@@ -3,6 +3,10 @@
 .tm-build/
 .omc/
 
+# xm-build runtime (projects, metrics — created during use)
+xm-build/lib/projects/
+xm-build/lib/metrics/
+
 # Node
 node_modules/
 

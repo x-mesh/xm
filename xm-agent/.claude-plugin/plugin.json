@@ -1,6 +1,6 @@
 {
   "name": "xm-agent",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Agent primitives — fan-out, delegate, broadcast, collect for Claude Code native multi-agent orchestration",
   "author": { "name": "x-mesh" },
   "repository": "https://github.com/x-mesh/xm-kit",

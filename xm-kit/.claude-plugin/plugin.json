@@ -1,6 +1,6 @@
 {
   "name": "xm-kit",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Meta-package: all x-mesh tools (xm-build, xm-op, and more)",
   "author": { "name": "x-mesh" },
   "repository": "https://github.com/x-mesh/xm-kit",

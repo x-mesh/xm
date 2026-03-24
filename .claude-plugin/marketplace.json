@@ -16,8 +16,8 @@
     },
     {
       "name": "xm-agent",
-      "description": "Agent primitives — fan-out, delegate, broadcast, collect for native multi-agent orchestration",
-      "version": "1.0.0",
+      "description": "Agent primitives with role presets — fan-out, delegate, broadcast for native multi-agent orchestration",
+      "version": "1.1.0",
       "author": { "name": "x-mesh" },
       "source": "./xm-agent",
       "category": "productivity",
@@ -37,7 +37,7 @@
     {
       "name": "xm-kit",
       "description": "Meta-package: install all x-mesh tools at once",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "author": { "name": "x-mesh" },
       "source": "./xm-kit",
       "category": "productivity",
