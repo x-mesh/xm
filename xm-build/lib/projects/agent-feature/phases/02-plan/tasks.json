@@ -67,15 +67,17 @@
       "size": "small",
       "status": "completed",
       "created_at": "2026-03-24T14:57:13.311Z",
-      "completed_at": "2026-03-24T15:00:48.630Z"
+      "completed_at": "2026-03-24T15:00:48.630Z",
+      "commit_sha": "2498b480cde64529e24c3982dd9d1985447301b3"
     },
     {
       "id": "t8",
       "name": "Define optimizer preset prompt",
       "depends_on": [],
       "size": "small",
-      "status": "pending",
-      "created_at": "2026-03-24T14:57:13.337Z"
+      "status": "completed",
+      "created_at": "2026-03-24T14:57:13.337Z",
+      "completed_at": "2026-03-24T15:00:48.702Z"
     },
     {
       "id": "t9",
