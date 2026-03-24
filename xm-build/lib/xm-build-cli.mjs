@@ -20,12 +20,10 @@ const __dirname = dirname(__filename);
 // ROOT resolution:
 // 1. TM_BUILD_ROOT env var (set by plugin hook)
 // 2. .xm-build/ in cwd (project-local data)
-// 3. fallback to script directory
+// 3. fallback: create .xm-build/ in cwd (NOT script dir — never pollute plugin source)
 const ROOT = process.env.TM_BUILD_ROOT
   ? resolve(process.env.TM_BUILD_ROOT)
-  : existsSync(join(process.cwd(), '.xm-build'))
-    ? resolve(process.cwd(), '.xm-build')
-    : resolve(__dirname);
+  : resolve(process.cwd(), '.xm-build');
 
 // PLUGIN_ROOT: where templates and defaults live (always script dir)
 const PLUGIN_ROOT = resolve(__dirname, '..');
