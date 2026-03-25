@@ -182,6 +182,40 @@ xm-op Alternative: [있으면 이름, 없으면 'none']
    - 대안 전략들
 5. 선택 후: `$XMS strategy set <chosen>`
 
+### Enhanced Signal Detection
+
+classify는 텍스트 패턴 매칭으로 시그널을 감지한다:
+
+| 시그널 | 감지 대상 | 예시 |
+|--------|----------|------|
+| `has_error` | 에러, 버그, crash, leak | "메모리 누수가 있어" |
+| `has_stack_trace` | 스택 트레이스, 파일:라인 | `.js:42` 포함 |
+| `has_code_context` | 코드 블록, 코드 타입 컨텍스트 | ``` 블록 |
+| `has_performance` | slow, latency, optimize, 느림, 병목 | "API가 느려요" |
+| `has_security` | vulnerability, injection, XSS, 보안 | "SQL injection 우려" |
+| `has_infra` | deploy, docker, k8s, scale, 배포 | "스케일링 전략" |
+| `has_design_question` | should, which, how to, 어떻게, 설계 | "어떤 DB가 좋을까" |
+| `has_tradeoff` | vs, tradeoff, pros/cons, 장단점 | "Redis vs Memcached" |
+
+### Composite Signal Boost
+
+2개 이상 시그널이 동시에 감지되면 confidence에 가산:
+- 2개 시그널: +5%
+- 3개+ 시그널: +10%
+
+### xm-op 전략 추천
+
+classify 결과에 관련 xm-op 전략을 함께 제안한다:
+
+| 시그널 조합 | xm-op 전략 | 이유 |
+|------------|-----------|------|
+| 에러 + 복잡 | `hypothesis` | 가설→반증으로 원인 진단 |
+| 설계 질문 (트레이드오프 없음) | `socratic` | 질문 기반 요구사항 명확화 |
+| 설계 + 다차원 | `persona` | 다관점 이해관계자 분석 |
+| 보안 | `red-team` | 보안 공격/방어 시뮬레이션 |
+| 성능 | `hypothesis` | 성능 병목 가설 검증 |
+| 인프라 + 트레이드오프 | `debate` | 인프라 선택지 찬반 토론 |
+
 ## Command: solve
 
 전략별 에이전트 오케스트레이션을 실행한다.

@@ -559,6 +559,12 @@ function cmdClassify(args) {
   const complexityScore = signals.word_count + signals.constraint_count * 10 + signals.context_count * 5;
   signals.complexity = complexityScore < 30 ? 'trivial' : complexityScore < 80 ? 'low' : complexityScore < 200 ? 'medium' : 'high';
 
+  // Composite signal score — boost confidence when multiple signals align
+  const signalCount = [signals.has_error, signals.has_stack_trace, signals.has_code_context,
+    signals.has_design_question, signals.has_tradeoff, signals.has_performance,
+    signals.has_security, signals.has_infra, signals.has_multiple_dims].filter(Boolean).length;
+  const compositeBoost = signalCount >= 3 ? 0.1 : signalCount >= 2 ? 0.05 : 0;
+
   // Strategy routing
   let recommended;
   let confidence;
@@ -606,11 +612,25 @@ function cmdClassify(args) {
     reasoning = 'No strong signals detected — pipeline will auto-route after deeper analysis';
   }
 
+  // Apply composite boost (cap at 0.95)
+  confidence = Math.min(0.95, confidence + compositeBoost);
+
+  // xm-op strategy recommendations based on signals
+  const xmOpRecommendations = [];
+  if (signals.has_error && signals.complexity !== 'trivial') xmOpRecommendations.push({ strategy: 'hypothesis', reason: '가설→반증으로 원인 진단' });
+  if (signals.has_design_question && !signals.has_tradeoff) xmOpRecommendations.push({ strategy: 'socratic', reason: '질문 기반 요구사항 명확화' });
+  if (signals.has_design_question && signals.has_multiple_dims) xmOpRecommendations.push({ strategy: 'persona', reason: '다관점 이해관계자 분석' });
+  if (signals.has_security) xmOpRecommendations.push({ strategy: 'red-team', reason: '보안 공격/방어 시뮬레이션' });
+  if (signals.has_performance) xmOpRecommendations.push({ strategy: 'hypothesis', reason: '성능 병목 가설 검증' });
+  if (signals.has_infra && signals.has_tradeoff) xmOpRecommendations.push({ strategy: 'debate', reason: '인프라 선택지 찬반 토론' });
+
   const classification = {
     recommended_strategy: recommended,
     confidence,
     reasoning,
     signals,
+    composite_boost: compositeBoost,
+    xm_op_recommendations: xmOpRecommendations,
     alternative_strategies: Object.values(STRATEGIES).filter(s => s !== recommended),
     classified_at: new Date().toISOString(),
   };
@@ -635,6 +655,18 @@ function cmdClassify(args) {
   console.log(`    Design: ${signals.has_design_question}  Tradeoff: ${signals.has_tradeoff}  Multi-dim: ${signals.has_multiple_dims}`);
   console.log(`    Performance: ${signals.has_performance}  Security: ${signals.has_security}  Infra: ${signals.has_infra}`);
   console.log(`    Complexity: ${signals.complexity} (score: ${complexityScore})\n`);
+
+  if (compositeBoost > 0) {
+    console.log(`  ${C.dim}Composite boost: +${Math.round(compositeBoost * 100)}% (${signalCount} signals)${C.reset}\n`);
+  }
+
+  if (xmOpRecommendations.length > 0) {
+    console.log(`  ${C.bold}xm-op Alternatives:${C.reset}`);
+    for (const rec of xmOpRecommendations) {
+      console.log(`    /xm-op ${rec.strategy} — ${rec.reason}`);
+    }
+    console.log();
+  }
 
   console.log(`  ${C.yellow}Run: xm-solver strategy set ${recommended}${C.reset}`);
   console.log(`  ${C.dim}Or choose another: xm-solver strategy set <decompose|iterate|constrain|pipeline>${C.reset}\n`);
