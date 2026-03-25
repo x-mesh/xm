@@ -1,0 +1,25 @@
+{
+  "gates": {
+    "research-exit": "human-verify",
+    "plan-exit": "human-verify",
+    "execute-exit": "auto",
+    "verify-exit": "quality",
+    "close-exit": "auto"
+  },
+  "execution": {
+    "parallel": true,
+    "max_concurrent": 3
+  },
+  "mode": "developer",
+  "workflow": "interactive",
+  "granularity": "standard",
+  "model_profile": "balanced",
+  "discussion": {
+    "default_mode": "interview",
+    "max_questions": 6
+  },
+  "research": {
+    "agents": 4,
+    "perspectives": ["stack", "features", "architecture", "pitfalls"]
+  }
+}

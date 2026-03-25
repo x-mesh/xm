@@ -1,11 +1,11 @@
 {
   "name": "xm-kit",
-  "version": "1.1.0",
-  "description": "Meta-package: all x-mesh tools (xm-build, xm-op, and more)",
+  "version": "1.2.0",
+  "description": "All-in-one x-mesh toolkit: xm-build (project harness), xm-op (strategy orchestration), xm-agent (agent primitives)",
   "author": { "name": "x-mesh" },
   "repository": "https://github.com/x-mesh/xm-kit",
   "homepage": "https://github.com/x-mesh/xm-kit",
   "license": "MIT",
-  "keywords": ["meta", "all-in-one", "x-mesh"],
+  "keywords": ["meta", "all-in-one", "x-mesh", "project-management", "orchestration", "agent"],
   "skills": "./skills/"
 }
