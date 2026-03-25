@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { execSync, spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
+import { readSharedConfig, writeSharedConfig, getSharedValue, getAgentCount } from './shared-config.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -725,6 +726,62 @@ function cmdMode(args) {
     console.log(`\n🔧 Developer mode activated.`);
     console.log(`   Technical terminology will be used.\n`);
   }
+}
+
+function cmdConfig(args) {
+  const sub = args[0];
+
+  if (!sub || sub === 'show') {
+    const config = readSharedConfig({ global: XM_GLOBAL });
+    console.log(`\n📋 xm-kit Shared Config (.xm/config.json)\n`);
+    console.log(`  mode:         ${config.mode}`);
+    console.log(`  agent_level:  ${config.agent_level}`);
+    console.log(`  max_agents:   ${getAgentCount({ global: XM_GLOBAL })}`);
+    console.log();
+    // Show agent profiles
+    const profiles = config.agent_profiles || {};
+    for (const [name, profile] of Object.entries(profiles)) {
+      const marker = name === config.agent_level ? ' ◀' : '';
+      console.log(`  ${name}: max_agents=${profile.max_agents} — ${profile.description}${marker}`);
+    }
+    console.log(`\n  변경: xm-kit config set <key> <value>\n`);
+    return;
+  }
+
+  if (sub === 'set') {
+    const key = args[1];
+    const value = args[2];
+    if (!key || value === undefined) {
+      console.error('Usage: xm-kit config set <key> <value>');
+      process.exit(1);
+    }
+    // Validate known keys
+    if (key === 'mode' && !['developer', 'normal'].includes(value)) {
+      console.error('❌ mode must be "developer" or "normal"');
+      process.exit(1);
+    }
+    if (key === 'agent_level' && !['min', 'medium', 'max'].includes(value)) {
+      console.error('❌ agent_level must be "min", "medium", or "max"');
+      process.exit(1);
+    }
+    writeSharedConfig(key, value, { global: XM_GLOBAL });
+    console.log(`✅ ${key} = ${value}`);
+    return;
+  }
+
+  if (sub === 'get') {
+    const key = args[1];
+    if (!key) {
+      console.error('Usage: xm-kit config get <key>');
+      process.exit(1);
+    }
+    const val = getSharedValue(key, { global: XM_GLOBAL });
+    console.log(val);
+    return;
+  }
+
+  console.error('Usage: xm-kit config <show|set|get>');
+  process.exit(1);
 }
 
 // ── Path Helpers ─────────────────────────────────────────────────────
@@ -3535,6 +3592,7 @@ switch (cmd) {
   case 'forecast':      cmdForecast(args); break;
   case 'run':            cmdRun(args); break;
   case 'mode':           cmdMode(args); break;
+  case 'config':        cmdConfig(args); break;
   case 'export':         cmdExport(args); break;
   case 'import':         cmdImport(args); break;
   case 'plan':           cmdPlan(args); break;

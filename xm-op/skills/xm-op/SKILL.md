@@ -32,13 +32,34 @@ Parse `$ARGUMENTS`의 첫 단어로 전략을 결정한다:
 
 - `--rounds N` — 라운드 수 (기본 4)
 - `--preset quick|thorough|deep` — quick: rounds=2, thorough: rounds=4, deep: rounds=6
-- `--agents N` — 참여 에이전트 수 (기본 3)
+- `--agents N` — 참여 에이전트 수 (기본값: shared config의 agent_level에 따라 결정. min=2, medium=4, max=8. 명시하면 오버라이드)
 - `--model sonnet|opus|haiku` — 에이전트 모델 (기본 sonnet)
 - `--steps "role:task,role:task"` — chain 단계 수동 지정
 - `--target <file|dir>` — review/red-team 대상
 - `--vote` — brainstorm 도트 투표 활성화
 - `--context` — 대화 맥락을 에이전트에게 주입
 - `--no-context` — 맥락 주입 비활성화
+
+## Shared Config Integration
+
+xm-op은 `.xm/config.json`의 공유 설정을 참조한다:
+
+| 설정 | 키 | 기본값 | 영향 |
+|------|-----|--------|------|
+| 에이전트 수 | `agent_level` | `medium` (4) | `--agents` 미지정 시 fan-out/broadcast 에이전트 수 결정 |
+| 모드 | `mode` | `developer` | 출력 스타일 (기술 용어 vs 쉬운 말) |
+
+### Agent Level → 에이전트 수 매핑
+
+| Level | Agents | 용도 |
+|-------|--------|------|
+| `min` | 2 | 토큰 절약, 빠른 피드백 |
+| `medium` | 4 | 기본값, 대부분의 작업 |
+| `max` | 8 | 대규모 분석, 토큰 무제한 |
+
+설정 변경: `xm-kit config set agent_level max`
+
+Skill layer가 에이전트를 생성할 때 `--agents` 플래그가 없으면 shared config에서 agent_level을 읽어 에이전트 수를 결정한다.
 
 ## Agent Primitives
 
@@ -52,6 +73,8 @@ Agent tool 호출 2: { description: "agent-2", prompt: "...", run_in_background:
 Agent tool 호출 3: { description: "agent-3", prompt: "...", run_in_background: true, model: "sonnet" }
 ```
 모든 에이전트가 같은 프롬프트를 받되, 각자 독립적으로 응답한다.
+
+에이전트 수는 `--agents N` 플래그 또는 shared config의 `agent_level`에 따라 결정된다.
 
 ### delegate (특정 에이전트에 위임)
 Agent tool 1개를 호출한다:
