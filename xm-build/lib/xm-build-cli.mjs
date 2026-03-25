@@ -694,8 +694,31 @@ function loadConfig() {
   return readJSON(join(ROOT, 'config.json')) || {};
 }
 
+function loadSharedConfig() {
+  // Shared config lives one level up from tool-specific root
+  // ROOT = .xm/build/ → shared = .xm/config.json
+  const sharedPath = join(ROOT, '..', 'config.json');
+  return readJSON(sharedPath) || {};
+}
+
 function getMode() {
-  return loadConfig().mode || 'developer';
+  // Priority: local config → shared config → default
+  const localMode = loadConfig().mode;
+  if (localMode) return localMode;
+  const sharedMode = loadSharedConfig().mode;
+  if (sharedMode) return sharedMode;
+  return 'developer';
+}
+
+function getAgentCount() {
+  const shared = loadSharedConfig();
+  const level = shared.agent_level || 'medium';
+  const profiles = shared.agent_profiles || {
+    min: { max_agents: 2 },
+    medium: { max_agents: 4 },
+    max: { max_agents: 8 },
+  };
+  return (profiles[level] || profiles['medium']).max_agents;
 }
 
 function isNormalMode() {
@@ -755,6 +778,11 @@ function cmdMode(args) {
   const config = loadConfig();
   config.mode = sub;
   writeJSON(join(ROOT, 'config.json'), config);
+  // Also update shared config
+  const sharedPath = join(ROOT, '..', 'config.json');
+  const sharedConfig = readJSON(sharedPath) || {};
+  sharedConfig.mode = sub;
+  writeJSON(sharedPath, sharedConfig);
 
   if (sub === 'normal') {
     console.log(`\n🟢 일반인 모드로 전환했습니다.`);
@@ -3175,7 +3203,7 @@ function cmdResearch(args) {
     action: 'research',
     project,
     goal,
-    agents: parseInt(opts.agents || '4'),
+    agents: parseInt(opts.agents || String(getAgentCount())),
     perspectives: ['stack', 'features', 'architecture', 'pitfalls'],
     model: opts.model || 'sonnet',
     existing_requirements: existsSync(join(contextDir(project), 'REQUIREMENTS.md'))

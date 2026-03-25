@@ -119,8 +119,30 @@ function loadConfig() {
   return readJSON(join(ROOT, 'config.json')) || {};
 }
 
+function loadSharedConfig() {
+  // Shared config: ROOT is .xm/solver/ → shared = .xm/config.json
+  const sharedPath = join(ROOT, '..', 'config.json');
+  return readJSON(sharedPath) || {};
+}
+
 function getMode() {
-  return loadConfig().mode || 'developer';
+  // Priority: local config → shared config → default
+  const localMode = loadConfig().mode;
+  if (localMode) return localMode;
+  const sharedMode = loadSharedConfig().mode;
+  if (sharedMode) return sharedMode;
+  return 'developer';
+}
+
+function getAgentCount() {
+  const shared = loadSharedConfig();
+  const level = shared.agent_level || 'medium';
+  const profiles = shared.agent_profiles || {
+    min: { max_agents: 2 },
+    medium: { max_agents: 4 },
+    max: { max_agents: 8 },
+  };
+  return (profiles[level] || profiles['medium']).max_agents;
 }
 
 function parseOptions(args) {
