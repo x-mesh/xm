@@ -27,10 +27,10 @@ Bundled tools (available now):
   /xm-build    Phase-based project harness — lifecycle, DAG, cost forecasting
   /xm-op       Strategy orchestration — refine, tournament, debate, review
   /xm-agent    Agent primitives — fan-out, delegate, broadcast, collect
+  /xm-solver   Structured problem solving — decompose, iterate, constrain, pipeline
 
 Coming soon:
   /xm-handoff  Session handoff between agents
-  /xm-solve    Structured problem solving
 
 Install bundle:     /plugin install xm-kit@xm-kit
 Install individual: /plugin install xm-kit@xm-build

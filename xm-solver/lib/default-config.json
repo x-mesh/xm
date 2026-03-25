@@ -1,0 +1,17 @@
+{
+  "gates": {
+    "intake-exit": "auto",
+    "classify-exit": "human-verify",
+    "solve-exit": "auto",
+    "verify-exit": "human-verify",
+    "close-exit": "auto"
+  },
+  "solving": {
+    "max_iterations": 3,
+    "max_candidates": 5,
+    "max_depth": 2,
+    "parallel_agents": 3,
+    "default_model": "sonnet"
+  },
+  "mode": "developer"
+}

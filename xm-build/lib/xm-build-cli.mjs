@@ -50,6 +50,15 @@ const TASK_STATES = {
   CANCELLED: 'cancelled',
 };
 
+const STATUS_ALIASES = {
+  in_progress: 'running',
+  done: 'completed',
+  complete: 'completed',
+  cancel: 'cancelled',
+  fail: 'failed',
+  todo: 'pending',
+};
+
 const GATE_TYPES = ['auto', 'human-verify', 'human-action', 'quality'];
 
 // ── ANSI Colors ──────────────────────────────────────────────────────
@@ -1328,15 +1337,17 @@ function taskRemove(project, args) {
 function taskUpdate(project, args) {
   const { opts, positional } = parseOptions(args);
   const id = positional[0];
-  const newStatus = opts.status;
+  const rawStatus = opts.status;
 
-  if (!id || !newStatus) {
+  if (!id || !rawStatus) {
     console.error('Usage: xm-build tasks update <task-id> --status <pending|ready|running|completed|failed>');
     process.exit(1);
   }
 
+  const newStatus = STATUS_ALIASES[rawStatus] || rawStatus;
+
   if (!Object.values(TASK_STATES).includes(newStatus)) {
-    console.error(`❌ Invalid status: "${newStatus}". Valid: ${Object.values(TASK_STATES).join(', ')}`);
+    console.error(`❌ Invalid status: "${rawStatus}". Valid: ${Object.values(TASK_STATES).join(', ')}`);
     process.exit(1);
   }
 

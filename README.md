@@ -10,11 +10,12 @@ Zero external dependencies. Claude Code native. Works on macOS, Linux, and Windo
 
 AI coding assistants are powerful but chaotic. They lose context mid-project, can't estimate costs, forget past decisions, and have no structured way to recover from failures.
 
-xm-kit fixes this with three layers:
+xm-kit fixes this with four layers:
 
 ```
 ┌─────────────────────────────────────────────┐
 │  xm-build    Project lifecycle & execution  │
+│  xm-solver   Structured problem solving     │
 │  xm-op       Strategy orchestration         │
 ├─────────────────────────────────────────────┤
 │  xm-agent    Agent primitives               │
@@ -26,6 +27,7 @@ xm-kit fixes this with three layers:
 
 - **xm-agent** — Reusable agent primitives (fan-out, delegate, broadcast)
 - **xm-op** — 9 multi-agent strategies built on xm-agent
+- **xm-solver** — 4 solving strategies (decompose, iterate, constrain, pipeline) with auto-recommendation
 - **xm-build** — Full project lifecycle built on xm-agent
 
 ## Install
@@ -41,6 +43,7 @@ xm-kit fixes this with three layers:
 /plugin install xm-kit@xm-agent    # Agent primitives
 /plugin install xm-kit@xm-build    # Project harness
 /plugin install xm-kit@xm-op       # Strategy orchestration
+/plugin install xm-kit@xm-solver   # Problem solving
 ```
 
 ## Quick Start
@@ -167,6 +170,27 @@ Chain primitives for custom workflows:
 /xm-op distribute "Fix 6 Sentry issues" --agents 3
 /xm-op council "Migration strategy" --rounds 4 --agenda "DB choice,API design,Deploy plan"
 ```
+
+---
+
+## xm-solver — Problem Solving
+
+Structured problem solving with 4 strategies: decompose, iterate, constrain, and auto-pipeline.
+
+```bash
+/xm-solver init "Memory leak in React component"
+/xm-solver classify                    # Auto-recommend strategy
+/xm-solver strategy set iterate        # Or choose manually
+/xm-solver solve                       # Execute strategy with agents
+/xm-solver verify                      # Check solution against constraints
+```
+
+| Strategy | Description | Best For |
+|----------|-------------|----------|
+| `decompose` | Tree-of-Thought: break → solve → merge | Complex multi-faceted problems |
+| `iterate` | Hypothesis → Test → Refine loop | Bugs, debugging, root cause |
+| `constrain` | Constraints → Candidates → Score → Select | Design decisions, tradeoffs |
+| `pipeline` | Auto-detect type → Route to best strategy | When unsure |
 
 ---
 
@@ -302,7 +326,6 @@ Plain language for non-developers:
 | Tool | Description |
 |------|-------------|
 | **xm-handoff** | Structured session handoff — context, decisions, and progress preserved across sessions |
-| **xm-solve** | Structured problem solving — root cause analysis, solution generation, verification |
 
 ---
 
