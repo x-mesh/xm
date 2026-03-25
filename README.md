@@ -26,7 +26,7 @@ xm-kit fixes this with four layers:
 ```
 
 - **xm-agent** — Reusable agent primitives (fan-out, delegate, broadcast)
-- **xm-op** — 9 multi-agent strategies built on xm-agent
+- **xm-op** — 16 multi-agent strategies built on xm-agent
 - **xm-solver** — 4 solving strategies (decompose, iterate, constrain, pipeline) with auto-recommendation
 - **xm-build** — Full project lifecycle built on xm-agent
 
@@ -119,14 +119,14 @@ Chain primitives for custom workflows:
 
 ## xm-op — Strategy Orchestration
 
-9 proven multi-agent strategies. All built on xm-agent primitives.
+16 multi-agent strategies. All built on xm-agent primitives.
 
 ```bash
 /xm-op refine "Payment API design" --rounds 4
-/xm-op tournament "Best login implementation" --agents 4
+/xm-op tournament "Best login implementation" --agents 4 --bracket double
 /xm-op debate "Monolith vs microservices"
-/xm-op review --target src/auth.ts
-/xm-op red-team --target src/api/
+/xm-op hypothesis "Why is latency spiking?" --rounds 3
+/xm-op escalate "Summarize this codebase" --start haiku
 ```
 
 ### Strategies
@@ -134,41 +134,57 @@ Chain primitives for custom workflows:
 | Strategy | Pattern | Best for |
 |----------|---------|----------|
 | **refine** | Diverge → converge → verify | Iterating on a design |
-| **tournament** | Compete → anonymous vote → winner | Picking the best solution |
-| **chain** | A → B → C sequential pipeline | Multi-step analysis |
+| **tournament** | Compete → seed → bracket → winner | Picking the best solution |
+| **chain** | A → B → C with conditional branching | Multi-step analysis |
 | **review** | Parallel multi-perspective | Code review |
 | **debate** | Pro vs Con + Judge → verdict | Trade-off decisions |
 | **red-team** | Attack → defend → re-attack | Security hardening |
 | **brainstorm** | Free ideation → cluster → vote | Feature exploration |
 | **distribute** | Split → parallel → merge | Large parallel tasks |
-| **council** | Free discussion → cross-examine → consensus | Complex multi-stakeholder decisions |
+| **council** | Weighted deliberation → consensus | Multi-stakeholder decisions |
+| **socratic** | Question-driven deep inquiry | Challenging assumptions |
+| **persona** | Multi-role perspective analysis | Requirements from all angles |
+| **scaffold** | Design → dispatch → integrate | Top-down implementation |
+| **compose** | Strategy piping (A \| B \| C) | Complex workflows |
+| **decompose** | Recursive split → leaf parallel → assemble | Large implementations |
+| **hypothesis** | Generate → falsify → adopt | Bug diagnosis, decisions |
+| **escalate** | haiku → sonnet → opus auto | Cost optimization |
 
 ### Options
 
 ```
 --rounds N              Round count (default 4)
 --preset quick|thorough|deep
---agents N              Number of agents (default 3)
+--agents N              Number of agents (default: agent_level)
 --model sonnet|opus     Agent model
 --target <file>         Review/red-team target
 --vote                  Enable voting (brainstorm)
---steps "a:t,b:t"       Chain steps
---roles "a,b"           Broadcast roles
---context / --no-context  Context injection
+--dry-run               Show execution plan only
+--resume                Resume from checkpoint
+--explain               Include decision trace
+--pipe <strategy>       Chain strategies (compose)
+--personas "a,b,c"      Persona roles
+--bracket single|double Tournament bracket
+--weights "role:N"      Council weighted voting
+--start haiku|sonnet    Escalate start level
 ```
 
 ### Examples
 
 ```bash
 /xm-op refine "Payment API design" --rounds 4
-/xm-op tournament "Login implementation" --agents 5
+/xm-op tournament "Login implementation" --agents 5 --bracket double
 /xm-op chain "Security audit" --steps "explorer:scan,security:analyze,architect:recommend"
 /xm-op review --target src/payments/
 /xm-op debate "REST vs GraphQL" --rounds 2
-/xm-op red-team --target src/auth.ts
 /xm-op brainstorm "v2 features" --vote
-/xm-op distribute "Fix 6 Sentry issues" --agents 3
-/xm-op council "Migration strategy" --rounds 4 --agenda "DB choice,API design,Deploy plan"
+/xm-op socratic "Why microservices?" --rounds 4
+/xm-op persona "Auth redesign" --personas "engineer,security,pm"
+/xm-op scaffold "Plugin system" --agents 4
+/xm-op compose "brainstorm | tournament | refine" --topic "v2 plan"
+/xm-op hypothesis "Memory leak cause" --rounds 3
+/xm-op escalate "Summarize codebase" --start haiku
+/xm-op refine "API design" --dry-run
 ```
 
 ---
@@ -306,6 +322,17 @@ Plain language for non-developers:
   🔬 security-audit           Security Audit
 ```
 
+### Shared Config
+
+Control agent parallelism across all xm-kit tools:
+
+```bash
+/xm-kit config set agent_level max    # 8 agents parallel
+/xm-kit config set agent_level medium # 4 agents (default)
+/xm-kit config set agent_level min    # 2 agents, token-saving
+/xm-kit config show                   # View current settings
+```
+
 ### All Commands
 
 | Category | Commands |
@@ -317,7 +344,7 @@ Plain language for non-developers:
 | **Execute** | `plan "goal"`, `run`, `run-status` |
 | **Analysis** | `forecast`, `metrics`, `decisions`, `summarize` |
 | **Export** | `export --format md/csv/jira/confluence`, `import` |
-| **Settings** | `mode developer/normal`, `quality`, `watch`, `alias install` |
+| **Settings** | `mode developer/normal`, `config set/get/show`, `quality`, `watch`, `alias install` |
 
 ---
 
@@ -341,7 +368,7 @@ Compared to 8 competitive tools (GSD, Cursor, Windsurf, Aider, Codex, Taskmaster
 | Phase-aware context loading | ✅ 76% token reduction | ❌ |
 | Non-developer mode | ✅ plain language | ❌ |
 | Structured agent primitives | ✅ fan-out/delegate/broadcast | ❌ |
-| 9 multi-agent strategies | ✅ refine to council | ❌ |
+| 16 multi-agent strategies | ✅ refine to escalate | ❌ |
 | Zero dependencies | ✅ Node.js stdlib only | varies |
 
 ## Architecture
@@ -362,9 +389,10 @@ xm-kit/                                ← Marketplace repo
 │   └── scripts/setup.mjs
 ├── xm-op/                              Strategy orchestration
 │   ├── .claude-plugin/plugin.json
-│   └── skills/xm-op/SKILL.md          9 strategies
-├── xm-kit/                             Meta-package
+│   └── skills/xm-op/SKILL.md          16 strategies
+├── xm-kit/                             Meta-package + shared config
 │   ├── .claude-plugin/plugin.json
+│   ├── lib/shared-config.mjs           Shared config utilities
 │   └── skills/xm-kit/SKILL.md
 ├── package.json
 ├── README.md
