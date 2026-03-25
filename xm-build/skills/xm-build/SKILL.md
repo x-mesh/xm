@@ -122,6 +122,7 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 
 ### Settings
 - `mode developer|normal`
+- `config show|set|get` — Shared config management (agent_level, mode)
 - `watch [--interval N]`
 - `alias install`
 
@@ -519,6 +520,39 @@ Future: shared `.xm/shared/decisions.json` for automatic cross-tool context.
 
 ---
 
+## Shared Config Integration
+
+xm-build는 `.xm/config.json`의 공유 설정을 참조한다:
+
+| 설정 | 키 | 기본값 | 영향 |
+|------|-----|--------|------|
+| 모드 | `mode` | `developer` | 출력 스타일 (기술 용어 vs 쉬운 말) |
+| 에이전트 수 | `agent_level` | `medium` (4) | research 에이전트 수, run 병렬 실행 수 |
+
+### Agent Level → 에이전트 수 매핑
+
+| Level | Max Agents | 용도 |
+|-------|-----------|------|
+| `min` | 2 | 토큰 절약, 빠른 피드백 |
+| `medium` | 4 | 기본값, 대부분의 작업 |
+| `max` | 8 | 대규모 프로젝트, 토큰 무제한 |
+
+설정 변경:
+```bash
+$XMB config set agent_level max    # 최대 병렬
+$XMB config set agent_level min    # 토큰 절약
+$XMB config show                   # 현재 설정 확인
+```
+
+### Config Resolution 우선순위
+
+1. CLI 플래그 (`--agents N`) — 명시하면 최우선
+2. 도구별 로컬 config (`.xm/build/config.json`)
+3. 공유 config (`.xm/config.json`)
+4. 기본값
+
+---
+
 ## Natural Language Mapping
 
 | User says | Command |
@@ -538,3 +572,4 @@ Future: shared `.xm/shared/decisions.json` for automatic cross-tool context.
 | "세션 저장" | `handoff` |
 | "내보내기", "export" | `export` |
 | "모드 변경" | `mode` |
+| "에이전트 설정", "agent level" | `config show` / `config set agent_level` |
