@@ -30,6 +30,9 @@ Parse `$ARGUMENTS`의 첫 단어로 전략을 결정한다:
 - `persona` → [Strategy: persona]
 - `scaffold` → [Strategy: scaffold]
 - `compose` → [Strategy: compose]
+- `decompose` → [Strategy: decompose]
+- `hypothesis` → [Strategy: hypothesis]
+- `escalate` → [Strategy: escalate]
 - 빈 입력 → 사용자에게 전략 선택 질문
 
 ## Options
@@ -50,6 +53,9 @@ Parse `$ARGUMENTS`의 첫 단어로 전략을 결정한다:
 - `--resume` — 이전 체크포인트에서 재개
 - `--explain` — 의사결정 과정 추적 출력
 - `--pipe <strategy>` — 전략 파이프라이닝 (compose)
+- `--start haiku|sonnet` — escalate 시작 레벨 (기본 haiku)
+- `--threshold N` — escalate 자가평가 임계값 (기본 7)
+- `--max-level haiku|sonnet|opus` — escalate 최대 레벨 (기본 opus)
 
 ## Shared Config Integration
 
@@ -120,6 +126,9 @@ Strategies:
   persona <topic>         Multi-persona perspective analysis
   scaffold <topic>        Design → dispatch → integrate (top-down)
   compose "A | B | C"     Strategy piping / chaining
+  decompose <topic>       Recursive decompose → leaf parallel → bottom-up
+  hypothesis <topic>      Generate → falsify → adopt surviving hypotheses
+  escalate <topic>        haiku→sonnet→opus auto-escalation (cost-optimized)
 
 Options:
   --rounds N              Round count (default 4)
@@ -148,6 +157,9 @@ Examples:
   /xm-op compose "brainstorm | tournament | refine" --topic "v2 plan"
   /xm-op refine "API design" --dry-run
   /xm-op tournament "Login" --explain
+  /xm-op decompose "Implement payment system" --agents 6
+  /xm-op hypothesis "Why is latency spiking?" --rounds 3
+  /xm-op escalate "Summarize this codebase" --start haiku
 ```
 
 ---
@@ -825,6 +837,212 @@ Execution Plan:
 
 ---
 
+## Strategy: decompose
+
+재귀 분해 → 리프 병렬 실행 → bottom-up 조립.
+
+### Phase 1: DECOMPOSE
+> 🧩 [decompose] Phase 1: Decompose
+
+delegate (foreground, opus 권장):
+```
+"## Decompose: {TOPIC}
+이 태스크를 재귀적으로 분해하라:
+- 각 하위 태스크는 독립적으로 실행 가능해야 한다
+- 하위 태스크가 여전히 복잡하면 한 단계 더 분해
+- 최종 리프는 에이전트 1명이 한 번에 완료 가능한 크기
+- 의존성 순서를 명시 (어떤 리프가 먼저 완료되어야 하는지)
+
+출력 형식:
+- 트리 구조 (들여쓰기로 계층 표현)
+- 각 리프: [ID] 태스크명 (deps: 없음 또는 ID 목록)"
+```
+
+### Phase 2: EXECUTE LEAVES
+> 🧩 [decompose] Phase 2: Execute Leaves
+
+의존성 순서에 따라 리프를 fan-out:
+- 의존성 없는 리프들을 먼저 병렬 실행
+- 완료되면 다음 레벨의 리프들을 병렬 실행
+- 각 리프 에이전트 프롬프트:
+```
+"## Leaf Task: {리프 태스크명}
+전체 구조:
+{Phase 1 트리}
+
+의존 결과:
+{선행 리프 결과들, 없으면 '없음'}
+
+이 리프 태스크를 완료하라. 범위를 벗어나지 말 것."
+```
+
+### Phase 3: ASSEMBLE
+> 🧩 [decompose] Phase 3: Assemble
+
+bottom-up으로 결과 조립 (delegate, foreground):
+```
+"## Bottom-up Assembly
+전체 트리:
+{Phase 1 트리}
+
+리프 결과들:
+{Phase 2 각 리프 결과}
+
+리프 결과들을 트리 구조에 따라 bottom-up으로 조립하라:
+- 하위 → 상위 순서로 통합
+- 리프 간 충돌이 있으면 해결
+- 최종 통합 결과물 출력"
+```
+
+### 최종 출력
+```
+🧩 [decompose] Complete — {depth} levels, {leaves} leaves
+
+## 분해 트리
+{트리 구조}
+
+## 실행 결과
+| Level | Leaf | Status |
+|-------|------|--------|
+| L2 | {리프명} | ✅ |
+
+## 최종 조립 결과
+{통합 결과물}
+```
+
+---
+
+## Strategy: hypothesis
+
+가설 생성 → 반증 시도 → 살아남은 가설만 채택. 버그 진단/과학적 추론에 특화.
+
+### Phase 1: GENERATE
+> 🔬 [hypothesis] Phase 1: Generate
+
+fan-out — 각 에이전트가 독립적으로 가설을 생성:
+```
+"## Hypothesis Generation: {TOPIC}
+이 문제에 대해 가능한 가설 2-3개를 제시하라.
+각 가설: 제목 + 근거 + 반증 가능한 예측(이 가설이 맞다면 ~해야 한다).
+200단어 이내."
+```
+
+리더가 수집 → 중복 제거 → 번호 부여 (H1, H2, ...).
+
+### Phase 2: FALSIFY
+> 🔬 [hypothesis] Phase 2: Falsify
+
+각 가설에 대해 반증 에이전트 fan-out:
+```
+"## Falsification: {가설 제목}
+가설: {가설 내용}
+예측: {반증 가능한 예측}
+
+이 가설을 반증하라:
+- 반례나 모순을 찾아라
+- 예측이 틀린 경우를 제시하라
+- 가설의 전제가 잘못된 근거를 찾아라
+
+결론: FALSIFIED (반증됨) 또는 SURVIVED (살아남음). 근거 필수."
+```
+
+### Phase 3: SYNTHESIZE
+> 🔬 [hypothesis] Phase 3: Synthesize
+
+리더가 결과 종합:
+- FALSIFIED 가설 제거
+- SURVIVED 가설들 중 가장 강력한 것 선정
+- 살아남은 가설이 없으면 → 새로운 가설 생성 라운드 (max_rounds까지)
+
+### 최종 출력
+```
+🔬 [hypothesis] Complete — {total} hypotheses, {survived} survived
+
+## 가설 결과
+| # | Hypothesis | Status | Rationale |
+|---|-----------|--------|-----------|
+| H1 | {제목} | ✅ SURVIVED | {근거} |
+| H2 | {제목} | ❌ FALSIFIED | {반증 근거} |
+
+## 채택된 가설
+{가장 강력한 생존 가설 상세}
+
+## 권장 검증 방법
+{가설을 실제로 확인하기 위한 다음 단계}
+```
+
+---
+
+## Strategy: escalate
+
+haiku → sonnet → opus 자동 에스컬레이션. 비용 최적화.
+
+### 실행 흐름
+> 📈 [escalate] Level 1: haiku
+
+1. **Level 1 (haiku)**: 가장 저렴한 모델로 시작
+```
+delegate (model: haiku):
+"## Task: {TOPIC}
+이 태스크를 해결하라. 400단어 이내.
+마지막에 자신의 답변 품질을 1-10으로 자가 평가하라.
+7 이상이면 'CONFIDENT', 미만이면 'UNCERTAIN'으로 표시."
+```
+
+2. **리더 평가**: 결과의 quality를 확인
+   - `CONFIDENT` + 리더가 동의 → 종료
+   - `UNCERTAIN` 또는 리더가 불충분 판단 → Level 2로 에스컬레이션
+
+> 📈 [escalate] Level 2: sonnet
+
+3. **Level 2 (sonnet)**: 이전 결과를 컨텍스트로 포함
+```
+delegate (model: sonnet):
+"## Escalated Task: {TOPIC}
+이전 시도 (haiku):
+{Level 1 결과}
+이전 시도의 부족한 점을 보완하여 더 나은 결과를 제시하라.
+자가 평가: CONFIDENT / UNCERTAIN"
+```
+
+4. 동일한 평가 → 필요시 Level 3 (opus)로 에스컬레이션
+
+> 📈 [escalate] Level 3: opus
+
+5. **Level 3 (opus)**: 최종 레벨
+```
+delegate (model: opus):
+"## Final Escalation: {TOPIC}
+이전 시도들:
+- haiku: {Level 1 결과}
+- sonnet: {Level 2 결과}
+최종 결과를 제시하라. 이전 시도의 모든 부족한 점을 해결할 것."
+```
+
+### 옵션
+- `--start haiku|sonnet` — 시작 레벨 (기본 haiku)
+- `--threshold N` — 자가 평가 임계값 (기본 7)
+- `--max-level haiku|sonnet|opus` — 최대 에스컬레이션 레벨 (기본 opus)
+
+### 최종 출력
+```
+📈 [escalate] Complete — resolved at {level}
+
+## Escalation Path
+| Level | Model | Quality | Decision |
+|-------|-------|---------|----------|
+| 1 | haiku | 5/10 | → escalate |
+| 2 | sonnet | 8/10 | ✅ accepted |
+
+## Cost Savings
+Estimated: ${cost} (vs ${opus_cost} if opus-only, saved ${saved}%)
+
+## Final Result
+{최종 결과}
+```
+
+---
+
 ## Interactive Mode
 
 `$ARGUMENTS`가 빈 경우, AskUserQuestion으로 단계적 선택:
@@ -832,8 +1050,9 @@ Execution Plan:
 **1단계 — 카테고리:**
 1. "협력 (refine / brainstorm / socratic)"
 2. "경쟁/숙의 (tournament / debate / council)"
-3. "파이프라인 (chain / distribute / scaffold / compose)"
-4. "분석 (review / red-team / persona)"
+3. "파이프라인 (chain / distribute / scaffold / compose / decompose)"
+4. "분석 (review / red-team / persona / hypothesis)"
+5. "메타 (escalate / compose)"
 
 **2단계 — 구체 전략 선택**
 **3단계 — 태스크 입력**
