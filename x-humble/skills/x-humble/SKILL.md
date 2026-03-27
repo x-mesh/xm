@@ -47,6 +47,31 @@ User provided: $ARGUMENTS
 
 **이번 세션을 함께 돌아본다.** 5단계 구조화 회고.
 
+### Phase 0: CHECK-IN — 이전 약속 확인
+
+> 🪞 [reflect] Phase 0: Check-In
+
+이전 회고에서 COMMIT한 항목이 있으면, 이행 여부를 먼저 확인한다.
+
+`.xm/humble/lessons/`에서 `status: "active"` 교훈을 로드:
+```
+지난 회고에서 약속한 것들:
+- START: "코드 리뷰 전 체크리스트 작성" (L2, 2026-03-25)
+- STOP: "첫 접근에 고착하기" (L1, 2026-03-27)
+
+이번 세션에서 실제로 지켰나요?
+1) 지켰음 — 효과가 있었음
+2) 지켰지만 — 효과 없었음 (교훈 재검토 필요)
+3) 못 지켰음 — 이유가 있음
+4) 이전 약속 없음 / 첫 회고
+```
+
+- "지켰음 + 효과" → `confirmed_count++`, REINFORCE
+- "지켰지만 효과 없음" → 이번 회고에서 교훈 재검토 대상으로 표시
+- "못 지켰음" → 이유를 Phase 3 ANALYZE에서 함께 분석
+
+> 이전 약속이 없으면 Phase 0을 스킵하고 Phase 1로 직행.
+
 ### Phase 1: RECALL — 무엇을 했는가
 
 > 🪞 [reflect] Phase 1: Recall
@@ -92,12 +117,23 @@ User provided: $ARGUMENTS
 
 **에이전트가 자신의 판단 과정을 솔직하게 분석한다.** 이것이 x-humble의 핵심.
 
+**Cross-Session Pattern Detection**: 분석 전에 `.xm/humble/retrospectives/`에서 과거 회고를 검색하여 유사 패턴이 있는지 확인한다. 동일 편향 태그가 이전에 등장했으면 명시적으로 지적:
+```
+"⚠ 이 패턴은 이전 회고에서도 등장했습니다:
+- 2026-03-25: confirmation_bias (기술 선택 시)
+- 2026-03-20: confirmation_bias (아키텍처 결정 시)
+이번이 3번째입니다."
+```
+
 delegate (foreground, opus 권장):
 ```
 "## Root Cause Analysis
 
 실패/아쉬움:
 {Phase 2에서 식별된 문제}
+
+과거 유사 패턴:
+{Cross-Session Pattern 검색 결과, 없으면 '첫 발생'}
 
 이 세션의 맥락:
 {Phase 1 요약}
@@ -125,7 +161,15 @@ delegate (foreground, opus 권장):
 300단어 이내. 변명하지 말고 솔직하게."
 ```
 
-분석 결과를 사용자에게 표시하고 피드백:
+분석 결과를 사용자에게 표시한다.
+
+**편안한 도전자 역할**: 사용자가 자기 합리화를 시도하면 (환경 탓, 시간 부족 탓 등), 에이전트가 부드럽지만 직접적으로 도전한다:
+```
+"지금 설명은 외부 환경 요인이 많습니다.
+본인의 결정 중 바꿀 수 있었던 것 하나만 꼽는다면?"
+```
+
+피드백 요청:
 ```
 이 분석이 맞나요? 다른 원인이 있었을까요?
 ```
@@ -135,6 +179,12 @@ delegate (foreground, opus 권장):
 > 🪞 [reflect] Phase 4: Alternative (Counterfactual)
 
 **반사실적 추론 — 다른 경로를 탐색한다.**
+
+**Steelman Protocol**: 에이전트가 대안을 제시하기 전에, 먼저 사용자에게 묻는다:
+```
+"만약 다시 한다면, 다르게 했을 한 가지는 무엇인가요?"
+```
+사용자 응답을 수집한 후, 에이전트가 사용자의 대안을 최대한 강하게 구성(steelman)하고 추가 대안을 보완한다.
 
 broadcast (3 agents):
 ```
@@ -348,9 +398,19 @@ Stats:
   "failures_identified": ["..."],
   "root_causes": ["..."],
   "biases_detected": ["anchoring"],
+  "bias_tags": [
+    { "bias": "confirmation_bias", "context": "tech-stack", "severity": "high" }
+  ],
   "alternatives_explored": 3,
+  "user_alternative": "사용자가 제시한 대안 (steelman)",
   "user_choice": "alternative-1",
   "lessons_created": ["L1"],
+  "commitment_checkin": {
+    "previous_lessons": ["L1", "L2"],
+    "kept": ["L1"],
+    "broken": ["L2"],
+    "reason": "시간 부족"
+  },
   "user_satisfaction": "helpful" | "neutral" | "unhelpful"
 }
 ```
