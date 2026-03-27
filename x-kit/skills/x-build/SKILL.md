@@ -317,8 +317,85 @@ PRD 생성 후, plan-quality rubric으로 자동 검증:
    | actionability | 7 |
    | scope-fit | 8 |
    | risk-coverage | 8 |
-   ✅ PRD approved. Proceeding to task decomposition.
+   ✅ PRD approved. Proceeding to review.
    ```
+
+#### PRD Review (사용자 리뷰 및 수정)
+
+PRD Quality Gate 통과 후, 사용자에게 PRD를 표시하고 피드백을 수렴한다. **사용자 승인 없이 태스크 분해로 넘어가지 않는다.**
+
+1. **PRD 전문 표시**: PRD.md 전체를 사용자에게 출력
+2. **피드백 요청**: AskUserQuestion으로 리뷰 결과 수집:
+   ```
+   PRD를 검토해주세요:
+   1) 승인 — 이대로 진행
+   2) 수정 필요 — 수정 사항을 알려주세요
+   3) 합의 검토 — 3 에이전트(architect, critic, planner)가 리뷰 후 합의할 때까지 자동 수정
+   4) 재작성 — PRD를 처음부터 다시 생성
+   ```
+3. **선택별 동작**:
+   - "승인" → 태스크 분해로 진행
+   - "수정 필요" → 사용자 피드백을 반영하여 PRD 수정 후 다시 표시 (반복)
+   - "합의 검토" → [Consensus Loop] 실행
+   - "재작성" → PRD Generation부터 재실행
+
+4. **수정 시 PRD 재저장**:
+   ```bash
+   $XMB save plan --content "{수정된 PRD 내용}"
+   ```
+
+5. **PRD 확정 기록**:
+   ```
+   ✅ PRD reviewed and approved by user.
+   Proceeding to task decomposition.
+   ```
+
+> 중요: PRD Review 루프는 사용자가 "승인"할 때까지 반복된다. 자동 스킵 불가.
+
+#### Consensus Loop (합의 검토)
+
+사용자가 "합의 검토"를 선택하면, 3 에이전트가 PRD를 다각도로 리뷰하고 합의할 때까지 자동 수정한다.
+
+**Round 1: broadcast (3 agents)**
+```
+Agent 1 (architect): "PRD의 구조적 완성도를 평가하라:
+- 모듈 경계가 명확한가
+- 인터페이스/의존성이 정의되어 있는가
+- 아키텍처 결정이 누락되지 않았는가
+결론: AGREE 또는 OBJECT + 구체적 피드백. 200단어 이내."
+
+Agent 2 (critic): "PRD의 약점을 찾아라:
+- 빠진 요구사항이나 시나리오가 있는가
+- 모순되는 항목이 있는가
+- 리스크가 과소평가되지 않았는가
+결론: AGREE 또는 OBJECT + 구체적 피드백. 200단어 이내."
+
+Agent 3 (planner): "PRD의 실행 가능성을 평가하라:
+- 태스크로 분해하기 쉬운 구조인가
+- 성공 기준이 측정 가능한가
+- 일정/비용 현실성이 있는가
+결론: AGREE 또는 OBJECT + 구체적 피드백. 200단어 이내."
+```
+
+**합의 판정:**
+- **전원 AGREE** → 합의 완료, 사용자에게 결과 표시 후 PRD Review 선택지로 복귀
+- **OBJECT 1개+** → 리더가 OBJECT 피드백을 종합하여 PRD 수정 → 다시 broadcast (max 3 rounds)
+- **3 rounds 후 미합의** → 핵심 쟁점을 정리하여 사용자에게 표시, 사용자 판단 요청
+
+**합의 결과 출력:**
+```
+🏛️ [consensus] PRD Review — Round {n}/{max}
+
+| Agent | Role | Verdict | Key Feedback |
+|-------|------|---------|-------------|
+| 1 | architect | ✅ AGREE | 구조 적절 |
+| 2 | critic | ❌ OBJECT | [R3] 테스트 전략 누락 |
+| 3 | planner | ✅ AGREE | 분해 가능 |
+
+→ critic 피드백 반영하여 PRD 수정 중...
+```
+
+합의 완료 후 PRD Review 선택지로 복귀 — 사용자가 최종 "승인"해야 진행.
 
 ---
 
@@ -347,7 +424,18 @@ Create tasks informed by research artifacts:
    $XMB steps compute
    $XMB forecast
    ```
-7. Show plan to user for approval
+7. **Plan Review** — 사용자에게 태스크 목록 + DAG + forecast를 표시하고 AskUserQuestion:
+   ```
+   계획을 검토해주세요:
+   1) 승인 — Execute로 진행
+   2) 수정 필요 — 태스크 추가/삭제/변경
+   3) 합의 검토 — 3 에이전트가 전체 계획(PRD+태스크+DAG)을 리뷰
+   4) 재계획 — plan부터 다시
+   ```
+   - "승인" → gate pass
+   - "수정 필요" → 사용자 피드백 반영 후 plan-check 재실행
+   - "합의 검토" → [Consensus Loop]를 전체 계획 대상으로 실행 (PRD + 태스크 + DAG를 평가)
+   - "재계획" → PRD Review부터 재시작
 8. Advance: `$XMB gate pass` → `$XMB phase next`
 
 ### Step 4: Execute (Execute Phase)
