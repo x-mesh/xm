@@ -1,6 +1,6 @@
 ---
 name: xm-op
-description: Strategy orchestration — refine, tournament, chain, review, debate, red-team, brainstorm, distribute, council
+description: Strategy orchestration — 18 strategies including refine, tournament, chain, review, debate, red-team, brainstorm, distribute, council, socratic, persona, scaffold, compose, decompose, hypothesis, investigate, monitor, escalate
 ---
 
 # xm-op — Strategy Orchestration (Claude Code Native)
@@ -32,6 +32,8 @@ Parse `$ARGUMENTS`의 첫 단어로 전략을 결정한다:
 - `compose` → [Strategy: compose]
 - `decompose` → [Strategy: decompose]
 - `hypothesis` → [Strategy: hypothesis]
+- `investigate` → [Strategy: investigate]
+- `monitor` → [Strategy: monitor]
 - `escalate` → [Strategy: escalate]
 - 빈 입력 → 사용자에게 전략 선택 질문
 
@@ -39,6 +41,9 @@ Parse `$ARGUMENTS`의 첫 단어로 전략을 결정한다:
 
 - `--rounds N` — 라운드 수 (기본 4)
 - `--preset quick|thorough|deep` — quick: rounds=2, thorough: rounds=4, deep: rounds=6
+- `--preset analysis-deep` — compose 프리셋: `investigate | hypothesis | refine`
+- `--preset security-audit` — compose 프리셋: `review | red-team`
+- `--preset consensus` — compose 프리셋: `persona | council`
 - `--agents N` — 참여 에이전트 수 (기본값: shared config의 agent_max_count (기본 4). 명시하면 오버라이드)
 - `--model sonnet|opus|haiku` — 에이전트 모델 (기본 sonnet)
 - `--steps "role:task,role:task"` — chain 단계 수동 지정
@@ -56,6 +61,8 @@ Parse `$ARGUMENTS`의 첫 단어로 전략을 결정한다:
 - `--start haiku|sonnet` — escalate 시작 레벨 (기본 haiku)
 - `--threshold N` — escalate 자가평가 임계값 (기본 7)
 - `--max-level haiku|sonnet|opus` — escalate 최대 레벨 (기본 opus)
+- `--angles "a,b,c"` — investigate 조사 관점 수동 지정
+- `--depth shallow|deep|exhaustive` — investigate 조사 깊이 (기본 shallow)
 
 ## Shared Config Integration
 
@@ -120,6 +127,8 @@ Strategies:
   compose "A | B | C"     Strategy piping / chaining
   decompose <topic>       Recursive decompose → leaf parallel → bottom-up
   hypothesis <topic>      Generate → falsify → adopt surviving hypotheses
+  investigate <topic>     Multi-angle investigation → synthesize → gap analysis
+  monitor --target <f>    Observe → analyze → auto-dispatch (1-shot watchdog)
   escalate <topic>        haiku→sonnet→opus auto-escalation (cost-optimized)
 
 Options:
@@ -136,6 +145,8 @@ Options:
   --resume                Resume from checkpoint
   --explain               Include decision trace
   --pipe <strategy>       Chain strategies (compose)
+  --angles "a,b,c"       Investigation angles (investigate)
+  --depth shallow|deep|exhaustive  Investigation depth (investigate)
 
 Examples:
   /xm-op refine "Payment API design" --rounds 4
@@ -146,6 +157,8 @@ Examples:
   /xm-op socratic "Why microservices?" --rounds 4
   /xm-op persona "Auth redesign" --personas "engineer,security,pm"
   /xm-op scaffold "Plugin system" --agents 4
+  /xm-op investigate "Auth system" --target src/auth/ --depth deep
+  /xm-op investigate "Redis vs Memcached" --angles "performance,ecosystem,ops,cost"
   /xm-op compose "brainstorm | tournament | refine" --topic "v2 plan"
   /xm-op refine "API design" --dry-run
   /xm-op tournament "Login" --explain
@@ -295,17 +308,23 @@ A→B→C 순차 파이프라인.
 - 없으면 → `git diff HEAD` (Bash tool)
 
 ### Phase 2: ASSIGN
-에이전트별 관점 자동 배정:
-- Agent 1 → 보안 (인젝션, 인증, 권한)
-- Agent 2 → 로직 (버그, 가독성, 패턴)
-- Agent 3 → 성능 (쿼리, 메모리, 에러 핸들링)
+에이전트 수(`--agents N` 또는 `agent_max_count`)에 따라 관점을 동적 배정:
+
+| Agents | 관점 |
+|--------|------|
+| 3 (기본) | 보안, 로직, 성능 |
+| 4 | + 에러 핸들링/복원력 |
+| 5 | + 테스트 가능성/커버리지 |
+| 6 | + 일관성/코드 규약 |
+| 7+ | + DX/가독성, 의존성/호환성 등 리더가 추가 배정 |
 
 ### Phase 3: REVIEW
 fan-out (각 에이전트에 다른 관점 프롬프트):
 ```
 "## Code Review: {관점}
 {코드}
-[Critical|High|Medium|Low] 파일:라인 — 설명 형식으로 이슈 보고."
+[Critical|High|Medium|Low] 파일:라인 — 설명 형식으로 이슈 보고.
+마지막에 자가 평가: 리뷰 충분도 1-10, CONFIDENT 또는 UNCERTAIN."
 ```
 
 ### Phase 4: SYNTHESIZE
@@ -734,26 +753,74 @@ Execution Plan:
 
 중단된 전략 실행을 체크포인트에서 재개.
 
-### 체크포인트 저장
-각 라운드/phase 완료 시 리더가 `.xm/op-checkpoints/{run-id}.json`에 자동 저장:
+### 체크포인트 스키마
+
+각 round/phase 완료 직후, 리더가 `.xm/op-checkpoints/{run-id}.json`에 자동 저장:
+
 ```json
 {
+  "version": 1,
+  "run_id": "refine-2026-03-27T12-30-00-000Z",
   "strategy": "refine",
-  "topic": "...",
-  "current_round": 2,
-  "completed_results": [...],
-  "options": { "agents": 8, "model": "sonnet" }
+  "topic": "Payment API design",
+  "status": "in_progress",
+  "created_at": "2026-03-27T12:30:00.000Z",
+  "updated_at": "2026-03-27T12:35:42.000Z",
+  "options": {
+    "rounds": 4,
+    "agents": 4,
+    "model": "sonnet",
+    "preset": "thorough"
+  },
+  "progress": {
+    "total_rounds": 4,
+    "completed_rounds": 2,
+    "current_phase": "converge",
+    "early_exit": false
+  },
+  "results": [
+    {
+      "round": 1,
+      "phase": "diverge",
+      "completed_at": "2026-03-27T12:32:10.000Z",
+      "agent_outputs": [
+        { "agent_id": "agent-1", "role": "engineer", "output_summary": "REST 기반 접근" },
+        { "agent_id": "agent-2", "role": "architect", "output_summary": "GraphQL 접근" }
+      ],
+      "summary": "3개 접근법 도출: REST, GraphQL, gRPC"
+    }
+  ]
 }
 ```
 
-### 재개
+`run-id` 생성: `{strategy}-{ISO timestamp}` (최초 실행 시 생성, 이후 재사용).
+
+### 저장 워크플로우
+
+각 round/phase 완료 시 리더가:
+1. `mkdirSync('.xm/op-checkpoints/', { recursive: true })` (Bash)
+2. `results` 배열에 현재 round 결과 append
+3. `progress.completed_rounds` 증가, `updated_at` 갱신
+4. JSON 파일 저장 (원자적 write)
+
+### 재개 워크플로우
+
 ```
 /xm-op --resume
 ```
-가장 최근 체크포인트를 로드 → 중단된 라운드부터 재실행.
 
-### 구현
-리더가 체크포인트 파일 존재 여부를 확인하고, 있으면 이전 결과를 컨텍스트로 주입하여 다음 라운드부터 진행.
+1. `.xm/op-checkpoints/` 에서 `status: "in_progress"` 파일 중 `updated_at` 최신 1개 선택
+2. `progress.completed_rounds` 읽기 → `resume_from = completed_rounds + 1`
+3. `results[].summary`를 다음 round 프롬프트 앞에 컨텍스트로 주입:
+   ```
+   "## 이전 실행 컨텍스트 (Round 1~{N} 결과)
+   {results 요약}"
+   ```
+4. `options` 복원하여 해당 round부터 실행 재개
+5. 완료 시: `status: "completed"` 기록 → 재개 대상에서 제외
+
+### 체크포인트가 없을 때
+`--resume` 사용 시 체크포인트가 없으면: `"⚠ No checkpoint found. Run a strategy first."` 출력.
 
 ---
 
@@ -797,11 +864,45 @@ Execution Plan:
 
 ### 실행 흐름
 1. 첫 전략 실행 → 결과 수집
-2. 결과를 다음 전략의 입력으로 자동 변환:
-   - brainstorm → tournament: Top N 아이디어를 후보로 전달
-   - tournament → refine: 우승 솔루션을 refine 시드로 전달
-   - review → red-team: 리뷰 이슈를 공격 대상으로 전달
-3. 마지막 전략 결과가 최종 출력
+2. 리더가 결과에서 `pipe_payload`를 구성 (아래 스키마 참조)
+3. `pipe_payload`를 다음 전략의 입력 컨텍스트로 주입
+4. 마지막 전략 결과가 최종 출력
+
+### pipe_payload 표준 스키마
+
+각 전략 완료 후, 리더가 마크다운 결과를 파싱하여 아래 구조를 내부적으로 구성한다 (사용자에게는 기존 마크다운 그대로 노출):
+
+```json
+{
+  "strategy": "tournament",
+  "status": "completed",
+  "result": {
+    "winner": "Solution B",
+    "score": 18,
+    "summary": "REST + OpenAPI 방향"
+  },
+  "candidates": [
+    { "id": "A", "summary": "...", "score": 14 },
+    { "id": "B", "summary": "...", "score": 18 }
+  ],
+  "pipe_payload": "다음 전략에 전달할 핵심 내용 텍스트"
+}
+```
+
+전략별 `pipe_payload` 추출 규칙:
+| 전략 | pipe_payload 내용 |
+|------|------------------|
+| brainstorm | 클러스터 대표 아이디어 목록 (투표 시 상위 N개) |
+| tournament | 우승 솔루션 전문 |
+| refine | 최종 채택안 전문 |
+| review | Critical/High 이슈 목록 |
+| debate | 판정 + 핵심 논거 |
+| hypothesis | 생존 가설 + 권장 검증 방법 |
+| investigate | Key Insights + Knowledge Gaps |
+| council | 합의문 (또는 NO CONSENSUS 시 핵심 쟁점) |
+| escalate | 최종 레벨의 결과물 |
+
+서브에이전트는 자유 텍스트로 응답하며, JSON 강제는 하지 않는다. pipe_payload 구성은 리더의 책임이다.
 
 ### 변환 규칙
 | From → To | 변환 |
@@ -811,6 +912,18 @@ Execution Plan:
 | tournament → refine | 우승 솔루션을 정제 대상으로 |
 | review → red-team | Critical/High 이슈를 공격 대상으로 |
 | chain → review | 체인 최종 출력을 리뷰 대상으로 |
+| investigate → debate | 충돌 발견을 PRO/CON 포지션으로 |
+| investigate → hypothesis | 지식 갭을 가설로 |
+| investigate → review | 식별된 파일을 리뷰 대상으로 |
+| investigate → red-team | 발견된 공격면을 타겟으로 |
+| investigate → refine | 핵심 인사이트를 seed로 |
+| brainstorm → investigate | 상위 아이디어를 조사 주제로 |
+| hypothesis → investigate | 생존 가설을 검증 조사 대상으로 |
+| hypothesis → scaffold | 채택 가설의 해결책을 모듈 설계 입력으로 |
+| hypothesis → chain | 채택 가설을 분석→설계→구현 파이프라인 시드로 |
+| council(no-consensus) → debate | 합의 실패 시 찬반 토론으로 에스컬레이션 |
+| review → chain "fix" | Critical 이슈를 분석→수정 파이프라인 입력으로 |
+| persona → council | 관점별 분석을 합의 토의 입력으로 |
 
 ### 최종 출력
 ```
@@ -965,6 +1078,175 @@ fan-out — 각 에이전트가 독립적으로 가설을 생성:
 
 ---
 
+## Strategy: investigate
+
+다각도 조사 → 종합 → 갭 분석. 미지 영역 탐색, 기술 비교, 코드베이스 이해에 특화.
+
+### Phase 1: SCOPE
+> 🔎 [investigate] Phase 1: Scope
+
+리더가 조사 범위를 결정:
+- `--target` → 조사 대상 파일/디렉토리 확인
+- `--angles` → 조사 관점 파싱 (없으면 주제 기반 자동 생성)
+- 관점 수를 에이전트 수에 맞춤 (초과 시 병합)
+
+기본 관점 (주제별 자동 선택):
+| 주제 패턴 | 감지 기준 | 기본 관점 |
+|-----------|----------|----------|
+| 코드베이스 | `--target` 있음 또는 파일/모듈명 언급 | `structure`, `data-flow`, `dependencies`, `conventions` |
+| 기술 비교 | "vs", "versus", "compared", "비교" 포함 | `performance`, `ecosystem`, `dx`, `tradeoffs` |
+| 보안/인증 | "auth", "security", "보안", "인증" 포함 | `authentication`, `authorization`, `attack-surface`, `data-protection` |
+| 성능/병목 | "slow", "latency", "성능", "병목" 포함 | `profiling`, `architecture`, `data-access`, `concurrency` |
+| 일반 | 위 패턴 미매칭 | `overview`, `mechanics`, `tradeoffs`, `alternatives` |
+
+### Phase 2: EXPLORE
+> 🔎 [investigate] Phase 2: Explore ({N} angles)
+
+broadcast — 각 에이전트에 다른 조사 관점 프롬프트. `--depth`에 따라 프롬프트가 달라진다:
+
+**shallow (기본):**
+```
+"## Investigation: {TOPIC}
+관점: {ANGLE_NAME} — {ANGLE_DESCRIPTION}
+대상: {--target 또는 'general'}
+깊이: shallow — 최대 5개 파일, 웹 검색 금지
+
+'{ANGLE_NAME}' 관점에서 조사하라:
+1. 구체적 사실 수집 (파일 읽기만, 웹 검색 하지 말 것)
+2. 각 발견에 출처 명시 (파일 경로)
+3. 각 발견의 신뢰도: HIGH / MEDIUM / LOW
+4. 확인 불가한 사항 (미지 영역) 플래그
+5. 자가 평가: 조사 충분도 1-10, CONFIDENT 또는 UNCERTAIN
+
+## Findings / ## Unknowns / ## Self-Assessment
+300단어 이내."
+```
+
+**deep:**
+```
+"## Investigation: {TOPIC}
+관점: {ANGLE_NAME} — {ANGLE_DESCRIPTION}
+대상: {--target 또는 'general'}
+깊이: deep — 최대 15개 파일, 웹 검색 허용
+
+'{ANGLE_NAME}' 관점에서 심층 조사하라:
+1. 구체적 사실 수집 (파일 읽기, 웹 검색 가능)
+2. 각 발견에 출처 명시 (파일 경로, URL, 추론)
+3. 각 발견의 신뢰도: HIGH / MEDIUM / LOW
+4. 확인 불가한 사항 (미지 영역) 플래그
+5. 자가 평가: 조사 충분도 1-10, CONFIDENT 또는 UNCERTAIN
+
+## Findings / ## Unknowns / ## Self-Assessment
+500단어 이내."
+```
+
+**exhaustive:**
+```
+"## Investigation: {TOPIC}
+관점: {ANGLE_NAME} — {ANGLE_DESCRIPTION}
+대상: {--target 또는 'general'}
+깊이: exhaustive — 최대 30개 파일, 웹 검색 + 교차 검증 필수
+
+'{ANGLE_NAME}' 관점에서 철저히 조사하라:
+1. 구체적 사실 수집 (파일 읽기, 웹 검색, 교차 검증)
+2. 각 발견에 출처 명시 (파일 경로, URL, 추론)
+3. 각 발견의 신뢰도: HIGH / MEDIUM / LOW
+4. 다른 관점과 겹칠 수 있는 발견은 명시적으로 태깅
+5. 확인 불가한 사항 (미지 영역) 플래그
+6. 자가 평가: 조사 충분도 1-10, CONFIDENT 또는 UNCERTAIN
+
+## Findings / ## Unknowns / ## Self-Assessment
+700단어 이내."
+```
+
+### Phase 2.5: CROSS-VALIDATE (`--depth deep|exhaustive`에서만)
+> 🔎 [investigate] Phase 2.5: Cross-Validate
+
+`--depth deep` 이상에서 자동 활성화. council의 CROSS-EXAMINE 패턴 적용:
+
+broadcast — 각 에이전트에 다른 에이전트의 Findings 전달:
+```
+"## Cross-Validation: {ANGLE_NAME}
+당신의 조사 결과: {자신의 Phase 2 Findings}
+다른 관점의 결과: {타 에이전트 Findings 요약}
+
+타 관점 결과를 읽고:
+1. 동의하는 발견 1-2개 + 근거
+2. 의문이 있는 발견 1-2개 + 이유
+3. 자신의 발견 중 수정/보강할 것
+200단어 이내."
+```
+
+### Phase 3: SYNTHESIZE
+> 🔎 [investigate] Phase 3: Synthesize
+
+리더가 전원 결과를 구조화된 규칙으로 종합:
+
+**교차 확인 규칙:**
+- 2+ 관점 일치: 신뢰도 → HIGH 확정
+- 1개 관점만: 원래 신뢰도 유지
+- Phase 2.5에서 동의받은 발견: +1 관점으로 카운트
+
+**충돌 해결 규칙:**
+- 동일 주제에 모순 발견: `[CONFLICT]` 태깅 → Phase 4 갭으로 전달
+- 다수결 (3+ 관점 합의 vs 1 반대): 다수 채택, 소수 의견 주석
+
+**구조화:**
+- 관점별이 아닌 테마별로 재배치
+- 각 테마에 교차 확인 점수 부여
+
+**자가 평가 집계:**
+- 에이전트 Self-Assessment 평균 < 6: "⚠ 추가 조사 권장" 표시
+- UNCERTAIN 에이전트 비율 > 50%: Phase 4에 심화 조사 갭 추가
+
+### Phase 4: GAP ANALYSIS
+> 🔎 [investigate] Phase 4: Gap Analysis
+
+delegate (foreground):
+```
+"## Gap Analysis: {TOPIC}
+종합 결과: {Phase 3 종합}
+보고된 미지 영역: {Phase 2 Unknowns 집계}
+
+아직 모르는 것을 분석하라:
+1. 지식 갭 목록
+2. 각 갭의 해소 방법 (읽을 파일, 실행할 실험, 질문할 대상)
+3. 중요도: CRITICAL / IMPORTANT / NICE-TO-HAVE
+4. 갭 해소에 적합한 xm-op 전략 제안:
+   - 모호한 발견 → debate 또는 hypothesis
+   - 코드 심층 분석 필요 → review 또는 red-team
+   - 다관점 필요 → persona 또는 council
+   - 반복 정제 필요 → refine
+200단어 이내."
+```
+
+### 최종 출력
+```
+🔎 [investigate] Complete — {N} angles, {M} findings, {G} gaps
+
+## Findings
+| # | Finding | Confidence | Sources | Angles |
+|---|---------|------------|---------|--------|
+| 1 | {발견} | HIGH | src/auth.ts:42 | structure, data-flow |
+| 2 | {발견} | MEDIUM | 공식 문서 | dependencies |
+
+## Key Insights
+- {핵심 인사이트 3-5개}
+
+## Knowledge Gaps
+| # | Gap | Importance | Suggested Action |
+|---|-----|------------|-----------------|
+| 1 | {미지 영역} | CRITICAL | → hypothesis "..." |
+| 2 | {미지 영역} | IMPORTANT | → review --target src/ |
+
+## Confidence Summary
+- HIGH: {N} ({P}%)
+- MEDIUM: {N} ({P}%)
+- LOW: {N} ({P}%)
+```
+
+---
+
 ## Strategy: escalate
 
 haiku → sonnet → opus 자동 에스컬레이션. 비용 최적화.
@@ -1011,8 +1293,19 @@ delegate (model: opus):
 최종 결과를 제시하라. 이전 시도의 모든 부족한 점을 해결할 것."
 ```
 
+### 자동 시작 레벨 결정
+
+xm-solver의 `classify` 결과에 `complexity` 필드가 있으면 자동으로 시작 레벨을 결정:
+| complexity | --start | 이유 |
+|------------|---------|------|
+| low | haiku | 간단한 태스크 — 최저 비용으로 시작 |
+| medium | sonnet | 중간 복잡도 — haiku 단계 스킵 |
+| high | sonnet | 높은 복잡도 — haiku로는 부족, sonnet부터 |
+
+수동 `--start` 플래그가 있으면 자동 결정보다 우선한다.
+
 ### 옵션
-- `--start haiku|sonnet` — 시작 레벨 (기본 haiku)
+- `--start haiku|sonnet` — 시작 레벨 (기본 haiku, classify complexity 연동 시 자동 결정)
 - `--threshold N` — 자가 평가 임계값 (기본 7)
 - `--max-level haiku|sonnet|opus` — 최대 에스컬레이션 레벨 (기본 opus)
 
@@ -1035,6 +1328,134 @@ Estimated: ${cost} (vs ${opus_cost} if opus-only, saved ${saved}%)
 
 ---
 
+## Strategy: monitor
+
+1회 관찰 → 이상 판단 → 전략 dispatch. 주기성은 외부(cron/tmux)에 위임.
+
+> 주의: Claude Code에 시간 기반 트리거가 없으므로, monitor는 "호출 시점에 1회 관찰"만 수행한다.
+> 주기적 감시가 필요하면 외부 cron + `claude -p "/xm-op monitor ..."` 또는 OMC `/loop`을 사용한다.
+
+### Phase 1: OBSERVE
+> 👁️ [monitor] Phase 1: Observe
+
+리더가 관찰 대상을 수집:
+- `--target <file|dir|cmd>` → 파일 읽기, 디렉토리 상태, 또는 Bash 명령 실행
+- 없으면 → `git diff HEAD` + `git log --oneline -5` (최근 변경)
+
+### Phase 2: ANALYZE
+> 👁️ [monitor] Phase 2: Analyze
+
+broadcast — 각 에이전트에 다른 관찰 관점:
+```
+"## Monitor: {TARGET}
+관찰 대상: {Phase 1 수집 결과}
+관점: {ANGLE}
+
+아래 기준으로 이상 여부를 판단하라:
+1. 예상 범위를 벗어나는 변경이 있는가
+2. 잠재적 문제(버그, 보안, 성능 퇴행)의 징후가 있는가
+3. 즉시 조치가 필요한 사항이 있는가
+
+결과: NORMAL / WARNING / ALERT + 근거. 200단어 이내."
+```
+
+기본 관점 (에이전트 수에 맞춰 배정):
+- `code-quality`: 코드 품질 퇴행
+- `security`: 보안 취약점 도입
+- `dependency`: 의존성 변경/충돌
+- `test-coverage`: 테스트 누락
+
+### Phase 3: DISPATCH
+> 👁️ [monitor] Phase 3: Dispatch
+
+리더가 에이전트 결과를 종합:
+- **전원 NORMAL** → 요약 출력, 조치 없음
+- **WARNING 1개+** → 경고 요약 + 권장 전략 제안
+- **ALERT 1개+** → 자동으로 권장 전략 실행 (사용자 확인 후)
+
+자동 dispatch 규칙:
+| Alert 유형 | 권장 전략 |
+|-----------|----------|
+| 보안 취약점 | → red-team --target {file} |
+| 코드 품질 퇴행 | → review --target {file} |
+| 테스트 누락 | → chain "test-gap-analysis → test-generation" |
+| 의존성 충돌 | → investigate "dependency conflict" |
+| 복합 이슈 | → hypothesis "What caused {issue}?" |
+
+### 최종 출력
+```
+👁️ [monitor] Complete — {N} agents, {alerts} alerts, {warnings} warnings
+
+## 관찰 결과
+| # | Angle | Status | Finding |
+|---|-------|--------|---------|
+| 1 | code-quality | ✅ NORMAL | 변경 없음 |
+| 2 | security | ⚠️ WARNING | 새 dependency에 known CVE |
+| 3 | test-coverage | 🚨 ALERT | 3개 함수 테스트 미작성 |
+
+## 자동 Dispatch
+| Alert | Strategy | Status |
+|-------|----------|--------|
+| test-coverage | → review --target src/auth/ | 실행 대기 (사용자 확인 필요) |
+```
+
+---
+
+## Strategy Selection Guide
+
+사용자가 전략을 모를 때, 아래 의사결정 트리로 추천한다:
+
+```
+어떤 종류의 작업인가?
+│
+├─ 코드 작성/구현 → 규모는?
+│   ├─ 단일 모듈 → scaffold
+│   ├─ 다수 독립 태스크 → distribute
+│   └─ 의존성 있는 트리 → decompose
+│
+├─ 코드 리뷰/보안 → 목적은?
+│   ├─ 품질 검사 → review
+│   ├─ 취약점 탐색 → red-team
+│   └─ 둘 다 → compose "review | red-team"
+│
+├─ 의사결정/설계 → 선택지가 있는가?
+│   ├─ 2개 대립 → debate
+│   ├─ 3개+ 후보 → tournament
+│   ├─ 다수 이해관계자 → council
+│   └─ 관점별 분석 필요 → persona
+│
+├─ 문제 해결/디버깅 → 원인을 아는가?
+│   ├─ 모름 → hypothesis
+│   ├─ 탐색 필요 → investigate
+│   └─ 전제를 검증하고 싶음 → socratic
+│
+├─ 아이디어/기획 → 단계는?
+│   ├─ 발산 → brainstorm
+│   ├─ 발산→선택→정제 → compose "brainstorm | tournament | refine"
+│   └─ 기존안 개선 → refine
+│
+├─ 순차 워크플로우 → chain
+│
+├─ 변경 감시/이상 탐지 → monitor
+│
+└─ 비용 최적화 → escalate
+```
+
+### 옵션 적용 가이드
+
+| 전략 | 핵심 옵션 | 설명 |
+|------|----------|------|
+| refine | `--rounds`, `--preset` | 라운드 수 = 정제 깊이 |
+| tournament | `--bracket`, `--agents` | 에이전트 수 = 후보 다양성 |
+| review | `--target` | 필수 — 리뷰 대상 파일 |
+| debate | `--agents` | 최소 3 (PRO+CON+JUDGE) |
+| brainstorm | `--vote` | 투표로 상위 아이디어 선별 |
+| council | `--weights` | 역할별 가중 투표 |
+| persona | `--personas` | 역할 수동 지정 |
+| investigate | `--angles`, `--depth` | 조사 관점과 깊이 |
+| escalate | `--start`, `--max-level` | 시작/최대 모델 레벨 |
+| compose | `--pipe` | 전략 파이프라이닝 |
+
 ## Interactive Mode
 
 `$ARGUMENTS`가 빈 경우, AskUserQuestion으로 단계적 선택:
@@ -1043,8 +1464,8 @@ Estimated: ${cost} (vs ${opus_cost} if opus-only, saved ${saved}%)
 1. "협력 (refine / brainstorm / socratic)"
 2. "경쟁/숙의 (tournament / debate / council)"
 3. "파이프라인 (chain / distribute / scaffold / compose / decompose)"
-4. "분석 (review / red-team / persona / hypothesis)"
-5. "메타 (escalate / compose)"
+4. "분석 (review / red-team / persona / hypothesis / investigate)"
+5. "감시/메타 (monitor / escalate / compose)"
 
 **2단계 — 구체 전략 선택**
 **3단계 — 태스크 입력**

@@ -829,6 +829,10 @@ function contextDir(project) {
   return join(projectDir(project), 'context');
 }
 
+function toSlug(name) {
+  return name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
+}
+
 // ── Project Manager ──────────────────────────────────────────────────
 
 function findCurrentProject() {
@@ -848,13 +852,17 @@ function findCurrentProject() {
     [0].name;
 }
 
-function resolveProject(explicit) {
+function resolveProject(explicit, { autoInit = false } = {}) {
   const name = explicit || findCurrentProject();
   if (!name) {
     console.error('❌ No project found. Run: xm-build init <project-name>');
     process.exit(1);
   }
   if (!existsSync(manifestPath(name))) {
+    if (autoInit) {
+      console.error(`⚡ Project "${name}" not found — auto-initializing...`);
+      return cmdInit([name]);
+    }
     console.error(`❌ Project "${name}" not found.`);
     process.exit(1);
   }
@@ -868,7 +876,7 @@ function cmdInit(args) {
     process.exit(1);
   }
 
-  const slug = name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
+  const slug = toSlug(name);
 
   if (existsSync(manifestPath(slug))) {
     console.error(`❌ Project "${slug}" already exists.`);
@@ -914,6 +922,7 @@ function cmdInit(args) {
   console.log(`✅ Project "${slug}" initialized.`);
   console.log(`📁 ${projectDir(slug)}`);
   console.log(`📍 Current phase: Research`);
+  return slug;
 }
 
 function cmdList() {
@@ -939,7 +948,7 @@ function cmdList() {
 // ── Status ───────────────────────────────────────────────────────────
 
 function cmdStatus(args) {
-  const name = resolveProject(args[0]);
+  const name = resolveProject(args[0], { autoInit: true });
   const manifest = readJSON(manifestPath(name));
   const config = loadConfig();
 
@@ -1036,7 +1045,7 @@ function cmdPhase(args) {
 }
 
 function phaseNext(args) {
-  const project = resolveProject(args[0]);
+  const project = resolveProject(args[0], { autoInit: true });
   const manifest = readJSON(manifestPath(project));
   const config = loadConfig();
   const currentIdx = PHASES.findIndex(p => p.id === manifest.current_phase);
@@ -1193,7 +1202,7 @@ function phaseNext(args) {
 
 function phaseSet(args) {
   const phaseName = args[0];
-  const project = resolveProject(args[1]);
+  const project = resolveProject(args[1], { autoInit: true });
 
   if (!phaseName) {
     console.error('Usage: xm-build phase set <phase-name> [project]');
@@ -1568,7 +1577,7 @@ function cmdSteps(args) {
     process.exit(1);
   }
 
-  const project = resolveProject(args[1] || null);
+  const project = resolveProject(args[1] || null, { autoInit: true });
 
   if (sub === 'compute') return stepsCompute(project);
   if (sub === 'status') return stepsStatus(project);
@@ -1705,7 +1714,7 @@ function cmdCheckpoint(args) {
 // ── Context Brief ────────────────────────────────────────────────────
 
 function cmdContext(args) {
-  const project = resolveProject(args[0] || null);
+  const project = resolveProject(args[0] || null, { autoInit: true });
   const manifest = readJSON(manifestPath(project));
   const currentPhase = PHASES.find(p => p.id === manifest.current_phase);
   const taskData = readJSON(tasksPath(project));
@@ -2804,7 +2813,7 @@ function cmdMetrics(args) {
 // ── Phase Context (enhanced) ─────────────────────────────────────────
 
 function cmdPhaseContext(args) {
-  const project = resolveProject(args[0] || null);
+  const project = resolveProject(args[0] || null, { autoInit: true });
   const manifest = readJSON(manifestPath(project));
   const currentPhase = PHASES.find(p => p.id === manifest.current_phase);
   const phaseName = currentPhase?.name || 'research';
