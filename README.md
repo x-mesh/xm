@@ -2,7 +2,7 @@
 
 **Multi-agent toolkit for Claude Code** by [x-mesh](https://github.com/x-mesh).
 
-Turn Claude Code into a structured project execution engine with 18 orchestration strategies, phase-based project management, and reusable agent primitives.
+Structured problem solving, strategy orchestration, and agent primitives — with built-in quality pipelines that ensure consistent, high-quality results.
 
 Zero dependencies. Claude Code native. Works everywhere.
 
@@ -16,28 +16,30 @@ Zero dependencies. Claude Code native. Works everywhere.
 /plugin install x-kit@x-kit -s user
 
 # Or install individually
-/plugin install x-agent@x-kit -s user   # Agent primitives
-/plugin install x-build@x-kit -s user   # Project harness
 /plugin install x-op@x-kit -s user      # Strategy orchestration
+/plugin install x-build@x-kit -s user   # Project harness
+/plugin install x-eval@x-kit -s user    # Quality evaluation
+/plugin install x-agent@x-kit -s user   # Agent primitives
 /plugin install x-solver@x-kit -s user  # Problem solving
 ```
 
 ## Quick Start
 
 ```bash
-# Run a multi-agent strategy
-/x-op debate "Monolith vs microservices"
-/x-op review --target src/auth/
+# Multi-agent strategy with auto quality verification
+/x-op debate "Monolith vs microservices" --verify
+/x-op review --target src/auth/ --agents 5
 /x-op investigate "Why is latency spiking?" --depth deep
 
-# Manage a project end-to-end
+# Project with PRD → consensus review → execution
 /x-build init my-api
-/x-build plan "Build a REST API with JWT auth and PostgreSQL"
+/x-build plan "Build a REST API with JWT auth"
+# → PRD auto-generated → 4-agent consensus review → task decomposition
 /x-build run
 
-# Use agent primitives directly
-/x-agent fan-out "Find bugs in src/" --agents 5
-/x-agent delegate architect "Design the database schema" --model opus
+# Measure quality
+/x-eval score output.md --rubric code-quality
+/x-eval diff --from v1.0 --quality
 ```
 
 ---
@@ -46,14 +48,15 @@ Zero dependencies. Claude Code native. Works everywhere.
 
 ### x-op — Strategy Orchestration
 
-18 multi-agent strategies built on x-agent primitives.
+18 multi-agent strategies with self-scoring and auto-verification.
 
 ```bash
-/x-op refine "Payment API design" --rounds 4
-/x-op tournament "Best login approach" --agents 6 --bracket double
+/x-op refine "Payment API design" --rounds 4 --verify
+/x-op tournament "Best approach" --agents 6 --bracket double
 /x-op debate "REST vs GraphQL"
-/x-op hypothesis "Memory leak cause" --rounds 3
+/x-op investigate "Redis vs Memcached" --depth deep
 /x-op compose "brainstorm | tournament | refine" --topic "v2 plan"
+/x-op hypothesis "Memory leak cause" --rounds 3
 ```
 
 | Category | Strategies |
@@ -63,6 +66,11 @@ Zero dependencies. Claude Code native. Works everywhere.
 | **Pipeline** | chain, distribute, scaffold, compose, decompose |
 | **Analysis** | review, red-team, persona, hypothesis, investigate |
 | **Meta** | monitor, escalate |
+
+**Quality features:**
+- **Self-Score**: Every strategy auto-scores output against rubric (1-10)
+- **--verify**: Judge panel validates quality, auto-retries if below threshold
+- **Compose presets**: `--preset analysis-deep`, `--preset security-audit`, `--preset consensus`
 
 <details>
 <summary>All 18 strategies</summary>
@@ -100,16 +108,13 @@ Zero dependencies. Claude Code native. Works everywhere.
 --model sonnet|opus     Agent model
 --target <file>         Review/red-team/monitor target
 --depth shallow|deep|exhaustive   Investigation depth
+--verify                Auto quality validation (judge panel + retry)
+--threshold N           Verify pass score (default 7)
 --vote                  Enable voting (brainstorm)
 --dry-run               Show execution plan only
 --resume                Resume from checkpoint
 --explain               Include decision trace
 --pipe <strategy>       Chain strategies (compose)
---personas "a,b,c"      Persona roles
---bracket single|double Tournament bracket
---weights "role:N"      Council weighted voting
---start haiku|sonnet    Escalate start level
---verify                Enable verification round
 ```
 
 </details>
@@ -118,30 +123,32 @@ Zero dependencies. Claude Code native. Works everywhere.
 
 ### x-build — Project Harness
 
-Full project lifecycle with DAG execution, cost forecasting, and decision memory.
+Full project lifecycle with PRD generation, consensus review, and quality-gated execution.
 
 ```bash
 /x-build init my-api
 /x-build plan "Build a REST API with JWT auth"
+# → PRD generated → quality gate → user/agent consensus review
 /x-build forecast    # Per-task cost estimate
-/x-build gate pass   # Human approval
 /x-build run         # Agents execute in DAG order
 ```
 
 ```
-Research ──→ Plan ──→ Execute ──→ Verify ──→ Close
- [auto]    [human]    [auto]    [quality]   [auto]
+Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──→ Close
+ [auto]    [quality]  [consensus]  [auto]   [quality]  [auto]
 ```
 
 | Feature | Description |
 |---------|-------------|
+| **PRD generation** | Auto-generates 8-section PRD from research artifacts |
+| **PRD quality gate** | Judge panel scores PRD, rejects if below 7.0/10 |
+| **Consensus review** | 4-agent review (architect, critic, planner, security) until agreement |
+| **Strategy-tagged tasks** | Tasks can specify x-op strategy + rubric for quality-verified execution |
 | **DAG execution** | Tasks run in dependency order, parallel where possible |
 | **Cost forecasting** | Per-task $ estimate before execution |
-| **Decision memory** | Architectural decisions auto-injected into agent context |
+| **Quality dashboard** | Per-task scores + project average in status output |
 | **Error recovery** | Auto-retry with exponential backoff, circuit breaker, git rollback |
-| **Quality gates** | Auto-detect npm test, pytest, go test, eslint |
-| **Export** | CSV, Jira, Confluence, Markdown |
-| **Normal mode** | Plain language output for non-developers |
+| **plan-check --strict** | Coverage enforcement: uncovered requirements block gate |
 
 <details>
 <summary>All commands</summary>
@@ -150,14 +157,40 @@ Research ──→ Plan ──→ Execute ──→ Verify ──→ Close
 |----------|----------|
 | **Project** | `init`, `list`, `status`, `close`, `dashboard` |
 | **Phase** | `phase next/set`, `gate pass/fail`, `checkpoint` |
-| **Tasks** | `tasks add/list/remove/update`, `templates list/use` |
+| **Plan** | `plan "goal"`, `plan-check [--strict]` |
+| **Tasks** | `tasks add [--strategy] [--rubric]`, `tasks list/remove/update [--score]` |
 | **Steps** | `steps compute/status/next` |
-| **Execute** | `plan "goal"`, `run`, `run-status` |
+| **Execute** | `run`, `run --json`, `run-status` |
 | **Analysis** | `forecast`, `metrics`, `decisions`, `summarize` |
 | **Export** | `export --format md/csv/jira/confluence`, `import` |
 | **Settings** | `mode developer/normal`, `config set/get/show` |
 
 </details>
+
+---
+
+### x-eval — Quality Evaluation
+
+Multi-rubric scoring, strategy benchmarking, A/B comparison, and change measurement.
+
+```bash
+/x-eval score output.md --rubric code-quality     # Judge panel scoring
+/x-eval compare old.md new.md --judges 5          # A/B comparison
+/x-eval bench "Find bugs" --strategies "refine,debate,tournament"  # Benchmark
+/x-eval diff --from abc1234 --quality              # Change measurement + quality delta
+/x-eval rubric create strict --criteria "correctness,edge-cases"   # Custom rubric
+```
+
+| Command | What it does |
+|---------|-------------|
+| **score** | N judges score content against rubric (1-10, weighted avg, consensus σ) |
+| **compare** | A/B comparison with position bias mitigation |
+| **bench** | strategies × models × trials matrix with Score/$ optimization |
+| **diff** | Git-based change analysis + optional before/after quality comparison |
+| **rubric** | Create/list custom evaluation rubrics |
+| **report** | Aggregated evaluation history |
+
+**Built-in rubrics:** `code-quality`, `review-quality`, `plan-quality`, `general`
 
 ---
 
@@ -168,7 +201,6 @@ Research ──→ Plan ──→ Execute ──→ Verify ──→ Close
 ```bash
 /x-solver init "Memory leak in React component"
 /x-solver classify          # Auto-recommend strategy
-/x-solver strategy set iterate
 /x-solver solve             # Execute with agents
 ```
 
@@ -201,9 +233,30 @@ Model auto-routing: `architect` → opus, `executor` → sonnet, `scanner` → h
 
 ---
 
-## Shared Config
+## Quality Pipeline
 
-Control agent parallelism across all x-kit tools:
+x-kit's quality system connects x-build, x-op, and x-eval into a closed feedback loop:
+
+```
+x-build plan → PRD Quality Gate (7.0+) → Consensus Review (4 agents)
+     ↓
+x-op strategy --verify → Judge Panel → Score < threshold? → Auto-retry
+     ↓
+x-eval score → Per-task quality tracking → Project quality dashboard
+```
+
+| Component | Mechanism |
+|-----------|-----------|
+| **Self-Score** | Every x-op strategy auto-scores against mapped rubric |
+| **--verify loop** | Judge panel → fail → feedback injection → re-execute (max 2) |
+| **PRD consensus** | architect + critic + planner + security must agree |
+| **plan-check --strict** | Uncovered requirements block the gate |
+| **Quality dashboard** | `x-build status` shows per-task scores + project avg |
+| **x-eval diff** | Measure how skills changed + quality delta |
+
+---
+
+## Shared Config
 
 ```bash
 /x-kit config set agent_max_count 10   # 10 agents parallel
@@ -219,27 +272,16 @@ Settings stored in `.xm/config.json` (project-level).
 
 ```
 x-kit/                              Marketplace repo
-├── .claude-plugin/
-│   └── marketplace.json            9 plugins registered
+├── x-op/                           Strategy orchestration (18 strategies)
+├── x-build/                        Project harness + PRD pipeline
+├── x-eval/                         Quality evaluation + diff
+├── x-solver/                       Problem solving (4 strategies)
 ├── x-agent/                        Agent primitives
-│   └── skills/x-agent/SKILL.md
-├── x-build/                        Project harness
-│   ├── lib/x-build-cli.mjs        Single-file CLI (0 deps)
-│   ├── skills/x-build/SKILL.md
-│   └── templates/
-├── x-op/                           Strategy orchestration
-│   └── skills/x-op/SKILL.md       18 strategies
-├── x-solver/                       Problem solving
-│   ├── lib/x-solver-cli.mjs
-│   └── skills/x-solver/SKILL.md
-├── x-kit/                          Bundle + shared config
-│   ├── lib/shared-config.mjs
-│   └── skills/                     All skills bundled
-├── x-review/                       Code review
+├── x-review/                       Code review orchestrator
 ├── x-trace/                        Execution tracing
-├── x-memory/                       Decision memory
-├── x-eval/                         Output evaluation
-└── package.json
+├── x-memory/                       Cross-session memory
+├── x-kit/                          Bundle (all skills) + shared config
+└── .claude-plugin/marketplace.json  9 plugins registered
 ```
 
 ## Requirements
