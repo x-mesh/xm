@@ -85,8 +85,9 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 - `checkpoint <type> [message]` — Record checkpoint
 
 ### Execute Phase
-- `tasks add <name> [--deps t1,t2] [--size small|medium|large]`
-- `tasks list` / `tasks remove <id>` / `tasks update <id> --status <s>`
+- `tasks add <name> [--deps t1,t2] [--size small|medium|large] [--done-criteria "..."]`
+- `tasks list` / `tasks remove <id>` / `tasks update <id> --status <s> [--done-criteria "..."]`
+- `tasks done-criteria` — Auto-derive done criteria from PRD for all tasks
 - `steps compute` — Calculate step groups from dependencies
 - `steps status` / `steps next` — Step progress
 - `run` — Execute current step via agents
@@ -97,6 +98,7 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 ### Verify & Close
 - `quality` — Run test/lint/build checks
 - `verify-coverage` — Check requirement-to-task mapping
+- `verify-contracts` — Check task done_criteria fulfillment
 - `context-usage` — Show artifact token usage
 
 ### Analysis
@@ -421,11 +423,21 @@ Create tasks informed by research artifacts:
    - Concrete, actionable names (start with verb)
    - Size: small (1-2h), medium (half-day), large (full day+)
    - Dependencies: what must complete first
-4. Register tasks:
+4. Register tasks with acceptance contracts:
    ```bash
    $XMB tasks add "Implement JWT auth [R1]" --size medium
    $XMB tasks add "Create CRUD endpoints [R2]" --deps t1 --size medium
    ```
+   After registering all tasks, derive **done criteria** for each task from the PRD's Section 8 (Acceptance Criteria) and Section 5 (Requirements Traceability):
+   ```bash
+   $XMB tasks done-criteria
+   ```
+   This generates `done_criteria` for each task — a checklist of verifiable conditions that define "done."
+   If auto-generation is insufficient, manually set criteria:
+   ```bash
+   $XMB tasks update t1 --done-criteria "JWT 발급/검증 동작, refresh token rotation 구현, 단위 테스트 3개 이상"
+   ```
+
 5. Validate the plan:
    ```bash
    $XMB plan-check
@@ -457,7 +469,13 @@ Create tasks informed by research artifacts:
 2. Parse JSON → spawn Agent per task:
    - `agent_type: "deep-executor"` → `subagent_type: "oh-my-claudecode:deep-executor"`, `model: "opus"`
    - otherwise → `subagent_type: "oh-my-claudecode:executor"`, `model: "sonnet"`
-   - `prompt`: use `task.prompt` value
+   - `prompt`: use `task.prompt` value + **inject `done_criteria`** as acceptance contract:
+     ```
+     ## Acceptance Contract
+     이 태스크는 아래 조건을 모두 충족해야 완료이다:
+     {task.done_criteria 항목을 체크리스트로 나열}
+     완료 시 각 조건의 충족 여부를 보고하라.
+     ```
    - `run_in_background: true` (parallel)
 3. On completion: `$XMB tasks update <id> --status completed|failed`
 4. Check `$XMB run-status`, advance to next step or phase
@@ -515,7 +533,11 @@ Project Quality: 7.3/10 avg (1 below threshold)
 
 1. Run quality checks: `$XMB quality`
 2. Check requirement coverage: `$XMB verify-coverage`
-3. If all pass: `$XMB phase next`
+3. Check acceptance contracts: `$XMB verify-contracts`
+   - For each task with `done_criteria`, verify that the criteria are met
+   - Output: `✅ t1: 3/3 criteria met` or `❌ t2: 1/3 criteria met — [missing: "단위 테스트 3개 이상"]`
+   - Unmet criteria → report to user for resolution before closing
+4. If all pass: `$XMB phase next`
 
 ### Step 6: Close
 
@@ -586,10 +608,20 @@ Validates the plan across:
 | completeness | Enough tasks to cover the goal |
 | context | CONTEXT.md exists for informed planning |
 | naming | Tasks start with action verbs |
+| tech-leakage | Tasks don't name specific technologies unless declared in CONTEXT.md or PRD Constraints |
 | overall | Combined assessment |
 
 Run: `$XMB plan-check`
 Fix errors → re-run until all pass → `$XMB gate pass`
+
+### tech-leakage 검사 규칙
+
+태스크 이름/설명에 특정 기술명(프레임워크, 라이브러리, 서비스)이 포함되어 있으면 **CONTEXT.md** 또는 **PRD Section 3 (Constraints)**에 해당 기술이 명시되어 있는지 확인한다.
+
+- 명시된 기술 → pass (이미 결정된 제약)
+- 명시되지 않은 기술 → `warn`: `"t3: 'Redis' is not declared in CONTEXT.md or PRD Constraints — consider using intent ('캐싱 구현') instead of implementation ('Redis 캐시 추가')"`
+
+이 검사는 **warn** 레벨이며 plan-check 전체를 fail시키지 않는다. PRD에서 결정된 기술 선택은 태스크에 사용해도 된다는 점에서, 사용자의 의도적인 구현 지정을 차단하지 않는다.
 
 ---
 
@@ -624,6 +656,21 @@ $XMB handoff --restore # Show saved state in new session
 ```
 
 HANDOFF.json includes: phase, pending tasks, recent decisions, artifact status.
+
+### Auto-Handoff on Phase Transition
+
+`phase next` 실행 시 **자동으로 `handoff`를 트리거**하여 현재 phase의 상태를 보존한다. 이는 오케스트레이터(리더) 레벨의 컨텍스트 누적을 방지하고, 다음 phase가 구조화된 맥락에서 시작할 수 있게 한다.
+
+`phase next` 내부 동작 확장:
+```
+1. gate 검증 (기존)
+2. $XMB handoff          ← 자동 실행 (현재 phase 상태 저장)
+3. phase 상태 전환 (기존)
+4. 리더에게 handoff 요약 출력:
+   "📋 Phase handoff saved. Key decisions: {N}, Pending risks: {M}"
+```
+
+Handoff 문서는 다음 phase에서 `$XMB handoff --restore`로 복원하거나, 새 에이전트에 컨텍스트로 주입할 수 있다. 이를 통해 이전 phase의 탐색 과정, 디버깅 로그, 폐기된 대안 등 "과정의 잡음"은 자연스럽게 버려지고 **결정과 산출물만** 다음 phase로 전달된다.
 
 ---
 

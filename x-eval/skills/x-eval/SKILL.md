@@ -582,6 +582,91 @@ Session avg score: 7.6/10
 
 ---
 
+## Domain Rubric Presets
+
+Built-in rubric 외에 도메인 특화 프리셋을 제공한다. `rubric list`에서 확인 가능.
+
+### api-design
+
+| Criterion | Description | Weight |
+|-----------|-------------|--------|
+| consistency | Naming, patterns, error format uniform across endpoints | 0.25 |
+| completeness | All CRUD + edge cases covered, pagination, filtering | 0.25 |
+| security | Auth, rate limiting, input validation, OWASP compliance | 0.25 |
+| developer-experience | Clear errors, self-documenting, discoverable | 0.15 |
+| extensibility | Versioning strategy, backward compatibility | 0.10 |
+
+### frontend-design
+
+| Criterion | Description | Weight |
+|-----------|-------------|--------|
+| visual-coherence | Color, typography, spacing create unified identity | 0.25 |
+| originality | Custom decisions vs template defaults, avoids generic patterns | 0.25 |
+| craft | Typography hierarchy, spacing rhythm, color harmony, contrast | 0.20 |
+| usability | Intuitive navigation, accessible, responsive | 0.20 |
+| performance | Minimal layout shift, fast paint, optimized assets | 0.10 |
+
+### data-pipeline
+
+| Criterion | Description | Weight |
+|-----------|-------------|--------|
+| correctness | Data transformations produce expected output, no data loss | 0.30 |
+| reliability | Error handling, retry logic, idempotency, dead-letter queues | 0.25 |
+| observability | Logging, metrics, alerting, data lineage tracking | 0.20 |
+| efficiency | Batch sizing, parallelism, resource utilization | 0.15 |
+| schema-safety | Schema evolution handled, backward/forward compatibility | 0.10 |
+
+### security-audit
+
+| Criterion | Description | Weight |
+|-----------|-------------|--------|
+| vulnerability-coverage | OWASP Top 10 addressed, injection/XSS/CSRF checked | 0.30 |
+| auth-correctness | Authentication + authorization logic sound, no bypasses | 0.25 |
+| data-protection | Secrets management, encryption at rest/transit, PII handling | 0.20 |
+| attack-surface | Unnecessary endpoints/ports closed, minimal exposure | 0.15 |
+| compliance | Relevant standards (GDPR, SOC2, HIPAA) addressed if applicable | 0.10 |
+
+### architecture-review
+
+| Criterion | Description | Weight |
+|-----------|-------------|--------|
+| modularity | Clear boundaries, low coupling, high cohesion | 0.25 |
+| scalability | Handles growth in data, users, features without redesign | 0.25 |
+| simplicity | No unnecessary abstractions, appropriate complexity for requirements | 0.20 |
+| resilience | Failure handling, degradation strategy, recovery mechanisms | 0.15 |
+| operability | Deployable, observable, configurable without code changes | 0.15 |
+
+---
+
+## Bias-Aware Judging (x-humble Integration)
+
+x-humble의 고신뢰 교훈을 judge 프롬프트에 선택적 컨텍스트로 노출한다. 이는 채점 기준(rubric weights)을 변경하지 않으며, judge가 알려진 편향 패턴을 인지하도록 돕는다.
+
+### 활성화 조건
+
+- x-humble lesson의 `confirmed_count >= 3` AND `status: "active"`인 항목만 대상
+- lesson의 `bias_tags`가 현재 평가 대상과 관련 있을 때만 주입
+
+### Judge 프롬프트 주입 형식
+
+기존 Judge Prompt의 rubric criteria 뒤에 추가:
+
+```
+## Known Bias Warnings (from x-humble, confirmed ≥3 times)
+- ⚠ anchoring: "첫 접근에 고착하는 패턴" (confirmed 5x) — 첫 번째 제안만 높게 평가하지 않도록 주의
+- ⚠ confirmation_bias: "기존 기술 스택 선호" (confirmed 3x) — 대안 기술의 장점도 공정하게 평가
+
+이 경고는 참고용이다. 채점 기준(rubric)에 따라 독립적으로 채점하되, 위 편향이 자신의 판단에 영향을 주고 있는지 자가 점검하라.
+```
+
+### 비활성 조건
+
+- `.xm/humble/lessons/` 디렉토리가 없거나 비어있으면 이 섹션을 건너뛴다
+- `confirmed_count < 3`인 lesson은 무시 (검증 부족)
+- `status: "deprecated"`인 lesson은 무시
+
+---
+
 ## Storage Layout
 
 ```

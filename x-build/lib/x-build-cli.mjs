@@ -1153,6 +1153,14 @@ function phaseNext(args) {
   // Emit pre-exit hook
   emitHook('phase:pre-exit', { project, phase: currentPhase.name });
 
+  // Auto-handoff: save structured state before transitioning
+  try {
+    cmdHandoff([]);
+    console.log(`📋 Phase handoff auto-saved for ${currentPhase.label || currentPhase.name}`);
+  } catch (e) {
+    console.log(`⚠️  Auto-handoff skipped: ${e.message}`);
+  }
+
   // Complete current phase (with rollback on failure)
   const now = new Date().toISOString();
   const currentStatus = readJSON(phaseStatusPath(project, currentPhase.id));
@@ -1320,8 +1328,8 @@ function cmdGate(args) {
 
 function cmdTasks(args) {
   const sub = args[0];
-  if (!sub || !['add', 'list', 'remove', 'update'].includes(sub)) {
-    console.error('Usage: x-build tasks <add|list|remove|update> [args]');
+  if (!sub || !['add', 'list', 'remove', 'update', 'done-criteria'].includes(sub)) {
+    console.error('Usage: x-build tasks <add|list|remove|update|done-criteria> [args]');
     process.exit(1);
   }
 
@@ -1331,6 +1339,73 @@ function cmdTasks(args) {
   if (sub === 'list') return taskList(project);
   if (sub === 'remove') return taskRemove(project, args.slice(1));
   if (sub === 'update') return taskUpdate(project, args.slice(1));
+  if (sub === 'done-criteria') return taskDoneCriteria(project);
+}
+
+function taskDoneCriteria(project) {
+  const data = readJSON(tasksPath(project));
+  if (!data?.tasks?.length) {
+    console.log('No tasks defined. Run: x-build tasks add <name>');
+    return;
+  }
+
+  const prdPath = join(phaseDir(project, '02-plan'), 'PRD.md');
+  const prd = readMD(prdPath);
+
+  if (!prd) {
+    console.log(`${C.yellow}No PRD found. done_criteria works best with PRD acceptance criteria.${C.reset}`);
+    console.log(`  Set manually: x-build tasks update <id> --done-criteria "criteria"`);
+    return;
+  }
+
+  // Extract acceptance criteria from PRD Section 8 (tolerant: "## 8." or "## Acceptance Criteria")
+  const acSection = prd.match(/##\s*(?:8\.)?\s*Acceptance Criteria[\s\S]*?(?=##\s*\d|$)/i);
+  const acItems = acSection ? [...acSection[0].matchAll(/- \[[ x]\] (.+)/gi)].map(m => m[1].trim()) : [];
+
+  // Pre-build Map<normalizedRid, acItem[]> for O(1) lookup
+  const acByRid = new Map();
+  for (const ac of acItems) {
+    const acLower = ac.toLowerCase();
+    const rids = [...acLower.matchAll(/r\d+/g)].map(m => m[0]);
+    for (const rid of rids) {
+      if (!acByRid.has(rid)) acByRid.set(rid, []);
+      acByRid.get(rid).push(ac);
+    }
+  }
+
+  let updated = 0;
+  for (const task of data.tasks) {
+    if (task.done_criteria?.length) continue; // works for both array and non-empty string
+
+    // Extract and normalize requirement IDs once
+    const reqIds = [...(task.name.matchAll(/\[R\d+\]/g))].map(m => m[0].replace(/[\[\]]/g, '').toLowerCase());
+    const criteria = [];
+
+    // O(1) Map lookup per reqId
+    for (const rid of reqIds) {
+      const matched = acByRid.get(rid);
+      if (matched) criteria.push(...matched);
+    }
+
+    // Fallback: derive basic criteria from task name
+    if (criteria.length === 0) {
+      criteria.push(`${task.name} 완료 및 동작 확인`);
+      if (task.size !== 'small') criteria.push('관련 테스트 작성 및 통과');
+    }
+
+    task.done_criteria = criteria; // Store as JSON array, not delimited string
+    updated++;
+  }
+
+  if (updated > 0) writeJSON(tasksPath(project), data);
+  console.log(`\n✅ done_criteria generated for ${updated} tasks\n`);
+
+  for (const task of data.tasks) {
+    if (task.done_criteria) {
+      console.log(`  ${task.id}: ${task.done_criteria}`);
+    }
+  }
+  console.log('');
 }
 
 function parseOptions(args) {
@@ -1378,6 +1453,9 @@ function taskAdd(project, args) {
   const role = opts.role || null; // e.g. architect, executor, reviewer, security
   const strategy = opts.strategy || null; // e.g. 'refine', 'review'
   const rubric = opts.rubric || null;     // e.g. 'general', 'code-quality'
+  // Normalize done-criteria to array (consistent with taskDoneCriteria storage format)
+  const rawCriteria = opts['done-criteria'] || null;
+  const doneCriteria = rawCriteria ? rawCriteria.split(';').map(c => c.trim()).filter(Boolean) : null;
 
   const task = {
     id,
@@ -1388,6 +1466,7 @@ function taskAdd(project, args) {
     strategy,
     rubric,
     score: null,   // x-eval 채점 결과 (실행 후 업데이트)
+    done_criteria: doneCriteria, // acceptance contract: verifiable "done" conditions
     status: TASK_STATES.PENDING,
     created_at: new Date().toISOString(),
   };
@@ -1457,9 +1536,10 @@ function taskUpdate(project, args) {
   const id = positional[0];
   const rawStatus = opts.status;
 
-  if (!id || (!rawStatus && opts.score === undefined)) {
+  if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined)) {
     console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed>');
     console.error('       x-build tasks update <task-id> --score <number>');
+    console.error('       x-build tasks update <task-id> --done-criteria "criteria text"');
     process.exit(1);
   }
 
@@ -1475,10 +1555,23 @@ function taskUpdate(project, args) {
     task.score = parseFloat(opts.score);
   }
 
-  // If no status provided, just save score and exit
+  // Update done_criteria if provided (must be a string, not boolean from bare flag)
+  if (opts['done-criteria'] !== undefined) {
+    if (typeof opts['done-criteria'] !== 'string') {
+      console.error('❌ --done-criteria requires a value. Usage: --done-criteria "criteria text"');
+      process.exit(1);
+    }
+    // Normalize to array to match taskDoneCriteria's storage format
+    task.done_criteria = opts['done-criteria'].split(';').map(c => c.trim()).filter(Boolean);
+  }
+
+  // If no status provided, just save score/done_criteria and exit
   if (!rawStatus) {
     writeJSON(tasksPath(project), data);
-    console.log(`✅ Task "${id}" score updated: ${task.score}`);
+    const updated = [];
+    if (opts.score !== undefined) updated.push(`score: ${task.score}`);
+    if (opts['done-criteria'] !== undefined) updated.push(`done_criteria updated`);
+    console.log(`✅ Task "${id}" ${updated.join(', ')}`);
     return;
   }
 
@@ -2877,14 +2970,15 @@ ${C.bold}Research Phase:${C.reset}
 
 ${C.bold}Plan Phase:${C.reset}
   plan ["goal"]                  Show plan or auto-decompose goal into tasks
-  plan-check [--strict]          Validate plan (--strict: coverage errors block gate)
+  plan-check [--strict]          Validate plan across 9 dimensions (--strict: coverage errors block gate)
   phase <next|set|status>        Manage phases
   gate <pass|fail> [message]     Resolve current phase gate
 
 ${C.bold}Execute Phase:${C.reset}
-  tasks <add|list|remove|update> Manage tasks
-    tasks add "name" [--strategy refine] [--rubric general]  Add task with strategy
-    tasks update <id> --score 7.8                             Update task score
+  tasks <add|list|remove|update|done-criteria> Manage tasks
+    tasks add "name" [--strategy refine] [--done-criteria "..."]  Add task
+    tasks update <id> --score 7.8 [--done-criteria "..."]         Update task
+    tasks done-criteria                                           Auto-derive from PRD
   steps <compute|status|next>    DAG-based step management
   run                            Execute next step via agent orchestration
   checkpoint <type> [message]    Record a checkpoint
@@ -2892,6 +2986,7 @@ ${C.bold}Execute Phase:${C.reset}
 ${C.bold}Verify & Close:${C.reset}
   quality                        Run quality checks (test/lint/build)
   verify-coverage                Check requirement coverage across tasks
+  verify-contracts               Check task done_criteria fulfillment
   context [project]              Generate context brief
   close [--summary "..."]        Close project with summary
 
@@ -3332,13 +3427,44 @@ function cmdPlanCheck(args) {
     }
   }
 
+  // 9. Tech-leakage: tasks should not name specific technologies unless declared in CONTEXT.md or PRD Constraints
+  // Single regex source shared across all 3 uses to prevent drift
+  const TECH_TERMS = 'React|Vue|Angular|Next\\.?js|Express|FastAPI|Django|Flask|Spring|Rails|Laravel|PostgreSQL|MySQL|MongoDB|Redis|Kafka|RabbitMQ|Docker|Kubernetes|AWS|GCP|Azure|Vercel|Supabase|Firebase|SQLite|GraphQL|gRPC|Prisma|Drizzle|TypeORM|Sequelize|Zod|Joi|JWT|OAuth|Tailwind|Vite|Webpack|Rollup|esbuild|Playwright|Jest|Vitest|pytest|JUnit|SwiftUI|UIKit|Jetpack\\s*Compose|Flutter|Dart|Kotlin|Swift|Go|Rust|Python|TypeScript|Node\\.?js|Deno|Bun';
+  const declaredTechs = new Set();
+  if (context) {
+    const techRe = new RegExp(`\\b(${TECH_TERMS})\\b`, 'gi');
+    const techMatches = context.match(techRe) || [];
+    for (const m of techMatches) declaredTechs.add(m.toLowerCase());
+  }
+  // Also check PRD constraints section
+  const prdPath = join(phaseDir(project, '02-plan'), 'PRD.md');
+  const prd = readMD(prdPath);
+  if (prd) {
+    const constraintSection = prd.match(/## 3\. Constraints[\s\S]*?(?=## \d|$)/);
+    if (constraintSection) {
+      const techRe = new RegExp(`\\b(${TECH_TERMS})\\b`, 'gi');
+      const prdTechs = constraintSection[0].match(techRe) || [];
+      for (const m of prdTechs) declaredTechs.add(m.toLowerCase());
+    }
+  }
+  for (const t of tasks) {
+    // New RegExp per iteration to avoid stateful lastIndex carry-over
+    const techRe = new RegExp(`\\b(${TECH_TERMS})\\b`, 'gi');
+    const found = t.name.match(techRe) || [];
+    for (const tech of found) {
+      if (!declaredTechs.has(tech.toLowerCase())) {
+        checks.push({ dim: 'tech-leakage', level: 'warn', task: t.id, msg: `"${tech}" is not declared in CONTEXT.md or PRD Constraints — consider using intent instead of implementation` });
+      }
+    }
+  }
+
   // Output
   const errors = checks.filter(c => c.level === 'error');
   const warns = checks.filter(c => c.level === 'warn');
 
   console.log(`\n${C.bold}Plan Check — ${tasks.length} tasks${C.reset}\n`);
 
-  const dims = ['atomicity', 'dependencies', 'coverage', 'granularity', 'completeness', 'context', 'naming', 'overall'];
+  const dims = ['atomicity', 'dependencies', 'coverage', 'granularity', 'completeness', 'context', 'naming', 'tech-leakage', 'overall'];
   for (const dim of dims) {
     const dimChecks = checks.filter(c => c.dim === dim);
     if (dimChecks.length === 0) {
@@ -3523,6 +3649,38 @@ function cmdHandoff(args) {
   writeJSON(handoffPath, handoff);
   console.log(`Handoff saved for "${project}"`);
   console.log(`   Restore in new session: x-build handoff --restore`);
+}
+
+function cmdVerifyContracts(args) {
+  const project = resolveProject(null);
+  const taskData = readJSON(tasksPath(project));
+  const tasks = taskData?.tasks || [];
+
+  const withCriteria = tasks.filter(t => t.done_criteria && t.status === 'completed');
+
+  if (withCriteria.length === 0) {
+    console.log('No completed tasks with done_criteria found.');
+    console.log('  Generate criteria: x-build tasks done-criteria');
+    return;
+  }
+
+  console.log(`\n${C.bold}Acceptance Contract Verification${C.reset}\n`);
+
+  for (const task of withCriteria) {
+    // Support both JSON array and legacy semicolon-delimited string
+    const criteria = Array.isArray(task.done_criteria)
+      ? task.done_criteria
+      : task.done_criteria.split(';').map(c => c.trim()).filter(Boolean);
+    console.log(`  ${task.id}: ${task.name}`);
+    for (const c of criteria) {
+      console.log(`    ☐ ${c}`);
+    }
+    console.log('');
+  }
+
+  console.log(`${C.yellow}${withCriteria.length} tasks with acceptance contracts listed above.${C.reset}`);
+  console.log(`  Verify each criterion manually or delegate to an agent for inspection.`);
+  console.log('');
 }
 
 function cmdVerifyCoverage(args) {
@@ -3759,6 +3917,7 @@ switch (cmd) {
   case 'next':           cmdNext(args); break;
   case 'handoff':        cmdHandoff(args); break;
   case 'verify-coverage': cmdVerifyCoverage(args); break;
+  case 'verify-contracts': cmdVerifyContracts(args); break;
   case 'context-usage':  cmdContextUsage(args); break;
   case 'save':           cmdSaveArtifact(args); break;
   case 'run-status':     cmdRunStatus(args); break;
