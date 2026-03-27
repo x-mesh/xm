@@ -1,4 +1,4 @@
-# xm-kit
+# x-core
 
 **Agent toolkit for Claude Code** by [x-mesh](https://github.com/x-mesh).
 
@@ -6,79 +6,79 @@ A modular collection of AI-powered development tools that turn Claude Code into 
 
 Zero external dependencies. Claude Code native. Works on macOS, Linux, and Windows.
 
-## Why xm-kit?
+## Why x-core?
 
 AI coding assistants are powerful but chaotic. They lose context mid-project, can't estimate costs, forget past decisions, and have no structured way to recover from failures.
 
-xm-kit fixes this with four layers:
+x-core fixes this with four layers:
 
 ```
 ┌─────────────────────────────────────────────┐
-│  xm-build    Project lifecycle & execution  │
-│  xm-solver   Structured problem solving     │
-│  xm-op       Strategy orchestration         │
+│  x-build    Project lifecycle & execution  │
+│  x-solver   Structured problem solving     │
+│  x-op       Strategy orchestration         │
 ├─────────────────────────────────────────────┤
-│  xm-agent    Agent primitives               │
+│  x-agent    Agent primitives               │
 │              fan-out · delegate · broadcast  │
 ├─────────────────────────────────────────────┤
 │  Claude Code  Agent tool · SendMessage      │
 └─────────────────────────────────────────────┘
 ```
 
-- **xm-agent** — Reusable agent primitives (fan-out, delegate, broadcast)
-- **xm-op** — 16 multi-agent strategies built on xm-agent
-- **xm-solver** — 4 solving strategies (decompose, iterate, constrain, pipeline) with auto-recommendation
-- **xm-build** — Full project lifecycle built on xm-agent
+- **x-agent** — Reusable agent primitives (fan-out, delegate, broadcast)
+- **x-op** — 16 multi-agent strategies built on x-agent
+- **x-solver** — 4 solving strategies (decompose, iterate, constrain, pipeline) with auto-recommendation
+- **x-build** — Full project lifecycle built on x-agent
 
 ## Install
 
 ```bash
 # Add the marketplace
-/plugin marketplace add x-mesh/xm-kit
+/plugin marketplace add x-mesh/x-core
 
 # Install everything
-/plugin install xm-kit@xm-kit
+/plugin install x-core@x-core
 
 # Or install individually
-/plugin install xm-kit@xm-agent    # Agent primitives
-/plugin install xm-kit@xm-build    # Project harness
-/plugin install xm-kit@xm-op       # Strategy orchestration
-/plugin install xm-kit@xm-solver   # Problem solving
+/plugin install x-core@x-agent    # Agent primitives
+/plugin install x-core@x-build    # Project harness
+/plugin install x-core@x-op       # Strategy orchestration
+/plugin install x-core@x-solver   # Problem solving
 ```
 
 ## Quick Start
 
 ```bash
 # Start a project, describe what you want
-/xm-build init my-api
-/xm-build plan "Build a REST API with JWT auth, PostgreSQL, and Docker"
+/x-build init my-api
+/x-build plan "Build a REST API with JWT auth, PostgreSQL, and Docker"
 
 # Review cost, approve
-/xm-build forecast
-/xm-build gate pass
+/x-build forecast
+/x-build gate pass
 
 # Agents execute in dependency order
-/xm-build run
+/x-build run
 
 # Or use agents directly
-/xm-agent fan-out "Find bugs in src/auth.ts" --agents 5
-/xm-agent delegate architect "Design the database schema" --model opus
+/x-agent fan-out "Find bugs in src/auth.ts" --agents 5
+/x-agent delegate architect "Design the database schema" --model opus
 
 # Or run a strategy
-/xm-op debate "Monolith vs microservices"
+/x-op debate "Monolith vs microservices"
 ```
 
 ---
 
-## xm-agent — Agent Primitives
+## x-agent — Agent Primitives
 
 The foundation layer. Structured patterns on top of Claude Code's native Agent tool.
 
 ```bash
-/xm-agent fan-out "Find bugs in this code" --agents 5       # Same prompt to N agents
-/xm-agent delegate security "Review src/auth.ts"             # One agent, specific role
-/xm-agent broadcast "Review this PR" --roles "security,perf,logic"  # Different roles
-/xm-agent status                                              # Active agents
+/x-agent fan-out "Find bugs in this code" --agents 5       # Same prompt to N agents
+/x-agent delegate security "Review src/auth.ts"             # One agent, specific role
+/x-agent broadcast "Review this PR" --roles "security,perf,logic"  # Different roles
+/x-agent status                                              # Active agents
 ```
 
 ### Primitives
@@ -106,27 +106,27 @@ Chain primitives for custom workflows:
 
 ```bash
 # 1. Analyze (fan-out)
-/xm-agent fan-out "Find problems in src/auth.ts" --agents 3
+/x-agent fan-out "Find problems in src/auth.ts" --agents 3
 
 # 2. Synthesize (delegate)
-/xm-agent delegate architect "Synthesize findings and design a fix" --model opus
+/x-agent delegate architect "Synthesize findings and design a fix" --model opus
 
 # 3. Review (broadcast)
-/xm-agent broadcast "Review this design" --roles "security,performance,testing"
+/x-agent broadcast "Review this design" --roles "security,performance,testing"
 ```
 
 ---
 
-## xm-op — Strategy Orchestration
+## x-op — Strategy Orchestration
 
-16 multi-agent strategies. All built on xm-agent primitives.
+16 multi-agent strategies. All built on x-agent primitives.
 
 ```bash
-/xm-op refine "Payment API design" --rounds 4
-/xm-op tournament "Best login implementation" --agents 4 --bracket double
-/xm-op debate "Monolith vs microservices"
-/xm-op hypothesis "Why is latency spiking?" --rounds 3
-/xm-op escalate "Summarize this codebase" --start haiku
+/x-op refine "Payment API design" --rounds 4
+/x-op tournament "Best login implementation" --agents 4 --bracket double
+/x-op debate "Monolith vs microservices"
+/x-op hypothesis "Why is latency spiking?" --rounds 3
+/x-op escalate "Summarize this codebase" --start haiku
 ```
 
 ### Strategies
@@ -172,33 +172,33 @@ Chain primitives for custom workflows:
 ### Examples
 
 ```bash
-/xm-op refine "Payment API design" --rounds 4
-/xm-op tournament "Login implementation" --agents 5 --bracket double
-/xm-op chain "Security audit" --steps "explorer:scan,security:analyze,architect:recommend"
-/xm-op review --target src/payments/
-/xm-op debate "REST vs GraphQL" --rounds 2
-/xm-op brainstorm "v2 features" --vote
-/xm-op socratic "Why microservices?" --rounds 4
-/xm-op persona "Auth redesign" --personas "engineer,security,pm"
-/xm-op scaffold "Plugin system" --agents 4
-/xm-op compose "brainstorm | tournament | refine" --topic "v2 plan"
-/xm-op hypothesis "Memory leak cause" --rounds 3
-/xm-op escalate "Summarize codebase" --start haiku
-/xm-op refine "API design" --dry-run
+/x-op refine "Payment API design" --rounds 4
+/x-op tournament "Login implementation" --agents 5 --bracket double
+/x-op chain "Security audit" --steps "explorer:scan,security:analyze,architect:recommend"
+/x-op review --target src/payments/
+/x-op debate "REST vs GraphQL" --rounds 2
+/x-op brainstorm "v2 features" --vote
+/x-op socratic "Why microservices?" --rounds 4
+/x-op persona "Auth redesign" --personas "engineer,security,pm"
+/x-op scaffold "Plugin system" --agents 4
+/x-op compose "brainstorm | tournament | refine" --topic "v2 plan"
+/x-op hypothesis "Memory leak cause" --rounds 3
+/x-op escalate "Summarize codebase" --start haiku
+/x-op refine "API design" --dry-run
 ```
 
 ---
 
-## xm-solver — Problem Solving
+## x-solver — Problem Solving
 
 Structured problem solving with 4 strategies: decompose, iterate, constrain, and auto-pipeline.
 
 ```bash
-/xm-solver init "Memory leak in React component"
-/xm-solver classify                    # Auto-recommend strategy
-/xm-solver strategy set iterate        # Or choose manually
-/xm-solver solve                       # Execute strategy with agents
-/xm-solver verify                      # Check solution against constraints
+/x-solver init "Memory leak in React component"
+/x-solver classify                    # Auto-recommend strategy
+/x-solver strategy set iterate        # Or choose manually
+/x-solver solve                       # Execute strategy with agents
+/x-solver verify                      # Check solution against constraints
 ```
 
 | Strategy | Description | Best For |
@@ -210,15 +210,15 @@ Structured problem solving with 4 strategies: decompose, iterate, constrain, and
 
 ---
 
-## xm-build — Project Harness
+## x-build — Project Harness
 
 Full project lifecycle management with DAG execution, cost forecasting, and decision memory.
 
 ```bash
-/xm-build init my-api
-/xm-build plan "Build a REST API with JWT auth"
-/xm-build gate pass
-/xm-build run
+/x-build init my-api
+/x-build plan "Build a REST API with JWT auth"
+/x-build gate pass
+/x-build run
 ```
 
 ### Phase Lifecycle
@@ -238,7 +238,7 @@ Full project lifecycle management with DAG execution, cost forecasting, and deci
 
 ### DAG Step Execution
 
-Tasks declare dependencies. xm-build computes parallel groups:
+Tasks declare dependencies. x-build computes parallel groups:
 
 ```
 Step 1 (parallel):  DB schema  +  Auth middleware      ← no deps
@@ -249,7 +249,7 @@ Step 3:             Integration tests                   ← depends on Step 2
 ### Cost Forecasting
 
 ```
-/xm-build forecast
+/x-build forecast
 
 💰 Cost Forecast (model: sonnet)
   t1: DB schema            small    sonnet   $0.207
@@ -262,7 +262,7 @@ Step 3:             Integration tests                   ← depends on Step 2
 ### Decision Memory
 
 ```bash
-/xm-build decisions add "Use PostgreSQL" --type architecture --rationale "ACID compliance"
+/x-build decisions add "Use PostgreSQL" --type architecture --rationale "ACID compliance"
 ```
 
 Decisions are automatically injected into agent context when running tasks.
@@ -288,11 +288,11 @@ Auto-detects and runs your project's tools:
 ### Export & Import
 
 ```bash
-/xm-build export --format csv          # Google Sheets / Excel
-/xm-build export --format jira         # Jira bulk issue JSON
-/xm-build export --format confluence   # Wiki markup
-/xm-build export --format md           # Markdown report
-/xm-build import tasks.csv --from csv
+/x-build export --format csv          # Google Sheets / Excel
+/x-build export --format jira         # Jira bulk issue JSON
+/x-build export --format confluence   # Wiki markup
+/x-build export --format md           # Markdown report
+/x-build import tasks.csv --from csv
 ```
 
 ### Normal Mode
@@ -300,7 +300,7 @@ Auto-detects and runs your project's tools:
 Plain language for non-developers:
 
 ```
-/xm-build mode normal
+/x-build mode normal
 
 📋 프로젝트: my-api
   ✅ 조사하기 완료!
@@ -311,7 +311,7 @@ Plain language for non-developers:
 ### Task Templates
 
 ```
-/xm-build templates list
+/x-build templates list
 
   📋 add-auth       (medium)  Add Authentication
   📋 setup-ci       (small)   Setup CI/CD
@@ -324,13 +324,13 @@ Plain language for non-developers:
 
 ### Shared Config
 
-Control agent parallelism across all xm-kit tools:
+Control agent parallelism across all x-core tools:
 
 ```bash
-/xm-kit config set agent_max_count 10  # 10 agents parallel
-/xm-kit config set agent_max_count 4   # 4 agents (default)
-/xm-kit config set agent_max_count 2   # 2 agents, token-saving
-/xm-kit config show                   # View current settings
+/x-core config set agent_max_count 10  # 10 agents parallel
+/x-core config set agent_max_count 4   # 4 agents (default)
+/x-core config set agent_max_count 2   # 2 agents, token-saving
+/x-core config show                   # View current settings
 ```
 
 ### All Commands
@@ -352,15 +352,15 @@ Control agent parallelism across all xm-kit tools:
 
 | Tool | Description |
 |------|-------------|
-| **xm-handoff** | Structured session handoff — context, decisions, and progress preserved across sessions |
+| **x-handoff** | Structured session handoff — context, decisions, and progress preserved across sessions |
 
 ---
 
-## What Makes xm-kit Different
+## What Makes x-core Different
 
 Compared to 8 competitive tools (GSD, Cursor, Windsurf, Aider, Codex, Taskmaster, Devin, Claude Code built-in):
 
-| Capability | xm-kit | Others (0/8) |
+| Capability | x-core | Others (0/8) |
 |-----------|--------|-------------|
 | Persistent decision memory | ✅ auto-inject to agents | ❌ |
 | Pre-task cost forecasting | ✅ per-task $ estimate | ❌ |
@@ -374,26 +374,26 @@ Compared to 8 competitive tools (GSD, Cursor, Windsurf, Aider, Codex, Taskmaster
 ## Architecture
 
 ```
-xm-kit/                                ← Marketplace repo
+x-core/                                ← Marketplace repo
 ├── .claude-plugin/
 │   └── marketplace.json                4 plugins registered
-├── xm-agent/                           Agent primitives
+├── x-agent/                           Agent primitives
 │   ├── .claude-plugin/plugin.json
-│   └── skills/xm-agent/SKILL.md       fan-out, delegate, broadcast
-├── xm-build/                           Project harness
+│   └── skills/x-agent/SKILL.md       fan-out, delegate, broadcast
+├── x-build/                           Project harness
 │   ├── .claude-plugin/plugin.json
-│   ├── lib/xm-build-cli.mjs           Single-file CLI (0 deps)
-│   ├── skills/xm-build/SKILL.md
+│   ├── lib/x-build-cli.mjs           Single-file CLI (0 deps)
+│   ├── skills/x-build/SKILL.md
 │   ├── hooks/                          Statusline
 │   ├── templates/                      Task & research templates
 │   └── scripts/setup.mjs
-├── xm-op/                              Strategy orchestration
+├── x-op/                              Strategy orchestration
 │   ├── .claude-plugin/plugin.json
-│   └── skills/xm-op/SKILL.md          16 strategies
-├── xm-kit/                             Meta-package + shared config
+│   └── skills/x-op/SKILL.md          16 strategies
+├── x-core/                             Meta-package + shared config
 │   ├── .claude-plugin/plugin.json
 │   ├── lib/shared-config.mjs           Shared config utilities
-│   └── skills/xm-kit/SKILL.md
+│   └── skills/x-core/SKILL.md
 ├── package.json
 ├── README.md
 └── LICENSE (MIT)

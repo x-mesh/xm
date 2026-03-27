@@ -1,0 +1,11 @@
+{
+  "name": "x-core",
+  "version": "1.5.0",
+  "description": "All-in-one x-mesh toolkit: x-build (project harness), x-op (strategy orchestration), x-agent (agent primitives), x-solver (problem solving)",
+  "author": { "name": "x-mesh" },
+  "repository": "https://github.com/x-mesh/x-core",
+  "homepage": "https://github.com/x-mesh/x-core",
+  "license": "MIT",
+  "keywords": ["meta", "all-in-one", "x-mesh", "project-management", "orchestration", "agent"],
+  "skills": "./skills/"
+}

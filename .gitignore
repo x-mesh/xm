@@ -1,12 +1,12 @@
 # Runtime data (created per-project, not part of plugin)
 .xm/
-.xm-build/
+.x-build/
 .tm-build/
 .omc/
 
-# xm-build runtime (legacy — should no longer appear here)
-xm-build/lib/projects/
-xm-build/lib/metrics/
+# x-build runtime (legacy — should no longer appear here)
+x-build/lib/projects/
+x-build/lib/metrics/
 
 # Node
 node_modules/

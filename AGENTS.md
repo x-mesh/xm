@@ -1,7 +1,7 @@
-# xm-kit Agent Directory
+# x-core Agent Directory
 
-xm-kit is a Claude Code plugin marketplace providing 5 tools for structured multi-agent orchestration.
-Agent primitives are handled by `xm-agent`; strategies by `xm-op`; project lifecycle by `xm-build`.
+x-core is a Claude Code plugin marketplace providing 5 tools for structured multi-agent orchestration.
+Agent primitives are handled by `x-agent`; strategies by `x-op`; project lifecycle by `x-build`.
 
 ## Agent Tiers
 
@@ -11,7 +11,7 @@ Agent primitives are handled by `xm-agent`; strategies by `xm-op`; project lifec
 | Standard | sonnet | Implementation, debugging, testing, review | Medium |
 | Deep | opus | Architecture, planning, critical review | High |
 
-## Role Presets (xm-agent)
+## Role Presets (x-agent)
 
 | Preset | Model | Description |
 |--------|-------|-------------|
@@ -32,9 +32,9 @@ Agent primitives are handled by `xm-agent`; strategies by `xm-op`; project lifec
 
 ## OMC Integration
 
-When oh-my-claudecode is installed, xm-build maps agent types to OMC agents:
+When oh-my-claudecode is installed, x-build maps agent types to OMC agents:
 
-| xm-agent Preset | OMC Agent (`oh-my-claudecode:*`) | Fallback |
+| x-agent Preset | OMC Agent (`oh-my-claudecode:*`) | Fallback |
 |-----------------|----------------------------------|----------|
 | explorer | explore | Inline preset |
 | se / executor | executor | Inline preset |
@@ -49,12 +49,12 @@ When oh-my-claudecode is installed, xm-build maps agent types to OMC agents:
 | test-engineer | test-engineer | Inline preset |
 | build-fixer | build-fixer | Inline preset |
 
-When OMC is NOT installed, xm-agent inline presets provide equivalent behavior.
+When OMC is NOT installed, x-agent inline presets provide equivalent behavior.
 
 ## Development Conventions
 
 - Plugin skill development: `sonnet` tier by default
 - Architecture decisions and planning: `opus` tier
 - Exploration and documentation: `haiku` tier
-- xm-build `run` auto-selects tier by task size (small/medium -> sonnet, large -> opus)
+- x-build `run` auto-selects tier by task size (small/medium -> sonnet, large -> opus)
 - Always verify with `verifier` preset before claiming completion
