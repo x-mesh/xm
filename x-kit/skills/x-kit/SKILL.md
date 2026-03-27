@@ -139,6 +139,55 @@ console.log('\n✅ Update complete. Run /reload-plugins to activate.');
 
 3. After update, remind the user: "Run `/reload-plugins` or restart Claude Code to activate."
 
+## Cross-Plugin Pipeline
+
+x-build, x-op, x-eval을 연결하는 표준 데이터 흐름.
+
+### Pipeline Flow
+
+```
+x-build plan → PRD → x-op strategy --verify → x-eval score → x-build tasks update --score
+```
+
+### Standard Payload Schema
+
+플러그인 간 데이터 전달 시 리더가 내부적으로 구성하는 구조:
+
+```json
+{
+  "xkit_payload": {
+    "version": 1,
+    "source": "x-build|x-op|x-eval",
+    "type": "prd|strategy-output|eval-result",
+    "content": "마크다운 텍스트",
+    "metadata": {
+      "project": "project-name",
+      "strategy": "refine|null",
+      "rubric": "general|code-quality|plan-quality|null",
+      "score": 7.8,
+      "timestamp": "ISO8601"
+    }
+  }
+}
+```
+
+### Plugin Responsibilities
+
+| Plugin | 생산 | 소비 |
+|--------|------|------|
+| x-build | PRD, task list, project context | eval scores, strategy outputs |
+| x-op | strategy output, self-score | PRD (as context), eval feedback |
+| x-eval | rubric scores, judge feedback | strategy output, code output |
+
+### Integration Points
+
+| Trigger | From | To | Data |
+|---------|------|----|------|
+| `x-build plan` 완료 | x-build | x-op | PRD + task list |
+| `x-op --verify` 완료 | x-op | x-eval | strategy output for scoring |
+| score < threshold | x-eval | x-op | feedback for retry |
+| task 완료 | x-op | x-build | score + output for task update |
+
 ## Shared Config
 
 x-kit manages shared settings at `.xm/config.json` that all tools (x-build, x-solver, x-op) reference.

@@ -9,8 +9,8 @@
   "plugins": [
     {
       "name": "x-build",
-      "description": "Phase-based project harness with requirements gathering, parallel research, plan validation, DAG execution, cost forecasting, and decision memory",
-      "version": "1.1.3",
+      "description": "Phase-based project harness with PRD generation, plan validation, DAG execution, cost forecasting, and decision memory",
+      "version": "1.2.0",
       "author": { "name": "x-mesh" },
       "source": "./x-build",
       "category": "productivity",
@@ -29,8 +29,8 @@
     },
     {
       "name": "x-op",
-      "description": "Strategy orchestration — 18 strategies including refine, tournament, chain, review, debate, red-team, brainstorm, distribute, council, socratic, persona, scaffold, compose, decompose, hypothesis, investigate, monitor, escalate",
-      "version": "1.2.0",
+      "description": "Strategy orchestration — 18 strategies with self-scoring, --verify auto-validation, and compose presets",
+      "version": "1.3.0",
       "author": { "name": "x-mesh" },
       "source": "./x-op",
       "category": "productivity",
@@ -79,8 +79,8 @@
     },
     {
       "name": "x-eval",
-      "description": "Agent output quality evaluation — multi-rubric scoring, strategy benchmarking, and A/B prompt experiments",
-      "version": "1.0.0",
+      "description": "Agent output quality evaluation — multi-rubric scoring, reusable judge prompt, strategy benchmarking, and A/B prompt experiments",
+      "version": "1.1.0",
       "author": { "name": "x-mesh" },
       "source": "./x-eval",
       "category": "productivity",
@@ -89,8 +89,8 @@
     },
     {
       "name": "x-kit",
-      "description": "All-in-one bundle: x-build + x-op + x-agent + x-solver in a single install",
-      "version": "1.5.0",
+      "description": "All-in-one bundle: x-build + x-op + x-agent + x-solver + cross-plugin quality pipeline",
+      "version": "1.6.0",
       "author": { "name": "x-mesh" },
       "source": "./x-kit",
       "category": "productivity",

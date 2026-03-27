@@ -1007,6 +1007,14 @@ function cmdStatus(args) {
       const taskLabel = normal ? '할 일' : 'Tasks';
       const failLabel = normal ? `${failed}개 문제` : `${failed} failed`;
       console.log(`\n📊 ${taskLabel}: ${renderBar(done, total)}${failed ? ` ${C.red}(${failLabel})${C.reset}` : ''}`);
+
+      // Quality summary (after task list)
+      const scoredTasks = tasks.tasks.filter(t => t.score != null);
+      if (scoredTasks.length > 0) {
+        const avg = scoredTasks.reduce((s, t) => s + t.score, 0) / scoredTasks.length;
+        const belowThreshold = scoredTasks.filter(t => t.score < 7).length;
+        console.log(`\n  Project Quality: ${avg.toFixed(1)}/10 avg${belowThreshold > 0 ? ` (${belowThreshold} below threshold)` : ''}`);
+      }
     }
 
     const stData = readJSON(stepsPath(name));
@@ -1084,6 +1092,10 @@ function phaseNext(args) {
 
   // Plan-exit: verify plan-check passed
   if (currentPhase.name === 'plan' && gateType === 'human-verify') {
+    const prdPath = join(phaseDir(project, '02-plan'), 'PRD.md');
+    if (!existsSync(prdPath)) {
+      console.error('⚠ PRD not generated yet. Run: /x-build plan to generate PRD first.');
+    }
     const tasks = readJSON(tasksPath(project));
     if (!tasks?.tasks?.length) {
       console.log(`⚠️  No tasks defined. Run: x-build plan "goal"`);
@@ -1341,7 +1353,7 @@ function taskAdd(project, args) {
   const name = positional.join(' ');
 
   if (!name) {
-    console.error('Usage: x-build tasks add <name> [--deps t1,t2] [--size small|medium|large]');
+    console.error('Usage: x-build tasks add <name> [--deps t1,t2] [--size small|medium|large] [--strategy refine] [--rubric general]');
     process.exit(1);
   }
 
@@ -1364,6 +1376,8 @@ function taskAdd(project, args) {
   }
 
   const role = opts.role || null; // e.g. architect, executor, reviewer, security
+  const strategy = opts.strategy || null; // e.g. 'refine', 'review'
+  const rubric = opts.rubric || null;     // e.g. 'general', 'code-quality'
 
   const task = {
     id,
@@ -1371,6 +1385,9 @@ function taskAdd(project, args) {
     depends_on: deps,
     size,
     role,
+    strategy,
+    rubric,
+    score: null,   // x-eval 채점 결과 (실행 후 업데이트)
     status: TASK_STATES.PENDING,
     created_at: new Date().toISOString(),
   };
@@ -1402,7 +1419,9 @@ function taskList(project) {
     const icon = stateIcon[task.status] || '⬜';
     const deps = task.depends_on.length ? ` ← [${task.depends_on.join(', ')}]` : '';
     const size = task.size ? ` (${task.size})` : '';
-    console.log(`  ${icon} ${task.id}: ${task.name}${size}${deps}`);
+    const scoreStr = task.score != null ? ` Score: ${task.score}/10` : '';
+    const scoreWarn = task.score != null && task.score < 7 ? ' ⚠' : '';
+    console.log(`  ${icon} ${task.id}: ${task.name}${size}${deps}${scoreStr}${scoreWarn}`);
   }
   console.log('');
 }
@@ -1438,15 +1457,9 @@ function taskUpdate(project, args) {
   const id = positional[0];
   const rawStatus = opts.status;
 
-  if (!id || !rawStatus) {
+  if (!id || (!rawStatus && opts.score === undefined)) {
     console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed>');
-    process.exit(1);
-  }
-
-  const newStatus = STATUS_ALIASES[rawStatus] || rawStatus;
-
-  if (!Object.values(TASK_STATES).includes(newStatus)) {
-    console.error(`❌ Invalid status: "${rawStatus}". Valid: ${Object.values(TASK_STATES).join(', ')}`);
+    console.error('       x-build tasks update <task-id> --score <number>');
     process.exit(1);
   }
 
@@ -1454,6 +1467,25 @@ function taskUpdate(project, args) {
   const task = data.tasks.find(t => t.id === id);
   if (!task) {
     console.error(`❌ Task "${id}" not found.`);
+    process.exit(1);
+  }
+
+  // Update score if provided
+  if (opts.score !== undefined) {
+    task.score = parseFloat(opts.score);
+  }
+
+  // If no status provided, just save score and exit
+  if (!rawStatus) {
+    writeJSON(tasksPath(project), data);
+    console.log(`✅ Task "${id}" score updated: ${task.score}`);
+    return;
+  }
+
+  const newStatus = STATUS_ALIASES[rawStatus] || rawStatus;
+
+  if (!Object.values(TASK_STATES).includes(newStatus)) {
+    console.error(`❌ Invalid status: "${rawStatus}". Valid: ${Object.values(TASK_STATES).join(', ')}`);
     process.exit(1);
   }
 
@@ -2845,12 +2877,14 @@ ${C.bold}Research Phase:${C.reset}
 
 ${C.bold}Plan Phase:${C.reset}
   plan ["goal"]                  Show plan or auto-decompose goal into tasks
-  plan-check                     Validate plan across 8 quality dimensions
+  plan-check [--strict]          Validate plan (--strict: coverage errors block gate)
   phase <next|set|status>        Manage phases
   gate <pass|fail> [message]     Resolve current phase gate
 
 ${C.bold}Execute Phase:${C.reset}
   tasks <add|list|remove|update> Manage tasks
+    tasks add "name" [--strategy refine] [--rubric general]  Add task with strategy
+    tasks update <id> --score 7.8                             Update task score
   steps <compute|status|next>    DAG-based step management
   run                            Execute next step via agent orchestration
   checkpoint <type> [message]    Record a checkpoint
@@ -3225,6 +3259,7 @@ function cmdResearch(args) {
 }
 
 function cmdPlanCheck(args) {
+  const strict = args.includes('--strict');
   const project = resolveProject(null);
   const taskData = readJSON(tasksPath(project));
   const requirements = readMD(join(contextDir(project), 'REQUIREMENTS.md'));
@@ -3264,7 +3299,7 @@ function cmdPlanCheck(args) {
       const taskText = tasks.map(t => t.name).join(' ');
       for (const rid of reqIds) {
         if (!taskText.includes(rid)) {
-          checks.push({ dim: 'coverage', level: 'warn', msg: `Requirement ${rid} not referenced in any task name` });
+          checks.push({ dim: 'coverage', level: strict ? 'error' : 'warn', msg: `Requirement ${rid} not referenced in any task name` });
         }
       }
     }

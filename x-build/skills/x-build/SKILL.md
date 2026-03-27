@@ -49,7 +49,7 @@ When executing via Bash tool, always use the full command — do NOT assign to a
 ## Phase Lifecycle
 
 ```
-Research → Plan → Execute → Verify → Close
+Research → [PRD] → Plan → Execute → Verify → Close
 ```
 
 Each phase has an exit gate. The gate blocks advancement until conditions are met:
@@ -234,6 +234,94 @@ $XMB save roadmap --content "# Roadmap\n\n## Phase 1: Foundation\n- R1, R2\n..."
 
 ### Step 3: Plan (Plan Phase)
 
+#### PRD Generation (Plan phase 첫 단계)
+
+태스크 분해 전에 리더가 PRD를 생성한다. Research 산출물(CONTEXT.md, REQUIREMENTS.md, ROADMAP.md)을 기반으로:
+
+delegate (foreground, opus 권장):
+```
+"## PRD Generation: {project_name}
+Research 산출물:
+- CONTEXT: {CONTEXT.md 요약}
+- REQUIREMENTS: {REQUIREMENTS.md 전문}
+- ROADMAP: {ROADMAP.md 요약 (있으면)}
+
+아래 PRD 템플릿의 모든 섹션을 빠짐없이 작성하라:
+
+# PRD: {project_name}
+
+## 1. Goal
+{1-2 문장 — 이 프로젝트가 해결하는 핵심 문제}
+
+## 2. Success Criteria
+- [SC1] {측정 가능한 성공 기준}
+- [SC2] ...
+
+## 3. Constraints
+- [C1] {기술적/비즈니스 제약}
+- [C2] ...
+
+## 4. Non-Functional Requirements
+- Performance: {응답 시간, 처리량}
+- Security: {인증, 암호화}
+- Scalability: {확장 요구사항}
+- Reliability: {가용성, 복구}
+
+## 5. Requirements Traceability
+- [R1] {요구사항} → SC1
+- [R2] {요구사항} → SC1, SC2
+(REQUIREMENTS.md의 모든 항목을 Success Criteria에 매핑)
+
+## 6. Out of Scope
+- {포함하지 않는 것을 명시}
+
+## 7. Risks
+- {식별된 리스크와 완화 방안}
+
+## 8. Acceptance Criteria
+- [ ] {검증 가능한 체크리스트 항목}
+- [ ] ...
+"
+```
+
+PRD를 `.xm/build/projects/{name}/02-plan/PRD.md`로 저장:
+```bash
+$XMB save plan --content "{PRD 내용}"
+```
+
+PRD 생성 후 태스크 분해로 진행 (기존 plan 로직).
+
+#### PRD Quality Gate
+
+PRD 생성 후, plan-quality rubric으로 자동 검증:
+
+1. Judge Panel 소환 (3 에이전트):
+   - Rubric: plan-quality (completeness 0.30, actionability 0.30, scope-fit 0.20, risk-coverage 0.20)
+   - 각 judge가 PRD를 독립 채점 (x-eval Reusable Judge Prompt 사용)
+
+2. 결과 판정:
+   - Score >= 7.0 → ✅ PRD 승인, 태스크 분해로 진행
+   - Score < 7.0 → 피드백 기반 PRD 재생성 (최대 2회)
+
+3. PRD 점수를 프로젝트 메타데이터에 기록:
+   ```bash
+   $XMB save plan --content "PRD Score: {score}/10"
+   ```
+
+4. 최종 출력:
+   ```
+   📋 PRD Quality: 7.8/10 (plan-quality rubric)
+   | Criterion | Score |
+   |-----------|-------|
+   | completeness | 8 |
+   | actionability | 7 |
+   | scope-fit | 8 |
+   | risk-coverage | 8 |
+   ✅ PRD approved. Proceeding to task decomposition.
+   ```
+
+---
+
 Create tasks informed by research artifacts:
 
 1. Run: `$XMB plan "goal"`
@@ -272,6 +360,55 @@ Create tasks informed by research artifacts:
    - `run_in_background: true` (parallel)
 3. On completion: `$XMB tasks update <id> --status completed|failed`
 4. Check `$XMB run-status`, advance to next step or phase
+
+#### Strategy-Tagged Execution
+
+태스크에 `--strategy` 플래그가 있으면 x-op 전략으로 실행한다:
+
+```
+$XMB tasks add "Review auth module [R3]" --strategy review --rubric code-quality
+$XMB tasks add "Design payment flow [R1]" --strategy refine --rubric plan-quality
+$XMB tasks add "Implement CRUD endpoints [R2]"   # 일반 태스크 (strategy 없음)
+```
+
+실행 시 리더가 태스크 유형을 판별:
+
+```
+For each task in current step:
+  if task.strategy:
+    → /x-op {task.strategy} "{task.name}" --verify --rubric {task.rubric}
+    → score를 수집하여 $XMB tasks update {id} --score {score}
+  else:
+    → 일반 에이전트 delegate로 실행
+```
+
+#### Quality Dashboard
+
+`status` 출력에 per-task score 표시:
+
+```
+📊 Tasks (scored):
+  [t1] Design payment flow [R1]     ✅ completed  Score: 8.2/10
+  [t2] Review auth module [R3]      ✅ completed  Score: 7.5/10
+  [t3] Implement CRUD endpoints [R2] ✅ completed
+  [t4] Add error handling [R4]      ⚠ completed  Score: 6.1/10 ⚠
+
+Project Quality: 7.3/10 avg (1 below threshold)
+```
+
+#### 전략 자동 추천
+
+태스크에 strategy가 없을 때 리더가 태스크 이름에서 추론:
+
+| 태스크 키워드 | 추천 전략 |
+|-------------|---------|
+| review, audit, check | review |
+| design, plan, architect | refine |
+| compare, evaluate, vs | debate |
+| investigate, analyze, debug | investigate |
+| implement, build, create | (일반 실행) |
+
+추천만 하고 자동 적용은 하지 않음 — 사용자가 `--strategy`로 명시해야 함.
 
 ### Step 5: Verify (Verify Phase)
 
