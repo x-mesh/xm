@@ -22,11 +22,14 @@ const __dirname = dirname(__filename);
 // 2. --global flag → ~/.xm/build/
 // 3. default → cwd/.xm/build/
 const XM_GLOBAL = process.argv.includes('--global');
-const ROOT = process.env.X_BUILD_ROOT
-  ? resolve(process.env.X_BUILD_ROOT)
-  : XM_GLOBAL
-    ? resolve(homedir(), '.xm', 'build')
-    : resolve(process.cwd(), '.xm', 'build');
+
+function resolveRoot(cwd) {
+  if (process.env.X_BUILD_ROOT) return resolve(process.env.X_BUILD_ROOT);
+  if (XM_GLOBAL) return resolve(homedir(), '.xm', 'build');
+  return resolve(cwd || process.cwd(), '.xm', 'build');
+}
+
+let ROOT = resolveRoot();
 
 // PLUGIN_ROOT: where templates and defaults live (always script dir)
 const PLUGIN_ROOT = resolve(__dirname, '..');
@@ -3711,7 +3714,10 @@ function extractFlags(rawArgs) {
 
 // ── Main Router (exported for server direct-import) ─────────────────
 
-export async function route(rawArgs) {
+export async function route(rawArgs, options = {}) {
+  // Re-resolve ROOT if cwd is provided (server direct-import)
+  if (options.cwd) ROOT = resolveRoot(options.cwd);
+
   const { cleaned, projectFlag } = extractFlags(rawArgs);
   const [cmd, ...args] = cleaned;
 

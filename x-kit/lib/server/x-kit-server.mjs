@@ -127,7 +127,6 @@ async function executeCommand(plugin, args, options = {}) {
 
     // Direct import mode — use installOutput instead of monkey-patching console
     if (router.type === 'direct') {
-      const origCwd = process.cwd();
       const stdoutChunks = [];
       const stderrChunks = [];
 
@@ -147,8 +146,7 @@ async function executeCommand(plugin, args, options = {}) {
 
       let exitCode = 0;
       try {
-        process.chdir(cwd);
-        await router.route(args);
+        await router.route(args, { cwd });
       } catch (err) {
         if (router.CLIError && err instanceof router.CLIError) {
           stderrChunks.push(err.message + '\n');
@@ -159,7 +157,6 @@ async function executeCommand(plugin, args, options = {}) {
         }
       } finally {
         if (restore) restore();
-        process.chdir(origCwd);
         for (const [k, v] of Object.entries(savedEnv)) {
           if (v === undefined) delete process.env[k];
           else process.env[k] = v;
