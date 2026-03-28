@@ -60,7 +60,8 @@ async function loadCLIRouter(plugin) {
         type: 'direct',
         route: mod.route,
         CLIError: mod.CLIError,
-        installOutput: mod.installOutput,
+        reqCtx: mod.reqCtx,
+        resolveRoot: mod.resolveRoot ?? null,
       });
       return cliRouters.get(plugin);
     }
@@ -106,80 +107,66 @@ function writeConfigCached(key, value) {
   writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
 }
 
-// ── Command Execution ───────────────────────────────────────────────
-
-// Mutex: serialize direct-import execution (console/cwd are global state)
-let execLock = Promise.resolve();
+// ── Command Execution (AsyncLocalStorage — no mutex needed) ─────────
 
 async function executeCommand(plugin, args, options = {}) {
-  const prev = execLock;
-  let releaseLock;
-  execLock = new Promise(r => { releaseLock = r; });
-  await prev;
-
-  try {
-    const router = await loadCLIRouter(plugin);
-    if (!router) {
-      return { exitCode: 1, stdout: '', stderr: `Unknown plugin: ${plugin}` };
-    }
-
-    const cwd = options.cwd ?? process.cwd();
-
-    // Direct import mode — use installOutput instead of monkey-patching console
-    if (router.type === 'direct') {
-      const stdoutChunks = [];
-      const stderrChunks = [];
-
-      // Install output collectors via CLI's exported API
-      const restore = router.installOutput
-        ? router.installOutput(
-            (...a) => stdoutChunks.push(a.join(' ') + '\n'),
-            (...a) => stderrChunks.push(a.join(' ') + '\n'),
-          )
-        : null;
-
-      const savedEnv = {};
-      for (const [k, v] of Object.entries(options.env ?? {})) {
-        savedEnv[k] = process.env[k];
-        process.env[k] = v;
-      }
-
-      let exitCode = 0;
-      try {
-        await router.route(args, { cwd });
-      } catch (err) {
-        if (router.CLIError && err instanceof router.CLIError) {
-          stderrChunks.push(err.message + '\n');
-          exitCode = err.exitCode;
-        } else {
-          stderrChunks.push(err.message + '\n');
-          exitCode = 1;
-        }
-      } finally {
-        if (restore) restore();
-        for (const [k, v] of Object.entries(savedEnv)) {
-          if (v === undefined) delete process.env[k];
-          else process.env[k] = v;
-        }
-      }
-
-      return { exitCode, stdout: stdoutChunks.join(''), stderr: stderrChunks.join('') };
-    }
-
-    // Subprocess fallback
-    const env = { ...process.env, ...(options.env ?? {}) };
-    const proc = Bun.spawn(['bun', router.path, ...args], {
-      cwd, env, stdout: 'pipe', stderr: 'pipe',
-    });
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    const exitCode = await proc.exited;
-    return { exitCode, stdout, stderr };
-  } finally {
-    releaseLock();
+  const router = await loadCLIRouter(plugin);
+  if (!router) {
+    return { exitCode: 1, stdout: '', stderr: `Unknown plugin: ${plugin}` };
   }
+
+  const cwd = options.cwd ?? process.cwd();
+
+  // Direct import mode — use AsyncLocalStorage for per-request isolation
+  if (router.type === 'direct' && router.reqCtx) {
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    const root = router.resolveRoot ? router.resolveRoot(cwd) : cwd;
+
+    const store = {
+      root,
+      out: (...a) => stdoutChunks.push(a.join(' ') + '\n'),
+      err: (...a) => stderrChunks.push(a.join(' ') + '\n'),
+    };
+
+    const savedEnv = {};
+    for (const [k, v] of Object.entries(options.env ?? {})) {
+      savedEnv[k] = process.env[k];
+      process.env[k] = v;
+    }
+
+    let exitCode = 0;
+    try {
+      await router.reqCtx.run(store, () => router.route(args));
+    } catch (err) {
+      if (router.CLIError && err instanceof router.CLIError) {
+        stderrChunks.push(err.message + '\n');
+        exitCode = err.exitCode;
+      } else {
+        stderrChunks.push(err.message + '\n');
+        exitCode = 1;
+      }
+    } finally {
+      for (const [k, v] of Object.entries(savedEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+
+    return { exitCode, stdout: stdoutChunks.join(''), stderr: stderrChunks.join('') };
+  }
+
+  // Subprocess fallback
+  const env = { ...process.env, ...(options.env ?? {}) };
+  const proc = Bun.spawn(['bun', router.path, ...args], {
+    cwd, env, stdout: 'pipe', stderr: 'pipe',
+  });
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  const exitCode = await proc.exited;
+  return { exitCode, stdout, stderr };
 }
 
 // ── HTTP Server ─────────────────────────────────────────────────────

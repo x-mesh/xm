@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { execSync, spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -23,16 +24,25 @@ const __dirname = dirname(__filename);
 // 3. default → cwd/.xm/build/
 const XM_GLOBAL = process.argv.includes('--global');
 
-function resolveRoot(cwd) {
+export function resolveRoot(cwd) {
   if (process.env.X_BUILD_ROOT) return resolve(process.env.X_BUILD_ROOT);
   if (XM_GLOBAL) return resolve(homedir(), '.xm', 'build');
   return resolve(cwd || process.cwd(), '.xm', 'build');
 }
 
-let ROOT = resolveRoot();
-
 // PLUGIN_ROOT: where templates and defaults live (always script dir)
 const PLUGIN_ROOT = resolve(__dirname, '..');
+
+// ── AsyncLocalStorage (per-request isolation for server) ────────────
+
+export const reqCtx = new AsyncLocalStorage();
+
+const _defaultRoot = resolveRoot();
+
+// Per-request ROOT via ALS, fallback to default
+function ROOT_() {
+  return reqCtx.getStore()?.root ?? _defaultRoot;
+}
 
 // ── CLIError (throwable exit — safe for server direct-import) ────────
 
@@ -48,26 +58,21 @@ function die(message, exitCode = 1) {
   throw new CLIError(message, exitCode);
 }
 
-// ── Output Context (injectable for server direct-import) ────────────
-// When running as CLI: uses real console.log/error
-// When imported by server: server replaces these with collectors
+// ── Output Context (per-request via ALS) ────────────────────────────
 
 const _realConsoleLog = console.log.bind(console);
 const _realConsoleError = console.error.bind(console);
 
-let _out = (...args) => _realConsoleLog(...args);
-let _err = (...args) => _realConsoleError(...args);
+function _out(...args) {
+  const store = reqCtx.getStore();
+  if (store?.out) store.out(...args);
+  else _realConsoleLog(...args);
+}
 
-/**
- * Install custom output collectors. Returns restore function.
- * Used by server to capture output without monkey-patching console.
- */
-export function installOutput(outFn, errFn) {
-  const prevOut = _out;
-  const prevErr = _err;
-  _out = outFn;
-  _err = errFn;
-  return () => { _out = prevOut; _err = prevErr; };
+function _err(...args) {
+  const store = reqCtx.getStore();
+  if (store?.err) store.err(...args);
+  else _realConsoleError(...args);
 }
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -136,9 +141,9 @@ function emitHook(event, payload) {
     try {
       const input = JSON.stringify({ event, ...payload, timestamp: new Date().toISOString() });
       if (h.exec.endsWith('.mjs')) {
-        spawnSync(process.execPath, [h.exec], { input, stdio: ['pipe', 'inherit', 'inherit'], cwd: resolve(ROOT, '..') });
+        spawnSync(process.execPath, [h.exec], { input, stdio: ['pipe', 'inherit', 'inherit'], cwd: resolve(ROOT_(), '..') });
       } else {
-        spawnSync(h.exec, [], { input, stdio: ['pipe', 'inherit', 'inherit'], shell: true, cwd: resolve(ROOT, '..') });
+        spawnSync(h.exec, [], { input, stdio: ['pipe', 'inherit', 'inherit'], shell: true, cwd: resolve(ROOT_(), '..') });
       }
     } catch { /* hook errors are non-fatal */ }
   }
@@ -189,7 +194,7 @@ function loadPhaseContext(project, phaseName) {
 
 function isGitRepo() {
   try {
-    execSync('git rev-parse --git-dir', { stdio: 'pipe', cwd: resolve(ROOT, '..') });
+    execSync('git rev-parse --git-dir', { stdio: 'pipe', cwd: resolve(ROOT_(), '..') });
     return true;
   } catch { return false; }
 }
@@ -200,7 +205,7 @@ function gitAutoCommit(project, task, phase) {
   if (config.git?.auto_commit === false) return null;
 
   try {
-    const cwd = resolve(ROOT, '..');
+    const cwd = resolve(ROOT_(), '..');
     execSync('git add -A', { stdio: 'pipe', cwd });
 
     // Check if there are staged changes
@@ -217,7 +222,7 @@ function gitAutoCommit(project, task, phase) {
 function gitRollbackTask(task) {
   if (!isGitRepo() || !task.commit_sha) return false;
   try {
-    const cwd = resolve(ROOT, '..');
+    const cwd = resolve(ROOT_(), '..');
     execSync(`git stash push -m "tm-task-${task.id}-failed"`, { stdio: 'pipe', cwd });
     execSync(`git reset --hard ${task.commit_sha}`, { stdio: 'pipe', cwd });
     return true;
@@ -227,7 +232,7 @@ function gitRollbackTask(task) {
 // ── Quality Gate Runner ──────────────────────────────────────────────
 
 function detectAndRunQualityChecks(project) {
-  const cwd = resolve(ROOT, '..');
+  const cwd = resolve(ROOT_(), '..');
   const results = [];
   const config = loadConfig();
 
@@ -425,7 +430,7 @@ function scheduleRetry(project, task, data) {
 
 function templatesDir() {
   // Check project-local first, then plugin bundled templates
-  const local = join(ROOT, 'templates');
+  const local = join(ROOT_(), 'templates');
   if (existsSync(local)) return local;
   return join(PLUGIN_ROOT, 'templates');
 }
@@ -665,7 +670,7 @@ function cmdTemplates(args) {
 // ── Metrics ──────────────────────────────────────────────────────────
 
 function metricsPath() {
-  return join(ROOT, 'metrics', 'sessions.jsonl');
+  return join(ROOT_(), 'metrics', 'sessions.jsonl');
 }
 
 const METRICS_MAX_BYTES = 5 * 1024 * 1024; // 5MB rotation threshold
@@ -728,13 +733,13 @@ function writeMD(path, content) {
 }
 
 function loadConfig() {
-  return readJSON(join(ROOT, 'config.json')) || {};
+  return readJSON(join(ROOT_(), 'config.json')) || {};
 }
 
 function loadSharedConfig() {
   // Shared config lives one level up from tool-specific root
-  // ROOT = .xm/build/ → shared = .xm/config.json
-  const sharedPath = join(ROOT, '..', 'config.json');
+  // ROOT_() = .xm/build/ → shared = .xm/config.json
+  const sharedPath = join(ROOT_(), '..', 'config.json');
   const local = readJSON(sharedPath);
   if (local) return local;
   // Fallback to global config (~/.xm/config.json)
@@ -811,9 +816,9 @@ function cmdMode(args) {
 
   const config = loadConfig();
   config.mode = sub;
-  writeJSON(join(ROOT, 'config.json'), config);
+  writeJSON(join(ROOT_(), 'config.json'), config);
   // Also update shared config
-  const sharedPath = join(ROOT, '..', 'config.json');
+  const sharedPath = join(ROOT_(), '..', 'config.json');
   const sharedConfig = readJSON(sharedPath) || {};
   sharedConfig.mode = sub;
   writeJSON(sharedPath, sharedConfig);
@@ -830,7 +835,7 @@ function cmdMode(args) {
 // ── Path Helpers ─────────────────────────────────────────────────────
 
 function projectsDir() {
-  return join(ROOT, 'projects');
+  return join(ROOT_(), 'projects');
 }
 
 function projectDir(name) {
@@ -1166,7 +1171,7 @@ function phaseNext(args) {
     const scripts = config.gate_scripts || {};
     if (scripts[gateType]) {
       _out(`🔍 Running custom gate: ${gateType}...`);
-      const out = spawnSync(scripts[gateType], [], { shell: true, cwd: resolve(ROOT, '..'), stdio: 'pipe' });
+      const out = spawnSync(scripts[gateType], [], { shell: true, cwd: resolve(ROOT_(), '..'), stdio: 'pipe' });
       if (out.status !== 0) {
         _out(`⛔ Custom gate "${gateType}" failed.`);
         return;
@@ -3715,9 +3720,6 @@ function extractFlags(rawArgs) {
 // ── Main Router (exported for server direct-import) ─────────────────
 
 export async function route(rawArgs, options = {}) {
-  // Re-resolve ROOT if cwd is provided (server direct-import)
-  if (options.cwd) ROOT = resolveRoot(options.cwd);
-
   const { cleaned, projectFlag } = extractFlags(rawArgs);
   const [cmd, ...args] = cleaned;
 
