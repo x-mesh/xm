@@ -99,6 +99,10 @@ export function cmdList() {
 export function cmdStatus(args) {
   const name = resolveProject(args[0], { autoInit: true });
   const manifest = readJSON(manifestPath(name));
+  if (!manifest) {
+    console.log('No project found. Run: x-build init <name>');
+    return;
+  }
   const config = loadConfig();
 
   const completedPhases = PHASES.filter(p => {

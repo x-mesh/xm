@@ -579,11 +579,11 @@ function suggestStrategy(taskName) {
 
 // ── Execution Engine ────────────────────────────────────────────────
 
-function buildAgentPrompt(project, task, briefContent, decisionsContent) {
-  const manifest = readJSON(manifestPath(project));
+function buildAgentPrompt(project, task, briefContent, decisionsContent, { manifest, taskData, stepData } = {}) {
+  manifest = manifest || readJSON(manifestPath(project));
   const lines = [
     `## Task: ${task.name}`,
-    `ID: ${task.id} | Size: ${task.size} | Project: ${manifest.display_name || project}`,
+    `ID: ${task.id} | Size: ${task.size} | Project: ${manifest?.display_name || project}`,
     '',
   ];
 
@@ -598,14 +598,14 @@ function buildAgentPrompt(project, task, briefContent, decisionsContent) {
 
   // Step progress context
   try {
-    const stepData = readJSON(stepsPath(project));
-    if (stepData?.steps?.length) {
-      const stepIdx = stepData.steps.findIndex(s => s.tasks.includes(task.id));
+    const steps = stepData || readJSON(stepsPath(project));
+    if (steps?.steps?.length) {
+      const stepIdx = steps.steps.findIndex(s => Array.isArray(s.tasks) && s.tasks.includes(task.id));
       if (stepIdx >= 0) {
-        lines.push(`Step: ${stepIdx + 1}/${stepData.steps.length}`, '');
+        lines.push(`Step: ${stepIdx + 1}/${steps.steps.length}`, '');
       }
     }
-  } catch {}
+  } catch { /* steps.json optional */ }
 
   if (briefContent) {
     lines.push('## Project Context', briefContent, '');
@@ -616,10 +616,10 @@ function buildAgentPrompt(project, task, briefContent, decisionsContent) {
   }
 
   if (task.depends_on?.length > 0) {
-    const taskData = readJSON(tasksPath(project));
+    const tasks = taskData || readJSON(tasksPath(project));
     lines.push('## Completed Dependencies');
     for (const depId of task.depends_on) {
-      const dep = taskData.tasks.find(t => t.id === depId);
+      const dep = tasks?.tasks?.find(t => t.id === depId);
       if (dep) lines.push(`- ${dep.id}: ${dep.name} (${dep.status})`);
     }
     lines.push('');
@@ -718,19 +718,15 @@ export function cmdRun(args) {
   // Generate context brief inline (avoid circular import with misc.mjs)
   const briefContent = (() => {
     try {
-      // Regenerate brief inline
-      const _manifest = readJSON(manifestPath(project));
-      const _currentPhase = PHASES.find(p => p.id === _manifest.current_phase);
-      const _taskData = readJSON(tasksPath(project));
       const briefLines = [
-        `# ${_manifest.display_name || project} — Context Brief`,
+        `# ${manifest.display_name || project} — Context Brief`,
         '',
-        `**Phase:** ${_currentPhase?.label || _manifest.current_phase}`,
+        `**Phase:** ${currentPhase?.label || manifest.current_phase}`,
         '',
       ];
-      if (_taskData?.tasks?.length > 0) {
-        const _done = _taskData.tasks.filter(t => t.status === TASK_STATES.COMPLETED).length;
-        briefLines.push(`## Tasks: ${_done}/${_taskData.tasks.length} completed`, '');
+      if (taskData?.tasks?.length > 0) {
+        const _done = taskData.tasks.filter(t => t.status === TASK_STATES.COMPLETED).length;
+        briefLines.push(`## Tasks: ${_done}/${taskData.tasks.length} completed`, '');
       }
       return briefLines.join('\n');
     } catch { return ''; }
@@ -759,7 +755,7 @@ export function cmdRun(args) {
         role,
         agent_type: role === 'deep-executor' || model === 'opus' ? 'deep-executor' : 'executor',
         model,
-        prompt: buildAgentPrompt(project, task, briefContent, decisionsContent),
+        prompt: buildAgentPrompt(project, task, briefContent, decisionsContent, { manifest, taskData, stepData }),
         on_complete: `node ${join(PLUGIN_ROOT, 'lib', 'x-build-cli.mjs')}${XM_GLOBAL ? ' --global' : ''} tasks update ${task.id} --status completed`,
         on_fail: `node ${join(PLUGIN_ROOT, 'lib', 'x-build-cli.mjs')}${XM_GLOBAL ? ' --global' : ''} tasks update ${task.id} --status failed`,
       };

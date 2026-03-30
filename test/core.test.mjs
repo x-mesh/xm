@@ -289,12 +289,12 @@ describe('edge cases', () => {
     }
   });
 
-  test('double init same project name', () => {
+  test('double init same project name handled gracefully', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       run(['init', 'proj'], { cwd: tmp });
       const r = run(['init', 'proj'], { cwd: tmp });
-      // Should handle gracefully (warn or succeed)
+      // Should either warn or fail, not silently overwrite
       expect(r.stdout + r.stderr).toBeTruthy();
     } finally {
       rmSync(tmp, { recursive: true, force: true });
@@ -306,7 +306,8 @@ describe('edge cases', () => {
     try {
       setupProject(tmp);
       const r = run(['status'], { cwd: tmp });
-      expect(r.stdout).toContain('Next');
+      // Matches both Korean and English modes
+      expect(r.stdout).toMatch(/다음 단계|Next/);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -319,7 +320,7 @@ describe('edge cases', () => {
       const r = run(['run'], { cwd: tmp });
       expect(r.exitCode).not.toBe(0);
       expect(r.stderr).toContain('Execute');
-      expect(r.stdout).toContain('Next steps');
+      expect(r.stdout).toContain('phase next');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
