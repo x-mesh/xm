@@ -140,6 +140,24 @@ Final: <weighted_avg>/10
 
 각 judge는 독립적으로 채점한다. 순서 바이어스를 방지하기 위해 judge 번호 외 식별자를 부여하지 않는다.
 
+### Reusable Judge Prompt (표준 프롬프트)
+
+이 프롬프트는 x-kit 생태계 전체에서 judge panel이 필요할 때 재사용한다:
+- **x-build prd-gate**: PRD 채점 (rubric: plan-quality 또는 prd-gate의 5-criteria rubric)
+- **x-op --verify**: 전략 결과 채점 (rubric: strategy-rubric 매핑표 참조)
+- **x-eval score**: 범용 채점 (rubric: 사용자 지정 또는 built-in)
+
+호출자는 `{rubric_name}`, `{criteria_list}`, `{content}`만 치환하면 된다.
+weights가 명시되지 않으면 모든 기준에 동일 가중치를 부여한다.
+
+### 합의도 판단 (σ 기반)
+
+| σ (judges 간 표준편차) | 합의 | 조치 |
+|---|------|------|
+| < 0.8 | High — 신뢰 가능 | score 그대로 사용 |
+| 0.8–1.5 | Medium | score 사용, 주의 표시 |
+| > 1.5 | Low | 추가 judge 1명 소환 후 재채점 |
+
 ### 결과 집계 및 출력
 
 모든 judge 완료 후 집계:
@@ -325,6 +343,27 @@ Score variance across trials:
 ### 저장
 
 결과를 `.xm/eval/benchmarks/{timestamp}-bench.json`에 저장한다.
+
+### x-op compose 연동
+
+bench 결과를 x-op compose 파이프라인 최적화에 활용한다:
+
+**compose 프리셋 벤치마킹:**
+```bash
+/x-eval bench "v2 feature plan" --strategies "brainstorm|tournament|refine,brainstorm|refine,brainstorm|council" --trials 2
+```
+
+각 전략은 `|`로 구분된 compose 파이프라인이다. bench가 각 파이프라인을 x-op compose로 실행하고 최종 출력을 채점한다.
+
+| Pipeline | Avg Score | Cost | Score/$ |
+|----------|-----------|------|---------|
+| brainstorm\|tournament\|refine | 8.5 | $0.45 | 18.9 |
+| brainstorm\|refine | 7.2 | $0.25 | 28.8 |
+| brainstorm\|council | 7.8 | $0.35 | 22.3 |
+
+**결과 활용:**
+- 최적 파이프라인을 x-build 태스크의 `--strategy` 값으로 권장
+- bench 결과의 `recommendation` 필드에 compose 파이프라인 포함
 
 ---
 

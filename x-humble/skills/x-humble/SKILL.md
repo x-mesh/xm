@@ -315,6 +315,21 @@ Stats:
   → 3회 이상 확인 → CLAUDE.md 적용 제안
 ```
 
+#### 자동 활성화 규칙
+
+| 조건 | 동작 |
+|------|------|
+| `confirmed_count >= 3` | `status: "recorded"` → `"active"` 자동 승격, CLAUDE.md 적용 제안 |
+| `confirmed_count >= 5` | 자동으로 CLAUDE.md에 주입 (사용자 확인 없이) |
+| `confirmed_count == 1` + 30일 미확인 | `"⚠ 이 교훈이 여전히 유효한가요?"` 확인 요청 |
+| `deprecated` 후 재확인 | `status: "deprecated"` → `"recorded"` 복구 + `confirmed_count` 리셋 |
+
+승격 시 메시지:
+```
+🎓 [L4] "에러 메시지 무시" — 3회 확인됨. active로 승격합니다.
+   CLAUDE.md에 적용할까요? (y/N)
+```
+
 교훈이 틀렸다고 판명되면:
 ```
 /x-humble lessons deprecate L2 --reason "dry-run이 오히려 비효율"
@@ -339,6 +354,30 @@ Stats:
 - STOP: 첫 접근에 고착하기. 최소 2개 대안을 먼저 고려. (L1, 3회 확인, 2026-03-27)
 - START: 구현 전 --dry-run으로 계획 확인. (L2, 2회 확인, 2026-03-25)
 ```
+
+### CLAUDE.md 동기화 규칙
+
+리더가 `apply` 실행 시 아래 규칙을 따른다:
+
+1. **섹션 탐색**: CLAUDE.md에서 `## Lessons (x-humble)` 섹션을 찾는다
+2. **섹션 없으면**: 파일 끝에 섹션을 새로 생성한다
+3. **중복 방지**: 동일 lesson ID(L{N})가 이미 있으면 업데이트, 없으면 추가
+4. **제거**: `--remove` 시 해당 줄을 삭제. 섹션이 비면 섹션 자체 유지 (빈 상태)
+5. **형식**: `- {TYPE}: {내용} (L{N}, {confirmed}회 확인, {date})`
+6. **순서**: KEEP → STOP → START 순서로 정렬
+
+### x-eval judge 컨텍스트 연동
+
+`confirmed_count >= 3`인 active 교훈은 x-eval의 judge 프롬프트에 선택적으로 주입된다:
+
+```
+## Context: Active Lessons (x-humble)
+아래 교훈은 이 프로젝트에서 반복 확인된 패턴입니다. 채점 시 참고하세요:
+- STOP: 에러 메시지 무시 (3회 확인)
+- START: 구현 전 dry-run (5회 확인)
+```
+
+이 컨텍스트는 x-eval `score` 명령의 `--context` 옵션으로 전달되며, judge의 독립성을 해치지 않도록 "참고" 수준으로만 제공한다.
 
 ---
 

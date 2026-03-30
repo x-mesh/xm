@@ -216,6 +216,23 @@ classify 결과에 관련 x-op 전략을 함께 제안한다:
 | 성능 | `hypothesis` | 성능 병목 가설 검증 |
 | 인프라 + 트레이드오프 | `debate` | 인프라 선택지 찬반 토론 |
 
+### x-op escalate 자동 연동
+
+classify의 `complexity` 필드가 x-op escalate의 `--start` 레벨을 결정한다:
+
+| complexity | escalate --start | 이유 |
+|------------|-----------------|------|
+| low | haiku | 간단한 문제 — 최저 비용 |
+| medium | sonnet | 중간 복잡도 — haiku 단계 스킵 |
+| high | sonnet | 높은 복잡도 — sonnet부터 시작 |
+
+사용자가 x-op 대안을 선택하면 리더가 자동으로 `--start` 옵션을 설정한다:
+```
+classify → complexity: "medium"
+사용자: "x-op hypothesis로 해볼게"
+→ /x-op hypothesis "문제 설명" --start sonnet
+```
+
 ## Command: solve
 
 전략별 에이전트 오케스트레이션을 실행한다.
@@ -483,6 +500,43 @@ x-solver는 `.xm/config.json`의 공유 설정을 참조한다:
 로컬 config의 `solving.parallel_agents`가 설정되어 있으면 shared config보다 우선한다.
 
 ---
+
+## x-build Integration
+
+solve 결과를 x-build 태스크로 변환할 수 있다.
+
+### solve → x-build 태스크 변환
+
+`close` 또는 `verify` 완료 후, 사용자에게 제안:
+```
+💡 이 해결책을 x-build 프로젝트의 태스크로 등록할까요?
+1) 예 — x-build tasks add로 등록
+2) 아니오 — 현재 세션에서 종료
+```
+
+"예" 선택 시, solve 결과에서 태스크를 자동 추출:
+
+| solve 전략 | 변환 규칙 |
+|-----------|---------|
+| decompose | 각 leaf 노드 → 별도 x-build task (의존성 유지) |
+| iterate | 최종 가설 검증 결과 → 1개 x-build task |
+| constrain | 선택된 후보 → 구현 x-build task + 제약 검증 task |
+| pipeline | 최종 전략 결과에 따라 위 규칙 적용 |
+
+변환 명령:
+```bash
+# decompose 결과 예시 (3개 leaf)
+x-build tasks add "Implement cache layer [R1]" --size medium
+x-build tasks add "Add rate limiting [R2]" --size small --deps t1
+x-build tasks add "Write integration tests [R3]" --size small --deps t1,t2
+```
+
+### x-build decisions 연동
+
+solve 과정에서 내린 결정은 x-build에 자동 주입 가능:
+```bash
+x-build decisions add "Redis for caching" --type architecture --rationale "x-solver constrain 결과: 응답시간/비용 최적"
+```
 
 ## Quick Reference
 
