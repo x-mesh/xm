@@ -4,7 +4,7 @@
  * x-build — Phase-Based Project Harness CLI
  * term-mesh 생태계의 프로젝트 라이프사이클 관리 도구
  *
- * Usage: node .x-build/x-build-cli.mjs <command> [args] [options]
+ * Usage: node <plugin-root>/lib/x-build-cli.mjs <command> [args] [options]
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, appendFileSync, renameSync, statSync } from 'node:fs';
@@ -2287,8 +2287,8 @@ function buildAgentPrompt(project, task, briefContent, decisionsContent) {
     'Write clean, tested code.',
     '',
     '## On Completion',
-    `After completing this task, run: node .x-build/x-build-cli.mjs tasks update ${task.id} --status completed`,
-    `If the task fails, run: node .x-build/x-build-cli.mjs tasks update ${task.id} --status failed`,
+    `After completing this task, run: node ${PLUGIN_ROOT}/lib/x-build-cli.mjs tasks update ${task.id} --status completed`,
+    `If the task fails, run: node ${PLUGIN_ROOT}/lib/x-build-cli.mjs tasks update ${task.id} --status failed`,
   );
 
   return lines.join('\n');
@@ -2439,8 +2439,14 @@ function cmdRun(args) {
     console.log(`  🔹 ${C.bold}${task.id}${C.reset}: ${task.name} → ${C.cyan}${role} (${model})${C.reset}`);
   }
 
-  console.log(`\n${C.dim}To execute, the /x-build skill will spawn agents for each task.${C.reset}`);
-  console.log(`${C.dim}Or run with --json for machine-readable output.${C.reset}\n`);
+  // Progress summary
+  const allTasks = taskData.tasks;
+  const doneCount = allTasks.filter(t => t.status === TASK_STATES.COMPLETED).length;
+  const totalCount = allTasks.length;
+  const pct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
+  console.log(`\n  📊 Progress: ${doneCount}/${totalCount} tasks (${pct}%) | Step ${currentStep.id}/${stepData.steps.length}`);
+  console.log(`${C.dim}  To execute, the /x-build skill will spawn agents for each task.${C.reset}`);
+  console.log(`${C.dim}  Or run with --json for machine-readable output.${C.reset}\n`);
 
   // Mark tasks as running
   for (const task of readyTasks) {

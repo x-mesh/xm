@@ -78,7 +78,7 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 ## Commands
 
 ### Project
-- `init <name>` — Create project (`.x-build/` in cwd)
+- `init <name>` — Create project (`.xm/build/` in cwd)
 - `list` — List all projects
 - `status` — Show status with progress bars
 - `next` — Smart routing: tells you what to do next
