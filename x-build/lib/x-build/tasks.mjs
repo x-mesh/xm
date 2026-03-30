@@ -634,7 +634,7 @@ export function cmdRun(args) {
     const plan = readyTasks.map(task => {
       const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
       const model = ROLE_MODEL_MAP[role] || (task.size === 'large' ? 'opus' : 'sonnet');
-      return {
+      const entry = {
         task_id: task.id,
         task_name: task.name,
         size: task.size,
@@ -645,6 +645,11 @@ export function cmdRun(args) {
         on_complete: `node ${join(PLUGIN_ROOT, 'lib', 'x-build-cli.mjs')}${XM_GLOBAL ? ' --global' : ''} tasks update ${task.id} --status completed`,
         on_fail: `node ${join(PLUGIN_ROOT, 'lib', 'x-build-cli.mjs')}${XM_GLOBAL ? ' --global' : ''} tasks update ${task.id} --status failed`,
       };
+      if (task.strategy) {
+        entry.strategy = task.strategy;
+        entry.strategy_hint = `Use /x-op ${task.strategy} for this task`;
+      }
+      return entry;
     });
 
     const output = {
@@ -673,7 +678,8 @@ export function cmdRun(args) {
   for (const task of readyTasks) {
     const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
     const model = ROLE_MODEL_MAP_HR[role] || (task.size === 'large' ? 'opus' : 'sonnet');
-    console.log(`  🔹 ${C.bold}${task.id}${C.reset}: ${task.name} → ${C.cyan}${role} (${model})${C.reset}`);
+    const strategyTag = task.strategy ? ` ${C.yellow}[${task.strategy}]${C.reset}` : '';
+    console.log(`  🔹 ${C.bold}${task.id}${C.reset}: ${task.name} → ${C.cyan}${role} (${model})${C.reset}${strategyTag}`);
   }
 
   const allTasks = taskData.tasks;

@@ -1,6 +1,6 @@
 # x-kit
 
-**"Build a REST API with JWT auth" → 끝.** Claude Code에서 한 문장으로 프로젝트를 시작하면, 태스크 분해 → 에이전트 실행 → 품질 검증까지 자동으로 진행됩니다.
+**"Build a REST API with JWT auth" → done.** Start a project with one sentence in Claude Code — it auto-decomposes tasks, runs agents, and verifies quality.
 
 Multi-agent toolkit for Claude Code by [x-mesh](https://github.com/x-mesh). Zero dependencies.
 
@@ -11,37 +11,38 @@ Multi-agent toolkit for Claude Code by [x-mesh](https://github.com/x-mesh). Zero
 /plugin install x-kit@x-kit -s user
 ```
 
-## Quick Start — 이것만 알면 됩니다
+## Quick Start
 
 ```bash
 /x-build plan "Build a REST API with JWT auth"
 ```
 
-이 한 줄이면:
-1. 프로젝트 생성 + 태스크 자동 분해
-2. 태스크 목록 검토 (사용자 승인)
-3. 에이전트가 태스크별로 병렬 실행
-4. 품질 검증 + 완료
+That single line:
+1. Creates a project + auto-decomposes into tasks
+2. Presents the task list for review (user approval)
+3. Agents execute tasks in parallel
+4. Quality verification + completion
 
-실패하면? `x-build run` 다시 실행. 완료된 태스크는 건너뛰고 나머지만 실행합니다.
+Failed? Run `x-build run` again. Completed tasks are skipped, only remaining ones execute.
 
-### 더 정교하게 쓰고 싶다면
+### Going deeper
 
 ```bash
-# 정규 플로우: 요구사항 인터뷰 → PRD → 합의 리뷰 → 실행
+# Full flow: requirements interview → PRD → consensus review → execution
 /x-build init my-api
-/x-build discuss --mode interview       # 요구사항 정리
-/x-build plan "Build a REST API"        # PRD + 태스크 분해
-/x-build run                            # 에이전트 실행
+/x-build discuss --mode interview       # Gather requirements
+/x-build plan "Build a REST API"        # PRD + task decomposition
+/x-build prd-gate                       # Judge panel quality evaluation
+/x-build run                            # Agent execution
 
-# 전략적 분석
-/x-op debate "REST vs GraphQL"          # 찬반 토론 + 판정
-/x-op review --target src/auth/         # 다각도 코드 리뷰
+# Strategic analysis
+/x-op debate "REST vs GraphQL"          # Pro/con debate + verdict
+/x-op review --target src/auth/         # Multi-perspective code review
 
-# 회고
-/x-humble reflect                       # 실패 분석 + KEEP/STOP/START
+# Retrospective
+/x-humble reflect                       # Failure analysis + KEEP/STOP/START
 
-# 품질 측정
+# Quality measurement
 /x-eval score output.md --rubric code-quality
 ```
 
@@ -133,6 +134,7 @@ Full project lifecycle with PRD generation, multi-mode deliberation, consensus r
 /x-build discuss --mode interview       # Multi-round requirements interview
 /x-build discuss --mode validate         # Verify research completeness
 /x-build plan "Build a REST API with JWT auth"
+/x-build prd-gate                        # Judge panel PRD quality evaluation
 /x-build discuss --mode critique         # Strategic plan review
 /x-build run                             # Agents execute in DAG order
 ```
@@ -141,19 +143,19 @@ Full project lifecycle with PRD generation, multi-mode deliberation, consensus r
 Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──→ Close
  [discuss]  [quality]  [critique]  [contract]  [quality]  [auto]
   interview   consensus   validate    adapt     verify-contracts
-  validate                critique
+  validate
 ```
 
 | Feature | Description |
 |---------|-------------|
 | **Multi-mode deliberation** | `discuss` with 5 modes: interview (drill-down), assumptions, validate, critique, adapt |
 | **PRD generation** | Auto-generates 8-section PRD from research artifacts |
-| **PRD quality gate** | On-demand judge panel — user triggers when needed, scores with guidance |
+| **PRD quality gate** | On-demand judge panel — user triggers, rubric-based scoring with guidance |
 | **Consensus review** | 4-agent review (architect, critic, planner, security) until agreement |
+| **Strategy-tagged tasks** | Tasks with `--strategy` flag execute via x-op with quality verification |
 | **Team execution** | `--team` routes tasks to hierarchical teams (x-agent team system) |
 | **Acceptance contracts** | `done_criteria` per task — auto-derived from PRD, injected into agent prompts, verified at close |
 | **Auto-handoff** | `phase next` auto-saves structured state — decisions survive, noise is discarded |
-| **Strategy-tagged tasks** | Tasks can specify x-op strategy + rubric for quality-verified execution |
 | **DAG execution** | Tasks run in dependency order, parallel where possible |
 | **Cost forecasting** | Per-task $ estimate before execution |
 | **Quality dashboard** | Per-task scores + project average in status output |
@@ -167,7 +169,7 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 |----------|----------|
 | **Project** | `init`, `list`, `status`, `close`, `dashboard` |
 | **Phase** | `phase next/set`, `gate pass/fail`, `checkpoint`, `handoff` |
-| **Plan** | `plan "goal"`, `plan-check [--strict]` |
+| **Plan** | `plan "goal"`, `plan-check [--strict]`, `prd-gate [--threshold N]` |
 | **Tasks** | `tasks add [--strategy] [--team] [--done-criteria]`, `tasks done-criteria`, `tasks list/remove/update` |
 | **Steps** | `steps compute/status/next` |
 | **Execute** | `run`, `run --json`, `run-status` |
@@ -331,7 +333,7 @@ Settings stored in `.xm/config.json` (project-level).
 
 ```
 x-kit/                              Marketplace repo
-├── x-build/                        Project harness + PRD pipeline (핵심)
+├── x-build/                        Project harness + PRD pipeline
 ├── x-op/                           Strategy orchestration (18 strategies)
 ├── x-eval/                         Quality evaluation + diff
 ├── x-humble/                       Structured retrospective
@@ -347,15 +349,15 @@ x-kit/                              Marketplace repo
 ### How it works
 
 ```
-SKILL.md (지시서)  →  Claude (오케스트레이터)  →  Agent Tool (실행)
+SKILL.md (spec)  →  Claude (orchestrator)  →  Agent Tool (execution)
        ↕                      ↕
-x-build CLI (상태 관리)  ←  tasks update (콜백)
+x-build CLI (state)  ←  tasks update (callback)
 ```
 
-- **SKILL.md**: Claude가 읽는 오케스트레이션 지시서. plan→run 플로우, 에이전트 스폰 방법, 에러 복구를 정의.
-- **x-build CLI**: 상태 관리 레이어. 태스크/페이즈/체크포인트를 `.xm/build/`에 JSON으로 영속화. 에이전트를 직접 스폰하지 않음.
-- **Claude**: SKILL.md를 해석하여 Agent Tool로 에이전트를 실제 스폰하고, 완료 시 CLI 콜백을 호출.
-- **Persistent Server**: Bun HTTP 서버가 CLI 호출을 캐싱하여 반복 호출 시 빠른 응답. AsyncLocalStorage로 per-request 격리.
+- **SKILL.md**: Orchestration spec that Claude reads. Defines plan→run flow, agent spawn patterns, error recovery.
+- **x-build CLI**: State management layer. Persists tasks/phases/checkpoints as JSON in `.xm/build/`. Does not spawn agents directly.
+- **Claude**: Interprets SKILL.md, spawns agents via Agent Tool, calls CLI callbacks on completion.
+- **Persistent Server**: Bun HTTP server caches CLI calls for fast repeated responses. AsyncLocalStorage for per-request isolation.
 
 ## Requirements
 

@@ -304,6 +304,52 @@ export function cmdResearch(args) {
   console.log(JSON.stringify(output, null, 2));
 }
 
+// ── cmdPrdGate ─────────────────────────────────────────────────
+
+export function cmdPrdGate(args) {
+  const { opts } = parseOptions(args);
+  const project = resolveProject(null);
+  const manifest = readJSON(manifestPath(project));
+
+  const prdPath = join(phaseDir(project, '02-plan'), 'PRD.md');
+  const prd = readMD(prdPath);
+  if (!prd) {
+    console.error('❌ No PRD.md found. Create a PRD first during the Plan phase.');
+    process.exit(1);
+  }
+
+  const requirements = readMD(join(contextDir(project), 'REQUIREMENTS.md'));
+  const context = readMD(join(contextDir(project), 'CONTEXT.md'));
+  const taskData = readJSON(tasksPath(project));
+  const planCheck = readJSON(join(phaseDir(project, '02-plan'), 'plan-check.json'));
+  const threshold = parseInt(opts.threshold || '7');
+
+  const rubric = [
+    { criterion: 'completeness', weight: 0.25, description: 'All requirements are addressed with acceptance criteria' },
+    { criterion: 'feasibility', weight: 0.20, description: 'Tasks are realistic given constraints and tech stack' },
+    { criterion: 'atomicity', weight: 0.20, description: 'Tasks are properly decomposed and independently executable' },
+    { criterion: 'clarity', weight: 0.20, description: 'PRD is unambiguous — no room for misinterpretation' },
+    { criterion: 'risk-coverage', weight: 0.15, description: 'Edge cases, failure modes, and risks are identified' },
+  ];
+
+  const output = {
+    action: 'prd-gate',
+    project,
+    goal: manifest.display_name || project,
+    threshold,
+    judges: parseInt(opts.judges || '3'),
+    rubric,
+    prd,
+    requirements: requirements?.slice(0, 3000) || null,
+    context_summary: context?.slice(0, 1500) || null,
+    tasks_count: taskData?.tasks?.length || 0,
+    plan_check_passed: planCheck?.passed ?? null,
+    result_path: join(phaseDir(project, '02-plan'), 'prd-gate.json'),
+  };
+
+  console.log(JSON.stringify(output, null, 2));
+}
+
 // ── cmdForecast ─────────────────────────────────────────────────────
 
 export function cmdForecast(args) {

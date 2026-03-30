@@ -596,6 +596,7 @@ ${C.bold}Research Phase:${C.reset}
 ${C.bold}Plan Phase:${C.reset}
   plan ["goal"]                  Show plan or auto-decompose goal into tasks
   plan-check [--strict]          Validate plan across 9 dimensions (--strict: coverage errors block gate)
+  prd-gate [--threshold N]       Judge panel PRD quality evaluation (default threshold: 7)
   phase <next|set|status>        Manage phases
   gate <pass|fail> [message]     Resolve current phase gate
 
