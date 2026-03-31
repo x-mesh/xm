@@ -141,12 +141,14 @@ This session's context:
 Analyze honestly:
 1. Why was that judgment made? (What information was it based on?)
 2. What information was missing? (Didn't know what you didn't know, or knowingly ignored it?)
-3. What biases were at play?
+3. Why was this discovered late? (Was there an earlier signal that was ignored or not checked? What check would have caught this sooner?)
+4. What biases were at play?
    - Overconfidence: Being certain about something uncertain
    - Anchoring: Fixating on the first approach
    - User appeasement: Trying to give the answer the user wants
    - Complexity bias: Ignoring simple solutions and overcomplicating
-4. Were there external constraints? (Lack of context, tool limitations, time pressure)
+5. Were there external constraints? (Lack of context, tool limitations, time pressure)
+6. What should change in the process? (Not just "be more careful" — a specific, actionable change to how we work)
 
 Format:
 ## Judgment Path

@@ -61,7 +61,7 @@ Parse the first word of `$ARGUMENTS` to determine the command:
 - `candidates` → Run `$XMS candidates <list|add|select|score>`
 - `phase` → Run `$XMS phase <next|set>`
 - `verify` → [Command: verify]
-- `close` → Run `$XMS close`
+- `close` → Run `$XMS close`, then [Post-Close: x-humble Link]
 - `history` → Run `$XMS history`
 - `next` → [Command: next]
 - `handoff` → Run `$XMS handoff [--restore]`
@@ -245,6 +245,8 @@ These principles are injected into all solve-phase agent prompts.
 3. **Separate the problem from the solution** — Understand what's actually wrong before proposing fixes. A misdiagnosed problem leads to a correct solution for the wrong question.
 4. **Evidence over intuition** — Every claim needs supporting evidence from code, logs, docs, or tests. "I think" is not evidence.
 5. **Constraints are guardrails, not goals** — Satisfying constraints is necessary but not sufficient. The goal is solving the actual problem.
+6. **Compound signals, not single indicators** — Never conclude from one log line, one error, or one metric. Require corroborating evidence from a different source. If only one signal exists, state the uncertainty.
+7. **No evidence, full stop** — If you cannot find evidence for a claim, stop and say so. Do not fill the gap with speculation. "I don't know yet" is a valid intermediate answer.
 ```
 
 ## Command: solve
@@ -353,6 +355,46 @@ Use the result to create the final candidate + select.
 
 ### Strategy: iterate
 
+#### Phase: diagnose (before hypothesize)
+
+Before generating hypotheses, establish the current state and a known-good reference point.
+
+**delegate** (debugger, sonnet):
+```
+{problem_solving_principles}
+
+## State Diagnosis + Baseline
+
+Before hypothesizing, answer these two questions:
+
+S1. Current State — Describe what is happening right now, not what the problem is.
+- What is the observable behavior? (error message, incorrect output, performance metric)
+- Which layer/boundary is it in? (UI, API, DB, network, config, build)
+- When did it start? (always, after a specific change, intermittently)
+
+S2. Known Good Baseline — What was the last known working state?
+- Is there a commit, version, or config where this worked?
+- If yes: what changed between then and now? (git log, config diff, dependency update)
+- If no baseline exists: state this explicitly. The first action should be finding one, not guessing.
+
+Problem: {problem_context}
+Context: {additional_context}
+
+Output:
+## Current State
+{observable behavior, layer, timing}
+
+## Baseline
+{last known good state, or "no baseline — search needed"}
+
+## Delta
+{what changed between baseline and current state, or "unknown — need to investigate"}
+```
+
+Use the state diagnosis to inform the hypothesize phase. If no baseline exists, recommend `context add` to gather more information before proceeding.
+
+Advance: `$XMS solve-advance --phase hypothesize`
+
 #### Phase: hypothesize
 **delegate** (debugger, sonnet):
 ```
@@ -405,8 +447,11 @@ Advance: `$XMS solve-advance --phase refine`
 
 #### Phase: refine
 Check verified (confirmed/inconclusive) hypotheses:
-- All refuted → return to hypothesize (increment iteration)
 - Confirmed exists → proceed to resolve
+- All refuted → apply **Switch or Revert** before retrying:
+  1. **Switch perspective** — Were all hypotheses from the same layer? If yes, look at a different layer (e.g., was debugging app code? try infra/config/network instead).
+  2. **Revert to baseline** — Return to the known-good state from the diagnose phase. Reproduce the issue from there with minimal changes to isolate the cause.
+  3. If both tried → return to hypothesize with the new perspective (increment iteration)
 - max_iterations reached → resolve with the most likely hypothesis
 
 `$XMS solve-advance --phase resolve` or `$XMS solve-advance --phase hypothesize`
@@ -539,6 +584,8 @@ Retry with an alternative strategy on failure.
 
 ## Command: verify
 
+**Principle: "Solved" is confirmed by execution only — not by reading, not by reasoning, not by "it should work."**
+
 1. Run: `$XMS verify`
 2. Parse JSON output (`action: "verify"`)
 3. If there are constraints without scores:
@@ -547,10 +594,16 @@ Retry with an alternative strategy on failure.
      Verify whether this solution satisfies the following constraints.
      Solution: {selected_candidate}
      Constraints: {unscored_constraints}
+
+     Verification must be by execution:
+     - Run the build, test, or command that demonstrates the constraint is met
+     - Paste the actual output as evidence
+     - "It should work" or "the code looks correct" is NOT verification
+     - If a constraint cannot be verified by execution (e.g., "maintainable code"), state explicitly that it requires human judgment
      ```
-4. Show results to the user
-5. On pass: `$XMS phase next` → recommend close
-6. On fail: show which constraints are unmet, recommend returning to solve
+4. Show results to the user with execution evidence
+5. On pass: `$XMS phase next` → recommend close. Suggest committing (save known-good state).
+6. On fail: show which constraints are unmet with the failing output, recommend returning to solve
 
 ## Command: next
 
@@ -589,6 +642,27 @@ x-solver references shared config in `.xm/config.json`:
 Change config: `x-kit config set agent_max_count 10`
 
 Local config's `solving.parallel_agents` takes priority over shared config when set.
+
+---
+
+## Post-Close: x-humble Link
+
+After `$XMS close`, suggest a retrospective if the problem was non-trivial:
+
+```
+Problem solved. Would you like to reflect on the process?
+1) Yes — run /x-humble review to analyze what we learned
+2) No — done
+```
+
+On "Yes", pass context to x-humble:
+```
+/x-humble review "x-solver: {problem_title} — strategy: {strategy}, iterations: {count}"
+```
+
+This connects S6 of the thinking protocol: **Why did this problem happen? Why was it found late? What should change in the process?**
+
+Skip this prompt if the problem was trivial (single-phase solve, no iteration).
 
 ---
 
