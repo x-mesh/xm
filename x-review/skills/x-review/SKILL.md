@@ -573,6 +573,39 @@ Example: `[Low←Medium] [challenged] file:line — description`
 
 If all findings are removed after challenge, verdict is LGTM regardless of original counts.
 
+### 3.5. Recall Boost (Completeness Check)
+
+After challenge filtering, the leader does a **second pass** to catch issues that strict severity rules might have filtered out.
+
+**Prompt for the recall boost pass:**
+```
+Review the diff one more time with fresh eyes. Ignore the findings already reported.
+Look specifically for:
+
+1. **Incomplete implementations** — Stubs, placeholder comments, TODO-equivalent code blocks
+   that have no actionable instruction. (e.g., a command handler that is just a comment)
+2. **Internal contradictions** — Two parts of the same file that say different things
+   (e.g., a config table says X, but the prose says Y)
+3. **Broken cross-references** — A section references a path, command, or identifier
+   that doesn't match the actual definition elsewhere in the diff
+
+For each issue found, output as:
+[Observation] file:line — description
+→ Fix: specific change
+
+Observations do NOT affect the verdict. They are informational.
+If nothing found, output: No additional observations.
+```
+
+**Rules:**
+- Observations are appended to the report **after** the verdict section
+- Observations do NOT count toward verdict thresholds (not Critical/High/Medium/Low)
+- Observations use the `[Observation]` tag — a distinct category, not a severity level
+- Maximum 5 observations per review
+- If an observation is clearly a real defect (would be Medium+ if severity-rated), the leader **promotes** it to a finding and re-evaluates the verdict
+
+**Why this exists:** x-review's "when in doubt, downgrade" principle optimizes for precision (no false positives) at the cost of recall. This pass recovers recall without inflating severity — observations are advisory, not blocking.
+
 ### 4. Sort
 
 Sort by Critical → High → Medium → Low.
@@ -623,6 +656,13 @@ Verdict: {LGTM ✅ | Request Changes 🔄 | Block 🚫}
 | perf | 1 | 0 | 0 | 1 | 0 |
 | tests | 0 | 0 | 0 | 0 | 0 |
 | **Total** | **4** | **1** | **2** | **1** | **0** |
+
+## Observations ({count})
+[Observation] src/commands/export.ts:45 — Export handler has only a comment stub, no implementation instruction
+  → Fix: Add explicit output format definition matching the import handler pattern
+
+[Observation] src/config.ts:12 — Config docs say "timeout in ms" but code uses seconds
+  → Fix: Align docs to match code: "timeout in seconds"
 ```
 
 #### format: github-comment

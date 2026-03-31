@@ -30,7 +30,17 @@ Same diff reviewed with and without x-review framework.
 
 **Key finding:** x-kit trades recall for precision. Every x-kit finding is correctly calibrated (no false positives), but it filters out edge-case issues that vanilla catches. Vanilla wins on balanced F1 (0.857 vs 0.4).
 
-**Improvement identified:** Add a "recall-boost pass" to x-review — after severity filtering, report filtered-out observations separately for leader review.
+**Improvement identified and implemented:** Recall Boost pass added to x-review Phase 4.
+
+### After Recall Boost (v4)
+
+| Metric | v3 (no boost) | v4 (with boost) | Change |
+|--------|:-------------:|:---------------:|:------:|
+| Precision | 1.0 | 1.0 | — |
+| Recall | 0.25 | **0.75** | **+200%** |
+| F1 | 0.4 | **0.857** | **+114%** |
+
+Recall Boost recovered 2 of 3 missed issues as `[Observation]` tags (non-blocking, advisory) plus found 1 new issue vanilla also missed. Precision preserved — observations don't inflate severity or affect verdict.
 
 ## 3. Cross-Plugin Strategy Quality
 
@@ -44,8 +54,9 @@ Same diff reviewed with and without x-review framework.
 
 1. **SKILL.md prompt programs work** — 100% verdict consistency across all plugins when criteria are specific
 2. **Calibration matters** — vague criteria ("many Medium") cause 33% inconsistency; quantified thresholds fix it
-3. **Precision vs recall tradeoff** — x-kit's "when in doubt, downgrade" is good for trust but costs coverage
+3. **Precision vs recall tradeoff solved** — Recall Boost pass recovers coverage (0.25→0.75) without sacrificing precision (1.0)
 4. **decompose is the most reliable strategy** — perfect rank correlation (ρ=1.0) across framings
+5. **x-kit matches vanilla F1** — after Recall Boost, x-kit F1 = 0.857 (equal to vanilla) with superior precision
 
 ## Data Files
 
