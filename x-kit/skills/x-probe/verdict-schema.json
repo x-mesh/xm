@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "x-probe Verdict",
+  "description": "Schema for .xm/probe/last-verdict.json — probe session result",
+  "type": "object",
+  "required": ["schema_version", "timestamp", "idea", "domain", "verdict", "premises", "recommendation"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2,
+      "description": "Schema version. Increment on breaking changes."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO8601 timestamp of verdict generation"
+    },
+    "idea": {
+      "type": "string",
+      "description": "The idea that was probed"
+    },
+    "domain": {
+      "type": "string",
+      "enum": ["technology", "business", "market", "mixed"],
+      "description": "Detected domain of the idea"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["PROCEED", "RETHINK", "KILL"],
+      "description": "Final verdict"
+    },
+    "premises": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "statement", "status", "initial_grade", "final_grade", "evidence_summary"],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Premise number"
+          },
+          "statement": {
+            "type": "string",
+            "description": "Falsifiable premise statement"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["survived", "weakened", "refuted"],
+            "description": "Premise status after probing"
+          },
+          "initial_grade": {
+            "type": "string",
+            "enum": ["assumption", "heuristic", "data-backed"],
+            "description": "Evidence grade at start of Phase 2"
+          },
+          "final_grade": {
+            "type": "string",
+            "enum": ["assumption", "heuristic", "data-backed"],
+            "description": "Evidence grade after Phase 2 probing"
+          },
+          "evidence_summary": {
+            "type": "string",
+            "description": "Summary of evidence (no raw user answers)"
+          }
+        }
+      },
+      "minItems": 1,
+      "maxItems": 10
+    },
+    "evidence_gaps": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Premises still at assumption grade — need early validation"
+    },
+    "kill_criteria": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Conditions that should stop the project immediately"
+    },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Key risks from pre-mortem analysis"
+    },
+    "recommendation": {
+      "type": "string",
+      "description": "2-3 sentence recommendation"
+    },
+    "conditions": {
+      "type": "string",
+      "description": "Conditions for conditional PROCEED verdict"
+    }
+  },
+  "additionalProperties": false
+}
