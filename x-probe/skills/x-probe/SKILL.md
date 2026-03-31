@@ -72,6 +72,7 @@ You don't give answers. You ask questions that make the user see the flaw themse
 3. **Evidence has a source and a date** — "Users want this" is not evidence.
    Who said it, when, how many, how was it measured?
    Evidence without provenance is opinion.
+   Grade every premise: assumption < heuristic < data-backed < validated.
 
 4. **Imagine the failure, then work backward** — It's 6 months later
    and this failed. What was the cause? Risks invisible from the present
@@ -115,15 +116,21 @@ For each premise:
   - fatal: idea collapses entirely
   - weakening: idea loses significant value
   - minor: idea survives with adjustments
+- Evidence Grade: classify the basis for the premise
+  - assumption: no evidence, belief or intuition only
+  - heuristic: pattern/experience-based ("we've seen this work before"), not measured
+  - data-backed: cited measurement with source and date
+  - validated: confirmed through experiment, production data, or user test
 
 Order by fragility (fatal first, minor last).
+Within the same fragility tier, order by evidence grade (assumption first — cheapest to kill).
 Start with the cheapest-to-test premise — if we can kill the idea with one phone call, do that first.
 
 Output format:
 ## Premises
-| # | Premise | Confidence | Fragility | Test |
-|---|---------|------------|-----------|------|
-| 1 | ... | low | fatal | ... |
+| # | Premise | Confidence | Fragility | Evidence | Test |
+|---|---------|------------|-----------|----------|------|
+| 1 | ... | low | fatal | assumption | ... |
 ```
 
 Show the premise table to the user. Ask:
@@ -149,10 +156,13 @@ What evidence do you have that this is true?
 (Specific: who told you, when, how was it measured?)
 ```
 
-After the user answers, follow up with:
-- If evidence is vague → "If we removed this assumption, what would change?"
-- If evidence is specific → "What would need to be true for this evidence to be misleading?"
-- If no evidence → "So this is an untested belief. What's the cheapest way to test it before committing?"
+After the user answers, follow up based on the evidence grade:
+- **assumption** (no evidence) → "So this is an untested belief. What's the cheapest way to test it before committing?" Upgrade to `heuristic` if user cites experience, or `data-backed` if they provide a source.
+- **heuristic** (experience-based) → "When did you last see this pattern hold? What was different about that context vs. now?" Challenge transferability.
+- **data-backed** (cited source) → "What would need to be true for this data to be misleading? Is the sample/context still relevant?" Stress-test the source.
+- **validated** (tested/confirmed) → Light touch only. "When was this validated, and has anything changed since?"
+
+Update the evidence grade in the premise table after each answer — grades can go up (user provides new evidence) or down (user admits evidence is weaker than stated).
 
 **"Let's say you're right" — follow the logic:**
 ```
@@ -241,8 +251,8 @@ The leader synthesizes Phase 1-3 into a verdict.
 
 | Verdict | Conditions |
 |---------|-----------|
-| **PROCEED** | All fatal premises survived with evidence. No unrefuted fatal objection. Alternatives are inferior. Failure scenarios are manageable. |
-| **RETHINK** | Some premises are weak but not refuted. A cheaper alternative exists for part of the scope. Pre-mortem found high-likelihood risks without mitigation. |
+| **PROCEED** | All fatal premises survived with evidence. No fatal premise graded `assumption`. No unrefuted fatal objection. Alternatives are inferior. Failure scenarios are manageable. |
+| **RETHINK** | Some premises are weak but not refuted. A fatal premise remains `assumption` or `heuristic` without upgrade path. A cheaper alternative exists for part of the scope. Pre-mortem found high-likelihood risks without mitigation. |
 | **KILL** | A fatal premise was refuted. An unrefutable objection exists. A dramatically cheaper alternative achieves 80%+ of the value. |
 
 **Output format:**
@@ -253,9 +263,14 @@ The leader synthesizes Phase 1-3 into a verdict.
 Idea: {idea}
 
 ## Premises Tested
-| # | Premise | Status | Evidence |
-|---|---------|--------|----------|
-| 1 | ... | survived ✅ / weakened ⚠ / refuted ❌ | ... |
+| # | Premise | Status | Evidence Grade | Evidence |
+|---|---------|--------|---------------|----------|
+| 1 | ... | survived ✅ / weakened ⚠ / refuted ❌ | assumption→heuristic ↑ | ... |
+
+## Evidence Summary
+- 🟢 validated/data-backed: {N} premises — strong foundation
+- 🟡 heuristic: {N} premises — experience-based, test before scaling
+- 🔴 assumption: {N} premises — ungrounded, require validation before commit
 
 ## Strongest Objection
 {The single most compelling reason not to do this, and whether it was neutralized}
@@ -281,7 +296,10 @@ Save verdict to `.xm/probe/last-verdict.json`:
   "timestamp": "ISO8601",
   "idea": "...",
   "verdict": "PROCEED|RETHINK|KILL",
-  "premises": [...],
+  "premises": [
+    { "statement": "...", "confidence": "high", "fragility": "fatal", "evidence_grade": "data-backed", "evidence_grade_initial": "assumption", "status": "survived" }
+  ],
+  "evidence_summary": { "validated": 0, "data_backed": 2, "heuristic": 1, "assumption": 0 },
   "recommendation": "..."
 }
 ```
@@ -360,8 +378,12 @@ When x-build init is called after a PROCEED verdict, automatically inject probe 
 ## Probe Results (validated {date})
 
 ### Premises Validated
-- ✅ {premise 1} — evidence: {evidence}
-- ⚠ {premise 2} — partially validated: {caveat}
+- ✅ [data-backed] {premise 1} — evidence: {evidence}
+- ⚠ [heuristic] {premise 2} — partially validated: {caveat}
+
+### Evidence Gaps (require early validation)
+- 🔴 [assumption] {premise N} — no evidence yet. Test by: {cheapest test}
+- 🟡 [heuristic] {premise M} — experience-based only. Validate by: {method}
 
 ### Kill Criteria
 - Stop if: {condition}

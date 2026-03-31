@@ -40,7 +40,7 @@
     {
       "name": "x-solver",
       "description": "Structured problem solving — decompose, iterate, constrain, or auto-pipeline with strategy recommendation",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "author": { "name": "x-mesh" },
       "source": "./x-solver",
       "category": "productivity",
@@ -90,7 +90,7 @@
     {
       "name": "x-probe",
       "description": "Premise validation — challenge assumptions, kill bad ideas early, earn the right to build",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "author": { "name": "x-mesh" },
       "source": "./x-probe",
       "category": "productivity",
@@ -110,7 +110,7 @@
     {
       "name": "x-kit",
       "description": "All-in-one bundle: x-build + x-op + x-agent + x-solver + x-eval + x-humble + cross-plugin quality pipeline",
-      "version": "1.15.2",
+      "version": "1.16.0",
       "author": { "name": "x-mesh" },
       "source": "./x-kit",
       "category": "productivity",

@@ -367,7 +367,7 @@ Multi-perspective code review with judgment frameworks, not just checklists.
 
 ### x-solver
 
-4 structured strategies with thinking principles and auto-recommendation.
+4 structured strategies with weight-based auto-classification and compound keyword detection.
 
 ```bash
 /x-solver init "Memory leak in React component"
@@ -412,10 +412,10 @@ FRAME ──→ PROBE ──→ STRESS ──→ VERDICT
 | Feature | Description |
 |---------|-------------|
 | **6 thinking principles** | Default is NO, kill cheaply, evidence with provenance, pre-mortem, code is expensive, ask don't answer |
-| **Premise extraction** | Auto-identifies 3-7 assumptions the idea rests on, ordered by fragility |
-| **Socratic probing** | "Why?" chains + "let's say you're right..." to surface hidden premises |
+| **Premise extraction** | Auto-identifies 3-7 assumptions with evidence grades (assumption/heuristic/data-backed/validated), ordered by fragility then evidence |
+| **Socratic probing** | Grade-calibrated questioning — heavy on assumptions, light on validated premises |
 | **3-agent stress test** | Pre-mortem (failure scenarios) + inversion (reasons NOT to) + alternatives (without code) |
-| **Verdict** | PROCEED / RETHINK / KILL with evidence and kill criteria |
+| **Verdict** | PROCEED / RETHINK / KILL with evidence summary — fatal+assumption blocks PROCEED |
 | **x-build link** | PROCEED auto-injects validated premises into CONTEXT.md |
 | **x-humble link** | KILL triggers retrospective on why the idea reached probe stage |
 

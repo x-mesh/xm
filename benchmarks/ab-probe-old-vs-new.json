@@ -1,0 +1,102 @@
+{
+  "benchmark": "ab-probe-old-vs-new",
+  "date": "2026-03-31",
+  "description": "A/B comparison of x-probe: old (no evidence grading) vs new (4-tier Evidence Quality Labels). Same test idea, same user answers.",
+  "method": {
+    "idea": "실시간 협업 문서 편집기 — Google Docs 같은 CRDT 기반 동시 편집",
+    "user_answers": {
+      "premise_1_market_demand": "우리 팀 내부에서 필요하다고 느낌 (no external data)",
+      "premise_2_crdt_feasibility": "Yjs 라이브러리가 있다 (specific tool, unproven integration)",
+      "premise_3_team_capability": "비슷한 걸 해본 적은 없지만 할 수 있을 것 같다 (belief)"
+    },
+    "condition_a": "Old — no evidence grading, confidence + fragility only",
+    "condition_b": "New — 4-tier evidence grades (assumption < heuristic < data-backed < validated), grade-calibrated questioning, fatal+assumption blocks PROCEED"
+  },
+  "results": {
+    "phase_1_frame": {
+      "old": {
+        "columns": ["#", "Premise", "Confidence", "Fragility", "Test"],
+        "ordering": "fragility only (fatal first)",
+        "evidence_visibility": "none — all premises look equally grounded"
+      },
+      "new": {
+        "columns": ["#", "Premise", "Confidence", "Fragility", "Evidence", "Test"],
+        "ordering": "fragility first, then evidence grade within tier (assumption first)",
+        "evidence_visibility": "immediate — assumption/heuristic/data-backed/validated per premise"
+      }
+    },
+    "phase_2_probe": {
+      "old": {
+        "question_strategy": "uniform — same pattern for all premises",
+        "grade_tracking": false,
+        "example": "What evidence do you have? → vague/specific/none follow-up"
+      },
+      "new": {
+        "question_strategy": "grade-calibrated — 4 different intensity levels",
+        "grade_tracking": true,
+        "example_assumption": "This is an untested belief. Cheapest way to test?",
+        "example_heuristic": "When did you last see this? What was different?",
+        "example_data_backed": "What would make this data misleading?",
+        "example_validated": "When was this validated? What changed since?",
+        "grade_transitions": "grades can go up or down after user answers"
+      }
+    },
+    "phase_4_verdict": {
+      "old": {
+        "verdict": "RETHINK",
+        "reasoning": "Some premises weak but not refuted, qualitative warning",
+        "evidence_summary": "none — buried in prose",
+        "could_have_been_proceed": true,
+        "explanation": "Old system has no hard blocker for belief-based fatal premises. A persuasive Socratic answer could pass."
+      },
+      "new": {
+        "verdict": "RETHINK",
+        "reasoning": "fatal+assumption hard blocker — P1(demand) and P3(capability) both FATAL+assumption",
+        "evidence_summary": {"validated": 0, "data_backed": 0, "heuristic": 1, "assumption": 4},
+        "could_have_been_proceed": false,
+        "explanation": "New rule: fatal premise graded assumption → PROCEED forbidden. No amount of persuasion bypasses this."
+      }
+    }
+  },
+  "metrics": {
+    "evidence_visibility": {
+      "old": 0,
+      "new": 1.0,
+      "improvement": "0→100% — every premise now has explicit evidence classification"
+    },
+    "questioning_differentiation": {
+      "old": {"strategies": 1, "description": "uniform for all premises"},
+      "new": {"strategies": 4, "description": "assumption/heuristic/data-backed/validated"},
+      "improvement": "1→4 distinct questioning strategies"
+    },
+    "verdict_safety": {
+      "description": "Can a belief-only fatal premise pass to PROCEED?",
+      "old": true,
+      "new": false,
+      "improvement": "Hard blocker: fatal+assumption → PROCEED forbidden"
+    },
+    "grade_tracking": {
+      "old": false,
+      "new": true,
+      "improvement": "Evidence grades tracked across phases with up/down transitions"
+    },
+    "xbuild_evidence_gaps": {
+      "old": {"sections": ["Premises Validated", "Kill Criteria", "Risks to Monitor"]},
+      "new": {"sections": ["Premises Validated (with grade)", "Evidence Gaps (assumption/heuristic separated)", "Kill Criteria", "Risks to Monitor"]},
+      "improvement": "+1 section — Evidence Gaps with specific validation actions"
+    },
+    "verdict_same_for_this_case": {
+      "old": "RETHINK",
+      "new": "RETHINK",
+      "note": "Same verdict here, but the critical difference: old system COULD have been PROCEED with a persuasive answer. New system CANNOT — structural blocker."
+    }
+  },
+  "conclusions": [
+    "Both systems produce RETHINK for this test case — but for fundamentally different reasons",
+    "Old system: qualitative warning ('some premises weak') — a persuasive Socratic answer could flip to PROCEED",
+    "New system: structural blocker (fatal+assumption) — no amount of persuasion bypasses the evidence requirement",
+    "Evidence Summary (🟢0 / 🟡1 / 🔴4) makes the idea's epistemic foundation immediately visible",
+    "Grade-calibrated questioning spends time proportionally: heavy on assumptions, light on validated premises",
+    "x-build receives actionable Evidence Gaps section — can auto-schedule validation tasks early in plan"
+  ]
+}
