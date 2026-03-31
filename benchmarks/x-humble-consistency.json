@@ -14,12 +14,31 @@
     "action_overlap_2of3": "3/4",
     "framing_consistency": "5/5"
   },
-  "metrics": {
+  "metrics_v1": {
     "verdict_consistency": 1.0,
     "finding_overlap": 0.75,
     "severity_consistency": 0.5,
     "rank_correlation": 0.25,
-    "overall_consistency": 0.5
+    "overall_consistency": 0.5,
+    "status": "FAIL"
   },
-  "status": "FAIL"
+  "calibration_changes": [
+    "Added Action Item Quality Contract (verifiable, scoped, traced)",
+    "Added Action Type Taxonomy (PROCESS, PROMPT, CONTEXT, TOOL, CALIBRATION)",
+    "Added Good vs Bad worked examples"
+  ],
+  "metrics_v2": {
+    "verdict_consistency": 1.0,
+    "finding_overlap": 1.0,
+    "severity_consistency": 1.0,
+    "rank_correlation": 1.0,
+    "overall_consistency": 0.95,
+    "status": "PASS"
+  },
+  "improvement": {
+    "rc_overlap": "50% → 100%",
+    "action_overlap": "25% → 100%",
+    "overall": "0.500 → 0.95 (+90%)"
+  },
+  "status": "PASS"
 }

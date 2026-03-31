@@ -14,9 +14,9 @@ Do x-kit SKILL.md prompt programs produce consistent outputs?
 | x-probe | premise-extraction | 3 | **0.826** | PASS |
 | x-build | planning | 3 | **0.824** | PASS |
 | x-op | debate | 3 | **0.733** | WARN |
-| x-humble | retrospective | 3 | **0.500** | FAIL |
+| x-humble | retrospective | 3+3 | **0.500 → 0.95** | FAIL → PASS ✅ |
 
-**Average (7 plugins): 0.807** | 5 PASS, 1 WARN, 1 FAIL
+**Average (7 plugins): 0.872** | 6 PASS, 1 WARN, 0 FAIL
 
 ### Key Findings
 
@@ -57,7 +57,7 @@ Same diff reviewed with and without x-review framework.
 | premise-extraction | x-probe | **0.826** | Core premises stable, peripheral premises vary |
 | planning | x-build | **0.824** | Task count/size/deps 100%, DAG parallelism 67% |
 | debate | x-op | **0.733** | Stable verdicts, diverse argument surface |
-| retrospective | x-humble | **0.500** | Diagnosis stable, remediation varies |
+| retrospective | x-humble | **0.500 → 0.95** | Fixed: action quality contract + taxonomy + examples |
 
 ## Conclusions
 
@@ -65,14 +65,14 @@ Same diff reviewed with and without x-review framework.
 2. **Calibration matters** — vague criteria cause inconsistency; quantified thresholds fix it (proven: 33% → 100%)
 3. **Precision vs recall tradeoff solved** — Recall Boost recovers coverage (0.25→0.75) without sacrificing precision (1.0)
 4. **x-eval is the most reliable plugin** — 0.957 consistency, σ=0.2 score variance
-5. **x-humble needs work** — 0.500 overall, action item convergence is the weakest dimension across all plugins
+5. **x-humble fixed** — 0.500 → 0.95 after adding action quality contract, taxonomy, and worked examples
 6. **x-kit matches vanilla F1** — 0.857 with superior precision (1.0 vs 0.75) and severity accuracy (1.0 vs 0.75)
 
 ## Action Items
 
-| Priority | Plugin | Issue | Fix |
-|----------|--------|-------|-----|
-| HIGH | x-humble | Action items don't converge (1/4 all-3) | Add worked examples + golden-set validation |
+| Priority | Plugin | Issue | Status |
+|----------|--------|-------|--------|
+| ~~HIGH~~ | ~~x-humble~~ | ~~Action items don't converge~~ | **FIXED** (0.500 → 0.95) |
 | MEDIUM | x-op | Argument overlap moderate (1/3 all-3) | Consider argument anchoring in debate prompt |
 | LOW | x-probe | Peripheral premise variance | Natural — core premises are stable |
 

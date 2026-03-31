@@ -236,6 +236,41 @@ If a similar situation arises next time, which approach would be best?
 
 Organize retrospective results into lessons. **Lesson sharing, not rule enforcement.**
 
+#### Action Item Quality Contract
+
+Every action must pass this checklist:
+1. **Verifiable** — Can you check if this is being done? "Be more careful" → FAIL. "Run tests before committing" → PASS.
+2. **Scoped** — Does it target a specific phase, tool, or artifact? "Improve code quality" → FAIL. "Add --strict flag to plan-check" → PASS.
+3. **Derived from root cause** — Does it trace to a specific Phase 3 finding? If not, it's speculation.
+
+#### Action Type Taxonomy
+
+Map each root cause to the appropriate action type:
+
+| Root Cause Type | Action Type | Template |
+|----------------|-------------|----------|
+| Missing check/validation | **PROCESS** | "Add {check} at {phase/step} before {action}" |
+| Bias (from Bias Dictionary) | **PROMPT** | "Add {disambiguation rule/question} to {SKILL.md section}" |
+| Missing information | **CONTEXT** | "Require {data source} before starting {phase}" |
+| Wrong tool/approach | **TOOL** | "Use {alternative} instead of {current} when {condition}" |
+| Calibration gap | **CALIBRATION** | "Add {worked example/threshold} to {criteria section}" |
+
+#### Good vs Bad Action Examples
+
+Good:
+```
+- START [CALIBRATION]: Add ≥2 worked examples per severity level in x-review architecture lens — traces to RC: "severity rubric lacks anchors"
+- STOP [PROCESS]: Skipping plan-check before execute phase — traces to RC: "scope creep in 3 of 5 projects"
+```
+
+Bad (DO NOT write like this):
+```
+- START: Be more thorough in reviews
+- STOP: Making mistakes in severity assessment
+```
+
+#### Output Format
+
 ```
 🪞 [reflect] Complete
 
@@ -243,9 +278,9 @@ Organize retrospective results into lessons. **Lesson sharing, not rule enforcem
 {Key insights derived from Phases 3-4}
 
 ## Behavior Changes
-- KEEP: {What to continue}
-- STOP: {What to stop}
-- START: {What to start}
+For each root cause from Phase 3, derive ONE action:
+
+- {KEEP|STOP|START} [{ACTION_TYPE}]: {specific, verifiable action} — traces to RC: "{root cause}"
 
 ## Application
 Save this lesson to CLAUDE.md?
