@@ -210,16 +210,58 @@ $XMB init my-project
 $XMB discuss --mode interview
 ```
 
-**Interview mode**: Claude identifies gray areas in the goal and asks 4-6 clarifying questions. After the user answers, generate CONTEXT.md:
+**Interview mode**: Structured multi-round interview with ambiguity gating. Repeats until clarity threshold is met.
 
 1. Run: `$XMB discuss --mode interview`
 2. Parse JSON output (`action: "discuss"`, `mode: "interview"`)
-3. Identify 4-6 ambiguous areas in the goal (technical choices, scope boundaries, constraints, priorities)
-4. Ask the user using AskUserQuestion (present as numbered choices where possible)
-5. After answers collected, save the result:
-   ```bash
-   $XMB save context --content "# CONTEXT.md\n\n## Goal\n...\n## Decisions\n...\n## Constraints\n..."
-   ```
+
+#### Round 1: Dimension Scan (mandatory)
+
+Ask exactly one question per dimension. Use AskUserQuestion with multiple questions:
+
+| Dimension | Question Pattern | Example |
+|-----------|-----------------|---------|
+| **scope** | "What is explicitly OUT of scope?" | "Admin panel? Mobile? i18n?" |
+| **users** | "Who are the primary users and what's their technical level?" | "Developers via API? End users via UI?" |
+| **tech** | "Are there hard tech constraints or preferences?" | "Must use PostgreSQL? Existing framework?" |
+| **quality** | "What's the minimum acceptable quality bar?" | "Tests required? CI/CD? Performance SLA?" |
+| **timeline** | "What's the urgency and phasing?" | "MVP first? All-at-once? Deadline?" |
+
+After user answers, compute **ambiguity score** per dimension:
+
+| User answer | Ambiguity |
+|-------------|:---------:|
+| Specific, decisive ("PostgreSQL, no alternatives") | 0 (clear) |
+| Partial ("probably REST, maybe GraphQL") | 1 (needs follow-up) |
+| Vague ("whatever works") | 2 (high ambiguity) |
+| No answer / skipped | 2 (high ambiguity) |
+
+**Ambiguity gate**: Sum all dimension scores. Max = 10, threshold = 3.
+- Total ≤ 3 → proceed to CONTEXT.md generation
+- Total > 3 → drill-down round on highest-ambiguity dimensions
+
+#### Round 2+: Drill-Down (conditional)
+
+For each dimension with ambiguity ≥ 2, ask 2-3 targeted follow-up questions:
+
+```
+Dimension: scope (ambiguity: 2)
+You said "whatever works" for scope. Let me narrow down:
+1. Will this need authentication/authorization?
+2. Is there an existing codebase this integrates with?
+3. Should this be deployable standalone or as part of a larger system?
+```
+
+Re-score after each round. Repeat until total ≤ 3 or `--round N` limit reached (default: 3 rounds).
+
+#### CONTEXT.md Generation
+
+After ambiguity gate passes, save:
+```bash
+$XMB save context --content "# CONTEXT.md\n\n## Goal\n...\n## Scope\n### In Scope\n...\n### Out of Scope\n...\n## Users\n...\n## Tech Constraints\n...\n## Quality Bar\n...\n## Timeline\n...\n## Decisions\n...\n## Ambiguity Log\n| Dimension | Round 1 | Final | Resolution |\n"
+```
+
+The **Ambiguity Log** records how each dimension was clarified — this feeds into x-probe if the user runs premise validation later.
 
 **Assumptions mode**: Claude reads the codebase, generates assumptions with confidence levels, and asks the user to confirm/reject:
 
