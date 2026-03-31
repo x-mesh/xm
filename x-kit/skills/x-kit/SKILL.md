@@ -100,7 +100,9 @@ Display the output to the user.
 
 ### x-kit update
 
-1. First, pull latest from remote (marketplace is a git clone):
+**MANDATORY: Always execute steps 1→2→3 in order. Never skip step 1 even if you think versions are current — the marketplace is a git clone and must be pulled before any comparison.**
+
+1. Pull latest from remote (MUST run — do not skip):
 ```bash
 cd ~/.claude/plugins/marketplaces/x-kit && git pull origin main 2>&1
 ```
