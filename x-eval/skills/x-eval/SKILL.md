@@ -417,13 +417,23 @@ For each plugin to test:
 | `rank_correlation` | Mean Spearman ρ across trial pairs | For ranked outputs (solutions, strategies) |
 | `overall_consistency` | Weighted average of above | Single 0.0–1.0 score |
 
-**Weights:**
+**Weights (strategy-type dependent):**
+
+Deterministic strategies (review, build planning, scoring):
 ```
 verdict_consistency:    0.40
 finding_overlap:        0.20
 severity_consistency:   0.20
 rank_correlation:       0.20
 ```
+
+Exploratory strategies (debate, brainstorm, hypothesis, investigate):
+```
+verdict_consistency:    0.60
+argument_quality:       0.20    # evidence-based + falsifiable per Agent Output Quality Contract
+decisive_factor:        0.20    # same key factor drives conclusion
+```
+Note: Argument/dimension overlap is NOT penalized for exploratory strategies — diversity of exploration is a feature, not a bug. Consistency is measured by verdict and conclusion quality, not by identical argument sets.
 
 5. **Compare to baseline**: If previous benchmark exists in `benchmarks/`, compare and report delta
 

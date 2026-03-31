@@ -359,8 +359,9 @@ Pro vs Con debate followed by verdict.
 
 ### Phase 2: OPENING
 PRO/CON simultaneous fan-out:
-- PRO: "Present 3 arguments in favor. Each must address a DISTINCT dimension from the Dimension Anchors. Tag each: [dimension] argument. 300 words max."
-- CON: "Present 3 arguments against. Each must address a DISTINCT dimension from the Dimension Anchors. Tag each: [dimension] argument. 300 words max."
+PRO/CON simultaneous fan-out:
+- PRO: "Present 3 arguments in favor. Each must be evidence-based and falsifiable per the Agent Output Quality Contract. Tag each with a dimension. 300 words max."
+- CON: "Present 3 arguments against. Each must be evidence-based and falsifiable per the Agent Output Quality Contract. Tag each with a dimension. 300 words max."
 
 ### Phase 3: REBUTTAL
 Send CON's opening to PRO, PRO's opening to CON (fan-out):
@@ -1626,7 +1627,11 @@ Agents must tag output by dimension BEFORE generating content. This prevents ove
 | Task decomposition | scaffold, decompose, distribute, chain | `scope-clarity`, `dependency-minimality`, `parallelizability`, `testability`, `interface-completeness` |
 | Ideation | brainstorm, persona | `novelty`, `feasibility`, `impact`, `effort`, `risk` |
 
-Rule: Each agent MUST select distinct dimensions. Leader assigns or verifies non-overlapping dimension coverage.
+Rule: The **leader** pre-assigns dimensions to agents before generation. Agents do NOT freely pick dimensions — the leader selects the most relevant 3 from the pool based on the topic and assigns them. This ensures cross-trial consistency while maintaining relevance.
+
+Leader dimension assignment (strategy-dependent):
+- **Deterministic strategies** (review, red-team, monitor, scaffold, decompose, distribute, chain): Leader pre-assigns fixed dimensions. Same input → same dimensions.
+- **Exploratory strategies** (debate, refine, tournament, brainstorm, council, socratic, persona, hypothesis, investigate): Leader selects the most relevant dimensions but diversity across trials is expected and valuable. Consistency is measured by verdict/conclusion, not by dimension selection.
 
 ### Judge/Evaluator Rubric
 

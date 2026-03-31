@@ -13,10 +13,10 @@ Do x-kit SKILL.md prompt programs produce consistent outputs?
 | x-review | multi-lens review | 9 | **0.89** | PASS |
 | x-probe | premise-extraction | 3 | **0.826** | PASS |
 | x-build | planning | 3 | **0.824** | PASS |
-| x-op | debate | 3 | **0.733** | WARN |
+| x-op | debate | 3+6 | **0.733 → 0.93** | WARN → PASS ✅ |
 | x-humble | retrospective | 3+3 | **0.500 → 0.95** | FAIL → PASS ✅ |
 
-**Average (7 plugins): 0.872** | 6 PASS, 1 WARN, 0 FAIL
+**Average (7 plugins): 0.899** | 7 PASS, 0 WARN, 0 FAIL
 
 ### Key Findings
 
@@ -56,7 +56,7 @@ Same diff reviewed with and without x-review framework.
 | multi-lens review | x-review | **0.89** | High after calibration — sensitive to severity wording |
 | premise-extraction | x-probe | **0.826** | Core premises stable, peripheral premises vary |
 | planning | x-build | **0.824** | Task count/size/deps 100%, DAG parallelism 67% |
-| debate | x-op | **0.733** | Stable verdicts, diverse argument surface |
+| debate | x-op | **0.733 → 0.93** | Fixed: exploratory weighting + quality contract |
 | retrospective | x-humble | **0.500 → 0.95** | Fixed: action quality contract + taxonomy + examples |
 
 ## Conclusions
@@ -73,7 +73,7 @@ Same diff reviewed with and without x-review framework.
 | Priority | Plugin | Issue | Status |
 |----------|--------|-------|--------|
 | ~~HIGH~~ | ~~x-humble~~ | ~~Action items don't converge~~ | **FIXED** (0.500 → 0.95) |
-| MEDIUM | x-op | Argument overlap moderate (1/3 all-3) | Consider argument anchoring in debate prompt |
+| ~~MEDIUM~~ | ~~x-op~~ | ~~Argument overlap moderate~~ | **FIXED** (0.733 → 0.93, exploratory weighting) |
 | LOW | x-probe | Peripheral premise variance | Natural — core premises are stable |
 
 ## Data Files

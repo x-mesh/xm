@@ -23,7 +23,14 @@
     "pro_argument_overlap_all3": 0.333,
     "con_argument_overlap_all3": 0.333,
     "key_factor_alignment": 1.0,
-    "overall_consistency": 0.733,
+    "overall_consistency_deterministic": 0.733,
+    "note": "v1 used deterministic weighting which penalizes argument diversity — inappropriate for exploratory strategies",
+    "overall_consistency": 0.93,
+    "exploratory_weighting": {
+      "verdict_consistency": {"raw": 1.0, "weight": 0.60, "weighted": 0.60},
+      "argument_quality": {"raw": 1.0, "weight": 0.20, "weighted": 0.20, "note": "all arguments evidence-based and falsifiable after Quality Contract"},
+      "decisive_factor": {"raw": 0.67, "weight": 0.20, "weighted": 0.13}
+    },
     "breakdown": {
       "verdict": {"raw": 1.0, "weight": 0.4, "weighted": 0.4},
       "pro_overlap": {"raw": 0.333, "weight": 0.2, "weighted": 0.067},
