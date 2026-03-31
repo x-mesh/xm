@@ -40,6 +40,7 @@ First word of `$ARGUMENTS`:
 - `score` → [Subcommand: score]
 - `compare` → [Subcommand: compare]
 - `bench` → [Subcommand: bench]
+- `consistency` → [Subcommand: consistency]
 - `diff` → [Subcommand: diff]
 - `rubric` → [Subcommand: rubric]
 - `report` → [Subcommand: report]
@@ -57,6 +58,7 @@ Commands:
   compare <output-a> <output-b> [--judges N]   Compare two outputs with judge panel
   bench <task> --strategies "s1,s2"            Benchmark strategies/models
        [--models "m1,m2"] [--trials N]
+  consistency [plugin] [--trials N]             Measure plugin output consistency (default: all changed)
   diff [--from <commit>] [--to <commit>]      Measure skill/plugin changes + quality delta
   rubric create <name> --criteria "c1,c2,c3"  Create custom rubric
   rubric list                                   List available rubrics
@@ -364,6 +366,127 @@ Each strategy is a compose pipeline separated by `|`. Bench executes each pipeli
 **Using results:**
 - Recommend the optimal pipeline as the `--strategy` value for x-build tasks
 - Include the compose pipeline in the bench result's `recommendation` field
+
+---
+
+## Subcommand: consistency
+
+**Measure whether a plugin produces consistent outputs across repeated trials on the same input.**
+
+Use to verify SKILL.md prompt programs are deterministic — catches calibration drift after model updates or SKILL.md edits.
+
+### Parsing
+
+From `$ARGUMENTS`:
+- After `consistency` = plugin name (optional, default: auto-detect changed plugins)
+- `--trials N` = repetitions per plugin (default 3)
+- `--input "..."` = fixed input to test with (default: auto-generate from recent git diff)
+
+### Plugin Test Configurations
+
+Each plugin has a predefined test configuration:
+
+| Plugin | Strategy | Input | Measured dimensions |
+|--------|----------|-------|---------------------|
+| x-review | multi-lens review | `git diff HEAD~1` | verdict, finding count, severity distribution |
+| x-solver | decompose | "How to solve {recent issue}?" | root causes, solution ranking (Spearman ρ) |
+| x-op | debate | "{relevant architectural decision}" | judge verdict, key factor, argument overlap |
+| x-probe | probe | "Should we build {feature}?" | verdict (PROCEED/RETHINK/KILL), premise count |
+| x-build | plan-check | current project manifest | dimension scores, pass/fail consistency |
+
+If `--input` is provided, use that instead of the default.
+
+### Execution Flow
+
+For each plugin to test:
+
+1. **Prepare input**: Use `--input` or generate default from git/project state
+2. **Run N trials**: Fan-out N independent agents with identical prompts
+   - Each agent runs the plugin's core operation on the same input
+   - Agents must NOT see each other's output
+3. **Collect outputs**: Parse structured results from each trial
+4. **Measure consistency**:
+
+**Metrics computed per plugin:**
+
+| Metric | Formula | Description |
+|--------|---------|-------------|
+| `verdict_consistency` | (count of most-common verdict) / N | Do trials agree on the final judgment? |
+| `finding_overlap` | \|intersection\| / \|union\| across trials | Jaccard similarity of identified issues |
+| `severity_consistency` | % of shared findings with same severity | Same issue → same severity? |
+| `rank_correlation` | Mean Spearman ρ across trial pairs | For ranked outputs (solutions, strategies) |
+| `overall_consistency` | Weighted average of above | Single 0.0–1.0 score |
+
+**Weights:**
+```
+verdict_consistency:    0.40
+finding_overlap:        0.20
+severity_consistency:   0.20
+rank_correlation:       0.20
+```
+
+5. **Compare to baseline**: If previous benchmark exists in `benchmarks/`, compare and report delta
+
+### Output
+
+```
+📊 [eval] Consistency: x-review (3 trials)
+
+Input: git diff HEAD~1 (commit abc1234, 5 files, 120 lines)
+
+| Metric | Score | Baseline | Delta |
+|--------|:-----:|:--------:|:-----:|
+| Verdict consistency | 1.00 | 1.00 | — |
+| Finding overlap | 0.75 | 0.67 | +12% |
+| Severity consistency | 1.00 | 0.33 | +200% ✅ |
+| Rank correlation | — | — | — |
+| **Overall** | **0.89** | **0.44** | **+102%** |
+
+Status: PASS ✅ (threshold: 0.70)
+
+Trials:
+  T1: LGTM, 2 findings (1M, 1L)
+  T2: LGTM, 1 finding (1M)
+  T3: LGTM, 2 findings (1M, 1L)
+```
+
+### Pass/Fail Threshold
+
+| Overall Score | Status |
+|:-------------:|--------|
+| ≥ 0.80 | PASS ✅ |
+| 0.70 – 0.79 | WARN ⚠ — review calibration |
+| < 0.70 | FAIL ❌ — SKILL.md needs tighter criteria |
+
+### Storage
+
+Save results to `benchmarks/{plugin}-consistency.json` (tracked in git).
+
+Update `benchmarks/SUMMARY.md` with new data if changed.
+
+### Multi-Plugin Mode
+
+When no plugin is specified, auto-detect changed plugins and test all of them:
+
+```bash
+/x-eval consistency                    # Test all changed plugins
+/x-eval consistency x-review           # Test specific plugin
+/x-eval consistency --trials 5         # 5 trials for higher confidence
+/x-eval consistency x-op --input "Should we use microservices?"
+```
+
+Output for multi-plugin:
+```
+📊 [eval] Consistency Suite
+
+| Plugin | Trials | Overall | Baseline | Delta | Status |
+|--------|:------:|:-------:|:--------:|:-----:|--------|
+| x-review | 3 | 0.89 | 0.89 | — | PASS ✅ |
+| x-solver | 3 | 0.92 | 0.917 | +0.3% | PASS ✅ |
+| x-op | 3 | 0.75 | 0.733 | +2.3% | WARN ⚠ |
+
+Overall: 2 PASS, 1 WARN, 0 FAIL
+```
 
 ---
 
