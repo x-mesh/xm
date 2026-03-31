@@ -1,8 +1,47 @@
-# x-kit
+<p align="center">
+  <img src="assets/x-kit-logo.jpeg" alt="x-kit" width="600" />
+</p>
 
-**"Build a REST API with JWT auth" → done.** Start a project with one sentence in Claude Code — it auto-decomposes tasks, runs agents, and verifies quality.
+<h1 align="center">x-kit</h1>
 
-Multi-agent toolkit for Claude Code by [x-mesh](https://github.com/x-mesh). Zero dependencies.
+<p align="center">
+  Multi-agent toolkit for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>. One sentence in, working project out.
+</p>
+
+<p align="center">
+  <a href="https://github.com/x-mesh/x-kit/releases"><img src="https://img.shields.io/badge/version-1.15.2-blue" alt="Version" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
+  <a href="#plugins"><img src="https://img.shields.io/badge/plugins-11-orange" alt="Plugins" /></a>
+</p>
+
+<p align="center">
+  <strong>"Build a REST API with JWT auth" → done.</strong><br />
+  x-kit auto-decomposes tasks, runs specialized agents in parallel, and verifies quality — all from a single prompt. Zero dependencies.
+</p>
+
+<p align="center">
+  By <a href="https://github.com/x-mesh">x-mesh</a>.
+</p>ne.** x-kit auto-decomposes tasks, runs specialized agents in parallel, and verifies quality — all from a single prompt. Zero dependencies.
+
+By [x-mesh](https://github.com/x-mesh).
+
+---
+
+## Table of Contents
+
+- [Install](#install)
+- [Quick Start](#quick-start)
+- [Why x-kit?](#why-x-kit)
+- [Plugins](#plugins) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory)
+- [Quality & Learning Pipeline](#quality--learning-pipeline)
+- [Architecture](#architecture)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
 
 ## Install
 
@@ -23,9 +62,10 @@ That single line:
 3. Agents execute tasks in parallel
 4. Quality verification + completion
 
-Failed? Run `x-build run` again. Completed tasks are skipped, only remaining ones execute.
+Failed? Run `/x-build run` again. Completed tasks are skipped, only remaining ones execute.
 
-### Step-by-Step Tutorial (5 minutes)
+<details>
+<summary>Step-by-step tutorial (5 minutes)</summary>
 
 ```bash
 # 1. Initialize
@@ -55,9 +95,11 @@ Failed? Run `x-build run` again. Completed tasks are skipped, only remaining one
 /x-build status
 ```
 
+</details>
+
 ---
 
-## How x-kit Thinks
+## Why x-kit?
 
 Most AI coding tools follow checklists: "check for SQL injection, check for null, check for N+1." A checklist finds patterns. A senior engineer finds *problems*.
 
@@ -65,7 +107,8 @@ A senior engineer asks **"Can an attacker actually reach this code path?"** befo
 
 x-kit embeds these judgment patterns — distilled from 20 years of engineering practice — directly into every agent prompt. The result: agents that reason about context, not just pattern-match against lists.
 
-### Before & After
+<details>
+<summary>Before & After examples</summary>
 
 **Code review (x-review):**
 
@@ -91,22 +134,10 @@ x-kit embeds these judgment patterns — distilled from 20 years of engineering 
 | Evidence | "It seems like the issue is..." | "git bisect shows regression in commit abc1234, confirmed by test output" |
 | Stuck | Retry same approach | Switch layer (was checking app code → now check infra/config) |
 
-### How a Senior Engineer Debugs
+</details>
 
-This is the thinking protocol embedded in x-solver's iterate strategy:
-
-```
-DIAGNOSE ──→ HYPOTHESIZE ──→ TEST ──→ REFINE ──→ RESOLVE ──→ REFLECT
-```
-
-1. **"What's happening right now?"** — Describe the observable state, not the problem. Which layer? When did it start?
-2. **"When did it last work?"** — Find the baseline. No baseline = find one first, don't guess.
-3. **"Why?" — with evidence** — No single-indicator conclusions. Corroborate from different sources. No evidence? Stop and say so.
-4. **"Stuck? Change the lens."** — All hypotheses from the same layer? Look at a different one. Or revert to known good and trace forward.
-5. **"Show me it works."** — Execution is the only proof. "It should work" is not verification.
-6. **"Why did we miss this?"** — Retrospect via x-humble. Why did it happen? Why was it found late? What should change?
-
-### Thinking Principles at a Glance
+<details>
+<summary>Thinking principles at a glance</summary>
 
 | When you... | x-kit principle | Tool |
 |-------------|----------------|------|
@@ -121,34 +152,101 @@ DIAGNOSE ──→ HYPOTHESIZE ──→ TEST ──→ REFINE ──→ RESOLVE
 | Solve a problem | Compound signals — never conclude from one log line | x-solver |
 | Reflect | Why happened · Why found late · What to change in the process | x-humble |
 
----
+**How a senior engineer debugs** — the thinking protocol embedded in x-solver:
 
-### Going deeper
-
-```bash
-# Full flow: requirements interview → PRD → consensus review → execution
-/x-build init my-api
-/x-build discuss --mode interview       # Gather requirements
-/x-build plan "Build a REST API"        # PRD + task decomposition
-/x-build prd-gate                       # Judge panel quality evaluation
-/x-build run                            # Agent execution
-
-# Strategic analysis
-/x-op debate "REST vs GraphQL"          # Pro/con debate + verdict
-/x-review diff                          # Multi-perspective code review with judgment
-
-# Retrospective
-/x-humble reflect                       # Failure analysis + KEEP/STOP/START
-
-# Quality measurement
-/x-eval score output.md --rubric code-quality
 ```
+DIAGNOSE ──→ HYPOTHESIZE ──→ TEST ──→ REFINE ──→ RESOLVE ──→ REFLECT
+```
+
+1. **"What's happening right now?"** — Describe the observable state, not the problem.
+2. **"When did it last work?"** — Find the baseline. No baseline = find one first.
+3. **"Why?" — with evidence** — Corroborate from different sources. No evidence? Stop.
+4. **"Stuck? Change the lens."** — All hypotheses from the same layer? Look at a different one.
+5. **"Show me it works."** — Execution is the only proof.
+6. **"Why did we miss this?"** — Retrospect via x-humble.
+
+</details>
 
 ---
 
 ## Plugins
 
-### x-op — Strategy Orchestration
+11 plugins, each installable individually or bundled via `x-kit`.
+
+| Plugin | Purpose | Key command |
+|--------|---------|-------------|
+| [x-build](#x-build) | Project lifecycle & PRD pipeline | `/x-build plan "goal"` |
+| [x-op](#x-op) | 18 multi-agent strategies | `/x-op debate "A vs B"` |
+| [x-review](#x-review) | Judgment-based code review | `/x-review diff` |
+| [x-solver](#x-solver) | Structured problem solving | `/x-solver init "bug"` |
+| [x-probe](#x-probe) | Premise validation | `/x-probe "idea"` |
+| [x-eval](#x-eval) | Quality scoring & benchmarks | `/x-eval score file` |
+| [x-humble](#x-humble) | Structured retrospective | `/x-humble reflect` |
+| [x-agent](#x-agent) | Agent primitives & teams | `/x-agent fan-out "task"` |
+| [x-trace](#x-trace) | Execution tracing & cost | `/x-trace timeline` |
+| [x-memory](#x-memory) | Cross-session memory | `/x-memory inject` |
+| x-kit | Bundle (all skills) + config | `/x-kit config show` |
+
+---
+
+### x-build
+
+Full project lifecycle — PRD generation, multi-mode deliberation, consensus review, acceptance contracts, and quality-gated execution.
+
+```bash
+/x-build init my-api
+/x-build discuss --mode interview       # Multi-round requirements interview
+/x-build plan "Build a REST API with JWT auth"
+/x-build run                             # Agents execute in DAG order
+```
+
+```
+Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──→ Close
+ [discuss]  [quality]  [critique]  [contract]  [quality]  [auto]
+  interview   consensus   validate    adapt     verify-contracts
+  validate
+```
+
+<details>
+<summary>Features & commands</summary>
+
+| Feature | Description |
+|---------|-------------|
+| **Multi-mode deliberation** | `discuss` with 5 modes: interview, assumptions, validate, critique, adapt |
+| **PRD generation** | Auto-generates 8-section PRD from research artifacts |
+| **PRD quality gate** | On-demand judge panel — rubric-based scoring with guidance |
+| **Planning principles** | Scope by exclusion, fail-fast risk ordering, plan as hypothesis, intent over implementation, verify or don't ship |
+| **Consensus review** | 4-agent review (architect, critic, planner, security) until agreement |
+| **Acceptance contracts** | `done_criteria` per task — auto-derived from PRD, verified at close |
+| **Strategy-tagged tasks** | Tasks with `--strategy` flag execute via x-op with quality verification |
+| **Team execution** | `--team` routes tasks to hierarchical teams (x-agent team system) |
+| **DAG execution** | Tasks run in dependency order, parallel where possible |
+| **Cost forecasting** | Per-task $ estimate with complexity-adjusted confidence |
+| **Quality dashboard** | Per-task scores + project average in status output |
+| **Traceability matrix** | R# ↔ Task ↔ AC ↔ Done Criteria with gap detection |
+| **Scope creep detection** | Warns when new tasks overlap with PRD "Out of Scope" items |
+| **Error recovery** | Auto-retry with exponential backoff, circuit breaker, git rollback |
+| **plan-check (11 dims)** | atomicity, deps, coverage, granularity, completeness, context, naming, tech-leakage, scope-clarity, risk-ordering, overall |
+| **Domain-aware done_criteria** | Auto-generated based on task domain, size tier, and PRD NFR targets |
+
+| Category | Commands |
+|----------|----------|
+| **Project** | `init`, `list`, `status`, `close`, `dashboard` |
+| **Phase** | `phase next/set`, `gate pass/fail`, `checkpoint`, `handoff` |
+| **Plan** | `plan "goal"`, `plan-check [--strict]`, `prd-gate [--threshold N]`, `consensus [--round N]` |
+| **Tasks** | `tasks add [--deps] [--size] [--strategy] [--team] [--done-criteria]`, `tasks done-criteria`, `tasks list`, `tasks remove [--cascade]`, `tasks update` |
+| **Steps** | `steps compute/status/next` |
+| **Execute** | `run`, `run --json`, `run-status` |
+| **Verify** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts` |
+| **Analysis** | `forecast`, `metrics`, `decisions`, `summarize` |
+| **Export** | `export --format md/csv/jira/confluence`, `import` |
+| **Settings** | `mode developer/normal`, `config set/get/show` |
+
+</details>
+
+---
+
+### x-op
 
 18 multi-agent strategies with self-scoring and auto-verification.
 
@@ -158,7 +256,6 @@ DIAGNOSE ──→ HYPOTHESIZE ──→ TEST ──→ REFINE ──→ RESOLVE
 /x-op debate "REST vs GraphQL"
 /x-op investigate "Redis vs Memcached" --depth deep
 /x-op compose "brainstorm | tournament | refine" --topic "v2 plan"
-/x-op hypothesis "Memory leak cause" --rounds 3
 ```
 
 | Category | Strategies |
@@ -201,6 +298,26 @@ DIAGNOSE ──→ HYPOTHESIZE ──→ TEST ──→ REFINE ──→ RESOLVE
 </details>
 
 <details>
+<summary>Which strategy should I use?</summary>
+
+| Situation | Strategy | Why |
+|-----------|----------|-----|
+| Iterate on a design | `refine` | Diverge → converge → verify |
+| Pick the best solution | `tournament` | Compete → anonymous vote |
+| Code review | `review` | Multi-perspective parallel review |
+| REST vs GraphQL tradeoff | `debate` | Pro/con + judge verdict |
+| Find a bug's root cause | `hypothesis` | Generate → falsify → adopt |
+| Large feature implementation | `decompose` | Recursive split → parallel → merge |
+| Security hardening | `red-team` | Attack → defend → report |
+| Feature brainstorming | `brainstorm` | Free ideation → cluster → vote |
+| Unknown territory exploration | `investigate` | Multi-angle → gap analysis |
+| Cost-sensitive task | `escalate` | haiku → sonnet → opus auto |
+
+Not sure? Run `/x-op list` to see all strategies with descriptions.
+
+</details>
+
+<details>
 <summary>Options</summary>
 
 ```
@@ -223,97 +340,7 @@ DIAGNOSE ──→ HYPOTHESIZE ──→ TEST ──→ REFINE ──→ RESOLVE
 
 ---
 
-### x-build — Project Harness
-
-Full project lifecycle with PRD generation, multi-mode deliberation, consensus review, acceptance contracts, and quality-gated execution.
-
-```bash
-/x-build init my-api
-/x-build discuss --mode interview       # Multi-round requirements interview
-/x-build discuss --mode validate         # Verify research completeness
-/x-build plan "Build a REST API with JWT auth"
-/x-build prd-gate                        # Judge panel PRD quality evaluation
-/x-build discuss --mode critique         # Strategic plan review
-/x-build run                             # Agents execute in DAG order
-```
-
-```
-Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──→ Close
- [discuss]  [quality]  [critique]  [contract]  [quality]  [auto]
-  interview   consensus   validate    adapt     verify-contracts
-  validate
-```
-
-| Feature | Description |
-|---------|-------------|
-| **Multi-mode deliberation** | `discuss` with 5 modes: interview (drill-down), assumptions, validate, critique, adapt |
-| **PRD generation** | Auto-generates 8-section PRD from research artifacts |
-| **PRD quality gate** | On-demand judge panel — user triggers, rubric-based scoring with guidance |
-| **Planning principles** | 5 built-in principles: scope by exclusion, fail-fast risk ordering, plan as hypothesis, intent over implementation, verify or don't ship |
-| **Consensus review** | 4-agent review with principle-backed prompts (architect, critic, planner, security) until agreement |
-| **Strategy-tagged tasks** | Tasks with `--strategy` flag execute via x-op with quality verification |
-| **Team execution** | `--team` routes tasks to hierarchical teams (x-agent team system) |
-| **Acceptance contracts** | `done_criteria` per task — auto-derived from PRD, injected into agent prompts, verified at close |
-| **Auto-handoff** | `phase next` auto-saves structured state — decisions survive, noise is discarded |
-| **DAG execution** | Tasks run in dependency order, parallel where possible |
-| **Cost forecasting** | Per-task $ estimate with complexity-adjusted confidence (deps, domain, strategy multipliers) |
-| **Quality dashboard** | Per-task scores + project average in status output |
-| **Traceability matrix** | `verify-traceability` maps R# ↔ Task ↔ AC ↔ Done Criteria with gap detection |
-| **Scope creep detection** | Warns when new tasks overlap with PRD "Out of Scope" items |
-| **Error recovery** | Auto-retry with exponential backoff, circuit breaker (half-open probe), git rollback, dependent task blocking |
-| **plan-check (11 dims)** | atomicity, deps, coverage, granularity, completeness, context, naming, tech-leakage, **scope-clarity**, **risk-ordering**, overall |
-| **Domain-aware done_criteria** | Auto-generated based on task domain (auth/API/DB/UI), size tier, and PRD NFR targets |
-
-<details>
-<summary>All commands</summary>
-
-| Category | Commands |
-|----------|----------|
-| **Project** | `init`, `list`, `status`, `close`, `dashboard` |
-| **Phase** | `phase next/set`, `gate pass/fail`, `checkpoint`, `handoff` |
-| **Plan** | `plan "goal"`, `plan-check [--strict]`, `prd-gate [--threshold N]`, `consensus [--round N]` |
-| **Tasks** | `tasks add [--deps] [--size] [--strategy] [--team] [--done-criteria]`, `tasks done-criteria`, `tasks list`, `tasks remove [--cascade]`, `tasks update` |
-| **Steps** | `steps compute/status/next` |
-| **Execute** | `run`, `run --json`, `run-status` |
-| **Verify** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts` |
-| **Analysis** | `forecast`, `metrics`, `decisions`, `summarize` |
-| **Export** | `export --format md/csv/jira/confluence`, `import` |
-| **Settings** | `mode developer/normal`, `config set/get/show` |
-
-</details>
-
----
-
-### x-probe — Premise Validation
-
-Should you build this? Probe before you commit. Embeds Socratic questioning, inversion thinking, and pre-mortem analysis.
-
-```bash
-/x-probe "Build a payment system"    # Full probe session
-/x-probe verdict                      # Show last verdict
-/x-probe list                         # Past probes
-```
-
-```
-FRAME ──→ PROBE ──→ STRESS ──→ VERDICT
-[premises]  [socratic]  [pre-mortem]  [PROCEED/RETHINK/KILL]
-                        [inversion]
-                        [alternatives]
-```
-
-| Feature | Description |
-|---------|-------------|
-| **6 thinking principles** | Default is NO, kill cheaply, evidence with provenance, pre-mortem, code is expensive, ask don't answer |
-| **Premise extraction** | Auto-identifies 3-7 assumptions the idea rests on, ordered by fragility |
-| **Socratic probing** | "Why?" chains + "let's say you're right..." to surface hidden premises |
-| **3-agent stress test** | Pre-mortem (failure scenarios) + inversion (reasons NOT to) + alternatives (without code) |
-| **Verdict** | PROCEED / RETHINK / KILL with evidence and kill criteria |
-| **x-build link** | PROCEED auto-injects validated premises into CONTEXT.md |
-| **x-humble link** | KILL triggers retrospective on why the idea reached probe stage |
-
----
-
-### x-review — Code Review
+### x-review
 
 Multi-perspective code review with judgment frameworks, not just checklists.
 
@@ -329,72 +356,15 @@ Multi-perspective code review with judgment frameworks, not just checklists.
 | **4 default lenses** | security, logic, perf, tests (expandable to 7: +architecture, docs, errors) |
 | **Judgment framework** | Each lens has principles, judgment criteria, severity calibration, ignore conditions |
 | **Why-line requirement** | Every finding must cite which severity criterion applies — no vague reports |
-| **Challenge stage** | Leader validates each finding's severity before final report (Why-check, context, reachability, impact) |
+| **Challenge stage** | Leader validates each finding's severity before final report |
 | **Consensus elevation** | 2+ agents report same issue → severity promoted + `[consensus]` tag |
-| **Severity disambiguation** | Architecture lens: "this diff introduced it" → Medium vs "follows existing convention" → Low |
-| **Verdict** | LGTM (0 Critical, 0 High, Medium ≤ 3) / Request Changes (High 1-2 or Medium > 3) / Block (1+ Critical or High > 2) |
+| **Verdict** | LGTM / Request Changes / Block with clear thresholds |
 
 **Review principles:** Context determines severity · No evidence = no finding · No fix direction = no finding · When in doubt, downgrade
 
 ---
 
-### x-humble — Structured Retrospective
-
-Learn from failures together. Not a rule generator — the retrospective process itself is the value.
-
-```bash
-/x-humble reflect              # Full session retrospective
-/x-humble review "why scaffold?"  # Deep-dive on specific decision
-/x-humble lessons              # View accumulated lessons
-/x-humble apply L3             # Apply lesson to CLAUDE.md
-```
-
-```
-CHECK-IN ──→ RECALL ──→ IDENTIFY ──→ ANALYZE ──→ ALTERNATIVE ──→ COMMIT
-[accountability]  [summary]  [failures]   [root cause]  [steelman]    [KEEP/STOP/START]
-```
-
-| Feature | Description |
-|---------|-------------|
-| **Phase 0 Check-In** | Verify previous COMMIT items before new retrospective |
-| **Root cause analysis** | Why it happened · Why it was discovered late · What process should change |
-| **Bias analysis** | 7 cognitive biases detected (anchoring, confirmation, sunk cost, ...) |
-| **Cross-session patterns** | Recurring bias tags surfaced automatically |
-| **Steelman Protocol** | User proposes alternative first, agent strengthens it |
-| **Comfortable Challenger** | Agent challenges self-rationalization directly |
-| **KEEP/STOP/START** | Lessons stored, optionally applied to CLAUDE.md |
-| **x-solver link** | After problem solving, auto-suggests retrospective for non-trivial problems |
-
----
-
-### x-eval — Quality Evaluation
-
-Multi-rubric scoring, strategy benchmarking, A/B comparison, and change measurement.
-
-```bash
-/x-eval score output.md --rubric code-quality     # Judge panel scoring
-/x-eval compare old.md new.md --judges 5          # A/B comparison
-/x-eval bench "Find bugs" --strategies "refine,debate,tournament"  # Benchmark
-/x-eval diff --from abc1234 --quality              # Change measurement + quality delta
-/x-eval rubric create strict --criteria "correctness,edge-cases"   # Custom rubric
-```
-
-| Command | What it does |
-|---------|-------------|
-| **score** | N judges score content against rubric (1-10, weighted avg, consensus σ) |
-| **compare** | A/B comparison with position bias mitigation |
-| **bench** | strategies × models × trials matrix with Score/$ optimization |
-| **diff** | Git-based change analysis + optional before/after quality comparison |
-| **rubric** | Create/list custom evaluation rubrics |
-| **report** | Aggregated evaluation history |
-
-**Built-in rubrics:** `code-quality`, `review-quality`, `plan-quality`, `general`
-**Domain presets:** `api-design`, `frontend-design`, `data-pipeline`, `security-audit`, `architecture-review`
-**Bias-aware judging:** High-confidence x-humble lessons (confirmed 3+) surfaced as optional judge context
-
----
-
-### x-solver — Problem Solving
+### x-solver
 
 4 structured strategies with thinking principles and auto-recommendation.
 
@@ -411,7 +381,6 @@ Multi-rubric scoring, strategy benchmarking, A/B comparison, and change measurem
 | **constrain** | Elicit → candidates → score → select | Design decisions, tradeoffs |
 | **pipeline** | Auto-detect → route to best strategy | When unsure |
 
-**Thinking protocol** (see [How x-kit Thinks](#how-x-kit-thinks)):
 ```
 DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE → x-humble
 [state+baseline] [falsifiable] [one var] [switch/revert] [exec verify] [why late?]
@@ -419,7 +388,108 @@ DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE → x-humble
 
 ---
 
-### x-agent — Agent Primitives & Teams
+### x-probe
+
+Should you build this? Probe before you commit. Embeds Socratic questioning, inversion thinking, and pre-mortem analysis.
+
+```bash
+/x-probe "Build a payment system"    # Full probe session
+/x-probe verdict                      # Show last verdict
+/x-probe list                         # Past probes
+```
+
+```
+FRAME ──→ PROBE ──→ STRESS ──→ VERDICT
+[premises]  [socratic]  [pre-mortem]  [PROCEED/RETHINK/KILL]
+                        [inversion]
+                        [alternatives]
+```
+
+<details>
+<summary>Features</summary>
+
+| Feature | Description |
+|---------|-------------|
+| **6 thinking principles** | Default is NO, kill cheaply, evidence with provenance, pre-mortem, code is expensive, ask don't answer |
+| **Premise extraction** | Auto-identifies 3-7 assumptions the idea rests on, ordered by fragility |
+| **Socratic probing** | "Why?" chains + "let's say you're right..." to surface hidden premises |
+| **3-agent stress test** | Pre-mortem (failure scenarios) + inversion (reasons NOT to) + alternatives (without code) |
+| **Verdict** | PROCEED / RETHINK / KILL with evidence and kill criteria |
+| **x-build link** | PROCEED auto-injects validated premises into CONTEXT.md |
+| **x-humble link** | KILL triggers retrospective on why the idea reached probe stage |
+
+</details>
+
+---
+
+### x-eval
+
+Multi-rubric scoring, strategy benchmarking, A/B comparison, and change measurement.
+
+```bash
+/x-eval score output.md --rubric code-quality     # Judge panel scoring
+/x-eval compare old.md new.md --judges 5          # A/B comparison
+/x-eval bench "Find bugs" --strategies "refine,debate,tournament"
+/x-eval diff --from abc1234 --quality              # Change measurement
+```
+
+<details>
+<summary>Commands & rubrics</summary>
+
+| Command | What it does |
+|---------|-------------|
+| **score** | N judges score content against rubric (1-10, weighted avg, consensus σ) |
+| **compare** | A/B comparison with position bias mitigation |
+| **bench** | strategies × models × trials matrix with Score/$ optimization |
+| **diff** | Git-based change analysis + optional before/after quality comparison |
+| **rubric** | Create/list custom evaluation rubrics |
+| **report** | Aggregated evaluation history |
+
+**Built-in rubrics:** `code-quality`, `review-quality`, `plan-quality`, `general`
+
+**Domain presets:** `api-design`, `frontend-design`, `data-pipeline`, `security-audit`, `architecture-review`
+
+**Bias-aware judging:** High-confidence x-humble lessons (confirmed 3+) surfaced as optional judge context
+
+</details>
+
+---
+
+### x-humble
+
+Learn from failures together. Not a rule generator — the retrospective process itself is the value.
+
+```bash
+/x-humble reflect              # Full session retrospective
+/x-humble review "why scaffold?"  # Deep-dive on specific decision
+/x-humble lessons              # View accumulated lessons
+/x-humble apply L3             # Apply lesson to CLAUDE.md
+```
+
+```
+CHECK-IN ──→ RECALL ──→ IDENTIFY ──→ ANALYZE ──→ ALTERNATIVE ──→ COMMIT
+[accountability]  [summary]  [failures]   [root cause]  [steelman]    [KEEP/STOP/START]
+```
+
+<details>
+<summary>Features</summary>
+
+| Feature | Description |
+|---------|-------------|
+| **Phase 0 Check-In** | Verify previous COMMIT items before new retrospective |
+| **Root cause analysis** | Why it happened · Why it was discovered late · What process should change |
+| **Bias analysis** | 7 cognitive biases detected (anchoring, confirmation, sunk cost, ...) |
+| **Cross-session patterns** | Recurring bias tags surfaced automatically |
+| **Steelman Protocol** | User proposes alternative first, agent strengthens it |
+| **Comfortable Challenger** | Agent challenges self-rationalization directly |
+| **KEEP/STOP/START** | Lessons stored, optionally applied to CLAUDE.md |
+| **x-solver link** | After problem solving, auto-suggests retrospective for non-trivial problems |
+
+</details>
+
+---
+
+### x-agent
 
 The foundation layer. Structured patterns on top of Claude Code's native Agent tool, plus hierarchical team management.
 
@@ -438,13 +508,13 @@ The foundation layer. Structured patterns on top of Claude Code's native Agent t
 | **broadcast** | Different role/context → each agent |
 | **team** | Hierarchical team: Director → Team Leader → Members |
 
-**Team system**: Define teams as YAML (`.xm/teams/`), assign goals, Team Leaders (opus) autonomously manage members using primitives. 5 templates: `engineering`, `design`, `review`, `research`, `fullstack`.
+**Team system**: Define teams as YAML (`.xm/teams/`), assign goals, Team Leaders (opus) autonomously manage members. 5 templates: `engineering`, `design`, `review`, `research`, `fullstack`.
 
 Model auto-routing: `architect` → opus, `executor` → sonnet, `scanner` → haiku. Override with `--model`.
 
 ---
 
-### x-trace — Execution Tracing
+### x-trace
 
 See what your agents actually did — timeline, cost, and replay.
 
@@ -457,7 +527,7 @@ See what your agents actually did — timeline, cost, and replay.
 
 ---
 
-### x-memory — Cross-Session Memory
+### x-memory
 
 Persist decisions and patterns across sessions. Auto-inject relevant context on start.
 
@@ -478,7 +548,7 @@ Persist decisions and patterns across sessions. Auto-inject relevant context on 
 
 ## Quality & Learning Pipeline
 
-x-kit connects thinking principles across plugins into a closed feedback loop:
+x-kit connects thinking principles across plugins into a closed feedback loop.
 
 **Example: building a payment API**
 1. `x-build plan` → PRD goal has "and"? Split into two projects. *(planning principle)*
@@ -487,6 +557,9 @@ x-kit connects thinking principles across plugins into a closed feedback loop:
 4. `x-review diff` → finds unhandled error path, Challenge stage validates it's genuinely High *(judgment)*
 5. `x-solver iterate` → diagnoses state, anchors to last passing test, traces with evidence *(thinking protocol)*
 6. `x-humble reflect` → "Why was the retry gap found during review, not planning?" → lesson saved *(retrospective)*
+
+<details>
+<summary>Full pipeline diagram</summary>
 
 ```
 x-probe → Premise Validation (PROCEED/RETHINK/KILL)
@@ -518,20 +591,8 @@ lessons → CLAUDE.md + x-eval judge context → Next session applies patterns
 | **Domain rubrics** | 5 presets (api-design, frontend, data-pipeline, security, architecture) |
 | **Bias-aware judging** | x-humble lessons (confirmed 3+) inform judge context |
 | **x-eval diff** | Measure how skills changed + quality delta |
-| **x-humble reflect** | Structured retrospective with bias detection + pattern tracking |
 
----
-
-## Shared Config
-
-```bash
-/x-kit config set agent_max_count 10              # 10 agents parallel
-/x-kit config set team_default_leader_model opus  # Team Leader model
-/x-kit config set team_max_members 5              # Max members per team
-/x-kit config show
-```
-
-Settings stored in `.xm/config.json` (project-level).
+</details>
 
 ---
 
@@ -544,7 +605,7 @@ x-kit/                              Marketplace repo
 ├── x-eval/                         Quality evaluation + diff
 ├── x-humble/                       Structured retrospective
 ├── x-solver/                       Problem solving (4 strategies)
-├── x-agent/                        Agent primitives
+├── x-agent/                        Agent primitives & teams
 ├── x-probe/                        Premise validation (probe before build)
 ├── x-review/                       Code review orchestrator
 ├── x-trace/                        Execution tracing
@@ -553,7 +614,8 @@ x-kit/                              Marketplace repo
 └── .claude-plugin/marketplace.json  11 plugins registered
 ```
 
-### How it works
+<details>
+<summary>How it works</summary>
 
 ```
 SKILL.md (spec)  →  Claude (orchestrator)  →  Agent Tool (execution)
@@ -566,53 +628,80 @@ x-build CLI (state)  ←  tasks update (callback)
 - **Claude**: Interprets SKILL.md, spawns agents via Agent Tool, calls CLI callbacks on completion.
 - **Persistent Server**: Bun HTTP server caches CLI calls for fast repeated responses. AsyncLocalStorage for per-request isolation.
 
-## Which x-op Strategy Should I Use?
+</details>
 
-| Situation | Strategy | Why |
-|-----------|----------|-----|
-| Iterate on a design | `refine` | Diverge → converge → verify |
-| Pick the best solution | `tournament` | Compete → anonymous vote |
-| Code review | `review` | Multi-perspective parallel review |
-| REST vs GraphQL tradeoff | `debate` | Pro/con + judge verdict |
-| Find a bug's root cause | `hypothesis` | Generate → falsify → adopt |
-| Large feature implementation | `decompose` | Recursive split → parallel → merge |
-| Security hardening | `red-team` | Attack → defend → report |
-| Feature brainstorming | `brainstorm` | Free ideation → cluster → vote |
-| Unknown territory exploration | `investigate` | Multi-angle → gap analysis |
-| Cost-sensitive task | `escalate` | haiku → sonnet → opus auto |
+---
 
-Not sure? Run `/x-op list` to see all 18 strategies with descriptions.
+## Configuration
+
+```bash
+/x-kit config set agent_max_count 10              # 10 agents parallel
+/x-kit config set team_default_leader_model opus  # Team Leader model
+/x-kit config set team_max_members 5              # Max members per team
+/x-kit config show
+```
+
+Settings stored in `.xm/config.json` (project-level).
 
 ---
 
 ## Troubleshooting
 
-**Circuit breaker is OPEN**
+<details>
+<summary>Circuit breaker is OPEN</summary>
+
 ```bash
 /x-build circuit-breaker reset    # Manual reset
 ```
 
-**"No steps computed"**
+</details>
+
+<details>
+<summary>"No steps computed"</summary>
+
 ```bash
 /x-build steps compute            # Build DAG from task dependencies
 ```
 
-**plan-check shows errors**
-1. Read each error message
-2. Fix: `x-build tasks update <id> --done-criteria "..."` or add missing tasks
-3. Re-run: `x-build plan-check`
+</details>
 
-**"Cannot run — current phase is Plan"**
+<details>
+<summary>plan-check shows errors</summary>
+
+1. Read each error message
+2. Fix: `/x-build tasks update <id> --done-criteria "..."` or add missing tasks
+3. Re-run: `/x-build plan-check`
+
+</details>
+
+<details>
+<summary>"Cannot run — current phase is Plan"</summary>
+
 ```bash
 /x-build phase next               # Advance to Execute phase
 /x-build run                      # Then run
 ```
 
-**Task stuck in RUNNING**
+</details>
+
+<details>
+<summary>Task stuck in RUNNING</summary>
+
 ```bash
 /x-build tasks update <id> --status failed --error-msg "timeout"
 /x-build run                      # Will retry or skip
 ```
+
+</details>
+
+---
+
+## Contributing
+
+Contributions are welcome. See the [issues page](https://github.com/x-mesh/x-kit/issues) for open tasks.
+
+- [Changelog / Releases](https://github.com/x-mesh/x-kit/releases)
+- [Report a bug](https://github.com/x-mesh/x-kit/issues/new)
 
 ---
 
