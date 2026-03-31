@@ -149,8 +149,7 @@ export function taskAdd(project, args) {
   const validIds = new Set(data.tasks.map(t => t.id));
   for (const dep of deps) {
     if (!validIds.has(dep)) {
-      console.error(`❌ Unknown dependency: "${dep}". Known: ${[...validIds].join(', ') || 'none'}`);
-      process.exit(1);
+      console.log(`${C.yellow}⚠ Forward dependency: "${dep}" does not exist yet — will be validated at steps compute${C.reset}`);
     }
   }
 
@@ -240,9 +239,10 @@ export function taskList(project) {
 }
 
 export function taskRemove(project, args) {
-  const id = args[0];
+  const { opts, positional } = parseOptions(args);
+  const id = positional[0];
   if (!id) {
-    console.error('Usage: x-build tasks remove <task-id>');
+    console.error('Usage: x-build tasks remove <task-id> [--cascade]');
     process.exit(1);
   }
 
@@ -253,15 +253,44 @@ export function taskRemove(project, args) {
     process.exit(1);
   }
 
-  const dependents = data.tasks.filter(t => t.depends_on.includes(id));
-  if (dependents.length > 0) {
-    console.error(`❌ Cannot remove "${id}" — depended on by: ${dependents.map(t => t.id).join(', ')}`);
-    process.exit(1);
+  const cascade = opts.cascade !== undefined;
+
+  // Collect all tasks to remove (id + transitive dependents if --cascade)
+  const toRemove = new Set([id]);
+  if (cascade) {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const t of data.tasks) {
+        if (!toRemove.has(t.id) && t.depends_on.some(d => toRemove.has(d))) {
+          toRemove.add(t.id);
+          changed = true;
+        }
+      }
+    }
+  } else {
+    const dependents = data.tasks.filter(t => t.depends_on.includes(id));
+    if (dependents.length > 0) {
+      console.error(`❌ Cannot remove "${id}" — depended on by: ${dependents.map(t => t.id).join(', ')}`);
+      console.error(`   Use --cascade to remove "${id}" and all dependents.`);
+      process.exit(1);
+    }
   }
 
-  data.tasks.splice(idx, 1);
+  // Remove in reverse dependency order
+  const removed = [];
+  data.tasks = data.tasks.filter(t => {
+    if (toRemove.has(t.id)) { removed.push(t.id); return false; }
+    return true;
+  });
+
+  // Clean up stale deps in remaining tasks
+  for (const t of data.tasks) {
+    t.depends_on = t.depends_on.filter(d => !toRemove.has(d));
+  }
+
   writeJSON(tasksPath(project), data);
-  console.log(`✅ Task "${id}" removed.`);
+  for (const rid of removed) console.log(`✅ Task "${rid}" removed.`);
 }
 
 export function taskUpdate(project, args) {
