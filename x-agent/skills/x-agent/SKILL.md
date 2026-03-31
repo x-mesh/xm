@@ -21,8 +21,8 @@ Structured agent primitives on top of Claude Code's native Agent tool. Provides 
 
 # x-agent — Agent Primitives
 
-Claude Code 네이티브 Agent tool 위의 구조화된 에이전트 프리미티브.
-외부 의존성 없음. Claude Code만 있으면 동작.
+Structured agent primitives on top of the Claude Code native Agent tool.
+No external dependencies. Works with Claude Code alone.
 
 ## Arguments
 
@@ -30,13 +30,13 @@ User provided: $ARGUMENTS
 
 ## Routing
 
-`$ARGUMENTS`의 첫 단어:
+First word of `$ARGUMENTS`:
 - `fan-out` → [Primitive: fan-out]
 - `delegate` → [Primitive: delegate]
 - `broadcast` → [Primitive: broadcast]
 - `status` → [Primitive: status]
-- `team` → [Team: 서브커맨드 라우팅]
-- `list` 또는 빈 입력 → [Subcommand: list]
+- `team` → [Team: subcommand routing]
+- `list` or empty input → [Subcommand: list]
 
 ---
 
@@ -88,13 +88,13 @@ Role Presets:
   team-leader    Hierarchical team management, coordination      (opus)
 
 Examples:
-  /x-agent fan-out "이 코드의 버그를 찾아라" --agents 5
-  /x-agent delegate security "src/auth.ts 보안 검토"
-  /x-agent broadcast "각자 관점에서 리뷰" --agents 3
-  /x-agent delegate architect "DB 스키마 설계" --model opus
-  /x-agent fan-out "PR 리뷰해줘" --roles "se,security,reviewer"
+  /x-agent fan-out "Find bugs in this code" --agents 5
+  /x-agent delegate security "Security review of src/auth.ts"
+  /x-agent broadcast "Review from your perspective" --agents 3
+  /x-agent delegate architect "Design the DB schema" --model opus
+  /x-agent fan-out "Review this PR" --roles "se,security,reviewer"
   /x-agent team create eng --template engineering
-  /x-agent team assign eng "결제 시스템 구현"
+  /x-agent team assign eng "Implement payment system"
   /x-agent team report eng
 ```
 
@@ -102,109 +102,109 @@ Examples:
 
 ## Primitive: fan-out
 
-**같은 프롬프트를 N개 에이전트에게 동시에 전달하고, 모든 결과를 수집한다.**
+**Send the same prompt to N agents in parallel and collect all results.**
 
-### 파싱
+### Parsing
 
-`$ARGUMENTS`에서:
-- 첫 단어 이후 = prompt (따옴표 안의 전체 텍스트)
-- `--agents N` = 에이전트 수 (기본 3)
-- `--model sonnet|opus|haiku` = 모델 (기본 sonnet)
-- `--role <name>` = 에이전트 역할 설명 (기본: "agent")
-- `--roles "se,sre,security"` = 에이전트별 역할 프리셋 (쉼표 구분)
-- `--context <text>` = 추가 맥락 주입
+From `$ARGUMENTS`:
+- After the first word = prompt (full text inside quotes)
+- `--agents N` = number of agents (default 3)
+- `--model sonnet|opus|haiku` = model (default sonnet)
+- `--role <name>` = agent role description (default: "agent")
+- `--roles "se,sre,security"` = per-agent role presets (comma-separated)
+- `--context <text>` = additional context injection
 
-### --roles 옵션
+### --roles option
 
-`--roles "se,sre,security"` 지정 시, 각 에이전트에 해당 역할 프리셋이 적용된다:
+When `--roles "se,sre,security"` is specified, each agent gets its corresponding role preset:
 
 ```
-Agent 1: se 프리셋 주입 + 공통 prompt
-Agent 2: sre 프리셋 주입 + 공통 prompt
-Agent 3: security 프리셋 주입 + 공통 prompt
+Agent 1: se preset injected + common prompt
+Agent 2: sre preset injected + common prompt
+Agent 3: security preset injected + common prompt
 ```
 
-`--roles`가 없으면 기존 동작 (동일 프롬프트).
-`--roles`의 역할 수와 `--agents N`이 다르면, roles 수에 맞춤.
+Without `--roles`, the default behavior applies (identical prompts).
+If the number of roles in `--roles` differs from `--agents N`, the roles count takes precedence.
 
-### 실행
+### Execution
 
-**하나의 메시지에서 N개의 Agent tool을 동시에 호출한다:**
+**Invoke N Agent tools simultaneously in a single message:**
 
 ```
 Agent tool 1: {
   description: "agent-1: {role}",
-  prompt: "{context가 있으면 context}\n\n{prompt}",
+  prompt: "{context if provided}\n\n{prompt}",
   run_in_background: true,
   model: "{model}"
 }
 Agent tool 2: {
   description: "agent-2: {role}",
-  prompt: "{같은 prompt}",
+  prompt: "{same prompt}",
   run_in_background: true,
   model: "{model}"
 }
-... (N개)
+... (N total)
 ```
 
-### 결과 수집
+### Result collection
 
-모든 에이전트가 완료되면:
-1. 각 에이전트의 결과를 번호와 함께 정리
-2. 사용자에게 종합 결과 출력:
+When all agents complete:
+1. Organize each agent's result with numbering
+2. Output consolidated results to the user:
 
 ```
-📡 [fan-out] {N}개 에이전트 완료
+📡 [fan-out] {N} agents completed
 
 ## Agent 1
-{결과}
+{result}
 
 ## Agent 2
-{결과}
+{result}
 
 ## Agent 3
-{결과}
+{result}
 
 ---
-💡 공통점: {리더가 분석한 공통 패턴}
-⚡ 차이점: {주요 차이점}
+💡 Commonalities: {common patterns identified by the leader}
+⚡ Differences: {key differences}
 ```
 
 ---
 
 ## Primitive: delegate
 
-**하나의 에이전트에게 특정 역할로 위임하고, 결과를 즉시 받는다.**
+**Delegate to a single agent with a specific role and receive the result immediately.**
 
-### 파싱
+### Parsing
 
-`$ARGUMENTS`에서:
-- `delegate` 다음 단어 = role
-- 나머지 = prompt
-- `--model sonnet|opus|haiku` = 모델 (기본 sonnet, role이 "architect" 등이면 자동 opus)
-- `--background` = 백그라운드 실행 (기본: foreground)
-- `--context <text>` = 추가 맥락
+From `$ARGUMENTS`:
+- Word after `delegate` = role
+- Remainder = prompt
+- `--model sonnet|opus|haiku` = model (default sonnet; auto-selects opus for roles like "architect")
+- `--background` = run in background (default: foreground)
+- `--context <text>` = additional context
 
-### 모델 자동 라우팅
+### Automatic model routing
 
-| Role 키워드 | 모델 |
+| Role keyword | Model |
 |------------|------|
 | architect, analyst, critic, planner | opus |
 | se, sre, reviewer, security, debugger, optimizer, executor, builder, fixer, tester, verifier, test-engineer, build-fixer | sonnet |
 | explorer, documenter, scanner, linter | haiku |
 
-`--model`로 명시하면 자동 라우팅을 오버라이드.
+Explicit `--model` overrides automatic routing.
 
-### 역할 프리셋 자동 주입
+### Automatic role preset injection
 
-delegate에서 역할 이름이 등록된 프리셋과 일치하면, 해당 프리셋의 시스템 프롬프트가 자동으로 에이전트 프롬프트에 주입된다:
+When the role name in delegate matches a registered preset, that preset's system prompt is automatically injected into the agent prompt:
 
-예시:
-- `/x-agent delegate sre "이 서비스 점검해"` → SRE 체크리스트가 프롬프트에 포함
-- `/x-agent delegate explorer "코드 파악해"` → 탐색 전략이 프롬프트에 포함
-- 알 수 없는 역할이면 → 프리셋 없이 기본 delegate 동작
+Examples:
+- `/x-agent delegate sre "Inspect this service"` → SRE checklist included in the prompt
+- `/x-agent delegate explorer "Map the codebase"` → Exploration strategy included in the prompt
+- Unknown role → default delegate behavior without preset
 
-### 실행
+### Execution
 
 ```
 Agent tool: {
@@ -215,79 +215,79 @@ Agent tool: {
 }
 ```
 
-### 결과
+### Result
 
 ```
-📌 [delegate] {role} ({model}) 완료
+📌 [delegate] {role} ({model}) completed
 
-{에이전트 결과}
+{agent result}
 ```
 
 ---
 
 ## Primitive: broadcast
 
-**각 에이전트에게 다른 맥락/역할을 부여하여 동시에 전달한다.**
+**Send to multiple agents simultaneously, each with a different context/role.**
 
-### 파싱
+### Parsing
 
-`$ARGUMENTS`에서:
-- `broadcast` 다음 = 공통 prompt
-- `--agents N` = 에이전트 수 (기본 3)
-- `--roles "security,performance,logic"` = 에이전트별 역할 (쉼표 구분)
-- `--model` = 모델
-- `--context` = 공통 맥락
+From `$ARGUMENTS`:
+- After `broadcast` = common prompt
+- `--agents N` = number of agents (default 3)
+- `--roles "security,performance,logic"` = per-agent roles (comma-separated)
+- `--model` = model
+- `--context` = common context
 
-`--roles`에 프리셋 이름을 사용하면 해당 역할의 전문 프롬프트가 자동 주입된다.
+When preset names are used in `--roles`, the corresponding specialized prompts are automatically injected.
 
-### 역할 미지정 시 자동 배정
+### Automatic role assignment when unspecified
 
-`--roles`가 없으면 에이전트 수에 따라 자동:
+When `--roles` is omitted, roles are auto-assigned based on agent count:
 
-| N | 자동 역할 |
+| N | Auto-assigned roles |
 |---|---------|
 | 2 | analyst, critic |
 | 3 | security, performance, logic |
 | 4 | security, performance, logic, architecture |
 | 5+ | security, performance, logic, architecture, testing, ... |
 
-### 실행
+### Execution
 
 ```
 Agent tool 1: {
   description: "agent-1: {role_1}",
-  prompt: "{context}\n\n## Your Role: {role_1}\n{prompt}\n\n{role_1} 관점에서 분석하라.",
+  prompt: "{context}\n\n## Your Role: {role_1}\n{prompt}\n\nAnalyze from the {role_1} perspective.",
   run_in_background: true,
   model: "{model}"
 }
 Agent tool 2: {
   description: "agent-2: {role_2}",
-  prompt: "{context}\n\n## Your Role: {role_2}\n{prompt}\n\n{role_2} 관점에서 분석하라.",
+  prompt: "{context}\n\n## Your Role: {role_2}\n{prompt}\n\nAnalyze from the {role_2} perspective.",
   run_in_background: true,
   model: "{model}"
 }
 ```
 
-### 결과
+### Result
 
 ```
-📡 [broadcast] {N}개 에이전트 ({roles}) 완료
+📡 [broadcast] {N} agents ({roles}) completed
 
 ## 🔒 Security
-{결과}
+{result}
 
 ## ⚡ Performance
-{결과}
+{result}
 
 ## 🧩 Logic
-{결과}
+{result}
 ```
 
 ---
 
 ## Primitive: status
 
-현재 백그라운드에서 실행 중인 에이전트 목록을 보여준다.
+Show the list of agents currently running in the background.
 
 ```
 📊 [status] Active agents
@@ -297,15 +297,15 @@ Agent tool 2: {
   ✅ agent-3: logic review         completed (32s)
 ```
 
-이 정보는 Claude Code의 내부 상태에서 추적한다. 별도 저장소 불필요.
+This information is tracked from Claude Code's internal state. No separate storage required.
 
 ---
 
 ## Role Presets
 
-등록된 역할 이름을 delegate/fan-out/broadcast에 사용하면 해당 전문 프롬프트가 자동 주입된다.
+When a registered role name is used with delegate/fan-out/broadcast, the corresponding specialized prompt is automatically injected.
 
-| Role | Model | Icon | 설명 |
+| Role | Model | Icon | Description |
 |------|-------|------|------|
 | explorer | haiku | 🗺️ | Codebase exploration, structure mapping |
 | se | sonnet | 🛠️ | Implementation, refactoring, testing |
@@ -792,79 +792,79 @@ Agent tool 2: {
 
 ## Team System
 
-계층적 팀 구조: Director(사용자) → Team Leader → Members.
+Hierarchical team structure: Director (user) → Team Leader → Members.
 
-> 상세 문서: [TEAM.md](./TEAM.md) — 팀 정의 포맷, 소통 프로토콜, TL Protocol, 서브커맨드 상세, 기본 템플릿.
-> `team` 명령 실행 시 TEAM.md를 읽어 해당 섹션의 지시를 따른다.
+> Detailed documentation: [TEAM.md](./TEAM.md) — team definition format, communication protocols, TL Protocol, subcommand details, built-in templates.
+> When executing a `team` command, read TEAM.md and follow the instructions in the relevant section.
 
 ```
-Director (사용자 + leader Claude)
-  ├── Team Leader (opus, named agent) → fan-out/delegate/broadcast로 멤버 관리
-  └── Cross-team: Director가 TL ↔ TL 메시지 라우팅
+Director (user + leader Claude)
+  ├── Team Leader (opus, named agent) → manages members via fan-out/delegate/broadcast
+  └── Cross-team: Director routes TL ↔ TL messages
 ```
 
-| 명령 | 동작 |
+| Command | Action |
 |------|------|
-| `team create <name> [--template <t>]` | 팀 생성 (템플릿 or 동적) |
-| `team list` | 활성 팀 목록 |
-| `team status [name]` | 팀 진행 상황 |
-| `team assign <team> <goal>` | 팀에 목표 할당 → TL 실행 |
-| `team report [name]` | TL에게 보고 요청 |
-| `team coord <from> <to> <msg>` | 팀 간 메시지 라우팅 |
-| `team disband [name]` | 팀 해산 |
-| `team templates` | 사용 가능한 템플릿 목록 |
+| `team create <name> [--template <t>]` | Create a team (template or dynamic) |
+| `team list` | List active teams |
+| `team status [name]` | Team progress report |
+| `team assign <team> <goal>` | Assign goal to team → TL executes |
+| `team report [name]` | Request report from TL |
+| `team coord <from> <to> <msg>` | Route cross-team message |
+| `team disband [name]` | Disband a team |
+| `team templates` | List available templates |
 
-기본 템플릿: `engineering`, `design`, `review`, `research`, `fullstack` (`.xm/teams/`)
+Built-in templates: `engineering`, `design`, `review`, `research`, `fullstack` (`.xm/teams/`)
 
 ---
 
-## x-op에서 사용하는 방법
+## How x-op uses this
 
-x-op 전략은 x-agent 프리미티브를 내부적으로 사용한다:
+x-op strategies use x-agent primitives internally:
 
-| x-op 전략 | 사용하는 프리미티브 |
+| x-op strategy | Primitive used |
 |-----------|------------------|
 | refine (diverge) | fan-out |
-| refine (converge/verify) | fan-out (투표/검증) |
+| refine (converge/verify) | fan-out (voting/verification) |
 | tournament (compete) | fan-out |
 | tournament (vote) | fan-out |
-| chain | delegate (순차) |
-| review | broadcast (관점별) |
-| debate (opening) | delegate × 2 (PRO/CON) |
-| debate (rebuttal) | delegate × 2 |
-| debate (verdict) | delegate × 1 (JUDGE) |
+| chain | delegate (sequential) |
+| review | broadcast (per-perspective) |
+| debate (opening) | delegate x 2 (PRO/CON) |
+| debate (rebuttal) | delegate x 2 |
+| debate (verdict) | delegate x 1 (JUDGE) |
 | red-team (attack) | fan-out |
 | red-team (defend) | fan-out |
 | brainstorm | fan-out |
-| distribute | broadcast (서브태스크별) |
+| distribute | broadcast (per-subtask) |
 | council | fan-out → broadcast → fan-out |
 
-## x-build에서 사용하는 방법
+## How x-build uses this
 
-x-build의 `run` 커맨드는 x-agent를 사용:
+x-build's `run` command uses x-agent:
 
-| x-build 커맨드 | 사용하는 프리미티브 |
+| x-build command | Primitive used |
 |----------------|------------------|
-| `run` (step 실행) | fan-out 또는 broadcast (태스크별 다른 프롬프트) |
-| `plan` (AI 분해) | delegate (planner role, opus) |
-| `quality` (검증) | delegate (verifier role) |
-| `run --team` (팀 실행) | team assign (TL이 내부에서 fan-out/delegate) |
+| `run` (step execution) | fan-out or broadcast (different prompts per task) |
+| `plan` (AI decomposition) | delegate (planner role, opus) |
+| `quality` (verification) | delegate (verifier role) |
+| `run --team` (team execution) | team assign (TL uses fan-out/delegate internally) |
 
 ---
 
-## Advanced: 파이프라인 조합
+## Advanced: Pipeline composition
 
-프리미티브를 직접 조합하여 커스텀 워크플로우를 만들 수 있다:
+Compose primitives directly to build custom workflows:
 
 ```
-# 1. 코드 분석 (fan-out)
-/x-agent fan-out "src/auth.ts의 문제점을 찾아라" --agents 3
+# 1. Code analysis (fan-out)
+/x-agent fan-out "Find issues in src/auth.ts" --agents 3
 
-# 2. 결과를 아키텍트에게 위임 (delegate)
-/x-agent delegate architect "위 분석을 종합하여 개선안을 설계하라" --model opus
+# 2. Delegate results to architect (delegate)
+/x-agent delegate architect "Synthesize the above analysis and design improvements" --model opus
 
-# 3. 개선안을 다각도 리뷰 (broadcast)
-/x-agent broadcast "이 설계안을 리뷰하라" --roles "security,performance,testing"
+# 3. Multi-perspective review of the proposal (broadcast)
+/x-agent broadcast "Review this design proposal" --roles "security,performance,testing"
 ```
 
-이 패턴은 x-op의 `chain` 전략과 유사하지만, 사용자가 각 단계를 직접 제어한다.
+This pattern is similar to x-op's `chain` strategy, but the user controls each step directly.

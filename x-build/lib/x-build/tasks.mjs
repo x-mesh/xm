@@ -650,6 +650,10 @@ export function cmdRun(args) {
   const { opts } = parseOptions(args);
   const project = resolveProject(null);
   const manifest = readJSON(manifestPath(project));
+  if (!manifest) {
+    console.error('❌ No project found. Run: x-build init <name>');
+    process.exit(1);
+  }
   const currentPhase = PHASES.find(p => p.id === manifest.current_phase);
 
   if (currentPhase?.name !== 'execute') {

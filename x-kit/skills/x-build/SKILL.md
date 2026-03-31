@@ -9,9 +9,9 @@ x-build manages the full project lifecycle (Research → Plan → Execute → Ve
 
 <Use_When>
 - User wants to start a new project with structured phases
-- User says "프로젝트 시작", "새 프로젝트", "init"
+- User says "start project", "new project", "init"
 - User asks to plan, execute, or verify work
-- User says "~만들어줘" or describes a goal (auto-plan)
+- User says "build me ~" or describes a goal (auto-plan)
 - User asks about project status, costs, or decisions
 - User wants to export to Jira, Confluence, CSV
 </Use_When>
@@ -32,9 +32,9 @@ node ${CLAUDE_PLUGIN_ROOT}/lib/x-build-cli.mjs mode show 2>/dev/null | head -1
 
 **Developer mode**: Use technical terms (DAG, phase, gate, step, context, retry, circuit breaker). Concise.
 
-**Normal mode**: Use simple language. "phase" → "단계", "gate" → "확인 절차", "step" → "순서".
+**Normal mode**: Use simple language. "phase" → "stage", "gate" → "checkpoint", "step" → "sequence".
 Use cooking analogies: project = recipe, phases = big steps (prep → cook → taste → serve), tasks = individual items.
-Always use 존댓말. Explain commands: `xmb steps compute` (할 일의 순서를 자동으로 계산합니다).
+Use polite language. Explain commands: `xmb steps compute` (automatically calculates the order of tasks).
 
 ## CLI
 
@@ -44,7 +44,20 @@ node ${CLAUDE_PLUGIN_ROOT}/lib/x-build-cli.mjs <command> [args]
 ```
 
 Shorthand in this document: `$XMB` = `node ${CLAUDE_PLUGIN_ROOT}/lib/x-build-cli.mjs`
-When executing via Bash tool, always use the full command — do NOT assign to a shell variable.
+
+> **⚠ When using Bash tool, always define a shell function first:**
+> ```bash
+> # Via persistent server (recommended — faster response):
+> xmb() { node "${CLAUDE_PLUGIN_ROOT}/lib/server/x-kit-client.mjs" x-build "$@"; }
+>
+> # Direct execution (fallback — when server is not in use):
+> # xmb() { node "${CLAUDE_PLUGIN_ROOT}/lib/x-build-cli.mjs" "$@"; }
+>
+> xmb plan "goal"
+> ```
+> **Forbidden:** Assigning `XMB="node ..."` then calling `$XMB plan` — zsh treats the entire string as a single command and fails.
+> When running multiple commands sequentially, define the function on the first line then call `xmb <command>` afterward.
+> The client auto-starts the server if not running (lazy start), and silently falls back to node if bun is not installed.
 
 ## Phase Lifecycle
 
@@ -57,7 +70,7 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 | Phase | Exit Gate | Condition |
 |-------|-----------|-----------|
 | Research | human-verify | CONTEXT.md or REQUIREMENTS.md must exist |
-| Plan | human-verify | Tasks defined + plan-check passed |
+| Plan | human-verify | Tasks defined + plan-check passed (+ optional critique) |
 | Execute | auto | All tasks completed |
 | Verify | quality | test/lint/build all pass |
 | Close | auto | — |
@@ -74,19 +87,29 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 - `dashboard` — Multi-project overview
 
 ### Research Phase
-- `discuss [--mode interview|assumptions]` — Gather requirements
+- `discuss [--mode interview|assumptions|validate]` — Gather & validate requirements
 - `research [goal]` — Parallel agent investigation
+
+### Deliberation (cross-phase)
+- `discuss --mode interview [--round N]` — Multi-round requirements interview with drill-down
+- `discuss --mode assumptions` — Codebase-driven assumption generation
+- `discuss --mode validate` — Research artifact completeness verification (Research phase)
+- `discuss --mode critique [--round N]` — Strategic plan review by Critic+Architect (Plan phase)
+- `discuss --mode adapt ["topic"]` — Adaptive review between execution steps (Execute phase)
 
 ### Plan Phase
 - `plan "goal"` — AI auto-decomposes goal into tasks
-- `plan-check` — Validate plan across 8 quality dimensions
+- `plan-check` — Validate plan across 11 quality dimensions
+- `prd-gate [--threshold N]` — Judge panel PRD quality evaluation (rubric-based scoring)
+- `consensus [--round N]` — 4-agent consensus review (architect/critic/planner/security)
 - `phase next` / `phase set <name>` — Move between phases
 - `gate pass/fail [message]` — Resolve gate
 - `checkpoint <type> [message]` — Record checkpoint
 
 ### Execute Phase
-- `tasks add <name> [--deps t1,t2] [--size small|medium|large]`
-- `tasks list` / `tasks remove <id>` / `tasks update <id> --status <s>`
+- `tasks add <name> [--deps t1,t2] [--size small|medium|large] [--done-criteria "..."] [--team <name>]`
+- `tasks list` / `tasks remove <id>` / `tasks update <id> --status <s> [--done-criteria "..."]`
+- `tasks done-criteria` — Auto-derive done criteria from PRD for all tasks
 - `steps compute` — Calculate step groups from dependencies
 - `steps status` / `steps next` — Step progress
 - `run` — Execute current step via agents
@@ -97,10 +120,12 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 ### Verify & Close
 - `quality` — Run test/lint/build checks
 - `verify-coverage` — Check requirement-to-task mapping
+- `verify-traceability` — R# ↔ Task ↔ AC ↔ Done Criteria matrix
+- `verify-contracts` — Check task done_criteria fulfillment
 - `context-usage` — Show artifact token usage
 
 ### Analysis
-- `forecast` — Per-task cost estimation ($)
+- `forecast` — Per-task cost estimation ($) with complexity-adjusted confidence levels
 - `metrics` — Phase duration, task velocity
 - `decisions add "..." [--type] [--rationale]` / `decisions list` / `decisions inject`
 - `summarize` — Step summaries
@@ -136,7 +161,7 @@ Several commands output JSON for the skill layer to parse and act on. The skill 
 
 | Command | `action` field | Key fields |
 |---------|---------------|------------|
-| `discuss` | `"discuss"` | `mode`, `project`, `current_phase` |
+| `discuss` | `"discuss"` | `mode`, `project`, `current_phase`, `round`, `max_rounds` + mode-specific fields |
 | `research` | `"research"` | `goal`, `project`, `perspectives[]` |
 | `plan` | `"auto-plan"` | `goal`, `project`, `existing_tasks`, `context_summary`, `requirements_summary`, `roadmap_summary` |
 | `run --json` | (no action field) | `project`, `step`, `total_steps`, `tasks[]`, `parallel` |
@@ -230,185 +255,298 @@ $XMB save requirements --content "# Requirements\n\n- [R1] User authentication w
 $XMB save roadmap --content "# Roadmap\n\n## Phase 1: Foundation\n- R1, R2\n..."
 ```
 
-5. Advance to Plan phase: `$XMB gate pass "Research complete"` → `$XMB phase next`
+5. **(Optional but recommended) Validate research artifacts**:
+   ```bash
+   $XMB discuss --mode validate
+   ```
+   - Checks completeness, consistency, testability, scope clarity, risk identification
+   - If `verdict === "incomplete"`: address gaps via `discuss --mode interview --round 2`
+   - If `verdict === "pass"`: proceed to gate
+
+6. Advance to Plan phase: `$XMB gate pass "Research complete"` → `$XMB phase next`
 
 ### Step 3: Plan (Plan Phase)
 
-#### PRD Generation (Plan phase 첫 단계)
+#### Planning Principles
 
-태스크 분해 전에 리더가 PRD를 생성한다. Research 산출물(CONTEXT.md, REQUIREMENTS.md, ROADMAP.md)을 기반으로:
+These principles apply to all plan-phase activities (PRD generation, task decomposition, consensus review, critique).
 
-delegate (foreground, opus 권장):
+```
+## Planning Principles
+
+1. **Decide what NOT to build first** — Scope is defined more by what you exclude than what you include. Every requirement added is a constraint on every future requirement.
+2. **Name the risk, then schedule it early** — Uncertainty should drive ordering. The task you're least sure about goes first, not last. Fail fast > fail late.
+3. **A plan is a hypothesis, not a promise** — Plans will change. Design for adaptability: small tasks, clear boundaries, minimal cross-task dependencies.
+4. **Intent over implementation** — PRD describes WHAT and WHY. Tasks describe WHAT to do. Neither should prescribe HOW (specific technology/library) unless it's a hard constraint.
+5. **If you can't verify it, you can't ship it** — Every requirement needs a success criterion. Every task needs done_criteria. If you can't describe how to check "done," the scope is too vague.
+```
+
+#### PRD Generation (first step of Plan phase)
+
+Before task decomposition, the leader generates a PRD. Based on research artifacts (CONTEXT.md, REQUIREMENTS.md, ROADMAP.md):
+
+delegate (foreground, opus recommended):
 ```
 "## PRD Generation: {project_name}
-Research 산출물:
-- CONTEXT: {CONTEXT.md 요약}
-- REQUIREMENTS: {REQUIREMENTS.md 전문}
-- ROADMAP: {ROADMAP.md 요약 (있으면)}
+Research artifacts:
+- CONTEXT: {CONTEXT.md summary}
+- REQUIREMENTS: {REQUIREMENTS.md full text}
+- ROADMAP: {ROADMAP.md summary (if available)}
 
-아래 PRD 템플릿의 모든 섹션을 빠짐없이 작성하라:
+Fill in every section of the PRD template below without omission:
 
 # PRD: {project_name}
 
 ## 1. Goal
-{1-2 문장 — 이 프로젝트가 해결하는 핵심 문제}
+{1-2 sentences — the core problem this project solves}
 
 ## 2. Success Criteria
-- [SC1] {측정 가능한 성공 기준}
+- [SC1] {measurable success criterion}
 - [SC2] ...
 
 ## 3. Constraints
-- [C1] {기술적/비즈니스 제약}
+- [C1] {technical/business constraint}
 - [C2] ...
 
 ## 4. Non-Functional Requirements
-- Performance: {응답 시간, 처리량}
-- Security: {인증, 암호화}
-- Scalability: {확장 요구사항}
-- Reliability: {가용성, 복구}
+- Performance: {response time, throughput}
+- Security: {authentication, encryption}
+- Scalability: {scaling requirements}
+- Reliability: {availability, recovery}
 
 ## 5. Requirements Traceability
-- [R1] {요구사항} → SC1
-- [R2] {요구사항} → SC1, SC2
-(REQUIREMENTS.md의 모든 항목을 Success Criteria에 매핑)
+- [R1] {requirement} → SC1
+- [R2] {requirement} → SC1, SC2
+(Map every item in REQUIREMENTS.md to Success Criteria)
 
 ## 6. Out of Scope
-- {포함하지 않는 것을 명시}
+- {explicitly state what is not included}
 
 ## 7. Risks
-- {식별된 리스크와 완화 방안}
+- {identified risks and mitigation strategies}
 
 ## 8. Acceptance Criteria
-- [ ] {검증 가능한 체크리스트 항목}
+- [ ] {verifiable checklist item}
 - [ ] ...
+
+## PRD Section Quality Criteria
+
+Apply these criteria when writing each section above:
+
+Goal: One sentence. If it needs 'and,' it's two projects.
+  Good: 'Enable users to authenticate via JWT with refresh token rotation'
+  Bad: 'Improve the auth system and add better error handling and logging'
+
+Success Criteria: Each must be measurable and binary (pass/fail).
+  Good: '[SC1] Login API responds in <200ms at p95 under 100 concurrent users'
+  Bad: '[SC1] System should be fast and reliable'
+
+Constraints: Only hard constraints — things that are NOT negotiable.
+  Good: '[C1] Must use PostgreSQL (existing production DB)'
+  Bad: '[C1] Should use a modern database' (this is a preference, not a constraint)
+
+Requirements Traceability: Every R# maps to at least one SC#. Unmapped requirements are scope creep.
+
+Out of Scope: Be specific. 'Not building X' is better than 'keeping it simple.'
+  Good: 'No mobile app, no real-time notifications, no multi-tenancy'
+  Bad: 'Anything not mentioned above'
+
+Risks: Each risk needs likelihood + impact + mitigation. 'Things might go wrong' is not a risk.
+  Good: 'JWT secret rotation may cause active sessions to invalidate — mitigate with grace period'
+  Bad: 'Security risks'
+
+Acceptance Criteria: Each item must be testable by running a command or checking a state.
+  Good: '[ ] npm test passes with >80% coverage on auth module'
+  Bad: '[ ] Code is well-tested'
 "
 ```
 
-PRD를 `.xm/build/projects/{name}/02-plan/PRD.md`로 저장:
+Save PRD to `.xm/build/projects/{name}/02-plan/PRD.md`:
 ```bash
-$XMB save plan --content "{PRD 내용}"
+$XMB save plan --content "{PRD content}"
 ```
 
-PRD 생성 후 태스크 분해로 진행 (기존 plan 로직).
+After PRD generation, proceed to PRD Review.
 
-#### PRD Quality Gate
+#### PRD Review (user review and revision)
 
-PRD 생성 후, plan-quality rubric으로 자동 검증:
+After PRD generation, **show the PRD to the user first** and collect feedback. Do not proceed to task decomposition without user approval.
 
-1. Judge Panel 소환 (3 에이전트):
-   - Rubric: plan-quality (completeness 0.30, actionability 0.30, scope-fit 0.20, risk-coverage 0.20)
-   - 각 judge가 PRD를 독립 채점 (x-eval Reusable Judge Prompt 사용)
+1. **Show full PRD**: Output the entire PRD.md to the user
+2. **Request feedback**: Collect review results via AskUserQuestion:
+   ```
+   Please review the PRD:
+   1) Approve — proceed as-is
+   2) Needs revision — tell me what to change
+   3) Quality check — Judge Panel (3 agents) scores and provides feedback
+   4) Consensus review — 4 agents (architect, critic, planner, security) review and auto-revise until consensus
+   5) Rewrite — regenerate the PRD from scratch
+   ```
+3. **Action per selection**:
+   - "Approve" → proceed to task decomposition
+   - "Needs revision" → revise PRD with user feedback, then show again (repeat)
+   - "Quality check" → run [PRD Quality Gate], then return to PRD Review options with results
+   - "Consensus review" → run [Consensus Loop]
+   - "Rewrite" → re-run PRD Generation from scratch
 
-2. 결과 판정:
-   - Score >= 7.0 → ✅ PRD 승인, 태스크 분해로 진행
-   - Score < 7.0 AND 재생성 < 2회 → 피드백 기반 PRD 재생성
-   - Score < 7.0 AND 재생성 >= 2회 → ⚠ 최고 점수 버전을 채택하고 경고와 함께 PRD Review로 진행:
-     `"⚠ PRD Quality Gate: {best_score}/10 (3회 시도). 사용자 판단 필요."`
-
-3. PRD 점수를 프로젝트 메타데이터에 기록:
+4. **Re-save on revision**:
    ```bash
-   $XMB save plan --content "PRD Score: {score}/10"
+   $XMB save plan --content "{revised PRD content}"
    ```
 
-4. 최종 출력:
-   ```
-   📋 PRD Quality: 7.8/10 (plan-quality rubric)
-   | Criterion | Score |
-   |-----------|-------|
-   | completeness | 8 |
-   | actionability | 7 |
-   | scope-fit | 8 |
-   | risk-coverage | 8 |
-   ✅ PRD approved. Proceeding to review.
-   ```
-
-#### PRD Review (사용자 리뷰 및 수정)
-
-PRD Quality Gate 통과 후, 사용자에게 PRD를 표시하고 피드백을 수렴한다. **사용자 승인 없이 태스크 분해로 넘어가지 않는다.**
-
-1. **PRD 전문 표시**: PRD.md 전체를 사용자에게 출력
-2. **피드백 요청**: AskUserQuestion으로 리뷰 결과 수집:
-   ```
-   PRD를 검토해주세요:
-   1) 승인 — 이대로 진행
-   2) 수정 필요 — 수정 사항을 알려주세요
-   3) 합의 검토 — 4 에이전트(architect, critic, planner, security)가 리뷰 후 합의할 때까지 자동 수정
-   4) 재작성 — PRD를 처음부터 다시 생성
-   ```
-3. **선택별 동작**:
-   - "승인" → 태스크 분해로 진행
-   - "수정 필요" → 사용자 피드백을 반영하여 PRD 수정 후 다시 표시 (반복)
-   - "합의 검토" → [Consensus Loop] 실행
-   - "재작성" → PRD Generation부터 재실행
-
-4. **수정 시 PRD 재저장**:
-   ```bash
-   $XMB save plan --content "{수정된 PRD 내용}"
-   ```
-
-5. **PRD 확정 기록**:
+5. **Record PRD confirmation**:
    ```
    ✅ PRD reviewed and approved by user.
    Proceeding to task decomposition.
    ```
 
-> 중요: PRD Review 루프는 사용자가 "승인"할 때까지 반복된다. 자동 스킵 불가.
-> 루프 제한: PRD Review 전체 루프(수정+재작성+합의 검토 포함)는 최대 5회 반복.
-> 5회 도달 시: 현재 PRD를 표시하고 "승인" 또는 "프로젝트 중단" 2가지 선택지만 제공.
+> Important: The PRD Review loop repeats until the user selects "Approve". Cannot be auto-skipped.
+> Loop limit: The entire PRD Review loop (including revisions + rewrites + quality checks + consensus reviews) repeats at most 5 times.
+> On reaching 5: Show the current PRD and offer only 2 options: "Approve" or "Abort project".
 
-#### Consensus Loop (합의 검토)
+#### PRD Quality Gate (on-demand)
 
-사용자가 "합의 검토"를 선택하면, 4 에이전트가 PRD를 다각도로 리뷰하고 합의할 때까지 자동 수정한다.
+Runs only when the user selects "Quality check". Not triggered automatically.
+
+```bash
+$XMB prd-gate [--threshold N] [--judges N]
+```
+
+Read `rubric`, `prd`, `requirements` from the output JSON and perform the following:
+
+1. **Summon Judge Panel** (default 3 agents, adjustable via `--judges`):
+   - Rubric: Use the `rubric` array from JSON (completeness, feasibility, atomicity, clarity, risk-coverage)
+   - Each judge scores the PRD independently (using x-eval Reusable Judge Prompt)
+
+2. **Display results** (no auto-judgment/regeneration — information only for the user):
+   ```
+   📋 PRD Quality: {score}/10 (plan-quality rubric)
+   | Criterion      | Score | Feedback          |
+   |----------------|-------|-------------------|
+   | completeness   | 8     | ...               |
+   | actionability  | 7     | ...               |
+   | scope-fit      | 8     | ...               |
+   | risk-coverage  | 6     | ...               |
+   ```
+
+3. **Score-based guidance message** (advisory only, no automatic action):
+   - Score >= 7.0 → `"💡 Quality is good — consider approving."`
+   - Score 5.0–6.9 → `"💡 Room for improvement — consider revising based on the feedback above."`
+   - Score < 5.0 → `"💡 Quality is insufficient — consider rewriting."`
+
+4. **Record PRD score in project metadata**:
+   ```bash
+   $XMB save plan --content "PRD Score: {score}/10"
+   ```
+
+5. **Return to PRD Review options** — Judge results are provided as reference; the final decision is the user's.
+
+> Call limit: Quality check can run at most 2 times within the same PRD Review session. Resets on "Rewrite".
+> After 2 attempts: `"⚠ Quality check limit reached. Select 'Approve', 'Needs revision', or 'Consensus review'."`
+
+#### Consensus Loop (consensus review)
+
+When the user selects "Consensus review", 4 agents review the PRD from multiple perspectives and auto-revise until consensus.
+
+```bash
+$XMB consensus [--round N] [--max-rounds N]
+```
+
+Read `agents`, `prd`, `round` from the output JSON and perform the following.
 
 **Round 1: broadcast (4 agents)**
 ```
-Agent 1 (architect): "PRD의 구조적 완성도를 평가하라:
-- 모듈 경계가 명확한가
-- 인터페이스/의존성이 정의되어 있는가
-- 아키텍처 결정이 누락되지 않았는가
-결론: AGREE 또는 OBJECT + 구체적 피드백. 200단어 이내."
+Agent 1 (architect): "Review the PRD from an architecture perspective.
 
-Agent 2 (critic): "PRD의 약점을 찾아라:
-- 빠진 요구사항이나 시나리오가 있는가
-- 모순되는 항목이 있는가
-- 리스크가 과소평가되지 않았는가
-결론: AGREE 또는 OBJECT + 구체적 피드백. 200단어 이내."
+Principles:
+1. Simplest architecture that meets constraints wins. More components = more failure modes.
+2. Module boundaries should align with team boundaries and deployment boundaries.
+3. Missing interfaces between modules are more dangerous than missing features.
 
-Agent 3 (planner): "PRD의 실행 가능성을 평가하라:
-- 태스크로 분해하기 쉬운 구조인가
-- 성공 기준이 측정 가능한가
-- 일정/비용 현실성이 있는가
-결론: AGREE 또는 OBJECT + 구체적 피드백. 200단어 이내."
+Evaluate:
+- Could this be built with fewer components/services/layers?
+- Are the boundaries between modules at natural seams (data ownership, deployment unit, team)?
+- Are cross-module interfaces defined, or left implicit?
 
-Agent 4 (security): "PRD의 보안/리스크 측면을 평가하라:
-- 보안 관련 요구사항이 누락되지 않았는가
-- 리스크 mitigation이 구체적이고 실행 가능한가
-- 민감 데이터 처리 방식이 명시되어 있는가
-결론: AGREE 또는 OBJECT + 구체적 피드백. 200단어 이내."
+Good OBJECT: 'PRD implies 3 services but only 1 deployment target. Simplify to monolith with module boundaries.'
+Bad OBJECT: 'Architecture could be better.'
+
+Conclusion: AGREE or OBJECT + specific feedback. 200 words max."
+
+Agent 2 (critic): "Find weaknesses in the PRD.
+
+Principles:
+1. The most dangerous assumption is the one nobody questioned.
+2. A contradiction between two requirements is better found now than during implementation.
+3. 'We'll figure it out later' is a risk, not a plan.
+
+Evaluate:
+- What assumption, if wrong, would invalidate this entire plan?
+- Are there contradictions between requirements, constraints, or success criteria?
+- Where does the PRD say 'TBD' or imply deferred decisions?
+
+Good OBJECT: '[R3] requires real-time sync but [C2] prohibits WebSocket — contradiction.'
+Bad OBJECT: 'Some requirements seem incomplete.'
+
+Conclusion: AGREE or OBJECT + specific feedback. 200 words max."
+
+Agent 3 (planner): "Evaluate the feasibility of the PRD.
+
+Principles:
+1. If a task can't be explained in one sentence starting with a verb, it's too big or too vague.
+2. Parallel tasks should have zero shared state. If they share a file, they're not parallel.
+3. Done criteria that require human judgment ('code is clean') are not done criteria.
+
+Evaluate:
+- Can each implied task be completed in one session by one agent?
+- Are success criteria measurable without subjective judgment?
+- Is the implicit task ordering fail-fast? (highest risk first)
+
+Good OBJECT: '[SC2] says performance is acceptable — not measurable. Needs p95 latency target.'
+Bad OBJECT: 'Success criteria need work.'
+
+Conclusion: AGREE or OBJECT + specific feedback. 200 words max."
+
+Agent 4 (security): "Evaluate the security/risk aspects of the PRD.
+
+Principles:
+1. Security requirements are constraints, not features. They don't get 'nice to have' priority.
+2. Every data flow that crosses a trust boundary needs explicit handling in the plan.
+3. 'We'll add auth later' means 'we'll rebuild everything later.'
+
+Evaluate:
+- Are auth, authz, and data protection explicitly addressed (not assumed)?
+- Do data flows crossing trust boundaries have handling specified?
+- Are security risks listed with specific mitigations (not 'follow best practices')?
+
+Good OBJECT: 'No mention of API rate limiting — [R1] public endpoint is DoS-vulnerable without it.'
+Bad OBJECT: 'Security could be improved.'
+
+Conclusion: AGREE or OBJECT + specific feedback. 200 words max."
 ```
 
-**합의 판정:**
-- **전원 AGREE** → 합의 완료, 사용자에게 결과 표시 후 PRD Review 선택지로 복귀
-- **OBJECT 1개+** → 리더가 OBJECT 피드백을 종합하여 PRD 수정 → 다시 broadcast (max 3 rounds)
-- **3 rounds 후 미합의** → 핵심 쟁점을 정리하여 사용자에게 표시, 사용자 판단 요청
+**Consensus judgment:**
+- **All AGREE** → Consensus reached; show results to user, return to PRD Review options
+- **1+ OBJECT** → Leader synthesizes OBJECT feedback to revise PRD → broadcast again (max 3 rounds)
+- **No consensus after 3 rounds** → Summarize key disagreements for the user, request user judgment
 
-> 재진입 제한: 동일 PRD Review 세션에서 Consensus Loop는 최대 2회 실행 가능.
-> 2회 후 "합의 검토" 선택 시: "⚠ 합의 검토 한도 도달. '승인' 또는 '수정 필요'를 선택하세요."
+> Re-entry limit: Consensus Loop can run at most 2 times within the same PRD Review session.
+> After 2 attempts: "⚠ Consensus review limit reached. Select 'Approve' or 'Needs revision'."
 
-**합의 결과 출력:**
+**Consensus result output:**
 ```
 🏛️ [consensus] PRD Review — Round {n}/{max}
 
 | Agent | Role | Verdict | Key Feedback |
 |-------|------|---------|-------------|
-| 1 | architect | ✅ AGREE | 구조 적절 |
-| 2 | critic | ❌ OBJECT | [R3] 테스트 전략 누락 |
-| 3 | planner | ✅ AGREE | 분해 가능 |
+| 1 | architect | ✅ AGREE | Structure is sound |
+| 2 | critic | ❌ OBJECT | [R3] Missing test strategy |
+| 3 | planner | ✅ AGREE | Decomposable |
 
-→ critic 피드백 반영하여 PRD 수정 중...
+→ Incorporating critic feedback to revise PRD...
 ```
 
-합의 완료 후 PRD Review 선택지로 복귀 — 사용자가 최종 "승인"해야 진행.
+After consensus, return to PRD Review options — user must give final "Approve" to proceed.
 
 ---
 
@@ -421,35 +559,53 @@ Create tasks informed by research artifacts:
    - Concrete, actionable names (start with verb)
    - Size: small (1-2h), medium (half-day), large (full day+)
    - Dependencies: what must complete first
-4. Register tasks:
+4. Register tasks with acceptance contracts:
    ```bash
    $XMB tasks add "Implement JWT auth [R1]" --size medium
    $XMB tasks add "Create CRUD endpoints [R2]" --deps t1 --size medium
    ```
+   After registering all tasks, derive **done criteria** for each task from the PRD's Section 8 (Acceptance Criteria) and Section 5 (Requirements Traceability):
+   ```bash
+   $XMB tasks done-criteria
+   ```
+   This generates `done_criteria` for each task — a checklist of verifiable conditions that define "done."
+   If auto-generation is insufficient, manually set criteria:
+   ```bash
+   $XMB tasks update t1 --done-criteria "JWT issue/verify works, refresh token rotation implemented, at least 3 unit tests"
+   ```
+
 5. Validate the plan:
    ```bash
    $XMB plan-check
    ```
-   This checks 8 dimensions: atomicity, dependencies, coverage, granularity, completeness, context, naming, overall. Fix any errors.
+   This checks 11 dimensions: atomicity, dependencies, coverage, granularity, completeness, context, naming, tech-leakage, scope-clarity, risk-ordering, overall. Fix any errors.
 
-6. Compute steps + forecast:
+6. **(Optional but recommended) Strategic critique**:
+   ```bash
+   $XMB discuss --mode critique
+   ```
+   - Reviews approach fitness, risk ordering, dependency structure, missing tasks, done-criteria quality, scope creep
+   - If `verdict === "revise"`: apply action items, then re-run critique (`--round 2`)
+   - If `verdict === "approve"`: proceed to step review
+
+7. Compute steps + forecast:
    ```bash
    $XMB steps compute
    $XMB forecast
    ```
-7. **Plan Review** — 사용자에게 태스크 목록 + DAG + forecast를 표시하고 AskUserQuestion:
+8. **Plan Review** — Show task list + DAG + forecast to the user and AskUserQuestion:
    ```
-   계획을 검토해주세요:
-   1) 승인 — Execute로 진행
-   2) 수정 필요 — 태스크 추가/삭제/변경
-   3) 합의 검토 — 4 에이전트가 전체 계획(PRD+태스크+DAG)을 리뷰
-   4) 재계획 — plan부터 다시
+   Please review the plan:
+   1) Approve — proceed to Execute
+   2) Needs revision — add/remove/change tasks
+   3) Consensus review — 4 agents review the full plan (PRD + tasks + DAG)
+   4) Re-plan — start over from plan
    ```
-   - "승인" → gate pass
-   - "수정 필요" → 사용자 피드백 반영 후 plan-check 재실행
-   - "합의 검토" → [Consensus Loop]를 전체 계획 대상으로 실행 (PRD + 태스크 + DAG를 평가)
-   - "재계획" → PRD Review부터 재시작
-8. Advance: `$XMB gate pass` → `$XMB phase next`
+   - "Approve" → gate pass
+   - "Needs revision" → apply user feedback then re-run plan-check
+   - "Consensus review" → run [Consensus Loop] against the full plan (PRD + tasks + DAG)
+   - "Re-plan" → restart from PRD Review
+9. Advance: `$XMB gate pass` → `$XMB phase next`
 
 ### Step 4: Execute (Execute Phase)
 
@@ -457,35 +613,48 @@ Create tasks informed by research artifacts:
 2. Parse JSON → spawn Agent per task:
    - `agent_type: "deep-executor"` → `subagent_type: "oh-my-claudecode:deep-executor"`, `model: "opus"`
    - otherwise → `subagent_type: "oh-my-claudecode:executor"`, `model: "sonnet"`
-   - `prompt`: use `task.prompt` value
+   - `prompt`: use `task.prompt` value + **inject `done_criteria`** as acceptance contract:
+     ```
+     ## Acceptance Contract
+     This task is complete only when all of the following conditions are met:
+     {list task.done_criteria items as a checklist}
+     Upon completion, report the fulfillment status of each condition.
+     ```
    - `run_in_background: true` (parallel)
 3. On completion: `$XMB tasks update <id> --status completed|failed`
 4. Check `$XMB run-status`, advance to next step or phase
 
 #### Strategy-Tagged Execution
 
-태스크에 `--strategy` 플래그가 있으면 x-op 전략으로 실행한다:
+If a task has the `--strategy` flag, execute it via x-op strategy:
 
 ```
 $XMB tasks add "Review auth module [R3]" --strategy review --rubric code-quality
 $XMB tasks add "Design payment flow [R1]" --strategy refine --rubric plan-quality
-$XMB tasks add "Implement CRUD endpoints [R2]"   # 일반 태스크 (strategy 없음)
+$XMB tasks add "Implement CRUD endpoints [R2]"   # regular task (no strategy)
+$XMB tasks add "Implement payment system [R4]" --team engineering  # assigned to team
 ```
 
-실행 시 리더가 태스크 유형을 판별:
+Tasks with a strategy in `$XMB run --json` output include `strategy` and `strategy_hint` fields.
+During execution, the leader determines the task type:
 
 ```
-For each task in current step:
+For each task in run output:
   if task.strategy:
-    → /x-op {task.strategy} "{task.name}" --verify --rubric {task.rubric}
-    → score를 수집하여 $XMB tasks update {id} --score {score}
+    → /x-op {task.strategy} "{task.task_name}" --verify --rubric {task.rubric || 'general'}
+    → collect score, then $XMB tasks update {task.task_id} --score {score}
+    → $XMB tasks update {task.task_id} --status completed
+  elif task.team:
+    → /x-agent team assign {task.team} "{task.task_name}"
+    → TL manages members internally, reports on completion
+    → $XMB tasks update {task.task_id} --status completed
   else:
-    → 일반 에이전트 delegate로 실행
+    → execute via regular agent delegation
 ```
 
 #### Quality Dashboard
 
-`status` 출력에 per-task score 표시:
+`status` output shows per-task score:
 
 ```
 📊 Tasks (scored):
@@ -497,25 +666,29 @@ For each task in current step:
 Project Quality: 7.3/10 avg (1 below threshold)
 ```
 
-#### 전략 자동 추천
+#### Automatic Strategy Recommendation
 
-태스크에 strategy가 없을 때 리더가 태스크 이름에서 추론:
+When a task has no strategy, the leader infers from the task name:
 
-| 태스크 키워드 | 추천 전략 |
+| Task keyword | Recommended strategy |
 |-------------|---------|
 | review, audit, check | review |
 | design, plan, architect | refine |
 | compare, evaluate, vs | debate |
 | investigate, analyze, debug | investigate |
-| implement, build, create | (일반 실행) |
+| implement, build, create | (regular execution) |
 
-추천만 하고 자동 적용은 하지 않음 — 사용자가 `--strategy`로 명시해야 함.
+Recommendation only — not auto-applied. User must specify via `--strategy`.
 
 ### Step 5: Verify (Verify Phase)
 
 1. Run quality checks: `$XMB quality`
 2. Check requirement coverage: `$XMB verify-coverage`
-3. If all pass: `$XMB phase next`
+3. Check acceptance contracts: `$XMB verify-contracts`
+   - For each task with `done_criteria`, verify that the criteria are met
+   - Output: `✅ t1: 3/3 criteria met` or `❌ t2: 1/3 criteria met — [missing: "at least 3 unit tests"]`
+   - Unmet criteria → report to user for resolution before closing
+4. If all pass: `$XMB phase next`
 
 ### Step 6: Close
 
@@ -525,83 +698,120 @@ Project Quality: 7.3/10 avg (1 below threshold)
 
 ## Quick Mode: One-Shot Plan→Run
 
-사용자가 "~만들어줘", "/x-build plan 'Build X'" 같은 짧은 요청을 하면, 전체 6단계를 축약한 **Quick Mode**로 실행한다.
+When the user makes a short request like "build me ~" or "/x-build plan 'Build X'", run **Quick Mode** — a condensed version of the full 6-step flow. For complex projects, recommend the full flow (Steps 1-6), but for simple requests, delivering results quickly is the killer experience.
 
-### Quick Mode 진입 조건
-- 사용자가 goal을 한 문장으로 제시
-- 기존 프로젝트가 없거나, 사용자가 명시적으로 "빠르게" 요청
-- goal이 단순 (예상 태스크 5개 이하)
+### Quick Mode Entry Conditions
+- User provides a goal in a single sentence
+- No existing project, or user explicitly requests "quick"
+- Goal is simple (expected 5 or fewer tasks)
 
-### Quick Mode 플로우
+### Quick Mode Flow
 
 ```
 Goal → Init → Auto-Plan → Review → Execute → Verify → Close
-       (자동)   (자동)    (사용자)   (자동)     (자동)   (자동)
+       (auto)   (auto)    (user)    (auto)     (auto)   (auto)
 ```
 
 1. **Init**: `$XMB init quick-{timestamp}`
-2. **Phase skip**: `$XMB phase set plan` (Research 건너뜀)
-3. **Auto-Plan**: `$XMB plan "{goal}"` → JSON 파싱 → 3-5개 태스크 생성
-   - Research 산출물 없이 goal 텍스트만으로 태스크 분해
-   - PRD 생성 생략 — 태스크 이름과 done_criteria로 충분
-   - 태스크 등록: `$XMB tasks add "..." --size small|medium`
-   - done-criteria 자동 생성: `$XMB tasks done-criteria`
-4. **Quick Review**: AskUserQuestion으로 태스크 목록 표시
+2. **Phase skip**: `$XMB phase set plan` (skip Research)
+3. **Auto-Plan**: `$XMB plan "{goal}"` → parse JSON → create 3-5 tasks
+   - Task decomposition from goal text only, without research artifacts
+   - PRD generation skipped — task names and done_criteria are sufficient
+   - Register tasks: `$XMB tasks add "..." --size small|medium`
+   - Auto-generate done-criteria: `$XMB tasks done-criteria`
+4. **Quick Review**: Show task list via AskUserQuestion
    ```
    Quick Plan:
-   - t1: {태스크1} (small)
-   - t2: {태스크2} (medium, depends: t1)
-   - t3: {태스크3} (small)
+   - t1: {task1} (small)
+   - t2: {task2} (medium, depends: t1)
+   - t3: {task3} (small)
 
-   1) 실행 — 이대로 진행
-   2) 수정 — 태스크 추가/변경
-   3) 정규 플로우 — 전체 Research→PRD→Plan 진행
+   1) Execute — proceed as-is
+   2) Revise — add/change tasks
+   3) Full flow — run full Research→PRD→Plan
    ```
 5. **Execute**: `$XMB steps compute` → `$XMB phase set execute` → `$XMB run --json`
-   - JSON 파싱 → Agent per task 스폰 (Step 4와 동일)
-   - 모든 태스크 완료 대기 → `$XMB run-status`로 확인
+   - Parse JSON → spawn Agent per task (same as Step 4)
+   - Wait for all tasks to complete → check with `$XMB run-status`
 6. **Verify**: `$XMB phase set verify` → `$XMB quality` → `$XMB verify-contracts`
 7. **Close**: `$XMB close --summary "Quick mode completed"`
 
-### 에러 시 복구
+### Error Recovery
 
-1. **태스크 실패**: `$XMB run` 재실행 (completed가 아닌 태스크부터 시작)
-2. **Circuit breaker open**: `$XMB circuit-breaker reset` → `$XMB run`
-3. **전체 재시작**: `$XMB phase set plan` → 태스크 수정 → `$XMB run`
+If an error occurs during Quick Mode execution:
+
+1. **Task failure**: Check the failed task's error, fix it, then re-run `$XMB run`
+   - `cmdRun` starts from non-completed tasks, so re-running is effectively a resume
+   - No separate --resume flag needed
+2. **Circuit breaker open**: Check `$XMB circuit-breaker status` → `$XMB circuit-breaker reset` → `$XMB run`
+3. **Full restart**: `$XMB phase set plan` → modify tasks → `$XMB run`
 
 ---
 
 ## Error Recovery Guide
 
-x-build run 실행 중 실패 시, 별도의 체크포인트/resume 메커니즘 없이도 복구 가능:
+When x-build run fails during execution, recovery is possible without a separate checkpoint/resume mechanism:
 
-| 상황 | 복구 방법 |
+| Situation | Recovery method |
 |------|----------|
-| 에이전트 1개 실패 | `$XMB tasks update <id> --status pending` → `$XMB run` |
-| 여러 에이전트 실패 | 실패 원인 확인 → 태스크 수정 → `$XMB run` |
+| Single agent failure | `$XMB tasks update <id> --status pending` → `$XMB run` |
+| Multiple agent failures | Identify failure cause → modify tasks → `$XMB run` |
 | Circuit breaker open | `$XMB circuit-breaker reset` → `$XMB run` |
-| 잘못된 태스크 분해 | `$XMB phase set plan` → 태스크 수정 → `$XMB steps compute` → `$XMB phase set execute` → `$XMB run` |
-| 중간에 세션 종료 | 새 세션에서 `$XMB status`로 현재 상태 확인 → `$XMB run` (이전 상태 유지됨) |
+| Incorrect task decomposition | `$XMB phase set plan` → modify tasks → `$XMB steps compute` → `$XMB phase set execute` → `$XMB run` |
+| Session terminated mid-run | In new session: `$XMB status` to check current state → `$XMB run` (previous state is preserved) |
 
-> **핵심 원리**: CLI가 모든 상태를 `.xm/build/` 파일에 영속화하므로, 세션이 끊겨도 상태는 보존된다. `x-build run`은 항상 미완료 태스크부터 시작한다.
+> **Core principle**: The CLI persists all state to `.xm/build/` files, so state is preserved even if the session disconnects. `x-build run` always starts from incomplete tasks.
 
 ---
 
-## Discuss Command (Requirements Gathering)
+## Discuss Command (Phase-Aware Deliberation)
+
+The discuss command is a multi-mode deliberation engine that adapts to the current project phase.
 
 When `discuss` is invoked:
 
-1. Run: `$XMB discuss [--mode interview|assumptions]`
+1. Run: `$XMB discuss [--mode MODE] [--round N]`
 2. Parse JSON output (`action: "discuss"`)
-3. Based on mode:
+3. Check `mode` and `round` fields, then branch accordingly:
 
-**Interview mode** (default):
+### Interview Mode (default, Research phase)
+
+Multi-round requirements gathering with drill-down.
+
+**Round 1** (initial):
 - Identify 4-6 gray areas: technology choices, scope boundaries, performance requirements, auth strategy, data model, deployment target
 - For each area, present 2-4 options as numbered choices
 - Collect answers
 - Generate CONTEXT.md with sections: Goal, Decisions, Constraints, Out of Scope, Assumptions
+- **Completeness check**: After saving CONTEXT.md, evaluate coverage against `completeness_dimensions` from JSON output:
+  - For each dimension (functional_requirements, non_functional_requirements, constraints, error_handling, security, performance, data_model, integrations):
+    - Rate coverage: `covered` | `partial` | `missing`
+  - If any dimension is `missing` and `round < max_rounds`: recommend drill-down
+- Save round result:
+  ```bash
+  $XMB save context --content "..." # Update CONTEXT.md
+  ```
+  Also write round metadata to `01-research/discuss-interview-r{round}.json`:
+  ```json
+  {
+    "round": 1,
+    "questions_asked": 6,
+    "answers_collected": 6,
+    "completeness": { "functional_requirements": "covered", "security": "missing", ... },
+    "recommendation": "drill-down on security, error_handling"
+  }
+  ```
 
-**Assumptions mode**:
+**Round 2+ (drill-down)**: When `round > 1` and `previous_round` is present:
+- Read `previous_round.completeness` to identify gaps
+- Generate 2-4 targeted follow-up questions for `missing`/`partial` dimensions only
+- Collect answers
+- Update CONTEXT.md (merge new information, don't overwrite)
+- Re-evaluate completeness
+- If all dimensions are `covered` or `partial`, or `round >= max_rounds`: conclude
+
+### Assumptions Mode (Research phase)
+
 - Read codebase files relevant to the goal
 - Generate 5-10 assumptions with format:
   ```
@@ -612,7 +822,134 @@ When `discuss` is invoked:
 - User confirms/rejects each
 - Save confirmed to CONTEXT.md
 
-Always save via: `$XMB save context --content "..."`
+### Validate Mode (Research → Plan transition)
+
+Verifies research artifacts are complete and consistent before moving to Plan phase.
+
+1. Run: `$XMB discuss --mode validate`
+2. JSON output includes `requirements`, `roadmap`, `context_full`
+3. Evaluate across 5 validation criteria:
+
+| Criterion | What to check |
+|-----------|---------------|
+| **Completeness** | All functional areas from CONTEXT.md have requirements in REQUIREMENTS.md |
+| **Consistency** | No contradictions between CONTEXT.md decisions and REQUIREMENTS.md |
+| **Testability** | Each requirement [R*] has verifiable acceptance criteria |
+| **Scope clarity** | Out-of-scope items are explicit; no ambiguous boundaries |
+| **Risk identification** | Major risks from research are acknowledged in ROADMAP.md |
+
+4. Output verdict and save to `01-research/discuss-validate.json`:
+   ```json
+   {
+     "verdict": "pass" | "incomplete",
+     "round": 1,
+     "summary": "2 requirements lack acceptance criteria, security section missing",
+     "criteria": {
+       "completeness": { "status": "pass", "detail": "..." },
+       "consistency": { "status": "pass", "detail": "..." },
+       "testability": { "status": "fail", "gaps": ["R3", "R7"] },
+       "scope_clarity": { "status": "pass", "detail": "..." },
+       "risk_identification": { "status": "fail", "detail": "No security risks listed" }
+     },
+     "recommended_actions": [
+       "Add acceptance criteria to R3, R7",
+       "Run discuss --mode interview --round 2 to address security"
+     ]
+   }
+   ```
+5. If `verdict === "incomplete"`: present gaps to user and recommend specific actions
+6. If `verdict === "pass"`: recommend `gate pass`
+
+### Critique Mode (Plan phase)
+
+Strategic review of task decomposition by Critic and Architect perspectives.
+
+1. Run: `$XMB discuss --mode critique`
+2. JSON output includes `prd`, `tasks`, `requirements`, `plan_check`
+3. Evaluate across 6 strategic dimensions (beyond plan-check's structural checks):
+
+| Dimension | Principle | Good Assessment | Bad Assessment |
+|-----------|-----------|----------------|----------------|
+| **Approach fitness** | Simplest approach that meets constraints. If a simpler alternative exists, the burden is on the complex approach to justify itself. | "Event sourcing justified: audit trail is [C2] constraint" | "Using microservices because it's modern" |
+| **Risk ordering** | Highest uncertainty first. If a task depends on an unproven assumption, it goes to step 1. | "t1: Validate third-party API integration (highest uncertainty)" | "t1: Setup project boilerplate" |
+| **Dependency structure** | Maximize parallelism. If tasks A and B have no data dependency, they should not have a declared dependency. | "t1,t2,t3 parallel → t4 depends on all" | "t1→t2→t3→t4 serial chain with no real dependency" |
+| **Missing tasks** | Every transition between tasks needs checking: setup→code, code→test, test→deploy. Implicit tasks are the ones that fail. | "Missing: DB migration task between schema design and API implementation" | "Looks complete" |
+| **Done-criteria quality** | Each criterion is a command you can run or a state you can check. Subjective criteria are not criteria. | "JWT endpoint returns 401 for expired token" | "Auth works properly" |
+| **Scope creep** | If a task doesn't trace back to a requirement [R#], it's scope creep. Nice-to-haves should be explicit and deferrable. | "t6 traces to R4" | "t6: Add dark mode (not in requirements)" |
+
+4. For each dimension, provide:
+   - Assessment: `good` | `concern` | `critical`
+   - Detail: specific observation
+   - Suggestion: actionable improvement (if concern/critical)
+
+5. Output verdict and save to `02-plan/discuss-critique.json`:
+   ```json
+   {
+     "verdict": "approve" | "revise",
+     "round": 1,
+     "summary": "Good decomposition but high-risk auth task is in step 3; move to step 1",
+     "dimensions": {
+       "approach_fitness": { "assessment": "good", "detail": "..." },
+       "risk_ordering": { "assessment": "concern", "detail": "Auth task t4 depends on t2,t3 but is highest risk", "suggestion": "Extract auth spike as t0 with no deps" },
+       ...
+     },
+     "action_items": [
+       "Reorder: move auth spike to step 1",
+       "Add missing task: database migration setup"
+     ]
+   }
+   ```
+6. If `verdict === "revise"`: present concerns and action items; user can apply fixes then re-run critique
+7. If `verdict === "approve"`: recommend `plan-check` then `gate pass`
+
+**Multi-round critique** (`--round 2+`): When `previous_round` is present:
+- Focus only on whether previous `action_items` were addressed
+- Verify fixes didn't introduce new issues
+- Lighter evaluation — skip dimensions that were `good` in previous round
+
+### Adapt Mode (Execute phase, between steps)
+
+Adaptive review during execution to catch plan divergence.
+
+1. Run: `$XMB discuss --mode adapt ["specific concern"]`
+2. JSON output includes `tasks`, `steps`, `progress`, `topic`
+3. Compare execution reality vs plan expectations:
+
+| Check | What to evaluate |
+|-------|-----------------|
+| **Completed vs expected** | Did completed tasks produce expected artifacts/results? |
+| **Discovered complexity** | Any task that took significantly longer or required unexpected changes? |
+| **Remaining relevance** | Are remaining tasks still necessary given what was learned? |
+| **New tasks needed** | Did execution reveal tasks not in the original plan? |
+
+4. If `topic` is provided, focus evaluation on that specific area
+5. Output to `03-execute/discuss-adapt.json`:
+   ```json
+   {
+     "verdict": "continue" | "replan",
+     "summary": "Step 1 revealed API needs pagination — add task for pagination support",
+     "observations": ["...", "..."],
+     "recommended_changes": [
+       { "type": "add_task", "description": "Add pagination to list endpoints" },
+       { "type": "update_task", "task_id": "t5", "change": "Add caching requirement" }
+     ]
+   }
+   ```
+6. If `verdict === "replan"`: present changes, user can apply via `tasks add`/`tasks update`
+7. If `verdict === "continue"`: proceed with next `run`
+
+### Saving discuss results
+
+All modes save via the skill layer:
+- **interview/assumptions**: `$XMB save context --content "..."` (updates CONTEXT.md)
+- **validate**: Write JSON to `01-research/discuss-validate.json`
+- **critique**: Write JSON to `02-plan/discuss-critique.json`
+- **adapt**: Write JSON to `03-execute/discuss-adapt.json`
+
+Use Bash to write JSON result files:
+```bash
+echo '{"verdict":"pass",...}' > .xm/build/{project}/{phase-dir}/discuss-{mode}.json
+```
 
 ---
 
@@ -650,10 +987,20 @@ Validates the plan across:
 | completeness | Enough tasks to cover the goal |
 | context | CONTEXT.md exists for informed planning |
 | naming | Tasks start with action verbs |
+| tech-leakage | Tasks don't name specific technologies unless declared in CONTEXT.md or PRD Constraints |
 | overall | Combined assessment |
 
 Run: `$XMB plan-check`
 Fix errors → re-run until all pass → `$XMB gate pass`
+
+### tech-leakage Check Rules
+
+If a task name/description contains a specific technology name (framework, library, service), verify that the technology is declared in **CONTEXT.md** or **PRD Section 3 (Constraints)**.
+
+- Declared technology → pass (already a decided constraint)
+- Undeclared technology → `warn`: `"t3: 'Redis' is not declared in CONTEXT.md or PRD Constraints — consider using intent ('implement caching') instead of implementation ('add Redis cache')"`
+
+This check is at the **warn** level and does not fail plan-check overall. Since technology choices decided in the PRD are fine to use in tasks, this does not block intentional implementation-specific naming by the user.
 
 ---
 
@@ -669,6 +1016,8 @@ Fix errors → re-run until all pass → `$XMB gate pass`
 | Plan | No tasks | → `plan "goal"` |
 | Plan | No plan-check | → `plan-check` |
 | Plan | Errors in plan-check | → Fix errors |
+| Plan | plan-check passed, no critique | → `discuss --mode critique` (suggest) |
+| Plan | critique verdict "revise" | → Fix action items, re-critique |
 | Plan | All good | → `phase next` |
 | Execute | No steps | → `steps compute` |
 | Execute | Has ready tasks | → `run` |
@@ -688,6 +1037,21 @@ $XMB handoff --restore # Show saved state in new session
 ```
 
 HANDOFF.json includes: phase, pending tasks, recent decisions, artifact status.
+
+### Auto-Handoff on Phase Transition
+
+When `phase next` runs, it **automatically triggers `handoff`** to preserve the current phase's state. This prevents context accumulation at the orchestrator (leader) level and ensures the next phase starts with structured context.
+
+Extended `phase next` behavior:
+```
+1. Gate verification (existing)
+2. $XMB handoff          ← auto-triggered (saves current phase state)
+3. Phase state transition (existing)
+4. Output handoff summary to leader:
+   "📋 Phase handoff saved. Key decisions: {N}, Pending risks: {M}"
+```
+
+The handoff document can be restored in the next phase via `$XMB handoff --restore`, or injected as context to new agents. This naturally discards the "noise of the process" — exploration paths, debugging logs, abandoned alternatives — and carries forward **only decisions and artifacts** to the next phase.
 
 ---
 
@@ -829,26 +1193,28 @@ Future: shared `.xm/shared/decisions.json` for automatic cross-tool context.
 
 ## Shared Config Integration
 
-x-build는 `.xm/config.json`의 공유 설정을 참조한다:
+x-build references the shared configuration in `.xm/config.json`:
 
-| 설정 | 키 | 기본값 | 영향 |
-|------|-----|--------|------|
-| 모드 | `mode` | `developer` | 출력 스타일 (기술 용어 vs 쉬운 말) |
-| 에이전트 수 | `agent_max_count` | `4` | research 에이전트 수, run 병렬 실행 수 |
+| Setting | Key | Default | Effect |
+|---------|-----|---------|--------|
+| Mode | `mode` | `developer` | Output style (technical terms vs simple language) |
+| Agent count | `agent_max_count` | `4` | Number of research agents, parallel run concurrency |
+| TL model | `team_default_leader_model` | `opus` | Team Leader model for `--team` tasks |
+| Team member count | `team_max_members` | `5` | Max members per team |
 
-설정 변경:
+Change settings:
 ```bash
-$XMB config set agent_max_count 10   # 최대 병렬
-$XMB config set agent_max_count 2    # 토큰 절약
-$XMB config show                     # 현재 설정 확인
+$XMB config set agent_max_count 10   # max parallelism
+$XMB config set agent_max_count 2    # save tokens
+$XMB config show                     # show current settings
 ```
 
-### Config Resolution 우선순위
+### Config Resolution Priority
 
-1. CLI 플래그 (`--agents N`) — 명시하면 최우선
-2. 도구별 로컬 config (`.xm/build/config.json`)
-3. 공유 config (`.xm/config.json`)
-4. 기본값
+1. CLI flag (`--agents N`) — highest priority when specified
+2. Tool-specific local config (`.xm/build/config.json`)
+3. Shared config (`.xm/config.json`)
+4. Defaults
 
 ---
 
@@ -856,19 +1222,22 @@ $XMB config show                     # 현재 설정 확인
 
 | User says | Command |
 |-----------|---------|
-| "프로젝트 시작", "new project" | `init` |
-| "뭐해야해?", "다음은?" | `next` |
-| "요구사항 정리", "질문해봐" | `discuss` |
-| "조사해봐", "리서치" | `research` |
-| "계획 세워", "~만들어줘" (goal) | `plan "goal"` |
-| "검증해봐", "계획 괜찮아?" | `plan-check` |
-| "상태", "status" | `status` |
-| "다음 단계" | `phase next` |
-| "승인", "LGTM" | `gate pass` |
-| "실행", "run" | `run` |
-| "비용", "cost" | `forecast` |
-| "커버리지" | `verify-coverage` |
-| "세션 저장" | `handoff` |
-| "내보내기", "export" | `export` |
-| "모드 변경" | `mode` |
-| "에이전트 설정", "agent level" | `config show` / `config set agent_max_count` |
+| "start project", "new project" | `init` |
+| "what should I do?", "what's next?" | `next` |
+| "gather requirements", "ask me questions" | `discuss` |
+| "investigate", "research" | `research` |
+| "validate requirements", "anything missing?" | `discuss --mode validate` |
+| "make a plan", "build me ~" (goal) | `plan "goal"` |
+| "validate plan", "is the plan ok?" | `plan-check` |
+| "critical review", "review the plan", "critique" | `discuss --mode critique` |
+| "mid-check", "need to adjust the plan?" | `discuss --mode adapt` |
+| "status" | `status` |
+| "next phase" | `phase next` |
+| "approve", "LGTM" | `gate pass` |
+| "execute", "run" | `run` |
+| "cost" | `forecast` |
+| "coverage" | `verify-coverage` |
+| "save session" | `handoff` |
+| "export" | `export` |
+| "change mode" | `mode` |
+| "agent settings", "agent level" | `config show` / `config set agent_max_count` |

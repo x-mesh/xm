@@ -42,9 +42,9 @@ Install individual: /plugin install x-kit@x-build
 
 | Command | Description |
 |---------|-------------|
-| `x-kit version` | 설치된 플러그인 버전 + 최신 버전 비교 |
-| `x-kit update` | 모든 x-kit 플러그인 일괄 업데이트 |
-| `x-kit update <plugin>` | 특정 플러그인만 업데이트 (e.g. `x-kit update x-build`) |
+| `x-kit version` | Compare installed plugin versions with latest available versions |
+| `x-kit update` | Batch update all x-kit plugins |
+| `x-kit update <plugin>` | Update a specific plugin only (e.g. `x-kit update x-build`) |
 
 ### x-kit version
 
@@ -141,7 +141,7 @@ console.log('\n✅ Update complete. Run /reload-plugins to activate.');
 
 ## Cross-Plugin Pipeline
 
-x-build, x-op, x-eval을 연결하는 표준 데이터 흐름.
+Standard data flow connecting x-build, x-op, and x-eval.
 
 ### Pipeline Flow
 
@@ -151,7 +151,7 @@ x-build plan → PRD → x-op strategy --verify → x-eval score → x-build tas
 
 ### Standard Payload Schema
 
-플러그인 간 데이터 전달 시 리더가 내부적으로 구성하는 구조:
+Structure that the leader constructs internally when passing data between plugins:
 
 ```json
 {
@@ -159,7 +159,7 @@ x-build plan → PRD → x-op strategy --verify → x-eval score → x-build tas
     "version": 1,
     "source": "x-build|x-op|x-eval",
     "type": "prd|strategy-output|eval-result",
-    "content": "마크다운 텍스트",
+    "content": "markdown text",
     "metadata": {
       "project": "project-name",
       "strategy": "refine|null",
@@ -173,8 +173,8 @@ x-build plan → PRD → x-op strategy --verify → x-eval score → x-build tas
 
 ### Plugin Responsibilities
 
-| Plugin | 생산 | 소비 |
-|--------|------|------|
+| Plugin | Produces | Consumes |
+|--------|----------|----------|
 | x-build | PRD, task list, project context | eval scores, strategy outputs |
 | x-op | strategy output, self-score | PRD (as context), eval feedback |
 | x-eval | rubric scores, judge feedback | strategy output, code output |
@@ -183,10 +183,10 @@ x-build plan → PRD → x-op strategy --verify → x-eval score → x-build tas
 
 | Trigger | From | To | Data |
 |---------|------|----|------|
-| `x-build plan` 완료 | x-build | x-op | PRD + task list |
-| `x-op --verify` 완료 | x-op | x-eval | strategy output for scoring |
+| `x-build plan` complete | x-build | x-op | PRD + task list |
+| `x-op --verify` complete | x-op | x-eval | strategy output for scoring |
 | score < threshold | x-eval | x-op | feedback for retry |
-| task 완료 | x-op | x-build | score + output for task update |
+| task complete | x-op | x-build | score + output for task update |
 
 ## Shared Config
 
@@ -196,22 +196,22 @@ x-kit manages shared settings at `.xm/config.json` that all tools (x-build, x-so
 
 | Command | Description |
 |---------|-------------|
-| `x-kit config show` | 현재 공유 설정 표시 |
-| `x-kit config set <key> <value>` | 설정 변경 |
-| `x-kit config get <key>` | 설정 값 조회 |
+| `x-kit config show` | Show current shared settings |
+| `x-kit config set <key> <value>` | Change a setting |
+| `x-kit config get <key>` | Get a setting value |
 
 ### Settings
 
 | Key | Values | Default | Description |
 |-----|--------|---------|-------------|
-| `mode` | `developer`, `normal` | `developer` | 출력 스타일 (기술 용어 vs 쉬운 말) |
-| `agent_max_count` | 숫자 (1-10) | `4` | 에이전트 병렬 실행 수 제어 |
-| `team_default_leader_model` | `opus`, `sonnet` | `opus` | Team Leader 기본 모델 |
-| `team_max_members` | 숫자 (1-10) | `5` | 팀당 최대 멤버 수 |
+| `mode` | `developer`, `normal` | `developer` | Output style (technical terms vs plain language) |
+| `agent_max_count` | number (1-10) | `4` | Max parallel agent execution count |
+| `team_default_leader_model` | `opus`, `sonnet` | `opus` | Default model for Team Leader |
+| `team_max_members` | number (1-10) | `5` | Max members per team |
 
 ### Config Resolution
 
-각 도구는 아래 우선순위로 설정을 읽는다:
-1. 도구별 로컬 config (`.xm/{tool}/config.json`)
-2. 공유 config (`.xm/config.json`)
-3. 기본값
+Each tool reads settings in the following priority order:
+1. Tool-specific local config (`.xm/{tool}/config.json`)
+2. Shared config (`.xm/config.json`)
+3. Default values

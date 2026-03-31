@@ -9,8 +9,8 @@ x-memory persists project decisions, patterns, failures, and learnings across se
 
 <Use_When>
 - User wants to save a decision, pattern, failure, or learning for future sessions
-- User says "기억해줘", "저장해줘", "나중에도 기억해"
-- User asks to recall or search past decisions ("이전에 어떻게 했지?", "recall auth")
+- User says "remember this", "save this", "remember this for later"
+- User asks to recall or search past decisions ("how did we do this before?", "recall auth")
 - Session starts and relevant context should be injected automatically
 - User wants to export/import memory across machines or projects
 - User asks for memory statistics or a list of saved memories
@@ -55,12 +55,12 @@ Options:
 
 Example:
 ```
-/x-memory save "JWT 인증 선택" --type decision --why "수평 확장 용이, 서버 상태 불필요" --tags "auth,architecture"
+/x-memory save "Choose JWT auth" --type decision --why "Easy horizontal scaling, no server state needed" --tags "auth,architecture"
 ```
 
 Output:
 ```
-[memory] Saved: mem-003 "JWT 인증 선택"
+[memory] Saved: mem-003 "Choose JWT auth"
   Type: decision | Tags: auth, architecture
   Stored: .xm/memory/memories/mem-003.md
 ```
@@ -73,18 +73,18 @@ Search memories by keyword or tag overlap. Matches against title, content, tags,
 
 Example:
 ```
-/x-memory recall "인증"
+/x-memory recall "auth"
 ```
 
 Output:
 ```
-[memory] 2 memories found for "인증"
+[memory] 2 memories found for "auth"
 
-  mem-003 [decision] JWT 인증 선택 (2026-03-25)
+  mem-003 [decision] Choose JWT auth (2026-03-25)
     Tags: auth, architecture | Confidence: high
-    → 수평 확장 용이, 서버 상태 불필요
+    → Easy horizontal scaling, no server state needed
 
-  mem-001 [pattern] 미들웨어 인증 체인 (2026-03-20)
+  mem-001 [pattern] Middleware auth chain (2026-03-20)
     Tags: auth, middleware | Confidence: medium
     → validateToken → checkPermission → handler
 ```
@@ -103,9 +103,9 @@ Relevance is determined by keyword overlap between memory titles/tags and:
 Output:
 ```
 [memory] Injected 3 relevant memories:
-  - mem-003: JWT 인증 선택 (decision)
-  - mem-001: 미들웨어 인증 체인 (pattern)
-  - mem-007: rate limiting 실패 사례 (failure)
+  - mem-003: Choose JWT auth (decision)
+  - mem-001: Middleware auth chain (pattern)
+  - mem-007: Rate limiting failure case (failure)
 ```
 
 After injecting, print the full content of each matched memory so the agent can use it.
@@ -131,10 +131,10 @@ Output:
 ```
 [memory] 4 decisions (last 30d)
 
-  mem-003  JWT 인증 선택              2026-03-25  auth,architecture
-  mem-008  PostgreSQL 선택            2026-03-22  database,architecture
-  mem-012  모노레포 구조 채택          2026-03-18  monorepo,build
-  mem-015  API 버전 전략 (URL prefix) 2026-03-10  api,versioning
+  mem-003  Choose JWT auth             2026-03-25  auth,architecture
+  mem-008  Choose PostgreSQL            2026-03-22  database,architecture
+  mem-012  Adopt monorepo structure     2026-03-18  monorepo,build
+  mem-015  API versioning (URL prefix)  2026-03-10  api,versioning
 ```
 
 ### Show
@@ -150,7 +150,7 @@ Example:
 
 Output:
 ```
-[memory] mem-003 — JWT 인증 선택
+[memory] mem-003 — Choose JWT auth
   Type: decision | Confidence: high
   Tags: auth, architecture
   Created: 2026-03-25T12:00:00Z | TTL: none
@@ -158,18 +158,18 @@ Output:
   Related files: src/auth/jwt.ts, src/middleware/auth.ts
 
 ---
-## JWT 인증 선택
+## Choose JWT auth
 
-### 배경 (WHY)
-수평 확장 요구사항과 서버 무상태(stateless) 아키텍처 결정에 따라 세션 기반 인증을 제외.
+### Background (WHY)
+Horizontal scaling requirements and the stateless architecture decision ruled out session-based auth.
 
-### 내용 (WHAT)
-- JWT (HS256) 발급: 액세스 토큰 15분, 리프레시 토큰 7일
-- 토큰 블랙리스트는 Redis에 저장 (리프레시 토큰 폐기 시)
-- 미들웨어 체인: validateToken → extractClaims → checkPermission
+### Details (WHAT)
+- JWT (HS256) issuance: access token 15 min, refresh token 7 days
+- Token blacklist stored in Redis (on refresh token revocation)
+- Middleware chain: validateToken → extractClaims → checkPermission
 
-### 영향 (IMPACT)
-세션 스토어 불필요, 수평 확장 시 별도 동기화 없음. 토큰 즉시 폐기 불가 트레이드오프 수용.
+### Impact (IMPACT)
+No session store needed; no synchronization required for horizontal scaling. Accepted the tradeoff that tokens cannot be revoked instantly.
 ```
 
 ### Forget
@@ -185,7 +185,7 @@ Example:
 
 Output:
 ```
-[memory] Deleted: mem-003 "JWT 인증 선택"
+[memory] Deleted: mem-003 "Choose JWT auth"
 ```
 
 ### Export
@@ -286,7 +286,7 @@ If no memories match, skip silently — do not mention memory to the user.
 ```json
 {
   "id": "mem-001",
-  "title": "PostgreSQL 선택",
+  "title": "Choose PostgreSQL",
   "type": "decision",
   "tags": ["database", "architecture"],
   "created": "2026-03-25T12:00:00Z",
@@ -295,7 +295,7 @@ If no memories match, skip silently — do not mention memory to the user.
   "related_files": ["src/db/connection.ts"],
   "confidence": "high",
   "source": "x-build:my-project",
-  "why": "ACID 요구사항, 팀 경험치"
+  "why": "ACID requirements, team experience"
 }
 ```
 
@@ -310,7 +310,7 @@ Field notes:
 ```markdown
 ---
 id: mem-001
-title: PostgreSQL 선택
+title: Choose PostgreSQL
 type: decision
 tags: [database, architecture]
 created: 2026-03-25T12:00:00Z
@@ -320,21 +320,21 @@ confidence: high
 source: x-build:my-project
 related_files:
   - src/db/connection.ts
-why: ACID 요구사항, 팀 경험치
+why: ACID requirements, team experience
 ---
 
-## PostgreSQL 선택
+## Choose PostgreSQL
 
-### 배경 (WHY)
-ACID 요구사항 충족 필요. 팀 전원 PostgreSQL 경험 보유.
+### Background (WHY)
+ACID compliance required. Entire team has PostgreSQL experience.
 
-### 내용 (WHAT)
-- PostgreSQL 16 사용
+### Details (WHAT)
+- PostgreSQL 16
 - Connection pooling: PgBouncer (transaction mode)
-- 마이그레이션: Flyway
+- Migrations: Flyway
 
-### 영향 (IMPACT)
-MySQL 대비 JSON 쿼리 성능 우위. 별도 캐시 레이어 없이도 충분한 읽기 성능.
+### Impact (IMPACT)
+Superior JSON query performance over MySQL. Sufficient read performance without a separate cache layer.
 ```
 
 ---
@@ -403,21 +403,21 @@ x-build decisions can be promoted to x-memory for cross-session persistence:
 node .../x-build-cli.mjs decisions list
 
 # Promote a key decision to x-memory:
-$XMM save "JWT 인증 선택" --type decision --why "..." --tags "auth" --source "x-build:my-project"
+$XMM save "Choose JWT auth" --type decision --why "..." --tags "auth" --source "x-build:my-project"
 ```
 
-### x-build decisions → x-memory 자동 승격 규칙
+### x-build decisions → x-memory auto-promotion rules
 
-x-build에서 중요한 결정이 내려지면 x-memory에 자동 저장을 제안한다:
+When an important decision is made in x-build, suggest auto-saving to x-memory:
 
-| 조건 | 동작 |
-|------|------|
-| `decisions add --type architecture` | 자동 저장 제안 (type: decision) |
-| `decisions add --type tradeoff` | 자동 저장 제안 (type: decision) |
-| 동일 프로젝트에서 3+ decisions 누적 | 일괄 promote 제안 |
-| `close` 시 decisions 5개 이상 | `"💡 {N}개 결정을 x-memory에 저장할까요?"` |
+| Condition | Action |
+|-----------|--------|
+| `decisions add --type architecture` | Suggest auto-save (type: decision) |
+| `decisions add --type tradeoff` | Suggest auto-save (type: decision) |
+| 3+ decisions accumulated in same project | Suggest bulk promote |
+| 5+ decisions at `close` | `"Tip: Save {N} decisions to x-memory?"` |
 
-저장 형식:
+Save format:
 ```bash
 x-memory save "{decision.title}" --type decision \
   --why "{decision.rationale}" \
@@ -425,17 +425,17 @@ x-memory save "{decision.title}" --type decision \
   --source "x-build:{project_name}"
 ```
 
-### x-review findings → x-memory failure 자동 저장
+### x-review findings → x-memory failure auto-save
 
-x-review에서 반복 발견되는 Critical/High 이슈를 x-memory에 failure로 저장:
+Save recurring Critical/High issues from x-review as failures in x-memory:
 
-| 조건 | 동작 |
-|------|------|
-| Critical finding (모든 경우) | 자동 저장 제안 (type: failure) |
-| 동일 파일/패턴 High가 2회+ 발견 | 자동 저장 제안 (type: pattern) |
-| Block 판정 | 전체 findings 요약을 failure로 저장 제안 |
+| Condition | Action |
+|-----------|--------|
+| Critical finding (all cases) | Suggest auto-save (type: failure) |
+| Same file/pattern High found 2+ times | Suggest auto-save (type: pattern) |
+| Block verdict | Suggest saving full findings summary as failure |
 
-저장 형식:
+Save format:
 ```bash
 x-memory save "{finding.description}" --type failure \
   --why "x-review {verdict}: {severity} in {file}:{line}" \
@@ -443,15 +443,15 @@ x-memory save "{finding.description}" --type failure \
   --related-files "{file}"
 ```
 
-### x-op 전략 결과 → x-memory learning 저장
+### x-op strategy results → x-memory learning save
 
-x-op 전략 완료 후 Self-Score가 높은 결과를 learning으로 보존:
+After x-op strategy completion, preserve high Self-Score results as learnings:
 
-| 조건 | 동작 |
-|------|------|
-| Self-Score ≥ 8.0 | `"💡 이 결과를 기억할까요?"` 제안 (type: learning) |
-| `--verify` 통과 (score ≥ threshold) | 전략 + rubric + score를 learning으로 저장 제안 |
-| compose 파이프라인 성공 | 파이프라인 조합을 pattern으로 저장 제안 |
+| Condition | Action |
+|-----------|--------|
+| Self-Score >= 8.0 | Suggest `"Tip: Remember this result?"` (type: learning) |
+| `--verify` passed (score >= threshold) | Suggest saving strategy + rubric + score as learning |
+| compose pipeline succeeded | Suggest saving pipeline combination as pattern |
 
 ---
 
@@ -459,12 +459,12 @@ x-op 전략 완료 후 Self-Score가 높은 결과를 learning으로 보존:
 
 | User says | Command |
 |-----------|---------|
-| "기억해줘", "저장해줘" | `save` |
-| "이전에 어떻게 했지?", "recall ..." | `recall` |
-| "관련 기억 불러와", "inject" | `inject` |
-| "기억 목록", "list memories" | `list` |
-| "이 기억 보여줘", "show mem-001" | `show` |
-| "삭제해줘", "잊어줘" | `forget` |
-| "내보내기", "export" | `export` |
-| "가져오기", "import" | `import` |
-| "통계", "stats" | `stats` |
+| "remember this", "save this" | `save` |
+| "how did we do this before?", "recall ..." | `recall` |
+| "load related memories", "inject" | `inject` |
+| "list memories", "show all memories" | `list` |
+| "show this memory", "show mem-001" | `show` |
+| "delete this", "forget this" | `forget` |
+| "export", "export memories" | `export` |
+| "import", "import memories" | `import` |
+| "stats", "memory stats" | `stats` |

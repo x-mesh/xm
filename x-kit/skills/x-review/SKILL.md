@@ -4,13 +4,13 @@ description: Multi-perspective code review orchestrator — PR diff analysis wit
 ---
 
 <Purpose>
-x-review는 PR diff, 파일, 또는 디렉토리를 입력받아 다수의 리뷰 에이전트를 병렬로 구동한다. 각 에이전트는 전담 관점(보안, 로직, 성능, 테스트 커버리지)에서 발견사항을 severity + file:line 형식으로 보고하고, 리더가 통합 보고서와 LGTM / Request Changes / Block 판정을 발행한다.
+x-review takes a PR diff, file, or directory as input and runs multiple review agents in parallel. Each agent reports findings from a dedicated perspective (security, logic, performance, test coverage) in severity + file:line format. The leader then produces a consolidated report with an LGTM / Request Changes / Block verdict.
 </Purpose>
 
 <Use_When>
 - User wants to review a PR, file, or directory
-- User says "리뷰", "코드 리뷰", "PR 확인", "diff 분석", "review"
-- User says "보안 취약점 확인", "성능 문제 찾아줘", "테스트 커버리지 확인"
+- User says "review", "code review", "check PR", "analyze diff", "review"
+- User says "check security vulnerabilities", "find performance issues", "check test coverage"
 - Other x-kit skills need a code quality gate
 </Use_When>
 
@@ -22,8 +22,8 @@ x-review는 PR diff, 파일, 또는 디렉토리를 입력받아 다수의 리�
 
 # x-review — Multi-Perspective Code Review
 
-Claude Code 네이티브 Agent tool 기반 병렬 리뷰 오케스트레이터.
-외부 의존성 없음. `git`, `gh` CLI만 있으면 동작.
+Parallel review orchestrator built on Claude Code native Agent tool.
+No external dependencies. Only requires `git` and `gh` CLI.
 
 ## Arguments
 
@@ -31,12 +31,12 @@ User provided: $ARGUMENTS
 
 ## Routing
 
-`$ARGUMENTS`의 첫 단어:
+First word of `$ARGUMENTS`:
 - `diff` → [Phase 1: TARGET — diff mode]
 - `pr` → [Phase 1: TARGET — pr mode]
 - `file` → [Phase 1: TARGET — file mode]
 - `list` → [Subcommand: list]
-- 빈 입력 또는 그 외 → [Subcommand: list]
+- Empty input or anything else → [Subcommand: list]
 
 ---
 
@@ -78,17 +78,17 @@ Examples:
 
 ## Phase 1: TARGET
 
-diff, PR, 또는 파일에서 리뷰 대상 콘텐츠를 수집한다.
+Collect review target content from a diff, PR, or file.
 
 ### diff [ref]
 
 ```bash
-git diff HEAD~1    # ref가 없으면 기본값
-git diff {ref}     # ref가 있으면 해당 ref 사용
+git diff HEAD~1    # default when no ref provided
+git diff {ref}     # use the specified ref
 ```
 
-Bash tool로 실행. 결과 전체를 `{diff_content}`로 보관.
-파일 확장자에서 언어 자동 감지 (`.ts`, `.py`, `.go` 등).
+Run via Bash tool. Store the entire result as `{diff_content}`.
+Auto-detect language from file extensions (`.ts`, `.py`, `.go`, etc.).
 
 ### pr [number]
 
@@ -96,166 +96,419 @@ Bash tool로 실행. 결과 전체를 `{diff_content}`로 보관.
 gh pr diff {number}
 ```
 
-Bash tool로 실행. 결과를 `{diff_content}`로 보관.
-`number`가 없으면 사용자에게 PR 번호 질문.
+Run via Bash tool. Store the result as `{diff_content}`.
+If `number` is omitted, prompt the user for the PR number.
 
 ### file <path>
 
-Read tool로 파일 직접 읽기. 경로가 디렉토리면 하위 파일 목록 후 각각 읽기.
-결과를 `{diff_content}`로 보관.
+Read the file directly via Read tool. If the path is a directory, list child files and read each one.
+Store the result as `{diff_content}`.
 
 ---
 
 ## Phase 2: ASSIGN
 
-`--lenses` 옵션 또는 자동으로 리뷰 관점을 배정한다.
+Assign review perspectives using `--lenses` option or automatically.
 
-### 기본 4개 관점
+### Default 4 Perspectives
 
-| Agent | Lens | 집중 영역 |
-|-------|------|----------|
+| Agent | Lens | Focus Area |
+|-------|------|------------|
 | Agent 1 | security | Injection, XSS, CSRF, auth/authz, hardcoded secrets, OWASP Top 10 |
-| Agent 2 | logic | 버그, 엣지 케이스, off-by-one, null/undefined 처리, 타입 오류 |
-| Agent 3 | perf | N+1 쿼리, 메모리 누수, 복잡도, blocking I/O, 불필요한 재계산 |
-| Agent 4 | tests | 테스트 누락, 미검증 경로, 테스트 품질, 경계값 테스트 |
+| Agent 2 | logic | Bugs, edge cases, off-by-one, null/undefined handling, type errors |
+| Agent 3 | perf | N+1 queries, memory leaks, complexity, blocking I/O, unnecessary recomputation |
+| Agent 4 | tests | Missing tests, untested paths, test quality, boundary value tests |
 
-### --agents > 4 시 추가 관점
+### Additional Perspectives When --agents > 4
 
-| Agent | Lens | 집중 영역 |
-|-------|------|----------|
-| Agent 5 | architecture | 모듈 경계, 결합도, 단일 책임 원칙 |
-| Agent 6 | docs | 인라인 주석, 공개 API 문서, 변경 이력 |
-| Agent 7 | errors | 에러 처리, 복구 경로, 실패 전파 |
-| Agent 8+ | (추가 security/logic 에이전트) | 심층 분석 |
+| Agent | Lens | Focus Area |
+|-------|------|------------|
+| Agent 5 | architecture | Module boundaries, coupling, single responsibility principle |
+| Agent 6 | docs | Inline comments, public API docs, change history |
+| Agent 7 | errors | Error handling, recovery paths, failure propagation |
+| Agent 8+ | (additional security/logic agents) | Deep analysis |
 
-### --lenses 지정 시
+### When --lenses Is Specified
 
-`--lenses "security,logic"` → 명시된 관점만 사용, 에이전트 수를 맞춤.
-`--lenses`와 `--agents`가 모두 있으면 → agents 수에 맞게 lenses를 반복 배정.
+`--lenses "security,logic"` → Use only the specified perspectives; match the agent count accordingly.
+If both `--lenses` and `--agents` are provided → Repeat-assign lenses to match the agent count.
 
-### Shared Config에서 에이전트 수 결정
+### Agent Count From Shared Config
 
-`--agents`가 없으면 shared config의 `agent_max_count` 값을 사용한다 (기본 4).
+If `--agents` is not specified, use `agent_max_count` from shared config (default 4).
 
 ---
 
 ## Phase 3: REVIEW
 
-fan-out — 각 에이전트에게 diff + 전담 관점 프롬프트를 동시에 전달한다.
+Fan-out — send the diff + dedicated perspective prompt to each agent simultaneously.
 
-**하나의 메시지에서 N개의 Agent tool을 동시에 호출:**
+**Invoke N Agent tools simultaneously in a single message:**
 
 ```
 Agent tool 1: {
   description: "x-review: security",
-  prompt: "## Code Review: Security\n\n{diff_content}\n\n[관점 프롬프트]",
+  prompt: "## Code Review: Security\n\n{diff_content}\n\n[perspective prompt]",
   run_in_background: true,
   model: "sonnet"
 }
 Agent tool 2: {
   description: "x-review: logic",
-  prompt: "## Code Review: Logic\n\n{diff_content}\n\n[관점 프롬프트]",
+  prompt: "## Code Review: Logic\n\n{diff_content}\n\n[perspective prompt]",
   run_in_background: true,
   model: "sonnet"
 }
-... (N개)
+... (N agents)
 ```
 
-### 관점별 프롬프트
+### Universal Review Principles
 
-각 에이전트에게 전달하는 관점 프롬프트:
+The following principles are injected at the `{universal_principles}` position in all perspective prompts.
+
+```
+## Universal Review Principles
+
+1. **Context determines severity** — The same pattern varies in severity depending on exposure scope, data sensitivity, and call frequency. Always ask first: "Where does this code run, with what data, and how often?"
+2. **A finding without evidence is noise** — Show "this code does X" not "this code could do X." If you cannot trace a concrete path in the diff, do not report it.
+3. **No fix direction, no finding** — A finding whose Fix is "be careful" is not actionable. If you cannot suggest a specific code change, it is not a finding.
+4. **Review only changed code** — Do not report issues in existing code outside the diff. Exception: when a change worsens an existing problem.
+5. **One finding, one problem** — Do not bundle multiple issues into a single finding. "This is wrong AND that is wrong" is two findings.
+6. **When in doubt, downgrade** — If you hesitate between two severity levels, choose the lower one. Over-reporting erodes trust faster than under-reporting. A consistently accurate Low is more valuable than an inflated Medium.
+```
+
+### Perspective Prompts
+
+Each agent receives a combination of `{universal_principles}` + perspective prompt.
 
 **security:**
 ```
-Review this code from a security perspective.
-Focus: injection attacks (SQL, command, LDAP), XSS/CSRF/SSRF, authentication and
-authorization flaws, hardcoded secrets or API keys, insecure deserialization,
-sensitive data exposure, OWASP Top 10 categories.
+{universal_principles}
+
+## Code Review: Security
+
+Principles:
+1. Validate only at trust boundaries; trust internals — Check validation where external input enters the system (API handler, CLI parser, file reader). Do not report "no validation" when already-validated data is passed to an internal function.
+2. Read as an attacker — Trace: "Can I control this input? If so, how far does it reach?" If no reachable path exists in the diff, it is not a finding.
+3. Recognize defense layers — ORMs, framework escaping, auth middleware already defend. Do not report theoretical threats that existing defenses already cover.
+
+Judgment criteria:
+- Is there a traceable path in the diff from external input to a dangerous sink (query, exec, eval, innerHTML)?
+- Does a missing auth/authz endpoint actually access sensitive data or actions?
+- Is a hardcoded value a real secret, or a config default / test fixture?
+
+Severity calibration:
+- Critical: Unauthenticated public endpoint where input flows directly to query/exec. Immediately exploitable.
+- High: Authenticated user can access data outside their scope (IDOR). Production secret hardcoded in source.
+- Medium: Input validation incomplete but existing defense layers (ORM, framework escaping) partially protect. Bypass possible.
+- Low: Missing security headers, verbose error messages — hard to exploit directly but widens attack surface.
+
+Ignore when:
+- Hardcoded tokens/passwords in test files (test fixtures)
+- "SQL injection possible" on code already using ORM / parameterized queries
+- Command injection warnings in internal-only CLI tools (no user input)
+- XSS warnings in templates with framework auto-escaping
+- Placeholder values in .env.example
+
+Good finding example:
+[Critical] src/api/users.ts:42 — req.query.id inserted directly into SQL template literal without validation. Public API endpoint with no auth middleware applied.
+→ Fix: db.query('SELECT * FROM users WHERE id = $1', [req.query.id])
+
+Bad finding example (DO NOT write like this):
+[Medium] src/api/users.ts:42 — Possible SQL injection vulnerability.
+→ Fix: Validate input.
 
 For each finding, output exactly:
 [Critical|High|Medium|Low] file:line — description
+→ Why: cite the specific severity calibration criterion that applies
 → Fix: one-line fix suggestion
+
+If your Why does not match the severity calibration criteria above, use a lower severity.
 
 Max 10 findings. If no issues found, output: [Info] No security issues detected.
 ```
 
 **logic:**
 ```
-Review this code from a logic correctness perspective.
-Focus: bugs, off-by-one errors, null/undefined dereferences, incorrect conditionals,
-race conditions, infinite loops, incorrect type assumptions, missing error returns.
+{universal_principles}
+
+## Code Review: Logic Correctness
+
+Principles:
+1. Boundary values and empty values cause 80% of bugs — Trace how the code behaves at 0, null, undefined, empty array, empty string, negative numbers, MAX_INT.
+2. Compare intent vs. implementation in conditionals — Check whether variable names / comments / function names imply an intent that diverges from the actual condition. >= vs >, && vs ||, missing early return are common mismatches.
+3. Trace state mutation propagation — After a value is mutated, verify all paths referencing it handle the new state correctly. Especially watch for state races in async code.
+
+Judgment criteria:
+- Does this conditional/loop produce off-by-one at boundary values? (Simulate with concrete inputs)
+- Is there property access without null/undefined check, AND does a code path exist where that value can actually be null?
+- Is a Promise used without await in an async function, or is an error silently discarded?
+- Can a type conversion cause data loss? (float→int truncation, string→number NaN)
+
+Severity calibration:
+- Critical: Data loss or corruption. Wrong condition deletes user data, infinite loop crashes service.
+- High: Feature behaves contrary to intent but no data loss. Filter works in reverse, pagination skips last item.
+- Medium: Only triggers on edge cases. Error on empty array input, unexpected result on negative input.
+- Low: Code works but intent is unclear. Magic numbers, confusing variable names.
+
+Ignore when:
+- Type system already guarantees null safety (TypeScript strict mode non-nullable)
+- Framework-guaranteed values (Express req.params is always string)
+- Explicit invariants documented in code/comments
+- Hardcoded assertion values in test code
+
+Good finding example:
+[High] src/utils/paginate.ts:28 — items.slice(offset, offset+limit) returns empty array when offset > items.length, but caller (line 45) throws "no data" error on empty result. This is a normal "no next page" scenario, not an error.
+→ Fix: Caller should treat empty result as normal case (compare against total count)
+
+Bad finding example (DO NOT write like this):
+[Medium] src/utils/paginate.ts:28 — Array index may be out of bounds.
+→ Fix: Add bounds checking.
 
 For each finding, output exactly:
 [Critical|High|Medium|Low] file:line — description
+→ Why: cite the specific severity calibration criterion that applies
 → Fix: one-line fix suggestion
+
+If your Why does not match the severity calibration criteria above, use a lower severity.
 
 Max 10 findings. If no issues found, output: [Info] No logic issues detected.
 ```
 
 **perf:**
 ```
-Review this code from a performance perspective.
-Focus: N+1 query patterns, memory leaks, O(n²) or worse algorithms, blocking I/O
-in async contexts, unnecessary recomputation, missing pagination, large allocations,
-inefficient data structures.
+{universal_principles}
+
+## Code Review: Performance
+
+Principles:
+1. Optimize only at measurable bottlenecks — O(n²) on a constant-size list is fine. Ask first: "What is n? How often does this code execute?"
+2. I/O always trumps CPU — Unnecessary network round-trips, disk access, and DB queries matter far more than algorithm complexity. One N+1 query is worse than ten O(n²) sorts.
+3. Show evidence, not speculation — Not "this could be slow" but "this loop issues a DB call on every iteration." Provide the concrete bottleneck path.
+
+Judgment criteria:
+- Does I/O (DB query, HTTP call, file read) occur inside a loop/iteration?
+- Is data size controlled by user input? (Unbounded growth potential)
+- Is the same computation/query repeated without caching?
+- Does a blocking call occupy the event loop/thread in an async context?
+
+Severity calibration:
+- Critical: Unbounded resource consumption proportional to user-controlled input. Full table scan per request, unpaginated full list return.
+- High: N+1 query, in-loop I/O, or blocking call on a hot path. Data size expected in hundreds to thousands.
+- Medium: Inefficient but limited impact at current scale. O(n²) but n<100 in a batch job.
+- Low: Micro-optimization. Unnecessary object copies, inefficiency in one-time initialization code.
+
+Ignore when:
+- n is constant or explicitly bounded (enum member count, fixed config list)
+- One-time initialization/migration code
+- Dev/test-only code
+- Suggesting "add cache" on code that already has caching/memoization
+- CLI tool startup performance (ms-level differences)
+
+Good finding example:
+[High] src/services/order.ts:67 — getOrderDetails() loop issues db.query('SELECT * FROM items WHERE order_id = ?') per order (N+1). 100 orders = 101 queries.
+→ Fix: Use WHERE order_id IN (...) batch query, then map in memory
+
+Bad finding example (DO NOT write like this):
+[Medium] src/services/order.ts:67 — Database query inside a loop may cause performance issues.
+→ Fix: Optimize the query.
 
 For each finding, output exactly:
 [Critical|High|Medium|Low] file:line — description
+→ Why: cite the specific severity calibration criterion that applies
 → Fix: one-line fix suggestion
+
+If your Why does not match the severity calibration criteria above, use a lower severity.
 
 Max 10 findings. If no issues found, output: [Info] No performance issues detected.
 ```
 
 **tests:**
 ```
-Review this code from a test coverage perspective.
-Focus: missing unit tests for new functions, untested error paths, untested edge cases,
-test quality (assertions that don't verify behavior), missing integration tests for
-critical flows, tests that mock too much.
+{universal_principles}
+
+## Code Review: Test Coverage
+
+Principles:
+1. Tests verify behavior, not implementation — Check "input X produces output Y," not "internal method called 3 times." Implementation-coupled tests block refactoring.
+2. Riskier paths need tests more — Do not demand tests for every function. Prioritize paths where failure is costly: payments, auth, data deletion, external API calls.
+3. A false-confidence test is worse than no test — An assertion-free test, an always-passing test, or a test that verifies nothing about actual behavior just creates the illusion of coverage.
+
+Judgment criteria:
+- Does each newly added public function/endpoint have a corresponding test?
+- Are error paths (catch, error callback, failure branches) tested?
+- Do assertions verify meaningful behavior? (Simply "no error thrown" is insufficient)
+- Do mocks diverge from real behavior enough to make the test meaningless?
+
+Severity calibration:
+- Critical: No tests at all for high-risk logic (payments, auth, data deletion).
+- High: New public API/endpoint has no tests. Existing tests do not cover new branches.
+- Medium: Insufficient edge case tests. Weak assertions (toBeTruthy instead of toEqual).
+- Low: Missing tests for internal utility functions. Demanding tests for doc/config changes.
+
+Ignore when:
+- Pure type definitions, interfaces, DTO declarations (no logic)
+- Simple re-exports or config file changes
+- Generated code (protobuf, GraphQL codegen)
+- Simple delegation functions already covered by integration tests
+- Trivial formatting/logging changes
+
+Good finding example:
+[High] src/services/payment.ts:89 — processRefund() newly added but has no tests. Partial refund (amount < total), already-refunded order, and insufficient balance cases are all unverified.
+→ Fix: Add 4 test cases in payment.test.ts: success, partial refund, duplicate refund, insufficient balance
+
+Bad finding example (DO NOT write like this):
+[Medium] src/services/payment.ts:89 — No tests found.
+→ Fix: Add tests.
 
 For each finding, output exactly:
 [Critical|High|Medium|Low] file:line — description
+→ Why: cite the specific severity calibration criterion that applies
 → Fix: one-line fix suggestion
+
+If your Why does not match the severity calibration criteria above, use a lower severity.
 
 Max 10 findings. If no issues found, output: [Info] No test coverage issues detected.
 ```
 
 **architecture:**
 ```
-Review this code from an architectural perspective.
-Focus: single responsibility violations, tight coupling, abstraction leaks,
-circular dependencies, inappropriate layer crossing, missing interfaces.
+{universal_principles}
+
+## Code Review: Architecture
+
+Principles:
+1. Blast radius of a change measures design quality — How many files must change for a single requirement change? Wider blast radius = higher coupling.
+2. Introduce abstractions only to solve current complexity — Interfaces/factories built "for future extensibility" only add complexity. An interface with a single implementation is YAGNI.
+3. Layers exist to enforce dependency direction — Upper→lower is OK; lower→upper inversion is a finding.
+
+Judgment criteria:
+- Does a module directly manipulate data outside its responsibility? (handler directly referencing DB schema)
+- Is there a circular dependency? (A→B→A)
+- Does a change require modifying unrelated modules? (shotgun surgery)
+- Does direct dependency on a concrete implementation make replacement/testing difficult?
+
+Severity calibration:
+- Critical: Circular dependency prevents build/deploy. Layer inversion risks data integrity.
+- High: Clear concern mixing — business logic + DB calls inside a UI component. High future change cost.
+- Medium: High coupling but manageable at current scale. 2-3 modules with excessive direct references.
+- Low: Naming inconsistency, misplaced files, structural improvement suggestions.
+
+Ignore when:
+- Prototype/MVP code explicitly marked as "temporary"
+- Suggesting "extract an interface" when only one implementation exists
+- Framework-enforced structure (Next.js pages/, Rails conventions)
+- Simple scripts/utilities under 10 lines
+
+Good finding example:
+[High] src/handlers/order.ts:34 — OrderHandler directly parses PaymentGateway internal response structure (response.data.transactions[0].id). Gateway response format change forces handler modification.
+→ Fix: Add PaymentService.getTransactionId(response) method; handler calls service only
+
+Bad finding example (DO NOT write like this):
+[Medium] src/handlers/order.ts:34 — Separation of concerns needed.
+→ Fix: Refactor.
 
 For each finding, output exactly:
 [Critical|High|Medium|Low] file:line — description
+→ Why: cite the specific severity calibration criterion that applies
 → Fix: one-line fix suggestion
+
+If your Why does not match the severity calibration criteria above, use a lower severity.
 
 Max 10 findings. If no issues found, output: [Info] No architecture issues detected.
 ```
 
 **docs:**
 ```
-Review this code from a documentation perspective.
-Focus: missing JSDoc/docstring for public APIs, unclear variable names, missing
-inline comments for complex logic, stale comments that contradict code, missing
-changelog entries for breaking changes.
+{universal_principles}
+
+## Code Review: Documentation
+
+Principles:
+1. Code says "how"; docs say "why" — Comments that repeat what the code already shows are noise. Only non-obvious decisions, external constraints, and business rules are worth documenting.
+2. Public API contracts must be explicit — Parameters, return values, errors, and side effects of functions called by other modules/teams are not fully conveyed by type signatures alone. JSDoc/docstring is the contract.
+3. False documentation is worse than no documentation — A comment that contradicts the code, or JSDoc describing a deleted parameter, is a finding.
+
+Judgment criteria:
+- Does each new public API (exported function, REST endpoint, library interface) have documentation beyond the type signature?
+- Do existing comments/docs contradict the changed code?
+- Do complex algorithms or non-obvious business rules have a "why" explanation?
+- Does a breaking change include a CHANGELOG entry / migration guide?
+
+Severity calibration:
+- Critical: Breaking change (public API signature, config format change) with no migration documentation.
+- High: New API in a public library/SDK has no documentation. External users cannot figure out usage.
+- Medium: Internal API documentation lacking. Existing comments contradict changed code.
+- Low: Missing JSDoc on internal utilities. No inline comments on non-complex code.
+
+Ignore when:
+- No JSDoc on private/internal functions (type signature is sufficient)
+- Demanding comments on self-evident code (getUserById(id))
+- Missing documentation in test files
+- Missing documentation in generated code
+- Incomplete docs in WIP/draft PRs
+
+Good finding example:
+[High] src/sdk/client.ts:156 — createSession() options.timeout changed from ms to seconds in v2, but JSDoc still says "timeout in ms." External SDK users passing 1000 will wait 1000 seconds.
+→ Fix: Update JSDoc to "@param options.timeout — Session timeout in seconds (changed in v2)"
+
+Bad finding example (DO NOT write like this):
+[Low] src/sdk/client.ts:156 — Missing JSDoc.
+→ Fix: Add JSDoc.
 
 For each finding, output exactly:
 [Critical|High|Medium|Low] file:line — description
+→ Why: cite the specific severity calibration criterion that applies
 → Fix: one-line fix suggestion
+
+If your Why does not match the severity calibration criteria above, use a lower severity.
 
 Max 10 findings. If no issues found, output: [Info] No documentation issues detected.
 ```
 
 **errors:**
 ```
-Review this code from an error handling perspective.
-Focus: swallowed exceptions, missing error propagation, overly broad catch blocks,
-missing cleanup on failure, inconsistent error types, panic without recovery.
+{universal_principles}
+
+## Code Review: Error Handling
+
+Principles:
+1. All failures must be visible — Swallowed errors (empty catch, ignored error callbacks) make debugging impossible. Whether handled or propagated, every error must be recorded somewhere.
+2. Recover if possible; fail fast if not — Distinguish retryable errors (network timeout) from fatal errors (missing config). Silently replacing a fatal error with a default hides a bigger problem.
+3. Error information must be specific enough for the caller to respond — "Error occurred" carries no information. Include what operation failed, why, and what the caller can do about it.
+
+Judgment criteria:
+- Does a catch/except block swallow the error? (Empty block with no logging)
+- Is the error type overly broad? (catch(Exception) treating all errors identically)
+- Is resource cleanup (file handles, DB connections, temp files) missing on failure paths?
+- Does an error message expose sensitive internals (stack traces, DB schema) to users?
+
+Severity calibration:
+- Critical: Swallowed error causes data inconsistency. Error ignored mid-transaction leading to partial commit. Resource leak on failure causes service outage.
+- High: Failure silently ignored — appears as success to user but actually failed. Error message exposes sensitive information.
+- Medium: Error handling exists but incomplete. Only some error types handled, no retry logic for transient failures.
+- Low: Unclear error messages, generic error types. No functional impact but harder to debug.
+
+Ignore when:
+- Error intentionally ignored with reason documented in comment
+- Framework already has top-level error handler (Express error middleware, React error boundary)
+- Test code expecting errors in assertions (expect().toThrow())
+- Property access safely handled via optional chaining (?.)
+- Global error handler configured via logging framework
+
+Good finding example:
+[High] src/services/export.ts:92 — catch block only does console.log(err) and function returns undefined. Caller (line 45) passes return value to JSON.stringify(), so "undefined" string is sent to user.
+→ Fix: Throw ExportError in catch, or add null check in caller and return failure response
+
+Bad finding example (DO NOT write like this):
+[Medium] src/services/export.ts:92 — Error handling is inappropriate.
+→ Fix: Handle errors properly.
 
 For each finding, output exactly:
 [Critical|High|Medium|Low] file:line — description
+→ Why: cite the specific severity calibration criterion that applies
 → Fix: one-line fix suggestion
+
+If your Why does not match the severity calibration criteria above, use a lower severity.
 
 Max 10 findings. If no issues found, output: [Info] No error handling issues detected.
 ```
@@ -264,43 +517,77 @@ Max 10 findings. If no issues found, output: [Info] No error handling issues det
 
 ## Phase 4: SYNTHESIZE
 
-모든 에이전트가 완료되면 리더가 통합 보고서를 생성한다.
+Once all agents complete, the leader generates a consolidated report.
 
-### 1. 파싱
+### 1. Parse
 
-각 에이전트 결과에서 findings를 파싱:
+Parse findings from each agent's result:
 ```
 [Severity] file:line — description
+→ Why: ...
 → Fix: ...
 ```
 
-`[Info]` 라인은 건너뜀.
+Skip `[Info]` lines.
 
-### 2. 중복 제거
+### 2. Deduplicate + Consensus Promotion
 
-- 같은 `file:line`에서 다른 에이전트가 동일 문제를 보고한 경우 → 하나로 합치고 출처 렌즈를 모두 표기
-- 합쳐진 findings는 "consensus" 표시
+- If different agents report the same issue at the same `file:line` → merge into one and list all source lenses
+- Merged findings are marked as "consensus"
 
-### 3. 정렬
+**Consensus promotion rules:**
+| Agent Count | Action |
+|-------------|--------|
+| 1 | Keep original severity |
+| 2 | Promote severity one level (Medium → High) + `[consensus]` tag |
+| 3+ | Promote to maximum severity (up to Critical) + `[strong consensus]` tag |
 
-Critical → High → Medium → Low 순으로 정렬.
-같은 severity 내에서 consensus findings 우선.
+Promotion caps at Critical. Order: Low → Medium → High → Critical.
+Preserve pre-promotion severity in parentheses: `[High←Medium] [consensus] file:line — issue`
 
-### 4. --severity 필터 적용
+### 3. Challenge (Severity Validation)
 
-`--severity high` → High 이상만 출력. 카운트는 필터 전 전체 기준.
+Before sorting, the leader validates each finding's severity:
 
-### 5. 판정
+1. **Why-line check** — Does the Why line cite a specific criterion from the severity calibration?
+   - If Why is vague ("could be a problem", "best practice") → downgrade one level
+   - If Why is missing → downgrade one level
 
-| 조건 | 판정 |
-|------|------|
-| Critical 0개, High ≤ 2개 | LGTM |
-| Critical 0개, High > 2개 또는 Medium 다수 | Request Changes |
-| Critical 1개 이상 | Block |
+2. **Context check** — Does the finding account for existing defenses?
+   - If the code already has guards (try/catch, optional chaining, ORM, auth middleware) that the finding ignores → downgrade one level or remove
 
-### 6. 출력 형식
+3. **Reachability check** — Is the problem actually reachable in production?
+   - If the finding requires conditions that cannot occur given the call site (e.g., internal-only function, caller already validates) → downgrade one level or remove
 
-#### format: markdown (기본)
+4. **Impact check** — What is the actual blast radius?
+   - "Function crashes" in a CLI tool (user retries) vs. in a server (service down) → adjust severity to match actual impact
+
+Downgrade is capped at removal (cannot go below Low).
+Mark challenged findings with `[↓ severity←original] [challenged]` tag.
+Example: `[Low←Medium] [challenged] file:line — description`
+
+If all findings are removed after challenge, verdict is LGTM regardless of original counts.
+
+### 4. Sort
+
+Sort by Critical → High → Medium → Low.
+Within the same severity, consensus findings come first.
+
+### 5. Apply --severity Filter
+
+`--severity high` → Show only High and above. Counts are based on pre-filter totals.
+
+### 6. Verdict
+
+| Condition | Verdict |
+|-----------|---------|
+| 0 Critical, High ≤ 2 | LGTM |
+| 0 Critical, High > 2 or many Medium | Request Changes |
+| 1+ Critical | Block |
+
+### 7. Output Format
+
+#### format: markdown (default)
 
 ```
 🔍 [x-review] Complete — {N} agents, {M} findings
@@ -378,22 +665,22 @@ Verdict: {LGTM ✅ | Request Changes 🔄 | Block 🚫}
 
 ## Severity Definitions
 
-| Severity | 기준 |
-|----------|------|
-| **Critical** | 즉시 악용 가능한 보안 취약점, 데이터 손실 위험, 프로덕션 장애 유발 버그 |
-| **High** | 기능 결함, 미처리 에러 경로, 성능 심각 저하 (10x+ 느려짐) |
-| **Medium** | 코드 품질 문제, 경미한 성능 이슈, 불완전한 테스트 커버리지 |
-| **Low** | 스타일, 문서 누락, 개선 제안 |
+| Severity | Criteria |
+|----------|----------|
+| **Critical** | Immediately exploitable security vulnerability, data loss risk, production-breaking bug |
+| **High** | Feature defect, unhandled error path, severe performance degradation (10x+ slowdown) |
+| **Medium** | Code quality issue, minor performance problem, incomplete test coverage |
+| **Low** | Style, missing documentation, improvement suggestion |
 
 ---
 
 ## Data Directory
 
-리뷰 상태는 `.xm/review/`에 저장한다.
+Review state is stored in `.xm/review/`.
 
 ```
 .xm/review/
-└── last-result.json    # 최근 리뷰 결과 (판정, findings, 에이전트별 요약)
+└── last-result.json    # Latest review result (verdict, findings, per-agent summary)
 ```
 
 ### last-result.json Schema
@@ -429,27 +716,60 @@ Verdict: {LGTM ✅ | Request Changes 🔄 | Block 🚫}
 
 ## Shared Config Integration
 
-x-review는 `.xm/config.json`의 공유 설정을 참조한다:
+x-review references shared settings in `.xm/config.json`:
 
-| 설정 | 키 | 기본값 | 영향 |
-|------|-----|--------|------|
-| 에이전트 수 | `agent_max_count` | `4` | `--agents` 미지정 시 기본 에이전트 수 결정 |
+| Setting | Key | Default | Effect |
+|---------|-----|---------|--------|
+| Agent count | `agent_max_count` | `4` | Default agent count when `--agents` is not specified |
 
-`--agents`를 명시하면 shared config보다 우선한다.
+`--agents` takes precedence over shared config when explicitly provided.
 
 ---
 
-## x-build에서 사용하는 방법
+## Usage From x-build
 
-x-build Verify 페이즈에서 품질 게이트로 활용:
+Used as a quality gate in x-build's Verify phase:
 
 ```
-# Verify 페이즈에서 전체 diff 리뷰
+# Full diff review in the Verify phase
 /x-review diff HEAD~{step_count}
 
-# Block 판정이면 gate fail
-# LGTM / Request Changes이면 계속 진행
+# Block verdict = gate fail
+# LGTM / Request Changes = continue
 ```
+
+### x-build Verdict-to-Gate Mapping
+
+| x-review Verdict | x-build Action |
+|------------------|----------------|
+| LGTM | `x-build gate pass "x-review LGTM"` |
+| Request Changes | Show review results to user, re-review after fixes |
+| Block | `x-build gate fail "Critical issues found"` — blocks phase next |
+
+### x-eval Scoring Integration
+
+After review completion, findings can be auto-scored via x-eval:
+
+```
+/x-eval score ".xm/review/last-result.json" --rubric review-quality
+```
+
+`review-quality` rubric criteria:
+- **coverage** (0.30): Were all perspectives sufficiently covered
+- **actionability** (0.30): Are findings specific and fixable
+- **accuracy** (0.25): Are there no false positives
+- **severity-calibration** (0.15): Are severity levels appropriate
+
+### x-memory Integration
+
+Recurring Critical/High findings are auto-saved to x-memory:
+```
+x-memory save --type failure --title "SQL injection in auth module"
+  --why "x-review detected SQLi in 3 consecutive reviews"
+  --tags "security,auth,recurring"
+```
+
+Condition: Auto-suggested when Critical/High is found 2+ times at the same file/pattern.
 
 ---
 
@@ -457,10 +777,10 @@ x-build Verify 페이즈에서 품질 게이트로 활용:
 
 | User says | Command |
 |-----------|---------|
-| "PR 리뷰해줘" | `pr` (PR 번호 질문) |
-| "코드 리뷰해줘" | `diff` (HEAD~1 기본) |
-| "이 파일 리뷰" | `file <path>` |
-| "보안 취약점만 확인" | `diff --lenses "security"` |
-| "심각한 것만 보여줘" | `diff --severity high` |
-| "GitHub 코멘트 형식으로" | `diff --format github-comment` |
-| "사용법" | `list` |
+| "Review this PR" | `pr` (prompt for PR number) |
+| "Review the code" | `diff` (default HEAD~1) |
+| "Review this file" | `file <path>` |
+| "Check security only" | `diff --lenses "security"` |
+| "Show critical ones only" | `diff --severity high` |
+| "GitHub comment format" | `diff --format github-comment` |
+| "Usage" | `list` |

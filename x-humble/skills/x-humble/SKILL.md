@@ -4,28 +4,28 @@ description: Structured retrospective — reflect on failures together, find roo
 ---
 
 <Purpose>
-x-humble은 사용자와 에이전트가 함께 실패에서 배우는 구조화된 회고 시스템이다.
-규칙 생성이 아니라 **회고 과정 자체**가 핵심이다. 규칙은 부산물일 뿐.
+x-humble is a structured retrospective system where the user and agent learn from failures together.
+The **retrospective process itself** is the core, not rule generation. Rules are merely a byproduct.
 
-"겸손(humble) = 틀릴 수 있다는 걸 아는 것"
+"humble = knowing you can be wrong"
 </Purpose>
 
 <Use_When>
-- 세션 끝에 "뭘 잘못했지?", "회고해보자", "반성", "reflect"
-- 같은 실수가 반복될 때 "또 이러네", "왜 자꾸 이래"
-- 프로젝트 완료 후 "뭘 배웠지?", "다음엔 어떻게?"
-- 사용자가 "이거 아닌데"라고 여러 번 말했을 때
+- At session end: "what did I get wrong?", "let's reflect", "retrospect", "reflect"
+- When the same mistake repeats: "this again", "why does this keep happening"
+- After project completion: "what did we learn?", "how should we do it next time?"
+- When the user has said "that's not right" multiple times
 </Use_When>
 
 <Do_Not_Use_When>
-- 지금 당장 문제를 해결해야 할 때 (x-solver 사용)
-- 전략적 분석이 필요할 때 (x-op 사용)
-- 단순 피드백 저장 (Claude Code 내장 memory 사용)
+- When a problem needs to be solved right now (use x-solver)
+- When strategic analysis is needed (use x-op)
+- For simple feedback storage (use Claude Code built-in memory)
 </Do_Not_Use_When>
 
 # x-humble — Structured Retrospective
 
-실패에서 함께 배우는 구조화된 회고. 사용자도 배우고, 에이전트도 배운다.
+A structured retrospective to learn from failures together. The user learns, the agent learns.
 
 ## Arguments
 
@@ -33,357 +33,357 @@ User provided: $ARGUMENTS
 
 ## Routing
 
-`$ARGUMENTS`의 첫 단어:
-- `reflect` → [Session: reflect] — 이번 세션 회고
-- `review` → [Session: review] — 특정 실패/결정 회고
-- `lessons` → [View: lessons] — 축적된 교훈 조회
-- `apply` → [Action: apply] — 교훈을 CLAUDE.md에 적용
-- `history` → [View: history] — 회고 이력
-- 빈 입력 → [Session: reflect] — 기본값
+First word of `$ARGUMENTS`:
+- `reflect` → [Session: reflect] — Reflect on this session
+- `review` → [Session: review] — Reflect on a specific failure/decision
+- `lessons` → [View: lessons] — View accumulated lessons
+- `apply` → [Action: apply] — Apply a lesson to CLAUDE.md
+- `history` → [View: history] — Retrospective history
+- Empty input → [Session: reflect] — Default
 
 ---
 
 ## Session: reflect
 
-**이번 세션을 함께 돌아본다.** 5단계 구조화 회고.
+**Look back on this session together.** 5-phase structured retrospective.
 
-### Phase 0: CHECK-IN — 이전 약속 확인
+### Phase 0: CHECK-IN — Verify previous commitments
 
 > 🪞 [reflect] Phase 0: Check-In
 
-이전 회고에서 COMMIT한 항목이 있으면, 이행 여부를 먼저 확인한다.
+If there are items committed in a previous retrospective, verify compliance first.
 
-`.xm/humble/lessons/`에서 `status: "active"` 교훈을 로드:
+Load lessons with `status: "active"` from `.xm/humble/lessons/`:
 ```
-지난 회고에서 약속한 것들:
-- START: "코드 리뷰 전 체크리스트 작성" (L2, 2026-03-25)
-- STOP: "첫 접근에 고착하기" (L1, 2026-03-27)
+Commitments from previous retrospectives:
+- START: "Write checklist before code review" (L2, 2026-03-25)
+- STOP: "Fixating on first approach" (L1, 2026-03-27)
 
-이번 세션에서 실제로 지켰나요?
-1) 지켰음 — 효과가 있었음
-2) 지켰지만 — 효과 없었음 (교훈 재검토 필요)
-3) 못 지켰음 — 이유가 있음
-4) 이전 약속 없음 / 첫 회고
+Did you actually follow through this session?
+1) Kept — it was effective
+2) Kept but — it wasn't effective (lesson needs re-evaluation)
+3) Didn't keep — there's a reason
+4) No previous commitments / first retrospective
 ```
 
-- "지켰음 + 효과" → `confirmed_count++`, REINFORCE
-- "지켰지만 효과 없음" → 이번 회고에서 교훈 재검토 대상으로 표시
-- "못 지켰음" → 이유를 Phase 3 ANALYZE에서 함께 분석
+- "Kept + effective" → `confirmed_count++`, REINFORCE
+- "Kept but not effective" → Mark as re-evaluation target in this retrospective
+- "Didn't keep" → Analyze the reason together in Phase 3 ANALYZE
 
-> 이전 약속이 없으면 Phase 0을 스킵하고 Phase 1로 직행.
+> If no previous commitments exist, skip Phase 0 and go straight to Phase 1.
 
-### Phase 1: RECALL — 무엇을 했는가
+### Phase 1: RECALL — What did we do
 
 > 🪞 [reflect] Phase 1: Recall
 
-리더가 이번 세션의 대화 흐름을 요약:
-- 사용자의 요청 목록
-- 에이전트의 주요 판단/행동
-- 결과물 (코드, 문서, 분석 등)
+The leader summarizes the conversation flow of this session:
+- List of user requests
+- Agent's key judgments/actions
+- Deliverables (code, documents, analysis, etc.)
 
 ```
-📋 이번 세션 요약
+📋 Session Summary
 
-| # | 요청 | 행동 | 결과 |
-|---|------|------|------|
-| 1 | API 설계 | refine 4 rounds | 채택안 도출 |
-| 2 | 코드 구현 | scaffold 3 modules | 구현 완료 |
-| 3 | 리뷰 | review 5 agents | 이슈 8개 발견 |
+| # | Request | Action | Result |
+|---|---------|--------|--------|
+| 1 | API design | refine 4 rounds | Adopted proposal derived |
+| 2 | Code implementation | scaffold 3 modules | Implementation complete |
+| 3 | Review | review 5 agents | 8 issues found |
 ```
 
-### Phase 2: IDENTIFY — 무엇이 잘 안 됐는가
+### Phase 2: IDENTIFY — What didn't go well
 
 > 🪞 [reflect] Phase 2: Identify
 
-사용자에게 질문 (AskUserQuestion):
+Ask the user (AskUserQuestion):
 ```
-이번 세션에서 불편하거나 아쉬웠던 점이 있나요?
-1) 결과물 품질이 기대 이하
-2) 같은 실수를 반복함
-3) 방향이 잘못되어 되돌아감
-4) 특별히 없음 (잘 됐음)
-```
-
-"없음" → Phase 5로 건너뛰기 (성공 회고).
-
-사용자가 선택하면 구체적으로 물어본다:
-```
-어떤 부분이 가장 아쉬웠나요? 구체적으로 알려주세요.
+Was there anything uncomfortable or disappointing in this session?
+1) Deliverable quality below expectations
+2) Repeated the same mistake
+3) Went the wrong direction and had to backtrack
+4) Nothing in particular (it went well)
 ```
 
-### Phase 3: ANALYZE — 왜 그런 판단을 했는가
+"Nothing" → Skip to Phase 5 (success retrospective).
+
+When the user selects, ask for specifics:
+```
+Which part was most disappointing? Please be specific.
+```
+
+### Phase 3: ANALYZE — Why was that judgment made
 
 > 🪞 [reflect] Phase 3: Analyze (Root Cause)
 
-**에이전트가 자신의 판단 과정을 솔직하게 분석한다.** 이것이 x-humble의 핵심.
+**The agent honestly analyzes its own judgment process.** This is the core of x-humble.
 
-**Cross-Session Pattern Detection**: 분석 전에 `.xm/humble/retrospectives/`에서 과거 회고를 검색하여 유사 패턴이 있는지 확인한다. 동일 편향 태그가 이전에 등장했으면 명시적으로 지적:
+**Cross-Session Pattern Detection**: Before analysis, search `.xm/humble/retrospectives/` for past retrospectives to check for similar patterns. If the same bias tag appeared previously, explicitly call it out:
 ```
-"⚠ 이 패턴은 이전 회고에서도 등장했습니다:
-- 2026-03-25: confirmation_bias (기술 선택 시)
-- 2026-03-20: confirmation_bias (아키텍처 결정 시)
-이번이 3번째입니다."
+"⚠ This pattern has appeared in previous retrospectives:
+- 2026-03-25: confirmation_bias (during tech stack selection)
+- 2026-03-20: confirmation_bias (during architecture decision)
+This is the 3rd occurrence."
 ```
 
-delegate (foreground, opus 권장):
+delegate (foreground, opus recommended):
 ```
 "## Root Cause Analysis
 
-실패/아쉬움:
-{Phase 2에서 식별된 문제}
+Failure/disappointment:
+{Problem identified in Phase 2}
 
-과거 유사 패턴:
-{Cross-Session Pattern 검색 결과, 없으면 '첫 발생'}
+Past similar patterns:
+{Cross-Session Pattern search results, or 'first occurrence' if none}
 
-이 세션의 맥락:
-{Phase 1 요약}
+This session's context:
+{Phase 1 summary}
 
-솔직하게 분석하라:
-1. 왜 그 판단을 했는가? (어떤 정보에 기반했는가)
-2. 어떤 정보가 부족했는가? (모르는 걸 몰랐는가, 아니면 알면서 무시했는가)
-3. 어떤 편향이 작용했는가?
-   - 과잉 자신감: 확실하지 않은데 확신한 것
-   - 앵커링: 첫 번째 접근법에 고착된 것
-   - 사용자 동조: 사용자가 원하는 답을 하려 한 것
-   - 복잡성 편향: 단순한 해결책을 무시하고 복잡하게 간 것
-4. 외부 제약이 있었는가? (컨텍스트 부족, 도구 한계, 시간 압박)
+Analyze honestly:
+1. Why was that judgment made? (What information was it based on?)
+2. What information was missing? (Didn't know what you didn't know, or knowingly ignored it?)
+3. What biases were at play?
+   - Overconfidence: Being certain about something uncertain
+   - Anchoring: Fixating on the first approach
+   - User appeasement: Trying to give the answer the user wants
+   - Complexity bias: Ignoring simple solutions and overcomplicating
+4. Were there external constraints? (Lack of context, tool limitations, time pressure)
 
-형식:
-## 판단 경로
-{어떤 시점에 어떤 판단을 했는지}
+Format:
+## Judgment Path
+{What judgment was made at what point}
 
-## 실패 원인
-{가장 근본적인 원인 1-2개}
+## Failure Cause
+{1-2 most fundamental causes}
 
-## 편향 분석
-{작용한 편향과 증거}
+## Bias Analysis
+{Biases at play and evidence}
 
-300단어 이내. 변명하지 말고 솔직하게."
+300 words max. No excuses, be honest."
 ```
 
-분석 결과를 사용자에게 표시한다.
+Show the analysis results to the user.
 
-**편안한 도전자 역할**: 사용자가 자기 합리화를 시도하면 (환경 탓, 시간 부족 탓 등), 에이전트가 부드럽지만 직접적으로 도전한다:
+**Comfortable Challenger Role**: If the user attempts self-rationalization (blaming environment, lack of time, etc.), the agent challenges gently but directly:
 ```
-"지금 설명은 외부 환경 요인이 많습니다.
-본인의 결정 중 바꿀 수 있었던 것 하나만 꼽는다면?"
-```
-
-피드백 요청:
-```
-이 분석이 맞나요? 다른 원인이 있었을까요?
+"Your explanation cites many external factors.
+If you had to name one decision of your own that could have been different?"
 ```
 
-### Phase 4: ALTERNATIVE — 어떻게 했어야 했는가
+Request feedback:
+```
+Is this analysis correct? Could there be other causes?
+```
+
+### Phase 4: ALTERNATIVE — What should have been done
 
 > 🪞 [reflect] Phase 4: Alternative (Counterfactual)
 
-**반사실적 추론 — 다른 경로를 탐색한다.**
+**Counterfactual reasoning — explore alternative paths.**
 
-**Steelman Protocol**: 에이전트가 대안을 제시하기 전에, 먼저 사용자에게 묻는다:
+**Steelman Protocol**: Before the agent proposes alternatives, ask the user first:
 ```
-"만약 다시 한다면, 다르게 했을 한 가지는 무엇인가요?"
+"If you could do it over, what one thing would you do differently?"
 ```
-사용자 응답을 수집한 후, 에이전트가 사용자의 대안을 최대한 강하게 구성(steelman)하고 추가 대안을 보완한다.
+After collecting the user's response, the agent steelmans the user's alternative and supplements with additional alternatives.
 
 broadcast (3 agents):
 ```
-Agent 1 (같은 접근, 다른 실행):
-"같은 전략을 선택했지만 실행 방식이 달랐다면?
-문제: {Phase 2 문제}
-실제 행동: {Phase 3 판단 경로}
-같은 방향에서 더 나은 실행 방법은? 200단어 이내."
+Agent 1 (same approach, different execution):
+"What if the same strategy was chosen but executed differently?
+Problem: {Phase 2 problem}
+Actual action: {Phase 3 judgment path}
+A better way to execute within the same direction? 200 words max."
 
-Agent 2 (완전히 다른 접근):
-"처음부터 완전히 다른 접근을 택했다면?
-문제: {Phase 2 문제}
-실제 접근: {Phase 3 판단 경로}
-근본적으로 다른 접근법은? 200단어 이내."
+Agent 2 (completely different approach):
+"What if a completely different approach was taken from the start?
+Problem: {Phase 2 problem}
+Actual approach: {Phase 3 judgment path}
+A fundamentally different approach? 200 words max."
 
-Agent 3 (최소 개입):
-"가장 단순한 해결책은 무엇이었는가?
-문제: {Phase 2 문제}
-실제 행동: {Phase 3 판단 경로}
-오컴의 면도날 — 가장 적은 노력으로 해결하는 방법은? 200단어 이내."
+Agent 3 (minimal intervention):
+"What was the simplest solution?
+Problem: {Phase 2 problem}
+Actual action: {Phase 3 judgment path}
+Occam's razor — the least effort to solve it? 200 words max."
 ```
 
-리더가 3개 대안을 종합하여 표시:
+The leader synthesizes and displays the 3 alternatives:
 
 ```
-🔄 대안 경로
+🔄 Alternative Paths
 
-| # | 접근 | 예상 결과 | 비용 |
-|---|------|----------|------|
-| 1 | 같은 방향, 더 나은 실행 | ... | 낮음 |
-| 2 | 완전히 다른 접근 | ... | 높음 |
-| 3 | 최소 개입 | ... | 최저 |
+| # | Approach | Expected Result | Cost |
+|---|----------|----------------|------|
+| 1 | Same direction, better execution | ... | Low |
+| 2 | Completely different approach | ... | High |
+| 3 | Minimal intervention | ... | Lowest |
 ```
 
-사용자에게 질문:
+Ask the user:
 ```
-다음에 비슷한 상황이 오면 어떤 접근이 좋을까요?
-1) 대안 1 — ...
-2) 대안 2 — ...
-3) 대안 3 — ...
-4) 원래 접근이 맞았음 — 실행만 개선
+If a similar situation arises next time, which approach would be best?
+1) Alternative 1 — ...
+2) Alternative 2 — ...
+3) Alternative 3 — ...
+4) The original approach was correct — just improve execution
 ```
 
-### Phase 5: COMMIT — 무엇을 바꿀 것인가
+### Phase 5: COMMIT — What to change
 
 > 🪞 [reflect] Phase 5: Commit
 
-회고 결과를 교훈(lesson)으로 정리한다. **규칙 강제가 아니라 교훈 공유.**
+Organize retrospective results into lessons. **Lesson sharing, not rule enforcement.**
 
 ```
 🪞 [reflect] Complete
 
-## 교훈
-{Phase 3-4에서 도출된 핵심 인사이트}
+## Lessons
+{Key insights derived from Phases 3-4}
 
-## 행동 변화
-- KEEP: {계속할 것}
-- STOP: {멈출 것}
-- START: {시작할 것}
+## Behavior Changes
+- KEEP: {What to continue}
+- STOP: {What to stop}
+- START: {What to start}
 
-## 적용 여부
-이 교훈을 CLAUDE.md에 저장할까요?
-1) 저장 — 다음 세션부터 자동 적용
-2) 기억만 — .xm/humble/에 기록만 (자동 적용 안 함)
-3) 무시 — 이번만의 상황, 일반화 불필요
+## Application
+Save this lesson to CLAUDE.md?
+1) Save — Auto-apply from next session
+2) Record only — Store in .xm/humble/ only (no auto-apply)
+3) Ignore — Situational, no need to generalize
 ```
 
-사용자가 "저장"을 선택하면:
+When the user selects "Save":
 ```
-CLAUDE.md에 추가:
+Add to CLAUDE.md:
 ## Lessons (x-humble)
-- STOP: {멈출 것} — {근거, 날짜}
-- START: {시작할 것} — {근거, 날짜}
+- STOP: {What to stop} — {rationale, date}
+- START: {What to start} — {rationale, date}
 ```
 
 ---
 
 ## Session: review
 
-**특정 실패나 결정을 깊이 회고한다.** reflect보다 좁고 깊다.
+**Deeply reflect on a specific failure or decision.** Narrower and deeper than reflect.
 
-### 사용법
+### Usage
 
 ```
-/x-humble review "왜 scaffold 대신 distribute를 선택했는가"
-/x-humble review "테스트 누락한 이유"
+/x-humble review "Why was distribute chosen over scaffold"
+/x-humble review "Reason for missing tests"
 ```
 
-### 실행
+### Execution
 
-Phase 3 (Analyze) + Phase 4 (Alternative)만 실행:
-- 특정 판단 시점을 찾아 맥락을 복원
-- 그 시점의 판단 경로를 분석
-- 대안을 탐색
-- 교훈 도출
+Run only Phase 3 (Analyze) + Phase 4 (Alternative):
+- Find the specific decision point and restore context
+- Analyze the judgment path at that point
+- Explore alternatives
+- Derive lessons
 
 ---
 
 ## View: lessons
 
-**축적된 교훈을 조회한다.**
+**View accumulated lessons.**
 
 ```
 /x-humble lessons
 
 🪞 Lessons (5 total)
 
-Active (CLAUDE.md에 적용 중):
-  [L1] STOP: 첫 접근에 고착하기 (2026-03-27, 3회 확인)
-  [L2] START: 구현 전 --dry-run 확인 (2026-03-25, 2회 확인)
+Active (applied to CLAUDE.md):
+  [L1] STOP: Fixating on first approach (2026-03-27, confirmed 3 times)
+  [L2] START: Run --dry-run before implementation (2026-03-25, confirmed 2 times)
 
-Recorded (기록만):
-  [L3] KEEP: PRD 생성 후 consensus 검토 (2026-03-27)
-  [L4] STOP: 에러 메시지 무시하고 재시도 (2026-03-26)
-  [L5] START: 사용자 피드백 즉시 반영 (2026-03-24)
+Recorded (stored only):
+  [L3] KEEP: Consensus review after PRD generation (2026-03-27)
+  [L4] STOP: Ignoring error messages and retrying (2026-03-26)
+  [L5] START: Immediately reflect user feedback (2026-03-24)
 
 Stats:
-  회고 횟수: 8
-  교훈 생성: 5 (active: 2, recorded: 3)
-  반복 실수 감소: 측정 중
+  Retrospectives: 8
+  Lessons created: 5 (active: 2, recorded: 3)
+  Repeated mistake reduction: measuring
 ```
 
-### 교훈 강화/약화
+### Lesson Reinforcement/Weakening
 
-동일 교훈이 다른 세션에서 다시 확인되면 자동 강화:
+When the same lesson is confirmed in a different session, it is automatically reinforced:
 ```
-[L4] STOP: 에러 메시지 무시 (confirmed: 3회)
-  → 3회 이상 확인 → CLAUDE.md 적용 제안
-```
-
-#### 자동 활성화 규칙
-
-| 조건 | 동작 |
-|------|------|
-| `confirmed_count >= 3` | `status: "recorded"` → `"active"` 자동 승격, CLAUDE.md 적용 제안 |
-| `confirmed_count >= 5` | 자동으로 CLAUDE.md에 주입 (사용자 확인 없이) |
-| `confirmed_count == 1` + 30일 미확인 | `"⚠ 이 교훈이 여전히 유효한가요?"` 확인 요청 |
-| `deprecated` 후 재확인 | `status: "deprecated"` → `"recorded"` 복구 + `confirmed_count` 리셋 |
-
-승격 시 메시지:
-```
-🎓 [L4] "에러 메시지 무시" — 3회 확인됨. active로 승격합니다.
-   CLAUDE.md에 적용할까요? (y/N)
+[L4] STOP: Ignoring error messages (confirmed: 3 times)
+  → Confirmed 3+ times → Suggest applying to CLAUDE.md
 ```
 
-교훈이 틀렸다고 판명되면:
+#### Auto-Activation Rules
+
+| Condition | Action |
+|-----------|--------|
+| `confirmed_count >= 3` | Auto-promote `status: "recorded"` → `"active"`, suggest CLAUDE.md application |
+| `confirmed_count >= 5` | Auto-inject into CLAUDE.md (without user confirmation) |
+| `confirmed_count == 1` + 30 days unconfirmed | `"⚠ Is this lesson still valid?"` confirmation request |
+| Re-confirmed after `deprecated` | Restore `status: "deprecated"` → `"recorded"` + reset `confirmed_count` |
+
+Promotion message:
 ```
-/x-humble lessons deprecate L2 --reason "dry-run이 오히려 비효율"
+🎓 [L4] "Ignoring error messages" — Confirmed 3 times. Promoting to active.
+   Apply to CLAUDE.md? (y/N)
+```
+
+When a lesson is found to be wrong:
+```
+/x-humble lessons deprecate L2 --reason "dry-run was actually inefficient"
 ```
 
 ---
 
 ## Action: apply
 
-**교훈을 CLAUDE.md에 수동 적용/해제한다.**
+**Manually apply/remove lessons to/from CLAUDE.md.**
 
 ```
-/x-humble apply L3          # L3 교훈을 CLAUDE.md에 추가
-/x-humble apply --remove L2 # L2 교훈을 CLAUDE.md에서 제거
+/x-humble apply L3          # Add lesson L3 to CLAUDE.md
+/x-humble apply --remove L2 # Remove lesson L2 from CLAUDE.md
 ```
 
-### CLAUDE.md 주입 형식
+### CLAUDE.md Injection Format
 
 ```markdown
 ## Lessons (x-humble)
-<!-- x-humble이 관리하는 섹션. 수동 편집 가능. -->
-- STOP: 첫 접근에 고착하기. 최소 2개 대안을 먼저 고려. (L1, 3회 확인, 2026-03-27)
-- START: 구현 전 --dry-run으로 계획 확인. (L2, 2회 확인, 2026-03-25)
+<!-- Section managed by x-humble. Manual editing allowed. -->
+- STOP: Fixating on first approach. Consider at least 2 alternatives first. (L1, confirmed 3 times, 2026-03-27)
+- START: Verify plan with --dry-run before implementation. (L2, confirmed 2 times, 2026-03-25)
 ```
 
-### CLAUDE.md 동기화 규칙
+### CLAUDE.md Sync Rules
 
-리더가 `apply` 실행 시 아래 규칙을 따른다:
+The leader follows these rules when executing `apply`:
 
-1. **섹션 탐색**: CLAUDE.md에서 `## Lessons (x-humble)` 섹션을 찾는다
-2. **섹션 없으면**: 파일 끝에 섹션을 새로 생성한다
-3. **중복 방지**: 동일 lesson ID(L{N})가 이미 있으면 업데이트, 없으면 추가
-4. **제거**: `--remove` 시 해당 줄을 삭제. 섹션이 비면 섹션 자체 유지 (빈 상태)
-5. **형식**: `- {TYPE}: {내용} (L{N}, {confirmed}회 확인, {date})`
-6. **순서**: KEEP → STOP → START 순서로 정렬
+1. **Find section**: Locate the `## Lessons (x-humble)` section in CLAUDE.md
+2. **If section missing**: Create a new section at the end of the file
+3. **Prevent duplicates**: If the same lesson ID (L{N}) already exists, update it; otherwise add
+4. **Removal**: On `--remove`, delete the corresponding line. If section becomes empty, keep the section (empty state)
+5. **Format**: `- {TYPE}: {content} (L{N}, confirmed {count} times, {date})`
+6. **Order**: Sort as KEEP → STOP → START
 
-### x-eval judge 컨텍스트 연동
+### x-eval Judge Context Integration
 
-`confirmed_count >= 3`인 active 교훈은 x-eval의 judge 프롬프트에 선택적으로 주입된다:
+Active lessons with `confirmed_count >= 3` are optionally injected into x-eval's judge prompt:
 
 ```
 ## Context: Active Lessons (x-humble)
-아래 교훈은 이 프로젝트에서 반복 확인된 패턴입니다. 채점 시 참고하세요:
-- STOP: 에러 메시지 무시 (3회 확인)
-- START: 구현 전 dry-run (5회 확인)
+The following lessons are repeatedly confirmed patterns in this project. Consider them when scoring:
+- STOP: Ignoring error messages (confirmed 3 times)
+- START: dry-run before implementation (confirmed 5 times)
 ```
 
-이 컨텍스트는 x-eval `score` 명령의 `--context` 옵션으로 전달되며, judge의 독립성을 해치지 않도록 "참고" 수준으로만 제공한다.
+This context is passed via the `--context` option of x-eval's `score` command. It is provided only as a "reference" to avoid compromising the judge's independence.
 
 ---
 
 ## View: history
 
-**회고 이력을 조회한다.**
+**View retrospective history.**
 
 ```
 /x-humble history
@@ -392,9 +392,9 @@ Stats:
 
 | # | Date | Type | Topic | Lessons |
 |---|------|------|-------|---------|
-| 1 | 03-27 | reflect | x-kit 리네이밍 세션 | L1, L3 |
-| 2 | 03-26 | review | scaffold vs distribute 선택 | L4 |
-| 3 | 03-25 | reflect | x-build PRD 파이프라인 | L2, L5 |
+| 1 | 03-27 | reflect | x-kit renaming session | L1, L3 |
+| 2 | 03-26 | review | scaffold vs distribute choice | L4 |
+| 3 | 03-25 | reflect | x-build PRD pipeline | L2, L5 |
 ```
 
 ---
@@ -403,11 +403,11 @@ Stats:
 
 ```
 .xm/humble/
-├── retrospectives/           # 회고 기록
+├── retrospectives/           # Retrospective records
 │   └── {timestamp}-{type}.json
-├── lessons/                  # 교훈
+├── lessons/                  # Lessons
 │   └── {id}.json
-└── stats.json                # 통계
+└── stats.json                # Statistics
 ```
 
 ### Lesson Schema
@@ -416,8 +416,8 @@ Stats:
 {
   "id": "L1",
   "type": "STOP" | "START" | "KEEP",
-  "content": "첫 접근에 고착하기",
-  "reason": "앵커링 편향으로 3회 연속 같은 실수",
+  "content": "Fixating on first approach",
+  "reason": "Same mistake 3 times in a row due to anchoring bias",
   "source_retrospective": "2026-03-27T12:00:00Z-reflect",
   "confirmed_count": 3,
   "status": "active" | "recorded" | "deprecated",
@@ -441,14 +441,14 @@ Stats:
     { "bias": "confirmation_bias", "context": "tech-stack", "severity": "high" }
   ],
   "alternatives_explored": 3,
-  "user_alternative": "사용자가 제시한 대안 (steelman)",
+  "user_alternative": "Alternative proposed by user (steelman)",
   "user_choice": "alternative-1",
   "lessons_created": ["L1"],
   "commitment_checkin": {
     "previous_lessons": ["L1", "L2"],
     "kept": ["L1"],
     "broken": ["L2"],
-    "reason": "시간 부족"
+    "reason": "Lack of time"
   },
   "user_satisfaction": "helpful" | "neutral" | "unhelpful"
 }
@@ -456,49 +456,49 @@ Stats:
 
 ---
 
-## 성공 회고 (Phase 2에서 "없음" 선택 시)
+## Success Retrospective (when "Nothing" is selected in Phase 2)
 
-실패만 회고하지 않는다. 성공에서도 배운다.
+Failures are not the only thing worth reflecting on. Learn from successes too.
 
 ```
-🪞 [reflect] 성공 회고
+🪞 [reflect] Success Retrospective
 
-이번 세션에서 잘 된 점:
-| # | 판단 | 왜 잘 됐는가 |
-|---|------|-------------|
-| 1 | PRD consensus 활용 | critic의 피드백이 빠진 부분을 채움 |
-| 2 | --verify로 품질 보장 | 첫 결과 6.2 → 재시도 7.8 |
+What went well this session:
+| # | Judgment | Why it worked |
+|---|---------|---------------|
+| 1 | Used PRD consensus | Critic's feedback filled in gaps |
+| 2 | Quality assured via --verify | Initial result 6.2 → retry 7.8 |
 
-KEEP으로 기록할까요?
-1) KEEP: consensus 검토 활용 → 교훈 저장
-2) 기록만
-3) 무시
+Record as KEEP?
+1) KEEP: Use consensus review → Save as lesson
+2) Record only
+3) Ignore
 ```
 
 ---
 
-## 편향 사전
+## Bias Dictionary
 
-Phase 3에서 사용하는 인지 편향 목록:
+List of cognitive biases used in Phase 3:
 
-| 편향 | 설명 | 감지 신호 |
-|------|------|----------|
-| 앵커링 | 첫 번째 접근에 고착 | 대안 탐색 없이 직진 |
-| 과잉 자신감 | 불확실한데 확신 | "확실히", "반드시" 사용하면서 틀림 |
-| 사용자 동조 | 원하는 답 맞추기 | 사용자 암시에 비판 없이 따름 |
-| 복잡성 편향 | 단순한 해결책 무시 | 3줄로 될 걸 30줄로 구현 |
-| 매몰 비용 | 잘못된 경로를 포기 못함 | "이미 여기까지 왔으니" |
-| 확증 편향 | 맞는 증거만 찾음 | 반례를 무시하거나 축소 |
-| 가용성 편향 | 최근/익숙한 것만 추천 | 항상 같은 패턴/라이브러리 제안 |
+| Bias | Description | Detection Signal |
+|------|-------------|-----------------|
+| Anchoring | Fixating on the first approach | Charging ahead without exploring alternatives |
+| Overconfidence | Certainty despite uncertainty | Using "definitely", "must be" while being wrong |
+| User appeasement | Matching the desired answer | Following user hints without critique |
+| Complexity bias | Ignoring simple solutions | Implementing in 30 lines what could be 3 |
+| Sunk cost | Unable to abandon a wrong path | "We've already come this far" |
+| Confirmation bias | Seeking only supporting evidence | Ignoring or minimizing counterexamples |
+| Availability bias | Recommending only recent/familiar things | Always suggesting the same patterns/libraries |
 
 ---
 
 ## Shared Config Integration
 
 ```
-.xm/config.json의 설정:
-- mode: developer | normal (회고 출력 스타일)
-- agent_max_count: Phase 4 대안 탐색 에이전트 수 (기본 3)
+Settings in .xm/config.json:
+- mode: developer | normal (retrospective output style)
+- agent_max_count: Number of agents for Phase 4 alternative exploration (default 3)
 ```
 
 ---
@@ -507,9 +507,9 @@ Phase 3에서 사용하는 인지 편향 목록:
 
 | User says | Command |
 |-----------|---------|
-| "회고하자", "돌아보자", "reflect" | `reflect` |
-| "왜 그렇게 했어?", "그 판단 왜?" | `review "해당 판단"` |
-| "뭘 배웠지?", "교훈 보여줘" | `lessons` |
-| "이거 CLAUDE.md에 넣어줘" | `apply L{N}` |
-| "회고 이력" | `history` |
-| "그 교훈 틀렸어" | `lessons deprecate L{N}` |
+| "let's reflect", "look back", "reflect" | `reflect` |
+| "why did you do that?", "why that judgment?" | `review "the judgment in question"` |
+| "what did we learn?", "show lessons" | `lessons` |
+| "put this in CLAUDE.md" | `apply L{N}` |
+| "retrospective history" | `history` |
+| "that lesson was wrong" | `lessons deprecate L{N}` |

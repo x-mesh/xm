@@ -4,16 +4,16 @@ description: Structured problem solving — decompose, iterate, constrain, or au
 ---
 
 <Purpose>
-x-solver는 복잡한 문제를 구조적으로 해결한다. 문제 유형을 자동 감지하여 최적 전략을 추천하되, 수동 선택도 가능하다.
-4가지 전략: 분해(decompose), 반복(iterate), 제약(constrain), 자동(pipeline).
-Stateful — 문제 상태를 `.xm/solver/`에 저장하여 세션 간 연속성 유지.
+x-solver solves complex problems structurally. It auto-detects problem types and recommends optimal strategies, with manual selection also available.
+4 strategies: decompose, iterate, constrain, pipeline (auto).
+Stateful — persists problem state to `.xm/solver/` for cross-session continuity.
 </Purpose>
 
 <Use_When>
 - User wants to solve a complex problem structurally
-- User says "문제 해결", "분석해줘", "버그 찾아줘", "어떤 방법이 나을까"
+- User says "solve this", "analyze this", "find the bug", "which approach is better"
 - User describes a bug, error, design question, or multi-faceted problem
-- User says "solve", "debug", "decompose", "어떻게 해야 하지"
+- User says "solve", "debug", "decompose", "how should I do this"
 </Use_When>
 
 <Do_Not_Use_When>
@@ -44,7 +44,7 @@ Shorthand in this document: `$XMS` = `node ${CLAUDE_PLUGIN_ROOT}/lib/x-solver-cl
 
 ## Routing
 
-Parse `$ARGUMENTS`의 첫 단어로 명령을 결정한다:
+Parse the first word of `$ARGUMENTS` to determine the command:
 
 - `init` → [Command: init]
 - `list` → Run `$XMS list`
@@ -65,44 +65,44 @@ Parse `$ARGUMENTS`의 첫 단어로 명령을 결정한다:
 - `history` → Run `$XMS history`
 - `next` → [Command: next]
 - `handoff` → Run `$XMS handoff [--restore]`
-- 빈 입력 → 사용자에게 문제 설명 질문 (AskUserQuestion)
-- 그 외 자연어 → [Command: auto] 문제 설명으로 간주하여 `init` + `classify`
+- Empty input → Ask the user to describe the problem (AskUserQuestion)
+- Other natural language → [Command: auto] Treat as problem description and run `init` + `classify`
 
 ## Natural Language Mapping
 
 | User says | Action |
 |-----------|--------|
-| "이 버그 좀 해결해줘" | init → classify (likely iterate) |
-| "어떤 방법이 나을까" | init → classify (likely constrain) |
-| "이 문제 분석해줘" | init → classify (pipeline) |
-| "분해해서 풀어봐" | init → strategy set decompose → solve |
-| "가설 추가" | hypotheses add |
-| "트리 보여줘" | tree show |
-| "후보 목록" | candidates list |
-| "검증해봐" | verify |
-| "다음은?" | next |
+| "Help me fix this bug" | init → classify (likely iterate) |
+| "Which approach is better" | init → classify (likely constrain) |
+| "Analyze this problem" | init → classify (pipeline) |
+| "Break it down and solve" | init → strategy set decompose → solve |
+| "Add hypothesis" | hypotheses add |
+| "Show the tree" | tree show |
+| "List candidates" | candidates list |
+| "Verify it" | verify |
+| "What's next?" | next |
 
 ---
 
 ## Agent Primitives
 
-이 스킬은 Claude Code 내장 Agent tool만 사용한다:
+This skill uses only Claude Code's built-in Agent tool:
 
-### fan-out (병렬 에이전트)
-하나의 메시지에서 N개의 Agent tool을 **동시에** 호출:
+### fan-out (parallel agents)
+Call N Agent tools **simultaneously** in a single message:
 ```
 Agent tool 1: { description: "agent-1", prompt: "...", run_in_background: true, model: "sonnet" }
 Agent tool 2: { description: "agent-2", prompt: "...", run_in_background: true, model: "sonnet" }
 Agent tool 3: { description: "agent-3", prompt: "...", run_in_background: true, model: "sonnet" }
 ```
 
-### delegate (단일 에이전트 위임)
+### delegate (single agent delegation)
 ```
-Agent tool: { description: "역할명", prompt: "...", run_in_background: false, model: "opus" }
+Agent tool: { description: "role name", prompt: "...", run_in_background: false, model: "opus" }
 ```
 
-### broadcast (각각 다른 프롬프트)
-fan-out과 동일하되 각 에이전트에게 다른 프롬프트 전달.
+### broadcast (different prompts to each)
+Same as fan-out but with a different prompt for each agent.
 
 ---
 
@@ -110,339 +110,430 @@ fan-out과 동일하되 각 에이전트에게 다른 프롬프트 전달.
 
 1. Run: `$XMS init "problem description"`
 2. Parse JSON output (`action: "init"`)
-3. 사용자에게 추가 정보 질문 (AskUserQuestion):
-   - 문제의 배경/맥락
-   - 관련 코드/파일
-   - 제약조건
-4. 답변 수집 후:
+3. Ask the user for additional information (AskUserQuestion):
+   - Background/context of the problem
+   - Related code/files
+   - Constraints
+4. After collecting answers:
    ```bash
    $XMS context add --content "..." --type code
    $XMS constraints add "constraint" --type hard
    ```
-5. 자동으로 classify 실행
+5. Automatically run classify
 
 ## Command: classify
 
 1. Run: `$XMS classify`
 2. Parse JSON output (`action: "classify"`)
-3. **Confidence 체크**:
+3. **Confidence check**:
 
 ### High confidence (≥ 0.7)
-규칙 기반 결과를 그대로 사용:
-- 사용자에게 결과 표시 (추천 전략, 신뢰도, 이유)
-- AskUserQuestion으로 전략 선택
+Use the rule-based result as-is:
+- Show the result to the user (recommended strategy, confidence, reasoning)
+- AskUserQuestion for strategy selection
 
 ### Low confidence (< 0.7) — LLM Fallback
-규칙만으로 확신이 부족할 때 에이전트에게 분류를 위임:
+When rules alone are insufficient, delegate classification to an agent:
 
 delegate (foreground, sonnet):
 ```
 "## Problem Classification
 
-문제 설명:
+Problem description:
 {description}
 
-컨텍스트:
-{context items 요약}
+Context:
+{context items summary}
 
-제약조건:
-{constraints 목록}
+Constraints:
+{constraints list}
 
-규칙 기반 사전 분석:
-- 감지된 시그널: {signals 요약}
-- 사전 추천: {recommended} (confidence: {confidence}%)
+Rule-based pre-analysis:
+- Detected signals: {signals summary}
+- Pre-recommendation: {recommended} (confidence: {confidence}%)
 
-이 문제에 가장 적합한 전략을 선택하고 이유를 설명하라:
-1. decompose — 복잡한 문제를 하위 문제로 분해
-2. iterate — 가설→검증→개선 반복 (버그, 성능)
-3. constrain — 제약 조건 기반 후보 평가 (설계 결정)
-4. pipeline — 자동 라우팅
+Choose the most suitable strategy for this problem and explain why:
+1. decompose — Break complex problems into sub-problems
+2. iterate — Hypothesis → Test → Refine loop (bugs, performance)
+3. constrain — Constraint-based candidate evaluation (design decisions)
+4. pipeline — Auto-routing
 
-추가로, 아래 x-op 전략이 더 적합할 수 있다면 제안하라:
-- hypothesis: 가설→반증→채택 (진단)
-- socratic: 질문 기반 심층 탐구 (불명확한 요구사항)
-- persona: 다관점 분석 (이해관계자 다양)
-- red-team: 보안 공격/방어 (보안 문제)
+Additionally, suggest if any of these x-op strategies would be more suitable:
+- hypothesis: Hypothesis → Refutation → Adoption (diagnosis)
+- socratic: Question-based deep exploration (unclear requirements)
+- persona: Multi-perspective analysis (diverse stakeholders)
+- red-team: Security attack/defense (security issues)
 
-형식:
-Strategy: [이름]
+Format:
+Strategy: [name]
 Confidence: [0-100]%
-Reasoning: [한 줄]
-x-op Alternative: [있으면 이름, 없으면 'none']
+Reasoning: [one line]
+x-op Alternative: [name if applicable, otherwise 'none']
 "
 ```
 
-에이전트 결과를 파싱하여:
-- `Strategy`가 x-solver 전략이면 → `$XMS strategy set <chosen>`
-- `x-op Alternative`가 있으면 → 사용자에게 x-op 전략도 함께 제안
+Parse the agent result:
+- If `Strategy` is an x-solver strategy → `$XMS strategy set <chosen>`
+- If `x-op Alternative` exists → Suggest the x-op strategy to the user as well
 
-4. AskUserQuestion으로 최종 전략 선택:
-   - 추천 전략 (규칙 기반 또는 LLM)
-   - x-op 대안 (있는 경우)
-   - 대안 전략들
-5. 선택 후: `$XMS strategy set <chosen>`
+4. AskUserQuestion for final strategy selection:
+   - Recommended strategy (rule-based or LLM)
+   - x-op alternative (if any)
+   - Alternative strategies
+5. After selection: `$XMS strategy set <chosen>`
 
 ### Enhanced Signal Detection
 
-classify는 텍스트 패턴 매칭으로 시그널을 감지한다:
+classify detects signals via text pattern matching:
 
-| 시그널 | 감지 대상 | 예시 |
-|--------|----------|------|
-| `has_error` | 에러, 버그, crash, leak | "메모리 누수가 있어" |
-| `has_stack_trace` | 스택 트레이스, 파일:라인 | `.js:42` 포함 |
-| `has_code_context` | 코드 블록, 코드 타입 컨텍스트 | ``` 블록 |
-| `has_performance` | slow, latency, optimize, 느림, 병목 | "API가 느려요" |
-| `has_security` | vulnerability, injection, XSS, 보안 | "SQL injection 우려" |
-| `has_infra` | deploy, docker, k8s, scale, 배포 | "스케일링 전략" |
-| `has_design_question` | should, which, how to, 어떻게, 설계 | "어떤 DB가 좋을까" |
-| `has_tradeoff` | vs, tradeoff, pros/cons, 장단점 | "Redis vs Memcached" |
+| Signal | Detection target | Example |
+|--------|-----------------|---------|
+| `has_error` | error, bug, crash, leak | "There's a memory leak" |
+| `has_stack_trace` | stack trace, file:line | Contains `.js:42` |
+| `has_code_context` | code block, code-type context | ``` block |
+| `has_performance` | slow, latency, optimize, bottleneck | "The API is slow" |
+| `has_security` | vulnerability, injection, XSS, security | "SQL injection concern" |
+| `has_infra` | deploy, docker, k8s, scale, infrastructure | "Scaling strategy" |
+| `has_design_question` | should, which, how to, design | "Which DB should I use" |
+| `has_tradeoff` | vs, tradeoff, pros/cons | "Redis vs Memcached" |
 
 ### Composite Signal Boost
 
-2개 이상 시그널이 동시에 감지되면 confidence에 가산:
-- 2개 시그널: +5%
-- 3개+ 시그널: +10%
+When 2+ signals are detected simultaneously, confidence gets a bonus:
+- 2 signals: +5%
+- 3+ signals: +10%
 
-### x-op 전략 추천
+### x-op Strategy Recommendation
 
-classify 결과에 관련 x-op 전략을 함께 제안한다:
+classify suggests relevant x-op strategies alongside its result:
 
-| 시그널 조합 | x-op 전략 | 이유 |
-|------------|-----------|------|
-| 에러 + 복잡 | `hypothesis` | 가설→반증으로 원인 진단 |
-| 설계 질문 (트레이드오프 없음) | `socratic` | 질문 기반 요구사항 명확화 |
-| 설계 + 다차원 | `persona` | 다관점 이해관계자 분석 |
-| 보안 | `red-team` | 보안 공격/방어 시뮬레이션 |
-| 성능 | `hypothesis` | 성능 병목 가설 검증 |
-| 인프라 + 트레이드오프 | `debate` | 인프라 선택지 찬반 토론 |
+| Signal combination | x-op strategy | Reasoning |
+|-------------------|---------------|-----------|
+| Error + complex | `hypothesis` | Diagnose root cause via hypothesis → refutation |
+| Design question (no tradeoff) | `socratic` | Clarify requirements via question-based exploration |
+| Design + multi-dimensional | `persona` | Multi-perspective stakeholder analysis |
+| Security | `red-team` | Security attack/defense simulation |
+| Performance | `hypothesis` | Validate performance bottleneck hypotheses |
+| Infra + tradeoff | `debate` | Pros/cons debate on infrastructure choices |
 
-### x-op escalate 자동 연동
+### x-op escalate auto-integration
 
-classify의 `complexity` 필드가 x-op escalate의 `--start` 레벨을 결정한다:
+The `complexity` field from classify determines the `--start` level for x-op escalate:
 
-| complexity | escalate --start | 이유 |
-|------------|-----------------|------|
-| low | haiku | 간단한 문제 — 최저 비용 |
-| medium | sonnet | 중간 복잡도 — haiku 단계 스킵 |
-| high | sonnet | 높은 복잡도 — sonnet부터 시작 |
+| complexity | escalate --start | Reasoning |
+|------------|-----------------|-----------|
+| low | haiku | Simple problem — lowest cost |
+| medium | sonnet | Medium complexity — skip haiku tier |
+| high | sonnet | High complexity — start from sonnet |
 
-사용자가 x-op 대안을 선택하면 리더가 자동으로 `--start` 옵션을 설정한다:
+When the user selects an x-op alternative, the leader automatically sets the `--start` option:
 ```
 classify → complexity: "medium"
-사용자: "x-op hypothesis로 해볼게"
-→ /x-op hypothesis "문제 설명" --start sonnet
+User: "Let's try x-op hypothesis"
+→ /x-op hypothesis "problem description" --start sonnet
+```
+
+## Problem-Solving Principles
+
+These principles are injected into all solve-phase agent prompts.
+
+```
+## Problem-Solving Principles
+
+1. **Simplest sufficient solution** — The best solution is the simplest one that satisfies all hard constraints. Complexity must justify itself with evidence.
+2. **Reversibility over optimality** — When two solutions score similarly, prefer the one that's easier to undo or change. Irreversible decisions need stronger evidence.
+3. **Separate the problem from the solution** — Understand what's actually wrong before proposing fixes. A misdiagnosed problem leads to a correct solution for the wrong question.
+4. **Evidence over intuition** — Every claim needs supporting evidence from code, logs, docs, or tests. "I think" is not evidence.
+5. **Constraints are guardrails, not goals** — Satisfying constraints is necessary but not sufficient. The goal is solving the actual problem.
 ```
 
 ## Command: solve
 
-전략별 에이전트 오케스트레이션을 실행한다.
+Execute strategy-specific agent orchestration.
 
 1. Run: `$XMS solve`
 2. Parse JSON output (`action: "solve"`)
-3. `strategy`와 `current_phase`에 따라 적절한 에이전트 오케스트레이션 실행:
+3. Run the appropriate agent orchestration based on `strategy` and `current_phase`:
 
 ### Strategy: decompose
 
 #### Phase: decompose
 **delegate** (architect, opus):
 ```
-이 문제를 2-5개의 독립적인 하위 문제로 분해해주세요.
+{problem_solving_principles}
 
-문제:
+Break this problem into 2-5 independent sub-problems.
+
+Decomposition principles:
+1. Sub-problems must be independently solvable — If solving sp2 requires knowing sp1's result, they're not independent. Merge or reorder.
+2. Same abstraction level — "Set up database" and "Fix typo in readme" are not peers. Sub-problems should be roughly equal in scope.
+3. Complete coverage — Solving all sub-problems must solve the original problem. If not, there's a missing sub-problem.
+
+Problem:
 {problem_context}
 
-각 하위 문제에 대해:
+For each sub-problem:
 - ID (sp1, sp2, ...)
-- 설명
-- 난이도 (trivial/medium/hard)
-- 다른 하위 문제와의 관계
+- Description
+- Difficulty (trivial/medium/hard)
+- Relationship to other sub-problems
+- Independence check: can this be solved without the others' results? (yes/no — if no, explain the dependency)
 
-JSON 형식으로 출력:
-{ "sub_problems": [{ "id": "sp1", "description": "...", "difficulty": "medium" }] }
+Output in JSON format:
+{ "sub_problems": [{ "id": "sp1", "description": "...", "difficulty": "medium", "independent": true }] }
 ```
 
-결과로 `$XMS tree add "description" --difficulty medium` 호출.
+Use the result to call `$XMS tree add "description" --difficulty medium`.
 Advance: `$XMS solve-advance --phase explore`
 
 #### Phase: explore
 **fan-out** (N agents per sub-problem, sonnet):
-각 하위 문제당 3개 에이전트가 병렬로 해결 방안 제시:
+3 agents per sub-problem propose solutions in parallel:
 ```
-다음 문제에 대한 해결 방안을 제시해주세요:
+{problem_solving_principles}
 
-하위 문제: {sub_problem.description}
-전체 맥락: {problem_context}
-제약조건: {constraints}
+Propose a solution for the following sub-problem:
 
-구체적이고 실행 가능한 해결 방안을 제시하세요.
+Sub-problem: {sub_problem.description}
+Full context: {problem_context}
+Constraints: {constraints}
+
+Requirements:
+- Solution must be specific and actionable (not "use a better approach")
+- State which constraints it satisfies and which it trades off
+- If multiple approaches exist, choose the simplest that satisfies hard constraints
+- Provide evidence (code paths, docs, benchmarks) for why this solution works
 ```
 
-결과로 `$XMS candidates add "description" --source agent-N --sub-problem spN`.
+Use the result to call `$XMS candidates add "description" --source agent-N --sub-problem spN`.
 Advance: `$XMS solve-advance --phase evaluate`
 
 #### Phase: evaluate
 **delegate** (reviewer, sonnet):
 ```
-각 하위 문제의 후보들을 평가하고 최적의 것을 선택해주세요.
+{problem_solving_principles}
 
-후보 목록: {candidates}
-제약조건: {constraints}
+Evaluate the candidates for each sub-problem and select the optimal one.
 
-각 후보를 제약조건에 대해 0-10으로 점수 매기고, 최적을 선택하세요.
+Candidate list: {candidates}
+Constraints: {constraints}
+
+Evaluation principles:
+- Hard constraint violation = immediate disqualification (score 0), regardless of other scores
+- Every score needs a one-line justification — a score without reasoning is noise
+- Equal scores → simpler solution wins. Complexity is a tiebreaker against.
+- Prefer reversible over optimal — a 7/10 you can change later beats a 9/10 that's permanent
+
+Score each candidate 0-10 against each constraint. Include justification per score.
 ```
 
-결과로 `$XMS candidates score <id> --constraint c1 --score 8`.
+Use the result to call `$XMS candidates score <id> --constraint c1 --score 8`.
 Advance: `$XMS solve-advance --phase synthesize`
 
 #### Phase: synthesize
 **delegate** (architect, opus):
 ```
-선택된 하위 해결책들을 하나의 통합 솔루션으로 합성해주세요.
+{problem_solving_principles}
 
-하위 해결책: {selected_candidates}
-전체 문제: {problem_context}
-제약조건: {constraints}
+Synthesize the selected sub-solutions into a unified solution.
 
-충돌이 있다면 해결하고, 최종 통합 솔루션을 제시하세요.
+Sub-solutions: {selected_candidates}
+Full problem: {problem_context}
+Constraints: {constraints}
+
+Synthesis principles:
+- Integration conflicts reveal missing constraints — document them, don't hide them
+- The combined solution must be simpler than the sum of its parts. If merging adds complexity, question whether the decomposition was correct.
+- Verify: does solving all sub-problems actually solve the original problem? If not, identify the gap.
+
+Resolve any conflicts and present the final integrated solution.
 ```
 
-결과로 최종 candidate 생성 + select.
+Use the result to create the final candidate + select.
 
 ### Strategy: iterate
 
 #### Phase: hypothesize
 **delegate** (debugger, sonnet):
 ```
-이 문제에 대해 3-5개의 가설을 생성해주세요.
+{problem_solving_principles}
 
-문제: {problem_context}
-맥락: {additional_context}
+Generate 3-5 hypotheses for this problem.
 
-각 가설에 대해:
-- 설명
-- 찬성 증거
-- 반대 증거
-- 검증 방법
+Hypothesis principles:
+1. Falsifiable only — "Something is wrong with the code" is not a hypothesis. "The N+1 query in getUserOrders causes the 3s latency" is. If you can't describe how to disprove it, it's not a hypothesis.
+2. Most likely first — Order by probability. Don't start with edge cases when the obvious cause hasn't been ruled out.
+3. One variable per hypothesis — Each hypothesis should isolate a single cause. "The DB is slow AND the cache is stale" is two hypotheses.
 
-JSON 형식으로 출력.
+Problem: {problem_context}
+Context: {additional_context}
+
+For each hypothesis:
+- Description (specific and falsifiable)
+- Supporting evidence (from code, logs, or observations)
+- Opposing evidence (what would disprove this)
+- Verification method (concrete command or check)
+- Estimated likelihood (high/medium/low)
+
+Order by likelihood descending. Output in JSON format.
 ```
 
-결과로 `$XMS hypotheses add "description"`.
+Use the result to call `$XMS hypotheses add "description"`.
 Advance: `$XMS solve-advance --phase test`
 
 #### Phase: test
 **fan-out** (1 agent per hypothesis, sonnet):
 ```
-다음 가설을 검증해주세요:
+{problem_solving_principles}
 
-가설: {hypothesis.description}
-문제: {problem_context}
+Verify the following hypothesis:
 
-코드를 읽고, 로그를 확인하고, 필요하면 명령을 실행하여 검증하세요.
-결과: confirmed / refuted / inconclusive + 근거
+Hypothesis: {hypothesis.description}
+Problem: {problem_context}
+
+Verification principles:
+- One variable at a time — each test should check one thing. If you change two variables, you can't attribute the result.
+- Prefer disproving over proving — actively try to refute the hypothesis. Confirmation bias is the enemy.
+- Concrete evidence only — "it seems to work" is inconclusive. Show the command output, log line, or code path.
+
+Read code, check logs, and run commands as needed to verify.
+Result: confirmed / refuted / inconclusive + concrete evidence (paste the relevant output)
 ```
 
-결과로 `$XMS hypotheses update <id> --status confirmed|refuted|inconclusive`.
+Use the result to call `$XMS hypotheses update <id> --status confirmed|refuted|inconclusive`.
 Advance: `$XMS solve-advance --phase refine`
 
 #### Phase: refine
-검증된(confirmed/inconclusive) 가설 확인:
-- 모두 refuted → hypothesize로 돌아감 (iteration 증가)
-- confirmed 있음 → resolve로 진행
-- max_iterations 도달 → 가장 유력한 가설로 resolve
+Check verified (confirmed/inconclusive) hypotheses:
+- All refuted → return to hypothesize (increment iteration)
+- Confirmed exists → proceed to resolve
+- max_iterations reached → resolve with the most likely hypothesis
 
-`$XMS solve-advance --phase resolve` 또는 `$XMS solve-advance --phase hypothesize`
+`$XMS solve-advance --phase resolve` or `$XMS solve-advance --phase hypothesize`
 
 #### Phase: resolve
 **delegate** (executor, sonnet):
 ```
-확인된 가설을 기반으로 해결책을 구현/설명해주세요.
+{problem_solving_principles}
 
-확인된 가설: {confirmed_hypotheses}
-문제: {problem_context}
+Implement or explain the solution based on confirmed hypotheses.
 
-구체적인 해결 방안을 제시하세요.
+Confirmed hypotheses: {confirmed_hypotheses}
+Problem: {problem_context}
+
+Resolution principles:
+- Fix the root cause, not the symptom — if the hypothesis points to a deeper issue, address that.
+- Minimal change that resolves the confirmed cause — don't refactor surrounding code.
+- Verify the fix addresses the original problem, not just the hypothesis.
+
+Provide a concrete solution with the specific change needed.
 ```
 
-결과로 candidate 생성 + select.
+Use the result to create candidate + select.
 
 ### Strategy: constrain
 
 #### Phase: elicit
 **delegate** (analyst, opus):
 ```
-이 문제의 모든 제약조건을 추출하고 분류해주세요.
+{problem_solving_principles}
 
-문제: {problem_context}
-기존 제약: {constraints}
+Extract and classify all constraints for this problem.
 
-추가로 발견한 제약조건을:
-- hard (반드시 충족)
-- soft (가능하면 충족)
-- preference (선호)
+Elicitation principles:
+- Hard constraints are non-negotiable — if violating it makes the solution unacceptable, it's hard. Everything else is soft or preference.
+- Implicit constraints are the dangerous ones — look for unstated assumptions (backward compatibility, deployment environment, team expertise, budget).
+- Fewer hard constraints = more solution space. Don't promote soft constraints to hard unless the user explicitly says "must."
 
-로 분류해주세요.
+Problem: {problem_context}
+Existing constraints: {constraints}
+
+Classify any additional constraints found as:
+- hard (must satisfy — violation = solution rejected)
+- soft (satisfy if possible — violation = tradeoff)
+- preference (preferred — nice to have)
 ```
 
-결과로 `$XMS constraints add "description" --type hard|soft|preference`.
+Use the result to call `$XMS constraints add "description" --type hard|soft|preference`.
 Advance: `$XMS solve-advance --phase generate`
 
 #### Phase: generate
 **fan-out** (N agents, sonnet):
-각 에이전트가 서로 다른 soft constraint를 최적화하는 후보 생성:
+Each agent generates candidates optimizing different soft constraints:
 ```
-다음 문제에 대한 해결책을 제시해주세요.
-특히 {focus_constraint}를 최적화하되, 모든 hard constraint를 충족하세요.
+{problem_solving_principles}
 
-문제: {problem_context}
+Propose a solution for the following problem.
+Focus on optimizing {focus_constraint} while satisfying all hard constraints.
+
+Generation principles:
+- Hard constraints are pass/fail — verify your solution satisfies every one before submitting
+- State the tradeoff explicitly — "This solution optimizes for {focus_constraint} at the cost of {other_constraint}"
+- Simpler is better — if you can satisfy the focus constraint without additional complexity, do so
+
+Problem: {problem_context}
 Hard constraints: {hard_constraints}
 Soft constraints: {soft_constraints}
 ```
 
-결과로 `$XMS candidates add "description" --source agent-N`.
+Use the result to call `$XMS candidates add "description" --source agent-N`.
 Advance: `$XMS solve-advance --phase evaluate`
 
 #### Phase: evaluate
 **broadcast** (multi-perspective, sonnet):
-각 에이전트가 다른 관점에서 후보들을 점수화:
+Each agent scores candidates from a different perspective:
 ```
-다음 후보들을 {perspective} 관점에서 평가해주세요.
+{problem_solving_principles}
 
-후보: {candidates}
-제약조건: {constraints}
+Evaluate the following candidates from a {perspective} perspective.
 
-각 후보를 각 제약조건에 대해 0-10으로 점수 매겨주세요.
+Candidates: {candidates}
+Constraints: {constraints}
+
+Scoring principles:
+- Hard constraint violation = 0 for the entire candidate, regardless of other scores
+- Every score needs a one-line justification — a number without reasoning is noise
+- Score the constraint, not your preference — personal opinion is not a criterion
+
+Score each candidate 0-10 against each constraint. Include justification per score.
 ```
 
-결과로 `$XMS candidates score <id> --constraint c1 --score N`.
+Use the result to call `$XMS candidates score <id> --constraint c1 --score N`.
 Advance: `$XMS solve-advance --phase select`
 
 #### Phase: select
 **delegate** (architect, opus):
 ```
-점수 결과를 종합하여 최적의 후보를 선택해주세요.
+{problem_solving_principles}
 
-후보별 점수: {candidate_scores}
-제약조건: {constraints}
+Aggregate score results and select the optimal candidate.
 
-트레이드오프를 분석하고 최종 추천을 제시하세요.
-Hard constraint 실패 시 어떤 제약이 충돌하는지 식별하세요.
+Scores by candidate: {candidate_scores}
+Constraints: {constraints}
+
+Selection principles:
+- Equal scores → simpler solution wins. Complexity is a tiebreaker against.
+- Prefer reversible over optimal — a 7/10 you can change later beats a 9/10 that's permanent.
+- If no candidate satisfies all hard constraints, report the failure — don't pick the "least bad" option without flagging it.
+
+Analyze tradeoffs and present a final recommendation.
+Identify which constraints conflict if a hard constraint fails.
 ```
 
-결과로 `$XMS candidates select <id>`.
+Use the result to call `$XMS candidates select <id>`.
 
 ### Strategy: pipeline
 
 #### Phase: classify
-`$XMS classify` 실행하여 문제 유형 감지.
-결과에 따라 적절한 전략을 자동 선택.
+Run `$XMS classify` to detect problem type.
+Auto-select the appropriate strategy based on the result.
 
 #### Phase: route
-선택된 전략(decompose/iterate/constrain)의 solve 워크플로우를 실행.
+Execute the solve workflow of the selected strategy (decompose/iterate/constrain).
 
 #### Phase: meta-verify
-해결 후 추가 검증: 원래 문제를 실제로 해결했는지 확인.
-실패 시 대안 전략으로 재시도.
+Additional verification after solving: confirm the original problem is actually resolved.
+Retry with an alternative strategy on failure.
 
 ---
 
@@ -450,92 +541,92 @@ Hard constraint 실패 시 어떤 제약이 충돌하는지 식별하세요.
 
 1. Run: `$XMS verify`
 2. Parse JSON output (`action: "verify"`)
-3. 점수가 없는 제약조건이 있다면:
-   - **delegate** (verifier, sonnet) 에이전트로 검증:
+3. If there are constraints without scores:
+   - **delegate** (verifier, sonnet) agent for verification:
      ```
-     이 해결책이 다음 제약조건을 충족하는지 검증해주세요.
-     해결책: {selected_candidate}
-     제약조건: {unscored_constraints}
+     Verify whether this solution satisfies the following constraints.
+     Solution: {selected_candidate}
+     Constraints: {unscored_constraints}
      ```
-4. 결과를 사용자에게 표시
-5. 통과 시: `$XMS phase next` → close 추천
-6. 실패 시: 어떤 제약이 미충족인지 표시, solve로 복귀 추천
+4. Show results to the user
+5. On pass: `$XMS phase next` → recommend close
+6. On fail: show which constraints are unmet, recommend returning to solve
 
 ## Command: next
 
 1. Run: `$XMS next`
 2. Parse JSON output (`action: "next"`)
-3. `recommendation`에 따라 적절한 명령 자동 실행:
-   - `init` → 사용자에게 문제 설명 질문
-   - `describe` → 설명 추가 요청
-   - `classify` → classify 실행
-   - `strategy set` → 전략 선택 질문
-   - `solve` → solve 실행
-   - `candidates select` → 후보 선택 질문
-   - `verify` → verify 실행
-   - `close` → close 실행
+3. Auto-execute the appropriate command based on `recommendation`:
+   - `init` → Ask the user to describe the problem
+   - `describe` → Request additional description
+   - `classify` → Run classify
+   - `strategy set` → Ask for strategy selection
+   - `solve` → Run solve
+   - `candidates select` → Ask for candidate selection
+   - `verify` → Run verify
+   - `close` → Run close
 
 ## Command: auto
 
-`$ARGUMENTS`가 자연어 문제 설명인 경우:
+When `$ARGUMENTS` is a natural language problem description:
 1. `$XMS init "description"`
 2. `$XMS classify`
-3. 추천 전략을 사용자에게 보여주고 확인
+3. Show the recommended strategy to the user and confirm
 4. `$XMS strategy set <chosen>`
-5. `$XMS solve` 실행
+5. Run `$XMS solve`
 
 ---
 
 ## Shared Config Integration
 
-x-solver는 `.xm/config.json`의 공유 설정을 참조한다:
+x-solver references shared config in `.xm/config.json`:
 
-| 설정 | 키 | 기본값 | 영향 |
-|------|-----|--------|------|
-| 모드 | `mode` | `developer` | 출력 스타일 |
-| 에이전트 수 | `agent_max_count` | `4` | `solving.parallel_agents` 미설정 시 기본 에이전트 수 결정 |
+| Setting | Key | Default | Effect |
+|---------|-----|---------|--------|
+| Mode | `mode` | `developer` | Output style |
+| Agent count | `agent_max_count` | `4` | Default agent count when `solving.parallel_agents` is not set |
 
-설정 변경: `x-kit config set agent_max_count 10`
+Change config: `x-kit config set agent_max_count 10`
 
-로컬 config의 `solving.parallel_agents`가 설정되어 있으면 shared config보다 우선한다.
+Local config's `solving.parallel_agents` takes priority over shared config when set.
 
 ---
 
 ## x-build Integration
 
-solve 결과를 x-build 태스크로 변환할 수 있다.
+Solve results can be converted to x-build tasks.
 
-### solve → x-build 태스크 변환
+### solve → x-build task conversion
 
-`close` 또는 `verify` 완료 후, 사용자에게 제안:
+After `close` or `verify` completion, suggest to the user:
 ```
-💡 이 해결책을 x-build 프로젝트의 태스크로 등록할까요?
-1) 예 — x-build tasks add로 등록
-2) 아니오 — 현재 세션에서 종료
+Would you like to register this solution as tasks in an x-build project?
+1) Yes — Register via x-build tasks add
+2) No — End with the current session
 ```
 
-"예" 선택 시, solve 결과에서 태스크를 자동 추출:
+On "Yes", auto-extract tasks from the solve result:
 
-| solve 전략 | 변환 규칙 |
-|-----------|---------|
-| decompose | 각 leaf 노드 → 별도 x-build task (의존성 유지) |
-| iterate | 최종 가설 검증 결과 → 1개 x-build task |
-| constrain | 선택된 후보 → 구현 x-build task + 제약 검증 task |
-| pipeline | 최종 전략 결과에 따라 위 규칙 적용 |
+| solve strategy | Conversion rule |
+|---------------|----------------|
+| decompose | Each leaf node → separate x-build task (preserve dependencies) |
+| iterate | Final hypothesis verification result → 1 x-build task |
+| constrain | Selected candidate → implementation x-build task + constraint verification task |
+| pipeline | Apply the above rules based on the final strategy result |
 
-변환 명령:
+Conversion commands:
 ```bash
-# decompose 결과 예시 (3개 leaf)
+# decompose result example (3 leaves)
 x-build tasks add "Implement cache layer [R1]" --size medium
 x-build tasks add "Add rate limiting [R2]" --size small --deps t1
 x-build tasks add "Write integration tests [R3]" --size small --deps t1,t2
 ```
 
-### x-build decisions 연동
+### x-build decisions integration
 
-solve 과정에서 내린 결정은 x-build에 자동 주입 가능:
+Decisions made during solve can be auto-injected into x-build:
 ```bash
-x-build decisions add "Redis for caching" --type architecture --rationale "x-solver constrain 결과: 응답시간/비용 최적"
+x-build decisions add "Redis for caching" --type architecture --rationale "x-solver constrain result: optimal for response time/cost"
 ```
 
 ## Quick Reference
@@ -544,10 +635,10 @@ x-build decisions add "Redis for caching" --type architecture --rationale "x-sol
 x-solver — Structured Problem Solving
 
 Strategies:
-  decompose    🌳 Tree-of-Thought: break → solve → merge
-  iterate      🔄 Hypothesis → Test → Refine loop
-  constrain    🎯 Constraints → Candidates → Score → Select
-  pipeline     🔀 Auto-detect → Route to best strategy
+  decompose    Tree-of-Thought: break → solve → merge
+  iterate      Hypothesis → Test → Refine loop
+  constrain    Constraints → Candidates → Score → Select
+  pipeline     Auto-detect → Route to best strategy
 
 Workflow:
   init "desc"         Start a new problem
