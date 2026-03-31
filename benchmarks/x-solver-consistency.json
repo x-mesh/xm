@@ -1,0 +1,42 @@
+{
+  "benchmark": "x-solver-consistency",
+  "date": "2026-03-31",
+  "description": "Measures x-solver decompose strategy consistency across 3 independent trials with different framings on the same problem.",
+  "method": {
+    "problem": "x-kit의 SKILL.md 파일이 500줄을 넘어가면 Claude의 instruction following이 저하된다. 어떻게 해결할 수 있나?",
+    "strategy": "decompose",
+    "agent": "oh-my-claudecode:scientist (sonnet)",
+    "trials": 3,
+    "framings": ["cognitive-load", "information-architecture", "tool-design"]
+  },
+  "results": {
+    "sub_problem_overlap": {"all_3": 4, "total_unique": 6, "rate": 0.667},
+    "root_cause_agreement": {"all_3": 3, "total": 3, "rate": 1.0,
+      "causes": [
+        "Monolithic file — all skills in single context block",
+        "No lazy/partial loading — entire file injected regardless of task",
+        "Prose format not optimized for LLM token efficiency"
+      ]},
+    "solution_overlap": {"all_3": 4, "total": 4, "rate": 1.0,
+      "solutions_ranked": [
+        "Per-skill file split + dynamic injection (intent-based)",
+        "Slim index + lazy content loading (2-tier)",
+        "Prose → structured rules/tables compression (30-70% reduction)",
+        "CI lint rule enforcing 500-line budget / degradation detection"
+      ]},
+    "rank_correlation": {"T1_T2": 1.0, "T1_T3": 1.0, "T2_T3": 1.0, "mean": 1.0}
+  },
+  "metrics": {
+    "sub_problem_consistency": 0.667,
+    "root_cause_consistency": 1.0,
+    "solution_consistency": 1.0,
+    "rank_consistency": 1.0,
+    "overall_consistency": 0.917
+  },
+  "conclusions": [
+    "Root cause identification is perfectly consistent (3/3) regardless of framing",
+    "Solution ranking is perfectly consistent (Spearman ρ = 1.0 across all pairs)",
+    "Sub-problem framing shows controlled variance (4/6 overlap) — exploratory diversity without affecting actionable solutions",
+    "decompose strategy is highly deterministic for well-defined technical problems"
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "benchmark": "ab-vanilla-vs-xkit-review",
+  "date": "2026-03-31",
+  "description": "A/B comparison: vanilla Claude Code review vs x-review framework on the same diff.",
+  "method": {
+    "target": "commit 5c17ed7 (x-probe plugin, 820 insertions, 5 files)",
+    "agent": "oh-my-claudecode:code-reviewer (sonnet)",
+    "condition_a": "Vanilla — no framework, natural judgment only",
+    "condition_b": "x-kit — x-review principles, severity calibration, verdict rules"
+  },
+  "results": {
+    "vanilla": {
+      "verdict": "Request Changes",
+      "findings": 4,
+      "by_severity": {"critical": 0, "high": 0, "medium": 2, "low": 2},
+      "issues_found": [
+        "Config table default 4 vs 3 (Medium)",
+        "Verdict command stub — no implementation (Medium)",
+        "List date format unspecified (Low)",
+        "List path vs history/ subdirectory mismatch (Low)"
+      ],
+      "actionability": "4/4 specific fixes"
+    },
+    "xkit": {
+      "verdict": "LGTM",
+      "findings": 1,
+      "by_severity": {"critical": 0, "high": 0, "medium": 1, "low": 0},
+      "issues_found": [
+        "Config table default 4 vs 3 (Medium)"
+      ],
+      "actionability": "1/1 specific fix"
+    }
+  },
+  "metrics": {
+    "precision": {
+      "vanilla": 0.75,
+      "xkit": 1.0,
+      "note": "x-kit reports only high-confidence findings; vanilla includes borderline issues"
+    },
+    "recall": {
+      "vanilla": 1.0,
+      "xkit": 0.25,
+      "note": "vanilla found 4 real issues; x-kit found 1 of 4"
+    },
+    "f1_score": {
+      "vanilla": 0.857,
+      "xkit": 0.4
+    },
+    "severity_accuracy": {
+      "vanilla": 0.75,
+      "xkit": 1.0,
+      "note": "x-kit's calibration rules produce more defensible severity assignments"
+    },
+    "verdict_accuracy": {
+      "vanilla": "Arguable — RC for 2 Medium is strict",
+      "xkit": "Correct per quantified rules (Medium ≤ 3 = LGTM)"
+    }
+  },
+  "conclusions": [
+    "x-kit excels at precision (1.0) — every finding is real and correctly calibrated",
+    "Vanilla excels at recall (1.0) — finds more issues including edge cases x-kit filters out",
+    "x-kit's 'when in doubt, downgrade' principle aggressively filters — good for trust, bad for coverage",
+    "Vanilla's 'verdict command stub' finding (Medium) is a genuine quality issue x-kit missed",
+    "Optimal approach: x-kit framework for calibration + explicit instruction to maximize recall",
+    "F1 score: vanilla 0.857 vs x-kit 0.4 — vanilla wins on balanced metric"
+  ],
+  "improvement_opportunity": "Add a recall-boost instruction to x-review: 'After applying severity filters, do a second pass for findings you might have filtered. Report these as [Observation] (no severity) so the leader can decide.'"
+}

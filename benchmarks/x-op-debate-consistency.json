@@ -1,0 +1,40 @@
+{
+  "benchmark": "x-op-debate-consistency",
+  "date": "2026-03-31",
+  "description": "Measures x-op debate strategy consistency across 3 independent trials on a technical architecture decision.",
+  "method": {
+    "topic": "x-kit should adopt Claude Code native Agent Teams (TeamCreate/SendMessage) instead of the current Agent tool hub-and-spoke pattern",
+    "strategy": "debate",
+    "agent": "oh-my-claudecode:scientist (sonnet)",
+    "trials": 3,
+    "roles": ["pro", "con", "judge"]
+  },
+  "results": {
+    "pro_argument_overlap": {"all_3": 1, "in_2_plus": 3, "total_unique": 5,
+      "core_pro": ["fault_isolation (3/3)", "platform_alignment (2/3)", "parallel_comms (2/3)"]},
+    "con_argument_overlap": {"all_3": 1, "in_2_plus": 3, "total_unique": 5,
+      "core_con": ["strategy_redesign (3/3)", "sequential_ok (2/3)", "vendor_lock (2/3)"]},
+    "judge_verdicts": ["CON", "CON", "CON"],
+    "judge_verdict_consistent": true,
+    "key_factor": "strategy_redesign cited as decisive factor in 3/3 trials"
+  },
+  "metrics": {
+    "verdict_consistency": 1.0,
+    "pro_argument_overlap_all3": 0.333,
+    "con_argument_overlap_all3": 0.333,
+    "key_factor_alignment": 1.0,
+    "overall_consistency": 0.733,
+    "breakdown": {
+      "verdict": {"raw": 1.0, "weight": 0.4, "weighted": 0.4},
+      "pro_overlap": {"raw": 0.333, "weight": 0.2, "weighted": 0.067},
+      "con_overlap": {"raw": 0.333, "weight": 0.2, "weighted": 0.067},
+      "key_factor": {"raw": 1.0, "weight": 0.2, "weighted": 0.2}
+    }
+  },
+  "conclusions": [
+    "Judge verdict is perfectly consistent (CON 3/3) — debate strategy produces deterministic decisions",
+    "Decisive factor (strategy_redesign cost) is consistent 3/3",
+    "Argument surface shows controlled variance — core arguments stable, supporting arguments vary",
+    "debate strategy is well-calibrated: stable conclusions with diverse evidence exploration"
+  ]
+}
