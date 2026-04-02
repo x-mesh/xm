@@ -21,7 +21,8 @@
       ],
       "status": "completed",
       "created_at": "2026-04-02T07:50:46.340Z",
-      "completed_at": "2026-04-02T08:10:29.823Z"
+      "completed_at": "2026-04-02T08:10:29.823Z",
+      "commit_sha": "d30620bcbea5177ba89d54985fd4b9e9c95f3831"
     },
     {
       "id": "t2",
@@ -58,7 +59,7 @@
       ],
       "status": "completed",
       "created_at": "2026-04-02T07:50:46.511Z",
-      "completed_at": "2026-04-02T08:06:01.927Z",
+      "completed_at": "2026-04-02T08:10:30.044Z",
       "commit_sha": "9d6d3580e7664048637578554a461090fa9ac605"
     },
     {
