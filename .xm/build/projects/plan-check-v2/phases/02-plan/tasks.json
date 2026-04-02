@@ -60,7 +60,7 @@
       "status": "completed",
       "created_at": "2026-04-02T07:50:46.511Z",
       "completed_at": "2026-04-02T08:10:30.044Z",
-      "commit_sha": "9d6d3580e7664048637578554a461090fa9ac605"
+      "commit_sha": "8b0641c5088730504317e6587b3a5e1845227379"
     },
     {
       "id": "t4",
@@ -78,8 +78,9 @@
         "README.md plan-check section reflects G1-G7 changes",
         "README.ko.md matches README.md"
       ],
-      "status": "pending",
-      "created_at": "2026-04-02T07:50:46.598Z"
+      "status": "completed",
+      "created_at": "2026-04-02T07:50:46.598Z",
+      "completed_at": "2026-04-02T08:11:58.089Z"
     },
     {
       "id": "t5",

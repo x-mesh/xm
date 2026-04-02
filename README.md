@@ -235,7 +235,7 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 | **Traceability matrix** | R# ↔ Task ↔ AC ↔ Done Criteria with gap detection |
 | **Scope creep detection** | Warns when new tasks overlap with PRD "Out of Scope" items |
 | **Error recovery** | Auto-retry with exponential backoff, circuit breaker, git rollback |
-| **plan-check (11 dims)** | atomicity, deps, coverage, granularity, completeness, context, naming, tech-leakage, scope-clarity, risk-ordering, overall |
+| **plan-check (11 dims)** | atomicity, deps, coverage (incl. done_criteria), granularity (upper bound >15), completeness, context, naming (44-verb dict), tech-leakage, scope-clarity (Out of Scope match), risk-ordering (DAG-based), overall |
 | **Domain-aware done_criteria** | Auto-generated based on task domain, size tier, and PRD NFR targets |
 
 | Category | Commands |
@@ -683,7 +683,7 @@ lessons → CLAUDE.md + x-eval judge context → Next session applies patterns
 | **PRD consensus** | architect + critic + planner + security with principle-backed prompts |
 | **Acceptance contracts** | `done_criteria` auto-derived from PRD → injected into agents → verified at close |
 | **Auto-handoff** | Phase transitions preserve decisions, discard exploration noise |
-| **plan-check (11 dims)** | atomicity, deps, coverage, granularity, completeness, context, naming, tech-leakage, scope-clarity, risk-ordering, overall |
+| **plan-check (11 dims)** | atomicity, deps, coverage (incl. done_criteria), granularity (upper bound >15), completeness, context, naming (44-verb dict), tech-leakage, scope-clarity (Out of Scope match), risk-ordering (DAG-based), overall |
 | **Quality dashboard** | `x-build status` shows per-task scores + project avg |
 | **Domain rubrics** | 5 presets (api-design, frontend, data-pipeline, security, architecture) |
 | **Bias-aware judging** | x-humble lessons (confirmed 3+) inform judge context |

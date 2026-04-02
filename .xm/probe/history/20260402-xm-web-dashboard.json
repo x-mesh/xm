@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-04-02T08:12:00Z",
+  "idea": "x-kit web dashboard — 명령 실행 시 브라우저에서 .xm/ 상태 시각화",
+  "domain": "technology",
+  "verdict": "RETHINK",
+  "premises": [
+    {"id": 1, "statement": "CLI 텍스트 출력으로 .xm/ 상태 파악이 어렵다", "status": "survived", "initial_grade": "assumption", "final_grade": "heuristic", "evidence_summary": "사용자 실제 불편 경험 확인"},
+    {"id": 2, "statement": "브라우저 전환 비용을 감수할 것이다", "status": "weakened", "initial_grade": "assumption", "final_grade": "heuristic", "evidence_summary": "TUI보다 낫다는 판단이지만 inversion 에이전트가 context switch 비용 지적"},
+    {"id": 3, "statement": "웹 대시보드가 CLI보다 의미 있게 낫다", "status": "weakened", "initial_grade": "assumption", "final_grade": "heuristic", "evidence_summary": "DAG/메트릭스 니즈 확인, 하지만 --format=md + Obsidian이 대부분 커버"},
+    {"id": 4, "statement": "프론트엔드 zero 프로젝트에 웹 추가 감당 가능", "status": "weakened", "initial_grade": "heuristic", "final_grade": "heuristic", "evidence_summary": "solo maintainer + fast release cycle = 2 릴리스 내 방치 위험"},
+    {"id": 7, "statement": "ROI가 CLI 개선이나 TUI보다 높다", "status": "weakened", "initial_grade": "assumption", "final_grade": "heuristic", "evidence_summary": "status --format=md (50줄)가 웹 서버 없이 동일 니즈 충족 가능"}
+  ],
+  "evidence_gaps": ["P3 — 웹이 --format=md+Obsidian보다 실제로 나은 구체적 시나리오 미확인"],
+  "kill_criteria": ["웹 레이어 유지보수가 플러그인 본체 개발 시간의 20% 초과", ".xm/ 스키마 변경 후 대시보드 수정 2회 연속 스킵"],
+  "risks": ["Solo maintainer + 웹 레이어 = 2-3 릴리스 내 방치", "터미널→브라우저 context switch 비용이 정보 이득보다 클 수 있음"],
+  "recommendation": "--format=md (mermaid DAG 포함) 출력을 먼저 추가하여 니즈 검증. 부족하면 그때 웹 대시보드 scope 확정."
+}
