@@ -1,5 +1,6 @@
 # Runtime data (created per-project, not part of plugin)
-# .xm/ itself is tracked — .xm/.gitignore handles selective exclusion
+.xm/
+**/.xm/
 .x-build/
 .tm-build/
 .omc/
