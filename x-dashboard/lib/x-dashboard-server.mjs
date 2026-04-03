@@ -66,6 +66,33 @@ function isValidSegment(segment) {
   return SAFE_SEGMENT_RE.test(segment);
 }
 
+// ── ETag Helpers ────────────────────────────────────────────────────
+
+function hashSimple(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) + h) ^ str.charCodeAt(i);
+    h = h >>> 0; // keep unsigned 32-bit
+  }
+  return h.toString(36);
+}
+
+function jsonResponseWithETag(data, req, status = 200) {
+  const body = JSON.stringify(data);
+  const etag = `"${body.length.toString(36)}-${hashSimple(body)}"`;
+  if (req && req.headers.get('if-none-match') === etag) {
+    return new Response(null, { status: 304, headers: { 'ETag': etag, 'Cache-Control': 'no-cache' } });
+  }
+  return new Response(body, {
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      'ETag': etag,
+      'Cache-Control': 'no-cache',
+    },
+  });
+}
+
 // ── Idle Timer (Session Mode only) ──────────────────────────────────
 
 let idleTimer = null;
@@ -238,19 +265,19 @@ server = Bun.serve({
       // GET /api/config
       if (path === '/api/config') {
         const filePath = safeJoin(XM_ROOT, 'config.json');
-        if (!filePath) return Response.json({ error: 'forbidden' }, { status: 400 });
-        if (!existsSync(filePath)) return Response.json({ error: 'not_found' }, { status: 404 });
+        if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+        if (!existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
         try {
-          return Response.json(JSON.parse(readFileSync(filePath, 'utf8')));
+          return jsonResponseWithETag(JSON.parse(readFileSync(filePath, 'utf8')), req);
         } catch {
-          return Response.json({ error: 'parse_error', file: 'config.json' }, { status: 500 });
+          return jsonResponseWithETag({ error: 'parse_error', file: 'config.json' }, req, 500);
         }
       }
 
       // GET /api/projects
       if (path === '/api/projects') {
         const projectsDir = safeJoin(XM_ROOT, 'build', 'projects');
-        if (!projectsDir || !existsSync(projectsDir)) return Response.json({ data: [] });
+        if (!projectsDir || !existsSync(projectsDir)) return jsonResponseWithETag({ data: [] }, req);
         const manifests = [];
         for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
           if (!entry.isDirectory()) continue;
@@ -262,21 +289,21 @@ server = Bun.serve({
             // skip unparseable manifests
           }
         }
-        return Response.json({ data: manifests });
+        return jsonResponseWithETag({ data: manifests }, req);
       }
 
       // GET /api/projects/:slug/tasks
       const tasksMatch = path.match(/^\/api\/projects\/([^/]+)\/tasks$/);
       if (tasksMatch) {
         const slug = tasksMatch[1];
-        if (!isValidSegment(slug)) return Response.json({ error: 'forbidden' }, { status: 400 });
+        if (!isValidSegment(slug)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
         const filePath = safeJoin(XM_ROOT, 'build', 'projects', slug, 'phases', '02-plan', 'tasks.json');
-        if (!filePath) return Response.json({ error: 'forbidden' }, { status: 400 });
-        if (!existsSync(filePath)) return Response.json({ error: 'not_found' }, { status: 404 });
+        if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+        if (!existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
         try {
-          return Response.json(JSON.parse(readFileSync(filePath, 'utf8')));
+          return jsonResponseWithETag(JSON.parse(readFileSync(filePath, 'utf8')), req);
         } catch {
-          return Response.json({ error: 'parse_error', file: 'tasks.json' }, { status: 500 });
+          return jsonResponseWithETag({ error: 'parse_error', file: 'tasks.json' }, req, 500);
         }
       }
 
@@ -284,17 +311,17 @@ server = Bun.serve({
       const projectMatch = path.match(/^\/api\/projects\/([^/]+)$/);
       if (projectMatch) {
         const slug = projectMatch[1];
-        if (!isValidSegment(slug)) return Response.json({ error: 'forbidden' }, { status: 400 });
+        if (!isValidSegment(slug)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
         const projectDir = safeJoin(XM_ROOT, 'build', 'projects', slug);
-        if (!projectDir || !existsSync(projectDir)) return Response.json({ error: 'not_found' }, { status: 404 });
+        if (!projectDir || !existsSync(projectDir)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
 
         const manifestPath = safeJoin(projectDir, 'manifest.json');
-        if (!manifestPath || !existsSync(manifestPath)) return Response.json({ error: 'not_found' }, { status: 404 });
+        if (!manifestPath || !existsSync(manifestPath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
         let manifest;
         try {
           manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
         } catch {
-          return Response.json({ error: 'parse_error', file: 'manifest.json' }, { status: 500 });
+          return jsonResponseWithETag({ error: 'parse_error', file: 'manifest.json' }, req, 500);
         }
 
         let circuitBreaker = null;
@@ -335,18 +362,18 @@ server = Bun.serve({
           }
         }
 
-        return Response.json({ manifest, circuitBreaker, handoff, phases, context });
+        return jsonResponseWithETag({ manifest, circuitBreaker, handoff, phases, context }, req);
       }
 
       // GET /api/probe/latest
       if (path === '/api/probe/latest') {
         const filePath = safeJoin(XM_ROOT, 'probe', 'last-verdict.json');
-        if (!filePath) return Response.json({ error: 'forbidden' }, { status: 400 });
-        if (!existsSync(filePath)) return Response.json({ error: 'not_found' }, { status: 404 });
+        if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+        if (!existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
         try {
-          return Response.json(JSON.parse(readFileSync(filePath, 'utf8')));
+          return jsonResponseWithETag(JSON.parse(readFileSync(filePath, 'utf8')), req);
         } catch {
-          return Response.json({ error: 'parse_error', file: 'last-verdict.json' }, { status: 500 });
+          return jsonResponseWithETag({ error: 'parse_error', file: 'last-verdict.json' }, req, 500);
         }
       }
 
@@ -355,22 +382,22 @@ server = Bun.serve({
       if (probeFileMatch) {
         const file = probeFileMatch[1];
         const baseName = file.endsWith('.json') ? file.slice(0, -5) : file;
-        if (!isValidSegment(baseName)) return Response.json({ error: 'forbidden' }, { status: 400 });
+        if (!isValidSegment(baseName)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
         const fileName = file.endsWith('.json') ? file : file + '.json';
         const filePath = safeJoin(XM_ROOT, 'probe', 'history', fileName);
-        if (!filePath) return Response.json({ error: 'forbidden' }, { status: 400 });
-        if (!existsSync(filePath)) return Response.json({ error: 'not_found' }, { status: 404 });
+        if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+        if (!existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
         try {
-          return Response.json(JSON.parse(readFileSync(filePath, 'utf8')));
+          return jsonResponseWithETag(JSON.parse(readFileSync(filePath, 'utf8')), req);
         } catch {
-          return Response.json({ error: 'parse_error', file: fileName }, { status: 500 });
+          return jsonResponseWithETag({ error: 'parse_error', file: fileName }, req, 500);
         }
       }
 
       // GET /api/probe/history
       if (path === '/api/probe/history') {
         const historyDir = safeJoin(XM_ROOT, 'probe', 'history');
-        if (!historyDir || !existsSync(historyDir)) return Response.json({ data: [] });
+        if (!historyDir || !existsSync(historyDir)) return jsonResponseWithETag({ data: [] }, req);
         const results = [];
         for (const entry of readdirSync(historyDir, { withFileTypes: true })) {
           if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
@@ -385,13 +412,13 @@ server = Bun.serve({
           const db = b.date ?? b.timestamp ?? b.created_at ?? '';
           return db < da ? -1 : db > da ? 1 : 0;
         });
-        return Response.json({ data: results });
+        return jsonResponseWithETag({ data: results }, req);
       }
 
       // GET /api/solver
       if (path === '/api/solver') {
         const solverDir = safeJoin(XM_ROOT, 'solver', 'problems');
-        if (!solverDir || !existsSync(solverDir)) return Response.json({ data: [] });
+        if (!solverDir || !existsSync(solverDir)) return jsonResponseWithETag({ data: [] }, req);
         const manifests = [];
         for (const entry of readdirSync(solverDir, { withFileTypes: true })) {
           if (!entry.isDirectory()) continue;
@@ -401,24 +428,24 @@ server = Bun.serve({
             manifests.push(JSON.parse(readFileSync(manifestPath, 'utf8')));
           } catch {}
         }
-        return Response.json({ data: manifests });
+        return jsonResponseWithETag({ data: manifests }, req);
       }
 
       // GET /api/solver/:slug
       const solverMatch = path.match(/^\/api\/solver\/([^/]+)$/);
       if (solverMatch) {
         const slug = solverMatch[1];
-        if (!isValidSegment(slug)) return Response.json({ error: 'forbidden' }, { status: 400 });
+        if (!isValidSegment(slug)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
         const problemDir = safeJoin(XM_ROOT, 'solver', 'problems', slug);
-        if (!problemDir || !existsSync(problemDir)) return Response.json({ error: 'not_found' }, { status: 404 });
+        if (!problemDir || !existsSync(problemDir)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
 
         const manifestPath = safeJoin(problemDir, 'manifest.json');
-        if (!manifestPath || !existsSync(manifestPath)) return Response.json({ error: 'not_found' }, { status: 404 });
+        if (!manifestPath || !existsSync(manifestPath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
         let manifest;
         try {
           manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
         } catch {
-          return Response.json({ error: 'parse_error', file: 'manifest.json' }, { status: 500 });
+          return jsonResponseWithETag({ error: 'parse_error', file: 'manifest.json' }, req, 500);
         }
 
         const phases = [];
@@ -434,7 +461,7 @@ server = Bun.serve({
           }
         }
 
-        return Response.json({ manifest, phases });
+        return jsonResponseWithETag({ manifest, phases }, req);
       }
 
       // GET /api/metrics/sessions
@@ -442,8 +469,8 @@ server = Bun.serve({
         const limit = Math.max(1, parseInt(url.searchParams.get('limit') ?? '50', 10));
         const offset = Math.max(0, parseInt(url.searchParams.get('offset') ?? '0', 10));
         const filePath = safeJoin(XM_ROOT, 'build', 'metrics', 'sessions.jsonl');
-        if (!filePath) return Response.json({ error: 'forbidden' }, { status: 400 });
-        if (!existsSync(filePath)) return Response.json({ data: [], total: 0 });
+        if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+        if (!existsSync(filePath)) return jsonResponseWithETag({ data: [], total: 0 }, req);
         try {
           const lines = readFileSync(filePath, 'utf8').split('\n').filter(l => l.trim());
           const parsed = [];
@@ -451,9 +478,9 @@ server = Bun.serve({
             try { parsed.push(JSON.parse(line)); } catch {}
           }
           const total = parsed.length;
-          return Response.json({ data: parsed.slice(offset, offset + limit), total, limit, offset });
+          return jsonResponseWithETag({ data: parsed.slice(offset, offset + limit), total, limit, offset }, req);
         } catch {
-          return Response.json({ error: 'parse_error', file: 'sessions.jsonl' }, { status: 500 });
+          return jsonResponseWithETag({ error: 'parse_error', file: 'sessions.jsonl' }, req, 500);
         }
       }
     }
