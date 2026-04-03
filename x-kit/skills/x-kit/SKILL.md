@@ -18,6 +18,16 @@ Show available x-mesh tools and their installation status.
 
 # x-kit — x-mesh Toolkit
 
+## Model Routing
+
+| Subcommand | Model | Reason |
+|------------|-------|--------|
+| `version`, `update`, `agents list/match/get` | **haiku** (Agent tool) | Read-only, no reasoning needed |
+| `config show/set/get/reset` | **haiku** (Agent tool) | Simple command execution |
+| `config` (interactive wizard) | main model | Requires AskUserQuestion |
+
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
+
 Show available tools:
 
 ```
@@ -234,11 +244,6 @@ Settings are resolved in priority order:
 3. Default values
 
 ### Interactive Config (`x-kit config` with no sub-command)
-
-**Model hint:** Config is menu-driven with no complex reasoning. Delegate to a **haiku agent** to save cost:
-```
-Agent tool: { description: "x-kit config wizard", model: "haiku", prompt: "[this section's instructions]" }
-```
 
 When `config` is called with no arguments, run an interactive wizard using AskUserQuestion.
 

@@ -24,6 +24,16 @@ x-memory persists project decisions, patterns, failures, and learnings across se
 
 # x-memory — Cross-Session Decision and Pattern Memory
 
+## Model Routing
+
+| Subcommand | Model | Reason |
+|------------|-------|--------|
+| `list`, `search`, `get`, `stats` | **haiku** (Agent tool) | Read-only query and display |
+| `save`, `update`, `delete` | **haiku** (Agent tool) | Simple write operations |
+| `inject` (context injection) | main model (sonnet) | Requires reasoning about relevance |
+
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
+
 ## Mode Detection
 
 Read mode from `.xm/config.json` (`mode` field). Default: `developer`.

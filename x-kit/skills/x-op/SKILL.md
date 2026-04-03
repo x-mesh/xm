@@ -27,6 +27,16 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 - "compose" → "조합", "decompose" → "분해", "escalate" → "단계 올리기"
 - "~하세요" 체 사용, 핵심 정보 먼저
 
+## Model Routing
+
+| Subcommand | Model | Reason |
+|------------|-------|--------|
+| `list` | **haiku** (Agent tool) | Catalog display, no reasoning |
+| Auto-route (strategy detection) | main model | Requires AskUserQuestion for confirmation |
+| Strategy execution | main model (sonnet+) | Multi-agent orchestration |
+
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
+
 ## Routing
 
 Determine strategy from the first word of `$ARGUMENTS`:

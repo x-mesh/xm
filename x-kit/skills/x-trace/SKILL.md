@@ -24,6 +24,15 @@ No external dependencies. All state is stored as JSONL files in `.xm/traces/`.
 
 # x-trace — Agent Execution Tracing
 
+## Model Routing
+
+| Subcommand | Model | Reason |
+|------------|-------|--------|
+| `show`, `list`, `cost`, `diff` | **haiku** (Agent tool) | Read-only log parsing and display |
+| `replay` | main model (sonnet) | Requires agent re-execution |
+
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
+
 Reads and writes JSONL files using Claude Code's native Bash tool.
 No external dependencies. Works as long as the `.xm/traces/` directory exists.
 

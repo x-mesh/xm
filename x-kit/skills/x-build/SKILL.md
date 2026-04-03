@@ -25,6 +25,16 @@ x-build manages the full project lifecycle (Research → Plan → Execute → Ve
 
 # x-build — Phase-Based Project Harness
 
+## Model Routing
+
+| Subcommand | Model | Reason |
+|------------|-------|--------|
+| `list`, `status`, `task list`, `decisions` | **haiku** (Agent tool) | Read-only status display |
+| `init` (interactive) | main model | Requires AskUserQuestion |
+| `plan`, `forecast`, `research`, `run` | main model (sonnet+) | Complex reasoning / orchestration |
+
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
+
 ## Mode Detection
 
 Check mode before every command:
