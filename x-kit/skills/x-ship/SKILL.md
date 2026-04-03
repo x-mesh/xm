@@ -233,9 +233,41 @@ If diff is non-empty → rollback: `git reset --hard $CURRENT`
 | `go.mod` | Go project | git tags only |
 | None | Generic | git tags only |
 
-#### 2.2 Determine bump level
+#### 2.2 Detect changed sub-plugins (x-kit marketplace only)
 
-If explicit (`patch`/`minor`/`major` in args) → use that.
+When project type is `x-kit marketplace`, map changed files to sub-plugins:
+
+```bash
+# Get changed files since last release (post-squash)
+git diff --name-only $LAST_RELEASE..HEAD
+```
+
+| Path pattern | Sub-plugin |
+|-------------|-----------|
+| `x-agent/**` | x-agent |
+| `x-build/**` | x-build |
+| `x-op/**` | x-op |
+| `x-kit/**` | x-kit |
+| `x-eval/**` | x-eval |
+| `x-review/**` | x-review |
+| `x-trace/**` | x-trace |
+| `x-memory/**` | x-memory |
+| `x-solver/**` | x-solver |
+| `x-probe/**` | x-probe |
+| `x-humble/**` | x-humble |
+| `x-ship/**` | x-ship (bundled in x-kit) |
+
+Display per-plugin change summary:
+```
+📊 변경된 플러그인:
+  x-kit    🔄 5 files (lib/shared-config.mjs, lib/x-build/core.mjs, ...)
+  x-build  🔄 2 files (lib/x-build/tasks.mjs, skills/x-build/SKILL.md)
+  x-agent  ✅ no changes
+```
+
+#### 2.3 Determine bump level
+
+If explicit (`patch`/`minor`/`major` in args) → use that for all changed plugins.
 
 Otherwise auto-detect from squashed commit messages:
 
@@ -256,26 +288,59 @@ Confirm with AskUserQuestion:
 3) major (X+1.0.0) — breaking change
 ```
 
-#### 2.3 Update version files
+#### 2.4 Update version files
 
-For x-kit marketplace:
-- `{plugin}/.claude-plugin/plugin.json` → version field
-- `.claude-plugin/marketplace.json` → matching plugin version
+**x-kit marketplace:**
+
+For each changed sub-plugin:
+1. Read `{plugin}/.claude-plugin/plugin.json` → Edit version field
+2. Read `.claude-plugin/marketplace.json` → Edit matching plugin version
+3. If x-kit (meta bundle) is not in changed list but any sub-plugin changed → bump x-kit too (patch)
+4. Update `package.json` → sync root version with x-kit version
+
+**Node.js project:**
 - `package.json` → version field
 
-For Node.js:
-- `package.json` → version field
+**Others:**
+- Update the detected version file, or create git tag
 
-For others:
-- Update the detected version file
+### Step 3: README SYNC (x-kit marketplace only)
 
-### Step 3: README SYNC
+**이 단계는 스킵할 수 없다.**
 
-For x-kit marketplace only. Check if SKILL.md changes need README updates.
+For each changed plugin, delegate a **sonnet agent** with this prompt:
 
-Same logic as x-release Step 3.5 — delegate agent to compare SKILL.md vs README sections.
+```
+## README Sync Check
 
-Skip for non-marketplace projects.
+Plugin: {plugin_name}
+SKILL.md path: {plugin}/skills/{plugin}/SKILL.md
+README.md section: find by "### {plugin_name}" or plugin description
+
+1. Read SKILL.md and README.md section for this plugin
+2. Compare and produce a diff checklist:
+
+| Item | SKILL.md | README | Action |
+|------|----------|--------|--------|
+| Description | "..." | "..." | UPDATE / OK |
+| Commands | cmd1, cmd2 | cmd1 | ADD cmd2 |
+| Options/flags | ... | ... | ADD / OK |
+
+3. For each ADD/UPDATE, produce the specific Edit
+4. If all OK: "README up to date for {plugin_name}"
+
+Rules:
+- README is concise — not a SKILL.md copy
+- Only add/update what changed
+- Both README.md (English) and README.ko.md (Korean) must stay in sync
+```
+
+Run agents for all changed plugins in parallel.
+
+**Checklist (must pass before Step 4):**
+- [ ] Every changed plugin has a README section
+- [ ] New commands/options reflected in README
+- [ ] README.md and README.ko.md are in sync
 
 ### Step 4: COMMIT + PUSH
 
@@ -283,10 +348,18 @@ Skip for non-marketplace projects.
 git add -A
 git commit -m "release: {name}@{version}
 
-{changelog summary from squashed commits}"
+{per-plugin changelog summary}
+- {plugin1}: {change description}
+- {plugin2}: {change description}"
 
 git push origin {branch}
 ```
+
+**If squash was performed:** history was rewritten, so force push is required.
+```bash
+git push origin {branch} --force
+```
+Confirm force push with AskUserQuestion before executing.
 
 ### Step 5: OUTPUT
 
@@ -299,6 +372,10 @@ git push origin {branch}
   Commit: {hash}
   Push: origin/{branch} ✅
 
+  Changed plugins:
+    x-kit    1.19.16 → 1.19.17
+    x-build  1.13.0  → 1.13.0 (no change)
+
   Users can update:
     /x-kit update
     /reload-plugins
@@ -309,10 +386,11 @@ git push origin {branch}
 ## Safety Rules
 
 - **No changes = no release** — prevent empty releases
-- **Squash verification** — always `git diff` before/after to confirm no code lost
+- **Squash verification** — always `git diff $CURRENT HEAD` before/after to confirm no code lost
 - **Not on main = warn** — "현재 브랜치가 main이 아닙니다. 계속?"
-- **Force push after squash** — squash rewrites history, force push required. Confirm with user.
-- **Rollback on failure** — save pre-squash HEAD, restore on any error
+- **Force push after squash** — squash rewrites history, confirm with user before force push
+- **Rollback on failure** — save pre-squash HEAD (`CURRENT`), restore with `git reset --hard $CURRENT` on any error
+- **README sync mandatory** — never skip Step 3 for x-kit marketplace releases
 
 ---
 
@@ -330,3 +408,23 @@ x-ship works in any git project:
 
 Version detection adapts to project type (package.json, Cargo.toml, pyproject.toml, git tags).
 No `.xm/config.json` required — works with defaults.
+
+For standalone projects, Step 2.2 (sub-plugin detection) and Step 3 (README sync) are skipped.
+
+---
+
+## Migration from x-release
+
+x-ship supersedes x-release. During the transition period both coexist.
+
+| Feature | x-release | x-ship |
+|---------|-----------|--------|
+| Commit squash | ❌ | ✅ Step 1 |
+| Version bump | ✅ | ✅ Step 2 |
+| Sub-plugin detection | ✅ | ✅ Step 2.2 |
+| README sync | ✅ | ✅ Step 3 |
+| Force push safety | ❌ | ✅ |
+| Non x-kit projects | ❌ | ✅ |
+| Dry-run preview | ❌ | ✅ |
+
+Once x-ship is validated in 2-3 releases, x-release can be retired.
