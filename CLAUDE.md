@@ -84,6 +84,20 @@ x-build plan-phase agents must follow these principles.
 | Done-criteria quality | Must be verifiable by command/state, not subjective |
 | Scope creep | No R# traceability = scope creep |
 
+## SKILL.md Language Rules
+
+SKILL.md is a prompt for LLMs — write instructions in English for precision.
+
+| Content type | Language |
+|-------------|----------|
+| Instructions, logic, rules, anti-patterns | **English only** |
+| User-facing output examples (normal mode) | Korean OK |
+| Term mapping tables (mode detection) | Korean OK |
+| Section headers | English |
+| Code examples | English |
+
+**NEVER write instructions/rules in Korean.** Korean in SKILL.md is only for output templates shown to the user.
+
 ## Documentation
 
 - `README.md` (English) and `README.ko.md` (Korean) must stay in sync

@@ -36,11 +36,11 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 **Developer mode**: Use technical terms (rubric, benchmark, verdict, score, dimension). Concise.
 
-**Normal mode**: 쉬운 한국어로 안내합니다.
+**Normal mode**: Guide in plain, accessible language.
 - "rubric" → "평가 기준", "benchmark" → "비교 평가", "verdict" → "판정", "dimension" → "평가 항목"
 - "score" → "점수", "judge" → "심사", "adversarial judge" → "검증 심사", "standard judge" → "기본 심사"
 - "bias check" → "교차 검증", "sigma" → "일치도", "consensus" → "합의"
-- "~하세요" 체 사용, 핵심 정보 먼저
+- Use polite tone ("~하세요" style), lead with the most important information
 
 ## Arguments
 
@@ -126,24 +126,24 @@ Judge count is specified via `--judges N`, or uses the agent_max_count value (de
 
 ### Judge Panel Composition (Bias Mitigation)
 
-**같은 모델 N개 = 같은 편향 N개.** Judge panel은 편향을 다양화해야 한다.
+**N judges from the same model = N copies of the same bias.** The judge panel must diversify its biases.
 
-**기본 3-judge 구성:**
+**Default 3-judge composition:**
 
-| Judge | Model | Role | 목적 |
-|-------|-------|------|------|
-| Judge 1 | sonnet | Standard Judge | 기본 루브릭 채점 |
-| Judge 2 | sonnet | Standard Judge | 독립 채점 (동일 프롬프트) |
-| Judge 3 | sonnet | **Adversarial Judge** | 결함 탐지 전문 — 아래 별도 프롬프트 |
+| Judge | Model | Role | Purpose |
+|-------|-------|------|---------|
+| Judge 1 | sonnet | Standard Judge | Standard rubric scoring |
+| Judge 2 | sonnet | Standard Judge | Independent scoring (same prompt) |
+| Judge 3 | sonnet | **Adversarial Judge** | Defect detection specialist — separate prompt below |
 
-**5+ judge 구성 (--judges 5 이상):**
+**5+ judge composition (--judges 5 or more):**
 
 | Judge | Model | Role |
 |-------|-------|------|
 | Judge 1-2 | sonnet | Standard Judge |
-| Judge 3 | opus | Standard Judge (다른 모델 관점) |
+| Judge 3 | opus | Standard Judge (different model perspective) |
 | Judge 4 | sonnet | Adversarial Judge |
-| Judge 5 | haiku | Fast Judge (비용 효율 교차 검증) |
+| Judge 5 | haiku | Fast Judge (cost-efficient cross-validation) |
 
 ### Judge Prompts
 
@@ -173,7 +173,7 @@ Criterion: <name> | Score: <N> | Reason: <justification>
 Final: <weighted_avg>/10
 ```
 
-**Adversarial Judge Prompt** — 마지막 1명에게 할당:
+**Adversarial Judge Prompt** — Assign to the last judge:
 
 ```
 ## Adversarial Evaluation Judge
@@ -218,21 +218,21 @@ If weights are not specified, equal weights are assigned to all criteria.
 
 | sigma | Consensus | Action |
 |---|------|------|
-| < 0.8 | High agreement | **공유 편향 위험 — Adversarial Judge 점수와 비교.** Adversarial이 2+ 점 낮으면 표준 judge들이 편향 공유 중. Adversarial 점수를 가중 반영 (weight 1.5x). |
-| 0.8–1.5 | Medium | 점수 사용, 주의 표시. Adversarial Judge 의견을 별도 표시. |
-| > 1.5 | Low — genuine disagreement | 추가 judge 1명 소환 (다른 모델). 재채점 후에도 σ > 1.5면 "판정 불가" 표시. |
+| < 0.8 | High agreement | **Shared bias risk — compare against Adversarial Judge score.** If adversarial is 2+ points lower, standard judges are sharing bias. Apply adversarial score with extra weight (1.5x). |
+| 0.8–1.5 | Medium | Use scores, flag with caution. Show Adversarial Judge opinion separately. |
+| > 1.5 | Low — genuine disagreement | Summon 1 additional judge (different model). If σ > 1.5 after re-scoring, mark as "no verdict". |
 
-**핵심 원칙: 낮은 σ는 "확신"이 아니라 "확인 필요".**
+**Key principle: Low σ means "needs verification", not "certainty".**
 
-같은 모델이 같은 프롬프트에 수렴하는 건 정확성의 신호가 아니라 모델의 mode(최빈값)를 반복하는 것일 수 있다. Adversarial Judge가 유일한 교차 검증 수단이다.
+When the same model converges on the same prompt, this may not be a signal of accuracy — it may just be repeating the model's mode. The Adversarial Judge is the only cross-validation mechanism.
 
-**Adversarial divergence 해석:**
+**Adversarial divergence interpretation:**
 
-| Standard avg | Adversarial | Gap | 해석 |
+| Standard avg | Adversarial | Gap | Interpretation |
 |---|---|---|---|
-| 8.0 | 7.5 | 0.5 | 정상 — 관점 차이 수준 |
-| 8.0 | 5.0 | 3.0 | **공유 편향 감지** — Adversarial이 잡은 결함을 표준 judge가 놓침. 최종 점수 = (standard × 0.6 + adversarial × 0.4) |
-| 8.0 | 2.0 | 6.0 | **심각한 품질 문제** — 표면적으로 좋아 보이나 근본적 결함 존재. 최종 점수 = adversarial 점수 우선 |
+| 8.0 | 7.5 | 0.5 | Normal — difference in perspective |
+| 8.0 | 5.0 | 3.0 | **Shared bias detected** — adversarial caught defects that standard judges missed. Final score = (standard × 0.6 + adversarial × 0.4) |
+| 8.0 | 2.0 | 6.0 | **Serious quality issue** — looks good on the surface but has fundamental flaws. Final score = adversarial score takes priority |
 
 ### Result Aggregation and Output
 
@@ -261,8 +261,8 @@ Adversarial findings:
 Notable: Adversarial judge가 정확도 문제를 잡음 — 표준 judge만으로는 놓쳤을 편향.
 ```
 
-**Score 계산:**
-- Standard judge 간 σ < 0.8 (high agreement) → 공유 편향 점검
+**Score calculation:**
+- σ < 0.8 between standard judges (high agreement) → check for shared bias
 - Adversarial gap > 1.5 → adjusted score = standard × 0.6 + adversarial × 0.4
 - Adversarial gap ≤ 1.5 → adjusted score = simple average (all judges)
 
@@ -1088,5 +1088,5 @@ Rules:
 
 Anti-patterns:
 - ❌ Auto-run evaluation without confirming what to evaluate
-- ✅ Show rubric + target, AskUserQuestion("이 설정으로 평가를 실행할까요?")
+- ✅ Show rubric + target, AskUserQuestion("Run evaluation with these settings?")
 | general | accuracy (0.25), completeness (0.25), consistency (0.20), clarity (0.20), hallucination-risk (0.10) |

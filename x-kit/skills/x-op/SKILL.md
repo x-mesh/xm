@@ -25,7 +25,7 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 - "strategy" → "전략", "verdict" → "판정", "premise" → "가정", "self-score" → "자체 점수"
 - "consensus" → "합의", "refinement" → "다듬기", "tournament" → "대결", "debate" → "토론"
 - "compose" → "조합", "decompose" → "분해", "escalate" → "단계 올리기"
-- "~하세요" 체 사용, 핵심 정보 먼저
+- Use "~하세요" form; lead with key information first
 
 ## Model Routing
 

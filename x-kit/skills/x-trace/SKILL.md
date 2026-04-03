@@ -42,10 +42,10 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 **Developer mode**: Use technical terms (trace, timeline, token, replay, diff, JSONL). Concise.
 
-**Normal mode**: 쉬운 한국어로 안내합니다.
+**Normal mode**: Use plain Korean for guidance.
 - "trace" → "실행 기록", "timeline" → "시간순 보기", "token" → "토큰", "replay" → "다시 보기"
 - "diff" → "비교", "cost" → "비용"
-- "~하세요" 체 사용, 핵심 정보 먼저
+- Use "~하세요" sentence style; lead with the most important information first
 
 ## Arguments
 

@@ -33,11 +33,11 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 **Developer mode**: Use technical terms (verdict, LGTM, Critical/High/Medium/Low, findings). Concise.
 
-**Normal mode**: 쉬운 한국어로 안내합니다.
+**Normal mode**: Use plain Korean for all user-facing output.
 - "verdict" → "결과", "LGTM" → "통과", "Request Changes" → "수정 필요", "Block" → "차단"
 - "finding" → "발견", "Critical" → "심각", "High" → "높음", "Medium" → "보통", "Low" → "낮음"
 - "severity" → "심각도", "lens" → "관점", "challenge stage" → "재확인", "consensus elevation" → "합의 승격"
-- "~하세요" 체 사용, 핵심 정보 먼저
+- Use "~하세요" style, lead with key information
 
 ## Arguments
 
@@ -53,84 +53,84 @@ First word of `$ARGUMENTS`:
 - `list` → [Subcommand: list]
 - Empty input → [Smart Router]
 - Natural language → [Smart Router] (interpret intent, then route)
-- Unrecognized input → [Subcommand: list] (오타/미지원 명령 안전 처리)
+- Unrecognized input → [Subcommand: list] (safe fallback for typos/unsupported commands)
 
 ### Smart Router (empty input or natural language)
 
-인자 없이 호출하면 **자동으로 리뷰 범위를 결정**한다. 사용자에게 범위를 묻지 않고 바로 실행.
+When called without arguments, **automatically determines the review scope**. Runs immediately without asking the user.
 
-**Step 1: Context detection (순서 = 라우팅 우선순위)**
+**Step 1: Context detection (order = routing priority)**
 
 ```bash
-# 1순위: PR 감지 (가장 높은 우선순위)
+# Priority 1: PR detection (highest priority)
 BRANCH=$(git branch --show-current 2>/dev/null)
 PR_NUM=$(gh pr view --json number -q .number 2>/dev/null || echo "")
 BASE=$(git merge-base main HEAD 2>/dev/null || git merge-base master HEAD 2>/dev/null || echo "")
 
-# 2순위: 마지막 리뷰 커밋 (main branch용)
+# Priority 2: Last reviewed commit (for main branch)
 LAST_REVIEW=$(jq -r '.reviewed_commit // empty' .xm/review/last-result.json 2>/dev/null || echo "")
 
-# 3순위: 마지막 릴리스 커밋
+# Priority 3: Last release commit
 if [ -z "$LAST_REVIEW" ]; then
   LAST_REVIEW=$(git log --grep="^release:" --format=%H -1 2>/dev/null || echo "")
 fi
 
-# 4순위: 마지막 태그
+# Priority 4: Last tag
 if [ -z "$LAST_REVIEW" ]; then
   TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
   [ -n "$TAG" ] && LAST_REVIEW=$(git rev-parse -- "$TAG" 2>/dev/null || echo "")
 fi
 
-# 5순위: Fallback
+# Priority 5: Fallback
 if [ -z "$LAST_REVIEW" ]; then
   LAST_REVIEW="HEAD~10"
 fi
 
-# 기준점 유효성 검증 — hex SHA 또는 HEAD~N만 허용
+# Validate reference point — only hex SHA or HEAD~N allowed
 if ! echo "$LAST_REVIEW" | grep -qE '^[0-9a-f]{7,40}$|^HEAD~[0-9]+$'; then
   LAST_REVIEW="HEAD~10"
 fi
 ```
 
-**Step 2: 라우팅 (위에서 아래로, 첫 매치 실행)**
+**Step 2: Routing (top to bottom, first match wins)**
 
-| 우선순위 | 조건 | 리뷰 범위 | 근거 |
+| Priority | Condition | Review scope | Rationale |
 |---------|------|----------|------|
-| 1 | PR 존재 | `gh pr diff {PR_NUM}` | PR = 리뷰의 자연스러운 단위 |
-| 2 | Feature branch (PR 없음) | `diff {BASE}..HEAD` | 브랜치 전체 = 작업 단위 |
-| 3 | Main + 기준점 있음 | `diff {LAST_REVIEW}..HEAD` | 마지막 리뷰/릴리스/태그 이후 |
-| 4 | Fallback | `diff HEAD~10` | 합리적 기본값 |
-| — | Unrecognized input | [Subcommand: list] | 오타/미지원 명령 안전 처리 |
+| 1 | PR exists | `gh pr diff {PR_NUM}` | PR = natural unit of review |
+| 2 | Feature branch (no PR) | `diff {BASE}..HEAD` | Entire branch = unit of work |
+| 3 | Main + reference point exists | `diff {LAST_REVIEW}..HEAD` | Since last review/release/tag |
+| 4 | Fallback | `diff HEAD~10` | Reasonable default |
+| — | Unrecognized input | [Subcommand: list] | Safe fallback for typos/unsupported commands |
 
-**Step 3: 실행 전 요약 + 대규모 diff 가드**
+**Step 3: Pre-run summary + large diff guard**
 ```
 🔍 리뷰 범위: {ref:0:7}..HEAD ({N} 커밋, {M} 파일, +{add}/-{del} 줄)
    기준: {마지막 리뷰 / 릴리스 커밋 / 태그 / HEAD~10}
 ```
 
-| diff 크기 | 동작 |
+| Diff size | Behavior |
 |----------|------|
-| 0줄 | "변경 사항이 없습니다" 출력, 종료 |
-| 1-500줄 | 바로 실행 |
-| 500-2000줄 | AskUserQuestion: `--preset thorough` (4렌즈) 또는 `--preset quick` (2렌즈) 선택 |
-| 2000줄 이상 | `--preset quick` 강제 적용 (override: `--force-full`) |
+| 0 lines | Output "변경 사항이 없습니다", exit |
+| 1-500 lines | Run immediately |
+| 500-2000 lines | AskUserQuestion: choose `--preset thorough` (4 lenses) or `--preset quick` (2 lenses) |
+| 2000+ lines | Force `--preset quick` (override: `--force-full`) |
 
-**리뷰 완료 시 기준점 저장:**
+**Save reference point after review:**
 
-Phase 4 완료 후 `last-result.json`에 `reviewed_commit` 필드를 기록한다:
+After Phase 4 completes, write the `reviewed_commit` field to `last-result.json`:
 ```json
 {
-  "reviewed_commit": "{HEAD의 commit hash}",
-  ...기존 필드
+  "reviewed_commit": "{commit hash of HEAD}",
+  ...existing fields
 }
 ```
-이 값이 다음 Smart Router 실행 시 기준점 1순위가 된다.
+This value becomes priority 1 reference point for the next Smart Router run.
 
 **Natural language mapping:**
 | User says | Route to |
 |-----------|----------|
 | "review this PR", "PR 리뷰" | `pr` (auto-detect) |
-| "review the code", "코드 리뷰" | Smart Router (자동 범위) |
+| "review the code", "코드 리뷰" | Smart Router (auto scope) |
 | "check security", "보안 검사" | `diff --lenses "security"` |
 | "review this file", "이 파일 리뷰" | `file` (ask for path) |
 | "full review", "전체 리뷰" | `full` |
@@ -147,7 +147,7 @@ Commands:
   diff [ref]                    Review git diff (default: HEAD~1)
   pr [number]                   Review GitHub PR (auto-detect from branch)
   file <path>                   Review specific file(s)
-  full                          Full codebase review (분할 리뷰)
+  full                          Full codebase review (split by lens)
 
 Options:
   --lenses "security,logic,perf,tests"
@@ -170,7 +170,7 @@ Lenses (default 4 + extended 3):
 Presets:
   --preset quick       security + logic (2 agents, ~2min)
   --preset standard    4 core lenses (~5min)
-  --preset security    security × 3 agents (중복 검증)
+  --preset security    security × 3 agents (redundant verification)
   (default)            all 7 lenses, 7 agents
 
 Examples:
@@ -211,7 +211,7 @@ If `number` is omitted, auto-detect from current branch:
 gh pr view --json number -q .number 2>/dev/null
 ```
 - If PR found → use that number automatically
-- If no PR → AskUserQuestion: "PR 번호를 입력해 주세요"
+- If no PR → AskUserQuestion: "Please enter the PR number"
 
 ### file <path>
 
@@ -220,20 +220,20 @@ Store the result as `{diff_content}`.
 
 ### full
 
-프로젝트 전체 코드베이스 리뷰. diff가 아닌 전체 소스를 대상으로 한다.
+Full codebase review. Targets entire source, not a diff.
 
-1. 리뷰 대상 파일 수집:
+1. Collect files to review:
    ```bash
    git ls-files --cached | grep -E '\.(ts|js|py|go|java|rs|mjs)$' | head -100
    ```
-2. **렌즈 우선 분할** — 파일이 아닌 렌즈 기준으로 에이전트 배정:
-   - 기본 4개 렌즈 (security, logic, perf, tests) × 전체 파일 목록
-   - 각 에이전트가 **하나의 렌즈**로 전체 파일을 스캔 (파일그룹 × 7렌즈 금지)
-   - 에이전트 수 = min(렌즈 수, `agent_max_count`)
-   - 파일이 20개 이상이면 렌즈별로 파일을 반씩 나눠 2 에이전트 배정
-3. 결과를 Phase 4: SYNTHESIZE로 통합
+2. **Lens-first split** — assign agents by lens, not by file group:
+   - Default 4 lenses (security, logic, perf, tests) × full file list
+   - Each agent scans all files with **one lens** (file-group × 7-lens split is prohibited)
+   - Agent count = min(lens count, `agent_max_count`)
+   - If 20+ files, split files in half per lens and assign 2 agents each
+3. Merge results into Phase 4: SYNTHESIZE
 
-`full` 모드는 비용이 높으므로 실행 전 확인:
+`full` mode is expensive — confirm before running:
 ```
 전체 리뷰 대상: {N}개 파일, {렌즈}개 렌즈, ~{agent_count}개 에이전트
 예상 토큰: ~{token}K
@@ -262,26 +262,26 @@ Assign review perspectives using `--lenses` option or automatically.
 
 `--lenses "security,logic"` → Use only the specified lenses; agent count = lens count.
 
-**--lenses + --agents 상호작용:**
-- `--lenses "security" --agents 3` → security를 3개 독립 에이전트로 실행 (중복 검증, Self-Consistency 효과)
-- `--lenses "security,logic" --agents 4` → security 2개 + logic 2개 (렌즈별 균등 분배)
-- `--lenses "security,logic,perf"` (--agents 없음) → 3개 에이전트, 렌즈별 1개
+**--lenses + --agents interaction:**
+- `--lenses "security" --agents 3` → runs security as 3 independent agents (redundant verification, Self-Consistency effect)
+- `--lenses "security,logic" --agents 4` → security ×2 + logic ×2 (evenly distributed per lens)
+- `--lenses "security,logic,perf"` (no --agents) → 3 agents, 1 per lens
 
-### Presets (빠른 시작)
+### Presets (quick start)
 
-| Preset | 렌즈 | 에이전트 | 용도 |
+| Preset | Lenses | Agents | Use case |
 |--------|------|---------|------|
-| `--preset quick` | security, logic | 2 | 빠른 핵심 검사 (2분) |
-| `--preset standard` | security, logic, perf, tests | 4 | 코드 품질 중심 (5분) |
-| `--preset security` | security only | 3 | 보안 집중 (Self-Consistency) |
-| (기본, preset 없음) | **전체 7개** | **7** | **전체 리뷰 (기본값)** |
+| `--preset quick` | security, logic | 2 | Fast core check (~2 min) |
+| `--preset standard` | security, logic, perf, tests | 4 | Code quality focused (~5 min) |
+| `--preset security` | security only | 3 | Security focused (Self-Consistency) |
+| (default, no preset) | **all 7** | **7** | **Full review (default)** |
 
 ### Agent Count
 
-- 기본: agent count = lens count (**7 lenses = 7 agents**)
+- Default: agent count = lens count (**7 lenses = 7 agents**)
 - `--preset quick` → 2, `--preset standard` → 4
-- `--agents N` 지정 시: N개 에이전트 (렌즈를 N에 맞춰 배정)
-- `--agents N`이 렌즈 수보다 적으면: 우선순위 높은 렌즈부터 배정 (security > logic > perf > errors > tests > architecture > docs)
+- When `--agents N` is specified: N agents (lenses assigned to fit N)
+- If `--agents N` is less than lens count: assign highest-priority lenses first (security > logic > perf > errors > tests > architecture > docs)
 
 ---
 
@@ -702,7 +702,7 @@ After deduplication, each finding is self-verified before challenge. For each Hi
 
 For each finding with severity >= High:
 1. **Generate verification question:** "Does {file}:{line} actually do {claimed behavior}?"
-2. **Verify against agent output:** Review agents must include the relevant code snippet (3-5 lines around the finding) in their output. The leader verifies the claim against this snippet — **파일을 다시 읽지 않는다.** 스니펫이 없는 finding만 Read tool로 확인.
+2. **Verify against agent output:** Review agents must include the relevant code snippet (3-5 lines around the finding) in their output. The leader verifies the claim against this snippet — **do not re-read the file.** Only use Read tool for findings that have no snippet.
 3. **Result:**
    - Verified → keep finding as-is
    - Contradicted → remove finding + tag `[CoVe-removed]`
@@ -779,13 +779,13 @@ Within the same severity, consensus findings come first.
 
 ### 6. Verdict
 
-| Condition | Verdict | 의미 |
+| Condition | Verdict | Meaning |
 |-----------|---------|------|
-| 0 Critical, 0 High, Medium ≤ 3 | LGTM ✅ | 머지 가능 |
-| 0 Critical, High 1-2 or Medium > 3 | Request Changes 🔄 | 수정 후 재리뷰 |
-| 1+ Critical or High > 2 | Block 🚫 | 머지 차단 — 반드시 수정 |
+| 0 Critical, 0 High, Medium ≤ 3 | LGTM ✅ | Ready to merge |
+| 0 Critical, High 1-2 or Medium > 3 | Request Changes 🔄 | Fix then re-review |
+| 1+ Critical or High > 2 | Block 🚫 | Merge blocked — must fix |
 
-출력에 판정 이유를 포함한다: "Verdict: Request Changes 🔄 — High 1건 발견 (LGTM 기준: High 0건 필요)"
+Include verdict rationale in output: "Verdict: Request Changes 🔄 — 1 High finding (LGTM requires: 0 High)"
 
 ### 7. Output Format
 
@@ -890,27 +890,27 @@ Review state is stored in `.xm/review/`.
 ```
 .xm/review/
 ├── last-result.json                    # Latest review result (JSON)
-├── last-result.md                      # Latest review result (Markdown, 사람이 읽는 용)
+├── last-result.md                      # Latest review result (Markdown, human-readable)
 └── history/
     └── {YYYY-MM-DD}-{ref-slug}.md      # Past review reports
 ```
 
-### Review Result MD 저장 (MANDATORY)
+### Review Result MD Save (MANDATORY)
 
-모든 리뷰 완료 후, Phase 4 최종 출력을 `.xm/review/` 에 MD 파일로 저장한다. **이 단계는 스킵할 수 없다.**
+After every review completes, save the Phase 4 final output as an MD file under `.xm/review/`. **This step cannot be skipped.**
 
-1. `last-result.md` — 최신 리뷰 결과 (덮어쓰기)
-2. `history/{YYYY-MM-DD}-{ref-slug}.md` — 히스토리 보존
+1. `last-result.md` — latest review result (overwrite)
+2. `history/{YYYY-MM-DD}-{ref-slug}.md` — preserve history
 
-**ref-slug 생성:**
+**ref-slug generation:**
 - `diff HEAD~1` → `head-1`
 - `pr 142` → `pr-142`
 - `diff main..HEAD` → `main-head`
 - `full` → `full`
 - `file src/auth.ts` → `file-src-auth-ts`
 
-**MD 파일 내용:** Phase 4 최종 출력 (verdict, findings, summary table, observations) 그대로 저장.
-파일 상단에 메타데이터 추가:
+**MD file content:** Save Phase 4 final output (verdict, findings, summary table, observations) as-is.
+Prepend metadata at the top of the file:
 ```markdown
 # x-review: {target} — {verdict}
 - Date: {YYYY-MM-DD HH:MM}

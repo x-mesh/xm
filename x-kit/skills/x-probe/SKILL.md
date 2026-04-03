@@ -34,13 +34,13 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 **Developer mode**: Use technical terms (premise, verdict, fatal, refuted, heuristic, data-backed). Concise English-Korean mix.
 
-**Normal mode**: 쉬운 한국어로 안내합니다.
+**Normal mode**: Use plain Korean throughout.
 - "premise" → "가정", "verdict" → "결론", "fatal" → "핵심", "weakening" → "약화", "minor" → "미미"
 - "refuted" → "틀림", "survived" → "유효", "weakened" → "약해짐"
 - "assumption" → "추측", "heuristic" → "경험 기반", "data-backed" → "데이터 있음", "validated" → "검증됨"
 - "PROCEED" → "진행", "RETHINK" → "재검토", "KILL" → "중단"
 - "pre-mortem" → "실패 시나리오", "inversion" → "반대로 생각하기", "falsifiable" → "검증 가능"
-- "~하세요" 체 사용, 핵심 정보 먼저
+- Use "~하세요" polite form; lead with key information
 
 ## Arguments
 
@@ -266,7 +266,7 @@ Upgrade or downgrade the evidence grade based on user's answer.
 
 **AskUserQuestion is the LAST action. STOP here. No text after it.**
 
-**Step C: "맞다고 치면"** — after user responds to Step B, call AskUserQuestion:
+**Step C: "Assume it's true"** — after user responds to Step B, call AskUserQuestion:
 
 ```
 AskUserQuestion("이 가정이 맞다고 칩시다. 그러면 6개월 뒤 성공한 모습은? 그리고 반만 맞았다면요?")

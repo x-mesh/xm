@@ -309,7 +309,7 @@ Use AskUserQuestion:
 
 #### 1.4 Execute squash
 
-**Method: soft reset + re-commit** (rebase보다 안전)
+**Method: soft reset + re-commit** (safer than rebase)
 
 ```bash
 # Save current HEAD
@@ -466,7 +466,7 @@ For each changed sub-plugin:
 
 ### Step 3: README SYNC (x-kit marketplace only)
 
-**이 단계는 스킵할 수 없다.**
+**This step cannot be skipped.**
 
 For each changed plugin, delegate a **sonnet agent** with this prompt:
 
@@ -515,7 +515,7 @@ git commit -m "release: {name}@{version}
 git push origin {branch}
 ```
 
-**Force push는 불필요해야 합니다.** Squash는 로컬 전용 커밋만 대상으로 하므로 일반 `git push`로 충분합니다. Force push가 필요하다면 squash 범위를 잘못 잡은 것 — 중단하고 확인하세요.
+**Force push should not be necessary.** Squash targets local-only commits, so a regular `git push` is sufficient. If force push is required, the squash range was set incorrectly — stop and verify.
 
 ### Step 4.5: METRICS — Record release checkpoint to x-trace
 
@@ -582,8 +582,8 @@ Write checkpoint:
 
 ## Safety Rules
 
-- **Squash는 로컬 전용 커밋만** — `git log origin/main..HEAD`로 아직 push되지 않은 커밋만 squash 대상. 이미 remote에 push된 커밋은 절대 squash하지 않는다. Push된 커밋을 squash하면 force push가 필요하고 다른 사람의 히스토리가 깨진다.
-- **Force push 금지 (원칙)** — squash를 로컬 커밋에만 적용하면 force push가 필요 없다. Force push가 필요한 상황 자체가 squash 범위를 잘못 잡았다는 신호다.
+- **Squash local-only commits** — only commits not yet pushed (`git log origin/main..HEAD`) are squash candidates. Never squash commits already on remote. Squashing pushed commits requires force push and breaks others' history.
+- **No force push (principle)** — applying squash only to local commits means force push is never needed. Needing force push is itself a signal that the squash range was set incorrectly.
 - **No changes = no release** — prevent empty releases
 - **Squash verification** — always `git diff $CURRENT HEAD` before/after to confirm no code lost
 - **Not on main = warn** — "현재 브랜치가 main이 아닙니다. 계속?"

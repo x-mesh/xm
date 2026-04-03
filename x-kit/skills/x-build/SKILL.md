@@ -44,18 +44,18 @@ node ${CLAUDE_PLUGIN_ROOT}/lib/x-build-cli.mjs mode show 2>/dev/null | head -1
 
 **Developer mode**: Use technical terms (DAG, phase, gate, step, context, retry, circuit breaker). Concise.
 
-**Normal mode**: 쉬운 한국어로 안내합니다.
-- 비유 없이 직접적 표현: "단계", "할 일", "확인", "다음"
-- "~하세요" 체 사용
-- 기술 용어 대신 설명: "DAG" → "순서 계산", "gate" → "넘어가기 조건", "circuit breaker" → "자동 중단"
-- 명령어는 영어 유지하되 설명 추가: `steps compute` → "할 일의 실행 순서를 계산합니다"
-- 핵심 정보 먼저, 부가 설명은 뒤에
+**Normal mode**: Guide in plain Korean.
+- Direct expressions without metaphors: "단계", "할 일", "확인", "다음"
+- Use "~하세요" style
+- Replace technical terms with explanations: "DAG" → "순서 계산", "gate" → "넘어가기 조건", "circuit breaker" → "자동 중단"
+- Keep commands in English but add explanation: `steps compute` → "할 일의 실행 순서를 계산합니다"
+- Key information first, supplementary details after
 
-**에이전트 위임 시 mode 전달 (MANDATORY):**
-모든 delegate/fan-out 프롬프트에 mode를 주입하세요. Normal mode일 때:
-- 프롬프트 첫 줄에 추가: `"언어: 한국어로 작성. 기술 용어는 원어 유지."`
-- PRD, CONTEXT.md, REQUIREMENTS.md 등 모든 산출물이 한국어로 생성
-- 섹션 제목은 영문 유지 (Goal, Success Criteria 등)
+**Pass mode when delegating agents (MANDATORY):**
+Inject mode into all delegate/fan-out prompts. When in Normal mode:
+- Add to first line of prompt: `"언어: 한국어로 작성. 기술 용어는 원어 유지."`
+- All artifacts (PRD, CONTEXT.md, REQUIREMENTS.md, etc.) are generated in Korean
+- Section titles remain in English (Goal, Success Criteria, etc.)
 
 ## CLI
 
@@ -104,7 +104,7 @@ Anti-patterns:
 
 Anti-patterns:
 - All tasks complete → immediately run `phase next`
-- Show plan and ask "진행할까요?" as text
+- Show plan and ask "Shall we proceed?" as text (must use AskUserQuestion)
 - All tasks complete → AskUserQuestion("모든 태스크 완료. Verify 단계로 넘어갈까요?")
 
 ## Phase Lifecycle
@@ -472,7 +472,7 @@ Before task decomposition, the leader generates a PRD. Based on research artifac
 
 **IMPORTANT: Check mode from `.xm/config.json` before generating.**
 - `developer` mode → Write PRD in English (technical terms, concise)
-- `normal` mode → Write PRD content in Korean (섹션 제목은 영문 유지, 내용은 한국어). Inject this instruction into the agent prompt: `"모든 섹션의 내용을 한국어로 작성하세요. 섹션 제목(Goal, Success Criteria 등)은 영문 유지. 기술 용어는 원어 유지."`
+- `normal` mode → Write PRD content in Korean (section titles remain in English, body in Korean). Inject this instruction into the agent prompt: `"모든 섹션의 내용을 한국어로 작성하세요. 섹션 제목(Goal, Success Criteria 등)은 영문 유지. 기술 용어는 원어 유지."`
 
 delegate (foreground, opus recommended):
 ```
@@ -517,60 +517,60 @@ Fill in every section of the PRD template below without omission:
 
 ## 8. Architecture
 
-**ASCII 다이어그램으로 시스템 구조를 표현하세요.** 상황에 맞는 유형을 아래에서 선택하세요.
+**Express the system structure with an ASCII diagram.** Select the appropriate type from the guide below.
 
-### 다이어그램 선택 가이드 (23종)
+### Diagram Selection Guide (23 types)
 
-| 분류 | 상황 | 추천 유형 |
+| Category | Situation | Recommended Type |
 |------|------|----------|
-| **시스템 아키텍처** | 서비스/API 전체 구조 | 시스템 아키텍처 |
-| | 논리적 계층 설계 | 레이어 |
-| | 플러그인/모듈 확장 | 확장 구조 |
-| | 분산 시스템 연결망 | 토폴로지 |
-| **프로세스/흐름** | API 호출 순서 | 시퀀스 |
-| | 태스크 의존성 | 트리, DAG |
-| | 비동기 이벤트 통신 | 메시지, CQRS |
-| | 사용자 액션 분기 | 사용자 여정 |
-| **데이터/상태** | 데이터 처리 과정 | 파이프라인, ETL |
-| | 상태 변화 | 상태 머신 |
-| | DB 테이블 관계 | ERD |
-| **인프라** | 환경 전환 | Before/After |
-| | 네트워크 경로 | 네트워크 흐름 |
-| | 접근 제어 | 보안 경계 |
-| | 오토스케일링 | 리소스 할당 |
-| **AI/자동화** | 에이전트 협력 | 멀티 에이전트 |
-| | CI/CD | 배포 파이프라인 |
-| | 에러 처리 | 폴백 |
-| **기타** | UI 와이어프레임 | 레이아웃 |
-| | 프로젝트 일정 | 간트 |
+| **System Architecture** | Overall service/API structure | System Architecture |
+| | Logical layer design | Layers |
+| | Plugin/module extension | Extension Structure |
+| | Distributed system network | Topology |
+| **Process/Flow** | API call sequence | Sequence |
+| | Task dependencies | Tree, DAG |
+| | Async event communication | Message, CQRS |
+| | User action branching | User Journey |
+| **Data/State** | Data processing flow | Pipeline, ETL |
+| | State transitions | State Machine |
+| | DB table relationships | ERD |
+| **Infrastructure** | Environment switching | Before/After |
+| | Network paths | Network Flow |
+| | Access control | Security Boundary |
+| | Auto-scaling | Resource Allocation |
+| **AI/Automation** | Agent collaboration | Multi-Agent |
+| | CI/CD | Deployment Pipeline |
+| | Error handling | Fallback |
+| **Other** | UI wireframe | Layout |
+| | Project schedule | Gantt |
 
-### 표준 작성 양식
+### Standard Format
 
 ```
-■ 다이어그램: [명칭]
-■ 목적: [핵심 메시지 1~2줄]
+■ Diagram: [name]
+■ Purpose: [core message 1-2 lines]
 
-[ ASCII Art — 코드 블록 사용 ]
+[ ASCII Art — use code block ]
 
-■ 범례:
-  - [ ] : 컴포넌트 / 서버
-  - ( ) : 데이터 / 상태
-  - ──▶ : 동기 호출
-  - ╌╌▶ : 비동기 통신
+■ Legend:
+  - [ ] : Component / Server
+  - ( ) : Data / State
+  - ──▶ : Synchronous call
+  - ╌╌▶ : Async communication
 
-■ 핵심 설명:
-  1. [설계 포인트]
-  2. [성능/보안 특이사항]
+■ Key Notes:
+  1. [Design point]
+  2. [Performance/security notes]
 ```
 
-### 대표 형태 참고
+### Reference Examples
 
-시스템 아키텍처:
+System Architecture:
 ```
 [Client] ──▶ [WAF/LB] ──▶ [App Cluster] ──▶ [(DB)]
 ```
 
-시퀀스:
+Sequence:
 ```
 User        Server        DB
  │── Req ──▶│             │
@@ -586,21 +586,21 @@ DAG:
      └── [Build B] ──┘
 ```
 
-상태 머신:
+State Machine:
 ```
 [Pending] ──(Start)──▶ [Running] ──(Done)──▶ [Complete]
                           │
                        (Fail)──▶ [Failed]
 ```
 
-멀티 에이전트:
+Multi-Agent:
 ```
                  ┌──▶ [Planning Agent] ──┐
 [Router Agent] ──┤                      ├──▶ [Executor]
                  └──▶ [Memory Mesh] ◀───┘
 ```
 
-Key decisions: 이 구조를 선택한 이유와 거부한 대안을 기술하세요.
+Key decisions: Describe why this structure was chosen and what alternatives were rejected.
 
 ## 9. Key Scenarios
 
@@ -699,8 +699,8 @@ Risks: Each risk needs likelihood + impact + mitigation. 'Things might go wrong'
   Good: 'JWT secret rotation may cause active sessions to invalidate — mitigate with grace period'
   Bad: 'Security risks'
 
-Architecture: Must include ASCII diagram with 표준 양식 (■ 다이어그램 / ■ 목적 / ■ 범례 / ■ 핵심 설명). Select type from the 23-type guide.
-  Good: ASCII diagram with labeled edges + 범례 + 핵심 설명
+Architecture: Must include ASCII diagram with standard format (■ Diagram / ■ Purpose / ■ Legend / ■ Key Notes). Select type from the 23-type guide.
+  Good: ASCII diagram with labeled edges + Legend + Key Notes
   Bad: 'Standard 3-tier architecture' (no diagram) or Mermaid (not rendered in dashboard)
 
 Key Scenarios: Must include happy path + failure path as numbered steps with specific commands/outputs.
@@ -738,7 +738,7 @@ After PRD generation, **the leader MUST output the full PRD text to the user**. 
 2. **After the full text output**, call AskUserQuestion for review.
 
 Anti-patterns:
-- ❌ Save PRD to file → immediately ask "리뷰해주세요" without showing content
+- ❌ Save PRD to file → immediately ask for review without showing content
 - ❌ Show only section titles or a summary instead of the full PRD
 - ✅ Output full PRD text → then AskUserQuestion for review
 
@@ -1028,7 +1028,7 @@ Create tasks informed by research artifacts:
 3. On completion: `$XMB tasks update <id> --status completed|failed`
 4. Check `$XMB run-status`, advance to next step or phase
 
-**Call AskUserQuestion before advancing to Verify phase.** When all tasks complete, ask: `"모든 태스크 완료. Verify 단계로 넘어갈까요?"` (or equivalent in developer mode). Do NOT run `phase next` without user confirmation.
+**Call AskUserQuestion before advancing to Verify phase.** When all tasks complete, ask the user to confirm before advancing (e.g., "All tasks completed. Proceed to the Verify phase?" in developer mode, or `"모든 태스크 완료. Verify 단계로 넘어갈까요?"` in normal mode). Do NOT run `phase next` without user confirmation.
 
 #### Strategy-Tagged Execution
 
@@ -1094,7 +1094,7 @@ Recommendation only — not auto-applied. User must specify via `--strategy`.
    - For each task with `done_criteria`, verify that the criteria are met
    - Output: `✅ t1: 3/3 criteria met` or `❌ t2: 1/3 criteria met — [missing: "at least 3 unit tests"]`
    - Unmet criteria → report to user for resolution before closing
-4. **Call AskUserQuestion before closing.** Show quality check results first, then ask: `"품질 검사 완료. 프로젝트를 Close 단계로 넘어갈까요?"` (or equivalent in developer mode). Do NOT run `phase next` without user confirmation.
+4. **Call AskUserQuestion before closing.** Show quality check results first, then ask the user to confirm before advancing (e.g., "Quality checks passed. Proceed to the Close phase?" in developer mode, or `"품질 검사 완료. 프로젝트를 Close 단계로 넘어갈까요?"` in normal mode). Do NOT run `phase next` without user confirmation.
 5. If user confirms: `$XMB phase next`
 
 ### Step 6: Close
