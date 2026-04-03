@@ -277,6 +277,7 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 **Quality features:**
 - **Self-Score**: Every strategy auto-scores output against rubric (1-10)
 - **--verify**: Judge panel validates quality, auto-retries if below threshold
+- **Result Persistence**: Strategy results saved to `.xm/op/` — viewable in x-dashboard
 - **Compose presets**: `--preset analysis-deep`, `--preset security-audit`, `--preset consensus`
 - **Output Quality Contract**: Evidence-based, falsifiable, dimension-tagged arguments with per-category Dimension Anchors
 

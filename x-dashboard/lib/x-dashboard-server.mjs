@@ -614,8 +614,10 @@ function handleOpList(xmRoot, req) {
 }
 
 function handleOpDetail(xmRoot, file, req) {
-  if (!isValidSegment(file)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
-  const filePath = safeJoin(xmRoot, 'op', file);
+  const baseName = file.endsWith('.json') ? file.slice(0, -5) : file;
+  if (!isValidSegment(baseName)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  const fileName = file.endsWith('.json') ? file : file + '.json';
+  const filePath = safeJoin(xmRoot, 'op', fileName);
   if (!filePath || !existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
   try {
     const data = JSON.parse(readFileSync(filePath, 'utf8'));
