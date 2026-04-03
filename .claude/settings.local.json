@@ -12,7 +12,9 @@
       "Bash(bash:*)",
       "Bash(node:*)",
       "Bash(cp:*)",
-      "Bash(git reset:*)"
+      "Bash(git reset:*)",
+      "Bash(bun:*)",
+      "Bash(lsof:*)"
     ]
   }
 }
