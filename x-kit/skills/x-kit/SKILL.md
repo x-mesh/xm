@@ -233,6 +233,61 @@ Settings are resolved in priority order:
 2. Global (`~/.xm/config.json`)
 3. Default values
 
+### Interactive Config (`x-kit config` with no sub-command)
+
+**Model hint:** Config is menu-driven with no complex reasoning. Delegate to a **haiku agent** to save cost:
+```
+Agent tool: { description: "x-kit config wizard", model: "haiku", prompt: "[this section's instructions]" }
+```
+
+When `config` is called with no arguments, run an interactive wizard using AskUserQuestion.
+
+**Step 1: Show current state**
+
+Run via Bash:
+```bash
+node -e "import('${CLAUDE_PLUGIN_ROOT}/lib/shared-config.mjs').then(m => m.cmdConfig(['show']))"
+```
+
+**Step 2: Ask what to configure**
+
+Use AskUserQuestion:
+```
+설정할 항목을 선택하세요:
+
+1) 모델 프로필 — economy / balanced / performance
+2) 예산 한도 — 세션당 최대 비용 ($)
+3) 에이전트 수 — 병렬 에이전트 수 (1-10)
+4) 모드 — developer / normal
+5) 역할별 오버라이드 — 프로필 위에 개별 역할 모델 지정
+0) 나가기
+```
+
+**Step 3: Execute based on choice**
+
+| Choice | Action |
+|--------|--------|
+| 1 | AskUserQuestion: "1) economy (~60-90% 절감) 2) balanced (기본) 3) performance (최강)" → run `cmdConfig(['set', 'model_profile', selected])` |
+| 2 | AskUserQuestion: "세션 예산 ($, 0=무제한):" → run `cmdConfig(['set', 'budget.max_usd', value], { local: true })` |
+| 3 | AskUserQuestion: "에이전트 수 (1-10):" → run `cmdConfig(['set', 'agent_max_count', value])` |
+| 4 | AskUserQuestion: "1) developer 2) normal" → run `cmdConfig(['set', 'mode', selected])` |
+| 5 | AskUserQuestion: "형식: role=model (예: architect=opus), done으로 종료" → loop: run `cmdConfig(['set', 'model_overrides', JSON.stringify(overrides)])` |
+| 0 | Exit |
+
+After each setting change, show the updated value and ask "다른 설정도 변경할까요? (y/n)". If y, return to Step 2.
+
+### CLI Config (`x-kit config set/get/show/reset`)
+
+Run directly via Bash:
+```bash
+node -e "import('${CLAUDE_PLUGIN_ROOT}/lib/shared-config.mjs').then(m => m.cmdConfig(['show']))"
+node -e "import('${CLAUDE_PLUGIN_ROOT}/lib/shared-config.mjs').then(m => m.cmdConfig(['set', 'KEY', 'VALUE']))"
+node -e "import('${CLAUDE_PLUGIN_ROOT}/lib/shared-config.mjs').then(m => m.cmdConfig(['get', 'KEY']))"
+node -e "import('${CLAUDE_PLUGIN_ROOT}/lib/shared-config.mjs').then(m => m.cmdConfig(['reset']))"
+```
+
+For `--local` scope, pass flags: `m.cmdConfig(['set', 'KEY', 'VALUE'], { local: true })`
+
 ## Agent Catalog
 
 x-kit includes a catalog of 37 specialist agents at `x-kit/agents/`. These provide domain expertise for broadcast/fan-out operations across all x-kit tools.
