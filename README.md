@@ -510,6 +510,47 @@ CHECK-IN ──→ RECALL ──→ IDENTIFY ──→ ANALYZE ──→ ALTERNA
 
 ---
 
+### x-dashboard
+
+Web dashboard for `.xm/` project state. Visualize builds, probes, solvers, traces, memory, and costs — all read-only, no build chain.
+
+```bash
+bun x-dashboard/lib/x-dashboard-server.mjs              # Start (standalone)
+bun x-dashboard/lib/x-dashboard-server.mjs --stop       # Stop
+/x-kit:x-dashboard                                       # Start from Claude Code
+```
+
+```
+Browser ──→ Bun HTTP :19841 ──→ .xm/ (read-only)
+  │
+  ├── Home (summary + cost widget)
+  ├── Builds (projects list + detail + tasks + context docs + PRD)
+  ├── Probes (history + detail + diff between two verdicts)
+  ├── Solvers (list + detail with phase data)
+  ├── Traces (timeline + token/cost per span)
+  ├── Memory (decisions with search/filter)
+  └── Config
+```
+
+<details>
+<summary>Features</summary>
+
+| Feature | Description |
+|---------|-------------|
+| **Multi-root workspaces** | `--scan ~/work` or `scan_roots` in `~/.xm/config.json` — view all projects across directories |
+| **Probe verdict diff** | Side-by-side comparison of two probe runs with premises change highlighting |
+| **Cost/token dashboard** | Aggregate cost by model (haiku/sonnet/opus) and date from x-trace data |
+| **Brutalism UI** | Hard shadows, monospace accents, dark/light toggle |
+| **Search** | Cross-data search across projects, tasks, probes, solvers, context docs |
+| **Export** | Download project/probe/solver detail as markdown |
+| **Auto-refresh** | 3-second polling with ETag/304 — no scroll/focus reset |
+| **Accessibility** | Skip-link, ARIA labels, keyboard navigation, focus indicators |
+| **Zero dependencies** | Vanilla HTML/JS/CSS, Bun HTTP server, no npm packages |
+
+</details>
+
+---
+
 ### x-agent
 
 The foundation layer. Structured patterns on top of Claude Code's native Agent tool, plus hierarchical team management.

@@ -510,6 +510,47 @@ CHECK-IN ──→ RECALL ──→ IDENTIFY ──→ ANALYZE ──→ ALTERNA
 
 ---
 
+### x-dashboard
+
+`.xm/` 프로젝트 상태를 위한 웹 대시보드. 빌드, 프로브, 솔버, 트레이스, 메모리, 비용을 시각화 — 읽기 전용, 빌드 체인 없음.
+
+```bash
+bun x-dashboard/lib/x-dashboard-server.mjs              # 시작 (독립 실행)
+bun x-dashboard/lib/x-dashboard-server.mjs --stop       # 중지
+/x-kit:x-dashboard                                       # Claude Code에서 시작
+```
+
+```
+브라우저 ──→ Bun HTTP :19841 ──→ .xm/ (읽기 전용)
+  │
+  ├── 홈 (요약 + 비용 위젯)
+  ├── 빌드 (프로젝트 목록 + 상세 + 태스크 + 문서 + PRD)
+  ├── 프로브 (히스토리 + 상세 + 두 결과 비교)
+  ├── 솔버 (목록 + 상세 + 페이즈 데이터)
+  ├── 트레이스 (타임라인 + 스팬별 토큰/비용)
+  ├── 메모리 (결정 검색/필터)
+  └── 설정
+```
+
+<details>
+<summary>기능</summary>
+
+| 기능 | 설명 |
+|------|------|
+| **멀티루트 워크스페이스** | `--scan ~/work` 또는 `~/.xm/config.json`의 `scan_roots` — 여러 디렉토리의 프로젝트를 한곳에서 조회 |
+| **프로브 verdict 비교** | 두 프로브 실행 결과를 사이드바이사이드로 비교, 가정 변화 하이라이트 |
+| **비용/토큰 대시보드** | 모델별(haiku/sonnet/opus), 날짜별 비용 집계 |
+| **Brutalism UI** | 하드 그림자, 모노스페이스 악센트, 다크/라이트 토글 |
+| **검색** | 프로젝트, 태스크, 프로브, 솔버, 문서 통합 검색 |
+| **내보내기** | 프로젝트/프로브/솔버 상세를 마크다운으로 다운로드 |
+| **자동 갱신** | 3초 폴링 + ETag/304 — 스크롤/포커스 유지 |
+| **접근성** | 스킵 링크, ARIA 라벨, 키보드 탐색, 포커스 표시 |
+| **의존성 제로** | Vanilla HTML/JS/CSS, Bun HTTP 서버, npm 패키지 없음 |
+
+</details>
+
+---
+
 ### x-agent
 
 기반 레이어. Claude Code Agent 도구 위에 구조화된 패턴을 제공하며, 계층적 팀 관리를 지원합니다.
