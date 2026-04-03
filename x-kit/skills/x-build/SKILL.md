@@ -92,8 +92,9 @@ Rules:
 Anti-patterns:
 - ❌ `plan "goal"` → `phase set plan` → PRD generation (skips Research)
 - ❌ PRD generated → "리뷰해주세요" without showing PRD content
+- ❌ PRD generated → show to user → but forget `$XMB save plan` (PRD lost, not in dashboard)
 - ❌ Phase transition without AskUserQuestion
-- ✅ `plan "goal"` → init → interview → research → gate pass → phase next → PRD → show PRD → AskUserQuestion
+- ✅ `plan "goal"` → init → interview → research → gate pass → phase next → PRD → `save plan` → show PRD → AskUserQuestion
 
 Anti-patterns:
 - All tasks complete → immediately run `phase next`
@@ -647,12 +648,13 @@ Acceptance Criteria: Each item must be testable by running a command or checking
 "
 ```
 
-Save PRD to `.xm/build/projects/{name}/02-plan/PRD.md`:
+**MANDATORY: Save PRD to file IMMEDIATELY after generation.** This is not optional — the PRD must exist as a file before review.
 ```bash
 $XMB save plan --content "{PRD content}"
 ```
+If `save plan` is not called, the PRD will not appear in the dashboard and will be lost on session end.
 
-After PRD generation, proceed to PRD Review.
+After saving, proceed to PRD Review.
 
 #### PRD Review (user review and revision)
 
