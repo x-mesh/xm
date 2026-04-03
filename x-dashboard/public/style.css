@@ -590,4 +590,54 @@ tbody td {
     padding: 16px;
     overflow-y: visible;
   }
+
+  /* Stat bar: 2x2 grid at 768px */
+  .stat-bar {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  /* Cards grid: 2 columns */
+  .cards-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  /* Cards: full width */
+  .card {
+    width: 100%;
+  }
+
+  /* View header meta: allow wrapping */
+  .view-header-meta {
+    flex-wrap: wrap;
+  }
+
+  /* Phase bar: scrollable on narrow screens */
+  .phase-bar {
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  /* Tables: ensure wrapper is scrollable (already set, reinforce) */
+  .table-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Markdown tables: scrollable */
+  .markdown-body table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* Single column at < 500px */
+@media (max-width: 499px) {
+  .stat-bar {
+    grid-template-columns: 1fr;
+  }
+
+  .cards-grid {
+    grid-template-columns: 1fr;
+  }
 }
