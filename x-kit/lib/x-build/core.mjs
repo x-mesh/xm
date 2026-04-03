@@ -25,13 +25,28 @@ const __dirname_core = dirname(__filename_core);
 // ROOT resolution:
 // 1. X_BUILD_ROOT env var (explicit override)
 // 2. --global flag → ~/.xm/build/
-// 3. default → cwd/.xm/build/
+// 3. default → cwd/.xm/build/ (with worktree fallback to main repo)
 export const XM_GLOBAL = process.argv.includes('--global');
+
+/** Resolve project .xm/ base — worktree-aware */
+function resolveProjectXm() {
+  const local = resolve(process.cwd(), '.xm');
+  if (existsSync(local)) return local;
+  try {
+    const commonDir = execSync('git rev-parse --git-common-dir', {
+      cwd: process.cwd(), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    const mainXm = resolve(process.cwd(), commonDir, '..', '.xm');
+    if (existsSync(mainXm)) return mainXm;
+  } catch {}
+  return local;
+}
+
 export const ROOT = process.env.X_BUILD_ROOT
   ? resolve(process.env.X_BUILD_ROOT)
   : XM_GLOBAL
     ? resolve(homedir(), '.xm', 'build')
-    : resolve(process.cwd(), '.xm', 'build');
+    : join(resolveProjectXm(), 'build');
 
 // PLUGIN_ROOT: where templates and defaults live
 // Original: resolve(__dirname, '..') from x-build-cli.mjs which is at x-kit/lib/

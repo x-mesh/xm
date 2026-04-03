@@ -46,12 +46,12 @@ cat ~/.xm/run/xdashboard-server.pid 2>/dev/null && echo "PID_EXISTS" || echo "NO
 kill -0 $(cat ~/.xm/run/xdashboard-server.pid 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['pid'])" 2>/dev/null) 2>/dev/null && echo "ALIVE" || echo "DEAD"
 ```
 
-3. If alive → just open browser and report URL:
+3. If alive → report URL (do NOT open browser — server auto-opens on start):
 ```
 Dashboard already running at http://127.0.0.1:{port}
 ```
 
-4. If not running → start server in background:
+4. If not running → start server in background (server auto-opens browser, do NOT call `open` separately):
 ```bash
 nohup bun x-dashboard/lib/x-dashboard-server.mjs --session > /dev/null 2>&1 &
 sleep 2

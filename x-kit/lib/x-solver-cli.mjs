@@ -10,21 +10,36 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
 import { homedir } from 'node:os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+/** Resolve project .xm/ base — worktree-aware */
+function resolveProjectXm() {
+  const local = resolve(process.cwd(), '.xm');
+  if (existsSync(local)) return local;
+  try {
+    const commonDir = execSync('git rev-parse --git-common-dir', {
+      cwd: process.cwd(), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    const mainXm = resolve(process.cwd(), commonDir, '..', '.xm');
+    if (existsSync(mainXm)) return mainXm;
+  } catch {}
+  return local;
+}
+
 // ROOT resolution:
 // 1. XM_SOLVER_ROOT env var (explicit override)
 // 2. --global flag → ~/.xm/solver/
-// 3. default → cwd/.xm/solver/
+// 3. default → cwd/.xm/solver/ (with worktree fallback)
 const XM_GLOBAL = process.argv.includes('--global');
 const ROOT = process.env.XM_SOLVER_ROOT
   ? resolve(process.env.XM_SOLVER_ROOT)
   : XM_GLOBAL
     ? resolve(homedir(), '.xm', 'solver')
-    : resolve(process.cwd(), '.xm', 'solver');
+    : join(resolveProjectXm(), 'solver');
 
 const PLUGIN_ROOT = resolve(__dirname, '..');
 

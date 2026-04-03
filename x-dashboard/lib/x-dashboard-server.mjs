@@ -33,7 +33,21 @@ const PID_FILE = join(RUN_DIR, 'xdashboard-server.pid');
 const SERVER_DIR = resolve(dirname(new URL(import.meta.url).pathname));
 const PUBLIC_DIR = resolve(SERVER_DIR, '..', 'public');
 
-const XM_ROOT = resolve(process.cwd(), '.xm');
+const XM_ROOT = resolveProjectXm();
+
+/** Resolve .xm/ — prefer local, fallback to main repo for worktrees */
+function resolveProjectXm() {
+  const local = resolve(process.cwd(), '.xm');
+  if (existsSync(local)) return local;
+  try {
+    const commonDir = execSync('git rev-parse --git-common-dir', {
+      cwd: process.cwd(), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    const mainXm = resolve(process.cwd(), commonDir, '..', '.xm');
+    if (existsSync(mainXm)) return mainXm;
+  } catch {}
+  return local;
+}
 
 const startedAt = Date.now();
 
@@ -175,6 +189,56 @@ const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build']);
  * @param {number} maxDepth - Maximum recursion depth (default 4)
  * @returns {Array<{id: string, name: string, path: string, xmRoot: string}>}
  */
+/** Check if dir is a git worktree (.git is a file, not a directory) */
+function isGitWorktree(dir) {
+  try {
+    const st = statSync(join(dir, '.git'));
+    return st.isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** For a worktree dir, resolve the main repo's .xm/ path (or null) */
+function getMainRepoXm(dir) {
+  try {
+    const content = readFileSync(join(dir, '.git'), 'utf8').trim();
+    const match = content.match(/^gitdir:\s*(.+)$/);
+    if (!match) return null;
+    const gitdir = resolve(dir, match[1]);
+
+    // Strategy 1: gitdir path exists — walk up 3 levels from .git/worktrees/<name>
+    const mainRoot1 = resolve(gitdir, '..', '..', '..');
+    const mainXm1 = join(mainRoot1, '.xm');
+    if (existsSync(mainXm1)) return mainXm1;
+
+    // Strategy 2: gitdir path is stale (repo renamed) — read commondir from
+    // the actual worktree entry inside the real repo's .git/worktrees/<name>/
+    // The gitdir pattern is always .../.git/worktrees/<name>, so extract
+    // the worktree name and search for it in sibling repos
+    const wtMatch = gitdir.match(/(.+)\/\.git\/worktrees\/([^/]+)$/);
+    if (wtMatch) {
+      const wtName = wtMatch[2];
+      // Scan parent dir for a repo that owns this worktree
+      const parentDir = dirname(dir);
+      try {
+        for (const entry of readdirSync(parentDir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const candidate = join(parentDir, entry.name, '.git', 'worktrees', wtName);
+          if (existsSync(candidate)) {
+            const mainXm2 = join(parentDir, entry.name, '.xm');
+            if (existsSync(mainXm2)) return mainXm2;
+          }
+        }
+      } catch {}
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function scanWorkspaces(rootDir, maxDepth = 4) {
   const results = [];
 
@@ -195,6 +259,10 @@ function scanWorkspaces(rootDir, maxDepth = 4) {
         try {
           const stat = statSync(xmPath);
           if (stat.isDirectory()) {
+            // Skip worktrees whose main repo has its own .xm/
+            if (isGitWorktree(fullPath) && getMainRepoXm(fullPath)) {
+              continue;
+            }
             const id = basename(fullPath);
             results.push({
               id,
@@ -219,8 +287,13 @@ function scanWorkspaces(rootDir, maxDepth = 4) {
     try {
       const stat = statSync(rootXm);
       if (stat.isDirectory()) {
-        const id = basename(rootDir);
-        results.push({ id, name: id, path: rootDir, xmRoot: rootXm });
+        // Skip if rootDir itself is a worktree with main repo .xm/
+        if (isGitWorktree(rootDir) && getMainRepoXm(rootDir)) {
+          scan(rootDir, 1);
+        } else {
+          const id = basename(rootDir);
+          results.push({ id, name: id, path: rootDir, xmRoot: rootXm });
+        }
       }
     } catch {}
   } else {
