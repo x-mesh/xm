@@ -4,40 +4,86 @@ function timeAgo(isoString) {
   if (!isoString) return '—';
   const diff = Date.now() - new Date(isoString).getTime();
   const s = Math.floor(diff / 1000);
-  if (s < 60) return `${s}s ago`;
+  if (s < 60) return 'just now';
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
-  return `${d}d ago`;
+  if (d < 7) return `${d}d ago`;
+  const w = Math.floor(d / 7);
+  if (w < 4) return `${w}w ago`;
+  const mo = Math.floor(d / 30);
+  return `${mo}mo ago`;
 }
 
 function phaseBadge(phase) {
-  const classes = {
-    '01': 'phase-01',
-    '02': 'phase-02',
-    '03': 'phase-03',
-    '04': 'phase-04',
-    '05': 'phase-05',
+  const map = {
+    '01-research': { cls: 'badge-blue',   label: 'Research' },
+    '02-plan':     { cls: 'badge-indigo', label: 'Plan'     },
+    '03-execute':  { cls: 'badge-amber',  label: 'Execute'  },
+    '04-verify':   { cls: 'badge-purple', label: 'Verify'   },
+    '05-close':    { cls: 'badge-green',  label: 'Close'    },
   };
-  const cls = classes[phase] || 'phase-01';
-  return `<span class="badge ${cls}">${phase}</span>`;
+  const entry = map[phase];
+  if (entry) return `<span class="badge ${entry.cls}">${entry.label}</span>`;
+  const label = phase || 'Unknown';
+  return `<span class="badge badge-gray">${label}</span>`;
 }
 
-function nullSafe(value) {
-  return value === null || value === undefined ? '—' : value;
+function nullSafe(value, fallback = '—') {
+  return (value === null || value === undefined || value === '') ? fallback : value;
 }
 
 async function fetchJSON(url) {
   try {
     const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    if (!res.ok) return { error: true, message: `HTTP ${res.status}` };
+    try {
+      return await res.json();
+    } catch (parseErr) {
+      return { error: true, message: `Parse error: ${parseErr.message}` };
+    }
   } catch (err) {
     console.error('fetchJSON error:', url, err);
-    return null;
+    return { error: true, message: err.message };
   }
+}
+
+function statusBadge(status) {
+  const map = {
+    completed: { cls: 'badge-green',  label: '✅ Completed' },
+    pending:   { cls: 'badge-gray',   label: 'Pending'      },
+    running:   { cls: 'badge-amber',  label: 'Running'      },
+    failed:    { cls: 'badge-red',    label: '❌ Failed'    },
+  };
+  const entry = map[status];
+  if (entry) return `<span class="badge ${entry.cls}">${entry.label}</span>`;
+  return `<span class="badge badge-gray">${status || 'Unknown'}</span>`;
+}
+
+function sizeBadge(size) {
+  const map = {
+    small:  { cls: 'badge-blue',  label: 'small'  },
+    medium: { cls: 'badge-amber', label: 'medium' },
+    large:  { cls: 'badge-red',   label: 'large'  },
+  };
+  const entry = map[size];
+  if (entry) return `<span class="badge ${entry.cls}">${entry.label}</span>`;
+  return `<span class="badge badge-gray">${size || '—'}</span>`;
+}
+
+function renderMarkdown(text) {
+  if (!text) return '';
+  if (typeof marked !== 'undefined' && marked.parse) {
+    return marked.parse(text);
+  }
+  // Fallback: escape HTML and preserve line breaks
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>');
 }
 
 function startPolling(fetchFn, intervalMs = 3000) {
