@@ -430,6 +430,65 @@ async function renderHome() {
       `;
       app.appendChild(metricsCard);
     });
+
+    // Cost widget (async, non-blocking)
+    fetchJSON(apiUrl('/costs')).then(costsRes => {
+      if (costsRes.error) return;
+      const totalCost = costsRes.totalCost ?? 0;
+      const totalTokens = (costsRes.totalInputTokens ?? 0) + (costsRes.totalOutputTokens ?? 0);
+      const byModel = costsRes.byModel ?? {};
+
+      const costCard = document.createElement('div');
+      costCard.className = 'card';
+      costCard.style.marginTop = '1rem';
+
+      if (totalCost === 0) {
+        costCard.innerHTML = `
+          <div class="card-header" style="margin-bottom:0.5rem">
+            <strong style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.1em">Cost</strong>
+          </div>
+          <p class="text-muted" style="font-size:12px">No cost data. Run x-trace to track tokens.</p>
+        `;
+      } else {
+        const modelKeys = Object.keys(byModel);
+        const modelTotal = modelKeys.reduce((sum, k) => sum + (byModel[k].cost ?? 0), 0);
+
+        const segmentColors = {
+          haiku:  '#40c4ff',
+          sonnet: '#FFAB40',
+          opus:   '#b388ff',
+        };
+
+        const segments = modelKeys.map(k => {
+          const pct = modelTotal > 0 ? ((byModel[k].cost ?? 0) / modelTotal) * 100 : 0;
+          if (pct < 1) return '';
+          const color = Object.keys(segmentColors).find(c => k.toLowerCase().includes(c));
+          const bg = color ? segmentColors[color] : '#B0BEC5';
+          const label = pct > 8 ? k.replace('claude-', '').split('-')[0] : '';
+          return `<div class="cost-bar-segment" style="width:${pct}%;background:${bg};color:#000">${label}</div>`;
+        }).join('');
+
+        const modelBreakdown = modelKeys.map(k => {
+          const c = byModel[k];
+          const pct = modelTotal > 0 ? Math.round(((c.cost ?? 0) / modelTotal) * 100) : 0;
+          const color = Object.keys(segmentColors).find(mc => k.toLowerCase().includes(mc));
+          const fg = color ? segmentColors[color] : '#B0BEC5';
+          return `<span style="font-size:11px;color:${fg};font-family:var(--font-mono)">${k.split('-').pop()}: $${(c.cost ?? 0).toFixed(4)} (${pct}%)</span>`;
+        }).join(' &nbsp;·&nbsp; ');
+
+        costCard.innerHTML = `
+          <div class="card-header" style="margin-bottom:0.75rem;display:flex;align-items:center;gap:0.75rem">
+            <strong style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.1em">Cost</strong>
+            <span style="font-size:18px;font-weight:700;font-family:var(--font-mono);color:var(--accent)">$${totalCost.toFixed(4)}</span>
+            ${totalTokens > 0 ? `<span class="text-muted" style="font-size:11px">/ ${totalTokens.toLocaleString()} tokens</span>` : ''}
+          </div>
+          ${segments ? `<div class="cost-bar">${segments}</div>` : ''}
+          ${modelBreakdown ? `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px">${modelBreakdown}</div>` : ''}
+        `;
+      }
+
+      app.appendChild(costCard);
+    });
   }, 3000);
 
   // Stop polling when navigating away
@@ -1424,25 +1483,373 @@ function renderConfig() {
   window.addEventListener('hashchange', stopPolling, { once: true });
 }
 
-function renderTracesPlaceholder() {
-  document.getElementById('app').innerHTML = `
+async function renderTracesList() {
+  const app = document.getElementById('app');
+  app.innerHTML = `
     <div class="view-header"><h1>Traces</h1><p>.xm/traces/</p></div>
-    <div class="card" style="text-align:center;padding:3rem">
-      <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
-      <p class="text-muted">No trace data yet.</p>
-      <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/x-trace start</code> to begin recording agent execution.</p>
+    <div class="card"><p class="text-muted">Loading traces...</p></div>
+  `;
+
+  const res = await fetchJSON(apiUrl('/traces'));
+  if (res.error) {
+    app.innerHTML = `
+      <div class="view-header"><h1>Traces</h1><p>.xm/traces/</p></div>
+      <div class="card"><p class="text-muted">Error: ${res.message}</p></div>
+    `;
+    return;
+  }
+
+  const traces = Array.isArray(res.traces) ? res.traces : [];
+  const activeFile = res.active ?? null;
+
+  if (traces.length === 0) {
+    app.innerHTML = `
+      <div class="view-header"><h1>Traces</h1><p>.xm/traces/</p></div>
+      <div class="card" style="text-align:center;padding:3rem">
+        <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
+        <p class="text-muted">No trace data yet.</p>
+        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/x-trace start</code> to begin recording agent execution.</p>
+      </div>
+    `;
+    return;
+  }
+
+  const rows = traces.map(t => {
+    const isActive = activeFile && t.file === activeFile;
+    const liveBadge = isActive ? `<span class="badge badge-green" style="margin-left:6px;animation:none">LIVE</span>` : '';
+    const statusBadgeHtml = t.status === 'active'
+      ? `<span class="badge badge-amber">Active</span>`
+      : `<span class="badge badge-gray">Done</span>`;
+    const dur = t.duration_ms != null ? `${(t.duration_ms / 1000).toFixed(1)}s` : '—';
+    return `
+      <tr${isActive ? ' style="background:rgba(105,240,174,0.05)"' : ''}>
+        <td><a href="#/traces/${encodeURIComponent(t.file)}">${t.name || t.file}</a>${liveBadge}</td>
+        <td class="mono" style="font-size:11px">${t.date || timeAgo(t.started_at) || '—'}</td>
+        <td>${nullSafe(t.entries, '—')}</td>
+        <td>${dur}</td>
+        <td>${statusBadgeHtml}</td>
+      </tr>
+    `;
+  }).join('');
+
+  app.innerHTML = `
+    <div class="view-header"><h1>Traces</h1><p>.xm/traces/</p></div>
+    <div class="card" style="padding:0">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Date</th>
+            <th>Entries</th>
+            <th>Duration</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
     </div>
   `;
 }
 
-function renderMemoryPlaceholder() {
-  document.getElementById('app').innerHTML = `
+function traceTypeBadge(type) {
+  const map = {
+    session_start: ['badge-blue',   'START'],
+    session_end:   ['badge-green',  'END'],
+    agent_call:    ['badge-amber',  'AGENT'],
+    fan_out:       ['badge-purple', 'FAN-OUT'],
+    synthesize:    ['badge-green',  'SYNTH'],
+    checkpoint:    ['badge-gray',   'CHECKPOINT'],
+  };
+  const [cls, label] = map[type] ?? ['badge-gray', type || '?'];
+  return `<span class="badge ${cls} trace-type">${label}</span>`;
+}
+
+async function renderTraceDetail(file) {
+  const app = document.getElementById('app');
+  const decodedFile = decodeURIComponent(file);
+  app.innerHTML = `
+    <div class="breadcrumb"><a href="#/traces">Traces</a><span class="sep">/</span>${decodedFile}</div>
+    <div class="view-header"><h1>Trace: <code>${decodedFile}</code></h1></div>
+    <div class="card"><p class="text-muted">Loading trace...</p></div>
+  `;
+
+  let offset = 0;
+  const limit = 200;
+
+  async function loadEntries(currentOffset) {
+    const res = await fetchJSON(apiUrl(`/traces/${encodeURIComponent(decodedFile)}?limit=${limit}&offset=${currentOffset}`));
+    if (res.error) {
+      app.innerHTML = `
+        <div class="breadcrumb"><a href="#/traces">Traces</a><span class="sep">/</span>${decodedFile}</div>
+        <div class="view-header"><h1>Trace: <code>${decodedFile}</code></h1></div>
+        <div class="card"><p class="text-muted">Error: ${res.message}</p></div>
+      `;
+      return;
+    }
+
+    const entries = Array.isArray(res.entries) ? res.entries : [];
+    const total = res.total ?? entries.length;
+    const hasMore = (currentOffset + entries.length) < total;
+
+    // Compute summary
+    let totalCost = 0;
+    let totalIn = 0;
+    let totalOut = 0;
+    let minTs = null;
+    let maxTs = null;
+    for (const e of entries) {
+      totalCost += e.cost ?? 0;
+      totalIn   += e.input_tokens  ?? e.tokens_in  ?? 0;
+      totalOut  += e.output_tokens ?? e.tokens_out ?? 0;
+      const ts = e.timestamp ?? e.ts;
+      if (ts) {
+        if (!minTs || ts < minTs) minTs = ts;
+        if (!maxTs || ts > maxTs) maxTs = ts;
+      }
+    }
+    const totalDurMs = (minTs && maxTs) ? (new Date(maxTs) - new Date(minTs)) : null;
+    const totalDurStr = totalDurMs != null ? `${(totalDurMs / 1000).toFixed(1)}s` : '—';
+
+    // Build parent-child map for fan_out indentation
+    const parentMap = {};
+    for (const e of entries) {
+      if (e.parent_id) {
+        if (!parentMap[e.parent_id]) parentMap[e.parent_id] = [];
+        parentMap[e.parent_id].push(e.id ?? e.seq);
+      }
+    }
+
+    const entryRows = entries.map(e => {
+      const isChild = !!e.parent_id;
+      const ts = e.timestamp ?? e.ts ?? '';
+      const tsDisplay = ts ? ts.slice(11, 19) : '—';
+      const dur = e.duration_ms != null ? `${(e.duration_ms / 1000).toFixed(2)}s` : '—';
+      const tokIn  = e.input_tokens  ?? e.tokens_in  ?? null;
+      const tokOut = e.output_tokens ?? e.tokens_out ?? null;
+      const cost   = e.cost ?? null;
+
+      let agentInfo = '';
+      if (e.agent_role || e.model) {
+        agentInfo = `<span style="color:var(--text)">${e.agent_role || ''}</span>`;
+        if (e.model) agentInfo += ` <span class="text-muted">(${e.model})</span>`;
+      } else if (e.message) {
+        agentInfo = `<span class="text-muted" style="font-size:11px">${e.message.slice(0, 80)}</span>`;
+      }
+
+      const tokStr = (tokIn != null || tokOut != null)
+        ? `<span class="trace-tokens">${tokIn != null ? tokIn.toLocaleString() : '?'} in / ${tokOut != null ? tokOut.toLocaleString() : '?'} out</span>`
+        : '';
+      const costStr = cost != null
+        ? `<span class="trace-tokens" style="color:var(--accent)">$${cost.toFixed(4)}</span>`
+        : '';
+
+      return `
+        <div class="trace-entry${isChild ? ' trace-entry-child' : ''}">
+          <span class="text-muted mono" style="font-size:11px;min-width:70px">${tsDisplay}</span>
+          ${traceTypeBadge(e.type)}
+          <span style="flex:1">${agentInfo}</span>
+          <span class="trace-tokens">${dur}</span>
+          ${tokStr}
+          ${costStr}
+        </div>
+      `;
+    }).join('');
+
+    const costDisplay = totalCost > 0 ? `$${totalCost.toFixed(4)}` : '—';
+    const tokDisplay = (totalIn + totalOut) > 0 ? `${(totalIn + totalOut).toLocaleString()} tokens` : '';
+
+    app.innerHTML = `
+      <div class="breadcrumb"><a href="#/traces">Traces</a><span class="sep">/</span>${decodedFile}</div>
+      <div class="view-header"><h1>Trace: <code>${decodedFile}</code></h1></div>
+      <div class="stat-bar" style="margin-bottom:16px">
+        <div class="card stat-card">
+          <div class="stat-value">${total}</div>
+          <div class="stat-label">Entries</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-value" style="font-size:20px">${totalDurStr}</div>
+          <div class="stat-label">Duration</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-value" style="font-size:20px">${costDisplay}</div>
+          <div class="stat-label">Total Cost</div>
+        </div>
+        ${tokDisplay ? `<div class="card stat-card">
+          <div class="stat-value" style="font-size:16px">${tokDisplay}</div>
+          <div class="stat-label">Tokens</div>
+        </div>` : ''}
+      </div>
+      <div class="card" style="padding:0" id="trace-entries">
+        ${entryRows || '<div class="trace-entry"><span class="text-muted">No entries.</span></div>'}
+      </div>
+      ${hasMore ? `<div style="margin-top:12px;text-align:center">
+        <button id="btn-load-more" style="background:var(--surface);border:var(--border);color:var(--accent);padding:8px 20px;font-family:var(--font-mono);font-size:11px;font-weight:700;text-transform:uppercase;cursor:pointer;letter-spacing:0.08em">
+          Load More (${total - currentOffset - entries.length} remaining)
+        </button>
+      </div>` : ''}
+    `;
+
+    const loadMoreBtn = document.getElementById('btn-load-more');
+    if (loadMoreBtn) {
+      loadMoreBtn.addEventListener('click', () => loadEntries(currentOffset + entries.length));
+    }
+  }
+
+  await loadEntries(offset);
+}
+
+function memoryTypeBadge(type) {
+  const map = {
+    decision: 'badge-blue',
+    pattern:  'badge-indigo',
+    failure:  'badge-red',
+    learning: 'badge-green',
+  };
+  const cls = map[(type ?? '').toLowerCase()] ?? 'badge-gray';
+  return `<span class="badge ${cls}">${type || '—'}</span>`;
+}
+
+function confidenceBadge(confidence) {
+  if (confidence === null || confidence === undefined || confidence === '') return `<span class="badge badge-gray">—</span>`;
+  const n = typeof confidence === 'number' ? confidence : parseFloat(confidence);
+  if (isNaN(n)) return `<span class="badge badge-gray">—</span>`;
+  const cls = n >= 0.8 ? 'badge-green' : n >= 0.5 ? 'badge-amber' : 'badge-red';
+  return `<span class="badge ${cls}">${(n * 100).toFixed(0)}%</span>`;
+}
+
+async function renderMemoryList() {
+  const app = document.getElementById('app');
+  const emptyState = `
     <div class="view-header"><h1>Memory</h1><p>.xm/memory/</p></div>
     <div class="card" style="text-align:center;padding:3rem">
       <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
       <p class="text-muted">No memory data yet.</p>
       <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/x-memory</code> to begin storing cross-session decisions.</p>
     </div>
+  `;
+
+  app.innerHTML = `<div class="view-header"><h1>Memory</h1><p>.xm/memory/</p></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+
+  const res = await fetchJSON(apiUrl('/memory'));
+  if (res.error) {
+    app.innerHTML = emptyState;
+    return;
+  }
+
+  const decisions = Array.isArray(res.decisions) ? res.decisions : [];
+  if (decisions.length === 0) {
+    app.innerHTML = emptyState;
+    return;
+  }
+
+  const TYPES = ['All', 'Decision', 'Pattern', 'Failure', 'Learning'];
+  let activeType = 'All';
+  let searchQuery = '';
+
+  function filtered() {
+    return decisions.filter(e => {
+      const matchType = activeType === 'All' || (e.type ?? '').toLowerCase() === activeType.toLowerCase();
+      const q = searchQuery.toLowerCase();
+      const matchSearch = !q ||
+        (e.title ?? '').toLowerCase().includes(q) ||
+        (e.why ?? '').toLowerCase().includes(q) ||
+        (Array.isArray(e.tags) ? e.tags.join(' ').toLowerCase().includes(q) : false);
+      return matchType && matchSearch;
+    });
+  }
+
+  function renderTable() {
+    const rows = filtered();
+    if (rows.length === 0) {
+      return `<p class="text-muted">No entries match.</p>`;
+    }
+    const tbody = rows.map(e => {
+      const tags = Array.isArray(e.tags) ? e.tags.map(t => `<code style="font-size:0.75rem;margin-right:3px">${t}</code>`).join('') : '—';
+      return `<tr>
+        <td><a href="#/memory/${encodeURIComponent(e.id)}">${e.title || e.id || '—'}</a></td>
+        <td>${memoryTypeBadge(e.type)}</td>
+        <td>${tags}</td>
+        <td>${confidenceBadge(e.confidence)}</td>
+        <td class="text-muted" style="font-size:0.8rem">${e.source || '—'}</td>
+        <td class="text-muted" style="font-size:0.8rem">${e.created_at ? timeAgo(e.created_at) : '—'}</td>
+      </tr>`;
+    }).join('');
+    return `
+      <div class="table-wrapper">
+        <table class="table">
+          <thead><tr>
+            <th>Title</th><th>Type</th><th>Tags</th><th>Confidence</th><th>Source</th><th>Created</th>
+          </tr></thead>
+          <tbody>${tbody}</tbody>
+        </table>
+      </div>`;
+  }
+
+  function renderView() {
+    const filterBtns = TYPES.map(t =>
+      `<button class="memory-filter-btn${activeType === t ? ' active' : ''}" data-type="${t}">${t}</button>`
+    ).join('');
+
+    app.innerHTML = `
+      <div class="view-header"><h1>Memory</h1><p>${res.total} entries in .xm/memory/</p></div>
+      <div class="card">
+        <input id="memory-search" type="text" placeholder="Search title, tags, why…"
+          style="width:100%;background:var(--surface);border:2px solid #333;color:var(--text);padding:6px 10px;font-family:var(--font-mono);font-size:12px;margin-bottom:12px;box-sizing:border-box"
+          value="${searchQuery.replace(/"/g, '&quot;')}">
+        <div class="memory-filters">${filterBtns}</div>
+        <div id="memory-table">${renderTable()}</div>
+      </div>
+    `;
+
+    document.getElementById('memory-search').addEventListener('input', e => {
+      searchQuery = e.target.value;
+      document.getElementById('memory-table').innerHTML = renderTable();
+    });
+
+    app.querySelectorAll('.memory-filter-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        activeType = btn.dataset.type;
+        renderView();
+      });
+    });
+  }
+
+  renderView();
+}
+
+async function renderMemoryDetail(id) {
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="view-header"><h1>Memory</h1></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+
+  const res = await fetchJSON(apiUrl(`/memory/${encodeURIComponent(id)}`));
+  if (res.error) {
+    app.innerHTML = `
+      <div class="view-header"><h1>Memory</h1></div>
+      <div class="card"><p class="text-muted">Error: ${res.message || res.error}</p></div>
+    `;
+    return;
+  }
+
+  const meta = res.meta ?? {};
+  const tags = Array.isArray(meta.tags) ? meta.tags.map(t => `<code style="font-size:0.75rem;margin-right:3px">${t}</code>`).join('') : '—';
+  const relatedFiles = Array.isArray(meta.related_files) ? meta.related_files : [];
+
+  app.innerHTML = `
+    <div class="view-header">
+      <h1>${meta.title || res.id}</h1>
+      <p><a href="#/memory" style="font-size:0.85rem">&#8592; Memory</a></p>
+    </div>
+    <div class="card" style="margin-bottom:1rem">
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin-bottom:0.75rem">
+        ${memoryTypeBadge(meta.type)}
+        ${confidenceBadge(meta.confidence)}
+        ${meta.source ? `<span class="text-muted" style="font-size:0.8rem;font-family:var(--font-mono)">${meta.source}</span>` : ''}
+        ${meta.created_at ? `<span class="text-muted" style="font-size:0.8rem">${timeAgo(meta.created_at)}</span>` : ''}
+      </div>
+      ${tags !== '—' ? `<div style="margin-bottom:0.5rem"><span class="text-muted" style="font-size:0.8rem">Tags: </span>${tags}</div>` : ''}
+      ${relatedFiles.length > 0 ? `<div><span class="text-muted" style="font-size:0.8rem">Related: </span>${relatedFiles.map(f => `<code style="font-size:0.75rem;margin-right:4px">${f}</code>`).join('')}</div>` : ''}
+    </div>
+    <div class="card markdown-body">${renderMarkdown(res.content)}</div>
   `;
 }
 
@@ -1534,8 +1941,10 @@ const ROUTES = [
   { pattern: /^\/solvers$/, handler: () => renderSolversList() },
   { pattern: /^\/solvers\/(.+)$/, handler: (m) => renderSolverDetail(m[1]) },
   { pattern: /^\/config$/, handler: () => renderConfig() },
-  { pattern: /^\/traces$/, handler: () => renderTracesPlaceholder() },
-  { pattern: /^\/memory$/, handler: () => renderMemoryPlaceholder() },
+  { pattern: /^\/traces$/, handler: () => renderTracesList() },
+  { pattern: /^\/traces\/(.+)$/, handler: (m) => renderTraceDetail(m[1]) },
+  { pattern: /^\/memory$/, handler: () => renderMemoryList() },
+  { pattern: /^\/memory\/(.+)$/, handler: (m) => renderMemoryDetail(decodeURIComponent(m[1])) },
   { pattern: /^\/search\/(.+)$/, handler: (m) => renderSearch(decodeURIComponent(m[1])) },
 ];
 

@@ -713,6 +713,211 @@ function handleSearch(xmRoot, url, req) {
   return jsonResponseWithETag({ data: results }, req);
 }
 
+// ── R3: Traces API ────────────────────────────────────────────────────
+
+const MODEL_PRICING = {
+  haiku:  { input: 0.80 / 1_000_000, output: 4.00 / 1_000_000 },
+  sonnet: { input: 3.00 / 1_000_000, output: 15.00 / 1_000_000 },
+  opus:   { input: 15.00 / 1_000_000, output: 75.00 / 1_000_000 },
+};
+
+function resolveModelKey(model) {
+  if (!model) return null;
+  const m = model.toLowerCase();
+  if (m.includes('haiku'))  return 'haiku';
+  if (m.includes('opus'))   return 'opus';
+  if (m.includes('sonnet')) return 'sonnet';
+  return null;
+}
+
+function parseJsonlFile(filePath) {
+  try {
+    return readFileSync(filePath, 'utf8')
+      .split('\n')
+      .filter(l => l.trim())
+      .map(l => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function handleTraces(xmRoot, req) {
+  const tracesDir = safeJoin(xmRoot, 'traces');
+
+  // Read active pointer
+  let active = null;
+  const activeFile = tracesDir ? safeJoin(xmRoot, 'traces', '.active') : null;
+  if (activeFile && existsSync(activeFile)) {
+    try { active = readFileSync(activeFile, 'utf8').trim(); } catch {}
+  }
+
+  if (!tracesDir || !existsSync(tracesDir)) {
+    return jsonResponseWithETag({ traces: [], active }, req);
+  }
+
+  let entries;
+  try {
+    entries = readdirSync(tracesDir, { withFileTypes: true });
+  } catch {
+    return jsonResponseWithETag({ traces: [], active }, req);
+  }
+
+  const traces = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+    const filePath = safeJoin(tracesDir, entry.name);
+    if (!filePath) continue;
+
+    let lineCount = 0;
+    let firstEntry = null;
+    let lastEntry = null;
+    try {
+      const lines = readFileSync(filePath, 'utf8').split('\n').filter(l => l.trim());
+      lineCount = lines.length;
+      if (lines.length > 0) {
+        try { firstEntry = JSON.parse(lines[0]); } catch {}
+        try { lastEntry = JSON.parse(lines[lines.length - 1]); } catch {}
+      }
+    } catch {
+      continue;
+    }
+
+    // Parse name and date from filename: {name}-{YYYYMMDD-HHMMSS}.jsonl
+    const nameMatch = entry.name.match(/^(.+)-(\d{8}-\d{6})\.jsonl$/);
+    const name = nameMatch ? nameMatch[1] : entry.name.replace(/\.jsonl$/, '');
+    const dateStr = nameMatch ? nameMatch[2].slice(0, 4) + '-' + nameMatch[2].slice(4, 6) + '-' + nameMatch[2].slice(6, 8) : null;
+
+    const startTime = firstEntry?.timestamp ?? null;
+    let duration = null;
+    let status = 'active';
+    if (lastEntry && lastEntry.type === 'session_end') {
+      status = 'completed';
+      if (firstEntry?.timestamp && lastEntry?.timestamp) {
+        duration = new Date(lastEntry.timestamp) - new Date(firstEntry.timestamp);
+      }
+      if (duration == null && lastEntry?.duration_ms != null) {
+        duration = lastEntry.duration_ms;
+      }
+    }
+
+    traces.push({
+      file: entry.name,
+      name,
+      date: dateStr,
+      entryCount: lineCount,
+      duration,
+      status,
+      startTime,
+    });
+  }
+
+  // Sort newest first
+  traces.sort((a, b) => (b.startTime ?? '') < (a.startTime ?? '') ? -1 : 1);
+
+  return jsonResponseWithETag({ traces, active }, req);
+}
+
+function handleTraceDetail(xmRoot, file, req, url) {
+  // Allow filenames like name-20260403-120000.jsonl
+  const TRACE_FILE_RE = /^[a-zA-Z0-9._-]+-\d{8}-\d{6}\.jsonl$/;
+  if (!TRACE_FILE_RE.test(file)) {
+    return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  }
+
+  const filePath = safeJoin(xmRoot, 'traces', file);
+  if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  if (!existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
+
+  const limit = Math.max(1, parseInt(url.searchParams.get('limit') ?? '200', 10));
+  const offset = Math.max(0, parseInt(url.searchParams.get('offset') ?? '0', 10));
+
+  const entries = parseJsonlFile(filePath);
+  const total = entries.length;
+  return jsonResponseWithETag({
+    entries: entries.slice(offset, offset + limit),
+    total,
+    limit,
+    offset,
+    file,
+  }, req);
+}
+
+// ── R5: Costs API ─────────────────────────────────────────────────────
+
+function handleCosts(xmRoot, req) {
+  const tracesDir = safeJoin(xmRoot, 'traces');
+  if (!tracesDir || !existsSync(tracesDir)) {
+    return jsonResponseWithETag({
+      totalCost: 0, totalInputTokens: 0, totalOutputTokens: 0,
+      byModel: {}, byDate: [],
+    }, req);
+  }
+
+  let entries;
+  try {
+    entries = readdirSync(tracesDir, { withFileTypes: true });
+  } catch {
+    return jsonResponseWithETag({
+      totalCost: 0, totalInputTokens: 0, totalOutputTokens: 0,
+      byModel: {}, byDate: [],
+    }, req);
+  }
+
+  let totalCost = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  const byModel = {};
+  const byDateMap = {};
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+    const filePath = safeJoin(tracesDir, entry.name);
+    if (!filePath) continue;
+
+    const lines = parseJsonlFile(filePath);
+    for (const line of lines) {
+      if (line.type !== 'agent_call') continue;
+      const inputTokens = line.input_tokens_est ?? 0;
+      const outputTokens = line.output_tokens_est ?? 0;
+      if (!inputTokens && !outputTokens) continue;
+
+      const modelKey = resolveModelKey(line.agent?.model);
+      const pricing = modelKey ? MODEL_PRICING[modelKey] : null;
+      const cost = pricing
+        ? inputTokens * pricing.input + outputTokens * pricing.output
+        : 0;
+
+      totalCost += cost;
+      totalInputTokens += inputTokens;
+      totalOutputTokens += outputTokens;
+
+      if (modelKey) {
+        if (!byModel[modelKey]) byModel[modelKey] = { cost: 0, inputTokens: 0, outputTokens: 0 };
+        byModel[modelKey].cost += cost;
+        byModel[modelKey].inputTokens += inputTokens;
+        byModel[modelKey].outputTokens += outputTokens;
+      }
+
+      // Date from timestamp
+      const ts = line.timestamp;
+      if (ts) {
+        const date = ts.slice(0, 10); // YYYY-MM-DD
+        if (!byDateMap[date]) byDateMap[date] = { date, cost: 0, inputTokens: 0, outputTokens: 0 };
+        byDateMap[date].cost += cost;
+        byDateMap[date].inputTokens += inputTokens;
+        byDateMap[date].outputTokens += outputTokens;
+      }
+    }
+  }
+
+  const byDate = Object.values(byDateMap).sort((a, b) => a.date < b.date ? -1 : 1);
+
+  return jsonResponseWithETag({
+    totalCost, totalInputTokens, totalOutputTokens, byModel, byDate,
+  }, req);
+}
+
 function handleMetricsSessions(xmRoot, url, req) {
   const limit = Math.max(1, parseInt(url.searchParams.get('limit') ?? '50', 10));
   const offset = Math.max(0, parseInt(url.searchParams.get('offset') ?? '0', 10));
@@ -730,6 +935,66 @@ function handleMetricsSessions(xmRoot, url, req) {
   } catch {
     return jsonResponseWithETag({ error: 'parse_error', file: 'sessions.jsonl' }, req, 500);
   }
+}
+
+function handleMemoryList(xmRoot, url, req) {
+  const indexPath = safeJoin(xmRoot, 'memory', 'index.json');
+  if (!indexPath || !existsSync(indexPath)) {
+    return jsonResponseWithETag({ decisions: [], total: 0 }, req);
+  }
+  let entries;
+  try {
+    const raw = JSON.parse(readFileSync(indexPath, 'utf8'));
+    entries = Array.isArray(raw) ? raw : (Array.isArray(raw.decisions) ? raw.decisions : []);
+  } catch {
+    return jsonResponseWithETag({ error: 'parse_error', file: 'index.json' }, req, 500);
+  }
+
+  const q = (url.searchParams.get('q') ?? '').trim().toLowerCase();
+  const typeFilter = (url.searchParams.get('type') ?? '').trim().toLowerCase();
+
+  let result = entries;
+  if (q) {
+    result = result.filter(e => {
+      const title = (e.title ?? '').toLowerCase();
+      const why = (e.why ?? '').toLowerCase();
+      const tags = Array.isArray(e.tags) ? e.tags.join(' ').toLowerCase() : '';
+      return title.includes(q) || why.includes(q) || tags.includes(q);
+    });
+  }
+  if (typeFilter) {
+    result = result.filter(e => (e.type ?? '').toLowerCase() === typeFilter);
+  }
+
+  return jsonResponseWithETag({ decisions: result, total: result.length }, req);
+}
+
+function handleMemoryDetail(xmRoot, id, req) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+    return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  }
+  const mdPath = safeJoin(xmRoot, 'memory', 'memories', id + '.md');
+  if (!mdPath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  if (!existsSync(mdPath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
+
+  let content;
+  try {
+    content = readFileSync(mdPath, 'utf8');
+  } catch {
+    return jsonResponseWithETag({ error: 'read_error' }, req, 500);
+  }
+
+  let meta = null;
+  const resolvedIndex = safeJoin(xmRoot, 'memory', 'index.json');
+  if (resolvedIndex && existsSync(resolvedIndex)) {
+    try {
+      const raw = JSON.parse(readFileSync(resolvedIndex, 'utf8'));
+      const idx = Array.isArray(raw) ? raw : (Array.isArray(raw.decisions) ? raw.decisions : []);
+      meta = idx.find(e => e.id === id) ?? null;
+    } catch {}
+  }
+
+  return jsonResponseWithETag({ id, content, meta }, req);
 }
 
 // ── M4: WorkspaceAPI helpers ─────────────────────────────────────────
@@ -962,6 +1227,35 @@ server = Bun.serve({
           return handleMetricsSessions(xmRoot, url, req);
         }
 
+        // GET /api/ws/:wsId/traces
+        if (subPath === '/traces') {
+          return handleTraces(xmRoot, req);
+        }
+
+        // GET /api/ws/:wsId/traces/:file
+        const wsTraceFileMatch = subPath.match(/^\/traces\/([^/]+)$/);
+        if (wsTraceFileMatch) {
+          const file = decodeURIComponent(wsTraceFileMatch[1]);
+          return handleTraceDetail(xmRoot, file, req, url);
+        }
+
+        // GET /api/ws/:wsId/costs
+        if (subPath === '/costs') {
+          return handleCosts(xmRoot, req);
+        }
+
+        // GET /api/ws/:wsId/memory
+        if (subPath === '/memory') {
+          return handleMemoryList(xmRoot, url, req);
+        }
+
+        // GET /api/ws/:wsId/memory/:id
+        const wsMemoryDetailMatch = subPath.match(/^\/memory\/([^/]+)$/);
+        if (wsMemoryDetailMatch) {
+          const id = decodeURIComponent(wsMemoryDetailMatch[1]);
+          return handleMemoryDetail(xmRoot, id, req);
+        }
+
         return jsonResponseWithETag({ error: 'not_found' }, req, 404);
       }
 
@@ -1033,6 +1327,35 @@ server = Bun.serve({
       // GET /api/metrics/sessions
       if (path === '/api/metrics/sessions') {
         return handleMetricsSessions(XM_ROOT, url, req);
+      }
+
+      // GET /api/traces
+      if (path === '/api/traces') {
+        return handleTraces(XM_ROOT, req);
+      }
+
+      // GET /api/traces/:file
+      const tracesFileMatch = path.match(/^\/api\/traces\/([^/]+)$/);
+      if (tracesFileMatch) {
+        const file = decodeURIComponent(tracesFileMatch[1]);
+        return handleTraceDetail(XM_ROOT, file, req, url);
+      }
+
+      // GET /api/costs
+      if (path === '/api/costs') {
+        return handleCosts(XM_ROOT, req);
+      }
+
+      // GET /api/memory
+      if (path === '/api/memory') {
+        return handleMemoryList(XM_ROOT, url, req);
+      }
+
+      // GET /api/memory/:id
+      const memoryDetailMatch = path.match(/^\/api\/memory\/([^/]+)$/);
+      if (memoryDetailMatch) {
+        const id = decodeURIComponent(memoryDetailMatch[1]);
+        return handleMemoryDetail(XM_ROOT, id, req);
       }
     }
 
