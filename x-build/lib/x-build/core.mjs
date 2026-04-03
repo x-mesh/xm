@@ -653,6 +653,39 @@ export function scheduleRetry(project, task, data) {
   return true;
 }
 
+// ── Budget Guard ────────────────────────────────────────────────────
+
+export function checkBudget(additionalCost = 0) {
+  const config = loadSharedConfig();
+  const budget = Number(config.budget?.max_usd);
+  if (!budget || isNaN(budget)) return { ok: true, budget: null };
+
+  const mp = metricsPath();
+  let spent = 0;
+  if (existsSync(mp)) {
+    try {
+      const lines = readFileSync(mp, 'utf8').trim().split('\n');
+      for (const line of lines) {
+        try {
+          const m = JSON.parse(line);
+          if (typeof m.cost_usd === 'number') spent += m.cost_usd;
+        } catch { /* skip malformed */ }
+      }
+    } catch { /* ignore read errors */ }
+  }
+
+  const projected = spent + additionalCost;
+  const pct = (projected / budget * 100);
+
+  if (projected > budget) {
+    return { ok: false, spent, projected, budget, pct, level: 'exceeded' };
+  }
+  if (pct > 80) {
+    return { ok: true, spent, projected, budget, pct, level: 'warning' };
+  }
+  return { ok: true, spent, projected, budget, pct, level: 'normal' };
+}
+
 // ── Templates ────────────────────────────────────────────────────────
 
 export function templatesDir() {
@@ -783,6 +816,29 @@ export const SIZE_TOKEN_ESTIMATES = {
   large:  { input: 30000, output: 12000, turns: 12 },
 };
 
+// Strategy-aware cost multipliers for estimateTaskCost.
+// Values reflect average token overhead relative to a single-agent baseline.
+export const STRATEGY_MULTIPLIERS = {
+  escalate: 0.4,     // starts haiku; average across 3 levels ≈ 40% of opus-only
+  decompose: 1.2,    // splits into smaller parallel tasks
+  distribute: 1.2,   // parallel independent subtasks
+  tournament: 1.3,   // elimination reduces total work
+  chain: 1.3,        // sequential A→B→C pipeline
+  brainstorm: 1.3,   // free ideation + clustering
+  hypothesis: 1.4,   // generate + falsify rounds
+  persona: 1.4,      // multi-persona analysis
+  scaffold: 1.4,     // design + dispatch + integrate
+  review: 1.5,       // multi-lens code review
+  investigate: 1.5,  // multi-angle + synthesis + gap analysis
+  monitor: 1.2,      // single OODA cycle
+  socratic: 1.5,     // question rounds
+  council: 1.6,      // cross-examination + deep dive + converge
+  debate: 1.6,       // opening + rebuttal + verdict
+  'red-team': 1.6,   // attack + defend + report
+  refine: 1.8,       // multiple refinement rounds
+  compose: 2.0,      // multi-strategy pipeline
+};
+
 export function estimateTaskCost(task, model = 'sonnet') {
   const size = task.size || 'medium';
   const base = SIZE_TOKEN_ESTIMATES[size] || SIZE_TOKEN_ESTIMATES.medium;
@@ -799,7 +855,9 @@ export function estimateTaskCost(task, model = 'sonnet') {
     /\b(migration|database)\b/.test(nameLower) ? 1.2 :
     1.0;
 
-  const strategyMultiplier = task.strategy ? 1.5 : 1.0; // x-op adds overhead
+  const strategyMultiplier = task.strategy
+    ? (STRATEGY_MULTIPLIERS[task.strategy] || 1.5)
+    : 1.0;
 
   const totalMultiplier = depMultiplier * domainMultiplier * strategyMultiplier;
   const adjustedInput = Math.round(base.input * totalMultiplier);
@@ -825,6 +883,43 @@ export const ROLE_MODEL_MAP_HR = {
   executor: 'sonnet', designer: 'sonnet', debugger: 'sonnet',
   explorer: 'haiku', writer: 'haiku',
 };
+
+// ── Model Profiles ──────────────────────────────────────────────────
+// model_profile in .xm/config.json controls role→model mapping globally.
+// "economy" downgrades expensive roles; "performance" upgrades cheap ones.
+
+export const MODEL_PROFILES = {
+  economy: {
+    architect: 'sonnet', reviewer: 'sonnet', security: 'sonnet',
+    executor: 'haiku',  designer: 'haiku',  debugger: 'sonnet',
+    explorer: 'haiku',  writer: 'haiku',
+  },
+  balanced: ROLE_MODEL_MAP_HR,
+  performance: {
+    architect: 'opus',  reviewer: 'opus',   security: 'opus',
+    executor: 'opus',   designer: 'sonnet', debugger: 'opus',
+    explorer: 'sonnet', writer: 'haiku',
+  },
+};
+
+export function getModelForRole(role, size, config) {
+  if (!config) config = loadSharedConfig();
+  const profile = config.model_profile || 'balanced';
+  if (!MODEL_PROFILES[profile]) {
+    console.error(`⚠ Unknown model_profile "${profile}" — falling back to balanced`);
+  }
+  const baseMap = MODEL_PROFILES[profile] || MODEL_PROFILES.balanced;
+  const overrides = config.model_overrides || {};
+  const map = { ...baseMap, ...overrides };
+  if (!baseMap[role]) {
+    console.warn(`⚠ Unknown role "${role}" — falling back to executor model`);
+  }
+  const model = map[role] || map.executor;
+  if (size === 'large' && model === 'haiku') {
+    console.warn(`  ⚠ ${role} uses haiku for large task — consider: /x-kit config set model_overrides '{"${role}": "sonnet"}'`);
+  }
+  return model;
+}
 
 // ── Interactive helpers ─────────────────────────────────────────────
 
