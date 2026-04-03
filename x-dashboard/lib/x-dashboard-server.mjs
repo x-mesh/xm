@@ -343,6 +343,24 @@ function handleProjectDetail(xmRoot, slug, req) {
     }
   }
 
+  // Also collect MD files from phase directories (PRD, roadmap, notes, summaries, checklists)
+  const phasesMdDir = safeJoin(projectDir, 'phases');
+  if (phasesMdDir && existsSync(phasesMdDir)) {
+    for (const phaseEntry of readdirSync(phasesMdDir, { withFileTypes: true })) {
+      if (!phaseEntry.isDirectory()) continue;
+      const phaseDir = safeJoin(phasesMdDir, phaseEntry.name);
+      if (!phaseDir) continue;
+      for (const file of readdirSync(phaseDir)) {
+        if (!file.endsWith('.md')) continue;
+        const mdPath = safeJoin(phaseDir, file);
+        if (!mdPath) continue;
+        try {
+          context.push({ name: `${phaseEntry.name}/${file}`, content: readFileSync(mdPath, 'utf8') });
+        } catch {}
+      }
+    }
+  }
+
   return jsonResponseWithETag({ manifest, circuitBreaker, handoff, phases, context }, req);
 }
 
@@ -369,6 +387,97 @@ function handleProbeHistoryFile(xmRoot, file, req) {
   } catch {
     return jsonResponseWithETag({ error: 'parse_error', file: fileName }, req, 500);
   }
+}
+
+function readProbeFile(xmRoot, param) {
+  if (param === 'latest') {
+    const filePath = safeJoin(xmRoot, 'probe', 'last-verdict.json');
+    if (!filePath) return { error: 'forbidden', status: 400 };
+    if (!existsSync(filePath)) return { error: 'not_found', status: 404 };
+    try {
+      return { data: JSON.parse(readFileSync(filePath, 'utf8')), file: 'latest' };
+    } catch {
+      return { error: 'parse_error', status: 500 };
+    }
+  }
+  const baseName = param.endsWith('.json') ? param.slice(0, -5) : param;
+  // Allow date-based names like 2026-04-03-xm-web-dashboard
+  const PROBE_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
+  if (!PROBE_SEGMENT_RE.test(baseName)) return { error: 'forbidden', status: 400 };
+  const fileName = param.endsWith('.json') ? param : param + '.json';
+  const filePath = safeJoin(xmRoot, 'probe', 'history', fileName);
+  if (!filePath) return { error: 'forbidden', status: 400 };
+  if (!existsSync(filePath)) return { error: 'not_found', status: 404 };
+  try {
+    return { data: JSON.parse(readFileSync(filePath, 'utf8')), file: fileName };
+  } catch {
+    return { error: 'parse_error', status: 500 };
+  }
+}
+
+function setDiff(a, b) {
+  return {
+    added: b.filter(x => !a.includes(x)),
+    removed: a.filter(x => !b.includes(x)),
+    unchanged: a.filter(x => b.includes(x)),
+  };
+}
+
+function diffVerdicts(a, b) {
+  const diff = {
+    verdict: { a: a.verdict, b: b.verdict, changed: a.verdict !== b.verdict },
+    idea: { a: a.idea, b: b.idea },
+    recommendation: { a: a.recommendation, b: b.recommendation, changed: a.recommendation !== b.recommendation },
+    premises: { added: [], removed: [], changed: [], unchanged: [] },
+    evidence_summary: { a: a.evidence_summary, b: b.evidence_summary },
+  };
+
+  const aPremises = a.premises || [];
+  const bPremises = b.premises || [];
+
+  const bMatched = new Set();
+  for (const ap of aPremises) {
+    const matchIdx = bPremises.findIndex((bp, i) => !bMatched.has(i) && (bp.statement === ap.statement || bp.id === ap.id));
+    if (matchIdx !== -1) {
+      bMatched.add(matchIdx);
+      const match = bPremises[matchIdx];
+      if (ap.status !== match.status || ap.final_grade !== match.final_grade) {
+        diff.premises.changed.push({ a: ap, b: match });
+      } else {
+        diff.premises.unchanged.push(match);
+      }
+    } else {
+      diff.premises.removed.push(ap);
+    }
+  }
+  for (let i = 0; i < bPremises.length; i++) {
+    if (!bMatched.has(i)) diff.premises.added.push(bPremises[i]);
+  }
+
+  diff.evidence_gaps = setDiff(a.evidence_gaps || [], b.evidence_gaps || []);
+  diff.risks = setDiff(a.risks || [], b.risks || []);
+  diff.kill_criteria = setDiff(a.kill_criteria || [], b.kill_criteria || []);
+
+  return diff;
+}
+
+function handleProbeDiff(xmRoot, url, req) {
+  const aParam = url.searchParams.get('a');
+  const bParam = url.searchParams.get('b');
+  if (!aParam || !bParam) return jsonResponseWithETag({ error: 'missing_param', required: ['a', 'b'] }, req, 400);
+
+  const aResult = readProbeFile(xmRoot, decodeURIComponent(aParam));
+  if (aResult.error) return jsonResponseWithETag({ error: aResult.error, file: aParam }, req, aResult.status);
+
+  const bResult = readProbeFile(xmRoot, decodeURIComponent(bParam));
+  if (bResult.error) return jsonResponseWithETag({ error: bResult.error, file: bParam }, req, bResult.status);
+
+  const diff = diffVerdicts(aResult.data, bResult.data);
+  return jsonResponseWithETag({
+    a: { file: aResult.file, idea: aResult.data.idea, verdict: aResult.data.verdict },
+    b: { file: bResult.file, idea: bResult.data.idea, verdict: bResult.data.verdict },
+    diff,
+  }, req);
 }
 
 function handleProbeHistory(xmRoot, req) {
@@ -814,6 +923,11 @@ server = Bun.serve({
           return handleProbeLatest(xmRoot, req);
         }
 
+        // GET /api/ws/:wsId/probe/diff?a=<file>&b=<file>
+        if (subPath === '/probe/diff') {
+          return handleProbeDiff(xmRoot, url, req);
+        }
+
         // GET /api/ws/:wsId/probe/history/:file
         const wsProbeFileMatch = subPath.match(/^\/probe\/history\/([^/]+)$/);
         if (wsProbeFileMatch) {
@@ -880,6 +994,11 @@ server = Bun.serve({
       // GET /api/probe/latest
       if (path === '/api/probe/latest') {
         return handleProbeLatest(XM_ROOT, req);
+      }
+
+      // GET /api/probe/diff?a=<file>&b=<file>
+      if (path === '/api/probe/diff') {
+        return handleProbeDiff(XM_ROOT, url, req);
       }
 
       // GET /api/probe/history/:file  (must come before /api/probe/history)

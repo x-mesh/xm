@@ -621,3 +621,10 @@ body.theme-light #search-input { background: #fff; border-color: #ccc; color: #1
 #ws-select:focus { outline: 2px solid var(--accent); }
 .ws-card { cursor: pointer; transition: transform 0.1s; }
 .ws-card:hover { transform: translate(-1px, -1px); }
+
+/* ── Probe Diff ── */
+.diff-added { background: rgba(105, 240, 174, 0.08); border-left: 3px solid var(--success); }
+.diff-removed { background: rgba(255, 82, 82, 0.08); border-left: 3px solid var(--danger); text-decoration: line-through; opacity: 0.7; }
+.diff-changed { background: rgba(255, 171, 64, 0.08); border-left: 3px solid var(--accent); }
+.diff-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.diff-side { padding: 12px; border: 2px solid #333; }

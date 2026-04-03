@@ -198,6 +198,13 @@ function startPolling(fetchFn, intervalMs = 3000) {
   return () => clearInterval(id);
 }
 
+function getHashParams() {
+  const hash = window.location.hash;
+  const qIdx = hash.indexOf('?');
+  if (qIdx === -1) return {};
+  return Object.fromEntries(new URLSearchParams(hash.slice(qIdx + 1)));
+}
+
 // View render functions
 
 function verdictBadge(verdict) {
@@ -547,7 +554,7 @@ function renderProjectDetail(slug) {
 
     const { manifest, circuitBreaker, handoff, phases: projectPhases, context } = projectResult;
     const name = nullSafe(manifest?.name, slug);
-    const phase = nullSafe(manifest?.phase, '');
+    const phase = nullSafe(manifest?.current_phase, '');
 
     // Header
     let html = `
@@ -829,6 +836,190 @@ function buildProbeDetailHtml(data) {
   `;
 }
 
+async function renderProbeDiff() {
+  const app = document.getElementById('app');
+  const { a, b } = getHashParams();
+
+  if (!a || !b) {
+    app.innerHTML = `
+      <div class="view-header"><h1>Probe Diff</h1></div>
+      <div class="card"><p class="text-muted">Missing parameters: a and b are required.</p></div>
+    `;
+    return;
+  }
+
+  app.innerHTML = `
+    <div class="view-header"><h1>Probe Diff</h1></div>
+    <div class="card"><p class="text-muted">Loading diff...</p></div>
+  `;
+
+  const url = `/api/probe/diff?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`;
+  const data = await fetchJSON(url);
+
+  if (!data || data.error) {
+    app.innerHTML = `
+      <div class="view-header"><h1>Probe Diff</h1></div>
+      <div class="card"><p class="text-muted">Error: ${data ? data.message : 'unknown error'}</p></div>
+    `;
+    return;
+  }
+
+  const { a: pa, b: pb, diff } = data;
+
+  // Header: side-by-side
+  const headerHtml = `
+    <div class="diff-grid" style="margin-bottom:1rem">
+      <div class="diff-side card" style="margin-bottom:0">
+        <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem">A (Before)</div>
+        <div style="font-weight:700;margin-bottom:0.5rem">${nullSafe(pa.idea)}</div>
+        <div style="margin-bottom:0.25rem">${verdictBadge(pa.verdict)}</div>
+        <div class="text-muted" style="font-size:0.8rem;margin-top:0.5rem">${pa.timestamp ? new Date(pa.timestamp).toLocaleDateString() : '—'}</div>
+      </div>
+      <div class="diff-side card" style="margin-bottom:0">
+        <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem">B (After)</div>
+        <div style="font-weight:700;margin-bottom:0.5rem">${nullSafe(pb.idea)}</div>
+        <div style="margin-bottom:0.25rem">${verdictBadge(pb.verdict)}</div>
+        <div class="text-muted" style="font-size:0.8rem;margin-top:0.5rem">${pb.timestamp ? new Date(pb.timestamp).toLocaleDateString() : '—'}</div>
+      </div>
+    </div>
+  `;
+
+  // Verdict change
+  let verdictChangeHtml = '';
+  if (diff.verdict && diff.verdict.changed) {
+    verdictChangeHtml = `
+      <div class="card diff-changed" style="margin-bottom:1rem">
+        <strong style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.1em">Verdict Changed</strong>
+        <div style="margin-top:0.5rem;display:flex;align-items:center;gap:0.75rem;font-size:1.1em">
+          ${verdictBadge(diff.verdict.a)}
+          <span style="color:var(--accent)">→</span>
+          ${verdictBadge(diff.verdict.b)}
+        </div>
+      </div>
+    `;
+  }
+
+  // Recommendation diff
+  let recommendationHtml = '';
+  if (diff.recommendation) {
+    if (diff.recommendation.changed) {
+      recommendationHtml = `
+        <div class="card" style="margin-bottom:1rem">
+          <strong style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.1em">Recommendation Changed</strong>
+          <div class="diff-grid" style="margin-top:0.75rem">
+            <div class="diff-removed" style="padding:0.75rem;font-size:0.85rem">${nullSafe(diff.recommendation.a)}</div>
+            <div class="diff-added" style="padding:0.75rem;font-size:0.85rem">${nullSafe(diff.recommendation.b)}</div>
+          </div>
+        </div>
+      `;
+    } else {
+      recommendationHtml = `
+        <div class="card" style="margin-bottom:1rem">
+          <strong style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.1em">Recommendation</strong>
+          <p style="margin-top:0.5rem">${nullSafe(diff.recommendation.b || diff.recommendation.a)}</p>
+        </div>
+      `;
+    }
+  }
+
+  // Premises diff table
+  let premisesHtml = '';
+  if (diff.premises) {
+    const { added = [], removed = [], changed = [], unchanged = [] } = diff.premises;
+    if (added.length + removed.length + changed.length + unchanged.length > 0) {
+      const addedRows = added.map(p => `
+        <tr class="diff-added">
+          <td style="color:var(--success);font-weight:700">+</td>
+          <td>${nullSafe(p.statement)}</td>
+          <td style="text-align:center">${premiseStatusIcon(p.status)}</td>
+          <td>${gradeLabel(p.final_grade)}</td>
+          <td class="text-muted" style="font-size:0.8rem">Added</td>
+        </tr>`).join('');
+
+      const removedRows = removed.map(p => `
+        <tr class="diff-removed">
+          <td style="color:var(--danger);font-weight:700">−</td>
+          <td>${nullSafe(p.statement)}</td>
+          <td style="text-align:center">${premiseStatusIcon(p.status)}</td>
+          <td>${gradeLabel(p.final_grade)}</td>
+          <td class="text-muted" style="font-size:0.8rem">Removed</td>
+        </tr>`).join('');
+
+      const changedRows = changed.map(({ a: pa, b: pb }) => `
+        <tr class="diff-changed">
+          <td style="color:var(--accent);font-weight:700">~</td>
+          <td>${nullSafe(pb.statement || pa.statement)}</td>
+          <td style="text-align:center">
+            ${pa.status !== pb.status
+              ? `${premiseStatusIcon(pa.status)} → ${premiseStatusIcon(pb.status)}`
+              : premiseStatusIcon(pb.status)}
+          </td>
+          <td>
+            ${pa.final_grade !== pb.final_grade
+              ? `${gradeLabel(pa.final_grade)} → ${gradeLabel(pb.final_grade)}`
+              : gradeLabel(pb.final_grade)}
+          </td>
+          <td class="text-muted" style="font-size:0.8rem">Changed</td>
+        </tr>`).join('');
+
+      const unchangedRows = unchanged.map(p => `
+        <tr style="opacity:0.55">
+          <td style="color:var(--text-muted)"> </td>
+          <td>${nullSafe(p.statement)}</td>
+          <td style="text-align:center">${premiseStatusIcon(p.status)}</td>
+          <td>${gradeLabel(p.final_grade)}</td>
+          <td class="text-muted" style="font-size:0.8rem">Unchanged</td>
+        </tr>`).join('');
+
+      premisesHtml = `
+        <div class="card" style="margin-bottom:1rem;padding:0">
+          <div style="padding:1rem 1.25rem 0"><h2 style="margin:0">Premises</h2></div>
+          <table class="table">
+            <thead><tr><th></th><th>Statement</th><th>Status</th><th>Grade</th><th>Change</th></tr></thead>
+            <tbody>${addedRows}${removedRows}${changedRows}${unchangedRows}</tbody>
+          </table>
+        </div>
+      `;
+    }
+  }
+
+  // List diff helper
+  function renderListDiff(diffObj, title) {
+    if (!diffObj) return '';
+    const { added = [], removed = [], unchanged = [] } = diffObj;
+    if (added.length + removed.length + unchanged.length === 0) return '';
+    const items = [
+      ...added.map(i => `<li class="diff-added" style="padding:0.35rem 0.75rem;margin:2px 0"><span style="color:var(--success);font-weight:700;margin-right:0.5rem">+</span>${i}</li>`),
+      ...removed.map(i => `<li class="diff-removed" style="padding:0.35rem 0.75rem;margin:2px 0"><span style="color:var(--danger);font-weight:700;margin-right:0.5rem">−</span>${i}</li>`),
+      ...unchanged.map(i => `<li style="padding:0.35rem 0.75rem;margin:2px 0;opacity:0.6">${i}</li>`),
+    ].join('');
+    return `
+      <div class="card" style="margin-bottom:1rem">
+        <h2 style="margin:0 0 0.75rem">${title}</h2>
+        <ul style="list-style:none;padding:0;margin:0">${items}</ul>
+      </div>
+    `;
+  }
+
+  const evidenceHtml   = renderListDiff(diff.evidence_gaps, 'Evidence Gaps');
+  const risksHtml      = renderListDiff(diff.risks, 'Risks');
+  const killHtml       = renderListDiff(diff.kill_criteria, 'Kill Criteria');
+
+  app.innerHTML = `
+    <div class="view-header">
+      <div><a href="#/probes" style="font-size:0.875rem;opacity:0.7">← Probes</a></div>
+      <h1 style="margin-top:0.5rem">Probe Diff</h1>
+    </div>
+    ${headerHtml}
+    ${verdictChangeHtml}
+    ${premisesHtml}
+    ${evidenceHtml}
+    ${risksHtml}
+    ${killHtml}
+    ${recommendationHtml}
+  `;
+}
+
 async function renderProbesList() {
   const app = document.getElementById('app');
   app.innerHTML = `
@@ -867,22 +1058,42 @@ async function renderProbesList() {
 
   let historyHtml = '';
   if (history.length > 0) {
+    const canCompare = history.length >= 2;
+    const compareToggleHtml = canCompare ? `
+      <button id="btn-compare-toggle" style="font-size:0.75rem;padding:0.25rem 0.6rem;background:transparent;border:1px solid var(--border,#333);border-radius:4px;cursor:pointer;color:var(--text-muted)">Compare</button>
+    ` : '';
+
     const rows = history.map((item, idx) => {
       const date = item.timestamp ? new Date(item.timestamp).toLocaleDateString() : '—';
       const idea = nullSafe(item.idea, '—');
       const fileParam = item._file ?? `history-${idx}`;
-      return `<tr style="cursor:pointer" data-href="#/probes/${encodeURIComponent(fileParam)}">
+      return `<tr style="cursor:pointer" data-href="#/probes/${encodeURIComponent(fileParam)}" data-file="${fileParam}">
+        <td class="compare-cell" style="display:none;width:32px;padding:10px 8px">
+          <input type="checkbox" class="compare-check" data-file="${fileParam}" style="cursor:pointer">
+        </td>
         <td>${date}</td>
         <td>${idea}</td>
         <td>${verdictBadge(item.verdict)}</td>
         <td>${nullSafe(item.domain)}</td>
       </tr>`;
     }).join('');
+
     historyHtml = `
       <div class="card" style="padding:0">
-        <div style="padding:1rem 1.25rem 0"><h2 style="margin:0">History</h2></div>
+        <div style="padding:1rem 1.25rem 0;display:flex;align-items:center;justify-content:space-between">
+          <h2 style="margin:0">History</h2>
+          <div style="display:flex;align-items:center;gap:0.5rem">
+            ${compareToggleHtml}
+            <button id="btn-compare-go" style="display:none;font-size:0.75rem;padding:0.25rem 0.6rem;background:var(--accent);border:none;border-radius:4px;cursor:pointer;color:#000;font-weight:700">Compare Selected</button>
+          </div>
+        </div>
         <table class="table" id="probe-history-table">
-          <thead><tr><th>Date</th><th>Idea</th><th>Verdict</th><th>Domain</th></tr></thead>
+          <thead>
+            <tr>
+              <th class="compare-cell" style="display:none;width:32px"></th>
+              <th>Date</th><th>Idea</th><th>Verdict</th><th>Domain</th>
+            </tr>
+          </thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;
@@ -900,8 +1111,52 @@ async function renderProbesList() {
   const table = document.getElementById('probe-history-table');
   if (table) {
     table.addEventListener('click', (e) => {
+      // Don't navigate if clicking a checkbox
+      if (e.target.classList.contains('compare-check')) return;
       const row = e.target.closest('tr[data-href]');
       if (row) window.location.hash = row.dataset.href;
+    });
+  }
+
+  // Compare mode toggle
+  const btnToggle = document.getElementById('btn-compare-toggle');
+  const btnGo = document.getElementById('btn-compare-go');
+  if (btnToggle) {
+    let compareMode = false;
+    btnToggle.addEventListener('click', () => {
+      compareMode = !compareMode;
+      btnToggle.textContent = compareMode ? 'Cancel' : 'Compare';
+      btnToggle.style.color = compareMode ? 'var(--accent)' : 'var(--text-muted)';
+      document.querySelectorAll('.compare-cell').forEach(el => {
+        el.style.display = compareMode ? '' : 'none';
+      });
+      if (!compareMode) {
+        document.querySelectorAll('.compare-check').forEach(cb => { cb.checked = false; });
+        if (btnGo) btnGo.style.display = 'none';
+      }
+    });
+  }
+
+  if (table) {
+    table.addEventListener('change', (e) => {
+      if (!e.target.classList.contains('compare-check')) return;
+      const checked = [...document.querySelectorAll('.compare-check:checked')];
+      if (checked.length > 2) {
+        e.target.checked = false;
+        return;
+      }
+      if (btnGo) {
+        btnGo.style.display = checked.length === 2 ? '' : 'none';
+      }
+    });
+  }
+
+  if (btnGo) {
+    btnGo.addEventListener('click', () => {
+      const checked = [...document.querySelectorAll('.compare-check:checked')];
+      if (checked.length !== 2) return;
+      const [fileA, fileB] = checked.map(cb => cb.dataset.file);
+      window.location.hash = `#/probes/diff?a=${encodeURIComponent(fileA)}&b=${encodeURIComponent(fileB)}`;
     });
   }
 }
@@ -1274,6 +1529,7 @@ const ROUTES = [
   { pattern: /^\/projects$/, handler: () => renderProjectsList() },
   { pattern: /^\/projects\/(.+)$/, handler: (m) => renderProjectDetail(m[1]) },
   { pattern: /^\/probes$/, handler: () => renderProbesList() },
+  { pattern: /^\/probes\/diff/, handler: () => renderProbeDiff() },
   { pattern: /^\/probes\/(.+)$/, handler: (m) => renderProbeDetail(m[1]) },
   { pattern: /^\/solvers$/, handler: () => renderSolversList() },
   { pattern: /^\/solvers\/(.+)$/, handler: (m) => renderSolverDetail(m[1]) },
