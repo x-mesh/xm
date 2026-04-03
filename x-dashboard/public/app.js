@@ -1,3 +1,49 @@
+// Workspace state
+let currentWsId = null;
+let multiRootMode = false;
+
+function apiUrl(path) {
+  const p = path.startsWith('/') ? path : '/' + path;
+  if (multiRootMode && currentWsId) {
+    return `/api/ws/${encodeURIComponent(currentWsId)}${p}`;
+  }
+  return `/api${p}`;
+}
+
+async function initWorkspaces() {
+  const res = await fetchJSON('/api/workspaces');
+  if (res.error || !Array.isArray(res)) return;
+
+  const workspaces = res;
+  if (workspaces.length <= 1) {
+    currentWsId = workspaces[0]?.id ?? null;
+    multiRootMode = false;
+    return;
+  }
+
+  multiRootMode = true;
+  currentWsId = workspaces[0].id;
+
+  const nav = document.getElementById('nav');
+  if (!nav) return;
+  const selector = document.createElement('div');
+  selector.id = 'ws-selector';
+  selector.style.cssText = 'padding:8px 14px;border-bottom:2px solid #333';
+  selector.innerHTML = `
+    <select id="ws-select" style="width:100%;background:var(--surface);border:2px solid #444;color:var(--accent);padding:6px 10px;font-family:var(--font-mono);font-size:11px;text-transform:uppercase">
+      ${workspaces.map(w => `<option value="${w.id}">${w.name} (${w.stats?.projects ?? 0})</option>`).join('')}
+    </select>
+  `;
+
+  const navLinks = nav.querySelector('.nav-links');
+  nav.insertBefore(selector, navLinks);
+
+  document.getElementById('ws-select').addEventListener('change', (e) => {
+    currentWsId = e.target.value;
+    route();
+  });
+}
+
 // Utility functions
 
 function timeAgo(isoString) {
@@ -86,6 +132,66 @@ function renderMarkdown(text) {
     .replace(/\n/g, '<br>');
 }
 
+function renderJsonSmart(obj) {
+  if (!obj || typeof obj !== 'object') return `<span class="text-muted">${nullSafe(obj)}</span>`;
+
+  // Array of objects → table
+  if (Array.isArray(obj) && obj.length > 0 && typeof obj[0] === 'object') {
+    const keys = [...new Set(obj.flatMap(o => Object.keys(o)))];
+    const thead = keys.map(k => `<th>${k}</th>`).join('');
+    const rows = obj.map(item => `<tr>${keys.map(k => {
+      const v = item[k];
+      if (v === null || v === undefined) return '<td class="text-muted">—</td>';
+      if (typeof v === 'boolean') return `<td>${v ? '✅' : '—'}</td>`;
+      if (typeof v === 'object') return `<td><code style="font-size:0.75rem">${JSON.stringify(v)}</code></td>`;
+      return `<td>${v}</td>`;
+    }).join('')}</tr>`).join('');
+    return `<div class="table-wrapper" style="margin-top:0.25rem"><table class="table"><thead><tr>${thead}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+
+  // Simple array → bulleted list
+  if (Array.isArray(obj)) {
+    return `<ul style="margin:0.25rem 0 0 1.25rem">${obj.map(i => `<li>${i}</li>`).join('')}</ul>`;
+  }
+
+  // Flat object → key-value table
+  const entries = Object.entries(obj);
+  if (entries.length > 0 && entries.every(([, v]) => v === null || typeof v !== 'object')) {
+    const rows = entries.map(([k, v]) => {
+      let display = nullSafe(v);
+      if (typeof v === 'boolean') display = v ? '<span class="badge badge-green">true</span>' : '<span class="badge badge-gray">false</span>';
+      else if (k.includes('passed') || k.includes('success')) display = v ? '<span class="badge badge-green">✅ yes</span>' : '<span class="badge badge-red">❌ no</span>';
+      else if (k.includes('duration') || k.includes('_ms')) display = typeof v === 'number' ? `${(v / 1000).toFixed(1)}s` : display;
+      else if (k.includes('_at') && typeof v === 'string') display = `${timeAgo(v)} <span class="text-muted" style="font-size:0.75rem">(${v})</span>`;
+      return `<tr><td style="font-weight:600;white-space:nowrap;width:1%;color:var(--text-muted)">${k}</td><td>${display}</td></tr>`;
+    }).join('');
+    return `<table class="table" style="margin-top:0.25rem"><tbody>${rows}</tbody></table>`;
+  }
+
+  // Nested object — recurse with sections
+  let html = '';
+  for (const [k, v] of entries) {
+    if (typeof v === 'object' && v !== null) {
+      html += `<div style="margin-top:0.5rem"><strong style="font-size:0.8rem;color:var(--text-muted)">${k}</strong>${renderJsonSmart(v)}</div>`;
+    } else {
+      let display = nullSafe(v);
+      if (typeof v === 'boolean') display = v ? '✅' : '—';
+      html += `<div style="margin-top:0.25rem"><span class="text-muted" style="font-size:0.8rem">${k}:</span> ${display}</div>`;
+    }
+  }
+  return `<div style="margin-top:0.25rem">${html}</div>`;
+}
+
+function exportMarkdown(filename, content) {
+  const blob = new Blob([content], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function startPolling(fetchFn, intervalMs = 3000) {
   fetchFn();
   const id = setInterval(fetchFn, intervalMs);
@@ -105,7 +211,75 @@ function verdictBadge(verdict) {
   return `<span class="badge ${cls}">${verdict}</span>`;
 }
 
+async function renderAggregateHome() {
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="view-header"><h1>Workspaces</h1></div>
+    <div class="card"><p class="text-muted">Loading workspaces...</p></div>
+  `;
+
+  const workspaces = await fetchJSON('/api/workspaces');
+  if (!Array.isArray(workspaces) || workspaces.error) {
+    app.innerHTML = `
+      <div class="view-header"><h1>Workspaces</h1></div>
+      <div class="card"><p class="text-muted">Error loading workspaces.</p></div>
+    `;
+    return;
+  }
+
+  let totalProjects = 0;
+  let totalProbes = 0;
+  let totalSolvers = 0;
+  for (const w of workspaces) {
+    totalProjects += w.stats?.projects ?? 0;
+    totalProbes   += w.stats?.probes   ?? 0;
+    totalSolvers  += w.stats?.solvers  ?? 0;
+  }
+
+  const cards = workspaces.map(w => `
+    <div class="card ws-card" data-wsid="${w.id}" style="cursor:pointer;flex:1 1 200px;min-width:180px">
+      <div style="font-size:1.1em;font-weight:700;margin-bottom:0.25rem">${w.name}</div>
+      <div class="text-muted" style="font-size:0.78em;font-family:var(--font-mono);margin-bottom:0.75rem;word-break:break-all">${w.path ?? ''}</div>
+      <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+        <span class="badge badge-blue">${w.stats?.projects ?? 0} builds</span>
+        <span class="badge badge-indigo">${w.stats?.probes ?? 0} probes</span>
+        <span class="badge badge-amber">${w.stats?.solvers ?? 0} solvers</span>
+      </div>
+    </div>
+  `).join('');
+
+  app.innerHTML = `
+    <div class="view-header"><h1>Workspaces</h1></div>
+    <div style="display:flex;flex-wrap:wrap;gap:1rem;margin-bottom:1rem">${cards}</div>
+    <div class="stat-bar">
+      <div class="card stat-card">
+        <div class="stat-value">${totalProjects}</div>
+        <div class="stat-label">Total Builds</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-value">${totalProbes}</div>
+        <div class="stat-label">Total Probes</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-value">${totalSolvers}</div>
+        <div class="stat-label">Total Solvers</div>
+      </div>
+    </div>
+  `;
+
+  app.querySelectorAll('.ws-card[data-wsid]').forEach(card => {
+    card.addEventListener('click', () => {
+      currentWsId = card.dataset.wsid;
+      const sel = document.getElementById('ws-select');
+      if (sel) sel.value = currentWsId;
+      window.location.hash = '#/projects';
+    });
+  });
+}
+
 async function renderHome() {
+  if (multiRootMode) return renderAggregateHome();
+
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Home</h1></div>
@@ -113,10 +287,11 @@ async function renderHome() {
   `;
 
   const stopPolling = startPolling(async () => {
-    const [projectsRes, solverRes, probeRes] = await Promise.all([
-      fetchJSON('/api/projects'),
-      fetchJSON('/api/solver'),
-      fetchJSON('/api/probe/latest'),
+    const [projectsRes, solverRes, probeRes, healthRes] = await Promise.all([
+      fetchJSON(apiUrl('/projects')),
+      fetchJSON(apiUrl('/solver')),
+      fetchJSON(apiUrl('/probe/latest')),
+      fetchJSON('/api/health'),
     ]);
 
     const projects = Array.isArray(projectsRes.data) ? projectsRes.data : [];
@@ -142,13 +317,19 @@ async function renderHome() {
       })
       .slice(0, 5);
 
+    const projectName = healthRes?.project ?? 'unknown';
+    const cwdPath = healthRes?.cwd ?? '';
+
     app.innerHTML = `
-      <div class="view-header"><h1>Home</h1></div>
+      <div class="view-header">
+        <h1>${projectName}</h1>
+        <p style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted)">${cwdPath}/.xm/</p>
+      </div>
 
       <div class="stat-bar">
         <div class="card stat-card">
           <div class="stat-value">${projects.length}</div>
-          <div class="stat-label">Projects</div>
+          <div class="stat-label">Builds</div>
         </div>
         <div class="card stat-card">
           <div class="stat-value">${activeTasks}</div>
@@ -187,20 +368,61 @@ async function renderHome() {
       </div>`}
 
       <div class="card" style="margin-top:1rem">
-        <div class="card-header"><strong>Recent Projects</strong></div>
+        <div class="card-header"><strong>Recent Builds</strong></div>
         ${recent.length === 0 ? `<p class="text-muted">No projects found.</p>` : `
         <ul style="list-style:none;padding:0;margin:0">
           ${recent.map(p => `
           <li style="padding:0.5rem 0;border-bottom:1px solid var(--border, #e5e7eb);display:flex;align-items:center;justify-content:space-between">
-            <a href="#/projects/${p.slug ?? p.name}">${nullSafe(p.name, p.slug ?? '—')}</a>
+            <a href="#/projects/${p.name}">${nullSafe(p.display_name || p.name)}</a>
             <span style="display:flex;align-items:center;gap:0.5rem">
-              ${phaseBadge(p.phase ?? p.current_phase)}
+              ${phaseBadge(p.current_phase)}
               <span class="text-muted" style="font-size:0.8em">${timeAgo(p.updated_at ?? p.created_at)}</span>
             </span>
           </li>`).join('')}
         </ul>`}
       </div>
     `;
+
+    // Session metrics bar chart (async, non-blocking)
+    fetchJSON(apiUrl('/metrics/sessions?limit=50')).then(sessionsRes => {
+      const sessions = Array.isArray(sessionsRes.data) ? sessionsRes.data : [];
+      if (sessions.length === 0) return;
+
+      // Group by date
+      const counts = {};
+      for (const s of sessions) {
+        const ts = s.started_at ?? s.timestamp ?? s.created_at ?? '';
+        if (!ts) continue;
+        const date = ts.slice(0, 10); // YYYY-MM-DD
+        counts[date] = (counts[date] || 0) + 1;
+      }
+      const dates = Object.keys(counts).sort();
+      if (dates.length === 0) return;
+
+      const max = Math.max(...Object.values(counts));
+      const bars = dates.map(d => {
+        const pct = max > 0 ? Math.round((counts[d] / max) * 100) : 0;
+        return `<div style="width:8px;background:var(--accent);height:${pct}%;min-height:2px;flex-shrink:0" title="${d}: ${counts[d]}"></div>`;
+      }).join('');
+
+      const metricsCard = document.createElement('div');
+      metricsCard.className = 'card';
+      metricsCard.style.marginTop = '1rem';
+      metricsCard.innerHTML = `
+        <div class="card-header" style="margin-bottom:0.75rem">
+          <strong style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.1em">Session Metrics</strong>
+          <span class="text-muted" style="font-size:11px;margin-left:0.5rem">${sessions.length} sessions</span>
+        </div>
+        <div style="display:flex;align-items:flex-end;gap:2px;height:60px;overflow:hidden">
+          ${bars}
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:4px">
+          <span class="text-muted" style="font-size:10px">${dates[0]}</span>
+          <span class="text-muted" style="font-size:10px">${dates[dates.length - 1]}</span>
+        </div>
+      `;
+      app.appendChild(metricsCard);
+    });
   }, 3000);
 
   // Stop polling when navigating away
@@ -210,15 +432,15 @@ async function renderHome() {
 function renderProjectsList() {
   const app = document.getElementById('app');
   app.innerHTML = `
-    <div class="view-header"><h1>Projects</h1></div>
+    <div class="view-header"><h1>Builds</h1><p>.xm/build/projects/</p></div>
     <div class="card"><p class="text-muted">Loading projects...</p></div>
   `;
 
   const stopPolling = startPolling(async () => {
-    const result = await fetchJSON('/api/projects');
+    const result = await fetchJSON(apiUrl('/projects'));
     if (result.error) {
       app.innerHTML = `
-        <div class="view-header"><h1>Projects</h1></div>
+        <div class="view-header"><h1>Builds</h1><p>.xm/build/projects/</p></div>
         <div class="card"><p class="text-muted">Error: ${result.message}</p></div>
       `;
       return;
@@ -227,7 +449,7 @@ function renderProjectsList() {
     const projects = result.data || [];
     if (projects.length === 0) {
       app.innerHTML = `
-        <div class="view-header"><h1>Projects</h1></div>
+        <div class="view-header"><h1>Builds</h1><p>.xm/build/projects/</p></div>
         <div class="card"><p class="text-muted">No projects found.</p></div>
       `;
       return;
@@ -235,15 +457,15 @@ function renderProjectsList() {
 
     const rows = projects.map((p) => `
       <tr>
-        <td><a href="#/projects/${nullSafe(p.slug, '')}">${nullSafe(p.name)}</a></td>
-        <td>${phaseBadge(p.phase)}</td>
+        <td><a href="#/projects/${p.name}">${nullSafe(p.display_name || p.name)}</a></td>
+        <td>${phaseBadge(p.current_phase)}</td>
         <td>${timeAgo(p.created_at)}</td>
         <td>${timeAgo(p.updated_at)}</td>
       </tr>
     `).join('');
 
     app.innerHTML = `
-      <div class="view-header"><h1>Projects</h1></div>
+      <div class="view-header"><h1>Builds</h1><p>.xm/build/projects/</p></div>
       <div class="card" style="padding:0">
         <table class="table">
           <thead>
@@ -281,13 +503,25 @@ function renderPhaseBar(currentPhase) {
   return `<div class="phase-bar">${parts.join('')}</div>`;
 }
 
+const _activeTabState = {};
 function switchTab(tabId, idx, btn) {
+  _activeTabState[tabId] = idx;
   const card = btn.closest('.card');
   card.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('tab-active'));
   btn.classList.add('tab-active');
   card.querySelectorAll('.tab-panel').forEach((p, i) => {
     p.style.display = i === idx ? '' : 'none';
   });
+}
+function restoreTab(tabId) {
+  const idx = _activeTabState[tabId];
+  if (idx == null) return;
+  const card = document.getElementById(tabId);
+  if (!card) return;
+  const btns = card.querySelectorAll('.tab-btn');
+  const panels = card.querySelectorAll('.tab-panel');
+  btns.forEach((b, i) => b.classList.toggle('tab-active', i === idx));
+  panels.forEach((p, i) => { p.style.display = i === idx ? '' : 'none'; });
 }
 
 function renderProjectDetail(slug) {
@@ -299,8 +533,8 @@ function renderProjectDetail(slug) {
 
   const stopPolling = startPolling(async () => {
     const [projectResult, tasksResult] = await Promise.all([
-      fetchJSON(`/api/projects/${slug}`),
-      fetchJSON(`/api/projects/${slug}/tasks`),
+      fetchJSON(apiUrl(`/projects/${slug}`)),
+      fetchJSON(apiUrl(`/projects/${slug}/tasks`)),
     ]);
 
     if (projectResult.error) {
@@ -311,7 +545,7 @@ function renderProjectDetail(slug) {
       return;
     }
 
-    const { manifest, circuitBreaker, handoff, context } = projectResult;
+    const { manifest, circuitBreaker, handoff, phases: projectPhases, context } = projectResult;
     const name = nullSafe(manifest?.name, slug);
     const phase = nullSafe(manifest?.phase, '');
 
@@ -323,6 +557,7 @@ function renderProjectDetail(slug) {
           ${phaseBadge(phase)}
           <span class="text-muted">Created: ${timeAgo(manifest?.created_at)}</span>
           <span class="text-muted">Updated: ${timeAgo(manifest?.updated_at)}</span>
+          <button class="btn-export" id="btn-export-project" style="margin-left:auto;font-size:0.75rem;padding:0.25rem 0.6rem;background:transparent;border:1px solid var(--border,#e5e7eb);border-radius:4px;cursor:pointer;color:var(--text-muted)">↓ EXPORT</button>
         </div>
       </div>
     `;
@@ -373,20 +608,21 @@ function renderProjectDetail(slug) {
       </div>
     `;
 
-    // Context docs (tabs)
+    // Context docs (tabs) — preserve active tab across polling
     const docs = Array.isArray(context) ? context : [];
     if (docs.length > 0) {
       const tabId = 'ctx-tab';
+      const savedIdx = _activeTabState[tabId] ?? 0;
       const tabs = docs.map((d, i) => `
-        <button class="tab-btn${i === 0 ? ' tab-active' : ''}" onclick="switchTab('${tabId}', ${i}, this)">${d.name}</button>
+        <button class="tab-btn${i === savedIdx ? ' tab-active' : ''}" onclick="switchTab('${tabId}', ${i}, this)">${d.name}</button>
       `).join('');
       const panels = docs.map((d, i) => `
-        <div class="tab-panel" id="${tabId}-panel-${i}" style="${i === 0 ? '' : 'display:none'}">
+        <div class="tab-panel" id="${tabId}-panel-${i}" style="${i === savedIdx ? '' : 'display:none'}">
           <div class="markdown-body">${renderMarkdown(d.content)}</div>
         </div>
       `).join('');
       html += `
-        <div class="card">
+        <div class="card" id="${tabId}">
           <h2 style="margin:0 0 .75rem">Context Docs</h2>
           <div class="tab-bar">${tabs}</div>
           ${panels}
@@ -421,7 +657,74 @@ function renderProjectDetail(slug) {
       `;
     }
 
+    // Build timeline
+    const timelineEvents = [];
+    if (manifest?.created_at) {
+      timelineEvents.push({ label: 'Project Created', ts: manifest.created_at, color: 'var(--info)' });
+    }
+    const phases = Array.isArray(projectPhases) ? projectPhases : [];
+    for (const p of phases) {
+      const phaseLabel = { '01-research': 'Research', '02-plan': 'Plan', '03-execute': 'Execute', '04-verify': 'Verify', '05-close': 'Close' }[p.phase] ?? p.phase;
+      const ts = p.started_at ?? p.completed_at ?? p.updated_at ?? '';
+      if (ts) {
+        timelineEvents.push({ label: phaseLabel, ts, color: 'var(--accent)', detail: p.status ? `Status: ${p.status}` : '' });
+      }
+    }
+    if (manifest?.updated_at && manifest.updated_at !== manifest.created_at) {
+      timelineEvents.push({ label: 'Last Activity', ts: manifest.updated_at, color: 'var(--success)' });
+    }
+    timelineEvents.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+
+    if (timelineEvents.length > 0) {
+      const timelineItems = timelineEvents.map(e => `
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background:${e.color};border-color:${e.color}"></div>
+          <div class="timeline-content">
+            <strong>${e.label}</strong>
+            ${e.detail ? `<span class="text-muted" style="margin-left:6px">${e.detail}</span>` : ''}
+            <span class="text-muted" style="display:block">${timeAgo(e.ts)}</span>
+          </div>
+        </div>
+      `).join('');
+      html += `
+        <div class="card" style="margin-top:1rem">
+          <h2 style="margin:0 0 1rem">Build Timeline</h2>
+          <div class="timeline">${timelineItems}</div>
+        </div>
+      `;
+    }
+
     app.innerHTML = html;
+
+    // Export button handler
+    const exportBtn = document.getElementById('btn-export-project');
+    if (exportBtn) {
+      exportBtn.addEventListener('click', () => {
+        const taskRows = tasks.map(t => {
+          const deps = Array.isArray(t.dependencies) ? t.dependencies.join(', ') : (t.dependencies || '');
+          return `| ${nullSafe(t.id)} | ${nullSafe(t.name)} | ${t.status || ''} | ${t.size || ''} | ${nullSafe(t.done_criteria)} |`;
+        }).join('\n');
+        const taskTable = tasks.length > 0
+          ? `| ID | Name | Status | Size | Done Criteria |\n|---|---|---|---|---|\n${taskRows}`
+          : '_No tasks found._';
+
+        const contextSections = docs.map(d => `### ${d.name}\n\n${d.content || ''}`).join('\n\n');
+
+        const md = [
+          `# Project: ${name}`,
+          `Phase: ${phase}`,
+          `Created: ${manifest?.created_at || '—'}`,
+          `Updated: ${manifest?.updated_at || '—'}`,
+          '',
+          '## Tasks',
+          taskTable,
+          '',
+          docs.length > 0 ? '## Context\n\n' + contextSections : '',
+        ].join('\n');
+
+        exportMarkdown(`project-${slug}.md`, md);
+      });
+    }
   });
 
   window.addEventListener('hashchange', stopPolling, { once: true });
@@ -512,7 +815,10 @@ function buildProbeDetailHtml(data) {
         ${nullSafe(data.idea, 'Probe Detail')}
         ${verdictBadge(data.verdict)}
       </h1>
-      <p class="text-muted" style="margin:4px 0 0">${ts}${data.domain ? ` · ${data.domain}` : ''}</p>
+      <div style="display:flex;align-items:center;gap:1rem">
+        <p class="text-muted" style="margin:4px 0 0">${ts}${data.domain ? ` · ${data.domain}` : ''}</p>
+        <button id="btn-export-probe" style="font-size:0.75rem;padding:0.25rem 0.6rem;background:transparent;border:1px solid var(--border,#e5e7eb);border-radius:4px;cursor:pointer;color:var(--text-muted)">↓ EXPORT</button>
+      </div>
     </div>
     ${premisesHtml}
     ${evidenceSummaryHtml}
@@ -531,8 +837,8 @@ async function renderProbesList() {
   `;
 
   const [latest, historyRes] = await Promise.all([
-    fetchJSON('/api/probe/latest'),
-    fetchJSON('/api/probe/history'),
+    fetchJSON(apiUrl('/probe/latest')),
+    fetchJSON(apiUrl('/probe/history')),
   ]);
 
   let latestCardHtml = '';
@@ -557,18 +863,19 @@ async function renderProbesList() {
       </div>`;
   }
 
-  const files = (!historyRes.error && Array.isArray(historyRes.files)) ? historyRes.files : [];
+  const history = (!historyRes.error && Array.isArray(historyRes.data)) ? historyRes.data : [];
 
   let historyHtml = '';
-  if (files.length > 0) {
-    const rows = files.slice().reverse().map((f) => {
-      const date = f.length >= 10 ? f.substring(0, 10) : f;
-      const label = f.replace(/\.json$/, '').substring(11).replace(/-/g, ' ');
-      return `<tr data-file="${f}" style="cursor:pointer" onclick="window.location.hash='#/probes/${encodeURIComponent(f)}'">
+  if (history.length > 0) {
+    const rows = history.map((item, idx) => {
+      const date = item.timestamp ? new Date(item.timestamp).toLocaleDateString() : '—';
+      const idea = nullSafe(item.idea, '—');
+      const fileParam = item._file ?? `history-${idx}`;
+      return `<tr style="cursor:pointer" data-href="#/probes/${encodeURIComponent(fileParam)}">
         <td>${date}</td>
-        <td>${label}</td>
-        <td></td>
-        <td></td>
+        <td>${idea}</td>
+        <td>${verdictBadge(item.verdict)}</td>
+        <td>${nullSafe(item.domain)}</td>
       </tr>`;
     }).join('');
     historyHtml = `
@@ -589,21 +896,14 @@ async function renderProbesList() {
     ${historyHtml}
   `;
 
-  // Async-fill verdict/domain/idea for each history row
-  files.forEach((f) => {
-    fetchJSON(`/api/probe/history/${encodeURIComponent(f)}`).then((d) => {
-      if (!d || d.error) return;
-      const table = document.getElementById('probe-history-table');
-      if (!table) return;
-      table.querySelectorAll('tbody tr').forEach((row) => {
-        if (row.dataset.file === f) {
-          if (d.idea) row.cells[1].textContent = d.idea;
-          row.cells[2].innerHTML = verdictBadge(d.verdict);
-          row.cells[3].textContent = nullSafe(d.domain);
-        }
-      });
+  // Event delegation for table row clicks (CSP-safe, no inline onclick)
+  const table = document.getElementById('probe-history-table');
+  if (table) {
+    table.addEventListener('click', (e) => {
+      const row = e.target.closest('tr[data-href]');
+      if (row) window.location.hash = row.dataset.href;
     });
-  });
+  }
 }
 
 async function renderProbeDetail(file) {
@@ -614,8 +914,8 @@ async function renderProbeDetail(file) {
   `;
 
   const url = file === 'latest'
-    ? '/api/probe/latest'
-    : `/api/probe/history/${encodeURIComponent(file)}`;
+    ? apiUrl('/probe/latest')
+    : apiUrl(`/probe/history/${encodeURIComponent(file)}`);
   const data = await fetchJSON(url);
 
   if (!data || data.error) {
@@ -627,6 +927,38 @@ async function renderProbeDetail(file) {
   }
 
   app.innerHTML = buildProbeDetailHtml(data);
+
+  // Export button handler
+  const exportBtn = document.getElementById('btn-export-probe');
+  if (exportBtn) {
+    exportBtn.addEventListener('click', () => {
+      const ts = data.timestamp ? new Date(data.timestamp).toLocaleString() : '—';
+      const premiseRows = (Array.isArray(data.premises) ? data.premises : []).map(p => {
+        const grade = p.initial_grade === p.final_grade
+          ? p.final_grade
+          : `${p.initial_grade} → ${p.final_grade}`;
+        return `| ${p.id} | ${nullSafe(p.statement)} | ${p.status || ''} | ${grade} | ${nullSafe(p.evidence_summary)} |`;
+      }).join('\n');
+      const premiseTable = data.premises && data.premises.length > 0
+        ? `| # | Statement | Status | Grade | Evidence |\n|---|---|---|---|---|\n${premiseRows}`
+        : '_No premises._';
+
+      const md = [
+        `# Probe: ${nullSafe(data.idea, 'Probe')}`,
+        `Verdict: ${data.verdict || '—'}`,
+        `Date: ${ts}`,
+        data.domain ? `Domain: ${data.domain}` : '',
+        '',
+        '## Premises',
+        premiseTable,
+        '',
+        data.recommendation ? `## Recommendation\n\n${data.recommendation}` : '',
+      ].filter(l => l !== undefined).join('\n');
+
+      const slug = (data.idea || 'probe').toLowerCase().replace(/\s+/g, '-').slice(0, 40);
+      exportMarkdown(`probe-${slug}.md`, md);
+    });
+  }
 }
 
 function solverStateBadge(state) {
@@ -657,7 +989,7 @@ function renderSolversList() {
   `;
 
   const stopPolling = startPolling(async () => {
-    const res = await fetchJSON('/api/solver');
+    const res = await fetchJSON(apiUrl('/solver'));
     if (res.error) {
       app.innerHTML = `
         <div class="view-header"><h1>Solvers</h1></div>
@@ -715,7 +1047,7 @@ function renderSolverDetail(slug) {
   `;
 
   const stopPolling = startPolling(async () => {
-    const res = await fetchJSON(`/api/solver/${encodeURIComponent(slug)}`);
+    const res = await fetchJSON(apiUrl(`/solver/${encodeURIComponent(slug)}`));
     if (res.error) {
       app.innerHTML = `
         <div class="view-header"><h1>Solver: <code>${slug}</code></h1></div>
@@ -738,6 +1070,7 @@ function renderSolverDetail(slug) {
           ${solverPhaseBadge(m.current_phase)}
           <span class="text-muted" style="font-size:0.8rem">created ${timeAgo(m.created_at)}</span>
           ${m.closed_at ? `<span class="text-muted" style="font-size:0.8rem">· closed ${timeAgo(m.closed_at)}</span>` : ''}
+          <button id="btn-export-solver" style="margin-left:auto;font-size:0.75rem;padding:0.25rem 0.6rem;background:transparent;border:1px solid var(--border,#e5e7eb);border-radius:4px;cursor:pointer;color:var(--text-muted)">↓ EXPORT</button>
         </div>
       </div>
 
@@ -757,16 +1090,53 @@ function renderSolverDetail(slug) {
 
     if (phases.length > 0) {
       for (const p of phases) {
-        const { phase, ...data } = p;
+        const files = p.files || {};
+        let contentHtml = '';
+        for (const [fname, content] of Object.entries(files)) {
+          if (fname.endsWith('.md')) {
+            contentHtml += `<div style="margin-top:0.75rem"><strong style="font-size:0.8rem;color:var(--text-muted)">${fname}</strong><div class="markdown-body" style="margin-top:0.25rem">${renderMarkdown(content)}</div></div>`;
+          } else if (fname.endsWith('.json')) {
+            contentHtml += `<div style="margin-top:0.75rem"><strong style="font-size:0.8rem;color:var(--text-muted)">${fname}</strong>${renderJsonSmart(content)}</div>`;
+          } else {
+            contentHtml += `<div style="margin-top:0.75rem"><strong style="font-size:0.8rem;color:var(--text-muted)">${fname}</strong><pre style="margin:0.25rem 0 0;white-space:pre-wrap;font-size:0.8rem">${content}</pre></div>`;
+          }
+        }
         html += `
           <div class="card" style="margin-top:1rem">
-            <div style="font-weight:600;margin-bottom:0.5rem">${solverPhaseBadge(phase)} ${phase}</div>
-            <pre style="margin:0;white-space:pre-wrap;font-size:0.8rem;opacity:0.85">${JSON.stringify(data, null, 2)}</pre>
+            <div style="font-weight:600;margin-bottom:0.5rem">${solverPhaseBadge(p.phase)} ${p.phase}</div>
+            ${contentHtml || '<p class="text-muted">No data</p>'}
           </div>`;
       }
     }
 
     app.innerHTML = html;
+
+    // Export button handler
+    const exportBtn = document.getElementById('btn-export-solver');
+    if (exportBtn) {
+      exportBtn.addEventListener('click', () => {
+        const sections = phases.map(p => {
+          const fileContents = Object.entries(p.files || {}).map(([fname, content]) => {
+            const text = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
+            return `### ${fname}\n\n${text}`;
+          }).join('\n\n');
+          return `## Phase: ${p.phase}\n\n${fileContents || '_No data._'}`;
+        }).join('\n\n');
+
+        const md = [
+          `# Solver: ${m.display_name || m.name || slug}`,
+          `State: ${m.state || '—'}`,
+          m.strategy ? `Strategy: ${m.strategy}` : '',
+          `Phase: ${m.current_phase || '—'}`,
+          `Created: ${m.created_at || '—'}`,
+          m.closed_at ? `Closed: ${m.closed_at}` : '',
+          '',
+          sections || '_No phase data._',
+        ].filter(l => l !== undefined).join('\n');
+
+        exportMarkdown(`solver-${slug}.md`, md);
+      });
+    }
   });
 
   window.addEventListener('hashchange', stopPolling, { once: true });
@@ -780,7 +1150,7 @@ function renderConfig() {
   `;
 
   const stopPolling = startPolling(async () => {
-    const res = await fetchJSON('/api/config');
+    const res = await fetchJSON(apiUrl('/config'));
     if (res.error) {
       app.innerHTML = `
         <div class="view-header"><h1>Config</h1></div>
@@ -799,11 +1169,102 @@ function renderConfig() {
   window.addEventListener('hashchange', stopPolling, { once: true });
 }
 
+function renderTracesPlaceholder() {
+  document.getElementById('app').innerHTML = `
+    <div class="view-header"><h1>Traces</h1><p>.xm/traces/</p></div>
+    <div class="card" style="text-align:center;padding:3rem">
+      <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
+      <p class="text-muted">No trace data yet.</p>
+      <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/x-trace start</code> to begin recording agent execution.</p>
+    </div>
+  `;
+}
+
+function renderMemoryPlaceholder() {
+  document.getElementById('app').innerHTML = `
+    <div class="view-header"><h1>Memory</h1><p>.xm/memory/</p></div>
+    <div class="card" style="text-align:center;padding:3rem">
+      <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
+      <p class="text-muted">No memory data yet.</p>
+      <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/x-memory</code> to begin storing cross-session decisions.</p>
+    </div>
+  `;
+}
+
 function render404(hash) {
   document.getElementById('app').innerHTML = `
     <div class="view-header"><h1>Not Found</h1></div>
     <div class="card"><p class="text-muted">No route matched: <code>${hash}</code></p></div>
   `;
+}
+
+
+async function renderSearch(query) {
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="view-header"><h1>Search: <code>${query}</code></h1></div>
+    <div class="card"><p class="text-muted">Searching...</p></div>
+  `;
+
+  const res = await fetchJSON(apiUrl(`/search?q=${encodeURIComponent(query)}`));
+  if (res.error) {
+    app.innerHTML = `
+      <div class="view-header"><h1>Search: <code>${query}</code></h1></div>
+      <div class="card"><p class="text-muted">Error: ${res.message}</p></div>
+    `;
+    return;
+  }
+
+  const all = Array.isArray(res.data) ? res.data : [];
+
+  function highlight(text, q) {
+    if (!text || !q) return text || '';
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return text.replace(new RegExp(`(${escaped})`, 'gi'), '<mark>$1</mark>');
+  }
+
+  function groupBy(arr, key) {
+    return arr.reduce((acc, item) => {
+      (acc[item[key]] = acc[item[key]] || []).push(item);
+      return acc;
+    }, {});
+  }
+
+  if (all.length === 0) {
+    app.innerHTML = `
+      <div class="view-header"><h1>Search: <code>${query}</code></h1></div>
+      <div class="card"><p class="text-muted">No results found for "<strong>${query}</strong>".</p></div>
+    `;
+    return;
+  }
+
+  const groups = groupBy(all, 'type');
+  const ORDER = ['project', 'task', 'probe', 'solver', 'doc'];
+  const LABELS = { project: 'Projects', task: 'Tasks', probe: 'Probes', solver: 'Solvers', doc: 'Context Docs' };
+
+  let html = `<div class="view-header"><h1>Search: <code>${query}</code></h1><p class="text-muted">${all.length} result${all.length !== 1 ? 's' : ''}</p></div>`;
+
+  for (const type of ORDER) {
+    const items = groups[type];
+    if (!items || items.length === 0) continue;
+    const cards = items.map(item => {
+      const name = highlight(item.name || '\u2014', query);
+      const match = highlight(item.match || '', query);
+      const sub = item.project ? `<span class="text-muted" style="font-size:0.8rem"> \u00b7 ${item.project}</span>` : '';
+      return `
+        <div style="padding:0.75rem 0;border-bottom:1px solid var(--border, #333)">
+          <div><a href="${item.url}">${name}</a>${sub}</div>
+          ${match ? `<div class="text-muted" style="font-size:0.82rem;margin-top:0.25rem;font-family:var(--font-mono)">${match}</div>` : ''}
+        </div>`;
+    }).join('');
+    html += `
+      <div class="card" style="margin-top:1rem">
+        <h2 style="margin:0 0 0.5rem">${LABELS[type] || type} <span class="badge badge-gray">${items.length}</span></h2>
+        ${cards}
+      </div>`;
+  }
+
+  app.innerHTML = html;
 }
 
 // Router
@@ -817,11 +1278,15 @@ const ROUTES = [
   { pattern: /^\/solvers$/, handler: () => renderSolversList() },
   { pattern: /^\/solvers\/(.+)$/, handler: (m) => renderSolverDetail(m[1]) },
   { pattern: /^\/config$/, handler: () => renderConfig() },
+  { pattern: /^\/traces$/, handler: () => renderTracesPlaceholder() },
+  { pattern: /^\/memory$/, handler: () => renderMemoryPlaceholder() },
+  { pattern: /^\/search\/(.+)$/, handler: (m) => renderSearch(decodeURIComponent(m[1])) },
 ];
 
 function getPath() {
   const hash = window.location.hash;
-  return hash.startsWith('#') ? hash.slice(1) || '/' : '/';
+  const raw = hash.startsWith('#') ? hash.slice(1) || '/' : '/';
+  try { return decodeURIComponent(raw); } catch { return raw; }
 }
 
 function updateActiveNav(path) {
@@ -848,4 +1313,53 @@ function route() {
 }
 
 window.addEventListener('hashchange', route);
-route();
+
+// Set sidebar brand to current project name
+fetchJSON('/api/health').then(h => {
+  if (h && !h.error && h.project) {
+    const brand = document.querySelector('.nav-brand');
+    if (brand) brand.textContent = h.project;
+  }
+});
+
+// Inject search input into sidebar
+(function() {
+  const nav = document.getElementById('nav');
+  if (!nav) return;
+  const searchDiv = document.createElement('div');
+  searchDiv.style.cssText = 'padding:8px 14px;border-bottom:2px solid #333';
+  searchDiv.innerHTML = '<input type="text" id="search-input" placeholder="Search .xm..." style="width:100%;background:#1a1a1a;border:2px solid #444;color:var(--text);padding:6px 10px;font-family:var(--font-mono);font-size:11px;box-sizing:border-box">';
+  const navLinks = nav.querySelector('.nav-links');
+  if (navLinks) {
+    nav.insertBefore(searchDiv, navLinks);
+  } else {
+    nav.appendChild(searchDiv);
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.target && e.target.id === 'search-input' && e.key === 'Enter') {
+      const q = e.target.value.trim();
+      if (q) window.location.hash = '#/search/' + encodeURIComponent(q);
+    }
+  });
+})();
+
+// Theme toggle
+(function initTheme() {
+  const saved = localStorage.getItem('xm-theme');
+  if (saved === 'light') document.body.classList.add('theme-light');
+
+  const nav = document.getElementById('nav');
+  if (!nav) return;
+  const btn = document.createElement('div');
+  btn.style.cssText = 'padding:12px 14px;border-top:2px solid #333;margin-top:auto;cursor:pointer;font-size:11px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);user-select:none';
+  btn.textContent = document.body.classList.contains('theme-light') ? '● DARK' : '◐ LIGHT';
+  btn.addEventListener('click', () => {
+    document.body.classList.toggle('theme-light');
+    const isLight = document.body.classList.contains('theme-light');
+    localStorage.setItem('xm-theme', isLight ? 'light' : 'dark');
+    btn.textContent = isLight ? '● DARK' : '◐ LIGHT';
+  });
+  nav.appendChild(btn);
+})();
+
+initWorkspaces().then(() => route());

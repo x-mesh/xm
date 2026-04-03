@@ -28,6 +28,22 @@ Stateful — persists problem state to `.xm/solver/` for cross-session continuit
 
 User provided: $ARGUMENTS
 
+## Interaction Protocol
+
+**CRITICAL: x-solver phase transitions MUST use AskUserQuestion for user confirmation.**
+
+Rules:
+1. **AskUserQuestion is REQUIRED** — after each phase completes, call AskUserQuestion before proceeding. Text-only questions do NOT create turn boundaries.
+2. **classify → strategy selection**: MUST use AskUserQuestion to confirm recommended strategy.
+3. **solve phase completion**: MUST use AskUserQuestion before proceeding to verify.
+4. **verify results**: MUST use AskUserQuestion to confirm before close.
+
+Anti-patterns:
+- ❌ Run classify, show result, immediately start solve
+- ✅ Run classify, show result, AskUserQuestion("전략 {X}를 추천합니다. 진행할까요?")
+
+---
+
 ## Mode Detection
 
 Check mode before every command:
@@ -182,10 +198,11 @@ Parse the agent result:
 - If `Strategy` is an x-solver strategy → `$XMS strategy set <chosen>`
 - If `x-op Alternative` exists → Suggest the x-op strategy to the user as well
 
-4. AskUserQuestion for final strategy selection:
+4. **AskUserQuestion (REQUIRED)** for final strategy selection:
    - Recommended strategy (rule-based or LLM)
    - x-op alternative (if any)
    - Alternative strategies
+   - Example: AskUserQuestion("전략 **{strategy}**를 추천합니다 (신뢰도 {confidence}%). 진행할까요? 다른 전략을 선택하려면 알려주세요.")
 5. After selection: `$XMS strategy set <chosen>`
 
 ### Enhanced Signal Detection
@@ -292,6 +309,9 @@ Output in JSON format:
 ```
 
 Use the result to call `$XMS tree add "description" --difficulty medium`.
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("문제를 {N}개의 하위 문제로 분해했습니다. 탐색(explore) 단계로 진행할까요?")
+
 Advance: `$XMS solve-advance --phase explore`
 
 #### Phase: explore
@@ -314,6 +334,9 @@ Requirements:
 ```
 
 Use the result to call `$XMS candidates add "description" --source agent-N --sub-problem spN`.
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("각 하위 문제에 대한 후보 솔루션을 생성했습니다. 평가(evaluate) 단계로 진행할까요?")
+
 Advance: `$XMS solve-advance --phase evaluate`
 
 #### Phase: evaluate
@@ -336,6 +359,9 @@ Score each candidate 0-10 against each constraint. Include justification per sco
 ```
 
 Use the result to call `$XMS candidates score <id> --constraint c1 --score 8`.
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("후보 평가가 완료됐습니다. 통합(synthesize) 단계로 진행할까요?")
+
 Advance: `$XMS solve-advance --phase synthesize`
 
 #### Phase: synthesize
@@ -444,7 +470,10 @@ $XMS solve-advance --phase hypothesize
 > - [ ] delegate agent 호출 완료
 > - [ ] Current State / Baseline / Delta 정보 수집 완료
 > - [ ] (Delta = unknown 또는 multiple layers인 경우) Fishbone 분석 완료
+> - [ ] AskUserQuestion 호출 완료
 > - [ ] `$XMS solve-advance --phase hypothesize` 호출 완료
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("진단(diagnose) 완료: {current_state_summary}. 가설 생성(hypothesize) 단계로 진행할까요?")
 
 #### Phase: hypothesize
 
@@ -482,7 +511,10 @@ $XMS solve-advance --phase test
 > 체크리스트:
 > - [ ] delegate agent 호출 완료
 > - [ ] `$XMS hypotheses add` 호출 완료 (가설 수만큼)
+> - [ ] AskUserQuestion 호출 완료
 > - [ ] `$XMS solve-advance --phase test` 호출 완료
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("{N}개의 가설을 생성했습니다. 검증(test) 단계로 진행할까요?")
 
 #### Phase: test
 
@@ -523,7 +555,10 @@ $XMS solve-advance --phase refine
 > 체크리스트:
 > - [ ] 가설 수만큼 agent fan-out 완료 (직접 검증 금지)
 > - [ ] `$XMS hypotheses update` 호출 완료 (가설 수만큼)
+> - [ ] AskUserQuestion 호출 완료
 > - [ ] `$XMS solve-advance --phase refine` 호출 완료
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("가설 검증 완료: {confirmed_count}개 확인, {refuted_count}개 반박. 정제(refine) 단계로 진행할까요?")
 
 #### Phase: refine
 
@@ -545,7 +580,10 @@ $XMS solve-advance --phase hypothesize # all refuted 시
 
 > 체크리스트:
 > - [ ] 가설 상태 확인 완료
+> - [ ] AskUserQuestion 호출 완료
 > - [ ] `$XMS solve-advance` 호출 완료 (resolve 또는 hypothesize)
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("정제 결과: {refine_decision}. {'해결(resolve) 단계로 진행할까요?' if confirmed else '다시 가설 생성(hypothesize)으로 돌아갈까요?'}")
 
 #### Phase: resolve
 
@@ -615,6 +653,9 @@ Classify any additional constraints found as:
 ```
 
 Use the result to call `$XMS constraints add "description" --type hard|soft|preference`.
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("제약 조건 추출 완료: hard {hard_count}개, soft {soft_count}개. 후보 생성(generate) 단계로 진행할까요?")
+
 Advance: `$XMS solve-advance --phase generate`
 
 #### Phase: generate
@@ -637,6 +678,9 @@ Soft constraints: {soft_constraints}
 ```
 
 Use the result to call `$XMS candidates add "description" --source agent-N`.
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("{N}개의 후보 솔루션을 생성했습니다. 평가(evaluate) 단계로 진행할까요?")
+
 Advance: `$XMS solve-advance --phase evaluate`
 
 #### Phase: evaluate
@@ -675,6 +719,8 @@ Situational recommendation: {context에 따라 어떤 상황에서 어떤 후보
 ```
 
 This makes tradeoffs visible at a glance before selection.
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("후보 평가가 완료됐습니다. 위의 Contrastive Matrix를 검토하고 최종 선택(select) 단계로 진행할까요?")
 
 Advance: `$XMS solve-advance --phase select`
 
@@ -734,8 +780,9 @@ Retry with an alternative strategy on failure.
      - If a constraint cannot be verified by execution (e.g., "maintainable code"), state explicitly that it requires human judgment
      ```
 4. Show results to the user with execution evidence
-5. On pass: `$XMS phase next` → recommend close. Suggest committing (save known-good state).
-6. On fail: show which constraints are unmet with the failing output, recommend returning to solve
+5. **AskUserQuestion (REQUIRED):** On pass: AskUserQuestion("검증 통과: {constraints_passed}개 제약 조건 모두 충족됐습니다. 문제를 종료(close)할까요?")
+6. On pass (confirmed): `$XMS phase next` → run close. Suggest committing (save known-good state).
+7. On fail: show which constraints are unmet with the failing output; AskUserQuestion("검증 실패: {failed_constraints}. solve 단계로 돌아갈까요?")
 
 ## Command: next
 

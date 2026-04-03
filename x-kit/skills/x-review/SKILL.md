@@ -1023,4 +1023,18 @@ Condition: Auto-suggested when Critical/High is found 2+ times at the same file/
 | "Check security only" | `diff --lenses "security"` |
 | "Show critical ones only" | `diff --severity high` |
 | "GitHub comment format" | `diff --format github-comment` |
+
+## Interaction Protocol
+
+**CRITICAL: x-review MUST use AskUserQuestion at key decision points.**
+
+Rules:
+1. Before starting review → AskUserQuestion to confirm target (file/PR/diff) and lens selection
+2. After showing review results → AskUserQuestion for verdict confirmation (LGTM or request changes)
+3. For multi-lens review → show each lens result, then AskUserQuestion before final synthesis
+
+Anti-patterns:
+- ❌ Auto-detect diff and immediately start reviewing
+- ❌ Show findings and declare LGTM without user confirmation
+- ✅ Show target + selected lenses, AskUserQuestion("이 설정으로 리뷰를 시작할까요?")
 | "Usage" | `list` |

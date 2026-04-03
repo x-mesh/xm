@@ -1076,4 +1076,17 @@ Final: <weighted_avg>/10"
 | code-quality | correctness (0.30), readability (0.20), maintainability (0.20), security (0.20), test-coverage (0.10) |
 | review-quality | coverage (0.30), actionability (0.30), severity-accuracy (0.25), false-positive-rate (0.15) |
 | plan-quality | completeness (0.30), actionability (0.30), scope-fit (0.20), risk-coverage (0.20) |
+
+## Interaction Protocol
+
+**CRITICAL: x-eval MUST use AskUserQuestion before executing evaluations and after showing results.**
+
+Rules:
+1. Before running evaluation judges → AskUserQuestion to confirm rubric and target
+2. After showing evaluation results → AskUserQuestion to confirm next action (re-run, accept, adjust)
+3. For A/B experiments → AskUserQuestion to confirm both variants before running
+
+Anti-patterns:
+- ❌ Auto-run evaluation without confirming what to evaluate
+- ✅ Show rubric + target, AskUserQuestion("이 설정으로 평가를 실행할까요?")
 | general | accuracy (0.25), completeness (0.25), consistency (0.20), clarity (0.20), hallucination-risk (0.10) |

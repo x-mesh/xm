@@ -11,36 +11,47 @@ bun x-dashboard/lib/x-dashboard-server.mjs
 
 ## Usage
 
-### Standalone (default)
+### A. Claude Code 안에서 (스킬)
 
-Runs until manually stopped. No idle timeout.
-
-```bash
-bun x-dashboard/lib/x-dashboard-server.mjs
-bun x-dashboard/lib/x-dashboard-server.mjs --port 8080
+```
+/x-kit:x-dashboard              # 대시보드 시작 (세션 모드, 60분 idle 자동 종료)
+/x-kit:x-dashboard stop         # 대시보드 중지
+/x-kit:x-dashboard status       # 상태 확인
+/x-kit:x-dashboard open         # 브라우저에서 열기
 ```
 
-### Stop
+세션 모드로 실행되며, Claude Code 세션이 끝나거나 60분간 요청이 없으면 자동 종료됩니다.
+
+### B. 터미널 CLI에서 (직접 실행)
+
+**시작:**
 
 ```bash
-bun x-dashboard/lib/x-dashboard-server.mjs --stop
+bun x-dashboard/lib/x-dashboard-server.mjs              # 독립 실행 (수동 종료 전까지 유지)
+bun x-dashboard/lib/x-dashboard-server.mjs --port 8080   # 커스텀 포트
+bun x-dashboard/lib/x-dashboard-server.mjs --session     # 세션 모드 (60분 idle 자동 종료)
 ```
 
-### Session mode
-
-Exits automatically after 60 minutes of idle (no incoming requests).
+**중지:**
 
 ```bash
-bun x-dashboard/lib/x-dashboard-server.mjs --session
+bun x-dashboard/lib/x-dashboard-server.mjs --stop        # PID 파일로 실행 중인 인스턴스 종료
+# 또는 Ctrl+C (포그라운드 실행 시)
+```
+
+**상태 확인:**
+
+```bash
+curl http://127.0.0.1:19841/health
 ```
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--port N` | `19841` | Port to listen on |
-| `--stop` | — | Stop a running instance |
-| `--session` | — | Enable 60 min idle timeout |
+| `--port N` | `19841` | 포트 지정 |
+| `--stop` | — | 실행 중인 인스턴스 종료 |
+| `--session` | — | 60분 idle 자동 종료 모드 |
 
 ## API Endpoints
 
@@ -59,6 +70,7 @@ bun x-dashboard/lib/x-dashboard-server.mjs --session
 | `GET` | `/api/solver` | List all solver problem manifests |
 | `GET` | `/api/solver/:slug` | Single solver problem: manifest + phases |
 | `GET` | `/api/metrics/sessions` | Session metrics from `.xm/build/metrics/sessions.jsonl`. Query: `?limit=50&offset=0` |
+| `GET` | `/api/search?q=keyword` | Cross-data search: projects, tasks, probes, solvers, context docs |
 
 Static files under `public/` are served at their URL path. `/` resolves to `/index.html`.
 
