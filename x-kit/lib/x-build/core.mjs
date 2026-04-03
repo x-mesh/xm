@@ -655,10 +655,10 @@ export function scheduleRetry(project, task, data) {
 
 // ── Budget Guard ────────────────────────────────────────────────────
 
-export function checkBudget(project, additionalCost = 0) {
+export function checkBudget(additionalCost = 0) {
   const config = loadSharedConfig();
-  const budget = config.budget?.max_usd;
-  if (!budget) return { ok: true, budget: null };
+  const budget = Number(config.budget?.max_usd);
+  if (!budget || isNaN(budget)) return { ok: true, budget: null };
 
   const mp = metricsPath();
   let spent = 0;
@@ -668,7 +668,7 @@ export function checkBudget(project, additionalCost = 0) {
       for (const line of lines) {
         try {
           const m = JSON.parse(line);
-          if (m.cost_usd) spent += m.cost_usd;
+          if (typeof m.cost_usd === 'number') spent += m.cost_usd;
         } catch { /* skip malformed */ }
       }
     } catch { /* ignore read errors */ }
@@ -816,6 +816,29 @@ export const SIZE_TOKEN_ESTIMATES = {
   large:  { input: 30000, output: 12000, turns: 12 },
 };
 
+// Strategy-aware cost multipliers for estimateTaskCost.
+// Values reflect average token overhead relative to a single-agent baseline.
+export const STRATEGY_MULTIPLIERS = {
+  escalate: 0.4,     // starts haiku; average across 3 levels ≈ 40% of opus-only
+  decompose: 1.2,    // splits into smaller parallel tasks
+  distribute: 1.2,   // parallel independent subtasks
+  tournament: 1.3,   // elimination reduces total work
+  chain: 1.3,        // sequential A→B→C pipeline
+  brainstorm: 1.3,   // free ideation + clustering
+  hypothesis: 1.4,   // generate + falsify rounds
+  persona: 1.4,      // multi-persona analysis
+  scaffold: 1.4,     // design + dispatch + integrate
+  review: 1.5,       // multi-lens code review
+  investigate: 1.5,  // multi-angle + synthesis + gap analysis
+  monitor: 1.2,      // single OODA cycle
+  socratic: 1.5,     // question rounds
+  council: 1.6,      // cross-examination + deep dive + converge
+  debate: 1.6,       // opening + rebuttal + verdict
+  'red-team': 1.6,   // attack + defend + report
+  refine: 1.8,       // multiple refinement rounds
+  compose: 2.0,      // multi-strategy pipeline
+};
+
 export function estimateTaskCost(task, model = 'sonnet') {
   const size = task.size || 'medium';
   const base = SIZE_TOKEN_ESTIMATES[size] || SIZE_TOKEN_ESTIMATES.medium;
@@ -832,14 +855,6 @@ export function estimateTaskCost(task, model = 'sonnet') {
     /\b(migration|database)\b/.test(nameLower) ? 1.2 :
     1.0;
 
-  // Strategy-aware multipliers: escalate saves cost by starting cheap
-  const STRATEGY_MULTIPLIERS = {
-    escalate: 0.6,    // starts haiku, may never reach opus
-    decompose: 1.2,   // splits into smaller parallel tasks
-    refine: 1.8,      // multiple refinement rounds
-    tournament: 1.3,  // elimination reduces total work
-    review: 1.5,      // multi-lens overhead
-  };
   const strategyMultiplier = task.strategy
     ? (STRATEGY_MULTIPLIERS[task.strategy] || 1.5)
     : 1.0;
@@ -887,13 +902,22 @@ export const MODEL_PROFILES = {
   },
 };
 
-export function getModelForRole(role, size) {
-  const config = loadSharedConfig();
+export function getModelForRole(role, size, config) {
+  if (!config) config = loadSharedConfig();
   const profile = config.model_profile || 'balanced';
-  const map = MODEL_PROFILES[profile] || MODEL_PROFILES.balanced;
+  if (!MODEL_PROFILES[profile]) {
+    console.error(`⚠ Unknown model_profile "${profile}" — falling back to balanced`);
+  }
+  const baseMap = MODEL_PROFILES[profile] || MODEL_PROFILES.balanced;
+  const overrides = config.model_overrides || {};
+  const map = { ...baseMap, ...overrides };
+  if (!baseMap[role]) {
+    console.warn(`⚠ Unknown role "${role}" — falling back to executor model`);
+  }
   const model = map[role] || map.executor;
-  // Large tasks in economy profile still get at least sonnet
-  if (size === 'large' && model === 'haiku') return 'sonnet';
+  if (size === 'large' && model === 'haiku') {
+    console.warn(`  ⚠ ${role} uses haiku for large task — consider: /x-kit config set model_overrides '{"${role}": "sonnet"}'`);
+  }
   return model;
 }
 

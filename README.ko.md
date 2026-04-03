@@ -719,13 +719,37 @@ x-kit에는 코어와 도메인 영역을 아우르는 37개 전문가 에이전
 
 | 프로필 | architect | executor | explorer | 예상 절감 |
 |--------|-----------|----------|----------|-----------|
-| economy | sonnet | haiku | haiku | balanced 대비 ~60-70% |
+| economy | sonnet | haiku | haiku | balanced 대비 ~60-90% (대형 태스크는 경고 출력, 사용자 선택 존중) |
 | balanced | opus | sonnet | haiku | 기준선 |
-| performance | opus | opus | sonnet | balanced 대비 ~2-3배 |
+| performance | opus | opus | sonnet | balanced 대비 ~2-5배 (태스크 구성에 따라 다름) |
 
-`escalate` 전략 (`/x-op escalate "작업"`)은 haiku로 시작하여 필요할 때만 자동 에스컬레이션하므로, opus급 추론이 불필요한 작업에서 최대 80-85% 절감됩니다.
+주요 역할만 표시. 전체 매핑(reviewer, security, designer, debugger, writer 포함)은 소스의 `MODEL_PROFILES` 참조.
 
-예산 가드는 80% 사용 시 경고하고, 100%에서 차단하며 세션 메트릭으로 추적됩니다.
+역할별 오버라이드: `/x-kit config set model_overrides '{"architect": "opus"}'`로 프로필 위에 개별 설정 가능.
+
+`escalate` 전략 (`/x-op escalate "작업"`)은 haiku로 시작하여 필요할 때만 자동 에스컬레이션하므로, 평균 ~60% 절감, haiku에서 해결되는 태스크는 최대 ~90% 절감됩니다.
+
+예산 가드는 80% 사용 시 경고하고, 100%에서 실행을 차단하며 세션 메트릭으로 추적됩니다. 현재 예산은 글로벌(`max_usd`)만 지원하며, 페이즈별/모델별 예산은 향후 릴리즈에서 추가될 예정입니다.
+
+#### 비용 대비 품질 벤치마크
+
+동일한 코딩 태스크(`rateLimiter` — 슬라이딩 윈도우)를 세 모델로 실행한 결과:
+
+| 기준 | haiku (economy) | sonnet (balanced) | opus (performance) |
+|------|:-:|:-:|:-:|
+| 정확성 | ✅ 동작 | ✅ 동작 | ✅ 동작 |
+| 엣지케이스 (0, 음수) | 부분 | ✅ 완전 | ✅ 완전 |
+| 엣지케이스 (NaN, Infinity, 소수) | ✗ | ✗ | ✅ isFinite + floor |
+| 코드 품질 | 6/10 | 8/10 | 9/10 |
+| **예상 비용 (medium 태스크)** | **$0.07** | **$0.81** | **$4.05** |
+
+> **핵심:** haiku는 동작하는 코드를 만들지만 엣지케이스가 부족합니다. sonnet은 대부분의 작업에 프로덕션급입니다. opus는 50배 비용으로 방어적 견고함을 추가합니다. 리스크 허용도에 따라 선택하세요.
+
+| 프로필 | 10태스크 시뮬레이션 | vs balanced |
+|--------|-------------------|-------------|
+| economy | $6.94 | **-80%** |
+| balanced | $35.28 | 기준선 |
+| performance | $46.84 | +33% |
 
 ---
 

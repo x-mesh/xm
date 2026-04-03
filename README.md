@@ -719,13 +719,37 @@ Control model spending with **model profiles** and **budget guards**.
 
 | Profile | architect | executor | explorer | Estimated savings |
 |---------|-----------|----------|----------|-------------------|
-| economy | sonnet | haiku | haiku | ~60-70% vs balanced |
+| economy | sonnet | haiku | haiku | ~60-90% vs balanced (large tasks warn but respect your choice) |
 | balanced | opus | sonnet | haiku | baseline |
-| performance | opus | opus | sonnet | ~2-3x vs balanced |
+| performance | opus | opus | sonnet | ~2-5x vs balanced (depends on task mix) |
 
-The `escalate` strategy (`/x-op escalate "task"`) starts with haiku and auto-escalates only when needed, saving up to 80-85% on tasks that don't require opus-level reasoning.
+Key roles shown; full mapping includes reviewer, security, designer, debugger, writer. See `MODEL_PROFILES` in source.
 
-Budget guards warn at 80% usage and block at 100%, tracked via session metrics.
+Per-role overrides: `/x-kit config set model_overrides '{"architect": "opus"}'` on top of any profile.
+
+The `escalate` strategy (`/x-op escalate "task"`) starts with haiku and auto-escalates only when needed — ~60% savings on average, up to ~90% when tasks resolve at haiku tier.
+
+Budget guards warn at 80% usage and block execution at 100%, tracked via session metrics. Budget is currently global (`max_usd` only); per-phase and per-model budgets are planned for a future release.
+
+#### Cost vs Quality Benchmark
+
+Same coding task (`rateLimiter` — sliding window) across three models:
+
+| Criterion | haiku (economy) | sonnet (balanced) | opus (performance) |
+|-----------|:-:|:-:|:-:|
+| Correctness | ✅ works | ✅ works | ✅ works |
+| Edge cases (0, negative) | partial | ✅ full | ✅ full |
+| Edge cases (NaN, Infinity, float) | ✗ | ✗ | ✅ isFinite + floor |
+| Code quality | 6/10 | 8/10 | 9/10 |
+| **Estimated cost (medium task)** | **$0.07** | **$0.81** | **$4.05** |
+
+> **Takeaway:** haiku produces working code but misses edge cases. sonnet is production-grade for most tasks. opus adds defensive robustness at 50x the cost. Choose based on your risk tolerance.
+
+| Profile | 10-task simulation | vs balanced |
+|---------|-------------------|-------------|
+| economy | $6.94 | **-80%** |
+| balanced | $35.28 | baseline |
+| performance | $46.84 | +33% |
 
 ---
 

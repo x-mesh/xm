@@ -7,7 +7,7 @@ import {
   readJSON, writeJSON, readMD, writeMD,
   manifestPath, tasksPath, stepsPath, contextDir, phaseDir, projectDir, decisionsPath, archiveDir,
   resolveProject,
-  loadConfig, parseOptions, fmtDuration, estimateTaskCost, getModelForRole,
+  loadConfig, loadSharedConfig, parseOptions, fmtDuration, estimateTaskCost, getModelForRole,
   existsSync, join, readFileSync, mkdirSync,
   getAgentCount, isNormalMode,
   templatesDir,
@@ -498,11 +498,12 @@ export function cmdForecast(args) {
   let totalInput = 0;
   let totalOutput = 0;
 
+  const sharedCfg = loadSharedConfig();
   for (const task of taskData.tasks) {
     if (task.status === TASK_STATES.COMPLETED || task.status === TASK_STATES.CANCELLED) continue;
 
     const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
-    const model = getModelForRole(role, task.size);
+    const model = getModelForRole(role, task.size, sharedCfg);
     const est = estimateTaskCost(task, model);
     totalCost += est.cost_usd;
     totalInput += est.input_tokens;

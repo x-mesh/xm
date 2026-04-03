@@ -198,24 +198,39 @@ x-kit manages shared settings at `.xm/config.json` that all tools (x-build, x-so
 
 | Command | Description |
 |---------|-------------|
-| `x-kit config show` | Show current shared settings |
+| `x-kit config` | Interactive config wizard |
+| `x-kit config show` | Show current settings (global + local + merged) |
 | `x-kit config set <key> <value>` | Change a setting |
 | `x-kit config get <key>` | Get a setting value |
+| `x-kit config reset` | Reset config to defaults |
+
+### Scope
+
+Default: **global** (`~/.xm/config.json`). Use `--local` to write to project (`.xm/config.json`).
+
+Exception: `budget` defaults to **local** (per-project budgets are more natural).
+
+| Flag | Writes to |
+|------|-----------|
+| (default) | `~/.xm/config.json` |
+| `--local` | `.xm/config.json` |
+| `--global` | `~/.xm/config.json` (explicit) |
 
 ### Settings
 
-| Key | Values | Default | Description |
-|-----|--------|---------|-------------|
-| `mode` | `developer`, `normal` | `developer` | Output style (technical terms vs plain language) |
-| `agent_max_count` | number (1-10) | `4` | Max parallel agent execution count |
-| `team_default_leader_model` | `opus`, `sonnet` | `opus` | Default model for Team Leader |
-| `team_max_members` | number (1-10) | `5` | Max members per team |
+| Key | Values | Default | Scope | Description |
+|-----|--------|---------|-------|-------------|
+| `mode` | `developer`, `normal` | `developer` | global | Output style |
+| `model_profile` | `economy`, `balanced`, `performance` | `balanced` | global | Role→model mapping |
+| `agent_max_count` | number (1-10) | `4` | global | Max parallel agents |
+| `budget.max_usd` | number or null | `null` | local | Session budget limit ($) |
+| `model_overrides` | `{"role": "model"}` | `{}` | global | Per-role model overrides on top of profile |
 
 ### Config Resolution
 
-Each tool reads settings in the following priority order:
-1. Tool-specific local config (`.xm/{tool}/config.json`)
-2. Shared config (`.xm/config.json`)
+Settings are resolved in priority order:
+1. Project-local (`.xm/config.json`)
+2. Global (`~/.xm/config.json`)
 3. Default values
 
 ## Agent Catalog

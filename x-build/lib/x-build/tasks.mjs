@@ -4,7 +4,7 @@
 
 import {
   PHASES, TASK_STATES, STATUS_ALIASES, C,
-  ROLE_MODEL_MAP_HR, getModelForRole, checkBudget, XM_GLOBAL, PLUGIN_ROOT, ROOT,
+  ROLE_MODEL_MAP_HR, getModelForRole, checkBudget, loadSharedConfig, XM_GLOBAL, PLUGIN_ROOT, ROOT,
   readJSON, writeJSON, modifyJSON, readMD,
   manifestPath, tasksPath, stepsPath, contextDir, phaseDir, decisionsPath, projectDir,
   resolveProject, logDecision, appendMetric, emitHook,
@@ -835,20 +835,22 @@ export function cmdRun(args) {
   // Human-readable output
   console.log(`\n${C.bold}🚀 Execution Plan — Step ${currentStep.id}/${stepData.steps.length}${C.reset}\n`);
 
+  const sharedCfg = loadSharedConfig();
   const cost = readyTasks.reduce((sum, t) => {
     const role = t.role || (t.size === 'large' ? 'deep-executor' : 'executor');
-    const model = getModelForRole(role, t.size);
+    const model = getModelForRole(role, t.size, sharedCfg);
     return sum + estimateTaskCost(t, model).cost_usd;
   }, 0);
   console.log(`  Tasks: ${readyTasks.length} (${readyTasks.length > 1 ? 'parallel' : 'sequential'})`);
   console.log(`  Estimated cost: ${C.yellow}$${cost.toFixed(3)}${C.reset}`);
 
   // Budget check before execution
-  const budgetStatus = checkBudget(project, cost);
+  const budgetStatus = checkBudget(cost);
   if (budgetStatus.budget) {
     if (budgetStatus.level === 'exceeded') {
       console.log(`  ${C.red}Budget exceeded: $${budgetStatus.projected.toFixed(2)} / $${budgetStatus.budget} (${budgetStatus.pct.toFixed(0)}%)${C.reset}`);
-      console.log(`  ${C.red}Set higher budget with: /x-kit config set budget '{"max_usd": N}'${C.reset}`);
+      console.log(`  ${C.red}Set higher budget with: /x-kit config set budget '{"max_usd": N}'${C.reset}\n`);
+      return;
     } else if (budgetStatus.level === 'warning') {
       console.log(`  ${C.yellow}Budget warning: $${budgetStatus.projected.toFixed(2)} / $${budgetStatus.budget} (${budgetStatus.pct.toFixed(0)}%)${C.reset}`);
     }
@@ -857,7 +859,7 @@ export function cmdRun(args) {
 
   for (const task of readyTasks) {
     const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
-    const model = getModelForRole(role, task.size);
+    const model = getModelForRole(role, task.size, sharedCfg);
     const strategyTag = task.strategy ? ` ${C.yellow}[${task.strategy}]${C.reset}` : '';
     const teamTag = task.team ? ` ${C.cyan}[team:${task.team}]${C.reset}` : '';
     console.log(`  🔹 ${C.bold}${task.id}${C.reset}: ${task.name} → ${C.cyan}${role} (${model})${C.reset}${strategyTag}${teamTag}`);

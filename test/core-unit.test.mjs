@@ -627,11 +627,18 @@ describe('getModelForRole', () => {
     expect(model).toBeDefined();
   });
 
-  test('large size prevents haiku assignment', () => {
-    // Even in economy mode, large tasks should get at least sonnet
-    // This tests the safety floor logic
-    const model = core.getModelForRole('executor', 'large');
-    expect(model).not.toBe('haiku');
+  test('economy + large returns haiku with warning (no forced upgrade)', () => {
+    const economyCfg = { model_profile: 'economy' };
+    const model = core.getModelForRole('executor', 'large', economyCfg);
+    // Economy respects user choice — haiku stays, warning emitted
+    expect(model).toBe('haiku');
+  });
+
+  test('model_overrides apply on top of profile', () => {
+    const cfg = { model_profile: 'economy', model_overrides: { architect: 'opus' } };
+    expect(core.getModelForRole('architect', 'medium', cfg)).toBe('opus');
+    // Non-overridden role still uses economy
+    expect(core.getModelForRole('executor', 'medium', cfg)).toBe('haiku');
   });
 });
 
@@ -661,7 +668,7 @@ describe('strategy cost multipliers', () => {
 
 describe('checkBudget', () => {
   test('returns ok when no budget set', () => {
-    const result = core.checkBudget('nonexistent-project', 1.0);
+    const result = core.checkBudget(1.0);
     expect(result.ok).toBe(true);
     expect(result.budget).toBeNull();
   });
