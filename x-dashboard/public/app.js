@@ -2,6 +2,34 @@
 let currentWsId = null;
 let multiRootMode = false;
 
+// Poll sequence counter — incremented on every route change to discard stale responses
+let _pollSequence = 0;
+
+// Smart DOM update: replaces #app innerHTML while preserving scroll and focus
+function updateApp(html) {
+  const app = document.getElementById('app');
+  const content = document.querySelector('.content');
+  const scrollTop = content ? content.scrollTop : 0;
+
+  const focused = document.activeElement;
+  const focusId = focused?.id;
+  const focusValue = focused?.value;
+  const focusSelStart = focused?.selectionStart;
+
+  app.innerHTML = html;
+
+  if (content) content.scrollTop = scrollTop;
+
+  if (focusId) {
+    const el = document.getElementById(focusId);
+    if (el) {
+      el.focus();
+      if (focusValue !== undefined) el.value = focusValue;
+      if (focusSelStart !== undefined) el.selectionStart = el.selectionEnd = focusSelStart;
+    }
+  }
+}
+
 function apiUrl(path) {
   const p = path.startsWith('/') ? path : '/' + path;
   if (multiRootMode && currentWsId) {
@@ -28,11 +56,12 @@ async function initWorkspaces() {
   if (!nav) return;
   const selector = document.createElement('div');
   selector.id = 'ws-selector';
-  selector.style.cssText = 'padding:8px 14px;border-bottom:2px solid #333';
   selector.innerHTML = `
-    <select id="ws-select" style="width:100%;background:var(--surface);border:2px solid #444;color:var(--accent);padding:6px 10px;font-family:var(--font-mono);font-size:11px;text-transform:uppercase">
-      ${workspaces.map(w => `<option value="${w.id}">${w.name} (${w.stats?.projects ?? 0})</option>`).join('')}
+    <div class="ws-selector-label">Workspace</div>
+    <select id="ws-select" aria-label="Select workspace">
+      ${workspaces.map(w => `<option value="${w.id}">${w.name} (${w.stats?.projects ?? 0} builds)</option>`).join('')}
     </select>
+    <div id="ws-current-name" class="ws-current-name">${workspaces[0].name}</div>
   `;
 
   const navLinks = nav.querySelector('.nav-links');
@@ -40,6 +69,9 @@ async function initWorkspaces() {
 
   document.getElementById('ws-select').addEventListener('change', (e) => {
     currentWsId = e.target.value;
+    const selected = workspaces.find(w => w.id === currentWsId);
+    const nameEl = document.getElementById('ws-current-name');
+    if (nameEl && selected) nameEl.textContent = selected.name;
     route();
   });
 }
@@ -243,31 +275,37 @@ async function renderAggregateHome() {
     totalSolvers  += w.stats?.solvers  ?? 0;
   }
 
-  const cards = workspaces.map(w => `
-    <div class="card ws-card" data-wsid="${w.id}" style="cursor:pointer;flex:1 1 200px;min-width:180px">
-      <div style="font-size:1.1em;font-weight:700;margin-bottom:0.25rem">${w.name}</div>
-      <div class="text-muted" style="font-size:0.78em;font-family:var(--font-mono);margin-bottom:0.75rem;word-break:break-all">${w.path ?? ''}</div>
+  const wsColors = ['#FFAB40', '#40c4ff', '#b388ff', '#69f0ae', '#ff5252', '#80cbc4'];
+  const cards = workspaces.map((w, idx) => {
+    const color = wsColors[idx % wsColors.length];
+    const lastActivity = w.stats?.last_updated_at ?? w.updated_at ?? null;
+    return `
+    <div class="card ws-card" data-wsid="${w.id}" style="cursor:pointer;flex:1 1 200px;min-width:180px;border-left:4px solid ${color}">
+      <div style="font-size:1.1em;font-weight:700;margin-bottom:0.25rem;color:${color}">${w.name}</div>
+      <div class="text-muted" style="font-size:0.75em;font-family:var(--font-mono);margin-bottom:0.5rem;word-break:break-all">${w.path ?? ''}</div>
+      ${lastActivity ? `<div class="text-muted" style="font-size:0.75em;margin-bottom:0.5rem">Last activity: ${timeAgo(lastActivity)}</div>` : ''}
       <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
         <span class="badge badge-blue">${w.stats?.projects ?? 0} builds</span>
         <span class="badge badge-indigo">${w.stats?.probes ?? 0} probes</span>
         <span class="badge badge-amber">${w.stats?.solvers ?? 0} solvers</span>
       </div>
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   app.innerHTML = `
     <div class="view-header"><h1>Workspaces</h1></div>
     <div style="display:flex;flex-wrap:wrap;gap:1rem;margin-bottom:1rem">${cards}</div>
     <div class="stat-bar">
-      <div class="card stat-card">
+      <div class="card stat-card" aria-label="${totalProjects} total builds">
         <div class="stat-value">${totalProjects}</div>
         <div class="stat-label">Total Builds</div>
       </div>
-      <div class="card stat-card">
+      <div class="card stat-card" aria-label="${totalProbes} total probes">
         <div class="stat-value">${totalProbes}</div>
         <div class="stat-label">Total Probes</div>
       </div>
-      <div class="card stat-card">
+      <div class="card stat-card" aria-label="${totalSolvers} total solvers">
         <div class="stat-value">${totalSolvers}</div>
         <div class="stat-label">Total Solvers</div>
       </div>
@@ -294,12 +332,14 @@ async function renderHome() {
   `;
 
   const stopPolling = startPolling(async () => {
+    const seq = _pollSequence;
     const [projectsRes, solverRes, probeRes, healthRes] = await Promise.all([
       fetchJSON(apiUrl('/projects')),
       fetchJSON(apiUrl('/solver')),
       fetchJSON(apiUrl('/probe/latest')),
       fetchJSON('/api/health'),
     ]);
+    if (seq !== _pollSequence) return;
 
     const projects = Array.isArray(projectsRes.data) ? projectsRes.data : [];
     const solvers  = Array.isArray(solverRes.data)   ? solverRes.data   : [];
@@ -327,7 +367,7 @@ async function renderHome() {
     const projectName = healthRes?.project ?? 'unknown';
     const cwdPath = healthRes?.cwd ?? '';
 
-    app.innerHTML = `
+    updateApp(`
       <div class="view-header">
         <h1>${projectName}</h1>
         <p style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted)">${cwdPath}/.xm/</p>
@@ -388,7 +428,7 @@ async function renderHome() {
           </li>`).join('')}
         </ul>`}
       </div>
-    `;
+    `);
 
     // Session metrics bar chart (async, non-blocking)
     fetchJSON(apiUrl('/metrics/sessions?limit=50')).then(sessionsRes => {
@@ -503,21 +543,23 @@ function renderProjectsList() {
   `;
 
   const stopPolling = startPolling(async () => {
+    const seq = _pollSequence;
     const result = await fetchJSON(apiUrl('/projects'));
+    if (seq !== _pollSequence) return;
     if (result.error) {
-      app.innerHTML = `
+      updateApp(`
         <div class="view-header"><h1>Builds</h1><p>.xm/build/projects/</p></div>
         <div class="card"><p class="text-muted">Error: ${result.message}</p></div>
-      `;
+      `);
       return;
     }
 
     const projects = result.data || [];
     if (projects.length === 0) {
-      app.innerHTML = `
+      updateApp(`
         <div class="view-header"><h1>Builds</h1><p>.xm/build/projects/</p></div>
         <div class="card"><p class="text-muted">No projects found.</p></div>
-      `;
+      `);
       return;
     }
 
@@ -530,7 +572,7 @@ function renderProjectsList() {
       </tr>
     `).join('');
 
-    app.innerHTML = `
+    updateApp(`
       <div class="view-header"><h1>Builds</h1><p>.xm/build/projects/</p></div>
       <div class="card" style="padding:0">
         <table class="table">
@@ -545,7 +587,7 @@ function renderProjectsList() {
           <tbody>${rows}</tbody>
         </table>
       </div>
-    `;
+    `);
   });
 
   window.addEventListener('hashchange', stopPolling, { once: true });
@@ -573,10 +615,15 @@ const _activeTabState = {};
 function switchTab(tabId, idx, btn) {
   _activeTabState[tabId] = idx;
   const card = btn.closest('.card');
-  card.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('tab-active'));
+  card.querySelectorAll('.tab-btn').forEach((b) => {
+    b.classList.remove('tab-active');
+    b.setAttribute('aria-selected', 'false');
+  });
   btn.classList.add('tab-active');
+  btn.setAttribute('aria-selected', 'true');
   card.querySelectorAll('.tab-panel').forEach((p, i) => {
     p.style.display = i === idx ? '' : 'none';
+    p.setAttribute('role', 'tabpanel');
   });
 }
 function restoreTab(tabId) {
@@ -598,16 +645,18 @@ function renderProjectDetail(slug) {
   `;
 
   const stopPolling = startPolling(async () => {
+    const seq = _pollSequence;
     const [projectResult, tasksResult] = await Promise.all([
       fetchJSON(apiUrl(`/projects/${slug}`)),
       fetchJSON(apiUrl(`/projects/${slug}/tasks`)),
     ]);
+    if (seq !== _pollSequence) return;
 
     if (projectResult.error) {
-      app.innerHTML = `
+      updateApp(`
         <div class="view-header"><h1>Project: <code>${slug}</code></h1></div>
         <div class="card"><p class="text-muted">Error: ${projectResult.message}</p></div>
-      `;
+      `);
       return;
     }
 
@@ -680,7 +729,7 @@ function renderProjectDetail(slug) {
       const tabId = 'ctx-tab';
       const savedIdx = _activeTabState[tabId] ?? 0;
       const tabs = docs.map((d, i) => `
-        <button class="tab-btn${i === savedIdx ? ' tab-active' : ''}" onclick="switchTab('${tabId}', ${i}, this)">${d.name}</button>
+        <button class="tab-btn${i === savedIdx ? ' tab-active' : ''}" role="tab" aria-selected="${i === savedIdx ? 'true' : 'false'}" onclick="switchTab('${tabId}', ${i}, this)">${d.name}</button>
       `).join('');
       const panels = docs.map((d, i) => `
         <div class="tab-panel" id="${tabId}-panel-${i}" style="${i === savedIdx ? '' : 'display:none'}">
@@ -690,7 +739,7 @@ function renderProjectDetail(slug) {
       html += `
         <div class="card" id="${tabId}">
           <h2 style="margin:0 0 .75rem">Context Docs</h2>
-          <div class="tab-bar">${tabs}</div>
+          <div class="tab-bar" role="tablist" aria-label="Context docs">${tabs}</div>
           ${panels}
         </div>
       `;
@@ -760,7 +809,7 @@ function renderProjectDetail(slug) {
       `;
     }
 
-    app.innerHTML = html;
+    updateApp(html);
 
     // Export button handler
     const exportBtn = document.getElementById('btn-export-project');
@@ -1303,18 +1352,20 @@ function renderSolversList() {
   `;
 
   const stopPolling = startPolling(async () => {
+    const seq = _pollSequence;
     const res = await fetchJSON(apiUrl('/solver'));
+    if (seq !== _pollSequence) return;
     if (res.error) {
-      app.innerHTML = `
+      updateApp(`
         <div class="view-header"><h1>Solvers</h1></div>
         <div class="card"><p class="text-muted">Error: ${res.message}</p></div>
-      `;
+      `);
       return;
     }
 
     const solvers = Array.isArray(res.data) ? res.data : [];
 
-    app.innerHTML = `
+    updateApp(`
       <div class="view-header">
         <h1>Solvers <span class="badge badge-neutral" style="font-size:0.85rem;vertical-align:middle">${solvers.length}</span></h1>
       </div>
@@ -1347,7 +1398,7 @@ function renderSolversList() {
           </tbody>
         </table>`}
       </div>
-    `;
+    `);
   });
 
   window.addEventListener('hashchange', stopPolling, { once: true });
@@ -1361,12 +1412,14 @@ function renderSolverDetail(slug) {
   `;
 
   const stopPolling = startPolling(async () => {
+    const seq = _pollSequence;
     const res = await fetchJSON(apiUrl(`/solver/${encodeURIComponent(slug)}`));
+    if (seq !== _pollSequence) return;
     if (res.error) {
-      app.innerHTML = `
+      updateApp(`
         <div class="view-header"><h1>Solver: <code>${slug}</code></h1></div>
         <div class="card"><p class="text-muted">Error: ${res.message || res.error}</p></div>
-      `;
+      `);
       return;
     }
 
@@ -1423,7 +1476,7 @@ function renderSolverDetail(slug) {
       }
     }
 
-    app.innerHTML = html;
+    updateApp(html);
 
     // Export button handler
     const exportBtn = document.getElementById('btn-export-solver');
@@ -1464,20 +1517,22 @@ function renderConfig() {
   `;
 
   const stopPolling = startPolling(async () => {
+    const seq = _pollSequence;
     const res = await fetchJSON(apiUrl('/config'));
+    if (seq !== _pollSequence) return;
     if (res.error) {
-      app.innerHTML = `
+      updateApp(`
         <div class="view-header"><h1>Config</h1></div>
         <div class="card"><p class="text-muted">Error: ${res.message ?? res.error}</p></div>
-      `;
+      `);
       return;
     }
-    app.innerHTML = `
+    updateApp(`
       <div class="view-header"><h1>Config</h1></div>
       <div class="card">
         <pre style="margin:0;overflow:auto;font-size:0.85em">${JSON.stringify(res, null, 2)}</pre>
       </div>
-    `;
+    `);
   });
 
   window.addEventListener('hashchange', stopPolling, { once: true });
@@ -1568,7 +1623,7 @@ async function renderTraceDetail(file) {
   const app = document.getElementById('app');
   const decodedFile = decodeURIComponent(file);
   app.innerHTML = `
-    <div class="breadcrumb"><a href="#/traces">Traces</a><span class="sep">/</span>${decodedFile}</div>
+    <div class="breadcrumb">${multiRootMode && currentWsId ? `<span class="text-accent" style="margin-right:4px">${currentWsId}</span><span class="sep">/</span>` : ''}<a href="#/traces">Traces</a><span class="sep">/</span>${decodedFile}</div>
     <div class="view-header"><h1>Trace: <code>${decodedFile}</code></h1></div>
     <div class="card"><p class="text-muted">Loading trace...</p></div>
   `;
@@ -1580,7 +1635,7 @@ async function renderTraceDetail(file) {
     const res = await fetchJSON(apiUrl(`/traces/${encodeURIComponent(decodedFile)}?limit=${limit}&offset=${currentOffset}`));
     if (res.error) {
       app.innerHTML = `
-        <div class="breadcrumb"><a href="#/traces">Traces</a><span class="sep">/</span>${decodedFile}</div>
+        <div class="breadcrumb">${multiRootMode && currentWsId ? `<span class="text-accent" style="margin-right:4px">${currentWsId}</span><span class="sep">/</span>` : ''}<a href="#/traces">Traces</a><span class="sep">/</span>${decodedFile}</div>
         <div class="view-header"><h1>Trace: <code>${decodedFile}</code></h1></div>
         <div class="card"><p class="text-muted">Error: ${res.message}</p></div>
       `;
@@ -1659,7 +1714,7 @@ async function renderTraceDetail(file) {
     const tokDisplay = (totalIn + totalOut) > 0 ? `${(totalIn + totalOut).toLocaleString()} tokens` : '';
 
     app.innerHTML = `
-      <div class="breadcrumb"><a href="#/traces">Traces</a><span class="sep">/</span>${decodedFile}</div>
+      <div class="breadcrumb">${multiRootMode && currentWsId ? `<span class="text-accent" style="margin-right:4px">${currentWsId}</span><span class="sep">/</span>` : ''}<a href="#/traces">Traces</a><span class="sep">/</span>${decodedFile}</div>
       <div class="view-header"><h1>Trace: <code>${decodedFile}</code></h1></div>
       <div class="stat-bar" style="margin-bottom:16px">
         <div class="card stat-card">
@@ -1959,10 +2014,16 @@ function updateActiveNav(path) {
     const route = a.getAttribute('data-route');
     const active = path === route || (route !== '/' && path.startsWith(route));
     a.classList.toggle('active', active);
+    if (active) {
+      a.setAttribute('aria-current', 'page');
+    } else {
+      a.removeAttribute('aria-current');
+    }
   });
 }
 
 function route() {
+  _pollSequence++;
   const path = getPath();
   updateActiveNav(path);
 
@@ -1993,7 +2054,7 @@ fetchJSON('/api/health').then(h => {
   if (!nav) return;
   const searchDiv = document.createElement('div');
   searchDiv.style.cssText = 'padding:8px 14px;border-bottom:2px solid #333';
-  searchDiv.innerHTML = '<input type="text" id="search-input" placeholder="Search .xm..." style="width:100%;background:#1a1a1a;border:2px solid #444;color:var(--text);padding:6px 10px;font-family:var(--font-mono);font-size:11px;box-sizing:border-box">';
+  searchDiv.innerHTML = '<input type="text" id="search-input" placeholder="Search .xm..." aria-label="Search workspace" style="width:100%;background:#1a1a1a;border:2px solid #444;color:var(--text);padding:6px 10px;font-family:var(--font-mono);font-size:11px;box-sizing:border-box">';
   const navLinks = nav.querySelector('.nav-links');
   if (navLinks) {
     nav.insertBefore(searchDiv, navLinks);
@@ -2015,14 +2076,17 @@ fetchJSON('/api/health').then(h => {
 
   const nav = document.getElementById('nav');
   if (!nav) return;
-  const btn = document.createElement('div');
-  btn.style.cssText = 'padding:12px 14px;border-top:2px solid #333;margin-top:auto;cursor:pointer;font-size:11px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);user-select:none';
+  const btn = document.createElement('button');
+  btn.role = 'button';
+  btn.setAttribute('aria-label', document.body.classList.contains('theme-light') ? 'Switch to dark theme' : 'Switch to light theme');
+  btn.style.cssText = 'padding:12px 14px;border:none;border-top:2px solid #333;margin-top:auto;cursor:pointer;font-size:11px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);user-select:none;background:transparent;width:100%;text-align:left';
   btn.textContent = document.body.classList.contains('theme-light') ? '● DARK' : '◐ LIGHT';
   btn.addEventListener('click', () => {
     document.body.classList.toggle('theme-light');
     const isLight = document.body.classList.contains('theme-light');
     localStorage.setItem('xm-theme', isLight ? 'light' : 'dark');
     btn.textContent = isLight ? '● DARK' : '◐ LIGHT';
+    btn.setAttribute('aria-label', isLight ? 'Switch to dark theme' : 'Switch to light theme');
   });
   nav.appendChild(btn);
 })();

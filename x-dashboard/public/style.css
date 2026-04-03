@@ -616,9 +616,66 @@ body.theme-light .breadcrumb { color: #888; }
 body.theme-light .view-header h1 { border-bottom-color: var(--accent); }
 body.theme-light #search-input { background: #fff; border-color: #ccc; color: #1a1a1a; }
 
+/* ── Skip link (accessibility) ── */
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--accent);
+  color: var(--bg);
+  padding: 8px 16px;
+  z-index: 9999;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  text-decoration: none;
+  border-bottom: none;
+}
+.skip-link:focus { top: 0; }
+
+/* ── Focus indicators ── */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* ── Workspace Switcher ── */
-#ws-select { cursor: pointer; }
-#ws-select:focus { outline: 2px solid var(--accent); }
+#ws-selector {
+  padding: 10px 14px;
+  border-bottom: 2px solid #333;
+  background: rgba(255, 171, 64, 0.04);
+}
+.ws-selector-label {
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+#ws-select {
+  width: 100%;
+  background: var(--surface);
+  border: 2px solid var(--accent-border);
+  color: var(--accent);
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+#ws-select:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ws-current-name {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .ws-card { cursor: pointer; transition: transform 0.1s; }
 .ws-card:hover { transform: translate(-1px, -1px); }
 
