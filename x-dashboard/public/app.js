@@ -50,7 +50,12 @@ async function initWorkspaces() {
   }
 
   multiRootMode = true;
-  currentWsId = workspaces[0].id;
+  const savedWs = localStorage.getItem('xm-workspace');
+  const savedValid = savedWs && workspaces.find(w => w.id === savedWs);
+  currentWsId = savedValid ? savedWs : workspaces[0].id;
+  localStorage.setItem('xm-workspace', currentWsId);
+
+  const currentWs = workspaces.find(w => w.id === currentWsId) || workspaces[0];
 
   const nav = document.getElementById('nav');
   if (!nav) return;
@@ -59,9 +64,9 @@ async function initWorkspaces() {
   selector.innerHTML = `
     <div class="ws-selector-label">Workspace</div>
     <select id="ws-select" aria-label="Select workspace">
-      ${workspaces.map(w => `<option value="${w.id}">${w.name} (${w.stats?.projects ?? 0} builds)</option>`).join('')}
+      ${workspaces.map(w => `<option value="${w.id}"${w.id === currentWsId ? ' selected' : ''}>${w.name} (${w.stats?.projects ?? 0} builds)</option>`).join('')}
     </select>
-    <div id="ws-current-name" class="ws-current-name">${workspaces[0].name}</div>
+    <div id="ws-current-name" class="ws-current-name">${currentWs.name}</div>
   `;
 
   const navLinks = nav.querySelector('.nav-links');
@@ -69,6 +74,7 @@ async function initWorkspaces() {
 
   document.getElementById('ws-select').addEventListener('change', (e) => {
     currentWsId = e.target.value;
+    localStorage.setItem('xm-workspace', currentWsId);
     const selected = workspaces.find(w => w.id === currentWsId);
     const nameEl = document.getElementById('ws-current-name');
     if (nameEl && selected) nameEl.textContent = selected.name;
@@ -315,6 +321,7 @@ async function renderAggregateHome() {
   app.querySelectorAll('.ws-card[data-wsid]').forEach(card => {
     card.addEventListener('click', () => {
       currentWsId = card.dataset.wsid;
+      localStorage.setItem('xm-workspace', currentWsId);
       const sel = document.getElementById('ws-select');
       if (sel) sel.value = currentWsId;
       window.location.hash = '#/projects';
@@ -565,7 +572,10 @@ function renderProjectsList() {
 
     const rows = projects.map((p) => `
       <tr>
-        <td><a href="#/projects/${p.name}">${nullSafe(p.display_name || p.name)}</a></td>
+        <td>
+          <a href="#/projects/${p.name}">${nullSafe(p.display_name || p.name)}</a>
+          ${p.goal ? `<div class="text-muted" style="font-size:11px;margin-top:2px">${p.goal}</div>` : ''}
+        </td>
         <td>${phaseBadge(p.current_phase)}</td>
         <td>${timeAgo(p.created_at)}</td>
         <td>${timeAgo(p.updated_at)}</td>
@@ -664,10 +674,20 @@ function renderProjectDetail(slug) {
     const name = nullSafe(manifest?.name, slug);
     const phase = nullSafe(manifest?.current_phase, '');
 
+    // Extract goal from context docs
+    const contextDocs = Array.isArray(context) ? context : [];
+    let goal = '';
+    const ctxDoc = contextDocs.find(d => d.name === 'CONTEXT.md' || d.name === 'brief.md');
+    if (ctxDoc) {
+      const goalMatch = ctxDoc.content.match(/^##\s*Goal\s*\n+(.+)/m);
+      if (goalMatch) goal = goalMatch[1].trim();
+    }
+
     // Header
     let html = `
       <div class="view-header">
         <h1>${name}</h1>
+        ${goal ? `<p style="margin:4px 0 0;font-size:13px">${goal}</p>` : ''}
         <div class="view-header-meta">
           ${phaseBadge(phase)}
           <span class="text-muted">Created: ${timeAgo(manifest?.created_at)}</span>

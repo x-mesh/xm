@@ -262,19 +262,33 @@ function handleConfig(xmRoot, req) {
   }
 }
 
+function extractGoal(projectDir) {
+  for (const file of ['context/CONTEXT.md', 'context/brief.md']) {
+    const fp = safeJoin(projectDir, file);
+    if (!fp || !existsSync(fp)) continue;
+    try {
+      const content = readFileSync(fp, 'utf8');
+      const m = content.match(/^##\s*Goal\s*\n+(.+)/m);
+      if (m) return m[1].trim().slice(0, 200);
+    } catch {}
+  }
+  return null;
+}
+
 function handleProjects(xmRoot, req) {
   const projectsDir = safeJoin(xmRoot, 'build', 'projects');
   if (!projectsDir || !existsSync(projectsDir)) return jsonResponseWithETag({ data: [] }, req);
   const manifests = [];
   for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    const manifestPath = safeJoin(projectsDir, entry.name, 'manifest.json');
+    const projectDir = safeJoin(projectsDir, entry.name);
+    const manifestPath = safeJoin(projectDir, 'manifest.json');
     if (!manifestPath || !existsSync(manifestPath)) continue;
     try {
-      manifests.push(JSON.parse(readFileSync(manifestPath, 'utf8')));
-    } catch {
-      // skip unparseable manifests
-    }
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      manifest.goal = extractGoal(projectDir);
+      manifests.push(manifest);
+    } catch {}
   }
   return jsonResponseWithETag({ data: manifests }, req);
 }

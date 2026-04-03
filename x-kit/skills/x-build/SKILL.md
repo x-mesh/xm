@@ -51,6 +51,12 @@ node ${CLAUDE_PLUGIN_ROOT}/lib/x-build-cli.mjs mode show 2>/dev/null | head -1
 - 명령어는 영어 유지하되 설명 추가: `steps compute` → "할 일의 실행 순서를 계산합니다"
 - 핵심 정보 먼저, 부가 설명은 뒤에
 
+**에이전트 위임 시 mode 전달 (MANDATORY):**
+모든 delegate/fan-out 프롬프트에 mode를 주입하세요. Normal mode일 때:
+- 프롬프트 첫 줄에 추가: `"언어: 한국어로 작성. 기술 용어는 원어 유지."`
+- PRD, CONTEXT.md, REQUIREMENTS.md 등 모든 산출물이 한국어로 생성
+- 섹션 제목은 영문 유지 (Goal, Success Criteria 등)
+
 ## CLI
 
 All commands via:
@@ -462,11 +468,16 @@ These principles apply to all plan-phase activities (PRD generation, task decomp
 
 #### PRD Generation (first step of Plan phase)
 
-Before task decomposition, the leader generates a PRD. Based on research artifacts (CONTEXT.md, REQUIREMENTS.md, ROADMAP.md):
+Before task decomposition, the leader generates a PRD. Based on research artifacts (CONTEXT.md, REQUIREMENTS.md, ROADMAP.md).
+
+**IMPORTANT: Check mode from `.xm/config.json` before generating.**
+- `developer` mode → Write PRD in English (technical terms, concise)
+- `normal` mode → Write PRD content in Korean (섹션 제목은 영문 유지, 내용은 한국어). Inject this instruction into the agent prompt: `"모든 섹션의 내용을 한국어로 작성하세요. 섹션 제목(Goal, Success Criteria 등)은 영문 유지. 기술 용어는 원어 유지."`
 
 delegate (foreground, opus recommended):
 ```
 "## PRD Generation: {project_name}
+{IF mode === 'normal': '언어: 한국어로 작성. 섹션 제목은 영문 유지, 내용은 한국어. 기술 용어는 원어 유지.'}
 Research artifacts:
 - CONTEXT: {CONTEXT.md summary}
 - REQUIREMENTS: {REQUIREMENTS.md full text}
@@ -506,28 +517,90 @@ Fill in every section of the PRD template below without omission:
 
 ## 8. Architecture
 
-Include a system architecture diagram using Mermaid or ASCII art.
-Show: components, data flow, external dependencies, and boundaries.
+**ASCII 다이어그램으로 시스템 구조를 표현하세요.** 상황에 맞는 유형을 아래에서 선택하세요.
 
-```mermaid
-graph LR
-  A[Component A] --> B[Component B]
-  B --> C[(Database)]
-  A --> D[External API]
+### 다이어그램 선택 가이드 (23종)
+
+| 분류 | 상황 | 추천 유형 |
+|------|------|----------|
+| **시스템 아키텍처** | 서비스/API 전체 구조 | 시스템 아키텍처 |
+| | 논리적 계층 설계 | 레이어 |
+| | 플러그인/모듈 확장 | 확장 구조 |
+| | 분산 시스템 연결망 | 토폴로지 |
+| **프로세스/흐름** | API 호출 순서 | 시퀀스 |
+| | 태스크 의존성 | 트리, DAG |
+| | 비동기 이벤트 통신 | 메시지, CQRS |
+| | 사용자 액션 분기 | 사용자 여정 |
+| **데이터/상태** | 데이터 처리 과정 | 파이프라인, ETL |
+| | 상태 변화 | 상태 머신 |
+| | DB 테이블 관계 | ERD |
+| **인프라** | 환경 전환 | Before/After |
+| | 네트워크 경로 | 네트워크 흐름 |
+| | 접근 제어 | 보안 경계 |
+| | 오토스케일링 | 리소스 할당 |
+| **AI/자동화** | 에이전트 협력 | 멀티 에이전트 |
+| | CI/CD | 배포 파이프라인 |
+| | 에러 처리 | 폴백 |
+| **기타** | UI 와이어프레임 | 레이아웃 |
+| | 프로젝트 일정 | 간트 |
+
+### 표준 작성 양식
+
+```
+■ 다이어그램: [명칭]
+■ 목적: [핵심 메시지 1~2줄]
+
+[ ASCII Art — 코드 블록 사용 ]
+
+■ 범례:
+  - [ ] : 컴포넌트 / 서버
+  - ( ) : 데이터 / 상태
+  - ──▶ : 동기 호출
+  - ╌╌▶ : 비동기 통신
+
+■ 핵심 설명:
+  1. [설계 포인트]
+  2. [성능/보안 특이사항]
 ```
 
-Or ASCII:
+### 대표 형태 참고
+
+시스템 아키텍처:
 ```
-┌──────────┐     ┌──────────┐
-│ Module A │────▶│ Module B │
-└──────────┘     └────┬─────┘
-                      │
-                 ┌────▼─────┐
-                 │   Store   │
-                 └──────────┘
+[Client] ──▶ [WAF/LB] ──▶ [App Cluster] ──▶ [(DB)]
 ```
 
-Key decisions: why this structure, what alternatives were considered.
+시퀀스:
+```
+User        Server        DB
+ │── Req ──▶│             │
+ │          │── Query ───▶│
+ │          │◀── Result ──│
+ │◀── Res ──│             │
+```
+
+DAG:
+```
+     ┌── [Build A] ──┐
+[Push]               ├──▶ [Test] ──▶ [Deploy]
+     └── [Build B] ──┘
+```
+
+상태 머신:
+```
+[Pending] ──(Start)──▶ [Running] ──(Done)──▶ [Complete]
+                          │
+                       (Fail)──▶ [Failed]
+```
+
+멀티 에이전트:
+```
+                 ┌──▶ [Planning Agent] ──┐
+[Router Agent] ──┤                      ├──▶ [Executor]
+                 └──▶ [Memory Mesh] ◀───┘
+```
+
+Key decisions: 이 구조를 선택한 이유와 거부한 대안을 기술하세요.
 
 ## 9. Key Scenarios
 
@@ -626,9 +699,9 @@ Risks: Each risk needs likelihood + impact + mitigation. 'Things might go wrong'
   Good: 'JWT secret rotation may cause active sessions to invalidate — mitigate with grace period'
   Bad: 'Security risks'
 
-Architecture: Must include a diagram (Mermaid or ASCII). Show data flow, not just boxes.
-  Good: Mermaid graph showing Client → API → DB with labeled edges
-  Bad: 'Standard 3-tier architecture' (no diagram)
+Architecture: Must include ASCII diagram with 표준 양식 (■ 다이어그램 / ■ 목적 / ■ 범례 / ■ 핵심 설명). Select type from the 23-type guide.
+  Good: ASCII diagram with labeled edges + 범례 + 핵심 설명
+  Bad: 'Standard 3-tier architecture' (no diagram) or Mermaid (not rendered in dashboard)
 
 Key Scenarios: Must include happy path + failure path as numbered steps with specific commands/outputs.
   Good: '1. User runs `xm dashboard` 2. Browser opens at :19841 3. Home shows 5 projects'
