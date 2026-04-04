@@ -944,8 +944,8 @@ function handleTraces(xmRoot, req) {
 }
 
 function handleTraceDetail(xmRoot, file, req, url) {
-  // Allow filenames like name-20260403-120000.jsonl
-  const TRACE_FILE_RE = /^[a-zA-Z0-9._-]+-\d{8}-\d{6}\.jsonl$/;
+  // Allow filenames like name-20260403-120000.jsonl or name-20260403-120000-a3f1.jsonl
+  const TRACE_FILE_RE = /^[a-zA-Z0-9._-]+-\d{8}-\d{6}(-[a-f0-9]{4})?\.jsonl$/;
   if (!TRACE_FILE_RE.test(file)) {
     return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
   }

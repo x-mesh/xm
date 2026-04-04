@@ -487,6 +487,18 @@ Before task decomposition, the leader generates a PRD. Based on research artifac
 - `developer` mode → Write PRD in English (technical terms, concise)
 - `normal` mode → Write PRD content in Korean (section titles remain in English, body in Korean). Inject this instruction into the agent prompt: `"모든 섹션의 내용을 한국어로 작성하세요. 섹션 제목(Goal, Success Criteria 등)은 영문 유지. 기술 용어는 원어 유지."`
 
+#### PRD Size Tiers
+
+Determine PRD size based on task count expectation or `--size` flag:
+
+| Tier | Condition | PRD Sections |
+|------|-----------|-------------|
+| **small** | ≤5 expected tasks or `--size small` | 1.Goal, 2.Success Criteria, 3.Constraints, 5.Requirements Traceability, 12.Acceptance Criteria (5 sections) |
+| **medium** | 6-15 tasks (default) | Above + 4.NFR, 6.Out of Scope, 7.Risks, 8.Architecture (9 sections) |
+| **large** | 15+ tasks or `--size large` | All 12 sections (current full template) |
+
+When generating the PRD, include only the sections for the determined tier. The delegate prompt should specify: "Generate PRD with {tier} tier — include only sections: {section list}."
+
 delegate (foreground, opus recommended):
 ```
 "## PRD Generation: {project_name}
@@ -688,49 +700,15 @@ Things that must ALWAYS be true regardless of implementation:
 
 ## PRD Section Quality Criteria
 
-Apply these criteria when writing each section above:
+**Detailed criteria with Good/Bad examples are in `PRD-GUIDE.md` (same directory).**
+When generating a PRD, read `PRD-GUIDE.md` for per-section quality standards.
 
-Goal: One sentence. If it needs 'and,' it's two projects.
-  Good: 'Enable users to authenticate via JWT with refresh token rotation'
-  Bad: 'Improve the auth system and add better error handling and logging'
-
-Success Criteria: Each must be measurable and binary (pass/fail).
-  Good: '[SC1] Login API responds in <200ms at p95 under 100 concurrent users'
-  Bad: '[SC1] System should be fast and reliable'
-
-Constraints: Only hard constraints — things that are NOT negotiable.
-  Good: '[C1] Must use PostgreSQL (existing production DB)'
-  Bad: '[C1] Should use a modern database' (this is a preference, not a constraint)
-
-Requirements Traceability: Every R# maps to at least one SC#. Unmapped requirements are scope creep.
-
-Out of Scope: Be specific. 'Not building X' is better than 'keeping it simple.'
-  Good: 'No mobile app, no real-time notifications, no multi-tenancy'
-  Bad: 'Anything not mentioned above'
-
-Risks: Each risk needs likelihood + impact + mitigation. 'Things might go wrong' is not a risk.
-  Good: 'JWT secret rotation may cause active sessions to invalidate — mitigate with grace period'
-  Bad: 'Security risks'
-
-Architecture: Must include ASCII diagram with standard format (■ Diagram / ■ Purpose / ■ Legend / ■ Key Notes). Select type from the 23-type guide.
-  Good: ASCII diagram with labeled edges + Legend + Key Notes
-  Bad: 'Standard 3-tier architecture' (no diagram) or Mermaid (not rendered in dashboard)
-
-Key Scenarios: Must include happy path + failure path as numbered steps with specific commands/outputs.
-  Good: '1. User runs `xm dashboard` 2. Browser opens at :19841 3. Home shows 5 projects'
-  Bad: 'User can start the dashboard and see projects'
-
-Data Model & API Contracts: Must show entity fields and at least one API response shape.
-  Good: 'GET /api/projects → [{ id, name, current_phase, created_at }]'
-  Bad: 'API returns project data'
-
-Decisions & Assumptions: Must have at least 1 decision with rejected alternative, and 1 assumption with consequence-if-wrong.
-  Good: 'Chose Bun over Express — rejected because Express needs npm deps. Assumption: .xm < 10MB — if wrong, API >100ms target fails'
-  Bad: 'We decided on the best approach'
-
-Acceptance Criteria: Each item must be testable by running a command or checking a state.
-  Good: '[ ] npm test passes with >80% coverage on auth module'
-  Bad: '[ ] Code is well-tested'
+Core rules (always apply without reading the file):
+- Goal: One sentence. If it needs 'and,' it's two projects.
+- Success Criteria: Each must be measurable and binary (pass/fail).
+- Constraints: Only hard constraints — non-negotiable.
+- Requirements Traceability: Every R# maps to at least one SC#.
+- Acceptance Criteria: Each item must be testable by command or state check.
 "
 ```
 
@@ -761,15 +739,13 @@ Anti-patterns:
    Please review the PRD:
    1) Approve — proceed as-is
    2) Needs revision — tell me what to change
-   3) Quality check — Judge Panel (3 agents) scores and provides feedback
-   4) Consensus review — 4 agents (architect, critic, planner, security) review and auto-revise until consensus
-   5) Rewrite — regenerate the PRD from scratch
+   3) Quality review — Judge Panel scores first; if score < 7.0, auto-escalates to Consensus Review
+   4) Rewrite — regenerate the PRD from scratch
    ```
 3. **Action per selection**:
    - "Approve" → proceed to task decomposition
    - "Needs revision" → revise PRD with user feedback, then show again (repeat)
-   - "Quality check" → run [PRD Quality Gate], then return to PRD Review options with results
-   - "Consensus review" → run [Consensus Loop]
+   - "Quality review" → run [PRD Quality Gate]; if score < 7.0, automatically run [Consensus Loop] with judge feedback as context
    - "Rewrite" → re-run PRD Generation from scratch
 
 4. **Re-save on revision**:
@@ -812,10 +788,10 @@ Read `rubric`, `prd`, `requirements` from the output JSON and perform the follow
    | risk-coverage  | 6     | ...               |
    ```
 
-3. **Score-based guidance message** (advisory only, no automatic action):
+3. **Score-based guidance message**:
    - Score >= 7.0 → `"💡 Quality is good — consider approving."`
-   - Score 5.0–6.9 → `"💡 Room for improvement — consider revising based on the feedback above."`
-   - Score < 5.0 → `"💡 Quality is insufficient — consider rewriting."`
+   - Score 5.0–6.9 → **Auto-escalate to Consensus Review** with judge feedback as context
+   - Score < 5.0 → **Auto-escalate to Consensus Review** with judge feedback as context
 
 4. **Record PRD score in project metadata**:
    ```bash
@@ -997,12 +973,13 @@ Create tasks informed by research artifacts:
    ```
    This checks 11 dimensions: atomicity, dependencies, coverage, granularity, completeness, context, naming, tech-leakage, scope-clarity, risk-ordering, overall. Fix any errors.
 
-6. **(Optional but recommended) Strategic critique**:
+6. **(Conditional) Strategic critique** — auto-skip when task count ≤ 5 (small project):
    ```bash
    $XMB discuss --mode critique
    ```
    - Reviews approach fitness, risk ordering, dependency structure, missing tasks, done-criteria quality, scope creep
    - If `verdict === "revise"`: apply action items, then re-run critique (`--round 2`)
+   **Auto-skip rule**: If `tasks.length <= 5`, skip critique and proceed directly to step 7 (steps compute). Show: `"💡 Small project (≤5 tasks) — skipping strategic critique."` Critique is most valuable for complex plans (6+ tasks, cross-cutting dependencies).
    - If `verdict === "approve"`: proceed to step review
 
 7. Compute steps + forecast:
@@ -1233,6 +1210,8 @@ Multi-round requirements gathering with drill-down.
 
 ### Assumptions Mode (Research phase)
 
+> **On-demand only** — not part of the default Research flow. Only triggered when `next --json` detects an existing codebase (presence of `package.json`, `go.mod`, `Cargo.toml`, etc.) or when the user explicitly calls `discuss --mode assumptions`. Skipped for greenfield projects.
+
 - Read codebase files relevant to the goal
 - Generate 5-10 assumptions with format:
   ```
@@ -1244,6 +1223,8 @@ Multi-round requirements gathering with drill-down.
 - Save confirmed to CONTEXT.md
 
 ### Validate Mode (Research → Plan transition)
+
+> **Lightweight alternative available** — For simple projects, `gate pass` automatically checks: (1) CONTEXT.md exists, (2) REQUIREMENTS.md has ≥1 R# item, (3) CONTEXT.md Decisions has no unresolved items. Full validate mode is recommended only for complex projects (10+ requirements).
 
 Verifies research artifacts are complete and consistent before moving to Plan phase.
 

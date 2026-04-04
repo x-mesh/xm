@@ -14,7 +14,8 @@
       "Bash(cp:*)",
       "Bash(git reset:*)",
       "Bash(bun:*)",
-      "Bash(lsof:*)"
+      "Bash(lsof:*)",
+      "Bash(curl:*)"
     ]
   }
 }
