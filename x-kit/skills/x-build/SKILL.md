@@ -117,7 +117,7 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 
 | Phase | Exit Gate | Condition |
 |-------|-----------|-----------|
-| Research | human-verify | CONTEXT.md or REQUIREMENTS.md must exist |
+| Research | human-verify | CONTEXT.md or REQUIREMENTS.md must exist + no unresolved decisions in CONTEXT.md |
 | Plan | human-verify | Tasks defined + plan-check passed (+ optional critique) |
 | Execute | auto | All tasks completed |
 | Verify | quality | test/lint/build all pass |
@@ -448,7 +448,20 @@ This step is triggered when the research goal contains technology comparison key
    - If `verdict === "incomplete"`: address gaps via `discuss --mode interview --round 2`
    - If `verdict === "pass"`: proceed to gate
 
-6. Advance to Plan phase: `$XMB gate pass "Research complete"` → `$XMB phase next`
+6. **Decision checkpoint (MUST — before gate pass)**:
+   Before advancing, check CONTEXT.md `## Decisions` section for unresolved items.
+   - Scan for keywords: "미결정", "undecided", "TBD", "조사 후 결정", "to be determined"
+   - If unresolved decisions exist → present each to the user via AskUserQuestion with the research findings as context
+   - User must confirm a choice for each unresolved decision before proceeding
+   - Update CONTEXT.md with confirmed decisions (change "미결정" → chosen option)
+   - Only after ALL decisions are resolved → proceed to gate pass
+
+   Anti-patterns:
+   - ❌ CONTEXT.md has "미결정" items → immediately `gate pass` (skips decisions)
+   - ❌ Assume defaults for unresolved decisions without asking
+   - ✅ Present each unresolved decision with research-backed options → AskUserQuestion → update CONTEXT.md → gate pass
+
+7. Advance to Plan phase: `$XMB gate pass "Research complete — all decisions resolved"` → `$XMB phase next`
 
 ### Step 3: Plan (Plan Phase)
 
@@ -1646,6 +1659,34 @@ $XMB config show                     # show current settings
 2. Tool-specific local config (`.xm/build/config.json`)
 3. Shared config (`.xm/config.json`)
 4. Defaults
+
+---
+
+## Trace Recording
+
+x-build MUST record trace entries to `.xm/traces/` during task execution. See x-trace SKILL.md "Trace Directive Template" for the full schema.
+
+### On `run` start (MUST)
+
+Before spawning task agents, generate session ID and record:
+```bash
+SESSION_ID="x-build-$(date +%Y%m%d-%H%M%S)-$(openssl rand -hex 2)"
+mkdir -p .xm/traces && echo "{\"type\":\"session_start\",\"session_id\":\"$SESSION_ID\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"v\":1,\"skill\":\"x-build\",\"args\":{\"project\":\"PROJECT\",\"step\":STEP_NUMBER}}" >> .xm/traces/$SESSION_ID.jsonl
+```
+
+### Per task agent (SHOULD — best-effort)
+
+After each task agent completes, record agent_step with task_id as role, model, estimated tokens, duration, and status.
+
+### On `run` end (MUST)
+
+After all tasks in the step complete, record session_end with total duration, agent count, and status.
+
+### Rules
+1. session_start and session_end are **MUST** — never skip
+2. agent_step is **SHOULD** — best-effort
+3. **Metadata only** — never include task output in trace entries
+4. If trace write fails, log to stderr and continue
 
 ---
 
