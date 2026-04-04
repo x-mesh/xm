@@ -1635,7 +1635,10 @@ console.log(`[x-dashboard-server] Serving static files from: ${PUBLIC_DIR}`);
 console.log(`[x-dashboard-server] Mode: ${SESSION_MODE ? `session (idle timeout: ${SESSION_IDLE_TIMEOUT_MS / 60000}m)` : 'standalone'}`);
 console.log(`[x-dashboard-server] PID file: ${PID_FILE}`);
 
-openBrowser(dashboardUrl);
+// Skip browser open in test/CI environments or when NO_BROWSER is set
+if (!process.env.NO_BROWSER && !process.env.CI && !process.env.BUN_TEST) {
+  openBrowser(dashboardUrl);
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────
 

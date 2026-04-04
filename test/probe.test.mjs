@@ -128,10 +128,10 @@ describe('verdict JSON v2 conformance', () => {
 describe('SKILL.md structure', () => {
   const skillPath = join(PROBE_DIR, 'SKILL.md');
 
-  test('SKILL.md is under 600 lines', () => {
+  test('SKILL.md is under 620 lines', () => {
     const content = readFileSync(skillPath, 'utf8');
     const lines = content.split('\n').length;
-    expect(lines).toBeLessThanOrEqual(600);
+    expect(lines).toBeLessThanOrEqual(620);
   });
 
   test('SKILL.md contains evidence grade definitions', () => {

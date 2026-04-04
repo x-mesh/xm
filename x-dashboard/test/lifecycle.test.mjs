@@ -34,6 +34,7 @@ function startServer(port) {
   return Bun.spawn(['bun', SERVER_PATH, '--port', String(port)], {
     stdout: 'pipe',
     stderr: 'pipe',
+    env: { ...process.env, NO_BROWSER: '1' },
   });
 }
 

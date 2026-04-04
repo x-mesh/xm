@@ -122,6 +122,7 @@ beforeAll(async () => {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
     cwd: PROJECT_ROOT,
+    env: { ...process.env, NO_BROWSER: '1' },
   });
 
   serverProc.stderr?.on('data', () => {});
