@@ -2230,7 +2230,7 @@ async function renderSync() {
   const allMachines = new Set();
   projects.forEach(p => (p.machines || []).forEach(m => allMachines.add(m)));
 
-  html += `<div class="stat-row">
+  html += `<div class="stat-bar">
     <div class="card stat-card"><div class="stat-value">${projects.length}</div><div class="text-muted">Projects</div></div>
     <div class="card stat-card"><div class="stat-value">${totalFiles}</div><div class="text-muted">Files</div></div>
     <div class="card stat-card"><div class="stat-value">${allMachines.size}</div><div class="text-muted">Machines</div></div>
