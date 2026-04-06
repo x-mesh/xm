@@ -78,8 +78,10 @@ CMD="${1:-help}"
 shift 2>/dev/null || true
 
 case "$CMD" in
-  push)   exec node "$LIB_DIR/sync-push.mjs" "$@" ;;
-  pull)   exec node "$LIB_DIR/sync-pull.mjs" "$@" ;;
+  push)     exec node "$LIB_DIR/sync-push.mjs" "$@" ;;
+  pull)     exec node "$LIB_DIR/sync-pull.mjs" "$@" ;;
+  push-all) exec node "$LIB_DIR/sync-push-all.mjs" "$@" ;;
+  pull-all) exec node "$LIB_DIR/sync-pull-all.mjs" "$@" ;;
   setup)
     read -rp "Server URL (e.g. http://vps:19842): " url
     read -rp "API Key: " key
@@ -103,10 +105,12 @@ case "$CMD" in
     echo "x-sync — Multi-machine .xm/ state sync"
     echo ""
     echo "Commands:"
-    echo "  x-sync setup    Configure server URL and API key"
-    echo "  x-sync push     Push .xm/ to sync server"
-    echo "  x-sync pull     Pull from sync server"
-    echo "  x-sync status   Show config and sync state"
+    echo "  x-sync setup      Configure server URL and API key"
+    echo "  x-sync push       Push current project .xm/ to server"
+    echo "  x-sync pull       Pull current project from server"
+    echo "  x-sync push-all   Push all projects under ~/work"
+    echo "  x-sync pull-all   Pull all projects under ~/work"
+    echo "  x-sync status     Show config and sync state"
     ;;
 esac
 WRAPPER

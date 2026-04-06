@@ -27,7 +27,7 @@ Syncs .xm/ project state across machines. Server stores data in SQLite; clients 
 | Subcommand | Model | Reason |
 |------------|-------|--------|
 | `status`, `server status` | **haiku** (Agent tool) | Read-only check |
-| `push`, `pull` | **haiku** (Agent tool) | Script execution, no reasoning |
+| `push`, `pull`, `push-all`, `pull-all` | **haiku** (Agent tool) | Script execution, no reasoning |
 | `server start`, `server stop` | **haiku** (Agent tool) | Simple process management |
 | `setup` (interactive) | main model | Requires AskUserQuestion |
 
@@ -44,6 +44,8 @@ User provided: `$ARGUMENTS`
 - `server status` → [Mode: server-status]
 - `push` → [Mode: push]
 - `pull` → [Mode: pull]
+- `push-all` or `push all` → [Mode: push-all]
+- `pull-all` or `pull all` → [Mode: pull-all]
 
 ---
 
@@ -185,6 +187,49 @@ Output example:
 [x-sync pull] project=my-project since=2026-04-06T10:00:00.000Z
 [x-sync pull] 8 files written (3 skipped — own machine)
 ```
+
+---
+
+## Mode: push-all
+
+Push all .xm/ projects under a root directory to the sync server.
+
+```bash
+node x-kit/lib/x-sync/sync-push-all.mjs
+```
+
+Optional flags:
+- `--root <dir>` — root directory to scan (default: `~/work`)
+- `--dry-run` — preview only, no files pushed
+
+Output example:
+```
+[sync-push-all] Found 11 projects under /Users/user/work
+
+  → x-kit (/Users/user/work/project/agentic/x-kit)
+  → biz-skills (/Users/user/work/project/agentic/biz-skills)
+  ...
+
+[x-sync push] 66 files from x-kit (macbook-a1b2)
+[x-sync push] accepted: 12, skipped: 54
+...
+
+[sync-push-all] Done — 11 pushed, 0 failed
+```
+
+---
+
+## Mode: pull-all
+
+Pull .xm/ data for all local projects from the sync server.
+
+```bash
+node x-kit/lib/x-sync/sync-pull-all.mjs
+```
+
+Optional flags:
+- `--root <dir>` — root directory to scan (default: `~/work`)
+- `--dry-run` — preview only, no files pulled
 
 ---
 
