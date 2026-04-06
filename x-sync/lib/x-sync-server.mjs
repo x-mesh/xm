@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 import { Database } from "bun:sqlite";
 import { homedir } from "os";
-import { mkdirSync } from "fs";
-import { join } from "path";
+import { mkdirSync, writeFileSync } from "fs";
+import { join, dirname } from "path";
 
 // --- Config ---
 const PORT = (() => {
@@ -11,8 +11,10 @@ const PORT = (() => {
 })();
 const API_KEY = process.env.XM_SYNC_API_KEY ?? "";
 const DB_PATH = join(homedir(), ".xm", "sync", "sync.db");
+const MATERIALIZE_DIR = process.env.XM_SYNC_DATA_DIR ?? join(homedir(), ".xm", "sync", "data");
 
 mkdirSync(join(homedir(), ".xm", "sync"), { recursive: true });
+mkdirSync(MATERIALIZE_DIR, { recursive: true });
 
 // --- DB ---
 const db = new Database(DB_PATH);
@@ -96,6 +98,12 @@ async function handlePush(req) {
     } else {
       stmtUpsert.run(project_id, machine_id, path, content, hash, now);
       accepted++;
+      // Materialize to disk for x-dashboard consumption
+      try {
+        const filePath = join(MATERIALIZE_DIR, project_id, ".xm", path);
+        mkdirSync(dirname(filePath), { recursive: true });
+        writeFileSync(filePath, content, "utf8");
+      } catch {}
     }
   }
 
@@ -189,6 +197,9 @@ code{font-family:var(--font-mono);font-size:.9em;background:#1a1a1a;padding:.1em
     <ul class="nav-links">
       <li><a href="/" class="active">Sync</a></li>
     </ul>
+    <div style="padding:10px 14px;border-top:2px solid #333;margin-top:auto">
+      <a href="//${location.hostname}:19841/" target="_blank" style="font-size:11px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);text-decoration:none;display:block">↗ FULL DASHBOARD</a>
+    </div>
   </nav>
   <main class="content">
     <div id="app"><h1>Sync</h1><p style="color:var(--text-muted)">Loading...</p></div>

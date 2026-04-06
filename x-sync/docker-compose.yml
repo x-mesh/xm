@@ -6,8 +6,10 @@ services:
       - "${XM_SYNC_PORT:-19842}:19842"
     environment:
       - XM_SYNC_API_KEY=${XM_SYNC_API_KEY:?Set XM_SYNC_API_KEY in .env or environment}
+      - XM_SYNC_DATA_DIR=/data
     volumes:
-      - x-sync-data:/root/.xm/sync
+      - x-sync-db:/root/.xm/sync
+      - x-sync-data:/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "bun", "-e", "fetch('http://localhost:19842/dashboard/health').then(r=>{if(!r.ok)process.exit(1)})"]
@@ -15,5 +17,21 @@ services:
       timeout: 5s
       retries: 3
 
+  x-dashboard:
+    build:
+      context: ..
+      dockerfile: x-sync/Dockerfile.dashboard
+    ports:
+      - "${XM_DASHBOARD_PORT:-19841}:19841"
+    environment:
+      - XM_SYNC_DATA_DIR=/data
+    volumes:
+      - x-sync-data:/data:ro
+    depends_on:
+      x-sync:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
+  x-sync-db:
   x-sync-data:

@@ -1,0 +1,6 @@
+FROM oven/bun:1-alpine
+WORKDIR /app
+COPY x-dashboard/lib/x-dashboard-server.mjs ./lib/
+COPY x-dashboard/public/ ./public/
+EXPOSE 19841
+CMD ["bun", "lib/x-dashboard-server.mjs", "--port", "19841", "--scan", "/data"]
