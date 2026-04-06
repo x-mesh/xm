@@ -1,7 +1,7 @@
 services:
   x-sync:
     build: .
-    image: ghcr.io/x-mesh/x-sync:latest
+    image: jinwoo/x-sync:latest
     ports:
       - "${XM_SYNC_PORT:-19842}:19842"
     environment:

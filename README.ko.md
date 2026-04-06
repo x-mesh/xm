@@ -656,7 +656,7 @@ XM_SYNC_API_KEY=secret docker compose -f x-sync/docker-compose.yml up -d
 
 # 또는 GHCR에서 직접 실행
 docker run -d -p 19842:19842 -e XM_SYNC_API_KEY=secret \
-  -v x-sync-data:/root/.xm/sync ghcr.io/x-mesh/x-sync:latest
+  -v x-sync-data:/root/.xm/sync jinwoo/x-sync:latest
 ```
 
 **방법 B: 직접 설치**

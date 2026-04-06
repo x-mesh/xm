@@ -53,7 +53,7 @@ WRAPPER
   info "  XM_SYNC_API_KEY=secret x-sync-server --port 19842"
   info ""
   info "Or use Docker:"
-  info "  docker run -d -p 19842:19842 -e XM_SYNC_API_KEY=secret ghcr.io/x-mesh/x-sync:latest"
+  info "  docker run -d -p 19842:19842 -e XM_SYNC_API_KEY=secret jinwoo/x-sync:latest"
 }
 
 install_client() {
