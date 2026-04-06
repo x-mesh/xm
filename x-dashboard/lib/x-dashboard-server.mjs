@@ -1290,7 +1290,7 @@ server = Bun.serve({
         project: projectName,
         xmRoot: XM_ROOT,
         workspaces: workspaces.length,
-        multiRoot: workspaces.length > 1,
+        multiRoot: !!SCAN_DIR || workspaces.length > 1,
       });
     }
 
