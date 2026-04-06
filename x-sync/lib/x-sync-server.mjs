@@ -198,7 +198,7 @@ code{font-family:var(--font-mono);font-size:.9em;background:#1a1a1a;padding:.1em
       <li><a href="/" class="active">Sync</a></li>
     </ul>
     <div style="padding:10px 14px;border-top:2px solid #333;margin-top:auto">
-      <a href="//${location.hostname}:19841/" target="_blank" style="font-size:11px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);text-decoration:none;display:block">↗ FULL DASHBOARD</a>
+      <a href="#" onclick="window.open('//'+location.hostname+':19841/','_blank');return false" style="font-size:11px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);text-decoration:none;display:block">↗ FULL DASHBOARD</a>
     </div>
   </nav>
   <main class="content">
