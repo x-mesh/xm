@@ -13,7 +13,7 @@ const API_KEY = process.env.XM_SYNC_API_KEY ?? "";
 const VERSION = process.env.XM_SYNC_VERSION ?? "dev";
 const DB_PATH = join(homedir(), ".xm", "sync", "sync.db");
 const MATERIALIZE_DIR = process.env.XM_SYNC_DATA_DIR ?? join(homedir(), ".xm", "sync", "data");
-const DASHBOARD_URL = process.env.XM_DASHBOARD_URL ?? "http://x-dashboard:19841";
+const DASHBOARD_URL = process.env.XM_DASHBOARD_URL ?? "http://localhost:19841";
 
 mkdirSync(join(homedir(), ".xm", "sync"), { recursive: true });
 mkdirSync(MATERIALIZE_DIR, { recursive: true });

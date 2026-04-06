@@ -3,9 +3,9 @@ name: x-sync Docker
 on:
   push:
     branches: [main]
-    paths: ['x-sync/**']
+    paths: ['x-sync/**', 'x-dashboard/**']
   pull_request:
-    paths: ['x-sync/**']
+    paths: ['x-sync/**', 'x-dashboard/**']
   workflow_dispatch:
     inputs:
       version:
@@ -27,7 +27,8 @@ jobs:
 
       - uses: docker/build-push-action@v7
         with:
-          context: x-sync
+          context: .
+          file: x-sync/Dockerfile
           push: false
           tags: jinwoo/x-sync:dev
           cache-from: type=gha
@@ -79,7 +80,8 @@ jobs:
 
       - uses: docker/build-push-action@v7
         with:
-          context: x-sync
+          context: .
+          file: x-sync/Dockerfile
           push: true
           tags: |
             jinwoo/x-sync:latest
