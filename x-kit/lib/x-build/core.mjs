@@ -291,6 +291,54 @@ export function manifestPath(name) {
   return join(projectDir(name), 'manifest.json');
 }
 
+/**
+ * Read manifest with multi-machine merge support.
+ * Reads manifest.json (local) + manifest.{machine_id}.json (synced remotes),
+ * merges them with newer pushed_at winning per conflicting key.
+ * Returns the merged manifest object, or null if none found.
+ */
+export function readManifestMerged(name) {
+  const dir = projectDir(name);
+  const local = readJSON(join(dir, 'manifest.json'));
+  if (!existsSync(dir)) return local;
+
+  // Find all manifest.*.json (namespaced by machine_id from sync-pull)
+  const remoteManifests = readdirSync(dir)
+    .filter(f => /^manifest\..+\.json$/.test(f) && f !== 'manifest.json')
+    .map(f => readJSON(join(dir, f)))
+    .filter(Boolean);
+
+  if (remoteManifests.length === 0) return local;
+  if (!local) return remoteManifests.length === 1 ? remoteManifests[0] : deepMergeManifests(remoteManifests);
+
+  return deepMergeManifests([local, ...remoteManifests]);
+}
+
+/**
+ * Deep merge multiple manifest objects.
+ * Arrays with id fields: union by id (last wins per id).
+ * Object fields: shallow merge (last wins per key).
+ */
+function deepMergeManifests(manifests) {
+  const result = {};
+  for (const m of manifests) {
+    for (const [key, value] of Object.entries(m)) {
+      if (Array.isArray(value) && value.length > 0 && value[0]?.id != null) {
+        // Array of objects with id — union by id
+        const existing = result[key] ?? [];
+        const byId = new Map(existing.map(item => [item.id, item]));
+        for (const item of value) byId.set(item.id, item);
+        result[key] = [...byId.values()];
+      } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+        result[key] = { ...(result[key] ?? {}), ...value };
+      } else {
+        result[key] = value;
+      }
+    }
+  }
+  return result;
+}
+
 export function phaseDir(project, phaseId) {
   return join(projectDir(project), 'phases', phaseId);
 }

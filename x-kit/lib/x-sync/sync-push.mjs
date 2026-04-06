@@ -30,12 +30,14 @@ function resolveXmDir() {
 function scanXmFiles(xmDir) {
   const files = [];
   const SKIP = new Set(['run', '.sync-queue', 'node_modules']);
+  const EXCLUDE_FILES = new Set(['config.json']); // per-machine local settings
 
   function walk(dir, prefix) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (SKIP.has(entry.name)) continue;
       if (entry.name.startsWith('.') && entry.name !== '.active') continue;
       if (entry.name.endsWith('.tmp') || entry.name.endsWith('.bak')) continue;
+      if (EXCLUDE_FILES.has(entry.name)) continue;
 
       const fullPath = join(dir, entry.name);
       const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
