@@ -1300,6 +1300,15 @@ server = Bun.serve({
       return Response.json({ status: 'shutting_down' });
     }
 
+    // ── POST /api/rescan — Re-scan workspaces ──────────────────
+    if (req.method === 'POST' && path === '/api/rescan') {
+      if (SCAN_DIR) {
+        workspaces = scanWorkspaces(resolve(SCAN_DIR));
+        console.log(`[x-dashboard-server] Rescan: ${workspaces.length} workspaces from ${SCAN_DIR}`);
+      }
+      return Response.json({ workspaces: workspaces.length });
+    }
+
     // ── JSON API ─────────────────────────────────────────────────
     if (req.method === 'GET' && path.startsWith('/api/')) {
 

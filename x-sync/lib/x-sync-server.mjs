@@ -109,6 +109,11 @@ async function handlePush(req) {
     }
   }
 
+  // Trigger dashboard rescan if files were materialized
+  if (accepted > 0) {
+    fetch(`${DASHBOARD_URL}/api/rescan`, { method: 'POST' }).catch(() => {});
+  }
+
   console.error(
     `[x-sync] POST /sync/push project=${project_id} files=${files.length} accepted=${accepted} skipped=${skipped}`
   );
