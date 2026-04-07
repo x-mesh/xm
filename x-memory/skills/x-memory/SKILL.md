@@ -24,15 +24,25 @@ x-memory persists project decisions, patterns, failures, and learnings across se
 
 # x-memory — Cross-Session Decision and Pattern Memory
 
+## Model Routing
+
+| Subcommand | Model | Reason |
+|------------|-------|--------|
+| `list`, `search`, `get`, `stats` | **haiku** (Agent tool) | Read-only query and display |
+| `save`, `update`, `delete` | **haiku** (Agent tool) | Simple write operations |
+| `inject` (context injection) | main model (sonnet) | Requires reasoning about relevance |
+
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
+
 ## Mode Detection
 
 Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 **Developer mode**: Use technical terms (TTL, verdict, tag, inject). Concise.
 
-**Normal mode**: 쉬운 한국어로 안내합니다.
-- "TTL" → "보관 기간", "verdict" → "판정", "inject" → "자동 반영", "tag" → "태그"
-- "~하세요" 체 사용, 핵심 정보 먼저
+**Normal mode**: Use plain, accessible language.
+- Prefer user-friendly terms: "TTL" → "retention period", "verdict" → "result", "inject" → "auto-load", "tag" → "label"
+- Lead with the key information; keep responses concise
 
 ## CLI
 
@@ -464,6 +474,28 @@ After x-op strategy completion, preserve high Self-Score results as learnings:
 | compose pipeline succeeded | Suggest saving pipeline combination as pattern |
 
 ---
+
+## Trace Recording
+
+x-memory MUST record trace entries to `.xm/traces/` during execution. See x-trace SKILL.md "Trace Directive Template" for the full schema.
+
+### On start (MUST)
+```bash
+SESSION_ID="x-memory-$(date +%Y%m%d-%H%M%S)-$(openssl rand -hex 2)"
+mkdir -p .xm/traces && echo "{\"type\":\"session_start\",\"session_id\":\"$SESSION_ID\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"v\":1,\"skill\":\"x-memory\",\"args\":{}}" >> .xm/traces/$SESSION_ID.jsonl
+```
+
+### Per agent call (SHOULD — best-effort)
+Record agent_step after each agent completes.
+
+### On end (MUST)
+Record session_end with total duration, agent count, and status.
+
+### Rules
+1. session_start and session_end are **MUST** — never skip
+2. agent_step is **SHOULD** — best-effort
+3. **Metadata only** — never include output content in trace entries
+4. If trace write fails, continue — never block execution
 
 ## Natural Language Mapping
 

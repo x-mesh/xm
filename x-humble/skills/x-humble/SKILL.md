@@ -35,10 +35,14 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 **Developer mode**: Use technical terms (root cause, counterfactual, retrospective). Concise.
 
-**Normal mode**: 쉬운 한국어로 안내합니다.
-- "root cause" → "근본 원인", "counterfactual" → "다르게 했다면", "retrospective" → "되돌아보기"
-- "bias" → "편향", "steelman" → "강화 반론", "KEEP/STOP/START" → "유지/중단/시작"
-- "~하세요" 체 사용, 핵심 정보 먼저
+**Normal mode**: Guide in plain, accessible language.
+- Use simplified terms: "root cause" → "the core reason", "counterfactual" → "what if we had done it differently", "retrospective" → "looking back"
+- "bias" → "thinking trap", "steelman" → "strengthen the argument", "KEEP/STOP/START" → "Continue/Stop/Start"
+- Lead with the most important information first; keep sentences short and direct
+
+## Arguments
+
+User provided: $ARGUMENTS
 
 ## AskUserQuestion Dark-Theme Rule
 
@@ -60,10 +64,6 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 **WRONG:** Putting context in `question` field → user sees blank space above options
 **RIGHT:** Print context as markdown first, use `header` for tag, options for detail
-
-## Arguments
-
-User provided: $ARGUMENTS
 
 ## Routing
 
@@ -573,6 +573,28 @@ Settings in .xm/config.json:
 ```
 
 ---
+
+## Trace Recording
+
+x-humble MUST record trace entries to `.xm/traces/` during execution. See x-trace SKILL.md "Trace Directive Template" for the full schema.
+
+### On start (MUST)
+```bash
+SESSION_ID="x-humble-$(date +%Y%m%d-%H%M%S)-$(openssl rand -hex 2)"
+mkdir -p .xm/traces && echo "{\"type\":\"session_start\",\"session_id\":\"$SESSION_ID\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"v\":1,\"skill\":\"x-humble\",\"args\":{}}" >> .xm/traces/$SESSION_ID.jsonl
+```
+
+### Per agent call (SHOULD — best-effort)
+Record agent_step after each agent completes.
+
+### On end (MUST)
+Record session_end with total duration, agent count, and status.
+
+### Rules
+1. session_start and session_end are **MUST** — never skip
+2. agent_step is **SHOULD** — best-effort
+3. **Metadata only** — never include output content in trace entries
+4. If trace write fails, continue — never block execution
 
 ## Natural Language Mapping
 

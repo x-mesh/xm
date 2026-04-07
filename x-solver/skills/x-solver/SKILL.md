@@ -28,12 +28,21 @@ Stateful — persists problem state to `.xm/solver/` for cross-session continuit
 
 User provided: $ARGUMENTS
 
-## Mode Detection
+## Interaction Protocol
 
-Check mode before every command:
-```bash
-node ${CLAUDE_PLUGIN_ROOT}/lib/x-solver-cli.mjs mode show 2>/dev/null | head -1
-```
+**CRITICAL: x-solver phase transitions MUST use AskUserQuestion for user confirmation.**
+
+Rules:
+1. **AskUserQuestion is REQUIRED** — after each phase completes, call AskUserQuestion before proceeding. Text-only questions do NOT create turn boundaries.
+2. **classify → strategy selection**: MUST use AskUserQuestion to confirm recommended strategy.
+3. **solve phase completion**: MUST use AskUserQuestion before proceeding to verify.
+4. **verify results**: MUST use AskUserQuestion to confirm before close.
+
+Anti-patterns:
+- ❌ Run classify, show result, immediately start solve
+- ✅ Run classify, show result, AskUserQuestion("전략 {X}를 추천합니다. 진행할까요?")
+
+---
 
 ## AskUserQuestion Dark-Theme Rule
 
@@ -55,6 +64,13 @@ node ${CLAUDE_PLUGIN_ROOT}/lib/x-solver-cli.mjs mode show 2>/dev/null | head -1
 
 **WRONG:** Putting context in `question` field → user sees blank space above options
 **RIGHT:** Print context as markdown first, use `header` for tag, options for detail
+
+## Mode Detection
+
+Check mode before every command:
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/lib/x-solver-cli.mjs mode show 2>/dev/null | head -1
+```
 
 ## CLI
 
@@ -90,6 +106,28 @@ Parse the first word of `$ARGUMENTS` to determine the command:
 - `handoff` → Run `$XMS handoff [--restore]`
 - Empty input → Ask the user to describe the problem (AskUserQuestion)
 - Other natural language → [Command: auto] Treat as problem description and run `init` + `classify`
+
+## Trace Recording
+
+x-solver MUST record trace entries to `.xm/traces/` during execution. See x-trace SKILL.md "Trace Directive Template" for the full schema.
+
+### On start (MUST)
+```bash
+SESSION_ID="x-solver-$(date +%Y%m%d-%H%M%S)-$(openssl rand -hex 2)"
+mkdir -p .xm/traces && echo "{\"type\":\"session_start\",\"session_id\":\"$SESSION_ID\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"v\":1,\"skill\":\"x-solver\",\"args\":{}}" >> .xm/traces/$SESSION_ID.jsonl
+```
+
+### Per agent call (SHOULD — best-effort)
+Record agent_step after each agent completes.
+
+### On end (MUST)
+Record session_end with total duration, agent count, and status.
+
+### Rules
+1. session_start and session_end are **MUST** — never skip
+2. agent_step is **SHOULD** — best-effort
+3. **Metadata only** — never include output content in trace entries
+4. If trace write fails, continue — never block execution
 
 ## Natural Language Mapping
 
@@ -148,10 +186,10 @@ Same as fan-out but with a different prompt for each agent.
 
 1. Run: `$XMS classify`
 2. Parse JSON output (`action: "classify"`)
-3. **Step-Back (상위 패턴 확인):** 분류 전에 한 단계 물러서서 묻는다 — "이 문제는 근본적으로 어떤 종류인가?"
-   - 코드 버그인가, 설계 문제인가, 프로세스 문제인가, 환경 문제인가?
-   - 이 질문의 답이 rule-based 추천과 다르면, LLM fallback을 강제로 실행한다.
-   - 예: 신호가 "error"지만 step-back에서 "설계 문제"로 판단 → iterate 대신 constrain 추천
+3. **Step-Back (check higher-level pattern):** Before classifying, step back and ask — "What kind of problem is this, fundamentally?"
+   - Is it a code bug, a design problem, a process problem, or an environment problem?
+   - If the answer differs from the rule-based recommendation, force LLM fallback.
+   - Example: signal is "error" but step-back determines "design problem" → recommend constrain instead of iterate
 4. **Confidence check**:
 
 ### High confidence (≥ 0.7)
@@ -203,10 +241,11 @@ Parse the agent result:
 - If `Strategy` is an x-solver strategy → `$XMS strategy set <chosen>`
 - If `x-op Alternative` exists → Suggest the x-op strategy to the user as well
 
-4. AskUserQuestion for final strategy selection:
+4. **AskUserQuestion (REQUIRED)** for final strategy selection:
    - Recommended strategy (rule-based or LLM)
    - x-op alternative (if any)
    - Alternative strategies
+   - Example: AskUserQuestion("전략 **{strategy}**를 추천합니다 (신뢰도 {confidence}%). 진행할까요? 다른 전략을 선택하려면 알려주세요.")
 5. After selection: `$XMS strategy set <chosen>`
 
 ### Enhanced Signal Detection
@@ -313,6 +352,9 @@ Output in JSON format:
 ```
 
 Use the result to call `$XMS tree add "description" --difficulty medium`.
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("문제를 {N}개의 하위 문제로 분해했습니다. 탐색(explore) 단계로 진행할까요?")
+
 Advance: `$XMS solve-advance --phase explore`
 
 #### Phase: explore
@@ -335,6 +377,9 @@ Requirements:
 ```
 
 Use the result to call `$XMS candidates add "description" --source agent-N --sub-problem spN`.
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("각 하위 문제에 대한 후보 솔루션을 생성했습니다. 평가(evaluate) 단계로 진행할까요?")
+
 Advance: `$XMS solve-advance --phase evaluate`
 
 #### Phase: evaluate
@@ -357,6 +402,9 @@ Score each candidate 0-10 against each constraint. Include justification per sco
 ```
 
 Use the result to call `$XMS candidates score <id> --constraint c1 --score 8`.
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("후보 평가가 완료됐습니다. 통합(synthesize) 단계로 진행할까요?")
+
 Advance: `$XMS solve-advance --phase synthesize`
 
 #### Phase: synthesize
@@ -382,10 +430,10 @@ Use the result to create the final candidate + select.
 
 ### Strategy: iterate
 
-> **리더 실행 규칙 (MUST)**
-> 1. 리더(Claude)는 어떤 phase에서도 직접 코드를 읽거나 가설을 검증하지 않는다. **반드시 agent에 위임한다.**
-> 2. phase는 반드시 순서대로 실행한다. **건너뛰기 금지.**
-> 3. 각 phase 완료 후 **즉시** `$XMS solve-advance`를 호출한다. 호출 없이 다음 phase로 넘어가지 않는다.
+> **Leader execution rules (MUST)**
+> 1. The leader (Claude) must never directly read code or verify hypotheses in any phase. **Always delegate to an agent.**
+> 2. Phases must be executed in order. **Skipping is forbidden.**
+> 3. After each phase completes, call `$XMS solve-advance` **immediately**. Do not advance to the next phase without calling it.
 >
 > **Phase Flow:**
 > ```
@@ -395,7 +443,7 @@ Use the result to create the final candidate + select.
 
 #### Phase: diagnose
 
-> **MUST — 이 phase는 SKIP 불가. iterate 전략의 첫 solve는 반드시 diagnose부터 시작한다.**
+> **MUST — This phase cannot be skipped. The first solve of the iterate strategy must always start from diagnose.**
 
 **delegate** (debugger, sonnet):
 ```
@@ -455,17 +503,20 @@ Highlight the 2-3 most likely root cause categories → these inform hypothesis 
 
 The Fishbone result feeds into hypothesize: agent prompts include "Focus hypotheses on these categories: {top categories from Fishbone}"
 
-완료 후 반드시 실행:
+After completion, run without fail:
 ```bash
-# [REQUIRED] diagnose 완료 — 다음 phase로 전진
+# [REQUIRED] diagnose complete — advance to next phase
 $XMS solve-advance --phase hypothesize
 ```
 
-> 체크리스트:
-> - [ ] delegate agent 호출 완료
-> - [ ] Current State / Baseline / Delta 정보 수집 완료
-> - [ ] (Delta = unknown 또는 multiple layers인 경우) Fishbone 분석 완료
-> - [ ] `$XMS solve-advance --phase hypothesize` 호출 완료
+> Checklist:
+> - [ ] delegate agent called
+> - [ ] Current State / Baseline / Delta information collected
+> - [ ] (If Delta = unknown or multiple layers) Fishbone analysis complete
+> - [ ] AskUserQuestion called
+> - [ ] `$XMS solve-advance --phase hypothesize` called
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("진단(diagnose) 완료: {current_state_summary}. 가설 생성(hypothesize) 단계로 진행할까요?")
 
 #### Phase: hypothesize
 
@@ -493,30 +544,33 @@ For each hypothesis:
 Order by likelihood descending. Output in JSON format.
 ```
 
-완료 후 반드시 실행:
+After completion, run without fail:
 ```bash
-$XMS hypotheses add "description"   # 각 가설마다 호출
-# [REQUIRED] hypothesize 완료 — 다음 phase로 전진
+$XMS hypotheses add "description"   # call once per hypothesis
+# [REQUIRED] hypothesize complete — advance to next phase
 $XMS solve-advance --phase test
 ```
 
-> 체크리스트:
-> - [ ] delegate agent 호출 완료
-> - [ ] `$XMS hypotheses add` 호출 완료 (가설 수만큼)
-> - [ ] `$XMS solve-advance --phase test` 호출 완료
+> Checklist:
+> - [ ] delegate agent called
+> - [ ] `$XMS hypotheses add` called (once per hypothesis)
+> - [ ] AskUserQuestion called
+> - [ ] `$XMS solve-advance --phase test` called
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("{N}개의 가설을 생성했습니다. 검증(test) 단계로 진행할까요?")
 
 #### Phase: test
 
-> **리더는 직접 가설을 검증하지 않는다. 가설 수만큼 agent를 fan-out해야 한다.**
+> **The leader must not verify hypotheses directly. Fan-out one agent per hypothesis.**
 
-**fan-out** (가설 N개 → agent N개 동시 호출, sonnet):
+**fan-out** (N hypotheses → N agents called simultaneously, sonnet):
 ```
 Agent tool 1: { description: "hypothesis-1-verifier", prompt: "...", run_in_background: true, model: "sonnet" }
 Agent tool 2: { description: "hypothesis-2-verifier", prompt: "...", run_in_background: true, model: "sonnet" }
 ...
 ```
 
-각 agent의 prompt:
+Each agent's prompt:
 ```
 {problem_solving_principles}
 
@@ -534,43 +588,49 @@ Read code, check logs, and run commands as needed to verify.
 Result: confirmed / refuted / inconclusive + concrete evidence (paste the relevant output)
 ```
 
-모든 agent 완료 후 반드시 실행:
+After all agents complete, run without fail:
 ```bash
-$XMS hypotheses update <id> --status confirmed|refuted|inconclusive  # 각 가설마다
-# [REQUIRED] test 완료 — 다음 phase로 전진
+$XMS hypotheses update <id> --status confirmed|refuted|inconclusive  # once per hypothesis
+# [REQUIRED] test complete — advance to next phase
 $XMS solve-advance --phase refine
 ```
 
-> 체크리스트:
-> - [ ] 가설 수만큼 agent fan-out 완료 (직접 검증 금지)
-> - [ ] `$XMS hypotheses update` 호출 완료 (가설 수만큼)
-> - [ ] `$XMS solve-advance --phase refine` 호출 완료
+> Checklist:
+> - [ ] Agent fan-out complete (one per hypothesis — direct verification forbidden)
+> - [ ] `$XMS hypotheses update` called (once per hypothesis)
+> - [ ] AskUserQuestion called
+> - [ ] `$XMS solve-advance --phase refine` called
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("가설 검증 완료: {confirmed_count}개 확인, {refuted_count}개 반박. 정제(refine) 단계로 진행할까요?")
 
 #### Phase: refine
 
 Check verified (confirmed/inconclusive) hypotheses:
 - Confirmed exists → proceed to resolve
 - All refuted → apply **Switch or Revert** before retrying:
-  1. **Switch perspective** — 모든 가설이 같은 레이어였다면 다른 레이어로 전환 (앱 코드 → infra/config/network)
-  2. **Revert to baseline** — diagnose phase의 known-good 상태로 복귀, 최소 변경으로 원인 격리
-  3. 둘 다 시도 후에도 실패 → hypothesize로 복귀 (iteration 횟수 증가)
-- max_iterations reached → 가장 가능성 높은 가설로 resolve 진행
+  1. **Switch perspective** — If all hypotheses targeted the same layer, switch to a different layer (app code → infra/config/network)
+  2. **Revert to baseline** — Return to the known-good state from the diagnose phase; isolate the cause with minimal changes
+  3. If both fail → return to hypothesize (iteration count increases)
+- max_iterations reached → proceed to resolve with the most likely hypothesis
 
-완료 후 반드시 실행:
+After completion, run without fail:
 ```bash
-# [REQUIRED] refine 결정에 따라 둘 중 하나 — 생략 금지
-$XMS solve-advance --phase resolve     # confirmed 존재 시
-# 또는
-$XMS solve-advance --phase hypothesize # all refuted 시
+# [REQUIRED] one of two based on refine decision — must not be omitted
+$XMS solve-advance --phase resolve     # if confirmed exists
+# or
+$XMS solve-advance --phase hypothesize # if all refuted
 ```
 
-> 체크리스트:
-> - [ ] 가설 상태 확인 완료
-> - [ ] `$XMS solve-advance` 호출 완료 (resolve 또는 hypothesize)
+> Checklist:
+> - [ ] Hypothesis status verified
+> - [ ] AskUserQuestion called
+> - [ ] `$XMS solve-advance` called (resolve or hypothesize)
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("정제 결과: {refine_decision}. {'해결(resolve) 단계로 진행할까요?' if confirmed else '다시 가설 생성(hypothesize)으로 돌아갈까요?'}")
 
 #### Phase: resolve
 
-> **fix + exec proof — 고치고, 실행으로 증명한다. 둘 다 이 phase에서 끝낸다.**
+> **fix + exec proof — Fix it and prove it by execution. Both must be completed in this phase.**
 
 **delegate** (executor, sonnet):
 ```
@@ -596,21 +656,21 @@ Output:
 3. Result: PASS (evidence) or FAIL (what's still broken)
 ```
 
-완료 후 반드시 실행:
+After completion, run without fail:
 ```bash
 $XMS candidates add "solution description" --source executor
 $XMS candidates select <id>
-$XMS verify   # 자동으로 verify phase로 전환 + 결과 기록
+$XMS verify   # automatically transitions to verify phase + records result
 $XMS close --summary "..."
 ```
 
-> 체크리스트:
-> - [ ] delegate agent 호출 완료 (fix + exec proof 포함)
-> - [ ] 실행 증거 확인 (명령어 출력 붙여넣기)
-> - [ ] `$XMS candidates add` + `select` 호출 완료
-> - [ ] `$XMS verify` 호출 완료
-> - [ ] `$XMS close` 호출 완료
-> - [ ] 비자명한 문제인 경우: `/x-humble review "x-solver: {title} — why late?"` 제안
+> Checklist:
+> - [ ] delegate agent called (including fix + exec proof)
+> - [ ] Execution evidence confirmed (paste command output)
+> - [ ] `$XMS candidates add` + `select` called
+> - [ ] `$XMS verify` called
+> - [ ] `$XMS close` called
+> - [ ] If non-trivial problem: suggest `/x-humble review "x-solver: {title} — why late?"`
 
 ### Strategy: constrain
 
@@ -636,6 +696,9 @@ Classify any additional constraints found as:
 ```
 
 Use the result to call `$XMS constraints add "description" --type hard|soft|preference`.
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("제약 조건 추출 완료: hard {hard_count}개, soft {soft_count}개. 후보 생성(generate) 단계로 진행할까요?")
+
 Advance: `$XMS solve-advance --phase generate`
 
 #### Phase: generate
@@ -658,6 +721,9 @@ Soft constraints: {soft_constraints}
 ```
 
 Use the result to call `$XMS candidates add "description" --source agent-N`.
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("{N}개의 후보 솔루션을 생성했습니다. 평가(evaluate) 단계로 진행할까요?")
+
 Advance: `$XMS solve-advance --phase evaluate`
 
 #### Phase: evaluate
@@ -692,10 +758,12 @@ After scoring, the leader produces a **Contrastive Matrix** for the user:
 | c3 (preference) | 6 — reason  | 8 — reason  | 6 — reason  | B      |
 | **Total**       | **21**      | **22**      | **14** ❌   | **B**  |
 
-Situational recommendation: {context에 따라 어떤 상황에서 어떤 후보가 더 나은지}
+Situational recommendation: {which candidate is better in which situation, based on context}
 ```
 
 This makes tradeoffs visible at a glance before selection.
+
+**AskUserQuestion (REQUIRED):** AskUserQuestion("후보 평가가 완료됐습니다. 위의 Contrastive Matrix를 검토하고 최종 선택(select) 단계로 진행할까요?")
 
 Advance: `$XMS solve-advance --phase select`
 
@@ -755,8 +823,9 @@ Retry with an alternative strategy on failure.
      - If a constraint cannot be verified by execution (e.g., "maintainable code"), state explicitly that it requires human judgment
      ```
 4. Show results to the user with execution evidence
-5. On pass: `$XMS phase next` → recommend close. Suggest committing (save known-good state).
-6. On fail: show which constraints are unmet with the failing output, recommend returning to solve
+5. **AskUserQuestion (REQUIRED):** On pass: AskUserQuestion("검증 통과: {constraints_passed}개 제약 조건 모두 충족됐습니다. 문제를 종료(close)할까요?")
+6. On pass (confirmed): `$XMS phase next` → run close. Suggest committing (save known-good state).
+7. On fail: show which constraints are unmet with the failing output; AskUserQuestion("검증 실패: {failed_constraints}. solve 단계로 돌아갈까요?")
 
 ## Command: next
 
@@ -800,7 +869,7 @@ Local config's `solving.parallel_agents` takes priority over shared config when 
 
 ## Post-Close: x-humble Link [why late?]
 
-After `$XMS close`, **iterate 전략에서 비자명한 문제(iteration 2회 이상 또는 perspective switch 발생)인 경우 반드시 제안한다.**
+After `$XMS close`, **always suggest this for non-trivial problems in the iterate strategy (2+ iterations or a perspective switch occurred).**
 
 ```
 문제가 해결됐습니다. 왜 이 문제가 늦게 발견됐는지 되돌아볼까요?
@@ -813,9 +882,9 @@ On "Yes", pass context to x-humble:
 /x-humble review "x-solver: {problem_title} — strategy: {strategy}, iterations: {count}, why was this found late?"
 ```
 
-핵심 질문: **왜 이 문제가 발생했나? 왜 늦게 발견됐나? 프로세스에서 뭘 바꿔야 하나?**
+Key questions: **Why did this problem occur? Why was it found late? What should change in the process?**
 
-Skip: 단순 문제 (single iteration, confirmed at first try).
+Skip: Simple problems (single iteration, confirmed at first try).
 
 ---
 

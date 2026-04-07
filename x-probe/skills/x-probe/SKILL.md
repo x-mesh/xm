@@ -34,13 +34,17 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 **Developer mode**: Use technical terms (premise, verdict, fatal, refuted, heuristic, data-backed). Concise English-Korean mix.
 
-**Normal mode**: 쉬운 한국어로 안내합니다.
+**Normal mode**: Use plain Korean throughout.
 - "premise" → "가정", "verdict" → "결론", "fatal" → "핵심", "weakening" → "약화", "minor" → "미미"
 - "refuted" → "틀림", "survived" → "유효", "weakened" → "약해짐"
 - "assumption" → "추측", "heuristic" → "경험 기반", "data-backed" → "데이터 있음", "validated" → "검증됨"
 - "PROCEED" → "진행", "RETHINK" → "재검토", "KILL" → "중단"
 - "pre-mortem" → "실패 시나리오", "inversion" → "반대로 생각하기", "falsifiable" → "검증 가능"
-- "~하세요" 체 사용, 핵심 정보 먼저
+- Use "~하세요" polite form; lead with key information
+
+## Arguments
+
+User provided: $ARGUMENTS
 
 ## AskUserQuestion Dark-Theme Rule
 
@@ -62,10 +66,6 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 **WRONG:** Putting context in `question` field → user sees blank space above options
 **RIGHT:** Print context as markdown first, use `header` for tag, options for detail
-
-## Arguments
-
-User provided: $ARGUMENTS
 
 ## Routing
 
@@ -100,6 +100,28 @@ First word of `$ARGUMENTS`:
       "에디터에 실시간 협업 기능 추가"
     ```
 - Any other text → [Session: probe] — treat as idea description
+
+## Trace Recording
+
+x-probe MUST record trace entries to `.xm/traces/` during execution. See x-trace SKILL.md "Trace Directive Template" for the full schema.
+
+### On start (MUST)
+```bash
+SESSION_ID="x-probe-$(date +%Y%m%d-%H%M%S)-$(openssl rand -hex 2)"
+mkdir -p .xm/traces && echo "{\"type\":\"session_start\",\"session_id\":\"$SESSION_ID\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"v\":1,\"skill\":\"x-probe\",\"args\":{}}" >> .xm/traces/$SESSION_ID.jsonl
+```
+
+### Per agent call (SHOULD — best-effort)
+Record agent_step after each agent completes.
+
+### On end (MUST)
+Record session_end with total duration, agent count, and status.
+
+### Rules
+1. session_start and session_end are **MUST** — never skip
+2. agent_step is **SHOULD** — best-effort
+3. **Metadata only** — never include output content in trace entries
+4. If trace write fails, continue — never block execution
 
 ## Natural Language Mapping
 
@@ -153,9 +175,28 @@ You don't give answers. You ask questions that make the user see the flaw themse
 
 ---
 
+## Interaction Protocol
+
+**CRITICAL: x-probe is an interactive session. Every question MUST use the AskUserQuestion tool.**
+
+Rules:
+1. **AskUserQuestion is REQUIRED, not optional** — every question to the user MUST be asked via the AskUserQuestion tool. This is the ONLY mechanism that forces a real turn boundary. Text output alone does NOT stop generation.
+2. **ONE AskUserQuestion per turn** — call AskUserQuestion once, then STOP. Do not call it multiple times. Do not add text after it. Do not proceed to the next phase.
+3. **No text-only questions** — NEVER output a question as plain text and expect the user to answer. If you find yourself writing "?" at the end of a text block without AskUserQuestion, you are violating this rule.
+4. **Phase progression requires user response** — after each AskUserQuestion, the user's reply arrives as a new turn. Only then may you proceed.
+
+Anti-patterns (NEVER do these):
+- ❌ Output premise table + "맞게 정리했나요?" as text → user has no turn boundary
+- ❌ Ask "근거가 있으세요?" in text output → generation continues past the question
+- ❌ Show Phase 2 question as text then say "답변 후 진행합니다" → HALT text has no mechanical effect
+- ✅ Output premise table, then call AskUserQuestion("맞게 정리했나요? 빠진 가정이나 수정할 부분이 있으면 알려주세요.")
+- ✅ Call AskUserQuestion("가정 #1: ... 이게 맞다는 근거가 있으세요?")
+
+---
+
 ## Session: probe
 
-4-phase structured probing session.
+4-phase structured probing session. Each phase has explicit HALT gates.
 
 ### Phase 1: FRAME — What are we probing?
 
@@ -172,9 +213,24 @@ Idea: {user_input}
 A premise is an assumption that must be true for this idea to succeed.
 Extract 3-7 core premises.
 
+**MANDATORY: Cover ALL dimensions below.** Do not extract only technical premises.
+Every idea rests on both technical AND human assumptions. Extract at least one from each category:
+
+| Dimension | What to question | Example premise |
+|-----------|-----------------|-----------------|
+| **Technical feasibility** | Can it be built? | "The API can handle 1K concurrent users" |
+| **User preference** | Will users CHOOSE this over alternatives? | "Users will prefer a GUI over memorizing CLI commands" |
+| **Cognitive load** | Is the interaction model simpler? | "Visual exploration reduces the effort to find information" |
+| **Adoption cost** | What does switching cost? | "The context-switch to a browser is worth the benefit" |
+| **Alternatives** | Is there a cheaper way? | "No existing tool achieves 80% of this value" |
+
+If you find yourself extracting only technical premises, STOP and ask:
+"Why would a human USE this, not just CAN it be built?"
+
 For each premise:
 - Statement: one sentence, falsifiable (can be proven wrong)
 - Confidence: high / medium / low / unknown
+- Dimension: which dimension from the table above
 - Fragility: if this premise is wrong, what happens to the entire idea?
   - fatal: idea collapses entirely
   - weakening: idea loses significant value
@@ -206,71 +262,78 @@ Output format:
 (근거 수준: 근거 없음 → 경험 기반 → 데이터 있음 → 검증됨)
 ```
 
-Show the premise table to the user. Ask:
+Show the premise table to the user as text output. Then IMMEDIATELY call AskUserQuestion:
 
 **Developer mode:**
 ```
-These are the assumptions your idea rests on.
-Does this capture it correctly? Any premises missing or wrong?
+AskUserQuestion("These are the assumptions your idea rests on. Does this capture it correctly? Any premises missing or wrong?")
 ```
 
 **Normal mode:**
 ```
-이 아이디어가 기대고 있는 가정들입니다.
-맞게 정리했나요? 빠진 가정이나 수정할 부분이 있으면 알려주세요.
+AskUserQuestion("이 아이디어가 기대고 있는 가정들입니다. 맞게 정리했나요? 빠진 가정이나 수정할 부분이 있으면 알려주세요.")
 ```
 
-Adjust premises based on user feedback.
+**The AskUserQuestion call is the LAST thing in this turn. Do NOT output any text after it. Do NOT proceed to Phase 2.**
+
+When the user responds: adjust premises based on feedback. If user confirms ("ok" / "맞아" / "계속"), proceed to Phase 2.
 
 ### Phase 2: PROBE — Socratic questioning on weakest premises
 
-For each premise (starting from most fragile):
+Probe 2-4 of the most fragile premises. **Ask ONE premise at a time.**
 
-Apply principle #6 — questions, not judgments.
+**For each premise** (starting from most fragile, fatal+assumption first):
 
-**IMPORTANT: Split context from question.** AskUserQuestion renders question text in low-contrast color on dark terminals. Always output context as regular markdown FIRST, then call AskUserQuestion with only the short question.
+**Step A: Initial question** — call AskUserQuestion (REQUIRED):
 
-**"Why?" chain** — surface the real premise:
-
-**Step A — Output context as regular text (NOT inside AskUserQuestion):**
+Developer mode:
 ```
-[Phase 2: 가정 #{n}]
-
-"{premise_statement}"
-
-확신도: {confidence} | 근거: {evidence_grade}
-
-이게 맞다는 근거가 있으세요?
-(구체적으로: {specific_probing_question})
+AskUserQuestion("[Phase 2: Premise #{N}]\n\n\"{premise_statement}\"\nConfidence: {confidence} | Evidence: {evidence_grade}\n\nWhat evidence do you have that this is true?\n(Specific: who said it, when, how was it measured?)")
 ```
 
-**Step B — Call AskUserQuestion with SHORT question only:**
-Use AskUserQuestion with `question` set to just: `"가정 #{n}: 근거 수준을 선택하세요"` (or equivalent short text).
-Put all detail in option `description` fields, NOT in the `question` field.
-
-After the user answers, follow up based on the evidence grade:
-- **assumption** (no evidence) → "So this is an untested belief. What's the cheapest way to test it before committing?" Upgrade to `heuristic` if user cites experience, or `data-backed` if they provide a source.
-- **heuristic** (experience-based) → "When did you last see this pattern hold? What was different about that context vs. now?" Challenge transferability.
-- **data-backed** (cited source) → "What would need to be true for this data to be misleading? Is the sample/context still relevant?" Stress-test the source.
-- **validated** (tested/confirmed) → Light touch only. "When was this validated, and has anything changed since?"
-
-Update the evidence grade in the premise table after each answer — grades can go up (user provides new evidence) or down (user admits evidence is weaker than stated).
-
-**"Let's say you're right" — follow the logic:**
-
-Output this as regular markdown text (NOT inside AskUserQuestion question field):
+Normal mode:
 ```
-"좋습니다, {premise}가 맞다고 치죠. 그러면 어떻게 됩니까?
-이걸 만들고 {premise}가 유지된다면, 6개월 후 성공은 어떤 모습인가요?
-그리고 {premise}가 반만 맞다면?"
+AskUserQuestion("[Phase 2: 가정 #{N}]\n\n\"{premise_statement}\"\n확신도: {confidence} | 근거: {evidence_grade}\n\n이게 맞다는 근거가 있으세요?\n(구체적으로: 누가, 언제, 어떻게 확인했는지)")
 ```
-Then use AskUserQuestion with a short question like `"가정 #{n}: 이 가정이 반만 맞다면?"` and options for the user's assessment.
 
-Probe 2-4 of the most fragile premises. Do not probe all of them — kill early if a fatal premise falls.
+**AskUserQuestion is the LAST action. STOP here. No text after it.**
 
-**Stop probing early if:**
-- A fatal premise is refuted by the user's own answers → skip to Phase 4 with KILL
-- All probed premises survive with strong evidence → skip to Phase 3
+**Step B: Follow-up** — after user responds, determine follow-up based on evidence grade, then call AskUserQuestion again:
+
+- **근거 없음** → AskUserQuestion("검증 안 된 믿음이네요. 코드 작성 전에 가장 저렴하게 테스트할 방법은?")
+- **경험 기반** → AskUserQuestion("그 패턴이 마지막으로 통한 게 언제였나요? 지금 상황이랑 뭐가 다른가요?")
+- **데이터 있음** → AskUserQuestion("그 데이터가 잘못됐을 수 있는 조건은? 표본/맥락이 지금도 유효한가요?")
+- **검증됨** → AskUserQuestion("언제 검증했고, 그 이후로 바뀐 게 있나요?")
+
+Upgrade or downgrade the evidence grade based on user's answer.
+
+**AskUserQuestion is the LAST action. STOP here. No text after it.**
+
+**Step C: "Assume it's true"** — after user responds to Step B, call AskUserQuestion:
+
+```
+AskUserQuestion("이 가정이 맞다고 칩시다. 그러면 6개월 뒤 성공한 모습은? 그리고 반만 맞았다면요?")
+```
+
+**AskUserQuestion is the LAST action. STOP here. After user responds, update premise status and move to next premise.**
+
+After probing a premise, show updated status:
+```
+가정 #{N} 업데이트: {근거 수준 변화} | 상태: {유효/약해짐/틀림}
+```
+
+**Early termination rules:**
+- A fatal premise is refuted by the user's own answers → skip remaining premises, go to Phase 4 with KILL
+- All probed premises survive with strong evidence → go to Phase 3
+- After probing 2-4 premises → go to Phase 3
+
+**Before Phase 3** — Show probed premises summary as text, then call AskUserQuestion:
+
+```
+AskUserQuestion("Phase 2 완료. 이제 Phase 3(스트레스 테스트)를 진행할까요?\n- 실패 시나리오 분석\n- 반대로 생각하기\n- 대안 탐색")
+```
+
+**AskUserQuestion is the LAST action. STOP here. Do NOT launch Phase 3 agents until user confirms.**
 
 ### Phase 3: STRESS — Pre-mortem + Inversion + Alternatives
 

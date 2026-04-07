@@ -24,6 +24,15 @@ No external dependencies. All state is stored as JSONL files in `.xm/traces/`.
 
 # x-trace — Agent Execution Tracing
 
+## Model Routing
+
+| Subcommand | Model | Reason |
+|------------|-------|--------|
+| `show`, `list`, `cost`, `diff` | **haiku** (Agent tool) | Read-only log parsing and display |
+| `replay` | main model (sonnet) | Requires agent re-execution |
+
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
+
 Reads and writes JSONL files using Claude Code's native Bash tool.
 No external dependencies. Works as long as the `.xm/traces/` directory exists.
 
@@ -33,10 +42,10 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 **Developer mode**: Use technical terms (trace, timeline, token, replay, diff, JSONL). Concise.
 
-**Normal mode**: 쉬운 한국어로 안내합니다.
+**Normal mode**: Use plain Korean for guidance.
 - "trace" → "실행 기록", "timeline" → "시간순 보기", "token" → "토큰", "replay" → "다시 보기"
 - "diff" → "비교", "cost" → "비용"
-- "~하세요" 체 사용, 핵심 정보 먼저
+- Use "~하세요" sentence style; lead with the most important information first
 
 ## Arguments
 
@@ -518,6 +527,49 @@ Automatic cost summary on session end:
 📊 Session cost: $0.42 (input: 180K, output: 45K tokens)
    Budget: $0.42 / $5.00 (8.4%)
 ```
+
+---
+
+## Trace Directive Template for Skills
+
+All x-kit skills MUST record trace entries during execution. This is the standard template — each skill's SKILL.md includes a customized version.
+
+### Mandatory Checkpoints (MUST — never skip)
+
+**On skill start** — append session_start BEFORE any agent calls:
+```bash
+mkdir -p .xm/traces && echo '{"type":"session_start","session_id":"SESSION_ID","ts":"TIMESTAMP","v":1,"skill":"SKILL_NAME","args":{}}' >> .xm/traces/SESSION_ID.jsonl
+```
+
+**On skill end** — append session_end AFTER all work completes:
+```bash
+echo '{"type":"session_end","session_id":"SESSION_ID","ts":"TIMESTAMP","v":1,"total_duration_ms":DURATION,"agent_count":N,"status":"success","tokens_est_total":{"input":TOTAL_IN,"output":TOTAL_OUT,"precision":"estimate"}}' >> .xm/traces/SESSION_ID.jsonl
+```
+
+### Best-Effort Entries (SHOULD — record when possible)
+
+**Per agent call** — append agent_step after each agent completes:
+```bash
+echo '{"type":"agent_step","session_id":"SESSION_ID","ts":"TIMESTAMP","v":1,"id":"step-NNN","parent_id":PARENT_OR_NULL,"role":"ROLE","model":"MODEL","tokens_est":{"input":N,"output":N,"precision":"estimate"},"duration_ms":N,"status":"success","error":null}' >> .xm/traces/SESSION_ID.jsonl
+```
+
+### Session ID Generation
+
+Format: `{skill}-{YYYYMMDD}-{HHMMSS}-{4hex}`
+Example: `x-op-20260404-153000-a3f1`
+
+Generate at skill start:
+```bash
+SESSION_ID="{skill}-$(date +%Y%m%d-%H%M%S)-$(openssl rand -hex 2)"
+```
+
+### Rules
+1. session_start and session_end are **MUST** — never skip even if agent_step recording fails
+2. agent_step is **SHOULD** — best-effort, record when possible
+3. Trace entries contain **metadata only** — never include LLM output, verdicts, or generated content
+4. `tokens_est` values are estimates (±30-50%) — always mark `"precision":"estimate"`
+5. If trace write fails (e.g., disk full), log to stderr and continue — NEVER block skill execution
+6. Each skill session writes to its own file — no concurrent writes to the same file
 
 ---
 

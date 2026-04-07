@@ -25,7 +25,17 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 - "strategy" → "전략", "verdict" → "판정", "premise" → "가정", "self-score" → "자체 점수"
 - "consensus" → "합의", "refinement" → "다듬기", "tournament" → "대결", "debate" → "토론"
 - "compose" → "조합", "decompose" → "분해", "escalate" → "단계 올리기"
-- "~하세요" 체 사용, 핵심 정보 먼저
+- Use "~하세요" form; lead with key information first
+
+## Model Routing
+
+| Subcommand | Model | Reason |
+|------------|-------|--------|
+| `list` | **haiku** (Agent tool) | Catalog display, no reasoning |
+| Auto-route (strategy detection) | main model | Requires AskUserQuestion for confirmation |
+| Strategy execution | main model (sonnet+) | Multi-agent orchestration |
+
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
 
 ## AskUserQuestion Dark-Theme Rule
 
@@ -47,6 +57,21 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 **WRONG:** Putting context in `question` field → user sees blank space above options
 **RIGHT:** Print context as markdown first, use `header` for tag, options for detail
+
+## Interaction Protocol
+
+**CRITICAL: x-op strategies with multiple phases MUST use AskUserQuestion at phase boundaries.**
+
+Rules:
+1. **AskUserQuestion is REQUIRED at every phase transition** — after completing a phase, call AskUserQuestion to confirm before proceeding to the next phase. This is the ONLY mechanism that forces a real turn boundary.
+2. **No text-only questions** — NEVER output "진행할까요?" as plain text. Use AskUserQuestion tool.
+3. **Show results before asking** — output the current phase results, then call AskUserQuestion for confirmation.
+4. **Auto-Route confirmation is mandatory** — when auto-detecting a strategy, MUST use AskUserQuestion to confirm the recommendation before executing.
+
+Anti-patterns (NEVER do these):
+- ❌ Complete Phase 1, output results, then immediately start Phase 2
+- ❌ Ask "다음 단계로 넘어갈까요?" as text output
+- ✅ Complete Phase 1, output results, call AskUserQuestion("Phase 1 완료. Phase 2를 진행할까요?")
 
 ## Routing
 
@@ -109,9 +134,7 @@ When the user provides text that doesn't match any strategy keyword, auto-detect
 **Execution flow:**
 
 1. Parse input text against signal table
-2. If high confidence match → **MUST use AskUserQuestion** to confirm before proceeding. Do NOT skip this step. Do NOT proceed without user response.
-
-   Use AskUserQuestion with this prompt (adjust for mode):
+2. If high confidence match → show recommendation and confirm:
 
    **Developer mode:**
    ```
@@ -135,10 +158,9 @@ When the user provides text that doesn't match any strategy keyword, auto-detect
    4) 직접 선택
    ```
 
-   **BLOCKING: Wait for user selection. Do NOT execute any strategy until user responds.**
-
-3. If low/medium confidence or no match → **MUST use AskUserQuestion** with top 3 suggestions
-4. After user confirms (via AskUserQuestion response) → execute the selected strategy with the original text as topic
+3. If low/medium confidence or no match → show top 3 suggestions with AskUserQuestion
+4. **Call AskUserQuestion to confirm strategy selection before executing.** (See Interaction Protocol)
+5. After user confirms → execute the selected strategy with the original text as topic
 
 **Examples:**
 ```
@@ -324,6 +346,8 @@ Tag 3+ dimensions from the Dimension Anchors (Agent Output Quality Contract). Ea
 - `run_in_background: true` (parallel)
 - Wait for all agents to complete
 
+**Call AskUserQuestion to confirm before Round 2. Show phase results first.**
+
 ### Round 2: CONVERGE
 
 > 🔄 [refine] Round 2/{max}: Converge
@@ -340,6 +364,8 @@ Select the best approach by number and explain your reasoning in 2-3 lines."
 ```
 
 The leader tallies the votes → determines the adopted proposal.
+
+**Call AskUserQuestion to confirm before Round 3. Show phase results first.**
 
 ### Round 3+: VERIFY
 
@@ -388,10 +414,14 @@ fan-out:
 "Submit your best result. This is a competition — the best result will be adopted. Structure by dimension (see Dimension Anchors). Judges score per-dimension. 400 words max."
 ```
 
+**Call AskUserQuestion to confirm before Phase 2. Show phase results first.**
+
 ### Phase 2: ANONYMIZE
 The leader anonymizes collected results:
 - Remove agent names, shuffle order
 - Label as "Solution A", "Solution B", "Solution C"
+
+**Call AskUserQuestion to confirm before Phase 3. Show phase results first.**
 
 ### Phase 3: VOTE
 fan-out:
@@ -400,6 +430,8 @@ fan-out:
 {anonymized solution list}
 Format: 1st: [A|B|C], 2nd: [...], ... Reason: [one line]"
 ```
+
+**Call AskUserQuestion to confirm before Phase 4. Show phase results first.**
 
 ### Phase 4: TALLY
 Borda count (1st=N points, 2nd=N-1 points...). Leader breaks ties.
@@ -450,6 +482,8 @@ All agents review code from multiple perspectives.
 - `--target <file>` → Read the file with Read tool
 - If absent → `git diff HEAD` (Bash tool)
 
+**Call AskUserQuestion to confirm before Phase 2. Show phase results first.**
+
 ### Phase 2: ASSIGN
 Dynamically assign perspectives based on agent count (`--agents N` or `agent_max_count`):
 
@@ -461,6 +495,8 @@ Dynamically assign perspectives based on agent count (`--agents N` or `agent_max
 | 6 | + Consistency/Code conventions |
 | 7+ | + DX/Readability, Dependencies/Compatibility, etc. — leader assigns additional |
 
+**Call AskUserQuestion to confirm before Phase 3. Show phase results first.**
+
 ### Phase 3: REVIEW
 fan-out (each agent gets a different perspective prompt):
 ```
@@ -469,6 +505,8 @@ fan-out (each agent gets a different perspective prompt):
 Report issues in [Critical|High|Medium|Low] file:line — description format. Each finding must be evidence-based and falsifiable per the Agent Output Quality Contract. Tag each with a dimension from Code Analysis Anchors.
 End with self-assessment: review thoroughness 1-10, CONFIDENT or UNCERTAIN."
 ```
+
+**Call AskUserQuestion to confirm before Phase 4. Show phase results first.**
 
 ### Phase 4: SYNTHESIZE
 Leader synthesizes: deduplicate, sort by severity, highlight issues found by multiple agents.
@@ -490,15 +528,21 @@ Pro vs Con debate followed by verdict.
 ### Phase 1: POSITION
 `--agents N` (minimum 3) → Auto-distribute into PRO team, CON team, and JUDGE.
 
+**Call AskUserQuestion to confirm before Phase 2. Show phase results first.**
+
 ### Phase 2: OPENING
 PRO/CON simultaneous fan-out:
 PRO/CON simultaneous fan-out:
 - PRO: "Present 3 arguments in favor. Each must be evidence-based and falsifiable per the Agent Output Quality Contract. Tag each with a dimension. 300 words max."
 - CON: "Present 3 arguments against. Each must be evidence-based and falsifiable per the Agent Output Quality Contract. Tag each with a dimension. 300 words max."
 
+**Call AskUserQuestion to confirm before Phase 3. Show phase results first.**
+
 ### Phase 3: REBUTTAL
 Send CON's opening to PRO, PRO's opening to CON (fan-out):
 "Rebut the opposing arguments. 200 words."
+
+**Call AskUserQuestion to confirm before Phase 4. Show phase results first.**
 
 ### Phase 4: VERDICT
 Send the full record to JUDGE (delegate):
@@ -523,13 +567,19 @@ Attack/defend. Find vulnerabilities → fix.
 ### Phase 1: TARGET
 Collect targets via `--target` or `git diff HEAD`.
 
+**Call AskUserQuestion to confirm before Phase 2. Show phase results first.**
+
 ### Phase 2: ATTACK
 Attack team fan-out:
 "From an adversarial perspective, find as many vulnerabilities/defects as possible. Each attack must target a distinct dimension from the Code Analysis Anchors. Tag: [dimension] [Critical|High|Medium] location — attack vector — proof scenario."
 
+**Call AskUserQuestion to confirm before Phase 3. Show phase results first.**
+
 ### Phase 3: DEFEND
 Defense team fan-out (with attack results):
 "For each attack, provide a fix or counter-evidence."
+
+**Call AskUserQuestion to confirm before Phase 4. Show phase results first.**
 
 ### Phase 4: REPORT
 Leader synthesizes: Fixed(🟢), Partial(🟡), Open(🔴).
@@ -568,8 +618,12 @@ Default mode generates ideas freely. Two additional modes are available:
 - Agent 4: **Fractionation** — "Break the problem into non-obvious pieces. Recombine differently."
 - Synthesis: leader runs vertical validation — which lateral ideas actually work when scrutinized?
 
+**Call AskUserQuestion to confirm before Phase 2. Show phase results first.**
+
 ### Phase 2: CLUSTER
 Leader deduplicates, groups by theme, assigns numbers.
+
+**Call AskUserQuestion to confirm before Phase 3. Show phase results first.**
 
 ### Phase 3: VOTE (when --vote is set)
 fan-out:
@@ -593,9 +647,13 @@ Split a large task into independent subtasks → parallel execution → merge.
 ### Phase 1: SPLIT
 `--splits "role:task,role:task"` or auto-split by the leader.
 
+**Call AskUserQuestion to confirm before Phase 2. Show phase results first.**
+
 ### Phase 2: DISPATCH
 fan-out with unique subtasks per agent:
 "Overall task: {original}. Your assignment: {subtask}. Confirm scope-clarity and interface-completeness per Dimension Anchors before starting. Do not modify anything outside your scope."
+
+**Call AskUserQuestion to confirm before Phase 3. Show phase results first.**
 
 ### Phase 3: MERGE
 Leader merges all results: check for conflicts, synthesize by theme.
@@ -619,11 +677,15 @@ fan-out: "State your position and rationale on this topic. Structure by dimensio
 
 Leader builds a position map: group similar stances, identify divergence points.
 
+**Call AskUserQuestion to confirm before Round 2. Show phase results first.**
+
 ### Round 2: CROSS-EXAMINE
 Send other participants' positions to each agent, **excluding their own** (broadcast — different prompt per agent):
 "Read the other participants' positions: agree with 1 + raise 1-2 questions + state whether your position changed."
 
 Early termination check: if all agree → skip to Final.
+
+**Call AskUserQuestion to confirm before Round 3. Show phase results first.**
 
 ### Round 3~N-1: DEEP DIVE
 fan-out (focus on key points of contention):
@@ -661,6 +723,8 @@ delegate (foreground):
 "## Socratic Seed: {TOPIC}
 Present your initial position and core arguments on this topic. 300 words max."
 ```
+
+**Call AskUserQuestion to confirm before Phase 2. Show phase results first.**
 
 ### Phase 2: QUESTION ROUNDS
 > 🧠 [socratic] Round {n}/{max}: Question
@@ -712,6 +776,8 @@ Role-based multi-perspective analysis — each agent is assigned a fixed persona
 - Default personas: senior engineer, security expert, PM, junior developer
 - Persona count adjusted to match `--agents N`
 
+**Call AskUserQuestion to confirm before Phase 2. Show phase results first.**
+
 ### Phase 2: ANALYZE
 > 🎭 [persona] Phase 2: Analyze
 
@@ -728,11 +794,15 @@ Map your persona's concerns to dimensions from the Dimension Anchors. Each perso
 300 words max."
 ```
 
+**Call AskUserQuestion to confirm before Phase 3. Show phase results first.**
+
 ### Phase 3: SYNTHESIZE
 Leader synthesizes all analyses:
 - Key summary per perspective
 - Common concerns vs conflict points
 - Unified recommendation
+
+**Call AskUserQuestion to confirm before Phase 4. Show phase results first.**
 
 ### Phase 4: CROSS-CHECK (optional, when --rounds > 2)
 fan-out — each agent re-verifies the unified proposal from their persona's perspective:
@@ -776,6 +846,8 @@ Design the overall structure:
 Each module must be independently implementable. Verify scope-clarity, dependency-minimality, and interface-completeness per Dimension Anchors. 400 words max."
 ```
 
+**Call AskUserQuestion to confirm before Phase 2. Show phase results first.**
+
 ### Phase 2: DISPATCH
 > 🏗️ [scaffold] Phase 2: Dispatch
 
@@ -791,6 +863,8 @@ Interface: {input/output spec}
 
 Implement this module. Do not assume other modules' internal implementation — use interfaces only."
 ```
+
+**Call AskUserQuestion to confirm before Phase 3. Show phase results first.**
 
 ### Phase 3: INTEGRATE
 > 🏗️ [scaffold] Phase 3: Integrate
@@ -1284,6 +1358,8 @@ Output format:
 - Each leaf: [ID] task name (deps: none or list of IDs)"
 ```
 
+**Call AskUserQuestion to confirm before Phase 2. Show phase results first.**
+
 ### Phase 2: EXECUTE LEAVES
 > 🧩 [decompose] Phase 2: Execute Leaves
 
@@ -1301,6 +1377,8 @@ Dependency results:
 
 Complete this leaf task. Do not exceed scope."
 ```
+
+**Call AskUserQuestion to confirm before Phase 3. Show phase results first.**
 
 ### Phase 3: ASSEMBLE
 > 🧩 [decompose] Phase 3: Assemble
@@ -1357,6 +1435,8 @@ Each hypothesis: title + rationale + falsifiable prediction (if this hypothesis 
 
 Leader collects → deduplicates → assigns numbers (H1, H2, ...).
 
+**Call AskUserQuestion to confirm before Phase 2. Show phase results first.**
+
 ### Phase 2: FALSIFY
 > 🔬 [hypothesis] Phase 2: Falsify
 
@@ -1373,6 +1453,8 @@ Attempt to falsify this hypothesis:
 
 Conclusion: FALSIFIED or SURVIVED. Rationale required."
 ```
+
+**Call AskUserQuestion to confirm before Phase 3. Show phase results first.**
 
 ### Phase 3: SYNTHESIZE
 > 🔬 [hypothesis] Phase 3: Synthesize
@@ -1423,6 +1505,8 @@ Default angles (auto-selected by topic):
 | Security/auth | Contains "auth", "security", "authentication" | `authentication`, `authorization`, `attack-surface`, `data-protection` |
 | Performance/bottleneck | Contains "slow", "latency", "performance", "bottleneck" | `profiling`, `architecture`, `data-access`, `concurrency` |
 | General | No pattern matched | `overview`, `mechanics`, `tradeoffs`, `alternatives` |
+
+**Call AskUserQuestion to confirm before Phase 2. Show phase results first.**
 
 ### Phase 2: EXPLORE
 > 🔎 [investigate] Phase 2: Explore ({N} angles)
@@ -1505,6 +1589,8 @@ Read the other angles' results and:
 200 words max."
 ```
 
+**Call AskUserQuestion to confirm before Phase 3. Show phase results first.**
+
 ### Phase 3: SYNTHESIZE
 > 🔎 [investigate] Phase 3: Synthesize
 
@@ -1526,6 +1612,8 @@ Leader synthesizes all results using structured rules:
 **Self-assessment aggregation:**
 - Average agent Self-Assessment < 6: display "⚠ Further investigation recommended"
 - UNCERTAIN agent ratio > 50%: add deeper investigation gap to Phase 4
+
+**Call AskUserQuestion to confirm before Phase 4. Show phase results first.**
 
 ### Phase 4: GAP ANALYSIS
 > 🔎 [investigate] Phase 4: Gap Analysis
@@ -1674,6 +1762,8 @@ Leader collects observation targets:
 - `--target <file|dir|cmd>` → Read file, check directory state, or execute Bash command
 - If absent → `git diff HEAD` + `git log --oneline -5` (recent changes)
 
+**Call AskUserQuestion to confirm before Phase 2. Show phase results first.**
+
 ### Phase 2: ORIENT
 > 🧭 [monitor] Phase 2: Orient
 
@@ -1704,6 +1794,8 @@ Leader then synthesizes agent results into a contextual interpretation by compar
 
 Orient distinguishes signal from noise: the same ALERT from a feature branch mid-refactor carries different weight than the same ALERT on main post-deploy.
 
+**Call AskUserQuestion to confirm before Phase 3. Show phase results first.**
+
 ### Phase 3: DECIDE
 > 🎯 [monitor] Phase 3: Decide
 
@@ -1717,6 +1809,8 @@ Leader applies decision criteria to the Orient synthesis:
 | 1+ ALERT, high confidence in Orient | Act — auto-execute recommended strategy (after user confirmation) |
 
 Decision output: chosen response (wait / escalate / act), rationale tied to Orient context, and reversibility assessment.
+
+**Call AskUserQuestion to confirm before Phase 4. Show phase results first.**
 
 ### Phase 4: ACT
 > ⚡ [monitor] Phase 4: Act
@@ -1888,6 +1982,113 @@ Appended to the end of every strategy's final output:
 ```
 
 Scoring scale: 1=fail, 5=baseline, 7=good, 10=excellent.
+
+## Result Persistence
+
+After every strategy completes (after Self-Score), the leader MUST save the result to `.xm/op/`.
+
+### Save workflow
+
+1. `mkdir -p .xm/op/` (Bash)
+2. Generate filename: `{strategy}-{YYYY-MM-DD}-{slug}.json` (slug from topic, max 40 chars, lowercase, hyphens)
+3. Write JSON file with the schema below
+
+### Result schema
+
+```json
+{
+  "schema_version": 1,
+  "strategy": "debate",
+  "topic": "Redis vs Postgres for queue",
+  "status": "completed",
+  "created_at": "2026-04-04T10:00:00.000Z",
+  "completed_at": "2026-04-04T10:12:34.000Z",
+  "options": {
+    "rounds": 4,
+    "agents": 4,
+    "model": "sonnet",
+    "preset": null
+  },
+  "outcome": {
+    "verdict": "Redis",
+    "summary": "Low latency + pub/sub requirements favor Redis",
+    "confidence": 7.8
+  },
+  "self_score": {
+    "overall": 7.8,
+    "criteria": {
+      "accuracy": 8,
+      "completeness": 7,
+      "consistency": 8,
+      "clarity": 8
+    }
+  },
+  "participants": [
+    { "role": "advocate", "position": "Redis" },
+    { "role": "advocate", "position": "Postgres" },
+    { "role": "judge" }
+  ],
+  "rounds_summary": [
+    { "round": 1, "phase": "opening", "summary": "PRO: low latency; CON: durability" },
+    { "round": 2, "phase": "rebuttal", "summary": "PRO addressed durability with AOF" }
+  ]
+}
+```
+
+### Per-strategy outcome mapping
+
+| Strategy | outcome.verdict | outcome.summary |
+|----------|----------------|-----------------|
+| debate | PRO or CON | Winning argument summary |
+| tournament | Winner name | Winning solution summary |
+| refine | "adopted" | Final adopted solution summary |
+| review | "{N} issues" | Critical/High issue summary |
+| red-team | "{N} vulns ({open} open)" | Top vulnerability summary |
+| hypothesis | "H{N} survived" | Strongest surviving hypothesis |
+| investigate | "{N} findings, {G} gaps" | Key insights summary |
+| council | CONSENSUS / NO CONSENSUS | Consensus statement |
+| brainstorm | "{N} ideas, {T} themes" | Top-voted ideas summary |
+| scaffold | "{N} modules" | Module structure summary |
+| decompose | "{N} leaves" | Assembly result summary |
+| chain | "completed" | Final step output summary |
+| persona | "{N} perspectives" | Unified recommendation summary |
+| socratic | "{N} rounds" | Final refined position summary |
+| escalate | "resolved at {level}" | Final result summary |
+| monitor | "{alerts} alerts" | Decision + dispatch summary |
+| distribute | "{N} subtasks" | Merge result summary |
+| compose | "{N} strategies" | Last strategy result summary |
+
+### What NOT to save
+
+- Full agent outputs (too large) — only summaries in `rounds_summary`
+- Checkpoint in-progress state — that stays in `.xm/op-checkpoints/`
+- escalate intermediate levels — only final result
+
+## Trace Recording
+
+x-op MUST record trace entries to `.xm/traces/` during every strategy execution. See x-trace SKILL.md "Trace Directive Template" for the full schema.
+
+### On strategy start (MUST)
+
+Before any agent calls, generate session ID and record:
+```bash
+SESSION_ID="x-op-$(date +%Y%m%d-%H%M%S)-$(openssl rand -hex 2)"
+mkdir -p .xm/traces && echo "{\"type\":\"session_start\",\"session_id\":\"$SESSION_ID\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"v\":1,\"skill\":\"x-op\",\"args\":{\"strategy\":\"STRATEGY\",\"topic\":\"TOPIC\"}}" >> .xm/traces/$SESSION_ID.jsonl
+```
+
+### Per agent call (SHOULD — best-effort)
+
+After each agent completes, record agent_step with role, model, estimated tokens, duration, and status. Use parent_id for fan-out trees (null for root agents).
+
+### On strategy end (MUST)
+
+After Self-Score and Result Persistence, record session_end with total duration, agent count, and aggregated token estimates.
+
+### Rules
+1. session_start and session_end are **MUST** — never skip
+2. agent_step is **SHOULD** — best-effort
+3. **Metadata only** — never include LLM output or verdicts in trace entries
+4. If trace write fails, log to stderr and continue — never block strategy execution
 
 ## Interactive Mode
 

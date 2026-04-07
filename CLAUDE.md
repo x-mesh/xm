@@ -135,6 +135,21 @@ Agent tool: { model: "haiku", description: "x-kit: [command]", prompt: "Run: [ba
 > If the output is determined by a script (not by LLM reasoning), use haiku.
 > The model is a messenger, not a thinker — pay messenger rates.
 
+## Edit Policy
+
+**NEVER edit files under `x-kit/skills/` directly.** That directory is the marketplace copy — a build artifact.
+
+- Always edit the **source** SKILL.md in each plugin's own directory (e.g., `x-solver/skills/x-solver/SKILL.md`)
+- The release process (`/x-release`) copies source → `x-kit/skills/`
+- If you edit the marketplace copy, the change will be overwritten on next release and the source will remain stale
+
+| Path | Role | Editable? |
+|------|------|-----------|
+| `x-solver/skills/x-solver/SKILL.md` | Source | **YES** |
+| `x-kit/skills/x-solver/SKILL.md` | Marketplace copy | **NO** |
+
+This applies to all plugins: x-build, x-op, x-probe, x-solver, x-eval, x-review, x-trace, x-memory, x-humble, x-ship, x-sync.
+
 ## Project Structure
 
 - `x-kit/` — core plugin (shared config, cost engine, DAG)

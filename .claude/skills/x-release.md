@@ -96,6 +96,45 @@ Map changed files to sub-plugins:
 If no changes:
 > ✅ No changes detected. Nothing to release.
 
+### Step 1.5: Source-Marketplace Consistency Check (MANDATORY)
+
+Before proceeding, verify that source SKILL.md files and marketplace copies are in sync.
+
+```bash
+# For each plugin with a source directory, compare source vs marketplace
+PLUGINS="x-build x-op x-solver x-probe x-eval x-review x-trace x-memory x-humble x-agent"
+DRIFT=""
+for p in $PLUGINS; do
+  SRC="$p/skills/$p/SKILL.md"
+  MKT="x-kit/skills/$p/SKILL.md"
+  if [ -f "$SRC" ] && [ -f "$MKT" ]; then
+    if ! diff -q "$SRC" "$MKT" > /dev/null 2>&1; then
+      DRIFT="$DRIFT $p"
+    fi
+  fi
+done
+echo "Drifted plugins:$DRIFT"
+```
+
+**If drift is detected:**
+
+1. Show the drifted plugins to the user
+2. Copy source → marketplace to make them consistent:
+   ```bash
+   cp $p/skills/$p/SKILL.md x-kit/skills/$p/SKILL.md
+   ```
+3. If marketplace has content that source doesn't (marketplace is newer), WARN:
+   ```
+   ⚠ x-solver: marketplace copy has changes not in source (261 lines differ).
+   This means someone edited x-kit/skills/ directly — violating Edit Policy.
+   Source is authoritative. Copying source → marketplace.
+   ```
+
+**If no drift:** log "✅ Source-marketplace sync: all plugins consistent" and continue.
+
+**Rule:** Source is ALWAYS authoritative. Never copy marketplace → source during release.
+If marketplace has extra content, it was an Edit Policy violation — source wins.
+
 ### Step 2: Determine version bump
 
 Auto-detect by change type:

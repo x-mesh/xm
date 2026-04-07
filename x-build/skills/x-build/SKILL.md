@@ -25,6 +25,16 @@ x-build manages the full project lifecycle (Research → Plan → Execute → Ve
 
 # x-build — Phase-Based Project Harness
 
+## Model Routing
+
+| Subcommand | Model | Reason |
+|------------|-------|--------|
+| `list`, `status`, `task list`, `decisions` | **haiku** (Agent tool) | Read-only status display |
+| `init` (interactive) | main model | Requires AskUserQuestion |
+| `plan`, `forecast`, `research`, `run` | main model (sonnet+) | Complex reasoning / orchestration |
+
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
+
 ## Mode Detection
 
 Check mode before every command:
@@ -34,33 +44,18 @@ node ${CLAUDE_PLUGIN_ROOT}/lib/x-build-cli.mjs mode show 2>/dev/null | head -1
 
 **Developer mode**: Use technical terms (DAG, phase, gate, step, context, retry, circuit breaker). Concise.
 
-**Normal mode**: 쉬운 한국어로 안내합니다.
-- 비유 없이 직접적 표현: "단계", "할 일", "확인", "다음"
-- "~하세요" 체 사용
-- 기술 용어 대신 설명: "DAG" → "순서 계산", "gate" → "넘어가기 조건", "circuit breaker" → "자동 중단"
-- 명령어는 영어 유지하되 설명 추가: `steps compute` → "할 일의 실행 순서를 계산합니다"
-- 핵심 정보 먼저, 부가 설명은 뒤에
+**Normal mode**: Guide in plain Korean.
+- Direct expressions without metaphors: "단계", "할 일", "확인", "다음"
+- Use "~하세요" style
+- Replace technical terms with explanations: "DAG" → "순서 계산", "gate" → "넘어가기 조건", "circuit breaker" → "자동 중단"
+- Keep commands in English but add explanation: `steps compute` → "할 일의 실행 순서를 계산합니다"
+- Key information first, supplementary details after
 
-## AskUserQuestion Dark-Theme Rule
-
-**CRITICAL:** The `question` field in AskUserQuestion is invisible on dark terminals.
-
-**Visibility map:**
-| Element | Visible | Use for |
-|---------|---------|---------|
-| `header` | ✅ YES | Short context tag (e.g., "x-op bump", "Pipeline") |
-| `question` | ❌ NO | Keep minimal — user cannot see this text |
-| option `label` | ✅ YES | Primary info — must be self-explanatory |
-| option `description` | ✅ YES | Supplementary detail |
-
-**Always follow this pattern:**
-1. Output ALL context (descriptions, status, analysis) as **regular markdown text** BEFORE calling AskUserQuestion
-2. `header`: put the key context here (visible, max 12 chars)
-3. `question`: keep short, duplicate of header is fine (invisible to user)
-4. Option `label` + `description`: carry all decision-relevant information
-
-**WRONG:** Putting context in `question` field → user sees blank space above options
-**RIGHT:** Print context as markdown first, use `header` for tag, options for detail
+**Pass mode when delegating agents (MANDATORY):**
+Inject mode into all delegate/fan-out prompts. When in Normal mode:
+- Add to first line of prompt: `"언어: 한국어로 작성. 기술 용어는 원어 유지."`
+- All artifacts (PRD, CONTEXT.md, REQUIREMENTS.md, etc.) are generated in Korean
+- Section titles remain in English (Goal, Success Criteria, etc.)
 
 ## CLI
 
@@ -86,6 +81,53 @@ Shorthand in this document: `$XMB` = `node ${CLAUDE_PLUGIN_ROOT}/lib/x-build-cli
 > When running multiple commands sequentially, define the function on the first line then call `xmb <command>` afterward.
 > The server client auto-starts the server if not running (lazy start), and silently falls back to node if bun is not installed.
 
+## AskUserQuestion Dark-Theme Rule
+
+**CRITICAL:** The `question` field in AskUserQuestion is invisible on dark terminals.
+
+**Visibility map:**
+| Element | Visible | Use for |
+|---------|---------|---------|
+| `header` | ✅ YES | Short context tag (e.g., "x-op bump", "Pipeline") |
+| `question` | ❌ NO | Keep minimal — user cannot see this text |
+| option `label` | ✅ YES | Primary info — must be self-explanatory |
+| option `description` | ✅ YES | Supplementary detail |
+
+**Always follow this pattern:**
+1. Output ALL context (descriptions, status, analysis) as **regular markdown text** BEFORE calling AskUserQuestion
+2. `header`: put the key context here (visible, max 12 chars)
+3. `question`: keep short, duplicate of header is fine (invisible to user)
+4. Option `label` + `description`: carry all decision-relevant information
+
+**WRONG:** Putting context in `question` field → user sees blank space above options
+**RIGHT:** Print context as markdown first, use `header` for tag, options for detail
+
+## Interaction Protocol
+
+**CRITICAL: x-build phase transitions and reviews MUST use AskUserQuestion.**
+
+Rules:
+1. **AskUserQuestion is REQUIRED for all user confirmations** — PRD review, plan review, phase gate passes, and any decision point. Text-only questions do NOT enforce turn boundaries.
+2. **Phase transitions** — before calling `phase next`, MUST get user confirmation via AskUserQuestion.
+3. **NEVER skip Research** — `plan "goal"` without `--quick` MUST go through Research (interview + research) before PRD generation. Calling `phase set plan` to skip Research is FORBIDDEN except in Quick Mode.
+4. **PRD MUST be printed** — after PRD generation, output the FULL PRD text to the user before calling AskUserQuestion for review. Never save-and-ask without showing.
+5. **PRD Review loop** — already uses AskUserQuestion (keep as-is).
+6. **Plan Review** — already uses AskUserQuestion (keep as-is).
+7. **Execute → Verify** — after all tasks complete, MUST use AskUserQuestion before advancing.
+8. **Verify → Close** — after quality checks, MUST use AskUserQuestion before closing.
+
+Anti-patterns:
+- ❌ `plan "goal"` → `phase set plan` → PRD generation (skips Research)
+- ❌ PRD generated → "리뷰해주세요" without showing PRD content
+- ❌ PRD generated → show to user → but forget `$XMB save plan` (PRD lost, not in dashboard)
+- ❌ Phase transition without AskUserQuestion
+- ✅ `plan "goal"` → init → interview → research → gate pass → phase next → PRD → `save plan` → show PRD → AskUserQuestion
+
+Anti-patterns:
+- All tasks complete → immediately run `phase next`
+- Show plan and ask "Shall we proceed?" as text (must use AskUserQuestion)
+- All tasks complete → AskUserQuestion("모든 태스크 완료. Verify 단계로 넘어갈까요?")
+
 ## Phase Lifecycle
 
 ```
@@ -96,7 +138,7 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 
 | Phase | Exit Gate | Condition |
 |-------|-----------|-----------|
-| Research | human-verify | CONTEXT.md or REQUIREMENTS.md must exist |
+| Research | human-verify | CONTEXT.md or REQUIREMENTS.md must exist + no unresolved decisions in CONTEXT.md |
 | Plan | human-verify | Tasks defined + plan-check passed (+ optional critique) |
 | Execute | auto | All tasks completed |
 | Verify | quality | test/lint/build all pass |
@@ -122,12 +164,20 @@ Parse user's `$ARGUMENTS` and current project state to determine the action:
 
 ### `plan "goal"` (with goal argument)
 1. Check for active project
-2. **If no project** → `$XMB init {slug}` → `$XMB phase set plan` → `$XMB plan "{goal}"` (full flow)
-3. **If project exists** → `$XMB plan "{goal}"`
+2. **If no project** → `$XMB init {slug}` → **start from Research phase** (interview → research → then plan):
+   - Run `$XMB discuss --mode interview` (gather requirements using the goal as seed)
+   - Run `$XMB research "{goal}"` (4-agent parallel investigation)
+   - Save CONTEXT.md, REQUIREMENTS.md, ROADMAP.md
+   - `$XMB gate pass` → `$XMB phase next` (Research → Plan)
+   - Then generate PRD and proceed with plan
+   - **NEVER skip Research by calling `phase set plan` directly — Research produces the artifacts that PRD depends on.**
+3. **If project exists in Research phase** → check artifacts, continue Research if incomplete, then plan
+4. **If project exists in Plan phase** → `$XMB plan "{goal}"` (already past Research)
 
 ### `plan "goal" --quick` (explicit Quick Mode)
 1. `$XMB init quick-{timestamp}` → `$XMB phase set plan` → Quick Mode flow (see [Quick Mode](#quick-mode-one-shot-planrun))
-2. Only enters Quick Mode when `--quick` flag is explicitly provided
+2. Only enters Quick Mode when `--quick` flag is **explicitly** provided
+3. Quick Mode is the ONLY case where Research is skipped — and only because `--quick` is an explicit user opt-in
 
 ### Other commands
 - Route directly to the matching CLI command (init, status, discuss, research, run, etc.)
@@ -419,7 +469,20 @@ This step is triggered when the research goal contains technology comparison key
    - If `verdict === "incomplete"`: address gaps via `discuss --mode interview --round 2`
    - If `verdict === "pass"`: proceed to gate
 
-6. Advance to Plan phase: `$XMB gate pass "Research complete"` → `$XMB phase next`
+6. **Decision checkpoint (MUST — before gate pass)**:
+   Before advancing, check CONTEXT.md `## Decisions` section for unresolved items.
+   - Scan for keywords: "미결정", "undecided", "TBD", "조사 후 결정", "to be determined"
+   - If unresolved decisions exist → present each to the user via AskUserQuestion with the research findings as context
+   - User must confirm a choice for each unresolved decision before proceeding
+   - Update CONTEXT.md with confirmed decisions (change "미결정" → chosen option)
+   - Only after ALL decisions are resolved → proceed to gate pass
+
+   Anti-patterns:
+   - ❌ CONTEXT.md has "미결정" items → immediately `gate pass` (skips decisions)
+   - ❌ Assume defaults for unresolved decisions without asking
+   - ✅ Present each unresolved decision with research-backed options → AskUserQuestion → update CONTEXT.md → gate pass
+
+7. Advance to Plan phase: `$XMB gate pass "Research complete — all decisions resolved"` → `$XMB phase next`
 
 ### Step 3: Plan (Plan Phase)
 
@@ -439,11 +502,28 @@ These principles apply to all plan-phase activities (PRD generation, task decomp
 
 #### PRD Generation (first step of Plan phase)
 
-Before task decomposition, the leader generates a PRD. Based on research artifacts (CONTEXT.md, REQUIREMENTS.md, ROADMAP.md):
+Before task decomposition, the leader generates a PRD. Based on research artifacts (CONTEXT.md, REQUIREMENTS.md, ROADMAP.md).
+
+**IMPORTANT: Check mode from `.xm/config.json` before generating.**
+- `developer` mode → Write PRD in English (technical terms, concise)
+- `normal` mode → Write PRD content in Korean (section titles remain in English, body in Korean). Inject this instruction into the agent prompt: `"모든 섹션의 내용을 한국어로 작성하세요. 섹션 제목(Goal, Success Criteria 등)은 영문 유지. 기술 용어는 원어 유지."`
+
+#### PRD Size Tiers
+
+Determine PRD size based on task count expectation or `--size` flag:
+
+| Tier | Condition | PRD Sections |
+|------|-----------|-------------|
+| **small** | ≤5 expected tasks or `--size small` | 1.Goal, 2.Success Criteria, 3.Constraints, 5.Requirements Traceability, 12.Acceptance Criteria (5 sections) |
+| **medium** | 6-15 tasks (default) | Above + 4.NFR, 6.Out of Scope, 7.Risks, 8.Architecture (9 sections) |
+| **large** | 15+ tasks or `--size large` | All 12 sections (current full template) |
+
+When generating the PRD, include only the sections for the determined tier. The delegate prompt should specify: "Generate PRD with {tier} tier — include only sections: {section list}."
 
 delegate (foreground, opus recommended):
 ```
 "## PRD Generation: {project_name}
+{IF mode === 'normal': '언어: 한국어로 작성. 섹션 제목은 영문 유지, 내용은 한국어. 기술 용어는 원어 유지.'}
 Research artifacts:
 - CONTEXT: {CONTEXT.md summary}
 - REQUIREMENTS: {REQUIREMENTS.md full text}
@@ -481,68 +561,212 @@ Fill in every section of the PRD template below without omission:
 ## 7. Risks
 - {identified risks and mitigation strategies}
 
-## 8. Acceptance Criteria
-- [ ] {verifiable checklist item}
+## 8. Architecture
+
+**Express the system structure with an ASCII diagram.** Select the appropriate type from the guide below.
+
+### Diagram Selection Guide (23 types)
+
+| Category | Situation | Recommended Type |
+|------|------|----------|
+| **System Architecture** | Overall service/API structure | System Architecture |
+| | Logical layer design | Layers |
+| | Plugin/module extension | Extension Structure |
+| | Distributed system network | Topology |
+| **Process/Flow** | API call sequence | Sequence |
+| | Task dependencies | Tree, DAG |
+| | Async event communication | Message, CQRS |
+| | User action branching | User Journey |
+| **Data/State** | Data processing flow | Pipeline, ETL |
+| | State transitions | State Machine |
+| | DB table relationships | ERD |
+| **Infrastructure** | Environment switching | Before/After |
+| | Network paths | Network Flow |
+| | Access control | Security Boundary |
+| | Auto-scaling | Resource Allocation |
+| **AI/Automation** | Agent collaboration | Multi-Agent |
+| | CI/CD | Deployment Pipeline |
+| | Error handling | Fallback |
+| **Other** | UI wireframe | Layout |
+| | Project schedule | Gantt |
+
+### Standard Format
+
+```
+■ Diagram: [name]
+■ Purpose: [core message 1-2 lines]
+
+[ ASCII Art — use code block ]
+
+■ Legend:
+  - [ ] : Component / Server
+  - ( ) : Data / State
+  - ──▶ : Synchronous call
+  - ╌╌▶ : Async communication
+
+■ Key Notes:
+  1. [Design point]
+  2. [Performance/security notes]
+```
+
+### Reference Examples
+
+System Architecture:
+```
+[Client] ──▶ [WAF/LB] ──▶ [App Cluster] ──▶ [(DB)]
+```
+
+Sequence:
+```
+User        Server        DB
+ │── Req ──▶│             │
+ │          │── Query ───▶│
+ │          │◀── Result ──│
+ │◀── Res ──│             │
+```
+
+DAG:
+```
+     ┌── [Build A] ──┐
+[Push]               ├──▶ [Test] ──▶ [Deploy]
+     └── [Build B] ──┘
+```
+
+State Machine:
+```
+[Pending] ──(Start)──▶ [Running] ──(Done)──▶ [Complete]
+                          │
+                       (Fail)──▶ [Failed]
+```
+
+Multi-Agent:
+```
+                 ┌──▶ [Planning Agent] ──┐
+[Router Agent] ──┤                      ├──▶ [Executor]
+                 └──▶ [Memory Mesh] ◀───┘
+```
+
+Key decisions: Describe why this structure was chosen and what alternatives were rejected.
+
+## 9. Key Scenarios
+
+Write 2-3 concrete scenarios as step-by-step flows:
+
+### Happy Path
+1. User runs `{command}`
+2. System does {specific action}
+3. User sees {specific output}
+4. Result: {measurable outcome}
+
+### Failure Path
+1. User runs `{command}` with {invalid input}
+2. System detects {specific condition}
+3. User sees {error message text}
+4. System state: {unchanged / rolled back}
+
+### Edge Case
+1. {Unusual but realistic scenario}
+2. Expected behavior: {specific}
+
+Include a **Day-0 Demo Script**: the exact commands a PM would run to demo this feature in 3 minutes.
+
+## 10. Data Model & API Contracts
+
+### Entity Model
+List core entities with key fields and relationships (Mermaid ER or table):
+
+| Entity | Key Fields | Relationships |
+|--------|-----------|---------------|
+| {Entity A} | id, name, status, created_at | has_many: {Entity B} |
+
+### Critical API Contracts
+For each interface crossing a module boundary, specify:
+```
+GET /api/{endpoint}
+Response: { field1: string, field2: number, nested: { ... } }
+Errors: 400 (invalid input), 404 (not found)
+```
+
+### Data Flow Trace
+Trace one request end-to-end: `User input → Component A (does X) → Component B (does Y) → Output`
+Name actual files, functions, or variables at each step.
+
+## 11. Decisions & Assumptions
+
+### Decision Log
+For each non-obvious decision, record what was chosen AND what was rejected:
+| Decision | Chosen | Rejected | Rationale |
+|----------|--------|----------|-----------|
+| {topic} | {option A} | {option B, C} | {why A wins} |
+
+### Assumption Register
+Separate facts from assumptions. If an assumption breaks, what collapses?
+| Assumption | Confidence | If Wrong |
+|-----------|-----------|----------|
+| {assumption} | high/medium/low | {consequence} |
+
+### Tension Map
+Where do requirements conflict? How was each resolved?
+| Requirement A | Requirement B | Tension | Resolution |
+|--------------|--------------|---------|------------|
+
+### Invariants
+Things that must ALWAYS be true regardless of implementation:
+- {invariant 1 — e.g., "No writes to .xm/ ever"}
+- {invariant 2 — e.g., "safeJoin called on every file path"}
+
+## 12. Acceptance Criteria
+- [ ] {verifiable checklist item — preferably a command: `curl /api/x` returns 200}
 - [ ] ...
 
 ## PRD Section Quality Criteria
 
-Apply these criteria when writing each section above:
+**Detailed criteria with Good/Bad examples are in `PRD-GUIDE.md` (same directory).**
+When generating a PRD, read `PRD-GUIDE.md` for per-section quality standards.
 
-Goal: One sentence. If it needs 'and,' it's two projects.
-  Good: 'Enable users to authenticate via JWT with refresh token rotation'
-  Bad: 'Improve the auth system and add better error handling and logging'
-
-Success Criteria: Each must be measurable and binary (pass/fail).
-  Good: '[SC1] Login API responds in <200ms at p95 under 100 concurrent users'
-  Bad: '[SC1] System should be fast and reliable'
-
-Constraints: Only hard constraints — things that are NOT negotiable.
-  Good: '[C1] Must use PostgreSQL (existing production DB)'
-  Bad: '[C1] Should use a modern database' (this is a preference, not a constraint)
-
-Requirements Traceability: Every R# maps to at least one SC#. Unmapped requirements are scope creep.
-
-Out of Scope: Be specific. 'Not building X' is better than 'keeping it simple.'
-  Good: 'No mobile app, no real-time notifications, no multi-tenancy'
-  Bad: 'Anything not mentioned above'
-
-Risks: Each risk needs likelihood + impact + mitigation. 'Things might go wrong' is not a risk.
-  Good: 'JWT secret rotation may cause active sessions to invalidate — mitigate with grace period'
-  Bad: 'Security risks'
-
-Acceptance Criteria: Each item must be testable by running a command or checking a state.
-  Good: '[ ] npm test passes with >80% coverage on auth module'
-  Bad: '[ ] Code is well-tested'
+Core rules (always apply without reading the file):
+- Goal: One sentence. If it needs 'and,' it's two projects.
+- Success Criteria: Each must be measurable and binary (pass/fail).
+- Constraints: Only hard constraints — non-negotiable.
+- Requirements Traceability: Every R# maps to at least one SC#.
+- Acceptance Criteria: Each item must be testable by command or state check.
 "
 ```
 
-Save PRD to `.xm/build/projects/{name}/02-plan/PRD.md`:
+**MANDATORY: Save PRD to file IMMEDIATELY after generation.** This is not optional — the PRD must exist as a file before review.
 ```bash
 $XMB save plan --content "{PRD content}"
 ```
+If `save plan` is not called, the PRD will not appear in the dashboard and will be lost on session end.
 
-After PRD generation, proceed to PRD Review.
+After saving, proceed to PRD Review.
 
 #### PRD Review (user review and revision)
 
-After PRD generation, **show the PRD to the user first** and collect feedback. Do not proceed to task decomposition without user approval.
+After PRD generation, **the leader MUST output the full PRD text to the user**. This is non-negotiable — the user cannot review what they cannot see.
 
-1. **Show full PRD**: Output the entire PRD.md to the user
+**Output protocol:**
+1. **Print the entire PRD as text output** — every section, every table, every diagram. Do NOT summarize. Do NOT say "PRD가 생성되었습니다" without showing the content.
+2. **After the full text output**, call AskUserQuestion for review.
+
+Anti-patterns:
+- ❌ Save PRD to file → immediately ask for review without showing content
+- ❌ Show only section titles or a summary instead of the full PRD
+- ✅ Output full PRD text → then AskUserQuestion for review
+
+1. **Show full PRD**: Output the ENTIRE PRD.md content as text (mandatory — not a file reference)
 2. **Request feedback**: Collect review results via AskUserQuestion:
    ```
    Please review the PRD:
    1) Approve — proceed as-is
    2) Needs revision — tell me what to change
-   3) Quality check — Judge Panel (3 agents) scores and provides feedback
-   4) Consensus review — 4 agents (architect, critic, planner, security) review and auto-revise until consensus
-   5) Rewrite — regenerate the PRD from scratch
+   3) Quality review — Judge Panel scores first; if score < 7.0, auto-escalates to Consensus Review
+   4) Rewrite — regenerate the PRD from scratch
    ```
 3. **Action per selection**:
    - "Approve" → proceed to task decomposition
    - "Needs revision" → revise PRD with user feedback, then show again (repeat)
-   - "Quality check" → run [PRD Quality Gate], then return to PRD Review options with results
-   - "Consensus review" → run [Consensus Loop]
+   - "Quality review" → run [PRD Quality Gate]; if score < 7.0, automatically run [Consensus Loop] with judge feedback as context
    - "Rewrite" → re-run PRD Generation from scratch
 
 4. **Re-save on revision**:
@@ -585,10 +809,10 @@ Read `rubric`, `prd`, `requirements` from the output JSON and perform the follow
    | risk-coverage  | 6     | ...               |
    ```
 
-3. **Score-based guidance message** (advisory only, no automatic action):
+3. **Score-based guidance message**:
    - Score >= 7.0 → `"💡 Quality is good — consider approving."`
-   - Score 5.0–6.9 → `"💡 Room for improvement — consider revising based on the feedback above."`
-   - Score < 5.0 → `"💡 Quality is insufficient — consider rewriting."`
+   - Score 5.0–6.9 → **Auto-escalate to Consensus Review** with judge feedback as context
+   - Score < 5.0 → **Auto-escalate to Consensus Review** with judge feedback as context
 
 4. **Record PRD score in project metadata**:
    ```bash
@@ -770,12 +994,13 @@ Create tasks informed by research artifacts:
    ```
    This checks 11 dimensions: atomicity, dependencies, coverage, granularity, completeness, context, naming, tech-leakage, scope-clarity, risk-ordering, overall. Fix any errors.
 
-6. **(Optional but recommended) Strategic critique**:
+6. **(Conditional) Strategic critique** — auto-skip when task count ≤ 5 (small project):
    ```bash
    $XMB discuss --mode critique
    ```
    - Reviews approach fitness, risk ordering, dependency structure, missing tasks, done-criteria quality, scope creep
    - If `verdict === "revise"`: apply action items, then re-run critique (`--round 2`)
+   **Auto-skip rule**: If `tasks.length <= 5`, skip critique and proceed directly to step 7 (steps compute). Show: `"💡 Small project (≤5 tasks) — skipping strategic critique."` Critique is most valuable for complex plans (6+ tasks, cross-cutting dependencies).
    - If `verdict === "approve"`: proceed to step review
 
 7. Compute steps + forecast:
@@ -813,6 +1038,8 @@ Create tasks informed by research artifacts:
    - `run_in_background: true` (parallel)
 3. On completion: `$XMB tasks update <id> --status completed|failed`
 4. Check `$XMB run-status`, advance to next step or phase
+
+**Call AskUserQuestion before advancing to Verify phase.** When all tasks complete, ask the user to confirm before advancing (e.g., "All tasks completed. Proceed to the Verify phase?" in developer mode, or `"모든 태스크 완료. Verify 단계로 넘어갈까요?"` in normal mode). Do NOT run `phase next` without user confirmation.
 
 #### Strategy-Tagged Execution
 
@@ -878,7 +1105,8 @@ Recommendation only — not auto-applied. User must specify via `--strategy`.
    - For each task with `done_criteria`, verify that the criteria are met
    - Output: `✅ t1: 3/3 criteria met` or `❌ t2: 1/3 criteria met — [missing: "at least 3 unit tests"]`
    - Unmet criteria → report to user for resolution before closing
-4. If all pass: `$XMB phase next`
+4. **Call AskUserQuestion before closing.** Show quality check results first, then ask the user to confirm before advancing (e.g., "Quality checks passed. Proceed to the Close phase?" in developer mode, or `"품질 검사 완료. 프로젝트를 Close 단계로 넘어갈까요?"` in normal mode). Do NOT run `phase next` without user confirmation.
+5. If user confirms: `$XMB phase next`
 
 ### Step 6: Close
 
@@ -892,7 +1120,8 @@ A condensed version of the full 6-step flow for simple, well-defined goals.
 
 ### Quick Mode Entry Conditions
 - **`--quick` flag explicitly provided** (e.g., `/x-build plan "Build X" --quick`)
-- Without `--quick`, `plan` always runs the full flow — "plan" means planning, not skipping it
+- Without `--quick`, `plan` ALWAYS runs the full flow: Research → PRD → Tasks. "plan" means planning, not skipping it
+- Quick Mode is the ONLY case where Research is skipped — `phase set plan` is NEVER used outside Quick Mode
 - Goal should be simple (expected 5 or fewer tasks); for complex goals, recommend full flow even with `--quick`
 
 ### Quick Mode Flow
@@ -1002,6 +1231,8 @@ Multi-round requirements gathering with drill-down.
 
 ### Assumptions Mode (Research phase)
 
+> **On-demand only** — not part of the default Research flow. Only triggered when `next --json` detects an existing codebase (presence of `package.json`, `go.mod`, `Cargo.toml`, etc.) or when the user explicitly calls `discuss --mode assumptions`. Skipped for greenfield projects.
+
 - Read codebase files relevant to the goal
 - Generate 5-10 assumptions with format:
   ```
@@ -1013,6 +1244,8 @@ Multi-round requirements gathering with drill-down.
 - Save confirmed to CONTEXT.md
 
 ### Validate Mode (Research → Plan transition)
+
+> **Lightweight alternative available** — For simple projects, `gate pass` automatically checks: (1) CONTEXT.md exists, (2) REQUIREMENTS.md has ≥1 R# item, (3) CONTEXT.md Decisions has no unresolved items. Full validate mode is recommended only for complex projects (10+ requirements).
 
 Verifies research artifacts are complete and consistent before moving to Plan phase.
 
@@ -1429,6 +1662,34 @@ $XMB config show                     # show current settings
 2. Tool-specific local config (`.xm/build/config.json`)
 3. Shared config (`.xm/config.json`)
 4. Defaults
+
+---
+
+## Trace Recording
+
+x-build MUST record trace entries to `.xm/traces/` during task execution. See x-trace SKILL.md "Trace Directive Template" for the full schema.
+
+### On `run` start (MUST)
+
+Before spawning task agents, generate session ID and record:
+```bash
+SESSION_ID="x-build-$(date +%Y%m%d-%H%M%S)-$(openssl rand -hex 2)"
+mkdir -p .xm/traces && echo "{\"type\":\"session_start\",\"session_id\":\"$SESSION_ID\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"v\":1,\"skill\":\"x-build\",\"args\":{\"project\":\"PROJECT\",\"step\":STEP_NUMBER}}" >> .xm/traces/$SESSION_ID.jsonl
+```
+
+### Per task agent (SHOULD — best-effort)
+
+After each task agent completes, record agent_step with task_id as role, model, estimated tokens, duration, and status.
+
+### On `run` end (MUST)
+
+After all tasks in the step complete, record session_end with total duration, agent count, and status.
+
+### Rules
+1. session_start and session_end are **MUST** — never skip
+2. agent_step is **SHOULD** — best-effort
+3. **Metadata only** — never include task output in trace entries
+4. If trace write fails, log to stderr and continue
 
 ---
 
