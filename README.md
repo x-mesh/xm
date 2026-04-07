@@ -582,24 +582,35 @@ Browser ──→ Bun HTTP :19841 ──→ .xm/ (read-only)
 
 ### x-agent
 
-The foundation layer. Structured patterns on top of Claude Code's native Agent tool, plus hierarchical team management.
+Agent primitives and autonomous behaviors on top of Claude Code's native Agent tool. Primitives give you direct control; autonomous behaviors let agents self-direct, discover, and collaborate via stigmergy.
 
 ```bash
+# Primitives
 /x-agent fan-out "Find bugs in this code" --agents 5
 /x-agent delegate security "Review src/auth.ts"
 /x-agent broadcast "Review this PR" --roles "security,perf,logic"
+
+# Autonomous behaviors
+/x-agent research "Redis pub/sub limits" --budget 5
+/x-agent solve "CI-only test failure in auth" --agents 3
+/x-agent consensus "JWT vs Session for auth" --agents 4
+/x-agent swarm "Increase test coverage to 80%" --agents 5
+
+# Team
 /x-agent team create eng --template engineering
 /x-agent team assign eng "Build payment system"
 ```
 
-| Primitive | What it does |
-|-----------|-------------|
-| **fan-out** | Same prompt → N agents in parallel |
-| **delegate** | One prompt → one specialized agent |
-| **broadcast** | Different role/context → each agent |
-| **team** | Hierarchical team: Director → Team Leader → Members |
+| Layer | Commands | What it does |
+|-------|----------|-------------|
+| **Primitives** | fan-out, delegate, broadcast | Direct agent control — parallel, specialized, or role-based |
+| **Autonomous** | research, solve, consensus, swarm | Goal-driven — agents explore, adapt, and converge on their own |
+| **Team** | team create/assign/status | Hierarchical: Team Leader (opus) → Members |
+| **Presets** | 15 role presets | Cross-cutting roles injected into all layers |
 
-**Team system**: Define teams as YAML (`.xm/teams/`), assign goals, Team Leaders (opus) autonomously manage members. 5 templates: `engineering`, `design`, `review`, `research`, `fullstack`.
+**Key distinction**: x-op = conductor with a score (leader controls every phase). x-agent = jazz band (agents listen to each other and adapt).
+
+**Autonomous options**: `--budget N` (max rounds), `--depth shallow|deep|exhaustive`, `--focus <hint>`, `--web` (allow web search).
 
 Model auto-routing: `architect` → opus, `executor` → sonnet, `scanner` → haiku. Override with `--model`.
 

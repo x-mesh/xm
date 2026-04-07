@@ -582,24 +582,35 @@ bun x-dashboard/lib/x-dashboard-server.mjs --stop       # 중지
 
 ### x-agent
 
-기반 레이어. Claude Code Agent 도구 위에 구조화된 패턴을 제공하며, 계층적 팀 관리를 지원합니다.
+Claude Code Agent 도구 위에 에이전트 프리미티브와 자율 행동을 제공합니다. 프리미티브는 직접 제어, 자율 행동은 에이전트가 스스로 탐색하고 stigmergy(간접 협동)로 협력합니다.
 
 ```bash
+# 프리미티브
 /x-agent fan-out "이 코드에서 버그 찾기" --agents 5
 /x-agent delegate security "src/auth.ts 리뷰"
 /x-agent broadcast "이 PR 리뷰" --roles "security,perf,logic"
+
+# 자율 행동
+/x-agent research "Redis pub/sub 한계" --budget 5
+/x-agent solve "CI에서만 실패하는 auth 테스트" --agents 3
+/x-agent consensus "JWT vs Session 인증 방식" --agents 4
+/x-agent swarm "테스트 커버리지 80% 달성" --agents 5
+
+# 팀
 /x-agent team create eng --template engineering
 /x-agent team assign eng "결제 시스템 만들기"
 ```
 
-| 프리미티브 | 기능 |
-|-----------|-------------|
-| **fan-out** | 같은 프롬프트 → N개 에이전트 병렬 |
-| **delegate** | 하나의 프롬프트 → 하나의 전문 에이전트 |
-| **broadcast** | 역할/컨텍스트별로 → 각 에이전트 |
-| **team** | 계층적 팀: Director → Team Leader → Members |
+| 레이어 | 커맨드 | 기능 |
+|--------|--------|------|
+| **Primitives** | fan-out, delegate, broadcast | 직접 에이전트 제어 — 병렬, 전문가, 역할 기반 |
+| **Autonomous** | research, solve, consensus, swarm | 목표 기반 — 에이전트가 탐색, 적응, 수렴 |
+| **Team** | team create/assign/status | 계층 구조: Team Leader (opus) → Members |
+| **Presets** | 15개 역할 프리셋 | 모든 레이어에 적용되는 역할 |
 
-**팀 시스템**: YAML로 팀 정의 (`.xm/teams/`), 목표 할당, Team Leader (opus)가 자율적으로 멤버 관리. 5가지 템플릿: `engineering`, `design`, `review`, `research`, `fullstack`.
+**핵심 차이**: x-op = 지휘자와 악보 (리더가 모든 단계 제어). x-agent = 재즈 밴드 (에이전트가 서로 듣고 적응).
+
+**자율 행동 옵션**: `--budget N` (최대 라운드), `--depth shallow|deep|exhaustive`, `--focus <hint>`, `--web` (웹 검색 허용).
 
 모델 자동 라우팅: `architect` → opus, `executor` → sonnet, `scanner` → haiku. `--model`로 오버라이드.
 
