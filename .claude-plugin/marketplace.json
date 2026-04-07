@@ -10,7 +10,7 @@
     {
       "name": "x-build",
       "description": "Phase-based project harness with PRD generation, consensus review, plan validation, multi-mode deliberation, DAG execution, cost forecasting, and decision memory",
-      "version": "1.14.2",
+      "version": "1.14.3",
       "author": {
         "name": "x-mesh"
       },
