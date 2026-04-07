@@ -525,9 +525,11 @@ Determine PRD size based on task count expectation or `--size` flag:
 
 | Tier | Condition | PRD Sections |
 |------|-----------|-------------|
-| **small** | ≤5 expected tasks or `--size small` | 1.Goal, 2.Success Criteria, 3.Constraints, 5.Requirements Traceability, 12.Acceptance Criteria (5 sections) |
-| **medium** | 6-15 tasks (default) | Above + 4.NFR, 6.Out of Scope, 7.Risks, 8.Architecture (9 sections) |
+| **small** | ≤5 expected tasks or `--size small` | 1.Goal, 2.Success Criteria, 3.Constraints, 5.Requirements Traceability, 7.Risks, 8.Architecture, 12.Acceptance Criteria (7 sections) |
+| **medium** | 6-15 tasks (default) | Above + 4.NFR, 6.Out of Scope, 9.Key Scenarios (10 sections) |
 | **large** | 15+ tasks or `--size large` | All 12 sections (current full template) |
+
+**Rationale for small tier change:** Previous small tier (5 sections) omitted Risks and Architecture, producing PRDs that lacked actionable context for executors. Every project has risks and structure — even small ones.
 
 When generating the PRD, include only the sections for the determined tier. The delegate prompt should specify: "Generate PRD with {tier} tier — include only sections: {section list}."
 
@@ -545,15 +547,18 @@ Fill in every section of the PRD template below without omission:
 # PRD: {project_name}
 
 ## 1. Goal
-{1-2 sentences — the core problem this project solves}
+{2-3 sentences: WHAT this project delivers + WHY it matters + WHO benefits.}
+{Anti-pattern: 1-line goals like 'Add feature X' — always include the motivation.}
+{If the goal needs 'and' joining two unrelated outcomes, split into two projects.}
 
 ## 2. Success Criteria
-- [SC1] {measurable success criterion}
-- [SC2] ...
+- [SC1] {verb + measurable outcome + threshold. e.g., 'Reduce API latency to <200ms p95'}
+- [SC2] {each SC must be binary pass/fail — no 'should be fast' or 'works correctly'}
+{Minimum 2 SCs. Each must answer: 'How would a stranger verify this in 5 minutes?'}
 
 ## 3. Constraints
-- [C1] {technical/business constraint}
-- [C2] ...
+- [C1] {hard constraint — non-negotiable. e.g., 'Must use existing PostgreSQL 15 instance'}
+- [C2] {preferences disguised as constraints are NOT constraints — move them to NFR}
 
 ## 4. Non-Functional Requirements
 - Performance: {response time, throughput}
@@ -564,13 +569,18 @@ Fill in every section of the PRD template below without omission:
 ## 5. Requirements Traceability
 - [R1] {requirement} → SC1
 - [R2] {requirement} → SC1, SC2
-(Map every item in REQUIREMENTS.md to Success Criteria)
+{Map EVERY item from REQUIREMENTS.md to at least one SC#. Unmapped items = scope creep or missing SC.}
+{IDs must be sequential (R1, R2, R3...). Gaps (R1, R2, R6) indicate deleted requirements — renumber.}
 
 ## 6. Out of Scope
-- {explicitly state what is not included}
+- {explicitly state what is NOT included — boundaries matter more than inclusions}
+{Minimum 2 items. Ask: 'What will users expect this project to do, that it will NOT do?'}
 
 ## 7. Risks
-- {identified risks and mitigation strategies}
+{Minimum 2 risks. Format: risk description → likelihood (H/M/L) × impact (H/M/L) → mitigation.}
+- {risk 1} — Likelihood: M, Impact: H → Mitigation: {specific action}
+- {risk 2} — Likelihood: L, Impact: H → Mitigation: {specific action}
+{Anti-pattern: 'Security risks' without specifics. Name the attack vector and the mitigation.}
 
 ## 8. Architecture
 
@@ -727,8 +737,10 @@ Things that must ALWAYS be true regardless of implementation:
 - {invariant 2 — e.g., "safeJoin called on every file path"}
 
 ## 12. Acceptance Criteria
-- [ ] {verifiable checklist item — preferably a command: `curl /api/x` returns 200}
-- [ ] ...
+- [ ] {verifiable checklist item — must be a command or observable state check}
+- [ ] {e.g., `bun test` passes, `curl /api/health` returns 200, file X exists with Y content}
+{Minimum: 1 item per SC. Each AC must map back to a Success Criterion.}
+{Anti-pattern: 'Code is well-tested' — not verifiable. Use: 'bun test passes with 0 failures'.}
 
 ## PRD Section Quality Criteria
 
@@ -736,11 +748,13 @@ Things that must ALWAYS be true regardless of implementation:
 When generating a PRD, read `PRD-GUIDE.md` for per-section quality standards.
 
 Core rules (always apply without reading the file):
-- Goal: One sentence. If it needs 'and,' it's two projects.
-- Success Criteria: Each must be measurable and binary (pass/fail).
-- Constraints: Only hard constraints — non-negotiable.
-- Requirements Traceability: Every R# maps to at least one SC#.
-- Acceptance Criteria: Each item must be testable by command or state check.
+- Goal: 2-3 sentences with WHAT + WHY + WHO. If it needs 'and' joining unrelated outcomes, split into two projects.
+- Success Criteria: Each must be measurable and binary (pass/fail). Minimum 2. 'Works correctly' is NEVER a valid SC.
+- Constraints: Only hard constraints — non-negotiable. Preferences go to NFR.
+- Requirements Traceability: Every R# maps to at least one SC#. IDs must be sequential — no gaps.
+- Risks: Minimum 2. Each with likelihood × impact + specific mitigation. 'Security risks' without specifics = rejected.
+- Architecture: ALWAYS include a diagram (even for small projects). A box-and-arrow showing data flow is sufficient.
+- Acceptance Criteria: Each item must be testable by command or state check. Minimum 1 per SC.
 "
 ```
 

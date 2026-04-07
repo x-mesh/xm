@@ -163,7 +163,26 @@ function sizeBadge(size) {
 function renderMarkdown(text) {
   if (!text) return '';
   if (typeof marked !== 'undefined' && marked.parse) {
-    return marked.parse(text);
+    // Pre-process: wrap ASCII diagram blocks in code fences so marked renders them as <pre>
+    // Detect lines with box-drawing chars (─│┌┐└┘├┤┬┴┼), arrows (──▶ ◀── →), or tree chars (├── └──)
+    const lines = text.split('\n');
+    const processed = [];
+    let inDiagram = false;
+    for (const line of lines) {
+      const isDiagramLine = /[─│┌┐└┘├┤┬┴┼▶◀▼▲═║╔╗╚╝╠╣╦╩╬]/.test(line) ||
+        /^\s*[\[(\s].*──/.test(line) ||
+        /^\s*[│├└┌]/.test(line);
+      if (isDiagramLine && !inDiagram) {
+        processed.push('```');
+        inDiagram = true;
+      } else if (!isDiagramLine && inDiagram && line.trim() === '') {
+        processed.push('```');
+        inDiagram = false;
+      }
+      processed.push(line);
+    }
+    if (inDiagram) processed.push('```');
+    return marked.parse(processed.join('\n'));
   }
   // Fallback: escape HTML and preserve line breaks
   return text
