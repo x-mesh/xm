@@ -116,12 +116,18 @@ Rules:
 7. **Execute → Verify** — after all tasks complete, MUST use AskUserQuestion before advancing.
 8. **Verify → Close** — after quality checks, MUST use AskUserQuestion before closing.
 
+9. **PRD is MANDATORY** — every project MUST have a PRD.md in `context/` before Execute phase. If tasks were added without PRD (e.g., direct `tasks add`), generate PRD from existing tasks before proceeding.
+10. **Task documentation** — every task MUST have `done_criteria` before execution starts. If missing, auto-derive from PRD requirements using `$XMB tasks done-criteria`.
+11. **No phantom projects** — a project without PRD.md and CONTEXT.md is invisible to dashboard and untrackable. Always generate these artifacts.
+
 Anti-patterns:
 - ❌ `plan "goal"` → `phase set plan` → PRD generation (skips Research)
 - ❌ PRD generated → "리뷰해주세요" without showing PRD content
 - ❌ PRD generated → show to user → but forget `$XMB save plan` (PRD lost, not in dashboard)
 - ❌ Phase transition without AskUserQuestion
+- ❌ `init` → `tasks add` → `tasks update --status in_progress` (no PRD, no CONTEXT.md — dashboard blind spot)
 - ✅ `plan "goal"` → init → interview → research → gate pass → phase next → PRD → `save plan` → show PRD → AskUserQuestion
+- ✅ If tasks added directly: generate PRD from task list before first `tasks update --status in_progress`
 
 Anti-patterns:
 - All tasks complete → immediately run `phase next`
@@ -139,10 +145,15 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 | Phase | Exit Gate | Condition |
 |-------|-----------|-----------|
 | Research | human-verify | CONTEXT.md or REQUIREMENTS.md must exist + no unresolved decisions in CONTEXT.md |
-| Plan | human-verify | Tasks defined + plan-check passed (+ optional critique) |
+| Plan | human-verify | PRD.md MUST exist + Tasks defined with done_criteria + plan-check passed (+ optional critique) |
 | Execute | auto | All tasks completed |
 | Verify | quality | test/lint/build all pass |
 | Close | auto | — |
+
+**Plan exit gate enforcement:** Before advancing from Plan → Execute, check:
+1. `context/PRD.md` exists and is non-empty
+2. All tasks have `done_criteria` (not null)
+3. If either check fails → block transition, generate missing artifacts first
 
 ## Routing
 
