@@ -135,6 +135,10 @@ Agent tool: { model: "haiku", description: "x-kit: [command]", prompt: "Run: [ba
 > If the output is determined by a script (not by LLM reasoning), use haiku.
 > The model is a messenger, not a thinker — pay messenger rates.
 
+### Guardrail
+
+Never route to haiku if the task involves: analysis, code generation, review, planning, evaluation, or multi-step orchestration. If detected, warn and escalate to sonnet. See `x-kit/skills/x-kit/SKILL.md` Model Guardrail for full rules.
+
 ## Edit Policy
 
 **NEVER edit files under `x-kit/skills/` directly.** That directory is the marketplace copy — a build artifact.

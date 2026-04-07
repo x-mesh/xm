@@ -399,7 +399,8 @@ Multi-perspective code review with judgment frameworks, not just checklists.
 | **Why-line requirement** | Every finding must cite which severity criterion applies — no vague reports |
 | **Challenge stage** | Leader validates each finding's severity before final report |
 | **Consensus elevation** | 2+ agents report same issue → severity promoted + `[consensus]` tag |
-| **Recall Boost** | After severity filtering, second pass catches stubs, contradictions, cross-reference errors as `[Observation]` tags |
+| **Recall Boost** | After severity filtering, second pass scans 6 categories (stubs, contradictions, cross-refs, silent behavior changes, missing error paths, off-by-one) as `[Observation]` tags |
+| **--thorough** | Dedicated recall agent with fresh context, 10 observations max, aggressive auto-promotion |
 | **Severity disambiguation** | Architecture lens: "this diff introduced it" → Medium vs "follows existing convention" → Low |
 | **Verdict** | LGTM (0 Critical, 0 High, Medium ≤ 3) / Request Changes (High 1-2 or Medium > 3) / Block (1+ Critical or High > 2) |
 

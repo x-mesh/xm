@@ -30,6 +30,25 @@ Show available x-mesh tools and their installation status.
 
 For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
 
+### Model Guardrail
+
+Before delegating to haiku, verify the task is display/query only. If ANY of the following apply, use sonnet or higher — never haiku:
+
+| Signal | Example | Why |
+|--------|---------|-----|
+| Produces analysis or recommendations | code review, plan critique, risk assessment | Reasoning quality degrades |
+| Generates or modifies code | implement feature, fix bug, refactor | Edge case handling (NaN, negative, boundary) drops significantly |
+| Multi-step orchestration | strategy execution, pipeline run | Loses coherence across steps |
+| Evaluates quality | x-eval scoring, x-probe validation | Calibration requires stronger model |
+
+If a haiku-eligible command receives `--thorough` or similar depth flags, escalate to sonnet.
+
+**Violation output:** If the leader detects a reasoning task routed to haiku (e.g., via user override or misconfigured pipeline), prepend this warning to the output:
+```
+⚠️ Model mismatch: this task requires reasoning but is running on haiku.
+   Results may miss edge cases. Re-run without --model haiku for full quality.
+```
+
 ## AskUserQuestion Dark-Theme Rule
 
 **CRITICAL:** The `question` field in AskUserQuestion is invisible on dark terminals.

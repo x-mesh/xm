@@ -178,6 +178,7 @@ Options:
   --format markdown|github-comment
                                 Output format (default: markdown)
   --agents N                    Number of review agents (default: from shared config)
+  --thorough                    Enhanced recall: dedicated recall agent, 10 observations max
 
 Lenses (default 4 + extended 3):
   security       Injection, auth, secrets, OWASP Top 10
@@ -760,6 +761,15 @@ If all findings are removed after challenge, verdict is LGTM regardless of origi
 
 After challenge filtering, the leader does a **second pass** to catch issues that strict severity rules might have filtered out.
 
+**Mode selection:**
+
+| Flag | Behavior | Observation limit | Agent |
+|------|----------|:-----------------:|-------|
+| (default) | Leader second pass, 6 categories | 5 | Leader only |
+| `--thorough` | Dedicated recall agent, 6 categories, aggressive promotion | 10 | Separate agent via Agent tool |
+
+When `--thorough` is active, spawn a **separate recall agent** (not the leader) via Agent tool. The agent receives: (1) the full diff, (2) the list of already-reported findings, and (3) the recall boost prompt below. This provides genuine "fresh eyes" — a different context window from the leader who applied severity filters.
+
 **Prompt for the recall boost pass:**
 ```
 Review the diff one more time with fresh eyes. Ignore the findings already reported.
@@ -771,6 +781,12 @@ Look specifically for:
    (e.g., a config table says X, but the prose says Y)
 3. **Broken cross-references** — A section references a path, command, or identifier
    that doesn't match the actual definition elsewhere in the diff
+4. **Silent behavior changes** — Default value changes, parameter reordering, removed
+   validations, or loosened constraints that alter runtime behavior without explicit mention
+5. **Missing error paths** — New I/O, network, or parsing operations introduced without
+   error handling (no try/catch, no error return check, no fallback)
+6. **Off-by-one and boundary gaps** — Loop bounds, array slicing, range checks, or
+   pagination logic where ±1 changes the result set (e.g., < vs <=, 0-index vs 1-index)
 
 For each issue found, output as:
 [Observation] file:line — description
@@ -780,14 +796,17 @@ Observations do NOT affect the verdict. They are informational.
 If nothing found, output: No additional observations.
 ```
 
-**Rules:**
+**Promotion rules:**
 - Observations are appended to the report **after** the verdict section
 - Observations do NOT count toward verdict thresholds (not Critical/High/Medium/Low)
 - Observations use the `[Observation]` tag — a distinct category, not a severity level
-- Maximum 5 observations per review
-- If an observation is clearly a real defect (would be Medium+ if severity-rated), the leader **promotes** it to a finding and re-evaluates the verdict
+- Maximum 5 observations per review (10 with `--thorough`)
+- **Auto-promotion criteria** — an observation is promoted to a severity-rated finding when ANY of:
+  1. It describes a defect that would be **Medium or higher** if severity-rated
+  2. (`--thorough` only) The recall agent flags it as `[Promote]` with explicit severity justification
+- Promoted observations are re-evaluated: apply the same Challenge rules (Why-line, context, reachability, impact). If they survive challenge, the verdict is recalculated.
 
-**Why this exists:** x-review's "when in doubt, downgrade" principle optimizes for precision (no false positives) at the cost of recall. This pass recovers recall without inflating severity — observations are advisory, not blocking.
+**Why this exists:** x-review's "when in doubt, downgrade" principle optimizes for precision (no false positives) at the cost of recall. This pass recovers recall without inflating severity — observations are advisory, not blocking. The 3 added categories (4-6) target the most common recall gaps identified in A/B benchmarks.
 
 ### 4. Sort
 
