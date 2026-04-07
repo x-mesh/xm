@@ -37,6 +37,28 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
 
+## Wiring
+
+```
+suggests: x-eval
+suggests: x-humble
+```
+
+## Post-Strategy Eval Gate
+
+After every strategy completes (Self-Score appended), check for auto-eval:
+
+1. Read `.xm/config.json` → check `eval.auto` field
+2. If `eval.auto: true` OR `--verify` flag was used:
+   - Automatically invoke x-eval score with the strategy output
+   - Rubric: use the strategy's default rubric from Self-Score Protocol mapping
+   - Mode: use `--grounded` if the strategy involved code (review, red-team, monitor)
+   - Store result in `.xm/eval/results/`
+3. If `eval.auto` is not set and `--verify` is not used:
+   - Show suggestion: `"💡 x-eval로 품질 평가를 할 수 있습니다. /x-eval score로 실행하세요."`
+
+This replaces the previous --verify inline judge panel with x-eval delegation, ensuring a single evaluation path.
+
 ## AskUserQuestion Dark-Theme Rule
 
 **CRITICAL:** The `question` field in AskUserQuestion is invisible on dark terminals.
