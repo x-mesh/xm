@@ -295,7 +295,20 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 git push origin main
 ```
 
-### Step 6: Output
+### Step 6: Local marketplace update
+
+After push, sync the local installed marketplace so the running session uses the released version:
+
+```bash
+claude plugin marketplace update x-kit
+```
+
+If the command fails or is unavailable, log a warning but do not block:
+```
+⚠ Local marketplace update failed. Run manually: claude plugin marketplace update x-kit
+```
+
+### Step 7: Output
 
 ```
 🚀 Released!
@@ -306,6 +319,7 @@ git push origin main
 
   Commit: abc1234
   Push: origin/main ✅
+  Local marketplace: updated ✅
 
   Users can update:
     /plugin marketplace update x-kit
