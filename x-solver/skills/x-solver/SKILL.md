@@ -147,14 +147,25 @@ Record session_end with total duration, agent count, and status.
 
 ## Agent Primitives
 
-This skill uses only Claude Code's built-in Agent tool:
+This skill uses only Claude Code's built-in Agent tool.
+
+### Agent Count Resolution (MANDATORY)
+
+Before any fan-out or broadcast, resolve the agent count:
+
+```bash
+node -e "import('/Users/jinwoo/.claude/plugins/cache/x-kit/x-kit/1.26.4/lib/shared-config.mjs').then(m => console.log(m.getAgentCount()))"
+```
+
+Use the returned value as `AGENT_COUNT` for all fan-out/broadcast operations in this session.
+Do NOT hardcode agent counts. Always use the resolved value.
 
 ### fan-out (parallel agents)
-Call N Agent tools **simultaneously** in a single message:
+Call `AGENT_COUNT` Agent tools **simultaneously** in a single message:
 ```
 Agent tool 1: { description: "agent-1", prompt: "...", run_in_background: true, model: "sonnet" }
 Agent tool 2: { description: "agent-2", prompt: "...", run_in_background: true, model: "sonnet" }
-Agent tool 3: { description: "agent-3", prompt: "...", run_in_background: true, model: "sonnet" }
+...up to AGENT_COUNT agents
 ```
 
 ### delegate (single agent delegation)
@@ -358,8 +369,8 @@ Use the result to call `$XMS tree add "description" --difficulty medium`.
 Advance: `$XMS solve-advance --phase explore`
 
 #### Phase: explore
-**fan-out** (N agents per sub-problem, sonnet):
-3 agents per sub-problem propose solutions in parallel:
+**fan-out** (`AGENT_COUNT` agents per sub-problem, sonnet):
+`AGENT_COUNT` agents per sub-problem propose solutions in parallel:
 ```
 {problem_solving_principles}
 
@@ -702,8 +713,8 @@ Use the result to call `$XMS constraints add "description" --type hard|soft|pref
 Advance: `$XMS solve-advance --phase generate`
 
 #### Phase: generate
-**fan-out** (N agents, sonnet):
-Each agent generates candidates optimizing different soft constraints:
+**fan-out** (`AGENT_COUNT` agents, sonnet):
+`AGENT_COUNT` agents generate candidates, each optimizing a different soft constraint:
 ```
 {problem_solving_principles}
 
@@ -727,8 +738,8 @@ Use the result to call `$XMS candidates add "description" --source agent-N`.
 Advance: `$XMS solve-advance --phase evaluate`
 
 #### Phase: evaluate
-**broadcast** (multi-perspective, sonnet):
-Each agent scores candidates from a different perspective:
+**broadcast** (`AGENT_COUNT` agents, multi-perspective, sonnet):
+`AGENT_COUNT` agents score candidates, each from a different perspective:
 ```
 {problem_solving_principles}
 

@@ -150,6 +150,11 @@ Agent tool: { model: "haiku", description: "x-kit: [command]", prompt: "Run: [ba
 
 This applies to all plugins: x-build, x-op, x-probe, x-solver, x-eval, x-review, x-trace, x-memory, x-humble, x-ship, x-sync.
 
+## Lessons (x-humble)
+<!-- Section managed by x-humble. Manual editing allowed. -->
+- STOP: Editing `x-kit/skills/` SKILL.md files directly. Always edit source directory first. (L4, confirmed 1 time, 2026-04-07)
+- START: Before editing any SKILL.md, verify the file path is in the source directory, not marketplace copy. (L5, confirmed 1 time, 2026-04-07)
+
 ## Project Structure
 
 - `x-kit/` — core plugin (shared config, cost engine, DAG)
