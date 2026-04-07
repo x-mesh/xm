@@ -257,6 +257,33 @@ Change settings: `x-kit config set agent_max_count 10`
 
 When the skill layer creates agents, if no `--agents` flag is present, it reads agent_max_count from shared config to determine the number of agents.
 
+## Pre-Execution Confidence Gate
+
+Before dispatching agents for any strategy, the leader self-assesses readiness. This is a lightweight pre-check (~50 tokens), not a post-execution quality gate.
+
+### Checklist (answer each before proceeding)
+
+1. **Topic clarity** — Is the task unambiguous? Can agents act on it without guessing?
+2. **Sufficient context** — Does the leader have enough information (files read, prior results) to orchestrate?
+3. **Strategy fit** — Is the selected strategy appropriate for this task type?
+4. **Scope boundedness** — Can agents produce a result within their token/round budget?
+
+### Decision
+
+| Yes count | Confidence | Action |
+|:---------:|:----------:|--------|
+| 4/4 | HIGH | Proceed silently — no user interruption |
+| 3/4 | MEDIUM | State which item is uncertain, proceed with caveat noted in trace |
+| ≤ 2/4 | LOW | **STOP.** Show the uncertain items. Use AskUserQuestion: "Confidence is low. Clarify or proceed anyway?" |
+
+### Rules
+- The gate fires AFTER strategy selection but BEFORE the first agent dispatch
+- For `compose` pipelines, the gate fires ONCE at the top level, not per sub-strategy
+- For `escalate`, the gate fires once before level 1 (cheapest model handles the rest)
+- The gate does NOT fire for `list`, `--dry-run`, or `--resume` (no agent dispatch)
+- When `--context` is active, context injection counts toward "sufficient context"
+- Record the confidence level in the trace entry (session_start args)
+
 ## Agent Primitives
 
 This skill uses only Claude Code built-in tools:
@@ -2004,6 +2031,37 @@ Appended to the end of every strategy's final output:
 ```
 
 Scoring scale: 1=fail, 5=baseline, 7=good, 10=excellent.
+
+### Hallucination Self-Check (4Q)
+
+After computing Self-Score and BEFORE presenting the final output, the leader answers 4 verification questions. This is a lightweight self-check (~100 tokens) that fills the gap between "no check" and the heavyweight `x-eval --grounded` judge panel.
+
+**4 Questions (answer each with evidence or "N/A"):**
+
+1. **Evidence exists?** — Every factual claim cites a source (file:line, URL, tool output, agent quote). Claims without sources → flag as UNVERIFIED.
+2. **Requirements addressed?** — Enumerate each element of the original task/topic. For each: covered / partially covered / not covered.
+3. **No unverified assumptions?** — List assumptions made during the strategy. For each: cite evidence or mark ASSUMED.
+4. **Internal consistency?** — Do findings/arguments contradict each other? Does the verdict follow from the evidence?
+
+**Output format** (appended after Self-Score table):
+
+```
+### 4Q Check
+| # | Question | Status | Note |
+|---|----------|:------:|------|
+| 1 | Evidence | ✅/⚠️ | {N verified, M unverified} |
+| 2 | Requirements | ✅/⚠️ | {N/M covered} |
+| 3 | Assumptions | ✅/⚠️ | {N assumptions, M unverified} |
+| 4 | Consistency | ✅/⚠️ | {consistent / conflicts noted} |
+```
+
+**Escalation rule:** If 2+ questions are ⚠️, append recommendation: `"⚠ 2+ items flagged. Consider: /x-eval score --grounded for tool-verified evaluation."`
+
+**Rules:**
+- 4Q is mandatory for all strategies (same scope as Self-Score)
+- 4Q does NOT replace Self-Score — it supplements it (Self-Score = numeric quality, 4Q = factual integrity)
+- 4Q does NOT use tools — it is text-only self-reflection. For tool-assisted verification, use `x-eval --grounded`
+- Keep answers concise — counts and flags, not paragraphs
 
 ## Result Persistence
 
