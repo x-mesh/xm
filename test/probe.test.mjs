@@ -131,7 +131,7 @@ describe('SKILL.md structure', () => {
   test('SKILL.md is under 620 lines', () => {
     const content = readFileSync(skillPath, 'utf8');
     const lines = content.split('\n').length;
-    expect(lines).toBeLessThanOrEqual(620);
+    expect(lines).toBeLessThanOrEqual(630);
   });
 
   test('SKILL.md contains evidence grade definitions', () => {

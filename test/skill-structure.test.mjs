@@ -17,7 +17,7 @@ describe('x-solver SKILL.md structure', () => {
 
   test('contains Step-Back in classify', () => {
     expect(content).toContain('Step-Back');
-    expect(content).toContain('상위 패턴');
+    expect(content).toContain('check higher-level pattern');
   });
 
   test('iterate phase flow includes diagnose', () => {
@@ -37,20 +37,20 @@ describe('x-solver SKILL.md structure', () => {
     expect(content).toContain('Winner');
   });
 
-  test('iterate diagnose is SKIP 불가', () => {
-    expect(content).toContain('SKIP 불가');
-    expect(content).toContain('diagnose부터 시작');
+  test('iterate diagnose cannot be skipped', () => {
+    expect(content).toContain('cannot be skipped');
+    expect(content).toContain('must always start from diagnose');
   });
 
   test('iterate has leader execution rules', () => {
-    expect(content).toContain('리더 실행 규칙');
-    expect(content).toContain('직접 코드를 읽거나 가설을 검증하지 않는다');
-    expect(content).toContain('agent에 위임');
+    expect(content).toContain('must never directly read code');
+    expect(content).toContain('verify hypotheses');
+    expect(content).toContain('delegate to an agent');
   });
 
   test('each iterate phase has checklist', () => {
     // Count checklist blocks
-    const checklistCount = (content.match(/체크리스트:/g) || []).length;
+    const checklistCount = (content.match(/Checklist:/g) || []).length;
     expect(checklistCount).toBeGreaterThanOrEqual(5); // diagnose, hypothesize, test, refine, resolve
   });
 
@@ -98,8 +98,8 @@ describe('x-review SKILL.md structure', () => {
 
   test('contains full mode with lens-first split', () => {
     expect(content).toContain('### full');
-    expect(content).toContain('렌즈 우선 분할');
-    expect(content).toContain('하나의 렌즈');
+    expect(content).toContain('Lens-first split');
+    expect(content).toContain('one lens');
   });
 
   test('contains CoVe self-verify step', () => {
@@ -110,8 +110,8 @@ describe('x-review SKILL.md structure', () => {
   });
 
   test('CoVe uses agent snippets, not file re-reads', () => {
-    expect(content).toContain('파일을 다시 읽지 않는다');
-    expect(content).toContain('스니펫');
+    expect(content).toContain('do not re-read the file');
+    expect(content).toContain('snippet');
   });
 
   test('contains presets (quick/standard/security)', () => {
@@ -121,7 +121,7 @@ describe('x-review SKILL.md structure', () => {
   });
 
   test('verdict includes reason', () => {
-    expect(content).toContain('판정 이유');
+    expect(content).toContain('verdict rationale');
   });
 
   test('review results saved as MD', () => {
