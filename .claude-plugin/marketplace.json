@@ -46,7 +46,7 @@
     {
       "name": "x-op",
       "description": "Strategy orchestration — 18 strategies with self-scoring, --verify auto-validation, and compose presets",
-      "version": "1.4.2",
+      "version": "1.4.3",
       "author": {
         "name": "x-mesh"
       },
