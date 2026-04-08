@@ -86,8 +86,6 @@ x-build plan-phase agents must follow these principles.
 
 ## SKILL.md Authoring
 
-Full spec: **`docs/skill-anatomy.md`** — required format, length budget, section definitions. Read it before creating or modifying any skill.
-
 ### Language Rules
 
 SKILL.md is a prompt for LLMs — write instructions in English for precision.
@@ -108,7 +106,7 @@ SKILL.md is a prompt for LLMs — write instructions in English for precision.
 
 ### Required Sections
 
-Every SKILL.md must include, in order: `Overview` → `When to Use` → `<Core Process>` → `Common Rationalizations` → `Red Flags` → `Verification`. See `docs/skill-anatomy.md` for the full spec and section definitions.
+Every SKILL.md must include, in order: `Overview` → `When to Use` → `<Core Process>` → `Common Rationalizations` → `Red Flags` → `Verification`.
 
 The **Common Rationalizations** table (excuses agents use to skip steps + factual rebuttals) is the single most impactful discipline mechanism — minimum 5 domain-specific rows. Without it, the skill has no defense against being partially applied.
 

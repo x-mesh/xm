@@ -1,6 +1,6 @@
 # SKILL.md Audit
 
-Status of every `SKILL.md` in the repo against the `docs/skill-anatomy.md` spec.
+Status of every `SKILL.md` in the repo against the length budget and required-sections rules in `CLAUDE.md`.
 
 Last updated: 2026-04-08
 
@@ -40,7 +40,7 @@ Post-Phase 2 (2026-04-08). Rationalizations added ~10-12 lines each; table refle
 
 ## Common Rationalizations section coverage
 
-Every SKILL.md must have a `## Common Rationalizations` section per `docs/skill-anatomy.md §4`.
+Every SKILL.md must have a `## Common Rationalizations` section.
 
 **Coverage: 14/14 (100%)** — all plugins compliant as of 2026-04-08.
 
