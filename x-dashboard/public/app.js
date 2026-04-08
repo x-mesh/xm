@@ -2139,6 +2139,275 @@ async function renderMemoryDetail(id) {
   `;
 }
 
+// ── x-review views ─────────────────────────────────────────────────
+
+function reviewVerdictBadge(verdict) {
+  if (!verdict) return '';
+  const v = String(verdict);
+  let color = 'var(--text-muted)';
+  if (v.includes('LGTM')) color = '#4ade80';
+  else if (v.includes('Request')) color = '#fbbf24';
+  else if (v.includes('Block')) color = '#f87171';
+  return `<span style="color:${color};font-weight:bold">${v}</span>`;
+}
+
+async function renderReviewsList() {
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="view-header"><h1>Reviews</h1><p>.xm/review/</p></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+
+  const [last, history] = await Promise.all([
+    fetchJSON(apiUrl('/review/last')),
+    fetchJSON(apiUrl('/review/history')),
+  ]);
+
+  const lastBlock = (last && !last.error && (last.json || last.md))
+    ? (() => {
+        const j = last.json ?? {};
+        const target = j.target ? `${j.target.type || 'diff'}: ${j.target.ref || ''}` : '(unknown)';
+        const verdict = j.verdict ?? '(unknown)';
+        const lenses = Array.isArray(j.lenses) ? j.lenses.join(', ') : '—';
+        const findings = Array.isArray(j.findings) ? j.findings.length : 0;
+        const obsCount = Array.isArray(j.observations) ? j.observations.length : 0;
+        const mdLink = last.md
+          ? `<details style="margin-top:0.75rem"><summary style="cursor:pointer;font-size:0.85rem;color:var(--text-muted)">Full report (markdown)</summary><div class="markdown-body" style="margin-top:0.5rem">${renderMarkdown(last.md)}</div></details>`
+          : '';
+        return `
+          <div class="card" style="margin-bottom:1rem">
+            <h2 style="margin-top:0">Last review</h2>
+            <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:baseline;margin-bottom:0.5rem">
+              <span>${reviewVerdictBadge(verdict)}</span>
+              <code style="font-size:0.85rem">${nullSafe(target)}</code>
+            </div>
+            <div class="text-muted" style="font-size:0.8rem">
+              Lenses: ${nullSafe(lenses)} · Findings: ${findings} · Observations: ${obsCount}
+              ${j.reviewed_commit ? ` · Commit: <code>${j.reviewed_commit.slice(0, 7)}</code>` : ''}
+            </div>
+            ${mdLink}
+          </div>
+        `;
+      })()
+    : '';
+
+  const historyRows = (history?.data ?? []).map(r => {
+    return `<tr style="cursor:pointer" onclick="window.location.hash='#/reviews/${encodeURIComponent(r.file)}'">
+      <td>${reviewVerdictBadge(r.verdict)}</td>
+      <td><code style="font-size:0.8rem">${nullSafe(r.target)}</code></td>
+      <td class="text-muted" style="font-size:0.8rem">${nullSafe(r.lenses)}</td>
+      <td class="text-muted" style="font-size:0.8rem">${nullSafe(r.findings_summary)}</td>
+      <td class="text-muted" style="font-size:0.8rem">${nullSafe(r.date)}</td>
+    </tr>`;
+  }).join('');
+
+  const historyBlock = historyRows
+    ? `<div class="card">
+        <h2 style="margin-top:0">History</h2>
+        <div class="table-wrapper">
+          <table class="table">
+            <thead><tr><th>Verdict</th><th>Target</th><th>Lenses</th><th>Findings</th><th>Date</th></tr></thead>
+            <tbody>${historyRows}</tbody>
+          </table>
+        </div>
+      </div>`
+    : '<div class="card"><p class="text-muted">No review history yet.</p></div>';
+
+  const emptyBlock = (!lastBlock && !historyRows)
+    ? `<div class="card" style="text-align:center;padding:3rem">
+        <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
+        <p class="text-muted">No reviews yet.</p>
+        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/x-review</code> to create one.</p>
+      </div>`
+    : '';
+
+  app.innerHTML = `
+    <div class="view-header"><h1>Reviews</h1><p>.xm/review/</p></div>
+    ${lastBlock}
+    ${historyRows ? historyBlock : ''}
+    ${emptyBlock}
+  `;
+}
+
+async function renderReviewDetail(file) {
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="view-header"><h1>Review</h1></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+
+  const res = await fetchJSON(apiUrl(`/review/history/${encodeURIComponent(file)}`));
+  if (res.error) {
+    app.innerHTML = `<div class="view-header"><h1>Review</h1><p><a href="#/reviews" style="font-size:0.85rem">← Reviews</a></p></div><div class="card"><p class="text-muted">Error: ${res.error}</p></div>`;
+    return;
+  }
+
+  app.innerHTML = `
+    <div class="view-header">
+      <h1>Review — ${file}</h1>
+      <p><a href="#/reviews" style="font-size:0.85rem">← Reviews</a></p>
+    </div>
+    <div class="card markdown-body">${renderMarkdown(res.content)}</div>
+  `;
+}
+
+// ── x-eval views ───────────────────────────────────────────────────
+
+async function renderEvalList() {
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="view-header"><h1>Eval</h1><p>.xm/eval/</p></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+
+  const res = await fetchJSON(apiUrl('/eval'));
+  if (res.error) {
+    app.innerHTML = `<div class="view-header"><h1>Eval</h1></div><div class="card"><p class="text-muted">Error: ${res.error}</p></div>`;
+    return;
+  }
+
+  const cats = res.categories || {};
+  const totalCount = Object.values(cats).reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
+
+  if (totalCount === 0) {
+    app.innerHTML = `
+      <div class="view-header"><h1>Eval</h1><p>.xm/eval/</p></div>
+      <div class="card" style="text-align:center;padding:3rem">
+        <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
+        <p class="text-muted">No eval data yet.</p>
+        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/x-eval score</code> or <code>/x-eval bench</code>.</p>
+      </div>`;
+    return;
+  }
+
+  function renderCategory(cat, items) {
+    if (!items.length) return '';
+    const rows = items.map(i => {
+      const s = i.summary ?? {};
+      const desc = s.type || s.rubric || s.name || s.verdict || '—';
+      const score = (s.overall != null) ? `<code>${s.overall}</code>` : '—';
+      return `<tr style="cursor:pointer" onclick="window.location.hash='#/eval/${encodeURIComponent(cat)}/${encodeURIComponent(i.file)}'">
+        <td><code style="font-size:0.8rem">${i.file}</code></td>
+        <td class="text-muted" style="font-size:0.8rem">${nullSafe(desc)}</td>
+        <td>${score}</td>
+        <td class="text-muted" style="font-size:0.8rem">${nullSafe(i.timestamp)}</td>
+      </tr>`;
+    }).join('');
+    return `<div class="card" style="margin-bottom:1rem">
+      <h2 style="margin-top:0;text-transform:capitalize">${cat} <span class="text-muted" style="font-size:0.8rem">(${items.length})</span></h2>
+      <div class="table-wrapper">
+        <table class="table">
+          <thead><tr><th>File</th><th>Type/Rubric</th><th>Score</th><th>When</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }
+
+  app.innerHTML = `
+    <div class="view-header"><h1>Eval</h1><p>.xm/eval/ · ${totalCount} items</p></div>
+    ${['results', 'benchmarks', 'diffs', 'rubrics'].map(c => renderCategory(c, cats[c] || [])).join('')}
+  `;
+}
+
+async function renderEvalDetail(category, file) {
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="view-header"><h1>Eval</h1></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+
+  const res = await fetchJSON(apiUrl(`/eval/${encodeURIComponent(category)}/${encodeURIComponent(file)}`));
+  if (res.error) {
+    app.innerHTML = `<div class="view-header"><h1>Eval</h1><p><a href="#/eval" style="font-size:0.85rem">← Eval</a></p></div><div class="card"><p class="text-muted">Error: ${res.error}</p></div>`;
+    return;
+  }
+
+  const body = res.json
+    ? `<pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--surface);padding:1rem;overflow:auto">${JSON.stringify(res.json, null, 2)}</pre>`
+    : `<div class="markdown-body">${renderMarkdown(res.content || '')}</div>`;
+
+  app.innerHTML = `
+    <div class="view-header">
+      <h1>Eval — ${category} / ${file}</h1>
+      <p><a href="#/eval" style="font-size:0.85rem">← Eval</a></p>
+    </div>
+    <div class="card">${body}</div>
+  `;
+}
+
+// ── x-humble views ─────────────────────────────────────────────────
+
+async function renderHumbleList() {
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="view-header"><h1>Humble</h1><p>.xm/humble/</p></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+
+  const res = await fetchJSON(apiUrl('/humble'));
+  if (res.error) {
+    app.innerHTML = `<div class="view-header"><h1>Humble</h1></div><div class="card"><p class="text-muted">Error: ${res.error}</p></div>`;
+    return;
+  }
+
+  const kinds = res.kinds || {};
+  const totalCount = Object.values(kinds).reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
+
+  if (totalCount === 0) {
+    app.innerHTML = `
+      <div class="view-header"><h1>Humble</h1><p>.xm/humble/</p></div>
+      <div class="card" style="text-align:center;padding:3rem">
+        <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
+        <p class="text-muted">No humble data yet.</p>
+        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/x-humble</code> to add retrospectives or lessons.</p>
+      </div>`;
+    return;
+  }
+
+  function renderKind(kind, items) {
+    if (!items.length) return '';
+    const rows = items.map(i => {
+      const s = i.summary ?? {};
+      const title = s.title ?? i.file;
+      const tags = Array.isArray(s.tags)
+        ? s.tags.map(t => `<code style="font-size:0.75rem;margin-right:3px">${t}</code>`).join('')
+        : '—';
+      const status = s.status ? `<span class="text-muted" style="font-size:0.8rem">${s.status}</span>` : '—';
+      const confirmed = s.confirmed_count != null ? `<code>${s.confirmed_count}×</code>` : '—';
+      return `<tr style="cursor:pointer" onclick="window.location.hash='#/humble/${encodeURIComponent(kind)}/${encodeURIComponent(i.file)}'">
+        <td>${nullSafe(title)}</td>
+        <td>${status}</td>
+        <td>${confirmed}</td>
+        <td>${tags}</td>
+        <td class="text-muted" style="font-size:0.8rem">${nullSafe(i.timestamp)}</td>
+      </tr>`;
+    }).join('');
+    return `<div class="card" style="margin-bottom:1rem">
+      <h2 style="margin-top:0;text-transform:capitalize">${kind} <span class="text-muted" style="font-size:0.8rem">(${items.length})</span></h2>
+      <div class="table-wrapper">
+        <table class="table">
+          <thead><tr><th>Title</th><th>Status</th><th>Confirmed</th><th>Tags</th><th>When</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }
+
+  app.innerHTML = `
+    <div class="view-header"><h1>Humble</h1><p>.xm/humble/ · ${totalCount} items</p></div>
+    ${['lessons', 'retrospectives'].map(k => renderKind(k, kinds[k] || [])).join('')}
+  `;
+}
+
+async function renderHumbleDetail(kind, file) {
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="view-header"><h1>Humble</h1></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+
+  const res = await fetchJSON(apiUrl(`/humble/${encodeURIComponent(kind)}/${encodeURIComponent(file)}`));
+  if (res.error) {
+    app.innerHTML = `<div class="view-header"><h1>Humble</h1><p><a href="#/humble" style="font-size:0.85rem">← Humble</a></p></div><div class="card"><p class="text-muted">Error: ${res.error}</p></div>`;
+    return;
+  }
+
+  const body = res.json
+    ? `<pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--surface);padding:1rem;overflow:auto">${JSON.stringify(res.json, null, 2)}</pre>`
+    : `<div class="markdown-body">${renderMarkdown(res.content || '')}</div>`;
+
+  app.innerHTML = `
+    <div class="view-header">
+      <h1>Humble — ${kind} / ${file}</h1>
+      <p><a href="#/humble" style="font-size:0.85rem">← Humble</a></p>
+    </div>
+    <div class="card">${body}</div>
+  `;
+}
+
 function render404(hash) {
   document.getElementById('app').innerHTML = `
     <div class="view-header"><h1>Not Found</h1></div>
@@ -2326,6 +2595,12 @@ const ROUTES = [
   { pattern: /^\/traces\/(.+)$/, handler: (m) => renderTraceDetail(m[1]) },
   { pattern: /^\/memory$/, handler: () => renderMemoryList() },
   { pattern: /^\/memory\/(.+)$/, handler: (m) => renderMemoryDetail(decodeURIComponent(m[1])) },
+  { pattern: /^\/reviews$/, handler: () => renderReviewsList() },
+  { pattern: /^\/reviews\/(.+)$/, handler: (m) => renderReviewDetail(decodeURIComponent(m[1])) },
+  { pattern: /^\/eval$/, handler: () => renderEvalList() },
+  { pattern: /^\/eval\/([^/]+)\/(.+)$/, handler: (m) => renderEvalDetail(decodeURIComponent(m[1]), decodeURIComponent(m[2])) },
+  { pattern: /^\/humble$/, handler: () => renderHumbleList() },
+  { pattern: /^\/humble\/([^/]+)\/(.+)$/, handler: (m) => renderHumbleDetail(decodeURIComponent(m[1]), decodeURIComponent(m[2])) },
   { pattern: /^\/search\/(.+)$/, handler: (m) => renderSearch(decodeURIComponent(m[1])) },
   { pattern: /^\/sync$/, handler: () => renderSync() },
 ];

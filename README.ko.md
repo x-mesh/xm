@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/x-kit/releases"><img src="https://img.shields.io/badge/version-1.26.9-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/x-kit/releases"><img src="https://img.shields.io/badge/version-1.26.10-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-11-orange" alt="Plugins" /></a>
@@ -543,7 +543,7 @@ CHECK-IN ──→ RECALL ──→ IDENTIFY ──→ ANALYZE ──→ ALTERNA
 
 ### x-dashboard
 
-`.xm/` 프로젝트 상태를 위한 웹 대시보드. 빌드, 프로브, 솔버, 트레이스, 메모리, 비용을 시각화 — 읽기 전용, 빌드 체인 없음.
+`.xm/` 프로젝트 상태를 위한 웹 대시보드. 빌드, 프로브, 솔버, **리뷰, 평가, humble 레슨**, 트레이스, 메모리, 비용을 시각화 — 읽기 전용, 빌드 체인 없음.
 
 ```bash
 bun x-dashboard/lib/x-dashboard-server.mjs              # 시작 (독립 실행)

@@ -685,6 +685,201 @@ function handleSolverDetail(xmRoot, slug, req) {
   return jsonResponseWithETag({ manifest, phases }, req);
 }
 
+// ── x-review handlers ──────────────────────────────────────────────
+
+function handleReviewLast(xmRoot, req) {
+  const reviewDir = safeJoin(xmRoot, 'review');
+  if (!reviewDir) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+
+  const result = { json: null, md: null };
+
+  const jsonPath = safeJoin(reviewDir, 'last-result.json');
+  if (jsonPath && existsSync(jsonPath)) {
+    try { result.json = JSON.parse(readFileSync(jsonPath, 'utf8')); } catch {}
+  }
+  const mdPath = safeJoin(reviewDir, 'last-result.md');
+  if (mdPath && existsSync(mdPath)) {
+    try { result.md = readFileSync(mdPath, 'utf8'); } catch {}
+  }
+
+  if (!result.json && !result.md) {
+    return jsonResponseWithETag({ error: 'not_found' }, req, 404);
+  }
+  return jsonResponseWithETag(result, req);
+}
+
+function handleReviewHistory(xmRoot, req) {
+  const historyDir = safeJoin(xmRoot, 'review', 'history');
+  if (!historyDir || !existsSync(historyDir)) return jsonResponseWithETag({ data: [] }, req);
+
+  const results = [];
+  for (const entry of readdirSync(historyDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+    const filePath = safeJoin(historyDir, entry.name);
+    if (!filePath) continue;
+    try {
+      const content = readFileSync(filePath, 'utf8');
+      // Parse MD header block produced by x-review
+      const titleMatch = content.match(/^# x-review: (.+?) — (.+)$/m);
+      const dateMatch = content.match(/^- Date: (.+)$/m);
+      const branchMatch = content.match(/^- Branch: (.+)$/m);
+      const lensesMatch = content.match(/^- Lenses: (.+)$/m);
+      const findingsMatch = content.match(/^- Findings: (.+)$/m);
+      results.push({
+        file: entry.name,
+        target: titleMatch?.[1] ?? entry.name,
+        verdict: titleMatch?.[2] ?? 'unknown',
+        date: dateMatch?.[1] ?? '',
+        branch: branchMatch?.[1] ?? '',
+        lenses: lensesMatch?.[1] ?? '',
+        findings_summary: findingsMatch?.[1] ?? '',
+      });
+    } catch {}
+  }
+  results.sort((a, b) => (b.date || b.file).localeCompare(a.date || a.file));
+  return jsonResponseWithETag({ data: results }, req);
+}
+
+function handleReviewHistoryFile(xmRoot, file, req) {
+  if (!/^[a-zA-Z0-9._-]+\.md$/.test(file)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  const filePath = safeJoin(xmRoot, 'review', 'history', file);
+  if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  if (!existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
+  try {
+    return jsonResponseWithETag({ file, content: readFileSync(filePath, 'utf8') }, req);
+  } catch {
+    return jsonResponseWithETag({ error: 'read_error' }, req, 500);
+  }
+}
+
+// ── x-eval handlers ────────────────────────────────────────────────
+
+const EVAL_CATEGORIES = new Set(['results', 'benchmarks', 'diffs', 'rubrics']);
+
+function handleEvalList(xmRoot, req) {
+  const evalDir = safeJoin(xmRoot, 'eval');
+  const categories = { results: [], benchmarks: [], diffs: [], rubrics: [] };
+  if (!evalDir || !existsSync(evalDir)) return jsonResponseWithETag({ categories }, req);
+
+  for (const cat of EVAL_CATEGORIES) {
+    const catDir = safeJoin(evalDir, cat);
+    if (!catDir || !existsSync(catDir)) continue;
+    const items = [];
+    try {
+      for (const entry of readdirSync(catDir, { withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        const filePath = safeJoin(catDir, entry.name);
+        if (!filePath) continue;
+        let summary = null;
+        let timestamp = null;
+        if (entry.name.endsWith('.json')) {
+          try {
+            const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
+            timestamp = parsed.timestamp ?? parsed.created_at ?? null;
+            summary = {
+              type: parsed.type ?? null,
+              rubric: parsed.rubric ?? null,
+              overall: parsed.overall ?? null,
+              verdict: parsed.verdict ?? null,
+              from: parsed.from ?? null,
+              to: parsed.to ?? null,
+              name: parsed.name ?? null,
+            };
+          } catch {}
+        }
+        items.push({ file: entry.name, timestamp, summary });
+      }
+    } catch {}
+    items.sort((a, b) => (b.timestamp || b.file).localeCompare(a.timestamp || a.file));
+    categories[cat] = items;
+  }
+  return jsonResponseWithETag({ categories }, req);
+}
+
+function handleEvalFile(xmRoot, category, file, req) {
+  if (!EVAL_CATEGORIES.has(category)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  if (!/^[a-zA-Z0-9._-]+\.(json|md)$/.test(file)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  const filePath = safeJoin(xmRoot, 'eval', category, file);
+  if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  if (!existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
+  try {
+    const raw = readFileSync(filePath, 'utf8');
+    if (file.endsWith('.json')) {
+      return jsonResponseWithETag({ category, file, json: JSON.parse(raw) }, req);
+    }
+    return jsonResponseWithETag({ category, file, content: raw }, req);
+  } catch {
+    return jsonResponseWithETag({ error: 'parse_error', file }, req, 500);
+  }
+}
+
+// ── x-humble handlers ──────────────────────────────────────────────
+
+const HUMBLE_KINDS = new Set(['lessons', 'retrospectives']);
+
+function handleHumbleList(xmRoot, req) {
+  const humbleDir = safeJoin(xmRoot, 'humble');
+  const kinds = { lessons: [], retrospectives: [] };
+  if (!humbleDir || !existsSync(humbleDir)) return jsonResponseWithETag({ kinds }, req);
+
+  for (const kind of HUMBLE_KINDS) {
+    const kindDir = safeJoin(humbleDir, kind);
+    if (!kindDir || !existsSync(kindDir)) continue;
+    const items = [];
+    try {
+      for (const entry of readdirSync(kindDir, { withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        const filePath = safeJoin(kindDir, entry.name);
+        if (!filePath) continue;
+        let summary = null;
+        let timestamp = null;
+        if (entry.name.endsWith('.json')) {
+          try {
+            const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
+            timestamp = parsed.timestamp ?? parsed.created_at ?? parsed.updated_at ?? null;
+            summary = {
+              title: parsed.title ?? null,
+              type: parsed.type ?? null,
+              status: parsed.status ?? null,
+              confirmed_count: parsed.confirmed_count ?? null,
+              tags: Array.isArray(parsed.tags) ? parsed.tags : null,
+            };
+          } catch {}
+        } else if (entry.name.endsWith('.md')) {
+          try {
+            const content = readFileSync(filePath, 'utf8').slice(0, 800);
+            const titleMatch = content.match(/^#\s+(.+)$/m);
+            const dateMatch = content.match(/^- Date: (.+)$/m);
+            timestamp = dateMatch?.[1] ?? null;
+            summary = { title: titleMatch?.[1] ?? null };
+          } catch {}
+        }
+        items.push({ file: entry.name, timestamp, summary });
+      }
+    } catch {}
+    items.sort((a, b) => (b.timestamp || b.file).localeCompare(a.timestamp || a.file));
+    kinds[kind] = items;
+  }
+  return jsonResponseWithETag({ kinds }, req);
+}
+
+function handleHumbleFile(xmRoot, kind, file, req) {
+  if (!HUMBLE_KINDS.has(kind)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  if (!/^[a-zA-Z0-9._-]+\.(json|md)$/.test(file)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  const filePath = safeJoin(xmRoot, 'humble', kind, file);
+  if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  if (!existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
+  try {
+    const raw = readFileSync(filePath, 'utf8');
+    if (file.endsWith('.json')) {
+      return jsonResponseWithETag({ kind, file, json: JSON.parse(raw) }, req);
+    }
+    return jsonResponseWithETag({ kind, file, content: raw }, req);
+  } catch {
+    return jsonResponseWithETag({ error: 'parse_error', file }, req, 500);
+  }
+}
+
 function handleSearch(xmRoot, url, req) {
   const q = (url.searchParams.get('q') ?? '').trim();
   if (!q) return jsonResponseWithETag({ data: [] }, req);
@@ -1455,6 +1650,49 @@ server = Bun.serve({
           return handleMemoryDetail(xmRoot, id, req);
         }
 
+        // GET /api/ws/:wsId/review/last
+        if (subPath === '/review/last') {
+          return handleReviewLast(xmRoot, req);
+        }
+
+        // GET /api/ws/:wsId/review/history/:file  (must come before /review/history)
+        const wsReviewFileMatch = subPath.match(/^\/review\/history\/([^/]+)$/);
+        if (wsReviewFileMatch) {
+          const file = decodeURIComponent(wsReviewFileMatch[1]);
+          return handleReviewHistoryFile(xmRoot, file, req);
+        }
+
+        // GET /api/ws/:wsId/review/history
+        if (subPath === '/review/history') {
+          return handleReviewHistory(xmRoot, req);
+        }
+
+        // GET /api/ws/:wsId/eval/:category/:file
+        const wsEvalFileMatch = subPath.match(/^\/eval\/([^/]+)\/([^/]+)$/);
+        if (wsEvalFileMatch) {
+          const category = decodeURIComponent(wsEvalFileMatch[1]);
+          const file = decodeURIComponent(wsEvalFileMatch[2]);
+          return handleEvalFile(xmRoot, category, file, req);
+        }
+
+        // GET /api/ws/:wsId/eval
+        if (subPath === '/eval') {
+          return handleEvalList(xmRoot, req);
+        }
+
+        // GET /api/ws/:wsId/humble/:kind/:file
+        const wsHumbleFileMatch = subPath.match(/^\/humble\/([^/]+)\/([^/]+)$/);
+        if (wsHumbleFileMatch) {
+          const kind = decodeURIComponent(wsHumbleFileMatch[1]);
+          const file = decodeURIComponent(wsHumbleFileMatch[2]);
+          return handleHumbleFile(xmRoot, kind, file, req);
+        }
+
+        // GET /api/ws/:wsId/humble
+        if (subPath === '/humble') {
+          return handleHumbleList(xmRoot, req);
+        }
+
         // GET /api/ws/:wsId/sync
         if (subPath === '/sync') {
           return handleSync(req);
@@ -1572,6 +1810,49 @@ server = Bun.serve({
       if (memoryDetailMatch) {
         const id = decodeURIComponent(memoryDetailMatch[1]);
         return handleMemoryDetail(XM_ROOT, id, req);
+      }
+
+      // GET /api/review/last
+      if (path === '/api/review/last') {
+        return handleReviewLast(XM_ROOT, req);
+      }
+
+      // GET /api/review/history/:file  (must come before /api/review/history)
+      const reviewFileMatch = path.match(/^\/api\/review\/history\/([^/]+)$/);
+      if (reviewFileMatch) {
+        const file = decodeURIComponent(reviewFileMatch[1]);
+        return handleReviewHistoryFile(XM_ROOT, file, req);
+      }
+
+      // GET /api/review/history
+      if (path === '/api/review/history') {
+        return handleReviewHistory(XM_ROOT, req);
+      }
+
+      // GET /api/eval/:category/:file
+      const evalFileMatch = path.match(/^\/api\/eval\/([^/]+)\/([^/]+)$/);
+      if (evalFileMatch) {
+        const category = decodeURIComponent(evalFileMatch[1]);
+        const file = decodeURIComponent(evalFileMatch[2]);
+        return handleEvalFile(XM_ROOT, category, file, req);
+      }
+
+      // GET /api/eval
+      if (path === '/api/eval') {
+        return handleEvalList(XM_ROOT, req);
+      }
+
+      // GET /api/humble/:kind/:file
+      const humbleFileMatch = path.match(/^\/api\/humble\/([^/]+)\/([^/]+)$/);
+      if (humbleFileMatch) {
+        const kind = decodeURIComponent(humbleFileMatch[1]);
+        const file = decodeURIComponent(humbleFileMatch[2]);
+        return handleHumbleFile(XM_ROOT, kind, file, req);
+      }
+
+      // GET /api/humble
+      if (path === '/api/humble') {
+        return handleHumbleList(XM_ROOT, req);
       }
 
       // GET /api/sync
