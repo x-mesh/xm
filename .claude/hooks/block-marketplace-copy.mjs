@@ -36,6 +36,20 @@ const X_BUILD_LIB_FILES = new Set([
   'misc.mjs',
 ]);
 
+// x-sync lib files copied into x-kit/lib/x-sync/. Keep in sync with sync-bundle.sh.
+const X_SYNC_LIB_FILES = new Set([
+  'sync-config.mjs',
+  'sync-pull.mjs',
+  'sync-pull-all.mjs',
+  'sync-push.mjs',
+  'sync-push-all.mjs',
+]);
+
+// x-trace lib files copied into x-kit/lib/x-trace/. Keep in sync with sync-bundle.sh.
+const X_TRACE_LIB_FILES = new Set([
+  'trace-writer.mjs',
+]);
+
 function readStdin() {
   return new Promise((resolve) => {
     let data = '';
@@ -61,6 +75,18 @@ function findSourcePath(rel) {
   const libMatch = rel.match(/^x-kit\/lib\/x-build\/([^/]+\.mjs)$/);
   if (libMatch && X_BUILD_LIB_FILES.has(libMatch[1])) {
     return `x-build/lib/x-build/${libMatch[1]}`;
+  }
+
+  // x-kit/lib/x-sync/<file>.mjs
+  const syncMatch = rel.match(/^x-kit\/lib\/x-sync\/([^/]+\.mjs)$/);
+  if (syncMatch && X_SYNC_LIB_FILES.has(syncMatch[1])) {
+    return `x-sync/lib/x-sync/${syncMatch[1]}`;
+  }
+
+  // x-kit/lib/x-trace/<file>.mjs
+  const traceMatch = rel.match(/^x-kit\/lib\/x-trace\/([^/]+\.mjs)$/);
+  if (traceMatch && X_TRACE_LIB_FILES.has(traceMatch[1])) {
+    return `x-trace/lib/x-trace/${traceMatch[1]}`;
   }
 
   if (rel === 'x-kit/lib/x-build-cli.mjs') {

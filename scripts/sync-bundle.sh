@@ -41,6 +41,16 @@ echo "=== Syncing x-solver lib files ==="
 sync_file "x-solver/lib/x-solver-cli.mjs" "x-kit/lib/x-solver-cli.mjs"
 
 echo ""
+echo "=== Syncing x-sync lib files ==="
+for f in sync-config.mjs sync-pull.mjs sync-pull-all.mjs sync-push.mjs sync-push-all.mjs; do
+  sync_file "x-sync/lib/x-sync/$f" "x-kit/lib/x-sync/$f"
+done
+
+echo ""
+echo "=== Syncing x-trace lib files ==="
+sync_file "x-trace/lib/x-trace/trace-writer.mjs" "x-kit/lib/x-trace/trace-writer.mjs"
+
+echo ""
 echo "=== Verifying all synced ==="
 DIVERGED=0
 for plugin in x-build x-op x-solver x-eval x-review x-trace x-memory x-humble x-probe x-agent; do
@@ -58,6 +68,18 @@ for f in core.mjs project.mjs phase.mjs plan.mjs tasks.mjs verify.mjs export.mjs
     DIVERGED=$((DIVERGED + 1))
   fi
 done
+
+for f in sync-config.mjs sync-pull.mjs sync-pull-all.mjs sync-push.mjs sync-push-all.mjs; do
+  if ! diff -q "x-sync/lib/x-sync/$f" "x-kit/lib/x-sync/$f" > /dev/null 2>&1; then
+    echo "  DIVERGED: x-kit/lib/x-sync/$f"
+    DIVERGED=$((DIVERGED + 1))
+  fi
+done
+
+if ! diff -q "x-trace/lib/x-trace/trace-writer.mjs" "x-kit/lib/x-trace/trace-writer.mjs" > /dev/null 2>&1; then
+  echo "  DIVERGED: x-kit/lib/x-trace/trace-writer.mjs"
+  DIVERGED=$((DIVERGED + 1))
+fi
 
 if [ "$DIVERGED" -eq 0 ]; then
   echo "  All files in sync."

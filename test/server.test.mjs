@@ -2,6 +2,8 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_PATH = join(__dirname, '..', 'x-kit', 'lib', 'server', 'x-kit-server.mjs');
@@ -9,12 +11,19 @@ const TEST_PORT = 19899;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
 
 let serverProc;
+let testXmRoot;
 
 beforeAll(async () => {
+  // Isolate .xm/ writes to a temp dir so tests don't pollute x-kit/lib/.xm/
+  // (the server resolves xmRoot from XM_ROOT env or cwd/.xm — without this,
+  //  PUT /config would write test_key into the marketplace lib tree).
+  testXmRoot = mkdtempSync(join(tmpdir(), 'x-kit-server-test-'));
+
   serverProc = spawn('bun', [SERVER_PATH, '--port', String(TEST_PORT), '--idle-timeout', '60000'], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
     cwd: join(__dirname, '..', 'x-kit', 'lib'),
+    env: { ...process.env, XM_ROOT: join(testXmRoot, '.xm') },
   });
 
   // Wait for server ready
@@ -31,6 +40,7 @@ beforeAll(async () => {
 
 afterAll(() => {
   try { serverProc?.kill('SIGTERM'); } catch {}
+  try { rmSync(testXmRoot, { recursive: true, force: true }); } catch {}
 });
 
 describe('x-kit-server', () => {
