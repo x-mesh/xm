@@ -1920,3 +1920,15 @@ Record session_end with total duration, agent count, and status.
 2. agent_step is **SHOULD** — best-effort
 3. **Metadata only** — never include output content in trace entries
 4. If trace write fails, continue — never block execution
+
+## Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "I'll do this sequentially, parallelism is overhead" | For N independent tasks, sequential is N× time. Parallelism overhead is fixed; serialization cost is linear in N. Measure before assuming. |
+| "This is too small to delegate" | Delegation isn't about task size — it's about context isolation. Small tasks that stuff the main context window cost more than a subagent run. |
+| "Delegating costs tokens" | Not delegating costs context window, which costs the entire session. Subagent tokens are cheap; a polluted main context is expensive and unrecoverable. |
+| "I'll just stuff the files into my context" | Context stuffing is how sessions degrade. Delegate the reading, keep the reasoning. The main agent should hold judgment, not raw data. |
+| "Broadcast is for research, not real work" | Broadcast is for anything where multiple independent perspectives help. If three agents looking at the same thing would help, it's a broadcast. |
+| "Swarm is overkill for this" | Swarm is for 5+ genuinely independent exploration paths. If you have 5+, it's not overkill — it's the right primitive. |
+| "Fan-out results are hard to merge" | The fan-out primitive returns structured results so merging is part of the contract. If you're hand-merging, you're using it wrong. |

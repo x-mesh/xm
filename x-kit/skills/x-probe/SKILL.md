@@ -633,7 +633,7 @@ x-probe references shared config in `.xm/config.json`:
 | "The user already decided, I shouldn't push back" | You were brought in for judgment. Silent compliance is not agreement — it's abdication. |
 | "The premise is probably fine" | "Probably" means you haven't checked. Probe first, build second — "probably fine" has a terrible track record. |
 | "I can validate during implementation" | Invalid premises compound. The cost of late validation is the cost of unwinding everything built on top. |
-| "Pushing back slows us down" | Building the wrong thing is slower. x-probe's overhead is measured in minutes; rework is measured in days. |
+| "This premise seems self-evident" | Self-evident premises are the ones most often wrong because nobody audits them. If it's truly self-evident, the pre-mortem + inversion + alternatives pass takes thirty seconds. If it isn't, you need the probe. |
 | "I'll just add a TODO and move on" | TODOs for invalid premises are bookmarks on wrong turns. Kill the premise now or commit to the detour explicitly. |
 | "The risks are obvious — no need to formalize" | Obvious risks are the ones most often skipped. Write them down; verify the mitigation. |
 | "The inversion exercise feels pedantic" | Inversion surfaces the failure modes that optimistic planning hides. Skip it and you'll meet those failures in production. |

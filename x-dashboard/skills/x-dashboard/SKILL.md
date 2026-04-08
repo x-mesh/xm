@@ -87,3 +87,13 @@ Open browser to dashboard URL:
 ```bash
 open http://127.0.0.1:19841
 ```
+
+## Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "I'll just curl the API instead" | curl output is unreadable for multi-entity state. Dashboard exists because text drops signal for cross-plugin views. |
+| "Starting a server for a status check is overhead" | bun command overhead is negligible. The real overhead is the time spent re-running plugin-scoped status commands to reconstruct what dashboard shows in one screen. |
+| "`x-build status` is enough, I don't need dashboard" | Plugin status commands are plugin-scoped. Dashboard is cross-plugin — use it when you need the whole `.xm/` state at once. |
+| "The terminal is faster than the browser" | Terminal is faster for single commands. Dashboard is faster for cross-cutting views — don't compare the wrong things. |
+| "Dashboard is just status commands in a browser" | It's a live view across x-build, x-op, x-eval, x-humble, and x-trace simultaneously. That's a structurally different thing from any single status command. |

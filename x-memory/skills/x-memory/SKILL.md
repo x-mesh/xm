@@ -510,3 +510,15 @@ Record session_end with total duration, agent count, and status.
 | "export", "export memories" | `export` |
 | "import", "import memories" | `import` |
 | "stats", "memory stats" | `stats` |
+
+## Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "I'll save everything just in case" | Memory bloat is worse than no memory — it drowns signal. Save decisions and surprises, not code or state. Code lives in git; memory is for the reasoning behind it. |
+| "This is obvious, no need to memorize" | Obvious today, forgotten next session. If it took thinking to arrive at, it's worth saving. If it was instant, probably not. |
+| "I can re-derive it later" | Re-derivation is the most expensive form of lookup — you pay the thinking cost twice. Memory is the cheapest. |
+| "I already saved something similar" | Duplicates drift apart and confuse future-you. Update the existing entry instead — that's why update exists. |
+| "The user will tell me what to remember" | Memory is your job, not theirs. Proactively save what's worth saving — they'll tell you what to forget, not what to keep. |
+| "git history already has the context I need" | git history has code changes. Memory has the *why* behind them — the part that isn't in any diff. |
+| "I'll clean up memories later" | Later never comes. Prune on save, not on audit. One stale memory poisons the search results of every future recall. |

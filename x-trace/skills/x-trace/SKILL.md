@@ -585,3 +585,14 @@ SESSION_ID="{skill}-$(date +%Y%m%d-%H%M%S)-$(openssl rand -hex 2)"
 | "compare before and after", "compare two runs" | `diff` |
 | "session list", "trace list" | `list` |
 | "delete old ones", "clean up" | `clean` |
+
+## Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "I'll skip session_start, nobody reads traces anyway" | Session boundaries are how you correlate events later. Without them, traces are uncorrelated noise and you've lost attribution. |
+| "Recording agent_step slows things down" | agent_step writes are append-only JSON lines — milliseconds, metadata only. The real slowdown is blind debugging later when the trail doesn't exist. |
+| "I'll put the output in the trace for easier debugging" | Output in traces = PII risk + disk bloat + search degradation. Metadata only. Session logs exist for output inspection. |
+| "If trace write fails, I should bubble the error up" | No. Trace failure must not block execution — traces are observability, not a gating mechanism. Fail silently and continue. |
+| "Traces are only for failures" | Traces are for attribution — cost, time, agent count, session shape. Success traces are the baseline you need to diagnose the failure ones. |
+| "One global trace file is simpler than per-session" | Per-session traces are correlatable and atomic. One global file is a race condition waiting to happen. |

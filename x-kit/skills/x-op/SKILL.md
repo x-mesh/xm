@@ -2183,3 +2183,15 @@ When `$ARGUMENTS` is empty, use AskUserQuestion for step-by-step selection:
 
 **Step 2 — Select specific strategy**
 **Step 3 — Enter task**
+
+## Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "I'll just use refine, it always works" | refine is convergence, not exploration. Use it *after* you have candidates, not before. Problems that need divergent thinking (brainstorm, tournament) starve on refine alone. |
+| "This result looks good, `--verify` is overkill" | `--verify` exists precisely because "looks good" is where shared bias hides. Skipping it means you're trusting one model's confidence instead of checking its work. |
+| "Debate is expensive, I'll skip it" | Debate is expensive *because* it surfaces disagreements that single-strategy runs hide. The cost is the value — if it didn't disagree, you didn't need it. |
+| "Any strategy works for this" | "Any strategy" is the tell that you haven't classified the problem. Use classify first — "any strategy" is functionally the same as no strategy. |
+| "18 strategies is too many, I'll stick with 3" | Sticking with 3 means you're using them outside their fit zone. classify narrows the 18 to the right 1-2 in seconds. |
+| "The strategy matters less than the prompt" | The strategy *is* the control loop around the prompt. Wrong strategy = wrong loop = wasted agents even with a perfect prompt. |
+| "Compose is for complex problems, mine is simple" | Compose chains strategies that address different failure modes. Even simple problems benefit when divergence-then-convergence is cheaper than any single strategy solving both. |

@@ -675,3 +675,14 @@ Record session_end with total duration, agent count, and status.
 2. agent_step is **SHOULD** — best-effort
 3. **Metadata only** — never include output content in trace entries
 4. If trace write fails, continue — never block execution
+
+## Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "I'll commit without a changelog entry" | Changelog is the user-facing interface to your release. Skipping it means users find out what changed during incidents, not before. |
+| "patch bump is safe, I'll use patch" | patch implies no behavior change. If behavior changed even slightly, bump minor. Misleading bumps erode semver trust across every dependent. |
+| "I'll squash later" | Squash before push or not at all. "Later" means the commits land in main unsquashed and the history is permanently noisy. |
+| "The user will confirm if they care about the push" | Don't guess on irreversible operations. Ask before push/force-push/tag — every time, not just when you're uncertain. |
+| "Version already bumped in a previous commit, I'll reuse it" | Version bumps are release-scoped. Reusing a bump means release notes don't match the version, and dependents can't tell what they got. |
+| "The release script will catch mistakes" | The script catches syntax errors, not semantic ones. The wrong version, wrong changelog, or wrong branch are all syntactically valid. |

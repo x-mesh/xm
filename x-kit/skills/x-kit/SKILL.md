@@ -537,3 +537,15 @@ x-kit/agents/
   rules/             ← Full agent rules (~240 lines each)
   slim/              ← Slim versions (~30 lines each, for prompt injection)
 ```
+
+## Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "I'll write my own config parser" | x-kit's shared config exists for cross-plugin consistency. Duplicating it creates drift that sync-bundle can't catch and that users can't debug. |
+| "I'll guess the cost, close enough" | Cost estimates are cheap; surprise bills are expensive. Use the cost engine — it's one call. |
+| "Model routing is overengineering" | Model routing is ~78% savings on haiku-eligible commands. That's math, not engineering. |
+| "This doesn't need a DAG, tasks are trivial" | DAGs make dependencies explicit. Trivial tasks with implicit dependencies are how parallel runs silently serialize on shared state. |
+| "The model guardrail will catch wrong routing" | The guardrail is a safety net, not a planner. Use it for defense in depth, not as your first line of thinking. |
+| "I don't need to read shared config, defaults are fine" | Defaults are fine in isolation. Cross-plugin coordination requires reading the actual config — otherwise plugins disagree about state. |
+| "Agent catalog is a nice-to-have" | The catalog is how agent rules get discovered across sessions. Without it, every new agent spawn starts from scratch. |

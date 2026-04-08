@@ -292,3 +292,13 @@ x-sync Status
     /x-sync push           Push .xm/ to server
     /x-sync pull           Pull from server
 ```
+
+## Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "My local is newest, I'll just push" | "Newest" is a claim, not evidence. Pull first to verify — the cost of a conflicting overwrite is higher than a round-trip. |
+| "The conflict is trivial, I'll pick mine" | Trivial conflicts are the ones where the wrong resolution looks right. Read both sides before picking. |
+| "I'll pull and deal with conflicts later" | Later is now. Unresolved sync state compounds silently across machines — the longer you wait, the more places it can be wrong. |
+| "Small changes don't need sync" | Small changes across machines are exactly when drift starts. Sync is cheap; unwinding drift is expensive. |
+| "Setup is a one-time thing, I'll skip verifying" | Setup drift across machines is the most common sync failure. Verify setup before you trust pull/push — five seconds up front, hours saved later. |
