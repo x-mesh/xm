@@ -17,22 +17,24 @@ Last updated: 2026-04-08
 
 ### Current lines (source files)
 
+Post-Phase 2 (2026-04-08). Rationalizations added ~10-12 lines each; table reflects current state.
+
 | Lines | Plugin | Over budget? |
 |-------|--------|--------------|
-| 2185 | `x-op/skills/x-op/SKILL.md` | 🔴 **4.4x** over |
-| 1922 | `x-agent/skills/x-agent/SKILL.md` | 🔴 **3.8x** over |
-| 1743 | `x-build/skills/x-build/SKILL.md` | 🔴 **3.5x** over |
-| 1218 | `x-eval/skills/x-eval/SKILL.md` | 🟠 2.4x over |
-| 1108 | `x-review/skills/x-review/SKILL.md` | 🟠 2.2x over |
-| 960  | `x-solver/skills/x-solver/SKILL.md` | 🟡 1.9x over |
-| 677  | `x-kit/skills/x-ship/SKILL.md` | 🟡 1.4x over |
-| 627  | `x-probe/skills/x-probe/SKILL.md` | 🟡 1.3x over |
-| 608  | `x-humble/skills/x-humble/SKILL.md` | 🟡 1.2x over |
-| 587  | `x-trace/skills/x-trace/SKILL.md` | 🟡 1.2x over |
-| 539  | `x-kit/skills/x-kit/SKILL.md` | 🟡 1.1x over |
-| 512  | `x-memory/skills/x-memory/SKILL.md` | 🟡 1.0x over |
-| 294  | `x-kit/skills/x-sync/SKILL.md` | ✅ OK |
-| 89   | `x-kit/skills/x-dashboard/SKILL.md` | ✅ OK |
+| 2197 | `x-op/skills/x-op/SKILL.md` | 🔴 **4.4x** over |
+| 1934 | `x-agent/skills/x-agent/SKILL.md` | 🔴 **3.9x** over |
+| 1755 | `x-build/skills/x-build/SKILL.md` | 🔴 **3.5x** over |
+| 1230 | `x-eval/skills/x-eval/SKILL.md` | 🟠 2.5x over |
+| 1120 | `x-review/skills/x-review/SKILL.md` | 🟠 2.2x over |
+| 972  | `x-solver/skills/x-solver/SKILL.md` | 🟡 1.9x over |
+| 688  | `x-kit/skills/x-ship/SKILL.md` | 🟡 1.4x over |
+| 639  | `x-probe/skills/x-probe/SKILL.md` | 🟡 1.3x over |
+| 620  | `x-humble/skills/x-humble/SKILL.md` | 🟡 1.2x over |
+| 598  | `x-trace/skills/x-trace/SKILL.md` | 🟡 1.2x over |
+| 551  | `x-kit/skills/x-kit/SKILL.md` | 🟡 1.1x over |
+| 524  | `x-memory/skills/x-memory/SKILL.md` | 🟡 1.0x over |
+| 304  | `x-kit/skills/x-sync/SKILL.md` | ✅ OK |
+| 99   | `x-dashboard/skills/x-dashboard/SKILL.md` | ✅ OK |
 
 ---
 
@@ -40,26 +42,28 @@ Last updated: 2026-04-08
 
 Every SKILL.md must have a `## Common Rationalizations` section per `docs/skill-anatomy.md §4`.
 
-| Plugin | Has Common Rationalizations? |
-|--------|----------------------------|
-| x-humble | ✅ (added 2026-04-08) |
-| x-probe | ✅ (added 2026-04-08) |
-| x-review | ✅ (added 2026-04-08) |
-| x-build | ✅ (added 2026-04-08) |
-| x-solver | ✅ (added 2026-04-08) |
-| x-eval | ✅ (added 2026-04-08) |
-| x-op | ❌ pending |
-| x-agent | ❌ pending |
-| x-memory | ❌ pending |
-| x-trace | ❌ pending |
-| x-kit | ❌ pending |
-| x-ship | ❌ pending |
-| x-sync | ❌ pending |
-| x-dashboard | ❌ pending |
+**Coverage: 14/14 (100%)** — all plugins compliant as of 2026-04-08.
 
-**Phase 1 done:** The 6 skills where "skipping discipline" is the actual failure mode (planning, retrospectives, premise validation, review, structured solving, evaluation).
+| Plugin | Phase | Rows | Focus |
+|--------|:-----:|:----:|-------|
+| x-humble | 1 | 7 | retrospective decay, pattern recognition |
+| x-probe | 1 | 7 | premise validation, inversion, self-evident trap |
+| x-review | 1 | 7 | review discipline, severity, author blind spots |
+| x-build | 1 | 7 | planning, done_criteria, scope, risk |
+| x-solver | 1 | 7 | structured decomposition, iteration, constraints |
+| x-eval | 1 | 7 | rubrics, N=1 eval, LLM-as-judge bias |
+| x-op | 2 | 7 | strategy selection, --verify, compose |
+| x-agent | 2 | 7 | parallelism, delegation, context isolation |
+| x-trace | 2 | 6 | session boundaries, metadata-only, fail-open |
+| x-memory | 2 | 7 | bloat vs recall, re-derivation, dedupe |
+| x-kit | 2 | 7 | shared config, cost engine, DAG, model routing |
+| x-ship | 2 | 6 | changelog, semver, squash, irreversibility |
+| x-sync | 2 | 5 | pull-first, conflicts, drift |
+| x-dashboard | 2 | 5 | cross-plugin vs plugin-scoped view |
 
-**Phase 2 candidates:** The tool-like skills (x-op, x-agent, x-memory, x-trace, x-kit, x-ship, x-sync, x-dashboard). These are lower priority because they're less about enforcing process and more about exposing capability — but they still need the section for spec compliance.
+**Phase 1 (discipline-enforcement plugins):** 6 skills where "skipping discipline" is the actual failure mode (planning, retrospectives, premise validation, review, structured solving, evaluation).
+
+**Phase 2 (tool-like plugins):** 8 skills where the failure mode is wrong tool choice or context pollution (orchestration, delegation, tracing, memory, core primitives, release, sync, dashboard).
 
 ---
 
