@@ -25,28 +25,13 @@ const __dirname_core = dirname(__filename_core);
 // ROOT resolution:
 // 1. X_BUILD_ROOT env var (explicit override)
 // 2. --global flag → ~/.xm/build/
-// 3. default → cwd/.xm/build/ (with worktree fallback to main repo)
+// 3. default → cwd/.xm/build/
 export const XM_GLOBAL = process.argv.includes('--global');
-
-/** Resolve project .xm/ base — worktree-aware */
-function resolveProjectXm() {
-  const local = resolve(process.cwd(), '.xm');
-  if (existsSync(local)) return local;
-  try {
-    const commonDir = execSync('git rev-parse --git-common-dir', {
-      cwd: process.cwd(), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    const mainXm = resolve(process.cwd(), commonDir, '..', '.xm');
-    if (existsSync(mainXm)) return mainXm;
-  } catch {}
-  return local;
-}
-
 export const ROOT = process.env.X_BUILD_ROOT
   ? resolve(process.env.X_BUILD_ROOT)
   : XM_GLOBAL
     ? resolve(homedir(), '.xm', 'build')
-    : join(resolveProjectXm(), 'build');
+    : resolve(process.cwd(), '.xm', 'build');
 
 // PLUGIN_ROOT: where templates and defaults live
 // Original: resolve(__dirname, '..') from x-build-cli.mjs which is at x-kit/lib/
@@ -289,54 +274,6 @@ export function projectDir(name) {
 
 export function manifestPath(name) {
   return join(projectDir(name), 'manifest.json');
-}
-
-/**
- * Read manifest with multi-machine merge support.
- * Reads manifest.json (local) + manifest.{machine_id}.json (synced remotes),
- * merges them with newer pushed_at winning per conflicting key.
- * Returns the merged manifest object, or null if none found.
- */
-export function readManifestMerged(name) {
-  const dir = projectDir(name);
-  const local = readJSON(join(dir, 'manifest.json'));
-  if (!existsSync(dir)) return local;
-
-  // Find all manifest.*.json (namespaced by machine_id from sync-pull)
-  const remoteManifests = readdirSync(dir)
-    .filter(f => /^manifest\..+\.json$/.test(f) && f !== 'manifest.json')
-    .map(f => readJSON(join(dir, f)))
-    .filter(Boolean);
-
-  if (remoteManifests.length === 0) return local;
-  if (!local) return remoteManifests.length === 1 ? remoteManifests[0] : deepMergeManifests(remoteManifests);
-
-  return deepMergeManifests([local, ...remoteManifests]);
-}
-
-/**
- * Deep merge multiple manifest objects.
- * Arrays with id fields: union by id (last wins per id).
- * Object fields: shallow merge (last wins per key).
- */
-function deepMergeManifests(manifests) {
-  const result = {};
-  for (const m of manifests) {
-    for (const [key, value] of Object.entries(m)) {
-      if (Array.isArray(value) && value.length > 0 && value[0]?.id != null) {
-        // Array of objects with id — union by id
-        const existing = result[key] ?? [];
-        const byId = new Map(existing.map(item => [item.id, item]));
-        for (const item of value) byId.set(item.id, item);
-        result[key] = [...byId.values()];
-      } else if (value && typeof value === 'object' && !Array.isArray(value)) {
-        result[key] = { ...(result[key] ?? {}), ...value };
-      } else {
-        result[key] = value;
-      }
-    }
-  }
-  return result;
 }
 
 export function phaseDir(project, phaseId) {

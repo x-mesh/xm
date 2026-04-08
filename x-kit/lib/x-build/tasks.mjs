@@ -16,7 +16,6 @@ import {
   existsSync, join, mkdirSync,
   createRL, ask, pickMenu, E,
 } from './core.mjs';
-import { createSessionId, sessionStart, sessionEnd, agentStep } from '../x-trace/trace-writer.mjs';
 
 // ── cmdTasks ────────────────────────────────────────────────────────
 
@@ -374,11 +373,9 @@ export function taskUpdate(project, args) {
       console.log(`  ${C.dim}📎 commit: ${sha.slice(0, 8)}${C.reset}`);
     }
     if (taskRef.started_at) {
-      const est = estimateTaskCost(taskRef);
       appendMetric({
         type: 'task_complete', project, taskId: id, taskName: taskRef.name,
         duration_ms: new Date(taskRef.completed_at) - new Date(taskRef.started_at),
-        cost_usd: est.cost_usd, model: est.model,
         timestamp: taskRef.completed_at,
       });
     }
@@ -422,14 +419,10 @@ export function taskUpdate(project, args) {
         .filter(t => t.started_at && t.completed_at)
         .map(t => new Date(t.completed_at) - new Date(t.started_at));
       const scores = allTasks.filter(t => t.score != null).map(t => t.score);
-      const totalCost = allTasks
-        .filter(t => t.status === TASK_STATES.COMPLETED)
-        .reduce((sum, t) => sum + (estimateTaskCost(t).cost_usd || 0), 0);
       appendMetric({
         type: 'run_complete', project, task_count: allTasks.length,
         completed: completedCount, failed: failedCount,
         total_duration_ms: durations.reduce((a, b) => a + b, 0),
-        total_cost_usd: +totalCost.toFixed(4),
         avg_quality_score: scores.length ? +(scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2) : null,
         timestamp: new Date().toISOString(),
       });
@@ -728,11 +721,6 @@ export function cmdRun(args) {
     process.exit(1);
   }
 
-  const traceSessionId = createSessionId('x-build');
-  sessionStart(traceSessionId, 'x-build', { project, step: null });
-  const traceStartTime = Date.now();
-  let traceAgentCount = 0;
-
   let currentStep = null;
   for (const step of stepData.steps) {
     const hasPending = step.tasks.some(id => {
@@ -888,14 +876,11 @@ export function cmdRun(args) {
   for (const task of readyTasks) {
     task.status = TASK_STATES.RUNNING;
     task.started_at = new Date().toISOString();
-    traceAgentCount++;
-    agentStep(traceSessionId, { id: `task-${task.id}`, role: task.id, model: task.model || 'sonnet', status: 'success' });
   }
   writeJSON(tasksPath(project), taskData);
   emitHook('task:pre-update', { project, step: currentStep.id, tasks: readyTasks.map(t => t.id) });
 
   console.log(`${C.green}✅ ${readyTasks.length} tasks marked as RUNNING.${C.reset}`);
-  sessionEnd(traceSessionId, { totalDurationMs: Date.now() - traceStartTime, agentCount: traceAgentCount, status: 'success' });
 }
 
 export function cmdRunStatus(args) {

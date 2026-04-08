@@ -1106,3 +1106,15 @@ Anti-patterns:
 - ❌ Show findings and declare LGTM without user confirmation
 - ✅ Show target + selected lenses, AskUserQuestion("이 설정으로 리뷰를 시작할까요?")
 | "Usage" | `list` |
+
+## Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "The change is small, no need for full review" | Small changes cause big regressions. The lens checks apply to one-line changes too — they just take thirty seconds. |
+| "Tests pass, so it's good" | Tests catch correctness. They don't catch architecture, security, performance, or readability issues. Reviewing only test results is half a review. |
+| "AI-generated code is probably fine" | AI code needs more scrutiny, not less. It's confident and plausible even when wrong. Severity-label every finding; don't rubber-stamp. |
+| "I don't want to be pedantic" | That's what severity labels exist for (Critical/High/Medium/Low). Silencing real findings to be polite is dishonest review. |
+| "The author knows what they're doing" | That's an assumption, not a review. Review the code, not the author. |
+| "I'll mark it LGTM and move on" | LGTM without cited evidence is not a review. State what you checked and what you found (including "nothing") — or don't approve. |
+| "This issue is outside the diff, not my problem" | True most of the time — but when a change *worsens* an existing problem, it becomes the reviewer's problem. Don't hide behind "pre-existing". |

@@ -958,3 +958,15 @@ Workflow:
 Management:
   list / status / next / history / handoff
 ```
+
+## Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "I already know the answer" | You have a solution. Structured decomposition tests whether you have the right problem. Skipping it means committing to one hypothesis without alternatives. |
+| "Decomposing wastes time on a simple problem" | If it's simple, decomposition takes 30 seconds and confirms that. If it's not, decomposition saves hours. Either way you win. |
+| "Iteration is just retrying the same thing" | Iteration changes what you test each round. If nothing changes between rounds, you're not iterating — you're hoping. |
+| "The constraints are obvious" | Obvious constraints are the ones most often violated. Name them explicitly so the solution can be scored against them. |
+| "I'll skip strategy selection and just start" | Starting without strategy is the strategy of "hope". It doesn't scale beyond trivial problems. |
+| "The first viable solution is good enough" | First viable ≠ best viable. The `constrain` strategy exists precisely to generate and score alternatives. |
+| "The problem is too novel for a strategy" | Strategies are meta-patterns, not answers. If none fit, you haven't framed the problem yet. |

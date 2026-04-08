@@ -10,37 +10,21 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
 import { homedir } from 'node:os';
-import { createSessionId, sessionStart, sessionEnd } from './x-trace/trace-writer.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-/** Resolve project .xm/ base — worktree-aware */
-function resolveProjectXm() {
-  const local = resolve(process.cwd(), '.xm');
-  if (existsSync(local)) return local;
-  try {
-    const commonDir = execSync('git rev-parse --git-common-dir', {
-      cwd: process.cwd(), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    const mainXm = resolve(process.cwd(), commonDir, '..', '.xm');
-    if (existsSync(mainXm)) return mainXm;
-  } catch {}
-  return local;
-}
-
 // ROOT resolution:
 // 1. XM_SOLVER_ROOT env var (explicit override)
 // 2. --global flag → ~/.xm/solver/
-// 3. default → cwd/.xm/solver/ (with worktree fallback)
+// 3. default → cwd/.xm/solver/
 const XM_GLOBAL = process.argv.includes('--global');
 const ROOT = process.env.XM_SOLVER_ROOT
   ? resolve(process.env.XM_SOLVER_ROOT)
   : XM_GLOBAL
     ? resolve(homedir(), '.xm', 'solver')
-    : join(resolveProjectXm(), 'solver');
+    : resolve(process.cwd(), '.xm', 'solver');
 
 const PLUGIN_ROOT = resolve(__dirname, '..');
 
@@ -1623,10 +1607,6 @@ ${C.bold}SETTINGS${C.reset}
 
 const [cmd, ...args] = process.argv.slice(2);
 
-const traceSessionId = createSessionId('x-solver');
-sessionStart(traceSessionId, 'x-solver', { command: cmd });
-const traceStartTime = Date.now();
-
 switch (cmd) {
   case 'init':           cmdInit(args); break;
   case 'list':           cmdList(); break;
@@ -1660,5 +1640,3 @@ switch (cmd) {
       process.exit(1);
     }
 }
-
-sessionEnd(traceSessionId, { totalDurationMs: Date.now() - traceStartTime, status: 'success' });

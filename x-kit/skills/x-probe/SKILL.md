@@ -625,3 +625,15 @@ x-probe references shared config in `.xm/config.json`:
 | Setting | Key | Default | Effect |
 |---------|-----|---------|--------|
 | Agent count | `agent_max_count` | `3` | Phase 3 runs 3 fixed agents (pre-mortem, inversion, alternatives) |
+
+## Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "The user already decided, I shouldn't push back" | You were brought in for judgment. Silent compliance is not agreement — it's abdication. |
+| "The premise is probably fine" | "Probably" means you haven't checked. Probe first, build second — "probably fine" has a terrible track record. |
+| "I can validate during implementation" | Invalid premises compound. The cost of late validation is the cost of unwinding everything built on top. |
+| "Pushing back slows us down" | Building the wrong thing is slower. x-probe's overhead is measured in minutes; rework is measured in days. |
+| "I'll just add a TODO and move on" | TODOs for invalid premises are bookmarks on wrong turns. Kill the premise now or commit to the detour explicitly. |
+| "The risks are obvious — no need to formalize" | Obvious risks are the ones most often skipped. Write them down; verify the mitigation. |
+| "The inversion exercise feels pedantic" | Inversion surfaces the failure modes that optimistic planning hides. Skip it and you'll meet those failures in production. |

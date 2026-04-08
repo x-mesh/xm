@@ -606,3 +606,15 @@ Record session_end with total duration, agent count, and status.
 | "put this in CLAUDE.md" | `apply L{N}` |
 | "retrospective history" | `history` |
 | "that lesson was wrong" | `lessons deprecate L{N}` |
+
+## Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "The bug was obvious in hindsight" | It wasn't at the time — if it had been, you'd have caught it before shipping. Write the lesson for past-you, who missed it. |
+| "This is bad luck, not a pattern" | A pattern is what you call coincidence after the third repetition. If you're defending it as bad luck, it's probably a pattern. |
+| "The root cause is obvious" | You have a hypothesis, not a root cause. Ask "why" three more times before committing it as a lesson. |
+| "The lesson is too obvious to write down" | Obvious today, forgotten in three weeks. Decay is the default — write it. |
+| "Adding a lesson feels like overreacting" | Lessons have confirmation counts for exactly this reason. A single-confirmation lesson is cheap; a missing lesson repeats the incident. |
+| "I already learned this, no need to retrospect" | Learning without encoding it in CLAUDE.md means the next session (or next agent) starts from zero. |
+| "The success was luck, not skill" | Successes that you can't explain are liabilities. If you can't name why it worked, you can't repeat it. |

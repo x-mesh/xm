@@ -1216,3 +1216,15 @@ Anti-patterns:
 - ❌ Auto-run evaluation without confirming what to evaluate
 - ✅ Show rubric + target, AskUserQuestion("Run evaluation with these settings?")
 | general | accuracy (0.25), completeness (0.25), consistency (0.20), clarity (0.20), hallucination-risk (0.10) |
+
+## Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "The output looks good to me" | Subjective evaluation is not evaluation — it's a vibe check. Use a rubric so the judgment is reproducible. |
+| "One sample is enough to judge" | N=1 is anecdote. Benchmark across at least 3-5 examples; single-sample eval fools you. |
+| "LLM-as-judge is probably accurate" | LLM-as-judge has biases (positional, verbosity, self-preference). Validate it against ground truth before trusting it for gating decisions. |
+| "Evaluation slows down iteration" | Un-measured iteration is a random walk. Evals are the compass — without them you can't tell if a change is an improvement. |
+| "I'll just eyeball the differences" | Differences small enough to eyeball are usually noise. Quantify or move on. |
+| "The rubric is overkill for this task" | The rubric is how "good" becomes inspectable. If you skip it, "good" lives only in your head and can't be argued with. |
+| "I trust my gut on this one" | Gut is useful for hypothesis generation. It is not useful for gating decisions — those need numbers. |

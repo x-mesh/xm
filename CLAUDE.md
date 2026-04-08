@@ -84,7 +84,11 @@ x-build plan-phase agents must follow these principles.
 | Done-criteria quality | Must be verifiable by command/state, not subjective |
 | Scope creep | No R# traceability = scope creep |
 
-## SKILL.md Language Rules
+## SKILL.md Authoring
+
+Full spec: **`docs/skill-anatomy.md`** — required format, length budget, section definitions. Read it before creating or modifying any skill.
+
+### Language Rules
 
 SKILL.md is a prompt for LLMs — write instructions in English for precision.
 
@@ -97,6 +101,16 @@ SKILL.md is a prompt for LLMs — write instructions in English for precision.
 | Code examples | English |
 
 **NEVER write instructions/rules in Korean.** Korean in SKILL.md is only for output templates shown to the user.
+
+### Length Budget
+
+**Hard limit: 500 lines per SKILL.md.** Longer files waste context on every invocation and get skimmed rather than read. If your skill exceeds 500 lines, split reference material into `docs/references/<plugin>-<topic>.md` and link from the main file. Current audit: `docs/skill-audit.md`.
+
+### Required Sections
+
+Every SKILL.md must include, in order: `Overview` → `When to Use` → `<Core Process>` → `Common Rationalizations` → `Red Flags` → `Verification`. See `docs/skill-anatomy.md` for the full spec and section definitions.
+
+The **Common Rationalizations** table (excuses agents use to skip steps + factual rebuttals) is the single most impactful discipline mechanism — minimum 5 domain-specific rows. Without it, the skill has no defense against being partially applied.
 
 ## Documentation
 
@@ -154,10 +168,12 @@ Never route to haiku if the task involves: analysis, code generation, review, pl
 
 This applies to all plugins: x-build, x-op, x-probe, x-solver, x-eval, x-review, x-trace, x-memory, x-humble, x-ship, x-sync.
 
+**Enforcement:** `.claude/hooks/block-marketplace-copy.mjs` is wired as a PreToolUse hook in `.claude/settings.json` and will deny any Edit/Write/MultiEdit/NotebookEdit targeting a marketplace copy. If you see a block, follow the source path in the error message and re-run `scripts/sync-bundle.sh` when done. The hook mirrors the protected set from `scripts/sync-bundle.sh`, so keep them in lockstep when adding new synced files.
+
 ## Lessons (x-humble)
 <!-- Section managed by x-humble. Manual editing allowed. -->
-- STOP: Editing `x-kit/skills/` SKILL.md files directly. Always edit source directory first. (L4, confirmed 1 time, 2026-04-07)
-- START: Before editing any SKILL.md, verify the file path is in the source directory, not marketplace copy. (L5, confirmed 1 time, 2026-04-07)
+- STOP: Editing `x-kit/skills/` SKILL.md files directly. Always edit source directory first. (L4, confirmed 2 times, 2026-04-08)
+- START: Before editing any SKILL.md, verify the file path is in the source directory, not marketplace copy. (L5, confirmed 2 times, 2026-04-08)
 
 ## Project Structure
 

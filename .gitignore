@@ -12,6 +12,9 @@ x-build/lib/metrics/
 # Node
 node_modules/
 
+# Local settings
+.claude/settings.local.json
+
 # OS
 .DS_Store
 Thumbs.db
