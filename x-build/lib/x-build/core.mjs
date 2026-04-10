@@ -320,31 +320,60 @@ export function metricsPath() {
 
 export const METRICS_MAX_BYTES = 5 * 1024 * 1024; // 5MB rotation threshold
 
+function acquireWriteLock(lockPath, maxRetries = 50, intervalMs = 20) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      writeFileSync(lockPath, String(process.pid), { flag: 'wx' }); // exclusive create
+      return true;
+    } catch (e) {
+      if (e.code === 'EEXIST') {
+        // Stale lock detection: if lock file is older than 10s, remove it
+        try {
+          const stat = statSync(lockPath);
+          if (Date.now() - stat.mtimeMs > 10000) {
+            unlinkSync(lockPath);
+            continue;
+          }
+        } catch { /* lock may have been removed by another process */ }
+        // Busy wait
+        const start = Date.now();
+        while (Date.now() - start < intervalMs) {} // spin
+        continue;
+      }
+      throw e;
+    }
+  }
+  return false;
+}
+
+function releaseWriteLock(lockPath) {
+  try { unlinkSync(lockPath); } catch { /* best effort */ }
+}
+
 export function appendMetric(data) {
   const p = metricsPath();
   mkdirSync(dirname(p), { recursive: true });
-  if (existsSync(p)) {
-    try {
-      const sz = statSync(p).size;
-      if (sz > METRICS_MAX_BYTES) {
-        const rotated = p + '.1';
-        const lockFile = p + '.lock';
-        try {
-          // Acquire rotation lock (O_EXCL = fail if exists)
-          writeFileSync(lockFile, String(process.pid), { flag: 'wx' });
-          try {
-            if (existsSync(rotated)) writeFileSync(rotated, '', 'utf8');
-            renameSync(p, rotated);
-          } finally {
-            try { unlinkSync(lockFile); } catch { /* best effort */ }
-          }
-        } catch {
-          // Lock held by another process — skip rotation, just append
-        }
-      }
-    } catch { /* ignore rotation errors */ }
+  const lockPath = p + '.lock';
+  const acquired = acquireWriteLock(lockPath);
+  if (!acquired) {
+    // Graceful degradation: log warning and proceed without lock
+    process.stderr.write('[x-build] appendMetric: failed to acquire write lock, proceeding without lock\n');
   }
-  appendFileSync(p, JSON.stringify(data) + '\n', 'utf8');
+  try {
+    if (existsSync(p)) {
+      try {
+        const sz = statSync(p).size;
+        if (sz > METRICS_MAX_BYTES) {
+          const rotated = p + '.1';
+          if (existsSync(rotated)) writeFileSync(rotated, '', 'utf8');
+          renameSync(p, rotated);
+        }
+      } catch { /* ignore rotation errors */ }
+    }
+    appendFileSync(p, JSON.stringify(data) + '\n', 'utf8');
+  } finally {
+    if (acquired) releaseWriteLock(lockPath);
+  }
 }
 
 // ── Lifecycle Hooks ──────────────────────────────────────────────────
