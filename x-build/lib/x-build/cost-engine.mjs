@@ -4,44 +4,20 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync, statSync, unlinkSync, renameSync, openSync, readSync, closeSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-
-// ── ROOT resolution (mirrors core.mjs) ──────────────────────────────
-
-const __filename_ce = fileURLToPath(import.meta.url);
-const __dirname_ce = dirname(__filename_ce);
-
-const XM_GLOBAL_CE = process.argv.includes('--global');
-const ROOT_CE = process.env.X_BUILD_ROOT
-  ? new URL('file://' + process.env.X_BUILD_ROOT).pathname
-  : XM_GLOBAL_CE
-    ? join(homedir(), '.xm', 'build')
-    : join(process.cwd(), '.xm', 'build');
-
-// ── Shared config loader (local copy to avoid circular dep) ─────────
-
-function loadSharedConfigCE() {
-  const sharedPath = join(ROOT_CE, '..', 'config.json');
-  if (existsSync(sharedPath)) {
-    try { return JSON.parse(readFileSync(sharedPath, 'utf8')); } catch (e) { process.stderr.write('[x-build] config parse error (' + sharedPath + '): ' + (e?.message || e) + '\n'); }
-  }
-  const globalPath = join(homedir(), '.xm', 'config.json');
-  if (existsSync(globalPath)) {
-    try { return JSON.parse(readFileSync(globalPath, 'utf8')); } catch (e) { process.stderr.write('[x-build] config parse error (' + globalPath + '): ' + (e?.message || e) + '\n'); }
-  }
-  return {};
-}
+import { ROOT } from './root.mjs';
+import { loadSharedConfig } from './config-loader.mjs';
+import { updateModelLearned } from './cost-learner.mjs';
 
 // ── Metrics path ─────────────────────────────────────────────────────
 
 export function metricsPath() {
-  return join(ROOT_CE, 'metrics', 'sessions.jsonl');
+  return join(ROOT, 'metrics', 'sessions.jsonl');
 }
 
 function tokenActualsPath() {
-  return join(ROOT_CE, 'metrics', 'token-actuals.json');
+  return join(ROOT, 'metrics', 'token-actuals.json');
 }
 
 export const METRICS_MAX_BYTES = 5 * 1024 * 1024; // 5MB rotation threshold
@@ -135,7 +111,7 @@ const DEFAULT_ESCALATE_CONFIG = {
  * Get escalation config from shared config, with defaults.
  */
 export function getEscalateConfig(config) {
-  if (!config) config = loadSharedConfigCE();
+  if (!config) config = loadSharedConfig();
   const userCfg = config.strategies?.escalate || {};
   return { ...DEFAULT_ESCALATE_CONFIG, ...userCfg };
 }
@@ -246,7 +222,7 @@ export const MIN_SAMPLES = 5;
 //   4. fallback: "sonnet"      — safe default
 
 export function getModelForRole(role, size, config) {
-  if (!config) config = loadSharedConfigCE();
+  if (!config) config = loadSharedConfig();
 
   // 1. User explicit override — ALWAYS wins
   const overrides = config.model_overrides || {};
@@ -377,7 +353,7 @@ export function estimateTaskCost(task, model = 'sonnet') {
 
   // Escalate strategy uses blended expected cost across levels instead of flat multiplier
   if (task.strategy === 'escalate') {
-    const config = loadSharedConfigCE();
+    const config = loadSharedConfig();
     const escCfg = getEscalateConfig(config);
     const levels = escCfg.levels;
     const totalMultiplier = depMultiplier * domainMultiplier;
@@ -454,7 +430,7 @@ export function cmdForecastUpdate() {
 // ── spendCachePath ────────────────────────────────────────────────────
 
 export function spendCachePath() {
-  return join(ROOT_CE, 'metrics', 'spend-cache.json');
+  return join(ROOT, 'metrics', 'spend-cache.json');
 }
 
 // ── readSpendCache ────────────────────────────────────────────────────
@@ -503,23 +479,147 @@ function readLinesFromOffset(filePath, offset) {
 }
 
 // ── refreshModelLearned ───────────────────────────────────────────────
-// Lazy-loads cost-learner.mjs to avoid circular deps, then updates model_learned in config.
 
-export async function refreshModelLearned() {
-  const { updateModelLearned } = await import('./cost-learner.mjs');
-  return updateModelLearned(loadSharedConfigCE(), (key, val) => {
-    const cfg = loadSharedConfigCE();
+export function refreshModelLearned() {
+  return updateModelLearned(loadSharedConfig(), (key, val) => {
+    const cfg = loadSharedConfig();
     cfg[key] = val;
-    const cfgPath = join(ROOT_CE, '..', 'config.json');
+    const cfgPath = join(ROOT, '..', 'config.json');
     mkdirSync(dirname(cfgPath), { recursive: true });
     writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
   });
 }
 
+// ── scanMetrics ───────────────────────────────────────────────────────
+
+function scanMetrics(config) {
+  const projectBudgets = config.budget?.projects ?? {};
+  const trackedProjectTotals = Object.keys(projectBudgets).length > 0;
+  const windowHours = config.budget?.window_hours ?? null;
+  const windowMs = windowHours != null ? Number(windowHours) * 3600000 : null;
+  const cutoff = windowMs != null ? Date.now() - windowMs : null;
+
+  const mp = metricsPath();
+  let spent = 0;
+  let projectSpentMap = {};
+
+  if (!existsSync(mp)) return { spent, projectSpentMap };
+
+  try {
+    if (cutoff != null) {
+      // Rolling window: must scan all lines to filter by timestamp — cache not applicable
+      const lines = readFileSync(mp, 'utf8').trim().split('\n');
+      for (const line of lines) {
+        if (!line) continue;
+        try {
+          const m = JSON.parse(line);
+          if (typeof m.cost_usd === 'number') {
+            const ts = typeof m.timestamp === 'number'
+              ? m.timestamp
+              : (m.timestamp ? new Date(m.timestamp).getTime() : 0);
+            if (ts >= cutoff) {
+              spent += m.cost_usd;
+              if (trackedProjectTotals && m.project) {
+                projectSpentMap[m.project] = (projectSpentMap[m.project] ?? 0) + m.cost_usd;
+              }
+            }
+          }
+        } catch { /* skip malformed */ }
+      }
+    } else {
+      // No rolling window: use spend-cache for incremental reads
+      const fileSize = statSync(mp).size;
+      const cache = readSpendCache();
+
+      let startOffset = 0;
+      let cachedTotal = 0;
+      let cachedProjectTotals = {};
+
+      if (cache) {
+        if (fileSize < cache.last_line_offset) {
+          // File was rotated — invalidate cache, start from beginning
+        } else {
+          startOffset = cache.last_line_offset;
+          cachedTotal = cache.total_usd;
+          cachedProjectTotals = cache.project_totals ?? {};
+        }
+      }
+
+      const { text: newText, endOffset } = readLinesFromOffset(mp, startOffset);
+      let newSpend = 0;
+      const newProjectSpend = {};
+      if (newText) {
+        for (const line of newText.split('\n')) {
+          if (!line) continue;
+          try {
+            const m = JSON.parse(line);
+            if (typeof m.cost_usd === 'number') {
+              newSpend += m.cost_usd;
+              if (trackedProjectTotals && m.project) {
+                newProjectSpend[m.project] = (newProjectSpend[m.project] ?? 0) + m.cost_usd;
+              }
+            }
+          } catch { /* skip malformed */ }
+        }
+      }
+
+      spent = cachedTotal + newSpend;
+
+      // Merge project totals
+      projectSpentMap = { ...cachedProjectTotals };
+      for (const [proj, val] of Object.entries(newProjectSpend)) {
+        projectSpentMap[proj] = (projectSpentMap[proj] ?? 0) + val;
+      }
+
+      writeSpendCache(spent, endOffset, projectSpentMap);
+    }
+  } catch (e) { process.stderr.write('[x-build] checkBudget read error: ' + (e?.message || e) + '\n'); }
+
+  return { spent, projectSpentMap };
+}
+
+// ── evaluateBudget ────────────────────────────────────────────────────
+
+function evaluateBudget(spent, budget, additionalCost) {
+  const projected = spent + additionalCost;
+  const pct = projected / budget * 100;
+  if (projected > budget) {
+    return { ok: false, spent, projected, budget, pct, level: 'exceeded' };
+  }
+  if (pct > 80) {
+    return { ok: true, spent, projected, budget, pct, level: 'warning' };
+  }
+  return { ok: true, spent, projected, budget, pct, level: 'normal' };
+}
+
+// ── mergeProjectBudget ────────────────────────────────────────────────
+
+function mergeProjectBudget(globalResult, projectSpentMap, projectLimit, project, additionalCost) {
+  const projSpent = projectSpentMap[project] ?? 0;
+  const projProjected = projSpent + additionalCost;
+  const projPct = projProjected / projectLimit * 100;
+
+  let projectResult;
+  if (projProjected > projectLimit) {
+    projectResult = { ok: false, spent: projSpent, projected: projProjected, budget: projectLimit, pct: projPct, level: 'exceeded', project };
+  } else if (projPct > 80) {
+    projectResult = { ok: true, spent: projSpent, projected: projProjected, budget: projectLimit, pct: projPct, level: 'warning', project };
+  } else {
+    projectResult = { ok: true, spent: projSpent, projected: projProjected, budget: projectLimit, pct: projPct, level: 'normal', project };
+  }
+
+  // Return the more restrictive result (prefer not-ok, then higher pct)
+  const globalPct = globalResult.pct;
+  if (!projectResult.ok && globalResult.ok) return projectResult;
+  if (!globalResult.ok && projectResult.ok) return globalResult;
+  // Both ok or both not-ok: return whichever has higher pct (more restrictive)
+  return projPct >= globalPct ? projectResult : globalResult;
+}
+
 // ── checkBudget ───────────────────────────────────────────────────────
 
 export function checkBudget(additionalCost = 0, project = null) {
-  const config = loadSharedConfigCE();
+  const config = loadSharedConfig();
   const budget = Number(config.budget?.max_usd);
   if (!budget || isNaN(budget)) return { ok: true, budget: null };
 
@@ -527,126 +627,11 @@ export function checkBudget(additionalCost = 0, project = null) {
   const projectLimit = project != null ? Number(projectBudgets[project]) : NaN;
   const hasProjectLimit = project != null && !isNaN(projectLimit) && projectLimit > 0;
 
-  const windowHours = config.budget?.window_hours ?? null;
-  const windowMs = windowHours != null ? Number(windowHours) * 3600000 : null;
-  const cutoff = windowMs != null ? Date.now() - windowMs : null;
+  const { spent, projectSpentMap } = scanMetrics(config);
+  const globalResult = evaluateBudget(spent, budget, additionalCost);
 
-  const mp = metricsPath();
-  let spent = 0;
-  // project_totals: map of project -> spend (only tracked when project budgets configured)
-  const trackedProjectTotals = Object.keys(projectBudgets).length > 0;
-  let projectSpentMap = {};
-
-  if (existsSync(mp)) {
-    try {
-      if (cutoff != null) {
-        // Rolling window: must scan all lines to filter by timestamp — cache not applicable
-        const lines = readFileSync(mp, 'utf8').trim().split('\n');
-        for (const line of lines) {
-          if (!line) continue;
-          try {
-            const m = JSON.parse(line);
-            if (typeof m.cost_usd === 'number') {
-              const ts = typeof m.timestamp === 'number'
-                ? m.timestamp
-                : (m.timestamp ? new Date(m.timestamp).getTime() : 0);
-              if (ts >= cutoff) {
-                spent += m.cost_usd;
-                if (trackedProjectTotals && m.project) {
-                  projectSpentMap[m.project] = (projectSpentMap[m.project] ?? 0) + m.cost_usd;
-                }
-              }
-            }
-          } catch { /* skip malformed */ }
-        }
-      } else {
-        // No rolling window: use spend-cache for incremental reads
-        const fileSize = statSync(mp).size;
-        const cache = readSpendCache();
-
-        let startOffset = 0;
-        let cachedTotal = 0;
-        let cachedProjectTotals = {};
-
-        if (cache) {
-          if (fileSize < cache.last_line_offset) {
-            // File was rotated — invalidate cache, start from beginning
-            startOffset = 0;
-            cachedTotal = 0;
-            cachedProjectTotals = {};
-          } else {
-            startOffset = cache.last_line_offset;
-            cachedTotal = cache.total_usd;
-            cachedProjectTotals = cache.project_totals ?? {};
-          }
-        }
-
-        const { text: newText, endOffset } = readLinesFromOffset(mp, startOffset);
-        let newSpend = 0;
-        const newProjectSpend = {};
-        if (newText) {
-          for (const line of newText.split('\n')) {
-            if (!line) continue;
-            try {
-              const m = JSON.parse(line);
-              if (typeof m.cost_usd === 'number') {
-                newSpend += m.cost_usd;
-                if (trackedProjectTotals && m.project) {
-                  newProjectSpend[m.project] = (newProjectSpend[m.project] ?? 0) + m.cost_usd;
-                }
-              }
-            } catch { /* skip malformed */ }
-          }
-        }
-
-        spent = cachedTotal + newSpend;
-
-        // Merge project totals
-        projectSpentMap = { ...cachedProjectTotals };
-        for (const [proj, val] of Object.entries(newProjectSpend)) {
-          projectSpentMap[proj] = (projectSpentMap[proj] ?? 0) + val;
-        }
-
-        writeSpendCache(spent, endOffset, projectSpentMap);
-      }
-    } catch (e) { process.stderr.write('[x-build] checkBudget read error: ' + (e?.message || e) + '\n'); }
-  }
-
-  const projected = spent + additionalCost;
-  const pct = (projected / budget * 100);
-
-  // Build global result
-  const globalResult = (() => {
-    if (projected > budget) {
-      return { ok: false, spent, projected, budget, pct, level: 'exceeded' };
-    }
-    if (pct > 80) {
-      return { ok: true, spent, projected, budget, pct, level: 'warning' };
-    }
-    return { ok: true, spent, projected, budget, pct, level: 'normal' };
-  })();
-
-  // Check per-project limit if applicable
   if (hasProjectLimit) {
-    const projSpent = projectSpentMap[project] ?? 0;
-    const projProjected = projSpent + additionalCost;
-    const projPct = (projProjected / projectLimit * 100);
-
-    const projectResult = (() => {
-      if (projProjected > projectLimit) {
-        return { ok: false, spent: projSpent, projected: projProjected, budget: projectLimit, pct: projPct, level: 'exceeded', project };
-      }
-      if (projPct > 80) {
-        return { ok: true, spent: projSpent, projected: projProjected, budget: projectLimit, pct: projPct, level: 'warning', project };
-      }
-      return { ok: true, spent: projSpent, projected: projProjected, budget: projectLimit, pct: projPct, level: 'normal', project };
-    })();
-
-    // Return the more restrictive result (prefer not-ok, then higher pct)
-    if (!projectResult.ok && globalResult.ok) return projectResult;
-    if (!globalResult.ok && projectResult.ok) return globalResult;
-    // Both ok or both not-ok: return whichever has higher pct (more restrictive)
-    return projPct >= pct ? projectResult : globalResult;
+    return mergeProjectBudget(globalResult, projectSpentMap, projectLimit, project, additionalCost);
   }
 
   return globalResult;
