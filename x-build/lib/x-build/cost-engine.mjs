@@ -323,6 +323,56 @@ export function cmdForecastUpdate() {
   console.log('Token actuals updated.');
 }
 
+// ── spendCachePath ────────────────────────────────────────────────────
+
+export function spendCachePath() {
+  return join(ROOT_CE, 'metrics', 'spend-cache.json');
+}
+
+// ── readSpendCache ────────────────────────────────────────────────────
+
+function readSpendCache() {
+  const cp = spendCachePath();
+  if (!existsSync(cp)) return null;
+  try {
+    const obj = JSON.parse(readFileSync(cp, 'utf8'));
+    if (typeof obj.total_usd === 'number' && typeof obj.last_line_offset === 'number') {
+      return obj;
+    }
+  } catch { /* malformed cache */ }
+  return null;
+}
+
+// ── writeSpendCache ───────────────────────────────────────────────────
+
+function writeSpendCache(total_usd, last_line_offset) {
+  const cp = spendCachePath();
+  try {
+    mkdirSync(dirname(cp), { recursive: true });
+    writeFileSync(cp, JSON.stringify({ updated_at: new Date().toISOString(), total_usd, last_line_offset }), 'utf8');
+  } catch { /* best effort */ }
+}
+
+// ── readLinesFromOffset ───────────────────────────────────────────────
+
+function readLinesFromOffset(filePath, offset) {
+  try {
+    const fileSize = statSync(filePath).size;
+    if (offset >= fileSize) return { text: '', endOffset: fileSize };
+    const length = fileSize - offset;
+    const buf = Buffer.allocUnsafe(length);
+    const fd = openSync(filePath, 'r');
+    try {
+      readSync(fd, buf, 0, length, offset);
+    } finally {
+      closeSync(fd);
+    }
+    return { text: buf.toString('utf8'), endOffset: fileSize };
+  } catch {
+    return { text: '', endOffset: 0 };
+  }
+}
+
 // ── checkBudget ───────────────────────────────────────────────────────
 
 export function checkBudget(additionalCost = 0) {
@@ -330,16 +380,63 @@ export function checkBudget(additionalCost = 0) {
   const budget = Number(config.budget?.max_usd);
   if (!budget || isNaN(budget)) return { ok: true, budget: null };
 
+  const windowHours = config.budget?.window_hours ?? null;
+  const windowMs = windowHours != null ? Number(windowHours) * 3600000 : null;
+  const cutoff = windowMs != null ? Date.now() - windowMs : null;
+
   const mp = metricsPath();
   let spent = 0;
+
   if (existsSync(mp)) {
     try {
-      const lines = readFileSync(mp, 'utf8').trim().split('\n');
-      for (const line of lines) {
-        try {
-          const m = JSON.parse(line);
-          if (typeof m.cost_usd === 'number') spent += m.cost_usd;
-        } catch { /* skip malformed */ }
+      if (cutoff != null) {
+        // Rolling window: must scan all lines to filter by timestamp — cache not applicable
+        const lines = readFileSync(mp, 'utf8').trim().split('\n');
+        for (const line of lines) {
+          if (!line) continue;
+          try {
+            const m = JSON.parse(line);
+            if (typeof m.cost_usd === 'number') {
+              const ts = typeof m.timestamp === 'number'
+                ? m.timestamp
+                : (m.timestamp ? new Date(m.timestamp).getTime() : 0);
+              if (ts >= cutoff) spent += m.cost_usd;
+            }
+          } catch { /* skip malformed */ }
+        }
+      } else {
+        // No rolling window: use spend-cache for incremental reads
+        const fileSize = statSync(mp).size;
+        const cache = readSpendCache();
+
+        let startOffset = 0;
+        let cachedTotal = 0;
+
+        if (cache) {
+          if (fileSize < cache.last_line_offset) {
+            // File was rotated — invalidate cache, start from beginning
+            startOffset = 0;
+            cachedTotal = 0;
+          } else {
+            startOffset = cache.last_line_offset;
+            cachedTotal = cache.total_usd;
+          }
+        }
+
+        const { text: newText, endOffset } = readLinesFromOffset(mp, startOffset);
+        let newSpend = 0;
+        if (newText) {
+          for (const line of newText.split('\n')) {
+            if (!line) continue;
+            try {
+              const m = JSON.parse(line);
+              if (typeof m.cost_usd === 'number') newSpend += m.cost_usd;
+            } catch { /* skip malformed */ }
+          }
+        }
+
+        spent = cachedTotal + newSpend;
+        writeSpendCache(spent, endOffset);
       }
     } catch { /* ignore read errors */ }
   }

@@ -666,11 +666,167 @@ describe('strategy cost multipliers', () => {
 
 // ── Budget guard ────────────────────────────────────────────────
 
+const _budgetCfgPath = join(process.cwd(), '.xm', 'config.json');
+// Capture the original config once at module level, before any test runs
+const _originalCfgContent = existsSync(_budgetCfgPath) ? readFileSync(_budgetCfgPath, 'utf8') : null;
+
 describe('checkBudget', () => {
+  beforeEach(() => {
+    // Always restore to original (no-budget) config before this test
+    if (_originalCfgContent === null) {
+      try { rmSync(_budgetCfgPath); } catch { /* ok */ }
+    } else {
+      writeFileSync(_budgetCfgPath, _originalCfgContent, 'utf8');
+    }
+  });
+  afterEach(() => {
+    if (_originalCfgContent === null) {
+      try { rmSync(_budgetCfgPath); } catch { /* ok */ }
+    } else {
+      writeFileSync(_budgetCfgPath, _originalCfgContent, 'utf8');
+    }
+  });
+
   test('returns ok when no budget set', () => {
     const result = core.checkBudget(1.0);
     expect(result.ok).toBe(true);
     expect(result.budget).toBeNull();
+  });
+});
+
+// ── checkBudget — rolling window (R3a) & spend-cache (R3b) ──────
+// ROOT_CE is baked at module load time, so we use the real resolved paths
+// and write/restore around each test.
+
+const costEngine = await import('../x-build/lib/x-build/cost-engine.mjs');
+
+const CE_METRICS = costEngine.metricsPath();
+const CE_CONFIG = join(CE_METRICS, '..', '..', '..', 'config.json'); // .xm/config.json
+const CE_CACHE = join(CE_METRICS, '..', 'spend-cache.json');
+
+function ceSetup(windowHours) {
+  mkdirSync(join(CE_METRICS, '..'), { recursive: true });
+  const cfg = { budget: { max_usd: 10 } };
+  if (windowHours != null) cfg.budget.window_hours = windowHours;
+  writeFileSync(CE_CONFIG, JSON.stringify(cfg), 'utf8');
+}
+
+function ceTeardown(savedMetrics, savedCache) {
+  // Restore or remove metrics
+  if (savedMetrics === null) {
+    try { rmSync(CE_METRICS); } catch { /* ok */ }
+  } else {
+    writeFileSync(CE_METRICS, savedMetrics, 'utf8');
+  }
+  // Always restore config to the original (pre-test) state
+  if (_originalCfgContent === null) {
+    try { rmSync(CE_CONFIG); } catch { /* ok */ }
+  } else {
+    writeFileSync(CE_CONFIG, _originalCfgContent, 'utf8');
+  }
+  // Restore or remove cache
+  if (savedCache === null) {
+    try { rmSync(CE_CACHE); } catch { /* ok */ }
+  } else {
+    writeFileSync(CE_CACHE, savedCache, 'utf8');
+  }
+}
+
+describe('checkBudget — rolling window (R3a)', () => {
+  let savedMetrics, savedCache;
+
+  beforeEach(() => {
+    savedMetrics = existsSync(CE_METRICS) ? readFileSync(CE_METRICS, 'utf8') : null;
+    savedCache   = existsSync(CE_CACHE)   ? readFileSync(CE_CACHE, 'utf8')   : null;
+    // Remove cache so each test starts fresh
+    try { rmSync(CE_CACHE); } catch { /* ok */ }
+  });
+
+  afterEach(() => ceTeardown(savedMetrics, savedCache));
+
+  function makeMetricsFile(entries) {
+    mkdirSync(join(CE_METRICS, '..'), { recursive: true });
+    writeFileSync(CE_METRICS, entries.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+  }
+
+  test('includes recent metrics within window', () => {
+    const now = Date.now();
+    makeMetricsFile([
+      { cost_usd: 1.0, timestamp: now - 1 * 3600 * 1000 },   // 1h ago — within 24h
+      { cost_usd: 2.0, timestamp: now - 48 * 3600 * 1000 },  // 48h ago — outside 24h
+    ]);
+    ceSetup(24);
+    const result = costEngine.checkBudget(0);
+    expect(result.spent).toBeCloseTo(1.0, 5);
+  });
+
+  test('excludes 48h-old metric when window=24', () => {
+    const now = Date.now();
+    makeMetricsFile([
+      { cost_usd: 5.0, timestamp: now - 48 * 3600 * 1000 },
+    ]);
+    ceSetup(24);
+    const result = costEngine.checkBudget(0);
+    expect(result.spent).toBeCloseTo(0, 5);
+  });
+
+  test('null window_hours sums all metrics', () => {
+    const now = Date.now();
+    makeMetricsFile([
+      { cost_usd: 1.0, timestamp: now - 100 * 3600 * 1000 },
+      { cost_usd: 2.0, timestamp: now - 200 * 3600 * 1000 },
+    ]);
+    ceSetup(null);
+    const result = costEngine.checkBudget(0);
+    expect(result.spent).toBeCloseTo(3.0, 5);
+  });
+});
+
+// ── checkBudget — spend-cache (R3b) ─────────────────────────────
+
+describe('checkBudget — spend-cache (R3b)', () => {
+  let savedMetrics, savedCache;
+
+  beforeEach(() => {
+    savedMetrics = existsSync(CE_METRICS) ? readFileSync(CE_METRICS, 'utf8') : null;
+    savedCache   = existsSync(CE_CACHE)   ? readFileSync(CE_CACHE, 'utf8')   : null;
+    try { rmSync(CE_CACHE); } catch { /* ok */ }
+    mkdirSync(join(CE_METRICS, '..'), { recursive: true });
+  });
+
+  afterEach(() => ceTeardown(savedMetrics, savedCache));
+
+  test('creates spend-cache.json after first call', () => {
+    writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 1.5 }) + '\n', 'utf8');
+    ceSetup(null);
+    costEngine.checkBudget(0);
+    expect(existsSync(CE_CACHE)).toBe(true);
+  });
+
+  test('incremental read: accumulates spend across two calls', () => {
+    writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 1.0 }) + '\n', 'utf8');
+    ceSetup(null);
+    const r1 = costEngine.checkBudget(0);
+    expect(r1.spent).toBeCloseTo(1.0, 5);
+
+    // Append a second entry
+    const existing = readFileSync(CE_METRICS, 'utf8');
+    writeFileSync(CE_METRICS, existing + JSON.stringify({ cost_usd: 2.0 }) + '\n', 'utf8');
+    const r2 = costEngine.checkBudget(0);
+    expect(r2.spent).toBeCloseTo(3.0, 5);
+  });
+
+  test('cache invalidated when file size < last_line_offset (rotation)', () => {
+    // Write many entries so last_line_offset is large
+    const manyLines = Array.from({ length: 20 }, (_, i) => JSON.stringify({ cost_usd: 0.1, seq: i })).join('\n') + '\n';
+    writeFileSync(CE_METRICS, manyLines, 'utf8');
+    ceSetup(null);
+    costEngine.checkBudget(0);
+
+    // Simulate rotation: replace with a single small entry (fileSize < last_line_offset)
+    writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 1.0 }) + '\n', 'utf8');
+    const r = costEngine.checkBudget(0);
+    expect(r.spent).toBeCloseTo(1.0, 5);
   });
 });
 
