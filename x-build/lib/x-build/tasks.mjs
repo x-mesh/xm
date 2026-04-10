@@ -375,6 +375,15 @@ export function taskUpdate(project, args) {
     if (taskRef.started_at) {
       appendMetric({
         type: 'task_complete', project, taskId: id, taskName: taskRef.name,
+        role: taskRef.role || 'executor',
+        model: taskRef._assigned_model || 'sonnet',
+        size: taskRef.size || 'medium',
+        strategy: taskRef.strategy || null,
+        cost_usd: taskRef._estimated_cost || 0,
+        quality_score: taskRef.score != null ? taskRef.score : 1,
+        success: true,
+        retry_count: taskRef.retry_count || 0,
+        failure_reason: null,
         duration_ms: new Date(taskRef.completed_at) - new Date(taskRef.started_at),
         timestamp: taskRef.completed_at,
       });
@@ -404,6 +413,23 @@ export function taskUpdate(project, args) {
           return d;
         });
       }
+    }
+
+    if (taskRef.started_at) {
+      appendMetric({
+        type: 'task_failed', project, taskId: id, taskName: taskRef.name,
+        role: taskRef.role || 'executor',
+        model: taskRef._assigned_model || 'sonnet',
+        size: taskRef.size || 'medium',
+        strategy: taskRef.strategy || null,
+        cost_usd: taskRef._estimated_cost || 0,
+        quality_score: taskRef.score != null ? taskRef.score : 0,
+        success: false,
+        retry_count: taskRef.retry_count || 0,
+        failure_reason: opts?.reason || 'unknown',
+        duration_ms: new Date(taskRef.failed_at || new Date()) - new Date(taskRef.started_at),
+        timestamp: taskRef.failed_at || new Date().toISOString(),
+      });
     }
   }
 
@@ -874,6 +900,10 @@ export function cmdRun(args) {
   console.log(`${C.dim}  Or run with --json for machine-readable output.${C.reset}\n`);
 
   for (const task of readyTasks) {
+    const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
+    const model = getModelForRole(role, task.size, sharedCfg);
+    task._assigned_model = model;
+    task._estimated_cost = estimateTaskCost(task, model).cost_usd;
     task.status = TASK_STATES.RUNNING;
     task.started_at = new Date().toISOString();
   }
