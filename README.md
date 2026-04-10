@@ -872,7 +872,11 @@ Per-role overrides: `/x-kit config set model_overrides '{"architect": "opus"}'` 
 
 The `escalate` strategy (`/x-op escalate "task"`) starts with haiku and auto-escalates only when needed — ~60% savings on average, up to ~90% when tasks resolve at haiku tier.
 
-Budget guards warn at 80% usage and block execution at 100%, tracked via session metrics. Budget is currently global (`max_usd` only); per-phase and per-model budgets are planned for a future release.
+Budget guards warn at 80% usage and block execution at 100%, tracked via session metrics. Rolling spend is tracked in `.xm/spend-cache.json` over a configurable window (`budget.window_hours`, default 24h). Per-project caps use `budget.projects`:
+
+```bash
+/x-kit config set budget '{"max_usd": 5.0, "window_hours": 48, "projects": {"my-proj": {"max_usd": 2.0}}}'
+```
 
 #### Cost vs Quality Benchmark
 
@@ -905,6 +909,8 @@ x-kit routes commands to the cheapest sufficient model automatically. Display/qu
 | Reasoning | **sonnet** (escalate to **opus** when budget allows) | `plan`, `run`, strategy execution, code review |
 
 > Principle: if the output is determined by a script (not LLM reasoning), use haiku. The model is a messenger, not a thinker.
+
+**Adaptive routing (Cost Engine v2):** the engine learns from past task outcomes and refines model selection automatically. Selection follows a 4-level priority chain: `model_overrides → model_learned → profile → fallback`. After 5 outcomes for a role (90-day rolling window), the best-performing model is promoted into `model_learned`. Each routing decision carries a correlation ID (`ce-XXXXXXXX`) linking it to its outcome metrics. The `escalate` strategy uses a configurable `quality_threshold` to gate haiku→sonnet→opus promotion.
 
 ---
 

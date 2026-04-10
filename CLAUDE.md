@@ -151,6 +151,34 @@ Agent tool: { model: "haiku", description: "x-kit: [command]", prompt: "Run: [ba
 
 Never route to haiku if the task involves: analysis, code generation, review, planning, evaluation, or multi-step orchestration. If detected, warn and escalate to sonnet. See `x-kit/skills/x-kit/SKILL.md` Model Guardrail for full rules.
 
+### Adaptive Model Routing (Cost Engine v2)
+
+The cost engine learns from past outcomes and adjusts routing automatically. Model selection follows a 4-level priority chain:
+
+```
+model_overrides → model_learned → profile → fallback
+```
+
+| Priority | Source | Description |
+|----------|--------|-------------|
+| 1 | `model_overrides` | Explicit per-role config — always wins |
+| 2 | `model_learned` | Learned from outcome feedback (≥5 samples, 90-day rolling window) |
+| 3 | profile | `economy` / `balanced` / `performance` setting |
+| 4 | fallback | Hard-coded safe defaults |
+
+**New config keys:**
+
+| Key | Description | Example |
+|-----|-------------|---------|
+| `model_learned` | Auto-populated by the engine from `task_complete` feedback; do not set manually | `{"executor": "haiku"}` |
+| `budget.window_hours` | Rolling window for spend tracking (default: 24h) | `48` |
+| `budget.projects` | Per-project budget caps | `{"my-project": {"max_usd": 2.0}}` |
+| `strategies.escalate.quality_threshold` | Minimum quality score before escalating haiku→sonnet→opus | `0.7` |
+
+**How adaptive routing works:** each `task_complete` event records `model`, `role`, `cost_usd`, `quality_score`, and a `correlation_id` (format: `ce-XXXXXXXX`). After MIN_SAMPLES=5 outcomes for a role, the engine promotes the best-performing model into `model_learned`. Routing decisions are linked to outcomes via correlation IDs for auditability.
+
+**Escalation cascade:** the `escalate` strategy uses `quality_threshold` to gate model promotion. If haiku's quality score falls below the threshold, the task re-runs at sonnet; if sonnet also falls short, it escalates to opus. Cost estimate is probability-weighted across all three tiers.
+
 ## Edit Policy
 
 **NEVER edit files under `x-kit/skills/` directly.** That directory is the marketplace copy — a build artifact.

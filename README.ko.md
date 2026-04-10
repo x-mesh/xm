@@ -872,7 +872,11 @@ x-kit에는 코어와 도메인 영역을 아우르는 37개 전문가 에이전
 
 `escalate` 전략 (`/x-op escalate "작업"`)은 haiku로 시작하여 필요할 때만 자동 에스컬레이션하므로, 평균 ~60% 절감, haiku에서 해결되는 태스크는 최대 ~90% 절감됩니다.
 
-예산 가드는 80% 사용 시 경고하고, 100%에서 실행을 차단하며 세션 메트릭으로 추적됩니다. 현재 예산은 글로벌(`max_usd`)만 지원하며, 페이즈별/모델별 예산은 향후 릴리즈에서 추가될 예정입니다.
+예산 가드는 80% 사용 시 경고하고, 100%에서 실행을 차단하며 세션 메트릭으로 추적됩니다. 롤링 지출은 `.xm/spend-cache.json`에 설정 가능한 윈도우(`budget.window_hours`, 기본값 24h) 단위로 추적됩니다. 프로젝트별 상한은 `budget.projects`로 설정합니다:
+
+```bash
+/x-kit config set budget '{"max_usd": 5.0, "window_hours": 48, "projects": {"my-proj": {"max_usd": 2.0}}}'
+```
 
 #### 비용 대비 품질 벤치마크
 
@@ -905,6 +909,8 @@ x-kit은 명령을 가장 저렴한 적합 모델로 자동 라우팅합니다. 
 | 추론 | **sonnet** (예산 여유 시 **opus**로 에스컬레이트) | `plan`, `run`, 전략 실행, 코드 리뷰 |
 
 > 원칙: 출력이 스크립트에 의해 결정되면 (LLM 추론이 아니면) haiku를 사용합니다. 모델은 전달자이지 사고자가 아닙니다.
+
+**적응형 라우팅 (Cost Engine v2):** 엔진은 과거 태스크 결과로부터 학습하여 모델 선택을 자동으로 개선합니다. 선택은 4단계 우선순위 체인을 따릅니다: `model_overrides → model_learned → profile → fallback`. 역할별로 5개 이상의 결과가 누적되면 (90일 롤링 윈도우) 최적 모델이 `model_learned`에 승격됩니다. 각 라우팅 결정은 결과 메트릭과 연결된 상관 ID (`ce-XXXXXXXX`)를 가집니다. `escalate` 전략은 설정 가능한 `quality_threshold`를 사용하여 haiku→sonnet→opus 승격을 제어합니다.
 
 ---
 
