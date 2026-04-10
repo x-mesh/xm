@@ -407,6 +407,20 @@ function readLinesFromOffset(filePath, offset) {
   }
 }
 
+// ── refreshModelLearned ───────────────────────────────────────────────
+// Lazy-loads cost-learner.mjs to avoid circular deps, then updates model_learned in config.
+
+export async function refreshModelLearned() {
+  const { updateModelLearned } = await import('./cost-learner.mjs');
+  return updateModelLearned(loadSharedConfigCE(), (key, val) => {
+    const cfg = loadSharedConfigCE();
+    cfg[key] = val;
+    const cfgPath = join(ROOT_CE, '..', 'config.json');
+    mkdirSync(dirname(cfgPath), { recursive: true });
+    writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  });
+}
+
 // ── checkBudget ───────────────────────────────────────────────────────
 
 export function checkBudget(additionalCost = 0, project = null) {
