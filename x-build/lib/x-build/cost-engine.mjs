@@ -2,10 +2,11 @@
  * x-build/cost-engine — Cost estimation, model profiles, and budget guard
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync, statSync, unlinkSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync, statSync, unlinkSync, renameSync, openSync, readSync, closeSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+import { randomBytes } from 'node:crypto';
 
 // ── ROOT resolution (mirrors core.mjs) ──────────────────────────────
 
@@ -38,6 +39,8 @@ function loadSharedConfigCE() {
 export function metricsPath() {
   return join(ROOT_CE, 'metrics', 'sessions.jsonl');
 }
+
+const TOKEN_ACTUALS_PATH = join(ROOT_CE, 'metrics', 'token-actuals.json');
 
 export const METRICS_MAX_BYTES = 5 * 1024 * 1024; // 5MB rotation threshold
 
@@ -188,6 +191,75 @@ export function getModelForRole(role, size, config) {
   return model;
 }
 
+// ── getModelForRoleWithCorrelation ────────────────────────────────────
+
+function generateCorrelationId() {
+  return 'ce-' + randomBytes(4).toString('hex');
+}
+
+export function getModelForRoleWithCorrelation(role, size, config) {
+  const model = getModelForRole(role, size, config);
+  const correlationId = generateCorrelationId();
+  return { model, correlationId };
+}
+
+// ── loadTokenActuals ──────────────────────────────────────────────────
+
+export function loadTokenActuals() {
+  try {
+    const metricsFile = metricsPath();
+    if (!existsSync(TOKEN_ACTUALS_PATH)) return null;
+    const actualsMtime = statSync(TOKEN_ACTUALS_PATH).mtimeMs;
+    const metricsMtime = statSync(metricsFile).mtimeMs;
+    if (metricsMtime > actualsMtime) return null; // stale, needs recompute
+    return JSON.parse(readFileSync(TOKEN_ACTUALS_PATH, 'utf8'));
+  } catch { return null; }
+}
+
+// ── computeTokenActuals ───────────────────────────────────────────────
+
+export function computeTokenActuals() {
+  const metricsFile = metricsPath();
+  if (!existsSync(metricsFile)) return null;
+
+  const groups = { small: [], medium: [], large: [] };
+  try {
+    const lines = readFileSync(metricsFile, 'utf8').trim().split('\n');
+    for (const line of lines) {
+      try {
+        const m = JSON.parse(line);
+        if (m.type === 'task_complete' && typeof m.cost_usd === 'number' && m.size && groups[m.size]) {
+          groups[m.size].push(m.cost_usd);
+        }
+      } catch { /* skip malformed */ }
+    }
+  } catch { return null; }
+
+  const sample_counts = {};
+  const estimates = {};
+  for (const size of Object.keys(groups)) {
+    const samples = groups[size];
+    sample_counts[size] = samples.length;
+    if (samples.length > 0) {
+      const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
+      estimates[size] = { avg_cost_usd: avg };
+    }
+  }
+
+  const result = {
+    updated_at: new Date().toISOString(),
+    sample_counts,
+    estimates,
+  };
+
+  try {
+    mkdirSync(dirname(TOKEN_ACTUALS_PATH), { recursive: true });
+    writeFileSync(TOKEN_ACTUALS_PATH, JSON.stringify(result, null, 2), 'utf8');
+  } catch { /* best effort */ }
+
+  return result;
+}
+
 // ── estimateTaskCost ──────────────────────────────────────────────────
 
 export function estimateTaskCost(task, model = 'sonnet') {
@@ -214,6 +286,21 @@ export function estimateTaskCost(task, model = 'sonnet') {
   const adjustedInput = Math.round(base.input * totalMultiplier);
   const adjustedOutput = Math.round(base.output * totalMultiplier);
 
+  // Use actuals-based cost if enough samples exist
+  const actuals = loadTokenActuals();
+  const sampleCount = actuals?.sample_counts?.[size] ?? 0;
+  if (actuals && sampleCount >= 10 && actuals.estimates?.[size]?.avg_cost_usd != null) {
+    const baseCostUsd = actuals.estimates[size].avg_cost_usd * totalMultiplier;
+    return {
+      input_tokens: adjustedInput * base.turns,
+      output_tokens: adjustedOutput * base.turns,
+      cost_usd: baseCostUsd,
+      model,
+      confidence: 'high',
+      multiplier: totalMultiplier,
+    };
+  }
+
   const inputCost = (adjustedInput * base.turns / 1_000_000) * costs.input;
   const outputCost = (adjustedOutput * base.turns / 1_000_000) * costs.output;
 
@@ -227,6 +314,13 @@ export function estimateTaskCost(task, model = 'sonnet') {
     confidence,
     multiplier: totalMultiplier,
   };
+}
+
+// ── cmdForecastUpdate ─────────────────────────────────────────────────
+
+export function cmdForecastUpdate() {
+  computeTokenActuals();
+  console.log('Token actuals updated.');
 }
 
 // ── checkBudget ───────────────────────────────────────────────────────

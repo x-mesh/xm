@@ -4,7 +4,7 @@
 
 import {
   PHASES, TASK_STATES, STATUS_ALIASES, C,
-  ROLE_MODEL_MAP_HR, getModelForRole, checkBudget, loadSharedConfig, XM_GLOBAL, PLUGIN_ROOT, ROOT,
+  ROLE_MODEL_MAP_HR, getModelForRole, getModelForRoleWithCorrelation, checkBudget, loadSharedConfig, XM_GLOBAL, PLUGIN_ROOT, ROOT,
   readJSON, writeJSON, modifyJSON, readMD,
   manifestPath, tasksPath, stepsPath, contextDir, phaseDir, decisionsPath, projectDir,
   resolveProject, logDecision, appendMetric, emitHook,
@@ -384,6 +384,7 @@ export function taskUpdate(project, args) {
         success: true,
         retry_count: taskRef.retry_count || 0,
         failure_reason: null,
+        routing_decision_id: taskRef._routing_decision_id || null,
         duration_ms: new Date(taskRef.completed_at) - new Date(taskRef.started_at),
         timestamp: taskRef.completed_at,
       });
@@ -901,8 +902,9 @@ export function cmdRun(args) {
 
   for (const task of readyTasks) {
     const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
-    const model = getModelForRole(role, task.size, sharedCfg);
+    const { model, correlationId } = getModelForRoleWithCorrelation(role, task.size, sharedCfg);
     task._assigned_model = model;
+    task._routing_decision_id = correlationId;
     task._estimated_cost = estimateTaskCost(task, model).cost_usd;
     task.status = TASK_STATES.RUNNING;
     task.started_at = new Date().toISOString();
