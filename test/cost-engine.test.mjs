@@ -592,7 +592,6 @@ describe('evaluateEscalation — escalation decision', () => {
     expect(result.shouldContinue).toBe(false);
     expect(result.reason).toBe('max model reached');
   });
-});
 
   test('unknown model not in levels returns shouldContinue: false', () => {
     const result = ce.evaluateEscalation(3, 'unknown-model', {});
