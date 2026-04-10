@@ -111,8 +111,8 @@ async function main() {
         agent_count: agentCount,
       });
 
-      fs.appendFileSync(traceFile, entry + '\n');
-      fs.unlinkSync(activeFile);
+      try { fs.appendFileSync(traceFile, entry + '\n'); } catch { /* best-effort */ }
+      try { fs.unlinkSync(activeFile); } catch { /* best-effort */ }
     }
   } catch {
     // Trace is best-effort — never block skill execution.

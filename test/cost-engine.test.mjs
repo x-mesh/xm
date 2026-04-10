@@ -527,7 +527,292 @@ describe('computeModelLearned — scoring and MIN_SAMPLES', () => {
   });
 });
 
-// ── 8. getModelForRoleWithCorrelation ─────────────────────────────────────────
+// ── 8. evaluateEscalation ─────────────────────────────────────────────────────
+
+describe('evaluateEscalation — escalation decision', () => {
+  test('score >= quality_threshold returns shouldContinue: false', () => {
+    const result = ce.evaluateEscalation(7, 'haiku', {});
+    expect(result.shouldContinue).toBe(false);
+    expect(result.nextModel).toBeNull();
+    expect(result.reason).toMatch(/threshold/);
+  });
+
+  test('score equal to threshold stops escalation', () => {
+    // Default threshold is 7; score of 7 should stop
+    const result = ce.evaluateEscalation(7, 'sonnet', {});
+    expect(result.shouldContinue).toBe(false);
+  });
+
+  test('currentModel is last in levels returns shouldContinue: false with max model reason', () => {
+    const result = ce.evaluateEscalation(3, 'opus', {});
+    expect(result.shouldContinue).toBe(false);
+    expect(result.nextModel).toBeNull();
+    expect(result.reason).toBe('max model reached');
+  });
+
+  test('score < threshold and not last level returns shouldContinue: true with nextModel', () => {
+    const result = ce.evaluateEscalation(4, 'haiku', {});
+    expect(result.shouldContinue).toBe(true);
+    expect(result.nextModel).toBe('sonnet');
+    expect(result.reason).toMatch(/threshold/);
+  });
+
+  test('score < threshold at sonnet level returns next model opus', () => {
+    const result = ce.evaluateEscalation(5, 'sonnet', {});
+    expect(result.shouldContinue).toBe(true);
+    expect(result.nextModel).toBe('opus');
+  });
+
+  test('custom config.strategies.escalate overrides threshold and levels', () => {
+    const config = {
+      strategies: {
+        escalate: {
+          quality_threshold: 5,
+          levels: ['haiku', 'sonnet'],
+        },
+      },
+    };
+    // score=5 >= threshold=5 → stop
+    const stopped = ce.evaluateEscalation(5, 'haiku', config);
+    expect(stopped.shouldContinue).toBe(false);
+
+    // score=4 < threshold=5, haiku is not last → continue
+    const continued = ce.evaluateEscalation(4, 'haiku', config);
+    expect(continued.shouldContinue).toBe(true);
+    expect(continued.nextModel).toBe('sonnet');
+  });
+
+  test('custom config with single level means any model is last', () => {
+    const config = {
+      strategies: {
+        escalate: { levels: ['sonnet'], quality_threshold: 8 },
+      },
+    };
+    const result = ce.evaluateEscalation(3, 'sonnet', config);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reason).toBe('max model reached');
+  });
+});
+
+// ── 9. refreshModelLearned ────────────────────────────────────────────────────
+
+describe('refreshModelLearned — model_learned config update', () => {
+  beforeEach(() => { clearMetrics(); clearConfig(); });
+  afterEach(() => { clearMetrics(); clearConfig(); });
+
+  test('metrics with >= 5 samples for a role updates config with model_learned', async () => {
+    const ts = new Date().toISOString();
+    for (let i = 0; i < 5; i++) {
+      appendLines({ type: 'task_complete', role: 'executor', model: 'haiku', timestamp: ts });
+    }
+    writeConfig({ budget: { max_usd: 1.0 } });
+
+    const result = await ce.refreshModelLearned();
+    expect(result).not.toBeNull();
+    expect(result.executor).toBeDefined();
+    expect(result.executor.model).toBe('haiku');
+    expect(result.executor.sample_count).toBeGreaterThanOrEqual(5);
+
+    // Config file must have been updated with model_learned
+    const written = JSON.parse(readFileSync(configPath(), 'utf8'));
+    expect(written.model_learned).toBeDefined();
+    expect(written.model_learned.executor.model).toBe('haiku');
+  });
+
+  test('empty metrics returns null and does not write model_learned to config', async () => {
+    mkdirSync(metricsDir(), { recursive: true });
+    writeFileSync(metricsFile(), '', 'utf8');
+    writeConfig({});
+
+    const result = await ce.refreshModelLearned();
+    expect(result).toBeNull();
+
+    // model_learned must not appear in config
+    const written = JSON.parse(readFileSync(configPath(), 'utf8'));
+    expect(written.model_learned).toBeUndefined();
+  });
+
+  test('missing metrics file returns null', async () => {
+    writeConfig({});
+    const result = await ce.refreshModelLearned();
+    expect(result).toBeNull();
+  });
+
+  test('fewer than 5 samples returns null', async () => {
+    const ts = new Date().toISOString();
+    for (let i = 0; i < 4; i++) {
+      appendLines({ type: 'task_complete', role: 'executor', model: 'sonnet', timestamp: ts });
+    }
+    writeConfig({});
+    const result = await ce.refreshModelLearned();
+    expect(result).toBeNull();
+  });
+});
+
+// ── 10. estimateTaskCost — escalate strategy branch ───────────────────────────
+
+describe('estimateTaskCost — escalate strategy branch', () => {
+  beforeEach(() => { clearMetrics(); clearConfig(); });
+  afterEach(() => { clearMetrics(); clearConfig(); });
+
+  test('escalate strategy returns first level model (haiku)', () => {
+    const result = ce.estimateTaskCost({ name: 'my-task', size: 'small', strategy: 'escalate' }, 'sonnet');
+    expect(result.model).toBe('haiku');
+  });
+
+  test('escalate strategy returns confidence medium', () => {
+    const result = ce.estimateTaskCost({ name: 'my-task', size: 'medium', strategy: 'escalate' }, 'sonnet');
+    expect(result.confidence).toBe('medium');
+  });
+
+  test('escalate strategy cost is less than flat sonnet estimate for same size', () => {
+    const escalate = ce.estimateTaskCost({ name: 'my-task', size: 'medium', strategy: 'escalate' }, 'sonnet');
+    const flat     = ce.estimateTaskCost({ name: 'my-task', size: 'medium' }, 'sonnet');
+    expect(escalate.cost_usd).toBeLessThan(flat.cost_usd);
+  });
+
+  test('escalate strategy returns input_tokens and output_tokens fields', () => {
+    const result = ce.estimateTaskCost({ name: 'my-task', size: 'large', strategy: 'escalate' }, 'sonnet');
+    expect(typeof result.input_tokens).toBe('number');
+    expect(typeof result.output_tokens).toBe('number');
+  });
+});
+
+// ── 11. computeTokenActuals — direct unit tests ───────────────────────────────
+
+describe('computeTokenActuals — averages from metrics', () => {
+  beforeEach(() => { clearMetrics(); clearConfig(); });
+  afterEach(() => { clearMetrics(); clearConfig(); });
+
+  test('returns null when metrics file does not exist', () => {
+    expect(ce.computeTokenActuals()).toBeNull();
+  });
+
+  test('known task_complete entries produce correct per-size averages', () => {
+    const ts = new Date().toISOString();
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.10, size: 'small',  timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.20, size: 'small',  timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.30, size: 'medium', timestamp: ts },
+    );
+
+    const result = ce.computeTokenActuals();
+    expect(result).not.toBeNull();
+    expect(result.estimates.small.avg_cost_usd).toBeCloseTo(0.15, 5);
+    expect(result.estimates.medium.avg_cost_usd).toBeCloseTo(0.30, 5);
+    expect(result.sample_counts.small).toBe(2);
+    expect(result.sample_counts.medium).toBe(1);
+  });
+
+  test('empty metrics file returns result with zero sample_counts', () => {
+    mkdirSync(metricsDir(), { recursive: true });
+    writeFileSync(metricsFile(), '', 'utf8');
+
+    const result = ce.computeTokenActuals();
+    expect(result).not.toBeNull();
+    expect(result.sample_counts.small).toBe(0);
+    expect(result.sample_counts.medium).toBe(0);
+    expect(result.sample_counts.large).toBe(0);
+  });
+
+  test('entries without size field are excluded from averages', () => {
+    const ts = new Date().toISOString();
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.50, timestamp: ts },           // no size
+      { type: 'task_complete', cost_usd: 0.10, size: 'large', timestamp: ts },
+    );
+    const result = ce.computeTokenActuals();
+    expect(result.sample_counts.large).toBe(1);
+    expect(result.estimates.large.avg_cost_usd).toBeCloseTo(0.10, 5);
+  });
+
+  test('task_failed entries are excluded from averages', () => {
+    const ts = new Date().toISOString();
+    appendLines(
+      { type: 'task_failed',   cost_usd: 0.99, size: 'small', timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.05, size: 'small', timestamp: ts },
+    );
+    const result = ce.computeTokenActuals();
+    expect(result.sample_counts.small).toBe(1);
+    expect(result.estimates.small.avg_cost_usd).toBeCloseTo(0.05, 5);
+  });
+
+  test('result includes updated_at timestamp string', () => {
+    const ts = new Date().toISOString();
+    appendLines({ type: 'task_complete', cost_usd: 0.05, size: 'small', timestamp: ts });
+    const result = ce.computeTokenActuals();
+    expect(typeof result.updated_at).toBe('string');
+    expect(() => new Date(result.updated_at)).not.toThrow();
+  });
+});
+
+// ── 12. checkBudget — 80% boundary precision ──────────────────────────────────
+
+describe('checkBudget — 80% boundary precision', () => {
+  beforeEach(() => { clearMetrics(); clearConfig(); });
+  afterEach(() => { clearMetrics(); clearConfig(); });
+
+  test('spend at exactly 80% of budget returns normal level (boundary is exclusive)', () => {
+    // pct > 80 is the condition; exactly 80% does NOT trigger warning → normal
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.40, timestamp: new Date().toISOString() },
+    );
+    writeConfig({ budget: { max_usd: 0.50 } });
+
+    const result = ce.checkBudget(0);
+    expect(result.ok).toBe(true);
+    expect(result.level).toBe('normal');
+  });
+
+  test('spend just below 80% of budget returns normal level', () => {
+    // 0.3999 / 0.50 = 79.98% → normal
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.3999, timestamp: new Date().toISOString() },
+    );
+    writeConfig({ budget: { max_usd: 0.50 } });
+
+    const result = ce.checkBudget(0);
+    expect(result.ok).toBe(true);
+    expect(result.level).toBe('normal');
+  });
+
+  test('spend just above 80% of budget returns warning level', () => {
+    // 0.4001 / 0.50 = 80.02% → warning
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.4001, timestamp: new Date().toISOString() },
+    );
+    writeConfig({ budget: { max_usd: 0.50 } });
+
+    const result = ce.checkBudget(0);
+    expect(result.ok).toBe(true);
+    expect(result.level).toBe('warning');
+  });
+
+  test('additionalCost pushing total to exactly 80% returns normal (boundary is exclusive)', () => {
+    // pct > 80 is the condition; exactly 80% does NOT trigger warning → normal
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.30, timestamp: new Date().toISOString() },
+    );
+    writeConfig({ budget: { max_usd: 0.50 } });
+
+    const result = ce.checkBudget(0.10);
+    expect(result.ok).toBe(true);
+    expect(result.level).toBe('normal');
+  });
+
+  test('additionalCost pushing total just above 100% returns exceeded', () => {
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.49, timestamp: new Date().toISOString() },
+    );
+    writeConfig({ budget: { max_usd: 0.50 } });
+
+    const result = ce.checkBudget(0.02);
+    expect(result.ok).toBe(false);
+    expect(result.level).toBe('exceeded');
+  });
+});
+
+// ── 13. getModelForRoleWithCorrelation ─────────────────────────────────────────
 
 describe('getModelForRoleWithCorrelation', () => {
   test('returns model and a ce-prefixed correlationId', () => {

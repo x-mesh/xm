@@ -25,11 +25,11 @@ const ROOT_CE = process.env.X_BUILD_ROOT
 function loadSharedConfigCE() {
   const sharedPath = join(ROOT_CE, '..', 'config.json');
   if (existsSync(sharedPath)) {
-    try { return JSON.parse(readFileSync(sharedPath, 'utf8')); } catch { /* fall through */ }
+    try { return JSON.parse(readFileSync(sharedPath, 'utf8')); } catch (e) { process.stderr.write('[x-build] config parse error (' + sharedPath + '): ' + (e?.message || e) + '\n'); }
   }
   const globalPath = join(homedir(), '.xm', 'config.json');
   if (existsSync(globalPath)) {
-    try { return JSON.parse(readFileSync(globalPath, 'utf8')); } catch { /* fall through */ }
+    try { return JSON.parse(readFileSync(globalPath, 'utf8')); } catch (e) { process.stderr.write('[x-build] config parse error (' + globalPath + '): ' + (e?.message || e) + '\n'); }
   }
   return {};
 }
@@ -85,7 +85,7 @@ export function appendMetric(data) {
   const acquired = acquireWriteLock(lockPath);
   if (!acquired) {
     // Graceful degradation: log warning and proceed without lock
-    process.stderr.write('[x-build] appendMetric: failed to acquire write lock, proceeding without lock\n');
+    process.stderr.write('[x-build] appendMetric: failed to acquire write lock (' + lockPath + '), proceeding without lock\n');
   }
   try {
     if (existsSync(p)) {
@@ -93,7 +93,6 @@ export function appendMetric(data) {
         const sz = statSync(p).size;
         if (sz > METRICS_MAX_BYTES) {
           const rotated = p + '.1';
-          if (existsSync(rotated)) writeFileSync(rotated, '', 'utf8');
           renameSync(p, rotated);
         }
       } catch { /* ignore rotation errors */ }
@@ -350,7 +349,7 @@ export function computeTokenActuals() {
   try {
     mkdirSync(dirname(TOKEN_ACTUALS_PATH), { recursive: true });
     writeFileSync(TOKEN_ACTUALS_PATH, JSON.stringify(result, null, 2), 'utf8');
-  } catch { /* best effort */ }
+  } catch (e) { process.stderr.write('[x-build] computeTokenActuals write error: ' + (e?.message || e) + '\n'); }
 
   return result;
 }
@@ -378,21 +377,15 @@ export function estimateTaskCost(task, model = 'sonnet') {
     const config = loadSharedConfigCE();
     const escCfg = getEscalateConfig(config);
     const levels = escCfg.levels;
-    const depMultiplier = 1.0 + ((task.depends_on?.length || 0) * 0.1);
-    const nameLower = (task.name || '').toLowerCase();
-    const domainMultiplier =
-      /\b(security|auth|oauth)\b/.test(nameLower) ? 1.4 :
-      /\b(architect|design|refactor)\b/.test(nameLower) ? 1.3 :
-      /\b(migration|database)\b/.test(nameLower) ? 1.2 :
-      1.0;
     const totalMultiplier = depMultiplier * domainMultiplier;
     const adjustedInput = Math.round(base.input * totalMultiplier);
     const adjustedOutput = Math.round(base.output * totalMultiplier);
 
+    const effectiveLevels = levels.slice(0, ESCALATE_STOP_PROBS.length);
     let blendedCost = 0;
-    for (let i = 0; i < levels.length; i++) {
+    for (let i = 0; i < effectiveLevels.length; i++) {
       const prob = ESCALATE_STOP_PROBS[i] ?? 0;
-      const levelCosts = MODEL_COSTS[levels[i]] || MODEL_COSTS.sonnet;
+      const levelCosts = MODEL_COSTS[effectiveLevels[i]] || MODEL_COSTS.sonnet;
       const levelInput = (adjustedInput * base.turns / 1_000_000) * levelCosts.input;
       const levelOutput = (adjustedOutput * base.turns / 1_000_000) * levelCosts.output;
       blendedCost += prob * (levelInput + levelOutput);
@@ -480,7 +473,7 @@ function writeSpendCache(total_usd, last_line_offset, project_totals = {}) {
   try {
     mkdirSync(dirname(cp), { recursive: true });
     writeFileSync(cp, JSON.stringify({ updated_at: new Date().toISOString(), total_usd, last_line_offset, project_totals }), 'utf8');
-  } catch { /* best effort */ }
+  } catch (e) { process.stderr.write('[x-build] writeSpendCache error: ' + (e?.message || e) + '\n'); }
 }
 
 // ── readLinesFromOffset ───────────────────────────────────────────────
@@ -492,14 +485,15 @@ function readLinesFromOffset(filePath, offset) {
     const length = fileSize - offset;
     const buf = Buffer.allocUnsafe(length);
     const fd = openSync(filePath, 'r');
+    let bytesRead;
     try {
-      readSync(fd, buf, 0, length, offset);
+      bytesRead = readSync(fd, buf, 0, length, offset);
     } finally {
       closeSync(fd);
     }
-    return { text: buf.toString('utf8'), endOffset: fileSize };
+    return { text: buf.subarray(0, bytesRead).toString('utf8'), endOffset: fileSize };
   } catch {
-    return { text: '', endOffset: 0 };
+    return { text: '', endOffset: offset };
   }
 }
 
@@ -610,7 +604,7 @@ export function checkBudget(additionalCost = 0, project = null) {
 
         writeSpendCache(spent, endOffset, projectSpentMap);
       }
-    } catch { /* ignore read errors */ }
+    } catch (e) { process.stderr.write('[x-build] checkBudget read error: ' + (e?.message || e) + '\n'); }
   }
 
   const projected = spent + additionalCost;

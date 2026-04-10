@@ -33,7 +33,7 @@ export function aggregateOutcomes(windowDays = WINDOW_DAYS) {
 
     if (!stats[key]) stats[key] = { role, model, attempts: 0, successes: 0, total_retries: 0, total_cost: 0 };
     stats[key].attempts++;
-    if (entry.success || entry.type === 'task_complete') stats[key].successes++;
+    if (entry.success === true || (entry.type === 'task_complete' && entry.success == null)) stats[key].successes++;
     stats[key].total_retries += entry.retry_count || 0;
     stats[key].total_cost += entry.cost_usd || 0;
   }

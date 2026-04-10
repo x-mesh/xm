@@ -162,7 +162,7 @@ model_overrides → model_learned → profile → fallback
 | Priority | Source | Description |
 |----------|--------|-------------|
 | 1 | `model_overrides` | Explicit per-role config — always wins |
-| 2 | `model_learned` | Learned from outcome feedback (≥5 samples, 90-day rolling window) |
+| 2 | `model_learned` | Learned from outcome feedback (≥5 samples, 90-day rolling window — hardcoded, separate from budget.window_hours) |
 | 3 | profile | `economy` / `balanced` / `performance` setting |
 | 4 | fallback | Hard-coded safe defaults |
 
@@ -170,12 +170,12 @@ model_overrides → model_learned → profile → fallback
 
 | Key | Description | Example |
 |-----|-------------|---------|
-| `model_learned` | Auto-populated by the engine from `task_complete` feedback; do not set manually | `{"executor": "haiku"}` |
+| `model_learned` | Auto-populated by the engine from `task_complete` feedback; do not set manually | (auto-populated) |
 | `budget.window_hours` | Rolling window for spend tracking (default: 24h) | `48` |
 | `budget.projects` | Per-project budget caps | `{"my-project": {"max_usd": 2.0}}` |
-| `strategies.escalate.quality_threshold` | Minimum quality score before escalating haiku→sonnet→opus | `0.7` |
+| `strategies.escalate.quality_threshold` | Minimum quality score before escalating haiku→sonnet→opus (scale 1-10, default 7) | `7` |
 
-**How adaptive routing works:** each `task_complete` event records `model`, `role`, `cost_usd`, `quality_score`, and a `correlation_id` (format: `ce-XXXXXXXX`). After MIN_SAMPLES=5 outcomes for a role, the engine promotes the best-performing model into `model_learned`. Routing decisions are linked to outcomes via correlation IDs for auditability.
+**How adaptive routing works:** each `task_complete` event records `model`, `role`, `cost_usd`, `quality_score` (recorded for future use; current learner uses binary success signal), and a `correlation_id` (format: `ce-XXXXXXXX`). After MIN_SAMPLES=5 outcomes for a role, the engine promotes the best-performing model into `model_learned`. Routing decisions are linked to outcomes via correlation IDs for external tooling and future aggregation.
 
 **Escalation cascade:** the `escalate` strategy uses `quality_threshold` to gate model promotion. If haiku's quality score falls below the threshold, the task re-runs at sonnet; if sonnet also falls short, it escalates to opus. Cost estimate is probability-weighted across all three tiers.
 
