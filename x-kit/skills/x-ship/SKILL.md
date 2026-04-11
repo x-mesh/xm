@@ -30,710 +30,204 @@ suggests: x-humble
 
 Commit squash + version bump + push. Works with any git project.
 
-## Model Routing
+## CLI
 
-| Subcommand | Model | Reason |
-|------------|-------|--------|
-| `status`, `dry-run` | **haiku** (Agent tool) | Read-only display — script output only |
-| `squash` | **sonnet** | Requires reasoning about commit scope and message quality |
-| `interactive` | **sonnet** | Multi-step with quality gates + AskUserQuestion |
-| `auto` | **sonnet** | Sequential execution of squash + bump + push |
-| `patch`, `minor`, `major` | **sonnet** | Sequential execution of squash + explicit bump + push |
-
-## Mode Detection
-
-Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
-
-## Arguments
-
-User provided: `$ARGUMENTS`
-
-## AskUserQuestion Dark-Theme Rule
-
-**CRITICAL:** The `question` field in AskUserQuestion is invisible on dark terminals.
-
-**Visibility map:**
-| Element | Visible | Use for |
-|---------|---------|---------|
-| `header` | ✅ YES | Short context tag (e.g., "x-op bump", "Pipeline") |
-| `question` | ❌ NO | Keep minimal — user cannot see this text |
-| option `label` | ✅ YES | Primary info — must be self-explanatory |
-| option `description` | ✅ YES | Supplementary detail |
-
-**Always follow this pattern:**
-1. Output ALL context (descriptions, status, analysis) as **regular markdown text** BEFORE calling AskUserQuestion
-2. `header`: put the key context here (visible, max 12 chars)
-3. `question`: keep short, duplicate of header is fine (invisible to user)
-4. Option `label` + `description`: carry all decision-relevant information
-
-**WRONG:** Putting context in `question` field → user sees blank space above options
-**RIGHT:** Print context as markdown first, use `header` for tag, options for detail
+```bash
+XMB="node x-build/lib/x-build-cli.mjs"
+```
 
 ## Routing
 
-- Empty → [Mode: interactive] (pre-release pipeline with quality gates)
-- `auto` → [Mode: auto] (squash + release, no gates)
-- `status` → [Mode: status]
-- `squash` → [Mode: squash only]
-- `dry-run` → [Mode: dry-run]
-- `patch` / `minor` / `major` → [Mode: manual bump]
+| Argument | Mode |
+|----------|------|
+| (empty) | interactive — quality gates (test + review) then auto |
+| `auto` | auto — squash + bump + push, no gates |
+| `status` | status — show commits since last release |
+| `dry-run` | dry-run — preview plan |
+| `squash` | squash only |
+| `patch` / `minor` / `major` | manual bump (skip bump confirmation) |
+
+## AskUserQuestion Dark-Theme Rule
+
+Output ALL context as markdown BEFORE calling AskUserQuestion. The `question` field is invisible on dark terminals — put key info in `header` and option `label`/`description` instead.
 
 ---
 
 ## Mode: status
 
-Show release state. Delegate to **haiku**.
-
 ```bash
-# Last release tag/commit
-LAST_RELEASE=$(git log --grep="^release:" --format="%h %s" -1 2>/dev/null || echo "none")
-
-# Commits since last release
-SINCE=$(git log --grep="^release:" --format=%H -1 2>/dev/null || git rev-list --max-parents=0 HEAD)
-COMMITS=$(git log --oneline $SINCE..HEAD | head -20)
-COUNT=$(git log --oneline $SINCE..HEAD | wc -l | tr -d ' ')
+$XMB release detect
 ```
 
-Output:
-```
-📊 x-ship Status
-
-  Last release: {hash} {message}
-  Commits since: {count}
-
-  {commit list}
-
-  Suggestion: {squash recommendation}
-```
+Display the JSON output in readable format. Show changed plugins, WIP commits, recommendation.
 
 ---
 
 ## Mode: dry-run
 
-Preview without any changes. Delegate to **haiku**.
-
-Same analysis as auto mode Steps 1-2, but output preview only:
+```bash
+$XMB release detect
+$XMB release diff-report
 ```
-🔍 [dry-run] Release Preview
 
-  Squash plan:
-    Group 1: "feat: cost efficiency improvements" (3 commits → 1)
-    Group 2: "chore: remove .xm/ from history" (1 commit, keep as-is)
-    Group 3: "docs: model routing" (2 commits → 1)
-
-  Would bump: 1.19.16 → 1.19.17 (patch)
-  Would push to: origin/main
-```
+Show what would happen without executing. Display squash plan, bump preview, push target.
 
 ---
 
 ## Mode: interactive
 
-Pre-release pipeline with quality gates. Triggered when `/x-ship` is called with no arguments.
+Pre-release pipeline with quality gates before auto flow.
 
-### Step 0.1: Show status
+### Step 0.1: Detect
 
 ```bash
-LAST_RELEASE=$(git log --grep="^release:" --format=%H -1 2>/dev/null)
-if [ -z "$LAST_RELEASE" ]; then
-  LAST_RELEASE=$(git rev-list --max-parents=0 HEAD)
-fi
-COUNT=$(git log --oneline $LAST_RELEASE..HEAD | wc -l | tr -d ' ')
+$XMB release detect
 ```
 
-Output:
-```
-📊 릴리스 준비 상태
+If no changes → "✅ 릴리스할 변경사항이 없습니다." Exit.
 
-  마지막 릴리스: {hash} {message}
-  대기 커밋: {count}개
+### Step 0.2: Select pipeline (AskUserQuestion)
 
-  {commit list, max 20}
-```
-
-If 0 commits → "릴리스할 변경사항이 없습니다." Exit.
-
-### Step 0.2: Select pipeline
-
-Use AskUserQuestion:
-```
-릴리스 전 검증을 어떻게 할까요?
-
-1) 테스트 → 리뷰 → 릴리스 (full pipeline, 추천)
-2) 리뷰만 → 릴리스
-3) 바로 릴리스 (squash + bump + push)
-```
+Options:
+1. 테스트 → 리뷰 → 릴리스 (full pipeline)
+2. 리뷰만 → 릴리스
+3. 바로 릴리스 (auto mode)
 
 ### Step 0.3: Test gate (option 1 only)
 
-Auto-detect test command:
-
-| Marker file | Test command |
-|-------------|-------------|
-| `package.json` | `bun test` or `npm test` |
-| `Cargo.toml` | `cargo test` |
-| `pyproject.toml` / `setup.py` | `pytest` |
-| `go.mod` | `go test ./...` |
-| `Makefile` with test target | `make test` |
-
-If no test command detected → skip with warning: "테스트 명령어를 감지하지 못했습니다. 리뷰로 넘어갑니다."
-
-Run tests via Bash. If tests fail, use AskUserQuestion:
-```
-❌ 테스트 실패
-
-1) 실패를 무시하고 계속
-2) 릴리스 중단
+```bash
+$XMB release test [--command "bun test"]
 ```
 
-Record `test_passed: true|false` for metrics.
+If failed → AskUserQuestion: "1) 무시하고 계속  2) 릴리스 중단"
 
 ### Step 0.4: Review gate (option 1 or 2)
 
-Invoke x-review:
-```
-/x-review diff $LAST_RELEASE..HEAD --preset quick
-```
+Invoke x-review: `/x-review diff $LAST_RELEASE..HEAD --preset quick`
 
-Gate on verdict:
 - **LGTM** → proceed
-- **Request Changes** → show findings, AskUserQuestion:
-  ```
-  리뷰에서 수정 사항이 발견되었습니다.
-
-  1) 무시하고 릴리스 계속
-  2) 릴리스 중단하고 수정
-  ```
-- **Block** → "리뷰가 릴리스를 차단했습니다. 수정 후 다시 시도하세요." Exit.
-
-Record `review_verdict` for metrics.
+- **Request Changes** → AskUserQuestion: "1) 무시하고 계속  2) 중단하고 수정"
+- **Block** → exit
 
 ### Step 0.5: Proceed to auto flow
-
-Continue to [Mode: auto] (Step 1 onwards), carrying test/review results for metrics.
-
----
-
-## Mode: squash only
-
-Run Step 1 (squash) without releasing.
 
 ---
 
 ## Mode: auto
 
-Full flow: squash → bump → commit → push.
+Full flow: detect → diff-report → squash → bump → commit → push → trace.
 
-### Step 1: SQUASH — Commit Consolidation
-
-#### 1.1 Identify range
-
-**CRITICAL: Squash only LOCAL (unpushed) commits. Never squash commits already on remote.**
+### Step 1: Detect
 
 ```bash
-# Find last release commit
-LAST_RELEASE=$(git log --grep="^release:" --format=%H -1 2>/dev/null)
-if [ -z "$LAST_RELEASE" ]; then
-  LAST_RELEASE=$(git rev-list --max-parents=0 HEAD)
-fi
-
-# ALL commits since last release (for version bump / changelog)
-git log --oneline $LAST_RELEASE..HEAD
-
-# LOCAL-ONLY commits (squash candidates) — NOT yet pushed to remote
-LOCAL_ONLY=$(git log --oneline origin/main..HEAD)
-LOCAL_COUNT=$(echo "$LOCAL_ONLY" | grep -c . || echo 0)
+$XMB release detect
 ```
 
-**Squash scope:**
-- `origin/main..HEAD` = LOCAL commits only → these are squash candidates
-- `$LAST_RELEASE..HEAD` = ALL commits since release → used for changelog/version bump, NOT for squash
+### Step 2: Squash decision (LLM judgment)
 
-If LOCAL_COUNT = 0 → all commits already pushed. **Skip squash entirely**, proceed to Step 2 (bump + release commit + push).
-If LOCAL_COUNT = 1-2 → Skip squash, proceed to Step 2.
-If LOCAL_COUNT = 3+ → Proceed with squash (local commits only).
-
-**If squash is skipped (all pushed):** no force push needed. Just add release commit and `git push`.
-
-#### 1.2 Auto-group commits (diff-based)
-
-Analyze `git diff` per commit to understand actual code changes, then group by scope.
-
-**Step 1.2.1: Collect per-commit diffs**
+If `recommendation.squash` is true (WIP commits exist):
 
 ```bash
-for COMMIT in $(git log --format=%H $LAST_RELEASE..HEAD --reverse); do
-  echo "=== $COMMIT ==="
-  git diff --stat $COMMIT~1..$COMMIT
-  git diff $COMMIT~1..$COMMIT | head -200
-done
+$XMB release diff-report
 ```
 
-**Step 1.2.2: Classify each commit's diff**
+LLM analyzes diff-report and decides:
+- **Option 1: Grouped squash** — group by scope, reset + re-commit per group
+- **Option 2: Single squash** — `$XMB release squash`
+- **Option 3: Keep as-is** — skip squash
 
-For each commit, analyze the **diff content** (not the message):
-
-| Classification | Detection |
-|---------------|-----------|
-| Public API change | `+export` or `-export` in diff (JS/TS), `+pub` (Rust), capitalized function (Go) |
-| Internal refactor | Changes within function bodies, no export/signature changes |
-| Test change | Files matching `*.test.*`, `*.spec.*`, `__tests__/`, `test/` |
-| Docs change | `*.md` files, comments-only changes |
-| Config/infra | `*.json`, `*.yml`, `*.toml`, `Dockerfile`, `.gitignore` |
-
-**Step 1.2.3: Group by module scope**
-
-Grouping rules (priority order):
-
-1. **Same module scope** — Commits with overlapping diff hunks (same file + adjacent lines) → same group
-2. **Public API vs internal** — Separate export-facing changes from internal refactors, even in the same file
-3. **Test follows source** — Test changes group with corresponding source (`src/foo.ts` ↔ `test/foo.test.ts`)
-4. **Standalone** — Config, docs, or unrelated scope → keep separate
-
-**Step 1.2.4: Generate squash messages from diff**
-
-For each group, generate a message by summarizing **what the diff does**, not copying WIP messages:
-- Read actual additions/deletions
-- Format: `{type}: {what changed} — {why it matters}`
-
-**Output:**
-
-```
-📦 커밋 정리 계획 (diff 분석 기반)
-
-  Group 1: feat: add budget guard to cost module (3 commits)
-    Scope: lib/x-build/core.mjs, lib/x-build/tasks.mjs
-    Diff: +85 -12 lines, 2 new exports (checkBudget, STRATEGY_MULTIPLIERS)
-    → "feat: add cost efficiency — model profiles, budget guards, strategy multipliers"
-
-  Group 2: chore: remove .xm/ from git history (1 commit)
-    Scope: .gitignore
-    Diff: +2 -3 lines, config only
-    → Keep as-is
-
-  Group 3: feat: add model routing to SKILL.md files (2 commits)
-    Scope: x-kit/skills/*/SKILL.md
-    Diff: +49 lines, docs only
-    → "docs: add model routing tables — haiku for display, sonnet+ for reasoning"
-```
-
-#### 1.3 Confirm with user
-
-Use AskUserQuestion:
-```
-커밋을 정리할까요?
-
-1) 위 계획대로 squash (추천)
-2) 모든 커밋을 하나로 squash
-3) 그대로 유지 (squash 안 함)
-4) 직접 수정
-```
-
-#### 1.4 Execute squash
-
-**Method: soft reset + re-commit** (safer than rebase)
-
+For grouped squash, LLM executes:
 ```bash
-# Save current HEAD
-CURRENT=$(git rev-parse HEAD)
-
-# Soft reset to last release (keeps all changes staged)
-git reset --soft $LAST_RELEASE
-
-# Now re-commit in groups
-# For each group, selectively stage and commit
+$XMB release squash --since <ref>
+# Then re-commit in groups (LLM stages files per group)
 ```
 
-For single squash (option 2):
+For single squash:
 ```bash
-git reset --soft $LAST_RELEASE
-git commit -m "feat: [generated summary of all changes]"
+$XMB release squash
 ```
 
-For grouped squash (option 1):
-```bash
-git reset --soft $LAST_RELEASE
+### Step 3: Bump type (LLM judgment)
 
-# Group 1: stage specific files and commit
-git reset HEAD -- .  # unstage all
-git add [group1 files]
-git commit -m "[group1 message]"
+Based on detect output, determine bump type:
 
-# Group 2: stage and commit
-git add [group2 files]
-git commit -m "[group2 message]"
+| Change type | Bump |
+|-------------|------|
+| Bug fix, internal refactor | patch |
+| New command/feature/export | minor |
+| Breaking change (removed export) | major |
+| Explicit in `$ARGUMENTS` | use that |
 
-# Group 3: remaining files
-git add -A
-git commit -m "[group3 message]"
-```
+Confirm with user unless `$ARGUMENTS` specifies bump type.
 
-#### 1.5 Verify squash
-
-```bash
-# Verify no changes lost
-git diff $CURRENT HEAD  # should be empty
-```
-
-If diff is non-empty → rollback: `git reset --hard $CURRENT`
-
-### Step 2: VERSION BUMP
-
-#### 2.1 Detect project type
-
-| Marker file | Project type | Version location |
-|-------------|-------------|-----------------|
-| `.claude-plugin/marketplace.json` | x-kit marketplace | marketplace.json + plugin.json + package.json |
-| `package.json` (no marketplace) | Node.js project | package.json |
-| `Cargo.toml` | Rust project | Cargo.toml |
-| `pyproject.toml` | Python project | pyproject.toml |
-| `go.mod` | Go project | git tags only |
-| None | Generic | git tags only |
-
-#### 2.2 Detect changed sub-plugins (x-kit marketplace only)
-
-When project type is `x-kit marketplace`, map changed files to sub-plugins:
-
-```bash
-# Get changed files since last release (post-squash)
-git diff --name-only $LAST_RELEASE..HEAD
-```
-
-| Path pattern | Sub-plugin |
-|-------------|-----------|
-| `x-agent/**` | x-agent |
-| `x-build/**` | x-build |
-| `x-op/**` | x-op |
-| `x-kit/**` | x-kit |
-| `x-eval/**` | x-eval |
-| `x-review/**` | x-review |
-| `x-trace/**` | x-trace |
-| `x-memory/**` | x-memory |
-| `x-solver/**` | x-solver |
-| `x-probe/**` | x-probe |
-| `x-humble/**` | x-humble |
-| `x-ship/**` | x-ship (bundled in x-kit) |
-
-Display per-plugin change summary:
-```
-📊 변경된 플러그인:
-  x-kit    🔄 5 files (lib/shared-config.mjs, lib/x-build/core.mjs, ...)
-  x-build  🔄 2 files (lib/x-build/tasks.mjs, skills/x-build/SKILL.md)
-  x-agent  ✅ no changes
-```
-
-#### 2.3 Determine bump level (diff-based)
-
-If explicit (`patch`/`minor`/`major` in args) → use that for all changed plugins.
-
-Otherwise, analyze the actual diff to determine the appropriate bump:
-
-```bash
-git diff $LAST_RELEASE..HEAD
-```
-
-**Diff analysis rules (highest match wins):**
-
-| Diff pattern | Bump | Detection |
-|-------------|------|-----------|
-| Export removed | **major** | `-export function/class/const` without corresponding `+` line |
-| Export param removed/reordered | **major** | Export function signature changed incompatibly |
-| New export added | **minor** | `+export function/class/const` not in old tree |
-| New file with exports | **minor** | New file containing `export` statements |
-| Export param added (optional) | **minor** | New optional parameter in existing export |
-| Function body changed (no export change) | **patch** | Internal changes only |
-| Docs/comments only | **patch** | Only `*.md` or comment changes |
-| Tests only | **patch** | Only test files changed |
-| Config/infra only | **patch** | Config, CI, Docker files |
-
-**Display analysis to user:**
-
-```
-🔍 버전 분석 (diff 기반)
-
-  Breaking changes: 없음
-  New exports: 2 (checkBudget, STRATEGY_MULTIPLIERS)
-  Modified exports: 1 (getModelForRole — param 추가, 하위호환)
-  Internal changes: 5 files
-  Tests: 1 file (82 lines 추가)
-  Docs: 2 files
-
-  추천: minor (새 export 추가)
-```
-
-Confirm with AskUserQuestion:
-```
-버전을 어떻게 올릴까요? (현재: X.Y.Z)
-
-1) patch (X.Y.Z+1) — 내부 변경만
-2) minor (X.Y+1.0) — 새 기능/export 추가 (추천, diff 분석 기반)
-3) major (X+1.0.0) — breaking change
-```
-
-#### 2.4 Update version files
+### Step 4: Bump
 
 **x-kit marketplace:**
-
-For each changed sub-plugin:
-1. Read `{plugin}/.claude-plugin/plugin.json` → Edit version field
-2. Read `.claude-plugin/marketplace.json` → Edit matching plugin version
-3. If x-kit (meta bundle) is not in changed list but any sub-plugin changed → bump x-kit too (patch)
-4. Update `package.json` → sync root version with x-kit version
-
-**Node.js project:**
-- `package.json` → version field
-
-**Others:**
-- Update the detected version file, or create git tag
-
-### Step 3: README SYNC (x-kit marketplace only)
-
-**This step cannot be skipped.**
-
-For each changed plugin, delegate a **sonnet agent** with this prompt:
-
+```bash
+$XMB release bump --patch --plugins x-build,x-dashboard
 ```
-## README Sync Check
+(Runs sync-bundle + tests automatically)
 
-Plugin: {plugin_name}
-SKILL.md path: {plugin}/skills/{plugin}/SKILL.md
-README.md section: find by "### {plugin_name}" or plugin description
-
-1. Read SKILL.md and README.md section for this plugin
-2. Compare and produce a diff checklist:
-
-| Item | SKILL.md | README | Action |
-|------|----------|--------|--------|
-| Description | "..." | "..." | UPDATE / OK |
-| Commands | cmd1, cmd2 | cmd1 | ADD cmd2 |
-| Options/flags | ... | ... | ADD / OK |
-
-3. For each ADD/UPDATE, produce the specific Edit
-4. If all OK: "README up to date for {plugin_name}"
-
-Rules:
-- README is concise — not a SKILL.md copy
-- Only add/update what changed
-- Both README.md (English) and README.ko.md (Korean) must stay in sync
+**Standalone project:**
+```bash
+$XMB release bump --patch --standalone
 ```
 
-Run agents for all changed plugins in parallel.
+### Step 5: README check (LLM judgment, x-kit only)
 
-**Checklist (must pass before Step 4):**
-- [ ] Every changed plugin has a README section
-- [ ] New commands/options reflected in README
-- [ ] README.md and README.ko.md are in sync
+| Change type | README action |
+|-------------|---------------|
+| New command/flag | Update README |
+| User-visible behavior change | Update README |
+| Internal refactor, bug fix | Skip — log: "README skip: {reason}" |
 
-### Step 4: COMMIT + PUSH
+### Step 6: Commit message (LLM writes)
+
+Format:
+```
+release: {name}@{version}
+
+- {plugin}: {change summary}
+```
+
+### Step 7: Commit & Push
 
 ```bash
-git add -A
-git commit -m "release: {name}@{version}
-
-{per-plugin changelog summary}
-- {plugin1}: {change description}
-- {plugin2}: {change description}"
-
-git push origin {branch}
+$XMB release commit --msg "release: ..." --push
 ```
 
-**Force push should not be necessary.** Squash targets local-only commits, so a regular `git push` is sufficient. If force push is required, the squash range was set incorrectly — stop and verify.
-
-### Step 4.1: POST-MERGE HUNK VERIFICATION (if merging)
-
-When the release involves merging branches (e.g., develop → main), verify that no hunks were silently dropped during the merge.
-
-**When to run:** Only if a merge occurred in this release flow (e.g., `git merge` or PR merge). Skip for direct-push releases.
-
-**Procedure:**
-
-1. Before the merge, capture the branch diff:
-```bash
-# Save pre-merge hunks (run BEFORE merge)
-git diff main...HEAD --unified=0 > /tmp/pre-merge-hunks.diff
-```
-
-2. After the merge, verify each hunk survived:
-```bash
-# For each changed file in the pre-merge diff, check the hunk is present in the merge result
-node -e "
-const fs = require('fs');
-const { execSync } = require('child_process');
-const diff = fs.readFileSync('/tmp/pre-merge-hunks.diff', 'utf8');
-const files = [...new Set(diff.match(/^\+\+\+ b\/(.+)$/gm)?.map(l => l.slice(6)) || [])];
-let dropped = 0;
-for (const file of files) {
-  if (!fs.existsSync(file)) { console.log('⚠ DELETED: ' + file); continue; }
-  // Extract added lines from pre-merge diff for this file
-  const fileSection = diff.split('diff --git').find(s => s.includes('+++ b/' + file)) || '';
-  const addedLines = fileSection.match(/^\+(?!\+\+)(.+)$/gm)?.map(l => l.slice(1).trim()) || [];
-  const content = fs.readFileSync(file, 'utf8');
-  for (const line of addedLines) {
-    if (line && !content.includes(line.trim())) {
-      console.log('❌ DROPPED: ' + file + ' — ' + line.slice(0, 80));
-      dropped++;
-    }
-  }
-}
-if (dropped === 0) console.log('✅ All hunks preserved — no silent drops.');
-else console.log('⚠ ' + dropped + ' hunks may have been dropped. Review before pushing.');
-"
-```
-
-3. **If dropped hunks found:**
-   - Show the dropped lines to the user
-   - AskUserQuestion: "Dropped hunks detected. 1) Review and fix 2) Accept (intentional) 3) Abort"
-   - Do NOT push until resolved
-
-4. Clean up: `rm -f /tmp/pre-merge-hunks.diff`
-
-**Note:** False positives are possible when lines were intentionally refactored (same intent, different wording). The check is advisory — the user makes the final call.
-
-### Step 4.5: METRICS — Record release checkpoint to x-trace
-
-Append a checkpoint entry to x-trace for velocity and quality tracking.
+### Step 8: Trace
 
 ```bash
-mkdir -p .xm/traces
-TRACE_FILE=".xm/traces/x-ship-$(date +%Y%m%d-%H%M%S).jsonl"
+$XMB release trace --from {old} --to {new} --bump {type} \
+  --test-passed {true|false} --review-verdict {LGTM|null}
 ```
 
-Write checkpoint:
-```json
-{
-  "id": "ship-{timestamp}",
-  "timestamp": "{ISO 8601}",
-  "type": "checkpoint",
-  "source": "x-ship",
-  "label": "release",
-  "data": {
-    "version_from": "{old}",
-    "version_to": "{new}",
-    "bump_level": "{patch|minor|major}",
-    "commits_before_squash": "{N}",
-    "commits_after_squash": "{M}",
-    "test_passed": "{true|false|null}",
-    "review_verdict": "{LGTM|Request Changes|null}",
-    "files_changed": "{count}",
-    "lines_added": "{count}",
-    "lines_deleted": "{count}"
-  }
-}
-```
-
-`test_passed` and `review_verdict` are `null` when gates were skipped.
-
-### Step 5: OUTPUT
+### Step 9: Output
 
 ```
 🚀 Shipped!
 
-  Squashed: {N} commits → {M} commits
   Version: {old} → {new}
-  Branch: {branch}
   Commit: {hash}
   Push: origin/{branch} ✅
-
-  Changed plugins:
-    x-kit    1.19.16 → 1.19.17
-    x-build  1.13.0  → 1.13.0 (no change)
-
-  Quality gates:
-    Tests:  ✅ passed / ❌ failed / ⏭️ skipped
-    Review: LGTM / Request Changes / ⏭️ skipped
-    Churn:  +{added} -{deleted} across {files} files
-
-  Metrics recorded to: .xm/traces/x-ship-{timestamp}.jsonl
-
-  Users can update:
-    /x-kit update
-    /reload-plugins
 ```
 
 ---
 
 ## Safety Rules
 
-- **Squash local-only commits** — only commits not yet pushed (`git log origin/main..HEAD`) are squash candidates. Never squash commits already on remote. Squashing pushed commits requires force push and breaks others' history.
-- **No force push (principle)** — applying squash only to local commits means force push is never needed. Needing force push is itself a signal that the squash range was set incorrectly.
-- **No changes = no release** — prevent empty releases
-- **Squash verification** — always `git diff $CURRENT HEAD` before/after to confirm no code lost
-- **Not on main = warn** — "현재 브랜치가 main이 아닙니다. 계속?"
-- **Rollback on failure** — save pre-squash HEAD (`CURRENT`), restore with `git reset --hard $CURRENT` on any error
-- **README sync mandatory** — never skip Step 3 for x-kit marketplace releases
-- **Quality gates are advisory** — test failures and review findings can be overridden by user, but are always recorded in metrics
-
----
-
-## Standalone Usage (non x-kit projects)
-
-x-ship works in any git project:
-
-```
-/x-ship              # auto: squash + bump + push
-/x-ship status       # show commits since last release
-/x-ship squash       # squash only, no release
-/x-ship dry-run      # preview plan
-/x-ship patch        # explicit patch bump
-```
-
-Version detection adapts to project type (package.json, Cargo.toml, pyproject.toml, git tags).
-No `.xm/config.json` required — works with defaults.
-
-For standalone projects, Step 2.2 (sub-plugin detection) and Step 3 (README sync) are skipped.
-
----
-
-## Migration from x-release
-
-x-ship supersedes x-release. During the transition period both coexist.
-
-| Feature | x-release | x-ship |
-|---------|-----------|--------|
-| Commit squash | ❌ | ✅ Step 1 |
-| Version bump | ✅ | ✅ Step 2 |
-| Sub-plugin detection | ✅ | ✅ Step 2.2 |
-| README sync | ✅ | ✅ Step 3 |
-| Force push safety | ❌ | ✅ |
-| Non x-kit projects | ❌ | ✅ |
-| Dry-run preview | ❌ | ✅ |
-| Diff-based analysis | ❌ | ✅ Step 1.2, 2.3 |
-| Pre-release gates (test + review) | ❌ | ✅ Interactive mode |
-| Release metrics (x-trace) | ❌ | ✅ Step 4.5 |
-
-Once x-ship is validated in 2-3 releases, x-release can be retired.
-
----
-
-## Trace Recording
-
-x-ship MUST record trace entries to `.xm/traces/` during execution. See x-trace SKILL.md "Trace Directive Template" for the full schema.
-
-### On start (MUST)
-```bash
-SESSION_ID="x-ship-$(date +%Y%m%d-%H%M%S)-$(openssl rand -hex 2)"
-mkdir -p .xm/traces && echo "{\"type\":\"session_start\",\"session_id\":\"$SESSION_ID\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"v\":1,\"skill\":\"x-ship\",\"args\":{}}" >> .xm/traces/$SESSION_ID.jsonl
-```
-
-### Per agent call (SHOULD — best-effort)
-Record agent_step after each agent completes.
-
-### On end (MUST)
-Record session_end with total duration, agent count, and status.
-
-### Rules
-1. session_start and session_end are **MUST** — never skip
-2. agent_step is **SHOULD** — best-effort
-3. **Metadata only** — never include output content in trace entries
-4. If trace write fails, continue — never block execution
+- **Squash local-only** — never squash pushed commits. Force push should not be needed.
+- **No changes = no release**
+- **Squash verification** — `git diff $PRE_SQUASH HEAD` must be empty
+- **Not on main/develop = warn**
+- **Rollback on failure** — save pre-squash HEAD, restore with `git reset --hard`
+- **Push failure = keep commit** — instruct user to push manually
 
 ## Common Rationalizations
 
 | Rationalization | Reality |
 |---|---|
-| "I'll commit without a changelog entry" | Changelog is the user-facing interface to your release. Skipping it means users find out what changed during incidents, not before. |
-| "patch bump is safe, I'll use patch" | patch implies no behavior change. If behavior changed even slightly, bump minor. Misleading bumps erode semver trust across every dependent. |
-| "I'll squash later" | Squash before push or not at all. "Later" means the commits land in main unsquashed and the history is permanently noisy. |
-| "The user will confirm if they care about the push" | Don't guess on irreversible operations. Ask before push/force-push/tag — every time, not just when you're uncertain. |
-| "Version already bumped in a previous commit, I'll reuse it" | Version bumps are release-scoped. Reusing a bump means release notes don't match the version, and dependents can't tell what they got. |
-| "The release script will catch mistakes" | The script catches syntax errors, not semantic ones. The wrong version, wrong changelog, or wrong branch are all syntactically valid. |
+| "patch bump is safe, I'll use patch" | patch implies no behavior change. If behavior changed, bump minor. |
+| "I'll squash later" | Squash before push or not at all. |
+| "The user will confirm if they care" | Don't guess on irreversible operations. Ask before push. |
