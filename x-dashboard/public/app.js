@@ -354,10 +354,24 @@ async function renderAggregateHome() {
   `;
   }).join('');
 
-  // Fetch session state for active work + decisions
-  const sessStateRes = await fetchJSON('/api/session-state');
-  const sessionState = sessStateRes?.active ? sessStateRes : { active: [], recent: [], decisions: [] };
-  const sessionHandoff = sessStateRes?.session_handoff || null;
+  // Fetch session state from each workspace, merge results
+  const sessResults = await Promise.all(
+    workspaces.map(w => fetchJSON(`/api/ws/${encodeURIComponent(w.id)}/session-state`).then(r => ({ ws: w, data: r })))
+  );
+  const allActive = [];
+  const allDecisions = [];
+  let sessionHandoff = null;
+  for (const { ws, data } of sessResults) {
+    if (!data || data.error) continue;
+    if (Array.isArray(data.active)) allActive.push(...data.active.map(a => ({ ...a, _ws: ws.name })));
+    if (Array.isArray(data.decisions)) allDecisions.push(...data.decisions);
+    if (data.session_handoff && !sessionHandoff) sessionHandoff = { ...data.session_handoff, _ws: ws.name };
+    else if (data.session_handoff && sessionHandoff) {
+      // keep the most recent handoff
+      if (data.session_handoff.saved_at > sessionHandoff.saved_at) sessionHandoff = { ...data.session_handoff, _ws: ws.name };
+    }
+  }
+  const sessionState = { active: allActive, recent: [], decisions: allDecisions.slice(-10) };
 
   const handoffHtml = sessionHandoff ? `
     <div class="card" style="margin-bottom:1rem;border-left:4px solid var(--accent)">
@@ -409,6 +423,24 @@ async function renderAggregateHome() {
             return `<span style="font-size:12px"><code>${k.split('/').pop()}</code> <strong style="color:${color}">${v}/10</strong></span>`;
           }).join('')}
         </div>
+      </div>` : ''}
+      ${sessionHandoff.context?.current_focus ? `
+      <div style="margin-top:0.5rem;font-size:13px">
+        <strong>Focus:</strong> ${sessionHandoff.context.current_focus}
+      </div>` : ''}
+      ${sessionHandoff.context?.blockers?.length ? `
+      <div style="margin-top:0.5rem;font-size:13px;color:var(--red,#f44)">
+        <strong>Blockers:</strong>
+        <ul style="margin:0.25rem 0 0;padding-left:20px">
+          ${sessionHandoff.context.blockers.map(b => `<li>${b}</li>`).join('')}
+        </ul>
+      </div>` : ''}
+      ${sessionHandoff.context?.stashes?.length ? `
+      <div style="margin-top:0.5rem;font-size:13px">
+        <strong>Stashes (${sessionHandoff.context.stashes.length}):</strong>
+        <ul style="margin:0.25rem 0 0;padding-left:20px;font-family:monospace;font-size:12px;color:var(--text-muted)">
+          ${sessionHandoff.context.stashes.map(s => `<li>${s}</li>`).join('')}
+        </ul>
       </div>` : ''}
       ${sessionHandoff.context?.key_files?.length ? `
       <div style="margin-top:0.5rem;font-size:12px;color:var(--text-muted)">

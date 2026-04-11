@@ -765,7 +765,7 @@ export function cmdHandoffFull(args) {
     decisions: allDecisions.slice(-10),
 
     context: {
-      current_focus: reason || (commitsToday.length > 0 ? commitsToday[0].replace(/^[a-f0-9]+ /, '') : ''),
+      current_focus: commitsToday.length > 0 ? commitsToday.slice(0, 3).map(c => c.replace(/^[a-f0-9]+ /, '')).join(' | ') : '',
       blockers: [],
       key_files: keyFiles,
       test_status: testStatus,
