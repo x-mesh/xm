@@ -697,11 +697,11 @@ export function cmdHandoffFull(args) {
     }
   }
 
-  // Quality scores from .xm/eval
+  // Quality scores from .xm/eval — keep latest per target
   const qualityScores = {};
   const evalDir = join(process.cwd(), '.xm', 'eval', 'results');
   if (existsSync(evalDir)) {
-    const files = readdirSync(evalDir).filter(f => f.endsWith('-score.json')).sort().reverse().slice(0, 3);
+    const files = readdirSync(evalDir).filter(f => f.endsWith('-score.json')).sort();
     for (const f of files) {
       try {
         const data = JSON.parse(readFileSync(join(evalDir, f), 'utf8'));
