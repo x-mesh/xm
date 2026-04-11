@@ -765,7 +765,9 @@ export function cmdHandoffFull(args) {
     decisions: allDecisions.slice(-10),
 
     context: {
-      current_focus: commitsToday.length > 0 ? commitsToday.slice(0, 3).map(c => c.replace(/^[a-f0-9]+ /, '')).join(' | ') : '',
+      current_focus: commitsToday.length > 0
+        ? [...new Set(commitsToday.map(c => c.replace(/^[a-f0-9]+ /, '')))].filter(m => !m.includes('[COMPLETED]') && !m.startsWith('Merge ')).slice(0, 3).join(' | ') || commitsToday[0].replace(/^[a-f0-9]+ /, '')
+        : '',
       blockers: [],
       key_files: keyFiles,
       test_status: testStatus,
