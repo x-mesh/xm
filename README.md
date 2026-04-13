@@ -14,10 +14,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/x-kit/releases"><img src="https://img.shields.io/badge/version-1.26.11-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/x-kit/releases"><img src="https://img.shields.io/badge/version-1.26.17-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
-  <a href="#plugins"><img src="https://img.shields.io/badge/plugins-11-orange" alt="Plugins" /></a>
+  <a href="#plugins"><img src="https://img.shields.io/badge/plugins-12-orange" alt="Plugins" /></a>
 </p>
 
 <p align="center">
@@ -36,7 +36,7 @@
 - [Install](#install)
 - [Quick Start](#quick-start)
 - [Why x-kit?](#why-x-kit)
-- [Plugins](#plugins) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory)
+- [Plugins](#plugins) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-ship](#x-ship)
 - [Quality & Learning Pipeline](#quality--learning-pipeline)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
@@ -79,6 +79,21 @@ After installation, verify with `bun --version` (requires v1.0+).
 /plugin marketplace add x-mesh/x-kit
 /plugin install x-kit@x-kit -s user
 ```
+
+### First-Run Init
+
+After installing, run once per project to wire up hooks, merge `.claude/settings.json`, and install the `x-sync` client:
+
+```
+/x-kit init              # install hooks + settings + x-sync client
+/x-kit init --dry-run    # preview all changes (no writes)
+/x-kit init --skip-sync  # hooks + settings only
+/x-kit init --rollback   # restore settings.json from latest backup
+/x-kit doctor            # diagnose install state
+/x-kit doctor --fix      # auto-repair what is safe
+```
+
+x-kit subcommands will prompt on first use if `init` has not run.
 
 ## Quick Start
 
@@ -206,7 +221,7 @@ DIAGNOSE ──→ HYPOTHESIZE ──→ TEST ──→ REFINE ──→ RESOLVE
 
 ## Plugins
 
-11 plugins, each installable individually or bundled via `x-kit`.
+12 plugins, each installable individually or bundled via `x-kit`.
 
 | Plugin | Purpose | Key command |
 |--------|---------|-------------|
@@ -221,6 +236,7 @@ DIAGNOSE ──→ HYPOTHESIZE ──→ TEST ──→ REFINE ──→ RESOLVE
 | [x-trace](#x-trace) | Execution tracing & cost | `/x-trace timeline` |
 | [x-memory](#x-memory) | Cross-session memory | `/x-memory inject` |
 | [x-sync](#x-sync) | Multi-machine .xm/ sync | `x-kit sync push` |
+| [x-ship](#x-ship) | Release automation & squash | `/x-ship auto` |
 | x-kit | Bundle + config + pipeline | `/x-kit pipeline release` |
 
 ---
@@ -268,7 +284,7 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 | Category | Commands |
 |----------|----------|
 | **Project** | `init`, `list`, `status`, `next [--json]`, `close`, `dashboard` |
-| **Phase** | `phase next/set`, `gate pass/fail`, `checkpoint`, `handoff` |
+| **Phase** | `phase next/set`, `gate pass/fail`, `checkpoint`, `handoff --full`, `handon` |
 | **Plan** | `plan "goal"`, `plan-check [--strict]`, `prd-gate [--threshold N]`, `consensus [--round N]` |
 | **Tasks** | `tasks add [--deps] [--size] [--strategy] [--team] [--done-criteria]`, `tasks done-criteria`, `tasks list`, `tasks remove [--cascade]`, `tasks update` |
 | **Steps** | `steps compute/status/next` |
@@ -276,6 +292,7 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 | **Verify** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts` |
 | **Analysis** | `forecast`, `metrics`, `decisions`, `summarize` |
 | **Export** | `export --format md/csv/jira/confluence`, `import` |
+| **Release** | `release detect`, `release squash`, `release bump`, `release commit`, `release test`, `release trace`, `release diff-report` |
 | **Settings** | `mode developer/normal`, `config set/get/show` |
 
 </details>
@@ -545,6 +562,10 @@ CHECK-IN ──→ RECALL ──→ IDENTIFY ──→ ANALYZE ──→ ALTERNA
 
 Web dashboard for `.xm/` project state. Visualize builds, probes, solvers, **reviews, evals, humble lessons**, traces, memory, and costs — all read-only, no build chain.
 
+<p align="center">
+  <img src="docs/images/dashboard.png" alt="x-dashboard" width="800" />
+</p>
+
 ```bash
 bun x-dashboard/lib/x-dashboard-server.mjs              # Start (standalone)
 bun x-dashboard/lib/x-dashboard-server.mjs --stop       # Stop
@@ -577,6 +598,8 @@ Browser ──→ Bun HTTP :19841 ──→ .xm/ (read-only)
 | **Auto-refresh** | 3-second polling with ETag/304 — no scroll/focus reset |
 | **Accessibility** | Skip-link, ARIA labels, keyboard navigation, focus indicators |
 | **Zero dependencies** | Vanilla HTML/JS/CSS, Bun HTTP server, no npm packages |
+| **Session handoff card** | Full handoff display — commits, decisions, quality scores, test status, blockers, stashes (collapsible) |
+| **Multi-root session state** | Fetches handoff from all workspaces in parallel, shows most recent |
 
 </details>
 
@@ -706,6 +729,28 @@ Or use directly in Claude Code: `/x-sync push`, `/x-sync pull`, `/x-sync setup`
 | **Storage** | SQLite WAL on server |
 | **Offline** | SessionEnd hook queues to `.sync-queue/`, drains on next push |
 | **Machine ID** | Auto-generated from hostname, stored in `~/.xm/sync.json` |
+
+---
+
+### x-ship
+
+Release automation — commit squash, version bump, push. Works with x-kit marketplace plugins AND standalone projects (Node.js, Rust, Python, Go).
+
+```bash
+/x-ship                # Interactive: test → review → release
+/x-ship auto           # Squash + bump + push, no gates
+/x-ship status         # Show commits since last release
+/x-ship patch          # Explicit patch bump
+```
+
+| Feature | Description |
+|---------|-------------|
+| **Release CLI** | 7 subcommands: `detect`, `diff-report`, `squash`, `bump`, `test`, `commit`, `trace` |
+| **WIP squash** | Auto-classifies WIP commits (tm(), fixup!, wip:) and squashes them |
+| **Quality gates** | Optional test + review gates before release |
+| **Standalone support** | Auto-detects package.json, Cargo.toml, pyproject.toml, go.mod |
+| **Release metrics** | Records version, bump type, test/review results to `.xm/traces/` |
+| **Diff-based analysis** | Per-commit diff report for intelligent squash grouping |
 
 ---
 

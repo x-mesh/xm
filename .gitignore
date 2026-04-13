@@ -18,3 +18,8 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+.gstack/
+
+# Prototypes — LLM outputs (large, noisy); keep scripts/rubrics/golden
+prototypes/*/out/
+prototypes/*/out-*/
