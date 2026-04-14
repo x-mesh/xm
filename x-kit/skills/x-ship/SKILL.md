@@ -221,6 +221,19 @@ release: {name}@{version}
 - {plugin}: {change summary}
 ```
 
+### Commit Message Rules (strict)
+
+| Allowed | Forbidden |
+|---------|-----------|
+| What changed (files, sections, commands added/removed/modified) | Why it changed (rationale, motivation) |
+| User-visible behavior change one-liners | Session context ("Karpathy judge caught X", "behavioral test showed Y") |
+| File path + concrete diff summary | Learning narrative ("self-demonstration", "this release proves Z") |
+| Version delta | Process notes ("shipped after consensus", "reverted v1") |
+
+**Anti-pattern**: including the agent's reasoning trail. Commit messages are for future readers of `git log` — not for the current session's record-keeping. Rationale belongs in PR descriptions, design docs, or x-humble retrospectives.
+
+**Test**: strip the bullet text. Could a developer see the code change and confirm the bullet describes it? If the bullet describes *why* or *how we decided*, it fails.
+
 ---
 
 ## Step 5: Trace (background) + Output (immediate)

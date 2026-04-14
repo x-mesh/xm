@@ -100,6 +100,11 @@ release: x-build@1.16.2, x-dashboard@0.4.2
 - x-dashboard: {change summary}
 ```
 
+**Rules**:
+- Describe WHAT changed, never WHY. No rationale, no session narrative, no "adversarial judge caught X", no "self-demonstration", no "shipped after consensus".
+- Each bullet must describe a code/file change a future reader can verify from the diff.
+- Rationale belongs in PR descriptions or retrospectives, not `git log`.
+
 ### Step 6: Commit & Push
 
 ```bash
