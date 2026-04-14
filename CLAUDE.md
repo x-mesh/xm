@@ -2,17 +2,6 @@
 
 Claude Code plugin marketplace for structured multi-agent orchestration.
 
-## Before Non-Trivial Work (Karpathy 4-principle)
-
-Applies to any multi-step or design task. Trivial edits (typo, rename) skip this.
-
-1. **State assumptions** — What project state am I assuming? What did the user want that wasn't said? If any assumption has < high confidence, name it.
-2. **Surface ambiguities** — Multiple interpretations exist? Present them; don't pick silently. Unclear? Stop and ask.
-3. **Note tradeoffs** — Simpler alternative exists? Say so. Push back when the chosen path is overkill.
-4. **Define success** — State the verifiable done condition before coding. "Make it work" is not a goal.
-
-Anti-pattern: jumping to solution design without naming assumptions. Every skill's planning phase must satisfy these before execution.
-
 ## Code Review Principles (x-review)
 
 x-review agents must follow these principles when producing findings.
@@ -64,6 +53,8 @@ x-build plan-phase agents must follow these principles.
 3. **A plan is a hypothesis, not a promise** — Design for adaptability: small tasks, clear boundaries, minimal cross-task deps.
 4. **Intent over implementation** — PRD says WHAT/WHY. Tasks say WHAT to do. Neither prescribes HOW unless hard constraint.
 5. **If you can't verify it, you can't ship it** — Every requirement needs success criteria. Every task needs done_criteria.
+6. **Surface ambiguities before picking** — Multiple interpretations of the request? List them; never pick silently. The agent's job is to expose the fork, not choose for the user.
+7. **Name low-confidence assumptions** — Assumptions at ≥ high confidence may stay implicit. Anything below must be written down (in PRD, plan, or AskUserQuestion) and validated before the next phase.
 
 ### PRD Quality — Good vs Bad
 
