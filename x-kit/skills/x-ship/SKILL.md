@@ -31,6 +31,21 @@ suggests: x-humble
 
 Commit squash + version bump + push. Works with any git project.
 
+## Model Routing
+
+| Step | Model | Reason |
+|------|-------|--------|
+| Step 0 (parallel discover) | **haiku** (Agent tool) | Pure git/script reads, no reasoning |
+| Mode: status, dry-run | **haiku** (Agent tool) | Read-only display |
+| Mode: squash (single) | **haiku** | Mechanical reset+commit |
+| Step 1 (decision gate) | **sonnet** | Squash strategy + bump type judgment |
+| Step 2 (grouped squash) | **sonnet** | LLM groups files by scope |
+| Step 4 (commit message) | **sonnet** | Quality writing matters for changelog |
+
+For haiku-eligible steps, delegate via: `Agent tool: { model: "haiku", prompt: "Run: <bash>" }`.
+
+**Guardrail**: never haiku for grouped squash, bump-type decision, or commit message authoring — these affect the published release.
+
 ## CLI Auto-Resolve
 
 Define `XMB` once at session start. Try local repo, then plugin cache, then fall back to plain-git mode. Never hardcode a single path.
@@ -103,23 +118,35 @@ If no changes → "✅ 릴리스할 변경사항이 없습니다." Exit.
 
 ---
 
-## Step 1: Single Decision Gate (interactive mode)
+## Step 1: Plan + Conditional Gate
 
-Combine squash plan + bump type + commit message draft + push target into **one** AskUserQuestion. Show the full plan as markdown first, then ask once.
+**Default behavior: proceed.** Invoking `/x-ship` is implicit consent to ship. Show the plan as markdown, then **execute immediately unless a blocker is detected**.
 
-Markdown preview must include:
+Markdown preview (always shown) must include:
 - Squash strategy (grouped vs single vs keep) with file→group mapping
 - Bump type (patch/minor/major) with rationale from detect
 - Drafted commit message
 - Push target (`origin/<branch>`)
 - README update needed? (yes/no with reason)
 
-AskUserQuestion options:
-1. **진행** — squash + bump + commit + push as planned
-2. **수정** — user edits one field (loop back to preview)
-3. **중단**
+### Blocker Conditions (only these halt for AskUserQuestion)
 
-Skip this gate entirely in `auto` mode.
+| Blocker | Why it halts | Question |
+|---------|--------------|----------|
+| Bump type ambiguous (signals split between patch+minor or minor+major) | Wrong bump = wrong release semver | "1) patch  2) minor  3) major" |
+| Breaking change detected (removed export, deleted command, signature change) | Major bump is irreversible after publish | "1) major  2) 변경 재검토" |
+| Current branch is `main` or `master` | Direct push to main is rare and risky | "1) main에 push  2) feature 브랜치로 이동  3) 중단" |
+| Pushed commits would be squashed (squash range crosses `@{u}`) | Force-push required, history rewrite | "1) 로컬만 squash  2) squash 생략  3) 중단" |
+| Test gate failed (only when explicitly requested) | Shipping broken code | "1) 무시하고 계속  2) 중단" |
+| Review verdict = Block (only when explicitly requested) | Critical findings | exit (no question — Block means block) |
+| Working tree contains files outside change scope | Unintended WIP would be shipped | "1) 모두 포함  2) 의도한 파일만  3) 중단" |
+| `--standalone` 모드인데 `package.json` 없음 | Bump 대상 파일 미상 | "1) 버전 파일 지정  2) bump 생략  3) 중단" |
+
+### No Blocker → Proceed Silently
+
+If none of the above apply, skip AskUserQuestion entirely. Print the plan, then immediately run Steps 2-5. Do **not** ask "진행할까요?" — the user already invoked /x-ship.
+
+Skip the entire gate (including blocker checks for test/review) in `auto` mode.
 
 ### Optional pre-gate quality checks (interactive only, opt-in)
 
@@ -272,6 +299,8 @@ Standalone projects without `package.json` skip bump entirely.
 | "CLI 경로 추측해서 시도" | resolve_xmb()로 자동 감지. 추측 후 실패는 최악의 패턴. |
 | "README 업데이트는 별도 단계" | commit과 같은 트랜잭션. Step 4에 인라인. |
 | "trace 결과 봐야 ship 완료" | trace는 관측용. push 성공 = ship 완료. background 실행. |
+| "안전하게 매번 진행 확인 받자" | /x-ship 호출 자체가 동의. 확인은 블로커 발생 시에만. 매번 확인은 사용자 시간을 낭비하고 같은 답("진행")을 강요. |
+| "사용자가 commit 메시지를 수정하고 싶을 수도 있다" | 수정하려면 명시적으로 요청한다. 추측해서 묻지 않는다. |
 
 ## Red Flags
 
