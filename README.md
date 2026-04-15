@@ -125,11 +125,19 @@ Writes `~/.claude/hooks/x-kit-trace-session.mjs` and merges `PreToolUse`/`PostTo
 > **Scope difference:** `/x-kit init` (slash command) is **per-project** — it installs hooks into the current project's `.claude/` and installs the x-sync client. `x-kit init` (bash) is **global** — it installs only the trace-session hook into `~/.claude/`. Prefer the global route unless you need the x-sync client in a specific project.
 
 ```bash
-x-kit dashboard                       # start (single project — current .xm/)
-x-kit dashboard --scan ~/work         # multi-project mode: scan ~/work for .xm/ dirs (depth 4)
+x-kit dashboard                       # start — uses ~/.xm/projects.json registry (all registered projects)
+x-kit dashboard --scan ~/work         # legacy multi-project mode: scan ~/work for .xm/ dirs (depth 4)
 XM_DASHBOARD_SCAN=~/work x-kit dashboard   # same, persisted via env var
 x-kit dashboard stop                  # stop it
 x-kit dashboard open                  # open it in your browser
+
+# Project registry (~/.xm/projects.json)
+x-kit project import ~/work           # one-shot bulk-register all .xm/ projects under ~/work
+x-kit project list                    # show registered projects
+x-kit project add [<path>]            # register CWD or given path
+x-kit project remove <id|path>        # unregister
+x-kit project archive <id>            # hide from dashboard without deleting
+x-kit project gc                      # drop entries whose path no longer exists
 x-kit sync push           # push .xm/ state to your sync server
 x-kit sync pull           # pull state from your sync server
 x-kit memory <subcmd>     # save | recall | inject | list
@@ -144,6 +152,15 @@ x-kit help
 ```
 
 The CLI dispatches to plugin libs in `~/.claude/plugins/cache/x-kit/` (or `$X_KIT_LIB`), so the Claude Code plugin must be installed first. The `sync` subcommand reuses the `x-sync` plugin lib, so you do **not** need to run `x-sync/install.sh client` separately.
+
+#### Project Registry (`x-kit project`)
+
+The dashboard reads from a machine-local registry at `~/.xm/projects.json`. Once populated, `x-kit dashboard` shows every registered project without `--scan`.
+
+- **First-time setup**: run `x-kit project import ~/work` (or any root) to bulk-register every existing `.xm/` project. Idempotent — re-running only updates `last_seen`.
+- **Auto-registration**: when you run any x-kit command from a project directory, the dispatcher self-registers it. New projects appear in the dashboard without explicit action.
+- **Worktrees**: a worktree of an already-registered repo is collapsed onto the main repo entry. Running `x-kit` from any worktree updates the same registry entry — no duplicates.
+- **Resolution priority**: `--scan` flag → `~/.xm/projects.json` → legacy `~/.xm/config.json` `scan_roots` → CWD only.
 
 ## Quick Start
 
