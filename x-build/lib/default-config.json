@@ -13,7 +13,7 @@
   "mode": "developer",
   "workflow": "interactive",
   "granularity": "standard",
-  "model_profile": "balanced",
+  "model_profile": "default",
   "budget": {
     "max_usd": null
   },

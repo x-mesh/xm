@@ -258,13 +258,13 @@ async function interactiveConfig(flags) {
   const config = readSharedConfig({ global: true });
 
   console.log(`\n${C.bold}⚙️  x-kit 설정${C.reset}\n`);
-  console.log(`  모델 프로필: ${C.cyan}${config.model_profile || 'balanced'}${C.reset}`);
+  console.log(`  모델 프로필: ${C.cyan}${config.model_profile || 'default'}${C.reset}`);
   console.log(`  에이전트 수: ${C.cyan}${config.agent_max_count ?? 4}${C.reset}`);
   console.log(`  예산 한도:   ${C.cyan}${config.budget?.max_usd ? '$' + config.budget.max_usd : '없음'}${C.reset}`);
   console.log(`  모드:        ${C.cyan}${config.mode || 'developer'}${C.reset}`);
 
   console.log(`\n  설정할 항목을 선택하세요:\n`);
-  console.log(`  ${C.bold}1)${C.reset} 모델 프로필     economy / balanced / performance`);
+  console.log(`  ${C.bold}1)${C.reset} 모델 프로필     economy / default / max`);
   console.log(`  ${C.bold}2)${C.reset} 예산 한도       세션당 최대 비용 ($)`);
   console.log(`  ${C.bold}3)${C.reset} 에이전트 수     병렬 에이전트 수 (1-10)`);
   console.log(`  ${C.bold}4)${C.reset} 모드            developer / normal`);
@@ -285,14 +285,16 @@ async function interactiveConfig(flags) {
 }
 
 async function configProfile(rl, config) {
-  const current = config.model_profile || 'balanced';
-  console.log(`\n  모델 프로필을 선택하세요:\n`);
-  console.log(`  ${C.bold}1)${C.reset} economy      — 저렴 (architect:sonnet, executor:haiku) ~60-70% 절감`);
-  console.log(`  ${C.bold}2)${C.reset} balanced     — 기본 (architect:opus, executor:sonnet)${current === 'balanced' ? ` ${C.green}← 현재${C.reset}` : ''}`);
-  console.log(`  ${C.bold}3)${C.reset} performance  — 강력 (architect:opus, executor:opus) 2-5x 비용\n`);
+  const LEGACY = { balanced: 'default', performance: 'max' };
+  const rawCurrent = config.model_profile || 'default';
+  const current = LEGACY[rawCurrent] || rawCurrent;
+  console.log(`\n  비용 의도를 선택하세요 (Opus 4.7 기준):\n`);
+  console.log(`  ${C.bold}1)${C.reset} economy   — Sonnet 중심, 최대 절약 (~80% 절감)${current === 'economy' ? ` ${C.green}← 현재${C.reset}` : ''}`);
+  console.log(`  ${C.bold}2)${C.reset} default   — Opus 중심, 합리적 기본${current === 'default' ? ` ${C.green}← 현재${C.reset}` : ''}`);
+  console.log(`  ${C.bold}3)${C.reset} max       — 전부 Opus, 품질 최우선${current === 'max' ? ` ${C.green}← 현재${C.reset}` : ''}\n`);
 
   const ch = (await ask(rl, '  선택: ')).trim();
-  const profiles = { '1': 'economy', '2': 'balanced', '3': 'performance' };
+  const profiles = { '1': 'economy', '2': 'default', '3': 'max' };
   const profile = profiles[ch];
   if (!profile) { console.log(`  ${C.dim}취소됨${C.reset}`); return; }
 

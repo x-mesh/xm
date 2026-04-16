@@ -801,7 +801,7 @@ Exception: `budget` defaults to **local** (per-project budgets are more natural)
 | Key | Values | Default | Scope | Description |
 |-----|--------|---------|-------|-------------|
 | `mode` | `developer`, `normal` | `developer` | global | Output style |
-| `model_profile` | `economy`, `balanced`, `performance` | `balanced` | global | Role→model mapping |
+| `model_profile` | `economy`, `default`, `max` | `default` | global | Cost intent (legacy `balanced`/`performance` auto-map to `default`/`max`) |
 | `agent_max_count` | number (1-10) | `4` | global | Max parallel agents |
 | `budget.max_usd` | number or null | `null` | local | Session budget limit ($) |
 | `model_overrides` | `{"role": "model"}` | `{}` | global | Per-role model overrides on top of profile |
@@ -830,7 +830,7 @@ Use AskUserQuestion:
 ```
 설정할 항목을 선택하세요:
 
-1) 모델 프로필 — economy / balanced / performance
+1) 모델 프로필 — economy / default / max
 2) 예산 한도 — 세션당 최대 비용 ($)
 3) 에이전트 수 — 병렬 에이전트 수 (1-10)
 4) 모드 — developer / normal
@@ -842,7 +842,7 @@ Use AskUserQuestion:
 
 | Choice | Action |
 |--------|--------|
-| 1 | AskUserQuestion: "1) economy (~60-90% 절감) 2) balanced (기본) 3) performance (최강)" → run `cmdConfig(['set', 'model_profile', selected])` |
+| 1 | AskUserQuestion: "1) economy (Sonnet 중심, 최대 절약) 2) default (Opus 중심, 권장) 3) max (전부 Opus)" → run `cmdConfig(['set', 'model_profile', selected])` |
 | 2 | AskUserQuestion: "세션 예산 ($, 0=무제한):" → run `cmdConfig(['set', 'budget.max_usd', value], { local: true })` |
 | 3 | AskUserQuestion: "에이전트 수 (1-10):" → run `cmdConfig(['set', 'agent_max_count', value])` |
 | 4 | AskUserQuestion: "1) developer 2) normal" → run `cmdConfig(['set', 'mode', selected])` |

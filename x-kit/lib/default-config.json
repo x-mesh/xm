@@ -14,7 +14,7 @@
   "agent_max_count": 4,
   "workflow": "interactive",
   "granularity": "standard",
-  "model_profile": "balanced",
+  "model_profile": "default",
   "budget": {
     "max_usd": null
   },

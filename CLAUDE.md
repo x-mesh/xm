@@ -165,7 +165,7 @@ model_overrides → model_learned → profile → fallback
 |----------|--------|-------------|
 | 1 | `model_overrides` | Explicit per-role config — always wins |
 | 2 | `model_learned` | Learned from outcome feedback (≥5 samples, 90-day rolling window — hardcoded, separate from budget.window_hours) |
-| 3 | profile | `economy` / `balanced` / `performance` setting |
+| 3 | profile | `economy` / `default` / `max` setting (legacy `balanced`/`performance` auto-remapped) |
 | 4 | fallback | Hard-coded safe defaults |
 
 **New config keys:**
