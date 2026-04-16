@@ -196,22 +196,51 @@ export const ROLE_MODEL_MAP_HR = {
 };
 
 // ── MODEL_PROFILES ────────────────────────────────────────────────────
-// model_profile in .xm/config.json controls role→model mapping globally.
-// "economy" downgrades expensive roles; "performance" upgrades cheap ones.
+// model_profile in .xm/config.json expresses COST INTENT (how much to spend),
+// not a per-role mixing strategy. Three tiers on a single axis: economy → default → max.
+//
+// Script-only commands (x-kit config show, version, agents list, …) are still
+// routed to haiku via the Model Guardrail in x-kit/skills/x-kit/SKILL.md — that
+// layer is independent of these role-based profiles.
+//
+// Legacy names ("balanced", "performance") are accepted and remapped via
+// LEGACY_PROFILE_MAP below.
 
 export const MODEL_PROFILES = {
+  // Sonnet-centric. For users without Opus budget — still usable quality.
+  // haiku reserved for cheap roles (explorer, writer).
   economy: {
     architect: 'sonnet', reviewer: 'sonnet', security: 'sonnet',
-    executor: 'haiku',  designer: 'haiku',  debugger: 'sonnet',
-    explorer: 'haiku',  writer: 'haiku',
+    executor:  'sonnet', designer:  'sonnet', debugger: 'sonnet',
+    explorer:  'haiku',  writer:    'haiku',
   },
-  balanced: ROLE_MODEL_MAP_HR,
-  performance: {
-    architect: 'opus',  reviewer: 'opus',   security: 'opus',
-    executor: 'opus',   designer: 'sonnet', debugger: 'opus',
-    explorer: 'sonnet', writer: 'haiku',
+  // Opus-centric. The reasonable default in the Opus 4.7 era.
+  // Selective downgrades: designer + explorer to sonnet, writer to haiku.
+  default: {
+    architect: 'opus', reviewer: 'opus',   security: 'opus',
+    executor:  'opus', designer:  'sonnet', debugger: 'opus',
+    explorer:  'sonnet', writer:  'haiku',
+  },
+  // Quality-first. Opus everywhere except trivial roles (explorer, writer)
+  // where Opus is over-investment.
+  max: {
+    architect: 'opus', reviewer: 'opus', security: 'opus',
+    executor:  'opus', designer:  'opus', debugger: 'opus',
+    explorer:  'sonnet', writer:  'haiku',
   },
 };
+
+// Accepts old names without breaking existing .xm/config.json files.
+// "balanced" maps to "default" (the closest semantic match), "performance" → "max".
+export const LEGACY_PROFILE_MAP = {
+  balanced: 'default',
+  performance: 'max',
+};
+
+export function resolveProfileName(name) {
+  if (!name) return 'default';
+  return LEGACY_PROFILE_MAP[name] || name;
+}
 
 // ── MIN_SAMPLES ───────────────────────────────────────────────────────
 // Minimum sample count required before model_learned entry is applied.
@@ -250,12 +279,13 @@ export function getModelForRole(role, size, config) {
     return learnedEntry;
   }
 
-  // 3. Static profile
-  const profile = config.model_profile || 'balanced';
+  // 3. Static profile (with legacy name remap: balanced→default, performance→max)
+  const rawProfile = config.model_profile || 'default';
+  const profile = resolveProfileName(rawProfile);
   if (!MODEL_PROFILES[profile]) {
-    console.error(`⚠ Unknown model_profile "${profile}" — falling back to balanced`);
+    console.error(`⚠ Unknown model_profile "${rawProfile}" — falling back to default`);
   }
-  const baseMap = MODEL_PROFILES[profile] || MODEL_PROFILES.balanced;
+  const baseMap = MODEL_PROFILES[profile] || MODEL_PROFILES.default;
   if (!baseMap[role]) {
     console.warn(`⚠ Unknown role "${role}" — falling back to executor model`);
   }

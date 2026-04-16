@@ -947,17 +947,21 @@ x-kit에는 코어와 도메인 영역을 아우르는 37개 전문가 에이전
 **모델 프로필**과 **예산 가드**로 모델 지출을 제어하세요.
 
 ```bash
-/x-kit config set model_profile economy           # 기본적으로 저렴한 모델 사용
-/x-kit config set model_profile balanced           # 기본값 — 역할 기반 라우팅
-/x-kit config set model_profile performance        # 모든 곳에 강력한 모델 사용
-/x-kit config set budget '{"max_usd": 5.0}'        # 세션 예산 한도 설정
+/x-kit config set model_profile economy           # Sonnet 중심, 최대 절약
+/x-kit config set model_profile default           # 기본값 — Opus 중심 (Opus 4.7 기준)
+/x-kit config set model_profile max               # 전부 Opus, 품질 최우선
+/x-kit config set budget '{"max_usd": 5.0}'       # 세션 예산 한도 설정
 ```
 
-| 프로필 | architect | executor | explorer | 예상 절감 |
-|--------|-----------|----------|----------|-----------|
-| economy | sonnet | haiku | haiku | balanced 대비 ~60-90% (대형 태스크는 경고 출력, 사용자 선택 존중) |
-| balanced | opus | sonnet | haiku | 기준선 |
-| performance | opus | opus | sonnet | balanced 대비 ~2-5배 (태스크 구성에 따라 다름) |
+`model_profile`은 **비용 의도**(얼마나 쓸지)를 단일 축으로 표현합니다. 기존 이름 `balanced`, `performance`는 각각 `default`, `max`로 자동 매핑됩니다.
+
+| 프로필 | architect | executor | designer | explorer | writer | 비고 |
+|--------|-----------|----------|----------|----------|--------|------|
+| economy | sonnet | sonnet | sonnet | haiku | haiku | default 대비 ~70-85% 절감 |
+| default | opus | opus | sonnet | sonnet | haiku | Opus 중심 기준선 |
+| max | opus | opus | opus | sonnet | haiku | default 대비 ~1.5-2배 |
+
+스크립트 전용 명령(`config show`, `version`, `agents list` 등)은 프로필과 무관하게 항상 haiku로 라우팅됩니다 (`x-kit/skills/x-kit/SKILL.md`의 Model Guardrail 참고).
 
 주요 역할만 표시. 전체 매핑(reviewer, security, designer, debugger, writer 포함)은 소스의 `MODEL_PROFILES` 참조.
 
@@ -975,7 +979,7 @@ x-kit에는 코어와 도메인 영역을 아우르는 37개 전문가 에이전
 
 동일한 코딩 태스크(`rateLimiter` — 슬라이딩 윈도우)를 세 모델로 실행한 결과:
 
-| 기준 | haiku (economy) | sonnet (balanced) | opus (performance) |
+| 기준 | haiku | sonnet | opus |
 |------|:-:|:-:|:-:|
 | 정확성 | ✅ 동작 | ✅ 동작 | ✅ 동작 |
 | 엣지케이스 (0, 음수) | 부분 | ✅ 완전 | ✅ 완전 |
@@ -983,13 +987,7 @@ x-kit에는 코어와 도메인 영역을 아우르는 37개 전문가 에이전
 | 코드 품질 | 6/10 | 8/10 | 9/10 |
 | **예상 비용 (medium 태스크)** | **$0.07** | **$0.81** | **$4.05** |
 
-> **핵심:** haiku는 동작하는 코드를 만들지만 엣지케이스가 부족합니다. sonnet은 대부분의 작업에 프로덕션급입니다. opus는 50배 비용으로 방어적 견고함을 추가합니다. 리스크 허용도에 따라 선택하세요.
-
-| 프로필 | 10태스크 시뮬레이션 | vs balanced |
-|--------|-------------------|-------------|
-| economy | $6.94 | **-80%** |
-| balanced | $35.28 | 기준선 |
-| performance | $46.84 | +33% |
+> **핵심:** haiku는 동작하는 코드를 만들지만 엣지케이스가 부족합니다. sonnet은 대부분의 작업에 프로덕션급이고, opus는 훨씬 높은 비용으로 방어적 견고함을 추가합니다. 프로필로 트레이드오프를 선택하세요: `economy`(Sonnet 중심) vs `default`(Opus 중심) vs `max`(전부 Opus). 워크로드별 추정치는 `/x-build forecast`.
 
 #### 자동 모델 라우팅
 

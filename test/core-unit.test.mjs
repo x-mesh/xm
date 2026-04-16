@@ -603,30 +603,47 @@ describe('ROLE_MODEL_MAP_HR', () => {
 // ── MODEL_PROFILES & getModelForRole ────────────────────────────
 
 describe('MODEL_PROFILES', () => {
-  test('has economy/balanced/performance profiles', () => {
+  test('has economy/default/max profiles', () => {
     expect(core.MODEL_PROFILES.economy).toBeDefined();
-    expect(core.MODEL_PROFILES.balanced).toBeDefined();
-    expect(core.MODEL_PROFILES.performance).toBeDefined();
+    expect(core.MODEL_PROFILES.default).toBeDefined();
+    expect(core.MODEL_PROFILES.max).toBeDefined();
   });
 
-  test('balanced profile matches ROLE_MODEL_MAP_HR', () => {
-    expect(core.MODEL_PROFILES.balanced).toBe(core.ROLE_MODEL_MAP_HR);
-  });
-
-  test('economy profile downgrades opus roles to sonnet', () => {
+  test('economy profile is sonnet-centric for reasoning roles', () => {
     expect(core.MODEL_PROFILES.economy.architect).toBe('sonnet');
     expect(core.MODEL_PROFILES.economy.reviewer).toBe('sonnet');
     expect(core.MODEL_PROFILES.economy.security).toBe('sonnet');
+    expect(core.MODEL_PROFILES.economy.executor).toBe('sonnet');
+    expect(core.MODEL_PROFILES.economy.designer).toBe('sonnet');
   });
 
-  test('economy profile downgrades sonnet roles to haiku', () => {
-    expect(core.MODEL_PROFILES.economy.executor).toBe('haiku');
-    expect(core.MODEL_PROFILES.economy.designer).toBe('haiku');
+  test('economy profile keeps haiku for cheap roles', () => {
+    expect(core.MODEL_PROFILES.economy.explorer).toBe('haiku');
+    expect(core.MODEL_PROFILES.economy.writer).toBe('haiku');
   });
 
-  test('performance profile upgrades executor to opus', () => {
-    expect(core.MODEL_PROFILES.performance.executor).toBe('opus');
-    expect(core.MODEL_PROFILES.performance.debugger).toBe('opus');
+  test('default profile is opus-centric for critical reasoning', () => {
+    expect(core.MODEL_PROFILES.default.architect).toBe('opus');
+    expect(core.MODEL_PROFILES.default.executor).toBe('opus');
+    expect(core.MODEL_PROFILES.default.reviewer).toBe('opus');
+    expect(core.MODEL_PROFILES.default.security).toBe('opus');
+    expect(core.MODEL_PROFILES.default.debugger).toBe('opus');
+  });
+
+  test('default profile keeps sonnet/haiku for lighter roles', () => {
+    expect(core.MODEL_PROFILES.default.designer).toBe('sonnet');
+    expect(core.MODEL_PROFILES.default.explorer).toBe('sonnet');
+    expect(core.MODEL_PROFILES.default.writer).toBe('haiku');
+  });
+
+  test('max profile upgrades designer to opus (quality-first)', () => {
+    expect(core.MODEL_PROFILES.max.executor).toBe('opus');
+    expect(core.MODEL_PROFILES.max.debugger).toBe('opus');
+    expect(core.MODEL_PROFILES.max.designer).toBe('opus');
+  });
+
+  test('max profile preserves haiku for writer (Opus is over-investment)', () => {
+    expect(core.MODEL_PROFILES.max.writer).toBe('haiku');
   });
 });
 
@@ -642,18 +659,18 @@ describe('getModelForRole', () => {
     expect(model).toBeDefined();
   });
 
-  test('economy + large returns haiku with warning (no forced upgrade)', () => {
+  test('economy + large explorer returns haiku with warning (no forced upgrade)', () => {
     const economyCfg = { model_profile: 'economy' };
-    const model = core.getModelForRole('executor', 'large', economyCfg);
-    // Economy respects user choice — haiku stays, warning emitted
+    const model = core.getModelForRole('explorer', 'large', economyCfg);
+    // Economy respects user choice — haiku stays for cheap roles, warning emitted
     expect(model).toBe('haiku');
   });
 
   test('model_overrides apply on top of profile', () => {
     const cfg = { model_profile: 'economy', model_overrides: { architect: 'opus' } };
     expect(core.getModelForRole('architect', 'medium', cfg)).toBe('opus');
-    // Non-overridden role still uses economy
-    expect(core.getModelForRole('executor', 'medium', cfg)).toBe('haiku');
+    // Non-overridden role still uses economy (executor is sonnet under cost-intent economy)
+    expect(core.getModelForRole('executor', 'medium', cfg)).toBe('sonnet');
   });
 });
 
