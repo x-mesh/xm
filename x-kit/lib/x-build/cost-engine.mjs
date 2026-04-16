@@ -8,7 +8,6 @@ import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { ROOT } from './root.mjs';
 import { loadSharedConfig } from './config-loader.mjs';
-import { updateModelLearned } from './cost-learner.mjs';
 
 // ── Metrics path ─────────────────────────────────────────────────────
 
@@ -176,17 +175,11 @@ export function resolveProfileName(name) {
   return LEGACY_PROFILE_MAP[name] || name;
 }
 
-// ── MIN_SAMPLES ───────────────────────────────────────────────────────
-// Minimum sample count required before model_learned entry is applied.
-
-export const MIN_SAMPLES = 5;
-
 // ── getModelForRole ───────────────────────────────────────────────────
 // Override priority chain:
 //   1. model_overrides[role]   — user explicit setting, ALWAYS wins
-//   2. model_learned[role]     — adaptive routing (only if samples >= MIN_SAMPLES)
-//   3. MODEL_PROFILES[profile] — static profile default
-//   4. fallback: "sonnet"      — safe default
+//   2. MODEL_PROFILES[profile] — static profile default
+//   3. fallback: "sonnet"      — safe default
 
 export function getModelForRole(role, size, config) {
   if (!config) config = loadSharedConfig();
@@ -195,25 +188,7 @@ export function getModelForRole(role, size, config) {
   const overrides = config.model_overrides || {};
   if (overrides[role]) return overrides[role];
 
-  // 2. Adaptive learned routing (only if enough samples)
-  const learned = config.model_learned || {};
-  const learnedEntry = learned[role];
-  if (learnedEntry && typeof learnedEntry === 'object' && learnedEntry.model && (learnedEntry.sample_count || 0) >= MIN_SAMPLES) {
-    const learnedModel = learnedEntry.model;
-    if (size === 'large' && learnedModel === 'haiku') {
-      console.warn(`  ⚠ ${role} uses haiku for large task — consider: /x-kit config set model_overrides '{"${role}": "sonnet"}'`);
-    }
-    return learnedModel;
-  }
-  // Simple string format: model_learned: { executor: "haiku" } — treat as user-placed, apply it
-  if (typeof learnedEntry === 'string') {
-    if (size === 'large' && learnedEntry === 'haiku') {
-      console.warn(`  ⚠ ${role} uses haiku for large task — consider: /x-kit config set model_overrides '{"${role}": "sonnet"}'`);
-    }
-    return learnedEntry;
-  }
-
-  // 3. Static profile (with legacy name remap: balanced→default, performance→max)
+  // 2. Static profile (with legacy name remap: balanced→default, performance→max)
   const rawProfile = config.model_profile || 'default';
   const profile = resolveProfileName(rawProfile);
   if (!MODEL_PROFILES[profile]) {
@@ -413,18 +388,6 @@ function readLinesFromOffset(filePath, offset) {
   } catch {
     return { text: '', endOffset: offset };
   }
-}
-
-// ── refreshModelLearned ───────────────────────────────────────────────
-
-export function refreshModelLearned() {
-  return updateModelLearned(loadSharedConfig(), (key, val) => {
-    const cfg = loadSharedConfig();
-    cfg[key] = val;
-    const cfgPath = join(ROOT, '..', 'config.json');
-    mkdirSync(dirname(cfgPath), { recursive: true });
-    writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-  });
 }
 
 // ── scanMetrics ───────────────────────────────────────────────────────

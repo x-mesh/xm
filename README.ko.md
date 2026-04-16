@@ -997,9 +997,9 @@ x-kit은 명령을 가장 저렴한 적합 모델로 자동 라우팅합니다. 
 
 > 원칙: 출력이 스크립트에 의해 결정되면 (LLM 추론이 아니면) haiku를 사용합니다. 모델은 전달자이지 사고자가 아닙니다.
 
-#### 적응형 라우팅 (Cost Engine v2)
+#### 비용 인지 라우팅
 
-엔진은 과거 태스크 결과로부터 학습하여 모델 선택을 자동으로 개선합니다. 선택은 4단계 우선순위 체인을 따릅니다: `model_overrides → model_learned → profile → fallback`. 역할별로 5개 이상의 결과가 누적되면 (90일 롤링 윈도우) 최적 모델이 `model_learned`에 승격됩니다. 각 라우팅 결정은 결과 메트릭과 연결된 상관 ID (`ce-XXXXXXXX`)를 가집니다. `escalate` 전략은 설정 가능한 `quality_threshold` (1-10 척도, 기본값 7)를 사용하여 haiku→sonnet→opus 승격을 제어합니다.
+선택은 3단계 우선순위 체인을 따릅니다: `model_overrides → profile → fallback`. 각 라우팅 결정은 결과 메트릭과 연결된 상관 ID (`ce-XXXXXXXX`)를 가집니다. 프로필 위에 개별 역할을 덮어쓰려면 `model_overrides`를 사용하세요.
 
 ---
 
