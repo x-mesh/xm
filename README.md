@@ -997,9 +997,9 @@ x-kit routes commands to the cheapest sufficient model automatically. Display/qu
 
 > Principle: if the output is determined by a script (not LLM reasoning), use haiku. The model is a messenger, not a thinker.
 
-#### Adaptive Routing (Cost Engine v2)
+#### Cost-Aware Routing
 
-The engine learns from past task outcomes and refines model selection automatically. Selection follows a 4-level priority chain: `model_overrides → model_learned → profile → fallback`. After 5 outcomes for a role (90-day rolling window), the best-performing model is promoted into `model_learned`. Each routing decision carries a correlation ID (`ce-XXXXXXXX`) linking it to its outcome metrics. The `escalate` strategy uses a configurable `quality_threshold` (scale 1-10, default 7) to gate haiku→sonnet→opus promotion.
+Selection follows a 3-level priority chain: `model_overrides → profile → fallback`. Each routing decision carries a correlation ID (`ce-XXXXXXXX`) linking it to outcome metrics. Use `model_overrides` for deliberate per-role choices on top of your profile.
 
 ---
 

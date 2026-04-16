@@ -1,8 +1,7 @@
 /**
  * cost-engine.mjs unit tests
- * Covers: override priority chain, spinlock, outcome enrichment,
- *         budget rolling window, cold-start fallback, forecast actuals,
- *         cost-learner aggregation and scoring.
+ * Covers: override priority chain, spinlock, budget rolling window,
+ *         cold-start fallback, forecast actuals.
  *
  * Design note: ROOT_CE in cost-engine is evaluated once at module load time
  * from process.env.X_BUILD_ROOT. Static ESM imports are hoisted and evaluated
@@ -24,8 +23,7 @@ const TEST_ROOT = mkdtempSync(join(tmpdir(), 'xb-ce-'));
 process.env.X_BUILD_ROOT = TEST_ROOT;
 
 // Dynamic imports so ROOT_CE sees TEST_ROOT
-const ce      = await import('../x-build/lib/x-build/cost-engine.mjs');
-const learner  = await import('../x-build/lib/x-build/cost-learner.mjs');
+const ce = await import('../x-build/lib/x-build/cost-engine.mjs');
 
 afterAll(() => {
   if (ORIG_X_BUILD_ROOT !== undefined) {
@@ -74,40 +72,17 @@ function clearMetrics() {
 describe('getModelForRole — override priority chain', () => {
   afterEach(() => { clearConfig(); clearMetrics(); });
 
-  test('model_overrides always wins over model_learned', () => {
+  test('model_overrides always wins over profile default', () => {
     const result = ce.getModelForRole('executor', 'medium', {
       model_overrides: { executor: 'opus' },
-      model_learned:   { executor: { model: 'haiku', sample_count: 10 } },
+      model_profile: 'economy',
     });
     expect(result).toBe('opus');
   });
 
-  test('model_learned with sample_count >= 5 is used when no override present', () => {
-    const result = ce.getModelForRole('executor', 'medium', {
-      model_learned: { executor: { model: 'haiku', sample_count: 5 } },
-    });
-    expect(result).toBe('haiku');
-  });
-
-  test('model_learned with sample_count < 5 falls back to static profile', () => {
+  test('no overrides falls back to static profile model', () => {
     const result = ce.getModelForRole('executor', 'medium', {
       model_profile: 'default',
-      model_learned: { executor: { model: 'haiku', sample_count: 4 } },
-    });
-    expect(result).toBe('opus');
-  });
-
-  test('model_learned as simple string is accepted', () => {
-    const result = ce.getModelForRole('executor', 'medium', {
-      model_learned: { executor: 'haiku' },
-    });
-    expect(result).toBe('haiku');
-  });
-
-  test('empty model_learned returns static profile model', () => {
-    const result = ce.getModelForRole('executor', 'medium', {
-      model_profile: 'default',
-      model_learned: {},
     });
     expect(result).toBe('opus');
   });
@@ -149,10 +124,10 @@ describe('getModelForRole — override priority chain', () => {
     expect(ce.getModelForRole('designer', 'medium', { model_profile: 'performance' })).toBe('opus');
   });
 
-  test('model_overrides wins even when model_learned has large sample_count', () => {
+  test('model_overrides wins even against legacy profile names', () => {
     const result = ce.getModelForRole('architect', 'medium', {
       model_overrides: { architect: 'haiku' },
-      model_learned:   { architect: { model: 'opus', sample_count: 100 } },
+      model_profile: 'max',
     });
     expect(result).toBe('haiku');
   });
@@ -306,7 +281,7 @@ describe('cold-start fallback — empty or missing metrics', () => {
     expect(ce.getModelForRole('executor', 'medium', { model_profile: 'default' })).toBe('opus');
   });
 
-  test('no model_learned in config — static profile is used', () => {
+  test('no config overrides — static profile is used', () => {
     expect(ce.getModelForRole('executor', 'medium', { model_profile: 'economy' })).toBe('sonnet');
   });
 
@@ -386,156 +361,7 @@ describe('estimateTaskCost — forecast actuals', () => {
   });
 });
 
-// ── 6. cost-learner — aggregateOutcomes ──────────────────────────────────────
-
-describe('aggregateOutcomes — 90-day window', () => {
-  beforeEach(() => { clearMetrics(); });
-  afterEach(() => { clearMetrics(); });
-
-  test('entries older than 90 days are excluded', () => {
-    const old    = new Date(Date.now() - 91 * 86_400_000).toISOString();
-    const recent = new Date().toISOString();
-    appendLines(
-      { type: 'task_complete', role: 'executor', model: 'haiku', timestamp: old,    cost_usd: 0.01 },
-      { type: 'task_complete', role: 'executor', model: 'haiku', timestamp: recent, cost_usd: 0.01 },
-    );
-    expect(learner.aggregateOutcomes()['executor:haiku'].attempts).toBe(1);
-  });
-
-  test('empty metrics file returns empty object', () => {
-    mkdirSync(metricsDir(), { recursive: true });
-    writeFileSync(metricsFile(), '', 'utf8');
-    expect(learner.aggregateOutcomes()).toEqual({});
-  });
-
-  test('missing metrics file returns empty object', () => {
-    expect(learner.aggregateOutcomes()).toEqual({});
-  });
-
-  test('task_complete entry counts as a success', () => {
-    appendLines({ type: 'task_complete', role: 'executor', model: 'sonnet', timestamp: new Date().toISOString() });
-    const outcomes = learner.aggregateOutcomes();
-    expect(outcomes['executor:sonnet'].successes).toBe(1);
-    expect(outcomes['executor:sonnet'].attempts).toBe(1);
-  });
-
-  test('task_failed entry counts as attempt but not as success', () => {
-    appendLines({ type: 'task_failed', role: 'executor', model: 'sonnet', timestamp: new Date().toISOString(), failure_reason: 'timeout' });
-    const outcomes = learner.aggregateOutcomes();
-    expect(outcomes['executor:sonnet'].attempts).toBe(1);
-    expect(outcomes['executor:sonnet'].successes).toBe(0);
-  });
-
-  test('retry_count values are accumulated across entries', () => {
-    const ts = new Date().toISOString();
-    appendLines(
-      { type: 'task_complete', role: 'executor', model: 'haiku', timestamp: ts, retry_count: 2 },
-      { type: 'task_complete', role: 'executor', model: 'haiku', timestamp: ts, retry_count: 3 },
-    );
-    expect(learner.aggregateOutcomes()['executor:haiku'].total_retries).toBe(5);
-  });
-
-  test('cost_usd values are accumulated across entries', () => {
-    const ts = new Date().toISOString();
-    appendLines(
-      { type: 'task_complete', role: 'executor', model: 'sonnet', timestamp: ts, cost_usd: 0.10 },
-      { type: 'task_complete', role: 'executor', model: 'sonnet', timestamp: ts, cost_usd: 0.20 },
-    );
-    expect(learner.aggregateOutcomes()['executor:sonnet'].total_cost).toBeCloseTo(0.30, 5);
-  });
-
-  test('custom windowDays parameter narrows the effective window', () => {
-    const old    = new Date(Date.now() - 10 * 86_400_000).toISOString(); // 10 days ago
-    const recent = new Date().toISOString();
-    appendLines(
-      { type: 'task_complete', role: 'executor', model: 'haiku', timestamp: old },
-      { type: 'task_complete', role: 'executor', model: 'haiku', timestamp: recent },
-    );
-    // 5-day window: only the recent entry should be counted
-    expect(learner.aggregateOutcomes(5)['executor:haiku'].attempts).toBe(1);
-  });
-});
-
-// ── 7. cost-learner — computeModelLearned ────────────────────────────────────
-
-describe('computeModelLearned — scoring and MIN_SAMPLES', () => {
-  beforeEach(() => { clearMetrics(); });
-  afterEach(() => { clearMetrics(); });
-
-  test('role with fewer than MIN_SAMPLES (5) attempts is excluded', () => {
-    const ts = new Date().toISOString();
-    for (let i = 0; i < 4; i++) {
-      appendLines({ type: 'task_complete', role: 'executor', model: 'haiku', timestamp: ts });
-    }
-    expect(learner.computeModelLearned().executor).toBeUndefined();
-  });
-
-  test('role with exactly MIN_SAMPLES (5) attempts is included', () => {
-    const ts = new Date().toISOString();
-    for (let i = 0; i < 5; i++) {
-      appendLines({ type: 'task_complete', role: 'executor', model: 'haiku', timestamp: ts });
-    }
-    const learned = learner.computeModelLearned();
-    expect(learned.executor).toBeDefined();
-    expect(learned.executor.model).toBe('haiku');
-    expect(learned.executor.sample_count).toBe(5);
-  });
-
-  test('model with higher success rate is selected over lower-rate model', () => {
-    const ts = new Date().toISOString();
-    // haiku: 5 attempts, 2 successes — rate 0.40
-    for (let i = 0; i < 5; i++) {
-      appendLines({ type: i < 2 ? 'task_complete' : 'task_failed', role: 'executor', model: 'haiku', timestamp: ts });
-    }
-    // sonnet: 5 attempts, 5 successes — rate 1.00
-    for (let i = 0; i < 5; i++) {
-      appendLines({ type: 'task_complete', role: 'executor', model: 'sonnet', timestamp: ts });
-    }
-    expect(learner.computeModelLearned().executor.model).toBe('sonnet');
-  });
-
-  test('high retry count penalises score and causes model to lose to zero-retry model', () => {
-    const ts = new Date().toISOString();
-    // haiku: 100% success but heavy retries → penalised
-    for (let i = 0; i < 5; i++) {
-      appendLines({ type: 'task_complete', role: 'executor', model: 'haiku', timestamp: ts, retry_count: 10 });
-    }
-    // sonnet: 100% success, no retries → wins
-    for (let i = 0; i < 5; i++) {
-      appendLines({ type: 'task_complete', role: 'executor', model: 'sonnet', timestamp: ts, retry_count: 0 });
-    }
-    expect(learner.computeModelLearned().executor.model).toBe('sonnet');
-  });
-
-  test('learned entry contains success_rate (number) and updated_at (string)', () => {
-    const ts = new Date().toISOString();
-    for (let i = 0; i < 5; i++) {
-      appendLines({ type: 'task_complete', role: 'executor', model: 'sonnet', timestamp: ts });
-    }
-    const entry = learner.computeModelLearned().executor;
-    expect(typeof entry.success_rate).toBe('number');
-    expect(typeof entry.updated_at).toBe('string');
-  });
-
-  test('empty metrics file returns empty learned mapping', () => {
-    mkdirSync(metricsDir(), { recursive: true });
-    writeFileSync(metricsFile(), '', 'utf8');
-    expect(learner.computeModelLearned()).toEqual({});
-  });
-
-  test('multiple roles are learned independently', () => {
-    const ts = new Date().toISOString();
-    for (let i = 0; i < 5; i++) {
-      appendLines({ type: 'task_complete', role: 'executor', model: 'haiku', timestamp: ts });
-      appendLines({ type: 'task_complete', role: 'reviewer', model: 'opus',  timestamp: ts });
-    }
-    const learned = learner.computeModelLearned();
-    expect(learned.executor.model).toBe('haiku');
-    expect(learned.reviewer.model).toBe('opus');
-  });
-});
-
-// ── 8. cmdForecastUpdate ──────────────────────────────────────────────────────
+// ── 6. cmdForecastUpdate ──────────────────────────────────────────────────────
 
 describe('cmdForecastUpdate', () => {
   beforeEach(() => { clearMetrics(); clearConfig(); });
@@ -556,62 +382,7 @@ describe('cmdForecastUpdate', () => {
   });
 });
 
-// ── 9. refreshModelLearned ────────────────────────────────────────────────────
-
-describe('refreshModelLearned — model_learned config update', () => {
-  beforeEach(() => { clearMetrics(); clearConfig(); });
-  afterEach(() => { clearMetrics(); clearConfig(); });
-
-  test('metrics with >= 5 samples for a role updates config with model_learned', async () => {
-    const ts = new Date().toISOString();
-    for (let i = 0; i < 5; i++) {
-      appendLines({ type: 'task_complete', role: 'executor', model: 'haiku', timestamp: ts });
-    }
-    writeConfig({ budget: { max_usd: 1.0 } });
-
-    const result = await ce.refreshModelLearned();
-    expect(result).not.toBeNull();
-    expect(result.executor).toBeDefined();
-    expect(result.executor.model).toBe('haiku');
-    expect(result.executor.sample_count).toBeGreaterThanOrEqual(5);
-
-    // Config file must have been updated with model_learned
-    const written = JSON.parse(readFileSync(configPath(), 'utf8'));
-    expect(written.model_learned).toBeDefined();
-    expect(written.model_learned.executor.model).toBe('haiku');
-  });
-
-  test('empty metrics returns null and does not write model_learned to config', async () => {
-    mkdirSync(metricsDir(), { recursive: true });
-    writeFileSync(metricsFile(), '', 'utf8');
-    writeConfig({});
-
-    const result = await ce.refreshModelLearned();
-    expect(result).toBeNull();
-
-    // model_learned must not appear in config
-    const written = JSON.parse(readFileSync(configPath(), 'utf8'));
-    expect(written.model_learned).toBeUndefined();
-  });
-
-  test('missing metrics file returns null', async () => {
-    writeConfig({});
-    const result = await ce.refreshModelLearned();
-    expect(result).toBeNull();
-  });
-
-  test('fewer than 5 samples returns null', async () => {
-    const ts = new Date().toISOString();
-    for (let i = 0; i < 4; i++) {
-      appendLines({ type: 'task_complete', role: 'executor', model: 'sonnet', timestamp: ts });
-    }
-    writeConfig({});
-    const result = await ce.refreshModelLearned();
-    expect(result).toBeNull();
-  });
-});
-
-// ── 10. computeTokenActuals — direct unit tests ───────────────────────────────
+// ── 7. computeTokenActuals — direct unit tests ────────────────────────────────
 
 describe('computeTokenActuals — averages from metrics', () => {
   beforeEach(() => { clearMetrics(); clearConfig(); });

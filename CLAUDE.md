@@ -153,30 +153,28 @@ Agent tool: { model: "haiku", description: "x-kit: [command]", prompt: "Run: [ba
 
 Never route to haiku if the task involves: analysis, code generation, review, planning, evaluation, or multi-step orchestration. If detected, warn and escalate to sonnet. See `x-kit/skills/x-kit/SKILL.md` Model Guardrail for full rules.
 
-### Adaptive Model Routing (Cost Engine v2)
+### Cost-Aware Model Routing
 
-The cost engine learns from past outcomes and adjusts routing automatically. Model selection follows a 4-level priority chain:
+Model selection follows a 3-level priority chain:
 
 ```
-model_overrides → model_learned → profile → fallback
+model_overrides → profile → fallback
 ```
 
 | Priority | Source | Description |
 |----------|--------|-------------|
 | 1 | `model_overrides` | Explicit per-role config — always wins |
-| 2 | `model_learned` | Learned from outcome feedback (≥5 samples, 90-day rolling window — hardcoded, separate from budget.window_hours) |
-| 3 | profile | `economy` / `default` / `max` setting (legacy `balanced`/`performance` auto-remapped) |
-| 4 | fallback | Hard-coded safe defaults |
+| 2 | profile | `economy` / `default` / `max` setting (legacy `balanced`/`performance` auto-remapped) |
+| 3 | fallback | Hard-coded safe defaults |
 
-**New config keys:**
+**Config keys:**
 
 | Key | Description | Example |
 |-----|-------------|---------|
-| `model_learned` | Auto-populated by the engine from `task_complete` feedback; do not set manually | (auto-populated) |
 | `budget.window_hours` | Rolling window for spend tracking (default: 24h) | `48` |
 | `budget.projects` | Per-project budget caps | `{"my-project": {"max_usd": 2.0}}` |
 
-**How adaptive routing works:** each `task_complete` event records `model`, `role`, `cost_usd`, `quality_score` (recorded for future use; current learner uses binary success signal), and a `correlation_id` (format: `ce-XXXXXXXX`). After MIN_SAMPLES=5 outcomes for a role, the engine promotes the best-performing model into `model_learned`. Routing decisions are linked to outcomes via correlation IDs for external tooling and future aggregation.
+Each `task_complete` event records `model`, `role`, `cost_usd`, `quality_score`, and a `correlation_id` (format: `ce-XXXXXXXX`) for observability. Adaptive learning was removed (Opus 4.7 era): it required multi-model samples per role to be meaningful, but single-profile routing rarely produces them — use `model_overrides` for deliberate per-role choices instead.
 
 ## Edit Policy
 
