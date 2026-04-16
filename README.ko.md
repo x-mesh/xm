@@ -965,8 +965,6 @@ x-kit에는 코어와 도메인 영역을 아우르는 37개 전문가 에이전
 
 역할별 오버라이드: `/x-kit config set model_overrides '{"architect": "opus"}'`로 프로필 위에 개별 설정 가능.
 
-`escalate` 전략 (`/x-op escalate "작업"`)은 haiku로 시작하여 필요할 때만 자동 에스컬레이션하므로, 평균 ~60% 절감, haiku에서 해결되는 태스크는 최대 ~90% 절감됩니다.
-
 예산 가드는 80% 사용 시 경고하고, 100%에서 실행을 차단하며 세션 메트릭으로 추적됩니다. 롤링 지출은 `.xm/spend-cache.json`에 설정 가능한 윈도우(`budget.window_hours`, 기본값 24h) 단위로 추적됩니다. 프로젝트별 상한은 `budget.projects`로 설정합니다:
 
 ```bash
