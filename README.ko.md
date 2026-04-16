@@ -81,20 +81,20 @@ powershell -c "irm bun.sh/install.ps1 | iex"
 /plugin install x-kit@x-kit -s user
 ```
 
-### 최초 초기화
+### 최초 초기화 (전역)
 
-설치 후 프로젝트마다 한 번 실행하여 훅을 연결하고, `.claude/settings.json`을 병합하고, `x-sync` 클라이언트를 설치합니다:
+설치 후 머신당 한 번 실행하여 trace-session 훅을 `~/.claude/hooks/`에 복사하고 `~/.claude/settings.json`에 Skill matcher를 등록합니다:
 
 ```
-/x-kit init              # 훅 + settings + x-sync 클라이언트 설치
-/x-kit init --dry-run    # 변경 내용 미리보기 (쓰기 없음)
-/x-kit init --skip-sync  # 훅 + settings만
-/x-kit init --rollback   # 가장 최근 백업에서 settings.json 복원
-/x-kit doctor            # 설치 상태 진단
-/x-kit doctor --fix      # 안전한 항목 자동 수정
+/x-kit:init              # trace-session 훅을 ~/.claude/에 설치
+/x-kit:init status       # 설치 상태 확인
+/x-kit:init uninstall    # 훅 파일 + settings.json 항목 제거
+/x-kit:init --no-hooks   # CLI만 설치 (현재는 no-op, 예약됨)
 ```
 
-`init`을 실행하지 않은 상태에서 x-kit 서브커맨드를 처음 호출하면 알림이 뜹니다.
+Idempotent: 재실행 안전. 기존 훅(mem-mesh 등)은 보존되고, 매 쓰기 시 `settings.json`의 타임스탬프 백업이 생성됩니다. 트레이스는 각 프로젝트의 `.xm/traces/`에 기록됩니다.
+
+터미널에서 동일한 설치를 하려면 `x-kit init`을 쓰세요 ([터미널 CLI](#terminal-cli-optional) 참고).
 
 ### 터미널 CLI (선택)
 
@@ -112,7 +112,7 @@ curl -fsSL https://raw.githubusercontent.com/x-mesh/x-kit/main/x-kit/scripts/ins
 
 #### 전역 훅 설치 (`x-kit init`)
 
-bash `x-kit init` 서브커맨드는 Skill 트레이싱 훅을 **사용자 스코프**(`~/.claude/`)에 설치합니다 — 머신당 1회로 끝나며, 프로젝트마다 반복할 필요가 없습니다. 매 프로젝트에서 `/x-kit init`을 돌리는 대신 이쪽을 쓰세요.
+bash `x-kit init` 서브커맨드는 `/x-kit:init` 슬래시 커맨드와 동일한 동작을 합니다 — Skill 트레이싱 훅을 **사용자 스코프**(`~/.claude/`)에 설치합니다 (머신당 1회):
 
 ```bash
 x-kit init                 # trace-session 훅을 ~/.claude/에 설치
@@ -121,9 +121,7 @@ x-kit init uninstall       # 훅 파일 + settings.json 항목 제거
 x-kit init --no-hooks      # CLI만 설치 (현재는 no-op, 예약됨)
 ```
 
-`~/.claude/hooks/x-kit-trace-session.mjs`를 복사하고 `~/.claude/settings.json`의 `PreToolUse`/`PostToolUse`에 Skill matcher를 병합합니다. 기존 훅(mem-mesh 등)은 보존되며, 수정 시 타임스탬프 백업이 생성됩니다. 트레이스는 기존과 동일하게 각 프로젝트의 `.xm/traces/`에 기록됩니다 — 전역 훅 덕분에 프로젝트마다 따로 배선할 필요가 없어질 뿐입니다.
-
-> **스코프 차이:** `/x-kit init` (슬래시 커맨드)은 **프로젝트별** — 현재 프로젝트의 `.claude/`에 훅을 설치하고 x-sync 클라이언트를 설치합니다. `x-kit init` (bash)은 **전역** — `~/.claude/`에 trace-session 훅만 설치합니다. 특정 프로젝트에서 x-sync 클라이언트가 필요한 게 아니라면 전역 경로를 권장합니다.
+`~/.claude/hooks/x-kit-trace-session.mjs`를 복사하고 `~/.claude/settings.json`의 `PreToolUse`/`PostToolUse`에 Skill matcher를 병합합니다. 기존 훅(mem-mesh 등)은 보존되며, 수정 시 타임스탬프 백업이 생성됩니다. Claude Code 밖에서 실행해야 할 때는 bash 경로를 쓰고, 그 외에는 `/x-kit:init`을 권장합니다.
 
 ```bash
 x-kit dashboard                       # 시작 (단일 프로젝트 — 현재 .xm/)

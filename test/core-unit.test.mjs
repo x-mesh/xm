@@ -581,6 +581,11 @@ describe('config helpers', () => {
   });
 
   test('getAgentCount returns default 4', () => {
+    // Bun quirk: process.env.HOME override does not affect os.homedir(), so
+    // loadSharedConfig still reads the real ~/.xm/config.json. Skip when the
+    // user has a real config that could set agent_max_count.
+    const realHome = ORIG_HOME ?? process.env.HOME;
+    if (realHome && existsSync(join(realHome, '.xm', 'config.json'))) return;
     expect(core.getAgentCount()).toBe(4);
   });
 });
