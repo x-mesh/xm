@@ -186,8 +186,15 @@ describe('x-op SKILL.md structure', () => {
   });
 
   test('--vote Self-Consistency documented', () => {
-    expect(content).toContain('Self-Consistency');
-    expect(content).toContain('Confidence Map');
-    expect(content).toContain('50%');
+    // --vote details live in references/x-op-options.md (extracted from SKILL.md)
+    const optionsBody = readFileSync(
+      join(ROOT, 'x-op', 'skills', 'x-op', 'references', 'x-op-options.md'),
+      'utf8'
+    );
+    expect(optionsBody).toContain('Self-Consistency');
+    expect(optionsBody).toContain('Confidence Map');
+    expect(optionsBody).toContain('50%');
+    // SKILL.md still references the options via link stub
+    expect(content).toContain('references/x-op-options.md');
   });
 });
