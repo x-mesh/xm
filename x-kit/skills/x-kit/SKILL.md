@@ -45,8 +45,11 @@ For a fuller picture (not just trace-session.mjs), suggest `x-kit doctor` — bu
 | Subcommand | Model | Reason |
 |------------|-------|--------|
 | `version`, `update`, `agents list/match/get` | **haiku** (Agent tool) | Read-only, no reasoning needed |
+| `cost`, `cost --session` | **haiku** (Agent tool) | Read-only aggregation |
 | `config show/set/get/reset` | **haiku** (Agent tool) | Simple command execution |
 | `config` (interactive wizard) | **sonnet** | Requires AskUserQuestion |
+| `init`, `init --dry-run`, `init --skip-sync`, `init --with-server`, `init --rollback` | **sonnet** | AskUserQuestion (First-Run Init Check) + multi-step install |
+| `doctor`, `doctor --fix` | **sonnet** | Diagnostic reasoning + conditional AskUserQuestion for network fixes |
 | `pipeline list`, `validate` | **haiku** (Agent tool) | Read-only display |
 | `pipeline <name>` | **sonnet** | Multi-step orchestration with AskUserQuestion |
 
@@ -119,8 +122,8 @@ Install individual: /plugin install x-kit@x-build
 **Progressive disclosure — use the Read tool to load the required sub-file BEFORE emitting any subcommand output.** The stubs below give you routing + key flags; the sub-file holds the executable procedure (bash blocks, schemas, node -e heredocs). If you generate a subcommand response without first reading the sub-file, you have fabricated the procedure.
 
 Mechanism (strict):
-1. User invokes `/x-kit <subcommand>` → look up the subcommand in the routing table below
-2. Call `Read` tool on the `Required file` path (relative to `${CLAUDE_PLUGIN_ROOT}/skills/x-kit/`)
+1. User invokes `/x-kit <subcommand>` → look up the subcommand in the routing table below to get the `Required file` (e.g., `commands/init.md`)
+2. Build the absolute path by prefixing `${CLAUDE_PLUGIN_ROOT}/skills/x-kit/`. Claude Code substitutes `${CLAUDE_PLUGIN_ROOT}` when SKILL.md is loaded, so pass the full concatenated string directly to the Read tool — e.g., Read `file_path: "${CLAUDE_PLUGIN_ROOT}/skills/x-kit/commands/init.md"`. Do **not** pass bare relative paths (`commands/init.md`) or rely on shell expansion of the variable
 3. Then execute the procedure found in that file
 
 | Subcommand | Required file |
