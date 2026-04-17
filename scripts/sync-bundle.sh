@@ -94,6 +94,10 @@ echo "=== Syncing x-build commands ==="
 mirror_md_dir "x-build/skills/x-build/commands" "x-kit/skills/x-build/commands"
 
 echo ""
+echo "=== Syncing x-build phases ==="
+mirror_md_dir "x-build/skills/x-build/references/phases" "x-kit/skills/x-build/references/phases"
+
+echo ""
 echo "=== Syncing x-review lenses ==="
 mirror_md_dir "x-review/skills/x-review/lenses" "x-kit/skills/x-review/lenses"
 

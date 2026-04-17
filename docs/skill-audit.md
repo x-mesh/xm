@@ -69,8 +69,9 @@ Largest sub-files (non-SKILL.md) by line count. These don't fall under the 500-l
 
 | Lines | File | Notes |
 |-------|------|-------|
-| 654 | `x-build/skills/x-build/references/workflow-guide.md` | Largest reference; candidate for secondary split (phases / data-model / consensus-agents) |
 | 494 | `x-agent/skills/x-agent/references/role-presets.md` | Per-primitive role presets |
+| 332 | `x-build/skills/x-build/references/workflow-guide.md` | Was 654; Step 3 Plan extracted to phases/plan.md |
+| 326 | `x-build/skills/x-build/references/phases/plan.md` | Full Plan-phase walkthrough (extracted 2026-04-17) |
 | 488 | `x-solver/skills/x-solver/commands/solve.md` | 4 strategy branches; already borderline |
 | 429 | `x-agent/skills/x-agent/TEAM.md` | Team mode dispatcher |
 | 396 | `x-review/skills/x-review/references/review-workflow.md` | Phase 1-4 full pipeline |
@@ -89,7 +90,7 @@ All 14 plugin skills are under budget. No urgent splits required.
 
 These references don't hit the 500-line policy (it applies to SKILL.md only) but could be split if they grow further:
 
-- `x-build/references/workflow-guide.md` (654 lines) — could split into `phases.md` + `data-model.md` + `consensus-agents.md` if it becomes hard to navigate
+- `x-build/references/workflow-guide.md` (332 lines, was 654) — Step 3 Plan extracted 2026-04-17. If Step 2 Research or Step 4 Execute grows, consider further per-phase splits
 - `x-solver/commands/solve.md` (488 lines) — borderline; consider per-strategy split (`decompose.md`, `iterate.md`, `constrain.md`, `pipeline.md`) if strategy branches grow
 
 ### Regression guard
