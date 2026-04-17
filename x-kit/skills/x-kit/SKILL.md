@@ -124,7 +124,7 @@ Install individual: /plugin install x-kit@x-build
 Mechanism (strict):
 1. **Locate the base directory** — when this skill is invoked, the Claude Code skill loader injects a line at the top of the rendered prompt: `Base directory for this skill: <absolute path>` (e.g., `/Users/.../x-kit/1.x.y/skills/x-kit`). Parse that path — it is your absolute base. Do NOT use `${CLAUDE_PLUGIN_ROOT}` as a literal in Read — it is **not** expanded by the Read tool (verified 2026-04-17: passing `${CLAUDE_PLUGIN_ROOT}/...` to Read returns "file does not exist").
 2. **Resolve the sub-file path** — look up the subcommand in the routing table below to get the `Required file` (e.g., `commands/init.md`), then concatenate: `<base>/<Required file>` → a real absolute path (e.g., `/Users/.../skills/x-kit/commands/init.md`).
-3. **Call Read tool** with the resolved absolute path. **If the base-directory header is missing** (older loader version or missing injection), fall back to Bash: `ls -d ~/.claude/plugins/cache/x-kit/x-kit/*/skills/x-kit/ | tail -1` → use the discovered path.
+3. **Call Read tool** with the resolved absolute path. **If the base-directory header is missing** (older loader version, header format change, or missing injection), fall back to Bash: `ls -d ~/.claude/plugins/cache/x-kit/x-kit/*/skills/x-kit/ | awk -F/ '{print $(NF-3), $0}' | sort -V | tail -1 | awk '{print $2}'` — this picks the **semver-latest** version (not lex-latest), so `1.30.1` correctly wins over `1.9.0`.
 4. Then execute the procedure found in that file.
 
 | Subcommand | Required file |
