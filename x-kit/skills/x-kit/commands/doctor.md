@@ -11,12 +11,14 @@ Unified diagnostic — check every piece of x-kit's install footprint in one pas
 
 ## Status symbols
 
+See the authoritative `Status Symbols > Health status` table in SKILL.md — reproduced here for offline readability. If the two drift, SKILL.md is the source of truth.
+
 | Symbol | Meaning |
 |--------|---------|
 | `✅` | OK |
 | `⚠️` | Degraded — works but suboptimal (e.g., hook out of date, PATH missing) |
 | `❌` | Broken — feature unavailable |
-| `⏭️` | Not applicable (e.g., server-only check when not installing server) |
+| `⏭️` | Not applicable for this context (e.g., x-kit-repo-only hook in a user project; server-only check when server not installed) |
 
 ## x-kit doctor
 
@@ -49,13 +51,16 @@ check('hooks/trace-session.mjs', () => {
 check('hooks/block-marketplace-copy.mjs', () => {
   // This hook is x-kit-repo-specific — intentionally omitted from per-project installs.
   // Only report presence inside the x-kit repo itself; everywhere else, mark as not applicable.
-  const inXKitRepo = fs.existsSync(path.join(PROJECT, '.claude-plugin/marketplace.json'));
+  // Heuristic requires BOTH a marketplace.json AND the x-kit skill file — the combination is unique to this repo
+  // and avoids false positives on other plugin-development projects that carry only marketplace.json.
+  const inXKitRepo = fs.existsSync(path.join(PROJECT, '.claude-plugin/marketplace.json')) &&
+                     fs.existsSync(path.join(PROJECT, 'x-kit/skills/x-kit/SKILL.md'));
   const src = path.join(MARKETPLACE, '.claude/hooks/block-marketplace-copy.mjs');
   const dst = path.join(PROJECT, '.claude/hooks/block-marketplace-copy.mjs');
   if (!inXKitRepo) return { status: '⏭️', detail: 'x-kit-repo-only — expected to be absent in user projects' };
-  if (!fs.existsSync(dst)) return { status: '❌', detail: 'missing in x-kit repo — restore from marketplace', fixable: false };
+  if (!fs.existsSync(dst)) return { status: '❌', detail: 'missing in x-kit repo — copy from marketplace manually', fixable: false, note: 'cp ' + src + ' ' + dst };
   if (fs.existsSync(src) && fs.readFileSync(src,'utf8') !== fs.readFileSync(dst,'utf8'))
-    return { status: '⚠️', detail: 'out of date', fixable: false };
+    return { status: '⚠️', detail: 'out of date — copy from marketplace manually', fixable: false, note: 'cp ' + src + ' ' + dst };
   return { status: '✅', detail: 'installed' };
 });
 
@@ -124,6 +129,7 @@ console.log('\n  Summary: ' + Object.entries(counts).map(([k,v]) => v + k).join(
 if (FIX) {
   const localFixes = results.filter(r => r.fixable && (r.status === '❌' || r.status === '⚠️'));
   const networkFixes = results.filter(r => r.networkFix);
+  const manualFixes = results.filter(r => !r.fixable && r.note && (r.status === '❌' || r.status === '⚠️'));
   if (localFixes.length > 0) {
     console.log('\n🔧 Re-running init for: ' + localFixes.map(r => r.name).join(', '));
     // Delegate to init (leader invokes 'x-kit init' separately — doctor only flags them)
@@ -133,7 +139,11 @@ if (FIX) {
     console.log('\n🌐 Network install required for: ' + networkFixes.map(r => r.name).join(', '));
     console.log('   → run: x-kit init  (will curl x-sync install.sh)');
   }
-  if (localFixes.length === 0 && networkFixes.length === 0) {
+  if (manualFixes.length > 0) {
+    console.log('\n✋ Manual fixes required (x-kit init does not handle these):');
+    for (const r of manualFixes) console.log('   ' + r.name + ' → ' + r.note);
+  }
+  if (localFixes.length === 0 && networkFixes.length === 0 && manualFixes.length === 0) {
     console.log('\n✅ Nothing to fix.');
   }
 }

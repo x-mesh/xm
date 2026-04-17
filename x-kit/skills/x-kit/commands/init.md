@@ -141,7 +141,7 @@ console.log(DRY ? '\n📋 Dry run complete. Re-run without --dry-run to apply.' 
 
 **Step 3: Install x-sync client** (skip if user passed `--skip-sync`)
 
-First check if already installed: `command -v x-sync >/dev/null 2>&1 && x-sync --version 2>/dev/null`. If present, print `⬜ x-sync (already installed)` and move on.
+First check if already installed: `command -v x-sync >/dev/null 2>&1 && x-sync --version 2>/dev/null`. If present, print `✅ already installed  x-sync` and move on.
 
 Otherwise run:
 
