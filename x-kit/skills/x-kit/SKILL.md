@@ -116,7 +116,12 @@ Install individual: /plugin install x-kit@x-build
 
 ## Sub-file Loading
 
-**Progressive disclosure — load the required sub-file BEFORE executing any subcommand.** The stubs below give you routing + key flags; the sub-file holds the executable procedure (bash blocks, schemas, node -e heredocs).
+**Progressive disclosure — use the Read tool to load the required sub-file BEFORE emitting any subcommand output.** The stubs below give you routing + key flags; the sub-file holds the executable procedure (bash blocks, schemas, node -e heredocs). If you generate a subcommand response without first reading the sub-file, you have fabricated the procedure.
+
+Mechanism (strict):
+1. User invokes `/x-kit <subcommand>` → look up the subcommand in the routing table below
+2. Call `Read` tool on the `Required file` path (relative to `${CLAUDE_PLUGIN_ROOT}/skills/x-kit/`)
+3. Then execute the procedure found in that file
 
 | Subcommand | Required file |
 |------------|---------------|
@@ -139,7 +144,7 @@ Two parallel conventions — do not mix them.
 | `➕ installed` | New item written |
 | `🔄 updated` | Existing item replaced with newer content |
 | `✅ already installed` | Content matches, no change |
-| `⏭️ skipped` | User flag skipped this step |
+| `🚫 skipped` | User flag skipped this step |
 | `🔍 would install/update` | Dry-run preview only |
 
 **Health status** (doctor output):

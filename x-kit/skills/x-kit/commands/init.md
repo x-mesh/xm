@@ -19,7 +19,7 @@ All install steps emit one of these labels per item for consistent feedback:
 | `➕ installed` | New item written |
 | `🔄 updated` | Existing item replaced with newer content |
 | `✅ already installed` | Content matches, no change |
-| `⏭️ skipped` | User flag skipped this step |
+| `🚫 skipped` | User flag skipped this step |
 | `🔍 would install/update` | Dry-run preview only |
 
 ## x-kit init

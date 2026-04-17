@@ -44,7 +44,14 @@ Users can define named pipelines in `.xm/config.json`:
 
 ## Model Routing
 
-See the [Model Routing](../SKILL.md#model-routing) table in SKILL.md for `pipeline list`, `pipeline validate`, and `pipeline <name>` model assignments.
+Self-contained routing for pipeline subcommands (no cross-file lookup required):
+
+| Subcommand | Model | Reason |
+|------------|-------|--------|
+| `pipeline list`, `validate` | **haiku** (Agent tool) | Read-only display |
+| `pipeline <name>` | **sonnet** | Multi-step orchestration with AskUserQuestion |
+
+For the full cross-plugin routing table (version, update, agents, config), see [Model Routing](../SKILL.md#model-routing) in SKILL.md.
 
 ## Execution Modes
 
