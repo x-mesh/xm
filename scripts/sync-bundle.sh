@@ -114,6 +114,14 @@ echo "=== Syncing x-eval references ==="
 mirror_md_dir "x-eval/skills/x-eval/references" "x-kit/skills/x-eval/references"
 
 echo ""
+echo "=== Syncing x-solver commands ==="
+mirror_md_dir "x-solver/skills/x-solver/commands" "x-kit/skills/x-solver/commands"
+
+echo ""
+echo "=== Syncing x-solver references ==="
+mirror_md_dir "x-solver/skills/x-solver/references" "x-kit/skills/x-solver/references"
+
+echo ""
 echo "=== Verifying all synced ==="
 DIVERGED=0
 for plugin in x-build x-op x-solver x-eval x-review x-trace x-memory x-humble x-probe x-agent; do
