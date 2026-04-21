@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SERVER_PATH = join(__dirname, '..', 'x-kit', 'lib', 'server', 'x-kit-server.mjs');
+const SERVER_PATH = join(__dirname, '..', 'xm', 'lib', 'server', 'xm-server.mjs');
 const TEST_PORT = 19899;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
 
@@ -14,15 +14,15 @@ let serverProc;
 let testXmRoot;
 
 beforeAll(async () => {
-  // Isolate .xm/ writes to a temp dir so tests don't pollute x-kit/lib/.xm/
+  // Isolate .xm/ writes to a temp dir so tests don't pollute xm/lib/.xm/
   // (the server resolves xmRoot from XM_ROOT env or cwd/.xm — without this,
   //  PUT /config would write test_key into the marketplace lib tree).
-  testXmRoot = mkdtempSync(join(tmpdir(), 'x-kit-server-test-'));
+  testXmRoot = mkdtempSync(join(tmpdir(), 'xm-server-test-'));
 
   serverProc = spawn('bun', [SERVER_PATH, '--port', String(TEST_PORT), '--idle-timeout', '60000'], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    cwd: join(__dirname, '..', 'x-kit', 'lib'),
+    cwd: join(__dirname, '..', 'xm', 'lib'),
     env: { ...process.env, XM_ROOT: join(testXmRoot, '.xm') },
   });
 
@@ -43,7 +43,7 @@ afterAll(() => {
   try { rmSync(testXmRoot, { recursive: true, force: true }); } catch {}
 });
 
-describe('x-kit-server', () => {
+describe('xm-server', () => {
   test('GET /health returns status ok', async () => {
     const res = await fetch(`${BASE}/health`);
     expect(res.status).toBe(200);
@@ -123,7 +123,7 @@ describe('x-kit-server', () => {
 });
 
 // Separate describe to ensure shutdown runs last
-describe('x-kit-server shutdown', () => {
+describe('xm-server shutdown', () => {
   test('POST /shutdown triggers shutdown', async () => {
     const res = await fetch(`${BASE}/shutdown`);
     expect(res.status).toBe(200);

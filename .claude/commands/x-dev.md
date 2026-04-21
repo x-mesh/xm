@@ -5,8 +5,8 @@ description: Plugin development & testing — local install, validate, update, t
 
 # x-dev — Plugin Development & Testing
 
-Local install, validate, update, and test x-kit plugins without pushing to remote.
-This command is for x-kit repo maintainers only.
+Local install, validate, update, and test xm plugins without pushing to remote.
+This command is for xm repo maintainers only.
 
 ## Arguments
 
@@ -32,15 +32,15 @@ User provided: $ARGUMENTS
 
 ```
 REPO_ROOT = /Users/jinwoo/work/project/agentic/xm:kit
-MARKETPLACE_NAME = x-kit
-PLUGINS = [x-agent, x-build, x-op, x-kit]
+MARKETPLACE_NAME = xm
+PLUGINS = [x-agent, x-build, x-op, xm]
 ```
 
 ---
 
 ## Mode: status
 
-Show current state of x-kit plugins.
+Show current state of xm plugins.
 
 ### Step 1: Check marketplace registration
 
@@ -48,7 +48,7 @@ Show current state of x-kit plugins.
 claude plugin marketplace list --json 2>&1
 ```
 
-Look for marketplace with name containing "x-kit" or source path matching REPO_ROOT.
+Look for marketplace with name containing "xm" or source path matching REPO_ROOT.
 
 ### Step 2: Check installed plugins
 
@@ -74,22 +74,22 @@ claude plugin validate REPO_ROOT/xm:kit 2>&1
 🔧 x-dev Status
 
   Marketplace:
-    x-kit  ✅ registered (local: /Users/jinwoo/work/project/agentic/xm:kit)
+    xm  ✅ registered (local: /Users/jinwoo/work/project/agentic/xm:kit)
     — or —
-    x-kit  ❌ not registered (run: /x-dev marketplace add)
+    xm  ❌ not registered (run: /x-dev marketplace add)
 
   Installed plugins:
     x-agent   ✅ v1.0.0 (scope: user)
     x-build   ✅ v1.0.0 (scope: user)
     x-op      ❌ not installed
-    x-kit     ❌ not installed
+    xm     ❌ not installed
 
   Validation:
     marketplace.json  ✅ valid
     x-agent          ✅ valid
     x-build          ✅ valid
     x-op             ✅ valid
-    x-kit            ✅ valid
+    xm            ✅ valid
 
   Quick commands:
     /x-dev install x-op       Install single plugin locally
@@ -110,7 +110,7 @@ claude plugin marketplace add REPO_ROOT
 
 Output:
 ```
-✅ Marketplace "x-kit" registered from local path
+✅ Marketplace "xm" registered from local path
    Source: REPO_ROOT
 
    Now you can install plugins:
@@ -120,7 +120,7 @@ Output:
 
 If already registered:
 ```
-ℹ️ Marketplace "x-kit" is already registered.
+ℹ️ Marketplace "xm" is already registered.
 ```
 
 ---
@@ -128,12 +128,12 @@ If already registered:
 ## Mode: marketplace-remove
 
 ```bash
-claude plugin marketplace remove x-kit
+claude plugin marketplace remove xm
 ```
 
 Output:
 ```
-✅ Marketplace "x-kit" removed.
+✅ Marketplace "xm" removed.
 ```
 
 ---
@@ -144,7 +144,7 @@ Install a single plugin from local source.
 
 ### Step 1: Ensure marketplace is registered
 
-Check `claude plugin marketplace list --json`. If x-kit marketplace is not found:
+Check `claude plugin marketplace list --json`. If xm marketplace is not found:
 ```
 ⚠️ Local marketplace not registered. Registering now...
 ```
@@ -152,12 +152,12 @@ Then run: `claude plugin marketplace add REPO_ROOT`
 
 ### Step 2: Parse plugin name
 
-From `$ARGUMENTS`, extract the plugin name after "install". Accept both `x-op` and `x-kit@x-op` format.
+From `$ARGUMENTS`, extract the plugin name after "install". Accept both `x-op` and `xm@x-op` format.
 
 If plugin name is not in PLUGINS list:
 ```
 ❌ Unknown plugin: {name}
-   Available: x-agent, x-build, x-op, x-kit
+   Available: x-agent, x-build, x-op, xm
 ```
 
 ### Step 3: Install
@@ -199,7 +199,7 @@ Install all plugins.
 claude plugin install x-agent@xm -s user
 claude plugin install x-build@xm -s user
 claude plugin install x-op@xm -s user
-claude plugin install x-kit@xm -s user
+claude plugin install xm@xm -s user
 ```
 
 Run sequentially. If a plugin is already installed, note it and continue.
@@ -207,12 +207,12 @@ Run sequentially. If a plugin is already installed, note it and continue.
 ### Step 3: Output
 
 ```
-✅ All x-kit plugins installed
+✅ All xm plugins installed
 
    x-agent  ✅ v1.0.0
    x-build  ✅ v1.0.0
    x-op     ✅ v1.0.0
-   x-kit    ✅ v1.0.0
+   xm    ✅ v1.0.0
 
    Run /reload-plugins to activate (or restart Claude Code).
 ```
@@ -241,7 +241,7 @@ Re-install from local source to pick up changes. This is the key dev workflow.
 ### Step 1: Update marketplace cache
 
 ```bash
-claude plugin marketplace update x-kit
+claude plugin marketplace update xm
 ```
 
 ### Step 2: Update the plugin
@@ -263,7 +263,7 @@ claude plugin update x-{name}@xm -s user
 
 If `$ARGUMENTS` is just "update" (no plugin name), update all installed xm plugins:
 ```bash
-claude plugin marketplace update x-kit
+claude plugin marketplace update xm
 ```
 Then for each installed xm plugin:
 ```bash
@@ -318,7 +318,7 @@ Output:
    x-agent          ✅
    x-build          ✅
    x-op             ✅
-   x-kit            ✅
+   xm            ✅
 
    All manifests valid.
 ```
@@ -331,7 +331,7 @@ Or with errors:
    x-agent          ✅
    x-build          ❌ Missing "description" in plugin.json
    x-op             ✅
-   x-kit            ✅
+   xm            ✅
 
    1 error found. Fix before releasing.
 ```
@@ -380,7 +380,7 @@ Remove all xm plugins and marketplace. Clean slate.
 ### Step 1: Confirm with user (AskUserQuestion)
 
 ```
-This will uninstall all x-kit plugins and remove the local marketplace. Continue? (y/n)
+This will uninstall all xm plugins and remove the local marketplace. Continue? (y/n)
 ```
 
 ### Step 2: Uninstall all
@@ -389,8 +389,8 @@ This will uninstall all x-kit plugins and remove the local marketplace. Continue
 claude plugin uninstall x-agent@xm -s user 2>&1 || true
 claude plugin uninstall x-build@xm -s user 2>&1 || true
 claude plugin uninstall x-op@xm -s user 2>&1 || true
-claude plugin uninstall x-kit@xm -s user 2>&1 || true
-claude plugin marketplace remove x-kit 2>&1 || true
+claude plugin uninstall xm@xm -s user 2>&1 || true
+claude plugin marketplace remove xm 2>&1 || true
 ```
 
 ### Step 3: Output
@@ -398,8 +398,8 @@ claude plugin marketplace remove x-kit 2>&1 || true
 ```
 🧹 Reset complete
 
-   Uninstalled: x-agent, x-build, x-op, x-kit
-   Marketplace: x-kit removed
+   Uninstalled: x-agent, x-build, x-op, xm
+   Marketplace: xm removed
 
    To start fresh: /x-dev marketplace add
 ```
@@ -438,7 +438,7 @@ Self-improve a plugin's SKILL.md using meta-prompting.
 3. Show results to user (AskUserQuestion) for approval before applying
 4. For each approved improvement:
    - Edit the source SKILL.md (`REPO_ROOT/x-{name}/skills/x-{name}/SKILL.md`)
-   - Sync to bundle copy (`REPO_ROOT/x-kit/skills/x-{name}/SKILL.md`)
+   - Sync to bundle copy (`REPO_ROOT/xm/skills/x-{name}/SKILL.md`)
    - Show the diff to confirm
 5. After all edits: "Run `/x-dev validate x-{name}` to verify, then `/x-release` to publish."
 

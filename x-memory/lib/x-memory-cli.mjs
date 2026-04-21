@@ -7,9 +7,9 @@
  */
 
 import { cmdSave, cmdShow, cmdList, cmdForget, cmdRecall, cmdInject, cmdExport, cmdImport, cmdStats } from './x-memory/commands.mjs';
-import { createSessionId, sessionStart, sessionEnd } from '../../x-kit/lib/x-trace/trace-writer.mjs';
+import { createSessionId, sessionStart, sessionEnd } from '../../xm/lib/x-trace/trace-writer.mjs';
 
-// Skip top-level execution when imported by x-kit-server
+// Skip top-level execution when imported by xm-server
 if (process.env.XKIT_SERVER !== '1') {
 
 // ── Flag extraction ─────────────────────────────────────────────────

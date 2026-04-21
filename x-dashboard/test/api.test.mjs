@@ -16,7 +16,7 @@ import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // The server uses resolve(process.cwd(), '.xm') as XM_ROOT.
-// We spawn it from the x-kit project root so fixtures land in x-kit/.xm/
+// We spawn it from the xm project root so fixtures land in xm/.xm/
 const PROJECT_ROOT = resolve(__dirname, '..', '..');
 const SERVER_PATH = join(__dirname, '..', 'lib', 'x-dashboard-server.mjs');
 const TEST_PORT = 19898;

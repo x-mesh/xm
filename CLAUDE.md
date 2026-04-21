@@ -1,4 +1,4 @@
-# x-kit
+# xm
 
 Claude Code plugin marketplace for structured multi-agent orchestration.
 
@@ -115,7 +115,7 @@ If the skill references a plugin CLI (`node ${CLAUDE_PLUGIN_ROOT}/lib/<name>-cli
 > xmXX <command> <args>
 > ```
 > **Forbidden:** Assigning `XMXX="node ..."` then calling `$XMXX <command>` — zsh treats the entire quoted string as a single command name and fails with `no such file or directory`.
-> Alternative: use the unified dispatcher `x-kit <subcmd> <command>` — no function needed.
+> Alternative: use the unified dispatcher `xm <subcmd> <command>` — no function needed.
 ```
 
 **Why:** zsh expands `$VAR` as a single token. `XMS="node /path/cli.mjs"; $XMS foo` executes the file literally named `"node /path/cli.mjs"`, which does not exist. This is the #1 invocation failure LLMs repeat across sessions. Every SKILL.md referencing a CLI must teach the correct pattern.
@@ -151,7 +151,7 @@ Use the cheapest model that gets the job done. For commands that just execute a 
 
 For haiku-eligible commands, delegate via Agent tool:
 ```
-Agent tool: { model: "haiku", description: "x-kit: [command]", prompt: "Run: [bash command]" }
+Agent tool: { model: "haiku", description: "xm: [command]", prompt: "Run: [bash command]" }
 ```
 
 ### Principle
@@ -161,7 +161,7 @@ Agent tool: { model: "haiku", description: "x-kit: [command]", prompt: "Run: [ba
 
 ### Guardrail
 
-Never route to haiku if the task involves: analysis, code generation, review, planning, evaluation, or multi-step orchestration. If detected, warn and escalate to sonnet. See `x-kit/skills/kit/SKILL.md` Model Guardrail for full rules.
+Never route to haiku if the task involves: analysis, code generation, review, planning, evaluation, or multi-step orchestration. If detected, warn and escalate to sonnet. See `xm/skills/kit/SKILL.md` Model Guardrail for full rules.
 
 ### Cost-Aware Model Routing
 
@@ -188,16 +188,16 @@ Each `task_complete` event records `model`, `role`, `cost_usd`, `quality_score`,
 
 ## Edit Policy
 
-**NEVER edit files under `x-kit/skills/` directly.** That directory is the marketplace copy — a build artifact.
+**NEVER edit files under `xm/skills/` directly.** That directory is the marketplace copy — a build artifact.
 
 - Always edit the **source** SKILL.md in each plugin's own directory (e.g., `x-solver/skills/solver/SKILL.md`)
-- The release process (`/x-release`) copies source → `x-kit/skills/`
+- The release process (`/x-release`) copies source → `xm/skills/`
 - If you edit the marketplace copy, the change will be overwritten on next release and the source will remain stale
 
 | Path | Role | Editable? |
 |------|------|-----------|
 | `x-solver/skills/solver/SKILL.md` | Source | **YES** |
-| `x-kit/skills/solver/SKILL.md` | Marketplace copy | **NO** |
+| `xm/skills/solver/SKILL.md` | Marketplace copy | **NO** |
 
 This applies to all plugins: x-build, x-op, x-probe, x-solver, x-eval, x-review, x-trace, x-memory, x-humble, x-ship, x-sync.
 
@@ -205,7 +205,7 @@ This applies to all plugins: x-build, x-op, x-probe, x-solver, x-eval, x-review,
 
 ## Lessons (x-humble)
 <!-- Section managed by x-humble. Manual editing allowed. -->
-- STOP: Editing `x-kit/skills/` SKILL.md files directly. Always edit source directory first. (L4, confirmed 2 times, 2026-04-08)
+- STOP: Editing `xm/skills/` SKILL.md files directly. Always edit source directory first. (L4, confirmed 2 times, 2026-04-08)
 - STOP: Silencing errors in user-facing CLI paths with `2>/dev/null`, `|| true`, or `set -e` silent exits. Show failures so they can be fixed — dashboard has regressed this way ≥3 times. (L6, confirmed 1 time, 2026-04-20)
 - STOP: Hardcoding per-file lists in bundle/sync scripts. Mirror plugin `lib/` and `public/` wholesale so new files ship automatically. (L8, confirmed 1 time, 2026-04-20)
 - START: Before editing any SKILL.md, verify the file path is in the source directory, not marketplace copy. (L5, confirmed 2 times, 2026-04-08)
@@ -214,7 +214,7 @@ This applies to all plugins: x-build, x-op, x-probe, x-solver, x-eval, x-review,
 
 ## Project Structure
 
-- `x-kit/` — core plugin (shared config, cost engine, DAG)
+- `xm/` — core plugin (shared config, cost engine, DAG)
 - `x-build/` — project lifecycle harness
 - `x-op/` — strategy orchestration (18 strategies)
 - `x-agent/` — agent primitives (fan-out, delegate, broadcast)

@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROBE_DIR = join(__dirname, '..', 'x-kit', 'skills', 'probe');
+const PROBE_DIR = join(__dirname, '..', 'xm', 'skills', 'probe');
 
 // --- verdict-schema.json validation ---
 

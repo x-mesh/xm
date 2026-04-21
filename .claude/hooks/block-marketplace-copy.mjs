@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // .claude/hooks/block-marketplace-copy.mjs
 //
-// PreToolUse hook: deny Edit/Write/MultiEdit/NotebookEdit on x-kit marketplace copies.
+// PreToolUse hook: deny Edit/Write/MultiEdit/NotebookEdit on xm marketplace copies.
 // Source of truth for the protected set: scripts/sync-bundle.sh
 // Rationale: CLAUDE.md § Edit Policy + § Lessons (x-humble) L4/L5.
 
@@ -9,7 +9,7 @@ import path from 'node:path';
 
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
-// Plugins whose SKILL.md is copied into x-kit/skills/<plugin>/SKILL.md by sync-bundle.sh.
+// Plugins whose SKILL.md is copied into xm/skills/<plugin>/SKILL.md by sync-bundle.sh.
 // Keep in sync with the for-loop at scripts/sync-bundle.sh:26.
 const PLUGINS_WITH_SOURCE_SKILL = new Set([
   'x-agent',
@@ -24,7 +24,7 @@ const PLUGINS_WITH_SOURCE_SKILL = new Set([
   'x-trace',
 ]);
 
-// x-build lib files copied into x-kit/lib/x-build/. Keep in sync with sync-bundle.sh:34.
+// x-build lib files copied into xm/lib/x-build/. Keep in sync with sync-bundle.sh:34.
 const X_BUILD_LIB_FILES = new Set([
   'core.mjs',
   'project.mjs',
@@ -36,7 +36,7 @@ const X_BUILD_LIB_FILES = new Set([
   'misc.mjs',
 ]);
 
-// x-sync lib files copied into x-kit/lib/x-sync/. Keep in sync with sync-bundle.sh.
+// x-sync lib files copied into xm/lib/x-sync/. Keep in sync with sync-bundle.sh.
 const X_SYNC_LIB_FILES = new Set([
   'sync-config.mjs',
   'sync-pull.mjs',
@@ -45,7 +45,7 @@ const X_SYNC_LIB_FILES = new Set([
   'sync-push-all.mjs',
 ]);
 
-// x-trace lib files copied into x-kit/lib/x-trace/. Keep in sync with sync-bundle.sh.
+// x-trace lib files copied into xm/lib/x-trace/. Keep in sync with sync-bundle.sh.
 const X_TRACE_LIB_FILES = new Set([
   'trace-writer.mjs',
 ]);
@@ -63,45 +63,45 @@ function readStdin() {
 }
 
 function findSourcePath(rel) {
-  // x-kit/skills/<plugin>/... where <plugin> has a standalone source directory.
+  // xm/skills/<plugin>/... where <plugin> has a standalone source directory.
   // Covers SKILL.md and any future copied assets under the same plugin dir.
-  const skillMatch = rel.match(/^x-kit\/skills\/([^/]+)\//);
+  const skillMatch = rel.match(/^xm\/skills\/([^/]+)\//);
   if (skillMatch && PLUGINS_WITH_SOURCE_SKILL.has(skillMatch[1])) {
     const plugin = skillMatch[1];
     return `${plugin}/skills/${plugin}/SKILL.md`;
   }
 
-  // x-kit/lib/x-build/<file>.mjs
-  const libMatch = rel.match(/^x-kit\/lib\/x-build\/([^/]+\.mjs)$/);
+  // xm/lib/x-build/<file>.mjs
+  const libMatch = rel.match(/^xm\/lib\/x-build\/([^/]+\.mjs)$/);
   if (libMatch && X_BUILD_LIB_FILES.has(libMatch[1])) {
     return `x-build/lib/x-build/${libMatch[1]}`;
   }
 
-  // x-kit/lib/x-sync/<file>.mjs
-  const syncMatch = rel.match(/^x-kit\/lib\/x-sync\/([^/]+\.mjs)$/);
+  // xm/lib/x-sync/<file>.mjs
+  const syncMatch = rel.match(/^xm\/lib\/x-sync\/([^/]+\.mjs)$/);
   if (syncMatch && X_SYNC_LIB_FILES.has(syncMatch[1])) {
     return `x-sync/lib/x-sync/${syncMatch[1]}`;
   }
 
-  // x-kit/lib/x-trace/<file>.mjs
-  const traceMatch = rel.match(/^x-kit\/lib\/x-trace\/([^/]+\.mjs)$/);
+  // xm/lib/x-trace/<file>.mjs
+  const traceMatch = rel.match(/^xm\/lib\/x-trace\/([^/]+\.mjs)$/);
   if (traceMatch && X_TRACE_LIB_FILES.has(traceMatch[1])) {
     return `x-trace/lib/x-trace/${traceMatch[1]}`;
   }
 
-  if (rel === 'x-kit/lib/x-build-cli.mjs') {
+  if (rel === 'xm/lib/x-build-cli.mjs') {
     return 'x-build/lib/x-build-cli.mjs';
   }
 
-  if (rel === 'x-kit/lib/x-solver-cli.mjs') {
+  if (rel === 'xm/lib/x-solver-cli.mjs') {
     return 'x-solver/lib/x-solver-cli.mjs';
   }
 
-  if (rel === 'x-kit/lib/shared-config.mjs') {
+  if (rel === 'xm/lib/shared-config.mjs') {
     return 'x-build/lib/shared-config.mjs';
   }
 
-  if (rel === 'x-kit/lib/default-config.json') {
+  if (rel === 'xm/lib/default-config.json') {
     return 'x-build/lib/default-config.json';
   }
 

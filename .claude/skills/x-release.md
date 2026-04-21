@@ -6,7 +6,7 @@ description: Release automation — detect changes, bump versions, update market
 # x-release — Release Automation
 
 Detect changed plugins, bump versions, update marketplace.json, commit, and push.
-This command is for x-kit repo maintainers only.
+This command is for xm repo maintainers only.
 
 ## Arguments
 

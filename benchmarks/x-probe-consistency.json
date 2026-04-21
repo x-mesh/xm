@@ -4,7 +4,7 @@
   "plugin": "x-probe",
   "strategy": "premise-extraction",
   "trials": 3,
-  "input": "x-kit should split large SKILL.md files (1000+ lines) into a slim index + references/ directory",
+  "input": "xm should split large SKILL.md files (1000+ lines) into a slim index + references/ directory",
   "results": {
     "premise_count": {"t1": 7, "t2": 6, "t3": 7},
     "premise_overlap_all3": "5/8",
