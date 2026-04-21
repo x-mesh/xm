@@ -72,13 +72,14 @@ x-eval — Agent Output Quality Evaluation
 Commands:
   score <content> --rubric <name|criteria>     Score content against rubric
   compare <output-a> <output-b> [--judges N]   Compare two outputs with judge panel
-  bench <task> --strategies "s1,s2"            Benchmark strategies/models
-       [--models "m1,m2"] [--trials N]
+  bench <task> --strategies "s1,s2"            Benchmark with pass@k/pass^k
+       [--models "m1,m2"] [--trials N]          reliability metrics
   consistency [plugin] [--trials N]             Measure plugin output consistency (default: all changed)
   diff [--from <commit>] [--to <commit>]      Measure skill/plugin changes + quality delta
   rubric create <name> --criteria "c1,c2,c3"  Create custom rubric
   rubric list                                   List available rubrics
-  report [session]                              Show evaluation report
+  report [session] [--sample-transcript N]     Show evaluation report;
+                                                optionally dump N judge transcripts
   list                                          Show this help
 
 Options:

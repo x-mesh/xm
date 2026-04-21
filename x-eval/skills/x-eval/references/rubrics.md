@@ -2,6 +2,8 @@
 
 Built-in rubrics and domain-specific presets available in x-eval. Use with `--rubric <name>` or `rubric list`.
 
+Each rubric declares a `pass_threshold` — the weighted overall score (1–10 scale) at which a single trial is counted as "pass" for `pass@k` / `pass^k` metrics in `bench`. Custom rubrics may override this in their JSON (`storage-layout.md`). Default: **7.0**.
+
 ## Built-in Rubrics
 
 ### code-quality
@@ -14,6 +16,8 @@ Built-in rubrics and domain-specific presets available in x-eval. Use with `--ru
 | security | No injection, input validated, secrets safe | 0.20 |
 | test-coverage | Critical paths have tests or are testable | 0.10 |
 
+**Pass threshold**: 7.5
+
 ### review-quality
 
 | Criterion | Description | Weight |
@@ -22,6 +26,8 @@ Built-in rubrics and domain-specific presets available in x-eval. Use with `--ru
 | actionability | Each finding has a clear fix suggestion | 0.30 |
 | severity-accuracy | Critical bugs labeled critical, nits labeled nits | 0.25 |
 | false-positive-rate | No valid code flagged as problematic | 0.15 |
+
+**Pass threshold**: 7.0
 
 ### plan-quality
 
@@ -32,6 +38,8 @@ Built-in rubrics and domain-specific presets available in x-eval. Use with `--ru
 | scope-fit | Plan fits the stated goal — not over or under | 0.20 |
 | risk-coverage | Key risks and dependencies identified | 0.20 |
 
+**Pass threshold**: 7.0
+
 ### general
 
 | Criterion | Description | Weight |
@@ -41,6 +49,8 @@ Built-in rubrics and domain-specific presets available in x-eval. Use with `--ru
 | consistency | No internal contradictions | 0.20 |
 | clarity | Easy to follow, well structured | 0.20 |
 | hallucination-risk | No unsupported claims or fabricated facts | 0.10 |
+
+**Pass threshold**: 7.0
 
 ---
 
@@ -58,6 +68,8 @@ Domain-specific presets beyond the built-in rubrics. Viewable via `rubric list`.
 | developer-experience | Clear errors, self-documenting, discoverable | 0.15 |
 | extensibility | Versioning strategy, backward compatibility | 0.10 |
 
+**Pass threshold**: 7.5
+
 ### frontend-design
 
 | Criterion | Description | Weight |
@@ -67,6 +79,8 @@ Domain-specific presets beyond the built-in rubrics. Viewable via `rubric list`.
 | craft | Typography hierarchy, spacing rhythm, color harmony, contrast | 0.20 |
 | usability | Intuitive navigation, accessible, responsive | 0.20 |
 | performance | Minimal layout shift, fast paint, optimized assets | 0.10 |
+
+**Pass threshold**: 7.0
 
 ### data-pipeline
 
@@ -78,6 +92,8 @@ Domain-specific presets beyond the built-in rubrics. Viewable via `rubric list`.
 | efficiency | Batch sizing, parallelism, resource utilization | 0.15 |
 | schema-safety | Schema evolution handled, backward/forward compatibility | 0.10 |
 
+**Pass threshold**: 7.5
+
 ### security-audit
 
 | Criterion | Description | Weight |
@@ -88,6 +104,8 @@ Domain-specific presets beyond the built-in rubrics. Viewable via `rubric list`.
 | attack-surface | Unnecessary endpoints/ports closed, minimal exposure | 0.15 |
 | compliance | Relevant standards (GDPR, SOC2, HIPAA) addressed if applicable | 0.10 |
 
+**Pass threshold**: 8.0  (security-critical — higher bar)
+
 ### architecture-review
 
 | Criterion | Description | Weight |
@@ -97,6 +115,8 @@ Domain-specific presets beyond the built-in rubrics. Viewable via `rubric list`.
 | simplicity | No unnecessary abstractions, appropriate complexity for requirements | 0.20 |
 | resilience | Failure handling, degradation strategy, recovery mechanisms | 0.15 |
 | operability | Deployable, observable, configurable without code changes | 0.15 |
+
+**Pass threshold**: 7.0
 
 ## Applies to
 

@@ -43,28 +43,64 @@ If x-op is unavailable, fall back to executing each strategy as a simple Agent p
 ```
 📊 [eval] Benchmark: 3 strategies × 3 trials
 Task: "Find the bug in this code"
-Rubric: general
+Rubric: general  (pass_threshold = 7.0)
 
-| Strategy   | Avg Score | Trials | Est. Cost | Avg Time | Score/$ |
-|------------|-----------|--------|-----------|----------|---------|
-| refine     |      8.2  |      3 |     $0.12 |      45s |    68.3 |
-| debate     |      7.8  |      3 |     $0.08 |      30s |    97.5 |
-| tournament |      8.5  |      3 |     $0.15 |      55s |    56.7 |
+| Strategy   | Avg  | σ   | pass@k | pass^k | Trials | Cost  | Score/$ |
+|------------|------|-----|--------|--------|--------|-------|---------|
+| refine     |  8.2 | 0.3 |  3/3   |   ✓    |      3 | $0.12 |   68.3  |
+| debate     |  7.8 | 0.8 |  2/3   |   ·    |      3 | $0.08 |   97.5  |
+| tournament |  8.5 | 0.2 |  3/3   |   ✓    |      3 | $0.15 |   56.7  |
 
-Best quality:  tournament (8.5/10)
-Best value:    debate (97.5 score/$)
-Recommendation: debate (best quality-cost balance at 7.8/10, $0.08/run)
-
-Score variance across trials:
-  refine     σ=0.3  (consistent)
-  debate     σ=0.8  (moderate variance)
-  tournament σ=0.2  (consistent)
+Best quality:   tournament (8.5/10, pass^k=3/3)
+Best value:     refine (Score/$=68.3, pass^k=3/3)
+Recommendation: refine — passes reliably AND cheapest reliable option
+                (debate has higher Score/$ but pass^k=0 — unreliable)
 ```
 
-**Recommendation logic:**
-- `best quality`: Highest Avg Score
-- `best value`: Highest Score/$
-- `recommendation`: Strategy with Score >= 7.5 and highest Score/$. If none, highest Score/$.
+**Metric definitions:**
+- `pass@k` = count of trials with `overall >= pass_threshold`. Capability upper bound ("can it ever succeed?").
+- `pass^k` = `✓` if ALL trials pass, else `·`. Reliability lower bound ("does it succeed every time?").
+- `k` = trial count (`--trials N`). `pass_threshold` comes from the rubric (default 7.0; see `references/rubrics.md`).
+
+**Why both:** avg score hides the "8.2 avg but 0/3 pass^k" failure mode — a strategy that occasionally scores 10 but often scores 5. `pass^k` separates capability from reliability. Empirically, ~25% of high-avg-high-variance strategies fall into this trap.
+
+**Broken-task warning** (printed above the table when triggered):
+
+```
+⚠ 0% pass across all strategies at threshold=7.0, and avg_score < 4.5 for all.
+   This pattern suggests a broken TASK, not failing strategies.
+   Check: task prompt ambiguity, rubric fit, pass_threshold setting.
+   (Empirical: false-alarm rate on merely-weak strategies = 0%.)
+```
+
+**Warning trigger (strict, empirically tuned):**
+```
+ALL strategies have pass_at_k_rate == 0
+  AND ALL strategies have avg_score < 4.5
+  AND trials >= 2
+```
+
+Rationale: `pass_at_k == 0` alone has a 35% false-alarm rate on merely-mediocre strategies (k=3). Adding `avg < 4.5` eliminates false alarms (0% on `mediocre` profile mean=6.5, `barely-failing` mean=5.5) while still catching 100% of truly broken tasks (mean=3.0).
+
+**Recommendation logic (pass-aware + σ-aware):**
+- `best quality`: strategy with `pass^k = 1` (all trials pass) AND highest Avg Score. If no strategy has `pass^k = 1`, fall back to highest Avg Score with a ⚠ flaky-best warning.
+- `best value`: strategy with `pass_at_k_rate >= 0.67` AND highest Score/$. Prevents recommending a high-Score/$ strategy that rarely passes.
+- `recommendation`: strategy with `pass^k = 1`, tiebroken by **(1) lowest σ**, then **(2) highest Score/$**. Rationale: at `trials = 3`, a flaky-high-avg strategy can pass all three by luck (~13/30 seeds in sim); picking low-σ among pass^k=1 candidates prefers the genuinely reliable one over the lucky one. If no strategy has `pass^k = 1`, print:
+  ```
+  ⚠ No strategy passed all trials. No reliable recommendation.
+     Suggestion: increase --trials or lower pass_threshold if threshold is unreasonable.
+     Best-effort pick: <strategy with highest pass_at_k_rate, tiebreak by avg>.
+  ```
+
+**Low-confidence advisory** (printed alongside the recommendation, not in place of):
+- When `trials <= 3` AND the recommended strategy has `σ >= 1.0`, append:
+  ```
+  ⚠ Recommendation is from a small sample (trials=3) with high variance (σ>=1.0).
+     A single all-pass result at this trial count has ~43% probability for flaky-high-avg strategies.
+     Increase --trials to 5+ for higher-confidence recommendations.
+  ```
+
+Do NOT silently recommend an unreliable strategy. Flaky high-avg strategies were the original motivation for `pass^k`.
 
 ### Storage
 
