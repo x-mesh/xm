@@ -14,11 +14,13 @@ import os from 'node:os';
 const HOME = os.homedir();
 const CLAUDE_DIR = path.join(HOME, '.claude');
 const HOOKS_DIR = path.join(CLAUDE_DIR, 'hooks');
+const COMMANDS_DIR = path.join(CLAUDE_DIR, 'commands');
 const SETTINGS = path.join(CLAUDE_DIR, 'settings.json');
 const HOOK_FILENAME = 'x-kit-trace-session.mjs';
 const HOOK_DEST = path.join(HOOKS_DIR, HOOK_FILENAME);
 const HOOK_CMD_PRE = `node "${HOOK_DEST}" pre`;
 const HOOK_CMD_POST = `node "${HOOK_DEST}" post`;
+const XM_CMD_DEST = path.join(COMMANDS_DIR, 'xm.md');
 
 function log(msg) { process.stdout.write(`[x-kit init] ${msg}\n`); }
 function warn(msg) { process.stderr.write(`[x-kit init] ${msg}\n`); }
@@ -34,15 +36,39 @@ function resolveHookSource() {
   }
   // Local repo (cwd)
   candidates.push(path.join(process.cwd(), 'x-kit', 'hooks', 'trace-session.mjs'));
-  // Plugin cache: ~/.claude/plugins/cache/x-kit/x-kit/<ver>/hooks/trace-session.mjs
-  const cacheRoot = path.join(HOME, '.claude', 'plugins', 'cache', 'x-kit', 'x-kit');
-  if (fs.existsSync(cacheRoot)) {
+  // Plugin cache: ~/.claude/plugins/cache/xm/xm/<ver>/hooks/trace-session.mjs (new) or legacy x-kit path
+  for (const cacheRoot of [
+    path.join(HOME, '.claude', 'plugins', 'cache', 'xm', 'xm'),
+    path.join(HOME, '.claude', 'plugins', 'cache', 'x-kit', 'x-kit'),
+  ]) {
+    if (!fs.existsSync(cacheRoot)) continue;
     const versions = fs.readdirSync(cacheRoot)
       .filter((v) => fs.statSync(path.join(cacheRoot, v)).isDirectory())
       .sort()
       .reverse();
     for (const v of versions) {
       candidates.push(path.join(cacheRoot, v, 'hooks', 'trace-session.mjs'));
+    }
+  }
+  return candidates.find((p) => fs.existsSync(p)) || null;
+}
+
+function resolveXmCommandSource() {
+  const candidates = [];
+  // Local repo (cwd)
+  candidates.push(path.join(process.cwd(), 'x-kit', 'commands', 'xm.md'));
+  // Plugin cache: ~/.claude/plugins/cache/xm/xm/<ver>/commands/xm.md (new) or legacy x-kit path
+  for (const cacheRoot of [
+    path.join(HOME, '.claude', 'plugins', 'cache', 'xm', 'xm'),
+    path.join(HOME, '.claude', 'plugins', 'cache', 'x-kit', 'x-kit'),
+  ]) {
+    if (!fs.existsSync(cacheRoot)) continue;
+    const versions = fs.readdirSync(cacheRoot)
+      .filter((v) => fs.statSync(path.join(cacheRoot, v)).isDirectory())
+      .sort()
+      .reverse();
+    for (const v of versions) {
+      candidates.push(path.join(cacheRoot, v, 'commands', 'xm.md'));
     }
   }
   return candidates.find((p) => fs.existsSync(p)) || null;
@@ -94,6 +120,7 @@ function removeSkillHook(entries, command) {
 
 function install(opts) {
   fs.mkdirSync(HOOKS_DIR, { recursive: true });
+  fs.mkdirSync(COMMANDS_DIR, { recursive: true });
 
   if (opts.withHooks) {
     const src = resolveHookSource();
@@ -113,6 +140,15 @@ function install(opts) {
     log('hooks skipped (--no-hooks). CLI dispatcher install is handled by install.sh.');
   }
 
+  // Install /xm user-level dispatcher command (allows `/xm <subcommand>` form)
+  const xmSrc = resolveXmCommandSource();
+  if (xmSrc) {
+    fs.copyFileSync(xmSrc, XM_CMD_DEST);
+    log(`copied dispatcher: ${XM_CMD_DEST}`);
+  } else {
+    warn('xm.md not found (skipped user-level dispatcher). Plugin-qualified form /xm:<cmd> still works.');
+  }
+
   log('done.');
 }
 
@@ -121,6 +157,11 @@ function uninstall() {
   if (fs.existsSync(HOOK_DEST)) {
     fs.unlinkSync(HOOK_DEST);
     log(`removed ${HOOK_DEST}`);
+    removed = true;
+  }
+  if (fs.existsSync(XM_CMD_DEST)) {
+    fs.unlinkSync(XM_CMD_DEST);
+    log(`removed ${XM_CMD_DEST}`);
     removed = true;
   }
   if (fs.existsSync(SETTINGS)) {
@@ -144,14 +185,16 @@ function uninstall() {
 
 function status() {
   const hookExists = fs.existsSync(HOOK_DEST);
+  const xmCmdExists = fs.existsSync(XM_CMD_DEST);
   const settings = readSettings();
   const pre = hasSkillHook(settings.hooks?.PreToolUse, HOOK_CMD_PRE);
   const post = hasSkillHook(settings.hooks?.PostToolUse, HOOK_CMD_POST);
-  log(`hook file       : ${hookExists ? HOOK_DEST : '(missing)'}`);
-  log(`PreToolUse/Skill: ${pre ? 'registered' : '(missing)'}`);
+  log(`hook file        : ${hookExists ? HOOK_DEST : '(missing)'}`);
+  log(`xm dispatcher    : ${xmCmdExists ? XM_CMD_DEST : '(missing)'}`);
+  log(`PreToolUse/Skill : ${pre ? 'registered' : '(missing)'}`);
   log(`PostToolUse/Skill: ${post ? 'registered' : '(missing)'}`);
-  const ok = hookExists && pre && post;
-  log(`overall         : ${ok ? 'OK' : 'NOT installed'}`);
+  const ok = hookExists && xmCmdExists && pre && post;
+  log(`overall          : ${ok ? 'OK' : 'NOT installed'}`);
   process.exit(ok ? 0 : 1);
 }
 
