@@ -10,13 +10,13 @@
     {
       "name": "build",
       "description": "Phase-based project harness with PRD generation, consensus review, plan validation, multi-mode deliberation, DAG execution, cost forecasting, and decision memory",
-      "version": "2.0.1",
+      "version": "2.0.2",
       "author": {
         "name": "x-mesh"
       },
       "source": "./x-build",
       "category": "productivity",
-      "homepage": "https://github.com/x-mesh/x-kit",
+      "homepage": "https://github.com/x-mesh/xm",
       "tags": [
         "project-management",
         "harness",
@@ -28,13 +28,13 @@
     {
       "name": "agent",
       "description": "Agent primitives and autonomous behaviors — fan-out, delegate, broadcast, research, solve, consensus, swarm for native multi-agent orchestration",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "author": {
         "name": "x-mesh"
       },
       "source": "./x-agent",
       "category": "productivity",
-      "homepage": "https://github.com/x-mesh/x-kit",
+      "homepage": "https://github.com/x-mesh/xm",
       "tags": [
         "agent",
         "primitives",
@@ -46,13 +46,13 @@
     {
       "name": "op",
       "description": "Strategy orchestration — 18 strategies with self-scoring, --verify auto-validation, and compose presets",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "author": {
         "name": "x-mesh"
       },
       "source": "./x-op",
       "category": "productivity",
-      "homepage": "https://github.com/x-mesh/x-kit",
+      "homepage": "https://github.com/x-mesh/xm",
       "tags": [
         "orchestration",
         "strategy",
@@ -64,13 +64,13 @@
     {
       "name": "solver",
       "description": "Structured problem solving — decompose, iterate, constrain, or auto-pipeline with strategy recommendation",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "author": {
         "name": "x-mesh"
       },
       "source": "./x-solver",
       "category": "productivity",
-      "homepage": "https://github.com/x-mesh/x-kit",
+      "homepage": "https://github.com/x-mesh/xm",
       "tags": [
         "problem-solving",
         "reasoning",
@@ -82,13 +82,13 @@
     {
       "name": "review",
       "description": "Multi-perspective code review orchestrator — PR diff analysis with severity-rated findings and LGTM verdict",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "author": {
         "name": "x-mesh"
       },
       "source": "./x-review",
       "category": "productivity",
-      "homepage": "https://github.com/x-mesh/x-kit",
+      "homepage": "https://github.com/x-mesh/xm",
       "tags": [
         "code-review",
         "pr-review",
@@ -100,13 +100,13 @@
     {
       "name": "trace",
       "description": "Agent execution tracing — timeline, token/cost tracking, replay, and diff for multi-agent observability",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "author": {
         "name": "x-mesh"
       },
       "source": "./x-trace",
       "category": "productivity",
-      "homepage": "https://github.com/x-mesh/x-kit",
+      "homepage": "https://github.com/x-mesh/xm",
       "tags": [
         "observability",
         "tracing",
@@ -118,13 +118,13 @@
     {
       "name": "memory",
       "description": "Cross-session decision and pattern memory — persist learnings, auto-inject relevant context on session start",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "author": {
         "name": "x-mesh"
       },
       "source": "./x-memory",
       "category": "productivity",
-      "homepage": "https://github.com/x-mesh/x-kit",
+      "homepage": "https://github.com/x-mesh/xm",
       "tags": [
         "memory",
         "context",
@@ -136,13 +136,13 @@
     {
       "name": "eval",
       "description": "Agent output quality evaluation — multi-rubric scoring, diff analysis, reusable judge prompt, strategy benchmarking, and A/B prompt experiments",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "author": {
         "name": "x-mesh"
       },
       "source": "./x-eval",
       "category": "productivity",
-      "homepage": "https://github.com/x-mesh/x-kit",
+      "homepage": "https://github.com/x-mesh/xm",
       "tags": [
         "evaluation",
         "benchmarking",
@@ -154,13 +154,13 @@
     {
       "name": "probe",
       "description": "Premise validation — evidence-grade questioning, domain-aware probing, kill bad ideas early, earn the right to build",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "author": {
         "name": "x-mesh"
       },
       "source": "./x-probe",
       "category": "productivity",
-      "homepage": "https://github.com/x-mesh/x-kit",
+      "homepage": "https://github.com/x-mesh/xm",
       "tags": [
         "premise",
         "validation",
@@ -172,13 +172,13 @@
     {
       "name": "humble",
       "description": "Structured retrospective — reflect on failures together, find root causes, explore alternatives, and grow",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "author": {
         "name": "x-mesh"
       },
       "source": "./x-humble",
       "category": "productivity",
-      "homepage": "https://github.com/x-mesh/x-kit",
+      "homepage": "https://github.com/x-mesh/xm",
       "tags": [
         "retrospective",
         "reflection",
@@ -195,7 +195,7 @@
       },
       "source": "./x-dashboard",
       "category": "productivity",
-      "homepage": "https://github.com/x-mesh/x-kit",
+      "homepage": "https://github.com/x-mesh/xm",
       "tags": [
         "dashboard",
         "visualization",
@@ -206,13 +206,13 @@
     {
       "name": "kit",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.0.1",
+      "version": "2.0.3",
       "author": {
         "name": "x-mesh"
       },
       "source": "./x-kit",
       "category": "productivity",
-      "homepage": "https://github.com/x-mesh/x-kit",
+      "homepage": "https://github.com/x-mesh/xm",
       "tags": [
         "meta",
         "all-in-one",

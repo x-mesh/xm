@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/x-kit/releases"><img src="https://img.shields.io/badge/version-1.26.17-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-1.26.17-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-12-orange" alt="Plugins" /></a>
@@ -104,7 +104,7 @@ Install the `x-kit` umbrella CLI to run commands directly from your shell — us
 bash x-kit/scripts/install.sh
 
 # Or remote
-curl -fsSL https://raw.githubusercontent.com/x-mesh/x-kit/main/x-kit/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/x-kit/scripts/install.sh | bash
 ```
 
 The installer writes `~/.local/bin/xm:kit` (override with `X_KIT_BIN_DIR`; ensure it is on your `PATH`) and, when the `claude` CLI is on `PATH`, also runs `claude plugin install <p>@xm -s user` for every plugin in `marketplace.json` (x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-dashboard, x-kit). Run `/reload-plugins` inside Claude Code afterward to activate them. If `claude` is not on `PATH`, the CLI wrapper alone is installed and the plugin list is printed for manual install.
@@ -784,7 +784,7 @@ docker run -d -p 19842:19842 -e XM_SYNC_API_KEY=secret \
 **Option B: Standalone install**
 ```bash
 # Install to ~/.local/bin/x-sync-server
-curl -fsSL https://raw.githubusercontent.com/x-mesh/x-kit/main/x-sync/install.sh | bash -s server
+curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/x-sync/install.sh | bash -s server
 
 # Run
 XM_SYNC_API_KEY=secret x-sync-server --port 19842
@@ -794,7 +794,7 @@ XM_SYNC_API_KEY=secret x-sync-server --port 19842
 
 ```bash
 # Install CLI
-curl -fsSL https://raw.githubusercontent.com/x-mesh/x-kit/main/x-sync/install.sh | bash -s client
+curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/x-sync/install.sh | bash -s client
 
 # Configure
 x-sync setup
@@ -1096,10 +1096,10 @@ Selection follows a 3-level priority chain: `model_overrides → profile → fal
 
 ## Contributing
 
-Contributions are welcome. See the [issues page](https://github.com/x-mesh/x-kit/issues) for open tasks.
+Contributions are welcome. See the [issues page](https://github.com/x-mesh/xm/issues) for open tasks.
 
-- [Changelog / Releases](https://github.com/x-mesh/x-kit/releases)
-- [Report a bug](https://github.com/x-mesh/x-kit/issues/new)
+- [Changelog / Releases](https://github.com/x-mesh/xm/releases)
+- [Report a bug](https://github.com/x-mesh/xm/issues/new)
 
 ---
 

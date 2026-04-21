@@ -2,14 +2,14 @@
 # x-kit umbrella CLI installer
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/x-mesh/x-kit/main/x-kit/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/x-kit/scripts/install.sh | bash
 #   bash x-kit/scripts/install.sh             # local install from repo
 #   X_KIT_BIN_DIR=~/bin bash install.sh       # custom bin dir
 
 set -euo pipefail
 
 BIN_DIR="${X_KIT_BIN_DIR:-$HOME/.local/bin}"
-REPO_URL="https://raw.githubusercontent.com/x-mesh/x-kit/main"
+REPO_URL="https://raw.githubusercontent.com/x-mesh/xm/main"
 SRC_LOCAL="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/x-kit"
 
 info()  { printf '\033[0;34m[x-kit]\033[0m %s\n' "$1"; }
@@ -48,7 +48,7 @@ if command -v claude >/dev/null 2>&1; then
   info "Installing x-kit plugins via claude CLI..."
 
   # Register marketplace (idempotent; quiet on already-registered)
-  claude plugin marketplace add x-mesh/x-kit >/dev/null 2>&1 || true
+  claude plugin marketplace add x-mesh/xm >/dev/null 2>&1 || true
 
   MARKETPLACE_JSON=""
   if [ -f "$(dirname "$SRC_LOCAL")/../../.claude-plugin/marketplace.json" ]; then

@@ -3,12 +3,12 @@ set -euo pipefail
 
 # x-sync installer — server or client mode
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/x-mesh/x-kit/main/x-sync/install.sh | bash -s server
-#   curl -fsSL https://raw.githubusercontent.com/x-mesh/x-kit/main/x-sync/install.sh | bash -s client
+#   curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/x-sync/install.sh | bash -s server
+#   curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/x-sync/install.sh | bash -s client
 
 MODE="${1:-}"
 BIN_DIR="${XM_BIN_DIR:-$HOME/.local/bin}"
-REPO_URL="https://raw.githubusercontent.com/x-mesh/x-kit/main"
+REPO_URL="https://raw.githubusercontent.com/x-mesh/xm/main"
 
 info()  { printf '\033[0;34m[x-sync]\033[0m %s\n' "$1"; }
 error() { printf '\033[0;31m[x-sync]\033[0m %s\n' "$1" >&2; }
