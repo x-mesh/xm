@@ -32,6 +32,14 @@ const PLUGIN_DIRS = [
   'x-dashboard', 'x-kit', 'x-sync', 'x-ship',
 ];
 
+// Maps source directory name → marketplace plugin name (xm namespace, no x- prefix)
+const PLUGIN_NAME_MAP = {
+  'x-build': 'build', 'x-agent': 'agent', 'x-op': 'op', 'x-solver': 'solver',
+  'x-review': 'review', 'x-trace': 'trace', 'x-memory': 'memory', 'x-eval': 'eval',
+  'x-probe': 'probe', 'x-humble': 'humble', 'x-dashboard': 'dashboard',
+  'x-kit': 'kit', 'x-sync': 'sync', 'x-ship': 'ship',
+};
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 function git(cmd) {
@@ -165,8 +173,12 @@ export function cmdReleaseDetect(args) {
   // Current versions from marketplace.json
   const marketplacePath = join(cwd, '.claude-plugin', 'marketplace.json');
   const marketplace = readJSON(marketplacePath);
+  // versions keyed by source dir name for easy lookup (x-build → version from marketplace entry "build")
   const versions = {};
-  for (const p of marketplace.plugins) versions[p.name] = p.version;
+  for (const p of marketplace.plugins) {
+    const srcDir = Object.keys(PLUGIN_NAME_MAP).find(k => PLUGIN_NAME_MAP[k] === p.name) || p.name;
+    versions[srcDir] = p.version;
+  }
 
   // Classify commits
   const commits = { work: [], wip: [] };
@@ -298,15 +310,16 @@ export function cmdReleaseBump(args) {
       bumped.push({ name: pluginName, from: oldV, to: pj.version });
     }
 
-    // 2. marketplace.json entry
-    const entry = marketplace.plugins.find(p => p.name === pluginName);
+    // 2. marketplace.json entry (plugin dir name → marketplace name via PLUGIN_NAME_MAP)
+    const mktName = PLUGIN_NAME_MAP[pluginName] || pluginName;
+    const entry = marketplace.plugins.find(p => p.name === mktName);
     if (entry) {
       entry.version = bumpVersion(entry.version, bumpType);
     }
   }
 
-  // 3. x-kit meta bump (always patch)
-  const xkitEntry = marketplace.plugins.find(p => p.name === 'x-kit');
+  // 3. kit meta bump (always patch)
+  const xkitEntry = marketplace.plugins.find(p => p.name === 'kit');
   const xkitPluginJsonPath = join(cwd, 'x-kit', '.claude-plugin', 'plugin.json');
   let xkitOld = xkitEntry?.version || '0.0.0';
   let xkitNew = bumpVersion(xkitOld, 'patch');
@@ -317,7 +330,7 @@ export function cmdReleaseBump(args) {
     xkitPj.version = xkitNew;
     writeJSON(xkitPluginJsonPath, xkitPj);
   }
-  bumped.push({ name: 'x-kit', from: xkitOld, to: xkitNew, meta: true });
+  bumped.push({ name: 'kit', from: xkitOld, to: xkitNew, meta: true });
 
   // 4. Write marketplace.json
   writeJSON(marketplacePath, marketplace);

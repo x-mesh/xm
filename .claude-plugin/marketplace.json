@@ -1,5 +1,5 @@
 {
-  "name": "x-kit",
+  "name": "xm",
   "metadata": {
     "description": "x-mesh toolkit — structured problem solving, strategy orchestration, and multi-agent primitives for Claude Code"
   },
@@ -8,9 +8,9 @@
   },
   "plugins": [
     {
-      "name": "x-build",
+      "name": "build",
       "description": "Phase-based project harness with PRD generation, consensus review, plan validation, multi-mode deliberation, DAG execution, cost forecasting, and decision memory",
-      "version": "1.23.3",
+      "version": "2.0.0",
       "author": {
         "name": "x-mesh"
       },
@@ -26,9 +26,9 @@
       ]
     },
     {
-      "name": "x-agent",
+      "name": "agent",
       "description": "Agent primitives and autonomous behaviors — fan-out, delegate, broadcast, research, solve, consensus, swarm for native multi-agent orchestration",
-      "version": "1.5.0",
+      "version": "2.0.0",
       "author": {
         "name": "x-mesh"
       },
@@ -44,9 +44,9 @@
       ]
     },
     {
-      "name": "x-op",
+      "name": "op",
       "description": "Strategy orchestration — 18 strategies with self-scoring, --verify auto-validation, and compose presets",
-      "version": "1.8.0",
+      "version": "2.0.0",
       "author": {
         "name": "x-mesh"
       },
@@ -62,9 +62,9 @@
       ]
     },
     {
-      "name": "x-solver",
+      "name": "solver",
       "description": "Structured problem solving — decompose, iterate, constrain, or auto-pipeline with strategy recommendation",
-      "version": "1.6.0",
+      "version": "2.0.0",
       "author": {
         "name": "x-mesh"
       },
@@ -80,9 +80,9 @@
       ]
     },
     {
-      "name": "x-review",
+      "name": "review",
       "description": "Multi-perspective code review orchestrator — PR diff analysis with severity-rated findings and LGTM verdict",
-      "version": "1.5.0",
+      "version": "2.0.0",
       "author": {
         "name": "x-mesh"
       },
@@ -98,9 +98,9 @@
       ]
     },
     {
-      "name": "x-trace",
+      "name": "trace",
       "description": "Agent execution tracing — timeline, token/cost tracking, replay, and diff for multi-agent observability",
-      "version": "1.1.0",
+      "version": "2.0.0",
       "author": {
         "name": "x-mesh"
       },
@@ -116,9 +116,9 @@
       ]
     },
     {
-      "name": "x-memory",
+      "name": "memory",
       "description": "Cross-session decision and pattern memory — persist learnings, auto-inject relevant context on session start",
-      "version": "1.3.0",
+      "version": "2.0.0",
       "author": {
         "name": "x-mesh"
       },
@@ -134,9 +134,9 @@
       ]
     },
     {
-      "name": "x-eval",
+      "name": "eval",
       "description": "Agent output quality evaluation — multi-rubric scoring, diff analysis, reusable judge prompt, strategy benchmarking, and A/B prompt experiments",
-      "version": "1.6.0",
+      "version": "2.0.0",
       "author": {
         "name": "x-mesh"
       },
@@ -152,9 +152,9 @@
       ]
     },
     {
-      "name": "x-probe",
+      "name": "probe",
       "description": "Premise validation — evidence-grade questioning, domain-aware probing, kill bad ideas early, earn the right to build",
-      "version": "0.6.0",
+      "version": "2.0.0",
       "author": {
         "name": "x-mesh"
       },
@@ -170,9 +170,9 @@
       ]
     },
     {
-      "name": "x-humble",
+      "name": "humble",
       "description": "Structured retrospective — reflect on failures together, find root causes, explore alternatives, and grow",
-      "version": "0.3.0",
+      "version": "2.0.0",
       "author": {
         "name": "x-mesh"
       },
@@ -187,9 +187,9 @@
       ]
     },
     {
-      "name": "x-dashboard",
+      "name": "dashboard",
       "description": "Web dashboard for .xm project state — visualize builds, probes, solvers, reviews, evals, humble lessons, traces, memory",
-      "version": "0.6.1",
+      "version": "2.0.0",
       "author": {
         "name": "x-mesh"
       },
@@ -204,9 +204,9 @@
       ]
     },
     {
-      "name": "x-kit",
-      "description": "All-in-one bundle: x-build + x-op + x-agent + x-solver + x-eval + x-humble + cross-plugin quality pipeline",
-      "version": "1.32.6",
+      "name": "kit",
+      "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
+      "version": "2.0.0",
       "author": {
         "name": "x-mesh"
       },

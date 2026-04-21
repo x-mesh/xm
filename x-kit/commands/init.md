@@ -27,7 +27,7 @@ resolve_script() {
     echo "x-kit/scripts/setup-global.mjs"
     return
   fi
-  local cache="$HOME/.claude/plugins/cache/x-kit/x-kit"
+  local cache="$HOME/.claude/plugins/cache/x-kit/xm:kit"
   if [ -d "$cache" ]; then
     ls -d "$cache"/*/scripts/setup-global.mjs 2>/dev/null | sort -V | tail -1
   fi
@@ -63,6 +63,6 @@ On `NOT installed` after `install`, surface the stderr lines so the user can see
 - First-time setup on a new machine
 - After `~/.claude/settings.json` was reset
 - After the user asks "install x-kit globally" / "x-kit 전역 설치"
-- `/x-kit init` invocation in Claude Code
+- `/xm:kit init` invocation in Claude Code
 
 Do **not** invoke this command for project-local setup — trace-session is a user-level hook only.

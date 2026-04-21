@@ -133,7 +133,7 @@ export const ROLE_MODEL_MAP_HR = {
 // not a per-role mixing strategy. Three tiers on a single axis: economy → default → max.
 //
 // Script-only commands (x-kit config show, version, agents list, …) are still
-// routed to haiku via the Model Guardrail in x-kit/skills/x-kit/SKILL.md — that
+// routed to haiku via the Model Guardrail in x-kit/skills/kit/SKILL.md — that
 // layer is independent of these role-based profiles.
 //
 // Legacy names ("balanced", "performance") are accepted and remapped via

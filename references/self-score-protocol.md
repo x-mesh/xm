@@ -56,7 +56,7 @@ After computing Self-Score and BEFORE presenting the final output, the leader an
 | 4 | Consistency | ✅/⚠️ | {consistent / conflicts noted} |
 ```
 
-**Escalation rule:** If 2+ questions are ⚠️, append recommendation: `"⚠ 2+ items flagged. Consider: /x-eval score --grounded for tool-verified evaluation."`
+**Escalation rule:** If 2+ questions are ⚠️, append recommendation: `"⚠ 2+ items flagged. Consider: /xm:eval score --grounded for tool-verified evaluation."`
 
 **Rules:**
 - 4Q is mandatory for all strategies (same scope as Self-Score)

@@ -1,7 +1,7 @@
 {
-  "name": "x-probe",
-  "version": "0.6.0",
-  "description": "Premise validation — challenge assumptions, kill bad ideas early, earn the right to build",
+  "name": "probe",
+  "version": "2.0.0",
+  "description": "Premise validation \u2014 challenge assumptions, kill bad ideas early, earn the right to build",
   "author": {
     "name": "x-mesh"
   },

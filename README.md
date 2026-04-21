@@ -25,7 +25,7 @@
 </p>
 
 <p align="center">
-  <code>/x-build plan "Build a REST API with JWT auth"</code><br />
+  <code>/xm:build plan "Build a REST API with JWT auth"</code><br />
   → PRD → task decomposition → parallel agents → verified ✅
 </p>
 
@@ -76,8 +76,8 @@ After installation, verify with `bun --version` (requires v1.0+).
 ### Plugin Setup
 
 ```bash
-/plugin marketplace add x-mesh/x-kit
-/plugin install x-kit@x-kit -s user
+/plugin marketplace add x-mesh/xm:kit
+/plugin install x-kit@xm -s user
 ```
 
 ### First-Run Init (Global)
@@ -85,10 +85,10 @@ After installation, verify with `bun --version` (requires v1.0+).
 After installing, run once per machine to copy the trace-session hook into `~/.claude/hooks/` and register Skill matchers in `~/.claude/settings.json`:
 
 ```
-/x-kit:init              # install trace-session hook into ~/.claude/
-/x-kit:init status       # verify install state
-/x-kit:init uninstall    # remove hook + settings entries
-/x-kit:init --no-hooks   # CLI-only install (no-op today — reserved)
+/xm:kit:init              # install trace-session hook into ~/.claude/
+/xm:kit:init status       # verify install state
+/xm:kit:init uninstall    # remove hook + settings entries
+/xm:kit:init --no-hooks   # CLI-only install (no-op today — reserved)
 ```
 
 Idempotent: safe to re-run. Existing hooks (e.g. mem-mesh) are preserved, and each write creates a timestamped backup of `settings.json`. Traces land in each project's `.xm/traces/`.
@@ -107,11 +107,11 @@ bash x-kit/scripts/install.sh
 curl -fsSL https://raw.githubusercontent.com/x-mesh/x-kit/main/x-kit/scripts/install.sh | bash
 ```
 
-The installer writes `~/.local/bin/x-kit` (override with `X_KIT_BIN_DIR`; ensure it is on your `PATH`) and, when the `claude` CLI is on `PATH`, also runs `claude plugin install <p>@x-kit -s user` for every plugin in `marketplace.json` (x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-dashboard, x-kit). Run `/reload-plugins` inside Claude Code afterward to activate them. If `claude` is not on `PATH`, the CLI wrapper alone is installed and the plugin list is printed for manual install.
+The installer writes `~/.local/bin/xm:kit` (override with `X_KIT_BIN_DIR`; ensure it is on your `PATH`) and, when the `claude` CLI is on `PATH`, also runs `claude plugin install <p>@xm -s user` for every plugin in `marketplace.json` (x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-dashboard, x-kit). Run `/reload-plugins` inside Claude Code afterward to activate them. If `claude` is not on `PATH`, the CLI wrapper alone is installed and the plugin list is printed for manual install.
 
 #### Global hook install (`x-kit init`)
 
-The bash `x-kit init` subcommand is equivalent to the `/x-kit:init` slash command — it installs the Skill-tracing hook into **user-scoped** `~/.claude/` (once per machine):
+The bash `x-kit init` subcommand is equivalent to the `/xm:kit:init` slash command — it installs the Skill-tracing hook into **user-scoped** `~/.claude/` (once per machine):
 
 ```bash
 x-kit init                 # install trace-session hook into ~/.claude/
@@ -120,7 +120,7 @@ x-kit init uninstall       # remove hook + settings entries
 x-kit init --no-hooks      # CLI-only install (no-op today — reserved)
 ```
 
-Writes `~/.claude/hooks/x-kit-trace-session.mjs` and merges `PreToolUse`/`PostToolUse` Skill matchers into `~/.claude/settings.json` (existing hooks such as mem-mesh are preserved; a timestamped backup is created on every write). Use the bash route when you are outside Claude Code; otherwise `/x-kit:init` is the preferred entry point.
+Writes `~/.claude/hooks/x-kit-trace-session.mjs` and merges `PreToolUse`/`PostToolUse` Skill matchers into `~/.claude/settings.json` (existing hooks such as mem-mesh are preserved; a timestamped backup is created on every write). Use the bash route when you are outside Claude Code; otherwise `/xm:kit:init` is the preferred entry point.
 
 ```bash
 x-kit dashboard                       # start — uses ~/.xm/projects.json registry (all registered projects)
@@ -163,7 +163,7 @@ The dashboard reads from a machine-local registry at `~/.xm/projects.json`. Once
 ## Quick Start
 
 ```bash
-/x-build plan "Build a REST API with JWT auth"
+/xm:build plan "Build a REST API with JWT auth"
 ```
 
 That single line:
@@ -174,40 +174,40 @@ That single line:
 
 Want to skip Research/PRD and go straight to execution? Use `--quick`:
 ```bash
-/x-build plan "Build a REST API with JWT auth" --quick
+/xm:build plan "Build a REST API with JWT auth" --quick
 ```
 
-Failed? Run `/x-build run` again. Completed tasks are skipped, only remaining ones execute.
+Failed? Run `/xm:build run` again. Completed tasks are skipped, only remaining ones execute.
 
 <details>
 <summary>Step-by-step tutorial (5 minutes)</summary>
 
 ```bash
 # 1. Initialize
-/x-build init my-project
+/xm:build init my-project
 
 # 2. Gather requirements (optional but recommended)
-/x-build discuss --mode interview
+/xm:build discuss --mode interview
 # → Agent asks clarifying questions, generates CONTEXT.md
 
 # 3. Generate PRD + decompose into tasks
-/x-build plan "Build a user auth system with JWT"
+/xm:build plan "Build a user auth system with JWT"
 # → Auto-generates PRD + task list
 
 # 4. Validate the plan
-/x-build plan-check
+/xm:build plan-check
 # → Checks 11 dimensions (atomicity, coverage, scope-clarity, ...)
 
 # 5. Execute
-/x-build run
+/xm:build run
 # → Agents execute tasks in parallel (DAG order)
 
 # 6. Verify
-/x-build quality                  # test/lint/build checks
-/x-build verify-traceability      # R# ↔ Task ↔ AC matrix
+/xm:build quality                  # test/lint/build checks
+/xm:build verify-traceability      # R# ↔ Task ↔ AC matrix
 
 # 7. Done!
-/x-build status
+/xm:build status
 ```
 
 </details>
@@ -304,19 +304,19 @@ Common reference material lives in `references/` (synced to marketplace as `x-ki
 
 | Plugin | Purpose | Key command |
 |--------|---------|-------------|
-| [x-build](#x-build) | Project lifecycle & PRD pipeline | `/x-build plan "goal"` |
-| [x-op](#x-op) | 18 multi-agent strategies | `/x-op debate "A vs B"` |
-| [x-review](#x-review) | Judgment-based code review | `/x-review diff` |
-| [x-solver](#x-solver) | Structured problem solving | `/x-solver init "bug"` |
-| [x-probe](#x-probe) | Evidence-grade premise validation | `/x-probe "idea"` |
-| [x-eval](#x-eval) | Quality scoring & benchmarks | `/x-eval score file` |
-| [x-humble](#x-humble) | Structured retrospective | `/x-humble reflect` |
-| [x-agent](#x-agent) | Agent primitives & teams | `/x-agent fan-out "task"` |
-| [x-trace](#x-trace) | Execution tracing & cost | `/x-trace timeline` |
-| [x-memory](#x-memory) | Cross-session memory | `/x-memory inject` |
+| [x-build](#x-build) | Project lifecycle & PRD pipeline | `/xm:build plan "goal"` |
+| [x-op](#x-op) | 18 multi-agent strategies | `/xm:op debate "A vs B"` |
+| [x-review](#x-review) | Judgment-based code review | `/xm:review diff` |
+| [x-solver](#x-solver) | Structured problem solving | `/xm:solver init "bug"` |
+| [x-probe](#x-probe) | Evidence-grade premise validation | `/xm:probe "idea"` |
+| [x-eval](#x-eval) | Quality scoring & benchmarks | `/xm:eval score file` |
+| [x-humble](#x-humble) | Structured retrospective | `/xm:humble reflect` |
+| [x-agent](#x-agent) | Agent primitives & teams | `/xm:agent fan-out "task"` |
+| [x-trace](#x-trace) | Execution tracing & cost | `/xm:trace timeline` |
+| [x-memory](#x-memory) | Cross-session memory | `/xm:memory inject` |
 | [x-sync](#x-sync) | Multi-machine .xm/ sync | `x-kit sync push` |
-| [x-ship](#x-ship) | Release automation & squash | `/x-ship auto` |
-| x-kit | Bundle + config + pipeline | `/x-kit pipeline release` |
+| [x-ship](#x-ship) | Release automation & squash | `/xm:ship auto` |
+| x-kit | Bundle + config + pipeline | `/xm:kit pipeline release` |
 
 ---
 
@@ -325,10 +325,10 @@ Common reference material lives in `references/` (synced to marketplace as `x-ki
 Full project lifecycle — PRD generation, multi-mode deliberation, consensus review, acceptance contracts, and quality-gated execution.
 
 ```bash
-/x-build init my-api
-/x-build discuss --mode interview       # Multi-round requirements interview
-/x-build plan "Build a REST API with JWT auth"
-/x-build run                             # Agents execute in DAG order
+/xm:build init my-api
+/xm:build discuss --mode interview       # Multi-round requirements interview
+/xm:build plan "Build a REST API with JWT auth"
+/xm:build run                             # Agents execute in DAG order
 ```
 
 ```
@@ -383,11 +383,11 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 18 multi-agent strategies with self-scoring and auto-verification.
 
 ```bash
-/x-op refine "Payment API design" --rounds 4 --verify
-/x-op tournament "Best approach" --agents 6 --bracket double
-/x-op debate "REST vs GraphQL"
-/x-op investigate "Redis vs Memcached" --depth deep
-/x-op compose "brainstorm | tournament | refine" --topic "v2 plan"
+/xm:op refine "Payment API design" --rounds 4 --verify
+/xm:op tournament "Best approach" --agents 6 --bracket double
+/xm:op debate "REST vs GraphQL"
+/xm:op investigate "Redis vs Memcached" --depth deep
+/xm:op compose "brainstorm | tournament | refine" --topic "v2 plan"
 ```
 
 | Category | Strategies |
@@ -446,7 +446,7 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 | Feature brainstorming | `brainstorm` | Free ideation → cluster → vote |
 | Unknown territory exploration | `investigate` | Multi-angle → gap analysis |
 
-Not sure? Run `/x-op list` to see all strategies with descriptions.
+Not sure? Run `/xm:op list` to see all strategies with descriptions.
 
 </details>
 
@@ -478,11 +478,11 @@ Not sure? Run `/x-op list` to see all strategies with descriptions.
 Multi-perspective code review with judgment frameworks, not just checklists.
 
 ```bash
-/x-review diff                     # Review last commit
-/x-review diff HEAD~3              # Review last 3 commits
-/x-review pr 142                   # Review GitHub PR
-/x-review file src/auth.ts         # Review specific file
-/x-review diff --specialists       # Enhance lenses with domain specialist agents
+/xm:review diff                     # Review last commit
+/xm:review diff HEAD~3              # Review last 3 commits
+/xm:review pr 142                   # Review GitHub PR
+/xm:review file src/auth.ts         # Review specific file
+/xm:review diff --specialists       # Enhance lenses with domain specialist agents
 ```
 
 | Feature | Description |
@@ -507,9 +507,9 @@ Multi-perspective code review with judgment frameworks, not just checklists.
 4 structured strategies with weight-based auto-classification and compound keyword detection.
 
 ```bash
-/x-solver init "Memory leak in React component"
-/x-solver classify          # Auto-recommend strategy
-/x-solver solve             # Execute with agents
+/xm:solver init "Memory leak in React component"
+/xm:solver classify          # Auto-recommend strategy
+/xm:solver solve             # Execute with agents
 ```
 
 | Strategy | Pattern | Best for |
@@ -531,9 +531,9 @@ DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE → x-humble
 Should you build this? Probe before you commit. Evidence-grade questioning, domain-aware probing, and pre-mortem analysis with structured downstream integration.
 
 ```bash
-/x-probe "Build a payment system"    # Full probe session
-/x-probe verdict                      # Show last verdict
-/x-probe list                         # Past probes
+/xm:probe "Build a payment system"    # Full probe session
+/xm:probe verdict                      # Show last verdict
+/xm:probe list                         # Past probes
 ```
 
 ```
@@ -556,7 +556,7 @@ FRAME ──→ PROBE ──→ STRESS ──→ VERDICT
 | **Reclassification triggers** | Grade auto-upgrades/downgrades based on user evidence during probing |
 | **Verdict** | PROCEED / RETHINK / KILL with evidence summary — fatal+assumption blocks PROCEED |
 | **x-build integration** | PROCEED verdict auto-injects premises, evidence gaps, kill criteria into CONTEXT.md |
-| **Verdict schema v2** | Structured JSON with domain, evidence grades, gaps — consumed by x-solver/x-humble/x-memory |
+| **Verdict schema v2** | Structured JSON with domain, evidence grades, gaps — consumed by x-solver/x-humble/xm:memory |
 | **x-build link** | PROCEED auto-injects validated premises into CONTEXT.md |
 | **x-humble link** | KILL triggers retrospective on why the idea reached probe stage |
 
@@ -569,18 +569,18 @@ FRAME ──→ PROBE ──→ STRESS ──→ VERDICT
 Multi-rubric scoring, strategy benchmarking, A/B comparison, and change measurement.
 
 ```bash
-/x-eval score output.md --rubric code-quality     # Judge panel scoring
-/x-eval score output.md --rubric code-quality \
+/xm:eval score output.md --rubric code-quality     # Judge panel scoring
+/xm:eval score output.md --rubric code-quality \
   --assert "handles empty input" \
   --assert "no global state"               # + binary outcome assertions (HARD FAIL gate)
-/x-eval compare old.md new.md --judges 5          # A/B comparison
-/x-eval bench "Find bugs" --strategies "refine,debate,tournament" --trials 5
+/xm:eval compare old.md new.md --judges 5          # A/B comparison
+/xm:eval bench "Find bugs" --strategies "refine,debate,tournament" --trials 5
                                                   # pass@k/pass^k reliability metrics
-/x-eval diff --from abc1234 --quality              # Change measurement
-/x-eval diff --baseline v1.5.0                     # Regression check vs pinned tag
-/x-eval consistency x-review                       # Test specific plugin consistency
-/x-eval report --sample-transcript 2              # Dump judge rationales to audit scores
-/x-eval calibrate --rubric code-quality            # Human-vs-judge bias check
+/xm:eval diff --from abc1234 --quality              # Change measurement
+/xm:eval diff --baseline v1.5.0                     # Regression check vs pinned tag
+/xm:eval consistency x-review                       # Test specific plugin consistency
+/xm:eval report --sample-transcript 2              # Dump judge rationales to audit scores
+/xm:eval calibrate --rubric code-quality            # Human-vs-judge bias check
 ```
 
 <details>
@@ -614,10 +614,10 @@ Multi-rubric scoring, strategy benchmarking, A/B comparison, and change measurem
 Learn from failures together. Not a rule generator — the retrospective process itself is the value.
 
 ```bash
-/x-humble reflect              # Full session retrospective
-/x-humble review "why scaffold?"  # Deep-dive on specific decision
-/x-humble lessons              # View accumulated lessons
-/x-humble apply L3             # Apply lesson to CLAUDE.md
+/xm:humble reflect              # Full session retrospective
+/xm:humble review "why scaffold?"  # Deep-dive on specific decision
+/xm:humble lessons              # View accumulated lessons
+/xm:humble apply L3             # Apply lesson to CLAUDE.md
 ```
 
 ```
@@ -655,7 +655,7 @@ Web dashboard for `.xm/` project state. Visualize builds, probes, solvers, **rev
 ```bash
 bun x-dashboard/lib/x-dashboard-server.mjs              # Start (standalone)
 bun x-dashboard/lib/x-dashboard-server.mjs --stop       # Stop
-/x-kit:x-dashboard                                       # Start from Claude Code
+/xm:dashboard                                       # Start from Claude Code
 ```
 
 ```
@@ -697,19 +697,19 @@ Agent primitives and autonomous behaviors on top of Claude Code's native Agent t
 
 ```bash
 # Primitives
-/x-agent fan-out "Find bugs in this code" --agents 5
-/x-agent delegate security "Review src/auth.ts"
-/x-agent broadcast "Review this PR" --roles "security,perf,logic"
+/xm:agent fan-out "Find bugs in this code" --agents 5
+/xm:agent delegate security "Review src/auth.ts"
+/xm:agent broadcast "Review this PR" --roles "security,perf,logic"
 
 # Autonomous behaviors
-/x-agent research "Redis pub/sub limits" --budget 5
-/x-agent solve "CI-only test failure in auth" --agents 3
-/x-agent consensus "JWT vs Session for auth" --agents 4
-/x-agent swarm "Increase test coverage to 80%" --agents 5
+/xm:agent research "Redis pub/sub limits" --budget 5
+/xm:agent solve "CI-only test failure in auth" --agents 3
+/xm:agent consensus "JWT vs Session for auth" --agents 4
+/xm:agent swarm "Increase test coverage to 80%" --agents 5
 
 # Team
-/x-agent team create eng --template engineering
-/x-agent team assign eng "Build payment system"
+/xm:agent team create eng --template engineering
+/xm:agent team assign eng "Build payment system"
 ```
 
 | Layer | Commands | What it does |
@@ -732,10 +732,10 @@ Model auto-routing: `architect` → opus, `executor` → sonnet, `scanner` → h
 See what your agents actually did — timeline, cost, and replay.
 
 ```bash
-/x-trace timeline              # Agent execution timeline
-/x-trace cost                  # Token/cost breakdown per agent
-/x-trace replay <id>           # Replay a past execution
-/x-trace diff <id1> <id2>      # Compare two execution runs
+/xm:trace timeline              # Agent execution timeline
+/xm:trace cost                  # Token/cost breakdown per agent
+/xm:trace replay <id>           # Replay a past execution
+/xm:trace diff <id1> <id2>      # Compare two execution runs
 ```
 
 ---
@@ -745,16 +745,16 @@ See what your agents actually did — timeline, cost, and replay.
 Persist decisions and patterns across sessions. Auto-inject relevant context on start.
 
 ```bash
-/x-memory save --type decision "Redis for caching — ACID not required, read-heavy"
-/x-memory save --type failure "Auth middleware order matters — apply before rate limiter"
-/x-memory list                 # List all memories (--type, --tag filters)
-/x-memory show mem-001         # Show full memory content
-/x-memory recall "auth"        # Search past decisions and patterns
-/x-memory forget mem-003       # Delete a memory
-/x-memory inject               # Auto-inject relevant memories into current context
-/x-memory export --format json # Export memories to JSON or Markdown
-/x-memory import backup.json   # Import memories with dedup
-/x-memory stats                # Show memory statistics by type
+/xm:memory save --type decision "Redis for caching — ACID not required, read-heavy"
+/xm:memory save --type failure "Auth middleware order matters — apply before rate limiter"
+/xm:memory list                 # List all memories (--type, --tag filters)
+/xm:memory show mem-001         # Show full memory content
+/xm:memory recall "auth"        # Search past decisions and patterns
+/xm:memory forget mem-003       # Delete a memory
+/xm:memory inject               # Auto-inject relevant memories into current context
+/xm:memory export --format json # Export memories to JSON or Markdown
+/xm:memory import backup.json   # Import memories with dedup
+/xm:memory stats                # Show memory statistics by type
 ```
 
 | Type | Purpose | Auto-injected |
@@ -778,7 +778,7 @@ XM_SYNC_API_KEY=secret docker compose -f x-sync/docker-compose.yml up -d
 
 # Or pull from GHCR
 docker run -d -p 19842:19842 -e XM_SYNC_API_KEY=secret \
-  -v x-sync-data:/root/.xm/sync jinwoo/x-sync:latest
+  -v x-sync-data:/root/.xm/sync jinwoo/xm:sync:latest
 ```
 
 **Option B: Standalone install**
@@ -805,7 +805,7 @@ x-sync pull     # pull other machines' data
 x-sync status   # show config and sync state
 ```
 
-Or use directly in Claude Code: `/x-sync push`, `/x-sync pull`, `/x-sync setup`
+Or use directly in Claude Code: `/xm:sync push`, `/xm:sync pull`, `/xm:sync setup`
 
 | Feature | Detail |
 |---------|--------|
@@ -823,10 +823,10 @@ Or use directly in Claude Code: `/x-sync push`, `/x-sync pull`, `/x-sync setup`
 Release automation — commit squash, version bump, push. Works with x-kit marketplace plugins AND standalone projects (Node.js, Rust, Python, Go).
 
 ```bash
-/x-ship                # Interactive: test → review → release
-/x-ship auto           # Squash + bump + push, no gates
-/x-ship status         # Show commits since last release
-/x-ship patch          # Explicit patch bump
+/xm:ship                # Interactive: test → review → release
+/xm:ship auto           # Squash + bump + push, no gates
+/xm:ship status         # Show commits since last release
+/xm:ship patch          # Explicit patch bump
 ```
 
 | Feature | Description |
@@ -892,7 +892,7 @@ lessons → CLAUDE.md + x-eval judge context → Next session applies patterns
 
 ## Benchmarks
 
-Empirical consistency measurements across all plugins. Run with `/x-eval consistency`.
+Empirical consistency measurements across all plugins. Run with `/xm:eval consistency`.
 
 | Plugin | Strategy | Consistency | Status |
 |--------|----------|:-----------:|--------|
@@ -955,9 +955,9 @@ x-build CLI (state)  ←  tasks update (callback)
 x-kit includes 37 specialist agents covering core and domain areas. Plugins use these agents automatically (e.g., x-op refine injects specialists per topic; x-review uses them with `--specialists`).
 
 ```bash
-/x-kit agents list                        # List all 37 specialists
-/x-kit agents match "payment API design"  # Find best agents for a topic
-/x-kit agents get security --slim         # Show a specialist's rules
+/xm:kit agents list                        # List all 37 specialists
+/xm:kit agents match "payment API design"  # Find best agents for a topic
+/xm:kit agents get security --slim         # Show a specialist's rules
 ```
 
 | Tier | Agents |
@@ -972,10 +972,10 @@ Catalog located at `x-kit/agents/catalog.json`. Each agent has a full rules file
 ## Configuration
 
 ```bash
-/x-kit config set agent_max_count 10              # 10 agents parallel
-/x-kit config set team_default_leader_model opus  # Team Leader model
-/x-kit config set team_max_members 5              # Max members per team
-/x-kit config show
+/xm:kit config set agent_max_count 10              # 10 agents parallel
+/xm:kit config set team_default_leader_model opus  # Team Leader model
+/xm:kit config set team_max_members 5              # Max members per team
+/xm:kit config show
 ```
 
 Settings stored in `.xm/config.json` (project-level).
@@ -985,10 +985,10 @@ Settings stored in `.xm/config.json` (project-level).
 Control model spending with **model profiles** and **budget guards**.
 
 ```bash
-/x-kit config set model_profile economy           # Sonnet-centric, maximum savings
-/x-kit config set model_profile default           # Default — Opus-centric (Opus 4.7 era)
-/x-kit config set model_profile max               # Opus everywhere, quality-first
-/x-kit config set budget '{"max_usd": 5.0}'       # Set session budget limit
+/xm:kit config set model_profile economy           # Sonnet-centric, maximum savings
+/xm:kit config set model_profile default           # Default — Opus-centric (Opus 4.7 era)
+/xm:kit config set model_profile max               # Opus everywhere, quality-first
+/xm:kit config set budget '{"max_usd": 5.0}'       # Set session budget limit
 ```
 
 The `model_profile` key expresses **cost intent** (how much to spend) on a single axis. Legacy names `balanced` and `performance` are auto-mapped to `default` and `max` respectively.
@@ -999,16 +999,16 @@ The `model_profile` key expresses **cost intent** (how much to spend) on a singl
 | default | opus | opus | sonnet | sonnet | haiku | Opus-centric baseline |
 | max | opus | opus | opus | sonnet | haiku | ~1.5-2x vs default |
 
-Script-only commands (`config show`, `version`, `agents list`, …) still route to haiku regardless of profile (see Model Guardrail in `x-kit/skills/x-kit/SKILL.md`).
+Script-only commands (`config show`, `version`, `agents list`, …) still route to haiku regardless of profile (see Model Guardrail in `x-kit/skills/kit/SKILL.md`).
 
 Key roles shown; full mapping includes reviewer, security, designer, debugger, writer. See `MODEL_PROFILES` in source.
 
-Per-role overrides: `/x-kit config set model_overrides '{"architect": "opus"}'` on top of any profile.
+Per-role overrides: `/xm:kit config set model_overrides '{"architect": "opus"}'` on top of any profile.
 
 Budget guards warn at 80% usage and block execution at 100%, tracked via session metrics. Rolling spend is tracked in `.xm/spend-cache.json` over a configurable window (`budget.window_hours`, default 24h). Per-project caps use `budget.projects`:
 
 ```bash
-/x-kit config set budget '{"max_usd": 5.0, "window_hours": 48, "projects": {"my-proj": {"max_usd": 2.0}}}'
+/xm:kit config set budget '{"max_usd": 5.0, "window_hours": 48, "projects": {"my-proj": {"max_usd": 2.0}}}'
 ```
 
 #### Cost vs Quality Benchmark
@@ -1023,7 +1023,7 @@ Same coding task (`rateLimiter` — sliding window) across three models:
 | Code quality | 6/10 | 8/10 | 9/10 |
 | **Estimated cost (medium task)** | **$0.07** | **$0.81** | **$4.05** |
 
-> **Takeaway:** haiku produces working code but misses edge cases. sonnet is production-grade for most tasks. opus adds defensive robustness at much higher cost. Profiles let you choose the tradeoff: `economy` (sonnet-centric) vs `default` (opus-centric) vs `max` (all-opus). Run `/x-build forecast` for workload-specific estimates.
+> **Takeaway:** haiku produces working code but misses edge cases. sonnet is production-grade for most tasks. opus adds defensive robustness at much higher cost. Profiles let you choose the tradeoff: `economy` (sonnet-centric) vs `default` (opus-centric) vs `max` (all-opus). Run `/xm:build forecast` for workload-specific estimates.
 
 #### Automatic Model Routing
 
@@ -1049,7 +1049,7 @@ Selection follows a 3-level priority chain: `model_overrides → profile → fal
 <summary>Circuit breaker is OPEN</summary>
 
 ```bash
-/x-build circuit-breaker reset    # Manual reset
+/xm:build circuit-breaker reset    # Manual reset
 ```
 
 </details>
@@ -1058,7 +1058,7 @@ Selection follows a 3-level priority chain: `model_overrides → profile → fal
 <summary>"No steps computed"</summary>
 
 ```bash
-/x-build steps compute            # Build DAG from task dependencies
+/xm:build steps compute            # Build DAG from task dependencies
 ```
 
 </details>
@@ -1067,8 +1067,8 @@ Selection follows a 3-level priority chain: `model_overrides → profile → fal
 <summary>plan-check shows errors</summary>
 
 1. Read each error message
-2. Fix: `/x-build tasks update <id> --done-criteria "..."` or add missing tasks
-3. Re-run: `/x-build plan-check`
+2. Fix: `/xm:build tasks update <id> --done-criteria "..."` or add missing tasks
+3. Re-run: `/xm:build plan-check`
 
 </details>
 
@@ -1076,8 +1076,8 @@ Selection follows a 3-level priority chain: `model_overrides → profile → fal
 <summary>"Cannot run — current phase is Plan"</summary>
 
 ```bash
-/x-build phase next               # Advance to Execute phase
-/x-build run                      # Then run
+/xm:build phase next               # Advance to Execute phase
+/xm:build run                      # Then run
 ```
 
 </details>
@@ -1086,8 +1086,8 @@ Selection follows a 3-level priority chain: `model_overrides → profile → fal
 <summary>Task stuck in RUNNING</summary>
 
 ```bash
-/x-build tasks update <id> --status failed --error-msg "timeout"
-/x-build run                      # Will retry or skip
+/xm:build tasks update <id> --status failed --error-msg "timeout"
+/xm:build run                      # Will retry or skip
 ```
 
 </details>

@@ -1,6 +1,6 @@
 # AskUserQuestion Dark-Theme Rule
 
-Reference for plugins using AskUserQuestion. Sourced from x-build/skills/x-build/SKILL.md.
+Reference for plugins using AskUserQuestion. Sourced from x-build/skills/build/SKILL.md.
 
 **CRITICAL:** The `question` field in AskUserQuestion is invisible on dark terminals.
 
