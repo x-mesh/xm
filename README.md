@@ -571,10 +571,12 @@ Multi-rubric scoring, strategy benchmarking, A/B comparison, and change measurem
 ```bash
 /x-eval score output.md --rubric code-quality     # Judge panel scoring
 /x-eval compare old.md new.md --judges 5          # A/B comparison
-/x-eval bench "Find bugs" --strategies "refine,debate,tournament"
+/x-eval bench "Find bugs" --strategies "refine,debate,tournament" --trials 5
+                                                  # pass@k/pass^k reliability metrics
 /x-eval diff --from abc1234 --quality              # Change measurement
 /x-eval consistency              # Measure plugin output consistency (default: all changed)
 /x-eval consistency x-review     # Test specific plugin
+/x-eval report --sample-transcript 2              # Dump judge rationales to audit scores
 ```
 
 <details>
@@ -584,13 +586,15 @@ Multi-rubric scoring, strategy benchmarking, A/B comparison, and change measurem
 |---------|-------------|
 | **score** | N judges score content against rubric (1-10, weighted avg, consensus σ) |
 | **compare** | A/B comparison with position bias mitigation |
-| **bench** | strategies × models × trials matrix with Score/$ optimization |
+| **bench** | strategies × models × trials with `pass@k`/`pass^k` reliability metrics, σ-aware recommendation, broken-task warning, and Score/$ optimization |
 | **diff** | Git-based change analysis + optional before/after quality comparison |
 | **consistency** | Measure plugin output consistency across repeated runs |
 | **rubric** | Create/list custom evaluation rubrics |
 | **report** | Aggregated evaluation history |
 
-**Built-in rubrics:** `code-quality`, `review-quality`, `plan-quality`, `general`
+**Built-in rubrics:** `code-quality`, `review-quality`, `plan-quality`, `general` — each declares a `pass_threshold` (7.0–8.0) used by `bench` to compute pass@k / pass^k. Custom rubrics may override via the `pass_threshold` field.
+
+**Audit trail:** `score` and `bench` preserve per-judge rationales in `.xm/eval/results/`; read them via `report --sample-transcript N` to verify scores aren't just aggregate vibes.
 
 **Domain presets:** `api-design`, `frontend-design`, `data-pipeline`, `security-audit`, `architecture-review`
 

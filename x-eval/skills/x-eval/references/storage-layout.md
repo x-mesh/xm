@@ -32,9 +32,22 @@ File system layout for x-eval outputs, result schemas, and rubric definitions st
   "averages": { "correctness": 8.7, "readability": 7.3 },
   "overall": 7.8,
   "sigma": 0.6,
-  "content_preview": "function add(a,b)..."
+  "pass_threshold": 7.5,
+  "passed": true,
+  "content_preview": "function add(a,b)...",
+  "judge_rationales": [
+    {
+      "judge": "judge-1 (standard)",
+      "per_criterion": { "correctness": "Handles edge cases; tested with negatives.", "readability": "..." },
+      "overall_reasoning": "Solid implementation; minor naming concerns."
+    }
+  ]
 }
 ```
+
+- `pass_threshold` — copied from rubric at evaluation time (allows rubric tuning without invalidating old results).
+- `passed` — `overall >= pass_threshold`. Used by `bench` for `pass_at_k` aggregation.
+- `judge_rationales` — preserved for `report --sample-transcript` (article H: "누군가 트랜스크립트를 읽기 전에는 점수를 액면 그대로 믿지 말라"). Optional — skip when `eval.persist_transcripts: false`.
 
 ### Result Schema (compare)
 
@@ -60,9 +73,46 @@ File system layout for x-eval outputs, result schemas, and rubric definitions st
   "description": "Strict code evaluation",
   "criteria": ["correctness", "edge-cases", "complexity"],
   "weights": [0.5, 0.3, 0.2],
+  "pass_threshold": 7.5,
   "created_at": "ISO8601"
 }
 ```
+
+- `pass_threshold` — optional, default **7.0**. Single trial is "pass" when `overall >= pass_threshold`. Used by `bench` pass@k / pass^k metrics. Built-in rubric thresholds: see `rubrics.md`.
+
+### Result Schema (bench)
+
+```json
+{
+  "type": "bench",
+  "timestamp": "ISO8601",
+  "task": "Find the bug in this code",
+  "rubric": "general",
+  "pass_threshold": 7.0,
+  "strategies": [
+    {
+      "name": "debate",
+      "trials": 3,
+      "avg_score": 7.8,
+      "sigma": 0.8,
+      "pass_at_k": 2,
+      "pass_hat_k": 0,
+      "pass_at_k_rate": 0.67,
+      "per_trial_overall": [8.2, 7.9, 5.4],
+      "est_cost_usd": 0.08,
+      "avg_time_sec": 30
+    }
+  ],
+  "broken_task_warning": false,
+  "recommendation": { "best_quality": "tournament", "best_value": "debate", "final": "tournament" }
+}
+```
+
+- `pass_at_k` — count of trials with `overall >= pass_threshold`. Capability signal.
+- `pass_hat_k` — 1 if all trials pass, else 0. Reliability signal.
+- `pass_at_k_rate` — `pass_at_k / trials`. Normalized.
+- `per_trial_overall` — per-trial weighted overall. Enables post-hoc re-scoring without re-running agents.
+- `broken_task_warning` — true when ALL strategies have `pass_at_k_rate == 0` AND their `avg_score < 4.5` AND `trials >= 2`. Empirically validated false-alarm rate = 0% on merely-weak strategies.
 
 ## Applies to
 

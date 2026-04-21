@@ -571,10 +571,12 @@ FRAME ──→ PROBE ──→ STRESS ──→ VERDICT
 ```bash
 /x-eval score output.md --rubric code-quality     # 심사 패널 채점
 /x-eval compare old.md new.md --judges 5          # A/B 비교
-/x-eval bench "버그 찾기" --strategies "refine,debate,tournament"
+/x-eval bench "버그 찾기" --strategies "refine,debate,tournament" --trials 5
+                                                  # pass@k/pass^k 신뢰성 지표
 /x-eval diff --from abc1234 --quality              # 변경 측정
 /x-eval consistency              # 플러그인 출력 일관성 측정 (기본: 변경된 전체)
 /x-eval consistency x-review     # 특정 플러그인 테스트
+/x-eval report --sample-transcript 2              # 점수 감사용 심사위원 판단 근거 출력
 ```
 
 <details>
@@ -584,13 +586,15 @@ FRAME ──→ PROBE ──→ STRESS ──→ VERDICT
 |---------|-------------|
 | **score** | N명 심사위원이 평가 기준으로 채점 (1-10, 가중 평균) |
 | **compare** | 위치 편향 완화된 A/B 비교 |
-| **bench** | 전략 × 모델 × 시행 매트릭스, Score/$ 최적화 |
+| **bench** | 전략 × 모델 × 시행 매트릭스, `pass@k`/`pass^k` 신뢰성 지표, σ 기반 추천, broken-task 경고, Score/$ 최적화 |
 | **diff** | Git 기반 변경 분석 + 선택적 전후 품질 비교 |
 | **consistency** | 반복 실행 간 플러그인 출력 일관성 측정 |
 | **rubric** | 커스텀 평가 기준 생성/목록 |
 | **report** | 집계된 평가 이력 |
 
-**내장 평가 기준:** `code-quality`, `review-quality`, `plan-quality`, `general`
+**내장 평가 기준:** `code-quality`, `review-quality`, `plan-quality`, `general` — 각 루브릭은 `pass_threshold`(7.0–8.0)를 선언하고, `bench`가 이를 기준으로 pass@k / pass^k를 계산합니다. 커스텀 루브릭은 `pass_threshold` 필드로 재정의 가능.
+
+**감사 추적:** `score`/`bench`는 심사위원별 판단 근거를 `.xm/eval/results/`에 보존합니다. `report --sample-transcript N`로 읽어서 점수가 단순 집계 분위기가 아닌지 검증하세요.
 
 **도메인 프리셋:** `api-design`, `frontend-design`, `data-pipeline`, `security-audit`, `architecture-review`
 

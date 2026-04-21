@@ -4,10 +4,11 @@
 
 | Command | Description |
 |---------|-------------|
-| `x-kit init` | Install hooks + settings into `.claude/` and install x-sync client |
+| `x-kit init` | Install hooks + settings into `.claude/` and install x-sync client. Skips hook+settings steps automatically if a global install is detected in `~/.claude/settings.json`. |
 | `x-kit init --dry-run` | Preview all changes without writing anything |
 | `x-kit init --skip-sync` | Install only hooks + settings, skip x-sync |
 | `x-kit init --with-server` | Also install x-sync server (requires Bun) |
+| `x-kit init --force-local` | Install per-project even when global x-kit is detected (trace events will fire twice — use only for explicit team-shared `.claude/` setups) |
 | `x-kit init --rollback` | Restore `.claude/settings.json` from the most recent backup |
 
 ## Status Labels
@@ -26,7 +27,11 @@ All install steps emit one of these labels per item for consistent feedback:
 
 **Dry-run mode** (`--dry-run`): Execute steps 1-3 in preview mode — compute diffs, do NOT write files, do NOT run curl. Print `🔍 would <action>` lines and the full diff for settings.json. Exit with `📋 Dry run complete. Re-run without --dry-run to apply.`
 
-**Normal mode**: Run steps 1-2 (hooks + settings, with auto-backup) → step 3 (x-sync client, unless `--skip-sync`) → step 4 if `--with-server`.
+**Normal mode**: Run step 0.5 (global detection) → steps 1-2 (hooks + settings, with auto-backup) → step 3 (x-sync client, unless `--skip-sync`) → step 4 if `--with-server`.
+
+**Global detection contract:** if `~/.claude/settings.json` already wires a hook whose command references `x-kit-trace-session.mjs`, steps 0-2 are skipped by default (the global hook already handles trace events; installing per-project would duplicate them). Pass `--force-local` to override — used only for team-shared `.claude/` directories that must ship their own hook.
+
+**Argument → env mapping:** when invoking the bash block below, the calling agent MUST translate flags into env vars: `--dry-run → DRY_RUN=1`, `--force-local → FORCE_LOCAL=1`. Flags not mapped here (`--skip-sync`, `--with-server`, `--rollback`) gate the step sequence, not the embedded node script.
 
 **Step 0: Backup settings.json** (normal mode only, before any write)
 
@@ -37,13 +42,43 @@ Before touching `.claude/settings.json`, copy it to `.claude/settings.json.backu
 Pass `DRY_RUN=1` env when `--dry-run` is active.
 
 ```bash
-DRY_RUN="${DRY_RUN:-0}" node -e "
+DRY_RUN="${DRY_RUN:-0}" FORCE_LOCAL="${FORCE_LOCAL:-0}" node -e "
 const fs = require('fs');
 const path = require('path');
 
 const DRY = process.env.DRY_RUN === '1';
+const FORCE_LOCAL = process.env.FORCE_LOCAL === '1';
 const MARKETPLACE = path.join(process.env.HOME, '.claude/plugins/marketplaces/x-kit');
 const PROJECT = process.cwd();
+
+// Step 0.5: Global install detection
+// If ~/.claude/settings.json already references the x-kit trace-session hook,
+// per-project install would duplicate hook firings. Skip by default; --force-local overrides.
+const globalSettingsPath = path.join(process.env.HOME, '.claude/settings.json');
+let globalInstalled = false;
+if (fs.existsSync(globalSettingsPath)) {
+  try {
+    const globalSettings = JSON.parse(fs.readFileSync(globalSettingsPath, 'utf8'));
+    const allEntries = Object.values(globalSettings.hooks || {}).flat();
+    globalInstalled = allEntries.some((entry) =>
+      Array.isArray(entry && entry.hooks) &&
+      entry.hooks.some((h) => /x-kit-trace-session\.mjs/.test((h && h.command) || ''))
+    );
+  } catch {}
+}
+
+if (globalInstalled && !FORCE_LOCAL) {
+  const label = DRY ? '🔍 would skip        ' : '⏭  skipped           ';
+  console.log('  ' + label + 'per-project hook+settings (global x-kit detected)');
+  console.log('     ~/.claude/settings.json already wires x-kit-trace-session.mjs.');
+  console.log('     Re-run with --force-local to install anyway (events will fire twice).');
+  console.log(DRY ? '\n📋 Dry run complete (no project changes planned). x-sync check still runs below.' : '\n✅ Per-project install skipped — global hook is active.');
+  process.exit(0);
+}
+
+if (globalInstalled && FORCE_LOCAL) {
+  console.log('  ⚠ global x-kit detected, --force-local overrides — trace events will duplicate');
+}
 
 // Step 0: Backup settings.json (skip in dry-run)
 const settingsPath = path.join(PROJECT, '.claude/settings.json');
