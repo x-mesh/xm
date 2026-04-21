@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CLI_PATH = join(__dirname, '..', 'x-kit', 'lib', 'x-build-cli.mjs');
+const CLI_PATH = join(__dirname, '..', 'xm', 'lib', 'x-build-cli.mjs');
 
 function run(args, opts = {}) {
   const result = spawnSync('node', [CLI_PATH, ...args], {

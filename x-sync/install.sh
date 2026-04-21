@@ -65,7 +65,7 @@ install_client() {
   local lib_dir="$HOME/.local/share/x-sync"
   mkdir -p "$lib_dir"
   for f in sync-push.mjs sync-pull.mjs sync-push-all.mjs sync-pull-all.mjs sync-config.mjs; do
-    curl -fsSL "$REPO_URL/x-kit/lib/x-sync/$f" -o "$lib_dir/$f"
+    curl -fsSL "$REPO_URL/xm/lib/x-sync/$f" -o "$lib_dir/$f"
   done
 
   # Create unified CLI wrapper

@@ -1,4 +1,4 @@
-# x-kit Benchmark Results
+# xm Benchmark Results
 
 Date: 2026-03-31 | Model: claude-sonnet-4-6 | Metric system: v2 (dual-metric)
 
@@ -57,18 +57,18 @@ Same conclusion via different paths. Diversity = good, convergence on core = req
 | x-humble | 0.50 | **0.96** | action quality contract + taxonomy + examples |
 | x-op | 0.73 | **0.95** | output quality contract + dimension anchors |
 
-## 2. A/B: x-kit vs Vanilla Claude Code
+## 2. A/B: xm vs Vanilla Claude Code
 
 Same diff reviewed with and without x-review framework.
 
-| Metric | Vanilla | x-kit (v3) | x-kit + Recall Boost (v4) |
+| Metric | Vanilla | xm (v3) | xm + Recall Boost (v4) |
 |--------|:-------:|:----------:|:-------------------------:|
 | Precision | 0.75 | **1.0** | **1.0** |
 | Recall | **1.0** | 0.25 | **0.75** |
 | F1 | 0.857 | 0.4 | **0.857** |
 | Severity accuracy | 0.75 | **1.0** | **1.0** |
 
-x-kit matches vanilla F1 with superior precision and severity accuracy.
+xm matches vanilla F1 with superior precision and severity accuracy.
 
 ## 3. Key Insights
 

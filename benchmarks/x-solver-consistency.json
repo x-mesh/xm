@@ -3,7 +3,7 @@
   "date": "2026-03-31",
   "description": "Measures x-solver decompose strategy consistency across 3 independent trials with different framings on the same problem.",
   "method": {
-    "problem": "x-kit의 SKILL.md 파일이 500줄을 넘어가면 Claude의 instruction following이 저하된다. 어떻게 해결할 수 있나?",
+    "problem": "xm의 SKILL.md 파일이 500줄을 넘어가면 Claude의 instruction following이 저하된다. 어떻게 해결할 수 있나?",
     "strategy": "decompose",
     "agent": "oh-my-claudecode:scientist (sonnet)",
     "trials": 3,

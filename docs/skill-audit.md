@@ -2,7 +2,7 @@
 
 Status of every `SKILL.md` in the repo against the length budget and required-sections rules in `CLAUDE.md`.
 
-Last updated: 2026-04-17 (post-x-kit split)
+Last updated: 2026-04-17 (post-xm split)
 
 ---
 
@@ -27,13 +27,13 @@ Phase 3 decomposition sweep complete (2026-04-17). **All 14 SKILL.md files under
 | 350 | `x-memory/skills/memory/SKILL.md` | ✅ OK |
 | 345 | `x-humble/skills/humble/SKILL.md` | ✅ OK |
 | 336 | `x-solver/skills/solver/SKILL.md` | ✅ OK |
-| 331 | `x-kit/skills/ship/SKILL.md` | ✅ OK |
+| 331 | `xm/skills/ship/SKILL.md` | ✅ OK |
 | 319 | `x-trace/skills/trace/SKILL.md` | ✅ OK |
-| 304 | `x-kit/skills/sync/SKILL.md` | ✅ OK |
+| 304 | `xm/skills/sync/SKILL.md` | ✅ OK |
 | 277 | `x-review/skills/review/SKILL.md` | ✅ OK |
 | 251 | `x-probe/skills/probe/SKILL.md` | ✅ OK |
 | 238 | `x-eval/skills/eval/SKILL.md` | ✅ OK |
-| 203 | `x-kit/skills/kit/SKILL.md` | ✅ OK (was 551 per 2026-04-08 audit; grew to 915 before split; briefly 159 after initial split; now 203 with thin stubs + commands/ + references/ + Sub-file Loading + Status Symbols sections) |
+| 203 | `xm/skills/kit/SKILL.md` | ✅ OK (was 551 per 2026-04-08 audit; grew to 915 before split; briefly 159 after initial split; now 203 with thin stubs + commands/ + references/ + Sub-file Loading + Status Symbols sections) |
 | 116 | `x-dashboard/skills/dashboard/SKILL.md` | ✅ OK |
 
 ---
@@ -56,7 +56,7 @@ Every SKILL.md must have a `## Common Rationalizations` section.
 | x-agent | 7 | parallelism, delegation, context isolation |
 | x-trace | 6 | session boundaries, metadata-only, fail-open |
 | x-memory | 7 | bloat vs recall, re-derivation, dedupe |
-| x-kit | 7 | shared config, cost engine, DAG, model routing |
+| xm | 7 | shared config, cost engine, DAG, model routing |
 | x-ship | 6 | changelog, semver, squash, irreversibility |
 | x-sync | 5 | pull-first, conflicts, drift |
 | x-dashboard | 5 | cross-plugin vs plugin-scoped view |
@@ -102,5 +102,5 @@ Re-run this audit whenever:
 
 Command:
 ```bash
-wc -l x-*/skills/*/SKILL.md x-kit/skills/*/SKILL.md | sort -rn
+wc -l x-*/skills/*/SKILL.md xm/skills/*/SKILL.md | sort -rn
 ```

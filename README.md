@@ -3,14 +3,14 @@
 </p>
 
 <p align="center">
-  <img src="assets/x-kit-logo.jpeg" alt="x-kit" width="600" />
+  <img src="assets/xm-logo.jpeg" alt="xm" width="600" />
 </p>
 
-<h1 align="center">x-kit</h1>
+<h1 align="center">xm</h1>
 
 <p align="center">
   AI coding agents fail silently — they skip planning, ignore context, and never verify.<br />
-  <strong>x-kit fixes this.</strong>
+  <strong>xm fixes this.</strong>
 </p>
 
 <p align="center">
@@ -35,7 +35,7 @@
 
 - [Install](#install)
 - [Quick Start](#quick-start)
-- [Why x-kit?](#why-x-kit)
+- [Why xm?](#why-xm)
 - [Plugins](#plugins) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-ship](#x-ship)
 - [Quality & Learning Pipeline](#quality--learning-pipeline)
 - [Architecture](#architecture)
@@ -50,7 +50,7 @@
 
 ### Prerequisites
 
-x-kit uses [Bun](https://bun.sh) as its JavaScript runtime for testing, the dashboard server, and script execution.
+xm uses [Bun](https://bun.sh) as its JavaScript runtime for testing, the dashboard server, and script execution.
 
 **Why Bun?**
 - Fast startup — scripts and tests launch instantly with no JIT warmup
@@ -71,13 +71,13 @@ powershell -c "irm bun.sh/install.ps1 | iex"
 
 After installation, verify with `bun --version` (requires v1.0+).
 
-> Node.js >= 18 is still required for Claude Code itself. Bun is used for x-kit's own tooling.
+> Node.js >= 18 is still required for Claude Code itself. Bun is used for xm's own tooling.
 
 ### Plugin Setup
 
 ```bash
 /plugin marketplace add x-mesh/xm:kit
-/plugin install x-kit@xm -s user
+/plugin install xm@xm -s user
 ```
 
 ### First-Run Init (Global)
@@ -93,71 +93,71 @@ After installing, run once per machine to copy the trace-session hook into `~/.c
 
 Idempotent: safe to re-run. Existing hooks (e.g. mem-mesh) are preserved, and each write creates a timestamped backup of `settings.json`. Traces land in each project's `.xm/traces/`.
 
-The same install flow is available from a terminal via `x-kit init` (see [Terminal CLI](#terminal-cli-optional)).
+The same install flow is available from a terminal via `xm init` (see [Terminal CLI](#terminal-cli-optional)).
 
 ### Terminal CLI (optional)
 
-Install the `x-kit` umbrella CLI to run commands directly from your shell — useful for the dashboard, sync, memory, traces, etc., without entering Claude Code:
+Install the `xm` umbrella CLI to run commands directly from your shell — useful for the dashboard, sync, memory, traces, etc., without entering Claude Code:
 
 ```bash
 # Local install from this repo
-bash x-kit/scripts/install.sh
+bash xm/scripts/install.sh
 
 # Or remote
-curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/x-kit/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/xm/scripts/install.sh | bash
 ```
 
-The installer writes `~/.local/bin/xm:kit` (override with `X_KIT_BIN_DIR`; ensure it is on your `PATH`) and, when the `claude` CLI is on `PATH`, also runs `claude plugin install <p>@xm -s user` for every plugin in `marketplace.json` (x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-dashboard, x-kit). Run `/reload-plugins` inside Claude Code afterward to activate them. If `claude` is not on `PATH`, the CLI wrapper alone is installed and the plugin list is printed for manual install.
+The installer writes `~/.local/bin/xm:kit` (override with `XM_BIN_DIR`; ensure it is on your `PATH`) and, when the `claude` CLI is on `PATH`, also runs `claude plugin install <p>@xm -s user` for every plugin in `marketplace.json` (x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-dashboard, xm). Run `/reload-plugins` inside Claude Code afterward to activate them. If `claude` is not on `PATH`, the CLI wrapper alone is installed and the plugin list is printed for manual install.
 
-#### Global hook install (`x-kit init`)
+#### Global hook install (`xm init`)
 
-The bash `x-kit init` subcommand is equivalent to the `/xm:kit:init` slash command — it installs the Skill-tracing hook into **user-scoped** `~/.claude/` (once per machine):
+The bash `xm init` subcommand is equivalent to the `/xm:kit:init` slash command — it installs the Skill-tracing hook into **user-scoped** `~/.claude/` (once per machine):
 
 ```bash
-x-kit init                 # install trace-session hook into ~/.claude/
-x-kit init status          # verify install state
-x-kit init uninstall       # remove hook + settings entries
-x-kit init --no-hooks      # CLI-only install (no-op today — reserved)
+xm init                 # install trace-session hook into ~/.claude/
+xm init status          # verify install state
+xm init uninstall       # remove hook + settings entries
+xm init --no-hooks      # CLI-only install (no-op today — reserved)
 ```
 
-Writes `~/.claude/hooks/x-kit-trace-session.mjs` and merges `PreToolUse`/`PostToolUse` Skill matchers into `~/.claude/settings.json` (existing hooks such as mem-mesh are preserved; a timestamped backup is created on every write). Use the bash route when you are outside Claude Code; otherwise `/xm:kit:init` is the preferred entry point.
+Writes `~/.claude/hooks/xm-trace-session.mjs` and merges `PreToolUse`/`PostToolUse` Skill matchers into `~/.claude/settings.json` (existing hooks such as mem-mesh are preserved; a timestamped backup is created on every write). Use the bash route when you are outside Claude Code; otherwise `/xm:kit:init` is the preferred entry point.
 
 ```bash
-x-kit dashboard                       # start — uses ~/.xm/projects.json registry (all registered projects)
-x-kit dashboard --scan ~/work         # legacy multi-project mode: scan ~/work for .xm/ dirs (depth 4)
-XM_DASHBOARD_SCAN=~/work x-kit dashboard   # same, persisted via env var
-x-kit dashboard stop                  # stop it
-x-kit dashboard open                  # open it in your browser
+xm dashboard                       # start — uses ~/.xm/projects.json registry (all registered projects)
+xm dashboard --scan ~/work         # legacy multi-project mode: scan ~/work for .xm/ dirs (depth 4)
+XM_DASHBOARD_SCAN=~/work xm dashboard   # same, persisted via env var
+xm dashboard stop                  # stop it
+xm dashboard open                  # open it in your browser
 
 # Project registry (~/.xm/projects.json)
-x-kit project import ~/work           # one-shot bulk-register all .xm/ projects under ~/work
-x-kit project list                    # show registered projects
-x-kit project add [<path>]            # register CWD or given path
-x-kit project remove <id|path>        # unregister
-x-kit project archive <id>            # hide from dashboard without deleting
-x-kit project gc                      # drop entries whose path no longer exists
-x-kit sync push           # push .xm/ state to your sync server
-x-kit sync pull           # pull state from your sync server
-x-kit memory <subcmd>     # save | recall | inject | list
-x-kit build <subcmd>      # build status / list / ...
-x-kit trace <subcmd>      # execution traces
-x-kit solver <subcmd>     # structured problem solving
-x-kit handoff [reason]    # save session state
-x-kit handon              # restore session state
-x-kit which               # show resolved lib paths
-x-kit version
-x-kit help
+xm project import ~/work           # one-shot bulk-register all .xm/ projects under ~/work
+xm project list                    # show registered projects
+xm project add [<path>]            # register CWD or given path
+xm project remove <id|path>        # unregister
+xm project archive <id>            # hide from dashboard without deleting
+xm project gc                      # drop entries whose path no longer exists
+xm sync push           # push .xm/ state to your sync server
+xm sync pull           # pull state from your sync server
+xm memory <subcmd>     # save | recall | inject | list
+xm build <subcmd>      # build status / list / ...
+xm trace <subcmd>      # execution traces
+xm solver <subcmd>     # structured problem solving
+xm handoff [reason]    # save session state
+xm handon              # restore session state
+xm which               # show resolved lib paths
+xm version
+xm help
 ```
 
-The CLI dispatches to plugin libs in `~/.claude/plugins/cache/x-kit/` (or `$X_KIT_LIB`), so the Claude Code plugin must be installed first. The `sync` subcommand reuses the `x-sync` plugin lib, so you do **not** need to run `x-sync/install.sh client` separately.
+The CLI dispatches to plugin libs in `~/.claude/plugins/cache/xm/` (or `$XM_LIB`), so the Claude Code plugin must be installed first. The `sync` subcommand reuses the `x-sync` plugin lib, so you do **not** need to run `x-sync/install.sh client` separately.
 
-#### Project Registry (`x-kit project`)
+#### Project Registry (`xm project`)
 
-The dashboard reads from a machine-local registry at `~/.xm/projects.json`. Once populated, `x-kit dashboard` shows every registered project without `--scan`.
+The dashboard reads from a machine-local registry at `~/.xm/projects.json`. Once populated, `xm dashboard` shows every registered project without `--scan`.
 
-- **First-time setup**: run `x-kit project import ~/work` (or any root) to bulk-register every existing `.xm/` project. Idempotent — re-running only updates `last_seen`.
-- **Auto-registration**: when you run any x-kit command from a project directory, the dispatcher self-registers it. New projects appear in the dashboard without explicit action.
-- **Worktrees**: a worktree of an already-registered repo is collapsed onto the main repo entry. Running `x-kit` from any worktree updates the same registry entry — no duplicates.
+- **First-time setup**: run `xm project import ~/work` (or any root) to bulk-register every existing `.xm/` project. Idempotent — re-running only updates `last_seen`.
+- **Auto-registration**: when you run any xm command from a project directory, the dispatcher self-registers it. New projects appear in the dashboard without explicit action.
+- **Worktrees**: a worktree of an already-registered repo is collapsed onto the main repo entry. Running `xm` from any worktree updates the same registry entry — no duplicates.
 - **Resolution priority**: `--scan` flag → `~/.xm/projects.json` → legacy `~/.xm/config.json` `scan_roots` → CWD only.
 
 ## Quick Start
@@ -214,20 +214,20 @@ Failed? Run `/xm:build run` again. Completed tasks are skipped, only remaining o
 
 ---
 
-## Why x-kit?
+## Why xm?
 
 Most AI coding tools follow checklists: "check for SQL injection, check for null, check for N+1." A checklist finds patterns. A senior engineer finds *problems*.
 
 A senior engineer asks **"Can an attacker actually reach this code path?"** before filing a security finding. They ask **"What was the last working state?"** before debugging. They ask **"Am I inflating this because I'm unsure?"** — and downgrade when uncertain.
 
-x-kit embeds these judgment patterns — distilled from 20 years of engineering practice — directly into every agent prompt. The result: agents that reason about context, not just pattern-match against lists.
+xm embeds these judgment patterns — distilled from 20 years of engineering practice — directly into every agent prompt. The result: agents that reason about context, not just pattern-match against lists.
 
 <details>
 <summary>Before & After examples</summary>
 
 **Code review (x-review):**
 
-| | Checklist agent | x-kit agent |
+| | Checklist agent | xm agent |
 |---|----------------|-------------|
 | Finding | `[Medium] src/api.ts:42 — Possible SQL injection` | `[Critical] src/api.ts:42 — req.query.id inserted directly into SQL template literal. Public API endpoint with no auth middleware.` |
 | Fix | `Validate input.` | `db.query('SELECT * FROM users WHERE id = $1', [req.query.id])` |
@@ -243,7 +243,7 @@ x-kit embeds these judgment patterns — distilled from 20 years of engineering 
 
 **Debugging (x-solver):**
 
-| | Typical AI | x-kit |
+| | Typical AI | xm |
 |---|-----------|-------|
 | First action | Generate 5 hypotheses | Describe current state + find last known-good baseline |
 | Evidence | "It seems like the issue is..." | "git bisect shows regression in commit abc1234, confirmed by test output" |
@@ -254,7 +254,7 @@ x-kit embeds these judgment patterns — distilled from 20 years of engineering 
 <details>
 <summary>Thinking principles at a glance</summary>
 
-| When you... | x-kit principle | Tool |
+| When you... | xm principle | Tool |
 |-------------|----------------|------|
 | Review code | Context determines severity — same pattern, different risk depending on exposure | x-review |
 | Review code | No evidence, no finding — trace it in the diff or don't report it | x-review |
@@ -286,7 +286,7 @@ DIAGNOSE ──→ HYPOTHESIZE ──→ TEST ──→ REFINE ──→ RESOLVE
 
 ### Shared References
 
-Common reference material lives in `references/` (synced to marketplace as `x-kit/references/`). Skills pull these in on demand — progressive disclosure keeps each SKILL.md lean.
+Common reference material lives in `references/` (synced to marketplace as `xm/references/`). Skills pull these in on demand — progressive disclosure keeps each SKILL.md lean.
 
 | Reference | Used by |
 |-----------|---------|
@@ -300,7 +300,7 @@ Common reference material lives in `references/` (synced to marketplace as `x-ki
 
 ## Plugins
 
-12 plugins, each installable individually or bundled via `x-kit`.
+12 plugins, each installable individually or bundled via `xm`.
 
 | Plugin | Purpose | Key command |
 |--------|---------|-------------|
@@ -314,9 +314,9 @@ Common reference material lives in `references/` (synced to marketplace as `x-ki
 | [x-agent](#x-agent) | Agent primitives & teams | `/xm:agent fan-out "task"` |
 | [x-trace](#x-trace) | Execution tracing & cost | `/xm:trace timeline` |
 | [x-memory](#x-memory) | Cross-session memory | `/xm:memory inject` |
-| [x-sync](#x-sync) | Multi-machine .xm/ sync | `x-kit sync push` |
+| [x-sync](#x-sync) | Multi-machine .xm/ sync | `xm sync push` |
 | [x-ship](#x-ship) | Release automation & squash | `/xm:ship auto` |
-| x-kit | Bundle + config + pipeline | `/xm:kit pipeline release` |
+| xm | Bundle + config + pipeline | `/xm:kit pipeline release` |
 
 ---
 
@@ -820,7 +820,7 @@ Or use directly in Claude Code: `/xm:sync push`, `/xm:sync pull`, `/xm:sync setu
 
 ### x-ship
 
-Release automation — commit squash, version bump, push. Works with x-kit marketplace plugins AND standalone projects (Node.js, Rust, Python, Go).
+Release automation — commit squash, version bump, push. Works with xm marketplace plugins AND standalone projects (Node.js, Rust, Python, Go).
 
 ```bash
 /xm:ship                # Interactive: test → review → release
@@ -842,7 +842,7 @@ Release automation — commit squash, version bump, push. Works with x-kit marke
 
 ## Quality & Learning Pipeline
 
-x-kit connects thinking principles across plugins into a closed feedback loop.
+xm connects thinking principles across plugins into a closed feedback loop.
 
 **Example: building a payment API**
 1. `x-build plan` → PRD goal has "and"? Split into two projects. *(planning principle)*
@@ -906,7 +906,7 @@ Empirical consistency measurements across all plugins. Run with `/xm:eval consis
 
 **Average: 0.899** | All 7 plugins PASS | Verdict consistency: 100%
 
-A/B vs vanilla Claude Code: x-kit matches vanilla F1 (0.857) with superior precision (1.0 vs 0.75).
+A/B vs vanilla Claude Code: xm matches vanilla F1 (0.857) with superior precision (1.0 vs 0.75).
 
 Full data: [`benchmarks/`](./benchmarks/SUMMARY.md)
 
@@ -915,7 +915,7 @@ Full data: [`benchmarks/`](./benchmarks/SUMMARY.md)
 ## Architecture
 
 ```
-x-kit/                              Marketplace repo
+xm/                              Marketplace repo
 ├── x-build/                        Project harness + PRD pipeline
 ├── x-op/                           Strategy orchestration (18 strategies)
 ├── x-eval/                         Quality evaluation + diff
@@ -927,7 +927,7 @@ x-kit/                              Marketplace repo
 ├── x-trace/                        Execution tracing
 ├── x-memory/                       Cross-session memory
 ├── x-sync/                         Multi-machine .xm/ sync server
-├── x-kit/                          Bundle (all skills) + shared config + server
+├── xm/                          Bundle (all skills) + shared config + server
 └── .claude-plugin/marketplace.json  11 plugins registered
 ```
 
@@ -952,7 +952,7 @@ x-build CLI (state)  ←  tasks update (callback)
 
 ## Agent Catalog
 
-x-kit includes 37 specialist agents covering core and domain areas. Plugins use these agents automatically (e.g., x-op refine injects specialists per topic; x-review uses them with `--specialists`).
+xm includes 37 specialist agents covering core and domain areas. Plugins use these agents automatically (e.g., x-op refine injects specialists per topic; x-review uses them with `--specialists`).
 
 ```bash
 /xm:kit agents list                        # List all 37 specialists
@@ -965,7 +965,7 @@ x-kit includes 37 specialist agents covering core and domain areas. Plugins use 
 | **Core** | api-designer, compliance, database, dependency-manager, deslop, developer-experience, devops, docs, frontend, performance, qa, refactor, reviewer, security, sre, tech-lead, ux-reviewer |
 | **Domain** | ai-coding-dx, analytics, blockchain, data-pipeline, data-visualization, eks, embedded-iot, event-driven, finops, gamedev, i18n, kubernetes, macos, mlops, mobile, monorepo, oke, prompt-engineer, search, serverless |
 
-Catalog located at `x-kit/agents/catalog.json`. Each agent has a full rules file and a slim version (~30 lines) for prompt injection.
+Catalog located at `xm/agents/catalog.json`. Each agent has a full rules file and a slim version (~30 lines) for prompt injection.
 
 ---
 
@@ -999,7 +999,7 @@ The `model_profile` key expresses **cost intent** (how much to spend) on a singl
 | default | opus | opus | sonnet | sonnet | haiku | Opus-centric baseline |
 | max | opus | opus | opus | sonnet | haiku | ~1.5-2x vs default |
 
-Script-only commands (`config show`, `version`, `agents list`, …) still route to haiku regardless of profile (see Model Guardrail in `x-kit/skills/kit/SKILL.md`).
+Script-only commands (`config show`, `version`, `agents list`, …) still route to haiku regardless of profile (see Model Guardrail in `xm/skills/kit/SKILL.md`).
 
 Key roles shown; full mapping includes reviewer, security, designer, debugger, writer. See `MODEL_PROFILES` in source.
 
@@ -1027,7 +1027,7 @@ Same coding task (`rateLimiter` — sliding window) across three models:
 
 #### Automatic Model Routing
 
-x-kit routes commands to the cheapest sufficient model automatically. Display/query commands use **haiku** (~78% cheaper), while reasoning tasks use sonnet or opus.
+xm routes commands to the cheapest sufficient model automatically. Display/query commands use **haiku** (~78% cheaper), while reasoning tasks use sonnet or opus.
 
 | Task type | Model | Examples |
 |-----------|-------|---------|

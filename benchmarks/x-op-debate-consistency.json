@@ -3,7 +3,7 @@
   "date": "2026-03-31",
   "description": "Measures x-op debate strategy consistency across 3 independent trials on a technical architecture decision.",
   "method": {
-    "topic": "x-kit should adopt Claude Code native Agent Teams (TeamCreate/SendMessage) instead of the current Agent tool hub-and-spoke pattern",
+    "topic": "xm should adopt Claude Code native Agent Teams (TeamCreate/SendMessage) instead of the current Agent tool hub-and-spoke pattern",
     "strategy": "debate",
     "agent": "oh-my-claudecode:scientist (sonnet)",
     "trials": 3,

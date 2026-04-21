@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sync-bundle.sh — Sync standalone plugin files to x-kit bundle
+# sync-bundle.sh — Sync standalone plugin files to xm bundle
 # Run from repo root: ./scripts/sync-bundle.sh
 # Source of truth: standalone plugin directories
 # Plugin naming: source dirs keep x-{name}/, skills dirs use {name}/ (no x- prefix)
@@ -39,125 +39,125 @@ mirror_md_dir() {
 echo "=== Syncing SKILL.md files ==="
 for plugin in build op solver eval review trace memory humble probe agent; do
   src="x-$plugin/skills/$plugin/SKILL.md"
-  dst="x-kit/skills/$plugin/SKILL.md"
+  dst="xm/skills/$plugin/SKILL.md"
   sync_file "$src" "$dst"
 done
 
 echo ""
 echo "=== Syncing x-build lib files ==="
 for f in core.mjs project.mjs phase.mjs plan.mjs tasks.mjs verify.mjs export.mjs misc.mjs release.mjs; do
-  sync_file "x-build/lib/x-build/$f" "x-kit/lib/x-build/$f"
+  sync_file "x-build/lib/x-build/$f" "xm/lib/x-build/$f"
 done
-sync_file "x-build/lib/x-build-cli.mjs" "x-kit/lib/x-build-cli.mjs"
-sync_file "x-build/lib/shared-config.mjs" "x-kit/lib/shared-config.mjs"
-sync_file "x-build/lib/default-config.json" "x-kit/lib/default-config.json"
+sync_file "x-build/lib/x-build-cli.mjs" "xm/lib/x-build-cli.mjs"
+sync_file "x-build/lib/shared-config.mjs" "xm/lib/shared-config.mjs"
+sync_file "x-build/lib/default-config.json" "xm/lib/default-config.json"
 
 echo ""
 echo "=== Syncing x-solver lib files ==="
-sync_file "x-solver/lib/x-solver-cli.mjs" "x-kit/lib/x-solver-cli.mjs"
+sync_file "x-solver/lib/x-solver-cli.mjs" "xm/lib/x-solver-cli.mjs"
 
 echo ""
 echo "=== Syncing x-sync lib files ==="
 for f in sync-config.mjs sync-pull.mjs sync-pull-all.mjs sync-push.mjs sync-push-all.mjs; do
-  sync_file "x-sync/lib/x-sync/$f" "x-kit/lib/x-sync/$f"
+  sync_file "x-sync/lib/x-sync/$f" "xm/lib/x-sync/$f"
 done
 
 echo ""
 echo "=== Syncing x-trace lib files ==="
-sync_file "x-trace/lib/x-trace/trace-writer.mjs" "x-kit/lib/x-trace/trace-writer.mjs"
+sync_file "x-trace/lib/x-trace/trace-writer.mjs" "xm/lib/x-trace/trace-writer.mjs"
 
 echo ""
 echo "=== Syncing x-dashboard lib + public ==="
-sync_file "x-dashboard/lib/x-dashboard-server.mjs" "x-kit/lib/x-dashboard-server.mjs"
-mkdir -p "x-kit/public"
+sync_file "x-dashboard/lib/x-dashboard-server.mjs" "xm/lib/x-dashboard-server.mjs"
+mkdir -p "xm/public"
 shopt -s nullglob
 for f in x-dashboard/public/*; do
-  sync_file "$f" "x-kit/public/$(basename "$f")"
+  sync_file "$f" "xm/public/$(basename "$f")"
 done
 shopt -u nullglob
 
 echo ""
 echo "=== Syncing references ==="
-mirror_md_dir "references" "x-kit/references"
+mirror_md_dir "references" "xm/references"
 
 echo ""
 echo "=== Syncing op strategies ==="
-mirror_md_dir "x-op/skills/op/strategies" "x-kit/skills/op/strategies"
+mirror_md_dir "x-op/skills/op/strategies" "xm/skills/op/strategies"
 
 echo ""
 echo "=== Syncing op references ==="
-mirror_md_dir "x-op/skills/op/references" "x-kit/skills/op/references"
+mirror_md_dir "x-op/skills/op/references" "xm/skills/op/references"
 
 echo ""
 echo "=== Syncing agent autonomous ==="
-mirror_md_dir "x-agent/skills/agent/autonomous" "x-kit/skills/agent/autonomous"
+mirror_md_dir "x-agent/skills/agent/autonomous" "xm/skills/agent/autonomous"
 
 echo ""
 echo "=== Syncing agent references ==="
-mirror_md_dir "x-agent/skills/agent/references" "x-kit/skills/agent/references"
+mirror_md_dir "x-agent/skills/agent/references" "xm/skills/agent/references"
 
 echo ""
 echo "=== Syncing build references ==="
-mirror_md_dir "x-build/skills/build/references" "x-kit/skills/build/references"
+mirror_md_dir "x-build/skills/build/references" "xm/skills/build/references"
 
 echo ""
 echo "=== Syncing build commands ==="
-mirror_md_dir "x-build/skills/build/commands" "x-kit/skills/build/commands"
+mirror_md_dir "x-build/skills/build/commands" "xm/skills/build/commands"
 
 echo ""
 echo "=== Syncing build phases ==="
-mirror_md_dir "x-build/skills/build/references/phases" "x-kit/skills/build/references/phases"
+mirror_md_dir "x-build/skills/build/references/phases" "xm/skills/build/references/phases"
 
 echo ""
 echo "=== Syncing review lenses ==="
-mirror_md_dir "x-review/skills/review/lenses" "x-kit/skills/review/lenses"
+mirror_md_dir "x-review/skills/review/lenses" "xm/skills/review/lenses"
 
 echo ""
 echo "=== Syncing review references ==="
-mirror_md_dir "x-review/skills/review/references" "x-kit/skills/review/references"
+mirror_md_dir "x-review/skills/review/references" "xm/skills/review/references"
 
 echo ""
 echo "=== Syncing eval judges ==="
-mirror_md_dir "x-eval/skills/eval/judges" "x-kit/skills/eval/judges"
+mirror_md_dir "x-eval/skills/eval/judges" "xm/skills/eval/judges"
 
 echo ""
 echo "=== Syncing eval subcommands ==="
-mirror_md_dir "x-eval/skills/eval/subcommands" "x-kit/skills/eval/subcommands"
+mirror_md_dir "x-eval/skills/eval/subcommands" "xm/skills/eval/subcommands"
 
 echo ""
 echo "=== Syncing eval references ==="
-mirror_md_dir "x-eval/skills/eval/references" "x-kit/skills/eval/references"
+mirror_md_dir "x-eval/skills/eval/references" "xm/skills/eval/references"
 
 echo ""
 echo "=== Syncing solver commands ==="
-mirror_md_dir "x-solver/skills/solver/commands" "x-kit/skills/solver/commands"
+mirror_md_dir "x-solver/skills/solver/commands" "xm/skills/solver/commands"
 
 echo ""
 echo "=== Syncing solver references ==="
-mirror_md_dir "x-solver/skills/solver/references" "x-kit/skills/solver/references"
+mirror_md_dir "x-solver/skills/solver/references" "xm/skills/solver/references"
 
 echo ""
 echo "=== Syncing probe sessions ==="
-mirror_md_dir "x-probe/skills/probe/sessions" "x-kit/skills/probe/sessions"
+mirror_md_dir "x-probe/skills/probe/sessions" "xm/skills/probe/sessions"
 
 echo ""
 echo "=== Syncing trace subcommands ==="
-mirror_md_dir "x-trace/skills/trace/subcommands" "x-kit/skills/trace/subcommands"
+mirror_md_dir "x-trace/skills/trace/subcommands" "xm/skills/trace/subcommands"
 
 echo ""
 echo "=== Syncing humble sessions ==="
-mirror_md_dir "x-humble/skills/humble/sessions" "x-kit/skills/humble/sessions"
+mirror_md_dir "x-humble/skills/humble/sessions" "xm/skills/humble/sessions"
 
 echo ""
 echo "=== Syncing memory references ==="
-mirror_md_dir "x-memory/skills/memory/references" "x-kit/skills/memory/references"
+mirror_md_dir "x-memory/skills/memory/references" "xm/skills/memory/references"
 
 echo ""
 echo "=== Verifying all synced ==="
 DIVERGED=0
 for plugin in build op solver eval review trace memory humble probe agent; do
   src="x-$plugin/skills/$plugin/SKILL.md"
-  dst="x-kit/skills/$plugin/SKILL.md"
+  dst="xm/skills/$plugin/SKILL.md"
   if [ -f "$src" ] && [ -f "$dst" ] && ! diff -q "$src" "$dst" > /dev/null 2>&1; then
     echo "  DIVERGED: $dst"
     DIVERGED=$((DIVERGED + 1))
@@ -165,15 +165,15 @@ for plugin in build op solver eval review trace memory humble probe agent; do
 done
 
 for f in core.mjs project.mjs phase.mjs plan.mjs tasks.mjs verify.mjs export.mjs misc.mjs release.mjs; do
-  if ! diff -q "x-build/lib/x-build/$f" "x-kit/lib/x-build/$f" > /dev/null 2>&1; then
-    echo "  DIVERGED: x-kit/lib/x-build/$f"
+  if ! diff -q "x-build/lib/x-build/$f" "xm/lib/x-build/$f" > /dev/null 2>&1; then
+    echo "  DIVERGED: xm/lib/x-build/$f"
     DIVERGED=$((DIVERGED + 1))
   fi
 done
 
 for pair in \
-  "x-build/lib/shared-config.mjs:x-kit/lib/shared-config.mjs" \
-  "x-build/lib/default-config.json:x-kit/lib/default-config.json"; do
+  "x-build/lib/shared-config.mjs:xm/lib/shared-config.mjs" \
+  "x-build/lib/default-config.json:xm/lib/default-config.json"; do
   src="${pair%%:*}"; dst="${pair##*:}"
   if ! diff -q "$src" "$dst" > /dev/null 2>&1; then
     echo "  DIVERGED: $dst"
@@ -182,26 +182,26 @@ for pair in \
 done
 
 for f in sync-config.mjs sync-pull.mjs sync-pull-all.mjs sync-push.mjs sync-push-all.mjs; do
-  if ! diff -q "x-sync/lib/x-sync/$f" "x-kit/lib/x-sync/$f" > /dev/null 2>&1; then
-    echo "  DIVERGED: x-kit/lib/x-sync/$f"
+  if ! diff -q "x-sync/lib/x-sync/$f" "xm/lib/x-sync/$f" > /dev/null 2>&1; then
+    echo "  DIVERGED: xm/lib/x-sync/$f"
     DIVERGED=$((DIVERGED + 1))
   fi
 done
 
-if ! diff -q "x-trace/lib/x-trace/trace-writer.mjs" "x-kit/lib/x-trace/trace-writer.mjs" > /dev/null 2>&1; then
-  echo "  DIVERGED: x-kit/lib/x-trace/trace-writer.mjs"
+if ! diff -q "x-trace/lib/x-trace/trace-writer.mjs" "xm/lib/x-trace/trace-writer.mjs" > /dev/null 2>&1; then
+  echo "  DIVERGED: xm/lib/x-trace/trace-writer.mjs"
   DIVERGED=$((DIVERGED + 1))
 fi
 
-if ! diff -q "x-dashboard/lib/x-dashboard-server.mjs" "x-kit/lib/x-dashboard-server.mjs" > /dev/null 2>&1; then
-  echo "  DIVERGED: x-kit/lib/x-dashboard-server.mjs"
+if ! diff -q "x-dashboard/lib/x-dashboard-server.mjs" "xm/lib/x-dashboard-server.mjs" > /dev/null 2>&1; then
+  echo "  DIVERGED: xm/lib/x-dashboard-server.mjs"
   DIVERGED=$((DIVERGED + 1))
 fi
 
 shopt -s nullglob
 for f in x-dashboard/public/*; do
-  if ! diff -q "$f" "x-kit/public/$(basename "$f")" > /dev/null 2>&1; then
-    echo "  DIVERGED: x-kit/public/$(basename "$f")"
+  if ! diff -q "$f" "xm/public/$(basename "$f")" > /dev/null 2>&1; then
+    echo "  DIVERGED: xm/public/$(basename "$f")"
     DIVERGED=$((DIVERGED + 1))
   fi
 done

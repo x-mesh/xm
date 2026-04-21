@@ -1,6 +1,6 @@
-# x-kit Agent Directory
+# xm Agent Directory
 
-x-kit is a Claude Code plugin marketplace providing 5 tools for structured multi-agent orchestration.
+xm is a Claude Code plugin marketplace providing 5 tools for structured multi-agent orchestration.
 Agent primitives are handled by `x-agent`; strategies by `x-op`; project lifecycle by `x-build`.
 
 ## Agent Tiers
