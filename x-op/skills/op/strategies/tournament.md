@@ -58,3 +58,16 @@ Before COMPETE, a lightweight evaluation (leader directly or haiku agent):
 - With 8 agents: quarterfinals → semifinals → finals
 
 Remaining phases (COMPETE, ANONYMIZE, VOTE, TALLY) proceed identically but within the bracket structure, round by round.
+
+---
+
+## Final Step: Persist (REQUIRED)
+
+After emitting the Final Output above and the Self-Score block, MUST save the result to `.xm/op/` (see `references/x-op-result-persistence.md`):
+
+1. `mkdir -p .xm/op/` (Bash)
+2. Filename: `tournament-{YYYY-MM-DD}-{slug}.json` (slug from topic, ≤ 40 chars, lowercase, hyphens)
+3. Write JSON per the result schema (include `outcome.verdict={winner name}`, `outcome.summary`, `self_score`, `rounds_summary`)
+4. Surface path: `💾 Saved: .xm/op/{filename}`
+
+Do not end the strategy until the file is written and the path is shown.

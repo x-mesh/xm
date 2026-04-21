@@ -100,3 +100,14 @@ Act — escalate test-coverage alert; wait on security warning (CVE unconfirmed 
 |-------|----------|--------|
 | test-coverage | → review --target src/auth/ | Pending (user confirmation required) |
 ```
+
+## Final Step: Persist (REQUIRED)
+
+After emitting the Final Output above and the Self-Score block, MUST save the result to `.xm/op/` (see `references/x-op-result-persistence.md`):
+
+1. `mkdir -p .xm/op/` (Bash)
+2. Filename: `monitor-{YYYY-MM-DD}-{slug}.json` (slug from target or topic, ≤ 40 chars, lowercase, hyphens)
+3. Write JSON per the result schema (include `outcome.verdict="{alerts} alerts"`, `outcome.summary` with decision + dispatch, `self_score`, `rounds_summary`)
+4. Surface path: `💾 Saved: .xm/op/{filename}`
+
+Do not end the strategy until the file is written and the path is shown.

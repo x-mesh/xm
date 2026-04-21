@@ -4,10 +4,40 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync, statSync, unlinkSync, renameSync, openSync, readSync, closeSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { ROOT } from './root.mjs';
 import { loadSharedConfig } from './config-loader.mjs';
+
+// ── Event schema version ─────────────────────────────────────────────
+// v1 = legacy (no schema_v field). v2 = adds schema_v, machine_id, event_id.
+// Readers MUST treat events without schema_v as v1 and apply v1→v2 adapter.
+export const EVENT_SCHEMA_VERSION = 2;
+
+function machineId() {
+  // Stable per-host identifier; used to dedup events when multiple machines
+  // share .xm/ via x-sync. Short hostname is sufficient for single-user setups.
+  try { return hostname(); } catch { return 'unknown'; }
+}
+
+function generateEventId() {
+  // 12-hex: enough entropy for session-scoped dedup, short enough to read.
+  return 'ev-' + randomBytes(6).toString('hex');
+}
+
+// ── v1→v2 event adapter ──────────────────────────────────────────────
+// Readers should wrap raw events via adaptEvent() so downstream code can
+// assume v2 shape. Events with schema_v:2 pass through unchanged.
+export function adaptEvent(raw) {
+  if (!raw || typeof raw !== 'object') return raw;
+  if (raw.schema_v === 2) return raw;
+  return {
+    ...raw,
+    schema_v: raw.schema_v ?? 1,
+    machine_id: raw.machine_id ?? null,
+    event_id: raw.event_id ?? null,
+  };
+}
 
 // ── Metrics path ─────────────────────────────────────────────────────
 
@@ -56,6 +86,14 @@ function releaseWriteLock(lockPath) {
 // ── appendMetric ─────────────────────────────────────────────────────
 
 export function appendMetric(data) {
+  // Inject v2 schema fields if absent. Callers may preset schema_v/machine_id/
+  // event_id (e.g., for dedup replay from remote); we only fill the gaps.
+  const event = {
+    schema_v: EVENT_SCHEMA_VERSION,
+    machine_id: machineId(),
+    event_id: generateEventId(),
+    ...data,
+  };
   const p = metricsPath();
   mkdirSync(dirname(p), { recursive: true });
   const lockPath = p + '.lock';
@@ -74,7 +112,7 @@ export function appendMetric(data) {
         }
       } catch { /* ignore rotation errors */ }
     }
-    appendFileSync(p, JSON.stringify(data) + '\n', 'utf8');
+    appendFileSync(p, JSON.stringify(event) + '\n', 'utf8');
   } finally {
     if (acquired) releaseWriteLock(lockPath);
   }
@@ -209,7 +247,7 @@ export function getModelForRole(role, size, config) {
 
 // ── getModelForRoleWithCorrelation ────────────────────────────────────
 
-function generateCorrelationId() {
+export function generateCorrelationId() {
   return 'ce-' + randomBytes(4).toString('hex');
 }
 

@@ -41,3 +41,16 @@ After each step completes, the leader evaluates the `if` condition:
 - After branch step completes, return to the original flow
 
 Without `--steps`, the leader auto-decides: if the previous step's confidence/quality is low, a supplementary step is auto-inserted.
+
+---
+
+## Final Step: Persist (REQUIRED)
+
+After emitting the Final Output above and the Self-Score block, MUST save the result to `.xm/op/` (see `references/x-op-result-persistence.md`):
+
+1. `mkdir -p .xm/op/` (Bash)
+2. Filename: `chain-{YYYY-MM-DD}-{slug}.json` (slug from topic, ≤ 40 chars, lowercase, hyphens)
+3. Write JSON per the result schema (include `outcome.verdict="completed"`, `outcome.summary`, `self_score`, `rounds_summary`)
+4. Surface path: `💾 Saved: .xm/op/{filename}`
+
+Do not end the strategy until the file is written and the path is shown.
