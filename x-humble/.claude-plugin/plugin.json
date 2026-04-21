@@ -1,12 +1,12 @@
 {
   "name": "humble",
-  "version": "2.0.0",
-  "description": "Structured retrospective \u2014 reflect on failures together, find root causes, explore alternatives, and grow",
+  "version": "2.0.1",
+  "description": "Structured retrospective — reflect on failures together, find root causes, explore alternatives, and grow",
   "author": {
     "name": "x-mesh"
   },
-  "repository": "https://github.com/x-mesh/x-kit",
-  "homepage": "https://github.com/x-mesh/x-kit",
+  "repository": "https://github.com/x-mesh/xm",
+  "homepage": "https://github.com/x-mesh/xm",
   "license": "MIT",
   "keywords": [
     "retrospective",

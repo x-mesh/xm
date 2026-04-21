@@ -181,7 +181,7 @@ First check if already installed: `command -v x-sync >/dev/null 2>&1 && x-sync -
 Otherwise run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x-mesh/x-kit/main/x-sync/install.sh | bash -s client
+curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/x-sync/install.sh | bash -s client
 ```
 
 After install, remind the user:
@@ -193,7 +193,7 @@ After install, remind the user:
 **Step 4: Install x-sync server** (only when `--with-server` is passed)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x-mesh/x-kit/main/x-sync/install.sh | bash -s server
+curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/x-sync/install.sh | bash -s server
 ```
 
 Display the output of each step to the user. Final line: `✅ x-kit init complete.` (or the dry-run message).

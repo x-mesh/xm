@@ -1,12 +1,12 @@
 {
   "name": "memory",
-  "version": "2.0.0",
-  "description": "Cross-session decision and pattern memory \u2014 persist learnings, auto-inject relevant context on session start",
+  "version": "2.0.1",
+  "description": "Cross-session decision and pattern memory — persist learnings, auto-inject relevant context on session start",
   "author": {
     "name": "x-mesh"
   },
-  "repository": "https://github.com/x-mesh/x-kit",
-  "homepage": "https://github.com/x-mesh/x-kit",
+  "repository": "https://github.com/x-mesh/xm",
+  "homepage": "https://github.com/x-mesh/xm",
   "license": "MIT",
   "keywords": [
     "memory",
