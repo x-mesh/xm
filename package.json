@@ -1,6 +1,6 @@
 {
   "name": "xm",
-  "version": "2.0.11",
+  "version": "2.0.12",
   "description": "x-mesh agent toolkit for Claude Code — project harness, strategy orchestration, and more",
   "type": "module",
   "keywords": [
