@@ -10,6 +10,10 @@ function readSkill(plugin) {
   return readFileSync(join(ROOT, plugin, 'skills', plugin, 'SKILL.md'), 'utf8');
 }
 
+function readEvalFile(path) {
+  return readFileSync(join(ROOT, 'x-eval', 'skills', 'x-eval', path), 'utf8');
+}
+
 // --- x-solver SKILL.md structure ---
 
 describe('x-solver SKILL.md structure', () => {
@@ -196,5 +200,80 @@ describe('x-op SKILL.md structure', () => {
     expect(optionsBody).toContain('50%');
     // SKILL.md still references the options via link stub
     expect(content).toContain('references/x-op-options.md');
+  });
+});
+
+// --- x-eval Tier 1 structure (pass@k/pass^k, broken-task warning, transcripts) ---
+
+describe('x-eval Tier 1 structure', () => {
+  const bench = readEvalFile('subcommands/bench.md');
+  const rubrics = readEvalFile('references/rubrics.md');
+  const report = readEvalFile('subcommands/report.md');
+  const score = readEvalFile('subcommands/score.md');
+  const storage = readEvalFile('references/storage-layout.md');
+
+  test('bench.md defines pass@k and pass^k metrics', () => {
+    expect(bench).toContain('pass@k');
+    expect(bench).toContain('pass^k');
+    expect(bench).toContain('Capability upper bound');
+    expect(bench).toContain('Reliability lower bound');
+  });
+
+  test('bench.md documents broken-task warning with empirical threshold', () => {
+    expect(bench).toContain('Broken-task warning');
+    expect(bench).toContain('avg_score < 4.5');
+    expect(bench).toContain('pass_at_k_rate == 0');
+    expect(bench).toContain('trials >= 2');
+  });
+
+  test('bench.md recommendation logic is pass-aware AND σ-aware', () => {
+    expect(bench).toContain('Recommendation logic (pass-aware + σ-aware)');
+    expect(bench).toContain('pass^k = 1');
+    expect(bench).toContain('lowest σ');
+    expect(bench).toContain('No reliable recommendation');
+  });
+
+  test('bench.md includes low-confidence advisory for small samples', () => {
+    expect(bench).toContain('Low-confidence advisory');
+    expect(bench).toContain('σ >= 1.0');
+    expect(bench).toMatch(/trials\s*<=?\s*3/i);
+  });
+
+  test('rubrics.md declares pass_threshold for every built-in + preset', () => {
+    // 9 rubrics total: 4 built-in + 5 domain presets
+    const matches = rubrics.match(/\*\*Pass threshold\*\*/g) || [];
+    expect(matches.length).toBeGreaterThanOrEqual(9);
+  });
+
+  test('rubrics.md declares default threshold in introduction', () => {
+    expect(rubrics).toContain('pass_threshold');
+    expect(rubrics).toMatch(/Default.{0,20}7\.0/);
+  });
+
+  test('report.md supports --sample-transcript flag', () => {
+    expect(report).toContain('--sample-transcript N');
+    expect(report).toContain('Transcript sampling');
+    expect(report).toContain('eval.persist_transcripts');
+  });
+
+  test('score.md preserves judge_rationales for audit', () => {
+    expect(score).toContain('judge_rationales');
+    expect(score).toContain('pass_threshold');
+    expect(score).toContain('passed');
+  });
+
+  test('storage-layout.md documents new Tier 1 fields', () => {
+    expect(storage).toContain('pass_threshold');
+    expect(storage).toContain('pass_at_k');
+    expect(storage).toContain('pass_hat_k');
+    expect(storage).toContain('per_trial_overall');
+    expect(storage).toContain('judge_rationales');
+    expect(storage).toContain('broken_task_warning');
+  });
+
+  test('SKILL.md help text mentions Tier 1 features', () => {
+    const skillContent = readSkill('x-eval');
+    expect(skillContent).toContain('pass@k');
+    expect(skillContent).toContain('--sample-transcript');
   });
 });
