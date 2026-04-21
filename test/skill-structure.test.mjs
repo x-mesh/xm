@@ -7,11 +7,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 
 function readSkill(plugin) {
-  return readFileSync(join(ROOT, plugin, 'skills', plugin, 'SKILL.md'), 'utf8');
+  // Skills dirs use short name (no x- prefix) since xm namespace rename
+  const shortName = plugin.replace(/^x-/, '');
+  return readFileSync(join(ROOT, plugin, 'skills', shortName, 'SKILL.md'), 'utf8');
 }
 
 function readEvalFile(path) {
-  return readFileSync(join(ROOT, 'x-eval', 'skills', 'x-eval', path), 'utf8');
+  return readFileSync(join(ROOT, 'x-eval', 'skills', 'eval', path), 'utf8');
 }
 
 // --- x-solver SKILL.md structure ---
@@ -158,7 +160,7 @@ describe('x-op SKILL.md structure', () => {
   test('brainstorm has --analogical and --lateral modes', () => {
     // brainstorm strategy body lives in strategies/brainstorm.md (extracted from SKILL.md)
     const brainstormBody = readFileSync(
-      join(ROOT, 'x-op', 'skills', 'x-op', 'strategies', 'brainstorm.md'),
+      join(ROOT, 'x-op', 'skills', 'op', 'strategies', 'brainstorm.md'),
       'utf8'
     );
     expect(brainstormBody).toContain('--analogical');
@@ -178,7 +180,7 @@ describe('x-op SKILL.md structure', () => {
   test('monitor uses OODA (4 phases)', () => {
     // monitor strategy body lives in strategies/monitor.md (extracted from SKILL.md)
     const monitorBody = readFileSync(
-      join(ROOT, 'x-op', 'skills', 'x-op', 'strategies', 'monitor.md'),
+      join(ROOT, 'x-op', 'skills', 'op', 'strategies', 'monitor.md'),
       'utf8'
     );
     expect(monitorBody).toContain('Phase 1: OBSERVE');
@@ -192,7 +194,7 @@ describe('x-op SKILL.md structure', () => {
   test('--vote Self-Consistency documented', () => {
     // --vote details live in references/x-op-options.md (extracted from SKILL.md)
     const optionsBody = readFileSync(
-      join(ROOT, 'x-op', 'skills', 'x-op', 'references', 'x-op-options.md'),
+      join(ROOT, 'x-op', 'skills', 'op', 'references', 'x-op-options.md'),
       'utf8'
     );
     expect(optionsBody).toContain('Self-Consistency');

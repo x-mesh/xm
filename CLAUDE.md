@@ -161,7 +161,7 @@ Agent tool: { model: "haiku", description: "x-kit: [command]", prompt: "Run: [ba
 
 ### Guardrail
 
-Never route to haiku if the task involves: analysis, code generation, review, planning, evaluation, or multi-step orchestration. If detected, warn and escalate to sonnet. See `x-kit/skills/x-kit/SKILL.md` Model Guardrail for full rules.
+Never route to haiku if the task involves: analysis, code generation, review, planning, evaluation, or multi-step orchestration. If detected, warn and escalate to sonnet. See `x-kit/skills/kit/SKILL.md` Model Guardrail for full rules.
 
 ### Cost-Aware Model Routing
 
@@ -190,14 +190,14 @@ Each `task_complete` event records `model`, `role`, `cost_usd`, `quality_score`,
 
 **NEVER edit files under `x-kit/skills/` directly.** That directory is the marketplace copy — a build artifact.
 
-- Always edit the **source** SKILL.md in each plugin's own directory (e.g., `x-solver/skills/x-solver/SKILL.md`)
+- Always edit the **source** SKILL.md in each plugin's own directory (e.g., `x-solver/skills/solver/SKILL.md`)
 - The release process (`/x-release`) copies source → `x-kit/skills/`
 - If you edit the marketplace copy, the change will be overwritten on next release and the source will remain stale
 
 | Path | Role | Editable? |
 |------|------|-----------|
-| `x-solver/skills/x-solver/SKILL.md` | Source | **YES** |
-| `x-kit/skills/x-solver/SKILL.md` | Marketplace copy | **NO** |
+| `x-solver/skills/solver/SKILL.md` | Source | **YES** |
+| `x-kit/skills/solver/SKILL.md` | Marketplace copy | **NO** |
 
 This applies to all plugins: x-build, x-op, x-probe, x-solver, x-eval, x-review, x-trace, x-memory, x-humble, x-ship, x-sync.
 

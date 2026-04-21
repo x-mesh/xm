@@ -14,10 +14,10 @@ bun x-dashboard/lib/x-dashboard-server.mjs
 ### A. Claude Code 안에서 (스킬)
 
 ```
-/x-kit:x-dashboard              # 대시보드 시작 (세션 모드, 60분 idle 자동 종료)
-/x-kit:x-dashboard stop         # 대시보드 중지
-/x-kit:x-dashboard status       # 상태 확인
-/x-kit:x-dashboard open         # 브라우저에서 열기
+/xm:dashboard              # 대시보드 시작 (세션 모드, 60분 idle 자동 종료)
+/xm:dashboard stop         # 대시보드 중지
+/xm:dashboard status       # 상태 확인
+/xm:dashboard open         # 브라우저에서 열기
 ```
 
 세션 모드로 실행되며, Claude Code 세션이 끝나거나 60분간 요청이 없으면 자동 종료됩니다.

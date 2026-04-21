@@ -2,6 +2,7 @@
 # sync-bundle.sh — Sync standalone plugin files to x-kit bundle
 # Run from repo root: ./scripts/sync-bundle.sh
 # Source of truth: standalone plugin directories
+# Plugin naming: source dirs keep x-{name}/, skills dirs use {name}/ (no x- prefix)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -36,8 +37,8 @@ mirror_md_dir() {
 }
 
 echo "=== Syncing SKILL.md files ==="
-for plugin in x-build x-op x-solver x-eval x-review x-trace x-memory x-humble x-probe x-agent; do
-  src="$plugin/skills/$plugin/SKILL.md"
+for plugin in build op solver eval review trace memory humble probe agent; do
+  src="x-$plugin/skills/$plugin/SKILL.md"
   dst="x-kit/skills/$plugin/SKILL.md"
   sync_file "$src" "$dst"
 done
@@ -80,82 +81,82 @@ echo "=== Syncing references ==="
 mirror_md_dir "references" "x-kit/references"
 
 echo ""
-echo "=== Syncing x-op strategies ==="
-mirror_md_dir "x-op/skills/x-op/strategies" "x-kit/skills/x-op/strategies"
+echo "=== Syncing op strategies ==="
+mirror_md_dir "x-op/skills/op/strategies" "x-kit/skills/op/strategies"
 
 echo ""
-echo "=== Syncing x-op references ==="
-mirror_md_dir "x-op/skills/x-op/references" "x-kit/skills/x-op/references"
+echo "=== Syncing op references ==="
+mirror_md_dir "x-op/skills/op/references" "x-kit/skills/op/references"
 
 echo ""
-echo "=== Syncing x-agent autonomous ==="
-mirror_md_dir "x-agent/skills/x-agent/autonomous" "x-kit/skills/x-agent/autonomous"
+echo "=== Syncing agent autonomous ==="
+mirror_md_dir "x-agent/skills/agent/autonomous" "x-kit/skills/agent/autonomous"
 
 echo ""
-echo "=== Syncing x-agent references ==="
-mirror_md_dir "x-agent/skills/x-agent/references" "x-kit/skills/x-agent/references"
+echo "=== Syncing agent references ==="
+mirror_md_dir "x-agent/skills/agent/references" "x-kit/skills/agent/references"
 
 echo ""
-echo "=== Syncing x-build references ==="
-mirror_md_dir "x-build/skills/x-build/references" "x-kit/skills/x-build/references"
+echo "=== Syncing build references ==="
+mirror_md_dir "x-build/skills/build/references" "x-kit/skills/build/references"
 
 echo ""
-echo "=== Syncing x-build commands ==="
-mirror_md_dir "x-build/skills/x-build/commands" "x-kit/skills/x-build/commands"
+echo "=== Syncing build commands ==="
+mirror_md_dir "x-build/skills/build/commands" "x-kit/skills/build/commands"
 
 echo ""
-echo "=== Syncing x-build phases ==="
-mirror_md_dir "x-build/skills/x-build/references/phases" "x-kit/skills/x-build/references/phases"
+echo "=== Syncing build phases ==="
+mirror_md_dir "x-build/skills/build/references/phases" "x-kit/skills/build/references/phases"
 
 echo ""
-echo "=== Syncing x-review lenses ==="
-mirror_md_dir "x-review/skills/x-review/lenses" "x-kit/skills/x-review/lenses"
+echo "=== Syncing review lenses ==="
+mirror_md_dir "x-review/skills/review/lenses" "x-kit/skills/review/lenses"
 
 echo ""
-echo "=== Syncing x-review references ==="
-mirror_md_dir "x-review/skills/x-review/references" "x-kit/skills/x-review/references"
+echo "=== Syncing review references ==="
+mirror_md_dir "x-review/skills/review/references" "x-kit/skills/review/references"
 
 echo ""
-echo "=== Syncing x-eval judges ==="
-mirror_md_dir "x-eval/skills/x-eval/judges" "x-kit/skills/x-eval/judges"
+echo "=== Syncing eval judges ==="
+mirror_md_dir "x-eval/skills/eval/judges" "x-kit/skills/eval/judges"
 
 echo ""
-echo "=== Syncing x-eval subcommands ==="
-mirror_md_dir "x-eval/skills/x-eval/subcommands" "x-kit/skills/x-eval/subcommands"
+echo "=== Syncing eval subcommands ==="
+mirror_md_dir "x-eval/skills/eval/subcommands" "x-kit/skills/eval/subcommands"
 
 echo ""
-echo "=== Syncing x-eval references ==="
-mirror_md_dir "x-eval/skills/x-eval/references" "x-kit/skills/x-eval/references"
+echo "=== Syncing eval references ==="
+mirror_md_dir "x-eval/skills/eval/references" "x-kit/skills/eval/references"
 
 echo ""
-echo "=== Syncing x-solver commands ==="
-mirror_md_dir "x-solver/skills/x-solver/commands" "x-kit/skills/x-solver/commands"
+echo "=== Syncing solver commands ==="
+mirror_md_dir "x-solver/skills/solver/commands" "x-kit/skills/solver/commands"
 
 echo ""
-echo "=== Syncing x-solver references ==="
-mirror_md_dir "x-solver/skills/x-solver/references" "x-kit/skills/x-solver/references"
+echo "=== Syncing solver references ==="
+mirror_md_dir "x-solver/skills/solver/references" "x-kit/skills/solver/references"
 
 echo ""
-echo "=== Syncing x-probe sessions ==="
-mirror_md_dir "x-probe/skills/x-probe/sessions" "x-kit/skills/x-probe/sessions"
+echo "=== Syncing probe sessions ==="
+mirror_md_dir "x-probe/skills/probe/sessions" "x-kit/skills/probe/sessions"
 
 echo ""
-echo "=== Syncing x-trace subcommands ==="
-mirror_md_dir "x-trace/skills/x-trace/subcommands" "x-kit/skills/x-trace/subcommands"
+echo "=== Syncing trace subcommands ==="
+mirror_md_dir "x-trace/skills/trace/subcommands" "x-kit/skills/trace/subcommands"
 
 echo ""
-echo "=== Syncing x-humble sessions ==="
-mirror_md_dir "x-humble/skills/x-humble/sessions" "x-kit/skills/x-humble/sessions"
+echo "=== Syncing humble sessions ==="
+mirror_md_dir "x-humble/skills/humble/sessions" "x-kit/skills/humble/sessions"
 
 echo ""
-echo "=== Syncing x-memory references ==="
-mirror_md_dir "x-memory/skills/x-memory/references" "x-kit/skills/x-memory/references"
+echo "=== Syncing memory references ==="
+mirror_md_dir "x-memory/skills/memory/references" "x-kit/skills/memory/references"
 
 echo ""
 echo "=== Verifying all synced ==="
 DIVERGED=0
-for plugin in x-build x-op x-solver x-eval x-review x-trace x-memory x-humble x-probe x-agent; do
-  src="$plugin/skills/$plugin/SKILL.md"
+for plugin in build op solver eval review trace memory humble probe agent; do
+  src="x-$plugin/skills/$plugin/SKILL.md"
   dst="x-kit/skills/$plugin/SKILL.md"
   if [ -f "$src" ] && [ -f "$dst" ] && ! diff -q "$src" "$dst" > /dev/null 2>&1; then
     echo "  DIVERGED: $dst"

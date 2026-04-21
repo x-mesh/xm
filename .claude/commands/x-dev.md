@@ -31,7 +31,7 @@ User provided: $ARGUMENTS
 ## Constants
 
 ```
-REPO_ROOT = /Users/jinwoo/work/project/agentic/x-kit
+REPO_ROOT = /Users/jinwoo/work/project/agentic/xm:kit
 MARKETPLACE_NAME = x-kit
 PLUGINS = [x-agent, x-build, x-op, x-kit]
 ```
@@ -62,10 +62,10 @@ Filter entries where id contains "x-".
 
 ```bash
 claude plugin validate REPO_ROOT/.claude-plugin/marketplace.json 2>&1
-claude plugin validate REPO_ROOT/x-agent 2>&1
-claude plugin validate REPO_ROOT/x-build 2>&1
-claude plugin validate REPO_ROOT/x-op 2>&1
-claude plugin validate REPO_ROOT/x-kit 2>&1
+claude plugin validate REPO_ROOT/xm:agent 2>&1
+claude plugin validate REPO_ROOT/xm:build 2>&1
+claude plugin validate REPO_ROOT/xm:op 2>&1
+claude plugin validate REPO_ROOT/xm:kit 2>&1
 ```
 
 ### Step 4: Output
@@ -74,7 +74,7 @@ claude plugin validate REPO_ROOT/x-kit 2>&1
 🔧 x-dev Status
 
   Marketplace:
-    x-kit  ✅ registered (local: /Users/jinwoo/work/project/agentic/x-kit)
+    x-kit  ✅ registered (local: /Users/jinwoo/work/project/agentic/xm:kit)
     — or —
     x-kit  ❌ not registered (run: /x-dev marketplace add)
 
@@ -163,7 +163,7 @@ If plugin name is not in PLUGINS list:
 ### Step 3: Install
 
 ```bash
-claude plugin install x-{name}@x-kit -s user
+claude plugin install x-{name}@xm -s user
 ```
 
 ### Step 4: Validate after install
@@ -182,7 +182,7 @@ Confirm the plugin appears in the list.
    Test it:
      /x-dev test x-op list
      — or in a new session —
-     /x-op list
+     /xm:op list
 ```
 
 ---
@@ -196,10 +196,10 @@ Install all plugins.
 ### Step 2: Install each
 
 ```bash
-claude plugin install x-agent@x-kit -s user
-claude plugin install x-build@x-kit -s user
-claude plugin install x-op@x-kit -s user
-claude plugin install x-kit@x-kit -s user
+claude plugin install x-agent@xm -s user
+claude plugin install x-build@xm -s user
+claude plugin install x-op@xm -s user
+claude plugin install x-kit@xm -s user
 ```
 
 Run sequentially. If a plugin is already installed, note it and continue.
@@ -222,7 +222,7 @@ Run sequentially. If a plugin is already installed, note it and continue.
 ## Mode: uninstall
 
 ```bash
-claude plugin uninstall x-{name}@x-kit -s user
+claude plugin uninstall x-{name}@xm -s user
 ```
 
 Output:
@@ -247,7 +247,7 @@ claude plugin marketplace update x-kit
 ### Step 2: Update the plugin
 
 ```bash
-claude plugin update x-{name}@x-kit -s user
+claude plugin update x-{name}@xm -s user
 ```
 
 ### Step 3: Output
@@ -267,7 +267,7 @@ claude plugin marketplace update x-kit
 ```
 Then for each installed xm plugin:
 ```bash
-claude plugin update x-{name}@x-kit -s user
+claude plugin update x-{name}@xm -s user
 ```
 
 ---
@@ -304,10 +304,10 @@ Validate all plugin manifests + marketplace manifest.
 
 ```bash
 claude plugin validate REPO_ROOT/.claude-plugin/marketplace.json
-claude plugin validate REPO_ROOT/x-agent
-claude plugin validate REPO_ROOT/x-build
-claude plugin validate REPO_ROOT/x-op
-claude plugin validate REPO_ROOT/x-kit
+claude plugin validate REPO_ROOT/xm:agent
+claude plugin validate REPO_ROOT/xm:build
+claude plugin validate REPO_ROOT/xm:op
+claude plugin validate REPO_ROOT/xm:kit
 ```
 
 Output:
@@ -354,7 +354,7 @@ cat REPO_ROOT/x-{plugin}/skills/x-{plugin}/SKILL.md
 ```
 🧪 Testing x-op
 
-   Skill loaded from: REPO_ROOT/x-op/skills/x-op/SKILL.md
+   Skill loaded from: REPO_ROOT/x-op/skills/op/SKILL.md
 
    To test in this session (no install needed):
      Just use the skill directly — the SKILL.md is already in context.
@@ -362,7 +362,7 @@ cat REPO_ROOT/x-{plugin}/skills/x-{plugin}/SKILL.md
    To test with real install:
      1. /x-dev install x-op
      2. Restart Claude Code
-     3. /x-op {args}
+     3. /xm:op {args}
 
    Test args provided: {remaining args after plugin name}
 ```
@@ -386,10 +386,10 @@ This will uninstall all x-kit plugins and remove the local marketplace. Continue
 ### Step 2: Uninstall all
 
 ```bash
-claude plugin uninstall x-agent@x-kit -s user 2>&1 || true
-claude plugin uninstall x-build@x-kit -s user 2>&1 || true
-claude plugin uninstall x-op@x-kit -s user 2>&1 || true
-claude plugin uninstall x-kit@x-kit -s user 2>&1 || true
+claude plugin uninstall x-agent@xm -s user 2>&1 || true
+claude plugin uninstall x-build@xm -s user 2>&1 || true
+claude plugin uninstall x-op@xm -s user 2>&1 || true
+claude plugin uninstall x-kit@xm -s user 2>&1 || true
 claude plugin marketplace remove x-kit 2>&1 || true
 ```
 
@@ -454,13 +454,13 @@ Self-improve a plugin's SKILL.md using meta-prompting.
 /x-dev install-all
 
 # 3. Make code changes...
-#    edit x-op/skills/x-op/SKILL.md
+#    edit x-op/skills/op/SKILL.md
 
 # 4. Update to pick up changes
 /x-dev update x-op
 
 # 5. Restart Claude Code and test
-/x-op debate "topic"
+/xm:op debate "topic"
 
 # 6. Validate before release
 /x-dev validate-all

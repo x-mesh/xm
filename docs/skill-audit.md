@@ -21,20 +21,20 @@ Phase 3 decomposition sweep complete (2026-04-17). **All 14 SKILL.md files under
 
 | Lines | Plugin | Status |
 |-------|--------|--------|
-| 494 | `x-op/skills/x-op/SKILL.md` | ✅ OK |
-| 491 | `x-agent/skills/x-agent/SKILL.md` | ✅ OK |
-| 411 | `x-build/skills/x-build/SKILL.md` | ✅ OK |
-| 350 | `x-memory/skills/x-memory/SKILL.md` | ✅ OK |
-| 345 | `x-humble/skills/x-humble/SKILL.md` | ✅ OK |
-| 336 | `x-solver/skills/x-solver/SKILL.md` | ✅ OK |
-| 331 | `x-kit/skills/x-ship/SKILL.md` | ✅ OK |
-| 319 | `x-trace/skills/x-trace/SKILL.md` | ✅ OK |
-| 304 | `x-kit/skills/x-sync/SKILL.md` | ✅ OK |
-| 277 | `x-review/skills/x-review/SKILL.md` | ✅ OK |
-| 251 | `x-probe/skills/x-probe/SKILL.md` | ✅ OK |
-| 238 | `x-eval/skills/x-eval/SKILL.md` | ✅ OK |
-| 203 | `x-kit/skills/x-kit/SKILL.md` | ✅ OK (was 551 per 2026-04-08 audit; grew to 915 before split; briefly 159 after initial split; now 203 with thin stubs + commands/ + references/ + Sub-file Loading + Status Symbols sections) |
-| 116 | `x-dashboard/skills/x-dashboard/SKILL.md` | ✅ OK |
+| 494 | `x-op/skills/op/SKILL.md` | ✅ OK |
+| 491 | `x-agent/skills/agent/SKILL.md` | ✅ OK |
+| 411 | `x-build/skills/build/SKILL.md` | ✅ OK |
+| 350 | `x-memory/skills/memory/SKILL.md` | ✅ OK |
+| 345 | `x-humble/skills/humble/SKILL.md` | ✅ OK |
+| 336 | `x-solver/skills/solver/SKILL.md` | ✅ OK |
+| 331 | `x-kit/skills/ship/SKILL.md` | ✅ OK |
+| 319 | `x-trace/skills/trace/SKILL.md` | ✅ OK |
+| 304 | `x-kit/skills/sync/SKILL.md` | ✅ OK |
+| 277 | `x-review/skills/review/SKILL.md` | ✅ OK |
+| 251 | `x-probe/skills/probe/SKILL.md` | ✅ OK |
+| 238 | `x-eval/skills/eval/SKILL.md` | ✅ OK |
+| 203 | `x-kit/skills/kit/SKILL.md` | ✅ OK (was 551 per 2026-04-08 audit; grew to 915 before split; briefly 159 after initial split; now 203 with thin stubs + commands/ + references/ + Sub-file Loading + Status Symbols sections) |
+| 116 | `x-dashboard/skills/dashboard/SKILL.md` | ✅ OK |
 
 ---
 
@@ -69,14 +69,14 @@ Largest sub-files (non-SKILL.md) by line count. These don't fall under the 500-l
 
 | Lines | File | Notes |
 |-------|------|-------|
-| 494 | `x-agent/skills/x-agent/references/role-presets.md` | Per-primitive role presets |
-| 332 | `x-build/skills/x-build/references/workflow-guide.md` | Was 654; Step 3 Plan extracted to phases/plan.md |
-| 326 | `x-build/skills/x-build/references/phases/plan.md` | Full Plan-phase walkthrough (extracted 2026-04-17) |
-| 488 | `x-solver/skills/x-solver/commands/solve.md` | 4 strategy branches; already borderline |
-| 429 | `x-agent/skills/x-agent/TEAM.md` | Team mode dispatcher |
-| 396 | `x-review/skills/x-review/references/review-workflow.md` | Phase 1-4 full pipeline |
-| 365 | `x-probe/skills/x-probe/sessions/probe.md` | Premise + evidence + verdict |
-| 257 | `x-humble/skills/x-humble/sessions/reflect.md` | Reflection walkthrough |
+| 494 | `x-agent/skills/agent/references/role-presets.md` | Per-primitive role presets |
+| 332 | `x-build/skills/build/references/workflow-guide.md` | Was 654; Step 3 Plan extracted to phases/plan.md |
+| 326 | `x-build/skills/build/references/phases/plan.md` | Full Plan-phase walkthrough (extracted 2026-04-17) |
+| 488 | `x-solver/skills/solver/commands/solve.md` | 4 strategy branches; already borderline |
+| 429 | `x-agent/skills/agent/TEAM.md` | Team mode dispatcher |
+| 396 | `x-review/skills/review/references/review-workflow.md` | Phase 1-4 full pipeline |
+| 365 | `x-probe/skills/probe/sessions/probe.md` | Premise + evidence + verdict |
+| 257 | `x-humble/skills/humble/sessions/reflect.md` | Reflection walkthrough |
 
 ---
 
