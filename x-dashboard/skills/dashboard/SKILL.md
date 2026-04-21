@@ -1,5 +1,5 @@
 ---
-name: x-dashboard
+name: dashboard
 description: Web dashboard for .xm project state — start, stop, open in browser
 allowed-tools:
   - Bash

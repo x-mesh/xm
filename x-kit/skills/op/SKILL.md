@@ -1,5 +1,5 @@
 ---
-name: x-op
+name: op
 description: Strategy orchestration — 17 strategies including refine, tournament, chain, review, debate, red-team, brainstorm, distribute, council, socratic, persona, scaffold, compose, decompose, hypothesis, investigate, monitor
 allowed-tools:
   - AskUserQuestion
