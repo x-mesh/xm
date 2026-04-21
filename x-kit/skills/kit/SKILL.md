@@ -1,5 +1,5 @@
 ---
-name: x-kit
+name: kit
 description: x-mesh toolkit — list available tools and their status
 ---
 

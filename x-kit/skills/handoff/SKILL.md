@@ -1,5 +1,5 @@
 ---
-name: x-handoff
+name: handoff
 description: Session handoff — save comprehensive session state for cross-session continuity
 ---
 

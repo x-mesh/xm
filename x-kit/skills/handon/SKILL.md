@@ -1,5 +1,5 @@
 ---
-name: x-handon
+name: handon
 description: Session restore — resume from last handoff, inject context automatically
 ---
 

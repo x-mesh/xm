@@ -1,5 +1,5 @@
 ---
-name: x-ship
+name: ship
 description: Release automation — commit squash, version bump, changelog, push. Works with any project.
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: x-memory
+name: memory
 description: Cross-session decision and pattern memory — persist learnings, auto-inject relevant context on session start
 ---
 

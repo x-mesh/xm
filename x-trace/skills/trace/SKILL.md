@@ -1,5 +1,5 @@
 ---
-name: x-trace
+name: trace
 description: Agent execution tracing — timeline, token/cost tracking, replay, and diff for multi-agent observability
 ---
 
