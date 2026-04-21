@@ -210,6 +210,7 @@ This applies to all plugins: x-build, x-op, x-probe, x-solver, x-eval, x-review,
 - STOP: Hardcoding per-file lists in bundle/sync scripts. Mirror plugin `lib/` and `public/` wholesale so new files ship automatically. (L8, confirmed 1 time, 2026-04-20)
 - START: Before editing any SKILL.md, verify the file path is in the source directory, not marketplace copy. (L5, confirmed 2 times, 2026-04-08)
 - START: After `release commit --push`, run `git show HEAD --stat` and verify every file the commit message claims is in the diff. (L7, confirmed 1 time, 2026-04-20)
+- START: Before shipping any numeric threshold / gate / tiebreak in eval or aggregator logic, write a small deterministic simulator that evaluates the rule across plausible input distributions, and pick values from simulation — not judgment. Example: x-eval Tier 1 spec initially proposed `0% pass` as broken-task signal; simulation revealed 35% false-alarm rate on merely-weak strategies (k=3, threshold 7.0). Adding `AND avg < 4.5` gate (simulator-derived) dropped false-alarms to 0% while keeping 100% true-positive detection. σ-aware recommendation tiebreak (picks lower-σ among pass^k=1) also came from simulation: 94% picks reliable vs 0% with Score/$-only. (L9, confirmed 1 time, 2026-04-21)
 
 ## Project Structure
 
