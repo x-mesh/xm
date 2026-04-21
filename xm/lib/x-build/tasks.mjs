@@ -4,7 +4,7 @@
 
 import {
   PHASES, TASK_STATES, STATUS_ALIASES, C,
-  ROLE_MODEL_MAP_HR, getModelForRole, getModelForRoleWithCorrelation, checkBudget, loadSharedConfig, XM_GLOBAL, PLUGIN_ROOT, ROOT,
+  ROLE_MODEL_MAP_HR, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, checkBudget, loadSharedConfig, XM_GLOBAL, PLUGIN_ROOT, ROOT,
   readJSON, writeJSON, modifyJSON, readMD,
   manifestPath, tasksPath, stepsPath, contextDir, phaseDir, decisionsPath, projectDir,
   resolveProject, logDecision, appendMetric, emitHook,
@@ -385,6 +385,7 @@ export function taskUpdate(project, args) {
         retry_count: taskRef.retry_count || 0,
         failure_reason: null,
         routing_decision_id: taskRef._routing_decision_id || null,
+        correlation_id: taskRef._routing_decision_id || generateCorrelationId(),
         duration_ms: new Date(taskRef.completed_at) - new Date(taskRef.started_at),
         timestamp: taskRef.completed_at,
       });
@@ -428,6 +429,8 @@ export function taskUpdate(project, args) {
         success: false,
         retry_count: taskRef.retry_count || 0,
         failure_reason: opts?.reason || 'unknown',
+        routing_decision_id: taskRef._routing_decision_id || null,
+        correlation_id: taskRef._routing_decision_id || generateCorrelationId(),
         duration_ms: new Date(taskRef.failed_at || new Date()) - new Date(taskRef.started_at),
         timestamp: taskRef.failed_at || new Date().toISOString(),
       });

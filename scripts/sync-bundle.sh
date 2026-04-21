@@ -45,7 +45,7 @@ done
 
 echo ""
 echo "=== Syncing x-build lib files ==="
-for f in core.mjs project.mjs phase.mjs plan.mjs tasks.mjs verify.mjs export.mjs misc.mjs release.mjs; do
+for f in core.mjs project.mjs phase.mjs plan.mjs tasks.mjs verify.mjs export.mjs misc.mjs release.mjs cost-engine.mjs config-loader.mjs root.mjs; do
   sync_file "x-build/lib/x-build/$f" "xm/lib/x-build/$f"
 done
 sync_file "x-build/lib/x-build-cli.mjs" "xm/lib/x-build-cli.mjs"

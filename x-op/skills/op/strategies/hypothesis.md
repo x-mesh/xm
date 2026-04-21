@@ -60,3 +60,14 @@ Leader synthesizes results:
 ## Recommended Verification Method
 {next steps to confirm the hypothesis in practice}
 ```
+
+## Final Step: Persist (REQUIRED)
+
+After emitting the Final Output above and the Self-Score block, MUST save the result to `.xm/op/` (see `references/x-op-result-persistence.md`):
+
+1. `mkdir -p .xm/op/` (Bash)
+2. Filename: `hypothesis-{YYYY-MM-DD}-{slug}.json` (slug from topic, ≤ 40 chars, lowercase, hyphens)
+3. Write JSON per the result schema (include `outcome.verdict="H{N} survived"`, `outcome.summary` with strongest surviving hypothesis, `self_score`, `rounds_summary`)
+4. Surface path: `💾 Saved: .xm/op/{filename}`
+
+Do not end the strategy until the file is written and the path is shown.

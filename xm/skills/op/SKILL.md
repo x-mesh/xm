@@ -457,9 +457,29 @@ See `references/agent-output-contract.md` — evidence-based, falsifiable, dimen
 
 See `references/self-score-protocol.md` — 1-10 self-assessment scale, Strategy-Rubric mapping, 4Q hallucination check, output block format.
 
-## Result Persistence
+## Result Persistence (REQUIRED — every strategy)
+
+Every strategy MUST save its result to `.xm/op/` as the final step, after the Self-Score block.
 
 See `references/x-op-result-persistence.md` — save workflow, result schema, per-strategy outcome mapping, and what NOT to save.
+
+### Termination Checkpoint (required before declaring any strategy complete)
+
+Before treating a strategy as done, emit this block as the last thing. Any unchecked item = strategy NOT complete — return to the missing step, do not end the turn.
+
+```
+**TERMINATION_CHECKPOINT:**
+- [x] Final Output emitted (strategy-specific format)
+- [x] Self-Score block emitted (per `references/self-score-protocol.md`)
+- [x] Result file written to `.xm/op/{strategy}-{YYYY-MM-DD}-{slug}.json`
+- [x] Save path surfaced to user: `💾 Saved: .xm/op/{filename}`
+```
+
+Rules:
+- Run this checkpoint BEFORE the Post-Strategy Eval Gate
+- `--dry-run` skips the checkpoint (no strategy execution occurred)
+- `compose` emits one checkpoint per sub-strategy AND one for the outer pipeline
+- Skipping the save step because "the result is in chat" is wrong: the next session cannot resume or cross-reference without the file
 
 ---
 

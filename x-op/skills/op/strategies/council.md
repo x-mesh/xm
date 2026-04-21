@@ -62,3 +62,16 @@ Adds role-based weighted voting to the existing council.
 | agent-2 | security | 2 | OBJECT |
 Weighted: AGREE 4 / OBJECT 2 → CONSENSUS
 ```
+
+---
+
+## Final Step: Persist (REQUIRED)
+
+After emitting the Final Output above and the Self-Score block, MUST save the result to `.xm/op/` (see `references/x-op-result-persistence.md`):
+
+1. `mkdir -p .xm/op/` (Bash)
+2. Filename: `council-{YYYY-MM-DD}-{slug}.json` (slug from topic, ≤ 40 chars, lowercase, hyphens)
+3. Write JSON per the result schema (include `outcome.verdict={CONSENSUS|NO CONSENSUS|CONSENSUS WITH RESERVATIONS}`, `outcome.summary` with consensus statement, `self_score`, `rounds_summary`)
+4. Surface path: `💾 Saved: .xm/op/{filename}`
+
+Do not end the strategy until the file is written and the path is shown.

@@ -10,7 +10,7 @@
     {
       "name": "build",
       "description": "Phase-based project harness with PRD generation, consensus review, plan validation, multi-mode deliberation, DAG execution, cost forecasting, and decision memory",
-      "version": "2.0.5",
+      "version": "2.0.6",
       "author": {
         "name": "x-mesh"
       },
@@ -46,7 +46,7 @@
     {
       "name": "op",
       "description": "Strategy orchestration — 18 strategies with self-scoring, --verify auto-validation, and compose presets",
-      "version": "2.0.4",
+      "version": "2.0.5",
       "author": {
         "name": "x-mesh"
       },

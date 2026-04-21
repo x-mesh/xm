@@ -68,3 +68,14 @@ Verify from your perspective. If there are issues, point them out and suggest fi
 | 2 | Converge | {N} agents | Adopted (votes {M}/{N}) |
 | 3 | Verify | {N} agents | {OK count}/{N} OK |
 ```
+
+## Final Step: Persist (REQUIRED)
+
+After emitting the Final Output above and the Self-Score block, MUST save the result to `.xm/op/` (see `references/x-op-result-persistence.md`):
+
+1. `mkdir -p .xm/op/` (Bash)
+2. Filename: `refine-{YYYY-MM-DD}-{slug}.json` (slug from topic, ≤ 40 chars, lowercase, hyphens)
+3. Write JSON per the result schema (include `outcome.verdict="adopted"`, `outcome.summary`, `self_score`, `rounds_summary`)
+4. Surface path: `💾 Saved: .xm/op/{filename}`
+
+Do not end the strategy until the file is written and the path is shown.

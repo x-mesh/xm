@@ -21,3 +21,14 @@ Leader merges all results: check for conflicts, synthesize by theme.
 📦 [distribute] {N} subtasks, {completed} succeeded
 | # | Agent | Subtask | Status |
 ```
+
+## Final Step: Persist (REQUIRED)
+
+After emitting the Final Output above and the Self-Score block, MUST save the result to `.xm/op/` (see `references/x-op-result-persistence.md`):
+
+1. `mkdir -p .xm/op/` (Bash)
+2. Filename: `distribute-{YYYY-MM-DD}-{slug}.json` (slug from topic, ≤ 40 chars, lowercase, hyphens)
+3. Write JSON per the result schema (include `outcome.verdict="{N} subtasks"`, `outcome.summary` with merge result, `self_score`, `rounds_summary`)
+4. Surface path: `💾 Saved: .xm/op/{filename}`
+
+Do not end the strategy until the file is written and the path is shown.

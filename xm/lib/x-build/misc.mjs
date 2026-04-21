@@ -6,7 +6,7 @@ import {
   PHASES, TASK_STATES, C, ROOT, PLUGIN_ROOT,
   readJSON, writeJSON, readMD, writeMD,
   manifestPath, phaseStatusPath, tasksPath, stepsPath, contextDir, phaseDir,
-  projectDir, decisionsPath, metricsPath, templatesDir,
+  projectDir, decisionsPath, metricsPath, templatesDir, adaptEvent,
   resolveProject, addDecision, loadPhaseContext,
   loadConfig, parseOptions, renderBar, fmtDuration,
   CONTEXT_MANIFESTS,
@@ -144,7 +144,7 @@ export function cmdMetrics(args) {
   }
 
   const lines = readFileSync(mp, 'utf8').trim().split('\n').filter(Boolean);
-  const entries = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  const entries = lines.map(l => { try { return adaptEvent(JSON.parse(l)); } catch { return null; } }).filter(Boolean);
 
   const phases = entries.filter(e => e.type === 'phase_complete');
   const tasks = entries.filter(e => e.type === 'task_complete');

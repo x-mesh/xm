@@ -537,3 +537,68 @@ describe('getModelForRoleWithCorrelation', () => {
     expect(ids.size).toBe(10);
   });
 });
+
+describe('event schema v2 migration (t1)', () => {
+  test('EVENT_SCHEMA_VERSION is 2', () => {
+    expect(ce.EVENT_SCHEMA_VERSION).toBe(2);
+  });
+
+  test('appendMetric injects schema_v, machine_id, event_id when absent', () => {
+    const mp = ce.metricsPath();
+    // Fresh file for this test
+    if (existsSync(mp)) writeFileSync(mp, '');
+    ce.appendMetric({ type: 'task_complete', cost_usd: 0.01, role: 'executor' });
+    const line = readFileSync(mp, 'utf8').trim().split('\n').pop();
+    const ev = JSON.parse(line);
+    expect(ev.schema_v).toBe(2);
+    expect(typeof ev.machine_id).toBe('string');
+    expect(ev.machine_id.length).toBeGreaterThan(0);
+    expect(typeof ev.event_id).toBe('string');
+    expect(ev.event_id.startsWith('ev-')).toBe(true);
+    // Caller-provided fields survive
+    expect(ev.type).toBe('task_complete');
+    expect(ev.cost_usd).toBe(0.01);
+    expect(ev.role).toBe('executor');
+  });
+
+  test('appendMetric preserves caller-provided schema_v / machine_id / event_id', () => {
+    const mp = ce.metricsPath();
+    if (existsSync(mp)) writeFileSync(mp, '');
+    ce.appendMetric({
+      type: 'task_complete', cost_usd: 0,
+      schema_v: 99, machine_id: 'remote-host', event_id: 'ev-fixed123',
+    });
+    const line = readFileSync(mp, 'utf8').trim().split('\n').pop();
+    const ev = JSON.parse(line);
+    expect(ev.schema_v).toBe(99);
+    expect(ev.machine_id).toBe('remote-host');
+    expect(ev.event_id).toBe('ev-fixed123');
+  });
+
+  test('adaptEvent treats missing schema_v as v1 and back-fills fields', () => {
+    const v1Event = { type: 'task_complete', cost_usd: 0.5, role: 'executor', timestamp: '2025-01-01T00:00:00Z' };
+    const adapted = ce.adaptEvent(v1Event);
+    expect(adapted.schema_v).toBe(1);
+    expect(adapted.machine_id).toBeNull();
+    expect(adapted.event_id).toBeNull();
+    // Original fields intact
+    expect(adapted.type).toBe('task_complete');
+    expect(adapted.cost_usd).toBe(0.5);
+    expect(adapted.role).toBe('executor');
+  });
+
+  test('adaptEvent passes v2 events through unchanged', () => {
+    const v2Event = {
+      type: 'task_complete', cost_usd: 0.1,
+      schema_v: 2, machine_id: 'host-a', event_id: 'ev-abc123',
+    };
+    const adapted = ce.adaptEvent(v2Event);
+    expect(adapted).toBe(v2Event); // same reference — no copy
+  });
+
+  test('adaptEvent handles null / non-object safely', () => {
+    expect(ce.adaptEvent(null)).toBeNull();
+    expect(ce.adaptEvent(undefined)).toBeUndefined();
+    expect(ce.adaptEvent('string')).toBe('string');
+  });
+});
