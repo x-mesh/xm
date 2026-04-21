@@ -154,7 +154,7 @@
     {
       "name": "probe",
       "description": "Premise validation — evidence-grade questioning, domain-aware probing, kill bad ideas early, earn the right to build",
-      "version": "2.0.4",
+      "version": "2.0.5",
       "author": {
         "name": "x-mesh"
       },
@@ -172,7 +172,7 @@
     {
       "name": "humble",
       "description": "Structured retrospective — reflect on failures together, find root causes, explore alternatives, and grow",
-      "version": "2.0.4",
+      "version": "2.0.5",
       "author": {
         "name": "x-mesh"
       },

@@ -296,7 +296,18 @@ If you proceed, stop immediately when:
 {2-3문장: 뭘 해야 하고 왜}
 ```
 
-Save verdict to `.xm/probe/last-verdict.json`:
+### Final Step: Persist (REQUIRED — both files)
+
+After emitting the verdict output above, MUST write the verdict to BOTH paths per the Termination Checkpoint in SKILL.md:
+
+1. `mkdir -p .xm/probe/history/` (Bash)
+2. Build JSON payload per the schema below (same object written to both files)
+3. Write `.xm/probe/last-verdict.json` — overwrites the previous run
+4. Write `.xm/probe/history/{YYYY-MM-DD}-{slug}.json` — archival copy; slug derived from idea, ≤ 40 chars, lowercase, hyphens
+5. Surface paths: `💾 Saved: .xm/probe/last-verdict.json` and `💾 Archived: .xm/probe/history/{filename}`
+
+Do not end the session until both files are written and both paths are shown. Skipping the `history/` write loses the record the moment the next probe runs.
+
 ```json
 {
   "timestamp": "ISO8601",

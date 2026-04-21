@@ -200,6 +200,24 @@ Probe state is stored in `.xm/probe/`:
     └── {timestamp}-{slug}.json  # All past verdicts
 ```
 
+### Termination Checkpoint (required before ending any probe session)
+
+Before treating a probe as done, emit this block as the last thing. Any unchecked item = session NOT complete — return to the missing step, do not end the turn.
+
+```
+**TERMINATION_CHECKPOINT:**
+- [x] Verdict output emitted (PROCEED / RETHINK / KILL with premises table + recommendation)
+- [x] `.xm/probe/last-verdict.json` written (most recent verdict)
+- [x] `.xm/probe/history/{YYYY-MM-DD}-{slug}.json` written (archival record)
+- [x] Save paths surfaced to user: `💾 Saved: .xm/probe/last-verdict.json` + `💾 Archived: .xm/probe/history/{filename}`
+```
+
+Rules:
+- Both `last-verdict.json` AND the `history/` entry MUST be written — `last-verdict` is overwritten every run, so skipping `history/` permanently loses prior probes
+- The `list` command reads `.xm/probe/history/` — skipping persistence breaks retrospection and cross-session verdict trends
+- Run this checkpoint BEFORE emitting the Post-Verdict Links (build/re-probe/humble-review)
+- Applies to PROCEED, RETHINK, AND KILL verdicts equally — a KILL is still a record worth keeping
+
 ---
 
 ## x-build Integration

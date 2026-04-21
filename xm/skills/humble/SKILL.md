@@ -224,6 +224,25 @@ This context is passed via the `--context` option of x-eval's `score` command. I
 └── stats.json                # Statistics
 ```
 
+### Termination Checkpoint (required before ending any reflect/review session)
+
+Before treating a retrospective as done, emit this block as the last thing. Any unchecked item = session NOT complete — return to the missing step, do not end the turn.
+
+```
+**TERMINATION_CHECKPOINT:**
+- [x] Output Format block emitted (Lessons + Behavior Changes)
+- [x] Retrospective JSON written to `.xm/humble/retrospectives/{ISO8601}-{reflect|review}.json` (Retrospective Schema below)
+- [x] For each new lesson: Lesson JSON written to `.xm/humble/lessons/L{N}.json` (Lesson Schema below)
+- [x] Save paths surfaced to user: `💾 Saved: .xm/humble/retrospectives/{filename}` + per-lesson `💾 Saved: .xm/humble/lessons/L{N}.json`
+```
+
+Rules:
+- Run this checkpoint AFTER the Application prompt and BEFORE the end of the session
+- The retrospective JSON MUST be written regardless of the user's Application choice (Save/Record only/Ignore) — "Ignore" means skip CLAUDE.md injection, not skip the record
+- If user selected "Save" or "Record only", lesson JSON files MUST also be written
+- If user selected "Ignore", still write retrospective JSON (for pattern detection) but skip lesson files
+- Skipping the save step because "the lessons are in CLAUDE.md" is wrong: Cross-Session Pattern Detection (reflect.md Phase 3) reads `.xm/humble/retrospectives/` — skipping persistence breaks future bias detection
+
 ### Lesson Schema
 
 ```json
