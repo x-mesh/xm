@@ -252,6 +252,22 @@ Add to CLAUDE.md:
 - START: {What to start} — {rationale, date}
 ```
 
+## Phase 6: PERSIST (REQUIRED — runs regardless of Application choice)
+
+After Phase 5 output and the user's Application selection, MUST save to `.xm/humble/` per the Storage schema in SKILL.md. This step is NOT optional — it runs even when the user selected "Ignore":
+
+1. `mkdir -p .xm/humble/retrospectives/ .xm/humble/lessons/` (Bash)
+2. Build retrospective filename: `{ISO8601_UTC}-{reflect|review}.json` (e.g., `2026-04-22T06-55-12Z-reflect.json`)
+3. Write retrospective JSON per the Retrospective Schema in SKILL.md (include Phase 1 session_summary, Phase 2 failures_identified, Phase 3 root_causes + biases_detected + bias_tags, Phase 4 alternatives_explored + user_alternative + user_choice, Phase 5 lessons_created + commitment_checkin, user_satisfaction)
+4. Surface path: `💾 Saved retrospective: .xm/humble/retrospectives/{filename}`
+5. For each new lesson (unless "Ignore" was chosen):
+   - Determine next lesson id: read `.xm/humble/lessons/` for highest `L{N}.json`, increment
+   - Write `.xm/humble/lessons/L{N}.json` per the Lesson Schema in SKILL.md (id, type, content, reason, source_retrospective = filename above, confirmed_count = 1, status = "active" if Save / "recorded" if Record only, applied_to_claudemd = true if Save else false, created_at, last_confirmed)
+   - Surface path: `💾 Saved lesson: .xm/humble/lessons/L{N}.json`
+6. Update `.xm/humble/stats.json` (increment retrospective count, adjust active/recorded lesson counts)
+
+Do not end the session until step 4 (retrospective path shown) has executed. Skipping it breaks Cross-Session Pattern Detection in Phase 3 of future retrospectives.
+
 ## Applies to
 
 Invoked by x-humble routing when reflecting on completed work, failures, or non-trivial outcomes.
