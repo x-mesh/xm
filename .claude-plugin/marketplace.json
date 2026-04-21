@@ -204,7 +204,7 @@
       ]
     },
     {
-      "name": "kit",
+      "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
       "version": "2.0.7",
       "author": {
