@@ -206,7 +206,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.0.12",
+      "version": "2.0.13",
       "author": {
         "name": "x-mesh"
       },
