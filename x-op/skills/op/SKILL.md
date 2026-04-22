@@ -119,8 +119,10 @@ Determine strategy from the first word of `$ARGUMENTS`:
 - `hypothesis` → [Strategy: hypothesis]
 - `investigate` → [Strategy: investigate]
 - `monitor` → [Strategy: monitor]
-- Empty input → [Subcommand: list] — show strategy catalog
+- Empty input → [Subcommand: interactive-pick] — show catalog, then AskUserQuestion to select strategy
 - Other text (no strategy keyword match) → [Auto-Route] — detect intent and recommend strategy
+
+> **Empty-input anti-pattern** (NEVER do this): output a plain-text question like "어떤 작업을 도와드릴까요?" and wait. Empty input has a deterministic spec — follow it. Plain-text questions don't create a real turn boundary, so the skill keeps re-firing against no arguments.
 
 ### Auto-Route (Natural Language → Strategy)
 
@@ -284,6 +286,12 @@ Examples:
   /xm:op decompose "Implement payment system" --agents 6
   /xm:op hypothesis "Why is latency spiking?" --rounds 3
 ```
+
+---
+
+## Subcommand: interactive-pick
+
+Entry: empty `$ARGUMENTS`. See `references/x-op-interactive-pick.md` — render catalog (same block as `## Subcommand: list`), then TWO AskUserQuestion calls: (1) strategy (4 common options; `AskUserQuestion` auto-appends `Other`, do NOT add it yourself), (2) topic. Plain-text questions are forbidden — they don't create a turn boundary and cause the skill to re-fire against empty args.
 
 ---
 
