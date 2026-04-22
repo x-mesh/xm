@@ -189,7 +189,7 @@
     {
       "name": "dashboard",
       "description": "Web dashboard for .xm project state — visualize builds, probes, solvers, reviews, evals, humble lessons, traces, memory",
-      "version": "2.0.6",
+      "version": "2.1.0",
       "author": {
         "name": "x-mesh"
       },
@@ -206,7 +206,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.0.15",
+      "version": "2.0.16",
       "author": {
         "name": "x-mesh"
       },
