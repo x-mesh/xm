@@ -76,7 +76,7 @@ After installation, verify with `bun --version` (requires v1.0+).
 ### Plugin Setup
 
 ```bash
-/plugin marketplace add x-mesh/xm:kit
+/plugin marketplace add x-mesh/xm
 /plugin install xm@xm -s user
 ```
 
@@ -85,10 +85,10 @@ After installation, verify with `bun --version` (requires v1.0+).
 After installing, run once per machine to copy the trace-session hook into `~/.claude/hooks/` and register Skill matchers in `~/.claude/settings.json`:
 
 ```
-/xm:kit:init              # install trace-session hook into ~/.claude/
-/xm:kit:init status       # verify install state
-/xm:kit:init uninstall    # remove hook + settings entries
-/xm:kit:init --no-hooks   # CLI-only install (no-op today — reserved)
+/xm init              # install trace-session hook into ~/.claude/
+/xm init status       # verify install state
+/xm init uninstall    # remove hook + settings entries
+/xm init --no-hooks   # CLI-only install (no-op today — reserved)
 ```
 
 Idempotent: safe to re-run. Existing hooks (e.g. mem-mesh) are preserved, and each write creates a timestamped backup of `settings.json`. Traces land in each project's `.xm/traces/`.
@@ -107,11 +107,11 @@ bash xm/scripts/install.sh
 curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/xm/scripts/install.sh | bash
 ```
 
-The installer writes `~/.local/bin/xm:kit` (override with `XM_BIN_DIR`; ensure it is on your `PATH`) and, when the `claude` CLI is on `PATH`, also runs `claude plugin install <p>@xm -s user` for every plugin in `marketplace.json` (x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-dashboard, xm). Run `/reload-plugins` inside Claude Code afterward to activate them. If `claude` is not on `PATH`, the CLI wrapper alone is installed and the plugin list is printed for manual install.
+The installer writes `~/.local/bin/xm` (override with `XM_BIN_DIR`; ensure it is on your `PATH`) and, when the `claude` CLI is on `PATH`, also runs `claude plugin install <p>@xm -s user` for every plugin in `marketplace.json` (x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-dashboard, xm). Run `/reload-plugins` inside Claude Code afterward to activate them. If `claude` is not on `PATH`, the CLI wrapper alone is installed and the plugin list is printed for manual install.
 
 #### Global hook install (`xm init`)
 
-The bash `xm init` subcommand is equivalent to the `/xm:kit:init` slash command — it installs the Skill-tracing hook into **user-scoped** `~/.claude/` (once per machine):
+The bash `xm init` subcommand is equivalent to the `/xm init` slash command — it installs the Skill-tracing hook into **user-scoped** `~/.claude/` (once per machine):
 
 ```bash
 xm init                 # install trace-session hook into ~/.claude/
@@ -120,7 +120,7 @@ xm init uninstall       # remove hook + settings entries
 xm init --no-hooks      # CLI-only install (no-op today — reserved)
 ```
 
-Writes `~/.claude/hooks/xm-trace-session.mjs` and merges `PreToolUse`/`PostToolUse` Skill matchers into `~/.claude/settings.json` (existing hooks such as mem-mesh are preserved; a timestamped backup is created on every write). Use the bash route when you are outside Claude Code; otherwise `/xm:kit:init` is the preferred entry point.
+Writes `~/.claude/hooks/xm-trace-session.mjs` and merges `PreToolUse`/`PostToolUse` Skill matchers into `~/.claude/settings.json` (existing hooks such as mem-mesh are preserved; a timestamped backup is created on every write). Use the bash route when you are outside Claude Code; otherwise `/xm init` is the preferred entry point.
 
 ```bash
 xm dashboard                       # start — uses ~/.xm/projects.json registry (all registered projects)
@@ -316,7 +316,7 @@ Common reference material lives in `references/` (synced to marketplace as `xm/r
 | [x-memory](#x-memory) | Cross-session memory | `/xm:memory inject` |
 | [x-sync](#x-sync) | Multi-machine .xm/ sync | `xm sync push` |
 | [x-ship](#x-ship) | Release automation & squash | `/xm:ship auto` |
-| xm | Bundle + config + pipeline | `/xm:kit pipeline release` |
+| xm | Bundle + config + pipeline | `/xm pipeline release` |
 
 ---
 
@@ -955,9 +955,9 @@ x-build CLI (state)  ←  tasks update (callback)
 xm includes 37 specialist agents covering core and domain areas. Plugins use these agents automatically (e.g., x-op refine injects specialists per topic; x-review uses them with `--specialists`).
 
 ```bash
-/xm:kit agents list                        # List all 37 specialists
-/xm:kit agents match "payment API design"  # Find best agents for a topic
-/xm:kit agents get security --slim         # Show a specialist's rules
+/xm agents list                        # List all 37 specialists
+/xm agents match "payment API design"  # Find best agents for a topic
+/xm agents get security --slim         # Show a specialist's rules
 ```
 
 | Tier | Agents |
@@ -972,10 +972,10 @@ Catalog located at `xm/agents/catalog.json`. Each agent has a full rules file an
 ## Configuration
 
 ```bash
-/xm:kit config set agent_max_count 10              # 10 agents parallel
-/xm:kit config set team_default_leader_model opus  # Team Leader model
-/xm:kit config set team_max_members 5              # Max members per team
-/xm:kit config show
+/xm config set agent_max_count 10              # 10 agents parallel
+/xm config set team_default_leader_model opus  # Team Leader model
+/xm config set team_max_members 5              # Max members per team
+/xm config show
 ```
 
 Settings stored in `.xm/config.json` (project-level).
@@ -985,10 +985,10 @@ Settings stored in `.xm/config.json` (project-level).
 Control model spending with **model profiles** and **budget guards**.
 
 ```bash
-/xm:kit config set model_profile economy           # Sonnet-centric, maximum savings
-/xm:kit config set model_profile default           # Default — Opus-centric (Opus 4.7 era)
-/xm:kit config set model_profile max               # Opus everywhere, quality-first
-/xm:kit config set budget '{"max_usd": 5.0}'       # Set session budget limit
+/xm config set model_profile economy           # Sonnet-centric, maximum savings
+/xm config set model_profile default           # Default — Opus-centric (Opus 4.7 era)
+/xm config set model_profile max               # Opus everywhere, quality-first
+/xm config set budget '{"max_usd": 5.0}'       # Set session budget limit
 ```
 
 The `model_profile` key expresses **cost intent** (how much to spend) on a single axis. Legacy names `balanced` and `performance` are auto-mapped to `default` and `max` respectively.
@@ -1003,12 +1003,12 @@ Script-only commands (`config show`, `version`, `agents list`, …) still route 
 
 Key roles shown; full mapping includes reviewer, security, designer, debugger, writer. See `MODEL_PROFILES` in source.
 
-Per-role overrides: `/xm:kit config set model_overrides '{"architect": "opus"}'` on top of any profile.
+Per-role overrides: `/xm config set model_overrides '{"architect": "opus"}'` on top of any profile.
 
 Budget guards warn at 80% usage and block execution at 100%, tracked via session metrics. Rolling spend is tracked in `.xm/spend-cache.json` over a configurable window (`budget.window_hours`, default 24h). Per-project caps use `budget.projects`:
 
 ```bash
-/xm:kit config set budget '{"max_usd": 5.0, "window_hours": 48, "projects": {"my-proj": {"max_usd": 2.0}}}'
+/xm config set budget '{"max_usd": 5.0, "window_hours": 48, "projects": {"my-proj": {"max_usd": 2.0}}}'
 ```
 
 #### Cost vs Quality Benchmark

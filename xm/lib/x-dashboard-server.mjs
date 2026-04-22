@@ -1540,35 +1540,47 @@ function getWorkspaceStats(ws) {
 // ── Stop Mode (early exit — must run before server starts) ───────────
 
 if (STOP_MODE) {
-  if (!existsSync(PID_FILE)) {
-    console.log('[x-dashboard-server] Not running (no PID file found)');
-    process.exit(0);
+  // Resolve target PID. Prefer the PID file, but fall back to lsof so we
+  // can still stop an orphaned dashboard that lost its PID file.
+  let pid = null;
+  let port = PORT;
+  let source = 'pid-file';
+
+  if (existsSync(PID_FILE)) {
+    try {
+      const existing = JSON.parse(readFileSync(PID_FILE, 'utf8'));
+      if (existing?.pid) {
+        pid = existing.pid;
+        port = existing.port ?? PORT;
+      }
+    } catch {
+      console.error('[x-dashboard-server] PID file unreadable — falling back to port probe');
+    }
   }
 
-  let existing;
-  try {
-    existing = JSON.parse(readFileSync(PID_FILE, 'utf8'));
-  } catch {
-    console.error('[x-dashboard-server] Could not read PID file');
-    process.exit(1);
-  }
-
-  const pid = existing?.pid;
   if (!pid) {
-    console.error('[x-dashboard-server] PID file is malformed');
-    process.exit(1);
+    const holder = findPortHolder(PORT);
+    if (holder) {
+      pid = Number(holder.pid);
+      source = `port ${PORT} probe (lsof)`;
+    }
+  }
+
+  if (!pid) {
+    console.log('[x-dashboard-server] Not running (no PID file, port idle)');
+    process.exit(0);
   }
 
   // Check if alive
   try {
     process.kill(pid, 0);
   } catch {
-    console.log(`[x-dashboard-server] Process ${pid} is not running (stale PID file)`);
-    unlinkSync(PID_FILE);
+    console.log(`[x-dashboard-server] Process ${pid} is not running (stale)`);
+    try { unlinkSync(PID_FILE); } catch {}
     process.exit(0);
   }
 
-  console.log(`[x-dashboard-server] Stopping pid ${pid} (port ${existing.port})...`);
+  console.log(`[x-dashboard-server] Stopping pid ${pid} (port ${port}, source: ${source})...`);
   process.kill(pid, 'SIGTERM');
 
   // Wait up to 5s for the process to exit
@@ -1577,6 +1589,8 @@ if (STOP_MODE) {
     try {
       process.kill(pid, 0);
     } catch {
+      // Process gone — clean up stale PID file if the dying process didn't
+      try { unlinkSync(PID_FILE); } catch {}
       console.log('[x-dashboard-server] Stopped.');
       process.exit(0);
     }
@@ -1584,7 +1598,9 @@ if (STOP_MODE) {
     while (Date.now() < wait) {}
   }
 
-  console.error(`[x-dashboard-server] Process ${pid} did not exit within 5s`);
+  console.error(`[x-dashboard-server] Process ${pid} did not exit within 5s — sending SIGKILL`);
+  try { process.kill(pid, 'SIGKILL'); } catch {}
+  try { unlinkSync(PID_FILE); } catch {}
   process.exit(1);
 }
 
@@ -2083,30 +2099,70 @@ async function handleSync(req) {
 
 // ── Process Management ──────────────────────────────────────────────
 
+/**
+ * Check for an existing dashboard instance.
+ *
+ * Two paths:
+ *   1) PID file exists → check whether the recorded PID is still alive.
+ *      Alive: exit with clear guidance. Dead: remove stale file and proceed.
+ *   2) PID file missing → probe the listening port. If another process
+ *      holds PORT, resolve its PID via lsof and exit with guidance.
+ *      This recovers from cases where the PID file was deleted but the
+ *      server is still running (e.g. ~/.xm/run/ wiped while server alive).
+ */
 function checkDuplicateInstance() {
-  if (!existsSync(PID_FILE)) return;
+  // Path 1: PID file exists
+  if (existsSync(PID_FILE)) {
+    let existing;
+    try {
+      existing = JSON.parse(readFileSync(PID_FILE, 'utf8'));
+    } catch {
+      removePIDFile();  // Corrupt PID file — clear and proceed to port check
+      existing = null;
+    }
 
-  let existing;
-  try {
-    existing = JSON.parse(readFileSync(PID_FILE, 'utf8'));
-  } catch {
-    return; // Corrupt PID file — proceed
+    if (existing?.pid) {
+      try {
+        process.kill(existing.pid, 0);
+        console.error(`[x-dashboard-server] Already running (pid: ${existing.pid}, port: ${existing.port})`);
+        console.error(`[x-dashboard-server] Stop it first: kill ${existing.pid}`);
+        console.error(`[x-dashboard-server]   or: xm dashboard stop`);
+        process.exit(1);
+      } catch {
+        console.log(`[x-dashboard-server] Removing stale PID file (pid: ${existing.pid} not found)`);
+        removePIDFile();
+      }
+    }
   }
 
-  const pid = existing?.pid;
-  if (!pid) return;
-
-  // Check if process is alive
-  try {
-    process.kill(pid, 0);
-    // Process exists — warn and exit
-    console.error(`[x-dashboard-server] Already running (pid: ${pid}, port: ${existing.port})`);
-    console.error(`[x-dashboard-server] Stop it first: kill ${pid}`);
+  // Path 2: port probe — PID file absent but port may be held by an orphan
+  const holder = findPortHolder(PORT);
+  if (holder) {
+    console.error(`[x-dashboard-server] Port ${PORT} already in use (pid: ${holder.pid}, cmd: ${holder.cmd})`);
+    console.error(`[x-dashboard-server] This may be an orphaned dashboard with a deleted PID file.`);
+    console.error(`[x-dashboard-server] Stop it: kill ${holder.pid}`);
+    console.error(`[x-dashboard-server]   then: xm dashboard start`);
     process.exit(1);
+  }
+}
+
+/** Return { pid, cmd } of the process listening on `port`, or null. macOS/Linux only. */
+function findPortHolder(port) {
+  try {
+    const out = execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -Fpc 2>/dev/null`, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (!out) return null;
+    let pid = null;
+    let cmd = null;
+    for (const line of out.split('\n')) {
+      if (line.startsWith('p')) pid = line.slice(1).trim();
+      else if (line.startsWith('c')) cmd = line.slice(1).trim();
+    }
+    return pid ? { pid, cmd: cmd || 'unknown' } : null;
   } catch {
-    // Process not alive — stale PID file, remove and proceed
-    console.log(`[x-dashboard-server] Removing stale PID file (pid: ${pid} not found)`);
-    removePIDFile();
+    return null;
   }
 }
 
@@ -2132,9 +2188,20 @@ function shutdown() {
   process.exit(0);
 }
 
-// Signal handlers
+// Signal handlers — ensure PID file is cleaned up on every exit path.
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
+process.on('SIGHUP', shutdown);  // terminal closed / nohup parent exit
+process.on('exit', () => {
+  // Last-chance cleanup. `exit` is synchronous; only unlink the PID file,
+  // skip server.stop() (not safe async here).
+  try { unlinkSync(PID_FILE); } catch {}
+});
+process.on('uncaughtException', (err) => {
+  console.error('[x-dashboard-server] Uncaught exception:', err);
+  try { unlinkSync(PID_FILE); } catch {}
+  process.exit(1);
+});
 
 // ── Browser Open ─────────────────────────────────────────────────────
 

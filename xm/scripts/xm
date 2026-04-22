@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# x-kit — umbrella CLI for x-mesh toolkit
+# xm — umbrella CLI for x-mesh toolkit
 # Dispatches to plugin-cache lib files installed by Claude Code.
 #
-# Install: curl -fsSL .../x-kit/install.sh | bash
-# Update : x-kit update  (or re-run installer)
+# Install: curl -fsSL .../xm/scripts/install.sh | bash
+# Update : xm update  (or re-run installer)
 
 set -euo pipefail
 
@@ -13,7 +13,7 @@ CMD="${1:-help}"
 # --- Self-register hook ---
 # When invoked from a directory containing .xm/, ensure the project is in the
 # registry. Silent on already-registered. Skipped for management commands so
-# `x-kit project import` / `gc` / `--help` don't trigger themselves.
+# `xm project import` / `gc` / `--help` don't trigger themselves.
 self_register() {
   # Best-effort only — must always return 0 so `set -e` does not kill the
   # whole script when called from a directory without .xm/.git.
@@ -22,53 +22,69 @@ self_register() {
   esac
   [ -d ".xm" ] || [ -f ".git" ] || [ -d ".git" ] || return 0
   local libPath
-  libPath="$(plugin_lib x-kit lib 2>/dev/null)" || return 0
+  libPath="$(plugin_lib xm lib 2>/dev/null)" || return 0
   [ -f "$libPath/x-projects-cli.mjs" ] || return 0
   node "$libPath/x-projects-cli.mjs" register --quiet >/dev/null 2>&1 || true
   return 0
 }
 
 # --- Resolve lib root ---
-# Priority: $X_KIT_LIB env > local repo (cwd has x-build/lib) > plugin cache
+# Priority: $XM_LIB env (or legacy $X_KIT_LIB) > local repo (cwd has x-build/lib + xm/lib) > plugin cache
 resolve_lib() {
-  if [ -n "${X_KIT_LIB:-}" ] && [ -d "$X_KIT_LIB" ]; then
-    echo "$X_KIT_LIB"; return
+  local override="${XM_LIB:-${X_KIT_LIB:-}}"
+  if [ -n "$override" ] && [ -d "$override" ]; then
+    echo "$override"; return
   fi
-  if [ -d "x-build/lib" ] && [ -d "x-kit/lib" ]; then
+  if [ -d "x-build/lib" ] && [ -d "xm/lib" ]; then
     echo "$PWD"; return
   fi
-  # Latest plugin cache version per plugin
-  local cache="$HOME/.claude/plugins/cache/x-kit"
+  # Marketplace cache (post-rename): ~/.claude/plugins/cache/xm
+  local cache="$HOME/.claude/plugins/cache/xm"
   if [ -d "$cache" ]; then
     echo "$cache"; return
+  fi
+  # Legacy cache path (pre-rename) — kept for in-flight upgrades
+  local legacy="$HOME/.claude/plugins/cache/x-kit"
+  if [ -d "$legacy" ]; then
+    echo "$legacy"; return
   fi
   echo ""
 }
 
 LIB="$(resolve_lib)"
 if [ -z "$LIB" ]; then
-  echo "x-kit: no lib found. Install Claude plugins or set X_KIT_LIB." >&2
+  echo "xm: no lib found. Install Claude plugins or set XM_LIB." >&2
   exit 1
 fi
 
-# Latest version under $LIB/<plugin>/<version>/lib
-# Resolution order: standalone plugin dir → standalone cache version → bundled x-kit
-# The bundled fallback covers users who installed only the all-in-one x-kit plugin
-# (sub-plugins like x-dashboard, x-sync, x-trace ship inside x-kit/<ver>/lib).
+# Resolve a plugin's lib directory. Tries both the long source-dir name
+# (`x-build` in local repo) and the short marketplace plugin name (`build`
+# in cache). Callers pass the short name and we probe both forms.
+#
+# Resolution order:
+#   1. Local repo: $LIB/x-<plugin>/<sub>     (e.g. x-build/lib in source tree)
+#   2. Local repo: $LIB/<plugin>/<sub>       (e.g. xm/lib — bundle source)
+#   3. Cache: $LIB/<plugin>/<version>/<sub>  (marketplace layout, short name)
+#   4. Bundled fallback inside xm meta plugin
 plugin_lib() {
   local plugin="$1" sub="${2:-lib}"
-  # Local repo layout: $LIB/<plugin>/lib
+  local long="x-$plugin"
+
+  # 1. Local repo with x- prefix (source tree for most plugins)
+  if [ -d "$LIB/$long/$sub" ]; then echo "$LIB/$long/$sub"; return 0; fi
+  # 2. Local repo with short name (xm bundle source)
   if [ -d "$LIB/$plugin/$sub" ]; then echo "$LIB/$plugin/$sub"; return 0; fi
-  # Cache layout: $LIB/<plugin>/<version>/lib — `|| true` keeps pipefail from
-  # exiting the whole script when the glob matches nothing (missing plugin).
+  # 3. Cache: short name, versioned
   local path
   path="$(ls -td "$LIB/$plugin"/*/"$sub" 2>/dev/null | head -1 || true)"
   if [ -n "$path" ]; then echo "$path"; return 0; fi
-  # Bundled fallback: sub-plugins ship inside x-kit at $LIB/x-kit/<ver>/<sub>
-  # Skip when already looking for x-kit itself to avoid redundant scan.
-  if [ "$plugin" != "x-kit" ]; then
-    if [ -d "$LIB/x-kit/$sub" ]; then echo "$LIB/x-kit/$sub"; return 0; fi
-    ls -td "$LIB/x-kit"/*/"$sub" 2>/dev/null | head -1 || true
+  # 4. Bundled fallback: sub-plugins ship inside xm bundle
+  if [ "$plugin" != "xm" ]; then
+    # Local repo: xm/<sub>
+    if [ -d "$LIB/xm/$sub" ]; then echo "$LIB/xm/$sub"; return 0; fi
+    # Cache: xm/<version>/<sub>
+    path="$(ls -td "$LIB/xm"/*/"$sub" 2>/dev/null | head -1 || true)"
+    [ -n "$path" ] && echo "$path"
   fi
 }
 
@@ -77,11 +93,11 @@ self_register
 # --- Subcommand dispatch ---
 case "$CMD" in
   dashboard|dash)
-    LIB_PATH="$(plugin_lib x-dashboard)"
+    LIB_PATH="$(plugin_lib dashboard)"
     if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-dashboard-server.mjs" ]; then
-      echo "x-kit dashboard: x-dashboard-server.mjs not found under $LIB" >&2
-      echo "  Install x-kit bundle: /plugin install x-kit@x-kit" >&2
-      echo "  Or standalone: /plugin install x-dashboard@x-kit" >&2
+      echo "xm dashboard: x-dashboard-server.mjs not found under $LIB" >&2
+      echo "  Install bundle: /plugin install xm@xm" >&2
+      echo "  Or standalone: /plugin install dashboard@xm" >&2
       exit 1
     fi
     # Subcommand is one of start|stop|status|open; anything starting with `-`
@@ -90,7 +106,7 @@ case "$CMD" in
     case "$SUB" in
       start|stop|status|open) shift || true ;;
       -*) SUB="start" ;;
-      *)  echo "x-kit dashboard: start|stop|status|open [--scan DIR] [--port N]" >&2; exit 1 ;;
+      *)  echo "xm dashboard: start|stop|status|open [--scan DIR] [--port N]" >&2; exit 1 ;;
     esac
     case "$SUB" in
       start)
@@ -114,11 +130,11 @@ case "$CMD" in
         PID=$!
         sleep 1
         if ! kill -0 "$PID" 2>/dev/null; then
-          echo "x-kit dashboard: failed to start — see $LOG" >&2
+          echo "xm dashboard: failed to start — see $LOG" >&2
           tail -20 "$LOG" >&2 || true
           exit 1
         fi
-        echo "x-kit dashboard: started at http://127.0.0.1:19841${SCAN_SOURCE:+ (scan: $SCAN_SOURCE)}"
+        echo "xm dashboard: started at http://127.0.0.1:19841${SCAN_SOURCE:+ (scan: $SCAN_SOURCE)}"
         ;;
       stop)   bun "$LIB_PATH/x-dashboard-server.mjs" --stop ;;
       status) curl -s http://127.0.0.1:19841/api/health 2>/dev/null || echo '{"status":"not_running"}' ;;
@@ -127,45 +143,45 @@ case "$CMD" in
     ;;
 
   handoff)
-    LIB_PATH="$(plugin_lib x-build)"
+    LIB_PATH="$(plugin_lib build)"
     node "$LIB_PATH/x-build-cli.mjs" handoff --full "$@"
     ;;
 
   handon)
-    LIB_PATH="$(plugin_lib x-build)"
+    LIB_PATH="$(plugin_lib build)"
     node "$LIB_PATH/x-build-cli.mjs" handon "$@"
     ;;
 
   memory|mem)
-    LIB_PATH="$(plugin_lib x-memory)"
+    LIB_PATH="$(plugin_lib memory)"
     node "$LIB_PATH/x-memory-cli.mjs" "$@"
     ;;
 
   build)
-    LIB_PATH="$(plugin_lib x-build)"
+    LIB_PATH="$(plugin_lib build)"
     node "$LIB_PATH/x-build-cli.mjs" "$@"
     ;;
 
   trace)
-    LIB_PATH="$(plugin_lib x-trace)"
+    LIB_PATH="$(plugin_lib trace)"
     if [ -f "$LIB_PATH/x-trace-cli.mjs" ]; then
       node "$LIB_PATH/x-trace-cli.mjs" "$@"
     else
-      echo "x-kit trace: CLI not yet available (only writer lib present)." >&2
+      echo "xm trace: CLI not yet available (only writer lib present)." >&2
       echo "  Trace files: ~/.xm/traces/ or ./.xm/traces/" >&2
       exit 1
     fi
     ;;
 
   sync)
-    LIB_PATH="$(plugin_lib x-sync)"
-    node "$LIB_PATH/sync-${1:-config}.mjs" "${@:2}"
+    LIB_PATH="$(plugin_lib sync)"
+    node "$LIB_PATH/x-sync/sync-${1:-config}.mjs" "${@:2}"
     ;;
 
   project|projects)
-    LIB_PATH="$(plugin_lib x-kit lib)"
+    LIB_PATH="$(plugin_lib xm lib)"
     if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-projects-cli.mjs" ]; then
-      echo "x-kit project: x-projects-cli.mjs not found under $LIB/x-kit" >&2
+      echo "xm project: x-projects-cli.mjs not found under $LIB" >&2
       exit 1
     fi
     node "$LIB_PATH/x-projects-cli.mjs" "$@"
@@ -174,34 +190,275 @@ case "$CMD" in
   init)
     # Resolve setup-global.mjs: local repo > plugin cache
     SETUP=""
-    if [ -f "$LIB/x-kit/scripts/setup-global.mjs" ]; then
-      SETUP="$LIB/x-kit/scripts/setup-global.mjs"
+    if [ -f "$LIB/xm/scripts/setup-global.mjs" ]; then
+      SETUP="$LIB/xm/scripts/setup-global.mjs"
     else
-      SETUP="$(ls -td "$LIB/x-kit"/*/scripts/setup-global.mjs 2>/dev/null | head -1)"
+      SETUP="$(ls -td "$LIB/xm"/*/scripts/setup-global.mjs 2>/dev/null | head -1)"
     fi
     if [ -z "$SETUP" ] || [ ! -f "$SETUP" ]; then
-      echo "x-kit init: setup-global.mjs not found under $LIB/x-kit" >&2
+      echo "xm init: setup-global.mjs not found under $LIB" >&2
       exit 1
     fi
     node "$SETUP" "$@"
     ;;
 
   solver)
-    LIB_PATH="$(plugin_lib x-solver)"
+    LIB_PATH="$(plugin_lib solver)"
     node "$LIB_PATH/x-solver-cli.mjs" "$@"
     ;;
 
   version|--version|-v)
-    if [ -f "$LIB/x-kit/.claude-plugin/plugin.json" ]; then
-      grep '"version"' "$LIB/x-kit/.claude-plugin/plugin.json" | head -1
+    # Prefer local repo plugin.json, fallback to cache
+    if [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
+      grep '"version"' "$LIB/xm/.claude-plugin/plugin.json" | head -1
     else
-      ls "$LIB/x-kit"/ 2>/dev/null | head -1
+      ls "$LIB/xm"/ 2>/dev/null | head -1
     fi
+    ;;
+
+  doctor)
+    # Health check: local install, remote latest, config drift.
+    # Flags: --fetch|-f (force remote fetch even if offline hint present)
+    REPO_URL="${XM_REPO_URL:-https://raw.githubusercontent.com/x-mesh/xm/main}"
+
+    # Helper: extract "version" from a plugin.json-ish JSON
+    _read_version() {
+      local path="$1"
+      [ -f "$path" ] || { echo ""; return; }
+      grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$path" | head -1 \
+        | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
+    }
+
+    # Local version — prefer repo plugin.json, fall back to cache
+    LOCAL_VERSION=""
+    LOCAL_SRC=""
+    if [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
+      LOCAL_VERSION="$(_read_version "$LIB/xm/.claude-plugin/plugin.json")"
+      LOCAL_SRC="$LIB/xm/.claude-plugin/plugin.json"
+    else
+      _cached_pj="$(ls -td "$LIB/xm"/*/.claude-plugin/plugin.json 2>/dev/null | head -1)"
+      if [ -n "$_cached_pj" ]; then
+        LOCAL_VERSION="$(_read_version "$_cached_pj")"
+        LOCAL_SRC="$_cached_pj"
+      fi
+    fi
+
+    # Remote version — parse marketplace.json, find the "xm" plugin entry
+    REMOTE_VERSION=""
+    if command -v curl >/dev/null 2>&1; then
+      REMOTE_JSON="$(curl -fsSL --max-time 5 "$REPO_URL/.claude-plugin/marketplace.json" 2>/dev/null || echo "")"
+      if [ -n "$REMOTE_JSON" ] && command -v node >/dev/null 2>&1; then
+        REMOTE_VERSION="$(printf '%s' "$REMOTE_JSON" | node -e '
+          let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{
+            try{const j=JSON.parse(s);
+              const xm=(j.plugins||[]).find(p=>p.name==="xm");
+              if(xm) process.stdout.write(xm.version||"");
+            }catch{}
+          })' 2>/dev/null)"
+      fi
+    fi
+
+    # ── Render ────────────────────────────────────────────────────
+    echo "xm — health check"
+    echo ""
+    echo "## Installation"
+    if [ -n "$LOCAL_VERSION" ]; then
+      echo "  ✅ local version     $LOCAL_VERSION"
+      echo "     source            $LOCAL_SRC"
+    else
+      echo "  ❌ local version     unknown (no plugin.json in $LIB/xm)"
+    fi
+    if [ -x "$HOME/.local/bin/xm" ]; then
+      echo "  ✅ CLI binary        $HOME/.local/bin/xm"
+    else
+      echo "  ⚠️  CLI binary       not in ~/.local/bin/xm"
+    fi
+    if command -v bun >/dev/null 2>&1; then
+      echo "  ✅ bun               $(bun --version 2>/dev/null)"
+    else
+      echo "  ⚠️  bun              not installed (dashboard needs it)"
+    fi
+
+    echo ""
+    echo "## Hooks (~/.claude/)"
+    # File presence
+    if [ -f "$HOME/.claude/hooks/xm-trace-session.mjs" ]; then
+      echo "  ✅ xm-trace-session.mjs (file present)"
+    else
+      echo "  ❌ xm-trace-session.mjs missing — run: xm init"
+    fi
+    # Legacy file still around?
+    if [ -f "$HOME/.claude/hooks/x-kit-trace-session.mjs" ]; then
+      echo "  ⚠️  legacy x-kit-trace-session.mjs still present — xm init will remove"
+    fi
+    # Settings.json registration
+    if [ -f "$HOME/.claude/settings.json" ] && command -v node >/dev/null 2>&1; then
+      node -e '
+        const fs=require("fs"), path=require("path");
+        const s=JSON.parse(fs.readFileSync(path.join(process.env.HOME,".claude/settings.json"),"utf8"));
+        const all=Object.entries(s.hooks||{});
+        const phases=["PreToolUse","PostToolUse"];
+        for (const phase of phases) {
+          const entries=(s.hooks||{})[phase]||[];
+          let xm=null, legacy=null;
+          for (const e of entries) {
+            if (!Array.isArray(e?.hooks)) continue;
+            for (const h of e.hooks) {
+              const c=h?.command||"";
+              if (/xm-trace-session\.mjs/.test(c)) xm=c;
+              else if (/x-kit-trace-session\.mjs/.test(c)) legacy=c;
+            }
+          }
+          if (xm) console.log(`  ✅ settings.json[${phase}] Skill hook → xm-trace-session.mjs`);
+          else console.log(`  ⚠️  settings.json[${phase}] no xm Skill hook (run: xm init)`);
+          if (legacy) console.log(`  ⚠️  settings.json[${phase}] legacy x-kit-trace-session.mjs still wired`);
+        }
+      ' 2>/dev/null || echo "  ⚠️  cannot parse ~/.claude/settings.json"
+    else
+      echo "  ⚠️  ~/.claude/settings.json not found"
+    fi
+
+    echo ""
+    echo "## Remote (github.com/x-mesh/xm)"
+    if [ -n "$REMOTE_VERSION" ]; then
+      echo "  ✅ latest version    $REMOTE_VERSION"
+      if [ -n "$LOCAL_VERSION" ] && [ "$LOCAL_VERSION" = "$REMOTE_VERSION" ]; then
+        echo "  ✅ status            up to date"
+      elif [ -n "$LOCAL_VERSION" ]; then
+        echo "  ⚠️  status           local ($LOCAL_VERSION) ≠ remote ($REMOTE_VERSION)"
+        echo "     update            claude plugin install xm@xm -s user"
+      fi
+    else
+      echo "  ⚠️  latest version   unreachable (offline or $REPO_URL blocked)"
+    fi
+
+    echo ""
+    echo "## Dashboard"
+    if [ -f "$HOME/.xm/run/xdashboard-server.pid" ]; then
+      _dash_pid="$(grep -o '"pid"[[:space:]]*:[[:space:]]*[0-9]*' "$HOME/.xm/run/xdashboard-server.pid" 2>/dev/null | grep -o '[0-9]*' | head -1)"
+      if [ -n "$_dash_pid" ] && kill -0 "$_dash_pid" 2>/dev/null; then
+        echo "  ✅ running           pid $_dash_pid (http://127.0.0.1:19841)"
+      else
+        echo "  ⚠️  stale PID file   (pid $_dash_pid not alive)"
+      fi
+    elif command -v lsof >/dev/null 2>&1 && lsof -iTCP:19841 -sTCP:LISTEN >/dev/null 2>&1; then
+      _port_pid="$(lsof -nP -iTCP:19841 -sTCP:LISTEN -Fp 2>/dev/null | head -1 | sed 's/^p//')"
+      echo "  ⚠️  orphan            port 19841 held by pid $_port_pid (no PID file)"
+      echo "     stop              kill $_port_pid"
+    else
+      echo "  ⏸  not running       (start: xm dashboard start)"
+    fi
+
+    echo ""
+    echo "## Resolved lib paths"
+    for p in xm dashboard build memory trace sync solver; do
+      resolved="$(plugin_lib "$p")"
+      if [ -n "$resolved" ]; then
+        echo "  ✅ $(printf '%-12s' "$p") $resolved"
+      else
+        echo "  ❌ $(printf '%-12s' "$p") (missing)"
+      fi
+    done
+    ;;
+
+  update)
+    # Update marketplace cache + reinstall plugin + refresh CLI binary.
+    # Flags: --force|-f (update even if versions match), --dry-run, --no-cli (skip binary copy)
+    FORCE=0; DRY=0; SKIP_CLI=0
+    for a in "$@"; do
+      case "$a" in
+        --force|-f) FORCE=1 ;;
+        --dry-run)  DRY=1 ;;
+        --no-cli)   SKIP_CLI=1 ;;
+        *) echo "xm update: unknown flag '$a'" >&2; exit 1 ;;
+      esac
+    done
+
+    REPO_URL="${XM_REPO_URL:-https://raw.githubusercontent.com/x-mesh/xm/main}"
+
+    _read_version() {
+      local path="$1"
+      [ -f "$path" ] || { echo ""; return; }
+      grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$path" | head -1 \
+        | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
+    }
+
+    # 1. Current installed version
+    LOCAL_VERSION=""
+    if [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
+      LOCAL_VERSION="$(_read_version "$LIB/xm/.claude-plugin/plugin.json")"
+    else
+      _cached_pj="$(ls -td "$LIB/xm"/*/.claude-plugin/plugin.json 2>/dev/null | head -1)"
+      [ -n "$_cached_pj" ] && LOCAL_VERSION="$(_read_version "$_cached_pj")"
+    fi
+
+    # 2. Remote latest version
+    command -v curl >/dev/null 2>&1 || { echo "xm update: curl required" >&2; exit 1; }
+    REMOTE_JSON="$(curl -fsSL --max-time 5 "$REPO_URL/.claude-plugin/marketplace.json" 2>/dev/null || echo "")"
+    if [ -z "$REMOTE_JSON" ]; then
+      echo "xm update: could not reach $REPO_URL (offline?)" >&2
+      exit 1
+    fi
+    REMOTE_VERSION="$(printf '%s' "$REMOTE_JSON" | node -e '
+      let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{
+        try{const j=JSON.parse(s);
+          const xm=(j.plugins||[]).find(p=>p.name==="xm");
+          if(xm) process.stdout.write(xm.version||"");
+        }catch{}
+      })' 2>/dev/null)"
+
+    if [ -z "$REMOTE_VERSION" ]; then
+      echo "xm update: could not parse remote version" >&2
+      exit 1
+    fi
+
+    echo "Local:  ${LOCAL_VERSION:-unknown}"
+    echo "Remote: $REMOTE_VERSION"
+
+    # 3. Decide whether to proceed
+    if [ -n "$LOCAL_VERSION" ] && [ "$LOCAL_VERSION" = "$REMOTE_VERSION" ] && [ "$FORCE" = "0" ]; then
+      echo "✅ already up to date. Pass --force to reinstall anyway."
+      exit 0
+    fi
+
+    echo ""
+    if [ "$DRY" = "1" ]; then
+      echo "🔍 Dry run — would run:"
+      echo "   claude plugin install xm@xm -s user"
+      [ "$SKIP_CLI" = "0" ] && echo "   cp <cache>/xm/scripts/xm ~/.local/bin/xm"
+      exit 0
+    fi
+
+    # 4. Reinstall plugin via claude CLI
+    if ! command -v claude >/dev/null 2>&1; then
+      echo "xm update: 'claude' CLI not on PATH. Install it first." >&2
+      exit 1
+    fi
+    echo "→ claude plugin install xm@xm -s user"
+    claude plugin install xm@xm -s user 2>&1 | tail -3
+
+    # 5. Refresh bash CLI binary from the newly-installed cache
+    if [ "$SKIP_CLI" = "0" ]; then
+      NEW_CACHE="$(ls -td "$HOME/.claude/plugins/cache/xm/xm"/*/scripts/xm 2>/dev/null | head -1)"
+      if [ -n "$NEW_CACHE" ] && [ -f "$NEW_CACHE" ]; then
+        BIN_DIR="${XM_BIN_DIR:-$HOME/.local/bin}"
+        mkdir -p "$BIN_DIR"
+        cp "$NEW_CACHE" "$BIN_DIR/xm"
+        chmod +x "$BIN_DIR/xm"
+        echo "→ refreshed $BIN_DIR/xm"
+      else
+        echo "⚠️  CLI binary source not found in cache (skipped)"
+      fi
+    fi
+
+    echo ""
+    echo "✅ Updated to $REMOTE_VERSION"
+    echo "💡 Run /reload-plugins in Claude Code to activate new skills"
     ;;
 
   which)
     echo "lib: $LIB"
-    for p in x-kit x-dashboard x-build x-memory x-trace x-sync x-solver; do
+    for p in xm dashboard build memory trace sync solver; do
       resolved="$(plugin_lib "$p")"
       printf "  %-12s %s\n" "$p" "${resolved:-(missing)}"
     done
@@ -209,9 +466,9 @@ case "$CMD" in
 
   help|--help|-h|"")
     cat <<'EOF'
-x-kit — x-mesh toolkit CLI
+xm — x-mesh toolkit CLI
 
-Usage: x-kit <command> [args...]
+Usage: xm <command> [args...]
 
 Commands:
   init [--no-hooks|uninstall|status]  Install global hooks into ~/.claude/
@@ -224,19 +481,23 @@ Commands:
   trace <subcmd>                      Execution traces
   sync push|pull|config               Multi-machine .xm sync
   solver <subcmd>                     Structured problem solving
-  version                             Installed x-kit version
+  version                             Installed xm version
+  doctor                              Health check: local vs remote version, hooks, dashboard
+  update [--force|--dry-run]          Update to latest remote (refreshes plugin + CLI binary)
   which                               Show resolved lib paths
   help                                This message
 
 Env:
-  X_KIT_LIB    Override lib root (default: plugin cache or cwd)
+  XM_LIB       Override lib root (default: plugin cache or cwd)
+  X_KIT_LIB    Legacy alias for XM_LIB (deprecated)
+  XM_REPO_URL  Override remote fetch base (default: raw.githubusercontent.com/x-mesh/xm/main)
 
-Run 'x-kit <command> --help' for subcommand details.
+Run 'xm <command> --help' for subcommand details.
 EOF
     ;;
 
   *)
-    echo "x-kit: unknown command '$CMD'. Try 'x-kit help'." >&2
+    echo "xm: unknown command '$CMD'. Try 'xm help'." >&2
     exit 1
     ;;
 esac

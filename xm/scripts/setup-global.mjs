@@ -178,7 +178,52 @@ function install(opts) {
     warn('xm.md not found (skipped user-level dispatcher). Plugin-qualified form /xm:<cmd> still works.');
   }
 
+  // Refresh the bash CLI binary (~/.local/bin/xm) from the freshest xm/scripts/xm
+  // available. Previously this was install.sh's responsibility; doing it here
+  // too ensures users who only ran `xm init` end up with a dispatcher matching
+  // their installed plugin version (doctor, update, etc.).
+  try {
+    const bashSrc = resolveBashDispatcher();
+    if (bashSrc) {
+      const binDir = process.env.XM_BIN_DIR || path.join(HOME, '.local', 'bin');
+      const binDest = path.join(binDir, 'xm');
+      // Compare to avoid a no-op write & noisy log line
+      const existing = fs.existsSync(binDest) ? fs.readFileSync(binDest, 'utf8') : null;
+      const incoming = fs.readFileSync(bashSrc, 'utf8');
+      if (existing !== incoming) {
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.copyFileSync(bashSrc, binDest);
+        fs.chmodSync(binDest, 0o755);
+        log(`refreshed CLI binary: ${binDest}`);
+      }
+    }
+  } catch (e) {
+    warn(`CLI binary refresh skipped: ${e.message}`);
+  }
+
   log('done.');
+}
+
+/** Resolve the newest xm/scripts/xm dispatcher source (local repo > plugin cache). */
+function resolveBashDispatcher() {
+  const candidates = [];
+  // Local repo
+  candidates.push(path.join(process.cwd(), 'xm', 'scripts', 'xm'));
+  // Plugin cache (sorted semver desc)
+  for (const cacheRoot of [
+    path.join(HOME, '.claude', 'plugins', 'cache', 'xm', 'xm'),
+    path.join(HOME, '.claude', 'plugins', 'cache', 'x-kit', 'x-kit'),
+  ]) {
+    if (!fs.existsSync(cacheRoot)) continue;
+    const versions = fs.readdirSync(cacheRoot)
+      .filter((v) => fs.statSync(path.join(cacheRoot, v)).isDirectory())
+      .sort()
+      .reverse();
+    for (const v of versions) {
+      candidates.push(path.join(cacheRoot, v, 'scripts', 'xm'));
+    }
+  }
+  return candidates.find((p) => fs.existsSync(p)) || null;
 }
 
 function uninstall() {
