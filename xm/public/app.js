@@ -3685,6 +3685,7 @@ const ROUTES = [
   { pattern: /^\/memory\/(.+)$/, handler: (m) => renderMemoryDetail(decodeURIComponent(m[1])) },
   { pattern: /^\/reviews$/, handler: () => renderReviewsList() },
   { pattern: /^\/reviews\/(.+)$/, handler: (m) => renderReviewDetail(decodeURIComponent(m[1])) },
+  { pattern: /^\/costs$/, handler: () => renderCostsPage() },
   { pattern: /^\/eval$/, handler: () => renderEvalList() },
   { pattern: /^\/eval\/([^/]+)\/(.+)$/, handler: (m) => renderEvalDetail(decodeURIComponent(m[1]), decodeURIComponent(m[2])) },
   { pattern: /^\/humble$/, handler: () => renderHumbleList() },
@@ -3883,5 +3884,377 @@ fetchJSON('/api/health').then(h => {
   });
   nav.appendChild(btn);
 })();
+
+// ── Costs page + cost-by-role stacked area ─────────────────────────
+async function renderCostsPage() {
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="view-header"><h1>Costs</h1></div><div class="card"><p class="text-muted">Loading…</p></div>`;
+  const [summary, sessions] = await Promise.all([
+    fetchJSON(apiUrl('/costs')),
+    fetchJSON(apiUrl('/metrics/sessions?limit=10000')),
+  ]);
+
+  const summaryHtml = summary.error
+    ? `<div class="card"><p class="text-muted">Costs summary: ${summary.message || summary.error}</p></div>`
+    : renderCostsSummary(summary);
+
+  const sessionEvents = (!sessions.error && Array.isArray(sessions.data)) ? sessions.data : [];
+  const roleChart = renderCostByRoleStackedArea(sessionEvents);
+
+  app.innerHTML = `
+    <div class="view-header"><h1>Costs</h1></div>
+    ${roleChart}
+    ${summaryHtml}
+  `;
+}
+
+function renderCostsSummary(s) {
+  const e = escapeHtmlHumble;
+  const fmtUSD = (v) => `$${Number(v || 0).toFixed(4)}`;
+  const byModel = s.byModel || {};
+  const modelRows = Object.entries(byModel).map(([m, v]) =>
+    `<tr><td><code>${e(m)}</code></td><td style="text-align:right">${fmtUSD(v.cost)}</td>
+    <td class="text-muted" style="text-align:right">${v.inputTokens}</td>
+    <td class="text-muted" style="text-align:right">${v.outputTokens}</td></tr>`
+  ).join('');
+  return `<div class="card" style="margin-bottom:1rem">
+    <h2 style="margin-top:0;font-size:.95rem">Summary</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;text-align:center;margin-bottom:1rem">
+      <div><div style="font-size:1.3em;font-weight:700">${fmtUSD(s.totalCost)}</div><span class="text-muted">Total</span></div>
+      <div><div style="font-size:1.3em;font-weight:700">${s.totalInputTokens||0}</div><span class="text-muted">Input tok</span></div>
+      <div><div style="font-size:1.3em;font-weight:700">${s.totalOutputTokens||0}</div><span class="text-muted">Output tok</span></div>
+    </div>
+    ${modelRows ? `<table class="table"><thead><tr><th>Model</th><th style="text-align:right">Cost</th><th style="text-align:right">Input</th><th style="text-align:right">Output</th></tr></thead><tbody>${modelRows}</tbody></table>` : ''}
+  </div>`;
+}
+
+/**
+ * Stacked area chart: cost_usd over time, stacked by role.
+ * Input: array of session events ({type:'task_complete', timestamp, role, cost_usd, model})
+ * Buckets by day; draws SVG polygon stack.
+ */
+function renderCostByRoleStackedArea(events) {
+  const tc = events.filter(e => e && e.type === 'task_complete' && e.cost_usd != null);
+  if (tc.length === 0) {
+    return `<div class="card" style="margin-bottom:1rem">
+      <h2 style="margin-top:0;font-size:.95rem">Cost by Role (stacked area)</h2>
+      <p class="text-muted" style="margin:0;font-size:.85em">No task_complete events with cost_usd found in sessions.jsonl.</p>
+    </div>`;
+  }
+  const e = escapeHtmlHumble;
+
+  // Build date buckets
+  const bucket = (ts) => new Date(ts).toISOString().slice(0, 10);
+  const dateSet = new Set();
+  const roleSet = new Set();
+  const cell = new Map(); // key = "role|date" → cost
+  for (const ev of tc) {
+    if (!ev.timestamp) continue;
+    const d = bucket(ev.timestamp);
+    const r = ev.role || 'unknown';
+    dateSet.add(d);
+    roleSet.add(r);
+    const key = `${r}|${d}`;
+    cell.set(key, (cell.get(key) || 0) + Number(ev.cost_usd || 0));
+  }
+  const dates = [...dateSet].sort();
+  const roles = [...roleSet].sort();
+  if (dates.length === 0 || roles.length === 0) return '';
+
+  // Role color palette (deterministic by role name)
+  const palette = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
+  const colorFor = (role) => {
+    let hash = 0;
+    for (const c of role) hash = (hash * 31 + c.charCodeAt(0)) >>> 0;
+    return palette[hash % palette.length];
+  };
+
+  // Compute stack: for each date, cumulative per role (in fixed role order)
+  const dayTotals = dates.map(d => {
+    let total = 0;
+    for (const r of roles) total += cell.get(`${r}|${d}`) || 0;
+    return total;
+  });
+  const maxTotal = Math.max(...dayTotals, 0.0001);
+
+  const width = 720, height = 260, padL = 60, padR = 16, padT = 20, padB = 40;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+  const xAt = (i) => padL + (dates.length === 1 ? plotW / 2 : (i / (dates.length - 1)) * plotW);
+  const yAt = (v) => padT + plotH - (v / maxTotal) * plotH;
+
+  // Build layered polygons top-down (reverse so later roles sit on top visually)
+  const layers = [];
+  const running = new Array(dates.length).fill(0);
+  for (const role of roles) {
+    const top = dates.map((d, i) => {
+      const v = cell.get(`${role}|${d}`) || 0;
+      const newRun = running[i] + v;
+      return { x: xAt(i), yTop: yAt(newRun), yBottom: yAt(running[i]), cost: v };
+    });
+    // Update running totals after capturing for this layer
+    for (let i = 0; i < dates.length; i++) {
+      running[i] += cell.get(`${role}|${dates[i]}`) || 0;
+    }
+    // Polygon: top edge left→right, bottom edge right→left
+    const points = [
+      ...top.map(p => `${p.x.toFixed(1)},${p.yTop.toFixed(1)}`),
+      ...top.slice().reverse().map(p => `${p.x.toFixed(1)},${p.yBottom.toFixed(1)}`),
+    ].join(' ');
+    const total = top.reduce((a, b) => a + b.cost, 0);
+    layers.push({
+      role,
+      points,
+      color: colorFor(role),
+      total,
+    });
+  }
+
+  // Axes
+  const yTicks = 4;
+  const yLabels = [];
+  for (let i = 0; i <= yTicks; i++) {
+    const v = (maxTotal * i) / yTicks;
+    const y = yAt(v);
+    yLabels.push(`<g>
+      <line x1="${padL}" y1="${y}" x2="${width - padR}" y2="${y}" stroke="var(--border)" stroke-dasharray="2,3" opacity="0.4"/>
+      <text x="${padL - 6}" y="${y + 3}" font-size="9" text-anchor="end" fill="var(--text-muted)">$${v.toFixed(3)}</text>
+    </g>`);
+  }
+  const maxXLabels = 8;
+  const xStep = Math.max(1, Math.ceil(dates.length / maxXLabels));
+  const xLabels = dates.map((d, i) => {
+    if (i % xStep !== 0 && i !== dates.length - 1) return '';
+    const x = xAt(i);
+    return `<text x="${x}" y="${height - padB + 14}" font-size="9" text-anchor="middle" fill="var(--text-muted)">${e(d.slice(5))}</text>`;
+  }).join('');
+
+  // Legend
+  const legendItems = layers.map(l => `
+    <span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:11px">
+      <span style="display:inline-block;width:10px;height:10px;background:${l.color};border-radius:2px"></span>
+      <code>${e(l.role)}</code>
+      <span class="text-muted" style="font-size:.85em">($${l.total.toFixed(3)})</span>
+    </span>
+  `).join('');
+
+  return `<div class="card" style="margin-bottom:1rem;overflow-x:auto">
+    <h2 style="margin-top:0;font-size:.95rem">Cost by Role (stacked area)
+      <span class="text-muted" style="font-size:.75em;font-weight:400;margin-left:6px">
+        ${tc.length} events · ${dates.length} day${dates.length === 1 ? '' : 's'} · ${roles.length} role${roles.length === 1 ? '' : 's'}
+      </span>
+    </h2>
+    <div style="margin-bottom:.5rem;line-height:1.6">${legendItems}</div>
+    <svg viewBox="0 0 ${width} ${height}" style="width:100%;min-width:${width}px;height:${height}px">
+      ${yLabels.join('')}
+      ${layers.map(l => `<polygon points="${l.points}" fill="${l.color}" opacity="0.75"><title>${e(l.role)} · $${l.total.toFixed(4)}</title></polygon>`).join('')}
+      ${xLabels}
+      <line x1="${padL}" y1="${padT + plotH}" x2="${width - padR}" y2="${padT + plotH}" stroke="var(--text-muted)"/>
+      <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT + plotH}" stroke="var(--text-muted)"/>
+    </svg>
+    <p class="text-muted" style="font-size:.7em;margin:.5rem 0 0">Source: <code>.xm/build/metrics/sessions.jsonl</code> task_complete events, bucketed by UTC day.</p>
+  </div>`;
+}
+
+// ── Cmd+K Command Palette ──────────────────────────────────────────
+// Global keyboard: Cmd/Ctrl+K opens overlay. Fuzzy matches routes,
+// workspaces, pinned, recent. Enter navigates. Esc closes. Arrow keys
+// move selection.
+
+const PALETTE_ROUTES = [
+  { path: '/', label: 'Home', kind: 'route' },
+  { path: '/projects', label: 'Projects', kind: 'route' },
+  { path: '/humble', label: 'Humble', kind: 'route' },
+  { path: '/ops', label: 'Ops', kind: 'route' },
+  { path: '/eval', label: 'Eval', kind: 'route' },
+  { path: '/reviews', label: 'Reviews', kind: 'route' },
+  { path: '/traces', label: 'Traces', kind: 'route' },
+  { path: '/memory', label: 'Memory', kind: 'route' },
+  { path: '/probes', label: 'Probes', kind: 'route' },
+  { path: '/solvers', label: 'Solvers', kind: 'route' },
+  { path: '/costs', label: 'Costs', kind: 'route' },
+];
+
+function paletteItems() {
+  const items = [...PALETTE_ROUTES];
+  // Workspaces (switch, not navigate)
+  if (multiRootMode && Array.isArray(workspaces)) {
+    for (const ws of workspaces) {
+      items.push({
+        path: null, wsSwitch: ws.id, label: ws.name || ws.id,
+        kind: 'workspace', hint: ws.path || '',
+      });
+    }
+  }
+  // Pins
+  for (const p of getPins()) {
+    items.push({ path: p.path, label: p.label || p.path, kind: 'pinned', hint: '★' });
+  }
+  // Recent
+  for (const r of getRecent()) {
+    items.push({ path: r.path, label: r.path, kind: 'recent', hint: '🕘' });
+  }
+  return items;
+}
+
+function fuzzyScore(query, text) {
+  if (!query) return 1;
+  const q = query.toLowerCase();
+  const t = (text || '').toLowerCase();
+  if (!t) return 0;
+  if (t === q) return 1000;
+  if (t.startsWith(q)) return 800;
+  if (t.includes(q)) return 500;
+  // letter-by-letter subsequence
+  let qi = 0;
+  for (let i = 0; i < t.length && qi < q.length; i++) {
+    if (t[i] === q[qi]) qi++;
+  }
+  return qi === q.length ? 100 : 0;
+}
+
+let _paletteState = null;
+
+function openPalette() {
+  if (_paletteState) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'palette-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding-top:10vh';
+  overlay.innerHTML = `
+    <div id="palette-box" style="width:min(640px,90vw);background:var(--bg);border:1px solid var(--border);border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,0.4);overflow:hidden">
+      <input id="palette-input" type="text" placeholder="Search routes, workspaces, pinned, recent…"
+        autocomplete="off" spellcheck="false"
+        style="width:100%;padding:16px 20px;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--text);font-size:15px;outline:none;box-sizing:border-box">
+      <div id="palette-list" style="max-height:400px;overflow-y:auto"></div>
+      <div style="padding:6px 16px;border-top:1px solid var(--border);font-size:.7em;color:var(--text-muted);display:flex;gap:16px">
+        <span>↑↓ select</span><span>↵ open</span><span>esc close</span>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closePalette(); });
+
+  const input = overlay.querySelector('#palette-input');
+  const list = overlay.querySelector('#palette-list');
+  _paletteState = { overlay, input, list, selectedIndex: 0, items: [] };
+
+  refreshPalette('');
+  input.focus();
+  input.addEventListener('input', () => refreshPalette(input.value));
+  input.addEventListener('keydown', onPaletteKey);
+}
+
+function closePalette() {
+  if (!_paletteState) return;
+  _paletteState.overlay.remove();
+  _paletteState = null;
+}
+
+function refreshPalette(query) {
+  if (!_paletteState) return;
+  const all = paletteItems();
+  const scored = all.map(item => {
+    const scoreLabel = fuzzyScore(query, item.label);
+    const scorePath = fuzzyScore(query, item.path || '');
+    const scoreKind = fuzzyScore(query, item.kind);
+    return { item, score: Math.max(scoreLabel, scorePath * 0.6, scoreKind * 0.3) };
+  }).filter(x => x.score > 0);
+  scored.sort((a, b) => b.score - a.score);
+  _paletteState.items = scored.slice(0, 50).map(s => s.item);
+  _paletteState.selectedIndex = 0;
+  renderPaletteList();
+}
+
+function renderPaletteList() {
+  if (!_paletteState) return;
+  const { list, items, selectedIndex } = _paletteState;
+  const e = escapeHtmlHumble;
+  if (items.length === 0) {
+    list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px">No matches</div>`;
+    return;
+  }
+  list.innerHTML = items.map((item, i) => {
+    const active = i === selectedIndex;
+    const kindBadge = {
+      route: 'background:#dbeafe;color:#1e40af',
+      workspace: 'background:#dcfce7;color:#166534',
+      pinned: 'background:#fef3c7;color:#92400e',
+      recent: 'background:#f3f4f6;color:#374151',
+    }[item.kind] || 'background:var(--surface);color:var(--text)';
+    return `<div class="palette-row" data-idx="${i}"
+      style="padding:10px 16px;display:flex;align-items:center;gap:10px;cursor:pointer;${active ? 'background:var(--accent);color:white' : ''}">
+      <span style="padding:1px 6px;border-radius:3px;font-size:9px;font-weight:600;text-transform:uppercase;${kindBadge}">${e(item.kind)}</span>
+      <span style="flex:1;font-size:13px">${e(item.label)}</span>
+      ${item.hint ? `<span style="font-size:10px;opacity:0.7">${e(item.hint)}</span>` : ''}
+    </div>`;
+  }).join('');
+  list.querySelectorAll('.palette-row').forEach(row => {
+    row.addEventListener('click', () => {
+      _paletteState.selectedIndex = Number(row.dataset.idx);
+      executePaletteSelection();
+    });
+    row.addEventListener('mousemove', () => {
+      const idx = Number(row.dataset.idx);
+      if (_paletteState.selectedIndex !== idx) {
+        _paletteState.selectedIndex = idx;
+        renderPaletteList();
+      }
+    });
+  });
+  // Scroll selected into view
+  const activeRow = list.querySelector('.palette-row[data-idx="' + selectedIndex + '"]');
+  if (activeRow) activeRow.scrollIntoView({ block: 'nearest' });
+}
+
+function onPaletteKey(e) {
+  if (!_paletteState) return;
+  if (e.key === 'Escape') { e.preventDefault(); closePalette(); return; }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    _paletteState.selectedIndex = Math.min(_paletteState.items.length - 1, _paletteState.selectedIndex + 1);
+    renderPaletteList();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    _paletteState.selectedIndex = Math.max(0, _paletteState.selectedIndex - 1);
+    renderPaletteList();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    executePaletteSelection();
+  }
+}
+
+function executePaletteSelection() {
+  if (!_paletteState) return;
+  const item = _paletteState.items[_paletteState.selectedIndex];
+  if (!item) return;
+  closePalette();
+  if (item.wsSwitch) {
+    // Switch workspace via the select dropdown
+    const sel = document.getElementById('ws-select');
+    if (sel) {
+      sel.value = item.wsSwitch;
+      sel.dispatchEvent(new Event('change'));
+    } else {
+      currentWsId = item.wsSwitch;
+      try { localStorage.setItem('xm-workspace', currentWsId); } catch {}
+      route();
+    }
+  } else if (item.path) {
+    window.location.hash = '#' + item.path;
+  }
+}
+
+// Global keybinding
+document.addEventListener('keydown', (e) => {
+  // Ignore when user is typing in an input/textarea (except our palette input)
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') && e.target.id !== 'palette-input') {
+    if (!((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K'))) return;
+  }
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault();
+    if (_paletteState) closePalette();
+    else openPalette();
+  }
+});
 
 initWorkspaces().then(() => route());
