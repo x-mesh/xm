@@ -988,6 +988,12 @@ function handleHumbleList(xmRoot, req) {
               status: parsed.status ?? null,
               confirmed_count: parsed.confirmed_count ?? null,
               tags: Array.isArray(parsed.tags) ? parsed.tags : null,
+              // Sankey link fields — included for humble graph rendering
+              applied_to_claudemd: parsed.applied_to_claudemd ?? null,
+              source_retrospective: parsed.source_retrospective ?? null,
+              lessons_created: Array.isArray(parsed.lessons_created) ? parsed.lessons_created : null,
+              failures_identified: Array.isArray(parsed.failures_identified) ? parsed.failures_identified : null,
+              id: parsed.id ?? null,
             };
           } catch {}
         } else if (entry.name.endsWith('.md')) {
@@ -1023,6 +1029,51 @@ function handleHumbleFile(xmRoot, kind, file, req) {
   } catch {
     return jsonResponseWithETag({ error: 'parse_error', file }, req, 500);
   }
+}
+
+/**
+ * PATCH a humble lesson JSON. Only allow-listed fields may be written —
+ * arbitrary JSON mutation is refused to prevent corruption of other
+ * plugins' state.
+ */
+const LESSON_PATCHABLE = new Set(['applied_to_claudemd', 'status']);
+
+async function handleHumbleLessonPatch(xmRoot, file, req) {
+  if (!/^[a-zA-Z0-9._-]+\.json$/.test(file)) {
+    return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  }
+  const filePath = safeJoin(xmRoot, 'humble', 'lessons', file);
+  if (!filePath || !existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
+
+  let body;
+  try { body = await req.json(); }
+  catch { return jsonResponseWithETag({ error: 'invalid_json' }, req, 400); }
+
+  const patch = body && typeof body === 'object' ? body : {};
+  const disallowed = Object.keys(patch).filter(k => !LESSON_PATCHABLE.has(k));
+  if (disallowed.length) {
+    return jsonResponseWithETag({
+      error: 'disallowed_fields',
+      fields: disallowed,
+      allowed: [...LESSON_PATCHABLE],
+    }, req, 400);
+  }
+
+  let current;
+  try { current = JSON.parse(readFileSync(filePath, 'utf8')); }
+  catch { return jsonResponseWithETag({ error: 'parse_error' }, req, 500); }
+
+  const before = { ...current };
+  const next = { ...current, ...patch, last_confirmed: new Date().toISOString() };
+  writeFileSync(filePath, JSON.stringify(next, null, 2) + '\n');
+
+  return jsonResponseWithETag({
+    ok: true,
+    file,
+    patched: Object.keys(patch),
+    before: Object.fromEntries(Object.keys(patch).map(k => [k, before[k]])),
+    after: Object.fromEntries(Object.keys(patch).map(k => [k, next[k]])),
+  }, req);
 }
 
 function handleSearch(xmRoot, url, req) {
@@ -1674,6 +1725,25 @@ server = Bun.serve({
     }
 
     // ── JSON API ─────────────────────────────────────────────────
+    // ── PATCH /api/ws/:wsId/humble/lessons/:file ──────────────
+    // Allow-listed field mutation for Humble lessons.
+    if (req.method === 'PATCH' && path.startsWith('/api/')) {
+      const wsLessonMatch = path.match(/^\/api\/ws\/([^/]+)\/humble\/lessons\/([^/]+)$/);
+      if (wsLessonMatch) {
+        const wsId = decodeURIComponent(wsLessonMatch[1]);
+        const file = decodeURIComponent(wsLessonMatch[2]);
+        const xmRoot = resolveXmRoot(wsId);
+        if (!xmRoot) return Response.json({ error: 'workspace_not_found' }, { status: 404 });
+        return handleHumbleLessonPatch(xmRoot, file, req);
+      }
+      const lessonMatch = path.match(/^\/api\/humble\/lessons\/([^/]+)$/);
+      if (lessonMatch) {
+        const file = decodeURIComponent(lessonMatch[1]);
+        return handleHumbleLessonPatch(XM_ROOT, file, req);
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }
+
     if (req.method === 'GET' && path.startsWith('/api/')) {
 
       // ── M4: GET /api/workspaces ──────────────────────────────
