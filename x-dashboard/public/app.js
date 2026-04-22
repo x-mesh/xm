@@ -154,6 +154,61 @@ function nullSafe(value, fallback = '—') {
   return (value === null || value === undefined || value === '') ? fallback : value;
 }
 
+// Host alias map (first-seen → 3-letter code). Persisted in localStorage so
+// the same host gets the same chip across sessions.
+const HOST_ALIAS_KEY = 'xm-host-aliases';
+function loadHostAliases() {
+  try { return JSON.parse(localStorage.getItem(HOST_ALIAS_KEY) || '{}'); } catch { return {}; }
+}
+function saveHostAliases(m) {
+  try { localStorage.setItem(HOST_ALIAS_KEY, JSON.stringify(m)); } catch {}
+}
+function aliasHost(host) {
+  const map = loadHostAliases();
+  if (map[host]) return map[host];
+  // First-time: take capital letters or first 3 chars
+  const caps = host.replace(/[^A-Z0-9]/g, '').slice(0, 4);
+  const alias = caps.length >= 2 ? caps : host.split(/[.-]/)[0].slice(0, 4);
+  map[host] = alias;
+  saveHostAliases(map);
+  return alias;
+}
+
+/**
+ * Compact file-label formatter.
+ *   "L2.jinwooui-MacBookPro.local-f675.jinwooui-Macmini.local-7a27.json"
+ *   → "[L2] MBP→Mini · 7a27"
+ *
+ * Returns { chip: HTML string (with hover title), raw: original }.
+ * Recognizes the xm sync convention `{id}.{host1-id1}.{host2-id2}...{.ext}`.
+ */
+function smartFileLabel(file) {
+  if (!file) return { chip: '', raw: '' };
+  const ext = (file.match(/\.(json|md|jsonl)$/) || [''])[0];
+  const base = file.slice(0, file.length - ext.length);
+  const parts = base.split('.');
+  const id = parts[0];
+  const hostSegments = parts.slice(1);
+  const escTitle = escapeHtmlHumble(file);
+  if (hostSegments.length === 0) {
+    return { chip: `<code title="${escTitle}">${escapeHtmlHumble(id)}${escapeHtmlHumble(ext)}</code>`, raw: file };
+  }
+  // Each host segment looks like "{hostname}-{hash4}" — keep the 4-char tail as stable fingerprint
+  const hostChips = hostSegments.map(seg => {
+    const m = seg.match(/^(.*)-([a-z0-9]{4,8})$/i);
+    if (m) return { host: m[1], hash: m[2] };
+    return { host: seg, hash: '' };
+  });
+  const hosts = hostChips.map(h => aliasHost(h.host)).join('→');
+  const tailHash = hostChips[hostChips.length - 1].hash;
+  const chip = `<span title="${escTitle}" style="display:inline-flex;gap:6px;align-items:center">
+    <code style="font-weight:600">${escapeHtmlHumble(id)}</code>
+    ${hosts ? `<span class="text-muted" style="font-size:.85em">${escapeHtmlHumble(hosts)}</span>` : ''}
+    ${tailHash ? `<code class="text-muted" style="font-size:.8em">${escapeHtmlHumble(tailHash)}</code>` : ''}
+  </span>`;
+  return { chip, raw: file };
+}
+
 async function fetchJSON(url) {
   try {
     const res = await fetch(url);
@@ -1884,33 +1939,220 @@ async function renderOpsList() {
     const topic = nullSafe(op.topic, '—');
     const truncTopic = topic.length > 60 ? topic.slice(0, 57) + '…' : topic;
     const verdict = op.outcome?.verdict ?? op.outcome?.summary ?? '—';
-    const truncVerdict = verdict.length > 50 ? verdict.slice(0, 47) + '…' : verdict;
+    const verdictStr = typeof verdict === 'string' ? verdict : JSON.stringify(verdict);
+    const truncVerdict = verdictStr.length > 50 ? verdictStr.slice(0, 47) + '…' : verdictStr;
     const score = op.self_score?.overall != null ? `${op.self_score.overall}/10` : '—';
     const agents = op.options?.agents ?? '—';
     const fileParam = op._file ?? '';
-    return `<tr style="cursor:pointer" onclick="window.location.hash='#/ops/${encodeURIComponent(fileParam)}'">
-      <td>${date}</td>
-      <td><span class="badge ${stratClass}">${op.strategy ?? '—'}</span></td>
-      <td title="${topic.replace(/"/g, '&quot;')}">${truncTopic}</td>
-      <td title="${verdict.replace(/"/g, '&quot;')}">${truncVerdict}</td>
-      <td style="text-align:center">${score}</td>
-      <td style="text-align:center">${agents}</td>
+    const escFile = fileParam.replace(/"/g, '&quot;');
+    return `<tr>
+      <td style="text-align:center;padding-right:0">
+        <input type="checkbox" class="op-compare-cb" data-file="${escFile}" aria-label="Select for compare" onclick="event.stopPropagation();updateCompareBar()">
+      </td>
+      <td onclick="window.location.hash='#/ops/${encodeURIComponent(fileParam)}'" style="cursor:pointer">${date}</td>
+      <td onclick="window.location.hash='#/ops/${encodeURIComponent(fileParam)}'" style="cursor:pointer"><span class="badge ${stratClass}">${op.strategy ?? '—'}</span></td>
+      <td onclick="window.location.hash='#/ops/${encodeURIComponent(fileParam)}'" style="cursor:pointer" title="${topic.replace(/"/g, '&quot;')}">${truncTopic}</td>
+      <td onclick="window.location.hash='#/ops/${encodeURIComponent(fileParam)}'" style="cursor:pointer" title="${verdictStr.replace(/"/g, '&quot;')}">${truncVerdict}</td>
+      <td onclick="window.location.hash='#/ops/${encodeURIComponent(fileParam)}'" style="cursor:pointer;text-align:center">${score}</td>
+      <td onclick="window.location.hash='#/ops/${encodeURIComponent(fileParam)}'" style="cursor:pointer;text-align:center">${agents}</td>
     </tr>`;
   }).join('');
+
+  const distribution = renderOpScoreDistribution(ops);
 
   app.innerHTML = `
     <div class="view-header">
       <h1>Ops <span class="badge badge-neutral" style="font-size:0.85rem;vertical-align:middle">${ops.length}</span></h1>
     </div>
+    ${distribution}
+    <div id="compare-bar" style="display:none;padding:8px 12px;margin-bottom:8px;background:var(--surface);border:1px solid var(--border);border-radius:4px">
+      <span id="compare-count" style="font-size:.85em"></span>
+      <button onclick="runOpCompare()" style="margin-left:12px;padding:4px 12px;cursor:pointer" id="compare-btn" disabled>Compare</button>
+      <button onclick="clearCompareSelection()" style="margin-left:6px;padding:4px 12px;cursor:pointer">Clear</button>
+    </div>
     <div class="card" style="padding:0">
       <table class="table">
         <thead>
-          <tr><th>Date</th><th>Strategy</th><th>Topic</th><th>Outcome</th><th>Score</th><th>Agents</th></tr>
+          <tr><th style="width:32px"></th><th>Date</th><th>Strategy</th><th>Topic</th><th>Outcome</th><th>Score</th><th>Agents</th></tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
   `;
+}
+
+// ── Op compare (2-way side-by-side) ─────────────────────────────────
+function getSelectedOpFiles() {
+  return [...document.querySelectorAll('.op-compare-cb:checked')].map(c => c.dataset.file);
+}
+function updateCompareBar() {
+  const bar = document.getElementById('compare-bar');
+  const countEl = document.getElementById('compare-count');
+  const btn = document.getElementById('compare-btn');
+  if (!bar) return;
+  const selected = getSelectedOpFiles();
+  if (selected.length === 0) {
+    bar.style.display = 'none';
+    return;
+  }
+  bar.style.display = '';
+  countEl.textContent = `${selected.length} selected`;
+  btn.disabled = selected.length !== 2;
+  btn.style.opacity = selected.length === 2 ? '1' : '.5';
+}
+function clearCompareSelection() {
+  document.querySelectorAll('.op-compare-cb').forEach(c => c.checked = false);
+  updateCompareBar();
+}
+function runOpCompare() {
+  const selected = getSelectedOpFiles();
+  if (selected.length !== 2) return;
+  window.location.hash = `#/ops/compare?a=${encodeURIComponent(selected[0])}&b=${encodeURIComponent(selected[1])}`;
+}
+
+async function renderOpCompare(aFile, bFile) {
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="view-header"><h1>Compare</h1></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+  const [a, b] = await Promise.all([
+    fetchJSON(apiUrl(`/op/${encodeURIComponent(aFile)}`)),
+    fetchJSON(apiUrl(`/op/${encodeURIComponent(bFile)}`)),
+  ]);
+  if (a.error || b.error) {
+    app.innerHTML = `<div class="card"><p class="text-muted">Error loading ops: ${(a.error ? a.message : b.message) || 'unknown'}</p></div>`;
+    return;
+  }
+  const fieldsToShow = [
+    ['Strategy', x => x.strategy],
+    ['Topic', x => x.topic],
+    ['Date', x => x.date || x.completed_at || x.created_at],
+    ['Agents', x => x.args?.agents || x.options?.agents],
+    ['Verdict', x => x.outcome?.verdict],
+    ['Self-score (overall)', x => x.self_score?.overall],
+    ['Theme count', x => Array.isArray(x.themes) ? x.themes.length : '—'],
+    ['Self-score: accuracy', x => x.self_score?.criteria?.accuracy?.score ?? x.self_score?.criteria?.accuracy],
+    ['Self-score: completeness', x => x.self_score?.criteria?.completeness?.score ?? x.self_score?.criteria?.completeness],
+    ['Self-score: consistency', x => x.self_score?.criteria?.consistency?.score ?? x.self_score?.criteria?.consistency],
+    ['Self-score: clarity', x => x.self_score?.criteria?.clarity?.score ?? x.self_score?.criteria?.clarity],
+    ['4Q evidence', x => x.four_q_check?.evidence?.status],
+    ['4Q assumptions', x => x.four_q_check?.assumptions?.status],
+  ];
+  const e = escapeHtmlHumble;
+  const rowsHtml = fieldsToShow.map(([label, getter]) => {
+    const va = getter(a) ?? '—';
+    const vb = getter(b) ?? '—';
+    const diff = JSON.stringify(va) !== JSON.stringify(vb);
+    const diffStyle = diff ? 'background:rgba(250,204,21,0.08)' : '';
+    return `<tr style="${diffStyle}">
+      <td class="text-muted" style="white-space:nowrap">${e(label)}</td>
+      <td>${e(String(va))}</td>
+      <td>${e(String(vb))}</td>
+    </tr>`;
+  }).join('');
+
+  app.innerHTML = `
+    <div class="view-header">
+      <div><a href="#/ops" style="font-size:.85rem">← Ops</a></div>
+      <h1 style="margin-top:.5rem">Compare</h1>
+      <p class="text-muted" style="margin:4px 0 0;font-size:.85em">
+        <strong>A:</strong> ${e(aFile)} · <strong>B:</strong> ${e(bFile)}
+      </p>
+    </div>
+    <div class="card">
+      <table class="table">
+        <thead><tr><th>Field</th><th>A</th><th>B</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+      <p class="text-muted" style="font-size:.75em;margin:.75rem 0 0">Highlighted rows = differ between A and B.</p>
+    </div>
+  `;
+}
+
+/**
+ * Self-score distribution per strategy — horizontal histogram (1.0-step bins).
+ * Shows mean + count per strategy. Pure SVG, no D3.
+ */
+function renderOpScoreDistribution(ops) {
+  const e = escapeHtmlHumble;
+  // Group by strategy, collect numeric self_score.overall
+  const byStrategy = new Map();
+  for (const op of ops) {
+    const s = op.strategy ?? 'unknown';
+    const score = Number(op.self_score?.overall);
+    if (!Number.isFinite(score)) continue;
+    if (!byStrategy.has(s)) byStrategy.set(s, []);
+    byStrategy.get(s).push(score);
+  }
+  if (byStrategy.size === 0) return '';
+
+  // 10 bins: [0,1) ... [9,10]
+  const binCount = 10;
+  const rowH = 42;
+  const labelW = 100;
+  const binW = 32;
+  const width = labelW + binCount * binW + 80;
+  const height = 30 + byStrategy.size * rowH;
+
+  const rows = [];
+  const sortedStrategies = [...byStrategy.entries()].sort((a, b) => b[1].length - a[1].length);
+  let y = 20;
+  for (const [strategy, scores] of sortedStrategies) {
+    const bins = new Array(binCount).fill(0);
+    for (const s of scores) {
+      const b = Math.min(binCount - 1, Math.floor(s));
+      bins[b]++;
+    }
+    const maxBin = Math.max(...bins, 1);
+    const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+    const stratClass = STRATEGY_BADGES[strategy] ?? 'badge-neutral';
+
+    // SVG row
+    const bars = bins.map((count, i) => {
+      if (count === 0) return '';
+      const h = (count / maxBin) * (rowH - 14);
+      const x = labelW + i * binW + 2;
+      const yTop = y + (rowH - 14 - h);
+      const opacity = 0.3 + (count / maxBin) * 0.7;
+      return `<rect x="${x}" y="${yTop}" width="${binW - 4}" height="${h}" fill="var(--accent)" opacity="${opacity}" rx="1"/>
+        <text x="${x + (binW - 4) / 2}" y="${yTop - 2}" font-size="9" text-anchor="middle" fill="var(--text-muted)">${count}</text>`;
+    }).join('');
+
+    // Mean marker
+    const meanX = labelW + mean * binW;
+    const markers = `<line x1="${meanX}" y1="${y}" x2="${meanX}" y2="${y + rowH - 14}" stroke="#ef4444" stroke-width="2" stroke-dasharray="3,2"/>`;
+
+    rows.push(`
+      <foreignObject x="0" y="${y}" width="${labelW - 6}" height="${rowH - 8}">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="display:flex;align-items:center;gap:4px;font-size:12px">
+          <span class="badge ${stratClass}" style="font-size:10px">${e(strategy)}</span>
+          <span class="text-muted" style="font-size:10px">n=${scores.length}, μ=${mean.toFixed(1)}</span>
+        </div>
+      </foreignObject>
+      ${bars}
+      ${markers}
+    `);
+    y += rowH;
+  }
+
+  // X axis
+  const axisY = y + 2;
+  const ticks = [];
+  for (let i = 0; i <= binCount; i++) {
+    const x = labelW + i * binW;
+    ticks.push(`<line x1="${x}" y1="${axisY}" x2="${x}" y2="${axisY + 3}" stroke="var(--text-muted)"/>
+      <text x="${x}" y="${axisY + 14}" font-size="9" text-anchor="middle" fill="var(--text-muted)">${i}</text>`);
+  }
+
+  return `<div class="card" style="margin-bottom:1rem;overflow-x:auto">
+    <h2 style="margin-top:0;font-size:0.95rem">Self-Score Distribution by Strategy
+      <span class="text-muted" style="font-size:.75em;font-weight:400;margin-left:6px">bin=1.0, red dash=mean</span>
+    </h2>
+    <svg viewBox="0 0 ${width} ${height + 20}" style="width:100%;min-width:${width}px;height:${height + 20}px">
+      ${rows.join('')}
+      <line x1="${labelW}" y1="${axisY}" x2="${labelW + binCount * binW}" y2="${axisY}" stroke="var(--text-muted)"/>
+      ${ticks.join('')}
+      <text x="${labelW + (binCount * binW) / 2}" y="${axisY + 28}" font-size="10" text-anchor="middle" fill="var(--text-muted)">self-score (0-10)</text>
+    </svg>
+  </div>`;
 }
 
 async function renderOpDetail(file) {
@@ -2079,9 +2321,13 @@ async function renderOpDetail(file) {
       <pre style="margin:0;font-size:0.85em">${JSON.stringify(data.options, null, 2)}</pre>
     </div>` : '';
 
+  const opRoutePath = `/ops/${encodeURIComponent(file)}`;
   app.innerHTML = `
     <div class="view-header">
-      <div><a href="#/ops" style="font-size:0.875rem;opacity:0.7">← Ops</a></div>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <a href="#/ops" style="font-size:0.875rem;opacity:0.7">← Ops</a>
+        ${pinButton(opRoutePath, `${data.strategy || 'op'} · ${data.topic || file}`)}
+      </div>
       <h1 style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;margin-top:0.5rem">
         <span class="badge ${stratClass}">${data.strategy ?? '—'}</span>
         ${nullSafe(data.topic, 'Op Detail')}
@@ -2938,10 +3184,149 @@ async function renderHumbleList() {
     </div>`;
   }
 
+  const sankey = renderHumbleSankey(kinds);
+
   app.innerHTML = `
     <div class="view-header"><h1>Humble</h1><p>.xm/humble/ · ${totalCount} items</p></div>
+    ${sankey}
     ${['lessons', 'retrospectives'].map(k => renderKind(k, kinds[k] || [])).join('')}
   `;
+}
+
+/**
+ * Retrospective → Lesson → CLAUDE.md 3-column Sankey (SVG).
+ * Uses summary.source_retrospective + summary.applied_to_claudemd to draw flows.
+ * Skips host-suffixed sync duplicates (keeps canonical files only).
+ */
+function renderHumbleSankey(kinds) {
+  const e = escapeHtmlHumble;
+  const isCanonical = (file) => {
+    // Canonical files end with just .json/.md; multi-host sync copies have `.{host}-{hash}.json`
+    const base = file.replace(/\.(json|md|jsonl)$/, '');
+    const segments = base.split('.');
+    return segments.length === 1 || !segments.slice(1).some(s => /-[a-z0-9]{4,}$/i.test(s));
+  };
+  const lessons = (kinds.lessons || []).filter(l => isCanonical(l.file) && l.summary);
+  const retros = (kinds.retrospectives || []).filter(r => isCanonical(r.file));
+  if (lessons.length === 0) return '';
+
+  // Group lessons by applied_to_claudemd
+  const applied = lessons.filter(l => l.summary.applied_to_claudemd === true);
+  const unapplied = lessons.filter(l => l.summary.applied_to_claudemd !== true);
+
+  // Group lessons by source_retrospective
+  const retroToLessons = new Map();
+  for (const l of lessons) {
+    const src = l.summary.source_retrospective || '(unknown)';
+    if (!retroToLessons.has(src)) retroToLessons.set(src, []);
+    retroToLessons.get(src).push(l);
+  }
+  const retroNodes = [...retroToLessons.entries()]
+    .map(([src, ls]) => ({ src, count: ls.length, lessons: ls }))
+    .sort((a, b) => b.count - a.count);
+
+  if (retroNodes.length === 0) return '';
+
+  // Layout
+  const width = 720, rowH = 26, padTop = 24, colW = 220, nodePad = 6;
+  const leftX = 0, midX = colW, rightX = colW * 2;
+  const colWidth = 140;
+
+  // Retro nodes (left)
+  let y = padTop;
+  const retroPositions = retroNodes.map(rn => {
+    const h = Math.max(rowH, rn.count * 8);
+    const pos = { ...rn, x: leftX, y, h };
+    y += h + nodePad;
+    return pos;
+  });
+  const leftHeight = y;
+
+  // Lesson nodes (middle)
+  y = padTop;
+  const lessonPositions = lessons.map(l => {
+    const size = Math.max(14, Math.min(40, 14 + (l.summary.confirmed_count || 1) * 4));
+    const pos = { ...l, x: midX, y, h: size };
+    y += size + nodePad;
+    return pos;
+  });
+  const midHeight = y;
+
+  // Right nodes (applied / not)
+  const appliedH = Math.max(rowH, applied.length * 10);
+  const unappliedH = Math.max(rowH, unapplied.length * 10);
+  const rightTop = padTop;
+  const appliedY = rightTop;
+  const unappliedY = rightTop + appliedH + 12;
+  const rightHeight = unappliedY + unappliedH;
+
+  const height = Math.max(leftHeight, midHeight, rightHeight) + 20;
+
+  // Draw flows (paths as bezier curves)
+  const flows = [];
+  for (const lp of lessonPositions) {
+    const src = lp.summary.source_retrospective || '(unknown)';
+    const retro = retroPositions.find(r => r.src === src);
+    if (retro) {
+      const x1 = retro.x + colWidth, y1 = retro.y + retro.h / 2;
+      const x2 = lp.x, y2 = lp.y + lp.h / 2;
+      const cx = (x1 + x2) / 2;
+      flows.push(`<path d="M${x1} ${y1} C${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}" stroke="var(--accent)" stroke-width="2" fill="none" opacity="0.35"/>`);
+    }
+    // right side
+    const rX = lp.x + colWidth, rY = lp.y + lp.h / 2;
+    const rightYPos = lp.summary.applied_to_claudemd === true ? appliedY + appliedH / 2 : unappliedY + unappliedH / 2;
+    const color = lp.summary.applied_to_claudemd === true ? '#22c55e' : '#9ca3af';
+    const cx2 = (rX + rightX) / 2;
+    flows.push(`<path d="M${rX} ${rY} C${cx2} ${rY}, ${cx2} ${rightYPos}, ${rightX} ${rightYPos}" stroke="${color}" stroke-width="2" fill="none" opacity="0.35"/>`);
+  }
+
+  const retroRects = retroPositions.map(r => {
+    const label = r.src.length > 25 ? r.src.slice(0, 22) + '…' : r.src;
+    return `<g>
+      <rect x="${r.x}" y="${r.y}" width="${colWidth}" height="${r.h}" rx="4" fill="var(--surface)" stroke="var(--border)"/>
+      <text x="${r.x + 8}" y="${r.y + r.h / 2 + 4}" font-size="11" fill="var(--text)">${e(label)} (${r.count})</text>
+    </g>`;
+  }).join('');
+
+  const lessonRects = lessonPositions.map(lp => {
+    const id = lp.summary.id || lp.file.replace(/\.json$/, '');
+    const fill = lp.summary.type === 'STOP' ? '#fee2e2' : lp.summary.type === 'START' ? '#dcfce7' : 'var(--surface)';
+    const stroke = lp.summary.type === 'STOP' ? '#991b1b' : lp.summary.type === 'START' ? '#166534' : 'var(--border)';
+    const ct = lp.summary.confirmed_count || 1;
+    return `<g style="cursor:pointer" onclick="window.location.hash='#/humble/lessons/${encodeURIComponent(lp.file)}'">
+      <rect x="${lp.x}" y="${lp.y}" width="${colWidth}" height="${lp.h}" rx="3" fill="${fill}" stroke="${stroke}"/>
+      <text x="${lp.x + 8}" y="${lp.y + lp.h / 2 + 4}" font-size="11" fill="#111">${e(id)} · ${ct}×</text>
+    </g>`;
+  }).join('');
+
+  const rightRects = `
+    <g>
+      <rect x="${rightX}" y="${appliedY}" width="${colWidth}" height="${appliedH}" rx="4" fill="#dcfce7" stroke="#166534"/>
+      <text x="${rightX + 8}" y="${appliedY + appliedH / 2 + 4}" font-size="12" font-weight="600" fill="#166534">✓ Applied (${applied.length})</text>
+    </g>
+    <g>
+      <rect x="${rightX}" y="${unappliedY}" width="${colWidth}" height="${unappliedH}" rx="4" fill="#f3f4f6" stroke="#6b7280"/>
+      <text x="${rightX + 8}" y="${unappliedY + unappliedH / 2 + 4}" font-size="12" font-weight="600" fill="#374151">Not applied (${unapplied.length})</text>
+    </g>`;
+
+  const headers = `
+    <text x="${leftX + colWidth / 2}" y="14" font-size="10" text-anchor="middle" fill="var(--text-muted)">RETROSPECTIVE</text>
+    <text x="${midX + colWidth / 2}" y="14" font-size="10" text-anchor="middle" fill="var(--text-muted)">LESSON (size ∝ confirmed)</text>
+    <text x="${rightX + colWidth / 2}" y="14" font-size="10" text-anchor="middle" fill="var(--text-muted)">CLAUDE.md</text>
+  `;
+
+  return `<div class="card" style="margin-bottom:1rem;overflow-x:auto">
+    <h2 style="margin-top:0;font-size:0.95rem">Retrospective → Lesson → CLAUDE.md</h2>
+    <svg viewBox="0 0 ${rightX + colWidth} ${height}" style="width:100%;min-width:720px;height:${height}px">
+      ${headers}
+      ${flows.join('')}
+      ${retroRects}
+      ${lessonRects}
+      ${rightRects}
+    </svg>
+    <p class="text-muted" style="margin:.5rem 0 0;font-size:.75em">클릭 가능: 레슨 노드 → 상세 페이지</p>
+  </div>`;
 }
 
 async function renderHumbleDetail(kind, file) {
@@ -2957,7 +3342,7 @@ async function renderHumbleDetail(kind, file) {
   let body;
   if (res.json) {
     body = kind === 'lessons'
-      ? renderLessonDetail(res.json)
+      ? renderLessonDetail(res.json, file)
       : kind === 'retrospectives'
         ? renderRetrospectiveDetail(res.json)
         : `<div class="card"><pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--surface);padding:1rem;overflow:auto">${JSON.stringify(res.json, null, 2)}</pre></div>`;
@@ -2965,10 +3350,14 @@ async function renderHumbleDetail(kind, file) {
     body = `<div class="card"><div class="markdown-body">${renderMarkdown(res.content || '')}</div></div>`;
   }
 
+  const humbleRoutePath = `/humble/${encodeURIComponent(kind)}/${encodeURIComponent(file)}`;
   app.innerHTML = `
     <div class="view-header">
-      <h1>Humble — ${kind} / ${file}</h1>
-      <p><a href="#/humble" style="font-size:0.85rem">← Humble</a></p>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <a href="#/humble" style="font-size:0.85rem">← Humble</a>
+        ${pinButton(humbleRoutePath, `${kind} · ${file}`)}
+      </div>
+      <h1 style="margin-top:0.5rem">Humble — ${kind} / ${file}</h1>
     </div>
     ${body}
   `;
@@ -2997,7 +3386,7 @@ function escapeHtmlHumble(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-function renderLessonDetail(d) {
+function renderLessonDetail(d, file) {
   const e = escapeHtmlHumble;
   const headerBadges = [
     d.type && humbleBadge(d.type, d.type),
@@ -3005,17 +3394,29 @@ function renderLessonDetail(d) {
     d.action_type && `<code style="font-size:0.75rem">${e(d.action_type)}</code>`,
   ].filter(Boolean).join(' ');
 
+  // Inline toggle UI for `applied_to_claudemd`
+  const applied = d.applied_to_claudemd === true;
+  const appliedCell = file
+    ? `<label style="display:inline-flex;gap:6px;align-items:center;cursor:pointer">
+         <input type="checkbox" ${applied ? 'checked' : ''}
+                onchange="toggleLessonApplied('${encodeURIComponent(file)}', this)"
+                data-lesson-file="${encodeURIComponent(file)}" />
+         <span data-applied-label>${applied ? 'Yes' : 'No'}</span>
+         <span class="text-muted" style="font-size:.75em" data-applied-status></span>
+       </label>`
+    : (applied ? 'Yes' : 'No');
+
   const metaRows = Object.entries({
     'ID': d.id,
     'Confirmed': d.confirmed_count != null ? `${d.confirmed_count}×` : null,
-    'Applied to CLAUDE.md': d.applied_to_claudemd != null ? (d.applied_to_claudemd ? 'Yes' : 'No') : null,
+    'Applied to CLAUDE.md': appliedCell,
     'Source retrospective': d.source_retrospective,
     'Created': d.created_at,
     'Last confirmed': d.last_confirmed,
   }).filter(([, v]) => v != null && v !== '');
 
   const metaTable = `<table class="table" style="width:auto"><tbody>${
-    metaRows.map(([k, v]) => `<tr><td class="text-muted" style="padding-right:1rem;white-space:nowrap">${k}</td><td>${e(v)}</td></tr>`).join('')
+    metaRows.map(([k, v]) => `<tr><td class="text-muted" style="padding-right:1rem;white-space:nowrap">${k}</td><td>${k === 'Applied to CLAUDE.md' ? v : e(v)}</td></tr>`).join('')
   }</tbody></table>`;
 
   return `
@@ -3026,6 +3427,32 @@ function renderLessonDetail(d) {
     </div>
     <div class="card"><h3 style="margin-top:0;font-size:0.9rem">Metadata</h3>${metaTable}</div>
   `;
+}
+
+/** Flip applied_to_claudemd via PATCH. Optimistic UI: revert on error. */
+async function toggleLessonApplied(encFile, checkbox) {
+  const file = decodeURIComponent(encFile);
+  const newValue = checkbox.checked;
+  const labelEl = checkbox.parentElement.querySelector('[data-applied-label]');
+  const statusEl = checkbox.parentElement.querySelector('[data-applied-status]');
+  if (labelEl) labelEl.textContent = newValue ? 'Yes' : 'No';
+  if (statusEl) statusEl.textContent = 'saving…';
+  try {
+    const res = await fetch(apiUrl(`/humble/lessons/${encodeURIComponent(file)}`), {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ applied_to_claudemd: newValue }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.ok) throw new Error(body.message || body.error || `HTTP ${res.status}`);
+    if (statusEl) statusEl.textContent = '✓ saved';
+    setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 1500);
+  } catch (err) {
+    // Revert optimistic change
+    checkbox.checked = !newValue;
+    if (labelEl) labelEl.textContent = !newValue ? 'Yes' : 'No';
+    if (statusEl) statusEl.textContent = `⚠ ${err.message}`;
+  }
 }
 
 function renderRetrospectiveDetail(d) {
@@ -3249,6 +3676,7 @@ const ROUTES = [
   { pattern: /^\/solvers$/, handler: () => renderSolversList() },
   { pattern: /^\/solvers\/(.+)$/, handler: (m) => renderSolverDetail(m[1]) },
   { pattern: /^\/ops$/, handler: () => renderOpsList() },
+  { pattern: /^\/ops\/compare\?a=([^&]+)&b=(.+)$/, handler: (m) => renderOpCompare(decodeURIComponent(m[1]), decodeURIComponent(m[2])) },
   { pattern: /^\/ops\/(.+)$/, handler: (m) => renderOpDetail(m[1]) },
   { pattern: /^\/config$/, handler: () => renderConfig() },
   { pattern: /^\/traces$/, handler: () => renderTracesList() },
@@ -3293,6 +3721,10 @@ function route() {
     const match = path.match(pattern);
     if (match) {
       handler(match);
+      // Track detail-view routes in recent history (skip list pages)
+      if (path.split('/').length >= 3 && !path.endsWith('/')) {
+        trackRecent(path);
+      }
       return;
     }
   }
@@ -3301,6 +3733,93 @@ function route() {
 }
 
 window.addEventListener('hashchange', route);
+
+// ── Pin + Recent (localStorage-backed) ──────────────────────────────
+const PINS_KEY = 'xm-pins';
+const RECENT_KEY = 'xm-recent';
+const RECENT_MAX = 8;
+
+function wsScoped(key) {
+  return `${key}:${currentWsId || '_single'}`;
+}
+function getPins() {
+  try { return JSON.parse(localStorage.getItem(wsScoped(PINS_KEY)) || '[]'); } catch { return []; }
+}
+function savePins(list) {
+  try { localStorage.setItem(wsScoped(PINS_KEY), JSON.stringify(list)); } catch {}
+}
+function isPinned(path) {
+  return getPins().some(p => p.path === path);
+}
+function togglePin(path, label) {
+  const pins = getPins();
+  const idx = pins.findIndex(p => p.path === path);
+  if (idx >= 0) pins.splice(idx, 1);
+  else pins.unshift({ path, label, ts: Date.now() });
+  savePins(pins);
+  renderSideRail();
+  return idx < 0;
+}
+function getRecent() {
+  try { return JSON.parse(localStorage.getItem(wsScoped(RECENT_KEY)) || '[]'); } catch { return []; }
+}
+function trackRecent(path) {
+  const list = getRecent();
+  const existing = list.findIndex(r => r.path === path);
+  if (existing >= 0) list.splice(existing, 1);
+  list.unshift({ path, ts: Date.now() });
+  while (list.length > RECENT_MAX) list.pop();
+  try { localStorage.setItem(wsScoped(RECENT_KEY), JSON.stringify(list)); } catch {}
+  renderSideRail();
+}
+
+function prettyRailLabel(path) {
+  // /ops/foo.json → Op · foo.json (compact)
+  const m = path.match(/^\/([^/]+)\/(.+)$/);
+  if (!m) return path;
+  const section = m[1];
+  const file = decodeURIComponent(m[2]);
+  const short = file.length > 28 ? file.slice(0, 25) + '…' : file;
+  return `<span class="text-muted" style="font-size:.7em">${section}</span> ${escapeHtmlHumble(short)}`;
+}
+
+function renderSideRail() {
+  const railEl = document.getElementById('side-rail');
+  if (!railEl) return;
+  const pins = getPins();
+  const recent = getRecent();
+  const currentHash = window.location.hash.slice(1) || '/';
+
+  const section = (title, items, empty) => {
+    if (!items.length) {
+      return `<div style="padding:6px 14px;font-size:10px;color:var(--text-muted);text-transform:uppercase">${title}</div>
+        <div style="padding:2px 14px 8px;font-size:11px;color:var(--text-muted);font-style:italic">${empty}</div>`;
+    }
+    const rows = items.map(item => {
+      const active = item.path === currentHash;
+      const style = `display:block;padding:4px 14px;font-size:11px;text-decoration:none;color:var(--text);${active ? 'background:var(--accent);color:white' : ''}`;
+      return `<a href="#${item.path}" style="${style}" title="${escapeHtmlHumble(item.path)}">${prettyRailLabel(item.path)}</a>`;
+    }).join('');
+    return `<div style="padding:6px 14px;font-size:10px;color:var(--text-muted);text-transform:uppercase">${title}</div>${rows}`;
+  };
+
+  railEl.innerHTML = `
+    ${section('★ Pinned', pins, 'Pin any detail view (★ button)')}
+    <div style="height:6px"></div>
+    ${section('🕘 Recent', recent, 'Visit any detail view')}
+  `;
+}
+
+/** Pin button helper for detail views. Returns HTML string. */
+function pinButton(path, label) {
+  const pinned = isPinned(path);
+  return `<button
+    onclick="togglePin('${path.replace(/'/g, "\\'")}', '${(label||'').replace(/'/g, "\\'")}')"
+    title="${pinned ? 'Unpin' : 'Pin to sidebar'}"
+    style="background:none;border:1px solid var(--border);padding:4px 10px;cursor:pointer;border-radius:4px;font-size:.85em;color:${pinned ? '#eab308' : 'var(--text-muted)'}">
+    ${pinned ? '★ Pinned' : '☆ Pin'}
+  </button>`;
+}
 
 // Set sidebar brand to current project name
 fetchJSON('/api/health').then(h => {
@@ -3329,6 +3848,18 @@ fetchJSON('/api/health').then(h => {
       if (q) window.location.hash = '#/search/' + encodeURIComponent(q);
     }
   });
+
+  // Side rail for pins + recent (below search, above nav links)
+  const railDiv = document.createElement('div');
+  railDiv.id = 'side-rail';
+  railDiv.style.cssText = 'border-bottom:2px solid #333;padding:4px 0';
+  const navLinksEl = nav.querySelector('.nav-links');
+  if (navLinksEl) {
+    nav.insertBefore(railDiv, navLinksEl);
+  } else {
+    nav.appendChild(railDiv);
+  }
+  renderSideRail();
 })();
 
 // Theme toggle
