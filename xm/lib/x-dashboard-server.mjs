@@ -765,10 +765,14 @@ function handleOpList(xmRoot, req) {
   return jsonResponseWithETag({ data: results }, req);
 }
 
+// Op file names routinely contain dots (x-sync adds host suffixes like
+// ".{host}-{hash}.json"), so we use the same permissive rule as Humble
+// files: alphanumerics, dot, underscore, hyphen — no path separators.
+const OP_FILE_RE = /^[a-zA-Z0-9._-]+\.json$/;
+
 function handleOpDetail(xmRoot, file, req) {
-  const baseName = file.endsWith('.json') ? file.slice(0, -5) : file;
-  if (!isValidSegment(baseName)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
   const fileName = file.endsWith('.json') ? file : file + '.json';
+  if (!OP_FILE_RE.test(fileName)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
   const filePath = safeJoin(xmRoot, 'op', fileName);
   if (!filePath || !existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
   try {
