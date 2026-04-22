@@ -424,18 +424,25 @@ case "$CMD" in
     echo ""
     if [ "$DRY" = "1" ]; then
       echo "🔍 Dry run — would run:"
-      echo "   claude plugin install xm@xm -s user"
+      echo "   claude plugin marketplace update xm"
+      echo "   claude plugin update xm@xm"
       [ "$SKIP_CLI" = "0" ] && echo "   cp <cache>/xm/scripts/xm ~/.local/bin/xm"
       exit 0
     fi
 
-    # 4. Reinstall plugin via claude CLI
+    # 4. Refresh marketplace metadata, then upgrade plugin
+    #    - `marketplace update` is required: without it `plugin update/install`
+    #      sees only the stale cached marketplace.json and skips the upgrade.
+    #    - `plugin update` (not `install`) is required: `install` is a no-op
+    #      when the plugin is already installed at any version.
     if ! command -v claude >/dev/null 2>&1; then
       echo "xm update: 'claude' CLI not on PATH. Install it first." >&2
       exit 1
     fi
-    echo "→ claude plugin install xm@xm -s user"
-    claude plugin install xm@xm -s user 2>&1 | tail -3
+    echo "→ claude plugin marketplace update xm"
+    claude plugin marketplace update xm 2>&1 | tail -2
+    echo "→ claude plugin update xm@xm"
+    claude plugin update xm@xm 2>&1 | tail -3
 
     # 5. Refresh bash CLI binary from the newly-installed cache
     if [ "$SKIP_CLI" = "0" ]; then

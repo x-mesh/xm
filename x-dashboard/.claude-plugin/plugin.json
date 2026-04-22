@@ -1,6 +1,6 @@
 {
   "name": "dashboard",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Web dashboard for .xm project state — visualize builds, probes, solvers, reviews, evals, humble lessons, traces, memory",
   "author": {
     "name": "x-mesh"
