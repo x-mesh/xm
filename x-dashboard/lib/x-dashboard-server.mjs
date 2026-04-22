@@ -614,10 +614,14 @@ function handleProbeLatest(xmRoot, req) {
   }
 }
 
+// Shared permissive filename rule — matches host-suffixed sync copies
+// like "2026-04-05-global-xm-rethink.Jinwoos-MacBook-Pro-620.local-6339.json".
+// See also OP_FILE_RE / HUMBLE_FILE_RE usages.
+const PROBE_FILE_RE = /^[a-zA-Z0-9._-]+\.json$/;
+
 function handleProbeHistoryFile(xmRoot, file, req) {
-  const baseName = file.endsWith('.json') ? file.slice(0, -5) : file;
-  if (!isValidSegment(baseName)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
   const fileName = file.endsWith('.json') ? file : file + '.json';
+  if (!PROBE_FILE_RE.test(fileName)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
   const filePath = safeJoin(xmRoot, 'probe', 'history', fileName);
   if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
   if (!existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
