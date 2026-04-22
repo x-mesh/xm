@@ -169,6 +169,9 @@ Usage:
 const sub = process.argv[2] || 'help';
 const rest = process.argv.slice(3);
 
+// Mutation commands that should hot-reload the dashboard if it's running.
+const MUTATION_CMDS = new Set(['add', 'remove', 'rm', 'archive', 'unarchive', 'import', 'gc']);
+
 let code = 0;
 switch (sub) {
   case 'list': case 'ls': code = listCmd(rest); break;
@@ -184,4 +187,24 @@ switch (sub) {
     process.stderr.write(`Unknown subcommand: ${sub}\nRun: xm project help\n`);
     code = 2;
 }
+
+// Best-effort hot-reload signal to a running dashboard.
+// Awaited so process.exit doesn't terminate the pending fetch.
+// Silent on failure (dashboard not running, older version without the endpoint).
+if (code === 0 && MUTATION_CMDS.has(sub)) {
+  await notifyDashboardRescan();
+}
+
 process.exit(code);
+
+async function notifyDashboardRescan() {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 500);
+    await fetch('http://127.0.0.1:19841/api/rescan', {
+      method: 'POST',
+      signal: controller.signal,
+    }).catch(() => {});
+    clearTimeout(timer);
+  } catch {}
+}

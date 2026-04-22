@@ -1656,13 +1656,21 @@ server = Bun.serve({
       return Response.json({ status: 'shutting_down' });
     }
 
-    // ── POST /api/rescan — Re-scan workspaces ──────────────────
+    // ── POST /api/rescan — Re-scan workspaces (all modes) ──────
+    // Use from `xm project add` to hot-reload registry changes without
+    // restarting the server.
     if (req.method === 'POST' && path === '/api/rescan') {
-      if (SCAN_DIR) {
-        workspaces = scanWorkspaces(resolve(SCAN_DIR));
-        console.log(`[x-dashboard-server] Rescan: ${workspaces.length} workspaces from ${SCAN_DIR}`);
-      }
-      return Response.json({ workspaces: workspaces.length });
+      const before = workspaces.length;
+      const result = rebuildWorkspaces();
+      // Reset mtime marker so the interval watcher doesn't fire again for
+      // the same change we just picked up manually.
+      try { lastRegistryMtime = statSync(REGISTRY_PATH).mtimeMs; } catch {}
+      return Response.json({
+        workspaces: result.count,
+        source: result.source,
+        changed: result.count !== before,
+        before,
+      });
     }
 
     // ── JSON API ─────────────────────────────────────────────────
@@ -2239,10 +2247,20 @@ function loadProjectRegistry() {
   }
 }
 
-if (SCAN_DIR) {
-  workspaces = scanWorkspaces(resolve(SCAN_DIR));
-  console.log(`[x-dashboard-server] Multi-root: ${workspaces.length} workspaces from ${SCAN_DIR}`);
-} else {
+/**
+ * Rebuild `workspaces` from disk. Idempotent — can be called on startup
+ * or when the registry changes (via /api/rescan or mtime watcher).
+ * Returns { source: 'scan'|'registry'|'scan_roots'|'cwd', count, summary }.
+ */
+function rebuildWorkspaces({ silent = false } = {}) {
+  const log = silent ? () => {} : (msg) => console.log(`[x-dashboard-server] ${msg}`);
+
+  if (SCAN_DIR) {
+    workspaces = scanWorkspaces(resolve(SCAN_DIR));
+    log(`Multi-root: ${workspaces.length} workspaces from ${SCAN_DIR}`);
+    return { source: 'scan', count: workspaces.length };
+  }
+
   const registered = loadProjectRegistry();
   if (registered.length > 0) {
     workspaces = registered.map((p) => ({
@@ -2251,36 +2269,61 @@ if (SCAN_DIR) {
       path: p.path,
       xmRoot: join(p.path, '.xm'),
     }));
-    console.log(`[x-dashboard-server] Registry: ${workspaces.length} project(s) from ~/.xm/projects.json`);
-  } else {
-    // Legacy fallback: ~/.xm/config.json scan_roots
-    const globalConfigPath = join(homedir(), '.xm', 'config.json');
-    let scanRoots = null;
-    try {
-      const globalConfig = JSON.parse(readFileSync(globalConfigPath, 'utf8'));
-      if (Array.isArray(globalConfig.scan_roots) && globalConfig.scan_roots.length > 0) {
-        scanRoots = globalConfig.scan_roots;
-      }
-    } catch {}
-
-    if (scanRoots) {
-      workspaces = [];
-      for (const root of scanRoots) {
-        const resolved = resolve(root.replace(/^~/, homedir()));
-        workspaces.push(...scanWorkspaces(resolved));
-      }
-      const seen = new Set();
-      workspaces = workspaces.filter(w => {
-        if (seen.has(w.xmRoot)) return false;
-        seen.add(w.xmRoot);
-        return true;
-      });
-      console.log(`[x-dashboard-server] Multi-root: ${workspaces.length} workspaces from scan_roots: ${scanRoots.join(', ')}`);
-    } else {
-      workspaces = [{ id: basename(process.cwd()), name: basename(process.cwd()), path: process.cwd(), xmRoot: XM_ROOT }];
-      console.log('[x-dashboard-server] Single-project mode. Tip: run `xm project import` to register projects globally.');
-    }
+    log(`Registry: ${workspaces.length} project(s) from ~/.xm/projects.json`);
+    return { source: 'registry', count: workspaces.length };
   }
+
+  // Legacy fallback: ~/.xm/config.json scan_roots
+  const globalConfigPath = join(homedir(), '.xm', 'config.json');
+  let scanRoots = null;
+  try {
+    const globalConfig = JSON.parse(readFileSync(globalConfigPath, 'utf8'));
+    if (Array.isArray(globalConfig.scan_roots) && globalConfig.scan_roots.length > 0) {
+      scanRoots = globalConfig.scan_roots;
+    }
+  } catch {}
+
+  if (scanRoots) {
+    workspaces = [];
+    for (const root of scanRoots) {
+      const resolved = resolve(root.replace(/^~/, homedir()));
+      workspaces.push(...scanWorkspaces(resolved));
+    }
+    const seen = new Set();
+    workspaces = workspaces.filter(w => {
+      if (seen.has(w.xmRoot)) return false;
+      seen.add(w.xmRoot);
+      return true;
+    });
+    log(`Multi-root: ${workspaces.length} workspaces from scan_roots: ${scanRoots.join(', ')}`);
+    return { source: 'scan_roots', count: workspaces.length };
+  }
+
+  workspaces = [{ id: basename(process.cwd()), name: basename(process.cwd()), path: process.cwd(), xmRoot: XM_ROOT }];
+  log('Single-project mode. Tip: run `xm project import` to register projects globally.');
+  return { source: 'cwd', count: 1 };
+}
+
+rebuildWorkspaces();
+
+// Auto-rescan: watch ~/.xm/projects.json mtime so new `xm project add` entries
+// appear without a server restart. Cheap (single fs.stat per tick, 30s interval).
+const REGISTRY_PATH = join(homedir(), '.xm', 'projects.json');
+let lastRegistryMtime = 0;
+try { lastRegistryMtime = statSync(REGISTRY_PATH).mtimeMs; } catch {}
+if (!SCAN_DIR) {
+  setInterval(() => {
+    let mtime = 0;
+    try { mtime = statSync(REGISTRY_PATH).mtimeMs; } catch {}
+    if (mtime !== lastRegistryMtime) {
+      lastRegistryMtime = mtime;
+      const before = workspaces.length;
+      const result = rebuildWorkspaces({ silent: true });
+      if (result.count !== before) {
+        console.log(`[x-dashboard-server] Auto-rescan: ${before} → ${result.count} workspaces (${result.source})`);
+      }
+    }
+  }, 30_000).unref?.();
 }
 
 const dashboardUrl = `http://127.0.0.1:${PORT}`;
