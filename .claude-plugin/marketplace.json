@@ -46,7 +46,7 @@
     {
       "name": "op",
       "description": "Strategy orchestration — 18 strategies with self-scoring, --verify auto-validation, and compose presets",
-      "version": "2.0.5",
+      "version": "2.0.6",
       "author": {
         "name": "x-mesh"
       },
@@ -206,7 +206,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.0.18",
+      "version": "2.0.19",
       "author": {
         "name": "x-mesh"
       },
