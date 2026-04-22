@@ -4139,9 +4139,25 @@ function openPalette() {
   _paletteState = { overlay, input, list, selectedIndex: 0, items: [] };
 
   refreshPalette('');
-  input.focus();
   input.addEventListener('input', () => refreshPalette(input.value));
   input.addEventListener('keydown', onPaletteKey);
+
+  // Focus the palette input. Do this reliably:
+  //  1. Blur any currently-focused input (e.g. sidebar search) that would
+  //     otherwise keep Cmd+K-originated keystrokes.
+  //  2. Defer focus() to the next frame so the overlay is mounted and
+  //     Chromium doesn't return focus to the previous element after our
+  //     preventDefault'd keydown finishes bubbling.
+  if (document.activeElement && document.activeElement !== document.body) {
+    try { document.activeElement.blur(); } catch {}
+  }
+  requestAnimationFrame(() => {
+    input.focus();
+    // Backstop: if something stole focus, try once more.
+    if (document.activeElement !== input) {
+      setTimeout(() => input.focus(), 0);
+    }
+  });
 }
 
 function closePalette() {
