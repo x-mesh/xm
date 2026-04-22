@@ -4117,13 +4117,31 @@ let _paletteState = null;
 
 function openPalette() {
   if (_paletteState) return;
+  // Capture and temporarily disable the previously-focused element so it
+  // cannot reclaim focus when the keydown event finishes bubbling.
+  const prevFocus = document.activeElement && document.activeElement !== document.body
+    ? document.activeElement : null;
+  let prevTabIndex = null;
+  if (prevFocus) {
+    try {
+      prevFocus.blur();
+      // Make it un-focusable until palette closes
+      if (prevFocus.tabIndex !== -1) {
+        prevTabIndex = prevFocus.tabIndex;
+        prevFocus.tabIndex = -1;
+      }
+    } catch {}
+  }
+
   const overlay = document.createElement('div');
   overlay.id = 'palette-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding-top:10vh';
+  // tabindex=-1 + focus the overlay first so Safari can't bounce focus out
+  overlay.tabIndex = -1;
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding-top:10vh;outline:none';
   overlay.innerHTML = `
     <div id="palette-box" style="width:min(640px,90vw);background:var(--bg);border:1px solid var(--border);border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,0.4);overflow:hidden">
       <input id="palette-input" type="text" placeholder="Search routes, workspaces, pinned, recent…"
-        autocomplete="off" spellcheck="false"
+        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" autofocus
         style="width:100%;padding:16px 20px;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--text);font-size:15px;outline:none;box-sizing:border-box">
       <div id="palette-list" style="max-height:400px;overflow-y:auto"></div>
       <div style="padding:6px 16px;border-top:1px solid var(--border);font-size:.7em;color:var(--text-muted);display:flex;gap:16px">
@@ -4136,34 +4154,38 @@ function openPalette() {
 
   const input = overlay.querySelector('#palette-input');
   const list = overlay.querySelector('#palette-list');
-  _paletteState = { overlay, input, list, selectedIndex: 0, items: [] };
+  _paletteState = { overlay, input, list, selectedIndex: 0, items: [], prevFocus, prevTabIndex };
 
   refreshPalette('');
   input.addEventListener('input', () => refreshPalette(input.value));
   input.addEventListener('keydown', onPaletteKey);
 
-  // Focus the palette input. Do this reliably:
-  //  1. Blur any currently-focused input (e.g. sidebar search) that would
-  //     otherwise keep Cmd+K-originated keystrokes.
-  //  2. Defer focus() to the next frame so the overlay is mounted and
-  //     Chromium doesn't return focus to the previous element after our
-  //     preventDefault'd keydown finishes bubbling.
-  if (document.activeElement && document.activeElement !== document.body) {
-    try { document.activeElement.blur(); } catch {}
-  }
-  requestAnimationFrame(() => {
-    input.focus();
-    // Backstop: if something stole focus, try once more.
-    if (document.activeElement !== input) {
-      setTimeout(() => input.focus(), 0);
+  // Multi-stage focus attempt. Browsers (especially Chromium with an
+  // active input on the page) sometimes revert focus between stages.
+  const tryFocus = (stage) => {
+    if (!_paletteState || document.activeElement === input) return;
+    try {
+      input.focus({ preventScroll: true });
+      input.select?.();
+    } catch {}
+    if (stage < 4 && document.activeElement !== input) {
+      // Exponential retry: 0 → 16ms → 50ms → 100ms
+      const delay = stage === 0 ? 0 : stage === 1 ? 16 : stage === 2 ? 50 : 100;
+      setTimeout(() => tryFocus(stage + 1), delay);
     }
-  });
+  };
+  requestAnimationFrame(() => tryFocus(0));
 }
 
 function closePalette() {
   if (!_paletteState) return;
-  _paletteState.overlay.remove();
+  const { overlay, prevFocus, prevTabIndex } = _paletteState;
+  overlay.remove();
   _paletteState = null;
+  // Restore the previous element's tabIndex so keyboard nav isn't broken
+  if (prevFocus && prevTabIndex !== null) {
+    try { prevFocus.tabIndex = prevTabIndex; } catch {}
+  }
 }
 
 function refreshPalette(query) {

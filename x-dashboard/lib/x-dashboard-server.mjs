@@ -174,8 +174,15 @@ async function serveStatic(urlPath) {
     return new Response('Not found', { status: 404 });
   }
 
+  // no-cache tells browsers to revalidate every request. Combined with
+  // our JSON API's ETag handling, unchanged assets return 304 quickly,
+  // but the browser never serves a stale cached copy after we ship a
+  // fix (solves the common "hard-reload didn't pick up new JS" issue).
   return new Response(file, {
-    headers: { 'Content-Type': getMime(filePath) },
+    headers: {
+      'Content-Type': getMime(filePath),
+      'Cache-Control': 'no-cache, must-revalidate',
+    },
   });
 }
 
