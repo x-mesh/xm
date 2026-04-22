@@ -1,6 +1,7 @@
 // Workspace state
 let currentWsId = null;
 let multiRootMode = false;
+let knownWorkspaces = [];  // Cached list for Cmd+K palette; populated on init/switch
 
 // Model color palette (used in trace charts)
 const MODEL_COLORS = {
@@ -78,6 +79,7 @@ async function initWorkspaces() {
   if (res.error || !Array.isArray(res)) return;
 
   const workspaces = res;
+  knownWorkspaces = workspaces;  // Expose for palette (+ any other global consumer)
   if (workspaces.length <= 1 && !serverMultiRoot) {
     currentWsId = workspaces[0]?.id ?? null;
     multiRootMode = false;
@@ -4077,9 +4079,9 @@ const PALETTE_ROUTES = [
 
 function paletteItems() {
   const items = [...PALETTE_ROUTES];
-  // Workspaces (switch, not navigate)
-  if (multiRootMode && Array.isArray(workspaces)) {
-    for (const ws of workspaces) {
+  // Workspaces (switch, not navigate) — only in multi-root mode
+  if (multiRootMode && Array.isArray(knownWorkspaces)) {
+    for (const ws of knownWorkspaces) {
       items.push({
         path: null, wsSwitch: ws.id, label: ws.name || ws.id,
         kind: 'workspace', hint: ws.path || '',
