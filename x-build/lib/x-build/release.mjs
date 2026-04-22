@@ -318,8 +318,8 @@ export function cmdReleaseBump(args) {
     }
   }
 
-  // 3. kit meta bump (always patch)
-  const xkitEntry = marketplace.plugins.find(p => p.name === 'kit');
+  // 3. xm meta bump (always patch)
+  const xkitEntry = marketplace.plugins.find(p => p.name === 'xm');
   const xkitPluginJsonPath = join(cwd, 'xm', '.claude-plugin', 'plugin.json');
   let xkitOld = xkitEntry?.version || '0.0.0';
   let xkitNew = bumpVersion(xkitOld, 'patch');
@@ -330,7 +330,7 @@ export function cmdReleaseBump(args) {
     xkitPj.version = xkitNew;
     writeJSON(xkitPluginJsonPath, xkitPj);
   }
-  bumped.push({ name: 'kit', from: xkitOld, to: xkitNew, meta: true });
+  bumped.push({ name: 'xm', from: xkitOld, to: xkitNew, meta: true });
 
   // 4. Write marketplace.json
   writeJSON(marketplacePath, marketplace);

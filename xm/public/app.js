@@ -2708,7 +2708,7 @@ async function renderReviewDetail(file) {
 
   const res = await fetchJSON(apiUrl(`/review/history/${encodeURIComponent(file)}`));
   if (res.error) {
-    app.innerHTML = `<div class="view-header"><h1>Review</h1><p><a href="#/reviews" style="font-size:0.85rem">← Reviews</a></p></div><div class="card"><p class="text-muted">Error: ${res.error}</p></div>`;
+    app.innerHTML = `<div class="view-header"><h1>Review</h1><p><a href="#/reviews" style="font-size:0.85rem">← Reviews</a></p></div><div class="card"><p class="text-muted">Error: ${res.message || res.error}</p></div>`;
     return;
   }
 
@@ -2729,7 +2729,7 @@ async function renderEvalList() {
 
   const res = await fetchJSON(apiUrl('/eval'));
   if (res.error) {
-    app.innerHTML = `<div class="view-header"><h1>Eval</h1></div><div class="card"><p class="text-muted">Error: ${res.error}</p></div>`;
+    app.innerHTML = `<div class="view-header"><h1>Eval</h1></div><div class="card"><p class="text-muted">Error: ${res.message || res.error}</p></div>`;
     return;
   }
 
@@ -2783,7 +2783,7 @@ async function renderEvalDetail(category, file) {
 
   const res = await fetchJSON(apiUrl(`/eval/${encodeURIComponent(category)}/${encodeURIComponent(file)}`));
   if (res.error) {
-    app.innerHTML = `<div class="view-header"><h1>Eval</h1><p><a href="#/eval" style="font-size:0.85rem">← Eval</a></p></div><div class="card"><p class="text-muted">Error: ${res.error}</p></div>`;
+    app.innerHTML = `<div class="view-header"><h1>Eval</h1><p><a href="#/eval" style="font-size:0.85rem">← Eval</a></p></div><div class="card"><p class="text-muted">Error: ${res.message || res.error}</p></div>`;
     return;
   }
 
@@ -2808,7 +2808,7 @@ async function renderHumbleList() {
 
   const res = await fetchJSON(apiUrl('/humble'));
   if (res.error) {
-    app.innerHTML = `<div class="view-header"><h1>Humble</h1></div><div class="card"><p class="text-muted">Error: ${res.error}</p></div>`;
+    app.innerHTML = `<div class="view-header"><h1>Humble</h1></div><div class="card"><p class="text-muted">Error: ${res.message || res.error}</p></div>`;
     return;
   }
 
@@ -2867,20 +2867,121 @@ async function renderHumbleDetail(kind, file) {
 
   const res = await fetchJSON(apiUrl(`/humble/${encodeURIComponent(kind)}/${encodeURIComponent(file)}`));
   if (res.error) {
-    app.innerHTML = `<div class="view-header"><h1>Humble</h1><p><a href="#/humble" style="font-size:0.85rem">← Humble</a></p></div><div class="card"><p class="text-muted">Error: ${res.error}</p></div>`;
+    app.innerHTML = `<div class="view-header"><h1>Humble</h1><p><a href="#/humble" style="font-size:0.85rem">← Humble</a></p></div><div class="card"><p class="text-muted">Error: ${res.message || res.error}</p></div>`;
     return;
   }
 
-  const body = res.json
-    ? `<pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--surface);padding:1rem;overflow:auto">${JSON.stringify(res.json, null, 2)}</pre>`
-    : `<div class="markdown-body">${renderMarkdown(res.content || '')}</div>`;
+  let body;
+  if (res.json) {
+    body = kind === 'lessons'
+      ? renderLessonDetail(res.json)
+      : kind === 'retrospectives'
+        ? renderRetrospectiveDetail(res.json)
+        : `<div class="card"><pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--surface);padding:1rem;overflow:auto">${JSON.stringify(res.json, null, 2)}</pre></div>`;
+  } else {
+    body = `<div class="card"><div class="markdown-body">${renderMarkdown(res.content || '')}</div></div>`;
+  }
 
   app.innerHTML = `
     <div class="view-header">
       <h1>Humble — ${kind} / ${file}</h1>
       <p><a href="#/humble" style="font-size:0.85rem">← Humble</a></p>
     </div>
-    <div class="card">${body}</div>
+    ${body}
+  `;
+}
+
+// ── Humble detail renderers ─────────────────────────────────────────
+
+function humbleBadge(text, color) {
+  const palette = {
+    stop: 'background:#fee2e2;color:#991b1b',
+    start: 'background:#dcfce7;color:#166534',
+    active: 'background:#dbeafe;color:#1e40af',
+    recorded: 'background:#f3f4f6;color:#374151',
+    high: 'background:#fee2e2;color:#991b1b',
+    medium: 'background:#fef3c7;color:#92400e',
+    low: 'background:#dbeafe;color:#1e40af',
+  };
+  const style = palette[String(color).toLowerCase()] || 'background:var(--surface);color:var(--text)';
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:600;margin-right:4px;${style}">${text}</span>`;
+}
+
+function escapeHtmlHumble(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function renderLessonDetail(d) {
+  const e = escapeHtmlHumble;
+  const headerBadges = [
+    d.type && humbleBadge(d.type, d.type),
+    d.status && humbleBadge(d.status, d.status),
+    d.action_type && `<code style="font-size:0.75rem">${e(d.action_type)}</code>`,
+  ].filter(Boolean).join(' ');
+
+  const metaRows = Object.entries({
+    'ID': d.id,
+    'Confirmed': d.confirmed_count != null ? `${d.confirmed_count}×` : null,
+    'Applied to CLAUDE.md': d.applied_to_claudemd != null ? (d.applied_to_claudemd ? 'Yes' : 'No') : null,
+    'Source retrospective': d.source_retrospective,
+    'Created': d.created_at,
+    'Last confirmed': d.last_confirmed,
+  }).filter(([, v]) => v != null && v !== '');
+
+  const metaTable = `<table class="table" style="width:auto"><tbody>${
+    metaRows.map(([k, v]) => `<tr><td class="text-muted" style="padding-right:1rem;white-space:nowrap">${k}</td><td>${e(v)}</td></tr>`).join('')
+  }</tbody></table>`;
+
+  return `
+    <div class="card" style="margin-bottom:1rem">
+      <div style="margin-bottom:0.75rem">${headerBadges}</div>
+      ${d.content ? `<p style="font-size:1rem;line-height:1.5;margin:0 0 1rem 0">${e(d.content)}</p>` : ''}
+      ${d.reason ? `<div style="padding:0.75rem 1rem;border-left:3px solid var(--border);background:var(--surface)"><div class="text-muted" style="font-size:0.75rem;margin-bottom:0.25rem">REASON</div><p style="margin:0;font-size:0.9rem;line-height:1.5">${e(d.reason)}</p></div>` : ''}
+    </div>
+    <div class="card"><h3 style="margin-top:0;font-size:0.9rem">Metadata</h3>${metaTable}</div>
+  `;
+}
+
+function renderRetrospectiveDetail(d) {
+  const e = escapeHtmlHumble;
+  const section = (title, body) => body ? `<div class="card" style="margin-bottom:1rem"><h3 style="margin-top:0;font-size:0.95rem">${title}</h3>${body}</div>` : '';
+  const bulletList = (arr) => Array.isArray(arr) && arr.length
+    ? `<ul style="margin:0;padding-left:1.25rem;line-height:1.5">${arr.map(x => `<li style="margin-bottom:0.3rem">${e(x)}</li>`).join('')}</ul>`
+    : '';
+
+  const biasRows = Array.isArray(d.bias_tags) && d.bias_tags.length
+    ? `<table class="table"><thead><tr><th>Bias</th><th>Severity</th><th>Context</th></tr></thead><tbody>${
+        d.bias_tags.map(b => `<tr><td><code>${e(b.bias)}</code></td><td>${b.severity ? humbleBadge(b.severity, b.severity) : '—'}</td><td style="font-size:0.85rem">${e(b.context)}</td></tr>`).join('')
+      }</tbody></table>`
+    : '';
+
+  const header = [
+    d.type && humbleBadge(d.type, d.type),
+    d.timestamp && `<code class="text-muted" style="font-size:0.8rem">${e(d.timestamp)}</code>`,
+  ].filter(Boolean).join(' ');
+
+  const lessonsCreated = Array.isArray(d.lessons_created) && d.lessons_created.length
+    ? d.lessons_created.map(l => `<a href="#/humble/lessons/${encodeURIComponent(l)}.json" style="margin-right:6px"><code>${e(l)}</code></a>`).join('')
+    : '';
+
+  const checkin = d.commitment_checkin;
+  const checkinBody = checkin ? `
+    ${Array.isArray(checkin.previous_lessons) ? `<p class="text-muted" style="font-size:0.85rem;margin:0 0 0.5rem 0">Previous: ${checkin.previous_lessons.map(l => `<code>${e(l)}</code>`).join(' ')}</p>` : ''}
+    ${checkin.notes ? `<p style="margin:0;font-size:0.9rem;line-height:1.5">${e(checkin.notes)}</p>` : ''}
+  ` : '';
+
+  return `
+    <div class="card" style="margin-bottom:1rem">${header}</div>
+    ${section('Session Summary', d.session_summary ? `<p style="margin:0;line-height:1.5">${e(d.session_summary)}</p>` : '')}
+    ${section('Failures Identified', bulletList(d.failures_identified))}
+    ${section('Root Causes', bulletList(d.root_causes))}
+    ${section('Biases Detected', biasRows)}
+    ${section('Alternatives', d.alternatives_explored != null ? `<p style="margin:0"><code>${d.alternatives_explored}</code> explored${d.user_choice ? ` — chose <code>${e(d.user_choice)}</code>` : ''}</p>` : '')}
+    ${section('Lessons Created', lessonsCreated)}
+    ${section('Commitment Check-in', checkinBody)}
   `;
 }
 

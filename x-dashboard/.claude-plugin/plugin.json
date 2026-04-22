@@ -1,0 +1,18 @@
+{
+  "name": "dashboard",
+  "version": "2.0.5",
+  "description": "Web dashboard for .xm project state — visualize builds, probes, solvers, reviews, evals, humble lessons, traces, memory",
+  "author": {
+    "name": "x-mesh"
+  },
+  "repository": "https://github.com/x-mesh/xm",
+  "homepage": "https://github.com/x-mesh/xm",
+  "license": "MIT",
+  "keywords": [
+    "dashboard",
+    "visualization",
+    "web-ui",
+    "monitoring"
+  ],
+  "skills": "./skills/"
+}
