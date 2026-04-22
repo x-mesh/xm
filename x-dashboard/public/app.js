@@ -1932,7 +1932,17 @@ async function renderOpDetail(file) {
   const ts = data.completed_at ? new Date(data.completed_at).toLocaleString() : data.created_at ? new Date(data.created_at).toLocaleString() : '—';
   const stratClass = STRATEGY_BADGES[data.strategy] ?? 'badge-neutral';
 
-  // Outcome card
+  // Outcome card — summary can be string OR array of bullets
+  const summaryHtml = (() => {
+    const s = data.outcome?.summary;
+    if (!s) return '';
+    if (Array.isArray(s)) {
+      return `<ul style="margin:.75rem 0 0;padding-left:1.25rem;line-height:1.5">${
+        s.map(x => `<li style="margin-bottom:.25rem">${typeof x === 'string' ? escapeHtmlHumble(x) : escapeHtmlHumble(JSON.stringify(x))}</li>`).join('')
+      }</ul>`;
+    }
+    return `<p style="margin:.75rem 0 0">${escapeHtmlHumble(String(s))}</p>`;
+  })();
   const outcomeHtml = data.outcome ? `
     <div class="card" style="margin-top:1rem">
       <h2 style="margin:0 0 .75rem">Outcome</h2>
@@ -1940,8 +1950,62 @@ async function renderOpDetail(file) {
         <div><div style="font-size:1.3em;font-weight:700">${nullSafe(data.outcome.verdict, '—')}</div><span class="text-muted">Verdict</span></div>
         ${data.outcome.confidence != null ? `<div><div style="font-size:1.3em;font-weight:700">${data.outcome.confidence}/10</div><span class="text-muted">Confidence</span></div>` : ''}
       </div>
-      ${data.outcome.summary ? `<p style="margin:.75rem 0 0">${data.outcome.summary}</p>` : ''}
+      ${summaryHtml}
     </div>` : '';
+
+  // Themes / Ideas (brainstorm, council, etc.)
+  let themesHtml = '';
+  if (Array.isArray(data.themes) && data.themes.length > 0) {
+    const themeCards = data.themes.map(t => {
+      const ideas = Array.isArray(t.ideas) ? t.ideas : [];
+      const ideasList = ideas.map(i => {
+        if (typeof i === 'string') return `<li>${escapeHtmlHumble(i)}</li>`;
+        const label = i.title || i.name || i.id || '';
+        const body = i.description || i.content || i.text || '';
+        return `<li style="margin-bottom:.35rem">${label ? `<strong>${escapeHtmlHumble(label)}</strong>${body ? ' — ' : ''}` : ''}${escapeHtmlHumble(body)}</li>`;
+      }).join('');
+      return `<details ${ideas.length <= 5 ? 'open' : ''} style="margin-bottom:.5rem;border-left:3px solid var(--border);padding:.5rem .75rem">
+        <summary style="cursor:pointer;font-weight:600">
+          ${t.id ? `<code style="margin-right:6px">${escapeHtmlHumble(t.id)}</code>` : ''}${escapeHtmlHumble(t.name ?? 'Theme')} <span class="text-muted" style="font-weight:400;font-size:.85em">(${ideas.length})</span>
+        </summary>
+        ${ideas.length ? `<ul style="margin:.5rem 0 0;padding-left:1.25rem;line-height:1.5">${ideasList}</ul>` : ''}
+      </details>`;
+    }).join('');
+    themesHtml = `
+      <div class="card" style="margin-top:1rem">
+        <h2 style="margin:0 0 .75rem">Themes <span class="text-muted" style="font-size:.85em;font-weight:400">(${data.themes.length})</span></h2>
+        ${themeCards}
+      </div>`;
+  }
+
+  // Current surface (brainstorm / investigate: pre-analysis state)
+  let surfaceHtml = '';
+  if (data.current_surface && typeof data.current_surface === 'object') {
+    const rows = Object.entries(data.current_surface).map(([k, v]) =>
+      `<tr><td class="text-muted" style="white-space:nowrap;vertical-align:top;padding-right:1rem"><code>${escapeHtmlHumble(k)}</code></td><td>${escapeHtmlHumble(String(v))}</td></tr>`
+    ).join('');
+    surfaceHtml = `
+      <div class="card" style="margin-top:1rem">
+        <h2 style="margin:0 0 .75rem">Current Surface</h2>
+        <table class="table" style="width:auto"><tbody>${rows}</tbody></table>
+      </div>`;
+  }
+
+  // 4Q hallucination check
+  let fourQHtml = '';
+  if (data.four_q_check && typeof data.four_q_check === 'object') {
+    const statusBadge = (s) => humbleBadge(s, s === 'ok' ? 'active' : s === 'warn' ? 'medium' : s === 'fail' ? 'high' : 'low');
+    const rows = Object.entries(data.four_q_check).map(([k, v]) => {
+      const status = v?.status ?? '—';
+      const note = v?.note ?? '';
+      return `<tr><td><strong>${escapeHtmlHumble(k)}</strong></td><td>${statusBadge(status)}</td><td style="font-size:.85em">${escapeHtmlHumble(note)}</td></tr>`;
+    }).join('');
+    fourQHtml = `
+      <div class="card" style="margin-top:1rem">
+        <h2 style="margin:0 0 .75rem">4Q Check</h2>
+        <table class="table"><thead><tr><th>Check</th><th>Status</th><th>Note</th></tr></thead><tbody>${rows}</tbody></table>
+      </div>`;
+  }
 
   // Self-score card
   let scoreHtml = '';
@@ -1976,19 +2040,35 @@ async function renderOpDetail(file) {
       </div>`;
   }
 
-  // Rounds summary card
+  // Rounds summary card — strategies have heterogeneous per-phase fields
+  // (brainstorm: agents/mode/seed_angles/ideas_produced/deduplicated;
+  //  debate: round/phase/summary; etc.). Render what's present.
   let roundsHtml = '';
   if (Array.isArray(data.rounds_summary) && data.rounds_summary.length > 0) {
-    const rRows = data.rounds_summary.map(r =>
-      `<tr><td style="text-align:center">${r.round}</td><td>${nullSafe(r.phase)}</td><td>${nullSafe(r.summary)}</td></tr>`
-    ).join('');
+    const rCards = data.rounds_summary.map((r, i) => {
+      const head = `${r.round != null ? `Round ${r.round}` : `Phase ${i + 1}`}${r.phase ? ` — ${escapeHtmlHumble(r.phase)}` : ''}`;
+      const rows = Object.entries(r)
+        .filter(([k]) => k !== 'round' && k !== 'phase')
+        .map(([k, v]) => {
+          let display;
+          if (Array.isArray(v)) {
+            display = v.map(x => typeof x === 'string' ? `<code>${escapeHtmlHumble(x)}</code>` : escapeHtmlHumble(JSON.stringify(x))).join(' ');
+          } else if (typeof v === 'object' && v !== null) {
+            display = `<pre style="margin:0;font-size:.8em">${escapeHtmlHumble(JSON.stringify(v, null, 2))}</pre>`;
+          } else {
+            display = escapeHtmlHumble(String(v));
+          }
+          return `<tr><td class="text-muted" style="white-space:nowrap;padding-right:1rem;vertical-align:top">${escapeHtmlHumble(k)}</td><td>${display}</td></tr>`;
+        }).join('');
+      return `<div style="margin-bottom:.75rem;padding:.5rem .75rem;border-left:3px solid var(--border)">
+        <div style="font-weight:600;margin-bottom:.3rem">${head}</div>
+        ${rows ? `<table class="table" style="width:auto;font-size:.9em"><tbody>${rows}</tbody></table>` : ''}
+      </div>`;
+    }).join('');
     roundsHtml = `
       <div class="card" style="margin-top:1rem">
-        <h2 style="margin:0 0 .75rem">Rounds</h2>
-        <table class="table">
-          <thead><tr><th>#</th><th>Phase</th><th>Summary</th></tr></thead>
-          <tbody>${rRows}</tbody>
-        </table>
+        <h2 style="margin:0 0 .75rem">Rounds / Phases</h2>
+        ${rCards}
       </div>`;
   }
 
@@ -2009,9 +2089,12 @@ async function renderOpDetail(file) {
       <p class="text-muted" style="margin:4px 0 0">${ts}</p>
     </div>
     ${outcomeHtml}
-    ${scoreHtml}
+    ${themesHtml}
     ${participantsHtml}
     ${roundsHtml}
+    ${surfaceHtml}
+    ${fourQHtml}
+    ${scoreHtml}
     ${optsHtml}
   `;
 }
