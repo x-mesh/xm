@@ -229,17 +229,31 @@ case "$CMD" in
         | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
     }
 
-    # Local version — prefer repo plugin.json, fall back to cache
+    # Local version — installed_plugins.json is authoritative; fall back to cache scan
     LOCAL_VERSION=""
     LOCAL_SRC=""
-    if [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
-      LOCAL_VERSION="$(_read_version "$LIB/xm/.claude-plugin/plugin.json")"
-      LOCAL_SRC="$LIB/xm/.claude-plugin/plugin.json"
-    else
-      _cached_pj="$(ls -td "$LIB/xm"/*/.claude-plugin/plugin.json 2>/dev/null | head -1)"
-      if [ -n "$_cached_pj" ]; then
-        LOCAL_VERSION="$(_read_version "$_cached_pj")"
-        LOCAL_SRC="$_cached_pj"
+    if [ -f "$HOME/.claude/plugins/installed_plugins.json" ] && command -v node >/dev/null 2>&1; then
+      LOCAL_VERSION="$(node -e '
+        try {
+          const fs = require("fs");
+          const d = JSON.parse(fs.readFileSync(process.env.HOME + "/.claude/plugins/installed_plugins.json", "utf8"));
+          const xm = (d.plugins || {})["xm@xm"];
+          const entry = Array.isArray(xm) ? xm[0] : xm;
+          if (entry && entry.version) process.stdout.write(entry.version);
+        } catch {}
+      ' 2>/dev/null)"
+      [ -n "$LOCAL_VERSION" ] && LOCAL_SRC="installed_plugins.json"
+    fi
+    if [ -z "$LOCAL_VERSION" ]; then
+      if [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
+        LOCAL_VERSION="$(_read_version "$LIB/xm/.claude-plugin/plugin.json")"
+        LOCAL_SRC="$LIB/xm/.claude-plugin/plugin.json"
+      else
+        _cached_pj="$(ls -td "$LIB/xm"/*/.claude-plugin/plugin.json 2>/dev/null | head -1)"
+        if [ -n "$_cached_pj" ]; then
+          LOCAL_VERSION="$(_read_version "$_cached_pj")"
+          LOCAL_SRC="$_cached_pj"
+        fi
       fi
     fi
 
@@ -384,12 +398,27 @@ case "$CMD" in
     }
 
     # 1. Current installed version
+    # Primary: installed_plugins.json is authoritative (version-exact, not mtime-sorted)
+    # Fallback: scan cache directory
     LOCAL_VERSION=""
-    if [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
-      LOCAL_VERSION="$(_read_version "$LIB/xm/.claude-plugin/plugin.json")"
-    else
-      _cached_pj="$(ls -td "$LIB/xm"/*/.claude-plugin/plugin.json 2>/dev/null | head -1)"
-      [ -n "$_cached_pj" ] && LOCAL_VERSION="$(_read_version "$_cached_pj")"
+    if [ -f "$HOME/.claude/plugins/installed_plugins.json" ] && command -v node >/dev/null 2>&1; then
+      LOCAL_VERSION="$(node -e '
+        try {
+          const fs = require("fs");
+          const d = JSON.parse(fs.readFileSync(process.env.HOME + "/.claude/plugins/installed_plugins.json", "utf8"));
+          const xm = (d.plugins || {})["xm@xm"];
+          const entry = Array.isArray(xm) ? xm[0] : xm;
+          if (entry && entry.version) process.stdout.write(entry.version);
+        } catch {}
+      ' 2>/dev/null)"
+    fi
+    if [ -z "$LOCAL_VERSION" ]; then
+      if [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
+        LOCAL_VERSION="$(_read_version "$LIB/xm/.claude-plugin/plugin.json")"
+      else
+        _cached_pj="$(ls -td "$LIB/xm"/*/.claude-plugin/plugin.json 2>/dev/null | head -1)"
+        [ -n "$_cached_pj" ] && LOCAL_VERSION="$(_read_version "$_cached_pj")"
+      fi
     fi
 
     # 2. Remote latest version
@@ -443,10 +472,21 @@ case "$CMD" in
     claude plugin marketplace update xm 2>&1 | tail -2
     echo "→ claude plugin update xm@xm"
     claude plugin update xm@xm 2>&1 | tail -3
+    # If the expected version directory is still missing (update reported "already at latest"
+    # but cache was wiped), force a reinstall to materialize the files.
+    EXPECTED_CACHE_DIR="$HOME/.claude/plugins/cache/xm/xm/$REMOTE_VERSION"
+    if [ ! -d "$EXPECTED_CACHE_DIR" ]; then
+      echo "→ cache missing for $REMOTE_VERSION — reinstalling"
+      claude plugin install xm@xm 2>&1 | tail -3
+    fi
 
     # 5. Refresh bash CLI binary from the newly-installed cache
+    # Use the explicit REMOTE_VERSION path — avoids picking a stale version by mtime.
     if [ "$SKIP_CLI" = "0" ]; then
-      NEW_CACHE="$(ls -td "$HOME/.claude/plugins/cache/xm/xm"/*/scripts/xm 2>/dev/null | head -1)"
+      NEW_CACHE="$HOME/.claude/plugins/cache/xm/xm/$REMOTE_VERSION/scripts/xm"
+      if [ ! -f "$NEW_CACHE" ]; then
+        NEW_CACHE="$(ls -td "$HOME/.claude/plugins/cache/xm/xm"/*/scripts/xm 2>/dev/null | head -1)"
+      fi
       if [ -n "$NEW_CACHE" ] && [ -f "$NEW_CACHE" ]; then
         BIN_DIR="${XM_BIN_DIR:-$HOME/.local/bin}"
         mkdir -p "$BIN_DIR"
