@@ -498,6 +498,19 @@ case "$CMD" in
       fi
     fi
 
+    # 6. Refresh ~/.claude/commands/xm.md dispatcher + hook file + settings.json
+    #    Skill hook entries. Without this step the user has to know to run
+    #    `xm init` separately whenever the dispatcher/hook source changes —
+    #    a frequent UX regression for new aliases or hook updates.
+    NEW_SETUP="$HOME/.claude/plugins/cache/xm/xm/$REMOTE_VERSION/scripts/setup-global.mjs"
+    if [ ! -f "$NEW_SETUP" ]; then
+      NEW_SETUP="$(ls -td "$HOME/.claude/plugins/cache/xm/xm"/*/scripts/setup-global.mjs 2>/dev/null | head -1)"
+    fi
+    if [ -n "$NEW_SETUP" ] && [ -f "$NEW_SETUP" ] && command -v node >/dev/null 2>&1; then
+      echo "→ refreshing global hooks/dispatcher"
+      node "$NEW_SETUP" install 2>&1 | sed 's/^/    /'
+    fi
+
     echo ""
     echo "✅ Updated to $REMOTE_VERSION"
     echo "💡 Run /reload-plugins in Claude Code to activate new skills"
