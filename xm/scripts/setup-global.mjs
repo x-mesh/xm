@@ -18,14 +18,43 @@ const COMMANDS_DIR = path.join(CLAUDE_DIR, 'commands');
 const SETTINGS = path.join(CLAUDE_DIR, 'settings.json');
 const HOOK_FILENAME = 'xm-trace-session.mjs';
 const HOOK_DEST = path.join(HOOKS_DIR, HOOK_FILENAME);
-const HOOK_CMD_PRE = `node "${HOOK_DEST}" pre`;
-const HOOK_CMD_POST = `node "${HOOK_DEST}" post`;
+const NODE_BIN = resolveNodeBin();
+const HOOK_CMD_PRE = `"${NODE_BIN}" "${HOOK_DEST}" pre`;
+const HOOK_CMD_POST = `"${NODE_BIN}" "${HOOK_DEST}" post`;
 const XM_CMD_DEST = path.join(COMMANDS_DIR, 'xm.md');
+
+// Previous format (bare `node`) — cleaned up during install so users upgrading
+// from earlier xm versions don't end up with duplicate Skill hook entries.
+const PREVIOUS_HOOK_CMD_PRE = `node "${HOOK_DEST}" pre`;
+const PREVIOUS_HOOK_CMD_POST = `node "${HOOK_DEST}" post`;
 
 // Legacy (pre-rename) locations — cleaned up during install for migration.
 const LEGACY_HOOK_DEST = path.join(HOOKS_DIR, 'x-kit-trace-session.mjs');
 const LEGACY_HOOK_CMD_PRE = `node "${LEGACY_HOOK_DEST}" pre`;
 const LEGACY_HOOK_CMD_POST = `node "${LEGACY_HOOK_DEST}" post`;
+
+/**
+ * Resolve a stable absolute path to a node binary. Bare `node` in hook
+ * commands is fragile because Claude Code spawns hook subprocesses with
+ * a PATH that may not include version-manager shims (fnm/nvm) — and
+ * those shims live in ephemeral per-shell directories that disappear
+ * when the parent shell exits, producing `node:internal/modules/cjs/loader:1478`
+ * style failures at runtime.
+ *
+ * Prefer well-known system locations (Homebrew, Linux distro paths) over
+ * `process.execPath`, which is absolute but might be the ephemeral shim.
+ */
+function resolveNodeBin() {
+  const stable = [
+    '/opt/homebrew/bin/node',  // macOS Apple Silicon Homebrew
+    '/usr/local/bin/node',     // macOS Intel Homebrew / Linux manual install
+    '/usr/bin/node',           // Linux distro packages
+  ];
+  for (const p of stable) {
+    try { if (fs.existsSync(p)) return p; } catch { /* ignore */ }
+  }
+  return process.execPath;
+}
 
 function log(msg) { process.stdout.write(`[xm init] ${msg}\n`); }
 function warn(msg) { process.stderr.write(`[xm init] ${msg}\n`); }
@@ -140,13 +169,18 @@ function install(opts) {
     if (s.hooks) {
       const beforePre = JSON.stringify(s.hooks.PreToolUse || []);
       const beforePost = JSON.stringify(s.hooks.PostToolUse || []);
+      // Drop renamed-hook entries (pre-rename: x-kit-trace-session.mjs)
       s.hooks.PreToolUse = removeSkillHook(s.hooks.PreToolUse, LEGACY_HOOK_CMD_PRE);
       s.hooks.PostToolUse = removeSkillHook(s.hooks.PostToolUse, LEGACY_HOOK_CMD_POST);
+      // Drop bare-`node` entries from earlier xm versions so we don't end up
+      // with both formats wired after this install rewrites with absolute path.
+      s.hooks.PreToolUse = removeSkillHook(s.hooks.PreToolUse, PREVIOUS_HOOK_CMD_PRE);
+      s.hooks.PostToolUse = removeSkillHook(s.hooks.PostToolUse, PREVIOUS_HOOK_CMD_POST);
       const changed = JSON.stringify(s.hooks.PreToolUse || []) !== beforePre
         || JSON.stringify(s.hooks.PostToolUse || []) !== beforePost;
       if (changed) {
         writeSettings(s);
-        log('migrated: removed legacy hook entries from settings');
+        log('migrated: removed superseded hook entries from settings');
       }
     }
   }
