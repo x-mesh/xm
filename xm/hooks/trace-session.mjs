@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-const TRACED_PREFIXES = ['xm:x-'];
+const TRACED_PREFIXES = ['xm:'];
 
 function isTracedSkill(skill) {
   return TRACED_PREFIXES.some((p) => skill.startsWith(p));
