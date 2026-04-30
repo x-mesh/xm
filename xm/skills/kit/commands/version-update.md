@@ -62,14 +62,22 @@ Display the output to the user.
 
 ## xm update
 
-**MANDATORY: Always execute steps 1→2→3 in order. Never skip step 1 even if you think versions are current — the marketplace is a git clone and must be pulled before any comparison.**
+**MANDATORY: Always execute steps 1→2→3→4→5 in order. Never skip step 1 (marketplace must be pulled before comparison) or step 2 (`claude plugin update` aborts on a single malformed entry in `known_marketplaces.json`, and v1.x → v2.x leftovers like `x-mesh-x-kit`, `x-kit`, `xm-kit` cause exactly this failure).**
 
 1. Pull latest from remote (MUST run — do not skip):
 ```bash
 cd ~/.claude/plugins/marketplaces/xm:kit && git pull origin main 2>&1
 ```
 
-2. Then update plugins. If a specific plugin name is given (e.g. `xm update x-build`), update only that one:
+2. Pre-flight — sanitize `known_marketplaces.json` (MUST run — do not skip):
+
+`claude plugin update` validates the entire registry before doing anything. A single entry without `source`/`lastUpdated` aborts every update. The v2.0.0 marketplace rename (`x-kit` → `xm`) left orphan entries on users who installed during the `x-mesh/x-kit`, `xm-kit`, or `xm:kit` README eras. The sanitizer auto-removes only entries that are unambiguously broken (missing `source` AND with an install dir that is absent or empty); anything else is flagged for manual review. On a parse error it exits non-zero so you can inspect the file before continuing.
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lib/sanitize-marketplaces.mjs"
+```
+
+3. Then update plugins. If a specific plugin name is given (e.g. `xm update x-build`), update only that one:
 ```bash
 claude plugin update <plugin>@xm -s user
 ```
@@ -101,9 +109,9 @@ console.log('\n✅ Update complete. Run /reload-plugins to activate.');
 "
 ```
 
-3. After update, remind the user: "Run `/reload-plugins` or restart Claude Code to activate."
+4. After update, remind the user: "Run `/reload-plugins` or restart Claude Code to activate."
 
-4. After plugins are updated, check if hooks need updating too:
+5. After plugins are updated, check if hooks need updating too:
 ```
 💡 Hooks may have changed. Run `xm init` to update hooks and settings.
 ```
