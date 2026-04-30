@@ -490,8 +490,14 @@ case "$CMD" in
       if [ -n "$NEW_CACHE" ] && [ -f "$NEW_CACHE" ]; then
         BIN_DIR="${XM_BIN_DIR:-$HOME/.local/bin}"
         mkdir -p "$BIN_DIR"
-        cp "$NEW_CACHE" "$BIN_DIR/xm"
-        chmod +x "$BIN_DIR/xm"
+        # Atomic replace: write to temp + rename. A direct `cp` overwrites the
+        # currently-executing script's inode in place, causing bash to read
+        # garbage from the new bytes at its current offset and emit errors like
+        # `line 551: Structured: command not found`. `mv` swaps inodes so the
+        # running process keeps reading the original file until exit.
+        cp "$NEW_CACHE" "$BIN_DIR/xm.new"
+        chmod +x "$BIN_DIR/xm.new"
+        mv "$BIN_DIR/xm.new" "$BIN_DIR/xm"
         echo "→ refreshed $BIN_DIR/xm"
       else
         echo "⚠️  CLI binary source not found in cache (skipped)"
@@ -514,6 +520,9 @@ case "$CMD" in
     echo ""
     echo "✅ Updated to $REMOTE_VERSION"
     echo "💡 Run /reload-plugins in Claude Code to activate new skills"
+    # Explicit exit — defense in depth against any future self-rewrite landing
+    # before the case block ends.
+    exit 0
     ;;
 
   which)
