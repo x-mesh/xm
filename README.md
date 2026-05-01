@@ -160,6 +160,46 @@ The dashboard reads from a machine-local registry at `~/.xm/projects.json`. Once
 - **Worktrees**: a worktree of an already-registered repo is collapsed onto the main repo entry. Running `xm` from any worktree updates the same registry entry — no duplicates.
 - **Resolution priority**: `--scan` flag → `~/.xm/projects.json` → legacy `~/.xm/config.json` `scan_roots` → CWD only.
 
+### Multi-Tool Install (Cursor / Codex / Kiro / Antigravity)
+
+xm is published as a Claude Code marketplace plugin, but its 16 SKILLs can also be rendered into rule/steering formats consumed by other AI coding tools. A single source compiler (`xm/lib/install/install-cli.mjs`) emits per-tool artifacts.
+
+```bash
+# Preview what would be installed (no fs writes)
+node xm/lib/install/install-cli.mjs --list
+
+# Install for one or more tools, project-local (default)
+node xm/lib/install/install-cli.mjs --target cursor,codex,kiro,antigravity
+
+# User-global install (~/.cursor/, ~/.codex/, ~/.kiro/, ~/.gemini/)
+node xm/lib/install/install-cli.mjs --target cursor --global
+
+# Re-hash installed files against the manifest (R-SEC-13/15)
+node xm/lib/install/install-cli.mjs --verify --target cursor
+
+# Remove all xm-managed files; user content in AGENTS.md is preserved
+node xm/lib/install/install-cli.mjs --uninstall --target cursor,codex
+```
+
+**Per-tool layout:**
+
+| Tool | Skills | Slash invocation | Hook |
+|------|--------|-----------------|------|
+| Cursor | `.cursor/rules/xm-*.mdc` (frontmatter: `description`, `alwaysApply`) | agent-requested | `.cursor/hooks.json` (camelCase events) |
+| Codex CLI | `.codex/prompts/xm-*.md` (project) or `~/.codex/prompts/xm-*.md` (`--global`) + `AGENTS.md` index (≤ 16 KiB block) | `/prompts:xm-<plug>` | `.codex/hooks.json` / `~/.codex/hooks.json` (requires `[features] codex_hooks=true`) |
+| Kiro | `.kiro/steering/xm-*.md` (frontmatter: `inclusion: auto\|manual`) | n/a | `.kiro/hooks/xm-*.kiro.hook` (informational only — Kiro cannot block) |
+| Antigravity | `.agent/skills/xm-*.md` (project) or `~/.gemini/antigravity/skills/xm-*.md` (`--global`) + shared `AGENTS.md` index | agent-requested | not supported (no programmable hook API) |
+
+**Safety:**
+- `<!-- xm:BEGIN v2 --> ... <!-- xm:END -->` markers isolate xm content inside files shared with the user (AGENTS.md). Pre-existing user content is preserved.
+- Existing files are rotated to `.bak`, `.bak.1`, `.bak.2` (max 3 generations) on first overwrite. Symbolic links abort.
+- Lock files use `O_EXCL` atomic creation with a 60-second stale TTL.
+- Each install writes a manifest (`<install-root>/.<tool>/xm/manifest.json`) with SHA-256 + HMAC self-checksum. `--verify` recomputes hashes; `--uninstall` rolls back exactly the recorded files.
+- `R-SEC-02` supply-chain guard: source SKILL.md hashes are verified against `xm/skills.checksums.json` before render. `--allow-unverified` bypasses with a flagged audit entry.
+- Installs are idempotent — re-running with the same arguments produces zero diff.
+
+See [`docs/multi-tool-install.md`](docs/multi-tool-install.md) for the complete guide — capability matrix, per-tool install steps, manual verification in each IDE, security model, troubleshooting. The full design (PRD v2.1) is at [`.xm/build/projects/multi-tool-install/phases/02-plan/PRD.md`](.xm/build/projects/multi-tool-install/phases/02-plan/PRD.md).
+
 ## Quick Start
 
 ```bash
