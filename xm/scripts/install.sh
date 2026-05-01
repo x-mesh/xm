@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-# xm umbrella CLI installer
+# xm umbrella CLI installer (Claude Code marketplace only)
+#
+# This script installs the `xm` umbrella CLI for Claude Code via the
+# `.claude-plugin/marketplace.json` mechanism. It does NOT touch Cursor /
+# Codex / Kiro / Antigravity — for those, use:
+#
+#   node xm/lib/install/install-cli.mjs --target cursor,codex,kiro,antigravity
+#
+# See `.xm/build/projects/multi-tool-install/phases/02-plan/PRD.md` §15 Q4.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/xm/scripts/install.sh | bash
