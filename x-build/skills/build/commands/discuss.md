@@ -17,6 +17,22 @@ Multi-round requirements gathering with drill-down.
 - For each area, present 2-4 options as numbered choices
 - Collect answers
 - Generate CONTEXT.md with sections: Goal, Decisions, Constraints, Out of Scope, Assumptions
+
+**Optional `--grill` flag** (Round 1 only, opt-in):
+
+When invoked as `discuss --mode interview --grill`, traverse the 5 ambiguity dimensions explicitly before composing the gray-areas list. This forces dimension-coverage instead of relying on free-form inference.
+
+| Dimension | Probe |
+|-----------|-------|
+| **Scope** | What's in/out? Hidden assumptions about coverage (e.g., "support all 16 SKILLs" vs subset)? |
+| **Technical** | Competing architectures/strategies the user hasn't picked (e.g., compiler vs MCP server)? |
+| **Edge case** | Unusual inputs/states/failures (e.g., conflicting marker blocks, partial installs)? |
+| **Success criteria** | How is "works" measured (e.g., file integrity vs IDE-level functional correctness)? |
+| **Constraint** | Hard limits — version compat, security, scope, time? |
+
+For each dimension, list 1-3 ambiguities. Output up to 15 items total. Then merge into the standard gray-areas list, deduping. Use this when the request is broad ("add multi-tool support") or domain-novel — skip when the request is narrow ("rename function X to Y").
+
+A/B verified (2026-05-02): on the multi-tool install request, structured grilling caught 4/6 ground-truth ambiguities vs 2/6 for free-form, with zero noise — `Edge case` and `Success criteria` dimensions were the highest-yield additions.
 - **Completeness check**: After saving CONTEXT.md, evaluate coverage against `completeness_dimensions` from JSON output:
   - For each dimension (functional_requirements, non_functional_requirements, constraints, error_handling, security, performance, data_model, integrations):
     - Rate coverage: `covered` | `partial` | `missing`
