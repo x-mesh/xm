@@ -550,6 +550,7 @@ Commands:
   trace <subcmd>                      Execution traces
   sync push|pull|config               Multi-machine .xm sync
   solver <subcmd>                     Structured problem solving
+  install [--target T] [--global]     Install xm SKILLs into Cursor/Codex/Kiro/Antigravity
   version                             Installed xm version
   doctor                              Health check: local vs remote version, hooks, dashboard
   update [--force|--dry-run]          Update to latest remote (refreshes plugin + CLI binary)
@@ -563,6 +564,16 @@ Env:
 
 Run 'xm <command> --help' for subcommand details.
 EOF
+    ;;
+
+  install)
+    LIB_PATH="$(plugin_lib xm lib)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/install/install-cli.mjs" ]; then
+      echo "xm install: install-cli.mjs not found under $LIB" >&2
+      echo "  Update xm: xm update" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/install/install-cli.mjs" "$@"
     ;;
 
   *)
