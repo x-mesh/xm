@@ -417,7 +417,6 @@ export function run(argv) {
   // Real install — all four renderers wired (Phase B/C/D/E).
   const cwd = process.cwd();
   const lines = [];
-  let exit = 0;
   for (const target of targets) {
     const installRoot = args.scope === 'global' ? homedir() : cwd;
     const ctx = {
@@ -491,7 +490,9 @@ export function run(argv) {
       // SHA of what is actually on disk so `--verify` can compare like-for-like.
       let recordedContent = out.content;
       if (out.kind === 'merge-marker') {
-        try { recordedContent = readFileSync(abs, 'utf8'); } catch { /* fall back to block */ }
+        try { recordedContent = readFileSync(abs, 'utf8'); } catch (e) {
+          warnings += `  WARN: could not re-read ${abs} for manifest hash: ${/** @type {Error} */ (e).message}\n`;
+        }
       }
       manifestEntries.push({
         relativePath: out.relativePath,
@@ -550,7 +551,7 @@ export function run(argv) {
     for (const w of skillOuts.warnings) lines.push(`  WARN ${w}`);
     for (const n of sharedOuts.notes) lines.push(`  note: ${n}`);
   }
-  return { exitCode: exit, stdout: warnings + lines.join('\n') + '\n', stderr: '' };
+  return { exitCode: 0, stdout: warnings + lines.join('\n') + '\n', stderr: '' };
 }
 
 // CLI entry guard: only exec if invoked directly.

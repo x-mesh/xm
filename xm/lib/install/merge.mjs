@@ -173,6 +173,10 @@ export function writeOverwrite(filePath, content, opts = {}) {
   }
   const release = acquireLock(filePath);
   try {
+    // Re-check symlink under lock to close TOCTOU window (R-SEC-05).
+    if (existsSync(filePath) && isSymlink(filePath)) {
+      throw new Error(`refusing to overwrite symlink (post-lock): ${filePath} (R-SEC-05)`);
+    }
     const backup = rotateBackup(filePath);
     atomicWrite(filePath, content, opts);
     return {
@@ -205,39 +209,39 @@ export function writeMergeMarker(filePath, blockContent, opts = {}) {
     );
   }
 
-  let nextContent;
-  let pre = '';
-  let post = '';
-  let hadBlock = false;
-  if (existsSync(filePath)) {
-    const before = readFileSync(filePath, 'utf8');
-    const begin = before.indexOf(MARKER_BEGIN);
-    const end = before.indexOf(MARKER_END);
-    if (begin !== -1 && end !== -1 && begin < end) {
-      hadBlock = true;
-      pre = before.slice(0, begin);
-      post = before.slice(end + MARKER_END.length);
-      // Drop the linefeed immediately after END if present, to avoid double blank lines.
-      if (post.startsWith('\n')) post = post.slice(1);
-    } else if (begin !== -1 || end !== -1) {
-      throw new Error(
-        `marker mismatch in ${filePath}: BEGIN at ${begin}, END at ${end}. Manual repair required.`
-      );
-    } else {
-      // No prior block — append at end.
-      pre = before.endsWith('\n') ? before : `${before}\n`;
-    }
-    nextContent = `${pre}${block}${post}`;
-    if (nextContent === before) {
-      return { path: filePath, action: 'unchanged', backupTaken: false };
-    }
-  } else {
-    nextContent = block;
-  }
-
-  const existedBefore = existsSync(filePath);
   const release = acquireLock(filePath);
   try {
+    // Read file under lock to close TOCTOU window (R-SEC-05).
+    let nextContent;
+    let pre = '';
+    let post = '';
+    let hadBlock = false;
+    const existedBefore = existsSync(filePath);
+    if (existedBefore) {
+      const before = readFileSync(filePath, 'utf8');
+      const begin = before.indexOf(MARKER_BEGIN);
+      const end = before.indexOf(MARKER_END);
+      if (begin !== -1 && end !== -1 && begin < end) {
+        hadBlock = true;
+        pre = before.slice(0, begin);
+        post = before.slice(end + MARKER_END.length);
+        // Drop the linefeed immediately after END if present, to avoid double blank lines.
+        if (post.startsWith('\n')) post = post.slice(1);
+      } else if (begin !== -1 || end !== -1) {
+        throw new Error(
+          `marker mismatch in ${filePath}: BEGIN at ${begin}, END at ${end}. Manual repair required.`
+        );
+      } else {
+        // No prior block — append at end.
+        pre = before.endsWith('\n') ? before : `${before}\n`;
+      }
+      nextContent = `${pre}${block}${post}`;
+      if (nextContent === before) {
+        return { path: filePath, action: 'unchanged', backupTaken: false };
+      }
+    } else {
+      nextContent = block;
+    }
     let backup = false;
     if (existedBefore) {
       backup = rotateBackup(filePath);
