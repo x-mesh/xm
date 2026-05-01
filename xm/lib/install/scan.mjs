@@ -54,6 +54,9 @@ function parseFrontmatter(block) {
       currentList = 'allowedTools';
       continue;
     }
+    if (value.trim() === '|' || value.trim() === '>') {
+      process.stderr.write(`WARN scan: multiline YAML not supported (${key}: ${value.trim()}) — only the first line is captured.\n`);
+    }
     raw[key] = stripQuotes(value);
   }
   return {
