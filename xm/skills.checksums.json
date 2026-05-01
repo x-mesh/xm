@@ -1,0 +1,86 @@
+{
+  "generatedAt": 1777596350587,
+  "version": 1,
+  "skills": [
+    {
+      "plugin": "agent",
+      "sha256": "11cfbd982b1947e0b2e402079981e383ca6d590c3258c08cd306f714ac2f9b87",
+      "bytes": 18893
+    },
+    {
+      "plugin": "build",
+      "sha256": "2f50cbfde035112df8b3bcbc338996cb70e1cdb2f89608cb8a8107a405d635b0",
+      "bytes": 21224
+    },
+    {
+      "plugin": "dashboard",
+      "sha256": "470dbef6703386028a6d92ba622102192f49a836af37e77b34495bea3d1b66f9",
+      "bytes": 3738
+    },
+    {
+      "plugin": "eval",
+      "sha256": "08f5e1c74e147af59edb33615dfee92fe4c30e9c925f0ea94af5e39bd6d34d0c",
+      "bytes": 11028
+    },
+    {
+      "plugin": "handoff",
+      "sha256": "203a38882e2536672bb31e493ec0d7c60f851a553f5bf581a496714449e1cda1",
+      "bytes": 2511
+    },
+    {
+      "plugin": "handon",
+      "sha256": "20446c436545fab5bafce8fa2a29d57b91aada72a8931b287dcfef8599ffd6b6",
+      "bytes": 3371
+    },
+    {
+      "plugin": "humble",
+      "sha256": "8c9cc2d87a97e61b9fec3ff242455ee415649e7c2a51e2b10fd2262c2053b196",
+      "bytes": 13333
+    },
+    {
+      "plugin": "kit",
+      "sha256": "844703c3dab4634361a2b3868d0c6b69b3c012082401223a65359594cb3f710a",
+      "bytes": 12650
+    },
+    {
+      "plugin": "memory",
+      "sha256": "97fb876308c6962a0c577cde26830b4d167403b7da063b6f9ddfe3907ed78be4",
+      "bytes": 11276
+    },
+    {
+      "plugin": "op",
+      "sha256": "1a6271bcbec6c332a4366c6fe87bca24651d5c0ffc55f0b556add4df44dff6da",
+      "bytes": 26698
+    },
+    {
+      "plugin": "probe",
+      "sha256": "62d7460f9fc83c3b518f778efe00e13121323bdb689186994cdde7688aa7318f",
+      "bytes": 11241
+    },
+    {
+      "plugin": "review",
+      "sha256": "90028092c7c751c4d2252ecf2a59a0dbbdf9877b10449ea4bb6fd4e9e7d49177",
+      "bytes": 12203
+    },
+    {
+      "plugin": "ship",
+      "sha256": "7ea442f62fa96311d67d5b54bec5361bd5aa08112aaa211405301f13b6b6f16f",
+      "bytes": 12673
+    },
+    {
+      "plugin": "solver",
+      "sha256": "552b1d8f3693ff08107b7becd6b6970a69c41674c6ea78534065a7464de67ab9",
+      "bytes": 14862
+    },
+    {
+      "plugin": "sync",
+      "sha256": "bc8fe5d9245851bb65606e7587e98407f812c344dca1d9edc10b484d5842ca81",
+      "bytes": 8660
+    },
+    {
+      "plugin": "trace",
+      "sha256": "e8625472b595cf383b78ee1969660ba989a06344e815a214a31a6fa09ec4d10e",
+      "bytes": 11489
+    }
+  ]
+}
