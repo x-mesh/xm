@@ -36,7 +36,21 @@ import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO_DEFAULT = resolve(HERE, '..', '..', '..');  // xm/lib/install/.. = xm/lib/.. = xm/.. = repo root
+
+// HERE is .../lib/install. Default skills/lib paths differ by layout:
+//   - source repo:   HERE/../../.. = <repo>     → skills at xm/skills, lib at xm/lib
+//   - plugin cache:  HERE/../..    = <plug>     → skills at <plug>/skills, lib at <plug>/lib
+// Probe cache layout first; the marketplace cache puts the version dir between
+// the plugin root and lib/, which made the old `../../..` jump one level too high.
+function inferDefaultPaths(here) {
+  const pluginRoot = resolve(here, '..', '..');
+  if (existsSync(resolve(pluginRoot, 'skills')) && existsSync(resolve(pluginRoot, 'lib'))) {
+    return { skillsDir: resolve(pluginRoot, 'skills'), libDir: resolve(pluginRoot, 'lib') };
+  }
+  const repoRoot = resolve(here, '..', '..', '..');
+  return { skillsDir: resolve(repoRoot, 'xm', 'skills'), libDir: resolve(repoRoot, 'xm', 'lib') };
+}
+const DEFAULT_PATHS = inferDefaultPaths(HERE);
 
 /**
  * @typedef {Object} ParsedArgs
@@ -74,8 +88,8 @@ export function parseArgs(argv) {
     help: false,
     scope: 'local',
     targets: null,
-    skillsDir: resolve(REPO_DEFAULT, 'xm', 'skills'),
-    libDir: resolve(REPO_DEFAULT, 'xm', 'lib'),
+    skillsDir: DEFAULT_PATHS.skillsDir,
+    libDir: DEFAULT_PATHS.libDir,
     only: [],
   };
   for (let i = 0; i < argv.length; i++) {

@@ -573,7 +573,16 @@ EOF
       echo "  Update xm: xm update" >&2
       exit 1
     fi
-    node "$LIB_PATH/install/install-cli.mjs" "$@"
+    # Explicitly pass --skills-dir/--lib-dir so install-cli doesn't have to
+    # guess the layout. User-supplied "$@" appears after ours; install-cli's
+    # last-wins parser lets users override either one.
+    PLUGIN_ROOT="$(dirname "$LIB_PATH")"
+    SKILLS_DIR="$PLUGIN_ROOT/skills"
+    [ -d "$SKILLS_DIR" ] || SKILLS_DIR="$PLUGIN_ROOT/xm/skills"   # source-repo layout
+    node "$LIB_PATH/install/install-cli.mjs" \
+      --skills-dir "$SKILLS_DIR" \
+      --lib-dir "$LIB_PATH" \
+      "$@"
     ;;
 
   *)
