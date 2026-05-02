@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import {
   mkdtempSync, mkdirSync, copyFileSync, readdirSync, readFileSync, writeFileSync,
-  existsSync, statSync, unlinkSync, chmodSync, symlinkSync,
+  existsSync, statSync, unlinkSync, chmodSync, symlinkSync, cpSync, realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -283,6 +283,35 @@ describe('manifest — selfChecksum tamper (H9 + H1)', () => {
     // must not include the resolved absolute path that would leak filesystem
     // structure outside installRoot.
     expect(r.stdout).not.toMatch(/^\/etc\/passwd|\s\/etc\/passwd/m);
+  });
+});
+
+// Layout auto-detection: install-cli must default skills/lib paths correctly
+// in BOTH the source-repo layout (HERE/../../..) AND the marketplace plugin
+// cache layout (HERE/../..), where the cache inserts a version directory.
+// Regression: previously `../../..` jumped one level too high in the cache,
+// producing "skillsDir not found: .../xm/xm/skills" when invoked via `xm install`.
+describe('install-cli — layout auto-detection', () => {
+  test('plugin-cache layout: <root>/lib/install + <root>/skills resolves without --skills-dir', () => {
+    // realpathSync collapses macOS /var → /private/var so install-cli's
+    // invokedDirectly guard (which compares argv[1] against import.meta.url)
+    // matches; otherwise the script imports cleanly and exits silently.
+    const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'xm-cache-layout-')));
+    cpSync(join(LIB, 'install'), join(tmp, 'lib', 'install'), { recursive: true });
+    cpSync(SKILLS, join(tmp, 'skills'), { recursive: true });
+    copyFileSync(join(REPO, 'xm', 'skills.checksums.json'), join(tmp, 'skills.checksums.json'));
+    const cli = join(tmp, 'lib', 'install', 'install-cli.mjs');
+    const r = spawnSync('node', [cli, '--list'], { encoding: 'utf8', timeout: 30_000 });
+    expect(r.stderr).not.toMatch(/skillsDir not found/);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/# cursor/);
+  });
+
+  test('source-repo layout: HERE/../../.. with xm/skills still resolves without --skills-dir', () => {
+    const r = spawnSync('node', [CLI, '--list'], { encoding: 'utf8', timeout: 30_000 });
+    expect(r.stderr).not.toMatch(/skillsDir not found/);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/# cursor/);
   });
 });
 
