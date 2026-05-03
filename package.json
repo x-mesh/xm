@@ -1,6 +1,6 @@
 {
   "name": "xm",
-  "version": "2.1.7",
+  "version": "2.1.8",
   "description": "x-mesh agent toolkit for Claude Code — project harness, strategy orchestration, and more",
   "type": "module",
   "keywords": [
@@ -22,5 +22,8 @@
   "homepage": "https://github.com/x-mesh/xm",
   "engines": {
     "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "fast-check": "^4.7.0"
   }
 }

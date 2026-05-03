@@ -29,7 +29,7 @@ import { replaceRefLinks } from '../util/inline-references.mjs';
 
 /**
  * Render Kiro frontmatter (subset our renderer uses).
- * @param {{ inclusion: 'always'|'fileMatch'|'manual'|'auto', name?: string, description?: string, fileMatchPattern?: string|string[] }} fm
+ * @param {{ inclusion: 'always'|'fileMatch'|'manual'|'auto', description?: string, fileMatchPattern?: string|string[] }} fm
  * @returns {string}
  */
 export function renderKiroFrontmatter(fm) {
@@ -42,7 +42,7 @@ export function renderKiroFrontmatter(fm) {
       lines.push(`fileMatchPattern: ${quoteYaml(fm.fileMatchPattern)}`);
     }
   }
-  if (fm.name !== undefined) lines.push(`name: ${fm.name}`);
+  // name field removed — Kiro standard frontmatter does not include name
   if (fm.description !== undefined) lines.push(`description: ${quoteYaml(fm.description)}`);
   lines.push('---');
   return lines.join('\n') + '\n\n';
@@ -102,7 +102,6 @@ export function renderKiroWithDiagnostics(skills, ctx) {
     }
     const fm = renderKiroFrontmatter({
       inclusion: 'auto',
-      name: ruleBase,
       description,
     });
     inclusionCounts.auto++;
@@ -116,7 +115,6 @@ export function renderKiroWithDiagnostics(skills, ctx) {
       const flatRef = flattenRefPath(ref.relativePath);
       const refFm = renderKiroFrontmatter({
         inclusion: 'manual',
-        name: `${ruleBase}-ref-${flatRef}`,
         description: `Reference: ${ref.name} (companion to ${ruleBase}).`,
       });
       inclusionCounts.manual++;

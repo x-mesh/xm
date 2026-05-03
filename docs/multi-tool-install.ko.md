@@ -135,15 +135,19 @@ node xm/lib/install/install-cli.mjs --target kiro
 생성:
 - `.kiro/steering/xm-<plug>.md` × 16 — `inclusion: auto` (Kiro가 LLM에게 로딩 여부 질의)
 - `.kiro/steering/xm-<plug>-ref-<name>.md` × 23 — `inclusion: manual` (명시 호출 시만 로드)
-- `.kiro/hooks/xm-pretooluse-0.kiro.hook` — JSON 훅; **연산과 병렬 실행, 차단 불가** (R-SEC-09 한계)
+- `.kiro/hooks/xm-<event>-<index>.kiro.hook` — JSON 훅 (변환 가능한 Claude 훅당 1파일); 도구 이벤트는 `when.toolTypes[]`, 파일 이벤트는 `when.patterns[]` 사용; `version: "1.0.0"` (semver). **연산과 병렬 실행, 차단 불가** (R-SEC-09 한계)
+- `.kiro/hooks/xm-pretooluse-1.kiro.hook` (등) — trace-session 훅은 **best-effort**로 변환 (`toolTypes: ["*"]`); Kiro에 Skill 매처 대응 없음
 - `.kiro/xm/manifest.json`
 
 Kiro에서 검증:
 1. Kiro로 프로젝트 열기. "Steering" 패널에 xm-* 엔트리 표시.
 2. "xm build가 뭐 하는 거야?" — `inclusion: auto`가 description으로 매칭해 `xm-build.md` 자동 첨부.
 3. inclusion 참조: `#xm-op-ref-strategies`로 manual-inclusion 파일 호출.
+4. `.kiro/hooks/` 확인 — 훅 파일에 `version: "1.0.0"`, `when.toolTypes` (배열, 도구 이벤트), `enabled`/`when.tool` 필드 부재 확인. trace-session 훅은 `toolTypes: ["*"]`와 description에 "best-effort" 포함.
 
 > **훅 의미가 Claude/Cursor와 다름.** Kiro의 `runCommand`는 도구 호출과 병렬 실행 — exit code로 차단 불가. 훅의 `description` 필드와 install stdout에 명시. 차단이 필요하면 Cursor 또는 Codex 사용.
+
+> **Trace-session 훅**은 `toolTypes: ["*"]` (모든 도구 호출에 트리거)로 best-effort 변환됩니다. 원본 Claude의 `Skill` 매처는 Kiro에 대응이 없으며, 훅의 description에 이 근사치를 안내합니다.
 
 ### Antigravity
 

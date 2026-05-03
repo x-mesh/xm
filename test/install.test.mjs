@@ -335,3 +335,100 @@ describe('install-cli — --global scope (H10)', () => {
     expect(mode).toBe(0o600);
   });
 });
+
+// Task 5.1: Kiro hook schema validation (kiro-xm-compatibility)
+// Validates: Requirements 8.1, 8.2, 8.3, 8.4
+describe('install-cli — Kiro hook schema validation (kiro-xm-compatibility)', () => {
+  test('kiro hooks have correct schema: toolTypes array, semver version, no enabled, no when.tool', () => {
+    const tmp = seedTmp();
+    const r = run(['--target', 'kiro', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
+    expect(r.status).toBe(0);
+
+    const hooksDir = join(tmp, '.kiro', 'hooks');
+    expect(existsSync(hooksDir)).toBe(true);
+
+    const hookFiles = readdirSync(hooksDir).filter(f => f.endsWith('.kiro.hook'));
+    expect(hookFiles.length).toBeGreaterThan(0);
+
+    const TOOL_EVENTS = new Set(['preToolUse', 'postToolUse']);
+    const FILE_EVENTS = new Set(['fileEdited', 'fileCreated', 'fileDeleted']);
+
+    for (const file of hookFiles) {
+      const content = readFileSync(join(hooksDir, file), 'utf8');
+      const hook = JSON.parse(content);
+
+      // version is semver
+      expect(hook.version).toMatch(/^\d+\.\d+\.\d+$/);
+      // no enabled field
+      expect(hook).not.toHaveProperty('enabled');
+      // no when.tool (old schema)
+      expect(hook.when).not.toHaveProperty('tool');
+
+      // Field shape per event category — tool events have toolTypes, file
+      // events have patterns, other events have neither.
+      const eventType = hook.when.type;
+      if (TOOL_EVENTS.has(eventType)) {
+        expect(Array.isArray(hook.when.toolTypes)).toBe(true);
+        hook.when.toolTypes.forEach(t => expect(typeof t).toBe('string'));
+        expect(hook.when.patterns).toBeUndefined();
+      } else if (FILE_EVENTS.has(eventType)) {
+        expect(Array.isArray(hook.when.patterns)).toBe(true);
+        hook.when.patterns.forEach(p => expect(typeof p).toBe('string'));
+        expect(hook.when.toolTypes).toBeUndefined();
+      } else {
+        expect(hook.when.toolTypes).toBeUndefined();
+        expect(hook.when.patterns).toBeUndefined();
+      }
+    }
+  });
+
+  // Task 5.2: Kiro steering frontmatter validation
+  // Validates: Requirements 8.5
+  test('kiro steering frontmatter has no name: field', () => {
+    const tmp = seedTmp();
+    const r = run(['--target', 'kiro', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
+    expect(r.status).toBe(0);
+
+    const steeringDir = join(tmp, '.kiro', 'steering');
+    const files = readdirSync(steeringDir).filter(f => f.endsWith('.md'));
+    expect(files.length).toBeGreaterThan(0);
+
+    for (const file of files) {
+      const content = readFileSync(join(steeringDir, file), 'utf8');
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      if (fmMatch) {
+        expect(fmMatch[1]).not.toMatch(/^name:/m);
+      }
+    }
+  });
+
+  // Task 5.3: Trace-session best-effort hook generation validation
+  // Validates: Requirements 6.1, 6.2
+  test('trace-session Skill matcher hooks are generated as best-effort (not skipped)', () => {
+    const tmp = seedTmp();
+    const r = run(['--target', 'kiro', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
+    expect(r.status).toBe(0);
+
+    const hooksDir = join(tmp, '.kiro', 'hooks');
+    const hookFiles = readdirSync(hooksDir).filter(f => f.endsWith('.kiro.hook'));
+
+    // Find hooks that contain trace-session in their command
+    const traceHooks = hookFiles.filter(f => {
+      const content = readFileSync(join(hooksDir, f), 'utf8');
+      return content.includes('trace-session');
+    });
+
+    // Should have at least one trace-session hook (was previously skipped)
+    expect(traceHooks.length).toBeGreaterThan(0);
+
+    // Each trace-session hook should have best-effort in description and
+    // explicitly explain why (Skill matcher has no Kiro equivalent).
+    for (const file of traceHooks) {
+      const hook = JSON.parse(readFileSync(join(hooksDir, file), 'utf8'));
+      expect(hook.description).toContain('best-effort');
+      expect(hook.description).toContain('Kiro has no Skill matcher');
+      expect(hook.description).toContain('Original Claude hook targeted Skill matcher');
+      expect(hook.when.toolTypes).toEqual(['*']);
+    }
+  });
+});
