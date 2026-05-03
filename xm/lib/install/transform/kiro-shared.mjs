@@ -13,8 +13,9 @@
  *     Claude's `block-marketplace-copy.mjs` (which exits 2 to block) loses
  *     the blocking behavior; we emit `runCommand` and an informational
  *     prompt note explaining the limitation (R-SEC-09).
- *   - The `Skill` matcher has no Kiro equivalent — `trace-session.mjs` hooks
- *     are skipped with a note.
+ *   - The `Skill` matcher has no direct Kiro equivalent — `trace-session.mjs`
+ *     hooks are converted best-effort with `toolTypes: ["*"]` and a
+ *     descriptive note explaining the approximation.
  *
  * Tool-name mapping (Claude Edit|Write|MultiEdit|NotebookEdit → Kiro):
  *   write — Kiro's catch-all for file mutations.
@@ -22,6 +23,11 @@
 
 import { readClaudeSettings } from './cursor-shared.mjs';
 import { assertSafeCommand } from '../security.mjs';
+
+/** Events that use `when.patterns` (file glob arrays). */
+const FILE_EVENTS = new Set(['fileEdited', 'fileCreated', 'fileDeleted']);
+/** Events that use `when.toolTypes` (tool category arrays). */
+const TOOL_EVENTS = new Set(['preToolUse', 'postToolUse']);
 
 const KIRO_TOOL_MAP = /** @type {Record<string, string>} */ ({
   Edit: 'write',
@@ -35,26 +41,39 @@ const KIRO_TOOL_MAP = /** @type {Record<string, string>} */ ({
 
 /**
  * Translate a Claude matcher (regex like "Edit|Write|MultiEdit|NotebookEdit")
- * into a Kiro tool selector. We pick the *broadest* match — if any token maps
- * to `write`, we emit `write`.
+ * into a Kiro toolTypes array with an optional best-effort flag.
+ *
+ * Returns `{ toolTypes, bestEffort }` on success, or `null` when no mapping
+ * is possible (entirely unsupported tokens, excluding Skill).
+ *
+ * The `Skill` token has no Kiro equivalent. When it is the only token (or
+ * combined only with other unsupported tokens that all fail mapping), we
+ * return `{ toolTypes: ['*'], bestEffort: true }` so the caller can annotate
+ * the hook description accordingly.
  *
  * @param {string} matcher
- * @returns {string|null}
+ * @returns {{ toolTypes: string[], bestEffort: boolean }|null}
  */
 function translateMatcher(matcher) {
-  if (typeof matcher !== 'string' || matcher.length === 0) return '*';
+  if (typeof matcher !== 'string' || matcher.length === 0) return { toolTypes: ['*'], bestEffort: false };
   const tokens = matcher.split(/[|\s,]+/).filter(Boolean);
-  if (tokens.length === 0) return '*';
+  if (tokens.length === 0) return { toolTypes: ['*'], bestEffort: false };
   const mapped = new Set();
   let unsupported = 0;
+  let hasSkill = false;
   for (const t of tokens) {
-    if (t === '*') return '*';
+    if (t === '*') return { toolTypes: ['*'], bestEffort: false };
+    if (t === 'Skill') { hasSkill = true; continue; }
     const v = KIRO_TOOL_MAP[t];
     if (v) mapped.add(v); else unsupported++;
   }
-  if (mapped.size === 0) return null;       // entirely unsupported (e.g. Skill)
-  if (mapped.size === 1 && unsupported === 0) return [...mapped][0];
-  return [...mapped].join('|');             // Kiro accepts regex matchers
+  // If we have mapped tools, propagate Skill loss as best-effort so the
+  // caller can annotate the description that Skill semantics were dropped.
+  if (mapped.size > 0) return { toolTypes: [...mapped], bestEffort: hasSkill };
+  // If only Skill token(s) and nothing else mapped → best-effort wildcard
+  if (hasSkill) return { toolTypes: ['*'], bestEffort: true };
+  // Entirely unsupported (no Skill, no mapped tools)
+  return null;
 }
 
 /**
@@ -68,6 +87,9 @@ function translateEvent(claudeEvent) {
     case 'PostToolUse': return 'postToolUse';
     case 'Stop':        return 'agentStop';
     case 'UserPromptSubmit': return 'promptSubmit';
+    case 'FileCreate':  return 'fileCreated';
+    case 'FileSave':    return 'fileEdited';
+    case 'FileDelete':  return 'fileDeleted';
     case 'SessionStart': return null;            // no Kiro equivalent
     default: return null;
   }
@@ -86,24 +108,57 @@ export function buildKiroHook(hookName, claudeEvent, claudeMatcher, hookSpec) {
   if (event === null) {
     return { json: null, note: `kiro: skipping ${claudeEvent} (no Kiro equivalent)` };
   }
-  const tool = translateMatcher(claudeMatcher ?? '*');
-  if (tool === null) {
-    return { json: null, note: `kiro: skipping ${claudeEvent}/${claudeMatcher} (no tool mapping; Skill etc. unsupported)` };
+
+  // Determine `when` based on event category:
+  //   - Tool events  → translateMatcher() → when.toolTypes
+  //   - File events  → parse matcher as glob patterns → when.patterns
+  //   - Other events → no toolTypes, no patterns
+  /** @type {{ type: string, toolTypes?: string[], patterns?: string[] }} */
+  let when;
+
+  let bestEffort = false;
+
+  if (TOOL_EVENTS.has(event)) {
+    const result = translateMatcher(claudeMatcher ?? '*');
+    if (result === null) {
+      return { json: null, note: `kiro: skipping ${claudeEvent}/${claudeMatcher} (no tool mapping; unsupported)` };
+    }
+    when = { type: event, toolTypes: result.toolTypes };
+    if (result.bestEffort) {
+      bestEffort = true;
+    }
+  } else if (FILE_EVENTS.has(event)) {
+    // For file events, treat the matcher string as file glob patterns
+    // (split on pipe, whitespace, or comma). Default to ['*'] if empty.
+    const patterns = (claudeMatcher && typeof claudeMatcher === 'string')
+      ? claudeMatcher.split(/[|\s,]+/).filter(Boolean)
+      : ['*'];
+    when = { type: event, patterns: patterns.length > 0 ? patterns : ['*'] };
+  } else {
+    // agentStop, promptSubmit — no toolTypes, no patterns
+    when = { type: event };
   }
+
   // Sanitize command. Strip variable references for the safety probe.
   const probe = String(hookSpec.command).replace(/\$\{[^}]+\}|\$[A-Z_]+/g, '');
   assertSafeCommand(probe);
 
-  // Kiro `runCommand` cannot block; flag this explicitly via prompt note for
-  // any hook whose Claude analogue exits 2 to block.
-  const note = `Note: Kiro hooks cannot block tool execution; this hook only runs alongside the operation. ` +
-               `Original Claude hook used PreToolUse blocking (exit 2). See R-SEC-09.`;
+  // Kiro `runCommand` cannot block. The exit-2 blocking caveat only applies
+  // to hooks whose Claude analogue used PreToolUse (where exit 2 denied the
+  // tool call). For other events, surface only the tool-agnostic note.
+  const baseNote = `Note: Kiro hooks cannot block tool execution; this hook only runs alongside the operation. See R-SEC-09.`;
+  let description = event === 'preToolUse'
+    ? `Note: Kiro hooks cannot block tool execution; this hook only runs alongside the operation. ` +
+      `Original Claude hook used PreToolUse blocking (exit 2). See R-SEC-09.`
+    : baseNote;
+  if (bestEffort) {
+    description = `best-effort adaptation — Kiro has no Skill matcher equivalent. Original Claude hook targeted Skill matcher. ${description}`;
+  }
   const json = {
-    enabled: true,
     name: hookName,
-    description: note,
-    version: '1',
-    when: { type: event, tool },
+    description,
+    version: '1.0.0',
+    when,
     then: { type: 'runCommand', command: hookSpec.command },
   };
   return { json, note: null };

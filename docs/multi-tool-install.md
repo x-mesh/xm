@@ -135,15 +135,19 @@ node xm/lib/install/install-cli.mjs --target kiro
 Writes:
 - `.kiro/steering/xm-<plug>.md` × 16 — `inclusion: auto` (Kiro asks the LLM whether to load each)
 - `.kiro/steering/xm-<plug>-ref-<name>.md` × 23 — `inclusion: manual` (companion docs only loaded when explicitly mentioned)
-- `.kiro/hooks/xm-pretooluse-0.kiro.hook` — JSON hook; **runs alongside the operation, cannot block** (R-SEC-09 limitation)
+- `.kiro/hooks/xm-<event>-<index>.kiro.hook` — JSON hooks (one per translatable Claude hook); uses `when.toolTypes[]` for tool events, `when.patterns[]` for file events; `version: "1.0.0"` (semver). **Runs alongside the operation, cannot block** (R-SEC-09 limitation)
+- `.kiro/hooks/xm-pretooluse-1.kiro.hook` (etc.) — trace-session hooks converted as **best-effort** (`toolTypes: ["*"]`); Kiro has no Skill matcher equivalent
 - `.kiro/xm/manifest.json`
 
 Verify in Kiro:
 1. Open the project in Kiro. The "Steering" panel should list xm-* entries.
 2. Ask the agent "what does xm build do?" — Kiro should auto-attach `xm-build.md` because `inclusion: auto` matches description.
 3. Reference an inclusion: `#xm-op-ref-strategies` should resolve to the manual-inclusion file.
+4. Check `.kiro/hooks/` — hook files should have `version: "1.0.0"`, `when.toolTypes` (array) for tool events, and no `enabled` or `when.tool` fields. Trace-session hooks should exist with `toolTypes: ["*"]` and "best-effort" in description.
 
 > **Hook semantics differ from Claude/Cursor.** Kiro's `runCommand` runs in parallel with the tool call — it cannot exit-code-deny. We surface this in the hook's `description` field and in install stdout. Use Cursor or Codex if you need blocking.
+
+> **Trace-session hooks** are now converted as best-effort with `toolTypes: ["*"]` (triggers on all tool calls). The original Claude `Skill` matcher has no Kiro equivalent; the hook description notes this approximation.
 
 ### Antigravity
 
