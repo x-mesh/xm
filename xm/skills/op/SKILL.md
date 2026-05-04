@@ -1,6 +1,7 @@
 ---
 name: op
 description: Strategy orchestration — 17 strategies including refine, tournament, chain, review, debate, red-team, brainstorm, distribute, council, socratic, persona, scaffold, compose, decompose, hypothesis, investigate, monitor
+model: opus
 allowed-tools:
   - AskUserQuestion
 ---
@@ -35,7 +36,7 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 | Auto-route (strategy detection) | **sonnet** | Requires AskUserQuestion for confirmation |
 | Strategy execution | **sonnet** | Multi-agent orchestration |
 
-For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
+For haiku-eligible commands, delegate via: `Agent tool: { model: "sonnet", prompt: "Run: [command]" }` <!-- managed-model: explorer -->
 
 ## Wiring
 
@@ -206,9 +207,9 @@ This skill uses only Claude Code built-in tools:
 ### fan-out (same question to all)
 Invoke N Agent tools **simultaneously** in a single message:
 ```
-Agent tool call 1: { description: "agent-1", prompt: "...", run_in_background: true, model: "sonnet" }
-Agent tool call 2: { description: "agent-2", prompt: "...", run_in_background: true, model: "sonnet" }
-Agent tool call 3: { description: "agent-3", prompt: "...", run_in_background: true, model: "sonnet" }
+Agent tool call 1: { description: "agent-1", prompt: "...", run_in_background: true, model: "opus" } <!-- managed-model: executor -->
+Agent tool call 2: { description: "agent-2", prompt: "...", run_in_background: true, model: "opus" } <!-- managed-model: executor -->
+Agent tool call 3: { description: "agent-3", prompt: "...", run_in_background: true, model: "opus" } <!-- managed-model: executor -->
 ```
 All agents receive the same prompt but respond independently.
 

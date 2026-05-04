@@ -1,6 +1,7 @@
 ---
 name: memory
 description: Cross-session decision and pattern memory — persist learnings, auto-inject relevant context on session start
+model: opus
 ---
 
 <Purpose>
@@ -32,7 +33,7 @@ x-memory persists project decisions, patterns, failures, and learnings across se
 | `save`, `update`, `delete` | **haiku** (Agent tool) | Simple write operations |
 | `inject` (context injection) | **sonnet** | Requires reasoning about relevance |
 
-For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
+For haiku-eligible commands, delegate via: `Agent tool: { model: "sonnet", prompt: "Run: [command]" }` <!-- managed-model: explorer -->
 
 ## Mode Detection
 
@@ -53,14 +54,19 @@ node ${CLAUDE_PLUGIN_ROOT}/lib/x-memory-cli.mjs <command> [args]
 
 Shorthand in this document: `$XMM` = `node ${CLAUDE_PLUGIN_ROOT}/lib/x-memory-cli.mjs`
 
-> **⚠ When using Bash tool, always define a shell function first:**
+> **⚠ When using Bash tool, define the helper once at session start. `${CLAUDE_PLUGIN_ROOT}` is substituted in SKILL.md prompt text but NOT as a Bash env var — relying on it alone causes `Cannot find module '/lib/...'` errors.**
 > ```bash
-> xmm() { node "${CLAUDE_PLUGIN_ROOT}/lib/x-memory-cli.mjs" "$@"; }
+> # Resolution chain: xm dispatcher → CLAUDE_PLUGIN_ROOT → plugin cache (latest)
+> xmm() {
+>   command -v xm >/dev/null 2>&1 && { xm memory "$@"; return; }
+>   local cli="${CLAUDE_PLUGIN_ROOT:-}/lib/x-memory-cli.mjs"
+>   [ -f "$cli" ] || cli=$(ls -d ~/.claude/plugins/cache/xm/{memory,xm}/*/lib/x-memory-cli.mjs 2>/dev/null | sort -V | tail -1)
+>   [ -f "${cli:-}" ] && node "$cli" "$@" || { echo "❌ x-memory CLI not found" >&2; return 1; }
+> }
 > xmm save "decision text" --type decision
 > ```
-> **Forbidden:** Assigning `XMM="node ..."` then calling `$XMM save` — zsh treats the entire quoted string as a single command name and fails with `no such file or directory`.
-> When running multiple commands sequentially, define the function on the first line then call `xmm <command>` afterward.
-> Alternative: use the unified dispatcher `xm memory <command>` — no function needed.
+> **Forbidden:** `XMM="node ..."; $XMM save` — zsh treats the quoted string as a single command name and fails.
+> **Shortcut (no helper):** just type `xm memory <command>` directly — works whenever the xm dispatcher is in PATH.
 
 ---
 

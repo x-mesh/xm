@@ -1,6 +1,7 @@
 ---
 name: probe
 description: Premise validation — challenge assumptions, kill bad ideas early, earn the right to build
+model: opus
 allowed-tools:
   - AskUserQuestion
 ---

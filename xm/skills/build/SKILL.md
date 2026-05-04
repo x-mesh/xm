@@ -1,6 +1,7 @@
 ---
 name: build
 description: Phase-based project harness — manage project lifecycle, DAG execution, cost forecasting, and agent orchestration
+model: opus
 allowed-tools:
   - AskUserQuestion
 ---
@@ -33,7 +34,7 @@ x-build manages the full project lifecycle (Research → Plan → Execute → Ve
 | `init` (interactive) | **sonnet** | Requires AskUserQuestion |
 | `plan`, `forecast`, `research`, `run` | **sonnet** | Complex reasoning / orchestration |
 
-For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
+For haiku-eligible commands, delegate via: `Agent tool: { model: "sonnet", prompt: "Run: [command]" }` <!-- managed-model: explorer -->
 
 ## Mode Detection
 
@@ -66,20 +67,30 @@ node ${CLAUDE_PLUGIN_ROOT}/lib/x-build-cli.mjs <command> [args]
 
 Shorthand in this document: `$XMB` = `node ${CLAUDE_PLUGIN_ROOT}/lib/x-build-cli.mjs`
 
-> **⚠ When using Bash tool, always define a shell function first:**
+> **⚠ When using Bash tool, define the helper once at session start. `${CLAUDE_PLUGIN_ROOT}` is substituted in SKILL.md prompt text but NOT as a Bash env var — relying on it alone causes `Cannot find module '/lib/...'` errors.**
 > ```bash
-> # Auto-detect: use persistent server if available, otherwise direct CLI
-> if [ -f "${CLAUDE_PLUGIN_ROOT}/lib/server/xm-client.mjs" ]; then
->   xmb() { node "${CLAUDE_PLUGIN_ROOT}/lib/server/xm-client.mjs" x-build "$@"; }
-> else
->   xmb() { node "${CLAUDE_PLUGIN_ROOT}/lib/x-build-cli.mjs" "$@"; }
-> fi
->
+> # Resolution: xm dispatcher (handles server vs direct internally) → CLAUDE_PLUGIN_ROOT → plugin cache
+> xmb() {
+>   command -v xm >/dev/null 2>&1 && { xm build "$@"; return; }
+>   # Prefer server client when available, else direct CLI
+>   local cli=""
+>   for cand in \
+>     "${CLAUDE_PLUGIN_ROOT:-}/lib/server/xm-client.mjs" \
+>     "${CLAUDE_PLUGIN_ROOT:-}/lib/x-build-cli.mjs" \
+>     $(ls -d ~/.claude/plugins/cache/xm/{build,xm}/*/lib/server/xm-client.mjs 2>/dev/null | sort -V | tail -1) \
+>     $(ls -d ~/.claude/plugins/cache/xm/{build,xm}/*/lib/x-build-cli.mjs 2>/dev/null | sort -V | tail -1); do
+>     [ -n "$cand" ] && [ -f "$cand" ] && { cli="$cand"; break; }
+>   done
+>   [ -n "$cli" ] || { echo "❌ x-build CLI not found" >&2; return 1; }
+>   case "$cli" in
+>     *xm-client.mjs) node "$cli" x-build "$@" ;;
+>     *) node "$cli" "$@" ;;
+>   esac
+> }
 > xmb plan "goal"
 > ```
-> **Forbidden:** Assigning `XMB="node ..."` then calling `$XMB plan` — zsh treats the entire string as a single command and fails.
-> When running multiple commands sequentially, define the function on the first line then call `xmb <command>` afterward.
-> The server client auto-starts the server if not running (lazy start), and silently falls back to node if bun is not installed.
+> **Forbidden:** `XMB="node ..."; $XMB plan` — zsh treats the quoted string as a single command and fails.
+> **Shortcut (no helper):** `xm build <command>` directly — works whenever xm dispatcher is in PATH and handles server-mode auto-start internally.
 
 ## Phase 0: Project Environment Detection
 

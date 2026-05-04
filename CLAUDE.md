@@ -105,20 +105,31 @@ The **Common Rationalizations** table (excuses agents use to skip steps + factua
 
 ### CLI Invocation Pattern (required when SKILL.md exposes a shell CLI)
 
-If the skill references a plugin CLI (`node ${CLAUDE_PLUGIN_ROOT}/lib/<name>-cli.mjs ...`), the SKILL.md **MUST** instruct the agent to define a shell function before running commands, and explicitly forbid the variable-assignment anti-pattern.
+If the skill references a plugin CLI (`node ${CLAUDE_PLUGIN_ROOT}/lib/<name>-cli.mjs ...`), the SKILL.md **MUST** instruct the agent to define a robust shell helper that prefers the `xm` dispatcher and falls back through plugin cache. Naive helpers using only `${CLAUDE_PLUGIN_ROOT}` break in Bash subprocesses where the env var is unset.
 
-**Required block** (adapt `xmXX` and path to the plugin):
+**Required block** (adapt `xmXX`, `<plugin>`, `<name>` per skill):
 ```markdown
-> **⚠ When using Bash tool, always define a shell function first:**
+> **⚠ When using Bash tool, define the helper once at session start. `${CLAUDE_PLUGIN_ROOT}` is substituted in SKILL.md prompt text but NOT as a Bash env var — relying on it alone causes `Cannot find module '/lib/...'` errors.**
 > ```bash
-> xmXX() { node "${CLAUDE_PLUGIN_ROOT}/lib/<name>-cli.mjs" "$@"; }
+> # Resolution chain: xm dispatcher → CLAUDE_PLUGIN_ROOT → plugin cache (latest)
+> xmXX() {
+>   command -v xm >/dev/null 2>&1 && { xm <plugin> "$@"; return; }
+>   local cli="${CLAUDE_PLUGIN_ROOT:-}/lib/x-<name>-cli.mjs"
+>   [ -f "$cli" ] || cli=$(ls -d ~/.claude/plugins/cache/xm/{<plugin>,xm}/*/lib/x-<name>-cli.mjs 2>/dev/null | sort -V | tail -1)
+>   [ -f "${cli:-}" ] && node "$cli" "$@" || { echo "❌ x-<plugin> CLI not found" >&2; return 1; }
+> }
 > xmXX <command> <args>
 > ```
-> **Forbidden:** Assigning `XMXX="node ..."` then calling `$XMXX <command>` — zsh treats the entire quoted string as a single command name and fails with `no such file or directory`.
-> Alternative: use the unified dispatcher `xm <subcmd> <command>` — no function needed.
+> **Forbidden:** `XMXX="node ..."; $XMXX <command>` — zsh treats the quoted string as a single command name and fails.
+> **Shortcut (no helper):** just type `xm <plugin> <command>` directly — works whenever the xm dispatcher is in PATH.
 ```
 
-**Why:** zsh expands `$VAR` as a single token. `XMS="node /path/cli.mjs"; $XMS foo` executes the file literally named `"node /path/cli.mjs"`, which does not exist. This is the #1 invocation failure LLMs repeat across sessions. Every SKILL.md referencing a CLI must teach the correct pattern.
+**Why this 3-tier chain is mandatory:**
+- **`xm` dispatcher (primary)**: `~/.local/bin/xm` resolves plugin lib via cache + version sort, no env var needed. Installed by `xm/scripts/install.sh`.
+- **`${CLAUDE_PLUGIN_ROOT}` (secondary)**: substituted in SKILL.md prompt rendering BUT not exported to Bash subprocess — using it bare → `node /lib/...` (fails).
+- **Plugin cache fallback (tertiary)**: `ls -d ~/.claude/plugins/cache/xm/{<plugin>,xm}/*/lib/...` + `sort -V | tail -1` picks the latest version when neither dispatcher nor env is available.
+
+**Why the variable-assignment anti-pattern still applies:** zsh expands `$VAR` as a single token. `XMS="node /path/cli.mjs"; $XMS foo` executes the file literally named `"node /path/cli.mjs"`, which does not exist. This is the #1 invocation failure LLMs repeat across sessions.
 
 **Exempt:** skills without a shell CLI (x-op, x-agent, x-review, x-eval, x-probe, x-humble, x-ship, x-trace, x-dashboard) — they orchestrate via the Agent tool only.
 

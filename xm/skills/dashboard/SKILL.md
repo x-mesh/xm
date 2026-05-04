@@ -1,6 +1,7 @@
 ---
 name: dashboard
 description: Web dashboard for .xm project state — start, stop, open in browser
+model: haiku
 allowed-tools:
   - Bash
 ---
@@ -33,7 +34,7 @@ This entire skill is **haiku** (Agent tool). All commands (start/stop/status/ope
 | `open` | **haiku** | macOS open command |
 
 ```
-Agent tool: { model: "haiku", description: "x-dashboard <cmd>", prompt: "Run: <bash from command section>" }
+Agent tool: { model: "haiku", description: "x-dashboard <cmd>", prompt: "Run: <bash from command section>" } <!-- managed-model: writer -->
 ```
 
 **Guardrail**: never haiku if the user asks "why is the dashboard showing X" or "interpret these metrics" — interpretation is sonnet-level reasoning.

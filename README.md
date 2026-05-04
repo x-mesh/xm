@@ -1041,6 +1041,8 @@ The `model_profile` key expresses **cost intent** (how much to spend) on a singl
 
 Script-only commands (`config show`, `version`, `agents list`, …) still route to haiku regardless of profile (see Model Guardrail in `xm/skills/kit/SKILL.md`).
 
+Profile changes now automatically rewrite SKILL.md frontmatter `model:` fields and body markers (`<!-- managed-model: <role> -->`) via `xm/lib/skill-frontmatter-sync.mjs` — Claude Code runtime then enforces the chosen model deterministically per skill turn. Mapping table: `xm/lib/skill-model-map.json`.
+
 Key roles shown; full mapping includes reviewer, security, designer, debugger, writer. See `MODEL_PROFILES` in source.
 
 Per-role overrides: `/xm config set model_overrides '{"architect": "opus"}'` on top of any profile.

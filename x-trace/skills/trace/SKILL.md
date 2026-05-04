@@ -1,6 +1,7 @@
 ---
 name: trace
 description: Agent execution tracing — timeline, token/cost tracking, replay, and diff for multi-agent observability
+model: opus
 ---
 
 <Purpose>
@@ -31,7 +32,7 @@ No external dependencies. All state is stored as JSONL files in `.xm/traces/`.
 | `show`, `list`, `cost`, `diff` | **haiku** (Agent tool) | Read-only log parsing and display |
 | `replay` | **sonnet** | Requires agent re-execution |
 
-For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
+For haiku-eligible commands, delegate via: `Agent tool: { model: "sonnet", prompt: "Run: [command]" }` <!-- managed-model: explorer -->
 
 Reads and writes JSONL files using Claude Code's native Bash tool.
 No external dependencies. Works as long as the `.xm/traces/` directory exists.

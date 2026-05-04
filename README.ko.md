@@ -1041,6 +1041,8 @@ xm에는 코어와 도메인 영역을 아우르는 37개 전문가 에이전트
 
 스크립트 전용 명령(`config show`, `version`, `agents list` 등)은 프로필과 무관하게 항상 haiku로 라우팅됩니다 (`xm/skills/kit/SKILL.md`의 Model Guardrail 참고).
 
+프로필 변경 시 SKILL.md frontmatter의 `model:` 필드와 본문 마커(`<!-- managed-model: <role> -->`)가 `xm/lib/skill-frontmatter-sync.mjs`를 통해 자동으로 재작성됩니다 — Claude Code 런타임이 선택된 모델을 skill turn 단위로 결정론적으로 강제합니다. 매핑 테이블: `xm/lib/skill-model-map.json`.
+
 주요 역할만 표시. 전체 매핑(reviewer, security, designer, debugger, writer 포함)은 소스의 `MODEL_PROFILES` 참조.
 
 역할별 오버라이드: `/xm config set model_overrides '{"architect": "opus"}'`로 프로필 위에 개별 설정 가능.

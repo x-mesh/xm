@@ -14,6 +14,7 @@ const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const PLUGINS_WITH_SOURCE_SKILL = new Set([
   'x-agent',
   'x-build',
+  'x-dashboard',
   'x-eval',
   'x-humble',
   'x-memory',
