@@ -6,8 +6,9 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 
 // ── Defaults ──────────────────────────────────────────────────────────
 
@@ -146,6 +147,43 @@ const C = {
 // Keys that default to local (.xm/) instead of global (~/.xm/)
 const LOCAL_DEFAULT_KEYS = new Set(['budget']);
 
+// ── Frontmatter sync trigger (best-effort) ──────────────────────────────
+// Locates xm/lib/skill-frontmatter-sync.mjs near this file (bundle case) or
+// up the source repo. Runs it asynchronously to update SKILL.md frontmatter
+// `model:` fields when model_profile changes. Failures are non-fatal.
+
+function findFrontmatterSyncTool() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(here, 'skill-frontmatter-sync.mjs'),                // xm bundle: same dir
+    join(here, '..', '..', 'xm', 'lib', 'skill-frontmatter-sync.mjs'),  // x-build source
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+function triggerFrontmatterSync() {
+  const tool = findFrontmatterSyncTool();
+  if (!tool) {
+    console.log(`  ${C.dim}↻ frontmatter sync 도구를 찾지 못함 — 수동 실행: node xm/lib/skill-frontmatter-sync.mjs${C.reset}`);
+    return;
+  }
+  try {
+    const r = spawnSync('node', [tool], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    if (r.status === 0) {
+      const summary = (r.stdout.split('\n').find(l => l.startsWith('summary:')) || '').trim();
+      console.log(`  ${C.green}↻${C.reset} SKILL frontmatter 동기화 완료 ${C.dim}${summary}${C.reset}`);
+    } else {
+      console.log(`  ${C.yellow}⚠${C.reset} frontmatter 동기화 실패 (exit ${r.status}) — 수동 실행 권장`);
+      if (r.stderr) console.log(`  ${C.dim}${r.stderr.trim()}${C.reset}`);
+    }
+  } catch (e) {
+    console.log(`  ${C.dim}↻ frontmatter 동기화 건너뜀: ${e.message}${C.reset}`);
+  }
+}
+
 function resolveScope(key, opts) {
   if (opts.local) return { global: false };
   if (opts.global) return { global: true };
@@ -267,6 +305,9 @@ function setConfig(key, rawValue, flags) {
 
   const scopeLabel = scope.global ? 'global' : 'local';
   console.log(`${C.green}✅${C.reset} ${C.cyan}${key}${C.reset} = ${typeof value === 'object' ? JSON.stringify(value) : value} ${C.dim}(${scopeLabel})${C.reset}`);
+
+  // Auto-sync SKILL.md frontmatter when model_profile changes
+  if (key === 'model_profile') triggerFrontmatterSync();
 }
 
 function resetConfig(flags) {
@@ -325,6 +366,7 @@ async function configProfile(rl, config) {
 
   writeSharedConfig('model_profile', profile, { global: true });
   console.log(`  ${C.green}✅${C.reset} 모델 프로필: ${current} → ${C.cyan}${profile}${C.reset} ${C.dim}(global)${C.reset}`);
+  triggerFrontmatterSync();
 }
 
 async function configBudget(rl, config) {

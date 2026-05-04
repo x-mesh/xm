@@ -1,6 +1,7 @@
 ---
 name: agent
 description: Agent primitives and autonomous behaviors — fan-out, delegate, broadcast, research, solve, consensus, swarm for Claude Code native multi-agent orchestration
+model: opus
 ---
 
 <Purpose>

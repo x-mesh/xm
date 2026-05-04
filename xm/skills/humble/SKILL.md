@@ -1,6 +1,7 @@
 ---
 name: humble
 description: Structured retrospective — reflect on failures together, find root causes, explore alternatives, and grow
+model: opus
 allowed-tools:
   - AskUserQuestion
 ---

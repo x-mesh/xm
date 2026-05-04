@@ -1,6 +1,7 @@
 ---
 name: solver
 description: Structured problem solving — decompose, iterate, constrain, or auto-pipeline with strategy recommendation
+model: opus
 allowed-tools:
   - AskUserQuestion
 ---
@@ -64,14 +65,19 @@ node ${CLAUDE_PLUGIN_ROOT}/lib/x-solver-cli.mjs <command> [args]
 
 Shorthand in this document: `$XMS` = `node ${CLAUDE_PLUGIN_ROOT}/lib/x-solver-cli.mjs`
 
-> **⚠ When using Bash tool, always define a shell function first:**
+> **⚠ When using Bash tool, define the helper once at session start. `${CLAUDE_PLUGIN_ROOT}` is substituted in SKILL.md prompt text but NOT as a Bash env var — relying on it alone causes `Cannot find module '/lib/...'` errors.**
 > ```bash
-> xms() { node "${CLAUDE_PLUGIN_ROOT}/lib/x-solver-cli.mjs" "$@"; }
+> # Resolution chain: xm dispatcher → CLAUDE_PLUGIN_ROOT → plugin cache (latest)
+> xms() {
+>   command -v xm >/dev/null 2>&1 && { xm solver "$@"; return; }
+>   local cli="${CLAUDE_PLUGIN_ROOT:-}/lib/x-solver-cli.mjs"
+>   [ -f "$cli" ] || cli=$(ls -d ~/.claude/plugins/cache/xm/{solver,xm}/*/lib/x-solver-cli.mjs 2>/dev/null | sort -V | tail -1)
+>   [ -f "${cli:-}" ] && node "$cli" "$@" || { echo "❌ x-solver CLI not found" >&2; return 1; }
+> }
 > xms constraints add "text" --type hard
 > ```
-> **Forbidden:** Assigning `XMS="node ..."` then calling `$XMS constraints add` — zsh treats the entire quoted string as a single command name and fails with `no such file or directory`.
-> When running multiple commands sequentially, define the function on the first line then call `xms <command>` afterward.
-> Alternative: use the unified dispatcher `xm solver <command>` — no function needed.
+> **Forbidden:** `XMS="node ..."; $XMS constraints add` — zsh treats the quoted string as a single command name and fails.
+> **Shortcut (no helper):** just type `xm solver <command>` directly — works whenever the xm dispatcher is in PATH.
 
 ## Routing
 
@@ -137,14 +143,14 @@ Do NOT hardcode agent counts. Always use the resolved value.
 ### fan-out (parallel agents)
 Call `AGENT_COUNT` Agent tools **simultaneously** in a single message:
 ```
-Agent tool 1: { description: "agent-1", prompt: "...", run_in_background: true, model: "sonnet" }
-Agent tool 2: { description: "agent-2", prompt: "...", run_in_background: true, model: "sonnet" }
+Agent tool 1: { description: "agent-1", prompt: "...", run_in_background: true, model: "opus" } <!-- managed-model: executor -->
+Agent tool 2: { description: "agent-2", prompt: "...", run_in_background: true, model: "opus" } <!-- managed-model: executor -->
 ...up to AGENT_COUNT agents
 ```
 
 ### delegate (single agent delegation)
 ```
-Agent tool: { description: "role name", prompt: "...", run_in_background: false, model: "opus" }
+Agent tool: { description: "role name", prompt: "...", run_in_background: false, model: "opus" } <!-- managed-model: architect -->
 ```
 
 ### broadcast (different prompts to each)

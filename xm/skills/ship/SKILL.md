@@ -1,6 +1,7 @@
 ---
 name: ship
 description: Release automation — commit squash, version bump, changelog, push. Works with any project.
+model: opus
 ---
 
 <Purpose>
@@ -42,7 +43,7 @@ Commit squash + version bump + push. Works with any git project.
 | Step 2 (grouped squash) | **sonnet** | LLM groups files by scope |
 | Step 4 (commit message) | **sonnet** | Quality writing matters for changelog |
 
-For haiku-eligible steps, delegate via: `Agent tool: { model: "haiku", prompt: "Run: <bash>" }`.
+For haiku-eligible steps, delegate via: `Agent tool: { model: "sonnet", prompt: "Run: <bash>" }`. <!-- managed-model: explorer -->
 
 **Guardrail**: never haiku for grouped squash, bump-type decision, or commit message authoring — these affect the published release.
 

@@ -1,6 +1,7 @@
 ---
 name: handon
 description: Session restore — resume from last handoff, inject context automatically
+model: haiku
 ---
 
 # x-handon — Session Restore (Resume)
@@ -12,7 +13,7 @@ Restore session context from the last handoff. **Context injection is automatic*
 This skill is **haiku** (Agent tool). Steps 1-3 are JSON read + structured display. No reasoning involved in restoration itself.
 
 ```
-Agent tool: { model: "haiku", description: "x-handon", prompt: "Run: node x-build/lib/x-build-cli.mjs handon --json" }
+Agent tool: { model: "haiku", description: "x-handon", prompt: "Run: node x-build/lib/x-build-cli.mjs handon --json" } <!-- managed-model: writer -->
 ```
 
 The leader receives the JSON, formats the summary, and waits for user direction. **Step 4 (wait for user)** is the boundary — once the user asks for actual work based on the restored context, that work runs at its own appropriate model (typically sonnet).

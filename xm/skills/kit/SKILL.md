@@ -1,6 +1,7 @@
 ---
 name: kit
 description: x-mesh toolkit — list available tools and their status
+model: opus
 ---
 
 <Purpose>
@@ -53,7 +54,7 @@ For a fuller picture (not just trace-session.mjs), suggest `xm doctor` — but t
 | `pipeline list`, `validate` | **haiku** (Agent tool) | Read-only display |
 | `pipeline <name>` | **sonnet** | Multi-step orchestration with AskUserQuestion |
 
-For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
+For haiku-eligible commands, delegate via: `Agent tool: { model: "sonnet", prompt: "Run: [command]" }` <!-- managed-model: explorer -->
 
 ### Model Guardrail
 
