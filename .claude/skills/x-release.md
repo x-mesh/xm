@@ -111,7 +111,30 @@ release: x-build@1.16.2, x-dashboard@0.4.2
 $XMB release commit --msg "release: ..." --push
 ```
 
-### Step 7: Post-Merge Hunk Verification (if branch merge involved)
+### Step 7: Deploy to Main
+
+After Step 6 push, propagate the release to `main` so users see the new version when running `/plugin update`. Skip this step only if `$ARGUMENTS` contains `--no-deploy`.
+
+```bash
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$CURRENT_BRANCH" = "main" ] || [ "$CURRENT_BRANCH" = "master" ]; then
+  echo "✅ Already on $CURRENT_BRANCH — release pushed directly. No merge needed."
+elif git merge-base --is-ancestor main HEAD 2>/dev/null; then
+  git checkout main && \
+    git merge "$CURRENT_BRANCH" --ff-only && \
+    git push origin main && \
+    git checkout "$CURRENT_BRANCH"
+  echo "✅ main fast-forwarded to $(git rev-parse --short main) from $CURRENT_BRANCH"
+else
+  echo "⚠ main has diverged from $CURRENT_BRANCH — fast-forward not possible."
+  echo "   Open a PR to merge: gh pr create --base main --head $CURRENT_BRANCH"
+  echo "   Or rebase: git checkout $CURRENT_BRANCH && git rebase main && git push --force-with-lease"
+fi
+```
+
+If main update fails or is skipped, **STOP** and report the issue — do not proceed to Step 9 with stale main.
+
+### Step 8: Post-Merge Hunk Verification (if branch merge involved)
 
 Skip if direct-push (no merge). Otherwise:
 
@@ -138,6 +161,22 @@ else console.log('⚠ ' + dropped + ' hunks may have been dropped.');
 "
 rm -f /tmp/pre-merge-hunks.diff
 ```
+
+### Step 9: Plugin Update Hint
+
+After main is updated, print this exact message so the user knows how to activate the release in their environment:
+
+```
+🚢 Released to main. To activate in Claude Code:
+
+  /plugin update xm@xm        # update bundle
+  /reload-plugins             # apply changes
+
+  Or from terminal:
+    claude plugin update xm@xm
+```
+
+The hint is **always printed** after a successful Step 7 (regardless of which branch the release came from), so users never assume "released = activated".
 
 ---
 
