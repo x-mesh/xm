@@ -22,7 +22,7 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { readFileSync, statSync, existsSync, lstatSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 import { writeOverwrite } from './merge.mjs';
-import { PRD_VERSION, TARGET_DIR } from './types.mjs';
+import { PRD_VERSION, targetDirFor } from './types.mjs';
 import { safeJoin } from './security.mjs';
 
 const MANIFEST_KIND = 'xm-install-manifest';
@@ -173,13 +173,14 @@ function timingSafeEqualHex(a, b) {
 
 /**
  * Compute the absolute manifest path for (target, installRoot).
- * Layout: `<installRoot>/.<tool>/xm/manifest.json`
+ * Layout: `<installRoot>/<target-dir>/xm/manifest.json`
  * @param {import('./types.mjs').TargetTool} target
  * @param {string} installRoot
+ * @param {'global'|'local'} [scope]
  * @returns {string}
  */
-export function manifestPath(target, installRoot) {
-  return resolvePath(installRoot, TARGET_DIR[target], 'xm', 'manifest.json');
+export function manifestPath(target, installRoot, scope = 'local') {
+  return resolvePath(installRoot, targetDirFor(target, scope), 'xm', 'manifest.json');
 }
 
 /**
@@ -188,7 +189,7 @@ export function manifestPath(target, installRoot) {
  * @returns {{ path: string, action: import('./merge.mjs').MergeResult['action'] }}
  */
 export function writeManifest(manifest) {
-  const path = manifestPath(manifest.target, manifest.installRoot);
+  const path = manifestPath(manifest.target, manifest.installRoot, manifest.scope);
   const result = writeOverwrite(path, JSON.stringify(manifest, null, 2) + '\n', { mode: manifest.scope === 'global' ? 0o600 : 0o644 });
   return { path, action: result.action };
 }

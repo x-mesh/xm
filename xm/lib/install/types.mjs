@@ -3,7 +3,7 @@
  * SkillIR — Intermediate Representation between SKILL.md sources and per-tool renderers.
  *
  * Source: xm/skills/<plug>/SKILL.md (+ references/*.md)
- * Sinks: cursor / codex / kiro / antigravity renderers
+ * Sinks: cursor / codex / kiro / antigravity / opencode renderers
  *
  * Frozen interface (PRD v2.1 §5.1, ADR-001).
  * Minor change policy: new optional fields allowed; renames/removals forbidden until v3.
@@ -57,7 +57,7 @@
  */
 
 /**
- * @typedef {'cursor'|'codex'|'kiro'|'antigravity'} TargetTool
+ * @typedef {'cursor'|'codex'|'kiro'|'antigravity'|'opencode'} TargetTool
  */
 
 /**
@@ -92,7 +92,7 @@
 
 export const PLUGIN_NAME_RE = /^[a-z][a-z0-9-]{0,30}$/;
 export const SKILL_NAME_RE = /^[a-z][a-z0-9-]{0,30}$/;
-export const TARGET_TOOLS = /** @type {const} */ (['cursor', 'codex', 'kiro', 'antigravity']);
+export const TARGET_TOOLS = /** @type {const} */ (['cursor', 'codex', 'kiro', 'antigravity', 'opencode']);
 
 /**
  * Per-target home/install directory name. Single source of truth — every
@@ -106,7 +106,28 @@ export const TARGET_DIR = Object.freeze({
   codex: '.codex',
   kiro: '.kiro',
   antigravity: '.gemini',
+  opencode: '.opencode',
 });
+
+/**
+ * Per-target user-global directory. Most tools use the same directory name
+ * globally and locally; OpenCode follows the XDG-style `~/.config/opencode`.
+ *
+ * @type {Readonly<Record<import('./types.mjs').TargetTool, string>>}
+ */
+export const TARGET_GLOBAL_DIR = Object.freeze({
+  ...TARGET_DIR,
+  opencode: '.config/opencode',
+});
+
+/**
+ * @param {import('./types.mjs').TargetTool} target
+ * @param {'global'|'local'} scope
+ * @returns {string}
+ */
+export function targetDirFor(target, scope) {
+  return scope === 'global' ? TARGET_GLOBAL_DIR[target] : TARGET_DIR[target];
+}
 export const MARKER_BEGIN = '<!-- xm:BEGIN v2 -->';
 export const MARKER_END = '<!-- xm:END -->';
 export const LOCK_TTL_MS = 60_000;

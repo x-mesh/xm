@@ -12,12 +12,13 @@
  *   $HOME/.codex/xm/lib/...
  *   $HOME/.kiro/xm/lib/...
  *   $HOME/.gemini/xm/lib/...      (Antigravity)
+ *   $HOME/.config/opencode/xm/lib/... (OpenCode)
  *
  * We intentionally use literal `$HOME` so renderers do not bake the user's
  * home directory absolute path into LLM-visible content (R-SEC-07).
  */
 
-import { TARGET_TOOLS, TARGET_DIR } from '../types.mjs';
+import { TARGET_TOOLS, targetDirFor } from '../types.mjs';
 
 const TOKEN_RE = /\$\{?CLAUDE_PLUGIN_ROOT\}?/g;
 
@@ -40,7 +41,7 @@ export function bundleRoot(target, scope) {
   if (scope !== 'global' && scope !== 'local') {
     throw new Error(`bundleRoot: scope must be 'global' or 'local', got ${JSON.stringify(scope)}`);
   }
-  const dir = TARGET_DIR[target];
+  const dir = targetDirFor(target, scope);
   return scope === 'global' ? `$HOME/${dir}/xm` : `${dir}/xm`;
 }
 
