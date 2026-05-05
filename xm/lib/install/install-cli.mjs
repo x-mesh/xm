@@ -16,7 +16,7 @@
  */
 
 import { parseTargets, safeJoin, scanSecrets } from './security.mjs';
-import { TARGET_TOOLS, TARGET_DIR, PRD_VERSION } from './types.mjs';
+import { TARGET_TOOLS, PRD_VERSION, targetDirFor } from './types.mjs';
 import { scanAll, listMissingCliRefs } from './scan.mjs';
 import { planAll, planTarget, bundleDir } from './plan-paths.mjs';
 import { writeOverwrite, writeMergeMarker, removeMarkerBlock } from './merge.mjs';
@@ -27,13 +27,15 @@ import { renderCodexShared, assertAgentsBlockSize } from './transform/codex-shar
 import { renderKiroWithDiagnostics } from './transform/kiro.mjs';
 import { renderKiroShared } from './transform/kiro-shared.mjs';
 import { renderAntigravityWithDiagnostics } from './transform/antigravity.mjs';
+import { renderOpencodeWithDiagnostics } from './transform/opencode.mjs';
 import { CODEX_AGENTS_MAX_BYTES } from './types.mjs';
 import { buildManifest, writeManifest, readManifest, verifyManifest, manifestPath } from './manifest.mjs';
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, lstatSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { createInterface } from 'node:readline/promises';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -62,6 +64,7 @@ const DEFAULT_PATHS = inferDefaultPaths(HERE);
  * @property {boolean} force
  * @property {boolean} yes
  * @property {boolean} allowUnverified
+ * @property {boolean} interactive
  * @property {boolean} help
  * @property {'global'|'local'} scope
  * @property {import('./types.mjs').TargetTool[] | null} targets
@@ -85,6 +88,7 @@ export function parseArgs(argv) {
     force: false,
     yes: false,
     allowUnverified: false,
+    interactive: false,
     help: false,
     scope: 'local',
     targets: null,
@@ -103,6 +107,7 @@ export function parseArgs(argv) {
       case '--force': out.force = true; break;
       case '--yes': case '-y': out.yes = true; break;
       case '--allow-unverified': out.allowUnverified = true; break;
+      case '--interactive': out.interactive = true; break;
       case '--global': out.scope = 'global'; break;
       case '--local': out.scope = 'local'; break;
       case '-h': case '--help': out.help = true; break;
@@ -123,6 +128,7 @@ const HELP = `xm install — render xm SKILLs to non-Claude AI tools
 
 USAGE
   xm install --list
+  xm install --interactive
   xm install --target <tool[,tool...]> [--global|--local] [--dry-run] [--force] [--yes]
   xm install --verify [--target <tool>]
   xm install --auto-detect
@@ -135,6 +141,7 @@ OPTIONS
   --dry-run              Show full plan with write modes (no fs writes).
   --verify               Re-check installed manifest integrity (re-hash + selfChecksum).
   --auto-detect          Pick targets from cwd signatures (.cursor/, .kiro/, AGENTS.md). (not yet implemented)
+  --interactive          Prompt for scope and targets (default when \`xm install\` runs in a TTY).
   --target <list>        Comma-separated subset of targets.
   --global               Install under \$HOME/.<tool>/ (default: project-local).
   --local                Install under cwd/.<tool>/ (default).
@@ -147,6 +154,241 @@ OPTIONS
   -h, --help             Show this help.
 
 PRD: ${PRD_VERSION}`;
+
+const TARGET_LABELS = Object.freeze({
+  cursor: 'Cursor',
+  codex: 'Codex CLI',
+  kiro: 'Kiro',
+  antigravity: 'Antigravity',
+  opencode: 'OpenCode',
+});
+
+/**
+ * @param {string} input
+ * @param {'global'|'local'} fallback
+ * @returns {'global'|'local'}
+ */
+export function parseScopeSelection(input, fallback = 'local') {
+  const value = input.trim().toLowerCase();
+  if (!value) return fallback;
+  if (value === '1' || value === 'local' || value === 'l') return 'local';
+  if (value === '2' || value === 'global' || value === 'g') return 'global';
+  throw new Error(`unknown scope selection: ${JSON.stringify(input)} (use local/global or 1/2)`);
+}
+
+/**
+ * @param {string} token
+ * @returns {import('./types.mjs').TargetTool}
+ */
+function resolveTargetToken(token) {
+  const value = token.trim().toLowerCase();
+  if (!value) throw new Error('empty target selection');
+  if (/^\d+$/.test(value)) {
+    const index = Number(value) - 1;
+    const target = TARGET_TOOLS[index];
+    if (!target) throw new Error(`target number out of range: ${value}`);
+    return target;
+  }
+  if (TARGET_TOOLS.includes(/** @type {any} */ (value))) {
+    return /** @type {import('./types.mjs').TargetTool} */ (value);
+  }
+  const matches = TARGET_TOOLS.filter((target) => target.startsWith(value) || target.includes(value));
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) throw new Error(`ambiguous target selection: ${value} (${matches.join(', ')})`);
+  throw new Error(`unknown target selection: ${value}`);
+}
+
+/**
+ * Parse an fzf-like target selection. Accepts `all`, numbers (`1,3`), names
+ * (`cursor,opencode`), or unique fuzzy fragments (`open`).
+ *
+ * @param {string} input
+ * @param {import('./types.mjs').TargetTool[]} [fallback]
+ * @returns {import('./types.mjs').TargetTool[]}
+ */
+export function parseTargetSelection(input, fallback = [...TARGET_TOOLS]) {
+  const value = input.trim().toLowerCase();
+  if (!value) return fallback;
+  if (value === 'all' || value === '*') return [...TARGET_TOOLS];
+  if (value === 'none') throw new Error('select at least one target');
+  const targets = value.split(/[\s,]+/).filter(Boolean).map(resolveTargetToken);
+  return Array.from(new Set(targets));
+}
+
+/**
+ * @param {ParsedArgs} args
+ * @returns {string[]}
+ */
+function argsToArgv(args) {
+  const argv = [];
+  if (args.list) argv.push('--list');
+  if (args.dryRun) argv.push('--dry-run');
+  if (args.verify) argv.push('--verify');
+  if (args.uninstall) argv.push('--uninstall');
+  if (args.autoDetect) argv.push('--auto-detect');
+  if (args.force) argv.push('--force');
+  if (args.yes) argv.push('--yes');
+  if (args.allowUnverified) argv.push('--allow-unverified');
+  argv.push(args.scope === 'global' ? '--global' : '--local');
+  if (args.targets) argv.push('--target', args.targets.join(','));
+  if (args.only.length > 0) argv.push('--only', args.only.join(','));
+  argv.push('--skills-dir', args.skillsDir);
+  argv.push('--lib-dir', args.libDir);
+  return argv;
+}
+
+/**
+ * @param {NodeJS.ReadableStream} input
+ * @returns {Promise<{ body: string, lines: string[] }>}
+ */
+function readPipedAnswers(input) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    input.setEncoding?.('utf8');
+    input.on('data', (chunk) => { body += chunk; });
+    input.on('end', () => { resolve({ body, lines: body.split(/\r?\n/) }); });
+    input.on('error', reject);
+    input.resume?.();
+  });
+}
+
+/**
+ * Mirror `xm/lib` into the target's bundle directory so generated skills and
+ * hooks can execute the CLI paths produced by expandPaths().
+ *
+ * @param {string} libDir
+ * @param {import('./types.mjs').TargetTool} target
+ * @param {'global'|'local'} scope
+ * @returns {import('./types.mjs').RenderOutput[]}
+ */
+function renderBundleOutputs(libDir, target, scope) {
+  /** @type {import('./types.mjs').RenderOutput[]} */
+  const outputs = [];
+  const base = join(targetDirFor(target, scope), 'xm', 'lib');
+  const mode = scope === 'global' ? 0o600 : 0o644;
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const abs = join(dir, entry.name);
+      const rel = relative(libDir, abs);
+      if (entry.isDirectory()) {
+        walk(abs);
+      } else if (entry.isFile()) {
+        outputs.push({
+          relativePath: join(base, rel),
+          content: readFileSync(abs, 'utf8'),
+          kind: 'overwrite',
+          mode,
+        });
+      } else if (lstatSync(abs).isSymbolicLink()) {
+        throw new Error(`refusing to bundle symlink: ${abs}`);
+      }
+    }
+  };
+  walk(libDir);
+  return outputs;
+}
+
+/**
+ * @param {ReturnType<typeof planTarget>} entries
+ * @param {string} libDir
+ * @returns {ReturnType<typeof planTarget>}
+ */
+function expandBundlePlanEntries(entries, libDir) {
+  const expanded = [];
+  for (const entry of entries) {
+    if (entry.kind !== 'bundle') {
+      expanded.push(entry);
+      continue;
+    }
+    const walk = (dir) => {
+      for (const child of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const abs = join(dir, child.name);
+        if (child.isDirectory()) {
+          walk(abs);
+        } else if (child.isFile()) {
+          expanded.push({
+            ...entry,
+            absolutePath: join(entry.absolutePath, relative(libDir, abs)),
+          });
+        } else if (lstatSync(abs).isSymbolicLink()) {
+          throw new Error(`refusing to plan bundle symlink: ${abs}`);
+        }
+      }
+    };
+    walk(libDir);
+  }
+  return expanded;
+}
+
+/**
+ * @param {Record<string, ReturnType<typeof planTarget>>} planMap
+ * @param {string} libDir
+ * @returns {Record<string, ReturnType<typeof planTarget>>}
+ */
+function expandBundlePlanMap(planMap, libDir) {
+  return Object.fromEntries(
+    Object.entries(planMap).map(([target, entries]) => [target, expandBundlePlanEntries(entries, libDir)])
+  );
+}
+
+/**
+ * @param {ParsedArgs} args
+ * @param {{ input?: NodeJS.ReadableStream, output?: NodeJS.WritableStream }} [io]
+ * @returns {Promise<ParsedArgs>}
+ */
+export async function promptInstallOptions(args, io = {}) {
+  const input = io.input ?? process.stdin;
+  const output = io.output ?? process.stdout;
+  const useReadline = Boolean(/** @type {{ isTTY?: boolean }} */ (input).isTTY);
+  const piped = useReadline ? { body: '', lines: [] } : await readPipedAnswers(input);
+  if (!useReadline && piped.body.length === 0) {
+    throw new Error('--interactive requires terminal input or newline-delimited answers on stdin');
+  }
+  const answers = piped.lines;
+  let answerIndex = 0;
+  const rl = useReadline ? createInterface({ input, output }) : null;
+  const question = async (prompt) => {
+    if (rl) return rl.question(prompt);
+    output.write(prompt);
+    return answers[answerIndex++] ?? '';
+  };
+  try {
+    output.write('\nxm install interactive\n\n');
+    output.write('Scope\n');
+    output.write('  1) local  - install under the current project\n');
+    output.write('  2) global - install under your home directory\n');
+    const scopeAnswer = await question(`Scope [${args.scope}]: `);
+    const scope = parseScopeSelection(scopeAnswer, args.scope);
+
+    const fallbackTargets = args.targets ?? [...TARGET_TOOLS];
+    output.write('\nTargets\n');
+    TARGET_TOOLS.forEach((target, index) => {
+      output.write(`  ${index + 1}) ${target.padEnd(12)} ${TARGET_LABELS[target]}\n`);
+    });
+    output.write('  all) every target\n');
+    const targetAnswer = await question(`Targets [${fallbackTargets.join(',')}]: `);
+    const targets = parseTargetSelection(targetAnswer, fallbackTargets);
+    output.write(`\nSelected: ${scope} -> ${targets.join(', ')}\n\n`);
+    return { ...args, scope, targets, interactive: false };
+  } finally {
+    rl?.close();
+  }
+}
+
+/**
+ * @param {string[]} argv
+ * @param {{ input?: NodeJS.ReadableStream, output?: NodeJS.WritableStream }} [io]
+ * @returns {Promise<{ exitCode: number, stdout: string, stderr: string }>}
+ */
+export async function runInteractive(argv, io = {}) {
+  try {
+    const args = parseArgs(argv);
+    const prompted = await promptInstallOptions(args, io);
+    return run(argsToArgv(prompted));
+  } catch (err) {
+    return { exitCode: 2, stdout: '', stderr: String(/** @type {Error} */ (err).message || err) + '\n' };
+  }
+}
 
 /** Pretty-print --list output. */
 export function renderList(planMap) {
@@ -209,7 +451,7 @@ export function run(argv) {
     let ok = true;
     let anyChecked = false;
     for (const target of targetsToCheck) {
-      const mp = manifestPath(target, installRoot);
+      const mp = manifestPath(target, installRoot, args.scope);
       if (!existsSync(mp)) {
         out.push(`# ${target} (${args.scope}): no manifest at ${mp} — skipping`);
         continue;
@@ -281,7 +523,7 @@ export function run(argv) {
     let exit = 0;
     let anyTouched = false;
     for (const target of targetsToRemove) {
-      const mp = manifestPath(target, installRoot);
+      const mp = manifestPath(target, installRoot, args.scope);
       if (!existsSync(mp)) {
         out.push(`# ${target} (${args.scope}): no manifest at ${mp} — nothing to uninstall`);
         continue;
@@ -408,6 +650,7 @@ export function run(argv) {
   let planMap;
   try {
     planMap = planAll({ skills, targets, scope: args.scope, cwd: process.cwd() });
+    planMap = expandBundlePlanMap(planMap, args.libDir);
   } catch (err) {
     return { exitCode: 2, stdout: '', stderr: `plan failed: ${err.message}\n` };
   }
@@ -428,7 +671,7 @@ export function run(argv) {
     };
   }
 
-  // Real install — all four renderers wired (Phase B/C/D/E).
+  // Real install — renderers are wired per target.
   const cwd = process.cwd();
   const lines = [];
   for (const target of targets) {
@@ -437,7 +680,7 @@ export function run(argv) {
       target,
       scope: args.scope,
       installRoot,
-      libPath: (args.scope === 'global' ? '$HOME/' : '') + TARGET_DIR[target] + '/xm/lib',
+      libPath: (args.scope === 'global' ? '$HOME/' : '') + targetDirFor(target, args.scope) + '/xm/lib',
       dryRun: false,
       allowUnverified: args.allowUnverified,
     };
@@ -465,6 +708,10 @@ export function run(argv) {
         const ag = renderAntigravityWithDiagnostics(skills, ctx);
         skillOuts = { outputs: ag.outputs, warnings: ag.warnings };
         // Antigravity has no hooks — sharedOuts stays empty.
+      } else if (target === 'opencode') {
+        const opencode = renderOpencodeWithDiagnostics(skills, ctx);
+        skillOuts = { outputs: opencode.outputs, warnings: opencode.warnings };
+        // OpenCode discovers native skills; no programmable hook API is emitted.
       } else {
         throw new Error(`internal: unhandled target ${target}`);
       }
@@ -472,7 +719,13 @@ export function run(argv) {
       return { exitCode: 2, stdout: '', stderr: `${target}: render failed: ${err.message}\n` };
     }
 
-    const allOutputs = [...skillOuts.outputs, ...sharedOuts.outputs];
+    let bundleOuts;
+    try {
+      bundleOuts = renderBundleOutputs(args.libDir, target, args.scope);
+    } catch (err) {
+      return { exitCode: 2, stdout: '', stderr: `${target}: bundle failed: ${/** @type {Error} */ (err).message}\n` };
+    }
+    const allOutputs = [...skillOuts.outputs, ...sharedOuts.outputs, ...bundleOuts];
     /** @type {{ relativePath: string, content: string|Buffer, mode: number }[]} */
     const manifestEntries = [];
     let wrote = 0, unchanged = 0, rotated = 0, updated = 0;
@@ -524,7 +777,7 @@ export function run(argv) {
         const buf = typeof e.content === 'string' ? Buffer.from(e.content, 'utf8') : e.content;
         newEntriesByPath.set(e.relativePath, { sha256: createHash('sha256').update(buf).digest('hex'), mode: e.mode });
       }
-      const existingPath = manifestPath(target, installRoot);
+      const existingPath = manifestPath(target, installRoot, args.scope);
       let canSkip = false;
       if (existsSync(existingPath)) {
         // E (errors review): scope catch to readManifest only — programming
@@ -571,7 +824,8 @@ export function run(argv) {
 // CLI entry guard: only exec if invoked directly.
 const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedDirectly) {
-  const result = run(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const result = argv.includes('--interactive') ? await runInteractive(argv) : run(argv);
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   process.exit(result.exitCode);

@@ -5,12 +5,12 @@
  * plan; --list / --dry-run print it.
  *
  * Path conventions are derived from research notes (Cursor / Codex / Kiro /
- * Antigravity) and PRD §5.2.
+ * Antigravity / OpenCode) and PRD §5.2.
  */
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { TARGET_TOOLS, TARGET_DIR } from './types.mjs';
+import { TARGET_TOOLS, targetDirFor } from './types.mjs';
 import { xmName, flattenRefPath } from './util/flatten-namespace.mjs';
 
 /**
@@ -157,6 +157,25 @@ function planAntigravity(s, scope, root) {
 }
 
 /**
+ * @param {import('./types.mjs').SkillIR} s
+ * @param {'global'|'local'} scope
+ * @param {string} root
+ * @returns {PlanEntry[]}
+ */
+function planOpencode(s, scope, root) {
+  const skillsDir = join(root, targetDirFor('opencode', scope), 'skills', xmName(s.pluginName, s.skillName));
+  return [
+    {
+      absolutePath: join(skillsDir, 'SKILL.md'),
+      kind: 'skill-doc',
+      skill: xmName(s.pluginName, s.skillName),
+      writeMode: 'overwrite',
+      mode: modeFor(scope),
+    },
+  ];
+}
+
+/**
  * Per-target shared file: AGENTS.md / hooks.json. One entry per target/scope.
  * @param {import('./types.mjs').TargetTool} target
  * @param {'global'|'local'} scope
@@ -222,7 +241,7 @@ function planSharedFiles(target, scope, root) {
  * @returns {string}
  */
 export function bundleDir(target, scope, root) {
-  return join(root, TARGET_DIR[target], 'xm', 'lib');
+  return join(root, targetDirFor(target, scope), 'xm', 'lib');
 }
 
 /**
@@ -250,6 +269,7 @@ export function planTarget({ skills, target, scope, cwd = process.cwd() }) {
     else if (target === 'codex') out.push(...planCodex(s, scope, root));
     else if (target === 'kiro') out.push(...planKiro(s, scope, root));
     else if (target === 'antigravity') out.push(...planAntigravity(s, scope, root));
+    else if (target === 'opencode') out.push(...planOpencode(s, scope, root));
   }
   out.push(...planSharedFiles(target, scope, root));
   // Bundle entry (single representative; renderer expands actual file list).

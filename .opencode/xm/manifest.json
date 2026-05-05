@@ -1,0 +1,21 @@
+{
+  "kind": "xm-install-manifest",
+  "schemaVersion": 1,
+  "prdVersion": "v2.1",
+  "target": "opencode",
+  "scope": "local",
+  "installRoot": "/Users/jinwoo/work/project/agentic/x-kit",
+  "installedAt": 1777986491916,
+  "files": [
+    {
+      "relativePath": ".opencode/skills/xm-build/SKILL.md",
+      "sha256": "7adaa7a4f05f8568a8acdc7430fbc13aeaf3ff544ec92203e125f499d0a2c70b",
+      "bytes": 70167,
+      "mode": 420,
+      "installedAt": 1777986491916,
+      "unverified": true
+    }
+  ],
+  "nonce": "1d443dfa8be8c39d12c71c3b62858846",
+  "selfChecksum": "a97e1c402191c727feaa99ac5f73d12a644997928ed974b896072553ac17c297"
+}
