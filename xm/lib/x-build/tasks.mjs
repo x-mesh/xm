@@ -6,7 +6,7 @@ import {
   PHASES, TASK_STATES, STATUS_ALIASES, C,
   ROLE_MODEL_MAP_HR, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, checkBudget, loadSharedConfig, XM_GLOBAL, PLUGIN_ROOT, ROOT,
   readJSON, writeJSON, modifyJSON, readMD,
-  manifestPath, tasksPath, stepsPath, contextDir, phaseDir, decisionsPath, projectDir,
+  manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, decisionsPath, projectDir,
   resolveProject, logDecision, appendMetric, emitHook,
   parseOptions, renderBar, fmtDuration,
   estimateTaskCost,
@@ -42,8 +42,7 @@ export function taskDoneCriteria(project) {
     return;
   }
 
-  const prdPath = join(phaseDir(project, '02-plan'), 'PRD.md');
-  const prd = readMD(prdPath);
+  const prd = readMD(prdPath(project));
 
   if (!prd) {
     console.log(`${C.yellow}No PRD found. done_criteria works best with PRD acceptance criteria.${C.reset}`);
@@ -179,9 +178,9 @@ export function taskAdd(project, args) {
   };
 
   // Scope creep detection: check against PRD Out of Scope
-  const prdPath = join(phaseDir(project, '02-plan'), 'PRD.md');
-  if (existsSync(prdPath)) {
-    const prd = readMD(prdPath);
+  const path = prdPath(project);
+  if (existsSync(path)) {
+    const prd = readMD(path);
     const oosSection = prd?.match(/##\s*(?:6\.)?\s*Out of Scope[\s\S]*?(?=##\s*\d|$)/i);
     if (oosSection) {
       const oosItems = oosSection[0].match(/- (.+)/g)?.map(m => m.slice(2).trim().toLowerCase()) || [];

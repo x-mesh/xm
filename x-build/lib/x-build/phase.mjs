@@ -5,7 +5,7 @@
 import {
   PHASES, TASK_STATES, GATE_TYPES, C,
   readJSON, writeJSON, readMD,
-  manifestPath, phaseStatusPath, tasksPath, contextDir, phaseDir, checkpointsDir,
+  manifestPath, phaseStatusPath, tasksPath, prdPath, contextDir, phaseDir, checkpointsDir,
   projectDir, decisionsPath,
   resolveProject, logDecision, appendMetric, emitHook,
   loadConfig, parseOptions, E,
@@ -54,6 +54,11 @@ export function phaseNext(args) {
   const gateKey = `${currentPhase.name}-exit`;
   const gateType = config.gates?.[gateKey] || 'auto';
 
+  if (currentPhase.name === 'plan' && !existsSync(prdPath(project))) {
+    console.error('⚠ PRD not generated yet. Run: /x-build plan to generate PRD first.');
+    return;
+  }
+
   if (gateType === 'human-verify') {
     const status = readJSON(phaseStatusPath(project, currentPhase.id));
     if (status?.gate_passed !== true) {
@@ -86,10 +91,6 @@ export function phaseNext(args) {
 
   // Plan-exit: verify plan-check passed + optional critique
   if (currentPhase.name === 'plan' && gateType === 'human-verify') {
-    const prdPath = join(phaseDir(project, '02-plan'), 'PRD.md');
-    if (!existsSync(prdPath)) {
-      console.error('⚠ PRD not generated yet. Run: /x-build plan to generate PRD first.');
-    }
     const tasks = readJSON(tasksPath(project));
     if (!tasks?.tasks?.length) {
       console.log(`⚠️  No tasks defined. Run: x-build plan "goal"`);
@@ -271,6 +272,13 @@ function phaseSet(args) {
 
   const manifest = readJSON(manifestPath(project));
   const now = new Date().toISOString();
+  const targetIdx = PHASES.findIndex(p => p.id === target.id);
+  const executeIdx = PHASES.findIndex(p => p.name === 'execute');
+
+  if (targetIdx >= executeIdx && !existsSync(prdPath(project))) {
+    console.error('⚠ PRD not generated yet. Run: /x-build plan to generate PRD first.');
+    return;
+  }
 
   for (const phase of PHASES) {
     const status = readJSON(phaseStatusPath(project, phase.id));

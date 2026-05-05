@@ -30,11 +30,11 @@ x-build manages the full project lifecycle (Research → Plan → Execute → Ve
 
 | Subcommand | Model | Reason |
 |------------|-------|--------|
-| `list`, `status`, `task list`, `decisions` | **haiku** (Agent tool) | Read-only status display |
+| `list`, `status`, `tasks list`, `decisions` | **haiku** (Agent tool) | Read-only status display |
 | `init` (interactive) | **sonnet** | Requires AskUserQuestion |
 | `plan`, `forecast`, `research`, `run` | **sonnet** | Complex reasoning / orchestration |
 
-For haiku-eligible commands, delegate via: `Agent tool: { model: "sonnet", prompt: "Run: [command]" }` <!-- managed-model: explorer -->
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }` <!-- managed-model: explorer -->
 
 ## Mode Detection
 
@@ -154,9 +154,9 @@ Rules:
 8. **Execute → Verify** — after all tasks complete, MUST use AskUserQuestion before advancing.
 9. **Verify → Close** — after quality checks, MUST use AskUserQuestion before closing.
 
-10. **PRD is MANDATORY** — every project MUST have a PRD.md in `context/` before Execute phase. If tasks were added without PRD (e.g., direct `tasks add`), generate PRD from existing tasks before proceeding.
+10. **PRD is MANDATORY** — every project MUST have `phases/02-plan/PRD.md` before Execute phase. If tasks were added without PRD (e.g., direct `tasks add`), generate PRD from existing tasks before proceeding.
 11. **Task documentation** — every task MUST have `done_criteria` before execution starts. If missing, auto-derive from PRD requirements using `$XMB tasks done-criteria`.
-12. **No phantom projects** — a project without PRD.md and CONTEXT.md is invisible to dashboard and untrackable. Always generate these artifacts.
+12. **No phantom projects** — a project without `phases/02-plan/PRD.md` and CONTEXT.md is invisible to dashboard and untrackable. Always generate these artifacts.
 
 Anti-patterns:
 - ❌ `plan "goal"` → `phase set plan` → PRD generation (skips Research)
@@ -170,10 +170,10 @@ Anti-patterns:
 - ✅ Plan phase: generate tasks → **print task list with done_criteria** → `save plan` → AskUserQuestion for plan review
 - ✅ If tasks added directly: generate PRD from task list before first `tasks update --status in_progress`
 
-Anti-patterns:
-- All tasks complete → immediately run `phase next`
-- Show plan and ask "Shall we proceed?" as text (must use AskUserQuestion)
-- All tasks complete → AskUserQuestion("모든 태스크 완료. Verify 단계로 넘어갈까요?")
+More anti-patterns:
+- ❌ All tasks complete → immediately run `phase next`
+- ❌ Show plan and ask "Shall we proceed?" as text (must use AskUserQuestion)
+- ✅ All tasks complete → print execution summary → AskUserQuestion("모든 태스크 완료. Verify 단계로 넘어갈까요?")
 
 ## Phase Lifecycle
 
@@ -192,7 +192,7 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 | Close | auto | — |
 
 **Plan exit gate enforcement:** Before advancing from Plan → Execute, check:
-1. `context/PRD.md` exists and is non-empty
+1. `phases/02-plan/PRD.md` exists and is non-empty
 2. All tasks have `done_criteria` (not null)
 3. If either check fails → block transition, generate missing artifacts first
 

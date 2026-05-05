@@ -5,7 +5,7 @@
 import {
   PHASES, TASK_STATES, C,
   readJSON, writeJSON, readMD, writeMD,
-  manifestPath, phaseStatusPath, tasksPath, stepsPath, contextDir, projectDir,
+  manifestPath, phaseStatusPath, tasksPath, stepsPath, prdPath, contextDir, projectDir,
   projectsDir, checkpointsDir, phaseDir, toSlug,
   resolveProject, findCurrentProject, logDecision,
   loadConfig, isNormalMode, L, renderBar, fmtDuration,
@@ -141,7 +141,7 @@ export function buildProjectState(project) {
     context: existsSync(join(contextDir(project), 'CONTEXT.md')),
     requirements: existsSync(join(contextDir(project), 'REQUIREMENTS.md')),
     roadmap: existsSync(join(contextDir(project), 'ROADMAP.md')),
-    prd: existsSync(join(contextDir(project), 'PRD.md')),
+    prd: existsSync(prdPath(project)),
   };
 
   // Steps

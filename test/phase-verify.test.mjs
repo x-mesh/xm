@@ -35,6 +35,12 @@ function projectPath(tmp, name, ...segments) {
   return join(tmp, '.xm', 'build', 'projects', name, ...segments);
 }
 
+function writePRD(tmp, name) {
+  const dir = projectPath(tmp, name, 'phases', '02-plan');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'PRD.md'), '# PRD\n\n## 1. Goal\nTest project\n');
+}
+
 // ── Phase transitions ─────────────────────────────────────────────
 
 describe('phase transitions', () => {
@@ -70,6 +76,7 @@ describe('phase transitions', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       const name = setupProject(tmp);
+      writePRD(tmp, name);
       run(['phase', 'set', 'execute'], { cwd: tmp });
       const manifest = readJSON(projectPath(tmp, name, 'manifest.json'));
       expect(manifest.current_phase).toBe('03-execute');
@@ -82,6 +89,7 @@ describe('phase transitions', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       const name = setupProject(tmp);
+      writePRD(tmp, name);
       run(['phase', 'set', 'verify'], { cwd: tmp });
       const manifest = readJSON(projectPath(tmp, name, 'manifest.json'));
       expect(manifest.current_phase).toBe('04-verify');

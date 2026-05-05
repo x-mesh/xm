@@ -44,6 +44,12 @@ function writePRD(tmp, name, content) {
   writeFileSync(join(prdDir, 'PRD.md'), content);
 }
 
+function writePlanCheck(tmp, name, content = { passed: true, checks: [] }) {
+  const prdDir = join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan');
+  mkdirSync(prdDir, { recursive: true });
+  writeFileSync(join(prdDir, 'plan-check.json'), JSON.stringify(content, null, 2));
+}
+
 function writeRequirements(tmp, name, content) {
   const ctxDir = join(tmp, '.xm', 'build', 'projects', name, 'context');
   mkdirSync(ctxDir, { recursive: true });
@@ -124,6 +130,120 @@ describe('forecast', () => {
       run(['steps', 'compute'], { cwd: tmp });
       const r = run(['forecast'], { cwd: tmp });
       expect(r.stdout).toContain('Confidence');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('plan routing protocol', () => {
+  test('plan --quick is parsed as an option, not part of the goal', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      const r = run(['plan', 'Build a hello world app', '--quick'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const output = JSON.parse(r.stdout);
+      expect(output.action).toBe('auto-plan');
+      expect(output.goal).toBe('Build a hello world app');
+      expect(output.quick).toBe(true);
+      expect(output.flow).toBe('quick');
+      expect(output.skip_research).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('plan preserves flag-like text in the goal except --quick', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      const r = run(['plan', 'Build CLI --help docs', '--quick'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const output = JSON.parse(r.stdout);
+      expect(output.goal).toBe('Build CLI --help docs');
+      expect(output.quick).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('next --json recognizes PRD in the plan phase directory', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['phase', 'set', 'plan'], { cwd: tmp });
+      writePRD(tmp, name, '# PRD\n\n## 1. Goal\nBuild API\n');
+      const r = run(['next', '--json'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const output = JSON.parse(r.stdout);
+      expect(output.artifacts.prd).toBe(true);
+      expect(output.action).toBe('plan');
+      expect(output.goal).toBe('Build API');
+      expect(output.args).toEqual(['Build API']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('next --json does not advance from plan without a PRD', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['phase', 'set', 'plan'], { cwd: tmp });
+      addTasks(tmp, [{ name: 'Implement auth [R1]', size: 'small' }]);
+      writePlanCheck(tmp, name);
+      const r = run(['next', '--json'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const output = JSON.parse(r.stdout);
+      expect(output.artifacts.prd).toBe(false);
+      expect(output.action).toBe('plan');
+      expect(output.ready).toBe(false);
+      expect(output.reason).toContain('PRD');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('phase next blocks Plan to Execute when PRD is missing', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['phase', 'set', 'plan'], { cwd: tmp });
+      addTasks(tmp, [{ name: 'Implement auth [R1]', size: 'small' }]);
+      writePlanCheck(tmp, name);
+      run(['gate', 'pass'], { cwd: tmp });
+      const r = run(['phase', 'next'], { cwd: tmp });
+      expect(r.stdout + r.stderr).toContain('PRD not generated');
+      const status = JSON.parse(run(['status', '--json'], { cwd: tmp }).stdout);
+      expect(status.phase.name).toBe('plan');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('phase set execute blocks when PRD is missing', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      const r = run(['phase', 'set', 'execute'], { cwd: tmp });
+      expect(r.stdout + r.stderr).toContain('PRD not generated');
+      const status = JSON.parse(run(['status', '--json'], { cwd: tmp }).stdout);
+      expect(status.phase.name).toBe('research');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('status --json recognizes PRD in the plan phase directory', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePRD(tmp, name, '# PRD\n\n## 1. Goal\nBuild API\n');
+      const r = run(['status', '--json'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const output = JSON.parse(r.stdout);
+      expect(output.context_files.prd).toBe(true);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

@@ -22,7 +22,11 @@ File system layout for x-eval outputs, result schemas, and rubric definitions st
 ```json
 {
   "type": "score",
+  "run_id": "debate-2026-04-04T10-00-00-redis-vs-postgres",
   "timestamp": "ISO8601",
+  "source_plugin": "x-op",
+  "source_strategy": "debate",
+  "source_result_path": ".xm/op/debate-2026-04-04-redis-vs-postgres.json",
   "rubric": "code-quality",
   "judges": 3,
   "scores": {
@@ -52,6 +56,10 @@ File system layout for x-eval outputs, result schemas, and rubric definitions st
 
 - `pass_threshold` — copied from rubric at evaluation time (allows rubric tuning without invalidating old results).
 - `passed` — `overall >= pass_threshold`. Used by `bench` for `pass_at_k` aggregation.
+- `run_id` — stable execution ID copied from the caller when x-eval scores an x-op result. Required when `source_plugin: "x-op"`.
+- `source_plugin` — optional caller identifier. Use `"x-op"` for x-op `--verify` / `eval.auto` scoring.
+- `source_strategy` — x-op strategy name when `source_plugin: "x-op"`.
+- `source_result_path` — path to the originating `.xm/op/*.json` file. Consumers use this to link eval results back to the strategy run.
 - `na_criteria` — list of criteria skipped by all judges due to insufficient context. Empty array when all criteria were scored. Consumers must not treat absence as implicit 0.
 - `assertion_results` — present only when `--assert` flags were used. Each entry: `assertion` (text), `result` (`PASS` / `UNCERTAIN` / `HARD_FAIL`), `confidence` (judge agreement, e.g. `"2/3"`). A `HARD_FAIL` entry forces `passed = false`.
 - `judge_rationales` — preserved for `report --sample-transcript` (article H: "누군가 트랜스크립트를 읽기 전에는 점수를 액면 그대로 믿지 말라"). Optional — skip when `eval.persist_transcripts: false`.

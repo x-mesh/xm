@@ -13,6 +13,10 @@ From `$ARGUMENTS`:
 - `--rubric <name>` = rubric name or criteria (comma-separated custom criteria)
 - `--judges N` = number of judge agents (default 3)
 - `--model` = judge model (default sonnet)
+- `--run-id <id>` = caller-provided execution ID, copied into the result JSON
+- `--source-plugin <name>` = caller identifier, e.g. `x-op`
+- `--source-strategy <name>` = caller strategy name when scoring x-op output
+- `--source-result <path>` = originating result file, e.g. `.xm/op/{file}.json`
 
 If content is a file path, read the file and pass its contents.
 If `--rubric` is empty, use the `general` rubric.
@@ -176,6 +180,8 @@ Notable: Adversarial judge가 정확도 문제를 잡음 — 표준 judge만으�
 ### Storage
 
 Save results to `.xm/eval/results/{timestamp}-score.json`.
+
+When x-op invokes `score` through `--verify` or `eval.auto`, it must pass `--run-id`, `--source-plugin x-op`, `--source-strategy`, and `--source-result`. The saved result JSON then includes those fields so `.xm/op/{file}.json` and `.xm/eval/results/{file}.json` can be joined by `run_id`.
 
 **Transcript preservation:** When `eval.persist_transcripts` (default `true`) is on, write each judge's per-criterion reasoning into `judge_rationales` on the result JSON (see `references/storage-layout.md` score schema). This powers `report --sample-transcript` so reviewers can audit scores, not just trust aggregates. Setting `eval.persist_transcripts: false` in `.xm/config.json` skips the field for users with storage concerns.
 

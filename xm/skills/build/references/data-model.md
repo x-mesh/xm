@@ -14,14 +14,24 @@ Directory layout and JSON schemas for `.xm/build/` project state.
 │   ├── REQUIREMENTS.md        # Scoped features [R1], [R2]...
 │   ├── ROADMAP.md             # Phase breakdown
 │   └── decisions.md           # Decision log (markdown)
-├── 01-research/ ... 05-close/
-│   ├── status.json            # Phase status
-│   └── quality-results.json   # Quality check results (verify phase)
-├── 03-execute/
-│   ├── tasks.json             # Task list + status
-│   ├── steps.json             # Computed DAG steps
-│   ├── circuit-breaker.json   # Resilience state
-│   └── checkpoints/           # Manual markers
+├── phases/
+│   ├── 01-research/
+│   │   ├── status.json        # Phase status
+│   │   └── notes.md           # Raw research agent outputs
+│   ├── 02-plan/
+│   │   ├── PRD.md             # Canonical PRD location
+│   │   ├── tasks.json         # Task list + status
+│   │   ├── steps.json         # Computed DAG steps
+│   │   └── plan-check.json    # Plan validation result
+│   ├── 03-execute/
+│   │   ├── circuit-breaker.json
+│   │   └── progress.json
+│   ├── 04-verify/
+│   │   ├── checklist.md
+│   │   └── quality-results.json
+│   └── 05-close/
+│       └── summary.md
+├── checkpoints/               # Manual markers
 └── metrics/
     └── sessions.jsonl         # Append-only metrics (auto-rotated at 5MB)
 ```
@@ -36,6 +46,11 @@ Directory layout and JSON schemas for `.xm/build/` project state.
     "depends_on": [],
     "size": "small | medium | large",
     "status": "pending | ready | running | completed | failed | cancelled",
+    "done_criteria": [
+      "Acceptance criteria or verification contract"
+    ],
+    "strategy": "refine | review | null",
+    "team": "team name | null",
     "created_at": "ISO8601",
     "started_at": "ISO8601 | null",
     "completed_at": "ISO8601 | null",
