@@ -15,6 +15,7 @@ sync_file() {
     echo "  SKIP $src (not found)"
     return
   fi
+  mkdir -p "$(dirname "$dst")"
   if diff -q "$src" "$dst" > /dev/null 2>&1; then
     echo "  OK   $dst"
   else
@@ -37,7 +38,7 @@ mirror_md_dir() {
 }
 
 echo "=== Syncing SKILL.md files ==="
-for plugin in build op solver eval review trace memory humble probe agent dashboard; do
+for plugin in build op solver eval review trace memory humble probe agent dashboard humanize; do
   src="x-$plugin/skills/$plugin/SKILL.md"
   dst="xm/skills/$plugin/SKILL.md"
   sync_file "$src" "$dst"
@@ -153,9 +154,13 @@ echo "=== Syncing memory references ==="
 mirror_md_dir "x-memory/skills/memory/references" "xm/skills/memory/references"
 
 echo ""
+echo "=== Syncing humanize references ==="
+mirror_md_dir "x-humanize/skills/humanize/references" "xm/skills/humanize/references"
+
+echo ""
 echo "=== Verifying all synced ==="
 DIVERGED=0
-for plugin in build op solver eval review trace memory humble probe agent dashboard; do
+for plugin in build op solver eval review trace memory humble probe agent dashboard humanize; do
   src="x-$plugin/skills/$plugin/SKILL.md"
   dst="xm/skills/$plugin/SKILL.md"
   if [ -f "$src" ] && [ -f "$dst" ] && ! diff -q "$src" "$dst" > /dev/null 2>&1; then
