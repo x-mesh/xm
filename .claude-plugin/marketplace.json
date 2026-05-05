@@ -187,6 +187,24 @@
       ]
     },
     {
+      "name": "humanize",
+      "description": "Remove AI writing patterns — detect and rewrite AI-generated text into natural human prose (English + Korean)",
+      "version": "0.1.0",
+      "author": {
+        "name": "x-mesh"
+      },
+      "source": "./x-humanize",
+      "category": "productivity",
+      "homepage": "https://github.com/x-mesh/xm",
+      "tags": [
+        "humanize",
+        "ai-detection",
+        "writing",
+        "editing",
+        "korean"
+      ]
+    },
+    {
       "name": "dashboard",
       "description": "Web dashboard for .xm project state — visualize builds, probes, solvers, reviews, evals, humble lessons, traces, memory",
       "version": "2.1.2",

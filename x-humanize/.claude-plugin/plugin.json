@@ -1,0 +1,19 @@
+{
+  "name": "humanize",
+  "version": "0.1.0",
+  "description": "Remove AI writing patterns — detect and rewrite AI-generated text into natural human prose (English + Korean)",
+  "author": {
+    "name": "x-mesh"
+  },
+  "repository": "https://github.com/x-mesh/xm",
+  "homepage": "https://github.com/x-mesh/xm",
+  "license": "MIT",
+  "keywords": [
+    "humanize",
+    "ai-detection",
+    "writing",
+    "editing",
+    "korean"
+  ],
+  "skills": "./skills/"
+}
