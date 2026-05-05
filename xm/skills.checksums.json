@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1777995075596,
+  "generatedAt": 1778022532398,
   "version": 1,
   "skills": [
     {
@@ -34,8 +34,8 @@
     },
     {
       "plugin": "humanize",
-      "sha256": "cee8bb21d7605b5ad39d0780244631b727cb149c073be9676177e80b8357d133",
-      "bytes": 10265
+      "sha256": "982369eb49663ed5080008cb8518b2b8575438590c8ba7aab15d7458ee25311f",
+      "bytes": 13601
     },
     {
       "plugin": "humble",
