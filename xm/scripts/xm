@@ -550,7 +550,7 @@ Commands:
   trace <subcmd>                      Execution traces
   sync push|pull|config               Multi-machine .xm sync
   solver <subcmd>                     Structured problem solving
-  install [--target T] [--global]     Install xm SKILLs into Cursor/Codex/Kiro/Antigravity
+  install [--target T] [--global]     Install xm SKILLs into Cursor/Codex/Kiro/Antigravity/OpenCode
   version                             Installed xm version
   doctor                              Health check: local vs remote version, hooks, dashboard
   update [--force|--dry-run]          Update to latest remote (refreshes plugin + CLI binary)
@@ -572,6 +572,9 @@ EOF
       echo "xm install: install-cli.mjs not found under $LIB" >&2
       echo "  Update xm: xm update" >&2
       exit 1
+    fi
+    if [ "$#" -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then
+      set -- --interactive
     fi
     # Explicitly pass --skills-dir/--lib-dir so install-cli doesn't have to
     # guess the layout. User-supplied "$@" appears after ours; install-cli's
