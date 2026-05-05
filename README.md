@@ -36,7 +36,7 @@
 - [Install](#install)
 - [Quick Start](#quick-start)
 - [Why xm?](#why-xm)
-- [Plugins](#plugins) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-ship](#x-ship)
+- [Plugins](#plugins) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-ship](#x-ship) · [x-humanize](#x-humanize)
 - [Quality & Learning Pipeline](#quality--learning-pipeline)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
@@ -362,6 +362,7 @@ Common reference material lives in `references/` (synced to marketplace as `xm/r
 | [x-memory](#x-memory) | Cross-session memory | `/xm:memory inject` |
 | [x-sync](#x-sync) | Multi-machine .xm/ sync | `xm sync push` |
 | [x-ship](#x-ship) | Release automation & squash | `/xm:ship auto` |
+| [x-humanize](#x-humanize) | Remove AI writing patterns | `/xm:humanize audit text` |
 | xm | Bundle + config + pipeline | `/xm pipeline release` |
 
 ---
@@ -883,6 +884,20 @@ Release automation: squash WIP commits, bump the version, push. Works on xm mark
 | **Standalone support** | Auto-detects package.json, Cargo.toml, pyproject.toml, go.mod |
 | **Release metrics** | Records version, bump type, test/review results to `.xm/traces/` |
 | **Diff-based analysis** | Per-commit diff report for intelligent squash grouping |
+
+---
+
+### x-humanize
+
+Remove AI writing patterns — rewrite generated text into natural human prose. Supports English and Korean.
+
+```bash
+/xm:humanize audit <text>          # Report AI patterns only, no rewrite
+/xm:humanize light <text>          # Minimal edits, preserve original structure
+/xm:humanize strong <text>         # Rebuild prose aggressively, preserve facts
+/xm:humanize voice <file> <text>   # Match voice of sample file
+/xm:humanize --lang ko <text>      # Force Korean output
+```
 
 ---
 

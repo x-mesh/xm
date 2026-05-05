@@ -29,7 +29,7 @@ const WIP_PATTERNS = [
 const PLUGIN_DIRS = [
   'x-build', 'x-agent', 'x-op', 'x-solver', 'x-review',
   'x-trace', 'x-memory', 'x-eval', 'x-probe', 'x-humble',
-  'x-dashboard', 'xm', 'x-sync', 'x-ship',
+  'x-dashboard', 'x-humanize', 'xm', 'x-sync', 'x-ship',
 ];
 
 // Maps source directory name → marketplace plugin name (xm namespace, no x- prefix)
@@ -37,7 +37,7 @@ const PLUGIN_NAME_MAP = {
   'x-build': 'build', 'x-agent': 'agent', 'x-op': 'op', 'x-solver': 'solver',
   'x-review': 'review', 'x-trace': 'trace', 'x-memory': 'memory', 'x-eval': 'eval',
   'x-probe': 'probe', 'x-humble': 'humble', 'x-dashboard': 'dashboard',
-  'xm': 'xm', 'x-sync': 'sync', 'x-ship': 'ship',
+  'x-humanize': 'humanize', 'xm': 'xm', 'x-sync': 'sync', 'x-ship': 'ship',
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────
