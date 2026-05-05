@@ -273,6 +273,13 @@ function renderBundleOutputs(libDir, target, scope) {
       if (entry.isDirectory()) {
         walk(abs);
       } else if (entry.isFile()) {
+        // Re-check via lstat right before read to close the TOCTOU window
+        // between readdirSync's withFileTypes snapshot and the actual read.
+        const st = lstatSync(abs);
+        if (st.isSymbolicLink()) {
+          throw new Error(`refusing to bundle symlink: ${abs}`);
+        }
+        if (!st.isFile()) continue;
         outputs.push({
           relativePath: join(base, rel),
           content: readFileSync(abs, 'utf8'),
