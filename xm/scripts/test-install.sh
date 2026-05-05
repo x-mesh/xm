@@ -4,7 +4,7 @@
 # Walks every target through install → verify → tamper → uninstall and prints
 # a pass/fail report. Use this before shipping or as a one-shot sanity check.
 #
-#   bash xm/scripts/test-install.sh                # all 4 targets
+#   bash xm/scripts/test-install.sh                # all 5 targets
 #   bash xm/scripts/test-install.sh cursor codex   # subset
 
 set -euo pipefail
@@ -16,7 +16,7 @@ LIB="$REPO/xm/lib"
 
 TARGETS=("$@")
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
-  TARGETS=(cursor codex kiro antigravity)
+  TARGETS=(cursor codex kiro antigravity opencode)
 fi
 
 TMP="$(mktemp -d -t xm-install-smoke-XXXXXX)"
@@ -78,7 +78,7 @@ for TARGET in "${TARGETS[@]}"; do
     fail "--verify reports clean"
   fi
 
-  # tamper → expect non-zero exit on --verify (4-tool coverage of the
+  # tamper → expect non-zero exit on --verify (multi-tool coverage of the
   # supply-chain regression path that test/install.test.mjs only exercises
   # for cursor today).
   TAMPER=""
@@ -87,6 +87,7 @@ for TARGET in "${TARGETS[@]}"; do
     codex)       TAMPER=".codex/prompts/xm-build.md" ;;
     kiro)        TAMPER=".kiro/steering/xm-build.md" ;;
     antigravity) TAMPER=".agent/skills/xm-build.md" ;;
+    opencode)    TAMPER=".opencode/skills/xm-build/SKILL.md" ;;
   esac
   if [[ -n "$TAMPER" && -f "$TAMPER" ]]; then
     cp "$TAMPER" "$TAMPER.orig"

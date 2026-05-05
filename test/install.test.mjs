@@ -22,6 +22,8 @@ function run(args, opts = {}) {
     cwd: opts.cwd ?? process.cwd(),
     encoding: 'utf8',
     timeout: 30_000,
+    input: opts.input,
+    env: opts.env ?? process.env,
   });
   return {
     stdout: result.stdout ?? '',
@@ -60,7 +62,7 @@ describe('install-cli — input validation (R-SEC-04)', () => {
 });
 
 describe('install-cli — --list and --dry-run (no fs writes)', () => {
-  test('--list produces 4-target plan, no fs side effects', () => {
+  test('--list produces 5-target plan, no fs side effects', () => {
     const tmp = seedTmp();
     const r = run(['--list', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
     expect(r.status).toBe(0);
@@ -68,8 +70,10 @@ describe('install-cli — --list and --dry-run (no fs writes)', () => {
     expect(r.stdout).toMatch(/# codex/);
     expect(r.stdout).toMatch(/# kiro/);
     expect(r.stdout).toMatch(/# antigravity/);
+    expect(r.stdout).toMatch(/# opencode/);
     expect(existsSync(join(tmp, '.cursor'))).toBe(false);
     expect(existsSync(join(tmp, '.codex'))).toBe(false);
+    expect(existsSync(join(tmp, '.opencode'))).toBe(false);
   });
   test('--dry-run leaves fs untouched', () => {
     const tmp = seedTmp();
@@ -117,6 +121,53 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     run(['--target', 'codex,antigravity', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
     expect(readdirSync(tmp).filter((f) => f === 'AGENTS.md').length).toBe(1);
     expect(readdirSync(join(tmp, '.agent', 'skills')).length).toBe(16);
+  });
+  test('opencode writes native SKILL.md files with frontmatter', () => {
+    const tmp = seedTmp();
+    const r = run(['--target', 'opencode', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
+    expect(r.status).toBe(0);
+    const skills = readdirSync(join(tmp, '.opencode', 'skills'));
+    expect(skills.length).toBe(16);
+    const skillFile = join(tmp, '.opencode', 'skills', 'xm-build', 'SKILL.md');
+    expect(readFileSync(skillFile, 'utf8')).toMatch(/^---\nname: "xm-build"\ndescription: /);
+    expect(existsSync(join(tmp, '.opencode', 'xm', 'lib', 'x-build-cli.mjs'))).toBe(true);
+    expect(existsSync(join(tmp, '.opencode', 'xm', 'manifest.json'))).toBe(true);
+  });
+});
+
+describe('install-cli — interactive selection', () => {
+  test('--interactive prompts for global scope and selected targets', () => {
+    const tmp = seedTmp();
+    const fakeHome = join(tmp, 'fakehome');
+    mkdirSync(fakeHome, { recursive: true });
+
+    const r = run(['--interactive', '--skills-dir', SKILLS, '--lib-dir', LIB], {
+      cwd: tmp,
+      input: '2\n1,5\n',
+      env: { ...process.env, HOME: fakeHome },
+    });
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/xm install interactive/);
+    expect(r.stdout).toMatch(/Selected: global -> cursor, opencode/);
+    expect(r.stdout).toMatch(/# cursor \(global\)/);
+    expect(r.stdout).toMatch(/# opencode \(global\)/);
+    expect(r.stdout).not.toMatch(/# codex \(global\)/);
+    expect(existsSync(join(fakeHome, '.cursor', 'skills', 'xm-build', 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(fakeHome, '.config', 'opencode', 'skills', 'xm-build', 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(fakeHome, '.config', 'opencode', 'xm', 'lib', 'x-build-cli.mjs'))).toBe(true);
+  });
+
+  test('--interactive with empty stdin fails instead of installing defaults', () => {
+    const tmp = seedTmp();
+    const r = run(['--interactive', '--skills-dir', SKILLS, '--lib-dir', LIB], {
+      cwd: tmp,
+      input: '',
+    });
+
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/requires terminal input/);
+    expect(existsSync(join(tmp, '.cursor'))).toBe(false);
   });
 });
 
@@ -180,8 +231,8 @@ describe('install-cli — uninstall (SC6)', () => {
   test('removes xm files, preserves user content in AGENTS.md', () => {
     const tmp = seedTmp();
     writeFileSync(join(tmp, 'AGENTS.md'), '# my own\n\nuser notes\n');
-    run(['--target', 'codex,antigravity,cursor,kiro', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
-    const r = run(['--uninstall', '--target', 'codex,antigravity,cursor,kiro'], { cwd: tmp });
+    run(['--target', 'codex,antigravity,cursor,kiro,opencode', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
+    const r = run(['--uninstall', '--target', 'codex,antigravity,cursor,kiro,opencode'], { cwd: tmp });
     expect(r.status).toBe(0);
     expect(existsSync(join(tmp, 'AGENTS.md'))).toBe(true);
     expect(readFileSync(join(tmp, 'AGENTS.md'), 'utf8')).toMatch(/user notes/);
@@ -190,6 +241,12 @@ describe('install-cli — uninstall (SC6)', () => {
       ? readdirSync(join(tmp, '.cursor', 'rules')).filter((f) => f.startsWith('xm-')).length
       : 0;
     expect(cursorRulesAfter).toBe(0);
+    const opencodeSkillsAfter = existsSync(join(tmp, '.opencode', 'skills'))
+      ? readdirSync(join(tmp, '.opencode', 'skills'))
+        .filter((f) => f.startsWith('xm-') && existsSync(join(tmp, '.opencode', 'skills', f, 'SKILL.md')))
+        .length
+      : 0;
+    expect(opencodeSkillsAfter).toBe(0);
   });
   test('preserves external .cursor file added after install', () => {
     const tmp = seedTmp();
@@ -333,6 +390,24 @@ describe('install-cli — --global scope (H10)', () => {
     expect(existsSync(skillFile)).toBe(true);
     const mode = statSync(skillFile).mode & 0o777;
     expect(mode).toBe(0o600);
+  });
+  test('opencode --global writes Skills layout under ~/.config/opencode with 0o600', () => {
+    const tmp = seedTmp();
+    const fakeHome = join(tmp, 'fakehome');
+    mkdirSync(fakeHome, { recursive: true });
+    const result = spawnSync('node', [CLI, '--target', 'opencode', '--global',
+      '--skills-dir', SKILLS, '--lib-dir', LIB], {
+      cwd: tmp,
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: { ...process.env, HOME: fakeHome },
+    });
+    expect(result.status).toBe(0);
+    const skillFile = join(fakeHome, '.config', 'opencode', 'skills', 'xm-build', 'SKILL.md');
+    expect(existsSync(skillFile)).toBe(true);
+    const mode = statSync(skillFile).mode & 0o777;
+    expect(mode).toBe(0o600);
+    expect(existsSync(join(fakeHome, '.config', 'opencode', 'xm', 'manifest.json'))).toBe(true);
   });
 });
 
