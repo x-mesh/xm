@@ -3,9 +3,9 @@
 #
 # This script installs the `xm` umbrella CLI for Claude Code via the
 # `.claude-plugin/marketplace.json` mechanism. It does NOT touch Cursor /
-# Codex / Kiro / Antigravity — for those, use:
+# Codex / Kiro / Antigravity / OpenCode — for those, use:
 #
-#   node xm/lib/install/install-cli.mjs --target cursor,codex,kiro,antigravity
+#   node xm/lib/install/install-cli.mjs --target cursor,codex,kiro,antigravity,opencode
 #
 # See `.xm/build/projects/multi-tool-install/phases/02-plan/PRD.md` §15 Q4.
 #
