@@ -30,8 +30,9 @@ From `types.mjs`:
 - `RenderOutput`
 - `Renderer`
 - `TargetTool` (string union; values bound by `TARGET_TOOLS` constant)
-- All exported constants (`PLUGIN_NAME_RE`, `SKILL_NAME_RE`, `TARGET_TOOLS`,
-  `TARGET_DIR`, `MARKER_BEGIN`, `MARKER_END`, `LOCK_TTL_MS`, `MAX_REF_DEPTH`,
+- All exported constants/functions (`PLUGIN_NAME_RE`, `SKILL_NAME_RE`,
+  `TARGET_TOOLS`, `TARGET_DIR`, `TARGET_GLOBAL_DIR`, `targetDirFor`,
+  `MARKER_BEGIN`, `MARKER_END`, `LOCK_TTL_MS`, `MAX_REF_DEPTH`,
   `MAX_BAK_ROTATION`, `CODEX_AGENTS_MAX_BYTES`, `CURSOR_MDC_MAX_LINES`,
   `SECRET_PATTERNS`, `SHELL_METACHARS_RE`, `PRD_VERSION`)
 
@@ -84,3 +85,4 @@ Before merging a renderer:
 | Date       | Change                              | Author              |
 |------------|-------------------------------------|---------------------|
 | 2026-04-30 | Initial freeze (Phase A complete).  | multi-tool-install  |
+| 2026-05-05 | Added OpenCode target and scoped directory helper. | xm install |
