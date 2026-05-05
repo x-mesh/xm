@@ -139,6 +139,10 @@ function getMode() {
 }
 
 function getAgentCount() {
+  const local = loadConfig();
+  const localParallel = local.solving?.parallel_agents;
+  if (Number.isInteger(localParallel) && localParallel > 0) return localParallel;
+
   const shared = loadSharedConfig();
   return shared.agent_max_count ?? 4;
 }
@@ -723,8 +727,13 @@ function cmdClassify(args) {
     console.log();
   }
 
-  console.log(`  ${C.yellow}Run: x-solver strategy set ${recommended}${C.reset}`);
-  console.log(`  ${C.dim}Or choose another: x-solver strategy set <decompose|iterate|constrain|pipeline>${C.reset}\n`);
+  if (recommended === 'direct') {
+    console.log(`  ${C.yellow}Direct path: answer directly, then close when done.${C.reset}`);
+    console.log(`  ${C.dim}If this is more complex than expected, choose: x-solver strategy set <decompose|iterate|constrain|pipeline>${C.reset}\n`);
+  } else {
+    console.log(`  ${C.yellow}Run: x-solver strategy set ${recommended}${C.reset}`);
+    console.log(`  ${C.dim}Or choose another: x-solver strategy set <decompose|iterate|constrain|pipeline>${C.reset}\n`);
+  }
 
   // JSON output
   console.log(JSON.stringify({
@@ -878,6 +887,7 @@ function cmdSolve(args) {
     current_phase: currentPhase,
     next_phase: phases[phases.indexOf(currentPhase) + 1] || null,
     step_only: !!opts.step,
+    agent_count: getAgentCount(),
     problem_context: problemContext,
     constraints: constraintData.constraints,
     strategy_state: stratState,
@@ -900,14 +910,61 @@ function cmdSolveAdvance(args) {
   const m = readJSON(manifestPath(problem));
   const stratState = readJSON(join(solvePath(problem), 'strategy-state.json'));
   const phases = SOLVE_PHASES[m.strategy];
-  const currentIdx = phases.indexOf(stratState.current_phase);
 
   if (!opts.phase) {
     console.error('Usage: x-solver solve-advance --phase <phase-name>');
     process.exit(1);
   }
 
-  stratState.phases_completed.push(stratState.current_phase);
+  if (!m.strategy || !phases) {
+    console.error('❌ No valid strategy set. Run: x-solver strategy set <decompose|iterate|constrain|pipeline>');
+    process.exit(1);
+  }
+
+  if (!stratState?.strategy || !stratState.current_phase) {
+    console.error('❌ No active solve phase. Run: x-solver strategy set <name> first.');
+    process.exit(1);
+  }
+
+  const currentIdx = phases.indexOf(stratState.current_phase);
+  const targetIdx = phases.indexOf(opts.phase);
+  const isIterateRetry = m.strategy === STRATEGIES.ITERATE
+    && stratState.current_phase === 'refine'
+    && opts.phase === 'hypothesize';
+
+  if (currentIdx === -1) {
+    console.error(`❌ Current solve phase "${stratState.current_phase}" is invalid for strategy "${m.strategy}".`);
+    process.exit(1);
+  }
+  if (targetIdx === -1) {
+    console.error(`❌ Unknown solve phase "${opts.phase}" for strategy "${m.strategy}". Valid: ${phases.join(', ')}`);
+    process.exit(1);
+  }
+  if (targetIdx !== currentIdx + 1 && !isIterateRetry) {
+    console.error(`❌ Invalid phase transition: ${stratState.current_phase} → ${opts.phase}. Expected: ${phases[currentIdx + 1] || '(complete)'}`);
+    process.exit(1);
+  }
+  if (isIterateRetry) {
+    const currentIteration = Number.isInteger(stratState.current_iteration)
+      ? stratState.current_iteration
+      : 0;
+    const maxIterations = stratState.max_iterations || loadConfig().solving?.max_iterations || 3;
+    if (currentIteration + 1 > maxIterations) {
+      console.error(`❌ Max iterations reached (${maxIterations}). Advance to resolve instead.`);
+      process.exit(1);
+    }
+    stratState.current_iteration = currentIteration + 1;
+  }
+
+  stratState.phases_completed = stratState.phases_completed || [];
+  if (!stratState.phases_completed.includes(stratState.current_phase)) {
+    stratState.phases_completed.push(stratState.current_phase);
+  }
+  if (isIterateRetry) {
+    stratState.phases_completed = stratState.phases_completed.filter(
+      (phase) => phases.indexOf(phase) !== -1 && phases.indexOf(phase) < targetIdx
+    );
+  }
   stratState.current_phase = opts.phase;
   stratState.updated_at = new Date().toISOString();
   writeJSON(join(solvePath(problem), 'strategy-state.json'), stratState);
@@ -1417,6 +1474,9 @@ function cmdNext(args) {
       if (!classification) {
         recommendation = 'classify';
         message = 'Run classification: x-solver classify';
+      } else if (classification.recommended_strategy === 'direct') {
+        recommendation = 'direct';
+        message = 'Simple problem: answer directly. If it becomes complex, choose a solver strategy.';
       } else if (!m.strategy) {
         recommendation = 'strategy set';
         message = `Set strategy (recommended: ${classification.recommended_strategy}): x-solver strategy set ${classification.recommended_strategy}`;

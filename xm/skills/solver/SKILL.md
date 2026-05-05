@@ -1,7 +1,7 @@
 ---
 name: solver
 description: Structured problem solving — decompose, iterate, constrain, or auto-pipeline with strategy recommendation
-model: opus
+model: sonnet
 allowed-tools:
   - AskUserQuestion
 ---
@@ -51,19 +51,19 @@ See `references/ask-user-question-rule.md` — the `question` field is invisible
 
 ## Mode Detection
 
-Check mode before every command:
+Check mode before every command after defining the `xms` helper:
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/lib/x-solver-cli.mjs mode show 2>/dev/null | head -1
+xms mode show
 ```
 
 ## CLI
 
 All commands via:
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/lib/x-solver-cli.mjs <command> [args]
+xms <command> [args]
 ```
 
-Shorthand in this document: `$XMS` = `node ${CLAUDE_PLUGIN_ROOT}/lib/x-solver-cli.mjs`
+Shorthand in this document: `$XMS` means the `xms` helper or `xm solver`.
 
 > **⚠ When using Bash tool, define the helper once at session start. `${CLAUDE_PLUGIN_ROOT}` is substituted in SKILL.md prompt text but NOT as a Bash env var — relying on it alone causes `Cannot find module '/lib/...'` errors.**
 > ```bash
@@ -131,26 +131,23 @@ This skill uses only Claude Code's built-in Agent tool.
 
 ### Agent Count Resolution (MANDATORY)
 
-Before any fan-out or broadcast, resolve the agent count:
+Before any fan-out or broadcast, parse `agent_count` from the latest `$XMS solve` JSON output.
+The CLI resolves it as local `.xm/solver/config.json` `solving.parallel_agents` first, then shared `.xm/config.json` `agent_max_count`, then default `4`.
 
-```bash
-node -e "import('/Users/jinwoo/.claude/plugins/cache/xm/xm/1.26.4/lib/shared-config.mjs').then(m => console.log(m.getAgentCount()))"
-```
-
-Use the returned value as `AGENT_COUNT` for all fan-out/broadcast operations in this session.
+Use that value as `AGENT_COUNT` for all fan-out/broadcast operations in the current solve phase.
 Do NOT hardcode agent counts. Always use the resolved value.
 
 ### fan-out (parallel agents)
 Call `AGENT_COUNT` Agent tools **simultaneously** in a single message:
 ```
-Agent tool 1: { description: "agent-1", prompt: "...", run_in_background: true, model: "opus" } <!-- managed-model: executor -->
-Agent tool 2: { description: "agent-2", prompt: "...", run_in_background: true, model: "opus" } <!-- managed-model: executor -->
+Agent tool 1: { description: "agent-1", prompt: "...", run_in_background: true, model: "sonnet" } <!-- managed-model: executor -->
+Agent tool 2: { description: "agent-2", prompt: "...", run_in_background: true, model: "sonnet" } <!-- managed-model: executor -->
 ...up to AGENT_COUNT agents
 ```
 
 ### delegate (single agent delegation)
 ```
-Agent tool: { description: "role name", prompt: "...", run_in_background: false, model: "opus" } <!-- managed-model: architect -->
+Agent tool: { description: "role name", prompt: "...", run_in_background: false, model: "sonnet" } <!-- managed-model: architect -->
 ```
 
 ### broadcast (different prompts to each)
@@ -182,6 +179,7 @@ Key behaviors:
 - **Step-Back (check higher-level pattern):** Before classifying, step back and ask — "What kind of problem is this, fundamentally?"
 - High confidence (≥ 0.7): use rule-based result as-is
 - Low confidence (< 0.7): LLM fallback via delegate agent
+- `direct` means no x-solver strategy is required; answer directly, or choose a real strategy if the problem becomes non-trivial
 - AskUserQuestion (REQUIRED) for final strategy selection
 
 ---
@@ -268,6 +266,7 @@ After scoring, the leader produces a Contrastive Matrix showing each candidate s
    - `init` → Ask the user to describe the problem
    - `describe` → Request additional description
    - `classify` → Run classify
+   - `direct` → Answer directly, then close or pick a real strategy if complexity increases
    - `strategy set` → Ask for strategy selection
    - `solve` → Run solve
    - `candidates select` → Ask for candidate selection
@@ -280,8 +279,8 @@ When `$ARGUMENTS` is a natural language problem description:
 1. `$XMS init "description"`
 2. `$XMS classify`
 3. Show the recommended strategy to the user and confirm
-4. `$XMS strategy set <chosen>`
-5. Run `$XMS solve`
+4. If recommendation is `direct`, answer directly and skip `strategy set`
+5. Otherwise `$XMS strategy set <chosen>` and run `$XMS solve`
 
 ---
 
