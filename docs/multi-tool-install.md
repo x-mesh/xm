@@ -1,13 +1,15 @@
 # xm Multi-Tool Install Guide
 
-xm is published as a Claude Code marketplace plugin, but its 16 SKILLs can also be rendered into the formats consumed by **Cursor**, **OpenAI Codex CLI**, **AWS Kiro**, and **Google Antigravity**. A single source compiler (`xm/lib/install/install-cli.mjs`) emits per-tool artifacts so you maintain one source of truth.
+xm is published as a Claude Code marketplace plugin, but its 16 SKILLs can also be rendered into the formats consumed by **Cursor**, **OpenAI Codex CLI**, **AWS Kiro**, **Google Antigravity**, and **OpenCode**. A single source compiler (`xm/lib/install/install-cli.mjs`) emits per-tool artifacts so you maintain one source of truth.
 
 > **TL;DR**
 > ```bash
+> # interactive picker
+> xm install
 > # preview
 > node xm/lib/install/install-cli.mjs --list
 > # install for one repo
-> node xm/lib/install/install-cli.mjs --target cursor,codex,kiro,antigravity
+> node xm/lib/install/install-cli.mjs --target cursor,codex,kiro,antigravity,opencode
 > # validate
 > node xm/lib/install/install-cli.mjs --verify
 > # remove (preserves your AGENTS.md content)
@@ -22,6 +24,7 @@ xm is published as a Claude Code marketplace plugin, but its 16 SKILLs can also 
   - [Codex CLI](#codex-cli)
   - [Kiro](#kiro)
   - [Antigravity](#antigravity)
+  - [OpenCode](#opencode)
 - [Verification](#verification)
 - [Uninstall](#uninstall)
 - [Testing](#testing)
@@ -34,16 +37,16 @@ xm is published as a Claude Code marketplace plugin, but its 16 SKILLs can also 
 
 Claude Code is the reference target — every other tool is a compiled subset shaped by the host's plugin model.
 
-| Capability | Claude Code | Cursor | Codex CLI | Kiro | Antigravity |
-|------------|:-:|:-:|:-:|:-:|:-:|
-| 16 SKILL bodies | ✅ | ✅ `.cursor/rules/*.mdc` | ✅ `.codex/prompts/*.md` (or `~/.codex/prompts/` with `--global`) | ✅ `.kiro/steering/*.md` | ✅ `.agent/skills/*.md` (or `~/.gemini/antigravity/skills/`) |
-| Auto rule loading | ✅ | △ agent-requested via description | ❌ user-invoked `/prompts:xm-<plug>` | △ inclusion: auto/manual | △ agent-requested |
-| Slash command discovery | ✅ `/xm:build` | △ `.cursor/commands/` (no commands declared yet) | △ `/prompts:xm-build` | ❌ | △ workflows file |
-| Blocking hook (exit 2) | ✅ | ✅ `.cursor/hooks.json` (camelCase) | △ Bash/shell only (issue #16732) | ❌ run-only, no block | ❌ no programmable API |
-| References as separate files | ✅ | ✅ `xm-*-ref-*.mdc` | △ inlined in prompt body | ✅ `#[[file:…]]` include | △ inlined |
-| CLI bundling (build/solver/memory) | ✅ `${CLAUDE_PLUGIN_ROOT}` | ✅ `~/.cursor/xm/lib/` | ✅ `~/.codex/xm/lib/` | ✅ `~/.kiro/xm/lib/` | ✅ `~/.gemini/xm/lib/` |
-| MCP servers | ✅ | ✅ | ✅ | ✅ | ✅ (config-only) |
-| Programmable hook API | ✅ | ✅ | △ partial | △ run-only | ❌ |
+| Capability | Claude Code | Cursor | Codex CLI | Kiro | Antigravity | OpenCode |
+|------------|:-:|:-:|:-:|:-:|:-:|:-:|
+| 16 SKILL bodies | ✅ | ✅ `.cursor/rules/*.mdc` | ✅ `.codex/prompts/*.md` (or `~/.codex/prompts/` with `--global`) | ✅ `.kiro/steering/*.md` | ✅ `.agent/skills/*.md` (or `~/.gemini/antigravity/skills/`) | ✅ `.opencode/skills/*/SKILL.md` (or `~/.config/opencode/skills/*/SKILL.md`) |
+| Auto rule loading | ✅ | △ agent-requested via description | ❌ user-invoked `/prompts:xm-<plug>` | △ inclusion: auto/manual | △ agent-requested | ✅ native skill discovery |
+| Slash command discovery | ✅ `/xm:build` | △ `.cursor/commands/` (no commands declared yet) | △ `/prompts:xm-build` | ❌ | △ workflows file | ❌ skill-only |
+| Blocking hook (exit 2) | ✅ | ✅ `.cursor/hooks.json` (camelCase) | △ Bash/shell only (issue #16732) | ❌ run-only, no block | ❌ no programmable API | ❌ not emitted |
+| References as separate files | ✅ | ✅ `xm-*-ref-*.mdc` | △ inlined in prompt body | ✅ `#[[file:…]]` include | △ inlined | △ inlined |
+| CLI bundling (build/solver/memory) | ✅ `${CLAUDE_PLUGIN_ROOT}` | ✅ `~/.cursor/xm/lib/` | ✅ `~/.codex/xm/lib/` | ✅ `~/.kiro/xm/lib/` | ✅ `~/.gemini/xm/lib/` | ✅ `~/.config/opencode/xm/lib/` |
+| MCP servers | ✅ | ✅ | ✅ | ✅ | ✅ (config-only) | ✅ |
+| Programmable hook API | ✅ | ✅ | △ partial | △ run-only | ❌ | ❌ |
 
 Legend: ✅ full / △ limited / ❌ unsupported.
 
@@ -55,7 +58,7 @@ Legend: ✅ full / △ limited / ❌ unsupported.
 - **Git** — manifests live alongside source; `.bak` rotation works on regular files only.
 - A clone of this repo or the published `x-mesh/xm` package on disk.
 
-> The same SKILL source files render to all four targets. You do **not** need each target's IDE installed before running `xm install`; rules will be picked up the next time you open the project in that tool.
+> The same SKILL source files render to all supported targets. You do **not** need each target's IDE installed before running `xm install`; rules will be picked up the next time you open the project in that tool.
 
 ---
 
@@ -71,15 +74,23 @@ Legend: ✅ full / △ limited / ❌ unsupported.
 You can pick one or many targets:
 
 ```bash
+# interactive scope + target picker
+xm install
+# direct compiler invocation
+node xm/lib/install/install-cli.mjs --interactive
+
 # one tool, project-local (most common)
 node xm/lib/install/install-cli.mjs --target cursor
 
 # many tools, project-local
-node xm/lib/install/install-cli.mjs --target cursor,codex,kiro,antigravity
+node xm/lib/install/install-cli.mjs --target cursor,codex,kiro,antigravity,opencode
 
 # user-global, with confirmation skipped (CI)
 node xm/lib/install/install-cli.mjs --target cursor --global --yes
 ```
+
+The interactive picker asks for `local` vs `global`, then accepts target numbers,
+names, `all`, or unique fuzzy fragments such as `open` for `opencode`.
 
 The first run writes new files and a manifest. Re-runs are idempotent — same arguments produce zero `git diff`. Existing user-authored content (e.g. notes you wrote in `AGENTS.md`) is preserved via `<!-- xm:BEGIN v2 --> ... <!-- xm:END -->` markers and `.bak` rotation (max 3 generations).
 
@@ -167,6 +178,28 @@ Notes:
 - Antigravity does **not** expose a programmable hook API. The renderer skips hooks entirely; Cursor or Codex remain the targets if you need that surface.
 - See [`.xm/build/projects/multi-tool-install/phases/02-plan/E0-gate.md`](../.xm/build/projects/multi-tool-install/phases/02-plan/E0-gate.md) for the spike decision rationale.
 
+### OpenCode
+
+```bash
+node xm/lib/install/install-cli.mjs --target opencode
+
+# global
+node xm/lib/install/install-cli.mjs --target opencode --global
+```
+
+Writes:
+- `.opencode/skills/xm-<plug>/SKILL.md` × 16 (project) or `~/.config/opencode/skills/xm-<plug>/SKILL.md` (`--global`) — native OpenCode skills with `name`, `description`, and `compatibility: opencode` frontmatter
+- `.opencode/xm/manifest.json` (project) or `~/.config/opencode/xm/manifest.json` (`--global`)
+
+Verify in OpenCode:
+1. Start `opencode` in the project root.
+2. Ask for an xm workflow such as "use xm build to plan a phased rollout"; OpenCode should discover the matching skill.
+3. For global installs, confirm `~/.config/opencode/skills/xm-build/SKILL.md` exists and restart OpenCode if the session was already running.
+
+Notes:
+- OpenCode can also read some Claude-compatible skill locations, but xm installs to the native `.opencode` / `~/.config/opencode` paths so users can disable Claude compatibility without losing xm.
+- Hooks are not emitted for OpenCode. Use Cursor or Codex when you need translated hook behavior.
+
 ---
 
 ## Verification
@@ -221,10 +254,10 @@ A second run safely reports "nothing to uninstall".
 
 ```bash
 bun test test/install.test.mjs
-# 24 pass / 53 expect() calls / ~1.4 s  (run `bun test test/install.test.mjs` for current count)
+# run `bun test test/install.test.mjs` for the current count
 ```
 
-Covers: input validation, `--list`/`--dry-run` (zero side-effects), install + idempotency for all four targets, supply-chain checksum guard with both pass and bypass paths, `--verify` (clean / tampered / missing), uninstall (preservation of user content + external files), and file permissions (`0o644` for local, `0o600` for global).
+Covers: input validation, `--list`/`--dry-run` (zero side-effects), install + idempotency for all supported targets, supply-chain checksum guard with both pass and bypass paths, `--verify` (clean / tampered / missing), uninstall (preservation of user content + external files), and file permissions (`0o644` for local, `0o600` for global).
 
 The full project test suite stays green:
 
@@ -236,10 +269,10 @@ bun test
 ### Smoke script (manual, one command)
 
 ```bash
+# all supported targets
 bash xm/scripts/test-install.sh
-# all four targets
-bash xm/scripts/test-install.sh cursor codex
 # subset
+bash xm/scripts/test-install.sh cursor codex
 ```
 
 The script:
@@ -249,7 +282,7 @@ The script:
 4. Final uninstall pass + AGENTS.md user-content preservation.
 5. Reports pass/fail per check; exits non-zero on any failure.
 
-Recent run: **20 passed, 0 failed** in ~6 s.
+Recent run: use `bash xm/scripts/test-install.sh` for the current pass/fail count.
 
 ### Manual end-to-end in the actual IDE
 
@@ -300,7 +333,7 @@ node xm/scripts/skills-checksum.mjs --check   # CI gate (exit 1 on stale)
 | Kiro hook didn't block a write | Kiro doesn't support exit-code denial (R-SEC-09) | Use Cursor or Codex if blocking semantics are required |
 | `~/.gemini/GEMINI.md` mysteriously rewritten | gemini-cli also uses this path ([#16058](https://github.com/google-gemini/gemini-cli/issues/16058)) | We default to `~/.gemini/AGENTS.md`; if you must use `GEMINI.md`, install with `--local` only |
 
-If `--verify` reports `selfChecksum: FAIL`, the manifest itself was tampered with. Re-run install to regenerate, and consider what process modified `<install-root>/.<tool>/xm/manifest.json` outside the installer.
+If `--verify` reports `selfChecksum: FAIL`, the manifest itself was tampered with. Re-run install to regenerate, and consider what process modified the target's `xm/manifest.json` outside the installer.
 
 ---
 
