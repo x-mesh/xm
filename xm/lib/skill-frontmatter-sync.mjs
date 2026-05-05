@@ -166,12 +166,16 @@ function writeAtomic(filePath, data) {
 
 function parseArgs(argv) {
   const args = { check: false, profile: null, repoRoot: null, verbose: false };
+  const requireValue = (flag, i) => {
+    if (i + 1 >= argv.length) throw new Error(`${flag} requires a value`);
+    return argv[i + 1];
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--check') args.check = true;
     else if (a === '--verbose' || a === '-v') args.verbose = true;
-    else if (a === '--profile') args.profile = argv[++i];
-    else if (a === '--repo-root') args.repoRoot = argv[++i];
+    else if (a === '--profile') { args.profile = requireValue('--profile', i); i++; }
+    else if (a === '--repo-root') { args.repoRoot = requireValue('--repo-root', i); i++; }
   }
   return args;
 }

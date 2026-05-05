@@ -46,6 +46,17 @@ function dirIsEmpty(loc) {
   }
 }
 
+// Guard rmdirSync against arbitrary `installLocation` values from the JSON.
+// Only allow paths resolving under the same parent dir as `knownPath`
+// (i.e. `~/.claude/plugins/`).
+function isWithinPluginsRoot(loc, knownPath) {
+  if (!loc || typeof loc !== 'string') return false;
+  const root = path.resolve(path.dirname(knownPath));
+  const target = path.resolve(loc);
+  const rel = path.relative(root, target);
+  return rel.length > 0 && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
 /**
  * @param {{ knownPath?: string, dryRun?: boolean }} [opts]
  * @returns {{ status: 'absent'|'clean'|'cleaned'|'flagged', removed: string[], flagged: Array<{name:string, loc:string|null}> }}
@@ -91,7 +102,15 @@ export function sanitizeMarketplaces(opts = {}) {
       removed.push(name);
       delete registry[name];
       if (!dryRun && loc && fs.existsSync(loc)) {
-        try { fs.rmdirSync(loc); } catch { /* best-effort cleanup */ }
+        if (isWithinPluginsRoot(loc, knownPath)) {
+          try {
+            fs.rmdirSync(loc);
+          } catch (e) {
+            console.warn(`  note: could not remove empty dir ${loc}: ${e.message}`);
+          }
+        } else {
+          console.warn(`  note: skipping rmdir on out-of-scope path: ${loc}`);
+        }
       }
     } else {
       flagged.push({ name, loc });

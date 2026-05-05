@@ -16,6 +16,7 @@ const PLUGINS_WITH_SOURCE_SKILL = new Set([
   'x-build',
   'x-dashboard',
   'x-eval',
+  'x-humanize',
   'x-humble',
   'x-memory',
   'x-op',
@@ -64,12 +65,15 @@ function readStdin() {
 }
 
 function findSourcePath(rel) {
-  // xm/skills/<plugin>/... where <plugin> has a standalone source directory.
+  // xm/skills/<short>/... where source plugin dir is `x-<short>`.
   // Covers SKILL.md and any future copied assets under the same plugin dir.
   const skillMatch = rel.match(/^xm\/skills\/([^/]+)\//);
-  if (skillMatch && PLUGINS_WITH_SOURCE_SKILL.has(skillMatch[1])) {
-    const plugin = skillMatch[1];
-    return `${plugin}/skills/${plugin}/SKILL.md`;
+  if (skillMatch) {
+    const short = skillMatch[1];
+    const plugin = `x-${short}`;
+    if (PLUGINS_WITH_SOURCE_SKILL.has(plugin)) {
+      return `${plugin}/skills/${short}/SKILL.md`;
+    }
   }
 
   // xm/lib/x-build/<file>.mjs
