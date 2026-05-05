@@ -40,6 +40,7 @@ Choose the most suitable strategy for this problem and explain why:
 2. iterate — Hypothesis → Test → Refine loop (bugs, performance)
 3. constrain — Constraint-based candidate evaluation (design decisions)
 4. pipeline — Auto-routing
+5. direct — Simple enough to answer without structured solving
 
 Additionally, suggest if any of these x-op strategies would be more suitable:
 - hypothesis: Hypothesis → Refutation → Adoption (diagnosis)
@@ -57,14 +58,18 @@ x-op Alternative: [name if applicable, otherwise 'none']
 
 Parse the agent result:
 - If `Strategy` is an x-solver strategy → `$XMS strategy set <chosen>`
+- If `Strategy` is `direct` → answer directly; do not run `$XMS strategy set direct`
 - If `x-op Alternative` exists → Suggest the x-op strategy to the user as well
 
 4. **AskUserQuestion (REQUIRED)** for final strategy selection:
    - Recommended strategy (rule-based or LLM)
    - x-op alternative (if any)
    - Alternative strategies
+   - Direct path when the recommendation is `direct`
    - Example: AskUserQuestion("전략 **{strategy}**를 추천합니다 (신뢰도 {confidence}%). 진행할까요? 다른 전략을 선택하려면 알려주세요.")
-5. After selection: `$XMS strategy set <chosen>`
+5. After selection:
+   - If `direct`: answer directly and close or leave the problem active for follow-up
+   - Otherwise: `$XMS strategy set <chosen>`
 
 ### Enhanced Signal Detection
 
@@ -83,9 +88,7 @@ classify detects signals via text pattern matching:
 
 ### Composite Signal Boost
 
-When 2+ signals are detected simultaneously, confidence gets a bonus:
-- 2 signals: +5%
-- 3+ signals: +10%
+When 4+ meaningful signals are detected simultaneously, confidence gets a +5% bonus.
 
 ### x-op Strategy Recommendation
 

@@ -20,6 +20,7 @@ function readEvalFile(path) {
 
 describe('x-solver SKILL.md structure', () => {
   const content = readSkill('x-solver');
+  const solverRoot = join(ROOT, 'x-solver', 'skills', 'solver');
 
   test('contains Step-Back in classify', () => {
     expect(content).toContain('Step-Back');
@@ -63,6 +64,37 @@ describe('x-solver SKILL.md structure', () => {
   test('allowed-tools includes AskUserQuestion', () => {
     expect(content).toContain('allowed-tools');
     expect(content).toContain('AskUserQuestion');
+  });
+
+  test('referenced x-solver reference files are bundled with x-solver', () => {
+    const references = new Set(
+      [...content.matchAll(/references\/([a-z0-9-]+\.md)/g)].map((match) => match[1])
+    );
+
+    for (const reference of references) {
+      expect(existsSync(join(solverRoot, 'references', reference))).toBe(true);
+    }
+  });
+
+  test('agent count resolution avoids hardcoded plugin cache versions', () => {
+    expect(content).toContain('agent_count');
+    expect(content).toContain('solving.parallel_agents');
+    expect(content).not.toContain('xm/xm/1.26.4');
+  });
+
+  test('classify direct path is documented as non-strategy', () => {
+    const classifyBody = readFileSync(join(solverRoot, 'commands', 'classify.md'), 'utf8');
+
+    expect(classifyBody).toContain('direct');
+    expect(classifyBody).toContain('do not run `$XMS strategy set direct`');
+  });
+
+  test('solve command documents solve-advance validation', () => {
+    const solveBody = readFileSync(join(solverRoot, 'commands', 'solve.md'), 'utf8');
+
+    expect(solveBody).toContain('solve-advance');
+    expect(solveBody).toContain('validates');
+    expect(solveBody).toContain('refine → hypothesize');
   });
 });
 

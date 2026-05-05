@@ -45,19 +45,19 @@ On "Yes", auto-extract tasks from the solve result:
 | constrain | Selected candidate → implementation x-build task + constraint verification task |
 | pipeline | Apply the above rules based on the final strategy result |
 
-Conversion commands:
+Conversion commands use the `xm build` dispatcher:
 ```bash
 # decompose result example (3 leaves)
-x-build tasks add "Implement cache layer [R1]" --size medium
-x-build tasks add "Add rate limiting [R2]" --size small --deps t1
-x-build tasks add "Write integration tests [R3]" --size small --deps t1,t2
+xm build tasks add "Implement cache layer [R1]" --size medium
+xm build tasks add "Add rate limiting [R2]" --size small --deps t1
+xm build tasks add "Write integration tests [R3]" --size small --deps t1,t2
 ```
 
 ### x-build decisions integration
 
 Decisions made during solve can be auto-injected into x-build:
 ```bash
-x-build decisions add "Redis for caching" --type architecture --rationale "x-solver constrain result: optimal for response time/cost"
+xm build decisions add "Redis for caching" --type architecture --rationale "x-solver constrain result: optimal for response time/cost"
 ```
 
 ## Applies to

@@ -4,12 +4,13 @@ Execute strategy-specific agent orchestration for the selected x-solver strategy
 
 1. Run: `$XMS solve`
 2. Parse JSON output (`action: "solve"`)
-3. Run the appropriate agent orchestration based on `strategy` and `current_phase`:
+3. Use `agent_count` from the JSON output as `AGENT_COUNT` for fan-out/broadcast in this phase.
+4. Run the appropriate agent orchestration based on `strategy` and `current_phase`:
 
 ### Strategy: decompose
 
 #### Phase: decompose
-**delegate** (architect, opus):
+**delegate** (architect, sonnet; escalate to opus only for high-complexity architecture):
 ```
 {problem_solving_principles}
 
@@ -65,6 +66,8 @@ Use the result to call `$XMS candidates add "description" --source agent-N --sub
 
 Advance: `$XMS solve-advance --phase evaluate`
 
+> `solve-advance` validates that the target phase belongs to the current strategy and normally only permits the next phase. The iterate `refine → hypothesize` retry path is the only intentional backward transition.
+
 #### Phase: evaluate
 **delegate** (reviewer, sonnet):
 ```
@@ -91,7 +94,7 @@ Use the result to call `$XMS candidates score <id> --constraint c1 --score 8`.
 Advance: `$XMS solve-advance --phase synthesize`
 
 #### Phase: synthesize
-**delegate** (architect, opus):
+**delegate** (architect, sonnet; escalate to opus only for high-complexity synthesis):
 ```
 {problem_solving_principles}
 
@@ -358,7 +361,7 @@ $XMS close --summary "..."
 ### Strategy: constrain
 
 #### Phase: elicit
-**delegate** (analyst, opus):
+**delegate** (analyst, sonnet):
 ```
 {problem_solving_principles}
 
@@ -451,7 +454,7 @@ This makes tradeoffs visible at a glance before selection.
 Advance: `$XMS solve-advance --phase select`
 
 #### Phase: select
-**delegate** (architect, opus):
+**delegate** (architect, sonnet; escalate to opus only when the decision is high-risk or irreversible):
 ```
 {problem_solving_principles}
 

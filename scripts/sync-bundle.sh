@@ -178,7 +178,8 @@ done
 
 for pair in \
   "x-build/lib/shared-config.mjs:xm/lib/shared-config.mjs" \
-  "x-build/lib/default-config.json:xm/lib/default-config.json"; do
+  "x-build/lib/default-config.json:xm/lib/default-config.json" \
+  "x-solver/lib/x-solver-cli.mjs:xm/lib/x-solver-cli.mjs"; do
   src="${pair%%:*}"; dst="${pair##*:}"
   if ! diff -q "$src" "$dst" > /dev/null 2>&1; then
     echo "  DIVERGED: $dst"

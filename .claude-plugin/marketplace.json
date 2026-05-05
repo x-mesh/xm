@@ -64,7 +64,7 @@
     {
       "name": "solver",
       "description": "Structured problem solving — decompose, iterate, constrain, or auto-pipeline with strategy recommendation",
-      "version": "2.0.5",
+      "version": "2.0.6",
       "author": {
         "name": "x-mesh"
       },
@@ -224,7 +224,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.1.13",
+      "version": "2.1.14",
       "author": {
         "name": "x-mesh"
       },
