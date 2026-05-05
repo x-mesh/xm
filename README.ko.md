@@ -36,7 +36,7 @@
 - [설치](#설치)
 - [빠른 시작](#빠른-시작)
 - [왜 xm인가?](#왜-xm인가)
-- [플러그인](#플러그인) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-dashboard](#x-dashboard) · [x-ship](#x-ship)
+- [플러그인](#플러그인) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-dashboard](#x-dashboard) · [x-ship](#x-ship) · [x-humanize](#x-humanize)
 - [품질 & 학습 파이프라인](#품질--학습-파이프라인)
 - [아키텍처](#아키텍처)
 - [설정](#설정)
@@ -362,6 +362,7 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 | [x-memory](#x-memory) | 세션 간 메모리 | `/xm:memory inject` |
 | [x-sync](#x-sync) | 멀티 머신 .xm/ 동기화 | `xm sync push` |
 | [x-ship](#x-ship) | 릴리스 자동화 & 커밋 정리 | `/xm:ship auto` |
+| [x-humanize](#x-humanize) | AI 글쓰기 패턴 제거 | `/xm:humanize audit text` |
 | xm | 번들 + 설정 + 파이프라인 | `/xm pipeline release` |
 
 ---
@@ -882,6 +883,20 @@ Claude Code 안에서도 사용 가능: `/xm:sync push`, `/xm:sync pull`, `/xm:s
 | **독립 프로젝트 지원** | package.json, Cargo.toml, pyproject.toml, go.mod 자동 감지 |
 | **릴리스 메트릭** | 버전, 범프 타입, 테스트/리뷰 결과를 `.xm/traces/`에 기록 |
 | **Diff 기반 분석** | 커밋별 diff 리포트로 지능적 스쿼시 그루핑 |
+
+---
+
+### x-humanize
+
+AI 글쓰기 패턴 제거 — 생성된 텍스트를 자연스러운 인간 문체로 재작성합니다. 영어와 한국어를 지원합니다.
+
+```bash
+/xm:humanize audit <텍스트>         # AI 패턴 리포트만 (재작성 없음)
+/xm:humanize light <텍스트>         # 최소 편집, 원본 구조 유지
+/xm:humanize strong <텍스트>        # 문장 전면 재구성, 사실은 보존
+/xm:humanize voice <파일> <텍스트>  # 샘플 파일 문체에 맞춰 재작성
+/xm:humanize --lang ko <텍스트>     # 한국어 출력 강제
+```
 
 ---
 
