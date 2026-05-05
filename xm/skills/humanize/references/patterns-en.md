@@ -1,6 +1,6 @@
 # English AI Writing Patterns
 
-29 patterns adapted from Wikipedia's "Signs of AI writing" (WikiProject AI Cleanup) via `blader/humanizer` (MIT).
+English pattern catalog adapted from Wikipedia's "Signs of AI writing" (WikiProject AI Cleanup) via `blader/humanizer` (MIT), with x-mesh additions for agent-era prose.
 
 Severity guide:
 - **High** — instantly reads as AI; always rewrite.
@@ -181,3 +181,17 @@ Respond directly without flattery.
 ### EN-25 — Generic conclusions (High)
 - Before: "The future looks bright. Exciting times lie ahead."
 - After: Specific plans, dates, or outcomes — or remove the conclusion.
+
+### EN-30 — Balanced-but-empty conclusions (Medium)
+**Watch:** "opportunities and challenges", "balance innovation with responsibility", "a nuanced approach is needed", "only time will tell".
+
+The sentence sounds thoughtful but makes no concrete judgment.
+
+- Before: "AI agents present both opportunities and challenges, so teams need a balanced approach."
+- After: "Use agents for reversible work first. Keep approvals on deploys, permission changes, and data deletion."
+
+### EN-31 — Over-smoothed paragraph rhythm (Medium)
+Every paragraph opens with context, gives three points, then lands on a tidy conclusion. Humans often leave a rough edge: a caveat, a sharper claim, a shorter sentence, or a concrete next step.
+
+- Before: "This shift is important because it improves speed, consistency, and collaboration. As a result, teams can work more effectively."
+- After: "This mostly saves review time. The collaboration story is less clear until teams decide who owns the agent's output."

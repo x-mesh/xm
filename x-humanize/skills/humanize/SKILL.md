@@ -54,10 +54,39 @@ Parse the first word of `$ARGUMENTS`:
 |-----------|--------|
 | `audit` | Detect-only mode — list findings with pattern numbers + severity, NO rewrite |
 | `rewrite` (default) | Detect + rewrite + final anti-AI audit pass |
+| `light` | Minimal edit — remove obvious AI tells while preserving most wording |
+| `strong` | Heavier edit — rebuild sentence flow while preserving every factual claim |
 | `voice <file>` | Voice calibration — use `<file>` as style sample, then process the rest |
 | `--lang en` / `--lang ko` | Force language (auto-detected otherwise) |
 
 If `$ARGUMENTS` is empty, ask the user to paste text or specify a file.
+
+## Input Handling
+
+Accept any of these input shapes:
+
+| Input | Handling |
+|-------|----------|
+| Inline prose | Humanize the prose directly. |
+| File path | Read the file, humanize its prose, and return the result. Do not edit the file unless the user explicitly asks. |
+| `voice <file> <text or file>` | Read the voice sample first, then process the target text. |
+| Mixed instructions + prose | Treat quoted blocks, fenced blocks, or obvious paragraphs as the target. Treat the rest as instructions. |
+
+If a file contains code plus prose, only humanize prose comments/docs that the user asked to change. Never rewrite code identifiers, commands, JSON keys, API names, paths, flags, citations, version numbers, or quoted user-facing strings unless the user explicitly includes them in scope.
+
+When the target text is too short to infer register, preserve the user's phrasing and make a light edit. Do not invent a stronger personality just to satisfy the skill.
+
+## Rewrite Intensity
+
+Default intensity is `medium`: remove AI patterns and improve flow without changing the writer's apparent intent.
+
+| Intensity | Use for | Rule |
+|-----------|---------|------|
+| `light` | Emails, PR descriptions, sensitive copy, short snippets | Keep sentence order unless a pattern is severe. |
+| `medium` | Default rewrite | Change sentence order when it improves rhythm or removes obvious AI structure. |
+| `strong` | Blog posts, marketing drafts, essays with heavy AI tone | Rebuild paragraphs, but keep a fact inventory so no claim disappears. |
+
+If the user asks for "AI 티만 빼줘", use `light`. If they ask for "완전히 자연스럽게 다시 써줘", use `strong`.
 
 ## Core Process
 
@@ -78,6 +107,13 @@ Scan the input against the loaded pattern catalog. For each match, record:
 - Span (exact substring)
 - Severity (High = breaks naturalness immediately / Medium = noticeably AI / Low = minor tic)
 
+Also make a quick fact inventory before rewriting:
+- Named entities, product names, file names, commands, metrics, dates, versions, citations, URLs
+- Required claims or constraints stated by the source
+- Tone constraints from the user ("casual", "존댓말", "keep it short", "for README")
+
+The rewrite must preserve this inventory. If a claim is unclear, keep it vague rather than making it more specific.
+
 In `audit` mode, stop here and output the findings table. In `rewrite` mode, continue.
 
 ### Step 3 — Rewrite
@@ -87,6 +123,8 @@ Replace AI-isms with natural alternatives. Constraints:
 - Match the intended register (formal/casual/technical).
 - Voice calibration: if a sample was provided, replace AI patterns with patterns from the sample (sentence length, word level, transitions, punctuation habits).
 - Do not over-correct. Keep terms that are technically accurate even if they appear on the watch-list (e.g., "pivotal" is fine in a chess analysis).
+- Prefer concrete verbs over abstract nouns, but do not dumb down domain terms.
+- Keep formatting when it carries meaning: headings, ordered steps, tables, commands, code blocks, and citations should survive unless they are the AI tell being fixed.
 
 ### Step 4 — Inject voice (PERSONALITY pass)
 
@@ -96,13 +134,21 @@ Avoiding AI patterns alone produces "clean but soulless" output. Add:
 - Acknowledged complexity ("impressive but also kind of unsettling")
 - Specific feelings instead of generic ones ("there's something unsettling about agents churning at 3am while nobody's watching" beats "this is concerning")
 
-Skip this pass for strict technical reference output if the user requested neutral tone.
+Skip this pass for strict technical reference output if the user requested neutral tone. For docs, READMEs, changelogs, release notes, legal/policy text, and incident writeups, "voice" usually means clearer human prose, not personal opinions.
+
+For Korean prose, the voice pass usually means:
+- Reduce stacked Sino-Korean abstractions when a plain verb is enough.
+- Vary endings naturally instead of forcing every sentence into `~다` or `~습니다`.
+- Keep the source register. Do not switch 반말 to 존댓말 or vice versa.
+- Use sentence fragments sparingly; Korean fragments can sound natural in essays and posts, but sloppy in docs.
 
 ### Step 5 — Final anti-AI audit pass (REQUIRED)
 
 Internally ask: **"What still makes this obviously AI-generated?"** List remaining tells in 1-2 lines, then revise once more to remove them. This catches lingering AI-isms in the first draft.
 
 Common tells caught at this stage: leftover em-dashes, residual rule-of-three lists, sycophantic openers like "Great question!", trailing chatbot disclaimers ("Let me know if…").
+
+Also compare against the fact inventory from Step 2. If the rewrite dropped a fact, restore it. If it added a fact, remove it.
 
 ### Step 6 — Output
 
@@ -113,6 +159,8 @@ Common tells caught at this stage: leftover em-dashes, residual rule-of-three li
 | `voice` | Rewritten text in user's voice + 2-line note explaining what voice features were matched |
 
 For Korean output, follow the user's existing register (반말/존댓말). Default to existing register; if mixed, keep the dominant register.
+
+Do not include an apology, preamble, or meta-commentary before the rewritten text. The command output should be usable as copy-paste text.
 
 ## Voice Calibration
 
@@ -202,6 +250,6 @@ Before returning output, internally confirm:
 
 ## References
 
-- `references/patterns-en.md` — 29 English patterns with before/after examples (Wikipedia source)
+- `references/patterns-en.md` — English patterns with before/after examples (Wikipedia source + x-mesh additions)
 - `references/patterns-ko.md` — Korean AI-slop pattern catalog
 - `references/voice-calibration.md` — How to analyze a writing sample and match it
