@@ -9,8 +9,8 @@
 <h1 align="center">xm</h1>
 
 <p align="center">
-  AI coding agents fail silently — they skip planning, ignore context, and never verify.<br />
-  <strong>xm fixes this.</strong>
+  AI coding agents fail silently. They skip planning, miss context, and never check the result.<br />
+  <strong>xm makes that harder to do.</strong>
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  A plugin toolkit for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a> that adds structured planning, multi-agent review, and quality verification — so your agents deliver production-grade code, not prototypes.
+  A plugin toolkit for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>. It adds the steps a senior engineer never skips: plan before coding, review before merging, verify before declaring done.
 </p>
 
 <p align="center">
@@ -262,11 +262,11 @@ Failed? Run `/xm:build run` again. Completed tasks are skipped, only remaining o
 
 ## Why xm?
 
-Most AI coding tools follow checklists: "check for SQL injection, check for null, check for N+1." A checklist finds patterns. A senior engineer finds *problems*.
+Most AI coding tools work off a checklist: SQL injection, null check, N+1. Checklists find patterns. Senior engineers find problems.
 
-A senior engineer asks **"Can an attacker actually reach this code path?"** before filing a security finding. They ask **"What was the last working state?"** before debugging. They ask **"Am I inflating this because I'm unsure?"** — and downgrade when uncertain.
+The difference is the questions they ask before they act. Before filing a security finding: can an attacker actually reach this path? Before debugging: when did this last work? Before raising severity: am I inflating this because I'm not sure?
 
-xm embeds these judgment patterns — distilled from 20 years of engineering practice — directly into every agent prompt. The result: agents that reason about context, not just pattern-match against lists.
+xm bakes those questions into every agent prompt. Agents end up reasoning about context instead of pattern-matching through a list.
 
 <details>
 <summary>Before & After examples</summary>
@@ -368,7 +368,7 @@ Common reference material lives in `references/` (synced to marketplace as `xm/r
 
 ### x-build
 
-Full project lifecycle — PRD generation, multi-mode deliberation, consensus review, acceptance contracts, and quality-gated execution.
+Takes a project from idea to verified delivery. Generates the PRD, runs deliberation modes, attaches a written acceptance contract to every task, and gates execution on quality.
 
 ```bash
 /xm:build init my-api
@@ -426,7 +426,7 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 
 ### x-op
 
-18 multi-agent strategies with self-scoring and auto-verification.
+18 multi-agent strategies. Each one self-scores its output and re-runs if a judge panel rejects it.
 
 ```bash
 /xm:op refine "Payment API design" --rounds 4 --verify
@@ -521,7 +521,7 @@ Not sure? Run `/xm:op list` to see all strategies with descriptions.
 
 ### x-review
 
-Multi-perspective code review with judgment frameworks, not just checklists.
+Multi-perspective code review that reasons about each finding instead of pattern-matching it against a checklist.
 
 ```bash
 /xm:review diff                     # Review last commit
@@ -550,7 +550,7 @@ Multi-perspective code review with judgment frameworks, not just checklists.
 
 ### x-solver
 
-4 structured strategies with weight-based auto-classification and compound keyword detection.
+4 strategies for working through a problem. Auto-picks one based on what the problem actually looks like.
 
 ```bash
 /xm:solver init "Memory leak in React component"
@@ -574,7 +574,7 @@ DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE → x-humble
 
 ### x-probe
 
-Should you build this? Probe before you commit. Evidence-grade questioning, domain-aware probing, and pre-mortem analysis with structured downstream integration.
+Should you build this? Probe before you commit. Grades every premise on the evidence behind it, runs a pre-mortem, and only returns PROCEED when no fatal assumption is left.
 
 ```bash
 /xm:probe "Build a payment system"    # Full probe session
@@ -612,7 +612,7 @@ FRAME ──→ PROBE ──→ STRESS ──→ VERDICT
 
 ### x-eval
 
-Multi-rubric scoring, strategy benchmarking, A/B comparison, and change measurement.
+Score outputs against rubrics, benchmark strategies head-to-head, and measure how quality moves between commits.
 
 ```bash
 /xm:eval score output.md --rubric code-quality     # Judge panel scoring
@@ -657,7 +657,7 @@ Multi-rubric scoring, strategy benchmarking, A/B comparison, and change measurem
 
 ### x-humble
 
-Learn from failures together. Not a rule generator — the retrospective process itself is the value.
+Learn from failures together. The retrospective process is the point — not the list of rules left at the end.
 
 ```bash
 /xm:humble reflect              # Full session retrospective
@@ -692,7 +692,7 @@ CHECK-IN ──→ RECALL ──→ IDENTIFY ──→ ANALYZE ──→ ALTERNA
 
 ### x-dashboard
 
-Web dashboard for `.xm/` project state. Visualize builds, probes, solvers, **reviews, evals, humble lessons**, traces, memory, and costs — all read-only, no build chain.
+Web dashboard for `.xm/` project state. Browse builds, probes, solvers, **reviews, evals, humble lessons**, traces, memory, and costs in one read-only view. No build chain to set up.
 
 <p align="center">
   <img src="docs/images/dashboard.png" alt="x-dashboard" width="800" />
@@ -739,7 +739,7 @@ Browser ──→ Bun HTTP :19841 ──→ .xm/ (read-only)
 
 ### x-agent
 
-Agent primitives and autonomous behaviors on top of Claude Code's native Agent tool. Primitives give you direct control; autonomous behaviors let agents self-direct, discover, and collaborate via stigmergy.
+Agent primitives and autonomous behaviors on top of Claude Code's native Agent tool. Use primitives when you want to control the steps; switch to autonomous behaviors when you'd rather let agents find the path themselves (stigmergy via a shared board).
 
 ```bash
 # Primitives
@@ -775,7 +775,7 @@ Model auto-routing: `architect` → opus, `executor` → sonnet, `scanner` → h
 
 ### x-trace
 
-See what your agents actually did — timeline, cost, and replay.
+See what your agents actually did. Walk the timeline, check the cost, replay any past run.
 
 ```bash
 /xm:trace timeline              # Agent execution timeline
@@ -866,7 +866,7 @@ Or use directly in Claude Code: `/xm:sync push`, `/xm:sync pull`, `/xm:sync setu
 
 ### x-ship
 
-Release automation — commit squash, version bump, push. Works with xm marketplace plugins AND standalone projects (Node.js, Rust, Python, Go).
+Release automation: squash WIP commits, bump the version, push. Works on xm marketplace plugins and on standalone projects (Node.js, Rust, Python, Go).
 
 ```bash
 /xm:ship                # Interactive: test → review → release
@@ -888,7 +888,7 @@ Release automation — commit squash, version bump, push. Works with xm marketpl
 
 ## Quality & Learning Pipeline
 
-xm connects thinking principles across plugins into a closed feedback loop.
+Each plugin's thinking principles feed the next one. What gets caught in review turns into a planning constraint; what fails in solve turns into a humble lesson.
 
 **Example: building a payment API**
 1. `x-build plan` → PRD goal has "and"? Split into two projects. *(planning principle)*
@@ -998,7 +998,7 @@ x-build CLI (state)  ←  tasks update (callback)
 
 ## Agent Catalog
 
-xm includes 37 specialist agents covering core and domain areas. Plugins use these agents automatically (e.g., x-op refine injects specialists per topic; x-review uses them with `--specialists`).
+37 specialist agents ship with xm, split into core roles and domain experts. Plugins pull them in automatically when extra context would help. x-op refine injects them by topic; x-review picks them up with `--specialists`.
 
 ```bash
 /xm agents list                        # List all 37 specialists
@@ -1028,7 +1028,7 @@ Settings stored in `.xm/config.json` (project-level).
 
 ### Cost Efficiency
 
-Control model spending with **model profiles** and **budget guards**.
+Spend gets controlled with two knobs. **Model profiles** decide which model handles which role; **budget guards** stop a run before it blows past the cap.
 
 ```bash
 /xm config set model_profile economy           # Sonnet-centric, maximum savings
@@ -1071,11 +1071,11 @@ Same coding task (`rateLimiter` — sliding window) across three models:
 | Code quality | 6/10 | 8/10 | 9/10 |
 | **Estimated cost (medium task)** | **$0.07** | **$0.81** | **$4.05** |
 
-> **Takeaway:** haiku produces working code but misses edge cases. sonnet is production-grade for most tasks. opus adds defensive robustness at much higher cost. Profiles let you choose the tradeoff: `economy` (sonnet-centric) vs `default` (opus-centric) vs `max` (all-opus). Run `/xm:build forecast` for workload-specific estimates.
+> **Takeaway:** haiku will write code that runs, but you'll be the one finding the edge cases. sonnet covers most production work fine. opus is what you reach for when robustness matters more than the cost. Profiles let you pick which trade-off you're making: `economy` (sonnet-centric), `default` (opus-centric), or `max` (all-opus). For a workload-specific estimate, run `/xm:build forecast`.
 
 #### Automatic Model Routing
 
-xm routes commands to the cheapest sufficient model automatically. Display/query commands use **haiku** (~78% cheaper), while reasoning tasks use sonnet or opus.
+xm picks the cheapest model that can actually handle the request. Plain display commands fall to **haiku** (~78% cheaper); anything that needs to think escalates to sonnet or opus.
 
 | Task type | Model | Examples |
 |-----------|-------|---------|
@@ -1087,7 +1087,7 @@ xm routes commands to the cheapest sufficient model automatically. Display/query
 
 #### Cost-Aware Routing
 
-Selection follows a 3-level priority chain: `model_overrides → profile → fallback`. Each routing decision carries a correlation ID (`ce-XXXXXXXX`) linking it to outcome metrics. Use `model_overrides` for deliberate per-role choices on top of your profile.
+The selection chain has three levels: `model_overrides → profile → fallback`. Every decision gets stamped with a correlation ID (`ce-XXXXXXXX`), so you can trace it back to the outcome later. Reach for `model_overrides` when you want to pin a specific role to a specific model regardless of profile.
 
 ---
 
