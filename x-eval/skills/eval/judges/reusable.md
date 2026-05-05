@@ -1,14 +1,14 @@
 # Judge: Reusable Judge Prompt
 
-Standard prompt for inline reuse of x-eval scoring logic from other xm plugins (e.g., x-op --verify). Callers substitute `{rubric_name}`, `{criteria_list}`, and `{content}` — no need to invoke x-eval as a separate subcommand.
+Standard prompt for inline reuse of x-eval scoring logic from xm plugins that intentionally run an inline judge panel. Callers substitute `{rubric_name}`, `{criteria_list}`, and `{content}`.
 
 ## Reusable Judge Prompt
 
-Standard prompt for inline reuse of x-eval scoring logic from other xm plugins (e.g., x-op --verify).
+Standard prompt for inline reuse of x-eval scoring logic from xm plugins that intentionally run an inline judge panel.
 
 ### Usage
 
-x-op's `--verify` option uses this prompt to summon a judge panel. Instead of calling x-eval separately, pass this prompt directly to the Agent tool.
+Use this prompt only when a plugin explicitly needs an inline judge panel. x-op `--verify` delegates to x-eval instead of using this prompt directly.
 
 ### Judge Prompt
 
@@ -62,4 +62,4 @@ Example: `security (0.20)` is N/A on a pure algorithm. Remaining weights (0.80 t
 | plan-quality | completeness (0.30), actionability (0.30), scope-fit (0.20), risk-coverage (0.20) |
 
 ## Applies to
-Invoked by x-eval and any xm plugin needing a judge panel inline (x-op --verify, x-build prd-gate). Pass this prompt directly to the Agent tool with substituted variables.
+Invoked by x-eval and any xm plugin needing a judge panel inline, such as x-build prd-gate. x-op `--verify` delegates to x-eval instead of invoking this prompt directly.

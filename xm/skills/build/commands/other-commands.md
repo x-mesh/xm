@@ -19,9 +19,9 @@ When `research` is invoked:
 
 4. Collect all results
 5. Synthesize into REQUIREMENTS.md and ROADMAP.md
-6. Save via `$XMB save requirements` and `$XMB save roadmap`
+6. Save raw outputs via `$XMB save research-notes --agent <name> --content "..."`, then save synthesized artifacts via `$XMB save requirements` and `$XMB save roadmap`
 
-## Plan-Check Command (8-Dimension Validation)
+## Plan-Check Command (11-Dimension Validation)
 
 Validates the plan across:
 
@@ -82,6 +82,7 @@ This check is at the **warn** level and does not fail plan-check overall. Since 
 | Research | No CONTEXT.md | → `discuss` |
 | Research | No REQUIREMENTS.md | → `research` |
 | Research | Both exist | → `phase next` |
+| Plan | No `phases/02-plan/PRD.md` | → `plan "goal"` |
 | Plan | No tasks | → `plan "goal"` |
 | Plan | No plan-check | → `plan-check` |
 | Plan | Errors in plan-check | → Fix errors |

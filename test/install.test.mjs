@@ -48,6 +48,21 @@ function hashDir(dir) {
   }).filter(Boolean).join('|');
 }
 
+const EXPECTED_SKILL_COUNT = readdirSync(SKILLS, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory() && existsSync(join(SKILLS, entry.name, 'SKILL.md')))
+  .length;
+const EXPECTED_REFERENCE_COUNT = readdirSync(SKILLS, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory() && existsSync(join(SKILLS, entry.name, 'SKILL.md')))
+  .reduce((count, entry) => {
+    const refsDir = join(SKILLS, entry.name, 'references');
+    if (!existsSync(refsDir)) return count;
+    return count + readdirSync(refsDir, { recursive: true })
+      .filter((file) => file.endsWith('.md') && statSync(join(refsDir, file)).isFile())
+      .length;
+  }, 0);
+const EXPECTED_CURSOR_RULE_COUNT = EXPECTED_SKILL_COUNT + EXPECTED_REFERENCE_COUNT;
+const EXPECTED_KIRO_MANUAL_COUNT = EXPECTED_CURSOR_RULE_COUNT - EXPECTED_SKILL_COUNT;
+
 describe('install-cli — input validation (R-SEC-04)', () => {
   test('--target unknown rejected', () => {
     const r = run(['--target', 'evil', '--skills-dir', SKILLS, '--lib-dir', LIB]);
@@ -83,12 +98,12 @@ describe('install-cli — --list and --dry-run (no fs writes)', () => {
 });
 
 describe('install-cli — install + idempotency (SC1, SC5)', () => {
-  test('installs cursor: 39 .mdc + hooks.json', () => {
+  test('installs cursor rules and hooks.json', () => {
     const tmp = seedTmp();
     const r = run(['--target', 'cursor', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
     expect(r.status).toBe(0);
     const rules = readdirSync(join(tmp, '.cursor', 'rules')).filter((f) => f.endsWith('.mdc'));
-    expect(rules.length).toBe(39);
+    expect(rules.length).toBe(EXPECTED_CURSOR_RULE_COUNT);
     expect(existsSync(join(tmp, '.cursor', 'hooks.json'))).toBe(true);
   });
   test('idempotent: re-run produces zero diff', () => {
@@ -100,34 +115,34 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     expect(after).toBe(before);
     expect(r.stdout).toMatch(/unchanged: \d+/);
   });
-  test('codex AGENTS.md ≤ 16 KiB index + 16 prompts', () => {
+  test('codex AGENTS.md ≤ 16 KiB index + prompts', () => {
     const tmp = seedTmp();
     run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
     expect(statSync(join(tmp, 'AGENTS.md')).size).toBeLessThanOrEqual(16 * 1024);
-    expect(readdirSync(join(tmp, '.codex', 'prompts')).length).toBe(16);
+    expect(readdirSync(join(tmp, '.codex', 'prompts')).length).toBe(EXPECTED_SKILL_COUNT);
   });
-  test('kiro steering inclusion: 16 auto + 23 manual', () => {
+  test('kiro steering inclusion matches skill and reference counts', () => {
     const tmp = seedTmp();
     run(['--target', 'kiro', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
     const files = readdirSync(join(tmp, '.kiro', 'steering'));
-    expect(files.length).toBe(39);
+    expect(files.length).toBe(EXPECTED_CURSOR_RULE_COUNT);
     const counts = files.map((f) => (readFileSync(join(tmp, '.kiro', 'steering', f), 'utf8').match(/^inclusion: (\w+)/m) || [, '?'])[1])
       .reduce((m, x) => ((m[x] = (m[x] ?? 0) + 1), m), {});
-    expect(counts.auto).toBe(16);
-    expect(counts.manual).toBe(23);
+    expect(counts.auto).toBe(EXPECTED_SKILL_COUNT);
+    expect(counts.manual).toBe(EXPECTED_KIRO_MANUAL_COUNT);
   });
-  test('antigravity AGENTS.md shared with codex + 16 .agent/skills', () => {
+  test('antigravity AGENTS.md shared with codex + .agent/skills', () => {
     const tmp = seedTmp();
     run(['--target', 'codex,antigravity', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
     expect(readdirSync(tmp).filter((f) => f === 'AGENTS.md').length).toBe(1);
-    expect(readdirSync(join(tmp, '.agent', 'skills')).length).toBe(16);
+    expect(readdirSync(join(tmp, '.agent', 'skills')).length).toBe(EXPECTED_SKILL_COUNT);
   });
   test('opencode writes native SKILL.md files with frontmatter', () => {
     const tmp = seedTmp();
     const r = run(['--target', 'opencode', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
     expect(r.status).toBe(0);
     const skills = readdirSync(join(tmp, '.opencode', 'skills'));
-    expect(skills.length).toBe(16);
+    expect(skills.length).toBe(EXPECTED_SKILL_COUNT);
     const skillFile = join(tmp, '.opencode', 'skills', 'xm-build', 'SKILL.md');
     expect(readFileSync(skillFile, 'utf8')).toMatch(/^---\nname: "xm-build"\ndescription: /);
     expect(existsSync(join(tmp, '.opencode', 'xm', 'lib', 'x-build-cli.mjs'))).toBe(true);

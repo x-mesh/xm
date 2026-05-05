@@ -351,7 +351,7 @@ Common reference material lives in `references/` (synced to marketplace as `xm/r
 | Plugin | Purpose | Key command |
 |--------|---------|-------------|
 | [x-build](#x-build) | Project lifecycle & PRD pipeline | `/xm:build plan "goal"` |
-| [x-op](#x-op) | 18 multi-agent strategies | `/xm:op debate "A vs B"` |
+| [x-op](#x-op) | 17 multi-agent strategies | `/xm:op debate "A vs B"` |
 | [x-review](#x-review) | Judgment-based code review | `/xm:review diff` |
 | [x-solver](#x-solver) | Structured problem solving | `/xm:solver init "bug"` |
 | [x-probe](#x-probe) | Evidence-grade premise validation | `/xm:probe "idea"` |
@@ -426,7 +426,7 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 
 ### x-op
 
-18 multi-agent strategies. Each one self-scores its output and re-runs if a judge panel rejects it.
+17 multi-agent strategies. Each one self-scores its output and can delegate verification to x-eval.
 
 ```bash
 /xm:op refine "Payment API design" --rounds 4 --verify
@@ -447,7 +447,7 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 **Quality features:**
 - **Confidence Gate**: Pre-execution 4-question checklist — blocks underspecified tasks before wasting agent tokens
 - **Self-Score + 4Q Check**: Every strategy auto-scores (1-10) then verifies evidence, requirements, assumptions, consistency
-- **--verify**: Judge panel validates quality, auto-retries if below threshold
+- **--verify**: Delegates quality verification to x-eval using the strategy's default rubric
 - **Result Persistence**: Strategy results saved to `.xm/op/` — viewable in x-dashboard
 - **Compose presets**: `--preset analysis-deep`, `--preset security-audit`, `--preset consensus`
 - **Output Quality Contract**: Evidence-based, falsifiable, dimension-tagged arguments with per-category Dimension Anchors
@@ -506,8 +506,8 @@ Not sure? Run `/xm:op list` to see all strategies with descriptions.
 --model sonnet|opus     Agent model
 --target <file>         Review/red-team/monitor target
 --depth shallow|deep|exhaustive   Investigation depth
---verify                Auto quality validation (judge panel + retry)
---threshold N           Verify pass score (default 7)
+--verify                Delegate quality validation to x-eval
+--threshold N           Quality threshold (default 7)
 --vote                  Enable voting (brainstorm)
 --dry-run               Show execution plan only
 --resume                Resume from checkpoint
@@ -963,7 +963,7 @@ Full data: [`benchmarks/`](./benchmarks/SUMMARY.md)
 ```
 xm/                              Marketplace repo
 ├── x-build/                        Project harness + PRD pipeline
-├── x-op/                           Strategy orchestration (18 strategies)
+├── x-op/                           Strategy orchestration (17 strategies)
 ├── x-eval/                         Quality evaluation + diff
 ├── x-humble/                       Structured retrospective
 ├── x-solver/                       Problem solving (4 strategies)

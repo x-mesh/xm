@@ -153,7 +153,7 @@ The leader records why each decision was made at each step and includes it in th
 
 ## Options: --verify
 
-Auto quality verification after strategy completion. A judge panel scores the result and re-runs with feedback if below threshold.
+Auto quality verification after strategy completion. x-op delegates final scoring to x-eval so every plugin uses the same evaluation path.
 
 ### Verification flow
 
@@ -163,74 +163,31 @@ Strategy complete → Self-Score (self-assessment)
   ├─ --verify not specified → Output Self-Score only, end
   │
   └─ --verify specified →
-      1. Summon Judge Panel (3 agents, fan-out)
-      2. Each judge scores against rubric criteria
-      3. Calculate weighted average + σ (agreement level)
-      │
-      ├─ score >= threshold → ✅ PASS, final output
-      │
-      └─ score < threshold →
-          ├─ retries < max-retries →
-          │   a. Extract feedback for the lowest-scoring criterion
-          │   b. Inject feedback as context
-          │   c. Re-run strategy (same options + feedback)
-          │   d. Increment retry counter
-          │
-          └─ retries >= max-retries →
-              ⚠ Select highest-scoring version, output with warning
+      1. Persist final strategy output to .xm/op/
+      2. Invoke x-eval score with the persisted output
+      3. Use the strategy's default rubric from self-score-protocol.md
+      4. Use --grounded for code-facing strategies (review, red-team, monitor)
+      5. Store the x-eval result under .xm/eval/results/
 ```
 
-### Judge Prompt Template
+### Rubric mapping
 
-Prompt sent to each judge agent (follows x-eval scoring format):
+`--verify` uses the same Strategy-Rubric mapping as the Self-Score Protocol:
+- `review`, `red-team`, `monitor` → `code-quality` with grounded evaluation
+- `scaffold`, `decompose`, `distribute`, `chain` → `plan-quality`
+- `compose` → last sub-strategy's rubric
+- all other strategies → `general`
 
-```
-"## Quality Evaluation
-Rubric: {rubric_name}
-Output to evaluate:
-{strategy final output (excluding Self-Score)}
-
-Score on a 1-10 scale per the criteria below (1=fail, 5=baseline, 7=good, 10=excellent):
-
-{rubric criteria + weights}
-
-Output format (follow exactly):
-Criterion: {name} | Score: {N} | Reason: {one-line rationale}
-...
-Final: {weighted average}/10"
-```
-
-### Agreement assessment
-
-| σ | Agreement | Action |
-|---|-----------|--------|
-| < 0.8 | High — reliable | Use score as-is |
-| 0.8–1.5 | Medium | Use score, flag caution |
-| > 1.5 | Low | Summon 1 additional judge and re-score |
-
-### Feedback injection on retry
-
-Context added to the re-run prompt:
-```
-"## Previous Execution Feedback
-Previous score: {score}/10
-Items needing improvement:
-- {lowest criterion}: {score}/10 — {judge reason}
-- {second lowest criterion}: {score}/10 — {judge reason}
-Focus on improving the above items in the re-run."
-```
+`--threshold N` is passed to x-eval as the passing threshold. x-op does not run an inline judge panel or retry loop.
 
 ### Verification result output
 
 ```
 ## Verification
-| Attempt | Score | Verdict | Feedback |
-|---------|-------|---------|----------|
-| 1 | 6.2/10 | ❌ retry | Insufficient completeness |
-| 2 | 7.8/10 | ✅ pass | - |
-
-Consensus: σ=0.6 (High)
+x-eval: PASS
+Score: 7.8/10
 Rubric: general
+Saved: .xm/eval/results/{result-id}.json
 ```
 
 ---

@@ -5,7 +5,7 @@
 import {
   TASK_STATES, C,
   readJSON, writeJSON, readMD,
-  tasksPath, contextDir, phaseDir,
+  tasksPath, prdPath, contextDir, phaseDir,
   resolveProject, renderBar,
   runQualityChecks,
   existsSync, join,
@@ -100,8 +100,7 @@ export function cmdVerifyCoverage(args) {
 export function cmdVerifyTraceability(args) {
   const project = resolveProject(null);
   const requirements = readMD(join(contextDir(project), 'REQUIREMENTS.md'));
-  const prdPath = join(phaseDir(project, '02-plan'), 'PRD.md');
-  const prd = readMD(prdPath);
+  const prd = readMD(prdPath(project));
   const taskData = readJSON(tasksPath(project));
   const tasks = taskData?.tasks || [];
 

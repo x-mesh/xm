@@ -617,7 +617,7 @@ function handleProbeLatest(xmRoot, req) {
 // Shared permissive filename rule — matches host-suffixed sync copies
 // like "2026-04-05-global-xm-rethink.Jinwoos-MacBook-Pro-620.local-6339.json".
 // See also OP_FILE_RE / HUMBLE_FILE_RE usages.
-const PROBE_FILE_RE = /^[a-zA-Z0-9._-]+\.json$/;
+const PROBE_FILE_RE = /^[a-zA-Z0-9_-]+\.json$/;
 
 function handleProbeHistoryFile(xmRoot, file, req) {
   const fileName = file.endsWith('.json') ? file : file + '.json';
@@ -645,7 +645,7 @@ function readProbeFile(xmRoot, param) {
   }
   const baseName = param.endsWith('.json') ? param.slice(0, -5) : param;
   // Allow date-based names like 2026-04-03-xm-web-dashboard
-  const PROBE_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
+  const PROBE_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
   if (!PROBE_SEGMENT_RE.test(baseName)) return { error: 'forbidden', status: 400 };
   const fileName = param.endsWith('.json') ? param : param + '.json';
   const filePath = safeJoin(xmRoot, 'probe', 'history', fileName);

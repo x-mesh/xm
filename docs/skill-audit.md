@@ -21,7 +21,7 @@ Phase 3 decomposition sweep complete (2026-04-17). **All 14 SKILL.md files under
 
 | Lines | Plugin | Status |
 |-------|--------|--------|
-| 494 | `x-op/skills/op/SKILL.md` | ✅ OK |
+| 500 | `x-op/skills/op/SKILL.md` | ✅ OK |
 | 491 | `x-agent/skills/agent/SKILL.md` | ✅ OK |
 | 411 | `x-build/skills/build/SKILL.md` | ✅ OK |
 | 350 | `x-memory/skills/memory/SKILL.md` | ✅ OK |

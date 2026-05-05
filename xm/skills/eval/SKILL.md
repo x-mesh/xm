@@ -222,7 +222,7 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 
 ## Reusable Judge Prompt
 
-See `judges/reusable.md` — standard inline judge for x-op --verify and x-build prd-gate. Substitute `{rubric_name}`, `{criteria_list}`, `{content}` and pass directly to Agent tool.
+See `judges/reusable.md` — standard inline judge for plugins that intentionally need an inline panel, such as x-build prd-gate. x-op `--verify` delegates to x-eval scoring instead.
 
 ---
 

@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -156,6 +156,7 @@ describe('x-review SKILL.md structure', () => {
 
 describe('x-op SKILL.md structure', () => {
   const content = readSkill('x-op');
+  const opRoot = join(ROOT, 'x-op', 'skills', 'op');
 
   test('brainstorm has --analogical and --lateral modes', () => {
     // brainstorm strategy body lives in strategies/brainstorm.md (extracted from SKILL.md)
@@ -202,6 +203,120 @@ describe('x-op SKILL.md structure', () => {
     expect(optionsBody).toContain('50%');
     // SKILL.md still references the options via link stub
     expect(content).toContain('references/x-op-options.md');
+  });
+
+  test('routing strategy list matches strategy files', () => {
+    const strategyDir = join(opRoot, 'strategies');
+    const strategyFiles = readdirSync(strategyDir)
+      .filter((file) => file.endsWith('.md'))
+      .map((file) => file.replace(/\.md$/, ''))
+      .sort();
+
+    const routingStrategies = [...content.matchAll(/^- `([^`]+)` → \[Strategy:/gm)]
+      .map((match) => match[1])
+      .sort();
+
+    expect(routingStrategies).toEqual(strategyFiles);
+    expect(routingStrategies).toHaveLength(17);
+    expect(content).not.toContain('18 strategies');
+    expect(content).not.toContain('classify narrows');
+  });
+
+  test('referenced x-op reference files are bundled with x-op', () => {
+    const contractBody = readFileSync(
+      join(opRoot, 'references', 'agent-output-contract.md'),
+      'utf8'
+    );
+    const references = new Set(
+      [...`${content}\n${contractBody}`.matchAll(/references\/([a-z0-9-]+\.md)/g)].map(
+        (match) => match[1]
+      )
+    );
+
+    for (const reference of references) {
+      expect(existsSync(join(opRoot, 'references', reference))).toBe(true);
+    }
+  });
+
+  test('--verify uses x-eval as the single evaluation path', () => {
+    const optionsBody = readFileSync(
+      join(opRoot, 'references', 'x-op-options.md'),
+      'utf8'
+    );
+    const optionsSection = content.split('## Options')[1]?.split('## Shared Config')[0] || '';
+
+    expect(content).toContain('invoke x-eval score');
+    expect(optionsBody).toContain('delegates final scoring to x-eval');
+    expect(optionsSection).toContain('Delegate final quality verification to x-eval');
+    expect(optionsBody).not.toContain('Summon Judge Panel');
+    expect(optionsSection).not.toContain('judge panel scoring');
+  });
+
+  test('x-op persistence schema links strategy results to x-eval by run_id', () => {
+    const persistenceBody = readFileSync(
+      join(opRoot, 'references', 'x-op-result-persistence.md'),
+      'utf8'
+    );
+
+    expect(persistenceBody).toContain('"run_id"');
+    expect(persistenceBody).toContain('"evaluation"');
+    expect(persistenceBody).toContain('source_result_path');
+    expect(persistenceBody).toContain('evaluation.result_path');
+    expect(persistenceBody).toContain('Do not omit the `evaluation` object');
+    expect(content).toContain('--source-plugin x-op');
+    expect(content).toContain('--source-result');
+  });
+});
+
+// --- x-build SKILL.md structure ---
+
+describe('x-build SKILL.md structure', () => {
+  const content = readSkill('x-build');
+  const buildRoot = join(ROOT, 'x-build', 'skills', 'build');
+
+  test('referenced x-build reference files are bundled with x-build', () => {
+    const references = new Set(
+      [...content.matchAll(/references\/([a-z0-9-]+\.md)/g)].map((match) => match[1])
+    );
+
+    for (const reference of references) {
+      expect(existsSync(join(buildRoot, 'references', reference))).toBe(true);
+    }
+  });
+
+  test('uses canonical PRD path in plan phase directory', () => {
+    expect(content).toContain('phases/02-plan/PRD.md');
+    expect(content).not.toContain('context/PRD.md');
+  });
+
+  test('model routing example matches haiku display commands', () => {
+    const modelRouting = content.split('## Model Routing')[1]?.split('## Mode Detection')[0] || '';
+    expect(modelRouting).toContain('**haiku**');
+    expect(modelRouting).toContain('model: "haiku"');
+    expect(modelRouting).not.toContain('model: "sonnet"');
+  });
+
+  test('plan-check is documented as 11 dimensions', () => {
+    const otherCommands = readFileSync(
+      join(buildRoot, 'commands', 'other-commands.md'),
+      'utf8'
+    );
+
+    expect(content).toContain('11 quality dimensions');
+    expect(otherCommands).toContain('11-Dimension Validation');
+    expect(otherCommands).not.toContain('8-Dimension Validation');
+  });
+
+  test('next routing documents missing PRD before plan execution', () => {
+    const otherCommands = readFileSync(
+      join(buildRoot, 'commands', 'other-commands.md'),
+      'utf8'
+    );
+
+    expect(otherCommands).toContain('No `phases/02-plan/PRD.md`');
+    expect(otherCommands.indexOf('No `phases/02-plan/PRD.md`')).toBeLessThan(
+      otherCommands.indexOf('No tasks')
+    );
   });
 });
 
@@ -271,6 +386,16 @@ describe('x-eval Tier 1 structure', () => {
     expect(storage).toContain('per_trial_overall');
     expect(storage).toContain('judge_rationales');
     expect(storage).toContain('broken_task_warning');
+  });
+
+  test('score storage documents x-op run_id linkage', () => {
+    expect(score).toContain('--run-id <id>');
+    expect(score).toContain('--source-plugin <name>');
+    expect(score).toContain('--source-result <path>');
+    expect(storage).toContain('"run_id"');
+    expect(storage).toContain('"source_plugin": "x-op"');
+    expect(storage).toContain('"source_result_path"');
+    expect(storage).toContain('Required when `source_plugin: "x-op"`');
   });
 
   test('SKILL.md help text mentions Tier 1 features', () => {

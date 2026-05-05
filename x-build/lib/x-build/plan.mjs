@@ -5,7 +5,7 @@
 import {
   PHASES, TASK_STATES, C, ROOT,
   readJSON, writeJSON, readMD, writeMD,
-  manifestPath, tasksPath, stepsPath, contextDir, phaseDir, projectDir, decisionsPath, archiveDir,
+  manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, projectDir, decisionsPath, archiveDir,
   resolveProject,
   loadConfig, loadSharedConfig, parseOptions, fmtDuration, estimateTaskCost, getModelForRole,
   existsSync, join, readFileSync, mkdirSync,
@@ -18,8 +18,24 @@ import { stepsStatus, computeSteps } from './tasks.mjs';
 
 // ── cmdPlan ─────────────────────────────────────────────────────────
 
+function parsePlanArgs(args) {
+  const positional = [];
+  let quick = false;
+
+  for (const arg of args) {
+    if (arg === '--quick') {
+      quick = true;
+    } else {
+      positional.push(arg);
+    }
+  }
+
+  return { quick, positional };
+}
+
 export function cmdPlan(args) {
-  const goal = args.join(' ');
+  const { quick, positional } = parsePlanArgs(args);
+  const goal = positional.join(' ');
   const project = resolveProject(null);
 
   if (!goal) {
@@ -39,6 +55,9 @@ export function cmdPlan(args) {
     action: 'auto-plan',
     project,
     goal,
+    quick,
+    flow: quick ? 'quick' : 'full',
+    skip_research: quick,
     current_phase: PHASES.find(p => p.id === manifest?.current_phase)?.name,
     existing_tasks: readJSON(tasksPath(project))?.tasks?.length || 0,
     templates_available: existsSync(templatesDir())
@@ -155,8 +174,7 @@ export function cmdPlanCheck(args) {
     const techMatches = context.match(techRe) || [];
     for (const m of techMatches) declaredTechs.add(m.toLowerCase());
   }
-  const prdPath = join(phaseDir(project, '02-plan'), 'PRD.md');
-  const prd = readMD(prdPath);
+  const prd = readMD(prdPath(project));
   if (prd) {
     const constraintSection = prd.match(/## 3\. Constraints[\s\S]*?(?=## \d|$)/);
     if (constraintSection) {
@@ -183,7 +201,7 @@ export function cmdPlanCheck(args) {
   }
 
   // G1: Scope guard — check task names against PRD "Out of Scope" items
-  const prdForScope = prd || readMD(join(contextDir(project), 'PRD.md'));
+  const prdForScope = prd;
   if (prdForScope) {
     const oosMatch = prdForScope.match(/## 6[\.\s]*Out of Scope([\s\S]*?)(?=\n## \d|$)/i);
     if (oosMatch) {
@@ -300,8 +318,8 @@ export function cmdDiscuss(args) {
     output.context_full = existsSync(join(contextDir(project), 'CONTEXT.md'))
       ? readMD(join(contextDir(project), 'CONTEXT.md')) : null;
   } else if (mode === 'critique') {
-    const prdPath = join(phaseDir(project, '02-plan'), 'PRD.md');
-    output.prd = existsSync(prdPath) ? readMD(prdPath) : null;
+    const path = prdPath(project);
+    output.prd = existsSync(path) ? readMD(path) : null;
     output.tasks = readJSON(tasksPath(project))?.tasks || [];
     output.requirements = existsSync(join(contextDir(project), 'REQUIREMENTS.md'))
       ? readMD(join(contextDir(project), 'REQUIREMENTS.md')) : null;
@@ -373,8 +391,7 @@ export function cmdPrdGate(args) {
   const project = resolveProject(null);
   const manifest = readJSON(manifestPath(project));
 
-  const prdPath = join(phaseDir(project, '02-plan'), 'PRD.md');
-  const prd = readMD(prdPath);
+  const prd = readMD(prdPath(project));
   if (!prd) {
     console.error('❌ No PRD.md found. Create a PRD first during the Plan phase.');
     process.exit(1);
@@ -419,8 +436,7 @@ export function cmdConsensus(args) {
   const project = resolveProject(null);
   const manifest = readJSON(manifestPath(project));
 
-  const prdPath = join(phaseDir(project, '02-plan'), 'PRD.md');
-  const prd = readMD(prdPath);
+  const prd = readMD(prdPath(project));
   if (!prd) {
     console.error('❌ No PRD.md found. Create a PRD first during the Plan phase.');
     process.exit(1);
@@ -554,7 +570,7 @@ function resolveNext(project) {
   const contextExists = existsSync(join(contextDir(project), 'CONTEXT.md'));
   const reqExists = existsSync(join(contextDir(project), 'REQUIREMENTS.md'));
   const roadmapExists = existsSync(join(contextDir(project), 'ROADMAP.md'));
-  const prdExists = existsSync(join(contextDir(project), 'PRD.md'));
+  const prdExists = existsSync(prdPath(project));
   const planCheckPath = join(phaseDir(project, '02-plan'), 'plan-check.json');
   const planCheckExists = existsSync(planCheckPath);
 
@@ -573,10 +589,19 @@ function resolveNext(project) {
     }
     case 'plan': {
       const tasks = taskData?.tasks || [];
+      if (!prdExists) {
+        let goal = null;
+        if (contextExists) {
+          const ctx = readMD(join(contextDir(project), 'CONTEXT.md'));
+          const goalMatch = ctx.match(/^## Goal\s*\n+(.+)/m);
+          if (goalMatch) goal = goalMatch[1].trim();
+        }
+        return { ...base, action: 'plan', args: goal ? [goal] : [], reason: R('PRD.md is missing. Generate and save a PRD before executing.', 'PRD가 없습니다. 실행 전에 PRD를 생성하고 저장하세요.'), goal, task_count: tasks.length, ready: false };
+      }
       if (tasks.length === 0) {
         let goal = null;
         if (prdExists) {
-          const prd = readMD(join(contextDir(project), 'PRD.md'));
+          const prd = readMD(prdPath(project));
           const goalMatch = prd.match(/^## 1\. Goal\s*\n+(.+)/m);
           if (goalMatch) goal = goalMatch[1].trim();
         }
@@ -821,7 +846,7 @@ export function cmdSaveArtifact(args) {
     'requirements': join(contextDir(project), 'REQUIREMENTS.md'),
     'roadmap': join(contextDir(project), 'ROADMAP.md'),
     'project': join(contextDir(project), 'PROJECT.md'),
-    'plan': join(phaseDir(project, '02-plan'), 'PRD.md'),
+    'plan': prdPath(project),
     'research-notes': join(phaseDir(project, '01-research'), 'notes.md'),
   };
 

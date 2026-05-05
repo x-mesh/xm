@@ -227,7 +227,7 @@ This applies to all plugins: x-build, x-op, x-probe, x-solver, x-eval, x-review,
 
 - `xm/` — core plugin (shared config, cost engine, DAG)
 - `x-build/` — project lifecycle harness
-- `x-op/` — strategy orchestration (18 strategies)
+- `x-op/` — strategy orchestration (17 strategies)
 - `x-agent/` — agent primitives (fan-out, delegate, broadcast)
 - `x-solver/` — structured problem solving
 - `x-eval/` — output quality evaluation

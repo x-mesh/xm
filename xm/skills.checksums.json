@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1777985390606,
+  "generatedAt": 1777993726248,
   "version": 1,
   "skills": [
     {
@@ -9,8 +9,8 @@
     },
     {
       "plugin": "build",
-      "sha256": "fa1b95eedd7f1facb6ce6a669bcf7e9b04c9a117868d7138e31bcac90bdf0ab1",
-      "bytes": 21874
+      "sha256": "508c15373ca1ffb959943c85606a2f029eec0a8bee0ce9a701b207f6e918ef9d",
+      "bytes": 21944
     },
     {
       "plugin": "dashboard",
@@ -19,7 +19,7 @@
     },
     {
       "plugin": "eval",
-      "sha256": "5428d46316cf37dc4b5beed992db0dd94e837db069bd49c3adbd616d8b4585f5",
+      "sha256": "1d29185d7aaabf7f96fdef5725a73f5194905a526db27b85bee9bca37d1e74a4",
       "bytes": 11040
     },
     {
@@ -31,6 +31,11 @@
       "plugin": "handon",
       "sha256": "57adc818b94d7f5217c2bfd722c0f25cbf04ebd6cf0248dcb134356aeefea505",
       "bytes": 3415
+    },
+    {
+      "plugin": "humanize",
+      "sha256": "cee8bb21d7605b5ad39d0780244631b727cb149c073be9676177e80b8357d133",
+      "bytes": 10265
     },
     {
       "plugin": "humble",
@@ -49,8 +54,8 @@
     },
     {
       "plugin": "op",
-      "sha256": "b7770164da8f3bade06f3594d9707667a85baec297986581beeb990bd5573229",
-      "bytes": 26837
+      "sha256": "ca71ecda091e2ef870d2f322ab005d67c340f9f6e9b92dad72a3464f08b2f88b",
+      "bytes": 26223
     },
     {
       "plugin": "probe",

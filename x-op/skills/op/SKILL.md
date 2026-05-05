@@ -36,7 +36,7 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 | Auto-route (strategy detection) | **sonnet** | Requires AskUserQuestion for confirmation |
 | Strategy execution | **sonnet** | Multi-agent orchestration |
 
-For haiku-eligible commands, delegate via: `Agent tool: { model: "sonnet", prompt: "Run: [command]" }` <!-- managed-model: explorer -->
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
 
 ## Wiring
 
@@ -54,6 +54,7 @@ After every strategy completes (Self-Score appended), check for auto-eval:
    - Automatically invoke x-eval score with the strategy output
    - Rubric: use the strategy's default rubric from Self-Score Protocol mapping
    - Mode: use `--grounded` if the strategy involved code (review, red-team, monitor)
+   - Linkage: pass `--run-id`, `--source-plugin x-op`, `--source-strategy`, and `--source-result`
    - Store result in `.xm/eval/results/`
 3. If `eval.auto` is not set and `--verify` is not used:
    - Show suggestion: `"💡 x-eval로 품질 평가를 할 수 있습니다. /xm:eval score로 실행하세요."`
@@ -98,6 +99,14 @@ Rules:
 - For fan-out phases, include agent count (e.g., `- [x] 4/4 agents completed`)
 - For compose sub-strategies, emit a checkpoint at each sub-strategy boundary, not only at the outer level
 - Checkpoint precedes AskUserQuestion; AskUserQuestion still carries phase-transition authority
+
+### Phase Boundary Exceptions
+
+Some strategies contain internal loops or sub-strategy calls. Apply the phase boundary rule at user-meaningful boundaries:
+- `chain`: checkpoint after each declared step; ask before moving to the next step unless the user selected `--dry-run`
+- `compose`: each sub-strategy follows its own phase rules; ask before starting the next sub-strategy in the pipeline
+- `socratic`: ask after the seed phase and after each synthesized question round
+- `investigate`: Phase 2.5 cross-validation is part of Phase 2 for `deep|exhaustive`; ask before Phase 3
 
 ## Routing
 
@@ -153,13 +162,11 @@ See `references/x-op-auto-route.md` — signal detection table, priority rules, 
 - `--explain` — Output decision trace
 - `--pipe <strategy>` — Strategy pipelining (compose)
 - `--start haiku|sonnet` — Escalate starting level (default haiku)
-- `--threshold N` — Escalate self-assessment threshold (default 7)
+- `--threshold N` — Quality threshold for escalation and x-eval verification (default 7)
 - `--max-level haiku|sonnet|opus` — Escalate maximum level (default opus)
 - `--angles "a,b,c"` — Manually specify investigation angles
 - `--depth shallow|deep|exhaustive` — Investigation depth (default shallow)
-- `--verify` — Auto quality verification after strategy completion (judge panel scoring + re-run if below threshold)
-- `--threshold N` — Verify passing score threshold (default 7, 1-10)
-- `--max-retries N` — Maximum retry count on verify failure (default 2)
+- `--verify` — Delegate final quality verification to x-eval after strategy completion
 
 ## Shared Config Integration
 
@@ -442,22 +449,7 @@ What kind of task is this?
 └─ Change monitoring/anomaly detection → monitor
 ```
 
-### Options application guide
-
-| Strategy | Key options | Description |
-|----------|-----------|-------------|
-| refine | `--rounds`, `--preset` | Round count = refinement depth |
-| tournament | `--bracket`, `--agents` | Agent count = candidate diversity |
-| review | `--target` | Required — file to review |
-| debate | `--agents` | Minimum 3 (PRO+CON+JUDGE) |
-| brainstorm | `--vote` | Vote to select top ideas |
-| council | `--weights` | Role-based weighted voting |
-| persona | `--personas` | Manually specify roles |
-| investigate | `--angles`, `--depth` | Investigation angles and depth |
-| compose | `--pipe` | Strategy pipelining |
-
 ## Agent Output Quality Contract
-
 See `references/agent-output-contract.md` — evidence-based, falsifiable, dimension-tagged outputs with per-category Dimension Anchors and strict evidence standards.
 
 ---
@@ -496,20 +488,6 @@ Rules:
 
 See `references/trace-recording.md` — session_start/session_end are automatic via `.claude/hooks/trace-session.mjs`; emit best-effort `agent_step` entries for long sub-operations.
 
-## Interactive Mode
-
-When `$ARGUMENTS` is empty, use AskUserQuestion for step-by-step selection:
-
-**Step 1 — Category:**
-1. "Collaboration (refine / brainstorm / socratic)"
-2. "Competition/Deliberation (tournament / debate / council)"
-3. "Pipeline (chain / distribute / scaffold / compose / decompose)"
-4. "Analysis (review / red-team / persona / hypothesis / investigate)"
-5. "Monitoring/Meta (monitor / compose)"
-
-**Step 2 — Select specific strategy**
-**Step 3 — Enter task**
-
 ## Common Rationalizations
 
 | Rationalization | Reality |
@@ -517,7 +495,7 @@ When `$ARGUMENTS` is empty, use AskUserQuestion for step-by-step selection:
 | "I'll just use refine, it always works" | refine is convergence, not exploration. Use it *after* you have candidates, not before. Problems that need divergent thinking (brainstorm, tournament) starve on refine alone. |
 | "This result looks good, `--verify` is overkill" | `--verify` exists precisely because "looks good" is where shared bias hides. Skipping it means you're trusting one model's confidence instead of checking its work. |
 | "Debate is expensive, I'll skip it" | Debate is expensive *because* it surfaces disagreements that single-strategy runs hide. The cost is the value — if it didn't disagree, you didn't need it. |
-| "Any strategy works for this" | "Any strategy" is the tell that you haven't classified the problem. Use classify first — "any strategy" is functionally the same as no strategy. |
-| "18 strategies is too many, I'll stick with 3" | Sticking with 3 means you're using them outside their fit zone. classify narrows the 18 to the right 1-2 in seconds. |
+| "Any strategy works for this" | "Any strategy" is the tell that you haven't classified the problem. Use auto-route or interactive-pick first — "any strategy" is functionally the same as no strategy. |
+| "17 strategies is too many, I'll stick with 3" | Sticking with 3 means you're using them outside their fit zone. Auto-route narrows the 17 to the right 1-2 in seconds. |
 | "The strategy matters less than the prompt" | The strategy *is* the control loop around the prompt. Wrong strategy = wrong loop = wasted agents even with a perfect prompt. |
 | "Compose is for complex problems, mine is simple" | Compose chains strategies that address different failure modes. Even simple problems benefit when divergence-then-convergence is cheaper than any single strategy solving both. |

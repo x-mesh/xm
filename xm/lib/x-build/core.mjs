@@ -292,6 +292,10 @@ export function stepsPath(project) {
   return join(phaseDir(project, '02-plan'), 'steps.json');
 }
 
+export function prdPath(project) {
+  return join(phaseDir(project, '02-plan'), 'PRD.md');
+}
+
 export function checkpointsDir(project) {
   return join(projectDir(project), 'checkpoints');
 }
