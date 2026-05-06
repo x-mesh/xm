@@ -889,15 +889,28 @@ Release automation: squash WIP commits, bump the version, push. Works on xm mark
 
 ### x-humanize
 
-Remove AI writing patterns — rewrite generated text into natural human prose. Supports English and Korean.
+Detect AI-writing patterns and rewrite generated text into natural human prose. Catalog draws from Wikipedia's "Signs of AI writing" (English) and observed Korean AI-slop conventions.
 
 ```bash
 /xm:humanize audit <text>          # Report AI patterns only, no rewrite
 /xm:humanize light <text>          # Minimal edits, preserve original structure
+/xm:humanize <text>                # Default: medium intensity rewrite
 /xm:humanize strong <text>         # Rebuild prose aggressively, preserve facts
 /xm:humanize voice <file> <text>   # Match voice of sample file
 /xm:humanize --lang ko <text>      # Force Korean output
 ```
+
+| Feature | Description |
+|---------|-------------|
+| **Pattern catalog** | Korean (KO-1 ~ KO-40) + English (EN-1 ~ EN-22), each tagged with severity (High/Medium/Low). Korean covers translation-ese, mechanical parallelism, hedging tics, formal-tone overuse, emoji bullets, etc. |
+| **Genre-aware filter** | Six genres (column / report / blog / formal / marketing / README) drop findings the genre legitimately uses — `격식체` in formal docs, `1) 2) 3)` in technical docs, em-dashes in essays. Threshold knobs (KO-26 권고형 결말 5→8 in formal, KO-39 따옴표 5→8 in marketing). |
+| **Change-rate guardrails** | < 30% proceed · 30–50% warn and re-verify fact inventory · > 50% hard stop, refuse to output. Length-aware: short inputs use absolute change-count thresholds (5 / 10) instead of percentages. |
+| **Auto-downshift** | When KO-26 (권고형 결말) ≥ 5 hits and KO-31 (단문 일변도) 5+ consecutive both fire, force `light` intensity even if the user asked for `medium` or `strong` — prevents the change-rate budget from blowing up on a single paragraph. |
+| **Fact inventory** | Named entities, metrics, dates, citations recorded before rewrite. The rewrite must restore any dropped fact and never fabricate one. Vague claims stay vague rather than become specific. |
+| **Voice calibration** | Voice sample overrides genre rules — match the user's sentence-length distribution, vocabulary level, and transition habits. Avoids "clean but soulless" output. |
+| **Anti-AI audit pass** | Required Step 5 — internally asks "what still makes this obviously AI-generated?" and revises once more. Catches leftover em-dashes, sycophantic openers, trailing chatbot disclaimers. |
+
+**Principles:** Meaning preserved 100% · Span-grounded edits only (no fix direction = no finding) · Genre kept (column ↛ essay) · Over-polish refused (>50% change rate)
 
 ---
 
