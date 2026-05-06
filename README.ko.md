@@ -888,15 +888,28 @@ Claude Code 안에서도 사용 가능: `/xm:sync push`, `/xm:sync pull`, `/xm:s
 
 ### x-humanize
 
-AI 글쓰기 패턴 제거 — 생성된 텍스트를 자연스러운 인간 문체로 재작성합니다. 영어와 한국어를 지원합니다.
+AI 글쓰기 패턴을 감지해 자연스러운 한국어/영어 문체로 재작성. 영어 카탈로그는 Wikipedia "Signs of AI writing" 가이드, 한국어는 실전 LLM 출력에서 관찰된 슬롭 패턴을 SSOT로 정리.
 
 ```bash
 /xm:humanize audit <텍스트>         # AI 패턴 리포트만 (재작성 없음)
 /xm:humanize light <텍스트>         # 최소 편집, 원본 구조 유지
+/xm:humanize <텍스트>               # 기본: medium 강도 재작성
 /xm:humanize strong <텍스트>        # 문장 전면 재구성, 사실은 보존
 /xm:humanize voice <파일> <텍스트>  # 샘플 파일 문체에 맞춰 재작성
 /xm:humanize --lang ko <텍스트>     # 한국어 출력 강제
 ```
+
+| 기능 | 설명 |
+|------|------|
+| **패턴 카탈로그** | 한국어 KO-1 ~ KO-40 + 영어 EN-1 ~ EN-22, 심각도(High/Medium/Low) 표기. 한국어는 번역투, 기계적 병렬, hedging 버릇, 격식체 과잉, 이모지 불릿 등을 커버. |
+| **장르 인식 필터** | 6개 장르(column / report / blog / formal / marketing / README) — 해당 장르가 정당하게 사용하는 패턴은 자동 드롭 (예: 공적 문서의 격식체, README의 `1) 2) 3)` 인덱싱, 에세이의 em-dash). 임계값 조정(KO-26 권고형 결말 5→8 in formal, KO-39 따옴표 5→8 in marketing). |
+| **변경률 가드레일** | < 30% 진행 · 30–50% 경고 + fact inventory 재검증 · > 50% 강제 중단(출력 거부). 짧은 입력은 절대 카운트(5 / 10) 임계값 적용. |
+| **Auto-downshift** | KO-26 (권고형 결말) 5회+ + KO-31 (단문 일변도) 5+ 연속 동시 검출 시 사용자가 `medium`/`strong`을 요청해도 강제 `light`로 다운시프트 — 한 단락이 변경률 예산을 폭증시키는 것을 방지. |
+| **Fact inventory** | 고유명사·수치·날짜·인용을 재작성 전에 기록. 누락된 사실은 복원하고, 새 사실은 절대 추가하지 않음. 모호한 주장은 모호하게 유지(임의로 구체화 금지). |
+| **Voice calibration** | Voice 샘플이 있으면 장르 룰을 덮어씀 — 사용자의 문장 길이 분포·어휘 수준·전환 습관에 맞춤. "깔끔하지만 영혼 없는" 출력 회피. |
+| **Anti-AI audit pass** | Step 5 필수 — "여전히 AI처럼 들리는 부분이 무엇인가?" 자문 후 1회 재수정. 잔존 em-dash, 사대주의적 도입부, 챗봇 잔재 종결문을 잡음. |
+
+**원칙:** 의미 100% 보존 · span 단위 수술적 수정(처방 없는 finding은 보고 안 함) · 장르 보존(칼럼 ↛ 에세이) · 과윤문 금지(변경률 50% 이상 차단)
 
 ---
 

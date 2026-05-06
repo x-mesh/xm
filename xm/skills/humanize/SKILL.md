@@ -88,6 +88,50 @@ Default intensity is `medium`: remove AI patterns and improve flow without chang
 
 If the user asks for "AI 티만 빼줘", use `light`. If they ask for "완전히 자연스럽게 다시 써줘", use `strong`.
 
+### Auto-downshift triggers
+
+If Step 2 detection returns either signal, start with `light` instead of the user-specified intensity and tell the user in one line that you downshifted. These two patterns alone tend to inflate change rate past the hard stop because their fixes collapse multiple sentences:
+
+- **KO-26** (권고형 결말 "~해야 한다") ≥ 5 hits — repeated 권고 sentences typically merge into one, dropping length sharply.
+- **KO-31** (단문 일변도) with 5+ consecutive short sentences in a single paragraph — combining them into one complex sentence is the right edit but eats the change-rate budget on its own.
+
+When both fire together, start `light` even if the user asked for `medium` or `strong`. Output once, then let the user opt in to a stronger pass.
+
+## Change Rate Guardrails
+
+Naturalness without preserved meaning is just a different lie. Set hard ceilings on edit volume and require justification when crossed.
+
+### Thresholds
+
+Measure character-level change rate as `edit_distance(original, rewrite) / len(original)`. Approximate via diff coverage when exact computation is impractical — count substituted/inserted/deleted character spans.
+
+| Rate | Action | Rationale |
+|------|--------|-----------|
+| < 30% | Proceed | Normal humanize range. Pattern removal + flow polish stays here. |
+| 30–50% | Warn and re-verify | Likely scope creep. Re-read the fact inventory before output. Confirm every claim is intact. |
+| > 50% | **Hard stop** — do not output. Diagnose. | Over-rewrite. Either you over-edited a near-natural input, or the user wanted full rewriting (different skill). |
+
+When change rate exceeds 50%:
+1. Do not return the over-edited text.
+2. Re-read the source. Was every change rule-driven (matched a numbered pattern), or did you "improve" wording subjectively?
+3. Either restart with `light` intensity, or tell the user the input may not need humanization.
+
+### Length-aware adjustment
+
+For short inputs, single-token swaps inflate percentages. Use absolute thresholds instead:
+
+| Input length | Warn at | Hard stop at |
+|-------------|---------|--------------|
+| < 200 chars | 5 token-level changes | 10 token-level changes |
+| 200–500 chars | 25% | 45% |
+| 500+ chars | 30% | 50% |
+
+### What counts toward change rate
+
+**Counts:** word substitutions, insertions, deletions; sentence reordering; removed connectives (`그리고`, `한편`, em-dashes the AI added); register shifts.
+
+**Does NOT count:** whitespace/line-break normalization; markdown structural fixes (heading levels, list bullets) when the user asked for prose only; removing pure chatbot residue (sycophantic openers, trailing "Let me know if…" disclaimers).
+
 ## Core Process
 
 Follow these steps in order. Do not skip Step 5.
@@ -106,6 +150,8 @@ Scan the input against the loaded pattern catalog. For each match, record:
 - Pattern number (e.g., EN-7 "AI vocabulary" or KO-3 "과도한 ~적/~성")
 - Span (exact substring)
 - Severity (High = breaks naturalness immediately / Medium = noticeably AI / Low = minor tic)
+
+Then **infer the genre** from the first 200 chars (column / report / blog / formal / marketing / README — see `references/genre-rules.md`) and apply the per-genre allowance matrix to drop or downgrade findings the genre actually permits. Mark dropped findings as `dropped (genre: <name>)` in the audit output rather than removing them silently — the user should be able to trace why a pattern was not fixed. Voice sample overrides genre rules; genre rules override the catalog default.
 
 Also make a quick fact inventory before rewriting:
 - Named entities, product names, file names, commands, metrics, dates, versions, citations, URLs
@@ -150,6 +196,8 @@ Common tells caught at this stage: leftover em-dashes, residual rule-of-three li
 
 Also compare against the fact inventory from Step 2. If the rewrite dropped a fact, restore it. If it added a fact, remove it.
 
+Then measure the change rate against the source per `## Change Rate Guardrails`. If above the warn threshold, re-verify fact inventory once more. If above the hard-stop threshold, do not output — restart with lower intensity or tell the user.
+
 ### Step 6 — Output
 
 | Mode | Output |
@@ -187,6 +235,9 @@ Skipping any of these excuses is a sign you are partially applying the skill. Re
 | "Voice calibration is for paid features." | Voice calibration is a 30-second analysis that drastically improves output. If a sample exists, use it. |
 | "I should add my own opinions even without the user's voice." | No. Inject voice patterns *consistent with the source genre*. A README does not need first-person reflection. A blog post might. |
 | "The findings table is overhead." | In developer mode, the table teaches the user what was wrong. Skipping it loses the learning value. |
+| "Change rate is just a heuristic — my rewrite reads better." | If you crossed 50%, you stopped humanizing and started rewriting. The skill is `humanize`, not `rewrite`. Stop and tell the user. |
+| "It's a short paragraph so the threshold doesn't apply." | Short inputs use absolute count thresholds (5 / 10 token-level changes). The rule still applies — see length-aware adjustment. |
+| "Genre rules just hide AI tells — strip everything." | Genre rules drop *patterns the genre legitimately uses* (e.g., 격식체 in 공적 문서). Stripping them produces a tonally wrong output the user will reject. Apply the matrix. |
 
 ## Red Flags (Stop and Re-check)
 
@@ -198,6 +249,8 @@ Stop and re-read the source if you notice:
 - Your output paragraph length variance is < 20% — voice is flat, return to Step 4.
 - The Korean output uses "~할 수 있다" or "~라 할 수 있다" as a sentence ending more than once — pattern KO-9, rewrite.
 - You added a citation or statistic that is not in the source — STOP. Never fabricate.
+- Change rate is climbing past 30% and you are still adding edits — STOP. Re-read the fact inventory before continuing.
+- Change rate hit 50% — DO NOT output. Restart with `light` or tell the user the source may already be natural.
 
 ## Verification
 
@@ -209,6 +262,7 @@ Before returning output, internally confirm:
 - [ ] If voice calibration was used, the rewrite matches the sample's sentence-length distribution within ±20%.
 - [ ] Output language matches input language (do not translate).
 - [ ] Findings table provided in developer mode.
+- [ ] Change rate measured. Below the warn threshold for the input length, OR (30–50% range) fact inventory re-verified, OR aborted per Change Rate Guardrails.
 
 ## Output Templates
 
@@ -251,5 +305,6 @@ Before returning output, internally confirm:
 ## References
 
 - `references/patterns-en.md` — English patterns with before/after examples (Wikipedia source + x-mesh additions)
-- `references/patterns-ko.md` — Korean AI-slop pattern catalog
+- `references/patterns-ko.md` — Korean AI-slop pattern catalog (KO-1 ~ KO-40)
+- `references/genre-rules.md` — Per-genre allowance matrix (column/report/blog/formal/marketing/README) and threshold adjustments
 - `references/voice-calibration.md` — How to analyze a writing sample and match it
