@@ -350,6 +350,17 @@ export function cmdReleaseBump(args) {
     execSync(`bash ${syncScript}`, { stdio: 'inherit' });
   }
 
+  // 6.5 Regenerate skills.checksums.json (R-SEC-02 registry).
+  // sync-bundle just copied SKILL.md sources into xm/skills/, so the registry
+  // is now stale by definition. Regenerate here so /x-release commits both
+  // marketplace SKILL.md and matching checksums in the same commit, which
+  // prevents the post-release "checksum mismatch" install error.
+  const checksumScript = join(cwd, 'xm', 'scripts', 'skills-checksum.mjs');
+  if (existsSync(checksumScript)) {
+    console.log('\n🔐 Regenerating skills.checksums.json...');
+    execSync(`node ${checksumScript}`, { stdio: 'inherit' });
+  }
+
   // 7. Run tests
   console.log('\n🧪 Running tests...');
   try {
