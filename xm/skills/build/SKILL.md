@@ -11,10 +11,10 @@ x-build manages the full project lifecycle (Research → Plan → Execute → Ve
 </Purpose>
 
 <Use_When>
-- User wants to start a new project with structured phases
-- User says "start project", "new project", "init"
+- User wants PRD-based task tracking (new OR existing project)
 - User asks to plan, execute, or verify work
 - User says "build me ~" or describes a goal (auto-plan)
+- User says "start project", "new project", "init"
 - User asks about project status, costs, or decisions
 - User wants to export to Jira, Confluence, CSV
 </Use_When>
@@ -198,7 +198,9 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 
 ## Routing
 
-Parse user's `$ARGUMENTS` and current project state to determine the action:
+Parse user's `$ARGUMENTS` and current project state to determine the action.
+
+**MANDATORY first step (all branches):** Run `$XMB list` BEFORE any routing decision. Never decide "new project vs existing" from user phrasing or git branch state alone. If an active (non-closed) x-build project exists, route to `$XMB next` regardless of user wording. A git feature branch is NOT an x-build project — they are independent. "Skill is heavy, just apply its spirit lightly" is a forbidden bypass; if the user invoked `build`, deliver the build flow.
 
 ### No arguments (empty)
 1. Run `$XMB list` to check for existing projects
@@ -424,3 +426,5 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | "We can parallelize everything" | Real dependencies exist. Declaring false parallelism creates integration debt — tasks that "could" run in parallel but actually serialize on shared state. |
 | "The scope is fine as is" | Scope is defined by exclusion. If you haven't decided what NOT to build, you haven't scoped anything. |
 | "Planning is overhead, not value" | Planning is where wrong turns are found for free. Every hour spent in plan-phase saves multiple hours in exec-phase. |
+| "User is mid-task on a feature branch — invoking build is heavy, just apply it lightly" | git branch ≠ x-build project. Run `$XMB list` first; "lightly" / "skill spirit only" is not a valid bypass — it discards the PRD/tasks tracking the user explicitly invoked build to get. |
+| "User just wants quick help, no need for full Research → Plan flow" | If they wanted Quick Mode they would have said `--quick`. Default to full flow; do not auto-shortcut on the user's behalf. |
