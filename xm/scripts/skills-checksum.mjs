@@ -63,12 +63,28 @@ if (checkMode) {
     process.exit(2);
   }
   const stored = JSON.parse(readFileSync(CHECKSUM_PATH, 'utf8'));
-  const a = stored.skills.map((s) => `${s.plugin}:${s.sha256}`).sort().join('\n');
-  const b = fresh.skills.map((s) => `${s.plugin}:${s.sha256}`).sort().join('\n');
-  if (a !== b) {
-    process.stderr.write(`skills.checksums.json out of date. Re-run without --check.\n`);
-    process.stderr.write(`  expected entries: ${stored.skills.length}\n`);
-    process.stderr.write(`  current entries:  ${fresh.skills.length}\n`);
+  const storedMap = new Map(stored.skills.map((s) => [s.plugin, s.sha256]));
+  const freshMap = new Map(fresh.skills.map((s) => [s.plugin, s.sha256]));
+  const drifted = [];
+  const added = [];
+  const removed = [];
+  for (const [plugin, sha] of freshMap) {
+    if (!storedMap.has(plugin)) added.push(plugin);
+    else if (storedMap.get(plugin) !== sha) drifted.push({ plugin, stored: storedMap.get(plugin), actual: sha });
+  }
+  for (const plugin of storedMap.keys()) {
+    if (!freshMap.has(plugin)) removed.push(plugin);
+  }
+  if (drifted.length || added.length || removed.length) {
+    process.stderr.write(`skills.checksums.json out of date — re-run: node xm/scripts/skills-checksum.mjs\n\n`);
+    if (drifted.length) {
+      process.stderr.write(`  ${drifted.length} drifted (SKILL.md changed since last regen):\n`);
+      for (const d of drifted) {
+        process.stderr.write(`    ${d.plugin.padEnd(14)} registry: ${d.stored.slice(0, 16)}...  actual: ${d.actual.slice(0, 16)}...\n`);
+      }
+    }
+    if (added.length) process.stderr.write(`  ${added.length} new skill(s) not in registry: ${added.join(', ')}\n`);
+    if (removed.length) process.stderr.write(`  ${removed.length} stale registry entries: ${removed.join(', ')}\n`);
     process.exit(1);
   }
   process.stdout.write(`skills.checksums.json verified (${stored.skills.length} skills).\n`);

@@ -602,11 +602,17 @@ export function run(argv) {
           }
         }
         if (mismatches.length > 0) {
-          let msg = `R-SEC-02: SKILL.md checksum mismatch (supply-chain guard).\n`;
+          let msg = `R-SEC-02: ${mismatches.length} SKILL.md file(s) differ from xm/skills.checksums.json.\n\n`;
           for (const m of mismatches) {
-            msg += `  ${m.plugin}: expected ${m.expected.slice(0, 16)}... got ${m.actual.slice(0, 16)}...\n`;
+            msg += `  ${m.plugin.padEnd(14)} registry: ${m.expected.slice(0, 16)}...  actual: ${m.actual.slice(0, 16)}...\n`;
           }
-          msg += `Re-run skills-checksum.mjs (release flow) or pass --allow-unverified to bypass.\n`;
+          msg += `\nMost likely cause: the registry was not regenerated after a release that touched these SKILL.md files.\n`;
+          msg += `If you ran /x-release on a version of release.mjs that pre-dates auto-regeneration, fix with:\n`;
+          msg += `  node xm/scripts/skills-checksum.mjs\n`;
+          msg += `  git add xm/skills.checksums.json && git commit -m "chore: update skills checksums"\n\n`;
+          msg += `Treat as a supply-chain event ONLY if you did not modify these files. Inspect with:\n`;
+          msg += `  git log -p -- xm/skills/<plugin>/SKILL.md\n\n`;
+          msg += `Bypass for one-off testing (audited, flagged unverified=true): --allow-unverified  (R-SEC-15)\n`;
           return { exitCode: 2, stdout: '', stderr: msg };
         }
       } catch (err) {
