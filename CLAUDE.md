@@ -31,6 +31,30 @@ x-review agents must follow these principles when producing findings.
 
 See `references/finding-severity.md` — Critical/High/Medium/Low criteria and Finding Quality Standard (good/bad examples).
 
+### Review-Fix Gate
+
+After x-review returns `Request Changes` or `Block`, do not start a broad second implementation pass.
+
+Required sequence:
+1. Run `x-build verify-review-fix --init` to create `.xm/review/triage.json`.
+2. Triage every Medium+ finding as `fix_now`, `backlog`, `accept_risk`, or `false_positive`.
+3. Never move Critical/High findings to `backlog`; fix them now or provide concrete evidence for `accept_risk` / `false_positive`.
+4. Limit review-fix edits to `fix_now` findings and files listed in `fix_scope.allowed_files`.
+5. Run `x-build verify-review-fix`, then quality checks, then re-run x-review before claiming completion.
+
+This gate exists to prevent review feedback from becoming an unbounded rewrite loop.
+
+### Later Queue
+
+When fixing A, do not opportunistically fix unrelated B.
+
+Rule:
+- If B blocks A or changes A's correctness, keep it in the current scope and update the active task/review-fix triage.
+- If B does not affect A, capture it with `x-build later add "..." --reason "..." --source "..." --files "..."` and keep coding focused on A.
+- Do not edit files for later items until they are promoted with `x-build later promote <id>`.
+
+Use `later` for drive-by bugs, cleanup ideas, refactors, stale comments, and non-blocking review observations.
+
 ## Planning Principles (x-build)
 
 x-build plan-phase agents must follow these principles.

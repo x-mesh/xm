@@ -308,7 +308,32 @@ Within the same severity, consensus findings come first.
 
 Include verdict rationale in output: "Verdict: Request Changes 🔄 — 1 High finding (LGTM requires: 0 High)"
 
-### 7. Output Format
+### 7. Review-Fix Contract
+
+When the verdict is `Request Changes` or `Block`, the report MUST include a review-fix contract before the Summary:
+
+1. Assign stable finding IDs in output order: `F1`, `F2`, ...
+2. Require triage for every Medium, High, and Critical finding.
+3. Do not instruct the implementer to edit code until triage is complete.
+4. Triage decisions are limited to:
+   - `fix_now` — fix in this review-fix loop
+   - `backlog` — defer; allowed for Medium/Low only
+   - `accept_risk` — allowed only with concrete evidence
+   - `false_positive` — allowed only with concrete evidence
+5. Review-fix edits are limited to files listed in `.xm/review/triage.json` `fix_scope.allowed_files`.
+6. Unrelated issues discovered during review-fix are not fixed in place. If they do not affect the current fix, capture them with `x-build later add` and continue the current fix.
+
+Recommended gate commands:
+
+```bash
+x-build verify-review-fix --init
+# edit .xm/review/triage.json
+x-build verify-review-fix
+```
+
+This turns review feedback into a bounded fix loop instead of an open-ended second implementation pass.
+
+### 8. Output Format
 
 #### format: markdown (default)
 
@@ -318,20 +343,31 @@ Include verdict rationale in output: "Verdict: Request Changes 🔄 — 1 High f
 Verdict: {LGTM ✅ | Request Changes 🔄 | Block 🚫}
 
 ## Critical ({count})
-[Critical] src/auth.ts:42 — SQL injection via unsanitized user input (security, logic)
+[F1] [Critical] src/auth.ts:42 — SQL injection via unsanitized user input (security, logic)
   → Fix: Use parameterized query: db.query('SELECT * FROM users WHERE id = $1', [id])
 
 ## High ({count})
-[High] src/api/handler.ts:88 — Unhandled promise rejection propagates silently (errors)
+[F2] [High] src/api/handler.ts:88 — Unhandled promise rejection propagates silently (errors)
   → Fix: Add .catch() or use await with try/catch
 
 ## Medium ({count})
-[Medium] src/utils/cache.ts:15 — O(n²) lookup in hot path (perf)
+[F3] [Medium] src/utils/cache.ts:15 — O(n²) lookup in hot path (perf)
   → Fix: Convert to Map for O(1) lookup
 
 ## Low ({count})
-[Low] src/models/user.ts:3 — Missing JSDoc for exported UserSchema (docs)
+[F4] [Low] src/models/user.ts:3 — Missing JSDoc for exported UserSchema (docs)
   → Fix: Add /** @param ... @returns ... */ above function signature
+
+## Review-Fix Triage Required
+
+Run `x-build verify-review-fix --init`, edit `.xm/review/triage.json`, then run `x-build verify-review-fix` before applying review fixes.
+
+| Finding | Required? | Allowed Decisions |
+|---------|-----------|-------------------|
+| F1 | yes | fix_now / accept_risk / false_positive |
+| F2 | yes | fix_now / accept_risk / false_positive |
+| F3 | yes | fix_now / backlog / accept_risk / false_positive |
+| F4 | no | optional |
 
 ## Summary
 | Lens | Findings | Critical | High | Medium | Low |

@@ -198,6 +198,7 @@ See `references/review-workflow.md` — full pipeline:
 - **Phase 2: ASSIGN** — select lenses (default 7 or preset), distribute to agents
 - **Phase 3: REVIEW** — fan-out N agents with Universal Principles + lens prompts (`lenses/{name}.md`)
 - **Phase 4: SYNTHESIZE** — parse → dedupe+consensus → Self-Verify (Chain-of-Verification: agents include code snippet 3-5 lines; leader verifies claim against snippet — do not re-read the file; contradicted findings tagged `[CoVe-removed]`, inconclusive tagged `[CoVe-downgraded]`) → challenge → recall boost → verdict (include verdict rationale in output) → output (markdown / github-comment)
+- **Phase 5: REVIEW-FIX CONTRACT** — every finding gets a stable `F#` ID; Request Changes / Block output MUST include a triage checklist that classifies each Medium+ finding as `fix_now`, `backlog`, `accept_risk`, or `false_positive` before any review-fix edits start.
 
 ---
 
@@ -211,7 +212,7 @@ See `references/finding-severity.md` — Critical/High/Medium/Low criteria share
 
 ## Data Directory
 
-See `references/data-directory.md` — writes `last-result.md` and `last-result.json` under `.xm/review/`, appends to `history/`, saves `reviewed_commit` to JSON after every review.
+See `references/data-directory.md` — writes `last-result.md` and `last-result.json` under `.xm/review/`, appends to `history/`, saves `reviewed_commit` to JSON after every review. `last-result.json.findings[]` MUST preserve output order so `F1`, `F2`, ... are stable for `.xm/review/triage.json`.
 
 ---
 

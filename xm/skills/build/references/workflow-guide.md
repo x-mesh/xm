@@ -187,6 +187,23 @@ See `phases/plan.md` — full Plan phase walkthrough: PRD generation, PRD review
 
 **Call AskUserQuestion before advancing to Verify phase.** When all tasks complete, ask the user to confirm before advancing (e.g., "All tasks completed. Proceed to the Verify phase?" in developer mode, or `"모든 태스크 완료. Verify 단계로 넘어갈까요?"` in normal mode). Do NOT run `phase next` without user confirmation.
 
+#### Later Queue
+
+During implementation or review-fix work, agents will notice unrelated bugs or cleanup opportunities. Do not fix them opportunistically.
+
+Decision rule:
+- If the issue blocks the current task or changes the correctness of the current fix, keep it in scope and update the active task / triage.
+- If the issue does not affect the current task, capture it and continue the current task:
+  ```bash
+  $XMB later add "Fix stale cache warning" \
+    --reason "Found while fixing auth; does not affect auth behavior" \
+    --source "review-fix:F2" \
+    --files "src/cache.ts"
+  ```
+- Later, convert it into real work with `$XMB later promote <id>`.
+
+Later items are not permission to edit code. They are deferred work records.
+
 #### Strategy-Tagged Execution
 
 If a task has the `--strategy` flag, execute it via x-op strategy:
@@ -251,8 +268,15 @@ Recommendation only — not auto-applied. User must specify via `--strategy`.
    - For each task with `done_criteria`, verify that the criteria are met
    - Output: `✅ t1: 3/3 criteria met` or `❌ t2: 1/3 criteria met — [missing: "at least 3 unit tests"]`
    - Unmet criteria → report to user for resolution before closing
-4. **Call AskUserQuestion before closing.** Show quality check results first, then ask the user to confirm before advancing (e.g., "Quality checks passed. Proceed to the Close phase?" in developer mode, or `"품질 검사 완료. 프로젝트를 Close 단계로 넘어갈까요?"` in normal mode). Do NOT run `phase next` without user confirmation.
-5. If user confirms: `$XMB phase next`
+4. If x-review returned `Request Changes` or `Block`, run the Review-Fix Gate:
+   ```bash
+   $XMB verify-review-fix --init
+   # edit .xm/review/triage.json
+   $XMB verify-review-fix
+   ```
+   Review-fix edits MUST be limited to `fix_now` findings and `fix_scope.allowed_files`. After applying fixes, run `$XMB quality`, `$XMB verify-review-fix`, and `/xm:review diff` again before closing.
+5. **Call AskUserQuestion before closing.** Show quality check results first, then ask the user to confirm before advancing (e.g., "Quality checks passed. Proceed to the Close phase?" in developer mode, or `"품질 검사 완료. 프로젝트를 Close 단계로 넘어갈까요?"` in normal mode). Do NOT run `phase next` without user confirmation.
+6. If user confirms: `$XMB phase next`
 
 ### Step 6: Close
 

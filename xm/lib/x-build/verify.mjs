@@ -8,7 +8,7 @@ import {
   tasksPath, prdPath, contextDir, phaseDir,
   resolveProject, renderBar,
   runQualityChecks,
-  existsSync, join,
+  existsSync, join, resolve, ROOT, parseOptions, spawnSync,
 } from './core.mjs';
 
 // ── cmdQuality ──────────────────────────────────────────────────────
@@ -215,4 +215,264 @@ export function cmdVerifyContracts(args) {
   console.log(`${C.yellow}${withCriteria.length} tasks with acceptance contracts listed above.${C.reset}`);
   console.log(`  Verify each criterion manually or delegate to an agent for inspection.`);
   console.log('');
+}
+
+// ── cmdVerifyReviewFix ──────────────────────────────────────────────
+
+const TRIAGE_REQUIRED_SEVERITY = new Set(['critical', 'high', 'medium']);
+const BLOCKING_SEVERITY = new Set(['critical', 'high']);
+const VALID_TRIAGE_DECISIONS = new Set(['fix_now', 'backlog', 'accept_risk', 'false_positive']);
+
+function normalizeSeverity(value) {
+  return String(value || '').toLowerCase();
+}
+
+function normalizeVerdict(value) {
+  return String(value || '').toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function findingId(index) {
+  return `F${index + 1}`;
+}
+
+function findingSummary(finding) {
+  return finding.summary || finding.description || finding.title || '';
+}
+
+function reviewDir() {
+  return join(ROOT, '..', 'review');
+}
+
+function workspaceRoot() {
+  return resolve(ROOT, '..', '..');
+}
+
+function runGit(args) {
+  const result = spawnSync('git', args, {
+    cwd: workspaceRoot(),
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+  if (result.status !== 0) return null;
+  return result.stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+}
+
+function collectChangedFilesSinceReview(reviewedCommit) {
+  const changed = new Set();
+  const add = files => {
+    if (!files) return;
+    for (const file of files) changed.add(file);
+  };
+
+  if (/^[0-9a-f]{7,40}$/i.test(String(reviewedCommit || ''))) {
+    add(runGit(['diff', '--name-only', `${reviewedCommit}..HEAD`]));
+  }
+
+  add(runGit(['diff', '--name-only']));
+  add(runGit(['diff', '--name-only', '--cached']));
+  add(runGit(['ls-files', '--others', '--exclude-standard']));
+
+  return [...changed].sort();
+}
+
+function toTriageMap(triage) {
+  const items = triage?.target_findings || triage?.findings || [];
+  const map = new Map();
+  if (Array.isArray(items)) {
+    for (const item of items) {
+      const id = item.id || item.finding_id;
+      if (id) map.set(id, item);
+    }
+  }
+  return map;
+}
+
+function getAllowedFiles(triage) {
+  const files = triage?.fix_scope?.allowed_files || triage?.allowed_files || [];
+  return Array.isArray(files) ? files : [];
+}
+
+function getVerificationItems(triage) {
+  const items = triage?.verification || triage?.fix_scope?.verification || [];
+  return Array.isArray(items) ? items : [];
+}
+
+function buildTriageTemplate(review) {
+  const findings = Array.isArray(review.findings) ? review.findings : [];
+  const targetFindings = findings.map((finding, index) => {
+    const severity = normalizeSeverity(finding.severity);
+    return {
+      id: findingId(index),
+      severity,
+      file: finding.file || null,
+      line: finding.line ?? null,
+      summary: findingSummary(finding),
+      decision: BLOCKING_SEVERITY.has(severity)
+        ? 'fix_now'
+        : (TRIAGE_REQUIRED_SEVERITY.has(severity) ? '' : 'backlog'),
+      evidence: '',
+      fix_notes: '',
+    };
+  });
+
+  const allowedFiles = [...new Set(targetFindings
+    .filter(f => TRIAGE_REQUIRED_SEVERITY.has(f.severity) && f.file)
+    .map(f => f.file))].sort();
+
+  return {
+    reviewed_commit: review.reviewed_commit || null,
+    verdict: review.verdict || null,
+    baseline_changed_files: collectChangedFilesSinceReview(review.reviewed_commit),
+    target_findings: targetFindings,
+    fix_scope: {
+      allowed_files: allowedFiles,
+      forbidden: [
+        'unrelated refactors',
+        'drive-by formatting outside allowed_files',
+        'new feature work not required by a fix_now finding',
+      ],
+    },
+    verification: [
+      'Run x-build quality',
+      'Run tests covering each fix_now finding',
+      'Re-run x-review after review-fix changes',
+    ],
+  };
+}
+
+export function cmdVerifyReviewFix(args) {
+  const { opts } = parseOptions(args);
+  const resultPath = join(reviewDir(), 'last-result.json');
+  const triagePath = join(reviewDir(), opts.triage || 'triage.json');
+
+  if (!existsSync(resultPath)) {
+    console.log(`${C.yellow}No x-review result found.${C.reset}`);
+    console.log('  Run: /xm:review diff');
+    process.exitCode = 1;
+    return;
+  }
+
+  const review = readJSON(resultPath);
+  const findings = Array.isArray(review?.findings) ? review.findings : [];
+  const required = findings
+    .map((finding, index) => ({ ...finding, id: findingId(index), severity: normalizeSeverity(finding.severity) }))
+    .filter(f => TRIAGE_REQUIRED_SEVERITY.has(f.severity));
+
+  if (opts.init) {
+    writeJSON(triagePath, buildTriageTemplate(review));
+    console.log(`${C.green}Created review-fix triage template:${C.reset} ${triagePath}`);
+    console.log('  Edit decisions, allowed_files, and verification before applying review fixes.');
+    return;
+  }
+
+  const verdict = normalizeVerdict(review?.verdict);
+  if ((verdict === 'lgtm' || verdict === 'pass') && required.length === 0) {
+    console.log(`${C.green}Review Fix Gate passed.${C.reset}`);
+    console.log('  Last x-review verdict is LGTM and no triage-required findings remain.');
+    return;
+  }
+
+  const failures = [];
+  const warnings = [];
+
+  if (!existsSync(triagePath)) {
+    failures.push(`Missing triage file: ${triagePath}`);
+    failures.push('Run: x-build verify-review-fix --init');
+  } else {
+    const triage = readJSON(triagePath);
+    const triageMap = toTriageMap(triage);
+    const allowedFiles = getAllowedFiles(triage);
+    const verification = getVerificationItems(triage);
+    const baselineFiles = new Set(Array.isArray(triage.baseline_changed_files) ? triage.baseline_changed_files : []);
+
+    if (review.reviewed_commit && triage.reviewed_commit && review.reviewed_commit !== triage.reviewed_commit) {
+      failures.push('triage.json reviewed_commit does not match last-result.json reviewed_commit');
+    }
+
+    for (const finding of required) {
+      const decision = triageMap.get(finding.id);
+      if (!decision) {
+        failures.push(`${finding.id}: missing triage decision for ${finding.severity} finding`);
+        continue;
+      }
+
+      const rawDecision = String(decision.decision || '').trim();
+      const value = rawDecision.toLowerCase();
+      if (!rawDecision) {
+        failures.push(`${finding.id}: ${finding.severity} finding requires an explicit triage decision`);
+        continue;
+      }
+      if (!VALID_TRIAGE_DECISIONS.has(value)) {
+        failures.push(`${finding.id}: invalid decision "${decision.decision}"`);
+        continue;
+      }
+
+      if (BLOCKING_SEVERITY.has(finding.severity) && value === 'backlog') {
+        failures.push(`${finding.id}: ${finding.severity} finding cannot be moved to backlog`);
+      }
+
+      if ((value === 'accept_risk' || value === 'false_positive') && !String(decision.evidence || '').trim()) {
+        failures.push(`${finding.id}: ${value} requires evidence`);
+      }
+
+      if (value === 'fix_now' && finding.file && !allowedFiles.includes(finding.file)) {
+        failures.push(`${finding.id}: fix_now file is not in fix_scope.allowed_files (${finding.file})`);
+      }
+    }
+
+    if (allowedFiles.length === 0 && required.some(f => triageMap.get(f.id)?.decision === 'fix_now')) {
+      failures.push('fix_scope.allowed_files must include every file that review fixes may touch');
+    }
+
+    if (verification.length === 0) {
+      failures.push('verification must list at least one command or evidence check');
+    }
+
+    const changedFiles = collectChangedFilesSinceReview(review.reviewed_commit);
+    const drift = changedFiles.filter(file =>
+      !baselineFiles.has(file) &&
+      file !== '.xm/review/triage.json' &&
+      file !== '.xm/review/review-fix-gate.json' &&
+      !file.startsWith('.xm/review/history/') &&
+      !allowedFiles.includes(file)
+    );
+
+    if (drift.length > 0) {
+      failures.push(`Changed files outside fix_scope.allowed_files: ${drift.join(', ')}`);
+    }
+
+    if (changedFiles.length === 0) {
+      warnings.push('No changed files detected since the reviewed commit. Run this again after applying review fixes.');
+    }
+
+    const baselineOutsideScope = [...baselineFiles].filter(file =>
+      !file.startsWith('.xm/review/') &&
+      !allowedFiles.includes(file)
+    );
+    if (baselineOutsideScope.length > 0) {
+      warnings.push(`Baseline already includes files outside fix_scope.allowed_files; file-level drift is only enforced for new files: ${baselineOutsideScope.join(', ')}`);
+    }
+  }
+
+  const report = {
+    timestamp: new Date().toISOString(),
+    reviewed_commit: review.reviewed_commit || null,
+    verdict: review.verdict || null,
+    triage_required: required.length,
+    passed: failures.length === 0,
+    failures,
+    warnings,
+  };
+  writeJSON(join(reviewDir(), 'review-fix-gate.json'), report);
+
+  if (failures.length > 0) {
+    console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
+    for (const failure of failures) console.log(`  - ${failure}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`${C.green}Review Fix Gate passed.${C.reset}`);
+  console.log(`  Triage-required findings: ${required.length}`);
+  for (const warning of warnings) console.log(`  ${C.yellow}Warning:${C.reset} ${warning}`);
 }

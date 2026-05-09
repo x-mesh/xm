@@ -265,6 +265,283 @@ describe('verify-contracts', () => {
   });
 });
 
+// ── Verify review-fix gate ────────────────────────────────────────
+
+function writeReviewResult(tmp, review = {}) {
+  const dir = join(tmp, '.xm', 'review');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'last-result.json'), JSON.stringify({
+    reviewed_commit: 'abc1234',
+    verdict: 'request_changes',
+    findings: [
+      {
+        severity: 'high',
+        lens: 'logic',
+        file: 'src/auth.ts',
+        line: 42,
+        summary: 'Auth bypass on missing token',
+      },
+      {
+        severity: 'low',
+        lens: 'docs',
+        file: 'src/auth.ts',
+        line: 7,
+        summary: 'Missing comment',
+      },
+    ],
+    ...review,
+  }, null, 2));
+}
+
+describe('verify-review-fix', () => {
+  test('--init creates triage template from last x-review result', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+
+      const r = run(['verify-review-fix', '--init'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('triage template');
+
+      const triage = readJSON(join(tmp, '.xm', 'review', 'triage.json'));
+      expect(triage.target_findings[0].id).toBe('F1');
+      expect(triage.target_findings[0].decision).toBe('fix_now');
+      expect(Array.isArray(triage.baseline_changed_files)).toBe(true);
+      expect(triage.fix_scope.allowed_files).toContain('src/auth.ts');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('fails when Request Changes review has no triage', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('Review Fix Gate failed');
+      expect(r.stdout).toContain('Missing triage file');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('passes with valid triage and verification contract', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      mkdirSync(join(tmp, '.xm', 'review'), { recursive: true });
+      writeFileSync(join(tmp, '.xm', 'review', 'triage.json'), JSON.stringify({
+        reviewed_commit: 'abc1234',
+        target_findings: [
+          { id: 'F1', decision: 'fix_now', evidence: 'Reproduced by auth test' },
+        ],
+        fix_scope: { allowed_files: ['src/auth.ts'] },
+        verification: ['bun test auth'],
+      }, null, 2));
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('Review Fix Gate passed');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('blocks Critical and High findings moved to backlog', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      writeFileSync(join(tmp, '.xm', 'review', 'triage.json'), JSON.stringify({
+        reviewed_commit: 'abc1234',
+        target_findings: [
+          { id: 'F1', decision: 'backlog', evidence: 'later' },
+        ],
+        fix_scope: { allowed_files: ['src/auth.ts'] },
+        verification: ['bun test auth'],
+      }, null, 2));
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('cannot be moved to backlog');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('passes immediately when verdict is LGTM with no triage-required findings', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, {
+        verdict: 'lgtm',
+        findings: [
+          { severity: 'low', lens: 'docs', file: 'src/x.ts', line: 1, summary: 'minor' },
+        ],
+      });
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('Review Fix Gate passed');
+      expect(existsSync(join(tmp, '.xm', 'review', 'triage.json'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('fails when triage reviewed_commit does not match last-result reviewed_commit', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      mkdirSync(join(tmp, '.xm', 'review'), { recursive: true });
+      writeFileSync(join(tmp, '.xm', 'review', 'triage.json'), JSON.stringify({
+        reviewed_commit: 'stale000',
+        target_findings: [
+          { id: 'F1', decision: 'fix_now', evidence: 'fixed' },
+        ],
+        fix_scope: { allowed_files: ['src/auth.ts'] },
+        verification: ['bun test auth'],
+      }, null, 2));
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('reviewed_commit does not match');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('requires explicit triage decision for Medium findings (no auto-backlog)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, {
+        findings: [
+          { severity: 'medium', lens: 'logic', file: 'src/cache.ts', line: 15, summary: 'O(n^2) lookup' },
+        ],
+      });
+
+      const init = run(['verify-review-fix', '--init'], { cwd: tmp });
+      expect(init.exitCode).toBe(0);
+      const triage = readJSON(join(tmp, '.xm', 'review', 'triage.json'));
+      expect(triage.target_findings[0].decision).toBe('');
+
+      const verify = run(['verify-review-fix'], { cwd: tmp });
+      expect(verify.exitCode).not.toBe(0);
+      expect(verify.stdout).toContain('requires an explicit triage decision');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── Later ──────────────────────────────────────────────────────────
+
+describe('later', () => {
+  test('adds and lists off-scope items without creating tasks', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+
+      const add = run([
+        'later', 'add', 'Fix unrelated cache warning',
+        '--reason', 'Found while touching auth but does not affect auth fix',
+        '--source', 'review-fix:F2',
+        '--files', 'src/cache.ts',
+      ], { cwd: tmp });
+      expect(add.exitCode).toBe(0);
+      expect(add.stdout).toContain('l1');
+
+      const list = run(['later', 'list'], { cwd: tmp });
+      expect(list.stdout).toContain('Fix unrelated cache warning');
+      expect(list.stdout).toContain('src/cache.ts');
+
+      const tasks = readJSON(projectPath(tmp, name, 'phases', '02-plan', 'tasks.json'));
+      expect(tasks?.tasks?.length ?? 0).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects items that affect the current task', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+
+      const r = run([
+        'later', 'add', 'Fix auth regression',
+        '--impact', 'blocks-current',
+      ], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain('not safely deferable');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('promotes later item to a task when ready', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['later', 'add', 'Fix unrelated cache warning', '--reason', 'Separate cleanup'], { cwd: tmp });
+
+      const promote = run(['later', 'promote', 'l1', '--size', 'small'], { cwd: tmp });
+      expect(promote.exitCode).toBe(0);
+      expect(promote.stdout).toContain('l1');
+      expect(promote.stdout).toContain('t1');
+
+      const tasks = readJSON(projectPath(tmp, name, 'phases', '02-plan', 'tasks.json'));
+      expect(tasks.tasks[0].name).toBe('Fix unrelated cache warning');
+      expect(tasks.tasks[0].source).toBe('later:l1');
+
+      const lot = readJSON(projectPath(tmp, name, 'later.json'));
+      expect(lot.items[0].status).toBe('promoted');
+      expect(lot.items[0].promoted_task_id).toBe('t1');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('dismisses an open later item and records the reason', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['later', 'add', 'Old refactor idea', '--reason', 'Initial idea'], { cwd: tmp });
+
+      const dismiss = run(['later', 'dismiss', 'l1', '--reason', 'Decided not needed'], { cwd: tmp });
+      expect(dismiss.exitCode).toBe(0);
+      expect(dismiss.stdout).toContain('l1');
+
+      const lot = readJSON(projectPath(tmp, name, 'later.json'));
+      expect(lot.items[0].status).toBe('dismissed');
+      expect(lot.items[0].dismiss_reason).toBe('Decided not needed');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects dismiss of an already-promoted later item', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      run(['later', 'add', 'Fix unrelated cache warning', '--reason', 'Separate cleanup'], { cwd: tmp });
+      run(['later', 'promote', 'l1', '--size', 'small'], { cwd: tmp });
+
+      const dismiss = run(['later', 'dismiss', 'l1'], { cwd: tmp });
+      expect(dismiss.exitCode).not.toBe(0);
+      expect(dismiss.stderr).toContain('already promoted');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 // ── Quality ───────────────────────────────────────────────────────
 
 describe('quality', () => {

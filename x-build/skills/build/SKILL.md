@@ -273,6 +273,7 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 - `tasks add <name> [--deps t1,t2] [--size small|medium|large] [--done-criteria "..."] [--team <name>]`
 - `tasks list` / `tasks remove <id>` / `tasks update <id> --status <s> [--done-criteria "..."]`
 - `tasks done-criteria` — Auto-derive done criteria from PRD for all tasks
+- `later add|list|promote|dismiss` — Capture off-scope work discovered during a task without editing it
 - `steps compute` — Calculate step groups from dependencies
 - `steps status` / `steps next` — Step progress
 - `run` — Execute current step via agents
@@ -285,6 +286,7 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 - `verify-coverage` — Check requirement-to-task mapping
 - `verify-traceability` — R# ↔ Task ↔ AC ↔ Done Criteria matrix
 - `verify-contracts` — Check task done_criteria fulfillment
+- `verify-review-fix [--init]` — Gate x-review Request Changes / Block fixes through triage and allowed-file scope
 - `context-usage` — Show artifact token usage
 
 ### Analysis

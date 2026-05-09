@@ -92,7 +92,7 @@ This check is at the **warn** level and does not fail plan-check overall. Since 
 | Execute | No steps | → `steps compute` |
 | Execute | Has ready tasks | → `run` |
 | Execute | All done | → `phase next` |
-| Verify | — | → `quality` + `verify-coverage` |
+| Verify | — | → `quality` + `verify-coverage` + `verify-review-fix` when x-review requested changes |
 | Close | — | → `close` |
 
 ## Handoff Command (Session Preservation)

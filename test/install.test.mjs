@@ -86,6 +86,7 @@ describe('install-cli — --list and --dry-run (no fs writes)', () => {
     expect(r.stdout).toMatch(/# kiro/);
     expect(r.stdout).toMatch(/# antigravity/);
     expect(r.stdout).toMatch(/# opencode/);
+    expect(r.stdout).not.toMatch(/CLI reference\(s\) point to missing files/);
     expect(existsSync(join(tmp, '.cursor'))).toBe(false);
     expect(existsSync(join(tmp, '.codex'))).toBe(false);
     expect(existsSync(join(tmp, '.opencode'))).toBe(false);
