@@ -58,6 +58,30 @@ When OMC is NOT installed, x-agent inline presets provide equivalent behavior.
 - Exploration and documentation: `haiku` tier
 - x-build `run` auto-selects tier by task size (small/medium -> sonnet, large -> opus)
 - Always verify with `verifier` preset before claiming completion
+
+## Review-Fix Gate
+
+After x-review returns `Request Changes` or `Block`, do not start a broad second implementation pass.
+
+Required sequence:
+1. Run `x-build verify-review-fix --init` to create `.xm/review/triage.json`.
+2. Triage every Medium+ finding as `fix_now`, `backlog`, `accept_risk`, or `false_positive`.
+3. Never move Critical/High findings to `backlog`; fix them now or provide concrete evidence for `accept_risk` / `false_positive`.
+4. Limit review-fix edits to `fix_now` findings and files listed in `fix_scope.allowed_files`.
+5. Run `x-build verify-review-fix`, then quality checks, then re-run x-review before claiming completion.
+
+This gate prevents review feedback from becoming an unbounded rewrite loop.
+
+## Later Queue
+
+When fixing A, do not opportunistically fix unrelated B.
+
+Rule:
+- If B blocks A or changes A's correctness, keep it in the current scope and update the active task/review-fix triage.
+- If B does not affect A, capture it with `x-build later add "..." --reason "..." --source "..." --files "..."` and keep coding focused on A.
+- Do not edit files for later items until they are promoted with `x-build later promote <id>`.
+
+Use `later` for drive-by bugs, cleanup ideas, refactors, stale comments, and non-blocking review observations.
 <!-- xm:BEGIN v2 -->
 ## xm — multi-agent orchestration toolkit
 
@@ -71,6 +95,7 @@ Each entry below corresponds to a saved prompt under `~/.codex/prompts/`
 - `/prompts:xm-eval` — Agent output quality evaluation — multi-rubric scoring, strategy benchmarking, and A/B prompt experiments
 - `/prompts:xm-handoff` — Session handoff — save comprehensive session state for cross-session continuity
 - `/prompts:xm-handon` — Session restore — resume from last handoff, inject context automatically
+- `/prompts:xm-humanize` — Remove AI writing patterns — detect and rewrite AI-generated text into natural, human-sounding prose. English + Korean pattern detection. Based on Wikipedia's "Signs of AI writing" guide and Korean...
 - `/prompts:xm-humble` — Structured retrospective — reflect on failures together, find root causes, explore alternatives, and grow
 - `/prompts:xm-kit` — x-mesh toolkit — list available tools and their status
 - `/prompts:xm-memory` — Cross-session decision and pattern memory — persist learnings, auto-inject relevant context on session start

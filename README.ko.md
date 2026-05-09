@@ -412,10 +412,10 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 | **프로젝트** | `init`, `list`, `status`, `next [--json]`, `close`, `dashboard` |
 | **페이즈** | `phase next/set`, `gate pass/fail`, `checkpoint`, `handoff --full`, `handon` |
 | **계획** | `plan "목표"`, `plan-check [--strict]`, `prd-gate [--threshold N]`, `consensus [--round N]` |
-| **태스크** | `tasks add [--deps] [--size] [--strategy] [--team] [--done-criteria]`, `tasks done-criteria`, `tasks list`, `tasks remove [--cascade]`, `tasks update` |
+| **태스크** | `tasks add [--deps] [--size] [--strategy] [--team] [--done-criteria]`, `tasks done-criteria`, `tasks list`, `tasks remove [--cascade]`, `tasks update`, `later add/list/promote/dismiss` |
 | **스텝** | `steps compute/status/next` |
 | **실행** | `run`, `run --json`, `run-status` |
-| **검증** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts` |
+| **검증** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts`, `verify-review-fix [--init]` |
 | **분석** | `forecast`, `metrics`, `decisions`, `summarize` |
 | **내보내기** | `export --format md/csv/jira/confluence`, `import` |
 | **릴리스** | `release detect`, `release squash`, `release bump`, `release commit`, `release test`, `release trace`, `release diff-report` |

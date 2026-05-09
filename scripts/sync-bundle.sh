@@ -24,6 +24,14 @@ sync_file() {
   fi
 }
 
+remove_obsolete_file() {
+  local path="$1"
+  if [ -f "$path" ]; then
+    rm -f "$path"
+    echo "  REMOVE $path"
+  fi
+}
+
 # Mirror every *.md inside a source directory to a destination directory.
 # Creates the destination if missing; no-op on empty source.
 mirror_md_dir() {
@@ -46,12 +54,20 @@ done
 
 echo ""
 echo "=== Syncing x-build lib files ==="
-for f in core.mjs project.mjs phase.mjs plan.mjs tasks.mjs verify.mjs export.mjs misc.mjs release.mjs cost-engine.mjs config-loader.mjs root.mjs; do
+for f in core.mjs project.mjs phase.mjs plan.mjs tasks.mjs later.mjs verify.mjs export.mjs misc.mjs release.mjs cost-engine.mjs config-loader.mjs root.mjs; do
   sync_file "x-build/lib/x-build/$f" "xm/lib/x-build/$f"
 done
+remove_obsolete_file "xm/lib/x-build/parking-lot.mjs"
 sync_file "x-build/lib/x-build-cli.mjs" "xm/lib/x-build-cli.mjs"
 sync_file "x-build/lib/shared-config.mjs" "xm/lib/shared-config.mjs"
 sync_file "x-build/lib/default-config.json" "xm/lib/default-config.json"
+
+echo ""
+echo "=== Syncing x-memory lib files ==="
+sync_file "x-memory/lib/x-memory-cli.mjs" "xm/lib/x-memory-cli.mjs"
+for f in commands.mjs core.mjs store.mjs; do
+  sync_file "x-memory/lib/x-memory/$f" "xm/lib/x-memory/$f"
+done
 
 echo ""
 echo "=== Syncing x-solver lib files ==="
@@ -169,7 +185,7 @@ for plugin in build op solver eval review trace memory humble probe agent dashbo
   fi
 done
 
-for f in core.mjs project.mjs phase.mjs plan.mjs tasks.mjs verify.mjs export.mjs misc.mjs release.mjs; do
+for f in core.mjs project.mjs phase.mjs plan.mjs tasks.mjs later.mjs verify.mjs export.mjs misc.mjs release.mjs; do
   if ! diff -q "x-build/lib/x-build/$f" "xm/lib/x-build/$f" > /dev/null 2>&1; then
     echo "  DIVERGED: xm/lib/x-build/$f"
     DIVERGED=$((DIVERGED + 1))
@@ -180,6 +196,18 @@ for pair in \
   "x-build/lib/shared-config.mjs:xm/lib/shared-config.mjs" \
   "x-build/lib/default-config.json:xm/lib/default-config.json" \
   "x-solver/lib/x-solver-cli.mjs:xm/lib/x-solver-cli.mjs"; do
+  src="${pair%%:*}"; dst="${pair##*:}"
+  if ! diff -q "$src" "$dst" > /dev/null 2>&1; then
+    echo "  DIVERGED: $dst"
+    DIVERGED=$((DIVERGED + 1))
+  fi
+done
+
+for pair in \
+  "x-memory/lib/x-memory-cli.mjs:xm/lib/x-memory-cli.mjs" \
+  "x-memory/lib/x-memory/commands.mjs:xm/lib/x-memory/commands.mjs" \
+  "x-memory/lib/x-memory/core.mjs:xm/lib/x-memory/core.mjs" \
+  "x-memory/lib/x-memory/store.mjs:xm/lib/x-memory/store.mjs"; do
   src="${pair%%:*}"; dst="${pair##*:}"
   if ! diff -q "$src" "$dst" > /dev/null 2>&1; then
     echo "  DIVERGED: $dst"

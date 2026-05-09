@@ -11,8 +11,9 @@ import { resolveProject, resetCircuitBreaker, getCircuitState } from './x-build/
 import { cmdInit, cmdList, cmdStatus, cmdClose, cmdDashboard, interactiveInit, interactiveDashboard, cmdHandoffFull, cmdHandon } from './x-build/project.mjs';
 import { cmdPhase, cmdGate, cmdCheckpoint } from './x-build/phase.mjs';
 import { cmdTasks, cmdSteps, cmdRun, cmdRunStatus, interactiveTasksAdd } from './x-build/tasks.mjs';
+import { cmdLater } from './x-build/later.mjs';
 import { cmdPlan, cmdPlanCheck, cmdPrdGate, cmdConsensus, cmdDiscuss, cmdResearch, cmdForecast, cmdNext, cmdHandoff, cmdSummarize, cmdSaveArtifact, cmdContextUsage } from './x-build/plan.mjs';
-import { cmdQuality, cmdVerifyCoverage, cmdVerifyTraceability, cmdVerifyContracts } from './x-build/verify.mjs';
+import { cmdQuality, cmdVerifyCoverage, cmdVerifyTraceability, cmdVerifyContracts, cmdVerifyReviewFix } from './x-build/verify.mjs';
 import { cmdExport, cmdImport } from './x-build/export.mjs';
 import { cmdAlias, cmdDemo, cmdWatch, cmdMetrics, cmdMode, cmdContext, cmdPhaseContext, cmdDecisions, cmdTemplates, printHelp } from './x-build/misc.mjs';
 import { cmdRelease } from './x-build/release.mjs';
@@ -66,6 +67,7 @@ switch (cmd) {
     if (args[0] === 'add' && args.length <= 1) { await interactiveTasksAdd(); }
     else { cmdTasks(args); }
     break;
+  case 'later': cmdLater(args); break;
   case 'steps':      cmdSteps(args); break;
   case 'checkpoint': cmdCheckpoint(args); break;
   case 'context':       cmdContext(args); break;
@@ -94,6 +96,7 @@ switch (cmd) {
   case 'verify-coverage': cmdVerifyCoverage(args); break;
   case 'verify-traceability': cmdVerifyTraceability(args); break;
   case 'verify-contracts': cmdVerifyContracts(args); break;
+  case 'verify-review-fix': cmdVerifyReviewFix(args); break;
   case 'context-usage':  cmdContextUsage(args); break;
   case 'save':           cmdSaveArtifact(args); break;
   case 'run-status':     cmdRunStatus(args); break;

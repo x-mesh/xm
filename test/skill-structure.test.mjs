@@ -168,6 +168,12 @@ describe('x-review SKILL.md structure', () => {
     expect(content).toContain('reviewed_commit');
   });
 
+  test('contains review-fix triage contract', () => {
+    expect(content).toContain('REVIEW-FIX CONTRACT');
+    expect(content).toContain('triage checklist');
+    expect(content).toContain('fix_now');
+  });
+
   test('all 7 lenses documented', () => {
     expect(content).toContain('security');
     expect(content).toContain('logic');

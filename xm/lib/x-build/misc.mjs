@@ -609,6 +609,7 @@ ${C.bold}Execute Phase:${C.reset}
     tasks add "name" [--strategy refine] [--team eng] [--done-criteria "..."]  Add task
     tasks update <id> --score 7.8 [--done-criteria "..."]         Update task
     tasks done-criteria                                           Auto-derive from PRD
+  later <add|list|promote|dismiss> Capture off-scope work without editing it
   steps <compute|status|next>    DAG-based step management
   run                            Execute next step via agent orchestration
   checkpoint <type> [message]    Record a checkpoint
@@ -618,6 +619,7 @@ ${C.bold}Verify & Close:${C.reset}
   verify-coverage                Check requirement coverage across tasks
   verify-traceability            R# ↔ Task ↔ AC ↔ Done Criteria matrix
   verify-contracts               Check task done_criteria fulfillment
+  verify-review-fix [--init]     Gate review-fix changes against x-review triage
   context [project]              Generate context brief
   close [--summary "..."]        Close project with summary
 

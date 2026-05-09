@@ -1,0 +1,545 @@
+{
+  "kind": "xm-install-manifest",
+  "schemaVersion": 1,
+  "prdVersion": "v2.1",
+  "target": "codex",
+  "scope": "local",
+  "installRoot": "/Users/jinwoo/work/project/agentic/x-kit",
+  "installedAt": 1778337853705,
+  "files": [
+    {
+      "relativePath": "AGENTS.md",
+      "sha256": "69ce3cf15e7d92e899618641a6a2122628ee7c49f3eb1246c340ce522510ce6e",
+      "bytes": 6611,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-agent.md",
+      "sha256": "d1f3a49055890563d8c2e24ef64a2e235da3d8f4f00351d517230ef4e60fd63d",
+      "bytes": 40569,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-build.md",
+      "sha256": "2df350aa6e1bf7845b086b219c6077b5d980760312a5c66eb0136f24fda88bf5",
+      "bytes": 75080,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-dashboard.md",
+      "sha256": "dd00408c8373d74b5508477e0e584633037ba771cc9198999339537796e57096",
+      "bytes": 3731,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-eval.md",
+      "sha256": "54454cbdf26b560ef5f7443589f433e130fc2b54fd628adee0f25170adb7c3b6",
+      "bytes": 23716,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-handoff.md",
+      "sha256": "e9570da9b454da906a87a4d33299412a891b76a8132b366dd428a8fdcab89146",
+      "bytes": 2530,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-handon.md",
+      "sha256": "4b1bc9888dc13fd22334146e3bbc400426a8425d352563d84a6e13a5cc71b046",
+      "bytes": 3391,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-humanize.md",
+      "sha256": "f1c2c9792f225b53a4f3f95773a4f1bfc7237b88a124c495e33c24e89b68a51a",
+      "bytes": 57705,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-humble.md",
+      "sha256": "43e597a1a9b4c6a7da099f10e5227845fb90b1dc25bec71ba402a23073605c2b",
+      "bytes": 13287,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-kit.md",
+      "sha256": "8cb4b66ebb00718f3d6283695a5f3cde2feb6edcbfc6710708d6dbb9657c9037",
+      "bytes": 15421,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-memory.md",
+      "sha256": "d6953042323ed3a04ae43f21bc63e14f21bc0de416b0608ad833fcb9f3b33ab9",
+      "bytes": 17182,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-op.md",
+      "sha256": "1fefe6136239fe2ccc2e1e8bbdd0d66ea0376131cd41012dc54e43d36e9aded5",
+      "bytes": 53713,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-probe.md",
+      "sha256": "ded537d29392021d6930e9a3bb53003c49bc60bfb600b3026c6d62c3993ae9de",
+      "bytes": 11196,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-review.md",
+      "sha256": "b16ecf1e5ac98b43f32bebee4dcb5f6dc8389cb2b428263a6d34cfff16c95d7b",
+      "bytes": 36659,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-ship.md",
+      "sha256": "aafb07a9ee99b4ed79412f46bd6a36ee0cd64a1ecff017afb0e04ddfefb2db14",
+      "bytes": 12698,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-solver.md",
+      "sha256": "9c7ce3105e80aebe4197f3fdc80a98ec413acd5813d30980ed2a70e8b7a73d6b",
+      "bytes": 20317,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-sync.md",
+      "sha256": "1772531555101501d82ac1e6ac66d8bb26f93917cc081e04ddd0b58e408a78f3",
+      "bytes": 8651,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/prompts/xm-trace.md",
+      "sha256": "63ce5ff6abb40e25e8459e95d5127b75cc0df6e8baebc35d87a862abe24bde10",
+      "bytes": 11513,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/hooks.json",
+      "sha256": "a506325e4263320672dd7403767eb95792459ae4b14ee02cb1ef9900d8c0cbc5",
+      "bytes": 710,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/agent-catalog.mjs",
+      "sha256": "2b96bb57d34f090e9f4132d545f91ffbb995eafe5a08f2906fd0a6ea6b732c56",
+      "bytes": 19711,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/agent-model.mjs",
+      "sha256": "a6f4e088b2ec32a1353d891229772e93eb8921fe83499dc0f13439ede76bf8ce",
+      "bytes": 2860,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/default-config.json",
+      "sha256": "d7f296e8f550371f992d7446e69f3fe3618132c4b803149b93ceeea2f2a08d35",
+      "bytes": 603,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/install-cli.mjs",
+      "sha256": "e154208bd132c56d8d8ba278152da419cc7d0ac6a6cec4d62e3818eb7780653b",
+      "bytes": 34974,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/INTERFACE-FREEZE.md",
+      "sha256": "59304d16d2fe9a27fd2f79792fcf6b7dfc313ce0114a1f4fa3c044d885869022",
+      "bytes": 3488,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/manifest.mjs",
+      "sha256": "8c7a0896bbcc3d2844ccddf561e63ef4c171a67a2ce67d0eb4d113b62d4c8eda",
+      "bytes": 9350,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/merge.mjs",
+      "sha256": "60bc49c5b2715896ac7b308268ff09e38d0bd6c567392ed54a1e62e8c87587af",
+      "bytes": 10550,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/plan-paths.mjs",
+      "sha256": "450bd684f73a8ae3a8d953f5bddb43b39608fb92762f286b3f193c0b4993562b",
+      "bytes": 8594,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/scan.mjs",
+      "sha256": "dc7a96cb1cc06cd54a1d042ffcae2cc51537d81797a0d727699b0e45843476d1",
+      "bytes": 8368,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/security.mjs",
+      "sha256": "0c7248d3877a0f7d2fc89504c207114278fd92879de9b29d6471ee6533a98748",
+      "bytes": 5711,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/transform/antigravity.mjs",
+      "sha256": "6477f66fd412a6dbf41dde4da6fde2b6df0d018e270c67eb596d7758b673bd79",
+      "bytes": 4623,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/transform/codex-shared.mjs",
+      "sha256": "ea72b1c758a6281959eddd07c1b40f24c0720b3820df78b6fd64a10a366f4fa6",
+      "bytes": 6051,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/transform/codex.mjs",
+      "sha256": "965eae651972455eee7c98e11b79c81d9855eaa677b933d4bf4238aeb14b54ba",
+      "bytes": 5516,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/transform/cursor-shared.mjs",
+      "sha256": "4a495e2f04a7cc52f54656b40805ef4ced5629ae360a0b8a2c8451d6427bd8a0",
+      "bytes": 8317,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/transform/cursor.mjs",
+      "sha256": "37fbf6a290ca8a5ed0ec2dbfc4491ffdd06cf73145c2d40656f91e6ec53dd8ff",
+      "bytes": 7751,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/transform/kiro-shared.mjs",
+      "sha256": "eb33fef7349372983bd56f1429c314b8c459ca1922f703b9d3da4f8db9dd889e",
+      "bytes": 9104,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/transform/kiro.mjs",
+      "sha256": "9a4be0c4f4433a6e002eca4ed91d4977c4ccf900734af817f41c3ea95e91ccc4",
+      "bytes": 5403,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/transform/opencode.mjs",
+      "sha256": "169b263951f724ba4281e6aa6ff99100458889a853b8e7257ae7b7980290ee4d",
+      "bytes": 2834,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/types.mjs",
+      "sha256": "a72e4a3ddb173a5d7349997f8a055ef85a1ea14785a590d7c0fb75b3f764e090",
+      "bytes": 6464,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/util/expand-paths.mjs",
+      "sha256": "e5c0d43f91db8c37d76e5864af591cece71d9ade5cab7a3eb8cc6c1355fb8630",
+      "bytes": 2468,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/util/flatten-namespace.mjs",
+      "sha256": "c21478054d8c0258304a50cd9b6af479fad1e08715d5596e669bf8254fb1d5b5",
+      "bytes": 2418,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/install/util/inline-references.mjs",
+      "sha256": "755cadbf4d9cc2c643d4f224c484369435e79a318c01cef77dbf32d9ca2dbf06",
+      "bytes": 3616,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/sanitize-marketplaces.mjs",
+      "sha256": "d0cc6a395b2bdb5e22b10e131b6b6b10a8e0fae5b56ed5fd06b5ccf725bb0833",
+      "bytes": 5562,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/server/xm-client.mjs",
+      "sha256": "9e6784ece80ad823cd99a06379ef38e752c97332c952c72303f0dc17ec5ba5bb",
+      "bytes": 7559,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/server/xm-proc.mjs",
+      "sha256": "fc0968338be1a374d24f0eafe722ba6b9639992e0b8b24ebf962d0fa7bb5a29e",
+      "bytes": 4797,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/server/xm-server.mjs",
+      "sha256": "dcd146d5da6abfcac5520d0749a5bfd43896eed7f514329e9d4dac811ce9591f",
+      "bytes": 9988,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/shared-config.mjs",
+      "sha256": "ba77e32d48bf89330911114681586e9fb51e5647712c53d84f661feb1d337ed6",
+      "bytes": 17999,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/skill-frontmatter-sync.mjs",
+      "sha256": "2744097b23ea5414fb011f8e464bd683c24c0cf5eb6a0ddd3763c23c19545daa",
+      "bytes": 11514,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/skill-model-map.json",
+      "sha256": "6c5690ae21c77a6a940bad3e467b1259ca1865f11c76e400b521a14d1d8d1683",
+      "bytes": 2573,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-build/config-loader.mjs",
+      "sha256": "b6d25e3acb7197a884025d5d932ce97495e014883e52aeb73c8b4a2d22b24865",
+      "bytes": 769,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-build/core.mjs",
+      "sha256": "c3befdeb37a3ef5ee20dba56bdc99c0ce8a99507cf19c01ef236123d41cfde7f",
+      "bytes": 29176,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-build/cost-engine.mjs",
+      "sha256": "734ecfc78034efdeaf37005dd501c611f1070e5c960e34945fab9761855f362d",
+      "bytes": 22941,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-build/export.mjs",
+      "sha256": "f7680f5529b15deac931b17e08b2f0e39b9b00049e8ac388211405234f0297da",
+      "bytes": 7849,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-build/later.mjs",
+      "sha256": "fd609d06bcfb6d2e75c0f64919671e9249d88d6d81d15258cdf794846229b879",
+      "bytes": 6780,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-build/misc.mjs",
+      "sha256": "8c585839c852bf6a2db40ae29976eb364b464815d0960644c2b362126005123c",
+      "bytes": 24427,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-build/phase.mjs",
+      "sha256": "06a704429aa8fd57a8dd3ec7756e132bd12738e8aa74245885e318032d647ffd",
+      "bytes": 15409,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-build/plan.mjs",
+      "sha256": "a41639dfddf433ee7821f867299f8ce7659972c0a5a5e6cd8e3e0115a9e00ccb",
+      "bytes": 39308,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-build/project.mjs",
+      "sha256": "13bd4f0c4859c8b3f7e47c993f40fad9f5c9aa3a117e44192049105217c7cc86",
+      "bytes": 37029,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-build/release.mjs",
+      "sha256": "15c5a562145068725d8eca252981e12f56eda1d39f26dd94ce39fd59a5a20e98",
+      "bytes": 23482,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-build/root.mjs",
+      "sha256": "346a25cc599d3c156c425cd86b19bea4dfcdd87b6919e5c2c7f0f251386b5fd7",
+      "bytes": 479,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-build/tasks.mjs",
+      "sha256": "a468aebbeae457465f05bb10e8f272aee117399ef0af6fa9eb285590ee2c73c8",
+      "bytes": 37474,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-build/verify.mjs",
+      "sha256": "b6ce67099fc20a5be070f50cab3319bd82f161e66a8daeca7831aa8108e563ad",
+      "bytes": 16567,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-build-cli.mjs",
+      "sha256": "aed77065dd67fb8294b3e42bbca37ee4da10ade17a7b29990ce84c198de7e7ec",
+      "bytes": 5765,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-dashboard-server.mjs",
+      "sha256": "b6b07caec1931d24339794f2804d8cc6cc9b104132525513999e2ca0450ccc2e",
+      "bytes": 91516,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-memory/commands.mjs",
+      "sha256": "1c9bc5ac07fdb03030aa21cdcbc036f90227383669d5a843a11ceca526ab5875",
+      "bytes": 14544,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-memory/core.mjs",
+      "sha256": "911f98fb9e2b2042410874ffb18b995aaf130a3b7a90522524a20ae0fd2a2830",
+      "bytes": 6593,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-memory/store.mjs",
+      "sha256": "3bc2339f64a98daf002a634bf05af10f9f58a0966ff67650b718eeca2262fa71",
+      "bytes": 6002,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-memory-cli.mjs",
+      "sha256": "4c263528223e8c79d0890a85cbfd12f1083922fc3b3fe255e89103cab37136d9",
+      "bytes": 3383,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-projects-cli.mjs",
+      "sha256": "93e29806e4279c8bacebea7a1530f0e65615fed5bbb7704f5814e4d8c71bd9e5",
+      "bytes": 6857,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-projects-registry.mjs",
+      "sha256": "20943492b9a624ddac19654cc0bdc88f339ca2eee37ed3b59dcc5e532f4e08fe",
+      "bytes": 6561,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-solver-cli.mjs",
+      "sha256": "43612e59842a45fefcbdf6a113a55634bc91a8906151e89c137986fab2e29494",
+      "bytes": 66069,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-sync/sync-config.mjs",
+      "sha256": "527075e5d79941dab81bc829a9606725366100c099a497d7f8d1f04a5198def4",
+      "bytes": 1824,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-sync/sync-pull-all.mjs",
+      "sha256": "6fbc3dfbd0b3d12a954ae72bc2192feb3fbb01643c5eaab990fe7f8d797affbb",
+      "bytes": 2644,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-sync/sync-pull.mjs",
+      "sha256": "a9e144bc00f6011bf06c02ada03bd2b720019ef63850c9af64f126495073cd95",
+      "bytes": 5555,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-sync/sync-push-all.mjs",
+      "sha256": "f5e1d00331fe0fb16f33098efdee249f304b0da8c422f5113688e5a00d82c436",
+      "bytes": 2672,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-sync/sync-push.mjs",
+      "sha256": "86202d7cfd243f1be5e8921bae78f514183545890fe9193a364499f4e7b16614",
+      "bytes": 4126,
+      "mode": 420,
+      "installedAt": 1778337853705
+    },
+    {
+      "relativePath": ".codex/xm/lib/x-trace/trace-writer.mjs",
+      "sha256": "5603d02ca4d6c9a4ab09170f48bc8cf36edaca0f46664c95af7e7c86e7b86085",
+      "bytes": 3038,
+      "mode": 420,
+      "installedAt": 1778337853705
+    }
+  ],
+  "nonce": "461ee44255121a577ff867577e7820a4",
+  "selfChecksum": "0f85e62d1905228a7438dd78b16574485b018ccf91da492631d3d61b59774d78"
+}
