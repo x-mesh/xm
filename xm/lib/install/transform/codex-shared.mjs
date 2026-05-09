@@ -6,8 +6,9 @@
  * Differences from Cursor:
  *   - Codex hooks.json keeps PascalCase event names (PreToolUse, PostToolUse,
  *     Stop, SessionStart, ...). Same shape as Claude's settings.hooks block.
- *   - Codex CLI requires `[features] codex_hooks = true` in config.toml; we
- *     emit a note instructing the user to set this once.
+ *   - Codex CLI requires the `hooks` feature flag. Modern Codex exposes this
+ *     as `codex features enable hooks`; we emit a note instructing the user to
+ *     set it once.
  *   - Currently only Bash/shell tools fire PreToolUse/PostToolUse reliably
  *     (research note); we still emit all matchers so any future stabilization
  *     will pick them up.
@@ -116,8 +117,8 @@ export function renderCodexShared({ projectRoot, scope }) {
     notes.push('codex: no hooks discovered — emitted empty .codex/hooks.json shell');
   } else {
     notes.push(
-      'codex: enable hooks once with `codex config set features.codex_hooks true` ' +
-      '(or add `[features] codex_hooks = true` to ~/.codex/config.toml).'
+      'codex: enable hooks once with `codex features enable hooks` ' +
+      '(or add `[features] hooks = true` to ~/.codex/config.toml).'
     );
     notes.push(
       'codex: research notes report PreToolUse/PostToolUse stable only for Bash/shell ' +

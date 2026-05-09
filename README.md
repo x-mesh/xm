@@ -191,7 +191,7 @@ node xm/lib/install/install-cli.mjs --uninstall --target cursor,codex
 | Tool | Skills | Slash invocation | Hook |
 |------|--------|-----------------|------|
 | Cursor | `.cursor/rules/xm-*.mdc` (frontmatter: `description`, `alwaysApply`) | agent-requested | `.cursor/hooks.json` (camelCase events) |
-| Codex CLI | `.codex/prompts/xm-*.md` (project) or `~/.codex/prompts/xm-*.md` (`--global`) + `AGENTS.md` index (≤ 16 KiB block) | `/prompts:xm-<plug>` | `.codex/hooks.json` / `~/.codex/hooks.json` (requires `[features] codex_hooks=true`) |
+| Codex CLI | `.codex/prompts/xm-*.md` (project) or `~/.codex/prompts/xm-*.md` (`--global`) + `AGENTS.md` index (≤ 16 KiB block) | `/prompts:xm-<plug>` | `.codex/hooks.json` / `~/.codex/hooks.json` (requires `codex features enable hooks` or `[features] hooks=true`) |
 | Kiro | `.kiro/steering/xm-*.md` (frontmatter: `inclusion: auto\|manual`) | n/a | `.kiro/hooks/xm-*.kiro.hook` (informational only — Kiro cannot block) |
 | Antigravity | `.agent/skills/xm-*.md` (project) or `~/.gemini/antigravity/skills/xm-*.md` (`--global`) + shared `AGENTS.md` index | agent-requested | not supported (no programmable hook API) |
 | OpenCode | `.opencode/skills/xm-*/SKILL.md` (project) or `~/.config/opencode/skills/xm-*/SKILL.md` (`--global`) | native skill discovery | not emitted |
