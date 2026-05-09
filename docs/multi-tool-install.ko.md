@@ -120,10 +120,10 @@ Cursor에서 검증:
 node xm/lib/install/install-cli.mjs --target codex --global
 
 # 훅 활성화 (1회)
-codex config set features.codex_hooks true
+codex features enable hooks
 # 또는 ~/.codex/config.toml에 추가:
 # [features]
-# codex_hooks = true
+# hooks = true
 ```
 
 생성:

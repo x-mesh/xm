@@ -118,9 +118,13 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
   });
   test('codex AGENTS.md ≤ 16 KiB index + prompts', () => {
     const tmp = seedTmp();
-    run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
+    const r = run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
     expect(statSync(join(tmp, 'AGENTS.md')).size).toBeLessThanOrEqual(16 * 1024);
     expect(readdirSync(join(tmp, '.codex', 'prompts')).length).toBe(EXPECTED_SKILL_COUNT);
+    expect(r.stdout).toContain('codex features enable hooks');
+    expect(r.stdout).toContain('[features] hooks = true');
+    expect(r.stdout).not.toContain('codex config set features.codex_hooks true');
+    expect(r.stdout).not.toContain('codex_hooks');
   });
   test('kiro steering inclusion matches skill and reference counts', () => {
     const tmp = seedTmp();

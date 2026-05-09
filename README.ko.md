@@ -191,7 +191,7 @@ node xm/lib/install/install-cli.mjs --uninstall --target cursor,codex
 | 도구 | 스킬 | 슬래시 호출 | 훅 |
 |------|------|------------|------|
 | Cursor | `.cursor/rules/xm-*.mdc` (frontmatter: `description`, `alwaysApply`) | agent-requested | `.cursor/hooks.json` (camelCase 이벤트) |
-| Codex CLI | `.codex/prompts/xm-*.md` (프로젝트) 또는 `~/.codex/prompts/xm-*.md` (`--global`) + `AGENTS.md` 인덱스 (≤ 16 KiB 블록) | `/prompts:xm-<plug>` | `.codex/hooks.json` / `~/.codex/hooks.json` (`[features] codex_hooks=true` 필요) |
+| Codex CLI | `.codex/prompts/xm-*.md` (프로젝트) 또는 `~/.codex/prompts/xm-*.md` (`--global`) + `AGENTS.md` 인덱스 (≤ 16 KiB 블록) | `/prompts:xm-<plug>` | `.codex/hooks.json` / `~/.codex/hooks.json` (`codex features enable hooks` 또는 `[features] hooks=true` 필요) |
 | Kiro | `.kiro/steering/xm-*.md` (frontmatter: `inclusion: auto\|manual`) | n/a | `.kiro/hooks/xm-*.kiro.hook` (informational only — Kiro는 차단 불가) |
 | Antigravity | `.agent/skills/xm-*.md` (프로젝트) 또는 `~/.gemini/antigravity/skills/xm-*.md` (`--global`) + 공유 `AGENTS.md` 인덱스 | agent-requested | 미지원 (programmable hook API 없음) |
 | OpenCode | `.opencode/skills/xm-*/SKILL.md` (프로젝트) 또는 `~/.config/opencode/skills/xm-*/SKILL.md` (`--global`) | native skill discovery | 생성 안 함 |

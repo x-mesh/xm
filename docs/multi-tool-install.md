@@ -120,10 +120,10 @@ Verify in Cursor:
 node xm/lib/install/install-cli.mjs --target codex --global
 
 # enable hooks (one-time)
-codex config set features.codex_hooks true
+codex features enable hooks
 # or add to ~/.codex/config.toml:
 # [features]
-# codex_hooks = true
+# hooks = true
 ```
 
 Writes:
