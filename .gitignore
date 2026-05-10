@@ -4,6 +4,7 @@
 .x-build/
 .tm-build/
 .omc/
+.codex/
 
 # x-build runtime (legacy — should no longer appear here)
 x-build/lib/projects/
