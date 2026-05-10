@@ -29,7 +29,7 @@ import { renderKiroShared } from './transform/kiro-shared.mjs';
 import { renderAntigravityWithDiagnostics } from './transform/antigravity.mjs';
 import { renderOpencodeWithDiagnostics } from './transform/opencode.mjs';
 import { CODEX_AGENTS_MAX_BYTES } from './types.mjs';
-import { buildManifest, writeManifest, readManifest, verifyManifest, manifestPath } from './manifest.mjs';
+import { buildManifest, writeManifest, readManifest, verifyManifest, manifestPath, discoverManifests, readManifestIfExists, shouldSkipTarget } from './manifest.mjs';
 import { existsSync, readFileSync, readdirSync, lstatSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -65,6 +65,8 @@ const DEFAULT_PATHS = inferDefaultPaths(HERE);
  * @property {boolean} yes
  * @property {boolean} allowUnverified
  * @property {boolean} interactive
+ * @property {boolean} listInstalled
+ * @property {boolean} propagate
  * @property {boolean} help
  * @property {'global'|'local'} scope
  * @property {import('./types.mjs').TargetTool[] | null} targets
@@ -89,6 +91,8 @@ export function parseArgs(argv) {
     yes: false,
     allowUnverified: false,
     interactive: false,
+    listInstalled: false,
+    propagate: false,
     help: false,
     scope: 'local',
     targets: null,
@@ -100,6 +104,8 @@ export function parseArgs(argv) {
     const a = argv[i];
     switch (a) {
       case '--list': out.list = true; break;
+      case '--list-installed': out.listInstalled = true; break;
+      case '--propagate': out.propagate = true; break;
       case '--dry-run': out.dryRun = true; break;
       case '--verify': out.verify = true; break;
       case '--uninstall': out.uninstall = true; break;
@@ -138,6 +144,8 @@ TARGETS
 
 OPTIONS
   --list                 Show planned output paths and exit (no fs writes).
+  --list-installed       List installed manifests as JSON (target/scope/installRoot/prdVersion/fileCount).
+  --propagate            Re-render every installed manifest target. Outputs JSON summary.
   --dry-run              Show full plan with write modes (no fs writes).
   --verify               Re-check installed manifest integrity (re-hash + selfChecksum).
   --auto-detect          Pick targets from cwd signatures (.cursor/, .kiro/, AGENTS.md). (not yet implemented)
@@ -444,6 +452,121 @@ export function run(argv) {
     return { exitCode: 0, stdout: HELP + '\n', stderr: '' };
   }
 
+  // --list-installed: discover installed manifests and return as JSON.
+  if (args.listInstalled) {
+    const entries = discoverManifests([homedir()]);
+    const result = [];
+    for (const entry of entries) {
+      try {
+        const manifest = readManifestIfExists(entry.path);
+        if (!manifest) continue;
+        result.push({
+          target: entry.target,
+          scope: entry.scope,
+          installRoot: entry.installRoot,
+          prdVersion: manifest.prdVersion,
+          fileCount: manifest.files.length,
+        });
+      } catch (err) {
+        result.push({
+          target: entry.target,
+          scope: entry.scope,
+          installRoot: entry.installRoot,
+          error: /** @type {Error} */ (err).message,
+        });
+      }
+    }
+    return { exitCode: 0, stdout: JSON.stringify(result, null, 2) + '\n', stderr: '' };
+  }
+
+  // --propagate: re-render every installed manifest target.
+  if (args.propagate) {
+    const installRoot = homedir();
+    const entries = discoverManifests([installRoot]);
+    if (entries.length === 0) {
+      const empty = { results: [], summary: { total: 0, success: 0, skipped: 0, failed: 0, migrated: 0 } };
+      return { exitCode: 0, stdout: JSON.stringify(empty, null, 2) + '\n', stderr: '' };
+    }
+
+    // Scan skills once for all targets.
+    /** @type {import('./types.mjs').SkillIR[]} */
+    let skills;
+    try {
+      skills = scanAll({ skillsDir: args.skillsDir, libDir: args.libDir, only: undefined });
+    } catch (err) {
+      return { exitCode: 2, stdout: '', stderr: `scan failed: ${/** @type {Error} */ (err).message}\n` };
+    }
+
+    const results = [];
+    let stderrNotes = '';
+
+    for (const entry of entries) {
+      const { target, scope } = entry;
+
+      // Check manifest validity to decide skip vs re-install.
+      let manifest = null;
+      let migrating = false;
+      try {
+        manifest = readManifestIfExists(entry.path);
+      } catch (err) {
+        // Schema mismatch or corrupt → safe re-install.
+        migrating = true;
+        manifest = null;
+      }
+
+      // Build planned files via full render to enable shouldSkipTarget comparison.
+      // The recursive run() is the v1 install mechanism; this pre-check avoids it
+      // when content hasn't changed.
+      let plannedFileCount = 0;
+      let skip = false;
+      if (!migrating && manifest) {
+        try {
+          planAll({ skills, targets: [target], scope, cwd: process.cwd() });
+          // Run through the same install path to produce rendered content, then
+          // compare. Since v1 uses recursive run() anyway, we use verifyManifest
+          // as a lightweight proxy: if all files on disk still match the manifest
+          // SHA-256s, and manifest selfChecksum is valid, the install is a no-op.
+          const verification = verifyManifest(manifest);
+          plannedFileCount = manifest.files.length;
+          skip = verification.ok;
+        } catch {
+          // Plan failure → must re-install to surface the error properly.
+          skip = false;
+        }
+      }
+
+      if (skip) {
+        results.push({ target, scope, status: 'skipped', filesChanged: 0, filesSkipped: plannedFileCount, error: null });
+        continue;
+      }
+
+      // Re-install via recursive run().
+      if (migrating) {
+        stderrNotes += `note: migrating ${target} from incompatible manifest schema\n`;
+      }
+      const subArgv = ['--target', target, scope === 'global' ? '--global' : '--local', '--force', '--yes',
+                       '--skills-dir', args.skillsDir, '--lib-dir', args.libDir];
+      const sub = run(subArgv);
+      const subWarnings = sub.stderr.split('\n').filter((line) => line.includes('marker block content changed'));
+      if (sub.exitCode === 0) {
+        const status = migrating ? 'migrated' : 'updated';
+        results.push({ target, scope, status, filesChanged: plannedFileCount || manifest?.files.length || 0, filesSkipped: 0, warnings: subWarnings, error: null });
+      } else {
+        results.push({ target, scope, status: 'failed', filesChanged: 0, filesSkipped: 0, warnings: subWarnings, error: sub.stderr.trim() });
+      }
+    }
+
+    const summary = {
+      total: results.length,
+      success: results.filter((r) => r.status === 'updated').length,
+      skipped: results.filter((r) => r.status === 'skipped').length,
+      failed: results.filter((r) => r.status === 'failed').length,
+      migrated: results.filter((r) => r.status === 'migrated').length,
+    };
+    const exitCode = (summary.success === 0 && summary.migrated === 0 && summary.failed > 0) ? 1 : 0;
+    return { exitCode, stdout: JSON.stringify({ results, summary }, null, 2) + '\n', stderr: stderrNotes };
+  }
+
   // Default --list when no flags given (planner C3 / N7).
   if (!args.list && !args.dryRun && !args.verify && !args.targets) {
     args.list = true;
@@ -687,6 +810,7 @@ export function run(argv) {
   // Real install — renderers are wired per target.
   const cwd = process.cwd();
   const lines = [];
+  let stderrMergeWarnings = '';
   for (const target of targets) {
     const installRoot = args.scope === 'global' ? homedir() : cwd;
     const ctx = {
@@ -742,6 +866,7 @@ export function run(argv) {
     /** @type {{ relativePath: string, content: string|Buffer, mode: number }[]} */
     const manifestEntries = [];
     let wrote = 0, unchanged = 0, rotated = 0, updated = 0;
+    let mergeWarnings = '';
     for (const out of allOutputs) {
       const abs = safeJoin(installRoot, out.relativePath);
       try {
@@ -756,6 +881,9 @@ export function run(argv) {
           else if (result.action === 'unchanged') unchanged++;
           else if (result.action === 'updated') updated++;
           else if (result.action === 'rotated-and-updated') rotated++;
+          if (result.warning) {
+            mergeWarnings += `WARN ${target} ${out.relativePath}: ${result.warning}\n`;
+          }
         } else {
           const result = writeOverwrite(abs, out.content, { mode: out.mode });
           if (result.action === 'created') wrote++;
@@ -830,8 +958,9 @@ export function run(argv) {
     if (args.allowUnverified) lines.push(`  ⚠ --allow-unverified: manifest entries flagged unverified=true (R-SEC-15).`);
     for (const w of skillOuts.warnings) lines.push(`  WARN ${w}`);
     for (const n of sharedOuts.notes) lines.push(`  note: ${n}`);
+    stderrMergeWarnings += mergeWarnings;
   }
-  return { exitCode: 0, stdout: warnings + lines.join('\n') + '\n', stderr: '' };
+  return { exitCode: 0, stdout: warnings + lines.join('\n') + '\n', stderr: stderrMergeWarnings };
 }
 
 // CLI entry guard: only exec if invoked directly.

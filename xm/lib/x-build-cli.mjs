@@ -7,7 +7,7 @@
  * Usage: node <plugin-root>/lib/x-build-cli.mjs <command> [args] [options]
  */
 
-import { resolveProject, resetCircuitBreaker, getCircuitState } from './x-build/core.mjs';
+import { resolveProject, resetCircuitBreaker, getCircuitState, setExplicitProject } from './x-build/core.mjs';
 import { cmdInit, cmdList, cmdStatus, cmdClose, cmdDashboard, interactiveInit, interactiveDashboard, cmdHandoffFull, cmdHandon } from './x-build/project.mjs';
 import { cmdPhase, cmdGate, cmdCheckpoint } from './x-build/phase.mjs';
 import { cmdTasks, cmdSteps, cmdRun, cmdRunStatus, interactiveTasksAdd } from './x-build/tasks.mjs';
@@ -42,10 +42,18 @@ function extractFlags(rawArgs) {
 
 const { cleaned: _cleanedArgv, projectFlag: _projectFlag } = extractFlags(process.argv.slice(2));
 
+// Make --project apply to every subcommand's resolveProject() call. Without
+// this, multi-active workspaces collapse all writes onto findCurrentProject()
+// (last-init wins) and the user's explicit target is silently discarded.
+if (_projectFlag) setExplicitProject(_projectFlag);
+
 // ── Main Router ─────────────────────────────────────────────────────
 
 const [cmd, ...args] = _cleanedArgv;
 
+// Backward-compat: a few commands (status, list) still accept `<project>` as
+// a positional. When --project was the only arg, pass it through positionally
+// so those commands keep working.
 if (_projectFlag && args.length === 0) {
   args.unshift(_projectFlag);
 } else if (_projectFlag) {

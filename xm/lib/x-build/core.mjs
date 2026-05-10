@@ -359,8 +359,15 @@ export function findCurrentProject() {
 let _cmdInit = null;
 export function setCmdInit(fn) { _cmdInit = fn; }
 
+// Top-level `--project <name>` overrides findCurrentProject() so writes never
+// land on the wrong active project when multiple are open. Set by the CLI
+// dispatcher right after extractFlags(); cleared between in-process runs is
+// not needed because each `node` invocation owns its own module state.
+let _explicitProject = null;
+export function setExplicitProject(name) { _explicitProject = name || null; }
+
 export function resolveProject(explicit, { autoInit = false } = {}) {
-  const name = explicit || findCurrentProject();
+  const name = explicit || _explicitProject || findCurrentProject();
   if (!name) {
     console.error(`❌ ${E('no-project')}`);
     process.exit(1);

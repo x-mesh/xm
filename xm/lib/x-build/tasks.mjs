@@ -22,16 +22,31 @@ import {
 export function cmdTasks(args) {
   const sub = args[0];
   if (!sub || !['add', 'list', 'remove', 'update', 'done-criteria'].includes(sub)) {
-    console.error('Usage: x-build tasks <add|list|remove|update|done-criteria> [args]');
+    console.error('Usage: x-build tasks <add|list|remove|update|done-criteria> [args] [--project <name>]');
     process.exit(1);
   }
 
-  const project = resolveProject(null);
+  // Extract `--project <name>` from args before subcommand parsing so write
+  // commands explicitly target the named project. Without this, multiple
+  // active projects collapse to "last init" and writes hit the wrong one.
+  const subArgs = args.slice(1);
+  let explicitProject = null;
+  const projIdx = subArgs.indexOf('--project');
+  if (projIdx >= 0) {
+    const val = subArgs[projIdx + 1];
+    if (val === undefined || val.startsWith('--')) {
+      console.error('❌ --project requires a value. Usage: --project <name>');
+      process.exit(1);
+    }
+    explicitProject = val;
+    subArgs.splice(projIdx, 2);
+  }
+  const project = resolveProject(explicitProject);
 
-  if (sub === 'add') return taskAdd(project, args.slice(1));
+  if (sub === 'add') return taskAdd(project, subArgs);
   if (sub === 'list') return taskList(project);
-  if (sub === 'remove') return taskRemove(project, args.slice(1));
-  if (sub === 'update') return taskUpdate(project, args.slice(1));
+  if (sub === 'remove') return taskRemove(project, subArgs);
+  if (sub === 'update') return taskUpdate(project, subArgs);
   if (sub === 'done-criteria') return taskDoneCriteria(project);
 }
 
@@ -300,10 +315,11 @@ export function taskUpdate(project, args) {
   const id = positional[0];
   const rawStatus = opts.status;
 
-  if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined)) {
+  if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined)) {
     console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed>');
     console.error('       x-build tasks update <task-id> --score <number>');
     console.error('       x-build tasks update <task-id> --done-criteria "criteria text"');
+    console.error('       x-build tasks update <task-id> --deps t1,t2  (replace dependency list; pass empty string to clear)');
     process.exit(1);
   }
 
@@ -331,6 +347,33 @@ export function taskUpdate(project, args) {
       }
       task.done_criteria = opts['done-criteria'].split(';').map(c => c.trim()).filter(Boolean);
       updatedFields.push('done_criteria updated');
+    }
+
+    if (opts.deps !== undefined) {
+      // parseOptions collapses `--deps` (no value) and `--deps ""` to `true`
+      // because of the falsy-next-arg shortcut. Treat both as "clear".
+      let newDeps;
+      if (opts.deps === true || opts.deps === '') {
+        newDeps = [];
+      } else if (typeof opts.deps === 'string') {
+        newDeps = opts.deps.split(',').map(d => d.trim()).filter(Boolean);
+      } else {
+        console.error('❌ --deps requires a value. Usage: --deps t1,t2  (or omit value to clear)');
+        process.exit(1);
+      }
+      const validIds = new Set(data.tasks.map(t => t.id));
+      for (const dep of newDeps) {
+        if (dep === id) {
+          console.error(`❌ Self-dependency rejected: task "${id}" cannot depend on itself.`);
+          process.exit(1);
+        }
+        if (!validIds.has(dep)) {
+          console.error(`❌ Unknown dependency: "${dep}" does not exist.`);
+          process.exit(1);
+        }
+      }
+      task.depends_on = newDeps;
+      updatedFields.push(`depends_on: [${newDeps.join(', ')}]`);
     }
 
     if (!rawStatus) return data;

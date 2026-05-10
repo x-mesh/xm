@@ -378,12 +378,13 @@ case "$CMD" in
   update)
     # Update marketplace cache + reinstall plugin + refresh CLI binary.
     # Flags: --force|-f (update even if versions match), --dry-run, --no-cli (skip binary copy)
-    FORCE=0; DRY=0; SKIP_CLI=0
+    FORCE=0; DRY=0; SKIP_CLI=0; NO_PROPAGATE=0
     for a in "$@"; do
       case "$a" in
-        --force|-f) FORCE=1 ;;
-        --dry-run)  DRY=1 ;;
-        --no-cli)   SKIP_CLI=1 ;;
+        --force|-f)      FORCE=1 ;;
+        --dry-run)       DRY=1 ;;
+        --no-cli)        SKIP_CLI=1 ;;
+        --no-propagate)  NO_PROPAGATE=1 ;;
         *) echo "xm update: unknown flag '$a'" >&2; exit 1 ;;
       esac
     done
@@ -456,6 +457,7 @@ case "$CMD" in
       echo "   claude plugin marketplace update xm"
       echo "   claude plugin update xm@xm"
       [ "$SKIP_CLI" = "0" ] && echo "   cp <cache>/xm/scripts/xm ~/.local/bin/xm"
+      [ "$NO_PROPAGATE" = "0" ] && echo "   node <cache>/install-cli.mjs --propagate"
       exit 0
     fi
 
@@ -517,6 +519,49 @@ case "$CMD" in
       node "$NEW_SETUP" install 2>&1 | sed 's/^/    /'
     fi
 
+    # 7. Propagate to other installed LLM targets (cursor/codex/kiro/...)
+    if [ "$NO_PROPAGATE" = "0" ]; then
+      NEW_CLI="$HOME/.claude/plugins/cache/xm/xm/$REMOTE_VERSION/lib/install/install-cli.mjs"
+      if [ ! -f "$NEW_CLI" ]; then
+        NEW_CLI="$(ls -td "$HOME/.claude/plugins/cache/xm/xm"/*/lib/install/install-cli.mjs 2>/dev/null | head -1)"
+      fi
+      if [ -n "$NEW_CLI" ] && [ -f "$NEW_CLI" ]; then
+        # Snapshot lib + skills to tmpdir to avoid source-race when plugin cache
+        # is concurrently rewritten by another marketplace update.
+        NEW_CACHE_ROOT="$(dirname "$(dirname "$(dirname "$NEW_CLI")")")"   # .../xm/<version>/
+        SNAPSHOT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/xm-propagate-XXXXXX")"
+        trap 'rm -rf "$SNAPSHOT_DIR"' EXIT INT TERM
+        cp -R "$NEW_CACHE_ROOT/lib" "$SNAPSHOT_DIR/lib" 2>/dev/null
+        cp -R "$NEW_CACHE_ROOT/skills" "$SNAPSHOT_DIR/skills" 2>/dev/null
+        SNAP_CLI="$SNAPSHOT_DIR/lib/install/install-cli.mjs"
+        SNAP_LIB="$SNAPSHOT_DIR/lib"
+        SNAP_SKILLS="$SNAPSHOT_DIR/skills"
+
+        if [ -f "$SNAP_CLI" ] && [ -d "$SNAP_LIB" ] && [ -d "$SNAP_SKILLS" ]; then
+          echo "→ propagating to other LLM targets"
+          PROPAGATE_OUT="$(node "$SNAP_CLI" --propagate --lib-dir "$SNAP_LIB" --skills-dir "$SNAP_SKILLS" 2>&1)"
+          PROPAGATE_EXIT=$?
+          if [ "$PROPAGATE_EXIT" = "0" ]; then
+            SUMMARY="$(printf '%s' "$PROPAGATE_OUT" | node -e '
+              let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
+                try {
+                  const j=JSON.parse(s);
+                  const sm=j.summary||{};
+                  const total=sm.total||0, ok=(sm.success||0)+(sm.migrated||0), skip=sm.skipped||0, fail=sm.failed||0;
+                  process.stdout.write(`${ok}/${total} updated, ${skip} skipped${fail?", "+fail+" failed":""}`);
+                } catch { process.stdout.write("(parse error)"); }
+              })' 2>/dev/null)"
+            echo "    $SUMMARY"
+          else
+            echo "⚠️  propagate exited $PROPAGATE_EXIT"
+            echo "$PROPAGATE_OUT" | sed "s/^/    /" | tail -10
+          fi
+        else
+          echo "⚠️  propagate snapshot incomplete — skipping fan-out"
+        fi
+      fi
+    fi
+
     echo ""
     echo "✅ Updated to $REMOTE_VERSION"
     echo "💡 Run /reload-plugins in Claude Code to activate new skills"
@@ -551,9 +596,11 @@ Commands:
   sync push|pull|config               Multi-machine .xm sync
   solver <subcmd>                     Structured problem solving
   install [--target T] [--global]     Install xm SKILLs into Cursor/Codex/Kiro/Antigravity/OpenCode
+  install --list-installed            List all installed manifests as JSON
+  install --propagate                 Re-render every installed manifest (best-effort)
   version                             Installed xm version
   doctor                              Health check: local vs remote version, hooks, dashboard
-  update [--force|--dry-run]          Update to latest remote (refreshes plugin + CLI binary)
+  update [--force|--dry-run|--no-propagate]  Update to latest remote (refreshes plugin + CLI binary, propagates to other targets)
   which                               Show resolved lib paths
   help                                This message
 

@@ -22,7 +22,7 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { readFileSync, statSync, existsSync, lstatSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 import { writeOverwrite } from './merge.mjs';
-import { PRD_VERSION, targetDirFor } from './types.mjs';
+import { PRD_VERSION, TARGET_TOOLS, targetDirFor } from './types.mjs';
 import { safeJoin } from './security.mjs';
 
 const MANIFEST_KIND = 'xm-install-manifest';
@@ -212,6 +212,103 @@ export function readManifest(absolutePath) {
     throw new Error(`unsupported manifest schemaVersion: ${parsed.schemaVersion}`);
   }
   return /** @type {Manifest} */ (parsed);
+}
+
+/**
+ * Read a manifest if the file exists; returns null when missing.
+ * Throws when the file exists but is unparseable or invalid (delegates to readManifest).
+ * @param {string} absolutePath
+ * @returns {Manifest | null}
+ */
+export function readManifestIfExists(absolutePath) {
+  if (!existsSync(absolutePath)) return null;
+  return readManifest(absolutePath);
+}
+
+/**
+ * Discover all installed global manifests under the given search roots.
+ *
+ * For each root in searchRoots, iterates TARGET_TOOLS and checks whether
+ * `manifestPath(target, root, 'global')` exists. Results are sorted
+ * alphabetically by target name for stable output.
+ *
+ * v1: global scope only. local support is deferred to v2.
+ * Non-existent roots are silently ignored (no throw).
+ *
+ * @param {string[]} searchRoots  Absolute paths to search (e.g. [os.homedir()]).
+ * @returns {Array<{path: string, target: import('./types.mjs').TargetTool, scope: 'global', installRoot: string}>}
+ */
+export function discoverManifests(searchRoots) {
+  /** @type {Array<{path: string, target: import('./types.mjs').TargetTool, scope: 'global', installRoot: string}>} */
+  const results = [];
+  for (const root of searchRoots) {
+    if (!existsSync(root)) continue;
+    for (const target of TARGET_TOOLS) {
+      const path = manifestPath(target, root, 'global');
+      if (existsSync(path)) {
+        results.push({ path, target, scope: 'global', installRoot: root });
+      }
+    }
+  }
+  results.sort((a, b) => a.target.localeCompare(b.target));
+  return results;
+}
+
+/**
+ * Determine whether a planned install can be skipped because the target is
+ * already up-to-date.
+ *
+ * Returns true (skip) when ALL three conditions hold:
+ *   1. Every file listed in manifest.files exists on disk.
+ *   2. The set of relativePaths in manifest.files exactly matches the set in
+ *      plannedFiles (no additions, no deletions).
+ *   3. sha256(plannedFiles[i].content) === manifest.files[i].sha256 for every
+ *      entry.
+ *
+ * Returns false (re-install) on any mismatch, or when the manifest structure
+ * is malformed — safe default keeps the install idempotent.
+ *
+ * @param {Manifest} manifest
+ * @param {Array<{relativePath: string, content: string|Buffer}>} plannedFiles
+ * @returns {boolean}
+ */
+export function shouldSkipTarget(manifest, plannedFiles) {
+  try {
+    const manifestFiles = manifest.files;
+    if (!Array.isArray(manifestFiles) || !manifest.installRoot) return false;
+
+    // Condition 1: all manifest files must exist on disk.
+    for (const entry of manifestFiles) {
+      let abs;
+      try {
+        abs = safeJoin(manifest.installRoot, entry.relativePath);
+      } catch {
+        return false;
+      }
+      if (!existsSync(abs)) return false;
+    }
+
+    // Condition 2: relativePath sets must match exactly.
+    const manifestPaths = new Set(manifestFiles.map((e) => e.relativePath));
+    const plannedPaths = new Set(plannedFiles.map((f) => f.relativePath));
+    if (manifestPaths.size !== plannedPaths.size) return false;
+    for (const p of manifestPaths) {
+      if (!plannedPaths.has(p)) return false;
+    }
+
+    // Condition 3: content sha256 must match for every planned file.
+    const manifestIndex = new Map(manifestFiles.map((e) => [e.relativePath, e.sha256]));
+    for (const file of plannedFiles) {
+      const expected = manifestIndex.get(file.relativePath);
+      if (expected === undefined) return false;
+      const buf = typeof file.content === 'string' ? Buffer.from(file.content, 'utf8') : file.content;
+      if (sha256(buf) !== expected) return false;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

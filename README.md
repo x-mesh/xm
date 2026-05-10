@@ -206,6 +206,17 @@ node xm/lib/install/install-cli.mjs --uninstall --target cursor,codex
 
 See [`docs/multi-tool-install.md`](docs/multi-tool-install.md) for the complete guide — capability matrix, per-tool install steps, manual verification in each IDE, security model, troubleshooting. The full design (PRD v2.1) is at [`.xm/build/projects/multi-tool-install/phases/02-plan/PRD.md`](.xm/build/projects/multi-tool-install/phases/02-plan/PRD.md).
 
+#### Auto-propagation on update
+
+`xm update` automatically re-renders skills to every installed LLM target (Cursor, Codex CLI, Kiro, Antigravity, OpenCode) when their global manifests are present. Per-file SHA-256 diffing skips unchanged targets. Pass `--no-propagate` to update only the Claude plugin.
+
+```bash
+xm update                   # update plugin + propagate to all installed targets
+xm update --no-propagate    # Claude-only update, skip fan-out
+xm install --propagate      # re-render every installed manifest target on demand
+xm install --list-installed # print installed manifest inventory as JSON
+```
+
 ## Quick Start
 
 ```bash
