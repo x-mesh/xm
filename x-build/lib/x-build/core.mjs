@@ -339,19 +339,22 @@ export function emitHook(event, payload) {
 // ── Project Resolution ──────────────────────────────────────────────
 
 export function findCurrentProject() {
+  const candidates = findActiveProjects();
+  return candidates[0]?.name || null;
+}
+
+// Returns all projects with a valid manifest, sorted by updated_at descending.
+// findCurrentProject() returns the first entry; callers that want disambiguation
+// (e.g., status display) iterate the full list.
+export function findActiveProjects() {
   const dir = projectsDir();
-  if (!existsSync(dir)) return null;
-  const projects = readdirSync(dir).filter(d =>
-    existsSync(manifestPath(d))
-  );
-  if (projects.length === 0) return null;
-  const withManifest = projects
+  if (!existsSync(dir)) return [];
+  const projects = readdirSync(dir).filter(d => existsSync(manifestPath(d)));
+  if (projects.length === 0) return [];
+  return projects
     .map(p => ({ name: p, manifest: readJSON(manifestPath(p)) }))
-    .filter(p => p.manifest && p.manifest.updated_at);
-  if (withManifest.length === 0) return null;
-  return withManifest
-    .sort((a, b) => new Date(b.manifest.updated_at) - new Date(a.manifest.updated_at))
-    [0].name;
+    .filter(p => p.manifest && p.manifest.updated_at)
+    .sort((a, b) => new Date(b.manifest.updated_at) - new Date(a.manifest.updated_at));
 }
 
 // NOTE: resolveProject needs cmdInit for autoInit, which creates a circular dep.
@@ -407,6 +410,13 @@ export function gitAutoCommit(project, task, phase) {
 
     const diff = execSync('git diff --cached --name-only', { stdio: 'pipe', cwd }).toString().trim();
     if (!diff) return null;
+
+    // Skip metadata-only commits — when only x-build tracking files changed, no real code work happened.
+    // Why: a "completed" status update writes to .xm/build/.../tasks.json. Without this guard the
+    // CLI emits a commit per metadata flip, polluting history with empty "[COMPLETED]" entries.
+    const stagedFiles = diff.split('\n').filter(Boolean);
+    const allMetadata = stagedFiles.every(f => f.startsWith('.xm/'));
+    if (allMetadata) return null;
 
     const msg = `tm(${phase}/${task.id}): ${task.name} [${task.status.toUpperCase()}]`;
     execSync(`git commit -m ${JSON.stringify(msg)}`, { stdio: 'pipe', cwd });

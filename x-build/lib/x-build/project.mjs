@@ -7,7 +7,7 @@ import {
   readJSON, writeJSON, readMD, writeMD,
   manifestPath, phaseStatusPath, tasksPath, stepsPath, prdPath, contextDir, projectDir,
   projectsDir, checkpointsDir, phaseDir, toSlug,
-  resolveProject, findCurrentProject, logDecision,
+  resolveProject, findCurrentProject, findActiveProjects, logDecision,
   loadConfig, isNormalMode, L, renderBar, fmtDuration,
   setCmdInit,
   existsSync, readdirSync, mkdirSync, join, readFileSync, writeFileSync,
@@ -241,12 +241,34 @@ export function cmdStatus(args) {
   const opts = parseOptions(args);
   const isJson = args.includes('--json');
   const isSave = args.includes('--save');
-  const name = resolveProject(opts.positional[0] || args.find(a => !a.startsWith('--')), { autoInit: true });
+  const explicitName = opts.positional[0] || args.find(a => !a.startsWith('--'));
+  const name = resolveProject(explicitName, { autoInit: true });
   const manifest = readJSON(manifestPath(name));
   if (!manifest) {
     if (isJson) { console.log(JSON.stringify({ error: 'no_project' })); return; }
     console.log('No project found. Run: x-build init <name>');
     return;
+  }
+
+  // Multi-active ambiguity warning — only when caller didn't disambiguate.
+  // findActiveProjects returns all manifest-bearing projects sorted by updated_at.
+  // If more than one exists and the user didn't pass a name, surface the list so
+  // they don't read "wrong project" output as truth. JSON mode emits the list as
+  // a metadata field instead of corrupting the structured output.
+  if (!explicitName) {
+    const all = findActiveProjects();
+    if (all.length > 1) {
+      const others = all.filter(p => p.name !== name).map(p => p.name);
+      if (isJson) {
+        // Re-emit JSON with disambiguation note appended in buildProjectState path below.
+        // We can't mutate from here, so stash on a module-scoped marker via stderr.
+        process.stderr.write(JSON.stringify({ warning: 'multi_active', active: all.map(p => p.name), showing: name }) + '\n');
+      } else {
+        console.log(`${C.yellow}⚠ Multiple active projects detected: ${all.map(p => p.name).join(', ')}${C.reset}`);
+        console.log(`${C.dim}  Showing "${name}" (most recently updated). To disambiguate: x-build status <name>${C.reset}`);
+        console.log('');
+      }
+    }
   }
 
   // --json: output structured state for API/Claude consumption

@@ -7,7 +7,7 @@ import {
   ROLE_MODEL_MAP_HR, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, checkBudget, loadSharedConfig, XM_GLOBAL, PLUGIN_ROOT, ROOT,
   readJSON, writeJSON, modifyJSON, readMD,
   manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, decisionsPath, projectDir,
-  resolveProject, logDecision, appendMetric, emitHook,
+  resolveProject, logDecision, addDecision, appendMetric, emitHook,
   parseOptions, renderBar, fmtDuration,
   estimateTaskCost,
   gitAutoCommit, gitRollbackTask,
@@ -21,8 +21,8 @@ import {
 
 export function cmdTasks(args) {
   const sub = args[0];
-  if (!sub || !['add', 'list', 'remove', 'update', 'done-criteria'].includes(sub)) {
-    console.error('Usage: x-build tasks <add|list|remove|update|done-criteria> [args] [--project <name>]');
+  if (!sub || !['add', 'list', 'remove', 'update', 'reopen', 'done-criteria'].includes(sub)) {
+    console.error('Usage: x-build tasks <add|list|remove|update|reopen|done-criteria> [args] [--project <name>]');
     process.exit(1);
   }
 
@@ -47,6 +47,7 @@ export function cmdTasks(args) {
   if (sub === 'list') return taskList(project);
   if (sub === 'remove') return taskRemove(project, subArgs);
   if (sub === 'update') return taskUpdate(project, subArgs);
+  if (sub === 'reopen') return taskReopen(project, subArgs);
   if (sub === 'done-criteria') return taskDoneCriteria(project);
 }
 
@@ -316,7 +317,7 @@ export function taskUpdate(project, args) {
   const rawStatus = opts.status;
 
   if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined)) {
-    console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed>');
+    console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed> [--no-commit]');
     console.error('       x-build tasks update <task-id> --score <number>');
     console.error('       x-build tasks update <task-id> --done-criteria "criteria text"');
     console.error('       x-build tasks update <task-id> --deps t1,t2  (replace dependency list; pass empty string to clear)');
@@ -405,7 +406,9 @@ export function taskUpdate(project, args) {
   if (newStatus === TASK_STATES.COMPLETED) {
     const manifest = readJSON(manifestPath(project));
     const phase = PHASES.find(p => p.id === manifest?.current_phase);
-    const sha = gitAutoCommit(project, taskRef, phase?.name || 'unknown');
+    const sha = opts['no-commit'] !== undefined
+      ? null
+      : gitAutoCommit(project, taskRef, phase?.name || 'unknown');
     if (sha) {
       modifyJSON(tasksPath(project), (d) => {
         const t = d.tasks.find(x => x.id === id);
@@ -502,6 +505,95 @@ export function taskUpdate(project, args) {
   }
 
   console.log(`✅ Task "${id}" → ${newStatus}`);
+}
+
+export function taskReopen(project, args) {
+  const { opts, positional } = parseOptions(args);
+  const id = positional[0];
+  const reason = opts.reason;
+
+  if (!id || !reason || typeof reason !== 'string' || !reason.trim()) {
+    console.error('Usage: x-build tasks reopen <task-id> --reason "<why>" [--cascade]');
+    console.error('       Reopen completed/failed/cancelled task back to pending.');
+    process.exit(1);
+  }
+
+  const REOPENABLE = new Set([TASK_STATES.COMPLETED, TASK_STATES.FAILED, TASK_STATES.CANCELLED]);
+  const reopened = [];
+  const skipped = [];
+
+  modifyJSON(tasksPath(project), (data) => {
+    if (!data?.tasks?.length) { console.error('❌ No tasks data found.'); process.exit(1); }
+    const root = data.tasks.find(t => t.id === id);
+    if (!root) { console.error(`❌ ${E('task-not-found', { id })}`); process.exit(1); }
+    if (!REOPENABLE.has(root.status)) {
+      console.error(`❌ Cannot reopen "${id}" — current status "${root.status}". Only completed/failed/cancelled can be reopened.`);
+      process.exit(1);
+    }
+
+    // Collect targets: root + transitive dependents if --cascade
+    const targets = new Set([id]);
+    if (opts.cascade !== undefined) {
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const t of data.tasks) {
+          if (!targets.has(t.id) && t.depends_on?.some(d => targets.has(d))) {
+            targets.add(t.id);
+            changed = true;
+          }
+        }
+      }
+    }
+
+    for (const t of data.tasks) {
+      if (!targets.has(t.id)) continue;
+      if (!REOPENABLE.has(t.status)) { skipped.push({ id: t.id, status: t.status }); continue; }
+
+      const fromStatus = t.status;
+      t.reopen_history = t.reopen_history || [];
+      t.reopen_history.push({
+        at: new Date().toISOString(),
+        reason: reason.trim(),
+        from_status: fromStatus,
+      });
+
+      t.status = TASK_STATES.PENDING;
+      delete t.completed_at;
+      delete t.failed_at;
+      delete t.error_message;
+      delete t.blocked_by;
+      delete t.next_retry_at;
+
+      reopened.push({ id: t.id, name: t.name, from: fromStatus });
+    }
+
+    return data;
+  });
+
+  if (reopened.length === 0) {
+    console.log(`⚠ Nothing reopened.`);
+    return;
+  }
+
+  for (const r of reopened) {
+    emitHook('task:post-update', { project, taskId: r.id, from: r.from, to: TASK_STATES.PENDING });
+    console.log(`✅ Reopened ${r.id} (${r.from} → pending): ${r.name}`);
+  }
+  if (skipped.length) {
+    for (const s of skipped) {
+      console.log(`  ${C.dim}↳ ${s.id} skipped (status: ${s.status})${C.reset}`);
+    }
+  }
+  console.log(`  ${C.dim}reason: ${reason.trim()}${C.reset}`);
+
+  // Audit trail in decisions log
+  addDecision(project, {
+    type: 'reopen',
+    title: `Reopened ${reopened.map(r => r.id).join(', ')}`,
+    rationale: reason.trim(),
+    phase: 'execute',
+  });
 }
 
 // ── DAG & Steps ─────────────────────────────────────────────────────
