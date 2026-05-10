@@ -87,6 +87,38 @@ release: x-build@1.16.2, x-dashboard@0.4.2
 - x-dashboard: {change summary}
 ```
 
+### Step 5.5: Source Integrity Check (mandatory)
+
+Before committing, verify the source actually contains what the commit message claims. Step 3 runs `bun test`, which has historically left silent stashes behind — see mem-mesh `2089a55f` (X-9 incident): `gitRollbackTask` previously called `git stash push` without sha validation, so any test passing an invalid sha pocketed the working tree into a stash and the next commit captured the *pre-stash* (HEAD) state of the files. This produced a release `v2.1.0` whose commit message claimed an X-8 fix that wasn't actually in the code.
+
+**Guard 1 — Stash leak detector (automated, halt on non-empty)**:
+
+```bash
+if [ -n "$(git stash list)" ]; then
+  echo "❌ STOP: Stash non-empty after bump/test:"
+  git stash list
+  echo
+  echo "   The working-tree changes this release claims may currently live in"
+  echo "   a stash (left by bun test invoking gitRollbackTask or similar)."
+  echo "   Inspect with: git stash show -p stash@{0}"
+  echo "   Recover with: git stash pop stash@{0}"
+  echo "   Then re-run Step 3 (release bump) and re-check this guard."
+fi
+```
+
+If the stash list is non-empty, do **not** proceed to Step 6. Pop the relevant stash, re-run bump+test, and only continue when the list is clean.
+
+**Guard 2 — Commit claim ↔ source match (LLM judgment, halt on mismatch)**:
+
+For each "fix X by doing Y" bullet you are about to write into the commit message, grep the source for the literal code that delivers Y. Example:
+
+- Claim: `gitAutoCommit scoped to <projectDir> instead of git add -A`
+  - Grep: `grep -n "git add" x-build/lib/x-build/core.mjs`
+  - Pass: result shows `git add ${JSON.stringify(pdir)}` (or equivalent), no `git add -A`
+  - Fail: `git add -A` still present → **STOP**; fix is missing from source. Inspect stash list, diff vs HEAD, or re-apply the fix.
+
+If any claim is unbacked by visible code, either (a) drop the claim from the commit message, or (b) restore the fix and re-verify. Never ship a release whose commit message describes code that isn't in the diff.
+
 ### Step 6: Commit & Push
 
 ```bash
