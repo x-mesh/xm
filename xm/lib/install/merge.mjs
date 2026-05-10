@@ -34,6 +34,7 @@ import { isSymlink, lockPayload, isStaleLock } from './security.mjs';
  * @property {string} path
  * @property {'created'|'updated'|'unchanged'|'rotated-and-updated'} action
  * @property {boolean} backupTaken
+ * @property {string} [warning]  User edit detection: set when marker block content changed on re-install.
  */
 
 /**
@@ -216,6 +217,7 @@ export function writeMergeMarker(filePath, blockContent, opts = {}) {
     let pre = '';
     let post = '';
     let hadBlock = false;
+    let hadUserEdit = false;
     const existedBefore = existsSync(filePath);
     if (existedBefore) {
       const before = readFileSync(filePath, 'utf8');
@@ -224,9 +226,15 @@ export function writeMergeMarker(filePath, blockContent, opts = {}) {
       if (begin !== -1 && end !== -1 && begin < end) {
         hadBlock = true;
         pre = before.slice(0, begin);
+        const existingBlockContent = before.slice(begin + MARKER_BEGIN.length, end);
         post = before.slice(end + MARKER_END.length);
         // Drop the linefeed immediately after END if present, to avoid double blank lines.
         if (post.startsWith('\n')) post = post.slice(1);
+        // Detect user edits inside the marker block (hand-edited content warning).
+        const newBlockContent = `\n${blockContent.trimEnd()}\n`;
+        if (existingBlockContent.trim() !== newBlockContent.trim()) {
+          hadUserEdit = true;
+        }
       } else if (begin !== -1 || end !== -1) {
         throw new Error(
           `marker mismatch in ${filePath}: BEGIN at ${begin}, END at ${end}. Manual repair required.`
@@ -253,7 +261,12 @@ export function writeMergeMarker(filePath, blockContent, opts = {}) {
     else if (hadBlock) action = 'updated';
     else if (backup) action = 'rotated-and-updated';
     else action = 'updated';
-    return { path: filePath, action, backupTaken: backup };
+    /** @type {MergeResult} */
+    const result = { path: filePath, action, backupTaken: backup };
+    if (hadUserEdit && hadBlock) {
+      result.warning = 'marker block content changed (xm:BEGIN..xm:END user edits will be overwritten)';
+    }
+    return result;
   } finally {
     release();
   }

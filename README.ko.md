@@ -206,6 +206,17 @@ node xm/lib/install/install-cli.mjs --uninstall --target cursor,codex
 
 전체 가이드는 [`docs/multi-tool-install.ko.md`](docs/multi-tool-install.ko.md)에서 — 지원 표면 비교, 도구별 설치 절차, IDE 안에서의 수동 검증, 보안 모델, 트러블슈팅을 다룹니다. 설계 문서(PRD v2.1)는 [`.xm/build/projects/multi-tool-install/phases/02-plan/PRD.md`](.xm/build/projects/multi-tool-install/phases/02-plan/PRD.md)에 있습니다.
 
+#### update 시 자동 전파
+
+`xm update`가 설치된 모든 LLM target(Cursor, Codex CLI, Kiro, Antigravity, OpenCode)의 global manifest를 감지하고 SKILL을 자동 재렌더링합니다. 파일별 SHA-256 비교로 변경 없는 target은 건너뜁니다. Claude만 갱신하려면 `--no-propagate` 플래그를 사용하세요.
+
+```bash
+xm update                   # 플러그인 업데이트 + 설치된 모든 target에 전파
+xm update --no-propagate    # Claude만 갱신, fan-out 생략
+xm install --propagate      # 설치된 manifest target 전체를 즉시 재렌더링
+xm install --list-installed # 설치된 manifest 목록을 JSON으로 출력
+```
+
 ## 빠른 시작
 
 ```bash
