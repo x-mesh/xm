@@ -201,6 +201,7 @@ Decision rule:
     --files "src/cache.ts"
   ```
 - Later, convert it into real work with `$XMB later promote <id>`.
+- Before claiming the current task is clean, run `$XMB later verify-scope` to catch edits to files that were captured as deferred work.
 
 Later items are not permission to edit code. They are deferred work records.
 

@@ -609,7 +609,8 @@ ${C.bold}Execute Phase:${C.reset}
     tasks add "name" [--strategy refine] [--team eng] [--done-criteria "..."]  Add task
     tasks update <id> --score 7.8 [--done-criteria "..."]         Update task
     tasks done-criteria                                           Auto-derive from PRD
-  later <add|list|promote|dismiss> Capture off-scope work without editing it
+  later <add|list|promote|dismiss|verify-scope>
+                                 Capture off-scope work and verify it stayed deferred
   steps <compute|status|next>    DAG-based step management
   run                            Execute next step via agent orchestration
   checkpoint <type> [message]    Record a checkpoint

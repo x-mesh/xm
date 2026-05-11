@@ -485,6 +485,29 @@ describe('later', () => {
     }
   });
 
+  test('validates current task references', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+
+      const missing = run([
+        'later', 'add', 'Fix unrelated cache warning',
+        '--task', 't9',
+      ], { cwd: tmp });
+      expect(missing.exitCode).not.toBe(0);
+      expect(missing.stderr).toContain('Unknown current task');
+
+      run(['tasks', 'add', 'Current auth fix'], { cwd: tmp });
+      const add = run([
+        'later', 'add', 'Fix unrelated cache warning',
+        '--task', 't1',
+      ], { cwd: tmp });
+      expect(add.exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('promotes later item to a task when ready', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
@@ -503,6 +526,43 @@ describe('later', () => {
       const lot = readJSON(projectPath(tmp, name, 'later.json'));
       expect(lot.items[0].status).toBe('promoted');
       expect(lot.items[0].promoted_task_id).toBe('t1');
+
+      const list = run(['later', 'list', '--status', 'all'], { cwd: tmp });
+      expect(list.stdout).toContain('promoted: t1');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('verify-scope fails when open later files change before promotion', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      mkdirSync(join(tmp, 'src'), { recursive: true });
+      writeFileSync(join(tmp, 'src', 'cache.ts'), 'export const value = 1;\n');
+
+      const add = run([
+        'later', 'add', 'Fix unrelated cache warning',
+        '--files', 'src/cache.ts',
+      ], { cwd: tmp });
+      expect(add.exitCode).toBe(0);
+
+      const lot = readJSON(projectPath(tmp, name, 'later.json'));
+      expect(lot.items[0].file_snapshots[0].file).toBe('src/cache.ts');
+      expect(lot.items[0].file_snapshots[0].sha256).toHaveLength(64);
+
+      const before = run(['later', 'verify-scope'], { cwd: tmp });
+      expect(before.exitCode).toBe(0);
+
+      writeFileSync(join(tmp, 'src', 'cache.ts'), 'export const value = 2;\n');
+      const changed = run(['later', 'verify-scope'], { cwd: tmp });
+      expect(changed.exitCode).not.toBe(0);
+      expect(changed.stdout).toContain('Later scope check failed');
+      expect(changed.stdout).toContain('src/cache.ts changed');
+
+      run(['later', 'promote', 'l1'], { cwd: tmp });
+      const promoted = run(['later', 'verify-scope'], { cwd: tmp });
+      expect(promoted.exitCode).toBe(0);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
