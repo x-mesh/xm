@@ -51,33 +51,29 @@ See `references/ask-user-question-rule.md` — the `question` field is invisible
 
 ## Mode Detection
 
-Check mode before every command after defining the `xms` helper:
+Check mode before every command:
 ```bash
-xms mode show
+xm solver mode show
 ```
 
 ## CLI
 
-All commands via:
+All commands via the `xm` dispatcher:
 ```bash
-xms <command> [args]
+xm solver <command> [args]
 ```
 
-Shorthand in this document: `$XMS` means the `xms` helper or `xm solver`.
+Shorthand in this document: `$XMS` means `xm solver`.
 
-> **⚠ When using Bash tool, define the helper once at session start. `${CLAUDE_PLUGIN_ROOT}` is substituted in SKILL.md prompt text but NOT as a Bash env var — relying on it alone causes `Cannot find module '/lib/...'` errors.**
+> **⚠ Call `xm solver <command>` directly. Claude Code's Bash tool starts a fresh shell on every invocation — shell functions (`xms()`) defined in one call do NOT persist to the next, causing `command not found: xms`. Never define a helper across calls; always use the dispatcher.**
+>
+> **Fallback** (only when `xm` is not in PATH — rare; `${CLAUDE_PLUGIN_ROOT}` is NOT exported to Bash subprocesses, so don't rely on it bare):
 > ```bash
-> # Resolution chain: xm dispatcher → CLAUDE_PLUGIN_ROOT → plugin cache (latest)
-> xms() {
->   command -v xm >/dev/null 2>&1 && { xm solver "$@"; return; }
->   local cli="${CLAUDE_PLUGIN_ROOT:-}/lib/x-solver-cli.mjs"
->   [ -f "$cli" ] || cli=$(ls -d ~/.claude/plugins/cache/xm/{solver,xm}/*/lib/x-solver-cli.mjs 2>/dev/null | sort -V | tail -1)
->   [ -f "${cli:-}" ] && node "$cli" "$@" || { echo "❌ x-solver CLI not found" >&2; return 1; }
-> }
-> xms constraints add "text" --type hard
+> XMS_CLI=$(ls -d ~/.claude/plugins/cache/xm/{solver,xm}/*/lib/x-solver-cli.mjs 2>/dev/null | sort -V | tail -1)
+> node "$XMS_CLI" <command> [args]
 > ```
-> **Forbidden:** `XMS="node ..."; $XMS constraints add` — zsh treats the quoted string as a single command name and fails.
-> **Shortcut (no helper):** just type `xm solver <command>` directly — works whenever the xm dispatcher is in PATH.
+>
+> **Forbidden:** `XMS="node ..."; $XMS <command>` — zsh treats the quoted string as a single command and fails.
 
 ## Routing
 
