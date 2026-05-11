@@ -425,6 +425,31 @@ tbody td {
   box-shadow: 2px 2px 0 var(--accent);
 }
 
+.cmd-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid var(--accent-border);
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.cmd-copy:hover {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+.cmd-copy:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
 /* ── Card warning ── */
 .card-warning {
   border-color: var(--hot);

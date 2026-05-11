@@ -48,6 +48,7 @@ function setupFixtures() {
   writeJSON(join(projectDir, 'manifest.json'), {
     slug: TEST_PROJECT_SLUG,
     name: 'Test Dashboard API Fixture',
+    current_phase: '02-plan',
     status: 'active',
   });
 
@@ -63,6 +64,38 @@ function setupFixtures() {
     { id: 'T1', title: 'First task', status: 'done' },
     { id: 'T2', title: 'Second task', status: 'pending' },
   ]);
+
+  writeJSON(join(projectDir, 'later.json'), {
+    items: [
+      {
+        id: 'l1',
+        title: 'Fix unrelated cache warning',
+        status: 'open',
+        reason: 'Separate cleanup',
+        source: 'test',
+        impact: 'low',
+        current_task: 'T2',
+        files: ['src/cache.js'],
+        file_snapshots: [
+          { file: 'package.json', exists: true, sha256: 'fixture-sha-does-not-match' },
+        ],
+        created_at: '2026-05-10T00:00:00.000Z',
+        updated_at: '2026-05-10T01:00:00.000Z',
+      },
+      {
+        id: 'l2',
+        title: 'Document old rollout behavior',
+        status: 'promoted',
+        reason: 'Docs follow-up',
+        source: 'test',
+        impact: 'none',
+        promoted_task_id: 'T3',
+        files: [],
+        created_at: '2026-05-09T00:00:00.000Z',
+        updated_at: '2026-05-09T02:00:00.000Z',
+      },
+    ],
+  });
 
   // ── probe fixtures ───────────────────────────────────────────────
   const probeDir = join(XM_ROOT, 'probe');
@@ -186,6 +219,12 @@ describe('GET /api/projects', () => {
     const found = body.data.find(p => p.slug === TEST_PROJECT_SLUG);
     expect(found).toBeDefined();
   });
+
+  it('includes later summary for build list rows', async () => {
+    const { body } = await getJSON('/api/projects');
+    const found = body.data.find(p => p.slug === TEST_PROJECT_SLUG);
+    expect(found.later).toEqual({ total: 2, open: 1, promoted: 1, dismissed: 0 });
+  });
 });
 
 describe('GET /api/projects/:slug', () => {
@@ -230,6 +269,55 @@ describe('GET /api/projects/:slug/tasks', () => {
   it('returns 400 for invalid slug in tasks path', async () => {
     const { res } = await getJSON('/api/projects/foo.bar/tasks');
     expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /api/projects/:slug/gate', () => {
+  it('returns current phase gate summary for a known project', async () => {
+    const { res, body } = await getJSON(`/api/projects/${TEST_PROJECT_SLUG}/gate`);
+    expect(res.status).toBe(200);
+    expect(body.current_phase).toBe('02-plan');
+    expect(body.missing).toEqual([]);
+    expect(body.tasks).toEqual({ total: 2, pending: 1 });
+    expect(body.ready).toBe(false);
+  });
+
+  it('returns 400 for invalid slug in gate path', async () => {
+    const { res } = await getJSON('/api/projects/foo.bar/gate');
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /api/projects/:slug/later', () => {
+  it('returns later items and summary for a known project', async () => {
+    const { res, body } = await getJSON(`/api/projects/${TEST_PROJECT_SLUG}/later`);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(body.items)).toBe(true);
+    expect(body.items.length).toBe(2);
+    expect(body.summary).toEqual({ total: 2, open: 1, promoted: 1, dismissed: 0 });
+    expect(body.updated_at).toBe('2026-05-10T01:00:00.000Z');
+    expect(body.items[0].scope.changed).toBe(1);
+  });
+
+  it('returns 404 for nonexistent project later queue', async () => {
+    const { res } = await getJSON('/api/projects/no-such-project/later');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 400 for invalid slug in later path', async () => {
+    const { res } = await getJSON('/api/projects/foo.bar/later');
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /api/later', () => {
+  it('returns aggregate later items across projects', async () => {
+    const { res, body } = await getJSON('/api/later');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(body.data)).toBe(true);
+    expect(body.data.some(item => item.project === TEST_PROJECT_SLUG && item.id === 'l1')).toBe(true);
+    expect(body.summary.open).toBeGreaterThanOrEqual(1);
+    expect(body.summary.changed_scope).toBeGreaterThanOrEqual(1);
   });
 });
 

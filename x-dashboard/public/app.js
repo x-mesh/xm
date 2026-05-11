@@ -156,6 +156,38 @@ function nullSafe(value, fallback = '—') {
   return (value === null || value === undefined || value === '') ? fallback : value;
 }
 
+function commandButton(command, label = 'Copy') {
+  const e = escapeHtmlHumble;
+  return `<button class="cmd-copy" type="button" onclick="copyCommand(${JSON.stringify(command)}, this)" title="${e(command)}">${e(label)}</button>`;
+}
+
+async function copyCommand(command, btn) {
+  try {
+    await navigator.clipboard.writeText(command);
+    if (btn) {
+      const old = btn.textContent;
+      btn.textContent = 'Copied';
+      btn.disabled = true;
+      setTimeout(() => {
+        btn.textContent = old;
+        btn.disabled = false;
+      }, 1100);
+    }
+  } catch {
+    window.prompt('Copy command', command);
+  }
+}
+
+function nextBuildAction(project) {
+  const phase = project?.current_phase;
+  const laterOpen = project?.later?.open || 0;
+  if (laterOpen > 0) return 'Review later';
+  if (phase === '04-verify') return 'Verify';
+  if (phase === '05-close') return 'Closed';
+  if (phase === '03-execute') return 'Run';
+  return 'Next';
+}
+
 // Host alias map (first-seen → 3-letter code). Persisted in localStorage so
 // the same host gets the same chip across sessions.
 const HOST_ALIAS_KEY = 'xm-host-aliases';
@@ -247,6 +279,52 @@ function sizeBadge(size) {
   const entry = map[size];
   if (entry) return `<span class="badge ${entry.cls}">${entry.label}</span>`;
   return `<span class="badge badge-gray">${size || '—'}</span>`;
+}
+
+function laterStatusBadge(status) {
+  const map = {
+    open:      { cls: 'badge-amber', label: 'Open'      },
+    promoted:  { cls: 'badge-green', label: 'Promoted'  },
+    dismissed: { cls: 'badge-gray',  label: 'Dismissed' },
+  };
+  const entry = map[status];
+  if (entry) return `<span class="badge ${entry.cls}">${entry.label}</span>`;
+  return `<span class="badge badge-gray">${status || 'Unknown'}</span>`;
+}
+
+function laterImpactBadge(impact) {
+  const map = {
+    none:    { cls: 'badge-gray',  label: 'none'    },
+    low:     { cls: 'badge-blue',  label: 'low'     },
+    unknown: { cls: 'badge-amber', label: 'unknown' },
+  };
+  const entry = map[impact];
+  if (entry) return `<span class="badge ${entry.cls}">${entry.label}</span>`;
+  return `<span class="badge badge-gray">${impact || '—'}</span>`;
+}
+
+function severityBadge(severity) {
+  const map = {
+    critical: { cls: 'badge-red', label: 'critical' },
+    high:     { cls: 'badge-red', label: 'high'     },
+    medium:   { cls: 'badge-amber', label: 'medium' },
+    low:      { cls: 'badge-blue', label: 'low'     },
+  };
+  const entry = map[String(severity || '').toLowerCase()];
+  if (entry) return `<span class="badge ${entry.cls}">${entry.label}</span>`;
+  return `<span class="badge badge-gray">${severity || '—'}</span>`;
+}
+
+function laterFilesCell(files) {
+  const e = escapeHtmlHumble;
+  if (!Array.isArray(files) || files.length === 0) return '<span class="text-muted">—</span>';
+  return files.map(file => `<code>${e(file)}</code>`).join(' ');
+}
+
+function laterScopeBadge(scope) {
+  if (!scope || !scope.tracked) return '<span class="badge badge-gray">untracked</span>';
+  if (scope.changed > 0) return `<span class="badge badge-red">${scope.changed} changed</span>`;
+  return `<span class="badge badge-green">${scope.tracked} clean</span>`;
 }
 
 function renderMarkdown(text) {
@@ -869,6 +947,12 @@ function renderProjectsList() {
           ${p.goal ? `<div class="text-muted" style="font-size:11px;margin-top:2px">${p.goal}</div>` : ''}
         </td>
         <td>${phaseBadge(p.current_phase)}</td>
+        <td>
+          ${(p.later?.open || 0) > 0
+            ? `<a href="#/later" class="badge badge-amber">${p.later.open} open</a>`
+            : '<span class="badge badge-gray">0 open</span>'}
+        </td>
+        <td>${statusBadge(nextBuildAction(p).toLowerCase())}</td>
         <td>${timeAgo(p.created_at)}</td>
         <td>${timeAgo(p.updated_at)}</td>
       </tr>
@@ -882,6 +966,8 @@ function renderProjectsList() {
             <tr>
               <th>Name</th>
               <th>Phase</th>
+              <th>Later</th>
+              <th>Next</th>
               <th>Created</th>
               <th>Updated</th>
             </tr>
@@ -893,6 +979,120 @@ function renderProjectsList() {
   });
 
   window.addEventListener('hashchange', stopPolling, { once: true });
+}
+
+async function renderLaterList() {
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="view-header"><h1>Later</h1><p>.xm/build/projects/*/later.json</p></div>
+    <div class="card"><p class="text-muted">Loading later queue...</p></div>
+  `;
+
+  const result = await fetchJSON(apiUrl('/later'));
+  if (result.error) {
+    app.innerHTML = `
+      <div class="view-header"><h1>Later</h1><p>.xm/build/projects/*/later.json</p></div>
+      <div class="card"><p class="text-muted">Error: ${result.message || result.error}</p></div>
+    `;
+    return;
+  }
+
+  const e = escapeHtmlHumble;
+  const items = Array.isArray(result.data) ? result.data : [];
+  const summary = result.summary || { total: items.length, open: 0, promoted: 0, dismissed: 0, changed_scope: 0 };
+
+  const renderRows = (rows) => rows.map((item) => {
+    const project = item.project || '';
+    const actions = item.status === 'open'
+      ? `${commandButton(`x-build later promote ${item.id} --size small`, 'Promote')} ${commandButton(`x-build later dismiss ${item.id} --reason ""`, 'Dismiss')}`
+      : commandButton('x-build later list --status all', 'List');
+    return `
+      <tr data-status="${e(item.status || '')}" data-impact="${e(item.impact || '')}" data-search="${e(`${project} ${item.id || ''} ${item.title || ''} ${item.reason || ''} ${(item.files || []).join(' ')}`.toLowerCase())}">
+        <td><a href="#/projects/${encodeURIComponent(project)}">${e(item.project_display_name || project)}</a></td>
+        <td><code>${e(item.id || '')}</code></td>
+        <td>
+          <div>${e(item.title || '')}</div>
+          ${item.reason ? `<div class="text-muted" style="margin-top:4px">${e(item.reason)}</div>` : ''}
+        </td>
+        <td>${laterStatusBadge(item.status)}</td>
+        <td>${laterImpactBadge(item.impact)}</td>
+        <td>${laterScopeBadge(item.scope)}</td>
+        <td>${laterFilesCell(item.files)}</td>
+        <td>${item.current_task ? `<code>${e(item.current_task)}</code>` : '<span class="text-muted">—</span>'}</td>
+        <td>${item.promoted_task_id ? `<code>${e(item.promoted_task_id)}</code>` : '<span class="text-muted">—</span>'}</td>
+        <td>${item.updated_at ? timeAgo(item.updated_at) : timeAgo(item.created_at)}</td>
+        <td>${actions}</td>
+      </tr>
+    `;
+  }).join('');
+
+  app.innerHTML = `
+    <div class="view-header">
+      <h1>Later</h1>
+      <p>.xm/build/projects/*/later.json</p>
+      <div class="view-header-meta">
+        <span class="badge badge-amber">${summary.open || 0} open</span>
+        <span class="badge badge-green">${summary.promoted || 0} promoted</span>
+        <span class="badge badge-gray">${summary.dismissed || 0} dismissed</span>
+        ${summary.changed_scope ? `<span class="badge badge-red">${summary.changed_scope} scope changed</span>` : ''}
+        <span style="margin-left:auto">${commandButton('x-build later verify-scope', 'Verify scope')}</span>
+      </div>
+    </div>
+
+    <div class="card" style="padding:12px 16px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input id="later-search" type="text" placeholder="Filter later items" style="min-width:220px;flex:1;padding:7px 10px;background:var(--bg);border:var(--border);color:var(--text);font-family:var(--font-mono);font-size:12px" />
+        <select id="later-status-filter" aria-label="Filter status" style="padding:7px 10px;background:var(--bg);border:var(--border);color:var(--text);font-family:var(--font-mono);font-size:12px">
+          <option value="all">All status</option>
+          <option value="open">Open</option>
+          <option value="promoted">Promoted</option>
+          <option value="dismissed">Dismissed</option>
+        </select>
+        <select id="later-impact-filter" aria-label="Filter impact" style="padding:7px 10px;background:var(--bg);border:var(--border);color:var(--text);font-family:var(--font-mono);font-size:12px">
+          <option value="all">All impact</option>
+          <option value="none">None</option>
+          <option value="low">Low</option>
+          <option value="unknown">Unknown</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="card" style="padding:0">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Project</th>
+            <th>ID</th>
+            <th>Item</th>
+            <th>Status</th>
+            <th>Impact</th>
+            <th>Scope</th>
+            <th>Files</th>
+            <th>Task</th>
+            <th>Promoted</th>
+            <th>Updated</th>
+            <th>Command</th>
+          </tr>
+        </thead>
+        <tbody id="later-rows">${renderRows(items) || '<tr><td colspan="11" class="text-muted">No later items captured.</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
+
+  const filter = () => {
+    const q = document.getElementById('later-search')?.value.trim().toLowerCase() || '';
+    const status = document.getElementById('later-status-filter')?.value || 'all';
+    const impact = document.getElementById('later-impact-filter')?.value || 'all';
+    app.querySelectorAll('#later-rows tr[data-status]').forEach(row => {
+      const matchesSearch = !q || row.dataset.search.includes(q);
+      const matchesStatus = status === 'all' || row.dataset.status === status;
+      const matchesImpact = impact === 'all' || row.dataset.impact === impact;
+      row.style.display = matchesSearch && matchesStatus && matchesImpact ? '' : 'none';
+    });
+  };
+  document.getElementById('later-search')?.addEventListener('input', filter);
+  document.getElementById('later-status-filter')?.addEventListener('change', filter);
+  document.getElementById('later-impact-filter')?.addEventListener('change', filter);
 }
 
 const PHASES = ['01-research', '02-plan', '03-execute', '04-verify', '05-close'];
@@ -948,9 +1148,11 @@ function renderProjectDetail(slug) {
 
   const stopPolling = startPolling(async () => {
     const seq = _pollSequence;
-    const [projectResult, tasksResult] = await Promise.all([
+    const [projectResult, tasksResult, laterResult, gateResult] = await Promise.all([
       fetchJSON(apiUrl(`/projects/${slug}`)),
       fetchJSON(apiUrl(`/projects/${slug}/tasks`)),
+      fetchJSON(apiUrl(`/projects/${slug}/later`)),
+      fetchJSON(apiUrl(`/projects/${slug}/gate`)),
     ]);
     if (seq !== _pollSequence) return;
 
@@ -965,6 +1167,7 @@ function renderProjectDetail(slug) {
     const { manifest, circuitBreaker, handoff, phases: projectPhases, context } = projectResult;
     const name = nullSafe(manifest?.name, slug);
     const phase = nullSafe(manifest?.current_phase, '');
+    const e = escapeHtmlHumble;
 
     // Extract goal from context docs
     const contextDocs = Array.isArray(context) ? context : [];
@@ -995,9 +1198,40 @@ function renderProjectDetail(slug) {
       : Array.isArray(tasksResult?.data) ? tasksResult.data
       : [];
     const completedCount = tasks.filter((t) => t.status === 'completed').length;
+    const laterItems = laterResult?.error ? [] : Array.isArray(laterResult?.items) ? laterResult.items : [];
+    const laterSummary = laterResult?.summary || {
+      total: laterItems.length,
+      open: laterItems.filter(item => item.status === 'open').length,
+      promoted: laterItems.filter(item => item.status === 'promoted').length,
+      dismissed: laterItems.filter(item => item.status === 'dismissed').length,
+    };
 
     // Phase bar
     html += `<div class="card">${renderPhaseBar(phase)}</div>`;
+
+    if (!gateResult?.error) {
+      const gateReady = gateResult.ready;
+      const gateBadge = gateReady
+        ? '<span class="badge badge-green">ready</span>'
+        : '<span class="badge badge-amber">attention</span>';
+      const missing = Array.isArray(gateResult.missing) && gateResult.missing.length
+        ? gateResult.missing.map(file => `<code>${e(file)}</code>`).join(' ')
+        : '<span class="text-muted">none</span>';
+      const commands = Array.isArray(gateResult.commands) && gateResult.commands.length
+        ? gateResult.commands.map(command => commandButton(command)).join(' ')
+        : '<span class="text-muted">none</span>';
+      html += `
+        <div class="card" style="padding:12px 16px">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <h2 style="margin:0;font-size:13px">Phase Gate</h2>
+            ${gateBadge}
+            <span class="text-muted">Pending tasks: ${gateResult.tasks?.pending ?? 0}/${gateResult.tasks?.total ?? 0}</span>
+            <span class="text-muted">Missing: ${missing}</span>
+            <span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">${commands}</span>
+          </div>
+        </div>
+      `;
+    }
 
     // Stat cards row
     const { steps: stepsData, cost: projectCost, quality: projectQuality, decisions: recentDecisions } = projectResult;
@@ -1008,6 +1242,10 @@ function renderProjectDetail(slug) {
         <div class="card stat-card">
           <div class="stat-value">${completedCount}/${tasks.length}</div>
           <div class="stat-label">Tasks</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-value">${laterSummary.open}/${laterSummary.total}</div>
+          <div class="stat-label">Later</div>
         </div>
         <div class="card stat-card">
           <div class="stat-value">${stepsData?.completed ?? 0}/${stepsData?.total ?? 0}</div>
@@ -1027,6 +1265,15 @@ function renderProjectDetail(slug) {
         </div>
       </div>
     `;
+
+    if (laterResult?.error) {
+      html += `
+        <div class="card card-warning" style="padding:12px 16px">
+          <h2 style="margin:0 0 .35rem;font-size:13px">Later Queue</h2>
+          <p class="text-muted" style="margin:0">Could not load later.json: ${e(laterResult.message || laterResult.error)}</p>
+        </div>
+      `;
+    }
 
     // Recent decisions
     const decisionsList = Array.isArray(recentDecisions) && recentDecisions.length > 0 ? recentDecisions : [];
@@ -1076,6 +1323,60 @@ function renderProjectDetail(slug) {
         </table>
       </div>
     `;
+
+    const laterRows = laterItems.map((item) => {
+      const currentTask = item.current_task ? `<code>${e(item.current_task)}</code>` : '<span class="text-muted">—</span>';
+      const promotedTask = item.promoted_task_id ? `<code>${e(item.promoted_task_id)}</code>` : '<span class="text-muted">—</span>';
+      return `
+        <tr>
+          <td><code>${e(item.id || '')}</code></td>
+          <td>
+            <div>${e(item.title || '')}</div>
+            ${item.reason ? `<div class="text-muted" style="margin-top:4px">${e(item.reason)}</div>` : ''}
+          </td>
+          <td>${laterStatusBadge(item.status)}</td>
+          <td>${laterImpactBadge(item.impact)}</td>
+          <td>${laterScopeBadge(item.scope)}</td>
+          <td>${currentTask}</td>
+          <td>${promotedTask}</td>
+          <td>${laterFilesCell(item.files)}</td>
+          <td>${item.updated_at ? timeAgo(item.updated_at) : timeAgo(item.created_at)}</td>
+          <td>${item.status === 'open'
+            ? `${commandButton(`x-build later promote ${item.id} --size small`, 'Promote')} ${commandButton(`x-build later dismiss ${item.id} --reason ""`, 'Dismiss')}`
+            : commandButton('x-build later list --status all', 'List')}</td>
+        </tr>
+      `;
+    }).join('');
+
+    if (!laterResult?.error) {
+      html += `
+        <div class="card" style="padding:0">
+          <div style="padding:1rem 1.25rem 0">
+            <h2 style="margin:0">Later Queue</h2>
+            <p class="text-muted" style="margin:.35rem 0 .75rem;font-size:12px">
+              ${laterSummary.open} open, ${laterSummary.promoted} promoted, ${laterSummary.dismissed} dismissed
+            </p>
+          </div>
+          <table class="table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Item</th>
+                <th>Status</th>
+                <th>Impact</th>
+                <th>Scope</th>
+                <th>Task</th>
+                <th>Promoted</th>
+                <th>Files</th>
+                <th>Updated</th>
+                <th>Command</th>
+              </tr>
+            </thead>
+            <tbody>${laterRows || '<tr><td colspan="10" class="text-muted">No later items captured.</td></tr>'}</tbody>
+          </table>
+        </div>
+      `;
+    }
 
     // Context docs (tabs) — preserve active tab across polling
     const docs = Array.isArray(context) ? context : [];
@@ -2958,13 +3259,25 @@ function reviewVerdictBadge(verdict) {
   return `<span style="color:${color};font-weight:bold">${v}</span>`;
 }
 
+function reviewGateBadge(status) {
+  const map = {
+    passed: 'badge-green',
+    ready: 'badge-blue',
+    blocked: 'badge-red',
+    no_review: 'badge-gray',
+  };
+  const cls = map[status] || 'badge-gray';
+  return `<span class="badge ${cls}">${status || 'unknown'}</span>`;
+}
+
 async function renderReviewsList() {
   const app = document.getElementById('app');
   app.innerHTML = `<div class="view-header"><h1>Reviews</h1><p>.xm/review/</p></div><div class="card"><p class="text-muted">Loading...</p></div>`;
 
-  const [last, history] = await Promise.all([
+  const [last, history, gate] = await Promise.all([
     fetchJSON(apiUrl('/review/last')),
     fetchJSON(apiUrl('/review/history')),
+    fetchJSON(apiUrl('/review/gate')),
   ]);
 
   const lastBlock = (last && !last.error && (last.json || last.md))
@@ -2990,6 +3303,45 @@ async function renderReviewsList() {
               ${j.reviewed_commit ? ` · Commit: <code>${j.reviewed_commit.slice(0, 7)}</code>` : ''}
             </div>
             ${mdLink}
+          </div>
+        `;
+      })()
+    : '';
+
+  const gateBlock = gate && !gate.error
+    ? (() => {
+        const requiredRows = (gate.required || []).map(f => `
+          <tr>
+            <td><code>${escapeHtmlHumble(f.id)}</code></td>
+            <td>${severityBadge(f.severity)}</td>
+            <td>${f.file ? `<code>${escapeHtmlHumble(f.file)}${f.line ? ':' + escapeHtmlHumble(f.line) : ''}</code>` : '<span class="text-muted">—</span>'}</td>
+            <td>${escapeHtmlHumble(f.summary || '')}</td>
+            <td>${f.decision ? `<span class="badge badge-blue">${escapeHtmlHumble(f.decision)}</span>` : '<span class="badge badge-amber">undecided</span>'}</td>
+          </tr>
+        `).join('');
+        const failures = (gate.failures || []).map(f => `<li>${escapeHtmlHumble(f)}</li>`).join('');
+        const commands = (gate.commands || []).map(command => commandButton(command)).join(' ');
+        const allowed = gate.triage?.allowed_files?.length
+          ? gate.triage.allowed_files.map(file => `<code>${escapeHtmlHumble(file)}</code>`).join(' ')
+          : '<span class="text-muted">none</span>';
+        return `
+          <div class="card" style="margin-bottom:1rem">
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:.75rem">
+              <h2 style="margin:0">Review-Fix Gate</h2>
+              ${reviewGateBadge(gate.status)}
+              <span class="text-muted">Required: ${gate.review?.required ?? 0}/${gate.review?.findings ?? 0}</span>
+              <span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">${commands}</span>
+            </div>
+            <div class="text-muted" style="font-size:12px;margin-bottom:.5rem">Allowed files: ${allowed}</div>
+            ${failures ? `<ul style="margin:0 0 .75rem 1.25rem;color:var(--danger);font-size:12px">${failures}</ul>` : ''}
+            ${requiredRows ? `
+              <div class="table-wrapper">
+                <table class="table">
+                  <thead><tr><th>ID</th><th>Severity</th><th>File</th><th>Finding</th><th>Decision</th></tr></thead>
+                  <tbody>${requiredRows}</tbody>
+                </table>
+              </div>
+            ` : '<p class="text-muted" style="margin:0">No triage-required findings.</p>'}
           </div>
         `;
       })()
@@ -3027,6 +3379,7 @@ async function renderReviewsList() {
 
   app.innerHTML = `
     <div class="view-header"><h1>Reviews</h1><p>.xm/review/</p></div>
+    ${gateBlock}
     ${lastBlock}
     ${historyRows ? historyBlock : ''}
     ${emptyBlock}
@@ -3671,6 +4024,7 @@ async function renderSync() {
 const ROUTES = [
   { pattern: /^\/$/, handler: () => renderHome() },
   { pattern: /^\/projects$/, handler: () => renderProjectsList() },
+  { pattern: /^\/later$/, handler: () => renderLaterList() },
   { pattern: /^\/projects\/(.+)$/, handler: (m) => renderProjectDetail(m[1]) },
   { pattern: /^\/probes$/, handler: () => renderProbesList() },
   { pattern: /^\/probes\/diff/, handler: () => renderProbeDiff() },
@@ -4066,6 +4420,7 @@ function renderCostByRoleStackedArea(events) {
 const PALETTE_ROUTES = [
   { path: '/', label: 'Home', kind: 'route' },
   { path: '/projects', label: 'Projects', kind: 'route' },
+  { path: '/later', label: 'Later', kind: 'route' },
   { path: '/humble', label: 'Humble', kind: 'route' },
   { path: '/ops', label: 'Ops', kind: 'route' },
   { path: '/eval', label: 'Eval', kind: 'route' },

@@ -12,6 +12,7 @@
  * Mode C (--scan <dir>): multi-root workspace mode
  */
 
+import { createHash } from 'node:crypto';
 import { writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
@@ -355,6 +356,14 @@ function extractGoal(projectDir) {
   return null;
 }
 
+function readJSONFile(filePath) {
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
 function handleProjects(xmRoot, req) {
   const projectsDir = safeJoin(xmRoot, 'build', 'projects');
   if (!projectsDir || !existsSync(projectsDir)) return jsonResponseWithETag({ data: [] }, req);
@@ -367,6 +376,7 @@ function handleProjects(xmRoot, req) {
     try {
       const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
       manifest.goal = extractGoal(projectDir);
+      manifest.later = getProjectLaterData(xmRoot, projectDir).summary;
       manifests.push(manifest);
     } catch {}
   }
@@ -382,6 +392,284 @@ function handleProjectTasks(xmRoot, slug, req) {
     return jsonResponseWithETag(JSON.parse(readFileSync(filePath, 'utf8')), req);
   } catch {
     return jsonResponseWithETag({ error: 'parse_error', file: 'tasks.json' }, req, 500);
+  }
+}
+
+function normalizeLaterData(data) {
+  const items = Array.isArray(data) ? data : Array.isArray(data?.items) ? data.items : [];
+  const summary = { total: items.length, open: 0, promoted: 0, dismissed: 0 };
+  let updatedAt = null;
+
+  for (const item of items) {
+    const status = item?.status;
+    if (status === 'open') summary.open += 1;
+    else if (status === 'promoted') summary.promoted += 1;
+    else if (status === 'dismissed') summary.dismissed += 1;
+
+    const timestamp = item?.updated_at || item?.created_at || null;
+    if (timestamp && (!updatedAt || timestamp > updatedAt)) updatedAt = timestamp;
+  }
+
+  return { items, summary, updated_at: updatedAt };
+}
+
+function hashFile(filePath) {
+  return createHash('sha256').update(readFileSync(filePath)).digest('hex');
+}
+
+function laterSnapshotStatus(xmRoot, item) {
+  const snapshots = Array.isArray(item?.file_snapshots) ? item.file_snapshots : [];
+  if (snapshots.length === 0) return { tracked: 0, changed: 0, files: [] };
+
+  const workspaceRoot = resolve(xmRoot, '..');
+  const files = [];
+  for (const snapshot of snapshots) {
+    const rel = String(snapshot?.file || '').trim();
+    if (!rel) continue;
+    const abs = safeJoin(workspaceRoot, rel);
+    if (!abs) {
+      files.push({ file: rel, changed: true, reason: 'path_escape' });
+      continue;
+    }
+    const exists = existsSync(abs);
+    const sha256 = exists ? hashFile(abs) : null;
+    files.push({
+      file: rel,
+      changed: exists !== snapshot.exists || sha256 !== snapshot.sha256,
+      before_exists: snapshot.exists,
+      after_exists: exists,
+    });
+  }
+
+  return {
+    tracked: files.length,
+    changed: files.filter(file => file.changed).length,
+    files,
+  };
+}
+
+function getProjectLaterData(xmRoot, projectDir) {
+  const filePath = safeJoin(projectDir, 'later.json');
+  if (!filePath || !existsSync(filePath)) return normalizeLaterData({ items: [] });
+
+  const parsed = readJSONFile(filePath);
+  if (!parsed) return { ...normalizeLaterData({ items: [] }), parse_error: true };
+
+  const data = normalizeLaterData(parsed);
+  data.items = data.items.map(item => ({
+    ...item,
+    scope: laterSnapshotStatus(xmRoot, item),
+  }));
+  return data;
+}
+
+function handleProjectLater(xmRoot, slug, req) {
+  if (!isValidSegment(slug)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  const projectDir = safeJoin(xmRoot, 'build', 'projects', slug);
+  if (!projectDir || !existsSync(projectDir)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
+
+  const data = getProjectLaterData(xmRoot, projectDir);
+  if (data.parse_error) return jsonResponseWithETag({ error: 'parse_error', file: 'later.json' }, req, 500);
+  return jsonResponseWithETag(data, req);
+}
+
+function handleLaterAll(xmRoot, req) {
+  const projectsDir = safeJoin(xmRoot, 'build', 'projects');
+  const summary = { total: 0, open: 0, promoted: 0, dismissed: 0, changed_scope: 0 };
+  const projects = [];
+  const items = [];
+  if (!projectsDir || !existsSync(projectsDir)) return jsonResponseWithETag({ data: [], projects: [], summary }, req);
+
+  for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const projectDir = safeJoin(projectsDir, entry.name);
+    const manifestPath = safeJoin(projectDir, 'manifest.json');
+    if (!projectDir || !manifestPath || !existsSync(manifestPath)) continue;
+    const manifest = readJSONFile(manifestPath);
+    if (!manifest) continue;
+    const later = getProjectLaterData(xmRoot, projectDir);
+    if (later.parse_error) continue;
+    const project = {
+      name: entry.name,
+      display_name: manifest.display_name || manifest.name || entry.name,
+      current_phase: manifest.current_phase || null,
+      updated_at: manifest.updated_at || null,
+      summary: later.summary,
+      updated_later_at: later.updated_at,
+    };
+    projects.push(project);
+
+    for (const item of later.items) {
+      const scopeChanged = item.scope?.changed || 0;
+      summary.changed_scope += scopeChanged > 0 ? 1 : 0;
+      items.push({
+        ...item,
+        project: entry.name,
+        project_display_name: project.display_name,
+        project_phase: project.current_phase,
+      });
+    }
+
+    summary.total += later.summary.total;
+    summary.open += later.summary.open;
+    summary.promoted += later.summary.promoted;
+    summary.dismissed += later.summary.dismissed;
+  }
+
+  projects.sort((a, b) => (b.updated_later_at || b.updated_at || '').localeCompare(a.updated_later_at || a.updated_at || ''));
+  items.sort((a, b) => (b.updated_at || b.created_at || '').localeCompare(a.updated_at || a.created_at || ''));
+  return jsonResponseWithETag({ data: items, projects, summary }, req);
+}
+
+function handleProjectGate(xmRoot, slug, req) {
+  if (!isValidSegment(slug)) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  const projectDir = safeJoin(xmRoot, 'build', 'projects', slug);
+  if (!projectDir || !existsSync(projectDir)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
+
+  const manifestPath = safeJoin(projectDir, 'manifest.json');
+  const manifest = manifestPath && existsSync(manifestPath) ? readJSONFile(manifestPath) : {};
+  const phasesDir = safeJoin(projectDir, 'phases');
+  const currentPhase = manifest?.current_phase || null;
+  const phaseDir = currentPhase && phasesDir ? safeJoin(phasesDir, currentPhase) : null;
+  const files = phaseDir && existsSync(phaseDir)
+    ? readdirSync(phaseDir, { withFileTypes: true }).filter(entry => entry.isFile()).map(entry => entry.name).sort()
+    : [];
+  const statusPath = phaseDir ? safeJoin(phaseDir, 'status.json') : null;
+  const status = statusPath && existsSync(statusPath) ? readJSONFile(statusPath) : null;
+  const tasksPath = phaseDir ? safeJoin(phaseDir, 'tasks.json') : null;
+  const tasksData = tasksPath && existsSync(tasksPath) ? readJSONFile(tasksPath) : null;
+  const tasks = Array.isArray(tasksData) ? tasksData : Array.isArray(tasksData?.tasks) ? tasksData.tasks : [];
+  const pendingTasks = tasks.filter(task => !['completed', 'done'].includes(String(task.status || '').toLowerCase())).length;
+  const requiredByPhase = {
+    '01-research': ['status.json'],
+    '02-plan': ['tasks.json'],
+    '03-execute': ['tasks.json'],
+    '04-verify': ['status.json'],
+    '05-close': ['status.json'],
+  };
+  const expected = requiredByPhase[currentPhase] || ['status.json'];
+  const missing = expected.filter(file => !files.includes(file));
+  const nextCommands = [
+    'x-build next',
+    pendingTasks > 0 ? 'x-build run' : null,
+    currentPhase === '04-verify' ? 'x-build quality' : null,
+    missing.length === 0 ? 'x-build phase next' : null,
+  ].filter(Boolean);
+
+  return jsonResponseWithETag({
+    current_phase: currentPhase,
+    status,
+    files,
+    missing,
+    tasks: { total: tasks.length, pending: pendingTasks },
+    ready: missing.length === 0 && pendingTasks === 0,
+    commands: nextCommands,
+  }, req);
+}
+
+function normalizeSeverity(value) {
+  return String(value || '').toLowerCase();
+}
+
+function normalizeVerdict(value) {
+  return String(value || '').toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function reviewFixGateData(xmRoot) {
+  const reviewDir = safeJoin(xmRoot, 'review');
+  const resultPath = reviewDir ? safeJoin(reviewDir, 'last-result.json') : null;
+  const triagePath = reviewDir ? safeJoin(reviewDir, 'triage.json') : null;
+  const review = resultPath && existsSync(resultPath) ? readJSONFile(resultPath) : null;
+  const triage = triagePath && existsSync(triagePath) ? readJSONFile(triagePath) : null;
+  const findings = Array.isArray(review?.findings) ? review.findings : [];
+  const requiredSeverities = new Set(['critical', 'high', 'medium']);
+  const blockingSeverities = new Set(['critical', 'high']);
+  const required = findings
+    .map((finding, index) => ({ ...finding, id: `F${index + 1}`, severity: normalizeSeverity(finding.severity) }))
+    .filter(finding => requiredSeverities.has(finding.severity));
+  const triageItems = Array.isArray(triage?.target_findings) ? triage.target_findings : Array.isArray(triage?.findings) ? triage.findings : [];
+  const triageMap = new Map(triageItems.map(item => [item.id || item.finding_id, item]));
+  const decisions = { fix_now: 0, backlog: 0, accept_risk: 0, false_positive: 0, undecided: 0 };
+  const failures = [];
+
+  if (!review) {
+    return {
+      status: 'no_review',
+      review: null,
+      triage: null,
+      required: [],
+      decisions,
+      failures: [],
+      commands: ['x-review diff'],
+    };
+  }
+
+  const verdict = normalizeVerdict(review.verdict);
+  if (!triage && required.length > 0 && !['lgtm', 'pass'].includes(verdict)) {
+    failures.push('Missing .xm/review/triage.json');
+  }
+
+  for (const finding of required) {
+    const item = triageMap.get(finding.id);
+    const decision = String(item?.decision || '').trim().toLowerCase();
+    if (!decision) {
+      decisions.undecided += 1;
+      failures.push(`${finding.id}: missing triage decision`);
+      continue;
+    }
+    if (decisions[decision] != null) decisions[decision] += 1;
+    if (blockingSeverities.has(finding.severity) && decision === 'backlog') {
+      failures.push(`${finding.id}: ${finding.severity} cannot be moved to backlog`);
+    }
+    if ((decision === 'accept_risk' || decision === 'false_positive') && !String(item?.evidence || '').trim()) {
+      failures.push(`${finding.id}: ${decision} requires evidence`);
+    }
+  }
+
+  if (review.reviewed_commit && triage?.reviewed_commit && review.reviewed_commit !== triage.reviewed_commit) {
+    failures.push('triage reviewed_commit does not match last review');
+  }
+
+  const allowedFiles = Array.isArray(triage?.fix_scope?.allowed_files) ? triage.fix_scope.allowed_files : [];
+  const verification = Array.isArray(triage?.verification) ? triage.verification : Array.isArray(triage?.fix_scope?.verification) ? triage.fix_scope.verification : [];
+  const status = failures.length > 0
+    ? 'blocked'
+    : required.length === 0 && ['lgtm', 'pass'].includes(verdict)
+      ? 'passed'
+      : 'ready';
+
+  return {
+    status,
+    review: {
+      verdict: review.verdict || null,
+      reviewed_commit: review.reviewed_commit || null,
+      findings: findings.length,
+      required: required.length,
+    },
+    triage: triage ? {
+      reviewed_commit: triage.reviewed_commit || null,
+      allowed_files: allowedFiles,
+      verification,
+    } : null,
+    required: required.map(finding => ({
+      id: finding.id,
+      severity: finding.severity,
+      file: finding.file || null,
+      line: finding.line ?? null,
+      summary: finding.summary || finding.description || finding.title || '',
+      decision: triageMap.get(finding.id)?.decision || '',
+    })),
+    decisions,
+    failures,
+    commands: triage ? ['x-build verify-review-fix', 'x-build quality', 'x-review diff'] : ['x-build verify-review-fix --init'],
+  };
+}
+
+function handleReviewGate(xmRoot, req) {
+  try {
+    return jsonResponseWithETag(reviewFixGateData(xmRoot), req);
+  } catch {
+    return jsonResponseWithETag({ error: 'read_error' }, req, 500);
   }
 }
 
@@ -1805,11 +2093,30 @@ server = Bun.serve({
           return handleProjects(xmRoot, req);
         }
 
+        // GET /api/ws/:wsId/later
+        if (subPath === '/later') {
+          return handleLaterAll(xmRoot, req);
+        }
+
         // GET /api/ws/:wsId/projects/:slug/tasks
         const wsTasksMatch = subPath.match(/^\/projects\/([^/]+)\/tasks$/);
         if (wsTasksMatch) {
           const slug = decodeURIComponent(wsTasksMatch[1]);
           return handleProjectTasks(xmRoot, slug, req);
+        }
+
+        // GET /api/ws/:wsId/projects/:slug/later
+        const wsLaterMatch = subPath.match(/^\/projects\/([^/]+)\/later$/);
+        if (wsLaterMatch) {
+          const slug = decodeURIComponent(wsLaterMatch[1]);
+          return handleProjectLater(xmRoot, slug, req);
+        }
+
+        // GET /api/ws/:wsId/projects/:slug/gate
+        const wsGateMatch = subPath.match(/^\/projects\/([^/]+)\/gate$/);
+        if (wsGateMatch) {
+          const slug = decodeURIComponent(wsGateMatch[1]);
+          return handleProjectGate(xmRoot, slug, req);
         }
 
         // GET /api/ws/:wsId/projects/:slug
@@ -1909,6 +2216,11 @@ server = Bun.serve({
           return handleReviewLast(xmRoot, req);
         }
 
+        // GET /api/ws/:wsId/review/gate
+        if (subPath === '/review/gate') {
+          return handleReviewGate(xmRoot, req);
+        }
+
         // GET /api/ws/:wsId/review/history/:file  (must come before /review/history)
         const wsReviewFileMatch = subPath.match(/^\/review\/history\/([^/]+)$/);
         if (wsReviewFileMatch) {
@@ -1972,11 +2284,30 @@ server = Bun.serve({
         return handleProjects(XM_ROOT, req);
       }
 
+      // GET /api/later
+      if (path === '/api/later') {
+        return handleLaterAll(XM_ROOT, req);
+      }
+
       // GET /api/projects/:slug/tasks
       const tasksMatch = path.match(/^\/api\/projects\/([^/]+)\/tasks$/);
       if (tasksMatch) {
         const slug = decodeURIComponent(tasksMatch[1]);
         return handleProjectTasks(XM_ROOT, slug, req);
+      }
+
+      // GET /api/projects/:slug/later
+      const laterMatch = path.match(/^\/api\/projects\/([^/]+)\/later$/);
+      if (laterMatch) {
+        const slug = decodeURIComponent(laterMatch[1]);
+        return handleProjectLater(XM_ROOT, slug, req);
+      }
+
+      // GET /api/projects/:slug/gate
+      const gateMatch = path.match(/^\/api\/projects\/([^/]+)\/gate$/);
+      if (gateMatch) {
+        const slug = decodeURIComponent(gateMatch[1]);
+        return handleProjectGate(XM_ROOT, slug, req);
       }
 
       // GET /api/projects/:slug
@@ -2079,6 +2410,11 @@ server = Bun.serve({
       // GET /api/review/last
       if (path === '/api/review/last') {
         return handleReviewLast(XM_ROOT, req);
+      }
+
+      // GET /api/review/gate
+      if (path === '/api/review/gate') {
+        return handleReviewGate(XM_ROOT, req);
       }
 
       // GET /api/review/history/:file  (must come before /api/review/history)
