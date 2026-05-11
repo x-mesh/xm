@@ -357,7 +357,9 @@ export function findActiveProjects() {
     .filter(p => p.manifest)
     .sort((a, b) => {
       try {
-        return statSync(manifestPath(b.name)).mtimeMs - statSync(manifestPath(a.name)).mtimeMs;
+        const diff = statSync(manifestPath(b.name)).mtimeMs - statSync(manifestPath(a.name)).mtimeMs;
+        if (diff !== 0) return diff;
+        return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
       } catch {
         return new Date(b.manifest.updated_at || 0) - new Date(a.manifest.updated_at || 0);
       }
