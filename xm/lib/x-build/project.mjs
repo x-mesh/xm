@@ -251,7 +251,7 @@ export function cmdStatus(args) {
   }
 
   // Multi-active ambiguity warning — only when caller didn't disambiguate.
-  // findActiveProjects returns all manifest-bearing projects sorted by updated_at.
+  // findActiveProjects returns all manifest-bearing projects sorted by manifest mtime descending.
   // If more than one exists and the user didn't pass a name, surface the list so
   // they don't read "wrong project" output as truth. JSON mode emits the list as
   // a metadata field instead of corrupting the structured output.
