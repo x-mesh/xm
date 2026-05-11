@@ -430,3 +430,130 @@ describe('misc commands', () => {
     }
   });
 });
+
+// ── Task reopen ───────────────────────────────────────────────────
+
+describe('task reopen', () => {
+  test('basic reopen: completed → pending, reopen_history added, completed_at cleared', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['tasks', 'add', 'Task A'], { cwd: tmp });
+      run(['tasks', 'update', 't1', '--status', 'completed'], { cwd: tmp });
+
+      const r = run(['tasks', 'reopen', 't1', '--reason', 'needs rework'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+
+      const tasks = readJSON(join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'tasks.json'));
+      const t1 = tasks.tasks.find(t => t.id === 't1');
+      expect(t1.status).toBe('pending');
+      expect(t1.reopen_history).toHaveLength(1);
+      expect(t1.reopen_history[0].reason).toBe('needs rework');
+      expect(t1.reopen_history[0].from_status).toBe('completed');
+      expect(t1.completed_at).toBeUndefined();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('--reason is required: missing reason exits non-zero', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['tasks', 'add', 'Task A'], { cwd: tmp });
+      run(['tasks', 'update', 't1', '--status', 'completed'], { cwd: tmp });
+
+      const r = run(['tasks', 'reopen', 't1'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+
+      // Task must remain completed
+      const tasks = readJSON(join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'tasks.json'));
+      const t1 = tasks.tasks.find(t => t.id === 't1');
+      expect(t1.status).toBe('completed');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('non-REOPENABLE status (pending) rejected', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      run(['tasks', 'add', 'Task A'], { cwd: tmp });
+
+      // Task is pending by default — not in REOPENABLE set
+      const r = run(['tasks', 'reopen', 't1', '--reason', 'retry'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain('Cannot reopen');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('cascade: reopen root without --cascade leaves dependents intact', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['tasks', 'add', 'Task A'], { cwd: tmp });
+      run(['tasks', 'add', 'Task B', '--deps', 't1'], { cwd: tmp });
+      run(['tasks', 'add', 'Task C', '--deps', 't2'], { cwd: tmp });
+      run(['tasks', 'update', 't1', '--status', 'completed'], { cwd: tmp });
+      run(['tasks', 'update', 't2', '--status', 'completed'], { cwd: tmp });
+      run(['tasks', 'update', 't3', '--status', 'completed'], { cwd: tmp });
+
+      const r = run(['tasks', 'reopen', 't1', '--reason', 'root only'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+
+      const tasks = readJSON(join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'tasks.json'));
+      expect(tasks.tasks.find(t => t.id === 't1').status).toBe('pending');
+      expect(tasks.tasks.find(t => t.id === 't2').status).toBe('completed');
+      expect(tasks.tasks.find(t => t.id === 't3').status).toBe('completed');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('cascade: --cascade transitively reopens dependents', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['tasks', 'add', 'Task A'], { cwd: tmp });
+      run(['tasks', 'add', 'Task B', '--deps', 't1'], { cwd: tmp });
+      run(['tasks', 'add', 'Task C', '--deps', 't2'], { cwd: tmp });
+      run(['tasks', 'update', 't1', '--status', 'completed'], { cwd: tmp });
+      run(['tasks', 'update', 't2', '--status', 'completed'], { cwd: tmp });
+      run(['tasks', 'update', 't3', '--status', 'completed'], { cwd: tmp });
+
+      const r = run(['tasks', 'reopen', 't1', '--reason', 'cascade all', '--cascade'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+
+      const tasks = readJSON(join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'tasks.json'));
+      expect(tasks.tasks.find(t => t.id === 't1').status).toBe('pending');
+      expect(tasks.tasks.find(t => t.id === 't2').status).toBe('pending');
+      expect(tasks.tasks.find(t => t.id === 't3').status).toBe('pending');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('audit: reopen writes entry to decisions.json', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['tasks', 'add', 'Task A'], { cwd: tmp });
+      run(['tasks', 'update', 't1', '--status', 'failed', '--retry', 'false'], { cwd: tmp });
+
+      run(['tasks', 'reopen', 't1', '--reason', 'audit check'], { cwd: tmp });
+
+      const decisions = readJSON(
+        join(tmp, '.xm', 'build', 'projects', name, 'context', 'decisions.json')
+      );
+      const reopenEntry = decisions.decisions?.find(d => d.type === 'reopen');
+      expect(reopenEntry).toBeTruthy();
+      expect(reopenEntry.rationale).toBe('audit check');
+      expect(reopenEntry.title).toContain('t1');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
