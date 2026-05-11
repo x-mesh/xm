@@ -531,6 +531,8 @@ describe('task reopen', () => {
       expect(tasks.tasks.find(t => t.id === 't1').status).toBe('pending');
       expect(tasks.tasks.find(t => t.id === 't2').status).toBe('pending');
       expect(tasks.tasks.find(t => t.id === 't3').status).toBe('pending');
+      expect(tasks.tasks.find(t => t.id === 't2').reopen_history).toHaveLength(1);
+      expect(tasks.tasks.find(t => t.id === 't3').reopen_history).toHaveLength(1);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -543,7 +545,8 @@ describe('task reopen', () => {
       run(['tasks', 'add', 'Task A'], { cwd: tmp });
       run(['tasks', 'update', 't1', '--status', 'failed', '--retry', 'false'], { cwd: tmp });
 
-      run(['tasks', 'reopen', 't1', '--reason', 'audit check'], { cwd: tmp });
+      const reopenResult = run(['tasks', 'reopen', 't1', '--reason', 'audit check'], { cwd: tmp });
+      expect(reopenResult.exitCode).toBe(0);
 
       const decisions = readJSON(
         join(tmp, '.xm', 'build', 'projects', name, 'context', 'decisions.json')

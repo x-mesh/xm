@@ -579,6 +579,7 @@ describe('findActiveProjects mtime sort', () => {
       const projects = core.findActiveProjects();
       const names = projects.map(p => p.name);
       expect(names.indexOf(nameA)).toBeLessThan(names.indexOf(nameB));
+      expect([nameA, nameB].every(n => names.includes(n))).toBe(true);
     } finally {
       rmSync(dirA, { recursive: true, force: true });
       rmSync(dirB, { recursive: true, force: true });
