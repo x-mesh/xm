@@ -2,12 +2,14 @@
  * x-build/later — Off-scope work capture
  */
 
+import { createHash } from 'node:crypto';
+import { relative } from 'node:path';
 import {
   TASK_STATES, C,
-  readJSON, writeJSON,
+  readJSON, writeJSON, modifyJSON,
   tasksPath, projectDir,
   resolveProject, parseOptions,
-  existsSync, join,
+  existsSync, join, resolve, ROOT, readFileSync,
 } from './core.mjs';
 
 const VALID_STATUS = new Set(['open', 'promoted', 'dismissed']);
@@ -38,6 +40,46 @@ function splitList(value) {
   return String(value).split(',').map(s => s.trim()).filter(Boolean);
 }
 
+function workspaceRoot() {
+  return resolve(ROOT, '..', '..');
+}
+
+function normalizeWorkspaceFile(file) {
+  const raw = String(file || '').trim();
+  if (!raw) return null;
+  const root = workspaceRoot();
+  const abs = resolve(root, raw);
+  const rel = relative(root, abs).replace(/\\/g, '/');
+  if (rel === '..' || rel.startsWith('../')) {
+    console.error(`❌ Later file path escapes the workspace: ${raw}`);
+    process.exit(1);
+  }
+  return rel;
+}
+
+function hashFile(path) {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+function fileSnapshot(file) {
+  const rel = normalizeWorkspaceFile(file);
+  const abs = resolve(workspaceRoot(), rel);
+  if (!existsSync(abs)) return { file: rel, exists: false, sha256: null };
+  return { file: rel, exists: true, sha256: hashFile(abs) };
+}
+
+function compareSnapshot(snapshot) {
+  const abs = resolve(workspaceRoot(), snapshot.file);
+  const exists = existsSync(abs);
+  const sha256 = exists ? hashFile(abs) : null;
+  return {
+    file: snapshot.file,
+    changed: exists !== snapshot.exists || sha256 !== snapshot.sha256,
+    before_exists: snapshot.exists,
+    after_exists: exists,
+  };
+}
+
 function nextTaskId(tasks) {
   const max = tasks.reduce((n, task) => {
     const parsed = parseInt(String(task.id || '').replace(/^t/, ''), 10);
@@ -50,8 +92,8 @@ function nextTaskId(tasks) {
 
 export function cmdLater(args) {
   const sub = args[0];
-  if (!sub || !['add', 'list', 'promote', 'dismiss'].includes(sub)) {
-    console.error('Usage: x-build later <add|list|promote|dismiss> [args]');
+  if (!sub || !['add', 'list', 'promote', 'dismiss', 'verify-scope'].includes(sub)) {
+    console.error('Usage: x-build later <add|list|promote|dismiss|verify-scope> [args]');
     process.exit(1);
   }
 
@@ -61,6 +103,7 @@ export function cmdLater(args) {
   if (sub === 'list') return laterList(project, args.slice(1));
   if (sub === 'promote') return laterPromote(project, args.slice(1));
   if (sub === 'dismiss') return laterDismiss(project, args.slice(1));
+  if (sub === 'verify-scope') return laterVerifyScope(project, args.slice(1));
 }
 
 export function laterAdd(project, args) {
@@ -78,23 +121,39 @@ export function laterAdd(project, args) {
     process.exit(1);
   }
 
-  const data = readLater(project);
-  const now = new Date().toISOString();
-  const item = {
-    id: nextLaterId(data.items),
-    title,
-    status: 'open',
-    reason: opts.reason && opts.reason !== true ? String(opts.reason) : '',
-    source: opts.source && opts.source !== true ? String(opts.source) : 'manual',
-    impact,
-    current_task: opts.task && opts.task !== true ? String(opts.task) : null,
-    files: splitList(opts.files),
-    created_at: now,
-    updated_at: now,
-  };
+  const currentTask = opts.task && opts.task !== true ? String(opts.task) : null;
+  if (currentTask) {
+    const tasksData = readJSON(tasksPath(project)) || { tasks: [] };
+    const validIds = new Set(tasksData.tasks.map(task => task.id));
+    if (!validIds.has(currentTask)) {
+      console.error(`❌ Unknown current task: "${currentTask}" does not exist. Add it first or omit --task.`);
+      process.exit(1);
+    }
+  }
 
-  data.items.push(item);
-  writeLater(project, data);
+  const files = splitList(opts.files).map(normalizeWorkspaceFile).filter(Boolean);
+  const fileSnapshots = files.map(fileSnapshot);
+  let item;
+  modifyJSON(laterPath(project), current => {
+    const data = current || { items: [] };
+    const now = new Date().toISOString();
+    item = {
+      id: nextLaterId(data.items || []),
+      title,
+      status: 'open',
+      reason: opts.reason && opts.reason !== true ? String(opts.reason) : '',
+      source: opts.source && opts.source !== true ? String(opts.source) : 'manual',
+      impact,
+      current_task: currentTask,
+      files,
+      file_snapshots: fileSnapshots,
+      created_at: now,
+      updated_at: now,
+    };
+    data.items = data.items || [];
+    data.items.push(item);
+    return data;
+  });
 
   console.log(`${C.green}Later item added:${C.reset} ${item.id} — ${item.title}`);
   console.log('  Deferred by design. Do not edit code for this item until it is promoted to a task.');
@@ -120,7 +179,8 @@ export function laterList(project, args) {
   for (const item of items) {
     const files = item.files?.length ? ` files: ${item.files.join(',')}` : '';
     const task = item.current_task ? ` task: ${item.current_task}` : '';
-    console.log(`  ${item.id} [${item.status}] ${item.title}${task}${files}`);
+    const promoted = item.promoted_task_id ? ` promoted: ${item.promoted_task_id}` : '';
+    console.log(`  ${item.id} [${item.status}] ${item.title}${task}${promoted}${files}`);
     if (item.reason) console.log(`     reason: ${item.reason}`);
   }
   console.log('');
@@ -190,8 +250,19 @@ export function laterDismiss(project, args) {
     process.exit(1);
   }
 
-  const data = readLater(project);
-  const item = data.items.find(entry => entry.id === id);
+  let item;
+  let previousStatus = null;
+  modifyJSON(laterPath(project), current => {
+    const data = current || { items: [] };
+    item = data.items.find(entry => entry.id === id);
+    if (!item) return data;
+    previousStatus = item.status;
+    if (item.status === 'promoted' || item.status === 'dismissed') return data;
+    item.status = 'dismissed';
+    item.dismiss_reason = opts.reason && opts.reason !== true ? String(opts.reason) : '';
+    item.updated_at = new Date().toISOString();
+    return data;
+  });
   if (!item) {
     console.error(`❌ Later item not found: ${id}`);
     process.exit(1);
@@ -200,14 +271,46 @@ export function laterDismiss(project, args) {
     console.error(`❌ Later item ${id} was already promoted to ${item.promoted_task_id}. Remove or complete the task first.`);
     process.exit(1);
   }
-  if (item.status === 'dismissed') {
+  if (previousStatus === 'dismissed') {
     console.error(`❌ Later item ${id} is already dismissed.`);
     process.exit(1);
   }
 
-  item.status = 'dismissed';
-  item.dismiss_reason = opts.reason && opts.reason !== true ? String(opts.reason) : '';
-  item.updated_at = new Date().toISOString();
-  writeLater(project, data);
   console.log(`${C.green}Dismissed:${C.reset} ${id} — ${item.title}`);
+}
+
+export function laterVerifyScope(project, args) {
+  const { opts } = parseOptions(args);
+  const data = readLater(project);
+  const openItems = (data.items || []).filter(item => item.status === 'open');
+  const failures = [];
+  const warnings = [];
+
+  for (const item of openItems) {
+    if (!Array.isArray(item.file_snapshots) || item.file_snapshots.length === 0) {
+      if (item.files?.length) warnings.push(`${item.id}: no baseline snapshot recorded for ${item.files.join(', ')}`);
+      continue;
+    }
+    for (const result of item.file_snapshots.map(compareSnapshot)) {
+      if (result.changed) {
+        failures.push(`${item.id}: ${result.file} changed while later item is still open`);
+      }
+    }
+  }
+
+  if (warnings.length > 0 && opts.strict) {
+    failures.push(...warnings);
+  }
+
+  if (failures.length > 0) {
+    console.log(`${C.red}Later scope check failed.${C.reset}`);
+    for (const failure of failures) console.log(`  - ${failure}`);
+    for (const warning of warnings) console.log(`  ${C.yellow}Warning:${C.reset} ${warning}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`${C.green}Later scope check passed.${C.reset}`);
+  console.log(`  Open later items: ${openItems.length}`);
+  for (const warning of warnings) console.log(`  ${C.yellow}Warning:${C.reset} ${warning}`);
 }
