@@ -343,7 +343,8 @@ export function findCurrentProject() {
   return candidates[0]?.name || null;
 }
 
-// Returns all projects with a valid manifest, sorted by updated_at descending.
+// Returns all projects with a valid manifest, sorted by manifest file mtime descending.
+// Using mtime (not updated_at) handles direct manifest edits that skip the CLI update path.
 // findCurrentProject() returns the first entry; callers that want disambiguation
 // (e.g., status display) iterate the full list.
 export function findActiveProjects() {
@@ -353,8 +354,14 @@ export function findActiveProjects() {
   if (projects.length === 0) return [];
   return projects
     .map(p => ({ name: p, manifest: readJSON(manifestPath(p)) }))
-    .filter(p => p.manifest && p.manifest.updated_at)
-    .sort((a, b) => new Date(b.manifest.updated_at) - new Date(a.manifest.updated_at));
+    .filter(p => p.manifest)
+    .sort((a, b) => {
+      try {
+        return statSync(manifestPath(b.name)).mtimeMs - statSync(manifestPath(a.name)).mtimeMs;
+      } catch {
+        return new Date(b.manifest.updated_at || 0) - new Date(a.manifest.updated_at || 0);
+      }
+    });
 }
 
 // NOTE: resolveProject needs cmdInit for autoInit, which creates a circular dep.
