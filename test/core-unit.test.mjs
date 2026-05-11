@@ -2,7 +2,7 @@
  * core.mjs unit tests — direct import for coverage
  */
 import { describe, test, expect, beforeEach, afterEach, afterAll } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -550,6 +550,67 @@ describe('renderTemplate', () => {
 
   test('missing var leaves placeholder', () => {
     expect(core.renderTemplate('{a} {b}', { a: '1' })).toBe('1 {b}');
+  });
+});
+
+// ── findActiveProjects (mtime sort) ──────────────────────────────
+
+describe('findActiveProjects mtime sort', () => {
+  test('sorts by manifest mtime, not updated_at', () => {
+    // Both projects have the same stale updated_at; only mtime differs.
+    const suffix = Date.now();
+    const nameA = `fap-mtime-a-${suffix}`;
+    const nameB = `fap-mtime-b-${suffix}`;
+    const dirA = join(core.ROOT, 'projects', nameA);
+    const dirB = join(core.ROOT, 'projects', nameB);
+    try {
+      mkdirSync(dirA, { recursive: true });
+      mkdirSync(dirB, { recursive: true });
+      const staleTs = new Date('2020-01-01').toISOString();
+      core.writeJSON(join(dirA, 'manifest.json'), { display_name: nameA, current_phase: '02-plan', updated_at: staleTs });
+      core.writeJSON(join(dirB, 'manifest.json'), { display_name: nameB, current_phase: '02-plan', updated_at: staleTs });
+
+      // Set A mtime to now, B mtime to 10s ago
+      const recent = new Date();
+      const older = new Date(Date.now() - 10_000);
+      utimesSync(join(dirA, 'manifest.json'), recent, recent);
+      utimesSync(join(dirB, 'manifest.json'), older, older);
+
+      const projects = core.findActiveProjects();
+      const names = projects.map(p => p.name);
+      expect(names.indexOf(nameA)).toBeLessThan(names.indexOf(nameB));
+    } finally {
+      rmSync(dirA, { recursive: true, force: true });
+      rmSync(dirB, { recursive: true, force: true });
+    }
+  });
+
+  test('manifest without updated_at is still included', () => {
+    const name = `fap-no-upd-${Date.now()}`;
+    const dir = join(core.ROOT, 'projects', name);
+    try {
+      mkdirSync(dir, { recursive: true });
+      core.writeJSON(join(dir, 'manifest.json'), { display_name: name, current_phase: '02-plan' });
+
+      const projects = core.findActiveProjects();
+      expect(projects.find(p => p.name === name)).toBeTruthy();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('directory without manifest.json is excluded', () => {
+    const name = `fap-no-manifest-${Date.now()}`;
+    const dir = join(core.ROOT, 'projects', name);
+    try {
+      mkdirSync(dir, { recursive: true });
+      // deliberately no manifest.json
+
+      const projects = core.findActiveProjects();
+      expect(projects.find(p => p.name === name)).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
