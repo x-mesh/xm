@@ -129,31 +129,28 @@ The **Common Rationalizations** table (excuses agents use to skip steps + factua
 
 ### CLI Invocation Pattern (required when SKILL.md exposes a shell CLI)
 
-If the skill references a plugin CLI (`node ${CLAUDE_PLUGIN_ROOT}/lib/<name>-cli.mjs ...`), the SKILL.md **MUST** instruct the agent to define a robust shell helper that prefers the `xm` dispatcher and falls back through plugin cache. Naive helpers using only `${CLAUDE_PLUGIN_ROOT}` break in Bash subprocesses where the env var is unset.
+If the skill references a plugin CLI, the SKILL.md **MUST** instruct the agent to call the `xm <plugin> <command>` dispatcher directly. **Do NOT** instruct agents to define shell helper functions — Claude Code's Bash tool starts a fresh shell on every invocation, so functions defined in one call do not persist to the next, causing repeated `command not found: xmXX` failures.
 
 **Required block** (adapt `xmXX`, `<plugin>`, `<name>` per skill):
 ```markdown
-> **⚠ When using Bash tool, define the helper once at session start. `${CLAUDE_PLUGIN_ROOT}` is substituted in SKILL.md prompt text but NOT as a Bash env var — relying on it alone causes `Cannot find module '/lib/...'` errors.**
+> **⚠ Call `xm <plugin> <command>` directly. Claude Code's Bash tool starts a fresh shell on every invocation — shell functions (`xmXX()`) defined in one call do NOT persist to the next, causing `command not found: xmXX`. Never define a helper across calls; always use the dispatcher.**
+>
+> **Fallback** (only when `xm` is not in PATH — rare; `${CLAUDE_PLUGIN_ROOT}` is NOT exported to Bash subprocesses, so don't rely on it bare):
 > ```bash
-> # Resolution chain: xm dispatcher → CLAUDE_PLUGIN_ROOT → plugin cache (latest)
-> xmXX() {
->   command -v xm >/dev/null 2>&1 && { xm <plugin> "$@"; return; }
->   local cli="${CLAUDE_PLUGIN_ROOT:-}/lib/x-<name>-cli.mjs"
->   [ -f "$cli" ] || cli=$(ls -d ~/.claude/plugins/cache/xm/{<plugin>,xm}/*/lib/x-<name>-cli.mjs 2>/dev/null | sort -V | tail -1)
->   [ -f "${cli:-}" ] && node "$cli" "$@" || { echo "❌ x-<plugin> CLI not found" >&2; return 1; }
-> }
-> xmXX <command> <args>
+> XMXX_CLI=$(ls -d ~/.claude/plugins/cache/xm/{<plugin>,xm}/*/lib/x-<name>-cli.mjs 2>/dev/null | sort -V | tail -1)
+> node "$XMXX_CLI" <command> [args]
 > ```
-> **Forbidden:** `XMXX="node ..."; $XMXX <command>` — zsh treats the quoted string as a single command name and fails.
-> **Shortcut (no helper):** just type `xm <plugin> <command>` directly — works whenever the xm dispatcher is in PATH.
+>
+> **Forbidden:** `XMXX="node ..."; $XMXX <command>` — zsh treats the quoted string as a single command and fails.
 ```
 
-**Why this 3-tier chain is mandatory:**
-- **`xm` dispatcher (primary)**: `~/.local/bin/xm` resolves plugin lib via cache + version sort, no env var needed. Installed by `xm/scripts/install.sh`.
-- **`${CLAUDE_PLUGIN_ROOT}` (secondary)**: substituted in SKILL.md prompt rendering BUT not exported to Bash subprocess — using it bare → `node /lib/...` (fails).
-- **Plugin cache fallback (tertiary)**: `ls -d ~/.claude/plugins/cache/xm/{<plugin>,xm}/*/lib/...` + `sort -V | tail -1` picks the latest version when neither dispatcher nor env is available.
+**Why dispatcher-first (no helper functions):**
+- **Bash tool is stateless per call** — Claude Code's Bash tool starts a fresh shell on every invocation. A shell function defined in one tool call (`xmb() { ... }`) is gone in the next call → repeated `command not found: xmb` failures. This was the #1 invocation issue.
+- **`xm` dispatcher** — `~/.local/bin/xm` is in PATH after `xm/scripts/install.sh`. It resolves the plugin lib via the cache + version sort internally, so the agent never has to think about paths.
+- **Direct cache resolution (fallback)** — when `xm` is missing, the agent expands `ls -d ~/.claude/plugins/cache/xm/{<plugin>,xm}/*/lib/...` + `sort -V | tail -1` *inside the same Bash call* (no function definition), assigns to a local variable, then invokes node. This survives the stateless-shell constraint.
+- **`${CLAUDE_PLUGIN_ROOT}`** — substituted in SKILL.md prompt rendering BUT not exported to Bash subprocess. Using it bare → `node /lib/...` (fails). Never rely on it.
 
-**Why the variable-assignment anti-pattern still applies:** zsh expands `$VAR` as a single token. `XMS="node /path/cli.mjs"; $XMS foo` executes the file literally named `"node /path/cli.mjs"`, which does not exist. This is the #1 invocation failure LLMs repeat across sessions.
+**Why the variable-assignment anti-pattern still applies:** zsh expands `$VAR` as a single token. `XMS="node /path/cli.mjs"; $XMS foo` executes the file literally named `"node /path/cli.mjs"`, which does not exist. Use a path-only variable + `node "$VAR"` instead.
 
 **Exempt:** skills without a shell CLI (x-op, x-agent, x-review, x-eval, x-probe, x-humble, x-ship, x-trace, x-dashboard) — they orchestrate via the Agent tool only.
 

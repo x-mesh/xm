@@ -47,26 +47,22 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 ## CLI
 
-All commands via:
+All commands via the `xm` dispatcher:
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/lib/x-memory-cli.mjs <command> [args]
+xm memory <command> [args]
 ```
 
-Shorthand in this document: `$XMM` = `node ${CLAUDE_PLUGIN_ROOT}/lib/x-memory-cli.mjs`
+Shorthand in this document: `$XMM` means `xm memory`.
 
-> **⚠ When using Bash tool, define the helper once at session start. `${CLAUDE_PLUGIN_ROOT}` is substituted in SKILL.md prompt text but NOT as a Bash env var — relying on it alone causes `Cannot find module '/lib/...'` errors.**
+> **⚠ Call `xm memory <command>` directly. Claude Code's Bash tool starts a fresh shell on every invocation — shell functions (`xmm()`) defined in one call do NOT persist to the next, causing `command not found: xmm`. Never define a helper across calls; always use the dispatcher.**
+>
+> **Fallback** (only when `xm` is not in PATH — rare; `${CLAUDE_PLUGIN_ROOT}` is NOT exported to Bash subprocesses, so don't rely on it bare):
 > ```bash
-> # Resolution chain: xm dispatcher → CLAUDE_PLUGIN_ROOT → plugin cache (latest)
-> xmm() {
->   command -v xm >/dev/null 2>&1 && { xm memory "$@"; return; }
->   local cli="${CLAUDE_PLUGIN_ROOT:-}/lib/x-memory-cli.mjs"
->   [ -f "$cli" ] || cli=$(ls -d ~/.claude/plugins/cache/xm/{memory,xm}/*/lib/x-memory-cli.mjs 2>/dev/null | sort -V | tail -1)
->   [ -f "${cli:-}" ] && node "$cli" "$@" || { echo "❌ x-memory CLI not found" >&2; return 1; }
-> }
-> xmm save "decision text" --type decision
+> XMM_CLI=$(ls -d ~/.claude/plugins/cache/xm/{memory,xm}/*/lib/x-memory-cli.mjs 2>/dev/null | sort -V | tail -1)
+> node "$XMM_CLI" <command> [args]
 > ```
-> **Forbidden:** `XMM="node ..."; $XMM save` — zsh treats the quoted string as a single command name and fails.
-> **Shortcut (no helper):** just type `xm memory <command>` directly — works whenever the xm dispatcher is in PATH.
+>
+> **Forbidden:** `XMM="node ..."; $XMM <command>` — zsh treats the quoted string as a single command and fails.
 
 ---
 

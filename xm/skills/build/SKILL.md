@@ -40,7 +40,7 @@ For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt
 
 Check mode before every command:
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/lib/x-build-cli.mjs mode show 2>/dev/null | head -1
+xm build mode show 2>/dev/null | head -1
 ```
 
 **Developer mode**: Use technical terms (DAG, phase, gate, step, context, retry, circuit breaker). Concise.
@@ -60,37 +60,27 @@ Inject mode into all delegate/fan-out prompts. When in Normal mode:
 
 ## CLI
 
-All commands via:
+All commands via the `xm` dispatcher:
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/lib/x-build-cli.mjs <command> [args]
+xm build <command> [args]
 ```
 
-Shorthand in this document: `$XMB` = `node ${CLAUDE_PLUGIN_ROOT}/lib/x-build-cli.mjs`
+Shorthand in this document: `$XMB` means `xm build`. The dispatcher handles server-mode auto-start internally.
 
-> **⚠ When using Bash tool, define the helper once at session start. `${CLAUDE_PLUGIN_ROOT}` is substituted in SKILL.md prompt text but NOT as a Bash env var — relying on it alone causes `Cannot find module '/lib/...'` errors.**
+> **⚠ Call `xm build <command>` directly. Claude Code's Bash tool starts a fresh shell on every invocation — shell functions (`xmb()`) defined in one call do NOT persist to the next, causing `command not found: xmb`. Never define a helper across calls; always use the dispatcher.**
+>
+> **Fallback** (only when `xm` is not in PATH — rare; `${CLAUDE_PLUGIN_ROOT}` is NOT exported to Bash subprocesses, so don't rely on it bare):
 > ```bash
-> # Resolution: xm dispatcher (handles server vs direct internally) → CLAUDE_PLUGIN_ROOT → plugin cache
-> xmb() {
->   command -v xm >/dev/null 2>&1 && { xm build "$@"; return; }
->   # Prefer server client when available, else direct CLI
->   local cli=""
->   for cand in \
->     "${CLAUDE_PLUGIN_ROOT:-}/lib/server/xm-client.mjs" \
->     "${CLAUDE_PLUGIN_ROOT:-}/lib/x-build-cli.mjs" \
->     $(ls -d ~/.claude/plugins/cache/xm/{build,xm}/*/lib/server/xm-client.mjs 2>/dev/null | sort -V | tail -1) \
->     $(ls -d ~/.claude/plugins/cache/xm/{build,xm}/*/lib/x-build-cli.mjs 2>/dev/null | sort -V | tail -1); do
->     [ -n "$cand" ] && [ -f "$cand" ] && { cli="$cand"; break; }
->   done
->   [ -n "$cli" ] || { echo "❌ x-build CLI not found" >&2; return 1; }
->   case "$cli" in
->     *xm-client.mjs) node "$cli" x-build "$@" ;;
->     *) node "$cli" "$@" ;;
->   esac
-> }
-> xmb plan "goal"
+> # Prefer server client when available, else direct CLI
+> XMB_CLI=$(ls -d ~/.claude/plugins/cache/xm/{build,xm}/*/lib/server/xm-client.mjs 2>/dev/null | sort -V | tail -1)
+> [ -f "$XMB_CLI" ] || XMB_CLI=$(ls -d ~/.claude/plugins/cache/xm/{build,xm}/*/lib/x-build-cli.mjs 2>/dev/null | sort -V | tail -1)
+> case "$XMB_CLI" in
+>   *xm-client.mjs) node "$XMB_CLI" x-build <command> [args] ;;
+>   *)              node "$XMB_CLI" <command> [args] ;;
+> esac
 > ```
-> **Forbidden:** `XMB="node ..."; $XMB plan` — zsh treats the quoted string as a single command and fails.
-> **Shortcut (no helper):** `xm build <command>` directly — works whenever xm dispatcher is in PATH and handles server-mode auto-start internally.
+>
+> **Forbidden:** `XMB="node ..."; $XMB <command>` — zsh treats the quoted string as a single command and fails.
 
 ## Phase 0: Project Environment Detection
 
