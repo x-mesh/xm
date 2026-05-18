@@ -52,11 +52,17 @@ function readLastPull(xmDir) {
   }
 }
 
-// Save last pull timestamp
-function saveLastPull(xmDir, serverTime) {
+// Save last pull timestamp (merge so we don't wipe last_push or other keys)
+function saveLastPull(xmDir, serverTime, projectId, fileCount) {
   const statePath = join(xmDir, '.sync-state.json');
+  let state = {};
+  try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch {}
+  state.last_pull = serverTime;
+  state.last_pull_at = Date.now();
+  state.last_pull_project = projectId;
+  state.last_pull_files = fileCount;
   mkdirSync(dirname(statePath), { recursive: true });
-  writeFileSync(statePath, JSON.stringify({ last_pull: serverTime }) + '\n', 'utf8');
+  writeFileSync(statePath, JSON.stringify(state) + '\n', 'utf8');
 }
 
 async function main() {
@@ -147,7 +153,7 @@ async function main() {
 
     // Save server_time for next pull
     if (data.server_time) {
-      saveLastPull(xmDir, data.server_time);
+      saveLastPull(xmDir, data.server_time, projectId, files.length);
     }
   } catch (err) {
     console.error(`[x-sync pull] Failed: ${err.message}`);

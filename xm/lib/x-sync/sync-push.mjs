@@ -4,8 +4,8 @@
  * Usage: node sync-push.mjs [--project PROJECT_ID]
  */
 
-import { readFileSync, readdirSync, existsSync, statSync, unlinkSync } from 'node:fs';
-import { join, resolve, relative, basename } from 'node:path';
+import { readFileSync, writeFileSync, readdirSync, existsSync, statSync, unlinkSync, mkdirSync } from 'node:fs';
+import { join, resolve, relative, basename, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { readSyncConfig, getMachineId } from './sync-config.mjs';
@@ -118,6 +118,18 @@ async function main() {
 
     const result = await res.json();
     console.log(`[x-sync push] accepted: ${result.accepted}, skipped: ${result.skipped}`);
+
+    // Save last_push state (merge with existing state instead of overwriting last_pull)
+    const statePath = join(xmDir, '.sync-state.json');
+    let state = {};
+    try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch {}
+    state.last_push = Date.now();
+    state.last_push_project = projectId;
+    state.last_push_accepted = result.accepted;
+    state.last_push_skipped = result.skipped;
+    state.last_push_total = files.length;
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(statePath, JSON.stringify(state) + '\n', 'utf8');
   } catch (err) {
     console.error(`[x-sync push] Failed: ${err.message}`);
     // Queue for later

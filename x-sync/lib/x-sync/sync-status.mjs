@@ -5,7 +5,7 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { readSyncConfig } from './sync-config.mjs';
@@ -59,37 +59,83 @@ async function checkServerHealth(url) {
   }
 }
 
+function fmtTime(ms) {
+  if (!ms) return null;
+  try {
+    return new Date(typeof ms === 'number' ? ms : Date.parse(ms)).toISOString();
+  } catch { return String(ms); }
+}
+
+function resolveProjectId(xmDir) {
+  return basename(resolve(xmDir, '..'));
+}
+
 async function main() {
   const config = readSyncConfig();
   const configured = !!(config.server_url && config.api_key);
   const state = readSyncState();
   const localPid = isServerRunning();
 
-  const lastPull = state?.last_pull_at || state?.lastPullAt || null;
-  const apiKeyDisplay = config.api_key ? '****configured****' : 'Not set';
+  const xmDir = resolveXmDir();
+  const xmExists = existsSync(xmDir);
+  const projectId = resolveProjectId(xmDir);
 
-  let serverLine = 'Not running locally';
-  if (localPid) {
-    serverLine = `Running (PID: ${localPid})`;
-  }
+  // last_pull (server_time from pull response), last_pull_at (local clock when pull happened)
+  const lastPullServer = fmtTime(state?.last_pull);
+  const lastPullLocal = fmtTime(state?.last_pull_at || state?.lastPullAt);
+  const lastPullProject = state?.last_pull_project;
+  const lastPullFiles = state?.last_pull_files;
+
+  const lastPush = fmtTime(state?.last_push);
+  const lastPushProject = state?.last_push_project;
+  const lastPushAccepted = state?.last_push_accepted;
+  const lastPushSkipped = state?.last_push_skipped;
+  const lastPushTotal = state?.last_push_total;
+
+  const apiKeyDisplay = config.api_key ? '****configured****' : 'Not set';
 
   let remoteHealth = null;
   if (configured) {
     remoteHealth = await checkServerHealth(config.server_url);
   }
 
+  // Server line: prefer remote status when configured; only mention local if running
+  let serverLine;
+  if (localPid) {
+    serverLine = `Local PID ${localPid}` + (remoteHealth !== null ? ` (remote: ${remoteHealth ? 'healthy' : 'unreachable'})` : '');
+  } else if (remoteHealth !== null) {
+    serverLine = remoteHealth ? '✅ Remote healthy' : '❌ Remote unreachable';
+  } else {
+    serverLine = '(not configured)';
+  }
+
   console.log('x-sync Status');
   console.log('');
-  console.log(`  Config:     ${SYNC_CONFIG_PATH}`);
-  console.log(`  Server URL: ${config.server_url || '(not set)'}`);
-  console.log(`  Machine ID: ${config.machine_id || '(not set)'}`);
-  console.log(`  API Key:    ${apiKeyDisplay}`);
+  console.log(`  Config:        ${SYNC_CONFIG_PATH}`);
+  console.log(`  Server URL:    ${config.server_url || '(not set)'}`);
+  console.log(`  Machine ID:    ${config.machine_id || '(not set)'}`);
+  console.log(`  API Key:       ${apiKeyDisplay}`);
   console.log('');
-  console.log(`  Last Pull:  ${lastPull || 'Never'}`);
-  console.log(`  Server:     ${serverLine}`);
-  if (remoteHealth !== null) {
-    console.log(`  Remote:     ${remoteHealth ? '✅ Healthy' : '❌ Unreachable'}`);
+  console.log(`  cwd:           ${process.cwd()}`);
+  console.log(`  .xm/ path:     ${xmDir}${xmExists ? '' : '  (does not exist)'}`);
+  console.log(`  Project ID:    ${projectId}    (← used by next push/pull)`);
+  console.log('');
+  if (lastPullServer || lastPullLocal) {
+    console.log(`  Last Pull:     ${lastPullLocal || '(unknown local time)'}`);
+    console.log(`    server_time: ${lastPullServer || '(none)'}`);
+    if (lastPullProject) console.log(`    project:     ${lastPullProject}${lastPullProject !== projectId ? '  ⚠ differs from current cwd project' : ''}`);
+    if (lastPullFiles != null) console.log(`    files:       ${lastPullFiles}`);
+  } else {
+    console.log('  Last Pull:     Never');
   }
+  if (lastPush) {
+    console.log(`  Last Push:     ${lastPush}`);
+    if (lastPushProject) console.log(`    project:     ${lastPushProject}${lastPushProject !== projectId ? '  ⚠ differs from current cwd project' : ''}`);
+    if (lastPushTotal != null) console.log(`    files:       ${lastPushAccepted}/${lastPushTotal} accepted, ${lastPushSkipped} skipped`);
+  } else {
+    console.log('  Last Push:     Never');
+  }
+  console.log(`  Server:        ${serverLine}`);
   console.log('');
   console.log('  Quick commands:');
   console.log('    xm sync setup          Configure sync credentials');

@@ -857,9 +857,11 @@ curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/x-sync/install.sh | 
 x-sync setup
 
 # 사용
-x-sync push     # .xm/ 데이터를 서버로 push
-x-sync pull     # 다른 머신의 데이터를 pull
-x-sync status   # 설정 및 동기화 상태 확인
+x-sync push       # 현재 프로젝트의 .xm/만 push (cwd 기반)
+x-sync pull       # 현재 프로젝트의 데이터만 pull
+x-sync push-all   # ~/work 아래 모든 .xm/ 프로젝트 push (--root 로 변경 가능)
+x-sync pull-all   # ~/work 아래 모든 .xm/ 프로젝트 pull
+x-sync status     # 설정 + 현재 cwd projectId + 마지막 pull/push 상태
 ```
 
 Claude Code 안에서도 사용 가능: `/xm:sync push`, `/xm:sync pull`, `/xm:sync setup`
