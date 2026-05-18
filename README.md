@@ -858,9 +858,11 @@ curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/x-sync/install.sh | 
 x-sync setup
 
 # Use
-x-sync push     # push .xm/ to server
-x-sync pull     # pull other machines' data
-x-sync status   # show config and sync state
+x-sync push       # push current project's .xm/ to server (cwd-based)
+x-sync pull       # pull current project's data
+x-sync push-all   # push every .xm/ project under ~/work (use --root to override)
+x-sync pull-all   # pull every .xm/ project under ~/work
+x-sync status     # show config, current cwd projectId, last pull/push
 ```
 
 Or use directly in Claude Code: `/xm:sync push`, `/xm:sync pull`, `/xm:sync setup`

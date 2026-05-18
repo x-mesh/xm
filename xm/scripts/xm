@@ -593,7 +593,12 @@ Commands:
   memory <subcmd>                     Memory: save|recall|inject|list
   build <subcmd>                      Build: status|list|...
   trace <subcmd>                      Execution traces
-  sync push|pull|config               Multi-machine .xm sync
+  sync <subcmd>                       Multi-machine .xm sync
+                                        push|pull             Sync current project (cwd-based)
+                                        push-all|pull-all     Sync all .xm/ projects under --root (default: ~/work)
+                                        status                Show config, cwd projectId, last pull/push
+                                        setup                 Configure server URL + API key
+                                        server start|stop     Local sync server
   solver <subcmd>                     Structured problem solving
   install [--target T] [--global]     Install xm SKILLs into Cursor/Codex/Kiro/Antigravity/OpenCode
   install --list-installed            List all installed manifests as JSON
