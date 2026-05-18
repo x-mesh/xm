@@ -763,7 +763,36 @@ export function cmdHandoffFull(args) {
     stashes = execSync('git stash list 2>/dev/null', { encoding: 'utf8' }).trim().split('\n').filter(Boolean).slice(0, 3);
   } catch {}
 
-  const reason = args.find(a => !a.startsWith('--')) || opts.reason || opts.summary || null;
+  // Narrative: conversation-level context the leader composes before dispatch.
+  // Passed as `--narrative-json '{"intent":"...","open_questions":[...], ...}'`.
+  // Fields: intent, open_questions, rejected_alternatives, next_session_should_know.
+  let narrative = null;
+  let narrativeValueIdx = -1; // exclude from positional reason scan
+  const njIdx = args.findIndex(a => a === '--narrative-json' || a.startsWith('--narrative-json='));
+  if (njIdx !== -1) {
+    let raw;
+    if (args[njIdx].startsWith('--narrative-json=')) {
+      raw = args[njIdx].slice('--narrative-json='.length);
+    } else {
+      raw = args[njIdx + 1];
+      narrativeValueIdx = njIdx + 1;
+    }
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        narrative = {
+          intent: typeof parsed.intent === 'string' ? parsed.intent : '',
+          open_questions: Array.isArray(parsed.open_questions) ? parsed.open_questions : [],
+          rejected_alternatives: Array.isArray(parsed.rejected_alternatives) ? parsed.rejected_alternatives : [],
+          next_session_should_know: Array.isArray(parsed.next_session_should_know) ? parsed.next_session_should_know : [],
+        };
+      } catch (e) {
+        console.error(`⚠️  Invalid --narrative-json (${e.message}); narrative will be omitted.`);
+      }
+    }
+  }
+
+  const reason = args.find((a, i) => i !== narrativeValueIdx && !a.startsWith('--')) || opts.reason || opts.summary || null;
 
   const state = {
     v: 1,
@@ -798,6 +827,8 @@ export function cmdHandoffFull(args) {
       stashes: stashes.length ? stashes : undefined,
     },
 
+    narrative,
+
     why_stopped: reason || 'Session handoff',
   };
 
@@ -813,6 +844,14 @@ export function cmdHandoffFull(args) {
   console.log(`   Active projects: ${activeProjects.length}`);
   console.log(`   Decisions: ${allDecisions.length}`);
   if (uncommittedFiles.length) console.log(`   Uncommitted: ${uncommittedFiles.length} files`);
+  if (narrative) {
+    const oq = narrative.open_questions.length;
+    const ra = narrative.rejected_alternatives.length;
+    const nk = narrative.next_session_should_know.length;
+    console.log(`   Narrative: intent${narrative.intent ? ' ✓' : ' —'}, ${oq} open Q, ${ra} rejected alt, ${nk} next-session note(s)`);
+  } else {
+    console.log(`   Narrative: (not provided — pass --narrative-json to capture intent / open questions)`);
+  }
 }
 
 // ── cmdHandon ────────────────────────────────────────────────────────
@@ -917,6 +956,27 @@ export function cmdHandon(args) {
     if (state.context.quality_scores && Object.keys(state.context.quality_scores).length) {
       for (const [k, v] of Object.entries(state.context.quality_scores)) {
         console.log(`     Quality: ${k} → ${v}/10`);
+      }
+    }
+  }
+
+  // Narrative — conversation-level context that disk artifacts can't capture
+  if (state.narrative) {
+    const n = state.narrative;
+    if (n.intent || n.open_questions?.length || n.rejected_alternatives?.length || n.next_session_should_know?.length) {
+      console.log(`\n  ${C.bold}🧭 Narrative${C.reset}`);
+      if (n.intent) console.log(`     ${C.cyan}Intent:${C.reset} ${n.intent}`);
+      if (n.open_questions?.length) {
+        console.log(`     ${C.yellow}Open questions:${C.reset}`);
+        for (const q of n.open_questions) console.log(`       ${C.dim}? ${q}${C.reset}`);
+      }
+      if (n.rejected_alternatives?.length) {
+        console.log(`     ${C.dim}Rejected alternatives:${C.reset}`);
+        for (const r of n.rejected_alternatives) console.log(`       ${C.dim}✗ ${r}${C.reset}`);
+      }
+      if (n.next_session_should_know?.length) {
+        console.log(`     ${C.green}Next session should know:${C.reset}`);
+        for (const k of n.next_session_should_know) console.log(`       ${C.dim}→ ${k}${C.reset}`);
       }
     }
   }
