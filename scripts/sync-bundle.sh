@@ -75,9 +75,12 @@ sync_file "x-solver/lib/x-solver-cli.mjs" "xm/lib/x-solver-cli.mjs"
 
 echo ""
 echo "=== Syncing x-sync lib files ==="
-for f in sync-config.mjs sync-pull.mjs sync-pull-all.mjs sync-push.mjs sync-push-all.mjs; do
-  sync_file "x-sync/lib/x-sync/$f" "xm/lib/x-sync/$f"
+mkdir -p "xm/lib/x-sync"
+shopt -s nullglob
+for f in x-sync/lib/x-sync/*.mjs; do
+  sync_file "$f" "xm/lib/x-sync/$(basename "$f")"
 done
+shopt -u nullglob
 
 echo ""
 echo "=== Syncing x-trace lib files ==="
@@ -215,12 +218,15 @@ for pair in \
   fi
 done
 
-for f in sync-config.mjs sync-pull.mjs sync-pull-all.mjs sync-push.mjs sync-push-all.mjs; do
-  if ! diff -q "x-sync/lib/x-sync/$f" "xm/lib/x-sync/$f" > /dev/null 2>&1; then
-    echo "  DIVERGED: xm/lib/x-sync/$f"
+shopt -s nullglob
+for f in x-sync/lib/x-sync/*.mjs; do
+  dst="xm/lib/x-sync/$(basename "$f")"
+  if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
+    echo "  DIVERGED: $dst"
     DIVERGED=$((DIVERGED + 1))
   fi
 done
+shopt -u nullglob
 
 if ! diff -q "x-trace/lib/x-trace/trace-writer.mjs" "xm/lib/x-trace/trace-writer.mjs" > /dev/null 2>&1; then
   echo "  DIVERGED: xm/lib/x-trace/trace-writer.mjs"
