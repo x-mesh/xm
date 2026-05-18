@@ -53,6 +53,10 @@ The JSON contains these sections that you MUST use as your working context:
 | `context.current_focus` | This was the working direction |
 | `context.test_status` | This is the test health |
 | `context.quality_scores` | These are the quality benchmarks |
+| `narrative.intent` | **Why the last session was started — load this as your interpretive frame before suggesting next steps** |
+| `narrative.open_questions` | **Decisions still pending — surface these before starting new work; do not silently resolve them** |
+| `narrative.rejected_alternatives` | **Approaches already ruled out — do NOT re-propose; reference if the user asks "why not X"** |
+| `narrative.next_session_should_know` | **Non-obvious context the prior session captured for you — treat as binding facts** |
 | `why_stopped` | This is why the last session ended |
 | `since_handoff.new_commits` | This many changes happened since the handoff (by others or other sessions) |
 
@@ -68,12 +72,21 @@ After absorbing, show a human-readable summary:
   📌 Active: {active_projects count} projects
   🔒 Decisions: {decisions count} carried forward
   🎯 Focus: {current_focus}
+  🧭 Intent: {narrative.intent}                     (omit line if empty)
+  ❓ Open: {narrative.open_questions.length} question(s)   (omit if 0; list inline if ≤2)
+  ✗ Ruled out: {narrative.rejected_alternatives.length}   (omit if 0)
+  → Carryover: {narrative.next_session_should_know.length} note(s)  (omit if 0)
   💤 Last stopped: {why_stopped}
-  
+
   Since handoff: {new_commits} new commits
 
 Ready to continue. What would you like to work on?
 ```
+
+**Rendering rules for narrative**:
+- If `narrative` is missing or all fields empty, omit the entire 🧭/❓/✗/→ block.
+- If `open_questions` has ≥3 items, render as a bulleted sublist instead of inline count, so the user actually sees them.
+- Never silently drop `rejected_alternatives` or `next_session_should_know` — they exist precisely because the prior session decided you need to see them.
 
 **Step 4: Wait for user direction**
 
