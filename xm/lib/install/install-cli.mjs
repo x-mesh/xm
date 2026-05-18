@@ -30,7 +30,7 @@ import { renderAntigravityWithDiagnostics } from './transform/antigravity.mjs';
 import { renderOpencodeWithDiagnostics } from './transform/opencode.mjs';
 import { CODEX_AGENTS_MAX_BYTES } from './types.mjs';
 import { buildManifest, writeManifest, readManifest, verifyManifest, manifestPath, discoverManifests, readManifestIfExists, shouldSkipTarget } from './manifest.mjs';
-import { existsSync, readFileSync, readdirSync, lstatSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, lstatSync, unlinkSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -964,7 +964,19 @@ export function run(argv) {
 }
 
 // CLI entry guard: only exec if invoked directly.
-const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+// realpathSync both sides because macOS /tmp → /private/tmp is a symlink
+// and Node ESM loader applies realpath to import.meta.url, breaking naive
+// string equality and silently turning `node install-cli.mjs --propagate`
+// invoked via /tmp/xxx into a no-op (empty stdout, exit 0) — which then
+// surfaces upstream as `(parse error)` in xm update's JSON parsing.
+const invokedDirectly = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  }
+})();
 if (invokedDirectly) {
   const argv = process.argv.slice(2);
   const result = argv.includes('--interactive') ? await runInteractive(argv) : run(argv);
