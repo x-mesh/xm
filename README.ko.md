@@ -390,6 +390,8 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 /xm:build run                             # DAG 순서로 에이전트 실행
 ```
 
+> 작업 중 범위 밖 할 일을 발견했나요? 흐름을 깨지 말고 **`/xm:later add "..."`** 로 미뤄두세요 — 준비되면 `/xm:later promote <id>` 로 꺼내 작업합니다. `xm build later` 기반.
+
 ```
 리서치 ──→ PRD ──→ 계획 ──→ 실행 ──→ 검증 ──→ 종료
  [discuss]  [quality]  [critique]  [contract]  [quality]  [auto]

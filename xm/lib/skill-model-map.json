@@ -9,6 +9,7 @@
   "skills": {
     "handoff":   { "economy": "haiku",  "default": "haiku",  "max": "haiku",  "rationale": "pure delegate — CLI does all work" },
     "handon":    { "economy": "haiku",  "default": "haiku",  "max": "haiku",  "rationale": "pure delegate — JSON read + display" },
+    "later":     { "economy": "haiku",  "default": "haiku",  "max": "haiku",  "rationale": "pure delegate — CLI queue ops + display" },
     "dashboard": { "economy": "haiku",  "default": "haiku",  "max": "haiku",  "rationale": "mechanical display, no reasoning" },
     "memory":    { "economy": "haiku",  "default": "sonnet", "max": "opus",   "rationale": "retrieval + reasoning over context" },
     "trace":     { "economy": "haiku",  "default": "sonnet", "max": "opus",   "rationale": "trace analysis benefits from deeper model" },

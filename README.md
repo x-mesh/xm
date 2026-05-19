@@ -390,6 +390,8 @@ Takes a project from idea to verified delivery. Generates the PRD, runs delibera
 /xm:build run                             # Agents execute in DAG order
 ```
 
+> Spotted off-scope work mid-task? Park it with **`/xm:later add "..."`** instead of derailing — then `/xm:later promote <id>` when you're ready to pick it up. Backed by `xm build later`.
+
 ```
 Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──→ Close
  [discuss]  [quality]  [critique]  [contract]  [quality]  [auto]
