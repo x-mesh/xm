@@ -162,6 +162,16 @@ case "$CMD" in
     node "$LIB_PATH/x-build-cli.mjs" "$@"
     ;;
 
+  config)
+    LIB_PATH="$(plugin_lib build)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-config-cli.mjs" ]; then
+      echo "xm config: x-config-cli.mjs not found under $LIB" >&2
+      echo "  Update xm: xm update" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-config-cli.mjs" "$@"
+    ;;
+
   trace)
     LIB_PATH="$(plugin_lib trace)"
     if [ -f "$LIB_PATH/x-trace-cli.mjs" ]; then
@@ -592,6 +602,7 @@ Commands:
   handon                              Restore session state
   memory <subcmd>                     Memory: save|recall|inject|list
   build <subcmd>                      Build: status|list|...
+  config <subcmd>                     Config: show|get <key>|set <key> <val>|reset (--local|--global)
   trace <subcmd>                      Execution traces
   sync <subcmd>                       Multi-machine .xm sync
                                         push|pull             Sync current project (cwd-based)

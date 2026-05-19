@@ -140,6 +140,7 @@ xm sync push           # push .xm/ state to your sync server
 xm sync pull           # pull state from your sync server
 xm memory <subcmd>     # save | recall | inject | list
 xm build <subcmd>      # build status / list / ...
+xm config <subcmd>     # show | get <key> | set <key> <val> | reset (--local | --global)
 xm trace <subcmd>      # execution traces
 xm solver <subcmd>     # structured problem solving
 xm handoff [reason]    # save session state

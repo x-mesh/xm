@@ -140,6 +140,7 @@ xm sync push           # .xm/ 상태를 sync 서버로 push
 xm sync pull           # sync 서버에서 pull
 xm memory <subcmd>     # save | recall | inject | list
 xm build <subcmd>      # build status / list / ...
+xm config <subcmd>     # show | get <key> | set <key> <val> | reset (--local | --global)
 xm trace <subcmd>      # 실행 트레이스
 xm solver <subcmd>     # 구조화된 문제 해결
 xm handoff [reason]    # 세션 상태 저장

@@ -59,6 +59,7 @@ for f in core.mjs project.mjs phase.mjs plan.mjs tasks.mjs later.mjs verify.mjs 
 done
 remove_obsolete_file "xm/lib/x-build/parking-lot.mjs"
 sync_file "x-build/lib/x-build-cli.mjs" "xm/lib/x-build-cli.mjs"
+sync_file "x-build/lib/x-config-cli.mjs" "xm/lib/x-config-cli.mjs"
 sync_file "x-build/lib/shared-config.mjs" "xm/lib/shared-config.mjs"
 sync_file "x-build/lib/default-config.json" "xm/lib/default-config.json"
 
