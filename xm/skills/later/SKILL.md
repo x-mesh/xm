@@ -90,12 +90,12 @@ For `list`, render the items as a short checklist with their IDs so the user can
 
 | Excuse | Reality |
 |--------|---------|
-| "이 무관한 버그도 지금 같이 고치자" | No. Parking it with `add` keeps the current diff reviewable; fixing it now expands blast radius and hides the real change. Capture, don't detour. |
-| "later에 넣었으니 코드도 미리 좀 고쳐두자" | Adding to `later` is a promise to NOT touch that code. Editing before `promote` defeats the entire mechanism. |
-| "impact가 medium인데 그냥 low로 넣자" | Misreporting impact to pass `add` is how blocking work gets silently deferred. If it is not truly `none/low/unknown`, it is in-scope — handle it now. |
-| "현재 작업 쪼개기인데 later가 편하네" | `later` is for OUT-of-scope work. Current-task subtasks belong in `xm build tasks`; mixing them corrupts both queues. |
-| "--files 없이 빨리 등록하자" | Without a file snapshot, `verify-scope` cannot prove the parked code stayed untouched. Omitting `--files` for a file-specific item removes the only guardrail. |
-| "promote 안 하고 그냥 작업 시작하자" | Editing a parked item's code without `promote` means it never became a tracked task — no done-criteria, no traceability. Promote first, then code. |
+| "I'll just fix this unrelated bug while I'm here" | No. Parking it with `add` keeps the current diff reviewable; fixing it now expands blast radius and hides the real change. Capture, don't detour. |
+| "it's in later, so let me pre-edit the code a bit too" | Adding to `later` is a promise to NOT touch that code. Editing before `promote` defeats the entire mechanism. |
+| "it's medium impact but I'll just file it as low" | Misreporting impact to pass `add` is how blocking work gets silently deferred. If it is not truly `none/low/unknown`, it is in-scope — handle it now. |
+| "these are subtasks of the current work, but later is handy" | `later` is for OUT-of-scope work. Current-task subtasks belong in `xm build tasks`; mixing them corrupts both queues. |
+| "let me file it quickly without --files" | Without a file snapshot, `verify-scope` cannot prove the parked code stayed untouched. Omitting `--files` for a file-specific item removes the only guardrail. |
+| "I'll just start working on it without promoting" | Editing a parked item's code without `promote` means it never became a tracked task — no done-criteria, no traceability. Promote first, then code. |
 
 ## Red Flags
 
