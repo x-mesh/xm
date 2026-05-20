@@ -36,7 +36,7 @@ Universal (both modes) — these read as machine-generated in any register:
 - No hedged non-conclusions ("결국 상황에 따라 다르다 / 균형이 필요하다"). End on a concrete fact, number, or next action.
 
 Developer mode: terse and direct — lead with the result; state findings/actions without a 권고형 결말 pile-up ("~해야 한다" sentence after sentence).
-Easy/normal mode: accessible Korean is the goal — polite guidance ("~해 보세요"), one line of context for non-experts, explain jargon. Still apply the universal rules; accessible ≠ padded or vague.
+Easy/normal mode: accessible Korean is the goal — polite guidance ("~해 보세요"), one line of context for non-experts. Keep commands, flags, paths, and proper nouns in English; on first use write a domain term as Korean(original), e.g. 결론(verdict). Still apply the universal rules; accessible ≠ padded or vague.
 
 ## Model Routing
 
