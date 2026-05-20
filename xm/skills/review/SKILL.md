@@ -40,6 +40,17 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 - "severity" → "심각도", "lens" → "관점", "challenge stage" → "재확인", "consensus elevation" → "합의 승격"
 - Use "~하세요" style, lead with key information
 
+### Korean output style (avoid AI-slop)
+
+Whenever you emit Korean prose (either mode), strip the tells that make output read as machine-generated. The verdict and findings are the product — keep them sharp:
+- No 권고형 결말 pile-up — do not end sentence after sentence with "~해야 한다 / ~하는 것이 중요하다". State the finding or the fix directly.
+- Drop empty intensifiers ("매우 / 완벽하게 / 강력한 / 원활하게 / 혁신적인") unless they carry a specific, real claim.
+- No forced rule-of-three or "~뿐만 아니라 ~까지" balance that adds no fact.
+- No hedged non-conclusions ("결국 상황에 따라 다르다 / 균형이 필요하다"). End on a concrete severity, file:line, number, or next action.
+- Vary sentence length; lead with the key result instead of context throat-clearing.
+
+Full catalog: the humanize skill's `patterns-ko.md`.
+
 ## Arguments
 
 User provided: $ARGUMENTS

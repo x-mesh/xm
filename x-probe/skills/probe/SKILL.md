@@ -43,6 +43,17 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 - "pre-mortem" → "실패 시나리오", "inversion" → "반대로 생각하기", "falsifiable" → "검증 가능"
 - Use "~하세요" polite form; lead with key information
 
+### Korean output style (avoid AI-slop)
+
+Whenever you emit Korean prose (either mode), strip the tells that make output read as machine-generated:
+- No 권고형 결말 pile-up — do not end sentence after sentence with "~해야 한다 / ~하는 것이 중요하다". State the point or the action directly.
+- Drop empty intensifiers ("매우 / 완벽하게 / 강력한 / 원활하게 / 혁신적인") unless they carry a specific, real claim.
+- No forced rule-of-three or "~뿐만 아니라 ~까지" balance that adds no fact.
+- No hedged non-conclusions ("결국 상황에 따라 다르다 / 균형이 필요하다"). End on a concrete fact, number, or next action.
+- Vary sentence length; lead with the key result instead of context throat-clearing.
+
+Full catalog: the humanize skill's `patterns-ko.md`.
+
 ## Arguments
 
 User provided: $ARGUMENTS
