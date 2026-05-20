@@ -1,6 +1,6 @@
 {
   "name": "eval",
-  "version": "2.0.6",
+  "version": "2.0.7",
   "description": "Agent output quality evaluation — multi-rubric scoring, strategy benchmarking, and A/B prompt experiments",
   "author": {
     "name": "x-mesh"
