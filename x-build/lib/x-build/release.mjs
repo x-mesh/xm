@@ -14,6 +14,7 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
+import { exitFail } from './core.mjs';
 
 // ── Constants ─────────────────────────────────────────────────────────
 
@@ -247,7 +248,7 @@ export function cmdReleaseSquash(args) {
 
   if (!ref) {
     console.error('❌ No release reference found. Use --since <ref>.');
-    process.exit(1);
+    exitFail(1);
   }
 
   // Count commits to squash
@@ -290,7 +291,7 @@ export function cmdReleaseBump(args) {
     }
     if (!pluginList.length) {
       console.error('❌ No plugins specified. Use --plugins x-build,x-dashboard or --standalone');
-      process.exit(1);
+      exitFail(1);
     }
   }
 
@@ -367,7 +368,7 @@ export function cmdReleaseBump(args) {
     execSync('bun test test/core-unit.test.mjs', { stdio: 'inherit', timeout: 120000 });
   } catch {
     console.error('❌ Tests failed. Fix before releasing.');
-    process.exit(1);
+    exitFail(1);
   }
 
   // Output summary
@@ -385,7 +386,7 @@ export function cmdReleaseCommit(args) {
 
   if (!msg) {
     console.error('❌ No commit message. Use --msg "release: ..."');
-    process.exit(1);
+    exitFail(1);
   }
 
   // Stage all relevant files
@@ -421,7 +422,7 @@ export function cmdReleaseCommit(args) {
   } catch (e) {
     console.error('❌ Commit failed.');
     try { unlinkSync(msgFile); } catch {}
-    process.exit(1);
+    exitFail(1);
   }
   try { unlinkSync(msgFile); } catch {}
 

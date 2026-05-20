@@ -8,7 +8,7 @@ import {
   tasksPath, prdPath, contextDir, phaseDir,
   resolveProject, renderBar,
   runQualityChecks,
-  existsSync, join, resolve, ROOT, parseOptions, spawnSync,
+  existsSync, join, resolve, ROOT, repoRoot, parseOptions, spawnSync,
 } from './core.mjs';
 
 // ── cmdQuality ──────────────────────────────────────────────────────
@@ -244,7 +244,7 @@ function reviewDir() {
 }
 
 function workspaceRoot() {
-  return resolve(ROOT, '..', '..');
+  return repoRoot();
 }
 
 function runGit(args) {

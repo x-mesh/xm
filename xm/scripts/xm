@@ -595,14 +595,14 @@ xm — x-mesh toolkit CLI
 Usage: xm <command> [args...]
 
 Commands:
-  init [--no-hooks|uninstall|status]  Install global hooks into ~/.claude/
+  init [--no-hooks|uninstall|status]  Set up global hooks in ~/.claude/
   project <subcmd>                    Project registry: list|add|remove|import|gc|...
   dashboard start|stop|status|open    Web dashboard server (uses ~/.xm/projects.json)
   handoff [reason]                    Save session state
   handon                              Restore session state
-  memory <subcmd>                     Memory: save|recall|inject|list
-  build <subcmd>                      Build: status|list|...
-  config <subcmd>                     Config: show|get <key>|set <key> <val>|reset (--local|--global)
+  memory <subcmd>                     Cross-session decision memory
+  build <subcmd>                      Phase-based project harness
+  config <subcmd>                     Shared toolkit config (--local|--global)
   trace <subcmd>                      Execution traces
   sync <subcmd>                       Multi-machine .xm sync
                                         push|pull             Sync current project (cwd-based)

@@ -490,7 +490,7 @@ describe('circuit breaker (direct)', () => {
     expect(core.isCircuitOpen(projName)).toBe(true);
   });
 
-  test('isCircuitOpen transitions to half-open after cooldown', () => {
+  test('isCircuitOpen is pure: cooldown elapsed unblocks WITHOUT mutating state (F4)', () => {
     core.updateCircuitBreaker(projName, true);
     core.updateCircuitBreaker(projName, true);
     core.updateCircuitBreaker(projName, true);
@@ -499,9 +499,36 @@ describe('circuit breaker (direct)', () => {
     const cb = core.readJSON(cbPath);
     cb.cooldown_until = new Date(Date.now() - 1000).toISOString();
     core.writeJSON(cbPath, cb);
+    // Predicate returns false (probe permitted) but must NOT write state.
     expect(core.isCircuitOpen(projName)).toBe(false);
-    const updated = core.readJSON(cbPath);
-    expect(updated.state).toBe('half-open');
+    expect(core.readJSON(cbPath).state).toBe('open');
+  });
+
+  test('beginHalfOpenProbe transitions open→half-open only when cooldown elapsed (F4)', () => {
+    core.updateCircuitBreaker(projName, true);
+    core.updateCircuitBreaker(projName, true);
+    core.updateCircuitBreaker(projName, true);
+    const cbPath = join(projDir, 'circuit-breaker.json');
+    const cb = core.readJSON(cbPath);
+    cb.cooldown_until = new Date(Date.now() - 1000).toISOString();
+    core.writeJSON(cbPath, cb);
+
+    expect(core.beginHalfOpenProbe(projName)).toBe(true);
+    expect(core.readJSON(cbPath).state).toBe('half-open');
+    // A redundant transition attempt is a no-op (already half-open).
+    expect(core.beginHalfOpenProbe(projName)).toBe(false);
+  });
+
+  test('half-open is non-blocking — never wedges (F4 self-recovery)', () => {
+    // A probe that is started but never resolved (the run/`tasks update` split
+    // makes abandonment common) must leave the breaker runnable, not stuck.
+    const cbPath = join(projDir, 'circuit-breaker.json');
+    core.writeJSON(cbPath, {
+      state: 'half-open', consecutive_failures: 3,
+      opened_at: new Date().toISOString(), cooldown_until: null,
+    });
+    expect(core.isCircuitOpen(projName)).toBe(false); // half-open does not block
+    expect(core.readJSON(cbPath).state).toBe('half-open'); // and isCircuitOpen stays pure
   });
 
   test('half-open failure reopens circuit', () => {

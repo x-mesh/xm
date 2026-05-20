@@ -9,10 +9,10 @@ import {
   projectDir, decisionsPath,
   resolveProject, logDecision, appendMetric, emitHook,
   loadConfig, parseOptions, E,
-  existsSync, join, resolve, ROOT,
+  existsSync, join, resolve, repoRoot,
   spawnSync,
   runQualityChecks,
-  ask, pickMenu,
+  ask, pickMenu, exitFail,
 } from './core.mjs';
 
 // ── cmdPhase ────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ export function cmdPhase(args) {
   const sub = args[0];
   if (!sub || !['next', 'set', 'status'].includes(sub)) {
     console.error('Usage: x-build phase <next|set|status> [args]');
-    process.exit(1);
+    exitFail(1);
   }
 
   if (sub === 'status') {
@@ -47,7 +47,7 @@ export function phaseNext(args) {
 
   if (currentIdx === -1) {
     console.error(`❌ ${E('invalid-phase')}`);
-    process.exit(1);
+    exitFail(1);
   }
 
   const currentPhase = PHASES[currentIdx];
@@ -139,7 +139,7 @@ export function phaseNext(args) {
     const scripts = config.gate_scripts || {};
     if (scripts[gateType]) {
       console.log(`🔍 Running custom gate: ${gateType}...`);
-      const out = spawnSync(scripts[gateType], [], { shell: true, cwd: resolve(ROOT, '..'), stdio: 'pipe' });
+      const out = spawnSync(scripts[gateType], [], { shell: true, cwd: repoRoot(), stdio: 'pipe' });
       if (out.status !== 0) {
         console.log(`⛔ Custom gate "${gateType}" failed.`);
         return;
@@ -261,13 +261,13 @@ function phaseSet(args) {
 
   if (!phaseName) {
     console.error('Usage: x-build phase set <phase-name> [project]');
-    process.exit(1);
+    exitFail(1);
   }
 
   const target = PHASES.find(p => p.name === phaseName || p.id === phaseName);
   if (!target) {
     console.error(`❌ ${E('unknown-phase', { name: phaseName })} Valid: ${PHASES.map(p => p.name).join(', ')}`);
-    process.exit(1);
+    exitFail(1);
   }
 
   const manifest = readJSON(manifestPath(project));
@@ -312,7 +312,7 @@ export function cmdGate(args) {
   const action = args[0];
   if (!action || !['pass', 'fail'].includes(action)) {
     console.error('Usage: x-build gate <pass|fail> [message] [project]');
-    process.exit(1);
+    exitFail(1);
   }
 
   const message = args.slice(1).filter(a => !a.startsWith('--')).join(' ') || null;
@@ -322,7 +322,7 @@ export function cmdGate(args) {
 
   if (!currentPhase) {
     console.error('❌ Invalid current phase.');
-    process.exit(1);
+    exitFail(1);
   }
 
   const status = readJSON(phaseStatusPath(project, currentPhase.id));
@@ -373,7 +373,7 @@ export function cmdCheckpoint(args) {
 
   if (!type || !GATE_TYPES.includes(type)) {
     console.error(`Usage: x-build checkpoint <${GATE_TYPES.join('|')}> [message]`);
-    process.exit(1);
+    exitFail(1);
   }
 
   const project = resolveProject(null);

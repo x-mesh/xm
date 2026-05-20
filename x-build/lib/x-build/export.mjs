@@ -9,6 +9,7 @@ import {
   resolveProject, parseOptions,
   existsSync, join, readFileSync, writeFileSync,
   parseCSVLine, normSize,
+  exitFail,
 } from './core.mjs';
 
 // ── cmdExport ───────────────────────────────────────────────────────
@@ -137,12 +138,12 @@ export function cmdImport(args) {
 
   if (!file) {
     console.error('Usage: x-build import <file> [--from csv|jira|md]');
-    process.exit(1);
+    exitFail(1);
   }
 
   if (!existsSync(file)) {
     console.error(`❌ File not found: ${file}`);
-    process.exit(1);
+    exitFail(1);
   }
 
   const data = readJSON(tasksPath(project)) || { tasks: [] };
@@ -159,7 +160,7 @@ export function cmdImport(args) {
 
     if (nameIdx === -1) {
       console.error('❌ CSV must have a "name" or "summary" column.');
-      process.exit(1);
+      exitFail(1);
     }
 
     let imported = 0;

@@ -13,6 +13,7 @@ import {
   existsSync, join, readdirSync, mkdirSync, readFileSync, appendFileSync,
   homedir, tmpdir, resolve, basename, dirname, fileURLToPath,
   isNormalMode, getMode,
+  exitFail,
 } from './core.mjs';
 import { stepsStatus } from './tasks.mjs';
 
@@ -199,7 +200,7 @@ export function cmdMode(args) {
   const modeValue = sub;
   if (!['developer', 'normal'].includes(modeValue)) {
     console.error('Usage: x-build mode <developer|normal>');
-    process.exit(1);
+    exitFail(1);
   }
 
   // Always write to global config (~/.xm/config.json)
@@ -319,7 +320,7 @@ export function cmdDecisions(args) {
     const title = positional.join(' ');
     if (!title) {
       console.error('Usage: x-build decisions add "title" [--type decision|architecture|tradeoff] [--rationale "why"] [--alternatives "a,b"]');
-      process.exit(1);
+      exitFail(1);
     }
     const alts = opts.alternatives ? opts.alternatives.split(',').map(a => a.trim()) : [];
     addDecision(project, { type: opts.type, title, rationale: opts.rationale, alternatives: alts });
@@ -384,7 +385,7 @@ export function cmdTemplates(args) {
     const templateName = args[1];
     if (!templateName) {
       console.error('Usage: x-build templates use <template-name>');
-      process.exit(1);
+      exitFail(1);
     }
 
     ensureTemplates();
@@ -398,7 +399,7 @@ export function cmdTemplates(args) {
     }
     if (!existsSync(templatePath)) {
       console.error(`❌ Template "${templateName}" not found. Run: x-build templates list`);
-      process.exit(1);
+      exitFail(1);
     }
 
     const content = readMD(templatePath);
@@ -588,7 +589,7 @@ ${C.bold}Project:${C.reset}
   init <name>                    Create a new project
   list                           List all projects
   status [project]               Show project status (with progress bar)
-  next                           Smart workflow routing — what to do next
+  next                           Suggest the next action
   handoff [--restore]            Save/restore session state for continuity
 
 ${C.bold}Research Phase:${C.reset}
@@ -605,7 +606,7 @@ ${C.bold}Plan Phase:${C.reset}
   gate <pass|fail> [message]     Resolve current phase gate
 
 ${C.bold}Execute Phase:${C.reset}
-  tasks <add|list|remove|update|done-criteria> Manage tasks
+  tasks <add|list|remove|update|reopen|done-criteria> Manage tasks
     tasks add "name" [--strategy refine] [--team eng] [--done-criteria "..."]  Add task
     tasks update <id> --score 7.8 [--done-criteria "..."]         Update task
     tasks done-criteria                                           Auto-derive from PRD
@@ -638,17 +639,17 @@ ${C.bold}Phase Lifecycle:${C.reset}
   Research → Plan → Execute → Verify → Close
 
 ${C.bold}Examples:${C.reset}
-  xmb init my-api
-  xmb discuss --mode interview
-  xmb research "Build a REST API with auth"
-  xmb plan "Build a REST API with auth and CRUD"
-  xmb plan-check
-  xmb next
-  xmb tasks add "Create DB schema" --size small
-  xmb steps compute
-  xmb run
-  xmb verify-coverage
-  xmb handoff
-  xmb context-usage
+  xm build init my-api
+  xm build discuss --mode interview
+  xm build research "Build a REST API with auth"
+  xm build plan "Build a REST API with auth and CRUD"
+  xm build plan-check
+  xm build next
+  xm build tasks add "Create DB schema" --size small
+  xm build steps compute
+  xm build run
+  xm build verify-coverage
+  xm build handoff
+  xm build context-usage
 `);
 }
