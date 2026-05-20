@@ -1629,7 +1629,7 @@ ${C.bold}PROBLEM MANAGEMENT${C.reset}
   status                    Show current problem status
   close [--summary "..."]   Close problem
   history                   Show solved problems
-  next                      Smart routing: what to do next
+  next                      Suggest the next action
   handoff [--restore]       Save/restore session
 
 ${C.bold}INTAKE${C.reset}
