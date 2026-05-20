@@ -46,6 +46,16 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 For Korean output, replace English rule names with Korean equivalents listed in `references/patterns-ko.md`.
 
+### Korean output style (avoid AI-slop)
+
+Universal (both modes) — these read as machine-generated in any register:
+- Drop empty intensifiers ("매우 / 완벽하게 / 강력한 / 원활하게 / 혁신적인") unless they carry a specific, real claim.
+- No forced rule-of-three or "~뿐만 아니라 ~까지" balance that adds no fact.
+- No hedged non-conclusions ("결국 상황에 따라 다르다 / 균형이 필요하다"). End on a concrete fact, number, or next action.
+
+Developer mode: terse and direct — lead with the result; state findings/actions without a 권고형 결말 pile-up ("~해야 한다" sentence after sentence).
+Easy/normal mode: accessible Korean is the goal — polite guidance ("~해 보세요"), one line of context for non-experts, explain jargon. Still apply the universal rules; accessible ≠ padded or vague.
+
 ## Routing
 
 Parse the first word of `$ARGUMENTS`:
