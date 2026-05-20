@@ -81,6 +81,8 @@ Block 2 (presence of the inline block) is the cheap, deterministic check to wire
 ## 10. Rollout
 
 1. ✅ Standard doc (this) + 7 skills already carry the block.
-2. ⬜ Add the inline block to the 5 remaining in-scope skills: ship, agent, humanize, memory, trace.
-3. ⬜ normal-mode Korean coverage + term-table pass per in-scope skill (D1).
-4. ⬜ Wire the §8 lint (start with block-presence check) into `bun test` / CI.
+2. ✅ Inline block added to the 5 remaining in-scope skills (ship, agent, humanize, memory, trace) — all 12 compliant.
+3. ✅ D1 term policy carried in every in-scope skill's normal-mode line (Korean(original) first-use; commands/flags/proper-nouns stay English).
+4. ✅ Block-presence lint wired into `bun test` (`test/skill-output-standard.test.mjs`, 12/12). Stretch (§8 slop-token scan) deferred.
+
+**Standard fully rolled out.** Future skills that emit Korean prose must copy the §3+§4 block (lint enforces presence).

@@ -59,7 +59,7 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 
 Universal (both modes): drop empty intensifiers (매우/완벽하게/강력한/원활하게/혁신적인) without a specific claim, no forced rule-of-three or "~뿐만 아니라 ~까지", no hedged non-conclusions — end on a concrete fact/number/next action.
 Developer mode: terse, lead with the result, no 권고형 결말 pile-up ("~해야 한다" 연속).
-Easy/normal mode: accessible Korean — polite guidance (~해 보세요), one line of context for non-experts, jargon explained; universal rules still apply.
+Easy/normal mode: accessible Korean — polite guidance (~해 보세요); keep commands/flags/proper-nouns in English, write domain terms as Korean(original) on first use; universal rules still apply.
 
 ## Arguments
 
