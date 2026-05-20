@@ -28,6 +28,17 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 - "compose" → "조합", "decompose" → "분해"
 - Use "~하세요" form; lead with key information first
 
+### Korean output style (avoid AI-slop)
+
+Whenever you emit Korean prose (either mode), strip the tells that make output read as machine-generated:
+- No 권고형 결말 pile-up — do not end sentence after sentence with "~해야 한다 / ~하는 것이 중요하다". State the point or the action directly.
+- Drop empty intensifiers ("매우 / 완벽하게 / 강력한 / 원활하게 / 혁신적인") unless they carry a specific, real claim.
+- No forced rule-of-three or "~뿐만 아니라 ~까지" balance that adds no fact.
+- No hedged non-conclusions ("결국 상황에 따라 다르다 / 균형이 필요하다"). End on a concrete fact, number, or next action.
+- Vary sentence length; lead with the key result instead of context throat-clearing.
+
+Full catalog: the humanize skill's `patterns-ko.md`.
+
 ## Model Routing
 
 | Subcommand | Model | Reason |
@@ -238,62 +249,7 @@ Same as fan-out, but sends a **different** prompt to each agent (e.g., including
 
 ## Subcommand: list
 
-```
-x-op — Strategy Orchestration
-
-Strategies:
-  refine <topic>          Diverge → converge → verify rounds
-  tournament <topic>      Compete → anonymous vote → winner
-  chain <topic>           A→B→C sequential pipeline (conditional branching)
-  review --target <file>  Multi-perspective code review
-  debate <topic>          Pro vs Con → verdict
-  red-team --target <f>   Attack → defend → re-attack
-  brainstorm <topic>      Free ideation → cluster → vote [--analogical|--lateral]
-  distribute <topic>      Split → parallel execute → merge
-  council <topic>         N-party deliberation → weighted consensus
-  socratic <topic>        Question-driven deep inquiry
-  persona <topic>         Multi-persona perspective analysis
-  scaffold <topic>        Design → dispatch → integrate (top-down)
-  compose "A | B | C"     Strategy piping / chaining
-  decompose <topic>       Recursive decompose → leaf parallel → bottom-up
-  hypothesis <topic>      Generate → falsify → adopt surviving hypotheses
-  investigate <topic>     Multi-angle investigation → synthesize → gap analysis
-  monitor --target <f>    Observe → analyze → auto-dispatch (1-shot watchdog)
-
-Options:
-  --rounds N              Round count (default 4)
-  --preset quick|thorough|deep
-  --agents N              Number of agents (default: agent_max_count)
-  --model sonnet|opus     Agent model
-  --vote                  Enable dot voting (brainstorm)
-  --target <file>         Review/red-team target
-  --personas "a,b,c"      Persona roles (persona strategy)
-  --bracket single|double Tournament bracket type
-  --weights "role:N"      Council weighted voting
-  --dry-run               Show execution plan only
-  --resume                Resume from checkpoint
-  --explain               Include decision trace
-  --pipe <strategy>       Chain strategies (compose)
-  --angles "a,b,c"       Investigation angles (investigate)
-  --depth shallow|deep|exhaustive  Investigation depth (investigate)
-
-Examples:
-  /xm:op refine "Payment API design" --rounds 4
-  /xm:op tournament "Login implementation" --agents 4 --bracket double
-  /xm:op debate "Monolith vs microservices"
-  /xm:op review --target src/auth.ts
-  /xm:op brainstorm "v2 feature ideas" --vote
-  /xm:op socratic "Why microservices?" --rounds 4
-  /xm:op persona "Auth redesign" --personas "engineer,security,pm"
-  /xm:op scaffold "Plugin system" --agents 4
-  /xm:op investigate "Auth system" --target src/auth/ --depth deep
-  /xm:op investigate "Redis vs Memcached" --angles "performance,ecosystem,ops,cost"
-  /xm:op compose "brainstorm | tournament | refine" --topic "v2 plan"
-  /xm:op refine "API design" --dry-run
-  /xm:op tournament "Login" --explain
-  /xm:op decompose "Implement payment system" --agents 6
-  /xm:op hypothesis "Why is latency spiking?" --rounds 3
-```
+Output the catalog in `references/x-op-list.md` verbatim (strategies, options, examples).
 
 ---
 
