@@ -307,22 +307,22 @@ Standalone projects without `package.json` skip bump entirely.
 | "patch bump is safe, I'll use patch" | patch implies no behavior change. If behavior changed, bump minor. |
 | "I'll squash later" | Squash before push or not at all. |
 | "The user will confirm if they care" | Don't guess on irreversible operations. Ask before push. |
-| "standalone 프로젝트라 CLI 없으면 ship 못 한다" | Plain-Git Fallback으로 동일 결과 가능. CLI 부재가 차단 사유 아님. |
-| "detect 한 번 더 돌려봐야 안전하다" | 같은 SHA면 동일 결과. Step 0 결과 재사용. 재실행은 턴 낭비. |
-| "단계별로 사용자 확인이 안전하다" | 5단계 확인 = 5턴 낭비. 전체 계획 1회 미리보기 후 단일 승인이 더 안전 (전체 영향 가시화). |
-| "CLI 경로 추측해서 시도" | resolve_xmb()로 자동 감지. 추측 후 실패는 최악의 패턴. |
-| "README 업데이트는 별도 단계" | commit과 같은 트랜잭션. Step 4에 인라인. |
-| "trace 결과 봐야 ship 완료" | trace는 관측용. push 성공 = ship 완료. background 실행. |
-| "안전하게 매번 진행 확인 받자" | /xm:ship 호출 자체가 동의. 확인은 블로커 발생 시에만. 매번 확인은 사용자 시간을 낭비하고 같은 답("진행")을 강요. |
-| "사용자가 commit 메시지를 수정하고 싶을 수도 있다" | 수정하려면 명시적으로 요청한다. 추측해서 묻지 않는다. |
+| "standalone project — can't ship without the CLI" | The Plain-Git Fallback delivers the same result. A missing CLI is not a blocker. |
+| "re-running detect is safer" | Same SHA = same result. Reuse the Step 0 output; re-running just wastes a turn. |
+| "confirming each step is safer" | Five step-confirms = five wasted turns. One plan preview + a single approval is safer — the full impact is visible at once. |
+| "guess the CLI path and try it" | resolve_xmb() auto-detects it. Guessing then failing is the worst pattern. |
+| "README update is a separate step" | Same transaction as the commit. Inline it in Step 4. |
+| "ship isn't done until I see trace results" | trace is for observability. Push success = ship done. Run trace in the background. |
+| "ask for go-ahead every time, to be safe" | Invoking /xm:ship is the consent. Confirm only when a blocker fires — asking every time wastes the user's time and forces the same answer ("proceed"). |
+| "the user might want to edit the commit message" | If they do, they will ask explicitly. Do not guess and prompt. |
 
 ## Red Flags
 
-- Step 0 결과 없이 Step 1로 진입 → 정보 부족
-- 같은 git 명령 2회 이상 실행 → 캐시 미사용
-- AskUserQuestion 3회 이상 (interactive 모드) → 결정 게이트 분산
-- CLI 경로 하드코딩 후 실패 → resolve_xmb() 미사용
-- trace 동기 대기 → blocking on observability
+- Entering Step 1 without Step 0 results → acting on missing information
+- Running the same git command 2+ times → cached result not reused
+- AskUserQuestion 3+ times (interactive mode) → decision gates scattered instead of batched
+- Hardcoding the CLI path then failing → resolve_xmb() not used
+- Waiting synchronously on trace → blocking on observability
 
 ## Verification
 
