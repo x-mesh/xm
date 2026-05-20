@@ -55,6 +55,12 @@ Read mode from `.xm/config.json` (`mode` field). Default: `developer`.
 - Term mapping: "verdict" → "판정", "role" → "역할", "team" → "팀", "stigmergy" → "간접 협동"
 - Use polite register (~하세요 체), prioritize key information first
 
+### Korean output style (avoid AI-slop)
+
+Universal (both modes): drop empty intensifiers (매우/완벽하게/강력한/원활하게/혁신적인) without a specific claim, no forced rule-of-three or "~뿐만 아니라 ~까지", no hedged non-conclusions — end on a concrete fact/number/next action.
+Developer mode: terse, lead with the result, no 권고형 결말 pile-up ("~해야 한다" 연속).
+Easy/normal mode: accessible Korean — polite guidance (~해 보세요), one line of context for non-experts, jargon explained; universal rules still apply.
+
 ## Arguments
 
 User provided: $ARGUMENTS
