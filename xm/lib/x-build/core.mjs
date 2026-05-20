@@ -38,6 +38,40 @@ export const ROOT = process.env.X_BUILD_ROOT
 // From xm/lib/x-build/core.mjs we need to go up two levels: x-build/ -> lib/ -> xm/
 export const PLUGIN_ROOT = resolve(__dirname_core, '..', '..');
 
+// repoRoot: the user's project/repo root. ROOT is `<repo>/.xm/build`, so the
+// repo root is two levels up. Every place that runs git or user scripts must
+// use repoRoot(), NOT the old `resolve(ROOT, '..')` (= `<repo>/.xm`, one level
+// short — it only worked by accident because git/npm walk upward to find
+// `.git`/`package.json`).
+// Single source of truth shared with later.mjs (workspaceRoot) and verify.mjs.
+export function repoRoot() {
+  return resolve(ROOT, '..', '..');
+}
+
+// ── CLI exit / library mode ──────────────────────────────────────────
+// exitFail() replaces bare `process.exit(1)` in command/guard functions.
+// In CLI mode (default) it exits the process exactly as before — byte-identical
+// behavior, zero regression. An in-process caller (e.g. a long-running server)
+// can call setLibraryMode(true) so guard failures throw CliError instead of
+// killing the host process, then catch it. Guards print their reason via
+// console.error before calling exitFail(); pass that reason as the optional
+// `message` so a library caller can recover it from CliError without scraping
+// stderr (existing call sites omit it and fall back to a generic message).
+export class CliError extends Error {
+  constructor(code = 1, message) {
+    super(message || `x-build exited with code ${code}`);
+    this.name = 'CliError';
+    this.code = code;
+  }
+}
+
+let LIBRARY_MODE = false;
+export function setLibraryMode(on) { LIBRARY_MODE = !!on; }
+export function exitFail(code = 1, message) {
+  if (LIBRARY_MODE) throw new CliError(code, message);
+  process.exit(code);
+}
+
 // ── Constants ────────────────────────────────────────────────────────
 
 export const PHASES = [
@@ -147,7 +181,11 @@ export function modifyJSON(path, mutator) {
       } finally {
         try { unlinkSync(lockPath); } catch { /* best effort */ }
       }
-    } catch {
+    } catch (e) {
+      // A guard inside the mutator called exitFail() (library mode → CliError).
+      // That is an intentional abort, not lock contention — propagate it instead
+      // of spin-waiting 20× and re-running the mutator.
+      if (e instanceof CliError) throw e;
       // Lock held — spin wait 50ms
       const deadline = Date.now() + 50;
       while (Date.now() < deadline) { /* spin */ }
@@ -328,9 +366,9 @@ export function emitHook(event, payload) {
     try {
       const input = JSON.stringify({ event, ...payload, timestamp: new Date().toISOString() });
       if (h.exec.endsWith('.mjs')) {
-        spawnSync(process.execPath, [h.exec], { input, stdio: ['pipe', 'inherit', 'inherit'], cwd: resolve(ROOT, '..') });
+        spawnSync(process.execPath, [h.exec], { input, stdio: ['pipe', 'inherit', 'inherit'], cwd: repoRoot() });
       } else {
-        spawnSync(h.exec, [], { input, stdio: ['pipe', 'inherit', 'inherit'], shell: true, cwd: resolve(ROOT, '..') });
+        spawnSync(h.exec, [], { input, stdio: ['pipe', 'inherit', 'inherit'], shell: true, cwd: repoRoot() });
       }
     } catch { /* hook errors are non-fatal */ }
   }
@@ -382,7 +420,7 @@ export function resolveProject(explicit, { autoInit = false } = {}) {
   const name = explicit || _explicitProject || findCurrentProject();
   if (!name) {
     console.error(`❌ ${E('no-project')}`);
-    process.exit(1);
+    exitFail(1);
   }
   if (!existsSync(manifestPath(name))) {
     if (autoInit && _cmdInit) {
@@ -390,7 +428,7 @@ export function resolveProject(explicit, { autoInit = false } = {}) {
       return _cmdInit([name]);
     }
     console.error(`❌ ${E('project-not-found', { name })}`);
-    process.exit(1);
+    exitFail(1);
   }
   return name;
 }
@@ -403,7 +441,7 @@ export function resolveProjectDir(name) {
 
 function isGitRepo() {
   try {
-    execSync('git rev-parse --git-dir', { stdio: 'pipe', cwd: resolve(ROOT, '..') });
+    execSync('git rev-parse --git-dir', { stdio: 'pipe', cwd: repoRoot() });
     return true;
   } catch { return false; }
 }
@@ -414,7 +452,7 @@ export function gitAutoCommit(project, task, phase) {
   if (config.git?.auto_commit === false) return null;
 
   try {
-    const cwd = resolve(ROOT, '..');
+    const cwd = repoRoot();
 
     // Stage only this project's tracking files (X-8). Previously `git add -A`
     // swept the entire working tree, which caused two distinct failures:
@@ -448,7 +486,7 @@ export function gitAutoCommit(project, task, phase) {
 
 export function gitRollbackTask(task) {
   if (!isGitRepo() || !task.commit_sha) return false;
-  const cwd = resolve(ROOT, '..');
+  const cwd = repoRoot();
 
   // Validate sha BEFORE any side effects (X-9). Previously this function ran
   // `git stash push` then `git reset --hard`; if the sha was invalid (e.g.,
@@ -458,6 +496,24 @@ export function gitRollbackTask(task) {
   try {
     execSync(`git rev-parse --verify ${JSON.stringify(task.commit_sha + '^{commit}')}`, { stdio: 'pipe', cwd });
   } catch { return false; }
+
+  // Blast-radius guard (F2): `git reset --hard <sha>` rewinds HEAD and discards
+  // EVERY commit made after <sha> — in a multi-task DAG run that silently throws
+  // away later tasks' commits. Only proceed when commit_sha is the current HEAD,
+  // so the reset merely drops uncommitted/working-tree changes (already stashed
+  // below) and never deletes intervening history. If HEAD has moved on, refuse
+  // and let the caller resolve manually instead of losing work.
+  let head;
+  try {
+    head = execSync('git rev-parse HEAD', { stdio: 'pipe', cwd }).toString().trim();
+  } catch {
+    console.error(`  ${C.yellow}⚠ rollback skipped for ${task.id}: unable to read HEAD (git rev-parse failed).${C.reset}`);
+    return false;
+  }
+  if (head !== task.commit_sha) {
+    console.error(`  ${C.yellow}⚠ rollback skipped for ${task.id}: ${task.commit_sha.slice(0, 8)} is not HEAD — a hard reset would discard later commits. Resolve manually.${C.reset}`);
+    return false;
+  }
 
   let stashed = false;
   try {
@@ -482,7 +538,7 @@ export function runQualityChecks(project) {
 }
 
 function detectAndRunQualityChecks(project) {
-  const cwd = resolve(ROOT, '..');
+  const cwd = repoRoot();
   const results = [];
   const config = loadConfig();
 
@@ -643,18 +699,34 @@ export function updateCircuitBreaker(project, taskFailed) {
   return cb;
 }
 
+// PURE predicate (F4): never writes. Returns whether work should be blocked.
+// The open→half-open transition lives in beginHalfOpenProbe() so that callers
+// using this for display/logging can't accidentally flip the breaker's state.
+// Half-open is treated as non-blocking: the probe run is permitted, and its
+// outcome (updateCircuitBreaker) closes or re-opens the breaker. This mirrors
+// the original self-recovering behavior — a probe that is started but never
+// resolved (the run/`tasks update` split means abandonment is common) leaves
+// the breaker half-open and still runnable, never wedged.
 export function isCircuitOpen(project) {
   const cb = getCircuitState(project);
-  if (cb.state !== 'open') return false;
+  if (cb.state !== 'open') return false; // closed or half-open → not blocking
+  if (cb.cooldown_until && new Date() > new Date(cb.cooldown_until)) return false; // cooldown elapsed → probe permitted
+  return true;
+}
 
-  if (cb.cooldown_until && new Date() > new Date(cb.cooldown_until)) {
+// MUTATING transition (F4): call right before dispatching the recovery probe,
+// after isCircuitOpen() has returned false for an open breaker whose cooldown
+// has elapsed. Moves open→half-open. No-op (returns false) when the breaker is
+// not in that ready-to-probe state, so it is safe to call unconditionally.
+export function beginHalfOpenProbe(project) {
+  const cb = getCircuitState(project);
+  if (cb.state === 'open' && cb.cooldown_until && new Date() > new Date(cb.cooldown_until)) {
     cb.state = 'half-open';
     writeJSON(circuitBreakerPath(project), cb);
     console.log(`  ${C.yellow}⚡ Circuit breaker HALF-OPEN — probe allowed.${C.reset}`);
-    return false;
+    return true;
   }
-
-  return true;
+  return false;
 }
 
 export function resetCircuitBreaker(project) {

@@ -15,6 +15,7 @@ import {
   parseOptions,
   decisionsPath, metricsPath,
   execSync,
+  exitFail,
 } from './core.mjs';
 
 // ── cmdInit ─────────────────────────────────────────────────────────
@@ -23,14 +24,14 @@ export function cmdInit(args) {
   const name = args[0];
   if (!name) {
     console.error('Usage: x-build init <project-name>');
-    process.exit(1);
+    exitFail(1);
   }
 
   const slug = toSlug(name);
 
   if (existsSync(manifestPath(slug))) {
     console.error(`❌ Project "${slug}" already exists.`);
-    process.exit(1);
+    exitFail(1);
   }
 
   const now = new Date().toISOString();

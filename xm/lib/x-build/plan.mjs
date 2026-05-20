@@ -12,6 +12,7 @@ import {
   getAgentCount, isNormalMode,
   templatesDir,
   readdirSync,
+  exitFail,
 } from './core.mjs';
 import { taskList } from './tasks.mjs';
 import { stepsStatus, computeSteps } from './tasks.mjs';
@@ -394,7 +395,7 @@ export function cmdPrdGate(args) {
   const prd = readMD(prdPath(project));
   if (!prd) {
     console.error('❌ No PRD.md found. Create a PRD first during the Plan phase.');
-    process.exit(1);
+    exitFail(1);
   }
 
   const requirements = readMD(join(contextDir(project), 'REQUIREMENTS.md'));
@@ -439,7 +440,7 @@ export function cmdConsensus(args) {
   const prd = readMD(prdPath(project));
   if (!prd) {
     console.error('❌ No PRD.md found. Create a PRD first during the Plan phase.');
-    process.exit(1);
+    exitFail(1);
   }
 
   const requirements = readMD(join(contextDir(project), 'REQUIREMENTS.md'));
@@ -828,7 +829,7 @@ export function cmdSaveArtifact(args) {
 
   if (!type) {
     console.error('Usage: x-build save <context|requirements|roadmap|project|plan|research-notes> [--content "..."] [--agent <name>]');
-    process.exit(1);
+    exitFail(1);
   }
 
   let content = opts.content || '';
@@ -838,7 +839,7 @@ export function cmdSaveArtifact(args) {
 
   if (!content) {
     console.error('No content provided. Use --content or pipe via stdin.');
-    process.exit(1);
+    exitFail(1);
   }
 
   const paths = {
@@ -853,7 +854,7 @@ export function cmdSaveArtifact(args) {
   const dest = paths[type];
   if (!dest) {
     console.error(`Unknown artifact type: "${type}". Valid: ${Object.keys(paths).join(', ')}`);
-    process.exit(1);
+    exitFail(1);
   }
 
   if (type === 'research-notes') {

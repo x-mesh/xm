@@ -11,10 +11,10 @@ import {
   parseOptions, renderBar, fmtDuration,
   estimateTaskCost,
   gitAutoCommit, gitRollbackTask,
-  updateCircuitBreaker, isCircuitOpen, scheduleRetry,
+  updateCircuitBreaker, isCircuitOpen, beginHalfOpenProbe, scheduleRetry,
   getCircuitState, resetCircuitBreaker,
   existsSync, join, mkdirSync,
-  createRL, ask, pickMenu, E,
+  createRL, ask, pickMenu, E, exitFail,
 } from './core.mjs';
 
 // ── cmdTasks ────────────────────────────────────────────────────────
@@ -23,7 +23,7 @@ export function cmdTasks(args) {
   const sub = args[0];
   if (!sub || !['add', 'list', 'remove', 'update', 'reopen', 'done-criteria'].includes(sub)) {
     console.error('Usage: x-build tasks <add|list|remove|update|reopen|done-criteria> [args] [--project <name>]');
-    process.exit(1);
+    exitFail(1);
   }
 
   // Extract `--project <name>` from args before subcommand parsing so write
@@ -36,7 +36,7 @@ export function cmdTasks(args) {
     const val = subArgs[projIdx + 1];
     if (val === undefined || val.startsWith('--')) {
       console.error('❌ --project requires a value. Usage: --project <name>');
-      process.exit(1);
+      exitFail(1);
     }
     explicitProject = val;
     subArgs.splice(projIdx, 2);
@@ -151,7 +151,7 @@ export function taskAdd(project, args) {
 
   if (!name) {
     console.error('Usage: x-build tasks add <name> [--deps t1,t2] [--size small|medium|large] [--strategy refine] [--rubric general]');
-    process.exit(1);
+    exitFail(1);
   }
 
   const data = readJSON(tasksPath(project)) || { tasks: [] };
@@ -167,7 +167,7 @@ export function taskAdd(project, args) {
   for (const dep of deps) {
     if (!validIds.has(dep)) {
       console.error(`❌ Unknown dependency: "${dep}" does not exist. Add it first or check the ID.`);
-      process.exit(1);
+      exitFail(1);
     }
   }
 
@@ -261,14 +261,14 @@ export function taskRemove(project, args) {
   const id = positional[0];
   if (!id) {
     console.error('Usage: x-build tasks remove <task-id> [--cascade]');
-    process.exit(1);
+    exitFail(1);
   }
 
   const data = readJSON(tasksPath(project));
   const idx = data.tasks.findIndex(t => t.id === id);
   if (idx === -1) {
     console.error(`❌ ${E('task-not-found', { id })}`);
-    process.exit(1);
+    exitFail(1);
   }
 
   const cascade = opts.cascade !== undefined;
@@ -291,7 +291,7 @@ export function taskRemove(project, args) {
     if (dependents.length > 0) {
       console.error(`❌ Cannot remove "${id}" — depended on by: ${dependents.map(t => t.id).join(', ')}`);
       console.error(`   Use --cascade to remove "${id}" and all dependents.`);
-      process.exit(1);
+      exitFail(1);
     }
   }
 
@@ -321,7 +321,7 @@ export function taskUpdate(project, args) {
     console.error('       x-build tasks update <task-id> --score <number>');
     console.error('       x-build tasks update <task-id> --done-criteria "criteria text"');
     console.error('       x-build tasks update <task-id> --deps t1,t2  (replace dependency list; pass empty string to clear)');
-    process.exit(1);
+    exitFail(1);
   }
 
   // Use modifyJSON for atomic read-modify-write (parallel agent safe)
@@ -330,9 +330,9 @@ export function taskUpdate(project, args) {
   let taskRef = null;
 
   modifyJSON(tasksPath(project), (data) => {
-    if (!data) { console.error('❌ No tasks data found.'); process.exit(1); }
+    if (!data) { console.error('❌ No tasks data found.'); exitFail(1); }
     const task = data.tasks.find(t => t.id === id);
-    if (!task) { console.error(`❌ ${E('task-not-found', { id })}`); process.exit(1); }
+    if (!task) { console.error(`❌ ${E('task-not-found', { id })}`); exitFail(1); }
     taskFound = true;
     taskRef = task;
 
@@ -344,7 +344,7 @@ export function taskUpdate(project, args) {
     if (opts['done-criteria'] !== undefined) {
       if (typeof opts['done-criteria'] !== 'string') {
         console.error('❌ --done-criteria requires a value. Usage: --done-criteria "criteria text"');
-        process.exit(1);
+        exitFail(1);
       }
       task.done_criteria = opts['done-criteria'].split(';').map(c => c.trim()).filter(Boolean);
       updatedFields.push('done_criteria updated');
@@ -360,17 +360,17 @@ export function taskUpdate(project, args) {
         newDeps = opts.deps.split(',').map(d => d.trim()).filter(Boolean);
       } else {
         console.error('❌ --deps requires a value. Usage: --deps t1,t2  (or omit value to clear)');
-        process.exit(1);
+        exitFail(1);
       }
       const validIds = new Set(data.tasks.map(t => t.id));
       for (const dep of newDeps) {
         if (dep === id) {
           console.error(`❌ Self-dependency rejected: task "${id}" cannot depend on itself.`);
-          process.exit(1);
+          exitFail(1);
         }
         if (!validIds.has(dep)) {
           console.error(`❌ Unknown dependency: "${dep}" does not exist.`);
-          process.exit(1);
+          exitFail(1);
         }
       }
       task.depends_on = newDeps;
@@ -382,7 +382,7 @@ export function taskUpdate(project, args) {
     newStatus = STATUS_ALIASES[rawStatus] || rawStatus;
     if (!Object.values(TASK_STATES).includes(newStatus)) {
       console.error(`❌ Invalid status: "${rawStatus}". Valid: ${Object.values(TASK_STATES).join(', ')}`);
-      process.exit(1);
+      exitFail(1);
     }
 
     oldStatus = task.status;
@@ -515,7 +515,7 @@ export function taskReopen(project, args) {
   if (!id || !reason || typeof reason !== 'string' || !reason.trim()) {
     console.error('Usage: x-build tasks reopen <task-id> --reason "<why>" [--cascade]');
     console.error('       Reopen completed/failed/cancelled task back to pending.');
-    process.exit(1);
+    exitFail(1);
   }
 
   const REOPENABLE = new Set([TASK_STATES.COMPLETED, TASK_STATES.FAILED, TASK_STATES.CANCELLED]);
@@ -523,12 +523,12 @@ export function taskReopen(project, args) {
   const skipped = [];
 
   modifyJSON(tasksPath(project), (data) => {
-    if (!data?.tasks?.length) { console.error('❌ No tasks data found.'); process.exit(1); }
+    if (!data?.tasks?.length) { console.error('❌ No tasks data found.'); exitFail(1); }
     const root = data.tasks.find(t => t.id === id);
-    if (!root) { console.error(`❌ ${E('task-not-found', { id })}`); process.exit(1); }
+    if (!root) { console.error(`❌ ${E('task-not-found', { id })}`); exitFail(1); }
     if (!REOPENABLE.has(root.status)) {
       console.error(`❌ Cannot reopen "${id}" — current status "${root.status}". Only completed/failed/cancelled can be reopened.`);
-      process.exit(1);
+      exitFail(1);
     }
 
     // Collect targets: root + transitive dependents if --cascade
@@ -657,7 +657,7 @@ export function cmdSteps(args) {
   const sub = args[0];
   if (!sub || !['compute', 'status', 'next'].includes(sub)) {
     console.error('Usage: x-build steps <compute|status|next> [project]');
-    process.exit(1);
+    exitFail(1);
   }
 
   const project = resolveProject(args[1] || null, { autoInit: true });
@@ -671,7 +671,7 @@ export function stepsCompute(project) {
   const data = readJSON(tasksPath(project));
   if (!data?.tasks?.length) {
     console.error('❌ No tasks defined. Run: x-build tasks add <name>');
-    process.exit(1);
+    exitFail(1);
   }
 
   try {
@@ -689,7 +689,7 @@ export function stepsCompute(project) {
     console.log('');
   } catch (err) {
     console.error(`❌ ${err.message}`);
-    process.exit(1);
+    exitFail(1);
   }
 }
 
@@ -859,7 +859,7 @@ export function cmdRun(args) {
   const manifest = readJSON(manifestPath(project));
   if (!manifest) {
     console.error('❌ No project found. Run: x-build init <name>');
-    process.exit(1);
+    exitFail(1);
   }
   const currentPhase = PHASES.find(p => p.id === manifest.current_phase);
 
@@ -869,12 +869,12 @@ export function cmdRun(args) {
     console.log(`     1. Review plan:   x-build plan-check`);
     console.log(`     2. Advance phase: x-build phase next`);
     console.log(`     3. Then run:      x-build run\n`);
-    process.exit(1);
+    exitFail(1);
   }
 
   if (isCircuitOpen(project)) {
     console.error(`❌ Circuit breaker is OPEN. Wait for cooldown or reset manually.`);
-    process.exit(1);
+    exitFail(1);
   }
 
   const taskData = readJSON(tasksPath(project));
@@ -882,7 +882,7 @@ export function cmdRun(args) {
 
   if (!stepData?.steps?.length) {
     console.error('❌ No steps computed. Run: x-build steps compute');
-    process.exit(1);
+    exitFail(1);
   }
 
   let currentStep = null;
@@ -925,6 +925,11 @@ export function cmdRun(args) {
     console.log(`⏳ No ready tasks in Step ${currentStep.id}. Some may be waiting for retries or dependencies.`);
     return;
   }
+
+  // A real probe is about to be dispatched — now transition open→half-open.
+  // Doing this only at dispatch (not at the gate) means a no-op run never
+  // trips the breaker into half-open. No-op when the breaker isn't ready.
+  beginHalfOpenProbe(project);
 
   // Generate context brief inline (avoid circular import with misc.mjs)
   const briefContent = (() => {
