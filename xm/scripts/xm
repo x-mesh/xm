@@ -217,6 +217,16 @@ case "$CMD" in
     node "$LIB_PATH/x-solver-cli.mjs" "$@"
     ;;
 
+  score)
+    LIB_PATH="$(plugin_lib xm lib)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-score-cli.mjs" ]; then
+      echo "xm score: x-score-cli.mjs not found under $LIB" >&2
+      echo "  Update xm: xm update" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-score-cli.mjs" "$@"
+    ;;
+
   version|--version|-v)
     # Prefer local repo plugin.json, fallback to cache
     if [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
@@ -611,6 +621,7 @@ Commands:
                                         setup                 Configure server URL + API key
                                         server start|stop     Local sync server
   solver <subcmd>                     Structured problem solving
+  score --parts ... --weights ...     Compute weighted score (shared utility)
   install [--target T] [--global]     Install xm SKILLs into Cursor/Codex/Kiro/Antigravity/OpenCode
   install --list-installed            List all installed manifests as JSON
   install --propagate                 Re-render every installed manifest (best-effort)

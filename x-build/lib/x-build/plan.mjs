@@ -43,7 +43,7 @@ export function cmdPlan(args) {
     const taskData = readJSON(tasksPath(project));
     const stepData = readJSON(stepsPath(project));
     if (!taskData?.tasks?.length) {
-      console.log('No plan yet. Use: /x-build plan "목표를 설명하세요"');
+      console.log('No plan yet. Use: /xm:build plan "목표를 설명하세요"');
       return;
     }
     taskList(project);

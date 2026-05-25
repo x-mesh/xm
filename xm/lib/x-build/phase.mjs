@@ -55,7 +55,7 @@ export function phaseNext(args) {
   const gateType = config.gates?.[gateKey] || 'auto';
 
   if (currentPhase.name === 'plan' && !existsSync(prdPath(project))) {
-    console.error('⚠ PRD not generated yet. Run: /x-build plan to generate PRD first.');
+    console.error('⚠ PRD not generated yet. Run: /xm:build plan to generate PRD first.');
     return;
   }
 
@@ -276,7 +276,7 @@ function phaseSet(args) {
   const executeIdx = PHASES.findIndex(p => p.name === 'execute');
 
   if (targetIdx >= executeIdx && !existsSync(prdPath(project))) {
-    console.error('⚠ PRD not generated yet. Run: /x-build plan to generate PRD first.');
+    console.error('⚠ PRD not generated yet. Run: /xm:build plan to generate PRD first.');
     return;
   }
 

@@ -287,6 +287,7 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 - `verify-traceability` — R# ↔ Task ↔ AC ↔ Done Criteria matrix
 - `verify-contracts` — Check task done_criteria fulfillment
 - `verify-review-fix [--init]` — Gate x-review Request Changes / Block fixes through triage and allowed-file scope
+- `verify-drift [--threshold N]` — Compute weighted PRD baseline drift (0.5×goal + 0.3×constraint + 0.2×ontology); writes phases/04-verify/drift-score.json and gates on threshold
 - `context-usage` — Show artifact token usage
 
 ### Analysis

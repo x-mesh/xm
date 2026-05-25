@@ -977,7 +977,7 @@ export function cmdRun(args) {
       };
       if (task.strategy) {
         entry.strategy = task.strategy;
-        entry.strategy_hint = `Use /x-op ${task.strategy} for this task`;
+        entry.strategy_hint = `Use /xm:op ${task.strategy} for this task`;
       } else {
         const suggested = suggestStrategy(task.name);
         if (suggested) entry.strategy_suggestion = suggested;

@@ -258,6 +258,12 @@ async function fetchJSON(url) {
   }
 }
 
+/** Returns an extra hint when multi-workspace is active and no data found. */
+function wsEmptyHint() {
+  if (!multiRootMode || !currentWsId) return '';
+  return `<p style="margin-top:0.5rem;font-size:0.8rem;color:var(--text-muted)">현재 workspace에 데이터 없음 — 사이드바에서 workspace 전환</p>`;
+}
+
 function statusBadge(status) {
   const map = {
     completed: { cls: 'badge-green',  label: '✅ Completed' },
@@ -809,6 +815,7 @@ async function renderHome() {
 
     // Session metrics bar chart (async, non-blocking)
     fetchJSON(apiUrl('/metrics/sessions?limit=50')).then(sessionsRes => {
+      if (seq !== _pollSequence) return;
       const sessions = Array.isArray(sessionsRes.data) ? sessionsRes.data : [];
       if (sessions.length === 0) return;
 
@@ -850,6 +857,7 @@ async function renderHome() {
 
     // Cost widget (async, non-blocking)
     fetchJSON(apiUrl('/costs')).then(costsRes => {
+      if (seq !== _pollSequence) return;
       if (costsRes.error) return;
       const totalCost = costsRes.totalCost ?? 0;
       const totalTokens = (costsRes.totalInputTokens ?? 0) + (costsRes.totalOutputTokens ?? 0);
@@ -1179,9 +1187,14 @@ function renderProjectDetail(slug) {
     }
 
     // Header
+    const projectRoutePath = `/projects/${encodeURIComponent(slug)}`;
     let html = `
       <div class="view-header">
-        <h1>${name}</h1>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <a href="#/projects" style="font-size:0.875rem;opacity:0.7">← Builds</a>
+          ${pinButton(projectRoutePath, name)}
+        </div>
+        <h1 style="margin-top:0.5rem">${name}</h1>
         ${goal ? `<p style="margin:4px 0 0;font-size:13px">${goal}</p>` : ''}
         <div class="view-header-meta">
           ${phaseBadge(phase)}
@@ -1581,7 +1594,11 @@ function buildProbeDetailHtml(data) {
 
   return `
     <div class="view-header">
-      <h1 style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <a href="#/probes" style="font-size:0.875rem;opacity:0.7">← Probes</a>
+        ${pinButton(`/probes/${encodeURIComponent(data._file || '')}`, nullSafe(data.idea, 'Probe'))}
+      </div>
+      <h1 style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;margin-top:0.5rem">
         ${nullSafe(data.idea, 'Probe Detail')}
         ${verdictBadge(data.verdict)}
       </h1>
@@ -2096,9 +2113,13 @@ function renderSolverDetail(slug) {
     const phases = Array.isArray(res.phases) ? res.phases : [];
     const phaseSet = new Set(phases.map(p => p.phase));
 
+    const solverRoutePath = `/solvers/${encodeURIComponent(slug)}`;
     let html = `
       <div class="view-header">
-        <div><a href="#/solvers" style="font-size:0.875rem;opacity:0.7">← Solvers</a></div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <a href="#/solvers" style="font-size:0.875rem;opacity:0.7">← Solvers</a>
+          ${pinButton(solverRoutePath, m.display_name || m.name || slug)}
+        </div>
         <h1 style="margin-top:0.5rem">${m.display_name || m.name || slug}</h1>
         <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-top:0.5rem">
           ${solverStateBadge(m.state)}
@@ -2218,6 +2239,24 @@ const STRATEGY_BADGES = {
   monitor: 'badge-red', distribute: 'badge-green', compose: 'badge-amber',
 };
 
+// Resolve the numeric overall score for an op, with a deep fallback for the
+// `self_score: { dim: { score, note }, ... }` shape (no top-level `overall`).
+// Used by the Ops list, sort, distribution chart, and compare view so they all
+// agree on what counts as a score across schema generations.
+function opScoreNumber(op) {
+  if (!op) return null;
+  let n = op.self_score?.overall ?? op.outcome?.confidence ?? op.confidence;
+  if (n == null && op.self_score && typeof op.self_score === 'object') {
+    const dims = Object.values(op.self_score)
+      .filter(v => v && typeof v === 'object' && typeof v.score === 'number')
+      .map(v => v.score);
+    if (dims.length > 0) {
+      n = Math.round((dims.reduce((a, b) => a + b, 0) / dims.length) * 10) / 10;
+    }
+  }
+  return n;
+}
+
 async function renderOpsList() {
   const app = document.getElementById('app');
   app.innerHTML = `
@@ -2231,21 +2270,73 @@ async function renderOpsList() {
   if (ops.length === 0) {
     app.innerHTML = `
       <div class="view-header"><h1>Ops</h1></div>
-      <div class="card"><p class="text-muted">No strategy results found. Run <code>/x-op</code> to generate one.</p></div>
+      <div class="card"><p class="text-muted">No strategy results found. Run <code>/xm:op</code> to generate one.</p>${wsEmptyHint()}</div>
     `;
     return;
   }
 
-  const rows = ops.map((op) => {
-    const date = op.completed_at ? new Date(op.completed_at).toLocaleDateString() : op.created_at ? new Date(op.created_at).toLocaleDateString() : '—';
+  _opsData = ops;
+  _opsSortCol = null;
+  _opsSortAsc = true;
+  const rows = renderOpsRows(ops);
+
+  const distribution = renderOpScoreDistribution(ops);
+
+  const thStyle = 'cursor:pointer;user-select:none';
+  app.innerHTML = `
+    <div class="view-header">
+      <h1>Ops <span class="badge badge-neutral" style="font-size:0.85rem;vertical-align:middle">${ops.length}</span></h1>
+    </div>
+    ${distribution}
+    <div id="compare-bar" style="display:none;padding:8px 12px;margin-bottom:8px;background:var(--surface);border:1px solid var(--border);border-radius:4px">
+      <span id="compare-count" style="font-size:.85em"></span>
+      <button onclick="runOpCompare()" style="margin-left:12px;padding:4px 12px;cursor:pointer" id="compare-btn" disabled>Compare</button>
+      <button onclick="clearCompareSelection()" style="margin-left:6px;padding:4px 12px;cursor:pointer">Clear</button>
+    </div>
+    <div class="card" style="padding:0">
+      <table class="table" id="ops-table">
+        <thead>
+          <tr>
+            <th style="width:32px"></th>
+            <th data-sort="date" style="${thStyle}" onclick="sortOpsTable('date')">Date<span class="sort-ind"> ↕</span></th>
+            <th data-sort="strategy" style="${thStyle}" onclick="sortOpsTable('strategy')">Strategy<span class="sort-ind"> ↕</span></th>
+            <th>Topic</th><th>Outcome</th>
+            <th data-sort="score" style="${thStyle}" onclick="sortOpsTable('score')">Score<span class="sort-ind"> ↕</span></th>
+            <th>Agents</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ── Ops list client-side sort ────────────────────────────────────────
+let _opsData = [];
+let _opsSortCol = null;
+let _opsSortAsc = true;
+
+function renderOpsRows(ops) {
+  return ops.map((op) => {
+    const rawDate = op.completed_at ?? op.created_at ?? op.date ?? op.timestamp;
+    const date = (() => {
+      if (!rawDate) return '—';
+      const d = new Date(rawDate);
+      return isNaN(d) ? String(rawDate) : d.toLocaleDateString();
+    })();
     const stratClass = STRATEGY_BADGES[op.strategy] ?? 'badge-neutral';
-    const topic = nullSafe(op.topic, '—');
+    const topic = nullSafe(
+      op.topic ?? op.question ?? op.subject ?? op.prompt ?? op.problem ?? op.goal
+      ?? op.task ?? op.focus ?? op.claim ?? op.scenario ?? op.target ?? op.theme,
+      '—'
+    );
     const truncTopic = topic.length > 60 ? topic.slice(0, 57) + '…' : topic;
-    const verdict = op.outcome?.verdict ?? op.outcome?.summary ?? '—';
+    const verdict = op.outcome?.verdict ?? op.verdict ?? op.outcome?.summary ?? '—';
     const verdictStr = typeof verdict === 'string' ? verdict : JSON.stringify(verdict);
     const truncVerdict = verdictStr.length > 50 ? verdictStr.slice(0, 47) + '…' : verdictStr;
-    const score = op.self_score?.overall != null ? `${op.self_score.overall}/10` : '—';
-    const agents = op.options?.agents ?? '—';
+    const scoreNum = opScoreNumber(op);
+    const score = scoreNum != null ? `${scoreNum}/10` : '—';
+    const agents = op.options?.agents ?? op.agents ?? '—';
     const fileParam = op._file ?? '';
     const escFile = fileParam.replace(/"/g, '&quot;');
     return `<tr>
@@ -2260,28 +2351,40 @@ async function renderOpsList() {
       <td onclick="window.location.hash='#/ops/${encodeURIComponent(fileParam)}'" style="cursor:pointer;text-align:center">${agents}</td>
     </tr>`;
   }).join('');
+}
 
-  const distribution = renderOpScoreDistribution(ops);
-
-  app.innerHTML = `
-    <div class="view-header">
-      <h1>Ops <span class="badge badge-neutral" style="font-size:0.85rem;vertical-align:middle">${ops.length}</span></h1>
-    </div>
-    ${distribution}
-    <div id="compare-bar" style="display:none;padding:8px 12px;margin-bottom:8px;background:var(--surface);border:1px solid var(--border);border-radius:4px">
-      <span id="compare-count" style="font-size:.85em"></span>
-      <button onclick="runOpCompare()" style="margin-left:12px;padding:4px 12px;cursor:pointer" id="compare-btn" disabled>Compare</button>
-      <button onclick="clearCompareSelection()" style="margin-left:6px;padding:4px 12px;cursor:pointer">Clear</button>
-    </div>
-    <div class="card" style="padding:0">
-      <table class="table">
-        <thead>
-          <tr><th style="width:32px"></th><th>Date</th><th>Strategy</th><th>Topic</th><th>Outcome</th><th>Score</th><th>Agents</th></tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-  `;
+function sortOpsTable(col) {
+  if (_opsSortCol === col) {
+    _opsSortAsc = !_opsSortAsc;
+  } else {
+    _opsSortCol = col;
+    _opsSortAsc = true;
+  }
+  const sorted = [..._opsData].sort((a, b) => {
+    let va, vb;
+    if (col === 'date') {
+      va = new Date(a.completed_at ?? a.created_at ?? a.date ?? a.timestamp ?? 0).getTime();
+      vb = new Date(b.completed_at ?? b.created_at ?? b.date ?? b.timestamp ?? 0).getTime();
+    } else if (col === 'strategy') {
+      va = (a.strategy ?? '').toLowerCase();
+      vb = (b.strategy ?? '').toLowerCase();
+    } else if (col === 'score') {
+      va = opScoreNumber(a) ?? -1;
+      vb = opScoreNumber(b) ?? -1;
+    } else {
+      return 0;
+    }
+    if (va < vb) return _opsSortAsc ? -1 : 1;
+    if (va > vb) return _opsSortAsc ? 1 : -1;
+    return 0;
+  });
+  const tbody = document.querySelector('#ops-table tbody');
+  if (tbody) tbody.innerHTML = renderOpsRows(sorted);
+  // Update sort indicators
+  document.querySelectorAll('#ops-table th[data-sort]').forEach(th => {
+    const ind = th.querySelector('.sort-ind');
+    if (ind) ind.textContent = th.dataset.sort === col ? (_opsSortAsc ? ' ▲' : ' ▼') : ' ↕';
+  });
 }
 
 // ── Op compare (2-way side-by-side) ─────────────────────────────────
@@ -2326,11 +2429,11 @@ async function renderOpCompare(aFile, bFile) {
   }
   const fieldsToShow = [
     ['Strategy', x => x.strategy],
-    ['Topic', x => x.topic],
+    ['Topic', x => x.topic ?? x.question ?? x.subject ?? x.theme ?? x.problem ?? x.goal ?? x.task ?? x.focus ?? x.claim ?? x.scenario ?? x.target ?? x.prompt],
     ['Date', x => x.date || x.completed_at || x.created_at],
-    ['Agents', x => x.args?.agents || x.options?.agents],
+    ['Agents', x => x.args?.agents || x.options?.agents || x.config?.agents],
     ['Verdict', x => x.outcome?.verdict],
-    ['Self-score (overall)', x => x.self_score?.overall],
+    ['Self-score (overall)', x => opScoreNumber(x)],
     ['Theme count', x => Array.isArray(x.themes) ? x.themes.length : '—'],
     ['Self-score: accuracy', x => x.self_score?.criteria?.accuracy?.score ?? x.self_score?.criteria?.accuracy],
     ['Self-score: completeness', x => x.self_score?.criteria?.completeness?.score ?? x.self_score?.criteria?.completeness],
@@ -2380,7 +2483,7 @@ function renderOpScoreDistribution(ops) {
   const byStrategy = new Map();
   for (const op of ops) {
     const s = op.strategy ?? 'unknown';
-    const score = Number(op.self_score?.overall);
+    const score = Number(opScoreNumber(op));
     if (!Number.isFinite(score)) continue;
     if (!byStrategy.has(s)) byStrategy.set(s, []);
     byStrategy.get(s).push(score);
@@ -2474,28 +2577,82 @@ async function renderOpDetail(file) {
     return;
   }
 
-  const ts = data.completed_at ? new Date(data.completed_at).toLocaleString() : data.created_at ? new Date(data.created_at).toLocaleString() : '—';
+  const ts = (() => {
+    const t = data.completed_at ?? data.created_at ?? data.date ?? data.timestamp;
+    if (!t) return '—';
+    const d = new Date(t);
+    return isNaN(d) ? String(t) : d.toLocaleString();
+  })();
   const stratClass = STRATEGY_BADGES[data.strategy] ?? 'badge-neutral';
 
-  // Outcome card — summary can be string OR array of bullets
-  const summaryHtml = (() => {
-    const s = data.outcome?.summary;
-    if (!s) return '';
-    if (Array.isArray(s)) {
-      return `<ul style="margin:.75rem 0 0;padding-left:1.25rem;line-height:1.5">${
-        s.map(x => `<li style="margin-bottom:.25rem">${typeof x === 'string' ? escapeHtmlHumble(x) : escapeHtmlHumble(JSON.stringify(x))}</li>`).join('')
+  // Outcome card — supports both legacy (outcome.{verdict,confidence,summary})
+  // and v2 shapes where verdict/summary live at the root of the op JSON.
+  const oVerdict = data.outcome?.verdict ?? data.verdict ?? null;
+  const oConfidence = data.outcome?.confidence ?? data.confidence ?? null;
+  // v2 outcome shapes carry extra rich keys (consensus_statement, follow_up_rfcs,
+  // draft_v2_required, key_insight, recommendation, implementation, …). verdict/
+  // confidence render in the metric grid; every other outcome key becomes its
+  // own sub-section with white-space:pre-line so long paragraphs wrap and
+  // explicit newlines survive.
+  const HEADER_OUTCOME_KEYS = new Set(['verdict', 'confidence']);
+  const renderOutcomeValue = (v) => {
+    if (v == null) return '';
+    if (Array.isArray(v)) {
+      if (v.length === 0) return '<span class="text-muted">[]</span>';
+      const allObjects = v.every(x => x !== null && typeof x === 'object' && !Array.isArray(x));
+      if (allObjects) {
+        const keys = [...new Set(v.flatMap(o => Object.keys(o)))];
+        const head = `<thead><tr>${keys.map(k => `<th>${escapeHtmlHumble(k)}</th>`).join('')}</tr></thead>`;
+        const body = v.map(row => `<tr>${keys.map(k => {
+          const cv = row[k];
+          if (cv == null) return '<td></td>';
+          if (typeof cv === 'object') return `<td><pre style="margin:0;font-size:.8em">${escapeHtmlHumble(JSON.stringify(cv))}</pre></td>`;
+          return `<td>${escapeHtmlHumble(String(cv))}</td>`;
+        }).join('')}</tr>`).join('');
+        return `<table class="table" style="font-size:.9em">${head}<tbody>${body}</tbody></table>`;
+      }
+      return `<ul style="margin:0;padding-left:1.25rem;line-height:1.55">${
+        v.map(x => `<li style="margin-bottom:.25rem">${
+          typeof x === 'string'
+            ? escapeHtmlHumble(x)
+            : `<pre style="margin:0;font-size:.85em">${escapeHtmlHumble(JSON.stringify(x, null, 2))}</pre>`
+        }</li>`).join('')
       }</ul>`;
     }
-    return `<p style="margin:.75rem 0 0">${escapeHtmlHumble(String(s))}</p>`;
-  })();
-  const outcomeHtml = data.outcome ? `
+    if (typeof v === 'object') {
+      const rows = Object.entries(v).map(([ok, ov]) => {
+        const cell = (ov != null && typeof ov === 'object')
+          ? `<pre style="margin:0;font-size:.85em">${escapeHtmlHumble(JSON.stringify(ov, null, 2))}</pre>`
+          : `<span style="white-space:pre-line">${escapeHtmlHumble(String(ov))}</span>`;
+        return `<tr><td class="text-muted" style="padding-right:1rem;vertical-align:top"><code>${escapeHtmlHumble(ok)}</code></td><td>${cell}</td></tr>`;
+      }).join('');
+      return `<table class="table" style="width:auto;font-size:.9em"><tbody>${rows}</tbody></table>`;
+    }
+    return `<p style="margin:0;white-space:pre-line;line-height:1.55">${escapeHtmlHumble(String(v))}</p>`;
+  };
+  const outcomeSubsections = (data.outcome && typeof data.outcome === 'object')
+    ? Object.entries(data.outcome)
+        .filter(([k]) => !HEADER_OUTCOME_KEYS.has(k))
+        .map(([k, v]) => `
+          <div style="margin-top:1rem">
+            <h3 style="margin:0 0 .4rem;font-size:1rem;text-transform:capitalize">${escapeHtmlHumble(k.replace(/_/g, ' '))}</h3>
+            ${renderOutcomeValue(v)}
+          </div>`).join('')
+    : (data.summary != null
+        ? `<div style="margin-top:1rem">
+             <h3 style="margin:0 0 .4rem;font-size:1rem">Summary</h3>
+             ${renderOutcomeValue(data.summary)}
+           </div>`
+        : '');
+  const hasOutcomeSignal = oVerdict != null || oConfidence != null || outcomeSubsections;
+  const outcomeHtml = hasOutcomeSignal ? `
     <div class="card" style="margin-top:1rem">
       <h2 style="margin:0 0 .75rem">Outcome</h2>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;text-align:center">
-        <div><div style="font-size:1.3em;font-weight:700">${nullSafe(data.outcome.verdict, '—')}</div><span class="text-muted">Verdict</span></div>
-        ${data.outcome.confidence != null ? `<div><div style="font-size:1.3em;font-weight:700">${data.outcome.confidence}/10</div><span class="text-muted">Confidence</span></div>` : ''}
+        <div><div style="font-size:1.3em;font-weight:700">${nullSafe(oVerdict, '—')}</div><span class="text-muted">Verdict</span></div>
+        ${oConfidence != null ? `<div><div style="font-size:1.3em;font-weight:700">${oConfidence}/10</div><span class="text-muted">Confidence</span></div>` : ''}
       </div>
-      ${summaryHtml}
+      ${outcomeSubsections}
     </div>` : '';
 
   // Themes / Ideas (brainstorm, council, etc.)
@@ -2556,14 +2713,43 @@ async function renderOpDetail(file) {
   let scoreHtml = '';
   if (data.self_score) {
     const criteria = data.self_score.criteria ?? {};
-    const criteriaRows = Object.entries(criteria).map(([k, v]) =>
-      `<tr><td>${k}</td><td style="text-align:center">${v}/10</td></tr>`
-    ).join('');
+    let criteriaRows = '';
+    if (Object.keys(criteria).length > 0) {
+      // Structured criteria: each value may be {score, note} or a plain number
+      criteriaRows = Object.entries(criteria).map(([k, v]) => {
+        if (v !== null && typeof v === 'object' && 'score' in v) {
+          return `<tr><td>${escapeHtmlHumble(k)}</td><td style="text-align:center">${v.score}/10</td><td class="text-muted" style="font-size:0.85em">${v.note ? escapeHtmlHumble(String(v.note)) : ''}</td></tr>`;
+        }
+        return `<tr><td>${escapeHtmlHumble(k)}</td><td style="text-align:center">${v}/10</td><td></td></tr>`;
+      }).join('');
+    } else {
+      // No explicit criteria key — scan top-level keys for {score,note} objects or numbers
+      const scoreEntries = Object.entries(data.self_score).filter(([k, v]) =>
+        k !== 'overall' && (
+          (typeof v === 'object' && v !== null && 'score' in v) ||
+          typeof v === 'number'
+        )
+      );
+      const boolEntries = Object.entries(data.self_score).filter(([k, v]) =>
+        k !== 'overall' && typeof v === 'object' && v !== null && !('score' in v)
+      );
+      if (scoreEntries.length > 0) {
+        criteriaRows = scoreEntries.map(([k, v]) => {
+          if (typeof v === 'object' && 'score' in v) {
+            return `<tr><td>${escapeHtmlHumble(k)}</td><td style="text-align:center">${v.score}/10</td><td class="text-muted" style="font-size:0.85em">${v.note ? escapeHtmlHumble(String(v.note)) : ''}</td></tr>`;
+          }
+          return `<tr><td>${escapeHtmlHumble(k)}</td><td style="text-align:center">${v}/10</td><td></td></tr>`;
+        }).join('');
+        if (boolEntries.length > 0) {
+          criteriaRows += `<tr><td colspan="3" class="text-muted" style="font-size:0.8em;padding-top:0.5rem">${boolEntries.map(([k, v]) => `<strong>${escapeHtmlHumble(k)}</strong>: ${escapeHtmlHumble(JSON.stringify(v))}`).join(' · ')}</td></tr>`;
+        }
+      }
+    }
     scoreHtml = `
       <div class="card" style="margin-top:1rem">
         <h2 style="margin:0 0 .75rem">Self-Score: ${data.self_score.overall ?? '—'}/10</h2>
         <table class="table">
-          <thead><tr><th>Criterion</th><th>Score</th></tr></thead>
+          <thead><tr><th>Criterion</th><th>Score</th><th>Note</th></tr></thead>
           <tbody>${criteriaRows}</tbody>
         </table>
       </div>`;
@@ -2591,15 +2777,37 @@ async function renderOpDetail(file) {
   let roundsHtml = '';
   if (Array.isArray(data.rounds_summary) && data.rounds_summary.length > 0) {
     const rCards = data.rounds_summary.map((r, i) => {
-      const head = `${r.round != null ? `Round ${r.round}` : `Phase ${i + 1}`}${r.phase ? ` — ${escapeHtmlHumble(r.phase)}` : ''}`;
+      const head = `${r.round != null ? `Round ${r.round}` : `Phase ${i + 1}`}${r.name ? ` — ${escapeHtmlHumble(r.name)}` : ''}${r.phase ? ` — ${escapeHtmlHumble(r.phase)}` : ''}`;
       const rows = Object.entries(r)
         .filter(([k]) => k !== 'round' && k !== 'phase')
         .map(([k, v]) => {
           let display;
           if (Array.isArray(v)) {
-            display = v.map(x => typeof x === 'string' ? `<code>${escapeHtmlHumble(x)}</code>` : escapeHtmlHumble(JSON.stringify(x))).join(' ');
+            if (v.length === 0) {
+              display = '<span class="text-muted">[]</span>';
+            } else if (v.every(x => x !== null && typeof x === 'object' && !Array.isArray(x))) {
+              // array-of-objects (positions[], findings[], candidates[]) → column table
+              const colKeys = [...new Set(v.flatMap(o => Object.keys(o)))];
+              const head = `<thead><tr>${colKeys.map(ck => `<th>${escapeHtmlHumble(ck)}</th>`).join('')}</tr></thead>`;
+              const body = v.map(row => `<tr>${colKeys.map(ck => {
+                const cv = row[ck];
+                if (cv == null) return '<td></td>';
+                if (typeof cv === 'object') return `<td><pre style="margin:0;font-size:.8em">${escapeHtmlHumble(JSON.stringify(cv))}</pre></td>`;
+                return `<td>${escapeHtmlHumble(String(cv))}</td>`;
+              }).join('')}</tr>`).join('');
+              display = `<table class="table" style="font-size:.85em">${head}<tbody>${body}</tbody></table>`;
+            } else {
+              display = v.map(x => typeof x === 'string' ? `<code>${escapeHtmlHumble(x)}</code>` : escapeHtmlHumble(JSON.stringify(x))).join(' ');
+            }
           } else if (typeof v === 'object' && v !== null) {
-            display = `<pre style="margin:0;font-size:.8em">${escapeHtmlHumble(JSON.stringify(v, null, 2))}</pre>`;
+            // plain object → key/value vertical table
+            const objRows = Object.entries(v).map(([ok, ov]) => {
+              const cell = (ov != null && typeof ov === 'object')
+                ? `<pre style="margin:0;font-size:.8em">${escapeHtmlHumble(JSON.stringify(ov, null, 2))}</pre>`
+                : escapeHtmlHumble(String(ov));
+              return `<tr><td class="text-muted" style="padding-right:1rem;vertical-align:top"><code>${escapeHtmlHumble(ok)}</code></td><td>${cell}</td></tr>`;
+            }).join('');
+            display = `<table class="table" style="width:auto;font-size:.85em"><tbody>${objRows}</tbody></table>`;
           } else {
             display = escapeHtmlHumble(String(v));
           }
@@ -2624,6 +2832,75 @@ async function renderOpDetail(file) {
       <pre style="margin:0;font-size:0.85em">${JSON.stringify(data.options, null, 2)}</pre>
     </div>` : '';
 
+  // Catch-all: any top-level fields we didn't render in a dedicated card get
+  // an "Additional Fields" table so v2 ops with new keys (key_findings,
+  // recommendation, evidence_extensions, gaps, next_strategy, angles, depth …)
+  // are visible instead of silently dropped.
+  const KNOWN_FIELDS = new Set([
+    '_file', 'schema_version', 'strategy', 'topic', 'args', 'options',
+    'date', 'created_at', 'completed_at', 'timestamp', 'status',
+    'outcome', 'verdict', 'summary', 'confidence',
+    'themes', 'current_surface', 'four_q_check', 'self_score',
+    'participants', 'rounds_summary', 'project', 'slug', 'source',
+    'candidates_count',
+  ]);
+  // Recursive value renderer — prefers tables over raw JSON:
+  //   array-of-objects → column-union table (keys become column headers)
+  //   plain object     → key/value vertical table
+  //   array-of-primitives or mixed → bullet list (objects within get a nested table)
+  //   primitive        → escaped text
+  const renderValue = (v) => {
+    if (v == null) return '';
+    if (Array.isArray(v)) {
+      if (v.length === 0) return '<span class="text-muted">[]</span>';
+      const allObjects = v.every(x => x !== null && typeof x === 'object' && !Array.isArray(x));
+      if (allObjects) {
+        const keys = [...new Set(v.flatMap(o => Object.keys(o)))];
+        const head = `<thead><tr>${keys.map(k => `<th>${escapeHtmlHumble(k)}</th>`).join('')}</tr></thead>`;
+        const body = v.map(row => {
+          const cells = keys.map(k => {
+            const cv = row[k];
+            if (cv == null) return '<td></td>';
+            if (Array.isArray(cv) || typeof cv === 'object') {
+              return `<td>${renderValue(cv)}</td>`;
+            }
+            return `<td>${escapeHtmlHumble(String(cv))}</td>`;
+          }).join('');
+          return `<tr>${cells}</tr>`;
+        }).join('');
+        return `<table class="table" style="font-size:.9em">${head}<tbody>${body}</tbody></table>`;
+      }
+      return `<ul style="margin:0;padding-left:1.25rem;line-height:1.5">${
+        v.map(x => `<li style="margin-bottom:.25rem">${
+          x !== null && typeof x === 'object'
+            ? renderValue(x)
+            : escapeHtmlHumble(String(x))
+        }</li>`).join('')
+      }</ul>`;
+    }
+    if (typeof v === 'object') {
+      const rows = Object.entries(v).map(([k, cv]) => {
+        const cell = (cv != null && (Array.isArray(cv) || typeof cv === 'object'))
+          ? renderValue(cv)
+          : escapeHtmlHumble(String(cv));
+        return `<tr><td class="text-muted" style="white-space:nowrap;vertical-align:top;padding-right:1rem"><code>${escapeHtmlHumble(k)}</code></td><td>${cell}</td></tr>`;
+      }).join('');
+      return `<table class="table" style="width:auto;font-size:.9em"><tbody>${rows}</tbody></table>`;
+    }
+    return escapeHtmlHumble(String(v));
+  };
+
+  const extraEntries = Object.entries(data).filter(([k]) => !KNOWN_FIELDS.has(k));
+  const rawFieldsHtml = extraEntries.length > 0 ? `
+    <div class="card" style="margin-top:1rem">
+      <h2 style="margin:0 0 .75rem">Additional Fields <span class="text-muted" style="font-size:.85em;font-weight:400">(${extraEntries.length})</span></h2>
+      <table class="table" style="width:auto"><tbody>${
+        extraEntries.map(([k, v]) =>
+          `<tr><td class="text-muted" style="white-space:nowrap;vertical-align:top;padding-right:1rem"><code>${escapeHtmlHumble(k)}</code></td><td>${renderValue(v)}</td></tr>`
+        ).join('')
+      }</tbody></table>
+    </div>` : '';
+
   const opRoutePath = `/ops/${encodeURIComponent(file)}`;
   app.innerHTML = `
     <div class="view-header">
@@ -2633,7 +2910,7 @@ async function renderOpDetail(file) {
       </div>
       <h1 style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;margin-top:0.5rem">
         <span class="badge ${stratClass}">${data.strategy ?? '—'}</span>
-        ${nullSafe(data.topic, 'Op Detail')}
+        ${nullSafe(data.topic ?? data.question ?? data.subject ?? data.prompt ?? data.problem ?? data.goal ?? data.task ?? data.focus ?? data.claim ?? data.scenario ?? data.target ?? data.theme, 'Op Detail')}
       </h1>
       <p class="text-muted" style="margin:4px 0 0">${ts}</p>
     </div>
@@ -2645,6 +2922,7 @@ async function renderOpDetail(file) {
     ${fourQHtml}
     ${scoreHtml}
     ${optsHtml}
+    ${rawFieldsHtml}
   `;
 }
 
@@ -2673,7 +2951,7 @@ async function renderTracesList() {
       <div class="card" style="text-align:center;padding:3rem">
         <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
         <p class="text-muted">No trace data yet.</p>
-        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/x-trace start</code> to begin recording agent execution.</p>
+        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/xm:trace start</code> to begin recording agent execution.</p>
       </div>
     `;
     return;
@@ -2691,8 +2969,8 @@ async function renderTracesList() {
     return `
       <tr${isActive ? ' style="background:rgba(105,240,174,0.05)"' : ''}>
         <td><a href="#/traces/${encodeURIComponent(t.file)}">${t.name || t.file}</a>${liveBadge}</td>
-        <td class="mono" style="font-size:11px">${t.date || timeAgo(t.started_at) || '—'}</td>
-        <td>${nullSafe(t.entries, '—')}</td>
+        <td class="mono" style="font-size:11px">${t.date || timeAgo(t.startTime ?? t.started_at) || '—'}</td>
+        <td>${nullSafe(t.entryCount ?? t.entries, '—')}</td>
         <td>${dur}</td>
         <td style="text-align:right">${cost}</td>
         <td style="text-align:center">${agents}</td>
@@ -2839,7 +3117,13 @@ async function renderTraceDetail(file) {
 
     app.innerHTML = `
       <div class="breadcrumb">${multiRootMode && currentWsId ? `<span class="text-accent" style="margin-right:4px">${currentWsId}</span><span class="sep">/</span>` : ''}<a href="#/traces">Traces</a><span class="sep">/</span>${decodedFile}</div>
-      <div class="view-header"><h1>Trace: <code>${decodedFile}</code></h1></div>
+      <div class="view-header">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span></span>
+          ${pinButton(`/traces/${encodeURIComponent(decodedFile)}`, `trace · ${decodedFile}`)}
+        </div>
+        <h1 style="margin-top:0.25rem">Trace: <code>${decodedFile}</code></h1>
+      </div>
       <div class="stat-bar" style="margin-bottom:16px">
         <div class="card stat-card">
           <div class="stat-value">${total}</div>
@@ -3105,6 +3389,17 @@ function memoryTypeBadge(type) {
 
 function confidenceBadge(confidence) {
   if (confidence === null || confidence === undefined || confidence === '') return `<span class="badge badge-gray">—</span>`;
+  // String confidence levels (high/medium/low) commonly used by memory entries
+  // — parseFloat would yield NaN and lose the signal; map to numeric bands and
+  // display the original label so users see "high" rather than "90%".
+  if (typeof confidence === 'string') {
+    const map = { high: 0.9, medium: 0.6, mid: 0.6, low: 0.3 };
+    const lvl = map[confidence.trim().toLowerCase()];
+    if (lvl != null) {
+      const cls = lvl >= 0.8 ? 'badge-green' : lvl >= 0.5 ? 'badge-amber' : 'badge-red';
+      return `<span class="badge ${cls}">${confidence}</span>`;
+    }
+  }
   const n = typeof confidence === 'number' ? confidence : parseFloat(confidence);
   if (isNaN(n)) return `<span class="badge badge-gray">—</span>`;
   const cls = n >= 0.8 ? 'badge-green' : n >= 0.5 ? 'badge-amber' : 'badge-red';
@@ -3118,7 +3413,8 @@ async function renderMemoryList() {
     <div class="card" style="text-align:center;padding:3rem">
       <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
       <p class="text-muted">No memory data yet.</p>
-      <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/x-memory</code> to begin storing cross-session decisions.</p>
+      <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/xm:memory</code> to begin storing cross-session decisions.</p>
+      ${wsEmptyHint()}
     </div>
   `;
 
@@ -3165,7 +3461,7 @@ async function renderMemoryList() {
         <td>${tags}</td>
         <td>${confidenceBadge(e.confidence)}</td>
         <td class="text-muted" style="font-size:0.8rem">${e.source || '—'}</td>
-        <td class="text-muted" style="font-size:0.8rem">${e.created_at ? timeAgo(e.created_at) : '—'}</td>
+        <td class="text-muted" style="font-size:0.8rem">${(e.created_at ?? e.created) ? timeAgo(e.created_at ?? e.created) : '—'}</td>
       </tr>`;
     }).join('');
     return `
@@ -3228,10 +3524,14 @@ async function renderMemoryDetail(id) {
   const tags = Array.isArray(meta.tags) ? meta.tags.map(t => `<code style="font-size:0.75rem;margin-right:3px">${t}</code>`).join('') : '—';
   const relatedFiles = Array.isArray(meta.related_files) ? meta.related_files : [];
 
+  const memRoutePath = `/memory/${encodeURIComponent(id)}`;
   app.innerHTML = `
     <div class="view-header">
-      <h1>${meta.title || res.id}</h1>
-      <p><a href="#/memory" style="font-size:0.85rem">&#8592; Memory</a></p>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <a href="#/memory" style="font-size:0.85rem">← Memory</a>
+        ${pinButton(memRoutePath, meta.title || id)}
+      </div>
+      <h1 style="margin-top:0.5rem">${meta.title || res.id}</h1>
     </div>
     <div class="card" style="margin-bottom:1rem">
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin-bottom:0.75rem">
@@ -3373,7 +3673,7 @@ async function renderReviewsList() {
     ? `<div class="card" style="text-align:center;padding:3rem">
         <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
         <p class="text-muted">No reviews yet.</p>
-        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/x-review</code> to create one.</p>
+        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/xm:review</code> to create one.</p>
       </div>`
     : '';
 
@@ -3396,10 +3696,14 @@ async function renderReviewDetail(file) {
     return;
   }
 
+  const reviewRoutePath = `/reviews/${encodeURIComponent(file)}`;
   app.innerHTML = `
     <div class="view-header">
-      <h1>Review — ${file}</h1>
-      <p><a href="#/reviews" style="font-size:0.85rem">← Reviews</a></p>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <a href="#/reviews" style="font-size:0.85rem">← Reviews</a>
+        ${pinButton(reviewRoutePath, `review · ${file}`)}
+      </div>
+      <h1 style="margin-top:0.5rem">Review — ${file}</h1>
     </div>
     <div class="card markdown-body">${renderMarkdown(res.content)}</div>
   `;
@@ -3426,7 +3730,8 @@ async function renderEvalList() {
       <div class="card" style="text-align:center;padding:3rem">
         <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
         <p class="text-muted">No eval data yet.</p>
-        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/x-eval score</code> or <code>/x-eval bench</code>.</p>
+        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/xm:eval score</code> or <code>/xm:eval bench</code>.</p>
+        ${wsEmptyHint()}
       </div>`;
     return;
   }
@@ -3471,14 +3776,60 @@ async function renderEvalDetail(category, file) {
     return;
   }
 
-  const body = res.json
-    ? `<pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--surface);padding:1rem;overflow:auto">${JSON.stringify(res.json, null, 2)}</pre>`
-    : `<div class="markdown-body">${renderMarkdown(res.content || '')}</div>`;
+  const e_eval = escapeHtmlHumble;
+  let body;
+  if (res.json) {
+    const j = res.json;
+    // results category: criterion×judge table
+    if (category === 'results' && (j.results || j.scores)) {
+      const entries = j.results ?? j.scores ?? {};
+      if (typeof entries === 'object' && !Array.isArray(entries)) {
+        const criteria = Object.keys(entries);
+        const judges = criteria.length > 0
+          ? [...new Set(Object.values(entries).flatMap(v => typeof v === 'object' ? Object.keys(v) : []))]
+          : [];
+        if (criteria.length > 0 && judges.length > 0) {
+          const headerRow = `<tr><th>Criterion</th>${judges.map(j => `<th>${e_eval(j)}</th>`).join('')}</tr>`;
+          const dataRows = criteria.map(c => {
+            const cells = judges.map(jj => {
+              const val = entries[c]?.[jj];
+              return `<td style="text-align:center">${val != null ? e_eval(String(val)) : '—'}</td>`;
+            }).join('');
+            return `<tr><td>${e_eval(c)}</td>${cells}</tr>`;
+          }).join('');
+          body = `<div class="table-wrapper"><table class="table"><thead>${headerRow}</thead><tbody>${dataRows}</tbody></table></div>`;
+          if (j.overall != null) body = `<div style="margin-bottom:1rem"><strong>Overall:</strong> ${e_eval(String(j.overall))}</div>` + body;
+        } else {
+          body = `<pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--surface);padding:1rem;overflow:auto">${JSON.stringify(j, null, 2)}</pre>`;
+        }
+      } else {
+        body = `<pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--surface);padding:1rem;overflow:auto">${JSON.stringify(j, null, 2)}</pre>`;
+      }
+    } else if (category === 'benchmarks' && Array.isArray(j.runs ?? j.benchmarks ?? j.results)) {
+      // benchmarks: comparison table
+      const runs = j.runs ?? j.benchmarks ?? j.results ?? [];
+      if (runs.length > 0) {
+        const cols = [...new Set(runs.flatMap(r => Object.keys(r)))];
+        const headerRow = `<tr>${cols.map(c => `<th>${e_eval(c)}</th>`).join('')}</tr>`;
+        const dataRows = runs.map(r => `<tr>${cols.map(c => `<td>${r[c] != null ? e_eval(String(r[c])) : '—'}</td>`).join('')}</tr>`).join('');
+        body = `<div class="table-wrapper"><table class="table"><thead>${headerRow}</thead><tbody>${dataRows}</tbody></table></div>`;
+      } else {
+        body = `<pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--surface);padding:1rem;overflow:auto">${JSON.stringify(j, null, 2)}</pre>`;
+      }
+    } else {
+      body = `<pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--surface);padding:1rem;overflow:auto">${JSON.stringify(j, null, 2)}</pre>`;
+    }
+  } else {
+    body = `<div class="markdown-body">${renderMarkdown(res.content || '')}</div>`;
+  }
 
   app.innerHTML = `
     <div class="view-header">
-      <h1>Eval — ${category} / ${file}</h1>
-      <p><a href="#/eval" style="font-size:0.85rem">← Eval</a></p>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <a href="#/eval" style="font-size:0.85rem">← Eval</a>
+        ${pinButton(`/eval/${encodeURIComponent(category)}/${encodeURIComponent(file)}`, `eval · ${file}`)}
+      </div>
+      <h1 style="margin-top:0.5rem">Eval — ${e_eval(category)} / ${e_eval(file)}</h1>
     </div>
     <div class="card">${body}</div>
   `;
@@ -3505,14 +3856,22 @@ async function renderHumbleList() {
       <div class="card" style="text-align:center;padding:3rem">
         <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
         <p class="text-muted">No humble data yet.</p>
-        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/x-humble</code> to add retrospectives or lessons.</p>
+        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/xm:humble</code> to add retrospectives or lessons.</p>
+        ${wsEmptyHint()}
       </div>`;
     return;
   }
 
   function renderKind(kind, items) {
-    if (!items.length) return '';
-    const rows = items.map(i => {
+    // Filter out host-suffixed sync copies (same logic as renderHumbleSankey)
+    const isCanonicalFile = (file) => {
+      const base = (file || '').replace(/\.(json|md|jsonl)$/, '');
+      const segments = base.split('.');
+      return segments.length === 1 || !segments.slice(1).some(s => /-[a-z0-9]{4,}$/i.test(s));
+    };
+    const canonical = items.filter(i => isCanonicalFile(i.file));
+    if (!canonical.length) return '';
+    const rows = canonical.map(i => {
       const s = i.summary ?? {};
       const title = s.title ?? i.file;
       const tags = Array.isArray(s.tags)
@@ -3750,7 +4109,9 @@ function renderLessonDetail(d, file) {
   ].filter(Boolean).join(' ');
 
   // Inline toggle UI for `applied_to_claudemd`
-  const applied = d.applied_to_claudemd === true;
+  // Some lesson writers serialize Python bools as the strings "True"/"False"
+  // instead of JSON booleans — accept both shapes so the toggle reflects state.
+  const applied = d.applied_to_claudemd === true || d.applied_to_claudemd === 'True' || d.applied_to_claudemd === 'true';
   const appliedCell = file
     ? `<label style="display:inline-flex;gap:6px;align-items:center;cursor:pointer">
          <input type="checkbox" ${applied ? 'checked' : ''}
@@ -3777,7 +4138,7 @@ function renderLessonDetail(d, file) {
   return `
     <div class="card" style="margin-bottom:1rem">
       <div style="margin-bottom:0.75rem">${headerBadges}</div>
-      ${d.content ? `<p style="font-size:1rem;line-height:1.5;margin:0 0 1rem 0">${e(d.content)}</p>` : ''}
+      ${d.content ? `<div style="font-size:1rem;line-height:1.5;margin:0 0 1rem 0;white-space:pre-line">${e(d.content)}</div>` : ''}
       ${d.reason ? `<div style="padding:0.75rem 1rem;border-left:3px solid var(--border);background:var(--surface)"><div class="text-muted" style="font-size:0.75rem;margin-bottom:0.25rem">REASON</div><p style="margin:0;font-size:0.9rem;line-height:1.5">${e(d.reason)}</p></div>` : ''}
     </div>
     <div class="card"><h3 style="margin-top:0;font-size:0.9rem">Metadata</h3>${metaTable}</div>
@@ -3926,23 +4287,70 @@ async function renderSearch(query) {
   app.innerHTML = html;
 }
 
+// ── Handoffs ──────────────────────────────────────────────────────
+
+async function renderHandoffsList() {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="view-header"><h1>Handoffs</h1></div><div class="card"><p class="text-muted">Loading...</p></div>';
+
+  const res = await fetchJSON(apiUrl('/handoffs'));
+  if (res.error) {
+    app.innerHTML = `<div class="view-header"><h1>Handoffs</h1></div><div class="card"><p class="text-muted">Error: ${escapeHtmlHumble(res.message || res.error)}</p></div>`;
+    return;
+  }
+
+  const items = Array.isArray(res.data) ? res.data : [];
+  if (items.length === 0) {
+    app.innerHTML = `
+      <div class="view-header"><h1>Handoffs</h1><p>.xm/handoff/ · .xm/build/projects/*/handoff.json</p></div>
+      <div class="card" style="text-align:center;padding:3rem">
+        <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
+        <p class="text-muted">No handoff data yet.</p>
+        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/xm:handoff</code> or <code>/xm:build handoff</code> to create one.</p>
+      </div>`;
+    return;
+  }
+
+  const e = escapeHtmlHumble;
+  const rows = items.map(h => {
+    const title = h.title ?? h.summary ?? h.project ?? h.file ?? '—';
+    const project = h.project ?? '—';
+    const ts = h.created_at ?? h.timestamp ?? h.updated_at;
+    return `<tr>
+      <td>${e(title)}</td>
+      <td><code style="font-size:0.8rem">${e(project)}</code></td>
+      <td class="text-muted" style="font-size:0.85rem">${ts ? timeAgo(ts) : '—'}</td>
+      <td class="text-muted" style="font-size:0.8rem"><code>${e(h.file ?? '')}</code></td>
+    </tr>`;
+  }).join('');
+
+  app.innerHTML = `
+    <div class="view-header"><h1>Handoffs</h1><p>.xm/handoff/ · ${items.length} items</p></div>
+    <div class="card" style="padding:0">
+      <table class="table">
+        <thead><tr><th>Title</th><th>Project</th><th>When</th><th>File</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
 // ── Sync ──────────────────────────────────────────────────────────
 
 async function renderSync() {
   const app = document.getElementById('app');
-  app.innerHTML = '<h1>Sync</h1><p class="text-muted">Loading...</p>';
+  app.innerHTML = '<div class="view-header"><h1>Sync</h1></div><p class="text-muted">Loading...</p>';
 
   const data = await fetchJSON(apiUrl('/sync'));
   if (!data || data.error) {
-    app.innerHTML = '<h1>Sync</h1><div class="card"><p class="text-muted">Failed to load sync status.</p></div>';
+    app.innerHTML = '<div class="view-header"><h1>Sync</h1></div><div class="card"><p class="text-muted">Failed to load sync status.</p></div>';
     return;
   }
 
   if (!data.configured) {
-    app.innerHTML = `<h1>Sync</h1>
+    app.innerHTML = `<div class="view-header"><h1>Sync</h1></div>
       <div class="card">
         <p class="text-muted">x-sync is not configured.</p>
-        <p style="margin-top:0.5rem"><code>~/.xm/sync.json</code> or run <code>/x-sync setup</code></p>
+        <p style="margin-top:0.5rem"><code>~/.xm/sync.json</code> or run <code>/xm:sync setup</code></p>
       </div>`;
     return;
   }
@@ -3952,7 +4360,7 @@ async function renderSync() {
     ? '<span class="badge badge-green">ONLINE</span>'
     : '<span class="badge badge-red">OFFLINE</span>';
 
-  let html = `<h1>Sync ${statusBadge}</h1>`;
+  let html = `<div class="view-header"><h1>Sync ${statusBadge}</h1></div>`;
 
   // Stats row
   const projects = data.server?.projects || [];
@@ -4048,6 +4456,7 @@ const ROUTES = [
   { pattern: /^\/humble\/([^/]+)\/(.+)$/, handler: (m) => renderHumbleDetail(decodeURIComponent(m[1]), decodeURIComponent(m[2])) },
   { pattern: /^\/search\/(.+)$/, handler: (m) => renderSearch(decodeURIComponent(m[1])) },
   { pattern: /^\/sync$/, handler: () => renderSync() },
+  { pattern: /^\/handoffs$/, handler: () => renderHandoffsList() },
 ];
 
 function getPath() {
@@ -4192,7 +4601,7 @@ fetchJSON('/api/health').then(h => {
   if (!nav) return;
   const searchDiv = document.createElement('div');
   searchDiv.style.cssText = 'padding:8px 14px;border-bottom:2px solid #333';
-  searchDiv.innerHTML = '<input type="text" id="search-input" placeholder="Search .xm..." aria-label="Search workspace" style="width:100%;background:#1a1a1a;border:2px solid #444;color:var(--text);padding:6px 10px;font-family:var(--font-mono);font-size:11px;box-sizing:border-box">';
+  searchDiv.innerHTML = '<input type="text" id="search-input" class="sidebar-search-input" placeholder="Search .xm..." aria-label="Search workspace">';
   const navLinks = nav.querySelector('.nav-links');
   if (navLinks) {
     nav.insertBefore(searchDiv, navLinks);
@@ -4430,6 +4839,9 @@ const PALETTE_ROUTES = [
   { path: '/probes', label: 'Probes', kind: 'route' },
   { path: '/solvers', label: 'Solvers', kind: 'route' },
   { path: '/costs', label: 'Costs', kind: 'route' },
+  { path: '/config', label: 'Config', kind: 'route' },
+  { path: '/sync', label: 'Sync', kind: 'route' },
+  { path: '/handoffs', label: 'Handoffs', kind: 'route' },
 ];
 
 function paletteItems() {
@@ -4652,4 +5064,4 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-initWorkspaces().then(() => route());
+initWorkspaces().then(() => route()).catch(() => route());

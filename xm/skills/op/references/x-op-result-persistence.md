@@ -12,6 +12,20 @@ After every strategy completes (after Self-Score), the leader MUST save the resu
 
 ## Result schema
 
+### Required canonical meta keys (every strategy)
+
+Regardless of a strategy's internal vocabulary (debate→question, persona→subject, decompose/scaffold→problem, brainstorm→theme, chain/distribute→task, refine→focus, red-team→claim|target, monitor→scenario, …), the SAVED result JSON MUST use the canonical top-level keys below. Internal terms may be added alongside, but they cannot REPLACE the canonical key.
+
+| Canonical key | Type | Why it must be present |
+|---|---|---|
+| `topic` | string | What the user asked. The dashboard Ops list reads `topic` first; missing → row shows `—` in Topic. |
+| `created_at`, `completed_at` | ISO8601 string | Sort order + duration. Missing → Date column shows `—`. |
+| `options.agents` | number | Agent count actually used. Missing → Agents column shows `—`. |
+| `self_score` | object (`{overall, criteria}`) | See `self-score-protocol.md`. Missing → Score column shows `—`. |
+| `status` | "completed" \| "failed" \| ... | Lifecycle. Currently optional but recommended. |
+
+Omitting any of the above is the root cause of `—` placeholders in the dashboard Ops list. Strategies that historically used `question`/`problem`/`subject` MUST still write `topic` (you may keep the original key for backward compatibility, but `topic` is the contract with the dashboard).
+
 ```json
 {
   "schema_version": 1,
@@ -94,6 +108,48 @@ If x-eval fails or is skipped, keep `evaluation.status` as `"skipped"` or `"fail
 | monitor | "{alerts} alerts" | Decision + dispatch summary |
 | distribute | "{N} subtasks" | Merge result summary |
 | compose | "{N} strategies" | Last strategy result summary |
+
+## Common rule: preserve diverged content
+
+**Every strategy MUST preserve the full body of its divergence-phase outputs.** `outcome.summary` is a digest only — it cannot replace the source material. The dashboard needs the body to show the diverge→converge flow.
+
+### Divergence body keys by strategy
+
+Each strategy records its diverged outputs under a body key inside `themes[i]` or `rounds_summary[i]`:
+
+| Strategy | Body key | Field that carries the content |
+|----------|----------|-------------------------------|
+| brainstorm | `themes[i].ideas[]` | `id`, `title`, `description`, `dimension` |
+| tournament | `themes[i]` | `id`, `name`, `description`, `score`, `rank`, `voter_rationales[]`, `selected` |
+| council | `rounds_summary[i].positions[]` | `participant`, `statement`, `dissent` |
+| investigate | `rounds_summary[i].findings[]` | `claim`, `evidence`, `confidence` |
+| debate | `rounds_summary[i]` | `summary` (argument text per side) |
+| persona | `rounds_summary[i]` | `summary` (perspective text per persona) |
+| red-team | `rounds_summary[i]` | `summary` (attack vector text) |
+| hypothesis | `rounds_summary[i]` | `summary` (hypothesis text + test result) |
+| other strategies | `rounds_summary[i]` | `summary` (phase output text) |
+
+### Selection/vote inline recording
+
+Selection results MUST be recorded **inline inside the divergence data**, not only in `outcome.summary`:
+
+- Vote counts → `votes: <N>` on the chosen item
+- Ranking → `rank: <position>` on each item
+- Winner flag → `selected: true` on the winning item
+- Voter rationales → `voter_rationales: ["<reason>"]` alongside the candidate
+
+**Forbidden:** storing selection results only in `outcome.summary` text while leaving `themes[]` / `rounds_summary[]` body-free.
+
+### Rule for future strategies
+
+Any new strategy MUST follow this rule on its first run. When writing a new strategy SKILL.md:
+
+1. Identify the divergence phase (fan-out or broadcast that produces candidates/positions/findings).
+2. Define a body key (`ideas[]`, `positions[]`, `findings[]`, `candidates[]`, or `outputs[]`) under `themes[i]` or `rounds_summary[i]`.
+3. Specify the schema (minimum: an `id` or `participant` field + a content text field).
+4. In the Persist section, state explicitly: "`<body-key>` body required — `summary` alone does not suffice."
+
+The 13 strategies without result files today (chain, debate, decompose, distribute, hypothesis, monitor, persona, red-team, refine, review, scaffold, socratic, compose) are subject to a follow-up audit. They must comply with this rule on their next run that produces a result file.
 
 ## What NOT to save
 
