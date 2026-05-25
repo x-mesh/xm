@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+import { detectStop } from './convergence.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -722,7 +723,7 @@ function cmdClassify(args) {
   if (xmOpRecommendations.length > 0) {
     console.log(`  ${C.bold}x-op Alternatives:${C.reset}`);
     for (const rec of xmOpRecommendations) {
-      console.log(`    /x-op ${rec.strategy} — ${rec.reason}`);
+      console.log(`    /xm:op ${rec.strategy} — ${rec.reason}`);
     }
     console.log();
   }
@@ -953,6 +954,40 @@ function cmdSolveAdvance(args) {
       console.error(`❌ Max iterations reached (${maxIterations}). Advance to resolve instead.`);
       process.exit(1);
     }
+
+    // Accumulate iteration outputs for convergence detection.
+    // Each entry: { output: string, score?: number } — populated by the caller
+    // via --output and --score flags when available.
+    if (!Array.isArray(stratState.iteration_outputs)) {
+      stratState.iteration_outputs = [];
+    }
+    const iterOutput = opts.output ?? '';
+    const iterScore = opts.score !== undefined ? Number(opts.score) : undefined;
+    const iterEntry = iterScore !== undefined
+      ? { output: iterOutput, score: iterScore }
+      : { output: iterOutput };
+    stratState.iteration_outputs.push(iterEntry);
+
+    // Convergence/stagnation/oscillation check — may stop before max_iterations.
+    const cfg = loadConfig().solving ?? {};
+    const convergeThreshold = cfg.converge_threshold ?? undefined; // undefined → use detectStop default
+    const stagnationN = cfg.stagnation_n ?? undefined;
+    const stopResult = detectStop(
+      stratState.iteration_outputs,
+      {
+        ...(convergeThreshold !== undefined && { convergeThreshold }),
+        ...(stagnationN !== undefined && { stagnationN }),
+      }
+    );
+    if (stopResult.stop) {
+      stratState.stop_reason = stopResult.reason;
+      stratState.stop_detail = stopResult.detail;
+      stratState.updated_at = new Date().toISOString();
+      writeJSON(join(solvePath(problem), 'strategy-state.json'), stratState);
+      console.error(`⚠️  Early stop (${stopResult.reason}): ${stopResult.detail} Advance to resolve instead.`);
+      process.exit(1);
+    }
+
     stratState.current_iteration = currentIteration + 1;
   }
 

@@ -180,7 +180,34 @@ After emitting the Final Output above and the Self-Score block, MUST save the re
 
 1. `mkdir -p .xm/op/` (Bash)
 2. Filename: `investigate-{YYYY-MM-DD}-{slug}.json` (slug from topic, ≤ 40 chars, lowercase, hyphens)
-3. Write JSON per the result schema (include `outcome.verdict="{M} findings, {G} gaps"`, `outcome.summary` with key insights, `self_score`, `rounds_summary`)
+3. Write JSON per the result schema. Required fields:
+   - `outcome.verdict="{M} findings, {G} gaps"`
+   - `outcome.summary` with key insights (string array)
+   - **`rounds_summary[]` with EACH phase carrying its full `findings[]` body** per the schema below. `summary` alone is NOT sufficient — the full finding text and evidence must be saved so reviewers can see what was discovered in the dashboard.
+   - `self_score`
+
+   Output schema per phase (this is what gets persisted — a one-line `summary` does NOT replace the body):
+
+   ```json
+   {
+     "round": 1,
+     "phase": "EXPLORE",
+     "findings": [
+       {
+         "claim": "<finding text>",
+         "evidence": "<file:line or URL or inference>",
+         "confidence": "high|medium|low"
+       }
+     ],
+     "unknowns": ["<unverifiable item>"],
+     "summary": "<one-line phase digest>"
+   }
+   ```
+
+   Every Phase 2 finding (post-synthesis) MUST appear under exactly one phase's `findings[]`. Dropping findings — or keeping only `summary` — discards the investigation results and the dashboard findings card renders empty.
+
+   When `--depth deep|exhaustive`: Phase 2.5 cross-validation endorsements are recorded as `confidence` upgrades inline (e.g., `"confidence": "high"` with `"cross_validated": true`). Conflicts are tagged `"conflict": true` and carried into Phase 4 gaps.
+
 4. Surface path: `💾 Saved: .xm/op/{filename}`
 
 Do not end the strategy until the file is written and the path is shown.

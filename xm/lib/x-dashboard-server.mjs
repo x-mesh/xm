@@ -1050,8 +1050,12 @@ function handleOpList(xmRoot, req) {
     } catch {}
   }
   results.sort((a, b) => {
-    const da = a.completed_at ?? a.created_at ?? '';
-    const db = b.completed_at ?? b.created_at ?? '';
+    // Newer op schemas (v2: brainstorm/council/investigate/debate/tournament)
+    // store the timestamp at the root `date` field rather than the nested
+    // completed_at/created_at — include those in the sort key so the list is
+    // ordered correctly across schema generations.
+    const da = a.completed_at ?? a.created_at ?? a.date ?? a.timestamp ?? '';
+    const db = b.completed_at ?? b.created_at ?? b.date ?? b.timestamp ?? '';
     return db < da ? -1 : db > da ? 1 : 0;
   });
   return jsonResponseWithETag({ data: results }, req);
@@ -1223,11 +1227,11 @@ function handleEvalList(xmRoot, req) {
         if (entry.name.endsWith('.json')) {
           try {
             const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
-            timestamp = parsed.timestamp ?? parsed.created_at ?? null;
+            timestamp = parsed.timestamp ?? parsed.created_at ?? parsed.completed_at ?? parsed.date ?? null;
             summary = {
               type: parsed.type ?? null,
               rubric: parsed.rubric ?? null,
-              overall: parsed.overall ?? null,
+              overall: parsed.overall ?? parsed.score ?? parsed.total_score ?? null,
               verdict: parsed.verdict ?? null,
               from: parsed.from ?? null,
               to: parsed.to ?? null,
@@ -2269,6 +2273,11 @@ server = Bun.serve({
           return handleSync(req);
         }
 
+        // GET /api/ws/:wsId/handoffs
+        if (subPath === '/handoffs') {
+          return handleHandoffs(xmRoot, req);
+        }
+
         return jsonResponseWithETag({ error: 'not_found' }, req, 404);
       }
 
@@ -2459,6 +2468,11 @@ server = Bun.serve({
       if (path === '/api/sync') {
         return handleSync(req);
       }
+
+      // GET /api/handoffs
+      if (path === '/api/handoffs') {
+        return handleHandoffs(XM_ROOT, req);
+      }
     }
 
     // ── Static files ─────────────────────────────────────────────
@@ -2469,6 +2483,63 @@ server = Bun.serve({
     return Response.json({ error: 'Not found' }, { status: 404 });
   },
 });
+
+// ── Handoffs Handler ───────────────────────────────────────────────
+
+function handleHandoffs(xmRoot, req) {
+  const items = [];
+
+  // Scan .xm/handoff/ directory
+  const handoffDir = join(xmRoot, 'handoff');
+  if (existsSync(handoffDir)) {
+    try {
+      const files = readdirSync(handoffDir).filter(f => f.endsWith('.json') || f.endsWith('.md'));
+      for (const file of files) {
+        const filePath = safeJoin(handoffDir, file);
+        if (!filePath) continue;
+        try {
+          let entry = { file, source: 'handoff' };
+          if (file.endsWith('.json')) {
+            const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
+            Object.assign(entry, parsed);
+          } else {
+            const content = readFileSync(filePath, 'utf8');
+            const titleMatch = content.match(/^#\s+(.+)/m);
+            entry.title = titleMatch ? titleMatch[1].trim() : file;
+            entry.content = content.slice(0, 200);
+          }
+          entry.file = file;
+          items.push(entry);
+        } catch {}
+      }
+    } catch {}
+  }
+
+  // Scan .xm/build/projects/*/handoff.json
+  const projectsDir = join(xmRoot, 'build', 'projects');
+  if (existsSync(projectsDir)) {
+    try {
+      const projects = readdirSync(projectsDir);
+      for (const proj of projects) {
+        const hPath = safeJoin(projectsDir, proj, 'HANDOFF.json');
+        if (!hPath || !existsSync(hPath)) continue;
+        try {
+          const parsed = JSON.parse(readFileSync(hPath, 'utf8'));
+          items.push({ ...parsed, project: proj, file: `${proj}/HANDOFF.json`, source: 'build' });
+        } catch {}
+      }
+    } catch {}
+  }
+
+  // Sort by created_at desc
+  items.sort((a, b) => {
+    const ta = a.created_at ?? a.timestamp ?? '';
+    const tb = b.created_at ?? b.timestamp ?? '';
+    return tb.localeCompare(ta);
+  });
+
+  return jsonResponseWithETag({ data: items, total: items.length }, req);
+}
 
 // ── Sync Handler ───────────────────────────────────────────────────
 

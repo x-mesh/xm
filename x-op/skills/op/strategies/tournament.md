@@ -67,7 +67,33 @@ After emitting the Final Output above and the Self-Score block, MUST save the re
 
 1. `mkdir -p .xm/op/` (Bash)
 2. Filename: `tournament-{YYYY-MM-DD}-{slug}.json` (slug from topic, ≤ 40 chars, lowercase, hyphens)
-3. Write JSON per the result schema (include `outcome.verdict={winner name}`, `outcome.summary`, `self_score`, `rounds_summary`)
+3. Write JSON per the result schema. Required fields:
+   - `outcome.verdict={winner name}`
+   - `outcome.summary` with winning solution rationale
+   - **`themes[]` with EACH candidate carrying its full body and vote results** per the schema below. `outcome.summary` alone is NOT sufficient — the full candidate description and voter rationales must be saved so reviewers can see what competed and why the winner won in the dashboard.
+   - `self_score`, `rounds_summary`
+
+   Output schema per candidate entry in `themes[]` (this is what gets persisted — rank alone does NOT replace the body):
+
+   ```json
+   {
+     "id": "A",
+     "name": "<solution label, e.g. 'Solution A'>",
+     "description": "<actual 1-3 line content of the candidate solution from Phase 1>",
+     "score": 12,
+     "rank": 1,
+     "voter_rationales": [
+       "<short reason from voter 1>",
+       "<short reason from voter 2>"
+     ],
+     "selected": true
+   }
+   ```
+
+   Every Phase 1 candidate MUST appear in `themes[]`. Dropping candidates — or keeping only `{id, name, score, rank}` — discards the competition content and the dashboard renders empty cards.
+
+   When `--bracket double`: include `"bracket": "winners|losers"` and `"eliminated_round": <N>` on each entry to preserve the bracket progression.
+
 4. Surface path: `💾 Saved: .xm/op/{filename}`
 
 Do not end the strategy until the file is written and the path is shown.

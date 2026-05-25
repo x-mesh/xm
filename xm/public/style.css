@@ -24,6 +24,11 @@
   --shadow-accent: 4px 4px 0 var(--accent);
   --shadow-hover: 6px 6px 0 var(--accent);
 
+  /* Semantic aliases */
+  --red: var(--danger);
+  --green: var(--success);
+  --amber: #FFAB40;
+
   --nav-width: 180px;
   --font-sans: 'Pretendard', -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', system-ui, sans-serif;
   --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
@@ -326,6 +331,7 @@ tbody td {
 .badge-danger { background: rgba(255, 82, 82, 0.12); color: #ff5252; border-color: rgba(255, 82, 82, 0.4); }
 .badge-info { background: rgba(64, 196, 255, 0.12); color: #40c4ff; border-color: rgba(64, 196, 255, 0.4); }
 .badge-neutral { background: rgba(176, 190, 197, 0.1); color: #B0BEC5; border-color: rgba(176, 190, 197, 0.25); }
+.badge-accent { background: rgba(255, 171, 64, 0.15); color: var(--accent); border-color: rgba(255, 171, 64, 0.4); }
 
 /* ── View header meta ── */
 .view-header-meta {
@@ -640,6 +646,23 @@ body.theme-light .timeline-dot { border-color: var(--accent); background: #fff; 
 body.theme-light .breadcrumb { color: #888; }
 body.theme-light .view-header h1 { border-bottom-color: var(--accent); }
 body.theme-light #search-input { background: #fff; border-color: #ccc; color: #1a1a1a; }
+/* Light theme badge contrast overrides (WCAG AA) */
+body.theme-light .badge-red { background: rgba(185,28,28,0.1); color: #b91c1c; border-color: rgba(185,28,28,0.35); }
+body.theme-light .badge-green { background: rgba(21,128,61,0.1); color: #15803d; border-color: rgba(21,128,61,0.35); }
+body.theme-light .badge-amber { background: rgba(146,64,14,0.1); color: #92400e; border-color: rgba(146,64,14,0.35); }
+body.theme-light .badge-accent { background: rgba(192,80,0,0.1); color: #c05000; border-color: rgba(192,80,0,0.35); }
+/* Search input class-based styling */
+.sidebar-search-input {
+  width: 100%;
+  background: #1a1a1a;
+  border: 2px solid #444;
+  color: var(--text);
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  box-sizing: border-box;
+}
+body.theme-light .sidebar-search-input { background: #fff; border-color: #ccc; color: #1a1a1a; }
 
 /* ── Skip link (accessibility) ── */
 .skip-link {

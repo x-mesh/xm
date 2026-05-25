@@ -25,5 +25,8 @@
   "research": {
     "agents": 4,
     "perspectives": ["stack", "features", "architecture", "pitfalls"]
+  },
+  "drift": {
+    "drift_threshold": 0.8
   }
 }

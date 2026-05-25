@@ -43,7 +43,10 @@ If you find yourself extracting only technical premises, STOP and ask:
 For each premise:
 - Statement: one sentence, falsifiable (can be proven wrong)
 - Confidence: high / medium / low / unknown
-- Dimension: which dimension from the table above
+- Dimension: **REQUIRED** — assign exactly one tag: `goal` | `constraints` | `success`
+  - `goal`: whether the problem/need is real and the approach targets it correctly
+  - `constraints`: resource, technical, or regulatory limits that bound the solution
+  - `success`: whether the outcome will be recognized as valuable (user adoption, metrics, market)
 - Fragility: if this premise is wrong, what happens to the entire idea?
   - fatal: idea collapses entirely
   - weakening: idea loses significant value
@@ -62,15 +65,16 @@ Output format:
 
 **Developer mode:**
 ## Premises
-| # | Premise | Confidence | Fragility | Evidence | Test |
-|---|---------|------------|-----------|----------|------|
-| 1 | ... | low | fatal | assumption | ... |
+| # | Premise | Dimension | Confidence | Fragility | Evidence | Test |
+|---|---------|-----------|------------|-----------|----------|------|
+| 1 | ... | goal | low | fatal | assumption | ... |
 
 **Normal mode:**
 ## 핵심 가정
-| # | 가정 | 확신도 | 중요도 | 근거 수준 | 검증 방법 |
-|---|------|--------|--------|-----------|-----------|
-| 1 | ... | 낮음 | 핵심 | 근거 없음 | ... |
+| # | 가정 | 차원 | 확신도 | 중요도 | 근거 수준 | 검증 방법 |
+|---|------|------|--------|--------|-----------|-----------|
+| 1 | ... | goal | 낮음 | 핵심 | 근거 없음 | ... |
+(차원: goal=문제/방향, constraints=제약/한계, success=성과/채택)
 (중요도: 핵심=틀리면 전체가 무너짐, 중간=가치가 크게 줄어듦, 부수=조정 가능)
 (근거 수준: 근거 없음 → 경험 기반 → 데이터 있음 → 검증됨)
 ```
@@ -218,12 +222,46 @@ Collect all 3 agent results.
 
 The leader synthesizes Phase 1-3 into a verdict.
 
-**Verdict criteria:**
+**Step 4a — Compute clarity scores by dimension.**
+
+For each premise, map its final `evidence_grade` to a clarity value:
+- `validated` or `data-backed` → 1.0
+- `heuristic` → 0.5
+- `assumption` → 0.0
+
+Average clarity values within each dimension tag (`goal`, `constraints`, `success`).
+If a dimension has no premises, default to 0.0.
+
+Let `g`, `c`, `s` = averaged clarity for goal, constraints, success respectively.
+
+**Step 4b — Compute ambiguity score via xm score (Bash, REQUIRED).**
+
+> **Call `xm score` directly. Do NOT define a shell helper function.**
+>
+> **Fallback** (only when `xm` is not in PATH):
+> ```bash
+> XM_SCORE_CLI=$(ls -d ~/.claude/plugins/cache/xm/{xm,x-build}/*/lib/x-score-cli.mjs 2>/dev/null | sort -V | tail -1)
+> node "$XM_SCORE_CLI" --parts "goal=<g>,constraints=<c>,success=<s>" --weights 'goal=0.4,constraints=0.3,success=0.3' --op '<=' --threshold 0.2 --invert --json
+> ```
+
+```bash
+xm score --parts 'goal=<g>,constraints=<c>,success=<s>' \
+  --weights 'goal=0.4,constraints=0.3,success=0.3' \
+  --op '<=' --threshold 0.2 --invert --json
+```
+
+Capture the JSON response. Extract:
+- `ambiguity_score` = response `.score`
+- `ambiguity_passed` = response `.passed`
+
+Interpretation: score = 0 means fully clear (all validated); score = 1 means fully ambiguous (all assumption). `passed = true` means ambiguity ≤ 0.2 (acceptable to PROCEED).
+
+**Step 4c — Apply verdict criteria.**
 
 | Verdict | Conditions |
 |---------|-----------|
-| **PROCEED** | All fatal premises survived with evidence. No fatal premise graded `assumption`. No unrefuted fatal objection. Alternatives are inferior. Failure scenarios are manageable. |
-| **RETHINK** | Some premises are weak but not refuted. A fatal premise remains `assumption` or `heuristic` without upgrade path. A cheaper alternative exists for part of the scope. Pre-mortem found high-likelihood risks without mitigation. |
+| **PROCEED** | All fatal premises survived with evidence. No fatal premise graded `assumption`. No unrefuted fatal objection. Alternatives are inferior. Failure scenarios are manageable. **ambiguity_score ≤ 0.2 (ambiguity_passed = true).** |
+| **RETHINK** | Some premises are weak but not refuted. A fatal premise remains `assumption` or `heuristic` without upgrade path. A cheaper alternative exists for part of the scope. Pre-mortem found high-likelihood risks without mitigation. **OR: ambiguity_passed = false** (minimum RETHINK gate). |
 | **KILL** | A fatal premise was refuted. An unrefutable objection exists. A dramatically cheaper alternative achieves 80%+ of the value. |
 
 **Output format:**
@@ -235,14 +273,18 @@ The leader synthesizes Phase 1-3 into a verdict.
 Idea: {idea}
 
 ## Premises Tested
-| # | Premise | Status | Evidence Grade | Evidence |
-|---|---------|--------|---------------|----------|
-| 1 | ... | survived ✅ / weakened ⚠ / refuted ❌ | assumption→heuristic ↑ | ... |
+| # | Premise | Dimension | Status | Evidence Grade | Evidence |
+|---|---------|-----------|--------|---------------|----------|
+| 1 | ... | goal | survived ✅ / weakened ⚠ / refuted ❌ | assumption→heuristic ↑ | ... |
 
 ## Evidence Summary
 - 🟢 validated/data-backed: {N} premises — strong foundation
 - 🟡 heuristic: {N} premises — experience-based, test before scaling
 - 🔴 assumption: {N} premises — ungrounded, require validation before commit
+
+## Ambiguity Gate
+Clarity — goal: {g:.2f} | constraints: {c:.2f} | success: {s:.2f}
+Ambiguity score: {ambiguity_score:.3f} (threshold ≤ 0.20) — {PASS ✅ | FAIL ❌}
 
 ## Strongest Objection
 {The single most compelling reason not to do this, and whether it was neutralized}
@@ -269,14 +311,18 @@ If you proceed, stop immediately when:
 아이디어: {idea}
 
 ## 가정 검증 결과
-| # | 가정 | 결과 | 근거 수준 | 근거 |
-|---|------|------|-----------|------|
-| 1 | ... | 유효 ✅ / 약해짐 ⚠ / 틀림 ❌ | 근거 없음→경험 기반 ↑ | ... |
+| # | 가정 | 차원 | 결과 | 근거 수준 | 근거 |
+|---|------|------|------|-----------|------|
+| 1 | ... | goal | 유효 ✅ / 약해짐 ⚠ / 틀림 ❌ | 근거 없음→경험 기반 ↑ | ... |
 
 ## 근거 요약
 - 🟢 검증됨/데이터 있음: {N}개 — 튼튼한 기반
 - 🟡 경험 기반: {N}개 — 경험에 의존, 확대 전 테스트 필요
 - 🔴 근거 없음: {N}개 — 확인 안 됨, 시작 전 검증 필요
+
+## 모호성 게이트
+명확도 — goal: {g:.2f} | constraints: {c:.2f} | success: {s:.2f}
+모호성 점수: {ambiguity_score:.3f} (기준 ≤ 0.20) — {통과 ✅ | 실패 ❌}
 
 ## 가장 강한 반론
 {이걸 하지 말아야 할 가장 설득력 있는 이유, 해소 여부}
@@ -296,6 +342,34 @@ If you proceed, stop immediately when:
 {2-3문장: 뭘 해야 하고 왜}
 ```
 
+### Ambiguity Gate Example
+
+**Input premises (after Phase 2 probing):**
+
+| # | Premise | Dimension | Final Grade |
+|---|---------|-----------|-------------|
+| 1 | The API can handle 1K concurrent users | constraints | data-backed → clarity 1.0 |
+| 2 | Users will prefer this GUI over CLI | goal | heuristic → clarity 0.5 |
+| 3 | No existing tool achieves 80% of this value | goal | assumption → clarity 0.0 |
+| 4 | The context-switch cost is worth the benefit | success | assumption → clarity 0.0 |
+
+**Clarity by dimension:**
+- goal: avg(0.5, 0.0) = 0.25
+- constraints: avg(1.0) = 1.0
+- success: avg(0.0) = 0.0
+
+**xm score call:**
+```bash
+xm score --parts 'goal=0.25,constraints=1.0,success=0.0' \
+  --weights 'goal=0.4,constraints=0.3,success=0.3' \
+  --op '<=' --threshold 0.2 --invert --json
+# → {"score": 0.6, "passed": false}
+```
+
+**Result:** `ambiguity_score = 0.6`, `ambiguity_passed = false` → minimum **RETHINK** (ambiguity gate blocks PROCEED even if all fatal premises survived). Two goal-dimension and success-dimension premises are ungrounded; validate them before committing.
+
+---
+
 ### Final Step: Persist (REQUIRED — both files)
 
 After emitting the verdict output above, MUST write the verdict to BOTH paths per the Termination Checkpoint in SKILL.md:
@@ -314,9 +388,12 @@ Do not end the session until both files are written and both paths are shown. Sk
   "idea": "...",
   "verdict": "PROCEED|RETHINK|KILL",
   "premises": [
-    { "statement": "...", "confidence": "high", "fragility": "fatal", "evidence_grade": "data-backed", "evidence_grade_initial": "assumption", "status": "survived" }
+    { "statement": "...", "dimension": "goal|constraints|success", "confidence": "high", "fragility": "fatal", "evidence_grade": "data-backed", "evidence_grade_initial": "assumption", "status": "survived" }
   ],
   "evidence_summary": { "validated": 0, "data_backed": 2, "heuristic": 1, "assumption": 0 },
+  "clarity_scores": { "goal": 1.0, "constraints": 0.5, "success": 0.0 },
+  "ambiguity_score": 0.45,
+  "ambiguity_passed": false,
   "recommendation": "..."
 }
 ```

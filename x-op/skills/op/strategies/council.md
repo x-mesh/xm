@@ -71,7 +71,33 @@ After emitting the Final Output above and the Self-Score block, MUST save the re
 
 1. `mkdir -p .xm/op/` (Bash)
 2. Filename: `council-{YYYY-MM-DD}-{slug}.json` (slug from topic, ≤ 40 chars, lowercase, hyphens)
-3. Write JSON per the result schema (include `outcome.verdict={CONSENSUS|NO CONSENSUS|CONSENSUS WITH RESERVATIONS}`, `outcome.summary` with consensus statement, `self_score`, `rounds_summary`)
+3. Write JSON per the result schema. Required fields:
+   - `outcome.verdict={CONSENSUS|NO CONSENSUS|CONSENSUS WITH RESERVATIONS}`
+   - `outcome.summary` with consensus statement
+   - **`rounds_summary[]` with EACH round carrying its full `positions[]` body** per the schema below. `summary` alone is NOT sufficient — the full position text must be saved so reviewers can see the divergence and evolution in the dashboard.
+   - `self_score`
+
+   Output schema per round (this is what gets persisted — a one-line `summary` does NOT replace the body):
+
+   ```json
+   {
+     "round": 1,
+     "phase": "OPEN",
+     "positions": [
+       {
+         "participant": "<role>",
+         "statement": "<full 1-3 line position text>",
+         "dissent": "<optional disagreement notes, omit if none>"
+       }
+     ],
+     "summary": "<one-line round digest>"
+   }
+   ```
+
+   Every round's agent statements MUST appear under `positions[]`. Dropping them — or keeping only `summary` — discards the divergence and the dashboard renders empty stances.
+
+   When `--weights` is set: add `"weight": <N>` and `"vote": "AGREE|OBJECT"` to each position entry in the CONVERGE round. This preserves the selection alongside the divergence so the dashboard can show *what was chosen and why* on a single screen.
+
 4. Surface path: `💾 Saved: .xm/op/{filename}`
 
 Do not end the strategy until the file is written and the path is shown.

@@ -10,6 +10,7 @@ import {
   runQualityChecks,
   existsSync, join, resolve, ROOT, repoRoot, parseOptions, spawnSync,
 } from './core.mjs';
+import { parsePrdBaseline, computeDrift } from './drift.mjs';
 
 // ── cmdQuality ──────────────────────────────────────────────────────
 
@@ -338,6 +339,77 @@ function buildTriageTemplate(review) {
       'Re-run x-review after review-fix changes',
     ],
   };
+}
+
+// ── cmdVerifyDrift ──────────────────────────────────────────────────
+
+export function cmdVerifyDrift(args) {
+  const { opts } = parseOptions(args);
+  const project = resolveProject(null);
+  const prd = readMD(prdPath(project));
+  const taskData = readJSON(tasksPath(project));
+  const tasks = taskData?.tasks || [];
+
+  if (!prd) {
+    console.log(`${C.yellow}No PRD.md found. Run: x-build plan${C.reset}`);
+    return;
+  }
+
+  const baseline = parsePrdBaseline(prd);
+  const threshold = opts.threshold != null ? Number(opts.threshold) : undefined;
+  const result = computeDrift(baseline, tasks, threshold != null ? { threshold } : {});
+
+  const passIcon = result.gate_pass ? `${C.green}PASS${C.reset}` : `${C.red}FAIL${C.reset}`;
+  const pct = v => `${Math.round(v * 100)}%`;
+
+  console.log(`\n${C.bold}PRD Drift Score${C.reset}\n`);
+  console.log(`  Goal coverage        (0.5×): ${pct(result.goal_score).padStart(4)}  ${renderScoreBar(result.goal_score)}`);
+  console.log(`  Constraint adherence (0.3×): ${pct(result.constraint_score).padStart(4)}  ${renderScoreBar(result.constraint_score)}`);
+  console.log(`  Ontology coverage    (0.2×): ${pct(result.ontology_score).padStart(4)}  ${renderScoreBar(result.ontology_score)}`);
+  console.log(`  ${'─'.repeat(48)}`);
+  console.log(`  Weighted drift score        : ${pct(result.weighted).padStart(4)}  (threshold: ${pct(result.threshold)})`);
+  console.log(`\n  Gate: ${passIcon}\n`);
+
+  if (!result.gate_pass) {
+    console.log(`  ${C.yellow}Drift score ${pct(result.weighted)} is below threshold ${pct(result.threshold)}.${C.reset}`);
+    if (result.goal_score < result.threshold) {
+      const scCount = baseline.successCriteria.length;
+      const completedCount = tasks.filter(t => t.status === 'completed').length;
+      console.log(`  ${C.dim}Hint: ${completedCount} completed tasks cover ${pct(result.goal_score)} of ${scCount} success criteria.${C.reset}`);
+    }
+  }
+
+  // Show baseline summary
+  console.log(`  ${C.dim}Parsed: ${baseline.successCriteria.length} SC, ${baseline.constraints.length} constraints, ${baseline.ontologyKeywords.length} ontology keywords${C.reset}`);
+
+  const outPath = join(phaseDir(project, '04-verify'), 'drift-score.json');
+  writeJSON(outPath, {
+    timestamp: new Date().toISOString(),
+    project,
+    ...result,
+    baseline_summary: {
+      success_criteria_count: baseline.successCriteria.length,
+      constraints_count: baseline.constraints.length,
+      ontology_keyword_count: baseline.ontologyKeywords.length,
+    },
+  });
+
+  console.log(`  Saved: ${outPath}\n`);
+
+  if (!result.gate_pass) {
+    process.exitCode = 1;
+  }
+}
+
+function renderScoreBar(score) {
+  const filled = Math.round(clamp01Score(score) * 10);
+  return `[${'█'.repeat(filled)}${'░'.repeat(10 - filled)}]`;
+}
+
+function clamp01Score(v) {
+  const n = Number(v);
+  if (!isFinite(n)) return 0;
+  return Math.min(1, Math.max(0, n));
 }
 
 export function cmdVerifyReviewFix(args) {

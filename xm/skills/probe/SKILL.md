@@ -172,7 +172,7 @@ Anti-patterns (NEVER do these):
 
 ## Session: probe
 
-See `sessions/probe.md` — full premise extraction + evidence gathering + verdict deliberation workflow. Includes bilingual output templates (English + Korean) for premises, evidence summary, strongest objection, key risks (pre-mortem), alternatives, kill criteria, and recommendation.
+See `sessions/probe.md` — full premise extraction + evidence gathering + verdict deliberation workflow. Includes bilingual output templates (English + Korean) for premises, evidence summary, strongest objection, key risks (pre-mortem), alternatives, kill criteria, and recommendation. Phase 4 computes an ambiguity score via `xm score` from per-dimension clarity averages; `ambiguity_passed = false` is a hard gate that blocks PROCEED and forces minimum RETHINK.
 
 ---
 
