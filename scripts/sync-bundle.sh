@@ -46,7 +46,7 @@ mirror_md_dir() {
 }
 
 echo "=== Syncing SKILL.md files ==="
-for plugin in build op solver eval review trace memory humble probe agent dashboard humanize; do
+for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync; do
   src="x-$plugin/skills/$plugin/SKILL.md"
   dst="xm/skills/$plugin/SKILL.md"
   sync_file "$src" "$dst"
@@ -58,9 +58,11 @@ sync_file "docs/korean-output-style.md" "xm/docs/korean-output-style.md"
 
 echo ""
 echo "=== Syncing x-build lib files ==="
-for f in core.mjs project.mjs phase.mjs plan.mjs tasks.mjs later.mjs verify.mjs export.mjs misc.mjs release.mjs cost-engine.mjs config-loader.mjs root.mjs; do
-  sync_file "x-build/lib/x-build/$f" "xm/lib/x-build/$f"
+shopt -s nullglob
+for f in x-build/lib/x-build/*.mjs; do
+  sync_file "$f" "xm/lib/x-build/$(basename "$f")"
 done
+shopt -u nullglob
 remove_obsolete_file "xm/lib/x-build/parking-lot.mjs"
 sync_file "x-build/lib/x-build-cli.mjs" "xm/lib/x-build-cli.mjs"
 sync_file "x-build/lib/x-config-cli.mjs" "xm/lib/x-config-cli.mjs"
@@ -86,6 +88,8 @@ for f in x-sync/lib/x-sync/*.mjs; do
   sync_file "$f" "xm/lib/x-sync/$(basename "$f")"
 done
 shopt -u nullglob
+# Server entry — sync-server.mjs resolves it at ../x-sync-server.mjs relative to lib/x-sync/
+sync_file "x-sync/lib/x-sync-server.mjs" "xm/lib/x-sync-server.mjs"
 
 echo ""
 echo "=== Syncing x-trace lib files ==="
@@ -184,7 +188,7 @@ mirror_md_dir "x-humanize/skills/humanize/references" "xm/skills/humanize/refere
 echo ""
 echo "=== Verifying all synced ==="
 DIVERGED=0
-for plugin in build op solver eval review trace memory humble probe agent dashboard humanize; do
+for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync; do
   src="x-$plugin/skills/$plugin/SKILL.md"
   dst="xm/skills/$plugin/SKILL.md"
   if [ -f "$src" ] && [ -f "$dst" ] && ! diff -q "$src" "$dst" > /dev/null 2>&1; then
@@ -193,12 +197,15 @@ for plugin in build op solver eval review trace memory humble probe agent dashbo
   fi
 done
 
-for f in core.mjs project.mjs phase.mjs plan.mjs tasks.mjs later.mjs verify.mjs export.mjs misc.mjs release.mjs; do
-  if ! diff -q "x-build/lib/x-build/$f" "xm/lib/x-build/$f" > /dev/null 2>&1; then
-    echo "  DIVERGED: xm/lib/x-build/$f"
+shopt -s nullglob
+for f in x-build/lib/x-build/*.mjs; do
+  dst="xm/lib/x-build/$(basename "$f")"
+  if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
+    echo "  DIVERGED: $dst"
     DIVERGED=$((DIVERGED + 1))
   fi
 done
+shopt -u nullglob
 
 for pair in \
   "x-build/lib/shared-config.mjs:xm/lib/shared-config.mjs" \
@@ -232,6 +239,11 @@ for f in x-sync/lib/x-sync/*.mjs; do
   fi
 done
 shopt -u nullglob
+
+if ! diff -q "x-sync/lib/x-sync-server.mjs" "xm/lib/x-sync-server.mjs" > /dev/null 2>&1; then
+  echo "  DIVERGED: xm/lib/x-sync-server.mjs"
+  DIVERGED=$((DIVERGED + 1))
+fi
 
 if ! diff -q "x-trace/lib/x-trace/trace-writer.mjs" "xm/lib/x-trace/trace-writer.mjs" > /dev/null 2>&1; then
   echo "  DIVERGED: xm/lib/x-trace/trace-writer.mjs"
