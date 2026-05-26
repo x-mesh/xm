@@ -174,6 +174,16 @@ For review gate, invoke x-review with refs already collected in Step 0:
 
 LGTM → proceed. Request Changes / Block → ask user before continuing.
 
+### README / docs prose audit (always runs when README changes are staged)
+
+When the plan says "README update needed? yes" or any `README*.md` / `docs/*.md` is staged for this release, run a one-shot prose audit before commit:
+
+```bash
+/xm:humanize audit README.md README.ko.md   # detect-only, no rewrite
+```
+
+Surface findings in the plan preview (pattern count + top 3 issues). Do NOT auto-rewrite — show the user and let them decide. This is the only allowed humanize call in the release flow; runtime/agent paths never invoke humanize automatically.
+
 ---
 
 ## Step 2: Squash (if planned)
