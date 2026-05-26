@@ -53,6 +53,10 @@ for plugin in build op solver eval review trace memory humble probe agent dashbo
 done
 
 echo ""
+echo "=== Syncing shared docs ==="
+sync_file "docs/korean-output-style.md" "xm/docs/korean-output-style.md"
+
+echo ""
 echo "=== Syncing x-build lib files ==="
 for f in core.mjs project.mjs phase.mjs plan.mjs tasks.mjs later.mjs verify.mjs export.mjs misc.mjs release.mjs cost-engine.mjs config-loader.mjs root.mjs; do
   sync_file "x-build/lib/x-build/$f" "xm/lib/x-build/$f"
