@@ -4,7 +4,7 @@
  * Usage: node sync-push.mjs [--project PROJECT_ID]
  */
 
-import { readFileSync, writeFileSync, readdirSync, existsSync, statSync, unlinkSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { join, resolve, relative, basename, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execSync } from 'node:child_process';
@@ -56,22 +56,6 @@ function scanXmFiles(xmDir) {
   return files;
 }
 
-// Drain .sync-queue if exists
-function drainQueue(xmDir) {
-  const queueDir = join(xmDir, '.sync-queue');
-  if (!existsSync(queueDir)) return [];
-  const queued = [];
-  for (const f of readdirSync(queueDir).sort()) {
-    if (!f.endsWith('.json')) continue;
-    try {
-      queued.push(JSON.parse(readFileSync(join(queueDir, f), 'utf8')));
-      // Delete after reading
-      unlinkSync(join(queueDir, f));
-    } catch {}
-  }
-  return queued;
-}
-
 // Main
 async function main() {
   const config = readSyncConfig();
@@ -107,7 +91,9 @@ async function main() {
         'Content-Type': 'application/json',
         'X-Api-Key': config.api_key,
       },
-      body: JSON.stringify({ machine_id: machineId, project_id: projectId, files }),
+      // full_snapshot: scanXmFiles always sends the complete .xm file set, so the
+      // server can tombstone paths absent from this push (deletion propagation).
+      body: JSON.stringify({ machine_id: machineId, project_id: projectId, files, full_snapshot: true }),
     });
 
     if (!res.ok) {
@@ -117,7 +103,11 @@ async function main() {
     }
 
     const result = await res.json();
-    console.log(`[x-sync push] accepted: ${result.accepted}, skipped: ${result.skipped}`);
+    const extra = [];
+    if (result.deleted) extra.push(`${result.deleted} deleted`);
+    if (result.rejected) extra.push(`${result.rejected} rejected`);
+    if (Array.isArray(result.write_errors) && result.write_errors.length) extra.push(`${result.write_errors.length} write-errors`);
+    console.log(`[x-sync push] accepted: ${result.accepted}, skipped: ${result.skipped}${extra.length ? ', ' + extra.join(', ') : ''}`);
 
     // Save last_push state (merge with existing state instead of overwriting last_pull)
     const statePath = join(xmDir, '.sync-state.json');
@@ -131,9 +121,9 @@ async function main() {
     mkdirSync(dirname(statePath), { recursive: true });
     writeFileSync(statePath, JSON.stringify(state) + '\n', 'utf8');
   } catch (err) {
+    // No retry queue needed: every push is a full snapshot, so the next successful
+    // push transmits the complete current state regardless of this failure.
     console.error(`[x-sync push] Failed: ${err.message}`);
-    // Queue for later
-    // (queue implementation is in t4 — SessionEnd hook)
     process.exit(1);
   }
 }

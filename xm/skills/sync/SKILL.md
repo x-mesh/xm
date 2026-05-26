@@ -23,6 +23,8 @@ Sync .xm/ project state (traces, plans, build data) across multiple machines via
 
 Syncs .xm/ project state across machines. Server stores data in SQLite; clients push/pull via HTTP.
 
+Pull is incremental by a monotonic server **cursor** (id), so same-millisecond pushes never get skipped. Push sends a **full snapshot**, so the server propagates local deletions as tombstones — clients then remove only the machine-namespaced copies they pulled earlier (never your local working files).
+
 ## Model Routing
 
 | Subcommand | Model | Reason |
@@ -31,6 +33,20 @@ Syncs .xm/ project state across machines. Server stores data in SQLite; clients 
 | `push`, `pull`, `push-all`, `pull-all` | **haiku** (Agent tool) | Script execution, no reasoning |
 | `server start`, `server stop` | **haiku** (Agent tool) | Simple process management |
 | `setup` (interactive) | **sonnet** | Requires AskUserQuestion |
+
+## CLI Invocation
+
+> **⚠ Call `xm sync <command>` directly. Claude Code's Bash tool starts a fresh shell on every invocation — shell functions (`xms()`) defined in one call do NOT persist to the next, causing `command not found: xms`. Never define a helper across calls; always use the dispatcher.**
+>
+> The `xm sync <sub>` dispatcher routes to `lib/x-sync/sync-<sub>.mjs` (and `server` → `sync-server.mjs`), resolving the bundled lib path internally. You never have to compute paths.
+>
+> **Fallback** (only when `xm` is not in PATH — rare; `${CLAUDE_PLUGIN_ROOT}` is NOT exported to Bash subprocesses, so don't rely on it bare):
+> ```bash
+> XMS_LIB=$(ls -d ~/.claude/plugins/cache/xm/{x-sync,xm}/*/lib/x-sync 2>/dev/null | sort -V | tail -1)
+> node "$XMS_LIB/sync-status.mjs"
+> ```
+>
+> **Forbidden:** `XMS="node ..."; $XMS status` — zsh treats the quoted string as a single command and fails.
 
 ## Arguments
 
@@ -43,7 +59,7 @@ User provided: `$ARGUMENTS`
 **Visibility map:**
 | Element | Visible | Use for |
 |---------|---------|---------|
-| `header` | ✅ YES | Short context tag (e.g., "x-op bump", "Pipeline") |
+| `header` | ✅ YES | Short context tag (e.g., "x-sync setup") |
 | `question` | ❌ NO | Keep minimal — user cannot see this text |
 | option `label` | ✅ YES | Primary info — must be self-explanatory |
 | option `description` | ✅ YES | Supplementary detail |
@@ -75,169 +91,118 @@ User provided: `$ARGUMENTS`
 
 Interactive wizard to configure sync credentials.
 
-**Step 1: Check current config**
+**Step 1: Show current config**
 
 ```bash
-cat ~/.xm/sync.json 2>/dev/null || echo '{"machine_id": null, "server_url": null, "api_key": null}'
+xm sync setup --show
 ```
 
-**Step 2: Ask for server URL**
+**Step 2: Collect server URL and API key**
 
-Use AskUserQuestion:
-```
-x-sync 서버 URL을 입력하세요 (예: http://my-server:19842):
-```
+Print the prompts as markdown text, then use AskUserQuestion (`header: "x-sync setup"`) to collect:
+- Server URL (e.g. `http://my-server:19842`)
+- API key (must match the server's `XM_SYNC_API_KEY`)
 
-**Step 3: Ask for API key**
-
-Use AskUserQuestion:
-```
-API 키를 입력하세요 (서버의 XM_SYNC_API_KEY와 동일해야 합니다):
-```
-
-**Step 4: Write config**
+**Step 3: Write config + test connection**
 
 ```bash
-node -e "
-const { writeSyncConfig, readSyncConfig } = await import('$SKILL_BASE_DIR/../../lib/x-sync/sync-config.mjs');
-const config = readSyncConfig();
-config.server_url = '$SERVER_URL';
-config.api_key = '$API_KEY';
-writeSyncConfig(config);
-console.log('✅ Sync configured:', JSON.stringify(config, null, 2));
-"
+xm sync setup --server-url "$SERVER_URL" --api-key "$API_KEY"
 ```
 
-Replace `$SERVER_URL` and `$API_KEY` with user-provided values.
-
-**Step 5: Test connection**
-
-```bash
-curl -s -o /dev/null -w "%{http_code}" -H "X-Api-Key: $API_KEY" "$SERVER_URL/dashboard/health"
-```
-
-If 200 → `✅ 서버 연결 확인`. Otherwise → `❌ 서버 연결 실패 (HTTP $code)`.
+`sync-setup.mjs` writes `~/.xm/sync.json` (chmod 600), then probes `/dashboard/health` and prints `✅ 서버 연결 확인` or `❌ 서버 연결 실패 (...)`. Substitute the user-provided values for `$SERVER_URL` / `$API_KEY`.
 
 ---
 
 ## Mode: server-start
 
-Start the sync server as a background process.
+Start the sync server as a managed background process. `sync-server.mjs` reads the API key from `~/.xm/sync.json`, prefers `bun` over `node`, writes the PID, and tails the log if startup crashes.
 
 ```bash
-XM_SYNC_API_KEY="$API_KEY" nohup bun x-sync/lib/x-sync-server.mjs --port 19842 > /tmp/x-sync-server.log 2>&1 &
-echo $! > /tmp/x-sync-server.pid
-echo "✅ x-sync server started (PID: $(cat /tmp/x-sync-server.pid), port: 19842)"
+xm sync server start
 ```
 
-Read the API key from `~/.xm/sync.json` if available. If no API key is set, warn:
-```
-⚠️ XM_SYNC_API_KEY가 설정되지 않았습니다. 서버가 인증 없이 열립니다.
-```
+Optional: `xm sync server start --port 19842` (default: 19842).
 
-The `--port` flag is optional. Default: 19842.
+If no API key is configured, the server warns that it is running **open** (push/pull and dashboard reachable without auth). Surface that warning to the user.
 
 ---
 
 ## Mode: server-stop
 
 ```bash
-if [ -f /tmp/x-sync-server.pid ]; then
-  kill $(cat /tmp/x-sync-server.pid) 2>/dev/null && echo "✅ x-sync server stopped" || echo "⚠️ Process already stopped"
-  rm -f /tmp/x-sync-server.pid
-else
-  echo "⚠️ No PID file found. Server may not be running."
-  # Try to find and kill by port
-  lsof -ti:19842 | xargs kill 2>/dev/null && echo "✅ Killed process on port 19842" || echo "ℹ️ No process on port 19842"
-fi
+xm sync server stop
 ```
+
+Kills the tracked PID; falls back to killing whatever holds the port. Reports a stale PID file if found.
 
 ---
 
 ## Mode: server-status
 
-Check if the server is running and healthy.
-
 ```bash
-if [ -f /tmp/x-sync-server.pid ] && kill -0 $(cat /tmp/x-sync-server.pid) 2>/dev/null; then
-  echo "✅ Server running (PID: $(cat /tmp/x-sync-server.pid))"
-  curl -s http://localhost:19842/dashboard/health 2>/dev/null || echo "⚠️ Health check failed"
-else
-  echo "⚠️ Server not running"
-fi
+xm sync server status
 ```
+
+Reports the running PID and a `/dashboard/health` probe, or `Server not running`.
 
 ---
 
 ## Mode: push
 
-Push local .xm/ state to the sync server.
+Push local .xm/ state (full snapshot) to the sync server.
 
 ```bash
-node xm/lib/x-sync/sync-push.mjs
+xm sync push
 ```
 
-Optional: `--project PROJECT_ID` to override auto-detected project name.
+Optional: `xm sync push --project PROJECT_ID` to override the auto-detected project name.
 
 Output example:
 ```
 [x-sync push] 42 files from my-project (macbook-a1b2)
-[x-sync push] accepted: 12, skipped: 30
+[x-sync push] accepted: 12, skipped: 30, 1 deleted
 ```
 
-If sync is not configured, show:
+`deleted` = paths tombstoned because they no longer exist locally. If sync is not configured:
 ```
-❌ x-sync 설정이 필요합니다. `/xm:sync setup`을 먼저 실행하세요.
+❌ x-sync 설정이 필요합니다. `xm sync setup`을 먼저 실행하세요.
 ```
 
 ---
 
 ## Mode: pull
 
-Pull remote .xm/ state from the sync server.
+Pull remote .xm/ state from the sync server (incremental by cursor).
 
 ```bash
-node xm/lib/x-sync/sync-pull.mjs
+xm sync pull
 ```
 
 Optional flags:
 - `--project PROJECT_ID` — override project name
-- `--since TIMESTAMP` — pull only after this epoch timestamp
+- `--since TIMESTAMP` — legacy timestamp pull (epoch ms); normally omit and let the cursor drive it
 
 Output example:
 ```
-[x-sync pull] project=my-project since=2026-04-06T10:00:00.000Z
-[x-sync pull] 8 files written (3 skipped — own machine)
+[x-sync pull] project=my-project cursor=128
+[x-sync pull] 8 files written, 1 namespaced, 2 removed (3 skipped — own machine)
 ```
+
+`removed` = machine-namespaced copies deleted because their source was tombstoned. Your own local files at non-namespaced paths are never touched.
 
 ---
 
 ## Mode: push-all
 
-Push all .xm/ projects under a root directory to the sync server.
+Push all .xm/ projects under a root directory.
 
 ```bash
-node xm/lib/x-sync/sync-push-all.mjs
+xm sync push-all
 ```
 
 Optional flags:
 - `--root <dir>` — root directory to scan (default: `~/work`)
 - `--dry-run` — preview only, no files pushed
-
-Output example:
-```
-[sync-push-all] Found 11 projects under /Users/user/work
-
-  → xm (/Users/user/work/project/agentic/xm:kit)
-  → biz-skills (/Users/user/work/project/agentic/biz-skills)
-  ...
-
-[x-sync push] 66 files from xm (macbook-a1b2)
-[x-sync push] accepted: 12, skipped: 54
-...
-
-[sync-push-all] Done — 11 pushed, 0 failed
-```
 
 ---
 
@@ -246,7 +211,7 @@ Output example:
 Pull .xm/ data for all local projects from the sync server.
 
 ```bash
-node xm/lib/x-sync/sync-pull-all.mjs
+xm sync pull-all
 ```
 
 Optional flags:
@@ -260,38 +225,27 @@ Optional flags:
 Show sync configuration and last sync state.
 
 ```bash
-echo "=== Sync Config ==="
-cat ~/.xm/sync.json 2>/dev/null || echo "Not configured"
-echo ""
-echo "=== Sync State ==="
-cat .xm/.sync-state.json 2>/dev/null || echo "No sync history"
-echo ""
-echo "=== Server ==="
-if [ -f /tmp/x-sync-server.pid ] && kill -0 $(cat /tmp/x-sync-server.pid) 2>/dev/null; then
-  echo "Running (PID: $(cat /tmp/x-sync-server.pid))"
-  curl -s http://localhost:19842/dashboard/health 2>/dev/null
-else
-  echo "Not running locally"
-fi
+xm sync status
 ```
 
-Output format:
+`sync-status.mjs` prints config (API key masked), the resolved `.xm/` path and project id, last pull/push details, and a remote health check. Output format:
 ```
 x-sync Status
 
-  Config:     ~/.xm/sync.json
-  Server URL: http://my-server:19842
-  Machine ID: macbook-a1b2
-  API Key:    ****configured****
+  Config:        ~/.xm/sync.json
+  Server URL:    http://my-server:19842
+  Machine ID:    macbook-a1b2
+  API Key:       ****configured****
 
-  Last Pull:  2026-04-06T10:30:00Z
-  Server:     Not running locally
+  Last Pull:     2026-04-06T10:30:00Z
+  Last Push:     2026-04-06T10:25:00Z
+  Server:        ✅ Remote healthy
 
   Quick commands:
-    /xm:sync setup          Configure sync credentials
-    /xm:sync server start   Start local server
-    /xm:sync push           Push .xm/ to server
-    /xm:sync pull           Pull from server
+    xm sync setup          Configure sync credentials
+    xm sync server start   Start local server
+    xm sync push           Push .xm/ to server
+    xm sync pull           Pull from server
 ```
 
 ## Common Rationalizations
@@ -303,3 +257,4 @@ x-sync Status
 | "I'll pull and deal with conflicts later" | Later is now. Unresolved sync state compounds silently across machines — the longer you wait, the more places it can be wrong. |
 | "Small changes don't need sync" | Small changes across machines are exactly when drift starts. Sync is cheap; unwinding drift is expensive. |
 | "Setup is a one-time thing, I'll skip verifying" | Setup drift across machines is the most common sync failure. Verify setup before you trust pull/push — five seconds up front, hours saved later. |
+| "I'll start the server without an API key, it's just my LAN" | An open server accepts pushes (and arbitrary writes) from anyone who can reach the port. Set `XM_SYNC_API_KEY` before binding to anything but localhost. |

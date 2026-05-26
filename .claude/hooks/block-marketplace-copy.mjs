@@ -23,6 +23,7 @@ const PLUGINS_WITH_SOURCE_SKILL = new Set([
   'x-probe',
   'x-review',
   'x-solver',
+  'x-sync',
   'x-trace',
 ]);
 
@@ -36,15 +37,6 @@ const X_BUILD_LIB_FILES = new Set([
   'verify.mjs',
   'export.mjs',
   'misc.mjs',
-]);
-
-// x-sync lib files copied into xm/lib/x-sync/. Keep in sync with sync-bundle.sh.
-const X_SYNC_LIB_FILES = new Set([
-  'sync-config.mjs',
-  'sync-pull.mjs',
-  'sync-pull-all.mjs',
-  'sync-push.mjs',
-  'sync-push-all.mjs',
 ]);
 
 // x-trace lib files copied into xm/lib/x-trace/. Keep in sync with sync-bundle.sh.
@@ -82,10 +74,15 @@ function findSourcePath(rel) {
     return `x-build/lib/x-build/${libMatch[1]}`;
   }
 
-  // xm/lib/x-sync/<file>.mjs
+  // xm/lib/x-sync/<file>.mjs — whole dir is mirrored by sync-bundle.sh, so protect all.
   const syncMatch = rel.match(/^xm\/lib\/x-sync\/([^/]+\.mjs)$/);
-  if (syncMatch && X_SYNC_LIB_FILES.has(syncMatch[1])) {
+  if (syncMatch) {
     return `x-sync/lib/x-sync/${syncMatch[1]}`;
+  }
+
+  // xm/lib/x-sync-server.mjs (server entry copied by sync-bundle.sh)
+  if (rel === 'xm/lib/x-sync-server.mjs') {
+    return 'x-sync/lib/x-sync-server.mjs';
   }
 
   // xm/lib/x-trace/<file>.mjs

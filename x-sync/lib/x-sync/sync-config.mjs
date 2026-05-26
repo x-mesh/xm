@@ -1,7 +1,7 @@
 /**
  * sync-config.mjs — Sync configuration for xm cross-machine sync
  */
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, hostname } from 'node:os';
 import { randomBytes } from 'node:crypto';
@@ -43,6 +43,8 @@ export function writeSyncConfig(config) {
   const dir = join(homedir(), '.xm');
   mkdirSync(dir, { recursive: true });
   writeFileSync(SYNC_CONFIG_PATH, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  // Contains the API key in plaintext — restrict to the owner only.
+  try { chmodSync(SYNC_CONFIG_PATH, 0o600); } catch {}
 }
 
 /** Get machine_id (auto-generates if needed) */
