@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-1.26.17-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.3.9-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-12-orange" alt="Plugins" /></a>
@@ -36,7 +36,7 @@
 - [Install](#install)
 - [Quick Start](#quick-start)
 - [Why xm?](#why-xm)
-- [Plugins](#plugins) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-ship](#x-ship) · [x-humanize](#x-humanize)
+- [Plugins](#plugins) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-humanize](#x-humanize)
 - [Quality & Learning Pipeline](#quality--learning-pipeline)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
@@ -107,7 +107,7 @@ bash xm/scripts/install.sh
 curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/xm/scripts/install.sh | bash
 ```
 
-The installer writes `~/.local/bin/xm` (override with `XM_BIN_DIR`; ensure it is on your `PATH`) and, when the `claude` CLI is on `PATH`, also runs `claude plugin install <p>@xm -s user` for every plugin in `marketplace.json` (x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-dashboard, xm). Run `/reload-plugins` inside Claude Code afterward to activate them. If `claude` is not on `PATH`, the CLI wrapper alone is installed and the plugin list is printed for manual install.
+The installer writes `~/.local/bin/xm` (override with `XM_BIN_DIR`; ensure it is on your `PATH`) and, when the `claude` CLI is on `PATH`, also runs `claude plugin install <p>@xm -s user` for every plugin in `marketplace.json` (x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-humanize, x-dashboard, xm). Run `/reload-plugins` inside Claude Code afterward to activate them. If `claude` is not on `PATH`, the CLI wrapper alone is installed and the plugin list is printed for manual install.
 
 #### Global hook install (`xm init`)
 
@@ -372,10 +372,11 @@ Common reference material lives in `references/` (synced to marketplace as `xm/r
 | [x-agent](#x-agent) | Agent primitives & teams | `/xm:agent fan-out "task"` |
 | [x-trace](#x-trace) | Execution tracing & cost | `/xm:trace timeline` |
 | [x-memory](#x-memory) | Cross-session memory | `/xm:memory inject` |
-| [x-sync](#x-sync) | Multi-machine .xm/ sync | `xm sync push` |
-| [x-ship](#x-ship) | Release automation & squash | `/xm:ship auto` |
-| [x-humanize](#x-humanize) | Remove AI writing patterns | `/xm:humanize audit text` |
+| [x-dashboard](#x-dashboard) | Web dashboard for .xm state | `/xm:dashboard start` |
+| [x-humanize](#x-humanize) | Remove AI writing patterns (v0.3.2, pre-stable) | `/xm:humanize audit text` |
 | xm | Bundle + config + pipeline | `/xm pipeline release` |
+
+**Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `x-sync` multi-machine sync server — see [x-ship](#x-ship) and [x-sync](#x-sync) below.
 
 ---
 
@@ -1018,7 +1019,7 @@ xm/                              Marketplace repo
 ├── x-memory/                       Cross-session memory
 ├── x-sync/                         Multi-machine .xm/ sync server
 ├── xm/                          Bundle (all skills) + shared config + server
-└── .claude-plugin/marketplace.json  11 plugins registered
+└── .claude-plugin/marketplace.json  12 plugins + xm core registered
 ```
 
 <details>
