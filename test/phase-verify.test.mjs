@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -644,6 +644,159 @@ describe('handoff', () => {
       const r = run(['handoff', '--restore'], { cwd: tmp });
       expect(r.exitCode).toBe(0);
       expect(r.stdout).toContain('Task A');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── run --json budget gate (regression) ─────────────────────────────
+// Regression for: the --json execution plan (consumed by the skill layer to
+// spawn agents) bypassed the budget gate entirely — only the human-readable
+// path enforced it. A budget below the projected cost must block --json runs
+// too (blocked:true, empty tasks, exit 1), not silently emit a spawnable plan.
+describe('run --json budget gate (regression)', () => {
+  let BUDGET_HOME;
+
+  beforeAll(() => {
+    // Isolated HOME so the developer's global ~/.xm/config.json budget (if any)
+    // cannot perturb these assertions.
+    BUDGET_HOME = mkdtempSync(join(tmpdir(), 'xb-budget-home-'));
+  });
+
+  afterAll(() => {
+    rmSync(BUDGET_HOME, { recursive: true, force: true });
+  });
+
+  function driveToExecute(tmp) {
+    const env = { HOME: BUDGET_HOME };
+    const name = setupProject(tmp);
+    run(['tasks', 'add', 'Build feature A'], { cwd: tmp, env });
+    run(['tasks', 'add', 'Write tests B'], { cwd: tmp, env });
+    writePRD(tmp, name);
+    run(['phase', 'set', 'execute'], { cwd: tmp, env });
+    run(['steps', 'compute'], { cwd: tmp, env });
+    return name;
+  }
+
+  function writeBudget(tmp, maxUsd) {
+    const dir = join(tmp, '.xm');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ budget: { max_usd: maxUsd } }, null, 2));
+  }
+
+  test('emits a spawnable plan when no budget is configured', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      driveToExecute(tmp);
+      const r = run(['run', '--json'], { cwd: tmp, env: { HOME: BUDGET_HOME } });
+      expect(r.exitCode).toBe(0);
+      const out = JSON.parse(r.stdout);
+      expect(out.tasks.length).toBeGreaterThan(0);
+      expect(typeof out.estimated_cost_usd).toBe('number');
+      expect(out.blocked).toBeUndefined();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('blocks the --json plan when projected cost exceeds budget', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      driveToExecute(tmp);
+      writeBudget(tmp, 0.0001); // far below any real task cost
+      const r = run(['run', '--json'], { cwd: tmp, env: { HOME: BUDGET_HOME } });
+      const out = JSON.parse(r.stdout);
+      expect(out.blocked).toBe(true);
+      expect(out.blocked_reason).toBe('budget_exceeded');
+      expect(out.tasks).toEqual([]);
+      expect(out.budget.level).toBe('exceeded');
+      expect(r.exitCode).toBe(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── cost: actual-token ingestion + profile-aware --json (regression) ─
+// Regression for two audit findings:
+//  - cost "actuals" were circular: estimates were recorded then averaged back
+//    as "actuals". Real token counts must record cost_source:'actual'.
+//  - run --json emitted models from a hardcoded map that ignored model_profile,
+//    so the actual spawn path bypassed cost routing.
+describe('cost: actual-token ingestion + profile-aware --json (regression)', () => {
+  let CHOME;
+
+  beforeAll(() => { CHOME = mkdtempSync(join(tmpdir(), 'xb-cost-home-')); });
+  afterAll(() => { rmSync(CHOME, { recursive: true, force: true }); });
+
+  function readMetrics(tmp) {
+    const f = join(tmp, '.xm', 'build', 'metrics', 'sessions.jsonl');
+    return readFileSync(f, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  }
+
+  function driveToExecute(tmp) {
+    const env = { HOME: CHOME };
+    const name = setupProject(tmp);
+    run(['tasks', 'add', 'Build feature A'], { cwd: tmp, env });
+    run(['tasks', 'add', 'Write tests B'], { cwd: tmp, env });
+    writePRD(tmp, name);
+    run(['phase', 'set', 'execute'], { cwd: tmp, env });
+    run(['steps', 'compute'], { cwd: tmp, env });
+    return name;
+  }
+
+  test('--tokens-in/--tokens-out records measured cost tagged actual', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const env = { HOME: CHOME };
+      setupProject(tmp);
+      run(['tasks', 'add', 'Build feature A'], { cwd: tmp, env });
+      run(['tasks', 'update', 't1', '--status', 'running'], { cwd: tmp, env });
+      run(['tasks', 'update', 't1', '--status', 'completed', '--tokens-in', '120000', '--tokens-out', '45000', '--no-commit'], { cwd: tmp, env });
+
+      const m = readMetrics(tmp).reverse().find((x) => x.type === 'task_complete' && x.taskId === 't1');
+      expect(m).toBeTruthy();
+      expect(m.cost_source).toBe('actual');
+      expect(m.tokens_in).toBe(120000);
+      expect(m.tokens_out).toBe(45000);
+      expect(m.actual_cost_usd).toBeGreaterThan(0);
+      expect(m.cost_usd).toBe(m.actual_cost_usd);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('completion without tokens is tagged estimated (excluded from actuals)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const env = { HOME: CHOME };
+      setupProject(tmp);
+      run(['tasks', 'add', 'Build feature A'], { cwd: tmp, env });
+      run(['tasks', 'update', 't1', '--status', 'running'], { cwd: tmp, env });
+      run(['tasks', 'update', 't1', '--status', 'completed', '--no-commit'], { cwd: tmp, env });
+
+      const m = readMetrics(tmp).reverse().find((x) => x.type === 'task_complete' && x.taskId === 't1');
+      expect(m.cost_source).toBe('estimated');
+      expect(m.actual_cost_usd).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('run --json honors model_profile (economy → sonnet, default → opus)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      driveToExecute(tmp);
+      const cfgPath = join(tmp, '.xm', 'config.json');
+
+      writeFileSync(cfgPath, JSON.stringify({ model_profile: 'economy' }));
+      const eco = JSON.parse(run(['run', '--json'], { cwd: tmp, env: { HOME: CHOME } }).stdout);
+      expect(eco.tasks.find((t) => t.role === 'executor').model).toBe('sonnet');
+
+      writeFileSync(cfgPath, JSON.stringify({ model_profile: 'default' }));
+      const def = JSON.parse(run(['run', '--json'], { cwd: tmp, env: { HOME: CHOME } }).stdout);
+      expect(def.tasks.find((t) => t.role === 'executor').model).toBe('opus');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

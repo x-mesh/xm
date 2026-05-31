@@ -448,6 +448,41 @@ describe('computeTokenActuals — averages from metrics', () => {
     expect(typeof result.updated_at).toBe('string');
     expect(() => new Date(result.updated_at)).not.toThrow();
   });
+
+  test('estimated samples (cost_source:estimated) are excluded — breaks circular loop', () => {
+    const ts = new Date().toISOString();
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.10, size: 'small', cost_source: 'estimated', timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.20, size: 'small', cost_source: 'actual',    timestamp: ts },
+    );
+    const result = ce.computeTokenActuals();
+    // Only the measured ('actual') sample feeds actuals; the estimate is ignored,
+    // so estimates can never recycle back as "actuals".
+    expect(result.sample_counts.small).toBe(1);
+    expect(result.estimates.small.avg_cost_usd).toBeCloseTo(0.20, 5);
+  });
+
+  test('legacy untagged samples remain counted (backward compatible)', () => {
+    const ts = new Date().toISOString();
+    appendLines({ type: 'task_complete', cost_usd: 0.30, size: 'medium', timestamp: ts });
+    const result = ce.computeTokenActuals();
+    expect(result.sample_counts.medium).toBe(1);
+  });
+});
+
+// ── costFromTokens — measured cost ────────────────────────────────────────────
+
+describe('costFromTokens — measured cost', () => {
+  test('sonnet pricing: 1M in @$3 + 0.5M out @$15 = $10.50', () => {
+    expect(ce.costFromTokens('sonnet', 1_000_000, 500_000)).toBeCloseTo(10.5, 6);
+  });
+  test('opus pricing: 100k in @$15 + 50k out @$75 = $5.25', () => {
+    expect(ce.costFromTokens('opus', 100_000, 50_000)).toBeCloseTo(5.25, 6);
+  });
+  test('unknown model falls back to sonnet; negative tokens clamp to 0', () => {
+    expect(ce.costFromTokens('zzz', 1_000_000, 0)).toBeCloseTo(3, 6);
+    expect(ce.costFromTokens('sonnet', -5, -5)).toBe(0);
+  });
 });
 
 // ── 12. checkBudget — 80% boundary precision ──────────────────────────────────

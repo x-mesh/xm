@@ -127,6 +127,18 @@ export const MODEL_COSTS = {
   'opus':   { input: 15.00, output: 75.00 },
 };
 
+// Real cost (USD) from measured token counts. Use when actual usage is known —
+// unlike estimateTaskCost(), which projects from size heuristics. Feeding the
+// result back into the metrics stream (tagged cost_source:'actual') is what
+// lets computeTokenActuals() learn from ground truth instead of recycling its
+// own estimates.
+export function costFromTokens(model, inputTokens, outputTokens) {
+  const costs = MODEL_COSTS[model] || MODEL_COSTS.sonnet;
+  const i = Math.max(0, Number(inputTokens) || 0);
+  const o = Math.max(0, Number(outputTokens) || 0);
+  return (i / 1_000_000) * costs.input + (o / 1_000_000) * costs.output;
+}
+
 // ── SIZE_TOKEN_ESTIMATES ──────────────────────────────────────────────
 
 export const SIZE_TOKEN_ESTIMATES = {
@@ -282,7 +294,12 @@ export function computeTokenActuals() {
     for (const line of lines) {
       try {
         const m = JSON.parse(line);
-        if (m.type === 'task_complete' && typeof m.cost_usd === 'number' && m.size && groups[m.size]) {
+        // Exclude estimated samples — only token-measured ('actual') or legacy
+        // untagged costs feed actuals. Newly-recorded estimates carry
+        // cost_source:'estimated' and must never recycle back as "actuals":
+        // that loop was circular (estimate → metric → average → reused as actual).
+        if (m.type === 'task_complete' && m.cost_source !== 'estimated'
+            && typeof m.cost_usd === 'number' && m.size && groups[m.size]) {
           groups[m.size].push(m.cost_usd);
         }
       } catch { /* skip malformed */ }

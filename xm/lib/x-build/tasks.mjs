@@ -9,7 +9,7 @@ import {
   manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, decisionsPath, projectDir,
   resolveProject, logDecision, addDecision, appendMetric, emitHook,
   parseOptions, renderBar, fmtDuration,
-  estimateTaskCost,
+  estimateTaskCost, costFromTokens,
   gitAutoCommit, gitRollbackTask,
   updateCircuitBreaker, isCircuitOpen, beginHalfOpenProbe, scheduleRetry,
   getCircuitState, resetCircuitBreaker,
@@ -318,6 +318,7 @@ export function taskUpdate(project, args) {
 
   if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined)) {
     console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed> [--no-commit]');
+    console.error('       x-build tasks update <task-id> --status completed --tokens-in <n> --tokens-out <n>  (record actual cost)');
     console.error('       x-build tasks update <task-id> --score <number>');
     console.error('       x-build tasks update <task-id> --done-criteria "criteria text"');
     console.error('       x-build tasks update <task-id> --deps t1,t2  (replace dependency list; pass empty string to clear)');
@@ -401,6 +402,24 @@ export function taskUpdate(project, args) {
     return;
   }
 
+  // Actual token usage (optional). When the orchestrator reports real counts
+  // via --tokens-in/--tokens-out, record the measured cost tagged
+  // cost_source:'actual' so computeTokenActuals() learns from ground truth.
+  // Without them the metric falls back to the estimate (cost_source:'estimated'),
+  // which is excluded from actuals to avoid the circular estimate→actual loop.
+  const _tokensIn = opts['tokens-in'] != null ? Number(opts['tokens-in']) : NaN;
+  const _tokensOut = opts['tokens-out'] != null ? Number(opts['tokens-out']) : NaN;
+  const _hasActuals = Number.isFinite(_tokensIn) && Number.isFinite(_tokensOut) && _tokensIn >= 0 && _tokensOut >= 0;
+  const _metricModel = taskRef._assigned_model || 'sonnet';
+  const _actualCost = _hasActuals ? costFromTokens(_metricModel, _tokensIn, _tokensOut) : null;
+  const _costFields = {
+    cost_usd: _hasActuals ? _actualCost : (taskRef._estimated_cost || 0),
+    cost_source: _hasActuals ? 'actual' : 'estimated',
+    actual_cost_usd: _actualCost,
+    tokens_in: _hasActuals ? _tokensIn : null,
+    tokens_out: _hasActuals ? _tokensOut : null,
+  };
+
   emitHook('task:post-update', { project, taskId: id, from: oldStatus, to: newStatus });
 
   if (newStatus === TASK_STATES.COMPLETED) {
@@ -424,7 +443,7 @@ export function taskUpdate(project, args) {
         model: taskRef._assigned_model || 'sonnet',
         size: taskRef.size || 'medium',
         strategy: taskRef.strategy || null,
-        cost_usd: taskRef._estimated_cost || 0,
+        ..._costFields,
         quality_score: taskRef.score != null ? taskRef.score : 1,
         success: true,
         retry_count: taskRef.retry_count || 0,
@@ -469,7 +488,7 @@ export function taskUpdate(project, args) {
         model: taskRef._assigned_model || 'sonnet',
         size: taskRef.size || 'medium',
         strategy: taskRef.strategy || null,
-        cost_usd: taskRef._estimated_cost || 0,
+        ..._costFields,
         quality_score: taskRef.score != null ? taskRef.score : 0,
         success: false,
         retry_count: taskRef.retry_count || 0,
@@ -955,15 +974,26 @@ export function cmdRun(args) {
       ).join('\n')
     : '';
 
+  // Cost + budget enforcement applies to BOTH the human-readable and --json
+  // paths. The skill layer consumes --json to spawn agents, so the budget gate
+  // must run here too — it previously guarded only the human path, letting
+  // --json runs bypass the configured budget entirely.
+  const sharedCfg = loadSharedConfig();
+  const cost = readyTasks.reduce((sum, t) => {
+    const role = t.role || (t.size === 'large' ? 'deep-executor' : 'executor');
+    const model = getModelForRole(role, t.size, sharedCfg);
+    return sum + estimateTaskCost(t, model).cost_usd;
+  }, 0);
+  const budgetStatus = checkBudget(cost);
+  const budgetExceeded = !!(budgetStatus.budget && budgetStatus.level === 'exceeded');
+
   if (opts.json) {
-    const ROLE_MODEL_MAP = {
-      architect: 'opus', reviewer: 'opus', security: 'opus',
-      executor: 'sonnet', designer: 'sonnet', debugger: 'sonnet',
-      explorer: 'haiku', writer: 'haiku',
-    };
     const plan = readyTasks.map(task => {
       const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
-      const model = ROLE_MODEL_MAP[role] || (task.size === 'large' ? 'opus' : 'sonnet');
+      // Profile-aware model (economy/default/max). Previously a hardcoded map
+      // that ignored model_profile, so the --json spawn path bypassed cost
+      // routing while the human-readable path honored it.
+      const model = getModelForRole(role, task.size, sharedCfg);
       const entry = {
         task_id: task.id,
         task_name: task.name,
@@ -993,28 +1023,35 @@ export function cmdRun(args) {
       project,
       step: currentStep.id,
       total_steps: stepData.steps.length,
-      tasks: plan,
-      parallel: readyTasks.length > 1,
+      tasks: budgetExceeded ? [] : plan,
+      parallel: !budgetExceeded && readyTasks.length > 1,
+      estimated_cost_usd: Number(cost.toFixed(4)),
     };
+    if (budgetStatus.budget) {
+      output.budget = {
+        level: budgetStatus.level,
+        projected_usd: Number(budgetStatus.projected.toFixed(4)),
+        max_usd: budgetStatus.budget,
+        pct: Number(budgetStatus.pct.toFixed(1)),
+      };
+    }
+    if (budgetExceeded) {
+      output.blocked = true;
+      output.blocked_reason = 'budget_exceeded';
+      process.exitCode = 1;
+    }
 
     console.log(JSON.stringify(output, null, 2));
     return;
   }
 
-  // Human-readable output
+  // Human-readable output (sharedCfg / cost / budgetStatus computed above).
   console.log(`\n${C.bold}🚀 Execution Plan — Step ${currentStep.id}/${stepData.steps.length}${C.reset}\n`);
 
-  const sharedCfg = loadSharedConfig();
-  const cost = readyTasks.reduce((sum, t) => {
-    const role = t.role || (t.size === 'large' ? 'deep-executor' : 'executor');
-    const model = getModelForRole(role, t.size, sharedCfg);
-    return sum + estimateTaskCost(t, model).cost_usd;
-  }, 0);
   console.log(`  Tasks: ${readyTasks.length} (${readyTasks.length > 1 ? 'parallel' : 'sequential'})`);
   console.log(`  Estimated cost: ${C.yellow}$${cost.toFixed(3)}${C.reset}`);
 
-  // Budget check before execution
-  const budgetStatus = checkBudget(cost);
+  // Budget check before execution (budgetStatus computed above, shared with --json).
   if (budgetStatus.budget) {
     if (budgetStatus.level === 'exceeded') {
       console.log(`  ${C.red}Budget exceeded: $${budgetStatus.projected.toFixed(2)} / $${budgetStatus.budget} (${budgetStatus.pct.toFixed(0)}%)${C.reset}`);
