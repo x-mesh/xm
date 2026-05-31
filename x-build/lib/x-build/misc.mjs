@@ -176,6 +176,27 @@ export function cmdMetrics(args) {
       console.log(`  ${tasksPerHour} tasks/hour`);
     }
     console.log('');
+
+    // Cost — read the cost fields already on each task_complete event. The
+    // actual-vs-estimated coverage line is the unique diagnostic: it tells you
+    // whether real token costs are flowing in (stays 0% until per-agent usage
+    // capture is available) instead of silently trusting estimates.
+    const withCost = tasks.filter(t => typeof t.cost_usd === 'number');
+    if (withCost.length > 0) {
+      const total = withCost.reduce((a, t) => a + t.cost_usd, 0);
+      const actualN = tasks.filter(t => t.cost_source === 'actual').length;
+      const pct = Math.round((actualN / tasks.length) * 100);
+      console.log(`${C.bold}Cost:${C.reset}`);
+      console.log(`  Total: $${total.toFixed(3)}  (avg $${(total / withCost.length).toFixed(3)}/task)`);
+      const byModel = {};
+      for (const t of withCost) byModel[t.model || 'unknown'] = (byModel[t.model || 'unknown'] || 0) + t.cost_usd;
+      for (const [m, c] of Object.entries(byModel).sort((a, b) => b[1] - a[1])) {
+        console.log(`    ${m.padEnd(8)} $${c.toFixed(3)}`);
+      }
+      console.log(`  Coverage: ${actualN}/${tasks.length} measured (actual), ${tasks.length - actualN} estimated  (${pct}% actual)`);
+      if (actualN === 0) console.log(`  ${C.dim}0% actual — costs are estimates; per-agent token capture is not exposed in-session${C.reset}`);
+      console.log('');
+    }
   }
 }
 
