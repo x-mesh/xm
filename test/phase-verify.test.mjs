@@ -785,18 +785,39 @@ describe('cost: actual-token ingestion + profile-aware --json (regression)', () 
   });
 
   test('run --json honors model_profile (economy → sonnet, default → opus)', () => {
+    // A fresh project per profile: run --json now marks tasks RUNNING (keystone),
+    // so a second run --json on the same project finds nothing ready — each
+    // profile must be checked on its own first run.
+    for (const [profile, expected] of [['economy', 'sonnet'], ['default', 'opus']]) {
+      const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+      try {
+        driveToExecute(tmp);
+        writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({ model_profile: profile }));
+        const out = JSON.parse(run(['run', '--json'], { cwd: tmp, env: { HOME: CHOME } }).stdout);
+        expect(out.tasks.find((t) => t.role === 'executor').model).toBe(expected);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('keystone: run --json marks RUNNING so completion records a metric with the plan model', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
+      const env = { HOME: CHOME };
       driveToExecute(tmp);
-      const cfgPath = join(tmp, '.xm', 'config.json');
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({ model_profile: 'default' })); // executor -> opus
+      const plan = JSON.parse(run(['run', '--json'], { cwd: tmp, env }).stdout);
+      expect(plan.tasks.find((t) => t.task_id === 't1').model).toBe('opus');
 
-      writeFileSync(cfgPath, JSON.stringify({ model_profile: 'economy' }));
-      const eco = JSON.parse(run(['run', '--json'], { cwd: tmp, env: { HOME: CHOME } }).stdout);
-      expect(eco.tasks.find((t) => t.role === 'executor').model).toBe('sonnet');
-
-      writeFileSync(cfgPath, JSON.stringify({ model_profile: 'default' }));
-      const def = JSON.parse(run(['run', '--json'], { cwd: tmp, env: { HOME: CHOME } }).stdout);
-      expect(def.tasks.find((t) => t.role === 'executor').model).toBe('opus');
+      // Complete via the json-driven path; before the keystone this recorded
+      // no metric (started_at unset) or model='sonnet' (_assigned_model unset).
+      run(['tasks', 'update', 't1', '--status', 'completed', '--no-commit'], { cwd: tmp, env });
+      const m = readMetrics(tmp).reverse().find((x) => x.type === 'task_complete' && x.taskId === 't1');
+      expect(m).toBeTruthy();
+      expect(m.model).toBe('opus');
+      expect(m.routing_decision_id).toBeTruthy();
+      expect(m.correlation_id).toBe(m.routing_decision_id); // persisted by marking, not freshly generated
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
