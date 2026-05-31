@@ -736,22 +736,39 @@ export function resetCircuitBreaker(project) {
   return cb;
 }
 
-export function scheduleRetry(project, task, data) {
+// Persists the retry decision for task `id` to disk via its own atomic
+// modifyJSON. Returns { scheduled, retry_count }. NOTE: takes the task id, not
+// a task object — a previous signature accepted (task, data) where callers
+// passed a task object aliased to a *different* data object than the one
+// written, so retry_count/status/next_retry_at never reached disk and the
+// retry feature was a silent no-op (cmdRun only re-picks PENDING/READY tasks).
+export function scheduleRetry(project, id) {
   const cfg = getRetryConfig();
-  task.retry_count = (task.retry_count || 0) + 1;
+  const result = { scheduled: false, retry_count: 0 };
 
-  if (task.retry_count > cfg.max_retries) {
-    console.log(`  ${C.red}🚫 Max retries (${cfg.max_retries}) exhausted for ${task.id}.${C.reset}`);
-    return false;
-  }
+  modifyJSON(tasksPath(project), (data) => {
+    if (!data?.tasks) return data;
+    const task = data.tasks.find((t) => t.id === id);
+    if (!task) return data;
 
-  const delay = computeRetryDelay(task.retry_count - 1, cfg);
-  task.status = TASK_STATES.PENDING;
-  task.next_retry_at = new Date(Date.now() + delay).toISOString();
+    const next = (task.retry_count || 0) + 1;
+    if (next > cfg.max_retries) {
+      result.retry_count = task.retry_count || 0;
+      console.log(`  ${C.red}🚫 Max retries (${cfg.max_retries}) exhausted for ${id}.${C.reset}`);
+      return data; // leave status as-is (stays FAILED) — do not reschedule
+    }
 
-  writeJSON(tasksPath(project), data);
-  console.log(`  ${C.yellow}🔄 Retry ${task.retry_count}/${cfg.max_retries} scheduled in ${fmtDuration(delay)}${C.reset}`);
-  return true;
+    const delay = computeRetryDelay(next - 1, cfg);
+    task.retry_count = next;
+    task.status = TASK_STATES.PENDING;
+    task.next_retry_at = new Date(Date.now() + delay).toISOString();
+    result.scheduled = true;
+    result.retry_count = next;
+    console.log(`  ${C.yellow}🔄 Retry ${next}/${cfg.max_retries} scheduled in ${fmtDuration(delay)}${C.reset}`);
+    return data;
+  });
+
+  return result;
 }
 
 
