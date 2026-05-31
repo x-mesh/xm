@@ -861,3 +861,65 @@ describe('cost: actual-token ingestion + profile-aware --json (regression)', () 
     }
   });
 });
+
+// ── prd-check + plan-exit gate (regression) ──────────────────────────
+// Deterministic PRD gate keyed to the template's own rule: unresolved
+// [A*, low] assumptions or unanswered "Status: blocking" questions block
+// entry to Execute. Verifies precise detection (no false positives on the
+// template's "blocking | answered" menu) and the --force override.
+describe('prd-check + plan-exit gate (regression)', () => {
+  let H;
+  beforeAll(() => { H = mkdtempSync(join(tmpdir(), 'xb-prd-home-')); });
+  afterAll(() => { rmSync(H, { recursive: true, force: true }); });
+
+  function writePrd(tmp, name, body) {
+    const dir = join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'PRD.md'), body);
+  }
+
+  test('passes on a clean PRD', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, '# PRD\n\n## 0. Assumptions & Open Questions\n- [A1, high] safe to proceed\n\n## 12. Acceptance Criteria\n- works\n');
+      const r = run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } });
+      expect(r.exitCode).toBe(0);
+      expect(JSON.parse(r.stdout).blocked).toBe(false);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test('blocks on low-confidence assumption and unanswered blocking question', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, '# PRD\n\n## 0. Assumptions\n- [A3, low] auth supports refresh tokens\n- [Q1] ambiguous behavior → Status: blocking\n\n## 12. Acceptance Criteria\n- x\n');
+      const r = run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } });
+      const out = JSON.parse(r.stdout);
+      expect(out.blocked).toBe(true);
+      expect(out.blocking.length).toBe(2);
+      expect(r.exitCode).toBe(1);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test('answered question and the template "blocking | answered" menu are not flagged', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, '# PRD\n\n## 0. Assumptions\n- [A1, high] ok\n- [Q1] resolved → Status: answered\n- [Q2] menu → Status: blocking | answered\n');
+      expect(JSON.parse(run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } }).stdout).blocked).toBe(false);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test('phase set execute is gated by a blocking PRD; --force overrides', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, '# PRD\n\n## 0. Assumptions\n- [A3, low] risky unresolved assumption\n');
+      run(['phase', 'set', 'execute'], { cwd: tmp, env: { HOME: H } });
+      expect(readJSON(projectPath(tmp, name, 'manifest.json')).current_phase).not.toBe('03-execute');
+      run(['phase', 'set', 'execute', '--force'], { cwd: tmp, env: { HOME: H } });
+      expect(readJSON(projectPath(tmp, name, 'manifest.json')).current_phase).toBe('03-execute');
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+});

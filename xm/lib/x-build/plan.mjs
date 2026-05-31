@@ -82,6 +82,56 @@ export function cmdPlan(args) {
 
 // ── cmdPlanCheck ────────────────────────────────────────────────────
 
+// Deterministic PRD structural check keyed to the PRD template's own Gate rule
+// (references/prd-template.md:23): "If any [A*, low] or Q* status: blocking
+// remains unresolved, Plan phase MUST halt." Only these unambiguous markers
+// block; missing top-level sections are warnings. Pure function over PRD text.
+export function prdBlockingFindings(prdText) {
+  const blocking = [];
+  const warnings = [];
+  if (!prdText) return { blocking, warnings };
+
+  for (const raw of prdText.split('\n')) {
+    const line = raw.trim();
+    if (/\[A\d+,\s*low\]/i.test(line)) {
+      blocking.push(`Low-confidence assumption unresolved — ${line.slice(0, 120)}`);
+    }
+    // "→ Status: blocking | answered" is the template's unfilled menu — only a
+    // genuinely-unresolved "blocking" (without "answered") blocks.
+    if (/status:\s*blocking/i.test(line) && !/answered/i.test(line)) {
+      blocking.push(`Open question still blocking — ${line.slice(0, 120)}`);
+    }
+  }
+  if (!/^##\s*0\.\s*Assumptions/im.test(prdText)) warnings.push('Section 0 (Assumptions & Open Questions) is missing');
+  if (!/^##\s*12\.\s*Acceptance Criteria/im.test(prdText)) warnings.push('Section 12 (Acceptance Criteria) is missing');
+  return { blocking, warnings };
+}
+
+export function cmdPrdCheck(args) {
+  const project = resolveProject(null);
+  const json = args.includes('--json');
+  const prd = readMD(prdPath(project));
+
+  if (!prd) {
+    if (json) console.log(JSON.stringify({ project, exists: false, blocked: true, blocking: ['PRD not found'], warnings: [] }, null, 2));
+    else console.error('❌ No PRD found. Run: /xm:build plan');
+    exitFail(1);
+    return;
+  }
+
+  const { blocking, warnings } = prdBlockingFindings(prd);
+  if (json) {
+    console.log(JSON.stringify({ project, exists: true, blocked: blocking.length > 0, blocking, warnings }, null, 2));
+  } else {
+    console.log(`\n${C.bold}📋 PRD Check${C.reset}\n`);
+    if (!blocking.length && !warnings.length) console.log(`  ${C.green}✓ No blocking items or structural gaps.${C.reset}`);
+    for (const b of blocking) console.log(`  ${C.red}✗ ${b}${C.reset}`);
+    for (const w of warnings) console.log(`  ${C.yellow}⚠ ${w}${C.reset}`);
+    console.log('');
+  }
+  if (blocking.length) exitFail(1);
+}
+
 export function cmdPlanCheck(args) {
   const strict = args.includes('--strict');
   const project = resolveProject(null);

@@ -14,6 +14,7 @@ import {
   runQualityChecks,
   ask, pickMenu, exitFail,
 } from './core.mjs';
+import { prdBlockingFindings } from './plan.mjs';
 
 // ── cmdPhase ────────────────────────────────────────────────────────
 
@@ -256,11 +257,12 @@ function _autoHandoff(project) {
 }
 
 function phaseSet(args) {
-  const phaseName = args[0];
-  const project = resolveProject(args[1], { autoInit: true });
+  const { opts, positional } = parseOptions(args);
+  const phaseName = positional[0];
+  const project = resolveProject(positional[1], { autoInit: true });
 
   if (!phaseName) {
-    console.error('Usage: x-build phase set <phase-name> [project]');
+    console.error('Usage: x-build phase set <phase-name> [project] [--force]');
     exitFail(1);
   }
 
@@ -278,6 +280,19 @@ function phaseSet(args) {
   if (targetIdx >= executeIdx && !existsSync(prdPath(project))) {
     console.error('⚠ PRD not generated yet. Run: /xm:build plan to generate PRD first.');
     return;
+  }
+
+  // Enforce the PRD template's own Gate rule before entering Execute: any
+  // unresolved low-confidence assumption or blocking open question must be
+  // settled first. Override with --force.
+  if (targetIdx >= executeIdx && !opts.force) {
+    const { blocking } = prdBlockingFindings(readMD(prdPath(project)));
+    if (blocking.length) {
+      console.error(`⚠ PRD has ${blocking.length} unresolved blocking item(s) (PRD template Gate rule):`);
+      for (const b of blocking) console.error(`   - ${b}`);
+      console.error('   Resolve them, or override: x-build phase set execute --force');
+      return;
+    }
   }
 
   for (const phase of PHASES) {
