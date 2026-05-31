@@ -874,6 +874,33 @@ function buildAgentPrompt(project, task, briefContent, decisionsContent, { manif
   return lines.join('\n');
 }
 
+// Mark ready tasks RUNNING and stamp routing/cost/start metadata, then persist.
+// Shared by BOTH the human and --json paths: the skill spawns agents from the
+// --json plan, so without marking here a later `tasks update completed` recorded
+// no metric (the appendMetric guard needs started_at) or defaulted the model to
+// sonnet (_assigned_model unset). Idempotent — tasks already RUNNING are skipped
+// so a re-emitted plan does not restart the duration clock. readyTasks are live
+// references into taskData, so the single writeJSON persists their mutations.
+function markTasksRunning(taskData, readyTasks, sharedCfg, project, step) {
+  let marked = 0;
+  for (const task of readyTasks) {
+    if (task.status === TASK_STATES.RUNNING) continue;
+    const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
+    const { model, correlationId } = getModelForRoleWithCorrelation(role, task.size, sharedCfg);
+    task._assigned_model = model;
+    task._routing_decision_id = correlationId;
+    task._estimated_cost = estimateTaskCost(task, model).cost_usd;
+    task.status = TASK_STATES.RUNNING;
+    task.started_at = new Date().toISOString();
+    marked++;
+  }
+  if (marked > 0) {
+    writeJSON(tasksPath(project), taskData);
+    emitHook('task:pre-update', { project, step, tasks: readyTasks.map((t) => t.id) });
+  }
+  return marked;
+}
+
 export function cmdRun(args) {
   const { opts } = parseOptions(args);
   const project = resolveProject(null);
@@ -919,6 +946,10 @@ export function cmdRun(args) {
   }
 
   if (!currentStep) {
+    if (opts.json) {
+      console.log(JSON.stringify({ project, total_steps: stepData.steps.length, tasks: [], status: 'all_done' }, null, 2));
+      return;
+    }
     console.log('✅ All steps completed. Run: x-build phase next');
     return;
   }
@@ -943,6 +974,17 @@ export function cmdRun(args) {
   writeJSON(tasksPath(project), taskData);
 
   if (readyTasks.length === 0) {
+    if (opts.json) {
+      const running = currentStep.tasks
+        .map((id) => taskData.tasks.find((t) => t.id === id))
+        .filter((t) => t && t.status === TASK_STATES.RUNNING)
+        .map((t) => t.id);
+      console.log(JSON.stringify({
+        project, step: currentStep.id, total_steps: stepData.steps.length,
+        tasks: [], status: running.length ? 'in_progress' : 'waiting', running,
+      }, null, 2));
+      return;
+    }
     console.log(`⏳ No ready tasks in Step ${currentStep.id}. Some may be waiting for retries or dependencies.`);
     return;
   }
@@ -990,12 +1032,15 @@ export function cmdRun(args) {
   const budgetExceeded = !!(budgetStatus.budget && budgetStatus.level === 'exceeded');
 
   if (opts.json) {
+    // Mark RUNNING on the spawn path too (skip when over budget — plan is []),
+    // so a later `tasks update completed` records a metric with the right model
+    // and the budget rolling window sees real spend.
+    if (!budgetExceeded) markTasksRunning(taskData, readyTasks, sharedCfg, project, currentStep.id);
     const plan = readyTasks.map(task => {
       const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
-      // Profile-aware model (economy/default/max). Previously a hardcoded map
-      // that ignored model_profile, so the --json spawn path bypassed cost
-      // routing while the human-readable path honored it.
-      const model = getModelForRole(role, task.size, sharedCfg);
+      // Model comes from the same routing call markTasksRunning persisted, so the
+      // emitted plan model == the model recorded on completion (profile-aware).
+      const model = task._assigned_model || getModelForRole(role, task.size, sharedCfg);
       const entry = {
         task_id: task.id,
         task_name: task.name,
@@ -1082,19 +1127,9 @@ export function cmdRun(args) {
   console.log(`${C.dim}  To execute, the /x-build skill will spawn agents for each task.${C.reset}`);
   console.log(`${C.dim}  Or run with --json for machine-readable output.${C.reset}\n`);
 
-  for (const task of readyTasks) {
-    const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
-    const { model, correlationId } = getModelForRoleWithCorrelation(role, task.size, sharedCfg);
-    task._assigned_model = model;
-    task._routing_decision_id = correlationId;
-    task._estimated_cost = estimateTaskCost(task, model).cost_usd;
-    task.status = TASK_STATES.RUNNING;
-    task.started_at = new Date().toISOString();
-  }
-  writeJSON(tasksPath(project), taskData);
-  emitHook('task:pre-update', { project, step: currentStep.id, tasks: readyTasks.map(t => t.id) });
+  const _marked = markTasksRunning(taskData, readyTasks, sharedCfg, project, currentStep.id);
 
-  console.log(`${C.green}✅ ${readyTasks.length} tasks marked as RUNNING.${C.reset}`);
+  console.log(`${C.green}✅ ${_marked} tasks marked as RUNNING.${C.reset}`);
 }
 
 export function cmdRunStatus(args) {
