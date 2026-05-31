@@ -7,7 +7,35 @@
  */
 
 import { cmdSave, cmdShow, cmdList, cmdForget, cmdRecall, cmdInject, cmdExport, cmdImport, cmdStats } from './x-memory/commands.mjs';
-import { createSessionId, sessionStart, sessionEnd } from '../../xm/lib/x-trace/trace-writer.mjs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Locate x-trace/trace-writer.mjs across both bundle and source layouts.
+// Tracing is best-effort observability: when the module cannot be resolved
+// (e.g. the standalone x-memory plugin bundle does not vendor x-trace), fall
+// back to no-ops so every memory command still runs. A static top-level
+// `import '../../xm/lib/x-trace/trace-writer.mjs'` previously crashed the CLI
+// with ERR_MODULE_NOT_FOUND in the versioned plugin-cache layout.
+function findTraceWriter() {
+  const candidates = [
+    join(__dirname, 'x-trace', 'trace-writer.mjs'),                          // xm core bundle (sibling)
+    join(__dirname, '..', '..', 'xm', 'lib', 'x-trace', 'trace-writer.mjs'), // source tree
+  ];
+  for (const p of candidates) if (existsSync(p)) return p;
+  return null;
+}
+
+async function loadTrace() {
+  const path = findTraceWriter();
+  if (!path) {
+    const noop = () => {};
+    return { createSessionId: () => null, sessionStart: noop, sessionEnd: noop };
+  }
+  return import(path);
+}
 
 // Skip top-level execution when imported by xm-server
 if (process.env.XKIT_SERVER !== '1') {
@@ -31,6 +59,7 @@ const [cmd, ...args] = cleanedArgv;
 
 // ── Main Router ─────────────────────────────────────────────────────
 
+const { createSessionId, sessionStart, sessionEnd } = await loadTrace();
 const traceSessionId = createSessionId('x-memory');
 sessionStart(traceSessionId, 'x-memory', { command: args[0] || 'help' });
 const traceStartTime = Date.now();

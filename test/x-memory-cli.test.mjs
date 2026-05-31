@@ -3,7 +3,7 @@
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, cpSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -276,5 +276,67 @@ describe('full flow', () => {
     expect(l2.stdout).toContain('0 memories');
 
     rmSync(freshDir, { recursive: true, force: true });
+  });
+});
+
+// ── plugin-cache layout (regression) ─────────────────────────────────
+// Regression for: x-memory-cli crashed with ERR_MODULE_NOT_FOUND in the
+// installed plugin cache (memory/<ver>/lib/...) because a top-level
+// `import '../../xm/lib/x-trace/trace-writer.mjs'` resolved to a path that
+// only exists in the flat source tree. The flat-path tests above never
+// caught it. Here we copy x-memory/lib into a dir with NO `xm` sibling —
+// faithfully reproducing the versioned-cache layout — and assert the CLI
+// still runs (tracing degrades to no-ops) instead of crashing on import.
+describe('plugin-cache layout (regression)', () => {
+  let CACHE_DIR;
+  let CACHE_CLI;
+
+  beforeAll(() => {
+    CACHE_DIR = mkdtempSync(join(tmpdir(), 'xmem-cache-'));
+    const srcLib = join(import.meta.dirname, '..', 'x-memory', 'lib');
+    const dstLib = join(CACHE_DIR, 'lib');
+    cpSync(srcLib, dstLib, { recursive: true });
+    CACHE_CLI = join(dstLib, 'x-memory-cli.mjs');
+  });
+
+  afterAll(() => {
+    rmSync(CACHE_DIR, { recursive: true, force: true });
+  });
+
+  function runCache(args) {
+    return spawnSync('node', [CACHE_CLI, ...args], {
+      cwd: CACHE_DIR,
+      env: { ...process.env, X_MEMORY_ROOT: join(CACHE_DIR, '.xm', 'memory'), NO_COLOR: '1' },
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+  }
+
+  test('no xm/ sibling exists in the replica (layout is faithful)', () => {
+    expect(existsSync(join(CACHE_DIR, 'xm'))).toBe(false);
+    expect(existsSync(CACHE_CLI)).toBe(true);
+  });
+
+  test('list does not crash on missing x-trace module', () => {
+    const r = runCache(['list']);
+    expect(r.stderr || '').not.toContain('ERR_MODULE_NOT_FOUND');
+    expect(r.status).toBe(0);
+  });
+
+  test('help and stats run without import crash', () => {
+    const h = runCache(['help']);
+    expect(h.stderr || '').not.toContain('ERR_MODULE_NOT_FOUND');
+    expect(h.status).toBe(0);
+
+    const s = runCache(['stats']);
+    expect(s.stderr || '').not.toContain('ERR_MODULE_NOT_FOUND');
+    expect(s.status).toBe(0);
+  });
+
+  test('save still works when tracing is unavailable', () => {
+    const r = runCache(['save', 'Cache Layout Memory', '--type', 'decision', '--why', 'regression guard']);
+    expect(r.stderr || '').not.toContain('ERR_MODULE_NOT_FOUND');
+    expect(r.stdout).toContain('Saved: mem-001');
+    expect(r.status).toBe(0);
   });
 });
