@@ -1189,22 +1189,39 @@ describe('scheduleRetry', () => {
   beforeEach(() => { proj = setupTestProject('retry-test'); });
   afterEach(() => { rmSync(proj.projDir, { recursive: true, force: true }); });
 
-  test('schedules retry and sets next_retry_at', () => {
-    const tasksData = core.readJSON(core.tasksPath(proj.name));
-    const task = tasksData.tasks[1]; // t2 running
-    const result = core.scheduleRetry(proj.name, task, tasksData);
-    expect(result).toBe(true);
-    expect(task.retry_count).toBe(1);
-    expect(task.status).toBe('pending');
-    expect(task.next_retry_at).toBeTruthy();
+  const taskId = () => core.readJSON(core.tasksPath(proj.name)).tasks[1].id; // t2
+  const onDisk = (id) => core.readJSON(core.tasksPath(proj.name)).tasks.find((t) => t.id === id);
+
+  test('PERSISTS the retry to disk (status=pending, next_retry_at, retry_count++)', () => {
+    const id = taskId();
+    const result = core.scheduleRetry(proj.name, id);
+    expect(result.scheduled).toBe(true);
+    expect(result.retry_count).toBe(1);
+    // Read back from DISK — the old test only checked the in-memory object and
+    // passed it aliased to the written data, hiding the no-op-on-disk bug.
+    const t = onDisk(id);
+    expect(t.retry_count).toBe(1);
+    expect(t.status).toBe('pending');
+    expect(t.next_retry_at).toBeTruthy();
   });
 
-  test('returns false after max retries', () => {
-    const tasksData = core.readJSON(core.tasksPath(proj.name));
-    const task = tasksData.tasks[1];
-    task.retry_count = 3; // already at max
-    const result = core.scheduleRetry(proj.name, task, tasksData);
-    expect(result).toBe(false);
+  test('returns scheduled=false at max retries and does NOT reschedule on disk', () => {
+    const id = taskId();
+    core.modifyJSON(core.tasksPath(proj.name), (d) => {
+      d.tasks.find((t) => t.id === id).retry_count = 3; // already at max
+      return d;
+    });
+    const result = core.scheduleRetry(proj.name, id);
+    expect(result.scheduled).toBe(false);
+    // exhausted task must not be flipped back to pending (would loop forever)
+    expect(onDisk(id).status).not.toBe('pending');
+  });
+
+  test('successive retries accumulate retry_count across separate calls', () => {
+    const id = taskId();
+    expect(core.scheduleRetry(proj.name, id).retry_count).toBe(1);
+    expect(core.scheduleRetry(proj.name, id).retry_count).toBe(2);
+    expect(onDisk(id).retry_count).toBe(2);
   });
 });
 

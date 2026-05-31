@@ -416,6 +416,7 @@ export function taskUpdate(project, args) {
     cost_usd: _hasActuals ? _actualCost : (taskRef._estimated_cost || 0),
     cost_source: _hasActuals ? 'actual' : 'estimated',
     actual_cost_usd: _actualCost,
+    estimated_cost_usd: taskRef._estimated_cost ?? null,
     tokens_in: _hasActuals ? _tokensIn : null,
     tokens_out: _hasActuals ? _tokensOut : null,
   };
@@ -464,10 +465,11 @@ export function taskUpdate(project, args) {
       if (rolled) console.log(`  ${C.dim}🔄 rolled back to ${taskRef.commit_sha.slice(0, 8)}${C.reset}`);
     }
 
+    let _retryCount = taskRef.retry_count || 0;
     if (opts.retry !== 'false') {
-      const currentData = readJSON(tasksPath(project));
-      const scheduled = scheduleRetry(project, taskRef, currentData);
-      if (!scheduled) {
+      const retry = scheduleRetry(project, id);
+      _retryCount = retry.retry_count;
+      if (!retry.scheduled) {
         // Retry exhausted — mark dependent tasks as blocked
         modifyJSON(tasksPath(project), (d) => {
           for (const t of d.tasks) {
@@ -491,7 +493,7 @@ export function taskUpdate(project, args) {
         ..._costFields,
         quality_score: taskRef.score != null ? taskRef.score : 0,
         success: false,
-        retry_count: taskRef.retry_count || 0,
+        retry_count: _retryCount,
         failure_reason: opts?.reason || 'unknown',
         routing_decision_id: taskRef._routing_decision_id || null,
         correlation_id: taskRef._routing_decision_id || generateCorrelationId(),
@@ -1056,6 +1058,7 @@ export function cmdRun(args) {
     if (budgetStatus.level === 'exceeded') {
       console.log(`  ${C.red}Budget exceeded: $${budgetStatus.projected.toFixed(2)} / $${budgetStatus.budget} (${budgetStatus.pct.toFixed(0)}%)${C.reset}`);
       console.log(`  ${C.red}Set higher budget with: /xm config set budget '{"max_usd": N}'${C.reset}\n`);
+      process.exitCode = 1; // align with the --json path; a hard budget stop must not exit 0
       return;
     } else if (budgetStatus.level === 'warning') {
       console.log(`  ${C.yellow}Budget warning: $${budgetStatus.projected.toFixed(2)} / $${budgetStatus.budget} (${budgetStatus.pct.toFixed(0)}%)${C.reset}`);
