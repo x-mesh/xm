@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-1.26.17-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.3.9-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-12-orange" alt="Plugins" /></a>
@@ -36,7 +36,7 @@
 - [설치](#설치)
 - [빠른 시작](#빠른-시작)
 - [왜 xm인가?](#왜-xm인가)
-- [플러그인](#플러그인) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-dashboard](#x-dashboard) · [x-ship](#x-ship) · [x-humanize](#x-humanize)
+- [플러그인](#플러그인) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-dashboard](#x-dashboard) · [x-humanize](#x-humanize)
 - [품질 & 학습 파이프라인](#품질--학습-파이프라인)
 - [아키텍처](#아키텍처)
 - [설정](#설정)
@@ -107,7 +107,7 @@ bash xm/scripts/install.sh
 curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/xm/scripts/install.sh | bash
 ```
 
-인스톨러는 `~/.local/bin/xm`을 설치하고(`XM_BIN_DIR`로 경로 변경 가능, `PATH`에 있어야 함), `claude` CLI가 `PATH`에 있으면 `marketplace.json`의 모든 플러그인(x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-dashboard, xm)을 `claude plugin install <p>@xm -s user`로 일괄 설치합니다. 설치 후 Claude Code에서 `/reload-plugins`로 활성화하세요. `claude`가 `PATH`에 없으면 CLI 래퍼만 설치되고 수동 설치용 플러그인 목록이 출력됩니다.
+인스톨러는 `~/.local/bin/xm`을 설치하고(`XM_BIN_DIR`로 경로 변경 가능, `PATH`에 있어야 함), `claude` CLI가 `PATH`에 있으면 `marketplace.json`의 모든 플러그인(x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-humanize, x-dashboard, xm)을 `claude plugin install <p>@xm -s user`로 일괄 설치합니다. 설치 후 Claude Code에서 `/reload-plugins`로 활성화하세요. `claude`가 `PATH`에 없으면 CLI 래퍼만 설치되고 수동 설치용 플러그인 목록이 출력됩니다.
 
 #### 전역 훅 설치 (`xm init`)
 
@@ -372,10 +372,11 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 | [x-agent](#x-agent) | 에이전트 기본 도구 & 팀 | `/xm:agent fan-out "작업"` |
 | [x-trace](#x-trace) | 실행 추적 & 비용 | `/xm:trace timeline` |
 | [x-memory](#x-memory) | 세션 간 메모리 | `/xm:memory inject` |
-| [x-sync](#x-sync) | 멀티 머신 .xm/ 동기화 | `xm sync push` |
-| [x-ship](#x-ship) | 릴리스 자동화 & 커밋 정리 | `/xm:ship auto` |
-| [x-humanize](#x-humanize) | AI 글쓰기 패턴 제거 | `/xm:humanize audit text` |
+| [x-dashboard](#x-dashboard) | .xm 상태 웹 대시보드 | `/xm:dashboard start` |
+| [x-humanize](#x-humanize) | AI 글쓰기 패턴 제거 (v0.3.2, 안정화 전) | `/xm:humanize audit text` |
 | xm | 번들 + 설정 + 파이프라인 | `/xm pipeline release` |
+
+**`xm` 코어에 번들됨 (별도 marketplace 플러그인 아님):** `/xm:ship` 릴리스 자동화 · `x-sync` 멀티 머신 동기화 서버 — 아래 [x-ship](#x-ship), [x-sync](#x-sync) 참고.
 
 ---
 
@@ -1017,7 +1018,7 @@ xm/                              마켓플레이스 레포
 ├── x-memory/                       세션 간 메모리
 ├── x-sync/                         멀티 머신 .xm/ 동기화 서버
 ├── xm/                          번들 (전체 스킬) + 공유 설정 + 서버
-└── .claude-plugin/marketplace.json  11개 플러그인 등록
+└── .claude-plugin/marketplace.json  12개 플러그인 + xm 코어 등록
 ```
 
 <details>
