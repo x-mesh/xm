@@ -874,6 +874,50 @@ function buildAgentPrompt(project, task, briefContent, decisionsContent, { manif
   return lines.join('\n');
 }
 
+// A task RUNNING longer than this (or RUNNING with no started_at — an orphan
+// from a crashed/abandoned agent) is considered stale and reclaimable.
+const DEFAULT_STALE_RUNNING_MS = 30 * 60 * 1000; // 30 min
+
+// Reclaim stale RUNNING tasks back to PENDING so an interrupted session can
+// resume. Explicit (run --reconcile) rather than automatic — RUNNING→PENDING is
+// a state mutation, so it should be a deliberate recovery action. Returns the
+// reclaimed task descriptors; dryRun reports without writing.
+function reconcileStaleRunning(project, { staleMs = DEFAULT_STALE_RUNNING_MS, dryRun = false } = {}) {
+  const now = Date.now();
+  const reclaimed = [];
+  const isStale = (t) => {
+    if (t.status !== TASK_STATES.RUNNING) return false;
+    const age = t.started_at ? now - new Date(t.started_at).getTime() : Infinity;
+    return age > staleMs;
+  };
+
+  if (dryRun) {
+    const data = readJSON(tasksPath(project));
+    for (const t of data?.tasks || []) {
+      if (isStale(t)) reclaimed.push({ id: t.id, name: t.name });
+    }
+    return reclaimed;
+  }
+
+  modifyJSON(tasksPath(project), (data) => {
+    if (!data?.tasks) return data;
+    for (const t of data.tasks) {
+      if (!isStale(t)) continue;
+      reclaimed.push({ id: t.id, name: t.name });
+      t.reopen_history = t.reopen_history || [];
+      t.reopen_history.push({ at: new Date().toISOString(), reason: 'stale_running_reconciled', from_status: 'running' });
+      t.status = TASK_STATES.PENDING;
+      delete t.started_at;
+      delete t._assigned_model;
+      delete t._routing_decision_id;
+      delete t._estimated_cost;
+      delete t.next_retry_at;
+    }
+    return data;
+  });
+  return reclaimed;
+}
+
 // Mark ready tasks RUNNING and stamp routing/cost/start metadata, then persist.
 // Shared by BOTH the human and --json paths: the skill spawns agents from the
 // --json plan, so without marking here a later `tasks update completed` recorded
@@ -909,6 +953,23 @@ export function cmdRun(args) {
     console.error('❌ No project found. Run: x-build init <name>');
     exitFail(1);
   }
+
+  // Recovery: reclaim stale RUNNING tasks. Runs before the phase/circuit gates
+  // so a wedged session can be unstuck regardless of breaker state.
+  if (opts.reconcile) {
+    const staleMs = opts['stale-min'] != null ? Number(opts['stale-min']) * 60000 : DEFAULT_STALE_RUNNING_MS;
+    const dryRun = opts['dry-run'] !== undefined;
+    const reclaimed = reconcileStaleRunning(project, { staleMs, dryRun });
+    if (opts.json) {
+      console.log(JSON.stringify({ project, reconciled: reclaimed.map((r) => r.id), count: reclaimed.length, dry_run: dryRun }, null, 2));
+    } else if (reclaimed.length) {
+      console.log(`${C.yellow}🩹 ${dryRun ? 'Would reconcile' : 'Reconciled'} ${reclaimed.length} stale RUNNING task(s) → PENDING:${C.reset} ${reclaimed.map((r) => r.id).join(', ')}`);
+    } else {
+      console.log(`${C.green}✓ No stale RUNNING tasks to reconcile.${C.reset}`);
+    }
+    return;
+  }
+
   const currentPhase = PHASES.find(p => p.id === manifest.current_phase);
 
   if (currentPhase?.name !== 'execute') {
@@ -1133,12 +1194,57 @@ export function cmdRun(args) {
 }
 
 export function cmdRunStatus(args) {
+  const { opts } = parseOptions(args);
   const project = resolveProject(null);
   const taskData = readJSON(tasksPath(project));
   const stepData = readJSON(stepsPath(project));
 
   if (!stepData?.steps?.length) {
+    if (opts.json) { console.log(JSON.stringify({ project, steps: [], all_done: false, error: 'no_steps', next_action: 'steps compute' }, null, 2)); return; }
     console.log('No steps. Run: x-build steps compute');
+    return;
+  }
+
+  // Structured status so the skill orchestrator can route deterministically
+  // instead of scraping ANSI/emoji text.
+  if (opts.json) {
+    const now = Date.now();
+    const stepsOut = [];
+    const blocked = [];
+    const staleRunning = [];
+    let currentStepId = null;
+    let allDone = true;
+    for (const step of stepData.steps) {
+      const tasks = step.tasks.map((id) => taskData.tasks.find((t) => t.id === id)).filter(Boolean);
+      const count = (st) => tasks.filter((t) => t.status === st).length;
+      const completed = count(TASK_STATES.COMPLETED);
+      const running = count(TASK_STATES.RUNNING);
+      const failed = count(TASK_STATES.FAILED);
+      const pending = tasks.length - completed - running - failed;
+      stepsOut.push({ id: step.id, total: tasks.length, completed, running, failed, pending });
+      if (completed < tasks.length) { allDone = false; if (currentStepId === null) currentStepId = step.id; }
+      for (const t of tasks) {
+        if (t.blocked_by) blocked.push({ id: t.id, blocked_by: t.blocked_by });
+        if (t.status === TASK_STATES.RUNNING) {
+          const age = t.started_at ? now - new Date(t.started_at).getTime() : Infinity;
+          if (age > DEFAULT_STALE_RUNNING_MS) staleRunning.push(t.id);
+        }
+      }
+    }
+    const cb = getCircuitState(project);
+    let next_action;
+    if (allDone) next_action = 'phase next';
+    else if (cb.state === 'open') next_action = 'wait for circuit breaker cooldown';
+    else if (staleRunning.length) next_action = 'run --reconcile';
+    else if (stepsOut.some((s) => s.running > 0)) next_action = 'wait for running tasks; poll run-status --json';
+    else if (blocked.length || stepsOut.some((s) => s.failed > 0)) next_action = 'investigate failed/blocked tasks';
+    else next_action = 'run --json';
+    console.log(JSON.stringify({
+      project, step: currentStepId, total_steps: stepData.steps.length,
+      all_done: allDone, steps: stepsOut, blocked_tasks: blocked, stale_running: staleRunning,
+      circuit_breaker: { state: cb.state, cooldown_until: cb.cooldown_until || null },
+      next_action,
+    }, null, 2));
     return;
   }
 

@@ -822,4 +822,42 @@ describe('cost: actual-token ingestion + profile-aware --json (regression)', () 
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  test('run-status --json reports structured step state and a next_action', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const env = { HOME: CHOME };
+      driveToExecute(tmp);
+      run(['run', '--json'], { cwd: tmp, env }); // marks t1,t2 RUNNING
+      const st = JSON.parse(run(['run-status', '--json'], { cwd: tmp, env }).stdout);
+      expect(st.all_done).toBe(false);
+      expect(Array.isArray(st.steps)).toBe(true);
+      expect(st.steps.reduce((n, s) => n + s.running, 0)).toBeGreaterThan(0);
+      expect(typeof st.next_action).toBe('string');
+      expect(st.circuit_breaker.state).toBeTruthy();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('run --reconcile reclaims stale RUNNING tasks to pending', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const env = { HOME: CHOME };
+      const name = driveToExecute(tmp);
+      run(['run', '--json'], { cwd: tmp, env }); // marks t1,t2 RUNNING (started_at=now)
+      const tf = join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'tasks.json');
+      const data = JSON.parse(readFileSync(tf, 'utf8'));
+      const oldTs = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1h ago → stale (>30m)
+      for (const t of data.tasks) if (t.status === 'running') t.started_at = oldTs;
+      writeFileSync(tf, JSON.stringify(data));
+
+      const out = JSON.parse(run(['run', '--reconcile', '--json'], { cwd: tmp, env }).stdout);
+      expect(out.count).toBeGreaterThan(0);
+      const after = JSON.parse(readFileSync(tf, 'utf8'));
+      expect(after.tasks.find((t) => t.id === 't1').status).toBe('pending');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
