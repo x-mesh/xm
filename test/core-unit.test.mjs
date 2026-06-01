@@ -1552,21 +1552,31 @@ describe('modifyJSON lock fallback', () => {
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'xb-lock-')); });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
-  test('proceeds without lock when lock file is stuck', () => {
+  test('reclaims a stale lock (mtime > 10s) and proceeds', () => {
     const p = join(dir, 'locked.json');
     core.writeJSON(p, { value: 0 });
 
-    // Create a stale lock file (simulates another process holding it)
+    // A lock left by a crashed process: backdate its mtime to 11s ago.
     writeFileSync(p + '.lock', '99999', 'utf8');
+    const old = Date.now() / 1000 - 11;
+    utimesSync(p + '.lock', old, old);
 
-    // modifyJSON should eventually fall through to the fallback path
-    // after exhausting retries (20 × 50ms spin = ~1s)
-    const result = core.modifyJSON(p, data => {
-      data.value = 42;
-      return data;
-    });
+    const result = core.modifyJSON(p, data => { data.value = 42; return data; });
     expect(result.value).toBe(42);
     expect(core.readJSON(p).value).toBe(42);
+    expect(existsSync(p + '.lock')).toBe(false); // lock released after use
+  });
+
+  test('throws loud on a fresh held lock instead of silently clobbering', () => {
+    const p = join(dir, 'locked.json');
+    core.writeJSON(p, { value: 0 });
+
+    // Fresh lock (mtime = now) — a live writer holds it; must NOT be reclaimed.
+    writeFileSync(p + '.lock', '99999', 'utf8');
+
+    expect(() => core.modifyJSON(p, data => { data.value = 42; return data; }))
+      .toThrow(/could not acquire lock/);
+    expect(core.readJSON(p).value).toBe(0); // unchanged — not clobbered
   });
 });
 

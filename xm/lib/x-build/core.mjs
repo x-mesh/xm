@@ -169,34 +169,44 @@ export function writeJSON(path, data) {
  */
 export function modifyJSON(path, mutator) {
   const lockPath = path + '.lock';
-  for (let attempt = 0; attempt < 20; attempt++) {
+
+  // Acquire the lock FIRST (separate from running the mutator), so a mutator's
+  // CliError propagates cleanly instead of being mistaken for lock contention.
+  let acquired = false;
+  for (let attempt = 0; attempt < 50 && !acquired; attempt++) {
     try {
       writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
-      try {
-        const data = readJSON(path);
-        const result = mutator(data);
-        const out = result !== undefined ? result : data;
-        writeJSON(path, out);
-        return out;
-      } finally {
-        try { unlinkSync(lockPath); } catch { /* best effort */ }
-      }
+      acquired = true;
     } catch (e) {
-      // A guard inside the mutator called exitFail() (library mode → CliError).
-      // That is an intentional abort, not lock contention — propagate it instead
-      // of spin-waiting 20× and re-running the mutator.
-      if (e instanceof CliError) throw e;
-      // Lock held — spin wait 50ms
-      const deadline = Date.now() + 50;
+      if (e?.code !== 'EEXIST') throw e; // unexpected fs error — surface it
+      // Reclaim a lock left behind by a crashed process (mtime older than 10s).
+      // Without this, one stale .lock degraded every later write forever.
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > 10000) { unlinkSync(lockPath); continue; }
+      } catch { continue; /* lock vanished between stat and now — retry immediately */ }
+      // Lock genuinely held by a live writer — brief spin, then retry.
+      const deadline = Date.now() + 20;
       while (Date.now() < deadline) { /* spin */ }
     }
   }
-  // Fallback: proceed without lock to avoid deadlock
-  const data = readJSON(path);
-  const result = mutator(data);
-  const out = result !== undefined ? result : data;
-  writeJSON(path, out);
-  return out;
+
+  if (!acquired) {
+    // Fail loud (L6): never silently write unlocked — a concurrent writer may be
+    // mid-update and an unlocked write would clobber it. Surface the contention.
+    process.stderr.write(`[x-build] modifyJSON: lock contention on ${path} — could not acquire ${lockPath} after 50 attempts.\n`);
+    process.stderr.write(`           If a process crashed, remove the stale lock: rm ${JSON.stringify(lockPath)}\n`);
+    throw new Error(`modifyJSON: could not acquire lock for ${path}`);
+  }
+
+  try {
+    const data = readJSON(path);
+    const result = mutator(data);
+    const out = result !== undefined ? result : data;
+    writeJSON(path, out);
+    return out;
+  } finally {
+    try { unlinkSync(lockPath); } catch { /* best effort */ }
+  }
 }
 
 export function readMD(path) {
