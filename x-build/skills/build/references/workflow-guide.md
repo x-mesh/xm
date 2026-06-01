@@ -170,10 +170,11 @@ See `phases/plan.md` — full Plan phase walkthrough: PRD generation, PRD review
 
 ### Step 4: Execute (Execute Phase)
 
-1. `$XMB run --json`
-2. Parse JSON → spawn Agent per task:
-   - `agent_type: "deep-executor"` → `subagent_type: "oh-my-claudecode:deep-executor"`, `model: "opus"`
-   - otherwise → `subagent_type: "oh-my-claudecode:executor"`, `model: "sonnet"`
+0. **Entry gate**: `$XMB phase set execute` runs a deterministic `prd-check`. It BLOCKS entry to Execute if the PRD has unresolved low-confidence assumptions (`[A*, low]`) or unanswered `Status: blocking` open questions (the PRD template's own Gate rule). Resolve them via AskUserQuestion, or override with `$XMB phase set execute --force`. Inspect anytime: `$XMB prd-check --json`.
+1. `$XMB run --json` — emits the execution plan AND marks the step's ready tasks RUNNING (so a later completion is actually recorded). It always emits valid JSON: when no tasks are ready it returns `{tasks: [], status: "all_done" | "in_progress" | "waiting", running: [...]}` — never human text.
+2. Parse JSON → spawn Agent per task, using the plan's own fields (profile-aware — do NOT hardcode the model):
+   - `subagent_type`: `task.agent_type === "deep-executor"` → `"oh-my-claudecode:deep-executor"`, else `"oh-my-claudecode:executor"`
+   - `model`: use `task.model` from the plan (resolved from `model_profile`: economy/default/max)
    - `prompt`: use `task.prompt` value + **inject `done_criteria`** as acceptance contract:
      ```
      ## Acceptance Contract
@@ -183,7 +184,11 @@ See `phases/plan.md` — full Plan phase walkthrough: PRD generation, PRD review
      ```
    - `run_in_background: true` (parallel)
 3. On completion: `$XMB tasks update <id> --status completed|failed`
-4. Check `$XMB run-status`, advance to next step or phase
+4. **Poll & route** with `$XMB run-status --json` (structured — do NOT scrape the human/emoji output). Branch on its fields:
+   - `all_done: true` → confirm with the user, then `$XMB phase next` (see below)
+   - `stale_running` non-empty (tasks stuck RUNNING after an interrupted or abandoned agent) → `$XMB run --reconcile` to reclaim them to PENDING, then `$XMB run --json` again
+   - otherwise → follow `next_action` (`run --json` for the next step's ready tasks, `wait` while tasks are running, or `investigate failed/blocked tasks`)
+   Re-running `$XMB run --json` is a safe resume — RUNNING tasks are not re-dispatched.
 
 **Call AskUserQuestion before advancing to Verify phase.** When all tasks complete, ask the user to confirm before advancing (e.g., "All tasks completed. Proceed to the Verify phase?" in developer mode, or `"모든 태스크 완료. Verify 단계로 넘어갈까요?"` in normal mode). Do NOT run `phase next` without user confirmation.
 
@@ -321,8 +326,8 @@ Goal → Init → Auto-Plan → Review → Execute → Verify → Close
    3) Full flow — run full Research→PRD→Plan
    ```
 5. **Execute**: `$XMB steps compute` → `$XMB phase set execute` → `$XMB run --json`
-   - Parse JSON → spawn Agent per task (same as Step 4)
-   - Wait for all tasks to complete → check with `$XMB run-status`
+   - Parse JSON → spawn Agent per task using `task.agent_type` + `task.model` (same as Step 4)
+   - Poll `$XMB run-status --json`; on `all_done` advance, on `stale_running` run `$XMB run --reconcile` then re-run `run --json`
 6. **Verify**: `$XMB phase set verify` → `$XMB quality` → `$XMB verify-contracts`
 7. **Close**: `$XMB close --summary "Quick mode completed"`
 
