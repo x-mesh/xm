@@ -263,6 +263,7 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 ### Plan Phase
 - `plan "goal"` — AI auto-decomposes goal into tasks
 - `plan-check` — Validate plan across 11 quality dimensions
+- `prd-check [--json]` — Deterministic PRD gate (blocks Execute on unresolved `[A*, low]` / `Status: blocking`); `phase set execute --force` to override
 - `prd-gate [--threshold N]` — Judge panel PRD quality evaluation (rubric-based scoring)
 - `consensus [--round N]` — 4-agent consensus review (architect/critic/planner/security)
 - `phase next` / `phase set <name>` — Move between phases
@@ -277,8 +278,9 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 - `steps compute` — Calculate step groups from dependencies
 - `steps status` / `steps next` — Step progress
 - `run` — Execute current step via agents
-- `run --json` — Machine-readable execution plan
-- `run-status` — Execution progress
+- `run --json` — Machine-readable execution plan (also marks ready tasks RUNNING; always emits JSON)
+- `run --reconcile [--dry-run] [--stale-min N]` — Reclaim stale RUNNING tasks (interrupted/abandoned agents) to PENDING
+- `run-status [--json]` — Execution progress; `--json` gives structured state (`all_done`, `steps`, `stale_running`, `blocked_tasks`, `next_action`) for orchestrator routing
 - `templates list` / `templates use <name>` — Use task templates
 
 ### Verify & Close
