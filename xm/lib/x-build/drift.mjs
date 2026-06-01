@@ -9,20 +9,16 @@ import { loadSharedConfig } from './config-loader.mjs';
 
 // ── Module-level constants ───────────────────────────────────────────
 
-// 0.80 from scripts/sim-thresholds.mjs (seed-stable). CAVEAT: the simulator's
-// "healthy" population over-estimated ontology coverage — real dogfooding
-// (quant-gates) landed at the 0.80 boundary, exposing an ontology-scoring gap.
-// Fixed by plain-path stem extraction + STRUCTURAL_NOISE stopwords (coverage
-// 21% -> realistic) and by gating on the rounded score (see computeDrift) so the
-// displayed percentage and pass/fail never contradict at the boundary.
-const DEFAULT_THRESHOLD = 0.8;
-
-/**
- * Weights for the weighted drift formula.
- * mirrors xm/lib/scoring.mjs weightedScore — inlined to avoid cross-plugin import.
- *   weighted = DRIFT_WEIGHTS.goal * goal + DRIFT_WEIGHTS.constraint * constraint + DRIFT_WEIGHTS.ontology * ontology
- */
-const DRIFT_WEIGHTS = { goal: 0.5, constraint: 0.3, ontology: 0.2 };
+// 0.70 from scripts/sim-thresholds.mjs (seed-stable, goal-only model). The drift
+// gate is goal coverage ONLY (weighted = goal_score; see computeDrift). The old
+// 3-term blend (0.5 goal + 0.3 constraint + 0.2 ontology) was simplified after
+// the simulator showed the constraint term was a near-constant 1.0 (no
+// discrimination) and the ontology term was noisy (repeatedly mis-scored healthy
+// projects). Goal-only matched the 3-term's separation (false-alarm 0%,
+// true-positive 100%): healthy projects score >=0.75, drifted <=0.67, so 0.70
+// sits in the gap with margin on both sides. Constraint and ontology are still
+// computed and surfaced as diagnostics, but they no longer gate.
+const DEFAULT_THRESHOLD = 0.7;
 
 // File-extension tokens that carry no ontology signal (task names reference
 // concepts, never extensions). Excluded from ontology keyword extraction.
@@ -190,15 +186,15 @@ function extractCapitalizedTokens(section, keywords) {
 /**
  * Compute weighted drift scores comparing PRD baseline against current tasks.
  *
- * Weighted formula (uses DRIFT_WEIGHTS — mirrors xm/lib/scoring.mjs weightedScore):
- *   weighted = DRIFT_WEIGHTS.goal * goal_score
- *            + DRIFT_WEIGHTS.constraint * constraint_score
- *            + DRIFT_WEIGHTS.ontology * ontology_score
+ * Gate formula (goal-only):
+ *   weighted = goal_score   (constraint_score / ontology_score are diagnostics)
  *
- * NOTE: The default threshold (DEFAULT_THRESHOLD = 0.80) was confirmed by a
- * deterministic simulator (scripts/sim-thresholds.mjs) across realistic input
- * distributions and seeds, per CLAUDE.md Lessons L9. Override via the
- * drift.drift_threshold config key.
+ * NOTE: The default threshold (DEFAULT_THRESHOLD = 0.70) and the goal-only
+ * formula were both derived from a deterministic simulator (scripts/sim-thresholds.mjs)
+ * across realistic input distributions and seeds, per CLAUDE.md Lessons L9 —
+ * the simulator showed goal-only matched the old 3-term blend's separation while
+ * dropping a non-discriminating constraint term and a noisy ontology term.
+ * Override via the drift.drift_threshold config key.
  *
  * Config key: drift.drift_threshold (in .xm/config.json or ~/.xm/config.json)
  *
@@ -218,12 +214,11 @@ export function computeDrift(baseline, tasks, opts = {}) {
   const constraint_score = computeConstraintScore(baseline, allTasks);
   const ontology_score = computeOntologyScore(baseline, allTasks);
 
-  // mirrors xm/lib/scoring.mjs weightedScore — inlined to avoid cross-plugin import
-  const weightedRaw = clamp01(
-    clamp01(goal_score) * DRIFT_WEIGHTS.goal +
-    clamp01(constraint_score) * DRIFT_WEIGHTS.constraint +
-    clamp01(ontology_score) * DRIFT_WEIGHTS.ontology
-  );
+  // Goal-only gate (see header note): the drift score IS goal coverage.
+  // constraint_score / ontology_score are returned below as diagnostics only —
+  // they do not affect the gate (simulation showed they never improved the
+  // good/bad separation).
+  const weightedRaw = clamp01(goal_score);
   // Gate on the displayed (rounded) score so a reported "80%" never contradicts
   // an 80% threshold. Comparing raw (0.7967) against threshold while displaying
   // round2 (0.80) produced "80% is below threshold 80%" — a boundary paradox.

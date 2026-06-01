@@ -27,6 +27,6 @@
     "perspectives": ["stack", "features", "architecture", "pitfalls"]
   },
   "drift": {
-    "drift_threshold": 0.8
+    "drift_threshold": 0.7
   }
 }
