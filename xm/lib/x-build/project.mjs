@@ -69,6 +69,7 @@ export function cmdInit(args) {
   console.log(`✅ Project "${slug}" initialized.`);
   console.log(`📁 ${projectDir(slug)}`);
   console.log(`📍 Current phase: Research`);
+  console.log(`→ Next: x-build discuss --mode interview   (resolve open questions, then: plan "goal")`);
   return slug;
 }
 

@@ -1,5 +1,15 @@
 ### Step 3: Plan (Plan Phase)
 
+#### Memory Recall (before PRD generation)
+
+Before generating the PRD, recall relevant prior context so the plan does not repeat recorded mistakes or re-litigate settled decisions. Best-effort — skip silently if x-memory is unavailable:
+
+```
+/xm:memory recall "{goal keywords}"
+```
+
+Fold any returned decisions / patterns / failures into the PRD-generation prompt alongside the research artifacts. This mirrors x-build's own `decisions inject` (see `references/plugin-integration.md`).
+
 #### PRD Generation (first step of Plan phase)
 
 Before task decomposition, the leader generates a PRD. Based on research artifacts (CONTEXT.md, REQUIREMENTS.md, ROADMAP.md).
