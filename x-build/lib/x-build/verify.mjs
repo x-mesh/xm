@@ -363,11 +363,11 @@ export function cmdVerifyDrift(args) {
   const pct = v => `${Math.round(v * 100)}%`;
 
   console.log(`\n${C.bold}PRD Drift Score${C.reset}\n`);
-  console.log(`  Goal coverage        (0.5×): ${pct(result.goal_score).padStart(4)}  ${renderScoreBar(result.goal_score)}`);
-  console.log(`  Constraint adherence (0.3×): ${pct(result.constraint_score).padStart(4)}  ${renderScoreBar(result.constraint_score)}`);
-  console.log(`  Ontology coverage    (0.2×): ${pct(result.ontology_score).padStart(4)}  ${renderScoreBar(result.ontology_score)}`);
+  console.log(`  Goal coverage        (gates): ${pct(result.goal_score).padStart(4)}  ${renderScoreBar(result.goal_score)}`);
+  console.log(`  Constraint adherence  (diag): ${pct(result.constraint_score).padStart(4)}  ${renderScoreBar(result.constraint_score)}`);
+  console.log(`  Ontology coverage     (diag): ${pct(result.ontology_score).padStart(4)}  ${renderScoreBar(result.ontology_score)}`);
   console.log(`  ${'─'.repeat(48)}`);
-  console.log(`  Weighted drift score        : ${pct(result.weighted).padStart(4)}  (threshold: ${pct(result.threshold)})`);
+  console.log(`  Drift score (=goal coverage): ${pct(result.weighted).padStart(4)}  (threshold: ${pct(result.threshold)})`);
   console.log(`\n  Gate: ${passIcon}\n`);
 
   if (!result.gate_pass) {

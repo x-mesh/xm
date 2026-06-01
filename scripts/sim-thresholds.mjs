@@ -256,19 +256,23 @@ function simConvergence(seed, n, thresholds) {
 // GATE 3: DRIFT (x-build)
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// computeDrift weighted = 0.5*goal + 0.3*constraint + 0.2*ontology.
-// Gate blocks (FAIL) when weighted < threshold.
+// computeDrift is GOAL-ONLY: weighted = goal_score. Gate blocks (FAIL) when
+// weighted < threshold. (The old 3-term blend added a near-constant constraint
+// term and a noisy ontology term; the simulator showed goal-only matched its
+// separation, so constraint/ontology were demoted to diagnostics.)
 //
 // Rather than reverse-engineer text that yields a target score, we build PRD +
 // task fixtures from controlled score targets, then call the REAL computeDrift
 // via synthetic baselines/tasks that deterministically produce the desired
 // sub-scores. We construct baselines/tasks so that:
-//   goal_score      = (#SC covered)/(#SC)
-//   constraint_score = (#C not violated)/(#C)
-//   ontology_score   = (#kw present)/(#kw)
+//   goal_score      = (#SC covered)/(#SC)   ← the only gating term
+//   constraint_score = (#C not violated)/(#C)   (diagnostic)
+//   ontology_score   = (#kw present)/(#kw)       (diagnostic)
 //
-// GOOD ("normal completion"): high coverage on all three.
-// BAD  ("drift"): goal/ontology coverage collapses (the dogfooding failure mode).
+// GOOD ("normal completion"): high goal coverage (0.8-1.0).
+// BAD  ("drift"): goal coverage collapses (0.2-0.6). Simulation (seed 12345,
+// n>=4000) → healthy >=0.75, drifted <=0.67; DEFAULT_THRESHOLD 0.70 sits in the
+// gap (false-alarm 0%, true-positive 100%).
 
 function buildDriftCase(rng, scTotal, scCovered, cTotal, cViolated, kwTotal, kwCovered) {
   // Success criteria

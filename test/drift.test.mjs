@@ -126,6 +126,31 @@ describe('computeDrift — boundary scores (0 and 1)', () => {
   });
 });
 
+describe('computeDrift — goal-only gate (regression)', () => {
+  // 4 SC, 3 covered → goal 0.75; ontology keywords present but uncovered → 0.
+  // The old 3-term blend scored 0.5*0.75 + 0.3*1 + 0.2*0 = 0.675 and FAILED a
+  // healthy project (the dogfooding failure). Goal-only scores 0.75 and passes.
+  const b = {
+    goal: 'g',
+    successCriteria: [{ id: 'SC1', desc: 'a' }, { id: 'SC2', desc: 'b' }, { id: 'SC3', desc: 'c' }, { id: 'SC4', desc: 'd' }],
+    constraints: [{ id: 'C1', desc: 'c' }],
+    ontologyKeywords: ['alphaword', 'betaword', 'gammaword'],
+  };
+  const tasks = [
+    { id: 't1', name: 'implement SC1', status: 'completed', done_criteria: ['covers SC1'] },
+    { id: 't2', name: 'implement SC2', status: 'completed', done_criteria: ['covers SC2'] },
+    { id: 't3', name: 'implement SC3', status: 'completed', done_criteria: ['covers SC3'] },
+  ];
+
+  test('weighted equals goal_score — ontology/constraint do not gate', () => {
+    const r = computeDrift(b, tasks, { threshold: 0.7 });
+    expect(r.goal_score).toBe(0.75);
+    expect(r.ontology_score).toBe(0);  // noisy term is present...
+    expect(r.weighted).toBe(0.75);     // ...but the gate is goal-only
+    expect(r.gate_pass).toBe(true);    // 0.75 >= 0.70; old 3-term (0.675) would FAIL
+  });
+});
+
 describe('computeDrift — partial coverage', () => {
   test('partial goal coverage gives fractional score', () => {
     // Only SC1 covered
