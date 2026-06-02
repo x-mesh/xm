@@ -11,11 +11,42 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 
 const TRACED_PREFIXES = ['xm:'];
 
 function isTracedSkill(skill) {
   return TRACED_PREFIXES.some((p) => skill.startsWith(p));
+}
+
+// Event-based project auto-registration: invoking an xm: skill in a project IS the
+// evidence that the project is in use, so register it (best-effort, idempotent — writes
+// only when newly added). Resolves x-projects-registry from XM_LIB, the plugin cache
+// (newest version), or the local repo. Never throws — tracing must not be blocked.
+async function ensureProjectRegistered(projectRoot) {
+  try {
+    const candidates = [];
+    const env = process.env.XM_LIB || process.env.X_KIT_LIB;
+    if (env) {
+      candidates.push(path.join(env, 'xm', 'lib', 'x-projects-registry.mjs'));
+      candidates.push(path.join(env, 'x-projects-registry.mjs'));
+    }
+    const cacheRoot = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'xm', 'xm');
+    try {
+      const vers = fs.readdirSync(cacheRoot)
+        .filter((v) => /\d/.test(v))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+        .reverse();
+      for (const v of vers) candidates.push(path.join(cacheRoot, v, 'lib', 'x-projects-registry.mjs'));
+    } catch { /* no cache dir */ }
+    candidates.push(path.join(projectRoot, 'xm', 'lib', 'x-projects-registry.mjs'));
+
+    const found = candidates.find((c) => { try { return fs.existsSync(c); } catch { return false; } });
+    if (!found) return;
+    const mod = await import(pathToFileURL(found).href);
+    if (typeof mod.ensureRegistered === 'function') mod.ensureRegistered(projectRoot);
+  } catch { /* best-effort */ }
 }
 
 function readStdin() {
@@ -64,6 +95,7 @@ async function main() {
     if (phase === 'pre') {
       const sessionId = makeSessionId(skillName);
       fs.mkdirSync(tracesDir, { recursive: true });
+      await ensureProjectRegistered(projectRoot);
 
       const entry = JSON.stringify({
         type: 'session_start',

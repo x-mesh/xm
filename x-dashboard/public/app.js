@@ -38,9 +38,15 @@ function calcEntryCost(e) {
 // Poll sequence counter — incremented on every route change to discard stale responses
 let _pollSequence = 0;
 
-// Smart DOM update: replaces #app innerHTML while preserving scroll and focus
+// Smart DOM update: replaces #app innerHTML while preserving scroll and focus.
+// Skips the DOM swap when the rendered HTML is identical to the last paint — e.g. a
+// 3s poll that returned 304/unchanged data. Avoids scroll jitter, focus loss, and
+// re-triggered animations on every tick (P6).
+let _lastAppHtml = null;
 function updateApp(html) {
   const app = document.getElementById('app');
+  if (html === _lastAppHtml && app && app.innerHTML !== '') return;
+  _lastAppHtml = html;
   const content = document.querySelector('.content');
   const scrollTop = content ? content.scrollTop : 0;
 
@@ -100,22 +106,82 @@ async function initWorkspaces() {
   selector.id = 'ws-selector';
   selector.innerHTML = `
     <div class="ws-selector-label">Workspace</div>
-    <select id="ws-select" aria-label="Select workspace">
-      ${workspaces.map(w => `<option value="${w.id}"${w.id === currentWsId ? ' selected' : ''}>${w.name} (${w.stats?.projects ?? 0} builds)</option>`).join('')}
-    </select>
-    <div id="ws-current-name" class="ws-current-name">${currentWs.name}</div>
+    <div class="ws-combo" id="ws-combo">
+      <input type="text" id="ws-search" class="ws-search-input"
+             placeholder="Search workspace…" value="${currentWs.name}"
+             autocomplete="off" spellcheck="false"
+             role="combobox" aria-expanded="false" aria-controls="ws-options" aria-label="Search workspace" />
+      <ul id="ws-options" class="ws-options" role="listbox" hidden></ul>
+    </div>
   `;
 
   const navLinks = nav.querySelector('.nav-links');
   nav.insertBefore(selector, navLinks);
 
-  document.getElementById('ws-select').addEventListener('change', (e) => {
-    currentWsId = e.target.value;
-    localStorage.setItem('xm-workspace', currentWsId);
-    const selected = workspaces.find(w => w.id === currentWsId);
-    const nameEl = document.getElementById('ws-current-name');
-    if (nameEl && selected) nameEl.textContent = selected.name;
+  const wsInput = document.getElementById('ws-search');
+  const wsList = document.getElementById('ws-options');
+  let wsActiveIdx = -1;
+
+  function wsRenderOptions(filter) {
+    const q = (filter || '').trim().toLowerCase();
+    const matches = workspaces.filter(w => !q || w.name.toLowerCase().includes(q));
+    wsActiveIdx = -1;
+    wsList.innerHTML = matches.length
+      ? matches.map(w => `<li role="option" class="ws-option${w.id === currentWsId ? ' current' : ''}" data-wsid="${w.id}">
+          <span class="ws-option-name">${w.name}</span>
+          <span class="ws-option-count">${w.stats?.projects ?? 0}</span>
+        </li>`).join('')
+      : '<li class="ws-option ws-option-empty">No match</li>';
+  }
+  function wsOpen() {
+    wsRenderOptions('');
+    wsList.hidden = false;
+    wsInput.setAttribute('aria-expanded', 'true');
+  }
+  function wsClose(restore = true) {
+    wsList.hidden = true;
+    wsInput.setAttribute('aria-expanded', 'false');
+    wsActiveIdx = -1;
+    if (restore) {
+      const cur = workspaces.find(w => w.id === currentWsId);
+      if (cur) wsInput.value = cur.name;
+    }
+  }
+  function wsSelect(id) {
+    const sel = workspaces.find(w => w.id === id);
+    if (!sel) return;
+    currentWsId = id;
+    localStorage.setItem('xm-workspace', id);
+    wsInput.value = sel.name;
+    wsClose(false);
     route();
+  }
+  function wsHighlight(opts) {
+    opts.forEach((o, i) => o.classList.toggle('active', i === wsActiveIdx));
+    if (opts[wsActiveIdx]) opts[wsActiveIdx].scrollIntoView({ block: 'nearest' });
+  }
+
+  wsInput.addEventListener('focus', () => { wsInput.select(); wsOpen(); });
+  wsInput.addEventListener('input', () => {
+    wsRenderOptions(wsInput.value);
+    wsList.hidden = false;
+    wsInput.setAttribute('aria-expanded', 'true');
+  });
+  wsInput.addEventListener('keydown', (e) => {
+    if (wsList.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { wsOpen(); return; }
+    const opts = Array.from(wsList.querySelectorAll('.ws-option[data-wsid]'));
+    if (e.key === 'ArrowDown') { e.preventDefault(); wsActiveIdx = Math.min(wsActiveIdx + 1, opts.length - 1); wsHighlight(opts); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); wsActiveIdx = Math.max(wsActiveIdx - 1, 0); wsHighlight(opts); }
+    else if (e.key === 'Enter') { e.preventDefault(); const pick = opts[wsActiveIdx] || opts[0]; if (pick && pick.dataset.wsid) wsSelect(pick.dataset.wsid); }
+    else if (e.key === 'Escape') { wsClose(true); wsInput.blur(); }
+  });
+  wsList.addEventListener('mousedown', (e) => {
+    const li = e.target.closest('.ws-option[data-wsid]');
+    if (li) { e.preventDefault(); wsSelect(li.dataset.wsid); }
+  });
+  document.addEventListener('click', (e) => {
+    const combo = document.getElementById('ws-combo');
+    if (combo && !combo.contains(e.target)) wsClose(true);
   });
 }
 
@@ -154,6 +220,21 @@ function phaseBadge(phase) {
 
 function nullSafe(value, fallback = '—') {
   return (value === null || value === undefined || value === '') ? fallback : value;
+}
+
+// ── Shared render helpers ─────────────────────────────────────────────
+function renderLoading() {
+  return '<div class="card"><p class="text-muted">Loading…</p></div>';
+}
+function renderError(msg) {
+  return '<div class="card card-error"><p>⚠ Error: ' + (msg ?? 'unknown error') + '</p></div>';
+}
+function renderEmpty(msg, cmd) {
+  return `<div class="card empty-state">
+    <div class="empty-icon">◇</div>
+    <p class="text-muted">${msg}</p>
+    ${cmd ? `<p class="empty-hint">Run <code>${cmd}</code></p>` : ''}
+  </div>`;
 }
 
 function commandButton(command, label = 'Copy') {
@@ -455,14 +536,14 @@ async function renderAggregateHome() {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Workspaces</h1></div>
-    <div class="card"><p class="text-muted">Loading workspaces...</p></div>
+    ${renderLoading()}
   `;
 
   const workspaces = await fetchJSON('/api/workspaces');
   if (!Array.isArray(workspaces) || workspaces.error) {
     app.innerHTML = `
       <div class="view-header"><h1>Workspaces</h1></div>
-      <div class="card"><p class="text-muted">Error loading workspaces.</p></div>
+      ${renderError('Error loading workspaces.')}
     `;
     return;
   }
@@ -657,7 +738,7 @@ async function renderHome() {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Home</h1></div>
-    <div class="card"><p class="text-muted">Loading...</p></div>
+    ${renderLoading()}
   `;
 
   const stopPolling = startPolling(async () => {
@@ -924,7 +1005,7 @@ function renderProjectsList() {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Builds</h1><p>.xm/build/projects/</p></div>
-    <div class="card"><p class="text-muted">Loading projects...</p></div>
+    ${renderLoading()}
   `;
 
   const stopPolling = startPolling(async () => {
@@ -934,7 +1015,7 @@ function renderProjectsList() {
     if (result.error) {
       updateApp(`
         <div class="view-header"><h1>Builds</h1><p>.xm/build/projects/</p></div>
-        <div class="card"><p class="text-muted">Error: ${result.message}</p></div>
+        ${renderError(result.message)}
       `);
       return;
     }
@@ -943,7 +1024,7 @@ function renderProjectsList() {
     if (projects.length === 0) {
       updateApp(`
         <div class="view-header"><h1>Builds</h1><p>.xm/build/projects/</p></div>
-        <div class="card"><p class="text-muted">No projects found.</p></div>
+        ${renderEmpty('No projects found.', 'xm:build init')}
       `);
       return;
     }
@@ -993,14 +1074,14 @@ async function renderLaterList() {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Later</h1><p>.xm/build/projects/*/later.json</p></div>
-    <div class="card"><p class="text-muted">Loading later queue...</p></div>
+    ${renderLoading()}
   `;
 
   const result = await fetchJSON(apiUrl('/later'));
   if (result.error) {
     app.innerHTML = `
       <div class="view-header"><h1>Later</h1><p>.xm/build/projects/*/later.json</p></div>
-      <div class="card"><p class="text-muted">Error: ${result.message || result.error}</p></div>
+      ${renderError(result.message || result.error)}
     `;
     return;
   }
@@ -1151,7 +1232,7 @@ function renderProjectDetail(slug) {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Project: <code>${slug}</code></h1></div>
-    <div class="card"><p class="text-muted">Loading project...</p></div>
+    ${renderLoading()}
   `;
 
   const stopPolling = startPolling(async () => {
@@ -1167,7 +1248,7 @@ function renderProjectDetail(slug) {
     if (projectResult.error) {
       updateApp(`
         <div class="view-header"><h1>Project: <code>${slug}</code></h1></div>
-        <div class="card"><p class="text-muted">Error: ${projectResult.message}</p></div>
+        ${renderError(projectResult.message)}
       `);
       return;
     }
@@ -1265,15 +1346,15 @@ function renderProjectDetail(slug) {
           <div class="stat-label">Steps</div>
         </div>
         <div class="card stat-card">
-          <div class="stat-value" style="font-size:20px">${projectCost > 0 ? '$' + projectCost.toFixed(2) : '—'}</div>
+          <div class="stat-value stat-value-string">${projectCost > 0 ? '$' + projectCost.toFixed(2) : '—'}</div>
           <div class="stat-label">Cost</div>
         </div>
         <div class="card stat-card">
-          <div class="stat-value" style="font-size:20px">${projectQuality != null ? projectQuality.toFixed(1) + '/10' : '—'}</div>
+          <div class="stat-value stat-value-string">${projectQuality != null ? projectQuality.toFixed(1) + '/10' : '—'}</div>
           <div class="stat-label">Quality</div>
         </div>
         <div class="card stat-card">
-          <div class="stat-value" style="font-size:16px">${lastActivity}</div>
+          <div class="stat-value stat-value-string">${lastActivity}</div>
           <div class="stat-label">Activity</div>
         </div>
       </div>
@@ -1477,6 +1558,73 @@ function renderProjectDetail(slug) {
       `;
     }
 
+    // Phase Gate Timeline — from checkpoints[]
+    const checkpoints = Array.isArray(projectResult.checkpoints) ? projectResult.checkpoints : [];
+    if (checkpoints.length > 0) {
+      const cpItems = checkpoints.map(cp => {
+        const cpType = cp.type || 'checkpoint';
+        const cpTs = cp.ts || cp.timestamp || '';
+        const color = cpType.includes('pass') ? 'var(--success,#4caf50)'
+          : cpType.includes('fail') ? 'var(--danger,#f44)'
+          : 'var(--accent)';
+        return `
+          <div class="timeline-item">
+            <div class="timeline-dot" style="background:${color};border-color:${color}"></div>
+            <div class="timeline-content">
+              <strong>${escapeHtmlHumble(cpType)}</strong>
+              ${cpTs ? `<span class="text-muted" style="display:block">${timeAgo(cpTs)}</span>` : ''}
+            </div>
+          </div>
+        `;
+      }).join('');
+      html += `
+        <div class="card" style="margin-top:1rem">
+          <h2 style="margin:0 0 1rem">Phase Gate Timeline</h2>
+          <div class="timeline">${cpItems}</div>
+        </div>
+      `;
+    }
+
+    // Plan Quality — from plan_check
+    const planCheck = projectResult.plan_check;
+    if (planCheck && typeof planCheck === 'object') {
+      const checks = Object.entries(planCheck);
+      if (checks.length > 0) {
+        const badges = checks.map(([key, val]) => {
+          const passed = val === true || val === 'pass' || val === 'ok';
+          const failed = val === false || val === 'fail';
+          const cls = passed ? 'badge-green' : failed ? 'badge-red' : 'badge-amber';
+          const display = typeof val === 'boolean' ? (val ? '✓' : '✗') : escapeHtmlHumble(String(val));
+          return `<span class="badge ${cls}" style="margin:2px">${escapeHtmlHumble(key)}: ${display}</span>`;
+        }).join('');
+        html += `
+          <div class="card" style="margin-top:1rem;padding:12px 16px">
+            <h2 style="margin:0 0 0.75rem;font-size:0.9rem">Plan Quality</h2>
+            <div style="display:flex;flex-wrap:wrap;gap:4px">${badges}</div>
+          </div>
+        `;
+      }
+    }
+
+    // Review-Fix Gate Snapshot — surface note near gate card if present
+    const rfGate = projectResult.review_fix_gate_snapshot;
+    if (rfGate && typeof rfGate === 'object') {
+      const rfStatus = rfGate.status || rfGate.gate_status || '';
+      const rfCls = rfStatus === 'passed' || rfStatus === 'ready' ? 'badge-green'
+        : rfStatus === 'blocked' ? 'badge-red'
+        : 'badge-amber';
+      const rfCount = rfGate.required_count ?? rfGate.open_count ?? null;
+      html += `
+        <div class="card" style="margin-top:0.5rem;padding:10px 16px;border-left:3px solid var(--border)">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:0.8rem;font-weight:600;color:var(--text-muted)">Review-Fix Gate</span>
+            ${rfStatus ? `<span class="badge ${rfCls}">${escapeHtmlHumble(rfStatus)}</span>` : ''}
+            ${rfCount != null ? `<span class="text-muted" style="font-size:0.8rem">${rfCount} finding${rfCount !== 1 ? 's' : ''} required</span>` : ''}
+          </div>
+        </div>
+      `;
+    }
+
     updateApp(html);
 
     // Export button handler
@@ -1630,7 +1778,7 @@ async function renderProbeDiff() {
 
   app.innerHTML = `
     <div class="view-header"><h1>Probe Diff</h1></div>
-    <div class="card"><p class="text-muted">Loading diff...</p></div>
+    ${renderLoading()}
   `;
 
   const url = `/api/probe/diff?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`;
@@ -1639,7 +1787,7 @@ async function renderProbeDiff() {
   if (!data || data.error) {
     app.innerHTML = `
       <div class="view-header"><h1>Probe Diff</h1></div>
-      <div class="card"><p class="text-muted">Error: ${data ? data.message : 'unknown error'}</p></div>
+      ${renderError(data ? data.message : 'unknown error')}
     `;
     return;
   }
@@ -1804,7 +1952,7 @@ async function renderProbesList() {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Probes</h1></div>
-    <div class="card"><p class="text-muted">Loading probes...</p></div>
+    ${renderLoading()}
   `;
 
   const [latest, historyRes] = await Promise.all([
@@ -1892,7 +2040,7 @@ async function renderProbesList() {
         </table>
       </div>`;
   } else {
-    historyHtml = `<div class="card"><p class="text-muted">No probe history found.</p></div>`;
+    historyHtml = renderEmpty('No probe history found.', 'xm:probe');
   }
 
   app.innerHTML = `
@@ -1959,7 +2107,7 @@ async function renderProbeDetail(file) {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Probe</h1></div>
-    <div class="card"><p class="text-muted">Loading...</p></div>
+    ${renderLoading()}
   `;
 
   const url = file === 'latest'
@@ -1970,7 +2118,7 @@ async function renderProbeDetail(file) {
   if (!data || data.error) {
     app.innerHTML = `
       <div class="view-header"><h1>Probe</h1></div>
-      <div class="card"><p class="text-muted">Error: ${data ? data.message : 'unknown error'}</p></div>
+      ${renderError(data ? data.message : 'unknown error')}
     `;
     return;
   }
@@ -2034,7 +2182,7 @@ function renderSolversList() {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Solvers</h1></div>
-    <div class="card"><p class="text-muted">Loading solvers...</p></div>
+    ${renderLoading()}
   `;
 
   const stopPolling = startPolling(async () => {
@@ -2044,7 +2192,7 @@ function renderSolversList() {
     if (res.error) {
       updateApp(`
         <div class="view-header"><h1>Solvers</h1></div>
-        <div class="card"><p class="text-muted">Error: ${res.message}</p></div>
+        ${renderError(res.message)}
       `);
       return;
     }
@@ -2094,7 +2242,7 @@ function renderSolverDetail(slug) {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Solver</h1></div>
-    <div class="card"><p class="text-muted">Loading...</p></div>
+    ${renderLoading()}
   `;
 
   const stopPolling = startPolling(async () => {
@@ -2104,7 +2252,7 @@ function renderSolverDetail(slug) {
     if (res.error) {
       updateApp(`
         <div class="view-header"><h1>Solver: <code>${slug}</code></h1></div>
-        <div class="card"><p class="text-muted">Error: ${res.message || res.error}</p></div>
+        ${renderError(res.message || res.error)}
       `);
       return;
     }
@@ -2203,7 +2351,7 @@ function renderConfig() {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Config</h1></div>
-    <div class="card"><p class="text-muted">Loading config...</p></div>
+    ${renderLoading()}
   `;
 
   const stopPolling = startPolling(async () => {
@@ -2213,7 +2361,7 @@ function renderConfig() {
     if (res.error) {
       updateApp(`
         <div class="view-header"><h1>Config</h1></div>
-        <div class="card"><p class="text-muted">Error: ${res.message ?? res.error}</p></div>
+        ${renderError(res.message ?? res.error)}
       `);
       return;
     }
@@ -2261,7 +2409,7 @@ async function renderOpsList() {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Ops</h1></div>
-    <div class="card"><p class="text-muted">Loading...</p></div>
+    ${renderLoading()}
   `;
 
   const res = await fetchJSON(apiUrl('/op'));
@@ -2270,7 +2418,7 @@ async function renderOpsList() {
   if (ops.length === 0) {
     app.innerHTML = `
       <div class="view-header"><h1>Ops</h1></div>
-      <div class="card"><p class="text-muted">No strategy results found. Run <code>/xm:op</code> to generate one.</p>${wsEmptyHint()}</div>
+      ${renderEmpty('No strategy results found.', '/xm:op')}${wsEmptyHint()}
     `;
     return;
   }
@@ -2418,13 +2566,13 @@ function runOpCompare() {
 
 async function renderOpCompare(aFile, bFile) {
   const app = document.getElementById('app');
-  app.innerHTML = `<div class="view-header"><h1>Compare</h1></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+  app.innerHTML = `<div class="view-header"><h1>Compare</h1></div>${renderLoading()}`;
   const [a, b] = await Promise.all([
     fetchJSON(apiUrl(`/op/${encodeURIComponent(aFile)}`)),
     fetchJSON(apiUrl(`/op/${encodeURIComponent(bFile)}`)),
   ]);
   if (a.error || b.error) {
-    app.innerHTML = `<div class="card"><p class="text-muted">Error loading ops: ${(a.error ? a.message : b.message) || 'unknown'}</p></div>`;
+    app.innerHTML = `<div class="view-header"><h1>Compare</h1></div>${renderError('Error loading ops: ' + ((a.error ? a.message : b.message) || 'unknown'))}`;
     return;
   }
   const fieldsToShow = [
@@ -2565,14 +2713,14 @@ async function renderOpDetail(file) {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Op Detail</h1></div>
-    <div class="card"><p class="text-muted">Loading...</p></div>
+    ${renderLoading()}
   `;
 
   const data = await fetchJSON(apiUrl(`/op/${encodeURIComponent(file)}`));
   if (data.error) {
     app.innerHTML = `
       <div class="view-header"><h1>Op Detail</h1></div>
-      <div class="card"><p class="text-muted">Error: ${data.error}</p></div>
+      ${renderError(data.error)}
     `;
     return;
   }
@@ -2930,14 +3078,14 @@ async function renderTracesList() {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Traces</h1><p>.xm/traces/</p></div>
-    <div class="card"><p class="text-muted">Loading traces...</p></div>
+    ${renderLoading()}
   `;
 
   const res = await fetchJSON(apiUrl('/traces'));
   if (res.error) {
     app.innerHTML = `
       <div class="view-header"><h1>Traces</h1><p>.xm/traces/</p></div>
-      <div class="card"><p class="text-muted">Error: ${res.message}</p></div>
+      ${renderError(res.message)}
     `;
     return;
   }
@@ -3020,7 +3168,7 @@ async function renderTraceDetail(file) {
   app.innerHTML = `
     <div class="breadcrumb">${multiRootMode && currentWsId ? `<span class="text-accent" style="margin-right:4px">${currentWsId}</span><span class="sep">/</span>` : ''}<a href="#/traces">Traces</a><span class="sep">/</span>${decodedFile}</div>
     <div class="view-header"><h1>Trace: <code>${decodedFile}</code></h1></div>
-    <div class="card"><p class="text-muted">Loading trace...</p></div>
+    ${renderLoading()}
   `;
 
   let offset = 0;
@@ -3032,7 +3180,7 @@ async function renderTraceDetail(file) {
       app.innerHTML = `
         <div class="breadcrumb">${multiRootMode && currentWsId ? `<span class="text-accent" style="margin-right:4px">${currentWsId}</span><span class="sep">/</span>` : ''}<a href="#/traces">Traces</a><span class="sep">/</span>${decodedFile}</div>
         <div class="view-header"><h1>Trace: <code>${decodedFile}</code></h1></div>
-        <div class="card"><p class="text-muted">Error: ${res.message}</p></div>
+        ${renderError(res.message)}
       `;
       return;
     }
@@ -3256,6 +3404,7 @@ function renderGanttChart(entries, minTs, maxTs) {
 function renderCostWaterfall(entries, minTs) {
   const ctx = document.getElementById('cost-waterfall-chart');
   if (!ctx || !window.Chart) return;
+  window.Chart.getChart(ctx)?.destroy();  // avoid "Canvas already in use" on re-render/skip
   const cs = getComputedStyle(document.documentElement);
   const gridColor = cs.getPropertyValue('--border').trim() || 'rgba(255,255,255,0.1)';
 
@@ -3312,6 +3461,7 @@ function renderCostWaterfall(entries, minTs) {
 function renderModelDonut(entries) {
   const donutCtx = document.getElementById('model-donut-chart');
   if (!donutCtx || !window.Chart) return;
+  window.Chart.getChart(donutCtx)?.destroy();  // avoid "Canvas already in use" on re-render/skip
 
   const agentSteps = entries.filter(e => e.type === 'agent_step');
 
@@ -3418,7 +3568,7 @@ async function renderMemoryList() {
     </div>
   `;
 
-  app.innerHTML = `<div class="view-header"><h1>Memory</h1><p>.xm/memory/</p></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+  app.innerHTML = `<div class="view-header"><h1>Memory</h1><p>.xm/memory/</p></div>${renderLoading()}`;
 
   const res = await fetchJSON(apiUrl('/memory'));
   if (res.error) {
@@ -3509,13 +3659,13 @@ async function renderMemoryList() {
 
 async function renderMemoryDetail(id) {
   const app = document.getElementById('app');
-  app.innerHTML = `<div class="view-header"><h1>Memory</h1></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+  app.innerHTML = `<div class="view-header"><h1>Memory</h1></div>${renderLoading()}`;
 
   const res = await fetchJSON(apiUrl(`/memory/${encodeURIComponent(id)}`));
   if (res.error) {
     app.innerHTML = `
       <div class="view-header"><h1>Memory</h1></div>
-      <div class="card"><p class="text-muted">Error: ${res.message || res.error}</p></div>
+      ${renderError(res.message || res.error)}
     `;
     return;
   }
@@ -3572,7 +3722,7 @@ function reviewGateBadge(status) {
 
 async function renderReviewsList() {
   const app = document.getElementById('app');
-  app.innerHTML = `<div class="view-header"><h1>Reviews</h1><p>.xm/review/</p></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+  app.innerHTML = `<div class="view-header"><h1>Reviews</h1><p>.xm/review/</p></div>${renderLoading()}`;
 
   const [last, history, gate] = await Promise.all([
     fetchJSON(apiUrl('/review/last')),
@@ -3688,11 +3838,11 @@ async function renderReviewsList() {
 
 async function renderReviewDetail(file) {
   const app = document.getElementById('app');
-  app.innerHTML = `<div class="view-header"><h1>Review</h1></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+  app.innerHTML = `<div class="view-header"><h1>Review</h1></div>${renderLoading()}`;
 
   const res = await fetchJSON(apiUrl(`/review/history/${encodeURIComponent(file)}`));
   if (res.error) {
-    app.innerHTML = `<div class="view-header"><h1>Review</h1><p><a href="#/reviews" style="font-size:0.85rem">← Reviews</a></p></div><div class="card"><p class="text-muted">Error: ${res.message || res.error}</p></div>`;
+    app.innerHTML = `<div class="view-header"><h1>Review</h1><p><a href="#/reviews" style="font-size:0.85rem">← Reviews</a></p></div>${renderError(res.message || res.error)}`;
     return;
   }
 
@@ -3713,11 +3863,11 @@ async function renderReviewDetail(file) {
 
 async function renderEvalList() {
   const app = document.getElementById('app');
-  app.innerHTML = `<div class="view-header"><h1>Eval</h1><p>.xm/eval/</p></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+  app.innerHTML = `<div class="view-header"><h1>Eval</h1><p>.xm/eval/</p></div>${renderLoading()}`;
 
   const res = await fetchJSON(apiUrl('/eval'));
   if (res.error) {
-    app.innerHTML = `<div class="view-header"><h1>Eval</h1></div><div class="card"><p class="text-muted">Error: ${res.message || res.error}</p></div>`;
+    app.innerHTML = `<div class="view-header"><h1>Eval</h1></div>${renderError(res.message || res.error)}`;
     return;
   }
 
@@ -3768,11 +3918,11 @@ async function renderEvalList() {
 
 async function renderEvalDetail(category, file) {
   const app = document.getElementById('app');
-  app.innerHTML = `<div class="view-header"><h1>Eval</h1></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+  app.innerHTML = `<div class="view-header"><h1>Eval</h1></div>${renderLoading()}`;
 
   const res = await fetchJSON(apiUrl(`/eval/${encodeURIComponent(category)}/${encodeURIComponent(file)}`));
   if (res.error) {
-    app.innerHTML = `<div class="view-header"><h1>Eval</h1><p><a href="#/eval" style="font-size:0.85rem">← Eval</a></p></div><div class="card"><p class="text-muted">Error: ${res.message || res.error}</p></div>`;
+    app.innerHTML = `<div class="view-header"><h1>Eval</h1><p><a href="#/eval" style="font-size:0.85rem">← Eval</a></p></div>${renderError(res.message || res.error)}`;
     return;
   }
 
@@ -3839,11 +3989,11 @@ async function renderEvalDetail(category, file) {
 
 async function renderHumbleList() {
   const app = document.getElementById('app');
-  app.innerHTML = `<div class="view-header"><h1>Humble</h1><p>.xm/humble/</p></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+  app.innerHTML = `<div class="view-header"><h1>Humble</h1><p>.xm/humble/</p></div>${renderLoading()}`;
 
   const res = await fetchJSON(apiUrl('/humble'));
   if (res.error) {
-    app.innerHTML = `<div class="view-header"><h1>Humble</h1></div><div class="card"><p class="text-muted">Error: ${res.message || res.error}</p></div>`;
+    app.innerHTML = `<div class="view-header"><h1>Humble</h1></div>${renderError(res.message || res.error)}`;
     return;
   }
 
@@ -4045,11 +4195,11 @@ function renderHumbleSankey(kinds) {
 
 async function renderHumbleDetail(kind, file) {
   const app = document.getElementById('app');
-  app.innerHTML = `<div class="view-header"><h1>Humble</h1></div><div class="card"><p class="text-muted">Loading...</p></div>`;
+  app.innerHTML = `<div class="view-header"><h1>Humble</h1></div>${renderLoading()}`;
 
   const res = await fetchJSON(apiUrl(`/humble/${encodeURIComponent(kind)}/${encodeURIComponent(file)}`));
   if (res.error) {
-    app.innerHTML = `<div class="view-header"><h1>Humble</h1><p><a href="#/humble" style="font-size:0.85rem">← Humble</a></p></div><div class="card"><p class="text-muted">Error: ${res.message || res.error}</p></div>`;
+    app.innerHTML = `<div class="view-header"><h1>Humble</h1><p><a href="#/humble" style="font-size:0.85rem">← Humble</a></p></div>${renderError(res.message || res.error)}`;
     return;
   }
 
@@ -4211,6 +4361,197 @@ function renderRetrospectiveDetail(d) {
   `;
 }
 
+// ── PRD views ─────────────────────────────────────────────────────────
+
+async function renderPrdList() {
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="view-header"><h1>PRDs</h1><p>.xm/build/projects/*/prd/</p></div>${renderLoading()}`;
+
+  const res = await fetchJSON(apiUrl('/prd'));
+  if (res.error) {
+    app.innerHTML = `<div class="view-header"><h1>PRDs</h1></div>${renderError(res.message || res.error)}`;
+    return;
+  }
+
+  const items = Array.isArray(res) ? res : [];
+  if (items.length === 0) {
+    app.innerHTML = `
+      <div class="view-header"><h1>PRDs</h1><p>.xm/build/projects/*/prd/</p></div>
+      ${renderEmpty('No PRDs found', 'xm build plan')}
+    `;
+    return;
+  }
+
+  const e = escapeHtmlHumble;
+  const cards = items.map(item => `
+    <div class="card prd-card" style="cursor:pointer;padding:12px 16px;margin-bottom:0.5rem"
+         onclick="window.location.hash='#/prd/${encodeURIComponent(item.name)}'">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <strong>${e(item.name)}</strong>
+        <span class="text-muted" style="font-size:0.8rem">${timeAgo(item.mtime)}</span>
+      </div>
+      ${item.size != null ? `<div class="text-muted" style="font-size:0.75rem;margin-top:4px">${item.size} bytes</div>` : ''}
+    </div>
+  `).join('');
+
+  app.innerHTML = `
+    <div class="view-header"><h1>PRDs</h1><p>.xm/build/projects/*/prd/ · ${items.length} file${items.length !== 1 ? 's' : ''}</p></div>
+    ${cards}
+  `;
+}
+
+async function renderPrdDetail(name) {
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="view-header">
+      <div><a href="#/prd" style="font-size:0.875rem;opacity:0.7">← PRDs</a></div>
+      <h1 style="margin-top:0.5rem">PRD: <code>${escapeHtmlHumble(name)}</code></h1>
+    </div>
+    ${renderLoading()}
+  `;
+
+  const res = await fetchJSON(apiUrl(`/prd/${encodeURIComponent(name)}`));
+  if (res.error) {
+    app.innerHTML = `
+      <div class="view-header">
+        <div><a href="#/prd" style="font-size:0.875rem;opacity:0.7">← PRDs</a></div>
+        <h1 style="margin-top:0.5rem">PRD</h1>
+      </div>
+      ${renderError(res.message || res.error)}
+    `;
+    return;
+  }
+
+  const decodedName = name;
+  app.innerHTML = `
+    <div class="view-header">
+      <div><a href="#/prd" style="font-size:0.875rem;opacity:0.7">← PRDs</a></div>
+      <h1 style="margin-top:0.5rem">PRD: <code>${escapeHtmlHumble(res.name || decodedName)}</code></h1>
+    </div>
+    <div class="card markdown-body">${renderMarkdown(res.content || '')}</div>
+  `;
+}
+
+// ── Research views ─────────────────────────────────────────────────────
+
+async function renderResearchList() {
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="view-header"><h1>Research</h1><p>.xm/op/</p></div>${renderLoading()}`;
+
+  const res = await fetchJSON(apiUrl('/research'));
+  if (res.error) {
+    app.innerHTML = `<div class="view-header"><h1>Research</h1></div>${renderError(res.message || res.error)}`;
+    return;
+  }
+
+  const items = Array.isArray(res) ? res : [];
+  if (items.length === 0) {
+    app.innerHTML = `
+      <div class="view-header"><h1>Research</h1><p>.xm/op/</p></div>
+      ${renderEmpty('No research runs found', '/xm op investigate')}
+    `;
+    return;
+  }
+
+  const e = escapeHtmlHumble;
+  const rows = items.map(item => `
+    <tr style="cursor:pointer" onclick="window.location.hash='#/research/${encodeURIComponent(item.id)}'">
+      <td><a href="#/research/${encodeURIComponent(item.id)}">${e(item.id)}</a></td>
+      <td class="text-muted">${item.agents != null ? item.agents : '—'}</td>
+      <td class="text-muted">${item.rounds != null ? item.rounds : '—'}</td>
+      <td class="text-muted">${item.findings != null ? item.findings : '—'}</td>
+      <td class="text-muted" style="font-size:0.8rem">${timeAgo(item.mtime)}</td>
+    </tr>
+  `).join('');
+
+  app.innerHTML = `
+    <div class="view-header"><h1>Research</h1><p>.xm/op/ · ${items.length} run${items.length !== 1 ? 's' : ''}</p></div>
+    <div class="card" style="padding:0">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Agents</th>
+            <th>Rounds</th>
+            <th>Findings</th>
+            <th>When</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function renderResearchDetail(id) {
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="view-header">
+      <div><a href="#/research" style="font-size:0.875rem;opacity:0.7">← Research</a></div>
+      <h1 style="margin-top:0.5rem">Research: <code>${escapeHtmlHumble(id)}</code></h1>
+    </div>
+    ${renderLoading()}
+  `;
+
+  const res = await fetchJSON(apiUrl(`/research/${encodeURIComponent(id)}`));
+  if (res.error) {
+    app.innerHTML = `
+      <div class="view-header">
+        <div><a href="#/research" style="font-size:0.875rem;opacity:0.7">← Research</a></div>
+        <h1 style="margin-top:0.5rem">Research</h1>
+      </div>
+      ${renderError(res.message || res.error)}
+    `;
+    return;
+  }
+
+  const e = escapeHtmlHumble;
+  const entries = Array.isArray(res.entries) ? res.entries : [];
+
+  // Group entries by round
+  const byRound = new Map();
+  for (const entry of entries) {
+    const round = entry.round != null ? entry.round : 0;
+    if (!byRound.has(round)) byRound.set(round, []);
+    byRound.get(round).push(entry);
+  }
+
+  const sortedRounds = [...byRound.keys()].sort((a, b) => a - b);
+
+  const timelineHtml = sortedRounds.map(round => {
+    const roundEntries = byRound.get(round);
+    const entryItems = roundEntries.map(entry => `
+      <div class="timeline-item" style="margin-bottom:1rem">
+        <div class="timeline-dot" style="background:var(--accent);border-color:var(--accent)"></div>
+        <div class="timeline-content">
+          ${entry.agent ? `<div style="font-weight:600;margin-bottom:0.25rem">${e(entry.agent)}</div>` : ''}
+          ${entry.finding ? `<div style="margin-bottom:0.25rem">${e(entry.finding)}</div>` : ''}
+          ${entry.source ? `<div class="text-muted" style="font-size:0.8rem;margin-bottom:0.2rem"><strong>Source:</strong> ${e(entry.source)}</div>` : ''}
+          ${entry.implication ? `<div class="text-muted" style="font-size:0.8rem"><strong>Implication:</strong> ${e(entry.implication)}</div>` : ''}
+        </div>
+      </div>
+    `).join('');
+
+    return `
+      <div class="card" style="margin-bottom:1rem">
+        <h3 style="margin:0 0 0.75rem;font-size:0.9rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted)">
+          Round ${round}
+          <span class="badge badge-gray" style="margin-left:0.5rem">${roundEntries.length} finding${roundEntries.length !== 1 ? 's' : ''}</span>
+        </h3>
+        <div class="timeline">${entryItems}</div>
+      </div>
+    `;
+  }).join('');
+
+  app.innerHTML = `
+    <div class="view-header">
+      <div><a href="#/research" style="font-size:0.875rem;opacity:0.7">← Research</a></div>
+      <h1 style="margin-top:0.5rem">Research: <code>${e(res.id || id)}</code></h1>
+    </div>
+    ${entries.length === 0 ? renderEmpty('No entries found in this research run.') : timelineHtml}
+  `;
+}
+
 function render404(hash) {
   document.getElementById('app').innerHTML = `
     <div class="view-header"><h1>Not Found</h1></div>
@@ -4223,14 +4564,14 @@ async function renderSearch(query) {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="view-header"><h1>Search: <code>${query}</code></h1></div>
-    <div class="card"><p class="text-muted">Searching...</p></div>
+    ${renderLoading()}
   `;
 
   const res = await fetchJSON(apiUrl(`/search?q=${encodeURIComponent(query)}`));
   if (res.error) {
     app.innerHTML = `
       <div class="view-header"><h1>Search: <code>${query}</code></h1></div>
-      <div class="card"><p class="text-muted">Error: ${res.message}</p></div>
+      ${renderError(res.message)}
     `;
     return;
   }
@@ -4253,7 +4594,7 @@ async function renderSearch(query) {
   if (all.length === 0) {
     app.innerHTML = `
       <div class="view-header"><h1>Search: <code>${query}</code></h1></div>
-      <div class="card"><p class="text-muted">No results found for "<strong>${query}</strong>".</p></div>
+      ${renderEmpty(`No results found for "<strong>${query}</strong>".`)}
     `;
     return;
   }
@@ -4291,11 +4632,11 @@ async function renderSearch(query) {
 
 async function renderHandoffsList() {
   const app = document.getElementById('app');
-  app.innerHTML = '<div class="view-header"><h1>Handoffs</h1></div><div class="card"><p class="text-muted">Loading...</p></div>';
+  app.innerHTML = `<div class="view-header"><h1>Handoffs</h1></div>${renderLoading()}`;
 
   const res = await fetchJSON(apiUrl('/handoffs'));
   if (res.error) {
-    app.innerHTML = `<div class="view-header"><h1>Handoffs</h1></div><div class="card"><p class="text-muted">Error: ${escapeHtmlHumble(res.message || res.error)}</p></div>`;
+    app.innerHTML = `<div class="view-header"><h1>Handoffs</h1></div>${renderError(escapeHtmlHumble(res.message || res.error))}`;
     return;
   }
 
@@ -4457,6 +4798,10 @@ const ROUTES = [
   { pattern: /^\/search\/(.+)$/, handler: (m) => renderSearch(decodeURIComponent(m[1])) },
   { pattern: /^\/sync$/, handler: () => renderSync() },
   { pattern: /^\/handoffs$/, handler: () => renderHandoffsList() },
+  { pattern: /^\/prd$/, handler: () => renderPrdList() },
+  { pattern: /^\/prd\/(.+)$/, handler: (m) => renderPrdDetail(m[1]) },
+  { pattern: /^\/research$/, handler: () => renderResearchList() },
+  { pattern: /^\/research\/(.+)$/, handler: (m) => renderResearchDetail(m[1]) },
 ];
 
 function getPath() {
@@ -4480,6 +4825,7 @@ function updateActiveNav(path) {
 
 function route() {
   _pollSequence++;
+  _lastAppHtml = null;  // invalidate paint cache on navigation so a returning view re-renders past its loading placeholder (P2)
   const path = getPath();
   updateActiveNav(path);
 
@@ -4653,14 +4999,14 @@ fetchJSON('/api/health').then(h => {
 // ── Costs page + cost-by-role stacked area ─────────────────────────
 async function renderCostsPage() {
   const app = document.getElementById('app');
-  app.innerHTML = `<div class="view-header"><h1>Costs</h1></div><div class="card"><p class="text-muted">Loading…</p></div>`;
+  app.innerHTML = `<div class="view-header"><h1>Costs</h1></div>${renderLoading()}`;
   const [summary, sessions] = await Promise.all([
     fetchJSON(apiUrl('/costs')),
     fetchJSON(apiUrl('/metrics/sessions?limit=10000')),
   ]);
 
   const summaryHtml = summary.error
-    ? `<div class="card"><p class="text-muted">Costs summary: ${summary.message || summary.error}</p></div>`
+    ? renderError('Costs summary: ' + (summary.message || summary.error))
     : renderCostsSummary(summary);
 
   const sessionEvents = (!sessions.error && Array.isArray(sessions.data)) ? sessions.data : [];
@@ -4842,6 +5188,8 @@ const PALETTE_ROUTES = [
   { path: '/config', label: 'Config', kind: 'route' },
   { path: '/sync', label: 'Sync', kind: 'route' },
   { path: '/handoffs', label: 'Handoffs', kind: 'route' },
+  { path: '/prd', label: 'PRDs', kind: 'route' },
+  { path: '/research', label: 'Research', kind: 'route' },
 ];
 
 function paletteItems() {

@@ -102,6 +102,9 @@ export function registerProject(cwd, opts = {}) {
   const reg = loadRegistry();
   const existing = findEntry(reg, owner);
   if (existing) {
+    // noTouch: event-based callers (hooks/bootstrap) skip the write when already
+    // registered, so the common path is read-only.
+    if (opts.noTouch) return { action: 'unchanged', entry: existing };
     existing.last_seen = nowIso();
     if (opts.unarchive && existing.archived) existing.archived = false;
     saveRegistry(reg);
@@ -120,6 +123,17 @@ export function registerProject(cwd, opts = {}) {
   reg.projects.push(entry);
   saveRegistry(reg);
   return { action: 'added', entry };
+}
+
+// Best-effort idempotent registration for event-based callers (dispatcher self-register,
+// trace-session hook, CLI bootstrap). Writes ONLY when the project is newly added —
+// already-registered projects incur a single registry read and no write. Never throws.
+export function ensureRegistered(cwd) {
+  try {
+    return registerProject(cwd, { noTouch: true });
+  } catch {
+    return { action: 'error' };
+  }
 }
 
 export function removeProject(idOrPath) {
