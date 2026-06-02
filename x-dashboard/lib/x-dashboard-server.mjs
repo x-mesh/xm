@@ -2608,30 +2608,53 @@ function handleHandoffs(xmRoot, req) {
 // ── PRD handlers ───────────────────────────────────────────────────
 
 function handlePrdList(xmRoot, req) {
-  const prdDir = safeJoin(xmRoot, 'prd');
-  if (!prdDir || !existsSync(prdDir)) return jsonResponseWithETag([], req);
   const items = [];
-  try {
-    for (const entry of readdirSync(prdDir, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
-      const filePath = safeJoin(prdDir, entry.name);
-      if (!filePath) continue;
-      try {
-        const st = statSync(filePath);
-        items.push({ name: entry.name, mtime: st.mtimeMs, size: st.size });
-      } catch {}
-    }
-  } catch {}
+  // Standalone PRDs: .xm/prd/*.md (from `xm build plan` run without a project)
+  const prdDir = safeJoin(xmRoot, 'prd');
+  if (prdDir && existsSync(prdDir)) {
+    try {
+      for (const entry of readdirSync(prdDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+        const filePath = safeJoin(prdDir, entry.name);
+        if (!filePath) continue;
+        try {
+          const st = statSync(filePath);
+          items.push({ id: 's:' + entry.name, name: entry.name, source: 'standalone', mtime: st.mtimeMs, size: st.size });
+        } catch {}
+      }
+    } catch {}
+  }
+  // Project PRDs: .xm/build/projects/<proj>/phases/02-plan/PRD.md (build flow)
+  const projBase = safeJoin(xmRoot, 'build', 'projects');
+  if (projBase && existsSync(projBase)) {
+    try {
+      for (const entry of readdirSync(projBase, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const prdPath = safeJoin(projBase, entry.name, 'phases', '02-plan', 'PRD.md');
+        if (!prdPath || !existsSync(prdPath)) continue;
+        try {
+          const st = statSync(prdPath);
+          items.push({ id: 'p:' + entry.name, name: entry.name, source: 'project', project: entry.name, mtime: st.mtimeMs, size: st.size });
+        } catch {}
+      }
+    } catch {}
+  }
   items.sort((a, b) => b.mtime - a.mtime);
   return jsonResponseWithETag(items, req);
 }
 
-function handlePrdDetail(xmRoot, name, req) {
-  const filePath = safeJoin(xmRoot, 'prd', name);
+function handlePrdDetail(xmRoot, id, req) {
+  // id prefix: 'p:<project>' → build-project PRD, 's:<file>' (or bare) → standalone
+  let filePath;
+  if (id.startsWith('p:')) {
+    filePath = safeJoin(xmRoot, 'build', 'projects', id.slice(2), 'phases', '02-plan', 'PRD.md');
+  } else {
+    filePath = safeJoin(xmRoot, 'prd', id.startsWith('s:') ? id.slice(2) : id);
+  }
   if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
   if (!existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
   try {
-    return jsonResponseWithETag({ name, content: readFileSync(filePath, 'utf8') }, req);
+    return jsonResponseWithETag({ id, content: readFileSync(filePath, 'utf8') }, req);
   } catch {
     return jsonResponseWithETag({ error: 'read_error' }, req, 500);
   }

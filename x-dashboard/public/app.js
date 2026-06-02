@@ -4380,7 +4380,7 @@ function renderRetrospectiveDetail(d) {
 
 async function renderPrdList() {
   const app = document.getElementById('app');
-  app.innerHTML = `<div class="view-header"><h1>PRDs</h1><p>.xm/build/projects/*/prd/</p></div>${renderLoading()}`;
+  app.innerHTML = `<div class="view-header"><h1>PRDs</h1><p>.xm/prd + build projects</p></div>${renderLoading()}`;
 
   const res = await fetchJSON(apiUrl('/prd'));
   if (res.error) {
@@ -4391,7 +4391,7 @@ async function renderPrdList() {
   const items = Array.isArray(res) ? res : [];
   if (items.length === 0) {
     app.innerHTML = `
-      <div class="view-header"><h1>PRDs</h1><p>.xm/build/projects/*/prd/</p></div>
+      <div class="view-header"><h1>PRDs</h1><p>.xm/prd + build projects</p></div>
       ${renderEmpty('No PRDs found', 'xm build plan')}
     `;
     return;
@@ -4400,27 +4400,31 @@ async function renderPrdList() {
   const e = escapeHtmlHumble;
   const cards = items.map(item => `
     <div class="card prd-card" style="cursor:pointer;padding:12px 16px;margin-bottom:0.5rem"
-         onclick="window.location.hash='#/prd/${encodeURIComponent(item.name)}'">
-      <div style="display:flex;align-items:center;justify-content:space-between">
+         onclick="window.location.hash='#/prd/${encodeURIComponent(item.id || item.name)}'">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
         <strong>${e(item.name)}</strong>
-        <span class="text-muted" style="font-size:0.8rem">${timeAgo(item.mtime)}</span>
+        <span style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+          <span class="badge ${item.source === 'project' ? 'badge-indigo' : 'badge-gray'}">${item.source || 'standalone'}</span>
+          <span class="text-muted" style="font-size:0.8rem">${timeAgo(item.mtime)}</span>
+        </span>
       </div>
       ${item.size != null ? `<div class="text-muted" style="font-size:0.75rem;margin-top:4px">${item.size} bytes</div>` : ''}
     </div>
   `).join('');
 
   app.innerHTML = `
-    <div class="view-header"><h1>PRDs</h1><p>.xm/build/projects/*/prd/ · ${items.length} file${items.length !== 1 ? 's' : ''}</p></div>
+    <div class="view-header"><h1>PRDs</h1><p>.xm/prd + build projects · ${items.length} file${items.length !== 1 ? 's' : ''}</p></div>
     ${cards}
   `;
 }
 
 async function renderPrdDetail(name) {
   const app = document.getElementById('app');
+  const display = String(name).replace(/^[sp]:/, '');  // strip s:/p: id prefix for display
   app.innerHTML = `
     <div class="view-header">
       <div><a href="#/prd" style="font-size:0.875rem;opacity:0.7">← PRDs</a></div>
-      <h1 style="margin-top:0.5rem">PRD: <code>${escapeHtmlHumble(name)}</code></h1>
+      <h1 style="margin-top:0.5rem">PRD: <code>${escapeHtmlHumble(display)}</code></h1>
     </div>
     ${renderLoading()}
   `;
@@ -4437,11 +4441,10 @@ async function renderPrdDetail(name) {
     return;
   }
 
-  const decodedName = name;
   app.innerHTML = `
     <div class="view-header">
       <div><a href="#/prd" style="font-size:0.875rem;opacity:0.7">← PRDs</a></div>
-      <h1 style="margin-top:0.5rem">PRD: <code>${escapeHtmlHumble(res.name || decodedName)}</code></h1>
+      <h1 style="margin-top:0.5rem">PRD: <code>${escapeHtmlHumble(display)}</code></h1>
     </div>
     <div class="card markdown-body">${renderMarkdown(res.content || '')}</div>
   `;
