@@ -792,15 +792,9 @@ function handleProjectDetail(xmRoot, slug, req) {
   const metricsDir = safeJoin(xmRoot, 'build', 'metrics');
   const metricsFile = metricsDir ? safeJoin(metricsDir, 'sessions.jsonl') : null;
   if (metricsFile && existsSync(metricsFile)) {
-    try {
-      const lines = readFileSync(metricsFile, 'utf8').trim().split('\n');
-      for (const line of lines) {
-        try {
-          const m = JSON.parse(line);
-          if (typeof m.cost_usd === 'number' && m.project === slug) cost += m.cost_usd;
-        } catch {}
-      }
-    } catch {}
+    for (const m of parseJsonlFile(metricsFile)) {
+      if (typeof m.cost_usd === 'number' && m.project === slug) cost += m.cost_usd;
+    }
   }
 
   // Quality (avg score from tasks found above)
@@ -808,7 +802,40 @@ function handleProjectDetail(xmRoot, slug, req) {
   const scored = allTasks.filter(t => t.score != null);
   if (scored.length > 0) quality = scored.reduce((s, t) => s + t.score, 0) / scored.length;
 
-  return jsonResponseWithETag({ manifest, circuitBreaker, handoff, phases, context, decisions, steps, cost: Math.round(cost * 10000) / 10000, quality }, req);
+  // Checkpoints — filenames in build/projects/<slug>/checkpoints/*.json
+  let checkpoints = [];
+  const checkpointsDir = safeJoin(projectDir, 'checkpoints');
+  if (checkpointsDir && existsSync(checkpointsDir)) {
+    try {
+      for (const entry of readdirSync(checkpointsDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+        // e.g. 2026-04-10T12-10-15-265Z-gate-pass.json → ts, type
+        const m = entry.name.match(/^([0-9T\-:.Z]+?)-([a-zA-Z][a-zA-Z0-9-]*)\.json$/);
+        if (m) {
+          checkpoints.push({ ts: m[1].replace(/-(\d{3}Z)$/, '.$1'), type: m[2] });
+        } else {
+          checkpoints.push({ ts: null, type: entry.name.replace(/\.json$/, '') });
+        }
+      }
+      checkpoints.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+    } catch {}
+  }
+
+  // plan_check — phases/02-plan/plan-check.json
+  let plan_check = null;
+  const planCheckPath = safeJoin(projectDir, 'phases', '02-plan', 'plan-check.json');
+  if (planCheckPath && existsSync(planCheckPath)) {
+    try { plan_check = JSON.parse(readFileSync(planCheckPath, 'utf8')); } catch {}
+  }
+
+  // review_fix_gate_snapshot — xmRoot/review/review-fix-gate.json
+  let review_fix_gate_snapshot = null;
+  const reviewFixGatePath = safeJoin(xmRoot, 'review', 'review-fix-gate.json');
+  if (reviewFixGatePath && existsSync(reviewFixGatePath)) {
+    try { review_fix_gate_snapshot = JSON.parse(readFileSync(reviewFixGatePath, 'utf8')); } catch {}
+  }
+
+  return jsonResponseWithETag({ manifest, circuitBreaker, handoff, phases, context, decisions, steps, cost: Math.round(cost * 10000) / 10000, quality, checkpoints, plan_check, review_fix_gate_snapshot }, req);
 }
 
 function handleSessionState(xmRoot, req) {
@@ -1592,19 +1619,15 @@ function handleTraces(xmRoot, req) {
     const filePath = safeJoin(tracesDir, entry.name);
     if (!filePath) continue;
 
-    let lineCount = 0;
-    let firstEntry = null;
-    let lastEntry = null;
-    try {
-      const lines = readFileSync(filePath, 'utf8').split('\n').filter(l => l.trim());
-      lineCount = lines.length;
-      if (lines.length > 0) {
-        try { firstEntry = JSON.parse(lines[0]); } catch {}
-        try { lastEntry = JSON.parse(lines[lines.length - 1]); } catch {}
-      }
-    } catch {
-      continue;
-    }
+    // Read the file once; reuse for line-count/first-last and cost calc.
+    // parseJsonlFile catches read errors internally and returns []; treat that
+    // the same as an empty file (entry included with lineCount=0) to preserve
+    // the original behaviour for empty files while avoiding a double-read.
+    const parsedLines = parseJsonlFile(filePath);
+
+    const lineCount = parsedLines.length;
+    const firstEntry = parsedLines[0] ?? null;
+    const lastEntry = parsedLines[parsedLines.length - 1] ?? null;
 
     // Parse name and date from filename: {name}-{YYYYMMDD-HHMMSS}.jsonl
     const nameMatch = entry.name.match(/^(.+)-(\d{8}-\d{6})\.jsonl$/);
@@ -1624,27 +1647,22 @@ function handleTraces(xmRoot, req) {
       }
     }
 
-    // Calculate per-trace cost from agent_call/agent_step entries
+    // Calculate per-trace cost from agent_call/agent_step entries (reuse parsed array)
     let traceCost = 0;
     let traceTokensIn = 0;
     let traceTokensOut = 0;
     let agentCount = 0;
-    try {
-      const allLines = readFileSync(filePath, 'utf8').split('\n').filter(l => l.trim());
-      for (const raw of allLines) {
-        let ln;
-        try { ln = JSON.parse(raw); } catch { continue; }
-        if (ln.type !== 'agent_call' && ln.type !== 'agent_step') continue;
-        agentCount++;
-        const inTok = ln.input_tokens_est ?? ln.tokens_est?.input ?? 0;
-        const outTok = ln.output_tokens_est ?? ln.tokens_est?.output ?? 0;
-        traceTokensIn += inTok;
-        traceTokensOut += outTok;
-        const mk = resolveModelKey(ln.agent?.model ?? ln.model);
-        const pr = mk ? MODEL_PRICING[mk] : null;
-        if (pr) traceCost += inTok * pr.input + outTok * pr.output;
-      }
-    } catch {}
+    for (const ln of parsedLines) {
+      if (ln.type !== 'agent_call' && ln.type !== 'agent_step') continue;
+      agentCount++;
+      const inTok = ln.input_tokens_est ?? ln.tokens_est?.input ?? 0;
+      const outTok = ln.output_tokens_est ?? ln.tokens_est?.output ?? 0;
+      traceTokensIn += inTok;
+      traceTokensOut += outTok;
+      const mk = resolveModelKey(ln.agent?.model ?? ln.model);
+      const pr = mk ? MODEL_PRICING[mk] : null;
+      if (pr) traceCost += inTok * pr.input + outTok * pr.output;
+    }
 
     traces.push({
       file: entry.name,
@@ -1772,17 +1790,9 @@ function handleMetricsSessions(xmRoot, url, req) {
   const filePath = safeJoin(xmRoot, 'build', 'metrics', 'sessions.jsonl');
   if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
   if (!existsSync(filePath)) return jsonResponseWithETag({ data: [], total: 0 }, req);
-  try {
-    const lines = readFileSync(filePath, 'utf8').split('\n').filter(l => l.trim());
-    const parsed = [];
-    for (const line of lines) {
-      try { parsed.push(JSON.parse(line)); } catch {}
-    }
-    const total = parsed.length;
-    return jsonResponseWithETag({ data: parsed.slice(offset, offset + limit), total, limit, offset }, req);
-  } catch {
-    return jsonResponseWithETag({ error: 'parse_error', file: 'sessions.jsonl' }, req, 500);
-  }
+  const parsed = parseJsonlFile(filePath);
+  const total = parsed.length;
+  return jsonResponseWithETag({ data: parsed.slice(offset, offset + limit), total, limit, offset }, req);
 }
 
 function handleMemoryList(xmRoot, url, req) {
@@ -1847,6 +1857,10 @@ function handleMemoryDetail(xmRoot, id, req) {
 
 // ── M4: WorkspaceAPI helpers ─────────────────────────────────────────
 
+/** TTL cache for getWorkspaceStats — keyed by ws.id, 10 s window */
+const _wsStatsCache = new Map(); // id → { ts: number, value: object }
+const WS_STATS_TTL_MS = 10_000;
+
 function countDirEntries(dirPath) {
   if (!dirPath || !existsSync(dirPath)) return 0;
   try {
@@ -1857,6 +1871,11 @@ function countDirEntries(dirPath) {
 }
 
 function getWorkspaceStats(ws) {
+  // TTL cache: reuse computed stats for the same workspace within 10 s
+  const now = Date.now();
+  const cached = _wsStatsCache.get(ws.id);
+  if (cached && now - cached.ts < WS_STATS_TTL_MS) return cached.value;
+
   const projectsDir = safeJoin(ws.xmRoot, 'build', 'projects');
   const probeHistoryDir = safeJoin(ws.xmRoot, 'probe', 'history');
   const solverDir = safeJoin(ws.xmRoot, 'solver', 'problems');
@@ -1870,29 +1889,26 @@ function getWorkspaceStats(ws) {
         if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
         const fp = safeJoin(tracesDir, entry.name);
         if (!fp) continue;
-        try {
-          const lines = readFileSync(fp, 'utf8').split('\n').filter(l => l.trim());
-          for (const raw of lines) {
-            let ln;
-            try { ln = JSON.parse(raw); } catch { continue; }
-            if (ln.type !== 'agent_call' && ln.type !== 'agent_step') continue;
-            const inTok = ln.input_tokens_est ?? ln.tokens_est?.input ?? 0;
-            const outTok = ln.output_tokens_est ?? ln.tokens_est?.output ?? 0;
-            const mk = resolveModelKey(ln.agent?.model ?? ln.model);
-            const pr = mk ? MODEL_PRICING[mk] : null;
-            if (pr) totalCost += inTok * pr.input + outTok * pr.output;
-          }
-        } catch {}
+        for (const ln of parseJsonlFile(fp)) {
+          if (ln.type !== 'agent_call' && ln.type !== 'agent_step') continue;
+          const inTok = ln.input_tokens_est ?? ln.tokens_est?.input ?? 0;
+          const outTok = ln.output_tokens_est ?? ln.tokens_est?.output ?? 0;
+          const mk = resolveModelKey(ln.agent?.model ?? ln.model);
+          const pr = mk ? MODEL_PRICING[mk] : null;
+          if (pr) totalCost += inTok * pr.input + outTok * pr.output;
+        }
       }
     } catch {}
   }
 
-  return {
+  const value = {
     projects: countDirEntries(projectsDir),
     probes: countDirEntries(probeHistoryDir),
     solvers: countDirEntries(solverDir),
     cost: Math.round(totalCost * 1000) / 1000,
   };
+  _wsStatsCache.set(ws.id, { ts: now, value });
+  return value;
 }
 
 // ── Stop Mode (early exit — must run before server starts) ───────────
@@ -2278,6 +2294,30 @@ server = Bun.serve({
           return handleHandoffs(xmRoot, req);
         }
 
+        // GET /api/ws/:wsId/prd
+        if (subPath === '/prd') {
+          return handlePrdList(xmRoot, req);
+        }
+
+        // GET /api/ws/:wsId/prd/:name
+        const wsPrdDetailMatch = subPath.match(/^\/prd\/([^/]+)$/);
+        if (wsPrdDetailMatch) {
+          const name = decodeURIComponent(wsPrdDetailMatch[1]);
+          return handlePrdDetail(xmRoot, name, req);
+        }
+
+        // GET /api/ws/:wsId/research
+        if (subPath === '/research') {
+          return handleResearchList(xmRoot, req);
+        }
+
+        // GET /api/ws/:wsId/research/:id
+        const wsResearchDetailMatch = subPath.match(/^\/research\/([^/]+)$/);
+        if (wsResearchDetailMatch) {
+          const id = decodeURIComponent(wsResearchDetailMatch[1]);
+          return handleResearchDetail(xmRoot, id, req);
+        }
+
         return jsonResponseWithETag({ error: 'not_found' }, req, 404);
       }
 
@@ -2473,6 +2513,30 @@ server = Bun.serve({
       if (path === '/api/handoffs') {
         return handleHandoffs(XM_ROOT, req);
       }
+
+      // GET /api/prd
+      if (path === '/api/prd') {
+        return handlePrdList(XM_ROOT, req);
+      }
+
+      // GET /api/prd/:name
+      const prdDetailMatch = path.match(/^\/api\/prd\/([^/]+)$/);
+      if (prdDetailMatch) {
+        const name = decodeURIComponent(prdDetailMatch[1]);
+        return handlePrdDetail(XM_ROOT, name, req);
+      }
+
+      // GET /api/research
+      if (path === '/api/research') {
+        return handleResearchList(XM_ROOT, req);
+      }
+
+      // GET /api/research/:id
+      const researchDetailMatch = path.match(/^\/api\/research\/([^/]+)$/);
+      if (researchDetailMatch) {
+        const id = decodeURIComponent(researchDetailMatch[1]);
+        return handleResearchDetail(XM_ROOT, id, req);
+      }
     }
 
     // ── Static files ─────────────────────────────────────────────
@@ -2539,6 +2603,86 @@ function handleHandoffs(xmRoot, req) {
   });
 
   return jsonResponseWithETag({ data: items, total: items.length }, req);
+}
+
+// ── PRD handlers ───────────────────────────────────────────────────
+
+function handlePrdList(xmRoot, req) {
+  const prdDir = safeJoin(xmRoot, 'prd');
+  if (!prdDir || !existsSync(prdDir)) return jsonResponseWithETag([], req);
+  const items = [];
+  try {
+    for (const entry of readdirSync(prdDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      const filePath = safeJoin(prdDir, entry.name);
+      if (!filePath) continue;
+      try {
+        const st = statSync(filePath);
+        items.push({ name: entry.name, mtime: st.mtimeMs, size: st.size });
+      } catch {}
+    }
+  } catch {}
+  items.sort((a, b) => b.mtime - a.mtime);
+  return jsonResponseWithETag(items, req);
+}
+
+function handlePrdDetail(xmRoot, name, req) {
+  const filePath = safeJoin(xmRoot, 'prd', name);
+  if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  if (!existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
+  try {
+    return jsonResponseWithETag({ name, content: readFileSync(filePath, 'utf8') }, req);
+  } catch {
+    return jsonResponseWithETag({ error: 'read_error' }, req, 500);
+  }
+}
+
+// ── Research handlers ──────────────────────────────────────────────
+
+function handleResearchList(xmRoot, req) {
+  const researchBase = safeJoin(xmRoot, 'research');
+  if (!researchBase || !existsSync(researchBase)) return jsonResponseWithETag([], req);
+  const items = [];
+  try {
+    for (const entry of readdirSync(researchBase, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.startsWith('research-')) continue;
+      const dirPath = safeJoin(researchBase, entry.name);
+      if (!dirPath) continue;
+      const boardPath = safeJoin(dirPath, 'board.jsonl');
+      if (!boardPath) continue;
+      let mtime = null;
+      try { mtime = statSync(dirPath).mtimeMs; } catch {}
+      if (!existsSync(boardPath)) {
+        items.push({ id: entry.name, mtime, agents: 0, rounds: 0, findings: 0 });
+        continue;
+      }
+      const entries = parseJsonlFile(boardPath);
+      const agentSet = new Set();
+      let maxRound = 0;
+      for (const e of entries) {
+        if (e && e.agent) agentSet.add(e.agent);
+        if (e && typeof e.round === 'number' && e.round > maxRound) maxRound = e.round;
+      }
+      items.push({ id: entry.name, mtime, agents: agentSet.size, rounds: maxRound, findings: entries.length });
+    }
+  } catch {}
+  items.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+  return jsonResponseWithETag(items, req);
+}
+
+function handleResearchDetail(xmRoot, id, req) {
+  const boardPath = safeJoin(xmRoot, 'research', id, 'board.jsonl');
+  if (!boardPath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  if (!existsSync(boardPath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
+  const rawEntries = parseJsonlFile(boardPath);
+  const entries = rawEntries.map(e => ({
+    agent: e?.agent ?? null,
+    round: e?.round ?? null,
+    finding: e?.finding ?? null,
+    source: e?.source ?? null,
+    implication: e?.implication ?? null,
+  }));
+  return jsonResponseWithETag({ id, entries }, req);
 }
 
 // ── Sync Handler ───────────────────────────────────────────────────

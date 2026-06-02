@@ -105,11 +105,13 @@ echo ""
 echo "=== Syncing x-dashboard lib + public ==="
 sync_file "x-dashboard/lib/x-dashboard-server.mjs" "xm/lib/x-dashboard-server.mjs"
 mkdir -p "xm/public"
-shopt -s nullglob
-for f in x-dashboard/public/*; do
-  sync_file "$f" "xm/public/$(basename "$f")"
-done
-shopt -u nullglob
+# Mirror public/ wholesale including subdirectories (e.g. vendor/) so bundled assets
+# ship automatically — a flat public/* glob silently drops vendor/*.js (L8).
+while IFS= read -r f; do
+  rel="${f#x-dashboard/public/}"
+  mkdir -p "xm/public/$(dirname "$rel")"
+  sync_file "$f" "xm/public/$rel"
+done < <(find x-dashboard/public -type f)
 
 echo ""
 echo "=== Syncing references ==="
