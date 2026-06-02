@@ -237,6 +237,21 @@ function renderEmpty(msg, cmd) {
   </div>`;
 }
 
+// Format an agents field that may be a number, string, or array of agent objects.
+// Avoids "[object Object]" when op results store agents as structured entries.
+function fmtAgents(a) {
+  if (a == null || a === '') return '—';
+  if (typeof a === 'number') return String(a);
+  if (typeof a === 'string') return a;
+  if (Array.isArray(a)) {
+    if (a.length === 0) return '—';
+    const names = a.map(x => typeof x === 'string' ? x : (x && (x.name || x.role || x.strategy || x.label || x.dimension))).filter(Boolean);
+    return names.length === a.length ? names.join(', ') : String(a.length);
+  }
+  if (typeof a === 'object') return a.name || a.role || a.strategy || '—';
+  return '—';
+}
+
 function commandButton(command, label = 'Copy') {
   const e = escapeHtmlHumble;
   return `<button class="cmd-copy" type="button" onclick="copyCommand(${JSON.stringify(command)}, this)" title="${e(command)}">${e(label)}</button>`;
@@ -2484,7 +2499,7 @@ function renderOpsRows(ops) {
     const truncVerdict = verdictStr.length > 50 ? verdictStr.slice(0, 47) + '…' : verdictStr;
     const scoreNum = opScoreNumber(op);
     const score = scoreNum != null ? `${scoreNum}/10` : '—';
-    const agents = op.options?.agents ?? op.agents ?? '—';
+    const agents = fmtAgents(op.options?.agents ?? op.agents);
     const fileParam = op._file ?? '';
     const escFile = fileParam.replace(/"/g, '&quot;');
     return `<tr>
@@ -2579,7 +2594,7 @@ async function renderOpCompare(aFile, bFile) {
     ['Strategy', x => x.strategy],
     ['Topic', x => x.topic ?? x.question ?? x.subject ?? x.theme ?? x.problem ?? x.goal ?? x.task ?? x.focus ?? x.claim ?? x.scenario ?? x.target ?? x.prompt],
     ['Date', x => x.date || x.completed_at || x.created_at],
-    ['Agents', x => x.args?.agents || x.options?.agents || x.config?.agents],
+    ['Agents', x => fmtAgents(x.args?.agents || x.options?.agents || x.config?.agents)],
     ['Verdict', x => x.outcome?.verdict],
     ['Self-score (overall)', x => opScoreNumber(x)],
     ['Theme count', x => Array.isArray(x.themes) ? x.themes.length : '—'],
