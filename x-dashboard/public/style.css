@@ -42,7 +42,7 @@ html, body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.5;
 }
 
@@ -151,7 +151,7 @@ code {
   padding: 28px 32px;
   background: var(--bg);
 }
-#app { max-width: 960px; }
+#app { max-width: 1600px; }
 
 /* ── View Header — BIG, raw ── */
 .view-header { margin-bottom: 24px; }
@@ -228,7 +228,7 @@ code {
 table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 14px;
   font-family: var(--font-mono);
 }
 thead { background: var(--surface); }
@@ -237,7 +237,7 @@ thead th {
   text-align: left;
   font-weight: 700;
   color: var(--accent);
-  font-size: 11px;
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
   border-bottom: 2px solid var(--accent);
