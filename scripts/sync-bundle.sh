@@ -78,7 +78,13 @@ done
 
 echo ""
 echo "=== Syncing x-solver lib files ==="
-sync_file "x-solver/lib/x-solver-cli.mjs" "xm/lib/x-solver-cli.mjs"
+# Mirror all *.mjs wholesale so dependency modules (e.g. convergence.mjs) ship automatically.
+# default-config.json is intentionally excluded: it would collide with x-build's at xm/lib/default-config.json.
+shopt -s nullglob
+for f in x-solver/lib/*.mjs; do
+  sync_file "$f" "xm/lib/$(basename "$f")"
+done
+shopt -u nullglob
 
 echo ""
 echo "=== Syncing x-sync lib files ==="
@@ -209,14 +215,23 @@ shopt -u nullglob
 
 for pair in \
   "x-build/lib/shared-config.mjs:xm/lib/shared-config.mjs" \
-  "x-build/lib/default-config.json:xm/lib/default-config.json" \
-  "x-solver/lib/x-solver-cli.mjs:xm/lib/x-solver-cli.mjs"; do
+  "x-build/lib/default-config.json:xm/lib/default-config.json"; do
   src="${pair%%:*}"; dst="${pair##*:}"
   if ! diff -q "$src" "$dst" > /dev/null 2>&1; then
     echo "  DIVERGED: $dst"
     DIVERGED=$((DIVERGED + 1))
   fi
 done
+
+shopt -s nullglob
+for f in x-solver/lib/*.mjs; do
+  dst="xm/lib/$(basename "$f")"
+  if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
+    echo "  DIVERGED: $dst"
+    DIVERGED=$((DIVERGED + 1))
+  fi
+done
+shopt -u nullglob
 
 for pair in \
   "x-memory/lib/x-memory-cli.mjs:xm/lib/x-memory-cli.mjs" \
