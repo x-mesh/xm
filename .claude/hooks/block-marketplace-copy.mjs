@@ -44,6 +44,12 @@ const X_TRACE_LIB_FILES = new Set([
   'trace-writer.mjs',
 ]);
 
+// x-solver lib files mirrored (whole *.mjs set) into xm/lib/ root. Keep in sync with sync-bundle.sh.
+const X_SOLVER_LIB_FILES = new Set([
+  'x-solver-cli.mjs',
+  'convergence.mjs',
+]);
+
 function readStdin() {
   return new Promise((resolve) => {
     let data = '';
@@ -95,8 +101,10 @@ function findSourcePath(rel) {
     return 'x-build/lib/x-build-cli.mjs';
   }
 
-  if (rel === 'xm/lib/x-solver-cli.mjs') {
-    return 'x-solver/lib/x-solver-cli.mjs';
+  // xm/lib/<file>.mjs from x-solver (whole *.mjs set mirrored to lib root)
+  const solverMatch = rel.match(/^xm\/lib\/([^/]+\.mjs)$/);
+  if (solverMatch && X_SOLVER_LIB_FILES.has(solverMatch[1])) {
+    return `x-solver/lib/${solverMatch[1]}`;
   }
 
   if (rel === 'xm/lib/shared-config.mjs') {
