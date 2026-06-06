@@ -19,6 +19,9 @@ coverage/
 # Local settings
 .claude/settings.local.json
 
+# Local session state (codex consult session ids, etc. — per-machine, not shared)
+.context/
+
 # OS
 .DS_Store
 Thumbs.db

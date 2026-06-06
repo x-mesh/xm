@@ -21,9 +21,16 @@ const __dirname = dirname(__filename);
 // ── Paths ─────────────────────────────────────────────────────────────
 
 const PLUGIN_ROOT = join(__dirname, '..');
-const CATALOG_PATH = join(PLUGIN_ROOT, 'agents', 'catalog.json');
-const RULES_DIR = join(PLUGIN_ROOT, 'agents', 'rules');
-const SLIM_DIR = join(PLUGIN_ROOT, 'agents', 'slim');
+// NOTE: this catalog lives in `agent-catalog/`, NOT `agents/`, on purpose.
+// Claude Code recursively auto-registers every *.md under a plugin's `agents/`
+// directory as a native subagent (namespaced `xm:rules:*` / `xm:slim:*`), which
+// loaded all 74 specialist files into standing context on every session. These
+// agents are on-demand only (loaded via this CLI from the kit skill), so they
+// are kept outside `agents/` to suppress that auto-registration. Do not move back.
+const CATALOG_ROOT = join(PLUGIN_ROOT, 'agent-catalog');
+const CATALOG_PATH = join(CATALOG_ROOT, 'catalog.json');
+const RULES_DIR = join(CATALOG_ROOT, 'rules');
+const SLIM_DIR = join(CATALOG_ROOT, 'slim');
 
 // ── Stopwords ─────────────────────────────────────────────────────────
 

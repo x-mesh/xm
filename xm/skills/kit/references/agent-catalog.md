@@ -1,6 +1,8 @@
 # Agent Catalog
 
-xm includes a catalog of 37 specialist agents at `xm/agents/`. These provide domain expertise for broadcast/fan-out operations across all xm tools.
+xm includes a catalog of 37 specialist agents at `xm/agent-catalog/`. These provide domain expertise for broadcast/fan-out operations across all xm tools.
+
+> **Why `agent-catalog/` and not `agents/`?** Claude Code recursively auto-registers every `*.md` under a plugin's `agents/` directory as a native subagent, which would load all 74 specialist files (rules + slim) into standing context on every session. These agents are on-demand only — accessed through the CLI below — so they live outside `agents/` to suppress that auto-registration.
 
 ## Commands
 
@@ -31,7 +33,7 @@ node ${CLAUDE_PLUGIN_ROOT}/lib/agent-catalog.mjs get security --slim
 ## Structure
 
 ```
-xm/agents/
+xm/agent-catalog/    ← NOT `agents/` — avoids Claude Code native auto-registration
   catalog.json       ← Index: name, description, tags per agent
   rules/             ← Full agent rules (~240 lines each)
   slim/              ← Slim versions (~30 lines each, for prompt injection)

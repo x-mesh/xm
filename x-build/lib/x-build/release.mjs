@@ -398,7 +398,7 @@ export function cmdReleaseCommit(args) {
     ...PLUGIN_DIRS.map(d => `${d}/skills/`),
     ...PLUGIN_DIRS.map(d => `${d}/public/`),
     'xm/lib/',
-    'xm/agents/',
+    'xm/agent-catalog/',
     'scripts/',
     'test/',
   ];
@@ -410,7 +410,7 @@ export function cmdReleaseCommit(args) {
 
   // Also stage new untracked files in marketplace directories (sync-bundle may have created them).
   // git add of a non-existent path is a no-op, so this is safe for non-marketplace repos.
-  for (const dir of ['xm/skills/', 'xm/lib/', 'xm/public/', 'xm/references/']) {
+  for (const dir of ['xm/skills/', 'xm/lib/', 'xm/public/', 'xm/references/', 'xm/agent-catalog/']) {
     try { execSync(`git add ${dir}`, { stdio: 'pipe' }); } catch {}
   }
 
