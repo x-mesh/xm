@@ -190,7 +190,7 @@ Load `commands/config.md` before executing. `config` with no args = interactive 
 
 ## Agent Catalog
 
-Load `references/agent-catalog.md` before executing. 37 specialist agents at `xm/agents/` with two layers — `rules/<name>.md` (full, ~240 lines) and `slim/<name>.md` (~30 lines, for prompt injection). CLI: `node ${CLAUDE_PLUGIN_ROOT}/lib/agent-catalog.mjs {list|match "<topic>" --count N|get <name> [--slim]}`. Consumed by x-op broadcasts, x-review `--specialists`, x-solver fan-out, x-build research.
+Load `references/agent-catalog.md` before executing. 37 specialist agents at `xm/agent-catalog/` (NOT `agents/`, which Claude Code would auto-register as native subagents) with two layers — `rules/<name>.md` (full, ~240 lines) and `slim/<name>.md` (~30 lines, for prompt injection). CLI: `node ${CLAUDE_PLUGIN_ROOT}/lib/agent-catalog.mjs {list|match "<topic>" --count N|get <name> [--slim]}`. Consumed by x-op broadcasts, x-review `--specialists`, x-solver fan-out, x-build research.
 
 ## Common Rationalizations
 
