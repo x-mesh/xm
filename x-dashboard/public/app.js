@@ -2778,14 +2778,14 @@ async function renderOpDetail(file) {
         v.map(x => `<li style="margin-bottom:.25rem">${
           typeof x === 'string'
             ? escapeHtmlHumble(x)
-            : `<pre style="margin:0;font-size:.85em">${escapeHtmlHumble(JSON.stringify(x, null, 2))}</pre>`
+            : renderOutcomeValue(x)
         }</li>`).join('')
       }</ul>`;
     }
     if (typeof v === 'object') {
       const rows = Object.entries(v).map(([ok, ov]) => {
         const cell = (ov != null && typeof ov === 'object')
-          ? `<pre style="margin:0;font-size:.85em">${escapeHtmlHumble(JSON.stringify(ov, null, 2))}</pre>`
+          ? renderOutcomeValue(ov)
           : `<span style="white-space:pre-line">${escapeHtmlHumble(String(ov))}</span>`;
         return `<tr><td class="text-muted" style="padding-right:1rem;vertical-align:top"><code>${escapeHtmlHumble(ok)}</code></td><td>${cell}</td></tr>`;
       }).join('');
