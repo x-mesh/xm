@@ -21,6 +21,8 @@ Early termination check: if all agree → skip to Final.
 fan-out (focus on key points of contention):
 "Contention 1: {description}. Provide additional evidence, propose compromises, and state any position changes."
 
+**Call AskUserQuestion to confirm before Final: CONVERGE. Show phase results first.**
+
 ## Final: CONVERGE
 Leader drafts a consensus proposal → fan-out:
 "AGREE or OBJECT to the consensus proposal. Summarize your final position in one line."

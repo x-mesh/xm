@@ -2,6 +2,8 @@
 
 When the user provides text that doesn't match any strategy keyword, auto-detect the best strategy.
 
+> The authoritative signal table is now inlined in `SKILL.md` (Auto-Route section) so it loads at runtime. Keep this copy in sync; this file additionally documents the execution flow and worked examples.
+
 ## Signal detection table
 
 | Signal Pattern | Detected Intent | Recommended Strategy | Confidence |
@@ -13,13 +15,17 @@ When the user provides text that doesn't match any strategy keyword, auto-detect
 | "왜", "why", "원인", "root cause", "디버그", "debug" | Root cause analysis | **hypothesis** | high |
 | "조사", "investigate", "분석", "analyze", "알아봐" | Deep investigation | **investigate** | high |
 | "개선", "improve", "다듬", "refine", "더 좋게" | Iterative improvement | **refine** | high |
-| "설계", "design", "아키텍처", "architecture", "구조" | Design decision | **council** | medium |
+| "설계", "design", "아키텍처", "architecture" (whole-system) | Design decision | **council** | medium |
 | "합의", "consensus", "의견 모아", "다 같이" | Multi-perspective agreement | **council** | high |
 | "분해", "break down", "나눠", "쪼개" | Problem decomposition | **decompose** | high |
 | "조합", "combine", "파이프라인", "순서대로" | Multi-strategy pipeline | **compose** | medium |
 | "모니터", "watch", "감시", "지켜봐" | Continuous monitoring | **monitor** | high |
 | "관점", "perspective", "입장", "stakeholder" | Multi-perspective analysis | **persona** | high |
 | "질문", "socratic", "탐구", "명확하게" | Requirement clarification | **socratic** | medium |
+| "경쟁", "compete", "best of", "제일 나은 거 골라", "후보 채택" | Competitive selection | **tournament** | high |
+| "단계별", "순차", "차례대로", "step by step", "A 다음 B" | Sequential pipeline | **chain** | high |
+| "병렬로 나눠", "동시에 처리", "독립 작업 분배" | Parallel split | **distribute** | high |
+| "모듈 구조 잡고 구현", "scaffold", "구조 잡고 만들어" | Structured build | **scaffold** | medium |
 | File/dir path detected (e.g., `src/`, `*.ts`) | Code target → review or red-team | **review** | medium |
 
 ## Priority rules
@@ -31,7 +37,9 @@ When the user provides text that doesn't match any strategy keyword, auto-detect
 2. Explicit comparison ("vs", "비교") → **debate**
 3. Code/file target → **review** (unless security signal present)
 4. Question/why → **hypothesis**
-5. Fallback → **refine** (safe default for improvement tasks)
+5. Still multiple matches → pick the highest-confidence row; tie → ask.
+
+No signal matches → show top 3 with AskUserQuestion (see Execution flow below); do not silently fall back to refine.
 
 ## Execution flow
 

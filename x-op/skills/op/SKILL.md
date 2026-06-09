@@ -146,7 +146,33 @@ Determine strategy from the first word of `$ARGUMENTS`:
 
 ### Auto-Route (Natural Language → Strategy)
 
-See `references/x-op-auto-route.md` — signal detection table, priority rules, compound signal boost, execution flow, and examples for mapping free-form input to strategies.
+When input matches no strategy keyword, detect intent from the signal table below, then **confirm with AskUserQuestion before executing** (see Interaction Protocol).
+
+| Signal (ko / en) | Strategy | Conf |
+|---|---|---|
+| 리뷰, 검토 / review, check | review | high |
+| 보안, 취약점 / security, vulnerability, XSS, injection | red-team | high |
+| vs, 비교 / compare, which is better | debate | high |
+| 아이디어, 브레인스토밍 / idea, brainstorm | brainstorm | high |
+| 왜, 원인 / why, root cause, debug | hypothesis | high |
+| 조사, 분석 / investigate, analyze | investigate | high |
+| 개선, 다듬 / improve, refine | refine | high |
+| 합의, 의견 모아 / consensus, stakeholders | council | high |
+| 설계, 아키텍처 (whole-system) / design, architecture | council | medium |
+| 분해, 나눠, 쪼개 (dependency tree) / break down | decompose | high |
+| 조합, 파이프라인 / combine, multi-strategy pipeline | compose | medium |
+| 모니터, 감시 / watch, monitor | monitor | high |
+| 관점, 입장 / perspective, persona | persona | high |
+| 질문, 명확하게 / clarify, socratic | socratic | medium |
+| 경쟁, 제일 나은 거 골라, 후보 채택 / compete, best of N | tournament | high |
+| 단계별, 순차, 차례대로 / step by step, sequential A→B | chain | high |
+| 병렬로 나눠, 동시에 처리 / parallel split, independent subtasks | distribute | high |
+| 모듈 구조 잡고 구현 / scaffold, build with module spec | scaffold | medium |
+| file/dir path (`src/`, `*.ts`) | review (red-team if security) | medium |
+
+Priority when multiple match: (1) security → red-team; (2) explicit vs/비교 → debate; (3) code/file target → review unless a security signal is present; (4) why/원인 → hypothesis; (5) still multiple → pick the highest-confidence row, tie → ask. Compound boost: 2+ signals raise confidence (e.g. "보안 리뷰" = security+review → red-team).
+
+See `references/x-op-auto-route.md` for execution flow and worked examples.
 
 ## Options
 
@@ -256,109 +282,75 @@ Output the catalog in `references/x-op-list.md` verbatim (strategies, options, e
 
 Entry: empty `$ARGUMENTS`. See `references/x-op-interactive-pick.md` — render catalog (same block as `## Subcommand: list`), then TWO AskUserQuestion calls: (1) strategy (4 common options; `AskUserQuestion` auto-appends `Other`, do NOT add it yourself), (2) topic. Plain-text questions are forbidden — they don't create a turn boundary and cause the skill to re-fire against empty args.
 
----
+> **Strategy block execution rule:** the `## Strategy:` blocks below are routing SUMMARIES. Before executing any strategy, use the Read tool to open `strategies/<name>.md` and follow it verbatim — the exact agent prompts, word limits, phase gates, and persist schema live there, not in the summary. (Repo probe: passive "see X.md" pointers go unread 0/5, so this Read step is mandatory, not optional.)
 
 ## Strategy: refine
 
 See `strategies/refine.md` — round-based Diverge → Converge → Verify refinement. Round 1 DIVERGE fan-out produces N independent proposals (run_in_background parallel); Round 2 CONVERGE leader synthesizes and runs a vote fan-out to adopt the best; Round 3+ VERIFY fan-out checks the adopted proposal — all OK triggers early termination, issues raised loop back until max_rounds.
 
----
-
 ## Strategy: tournament
 
 See `strategies/tournament.md` — Compete → anonymous vote → adopt winner. Phase 1 COMPETE fan-out collects solutions; Phase 2 ANONYMIZE removes agent names and shuffles order; Phase 3 VOTE fan-out ranks anonymized solutions; Phase 4 TALLY applies Borda count. Supports `--bracket double` for seed ranking with losers' bracket.
-
----
 
 ## Strategy: chain
 
 See `strategies/chain.md` — A→B→C sequential pipeline with conditional branching. Each step delegates to one agent passing prior step result as context. Enhanced mode supports `if:condition->step` DAG branching syntax and auto-inserts supplementary steps when confidence is low.
 
----
-
 ## Strategy: review
 
 See `strategies/review.md` — Multi-perspective code review fan-out. Phase 1 TARGET reads `--target` file or `git diff HEAD`; Phase 2 ASSIGN distributes Security/Logic/Performance perspectives (scales with `--agents N`); Phase 3 REVIEW fan-out with per-perspective prompts; Phase 4 SYNTHESIZE deduplicates and sorts by severity.
-
----
 
 ## Strategy: debate
 
 See `strategies/debate.md` — Pro vs Con debate followed by verdict. Phase 1 POSITION distributes agents into PRO/CON/JUDGE; Phase 2 OPENING runs simultaneous fan-out for arguments; Phase 3 REBUTTAL cross-sends openings; Phase 4 VERDICT delegate scores all arguments and delivers a final recommendation.
 
----
-
 ## Strategy: red-team
 
 See `strategies/red-team.md` — Adversarial attack/defend cycle. Phase 1 TARGET collects via `--target` or `git diff HEAD`; Phase 2 ATTACK fan-out finds vulnerabilities tagged by dimension; Phase 3 DEFEND fan-out provides fixes or counter-evidence; Phase 4 REPORT synthesizes Fixed(🟢)/Partial(🟡)/Open(🔴).
-
----
 
 ## Strategy: brainstorm
 
 See `strategies/brainstorm.md` — free ideation → cluster → vote. Phase 1 GENERATE fan-out produces minimum 5 tagged ideas per agent; two optional modes: `--analogical` (cross-domain structural mapping) and `--lateral` (de Bono operators: Reversal, Provocation, Random Entry, Fractionation). Phase 2 CLUSTER deduplicates and groups by theme; Phase 3 VOTE (when `--vote` is set) fan-out selects top 3.
 
----
-
 ## Strategy: distribute
 
 See `strategies/distribute.md` — Split a large task into independent subtasks → parallel fan-out → merge. Phase 1 SPLIT auto-splits or uses `--splits`; Phase 2 DISPATCH fan-out with scoped subtask prompts; Phase 3 MERGE leader resolves conflicts and synthesizes by theme.
-
----
 
 ## Strategy: council
 
 See `strategies/council.md` — N-party free discussion → cross-examination → deep dive → consensus. Round 1 OPENING fan-out collects positions; Round 2 CROSS-EXAMINE broadcasts each agent's view to others (excluding their own); Round 3~N-1 DEEP DIVE targets key points of contention; Final CONVERGE drafts a consensus proposal for vote. Supports `--weights` for role-based weighted voting.
 
----
-
 ## Strategy: socratic
 
 See `strategies/socratic.md` — Socratic questioning across N rounds: Phase 1 SEED collects an initial position via delegate; Phase 2 QUESTION ROUNDS fan-out agents as questioners targeting logical gaps and implicit premises, then leader synthesizes and sends to a responding agent. Early termination when questions become trivial; max_rounds cap for best-effort output.
-
----
 
 ## Strategy: persona
 
 See `strategies/persona.md` — Role-based multi-perspective analysis. Phase 1 ASSIGN distributes fixed personas (default: senior engineer, security expert, PM, junior developer); Phase 2 ANALYZE broadcast with per-persona prompts; Phase 3 SYNTHESIZE unifies across perspectives; optional Phase 4 CROSS-CHECK verifies unified proposal from each persona's view.
 
----
-
 ## Strategy: scaffold
 
 See `strategies/scaffold.md` — Structure design → module distribution → parallel implementation → integration. Phase 1 DESIGN delegates to opus for module/interface spec; Phase 2 DISPATCH fan-out per module; Phase 3 INTEGRATE resolves interface compatibility and assembles final result.
-
----
 
 ## Options Reference
 
 See `references/x-op-options.md` — detailed behavior for `--dry-run`, `--resume`, `--explain`, `--verify`, `--vote` (Self-Consistency).
 
----
-
 ## Strategy: compose
 
 See `strategies/compose.md` — Chain multiple strategies into a sequential pipeline. Supports `compose "A | B | C"` syntax and `--pipe` flag. Leader constructs `pipe_payload` between each step using per-strategy extraction rules; includes a full transformation table for common strategy pairings.
-
----
 
 ## Strategy: decompose
 
 See `strategies/decompose.md` — Recursive decomposition → leaf parallel execution → bottom-up assembly. Phase 1 DECOMPOSE delegates to an opus agent to build a dependency tree; Phase 2 EXECUTE LEAVES fan-out in dependency order; Phase 3 ASSEMBLE integrates results bottom-up.
 
----
-
 ## Strategy: hypothesis
 
 See `strategies/hypothesis.md` — Generate hypotheses → falsify → adopt survivors. Phase 1 GENERATE fan-out produces 2-3 tagged hypotheses per agent with falsifiable predictions; Phase 2 FALSIFY fan-out attempts to disprove each (FALSIFIED or SURVIVED); Phase 3 SYNTHESIZE selects strongest survivor, re-runs if none survive (up to max_rounds).
 
----
-
 ## Strategy: investigate
 
 See `strategies/investigate.md` — Multi-angle investigation → synthesis → gap analysis. Phase 1 SCOPE auto-selects angles from topic pattern (codebase/comparison/security/performance/general); Phase 2 EXPLORE broadcast with depth-aware prompts (shallow/deep/exhaustive); Phase 2.5 CROSS-VALIDATE for deep/exhaustive; Phase 3 SYNTHESIZE with conflict resolution and confidence aggregation; Phase 4 GAP ANALYSIS delegate suggests follow-up strategies.
-
----
 
 ## Strategy: monitor
 
@@ -405,19 +397,59 @@ What kind of task is this?
 ```
 
 ## Agent Output Quality Contract
-See `references/agent-output-contract.md` — evidence-based, falsifiable, dimension-tagged outputs with per-category Dimension Anchors and strict evidence standards.
+
+Every agent output must be **evidence-based** (cites a fact/example/mechanism — "it's better" FAILs), **falsifiable**, and **dimension-tagged**. The leader enforces this at synthesis: **a finding whose only support is Invalid evidence is dropped, or returned to the agent for evidence before it counts.**
+
+| Valid evidence | Invalid evidence |
+|---|---|
+| `file.ts:123` with the code quoted | "likely…", "probably…", "may be" |
+| Output of a command actually run (grep/test/diff) | Logical deduction with no code proof |
+| A test executed whose result proves the behavior | General explanation of how a tech works |
+| Cited URL + quoted passage | Bare URL, no quote |
+| Another agent's output referenced by ID/phase | "It is well known that…" |
+
+See `references/agent-output-contract.md` for per-category Dimension Anchors and good/bad examples.
 
 ---
 
 ## Self-Score Protocol
 
-See `references/self-score-protocol.md` — 1-10 self-assessment scale, Strategy-Rubric mapping, 4Q hallucination check, output block format.
+Every strategy appends a `## Self-Score` block before persisting. Scale: **1=fail, 5=baseline, 7=good, 10=excellent.** Overall = weighted average of the rubric criteria.
+
+Rubric by category (override with `--rubric`; the rubric NAME is recorded in the persisted eval object):
+| Category | Strategies | Rubric | Criteria (weight) |
+|---|---|---|---|
+| Code | review, red-team, monitor | code-quality | correctness .30, readability .20, maintainability .20, security .20, test-coverage .10 |
+| Argument | refine, tournament, debate, council, socratic, hypothesis, investigate | general | accuracy .25, completeness .25, consistency .20, clarity .20, hallucination-risk .10 |
+| Decomposition | scaffold, decompose, distribute, chain | plan-quality | completeness .30, actionability .30, scope-fit .20, risk-coverage .20 |
+| Ideation | brainstorm, persona | general | accuracy .25, completeness .25, consistency .20, clarity .20, hallucination-risk .10 |
+| Pipeline | compose | (inherits last sub-strategy's) | — |
+
+**4Q hallucination check (mandatory, every strategy)** — answer before presenting the final output:
+1. **Evidence?** every factual claim cites a source (file:line / URL / tool output / agent quote); else flag UNVERIFIED.
+2. **Requirements?** each element of the task: covered / partial / not covered.
+3. **Assumptions?** list each; cite evidence or mark ASSUMED.
+4. **Consistency?** findings don't contradict; the verdict follows from the evidence.
+
+If 2+ are ⚠️, append: `"⚠ 2+ items flagged. Consider /xm:eval score --grounded."`
+
+See `references/self-score-protocol.md` for the output-table format and full rationale.
 
 ## Result Persistence (REQUIRED — every strategy)
 
-Every strategy MUST save its result to `.xm/op/` as the final step, after the Self-Score block.
+Every strategy MUST save its result to `.xm/op/{strategy}-{YYYY-MM-DD}-{slug}.json` as the final step, after the Self-Score block.
 
-See `references/x-op-result-persistence.md` — save workflow, result schema, per-strategy outcome mapping, and what NOT to save.
+**Canonical top-level keys the saved JSON MUST carry** — a strategy's internal vocabulary (debate→question, persona→subject, …) may be added alongside but cannot REPLACE these. Omitting any is the documented root cause of `—` placeholders in the dashboard Ops list:
+
+| Key | Why |
+|---|---|
+| `topic` | what the user asked — dashboard Topic column |
+| `created_at`, `completed_at` | ISO8601 — sort order + duration |
+| `options.agents` | agent count used — Agents column |
+| `self_score` | `{overall, criteria}` — Score column |
+| `status` | `completed` \| `failed` |
+
+See `references/x-op-result-persistence.md` for the full schema and per-strategy outcome mapping.
 
 ### Termination Checkpoint (required before declaring any strategy complete)
 
@@ -426,8 +458,9 @@ Before treating a strategy as done, emit this block as the last thing. Any unche
 ```
 **TERMINATION_CHECKPOINT:**
 - [x] Final Output emitted (strategy-specific format)
-- [x] Self-Score block emitted (per `references/self-score-protocol.md`)
-- [x] Result file written to `.xm/op/{strategy}-{YYYY-MM-DD}-{slug}.json`
+- [x] Self-Score block emitted (1-10 scale + rubric)
+- [x] 4Q hallucination check emitted (⚠ flagged when 2+ items uncertain)
+- [x] Result file written with canonical keys (topic, created_at, completed_at, options.agents, self_score, status)
 - [x] Save path surfaced to user: `💾 Saved: .xm/op/{filename}`
 ```
 
