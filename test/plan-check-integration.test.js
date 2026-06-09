@@ -203,7 +203,7 @@ describe('plan-check integration — full project setup', () => {
   it('G4 — warns about 3 large tasks with suggestion to split', () => {
     expect(RESULT.stdout).toContain('atomicity');
     expect(RESULT.stdout).toMatch(/3 large tasks/);
-    expect(RESULT.stdout).toContain('consider splitting');
+    expect(RESULT.stdout).toContain('decompose');
   });
 
   // ── G6: >15 tasks upper bound ─────────────────────────────────────────────
