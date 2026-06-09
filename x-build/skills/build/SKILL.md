@@ -271,8 +271,8 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 - `checkpoint <type> [message]` — Record checkpoint
 
 ### Execute Phase
-- `tasks add <name> [--deps t1,t2] [--size small|medium|large] [--done-criteria "..."] [--team <name>]`
-- `tasks list` / `tasks remove <id>` / `tasks update <id> --status <s> [--done-criteria "..."]`
+- `tasks add <name> [--desc "what + why"] [--deps t1,t2] [--size small|medium|large] [--done-criteria "..."] [--team <name>]` — always pass `--desc`; the name is a title, the description is what the executor reads
+- `tasks list` / `tasks remove <id>` / `tasks update <id> --status <s> [--desc "..."] [--done-criteria "..."]`
 - `tasks done-criteria` — Auto-derive done criteria from PRD for all tasks
 - `later add|list|promote|dismiss|verify-scope` — Capture off-scope work discovered during a task without editing it; verify open later files stayed untouched
 - `steps compute` — Calculate step groups from dependencies

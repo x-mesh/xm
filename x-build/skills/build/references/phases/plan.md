@@ -249,7 +249,8 @@ Create tasks informed by research artifacts:
 3. Decompose into 5-10 tasks based on REQUIREMENTS.md:
    - Each task references requirement IDs in its name (e.g., "Implement JWT auth [R1]")
    - Concrete, actionable names (start with verb)
-   - Size: small (1-2h), medium (half-day), large (full day+)
+   - **Every task MUST carry a `--desc` (1-3 sentences: WHAT it does + WHY it exists).** The name is a compressed title; the description is the text the executor actually reads to understand scope and intent. Do not register a task whose intent is not obvious from its name alone without a description.
+   - **Size by single-agent session, not calendar time:** `small` = part of one session, `medium` = ≈ one session, `large` = at the limit of one session (prefer to split it). Avoid full-day tasks — if a task cannot finish in one agent session, decompose it into smaller tasks. `plan-check` flags every `large` task as a split candidate.
    - Dependencies: what must complete first
 
 4. **CONTEXT.md Quality Bar → Task Injection (automatic)**
@@ -283,10 +284,12 @@ Create tasks informed by research artifacts:
 
    Tags: `[QA]` for quality tasks, `[DOC]` for documentation tasks, `[R1]` for requirement tasks. This makes CONTEXT.md → task traceability visible.
 
-5. Register all tasks (requirement-derived + quality-derived):
+5. Register all tasks (requirement-derived + quality-derived). Pass `--desc` on every task:
    ```bash
-   $XMB tasks add "Implement JWT auth [R1]" --size medium
-   $XMB tasks add "Create CRUD endpoints [R2]" --deps t1 --size medium
+   $XMB tasks add "Implement JWT auth [R1]" --size medium \
+     --desc "Issue and verify JWTs for the login flow so protected routes can authenticate requests. Covers signing, expiry, and refresh-token rotation."
+   $XMB tasks add "Create CRUD endpoints [R2]" --deps t1 --size medium \
+     --desc "Expose REST endpoints for the core resource so the client can read/write data. Every mutation is gated by the auth from t1."
    # ... plus auto-injected [QA] and [DOC] tasks from step 4
    ```
    After registering all tasks, derive **done criteria** for each task from the PRD's Section 8 (Acceptance Criteria) and Section 5 (Requirements Traceability):
