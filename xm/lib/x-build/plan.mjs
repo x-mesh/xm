@@ -142,16 +142,18 @@ export function cmdPlanCheck(args) {
   const checks = [];
   const tasks = taskData?.tasks || [];
 
-  // 1. Atomicity
+  // 1. Atomicity — a "large" task exceeds the one-session unit, so each one is a
+  // split candidate regardless of dependencies. Smaller tasks give the executor
+  // clearer scope and make parallelism safer.
   for (const t of tasks) {
-    if (t.size === 'large' && !t.depends_on?.length) {
-      checks.push({ dim: 'atomicity', level: 'warn', task: t.id, msg: `Task "${t.name}" is large with no dependencies — consider splitting` });
+    if (t.size === 'large') {
+      checks.push({ dim: 'atomicity', level: 'warn', task: t.id, msg: `Task "${t.name}" is large (>1 session) — split into 2+ smaller tasks` });
     }
   }
-  // G4: Flag excessive large tasks regardless of dependencies
+  // G4: Flag excessive large tasks in aggregate too
   const largeTasks = tasks.filter(t => t.size === 'large');
   if (largeTasks.length >= 3) {
-    checks.push({ dim: 'atomicity', level: 'warn', msg: `${largeTasks.length} large tasks — consider splitting: ${largeTasks.map(t => t.id).join(', ')}` });
+    checks.push({ dim: 'atomicity', level: 'warn', msg: `${largeTasks.length} large tasks — plan is too coarse; decompose: ${largeTasks.map(t => t.id).join(', ')}` });
   }
 
   // 2. Dependencies
@@ -248,6 +250,15 @@ export function cmdPlanCheck(args) {
   for (const t of tasks) {
     if (!t.done_criteria?.length) {
       checks.push({ dim: 'scope-clarity', level: 'warn', task: t.id, msg: `"${t.name}" has no done_criteria — completion is ambiguous. Run: tasks done-criteria` });
+    }
+  }
+
+  // 10b. Description presence — a task with no description AND no [R#] ref is
+  // unexplained: the executor can only guess intent from the one-line name.
+  for (const t of tasks) {
+    const hasReqRef = /\[R\d+\]/i.test(t.name);
+    if (!t.description?.trim() && !hasReqRef) {
+      checks.push({ dim: 'scope-clarity', level: 'info', task: t.id, msg: `"${t.name}" has no description and no [R#] ref — intent is implicit. Add: tasks update ${t.id} --desc "what + why"` });
     }
   }
 
