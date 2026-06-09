@@ -226,7 +226,7 @@ describe('G4 — Atomicity 3+ large tasks (atomicity dim)', () => {
       const r = run(['plan-check'], { cwd: tmp });
       expect(r.stdout).toContain('atomicity');
       expect(r.stdout).toContain('large tasks');
-      expect(r.stdout).toContain('consider splitting');
+      expect(r.stdout).toContain('decompose');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
