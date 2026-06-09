@@ -201,6 +201,10 @@ export function taskAdd(project, args) {
   const strategy = opts.strategy || null;
   const rubric = opts.rubric || null;
   const team = opts.team || null;
+  if (opts.desc !== undefined && typeof opts.desc !== 'string') {
+    console.error('❌ --desc requires a value. Usage: --desc "what + why"');
+    exitFail(1);
+  }
   const description = typeof opts.desc === 'string' && opts.desc.trim() ? opts.desc.trim() : null;
   const rawCriteria = opts['done-criteria'] || null;
   const doneCriteria = rawCriteria ? rawCriteria.split(';').map(c => c.trim()).filter(Boolean) : null;
