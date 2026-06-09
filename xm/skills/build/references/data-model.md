@@ -43,6 +43,7 @@ Directory layout and JSON schemas for `.xm/build/` project state.
   "tasks": [{
     "id": "t1",
     "name": "Implement JWT auth [R1]",
+    "description": "1-3 sentences: WHAT the task does + WHY it exists. The name is a compressed title; this is what the executor reads. null until set via --desc.",
     "depends_on": [],
     "size": "small | medium | large",
     "status": "pending | ready | running | completed | failed | cancelled",
