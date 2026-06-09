@@ -1056,7 +1056,7 @@ x-build CLI (state)  ←  tasks update (callback)
 | **Core** | api-designer, compliance, database, dependency-manager, deslop, developer-experience, devops, docs, frontend, performance, qa, refactor, reviewer, security, sre, tech-lead, ux-reviewer |
 | **Domain** | ai-coding-dx, analytics, blockchain, data-pipeline, data-visualization, eks, embedded-iot, event-driven, finops, gamedev, i18n, kubernetes, macos, mlops, mobile, monorepo, oke, prompt-engineer, search, serverless |
 
-Catalog located at `xm/agents/catalog.json`. Each agent has a full rules file and a slim version (~30 lines) for prompt injection.
+Catalog located at `xm/agent-catalog/catalog.json`. Each agent has a full rules file and a slim version (~30 lines) for prompt injection.
 
 ---
 
