@@ -51,6 +51,32 @@ export function cmdTasks(args) {
   if (sub === 'done-criteria') return taskDoneCriteria(project);
 }
 
+// Build a map of R# → requirement text from REQUIREMENTS.md so task names that
+// reference [R1] can be expanded inline (agent prompt + task list). Without this
+// an executor sees only the compressed "[R1]" tag and must open REQUIREMENTS.md
+// by hand — the #1 "what does this task even mean?" gap.
+function loadRequirementsMap(project) {
+  const reqText = readMD(join(contextDir(project), 'REQUIREMENTS.md'));
+  if (!reqText) return new Map();
+  const map = new Map();
+  for (const m of reqText.matchAll(/^-\s*\[(R\d+)\]\s*[:\-—]?\s*(.+)$/gim)) {
+    map.set(m[1].toUpperCase(), m[2].trim());
+  }
+  return map;
+}
+
+// Expand [R#] refs in a task name to "R#: requirement text" lines.
+function expandReqRefs(name, reqMap) {
+  if (!reqMap?.size || !name) return [];
+  const ids = [...name.matchAll(/\[(R\d+)\]/gi)].map(m => m[1].toUpperCase());
+  const out = [];
+  for (const id of ids) {
+    const text = reqMap.get(id);
+    if (text) out.push(`${id}: ${text}`);
+  }
+  return out;
+}
+
 export function taskDoneCriteria(project) {
   const data = readJSON(tasksPath(project));
   if (!data?.tasks?.length) {
@@ -150,7 +176,7 @@ export function taskAdd(project, args) {
   const name = positional.join(' ');
 
   if (!name) {
-    console.error('Usage: x-build tasks add <name> [--deps t1,t2] [--size small|medium|large] [--strategy refine] [--rubric general]');
+    console.error('Usage: x-build tasks add <name> [--desc "what+why"] [--deps t1,t2] [--size small|medium|large] [--strategy refine] [--rubric general]');
     exitFail(1);
   }
 
@@ -175,12 +201,14 @@ export function taskAdd(project, args) {
   const strategy = opts.strategy || null;
   const rubric = opts.rubric || null;
   const team = opts.team || null;
+  const description = typeof opts.desc === 'string' && opts.desc.trim() ? opts.desc.trim() : null;
   const rawCriteria = opts['done-criteria'] || null;
   const doneCriteria = rawCriteria ? rawCriteria.split(';').map(c => c.trim()).filter(Boolean) : null;
 
   const task = {
     id,
     name,
+    description,
     depends_on: deps,
     size,
     role,
@@ -215,6 +243,8 @@ export function taskAdd(project, args) {
   data.tasks.push(task);
   writeJSON(tasksPath(project), data);
   console.log(`✅ Task added: ${id} — ${name}${deps.length ? ` (deps: ${deps.join(', ')})` : ''}`);
+  if (description) console.log(`   ${C.dim}${description}${C.reset}`);
+  if (!description) console.log(`   ${C.dim}↳ no description — add intent with: x-build tasks update ${id} --desc "what + why"${C.reset}`);
 }
 
 export function taskList(project) {
@@ -235,6 +265,7 @@ export function taskList(project) {
     [TASK_STATES.CANCELLED]: '⛔',
   };
 
+  const reqMap = loadRequirementsMap(project);
   const scoredTasks = [];
   for (const task of data.tasks) {
     const icon = stateIcon[task.status] || '⬜';
@@ -244,6 +275,21 @@ export function taskList(project) {
     const scoreWarn = task.score != null && task.score < 7 ? ' ⚠' : '';
     const strategyStr = task.strategy ? ` ${C.yellow}[${task.strategy}]${C.reset}` : '';
     console.log(`  ${icon} ${task.id}: ${task.name}${size}${deps}${scoreStr}${scoreWarn}${strategyStr}`);
+
+    // Second line(s): intent (or expanded requirement text as fallback) + a
+    // done-criteria count, so the list explains each task instead of just a tag.
+    const sub = [];
+    if (task.description) {
+      sub.push(task.description.length > 100 ? task.description.slice(0, 97) + '…' : task.description);
+    } else {
+      for (const r of expandReqRefs(task.name, reqMap)) sub.push(r);
+    }
+    for (const s of sub) console.log(`     ${C.dim}↳ ${s}${C.reset}`);
+    const dc = task.done_criteria?.length || 0;
+    const dcLabel = dc ? `${dc} done-criteria` : `${C.yellow}no done-criteria${C.reset}`;
+    const descLabel = sub.length ? '' : `${C.yellow}no description${C.reset} · `;
+    console.log(`     ${C.dim}↳ ${descLabel}${dcLabel}${C.reset}`);
+
     if (task.score != null) scoredTasks.push(task);
   }
 
@@ -316,10 +362,11 @@ export function taskUpdate(project, args) {
   const id = positional[0];
   const rawStatus = opts.status;
 
-  if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined)) {
+  if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined && opts.desc === undefined)) {
     console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed> [--no-commit]');
     console.error('       x-build tasks update <task-id> --status completed --tokens-in <n> --tokens-out <n>  (record actual cost)');
     console.error('       x-build tasks update <task-id> --score <number>');
+    console.error('       x-build tasks update <task-id> --desc "what + why"  (set task description)');
     console.error('       x-build tasks update <task-id> --done-criteria "criteria text"');
     console.error('       x-build tasks update <task-id> --deps t1,t2  (replace dependency list; pass empty string to clear)');
     exitFail(1);
@@ -340,6 +387,15 @@ export function taskUpdate(project, args) {
     if (opts.score !== undefined) {
       task.score = parseFloat(opts.score);
       updatedFields.push(`score: ${task.score}`);
+    }
+
+    if (opts.desc !== undefined) {
+      if (typeof opts.desc !== 'string') {
+        console.error('❌ --desc requires a value. Usage: --desc "what + why"');
+        exitFail(1);
+      }
+      task.description = opts.desc.trim() || null;
+      updatedFields.push('description updated');
     }
 
     if (opts['done-criteria'] !== undefined) {
@@ -814,6 +870,21 @@ function buildAgentPrompt(project, task, briefContent, decisionsContent, { manif
     `ID: ${task.id} | Size: ${task.size} | Project: ${manifest?.display_name || project}`,
     '',
   ];
+
+  // Intent — what this task is and why it exists. Without this the executor sees
+  // only the one-line name and has to guess the scope and intent.
+  if (task.description) {
+    lines.push('## Intent', task.description, '');
+  }
+
+  // Expand [R#] refs to the actual requirement text so the executor doesn't have
+  // to open REQUIREMENTS.md to learn what "[R1]" means.
+  const reqRefs = expandReqRefs(task.name, loadRequirementsMap(project));
+  if (reqRefs.length) {
+    lines.push('## Requirements');
+    for (const r of reqRefs) lines.push(`- ${r}`);
+    lines.push('');
+  }
 
   // Done criteria — definition of done
   if (task.done_criteria?.length) {
