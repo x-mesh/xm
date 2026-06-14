@@ -77,6 +77,7 @@ First word of `$ARGUMENTS`:
 - `solve` → [Autonomous: solve]
 - `consensus` → [Autonomous: consensus]
 - `swarm` → [Autonomous: swarm]
+- `flow` → [Subcommand: flow]
 - `list` or empty input → [Subcommand: list]
 
 ---
@@ -97,6 +98,12 @@ Autonomous:
   solve <goal> [options]         Autonomous problem-solving — agents try, adapt, converge
   consensus <topic> [options]    Peer deliberation — agents debate and self-converge
   swarm <goal> [options]         Stigmergy — agents claim, execute, post tasks to shared board
+
+Flow (Workflow backend — max parallelism):
+  flow "<goal>" [options]        Decompose → topo-batch fan-out (queued, 1000 max) → schema merge
+    --agents N                   Target leaf count (advisory)
+    --op <preset>               Fixed roster: review | research | score | red-team
+    --no-merge                   Return raw leaf results without the merge step
 
 Team:
   team create <name> [--template <t>]   Create a team (from template or dynamic)
@@ -150,6 +157,8 @@ Examples:
   /xm:agent solve "CI-only test failure in auth module" --agents 3
   /xm:agent consensus "JWT vs Session for auth" --agents 4
   /xm:agent swarm "Increase test coverage to 80%" --agents 5 --budget 10
+  /xm:agent flow "Analyze refactor impact across the token-capture path" --agents 6
+  /xm:agent flow --op review --target HEAD
   /xm:agent team create eng --template engineering
   /xm:agent team assign eng "Implement payment system"
 ```
@@ -438,22 +447,11 @@ x-build's `run` command uses x-agent:
 
 ---
 
-## Advanced: Pipeline composition
+## Subcommand: flow
 
-Compose primitives directly to build custom workflows:
+See [flow.md](./flow.md) — high-parallelism backend that runs fan-out work through the deterministic **Workflow tool** (queued, up to 1000 agents, JSON-schema-forced merge, dependency levels, background + resume) instead of manual Agent-tool calls. Decompose modes: (a) inline-scout — leader decomposes and shows a human-checkable plan (default for generic `flow "<goal>"`); (b) in-script roster — engine's first agent emits the leaf list (default for `--op` presets). The engine `flow/flow-template.mjs` is read and passed inline as the Workflow `script`; the leader persists the return to `.xm/flow/`. Use for unattended diverge→merge; NOT for x-op strategies that gate on AskUserQuestion mid-run.
 
-```
-# 1. Code analysis (fan-out)
-/xm:agent fan-out "Find issues in src/auth.ts" --agents 3
-
-# 2. Delegate results to architect (delegate)
-/xm:agent delegate architect "Synthesize the above analysis and design improvements" --model opus
-
-# 3. Multi-perspective review of the proposal (broadcast)
-/xm:agent broadcast "Review this design proposal" --roles "security,performance,testing"
-```
-
-This pattern is similar to x-op's `chain` strategy, but the user controls each step directly.
+For step-by-step composition where the user controls each step, chain primitives directly (`fan-out` → `delegate architect` → `broadcast`) — same shape as x-op's `chain`.
 
 ---
 

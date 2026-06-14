@@ -772,6 +772,10 @@ Agent primitives and autonomous behaviors on top of Claude Code's native Agent t
 # Team
 /xm:agent team create eng --template engineering
 /xm:agent team assign eng "Build payment system"
+
+# Flow (Workflow backend — max parallelism)
+/xm:agent flow "Analyze refactor impact across the token-capture path" --agents 6
+/xm:agent flow --op review --target HEAD
 ```
 
 | Layer | Commands | What it does |
@@ -779,11 +783,14 @@ Agent primitives and autonomous behaviors on top of Claude Code's native Agent t
 | **Primitives** | fan-out, delegate, broadcast | Direct agent control — parallel, specialized, or role-based |
 | **Autonomous** | research, solve, consensus, swarm | Goal-driven — agents explore, adapt, and converge on their own |
 | **Team** | team create/assign/status | Hierarchical: Team Leader (opus) → Members |
+| **Flow** | flow "&lt;goal&gt;" [--op] | Deterministic **Workflow tool** backend — decompose → topo-batch fan-out (queued, up to 1000 agents) → schema-forced merge, background + resume |
 | **Presets** | 15 role presets | Cross-cutting roles injected into all layers |
 
 **Key distinction**: x-op = conductor with a score (leader controls every phase). x-agent = jazz band (agents listen to each other and adapt).
 
 **Autonomous options**: `--budget N` (max rounds), `--depth shallow|deep|exhaustive`, `--focus <hint>`, `--web` (allow web search).
+
+**Flow vs primitives**: `flow` runs fan-out through the Workflow tool instead of manual Agent-tool calls — it queues past the per-message limit, forces JSON-schema-merged output, and respects dependency levels, all in a background run. Use it for unattended diverge→merge; it does **not** replace x-op strategies that gate on user confirmation mid-run.
 
 Model auto-routing: `architect` → opus, `executor` → sonnet, `scanner` → haiku. Override with `--model`.
 

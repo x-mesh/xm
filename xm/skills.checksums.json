@@ -1,11 +1,11 @@
 {
-  "generatedAt": 1780986813032,
+  "generatedAt": 1781443847289,
   "version": 1,
   "skills": [
     {
       "plugin": "agent",
-      "sha256": "f750e4f69c96716479d765a5b9c54516483cffd23ab2dcc142e2a7b475ec6b11",
-      "bytes": 19509
+      "sha256": "5c86b25062eb3301ba50c974dc69e5b0ba2dd4e0f41255bcac4ff78b0d66e97b",
+      "bytes": 20374
     },
     {
       "plugin": "build",

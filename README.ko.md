@@ -771,6 +771,10 @@ Claude Code Agent 도구 위에 얹은 프리미티브와 자율 행동입니다
 # 팀
 /xm:agent team create eng --template engineering
 /xm:agent team assign eng "결제 시스템 만들기"
+
+# Flow (Workflow 백엔드 — 최대 병렬)
+/xm:agent flow "토큰 캡처 경로에 미치는 리팩터링 영향 분석" --agents 6
+/xm:agent flow --op review --target HEAD
 ```
 
 | 레이어 | 커맨드 | 기능 |
@@ -778,11 +782,14 @@ Claude Code Agent 도구 위에 얹은 프리미티브와 자율 행동입니다
 | **Primitives** | fan-out, delegate, broadcast | 직접 에이전트 제어 — 병렬, 전문가, 역할 기반 |
 | **Autonomous** | research, solve, consensus, swarm | 목표 기반 — 에이전트가 탐색, 적응, 수렴 |
 | **Team** | team create/assign/status | 계층 구조: Team Leader (opus) → Members |
+| **Flow** | flow "&lt;목표&gt;" [--op] | 결정론적 **Workflow 도구** 백엔드 — 분해 → topo-batch fan-out (큐잉, 최대 1000 에이전트) → 스키마 강제 병합, 백그라운드 + 재개 |
 | **Presets** | 15개 역할 프리셋 | 모든 레이어에 적용되는 역할 |
 
 **핵심 차이**: x-op = 지휘자와 악보 (리더가 모든 단계 제어). x-agent = 재즈 밴드 (에이전트가 서로 듣고 적응).
 
 **자율 행동 옵션**: `--budget N` (최대 라운드), `--depth shallow|deep|exhaustive`, `--focus <hint>`, `--web` (웹 검색 허용).
+
+**Flow vs 프리미티브**: `flow`는 수동 Agent-tool 호출 대신 Workflow 도구로 fan-out을 실행합니다 — 메시지당 한계를 넘어 큐잉하고, JSON 스키마로 병합 출력을 강제하며, 의존성 레벨을 지키는 작업을 백그라운드로 돌립니다. 무인 diverge→merge에 쓰세요. 중간에 사용자 확인이 필요한 x-op 전략을 **대체하지는 않습니다**.
 
 모델 자동 라우팅: `architect` → opus, `executor` → sonnet, `scanner` → haiku. `--model`로 오버라이드.
 
