@@ -763,10 +763,13 @@ body.theme-light .sidebar-search-input { background: #fff; border-color: #ccc; c
 }
 .ws-option:hover, .ws-option.active { background: var(--accent-dim); color: var(--accent); }
 .ws-option.current { color: var(--accent); }
-.ws-option-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-option-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-option-count { font-size: 9px; color: var(--text-muted); flex-shrink: 0; }
+.ws-option-tree { color: var(--text-muted); flex-shrink: 0; margin-right: -4px; }
+.ws-option-nested { font-size: 9px; color: var(--accent); flex-shrink: 0; }
 .ws-option-empty { color: var(--text-muted); cursor: default; justify-content: center; }
 .ws-option-empty:hover { background: none; }
+.ws-card-nested { opacity: 0.94; }
 .ws-card { cursor: pointer; transition: transform 0.1s; }
 .ws-card:hover { transform: translate(-1px, -1px); }
 .prd-card { transition: transform 0.1s; }

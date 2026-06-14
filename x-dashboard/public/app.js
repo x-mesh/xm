@@ -86,6 +86,7 @@ async function initWorkspaces() {
 
   const workspaces = res;
   knownWorkspaces = workspaces;  // Expose for palette (+ any other global consumer)
+  const orderedWorkspaces = orderWorkspaces(workspaces);  // parents → nested children
   if (workspaces.length <= 1 && !serverMultiRoot) {
     currentWsId = workspaces[0]?.id ?? null;
     multiRootMode = false;
@@ -124,13 +125,18 @@ async function initWorkspaces() {
 
   function wsRenderOptions(filter) {
     const q = (filter || '').trim().toLowerCase();
-    const matches = workspaces.filter(w => !q || w.name.toLowerCase().includes(q));
+    const matches = orderedWorkspaces.filter(w => !q || w.name.toLowerCase().includes(q));
     wsActiveIdx = -1;
     wsList.innerHTML = matches.length
-      ? matches.map(w => `<li role="option" class="ws-option${w.id === currentWsId ? ' current' : ''}" data-wsid="${w.id}">
-          <span class="ws-option-name">${w.name}</span>
-          <span class="ws-option-count">${w.stats?.projects ?? 0}</span>
-        </li>`).join('')
+      ? matches.map(w => {
+          const indent = w._depth > 0 ? `padding-left:${0.625 + w._depth * 0.85}rem` : '';
+          const glyph = w._depth > 0 ? '<span class="ws-option-tree">└</span>' : '';
+          const nested = w.childCount > 0 ? `<span class="ws-option-nested" title="${w.childCount} nested workspace(s)">⌄${w.childCount}</span>` : '';
+          return `<li role="option" class="ws-option${w.id === currentWsId ? ' current' : ''}" data-wsid="${w.id}" style="${indent}">
+          ${glyph}<span class="ws-option-name">${w.name}</span>
+          ${nested}<span class="ws-option-count">${w.stats?.projects ?? 0}</span>
+        </li>`;
+        }).join('')
       : '<li class="ws-option ws-option-empty">No match</li>';
   }
   function wsOpen() {
@@ -220,6 +226,31 @@ function phaseBadge(phase) {
 
 function nullSafe(value, fallback = '—') {
   return (value === null || value === undefined || value === '') ? fallback : value;
+}
+
+// Order workspaces depth-first — each parent immediately followed by its nested
+// children. Returns shallow copies annotated with `_depth`. Used by the workspace
+// switcher and the aggregate home cards so nested workspaces render under parents.
+function orderWorkspaces(list) {
+  const byParent = new Map();
+  for (const w of list) {
+    const p = w.parentId ?? null;
+    if (!byParent.has(p)) byParent.set(p, []);
+    byParent.get(p).push(w);
+  }
+  const out = [];
+  const visited = new Set();
+  (function walk(parentId, depth) {
+    for (const w of byParent.get(parentId) ?? []) {
+      if (visited.has(w.id)) continue; // guard against cycles / dupes
+      visited.add(w.id);
+      out.push({ ...w, _depth: depth });
+      walk(w.id, depth + 1);
+    }
+  })(null, 0);
+  // Defensive: append orphans whose parent isn't in the list
+  for (const w of list) if (!visited.has(w.id)) out.push({ ...w, _depth: 0 });
+  return out;
 }
 
 // ── Shared render helpers ─────────────────────────────────────────────
@@ -573,12 +604,16 @@ async function renderAggregateHome() {
   }
 
   const wsColors = ['#FFAB40', '#40c4ff', '#b388ff', '#69f0ae', '#ff5252', '#80cbc4'];
-  const cards = workspaces.map((w, idx) => {
+  const nameById = new Map(workspaces.map(w => [w.id, w.name]));
+  const cards = orderWorkspaces(workspaces).map((w, idx) => {
     const color = wsColors[idx % wsColors.length];
     const lastActivity = w.stats?.last_updated_at ?? w.updated_at ?? null;
+    const parentName = w.parentId ? nameById.get(w.parentId) : null;
+    const nestIndent = w._depth > 0 ? `;margin-left:${w._depth * 1.25}rem` : '';
     return `
-    <div class="card ws-card" data-wsid="${w.id}" style="cursor:pointer;flex:1 1 200px;min-width:180px;border-left:4px solid ${color}">
+    <div class="card ws-card${w._depth > 0 ? ' ws-card-nested' : ''}" data-wsid="${w.id}" style="cursor:pointer;flex:1 1 200px;min-width:180px;border-left:4px solid ${color}${nestIndent}">
       <div style="font-size:1.1em;font-weight:700;margin-bottom:0.25rem;color:${color}">${w.name}</div>
+      ${parentName ? `<div class="text-muted" style="font-size:0.7em;margin-bottom:0.25rem">↳ nested in ${parentName}</div>` : ''}
       <div class="text-muted" style="font-size:0.75em;font-family:var(--font-mono);margin-bottom:0.5rem;word-break:break-all">${w.path ?? ''}</div>
       ${lastActivity ? `<div class="text-muted" style="font-size:0.75em;margin-bottom:0.5rem">Last activity: ${timeAgo(lastActivity)}</div>` : ''}
       <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
@@ -586,6 +621,7 @@ async function renderAggregateHome() {
         <span class="badge badge-indigo">${w.stats?.probes ?? 0} probes</span>
         <span class="badge badge-amber">${w.stats?.solvers ?? 0} solvers</span>
         ${w.stats?.cost > 0 ? `<span class="badge badge-green">$${w.stats.cost.toFixed(2)}</span>` : ''}
+        ${w.childCount > 0 ? `<span class="badge badge-purple">${w.childCount} nested</span>` : ''}
       </div>
     </div>
   `;

@@ -10,7 +10,9 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
-_Nothing pending._
+### dashboard 2.4.4 → 2.4.5
+
+- Surface nested workspaces. `scanWorkspaces` no longer stops at the first `.xm/` it finds — it registers the workspace and keeps recursing, so independent repos living inside a container workspace (e.g. `agentic/httprove`, `agentic/x-kit`) now appear instead of being silently swallowed by the parent. Each workspace carries a `parentId`; `/api/workspaces` adds `parentId` + `childCount`. The switcher and home cards render the parent→child hierarchy (tree indent + `└` glyph, `↳ nested in <parent>` label, `N nested` badge). IDs are disambiguated on basename collision.
 
 ## 2026-06-06
 

@@ -249,8 +249,33 @@ function getMainRepoXm(dir) {
 
 function scanWorkspaces(rootDir, maxDepth = 4) {
   const results = [];
+  const usedIds = new Set();
 
-  function scan(dir, depth) {
+  /** Stable, collision-free id for a workspace dir (handles nested duplicate basenames). */
+  function makeId(fullPath) {
+    let id = basename(fullPath);
+    if (usedIds.has(id)) {
+      id = `${basename(dirname(fullPath))}/${basename(fullPath)}`;
+      let n = 2;
+      while (usedIds.has(id)) id = `${basename(dirname(fullPath))}/${basename(fullPath)}-${n++}`;
+    }
+    usedIds.add(id);
+    return id;
+  }
+
+  function register(fullPath, parentId) {
+    const id = makeId(fullPath);
+    results.push({
+      id,
+      name: basename(fullPath),
+      path: fullPath,
+      xmRoot: join(fullPath, '.xm'),
+      parentId: parentId ?? null,
+    });
+    return id;
+  }
+
+  function scan(dir, depth, parentId) {
     if (depth > maxDepth) return;
     let entries;
     try {
@@ -271,21 +296,17 @@ function scanWorkspaces(rootDir, maxDepth = 4) {
             if (isGitWorktree(fullPath) && getMainRepoXm(fullPath)) {
               continue;
             }
-            const id = basename(fullPath);
-            results.push({
-              id,
-              name: id,
-              path: fullPath,
-              xmRoot: xmPath,
-            });
-            // Don't recurse into a workspace — scan its siblings instead
+            const id = register(fullPath, parentId);
+            // Recurse INTO this workspace too — surfaces nested workspaces
+            // (e.g. independent repos living inside a container workspace).
+            scan(fullPath, depth + 1, id);
             continue;
           }
         } catch {
           // stat failed, skip
         }
       }
-      scan(fullPath, depth + 1);
+      scan(fullPath, depth + 1, parentId);
     }
   }
 
@@ -297,15 +318,15 @@ function scanWorkspaces(rootDir, maxDepth = 4) {
       if (stat.isDirectory()) {
         // Skip if rootDir itself is a worktree with main repo .xm/
         if (isGitWorktree(rootDir) && getMainRepoXm(rootDir)) {
-          scan(rootDir, 1);
+          scan(rootDir, 1, null);
         } else {
-          const id = basename(rootDir);
-          results.push({ id, name: id, path: rootDir, xmRoot: rootXm });
+          const id = register(rootDir, null);
+          scan(rootDir, 1, id);
         }
       }
     } catch {}
   } else {
-    scan(rootDir, 1);
+    scan(rootDir, 1, null);
   }
 
   return results;
@@ -2071,10 +2092,16 @@ server = Bun.serve({
 
       // ── M4: GET /api/workspaces ──────────────────────────────
       if (path === '/api/workspaces') {
+        const childCounts = new Map();
+        for (const ws of workspaces) {
+          if (ws.parentId) childCounts.set(ws.parentId, (childCounts.get(ws.parentId) ?? 0) + 1);
+        }
         const data = workspaces.map(ws => ({
           id: ws.id,
           name: ws.name,
           path: ws.path,
+          parentId: ws.parentId ?? null,
+          childCount: childCounts.get(ws.id) ?? 0,
           stats: getWorkspaceStats(ws),
         }));
         return jsonResponseWithETag(data, req);
@@ -2091,6 +2118,7 @@ server = Bun.serve({
           name: ws.name,
           path: ws.path,
           xmRoot: ws.xmRoot,
+          parentId: ws.parentId ?? null,
           stats: getWorkspaceStats(ws),
         }, req);
       }
