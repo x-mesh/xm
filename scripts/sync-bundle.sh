@@ -134,6 +134,19 @@ echo "=== Syncing agent references ==="
 mirror_md_dir "x-agent/skills/agent/references" "xm/skills/agent/references"
 
 echo ""
+echo "=== Syncing agent flow (skill doc + engine) ==="
+# flow.md sits beside SKILL.md; flow/ holds the Workflow engine (.mjs, not *.md),
+# so mirror the whole flow/ tree by file type, not just *.md (L8: mirror wholesale).
+sync_file "x-agent/skills/agent/flow.md" "xm/skills/agent/flow.md"
+if [ -d "x-agent/skills/agent/flow" ]; then
+  while IFS= read -r f; do
+    rel="${f#x-agent/skills/agent/flow/}"
+    mkdir -p "xm/skills/agent/flow/$(dirname "$rel")"
+    sync_file "$f" "xm/skills/agent/flow/$rel"
+  done < <(find x-agent/skills/agent/flow -type f)
+fi
+
+echo ""
 echo "=== Syncing build references ==="
 mirror_md_dir "x-build/skills/build/references" "xm/skills/build/references"
 
@@ -270,6 +283,20 @@ fi
 if ! diff -q "x-dashboard/lib/x-dashboard-server.mjs" "xm/lib/x-dashboard-server.mjs" > /dev/null 2>&1; then
   echo "  DIVERGED: xm/lib/x-dashboard-server.mjs"
   DIVERGED=$((DIVERGED + 1))
+fi
+
+if ! diff -q "x-agent/skills/agent/flow.md" "xm/skills/agent/flow.md" > /dev/null 2>&1; then
+  echo "  DIVERGED: xm/skills/agent/flow.md"
+  DIVERGED=$((DIVERGED + 1))
+fi
+if [ -d "x-agent/skills/agent/flow" ]; then
+  while IFS= read -r f; do
+    rel="${f#x-agent/skills/agent/flow/}"
+    if ! diff -q "$f" "xm/skills/agent/flow/$rel" > /dev/null 2>&1; then
+      echo "  DIVERGED: xm/skills/agent/flow/$rel"
+      DIVERGED=$((DIVERGED + 1))
+    fi
+  done < <(find x-agent/skills/agent/flow -type f)
 fi
 
 shopt -s nullglob

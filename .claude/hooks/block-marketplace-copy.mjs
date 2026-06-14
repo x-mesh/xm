@@ -63,14 +63,17 @@ function readStdin() {
 }
 
 function findSourcePath(rel) {
-  // xm/skills/<short>/... where source plugin dir is `x-<short>`.
-  // Covers SKILL.md and any future copied assets under the same plugin dir.
-  const skillMatch = rel.match(/^xm\/skills\/([^/]+)\//);
+  // xm/skills/<short>/<rest> where source plugin dir is `x-<short>`.
+  // Reconstruct the full source subpath so the hint is accurate for SKILL.md AND
+  // any mirrored sub-asset (flow.md, flow/flow-template.mjs, strategies/*.md, …).
+  // sync-bundle.sh mirrors source -> marketplace, so the source path always exists.
+  const skillMatch = rel.match(/^xm\/skills\/([^/]+)\/(.+)$/);
   if (skillMatch) {
     const short = skillMatch[1];
+    const rest = skillMatch[2];
     const plugin = `x-${short}`;
     if (PLUGINS_WITH_SOURCE_SKILL.has(plugin)) {
-      return `${plugin}/skills/${short}/SKILL.md`;
+      return `${plugin}/skills/${short}/${rest}`;
     }
   }
 
