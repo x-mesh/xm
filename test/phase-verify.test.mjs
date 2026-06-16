@@ -617,6 +617,29 @@ describe('quality', () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  test('quality uses detected package manager for package scripts', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writeFileSync(join(tmp, 'package.json'), JSON.stringify({
+        scripts: {
+          test: 'echo test-ok',
+          build: 'echo build-ok',
+        },
+      }, null, 2));
+      writeFileSync(join(tmp, 'bun.lockb'), '');
+
+      const r = run(['quality'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+
+      const quality = readJSON(projectPath(tmp, name, 'phases', '04-verify', 'quality-results.json'));
+      expect(quality.results.find((check) => check.check === 'bun-test')?.passed).toBe(true);
+      expect(quality.results.find((check) => check.check === 'bun-build')?.passed).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── Handoff ───────────────────────────────────────────────────────
@@ -694,6 +717,8 @@ describe('run --json budget gate (regression)', () => {
       const out = JSON.parse(r.stdout);
       expect(out.tasks.length).toBeGreaterThan(0);
       expect(typeof out.estimated_cost_usd).toBe('number');
+      expect(out.tasks[0].on_complete).toMatch(/^xm build tasks update t\d+ --status completed$/);
+      expect(out.tasks[0].on_fail).toMatch(/^xm build tasks update t\d+ --status failed$/);
       expect(out.blocked).toBeUndefined();
     } finally {
       rmSync(tmp, { recursive: true, force: true });

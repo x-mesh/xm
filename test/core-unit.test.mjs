@@ -1367,6 +1367,7 @@ describe('runQualityChecks', () => {
     // In a temp project with no package.json/go.mod etc, should return empty results
     const results = core.runQualityChecks(proj.name);
     expect(Array.isArray(results)).toBe(true);
+    expect(results.some((r) => r.check === 'npm-test')).toBe(false);
 
     // Quality results file should be saved
     const qrPath = join(proj.projDir, 'phases', '04-verify', 'quality-results.json');
@@ -1639,4 +1640,3 @@ describe('resolveProject edge cases', () => {
     }
   });
 });
-

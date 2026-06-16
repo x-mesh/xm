@@ -64,6 +64,16 @@ const EXPECTED_CURSOR_RULE_COUNT = EXPECTED_SKILL_COUNT + EXPECTED_REFERENCE_COU
 const EXPECTED_KIRO_MANUAL_COUNT = EXPECTED_CURSOR_RULE_COUNT - EXPECTED_SKILL_COUNT;
 
 describe('install-cli — input validation (R-SEC-04)', () => {
+  test('help does not advertise reserved --auto-detect', () => {
+    const r = run(['--help']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).not.toContain('--auto-detect');
+  });
+  test('--auto-detect fails loudly until implemented', () => {
+    const r = run(['--auto-detect', '--skills-dir', SKILLS, '--lib-dir', LIB]);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/reserved and not implemented/);
+  });
   test('--target unknown rejected', () => {
     const r = run(['--target', 'evil', '--skills-dir', SKILLS, '--lib-dir', LIB]);
     expect(r.status).not.toBe(0);
