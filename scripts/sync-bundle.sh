@@ -7,28 +7,80 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+CHECK_MODE=0
+case "${1:-}" in
+  --check)
+    CHECK_MODE=1
+    shift
+    ;;
+  -h|--help)
+    echo "Usage: bash scripts/sync-bundle.sh [--check]"
+    echo "  default   sync standalone plugin sources into xm/"
+    echo "  --check   verify source and bundle are in sync without writing files"
+    exit 0
+    ;;
+  "")
+    ;;
+  *)
+    echo "sync-bundle.sh: unknown argument: $1" >&2
+    exit 2
+    ;;
+esac
+if [ "$#" -gt 0 ]; then
+  echo "sync-bundle.sh: unknown argument: $1" >&2
+  exit 2
+fi
+
 ERRORS=0
+
+ensure_dir() {
+  if [ "$CHECK_MODE" -eq 0 ]; then
+    mkdir -p "$1"
+  fi
+}
+
+record_error() {
+  ERRORS=$((ERRORS + 1))
+}
 
 sync_file() {
   local src="$1" dst="$2"
   if [ ! -f "$src" ]; then
-    echo "  SKIP $src (not found)"
+    echo "  MISSING SOURCE $src"
+    record_error
     return
   fi
-  mkdir -p "$(dirname "$dst")"
+  ensure_dir "$(dirname "$dst")"
+  if [ ! -f "$dst" ]; then
+    if [ "$CHECK_MODE" -eq 1 ]; then
+      echo "  MISSING $dst (from $src)"
+      record_error
+      return
+    fi
+  fi
   if diff -q "$src" "$dst" > /dev/null 2>&1; then
     echo "  OK   $dst"
   else
-    cp "$src" "$dst"
-    echo "  SYNC $dst"
+    if [ "$CHECK_MODE" -eq 1 ]; then
+      echo "  DIVERGED $dst"
+      record_error
+    else
+      cp "$src" "$dst"
+      echo "  SYNC $dst"
+    fi
   fi
 }
 
 remove_obsolete_file() {
   local path="$1"
   if [ -f "$path" ]; then
-    rm -f "$path"
-    echo "  REMOVE $path"
+    if [ "$CHECK_MODE" -eq 1 ]; then
+      echo "  OBSOLETE $path"
+      record_error
+    else
+      rm -f "$path"
+      echo "  REMOVE $path"
+    fi
   fi
 }
 
@@ -37,7 +89,7 @@ remove_obsolete_file() {
 mirror_md_dir() {
   local src="$1" dst="$2"
   [ -d "$src" ] || return 0
-  mkdir -p "$dst"
+  ensure_dir "$dst"
   shopt -s nullglob
   for f in "$src"/*.md; do
     sync_file "$f" "$dst/$(basename "$f")"
@@ -88,7 +140,7 @@ shopt -u nullglob
 
 echo ""
 echo "=== Syncing x-sync lib files ==="
-mkdir -p "xm/lib/x-sync"
+ensure_dir "xm/lib/x-sync"
 shopt -s nullglob
 for f in x-sync/lib/x-sync/*.mjs; do
   sync_file "$f" "xm/lib/x-sync/$(basename "$f")"
@@ -104,12 +156,12 @@ sync_file "x-trace/lib/x-trace/trace-writer.mjs" "xm/lib/x-trace/trace-writer.mj
 echo ""
 echo "=== Syncing x-dashboard lib + public ==="
 sync_file "x-dashboard/lib/x-dashboard-server.mjs" "xm/lib/x-dashboard-server.mjs"
-mkdir -p "xm/public"
+ensure_dir "xm/public"
 # Mirror public/ wholesale including subdirectories (e.g. vendor/) so bundled assets
 # ship automatically — a flat public/* glob silently drops vendor/*.js (L8).
 while IFS= read -r f; do
   rel="${f#x-dashboard/public/}"
-  mkdir -p "xm/public/$(dirname "$rel")"
+  ensure_dir "xm/public/$(dirname "$rel")"
   sync_file "$f" "xm/public/$rel"
 done < <(find x-dashboard/public -type f)
 
@@ -141,7 +193,7 @@ sync_file "x-agent/skills/agent/flow.md" "xm/skills/agent/flow.md"
 if [ -d "x-agent/skills/agent/flow" ]; then
   while IFS= read -r f; do
     rel="${f#x-agent/skills/agent/flow/}"
-    mkdir -p "xm/skills/agent/flow/$(dirname "$rel")"
+    ensure_dir "xm/skills/agent/flow/$(dirname "$rel")"
     sync_file "$f" "xm/skills/agent/flow/$rel"
   done < <(find x-agent/skills/agent/flow -type f)
 fi
@@ -299,18 +351,38 @@ if [ -d "x-agent/skills/agent/flow" ]; then
   done < <(find x-agent/skills/agent/flow -type f)
 fi
 
-shopt -s nullglob
-for f in x-dashboard/public/*; do
-  if ! diff -q "$f" "xm/public/$(basename "$f")" > /dev/null 2>&1; then
-    echo "  DIVERGED: xm/public/$(basename "$f")"
+while IFS= read -r f; do
+  rel="${f#x-dashboard/public/}"
+  if ! diff -q "$f" "xm/public/$rel" > /dev/null 2>&1; then
+    echo "  DIVERGED: xm/public/$rel"
     DIVERGED=$((DIVERGED + 1))
   fi
-done
-shopt -u nullglob
+done < <(find x-dashboard/public -type f)
 
 if [ "$DIVERGED" -eq 0 ]; then
   echo "  All files in sync."
 else
   echo "  $DIVERGED file(s) still diverged!"
+  ERRORS=$((ERRORS + DIVERGED))
+fi
+
+echo ""
+echo "=== Verifying skills checksum ==="
+if [ "$CHECK_MODE" -eq 1 ]; then
+  if ! node xm/scripts/skills-checksum.mjs --check; then
+    record_error
+  fi
+else
+  node xm/scripts/skills-checksum.mjs
+fi
+
+if [ "$ERRORS" -eq 0 ]; then
+  if [ "$CHECK_MODE" -eq 1 ]; then
+    echo "Bundle check passed."
+  else
+    echo "Bundle sync complete."
+  fi
+else
+  echo "$ERRORS bundle sync issue(s) detected."
   exit 1
 fi

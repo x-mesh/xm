@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.8-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.12-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-12-orange" alt="Plugins" /></a>
@@ -1196,6 +1196,12 @@ xm은 요청을 처리할 수 있는 가장 저렴한 모델을 자동으로 고
 ## 기여하기
 
 기여를 환영합니다. [이슈 페이지](https://github.com/x-mesh/xm/issues)에서 열린 작업을 확인하세요.
+
+변경을 올리기 전에 아래 명령을 실행하세요:
+
+```bash
+bun run verify
+```
 
 - [변경 이력 / 릴리스](https://github.com/x-mesh/xm/releases)
 - [버그 신고](https://github.com/x-mesh/xm/issues/new)
