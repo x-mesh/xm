@@ -137,7 +137,6 @@ USAGE
   xm install --interactive
   xm install --target <tool[,tool...]> [--global|--local] [--dry-run] [--force] [--yes]
   xm install --verify [--target <tool>]
-  xm install --auto-detect
 
 TARGETS
   ${TARGET_TOOLS.join(', ')}
@@ -148,7 +147,6 @@ OPTIONS
   --propagate            Re-render every installed manifest target. Outputs JSON summary.
   --dry-run              Show full plan with write modes (no fs writes).
   --verify               Re-check installed manifest integrity (re-hash + selfChecksum).
-  --auto-detect          Pick targets from cwd signatures (.cursor/, .kiro/, AGENTS.md). (not yet implemented)
   --interactive          Prompt for scope and targets (default when \`xm install\` runs in a TTY).
   --target <list>        Comma-separated subset of targets.
   --global               Install under \$HOME/.<tool>/ (default: project-local).
@@ -450,6 +448,14 @@ export function run(argv) {
   }
   if (args.help) {
     return { exitCode: 0, stdout: HELP + '\n', stderr: '' };
+  }
+
+  if (args.autoDetect) {
+    return {
+      exitCode: 2,
+      stdout: '',
+      stderr: '--auto-detect is reserved and not implemented. Pass --target <cursor,codex,kiro,antigravity,opencode> explicitly.\n',
+    };
   }
 
   // --list-installed: discover installed manifests and return as JSON.

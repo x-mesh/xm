@@ -4,7 +4,7 @@
 
 import {
   PHASES, TASK_STATES, STATUS_ALIASES, C,
-  ROLE_MODEL_MAP_HR, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, checkBudget, loadSharedConfig, XM_GLOBAL, PLUGIN_ROOT, ROOT,
+  ROLE_MODEL_MAP_HR, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, checkBudget, loadSharedConfig, XM_GLOBAL, ROOT,
   readJSON, writeJSON, modifyJSON, readMD,
   manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, decisionsPath, projectDir,
   resolveProject, logDecision, addDecision, appendMetric, emitHook,
@@ -865,6 +865,10 @@ function suggestStrategy(taskName) {
   return null;
 }
 
+function taskUpdateCommand(taskId, status) {
+  return `xm build${XM_GLOBAL ? ' --global' : ''} tasks update ${taskId} --status ${status}`;
+}
+
 // ── Execution Engine ────────────────────────────────────────────────
 
 function buildAgentPrompt(project, task, briefContent, decisionsContent, { manifest, taskData, stepData } = {}) {
@@ -942,8 +946,8 @@ function buildAgentPrompt(project, task, briefContent, decisionsContent, { manif
     'Write clean, tested code.',
     '',
     '## On Completion',
-    `After completing this task, run: node ${PLUGIN_ROOT}/lib/x-build-cli.mjs tasks update ${task.id} --status completed`,
-    `If the task fails, run: node ${PLUGIN_ROOT}/lib/x-build-cli.mjs tasks update ${task.id} --status failed`,
+    `After completing this task, run: ${taskUpdateCommand(task.id, 'completed')}`,
+    `If the task fails, run: ${taskUpdateCommand(task.id, 'failed')}`,
   );
 
   return lines.join('\n');
@@ -1185,8 +1189,8 @@ export function cmdRun(args) {
         agent_type: role === 'deep-executor' || model === 'opus' ? 'deep-executor' : 'executor',
         model,
         prompt: buildAgentPrompt(project, task, briefContent, decisionsContent, { manifest, taskData, stepData }),
-        on_complete: `node ${join(PLUGIN_ROOT, 'lib', 'x-build-cli.mjs')}${XM_GLOBAL ? ' --global' : ''} tasks update ${task.id} --status completed`,
-        on_fail: `node ${join(PLUGIN_ROOT, 'lib', 'x-build-cli.mjs')}${XM_GLOBAL ? ' --global' : ''} tasks update ${task.id} --status failed`,
+        on_complete: taskUpdateCommand(task.id, 'completed'),
+        on_fail: taskUpdateCommand(task.id, 'failed'),
       };
       if (task.strategy) {
         entry.strategy = task.strategy;
