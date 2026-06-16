@@ -91,6 +91,18 @@ if (checkMode) {
   process.exit(0);
 }
 
+if (existsSync(CHECKSUM_PATH)) {
+  try {
+    const stored = JSON.parse(readFileSync(CHECKSUM_PATH, 'utf8'));
+    if (JSON.stringify(stored.skills || []) === JSON.stringify(fresh.skills)) {
+      process.stdout.write(`skills.checksums.json already current (${fresh.skills.length} skills).\n`);
+      process.exit(0);
+    }
+  } catch {
+    // Fall through and rewrite malformed checksum files in normal write mode.
+  }
+}
+
 writeFileSync(CHECKSUM_PATH, JSON.stringify(fresh, null, 2) + '\n');
 process.stdout.write(`Wrote ${CHECKSUM_PATH}\n`);
 process.stdout.write(`  ${fresh.skills.length} skills hashed\n`);

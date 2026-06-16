@@ -384,6 +384,51 @@ case "$CMD" in
     fi
 
     echo ""
+    echo "## Bundle / release state"
+    VERIFY_STATE=""
+    if [ -f "$LIB/scripts/verify-release-state.mjs" ]; then
+      VERIFY_STATE="$LIB/scripts/verify-release-state.mjs"
+    elif [ -f "$LIB/xm/scripts/verify-release-state.mjs" ]; then
+      VERIFY_STATE="$LIB/xm/scripts/verify-release-state.mjs"
+    fi
+    if [ -z "$VERIFY_STATE" ] || [ ! -f "$LIB/package.json" ]; then
+      echo "  ⏭  source checks     unavailable (requires source checkout)"
+    elif ! command -v node >/dev/null 2>&1; then
+      echo "  ⚠️  source checks     node not installed"
+    else
+      if VERIFY_JSON="$(node "$VERIFY_STATE" --json 2>&1)"; then
+        VERIFY_STATUS=0
+      else
+        VERIFY_STATUS=$?
+      fi
+      if printf '%s' "$VERIFY_JSON" | node -e '
+        let input = "";
+        process.stdin.on("data", (chunk) => input += chunk);
+        process.stdin.on("end", () => {
+          try {
+            const data = JSON.parse(input);
+            for (const result of data.results || []) {
+              const icon = result.ok ? "✅" : "❌";
+              const name = String(result.name || "check").padEnd(19);
+              const lines = String(result.output || "").split(/\n/).filter(Boolean);
+              const summary = lines[lines.length - 1] || "";
+              console.log(`  ${icon} ${name} ${summary}`.trimEnd());
+            }
+          } catch {
+            process.exit(2);
+          }
+        });
+      ' 2>/dev/null; then
+        if [ "$VERIFY_STATUS" -ne 0 ]; then
+          echo "     fix               bun run verify"
+        fi
+      else
+        echo "  ❌ release-state     unable to parse checker output"
+        printf '%s\n' "$VERIFY_JSON" | tail -8 | sed 's/^/     /'
+      fi
+    fi
+
+    echo ""
     echo "## Resolved lib paths"
     for p in xm dashboard build memory trace sync solver; do
       resolved="$(plugin_lib "$p")"

@@ -111,14 +111,38 @@ function detectProjectType(cwd) {
   return 'generic';
 }
 
+function detectPackageManager(cwd, pkg = null) {
+  const declared = pkg?.packageManager || '';
+  if (declared.startsWith('bun@')) return 'bun';
+  if (declared.startsWith('pnpm@')) return 'pnpm';
+  if (declared.startsWith('yarn@')) return 'yarn';
+  if (existsSync(join(cwd, 'bun.lock')) || existsSync(join(cwd, 'bun.lockb')) || existsSync(join(cwd, 'bunfig.toml'))) return 'bun';
+  if (existsSync(join(cwd, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (existsSync(join(cwd, 'yarn.lock'))) return 'yarn';
+  return 'npm';
+}
+
+function packageScriptCommand(packageManager, scriptName) {
+  if (packageManager === 'bun') return `bun run ${scriptName}`;
+  if (packageManager === 'pnpm') return `pnpm run ${scriptName}`;
+  if (packageManager === 'yarn') return scriptName === 'test' ? 'yarn test' : `yarn ${scriptName}`;
+  return scriptName === 'test' ? 'npm test' : `npm run ${scriptName}`;
+}
+
+function hasBunProjectFiles(cwd) {
+  return existsSync(join(cwd, 'bun.lock')) || existsSync(join(cwd, 'bun.lockb')) || existsSync(join(cwd, 'bunfig.toml'));
+}
+
 function detectTestCommand(cwd) {
-  if (existsSync(join(cwd, 'bun.lockb')) || existsSync(join(cwd, 'bunfig.toml'))) return 'bun test';
   if (existsSync(join(cwd, 'package.json'))) {
     try {
       const pkg = readJSON(join(cwd, 'package.json'));
-      if (pkg.scripts?.test && pkg.scripts.test !== 'echo "Error: no test specified" && exit 1') return 'npm test';
+      if (pkg.scripts?.test && pkg.scripts.test !== 'echo "Error: no test specified" && exit 1') {
+        return packageScriptCommand(detectPackageManager(cwd, pkg), 'test');
+      }
     } catch {}
   }
+  if (hasBunProjectFiles(cwd)) return 'bun test';
   if (existsSync(join(cwd, 'Cargo.toml'))) return 'cargo test';
   if (existsSync(join(cwd, 'go.mod'))) return 'go test ./...';
   if (existsSync(join(cwd, 'pyproject.toml')) || existsSync(join(cwd, 'setup.py'))) return 'pytest';
@@ -127,6 +151,18 @@ function detectTestCommand(cwd) {
     if (/^test:/m.test(mf)) return 'make test';
   } catch {}
   return null;
+}
+
+function runReleaseStateCheck(cwd) {
+  const script = join(cwd, 'scripts', 'verify-release-state.mjs');
+  if (!existsSync(script)) return;
+  console.log('\n🔎 Verifying release state...');
+  try {
+    execSync(`node ${JSON.stringify(script)}`, { stdio: 'inherit', timeout: 120000 });
+  } catch {
+    console.error('❌ Release state verification failed. Fix before releasing.');
+    exitFail(1);
+  }
 }
 
 function getVersionFile(cwd, projectType) {
@@ -362,7 +398,10 @@ export function cmdReleaseBump(args) {
     execSync(`node ${checksumScript}`, { stdio: 'inherit' });
   }
 
-  // 7. Run tests
+  // 7. Verify release consistency before running tests.
+  runReleaseStateCheck(cwd);
+
+  // 8. Run tests
   console.log('\n🧪 Running tests...');
   try {
     execSync('bun test test/core-unit.test.mjs', { stdio: 'inherit', timeout: 120000 });

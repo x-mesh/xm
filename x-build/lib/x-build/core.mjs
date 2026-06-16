@@ -547,6 +547,24 @@ export function runQualityChecks(project) {
   return detectAndRunQualityChecks(project);
 }
 
+function detectPackageManager(cwd) {
+  if (existsSync(join(cwd, 'bun.lock')) || existsSync(join(cwd, 'bun.lockb')) || existsSync(join(cwd, 'bunfig.toml'))) return 'bun';
+  if (existsSync(join(cwd, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (existsSync(join(cwd, 'yarn.lock'))) return 'yarn';
+  return 'npm';
+}
+
+function packageScriptCommand(packageManager, scriptName) {
+  if (packageManager === 'bun') return `bun run ${scriptName}`;
+  if (packageManager === 'pnpm') return `pnpm run ${scriptName}`;
+  if (packageManager === 'yarn') return scriptName === 'test' ? 'yarn test' : `yarn ${scriptName}`;
+  return scriptName === 'test' ? 'npm test' : `npm run ${scriptName}`;
+}
+
+function shouldSkipRecursiveTestScript(testScript) {
+  return process.env.NODE_ENV === 'test' && /\bbun\s+test\b/.test(testScript);
+}
+
 function detectAndRunQualityChecks(project) {
   const cwd = repoRoot();
   const results = [];
@@ -565,7 +583,7 @@ function detectAndRunQualityChecks(project) {
 
   // Auto-detect test runners
   const detections = [
-    { file: 'package.json', key: 'scripts.test', cmd: 'npm test', name: 'npm-test' },
+    { file: 'package.json', kind: 'package-test' },
     { file: 'pytest.ini', cmd: 'pytest', name: 'pytest' },
     { file: 'pyproject.toml', cmd: 'pytest', name: 'pytest' },
     { file: 'go.mod', cmd: 'go test ./...', name: 'go-test' },
@@ -575,17 +593,27 @@ function detectAndRunQualityChecks(project) {
   for (const d of detections) {
     const filePath = join(cwd, d.file);
     if (!existsSync(filePath)) continue;
-    if (d.key === 'scripts.test') {
+    let cmd = d.cmd;
+    let name = d.name;
+    if (d.kind === 'package-test') {
       try {
         const pkg = JSON.parse(readFileSync(filePath, 'utf8'));
-        if (!pkg.scripts?.test || pkg.scripts.test.includes('no test specified')) continue;
+        const testScript = pkg.scripts?.test || '';
+        if (!testScript || testScript.includes('no test specified')) continue;
+        // Unit tests invoke `x-build quality` as a subprocess. If this repo's
+        // package test script is `bun test`, auto-running it from inside Bun's
+        // own test environment recursively spawns the full suite.
+        if (shouldSkipRecursiveTestScript(testScript)) continue;
+        const packageManager = detectPackageManager(cwd);
+        cmd = packageScriptCommand(packageManager, 'test');
+        name = `${packageManager}-test`;
       } catch { continue; }
     }
     try {
-      const out = spawnSync(d.cmd, [], { shell: true, cwd, stdio: 'pipe', timeout: 300000 });
-      results.push({ check: d.name, passed: out.status === 0, output: out.stderr?.toString().slice(-200) || '' });
+      const out = spawnSync(cmd, [], { shell: true, cwd, stdio: 'pipe', timeout: 300000 });
+      results.push({ check: name, passed: out.status === 0, output: out.stderr?.toString().slice(-200) || '' });
     } catch (e) {
-      results.push({ check: d.name, passed: false, output: e.message });
+      results.push({ check: name, passed: false, output: e.message });
     }
   }
 
@@ -608,24 +636,29 @@ function detectAndRunQualityChecks(project) {
 
   // Auto-detect build
   const builds = [
-    { file: 'package.json', key: 'scripts.build', cmd: 'npm run build', name: 'npm-build' },
+    { file: 'package.json', kind: 'package-build' },
     { file: 'go.mod', cmd: 'go build ./...', name: 'go-build' },
   ];
 
   for (const b of builds) {
     const filePath = join(cwd, b.file);
     if (!existsSync(filePath)) continue;
-    if (b.key) {
+    let cmd = b.cmd;
+    let name = b.name;
+    if (b.kind === 'package-build') {
       try {
         const pkg = JSON.parse(readFileSync(filePath, 'utf8'));
         if (!pkg.scripts?.build) continue;
+        const packageManager = detectPackageManager(cwd);
+        cmd = packageScriptCommand(packageManager, 'build');
+        name = `${packageManager}-build`;
       } catch { continue; }
     }
     try {
-      const out = spawnSync(b.cmd, [], { shell: true, cwd, stdio: 'pipe', timeout: 300000 });
-      results.push({ check: b.name, passed: out.status === 0, output: out.stderr?.toString().slice(-200) || '' });
+      const out = spawnSync(cmd, [], { shell: true, cwd, stdio: 'pipe', timeout: 300000 });
+      results.push({ check: name, passed: out.status === 0, output: out.stderr?.toString().slice(-200) || '' });
     } catch (e) {
-      results.push({ check: b.name, passed: false, output: e.message });
+      results.push({ check: name, passed: false, output: e.message });
     }
   }
 
