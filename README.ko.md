@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.12-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.13-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-12-orange" alt="Plugins" /></a>
@@ -594,6 +594,7 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 
 ```bash
 /xm:probe "결제 시스템 만들기"          # 전체 검증 세션
+/xm:probe grill "<결정>"               # 방어 리허설 — 내린 결정을 압박 심문
 /xm:probe verdict                      # 마지막 판정 보기
 /xm:probe list                         # 과거 검증 목록
 ```
