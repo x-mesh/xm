@@ -17,6 +17,7 @@ The default answer is NO — ideas must earn a YES by surviving scrutiny.
 - User says "should we build this?", "is this worth it?", "probe this idea"
 - User says "validate", "challenge", "should I?", "is this the right approach?"
 - Before running /xm:build — probe first, build second
+- User wants to rehearse defending a decision already made ("grill me on X", "방어 연습", "내 결정 캐물어줘") — see `grill`
 </Use_When>
 
 <Do_Not_Use_When>
@@ -64,6 +65,7 @@ See `references/ask-user-question-rule.md` — the `question` field is invisible
 ## Routing
 
 First word of `$ARGUMENTS`:
+- `grill` → [Session: grill] — adversarial rehearsal of a decision the user must defend (see `sessions/grill.md`)
 - `verdict` → [Command: verdict]
 - `list` → [Command: list]
 - Empty → Output the following message and wait for the user's reply:
@@ -106,6 +108,7 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | "Should we build a payment system?" | probe "payment system" |
 | "Is this worth doing?" | probe (ask for idea description) |
 | "Challenge this approach" | probe "{approach}" |
+| "Grill me on this decision" / "내 결정 캐물어줘" / "방어 연습" | grill "{decision}" |
 | "What was the verdict?" | verdict |
 | "Show past probes" | list |
 
@@ -176,6 +179,12 @@ See `sessions/probe.md` — full premise extraction + evidence gathering + verdi
 
 ---
 
+## Session: grill
+
+See `sessions/grill.md` — adversarial rehearsal where a persona panel grills the USER on a decision they must defend, then scores defense-readiness (DEFENSIBLE ✅ / SHAKY 🔄 / EXPOSED ❌). Distinct from `probe`: the subject is the user's own stance (not an idea's viability), and the user answers every round via AskUserQuestion. A persona fan-out generates the question pool once (Phase 1.5), then the leader spends it interactively. A scope guard redirects not-yet-decided ideas ("should we build X?") back to `session probe`.
+
+---
+
 ## Command: verdict
 
 Show the last probe verdict:
@@ -207,6 +216,10 @@ Probe state is stored in `.xm/probe/`:
 ```
 .xm/probe/
 ├── last-verdict.json          # Most recent probe result
+├── grill/
+│   ├── last-grill.json          # Most recent grill rehearsal
+│   └── history/
+│       └── {timestamp}-{slug}.json  # All past grill sessions
 └── history/
     └── {timestamp}-{slug}.json  # All past verdicts
 ```

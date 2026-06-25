@@ -10,7 +10,7 @@
     {
       "name": "build",
       "description": "Phase-based project harness with PRD generation, consensus review, plan validation, multi-mode deliberation, DAG execution, cost forecasting, and decision memory",
-      "version": "2.7.0",
+      "version": "2.8.0",
       "author": {
         "name": "x-mesh"
       },
@@ -154,7 +154,7 @@
     {
       "name": "probe",
       "description": "Premise validation — evidence-grade questioning, domain-aware probing, kill bad ideas early, earn the right to build",
-      "version": "2.1.0",
+      "version": "2.2.0",
       "author": {
         "name": "x-mesh"
       },
@@ -224,7 +224,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.4.12",
+      "version": "2.4.13",
       "author": {
         "name": "x-mesh"
       },
