@@ -69,6 +69,13 @@ function updateApp(html) {
   }
 }
 
+// Encode a value for a location.hash built inside a single-quoted onclick string.
+// encodeURIComponent leaves `'` unescaped (it is an unreserved mark), so an id with
+// a quote could break out of the attribute — escape it to %27 as well.
+function hashEnc(s) {
+  return encodeURIComponent(String(s ?? '')).replace(/'/g, '%27');
+}
+
 function apiUrl(path) {
   const p = path.startsWith('/') ? path : '/' + path;
   if (multiRootMode && currentWsId) {
@@ -460,6 +467,27 @@ function laterScopeBadge(scope) {
   return `<span class="badge badge-green">${scope.tracked} clean</span>`;
 }
 
+// Strip active content from rendered HTML before insertion. marked has no built-in
+// sanitizer and .xm artifacts can carry untrusted model output, so neutralize
+// script/embed tags, on* handlers, and javascript:/data: URLs. Parsed into an inert
+// <template> so nothing loads or executes during cleaning.
+function sanitizeHtml(html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = String(html ?? '');
+  const BAD_TAGS = new Set(['script', 'iframe', 'object', 'embed', 'link', 'meta', 'style', 'form', 'base']);
+  tpl.content.querySelectorAll('*').forEach((el) => {
+    if (BAD_TAGS.has(el.tagName.toLowerCase())) { el.remove(); return; }
+    [...el.attributes].forEach((attr) => {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith('on')) el.removeAttribute(attr.name);
+      else if ((name === 'href' || name === 'src' || name === 'xlink:href') && /^\s*(javascript|data|vbscript):/i.test(attr.value)) {
+        el.removeAttribute(attr.name);
+      }
+    });
+  });
+  return tpl.innerHTML;
+}
+
 function renderMarkdown(text) {
   if (!text) return '';
   if (typeof marked !== 'undefined' && marked.parse) {
@@ -482,7 +510,7 @@ function renderMarkdown(text) {
       processed.push(line);
     }
     if (inDiagram) processed.push('```');
-    return marked.parse(processed.join('\n'));
+    return sanitizeHtml(marked.parse(processed.join('\n')));
   }
   // Fallback: escape HTML and preserve line breaks
   return text
@@ -2398,33 +2426,211 @@ function renderSolverDetail(slug) {
   window.addEventListener('hashchange', stopPolling, { once: true });
 }
 
+// ── Config editor (tier toggle · panel structured form · generic JSON) ────
+// No polling here: an editor must not clobber in-progress edits. Load once;
+// reload explicitly after a save or tier switch.
+let _configTier = 'project';
+let _configProviders = [];
+let _configPanelRaw = {};   // full panel section as loaded — preserved on save
+let _configLoadSeq = 0;     // guards against a stale tier-switch fetch winning the race
+
 function renderConfig() {
+  _configTier = 'project';
+  document.getElementById('app').innerHTML =
+    `<div class="view-header"><h1>Config</h1></div>${renderLoading()}`;
+  loadConfigEditor();
+}
+
+async function loadConfigEditor() {
   const app = document.getElementById('app');
+  const seq = ++_configLoadSeq;
+  const [cfg, prov] = await Promise.all([
+    fetchJSON(apiUrl(`/config?tier=${_configTier}`)),
+    fetchJSON(apiUrl('/panel/providers')),
+  ]);
+  // A newer load (tier switch / reload) started while we awaited — discard this one.
+  if (seq !== _configLoadSeq || getPath() !== '/config') return;
+  if (cfg.error) {
+    app.innerHTML = `<div class="view-header"><h1>Config</h1></div>${renderError(cfg.message || cfg.error)}`;
+    return;
+  }
+  _configProviders = (prov && !prov.error && Array.isArray(prov.providers)) ? prov.providers : [];
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+
+  const { panel, _tier, _path, _empty, ...rest } = cfg;
+  _configPanelRaw = (panel && typeof panel === 'object') ? panel : {};
+  const panelCfg = panel || {};
+  const savePath = esc(_path || '');
+
+  // tier toggle
+  const tierBtn = (t, label) => `<button onclick="configSetTier('${t}')" class="badge ${_configTier === t ? 'badge-indigo' : 'badge-gray'}" style="cursor:pointer;padding:5px 12px">${label}</button>`;
+  const tierToggle = `<div style="display:flex;gap:8px;align-items:center;margin-bottom:1rem">
+    <span class="text-muted" style="font-size:.8rem">tier:</span>${tierBtn('project', 'Project (.xm)')}${tierBtn('global', 'Global (~/.xm)')}
+    <span class="text-muted" style="font-size:.72rem;margin-left:8px">${savePath}${_empty ? ' (new)' : ''}</span>
+  </div>`;
+
+  // panel form — model checkboxes (union of detected providers + configured models)
+  const provNames = _configProviders.map((p) => p.name);
+  const allModels = [...new Set([...provNames, ...((panelCfg.models) || [])])];
+  const modelChecks = allModels.length ? allModels.map((name) => {
+    const prov = _configProviders.find((p) => p.name === name);
+    const onPath = prov ? prov.available : null;
+    const checked = ((panelCfg.models) || []).includes(name) ? 'checked' : '';
+    const note = onPath === false ? ' <span class="text-muted" style="font-size:.68rem">(not on PATH)</span>' : '';
+    return `<label style="display:inline-flex;align-items:center;gap:5px;margin:0 14px 6px 0">
+      <input type="checkbox" class="cfg-model" value="${esc(name)}" ${checked}> ${esc(name)}${note}</label>`;
+  }).join('') : '<span class="text-muted" style="font-size:.8rem">no providers detected</span>';
+
+  const judgeVal = panelCfg.judge || 'rule';
+  const overrideRows = Object.entries(panelCfg.model_overrides || {}).map(([k, v]) => cfgOverrideRow(k, v)).join('');
+  const presetRows = Object.entries(panelCfg.presets || {}).map(([k, v]) => cfgPresetRow(k, Array.isArray(v) ? v.join(',') : v)).join('');
+
+  const panelForm = `<div class="card" style="margin-bottom:1rem">
+    <h2 style="margin-top:0;font-size:1rem">Panel</h2>
+    <div style="margin-bottom:10px"><div class="text-muted" style="font-size:.78rem;margin-bottom:4px">models</div>${modelChecks}</div>
+    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px">
+      <label style="font-size:.85rem">judge
+        <select id="cfg-judge" style="margin-left:6px">
+          <option value="rule" ${judgeVal === 'rule' ? 'selected' : ''}>rule</option>
+        </select></label>
+      <label style="font-size:.85rem">timeout_s
+        <input id="cfg-timeout" type="number" min="1" value="${esc(panelCfg.timeout_s ?? '')}" placeholder="240" style="width:90px;margin-left:6px"></label>
+    </div>
+    <div style="margin-bottom:10px">
+      <div class="text-muted" style="font-size:.78rem;margin-bottom:4px">model_overrides <span style="opacity:.7">(name → model)</span></div>
+      <div id="cfg-overrides">${overrideRows}</div>
+      <button onclick="configAddOverrideRow()" class="badge badge-gray" style="cursor:pointer;margin-top:4px">+ override</button>
+    </div>
+    <div style="margin-bottom:10px">
+      <div class="text-muted" style="font-size:.78rem;margin-bottom:4px">presets <span style="opacity:.7">(name → models, comma-separated)</span></div>
+      <div id="cfg-presets">${presetRows}</div>
+      <button onclick="configAddPresetRow()" class="badge badge-gray" style="cursor:pointer;margin-top:4px">+ preset</button>
+    </div>
+    <button onclick="configSavePanel()" class="badge badge-green" style="cursor:pointer;padding:6px 14px">Save panel</button>
+  </div>`;
+
+  // generic editor for everything else (non-panel top-level keys)
+  const otherJson = escapeHtmlHumble(JSON.stringify(rest, null, 2));
+  const otherForm = `<div class="card" style="margin-bottom:1rem">
+    <h2 style="margin-top:0;font-size:1rem">Other keys <span class="text-muted" style="font-size:.75rem;font-weight:400">(raw JSON — non-panel)</span></h2>
+    <textarea id="cfg-other" spellcheck="false" style="width:100%;min-height:180px;font-family:monospace;font-size:.8rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px">${otherJson}</textarea>
+    <div style="margin-top:8px"><button onclick="configSaveOther()" class="badge badge-green" style="cursor:pointer;padding:6px 14px">Save other keys</button>
+    <span class="text-muted" style="font-size:.72rem;margin-left:8px">merge only — key deletion not persisted</span></div>
+  </div>`;
+
   app.innerHTML = `
-    <div class="view-header"><h1>Config</h1></div>
-    ${renderLoading()}
-  `;
+    <div class="view-header"><h1>Config</h1><p>edit ${esc(_configTier)} config · panel form + raw keys</p></div>
+    ${tierToggle}
+    <div id="config-status" style="min-height:20px;margin-bottom:8px;font-size:.82rem"></div>
+    ${panelForm}
+    ${otherForm}`;
+}
 
-  const stopPolling = startPolling(async () => {
-    const seq = _pollSequence;
-    const res = await fetchJSON(apiUrl('/config'));
-    if (seq !== _pollSequence) return;
-    if (res.error) {
-      updateApp(`
-        <div class="view-header"><h1>Config</h1></div>
-        ${renderError(res.message ?? res.error)}
-      `);
-      return;
+function cfgOverrideRow(name = '', model = '') {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  return `<div class="cfg-ovr-row" style="display:flex;gap:6px;margin-bottom:4px">
+    <input class="cfg-ovr-name" placeholder="codex" value="${esc(name)}" style="width:140px">
+    <span style="opacity:.5">→</span>
+    <input class="cfg-ovr-model" placeholder="gpt-5.2" value="${esc(model)}" style="width:180px">
+    <button onclick="this.parentNode.remove()" class="badge badge-gray" style="cursor:pointer">×</button>
+  </div>`;
+}
+
+function cfgPresetRow(name = '', models = '') {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  return `<div class="cfg-preset-row" style="display:flex;gap:6px;margin-bottom:4px">
+    <input class="cfg-preset-name" placeholder="fast" value="${esc(name)}" style="width:140px">
+    <span style="opacity:.5">→</span>
+    <input class="cfg-preset-models" placeholder="claude,codex" value="${esc(models)}" style="width:220px">
+    <button onclick="this.parentNode.remove()" class="badge badge-gray" style="cursor:pointer">×</button>
+  </div>`;
+}
+
+function configAddOverrideRow() {
+  document.getElementById('cfg-overrides')?.insertAdjacentHTML('beforeend', cfgOverrideRow());
+}
+function configAddPresetRow() {
+  document.getElementById('cfg-presets')?.insertAdjacentHTML('beforeend', cfgPresetRow());
+}
+
+function configSetTier(tier) {
+  if (tier !== 'project' && tier !== 'global') return;
+  _configTier = tier;
+  loadConfigEditor();
+}
+
+function setConfigStatus(msg, ok) {
+  const el = document.getElementById('config-status');
+  if (el) el.innerHTML = `<span style="color:${ok ? 'var(--success,#2a2)' : 'var(--danger,#c00)'}">${escapeHtmlHumble(msg)}</span>`;
+}
+
+async function patchConfigTier(body) {
+  setConfigStatus('저장 중…', true);
+  try {
+    const res = await fetch(apiUrl(`/config?tier=${_configTier}`), {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    let data = {};
+    try { data = await res.json(); } catch {}
+    if (!res.ok || data.error) {
+      setConfigStatus(`저장 실패 (HTTP ${res.status}): ${data.error || ''}${data.message ? ' — ' + data.message : ''}`, false);
+      return false;
     }
-    updateApp(`
-      <div class="view-header"><h1>Config</h1></div>
-      <div class="card">
-        <pre style="margin:0;overflow:auto;font-size:0.85em">${JSON.stringify(res, null, 2)}</pre>
-      </div>
-    `);
-  });
+    setConfigStatus(`저장됨 → ${data.path || _configTier}`, true);
+    await loadConfigEditor();
+    return true;
+  } catch (e) {
+    setConfigStatus('저장 실패: ' + (e.message || e), false);
+    return false;
+  }
+}
 
-  window.addEventListener('hashchange', stopPolling, { once: true });
+function configSavePanel() {
+  const uniqModels = [...new Set([...document.querySelectorAll('.cfg-model:checked')].map((c) => c.value))];
+  const judge = document.getElementById('cfg-judge')?.value || 'rule';
+  const timeoutRaw = document.getElementById('cfg-timeout')?.value;
+  // Start from the panel section as loaded so keys the form doesn't render (any
+  // future panel.* setting) survive the save; then set the known fields explicitly
+  // so each can also be cleared.
+  const panel = { ..._configPanelRaw, models: uniqModels, judge };
+  if (timeoutRaw !== '' && timeoutRaw != null) {
+    const t = Number(timeoutRaw);
+    if (!Number.isFinite(t) || t <= 0) { setConfigStatus('timeout_s는 양수여야 합니다', false); return; }
+    panel.timeout_s = t;
+  } else {
+    delete panel.timeout_s;
+  }
+  const overrides = {};
+  document.querySelectorAll('#cfg-overrides .cfg-ovr-row').forEach((row) => {
+    const k = row.querySelector('.cfg-ovr-name')?.value.trim();
+    const v = row.querySelector('.cfg-ovr-model')?.value.trim();
+    if (k) overrides[k] = v || '';
+  });
+  if (Object.keys(overrides).length) panel.model_overrides = overrides; else delete panel.model_overrides;
+  const presets = {};
+  document.querySelectorAll('#cfg-presets .cfg-preset-row').forEach((row) => {
+    const k = row.querySelector('.cfg-preset-name')?.value.trim();
+    const v = row.querySelector('.cfg-preset-models')?.value.trim();
+    if (k) presets[k] = v ? v.split(',').map((s) => s.trim()).filter(Boolean) : [];
+  });
+  if (Object.keys(presets).length) panel.presets = presets; else delete panel.presets;
+  patchConfigTier({ panel });
+}
+
+function configSaveOther() {
+  const ta = document.getElementById('cfg-other');
+  if (!ta) return;
+  let parsed;
+  try { parsed = JSON.parse(ta.value || '{}'); }
+  catch (e) { setConfigStatus('JSON 파싱 오류: ' + e.message, false); return; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    setConfigStatus('JSON 객체여야 합니다 (배열·원시값 불가)', false); return;
+  }
+  if ('panel' in parsed) {
+    setConfigStatus('panel 키는 위 Panel 폼에서 저장하세요 (여기선 제외됩니다)', false);
+    delete parsed.panel;
+  }
+  patchConfigTier(parsed);
 }
 
 // ── x-op views ──────────────────────────────────────────────────────
@@ -4146,7 +4352,12 @@ async function renderRecallList() {
   const rows = items.map(it => {
     const when = esc((it.created_at || '').slice(0, 10));
     const status = it.status ? `<span class="text-muted" style="font-size:0.8rem">${esc(it.status)}</span>` : '—';
-    return `<tr data-type="${esc(it.type)}">
+    // panel artifacts have a dedicated detail view (consensus + per-model rounds);
+    // everything else opens the generic recall content view.
+    const target = (it.type === 'panel' && typeof it.id === 'string' && it.id.startsWith('panel:'))
+      ? `#/panel/${hashEnc(it.id.slice('panel:'.length))}`
+      : `#/recall/${hashEnc(it.id || '')}`;
+    return `<tr data-type="${esc(it.type)}" style="cursor:pointer" onclick="window.location.hash='${target}'">
       <td><code style="font-size:0.75rem">${esc(it.type)}</code></td>
       <td>${esc(nullSafe(it.title))}</td>
       <td>${status}</td>
@@ -4207,8 +4418,10 @@ async function refreshPanel() {
   const icon = (s) => s === 'done' ? '✓' : s === 'failed' ? '✗' : s === 'running' ? '⏳' : '·';
   const cards = runs.map((r) => {
     const st = r.status;
-    const running = !!(st && st.phase !== 'done');
-    const phase = st ? st.phase : (r.verdict ? 'done' : 'unknown');
+    const live = panelIsLive(st);
+    const stalled = !!(st && st.phase !== 'done') && !live; // process died mid-run
+    const phase = st ? (stalled ? `${st.phase} (stalled)` : st.phase) : (r.verdict ? 'done' : 'unknown');
+    const badgeCls = live ? 'badge-yellow' : stalled ? 'badge-gray' : 'badge-green';
     const models = st ? st.models
       : (r.verdict ? (r.verdict.models || []).map((m) => ({ label: m, state: 'done', elapsed_s: null })) : []);
     const modelLine = models.map((m) =>
@@ -4216,19 +4429,268 @@ async function refreshPanel() {
     const c = r.verdict && r.verdict.counts;
     const summary = c
       ? `${c.unique} issue(s) · ${c.contested} contested${c.unreviewed ? ` · ${c.unreviewed} unreviewed` : ''}`
-      : (running ? 'in progress…' : '');
-    return `<div class="card" style="margin-bottom:0.75rem">
+      : (live ? 'in progress…' : stalled ? 'stalled — no update' : '');
+    return `<div class="card" style="margin-bottom:0.75rem;cursor:pointer" onclick="window.location.hash='#/panel/${hashEnc(r.run)}'">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <strong style="font-size:0.85rem">${esc(r.run)}</strong>
-        <span class="badge ${running ? 'badge-yellow' : 'badge-green'}">${esc(phase)}</span>
+        <span class="badge ${badgeCls}">${esc(phase)}</span>
       </div>
       <div style="font-size:0.85rem;margin-top:6px">${modelLine || '<span class="text-muted">—</span>'}</div>
-      <div class="text-muted" style="font-size:0.85rem;margin-top:4px">${esc(summary)}</div>
+      <div class="text-muted" style="font-size:0.85rem;margin-top:4px">${esc(summary)} <span style="opacity:.6">›</span></div>
     </div>`;
   }).join('');
-  const anyRunning = runs.some((r) => r.status && r.status.phase !== 'done');
+  const anyRunning = runs.some((r) => panelIsLive(r.status));
   app.innerHTML = `<div class="view-header"><h1>Panel</h1><p>cross-model reviews${anyRunning ? ' · <span style="color:var(--warning,#d80)">● live</span>' : ''}</p></div>${cards}`;
   if (anyRunning) setTimeout(refreshPanel, 2000); // poll while any run is in progress
+}
+
+// A run is "live" only if it hasn't finished AND its status.json was touched
+// recently. The CLI flushes every ~2s while running, so a status older than this
+// window means the process died mid-run (e.g. interrupted) — show it as stalled,
+// not a phantom "live" run that the dashboard would poll forever.
+const PANEL_STALE_MS = 30000;
+function panelIsLive(st) {
+  if (!st || st.phase === 'done') return false;
+  const t = Date.parse(st.updated_at || '');
+  return Number.isFinite(t) && (Date.now() - t) < PANEL_STALE_MS;
+}
+
+// stance from round2 verdicts: concede = opponent agreed, refute = pushed back.
+function panelStanceBadge(stance) {
+  const s = String(stance || '').toLowerCase();
+  const cls = s === 'concede' ? 'badge-amber' : s === 'refute' ? 'badge-red' : 'badge-gray';
+  return `<span class="badge ${cls}">${escapeHtmlHumble(stance || '—')}</span>`;
+}
+
+// One finding (confirmed/contested/unreviewed) with its opponents' round2 stances.
+function panelFindingCard(f) {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const loc = f.file ? `<code style="font-size:.75rem">${esc(f.file)}${f.line != null ? ':' + esc(f.line) : ''}</code>` : '<span class="text-muted">no location</span>';
+  const opps = Array.isArray(f.opponents) ? f.opponents : [];
+  const oppLines = opps.map((o) =>
+    `<div style="margin-top:4px;font-size:.8rem"><strong>${esc(o.model)}</strong> ${panelStanceBadge(o.stance)} <span class="text-muted">${esc(o.reason || '')}</span></div>`).join('');
+  return `<div class="card" style="margin-bottom:.6rem">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      ${severityBadge(f.severity)}
+      <span class="text-muted" style="font-size:.78rem">raised by <strong>${esc(f.owner)}</strong></span>
+      ${loc}
+    </div>
+    <div style="margin-top:6px;font-weight:600;font-size:.88rem">${esc(f.claim)}</div>
+    ${f.evidence ? `<div class="text-muted" style="margin-top:4px;font-size:.8rem;white-space:pre-line">${esc(f.evidence)}</div>` : ''}
+    ${oppLines ? `<div style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px">${oppLines}</div>` : ''}
+  </div>`;
+}
+
+// One consensus issue (merged across models) with each model's claim.
+function panelConsensusCard(c, modelCount) {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const loc = c.file ? `<code style="font-size:.75rem">${esc(c.file)}${c.line != null ? ':' + esc(c.line) : ''}</code>` : '<span class="text-muted">no location</span>';
+  const claims = (Array.isArray(c.claims) ? c.claims : []).map((cl) =>
+    `<div style="margin-top:4px;font-size:.8rem"><strong>${esc(cl.model)}</strong> ${severityBadge(cl.severity)} <span class="text-muted">${esc(cl.claim)}</span></div>`).join('');
+  return `<div class="card" style="margin-bottom:.6rem">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span class="badge badge-green">${esc(c.consensus)}/${esc(modelCount)} agree</span>
+      ${severityBadge(c.severity)}
+      ${loc}
+      <span class="text-muted" style="font-size:.78rem">${esc((c.models || []).join(', '))}</span>
+    </div>
+    ${claims ? `<div style="margin-top:6px">${claims}</div>` : ''}
+  </div>`;
+}
+
+let _panelDetailToken = 0;
+async function renderPanelDetail(run) {
+  // Each call (navigation OR poll) takes a fresh token; a stale poll callback whose
+  // token was superseded by a newer render must not start a second polling loop.
+  const token = ++_panelDetailToken;
+  const app = document.getElementById('app');
+  if (getPath() !== `/panel/${run}`) return; // navigated away before we even painted
+  if (!app.querySelector('.panel-detail-body')) {
+    app.innerHTML = `<div class="view-header"><h1>Panel</h1></div>${renderLoading()}`;
+  }
+  const res = await fetchJSON(apiUrl(`/panel/${encodeURIComponent(run)}`));
+  if (token !== _panelDetailToken || getPath() !== `/panel/${run}`) return;
+  if (res.error) {
+    app.innerHTML = `<div class="view-header"><h1>Panel</h1><p><a href="#/panel" style="font-size:.85rem">← Panel</a></p></div>${renderError(res.message || res.error)}`;
+    return;
+  }
+
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const v = res.verdict;
+  const st = res.status;
+  const rounds = res.rounds || [];
+  const running = panelIsLive(st) && !v;
+  const stalled = !!(st && st.phase !== 'done') && !running && !v;
+
+  // ── Phase bar (top, compact) ──────────────────────────────────────
+  const phaseBar = (() => {
+    const models = st ? st.models
+      : v ? (v.models || []).map((m) => ({ label: m, state: 'done', elapsed_s: null }))
+      : [];
+    const icon = (s) => s === 'done' ? '✓' : s === 'failed' ? '✗' : s === 'running' ? '⏳' : '·';
+    const liveBadge = running ? ' <span class="badge badge-yellow" style="font-size:.7rem">● live</span>'
+      : stalled ? ' <span class="badge badge-gray" style="font-size:.7rem">stalled</span>' : '';
+    const phase = st ? st.phase : (v ? 'done' : 'unknown');
+    const modelTags = models.map((m) => {
+      const cls = m.state === 'done' ? 'color:var(--success,#2a2)' : m.state === 'failed' ? 'color:var(--danger,#c00)' : 'color:var(--warning,#d80)';
+      return `<span style="${cls}">${icon(m.state)} ${esc(m.label)}${m.elapsed_s != null ? ` <span class="text-muted">(${m.elapsed_s}s)</span>` : ''}</span>`;
+    }).join('  ');
+    return `<div style="font-size:.82rem;padding:.5rem .75rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;margin-bottom:1rem;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <span class="text-muted">${esc(phase)}${liveBadge}</span>
+      <span style="display:flex;gap:14px;flex-wrap:wrap">${modelTags}</span>
+    </div>`;
+  })();
+
+  // ── Verdict summary (only when done) ─────────────────────────────
+  let verdictHtml = '';
+  if (v) {
+    const c = v.counts || {};
+    const modelCount = (v.models || []).length;
+    const consensus = (v.consensus || []).slice().sort((a, b) => (b.consensus || 0) - (a.consensus || 0));
+    const section = (title, hint, body) => body
+      ? `<h2 style="font-size:.95rem;margin:1.1rem 0 .4rem">${title} <span class="text-muted" style="font-size:.75rem;font-weight:400">${hint}</span></h2>${body}`
+      : '';
+    const meta = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:.75rem">
+      <span class="badge badge-green">${esc(c.unique ?? c.confirmed ?? 0)} issue(s)</span>
+      <span class="badge badge-red">${esc(c.contested ?? 0)} contested</span>
+      ${c.unreviewed ? `<span class="badge badge-amber">${esc(c.unreviewed)} unreviewed</span>` : ''}
+      <span class="text-muted" style="font-size:.75rem">${esc((v.models || []).join(', '))} · ${esc(v.judge || 'rule')} · ${esc(v.target_kind || '')}${v.created_at ? ' · ' + esc(v.created_at.slice(0, 16).replace('T', ' ')) : ''}</span>
+    </div>`;
+    verdictHtml = meta
+      + section('Consensus', `≥2/${modelCount} agree`, consensus.length ? consensus.map((x) => panelConsensusCard(x, modelCount)).join('') : '')
+      + section('Confirmed', 'survived adversarial round', (v.confirmed || []).length ? v.confirmed.map(panelFindingCard).join('') : '')
+      + section('Contested', 'a model refuted this', (v.contested || []).length ? v.contested.map(panelFindingCard).join('') : '')
+      + section('Unreviewed', 'opponents abstained', (v.unreviewed || []).length ? v.unreviewed.map(panelFindingCard).join('') : '');
+  }
+
+  // ── Per-model log (always visible, no folds) ──────────────────────
+  // During a live run, build the model list from status.json so users see
+  // all models immediately — even before any r1/r2 files exist on disk.
+  const modelKeys = (() => {
+    const fromRounds = rounds.map((r) => r.label);
+    const fromStatus = (st && st.models || []).map((m) => m.label);
+    const fromVerdict = v ? (v.models || []) : [];
+    return [...new Set([...fromRounds, ...fromStatus, ...fromVerdict])];
+  })();
+
+  const modelCardsHtml = modelKeys.length ? (() => {
+    const roundMap = Object.fromEntries(rounds.map((r) => [r.label, r]));
+    const statusMap = Object.fromEntries((st && st.models || []).map((m) => [m.label, m]));
+    return modelKeys.map((label) => {
+      const m = roundMap[label] || {};
+      const ms = statusMap[label] || {};
+      const r1 = m.r1 || {}; const r2 = m.r2 || {};
+      const state = ms.state || (m.r1 ? (r1.ok ? 'done' : 'failed') : (running ? 'running' : 'unknown'));
+      const elapsed = ms.elapsed_s;
+      const err = r1.error || r2.error;
+
+      const stateBadge = state === 'done' ? '<span class="badge badge-green">done</span>'
+        : state === 'failed' ? '<span class="badge badge-red">error</span>'
+        : state === 'running' ? '<span class="badge badge-yellow">running</span>'
+        : '<span class="badge badge-gray">pending</span>';
+
+      // Round1 findings
+      const f1Items = (r1.findings || []).map((f) =>
+        `<div style="padding:5px 0;border-top:1px solid var(--border)">
+          <div style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap">
+            ${severityBadge(f.severity)}
+            ${f.file ? `<code style="font-size:.72rem">${esc(f.file)}${f.line != null ? ':' + esc(f.line) : ''}</code>` : ''}
+          </div>
+          <div style="font-size:.82rem;margin-top:3px">${esc(f.claim)}</div>
+          ${f.evidence ? `<div class="text-muted" style="font-size:.75rem;margin-top:2px;white-space:pre-line">${esc(f.evidence)}</div>` : ''}
+        </div>`).join('');
+
+      // Round2 verdicts
+      const f2Items = (r2.verdicts || []).map((vd) =>
+        `<div style="padding:4px 0;border-top:1px solid var(--border);font-size:.8rem;display:flex;gap:6px;flex-wrap:wrap">
+          <code style="font-size:.7rem">${esc(vd.ref)}</code>${panelStanceBadge(vd.stance)}
+          <span class="text-muted">${esc(vd.reason || '')}</span>
+        </div>`).join('');
+
+      const r1Section = r1.ok != null ? `
+        <div style="margin-top:8px">
+          <div style="font-size:.72rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">Round 1 — findings (${(r1.findings || []).length})</div>
+          ${f1Items || '<div class="text-muted" style="font-size:.78rem;padding:4px 0">none</div>'}
+        </div>` : running ? '<div class="text-muted" style="font-size:.78rem;margin-top:8px;font-style:italic">reviewing…</div>' : '';
+
+      const r2Section = r2.ok != null ? `
+        <div style="margin-top:8px">
+          <div style="font-size:.72rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">Round 2 — refute/concede (${(r2.verdicts || []).length})</div>
+          ${f2Items || '<div class="text-muted" style="font-size:.78rem;padding:4px 0">none</div>'}
+        </div>` : '';
+
+      return `<div style="margin-bottom:.75rem;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+        <div style="padding:8px 12px;background:var(--surface);display:flex;gap:8px;align-items:center">
+          <strong style="font-size:.85rem">${esc(label)}</strong>
+          ${stateBadge}
+          ${elapsed != null ? `<span class="text-muted" style="font-size:.78rem">${elapsed}s</span>` : ''}
+          ${err ? `<span style="color:var(--danger,#c00);font-size:.78rem">· ${esc(err)}</span>` : ''}
+        </div>
+        ${(r1Section || r2Section) ? `<div style="padding:4px 12px 10px">${r1Section}${r2Section}</div>` : ''}
+      </div>`;
+    }).join('');
+  })() : '';
+
+  const modelsSection = modelCardsHtml
+    ? `<h2 style="font-size:.95rem;margin:1.1rem 0 .4rem">Per-model <span class="text-muted" style="font-size:.75rem;font-weight:400">round1 findings · round2 verdicts</span></h2>${modelCardsHtml}`
+    : '';
+
+  const prevScroll = window.scrollY;
+  app.innerHTML = `
+    <div class="view-header panel-detail-body">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <a href="#/panel" style="font-size:.85rem">← Panel</a>
+        ${pinButton(`/panel/${run}`, `panel · ${run}`)}
+      </div>
+      <h1 style="margin-top:.5rem">Panel — ${esc(run)}</h1>
+    </div>
+    ${phaseBar}${verdictHtml}${modelsSection}`;
+  window.scrollTo(0, prevScroll);
+
+  // Re-poll only if this render is still the latest (token) AND we're still on this
+  // route — guards against duplicate loops on re-entry and clobbering another view.
+  if (running && token === _panelDetailToken && getPath() === `/panel/${run}`) {
+    setTimeout(() => {
+      if (token === _panelDetailToken && getPath() === `/panel/${run}`) renderPanelDetail(run);
+    }, 2000);
+  }
+}
+
+async function renderRecallDetail(id) {
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="view-header"><h1>Recall</h1></div>${renderLoading()}`;
+
+  const res = await fetchJSON(apiUrl(`/recall/${encodeURIComponent(id)}`));
+  if (getPath() !== `/recall/${id}`) return; // navigated away mid-fetch
+  if (res.error) {
+    const hint = res.error === 'recall_unavailable'
+      ? 'x-recall is not installed in this environment.'
+      : (res.message || res.error);
+    app.innerHTML = `<div class="view-header"><h1>Recall</h1><p><a href="#/recall" style="font-size:.85rem">← Recall</a></p></div>${renderError(hint)}`;
+    return;
+  }
+
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const art = res.artifact || {};
+  const content = res.content || {};
+  const text = content.text || '';
+  const isMarkdown = (content.path || '').endsWith('.md');
+  const body = isMarkdown
+    ? `<div class="card"><div class="markdown-body">${renderMarkdown(text)}</div></div>`
+    : `<div class="card"><pre style="white-space:pre-wrap;font-size:.8rem;background:var(--surface);padding:1rem;overflow:auto;max-height:70vh">${esc(text)}</pre></div>`;
+
+  app.innerHTML = `
+    <div class="view-header">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <a href="#/recall" style="font-size:.85rem">← Recall</a>
+        ${pinButton(`/recall/${id}`, `${art.type || 'artifact'} · ${art.id || id}`)}
+      </div>
+      <h1 style="margin-top:.5rem">${esc(art.type || 'artifact')} — ${esc(nullSafe(art.title))}</h1>
+      <p class="text-muted" style="font-size:.78rem;margin-top:2px">
+        <code>${esc(art.id || id)}</code>${art.created_at ? ` · ${esc((art.created_at || '').slice(0, 19).replace('T', ' '))}` : ''}${content.path ? ` · <code style="font-size:.7rem">${esc(content.path)}</code>` : ''}
+      </p>
+    </div>
+    ${body}`;
 }
 
 /**
@@ -4980,7 +5442,9 @@ const ROUTES = [
   { pattern: /^\/research$/, handler: () => renderResearchList() },
   { pattern: /^\/research\/(.+)$/, handler: (m) => renderResearchDetail(m[1]) },
   { pattern: /^\/recall$/, handler: () => renderRecallList() },
+  { pattern: /^\/recall\/(.+)$/, handler: (m) => renderRecallDetail(m[1]) },
   { pattern: /^\/panel$/, handler: () => renderPanelList() },
+  { pattern: /^\/panel\/(.+)$/, handler: (m) => renderPanelDetail(m[1]) },
 ];
 
 function getPath() {

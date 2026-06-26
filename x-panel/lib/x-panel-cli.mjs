@@ -118,11 +118,19 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate) {
   process.stderr.write(`${C.dim}${roundLabel} — ${usable.length} models in parallel…${C.reset}\n`);
   const pending = new Set(usable.map((e) => e.label));
   const t0 = Date.now();
+  // Tick fast (2s) so the live status.json — and thus the dashboard's per-model
+  // "(Ns)" — ticks up visibly while a round runs. The stderr console line stays
+  // at ~30s so the terminal isn't spammed. Without the fast tick, elapsed_s only
+  // updated on completion and every running model showed "0s" the whole round.
+  let lastStderr = 0;
   const hb = setInterval(() => {
     const el = Math.round((Date.now() - t0) / 1000);
-    process.stderr.write(`  ${C.dim}… ${el}s — waiting on: ${[...pending].join(', ') || '(done)'}${C.reset}\n`);
-    if (onUpdate) onUpdate({ event: 'heartbeat', elapsed_s: el });
-  }, 30000);
+    if (el - lastStderr >= 30) {
+      lastStderr = el;
+      process.stderr.write(`  ${C.dim}… ${el}s — waiting on: ${[...pending].join(', ') || '(done)'}${C.reset}\n`);
+    }
+    if (onUpdate) onUpdate({ event: 'progress', elapsed_s: el });
+  }, 2000);
   if (hb.unref) hb.unref();
   const results = await Promise.all(usable.map(async (e) => {
     const s = Date.now();
@@ -242,6 +250,10 @@ async function cmdReview(pos, flags) {
     if (ev.event === 'model_done') {
       const m = status.models.find((x) => x.label === ev.label);
       if (m) { m.state = ev.ok ? 'done' : 'failed'; m.elapsed_s = ev.elapsed_s; }
+    } else if (ev.event === 'progress') {
+      // Tick the elapsed clock of every still-running model so the dashboard
+      // shows live progress instead of a frozen "0s" until completion.
+      status.models.forEach((m) => { if (m.state === 'running') m.elapsed_s = ev.elapsed_s; });
     }
     flushStatus();
   };
