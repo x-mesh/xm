@@ -453,6 +453,12 @@ export function cmdReleaseCommit(args) {
   for (const dir of ['xm/skills/', 'xm/lib/', 'xm/public/', 'xm/references/', 'xm/agent-catalog/']) {
     try { execSync(`git add ${dir}`, { stdio: 'pipe' }); } catch {}
   }
+  // Plugin SOURCE dirs too. A new plugin's .claude-plugin/commands/skills land as untracked,
+  // which `git add -u` (tracked-only) silently skips → source never reaches GitHub while the
+  // bundle copy does (the x-panel incident: only x-panel/lib was tracked, def/commands/skills lost).
+  for (const dir of PLUGIN_DIRS) {
+    try { execSync(`git add ${JSON.stringify(dir)}`, { stdio: 'pipe' }); } catch {}
+  }
 
   // Commit — use -F <file> to preserve real newlines (JSON.stringify -m escapes \n as literal)
   const msgFile = `/tmp/xbuild-commit-${process.pid}-${Date.now()}.msg`;

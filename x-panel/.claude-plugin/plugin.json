@@ -1,0 +1,19 @@
+{
+  "name": "panel",
+  "version": "0.1.1",
+  "description": "Cross-model adversarial review panel — run claude/codex/agy/cursor on the same target, have them refute each other, and synthesize a consensus verdict",
+  "author": {
+    "name": "x-mesh"
+  },
+  "repository": "https://github.com/x-mesh/xm",
+  "homepage": "https://github.com/x-mesh/xm",
+  "license": "MIT",
+  "keywords": [
+    "panel",
+    "cross-model",
+    "adversarial-review",
+    "multi-llm",
+    "consensus"
+  ],
+  "skills": "./skills/"
+}
