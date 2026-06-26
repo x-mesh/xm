@@ -96,6 +96,12 @@ beforeAll(() => {
     narrative: { intent: 'build recall', open_questions: ['naming?'], rejected_alternatives: ['rules-only'], next_session_should_know: ['dedup matters'] },
     why_stopped: 'PRD done',
   });
+
+  // panel verdict (x-panel cross-model review)
+  writeJSON(join(XM, 'panel', 'panel-20260601-000000', 'verdict.json'), {
+    run: 'panel-20260601-000000', created_at: '2026-06-01T00:00:00.000Z',
+    models: ['claude', 'codex'], counts: { unique: 3, confirmed: 5, contested: 1 },
+  });
 });
 
 afterAll(() => {
@@ -128,6 +134,14 @@ describe('list', () => {
     const r = run(['list', '--type', 'eval', '--json']);
     const parsed = JSON.parse(r.stdout);
     expect(parsed.every(a => a.type === 'eval')).toBe(true);
+  });
+
+  test('indexes x-panel verdicts as panel type', () => {
+    const r = run(['list', '--type', 'panel', '--json']);
+    const arts = JSON.parse(r.stdout);
+    const p = arts.find(a => a.id === 'panel:panel-20260601-000000');
+    expect(p).toBeTruthy();
+    expect(p.meta.models).toEqual(['claude', 'codex']);
   });
 });
 

@@ -162,6 +162,11 @@ case "$CMD" in
     node "$LIB_PATH/x-recall-cli.mjs" "$@"
     ;;
 
+  panel)
+    LIB_PATH="$(plugin_lib panel)"
+    node "$LIB_PATH/x-panel-cli.mjs" "$@"
+    ;;
+
   build)
     LIB_PATH="$(plugin_lib build)"
     node "$LIB_PATH/x-build-cli.mjs" "$@"

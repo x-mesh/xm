@@ -98,7 +98,7 @@ mirror_md_dir() {
 }
 
 echo "=== Syncing SKILL.md files ==="
-for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall; do
+for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel; do
   src="x-$plugin/skills/$plugin/SKILL.md"
   dst="xm/skills/$plugin/SKILL.md"
   sync_file "$src" "$dst"
@@ -136,6 +136,16 @@ ensure_dir "xm/lib/x-recall"
 shopt -s nullglob
 for f in x-recall/lib/x-recall/*.mjs; do
   sync_file "$f" "xm/lib/x-recall/$(basename "$f")"
+done
+shopt -u nullglob
+
+echo ""
+echo "=== Syncing x-panel lib files ==="
+sync_file "x-panel/lib/x-panel-cli.mjs" "xm/lib/x-panel-cli.mjs"
+ensure_dir "xm/lib/x-panel"
+shopt -s nullglob
+for f in x-panel/lib/x-panel/*.mjs; do
+  sync_file "$f" "xm/lib/x-panel/$(basename "$f")"
 done
 shopt -u nullglob
 
@@ -272,7 +282,7 @@ mirror_md_dir "x-humanize/skills/humanize/references" "xm/skills/humanize/refere
 echo ""
 echo "=== Verifying all synced ==="
 DIVERGED=0
-for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall; do
+for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel; do
   src="x-$plugin/skills/$plugin/SKILL.md"
   dst="xm/skills/$plugin/SKILL.md"
   if [ -f "$src" ] && [ -f "$dst" ] && ! diff -q "$src" "$dst" > /dev/null 2>&1; then
@@ -340,6 +350,20 @@ fi
 shopt -s nullglob
 for f in x-recall/lib/x-recall/*.mjs; do
   dst="xm/lib/x-recall/$(basename "$f")"
+  if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
+    echo "  DIVERGED: $dst"
+    DIVERGED=$((DIVERGED + 1))
+  fi
+done
+shopt -u nullglob
+
+if ! diff -q "x-panel/lib/x-panel-cli.mjs" "xm/lib/x-panel-cli.mjs" > /dev/null 2>&1; then
+  echo "  DIVERGED: xm/lib/x-panel-cli.mjs"
+  DIVERGED=$((DIVERGED + 1))
+fi
+shopt -s nullglob
+for f in x-panel/lib/x-panel/*.mjs; do
+  dst="xm/lib/x-panel/$(basename "$f")"
   if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
     echo "  DIVERGED: $dst"
     DIVERGED=$((DIVERGED + 1))

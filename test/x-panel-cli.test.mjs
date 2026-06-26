@@ -5,37 +5,47 @@
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus } from '../x-panel/lib/x-panel/synth.mjs';
-import { extractJSON } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, autodetectModels } from '../x-panel/lib/x-panel/adapters.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
 const STUB = join(import.meta.dirname, 'fixtures', 'panel-stub-model.mjs');
 let DIR;
 
+const STUB_ENV = (extra) => ({
+  ...process.env,
+  X_PANEL_ROOT: join(DIR, '.xm'),
+  X_PANEL_GLOBAL_ROOT: join(DIR, '.xm-global'), // hermetic: don't read the real ~/.xm
+  X_PANEL_CMD_CLAUDE: STUB,
+  X_PANEL_CMD_CODEX: STUB,
+  NO_COLOR: '1',
+  ...extra,
+});
+
 function review(args, env = {}) {
-  return spawnSync('node', [CLI, 'review', ...args], {
-    cwd: DIR,
-    env: {
-      ...process.env,
-      X_PANEL_ROOT: join(DIR, '.xm'),
-      X_PANEL_CMD_CLAUDE: STUB,
-      X_PANEL_CMD_CODEX: STUB,
-      NO_COLOR: '1',
-      ...env,
-    },
-    encoding: 'utf8',
-    timeout: 20000,
-  });
+  // default to the two stubbed models so tests never invoke real autodetected CLIs
+  const finalArgs = args.includes('--models') ? args : ['--models', 'claude,codex', ...args];
+  return spawnSync('node', [CLI, 'review', ...finalArgs], { cwd: DIR, env: STUB_ENV(env), encoding: 'utf8', timeout: 20000 });
+}
+
+function panelRaw(args, env = {}) {
+  // no implicit 'review' prefix and no implicit --models — exercises shortcut + config
+  return spawnSync('node', [CLI, ...args], { cwd: DIR, env: STUB_ENV(env), encoding: 'utf8', timeout: 20000 });
+}
+
+function writeProjectConfig(panel) {
+  mkdirSync(join(DIR, '.xm'), { recursive: true });
+  writeFileSync(join(DIR, '.xm', 'config.json'), JSON.stringify({ panel }, null, 2));
 }
 
 function latestVerdict() {
   const panelDir = join(DIR, '.xm', 'panel');
-  const runs = readdirSync(panelDir);
-  return JSON.parse(readFileSync(join(panelDir, runs[0], 'verdict.json'), 'utf8'));
+  const runs = readdirSync(panelDir).filter(n => n.startsWith('panel-')).sort();
+  return JSON.parse(readFileSync(join(panelDir, runs[runs.length - 1], 'verdict.json'), 'utf8'));
 }
 
 beforeAll(() => { DIR = mkdtempSync(join(tmpdir(), 'xpanel-')); });
@@ -175,5 +185,71 @@ describe('review (stubbed models)', () => {
     const r = review(['x', '--models', 'claude,gemini']);
     expect(r.stderr).toContain('gemini');
     expect(r.status).toBe(1);
+  });
+});
+
+describe('help', () => {
+  test('help prints usage', () => {
+    const r = panelRaw(['help']);
+    expect(r.stdout).toContain('x-panel');
+    expect(r.stdout).toContain('Commands:');
+  });
+});
+
+describe('UX: config, presets, shortcut, setup', () => {
+  test('autodetectModels includes an overridden provider', () => {
+    const prev = process.env.X_PANEL_CMD_CLAUDE;
+    process.env.X_PANEL_CMD_CLAUDE = STUB;
+    expect(autodetectModels()).toContain('claude');
+    if (prev === undefined) delete process.env.X_PANEL_CMD_CLAUDE;
+    else process.env.X_PANEL_CMD_CLAUDE = prev;
+  });
+
+  test('setup saves default models/judge to project config', () => {
+    const r = panelRaw(['setup', '--models', 'claude,codex', '--judge', 'rule']);
+    expect(r.status).toBe(0);
+    const cfg = JSON.parse(readFileSync(join(DIR, '.xm', 'config.json'), 'utf8'));
+    expect(cfg.panel.models).toEqual(['claude', 'codex']);
+    expect(cfg.panel.judge).toBe('rule');
+  });
+
+  test('review uses models from config when --models omitted', () => {
+    writeProjectConfig({ models: ['claude', 'codex'] });
+    const r = panelRaw(['review', 'some target']);
+    expect(r.status).toBe(0);
+    expect(latestVerdict().models).toEqual(['claude', 'codex']);
+  });
+
+  test('bare "x-panel" runs review (shortcut, no subcommand)', () => {
+    writeProjectConfig({ models: ['claude', 'codex'] });
+    const r = panelRaw([]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('Panel verdict');
+  });
+
+  test('--fast preset resolves to claude,codex', () => {
+    const r = panelRaw(['--fast', 'some target']);
+    expect(r.status).toBe(0);
+    expect(latestVerdict().models).toEqual(['claude', 'codex']);
+  });
+
+  test('parses provider:model spec into labels', () => {
+    const r = panelRaw(['review', 'target', '--models', 'claude:opus,codex:gpt-5']);
+    expect(r.status).toBe(0);
+    expect(latestVerdict().models).toEqual(['claude:opus', 'codex:gpt-5']);
+  });
+
+  test('applies model_overrides from config to bare names', () => {
+    writeProjectConfig({ models: ['claude', 'codex'], model_overrides: { codex: 'gpt-5' } });
+    const r = panelRaw(['review', 'target']);
+    expect(r.status).toBe(0);
+    expect(latestVerdict().models).toEqual(['claude', 'codex:gpt-5']);
+  });
+
+  test('config preset resolves to its model list', () => {
+    writeProjectConfig({ presets: { duo: ['claude', 'codex'] } });
+    const r = panelRaw(['--preset', 'duo', 'target']);
+    expect(r.status).toBe(0);
+    expect(latestVerdict().models).toEqual(['claude', 'codex']);
   });
 });
