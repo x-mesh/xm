@@ -230,6 +230,41 @@ function scanHandoff(root) {
 }
 
 // x-panel cross-model review verdicts under .xm/panel/<run>/verdict.json
+function compactPanelText(value, max = 96) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? text.slice(0, max - 1).trimEnd() + '...' : text;
+}
+
+function firstPanelClaim(j) {
+  const consensus = Array.isArray(j.consensus) ? j.consensus : [];
+  for (const c of consensus) {
+    if (c && typeof c.claim === 'string' && c.claim.trim()) return c.claim;
+    const claims = Array.isArray(c && c.claims) ? c.claims : [];
+    for (const claim of claims) {
+      if (claim && typeof claim.claim === 'string' && claim.claim.trim()) return claim.claim;
+    }
+  }
+  for (const key of ['confirmed', 'contested', 'unreviewed']) {
+    const items = Array.isArray(j[key]) ? j[key] : [];
+    for (const item of items) {
+      if (item && typeof item.claim === 'string' && item.claim.trim()) return item.claim;
+    }
+  }
+  return '';
+}
+
+function panelTitle(j, runName, counts = {}) {
+  const explicit = compactPanelText(j.title || j.target_title || j.request_title || j.summary);
+  if (explicit) return explicit;
+  const claim = compactPanelText(firstPanelClaim(j));
+  if (claim) return `Panel review: ${claim}`;
+  if (counts.unique === 0) return 'Panel review: no issues found';
+  if (j.target_ref) return `Panel review: ${String(j.target_ref).split('/').pop()}`;
+  const models = Array.isArray(j.models) && j.models.length ? j.models.join('+') : runName;
+  return `Panel review: ${models}`;
+}
+
 function scanPanel(root) {
   const out = [];
   for (const d of listDirs(join(root, 'panel'))) {
@@ -239,7 +274,7 @@ function scanPanel(root) {
     const counts = j.counts || {};
     out.push({
       type: 'panel', id: 'panel:' + d.name,
-      title: `${(j.models || []).join('+')}${counts.unique != null ? ` — ${counts.unique} issue(s)` : ''}`,
+      title: panelTitle(j, d.name, counts),
       status: counts.unique != null ? `${counts.unique} issues / ${counts.contested ?? 0} contested` : '',
       created_at: j.created_at || isoFromMtime(d.mtimeMs),
       project: null, path: vf, format: 'json',
