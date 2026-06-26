@@ -222,6 +222,24 @@
       ]
     },
     {
+      "name": "recall",
+      "description": "Cross-session artifact index — find and read review/op/plan/eval/probe outputs across Claude, Codex, and Cursor sessions in the same repo",
+      "version": "0.1.0",
+      "author": {
+        "name": "x-mesh"
+      },
+      "source": "./x-recall",
+      "category": "productivity",
+      "homepage": "https://github.com/x-mesh/xm",
+      "tags": [
+        "recall",
+        "artifact",
+        "cross-session",
+        "index",
+        "handoff"
+      ]
+    },
+    {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
       "version": "2.4.13",

@@ -98,7 +98,7 @@ mirror_md_dir() {
 }
 
 echo "=== Syncing SKILL.md files ==="
-for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync; do
+for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall; do
   src="x-$plugin/skills/$plugin/SKILL.md"
   dst="xm/skills/$plugin/SKILL.md"
   sync_file "$src" "$dst"
@@ -127,6 +127,17 @@ sync_file "x-memory/lib/x-memory-cli.mjs" "xm/lib/x-memory-cli.mjs"
 for f in commands.mjs core.mjs store.mjs; do
   sync_file "x-memory/lib/x-memory/$f" "xm/lib/x-memory/$f"
 done
+
+echo ""
+echo "=== Syncing x-recall lib files ==="
+sync_file "x-recall/lib/x-recall-cli.mjs" "xm/lib/x-recall-cli.mjs"
+ensure_dir "xm/lib/x-recall"
+# Mirror all *.mjs wholesale so dependency modules ship automatically (L8).
+shopt -s nullglob
+for f in x-recall/lib/x-recall/*.mjs; do
+  sync_file "$f" "xm/lib/x-recall/$(basename "$f")"
+done
+shopt -u nullglob
 
 echo ""
 echo "=== Syncing x-solver lib files ==="
@@ -261,7 +272,7 @@ mirror_md_dir "x-humanize/skills/humanize/references" "xm/skills/humanize/refere
 echo ""
 echo "=== Verifying all synced ==="
 DIVERGED=0
-for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync; do
+for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall; do
   src="x-$plugin/skills/$plugin/SKILL.md"
   dst="xm/skills/$plugin/SKILL.md"
   if [ -f "$src" ] && [ -f "$dst" ] && ! diff -q "$src" "$dst" > /dev/null 2>&1; then
@@ -315,6 +326,20 @@ done
 shopt -s nullglob
 for f in x-sync/lib/x-sync/*.mjs; do
   dst="xm/lib/x-sync/$(basename "$f")"
+  if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
+    echo "  DIVERGED: $dst"
+    DIVERGED=$((DIVERGED + 1))
+  fi
+done
+shopt -u nullglob
+
+if ! diff -q "x-recall/lib/x-recall-cli.mjs" "xm/lib/x-recall-cli.mjs" > /dev/null 2>&1; then
+  echo "  DIVERGED: xm/lib/x-recall-cli.mjs"
+  DIVERGED=$((DIVERGED + 1))
+fi
+shopt -s nullglob
+for f in x-recall/lib/x-recall/*.mjs; do
+  dst="xm/lib/x-recall/$(basename "$f")"
   if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
     echo "  DIVERGED: $dst"
     DIVERGED=$((DIVERGED + 1))

@@ -1,0 +1,19 @@
+{
+  "name": "recall",
+  "version": "0.1.0",
+  "description": "Cross-session artifact index — find and read review/op/plan/eval/probe outputs across Claude, Codex, and Cursor sessions",
+  "author": {
+    "name": "x-mesh"
+  },
+  "repository": "https://github.com/x-mesh/xm",
+  "homepage": "https://github.com/x-mesh/xm",
+  "license": "MIT",
+  "keywords": [
+    "recall",
+    "artifact",
+    "cross-session",
+    "index",
+    "handoff"
+  ],
+  "skills": "./skills/"
+}

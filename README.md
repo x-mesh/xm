@@ -17,7 +17,7 @@
   <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.13-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
-  <a href="#plugins"><img src="https://img.shields.io/badge/plugins-12-orange" alt="Plugins" /></a>
+  <a href="#plugins"><img src="https://img.shields.io/badge/plugins-13-orange" alt="Plugins" /></a>
 </p>
 
 <p align="center">
@@ -36,7 +36,7 @@
 - [Install](#install)
 - [Quick Start](#quick-start)
 - [Why xm?](#why-xm)
-- [Plugins](#plugins) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-humanize](#x-humanize)
+- [Plugins](#plugins) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-humanize](#x-humanize) · [x-recall](#x-recall)
 - [Quality & Learning Pipeline](#quality--learning-pipeline)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
@@ -107,7 +107,7 @@ bash xm/scripts/install.sh
 curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/xm/scripts/install.sh | bash
 ```
 
-The installer writes `~/.local/bin/xm` (override with `XM_BIN_DIR`; ensure it is on your `PATH`) and, when the `claude` CLI is on `PATH`, also runs `claude plugin install <p>@xm -s user` for every plugin in `marketplace.json` (x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-humanize, x-dashboard, xm). Run `/reload-plugins` inside Claude Code afterward to activate them. If `claude` is not on `PATH`, the CLI wrapper alone is installed and the plugin list is printed for manual install.
+The installer writes `~/.local/bin/xm` (override with `XM_BIN_DIR`; ensure it is on your `PATH`) and, when the `claude` CLI is on `PATH`, also runs `claude plugin install <p>@xm -s user` for every plugin in `marketplace.json` (x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-humanize, x-dashboard, x-recall, xm). Run `/reload-plugins` inside Claude Code afterward to activate them. If `claude` is not on `PATH`, the CLI wrapper alone is installed and the plugin list is printed for manual install.
 
 #### Global hook install (`xm init`)
 
@@ -374,6 +374,7 @@ Common reference material lives in `references/` (synced to marketplace as `xm/r
 | [x-memory](#x-memory) | Cross-session memory | `/xm:memory inject` |
 | [x-dashboard](#x-dashboard) | Web dashboard for .xm state | `/xm:dashboard start` |
 | [x-humanize](#x-humanize) | Remove AI writing patterns (v0.3.2, pre-stable) | `/xm:humanize audit text` |
+| [x-recall](#x-recall) | Cross-session artifact index | `xm recall list` |
 | xm | Bundle + config + pipeline | `/xm pipeline release` |
 
 **Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `x-sync` multi-machine sync server — see [x-ship](#x-ship) and [x-sync](#x-sync) below.
@@ -936,6 +937,23 @@ Detect AI-writing patterns and rewrite generated text into natural human prose. 
 | **Anti-AI audit pass** | Required Step 5 — internally asks "what still makes this obviously AI-generated?" and revises once more. Catches leftover em-dashes, sycophantic openers, trailing chatbot disclaimers. |
 
 **Principles:** Meaning preserved 100% · Span-grounded edits only (no fix direction = no finding) · Genre kept (column ↛ essay) · Over-polish refused (>50% change rate)
+
+---
+
+### x-recall
+
+Cross-session artifact index. Every xm tool persists its output under `.xm/`; `x-recall` is the one place to **find and read** those artifacts across sessions and tools.
+
+Because the CLI reads `.xm/` directly, it is tool-neutral — a later **Codex** or **Cursor** session in the same repo runs `xm recall …` in plain bash to pick up what a Claude session produced.
+
+```bash
+xm recall list --type review --since 7d   # browse, newest first
+xm recall show review --last              # read the latest code review
+xm recall search "sql injection"          # full-text + metadata search
+xm recall handoff-md                      # (re)write tool-neutral .xm/build/HANDOFF.md
+```
+
+Artifact types: `review op plan eval probe humble solver research prd handoff`. Host-variant copies are deduplicated to one canonical entry. A handoff also emits `.xm/build/HANDOFF.md` — a plain-markdown session summary any tool can read without the skill.
 
 ---
 

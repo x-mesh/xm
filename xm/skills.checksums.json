@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1782372800450,
+  "generatedAt": 1782436223079,
   "version": 1,
   "skills": [
     {
@@ -66,6 +66,11 @@
       "plugin": "probe",
       "sha256": "8cf8d9a2ccf4676b9552d5a5f8a4d22764b1834e3fa69f0ddc9686e45aed604f",
       "bytes": 13493
+    },
+    {
+      "plugin": "recall",
+      "sha256": "e48e605501b55b4fa6273e55d54545a1c342dcf857ef2ea61d7be376043fc2bb",
+      "bytes": 5819
     },
     {
       "plugin": "review",

@@ -840,6 +840,14 @@ export function cmdHandoffFull(args) {
   const statePath = join(buildDir, 'SESSION-STATE.json');
   writeFileSync(statePath, JSON.stringify(state, null, 2) + '\n', 'utf8');
 
+  // Also emit a tool-neutral HANDOFF.md so sessions that cannot run the
+  // handoff/handon skills (Codex, Cursor) read the same context in plain
+  // markdown. Best-effort: never fail the handoff over the markdown mirror.
+  // Keep the format in sync with x-recall/lib/x-recall/handoff-md.mjs.
+  try {
+    writeFileSync(join(buildDir, 'HANDOFF.md'), _sessionStateToHandoffMd(state), 'utf8');
+  } catch { /* best-effort mirror */ }
+
   console.log(`✅ Session state saved: ${statePath}`);
   console.log(`   Branch: ${branch} (+${ahead} ahead)`);
   console.log(`   Commits today: ${commitsToday.length}`);
@@ -854,6 +862,41 @@ export function cmdHandoffFull(args) {
   } else {
     console.log(`   Narrative: (not provided — pass --narrative-json to capture intent / open questions)`);
   }
+}
+
+// Render SESSION-STATE into a tool-neutral HANDOFF.md. Mirrors
+// x-recall/lib/x-recall/handoff-md.mjs:sessionStateToMarkdown — keep in sync.
+function _sessionStateToHandoffMd(state) {
+  const list = (items, fmt = (x) => `- ${x}`) =>
+    (!items || !items.length) ? '_(none)_' : items.map(fmt).join('\n');
+  const w = state.where || {};
+  const ctx = state.context || {};
+  const nar = state.narrative || {};
+  const rem = state.what_remains || {};
+  const L = [];
+  L.push('# Session Handoff', '');
+  L.push('> Tool-neutral handoff generated from `.xm/build/SESSION-STATE.json`. Readable by any session (Claude, Codex, Cursor).', '');
+  L.push(`- **Saved:** ${state.saved_at || '—'}`);
+  L.push(`- **Branch:** ${w.branch || '—'}${w.ahead != null ? ` (+${w.ahead}/-${w.behind || 0})` : ''}`);
+  if (state.why_stopped) L.push(`- **Stopped because:** ${state.why_stopped}`);
+  if (ctx.current_focus) L.push(`- **Focus:** ${ctx.current_focus}`);
+  if (ctx.test_status) L.push(`- **Tests:** ${ctx.test_status}`);
+  L.push('');
+  if (nar.intent) L.push('## Intent', nar.intent, '');
+  L.push('## Done last session', list(state.what_done), '');
+  const active = (rem.active_projects || []).map(p =>
+    typeof p === 'string' ? p : `${p.name || '?'}${p.phase ? ` (${p.phase})` : ''}${p.pending ? ` — ${p.pending} pending` : ''}`);
+  L.push('## Remaining', '**Active projects:** ' + (active.length ? '\n' + list(active) : '_(none)_'));
+  if (w.uncommitted_files && w.uncommitted_files.length) L.push('', '**Uncommitted:**', list(w.uncommitted_files));
+  L.push('');
+  if (state.decisions && state.decisions.length) {
+    L.push('## Decisions carried forward', list(state.decisions, d => `- **${d.what || d}**${d.why ? ` — ${d.why}` : ''}`), '');
+  }
+  if (nar.open_questions && nar.open_questions.length) L.push('## Open questions', list(nar.open_questions), '');
+  if (nar.rejected_alternatives && nar.rejected_alternatives.length) L.push('## Ruled out (do not re-litigate)', list(nar.rejected_alternatives), '');
+  if (nar.next_session_should_know && nar.next_session_should_know.length) L.push('## Next session should know', list(nar.next_session_should_know), '');
+  if (w.last_commits && w.last_commits.length) L.push('## Recent commits', list(w.last_commits.slice(0, 5)), '');
+  return L.join('\n');
 }
 
 // ── cmdHandon ────────────────────────────────────────────────────────

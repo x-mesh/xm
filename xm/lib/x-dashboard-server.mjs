@@ -351,6 +351,38 @@ function resolveXmRoot(wsId) {
   return ws ? ws.xmRoot : null;
 }
 
+// ── x-recall engine (lazy, cache-safe) ───────────────────────────────
+// Reuse x-recall's scanner instead of re-implementing artifact enumeration
+// (and its host-variant dedup). scan.mjs has no side effects, so a dynamic
+// import is safe; resolve across the xm bundle (sibling x-recall/) and the
+// standalone source tree. Falls back to no-ops when x-recall isn't installed.
+let _recallEngine = null;
+async function getRecallEngine() {
+  if (_recallEngine) return _recallEngine;
+  const here = import.meta.dirname;
+  const candidates = [
+    join(here, 'x-recall', 'scan.mjs'),                                // xm bundle: xm/lib/x-recall/scan.mjs
+    join(here, '..', '..', 'x-recall', 'lib', 'x-recall', 'scan.mjs'), // source: x-dashboard/lib → x-recall/lib/x-recall/scan.mjs
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      try { _recallEngine = await import(p); return _recallEngine; } catch { /* try next */ }
+    }
+  }
+  _recallEngine = { scanAll: () => [], search: () => [] };
+  return _recallEngine;
+}
+
+async function handleRecallList(xmRoot, req) {
+  const { scanAll, search } = await getRecallEngine();
+  const url = new URL(req.url);
+  const type = url.searchParams.get('type') || undefined;
+  const q = url.searchParams.get('q') || undefined;
+  const since = url.searchParams.get('since') || undefined;
+  const items = q ? search(xmRoot, q, { type, since }) : scanAll(xmRoot, { type, since });
+  return jsonResponseWithETag({ items, total: items.length }, req);
+}
+
 // ── Route handler functions (accept xmRoot parameter) ────────────────
 
 function handleConfig(xmRoot, req) {
@@ -2346,6 +2378,11 @@ server = Bun.serve({
           return handleResearchDetail(xmRoot, id, req);
         }
 
+        // GET /api/ws/:wsId/recall
+        if (subPath === '/recall') {
+          return handleRecallList(xmRoot, req);
+        }
+
         return jsonResponseWithETag({ error: 'not_found' }, req, 404);
       }
 
@@ -2564,6 +2601,11 @@ server = Bun.serve({
       if (researchDetailMatch) {
         const id = decodeURIComponent(researchDetailMatch[1]);
         return handleResearchDetail(XM_ROOT, id, req);
+      }
+
+      // GET /api/recall
+      if (path === '/api/recall') {
+        return handleRecallList(XM_ROOT, req);
       }
     }
 
