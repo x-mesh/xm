@@ -383,6 +383,27 @@ async function handleRecallList(xmRoot, req) {
   return jsonResponseWithETag({ items, total: items.length }, req);
 }
 
+// x-panel runs: live status.json (in-progress) + verdict.json (done) per run.
+function handlePanelList(xmRoot, req) {
+  const dir = safeJoin(xmRoot, 'panel');
+  if (!dir || !existsSync(dir)) return jsonResponseWithETag({ runs: [] }, req);
+  const runs = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const rdir = safeJoin(dir, entry.name);
+    if (!rdir) continue;
+    let status = null, verdict = null;
+    try { status = JSON.parse(readFileSync(join(rdir, 'status.json'), 'utf8')); } catch { /* older/older run */ }
+    try {
+      const v = JSON.parse(readFileSync(join(rdir, 'verdict.json'), 'utf8'));
+      verdict = { counts: v.counts, models: v.models, created_at: v.created_at };
+    } catch { /* not finished */ }
+    runs.push({ run: entry.name, status, verdict });
+  }
+  runs.sort((a, b) => b.run.localeCompare(a.run));
+  return jsonResponseWithETag({ runs }, req);
+}
+
 // ── Route handler functions (accept xmRoot parameter) ────────────────
 
 function handleConfig(xmRoot, req) {
@@ -2383,6 +2404,11 @@ server = Bun.serve({
           return handleRecallList(xmRoot, req);
         }
 
+        // GET /api/ws/:wsId/panel
+        if (subPath === '/panel') {
+          return handlePanelList(xmRoot, req);
+        }
+
         return jsonResponseWithETag({ error: 'not_found' }, req, 404);
       }
 
@@ -2606,6 +2632,11 @@ server = Bun.serve({
       // GET /api/recall
       if (path === '/api/recall') {
         return handleRecallList(XM_ROOT, req);
+      }
+
+      // GET /api/panel
+      if (path === '/api/panel') {
+        return handlePanelList(XM_ROOT, req);
       }
     }
 

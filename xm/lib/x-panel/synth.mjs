@@ -46,11 +46,13 @@ export function normalizeVerdicts(raw) {
  * @param round2  { [model]: normalizedVerdicts[] }  — model's verdicts on the OTHER models'
  *                findings, each verdict referencing a finding by its global ref `owner#idx`
  */
-export function synthesize(models, round1, round2) {
+export function synthesize(models, round1, round2, abstained = new Set()) {
   const confirmed = [];
   const contested = [];
+  const unreviewed = []; // every opponent's round-2 failed → nobody could vouch/refute
   for (const owner of models) {
     const others = models.filter(m => m !== owner);
+    const activeReviewers = others.filter(o => !abstained.has(o));
     for (const f of round1[owner] || []) {
       const gref = `${owner}#${f.idx}`;
       const opponents = [];
@@ -58,14 +60,16 @@ export function synthesize(models, round1, round2) {
         const v = (round2[opp] || []).find(x => x.ref === gref);
         if (v) opponents.push({ model: opp, stance: v.stance, reason: v.reason });
       }
-      const entry = { owner, ...f, opponents };
+      const entry = { owner, ...f, opponents, reviewers: activeReviewers.length };
       if (opponents.some(o => o.stance === 'refute')) contested.push(entry);
+      else if (activeReviewers.length === 0) unreviewed.push(entry); // round2 failed for all opponents
       else confirmed.push(entry);
     }
   }
   const bySev = (a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9);
   confirmed.sort(bySev);
   contested.sort(bySev);
+  unreviewed.sort(bySev);
 
   const byModel = {};
   for (const m of models) {
@@ -79,17 +83,13 @@ export function synthesize(models, round1, round2) {
   const consensus = mergeConsensus(confirmed);
   return {
     models,
-    counts: { confirmed: confirmed.length, contested: contested.length, unique: consensus.length },
+    counts: { confirmed: confirmed.length, contested: contested.length, unreviewed: unreviewed.length, unique: consensus.length },
     by_model: byModel,
     consensus,
     confirmed,
     contested,
+    unreviewed,
   };
-}
-
-function sameLine(a, b, tol) {
-  if (a == null || b == null) return a === b;
-  return Math.abs(a - b) <= tol;
 }
 
 /**
@@ -97,14 +97,23 @@ function sameLine(a, b, tol) {
  * across models into one entry. Collapses the duplicate explosion that grows with
  * model count, and surfaces consensus (how many models agreed) vs single-model
  * findings (diversity). Cross-language claims are preserved per model.
+ *
+ * Only merges when BOTH findings have a concrete file AND line. A null file or
+ * line can't confirm "same issue" — merging them produced false consensus
+ * (null === null), a bug the panel caught reviewing itself. Such findings stay
+ * separate (counted as single-model diversity).
  */
 export function mergeConsensus(findings, { lineTolerance = 2 } = {}) {
   const clusters = [];
   for (const f of findings) {
-    let cl = clusters.find(c => c.file === f.file && sameLine(c.line, f.line, lineTolerance));
-    if (!cl) { cl = { file: f.file, line: f.line, members: [] }; clusters.push(cl); }
-    cl.members.push(f);
-    if (cl.line == null && f.line != null) cl.line = f.line; // prefer a concrete line
+    const cl = (f.file != null && f.line != null)
+      ? clusters.find(c => c.file === f.file && c.line != null && Math.abs(c.line - f.line) <= lineTolerance)
+      : null;
+    if (cl) {
+      cl.members.push(f);
+    } else {
+      clusters.push({ file: f.file, line: f.line, members: [f] });
+    }
   }
   return clusters.map(c => {
     const models = [...new Set(c.members.map(m => m.owner))];

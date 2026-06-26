@@ -125,6 +125,25 @@ describe('mergeConsensus', () => {
     ]);
     expect(m.length).toBe(2);
   });
+
+  test('does NOT merge findings with null line (no false consensus)', () => {
+    const m = mergeConsensus([
+      { owner: 'a', severity: 'high', file: 'x.js', line: null, claim: 'issue one' },
+      { owner: 'b', severity: 'high', file: 'x.js', line: null, claim: 'issue two' },
+    ]);
+    expect(m.length).toBe(2);
+    expect(m.every(c => c.consensus === 1)).toBe(true);
+  });
+});
+
+describe('synthesize abstain', () => {
+  test('all opponents abstained → unreviewed, not confirmed', () => {
+    const round1 = { claude: [{ idx: 0, severity: 'high', file: 'a', line: 1, claim: 'x' }], codex: [] };
+    const round2 = { claude: [], codex: [] };
+    const v = synthesize(['claude', 'codex'], round1, round2, new Set(['codex']));
+    expect(v.counts.unreviewed).toBe(1);
+    expect(v.counts.confirmed).toBe(0);
+  });
 });
 
 describe('extractJSON', () => {
@@ -165,6 +184,16 @@ describe('review (stubbed models)', () => {
     const v = latestVerdict();
     expect(Array.isArray(v.consensus)).toBe(true);
     expect(v.counts.unique).toBe(v.consensus.length);
+  });
+
+  test('writes live status.json (phase done) after run', () => {
+    const r = review(['some target for status']);
+    expect(r.status).toBe(0);
+    const panelDir = join(DIR, '.xm', 'panel');
+    const runs = readdirSync(panelDir).filter(n => n.startsWith('panel-')).sort();
+    const st = JSON.parse(readFileSync(join(panelDir, runs[runs.length - 1], 'status.json'), 'utf8'));
+    expect(st.phase).toBe('done');
+    expect(st.models.length).toBeGreaterThan(0);
   });
 
   test('--json emits a parseable verdict record', () => {

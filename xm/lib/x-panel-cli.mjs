@@ -114,13 +114,14 @@ function sev(s) {
 
 // Run one round across all models in parallel, reporting start/heartbeat/elapsed
 // on stderr so a long round (large diff) isn't a silent black box.
-async function runRound(roundLabel, usable, makePrompt, timeoutMs) {
+async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate) {
   process.stderr.write(`${C.dim}${roundLabel} — ${usable.length} models in parallel…${C.reset}\n`);
   const pending = new Set(usable.map((e) => e.label));
   const t0 = Date.now();
   const hb = setInterval(() => {
     const el = Math.round((Date.now() - t0) / 1000);
     process.stderr.write(`  ${C.dim}… ${el}s — waiting on: ${[...pending].join(', ') || '(done)'}${C.reset}\n`);
+    if (onUpdate) onUpdate({ event: 'heartbeat', elapsed_s: el });
   }, 30000);
   if (hb.unref) hb.unref();
   const results = await Promise.all(usable.map(async (e) => {
@@ -131,6 +132,7 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs) {
     process.stderr.write(res.ok
       ? `  ${C.green}✓${C.reset} ${e.label} ${C.dim}(${dt}s)${C.reset}\n`
       : `  ${C.red}✗${C.reset} ${e.label} ${C.dim}(${dt}s)${C.reset}: ${res.error}\n`);
+    if (onUpdate) onUpdate({ event: 'model_done', label: e.label, ok: res.ok, elapsed_s: dt });
     return [e.label, res];
   }));
   clearInterval(hb);
@@ -140,7 +142,8 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs) {
 function renderVerdict(v, dir) {
   const total = v.models.length;
   const lines = [];
-  lines.push(`${C.bold}Panel verdict${C.reset} — ${C.green}${v.counts.unique} issue(s)${C.reset} (from ${v.counts.confirmed} confirmed findings), ${C.yellow}${v.counts.contested} contested${C.reset}  ${C.dim}(models: ${v.models.join(', ')})${C.reset}`);
+  const unrev = v.counts.unreviewed ? `, ${C.red}${v.counts.unreviewed} unreviewed${C.reset}` : '';
+  lines.push(`${C.bold}Panel verdict${C.reset} — ${C.green}${v.counts.unique} issue(s)${C.reset} (from ${v.counts.confirmed} confirmed findings), ${C.yellow}${v.counts.contested} contested${C.reset}${unrev}  ${C.dim}(models: ${v.models.join(', ')})${C.reset}`);
   lines.push('');
   lines.push(`${C.bold}ISSUES${C.reset} ${C.dim}(merged across models, by consensus)${C.reset}`);
   if (!v.consensus.length) lines.push('  (none)');
@@ -156,6 +159,13 @@ function renderVerdict(v, dir) {
     for (const f of v.contested) {
       const ref = f.opponents.find(o => o.stance === 'refute');
       lines.push(`  ${sev(f.severity)} ${f.file ?? ''}${f.line ? ':' + f.line : ''}  ${f.claim}  ${C.dim}— ${f.owner} vs ${ref ? ref.model + ': ' + ref.reason : '?'}${C.reset}`);
+    }
+  }
+  if (v.unreviewed && v.unreviewed.length) {
+    lines.push('');
+    lines.push(`${C.bold}UNREVIEWED${C.reset} ${C.dim}(round 2 failed for all opponents — not vouched)${C.reset}`);
+    for (const f of v.unreviewed) {
+      lines.push(`  ${sev(f.severity)} ${f.file ?? ''}${f.line ? ':' + f.line : ''}  ${f.claim}  ${C.dim}— raised by ${f.owner}${C.reset}`);
     }
   }
   lines.push('');
@@ -218,8 +228,33 @@ async function cmdReview(pos, flags) {
   const dir = join(PANEL_DIR, run);
   ensureDir(dir);
 
+  // Live status for polling (dashboard / xm recall / cat .xm/panel/<run>/status.json)
+  const status = {
+    run, started_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    phase: 'starting', target_kind: target.kind,
+    models: usable.map((e) => ({ label: e.label, state: 'pending', elapsed_s: 0 })),
+  };
+  const flushStatus = () => {
+    status.updated_at = new Date().toISOString();
+    try { writeJSON(join(dir, 'status.json'), status); } catch { /* best-effort */ }
+  };
+  const onModelDone = (ev) => {
+    if (ev.event === 'model_done') {
+      const m = status.models.find((x) => x.label === ev.label);
+      if (m) { m.state = ev.ok ? 'done' : 'failed'; m.elapsed_s = ev.elapsed_s; }
+    }
+    flushStatus();
+  };
+  const startPhase = (phase) => {
+    status.phase = phase;
+    status.models.forEach((m) => { m.state = 'running'; m.elapsed_s = 0; });
+    flushStatus();
+  };
+  flushStatus();
+
   // Round 1 — independent review (all models in parallel)
-  const r1 = await runRound('round 1 (review)', usable, () => reviewPrompt(target.text), timeoutMs);
+  startPhase('round1 (review)');
+  const r1 = await runRound('round 1 (review)', usable, () => reviewPrompt(target.text), timeoutMs, onModelDone);
   const round1 = {};
   for (const [label, res] of r1) {
     const findings = res.ok ? normalizeFindings(res.json) : [];
@@ -228,20 +263,23 @@ async function cmdReview(pos, flags) {
   }
 
   // Round 2 — adversarial: each model refutes the others' findings (in parallel)
+  startPhase('round2 (refute)');
   const r2 = await runRound('round 2 (refute)', usable, (e) => {
     const others = usable.filter(x => x.label !== e.label);
     // Tag each opponent finding with a global ref `owner#idx` so 3+ models don't collide.
     const otherFindings = others.flatMap(o => (round1[o.label] || []).map(f => ({ ...f, gref: `${o.label}#${f.idx}` })));
     return refutePrompt(target.text, others.map(o => o.label).join('+'), otherFindings);
-  }, timeoutMs);
+  }, timeoutMs, onModelDone);
   const round2 = {};
+  const abstained = new Set();
   for (const [label, res] of r2) {
+    if (!res.ok) abstained.add(label); // round2 failure ≠ silent concede
     const verdicts = res.ok ? normalizeVerdicts(res.json) : [];
     round2[label] = verdicts;
     writeJSON(join(dir, `${safeLabel(label)}.r2.json`), { model: label, ok: res.ok, error: res.error, verdicts, raw: res.raw });
   }
 
-  const verdict = synthesize(labels, round1, round2);
+  const verdict = synthesize(labels, round1, round2, abstained);
   const record = {
     run,
     created_at: new Date().toISOString(),
@@ -251,6 +289,8 @@ async function cmdReview(pos, flags) {
     ...verdict,
   };
   writeJSON(join(dir, 'verdict.json'), record);
+  status.phase = 'done';
+  flushStatus();
 
   if (flags.json) console.log(JSON.stringify(record, null, 2));
   else console.log(renderVerdict(verdict, dir));
