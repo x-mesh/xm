@@ -101,6 +101,10 @@ beforeAll(() => {
   writeJSON(join(XM, 'panel', 'panel-20260601-000000', 'verdict.json'), {
     run: 'panel-20260601-000000', created_at: '2026-06-01T00:00:00.000Z',
     models: ['claude', 'codex'], counts: { unique: 3, confirmed: 5, contested: 1 },
+    consensus: [{
+      consensus: 2,
+      claims: [{ model: 'claude', claim: 'Dashboard recall filters are unreadable in dark mode' }],
+    }],
   });
 });
 
@@ -142,6 +146,7 @@ describe('list', () => {
     const p = arts.find(a => a.id === 'panel:panel-20260601-000000');
     expect(p).toBeTruthy();
     expect(p.meta.models).toEqual(['claude', 'codex']);
+    expect(p.title).toBe('Panel review: Dashboard recall filters are unreadable in dark mode');
   });
 });
 
