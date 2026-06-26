@@ -86,7 +86,7 @@ if command -v claude >/dev/null 2>&1; then
 else
   warn "claude CLI not on PATH — skipping plugin install."
   warn "Install inside Claude Code: /plugin install <name>@xm"
-  warn "Available: xm, x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-dashboard"
+  warn "Available: xm, x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-dashboard, x-recall"
 fi
 
 # --- Verify ---

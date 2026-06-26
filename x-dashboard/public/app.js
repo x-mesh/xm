@@ -4108,6 +4108,75 @@ async function renderHumbleList() {
   `;
 }
 
+// ── Recall — unified cross-type artifact index ───────────────────────
+// Backed by /api/recall, which reuses x-recall's scanAll (host-variant dedup
+// already applied server-side). One table over every .xm/ artifact type.
+async function renderRecallList() {
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="view-header"><h1>Recall</h1><p>.xm/ — all artifacts, newest first</p></div>${renderLoading()}`;
+
+  const res = await fetchJSON(apiUrl('/recall'));
+  if (res.error) {
+    app.innerHTML = `<div class="view-header"><h1>Recall</h1></div>${renderError(res.message || res.error)}`;
+    return;
+  }
+
+  const items = Array.isArray(res.items) ? res.items : [];
+  if (items.length === 0) {
+    app.innerHTML = `
+      <div class="view-header"><h1>Recall</h1><p>.xm/ — all artifacts</p></div>
+      <div class="card" style="text-align:center;padding:3rem">
+        <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
+        <p class="text-muted">No artifacts yet.</p>
+        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/xm:op</code>, <code>/xm:review</code>, or <code>/xm:build</code> to create some.</p>
+        ${wsEmptyHint()}
+      </div>`;
+    return;
+  }
+
+  const counts = {};
+  for (const it of items) counts[it.type] = (counts[it.type] || 0) + 1;
+  const chipStyle = 'padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--card);cursor:pointer;font-size:0.8rem';
+  const chips = [`<button class="recall-chip" data-type="all" style="${chipStyle}" onclick="filterRecallType('all')">All (${items.length})</button>`]
+    .concat(Object.keys(counts).sort().map(t =>
+      `<button class="recall-chip" data-type="${t}" style="${chipStyle}" onclick="filterRecallType('${t}')">${t} (${counts[t]})</button>`))
+    .join(' ');
+
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const rows = items.map(it => {
+    const when = esc((it.created_at || '').slice(0, 10));
+    const status = it.status ? `<span class="text-muted" style="font-size:0.8rem">${esc(it.status)}</span>` : '—';
+    return `<tr data-type="${esc(it.type)}">
+      <td><code style="font-size:0.75rem">${esc(it.type)}</code></td>
+      <td>${esc(nullSafe(it.title))}</td>
+      <td>${status}</td>
+      <td class="text-muted" style="font-size:0.8rem">${when}</td>
+      <td class="text-muted" style="font-size:0.72rem">${esc(nullSafe(it.id))}</td>
+    </tr>`;
+  }).join('');
+
+  app.innerHTML = `
+    <div class="view-header"><h1>Recall</h1><p>.xm/ — ${items.length} artifacts, newest first</p></div>
+    <div style="margin-bottom:1rem;display:flex;gap:6px;flex-wrap:wrap">${chips}</div>
+    <div class="card" style="padding:0">
+      <div class="table-wrapper">
+        <table class="table">
+          <thead><tr><th style="width:90px">Type</th><th>Title</th><th>Status</th><th style="width:110px">When</th><th>ID</th></tr></thead>
+          <tbody id="recall-tbody">${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function filterRecallType(type) {
+  for (const r of document.querySelectorAll('#recall-tbody tr')) {
+    r.style.display = (type === 'all' || r.dataset.type === type) ? '' : 'none';
+  }
+  for (const b of document.querySelectorAll('.recall-chip')) {
+    b.style.fontWeight = (b.dataset.type === type) ? '700' : '400';
+  }
+}
+
 /**
  * Retrospective → Lesson → CLAUDE.md 3-column Sankey (SVG).
  * Uses summary.source_retrospective + summary.applied_to_claudemd to draw flows.
@@ -4856,6 +4925,7 @@ const ROUTES = [
   { pattern: /^\/prd\/(.+)$/, handler: (m) => renderPrdDetail(m[1]) },
   { pattern: /^\/research$/, handler: () => renderResearchList() },
   { pattern: /^\/research\/(.+)$/, handler: (m) => renderResearchDetail(m[1]) },
+  { pattern: /^\/recall$/, handler: () => renderRecallList() },
 ];
 
 function getPath() {

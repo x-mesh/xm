@@ -82,6 +82,26 @@ Rule:
 - Do not edit files for later items until they are promoted with `x-build later promote <id>`.
 
 Use `later` for drive-by bugs, cleanup ideas, refactors, stale comments, and non-blocking review observations.
+
+## Cross-Session Recall
+
+Earlier sessions in this repo (Claude, Codex, Cursor) persist their outputs under
+`.xm/` — code reviews, op strategy results, plans/PRDs, eval scores, probe verdicts.
+To pick up what another session produced, query them with the tool-neutral
+`xm recall` CLI. It is plain bash over `.xm/` (no Claude Code skill required), so it
+works the same from any tool:
+
+- `xm recall list` — all artifacts, newest first (`--type review|op|plan|eval|probe`, `--since 7d`, `--json`)
+- `xm recall show review --last` — read the most recent code review
+- `xm recall show <id>` — read a specific artifact (ids come from `list`)
+- `xm recall search "<query>"` — full-text + metadata search across artifacts
+- `xm recall handoff-md` — (re)generate `.xm/build/HANDOFF.md`
+
+Also read `.xm/build/HANDOFF.md` when present: it is the previous session's intent,
+decisions, and open questions in plain markdown.
+
+If `xm` is not on PATH, the CLI is at
+`~/.claude/plugins/cache/xm/{x-recall,recall,xm}/*/lib/x-recall-cli.mjs` — call it with `node`.
 <!-- xm:BEGIN v2 -->
 ## xm — multi-agent orchestration toolkit
 
