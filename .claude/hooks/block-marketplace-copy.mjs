@@ -6,6 +6,7 @@
 // Rationale: CLAUDE.md § Edit Policy + § Lessons (x-humble) L4/L5.
 
 import path from 'node:path';
+import fs from 'node:fs';
 
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
@@ -64,7 +65,30 @@ function readStdin() {
   });
 }
 
-function findSourcePath(rel) {
+function findSourcePath(rel, projectRoot) {
+  // xm/commands/<name>.md — mirrored from x-<name>/commands/<name>.md by
+  // sync-bundle.sh. Only plugin-sourced commands are protected; xm-native
+  // commands (handoff/handon/init/kit/ship/sync/xm) have no x-<name> source,
+  // so the existence check below leaves them directly editable.
+  // xm/commands/<basename>.md — sync-bundle.sh mirrors all x-*/commands/*.md
+  // wholesale. Protect the bundle copy whenever any x-<plugin>/commands/<basename>.md
+  // source exists (filename need not equal the plugin name, covering future cases).
+  const cmdMatch = rel.match(/^xm\/commands\/([^/]+\.md)$/);
+  if (cmdMatch) {
+    const basename = cmdMatch[1];
+    // Fast path: same-name plugin (current convention — x-panel/commands/panel.md)
+    const conventional = `x-${basename.replace(/\.md$/, '')}/commands/${basename}`;
+    if (fs.existsSync(path.resolve(projectRoot, conventional))) return conventional;
+    // Fallback: scan all x-*/commands/ for a matching basename
+    const dirs = fs.readdirSync(projectRoot, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name.startsWith('x-') && e.name !== 'xm')
+      .map((e) => e.name);
+    for (const dir of dirs) {
+      const src = `${dir}/commands/${basename}`;
+      if (fs.existsSync(path.resolve(projectRoot, src))) return src;
+    }
+  }
+
   // xm/skills/<short>/<rest> where source plugin dir is `x-<short>`.
   // Reconstruct the full source subpath so the hint is accurate for SKILL.md AND
   // any mirrored sub-asset (flow.md, flow/flow-template.mjs, strategies/*.md, …).
@@ -176,7 +200,7 @@ async function main() {
     process.exit(0);
   }
 
-  const source = findSourcePath(rel);
+  const source = findSourcePath(rel, projectRoot);
   if (!source) {
     process.exit(0);
   }

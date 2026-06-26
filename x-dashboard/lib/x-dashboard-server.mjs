@@ -13,7 +13,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, readFileSync, statSync, renameSync } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
@@ -383,6 +383,21 @@ async function handleRecallList(xmRoot, req) {
   return jsonResponseWithETag({ items, total: items.length }, req);
 }
 
+// Resolve one recall artifact (by exact id, type, or fuzzy match) to its most
+// readable content — markdown sibling preferred, JSON/text otherwise.
+async function handleRecallDetail(xmRoot, id, req) {
+  const { resolveSelector, readableContent } = await getRecallEngine();
+  if (typeof resolveSelector !== 'function') {
+    return jsonResponseWithETag({ error: 'recall_unavailable' }, req, 503);
+  }
+  const art = resolveSelector(xmRoot, id);
+  if (!art) return jsonResponseWithETag({ error: 'not_found', id }, req, 404);
+  const content = typeof readableContent === 'function'
+    ? readableContent(art)
+    : { path: art.path, text: null };
+  return jsonResponseWithETag({ artifact: art, content }, req);
+}
+
 // x-panel runs: live status.json (in-progress) + verdict.json (done) per run.
 function handlePanelList(xmRoot, req) {
   const dir = safeJoin(xmRoot, 'panel');
@@ -404,17 +419,146 @@ function handlePanelList(xmRoot, req) {
   return jsonResponseWithETag({ runs }, req);
 }
 
+// One panel run, fully: verdict.json (consensus/confirmed/contested/by_model),
+// live status.json, and each model's round1 findings + round2 verdicts (the
+// intermediate content). The bulky raw model output is dropped — findings and
+// verdicts carry the structured claims/refutals the detail view renders.
+function handlePanelDetail(xmRoot, run, req) {
+  const dir = safeJoin(xmRoot, 'panel');
+  if (!dir) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  const rdir = safeJoin(dir, run);
+  if (!rdir || !existsSync(rdir)) return jsonResponseWithETag({ error: 'not_found', run }, req, 404);
+  const read = (f) => { try { return JSON.parse(readFileSync(join(rdir, f), 'utf8')); } catch { return null; } };
+  const verdict = read('verdict.json');
+  const status = read('status.json');
+  const rounds = {};
+  for (const ent of readdirSync(rdir)) {
+    const m = ent.match(/^(.+)\.r([12])\.json$/);
+    if (!m) continue;
+    const [, fileLabel, r] = m;
+    const data = read(ent);
+    if (!data) continue;
+    // Key by the raw model label stored in the file, not the sanitized filename —
+    // a label with ':' (e.g. codex:gpt-5) is filename-safe-mangled, so keying by
+    // the filename would split it from the status/verdict label into two cards.
+    const label = data.model || fileLabel;
+    rounds[label] = rounds[label] || { label };
+    if (r === '1') rounds[label].r1 = { ok: data.ok, error: data.error, findings: data.findings || [] };
+    else rounds[label].r2 = { ok: data.ok, error: data.error, verdicts: data.verdicts || [] };
+  }
+  if (!verdict && !status && Object.keys(rounds).length === 0) {
+    return jsonResponseWithETag({ error: 'not_found', run }, req, 404);
+  }
+  return jsonResponseWithETag({ run, verdict, status, rounds: Object.values(rounds) }, req);
+}
+
+// Reuse x-panel's provider adapters (PATH detection) instead of re-implementing
+// which CLIs are installed. adapters.mjs has no XM_ROOT side effects, so a dynamic
+// import is safe; resolve across the bundle (xm/lib/x-panel/) and source tree.
+let _panelEngine = null;
+async function getPanelEngine() {
+  if (_panelEngine) return _panelEngine;
+  const here = import.meta.dirname;
+  const candidates = [
+    join(here, 'x-panel', 'adapters.mjs'),                                // xm bundle: xm/lib/x-panel/adapters.mjs
+    join(here, '..', '..', 'x-panel', 'lib', 'x-panel', 'adapters.mjs'),  // source: x-dashboard/lib → x-panel/lib/x-panel/adapters.mjs
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      try { _panelEngine = await import(p); return _panelEngine; } catch { /* try next */ }
+    }
+  }
+  _panelEngine = { knownProviders: () => [], isAvailable: () => false };
+  return _panelEngine;
+}
+
+// GET panel providers — which model CLIs are on PATH (for the config form's model
+// checkboxes) + the workspace's merged panel config (global then project wins).
+async function handlePanelProviders(xmRoot, req) {
+  const { knownProviders, isAvailable } = await getPanelEngine();
+  const names = typeof knownProviders === 'function' ? knownProviders() : [];
+  const providers = names.map((name) => ({
+    name,
+    available: typeof isAvailable === 'function' ? !!isAvailable(name) : false,
+  }));
+  const readPanel = (tier) => {
+    const fp = configPathForTier(xmRoot, tier);
+    if (!fp || !existsSync(fp)) return {};
+    try { return (JSON.parse(readFileSync(fp, 'utf8')).panel) || {}; } catch { return {}; }
+  };
+  const g = readPanel('global'), p = readPanel('project');
+  const panel = { ...g, ...p, presets: { ...(g.presets || {}), ...(p.presets || {}) } };
+  return jsonResponseWithETag({ providers, panel }, req);
+}
+
 // ── Route handler functions (accept xmRoot parameter) ────────────────
 
-function handleConfig(xmRoot, req) {
-  const filePath = safeJoin(xmRoot, 'config.json');
-  if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
-  if (!existsSync(filePath)) return jsonResponseWithETag({ error: 'not_found' }, req, 404);
-  try {
-    return jsonResponseWithETag(JSON.parse(readFileSync(filePath, 'utf8')), req);
-  } catch {
-    return jsonResponseWithETag({ error: 'parse_error', file: 'config.json' }, req, 500);
+// Resolve the config.json path for a tier. project = the workspace's .xm; global
+// = ~/.xm (matches x-panel's globalXmDir, env-overridable to keep tests hermetic).
+function configPathForTier(xmRoot, tier) {
+  if (tier === 'global') {
+    const root = process.env.X_PANEL_GLOBAL_ROOT ? resolve(process.env.X_PANEL_GLOBAL_ROOT) : join(homedir(), '.xm');
+    return join(root, 'config.json');
   }
+  return safeJoin(xmRoot, 'config.json');
+}
+
+function handleConfig(xmRoot, req) {
+  const url = new URL(req.url);
+  const tier = url.searchParams.get('tier') === 'global' ? 'global' : 'project';
+  const filePath = configPathForTier(xmRoot, tier);
+  if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+  // A missing config is a valid empty config (editable), not a 404 — the editor
+  // needs to render and let the user create one, especially for the global tier.
+  if (!existsSync(filePath)) return jsonResponseWithETag({ _tier: tier, _path: filePath, _empty: true }, req);
+  try {
+    const cfg = JSON.parse(readFileSync(filePath, 'utf8'));
+    return jsonResponseWithETag({ ...cfg, _tier: tier, _path: filePath }, req);
+  } catch {
+    return jsonResponseWithETag({ error: 'parse_error', file: filePath }, req, 500);
+  }
+}
+
+// PATCH a tier's config.json — parse-validate the body, top-level merge into the
+// existing config, atomic (tmp+rename) write. Existing keys are preserved unless
+// the body overrides them. Never a silent failure (L6): every error returns a code.
+const CONFIG_MAX_BYTES = 256 * 1024;
+async function handleConfigPatch(xmRoot, req) {
+  const url = new URL(req.url);
+  const tier = url.searchParams.get('tier') === 'global' ? 'global' : 'project';
+  const filePath = configPathForTier(xmRoot, tier);
+  if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
+
+  let body;
+  try { body = await req.json(); }
+  catch { return jsonResponseWithETag({ error: 'invalid_json' }, req, 400); }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonResponseWithETag({ error: 'expected_object' }, req, 400);
+  }
+  if (JSON.stringify(body).length > CONFIG_MAX_BYTES) {
+    return jsonResponseWithETag({ error: 'too_large', max_bytes: CONFIG_MAX_BYTES }, req, 413);
+  }
+  // Strip GET-only metadata keys the client echoes back (_tier, _path, _empty)
+  // so they never land in config.json (they carry no config meaning).
+  for (const k of Object.keys(body)) {
+    if (k.startsWith('_')) delete body[k];
+  }
+
+  let current = {};
+  if (existsSync(filePath)) {
+    try { current = JSON.parse(readFileSync(filePath, 'utf8')); }
+    catch { return jsonResponseWithETag({ error: 'parse_error', file: filePath }, req, 500); }
+  }
+  const next = { ...current, ...body };
+  try {
+    mkdirSync(dirname(filePath), { recursive: true });
+    const tmp = filePath + '.tmp';
+    writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n');
+    renameSync(tmp, filePath);
+  } catch (e) {
+    return jsonResponseWithETag({ error: 'write_failed', message: String(e?.message || e) }, req, 500);
+  }
+  return jsonResponseWithETag({ ok: true, tier, path: filePath, config: next }, req);
 }
 
 function extractGoal(projectDir) {
@@ -2138,6 +2282,16 @@ server = Bun.serve({
         const file = decodeURIComponent(lessonMatch[1]);
         return handleHumbleLessonPatch(XM_ROOT, file, req);
       }
+      // PATCH /api/ws/:wsId/config  +  PATCH /api/config
+      const wsConfigMatch = path.match(/^\/api\/ws\/([^/]+)\/config$/);
+      if (wsConfigMatch) {
+        const xmRoot = resolveXmRoot(decodeURIComponent(wsConfigMatch[1]));
+        if (!xmRoot) return Response.json({ error: 'workspace_not_found' }, { status: 404 });
+        return handleConfigPatch(xmRoot, req);
+      }
+      if (path === '/api/config') {
+        return handleConfigPatch(XM_ROOT, req);
+      }
       return Response.json({ error: 'not_found' }, { status: 404 });
     }
 
@@ -2404,9 +2558,26 @@ server = Bun.serve({
           return handleRecallList(xmRoot, req);
         }
 
+        // GET /api/ws/:wsId/recall/:id
+        const wsRecallDetailMatch = subPath.match(/^\/recall\/(.+)$/);
+        if (wsRecallDetailMatch) {
+          return handleRecallDetail(xmRoot, decodeURIComponent(wsRecallDetailMatch[1]), req);
+        }
+
+        // GET /api/ws/:wsId/panel/providers (before the :run match)
+        if (subPath === '/panel/providers') {
+          return handlePanelProviders(xmRoot, req);
+        }
+
         // GET /api/ws/:wsId/panel
         if (subPath === '/panel') {
           return handlePanelList(xmRoot, req);
+        }
+
+        // GET /api/ws/:wsId/panel/:run
+        const wsPanelDetailMatch = subPath.match(/^\/panel\/(.+)$/);
+        if (wsPanelDetailMatch) {
+          return handlePanelDetail(xmRoot, decodeURIComponent(wsPanelDetailMatch[1]), req);
         }
 
         return jsonResponseWithETag({ error: 'not_found' }, req, 404);
@@ -2634,9 +2805,26 @@ server = Bun.serve({
         return handleRecallList(XM_ROOT, req);
       }
 
+      // GET /api/recall/:id
+      const recallDetailMatch = path.match(/^\/api\/recall\/(.+)$/);
+      if (recallDetailMatch) {
+        return handleRecallDetail(XM_ROOT, decodeURIComponent(recallDetailMatch[1]), req);
+      }
+
       // GET /api/panel
+      // GET /api/panel/providers (before the :run match)
+      if (path === '/api/panel/providers') {
+        return handlePanelProviders(XM_ROOT, req);
+      }
+
       if (path === '/api/panel') {
         return handlePanelList(XM_ROOT, req);
+      }
+
+      // GET /api/panel/:run
+      const panelDetailMatch = path.match(/^\/api\/panel\/(.+)$/);
+      if (panelDetailMatch) {
+        return handlePanelDetail(XM_ROOT, decodeURIComponent(panelDetailMatch[1]), req);
       }
     }
 

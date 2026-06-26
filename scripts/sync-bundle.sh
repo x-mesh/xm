@@ -105,6 +105,18 @@ for plugin in build op solver eval review trace memory humble probe agent dashbo
 done
 
 echo ""
+echo "=== Syncing plugin commands into bundle ==="
+# Every plugin's commands/*.md → xm/commands/. ADDITIVE: xm-native commands
+# (handoff/handon/init/kit/ship/sync/xm) have no x-<plugin> source and are left
+# untouched. Mirror wholesale (no hardcoded plugin list) so a new plugin's
+# command — e.g. panel.md, recall.md — ships into the bundle automatically (L8).
+shopt -s nullglob
+for cmddir in x-*/commands; do
+  mirror_md_dir "$cmddir" "xm/commands"
+done
+shopt -u nullglob
+
+echo ""
 echo "=== Syncing shared docs ==="
 sync_file "docs/korean-output-style.md" "xm/docs/korean-output-style.md"
 
@@ -290,6 +302,21 @@ for plugin in build op solver eval review trace memory humble probe agent dashbo
     DIVERGED=$((DIVERGED + 1))
   fi
 done
+
+shopt -s nullglob
+for cmddir in x-*/commands; do
+  for f in "$cmddir"/*.md; do
+    dst="xm/commands/$(basename "$f")"
+    if [ -f "$dst" ] && ! diff -q "$f" "$dst" > /dev/null 2>&1; then
+      echo "  DIVERGED: $dst"
+      DIVERGED=$((DIVERGED + 1))
+    elif [ ! -f "$dst" ]; then
+      echo "  MISSING: $dst (from $f)"
+      DIVERGED=$((DIVERGED + 1))
+    fi
+  done
+done
+shopt -u nullglob
 
 shopt -s nullglob
 for f in x-build/lib/x-build/*.mjs; do
