@@ -4177,6 +4177,60 @@ function filterRecallType(type) {
   }
 }
 
+// ── Panel — cross-model review runs, live via status.json polling ────
+async function renderPanelList() {
+  document.getElementById('app').innerHTML =
+    `<div class="view-header"><h1>Panel</h1><p>cross-model reviews</p></div>${renderLoading()}`;
+  await refreshPanel();
+}
+
+async function refreshPanel() {
+  if (getPath() !== '/panel') return; // navigated away → stop polling
+  const res = await fetchJSON(apiUrl('/panel'));
+  if (getPath() !== '/panel') return;
+  const app = document.getElementById('app');
+  if (res.error) {
+    app.innerHTML = `<div class="view-header"><h1>Panel</h1></div>${renderError(res.message || res.error)}`;
+    return;
+  }
+  const runs = res.runs || [];
+  if (!runs.length) {
+    app.innerHTML = `<div class="view-header"><h1>Panel</h1><p>cross-model reviews</p></div>
+      <div class="card" style="text-align:center;padding:3rem">
+        <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
+        <p class="text-muted">No panel runs yet.</p>
+        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/xm:panel</code> or <code>xm panel</code>.</p>
+      </div>`;
+    return;
+  }
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const icon = (s) => s === 'done' ? '✓' : s === 'failed' ? '✗' : s === 'running' ? '⏳' : '·';
+  const cards = runs.map((r) => {
+    const st = r.status;
+    const running = !!(st && st.phase !== 'done');
+    const phase = st ? st.phase : (r.verdict ? 'done' : 'unknown');
+    const models = st ? st.models
+      : (r.verdict ? (r.verdict.models || []).map((m) => ({ label: m, state: 'done', elapsed_s: null })) : []);
+    const modelLine = models.map((m) =>
+      `${icon(m.state)} ${esc(m.label)}${m.elapsed_s != null ? ` (${m.elapsed_s}s)` : ''}`).join('   ');
+    const c = r.verdict && r.verdict.counts;
+    const summary = c
+      ? `${c.unique} issue(s) · ${c.contested} contested${c.unreviewed ? ` · ${c.unreviewed} unreviewed` : ''}`
+      : (running ? 'in progress…' : '');
+    return `<div class="card" style="margin-bottom:0.75rem">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <strong style="font-size:0.85rem">${esc(r.run)}</strong>
+        <span class="badge ${running ? 'badge-yellow' : 'badge-green'}">${esc(phase)}</span>
+      </div>
+      <div style="font-size:0.85rem;margin-top:6px">${modelLine || '<span class="text-muted">—</span>'}</div>
+      <div class="text-muted" style="font-size:0.85rem;margin-top:4px">${esc(summary)}</div>
+    </div>`;
+  }).join('');
+  const anyRunning = runs.some((r) => r.status && r.status.phase !== 'done');
+  app.innerHTML = `<div class="view-header"><h1>Panel</h1><p>cross-model reviews${anyRunning ? ' · <span style="color:var(--warning,#d80)">● live</span>' : ''}</p></div>${cards}`;
+  if (anyRunning) setTimeout(refreshPanel, 2000); // poll while any run is in progress
+}
+
 /**
  * Retrospective → Lesson → CLAUDE.md 3-column Sankey (SVG).
  * Uses summary.source_retrospective + summary.applied_to_claudemd to draw flows.
@@ -4926,6 +4980,7 @@ const ROUTES = [
   { pattern: /^\/research$/, handler: () => renderResearchList() },
   { pattern: /^\/research\/(.+)$/, handler: (m) => renderResearchDetail(m[1]) },
   { pattern: /^\/recall$/, handler: () => renderRecallList() },
+  { pattern: /^\/panel$/, handler: () => renderPanelList() },
 ];
 
 function getPath() {
