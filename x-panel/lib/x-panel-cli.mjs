@@ -46,6 +46,18 @@ function resolveTarget(arg) {
   return { kind: 'literal', text: arg };
 }
 
+function compactTitle(value, max = 120) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  return text.length > max ? text.slice(0, max - 1).trimEnd() + '...' : text;
+}
+
+function targetTitle(target) {
+  if (target.kind === 'literal') return compactTitle(target.text);
+  if (target.kind === 'file' && target.ref) return `Review ${target.ref}`;
+  return null;
+}
+
 function parseFlags(raw) {
   const flags = {};
   const pos = [];
@@ -114,7 +126,7 @@ function sev(s) {
 
 // Run one round across all models in parallel, reporting start/heartbeat/elapsed
 // on stderr so a long round (large diff) isn't a silent black box.
-async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate) {
+async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult) {
   process.stderr.write(`${C.dim}${roundLabel} — ${usable.length} models in parallel…${C.reset}\n`);
   const pending = new Set(usable.map((e) => e.label));
   const t0 = Date.now();
@@ -132,19 +144,23 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate) {
     if (onUpdate) onUpdate({ event: 'progress', elapsed_s: el });
   }, 2000);
   if (hb.unref) hb.unref();
-  const results = await Promise.all(usable.map(async (e) => {
-    const s = Date.now();
-    const res = await invokeProviderAsync(e.name, makePrompt(e), { timeout: timeoutMs, model: e.model });
-    pending.delete(e.label);
-    const dt = Math.round((Date.now() - s) / 1000);
-    process.stderr.write(res.ok
-      ? `  ${C.green}✓${C.reset} ${e.label} ${C.dim}(${dt}s)${C.reset}\n`
-      : `  ${C.red}✗${C.reset} ${e.label} ${C.dim}(${dt}s)${C.reset}: ${res.error}\n`);
-    if (onUpdate) onUpdate({ event: 'model_done', label: e.label, ok: res.ok, elapsed_s: dt });
-    return [e.label, res];
-  }));
-  clearInterval(hb);
-  return results;
+  try {
+    const results = await Promise.all(usable.map(async (e) => {
+      const s = Date.now();
+      const res = await invokeProviderAsync(e.name, makePrompt(e), { timeout: timeoutMs, model: e.model });
+      pending.delete(e.label);
+      const dt = Math.round((Date.now() - s) / 1000);
+      process.stderr.write(res.ok
+        ? `  ${C.green}✓${C.reset} ${e.label} ${C.dim}(${dt}s)${C.reset}\n`
+        : `  ${C.red}✗${C.reset} ${e.label} ${C.dim}(${dt}s)${C.reset}: ${res.error}\n`);
+      if (onResult) onResult(e, res);
+      if (onUpdate) onUpdate({ event: 'model_done', label: e.label, ok: res.ok, elapsed_s: dt });
+      return [e.label, res];
+    }));
+    return results;
+  } finally {
+    clearInterval(hb);
+  }
 }
 
 function renderVerdict(v, dir) {
@@ -266,30 +282,28 @@ async function cmdReview(pos, flags) {
 
   // Round 1 — independent review (all models in parallel)
   startPhase('round1 (review)');
-  const r1 = await runRound('round 1 (review)', usable, () => reviewPrompt(target.text), timeoutMs, onModelDone);
   const round1 = {};
-  for (const [label, res] of r1) {
+  await runRound('round 1 (review)', usable, () => reviewPrompt(target.text), timeoutMs, onModelDone, (e, res) => {
     const findings = res.ok ? normalizeFindings(res.json) : [];
-    round1[label] = findings;
-    writeJSON(join(dir, `${safeLabel(label)}.r1.json`), { model: label, ok: res.ok, error: res.error, findings, raw: res.raw });
-  }
+    round1[e.label] = findings;
+    writeJSON(join(dir, `${safeLabel(e.label)}.r1.json`), { model: e.label, ok: res.ok, error: res.error, findings, raw: res.raw });
+  });
 
   // Round 2 — adversarial: each model refutes the others' findings (in parallel)
   startPhase('round2 (refute)');
-  const r2 = await runRound('round 2 (refute)', usable, (e) => {
+  const round2 = {};
+  const abstained = new Set();
+  await runRound('round 2 (refute)', usable, (e) => {
     const others = usable.filter(x => x.label !== e.label);
     // Tag each opponent finding with a global ref `owner#idx` so 3+ models don't collide.
     const otherFindings = others.flatMap(o => (round1[o.label] || []).map(f => ({ ...f, gref: `${o.label}#${f.idx}` })));
     return refutePrompt(target.text, others.map(o => o.label).join('+'), otherFindings);
-  }, timeoutMs, onModelDone);
-  const round2 = {};
-  const abstained = new Set();
-  for (const [label, res] of r2) {
-    if (!res.ok) abstained.add(label); // round2 failure ≠ silent concede
+  }, timeoutMs, onModelDone, (e, res) => {
+    if (!res.ok) abstained.add(e.label); // round2 failure ≠ silent concede
     const verdicts = res.ok ? normalizeVerdicts(res.json) : [];
-    round2[label] = verdicts;
-    writeJSON(join(dir, `${safeLabel(label)}.r2.json`), { model: label, ok: res.ok, error: res.error, verdicts, raw: res.raw });
-  }
+    round2[e.label] = verdicts;
+    writeJSON(join(dir, `${safeLabel(e.label)}.r2.json`), { model: e.label, ok: res.ok, error: res.error, verdicts, raw: res.raw });
+  });
 
   const verdict = synthesize(labels, round1, round2, abstained);
   const record = {
@@ -297,6 +311,7 @@ async function cmdReview(pos, flags) {
     created_at: new Date().toISOString(),
     target_kind: target.kind,
     target_ref: target.ref || null,
+    target_title: targetTitle(target),
     judge: 'rule',
     ...verdict,
   };
