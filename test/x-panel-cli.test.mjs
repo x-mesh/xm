@@ -4,8 +4,8 @@
  * - CLI: full review flow driven by stub model commands (no real models)
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -40,6 +40,20 @@ function panelRaw(args, env = {}) {
 function writeProjectConfig(panel) {
   mkdirSync(join(DIR, '.xm'), { recursive: true });
   writeFileSync(join(DIR, '.xm', 'config.json'), JSON.stringify({ panel }, null, 2));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitFor(check, timeoutMs = 5000, intervalMs = 50) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const value = check();
+    if (value) return value;
+    await sleep(intervalMs);
+  }
+  return null;
 }
 
 function latestVerdict() {
@@ -196,12 +210,47 @@ describe('review (stubbed models)', () => {
     expect(st.models.length).toBeGreaterThan(0);
   });
 
+  test('writes a model round file as soon as that model finishes', async () => {
+    const panelDir = join(DIR, '.xm', 'panel');
+    const before = new Set(existsSync(panelDir) ? readdirSync(panelDir) : []);
+    const child = spawn('node', [CLI, 'review', '--models', 'claude,codex', 'slow target'], {
+      cwd: DIR,
+      env: STUB_ENV({ X_PANEL_DELAY_R1_CODEX_MS: '4000' }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+
+    try {
+      const partialDir = await waitFor(() => {
+        if (!existsSync(panelDir)) return null;
+        const runs = readdirSync(panelDir).filter(n => n.startsWith('panel-') && !before.has(n)).sort();
+        for (const run of runs) {
+          const dir = join(panelDir, run);
+          if (existsSync(join(dir, 'claude.r1.json')) && !existsSync(join(dir, 'codex.r1.json'))) return dir;
+        }
+        return null;
+      }, 3000);
+      expect(partialDir).toBeTruthy();
+
+      const code = await new Promise((resolve) => child.on('close', resolve));
+      expect({ code, stdout, stderr }).toMatchObject({ code: 0 });
+    } finally {
+      if (child.exitCode == null) child.kill('SIGKILL');
+    }
+  }, 10000);
+
   test('--json emits a parseable verdict record', () => {
     const r = review(['some code change', '--json']);
     const rec = JSON.parse(r.stdout);
     expect(rec.run).toMatch(/^panel-/);
     expect(rec.models).toEqual(['claude', 'codex']);
     expect(rec.judge).toBe('rule');
+    expect(rec.target_title).toBe('some code change');
   });
 
   test('fewer than 2 models exits 1', () => {
