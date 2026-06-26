@@ -20,6 +20,7 @@ const PLUGINS_WITH_SOURCE_SKILL = new Set([
   'x-humble',
   'x-memory',
   'x-op',
+  'x-panel',
   'x-probe',
   'x-recall',
   'x-review',
@@ -104,6 +105,17 @@ function findSourcePath(rel) {
   // xm/lib/x-recall-cli.mjs (CLI entry copied by sync-bundle.sh)
   if (rel === 'xm/lib/x-recall-cli.mjs') {
     return 'x-recall/lib/x-recall-cli.mjs';
+  }
+
+  // xm/lib/x-panel/<file>.mjs — whole dir is mirrored by sync-bundle.sh, so protect all.
+  const panelMatch = rel.match(/^xm\/lib\/x-panel\/([^/]+\.mjs)$/);
+  if (panelMatch) {
+    return `x-panel/lib/x-panel/${panelMatch[1]}`;
+  }
+
+  // xm/lib/x-panel-cli.mjs (CLI entry copied by sync-bundle.sh)
+  if (rel === 'xm/lib/x-panel-cli.mjs') {
+    return 'x-panel/lib/x-panel-cli.mjs';
   }
 
   // xm/lib/x-trace/<file>.mjs

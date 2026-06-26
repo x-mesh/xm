@@ -24,7 +24,7 @@ import {
   normalizeVerdict, toMillis, parseSince,
 } from './core.mjs';
 
-const ALL_TYPES = ['review', 'op', 'plan', 'eval', 'probe', 'humble', 'solver', 'research', 'prd', 'handoff'];
+const ALL_TYPES = ['review', 'op', 'plan', 'eval', 'probe', 'humble', 'solver', 'research', 'prd', 'handoff', 'panel'];
 
 export function knownTypes() {
   return ALL_TYPES.slice();
@@ -229,9 +229,30 @@ function scanHandoff(root) {
   return out;
 }
 
+// x-panel cross-model review verdicts under .xm/panel/<run>/verdict.json
+function scanPanel(root) {
+  const out = [];
+  for (const d of listDirs(join(root, 'panel'))) {
+    const vf = join(d.path, 'verdict.json');
+    if (!existsSync(vf)) continue;
+    const j = readJSON(vf) || {};
+    const counts = j.counts || {};
+    out.push({
+      type: 'panel', id: 'panel:' + d.name,
+      title: `${(j.models || []).join('+')}${counts.unique != null ? ` — ${counts.unique} issue(s)` : ''}`,
+      status: counts.unique != null ? `${counts.unique} issues / ${counts.contested ?? 0} contested` : '',
+      created_at: j.created_at || isoFromMtime(d.mtimeMs),
+      project: null, path: vf, format: 'json',
+      meta: { models: j.models || [], unique: counts.unique ?? null, target_kind: j.target_kind || null },
+    });
+  }
+  return out;
+}
+
 const SCANNERS = {
   review: scanReview, op: scanOp, plan: scanPlan, eval: scanEval, probe: scanProbe,
   humble: scanHumble, solver: scanSolver, research: scanResearch, prd: scanPrd, handoff: scanHandoff,
+  panel: scanPanel,
 };
 
 // ── public API ───────────────────────────────────────────────────────

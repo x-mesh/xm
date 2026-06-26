@@ -9,7 +9,7 @@ const [model, prompt = ''] = process.argv.slice(2);
 const isRefute = /verdicts/i.test(prompt);
 
 if (isRefute) {
-  const refs = [...prompt.matchAll(/\[([a-z]+#\d+)\]/gi)].map((m) => m[1]); // global ref "owner#idx"
+  const refs = [...prompt.matchAll(/\[([^\]]+#\d+)\]/g)].map((m) => m[1]); // global ref "owner#idx" (owner may contain ':')
   const verdicts = refs.map((ref, i) => ({
     ref,
     // codex refutes the opponent's first finding → creates one CONTESTED entry
