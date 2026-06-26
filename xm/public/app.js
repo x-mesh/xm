@@ -2432,7 +2432,19 @@ function renderSolverDetail(slug) {
 let _configTier = 'project';
 let _configProviders = [];
 let _configPanelRaw = {};   // full panel section as loaded — preserved on save
+let _configSharedRaw = {};  // non-panel config as loaded — preserves nested keys on structured saves
 let _configLoadSeq = 0;     // guards against a stale tier-switch fetch winning the race
+
+// Hints only: the input stays free-form because provider model IDs change faster
+// than xm releases. Users can extend these from panel.model_catalog in config.
+const CFG_PANEL_MODEL_HINTS = {
+  claude: ['sonnet', 'opus', 'haiku'],
+  codex: ['gpt-5', 'gpt-5-codex', 'o3', 'o4-mini'],
+  agy: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+  cursor: ['sonnet', 'opus', 'gpt-5', 'gpt-5-codex', 'gemini-2.5-pro'],
+};
+const CFG_ROLE_NAMES = ['architect', 'reviewer', 'security', 'executor', 'designer', 'debugger', 'explorer', 'writer', 'planner', 'critic', 'verifier', 'documenter'];
+const CFG_ROLE_MODELS = ['haiku', 'sonnet', 'opus'];
 
 function renderConfig() {
   _configTier = 'project';
@@ -2459,14 +2471,15 @@ async function loadConfigEditor() {
 
   const { panel, _tier, _path, _empty, ...rest } = cfg;
   _configPanelRaw = (panel && typeof panel === 'object') ? panel : {};
+  _configSharedRaw = rest && typeof rest === 'object' ? rest : {};
   const panelCfg = panel || {};
   const savePath = esc(_path || '');
 
   // tier toggle
-  const tierBtn = (t, label) => `<button onclick="configSetTier('${t}')" class="badge ${_configTier === t ? 'badge-indigo' : 'badge-gray'}" style="cursor:pointer;padding:5px 12px">${label}</button>`;
-  const tierToggle = `<div style="display:flex;gap:8px;align-items:center;margin-bottom:1rem">
-    <span class="text-muted" style="font-size:.8rem">tier:</span>${tierBtn('project', 'Project (.xm)')}${tierBtn('global', 'Global (~/.xm)')}
-    <span class="text-muted" style="font-size:.72rem;margin-left:8px">${savePath}${_empty ? ' (new)' : ''}</span>
+  const tierBtn = (t, label) => `<button onclick="configSetTier('${t}')" class="badge ${_configTier === t ? 'badge-indigo' : 'badge-gray'} cfg-tier-btn">${label}</button>`;
+  const tierToggle = `<div class="cfg-tier-bar">
+    <span class="cfg-label">tier</span>${tierBtn('project', 'Project (.xm)')}${tierBtn('global', 'Global (~/.xm)')}
+    <span class="cfg-path">${savePath}${_empty ? ' (new)' : ''}</span>
   </div>`;
 
   // panel form — model checkboxes (union of detected providers + configured models)
@@ -2476,81 +2489,230 @@ async function loadConfigEditor() {
     const prov = _configProviders.find((p) => p.name === name);
     const onPath = prov ? prov.available : null;
     const checked = ((panelCfg.models) || []).includes(name) ? 'checked' : '';
-    const note = onPath === false ? ' <span class="text-muted" style="font-size:.68rem">(not on PATH)</span>' : '';
-    return `<label style="display:inline-flex;align-items:center;gap:5px;margin:0 14px 6px 0">
+    const note = onPath === false ? '<span class="cfg-note">(not on PATH)</span>' : '';
+    return `<label class="cfg-check">
       <input type="checkbox" class="cfg-model" value="${esc(name)}" ${checked}> ${esc(name)}${note}</label>`;
-  }).join('') : '<span class="text-muted" style="font-size:.8rem">no providers detected</span>';
+  }).join('') : '<span class="cfg-note">no providers detected</span>';
 
   const judgeVal = panelCfg.judge || 'rule';
   const overrideRows = Object.entries(panelCfg.model_overrides || {}).map(([k, v]) => cfgOverrideRow(k, v)).join('');
   const presetRows = Object.entries(panelCfg.presets || {}).map(([k, v]) => cfgPresetRow(k, Array.isArray(v) ? v.join(',') : v)).join('');
+  const catalogRows = Object.entries(panelCfg.model_catalog || {}).map(([k, v]) => cfgCatalogRow(k, Array.isArray(v) ? v.join(',') : v)).join('');
+  const modelOptions = cfgPanelModelOptions(panelCfg);
+  const providerOptions = cfgPanelProviderOptions(panelCfg);
+  const datalists = [
+    cfgDatalist('cfg-provider-options', providerOptions),
+    cfgDatalist('cfg-panel-model-options', modelOptions),
+    cfgDatalist('cfg-role-options', CFG_ROLE_NAMES),
+    cfgDatalist('cfg-role-model-options', CFG_ROLE_MODELS),
+  ].join('');
 
-  const panelForm = `<div class="card" style="margin-bottom:1rem">
-    <h2 style="margin-top:0;font-size:1rem">Panel</h2>
-    <div style="margin-bottom:10px"><div class="text-muted" style="font-size:.78rem;margin-bottom:4px">models</div>${modelChecks}</div>
-    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px">
-      <label style="font-size:.85rem">judge
-        <select id="cfg-judge" style="margin-left:6px">
+  const panelForm = `<div class="card cfg-card">
+    <div class="cfg-card-head">
+      <h2>Panel</h2>
+      <span class="cfg-note">default providers, provider:model overrides, presets</span>
+    </div>
+    ${datalists}
+    <div class="cfg-section">
+      <div class="cfg-label">models</div>
+      <div class="cfg-check-grid">${modelChecks}</div>
+    </div>
+    <div class="cfg-field-grid">
+      <label class="cfg-field">judge
+        <select id="cfg-judge" class="cfg-control">
           <option value="rule" ${judgeVal === 'rule' ? 'selected' : ''}>rule</option>
-        </select></label>
-      <label style="font-size:.85rem">timeout_s
-        <input id="cfg-timeout" type="number" min="1" value="${esc(panelCfg.timeout_s ?? '')}" placeholder="240" style="width:90px;margin-left:6px"></label>
+        </select>
+      </label>
+      <label class="cfg-field">timeout_s
+        <input id="cfg-timeout" class="cfg-control" type="number" min="1" value="${esc(panelCfg.timeout_s ?? '')}" placeholder="240">
+      </label>
     </div>
-    <div style="margin-bottom:10px">
-      <div class="text-muted" style="font-size:.78rem;margin-bottom:4px">model_overrides <span style="opacity:.7">(name → model)</span></div>
+    <div class="cfg-section">
+      <div class="cfg-label">model_overrides <span>(provider → model)</span></div>
       <div id="cfg-overrides">${overrideRows}</div>
-      <button onclick="configAddOverrideRow()" class="badge badge-gray" style="cursor:pointer;margin-top:4px">+ override</button>
+      <button onclick="configAddOverrideRow()" class="badge badge-gray cfg-mini-action">+ override</button>
     </div>
-    <div style="margin-bottom:10px">
-      <div class="text-muted" style="font-size:.78rem;margin-bottom:4px">presets <span style="opacity:.7">(name → models, comma-separated)</span></div>
+    <div class="cfg-section">
+      <div class="cfg-label">model_catalog <span>(provider → model suggestions)</span></div>
+      <div id="cfg-catalog">${catalogRows}</div>
+      <button onclick="configAddCatalogRow()" class="badge badge-gray cfg-mini-action">+ catalog</button>
+    </div>
+    <div class="cfg-section">
+      <div class="cfg-label">presets <span>(name → models, comma-separated)</span></div>
       <div id="cfg-presets">${presetRows}</div>
-      <button onclick="configAddPresetRow()" class="badge badge-gray" style="cursor:pointer;margin-top:4px">+ preset</button>
+      <button onclick="configAddPresetRow()" class="badge badge-gray cfg-mini-action">+ preset</button>
     </div>
-    <button onclick="configSavePanel()" class="badge badge-green" style="cursor:pointer;padding:6px 14px">Save panel</button>
+    <button onclick="configSavePanel()" class="badge badge-green cfg-save-btn">Save panel</button>
+  </div>`;
+
+  const sharedKeys = new Set(['model_profile', 'agent_max_count', 'mode', 'budget', 'model_overrides']);
+  const sharedRest = {};
+  for (const [k, v] of Object.entries(rest)) if (!sharedKeys.has(k)) sharedRest[k] = v;
+  const profile = rest.model_profile || '';
+  const mode = rest.mode || '';
+  const agentCount = rest.agent_max_count ?? '';
+  const budget = (rest.budget && typeof rest.budget === 'object' && !Array.isArray(rest.budget)) ? rest.budget : {};
+  const budgetProjectsJson = escapeHtmlHumble(JSON.stringify(budget.projects || {}, null, 2));
+  const roleRows = Object.entries(rest.model_overrides || {}).map(([k, v]) => cfgRoleOverrideRow(k, v)).join('');
+  const sharedForm = `<div class="card cfg-card">
+    <div class="cfg-card-head">
+      <h2>Shared settings</h2>
+      <span class="cfg-note">x-build, x-op, x-agent, x-solver defaults</span>
+    </div>
+    <div class="cfg-field-grid cfg-field-grid-wide">
+      <label class="cfg-field">model_profile
+        <select id="cfg-model-profile" class="cfg-control">
+          <option value="" ${profile === '' ? 'selected' : ''}>(unset)</option>
+          <option value="economy" ${profile === 'economy' ? 'selected' : ''}>economy</option>
+          <option value="default" ${profile === 'default' ? 'selected' : ''}>default</option>
+          <option value="max" ${profile === 'max' ? 'selected' : ''}>max</option>
+        </select>
+      </label>
+      <label class="cfg-field">mode
+        <select id="cfg-mode" class="cfg-control">
+          <option value="" ${mode === '' ? 'selected' : ''}>(unset)</option>
+          <option value="developer" ${mode === 'developer' ? 'selected' : ''}>developer</option>
+          <option value="normal" ${mode === 'normal' ? 'selected' : ''}>normal</option>
+        </select>
+      </label>
+      <label class="cfg-field">agent_max_count
+        <input id="cfg-agent-max" class="cfg-control" type="number" min="1" max="10" step="1" value="${esc(agentCount)}" placeholder="4">
+      </label>
+      <label class="cfg-field">budget.max_usd
+        <input id="cfg-budget-max" class="cfg-control" type="number" min="0" step="0.01" value="${esc(budget.max_usd ?? '')}" placeholder="unlimited">
+      </label>
+      <label class="cfg-field">budget.window_hours
+        <input id="cfg-budget-window" class="cfg-control" type="number" min="0" step="1" value="${esc(budget.window_hours ?? '')}" placeholder="all time">
+      </label>
+    </div>
+    <div class="cfg-section">
+      <div class="cfg-label">budget.projects <span>(project → max_usd JSON)</span></div>
+      <textarea id="cfg-budget-projects" class="cfg-json cfg-json-compact" spellcheck="false">${budgetProjectsJson}</textarea>
+    </div>
+    <div class="cfg-section">
+      <div class="cfg-label">model_overrides <span>(role → haiku/sonnet/opus)</span></div>
+      <div id="cfg-role-overrides">${roleRows}</div>
+      <button onclick="configAddRoleOverrideRow()" class="badge badge-gray cfg-mini-action">+ role override</button>
+    </div>
+    <button onclick="configSaveShared()" class="badge badge-green cfg-save-btn">Save shared settings</button>
   </div>`;
 
   // generic editor for everything else (non-panel top-level keys)
-  const otherJson = escapeHtmlHumble(JSON.stringify(rest, null, 2));
-  const otherForm = `<div class="card" style="margin-bottom:1rem">
-    <h2 style="margin-top:0;font-size:1rem">Other keys <span class="text-muted" style="font-size:.75rem;font-weight:400">(raw JSON — non-panel)</span></h2>
-    <textarea id="cfg-other" spellcheck="false" style="width:100%;min-height:180px;font-family:monospace;font-size:.8rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px">${otherJson}</textarea>
-    <div style="margin-top:8px"><button onclick="configSaveOther()" class="badge badge-green" style="cursor:pointer;padding:6px 14px">Save other keys</button>
-    <span class="text-muted" style="font-size:.72rem;margin-left:8px">merge only — key deletion not persisted</span></div>
+  const otherJson = escapeHtmlHumble(JSON.stringify(sharedRest, null, 2));
+  const otherForm = `<div class="card cfg-card">
+    <div class="cfg-card-head">
+      <h2>Other keys</h2>
+      <span class="cfg-note">raw JSON, excluding panel and shared form keys</span>
+    </div>
+    <textarea id="cfg-other" class="cfg-json" spellcheck="false">${otherJson}</textarea>
+    <div class="cfg-actions"><button onclick="configSaveOther()" class="badge badge-green cfg-save-btn">Save other keys</button>
+    <span class="cfg-note">merge; use _delete dot paths for removals</span></div>
   </div>`;
 
   app.innerHTML = `
-    <div class="view-header"><h1>Config</h1><p>edit ${esc(_configTier)} config · panel form + raw keys</p></div>
+    <div class="view-header"><h1>Config</h1><p>edit ${esc(_configTier)} config · panel + shared settings + raw keys</p></div>
     ${tierToggle}
-    <div id="config-status" style="min-height:20px;margin-bottom:8px;font-size:.82rem"></div>
+    <div id="config-status" class="cfg-status"></div>
     ${panelForm}
+    ${sharedForm}
     ${otherForm}`;
+}
+
+function cfgList(v) {
+  if (Array.isArray(v)) return v.map((x) => String(x ?? '').trim()).filter(Boolean);
+  if (typeof v === 'string') return v.split(',').map((x) => x.trim()).filter(Boolean);
+  return [];
+}
+
+function cfgUnique(values) {
+  return [...new Set(values.map((v) => String(v ?? '').trim()).filter(Boolean))];
+}
+
+function cfgHasOwn(obj, key) {
+  return !!obj && typeof obj === 'object' && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function cfgHasPath(obj, path) {
+  let cur = obj;
+  for (const part of String(path).split('.')) {
+    if (!cfgHasOwn(cur, part)) return false;
+    cur = cur[part];
+  }
+  return true;
+}
+
+function cfgPanelProviderOptions(panelCfg = {}) {
+  const fromOverrides = Object.keys(panelCfg.model_overrides || {});
+  const fromCatalog = Object.keys(panelCfg.model_catalog || {});
+  const fromModels = cfgList(panelCfg.models).map((spec) => String(spec).split(':')[0]);
+  return cfgUnique([..._configProviders.map((p) => p.name), ...Object.keys(CFG_PANEL_MODEL_HINTS), ...fromModels, ...fromOverrides, ...fromCatalog]);
+}
+
+function cfgPanelModelOptions(panelCfg = {}) {
+  const catalog = panelCfg.model_catalog || {};
+  const fromCatalog = Object.values(catalog).flatMap((v) => cfgList(v));
+  const fromOverrides = Object.values(panelCfg.model_overrides || {});
+  const fromModels = cfgList(panelCfg.models).map((spec) => String(spec).split(':')[1]);
+  const fromPresets = Object.values(panelCfg.presets || {}).flatMap((v) => cfgList(v).map((spec) => String(spec).split(':')[1]));
+  return cfgUnique([...Object.values(CFG_PANEL_MODEL_HINTS).flat(), ...fromCatalog, ...fromOverrides, ...fromModels, ...fromPresets]);
+}
+
+function cfgDatalist(id, values) {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  return `<datalist id="${esc(id)}">${cfgUnique(values).map((v) => `<option value="${esc(v)}"></option>`).join('')}</datalist>`;
 }
 
 function cfgOverrideRow(name = '', model = '') {
   const esc = (v) => escapeHtmlHumble(String(v ?? ''));
-  return `<div class="cfg-ovr-row" style="display:flex;gap:6px;margin-bottom:4px">
-    <input class="cfg-ovr-name" placeholder="codex" value="${esc(name)}" style="width:140px">
-    <span style="opacity:.5">→</span>
-    <input class="cfg-ovr-model" placeholder="gpt-5.2" value="${esc(model)}" style="width:180px">
-    <button onclick="this.parentNode.remove()" class="badge badge-gray" style="cursor:pointer">×</button>
+  return `<div class="cfg-ovr-row cfg-row">
+    <input class="cfg-ovr-name cfg-control" list="cfg-provider-options" placeholder="codex" value="${esc(name)}">
+    <span class="cfg-arrow">→</span>
+    <input class="cfg-ovr-model cfg-control" list="cfg-panel-model-options" placeholder="gpt-5-codex" value="${esc(model)}">
+    <button onclick="this.parentNode.remove()" class="badge badge-gray cfg-remove-btn">×</button>
+  </div>`;
+}
+
+function cfgCatalogRow(name = '', models = '') {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  return `<div class="cfg-catalog-row cfg-row">
+    <input class="cfg-catalog-name cfg-control" list="cfg-provider-options" placeholder="codex" value="${esc(name)}">
+    <span class="cfg-arrow">→</span>
+    <input class="cfg-catalog-models cfg-control cfg-control-wide" list="cfg-panel-model-options" placeholder="gpt-5-codex,o3" value="${esc(models)}">
+    <button onclick="this.parentNode.remove()" class="badge badge-gray cfg-remove-btn">×</button>
   </div>`;
 }
 
 function cfgPresetRow(name = '', models = '') {
   const esc = (v) => escapeHtmlHumble(String(v ?? ''));
-  return `<div class="cfg-preset-row" style="display:flex;gap:6px;margin-bottom:4px">
-    <input class="cfg-preset-name" placeholder="fast" value="${esc(name)}" style="width:140px">
-    <span style="opacity:.5">→</span>
-    <input class="cfg-preset-models" placeholder="claude,codex" value="${esc(models)}" style="width:220px">
-    <button onclick="this.parentNode.remove()" class="badge badge-gray" style="cursor:pointer">×</button>
+  return `<div class="cfg-preset-row cfg-row">
+    <input class="cfg-preset-name cfg-control" placeholder="fast" value="${esc(name)}">
+    <span class="cfg-arrow">→</span>
+    <input class="cfg-preset-models cfg-control cfg-control-wide" placeholder="claude,codex" value="${esc(models)}">
+    <button onclick="this.parentNode.remove()" class="badge badge-gray cfg-remove-btn">×</button>
+  </div>`;
+}
+
+function cfgRoleOverrideRow(role = '', model = '') {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  return `<div class="cfg-role-row cfg-row">
+    <input class="cfg-role-name cfg-control" list="cfg-role-options" placeholder="architect" value="${esc(role)}">
+    <span class="cfg-arrow">→</span>
+    <input class="cfg-role-model cfg-control" list="cfg-role-model-options" placeholder="opus" value="${esc(model)}">
+    <button onclick="this.parentNode.remove()" class="badge badge-gray cfg-remove-btn">×</button>
   </div>`;
 }
 
 function configAddOverrideRow() {
   document.getElementById('cfg-overrides')?.insertAdjacentHTML('beforeend', cfgOverrideRow());
 }
+function configAddCatalogRow() {
+  document.getElementById('cfg-catalog')?.insertAdjacentHTML('beforeend', cfgCatalogRow());
+}
 function configAddPresetRow() {
   document.getElementById('cfg-presets')?.insertAdjacentHTML('beforeend', cfgPresetRow());
+}
+function configAddRoleOverrideRow() {
+  document.getElementById('cfg-role-overrides')?.insertAdjacentHTML('beforeend', cfgRoleOverrideRow());
 }
 
 function configSetTier(tier) {
@@ -2607,6 +2769,13 @@ function configSavePanel() {
     if (k) overrides[k] = v || '';
   });
   if (Object.keys(overrides).length) panel.model_overrides = overrides; else delete panel.model_overrides;
+  const catalog = {};
+  document.querySelectorAll('#cfg-catalog .cfg-catalog-row').forEach((row) => {
+    const k = row.querySelector('.cfg-catalog-name')?.value.trim();
+    const v = row.querySelector('.cfg-catalog-models')?.value.trim();
+    if (k) catalog[k] = cfgList(v);
+  });
+  if (Object.keys(catalog).length) panel.model_catalog = catalog; else delete panel.model_catalog;
   const presets = {};
   document.querySelectorAll('#cfg-presets .cfg-preset-row').forEach((row) => {
     const k = row.querySelector('.cfg-preset-name')?.value.trim();
@@ -2615,6 +2784,84 @@ function configSavePanel() {
   });
   if (Object.keys(presets).length) panel.presets = presets; else delete panel.presets;
   patchConfigTier({ panel });
+}
+
+function configSaveShared() {
+  const body = {};
+  const deletePaths = [];
+  const profile = document.getElementById('cfg-model-profile')?.value || '';
+  const mode = document.getElementById('cfg-mode')?.value || '';
+  const agentRaw = document.getElementById('cfg-agent-max')?.value;
+  const budgetMaxRaw = document.getElementById('cfg-budget-max')?.value;
+  const budgetWindowRaw = document.getElementById('cfg-budget-window')?.value;
+  const budgetProjectsRaw = document.getElementById('cfg-budget-projects')?.value || '{}';
+
+  if (profile) body.model_profile = profile;
+  else if (cfgHasOwn(_configSharedRaw, 'model_profile')) deletePaths.push('model_profile');
+
+  if (mode) body.mode = mode;
+  else if (cfgHasOwn(_configSharedRaw, 'mode')) deletePaths.push('mode');
+
+  if (agentRaw !== '' && agentRaw != null) {
+    const n = Number(agentRaw);
+    if (!Number.isInteger(n) || n < 1 || n > 10) { setConfigStatus('agent_max_count는 1-10 사이 정수여야 합니다', false); return; }
+    body.agent_max_count = n;
+  } else if (cfgHasOwn(_configSharedRaw, 'agent_max_count')) {
+    deletePaths.push('agent_max_count');
+  }
+
+  const rawBudget = (_configSharedRaw.budget && typeof _configSharedRaw.budget === 'object' && !Array.isArray(_configSharedRaw.budget)) ? _configSharedRaw.budget : {};
+  const budget = { ...rawBudget };
+  let budgetTouched = false;
+  if (budgetMaxRaw !== '' && budgetMaxRaw != null) {
+    const n = Number(budgetMaxRaw);
+    if (!Number.isFinite(n) || n < 0) { setConfigStatus('budget.max_usd는 0 이상의 숫자여야 합니다', false); return; }
+    budget.max_usd = n > 0 ? n : null;
+    budgetTouched = true;
+  } else if (cfgHasPath(_configSharedRaw, 'budget.max_usd')) {
+    deletePaths.push('budget.max_usd');
+  }
+  if (budgetWindowRaw !== '' && budgetWindowRaw != null) {
+    const n = Number(budgetWindowRaw);
+    if (!Number.isFinite(n) || n < 0) { setConfigStatus('budget.window_hours는 0 이상의 숫자여야 합니다', false); return; }
+    if (n > 0) {
+      budget.window_hours = n;
+      budgetTouched = true;
+    } else if (cfgHasPath(_configSharedRaw, 'budget.window_hours')) {
+      deletePaths.push('budget.window_hours');
+    }
+  } else if (cfgHasPath(_configSharedRaw, 'budget.window_hours')) {
+    deletePaths.push('budget.window_hours');
+  }
+  let projects;
+  try { projects = JSON.parse(budgetProjectsRaw.trim() || '{}'); }
+  catch (e) { setConfigStatus('budget.projects JSON 파싱 오류: ' + e.message, false); return; }
+  if (!projects || typeof projects !== 'object' || Array.isArray(projects)) {
+    setConfigStatus('budget.projects는 JSON 객체여야 합니다', false); return;
+  }
+  if (Object.keys(projects).length) {
+    budget.projects = projects;
+    budgetTouched = true;
+  } else if (cfgHasPath(_configSharedRaw, 'budget.projects')) {
+    deletePaths.push('budget.projects');
+  }
+  if (budgetTouched) body.budget = budget;
+
+  const roleOverrides = {};
+  document.querySelectorAll('#cfg-role-overrides .cfg-role-row').forEach((row) => {
+    const k = row.querySelector('.cfg-role-name')?.value.trim();
+    const v = row.querySelector('.cfg-role-model')?.value.trim();
+    if (k) roleOverrides[k] = v || '';
+  });
+  if (Object.keys(roleOverrides).length) body.model_overrides = roleOverrides;
+  else if (cfgHasOwn(_configSharedRaw, 'model_overrides')) deletePaths.push('model_overrides');
+
+  if (deletePaths.length) body._delete = deletePaths;
+  if (Object.keys(body).length === 0) {
+    setConfigStatus('저장할 변경이 없습니다', true);
+    return;
+  }
+  patchConfigTier(body);
 }
 
 function configSaveOther() {
@@ -2629,6 +2876,12 @@ function configSaveOther() {
   if ('panel' in parsed) {
     setConfigStatus('panel 키는 위 Panel 폼에서 저장하세요 (여기선 제외됩니다)', false);
     delete parsed.panel;
+  }
+  for (const key of ['model_profile', 'agent_max_count', 'mode', 'budget', 'model_overrides']) {
+    if (key in parsed) {
+      setConfigStatus(`${key} 키는 Shared settings 폼에서 저장하세요 (여기선 제외됩니다)`, false);
+      delete parsed[key];
+    }
   }
   patchConfigTier(parsed);
 }

@@ -519,9 +519,34 @@ function handleConfig(xmRoot, req) {
   }
 }
 
-// PATCH a tier's config.json — parse-validate the body, top-level merge into the
-// existing config, atomic (tmp+rename) write. Existing keys are preserved unless
-// the body overrides them. Never a silent failure (L6): every error returns a code.
+function deleteConfigPath(obj, path) {
+  if (!obj || typeof obj !== 'object' || typeof path !== 'string') return;
+  const parts = path.split('.').map((p) => p.trim()).filter(Boolean);
+  const forbidden = new Set(['__proto__', 'constructor', 'prototype']);
+  if (!parts.length || parts.some((p) => forbidden.has(p))) return;
+  const parents = [];
+  let cur = obj;
+  for (const part of parts.slice(0, -1)) {
+    if (!cur || typeof cur !== 'object' || Array.isArray(cur)) return;
+    parents.push([cur, part]);
+    cur = cur[part];
+  }
+  if (!cur || typeof cur !== 'object' || Array.isArray(cur)) return;
+  delete cur[parts[parts.length - 1]];
+  for (let i = parents.length - 1; i >= 0; i--) {
+    const [parent, key] = parents[i];
+    const child = parent[key];
+    if (child && typeof child === 'object' && !Array.isArray(child) && Object.keys(child).length === 0) {
+      delete parent[key];
+    } else {
+      break;
+    }
+  }
+}
+
+// PATCH a tier's config.json — parse-validate the body, apply optional `_delete`
+// dot-path removals, then top-level merge into the existing config. Atomic
+// tmp+rename write. Never a silent failure (L6): every error returns a code.
 const CONFIG_MAX_BYTES = 256 * 1024;
 async function handleConfigPatch(xmRoot, req) {
   const url = new URL(req.url);
@@ -538,8 +563,9 @@ async function handleConfigPatch(xmRoot, req) {
   if (JSON.stringify(body).length > CONFIG_MAX_BYTES) {
     return jsonResponseWithETag({ error: 'too_large', max_bytes: CONFIG_MAX_BYTES }, req, 413);
   }
+  const deletePaths = Array.isArray(body._delete) ? body._delete.map((p) => String(p)) : [];
   // Strip GET-only metadata keys the client echoes back (_tier, _path, _empty)
-  // so they never land in config.json (they carry no config meaning).
+  // and control keys (_delete) so they never land in config.json.
   for (const k of Object.keys(body)) {
     if (k.startsWith('_')) delete body[k];
   }
@@ -549,6 +575,7 @@ async function handleConfigPatch(xmRoot, req) {
     try { current = JSON.parse(readFileSync(filePath, 'utf8')); }
     catch { return jsonResponseWithETag({ error: 'parse_error', file: filePath }, req, 500); }
   }
+  for (const p of deletePaths) deleteConfigPath(current, p);
   const next = { ...current, ...body };
   try {
     mkdirSync(dirname(filePath), { recursive: true });
