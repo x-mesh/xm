@@ -4342,10 +4342,9 @@ async function renderRecallList() {
 
   const counts = {};
   for (const it of items) counts[it.type] = (counts[it.type] || 0) + 1;
-  const chipStyle = 'padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--card);cursor:pointer;font-size:0.8rem';
-  const chips = [`<button class="recall-chip" data-type="all" style="${chipStyle}" onclick="filterRecallType('all')">All (${items.length})</button>`]
+  const chips = [`<button class="recall-chip active" data-type="all" onclick="filterRecallType('all')">All (${items.length})</button>`]
     .concat(Object.keys(counts).sort().map(t =>
-      `<button class="recall-chip" data-type="${t}" style="${chipStyle}" onclick="filterRecallType('${t}')">${t} (${counts[t]})</button>`))
+      `<button class="recall-chip" data-type="${t}" onclick="filterRecallType('${t}')">${t} (${counts[t]})</button>`))
     .join(' ');
 
   const esc = (v) => escapeHtmlHumble(String(v ?? ''));
@@ -4368,7 +4367,7 @@ async function renderRecallList() {
 
   app.innerHTML = `
     <div class="view-header"><h1>Recall</h1><p>.xm/ — ${items.length} artifacts, newest first</p></div>
-    <div style="margin-bottom:1rem;display:flex;gap:6px;flex-wrap:wrap">${chips}</div>
+    <div class="recall-filter-bar">${chips}</div>
     <div class="card" style="padding:0">
       <div class="table-wrapper">
         <table class="table">
@@ -4384,7 +4383,7 @@ function filterRecallType(type) {
     r.style.display = (type === 'all' || r.dataset.type === type) ? '' : 'none';
   }
   for (const b of document.querySelectorAll('.recall-chip')) {
-    b.style.fontWeight = (b.dataset.type === type) ? '700' : '400';
+    b.classList.toggle('active', b.dataset.type === type);
   }
 }
 
@@ -4583,6 +4582,9 @@ async function renderPanelDetail(run) {
       const state = ms.state || (m.r1 ? (r1.ok ? 'done' : 'failed') : (running ? 'running' : 'unknown'));
       const elapsed = ms.elapsed_s;
       const err = r1.error || r2.error;
+      const phase = String((st && st.phase) || '');
+      const isRound1 = phase.startsWith('round1');
+      const isRound2 = phase.startsWith('round2');
 
       const stateBadge = state === 'done' ? '<span class="badge badge-green">done</span>'
         : state === 'failed' ? '<span class="badge badge-red">error</span>'
@@ -4607,17 +4609,25 @@ async function renderPanelDetail(run) {
           <span class="text-muted">${esc(vd.reason || '')}</span>
         </div>`).join('');
 
+      const liveNote = (() => {
+        if (!running || r2.ok != null) return '';
+        if (isRound2 && r1.ok != null) return 'refuting other model findings...';
+        if (isRound1 && r1.ok != null && state === 'done') return 'round 1 complete, waiting for slower models...';
+        return '';
+      })();
+
       const r1Section = r1.ok != null ? `
         <div style="margin-top:8px">
           <div style="font-size:.72rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">Round 1 — findings (${(r1.findings || []).length})</div>
           ${f1Items || '<div class="text-muted" style="font-size:.78rem;padding:4px 0">none</div>'}
-        </div>` : running ? '<div class="text-muted" style="font-size:.78rem;margin-top:8px;font-style:italic">reviewing…</div>' : '';
+        </div>` : running ? '<div class="text-muted" style="font-size:.78rem;margin-top:8px;font-style:italic">reviewing target...</div>' : '';
 
       const r2Section = r2.ok != null ? `
         <div style="margin-top:8px">
           <div style="font-size:.72rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">Round 2 — refute/concede (${(r2.verdicts || []).length})</div>
           ${f2Items || '<div class="text-muted" style="font-size:.78rem;padding:4px 0">none</div>'}
         </div>` : '';
+      const liveNoteSection = liveNote ? `<div class="text-muted" style="font-size:.78rem;margin-top:8px;font-style:italic">${esc(liveNote)}</div>` : '';
 
       return `<div style="margin-bottom:.75rem;border:1px solid var(--border);border-radius:6px;overflow:hidden">
         <div style="padding:8px 12px;background:var(--surface);display:flex;gap:8px;align-items:center">
@@ -4626,7 +4636,7 @@ async function renderPanelDetail(run) {
           ${elapsed != null ? `<span class="text-muted" style="font-size:.78rem">${elapsed}s</span>` : ''}
           ${err ? `<span style="color:var(--danger,#c00);font-size:.78rem">· ${esc(err)}</span>` : ''}
         </div>
-        ${(r1Section || r2Section) ? `<div style="padding:4px 12px 10px">${r1Section}${r2Section}</div>` : ''}
+        ${(r1Section || r2Section || liveNoteSection) ? `<div style="padding:4px 12px 10px">${r1Section}${r2Section}${liveNoteSection}</div>` : ''}
       </div>`;
     }).join('');
   })() : '';

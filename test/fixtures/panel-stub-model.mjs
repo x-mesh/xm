@@ -7,6 +7,12 @@
  */
 const [model, prompt = ''] = process.argv.slice(2);
 const isRefute = /verdicts/i.test(prompt);
+const envModel = String(model || '').toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+const delayMs = Number(process.env[`X_PANEL_DELAY_${isRefute ? 'R2' : 'R1'}_${envModel}_MS`] || process.env[`X_PANEL_DELAY_${envModel}_MS`] || 0);
+
+if (Number.isFinite(delayMs) && delayMs > 0) {
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
 
 if (isRefute) {
   const refs = [...prompt.matchAll(/\[([^\]]+#\d+)\]/g)].map((m) => m[1]); // global ref "owner#idx" (owner may contain ':')

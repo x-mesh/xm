@@ -787,6 +787,36 @@ body.theme-light .sidebar-search-input { background: #fff; border-color: #ccc; c
 .memory-filter-btn { padding: 4px 12px; border: 2px solid #333; background: transparent; color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; cursor: pointer; text-transform: uppercase; }
 .memory-filter-btn.active { border-color: var(--accent); color: var(--accent); }
 
+.recall-filter-bar {
+  margin-bottom: 1rem;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.recall-chip {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid #333;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.recall-chip:hover {
+  border-color: var(--accent-border);
+  color: var(--text);
+}
+
+.recall-chip.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-weight: 700;
+}
+
 /* ── Trace Timeline ── */
 .trace-entry { padding: 8px 12px; border-bottom: 1px solid #333; display: flex; gap: 12px; align-items: center; font-size: 12px; }
 .trace-entry-child { padding-left: 32px; }
