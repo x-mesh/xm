@@ -1,6 +1,6 @@
 ---
 name: panel
-description: Cross-model adversarial review panel. Run multiple LLM CLIs (claude/codex/agy/cursor) on the same target, have them refute each other, and synthesize a consensus verdict. Use when the user asks to review/plan with several models at once, "panel review", "다른 모델들로 같이 리뷰", "여러 LLM으로 적대 리뷰", or /xm:panel. Interactive when invoked bare; passes through when models/target are given.
+description: Cross-model adversarial review panel. Run multiple LLM CLIs (claude/codex/agy/cursor/kiro) on the same target, have them refute each other, and synthesize a consensus verdict. Use when the user asks to review/plan with several models at once, "panel review", "다른 모델들로 같이 리뷰", "여러 LLM으로 적대 리뷰", or /xm:panel. Interactive when invoked bare; passes through when models/target are given.
 model: sonnet
 ---
 
@@ -46,7 +46,7 @@ Route by what the user gave you.
 1. Show the current setup so the choice is informed:
    `xm panel setup` (prints detected CLIs on PATH + current config defaults).
 2. Ask the user how to run it (AskUserQuestion, one turn):
-   - **Models**: offer (a) config default, (b) a named preset from config, (c) `--full` (all installed), (d) custom `name` / `name:model` list.
+   - **Models**: offer (a) config default, (b) a named preset from config, (c) `--full` (all installed), (d) custom `name` / `name:model` list. For Kiro, `kiro:<value>` is passed to `kiro-cli chat --model <value>`.
    - **Target**: current `git diff HEAD` (default), a file path, or pasted text.
 3. Run it: `xm panel [target] --models <list>` or `xm panel [target] --preset <name>`.
 4. Relay the verdict in this order: **consensus issues (N/M) first**, then contested
@@ -56,7 +56,7 @@ Route by what the user gave you.
 ### B. `/xm:panel setup` → interactive config
 1. Show `xm panel setup` (detected + current models/judge).
 2. Ask (AskUserQuestion): which **models**, any per-model **overrides** (`name:model`,
-   e.g. `codex:gpt-5.2`), **judge** (rule for now), and **scope** (project `.xm` or `--global`).
+   e.g. `codex:gpt-5.2` or `kiro:claude-sonnet-4.6`), **judge** (rule for now), and **scope** (project `.xm` or `--global`).
 3. Save: `xm panel setup --models a:m1,b,c --judge rule [--global]`.
    For presets/overrides not expressible via flags, edit `panel.presets` /
    `panel.model_overrides` in the chosen `config.json` and confirm with `xm panel setup`.

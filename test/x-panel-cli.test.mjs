@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus } from '../x-panel/lib/x-panel/synth.mjs';
-import { extractJSON, autodetectModels } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, autodetectModels, knownProviders, invokeProvider } from '../x-panel/lib/x-panel/adapters.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
 const STUB = join(import.meta.dirname, 'fixtures', 'panel-stub-model.mjs');
@@ -172,6 +172,24 @@ describe('extractJSON', () => {
   test('returns null when no JSON', () => {
     expect(extractJSON('no json here')).toBeNull();
   });
+
+  test('provider invocation fails when stdout has no JSON object', () => {
+    const prevCmd = process.env.X_PANEL_CMD_NOJSON;
+    const prevNoJson = process.env.X_PANEL_NO_JSON_NOJSON;
+    process.env.X_PANEL_CMD_NOJSON = STUB;
+    process.env.X_PANEL_NO_JSON_NOJSON = '1';
+    try {
+      const res = invokeProvider('nojson', 'target');
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain('no JSON');
+      expect(res.raw).toContain('plain text');
+    } finally {
+      if (prevCmd === undefined) delete process.env.X_PANEL_CMD_NOJSON;
+      else process.env.X_PANEL_CMD_NOJSON = prevCmd;
+      if (prevNoJson === undefined) delete process.env.X_PANEL_NO_JSON_NOJSON;
+      else process.env.X_PANEL_NO_JSON_NOJSON = prevNoJson;
+    }
+  });
 });
 
 // ── integration: full panel flow via stubs ───────────────────────────
@@ -281,6 +299,16 @@ describe('UX: config, presets, shortcut, setup', () => {
     expect(autodetectModels()).toContain('claude');
     if (prev === undefined) delete process.env.X_PANEL_CMD_CLAUDE;
     else process.env.X_PANEL_CMD_CLAUDE = prev;
+  });
+
+  test('known providers include kiro', () => {
+    expect(knownProviders()).toContain('kiro');
+  });
+
+  test('parses Kiro model spec into labels', () => {
+    const r = panelRaw(['review', 'target', '--models', 'claude,kiro:claude-sonnet-4-6'], { X_PANEL_CMD_KIRO: STUB });
+    expect(r.status).toBe(0);
+    expect(latestVerdict().models).toEqual(['claude', 'kiro:claude-sonnet-4-6']);
   });
 
   test('setup saves default models/judge to project config', () => {
