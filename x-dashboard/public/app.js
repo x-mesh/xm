@@ -2438,10 +2438,11 @@ let _configLoadSeq = 0;     // guards against a stale tier-switch fetch winning 
 // Hints only: the input stays free-form because provider model IDs change faster
 // than xm releases. Users can extend these from panel.model_catalog in config.
 const CFG_PANEL_MODEL_HINTS = {
-  claude: ['sonnet', 'opus', 'haiku'],
-  codex: ['gpt-5', 'gpt-5-codex', 'o3', 'o4-mini'],
-  agy: ['gemini-2.5-pro', 'gemini-2.5-flash'],
-  cursor: ['sonnet', 'opus', 'gpt-5', 'gpt-5-codex', 'gemini-2.5-pro'],
+  claude: ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-haiku-4-5-20251001', 'claude-opus-4-7'],
+  codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'],
+  agy: ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-3.1-pro-preview-customtools', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite'],
+  cursor: ['auto', 'claude-sonnet-4-6', 'claude-opus-4-8', 'gpt-5.5', 'gpt-5.4', 'gemini-3.5-flash', 'gemini-3.1-pro-preview'],
+  kiro: ['auto', 'claude-sonnet-4.6', 'claude-opus-4.8', 'claude-opus-4.7', 'claude-haiku-4.5', 'deepseek-3.2'],
 };
 const CFG_ROLE_NAMES = ['architect', 'reviewer', 'security', 'executor', 'designer', 'debugger', 'explorer', 'writer', 'planner', 'critic', 'verifier', 'documenter'];
 const CFG_ROLE_MODELS = ['haiku', 'sonnet', 'opus'];
@@ -2498,11 +2499,11 @@ async function loadConfigEditor() {
   const overrideRows = Object.entries(panelCfg.model_overrides || {}).map(([k, v]) => cfgOverrideRow(k, v)).join('');
   const presetRows = Object.entries(panelCfg.presets || {}).map(([k, v]) => cfgPresetRow(k, Array.isArray(v) ? v.join(',') : v)).join('');
   const catalogRows = Object.entries(panelCfg.model_catalog || {}).map(([k, v]) => cfgCatalogRow(k, Array.isArray(v) ? v.join(',') : v)).join('');
-  const modelOptions = cfgPanelModelOptions(panelCfg);
   const providerOptions = cfgPanelProviderOptions(panelCfg);
   const datalists = [
     cfgDatalist('cfg-provider-options', providerOptions),
-    cfgDatalist('cfg-panel-model-options', modelOptions),
+    cfgDatalist('cfg-panel-model-options', cfgPanelModelOptions(panelCfg)),
+    cfgPanelModelDatalists(panelCfg, providerOptions),
     cfgDatalist('cfg-role-options', CFG_ROLE_NAMES),
     cfgDatalist('cfg-role-model-options', CFG_ROLE_MODELS),
   ].join('');
@@ -2628,6 +2629,24 @@ function cfgUnique(values) {
   return [...new Set(values.map((v) => String(v ?? '').trim()).filter(Boolean))];
 }
 
+function cfgProviderKey(name) {
+  return String(name ?? '').trim().toLowerCase();
+}
+
+function cfgSafeIdPart(name) {
+  return cfgProviderKey(name).replace(/[^a-z0-9_-]+/g, '-') || 'custom';
+}
+
+function cfgModelListId(provider) {
+  const key = cfgProviderKey(provider);
+  return key ? `cfg-panel-model-options-${cfgSafeIdPart(key)}` : 'cfg-panel-model-options';
+}
+
+function cfgModelPlaceholder(provider) {
+  const key = cfgProviderKey(provider);
+  return key ? `${key} model` : 'select provider first';
+}
+
 function cfgHasOwn(obj, key) {
   return !!obj && typeof obj === 'object' && Object.prototype.hasOwnProperty.call(obj, key);
 }
@@ -2648,7 +2667,38 @@ function cfgPanelProviderOptions(panelCfg = {}) {
   return cfgUnique([..._configProviders.map((p) => p.name), ...Object.keys(CFG_PANEL_MODEL_HINTS), ...fromModels, ...fromOverrides, ...fromCatalog]);
 }
 
-function cfgPanelModelOptions(panelCfg = {}) {
+function cfgPanelCatalogForProvider(panelCfg = {}, provider = '') {
+  const key = cfgProviderKey(provider);
+  const catalog = panelCfg.model_catalog || {};
+  const match = Object.entries(catalog).find(([name]) => cfgProviderKey(name) === key);
+  return match ? cfgList(match[1]) : [];
+}
+
+function cfgProviderModelFromSpecs(specs, provider = '') {
+  const key = cfgProviderKey(provider);
+  if (!key) return [];
+  return cfgList(specs).map((spec) => {
+    const raw = String(spec);
+    const i = raw.indexOf(':');
+    if (i < 0) return '';
+    return cfgProviderKey(raw.slice(0, i)) === key ? raw.slice(i + 1).trim() : '';
+  }).filter(Boolean);
+}
+
+function cfgPanelModelOptions(panelCfg = {}, provider = null) {
+  if (provider != null && cfgProviderKey(provider)) {
+    const key = cfgProviderKey(provider);
+    const overrides = panelCfg.model_overrides || {};
+    const override = Object.entries(overrides).find(([name]) => cfgProviderKey(name) === key)?.[1];
+    const presetModels = Object.values(panelCfg.presets || {}).flatMap((v) => cfgProviderModelFromSpecs(v, key));
+    return cfgUnique([
+      ...(CFG_PANEL_MODEL_HINTS[key] || []),
+      ...cfgPanelCatalogForProvider(panelCfg, key),
+      override,
+      ...cfgProviderModelFromSpecs(panelCfg.models, key),
+      ...presetModels,
+    ]);
+  }
   const catalog = panelCfg.model_catalog || {};
   const fromCatalog = Object.values(catalog).flatMap((v) => cfgList(v));
   const fromOverrides = Object.values(panelCfg.model_overrides || {});
@@ -2662,12 +2712,16 @@ function cfgDatalist(id, values) {
   return `<datalist id="${esc(id)}">${cfgUnique(values).map((v) => `<option value="${esc(v)}"></option>`).join('')}</datalist>`;
 }
 
+function cfgPanelModelDatalists(panelCfg = {}, providers = []) {
+  return cfgUnique(providers).map((provider) => cfgDatalist(cfgModelListId(provider), cfgPanelModelOptions(panelCfg, provider))).join('');
+}
+
 function cfgOverrideRow(name = '', model = '') {
   const esc = (v) => escapeHtmlHumble(String(v ?? ''));
   return `<div class="cfg-ovr-row cfg-row">
-    <input class="cfg-ovr-name cfg-control" list="cfg-provider-options" placeholder="codex" value="${esc(name)}">
+    <input class="cfg-ovr-name cfg-control" list="cfg-provider-options" placeholder="codex" value="${esc(name)}" oninput="configSyncModelOptions(this)" onchange="configSyncModelOptions(this)">
     <span class="cfg-arrow">→</span>
-    <input class="cfg-ovr-model cfg-control" list="cfg-panel-model-options" placeholder="gpt-5-codex" value="${esc(model)}">
+    <input class="cfg-ovr-model cfg-control" list="${esc(cfgModelListId(name))}" placeholder="${esc(cfgModelPlaceholder(name))}" value="${esc(model)}">
     <button onclick="this.parentNode.remove()" class="badge badge-gray cfg-remove-btn">×</button>
   </div>`;
 }
@@ -2675,9 +2729,9 @@ function cfgOverrideRow(name = '', model = '') {
 function cfgCatalogRow(name = '', models = '') {
   const esc = (v) => escapeHtmlHumble(String(v ?? ''));
   return `<div class="cfg-catalog-row cfg-row">
-    <input class="cfg-catalog-name cfg-control" list="cfg-provider-options" placeholder="codex" value="${esc(name)}">
+    <input class="cfg-catalog-name cfg-control" list="cfg-provider-options" placeholder="codex" value="${esc(name)}" oninput="configSyncModelOptions(this)" onchange="configSyncModelOptions(this)">
     <span class="cfg-arrow">→</span>
-    <input class="cfg-catalog-models cfg-control cfg-control-wide" list="cfg-panel-model-options" placeholder="gpt-5-codex,o3" value="${esc(models)}">
+    <input class="cfg-catalog-models cfg-control cfg-control-wide" list="${esc(cfgModelListId(name))}" placeholder="${esc(cfgModelPlaceholder(name))}" value="${esc(models)}">
     <button onclick="this.parentNode.remove()" class="badge badge-gray cfg-remove-btn">×</button>
   </div>`;
 }
@@ -2713,6 +2767,26 @@ function configAddPresetRow() {
 }
 function configAddRoleOverrideRow() {
   document.getElementById('cfg-role-overrides')?.insertAdjacentHTML('beforeend', cfgRoleOverrideRow());
+}
+
+function configSyncModelOptions(providerInput) {
+  const row = providerInput?.closest?.('.cfg-row');
+  if (!row) return;
+  const modelInput = row.querySelector('.cfg-ovr-model, .cfg-catalog-models');
+  if (!modelInput) return;
+  const provider = providerInput.value.trim();
+  const listId = cfgModelListId(provider);
+  modelInput.setAttribute('list', listId);
+  modelInput.setAttribute('placeholder', cfgModelPlaceholder(provider));
+  // Create the per-provider datalist on the fly when a new provider name is typed —
+  // cfgPanelModelDatalists only renders datalists for providers known at load time.
+  if (provider && !document.getElementById(listId)) {
+    const dl = document.createElement('datalist');
+    dl.id = listId;
+    const options = typeof cfgPanelModelOptions === 'function' ? cfgPanelModelOptions(_configPanelRaw, provider) : [];
+    options.forEach((v) => { const o = document.createElement('option'); o.value = v; dl.appendChild(o); });
+    document.body.appendChild(dl);
+  }
 }
 
 function configSetTier(tier) {

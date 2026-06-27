@@ -20,7 +20,7 @@ const BUILTIN = {
   codex: (prompt, model) => ['codex', ['exec', ...(model ? ['--model', model] : []), prompt]],
   agy: (prompt, model) => ['agy', ['-p', ...(model ? ['--model', model] : []), prompt]], // Antigravity CLI (formerly gemini)
   cursor: (prompt, model) => ['cursor-agent', ['-p', '-f', ...(model ? ['--model', model] : []), prompt]], // -f bypasses workspace-trust
-  // kiro can be added once its headless command is confirmed.
+  kiro: (prompt, model) => ['kiro-cli', ['chat', '--no-interactive', '--wrap', 'never', '--trust-tools=', ...(model ? ['--model', model] : []), prompt]],
 };
 
 export function knownProviders() {
@@ -60,7 +60,7 @@ export function invokeProvider(name, prompt, { timeout = 180_000, model = null }
   const resolved = resolveCommand(name, prompt, model);
   if (!resolved) return { ok: false, error: `unknown provider: ${name}`, raw: '', json: null };
   const [cmd, args] = resolved;
-  const res = spawnSync(cmd, args, { encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024 });
+  const res = spawnSync(cmd, args, { encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024, env: process.env });
   if (res.error) {
     return { ok: false, error: String(res.error.message || res.error), raw: '', json: null };
   }
@@ -68,7 +68,9 @@ export function invokeProvider(name, prompt, { timeout = 180_000, model = null }
     return { ok: false, error: `exit ${res.status}: ${(res.stderr || '').trim().slice(0, 300)}`, raw: res.stdout || '', json: null };
   }
   const raw = res.stdout || '';
-  return { ok: true, error: null, raw, json: extractJSON(raw) };
+  const json = extractJSON(raw);
+  if (!json) return { ok: false, error: 'no JSON object in output', raw, json: null };
+  return { ok: true, error: null, raw, json };
 }
 
 /** Async variant of invokeProvider — non-blocking so multiple models run in parallel. */
@@ -81,7 +83,7 @@ export function invokeProviderAsync(name, prompt, { timeout = 180_000, model = n
     try {
       // stdin must be closed (ignore) or non-interactive CLIs like codex/agy hang
       // waiting for input — spawnSync closes it automatically, spawn does not.
-      child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
     } catch (e) {
       return resolve({ ok: false, error: String(e.message || e), raw: '', json: null });
     }
@@ -96,7 +98,9 @@ export function invokeProviderAsync(name, prompt, { timeout = 180_000, model = n
     child.on('close', (code) => {
       clearTimeout(timer);
       if (code !== 0) return resolve({ ok: false, error: `exit ${code}: ${stderr.trim().slice(0, 300)}`, raw: stdout, json: null });
-      resolve({ ok: true, error: null, raw: stdout, json: extractJSON(stdout) });
+      const json = extractJSON(stdout);
+      if (!json) return resolve({ ok: false, error: 'no JSON object in output', raw: stdout, json: null });
+      resolve({ ok: true, error: null, raw: stdout, json });
     });
   });
 }

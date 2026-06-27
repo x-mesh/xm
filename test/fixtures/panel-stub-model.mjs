@@ -14,6 +14,11 @@ if (Number.isFinite(delayMs) && delayMs > 0) {
   await new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
+if (process.env[`X_PANEL_NO_JSON_${envModel}`]) {
+  process.stdout.write('plain text without a JSON payload');
+  process.exit(0);
+}
+
 if (isRefute) {
   const refs = [...prompt.matchAll(/\[([^\]]+#\d+)\]/g)].map((m) => m[1]); // global ref "owner#idx" (owner may contain ':')
   const verdicts = refs.map((ref, i) => ({

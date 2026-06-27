@@ -207,7 +207,7 @@ async function cmdReview(pos, flags) {
   const cfg = loadPanelConfig();
   const specs = resolveModels(flags, cfg);
   if (specs.length < 2) {
-    console.error(`${C.red}panel needs ≥2 models${C.reset} — found ${specs.length}. Configure once:\n  x-panel setup --models claude,codex,agy [--global]\nor pass --models claude,codex`);
+    console.error(`${C.red}panel needs ≥2 models${C.reset} — found ${specs.length}. Configure once:\n  x-panel setup --models claude,codex,agy,kiro [--global]\nor pass --models claude,codex`);
     process.exitCode = 1;
     return;
   }
@@ -333,7 +333,7 @@ function cmdSetup(pos, flags) {
     console.log(`  detected on PATH : ${autodetectModels().join(', ') || '(none)'}`);
     console.log(`  current models   : ${(cfg.models || []).join(', ') || '(autodetect)'}`);
     console.log(`  current judge    : ${cfg.judge || 'rule'}`);
-    console.log(`\nSet defaults:\n  x-panel setup --models claude,codex,agy --judge rule [--global]`);
+    console.log(`\nSet defaults:\n  x-panel setup --models claude,codex,agy,kiro --judge rule [--global]`);
     return;
   }
   const path = savePanelConfig(patch, { global: flags.global });
@@ -351,7 +351,7 @@ Commands:
                                   x-panel              review git diff with your default models
                                   x-panel ./file       review a file
                                   x-panel --full       review with all installed models
-    --models a,b,c              Override models — name or name:model (e.g. codex:gpt-5,cursor:sonnet-4-thinking)
+    --models a,b,c              Override models — name or name:model (e.g. codex:gpt-5,cursor:sonnet-4-thinking,kiro:claude-sonnet-4.6)
     --fast | --full | --preset NAME   fast=claude,codex · full=all installed · or a named preset
     --judge rule                Synthesis (PoC: rule only)
     --timeout SECONDS           Per-model timeout (default 240; config: panel.timeout_s)
