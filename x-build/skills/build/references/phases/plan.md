@@ -240,6 +240,14 @@ Conclusion: AGREE or OBJECT + specific feedback. 200 words max."
 
 After consensus, return to PRD Review options — user must give final "Approve" to proceed.
 
+**Cross-Vendor Mode (opt-in):** when the user requests cross-vendor consensus
+(`consensus --cross-vendor`, or "review the PRD with different models"), assign the 4 roles to
+DIFFERENT model vendors via `xm panel cross` instead of 4 Claude personas — genuine cross-model
+PRD critique that escapes single-model groupthink. Probe with `xm panel detect` and fall back
+loudly to single-vendor if fewer than 2 vendors are installed. Full flow:
+`references/cross-vendor-consensus.md`. The consensus judgment logic (all AGREE / 1+ OBJECT
+revise / 3-round limit) is unchanged — only who executes each role differs.
+
 ---
 
 Create tasks informed by research artifacts:
