@@ -173,6 +173,9 @@ Options:
                                 Output format (default: markdown)
   --agents N                    Number of review agents (default: from shared config)
   --thorough                    Enhanced recall: dedicated recall agent, 10 observations max
+  --cross-vendor                Run each lens across MULTIPLE model vendors (claude+codex+cursor…)
+                                via the x-panel engine — real cross-vendor consensus + diversity.
+                                Opt-in; falls back to single-vendor when <2 vendor CLIs installed.
 
 Lenses (default 4 + extended 3):
   security       Injection, auth, secrets, OWASP Top 10
@@ -209,6 +212,57 @@ See `references/review-workflow.md` — full pipeline:
 - **Phase 3: REVIEW** — fan-out N agents with Universal Principles + lens prompts (`lenses/{name}.md`)
 - **Phase 4: SYNTHESIZE** — parse → dedupe+consensus → Self-Verify (Chain-of-Verification: agents include code snippet 3-5 lines; leader verifies claim against snippet — do not re-read the file; contradicted findings tagged `[CoVe-removed]`, inconclusive tagged `[CoVe-downgraded]`) → challenge → recall boost → verdict (include verdict rationale in output) → output (markdown / github-comment)
 - **Phase 5: REVIEW-FIX CONTRACT** — every finding gets a stable `F#` ID; Request Changes / Block output MUST include a triage checklist that classifies each Medium+ finding as `fix_now`, `backlog`, `accept_risk`, or `false_positive` before any review-fix edits start.
+
+---
+
+## Cross-Vendor Mode (opt-in)
+
+By default Phase 3 fans out single-vendor Claude agents (one per lens). With `--cross-vendor`,
+each lens is reviewed by MULTIPLE model vendors (claude + codex + cursor + …) through the
+x-panel engine, so findings carry real cross-vendor **consensus** (how many vendors independently
+agreed) and **diversity** (what only one vendor caught). A single-vendor harness structurally
+cannot produce this — it is x-review's edge over Claude-only review (e.g. `/code-review ultra`
+runs Claude alone).
+
+> **⚠ Call `xm panel …` directly via the dispatcher (Bash) — do NOT import anything.** Same
+> dispatcher-first rule as elsewhere; a fresh shell each Bash call means no helper functions.
+
+Trigger: `--cross-vendor` flag, or natural language ("여러 모델로 리뷰", "다른 모델로 교차검증",
+"cross-vendor review").
+
+Phase 3 (cross-vendor) replaces the Claude fan-out with:
+
+1. **Probe** installed vendors (decide fallback BEFORE spending tokens):
+   ```bash
+   xm panel detect --json        # {"available":[...],"known":[...]}
+   ```
+2. **Loud fallback (never silent — Lesson L6):** if `available` has fewer than 2 vendors, run the
+   normal single-vendor Claude flow and tell the user: "cross-vendor requested but only N
+   vendor(s) installed (<list>) — running single-vendor; install codex/cursor for cross-vendor."
+3. **Per-lens cross-vendor review.** Cost = lenses × vendors × 2 rounds, so default to `--preset
+   quick` (security + logic) unless the user widens it; announce the model set + rough cost first.
+   - **Use the detected vendors** — pass `--models <the `available` list from step 1>`, NOT a
+     hardcoded set (a fixed `claude,codex,cursor` fails when the user has, say, claude+kiro).
+   - **Pass the Phase-1 target explicitly** — write the diff/target that Phase 1 (TARGET) resolved
+     to a temp file and pass it as the panel target, so the review scope matches (do NOT rely on
+     `xm panel`'s default `git diff HEAD`, which may differ from a PR / file / ref target).
+   - For each selected lens, write the composed lens prompt (universal principles + `lenses/{lens}.md`)
+     to a temp file, then:
+   ```bash
+   xm panel <phase1-target-tmp> \
+     --review-prompt-file <lens-prompt-tmp> \
+     --lens-tag <lens> \
+     --models "$(echo <available> | tr ' ' ',')" --json
+   ```
+   Each run writes `.xm/review/<run>/verdict.json` (consensus[], confirmed[], contested[], by_model, usage).
+4. **Synthesize (Phase 4)** across lenses, feeding into the standard Phase 4 pipeline (CoVe /
+   challenge / verdict): a finding's confidence scales with `consensus` (N/M vendors agreed) —
+   1-vendor findings are diversity (keep, do not drop), multi-vendor are high-confidence. **Also
+   surface `contested[]`** (one vendor raised, another refuted): vendor disagreement is a signal to
+   show the user, NOT a silent drop (false-negative risk in review). Note which vendors raised each
+   finding, then map to LGTM / Request Changes / Block.
+
+Single-vendor remains the default for everyone; cross-vendor is purely additive.
 
 ---
 
@@ -260,6 +314,7 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | "Check security only" | `diff --lenses "security"` |
 | "Show critical ones only" | `diff --severity high` |
 | "GitHub comment format" | `diff --format github-comment` |
+| "여러 모델로 리뷰", "다른 모델로 교차검증", "cross-vendor review" | `diff --cross-vendor` |
 
 ## Interaction Protocol
 

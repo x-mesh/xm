@@ -116,6 +116,12 @@ These are NOT in the default preset — invoke explicitly: `--lenses "silent-fai
 
 ## Phase 3: REVIEW
 
+> **Cross-vendor mode (`--cross-vendor`):** this single-vendor Claude fan-out is replaced by
+> per-lens cross-vendor runs through the x-panel engine (`xm panel … --review-prompt-file
+> lenses/{lens}.md --lens-tag {lens} --models <detected vendors>`). See the "Cross-Vendor Mode"
+> section in `SKILL.md` for the probe → fallback → per-lens → synthesize flow. The rest of this
+> Phase 3 description applies to the default single-vendor path.
+
 Fan-out — send the diff + dedicated perspective prompt to each agent simultaneously.
 
 **Invoke N Agent tools simultaneously in a single message:**
