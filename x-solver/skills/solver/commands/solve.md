@@ -62,6 +62,10 @@ Requirements:
 
 Use the result to call `$XMS candidates add "description" --source agent-N --sub-problem spN`.
 
+> **Cross-vendor (opt-in):** when invoked with `--cross-vendor`, generate candidates across
+> different model vendors (one per vendor via `xm panel cross`) instead of same-model Claude
+> fan-out, and tag each `candidates add --source <vendor>`. See `references/cross-vendor.md`.
+
 **AskUserQuestion (REQUIRED):** AskUserQuestion("각 하위 문제에 대한 후보 솔루션을 생성했습니다. 평가(evaluate) 단계로 진행할까요?")
 
 Advance: `$XMS solve-advance --phase evaluate`
@@ -207,6 +211,12 @@ $XMS solve-advance --phase hypothesize
 #### Phase: hypothesize
 
 **delegate** (debugger, sonnet):
+
+> **Cross-vendor (opt-in):** with `--cross-vendor`, broadcast this hypothesis-generation prompt
+> across vendors via `xm panel cross` and merge the distinct hypothesis sets (dedup overlaps) —
+> different model families frame root causes differently. Then `hypotheses add` the merged set.
+> See `references/cross-vendor.md`. (The `test` phase below stays single-vendor — execution.)
+
 ```
 {problem_solving_principles}
 
@@ -390,6 +400,12 @@ Advance: `$XMS solve-advance --phase generate`
 #### Phase: generate
 **fan-out** (`AGENT_COUNT` agents, sonnet):
 `AGENT_COUNT` agents generate candidates, each optimizing a different soft constraint:
+
+> **Cross-vendor (opt-in):** with `--cross-vendor`, generate one candidate per vendor via
+> `xm panel cross` (assign each vendor a different `focus_constraint` round-robin) instead of
+> same-model fan-out, and tag each `candidates add --source <vendor>`. See
+> `references/cross-vendor.md`.
+
 ```
 {problem_solving_principles}
 

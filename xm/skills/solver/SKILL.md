@@ -126,6 +126,7 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | "Add hypothesis" | hypotheses add |
 | "Show the tree" | tree show |
 | "List candidates" | candidates list |
+| "Generate candidates with different models", "cross-vendor candidates" | solve --cross-vendor |
 | "Verify it" | verify |
 | "What's next?" | next |
 
@@ -214,6 +215,13 @@ See `commands/solve.md` — strategy-specific agent orchestration. Phase flow:
 - iterate: DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE [state+baseline] [falsifiable] [one var] [switch/revert] [fix+exec proof] [why late?]
 - constrain: elicit → generate → evaluate → select (Contrastive Matrix with Winner column)
 - pipeline: classify → route → meta-verify
+
+**Cross-vendor (opt-in):** `solve --cross-vendor` fans out the GENERATION steps (explore /
+generate / hypothesize) across different model vendors via `xm panel cross` instead of
+same-model Claude agents — same-model fan-out has low diversity, different model families produce
+genuinely different candidates. Evaluation/scoring stays single-vendor (for cross-vendor scoring
+use `x-eval --cross-vendor`). Probe `xm panel detect`; fall back loudly to single-vendor if <2
+vendors. Full flow: `references/cross-vendor.md`.
 
 ### iterate — Leader execution rules (MUST)
 The leader must never directly read code or verify hypotheses in any phase. Always delegate to an agent.
