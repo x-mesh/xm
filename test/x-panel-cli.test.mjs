@@ -293,6 +293,108 @@ describe('structured streaming (adapters)', () => {
   });
 });
 
+describe('cross-vendor engine wiring (prompt injection + detect + namespace)', () => {
+  const DEFAULT_R1 = `You are a code reviewer. Review the following change and report only real, evidence-backed issues.
+
+TARGET:
+delta tail target
+
+Return ONLY a JSON object, with no prose before or after:
+{"findings":[{"severity":"critical|high|medium|low","file":"path or null","line":number_or_null,"claim":"one-line issue","evidence":"why it is real, with a concrete reference"}]}
+If there are no real issues, return {"findings":[]}.`;
+
+  test('default round-1 prompt is byte-identical after FINDINGS_CONTRACT extraction', () => {
+    const dump = join(DIR, 'r1-default.txt');
+    const r = review(['delta tail target'], { X_PANEL_DUMP_R1: dump });
+    expect(r.status).toBe(0);
+    expect(readFileSync(dump, 'utf8')).toBe(DEFAULT_R1); // no behavior change to the default path
+  });
+
+  test('--review-prompt-file injects the override body + forces FINDINGS_CONTRACT', () => {
+    const lensFile = join(DIR, 'lens-security.txt');
+    writeFileSync(lensFile, 'You are a SECURITY lens. Report SQL injection only. Output as a markdown list.');
+    const dump = join(DIR, 'r1-override.txt');
+    const r = review(['some diff', '--review-prompt-file', lensFile, '--lens-tag', 'security'], { X_PANEL_DUMP_R1: dump });
+    expect(r.status).toBe(0);
+    const sent = readFileSync(dump, 'utf8');
+    expect(sent).toContain('You are a SECURITY lens'); // override body injected
+    expect(sent).not.toContain('You are a code reviewer.'); // default intro replaced
+    expect(sent).toContain('Return ONLY a JSON object'); // contract footer FORCED despite "markdown list"
+  });
+
+  test('--lens-tag flows to verdict findings and consensus lenses', () => {
+    const r = review(['some diff', '--review-prompt', 'Find bugs.', '--lens-tag', 'logic']);
+    expect(r.status).toBe(0);
+    // injected review mode writes under .xm/review/, not .xm/panel/
+    const reviewDir = join(DIR, '.xm', 'review');
+    const runs = readdirSync(reviewDir).filter((n) => n.startsWith('panel-')).sort();
+    const v = JSON.parse(readFileSync(join(reviewDir, runs[runs.length - 1], 'verdict.json'), 'utf8'));
+    const tagged = [...(v.confirmed || []), ...(v.contested || [])];
+    expect(tagged.length).toBeGreaterThan(0);
+    expect(tagged.every((f) => f.lens === 'logic')).toBe(true);
+    expect(v.consensus.every((c) => Array.isArray(c.lenses))).toBe(true);
+  });
+
+  test('injected review mode writes to .xm/review/, not .xm/panel/', () => {
+    const before = existsSync(join(DIR, '.xm', 'panel')) ? readdirSync(join(DIR, '.xm', 'panel')) : [];
+    const r = review(['some diff', '--review-prompt', 'Find bugs.', '--lens-tag', 'security']);
+    expect(r.status).toBe(0);
+    const reviewDir = join(DIR, '.xm', 'review');
+    expect(existsSync(reviewDir)).toBe(true);
+    const runs = readdirSync(reviewDir);
+    expect(runs.length).toBeGreaterThan(0);
+    expect(existsSync(join(reviewDir, runs[0], 'verdict.json'))).toBe(true);
+    // no NEW panel run was created by the injected review
+    const after = existsSync(join(DIR, '.xm', 'panel')) ? readdirSync(join(DIR, '.xm', 'panel')) : [];
+    expect(after.length).toBe(before.length);
+  });
+
+  test('operator --lens-tag is authoritative; model-supplied lens cannot spoof it', () => {
+    // tag supplied → wins over the model's own lens field
+    expect(normalizeFindings({ findings: [{ claim: 'x', lens: 'evil' }] }, 'correctness')[0].lens).toBe('correctness');
+    // no tag → fall back to model's lens (harmless)
+    expect(normalizeFindings({ findings: [{ claim: 'x', lens: 'model' }] }, null)[0].lens).toBe('model');
+    // neither → null
+    expect(normalizeFindings({ findings: [{ claim: 'x' }] })[0].lens).toBe(null);
+  });
+
+  test('empty review-prompt override fails loudly (no instruction-less panel)', () => {
+    const r = panelRaw(['review', 'target', '--models', 'claude,codex', '--review-prompt', '']);
+    expect(r.status).not.toBe(0); // exits non-zero instead of silently running
+  });
+
+  test('--review-prompt-file with no value fails loudly', () => {
+    const r = panelRaw(['review', 'target', '--models', 'claude,codex', '--review-prompt-file']);
+    expect(r.status).not.toBe(0);
+  });
+
+  test('git-diff target_title parses real "diff --git" headers (diffFiles)', () => {
+    const gitdir = mkdtempSync(join(tmpdir(), 'xpanel-git-'));
+    const g = (...a) => spawnSync('git', a, { cwd: gitdir, encoding: 'utf8' });
+    g('init', '-q'); g('config', 'user.email', 't@t'); g('config', 'user.name', 't');
+    writeFileSync(join(gitdir, 'alpha.js'), 'const a=1;\n');
+    g('add', '-A'); g('commit', '-qm', 'init');
+    writeFileSync(join(gitdir, 'alpha.js'), 'const a=2;\n'); // modify → real diff header
+    const env = { ...process.env, X_PANEL_ROOT: join(gitdir, '.xm'), X_PANEL_GLOBAL_ROOT: join(gitdir, '.xm-g'), X_PANEL_CMD_CLAUDE: STUB, X_PANEL_CMD_CODEX: STUB, NO_COLOR: '1' };
+    const r = spawnSync('node', [CLI, 'review', '--models', 'claude,codex'], { cwd: gitdir, env, encoding: 'utf8', timeout: 20000 });
+    expect(r.status).toBe(0);
+    const pdir = join(gitdir, '.xm', 'panel');
+    const runs = readdirSync(pdir).filter((n) => n.startsWith('panel-')).sort();
+    const v = JSON.parse(readFileSync(join(pdir, runs[runs.length - 1], 'verdict.json'), 'utf8'));
+    expect(v.target_title).toBe('diff: alpha.js'); // diffFiles() parsed the real header
+    rmSync(gitdir, { recursive: true, force: true });
+  });
+
+  test('panel detect --json reports available + known providers', () => {
+    const r = panelRaw(['detect', '--json']);
+    expect(r.status).toBe(0);
+    const info = JSON.parse(r.stdout);
+    expect(Array.isArray(info.available)).toBe(true);
+    expect(Array.isArray(info.known)).toBe(true);
+    expect(info.known).toContain('claude');
+  });
+});
+
 // ── integration: full panel flow via stubs ───────────────────────────
 
 describe('review (stubbed models)', () => {
@@ -317,6 +419,22 @@ describe('review (stubbed models)', () => {
     const v = latestVerdict();
     expect(Array.isArray(v.consensus)).toBe(true);
     expect(v.counts.unique).toBe(v.consensus.length);
+  });
+
+  test('verdict + status carry a meaningful target_title (not the run id)', () => {
+    const r = review(['Find SQL injection and N+1 issues']);
+    expect(r.status).toBe(0);
+    const v = latestVerdict();
+    expect(v.target_title).toBe('Find SQL injection and N+1 issues'); // literal target
+    const st = JSON.parse(readFileSync(join(latestRunDir(), 'status.json'), 'utf8'));
+    expect(st.target_title).toBe(v.target_title); // live status carries it too
+  });
+
+  test('git-diff target_title summarizes the diff (not a timestamp)', () => {
+    writeProjectConfig({ models: ['claude', 'codex'] });
+    const r = panelRaw(['review']); // no target → git diff HEAD
+    expect(r.status).toBe(0);
+    expect(latestVerdict().target_title).toMatch(/^(diff:|git diff)/);
   });
 
   test('writes live status.json (phase done) after run', () => {

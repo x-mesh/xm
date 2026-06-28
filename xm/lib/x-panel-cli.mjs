@@ -14,7 +14,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import {
   PANEL_DIR, C, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
@@ -65,9 +65,26 @@ function tailText(value, max = 4000) {
   return text.length > max ? text.slice(text.length - max) : text;
 }
 
+/** Changed file paths from a `git diff` body (via the `diff --git a/X b/Y` headers). */
+function diffFiles(diffText) {
+  const files = [];
+  const re = /^diff --git a\/(.+?) b\//gm;
+  let m;
+  while ((m = re.exec(String(diffText || '')))) files.push(m[1]);
+  return files;
+}
+
+/** A meaningful, human-readable title for a panel run (not the timestamp run id). */
 function targetTitle(target) {
-  if (target.kind === 'literal') return compactTitle(target.text);
-  if (target.kind === 'file' && target.ref) return `Review ${target.ref}`;
+  if (target.kind === 'literal') return compactTitle(target.text, 80);
+  if (target.kind === 'file' && target.ref) return `Review ${target.ref.split('/').pop()}`;
+  if (target.kind === 'git-diff') {
+    const files = diffFiles(target.text);
+    if (!files.length) return 'git diff (no changes)';
+    const names = files.map((f) => f.split('/').pop());
+    const shown = names.slice(0, 2).join(', ');
+    return files.length > 2 ? `diff: ${shown} +${files.length - 2} more` : `diff: ${shown}`;
+  }
   return null;
 }
 
@@ -88,9 +105,40 @@ function parseFlags(raw) {
     else if (a === '--no-stream') flags.stream = false;
     else if (a === '--partial') flags.partial = true;
     else if (a === '--no-partial') flags.partial = false;
+    // Take the next token as a value ONLY if it isn't another --flag (so a missing value
+    // doesn't silently swallow the following option as the prompt body). '-' (stdin) is kept.
+    else if (a === '--review-prompt-file') flags.reviewPromptFile = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
+    else if (a === '--review-prompt') flags.reviewPrompt = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined; // '-' = stdin
+    else if (a === '--lens-tag') flags.lensTag = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
     else pos.push(a);
   }
   return { flags, pos };
+}
+
+/**
+ * Resolve an injected round-1 prompt override (a custom lens instruction) from
+ * --review-prompt-file <path>, or --review-prompt - (stdin) / --review-prompt "<text>".
+ * Returns null when none given (→ default reviewer prompt, no behavior change).
+ */
+function loadPromptOverride(flags) {
+  const fail = (msg) => { console.error(`${C.red}✗ ${msg}${C.reset}`); process.exitCode = 1; return undefined; };
+  let body;
+  // `'key' in flags` distinguishes "flag absent" from "flag present but value missing"
+  // (parseFlags sets the key to undefined when no value follows).
+  if ('reviewPromptFile' in flags) {
+    if (!flags.reviewPromptFile) return fail('--review-prompt-file needs a path');
+    body = readText(flags.reviewPromptFile);
+    if (body == null) return fail(`--review-prompt-file: cannot read ${flags.reviewPromptFile}`);
+  } else if ('reviewPrompt' in flags) {
+    if (flags.reviewPrompt == null) return fail('--review-prompt needs a value (or - for stdin)');
+    if (flags.reviewPrompt === '-') { try { body = readFileSync(0, 'utf8'); } catch { return fail('--review-prompt -: cannot read stdin'); } }
+    else body = flags.reviewPrompt;
+  } else {
+    return null; // no override → default reviewer prompt
+  }
+  // An empty/whitespace override would run a full multi-model panel with NO instruction.
+  if (!String(body).trim()) return fail('review prompt override is empty');
+  return body;
 }
 
 /** Decide the model set: --models flag > preset > config > autodetect installed CLIs. */
@@ -107,15 +155,24 @@ function resolveModels(flags, cfg) {
 
 // ── prompts ──────────────────────────────────────────────────────────
 
-function reviewPrompt(target) {
-  return `You are a code reviewer. Review the following change and report only real, evidence-backed issues.
+// The output contract is appended last so it FORCE-OVERRIDES any output format an
+// injected lens prompt might request — findings always come back JSON-shaped.
+const FINDINGS_CONTRACT = `Return ONLY a JSON object, with no prose before or after:
+{"findings":[{"severity":"critical|high|medium|low","file":"path or null","line":number_or_null,"claim":"one-line issue","evidence":"why it is real, with a concrete reference"}]}
+If there are no real issues, return {"findings":[]}.`;
+
+// overrideBody (a custom per-lens instruction) replaces the default reviewer intro;
+// with overrideBody=null the returned string is byte-identical to the original prompt.
+function reviewPrompt(target, overrideBody = null) {
+  const intro = overrideBody != null
+    ? String(overrideBody).trim()
+    : 'You are a code reviewer. Review the following change and report only real, evidence-backed issues.';
+  return `${intro}
 
 TARGET:
 ${target}
 
-Return ONLY a JSON object, with no prose before or after:
-{"findings":[{"severity":"critical|high|medium|low","file":"path or null","line":number_or_null,"claim":"one-line issue","evidence":"why it is real, with a concrete reference"}]}
-If there are no real issues, return {"findings":[]}.`;
+${FINDINGS_CONTRACT}`;
 }
 
 function refutePrompt(target, otherLabel, otherFindings) {
@@ -275,6 +332,11 @@ async function cmdReview(pos, flags) {
   const labels = usable.map((e) => e.label);
 
   const target = resolveTarget(pos[0]);
+  // Injected per-lens prompt (cross-vendor review mode): overrides round-1 intro only.
+  const reviewOverride = loadPromptOverride(flags);
+  if (reviewOverride === undefined) return; // unreadable --review-prompt-file (error already logged)
+  const lensTag = flags.lensTag || null;
+  const reviewMode = reviewOverride != null; // → write under .xm/review/ (separate namespace)
   // Token-level partial streaming: default on within --stream, but auto-disable on very
   // large targets (the extra delta events slow generation and can trip the timeout —
   // observed: a 1600-line diff timed out claude under partial). --partial forces it on;
@@ -307,7 +369,10 @@ async function cmdReview(pos, flags) {
   }
   const timeoutMs = timeoutS * 1000;
   const run = runId(stamp());
-  const dir = join(PANEL_DIR, run);
+  // Cross-vendor REVIEW runs go to a separate .xm/review/ namespace so they never
+  // collide with native panel history under .xm/panel/.
+  const baseDir = reviewMode ? join(PANEL_DIR, '..', 'review') : PANEL_DIR;
+  const dir = join(baseDir, run);
   ensureDir(dir);
   const eventPath = join(dir, 'events.jsonl');
   let eventSeq = 0;
@@ -325,7 +390,7 @@ async function cmdReview(pos, flags) {
   const zeroTokens = () => ({ input: 0, output: 0, cached: 0, reasoning: 0 });
   const status = {
     run, started_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    phase: 'starting', target_kind: target.kind, stream, partial: stream ? partial : false, timeout_s: timeoutS,
+    phase: 'starting', target_kind: target.kind, target_title: targetTitle(target), stream, partial: stream ? partial : false, timeout_s: timeoutS,
     // Cumulative cost/tokens across BOTH rounds (round-scoped live fields below are
     // reset each round by startPhase, so totals must live separately to be holdable).
     totals: { cost_usd: 0, credits: 0, tokens: zeroTokens() },
@@ -493,8 +558,8 @@ async function cmdReview(pos, flags) {
   // Round 1 — independent review (all models in parallel)
   startPhase('round1 (review)');
   const round1 = {};
-  await runRound('round 1 (review)', usable, () => reviewPrompt(target.text), timeoutMs, onModelDone, (e, res) => {
-    const findings = res.ok ? normalizeFindings(res.json) : [];
+  await runRound('round 1 (review)', usable, () => reviewPrompt(target.text, reviewOverride), timeoutMs, onModelDone, (e, res) => {
+    const findings = res.ok ? normalizeFindings(res.json, lensTag) : [];
     round1[e.label] = findings;
     writeJSON(join(dir, `${safeLabel(e.label)}.r1.json`), { model: e.label, ok: res.ok, error: res.error, findings, usage: res.usage || null, raw: res.raw });
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 1, ok: res.ok, count: findings.length, error: res.error || null });
@@ -588,7 +653,15 @@ Commands:
                                 (project .xm/config.json, or ~/.xm with --global).
                                 No args → show detected + current config.
 
+  detect [--json]               Print available (installed) + known providers — lets a
+                                caller decide single-vendor fallback BEFORE spending tokens
   types                         List known providers
+
+  Review-prompt injection (programmatic — for cross-vendor review by other plugins):
+    --review-prompt-file <path>   Override round-1 reviewer prompt with a custom lens prompt
+    --review-prompt -             Read the override from stdin
+    --lens-tag <name>             Tag round-1 findings with this lens (flows to verdict)
+                                  Injected runs write to .xm/review/<run>/ (not .xm/panel/).
   help
 
 Model resolution: --models > preset > config > autodetect installed CLIs.
@@ -600,7 +673,7 @@ Output: .xm/panel/<run>/{<model>.r1.json, <model>.r2.json, verdict.json}
 // ── entry ────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
-const SUB = new Set(['review', 'setup', 'types', 'help', '--help', '-h']);
+const SUB = new Set(['review', 'setup', 'types', 'detect', 'help', '--help', '-h']);
 let cmd = argv[0];
 let rest;
 if (!cmd) { cmd = 'review'; rest = []; }            // `x-panel` → review git diff
@@ -612,6 +685,12 @@ switch (cmd) {
   case 'review': await cmdReview(pos, flags); break;
   case 'setup': cmdSetup(pos, flags); break;
   case 'types': console.log(knownProviders().join('\n')); break;
+  case 'detect': {
+    const info = { available: autodetectModels(), known: knownProviders() };
+    if (flags.json) console.log(JSON.stringify(info));
+    else console.log(`available: ${info.available.join(', ') || '(none)'}\nknown: ${info.known.join(', ')}`);
+    break;
+  }
   case 'help': case '--help': case '-h': printHelp(); break;
   default: printHelp();
 }
