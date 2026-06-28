@@ -265,7 +265,7 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 - `plan-check` — Validate plan across 11 quality dimensions
 - `prd-check [--json]` — Deterministic PRD gate (blocks Execute on unresolved `[A*, low]` / `Status: blocking`); `phase set execute --force` to override
 - `prd-gate [--threshold N]` — Judge panel PRD quality evaluation (rubric-based scoring)
-- `consensus [--round N]` — 4-agent consensus review (architect/critic/planner/security)
+- `consensus [--round N] [--cross-vendor]` — 4-agent consensus review (architect/critic/planner/security); `--cross-vendor` assigns each role to a different model vendor via `xm panel cross` (opt-in, graceful single-vendor fallback) — see `references/cross-vendor-consensus.md`
 - `phase next` / `phase set <name>` — Move between phases
 - `gate pass/fail [message]` — Resolve gate
 - `checkpoint <type> [message]` — Record checkpoint
@@ -408,6 +408,7 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | "make a plan", "build me ~" (goal) | `plan "goal"` |
 | "validate plan", "is the plan ok?" | `plan-check` |
 | "critical review", "review the plan", "critique" | `discuss --mode critique` |
+| "cross-vendor consensus", "review the PRD with different models", "multi-vendor consensus" | `consensus --cross-vendor` |
 | "mid-check", "need to adjust the plan?" | `discuss --mode adapt` |
 | "status" | `status` |
 | "next phase" | `phase next` |
