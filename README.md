@@ -36,6 +36,7 @@
 - [Install](#install)
 - [Quick Start](#quick-start)
 - [Why xm?](#why-xm)
+- [Cross-Vendor Verification](#cross-vendor-verification)
 - [Plugins](#plugins) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-humanize](#x-humanize) · [x-recall](#x-recall) · [x-panel](#x-panel)
 - [Quality & Learning Pipeline](#quality--learning-pipeline)
 - [Architecture](#architecture)
@@ -353,6 +354,26 @@ Common reference material lives in `references/` (synced to marketplace as `xm/r
 | `dimension-anchors.md` | x-op strategies, x-review lenses, x-eval rubrics |
 | `self-score-protocol.md` | all x-op strategies, x-agent solve/consensus |
 | `finding-severity.md` | x-review, CLAUDE.md code review principles |
+
+---
+
+## Cross-Vendor Verification
+
+Single-vendor AI harnesses — including Claude Code's own `/code-review ultra` — orchestrate one model family. They structurally cannot have a competitor's model check their work. xm can: it spawns external model CLIs (claude + codex + cursor + agy + kiro) directly, so a finding, a plan, a score, or a hypothesis can be adversarially checked across *different* model families. Different vendors have different blind spots — agreement across them is real confidence, and a lone dissent is often the blind spot one family would have shipped silently.
+
+One engine (`xm panel cross`) backs every layer. `--cross-vendor` is **opt-in everywhere** and degrades gracefully to single-vendor when fewer than two CLIs are installed — single-vendor stays the fast, cheap default:
+
+| Layer | Plugin | What `--cross-vendor` does |
+|-------|--------|---------------------------|
+| Primitive | x-agent fan-out/broadcast | each parallel agent runs on a different vendor |
+| Generation | x-solver | candidates/hypotheses generated across model families |
+| Planning | x-build consensus | architect/critic/planner/security roles split across vendors |
+| Deliberation | x-op debate/council | PRO/CON/JUDGE are genuinely different models |
+| Review | x-review | findings cross-checked — consensus vs. diversity |
+| Evaluation | x-eval | judges from different vendors, bias-reduced scoring |
+| Engine | x-panel | the cross-model adversarial panel itself |
+
+This is a *capability*, available today; proving it produces measurably better outcomes is a separate, ongoing effort (see `docs/strategy/xm-differentiation.md`).
 
 ---
 
@@ -974,6 +995,8 @@ xm panel setup --models codex,agy --global   # save defaults
 Per-model `--model` via `name:model`, named `presets`, parallel calls, and results under `.xm/panel/` (queryable with `xm recall`). Different models have different blind spots — that's the point.
 
 `--stream` captures real per-model token usage and cost and streams each model's output live — token-by-token for claude/cursor (`--partial`, on by default; auto-disabled on very large targets), and as it lands for codex. The x-dashboard Panel view renders a per-model live grid with cleaned messages, phase, and a running cost total. Timeouts auto-scale with target size (`--timeout` to pin).
+
+`xm panel cross` exposes this engine as a reusable primitive — one prompt across N vendors, each vendor's raw output returned — which is what backs the opt-in `--cross-vendor` mode in x-agent, x-solver, x-build, x-op, x-review, and x-eval. See [Cross-Vendor Verification](#cross-vendor-verification).
 
 ---
 

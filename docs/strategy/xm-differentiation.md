@@ -175,3 +175,29 @@ x-sync, x-dashboard, x-handoff/handon, x-humanize.
 - Bet B(c) legacy 정화의 숨은 결과 명시: 차단 경로에선 actuals를 *비움* → 추정-라벨이 유일 경로.
 - §6에 **x-op/x-agent 산출물 x-eval 수집·채점 배선**(Bet A 대상)과 **사용자 WTP 사전 검증** 단계 추가.
 - §7 선결 게이트에 **Bet C↔Bet A 의존성**(오탐 지표는 인간 라벨셋 의존) 추가.
+
+### v2.2 → v2.3 패치 (크로스-벤더 계층 구현 반영 — 능력 구현됨, 성과 미측정)
+
+> §1·§3.2·Bet B가 식별한 핵심 통찰 — **"외부 CLI 스폰 경로(x-panel 한정)는 Agent/Workflow
+> 도구 차단을 벗어나는 유일한 경로"** — 를 토대로, 그 경로를 **재사용 가능한 크로스-벤더
+> 검증 엔진으로 일반화**하고 라이프사이클 전 계층에 배선했다(PR1-PR7). 단 아래는 **능력
+> (capability) 구현**이며, **성과(outcome) 입증이 아니다** — 이 구분은 Bet A/C·§7에 그대로 유효.
+
+- **엔진 추출 (PR1)**: x-panel의 외부 CLI 스폰 경로를 `xm panel cross` / `invokeProviderText`
+  (원시 stdout, 스키마 없음)로 재사용 가능한 primitive화. 새 엔진 코드는 이 1회뿐, 이후는 전부 재사용.
+- **7개 소비자 배선 (PR2-PR7, 전부 SKILL-only 가산, opt-in `--cross-vendor`, <2벤더 시 loud
+  단일벤더 폴백 L6)**:
+  primitive(x-agent fan-out/broadcast) · 생성(x-solver candidates/hypotheses) ·
+  계획(x-build consensus) · 심의(x-op debate/council) · 리뷰(x-review findings) ·
+  평가(x-eval judges). 각 PR은 엔진이 자기 diff를 적대 검증하는 **dogfood**로 게이팅(매 PR 실버그 1-4건 발견·수정).
+- **§1 자산 등급 갱신**: "외부 CLI 스폰 경로 실측 캡처(x-panel 한정)" 행이 가졌던 통찰이
+  이제 **크로스-벤더 *검증* 능력으로는 🟢(구현·dogfood 검증)** 으로 승급. 단 **비용 *실측*
+  파싱(usage/credits)은 여전히 🟡 가설** — 검증 능력과 비용-캡처 능력은 같은 spawn 경로를
+  공유하나 별개 작업이다(혼동 금지).
+- **§2 `/code-review ultra` 차별화 격상**: 종전엔 "포지셔닝"이었으나, 이제 ultra(단일벤더
+  멀티에이전트)가 **구조적으로 불가능한** 것(경쟁사 모델로 자기 작업 검증)을 xm이 **실제
+  출시**했다 → 차별점이 문서 주장에서 **선적된 구조적 사실**로 이동.
+- **여전히 미해결(정직)**: 이 크로스-벤더 능력이 **측정 가능한 더 나은 성과**를 내는지는
+  미입증. Bet A(전략-인지 eval)·Bet C(규율 on/off A/B)의 성과 델타 측정이 능력→해자 승격의
+  전제로 그대로 남는다. 즉 v2.3은 **§3.2 "결합 해자"의 한 기둥(크로스-벤더 검증)을 가설→구현
+  으로 전진**시켰을 뿐, 베팅 자체를 종결하지 않는다.
