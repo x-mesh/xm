@@ -14,6 +14,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
 import {
   PANEL_DIR, C, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
@@ -52,6 +53,18 @@ function compactTitle(value, max = 120) {
   return text.length > max ? text.slice(0, max - 1).trimEnd() + '...' : text;
 }
 
+function redactPanelText(value) {
+  return String(value || '')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[redacted]')
+    .replace(/\bAKIA[0-9A-Z]{12,}\b/g, 'AKIA[redacted]')
+    .replace(/\b((?:api[_-]?key|token|secret|password)\s*[:=]\s*)["']?[^"'\s,}]+/gi, '$1[redacted]');
+}
+
+function tailText(value, max = 4000) {
+  const text = String(value || '');
+  return text.length > max ? text.slice(text.length - max) : text;
+}
+
 function targetTitle(target) {
   if (target.kind === 'literal') return compactTitle(target.text);
   if (target.kind === 'file' && target.ref) return `Review ${target.ref}`;
@@ -71,6 +84,10 @@ function parseFlags(raw) {
     else if (a === '--fast') flags.preset = 'fast';
     else if (a === '--full') flags.preset = 'full';
     else if (a === '--global') flags.global = true;
+    else if (a === '--stream') flags.stream = true;
+    else if (a === '--no-stream') flags.stream = false;
+    else if (a === '--partial') flags.partial = true;
+    else if (a === '--no-partial') flags.partial = false;
     else pos.push(a);
   }
   return { flags, pos };
@@ -126,7 +143,7 @@ function sev(s) {
 
 // Run one round across all models in parallel, reporting start/heartbeat/elapsed
 // on stderr so a long round (large diff) isn't a silent black box.
-async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult) {
+async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult, onProviderEvent, stream = false, partial = true) {
   process.stderr.write(`${C.dim}${roundLabel} — ${usable.length} models in parallel…${C.reset}\n`);
   const pending = new Set(usable.map((e) => e.label));
   const t0 = Date.now();
@@ -147,14 +164,20 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
   try {
     const results = await Promise.all(usable.map(async (e) => {
       const s = Date.now();
-      const res = await invokeProviderAsync(e.name, makePrompt(e), { timeout: timeoutMs, model: e.model });
+      const res = await invokeProviderAsync(e.name, makePrompt(e), {
+        timeout: timeoutMs,
+        model: e.model,
+        stream,
+        partial,
+        onEvent: (ev) => onProviderEvent && onProviderEvent(e, ev),
+      });
       pending.delete(e.label);
       const dt = Math.round((Date.now() - s) / 1000);
       process.stderr.write(res.ok
         ? `  ${C.green}✓${C.reset} ${e.label} ${C.dim}(${dt}s)${C.reset}\n`
         : `  ${C.red}✗${C.reset} ${e.label} ${C.dim}(${dt}s)${C.reset}: ${res.error}\n`);
       if (onResult) onResult(e, res);
-      if (onUpdate) onUpdate({ event: 'model_done', label: e.label, ok: res.ok, elapsed_s: dt });
+      if (onUpdate) onUpdate({ event: 'model_done', label: e.label, ok: res.ok, error: res.error, elapsed_s: dt });
       return [e.label, res];
     }));
     return results;
@@ -215,8 +238,12 @@ async function cmdReview(pos, flags) {
   if (judge !== 'rule') {
     console.error(`${C.yellow}⚠ --judge ${judge} not implemented in PoC — using rule-based synthesis${C.reset}`);
   }
-  // Per-model timeout: large diffs + many parallel models need headroom (dogfooding hit the 180s wall).
-  const timeoutMs = (flags.timeout || cfg.timeout_s || 240) * 1000;
+  // Per-model timeout base (large diffs + many parallel models need headroom). The
+  // effective timeout is auto-raised for large targets below (after the target is known).
+  const baseTimeoutS = flags.timeout || cfg.timeout_s || 240;
+  // Structured streaming (live tokens/cost) is opt-in until dogfooded — default off
+  // keeps the proven raw flow intact. Enable per-run with --stream or config panel.stream.
+  const stream = (flags.stream != null) ? flags.stream : !!cfg.stream;
   const overrides = cfg.model_overrides || {};
 
   // Each spec is "name" or "name:model"; bare names fall back to model_overrides.
@@ -248,37 +275,220 @@ async function cmdReview(pos, flags) {
   const labels = usable.map((e) => e.label);
 
   const target = resolveTarget(pos[0]);
+  // Token-level partial streaming: default on within --stream, but auto-disable on very
+  // large targets (the extra delta events slow generation and can trip the timeout —
+  // observed: a 1600-line diff timed out claude under partial). --partial forces it on;
+  // --no-partial / config panel.stream_partial:false turn it off.
+  let partial = (flags.partial != null) ? flags.partial : (cfg.stream_partial !== false);
+  if (stream && partial && flags.partial == null) {
+    const PARTIAL_MAX = cfg.partial_max_chars || 50000;
+    const tlen = (target.text || '').length;
+    if (tlen > PARTIAL_MAX) {
+      partial = false;
+      console.error(`${C.yellow}⚠ target ${tlen} chars > ${PARTIAL_MAX} — partial streaming auto-disabled (faster on large inputs; --partial to force)${C.reset}`);
+    }
+  }
+  // Auto-raise the per-model timeout for large targets — a big diff needs more wall
+  // time per model (observed: a 133K-char diff timed out claude at 300s). Only when
+  // --timeout was not given explicitly; capped, and tunable via config.
+  let timeoutS = baseTimeoutS;
+  if (flags.timeout == null) {
+    const SOFT = cfg.timeout_soft_chars || 20000;       // grow only beyond this size
+    const RATE = cfg.timeout_chars_per_s || 300;        // +1s per RATE chars over SOFT
+    const MAX = cfg.timeout_max_s || 900;               // hard cap
+    const tlen = (target.text || '').length;
+    if (tlen > SOFT) {
+      const scaled = Math.min(MAX, baseTimeoutS + Math.ceil((tlen - SOFT) / RATE));
+      if (scaled > timeoutS) {
+        console.error(`${C.yellow}⚠ large target (${tlen} chars) — timeout auto-raised ${baseTimeoutS}s → ${scaled}s (cap ${MAX}s; --timeout to override)${C.reset}`);
+        timeoutS = scaled;
+      }
+    }
+  }
+  const timeoutMs = timeoutS * 1000;
   const run = runId(stamp());
   const dir = join(PANEL_DIR, run);
   ensureDir(dir);
+  const eventPath = join(dir, 'events.jsonl');
+  let eventSeq = 0;
+  const writeEvent = (event) => {
+    const record = { seq: ++eventSeq, at: new Date().toISOString(), ...event };
+    if (record.text != null) {
+      const redacted = redactPanelText(record.text);
+      record.text = tailText(redacted, 2000);
+      record.truncated = redacted.length > record.text.length;
+    }
+    try { appendFileSync(eventPath, JSON.stringify(record) + '\n', 'utf8'); } catch { /* best-effort */ }
+  };
 
   // Live status for polling (dashboard / xm recall / cat .xm/panel/<run>/status.json)
+  const zeroTokens = () => ({ input: 0, output: 0, cached: 0, reasoning: 0 });
   const status = {
     run, started_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    phase: 'starting', target_kind: target.kind,
-    models: usable.map((e) => ({ label: e.label, state: 'pending', elapsed_s: 0 })),
+    phase: 'starting', target_kind: target.kind, stream, partial: stream ? partial : false, timeout_s: timeoutS,
+    // Cumulative cost/tokens across BOTH rounds (round-scoped live fields below are
+    // reset each round by startPhase, so totals must live separately to be holdable).
+    totals: { cost_usd: 0, credits: 0, tokens: zeroTokens() },
+    models: usable.map((e) => ({
+      label: e.label,
+      provider: e.name,
+      model: e.model,
+      state: 'pending',
+      round: null,
+      elapsed_s: 0,
+      started_at: null,
+      updated_at: null,
+      last_event: 'pending',
+      stdout_bytes: 0,
+      stderr_bytes: 0,
+      stdout_tail: '',
+      stderr_tail: '',
+      error: null,
+      // live (round-scoped) usage + phase
+      phase_label: null,
+      tokens: null,
+      cost_usd: null,
+      credits: null,
+      // cumulative (across rounds) — never reset by startPhase
+      cum_tokens: zeroTokens(),
+      cum_cost_usd: 0,
+      cum_credits: 0,
+    })),
   };
-  const flushStatus = () => {
+  let lastStatusFlushMs = 0;
+  const flushStatus = ({ force = false } = {}) => {
+    const now = Date.now();
+    if (!force && now - lastStatusFlushMs < 500) return;
+    lastStatusFlushMs = now;
     status.updated_at = new Date().toISOString();
     try { writeJSON(join(dir, 'status.json'), status); } catch { /* best-effort */ }
   };
   const onModelDone = (ev) => {
     if (ev.event === 'model_done') {
       const m = status.models.find((x) => x.label === ev.label);
-      if (m) { m.state = ev.ok ? 'done' : 'failed'; m.elapsed_s = ev.elapsed_s; }
+      if (m) {
+        m.state = ev.ok ? 'done' : 'failed';
+        m.elapsed_s = ev.elapsed_s;
+        m.updated_at = new Date().toISOString();
+        m.last_event = ev.ok ? 'model done' : 'model failed';
+        m.error = ev.ok ? null : ev.error;
+      }
+      writeEvent({ type: 'model_done', model: ev.label, ok: ev.ok, elapsed_s: ev.elapsed_s, error: ev.error || null });
     } else if (ev.event === 'progress') {
       // Tick the elapsed clock of every still-running model so the dashboard
       // shows live progress instead of a frozen "0s" until completion.
       status.models.forEach((m) => { if (m.state === 'running') m.elapsed_s = ev.elapsed_s; });
     }
-    flushStatus();
+    flushStatus({ force: ev.event === 'model_done' });
+  };
+  // events.jsonl is the durable, pollable log — keep it MILESTONE-only so its size
+  // (and every dashboard poll that reads it) stays bounded. High-frequency deltas
+  // (text/thinking/stdout/stderr chunks) update the small, overwritten status.json
+  // instead of appending a line each time.
+  // stdout/stderr are kept (raw mode is coarse: 1–2 chunks, not the bloat source).
+  // The high-frequency stream-mode deltas (text/thinking) are deliberately absent.
+  const MILESTONE = new Set(['spawn', 'exit', 'timeout', 'error', 'json_parsed', 'json_missing', 'usage_final', 'lifecycle', 'stdout', 'stderr']);
+  const onProviderEvent = (entry, ev) => {
+    const m = status.models.find((x) => x.label === entry.label);
+    const type = ev.type || 'event';
+    const rawStream = type === 'stdout' || type === 'stderr' ? type : null;
+    if (m) {
+      m.updated_at = new Date().toISOString();
+      if (type === 'spawn') {
+        m.pid = ev.pid;
+        m.last_event = (ev.mode === 'stream' || ev.mode === 'stream-partial') ? `spawned (${ev.mode})` : 'spawned';
+      } else if (rawStream) {
+        const bytesKey = `${rawStream}_bytes`;
+        const tailKey = `${rawStream}_tail`;
+        const text = redactPanelText(ev.text || '');
+        m[bytesKey] = (m[bytesKey] || 0) + (ev.bytes || Buffer.byteLength(text));
+        if (text) m[tailKey] = tailText(`${m[tailKey] || ''}${text}`, 4000);
+        m.last_event = `${rawStream} +${ev.bytes || Buffer.byteLength(text)} bytes`;
+      } else if (type === 'thinking') {
+        m.phase_label = 'thinking';
+        m.last_event = 'thinking';
+      } else if (type === 'text') {
+        m.phase_label = 'responding';
+        const text = redactPanelText(ev.delta || '');
+        if (text) m.stdout_tail = tailText(`${m.stdout_tail || ''}${text}`, 4000);
+        m.last_event = 'responding';
+      } else if (type === 'usage') {
+        // live (round-scoped) display only — accumulation happens on usage_final
+        m.tokens = ev.tokens || m.tokens;
+        if (ev.cost_usd != null) m.cost_usd = ev.cost_usd;
+        m.last_event = 'usage';
+      } else if (type === 'usage_final') {
+        const u = ev.usage || {};
+        const t = { input: u.input || 0, output: u.output || 0, cached: u.cached || 0, reasoning: u.reasoning || 0 };
+        m.tokens = t;
+        m.cost_usd = (u.cost_usd != null) ? u.cost_usd : m.cost_usd;
+        if (u.credits != null) m.credits = u.credits;
+        // accumulate into cumulative totals (once per model per round)
+        for (const k of ['input', 'output', 'cached', 'reasoning']) { m.cum_tokens[k] += t[k]; status.totals.tokens[k] += t[k]; }
+        if (u.cost_usd != null) { m.cum_cost_usd += u.cost_usd; status.totals.cost_usd += u.cost_usd; }
+        if (u.credits != null) { m.cum_credits += u.credits; status.totals.credits += u.credits; }
+        m.last_event = 'usage final';
+      } else if (type === 'json_parsed') {
+        m.last_event = 'json parsed';
+      } else if (type === 'json_missing') {
+        m.last_event = 'json missing';
+      } else if (type === 'timeout') {
+        m.last_event = 'timeout';
+        m.error = ev.error || 'timeout';
+      } else if (type === 'error') {
+        m.last_event = 'process error';
+        m.error = ev.error || 'process error';
+      } else if (type === 'exit') {
+        m.last_event = ev.code === 0 ? 'process exited' : `exit ${ev.code}`;
+      } else if (type === 'lifecycle') {
+        m.last_event = ev.note || 'lifecycle';
+      }
+    }
+    if (MILESTONE.has(type)) {
+      writeEvent({
+        type,
+        phase: status.phase,
+        model: entry.label,
+        provider: entry.name,
+        bytes: ev.bytes || null,
+        pid: ev.pid || null,
+        code: ev.code ?? null,
+        tokens: ev.tokens || (ev.usage ? { input: ev.usage.input, output: ev.usage.output, cached: ev.usage.cached, reasoning: ev.usage.reasoning } : null),
+        cost_usd: (ev.cost_usd != null) ? ev.cost_usd : (ev.usage && ev.usage.cost_usd != null ? ev.usage.cost_usd : null),
+        credits: (ev.usage && ev.usage.credits != null) ? ev.usage.credits : null,
+        note: ev.note || null,
+        error: ev.error || null,
+        text: ev.text || null,
+      });
+    }
+    flushStatus({ force: MILESTONE.has(type) });
   };
   const startPhase = (phase) => {
     status.phase = phase;
-    status.models.forEach((m) => { m.state = 'running'; m.elapsed_s = 0; });
-    flushStatus();
+    const now = new Date().toISOString();
+    status.models.forEach((m) => {
+      m.state = 'running';
+      m.round = phase;
+      m.elapsed_s = 0;
+      m.started_at = now;
+      m.updated_at = now;
+      m.last_event = 'round started';
+      m.stdout_bytes = 0;
+      m.stderr_bytes = 0;
+      m.stdout_tail = '';
+      m.stderr_tail = '';
+      m.error = null;
+      // reset round-scoped live usage; cum_* / status.totals persist across rounds
+      m.phase_label = null;
+      m.tokens = null;
+      m.cost_usd = null;
+      m.credits = null;
+    });
+    writeEvent({ type: 'round_start', phase });
+    flushStatus({ force: true });
   };
-  flushStatus();
+  writeEvent({ type: 'run_start', phase: status.phase, models: labels, target_kind: target.kind });
+  flushStatus({ force: true });
 
   // Round 1 — independent review (all models in parallel)
   startPhase('round1 (review)');
@@ -286,8 +496,9 @@ async function cmdReview(pos, flags) {
   await runRound('round 1 (review)', usable, () => reviewPrompt(target.text), timeoutMs, onModelDone, (e, res) => {
     const findings = res.ok ? normalizeFindings(res.json) : [];
     round1[e.label] = findings;
-    writeJSON(join(dir, `${safeLabel(e.label)}.r1.json`), { model: e.label, ok: res.ok, error: res.error, findings, raw: res.raw });
-  });
+    writeJSON(join(dir, `${safeLabel(e.label)}.r1.json`), { model: e.label, ok: res.ok, error: res.error, findings, usage: res.usage || null, raw: res.raw });
+    writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 1, ok: res.ok, count: findings.length, error: res.error || null });
+  }, onProviderEvent, stream, partial);
 
   // Round 2 — adversarial: each model refutes the others' findings (in parallel)
   startPhase('round2 (refute)');
@@ -302,8 +513,9 @@ async function cmdReview(pos, flags) {
     if (!res.ok) abstained.add(e.label); // round2 failure ≠ silent concede
     const verdicts = res.ok ? normalizeVerdicts(res.json) : [];
     round2[e.label] = verdicts;
-    writeJSON(join(dir, `${safeLabel(e.label)}.r2.json`), { model: e.label, ok: res.ok, error: res.error, verdicts, raw: res.raw });
-  });
+    writeJSON(join(dir, `${safeLabel(e.label)}.r2.json`), { model: e.label, ok: res.ok, error: res.error, verdicts, usage: res.usage || null, raw: res.raw });
+    writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 2, ok: res.ok, count: verdicts.length, error: res.error || null });
+  }, onProviderEvent, stream, partial);
 
   const verdict = synthesize(labels, round1, round2, abstained);
   const record = {
@@ -313,11 +525,19 @@ async function cmdReview(pos, flags) {
     target_ref: target.ref || null,
     target_title: targetTitle(target),
     judge: 'rule',
+    stream,
+    partial: stream ? partial : false,
+    timeout_s: timeoutS,
+    usage: {
+      totals: status.totals,
+      by_model: Object.fromEntries(status.models.map((m) => [m.label, { tokens: m.cum_tokens, cost_usd: m.cum_cost_usd, credits: m.cum_credits }])),
+    },
     ...verdict,
   };
   writeJSON(join(dir, 'verdict.json'), record);
   status.phase = 'done';
-  flushStatus();
+  writeEvent({ type: 'run_done', phase: status.phase, counts: verdict.counts });
+  flushStatus({ force: true });
 
   if (flags.json) console.log(JSON.stringify(record, null, 2));
   else console.log(renderVerdict(verdict, dir));
@@ -354,7 +574,13 @@ Commands:
     --models a,b,c              Override models — name or name:model (e.g. codex:gpt-5,cursor:sonnet-4-thinking,kiro:claude-sonnet-4.6)
     --fast | --full | --preset NAME   fast=claude,codex · full=all installed · or a named preset
     --judge rule                Synthesis (PoC: rule only)
-    --timeout SECONDS           Per-model timeout (default 240; config: panel.timeout_s)
+    --timeout SECONDS           Per-model timeout (default 240; config: panel.timeout_s).
+                                Auto-raised for large targets (cap panel.timeout_max_s=900); --timeout pins it.
+    --stream | --no-stream      Structured streaming: live token/cost per model (claude/cursor/codex).
+                                Opt-in (default off; config: panel.stream). kiro/agy stay raw.
+    --partial | --no-partial    Token-level live text for claude/cursor (default on within --stream;
+                                config: panel.stream_partial). Auto-off when target > panel.partial_max_chars
+                                (default 50000) unless --partial forces it. codex/agy/kiro unaffected.
     --json
 
   setup [--models a,b] [--judge rule] [--global]

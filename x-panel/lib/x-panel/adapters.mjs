@@ -15,12 +15,25 @@ import { existsSync } from 'node:fs';
 
 // Each builds [bin, args]. `model` (optional) maps to that CLI's --model flag;
 // when null the CLI uses its own default model.
+export function normalizeKiroModel(model) {
+  const value = String(model || '').trim();
+  if (!value) return null;
+  // Kiro CLI lists Claude models as claude-opus-4.8 / claude-sonnet-4.6,
+  // while Anthropic API IDs commonly use claude-opus-4-8. Accept either.
+  return value.replace(/^claude-(opus|sonnet|haiku)-(\d+)-(\d+)(.*)$/i, 'claude-$1-$2.$3$4');
+}
+
 const BUILTIN = {
   claude: (prompt, model) => ['claude', ['-p', ...(model ? ['--model', model] : []), prompt]],
   codex: (prompt, model) => ['codex', ['exec', ...(model ? ['--model', model] : []), prompt]],
   agy: (prompt, model) => ['agy', ['-p', ...(model ? ['--model', model] : []), prompt]], // Antigravity CLI (formerly gemini)
   cursor: (prompt, model) => ['cursor-agent', ['-p', '-f', ...(model ? ['--model', model] : []), prompt]], // -f bypasses workspace-trust
-  kiro: (prompt, model) => ['kiro-cli', ['chat', '--no-interactive', '--wrap', 'never', '--trust-tools=', ...(model ? ['--model', model] : []), prompt]],
+  kiro: (prompt, model) => {
+    const m = normalizeKiroModel(model);
+    // --trust-tools= (empty) = trust NO tools, so a review prompt can't make kiro run
+    // tools / hang waiting for approval under --no-interactive. (Harmless stderr warning.)
+    return ['kiro-cli', ['chat', '--no-interactive', '--wrap', 'never', '--trust-tools=', ...(m ? ['--model', m] : []), prompt]];
+  },
 };
 
 export function knownProviders() {
@@ -73,9 +86,27 @@ export function invokeProvider(name, prompt, { timeout = 180_000, model = null }
   return { ok: true, error: null, raw, json };
 }
 
-/** Async variant of invokeProvider — non-blocking so multiple models run in parallel. */
-export function invokeProviderAsync(name, prompt, { timeout = 180_000, model = null } = {}) {
+/**
+ * Async variant of invokeProvider — non-blocking so multiple models run in parallel.
+ * When `stream` is set and the provider has a streaming profile, delegate to the
+ * structured-streaming path (live token/cost events). Otherwise the original raw
+ * path is used unchanged, so the default flow and its tests never regress.
+ */
+export function invokeProviderAsync(name, prompt, { timeout = 180_000, model = null, onEvent = null, stream = false, partial = true } = {}) {
+  if (stream && supportsStream(name)) {
+    return invokeProviderStream(name, prompt, { timeout, model, onEvent, partial });
+  }
   return new Promise((resolve) => {
+    const emit = (event) => {
+      if (!onEvent) return;
+      try { onEvent({ at: new Date().toISOString(), ...event }); } catch { /* observer only */ }
+    };
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     const resolved = resolveCommand(name, prompt, model);
     if (!resolved) return resolve({ ok: false, error: `unknown provider: ${name}`, raw: '', json: null });
     const [cmd, args] = resolved;
@@ -87,20 +118,253 @@ export function invokeProviderAsync(name, prompt, { timeout = 180_000, model = n
     } catch (e) {
       return resolve({ ok: false, error: String(e.message || e), raw: '', json: null });
     }
+    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: cmd });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve({ ok: false, error: `timeout ${timeout}ms`, raw: stdout, json: null }); }, timeout);
-    child.stdout.on('data', (d) => { stdout += d; });
-    child.stderr.on('data', (d) => { stderr += d; });
-    child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, error: String(e.message || e), raw: '', json: null }); });
+    const timer = setTimeout(() => {
+      const error = `timeout ${timeout}ms`;
+      emit({ type: 'timeout', provider: name, model, error });
+      child.kill('SIGKILL');
+      finish({ ok: false, error, raw: stdout, json: null });
+    }, timeout);
+    child.stdout.on('data', (d) => {
+      stdout += d;
+      emit({ type: 'stdout', provider: name, model, bytes: Buffer.byteLength(d), text: d });
+    });
+    child.stderr.on('data', (d) => {
+      stderr += d;
+      emit({ type: 'stderr', provider: name, model, bytes: Buffer.byteLength(d), text: d });
+    });
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      const error = String(e.message || e);
+      emit({ type: 'error', provider: name, model, error });
+      finish({ ok: false, error, raw: '', json: null });
+    });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (code !== 0) return resolve({ ok: false, error: `exit ${code}: ${stderr.trim().slice(0, 300)}`, raw: stdout, json: null });
+      if (settled) return;
+      emit({ type: 'exit', provider: name, model, code });
+      // Some raw-mode CLIs (kiro) print a cost line on stderr — surface it as usage.
+      const usage = parseStderrUsage(name, stderr);
+      if (usage) emit({ type: 'usage_final', provider: name, model, usage });
+      if (code !== 0) return finish({ ok: false, error: `exit ${code}: ${stderr.trim().slice(0, 300)}`, raw: stdout, json: null, usage });
       const json = extractJSON(stdout);
-      if (!json) return resolve({ ok: false, error: 'no JSON object in output', raw: stdout, json: null });
-      resolve({ ok: true, error: null, raw: stdout, json });
+      if (!json) {
+        emit({ type: 'json_missing', provider: name, model });
+        return finish({ ok: false, error: 'no JSON object in output', raw: stdout, json: null, usage });
+      }
+      emit({ type: 'json_parsed', provider: name, model });
+      finish({ ok: true, error: null, raw: stdout, json, usage });
+    });
+  });
+}
+
+// ── structured streaming (live token/cost) ───────────────────────────
+//
+// Separate from the raw path above: stream-capable CLIs are invoked with their
+// JSONL/stream-json flags, each line is parsed into normalized events, and the
+// final answer text (not the envelope) is what findings are extracted from.
+
+// Streaming command builders — deliberately NOT merged into BUILTIN so the raw
+// (sync) path and its tests keep their exact argv.
+const STREAM_BUILTIN = {
+  // When `partial` is on, --include-partial-messages / --stream-partial-output emit
+  // token-level text deltas (verified: claude → stream_event/content_block_delta/text_delta;
+  // cursor → incremental assistant events). With partial off, the stream is still structured
+  // (usage + final text) but the body arrives in one block — faster on very large inputs.
+  // codex has no partial mode, so it stays final-block regardless.
+  claude: (prompt, model, partial) => ['claude', ['-p', '--output-format', 'stream-json', ...(partial ? ['--include-partial-messages'] : []), '--verbose', ...(model ? ['--model', model] : []), prompt]],
+  cursor: (prompt, model, partial) => ['cursor-agent', ['-p', '-f', '--output-format', 'stream-json', ...(partial ? ['--stream-partial-output'] : []), ...(model ? ['--model', model] : []), prompt]], // -f bypasses workspace-trust
+  codex: (prompt, model) => {
+    const m = model || null;
+    // --sandbox read-only prevents the agent from editing the repo; --json streams JSONL events.
+    return ['codex', ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', ...(m ? ['--model', m] : []), prompt]];
+  },
+};
+
+// Only providers with a real streaming profile use the structured-stream path.
+// An X_PANEL_CMD_* override does NOT make a provider stream-capable — the agy
+// wrapper emits plain text, so agy/kiro must stay on the raw path even under
+// --stream. (Test stubs override claude/codex, which ARE in STREAM_BUILTIN, so
+// the stream path is still exercised.)
+export function supportsStream(name) {
+  return Object.prototype.hasOwnProperty.call(STREAM_BUILTIN, name);
+}
+
+/** The real streaming argv for a provider (no override) — for tests/inspection. */
+export function streamCommand(name, prompt = '', model = null, partial = true) {
+  const fn = STREAM_BUILTIN[name];
+  return fn ? fn(prompt, model, partial) : null;
+}
+
+function resolveStreamCommand(name, prompt, model, partial) {
+  const override = overridePath(name);
+  if (override) return ['node', [override, name, prompt, '--stream', ...(partial ? ['--partial'] : [])]]; // hint the stub
+  const fn = STREAM_BUILTIN[name];
+  return fn ? fn(prompt, model || null, partial) : null;
+}
+
+// Approximate USD per 1M tokens. INLINE on purpose — importing x-build/cost-engine
+// (even dynamically) throws under the versioned plugin-cache layout (see x-memory
+// cache-crash lesson). claude reports its own total_cost_usd (authoritative, used
+// directly); this table only estimates cursor/codex. PLACEHOLDER values — calibrate.
+const PRICE_PER_MTOK = {
+  'claude-opus-4-8': { input: 15, output: 75, cached: 1.5 },
+  'claude-opus-4.8': { input: 15, output: 75, cached: 1.5 },
+  'claude-sonnet-4-6': { input: 3, output: 15, cached: 0.3 },
+  default: { input: 5, output: 15, cached: 0.5 },
+};
+function priceFor(model) { return PRICE_PER_MTOK[model] || PRICE_PER_MTOK.default; }
+export function costFromTokens(model, t) {
+  const p = priceFor(model);
+  const uncached = Math.max(0, (t.input || 0) - (t.cached || 0));
+  return (uncached * p.input + (t.cached || 0) * p.cached + (t.output || 0) * p.output) / 1e6;
+}
+
+/** kiro (raw mode) prints `▸ Credits: 0.30 • Time: 4s` on stderr (ANSI-wrapped). */
+function parseStderrUsage(name, stderr) {
+  if (name !== 'kiro') return null;
+  const clean = String(stderr || '').replace(/\x1b\[[0-9;]*[mGKH]/g, '');
+  const m = clean.match(/Credits:\s*([0-9.]+)/i);
+  return m ? { credits: parseFloat(m[1]), cost_usd: null } : null;
+}
+
+/** Extract text from a cursor stream event — text lives in message.content[].text. */
+function cursorEventText(obj) {
+  if (typeof obj.text === 'string') return obj.text;
+  const c = obj.message && obj.message.content;
+  if (Array.isArray(c)) return c.map((b) => (b && b.type === 'text' && b.text ? b.text : '')).join('');
+  if (obj.message && typeof obj.message.text === 'string') return obj.message.text;
+  return '';
+}
+
+/**
+ * Parse ONE provider JSONL line into normalized events + optional final
+ * text/usage. Returns { events, finalText?, usage? }. Unknown lines → no events.
+ */
+export function parseStreamLine(name, obj, model) {
+  const events = [];
+  let finalText, usage;
+  const setUsage = (tokens, cost_usd) => {
+    const cost = (cost_usd != null) ? cost_usd : costFromTokens(model, tokens);
+    usage = { ...tokens, cost_usd: cost };
+    events.push({ kind: 'usage', tokens, cost_usd: cost });
+  };
+  if (name === 'claude') {
+    // Token-level deltas (--include-partial-messages): stream_event → content_block_delta.
+    // We take live text ONLY from these deltas; the aggregate `assistant` event is the
+    // SAME text re-emitted, so handling it too would double-count the tail.
+    if (obj.type === 'stream_event' && obj.event && obj.event.type === 'content_block_delta' && obj.event.delta) {
+      const d = obj.event.delta;
+      if (d.type === 'text_delta' && d.text) events.push({ kind: 'text', delta: d.text });
+      else if (d.type === 'thinking_delta' && d.thinking) events.push({ kind: 'thinking', delta: d.thinking });
+      // signature_delta and others: ignore
+    } else if (obj.type === 'result') {
+      if (typeof obj.result === 'string') finalText = obj.result;
+      const u = obj.usage || {};
+      setUsage({ input: u.input_tokens || 0, output: u.output_tokens || 0, cached: u.cache_read_input_tokens || 0, reasoning: 0 }, obj.total_cost_usd);
+    }
+  } else if (name === 'cursor') {
+    // --stream-partial-output: response deltas arrive as incremental `assistant` events,
+    // thinking deltas as `thinking` events; text lives in message.content[].text.
+    if (obj.type === 'thinking') {
+      const d = cursorEventText(obj);
+      events.push(d ? { kind: 'thinking', delta: d } : { kind: 'thinking' });
+    } else if (obj.type === 'text' || obj.type === 'assistant') {
+      const d = cursorEventText(obj);
+      if (d) events.push({ kind: 'text', delta: d });
+    } else if (obj.type === 'result') {
+      if (typeof obj.result === 'string') finalText = obj.result;
+      const u = obj.usage || {};
+      setUsage({ input: u.inputTokens || 0, output: u.outputTokens || 0, cached: u.cacheReadTokens || 0, reasoning: 0 });
+    }
+  } else if (name === 'codex') {
+    if (obj.type === 'thread.started' || obj.type === 'turn.started') {
+      events.push({ kind: 'lifecycle', note: obj.type });
+    } else if (obj.type === 'item.completed' && obj.item && obj.item.type === 'agent_message') {
+      finalText = obj.item.text || '';
+      if (finalText) events.push({ kind: 'text', delta: finalText });
+    } else if (obj.type === 'turn.completed') {
+      const u = obj.usage || {};
+      setUsage({ input: u.input_tokens || 0, output: u.output_tokens || 0, cached: u.cached_input_tokens || 0, reasoning: u.reasoning_output_tokens || 0 });
+    }
+  }
+  return { events, finalText, usage };
+}
+
+function invokeProviderStream(name, prompt, { timeout = 180_000, model = null, onEvent = null, partial = true } = {}) {
+  return new Promise((resolve) => {
+    const emit = (event) => { if (!onEvent) return; try { onEvent({ at: new Date().toISOString(), ...event }); } catch { /* observer only */ } };
+    let settled = false;
+    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+    const resolved = resolveStreamCommand(name, prompt, model, partial);
+    if (!resolved) return resolve({ ok: false, error: `no stream profile: ${name}`, raw: '', json: null });
+    const [cmd, args] = resolved;
+    let child;
+    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env }); }
+    catch (e) { return resolve({ ok: false, error: String(e.message || e), raw: '', json: null }); }
+    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: cmd, mode: partial ? 'stream-partial' : 'stream' });
+
+    // Bounds — the async path has no maxBuffer, so cap every accumulator.
+    const RAW_CAP = 2_000_000, TEXT_CAP = 1_000_000, LINE_CAP = 4_000_000, ERR_CAP = 200_000;
+    let rawCap = '', buf = '', textBuf = '', stderr = '';
+    let finalText = null, usage = null;
+
+    const handleLine = (line) => {
+      if (!line.trim()) return;
+      let obj;
+      try { obj = JSON.parse(line); } catch { return; } // skip non-JSON notices
+      const r = parseStreamLine(name, obj, model);
+      for (const ev of r.events) {
+        if (ev.kind === 'text' && ev.delta && textBuf.length < TEXT_CAP) textBuf += ev.delta;
+        emit({ type: ev.kind, provider: name, model, ...ev });
+      }
+      if (r.finalText != null) finalText = r.finalText;
+      if (r.usage) usage = r.usage;
+    };
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    const timer = setTimeout(() => {
+      emit({ type: 'timeout', provider: name, model, error: `timeout ${timeout}ms` });
+      child.kill('SIGKILL');
+      finish({ ok: false, error: `timeout ${timeout}ms`, raw: rawCap, json: null, usage });
+    }, timeout);
+    child.stdout.on('data', (d) => {
+      if (rawCap.length < RAW_CAP) rawCap += d;
+      buf += d;
+      if (buf.length > LINE_CAP) buf = buf.slice(buf.length - LINE_CAP); // overflow guard for newline-less floods
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, nl); buf = buf.slice(nl + 1); handleLine(line); }
+    });
+    child.stderr.on('data', (d) => { stderr += d; if (stderr.length > ERR_CAP) stderr = stderr.slice(-ERR_CAP); emit({ type: 'stderr', provider: name, model, bytes: Buffer.byteLength(d), text: d }); });
+    child.on('error', (e) => { clearTimeout(timer); emit({ type: 'error', provider: name, model, error: String(e.message || e) }); finish({ ok: false, error: String(e.message || e), raw: '', json: null }); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      if (buf.trim()) handleLine(buf); // flush the trailing (unterminated) line — carries final result/usage
+      emit({ type: 'exit', provider: name, model, code });
+      if (usage) emit({ type: 'usage_final', provider: name, model, usage });
+      // A non-zero exit is a failure REGARDLESS of any JSON in partial output —
+      // otherwise a crashed provider whose stream happened to contain a JSON object
+      // would be reported as a successful review (matches the raw path's contract).
+      if (code !== 0) return finish({ ok: false, error: `exit ${code}: ${stderr.trim().slice(0, 300)}`, raw: rawCap, json: null, usage });
+      // Findings come from the final answer text (NOT the raw JSONL envelope).
+      const text = finalText != null ? finalText : textBuf;
+      let json = extractJSON(text);
+      // rawCap fallback is shape-guarded: a JSONL envelope line (e.g. {"type":"system"})
+      // must NOT be mistaken for a successful review, so only accept it when it actually
+      // carries findings/verdicts.
+      if (!json) {
+        const alt = extractJSON(rawCap);
+        if (alt && (Array.isArray(alt.findings) || Array.isArray(alt.verdicts))) json = alt;
+      }
+      if (!json) { emit({ type: 'json_missing', provider: name, model }); return finish({ ok: false, error: 'no JSON object in output', raw: rawCap, json: null, usage }); }
+      emit({ type: 'json_parsed', provider: name, model });
+      finish({ ok: true, error: null, raw: rawCap, json, usage });
     });
   });
 }
