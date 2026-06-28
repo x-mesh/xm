@@ -411,12 +411,35 @@ function handlePanelList(xmRoot, req) {
     try { status = JSON.parse(readFileSync(join(rdir, 'status.json'), 'utf8')); } catch { /* older/older run */ }
     try {
       const v = JSON.parse(readFileSync(join(rdir, 'verdict.json'), 'utf8'));
-      verdict = { counts: v.counts, models: v.models, created_at: v.created_at };
+      verdict = { counts: v.counts, models: v.models, created_at: v.created_at, usage: v.usage || null };
     } catch { /* not finished */ }
     runs.push({ run: entry.name, status, verdict });
   }
   runs.sort((a, b) => b.run.localeCompare(a.run));
   return jsonResponseWithETag({ runs }, req);
+}
+
+function readPanelEvents(runDir, req) {
+  let limit = 120;
+  try {
+    const url = new URL(req.url);
+    const raw = Number.parseInt(url.searchParams.get('events') || '', 10);
+    if (Number.isFinite(raw)) limit = Math.min(500, Math.max(0, raw));
+  } catch { /* keep default */ }
+  if (limit === 0) return [];
+  try {
+    const lines = readFileSync(join(runDir, 'events.jsonl'), 'utf8')
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(-limit);
+    const events = [];
+    for (const line of lines) {
+      try { events.push(JSON.parse(line)); } catch { /* skip corrupt partial line */ }
+    }
+    return events;
+  } catch {
+    return [];
+  }
 }
 
 // One panel run, fully: verdict.json (consensus/confirmed/contested/by_model),
@@ -449,7 +472,7 @@ function handlePanelDetail(xmRoot, run, req) {
   if (!verdict && !status && Object.keys(rounds).length === 0) {
     return jsonResponseWithETag({ error: 'not_found', run }, req, 404);
   }
-  return jsonResponseWithETag({ run, verdict, status, rounds: Object.values(rounds) }, req);
+  return jsonResponseWithETag({ run, verdict, status, rounds: Object.values(rounds), events: readPanelEvents(rdir, req) }, req);
 }
 
 // Reuse x-panel's provider adapters (PATH detection) instead of re-implementing
