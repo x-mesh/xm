@@ -101,6 +101,9 @@ Options:
   --rubric <name>           Built-in or custom rubric name
   --judges N                Number of judge agents (default 3)
   --model sonnet|opus|haiku Judge model (default sonnet)
+  --cross-vendor            Judges are DIFFERENT model vendors (claude+codex+cursor…) via
+                            `xm panel cross` — removes single-model self-bias. Opt-in; falls
+                            back to single-vendor judges when <2 vendor CLIs. See "Cross-Vendor Judges".
   --trials N                Repetitions per strategy (default 3, for bench)
   --strategies "s1,s2"      Comma-separated strategy names (for bench)
   --models "m1,m2"          Comma-separated model names (for bench)
@@ -183,6 +186,37 @@ See `references/bias-aware.md` — x-humble integration; injects confirmed bias 
 
 ---
 
+## Cross-Vendor Judges (opt-in)
+
+`--cross-vendor` (on `score` / `compare`) replaces the N same-model Claude judges with judges
+from DIFFERENT model vendors (claude + codex + cursor + …). A single vendor judging output —
+especially output produced by its own model family — carries self-bias; genuinely independent
+cross-vendor judges remove it. This makes the existing `sigma`/일치도 a TRUE cross-model agreement
+signal, not same-model noise.
+
+> **⚠ Call `xm panel …` directly via the dispatcher (Bash) — never import.**
+
+1. **Probe** vendors: `xm panel detect --json`. If `available` has fewer than 2 vendors, fall back
+   to standard single-vendor judges and say so (loud, never silent — Lesson L6).
+2. **Judge across vendors** — build the judge prompt (rubric + criteria + the content to score +
+   `judges/{type}.md`, instructing a JSON score-per-dimension reply), then:
+   ```bash
+   xm panel cross --models "<available>" --prompt-file <judge-prompt> --json
+   # → {"results":[{"model","ok","output"}, ...]}  (output = each vendor's JSON scores)
+   ```
+   Each vendor is one independent judge. Announce the vendor set + rough cost first (cost = vendors × rubrics).
+3. **Aggregate** — parse each vendor's per-dimension scores; report the mean and the **cross-vendor
+   σ** (spread across vendors). High σ = the vendors genuinely disagree on a dimension → surface it
+   for human review instead of hiding it in an averaged number. Note which vendor gave which score.
+
+**For `compare --cross-vendor`:** keep the existing A/B order randomization — counterbalance the
+A/B order across vendors (or randomize per vendor) so cross-vendor does NOT reintroduce position
+bias. Never send every vendor the same fixed A-then-B ordering.
+
+Single-vendor judging stays the default; `--cross-vendor` is purely additive.
+
+---
+
 ## Storage Layout
 
 See `references/storage-layout.md` — `.xm/eval/` directory tree; result schemas for score/compare/bench/diff; rubric JSON schema.
@@ -217,6 +251,7 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 |-----------|---------|
 | "evaluate this", "grade this", "score this" | `score <content>` |
 | "which is better?", "compare A vs B" | `compare <a> <b>` |
+| "여러 모델로 채점", "편향 없이 평가", "cross-vendor judges" | `score <content> --cross-vendor` |
 | "strategy comparison", "benchmark", "which strategy is better?" | `bench <task> --strategies "..."` |
 | "create a rubric" | `rubric create <name>` |
 | "list rubrics", "what criteria are available?" | `rubric list` |
