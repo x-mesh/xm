@@ -19,7 +19,7 @@ import {
   PANEL_DIR, C, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
-import { invokeProviderAsync, isAvailable, knownProviders, autodetectModels } from './x-panel/adapters.mjs';
+import { invokeProviderAsync, invokeProviderText, isAvailable, knownProviders, autodetectModels } from './x-panel/adapters.mjs';
 import { normalizeFindings, normalizeVerdicts, synthesize } from './x-panel/synth.mjs';
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -110,6 +110,8 @@ function parseFlags(raw) {
     else if (a === '--review-prompt-file') flags.reviewPromptFile = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
     else if (a === '--review-prompt') flags.reviewPrompt = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined; // '-' = stdin
     else if (a === '--lens-tag') flags.lensTag = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
+    else if (a === '--prompt-file') flags.promptFile = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
+    else if (a === '--prompt') flags.prompt = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
     else pos.push(a);
   }
   return { flags, pos };
@@ -120,25 +122,30 @@ function parseFlags(raw) {
  * --review-prompt-file <path>, or --review-prompt - (stdin) / --review-prompt "<text>".
  * Returns null when none given (→ default reviewer prompt, no behavior change).
  */
-function loadPromptOverride(flags) {
+function loadPromptArg(flags, fileKey, textKey, label) {
   const fail = (msg) => { console.error(`${C.red}✗ ${msg}${C.reset}`); process.exitCode = 1; return undefined; };
   let body;
   // `'key' in flags` distinguishes "flag absent" from "flag present but value missing"
   // (parseFlags sets the key to undefined when no value follows).
-  if ('reviewPromptFile' in flags) {
-    if (!flags.reviewPromptFile) return fail('--review-prompt-file needs a path');
-    body = readText(flags.reviewPromptFile);
-    if (body == null) return fail(`--review-prompt-file: cannot read ${flags.reviewPromptFile}`);
-  } else if ('reviewPrompt' in flags) {
-    if (flags.reviewPrompt == null) return fail('--review-prompt needs a value (or - for stdin)');
-    if (flags.reviewPrompt === '-') { try { body = readFileSync(0, 'utf8'); } catch { return fail('--review-prompt -: cannot read stdin'); } }
-    else body = flags.reviewPrompt;
+  if (fileKey in flags) {
+    if (!flags[fileKey]) return fail(`${label}-file needs a path`);
+    body = readText(flags[fileKey]);
+    if (body == null) return fail(`${label}-file: cannot read ${flags[fileKey]}`);
+  } else if (textKey in flags) {
+    if (flags[textKey] == null) return fail(`${label} needs a value (or - for stdin)`);
+    if (flags[textKey] === '-') { try { body = readFileSync(0, 'utf8'); } catch { return fail(`${label} -: cannot read stdin`); } }
+    else body = flags[textKey];
   } else {
-    return null; // no override → default reviewer prompt
+    return null; // not supplied
   }
-  // An empty/whitespace override would run a full multi-model panel with NO instruction.
-  if (!String(body).trim()) return fail('review prompt override is empty');
+  // An empty/whitespace prompt would run a full multi-model run with NO instruction.
+  if (!String(body).trim()) return fail(`${label} is empty`);
   return body;
+}
+
+// Review round-1 override (null = default reviewer prompt, no behavior change).
+function loadPromptOverride(flags) {
+  return loadPromptArg(flags, 'reviewPromptFile', 'reviewPrompt', '--review-prompt');
 }
 
 /** Decide the model set: --models flag > preset > config > autodetect installed CLIs. */
@@ -608,6 +615,60 @@ async function cmdReview(pos, flags) {
   else console.log(renderVerdict(verdict, dir));
 }
 
+// Resolve provider entries (name / name:model) from --models/preset/config — shared by review & cross.
+function resolveEntries(flags, cfg) {
+  const overrides = cfg.model_overrides || {};
+  return resolveModels(flags, cfg).map((spec) => {
+    const i = String(spec).indexOf(':');
+    const name = (i < 0 ? spec : spec.slice(0, i)).trim();
+    const model = (i < 0 ? (overrides[name] || null) : spec.slice(i + 1).trim()) || null;
+    return { name, model, label: model ? `${name}:${model}` : name };
+  });
+}
+
+// Generic cross-vendor raw invocation: run ONE prompt across N vendors in parallel and
+// return each vendor's free-form text output. No findings parsing, no merge — the caller
+// (e.g. x-op debate/council) does the deliberation. Output lands in .xm/cross/<run>/.
+async function cmdCross(pos, flags) {
+  const cfg = loadPanelConfig();
+  // Warn (never silently drop — Lesson L6) when a requested provider is unknown/not installed:
+  // a cross-vendor caller must SEE that it degraded toward single-vendor.
+  const usable = [];
+  for (const e of resolveEntries(flags, cfg)) {
+    if (!knownProviders().includes(e.name) && !process.env[`X_PANEL_CMD_${e.name.toUpperCase()}`]) {
+      console.error(`${C.yellow}⚠ unknown provider "${e.name}" — skipping${C.reset}`); continue;
+    }
+    if (!isAvailable(e.name)) {
+      console.error(`${C.yellow}⚠ ${e.name} CLI not installed — skipping${C.reset}`); continue;
+    }
+    usable.push(e);
+  }
+  if (!usable.length) {
+    console.error(`${C.red}cross needs ≥1 available model${C.reset} — none found. Install a model CLI or pass --models.`);
+    process.exitCode = 1;
+    return;
+  }
+  const prompt = loadPromptArg(flags, 'promptFile', 'prompt', '--prompt');
+  if (prompt === undefined) return; // value error already logged
+  if (prompt == null) { console.error(`${C.red}cross needs a prompt${C.reset} — pass --prompt "<text>", --prompt-file <path>, or --prompt -`); process.exitCode = 1; return; }
+  const timeoutMs = (flags.timeout || cfg.timeout_s || 240) * 1000;
+  const run = runId(stamp());
+  const dir = join(PANEL_DIR, '..', 'cross', run);
+  ensureDir(dir);
+  const results = await Promise.all(usable.map(async (e) => {
+    const res = await invokeProviderText(e.name, prompt, { timeout: timeoutMs, model: e.model });
+    const rec = { model: e.label, provider: e.name, ok: res.ok, output: res.output || '', error: res.error || null };
+    writeJSON(join(dir, `${safeLabel(e.label)}.json`), rec);
+    return rec;
+  }));
+  const record = { run, created_at: new Date().toISOString(), models: usable.map((e) => e.label), prompt_chars: prompt.length, results };
+  writeJSON(join(dir, 'result.json'), record);
+  if (flags.json) console.log(JSON.stringify(record, null, 2));
+  else for (const r of results) console.log(`\n${C.bold}## ${r.model}${C.reset}${r.ok ? '' : ` ${C.red}(FAILED: ${r.error})${C.reset}`}\n${r.output || ''}`);
+  // Total failure must be a non-zero exit so callers (x-op) can detect it.
+  if (!results.some((r) => r.ok)) { console.error(`${C.red}✗ all ${results.length} provider(s) failed${C.reset}`); process.exitCode = 1; }
+}
+
 function cmdSetup(pos, flags) {
   const patch = {};
   if (flags.models) patch.models = flags.models.split(',').map(s => s.trim()).filter(Boolean);
@@ -655,6 +716,11 @@ Commands:
 
   detect [--json]               Print available (installed) + known providers — lets a
                                 caller decide single-vendor fallback BEFORE spending tokens
+  cross --models a,b,c (--prompt "..." | --prompt-file <p> | --prompt -) [--json]
+                                Generic cross-vendor invocation: run ONE prompt across N vendors,
+                                return each vendor's RAW text output (no findings/merge). For
+                                deliberation (debate/council) — caller does the synthesis.
+                                Output under .xm/cross/<run>/.
   types                         List known providers
 
   Review-prompt injection (programmatic — for cross-vendor review by other plugins):
@@ -673,7 +739,7 @@ Output: .xm/panel/<run>/{<model>.r1.json, <model>.r2.json, verdict.json}
 // ── entry ────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
-const SUB = new Set(['review', 'setup', 'types', 'detect', 'help', '--help', '-h']);
+const SUB = new Set(['review', 'cross', 'setup', 'types', 'detect', 'help', '--help', '-h']);
 let cmd = argv[0];
 let rest;
 if (!cmd) { cmd = 'review'; rest = []; }            // `x-panel` → review git diff
@@ -683,6 +749,7 @@ const { flags, pos } = parseFlags(rest);
 
 switch (cmd) {
   case 'review': await cmdReview(pos, flags); break;
+  case 'cross': await cmdCross(pos, flags); break;
   case 'setup': cmdSetup(pos, flags); break;
   case 'types': console.log(knownProviders().join('\n')); break;
   case 'detect': {

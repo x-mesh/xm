@@ -385,6 +385,35 @@ If there are no real issues, return {"findings":[]}.`;
     rmSync(gitdir, { recursive: true, force: true });
   });
 
+  test('cross runs one prompt across vendors and returns raw outputs to .xm/cross/', () => {
+    const r = panelRaw(['cross', '--models', 'claude,codex', '--prompt', 'Argue the PRO side.', '--json']);
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.results.length).toBe(2);
+    expect(out.results.every((x) => x.ok && x.output.length > 0)).toBe(true); // raw text per vendor, no findings parse
+    const crossDir = join(DIR, '.xm', 'cross');
+    expect(existsSync(crossDir)).toBe(true);
+    expect(readdirSync(crossDir).length).toBeGreaterThan(0);
+  });
+
+  test('cross fails loudly without a prompt', () => {
+    const r = panelRaw(['cross', '--models', 'claude,codex']);
+    expect(r.status).not.toBe(0);
+  });
+
+  test('cross warns (not silent) when a requested vendor is unknown/unavailable', () => {
+    const r = panelRaw(['cross', '--models', 'claude,bogusvendor', '--prompt', 'hi', '--json']);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/unknown provider|skipping/i); // dropped vendor is surfaced, not silent
+    expect(JSON.parse(r.stdout).results.length).toBe(1); // only the available vendor ran
+  });
+
+  test('cross exits non-zero when every vendor fails', () => {
+    const r = panelRaw(['cross', '--models', 'claude,codex', '--prompt', 'hi'],
+      { X_PANEL_EXIT1_CLAUDE: '1', X_PANEL_EXIT1_CODEX: '1' });
+    expect(r.status).not.toBe(0); // total failure is a non-zero exit, not silent ok
+  });
+
   test('panel detect --json reports available + known providers', () => {
     const r = panelRaw(['detect', '--json']);
     expect(r.status).toBe(0);

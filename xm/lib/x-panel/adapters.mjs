@@ -369,6 +369,34 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, model = null, o
   });
 }
 
+/**
+ * Invoke a provider and return its RAW text output (no JSON requirement). Used by
+ * generic cross-vendor deliberation (debate/council) where the answer is free-form
+ * prose, not findings JSON. ok = process exited 0.
+ */
+export function invokeProviderText(name, prompt, { timeout = 180_000, model = null } = {}) {
+  return new Promise((resolve) => {
+    const resolved = resolveCommand(name, prompt, model);
+    if (!resolved) return resolve({ ok: false, output: '', error: `unknown provider: ${name}` });
+    const [cmd, args] = resolved;
+    let child;
+    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env }); }
+    catch (e) { return resolve({ ok: false, output: '', error: String(e.message || e) }); }
+    let stdout = '', stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve({ ok: false, output: stdout, error: `timeout ${timeout}ms` }); }, timeout);
+    child.stdout.on('data', (d) => { stdout += d; if (stdout.length > 16 * 1024 * 1024) stdout = stdout.slice(-16 * 1024 * 1024); });
+    child.stderr.on('data', (d) => { stderr += d; if (stderr.length > 200_000) stderr = stderr.slice(-200_000); });
+    child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, output: '', error: String(e.message || e) }); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) return resolve({ ok: false, output: stdout, error: `exit ${code}: ${stderr.trim().slice(0, 300)}` });
+      resolve({ ok: true, output: stdout.trim(), error: null });
+    });
+  });
+}
+
 /** Extract the first balanced top-level JSON object from text. */
 export function extractJSON(text) {
   if (!text) return null;
