@@ -25,7 +25,8 @@ export function normalizeKiroModel(model) {
 
 const BUILTIN = {
   claude: (prompt, model) => ['claude', ['-p', ...(model ? ['--model', model] : []), prompt]],
-  codex: (prompt, model) => ['codex', ['exec', ...(model ? ['--model', model] : []), prompt]],
+  // --sandbox read-only matches the streaming codex path: review/cross prompts never edit the repo.
+  codex: (prompt, model) => ['codex', ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', ...(model ? ['--model', model] : []), prompt]],
   agy: (prompt, model) => ['agy', ['-p', ...(model ? ['--model', model] : []), prompt]], // Antigravity CLI (formerly gemini)
   cursor: (prompt, model) => ['cursor-agent', ['-p', '-f', ...(model ? ['--model', model] : []), prompt]], // -f bypasses workspace-trust
   kiro: (prompt, model) => {
@@ -49,7 +50,7 @@ function overridePath(name) {
   return process.env[`X_PANEL_CMD_${name.toUpperCase()}`] || null;
 }
 
-function resolveCommand(name, prompt, model) {
+export function resolveCommand(name, prompt, model) {
   const override = overridePath(name);
   if (override) {
     // override is a node script invoked as: node <script> <name> <prompt>
