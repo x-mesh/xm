@@ -123,6 +123,7 @@ Primitive Options:
   --role <name>                  Agent role/description
   --roles "r1,r2,r3"             Per-agent role presets (comma-separated)
   --context <text>               Additional context to inject
+  --cross-vendor                 Run each agent on a different model vendor (fan-out/broadcast)
 
 Autonomous Options:
   --agents N                     Number of agents (default 3; consensus: 4)
@@ -178,6 +179,7 @@ From `$ARGUMENTS`:
 - `--role <name>` = agent role description (default: "agent")
 - `--roles "se,sre,security"` = per-agent role presets (comma-separated)
 - `--context <text>` = additional context injection
+- `--cross-vendor` = run each agent on a different model vendor via `xm panel cross` (opt-in, graceful single-vendor fallback) — see `references/cross-vendor.md`
 
 ### --roles option
 
@@ -302,6 +304,7 @@ From `$ARGUMENTS`:
 - `--roles "security,performance,logic"` = per-agent roles (comma-separated)
 - `--model` = model
 - `--context` = common context
+- `--cross-vendor` = pair each role with a different model vendor via `xm panel cross` — see `references/cross-vendor.md`
 
 When preset names are used in `--roles`, the corresponding specialized prompts are automatically injected.
 
