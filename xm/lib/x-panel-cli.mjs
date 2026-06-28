@@ -76,7 +76,10 @@ function diffFiles(diffText) {
 
 /** A meaningful, human-readable title for a panel run (not the timestamp run id). */
 function targetTitle(target) {
-  if (target.kind === 'literal') return compactTitle(target.text, 80);
+  // literal targets are user-pasted text that may contain secrets — redact BEFORE truncating,
+  // so a secret straddling the 80-char cut can't leak a fragment too short for the redaction
+  // regex to match. `[redacted]` tokens are short, so truncating after redaction is safe.
+  if (target.kind === 'literal') return compactTitle(redactPanelText(target.text), 80);
   if (target.kind === 'file' && target.ref) return `Review ${target.ref.split('/').pop()}`;
   if (target.kind === 'git-diff') {
     const files = diffFiles(target.text);
@@ -91,8 +94,22 @@ function targetTitle(target) {
 function parseFlags(raw) {
   const flags = {};
   const pos = [];
+  // --key=value long-option form: unlike the space-separated form below, the value may legitimately
+  // start with '--' (e.g. --prompt='-- note: ...'). Maps each value-flag to its stored key.
+  const valueFlags = {
+    '--models': 'models', '-m': 'models', '--judge': 'judge', '--preset': 'preset',
+    '--review-prompt-file': 'reviewPromptFile', '--review-prompt': 'reviewPrompt',
+    '--lens-tag': 'lensTag', '--prompt-file': 'promptFile', '--prompt': 'prompt',
+  };
   for (let i = 0; i < raw.length; i++) {
     const a = raw[i];
+    if (a.startsWith('--') && a.includes('=')) {
+      const eq = a.indexOf('=');
+      const key = a.slice(0, eq), val = a.slice(eq + 1);
+      if (key === '--timeout') { flags.timeout = parseInt(val, 10) || undefined; continue; }
+      if (valueFlags[key]) { flags[valueFlags[key]] = val; continue; }
+      // unknown --key=value → fall through to positional handling below
+    }
     if (a === '--json') flags.json = true;
     else if (a === '--models' || a === '-m') flags.models = raw[++i];
     else if (a === '--judge') flags.judge = raw[++i];

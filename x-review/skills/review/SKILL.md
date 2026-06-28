@@ -241,8 +241,10 @@ Phase 3 (cross-vendor) replaces the Claude fan-out with:
    vendor(s) installed (<list>) — running single-vendor; install codex/cursor for cross-vendor."
 3. **Per-lens cross-vendor review.** Cost = lenses × vendors × 2 rounds, so default to `--preset
    quick` (security + logic) unless the user widens it; announce the model set + rough cost first.
-   - **Use the detected vendors** — pass `--models <the `available` list from step 1>`, NOT a
+   - **Use the detected vendors** — derive `--models` from step 1's `available` array, NOT a
      hardcoded set (a fixed `claude,codex,cursor` fails when the user has, say, claude+kiro).
+     `available` is a JSON array, so comma-join it with `jq` (piping the raw array through
+     `tr` leaves the brackets/quotes in place and breaks `--models`).
    - **Pass the Phase-1 target explicitly** — write the diff/target that Phase 1 (TARGET) resolved
      to a temp file and pass it as the panel target, so the review scope matches (do NOT rely on
      `xm panel`'s default `git diff HEAD`, which may differ from a PR / file / ref target).
@@ -252,7 +254,7 @@ Phase 3 (cross-vendor) replaces the Claude fan-out with:
    xm panel <phase1-target-tmp> \
      --review-prompt-file <lens-prompt-tmp> \
      --lens-tag <lens> \
-     --models "$(echo <available> | tr ' ' ',')" --json
+     --models "$(xm panel detect --json | jq -r '.available | join(",")')" --json
    ```
    Each run writes `.xm/review/<run>/verdict.json` (consensus[], confirmed[], contested[], by_model, usage).
 4. **Synthesize (Phase 4)** across lenses, feeding into the standard Phase 4 pipeline (CoVe /

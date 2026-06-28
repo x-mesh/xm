@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus } from '../x-panel/lib/x-panel/synth.mjs';
-import { extractJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand } from '../x-panel/lib/x-panel/adapters.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
 const STUB = join(import.meta.dirname, 'fixtures', 'panel-stub-model.mjs');
@@ -227,6 +227,13 @@ describe('structured streaming (adapters)', () => {
     expect(streamCommand('kiro')).toBeNull(); // no structured streaming
   });
 
+  test('raw codex command is also --sandbox read-only (cross/review path, matches streaming)', () => {
+    const codex = resolveCommand('codex', 'p', null);
+    expect(codex[0]).toBe('codex');
+    expect(codex[1].join(' ')).toContain('--sandbox read-only'); // invokeProviderText path can't edit the repo
+    expect(codex[1]).toContain('--skip-git-repo-check');
+  });
+
   test('supportsStream: structured providers yes, kiro/agy no', () => {
     expect(supportsStream('claude')).toBe(true);
     expect(supportsStream('codex')).toBe(true);
@@ -401,6 +408,12 @@ If there are no real issues, return {"findings":[]}.`;
     expect(r.status).not.toBe(0);
   });
 
+  test('--prompt=<value> accepts a prompt that starts with -- (long-option form)', () => {
+    const r = panelRaw(['cross', '--models', 'claude,codex', '--prompt=-- note: argue PRO', '--json']);
+    expect(r.status).toBe(0); // the leading -- is part of the value, not treated as a missing prompt
+    expect(JSON.parse(r.stdout).results.length).toBe(2);
+  });
+
   test('cross warns (not silent) when a requested vendor is unknown/unavailable', () => {
     const r = panelRaw(['cross', '--models', 'claude,bogusvendor', '--prompt', 'hi', '--json']);
     expect(r.status).toBe(0);
@@ -457,6 +470,22 @@ describe('review (stubbed models)', () => {
     expect(v.target_title).toBe('Find SQL injection and N+1 issues'); // literal target
     const st = JSON.parse(readFileSync(join(latestRunDir(), 'status.json'), 'utf8'));
     expect(st.target_title).toBe(v.target_title); // live status carries it too
+  });
+
+  test('literal target_title redacts secrets before storing/displaying it', () => {
+    const r = review(['review this api_key=sk-abcdef1234567890 leak']);
+    expect(r.status).toBe(0);
+    const v = latestVerdict();
+    expect(v.target_title).not.toContain('sk-abcdef1234567890'); // secret never reaches the title
+    expect(v.target_title).toContain('[redacted]');
+  });
+
+  test('literal target_title redacts BEFORE truncating (secret straddling the 80-char cut)', () => {
+    // Secret positioned so truncate-then-redact would slice it to a fragment too short for the
+    // redaction regex; redact-then-truncate must catch the whole secret regardless of position.
+    const r = review(['x'.repeat(72) + ' sk-DEADBEEFCAFE1234567890 tail']);
+    expect(r.status).toBe(0);
+    expect(latestVerdict().target_title).not.toContain('sk-DEADBEEF'); // no leaked fragment
   });
 
   test('git-diff target_title summarizes the diff (not a timestamp)', () => {
