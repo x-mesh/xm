@@ -5,9 +5,15 @@
  * Returns deterministic JSON so x-panel's flow can be tested without real models.
  * Wraps output in noise to exercise extractJSON.
  */
+import { writeFileSync } from 'node:fs';
 const [model, prompt = ''] = process.argv.slice(2);
 const stream = process.argv.includes('--stream'); // resolveStreamCommand appends --stream
 const isRefute = /verdicts/i.test(prompt);
+
+// Test hook: dump the exact round-1 prompt the model received (for snapshot/override tests).
+if (process.env.X_PANEL_DUMP_R1 && !isRefute) {
+  try { writeFileSync(process.env.X_PANEL_DUMP_R1, prompt); } catch { /* best-effort */ }
+}
 const envModel = String(model || '').toUpperCase().replace(/[^A-Z0-9_]/g, '_');
 
 // Emit a payload as provider-shaped stream-json/JSONL so the structured path

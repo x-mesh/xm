@@ -38,6 +38,30 @@ is a tool-neutral CLI, so the "leader" is not a fixed model.
 >
 > **Forbidden:** `XP="node ..."; $XP review` — zsh treats the quoted string as one command and fails.
 
+## Programmatic API (for other plugins — cross-vendor review)
+
+The panel engine is reusable by other skills via the dispatcher (no imports — cache-safe).
+A consumer (e.g. x-review's opt-in cross-vendor mode) probes availability, then drives a
+review with its own per-lens prompt:
+
+```bash
+# Probe availability first → decide single-vendor fallback (need ≥2) BEFORE spending tokens:
+xm panel detect --json          # {"available":[...installed CLIs],"known":[...]}
+
+# Drive a review with a custom per-lens prompt (--lens-tag flows to the verdict).
+# Each backslash is the LAST char on its line — copy as-is. Or use --review-prompt - for stdin.
+xm panel <target> \
+  --review-prompt-file lens.txt \
+  --lens-tag security \
+  --models claude,codex,cursor --json
+```
+
+- The override replaces only the round-1 reviewer intro; a fixed output contract is appended
+  so findings always come back JSON-shaped regardless of what the lens prompt asks for.
+- round-2 (refute) is unchanged. Injected (review-mode) runs write to `.xm/review/<run>/`,
+  separate from native `.xm/panel/` history.
+- These flags are programmatic plumbing — interactive `/xm:panel` users don't need them.
+
 ## Core Process
 
 Route by what the user gave you.

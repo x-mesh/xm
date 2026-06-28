@@ -12,7 +12,7 @@
 
 const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
-export function normalizeFindings(raw) {
+export function normalizeFindings(raw, lens = null) {
   const arr = raw && Array.isArray(raw.findings) ? raw.findings : [];
   return arr
     .map((f, i) => ({
@@ -22,6 +22,10 @@ export function normalizeFindings(raw) {
       line: f.line ?? null,
       claim: String(f.claim || f.summary || '').trim(),
       evidence: String(f.evidence || '').trim(),
+      // Operator-supplied lens tag is authoritative — a model's own `lens` field must NOT
+      // override it (would let model output spoof lens attribution). Falls back to model's
+      // lens only when no tag was supplied.
+      lens: lens ?? f.lens ?? null,
     }))
     .filter(f => f.claim);
 }
@@ -120,12 +124,14 @@ export function mergeConsensus(findings, { lineTolerance = 2 } = {}) {
     const severity = c.members
       .map(m => m.severity)
       .sort((a, b) => (SEV_RANK[a] ?? 9) - (SEV_RANK[b] ?? 9))[0]; // highest severity wins
+    const lenses = [...new Set(c.members.map(m => m.lens).filter(Boolean))];
     return {
       severity,
       file: c.file,
       line: c.line,
       consensus: models.length,
       models,
+      lenses, // review lenses that surfaced this cluster (empty in non-review mode)
       claims: c.members.map(m => ({ model: m.owner, severity: m.severity, claim: m.claim })),
     };
   }).sort((a, b) => (b.consensus - a.consensus) || ((SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9)));
