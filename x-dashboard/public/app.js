@@ -4753,9 +4753,12 @@ async function refreshPanel() {
     const modelLine = models.map((m) =>
       `${icon(m.state)} ${esc(m.label)}${m.elapsed_s != null ? ` (${m.elapsed_s}s)` : ''}`).join('   ');
     const c = r.verdict && r.verdict.counts;
-    const summary = c
+    const totals = (r.verdict && r.verdict.usage && r.verdict.usage.totals) || (st && st.totals) || null;
+    const costStr = totals ? panelFmtCost(totals.cost_usd) : null;
+    const summary = (c
       ? `${c.unique} issue(s) · ${c.contested} contested${c.unreviewed ? ` · ${c.unreviewed} unreviewed` : ''}`
-      : (live ? 'in progress…' : stalled ? 'stalled — no update' : '');
+      : (live ? 'in progress…' : stalled ? 'stalled — no update' : ''))
+      + (costStr ? ` · ${costStr}` : '');
     return `<div class="card" style="margin-bottom:0.75rem;cursor:pointer" onclick="window.location.hash='#/panel/${hashEnc(r.run)}'">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <strong style="font-size:0.85rem">${esc(r.run)}</strong>
@@ -4786,6 +4789,52 @@ function panelStanceBadge(stance) {
   const s = String(stance || '').toLowerCase();
   const cls = s === 'concede' ? 'badge-amber' : s === 'refute' ? 'badge-red' : 'badge-gray';
   return `<span class="badge ${cls}">${escapeHtmlHumble(stance || '—')}</span>`;
+}
+
+function panelEventBadge(type) {
+  const t = String(type || 'event');
+  const cls = t.includes('error') || t.includes('missing') || t === 'timeout' ? 'badge-red'
+    : t === 'stderr' ? 'badge-amber'
+    : t === 'stdout' || t === 'json_parsed' || t === 'model_done' || t === 'run_done' ? 'badge-green'
+    : t.includes('start') || t === 'spawn' ? 'badge-blue'
+    : 'badge-gray';
+  return `<span class="badge ${cls}">${escapeHtmlHumble(t)}</span>`;
+}
+
+function panelEventTime(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (!Number.isFinite(d.getTime())) return '';
+  return d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function panelStreamBlock(label, text, bytes) {
+  if (!text) return '';
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const meta = bytes ? ` · ${bytes} bytes` : '';
+  return `<div class="panel-live-stream">
+    <div class="panel-live-stream-head">${esc(label)}${esc(meta)}</div>
+    <pre>${esc(text)}</pre>
+  </div>`;
+}
+
+function panelEventRows(events) {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  return (events || []).slice(-30).reverse().map((ev) => {
+    const body = ev.text ? `<pre>${esc(ev.text)}</pre>` : '';
+    const meta = [
+      panelEventTime(ev.at),
+      ev.model,
+      ev.phase,
+      ev.bytes ? `${ev.bytes} bytes` : '',
+      ev.code != null ? `exit ${ev.code}` : '',
+      ev.error || '',
+    ].filter(Boolean).map(esc).join(' · ');
+    return `<div class="panel-event-row">
+      <div class="panel-event-meta">${panelEventBadge(ev.type)}<span>${meta}</span></div>
+      ${body}
+    </div>`;
+  }).join('');
 }
 
 // One finding (confirmed/contested/unreviewed) with its opponents' round2 stances.
@@ -4824,6 +4873,113 @@ function panelConsensusCard(c, modelCount) {
   </div>`;
 }
 
+// ── usage/cost formatting (structured streaming) ──────────────────────
+function panelFmtCost(usd) {
+  const n = Number(usd);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n >= 0.01 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`;
+}
+function panelFmtTokens(t) {
+  if (!t) return null;
+  const parts = [];
+  if (t.input) parts.push(`in ${Number(t.input).toLocaleString()}`);
+  if (t.output) parts.push(`out ${Number(t.output).toLocaleString()}`);
+  if (t.cached) parts.push(`cache ${Number(t.cached).toLocaleString()}`);
+  if (t.reasoning) parts.push(`reason ${Number(t.reasoning).toLocaleString()}`);
+  return parts.length ? parts.join(' · ') : null;
+}
+// Compact cost/tokens/credits chips for one model (renders '' when nothing tracked,
+// so raw-mode/non-stream runs degrade gracefully to no usage UI).
+function panelUsageBadges(u) {
+  if (!u) return '';
+  const esc = (val) => escapeHtmlHumble(String(val ?? ''));
+  const out = [];
+  const cost = panelFmtCost(u.cost_usd);
+  if (cost) out.push(`<span class="badge badge-green" title="cost (USD)">${cost}</span>`);
+  if (u.credits != null && Number(u.credits) > 0) out.push(`<span class="badge badge-amber" title="credits">${esc(Number(u.credits).toFixed(2))} cr</span>`);
+  const tok = panelFmtTokens(u.tokens);
+  if (tok) out.push(`<span class="text-muted" style="font-size:.72rem">${esc(tok)}</span>`);
+  return out.join(' ');
+}
+function panelPhaseBadge(phaseLabel) {
+  const p = String(phaseLabel || '');
+  if (p === 'thinking') return `<span class="badge badge-blue" style="font-size:.7rem">thinking…</span>`;
+  if (p === 'responding') return `<span class="badge badge-green" style="font-size:.7rem">responding…</span>`;
+  return '';
+}
+// Panel-wide cost chip from either the final verdict or the live status totals.
+function panelTotalChip(totals) {
+  if (!totals) return '';
+  const cost = panelFmtCost(totals.cost_usd);
+  const credits = (totals.credits && Number(totals.credits) > 0) ? `${Number(totals.credits).toFixed(2)} cr` : '';
+  if (!cost && !credits) return '';
+  return `<span class="badge badge-green" title="panel total cost">Σ ${[cost, credits].filter(Boolean).join(' · ')}</span>`;
+}
+
+// Turn a model's raw output (JSON findings/verdicts, partial JSON mid-stream, or
+// plain text) into a clean human-readable message — never raw JSON braces.
+function panelCleanMessage(raw, max = 1400) {
+  let s = String(raw || '').replace(/\x1b\[[0-9;]*[mGKH]/g, '').trim(); // strip ANSI (kiro)
+  if (!s) return '';
+  // 1) complete JSON → format findings / verdicts as lines
+  let obj = null;
+  try { obj = JSON.parse(s); } catch { /* partial or non-JSON */ }
+  if (obj && Array.isArray(obj.findings)) {
+    return obj.findings.map((f) => `• [${f.severity || '?'}] ${f.claim || ''}`).join('\n').slice(0, max);
+  }
+  if (obj && Array.isArray(obj.verdicts)) {
+    return obj.verdicts.map((v) => `• ${v.ref || ''} ${v.stance || ''} — ${v.reason || ''}`).join('\n').slice(0, max);
+  }
+  // 2) partial/streaming JSON → pull the human-readable string values out
+  const found = [];
+  const re = /"(?:claim|reason|evidence|text)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+  let m;
+  while ((m = re.exec(s)) && found.length < 40) {
+    try { found.push(JSON.parse('"' + m[1] + '"')); } catch { found.push(m[1]); }
+  }
+  if (found.length) return found.map((t) => `• ${t}`).join('\n').slice(0, max);
+  // 3) not JSON at all (agy prose, kiro plain) → show as-is
+  return s.slice(0, max);
+}
+
+// One model tile for the top live grid — header (state/phase/cost) + a CLEANED body.
+function panelModelTile(label, ms, m, running, vUsage, runDone) {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const r1 = m.r1 || {}, r2 = m.r2 || {};
+  const state = ms.state || (m.r1 ? (r1.ok ? 'done' : 'failed') : (running ? 'running' : (runDone ? 'done' : 'unknown')));
+  const stateBadge = state === 'done' ? '<span class="badge badge-green">done</span>'
+    : state === 'failed' ? '<span class="badge badge-red">error</span>'
+    : state === 'running' ? '<span class="badge badge-yellow">running</span>'
+    : '<span class="badge badge-gray">pending</span>';
+  const phaseBadge = state === 'running' ? panelPhaseBadge(ms.phase_label) : '';
+  const usage = vUsage || (ms.cum_tokens && (Number(ms.cum_cost_usd) > 0 || ms.cum_tokens.input) ? { cost_usd: ms.cum_cost_usd, credits: ms.cum_credits, tokens: ms.cum_tokens } : null);
+  const usageBadges = panelUsageBadges(usage);
+  const elapsed = ms.elapsed_s != null ? `<span class="text-muted" style="font-size:.72rem">${ms.elapsed_s}s</span>` : '';
+
+  // Body: live cleaned message while running; clean findings summary when done; error if failed.
+  let body, cls = '';
+  if (state === 'running') {
+    const live = panelCleanMessage(ms.stdout_tail);
+    body = live ? esc(live) : `<span class="text-muted">${esc(ms.phase_label || 'working')}…</span>`;
+    cls = 'streaming';
+  } else if (state === 'failed') {
+    body = `<span style="color:var(--danger,#c00)">${esc(r1.error || r2.error || ms.error || 'failed')}</span>`;
+  } else if ((r1.findings || []).length) {
+    body = esc(r1.findings.map((f) => `• [${f.severity}] ${f.claim}`).join('\n'));
+  } else {
+    const clean = panelCleanMessage(ms.stdout_tail);
+    body = clean ? esc(clean) : '<span class="text-muted">no findings</span>';
+  }
+  return `<div class="panel-tile">
+    <div class="panel-tile-head">
+      <strong style="font-size:.82rem">${esc(label)}</strong>
+      ${stateBadge}${phaseBadge}${elapsed}
+      ${usageBadges ? `<span style="margin-left:auto;display:flex;gap:5px;align-items:center;flex-wrap:wrap">${usageBadges}</span>` : ''}
+    </div>
+    <div class="panel-tile-body ${cls}">${body}</div>
+  </div>`;
+}
+
 let _panelDetailToken = 0;
 async function renderPanelDetail(run) {
   // Each call (navigation OR poll) takes a fresh token; a stale poll callback whose
@@ -4845,6 +5001,7 @@ async function renderPanelDetail(run) {
   const v = res.verdict;
   const st = res.status;
   const rounds = res.rounds || [];
+  const events = res.events || [];
   const running = panelIsLive(st) && !v;
   const stalled = !!(st && st.phase !== 'done') && !running && !v;
 
@@ -4861,9 +5018,12 @@ async function renderPanelDetail(run) {
       const cls = m.state === 'done' ? 'color:var(--success,#2a2)' : m.state === 'failed' ? 'color:var(--danger,#c00)' : 'color:var(--warning,#d80)';
       return `<span style="${cls}">${icon(m.state)} ${esc(m.label)}${m.elapsed_s != null ? ` <span class="text-muted">(${m.elapsed_s}s)</span>` : ''}</span>`;
     }).join('  ');
+    const totals = (v && v.usage && v.usage.totals) || (st && st.totals) || null;
+    const totalChip = panelTotalChip(totals);
     return `<div style="font-size:.82rem;padding:.5rem .75rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;margin-bottom:1rem;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
       <span class="text-muted">${esc(phase)}${liveBadge}</span>
       <span style="display:flex;gap:14px;flex-wrap:wrap">${modelTags}</span>
+      ${totalChip ? `<span style="margin-left:auto">${totalChip}</span>` : ''}
     </div>`;
   })();
 
@@ -4899,6 +5059,16 @@ async function renderPanelDetail(run) {
     return [...new Set([...fromRounds, ...fromStatus, ...fromVerdict])];
   })();
 
+  // Top live grid — one cleaned tile per model ([claude][codex] / [cursor][agy]).
+  const liveGridHtml = modelKeys.length ? (() => {
+    const roundMap = Object.fromEntries(rounds.map((r) => [r.label, r]));
+    const statusMap = Object.fromEntries((st && st.models || []).map((m) => [m.label, m]));
+    const vUsage = (v && v.usage && v.usage.by_model) || {};
+    const runDone = !running && !!v; // completed run (even if a model lacks status/rounds)
+    const tiles = modelKeys.map((label) => panelModelTile(label, statusMap[label] || {}, roundMap[label] || {}, running, vUsage[label], runDone)).join('');
+    return `<div class="panel-live-grid">${tiles}</div>`;
+  })() : '';
+
   const modelCardsHtml = modelKeys.length ? (() => {
     const roundMap = Object.fromEntries(rounds.map((r) => [r.label, r]));
     const statusMap = Object.fromEntries((st && st.models || []).map((m) => [m.label, m]));
@@ -4909,6 +5079,7 @@ async function renderPanelDetail(run) {
       const state = ms.state || (m.r1 ? (r1.ok ? 'done' : 'failed') : (running ? 'running' : 'unknown'));
       const elapsed = ms.elapsed_s;
       const err = r1.error || r2.error;
+      const statusErr = ms.error && ms.error !== err ? ms.error : '';
       const phase = String((st && st.phase) || '');
       const isRound1 = phase.startsWith('round1');
       const isRound2 = phase.startsWith('round2');
@@ -4955,21 +5126,39 @@ async function renderPanelDetail(run) {
           ${f2Items || '<div class="text-muted" style="font-size:.78rem;padding:4px 0">none</div>'}
         </div>` : '';
       const liveNoteSection = liveNote ? `<div class="text-muted" style="font-size:.78rem;margin-top:8px;font-style:italic">${esc(liveNote)}</div>` : '';
+      const lastEvent = ms.last_event ? `<span class="text-muted" style="font-size:.78rem">· ${esc(ms.last_event)}</span>` : '';
+      // The live message now lives in the top grid (cleaned); stderr is surfaced only on error.
+      const liveStreams = (state === 'failed' && ms.stderr_tail) ? panelStreamBlock('stderr', ms.stderr_tail, ms.stderr_bytes) : '';
+
+      // Per-model usage: final verdict (authoritative) → live cumulative from status.
+      const vModelUsage = (v && v.usage && v.usage.by_model) ? v.usage.by_model[label] : null;
+      const liveCum = (ms.cum_tokens && (Number(ms.cum_cost_usd) > 0 || Number(ms.cum_credits) > 0 || ms.cum_tokens.input || ms.cum_tokens.output))
+        ? { cost_usd: ms.cum_cost_usd, credits: ms.cum_credits, tokens: ms.cum_tokens } : null;
+      const usageBadges = panelUsageBadges(vModelUsage || liveCum);
+      const phaseBadge = (state === 'running') ? panelPhaseBadge(ms.phase_label) : '';
 
       return `<div style="margin-bottom:.75rem;border:1px solid var(--border);border-radius:6px;overflow:hidden">
-        <div style="padding:8px 12px;background:var(--surface);display:flex;gap:8px;align-items:center">
+        <div style="padding:8px 12px;background:var(--surface);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <strong style="font-size:.85rem">${esc(label)}</strong>
           ${stateBadge}
+          ${phaseBadge}
           ${elapsed != null ? `<span class="text-muted" style="font-size:.78rem">${elapsed}s</span>` : ''}
           ${err ? `<span style="color:var(--danger,#c00);font-size:.78rem">· ${esc(err)}</span>` : ''}
+          ${statusErr ? `<span style="color:var(--danger,#c00);font-size:.78rem">· ${esc(statusErr)}</span>` : ''}
+          ${lastEvent}
+          ${usageBadges ? `<span style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap">${usageBadges}</span>` : ''}
         </div>
-        ${(r1Section || r2Section || liveNoteSection) ? `<div style="padding:4px 12px 10px">${r1Section}${r2Section}${liveNoteSection}</div>` : ''}
+        ${(r1Section || r2Section || liveNoteSection || liveStreams) ? `<div style="padding:4px 12px 10px">${r1Section}${r2Section}${liveNoteSection}${liveStreams}</div>` : ''}
       </div>`;
     }).join('');
   })() : '';
 
   const modelsSection = modelCardsHtml
     ? `<h2 style="font-size:.95rem;margin:1.1rem 0 .4rem">Per-model <span class="text-muted" style="font-size:.75rem;font-weight:400">round1 findings · round2 verdicts</span></h2>${modelCardsHtml}`
+    : '';
+  const eventsSection = events.length
+    ? `<h2 style="font-size:.95rem;margin:1.1rem 0 .4rem">Live events <span class="text-muted" style="font-size:.75rem;font-weight:400">latest ${Math.min(30, events.length)} of ${events.length}</span></h2>
+      <div class="panel-event-list">${panelEventRows(events)}</div>`
     : '';
 
   const prevScroll = window.scrollY;
@@ -4981,7 +5170,7 @@ async function renderPanelDetail(run) {
       </div>
       <h1 style="margin-top:.5rem">Panel — ${esc(run)}</h1>
     </div>
-    ${phaseBar}${verdictHtml}${modelsSection}`;
+    ${phaseBar}${liveGridHtml}${verdictHtml}${modelsSection}${eventsSection}`;
   window.scrollTo(0, prevScroll);
 
   // Re-poll only if this render is still the latest (token) AND we're still on this

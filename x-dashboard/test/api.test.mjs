@@ -27,6 +27,8 @@ const XM_ROOT = join(PROJECT_ROOT, '.xm');
 
 const TEST_PROJECT_SLUG = 'test-dashboard-api-fixture';
 const TEST_SOLVER_SLUG = 'test-solver-api-fixture';
+const TEST_PANEL_RUN = 'panel-api-live-fixture';
+const TEST_PANEL_DONE_RUN = 'panel-api-done-fixture';
 
 /** Track only the top-level dirs we create so teardown is safe */
 const FIXTURE_ROOTS = [];
@@ -136,6 +138,60 @@ function setupFixtures() {
     ].join('\n') + '\n');
     FIXTURE_ROOTS.push(sessionsPath);
   }
+
+  // ── panel live fixture ──────────────────────────────────────────────
+  const panelRunDir = join(XM_ROOT, 'panel', TEST_PANEL_RUN);
+  ensureDir(panelRunDir);
+  FIXTURE_ROOTS.push(panelRunDir);
+  writeJSON(join(panelRunDir, 'status.json'), {
+    run: TEST_PANEL_RUN,
+    phase: 'round1 (review)',
+    updated_at: new Date().toISOString(),
+    models: [
+      {
+        label: 'claude',
+        provider: 'claude',
+        state: 'running',
+        elapsed_s: 3,
+        last_event: 'stdout +24 bytes',
+        stdout_bytes: 24,
+        stderr_bytes: 0,
+        stdout_tail: '{"findings":[]}',
+        stderr_tail: '',
+      },
+    ],
+  });
+  writeJSON(join(panelRunDir, 'claude.r1.json'), {
+    model: 'claude',
+    ok: true,
+    error: null,
+    findings: [],
+    raw: '{"findings":[]}',
+  });
+  writeFileSync(join(panelRunDir, 'events.jsonl'), [
+    JSON.stringify({ seq: 1, at: new Date().toISOString(), type: 'run_start', phase: 'starting', models: ['claude'] }),
+    JSON.stringify({ seq: 2, at: new Date().toISOString(), type: 'stdout', phase: 'round1 (review)', model: 'claude', bytes: 24, text: '{"findings":[]}' }),
+  ].join('\n') + '\n');
+
+  // ── panel completed fixture (structured streaming usage/cost) ─────────
+  const panelDoneDir = join(XM_ROOT, 'panel', TEST_PANEL_DONE_RUN);
+  ensureDir(panelDoneDir);
+  FIXTURE_ROOTS.push(panelDoneDir);
+  writeJSON(join(panelDoneDir, 'verdict.json'), {
+    run: TEST_PANEL_DONE_RUN,
+    created_at: new Date().toISOString(),
+    stream: true,
+    counts: { confirmed: 1, contested: 0, unreviewed: 0, unique: 1 },
+    models: ['claude', 'codex'],
+    usage: {
+      totals: { cost_usd: 0.42, credits: 0, tokens: { input: 1000, output: 100, cached: 50, reasoning: 10 } },
+      by_model: {
+        claude: { tokens: { input: 600, output: 60, cached: 30, reasoning: 0 }, cost_usd: 0.3, credits: 0 },
+        codex: { tokens: { input: 400, output: 40, cached: 20, reasoning: 10 }, cost_usd: 0.12, credits: 0 },
+      },
+    },
+    consensus: [], confirmed: [], contested: [], unreviewed: [],
+  });
 }
 
 function teardownFixtures() {
@@ -398,6 +454,34 @@ describe('GET /api/solver/:slug', () => {
   it('returns 400 for invalid slug (dot)', async () => {
     const { res } = await getJSON('/api/solver/foo.bar');
     expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /api/panel/:run', () => {
+  it('returns status, rounds, and live events for a panel run', async () => {
+    const { res, body } = await getJSON(`/api/panel/${TEST_PANEL_RUN}`);
+    expect(res.status).toBe(200);
+    expect(body.status.phase).toBe('round1 (review)');
+    expect(body.rounds[0].label).toBe('claude');
+    expect(body.events.some(ev => ev.type === 'stdout' && ev.model === 'claude')).toBe(true);
+  });
+
+  it('exposes verdict.usage (totals + by_model) for a completed run', async () => {
+    const { res, body } = await getJSON(`/api/panel/${TEST_PANEL_DONE_RUN}`);
+    expect(res.status).toBe(200);
+    expect(body.verdict.usage.totals.cost_usd).toBeCloseTo(0.42, 5);
+    expect(body.verdict.usage.by_model.claude.cost_usd).toBeCloseTo(0.3, 5);
+    expect(body.verdict.usage.by_model.codex.tokens.reasoning).toBe(10);
+  });
+});
+
+describe('GET /api/panel (list)', () => {
+  it('includes per-run usage totals so the list can show cost', async () => {
+    const { res, body } = await getJSON('/api/panel');
+    expect(res.status).toBe(200);
+    const done = (body.runs || []).find((r) => r.run === TEST_PANEL_DONE_RUN);
+    expect(done).toBeTruthy();
+    expect(done.verdict.usage.totals.cost_usd).toBeCloseTo(0.42, 5);
   });
 });
 
