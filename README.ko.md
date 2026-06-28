@@ -36,6 +36,7 @@
 - [설치](#설치)
 - [빠른 시작](#빠른-시작)
 - [왜 xm인가?](#왜-xm인가)
+- [크로스-벤더 검증](#크로스-벤더-검증)
 - [플러그인](#플러그인) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-dashboard](#x-dashboard) · [x-humanize](#x-humanize) · [x-recall](#x-recall) · [x-panel](#x-panel)
 - [품질 & 학습 파이프라인](#품질--학습-파이프라인)
 - [아키텍처](#아키텍처)
@@ -353,6 +354,26 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 | `dimension-anchors.md` | x-op 전략, x-review lens, x-eval rubric |
 | `self-score-protocol.md` | 모든 x-op 전략, x-agent solve/consensus |
 | `finding-severity.md` | x-review, CLAUDE.md 코드 리뷰 원칙 |
+
+---
+
+## 크로스-벤더 검증
+
+단일 벤더 AI 하네스는 — Claude Code 자체의 `/code-review ultra`를 포함해 — 한 모델 패밀리만 오케스트레이션합니다. 경쟁사 모델로 자기 작업을 검증하는 것이 구조적으로 불가능합니다. xm은 가능합니다: 외부 모델 CLI(claude + codex + cursor + agy + kiro)를 직접 spawn하므로, finding·계획·점수·가설을 *서로 다른* 모델 패밀리로 적대 검증할 수 있습니다. 벤더마다 사각지대가 다릅니다 — 벤더 간 합의는 진짜 신뢰도이고, 한 벤더만의 반대는 종종 다른 패밀리가 조용히 출시했을 사각지대입니다.
+
+하나의 엔진(`xm panel cross`)이 모든 계층을 떠받칩니다. `--cross-vendor`는 **어디서나 opt-in**이며 CLI가 2개 미만 설치된 경우 단일 벤더로 우아하게 폴백합니다 — 단일 벤더가 빠르고 저렴한 기본값으로 유지됩니다:
+
+| 계층 | 플러그인 | `--cross-vendor`가 하는 일 |
+|------|----------|---------------------------|
+| Primitive | x-agent fan-out/broadcast | 병렬 에이전트 각각을 다른 벤더에서 실행 |
+| 생성 | x-solver | 후보/가설을 여러 모델 패밀리로 생성 |
+| 계획 | x-build consensus | architect/critic/planner/security 역할을 벤더별로 분산 |
+| 심의 | x-op debate/council | PRO/CON/JUDGE가 진짜 다른 모델 |
+| 리뷰 | x-review | finding 교차 검증 — 합의 vs 다양성 |
+| 평가 | x-eval | 다른 벤더의 심판으로 편향 완화 채점 |
+| 엔진 | x-panel | 크로스-모델 적대 패널 그 자체 |
+
+이것은 오늘 사용 가능한 *능력*입니다. 이 능력이 측정 가능한 더 나은 성과를 낸다는 입증은 별개의 진행 중 과제입니다 (`docs/strategy/xm-differentiation.md` 참조).
 
 ---
 
@@ -973,6 +994,8 @@ xm panel setup --models codex,agy --global   # 기본값 저장
 `name:model`로 모델별 `--model`, named `presets`, 병렬 호출, 결과는 `.xm/panel/`에 저장(`xm recall`로 조회). 모델마다 사각지대가 다른 게 핵심입니다.
 
 `--stream`은 모델별 실측 토큰·비용을 캡처하고 각 모델 출력을 라이브로 흘립니다 — claude/cursor는 토큰 단위(`--partial`, 기본 on, 초대형 타깃에선 자동 off), codex는 도착하는 대로. x-dashboard Panel 뷰는 모델별 라이브 그리드(정제된 메시지·단계·누적 비용)로 렌더합니다. timeout은 타깃 크기에 따라 자동 상향(`--timeout`으로 고정).
+
+`xm panel cross`는 이 엔진을 재사용 가능한 primitive로 노출합니다 — N개 벤더에 한 프롬프트, 각 벤더의 원시 출력 반환 — 이것이 x-agent·x-solver·x-build·x-op·x-review·x-eval의 opt-in `--cross-vendor` 모드를 떠받칩니다. [크로스-벤더 검증](#크로스-벤더-검증) 참조.
 
 ---
 
