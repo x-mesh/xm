@@ -183,6 +183,7 @@ See `references/x-op-auto-route.md` for execution flow and worked examples.
 - `--preset consensus` — compose preset: `persona | council`
 - `--agents N` — Number of participating agents (default: shared config's agent_max_count (default 4). Overrides when specified)
 - `--model sonnet|opus|haiku` — Agent model (default sonnet)
+- `--cross-vendor` — debate/council only: assign roles/positions to different model vendors (claude+codex+cursor…) via `xm panel cross`. Opt-in; single-vendor fallback when <2 vendor CLIs. See `references/cross-vendor.md`.
 - `--steps "role:task,role:task"` — Manually specify chain steps
 - `--target <file|dir>` — review/red-team target
 - `--vote` — Enable dot voting for brainstorm
@@ -302,7 +303,7 @@ See `strategies/review.md` — Multi-perspective code review fan-out. Phase 1 TA
 
 ## Strategy: debate
 
-See `strategies/debate.md` — Pro vs Con debate followed by verdict. Phase 1 POSITION distributes agents into PRO/CON/JUDGE; Phase 2 OPENING runs simultaneous fan-out for arguments; Phase 3 REBUTTAL cross-sends openings; Phase 4 VERDICT delegate scores all arguments and delivers a final recommendation.
+See `strategies/debate.md` — Pro vs Con debate followed by verdict. Phase 1 POSITION distributes agents into PRO/CON/JUDGE; Phase 2 OPENING runs simultaneous fan-out for arguments; Phase 3 REBUTTAL cross-sends openings; Phase 4 VERDICT delegate scores all arguments and delivers a final recommendation. With `--cross-vendor`, PRO/CON/JUDGE map to different model vendors — see `references/cross-vendor.md`.
 
 ## Strategy: red-team
 
@@ -318,7 +319,7 @@ See `strategies/distribute.md` — Split a large task into independent subtasks 
 
 ## Strategy: council
 
-See `strategies/council.md` — N-party free discussion → cross-examination → deep dive → consensus. Round 1 OPENING fan-out collects positions; Round 2 CROSS-EXAMINE broadcasts each agent's view to others (excluding their own); Round 3~N-1 DEEP DIVE targets key points of contention; Final CONVERGE drafts a consensus proposal for vote. Supports `--weights` for role-based weighted voting.
+See `strategies/council.md` — N-party free discussion → cross-examination → deep dive → consensus. Round 1 OPENING fan-out collects positions; Round 2 CROSS-EXAMINE broadcasts each agent's view to others (excluding their own); Round 3~N-1 DEEP DIVE targets key points of contention; Final CONVERGE drafts a consensus proposal for vote. Supports `--weights` for role-based weighted voting. With `--cross-vendor`, opening positions come from different model vendors — see `references/cross-vendor.md`.
 
 ## Strategy: socratic
 
