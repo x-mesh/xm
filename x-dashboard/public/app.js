@@ -4759,11 +4759,13 @@ async function refreshPanel() {
       ? `${c.unique} issue(s) · ${c.contested} contested${c.unreviewed ? ` · ${c.unreviewed} unreviewed` : ''}`
       : (live ? 'in progress…' : stalled ? 'stalled — no update' : ''))
       + (costStr ? ` · ${costStr}` : '');
+    const title = r.target_title || r.run;
     return `<div class="card" style="margin-bottom:0.75rem;cursor:pointer" onclick="window.location.hash='#/panel/${hashEnc(r.run)}'">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <strong style="font-size:0.85rem">${esc(r.run)}</strong>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <strong style="font-size:0.85rem">${esc(title)}</strong>
         <span class="badge ${badgeCls}">${esc(phase)}</span>
       </div>
+      ${r.target_title ? `<div class="text-muted" style="font-size:0.7rem;margin-top:2px;opacity:.6">${esc(r.run)}</div>` : ''}
       <div style="font-size:0.85rem;margin-top:6px">${modelLine || '<span class="text-muted">—</span>'}</div>
       <div class="text-muted" style="font-size:0.85rem;margin-top:4px">${esc(summary)} <span style="opacity:.6">›</span></div>
     </div>`;
@@ -5161,6 +5163,7 @@ async function renderPanelDetail(run) {
       <div class="panel-event-list">${panelEventRows(events)}</div>`
     : '';
 
+  const detailTitle = (v && v.target_title) || (st && st.target_title) || run;
   const prevScroll = window.scrollY;
   app.innerHTML = `
     <div class="view-header panel-detail-body">
@@ -5168,7 +5171,8 @@ async function renderPanelDetail(run) {
         <a href="#/panel" style="font-size:.85rem">← Panel</a>
         ${pinButton(`/panel/${run}`, `panel · ${run}`)}
       </div>
-      <h1 style="margin-top:.5rem">Panel — ${esc(run)}</h1>
+      <h1 style="margin-top:.5rem">Panel — ${esc(detailTitle)}</h1>
+      ${detailTitle !== run ? `<p class="text-muted" style="font-size:.75rem;margin-top:2px">${esc(run)}</p>` : ''}
     </div>
     ${phaseBar}${liveGridHtml}${verdictHtml}${modelsSection}${eventsSection}`;
   window.scrollTo(0, prevScroll);

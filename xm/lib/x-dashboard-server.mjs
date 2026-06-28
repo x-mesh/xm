@@ -411,9 +411,11 @@ function handlePanelList(xmRoot, req) {
     try { status = JSON.parse(readFileSync(join(rdir, 'status.json'), 'utf8')); } catch { /* older/older run */ }
     try {
       const v = JSON.parse(readFileSync(join(rdir, 'verdict.json'), 'utf8'));
-      verdict = { counts: v.counts, models: v.models, created_at: v.created_at, usage: v.usage || null };
+      verdict = { counts: v.counts, models: v.models, created_at: v.created_at, usage: v.usage || null, target_title: v.target_title || null };
     } catch { /* not finished */ }
-    runs.push({ run: entry.name, status, verdict });
+    // Prefer the finished verdict's title; fall back to the live status (in-progress runs).
+    const target_title = (verdict && verdict.target_title) || (status && status.target_title) || null;
+    runs.push({ run: entry.name, status, verdict, target_title });
   }
   runs.sort((a, b) => b.run.localeCompare(a.run));
   return jsonResponseWithETag({ runs }, req);
