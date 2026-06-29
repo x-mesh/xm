@@ -445,6 +445,29 @@ If there are no real issues, return {"findings":[]}.`;
     expect(r.stderr).not.toContain('retrying once');
   });
 
+  test('cross: exit-0-empty whose stderr mentions "timeout" is STILL retried (flag, not substring)', () => {
+    // error text becomes "exit 0 but empty output: request timed out" — it contains "timed out",
+    // but this is an exit-0-empty (timedOut flag is false), so the retry MUST still fire. Guards the
+    // isTimeout-substring regression the cross-vendor review caught (codex+claude confirmed).
+    const r = panelRaw(['cross', '--models', 'cursor', '--prompt', 'test', '--json'],
+      { X_PANEL_CMD_CURSOR: STUB, X_PANEL_EMPTY_CURSOR: 'request timed out' });
+    expect(r.status).not.toBe(0);
+    const cursor = JSON.parse(r.stdout).results.find((x) => x.provider === 'cursor');
+    expect(cursor.error).toContain('timed out'); // stderr hint forwarded
+    expect(cursor.error).toContain('retried once'); // ← retry DID fire despite the "timed out" substring
+    expect(r.stderr).toContain('retrying once');
+  });
+
+  test('cross: a real timeout/stall is NOT retried (would just double the wall-clock)', () => {
+    // stub stays silent past the 1s idle window → guard kills it with timedOut=true → no retry.
+    const r = panelRaw(['cross', '--models', 'cursor', '--prompt', 'test', '--json', '--timeout', '1'],
+      { X_PANEL_CMD_CURSOR: STUB, X_PANEL_DELAY_CURSOR_MS: '4000' });
+    expect(r.status).not.toBe(0);
+    const cursor = JSON.parse(r.stdout).results.find((x) => x.provider === 'cursor');
+    expect(cursor.ok).toBe(false);
+    expect(r.stderr).not.toContain('retrying once'); // ← timeout did NOT trigger a retry
+  });
+
   test('cross records --source + --title provenance in result.json', () => {
     const r = panelRaw(['cross', '--models', 'claude,codex', '--prompt', 'Argue the PRO side.',
       '--source', 'op:debate', '--title', 'cross-vendor moat', '--json']);
