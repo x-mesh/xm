@@ -89,7 +89,7 @@ Domain logic lives in the consumer; panel only routes — never reimplement a co
 | `/xm:panel …` | Skill | args |
 |---|---|---|
 | `review [target]` | `xm:review` | `diff [target] --cross-vendor` |
-| `op <strategy> [args]` | `xm:op` | `<strategy> [args] --cross-vendor` — any x-op strategy (cross-vendor wired for debate/council/brainstorm) |
+| `op debate\|council\|brainstorm [args]` | `xm:op` | `<strategy> [args] --cross-vendor` — only the cross-vendor-wired x-op strategies; other strategies aren't cross-vendor, so use `xm:op` directly (don't append `--cross-vendor`) |
 | `debate <topic>` | `xm:op` | `debate <topic> --cross-vendor` |
 | `council <topic>` | `xm:op` | `council <topic> --cross-vendor` |
 | `solve <problem>` | `xm:solver` | `<problem> --cross-vendor` |
