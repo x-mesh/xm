@@ -14,7 +14,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, readdirSync } from 'node:fs';
 import {
   PANEL_DIR, C, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
@@ -91,6 +91,38 @@ function targetTitle(target) {
   return null;
 }
 
+// A provenance tag for a cross-vendor run (e.g. "op:debate", "build:consensus"). Constrained
+// to a short, filesystem/log-safe token so a caller can't smuggle markup or newlines into the
+// dashboard. null when not provided → the dashboard falls back to a generic "cross" label.
+function sourceTag(value) {
+  const tag = String(value || '').trim().replace(/[^a-z0-9:_./-]/gi, '-').slice(0, 40);
+  return tag || null;
+}
+
+// Size-based timeout auto-raise: a bigger target/prompt needs more wall time per model. Only
+// grows when --timeout was not given explicitly; capped and config-tunable. Shared by review and
+// cross so cross-vendor sub-invocations get the same headroom for large prompts (not a flat base).
+function autoRaiseTimeoutS(baseS, textLen, explicit, cfg, onRaise) {
+  if (explicit) return baseS;
+  const SOFT = cfg.timeout_soft_chars || 20000;   // grow only beyond this size
+  const RATE = cfg.timeout_chars_per_s || 300;    // +1s per RATE chars over SOFT
+  const MAX = cfg.timeout_max_s || 1200;          // hard cap
+  if (textLen <= SOFT) return baseS;
+  const scaled = Math.min(MAX, baseS + Math.ceil((textLen - SOFT) / RATE));
+  if (scaled > baseS && onRaise) onRaise(scaled, MAX, textLen);
+  return Math.max(baseS, scaled);
+}
+
+// First non-empty line of a prompt — a usable fallback title when --title is omitted, so a
+// cross run still gets a human-ish name instead of just its timestamp id.
+function firstLine(value) {
+  for (const line of String(value || '').split('\n')) {
+    const t = line.trim();
+    if (t) return t;
+  }
+  return null;
+}
+
 function parseFlags(raw) {
   const flags = {};
   const pos = [];
@@ -100,7 +132,7 @@ function parseFlags(raw) {
     '--models': 'models', '-m': 'models', '--judge': 'judge', '--preset': 'preset',
     '--review-prompt-file': 'reviewPromptFile', '--review-prompt': 'reviewPrompt',
     '--lens-tag': 'lensTag', '--prompt-file': 'promptFile', '--prompt': 'prompt',
-    '--check': 'check',
+    '--check': 'check', '--source': 'source', '--title': 'title',
   };
   for (let i = 0; i < raw.length; i++) {
     const a = raw[i];
@@ -126,6 +158,8 @@ function parseFlags(raw) {
     else if (a === '--no-stream') flags.stream = false;
     else if (a === '--partial') flags.partial = true;
     else if (a === '--no-partial') flags.partial = false;
+    else if (a === '--watch') flags.watch = true;
+    else if (a === '--interval') flags.interval = parseInt(raw[++i], 10) || undefined;
     // Take the next token as a value ONLY if it isn't another --flag (so a missing value
     // doesn't silently swallow the following option as the prompt body). '-' (stdin) is kept.
     else if (a === '--review-prompt-file') flags.reviewPromptFile = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
@@ -133,6 +167,10 @@ function parseFlags(raw) {
     else if (a === '--lens-tag') flags.lensTag = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
     else if (a === '--prompt-file') flags.promptFile = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
     else if (a === '--prompt') flags.prompt = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
+    // Provenance for cross-vendor sub-invocations: --source tags the caller (e.g. op:debate,
+    // build:consensus), --title gives the run a human name. Both surface in the dashboard list.
+    else if (a === '--source') flags.source = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
+    else if (a === '--title') flags.title = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
     else pos.push(a);
   }
   return { flags, pos };
@@ -325,7 +363,7 @@ async function cmdReview(pos, flags) {
   }
   // Per-model timeout base (large diffs + many parallel models need headroom). The
   // effective timeout is auto-raised for large targets below (after the target is known).
-  const baseTimeoutS = flags.timeout || cfg.timeout_s || 240;
+  const baseTimeoutS = flags.timeout || cfg.timeout_s || 600;
   // Structured streaming (live tokens/cost) is opt-in until dogfooded — default off
   // keeps the proven raw flow intact. Enable per-run with --stream or config panel.stream.
   const stream = (flags.stream != null) ? flags.stream : !!cfg.stream;
@@ -381,20 +419,8 @@ async function cmdReview(pos, flags) {
   // Auto-raise the per-model timeout for large targets — a big diff needs more wall
   // time per model (observed: a 133K-char diff timed out claude at 300s). Only when
   // --timeout was not given explicitly; capped, and tunable via config.
-  let timeoutS = baseTimeoutS;
-  if (flags.timeout == null) {
-    const SOFT = cfg.timeout_soft_chars || 20000;       // grow only beyond this size
-    const RATE = cfg.timeout_chars_per_s || 300;        // +1s per RATE chars over SOFT
-    const MAX = cfg.timeout_max_s || 900;               // hard cap
-    const tlen = (target.text || '').length;
-    if (tlen > SOFT) {
-      const scaled = Math.min(MAX, baseTimeoutS + Math.ceil((tlen - SOFT) / RATE));
-      if (scaled > timeoutS) {
-        console.error(`${C.yellow}⚠ large target (${tlen} chars) — timeout auto-raised ${baseTimeoutS}s → ${scaled}s (cap ${MAX}s; --timeout to override)${C.reset}`);
-        timeoutS = scaled;
-      }
-    }
-  }
+  const timeoutS = autoRaiseTimeoutS(baseTimeoutS, (target.text || '').length, flags.timeout != null, cfg,
+    (scaled, MAX, tlen) => console.error(`${C.yellow}⚠ large target (${tlen} chars) — timeout auto-raised ${baseTimeoutS}s → ${scaled}s (cap ${MAX}s; --timeout to override)${C.reset}`));
   const timeoutMs = timeoutS * 1000;
   const run = runId(stamp());
   // Cross-vendor REVIEW runs go to a separate .xm/review/ namespace so they never
@@ -672,7 +698,10 @@ async function cmdCross(pos, flags) {
   const prompt = loadPromptArg(flags, 'promptFile', 'prompt', '--prompt');
   if (prompt === undefined) return; // value error already logged
   if (prompt == null) { console.error(`${C.red}cross needs a prompt${C.reset} — pass --prompt "<text>", --prompt-file <path>, or --prompt -`); process.exitCode = 1; return; }
-  const timeoutMs = (flags.timeout || cfg.timeout_s || 240) * 1000;
+  const baseTimeoutS = flags.timeout || cfg.timeout_s || 600;
+  const timeoutS = autoRaiseTimeoutS(baseTimeoutS, prompt.length, flags.timeout != null, cfg,
+    (scaled, MAX, tlen) => console.error(`${C.yellow}⚠ large prompt (${tlen} chars) — timeout auto-raised ${baseTimeoutS}s → ${scaled}s (cap ${MAX}s)${C.reset}`));
+  const timeoutMs = timeoutS * 1000;
   const run = runId(stamp());
   const dir = join(PANEL_DIR, '..', 'cross', run);
   ensureDir(dir);
@@ -682,7 +711,12 @@ async function cmdCross(pos, flags) {
     writeJSON(join(dir, `${safeLabel(e.label)}.json`), rec);
     return rec;
   }));
-  const record = { run, created_at: new Date().toISOString(), models: usable.map((e) => e.label), prompt_chars: prompt.length, results };
+  // Provenance + human title so the dashboard can show WHICH workflow ran this and WHAT it was
+  // about (not just a timestamp). Title is redacted before truncation (same rule as targetTitle):
+  // a caller may pass user text. Falls back to the prompt's first line when --title is omitted.
+  const source = sourceTag(flags.source);
+  const title = compactTitle(redactPanelText(flags.title || firstLine(prompt) || ''), 80);
+  const record = { run, created_at: new Date().toISOString(), source, title, models: usable.map((e) => e.label), prompt_chars: prompt.length, results };
   writeJSON(join(dir, 'result.json'), record);
   if (flags.json) console.log(JSON.stringify(record, null, 2));
   else for (const r of results) console.log(`\n${C.bold}## ${r.model}${C.reset}${r.ok ? '' : ` ${C.red}(FAILED: ${r.error})${C.reset}`}\n${r.output || ''}`);
@@ -700,7 +734,7 @@ function cmdSetup(pos, flags) {
     console.log(`  detected on PATH : ${autodetectModels().join(', ') || '(none)'}`);
     console.log(`  current models   : ${(cfg.models || []).join(', ') || '(autodetect)'}`);
     console.log(`  current judge    : ${cfg.judge || 'rule'}`);
-    console.log(`  timeout_s        : ${cfg.timeout_s || 240}  ${C.dim}(shared with cross-vendor)${C.reset}`);
+    console.log(`  timeout_s        : ${cfg.timeout_s || 600}  ${C.dim}(shared with cross-vendor)${C.reset}`);
     console.log(`${C.dim}  scope            : models/judge/stream tune panel review only; cross-vendor`);
     console.log(`                     consumers pass --models directly and share providers (code-`);
     console.log(`                     defined in adapters) + timeout_s — never models/judge/stream.${C.reset}`);
@@ -817,7 +851,10 @@ Commands:
                                 multi-vendor; list a provider's live models with \`xm panel types\`.
     --fast | --full | --preset NAME   fast=claude,codex · full=all installed · or a named preset
     --judge rule                Synthesis (PoC: rule only)
-    --timeout SECONDS           Per-model timeout (default 240; config: panel.timeout_s).
+    --timeout SECONDS           Per-model idle timeout (default 600; config: panel.timeout_s).
+                                Resets on stdout activity (a working model keeps going); a model
+                                silent this long is killed as stalled. Auto-raised for large
+                                targets (cap panel.timeout_max_s, default 1200).
                                 Auto-raised for large targets (cap panel.timeout_max_s=900); --timeout pins it.
     --stream | --no-stream      Structured streaming: live token/cost per model (claude/cursor/codex).
                                 Opt-in (default off; config: panel.stream). kiro/agy stay raw.
@@ -839,10 +876,20 @@ Commands:
                                 caller decide single-vendor fallback BEFORE spending tokens.
                                 --auth narrows "available" to installed AND authenticated.
   cross --models a,b,c (--prompt "..." | --prompt-file <p> | --prompt -) [--json]
+        [--source <tag>] [--title <text>]
                                 Generic cross-vendor invocation: run ONE prompt across N vendors,
                                 return each vendor's RAW text output (no findings/merge). For
                                 deliberation (debate/council) — caller does the synthesis.
                                 Output under .xm/cross/<run>/.
+                                --source tags the calling workflow (e.g. op:debate, build:consensus,
+                                solver:hypothesize, eval:judge) and --title names the run; both
+                                surface in the dashboard panel list so runs are identifiable.
+  status [run] [--json] [--watch [--interval N]]
+                                Read run state from disk — see an IN-PROGRESS panel from the CLI.
+                                No run → list recent review + cross runs (phase + per-model state).
+                                A run id → per-model live state + each model's latest stdout tail
+                                (what it is producing now). Read-only. --watch refreshes live every
+                                N seconds (default 2) — terminal equivalent of the dashboard.
   types                         List providers (install status) + how to query each
                                 one's live models (cursor/kiro are multi-vendor: kimi, deepseek, …)
   models [vendor] [--check m1,m2]
@@ -863,10 +910,95 @@ Output: .xm/panel/<run>/{<model>.r1.json, <model>.r2.json, verdict.json}
 `);
 }
 
+function readJSONSafe(p) { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } }
+
+// `xm panel status [run] [--json] [--watch]` — read run state straight from disk so an IN-PROGRESS
+// panel is visible from the CLI (not only the dashboard). No run id → list recent review + cross
+// runs with their phase and per-model state. A run id → that run's per-model live state plus each
+// model's latest stdout tail (what it is producing right now). Read-only; --watch polls live.
+function cmdStatus(pos, flags) {
+  if (flags.watch && !flags.json) {
+    const ESC = String.fromCharCode(27);
+    const everyMs = Math.max(1, flags.interval || 2) * 1000;
+    const tick = () => {
+      if (process.stdout.isTTY) process.stdout.write(`${ESC}[2J${ESC}[3J${ESC}[H`); // clear scrollback + home
+      console.log(`${C.dim}panel status · watch (every ${everyMs / 1000}s) · Ctrl-C to exit${C.reset}\n`);
+      renderStatusOnce(pos, flags);
+    };
+    tick();
+    const iv = setInterval(tick, everyMs); // NOT unref'd — the interval is what keeps the CLI alive
+    process.on('SIGINT', () => { clearInterval(iv); process.stdout.write('\n'); process.exit(0); });
+    return;
+  }
+  renderStatusOnce(pos, flags);
+}
+
+function renderStatusOnce(pos, flags) {
+  const ESC = String.fromCharCode(27); // ANSI escape, for stripping colorized model output
+  const panelDir = PANEL_DIR;
+  const crossDir = join(PANEL_DIR, '..', 'cross');
+  const runArg = pos[0];
+  const collect = (dir, kind) => existsSync(dir)
+    ? readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => ({ kind, run: e.name, dir: join(dir, e.name) }))
+    : [];
+
+  if (!runArg) {
+    const runs = [...collect(panelDir, 'review'), ...collect(crossDir, 'cross')]
+      .sort((a, b) => b.run.localeCompare(a.run)).slice(0, 20);
+    const rows = runs.map((r) => {
+      if (r.kind === 'cross') {
+        const res = readJSONSafe(join(r.dir, 'result.json'));
+        const models = res ? res.models
+          : readdirSync(r.dir).filter((f) => f.endsWith('.json') && f !== 'result.json').map((f) => f.replace(/\.json$/, ''));
+        return { kind: 'cross', run: r.run, source: (res && res.source) || 'cross', title: (res && res.title) || null, phase: res ? 'done' : 'running', models };
+      }
+      const st = readJSONSafe(join(r.dir, 'status.json'));
+      const phase = st ? st.phase : (existsSync(join(r.dir, 'verdict.json')) ? 'done' : 'unknown');
+      return { kind: 'review', run: r.run, source: st && st.target_kind ? `review(${st.target_kind})` : 'review', title: st && st.target_title || null, phase, models: st ? st.models.map((m) => `${m.label}:${m.state}`) : [] };
+    });
+    if (flags.json) { console.log(JSON.stringify(rows, null, 2)); return; }
+    if (!rows.length) { console.log('(no panel runs)'); return; }
+    for (const r of rows) {
+      console.log(`${C.bold}${r.run}${C.reset}  ${C.cyan}${r.source}${C.reset}  ${C.dim}[${r.phase}]${C.reset}  ${r.title || ''}`);
+      console.log(`  ${(r.models || []).join('   ') || C.dim + '—' + C.reset}`);
+    }
+    return;
+  }
+
+  let dir = join(panelDir, runArg), kind = 'review';
+  if (!existsSync(dir)) { dir = join(crossDir, runArg); kind = 'cross'; }
+  if (!existsSync(dir)) { console.error(`${C.red}run not found: ${runArg}${C.reset}`); process.exitCode = 1; return; }
+
+  if (kind === 'cross') {
+    const res = readJSONSafe(join(dir, 'result.json'));
+    const results = res ? res.results
+      : readdirSync(dir).filter((f) => f.endsWith('.json') && f !== 'result.json').map((f) => readJSONSafe(join(dir, f))).filter(Boolean);
+    if (flags.json) { console.log(JSON.stringify(res || { run: runArg, phase: 'running', results }, null, 2)); return; }
+    console.log(`${C.bold}${runArg}${C.reset}  ${C.cyan}cross/${(res && res.source) || 'cross'}${C.reset}  ${C.dim}[${res ? 'done' : 'running'}]${C.reset}  ${(res && res.title) || ''}`);
+    for (const v of (results || [])) {
+      console.log(`\n${C.bold}## ${v.model}${C.reset}${v.ok === false ? ` ${C.red}(${v.error})${C.reset}` : ''}`);
+      console.log((v.output || '').slice(-1200).trim() || `${C.dim}(no output yet)${C.reset}`);
+    }
+    return;
+  }
+
+  const st = readJSONSafe(join(dir, 'status.json'));
+  if (flags.json) { console.log(JSON.stringify({ status: st, done: existsSync(join(dir, 'verdict.json')) }, null, 2)); return; }
+  if (!st) { console.log(`${runArg}: no status.json`); return; }
+  console.log(`${C.bold}${runArg}${C.reset}  ${C.dim}[${st.phase}]${C.reset}  ${st.target_title || ''}`);
+  for (const m of (st.models || [])) {
+    // strip ANSI SGR (kiro colorizes its output) + collapse whitespace so the tail stays one line
+    const tail = (m.stdout_tail || '').replace(new RegExp(ESC+'\\[[0-9;]*m','g'), '').replace(/\s+/g, ' ').trim().slice(-200);
+    const err = m.error ? ` ${C.red}${m.error}${C.reset}` : '';
+    console.log(`\n${C.bold}${m.label}${C.reset} ${m.state}${m.elapsed_s != null ? ` (${m.elapsed_s}s)` : ''}${err}`);
+    console.log(`  ${C.dim}${m.last_event || ''}${C.reset} ${tail}`);
+  }
+}
+
 // ── entry ────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
-const SUB = new Set(['review', 'cross', 'setup', 'types', 'models', 'detect', 'doctor', 'help', '--help', '-h']);
+const SUB = new Set(['review', 'cross', 'status', 'setup', 'types', 'models', 'detect', 'doctor', 'help', '--help', '-h']);
 let cmd = argv[0];
 let rest;
 if (!cmd) { cmd = 'review'; rest = []; }            // `x-panel` → review git diff
@@ -877,6 +1009,7 @@ const { flags, pos } = parseFlags(rest);
 switch (cmd) {
   case 'review': await cmdReview(pos, flags); break;
   case 'cross': await cmdCross(pos, flags); break;
+  case 'status': cmdStatus(pos, flags); break;
   case 'setup': cmdSetup(pos, flags); break;
   case 'types': cmdTypes(); break;
   case 'models': cmdModels(pos, flags); break;

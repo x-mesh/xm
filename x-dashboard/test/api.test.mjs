@@ -29,6 +29,7 @@ const TEST_PROJECT_SLUG = 'test-dashboard-api-fixture';
 const TEST_SOLVER_SLUG = 'test-solver-api-fixture';
 const TEST_PANEL_RUN = 'panel-api-live-fixture';
 const TEST_PANEL_DONE_RUN = 'panel-api-done-fixture';
+const TEST_CROSS_RUN = 'panel-api-cross-fixture';
 
 /** Track only the top-level dirs we create so teardown is safe */
 const FIXTURE_ROOTS = [];
@@ -146,6 +147,8 @@ function setupFixtures() {
   writeJSON(join(panelRunDir, 'status.json'), {
     run: TEST_PANEL_RUN,
     phase: 'round1 (review)',
+    target_kind: 'literal',
+    target_title: 'live review fixture',
     updated_at: new Date().toISOString(),
     models: [
       {
@@ -191,6 +194,23 @@ function setupFixtures() {
       },
     },
     consensus: [], confirmed: [], contested: [], unreviewed: [],
+  });
+
+  // ── cross-vendor fixture (.xm/cross/) — provenance-tagged sub-invocation ──
+  const crossRunDir = join(XM_ROOT, 'cross', TEST_CROSS_RUN);
+  ensureDir(crossRunDir);
+  FIXTURE_ROOTS.push(crossRunDir);
+  writeJSON(join(crossRunDir, 'result.json'), {
+    run: TEST_CROSS_RUN,
+    created_at: new Date().toISOString(),
+    source: 'op:debate',
+    title: 'cross-vendor moat',
+    models: ['claude', 'codex'],
+    prompt_chars: 1234,
+    results: [
+      { model: 'claude', provider: 'claude', ok: true, output: 'PRO argument body', error: null },
+      { model: 'codex', provider: 'codex', ok: true, output: 'CON argument body', error: null },
+    ],
   });
 }
 
@@ -482,6 +502,52 @@ describe('GET /api/panel (list)', () => {
     const done = (body.runs || []).find((r) => r.run === TEST_PANEL_DONE_RUN);
     expect(done).toBeTruthy();
     expect(done.verdict.usage.totals.cost_usd).toBeCloseTo(0.42, 5);
+  });
+
+  it('tags review runs with kind + a review(<target_kind>) source', async () => {
+    const { body } = await getJSON('/api/panel');
+    const live = (body.runs || []).find((r) => r.run === TEST_PANEL_RUN);
+    expect(live).toBeTruthy();
+    expect(live.kind).toBe('review');
+    expect(live.source).toBe('review(literal)'); // category visible without opening the run
+  });
+
+  it('surfaces cross-vendor runs with their provenance source + title', async () => {
+    const { body } = await getJSON('/api/panel');
+    const cross = (body.runs || []).find((r) => r.run === TEST_CROSS_RUN);
+    expect(cross).toBeTruthy();          // .xm/cross/ runs now appear in the panel list
+    expect(cross.kind).toBe('cross');
+    expect(cross.source).toBe('op:debate');     // which workflow invoked it
+    expect(cross.title).toBe('cross-vendor moat'); // human name, not a timestamp
+    expect(cross.vendor_count).toBe(2);
+    expect(cross.phase).toBe('done');
+  });
+});
+
+describe('GET /api/panels/all (cross-workspace aggregate)', () => {
+  it('groups every project\'s panel + cross runs under its workspace', async () => {
+    const { res, body } = await getJSON('/api/panels/all');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(body.workspaces)).toBe(true);
+    expect(body.workspaces.length).toBeGreaterThanOrEqual(1); // single-project mode → one workspace
+    const ws = body.workspaces[0];
+    expect(ws.id).toBeTruthy();
+    expect(Array.isArray(ws.runs)).toBe(true);
+    // the cross fixture + review fixtures all live in this project → surfaced in the aggregate
+    const allRuns = body.workspaces.flatMap((w) => w.runs);
+    expect(allRuns.find((r) => r.run === TEST_CROSS_RUN)).toBeTruthy();
+    expect(allRuns.find((r) => r.kind === 'cross' && r.source === 'op:debate')).toBeTruthy();
+  });
+});
+
+describe('GET /api/panel/:run (cross detail)', () => {
+  it('returns the per-vendor outputs for a cross run', async () => {
+    const { res, body } = await getJSON(`/api/panel/${TEST_CROSS_RUN}`);
+    expect(res.status).toBe(200);
+    expect(body.kind).toBe('cross');
+    expect(body.source).toBe('op:debate');
+    expect(body.results).toHaveLength(2);
+    expect(body.results[0].output).toBeTruthy(); // raw deliberation, readable in the detail view
   });
 });
 

@@ -194,6 +194,10 @@ especially output produced by its own model family — carries self-bias; genuin
 cross-vendor judges remove it. This makes the existing `sigma`/일치도 a TRUE cross-model agreement
 signal, not same-model noise.
 
+**Config default:** with neither `--cross-vendor` nor `--no-cross-vendor`, resolve `.xm/config.json`
+`cross_vendor.eval` ?? `cross_vendor.default` ?? false — true ⇒ default to cross-vendor judges
+(`--no-cross-vendor` forces single-vendor; ≥2 ready vendors still required).
+
 > **⚠ Call `xm panel …` directly via the dispatcher (Bash) — never import.**
 
 1. **Probe** vendors: `xm panel detect --auth --json` (available = installed AND authenticated).
@@ -202,10 +206,13 @@ signal, not same-model noise.
 2. **Judge across vendors** — build the judge prompt (rubric + criteria + the content to score +
    `judges/{type}.md`, instructing a JSON score-per-dimension reply), then:
    ```bash
-   xm panel cross --models "<available>" --prompt-file <judge-prompt> --json
+   xm panel cross --models "<available>" --prompt-file <judge-prompt> --json \
+     --source eval:judge --title "<what is being judged>"
    # → {"results":[{"model","ok","output"}, ...]}  (output = each vendor's JSON scores)
    ```
-   Each vendor is one independent judge. Announce the vendor set + rough cost first (cost = vendors × rubrics).
+   `--source eval:judge` + `--title` tag the run so it is identifiable in the dashboard panel list
+   (caller + topic, not a bare timestamp). Each vendor is one independent judge. Announce the vendor
+   set + rough cost first (cost = vendors × rubrics).
 3. **Aggregate** — parse each vendor's per-dimension scores; report the mean and the **cross-vendor
    σ** (spread across vendors). High σ = the vendors genuinely disagree on a dimension → surface it
    for human review instead of hiding it in an averaged number. Note which vendor gave which score.

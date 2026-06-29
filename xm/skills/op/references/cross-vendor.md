@@ -25,15 +25,21 @@ Runs ONE prompt across N vendors in parallel and returns each vendor's RAW text 
 findings parsing, no merge). The caller does the synthesis. Output lands in `.xm/cross/<run>/`.
 
 ```bash
-xm panel cross --models "<available>" --prompt-file <prompt-tmp> --json
+xm panel cross --models "<available>" --prompt-file <prompt-tmp> --json \
+  --source op:<strategy> --title "<short topic>"
 # → {"results":[{"model","ok","output","error"}, ...]}
 ```
+
+Always pass `--source op:<strategy>` (e.g. `op:debate`, `op:council`) and `--title "<short topic>"`.
+These tag the run with its calling workflow and a human name so it is identifiable in the dashboard
+panel list (otherwise it shows as a bare `cross` run with a timestamp). `--source` is sanitized to a
+short safe tag; `--title` falls back to the prompt's first line when omitted.
 
 ## debate (PRO / CON / JUDGE across vendors)
 
 1. Assign roles to distinct vendors (e.g. PRO=claude, CON=codex, JUDGE=cursor).
 2. OPENING: for each side, write its role prompt to a temp file and call
-   `xm panel cross --models <that vendor> --prompt-file <role-prompt>`.
+   `xm panel cross --models <that vendor> --prompt-file <role-prompt> --source op:debate --title "<motion>"`.
 3. REBUTTAL: send each side's opening to the opposing vendor as the next prompt.
 4. VERDICT: give the JUDGE vendor both sides' arguments; it scores and recommends.
 The cross-vendor value: PRO and CON are genuinely different models, not one model role-playing both.
@@ -41,7 +47,7 @@ The cross-vendor value: PRO and CON are genuinely different models, not one mode
 ## council (N-party across vendors)
 
 1. OPENING: same question to all available vendors in one call —
-   `xm panel cross --models "<available>" --prompt-file <question>`.
+   `xm panel cross --models "<available>" --prompt-file <question> --source op:council --title "<question>"`.
 2. CROSS-EXAMINE: broadcast each vendor's position to the others (exclude its own) as the next prompt.
 3. DEEP DIVE / CONVERGE: leader (Claude) drafts a consensus proposal from the vendor positions; note
    where vendors agreed (consensus) and where only one did (diversity) — keep both, drop neither.

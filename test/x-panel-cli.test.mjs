@@ -403,6 +403,31 @@ If there are no real issues, return {"findings":[]}.`;
     expect(readdirSync(crossDir).length).toBeGreaterThan(0);
   });
 
+  test('cross records --source + --title provenance in result.json', () => {
+    const r = panelRaw(['cross', '--models', 'claude,codex', '--prompt', 'Argue the PRO side.',
+      '--source', 'op:debate', '--title', 'cross-vendor moat', '--json']);
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.source).toBe('op:debate'); // calling workflow is identifiable in the dashboard
+    expect(out.title).toBe('cross-vendor moat');
+  });
+
+  test('cross --title falls back to the prompt first line, --source sanitizes to null when absent', () => {
+    const r = panelRaw(['cross', '--models', 'claude', '--prompt', 'First meaningful line\nsecond line', '--json']);
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.source).toBe(null);            // no --source → generic; dashboard shows "cross"
+    expect(out.title).toBe('First meaningful line'); // human-ish name even without --title
+  });
+
+  test('cross --source strips markup/newlines to a short safe tag', () => {
+    const r = panelRaw(['cross', '--models', 'claude', '--prompt', 'hi',
+      '--source', 'op:<script>alert(1)</script>', '--json']);
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.source).not.toMatch(/[<>]/); // no markup can reach the dashboard via the source tag
+  });
+
   test('cross fails loudly without a prompt', () => {
     const r = panelRaw(['cross', '--models', 'claude,codex']);
     expect(r.status).not.toBe(0);
@@ -419,6 +444,46 @@ If there are no real issues, return {"findings":[]}.`;
     expect(r.status).toBe(0);
     expect(r.stderr).toMatch(/unknown provider|skipping/i); // dropped vendor is surfaced, not silent
     expect(JSON.parse(r.stdout).results.length).toBe(1); // only the available vendor ran
+  });
+
+  test('idle timeout kills a silent (stalled) vendor with a "stalled" error, not a generic timeout', () => {
+    // claude is silent for 3s with a 1s idle window → no output → killed as stalled.
+    const r = panelRaw(['cross', '--models', 'claude', '--prompt', 'hi', '--timeout', '1', '--json'],
+      { X_PANEL_DELAY_CLAUDE_MS: '3000' });
+    expect(r.status).not.toBe(0);           // the only vendor failed → non-zero exit
+    const out = JSON.parse(r.stdout);
+    expect(out.results[0].ok).toBe(false);
+    expect(out.results[0].error).toMatch(/stalled/i); // distinguishes hung from working
+  });
+
+  test('idle timeout does NOT kill a vendor that keeps emitting output (dynamic extension)', () => {
+    // claude stays busy 2.5s but ticks every 400ms < the 1s idle window → never idle → completes.
+    const r = panelRaw(['cross', '--models', 'claude', '--prompt', 'hi', '--timeout', '1', '--json'],
+      { X_PANEL_DELAY_CLAUDE_MS: '2500', X_PANEL_HB_CLAUDE_MS: '400' });
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.results[0].ok).toBe(true);   // activity resets the deadline → survives past base timeout
+  });
+
+  test('panel status lists runs and shows a run\'s per-vendor output from disk', () => {
+    // seed a cross run, then read it back via the read-only status command (CLI visibility)
+    const seed = panelRaw(['cross', '--models', 'claude,codex', '--prompt', 'visibility check',
+      '--source', 'op:debate', '--title', 'status-cli test', '--json']);
+    expect(seed.status).toBe(0);
+    const run = JSON.parse(seed.stdout).run;
+
+    const list = panelRaw(['status', '--json']);
+    expect(list.status).toBe(0);
+    const rows = JSON.parse(list.stdout);
+    const row = rows.find((r) => r.run === run);
+    expect(row).toBeTruthy();
+    expect(row.source).toBe('op:debate'); // category visible from the CLI list
+
+    const detail = panelRaw(['status', run, '--json']);
+    expect(detail.status).toBe(0);
+    const got = JSON.parse(detail.stdout);
+    expect(got.results.length).toBe(2);
+    expect(got.results[0].output.length).toBeGreaterThan(0); // each vendor's stdout readable
   });
 
   test('cross exits non-zero when every vendor fails', () => {
@@ -589,12 +654,12 @@ describe('review (stubbed models)', () => {
   test('timeout auto-raises for large targets; --timeout pins it', () => {
     const r0 = review(['small t', '--stream']);
     expect(r0.status).toBe(0);
-    expect(latestVerdict().timeout_s).toBe(240); // base, small target
+    expect(latestVerdict().timeout_s).toBe(600); // base, small target
 
     const big = 'x'.repeat(60_000);
     const r1 = review([big, '--stream']);
     expect(r1.status).toBe(0);
-    expect(latestVerdict().timeout_s).toBeGreaterThan(240); // auto-raised
+    expect(latestVerdict().timeout_s).toBeGreaterThan(600); // auto-raised
 
     const r2 = review([big, '--stream', '--timeout', '120']);
     expect(r2.status).toBe(0);
@@ -602,11 +667,11 @@ describe('review (stubbed models)', () => {
   });
 
   test('timeout auto-raise is capped by panel.timeout_max_s', () => {
-    writeProjectConfig({ timeout_max_s: 300 });
+    writeProjectConfig({ timeout_max_s: 700 }); // cap must sit above the 600s base to bind the raise
     const big = 'x'.repeat(60_000);
     const r = panelRaw(['review', big, '--stream', '--models', 'claude,codex']);
     expect(r.status).toBe(0);
-    expect(latestVerdict().timeout_s).toBe(300); // capped
+    expect(latestVerdict().timeout_s).toBe(700); // 600 base + size-raise → capped at 700
   });
 
   test('--stream: a non-zero exit is a failure even if JSON was emitted', () => {

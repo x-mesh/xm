@@ -183,7 +183,7 @@ See `references/x-op-auto-route.md` for execution flow and worked examples.
 - `--preset consensus` — compose preset: `persona | council`
 - `--agents N` — Number of participating agents (default: shared config's agent_max_count (default 4). Overrides when specified)
 - `--model sonnet|opus|haiku` — Agent model (default sonnet)
-- `--cross-vendor` — debate/council only: assign roles/positions to different model vendors (claude+codex+cursor…) via `xm panel cross`. Opt-in; single-vendor fallback when <2 vendor CLIs. See `references/cross-vendor.md`.
+- `--cross-vendor` — debate/council only: assign roles/positions to different model vendors (claude+codex+cursor…) via `xm panel cross`. Opt-in; single-vendor fallback when <2 vendor CLIs. Default without the flag: `.xm/config.json` `cross_vendor.op` ?? `cross_vendor.default`; `--no-cross-vendor` forces single. See `references/cross-vendor.md`.
 - `--steps "role:task,role:task"` — Manually specify chain steps
 - `--target <file|dir>` — review/red-team target
 - `--vote` — Enable dot voting for brainstorm

@@ -32,9 +32,13 @@ Runs ONE prompt across N vendors in parallel and returns each vendor's RAW text 
 findings parsing, no merge). The caller does the synthesis. Output lands in `.xm/cross/<run>/`.
 
 ```bash
-xm panel cross --models "<vendor>" --prompt-file <role-prompt-tmp> --json
+xm panel cross --models "<vendor>" --prompt-file <role-prompt-tmp> --json \
+  --source build:consensus --title "<PRD name> — <role>"
 # → {"results":[{"model","ok","output","error"}, ...]}
 ```
+
+Always pass `--source build:consensus` and `--title` so each role's run is identifiable in the
+dashboard panel list by its calling workflow + topic, not a bare timestamp.
 
 ## Role → vendor assignment
 
@@ -64,7 +68,8 @@ executor changes.
    temp file.
 2. Send it to that role's assigned vendor:
    ```bash
-   xm panel cross --models "<role's vendor>" --prompt-file <role-prompt-tmp> --json
+   xm panel cross --models "<role's vendor>" --prompt-file <role-prompt-tmp> --json \
+     --source build:consensus --title "<PRD name> — <role>"
    ```
    These are independent — fire all four; each is one single-vendor `cross` call.
 3. Collect each role's raw verdict (AGREE / OBJECT + feedback).

@@ -44,8 +44,22 @@ function emitStream(name, jsonStr) {
 }
 const delayMs = Number(process.env[`X_PANEL_DELAY_${isRefute ? 'R2' : 'R1'}_${envModel}_MS`] || process.env[`X_PANEL_DELAY_${envModel}_MS`] || 0);
 
+// Optional heartbeat: emit a stderr tick every X_PANEL_HB_<MODEL>_MS during the delay so the
+// idle-reset timeout guard sees continuous activity (a "working" model that must NOT be killed).
+// Without it, the delay is pure silence (a "stalled" model the idle timer should kill).
+const hbMs = Number(process.env[`X_PANEL_HB_${envModel}_MS`] || 0);
 if (Number.isFinite(delayMs) && delayMs > 0) {
-  await new Promise((resolve) => setTimeout(resolve, delayMs));
+  if (Number.isFinite(hbMs) && hbMs > 0) {
+    let waited = 0;
+    while (waited < delayMs) {
+      const step = Math.min(hbMs, delayMs - waited);
+      await new Promise((resolve) => setTimeout(resolve, step));
+      waited += step;
+      process.stderr.write('.'); // activity heartbeat — not part of the JSON payload
+    }
+  } else {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
 }
 
 if (process.env[`X_PANEL_NO_JSON_${envModel}`]) {
