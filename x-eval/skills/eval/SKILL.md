@@ -196,8 +196,9 @@ signal, not same-model noise.
 
 > **⚠ Call `xm panel …` directly via the dispatcher (Bash) — never import.**
 
-1. **Probe** vendors: `xm panel detect --json`. If `available` has fewer than 2 vendors, fall back
-   to standard single-vendor judges and say so (loud, never silent — Lesson L6).
+1. **Probe** vendors: `xm panel detect --auth --json` (available = installed AND authenticated).
+   If fewer than 2 vendors are ready, fall back to standard single-vendor judges and say so —
+   loud, never silent (Lesson L6); run `xm panel doctor` to check why a CLI isn't ready.
 2. **Judge across vendors** — build the judge prompt (rubric + criteria + the content to score +
    `judges/{type}.md`, instructing a JSON score-per-dimension reply), then:
    ```bash

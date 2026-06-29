@@ -18,12 +18,13 @@ MANY models at once, which only fan-out and broadcast do.
 ## Probe + fallback (do this first)
 
 ```bash
-xm panel detect --json        # {"available":[...],"known":[...]}
+xm panel detect --auth --json   # available = installed AND authenticated (skips logged-out CLIs)
 ```
 
-If `available` has fewer than 2 vendors, run the normal single-vendor Claude fan-out/broadcast and
+If fewer than 2 vendors are ready, run the normal single-vendor Claude fan-out/broadcast and
 tell the user (loud, never silent — Lesson L6): "cross-vendor requested but only N vendor(s)
-installed (<list>) — running single-vendor; install codex/cursor for cross-vendor."
+ready (installed + signed in) (<list>) — running single-vendor; run `xm panel doctor` to fix auth,
+or install another CLI (codex/cursor)."
 
 ## The primitive: `xm panel cross`
 

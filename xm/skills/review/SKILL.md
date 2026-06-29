@@ -232,13 +232,14 @@ Trigger: `--cross-vendor` flag, or natural language ("여러 모델로 리뷰", 
 
 Phase 3 (cross-vendor) replaces the Claude fan-out with:
 
-1. **Probe** installed vendors (decide fallback BEFORE spending tokens):
+1. **Probe** ready vendors — installed AND authenticated (decide fallback BEFORE spending tokens):
    ```bash
-   xm panel detect --json        # {"available":[...],"known":[...]}
+   xm panel detect --auth --json   # available = installed AND authenticated (skips logged-out CLIs)
    ```
-2. **Loud fallback (never silent — Lesson L6):** if `available` has fewer than 2 vendors, run the
+2. **Loud fallback (never silent — Lesson L6):** if fewer than 2 vendors are ready, run the
    normal single-vendor Claude flow and tell the user: "cross-vendor requested but only N
-   vendor(s) installed (<list>) — running single-vendor; install codex/cursor for cross-vendor."
+   vendor(s) ready (installed + signed in) (<list>) — running single-vendor; run `xm panel doctor`
+   to check auth, or install another CLI (codex/cursor)."
 3. **Per-lens cross-vendor review.** Cost = lenses × vendors × 2 rounds, so default to `--preset
    quick` (security + logic) unless the user widens it; announce the model set + rough cost first.
    - **Use the detected vendors** — derive `--models` from step 1's `available` array, NOT a
@@ -254,7 +255,7 @@ Phase 3 (cross-vendor) replaces the Claude fan-out with:
    xm panel <phase1-target-tmp> \
      --review-prompt-file <lens-prompt-tmp> \
      --lens-tag <lens> \
-     --models "$(xm panel detect --json | jq -r '.available | join(",")')" --json
+     --models "$(xm panel detect --auth --json | jq -r '.available | join(",")')" --json
    ```
    Each run writes `.xm/review/<run>/verdict.json` (consensus[], confirmed[], contested[], by_model, usage).
 4. **Synthesize (Phase 4)** across lenses, feeding into the standard Phase 4 pipeline (CoVe /

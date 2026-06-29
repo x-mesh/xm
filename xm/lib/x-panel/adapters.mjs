@@ -12,6 +12,8 @@
 
 import { spawnSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 // Each builds [bin, args]. `model` (optional) maps to that CLI's --model flag;
 // when null the CLI uses its own default model.
@@ -23,6 +25,11 @@ export function normalizeKiroModel(model) {
   return value.replace(/^claude-(opus|sonnet|haiku)-(\d+)-(\d+)(.*)$/i, 'claude-$1-$2.$3$4');
 }
 
+// THE single source of provider command definitions — shared by panel review
+// AND every cross-vendor consumer (x-review/op/agent/eval/solver/build), which
+// all reach these via `xm panel cross`. Providers live in CODE, not config:
+// `panel.*` config only tunes panel-review behavior (models/judge/stream); the
+// lone config key the cross path also reads is `timeout_s` (cmdCross).
 const BUILTIN = {
   claude: (prompt, model) => ['claude', ['-p', ...(model ? ['--model', model] : []), prompt]],
   // --sandbox read-only matches the streaming codex path: review/cross prompts never edit the repo.
@@ -39,6 +46,87 @@ const BUILTIN = {
 
 export function knownProviders() {
   return Object.keys(BUILTIN);
+}
+
+// Per-provider catalog metadata. The model LISTS are intentionally NOT hardcoded
+// (cursor alone exposes 130+ variants, versioned weekly) — `list` is the live
+// query command so this never goes stale. `multi` flags vendors that are model
+// gateways (one CLI fronts several model families). `examples` are a few verified
+// IDs (2026-06) to seed `--models name:model`; agy/codex omit them because their
+// accepted ID form isn't unambiguous from the CLI — query `list` instead.
+// `auth` is the CLI's own non-interactive auth-status command (exit 0 = signed in),
+// verified 2026-06; `login` is the fix hint shown when it fails. agy has no such
+// command, so its readiness can only be confirmed by an actual --probe call.
+export const PROVIDER_META = {
+  claude: { vendor: 'Anthropic', multi: false, list: 'claude --help', examples: 'claude-opus-4-8, claude-sonnet-4-6', auth: ['claude', ['auth', 'status']], login: 'claude auth login' },
+  codex:  { vendor: 'OpenAI', multi: false, list: 'codex --help (no list cmd; pass -m <id>)', examples: '', auth: ['codex', ['login', 'status']], login: 'codex login' },
+  agy:    { vendor: 'Google Antigravity', multi: true, list: 'agy models', examples: '', auth: null, login: 'agy install', creds: '.gemini/oauth_creds.json', listCmd: ['agy', ['models']] },
+  cursor: { vendor: 'Cursor — multi-vendor gateway', multi: true, list: 'cursor-agent --list-models', examples: 'cursor:kimi-k2.5, cursor:claude-opus-4-8-thinking-high, cursor:gpt-5.5-high, cursor:gemini-3.1-pro, cursor:grok-4.3, cursor:glm-5.2-max', auth: ['cursor-agent', ['status']], login: 'cursor-agent login', listCmd: ['cursor-agent', ['--list-models']] },
+  kiro:   { vendor: 'AWS Kiro — multi-vendor', multi: true, list: 'kiro-cli chat --list-models', examples: 'kiro:claude-opus-4.8, kiro:deepseek-3.2, kiro:minimax-m2.5, kiro:glm-5, kiro:qwen3-coder-next', auth: ['kiro-cli', ['whoami']], login: 'kiro-cli login', listCmd: ['kiro-cli', ['chat', '--list-models']] },
+};
+
+export function providerMeta(name) {
+  return name ? (PROVIDER_META[name] || null) : PROVIDER_META;
+}
+
+/**
+ * Readiness probe for one provider WITHOUT spending a model call: checks PATH
+ * install, then runs the CLI's auth-status command (exit 0 = authenticated).
+ * Returns { name, installed, authed, detail } where authed is true/false, or
+ * null when it can't be known cheaply (no status cmd) — caller may then --probe.
+ */
+export function checkAuth(name, { timeout = 12_000 } = {}) {
+  const meta = PROVIDER_META[name];
+  if (!meta) return { name, installed: false, authed: null, detail: 'unknown provider' };
+  if (!isAvailable(name)) return { name, installed: false, authed: null, detail: 'not on PATH' };
+  // A test/env override stub stands in for the real CLI — treat as ready.
+  if (overridePath(name)) return { name, installed: true, authed: true, detail: 'X_PANEL_CMD override (assumed ready)' };
+  if (!meta.auth) {
+    // No non-interactive auth-status command (agy). We can't confirm auth without a
+    // model call, so authed stays null (?). If the CLI's creds file exists, surface that
+    // as a hint — but DON'T promote to ✓: a present-but-expired token would be a false ready.
+    let detail = 'no auth-status command — use --probe';
+    if (meta.creds) {
+      const p = join(homedir(), meta.creds);
+      detail = existsSync(p)
+        ? `credentials present (~/${meta.creds}); run --probe to confirm`
+        : `no credentials at ~/${meta.creds} — likely logged out; --probe to confirm`;
+    }
+    return { name, installed: true, authed: null, detail };
+  }
+  const [bin, args] = meta.auth;
+  const r = spawnSync(bin, args, { encoding: 'utf8', timeout, env: process.env });
+  if (r.error) {
+    const msg = (r.error.code === 'ETIMEDOUT') ? `auth check timed out (${timeout}ms)` : String(r.error.message || r.error);
+    return { name, installed: true, authed: false, detail: msg.slice(0, 120) };
+  }
+  const clean = ((r.stdout || '') + ' ' + (r.stderr || '')).replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').trim();
+  let detail = clean.split('\n').map((s) => s.trim()).filter(Boolean)[0] || `exit ${r.status}`;
+  // claude's status is a JSON object — summarize its fields instead of a bare "{".
+  if (detail.startsWith('{')) {
+    try {
+      const j = JSON.parse((r.stdout || '').trim());
+      detail = [j.authMethod || j.apiProvider, j.email].filter(Boolean).join(' · ') || (j.loggedIn ? 'logged in' : 'logged out');
+    } catch { /* keep first line */ }
+  }
+  return { name, installed: true, authed: r.status === 0, detail: detail.slice(0, 90) };
+}
+
+/**
+ * Fetch a provider's REAL model catalog by running its own --list-models command.
+ * NOT hardcoded — always current (cursor's kimi-k2.5, kiro's deepseek, …). Returns
+ * { ok, output, error }; ok=false when not installed or the CLI has no list command.
+ */
+export function listModels(name, { timeout = 30_000 } = {}) {
+  const meta = PROVIDER_META[name];
+  if (!meta) return { ok: false, output: '', error: `unknown provider: ${name}` };
+  if (!isAvailable(name)) return { ok: false, output: '', error: 'not installed' };
+  if (!meta.listCmd) return { ok: false, output: '', error: `no model-list command (${meta.list})` };
+  const [bin, args] = meta.listCmd;
+  const r = spawnSync(bin, args, { encoding: 'utf8', timeout, maxBuffer: 8 * 1024 * 1024, env: process.env });
+  if (r.error) return { ok: false, output: '', error: String(r.error.message || r.error) };
+  if (r.status !== 0) return { ok: false, output: r.stdout || '', error: `exit ${r.status}: ${(r.stderr || '').trim().slice(0, 100)}` };
+  return { ok: true, output: (r.stdout || '').trim(), error: null };
 }
 
 /** Known providers that are actually installed on PATH (or overridden via env). */

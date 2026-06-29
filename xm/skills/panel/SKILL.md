@@ -47,6 +47,10 @@ review with its own per-lens prompt:
 ```bash
 # Probe availability first → decide single-vendor fallback (need ≥2) BEFORE spending tokens:
 xm panel detect --json          # {"available":[...installed CLIs],"known":[...]}
+# detect only checks PATH. A CLI can be installed but logged out → the run fails mid-panel.
+# To gate on real readiness (install + auth, no model call):
+xm panel doctor                 # ✓ ready / ✗ NOT authenticated / ? unknown, per provider
+xm panel detect --auth --json   # "available" narrowed to installed AND authenticated
 
 # Drive a review with a custom per-lens prompt (--lens-tag flows to the verdict).
 # Each backslash is the LAST char on its line — copy as-is. Or use --review-prompt - for stdin.
@@ -61,6 +65,11 @@ xm panel <target> \
 - round-2 (refute) is unchanged. Injected (review-mode) runs write to `.xm/review/<run>/`,
   separate from native `.xm/panel/` history.
 - These flags are programmatic plumbing — interactive `/xm:panel` users don't need them.
+- **Where providers/config live:** the provider set (which CLIs exist, how they're spawned) is
+  code-defined in adapters `BUILTIN` — the ONE definition shared by panel review AND every
+  cross-vendor consumer (x-review/op/agent/eval/solver/build) via `xm panel cross`. `panel.*`
+  config tunes panel-review behavior (models/judge/stream) only; the sole key the cross path
+  also reads is `timeout_s`. There is no separate per-consumer provider config to maintain.
 
 ## Core Process
 
@@ -70,7 +79,7 @@ Route by what the user gave you.
 1. Show the current setup so the choice is informed:
    `xm panel setup` (prints detected CLIs on PATH + current config defaults).
 2. Ask the user how to run it (AskUserQuestion, one turn):
-   - **Models**: offer (a) config default, (b) a named preset from config, (c) `--full` (all installed), (d) custom `name` / `name:model` list. For Kiro, `kiro:<value>` is passed to `kiro-cli chat --model <value>`.
+   - **Models**: offer (a) config default, (b) a named preset from config, (c) `--full` (all installed), (d) custom `name` / `name:model` list. For Kiro, `kiro:<value>` is passed to `kiro-cli chat --model <value>`. **cursor and kiro are multi-vendor gateways** — `cursor:kimi-k2.5`, `cursor:gemini-3.1-pro`, `kiro:deepseek-3.2` all work. Don't hardcode a model list (catalogs move weekly): run `xm panel types` for each provider's live model query. `xm panel models <vendor>` prints that catalog *through x-kit* (so cursor's kimi-k2.5 etc. show up here), and `xm panel models <vendor> --check <model>` validates a model ID **before** you put it in config / `--models` — that's how you confirm a configured model is usable (doctor only checks auth, not model IDs).
    - **Target**: current `git diff HEAD` (default), a file path, or pasted text.
 3. Run it: `xm panel [target] --models <list>` or `xm panel [target] --preset <name>`.
 4. Relay the verdict in this order: **consensus issues (N/M) first**, then contested
@@ -80,10 +89,13 @@ Route by what the user gave you.
 ### B. `/xm:panel setup` → interactive config
 1. Show `xm panel setup` (detected + current models/judge).
 2. Ask (AskUserQuestion): which **models**, any per-model **overrides** (`name:model`,
-   e.g. `codex:gpt-5.2` or `kiro:claude-sonnet-4.6`), **judge** (rule for now), and **scope** (project `.xm` or `--global`).
+   e.g. `cursor:kimi-k2.5` or `kiro:claude-opus-4.8`), **judge** (rule for now), and **scope** (project `.xm` or `--global`).
 3. Save: `xm panel setup --models a:m1,b,c --judge rule [--global]`.
    For presets/overrides not expressible via flags, edit `panel.presets` /
    `panel.model_overrides` in the chosen `config.json` and confirm with `xm panel setup`.
+   > `setup` saves **panel-review** defaults. Cross-vendor consumers don't read `models`/
+   > `judge`/`stream` — they detect vendors at call time and pass `--models` explicitly
+   > (only `timeout_s` is shared). So these defaults look panel-scoped because they are.
 
 ### C. `/xm:panel <target>` or explicit `--models`/`--preset` → run directly
 Pass straight through: `xm panel <args>`. No questions — the user already specified.
@@ -103,6 +115,7 @@ question. Never silently pick models when the user invoked `/xm:panel` bare to c
 | "I'll define a bash function for the long command." | Bash tool is stateless per call; the function vanishes → `command not found`. Use `xm panel` directly. |
 | "The verdict has duplicate findings, I'll dedupe by hand." | `consensus[]` already merges same file+line across models with an N/M tag. Read consensus, not raw `confirmed`. |
 | "Some models timed out, I'll just present what I have as complete." | Report failures (timeouts, missing CLIs) honestly. A 2/4 panel is not a 4/4 panel. |
+| "It's installed, so it'll work." | Installed ≠ authenticated. `xm panel doctor` catches a logged-out CLI up front, instead of losing a round when it fails mid-panel. Run it (or `detect --auth`) before a cross-vendor run. |
 
 ## Red Flags
 
@@ -116,4 +129,5 @@ question. Never silently pick models when the user invoked `/xm:panel` bare to c
 - For bare `/xm:panel`, you asked the user (models + target) before running.
 - You reported consensus (N/M) and diversity, and named any model that failed.
 - For `setup`, you confirmed the saved config with `xm panel setup`.
+- Before a cross-vendor run, you confirmed providers are authenticated (`xm panel doctor`), not just installed.
 - The verdict file exists under `.xm/panel/<run>/verdict.json` (recall can show it later).
