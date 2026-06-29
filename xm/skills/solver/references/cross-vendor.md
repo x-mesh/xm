@@ -28,7 +28,7 @@ cross-vendor SCORING, use `x-eval --cross-vendor` (that is its domain) — do no
 ## Probe + fallback (do this first)
 
 ```bash
-xm panel detect --auth --json   # available = installed AND authenticated (skips logged-out CLIs)
+xm panel detect --auth --json   # available = installed AND ready (authed, or assumed-ready like agy w/ creds; skips logged-out)
 ```
 
 If fewer than 2 vendors are ready, run the normal single-vendor Claude fan-out and tell the

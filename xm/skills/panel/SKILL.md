@@ -56,8 +56,8 @@ review with its own per-lens prompt:
 xm panel detect --json          # {"available":[...installed CLIs],"known":[...]}
 # detect only checks PATH. A CLI can be installed but logged out → the run fails mid-panel.
 # To gate on real readiness (install + auth, no model call):
-xm panel doctor                 # ✓ ready / ✗ NOT authenticated / ? unknown, per provider
-xm panel detect --auth --json   # "available" narrowed to installed AND authenticated
+xm panel doctor                 # ✓ ready / ~ likely ready (no auth-status CLI, creds present) / ✗ NOT authenticated / ? unknown
+xm panel detect --auth --json   # "available" = installed AND (authenticated OR assumed-ready, e.g. agy w/ creds)
 
 # Drive a review with a custom per-lens prompt (--lens-tag flows to the verdict).
 # Each backslash is the LAST char on its line — copy as-is. Or use --review-prompt - for stdin.

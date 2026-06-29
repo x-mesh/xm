@@ -200,7 +200,7 @@ signal, not same-model noise.
 
 > **⚠ Call `xm panel …` directly via the dispatcher (Bash) — never import.**
 
-1. **Probe** vendors: `xm panel detect --auth --json` (available = installed AND authenticated).
+1. **Probe** vendors: `xm panel detect --auth --json` (available = installed AND ready: authenticated or assumed-ready, e.g. agy w/ creds).
    If fewer than 2 vendors are ready, fall back to standard single-vendor judges and say so —
    loud, never silent (Lesson L6); run `xm panel doctor` to check why a CLI isn't ready.
 2. **Judge across vendors** — build the judge prompt (rubric + criteria + the content to score +
