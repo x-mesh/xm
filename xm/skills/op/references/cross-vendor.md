@@ -1,4 +1,4 @@
-# Cross-Vendor Mode (debate / council)
+# Cross-Vendor Mode (debate / council / brainstorm)
 
 By default x-op strategies fan out single-vendor Claude agents (different personas/roles,
 same model). With `--cross-vendor`, `debate` and `council` instead assign roles/positions to
@@ -52,8 +52,25 @@ The cross-vendor value: PRO and CON are genuinely different models, not one mode
 3. DEEP DIVE / CONVERGE: leader (Claude) drafts a consensus proposal from the vendor positions; note
    where vendors agreed (consensus) and where only one did (diversity) — keep both, drop neither.
 
+## brainstorm (ideation across vendors)
+
+The GENERATE phase (Phase 1) fans out to DIFFERENT vendors instead of same-model Claude agents, so
+the idea pool spans model families — different priors surface ideas one model never would. CLUSTER
+and VOTE stay single-vendor (the leader dedups, groups by theme, selects).
+
+1. GENERATE: send the SAME ideation prompt (min 5 tagged ideas; `--analogical`/`--lateral` modes
+   still apply) to every available vendor in one call —
+   `xm panel cross --models "<available>" --prompt-file <generate-prompt> --source op:brainstorm --title "<topic>"`.
+2. Collect each vendor's idea set (a per-vendor failure = one fewer pool, surfaced not silent — L6).
+3. CLUSTER: leader merges all vendors' ideas, dedups, groups by theme — tag each cluster with the
+   vendors that reached it (a cluster only one vendor produced is the cross-vendor signal).
+4. VOTE (if `--vote`): leader selects the top ideas as usual.
+
+GENERATION-only pattern (same as x-solver): inject diversity where ideas are born, keep synthesis
+with the leader. `select`/judgement is NOT cross-vendor here.
+
 ## Cost & defaults
 
 Cross-vendor multiplies cost (vendors × rounds). Announce the model set + rough cost before
 spending. Single-vendor remains the default for every strategy; `--cross-vendor` is purely additive
-and currently wired for `debate` and `council` only.
+and currently wired for `debate`, `council`, and `brainstorm` (the last on its GENERATE phase only).

@@ -183,7 +183,7 @@ See `references/x-op-auto-route.md` for execution flow and worked examples.
 - `--preset consensus` — compose preset: `persona | council`
 - `--agents N` — Number of participating agents (default: shared config's agent_max_count (default 4). Overrides when specified)
 - `--model sonnet|opus|haiku` — Agent model (default sonnet)
-- `--cross-vendor` — debate/council only: assign roles/positions to different model vendors (claude+codex+cursor…) via `xm panel cross`. Opt-in; single-vendor fallback when <2 vendor CLIs. Default without the flag: `.xm/config.json` `cross_vendor.op` ?? `cross_vendor.default`; `--no-cross-vendor` forces single. See `references/cross-vendor.md`.
+- `--cross-vendor` — debate/council (roles→vendors) + brainstorm (GENERATE phase→vendors): fan out across different model vendors (claude+codex+cursor…) via `xm panel cross`. Opt-in; single-vendor fallback when <2 ready. Default without the flag: `.xm/config.json` `cross_vendor.op` ?? `cross_vendor.default`; `--no-cross-vendor` forces single. See `references/cross-vendor.md`.
 - `--steps "role:task,role:task"` — Manually specify chain steps
 - `--target <file|dir>` — review/red-team target
 - `--vote` — Enable dot voting for brainstorm
@@ -311,7 +311,7 @@ See `strategies/red-team.md` — Adversarial attack/defend cycle. Phase 1 TARGET
 
 ## Strategy: brainstorm
 
-See `strategies/brainstorm.md` — free ideation → cluster → vote. Phase 1 GENERATE fan-out produces minimum 5 tagged ideas per agent; two optional modes: `--analogical` (cross-domain structural mapping) and `--lateral` (de Bono operators: Reversal, Provocation, Random Entry, Fractionation). Phase 2 CLUSTER deduplicates and groups by theme; Phase 3 VOTE (when `--vote` is set) fan-out selects top 3.
+See `strategies/brainstorm.md` — free ideation → cluster → vote. Phase 1 GENERATE fan-out produces minimum 5 tagged ideas per agent; two optional modes: `--analogical` (cross-domain structural mapping) and `--lateral` (de Bono operators: Reversal, Provocation, Random Entry, Fractionation). Phase 2 CLUSTER deduplicates and groups by theme; Phase 3 VOTE (when `--vote` is set) fan-out selects top 3. With `--cross-vendor`, the GENERATE phase fans out across model vendors (each vendor's idea set) instead of same-model agents; CLUSTER/VOTE stay single-vendor — see `references/cross-vendor.md`.
 
 ## Strategy: distribute
 
