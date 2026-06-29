@@ -15,8 +15,10 @@
 
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, readFileSync, readdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, dirname } from 'node:path';
 import {
-  PANEL_DIR, C, join, existsSync, ensureDir, writeJSON, readText, runId,
+  PANEL_DIR, XM_ROOT, C, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
 import { invokeProviderAsync, invokeProviderText, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels } from './x-panel/adapters.mjs';
@@ -160,6 +162,7 @@ function parseFlags(raw) {
     else if (a === '--no-partial') flags.partial = false;
     else if (a === '--watch') flags.watch = true;
     else if (a === '--interval') flags.interval = parseInt(raw[++i], 10) || undefined;
+    else if (a === '--all') flags.all = true;
     // Take the next token as a value ONLY if it isn't another --flag (so a missing value
     // doesn't silently swallow the following option as the prompt body). '-' (stdin) is kept.
     else if (a === '--review-prompt-file') flags.reviewPromptFile = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
@@ -907,12 +910,14 @@ Commands:
                                 --source tags the calling workflow (e.g. op:debate, build:consensus,
                                 solver:hypothesize, eval:judge) and --title names the run; both
                                 surface in the dashboard panel list so runs are identifiable.
-  status [run] [--json] [--watch [--interval N]]
+  status [run] [--all] [--json] [--watch [--interval N]]
                                 Read run state from disk — see an IN-PROGRESS panel from the CLI.
-                                No run → list recent review + cross runs (phase + per-model state).
-                                A run id → per-model live state + each model's latest stdout tail
-                                (what it is producing now). Read-only. --watch refreshes live every
-                                N seconds (default 2) — terminal equivalent of the dashboard.
+                                No run → list THIS project's recent review + cross runs (cwd/.xm),
+                                with a project header + staleness (a dead run shows "stalled · Nago",
+                                not a phantom "running"). --all → every registered project, grouped
+                                (~/.xm/projects.json). A run id → per-model state + each model's
+                                latest stdout tail. Read-only. --watch refreshes live every N
+                                seconds (default 2) — terminal equivalent of the dashboard.
   types                         List providers (install status) + how to query each
                                 one's live models (cursor/kiro are multi-vendor: kimi, deepseek, …)
   models [vendor] [--check m1,m2]
@@ -934,6 +939,78 @@ Output: .xm/panel/<run>/{<model>.r1.json, <model>.r2.json, verdict.json}
 }
 
 function readJSONSafe(p) { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } }
+
+const STATUS_STALE_MS = 30_000; // mirrors the dashboard's PANEL_STALE_MS
+
+// Human-readable age of an ISO timestamp ("12s" / "35m" / "6h" / "2d"), or null if unparseable.
+function statusAge(iso) {
+  const t = Date.parse(iso || '');
+  if (!Number.isFinite(t)) return null;
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.round(s / 60)}m`;
+  if (s < 86400) return `${Math.round(s / 3600)}h`;
+  return `${Math.round(s / 86400)}d`;
+}
+
+// One run dir → a normalized status row. STALENESS: a non-done review whose status.json hasn't been
+// touched within STATUS_STALE_MS is a DEAD process (terminal closed / interrupted / crashed) — its
+// last-written phase says "running" forever, which is misleading. Mark it "stalled" instead, so a
+// 6-hours-ago interrupted run never masquerades as live. (Mirrors the dashboard's isPanelRunLive.)
+function statusRunRow(entry) {
+  if (entry.kind === 'cross') {
+    const res = readJSONSafe(join(entry.dir, 'result.json'));
+    const models = res ? res.models
+      : readdirSync(entry.dir).filter((f) => f.endsWith('.json') && f !== 'result.json').map((f) => f.replace(/\.json$/, ''));
+    return { kind: 'cross', run: entry.run, source: (res && res.source) || 'cross', title: (res && res.title) || null,
+      phase: res ? 'done' : 'running', live: !res, stale: false, age: null, models: models || [] };
+  }
+  const st = readJSONSafe(join(entry.dir, 'status.json'));
+  const done = (st && st.phase === 'done') || existsSync(join(entry.dir, 'verdict.json'));
+  const t = st && Date.parse(st.updated_at || '');
+  const live = !done && Number.isFinite(t) && (Date.now() - t) < STATUS_STALE_MS;
+  const stale = !done && !live && !!st;
+  const phase = done ? 'done' : stale ? 'stalled' : (st ? st.phase : 'unknown');
+  return { kind: 'review', run: entry.run, source: st && st.target_kind ? `review(${st.target_kind})` : 'review',
+    title: (st && st.target_title) || null, phase, live, stale, age: st ? statusAge(st.updated_at) : null,
+    models: st ? st.models.map((m) => `${m.label}:${m.state}`) : [] };
+}
+
+// All runs under one .xm root (panel + cross), newest first.
+function collectStatusRuns(xmRoot, limit = 20) {
+  const mk = (dir, kind) => existsSync(dir)
+    ? readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => ({ kind, run: e.name, dir: join(dir, e.name) }))
+    : [];
+  return [...mk(join(xmRoot, 'panel'), 'review'), ...mk(join(xmRoot, 'cross'), 'cross')]
+    .sort((a, b) => b.run.localeCompare(a.run)).slice(0, limit).map(statusRunRow);
+}
+
+// Registered projects from ~/.xm/projects.json (the same source the dashboard uses) — non-archived,
+// with an .xm dir. The current cwd's project is always first (even if unregistered).
+function statusProjects() {
+  const out = [], seen = new Set();
+  const add = (name, xmRoot) => { if (!seen.has(xmRoot)) { seen.add(xmRoot); out.push({ name, xmRoot }); } };
+  add(basename(dirname(XM_ROOT)) || 'project', XM_ROOT);
+  // Resolve the global xm dir the same way core.mjs does (X_PANEL_GLOBAL_ROOT override → ~/.xm) so
+  // the registry read honors test isolation and any custom global root, not a hardcoded homedir.
+  const globalRoot = process.env.X_PANEL_GLOBAL_ROOT ? process.env.X_PANEL_GLOBAL_ROOT : join(homedir(), '.xm');
+  try {
+    const reg = JSON.parse(readFileSync(join(globalRoot, 'projects.json'), 'utf8'));
+    for (const p of (reg.projects || [])) {
+      if (p.archived) continue;
+      const xr = join(p.path, '.xm');
+      if (existsSync(xr)) add(p.name || p.id || basename(p.path), xr);
+    }
+  } catch { /* no registry → current project only */ }
+  return out;
+}
+
+function printStatusRow(r) {
+  const color = r.phase === 'done' ? C.green : r.live ? C.yellow : C.dim;
+  const phaseTxt = r.stale && r.age ? `stalled · ${r.age} ago` : r.phase;
+  console.log(`${C.bold}${r.run}${C.reset}  ${C.cyan}${r.source}${C.reset}  ${color}[${phaseTxt}]${C.reset}  ${r.title || ''}`);
+  console.log(`  ${(r.models || []).join('   ') || C.dim + '—' + C.reset}`);
+}
 
 // `xm panel status [run] [--json] [--watch]` — read run state straight from disk so an IN-PROGRESS
 // panel is visible from the CLI (not only the dashboard). No run id → list recent review + cross
@@ -958,36 +1035,43 @@ function cmdStatus(pos, flags) {
 
 function renderStatusOnce(pos, flags) {
   const ESC = String.fromCharCode(27); // ANSI escape, for stripping colorized model output
-  const panelDir = PANEL_DIR;
-  const crossDir = join(PANEL_DIR, '..', 'cross');
   const runArg = pos[0];
-  const collect = (dir, kind) => existsSync(dir)
-    ? readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => ({ kind, run: e.name, dir: join(dir, e.name) }))
-    : [];
 
-  if (!runArg) {
-    const runs = [...collect(panelDir, 'review'), ...collect(crossDir, 'cross')]
-      .sort((a, b) => b.run.localeCompare(a.run)).slice(0, 20);
-    const rows = runs.map((r) => {
-      if (r.kind === 'cross') {
-        const res = readJSONSafe(join(r.dir, 'result.json'));
-        const models = res ? res.models
-          : readdirSync(r.dir).filter((f) => f.endsWith('.json') && f !== 'result.json').map((f) => f.replace(/\.json$/, ''));
-        return { kind: 'cross', run: r.run, source: (res && res.source) || 'cross', title: (res && res.title) || null, phase: res ? 'done' : 'running', models };
-      }
-      const st = readJSONSafe(join(r.dir, 'status.json'));
-      const phase = st ? st.phase : (existsSync(join(r.dir, 'verdict.json')) ? 'done' : 'unknown');
-      return { kind: 'review', run: r.run, source: st && st.target_kind ? `review(${st.target_kind})` : 'review', title: st && st.target_title || null, phase, models: st ? st.models.map((m) => `${m.label}:${m.state}`) : [] };
-    });
-    if (flags.json) { console.log(JSON.stringify(rows, null, 2)); return; }
-    if (!rows.length) { console.log('(no panel runs)'); return; }
-    for (const r of rows) {
-      console.log(`${C.bold}${r.run}${C.reset}  ${C.cyan}${r.source}${C.reset}  ${C.dim}[${r.phase}]${C.reset}  ${r.title || ''}`);
-      console.log(`  ${(r.models || []).join('   ') || C.dim + '—' + C.reset}`);
+  // --all: every registered project's runs, grouped — the CLI equivalent of the dashboard Activity
+  // view. Projects with no panel activity are skipped; projects with a live run float by the badge.
+  if (flags.all && !runArg) {
+    const projects = statusProjects();
+    if (flags.json) {
+      console.log(JSON.stringify(projects.map((p) => ({ project: p.name, xmRoot: p.xmRoot, runs: collectStatusRuns(p.xmRoot, 10) })), null, 2));
+      return;
     }
+    let any = false;
+    for (const p of projects) {
+      const runs = collectStatusRuns(p.xmRoot, 10);
+      if (!runs.length) continue;
+      any = true;
+      const live = runs.filter((r) => r.live && r.phase !== 'done').length;
+      console.log(`\n${C.bold}▸ ${p.name}${C.reset}  ${C.dim}${p.xmRoot}${C.reset}${live ? `  ${C.yellow}● ${live} live${C.reset}` : ''}`);
+      for (const r of runs) printStatusRow(r);
+    }
+    if (!any) console.log('(no panel runs in any registered project)');
     return;
   }
 
+  // No run id → this project's runs (cwd-scoped). Header names the project so it's never ambiguous
+  // whether the list is local or global (it is always local — use --all to span every project).
+  if (!runArg) {
+    const runs = collectStatusRuns(XM_ROOT, 20);
+    if (flags.json) { console.log(JSON.stringify(runs, null, 2)); return; }
+    console.log(`${C.dim}project${C.reset} ${C.bold}${basename(dirname(XM_ROOT)) || 'project'}${C.reset}  ${C.dim}${join(XM_ROOT, 'panel')}  (--all for every project)${C.reset}`);
+    if (!runs.length) { console.log('(no panel runs)'); return; }
+    for (const r of runs) printStatusRow(r);
+    return;
+  }
+
+  // A run id → detail.
+  const panelDir = PANEL_DIR;
+  const crossDir = join(PANEL_DIR, '..', 'cross');
   let dir = join(panelDir, runArg), kind = 'review';
   if (!existsSync(dir)) { dir = join(crossDir, runArg); kind = 'cross'; }
   if (!existsSync(dir)) { console.error(`${C.red}run not found: ${runArg}${C.reset}`); process.exitCode = 1; return; }
@@ -1008,7 +1092,14 @@ function renderStatusOnce(pos, flags) {
   const st = readJSONSafe(join(dir, 'status.json'));
   if (flags.json) { console.log(JSON.stringify({ status: st, done: existsSync(join(dir, 'verdict.json')) }, null, 2)); return; }
   if (!st) { console.log(`${runArg}: no status.json`); return; }
-  console.log(`${C.bold}${runArg}${C.reset}  ${C.dim}[${st.phase}]${C.reset}  ${st.target_title || ''}`);
+  // Same staleness rule as the list: a non-done run not touched within the window is a dead process,
+  // so the per-model "running" states below are frozen-at-death, not live.
+  const detailDone = st.phase === 'done' || existsSync(join(dir, 'verdict.json'));
+  const t = Date.parse(st.updated_at || '');
+  const stale = !detailDone && !(Number.isFinite(t) && (Date.now() - t) < STATUS_STALE_MS);
+  const phaseTxt = detailDone ? 'done' : stale ? `stalled · ${statusAge(st.updated_at)} ago (process gone — states below are frozen)` : st.phase;
+  const phaseColor = detailDone ? C.green : stale ? C.dim : C.yellow;
+  console.log(`${C.bold}${runArg}${C.reset}  ${phaseColor}[${phaseTxt}]${C.reset}  ${st.target_title || ''}`);
   for (const m of (st.models || [])) {
     // strip ANSI SGR (kiro colorizes its output) + collapse whitespace so the tail stays one line
     const tail = (m.stdout_tail || '').replace(new RegExp(ESC+'\\[[0-9;]*m','g'), '').replace(/\s+/g, ' ').trim().slice(-200);

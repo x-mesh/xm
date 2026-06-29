@@ -613,6 +613,47 @@ describe('providerReady (auth gate — fixes agy false-negative)', () => {
   });
 });
 
+describe('panel status (staleness + project scope + --all)', () => {
+  // Own temp .xm so seeded fixtures don't pollute the shared DIR (latestVerdict() reads the
+  // alphabetically-last run there and would choke on a verdict-less fixture).
+  let SDIR;
+  beforeAll(() => { SDIR = mkdtempSync(join(tmpdir(), 'xpanel-status-')); });
+  afterAll(() => { rmSync(SDIR, { recursive: true, force: true }); });
+  const statusEnv = () => ({ X_PANEL_ROOT: join(SDIR, '.xm'), X_PANEL_GLOBAL_ROOT: join(SDIR, '.xm-global') });
+  const seedRun = (run, updatedAt) => {
+    const d = join(SDIR, '.xm', 'panel', run);
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'status.json'), JSON.stringify({
+      run, phase: 'round1 (review)', target_kind: 'literal', target_title: 'seed',
+      updated_at: updatedAt, models: [{ label: 'claude', state: 'running' }],
+    }));
+  };
+
+  test('a non-done run not updated within the window shows "stalled", a fresh one stays live', () => {
+    seedRun('panel-stale-fixture', '2020-01-01T00:00:00.000Z'); // ancient → dead process
+    seedRun('panel-live-fixture', new Date().toISOString());    // just written → live
+    const r = panelRaw(['status', '--json'], statusEnv());
+    expect(r.status).toBe(0);
+    const rows = JSON.parse(r.stdout);
+    const stale = rows.find((x) => x.run === 'panel-stale-fixture');
+    const live = rows.find((x) => x.run === 'panel-live-fixture');
+    expect(stale.phase).toBe('stalled');     // not the frozen "round1 (review)"
+    expect(stale.stale).toBe(true);
+    expect(live.stale).toBe(false);
+    expect(live.phase).toBe('round1 (review)'); // genuinely in progress
+  });
+
+  test('--all groups by project; with no registry it falls back to the current project', () => {
+    seedRun('panel-all-fixture', new Date().toISOString());
+    const r = panelRaw(['status', '--all', '--json'], statusEnv()); // global root has no projects.json
+    expect(r.status).toBe(0);
+    const groups = JSON.parse(r.stdout);
+    expect(Array.isArray(groups)).toBe(true);
+    expect(groups.length).toBeGreaterThanOrEqual(1); // at least the current project
+    expect(groups[0].runs.some((x) => x.run === 'panel-all-fixture')).toBe(true);
+  });
+});
+
 // ── integration: full panel flow via stubs ───────────────────────────
 
 describe('review (stubbed models)', () => {
