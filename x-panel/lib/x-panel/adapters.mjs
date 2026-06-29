@@ -77,28 +77,33 @@ export function providerMeta(name) {
  */
 export function checkAuth(name, { timeout = 12_000 } = {}) {
   const meta = PROVIDER_META[name];
-  if (!meta) return { name, installed: false, authed: null, detail: 'unknown provider' };
-  if (!isAvailable(name)) return { name, installed: false, authed: null, detail: 'not on PATH' };
+  if (!meta) return { name, installed: false, authed: null, assumedReady: false, detail: 'unknown provider' };
+  if (!isAvailable(name)) return { name, installed: false, authed: null, assumedReady: false, detail: 'not on PATH' };
   // A test/env override stub stands in for the real CLI — treat as ready.
-  if (overridePath(name)) return { name, installed: true, authed: true, detail: 'X_PANEL_CMD override (assumed ready)' };
+  if (overridePath(name)) return { name, installed: true, authed: true, assumedReady: true, detail: 'X_PANEL_CMD override (assumed ready)' };
   if (!meta.auth) {
-    // No non-interactive auth-status command (agy). We can't confirm auth without a
-    // model call, so authed stays null (?). If the CLI's creds file exists, surface that
-    // as a hint — but DON'T promote to ✓: a present-but-expired token would be a false ready.
+    // No non-interactive auth-status command (agy). We can't confirm auth without a model call,
+    // so authed stays null (?) — never promoted to ✓ (a present-but-expired token must not read as
+    // a false ✓). BUT we set assumedReady when the creds file exists, so the picker/gate treats
+    // agy as usable: excluding it outright made an authenticated agy a permanent false-negative.
+    // The worst case (stale creds) is a loud mid-run failure, recoverable; a silent always-hidden
+    // vendor is not. No creds → likely logged out → not assumed ready.
     let detail = 'no auth-status command — use --probe';
+    let credsPresent = false;
     if (meta.creds) {
       const p = join(homedir(), meta.creds);
-      detail = existsSync(p)
-        ? `credentials present (~/${meta.creds}); run --probe to confirm`
+      credsPresent = existsSync(p);
+      detail = credsPresent
+        ? `credentials present (~/${meta.creds}); assumed ready — run --probe to confirm`
         : `no credentials at ~/${meta.creds} — likely logged out; --probe to confirm`;
     }
-    return { name, installed: true, authed: null, detail };
+    return { name, installed: true, authed: null, assumedReady: credsPresent, detail };
   }
   const [bin, args] = meta.auth;
   const r = spawnSync(bin, args, { encoding: 'utf8', timeout, env: process.env });
   if (r.error) {
     const msg = (r.error.code === 'ETIMEDOUT') ? `auth check timed out (${timeout}ms)` : String(r.error.message || r.error);
-    return { name, installed: true, authed: false, detail: msg.slice(0, 120) };
+    return { name, installed: true, authed: false, assumedReady: false, detail: msg.slice(0, 120) };
   }
   const clean = ((r.stdout || '') + ' ' + (r.stderr || '')).replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').trim();
   let detail = clean.split('\n').map((s) => s.trim()).filter(Boolean)[0] || `exit ${r.status}`;
@@ -109,7 +114,16 @@ export function checkAuth(name, { timeout = 12_000 } = {}) {
       detail = [j.authMethod || j.apiProvider, j.email].filter(Boolean).join(' · ') || (j.loggedIn ? 'logged in' : 'logged out');
     } catch { /* keep first line */ }
   }
-  return { name, installed: true, authed: r.status === 0, detail: detail.slice(0, 90) };
+  const authed = r.status === 0;
+  return { name, installed: true, authed, assumedReady: authed, detail: detail.slice(0, 90) };
+}
+
+// A provider is usable in a run when it's installed AND either verified-authed (authed===true) OR
+// assumed-ready (a no-auth-status CLI like agy whose credentials file is present). assumedReady is
+// kept DISTINCT from authed===true so `doctor` can still mark it "unverified" — this only governs
+// whether the auth gate (detect --auth, picker) offers the provider, not whether it's confirmed.
+export function providerReady(c) {
+  return !!c && c.installed === true && (c.authed === true || c.assumedReady === true);
 }
 
 /**
@@ -507,7 +521,15 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
     child.on('close', (code) => {
       guard.clear();
       if (code !== 0) return done({ ok: false, output: stdout, error: `exit ${code}: ${stderr.trim().slice(0, 300)}` });
-      done({ ok: true, output: stdout.trim(), error: null });
+      const out = stdout.trim();
+      // exit 0 but EMPTY stdout: a gateway CLI (cursor especially, also agy) can return
+      // success with no answer — transient rate-limit, silent auth refusal, or an empty
+      // completion. The raw-text path used to pass this through as ok:true/output:'' →
+      // the result was silently blanked in the panel (the "can't capture cursor" case).
+      // Treat empty-on-success as a failure so it's surfaced loud (L6) and is retryable,
+      // forwarding any stderr as the reason.
+      if (!out) return done({ ok: false, output: '', error: `exit 0 but empty output${stderr.trim() ? `: ${stderr.trim().slice(0, 200)}` : ' (no stdout from CLI)'}` });
+      done({ ok: true, output: out, error: null });
     });
   });
 }

@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus } from '../x-panel/lib/x-panel/synth.mjs';
-import { extractJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady } from '../x-panel/lib/x-panel/adapters.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
 const STUB = join(import.meta.dirname, 'fixtures', 'panel-stub-model.mjs');
@@ -403,6 +403,48 @@ If there are no real issues, return {"findings":[]}.`;
     expect(readdirSync(crossDir).length).toBeGreaterThan(0);
   });
 
+  test('cross: exit-0 empty output is a loud failure, retried once (no silent blank)', () => {
+    // cursor returns success with empty stdout (transient rate-limit) on every call → the guard
+    // turns it into ok:false, cross retries once (still empty), and it ends as a surfaced FAILURE
+    // instead of a silently blank panel cell — the "can't capture cursor" bug.
+    const r = panelRaw(['cross', '--models', 'cursor', '--prompt', 'test', '--json'],
+      { X_PANEL_CMD_CURSOR: STUB, X_PANEL_EMPTY_CURSOR: 'rate limited' });
+    expect(r.status).not.toBe(0); // single empty vendor → all failed → non-zero exit
+    const out = JSON.parse(r.stdout);
+    const cursor = out.results.find((x) => x.provider === 'cursor');
+    expect(cursor.ok).toBe(false);
+    expect(cursor.output).toBe('');
+    expect(cursor.error).toContain('empty output'); // guard message, not a silent blank
+    expect(cursor.error).toContain('rate limited'); // stderr hint forwarded as the reason
+    expect(cursor.error).toContain('retried once'); // retry attempt is surfaced
+    expect(r.stderr).toContain('retrying once'); // loud warning (L6), not silent
+  });
+
+  test('cross: retry recovers a transient exit-0-empty (cursor succeeds on 2nd try)', () => {
+    const marker = join(DIR, 'cursor-empty-once.marker');
+    if (existsSync(marker)) rmSync(marker);
+    const r = panelRaw(['cross', '--models', 'cursor', '--prompt', 'test', '--json'],
+      { X_PANEL_CMD_CURSOR: STUB, X_PANEL_EMPTY_ONCE_CURSOR: marker });
+    expect(r.status).toBe(0); // first call empty → retry succeeds → overall success
+    const out = JSON.parse(r.stdout);
+    const cursor = out.results.find((x) => x.provider === 'cursor');
+    expect(cursor.ok).toBe(true);
+    expect(cursor.output.length).toBeGreaterThan(0); // 2nd-try output captured, not lost
+    expect(r.stderr).toContain('retrying once'); // the first failure was still surfaced
+  });
+
+  test('cross: a timeout/stall is NOT retried (no doubling the wall-clock on a hung provider)', () => {
+    // claude is silent for 3s with a 1s idle window → stalled. Unlike a transient empty/exit-N,
+    // a timeout already burned the full window, so retrying would just pay it twice — skip it.
+    const r = panelRaw(['cross', '--models', 'claude', '--prompt', 'hi', '--timeout', '1', '--json'],
+      { X_PANEL_DELAY_CLAUDE_MS: '3000' });
+    expect(r.status).not.toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.results[0].error).toMatch(/stalled/i);
+    expect(out.results[0].error).not.toMatch(/retried once/i); // timeout → no second attempt
+    expect(r.stderr).not.toContain('retrying once');
+  });
+
   test('cross records --source + --title provenance in result.json', () => {
     const r = panelRaw(['cross', '--models', 'claude,codex', '--prompt', 'Argue the PRO side.',
       '--source', 'op:debate', '--title', 'cross-vendor moat', '--json']);
@@ -522,6 +564,29 @@ If there are no real issues, return {"findings":[]}.`;
     const info = JSON.parse(r.stdout);
     expect(info.available).toContain('claude');
     expect(info.available).toContain('codex');
+  });
+});
+
+describe('providerReady (auth gate — fixes agy false-negative)', () => {
+  test('verified-authed provider is ready', () => {
+    expect(providerReady({ installed: true, authed: true, assumedReady: true })).toBe(true);
+  });
+  test('assumed-ready (no auth-status command + creds present, e.g. agy) IS offered', () => {
+    // the bug: agy was authed:null → excluded by authed===true gate even though it works.
+    expect(providerReady({ installed: true, authed: null, assumedReady: true })).toBe(true);
+  });
+  test('null auth WITHOUT creds (likely logged out) is NOT offered', () => {
+    expect(providerReady({ installed: true, authed: null, assumedReady: false })).toBe(false);
+  });
+  test('explicitly NOT authenticated is excluded', () => {
+    expect(providerReady({ installed: true, authed: false, assumedReady: false })).toBe(false);
+  });
+  test('not installed is excluded regardless of auth', () => {
+    expect(providerReady({ installed: false, authed: true, assumedReady: true })).toBe(false);
+  });
+  test('null/garbage input is safely not-ready', () => {
+    expect(providerReady(null)).toBe(false);
+    expect(providerReady({})).toBe(false);
   });
 });
 

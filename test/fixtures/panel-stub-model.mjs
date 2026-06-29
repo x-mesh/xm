@@ -5,7 +5,7 @@
  * Returns deterministic JSON so x-panel's flow can be tested without real models.
  * Wraps output in noise to exercise extractJSON.
  */
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, existsSync } from 'node:fs';
 const [model, prompt = ''] = process.argv.slice(2);
 const stream = process.argv.includes('--stream'); // resolveStreamCommand appends --stream
 const isRefute = /verdicts/i.test(prompt);
@@ -65,6 +65,24 @@ if (Number.isFinite(delayMs) && delayMs > 0) {
 if (process.env[`X_PANEL_NO_JSON_${envModel}`]) {
   process.stdout.write('plain text without a JSON payload');
   process.exit(0);
+}
+
+// Emit NOTHING and exit 0 — a gateway CLI (cursor especially) that returns success with an
+// empty completion (transient rate-limit / silent auth refusal). The raw-text cross path must
+// treat this as a FAILURE (loud, retryable), not a silent blank. An optional stderr hint is
+// emitted when X_PANEL_EMPTY_<MODEL> holds a non-"1" message, to exercise the reason passthrough.
+if (process.env[`X_PANEL_EMPTY_${envModel}`]) {
+  const hint = process.env[`X_PANEL_EMPTY_${envModel}`];
+  if (hint && hint !== '1') process.stderr.write(hint);
+  process.exit(0);
+}
+
+// Transient flavour: FIRST invocation returns exit-0-empty, later ones succeed — proves the
+// cross retry recovers a flaky gateway. A marker file remembers it already failed once.
+if (process.env[`X_PANEL_EMPTY_ONCE_${envModel}`]) {
+  const marker = process.env[`X_PANEL_EMPTY_ONCE_${envModel}`];
+  if (!existsSync(marker)) { writeFileSync(marker, '1'); process.exit(0); }
+  // else: fall through to the normal output below (recovered on retry)
 }
 
 // Emit valid JSON but exit non-zero — a crashed provider whose output still
