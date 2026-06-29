@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.21-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.23-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -372,6 +372,10 @@ One engine (`xm panel cross`) backs every layer. `--cross-vendor` is **opt-in ev
 | Review | x-review | findings cross-checked — consensus vs. diversity |
 | Evaluation | x-eval | judges from different vendors, bias-reduced scoring |
 | Engine | x-panel | the cross-model adversarial panel itself |
+
+All layers share **one** provider definition: which CLIs exist and how each is spawned lives in the panel's adapters (code), not config. There is no per-plugin provider setup — `panel.*` config tunes panel review only (models/judge/stream), and the cross path shares just `timeout_s`. To add or retarget a vendor, you edit that single definition and every layer picks it up.
+
+Several of those CLIs are themselves multi-vendor gateways — `cursor` and `kiro` front Kimi, DeepSeek, GLM, Gemini, Grok and more — so `--models cursor:kimi-k2.5` works out of the box. Model catalogs move fast, so xm does **not** hardcode them: run `xm panel types` to see each installed CLI's live model-list command.
 
 This is a *capability*, available today; proving it produces measurably better outcomes is a separate, ongoing effort (see `docs/strategy/xm-differentiation.md`).
 

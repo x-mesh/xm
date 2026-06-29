@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1782665244417,
+  "generatedAt": 1782693557146,
   "version": 1,
   "skills": [
     {
@@ -19,8 +19,8 @@
     },
     {
       "plugin": "eval",
-      "sha256": "c05c93de087dcaa05dc192c50a015a165fcac34ec8763fe3e0d20053bc73a0c7",
-      "bytes": 14252
+      "sha256": "53b5b7fa5a6a6fd7a6e952d679c73f61a8d2bf2e3339dc46c22f02f5353e577a",
+      "bytes": 14352
     },
     {
       "plugin": "handoff",
@@ -64,8 +64,8 @@
     },
     {
       "plugin": "panel",
-      "sha256": "3fc535a37c0466b343a60b4ec7c88503eb79ae0d7986382e6a748e0a7623f4fe",
-      "bytes": 6935
+      "sha256": "089072becec1670808bf2eb48b2f5702f626d5883e007e5861e9dbf41f62bf3f",
+      "bytes": 8899
     },
     {
       "plugin": "probe",
@@ -79,8 +79,8 @@
     },
     {
       "plugin": "review",
-      "sha256": "81e7ff8718acc8af877248f926e9313d6bdb954d6f8f7f1a1cb3a6e6600301ac",
-      "bytes": 17258
+      "sha256": "5eb64c1502b8b6d4a5126dafc1a7494d1fec4c790c9c71b24c7027b1f312b90d",
+      "bytes": 17379
     },
     {
       "plugin": "ship",
@@ -89,8 +89,8 @@
     },
     {
       "plugin": "solver",
-      "sha256": "6fc420be6704af893df685de1804e6ebf82b6fb5987f4206e00b00056c59d502",
-      "bytes": 16926
+      "sha256": "45283693867815bbb03ac57376a1d6f56e9dc9931be08911e26c0b31d743ec01",
+      "bytes": 17001
     },
     {
       "plugin": "sync",

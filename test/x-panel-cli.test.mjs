@@ -435,6 +435,29 @@ If there are no real issues, return {"findings":[]}.`;
     expect(Array.isArray(info.known)).toBe(true);
     expect(info.known).toContain('claude');
   });
+
+  test('panel doctor --json reports per-provider readiness; overrides are assumed ready', () => {
+    // Override every provider so the check is hermetic (no real auth-status call).
+    const allStub = { X_PANEL_CMD_AGY: STUB, X_PANEL_CMD_CURSOR: STUB, X_PANEL_CMD_KIRO: STUB };
+    const r = panelRaw(['doctor', '--json'], allStub);
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.providers.length).toBe(5);
+    for (const p of out.providers) {
+      expect(p.installed).toBe(true);
+      expect(p.authed).toBe(true); // X_PANEL_CMD override → assumed ready, no model call
+    }
+  });
+
+  test('panel detect --auth narrows available to authenticated providers', () => {
+    // Only claude+codex are stubbed (assumed ready); the rest aren't overridden,
+    // so --auth must still surface at least the two ready ones.
+    const r = panelRaw(['detect', '--auth', '--json']);
+    expect(r.status).toBe(0);
+    const info = JSON.parse(r.stdout);
+    expect(info.available).toContain('claude');
+    expect(info.available).toContain('codex');
+  });
 });
 
 // ── integration: full panel flow via stubs ───────────────────────────

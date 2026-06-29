@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.21-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.23-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -372,6 +372,10 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 | 리뷰 | x-review | finding 교차 검증 — 합의 vs 다양성 |
 | 평가 | x-eval | 다른 벤더의 심판으로 편향 완화 채점 |
 | 엔진 | x-panel | 크로스-모델 적대 패널 그 자체 |
+
+모든 계층은 **하나의** provider 정의를 공유합니다: 어떤 CLI가 존재하고 각각을 어떻게 spawn하는지는 config가 아니라 panel의 adapters(코드)에 있습니다. 플러그인별 provider 설정은 없습니다 — `panel.*` config는 panel review만 조정하고(models/judge/stream), cross 경로는 `timeout_s`만 공유합니다. 벤더를 추가하거나 바꾸려면 그 단일 정의를 수정하면 모든 계층이 따라옵니다.
+
+이 CLI들 중 일부는 그 자체로 멀티벤더 게이트웨이입니다 — `cursor`와 `kiro`는 Kimi·DeepSeek·GLM·Gemini·Grok 등을 프론트합니다 — 따라서 `--models cursor:kimi-k2.5`가 그대로 동작합니다. 모델 카탈로그는 빠르게 바뀌므로 xm은 이를 하드코딩하지 **않습니다**: `xm panel types`로 설치된 각 CLI의 라이브 모델 조회 커맨드를 확인하세요.
 
 이것은 오늘 사용 가능한 *능력*입니다. 이 능력이 측정 가능한 더 나은 성과를 낸다는 입증은 별개의 진행 중 과제입니다 (`docs/strategy/xm-differentiation.md` 참조).
 

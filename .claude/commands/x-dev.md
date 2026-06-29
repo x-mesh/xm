@@ -31,10 +31,36 @@ User provided: $ARGUMENTS
 ## Constants
 
 ```
-REPO_ROOT = /Users/jinwoo/work/project/agentic/xm:kit
-MARKETPLACE_NAME = xm
-PLUGINS = [x-agent, x-build, x-op, xm]
+REPO_ROOT = /Users/jinwoo/work/project/agentic/x-kit
+MARKETPLACE_NAME = xm        # registered from a GitHub remote (x-mesh/xm), NOT a local path
+# marketplace plugin names (install id = <name>@xm); source dir is x-<name>/ (xm core = ./xm):
+PLUGINS = [xm, build, agent, op, solver, review, trace, memory, eval,
+           probe, humble, humanize, dashboard, recall, panel]
+# NOTE: x-sync exists as a dir but is NOT registered in marketplace.json.
 ```
+
+---
+
+## Reality — how this repo actually installs (READ FIRST)
+
+The `xm` marketplace is a **GitHub remote (x-mesh/xm)**, not a local path. Two consequences that
+make most of the per-plugin install/update modes below legacy:
+
+1. **One core plugin bundles everything.** `scripts/sync-bundle.sh` copies every `x-<name>/lib` and
+   `x-<name>/skills` into the `xm` core plugin. So a single `claude plugin install xm@xm` makes ALL
+   dispatchers work (`xm panel`, `xm op`, …). Installed today: `xm@xm` only — per-plugin installs are rarely needed.
+
+2. **`claude plugin update xm` pulls from GitHub** — it does NOT see uncommitted local edits.
+   To test working-tree changes, bypass install entirely:
+   - **From the repo root:** the `xm` dispatcher resolves its lib to `$PWD` when the cwd has
+     `x-build/lib` + `xm/lib` (the repo root). So `cd REPO_ROOT && xm panel doctor` runs your working
+     tree — but run `bash scripts/sync-bundle.sh` first so `xm/lib` reflects the source edits.
+   - **Direct CLI:** `node x-panel/lib/x-panel-cli.mjs <cmd>` (always the live source, no sync needed).
+
+   Permanent rollout (other dirs, `/xm:panel` slash command): commit → `/x-release` → `claude plugin update xm`.
+
+The install / install-all / update / marketplace-add modes below assume a per-plugin, local-marketplace
+model that does NOT match this setup. Prefer the two options above for local testing.
 
 ---
 
@@ -62,10 +88,10 @@ Filter entries where id contains "x-".
 
 ```bash
 claude plugin validate REPO_ROOT/.claude-plugin/marketplace.json 2>&1
-claude plugin validate REPO_ROOT/xm:agent 2>&1
-claude plugin validate REPO_ROOT/xm:build 2>&1
-claude plugin validate REPO_ROOT/xm:op 2>&1
-claude plugin validate REPO_ROOT/xm:kit 2>&1
+# Validate the SOURCE dirs (all live at REPO_ROOT/x-<name>, or REPO_ROOT/xm for the core):
+claude plugin validate REPO_ROOT/xm 2>&1
+claude plugin validate REPO_ROOT/x-panel 2>&1
+claude plugin validate REPO_ROOT/x-op 2>&1
 ```
 
 ### Step 4: Output
@@ -74,7 +100,7 @@ claude plugin validate REPO_ROOT/xm:kit 2>&1
 🔧 x-dev Status
 
   Marketplace:
-    xm  ✅ registered (local: /Users/jinwoo/work/project/agentic/xm:kit)
+    xm  ✅ registered (GitHub remote: x-mesh/xm)
     — or —
     xm  ❌ not registered (run: /x-dev marketplace add)
 
@@ -304,10 +330,11 @@ Validate all plugin manifests + marketplace manifest.
 
 ```bash
 claude plugin validate REPO_ROOT/.claude-plugin/marketplace.json
-claude plugin validate REPO_ROOT/xm:agent
-claude plugin validate REPO_ROOT/xm:build
-claude plugin validate REPO_ROOT/xm:op
-claude plugin validate REPO_ROOT/xm:kit
+# All registered source dirs (or just the ones you changed):
+for d in xm x-agent x-build x-op x-solver x-review x-trace x-memory x-eval \
+         x-probe x-humble x-humanize x-dashboard x-recall x-panel; do
+  claude plugin validate REPO_ROOT/$d
+done
 ```
 
 Output:

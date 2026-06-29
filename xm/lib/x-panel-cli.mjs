@@ -19,7 +19,7 @@ import {
   PANEL_DIR, C, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
-import { invokeProviderAsync, invokeProviderText, isAvailable, knownProviders, autodetectModels } from './x-panel/adapters.mjs';
+import { invokeProviderAsync, invokeProviderText, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, listModels } from './x-panel/adapters.mjs';
 import { normalizeFindings, normalizeVerdicts, synthesize } from './x-panel/synth.mjs';
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -100,6 +100,7 @@ function parseFlags(raw) {
     '--models': 'models', '-m': 'models', '--judge': 'judge', '--preset': 'preset',
     '--review-prompt-file': 'reviewPromptFile', '--review-prompt': 'reviewPrompt',
     '--lens-tag': 'lensTag', '--prompt-file': 'promptFile', '--prompt': 'prompt',
+    '--check': 'check',
   };
   for (let i = 0; i < raw.length; i++) {
     const a = raw[i];
@@ -115,9 +116,12 @@ function parseFlags(raw) {
     else if (a === '--judge') flags.judge = raw[++i];
     else if (a === '--timeout') flags.timeout = parseInt(raw[++i], 10) || undefined;
     else if (a === '--preset') flags.preset = raw[++i];
+    else if (a === '--check') flags.check = raw[++i];
     else if (a === '--fast') flags.preset = 'fast';
     else if (a === '--full') flags.preset = 'full';
     else if (a === '--global') flags.global = true;
+    else if (a === '--auth') flags.auth = true;
+    else if (a === '--probe') flags.probe = true;
     else if (a === '--stream') flags.stream = true;
     else if (a === '--no-stream') flags.stream = false;
     else if (a === '--partial') flags.partial = true;
@@ -696,11 +700,105 @@ function cmdSetup(pos, flags) {
     console.log(`  detected on PATH : ${autodetectModels().join(', ') || '(none)'}`);
     console.log(`  current models   : ${(cfg.models || []).join(', ') || '(autodetect)'}`);
     console.log(`  current judge    : ${cfg.judge || 'rule'}`);
+    console.log(`  timeout_s        : ${cfg.timeout_s || 240}  ${C.dim}(shared with cross-vendor)${C.reset}`);
+    console.log(`${C.dim}  scope            : models/judge/stream tune panel review only; cross-vendor`);
+    console.log(`                     consumers pass --models directly and share providers (code-`);
+    console.log(`                     defined in adapters) + timeout_s — never models/judge/stream.${C.reset}`);
     console.log(`\nSet defaults:\n  x-panel setup --models claude,codex,agy,kiro --judge rule [--global]`);
     return;
   }
   const path = savePanelConfig(patch, { global: flags.global });
   console.log(`${C.green}✓${C.reset} saved panel defaults → ${path}`);
+}
+
+// `xm panel types` — list providers with install status + how to discover each
+// one's live model set. Model IDs are NOT baked in here; we point at the CLI's own
+// list command so cursor/kiro's fast-moving catalogs (kimi, deepseek, glm, …) stay current.
+function cmdTypes() {
+  const installed = new Set(autodetectModels());
+  const meta = providerMeta();
+  for (const name of knownProviders()) {
+    const m = meta[name] || {};
+    const mark = installed.has(name) ? `${C.green}●${C.reset}` : `${C.dim}○${C.reset}`;
+    const tag = m.multi ? `${C.cyan}${m.vendor}${C.reset}` : (m.vendor || '');
+    console.log(`${mark} ${C.bold}${name}${C.reset}  ${tag}`);
+    if (m.list) console.log(`    models : ${m.list}`);
+    if (m.examples) console.log(`    ${C.dim}e.g. ${m.examples}${C.reset}`);
+  }
+  console.log(`\n${C.dim}● installed   ○ not on PATH${C.reset}`);
+  console.log(`Use a specific model with --models name:model (e.g. ${C.bold}cursor:kimi-k2.5${C.reset}).`);
+  console.log(`Full live catalog for a vendor: ${C.bold}xm panel models <vendor>${C.reset} (e.g. cursor → kimi, glm, grok).`);
+}
+
+// `xm panel models [vendor] [--check m1,m2]` — print a vendor's REAL model catalog
+// fetched live from its own --list-models (never hardcoded → always current, so cursor's
+// kimi-k2.5 shows up). With --check, verify specific model IDs exist in that catalog —
+// the way to confirm a config / --models entry is valid before a run uses it.
+function cmdModels(pos, flags) {
+  const meta = providerMeta();
+  const target = pos[0];
+  const names = target ? [target] : knownProviders();
+  const check = flags.check ? flags.check.split(',').map((s) => s.trim()).filter(Boolean) : null;
+  let shown = false;
+  for (const name of names) {
+    if (!meta[name]) { console.log(`${C.red}unknown provider: ${name}${C.reset}`); continue; }
+    if (!meta[name].listCmd) { if (target) console.log(`${C.yellow}${name}${C.reset}: no model-list command ${C.dim}(${meta[name].list})${C.reset}`); continue; }
+    const r = listModels(name);
+    if (!r.ok) { if (target || check) console.log(`${C.red}${name}${C.reset}: ${C.dim}${r.error}${C.reset}`); continue; }
+    shown = true;
+    if (check) {
+      console.log(`${C.bold}${name}${C.reset}`);
+      for (const c of check) {
+        const model = c.includes(':') ? c.split(':').slice(1).join(':') : c;
+        const esc = model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const hit = new RegExp(`(^|[\\s|])${esc}([\\s|]|$)`, 'm').test(r.output);
+        console.log(`  ${hit ? `${C.green}✓${C.reset}` : `${C.red}✗${C.reset}`} ${model}${hit ? '' : `  ${C.dim}not in ${name}'s catalog${C.reset}`}`);
+      }
+    } else {
+      console.log(`${C.bold}── ${name} ──${C.reset}`);
+      console.log(r.output);
+      console.log('');
+    }
+  }
+  if (!shown && !target) console.log(`${C.dim}No installed provider has a model-list command. See: xm panel types${C.reset}`);
+}
+
+// `xm panel doctor` — pre-flight readiness so a run never fails mid-panel on a
+// logged-out CLI (the cursor case). For each provider: installed on PATH? then its
+// own auth-status command (exit 0 = signed in), NO model call. `--probe` makes one
+// tiny real call for providers without an auth-status command (agy).
+async function cmdDoctor(flags) {
+  const rows = knownProviders().map((n) => checkAuth(n));
+  if (flags.probe) {
+    for (const r of rows) {
+      if (!r.installed || r.authed !== null) continue; // only the "unknown" ones
+      const res = await invokeProviderText(r.name, 'Reply with exactly: OK', { timeout: 30_000 });
+      r.authed = !!(res.ok && /\bok\b/i.test(res.output || ''));
+      r.detail = r.authed ? 'probe ok' : `probe failed: ${(res.error || res.output || '').slice(0, 70)}`;
+    }
+  }
+  if (flags.json) { console.log(JSON.stringify({ providers: rows }, null, 2)); return; }
+  const meta = providerMeta();
+  console.log(`${C.bold}x-panel doctor${C.reset} — provider readiness (install + auth, no model call)\n`);
+  for (const r of rows) {
+    let icon, label;
+    if (!r.installed) { icon = `${C.dim}○${C.reset}`; label = `${C.dim}not installed${C.reset}`; }
+    else if (r.authed === true) { icon = `${C.green}✓${C.reset}`; label = `${C.green}ready${C.reset}`; }
+    else if (r.authed === false) { icon = `${C.red}✗${C.reset}`; label = `${C.red}NOT authenticated${C.reset}`; }
+    else { icon = `${C.yellow}?${C.reset}`; label = `${C.yellow}auth unknown${C.reset}`; }
+    console.log(`${icon} ${C.bold}${r.name}${C.reset}  ${label}  ${C.dim}${r.detail}${C.reset}`);
+    if (r.installed && r.authed === false && meta[r.name] && meta[r.name].login) {
+      console.log(`    ${C.dim}→ fix: ${meta[r.name].login}${C.reset}`);
+    }
+    if (r.authed === null && r.installed) {
+      console.log(`    ${C.dim}→ confirm with: xm panel doctor --probe${C.reset}`);
+    }
+  }
+  const ready = rows.filter((r) => r.authed === true).length;
+  const tail = ready >= 2
+    ? `${C.green}cross-vendor OK${C.reset}`
+    : `${C.yellow}cross-vendor needs ≥2 ready (else single-vendor fallback)${C.reset}`;
+  console.log(`\n${ready}/${rows.length} ready — ${tail}`);
 }
 
 function printHelp() {
@@ -714,7 +812,9 @@ Commands:
                                   x-panel              review git diff with your default models
                                   x-panel ./file       review a file
                                   x-panel --full       review with all installed models
-    --models a,b,c              Override models — name or name:model (e.g. codex:gpt-5,cursor:sonnet-4-thinking,kiro:claude-sonnet-4.6)
+    --models a,b,c              Override models — name or name:model (e.g. cursor:kimi-k2.5,
+                                cursor:claude-opus-4-8-thinking-high,kiro:deepseek-3.2). cursor & kiro are
+                                multi-vendor; list a provider's live models with \`xm panel types\`.
     --fast | --full | --preset NAME   fast=claude,codex · full=all installed · or a named preset
     --judge rule                Synthesis (PoC: rule only)
     --timeout SECONDS           Per-model timeout (default 240; config: panel.timeout_s).
@@ -731,14 +831,23 @@ Commands:
                                 (project .xm/config.json, or ~/.xm with --global).
                                 No args → show detected + current config.
 
-  detect [--json]               Print available (installed) + known providers — lets a
-                                caller decide single-vendor fallback BEFORE spending tokens
+  doctor [--probe] [--json]     Pre-flight readiness: is each provider installed AND
+                                authenticated? Catches logged-out CLIs before a run fails
+                                mid-panel. --probe makes one tiny real call for providers
+                                without an auth-status command (agy).
+  detect [--auth] [--json]      Print available (installed) + known providers — lets a
+                                caller decide single-vendor fallback BEFORE spending tokens.
+                                --auth narrows "available" to installed AND authenticated.
   cross --models a,b,c (--prompt "..." | --prompt-file <p> | --prompt -) [--json]
                                 Generic cross-vendor invocation: run ONE prompt across N vendors,
                                 return each vendor's RAW text output (no findings/merge). For
                                 deliberation (debate/council) — caller does the synthesis.
                                 Output under .xm/cross/<run>/.
-  types                         List known providers
+  types                         List providers (install status) + how to query each
+                                one's live models (cursor/kiro are multi-vendor: kimi, deepseek, …)
+  models [vendor] [--check m1,m2]
+                                Print a vendor's REAL live model catalog (cursor → kimi-k2.5, glm,
+                                grok…). --check verifies model IDs exist — vet a config/--models entry.
 
   Review-prompt injection (programmatic — for cross-vendor review by other plugins):
     --review-prompt-file <path>   Override round-1 reviewer prompt with a custom lens prompt
@@ -748,7 +857,8 @@ Commands:
   help
 
 Model resolution: --models > preset > config > autodetect installed CLIs.
-Providers: ${knownProviders().join(', ')} (override a command with X_PANEL_CMD_<MODEL>)
+Providers: ${knownProviders().join(', ')} — run \`xm panel types\` for each one's live models
+(cursor & kiro front many vendors: kimi, deepseek, glm, gemini, grok…). Override a CLI with X_PANEL_CMD_<MODEL>.
 Output: .xm/panel/<run>/{<model>.r1.json, <model>.r2.json, verdict.json}
 `);
 }
@@ -756,7 +866,7 @@ Output: .xm/panel/<run>/{<model>.r1.json, <model>.r2.json, verdict.json}
 // ── entry ────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
-const SUB = new Set(['review', 'cross', 'setup', 'types', 'detect', 'help', '--help', '-h']);
+const SUB = new Set(['review', 'cross', 'setup', 'types', 'models', 'detect', 'doctor', 'help', '--help', '-h']);
 let cmd = argv[0];
 let rest;
 if (!cmd) { cmd = 'review'; rest = []; }            // `x-panel` → review git diff
@@ -768,9 +878,15 @@ switch (cmd) {
   case 'review': await cmdReview(pos, flags); break;
   case 'cross': await cmdCross(pos, flags); break;
   case 'setup': cmdSetup(pos, flags); break;
-  case 'types': console.log(knownProviders().join('\n')); break;
+  case 'types': cmdTypes(); break;
+  case 'models': cmdModels(pos, flags); break;
+  case 'doctor': await cmdDoctor(flags); break;
   case 'detect': {
-    const info = { available: autodetectModels(), known: knownProviders() };
+    const known = knownProviders();
+    const available = flags.auth
+      ? known.filter((n) => { const c = checkAuth(n); return c.installed && c.authed === true; })
+      : autodetectModels();
+    const info = { available, known };
     if (flags.json) console.log(JSON.stringify(info));
     else console.log(`available: ${info.available.join(', ') || '(none)'}\nknown: ${info.known.join(', ')}`);
     break;
