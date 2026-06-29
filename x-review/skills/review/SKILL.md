@@ -234,9 +234,9 @@ to cross-vendor (still needs ≥2 ready vendors; `--no-cross-vendor` forces sing
 
 Phase 3 (cross-vendor) replaces the Claude fan-out with:
 
-1. **Probe** ready vendors — installed AND authenticated (decide fallback BEFORE spending tokens):
+1. **Probe** ready vendors — installed AND ready — authenticated or assumed-ready (decide fallback BEFORE spending tokens):
    ```bash
-   xm panel detect --auth --json   # available = installed AND authenticated (skips logged-out CLIs)
+   xm panel detect --auth --json   # available = installed AND ready (authed, or assumed-ready like agy w/ creds; skips logged-out)
    ```
 2. **Loud fallback (never silent — Lesson L6):** if fewer than 2 vendors are ready, run the
    normal single-vendor Claude flow and tell the user: "cross-vendor requested but only N
