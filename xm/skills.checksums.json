@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1782702080096,
+  "generatedAt": 1782709920727,
   "version": 1,
   "skills": [
     {
@@ -19,8 +19,8 @@
     },
     {
       "plugin": "eval",
-      "sha256": "b021a6d0fcb71e4be8acb9f1269835c71b345f1c3eaac902d5226e3d479c9e40",
-      "bytes": 14834
+      "sha256": "89d20966f1cc2ddf47859e0cb0976a21ec564d66ca309dd9acac45621d9ad95c",
+      "bytes": 14877
     },
     {
       "plugin": "handoff",
@@ -64,8 +64,8 @@
     },
     {
       "plugin": "panel",
-      "sha256": "c8106e097cb20080edfd78ac39ac90f39a96764a921c2cd1710558b8e6ddd012",
-      "bytes": 11235
+      "sha256": "04704748536e7d4a579cf5951c981d5dcb1f0f9d73e422aafe62a778e18d661d",
+      "bytes": 11302
     },
     {
       "plugin": "probe",
@@ -79,8 +79,8 @@
     },
     {
       "plugin": "review",
-      "sha256": "9a04fab4e5310585debb307d1edd11c23025e5a65408c793518749366ed0419d",
-      "bytes": 17662
+      "sha256": "a6c1b52961b4228db351fe02097449ca03b47967e597a75e0d38b8a5f7188a06",
+      "bytes": 17720
     },
     {
       "plugin": "ship",

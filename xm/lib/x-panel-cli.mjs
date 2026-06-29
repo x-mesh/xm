@@ -19,7 +19,7 @@ import {
   PANEL_DIR, C, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
-import { invokeProviderAsync, invokeProviderText, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, listModels } from './x-panel/adapters.mjs';
+import { invokeProviderAsync, invokeProviderText, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels } from './x-panel/adapters.mjs';
 import { normalizeFindings, normalizeVerdicts, synthesize } from './x-panel/synth.mjs';
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -706,7 +706,19 @@ async function cmdCross(pos, flags) {
   const dir = join(PANEL_DIR, '..', 'cross', run);
   ensureDir(dir);
   const results = await Promise.all(usable.map(async (e) => {
-    const res = await invokeProviderText(e.name, prompt, { timeout: timeoutMs, model: e.model });
+    let res = await invokeProviderText(e.name, prompt, { timeout: timeoutMs, model: e.model });
+    // One retry on a TRANSIENT failure (exit-0-empty / exit-N): cursor and other gateway CLIs
+    // intermittently return an empty/failed result that succeeds on a second try. Do NOT retry a
+    // timeout/stall — it already burned the full (600s+) window, so a retry just doubles the
+    // wall-clock for a hung provider with no new information. The idle-timeout guard's error text
+    // ("stalled: no output…", "…wall-clock cap") is the signal. Retries are surfaced (L6).
+    const isTimeout = (err) => /stalled|wall-clock|timed?\s*out/i.test(String(err || ''));
+    if (!res.ok && !isTimeout(res.error)) {
+      console.error(`${C.yellow}⚠ ${e.label} failed (${res.error}) — retrying once${C.reset}`);
+      const retry = await invokeProviderText(e.name, prompt, { timeout: timeoutMs, model: e.model });
+      if (retry.ok) res = retry;
+      else res = { ...res, error: `${res.error} (retried once, still failed: ${retry.error})` };
+    }
     const rec = { model: e.label, provider: e.name, ok: res.ok, output: res.output || '', error: res.error || null };
     writeJSON(join(dir, `${safeLabel(e.label)}.json`), rec);
     return rec;
@@ -808,6 +820,7 @@ async function cmdDoctor(flags) {
       if (!r.installed || r.authed !== null) continue; // only the "unknown" ones
       const res = await invokeProviderText(r.name, 'Reply with exactly: OK', { timeout: 30_000 });
       r.authed = !!(res.ok && /\bok\b/i.test(res.output || ''));
+      r.assumedReady = r.authed; // probe resolved the unknown → assumed-ready tracks the verdict
       r.detail = r.authed ? 'probe ok' : `probe failed: ${(res.error || res.output || '').slice(0, 70)}`;
     }
   }
@@ -819,6 +832,9 @@ async function cmdDoctor(flags) {
     if (!r.installed) { icon = `${C.dim}○${C.reset}`; label = `${C.dim}not installed${C.reset}`; }
     else if (r.authed === true) { icon = `${C.green}✓${C.reset}`; label = `${C.green}ready${C.reset}`; }
     else if (r.authed === false) { icon = `${C.red}✗${C.reset}`; label = `${C.red}NOT authenticated${C.reset}`; }
+    // authed === null: a no-auth-status CLI (agy). creds present → assumed ready (~, usable);
+    // creds absent → likely logged out (?, not offered).
+    else if (r.assumedReady) { icon = `${C.cyan}~${C.reset}`; label = `${C.cyan}likely ready${C.reset} ${C.dim}(unverified)${C.reset}`; }
     else { icon = `${C.yellow}?${C.reset}`; label = `${C.yellow}auth unknown${C.reset}`; }
     console.log(`${icon} ${C.bold}${r.name}${C.reset}  ${label}  ${C.dim}${r.detail}${C.reset}`);
     if (r.installed && r.authed === false && meta[r.name] && meta[r.name].login) {
@@ -828,11 +844,15 @@ async function cmdDoctor(flags) {
       console.log(`    ${C.dim}→ confirm with: xm panel doctor --probe${C.reset}`);
     }
   }
-  const ready = rows.filter((r) => r.authed === true).length;
+  // "ready" = usable in a run (verified OR assumed); break out how many are still unverified so
+  // the assumed ones are visible, not silently counted as fully confirmed.
+  const verified = rows.filter((r) => r.authed === true).length;
+  const ready = rows.filter(providerReady).length;
+  const assumed = ready - verified;
   const tail = ready >= 2
     ? `${C.green}cross-vendor OK${C.reset}`
     : `${C.yellow}cross-vendor needs ≥2 ready (else single-vendor fallback)${C.reset}`;
-  console.log(`\n${ready}/${rows.length} ready — ${tail}`);
+  console.log(`\n${ready}/${rows.length} ready${assumed ? ` (${verified} verified + ${assumed} assumed — \`doctor --probe\` to confirm)` : ''} — ${tail}`);
 }
 
 function printHelp() {
@@ -874,7 +894,9 @@ Commands:
                                 without an auth-status command (agy).
   detect [--auth] [--json]      Print available (installed) + known providers — lets a
                                 caller decide single-vendor fallback BEFORE spending tokens.
-                                --auth narrows "available" to installed AND authenticated.
+                                --auth narrows "available" to installed AND ready: authenticated,
+                                OR assumed-ready (a no-auth-status CLI like agy whose creds are
+                                present). Still skips logged-out CLIs. Use doctor --probe to verify.
   cross --models a,b,c (--prompt "..." | --prompt-file <p> | --prompt -) [--json]
         [--source <tag>] [--title <text>]
                                 Generic cross-vendor invocation: run ONE prompt across N vendors,
@@ -1017,7 +1039,7 @@ switch (cmd) {
   case 'detect': {
     const known = knownProviders();
     const available = flags.auth
-      ? known.filter((n) => { const c = checkAuth(n); return c.installed && c.authed === true; })
+      ? known.filter((n) => providerReady(checkAuth(n))) // verified-authed OR assumed-ready (e.g. agy w/ creds)
       : autodetectModels();
     const info = { available, known };
     if (flags.json) console.log(JSON.stringify(info));
