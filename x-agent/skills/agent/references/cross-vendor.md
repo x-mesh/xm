@@ -18,7 +18,7 @@ MANY models at once, which only fan-out and broadcast do.
 ## Probe + fallback (do this first)
 
 ```bash
-xm panel detect --auth --json   # available = installed AND authenticated (skips logged-out CLIs)
+xm panel detect --auth --json   # available = installed AND ready (authed, or assumed-ready like agy w/ creds; skips logged-out)
 ```
 
 If fewer than 2 vendors are ready, run the normal single-vendor Claude fan-out/broadcast and
