@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.23-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.25-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -376,6 +376,14 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 모든 계층은 **하나의** provider 정의를 공유합니다: 어떤 CLI가 존재하고 각각을 어떻게 spawn하는지는 config가 아니라 panel의 adapters(코드)에 있습니다. 플러그인별 provider 설정은 없습니다 — `panel.*` config는 panel review만 조정하고(models/judge/stream), cross 경로는 `timeout_s`만 공유합니다. 벤더를 추가하거나 바꾸려면 그 단일 정의를 수정하면 모든 계층이 따라옵니다.
 
 이 CLI들 중 일부는 그 자체로 멀티벤더 게이트웨이입니다 — `cursor`와 `kiro`는 Kimi·DeepSeek·GLM·Gemini·Grok 등을 프론트합니다 — 따라서 `--models cursor:kimi-k2.5`가 그대로 동작합니다. 모델 카탈로그는 빠르게 바뀌므로 xm은 이를 하드코딩하지 **않습니다**: `xm panel types`로 설치된 각 CLI의 라이브 모델 조회 커맨드를 확인하세요.
+
+**config로 기본값 설정.** cross-vendor는 실행마다 opt-in입니다. 특정 소비자의 기본값으로 만들려면 `.xm/config.json`에 설정:
+
+```json
+{ "cross_vendor": { "default": false, "review": true, "eval": true } }
+```
+
+우선순위: `--cross-vendor` / `--no-cross-vendor` 플래그 > `cross_vendor.<consumer>` > `cross_vendor.default` > false. 소비자: `review`, `op`, `eval`, `solver`, `build`, `agent`. config 기본값이 켜져도 설치+인증된 벤더가 2개 이상이어야 하며(`xm panel doctor`), 아니면 단일 벤더로 loud 폴백합니다.
 
 이것은 오늘 사용 가능한 *능력*입니다. 이 능력이 측정 가능한 더 나은 성과를 낸다는 입증은 별개의 진행 중 과제입니다 (`docs/strategy/xm-differentiation.md` 참조).
 

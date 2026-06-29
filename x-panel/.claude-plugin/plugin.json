@@ -1,6 +1,6 @@
 {
   "name": "panel",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Cross-model adversarial review panel — run claude/codex/agy/cursor on the same target, have them refute each other, and synthesize a consensus verdict",
   "author": {
     "name": "x-mesh"

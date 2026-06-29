@@ -42,9 +42,16 @@ Runs ONE prompt across N vendors in parallel and returns each vendor's RAW text 
 caller does the synthesis. Output lands in `.xm/cross/<run>/`.
 
 ```bash
-xm panel cross --models "<available>" --prompt-file <gen-prompt-tmp> --json
+xm panel cross --models "<available>" --prompt-file <gen-prompt-tmp> --json \
+  --source solver:<activity> --title "<problem>"
 # → {"results":[{"model","ok","output","error"}, ...]}
 ```
+
+Always pass `--source solver:<activity>` (e.g. `solver:explore`, `solver:generate`,
+`solver:hypothesize`) and `--title "<problem>"` to the `panel cross` call so the run is
+identifiable in the dashboard panel list. NOTE: this is the **panel** `--source` (the calling
+workflow) — distinct from `solver candidates add --source <vendor>` (which tags the producing
+vendor). Keep both.
 
 ## Generation flow
 
@@ -56,7 +63,7 @@ and where you register results, depends on the strategy:
 **decompose → explore** (writes to the `candidates` store, per sub-problem)
 The explore prompt is sub-problem-specific, so run one `cross` call PER sub-problem:
 ```bash
-xm panel cross --models "<available>" --prompt-file <explore-prompt-for-spN> --json
+xm panel cross --models "<available>" --prompt-file <explore-prompt-for-spN> --json --source solver:explore --title "spN: <sub-problem>"
 xm solver candidates add "<vendor's proposal>" --source <vendor> --sub-problem spN
 ```
 
@@ -66,14 +73,14 @@ single `--models "<available>"` call would send every vendor the same focus. The
 unchanged; only its `focus_constraint` line varies per vendor:
 ```bash
 # for each (vendor, focus_constraint) pair:
-xm panel cross --models "<one vendor>" --prompt-file <prompt-with-that-focus> --json
+xm panel cross --models "<one vendor>" --prompt-file <prompt-with-that-focus> --json --source solver:generate --title "<focus_constraint>"
 xm solver candidates add "<vendor's proposal>" --source <vendor>   # no --sub-problem
 ```
 
 **iterate → hypothesize** (writes to the SEPARATE `hypotheses` store)
 Broadcast the hypothesis-generation prompt to all vendors in one call, then merge:
 ```bash
-xm panel cross --models "<available>" --prompt-file <hypothesize-prompt> --json
+xm panel cross --models "<available>" --prompt-file <hypothesize-prompt> --json --source solver:hypothesize --title "<problem>"
 xm solver hypotheses add "<merged hypothesis>"   # once per distinct hypothesis
 ```
 `hypotheses add` takes NO `--source` and NO `--sub-problem` — hypotheses carry no vendor tag, so

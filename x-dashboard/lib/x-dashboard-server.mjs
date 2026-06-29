@@ -399,26 +399,114 @@ async function handleRecallDetail(xmRoot, id, req) {
 }
 
 // x-panel runs: live status.json (in-progress) + verdict.json (done) per run.
-function handlePanelList(xmRoot, req) {
-  const dir = safeJoin(xmRoot, 'panel');
-  if (!dir || !existsSync(dir)) return jsonResponseWithETag({ runs: [] }, req);
+// Two run families share this list: `review` runs (.xm/panel/, findings-based adversarial
+// review) and `cross` runs (.xm/cross/, generic cross-vendor invocations by op/build/solver/
+// eval). Each carries a `kind` + a `source` provenance tag + a human `title` so the list is
+// identifiable at a glance instead of showing bare timestamps or literal-target fragments.
+function collectPanelRuns(xmRoot) {
   const runs = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const rdir = safeJoin(dir, entry.name);
-    if (!rdir) continue;
-    let status = null, verdict = null;
-    try { status = JSON.parse(readFileSync(join(rdir, 'status.json'), 'utf8')); } catch { /* older/older run */ }
-    try {
-      const v = JSON.parse(readFileSync(join(rdir, 'verdict.json'), 'utf8'));
-      verdict = { counts: v.counts, models: v.models, created_at: v.created_at, usage: v.usage || null, target_title: v.target_title || null };
-    } catch { /* not finished */ }
-    // Prefer the finished verdict's title; fall back to the live status (in-progress runs).
-    const target_title = (verdict && verdict.target_title) || (status && status.target_title) || null;
-    runs.push({ run: entry.name, status, verdict, target_title });
+
+  // ── review runs (.xm/panel/) ──────────────────────────────────────────
+  const dir = safeJoin(xmRoot, 'panel');
+  if (dir && existsSync(dir)) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const rdir = safeJoin(dir, entry.name);
+      if (!rdir) continue;
+      let status = null, verdict = null;
+      try { status = JSON.parse(readFileSync(join(rdir, 'status.json'), 'utf8')); } catch { /* older/older run */ }
+      try {
+        const v = JSON.parse(readFileSync(join(rdir, 'verdict.json'), 'utf8'));
+        verdict = { counts: v.counts, models: v.models, created_at: v.created_at, usage: v.usage || null, target_title: v.target_title || null };
+      } catch { /* not finished */ }
+      // Prefer the finished verdict's title; fall back to the live status (in-progress runs).
+      const target_title = (verdict && verdict.target_title) || (status && status.target_title) || null;
+      // Source = review(<target_kind>) so the list shows what was reviewed (literal/file/diff)
+      // even when the title itself is a cryptic fragment like "status" or "-help".
+      const target_kind = (status && status.target_kind) || null;
+      const source = target_kind ? `review(${target_kind})` : 'review';
+      runs.push({ run: entry.name, kind: 'review', source, title: target_title, status, verdict, target_title });
+    }
   }
+
+  // ── cross runs (.xm/cross/) ───────────────────────────────────────────
+  const cdir = safeJoin(xmRoot, 'cross');
+  if (cdir && existsSync(cdir)) {
+    for (const entry of readdirSync(cdir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const rdir = safeJoin(cdir, entry.name);
+      if (!rdir) continue;
+      let result = null;
+      try { result = JSON.parse(readFileSync(join(rdir, 'result.json'), 'utf8')); } catch { /* in-progress or crashed */ }
+      if (result) {
+        const okCount = (result.results || []).filter((r) => r && r.ok).length;
+        const phase = okCount ? 'done' : ((result.results || []).length ? 'failed' : 'done');
+        runs.push({
+          run: entry.name, kind: 'cross',
+          source: result.source || 'cross',
+          title: result.title || null,
+          models: result.models || [],
+          vendor_count: (result.models || []).length,
+          prompt_chars: result.prompt_chars || null,
+          created_at: result.created_at || null,
+          ok_count: okCount,
+          phase,
+          status: null, verdict: null,
+        });
+      } else {
+        // result.json not written yet — surface the run as in-progress using whatever
+        // per-vendor files have landed, so a live cross run isn't invisible.
+        const labels = readdirSync(rdir).filter((f) => f.endsWith('.json') && f !== 'result.json').map((f) => f.replace(/\.json$/, ''));
+        if (!labels.length) continue;
+        runs.push({
+          run: entry.name, kind: 'cross', source: 'cross', title: null,
+          models: labels, vendor_count: labels.length, prompt_chars: null,
+          created_at: null, phase: 'running', status: null, verdict: null,
+        });
+      }
+    }
+  }
+
+  // run ids share the panel-<timestamp>-<rand> format across both families, so a plain
+  // descending sort interleaves review + cross runs in reverse-chronological order.
   runs.sort((a, b) => b.run.localeCompare(a.run));
-  return jsonResponseWithETag({ runs }, req);
+  return runs;
+}
+
+// A run is still "live": a cross run with no result.json yet, or a review run whose status.json
+// is non-final AND was touched recently (older than this window = the process died mid-run, so it
+// is stale, not live — mirrors the client's PANEL_STALE_MS so server/UI agree).
+const PANEL_STALE_MS = 30000;
+function isPanelRunLive(run) {
+  if (run.kind === 'cross') return run.phase === 'running';
+  const st = run.status;
+  if (!st || st.phase === 'done') return false;
+  const t = Date.parse(st.updated_at || '');
+  return Number.isFinite(t) && (Date.now() - t) < PANEL_STALE_MS;
+}
+
+function handlePanelList(xmRoot, req) {
+  return jsonResponseWithETag({ runs: collectPanelRuns(xmRoot) }, req);
+}
+
+// Cross-workspace aggregate: every project's live (+ a few recent) panel/cross runs in one
+// payload, so a multi-agent / multi-project session sees ALL running panels on one screen instead
+// of switching workspaces one at a time. Works in every mode — single-project (one workspace),
+// registry, or --scan (N workspaces). Workspaces with no panel activity are omitted.
+function handlePanelsAll(req) {
+  const out = [];
+  for (const ws of getAllWorkspaces()) {
+    if (!ws || !ws.xmRoot) continue;
+    let runs = [];
+    try { runs = collectPanelRuns(ws.xmRoot); } catch { runs = []; }
+    if (!runs.length) continue;
+    const live = runs.filter(isPanelRunLive);
+    const recent = runs.filter((r) => !isPanelRunLive(r)).slice(0, 8);
+    out.push({ id: ws.id, name: ws.name, path: ws.path || null, live_count: live.length, total: runs.length, runs: [...live, ...recent] });
+  }
+  // projects with live runs float to the top, then alphabetical — the eye lands on activity first.
+  out.sort((a, b) => (b.live_count - a.live_count) || String(a.name).localeCompare(String(b.name)));
+  return jsonResponseWithETag({ workspaces: out, generated_at: new Date().toISOString() }, req);
 }
 
 function readPanelEvents(runDir, req) {
@@ -452,7 +540,7 @@ function handlePanelDetail(xmRoot, run, req) {
   const dir = safeJoin(xmRoot, 'panel');
   if (!dir) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
   const rdir = safeJoin(dir, run);
-  if (!rdir || !existsSync(rdir)) return jsonResponseWithETag({ error: 'not_found', run }, req, 404);
+  if (!rdir || !existsSync(rdir)) return handleCrossDetail(xmRoot, run, req);
   const read = (f) => { try { return JSON.parse(readFileSync(join(rdir, f), 'utf8')); } catch { return null; } };
   const verdict = read('verdict.json');
   const status = read('status.json');
@@ -474,7 +562,38 @@ function handlePanelDetail(xmRoot, run, req) {
   if (!verdict && !status && Object.keys(rounds).length === 0) {
     return jsonResponseWithETag({ error: 'not_found', run }, req, 404);
   }
-  return jsonResponseWithETag({ run, verdict, status, rounds: Object.values(rounds), events: readPanelEvents(rdir, req) }, req);
+  return jsonResponseWithETag({ run, kind: 'review', verdict, status, rounds: Object.values(rounds), events: readPanelEvents(rdir, req) }, req);
+}
+
+// One cross-vendor run (.xm/cross/<run>/): each vendor's free-form text output. No findings,
+// no rounds — the caller (op/build/solver/eval) did its own synthesis. The detail view shows
+// the raw per-vendor deliberation so the cross run isn't a dead-end card in the list.
+function handleCrossDetail(xmRoot, run, req) {
+  const cdir = safeJoin(xmRoot, 'cross');
+  const rdir = cdir && safeJoin(cdir, run);
+  if (!rdir || !existsSync(rdir)) return jsonResponseWithETag({ error: 'not_found', run }, req, 404);
+  let result = null;
+  try { result = JSON.parse(readFileSync(join(rdir, 'result.json'), 'utf8')); } catch { /* in-progress */ }
+  if (!result) {
+    // result.json not written yet — assemble from the per-vendor files that have landed.
+    const results = [];
+    for (const f of readdirSync(rdir)) {
+      if (!f.endsWith('.json') || f === 'result.json') continue;
+      try { results.push(JSON.parse(readFileSync(join(rdir, f), 'utf8'))); } catch { /* skip partial */ }
+    }
+    if (!results.length) return jsonResponseWithETag({ error: 'not_found', run }, req, 404);
+    return jsonResponseWithETag({ run, kind: 'cross', source: 'cross', title: null, models: results.map((r) => r.model), phase: 'running', results }, req);
+  }
+  return jsonResponseWithETag({
+    run, kind: 'cross',
+    source: result.source || 'cross',
+    title: result.title || null,
+    models: result.models || [],
+    prompt_chars: result.prompt_chars || null,
+    created_at: result.created_at || null,
+    phase: 'done',
+    results: result.results || [],
+  }, req);
 }
 
 // Reuse x-panel's provider adapters (PATH detection) instead of re-implementing
@@ -2867,6 +2986,11 @@ server = Bun.serve({
       // GET /api/panel/providers (before the :run match)
       if (path === '/api/panel/providers') {
         return handlePanelProviders(XM_ROOT, req);
+      }
+
+      // GET /api/panels/all — cross-workspace aggregate of running + recent panels
+      if (path === '/api/panels/all') {
+        return handlePanelsAll(req);
       }
 
       if (path === '/api/panel') {

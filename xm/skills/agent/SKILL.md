@@ -179,7 +179,7 @@ From `$ARGUMENTS`:
 - `--role <name>` = agent role description (default: "agent")
 - `--roles "se,sre,security"` = per-agent role presets (comma-separated)
 - `--context <text>` = additional context injection
-- `--cross-vendor` = run each agent on a different model vendor via `xm panel cross` (opt-in, graceful single-vendor fallback) — see `references/cross-vendor.md`
+- `--cross-vendor` = run each agent on a different model vendor via `xm panel cross` (opt-in, graceful single-vendor fallback). Default without the flag: `.xm/config.json` `cross_vendor.agent` ?? `cross_vendor.default`; `--no-cross-vendor` forces single — see `references/cross-vendor.md`
 
 ### --roles option
 

@@ -265,7 +265,7 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 - `plan-check` — Validate plan across 11 quality dimensions
 - `prd-check [--json]` — Deterministic PRD gate (blocks Execute on unresolved `[A*, low]` / `Status: blocking`); `phase set execute --force` to override
 - `prd-gate [--threshold N]` — Judge panel PRD quality evaluation (rubric-based scoring)
-- `consensus [--round N] [--cross-vendor]` — 4-agent consensus review (architect/critic/planner/security); `--cross-vendor` assigns each role to a different model vendor via `xm panel cross` (opt-in, graceful single-vendor fallback) — see `references/cross-vendor-consensus.md`
+- `consensus [--round N] [--cross-vendor]` — 4-agent consensus review (architect/critic/planner/security); `--cross-vendor` assigns each role to a different model vendor via `xm panel cross` (opt-in, graceful single-vendor fallback). Default without the flag: `.xm/config.json` `cross_vendor.build` ?? `cross_vendor.default`; `--no-cross-vendor` forces single — see `references/cross-vendor-consensus.md`
 - `phase next` / `phase set <name>` — Move between phases
 - `gate pass/fail [message]` — Resolve gate
 - `checkpoint <type> [message]` — Record checkpoint

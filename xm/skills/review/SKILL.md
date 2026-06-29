@@ -228,7 +228,9 @@ runs Claude alone).
 > dispatcher-first rule as elsewhere; a fresh shell each Bash call means no helper functions.
 
 Trigger: `--cross-vendor` flag, or natural language ("여러 모델로 리뷰", "다른 모델로 교차검증",
-"cross-vendor review").
+"cross-vendor review"). **Config default:** with neither `--cross-vendor` nor `--no-cross-vendor`,
+resolve `.xm/config.json` `cross_vendor.review` ?? `cross_vendor.default` ?? false — if true, default
+to cross-vendor (still needs ≥2 ready vendors; `--no-cross-vendor` forces single-vendor for one run).
 
 Phase 3 (cross-vendor) replaces the Claude fan-out with:
 

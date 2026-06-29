@@ -181,9 +181,30 @@ export function invokeProvider(name, prompt, { timeout = 180_000, model = null }
  * structured-streaming path (live token/cost events). Otherwise the original raw
  * path is used unchanged, so the default flow and its tests never regress.
  */
-export function invokeProviderAsync(name, prompt, { timeout = 180_000, model = null, onEvent = null, stream = false, partial = true } = {}) {
+// Idle-reset timeout guard with an absolute backstop. `timeout` is the IDLE window: the child is
+// killed only after it produces NO output for this long (genuinely stalled), so a model that keeps
+// streaming keeps running — this is the dynamic, activity-based extension. `maxTimeout` is a hard
+// wall-clock cap so a runaway can't stream forever. The two paths fire DISTINCT errors so a caller
+// (and the dashboard) can tell "stalled" (hung) from "cap" (working but too long) — and both apart
+// from a real exit-code/parse failure. Returns { touch, clear }: call touch() on every byte of
+// output, clear() when the process settles.
+function makeTimeoutGuard(timeout, maxTimeout, onKill) {
+  const cap = maxTimeout && maxTimeout > timeout ? maxTimeout : Math.max(timeout * 2, timeout + 120_000);
+  let idleTimer = null, hardTimer = null, done = false;
+  const clear = () => { done = true; if (idleTimer) clearTimeout(idleTimer); if (hardTimer) clearTimeout(hardTimer); idleTimer = hardTimer = null; };
+  const touch = () => {
+    if (done) return;
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { clear(); onKill(`stalled: no output for ${Math.round(timeout / 1000)}s`, 'idle'); }, timeout);
+  };
+  hardTimer = setTimeout(() => { clear(); onKill(`timeout ${Math.round(cap / 1000)}s wall-clock cap (was still producing output)`, 'cap'); }, cap);
+  touch(); // arm immediately — silence from spawn to first byte also counts toward the idle window
+  return { touch, clear };
+}
+
+export function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, stream = false, partial = true } = {}) {
   if (stream && supportsStream(name)) {
-    return invokeProviderStream(name, prompt, { timeout, model, onEvent, partial });
+    return invokeProviderStream(name, prompt, { timeout, maxTimeout, model, onEvent, partial });
   }
   return new Promise((resolve) => {
     const emit = (event) => {
@@ -212,28 +233,29 @@ export function invokeProviderAsync(name, prompt, { timeout = 180_000, model = n
     let stderr = '';
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    const timer = setTimeout(() => {
-      const error = `timeout ${timeout}ms`;
-      emit({ type: 'timeout', provider: name, model, error });
+    const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
+      emit({ type: 'timeout', provider: name, model, error, reason });
       child.kill('SIGKILL');
       finish({ ok: false, error, raw: stdout, json: null });
-    }, timeout);
+    });
     child.stdout.on('data', (d) => {
       stdout += d;
+      guard.touch(); // output = alive → extend the idle window
       emit({ type: 'stdout', provider: name, model, bytes: Buffer.byteLength(d), text: d });
     });
     child.stderr.on('data', (d) => {
       stderr += d;
+      guard.touch(); // progress/heartbeat on stderr (spinners, cost lines) also counts as activity
       emit({ type: 'stderr', provider: name, model, bytes: Buffer.byteLength(d), text: d });
     });
     child.on('error', (e) => {
-      clearTimeout(timer);
+      guard.clear();
       const error = String(e.message || e);
       emit({ type: 'error', provider: name, model, error });
       finish({ ok: false, error, raw: '', json: null });
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
+      guard.clear();
       if (settled) return;
       emit({ type: 'exit', provider: name, model, code });
       // Some raw-mode CLIs (kiro) print a cost line on stderr — surface it as usage.
@@ -384,7 +406,7 @@ export function parseStreamLine(name, obj, model) {
   return { events, finalText, usage };
 }
 
-function invokeProviderStream(name, prompt, { timeout = 180_000, model = null, onEvent = null, partial = true } = {}) {
+function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, partial = true } = {}) {
   return new Promise((resolve) => {
     const emit = (event) => { if (!onEvent) return; try { onEvent({ at: new Date().toISOString(), ...event }); } catch { /* observer only */ } };
     let settled = false;
@@ -417,22 +439,23 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, model = null, o
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    const timer = setTimeout(() => {
-      emit({ type: 'timeout', provider: name, model, error: `timeout ${timeout}ms` });
+    const guard = makeTimeoutGuard(timeout, maxTimeout, (error) => {
+      emit({ type: 'timeout', provider: name, model, error });
       child.kill('SIGKILL');
-      finish({ ok: false, error: `timeout ${timeout}ms`, raw: rawCap, json: null, usage });
-    }, timeout);
+      finish({ ok: false, error, raw: rawCap, json: null, usage });
+    });
     child.stdout.on('data', (d) => {
+      guard.touch(); // streaming tokens = alive → reset the idle window (working models keep going)
       if (rawCap.length < RAW_CAP) rawCap += d;
       buf += d;
       if (buf.length > LINE_CAP) buf = buf.slice(buf.length - LINE_CAP); // overflow guard for newline-less floods
       let nl;
       while ((nl = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, nl); buf = buf.slice(nl + 1); handleLine(line); }
     });
-    child.stderr.on('data', (d) => { stderr += d; if (stderr.length > ERR_CAP) stderr = stderr.slice(-ERR_CAP); emit({ type: 'stderr', provider: name, model, bytes: Buffer.byteLength(d), text: d }); });
-    child.on('error', (e) => { clearTimeout(timer); emit({ type: 'error', provider: name, model, error: String(e.message || e) }); finish({ ok: false, error: String(e.message || e), raw: '', json: null }); });
+    child.stderr.on('data', (d) => { guard.touch(); stderr += d; if (stderr.length > ERR_CAP) stderr = stderr.slice(-ERR_CAP); emit({ type: 'stderr', provider: name, model, bytes: Buffer.byteLength(d), text: d }); });
+    child.on('error', (e) => { guard.clear(); emit({ type: 'error', provider: name, model, error: String(e.message || e) }); finish({ ok: false, error: String(e.message || e), raw: '', json: null }); });
     child.on('close', (code) => {
-      clearTimeout(timer);
+      guard.clear();
       if (settled) return;
       if (buf.trim()) handleLine(buf); // flush the trailing (unterminated) line — carries final result/usage
       emit({ type: 'exit', provider: name, model, code });
@@ -463,7 +486,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, model = null, o
  * generic cross-vendor deliberation (debate/council) where the answer is free-form
  * prose, not findings JSON. ok = process exited 0.
  */
-export function invokeProviderText(name, prompt, { timeout = 180_000, model = null } = {}) {
+export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout = null, model = null } = {}) {
   return new Promise((resolve) => {
     const resolved = resolveCommand(name, prompt, model);
     if (!resolved) return resolve({ ok: false, output: '', error: `unknown provider: ${name}` });
@@ -472,16 +495,19 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, model = nu
     try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env }); }
     catch (e) { return resolve({ ok: false, output: '', error: String(e.message || e) }); }
     let stdout = '', stderr = '';
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve({ ok: false, output: stdout, error: `timeout ${timeout}ms` }); }, timeout);
-    child.stdout.on('data', (d) => { stdout += d; if (stdout.length > 16 * 1024 * 1024) stdout = stdout.slice(-16 * 1024 * 1024); });
-    child.stderr.on('data', (d) => { stderr += d; if (stderr.length > 200_000) stderr = stderr.slice(-200_000); });
-    child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, output: '', error: String(e.message || e) }); });
+    // Idle-reset timeout: a vendor still streaming text keeps going; only true silence kills it.
+    const guard = makeTimeoutGuard(timeout, maxTimeout, (error) => { child.kill('SIGKILL'); done({ ok: false, output: stdout, error }); });
+    child.stdout.on('data', (d) => { guard.touch(); stdout += d; if (stdout.length > 16 * 1024 * 1024) stdout = stdout.slice(-16 * 1024 * 1024); });
+    child.stderr.on('data', (d) => { guard.touch(); stderr += d; if (stderr.length > 200_000) stderr = stderr.slice(-200_000); });
+    child.on('error', (e) => { guard.clear(); done({ ok: false, output: '', error: String(e.message || e) }); });
     child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code !== 0) return resolve({ ok: false, output: stdout, error: `exit ${code}: ${stderr.trim().slice(0, 300)}` });
-      resolve({ ok: true, output: stdout.trim(), error: null });
+      guard.clear();
+      if (code !== 0) return done({ ok: false, output: stdout, error: `exit ${code}: ${stderr.trim().slice(0, 300)}` });
+      done({ ok: true, output: stdout.trim(), error: null });
     });
   });
 }

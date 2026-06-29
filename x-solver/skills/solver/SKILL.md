@@ -221,8 +221,9 @@ generate / hypothesize) across different model vendors via `xm panel cross` inst
 same-model Claude agents — same-model fan-out has low diversity, different model families produce
 genuinely different candidates. Evaluation/scoring stays single-vendor (for cross-vendor scoring
 use `x-eval --cross-vendor`). Probe `xm panel detect --auth` (installed + authenticated); fall
-back loudly to single-vendor if <2 vendors are ready (`xm panel doctor` shows why). Full flow:
-`references/cross-vendor.md`.
+back loudly to single-vendor if <2 vendors are ready (`xm panel doctor` shows why). **Default without
+the flag:** `.xm/config.json` `cross_vendor.solver` ?? `cross_vendor.default`; `--no-cross-vendor` forces
+single-vendor. Full flow: `references/cross-vendor.md`.
 
 ### iterate — Leader execution rules (MUST)
 The leader must never directly read code or verify hypotheses in any phase. Always delegate to an agent.

@@ -4714,6 +4714,70 @@ function filterRecallType(type) {
   }
 }
 
+// ── Activity — every project's running (+ recent) panels on one screen ────
+// Cross-workspace aggregate (/api/panels/all). Unscoped on purpose: it spans ALL workspaces, so
+// it uses a raw fetch, not apiUrl() (which would pin it to the current workspace).
+async function renderActivity() {
+  document.getElementById('app').innerHTML =
+    `<div class="view-header"><h1>Activity</h1><p>running panels across all projects</p></div>${renderLoading()}`;
+  await refreshActivity();
+}
+
+// Switch to a run's workspace (so the scoped detail fetch resolves) then open its panel detail.
+function activityOpen(wsId, run) {
+  if (multiRootMode && wsId) { currentWsId = wsId; try { localStorage.setItem('xm-workspace', wsId); } catch { /* private mode */ } }
+  window.location.hash = '#/panel/' + hashEnc(run);
+}
+
+async function refreshActivity() {
+  if (getPath() !== '/activity') return; // navigated away → stop polling
+  const res = await fetchJSON('/api/panels/all');
+  if (getPath() !== '/activity') return;
+  const app = document.getElementById('app');
+  if (res.error) { app.innerHTML = `<div class="view-header"><h1>Activity</h1></div>${renderError(res.message || res.error)}`; return; }
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const icon = (s) => s === 'done' ? '✓' : s === 'failed' ? '✗' : s === 'running' ? '⏳' : '·';
+  const wss = res.workspaces || [];
+  const totalLive = wss.reduce((n, w) => n + (w.live_count || 0), 0);
+  if (!wss.length) {
+    app.innerHTML = `<div class="view-header"><h1>Activity</h1><p>running panels across all projects</p></div>
+      <div class="card" style="text-align:center;padding:3rem">
+        <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
+        <p class="text-muted">No panel activity in any project.</p>
+        <p style="font-size:0.8rem;color:var(--text-muted)">Run <code>/xm:panel</code>, or launch the dashboard with <code>--scan &lt;dir&gt;</code> to span more projects.</p>
+      </div>`;
+    return;
+  }
+  const liveRun = (r) => r.kind === 'cross' ? r.phase === 'running' : panelIsLive(r.status);
+  const runRow = (wsId, r) => {
+    const live = liveRun(r);
+    const phase = r.kind === 'cross' ? r.phase : (r.status ? r.status.phase : (r.verdict ? 'done' : 'unknown'));
+    const badgeCls = live ? 'badge-yellow' : phase === 'failed' ? 'badge-red' : 'badge-green';
+    const models = r.kind === 'cross'
+      ? (r.models || []).map((m) => esc(m)).join(' ')
+      : (r.status ? r.status.models : (r.verdict ? (r.verdict.models || []).map((m) => ({ label: m, state: 'done' })) : []))
+          .map((m) => `${icon(m.state)} ${esc(m.label)}`).join('  ');
+    const title = r.title || r.target_title || r.run;
+    return `<div class="card" style="margin-bottom:.5rem;cursor:pointer;padding:.6rem .8rem" onclick="activityOpen('${esc(wsId)}','${esc(r.run)}')">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <span style="display:flex;align-items:center;gap:7px;min-width:0">${panelSourceBadge(r.source)}<strong style="font-size:.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(title)}</strong></span>
+        <span class="badge ${badgeCls}">${esc(phase)}</span>
+      </div>
+      <div style="font-size:.8rem;margin-top:4px;color:var(--text-muted)">${models || '—'}</div>
+    </div>`;
+  };
+  const groups = wss.map((w) => {
+    const liveBadge = w.live_count ? ` <span class="badge badge-yellow">● ${w.live_count} live</span>` : '';
+    const rows = (w.runs || []).map((r) => runRow(w.id, r)).join('');
+    return `<section style="margin-bottom:1.5rem">
+      <h2 style="font-size:.95rem;margin:0 0 .5rem;display:flex;align-items:center;gap:8px">${esc(w.name)}${liveBadge}
+        <span class="text-muted" style="font-size:.72rem;font-weight:400">${w.total} run${w.total === 1 ? '' : 's'}</span></h2>
+      ${rows}</section>`;
+  }).join('');
+  app.innerHTML = `<div class="view-header"><h1>Activity</h1><p>running panels across all projects${totalLive ? ` · <span style="color:var(--warning,#d80)">● ${totalLive} live</span>` : ''}</p></div>${groups}`;
+  if (totalLive) setTimeout(refreshActivity, 2500); // poll while anything is live
+}
+
 // ── Panel — cross-model review runs, live via status.json polling ────
 async function renderPanelList() {
   document.getElementById('app').innerHTML =
@@ -4743,6 +4807,32 @@ async function refreshPanel() {
   const esc = (v) => escapeHtmlHumble(String(v ?? ''));
   const icon = (s) => s === 'done' ? '✓' : s === 'failed' ? '✗' : s === 'running' ? '⏳' : '·';
   const cards = runs.map((r) => {
+    const srcBadge = panelSourceBadge(r.source);
+    // Title falls back to the run id, but the source badge + run id below keep even a
+    // titleless run identifiable — so a literal-target name like "status" reads as
+    // "review(literal) · status" rather than a bare, category-less fragment.
+    const title = r.title || r.target_title || r.run;
+    const header = (phaseTxt, badgeCls, modelLine, summary) => `<div class="card" style="margin-bottom:0.75rem;cursor:pointer" onclick="window.location.hash='#/panel/${hashEnc(r.run)}'">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <span style="display:flex;align-items:center;gap:7px;min-width:0">${srcBadge}<strong style="font-size:0.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(title)}</strong></span>
+        <span class="badge ${badgeCls}">${esc(phaseTxt)}</span>
+      </div>
+      <div class="text-muted" style="font-size:0.7rem;margin-top:2px;opacity:.6">${esc(r.run)}</div>
+      <div style="font-size:0.85rem;margin-top:6px">${modelLine || '<span class="text-muted">—</span>'}</div>
+      <div class="text-muted" style="font-size:0.85rem;margin-top:4px">${esc(summary)} <span style="opacity:.6">›</span></div>
+    </div>`;
+
+    if (r.kind === 'cross') {
+      const running = r.phase === 'running';
+      const badgeCls = running ? 'badge-yellow' : r.phase === 'failed' ? 'badge-red' : 'badge-green';
+      const modelLine = (r.models || []).map((m) => esc(m)).join('  ')
+        + (r.vendor_count ? ` <span class="text-muted">· ${r.vendor_count} vendor${r.vendor_count === 1 ? '' : 's'}</span>` : '');
+      const summary = running ? 'in progress…'
+        : `${r.ok_count ?? r.vendor_count}/${r.vendor_count} responded${r.prompt_chars ? ` · ${r.prompt_chars} char prompt` : ''}`;
+      return header(r.phase || 'done', badgeCls, modelLine, summary);
+    }
+
+    // review run (existing shape: live status.json + verdict.json)
     const st = r.status;
     const live = panelIsLive(st);
     const stalled = !!(st && st.phase !== 'done') && !live; // process died mid-run
@@ -4759,18 +4849,9 @@ async function refreshPanel() {
       ? `${c.unique} issue(s) · ${c.contested} contested${c.unreviewed ? ` · ${c.unreviewed} unreviewed` : ''}`
       : (live ? 'in progress…' : stalled ? 'stalled — no update' : ''))
       + (costStr ? ` · ${costStr}` : '');
-    const title = r.target_title || r.run;
-    return `<div class="card" style="margin-bottom:0.75rem;cursor:pointer" onclick="window.location.hash='#/panel/${hashEnc(r.run)}'">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <strong style="font-size:0.85rem">${esc(title)}</strong>
-        <span class="badge ${badgeCls}">${esc(phase)}</span>
-      </div>
-      ${r.target_title ? `<div class="text-muted" style="font-size:0.7rem;margin-top:2px;opacity:.6">${esc(r.run)}</div>` : ''}
-      <div style="font-size:0.85rem;margin-top:6px">${modelLine || '<span class="text-muted">—</span>'}</div>
-      <div class="text-muted" style="font-size:0.85rem;margin-top:4px">${esc(summary)} <span style="opacity:.6">›</span></div>
-    </div>`;
+    return header(phase, badgeCls, modelLine, summary);
   }).join('');
-  const anyRunning = runs.some((r) => panelIsLive(r.status));
+  const anyRunning = runs.some((r) => r.kind === 'cross' ? r.phase === 'running' : panelIsLive(r.status));
   app.innerHTML = `<div class="view-header"><h1>Panel</h1><p>cross-model reviews${anyRunning ? ' · <span style="color:var(--warning,#d80)">● live</span>' : ''}</p></div>${cards}`;
   if (anyRunning) setTimeout(refreshPanel, 2000); // poll while any run is in progress
 }
@@ -4784,6 +4865,20 @@ function panelIsLive(st) {
   if (!st || st.phase === 'done') return false;
   const t = Date.parse(st.updated_at || '');
   return Number.isFinite(t) && (Date.now() - t) < PANEL_STALE_MS;
+}
+
+// Provenance badge for a panel/cross run — color-keyed by the calling workflow so the list
+// is scannable by category (op / build / solver / eval / standalone review).
+function panelSourceBadge(source) {
+  const s = String(source || 'cross');
+  const head = s.split(/[:(]/)[0];
+  const cls = head === 'op' ? 'badge-blue'
+    : head === 'build' ? 'badge-indigo'
+    : head === 'solver' ? 'badge-purple'
+    : head === 'eval' ? 'badge-amber'
+    : head === 'review' ? 'badge-gray'
+    : 'badge-neutral';
+  return `<span class="badge ${cls}" style="font-size:.68rem;font-family:var(--mono,monospace)">${escapeHtmlHumble(s)}</span>`;
 }
 
 // stance from round2 verdicts: concede = opponent agreed, refute = pushed back.
@@ -4982,6 +5077,47 @@ function panelModelTile(label, ms, m, running, vUsage, runDone) {
   </div>`;
 }
 
+// Strip ANSI SGR escapes — some CLIs (e.g. kiro) write colorized text into result.json,
+// which would otherwise render as literal escape sequences in the browser.
+function stripAnsi(text) {
+  // CSI sequences (colors, cursor moves) = ESC [ ... final-byte; also drop any stray lone ESC.
+  const ESC = String.fromCharCode(27);
+  const re = new RegExp(ESC + "\\[[0-9;?]*[ -/]*[@-~]", "g");
+  return String(text || "").replace(re, "").split(ESC).join("");
+}
+
+// Cross-vendor run detail: one card per vendor with its raw free-form output. No findings/
+// rounds — these runs are generic deliberation (op/build/solver/eval did their own synthesis).
+function renderCrossDetail(res) {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const title = res.title || res.run;
+  const running = res.phase === 'running';
+  const liveBadge = running ? ' <span class="badge badge-yellow" style="font-size:.7rem">● live</span>' : '';
+  const meta = [
+    res.models && res.models.length ? `${res.models.length} vendor${res.models.length === 1 ? '' : 's'}` : '',
+    res.prompt_chars ? `${res.prompt_chars} char prompt` : '',
+    res.created_at ? esc(String(res.created_at).slice(0, 16).replace('T', ' ')) : '',
+  ].filter(Boolean).join(' · ');
+  const cards = (res.results || []).map((r) => {
+    const ok = r.ok !== false && !r.error;
+    const badge = ok ? '<span class="badge badge-green" style="font-size:.7rem">ok</span>'
+      : `<span class="badge badge-red" style="font-size:.7rem">failed</span>`;
+    const body = ok
+      ? `<div class="md-body" style="font-size:.85rem">${renderMarkdown(stripAnsi(r.output))}</div>`
+      : `<div class="text-muted" style="font-size:.85rem">${esc(r.error || 'no output')}</div>`;
+    return `<div class="card" style="margin-bottom:.75rem">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:.5rem">
+        <strong style="font-size:.9rem">${esc(r.model || r.provider || 'vendor')}</strong>${badge}
+      </div>${body}</div>`;
+  }).join('');
+  return `<div class="view-header"><h1>Panel</h1><p><a href="#/panel" style="font-size:.85rem">← Panel</a></p></div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:.4rem">
+      ${panelSourceBadge(res.source)}<strong style="font-size:1rem">${esc(title)}</strong>${liveBadge}
+    </div>
+    <div class="text-muted" style="font-size:.78rem;margin-bottom:1rem">${esc(res.run)}${meta ? ' · ' + meta : ''}</div>
+    ${cards || '<p class="text-muted">No vendor output yet.</p>'}`;
+}
+
 let _panelDetailToken = 0;
 async function renderPanelDetail(run) {
   // Each call (navigation OR poll) takes a fresh token; a stale poll callback whose
@@ -4996,6 +5132,15 @@ async function renderPanelDetail(run) {
   if (token !== _panelDetailToken || getPath() !== `/panel/${run}`) return;
   if (res.error) {
     app.innerHTML = `<div class="view-header"><h1>Panel</h1><p><a href="#/panel" style="font-size:.85rem">← Panel</a></p></div>${renderError(res.message || res.error)}`;
+    return;
+  }
+
+  // Cross-vendor runs have no verdict/rounds — render the raw per-vendor deliberation instead.
+  if (res.kind === 'cross') {
+    app.innerHTML = renderCrossDetail(res);
+    if (res.phase === 'running') {
+      setTimeout(() => { if (token === _panelDetailToken && getPath() === `/panel/${run}`) renderPanelDetail(run); }, 2000);
+    }
     return;
   }
 
@@ -5975,6 +6120,7 @@ const ROUTES = [
   { pattern: /^\/recall\/(.+)$/, handler: (m) => renderRecallDetail(m[1]) },
   { pattern: /^\/panel$/, handler: () => renderPanelList() },
   { pattern: /^\/panel\/(.+)$/, handler: (m) => renderPanelDetail(m[1]) },
+  { pattern: /^\/activity$/, handler: () => renderActivity() },
 ];
 
 function getPath() {
