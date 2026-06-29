@@ -514,7 +514,9 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     // Idle-reset timeout: a vendor still streaming text keeps going; only true silence kills it.
-    const guard = makeTimeoutGuard(timeout, maxTimeout, (error) => { child.kill('SIGKILL'); done({ ok: false, output: stdout, error }); });
+    // `timedOut: true` marks this as a timeout/stall (not an exit code) so callers can decide NOT
+    // to retry a hung provider by checking the FLAG, never by substring-matching the error text.
+    const guard = makeTimeoutGuard(timeout, maxTimeout, (error) => { child.kill('SIGKILL'); done({ ok: false, output: stdout, error, timedOut: true }); });
     child.stdout.on('data', (d) => { guard.touch(); stdout += d; if (stdout.length > 16 * 1024 * 1024) stdout = stdout.slice(-16 * 1024 * 1024); });
     child.stderr.on('data', (d) => { guard.touch(); stderr += d; if (stderr.length > 200_000) stderr = stderr.slice(-200_000); });
     child.on('error', (e) => { guard.clear(); done({ ok: false, output: '', error: String(e.message || e) }); });

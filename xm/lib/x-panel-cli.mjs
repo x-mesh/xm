@@ -710,10 +710,11 @@ async function cmdCross(pos, flags) {
     // One retry on a TRANSIENT failure (exit-0-empty / exit-N): cursor and other gateway CLIs
     // intermittently return an empty/failed result that succeeds on a second try. Do NOT retry a
     // timeout/stall — it already burned the full (600s+) window, so a retry just doubles the
-    // wall-clock for a hung provider with no new information. The idle-timeout guard's error text
-    // ("stalled: no output…", "…wall-clock cap") is the signal. Retries are surfaced (L6).
-    const isTimeout = (err) => /stalled|wall-clock|timed?\s*out/i.test(String(err || ''));
-    if (!res.ok && !isTimeout(res.error)) {
+    // wall-clock for a hung provider with no new information. That case is flagged by `timedOut`
+    // (set by invokeProviderText's idle/cap guard), so we gate on the FLAG — never a substring of
+    // the error text, which used to over-match exit-0-empty/exit-N messages that merely mention
+    // "timeout" (e.g. `exit 0 but empty output: ...timed out...`). Retries are surfaced (L6).
+    if (!res.ok && !res.timedOut) {
       console.error(`${C.yellow}⚠ ${e.label} failed (${res.error}) — retrying once${C.reset}`);
       const retry = await invokeProviderText(e.name, prompt, { timeout: timeoutMs, model: e.model });
       if (retry.ok) res = retry;
