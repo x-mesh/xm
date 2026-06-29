@@ -56,15 +56,18 @@ The cross-vendor value: PRO and CON are genuinely different models, not one mode
 
 The GENERATE phase (Phase 1) fans out to DIFFERENT vendors instead of same-model Claude agents, so
 the idea pool spans model families — different priors surface ideas one model never would. CLUSTER
-and VOTE stay single-vendor (the leader dedups, groups by theme, selects).
+and VOTE stay single-vendor: the leader dedups and groups (CLUSTER), and the standard single-vendor
+fan-out picks the top ideas (VOTE).
 
-1. GENERATE: send the SAME ideation prompt (min 5 tagged ideas; `--analogical`/`--lateral` modes
-   still apply) to every available vendor in one call —
+1. GENERATE: send the SAME ideation prompt to every available vendor in one call — if
+   `--analogical`/`--lateral` is set, that mode is already baked into the base prompt, so every
+   vendor receives the same mode-applied prompt (min 5 tagged ideas each) —
    `xm panel cross --models "<available>" --prompt-file <generate-prompt> --source op:brainstorm --title "<topic>"`.
 2. Collect each vendor's idea set (a per-vendor failure = one fewer pool, surfaced not silent — L6).
 3. CLUSTER: leader merges all vendors' ideas, dedups, groups by theme — tag each cluster with the
    vendors that reached it (a cluster only one vendor produced is the cross-vendor signal).
-4. VOTE (if `--vote`): leader selects the top ideas as usual.
+4. VOTE (if `--vote`): the standard single-vendor brainstorm fan-out selects the top ideas — NOT a
+   cross-vendor step (it votes on the already vendor-merged pool from CLUSTER).
 
 GENERATION-only pattern (same as x-solver): inject diversity where ideas are born, keep synthesis
 with the leader. `select`/judgement is NOT cross-vendor here.
