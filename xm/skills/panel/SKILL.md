@@ -89,7 +89,7 @@ Domain logic lives in the consumer; panel only routes — never reimplement a co
 | `/xm:panel …` | Skill | args |
 |---|---|---|
 | `review [target]` | `xm:review` | `diff [target] --cross-vendor` |
-| `op debate\|council\|brainstorm [args]` | `xm:op` | `<strategy> [args] --cross-vendor` — only the cross-vendor-wired x-op strategies; other strategies aren't cross-vendor, so use `xm:op` directly (don't append `--cross-vendor`) |
+| `op debate\|council\|persona\|brainstorm\|red-team\|tournament\|hypothesis [args]` | `xm:op` | `<strategy> [args] --cross-vendor` — the 7 cross-vendor-wired strategies ONLY; any other x-op strategy isn't cross-vendor → use `xm:op` directly (no `--cross-vendor`) |
 | `debate <topic>` | `xm:op` | `debate <topic> --cross-vendor` |
 | `council <topic>` | `xm:op` | `council <topic> --cross-vendor` |
 | `solve <problem>` | `xm:solver` | `<problem> --cross-vendor` |
@@ -101,7 +101,7 @@ Domain logic lives in the consumer; panel only routes — never reimplement a co
 `plan` is **divergent generation** — different vendors propose different plans, then synthesize. It
 does NOT produce a formal PRD. **Loose handoff:** if the user then wants a real PRD+tasks, point them
 to `x-build plan` (Research→PRD lifecycle) or `/xm:panel consensus` to critique an existing PRD — do
-NOT auto-run x-build. For structure/breakdown instead of ideation, use `xm:op scaffold`/`decompose --cross-vendor`.
+NOT auto-run x-build. For structure/breakdown instead of ideation, use `xm:op scaffold`/`decompose` (single-vendor — neither is cross-vendor-wired).
 
 Each consumer probes `xm panel detect --auth` / `doctor` itself and falls back to single-vendor
 loudly when <2 vendors are ready — don't duplicate that here.

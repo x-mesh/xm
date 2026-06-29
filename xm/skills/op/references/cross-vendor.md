@@ -1,7 +1,11 @@
-# Cross-Vendor Mode (debate / council / brainstorm)
+# Cross-Vendor Mode (debate / council / persona · brainstorm / red-team / tournament / hypothesis)
+
+Two shapes: **roles→vendors** (debate, council, persona — assign each role/position to a different
+vendor) and **fan-out-phase→vendors** (brainstorm/hypothesis = GENERATE, red-team = ATTACK,
+tournament = COMPETE — fan out that ONE phase per-vendor; downstream synthesis/voting stays single-vendor).
 
 By default x-op strategies fan out single-vendor Claude agents (different personas/roles,
-same model). With `--cross-vendor`, `debate` and `council` instead assign roles/positions to
+same model). With `--cross-vendor`, `debate`/`council`/`persona` instead assign roles/positions to
 DIFFERENT model vendors (claude + codex + cursor + …) via the shared x-panel engine, so the
 deliberation has real cross-vendor diversity — a single-vendor harness structurally cannot do this.
 
@@ -72,8 +76,53 @@ fan-out picks the top ideas (VOTE).
 GENERATION-only pattern (same as x-solver): inject diversity where ideas are born, keep synthesis
 with the leader. `select`/judgement is NOT cross-vendor here.
 
+## red-team (attack across vendors)
+
+The ATTACK phase (Phase 2) fans out per-vendor — each vendor attacks from its OWN blind spots, so the
+vulnerability set spans model families (the adversarial analogue of panel review: different models
+catch different holes). DEFEND/REPORT stay single-vendor (the leader triages fixes/counter-evidence).
+
+```bash
+xm panel cross --models "<available>" --prompt-file <attack-prompt> --source op:red-team --title "<target>"
+```
+Register each vendor's tagged vulnerabilities, then run DEFEND/REPORT as usual.
+
+## tournament (compete across vendors)
+
+The COMPETE phase (Phase 1) fans out per-vendor — each vendor submits ITS OWN solution, so the bracket
+judges genuinely different approaches, not one model's variations. ANONYMIZE/VOTE/TALLY stay
+single-vendor (the anonymized Borda vote is model-agnostic by design — keep it the leader's job).
+
+```bash
+xm panel cross --models "<available>" --prompt-file <compete-prompt> --source op:tournament --title "<problem>"
+```
+One solution per vendor enters the bracket; the rest of the tournament is unchanged.
+
+## persona (roles across vendors)
+
+Like debate/council: ASSIGN (Phase 1) maps each persona (senior eng / security / PM / junior) to a
+DIFFERENT vendor, and each persona's ANALYZE (Phase 2) runs on its vendor — so each perspective is a
+genuinely different model, not one model role-playing four. Run one single-vendor `cross` call per
+persona; SYNTHESIZE/CROSS-CHECK stay with the leader.
+
+```bash
+xm panel cross --models "<that persona's vendor>" --prompt-file <persona-prompt> --source op:persona --title "<topic>"
+```
+
+## hypothesis (generation across vendors)
+
+The GENERATE phase (Phase 1) fans out per-vendor — each vendor frames different root-causes, so the
+hypothesis pool has genuinely diverse priors (same logic as x-solver `iterate`). FALSIFY/SYNTHESIZE
+stay single-vendor (the leader disproves and picks the strongest survivor).
+
+```bash
+xm panel cross --models "<available>" --prompt-file <hypothesize-prompt> --source op:hypothesis --title "<problem>"
+```
+Register each vendor's tagged hypotheses (with falsifiable predictions), then FALSIFY as usual.
+
 ## Cost & defaults
 
 Cross-vendor multiplies cost (vendors × rounds). Announce the model set + rough cost before
 spending. Single-vendor remains the default for every strategy; `--cross-vendor` is purely additive
-and currently wired for `debate`, `council`, and `brainstorm` (the last on its GENERATE phase only).
+and currently wired for `debate`, `council`, `persona` (roles→vendors) and `brainstorm`, `red-team`,
+`tournament`, `hypothesis` (generation/attack/compete phase→vendors; downstream stays single-vendor).

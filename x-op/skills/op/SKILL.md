@@ -183,7 +183,7 @@ See `references/x-op-auto-route.md` for execution flow and worked examples.
 - `--preset consensus` — compose preset: `persona | council`
 - `--agents N` — Number of participating agents (default: shared config's agent_max_count (default 4). Overrides when specified)
 - `--model sonnet|opus|haiku` — Agent model (default sonnet)
-- `--cross-vendor` — debate/council (roles→vendors) + brainstorm (GENERATE phase→vendors): fan out across different model vendors (claude+codex+cursor…) via `xm panel cross`. Opt-in; single-vendor fallback when <2 ready. Default without the flag: `.xm/config.json` `cross_vendor.op` ?? `cross_vendor.default`; `--no-cross-vendor` forces single. See `references/cross-vendor.md`.
+- `--cross-vendor` — debate/council/persona (roles→vendors) + brainstorm/red-team/tournament/hypothesis (generation phase→vendors): fan out across different model vendors (claude+codex+cursor…) via `xm panel cross`. Opt-in; single-vendor fallback when <2 ready. Default without the flag: `.xm/config.json` `cross_vendor.op` ?? `cross_vendor.default`; `--no-cross-vendor` forces single. See `references/cross-vendor.md`.
 - `--steps "role:task,role:task"` — Manually specify chain steps
 - `--target <file|dir>` — review/red-team target
 - `--vote` — Enable dot voting for brainstorm
@@ -291,7 +291,7 @@ See `strategies/refine.md` — round-based Diverge → Converge → Verify refin
 
 ## Strategy: tournament
 
-See `strategies/tournament.md` — Compete → anonymous vote → adopt winner. Phase 1 COMPETE fan-out collects solutions; Phase 2 ANONYMIZE removes agent names and shuffles order; Phase 3 VOTE fan-out ranks anonymized solutions; Phase 4 TALLY applies Borda count. Supports `--bracket double` for seed ranking with losers' bracket.
+See `strategies/tournament.md` — Compete → anonymous vote → adopt winner. Phase 1 COMPETE fan-out collects solutions; Phase 2 ANONYMIZE removes agent names and shuffles order; Phase 3 VOTE fan-out ranks anonymized solutions; Phase 4 TALLY applies Borda count. Supports `--bracket double` for seed ranking with losers' bracket. With `--cross-vendor`, the COMPETE phase fans out across vendors (one solution per vendor into the bracket); ANONYMIZE/VOTE/TALLY stay single-vendor — see `references/cross-vendor.md`.
 
 ## Strategy: chain
 
@@ -307,7 +307,7 @@ See `strategies/debate.md` — Pro vs Con debate followed by verdict. Phase 1 PO
 
 ## Strategy: red-team
 
-See `strategies/red-team.md` — Adversarial attack/defend cycle. Phase 1 TARGET collects via `--target` or `git diff HEAD`; Phase 2 ATTACK fan-out finds vulnerabilities tagged by dimension; Phase 3 DEFEND fan-out provides fixes or counter-evidence; Phase 4 REPORT synthesizes Fixed(🟢)/Partial(🟡)/Open(🔴).
+See `strategies/red-team.md` — Adversarial attack/defend cycle. Phase 1 TARGET collects via `--target` or `git diff HEAD`; Phase 2 ATTACK fan-out finds vulnerabilities tagged by dimension; Phase 3 DEFEND fan-out provides fixes or counter-evidence; Phase 4 REPORT synthesizes Fixed(🟢)/Partial(🟡)/Open(🔴). With `--cross-vendor`, the ATTACK phase fans out across vendors (each model attacks from its own blind spots); DEFEND/REPORT stay single-vendor — see `references/cross-vendor.md`.
 
 ## Strategy: brainstorm
 
@@ -327,7 +327,7 @@ See `strategies/socratic.md` — Socratic questioning across N rounds: Phase 1 S
 
 ## Strategy: persona
 
-See `strategies/persona.md` — Role-based multi-perspective analysis. Phase 1 ASSIGN distributes fixed personas (default: senior engineer, security expert, PM, junior developer); Phase 2 ANALYZE broadcast with per-persona prompts; Phase 3 SYNTHESIZE unifies across perspectives; optional Phase 4 CROSS-CHECK verifies unified proposal from each persona's view.
+See `strategies/persona.md` — Role-based multi-perspective analysis. Phase 1 ASSIGN distributes fixed personas (default: senior engineer, security expert, PM, junior developer); Phase 2 ANALYZE broadcast with per-persona prompts; Phase 3 SYNTHESIZE unifies across perspectives; optional Phase 4 CROSS-CHECK verifies unified proposal from each persona's view. With `--cross-vendor`, ASSIGN maps each persona to a different vendor and Phase 2 ANALYZE runs per-vendor (a genuinely different model per perspective, not one model role-playing); SYNTHESIZE/CROSS-CHECK stay single-vendor — see `references/cross-vendor.md`.
 
 ## Strategy: scaffold
 
@@ -347,7 +347,7 @@ See `strategies/decompose.md` — Recursive decomposition → leaf parallel exec
 
 ## Strategy: hypothesis
 
-See `strategies/hypothesis.md` — Generate hypotheses → falsify → adopt survivors. Phase 1 GENERATE fan-out produces 2-3 tagged hypotheses per agent with falsifiable predictions; Phase 2 FALSIFY fan-out attempts to disprove each (FALSIFIED or SURVIVED); Phase 3 SYNTHESIZE selects strongest survivor, re-runs if none survive (up to max_rounds).
+See `strategies/hypothesis.md` — Generate hypotheses → falsify → adopt survivors. Phase 1 GENERATE fan-out produces 2-3 tagged hypotheses per agent with falsifiable predictions; Phase 2 FALSIFY fan-out attempts to disprove each (FALSIFIED or SURVIVED); Phase 3 SYNTHESIZE selects strongest survivor, re-runs if none survive (up to max_rounds). With `--cross-vendor`, the GENERATE phase fans out across vendors (diverse root-cause priors); FALSIFY/SYNTHESIZE stay single-vendor — see `references/cross-vendor.md`.
 
 ## Strategy: investigate
 
