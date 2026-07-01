@@ -11,9 +11,13 @@ const CLI_PATH = join(__dirname, '..', 'x-build', 'lib', 'x-build-cli.mjs');
 // Use isolated HOME to avoid global config (~/.xm/config.json) affecting tests
 const TEST_HOME = mkdtempSync(join(tmpdir(), 'xb-home-'));
 
+// Default cwd for cwd-less run() calls must NEVER be the host repo: a subprocess
+// that reaches gitAutoCommit would commit the dev's pre-staged files into a tm()
+// task commit (RV-2 / X-9-class test-isolation failure). Isolate it to a temp dir.
+const RUN_DEFAULT_CWD = mkdtempSync(join(tmpdir(), 'xb-nocwd-'));
 function run(args, opts = {}) {
   const result = spawnSync('node', [CLI_PATH, ...args], {
-    cwd: opts.cwd ?? process.cwd(),
+    cwd: opts.cwd ?? RUN_DEFAULT_CWD,
     env: { ...process.env, XKIT_SERVER: undefined, HOME: TEST_HOME, ...opts.env },
     encoding: 'utf8',
     timeout: 10000,
@@ -33,6 +37,28 @@ function setupProject(tmp, name = 'test-proj') {
 function readJSON(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
+
+// ── RV-2 regression: a cwd-less run() must never target the host repo ──
+// If this default reverts to process.cwd(), a subprocess that reaches
+// gitAutoCommit can sweep the dev's pre-staged files into a tm() task commit
+// on the real working repo (the grill.md / X-9-class test-isolation failure).
+describe('test isolation (RV-2)', () => {
+  test('cwd-less run() default is isolated, not the host repo', () => {
+    expect(RUN_DEFAULT_CWD.startsWith(tmpdir())).toBe(true);
+    expect(RUN_DEFAULT_CWD).not.toBe(process.cwd());
+  });
+
+  test('a cwd-less task-completion flow leaves the host repo untouched', () => {
+    const hostProj = join(process.cwd(), '.xm', 'build', 'projects', 'rv2-iso');
+    const before = existsSync(hostProj);
+    run(['init', 'rv2-iso']);                                  // no cwd → isolated temp
+    run(['tasks', 'add', 'T']);                                // no cwd
+    run(['tasks', 'update', 't1', '--status', 'completed']);   // would gitAutoCommit if on host
+    const after = existsSync(hostProj);
+    if (after && !before) { try { rmSync(hostProj, { recursive: true, force: true }); } catch {} }
+    expect(after).toBe(before);                                // host .xm must be unchanged
+  });
+});
 
 // ── Phase lifecycle ───────────────────────────────────────────────
 

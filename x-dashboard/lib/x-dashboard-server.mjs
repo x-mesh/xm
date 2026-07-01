@@ -26,6 +26,7 @@ const VERSION = process.env.XM_SYNC_VERSION ?? '0.1.0';
 
 const args = process.argv.slice(2);
 const STOP_MODE = args.includes('--stop');
+const BUILD_ID_MODE = args.includes('--print-build-id') || args.includes('--build-id');
 const PORT = parseInt(getArg('--port') ?? String(DEFAULT_PORT), 10);
 const SESSION_MODE = args.includes('--session');
 const SCAN_DIR = getArg('--scan');
@@ -612,8 +613,41 @@ async function getPanelEngine() {
       try { _panelEngine = await import(p); return _panelEngine; } catch { /* try next */ }
     }
   }
-  _panelEngine = { knownProviders: () => [], isAvailable: () => false };
+  _panelEngine = { knownProviders: () => [], isAvailable: () => false, listModelIds: async () => ({ ok: false, models: [] }) };
   return _panelEngine;
+}
+
+// Live model catalog — the vendor CLIs (cursor/kiro/agy) expose their REAL model
+// lists via `--list-models`, but each call spawns a process (~1-3s), so we cache the
+// parsed result (TTL) and refresh asynchronously (never blocking the event loop).
+// Without this the config form only offered a stale hardcoded list — no cursor
+// kimi/glm, no kiro glm — which is exactly the "can't pick kimi/glm" report.
+const MODEL_CATALOG_TTL_MS = 10 * 60 * 1000;
+const _modelCatalog = { models: {}, fetchedAt: 0, refreshing: null };
+async function refreshModelCatalog() {
+  const eng = await getPanelEngine();
+  if (typeof eng.listModelIds !== 'function' || typeof eng.knownProviders !== 'function') return _modelCatalog;
+  const out = {};
+  await Promise.all(eng.knownProviders().map(async (name) => {
+    try { const r = await eng.listModelIds(name); if (r && r.ok && r.models.length) out[name] = r.models; }
+    catch (e) { console.error(`[x-dashboard-server] model catalog refresh failed for ${name}: ${e?.message || e}`); }
+  }));
+  _modelCatalog.models = out;
+  _modelCatalog.fetchedAt = Date.now();
+  return _modelCatalog;
+}
+function ensureModelCatalog(force = false) {
+  const stale = force || (Date.now() - _modelCatalog.fetchedAt > MODEL_CATALOG_TTL_MS);
+  if (stale && !_modelCatalog.refreshing) {
+    _modelCatalog.refreshing = refreshModelCatalog().finally(() => { _modelCatalog.refreshing = null; });
+  }
+  return _modelCatalog.refreshing || Promise.resolve(_modelCatalog);
+}
+// GET panel models — live per-vendor model catalogs for the config form's datalists.
+async function handlePanelModels(req) {
+  const force = new URL(req.url).searchParams.get('refresh') === '1';
+  await ensureModelCatalog(force);
+  return jsonResponseWithETag({ models: _modelCatalog.models, fetchedAt: _modelCatalog.fetchedAt }, req);
 }
 
 // GET panel providers — which model CLIs are on PATH (for the config form's model
@@ -805,6 +839,31 @@ function normalizeLaterData(data) {
 function hashFile(filePath) {
   return createHash('sha256').update(readFileSync(filePath)).digest('hex');
 }
+
+// ── Build identity ───────────────────────────────────────────────────
+// Content hash of the served browser bundle, so /health can prove WHICH
+// public/ is live (cache copy vs working-tree source) and a release gate can
+// assert served==source. Same algorithm wherever it runs, so a buildId from
+// the source tree (`--print-build-id`) is comparable to a running server's
+// /health buildId. Computed once at startup; the bundle can't change without
+// a restart.
+// Every asset the browser actually loads from index.html — keep in sync with the
+// <script>/<link> tags. Omitting one (e.g. render-helpers.js) lets a changed-but-
+// unhashed bundle pass the served==source gate as "live" while serving stale code.
+const BUILD_ASSETS = ['index.html', 'style.css', 'vendor/marked.js', 'vendor/chart.js', 'render-helpers.js', 'app.js'];
+function computeBuildId(publicDir) {
+  const h = createHash('sha256');
+  const assets = {};
+  for (const name of BUILD_ASSETS) {
+    const p = join(publicDir, name);
+    if (!existsSync(p)) { assets[name] = null; continue; }
+    const buf = readFileSync(p);
+    assets[name] = createHash('sha256').update(buf).digest('hex').slice(0, 12);
+    h.update(name).update('\0').update(buf).update('\0');
+  }
+  return { buildId: h.digest('hex').slice(0, 12), assets };
+}
+const BUILD = computeBuildId(PUBLIC_DIR);
 
 function laterSnapshotStatus(xmRoot, item) {
   const snapshots = Array.isArray(item?.file_snapshots) ? item.file_snapshots : [];
@@ -2300,6 +2359,15 @@ function getWorkspaceStats(ws) {
   return value;
 }
 
+// ── Build-id Mode (early exit — print the served bundle's identity) ──
+// Used by the release gate to compute the source tree's buildId and compare
+// it against a running server's /health buildId without starting a server.
+
+if (BUILD_ID_MODE) {
+  console.log(JSON.stringify({ buildId: BUILD.buildId, servedFrom: PUBLIC_DIR, version: VERSION, assets: BUILD.assets }));
+  process.exit(0);
+}
+
 // ── Stop Mode (early exit — must run before server starts) ───────────
 
 if (STOP_MODE) {
@@ -2388,6 +2456,9 @@ server = Bun.serve({
       return Response.json({
         status: 'ok',
         version: VERSION,
+        buildId: BUILD.buildId,
+        servedFrom: PUBLIC_DIR,
+        assets: BUILD.assets,
         uptime: Math.floor((Date.now() - startedAt) / 1000),
         port: PORT,
         pid: process.pid,
@@ -2401,6 +2472,9 @@ server = Bun.serve({
       return Response.json({
         status: 'ok',
         version: VERSION,
+        buildId: BUILD.buildId,
+        servedFrom: PUBLIC_DIR,
+        assets: BUILD.assets,
         uptime: Math.floor((Date.now() - startedAt) / 1000),
         port: PORT,
         pid: process.pid,
@@ -2739,6 +2813,10 @@ server = Bun.serve({
         if (subPath === '/panel/providers') {
           return handlePanelProviders(xmRoot, req);
         }
+        // GET /api/ws/:wsId/panel/models — live per-vendor model catalog
+        if (subPath === '/panel/models') {
+          return handlePanelModels(req);
+        }
 
         // GET /api/ws/:wsId/panel
         if (subPath === '/panel') {
@@ -2986,6 +3064,10 @@ server = Bun.serve({
       // GET /api/panel/providers (before the :run match)
       if (path === '/api/panel/providers') {
         return handlePanelProviders(XM_ROOT, req);
+      }
+      // GET /api/panel/models — live per-vendor model catalog (cursor kimi/glm, kiro glm…)
+      if (path === '/api/panel/models') {
+        return handlePanelModels(req);
       }
 
       // GET /api/panels/all — cross-workspace aggregate of running + recent panels

@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus } from '../x-panel/lib/x-panel/synth.mjs';
-import { extractJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds } from '../x-panel/lib/x-panel/adapters.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
 const STUB = join(import.meta.dirname, 'fixtures', 'panel-stub-model.mjs');
@@ -961,5 +961,60 @@ describe('UX: config, presets, shortcut, setup', () => {
     const r = panelRaw(['--preset', 'duo', 'target']);
     expect(r.status).toBe(0);
     expect(latestVerdict().models).toEqual(['claude', 'codex']);
+  });
+});
+
+describe('parseModelIds (live model catalog)', () => {
+  test('cursor "id - Description" format → bare ids (kimi/glm surfaced)', () => {
+    const out = 'Available models\n\nauto - Auto\nkimi-k2.5 - Kimi K2.5 (current)\nglm-5.2-max - GLM 5.2 Max\ngpt-5.5-high - GPT-5.5 1M High\n\nTip: use --model <id> (or /model <id>) to switch.';
+    const ids = parseModelIds(out);
+    expect(ids).toContain('kimi-k2.5');
+    expect(ids).toContain('glm-5.2-max');
+    expect(ids).toContain('auto');
+    expect(ids).not.toContain('Tip:');       // footer skipped
+    expect(ids).not.toContain('Available');   // header skipped
+  });
+  test('kiro "[*] id  N.NNx credits" format → bare ids (glm surfaced)', () => {
+    const out = 'Available models (* = default):\n\n* auto                 1.00x credits      chosen by task\n  glm-5                0.50x credits      GLM-5 model\n  deepseek-3.2         0.25x credits      DeepSeek V3.2';
+    const ids = parseModelIds(out);
+    expect(ids).toEqual(['auto', 'glm-5', 'deepseek-3.2']);
+  });
+  test('dedupes and tolerates empty/garbage input', () => {
+    expect(parseModelIds('')).toEqual([]);
+    expect(parseModelIds(null)).toEqual([]);
+    expect(parseModelIds('auto - X\nauto - Y')).toEqual(['auto']);
+  });
+});
+
+describe('preflight (live model check, stubbed)', () => {
+  test('every resolved model is probed; ≥2 live → cross_vendor', () => {
+    const r = panelRaw(['preflight', '--models', 'claude,codex', '--json']);
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.total).toBe(2);
+    expect(out.ok).toBe(2);
+    expect(out.cross_vendor).toBe(true);
+    expect(out.results.every((x) => x.status === 'ok')).toBe(true);
+    expect(out.results.map((x) => x.label).sort()).toEqual(['claude', 'codex']);
+  });
+
+  test('an unknown/uninstalled provider is flagged, not silently dropped', () => {
+    const r = panelRaw(['preflight', '--models', 'claude,faketool', '--json']);
+    const out = JSON.parse(r.stdout);
+    expect(out.total).toBe(2);
+    expect(out.ok).toBe(1);
+    expect(out.cross_vendor).toBe(false);
+    const fake = out.results.find((x) => x.name === 'faketool');
+    expect(fake.ok).toBe(false);
+    expect(['unknown', 'not_installed']).toContain(fake.status);
+    expect(r.status).toBe(0); // ≥1 live → exit 0
+  });
+
+  test('a name:model spec is carried into the probe label', () => {
+    const r = panelRaw(['preflight', '--models', 'claude:some-model', '--json']);
+    const out = JSON.parse(r.stdout);
+    expect(out.results[0].label).toBe('claude:some-model');
+    expect(out.results[0].model).toBe('some-model');
+    expect(out.results[0].status).toBe('ok');
   });
 });

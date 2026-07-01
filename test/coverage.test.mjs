@@ -13,9 +13,13 @@ const CLI_PATH = join(__dirname, '..', 'x-build', 'lib', 'x-build-cli.mjs');
 
 const TEST_HOME = mkdtempSync(join(tmpdir(), 'xb-cov-'));
 
+// Default cwd for cwd-less run() calls must NEVER be the host repo: a subprocess
+// that reaches gitAutoCommit would commit the dev's pre-staged files into a tm()
+// task commit (RV-2 / X-9-class test-isolation failure). Isolate it to a temp dir.
+const RUN_DEFAULT_CWD = mkdtempSync(join(tmpdir(), 'xb-nocwd-'));
 function run(args, opts = {}) {
   const result = spawnSync('node', [CLI_PATH, ...args], {
-    cwd: opts.cwd ?? process.cwd(),
+    cwd: opts.cwd ?? RUN_DEFAULT_CWD,
     env: { ...process.env, XKIT_SERVER: undefined, HOME: TEST_HOME, ...opts.env },
     encoding: 'utf8',
     timeout: 15000,

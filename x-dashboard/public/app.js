@@ -267,28 +267,12 @@ function renderLoading() {
 function renderError(msg) {
   return '<div class="card card-error"><p>⚠ Error: ' + (msg ?? 'unknown error') + '</p></div>';
 }
-function renderEmpty(msg, cmd) {
-  return `<div class="card empty-state">
-    <div class="empty-icon">◇</div>
-    <p class="text-muted">${msg}</p>
-    ${cmd ? `<p class="empty-hint">Run <code>${cmd}</code></p>` : ''}
-  </div>`;
-}
-
-// Format an agents field that may be a number, string, or array of agent objects.
-// Avoids "[object Object]" when op results store agents as structured entries.
-function fmtAgents(a) {
-  if (a == null || a === '') return '—';
-  if (typeof a === 'number') return String(a);
-  if (typeof a === 'string') return a;
-  if (Array.isArray(a)) {
-    if (a.length === 0) return '—';
-    const names = a.map(x => typeof x === 'string' ? x : (x && (x.name || x.role || x.strategy || x.label || x.dimension))).filter(Boolean);
-    return names.length === a.length ? names.join(', ') : String(a.length);
-  }
-  if (typeof a === 'object') return a.name || a.role || a.strategy || '—';
-  return '—';
-}
+// These delegate to the tested, importable helpers in render-helpers.js (loaded
+// as a classic <script> BEFORE app.js, so globalThis.XMRender is always set).
+// Keeping the names lets every existing call site stay unchanged.
+function renderEmpty(msg, cmd, searched) { return globalThis.XMRender.renderEmpty(msg, cmd, searched); }
+function renderValue(v) { return globalThis.XMRender.renderValue(v); }
+function fmtAgents(a) { return globalThis.XMRender.fmtAgents(a); }
 
 function commandButton(command, label = 'Copy') {
   const e = escapeHtmlHumble;
@@ -2431,6 +2415,7 @@ function renderSolverDetail(slug) {
 // reload explicitly after a save or tier switch.
 let _configTier = 'project';
 let _configProviders = [];
+let _configLiveModels = {};  // live per-vendor model catalogs from /panel/models (cursor kimi/glm, kiro glm…)
 let _configPanelRaw = {};   // full panel section as loaded — preserved on save
 let _configSharedRaw = {};  // non-panel config as loaded — preserves nested keys on structured saves
 let _configLoadSeq = 0;     // guards against a stale tier-switch fetch winning the race
@@ -2457,9 +2442,10 @@ function renderConfig() {
 async function loadConfigEditor() {
   const app = document.getElementById('app');
   const seq = ++_configLoadSeq;
-  const [cfg, prov] = await Promise.all([
+  const [cfg, prov, modelCat] = await Promise.all([
     fetchJSON(apiUrl(`/config?tier=${_configTier}`)),
     fetchJSON(apiUrl('/panel/providers')),
+    fetchJSON(apiUrl('/panel/models')),
   ]);
   // A newer load (tier switch / reload) started while we awaited — discard this one.
   if (seq !== _configLoadSeq || getPath() !== '/config') return;
@@ -2468,6 +2454,7 @@ async function loadConfigEditor() {
     return;
   }
   _configProviders = (prov && !prov.error && Array.isArray(prov.providers)) ? prov.providers : [];
+  _configLiveModels = (modelCat && !modelCat.error && modelCat.models && typeof modelCat.models === 'object') ? modelCat.models : {};
   const esc = (v) => escapeHtmlHumble(String(v ?? ''));
 
   const { panel, _tier, _path, _empty, ...rest } = cfg;
@@ -2692,7 +2679,8 @@ function cfgPanelModelOptions(panelCfg = {}, provider = null) {
     const override = Object.entries(overrides).find(([name]) => cfgProviderKey(name) === key)?.[1];
     const presetModels = Object.values(panelCfg.presets || {}).flatMap((v) => cfgProviderModelFromSpecs(v, key));
     return cfgUnique([
-      ...(CFG_PANEL_MODEL_HINTS[key] || []),
+      ...(_configLiveModels[key] || []),        // LIVE from the vendor's --list-models (kimi, glm, …)
+      ...(CFG_PANEL_MODEL_HINTS[key] || []),     // static fallback when the CLI is offline
       ...cfgPanelCatalogForProvider(panelCfg, key),
       override,
       ...cfgProviderModelFromSpecs(panelCfg.models, key),
@@ -2704,7 +2692,7 @@ function cfgPanelModelOptions(panelCfg = {}, provider = null) {
   const fromOverrides = Object.values(panelCfg.model_overrides || {});
   const fromModels = cfgList(panelCfg.models).map((spec) => String(spec).split(':')[1]);
   const fromPresets = Object.values(panelCfg.presets || {}).flatMap((v) => cfgList(v).map((spec) => String(spec).split(':')[1]));
-  return cfgUnique([...Object.values(CFG_PANEL_MODEL_HINTS).flat(), ...fromCatalog, ...fromOverrides, ...fromModels, ...fromPresets]);
+  return cfgUnique([...Object.values(_configLiveModels).flat(), ...Object.values(CFG_PANEL_MODEL_HINTS).flat(), ...fromCatalog, ...fromOverrides, ...fromModels, ...fromPresets]);
 }
 
 function cfgDatalist(id, values) {
@@ -3557,13 +3545,6 @@ async function renderOpDetail(file) {
       </div>`;
   }
 
-  // Options card
-  const optsHtml = data.options ? `
-    <div class="card" style="margin-top:1rem">
-      <h2 style="margin:0 0 .75rem">Options</h2>
-      <pre style="margin:0;font-size:0.85em">${JSON.stringify(data.options, null, 2)}</pre>
-    </div>` : '';
-
   // Catch-all: any top-level fields we didn't render in a dedicated card get
   // an "Additional Fields" table so v2 ops with new keys (key_findings,
   // recommendation, evidence_extensions, gaps, next_strategy, angles, depth …)
@@ -3621,6 +3602,16 @@ async function renderOpDetail(file) {
     }
     return escapeHtmlHumble(String(v));
   };
+
+  // Options card — built AFTER the local `renderValue` above so it reuses the rich
+  // op-detail formatter AND avoids a TDZ (renderValue is a const in this scope, so
+  // referencing it earlier threw "Cannot access 'renderValue' before initialization"
+  // on any op with an `options` field).
+  const optsHtml = data.options ? `
+    <div class="card" style="margin-top:1rem">
+      <h2 style="margin:0 0 .75rem">Options</h2>
+      ${renderValue(data.options)}
+    </div>` : '';
 
   const extraEntries = Object.entries(data).filter(([k]) => !KNOWN_FIELDS.has(k));
   const rawFieldsHtml = extraEntries.length > 0 ? `
@@ -4534,10 +4525,10 @@ async function renderEvalDetail(category, file) {
           body = `<div class="table-wrapper"><table class="table"><thead>${headerRow}</thead><tbody>${dataRows}</tbody></table></div>`;
           if (j.overall != null) body = `<div style="margin-bottom:1rem"><strong>Overall:</strong> ${e_eval(String(j.overall))}</div>` + body;
         } else {
-          body = `<pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--surface);padding:1rem;overflow:auto">${JSON.stringify(j, null, 2)}</pre>`;
+          body = renderValue(j);
         }
       } else {
-        body = `<pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--surface);padding:1rem;overflow:auto">${JSON.stringify(j, null, 2)}</pre>`;
+        body = renderValue(j);
       }
     } else if (category === 'benchmarks' && Array.isArray(j.runs ?? j.benchmarks ?? j.results)) {
       // benchmarks: comparison table
@@ -4548,10 +4539,10 @@ async function renderEvalDetail(category, file) {
         const dataRows = runs.map(r => `<tr>${cols.map(c => `<td>${r[c] != null ? e_eval(String(r[c])) : '—'}</td>`).join('')}</tr>`).join('');
         body = `<div class="table-wrapper"><table class="table"><thead>${headerRow}</thead><tbody>${dataRows}</tbody></table></div>`;
       } else {
-        body = `<pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--surface);padding:1rem;overflow:auto">${JSON.stringify(j, null, 2)}</pre>`;
+        body = renderValue(j);
       }
     } else {
-      body = `<pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--surface);padding:1rem;overflow:auto">${JSON.stringify(j, null, 2)}</pre>`;
+      body = renderValue(j);
     }
   } else {
     body = `<div class="markdown-body">${renderMarkdown(res.content || '')}</div>`;
@@ -5688,7 +5679,7 @@ async function renderPrdList() {
   if (items.length === 0) {
     app.innerHTML = `
       <div class="view-header"><h1>PRDs</h1><p>.xm/prd + build projects</p></div>
-      ${renderEmpty('No PRDs found', 'xm build plan')}
+      ${renderEmpty('No PRDs found', 'xm build plan', ['.xm/prd', '.xm/build/projects/*/phases'])}
     `;
     return;
   }
@@ -6252,11 +6243,26 @@ function pinButton(path, label) {
   </button>`;
 }
 
-// Set sidebar brand to current project name
+// Set sidebar brand to current project name + render the build-identity footer
 fetchJSON('/api/health').then(h => {
-  if (h && !h.error && h.project) {
+  if (!h || h.error) return;
+  if (h.project) {
     const brand = document.querySelector('.nav-brand');
     if (brand) brand.textContent = h.project;
+  }
+  // Build footer: surface WHICH public/ bundle is being served (cache vs
+  // working-tree source) so a stale-served fix is visible at a glance.
+  const nav = document.getElementById('nav');
+  if (nav && h.buildId) {
+    const served = h.servedFrom || '';
+    const from = /\/plugins\/cache\//.test(served) ? 'cache'
+      : /x-dashboard\/public\/?$/.test(served) ? 'source'
+      : (served.split('/').filter(Boolean).slice(-2, -1)[0] || '');
+    let f = document.getElementById('nav-build');
+    if (!f) { f = document.createElement('div'); f.id = 'nav-build'; f.className = 'nav-build'; nav.appendChild(f); }
+    f.title = `served from: ${served || '?'}\nbuild ${h.buildId}` + (h.version ? `\nversion ${h.version}` : '');
+    f.innerHTML = `<span class="nav-build-id">build ${h.buildId}</span>`
+      + (from ? `<span class="nav-build-from nav-build-from--${from}">${from}</span>` : '');
   }
 });
 

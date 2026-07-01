@@ -1,6 +1,6 @@
 ---
 name: panel
-description: Cross-vendor entry point + adversarial panel engine. `/xm:panel <verb>` routes multi-model work to the matching consumer in --cross-vendor mode (review→x-review, plan(brainstorm)/debate/council→x-op, solve→x-solver, eval→x-eval, consensus→x-build, fan-out→x-agent); `/xm:panel <target>` runs the panel engine itself (N model CLIs refute each other → consensus verdict); bare `/xm:panel` is an interactive picker; cross/detect/doctor/types/models are engine utilities. Use for "panel review", "다른 모델들로 같이 리뷰", "여러 LLM으로 적대 리뷰", "다중모델로 토론/문제해결/평가", or /xm:panel.
+description: Cross-vendor entry point + adversarial panel engine. `/xm:panel <verb>` routes multi-model work to the matching consumer in --cross-vendor mode (review→x-review, plan(brainstorm)/debate/council→x-op, solve→x-solver, eval→x-eval, consensus→x-build, fan-out→x-agent); `/xm:panel <target>` runs the panel engine itself (N model CLIs refute each other → consensus verdict); bare `/xm:panel` is an interactive picker; cross/detect/doctor/preflight/types/models are engine utilities (preflight = live model check before a run). Use for "panel review", "다른 모델들로 같이 리뷰", "여러 LLM으로 적대 리뷰", "다중모델로 토론/문제해결/평가", "panel 돌리기 전에 모델/프로바이더 상태 점검", or /xm:panel.
 model: sonnet
 ---
 
@@ -107,8 +107,14 @@ Each consumer probes `xm panel detect --auth` / `doctor` itself and falls back t
 loudly when <2 vendors are ready — don't duplicate that here.
 
 ### 2. Engine utility → run the CLI directly (no delegation)
-`cross | detect | doctor | types | models | setup` → `xm panel <cmd> [args]` straight through
+`cross | detect | doctor | preflight | types | models | setup` → `xm panel <cmd> [args]` straight through
 (see Programmatic API above for cross/detect/doctor/models).
+
+**Readiness has two levels — `doctor` ≠ `preflight`:**
+- `xm panel doctor` — STATIC: each provider installed AND authenticated? No model call (cheap, instant). Catches logged-out CLIs.
+- `xm panel preflight [--models …]` — LIVE: send one tiny real prompt to each model the panel would actually use (incl. `name:model`) and report which respond. Catches an authed provider whose CONFIGURED model is invalid/unavailable/rate-limited — which doctor cannot see. Costs one minimal call per model.
+
+When a run failed and it's unclear whether a provider/model is actually broken, run `preflight` — it turns "the panel failed" into a per-model live/dead verdict before spending another full run.
 
 ### 3. Target or model flags → the native panel engine
 `/xm:panel <file|diff|--models|--preset>` or `/xm:panel quick [target]` → N model CLIs review the

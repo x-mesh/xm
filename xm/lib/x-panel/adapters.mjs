@@ -143,6 +143,49 @@ export function listModels(name, { timeout = 30_000 } = {}) {
   return { ok: true, output: (r.stdout || '').trim(), error: null };
 }
 
+// Parse a `--list-models` CLI dump into bare model IDs. Handles the two live formats
+// we ship: cursor ("id - Description") and kiro ("[*] id  N.NNx credits  Desc"). Other
+// shapes yield [] so the caller can fall back to its static hints.
+export function parseModelIds(output) {
+  const ids = [];
+  for (const line of String(output || '').split('\n')) {
+    const m = line.match(/^\s*\*?\s*([A-Za-z0-9][\w.:-]*)\s+-\s+/)          // cursor: "id - Description"
+      || line.match(/^\s*\*?\s*([A-Za-z0-9][\w.:-]*)\s+[\d.]+x\s+credits/);  // kiro: "id  1.00x credits ..."
+    if (m) ids.push(m[1]);
+  }
+  return [...new Set(ids)];
+}
+
+// Async, non-blocking model catalog: spawns the provider's own list command and parses
+// it to IDs. Used by the dashboard so a slow CLI never blocks the server event loop
+// (listModels is spawnSync). Returns { ok, models, error }.
+export function listModelIds(name, { timeout = 20_000 } = {}) {
+  return new Promise((resolve) => {
+    const meta = PROVIDER_META[name];
+    if (!meta) return resolve({ ok: false, models: [], error: `unknown provider: ${name}` });
+    if (!isAvailable(name)) return resolve({ ok: false, models: [], error: 'not installed' });
+    if (!meta.listCmd) return resolve({ ok: false, models: [], error: 'no model-list command' });
+    const [bin, args] = meta.listCmd;
+    let child;
+    try { child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env }); }
+    catch (e) { return resolve({ ok: false, models: [], error: String(e.message || e) }); }
+    let out = '', err = '', settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } done({ ok: false, models: parseModelIds(out), error: 'timeout' }); }, timeout);
+    if (timer.unref) timer.unref();
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (d) => { out += d; if (out.length > 8 * 1024 * 1024) out = out.slice(-8 * 1024 * 1024); });
+    child.stderr.on('data', (d) => { err += d; if (err.length > 50_000) err = err.slice(-50_000); });
+    child.on('error', (e) => { clearTimeout(timer); done({ ok: false, models: [], error: String(e.message || e) }); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const models = parseModelIds(out);
+      if (code !== 0 && models.length === 0) return done({ ok: false, models: [], error: `exit ${code}: ${err.trim().slice(0, 100)}` });
+      done({ ok: true, models, error: null });
+    });
+  });
+}
+
 /** Known providers that are actually installed on PATH (or overridden via env). */
 export function autodetectModels() {
   return knownProviders().filter(isAvailable);
@@ -532,6 +575,61 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
       // forwarding any stderr as the reason.
       if (!out) return done({ ok: false, output: '', error: `exit 0 but empty output${stderr.trim() ? `: ${stderr.trim().slice(0, 200)}` : ' (no stdout from CLI)'}` });
       done({ ok: true, output: out, error: null });
+    });
+  });
+}
+
+// Preflight probe: run one tiny prompt in stream-json mode and report (a) liveness
+// — did the CLI answer with any text on exit 0 — and (b) the ACTUAL model the CLI
+// resolved, captured from the provider's own stream-json `model` field. That field
+// is the only reliable source of the real model when no explicit --model was passed
+// (the CLI picks its own default and never tells the caller otherwise). Unlike the
+// review stream path this accepts free text (no findings-JSON requirement), and it
+// falls back to raw-text liveness (model unknown) for providers with no stream profile.
+export function probeProvider(name, { timeout = 45_000, model = null } = {}) {
+  return new Promise((resolve) => {
+    const resolved = resolveStreamCommand(name, 'Reply with exactly: OK', model, false);
+    if (!resolved) {
+      return invokeProviderText(name, 'Reply with exactly: OK', { timeout, model })
+        .then((r) => resolve({ ok: r.ok, model: null, text: (r.output || '').trim(), error: r.error || null, timedOut: !!r.timedOut }))
+        .catch((err) => resolve({ ok: false, model: null, text: '', error: String(err?.message || err) }));
+    }
+    const [cmd, args] = resolved;
+    let child;
+    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env }); }
+    catch (e) { return resolve({ ok: false, model: null, text: '', error: String(e.message || e) }); }
+    let stdout = '', stderr = '', buf = '', text = '', actualModel = null, sawJson = false, settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    const guard = makeTimeoutGuard(timeout, null, (error) => { child.kill('SIGKILL'); done({ ok: false, model: actualModel, text: text.trim(), error, timedOut: true }); });
+    const handleLine = (line) => {
+      const s = line.trim();
+      if (!s) return;
+      let o; try { o = JSON.parse(s); } catch { return; }
+      sawJson = true;
+      if (!actualModel) {
+        if (typeof o.model === 'string' && o.model) actualModel = o.model;
+        else if (o.message && typeof o.message.model === 'string' && o.message.model) actualModel = o.message.model;
+      }
+      const r = parseStreamLine(name, o, model);
+      for (const ev of r.events) if (ev.kind === 'text' && ev.delta) text += ev.delta;
+      if (r.finalText != null) text = r.finalText;
+    };
+    child.stdout.on('data', (d) => { guard.touch(); stdout += d; buf += d; let nl; while ((nl = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); } });
+    child.stderr.on('data', (d) => { guard.touch(); stderr += d; if (stderr.length > 200_000) stderr = stderr.slice(-200_000); });
+    child.on('error', (e) => { guard.clear(); done({ ok: false, model: actualModel, text: '', error: String(e.message || e) }); });
+    child.on('close', (code) => {
+      guard.clear();
+      if (buf.trim()) handleLine(buf);
+      // Liveness = a real answer. If the CLI spoke stream-json (sawJson), require the
+      // PARSED answer text — a bare JSONL envelope with no answer is NOT alive. Only
+      // when the CLI emitted no JSON at all (e.g. kiro's plain-text mode) do we accept
+      // raw stdout as the answer.
+      const t = (sawJson ? text : (text || stdout)).trim();
+      if (code !== 0) return done({ ok: false, model: actualModel, text: t, error: `exit ${code}: ${stderr.trim().slice(0, 300)}` });
+      if (!t) return done({ ok: false, model: actualModel, text: '', error: `exit 0 but empty output${stderr.trim() ? `: ${stderr.trim().slice(0, 200)}` : ''}` });
+      done({ ok: true, model: actualModel, text: t, error: null });
     });
   });
 }

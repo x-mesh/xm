@@ -21,7 +21,7 @@ import {
   PANEL_DIR, XM_ROOT, C, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
-import { invokeProviderAsync, invokeProviderText, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels } from './x-panel/adapters.mjs';
+import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels } from './x-panel/adapters.mjs';
 import { normalizeFindings, normalizeVerdicts, synthesize } from './x-panel/synth.mjs';
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -128,6 +128,7 @@ function firstLine(value) {
 function parseFlags(raw) {
   const flags = {};
   const pos = [];
+  const unknown = [];  // typo'd/unrecognized --flags — rejected before any model spawns
   // --key=value long-option form: unlike the space-separated form below, the value may legitimately
   // start with '--' (e.g. --prompt='-- note: ...'). Maps each value-flag to its stored key.
   const valueFlags = {
@@ -174,9 +175,13 @@ function parseFlags(raw) {
     // build:consensus), --title gives the run a human name. Both surface in the dashboard list.
     else if (a === '--source') flags.source = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
     else if (a === '--title') flags.title = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
+    // A dash-prefixed token that matched no known flag is a typo (e.g. `--heolp`).
+    // Routing it to positionals would make it a literal review target and fan out
+    // every model on garbage — collect it for an up-front rejection instead.
+    else if (a.startsWith('-') && a !== '-') unknown.push(a);
     else pos.push(a);
   }
-  return { flags, pos };
+  return { flags, pos, unknown };
 }
 
 /**
@@ -859,6 +864,130 @@ async function cmdDoctor(flags) {
   console.log(`\n${ready}/${rows.length} ready${assumed ? ` (${verified} verified + ${assumed} assumed — \`doctor --probe\` to confirm)` : ''} — ${tail}`);
 }
 
+// `xm panel preflight [--models <list>] [--timeout N] [--json]` — the REAL check:
+// invoke each model the panel would actually use (resolveEntries → config/preset/
+// --models, with name:model + model_overrides) with one tiny prompt and confirm it
+// responds. doctor checks install+auth only (no model call), so an authed provider
+// whose configured model is invalid/unavailable/rate-limited passes doctor but fails
+// a real run — preflight catches that HERE, before spending a full panel.
+async function cmdPreflight(pos, flags) {
+  const cfg = loadPanelConfig();
+  // Dedupe by label so a model listed via both a preset and --models isn't probed
+  // (and billed) twice.
+  const _seen = new Set();
+  const entries = resolveEntries(flags, cfg).filter((e) => (_seen.has(e.label) ? false : (_seen.add(e.label), true)));
+  if (entries.length === 0) {
+    console.error(`${C.yellow}no models resolved — configure with: xm panel setup${C.reset}`);
+    process.exit(1);
+  }
+  const timeoutMs = Math.max(5, (flags.timeout != null ? Number(flags.timeout) : 45)) * 1000;
+
+  // Probe one entry → result. `model` = the ACTUAL model the CLI resolved (probeProvider
+  // reads it from the provider's own stream-json); `requested_model` = what we asked for.
+  const probeOne = async (e) => {
+    const base = { name: e.name, requested_model: e.model, label: e.label };
+    if (!knownProviders().includes(e.name) && !process.env[`X_PANEL_CMD_${e.name.toUpperCase()}`]) {
+      return { ...base, model: e.model, ok: false, status: 'unknown', ms: 0, detail: 'unknown provider' };
+    }
+    if (!isAvailable(e.name)) {
+      return { ...base, model: e.model, ok: false, status: 'not_installed', ms: 0, detail: 'CLI not on PATH' };
+    }
+    const t0 = Date.now();
+    let res;
+    try {
+      res = await probeProvider(e.name, { model: e.model, timeout: timeoutMs });
+    } catch (err) {
+      return { ...base, model: e.model, ok: false, status: 'error', ms: Date.now() - t0, detail: String(err?.message || err).slice(0, 90) };
+    }
+    const ms = Date.now() - t0;
+    const model = res.model || e.model || null;
+    const out = (res.text || '').replace(/\s+/g, ' ').trim();
+    const ok = !!(res.ok && out.length > 0);
+    if (ok) return { ...base, model, ok, status: 'ok', ms, detail: out.slice(0, 40) };
+    const blob = `${res.error || ''} ${res.text || ''}`;
+    const status = res.timedOut || /timeout|timed out/i.test(blob) ? 'timeout'
+      : /auth|login|unauthor|forbidden|sign.?in|\b401\b|\b403\b/i.test(blob) ? 'auth'
+      : /model|not found|unknown model|invalid|unsupported/i.test(blob) ? 'bad_model'
+      : 'failed';
+    return { ...base, model, ok, status, ms, detail: (res.error || 'no response').replace(/\s+/g, ' ').trim().slice(0, 90) };
+  };
+
+  const ICON = { ok: `${C.green}✓${C.reset}`, not_installed: `${C.dim}○${C.reset}`, unknown: `${C.dim}○${C.reset}` };
+  const fmtLine = (r) => {
+    const icon = ICON[r.status] || `${C.red}✗${C.reset}`;
+    const verdict = r.ok ? `${C.green}live${C.reset}` : `${C.red}${r.status}${C.reset}`;
+    const lat = r.ms ? `  ${C.dim}${(r.ms / 1000).toFixed(1)}s${C.reset}` : '';
+    // Actual model that answered (cyan). "(default)" = live but the CLI didn't disclose it.
+    const modelCol = r.model ? `  ${C.cyan}${r.model}${C.reset}` : (r.status === 'ok' ? `  ${C.dim}(default)${C.reset}` : '');
+    return `${icon} ${C.bold}${r.label}${C.reset}  ${verdict}${lat}${modelCol}  ${C.dim}${r.detail || ''}${C.reset}`;
+  };
+
+  const isTTY = !!process.stdout.isTTY && !flags.json;
+  const results = new Array(entries.length);
+  if (!flags.json) console.log(`${C.bold}x-panel preflight${C.reset} — live model check (one tiny real call per model)\n`);
+
+  // Hard-truncate a colored string to `max` VISIBLE chars without cutting an ANSI
+  // escape sequence in half — so a line can never wrap. The cursor-up overwrite
+  // scheme below assumes exactly one physical terminal row per provider; a single
+  // wrapped line desyncs the row count and every following tick redraws on top of
+  // (instead of over) the previous frame, printing duplicate lines down the screen.
+  const truncateVisible = (s, max) => {
+    if (max <= 0) return '';
+    let out = '', visible = 0, i = 0;
+    while (i < s.length) {
+      if (s[i] === '\x1b' && s[i + 1] === '[') {
+        const end = s.indexOf('m', i);
+        if (end !== -1) { out += s.slice(i, end + 1); i = end + 1; continue; }
+      }
+      if (visible < max) { out += s[i]; visible++; }
+      i++;
+    }
+    return out;
+  };
+
+  if (isTTY) {
+    // Live block: one line per model, a spinner while pending, filled in place the moment
+    // its probe resolves — so a slow provider (codex ~25s) doesn't blank the whole screen.
+    const SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    const state = entries.map((e) => ({ label: e.label, done: false, line: null }));
+    let spin = 0, first = true;
+    const render = () => {
+      if (!first) process.stdout.write(`\x1b[${state.length}A`);
+      first = false;
+      const frame = SPIN[spin = (spin + 1) % SPIN.length];
+      const width = Math.max(20, (process.stdout.columns || 80) - 1);
+      for (const s of state) {
+        const body = s.done ? s.line
+          : `${C.cyan}${frame}${C.reset} ${C.bold}${s.label}${C.reset}  ${C.dim}checking…${C.reset}`;
+        process.stdout.write(`\x1b[K${truncateVisible(body, width)}\n`);
+      }
+    };
+    render();
+    const timer = setInterval(render, 100);
+    await Promise.all(entries.map((e, i) => probeOne(e).then((r) => { results[i] = r; state[i].done = true; state[i].line = fmtLine(r); })));
+    clearInterval(timer);
+    render(); // final frame — every line filled
+  } else {
+    // Non-TTY (piped): run in parallel; for text output print each line as it completes.
+    await Promise.all(entries.map((e, i) => probeOne(e).then((r) => { results[i] = r; if (!flags.json) console.log(fmtLine(r)); })));
+  }
+
+  const okN = results.filter((r) => r.ok).length;
+  if (flags.json) {
+    console.log(JSON.stringify({ ok: okN, total: results.length, cross_vendor: okN >= 2, results }, null, 2));
+    process.exit(okN >= 1 ? 0 : 1);
+  }
+
+  const tail = okN >= 2 ? `${C.green}cross-vendor OK${C.reset}`
+    : okN === 1 ? `${C.yellow}single-vendor only (cross-vendor needs ≥2)${C.reset}`
+    : `${C.red}no live models — panel will fail${C.reset}`;
+  console.log(`\n${okN}/${results.length} live — ${tail}`);
+  if (okN < results.length) {
+    console.log(`${C.dim}auth issue → xm panel doctor   ·   bad model → xm panel models <vendor> --check <id>${C.reset}`);
+  }
+  process.exit(okN >= 1 ? 0 : 1);
+}
+
 function printHelp() {
   console.log(`x-panel — Cross-Model Adversarial Review Panel (PoC)
 
@@ -892,10 +1021,16 @@ Commands:
                                 (project .xm/config.json, or ~/.xm with --global).
                                 No args → show detected + current config.
 
-  doctor [--probe] [--json]     Pre-flight readiness: is each provider installed AND
+  doctor [--probe] [--json]     Static readiness: is each provider installed AND
                                 authenticated? Catches logged-out CLIs before a run fails
-                                mid-panel. --probe makes one tiny real call for providers
-                                without an auth-status command (agy).
+                                mid-panel. NO model call (except --probe, for agy only).
+  preflight [--models a,b,c] [--timeout N] [--json]
+                                LIVE check: send one tiny prompt to each model the panel
+                                would actually use (config/preset/--models, incl. name:model)
+                                and report which respond. Catches an authed provider whose
+                                CONFIGURED model is invalid/unavailable/rate-limited — which
+                                doctor cannot see. Costs one minimal call per model. Exit 0 if
+                                ≥1 live. Run this before a real panel when models are uncertain.
   detect [--auth] [--json]      Print available (installed) + known providers — lets a
                                 caller decide single-vendor fallback BEFORE spending tokens.
                                 --auth narrows "available" to installed AND ready: authenticated,
@@ -1112,13 +1247,22 @@ function renderStatusOnce(pos, flags) {
 // ── entry ────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
-const SUB = new Set(['review', 'cross', 'status', 'setup', 'types', 'models', 'detect', 'doctor', 'help', '--help', '-h']);
+const SUB = new Set(['review', 'cross', 'status', 'setup', 'types', 'models', 'detect', 'doctor', 'preflight', 'help', '--help', '-h']);
 let cmd = argv[0];
 let rest;
 if (!cmd) { cmd = 'review'; rest = []; }            // `x-panel` → review git diff
 else if (SUB.has(cmd)) { rest = argv.slice(1); }
 else { cmd = 'review'; rest = argv; }                // `x-panel ./file` / `x-panel --full` → review
-const { flags, pos } = parseFlags(rest);
+const { flags, pos, unknown } = parseFlags(rest);
+
+// Reject typo'd flags before any model is spawned (a literal target never starts
+// with `-`). Without this, `x-panel --heolp` reviews the string "--heolp" across
+// every vendor, burning credits on a typo.
+if (unknown.length && !['help', '--help', '-h'].includes(cmd)) {
+  console.error(`x-panel: unknown flag${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}`);
+  console.error(`A review target is a file path or text; flags start with --. Run 'x-panel --help' for usage.`);
+  process.exit(1);
+}
 
 switch (cmd) {
   case 'review': await cmdReview(pos, flags); break;
@@ -1128,6 +1272,7 @@ switch (cmd) {
   case 'types': cmdTypes(); break;
   case 'models': cmdModels(pos, flags); break;
   case 'doctor': await cmdDoctor(flags); break;
+  case 'preflight': await cmdPreflight(pos, flags); break;
   case 'detect': {
     const known = knownProviders();
     const available = flags.auth

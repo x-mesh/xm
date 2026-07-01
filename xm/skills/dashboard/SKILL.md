@@ -48,6 +48,7 @@ User provided: $ARGUMENTS
 Parse `$ARGUMENTS`:
 
 - `stop` / `close` / `kill` → [Command: stop]
+- `restart` / `relaunch` / `reload` → [Command: restart]
 - `status` → [Command: status]
 - `open` → [Command: open]
 - Empty or `start` or any other text → [Command: start]
@@ -91,13 +92,31 @@ bun x-dashboard/lib/x-dashboard-server.mjs --stop
 
 Report result to user.
 
+## Command: restart
+
+Stop the running server, then start a fresh one. Use this after the dashboard's
+server code or served `public/` bundle changed — a long-lived server keeps
+serving whatever it was launched with, so a restart is the cure for a stale
+served bundle ("fixed but still shows the old UI").
+
+```bash
+bun x-dashboard/lib/x-dashboard-server.mjs --stop
+nohup bun x-dashboard/lib/x-dashboard-server.mjs --session > /dev/null 2>&1 &
+sleep 2
+curl -s http://127.0.0.1:19841/health
+```
+
+Report the new `buildId` from `/health` so the user can confirm which bundle is
+now live (it also shows in the dashboard sidebar footer, with a `source`/`cache`
+badge).
+
 ## Command: status
 
 ```bash
 curl -s http://127.0.0.1:19841/api/health 2>/dev/null || echo '{"status":"not_running"}'
 ```
 
-Show: running/stopped, port, uptime, project name, cwd.
+Show: running/stopped, port, uptime, **buildId**, project name, cwd.
 
 ## Command: open
 

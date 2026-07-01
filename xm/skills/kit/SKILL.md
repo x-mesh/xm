@@ -101,13 +101,37 @@ If a haiku-eligible command receives `--thorough` or similar depth flags, escala
 Show available tools:
 
 ```
-x-mesh Toolkit (xm)
+x-mesh Toolkit (xm) — pick a tool by what you're doing ("쓸 때")
 
-Bundled tools (available now):
-  /xm:build    Phase-based project harness — lifecycle, DAG, cost forecasting
-  /xm:op       Strategy orchestration — refine, tournament, debate, review
-  /xm:agent    Agent primitives — fan-out, delegate, broadcast, collect
-  /xm:solver   Structured problem solving — decompose, iterate, constrain, pipeline
+Plan & build:
+  /xm:build     PRD → tasks → DAG 실행·비용예측    쓸 때: 멀티스텝 기능을 계획·관리
+  /xm:op        17 전략 오케스트레이션              쓸 때: 한 문제를 여러 전략으로(refine/debate/tournament…)
+  /xm:agent     fan-out · delegate · consensus      쓸 때: 에이전트 여러 개를 직접 오케스트레이션
+  /xm:solver    decompose · iterate · constrain     쓸 때: 막힌 문제를 구조적으로 분해
+
+Review & quality:
+  /xm:review    PR 코드 리뷰 (severity + LGTM)       쓸 때: 변경 코드를 다관점 리뷰
+  /xm:eval      출력 품질 채점 (multi-rubric, A/B)   쓸 때: 에이전트/프롬프트 출력을 점수화
+  /xm:panel     크로스모델 적대 패널 (claude/codex…)  쓸 때: 여러 LLM으로 교차검증/적대 리뷰
+  /xm:probe     전제 검증 — 나쁜 아이디어 조기 사살   쓸 때: 만들기 전에 가정이 맞는지
+
+Knowledge & memory:
+  /xm:recall    과거 산출물 인덱스 (review/op/plan…)  쓸 때: 지난 세션의 리뷰/op/plan을 찾기
+  /xm:memory    교차세션 결정·패턴 기억              쓸 때: 결정을 영속화·자동 주입
+  /xm:trace     실행 타임라인·토큰/비용 추적          쓸 때: 멀티에이전트 실행을 관찰/리플레이
+
+Writing & retro:
+  /xm:humanize  AI 글투 제거 (EN+KO)                 쓸 때: AI스러운 텍스트를 자연스럽게
+  /xm:humble    구조적 회고 — 실패 근본원인          쓸 때: 실패를 함께 돌아보고 배우기
+
+Ops:
+  /xm:dashboard .xm 상태 웹 대시보드                  쓸 때: 빌드/리뷰/op 상태를 한 화면에
+  /xm:ship      릴리스 자동화 (commit→bump→push)      쓸 때: 릴리스 컷
+  /xm:sync      다기기 .xm 동기화                     쓸 때: 여러 머신에서 상태 공유
+  /xm:kit       이 개요 + config/version/doctor/cost  쓸 때: 도구 목록·설치 상태·설정
+
+대부분 직접 호출. review/eval/solver/trace/humble는 op/build/panel 파이프라인 안에서도
+자동 실행되므로 직접 /xm:<도구> 호출 통계엔 잘 안 잡힐 수 있음 — 미사용이 아니라 간접 사용.
 
 Pipeline:
   /xm:kit pipeline <name>    Run a named plugin pipeline (release, full, etc.)
