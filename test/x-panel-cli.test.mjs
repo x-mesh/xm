@@ -719,6 +719,118 @@ describe('panel status (staleness + project scope + --all)', () => {
     expect(r.stdout).toContain('waiting for panel-does-not-exist');
     expect(r.stdout).not.toContain('run not found'); // no red error spam
   });
+
+  // Rich progress fixture: one model done, one mid-flight with the live signals a stream
+  // run writes (phase_label, tokens, cost, updated_at) — what the board must surface.
+  const seedProgressRun = (run) => {
+    const d = join(SDIR, '.xm', 'panel', run);
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'status.json'), JSON.stringify({
+      run, phase: 'round1 (review)', target_kind: 'git-diff', target_title: 'diff: a.js',
+      updated_at: new Date().toISOString(),
+      models: [
+        { label: 'claude', state: 'done', elapsed_s: 30 },
+        { label: 'codex', state: 'running', elapsed_s: 45, phase_label: 'responding', stdout_bytes: 2130,
+          tokens: { input: 9000, output: 3300 }, cost_usd: 0.12, updated_at: new Date().toISOString(),
+          stdout_tail: 'YYMARKER live tail line' },
+      ],
+    }));
+  };
+
+  test('--watch board shows round progress + live phase/tokens/cost per agent', () => {
+    seedProgressRun('panel-progress-fixture');
+    const r = spawnSync('node', [CLI, 'status', '--watch', '--lines', '1', '--interval', '1'],
+      { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 2500 });
+    expect(r.stdout).toContain('1/2 done');            // round progress in the run header
+    expect(r.stdout).toContain('responding');          // live phase of the running agent
+    expect(r.stdout).toContain('12.3k tok');           // live token usage
+    expect(r.stdout).toContain('$0.12');               // live cost
+    expect(r.stdout).toContain('YYMARKER live tail line'); // --lines content still renders
+  });
+
+  test('--watch --json emits one compact JSONL board snapshot per tick (agent-consumable)', () => {
+    seedProgressRun('panel-jsonwatch-fixture');
+    const r = spawnSync('node', [CLI, 'status', '--watch', '--json', '--lines', '1', '--interval', '1'],
+      { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 2500 });
+    const lines = r.stdout.trim().split('\n').filter(Boolean);
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+    const snap = JSON.parse(lines[0]);                 // parses → compact, no ANSI/clear codes
+    const run = snap.live.find((x) => x.run === 'panel-jsonwatch-fixture');
+    expect(run.progress).toEqual({ done: 1, total: 2 });
+    const codex = run.models.find((m) => m.label === 'codex');
+    expect(codex.state).toBe('running');
+    expect(codex.phase_label).toBe('responding');
+    expect(codex.cost_usd).toBe(0.12);
+    expect(codex.tokens.output).toBe(3300);
+    expect(codex.tail).toEqual(['YYMARKER live tail line']); // --lines flows into JSON too
+  });
+
+  test('run-scoped --watch --json ends with exit 0 when the run is done', () => {
+    const d = join(SDIR, '.xm', 'panel', 'panel-jsondone-fixture');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'status.json'), JSON.stringify({
+      run: 'panel-jsondone-fixture', phase: 'done', target_kind: 'literal', target_title: 'seed',
+      updated_at: new Date().toISOString(), models: [{ label: 'claude', state: 'done', elapsed_s: 12 }],
+    }));
+    const r = spawnSync('node', [CLI, 'status', 'panel-jsondone-fixture', '--watch', '--json', '--interval', '1'],
+      { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 5000 });
+    expect(r.signal).toBe(null);   // exited on its own — the stream ENDS for a consumer
+    expect(r.status).toBe(0);
+    const last = JSON.parse(r.stdout.trim().split('\n').filter(Boolean).pop());
+    expect(last.done).toBe(true);
+    expect(last.phase).toBe('done');
+  });
+
+  test('run-scoped --watch --json exits 1 when the run is stalled (dead process)', () => {
+    seedRun('panel-jsonstalled-fixture', '2020-01-01T00:00:00.000Z'); // ancient heartbeat
+    const r = spawnSync('node', [CLI, 'status', 'panel-jsonstalled-fixture', '--watch', '--json', '--interval', '1'],
+      { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 5000 });
+    expect(r.signal).toBe(null);
+    expect(r.status).toBe(1);      // stalled ≠ done — no more progress will ever arrive
+    const last = JSON.parse(r.stdout.trim().split('\n').filter(Boolean).pop());
+    expect(last.stale).toBe(true);
+  });
+
+  test('lens-injected runs under .xm/review/ are visible to status + watch (the x-review namespace)', () => {
+    // x-review's cross-vendor reviews write to .xm/review/<run>/ (not .xm/panel/) — a live one
+    // must appear on the board, not be invisible (the aic-rust bug).
+    const d = join(SDIR, '.xm', 'review', 'panel-xreview-fixture');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'status.json'), JSON.stringify({
+      run: 'panel-xreview-fixture', phase: 'round1 (review)', target_kind: 'file', target_title: 'Review PLAN.md',
+      updated_at: new Date().toISOString(),
+      models: [{ label: 'claude', state: 'running', elapsed_s: 20 }],
+    }));
+    // list: present, namespace-labeled
+    const list = panelRaw(['status', '--json'], statusEnv());
+    const row = JSON.parse(list.stdout).find((x) => x.run === 'panel-xreview-fixture');
+    expect(row).toBeDefined();
+    expect(row.source).toBe('x-review(file)');       // distinguishable from native "review(file)"
+    expect(row.phase).toBe('round1 (review)');       // live, not stalled
+    // detail lookup resolves the review namespace
+    const detail = panelRaw(['status', 'panel-xreview-fixture', '--json'], statusEnv());
+    expect(detail.status).toBe(0);
+    expect(JSON.parse(detail.stdout).status.run).toBe('panel-xreview-fixture');
+    // watch board picks it up as a live run
+    const w = spawnSync('node', [CLI, 'status', '--watch', '--json', '--interval', '1'],
+      { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 2500 });
+    const snap = JSON.parse(w.stdout.trim().split('\n')[0]);
+    expect(snap.live.some((x) => x.run === 'panel-xreview-fixture')).toBe(true);
+  });
+
+  test('run-scoped text --watch also ends when the run is done', () => {
+    const d = join(SDIR, '.xm', 'panel', 'panel-textdone-fixture');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'status.json'), JSON.stringify({
+      run: 'panel-textdone-fixture', phase: 'done', target_kind: 'literal', target_title: 'seed',
+      updated_at: new Date().toISOString(), models: [{ label: 'claude', state: 'done', elapsed_s: 12 }],
+    }));
+    const r = spawnSync('node', [CLI, 'status', 'panel-textdone-fixture', '--watch', '--interval', '1'],
+      { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 5000 });
+    expect(r.signal).toBe(null);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('watch ended');
+  });
 });
 
 // ── integration: full panel flow via stubs ───────────────────────────
