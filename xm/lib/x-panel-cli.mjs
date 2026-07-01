@@ -14,7 +14,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, readFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname } from 'node:path';
 import {
@@ -164,6 +164,9 @@ function parseFlags(raw) {
     else if (a === '--watch') flags.watch = true;
     else if (a === '--interval') flags.interval = parseInt(raw[++i], 10) || undefined;
     else if (a === '--all') flags.all = true;
+    // Only consume the next token as the count when it's actually numeric — a bare `--lines`
+    // (or `--lines --all`) must NOT swallow the following flag. Bare → a sensible default of 3.
+    else if (a === '--lines') { const nx = raw[i + 1]; flags.lines = (nx != null && /^\d+$/.test(nx)) ? (i++, Math.max(0, parseInt(nx, 10))) : 3; }
     // Take the next token as a value ONLY if it isn't another --flag (so a missing value
     // doesn't silently swallow the following option as the prompt body). '-' (stdin) is kept.
     else if (a === '--review-prompt-file') flags.reviewPromptFile = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
@@ -1051,8 +1054,13 @@ Commands:
                                 with a project header + staleness (a dead run shows "stalled · Nago",
                                 not a phantom "running"). --all → every registered project, grouped
                                 (~/.xm/projects.json). A run id → per-model state + each model's
-                                latest stdout tail. Read-only. --watch refreshes live every N
-                                seconds (default 2) — terminal equivalent of the dashboard.
+                                latest stdout tail. Read-only. --watch is a LIVE activity board:
+                                only in-progress runs, one line per agent (state · elapsed · what
+                                it's doing now), refreshed every N seconds (default 2); combine with
+                                --all to watch every project at once. --lines N (or config
+                                panel.watch_lines) shows the last N lines each agent is actually
+                                producing/reasoning under it. Compact one-line-per-run list
+                                otherwise (vendor glyphs ✓✗●·, model-id in the run's detail view).
   types                         List providers (install status) + how to query each
                                 one's live models (cursor/kiro are multi-vendor: kimi, deepseek, …)
   models [vendor] [--check m1,m2]
@@ -1075,7 +1083,8 @@ Output: .xm/panel/<run>/{<model>.r1.json, <model>.r2.json, verdict.json}
 
 function readJSONSafe(p) { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } }
 
-const STATUS_STALE_MS = 30_000; // mirrors the dashboard's PANEL_STALE_MS
+const STATUS_STALE_MS = 30_000;       // review runs flush status.json ~every 2s → 30s = dead
+const CROSS_STALE_MS = 15 * 60_000;   // cross has no heartbeat; a slow multi-vendor run may take minutes
 
 // Human-readable age of an ISO timestamp ("12s" / "35m" / "6h" / "2d"), or null if unparseable.
 function statusAge(iso) {
@@ -1095,10 +1104,25 @@ function statusAge(iso) {
 function statusRunRow(entry) {
   if (entry.kind === 'cross') {
     const res = readJSONSafe(join(entry.dir, 'result.json'));
-    const models = res ? res.models
-      : readdirSync(entry.dir).filter((f) => f.endsWith('.json') && f !== 'result.json').map((f) => f.replace(/\.json$/, ''));
+    let models;
+    if (res && res.results) models = res.results.map((v) => ({ label: v.model, state: v.ok === false ? 'failed' : 'done', error: v.error || null }));
+    else if (res) models = (res.models || []).map((l) => ({ label: l, state: 'done' }));
+    else models = readdirSync(entry.dir).filter((f) => f.endsWith('.json') && f !== 'result.json').map((f) => {
+      // a present per-vendor file means THAT vendor already finished — read its ok, don't call it "running".
+      const v = readJSONSafe(join(entry.dir, f));
+      return { label: (v && v.model) || f.replace(/\.json$/, ''), state: v ? (v.ok === false ? 'failed' : 'done') : 'running', error: (v && v.error) || null };
+    });
+    // cross has no status.json/updated_at; use the run dir's mtime for staleness of an unfinished run.
+    // A multi-vendor cross can legitimately run for MINUTES (slow vendors), so the window is generous
+    // — a much longer bound than a review's 30s heartbeat, or a live cross vanishes from --watch.
+    let live = false, age = null;
+    if (!res) {
+      const mt = (() => { try { return statSync(entry.dir).mtimeMs; } catch { return 0; } })();
+      if (mt > 0) { live = (Date.now() - mt) < CROSS_STALE_MS; age = statusAge(new Date(mt).toISOString()); }
+      // mt === 0 (stat failed) → leave live=false, age=null; never age off the epoch ("56 years ago").
+    }
     return { kind: 'cross', run: entry.run, source: (res && res.source) || 'cross', title: (res && res.title) || null,
-      phase: res ? 'done' : 'running', live: !res, stale: false, age: null, models: models || [] };
+      phase: res ? 'done' : live ? 'running' : 'stalled', live, stale: !res && !live, age, phaseRaw: null, models };
   }
   const st = readJSONSafe(join(entry.dir, 'status.json'));
   const done = (st && st.phase === 'done') || existsSync(join(entry.dir, 'verdict.json'));
@@ -1108,7 +1132,46 @@ function statusRunRow(entry) {
   const phase = done ? 'done' : stale ? 'stalled' : (st ? st.phase : 'unknown');
   return { kind: 'review', run: entry.run, source: st && st.target_kind ? `review(${st.target_kind})` : 'review',
     title: (st && st.target_title) || null, phase, live, stale, age: st ? statusAge(st.updated_at) : null,
-    models: st ? st.models.map((m) => `${m.label}:${m.state}`) : [] };
+    phaseRaw: st ? st.phase : null, models: st ? st.models : [] };
+}
+
+// Canonical vendor order so the per-run glyph columns line up under one legend, run to run.
+const STATUS_VENDORS = ['claude', 'codex', 'agy', 'cursor', 'kiro'];
+const vendorOf = (label) => String(label || '').split(':')[0];
+const statusLegend = () => `${C.dim}vendors ${STATUS_VENDORS.join(' ')} · ✓done ✗fail ●live ·absent${C.reset}`;
+
+// Compact per-vendor state glyphs in canonical order: ✓done ✗failed ●running ·absent/other.
+function statusGlyphs(models) {
+  return STATUS_VENDORS.map((v) => {
+    const m = (models || []).find((x) => vendorOf(x.label) === v);
+    if (!m) return `${C.dim}·${C.reset}`;
+    return m.state === 'done' ? `${C.green}✓${C.reset}` : m.state === 'failed' ? `${C.red}✗${C.reset}`
+      : m.state === 'running' ? `${C.yellow}●${C.reset}` : `${C.dim}·${C.reset}`;
+  }).join('');
+}
+
+// What a running agent is doing right now: stdout volume, else its last lifecycle event.
+function statusActivityHint(m) {
+  if (m.stdout_bytes) {
+    const b = m.stdout_bytes;
+    return `↑${b >= 1000 ? (b / 1000).toFixed(1) + 'k' : b}`;
+  }
+  return m.last_event || '';
+}
+
+// Compiled once (a /g regex resets lastIndex on each .replace, so reuse is safe).
+const CLI_ANSI_RE = new RegExp(String.fromCharCode(27) + '\\[[0-9;?]*[ -/]*[@-~]', 'g');
+function stripAnsiCli(s) {
+  return String(s || '').replace(CLI_ANSI_RE, '');
+}
+
+// The last `n` non-empty lines of an agent's live output — the ACTUAL content it is reasoning /
+// producing right now (not just a byte count). Prefer stdout (the model's answer); fall back to
+// stderr, where some CLIs (codex) stream their reasoning. ANSI-stripped; width-trimmed at print.
+function statusTailLines(m, n) {
+  if (n <= 0) return [];
+  const raw = (m.stdout_tail && m.stdout_tail.trim()) ? m.stdout_tail : (m.stderr_tail || '');
+  return stripAnsiCli(raw).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim()).slice(-n);
 }
 
 // All runs under one .xm root (panel + cross), newest first.
@@ -1140,11 +1203,57 @@ function statusProjects() {
   return out;
 }
 
+// One-line compact history row: {status} {source} {vendor glyphs} {title}  {dim time/id}.
+// The per-model model-id (claude-opus-4-8 …) is dropped here — it lives in the detail view; the
+// list only needs which vendor did what (glyph), so a 40-run list stays scannable.
 function printStatusRow(r) {
-  const color = r.phase === 'done' ? C.green : r.live ? C.yellow : C.dim;
-  const phaseTxt = r.stale && r.age ? `stalled · ${r.age} ago` : r.phase;
-  console.log(`${C.bold}${r.run}${C.reset}  ${C.cyan}${r.source}${C.reset}  ${color}[${phaseTxt}]${C.reset}  ${r.title || ''}`);
-  console.log(`  ${(r.models || []).join('   ') || C.dim + '—' + C.reset}`);
+  const g = r.phase === 'done' ? `${C.green}✓${C.reset}` : r.stale ? `${C.dim}⚠${C.reset}` : `${C.yellow}●${C.reset}`;
+  const title = compactTitle(r.title || '', 46) || `${C.dim}${r.run}${C.reset}`;
+  const meta = r.stale && r.age ? `${C.dim}${r.age} ago${C.reset}` : `${C.dim}${r.run.replace(/^panel-/, '')}${C.reset}`;
+  console.log(`${g} ${C.cyan}${r.source.padEnd(15)}${C.reset} ${statusGlyphs(r.models)}  ${title}  ${meta}`);
+}
+
+// --watch board: NOT a history list — a live activity monitor answering "which project · which
+// command · which agent · doing what right now". Only in-progress runs are expanded (one line per
+// agent with its state + elapsed + current activity); finished/stalled runs collapse to a footer
+// count. Empty when nothing is running.
+function renderStatusWatch(flags) {
+  const projects = flags.all ? statusProjects() : [{ name: basename(dirname(XM_ROOT)) || 'project', xmRoot: XM_ROOT }];
+  // How many lines of each agent's live output to show under it — the "what is it reasoning" view.
+  // 0 = compact (byte-count hint only). Flag wins; else the persistent panel.watch_lines setting.
+  const linesN = flags.lines != null ? flags.lines : (loadPanelConfig().watch_lines || 0);
+  const width = Math.max(24, (process.stdout.columns || 100) - 12);
+  const liveRuns = [];
+  let doneCount = 0, staleCount = 0;
+  for (const p of projects) {
+    for (const r of collectStatusRuns(p.xmRoot, 100)) {
+      if (r.live && r.phase !== 'done') liveRuns.push({ ...r, project: p.name });
+      else if (r.stale) staleCount++;
+      else doneCount++;
+    }
+  }
+  const clock = new Date().toTimeString().slice(0, 8);
+  console.log(`${C.bold}panel watch${C.reset} · ${liveRuns.length ? `${C.yellow}${liveRuns.length} live${C.reset}` : `${C.dim}0 live${C.reset}`} · ${C.dim}${clock}${C.reset}`);
+  if (!liveRuns.length) console.log(`\n${C.dim}(no active panels — a run appears here while it is in progress)${C.reset}`);
+  for (const r of liveRuns) {
+    const elapsed = Math.max(0, ...(r.models || []).map((m) => m.elapsed_s || 0));
+    const round = r.phaseRaw || r.phase;
+    console.log(`\n${C.bold}▸ ${r.project}${C.reset}  ${C.cyan}${r.source}${C.reset}  ${r.title || r.run}   ${C.dim}${round} · ${elapsed}s${C.reset}`);
+    for (const m of (r.models || [])) {
+      const glyph = m.state === 'done' ? `${C.green}✓${C.reset} ` : m.state === 'failed' ? `${C.red}✗${C.reset} `
+        : m.state === 'running' ? `${C.yellow}⏳${C.reset}` : `${C.dim}·${C.reset} `;
+      const el = m.elapsed_s != null ? `${m.elapsed_s}s` : '';
+      const hint = m.state === 'failed' ? `${C.red}${m.error || 'failed'}${C.reset}`
+        : m.state === 'running' ? `${C.dim}${statusActivityHint(m)}${C.reset}` : '';
+      console.log(`    ${glyph} ${vendorOf(m.label).padEnd(8)} ${C.dim}${el.padEnd(5)}${C.reset} ${hint}`);
+      // Content lines (opt-in via --lines N / panel.watch_lines): the tail of what this agent is
+      // actually producing/reasoning, indented under it.
+      for (const line of statusTailLines(m, linesN)) {
+        console.log(`        ${C.dim}│ ${line.slice(0, width)}${C.reset}`);
+      }
+    }
+  }
+  console.log(`\n${C.dim}idle · ${doneCount} done · ${staleCount} stalled · ${projects.length} project${projects.length === 1 ? '' : 's'}${flags.all ? '' : ' (--all for every project)'}${C.reset}`);
 }
 
 // `xm panel status [run] [--json] [--watch]` — read run state straight from disk so an IN-PROGRESS
@@ -1157,8 +1266,15 @@ function cmdStatus(pos, flags) {
     const everyMs = Math.max(1, flags.interval || 2) * 1000;
     const tick = () => {
       if (process.stdout.isTTY) process.stdout.write(`${ESC}[2J${ESC}[3J${ESC}[H`); // clear scrollback + home
-      console.log(`${C.dim}panel status · watch (every ${everyMs / 1000}s) · Ctrl-C to exit${C.reset}\n`);
-      renderStatusOnce(pos, flags);
+      // A run id → live-tail that run's detail; no run id → the cross-run activity board.
+      if (pos[0]) {
+        // Don't loop the red "run not found" error (renderStatusOnce sets exitCode) — a watched run
+        // may simply not exist yet; show a clean waiting line until it appears.
+        const exists = existsSync(join(PANEL_DIR, pos[0])) || existsSync(join(PANEL_DIR, '..', 'cross', pos[0]));
+        if (exists) renderStatusOnce(pos, flags);
+        else console.log(`${C.dim}waiting for ${pos[0]} …${C.reset}`);
+      } else renderStatusWatch(flags);
+      console.log(`${C.dim}every ${everyMs / 1000}s · Ctrl-C to exit${C.reset}`);
     };
     tick();
     const iv = setInterval(tick, everyMs); // NOT unref'd — the interval is what keeps the CLI alive
@@ -1184,6 +1300,7 @@ function renderStatusOnce(pos, flags) {
     for (const p of projects) {
       const runs = collectStatusRuns(p.xmRoot, 10);
       if (!runs.length) continue;
+      if (!any) console.log(statusLegend());
       any = true;
       const live = runs.filter((r) => r.live && r.phase !== 'done').length;
       console.log(`\n${C.bold}▸ ${p.name}${C.reset}  ${C.dim}${p.xmRoot}${C.reset}${live ? `  ${C.yellow}● ${live} live${C.reset}` : ''}`);
@@ -1200,6 +1317,7 @@ function renderStatusOnce(pos, flags) {
     if (flags.json) { console.log(JSON.stringify(runs, null, 2)); return; }
     console.log(`${C.dim}project${C.reset} ${C.bold}${basename(dirname(XM_ROOT)) || 'project'}${C.reset}  ${C.dim}${join(XM_ROOT, 'panel')}  (--all for every project)${C.reset}`);
     if (!runs.length) { console.log('(no panel runs)'); return; }
+    console.log(statusLegend());
     for (const r of runs) printStatusRow(r);
     return;
   }

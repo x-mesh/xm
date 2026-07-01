@@ -652,6 +652,73 @@ describe('panel status (staleness + project scope + --all)', () => {
     expect(groups.length).toBeGreaterThanOrEqual(1); // at least the current project
     expect(groups[0].runs.some((x) => x.run === 'panel-all-fixture')).toBe(true);
   });
+
+  test('a run row carries phaseRaw + raw per-agent objects (the data the --watch board renders)', () => {
+    const d = join(SDIR, '.xm', 'panel', 'panel-detail-fixture');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'status.json'), JSON.stringify({
+      run: 'panel-detail-fixture', phase: 'round1 (review)', target_kind: 'git-diff', target_title: 'diff: a.js',
+      updated_at: new Date().toISOString(),
+      models: [
+        { label: 'claude:claude-opus-4-8', state: 'running', elapsed_s: 45, stdout_bytes: 2130 },
+        { label: 'kiro', state: 'failed', elapsed_s: 8, error: 'timeout 600s' },
+      ],
+    }));
+    const r = panelRaw(['status', '--json'], statusEnv());
+    const row = JSON.parse(r.stdout).find((x) => x.run === 'panel-detail-fixture');
+    expect(row.phaseRaw).toBe('round1 (review)');    // the actual round, for the board header
+    expect(row.models[0].state).toBe('running');     // raw objects, not "label:state" strings
+    expect(row.models[0].stdout_bytes).toBe(2130);   // activity volume → "↑2.1k"
+    expect(row.models.find((m) => m.label === 'kiro').error).toBe('timeout 600s');
+  });
+
+  test('--watch --lines N shows each agent\'s output tail (what it is reasoning), not just a byte count', () => {
+    const d = join(SDIR, '.xm', 'panel', 'panel-watchlines-fixture');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'status.json'), JSON.stringify({
+      run: 'panel-watchlines-fixture', phase: 'round1 (review)', target_kind: 'git-diff', target_title: 'diff: a.js',
+      updated_at: new Date().toISOString(),
+      models: [{ label: 'claude', state: 'running', elapsed_s: 10, stdout_bytes: 40, stdout_tail: 'ZZMARKER first line\nZZMARKER final reasoning line' }],
+    }));
+    // --watch loops; kill it after one frame via spawnSync timeout and inspect the captured frame.
+    const r = spawnSync('node', [CLI, 'status', '--watch', '--lines', '2', '--interval', '1'],
+      { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 2500 });
+    expect(r.stdout).toContain('ZZMARKER final reasoning line'); // the actual content is rendered
+    expect(r.stdout).toContain('panel watch');                   // it is the live board, not the list
+  });
+
+  test('status <run> --watch live-tails that run (loops the detail, not a one-shot)', () => {
+    const d = join(SDIR, '.xm', 'panel', 'panel-runwatch-fixture');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'status.json'), JSON.stringify({
+      run: 'panel-runwatch-fixture', phase: 'round1 (review)', target_kind: 'literal', target_title: 'seed',
+      updated_at: new Date().toISOString(), models: [{ label: 'claude', state: 'running', elapsed_s: 5 }],
+    }));
+    const r = spawnSync('node', [CLI, 'status', 'panel-runwatch-fixture', '--watch', '--interval', '1'],
+      { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 2500 });
+    // A one-shot would EXIT before the timeout (signal null); a live loop is still running and gets
+    // SIGTERM'd — load-independent proof that <run> --watch keeps polling (regression stays fixed).
+    expect(r.signal).toBe('SIGTERM');
+    expect(r.stdout).toContain('panel-runwatch-fixture'); // it did render the detail at least once
+  });
+
+  test('--lines with no numeric value does not swallow the next flag', () => {
+    seedRun('panel-lines-parse-fixture', new Date().toISOString());
+    const r = panelRaw(['status', '--lines', '--all', '--json'], statusEnv());
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    // if --lines had eaten --all, this would be the flat single-project rows array; instead it's the
+    // grouped --all shape ([{project, runs}]) → --all survived.
+    expect(out[0]).toHaveProperty('runs');
+    expect(out[0]).toHaveProperty('project');
+  });
+
+  test('watching a nonexistent run shows a clean "waiting" line, not a looping error', () => {
+    const r = spawnSync('node', [CLI, 'status', 'panel-does-not-exist', '--watch', '--interval', '1'],
+      { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 2000 });
+    expect(r.stdout).toContain('waiting for panel-does-not-exist');
+    expect(r.stdout).not.toContain('run not found'); // no red error spam
+  });
 });
 
 // ── integration: full panel flow via stubs ───────────────────────────
