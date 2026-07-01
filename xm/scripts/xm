@@ -104,10 +104,20 @@ case "$CMD" in
     # (e.g. --scan, --port) is treated as a flag to the implicit `start`.
     SUB="${1:-start}"
     case "$SUB" in
-      start|stop|status|open) shift || true ;;
+      start|stop|status|open|restart) shift || true ;;
       -*) SUB="start" ;;
-      *)  echo "xm dashboard: start|stop|status|open [--scan DIR] [--port N]" >&2; exit 1 ;;
+      *)  echo "xm dashboard: start|stop|status|open|restart [--scan DIR] [--port N]" >&2; exit 1 ;;
     esac
+    # restart = stop the running server, then fall through to the start path so
+    # a relaunch picks up new server code / a different served bundle (the cure
+    # for a long-lived server pinning a stale public/ — see RV-1).
+    if [ "$SUB" = "restart" ]; then
+      # Forward flags (e.g. --port) to --stop too, so a non-default-port server is
+      # targeted correctly even when its PID file is missing (stop then falls back to
+      # probing the right port instead of the default). Start reuses "$@" below.
+      bun "$LIB_PATH/x-dashboard-server.mjs" --stop "$@" || true
+      SUB="start"
+    fi
     case "$SUB" in
       start)
         # Scan root precedence: --scan flag > $XM_DASHBOARD_SCAN > ~/.xm/config.json scan_roots > single-project mode
@@ -448,6 +458,17 @@ case "$CMD" in
         echo "  ❌ $(printf '%-12s' "$p") (missing)"
       fi
     done
+
+    echo ""
+    echo "## Cross-vendor providers (panel)"
+    PANEL_LIB="$(plugin_lib panel)"
+    if [ -n "$PANEL_LIB" ] && [ -f "$PANEL_LIB/x-panel-cli.mjs" ]; then
+      echo "  ✅ installed         $PANEL_LIB"
+      echo "     readiness         xm panel doctor   (install + auth per vendor, no model call)"
+      echo "     configure         xm panel setup    ·   models: xm panel models <vendor>"
+    else
+      echo "  ⏸  not installed     (install: /plugin install panel@xm)"
+    fi
     ;;
 
   update)
@@ -662,7 +683,7 @@ Usage: xm <command> [args...]
 Commands:
   init [--no-hooks|uninstall|status]  Set up global hooks in ~/.claude/
   project <subcmd>                    Project registry: list|add|remove|import|gc|...
-  dashboard start|stop|status|open    Web dashboard server (uses ~/.xm/projects.json)
+  dashboard start|stop|restart|status|open  Web dashboard server (uses ~/.xm/projects.json)
   handoff [reason]                    Save session state
   handon                              Restore session state
   memory <subcmd>                     Cross-session decision memory

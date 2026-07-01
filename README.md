@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.29-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.31-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -128,6 +128,7 @@ xm dashboard                       # start — uses ~/.xm/projects.json registry
 xm dashboard --scan ~/work         # legacy multi-project mode: scan ~/work for .xm/ dirs (depth 4)
 XM_DASHBOARD_SCAN=~/work xm dashboard   # same, persisted via env var
 xm dashboard stop                  # stop it
+xm dashboard restart               # stop + start — picks up new server code / a fresh served bundle
 xm dashboard open                  # open it in your browser
 
 # Project registry (~/.xm/projects.json)
@@ -1002,6 +1003,8 @@ xm panel ./file --full           # all installed model CLIs
 xm panel --models codex:gpt-5.2,cursor:gpt-5.3-codex,claude:opus
 xm panel --stream                # live: per-model tokens, cost, and streaming text
 xm panel setup --models codex,agy --global   # save defaults
+xm panel doctor                  # readiness: each provider installed + authed (no model call)
+xm panel preflight               # live check: probe each configured model (cursor:kimi, kiro:glm…) before a run
 ```
 
 Per-model `--model` via `name:model`, named `presets`, parallel calls, and results under `.xm/panel/` (queryable with `xm recall`). Different models have different blind spots — that's the point.

@@ -274,6 +274,15 @@ function showConfig(flags) {
   for (const [k, v] of Object.entries(effective)) {
     console.log(`  ${C.cyan}${k}${C.reset}: ${typeof v === 'object' ? JSON.stringify(v) : v}`);
   }
+
+  // Cross-vendor provider config lives under the `panel.*` key but is NOT
+  // panel-private — it's the shared multi-vendor provider setup that x-review/op/
+  // solver/eval/build all reuse. `xm config` can't edit or validate it, so point
+  // users at its dedicated wizard/diagnostics instead of leaving a dead end (PMC-1).
+  const hasPanel = effective && effective.panel && typeof effective.panel === 'object'
+    && Object.keys(effective.panel).length > 0;
+  console.log(`\n${C.dim}Cross-vendor providers${hasPanel ? ' (see panel.* above)' : ''}:${C.reset}`);
+  console.log(`  ${C.dim}configure:${C.reset} xm panel setup   ${C.dim}·  check (install+auth):${C.reset} xm panel doctor   ${C.dim}·  models:${C.reset} xm panel models <vendor>`);
   console.log('');
 }
 

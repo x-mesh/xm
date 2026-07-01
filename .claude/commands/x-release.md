@@ -177,6 +177,37 @@ else console.log('⚠ ' + dropped + ' hunks may have been dropped.');
 rm -f /tmp/pre-merge-hunks.diff
 ```
 
+### Step 8.5: Dashboard Live-Artifact Verification (if x-dashboard changed)
+
+Skip unless this release touched `x-dashboard/public/**` or `x-dashboard/lib/**`. A long-lived dashboard server keeps serving whatever `public/` it was launched from, so a shipped UI fix can still render the *old* bundle to the user (the "수정했는데 왜 그대로?" trap — RV-1). Prove the running dashboard serves what was just released, using the bundle's content hash (`buildId`):
+
+```bash
+# Source bundle identity, from the working tree just released
+SRC=$(bun x-dashboard/lib/x-dashboard-server.mjs --print-build-id | node -pe 'JSON.parse(require("fs").readFileSync(0)).buildId')
+echo "source buildId: $SRC"
+
+# Compare against what a running dashboard actually serves (if any)
+RUN=$(curl -s http://127.0.0.1:19841/health | node -pe 'try{JSON.parse(require("fs").readFileSync(0)).buildId}catch{""}' 2>/dev/null)
+if [ -z "$RUN" ]; then
+  echo "ℹ dashboard not running — it will serve $SRC on next start"
+elif [ "$RUN" = "$SRC" ]; then
+  echo "✅ live dashboard serves the released bundle ($SRC)"
+else
+  echo "⚠ live dashboard serves a STALE bundle (running=$RUN, source=$SRC) — restarting…"
+  xm dashboard restart >/dev/null 2>&1 || true
+  sleep 1
+  RUN2=$(curl -s http://127.0.0.1:19841/health | node -pe 'try{JSON.parse(require("fs").readFileSync(0)).buildId}catch{""}' 2>/dev/null)
+  if [ "$RUN2" = "$SRC" ]; then
+    echo "✅ restarted — now serving $SRC"
+  else
+    echo "❌ still stale after restart (running=$RUN2) — the plugin CACHE lags source."
+    echo "   Run Step 9's '/plugin update xm@xm', then 'xm dashboard restart' to activate."
+  fi
+fi
+```
+
+Never claim a dashboard fix is live until the served `buildId` matches source. If the mismatch survives a restart, the cache copy is stale — defer to Step 9. The footer in the dashboard sidebar shows the same `buildId` (+ a `source`/`cache` badge), so the user can eyeball which bundle they are looking at.
+
 ### Step 9: Plugin Update Hint
 
 After main is updated, print this exact message so the user knows how to activate the release in their environment:
