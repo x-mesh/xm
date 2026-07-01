@@ -1050,17 +1050,23 @@ Commands:
                                 surface in the dashboard panel list so runs are identifiable.
   status [run] [--all] [--json] [--watch [--interval N]]
                                 Read run state from disk — see an IN-PROGRESS panel from the CLI.
-                                No run → list THIS project's recent review + cross runs (cwd/.xm),
+                                Covers all three namespaces: .xm/panel (native), .xm/review
+                                (lens-injected x-review runs, labeled "x-review(...)"), .xm/cross.
+                                No run → list THIS project's recent runs (cwd/.xm),
                                 with a project header + staleness (a dead run shows "stalled · Nago",
                                 not a phantom "running"). --all → every registered project, grouped
                                 (~/.xm/projects.json). A run id → per-model state + each model's
                                 latest stdout tail. Read-only. --watch is a LIVE activity board:
-                                only in-progress runs, one line per agent (state · elapsed · what
-                                it's doing now), refreshed every N seconds (default 2); combine with
-                                --all to watch every project at once. --lines N (or config
-                                panel.watch_lines) shows the last N lines each agent is actually
-                                producing/reasoning under it. Compact one-line-per-run list
-                                otherwise (vendor glyphs ✓✗●·, model-id in the run's detail view).
+                                only in-progress runs, one line per agent (state · elapsed · phase ·
+                                tokens/cost · freshness), a per-run round progress (n/N done),
+                                refreshed every N seconds (default 2); combine with --all to watch
+                                every project at once. --lines N (or config panel.watch_lines) shows
+                                the last N lines each agent is actually producing/reasoning under it.
+                                --watch --json emits one COMPACT JSON snapshot per tick (JSONL, no
+                                ANSI) for agent/pipe consumers. Watching a RUN ID ends when the run
+                                finishes: exit 0 on done, 1 on stalled (dead process) — both for
+                                text and --json. Compact one-line-per-run list otherwise (vendor
+                                glyphs ✓✗●·, model-id in the run's detail view).
   types                         List providers (install status) + how to query each
                                 one's live models (cursor/kiro are multi-vendor: kimi, deepseek, …)
   models [vendor] [--check m1,m2]
@@ -1130,7 +1136,10 @@ function statusRunRow(entry) {
   const live = !done && Number.isFinite(t) && (Date.now() - t) < STATUS_STALE_MS;
   const stale = !done && !live && !!st;
   const phase = done ? 'done' : stale ? 'stalled' : (st ? st.phase : 'unknown');
-  return { kind: 'review', run: entry.run, source: st && st.target_kind ? `review(${st.target_kind})` : 'review',
+  // Namespace prefixes the source label ("x-review(file)" vs "review(file)") so a lens-injected
+  // run from x-review is distinguishable from a native panel review in the same list.
+  const srcBase = entry.ns || 'review';
+  return { kind: 'review', run: entry.run, source: st && st.target_kind ? `${srcBase}(${st.target_kind})` : srcBase,
     title: (st && st.target_title) || null, phase, live, stale, age: st ? statusAge(st.updated_at) : null,
     phaseRaw: st ? st.phase : null, models: st ? st.models : [] };
 }
@@ -1150,13 +1159,30 @@ function statusGlyphs(models) {
   }).join('');
 }
 
-// What a running agent is doing right now: stdout volume, else its last lifecycle event.
-function statusActivityHint(m) {
-  if (m.stdout_bytes) {
-    const b = m.stdout_bytes;
-    return `↑${b >= 1000 ? (b / 1000).toFixed(1) + 'k' : b}`;
-  }
-  return m.last_event || '';
+// Human token count ("12.3k tok") for the watch board's live usage column, or null when
+// the run carries no usage yet (raw mode / round not started).
+function fmtTokens(t) {
+  if (!t) return null;
+  const n = (t.input || 0) + (t.output || 0);
+  if (!n) return null;
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k tok` : `${n} tok`;
+}
+
+// Progress fragments for one agent: phase (thinking/responding), output volume, live
+// tokens/cost, and freshness (how long since its last event) — the "is it actually
+// moving" signals a bare state glyph + elapsed can't answer. Falls back to the last
+// lifecycle event when none of the live signals exist (raw mode before first output).
+function modelProgress(m) {
+  const parts = [];
+  if (m.phase_label) parts.push(m.phase_label);
+  if (m.stdout_bytes) parts.push(`↑${m.stdout_bytes >= 1000 ? (m.stdout_bytes / 1000).toFixed(1) + 'k' : m.stdout_bytes}`);
+  const tok = fmtTokens(m.tokens);
+  if (tok) parts.push(tok);
+  if (m.cost_usd != null && m.cost_usd > 0) parts.push(`$${m.cost_usd.toFixed(2)}`);
+  const age = statusAge(m.updated_at);
+  if (age) parts.push(`${age} ago`);
+  if (!parts.length && m.last_event) parts.push(m.last_event);
+  return parts;
 }
 
 // Compiled once (a /g regex resets lastIndex on each .replace, so reuse is safe).
@@ -1174,12 +1200,17 @@ function statusTailLines(m, n) {
   return stripAnsiCli(raw).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim()).slice(-n);
 }
 
-// All runs under one .xm root (panel + cross), newest first.
+// All runs under one .xm root, newest first. THREE namespaces: .xm/panel (native panel),
+// .xm/review (lens-injected cross-vendor reviews — same status.json format, separate dir so
+// they never collide with panel history), .xm/cross (raw cross-vendor invocations). Missing
+// the review namespace made x-review's in-progress panels invisible to status/--watch.
 function collectStatusRuns(xmRoot, limit = 20) {
-  const mk = (dir, kind) => existsSync(dir)
-    ? readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => ({ kind, run: e.name, dir: join(dir, e.name) }))
+  // Only runId-shaped dirs (panel-<stamp>) are runs — .xm/review is SHARED with x-review's own
+  // artifacts (history/, last-result.*), which must not appear as phantom runs.
+  const mk = (dir, kind, ns) => existsSync(dir)
+    ? readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && e.name.startsWith('panel-')).map((e) => ({ kind, ns, run: e.name, dir: join(dir, e.name) }))
     : [];
-  return [...mk(join(xmRoot, 'panel'), 'review'), ...mk(join(xmRoot, 'cross'), 'cross')]
+  return [...mk(join(xmRoot, 'panel'), 'review', null), ...mk(join(xmRoot, 'review'), 'review', 'x-review'), ...mk(join(xmRoot, 'cross'), 'cross', null)]
     .sort((a, b) => b.run.localeCompare(a.run)).slice(0, limit).map(statusRunRow);
 }
 
@@ -1213,47 +1244,126 @@ function printStatusRow(r) {
   console.log(`${g} ${C.cyan}${r.source.padEnd(15)}${C.reset} ${statusGlyphs(r.models)}  ${title}  ${meta}`);
 }
 
-// --watch board: NOT a history list — a live activity monitor answering "which project · which
-// command · which agent · doing what right now". Only in-progress runs are expanded (one line per
-// agent with its state + elapsed + current activity); finished/stalled runs collapse to a footer
-// count. Empty when nothing is running.
-function renderStatusWatch(flags) {
+// One agent → a machine-readable progress record: the SAME signals the text board renders
+// (state, elapsed, phase, output volume, tokens/cost, freshness, optional output tail).
+// tokens/cost prefer the round-scoped live fields and fall back to the cumulative ones, so
+// a model between rounds still shows what it has consumed so far.
+function watchModelJSON(m, linesN) {
+  return {
+    label: m.label,
+    vendor: vendorOf(m.label),
+    state: m.state,
+    elapsed_s: m.elapsed_s ?? null,
+    phase_label: m.phase_label || null,
+    last_event: m.last_event || null,
+    error: m.error || null,
+    stdout_bytes: m.stdout_bytes || 0,
+    tokens: m.tokens || ((m.cum_tokens && ((m.cum_tokens.input || 0) + (m.cum_tokens.output || 0) > 0)) ? m.cum_tokens : null),
+    cost_usd: (m.cost_usd != null) ? m.cost_usd : (m.cum_cost_usd || null),
+    updated_at: m.updated_at || null,
+    ...(linesN > 0 ? { tail: statusTailLines(m, linesN) } : {}),
+  };
+}
+
+// How many lines of each agent's live output to show under it — the "what is it reasoning"
+// view. 0 = compact. Flag wins; else the persistent panel.watch_lines setting.
+function watchLinesN(flags) {
+  return flags.lines != null ? flags.lines : (loadPanelConfig().watch_lines || 0);
+}
+
+// The --watch board as one snapshot object — the single source for BOTH renderers: the
+// text board prints it, --watch --json emits it as a JSONL line per tick.
+function watchBoardSnapshot(flags) {
   const projects = flags.all ? statusProjects() : [{ name: basename(dirname(XM_ROOT)) || 'project', xmRoot: XM_ROOT }];
-  // How many lines of each agent's live output to show under it — the "what is it reasoning" view.
-  // 0 = compact (byte-count hint only). Flag wins; else the persistent panel.watch_lines setting.
-  const linesN = flags.lines != null ? flags.lines : (loadPanelConfig().watch_lines || 0);
-  const width = Math.max(24, (process.stdout.columns || 100) - 12);
-  const liveRuns = [];
-  let doneCount = 0, staleCount = 0;
+  const linesN = watchLinesN(flags);
+  const live = [];
+  let done = 0, stalled = 0;
   for (const p of projects) {
     for (const r of collectStatusRuns(p.xmRoot, 100)) {
-      if (r.live && r.phase !== 'done') liveRuns.push({ ...r, project: p.name });
-      else if (r.stale) staleCount++;
-      else doneCount++;
+      if (r.live && r.phase !== 'done') {
+        const models = (r.models || []).map((m) => watchModelJSON(m, linesN));
+        live.push({
+          project: p.name, kind: r.kind, run: r.run, source: r.source, title: r.title,
+          phase: r.phaseRaw || r.phase,
+          elapsed_s: Math.max(0, ...(r.models || []).map((m) => m.elapsed_s || 0)),
+          progress: { done: models.filter((m) => m.state === 'done' || m.state === 'failed').length, total: models.length },
+          models,
+        });
+      } else if (r.stale) stalled++;
+      else done++;
     }
   }
+  return { at: new Date().toISOString(), live, done, stalled, projects: projects.length };
+}
+
+// One run's detail as a snapshot (JSONL line per tick under `status <run> --watch --json`).
+// `found:false` = the run dir doesn't exist yet (a watcher may start before the run does).
+// done/stale drive the watch loop's end condition — a consumer needs the stream to END.
+function watchRunSnapshot(runArg, linesN = 0) {
+  const at = new Date().toISOString();
+  // panel + review namespaces share the status.json format; try both (see collectStatusRuns).
+  let reviewDir = join(PANEL_DIR, runArg);
+  if (!existsSync(reviewDir)) {
+    const injected = join(PANEL_DIR, '..', 'review', runArg);
+    if (existsSync(injected)) reviewDir = injected;
+  }
+  if (existsSync(reviewDir)) {
+    const st = readJSONSafe(join(reviewDir, 'status.json'));
+    const done = (st && st.phase === 'done') || existsSync(join(reviewDir, 'verdict.json'));
+    const t = st && Date.parse(st.updated_at || '');
+    // no status.json yet ≠ stalled — the run may not have flushed its first status; keep waiting.
+    const stale = !done && !!st && !(Number.isFinite(t) && (Date.now() - t) < STATUS_STALE_MS);
+    const models = ((st && st.models) || []).map((m) => watchModelJSON(m, linesN));
+    return {
+      at, run: runArg, kind: 'review', found: true,
+      phase: done ? 'done' : stale ? 'stalled' : (st ? st.phase : 'starting'), done, stale,
+      progress: { done: models.filter((m) => m.state === 'done' || m.state === 'failed').length, total: models.length },
+      totals: (st && st.totals) || null,
+      models,
+    };
+  }
+  const crossDir = join(PANEL_DIR, '..', 'cross', runArg);
+  if (existsSync(crossDir)) {
+    const row = statusRunRow({ kind: 'cross', run: runArg, dir: crossDir });
+    const models = (row.models || []).map((m) => watchModelJSON(m, 0)); // cross has no live tails
+    return {
+      at, run: runArg, kind: 'cross', found: true,
+      phase: row.phase, done: row.phase === 'done', stale: !!row.stale,
+      progress: { done: models.filter((m) => m.state === 'done' || m.state === 'failed').length, total: models.length },
+      totals: null,
+      models,
+    };
+  }
+  return { at, run: runArg, kind: null, found: false, phase: 'waiting', done: false, stale: false, progress: { done: 0, total: 0 }, models: [] };
+}
+
+// --watch board: NOT a history list — a live activity monitor answering "which project · which
+// command · which agent · doing what right now". Only in-progress runs are expanded (one line per
+// agent with its state + elapsed + current progress signals); finished/stalled runs collapse to a
+// footer count. Empty when nothing is running.
+function renderStatusWatch(flags) {
+  const snap = watchBoardSnapshot(flags);
+  const width = Math.max(24, (process.stdout.columns || 100) - 12);
   const clock = new Date().toTimeString().slice(0, 8);
-  console.log(`${C.bold}panel watch${C.reset} · ${liveRuns.length ? `${C.yellow}${liveRuns.length} live${C.reset}` : `${C.dim}0 live${C.reset}`} · ${C.dim}${clock}${C.reset}`);
-  if (!liveRuns.length) console.log(`\n${C.dim}(no active panels — a run appears here while it is in progress)${C.reset}`);
-  for (const r of liveRuns) {
-    const elapsed = Math.max(0, ...(r.models || []).map((m) => m.elapsed_s || 0));
-    const round = r.phaseRaw || r.phase;
-    console.log(`\n${C.bold}▸ ${r.project}${C.reset}  ${C.cyan}${r.source}${C.reset}  ${r.title || r.run}   ${C.dim}${round} · ${elapsed}s${C.reset}`);
-    for (const m of (r.models || [])) {
+  console.log(`${C.bold}panel watch${C.reset} · ${snap.live.length ? `${C.yellow}${snap.live.length} live${C.reset}` : `${C.dim}0 live${C.reset}`} · ${C.dim}${clock}${C.reset}`);
+  if (!snap.live.length) console.log(`\n${C.dim}(no active panels — a run appears here while it is in progress)${C.reset}`);
+  for (const r of snap.live) {
+    console.log(`\n${C.bold}▸ ${r.project}${C.reset}  ${C.cyan}${r.source}${C.reset}  ${r.title || r.run}   ${C.dim}${r.phase} · ${r.progress.done}/${r.progress.total} done · ${r.elapsed_s}s${C.reset}`);
+    for (const m of r.models) {
       const glyph = m.state === 'done' ? `${C.green}✓${C.reset} ` : m.state === 'failed' ? `${C.red}✗${C.reset} `
         : m.state === 'running' ? `${C.yellow}⏳${C.reset}` : `${C.dim}·${C.reset} `;
       const el = m.elapsed_s != null ? `${m.elapsed_s}s` : '';
       const hint = m.state === 'failed' ? `${C.red}${m.error || 'failed'}${C.reset}`
-        : m.state === 'running' ? `${C.dim}${statusActivityHint(m)}${C.reset}` : '';
-      console.log(`    ${glyph} ${vendorOf(m.label).padEnd(8)} ${C.dim}${el.padEnd(5)}${C.reset} ${hint}`);
+        : m.state === 'running' ? `${C.dim}${modelProgress(m).join(' · ')}${C.reset}` : '';
+      console.log(`    ${glyph} ${m.vendor.padEnd(8)} ${C.dim}${el.padEnd(5)}${C.reset} ${hint}`);
       // Content lines (opt-in via --lines N / panel.watch_lines): the tail of what this agent is
       // actually producing/reasoning, indented under it.
-      for (const line of statusTailLines(m, linesN)) {
+      for (const line of (m.tail || [])) {
         console.log(`        ${C.dim}│ ${line.slice(0, width)}${C.reset}`);
       }
     }
   }
-  console.log(`\n${C.dim}idle · ${doneCount} done · ${staleCount} stalled · ${projects.length} project${projects.length === 1 ? '' : 's'}${flags.all ? '' : ' (--all for every project)'}${C.reset}`);
+  console.log(`\n${C.dim}idle · ${snap.done} done · ${snap.stalled} stalled · ${snap.projects} project${snap.projects === 1 ? '' : 's'}${flags.all ? '' : ' (--all for every project)'}${C.reset}`);
 }
 
 // `xm panel status [run] [--json] [--watch]` — read run state straight from disk so an IN-PROGRESS
@@ -1261,23 +1371,46 @@ function renderStatusWatch(flags) {
 // runs with their phase and per-model state. A run id → that run's per-model live state plus each
 // model's latest stdout tail (what it is producing right now). Read-only; --watch polls live.
 function cmdStatus(pos, flags) {
-  if (flags.watch && !flags.json) {
+  if (flags.watch) {
     const ESC = String.fromCharCode(27);
     const everyMs = Math.max(1, flags.interval || 2) * 1000;
+    let iv = null;
+    const finish = (code) => { if (iv) clearInterval(iv); process.exit(code); };
     const tick = () => {
+      // --watch --json: machine-readable watch — one COMPACT JSON snapshot per tick (JSONL),
+      // no ANSI, no screen clears, so an agent/pipe consumer reads progress line by line.
+      if (flags.json) {
+        if (pos[0]) {
+          const snap = watchRunSnapshot(pos[0], watchLinesN(flags));
+          console.log(JSON.stringify(snap));
+          // A consumer loop needs the stream to END: exit 0 when the run completes, 1 when it
+          // stalled (dead process — no more progress will ever arrive).
+          if (snap.done || snap.stale) finish(snap.done ? 0 : 1);
+        } else {
+          console.log(JSON.stringify(watchBoardSnapshot(flags)));
+        }
+        return;
+      }
       if (process.stdout.isTTY) process.stdout.write(`${ESC}[2J${ESC}[3J${ESC}[H`); // clear scrollback + home
       // A run id → live-tail that run's detail; no run id → the cross-run activity board.
       if (pos[0]) {
         // Don't loop the red "run not found" error (renderStatusOnce sets exitCode) — a watched run
         // may simply not exist yet; show a clean waiting line until it appears.
-        const exists = existsSync(join(PANEL_DIR, pos[0])) || existsSync(join(PANEL_DIR, '..', 'cross', pos[0]));
-        if (exists) renderStatusOnce(pos, flags);
-        else console.log(`${C.dim}waiting for ${pos[0]} …${C.reset}`);
+        const snap = watchRunSnapshot(pos[0]);
+        if (snap.found) {
+          renderStatusOnce(pos, flags);
+          // Same end condition as the JSON path: a finished/stalled run stops the loop with its
+          // final frame on screen instead of re-rendering a terminal state forever.
+          if (snap.done || snap.stale) {
+            console.log(`${C.dim}run ${snap.done ? 'done' : 'stalled'} — watch ended${C.reset}`);
+            finish(snap.done ? 0 : 1);
+          }
+        } else console.log(`${C.dim}waiting for ${pos[0]} …${C.reset}`);
       } else renderStatusWatch(flags);
       console.log(`${C.dim}every ${everyMs / 1000}s · Ctrl-C to exit${C.reset}`);
     };
     tick();
-    const iv = setInterval(tick, everyMs); // NOT unref'd — the interval is what keeps the CLI alive
+    iv = setInterval(tick, everyMs); // NOT unref'd — the interval is what keeps the CLI alive
     process.on('SIGINT', () => { clearInterval(iv); process.stdout.write('\n'); process.exit(0); });
     return;
   }
@@ -1322,10 +1455,11 @@ function renderStatusOnce(pos, flags) {
     return;
   }
 
-  // A run id → detail.
+  // A run id → detail. Same three namespaces as collectStatusRuns (panel / review / cross).
   const panelDir = PANEL_DIR;
   const crossDir = join(PANEL_DIR, '..', 'cross');
   let dir = join(panelDir, runArg), kind = 'review';
+  if (!existsSync(dir)) dir = join(PANEL_DIR, '..', 'review', runArg);
   if (!existsSync(dir)) { dir = join(crossDir, runArg); kind = 'cross'; }
   if (!existsSync(dir)) { console.error(`${C.red}run not found: ${runArg}${C.reset}`); process.exitCode = 1; return; }
 
@@ -1350,7 +1484,10 @@ function renderStatusOnce(pos, flags) {
   const detailDone = st.phase === 'done' || existsSync(join(dir, 'verdict.json'));
   const t = Date.parse(st.updated_at || '');
   const stale = !detailDone && !(Number.isFinite(t) && (Date.now() - t) < STATUS_STALE_MS);
-  const phaseTxt = detailDone ? 'done' : stale ? `stalled · ${statusAge(st.updated_at)} ago (process gone — states below are frozen)` : st.phase;
+  // Round progress (n/N done) so a live detail header answers "how far along" at a glance.
+  const mTotal = (st.models || []).length;
+  const mDone = (st.models || []).filter((m) => m.state === 'done' || m.state === 'failed').length;
+  const phaseTxt = detailDone ? 'done' : stale ? `stalled · ${statusAge(st.updated_at)} ago (process gone — states below are frozen)` : `${st.phase} · ${mDone}/${mTotal} done`;
   const phaseColor = detailDone ? C.green : stale ? C.dim : C.yellow;
   console.log(`${C.bold}${runArg}${C.reset}  ${phaseColor}[${phaseTxt}]${C.reset}  ${st.target_title || ''}`);
   for (const m of (st.models || [])) {
