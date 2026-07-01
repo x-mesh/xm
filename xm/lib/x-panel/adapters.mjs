@@ -547,14 +547,22 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
  * generic cross-vendor deliberation (debate/council) where the answer is free-form
  * prose, not findings JSON. ok = process exited 0.
  */
-export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout = null, model = null } = {}) {
+export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null } = {}) {
   return new Promise((resolve) => {
+    // Observer-only progress events (same shapes as invokeProviderAsync's raw path:
+    // spawn/stdout/stderr/timeout/error/exit) so a cross-vendor caller can write a live
+    // status heartbeat. Never throws into the invocation.
+    const emit = (event) => {
+      if (!onEvent) return;
+      try { onEvent({ at: new Date().toISOString(), ...event }); } catch { /* observer only */ }
+    };
     const resolved = resolveCommand(name, prompt, model);
     if (!resolved) return resolve({ ok: false, output: '', error: `unknown provider: ${name}` });
     const [cmd, args] = resolved;
     let child;
     try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env }); }
     catch (e) { return resolve({ ok: false, output: '', error: String(e.message || e) }); }
+    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: cmd });
     let stdout = '', stderr = '';
     let settled = false;
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
@@ -563,12 +571,18 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
     // Idle-reset timeout: a vendor still streaming text keeps going; only true silence kills it.
     // `timedOut: true` marks this as a timeout/stall (not an exit code) so callers can decide NOT
     // to retry a hung provider by checking the FLAG, never by substring-matching the error text.
-    const guard = makeTimeoutGuard(timeout, maxTimeout, (error) => { child.kill('SIGKILL'); done({ ok: false, output: stdout, error, timedOut: true }); });
-    child.stdout.on('data', (d) => { guard.touch(); stdout += d; if (stdout.length > 16 * 1024 * 1024) stdout = stdout.slice(-16 * 1024 * 1024); });
-    child.stderr.on('data', (d) => { guard.touch(); stderr += d; if (stderr.length > 200_000) stderr = stderr.slice(-200_000); });
-    child.on('error', (e) => { guard.clear(); done({ ok: false, output: '', error: String(e.message || e) }); });
+    const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
+      emit({ type: 'timeout', provider: name, model, error, reason });
+      child.kill('SIGKILL');
+      done({ ok: false, output: stdout, error, timedOut: true });
+    });
+    child.stdout.on('data', (d) => { guard.touch(); stdout += d; if (stdout.length > 16 * 1024 * 1024) stdout = stdout.slice(-16 * 1024 * 1024); emit({ type: 'stdout', provider: name, model, bytes: Buffer.byteLength(d), text: d }); });
+    child.stderr.on('data', (d) => { guard.touch(); stderr += d; if (stderr.length > 200_000) stderr = stderr.slice(-200_000); emit({ type: 'stderr', provider: name, model, bytes: Buffer.byteLength(d), text: d }); });
+    child.on('error', (e) => { guard.clear(); const error = String(e.message || e); emit({ type: 'error', provider: name, model, error }); done({ ok: false, output: '', error }); });
     child.on('close', (code) => {
       guard.clear();
+      if (settled) return;
+      emit({ type: 'exit', provider: name, model, code });
       if (code !== 0) return done({ ok: false, output: stdout, error: `exit ${code}: ${stderr.trim().slice(0, 300)}` });
       const out = stdout.trim();
       // exit 0 but EMPTY stdout: a gateway CLI (cursor especially, also agy) can return

@@ -831,6 +831,58 @@ describe('panel status (staleness + project scope + --all)', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('watch ended');
   });
+
+  // ── cross heartbeat (A1): cross runs write a live status.json like review ──
+
+  test('cross writes a status.json heartbeat and marks it done at the end', () => {
+    const r = panelRaw(['cross', '--models', 'claude,codex', '--prompt', 'heartbeat probe', '--source', 'op:debate', '--json'], statusEnv());
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    const st = JSON.parse(readFileSync(join(SDIR, '.xm', 'cross', out.run, 'status.json'), 'utf8'));
+    expect(st.phase).toBe('done');
+    expect(st.source).toBe('op:debate');            // provenance available in the live file
+    expect(st.models.every((m) => m.state === 'done')).toBe(true);
+    expect(st.models[0].stdout_bytes).toBeGreaterThan(0); // provider output was observed live
+  });
+
+  test('a live cross heartbeat appears on the watch board with per-model progress + tails', () => {
+    const d = join(SDIR, '.xm', 'cross', 'panel-crosslive-fixture');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'status.json'), JSON.stringify({
+      run: 'panel-crosslive-fixture', kind: 'cross', source: 'op:council', title: 'live cross probe',
+      phase: 'running', updated_at: new Date().toISOString(),
+      models: [
+        { label: 'claude', state: 'done', elapsed_s: 20 },
+        { label: 'codex', state: 'running', elapsed_s: 33, stdout_bytes: 512,
+          stdout_tail: 'XXMARKER cross tail', updated_at: new Date().toISOString() },
+      ],
+    }));
+    const list = panelRaw(['status', '--json'], statusEnv());
+    const row = JSON.parse(list.stdout).find((x) => x.run === 'panel-crosslive-fixture');
+    expect(row.phase).toBe('running');
+    expect(row.source).toBe('op:council');           // source visible MID-run (was result.json-only)
+    expect(row.models.find((m) => m.label === 'codex').elapsed_s).toBe(33);
+    const w = spawnSync('node', [CLI, 'status', '--watch', '--json', '--lines', '1', '--interval', '1'],
+      { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 2500 });
+    const snap = JSON.parse(w.stdout.trim().split('\n')[0]);
+    const live = snap.live.find((x) => x.run === 'panel-crosslive-fixture');
+    expect(live.progress).toEqual({ done: 1, total: 2 });
+    expect(live.models.find((m) => m.label === 'codex').tail).toEqual(['XXMARKER cross tail']);
+  });
+
+  test('a cross heartbeat older than 30s marks the run stalled (review-grade staleness)', () => {
+    const d = join(SDIR, '.xm', 'cross', 'panel-crossstale-fixture');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'status.json'), JSON.stringify({
+      run: 'panel-crossstale-fixture', kind: 'cross', phase: 'running',
+      updated_at: '2020-01-01T00:00:00.000Z', // ancient heartbeat, but the dir mtime is NOW
+      models: [{ label: 'claude', state: 'running', elapsed_s: 5 }],
+    }));
+    const list = panelRaw(['status', '--json'], statusEnv());
+    const row = JSON.parse(list.stdout).find((x) => x.run === 'panel-crossstale-fixture');
+    expect(row.phase).toBe('stalled');               // updated_at rule wins over the mtime guess
+    expect(row.stale).toBe(true);
+  });
 });
 
 // ── integration: full panel flow via stubs ───────────────────────────
