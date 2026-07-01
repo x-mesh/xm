@@ -34,7 +34,11 @@ const BUILTIN = {
   claude: (prompt, model) => ['claude', ['-p', ...(model ? ['--model', model] : []), prompt]],
   // --sandbox read-only matches the streaming codex path: review/cross prompts never edit the repo.
   codex: (prompt, model) => ['codex', ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', ...(model ? ['--model', model] : []), prompt]],
-  agy: (prompt, model) => ['agy', ['-p', ...(model ? ['--model', model] : []), prompt]], // Antigravity CLI (formerly gemini)
+  // agy's -p/--print CONSUMES the next token as the prompt value, so --model must
+  // precede -p (unlike claude/codex whose -p is a boolean with a positional prompt).
+  // Wrong order (`-p --model X <prompt>`) makes -p eat "--model", dropping the real
+  // prompt → agy replies with a generic self-intro that fails JSON parsing.
+  agy: (prompt, model) => ['agy', [...(model ? ['--model', model] : []), '-p', prompt]], // Antigravity CLI (formerly gemini)
   cursor: (prompt, model) => ['cursor-agent', ['-p', '-f', ...(model ? ['--model', model] : []), prompt]], // -f bypasses workspace-trust
   kiro: (prompt, model) => {
     const m = normalizeKiroModel(model);
