@@ -716,30 +716,95 @@ async function cmdCross(pos, flags) {
   const run = runId(stamp());
   const dir = join(PANEL_DIR, '..', 'cross', run);
   ensureDir(dir);
-  const results = await Promise.all(usable.map(async (e) => {
-    let res = await invokeProviderText(e.name, prompt, { timeout: timeoutMs, model: e.model });
-    // One retry on a TRANSIENT failure (exit-0-empty / exit-N): cursor and other gateway CLIs
-    // intermittently return an empty/failed result that succeeds on a second try. Do NOT retry a
-    // timeout/stall — it already burned the full (600s+) window, so a retry just doubles the
-    // wall-clock for a hung provider with no new information. That case is flagged by `timedOut`
-    // (set by invokeProviderText's idle/cap guard), so we gate on the FLAG — never a substring of
-    // the error text, which used to over-match exit-0-empty/exit-N messages that merely mention
-    // "timeout" (e.g. `exit 0 but empty output: ...timed out...`). Retries are surfaced (L6).
-    if (!res.ok && !res.timedOut) {
-      console.error(`${C.yellow}⚠ ${e.label} failed (${res.error}) — retrying once${C.reset}`);
-      const retry = await invokeProviderText(e.name, prompt, { timeout: timeoutMs, model: e.model });
-      if (retry.ok) res = retry;
-      else res = { ...res, error: `${res.error} (retried once, still failed: ${retry.error})` };
-    }
-    const rec = { model: e.label, provider: e.name, ok: res.ok, output: res.output || '', error: res.error || null };
-    writeJSON(join(dir, `${safeLabel(e.label)}.json`), rec);
-    return rec;
-  }));
-  // Provenance + human title so the dashboard can show WHICH workflow ran this and WHAT it was
-  // about (not just a timestamp). Title is redacted before truncation (same rule as targetTitle):
-  // a caller may pass user text. Falls back to the prompt's first line when --title is omitted.
+  // Provenance + human title, hoisted BEFORE the run so the live status.json can name an
+  // in-progress run (not only a finished one). Title is redacted before truncation (same rule
+  // as targetTitle): a caller may pass user text. Falls back to the prompt's first line.
   const source = sourceTag(flags.source);
   const title = compactTitle(redactPanelText(flags.title || firstLine(prompt) || ''), 80);
+  // Live heartbeat — cross used to be a black box while running: no per-model state/elapsed/tail
+  // until each vendor's result file appeared. A review-style status.json (lighter: no rounds, no
+  // usage) is flushed on every provider event (throttled) plus a 2s tick, so status/--watch see
+  // cross progress under the same 30s staleness rule as review instead of the mtime guess.
+  const nowISO = () => new Date().toISOString();
+  const status = {
+    run, kind: 'cross', source, title, started_at: nowISO(), updated_at: nowISO(), phase: 'running',
+    timeout_s: timeoutS, prompt_chars: prompt.length,
+    models: usable.map((e) => ({
+      label: e.label, provider: e.name, model: e.model,
+      state: 'running', elapsed_s: 0, started_at: nowISO(), updated_at: nowISO(),
+      last_event: 'pending', stdout_bytes: 0, stderr_bytes: 0, stdout_tail: '', stderr_tail: '',
+      retried: false, error: null,
+    })),
+  };
+  let lastFlushMs = 0;
+  const flushStatus = ({ force = false } = {}) => {
+    const t = Date.now();
+    if (!force && t - lastFlushMs < 500) return;
+    lastFlushMs = t;
+    status.updated_at = nowISO();
+    try { writeJSON(join(dir, 'status.json'), status); } catch { /* best-effort */ }
+  };
+  const t0 = Date.now();
+  const hb = setInterval(() => {
+    const el = Math.round((Date.now() - t0) / 1000);
+    status.models.forEach((m) => { if (m.state === 'running') m.elapsed_s = el; });
+    flushStatus();
+  }, 2000);
+  if (hb.unref) hb.unref();
+  // Per-provider progress → status.json (redacted + tail-bounded, same rules as review).
+  const onProviderEvent = (m) => (ev) => {
+    m.updated_at = nowISO();
+    if (ev.type === 'spawn') { m.pid = ev.pid; m.last_event = 'spawned'; }
+    else if (ev.type === 'stdout' || ev.type === 'stderr') {
+      const text = redactPanelText(ev.text || '');
+      m[`${ev.type}_bytes`] = (m[`${ev.type}_bytes`] || 0) + (ev.bytes || Buffer.byteLength(text));
+      if (text) m[`${ev.type}_tail`] = tailText(`${m[`${ev.type}_tail`] || ''}${text}`, 4000);
+      m.last_event = `${ev.type} +${ev.bytes || 0} bytes`;
+    } else if (ev.type === 'timeout') { m.last_event = 'timeout'; m.error = ev.error || 'timeout'; }
+    else if (ev.type === 'error') { m.last_event = 'process error'; m.error = ev.error || 'process error'; }
+    else if (ev.type === 'exit') { m.last_event = ev.code === 0 ? 'process exited' : `exit ${ev.code}`; }
+    flushStatus({ force: ev.type !== 'stdout' && ev.type !== 'stderr' });
+  };
+  flushStatus({ force: true });
+
+  let results;
+  try {
+    results = await Promise.all(usable.map(async (e, i) => {
+      const m = status.models[i];
+      const onEvent = onProviderEvent(m);
+      let res = await invokeProviderText(e.name, prompt, { timeout: timeoutMs, model: e.model, onEvent });
+      // One retry on a TRANSIENT failure (exit-0-empty / exit-N): cursor and other gateway CLIs
+      // intermittently return an empty/failed result that succeeds on a second try. Do NOT retry a
+      // timeout/stall — it already burned the full (600s+) window, so a retry just doubles the
+      // wall-clock for a hung provider with no new information. That case is flagged by `timedOut`
+      // (set by invokeProviderText's idle/cap guard), so we gate on the FLAG — never a substring of
+      // the error text, which used to over-match exit-0-empty/exit-N messages that merely mention
+      // "timeout" (e.g. `exit 0 but empty output: ...timed out...`). Retries are surfaced (L6).
+      if (!res.ok && !res.timedOut) {
+        console.error(`${C.yellow}⚠ ${e.label} failed (${res.error}) — retrying once${C.reset}`);
+        m.retried = true;
+        m.last_event = 'retrying';
+        m.error = null;
+        flushStatus({ force: true });
+        const retry = await invokeProviderText(e.name, prompt, { timeout: timeoutMs, model: e.model, onEvent });
+        if (retry.ok) res = retry;
+        else res = { ...res, error: `${res.error} (retried once, still failed: ${retry.error})` };
+      }
+      m.state = res.ok ? 'done' : 'failed';
+      m.error = res.ok ? null : (res.error || m.error);
+      m.elapsed_s = Math.round((Date.now() - t0) / 1000);
+      m.updated_at = nowISO();
+      m.last_event = res.ok ? 'done' : 'failed';
+      flushStatus({ force: true });
+      const rec = { model: e.label, provider: e.name, ok: res.ok, output: res.output || '', error: res.error || null };
+      writeJSON(join(dir, `${safeLabel(e.label)}.json`), rec);
+      return rec;
+    }));
+  } finally {
+    clearInterval(hb);
+  }
+  status.phase = 'done';
+  flushStatus({ force: true });
   const record = { run, created_at: new Date().toISOString(), source, title, models: usable.map((e) => e.label), prompt_chars: prompt.length, results };
   writeJSON(join(dir, 'result.json'), record);
   if (flags.json) console.log(JSON.stringify(record, null, 2));
@@ -1044,7 +1109,9 @@ Commands:
                                 Generic cross-vendor invocation: run ONE prompt across N vendors,
                                 return each vendor's RAW text output (no findings/merge). For
                                 deliberation (debate/council) — caller does the synthesis.
-                                Output under .xm/cross/<run>/.
+                                Output under .xm/cross/<run>/. Writes a live status.json
+                                heartbeat (~2s) while running, so status/--watch show per-model
+                                state · elapsed · output tail for cross runs too.
                                 --source tags the calling workflow (e.g. op:debate, build:consensus,
                                 solver:hypothesize, eval:judge) and --title names the run; both
                                 surface in the dashboard panel list so runs are identifiable.
@@ -1089,8 +1156,8 @@ Output: .xm/panel/<run>/{<model>.r1.json, <model>.r2.json, verdict.json}
 
 function readJSONSafe(p) { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } }
 
-const STATUS_STALE_MS = 30_000;       // review runs flush status.json ~every 2s → 30s = dead
-const CROSS_STALE_MS = 15 * 60_000;   // cross has no heartbeat; a slow multi-vendor run may take minutes
+const STATUS_STALE_MS = 30_000;       // review + cross flush status.json ~every 2s → 30s = dead
+const CROSS_STALE_MS = 15 * 60_000;   // LEGACY cross runs only (pre-heartbeat, no status.json): mtime guess
 
 // Human-readable age of an ISO timestamp ("12s" / "35m" / "6h" / "2d"), or null if unparseable.
 function statusAge(iso) {
@@ -1110,25 +1177,38 @@ function statusAge(iso) {
 function statusRunRow(entry) {
   if (entry.kind === 'cross') {
     const res = readJSONSafe(join(entry.dir, 'result.json'));
+    const st = readJSONSafe(join(entry.dir, 'status.json'));
+    const done = !!res || !!(st && st.phase === 'done');
     let models;
     if (res && res.results) models = res.results.map((v) => ({ label: v.model, state: v.ok === false ? 'failed' : 'done', error: v.error || null }));
     else if (res) models = (res.models || []).map((l) => ({ label: l, state: 'done' }));
-    else models = readdirSync(entry.dir).filter((f) => f.endsWith('.json') && f !== 'result.json').map((f) => {
+    // Live heartbeat: cross writes a review-style status.json while running — full model
+    // objects (state/elapsed/tails) so the --watch board renders cross like a review run.
+    else if (st) models = st.models || [];
+    else models = readdirSync(entry.dir).filter((f) => f.endsWith('.json') && f !== 'result.json' && f !== 'status.json').map((f) => {
       // a present per-vendor file means THAT vendor already finished — read its ok, don't call it "running".
       const v = readJSONSafe(join(entry.dir, f));
       return { label: (v && v.model) || f.replace(/\.json$/, ''), state: v ? (v.ok === false ? 'failed' : 'done') : 'running', error: (v && v.error) || null };
     });
-    // cross has no status.json/updated_at; use the run dir's mtime for staleness of an unfinished run.
-    // A multi-vendor cross can legitimately run for MINUTES (slow vendors), so the window is generous
-    // — a much longer bound than a review's 30s heartbeat, or a live cross vanishes from --watch.
     let live = false, age = null;
-    if (!res) {
-      const mt = (() => { try { return statSync(entry.dir).mtimeMs; } catch { return 0; } })();
-      if (mt > 0) { live = (Date.now() - mt) < CROSS_STALE_MS; age = statusAge(new Date(mt).toISOString()); }
-      // mt === 0 (stat failed) → leave live=false, age=null; never age off the epoch ("56 years ago").
+    if (!done) {
+      if (st) {
+        // heartbeat present → the same 30s freshness rule as review (status.json ticks ~2s).
+        const t = Date.parse(st.updated_at || '');
+        live = Number.isFinite(t) && (Date.now() - t) < STATUS_STALE_MS;
+        age = statusAge(st.updated_at);
+      } else {
+        // legacy runs (pre-heartbeat) have only the dir mtime; keep the generous window — a
+        // multi-vendor cross can legitimately run for minutes between file writes.
+        const mt = (() => { try { return statSync(entry.dir).mtimeMs; } catch { return 0; } })();
+        if (mt > 0) { live = (Date.now() - mt) < CROSS_STALE_MS; age = statusAge(new Date(mt).toISOString()); }
+        // mt === 0 (stat failed) → leave live=false, age=null; never age off the epoch ("56 years ago").
+      }
     }
-    return { kind: 'cross', run: entry.run, source: (res && res.source) || 'cross', title: (res && res.title) || null,
-      phase: res ? 'done' : live ? 'running' : 'stalled', live, stale: !res && !live, age, phaseRaw: null, models };
+    return { kind: 'cross', run: entry.run, source: (res && res.source) || (st && st.source) || 'cross',
+      title: (res && res.title) || (st && st.title) || null,
+      phase: done ? 'done' : live ? 'running' : 'stalled', live, stale: !done && !live, age,
+      phaseRaw: st ? st.phase : null, models };
   }
   const st = readJSONSafe(join(entry.dir, 'status.json'));
   const done = (st && st.phase === 'done') || existsSync(join(entry.dir, 'verdict.json'));
@@ -1325,7 +1405,7 @@ function watchRunSnapshot(runArg, linesN = 0) {
   const crossDir = join(PANEL_DIR, '..', 'cross', runArg);
   if (existsSync(crossDir)) {
     const row = statusRunRow({ kind: 'cross', run: runArg, dir: crossDir });
-    const models = (row.models || []).map((m) => watchModelJSON(m, 0)); // cross has no live tails
+    const models = (row.models || []).map((m) => watchModelJSON(m, linesN)); // tails exist while the heartbeat status.json is live
     return {
       at, run: runArg, kind: 'cross', found: true,
       phase: row.phase, done: row.phase === 'done', stale: !!row.stale,
@@ -1465,14 +1545,30 @@ function renderStatusOnce(pos, flags) {
 
   if (kind === 'cross') {
     const res = readJSONSafe(join(dir, 'result.json'));
-    const results = res ? res.results
-      : readdirSync(dir).filter((f) => f.endsWith('.json') && f !== 'result.json').map((f) => readJSONSafe(join(dir, f))).filter(Boolean);
-    if (flags.json) { console.log(JSON.stringify(res || { run: runArg, phase: 'running', results }, null, 2)); return; }
-    console.log(`${C.bold}${runArg}${C.reset}  ${C.cyan}cross/${(res && res.source) || 'cross'}${C.reset}  ${C.dim}[${res ? 'done' : 'running'}]${C.reset}  ${(res && res.title) || ''}`);
-    for (const v of (results || [])) {
-      console.log(`\n${C.bold}## ${v.model}${C.reset}${v.ok === false ? ` ${C.red}(${v.error})${C.reset}` : ''}`);
-      console.log((v.output || '').slice(-1200).trim() || `${C.dim}(no output yet)${C.reset}`);
+    const stc = readJSONSafe(join(dir, 'status.json'));
+    if (flags.json) {
+      if (res) { console.log(JSON.stringify(res, null, 2)); return; }
+      const results = readdirSync(dir).filter((f) => f.endsWith('.json') && f !== 'result.json' && f !== 'status.json').map((f) => readJSONSafe(join(dir, f))).filter(Boolean);
+      console.log(JSON.stringify({ run: runArg, phase: stc ? stc.phase : 'running', status: stc, results }, null, 2));
+      return;
     }
+    console.log(`${C.bold}${runArg}${C.reset}  ${C.cyan}cross/${(res && res.source) || (stc && stc.source) || 'cross'}${C.reset}  ${C.dim}[${res ? 'done' : 'running'}]${C.reset}  ${(res && res.title) || (stc && stc.title) || ''}`);
+    if (res) {
+      for (const v of (res.results || [])) {
+        console.log(`\n${C.bold}## ${v.model}${C.reset}${v.ok === false ? ` ${C.red}(${v.error})${C.reset}` : ''}`);
+        console.log((v.output || '').slice(-1200).trim() || `${C.dim}(no output)${C.reset}`);
+      }
+      return;
+    }
+    // In progress with a heartbeat → the same review-style per-model live view (state,
+    // elapsed, last event, live stdout tail) instead of "(no output yet)" placeholders.
+    for (const m of ((stc && stc.models) || [])) {
+      const tail = stripAnsiCli(m.stdout_tail || m.stderr_tail || '').replace(/\s+/g, ' ').trim().slice(-200);
+      const err = m.error ? ` ${C.red}${m.error}${C.reset}` : '';
+      console.log(`\n${C.bold}${m.label}${C.reset} ${m.state}${m.elapsed_s != null ? ` (${m.elapsed_s}s)` : ''}${err}`);
+      console.log(`  ${C.dim}${m.last_event || ''}${C.reset} ${tail}`);
+    }
+    if (!stc) console.log(`${C.dim}(legacy run — no live status; results appear per vendor as they finish)${C.reset}`);
     return;
   }
 
