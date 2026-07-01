@@ -18,6 +18,24 @@ import { CODEX_AGENTS_MAX_BYTES } from '../types.mjs';
 import { xmName } from '../util/flatten-namespace.mjs';
 import { expandPaths } from '../util/expand-paths.mjs';
 
+function codexDescriptionScalar(value, fallback) {
+  const text = String(value || fallback || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const clipped = text.length > 240 ? `${text.slice(0, 237).trimEnd()}...` : text;
+  const plain = clipped
+    .replace(/[:#\[\]{},&*!|>'"%@`\\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return plain || String(fallback || 'xm prompt');
+}
+
+function escapeCodexPromptPlaceholders(value) {
+  // xm prompts use $ARGUMENTS, but source docs also contain SQL bind vars and
+  // dollar amounts like $1 and $5.00. Escape numeric forms as literals.
+  return String(value || '').replace(/\$(?!ARGUMENTS\b)/g, '$$$$');
+}
+
 /**
  * Build the AGENTS.md xm block body (without BEGIN/END markers — merge.mjs adds those).
  * @param {import('../types.mjs').SkillIR[]} skills
@@ -53,14 +71,15 @@ export function renderCodexIndex(skills) {
  * @returns {string}
  */
 export function renderCodexPrompt(skill, ctx) {
-  const description = (skill.description || `xm ${xmName(skill.pluginName, skill.skillName)}`).trim();
+  const slug = xmName(skill.pluginName, skill.skillName);
+  const description = codexDescriptionScalar(skill.description, `xm ${slug}`);
   const head = [
     '---',
-    `description: ${JSON.stringify(description)}`,
+    `description: ${description}`,
     '---',
     '',
   ].join('\n');
-  let body = expandPaths(skill.body, { target: 'codex', scope: ctx.scope });
+  let body = escapeCodexPromptPlaceholders(expandPaths(skill.body, { target: 'codex', scope: ctx.scope }));
   // Inline references: Codex does not auto-fetch sibling files, so we append
   // each reference body as a sub-section, separated by `[See: <name>]`.
   if (skill.references.length > 0) {
@@ -68,7 +87,7 @@ export function renderCodexPrompt(skill, ctx) {
     for (const ref of skill.references) {
       body += '---\n';
       body += `<!-- [See: ${ref.name}] -->\n\n`;
-      body += expandPaths(ref.body, { target: 'codex', scope: ctx.scope }).trimEnd() + '\n\n';
+      body += escapeCodexPromptPlaceholders(expandPaths(ref.body, { target: 'codex', scope: ctx.scope })).trimEnd() + '\n\n';
     }
   }
   return head + body.trimEnd() + '\n';
