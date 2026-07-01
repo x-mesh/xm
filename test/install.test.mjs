@@ -131,6 +131,27 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     const r = run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
     expect(statSync(join(tmp, 'AGENTS.md')).size).toBeLessThanOrEqual(16 * 1024);
     expect(readdirSync(join(tmp, '.codex', 'prompts')).length).toBe(EXPECTED_SKILL_COUNT);
+    const panelPrompt = readFileSync(join(tmp, '.codex', 'prompts', 'xm-panel.md'), 'utf8');
+    expect(panelPrompt).toMatch(/^---\ndescription: Cross-vendor entry point \+ adversarial panel engine\./);
+    expect(panelPrompt).not.toMatch(/^description: "/m);
+    expect(panelPrompt).toContain('XPANEL_CLI=$$(');
+    expect(panelPrompt).toContain('node "$$XPANEL_CLI"');
+    const reviewPrompt = readFileSync(join(tmp, '.codex', 'prompts', 'xm-review.md'), 'utf8');
+    expect(reviewPrompt).toContain('User provided: $ARGUMENTS');
+    expect(reviewPrompt).toContain('id = $$1');
+    const opPrompt = readFileSync(join(tmp, '.codex', 'prompts', 'xm-op.md'), 'utf8');
+    expect(opPrompt).toContain('Estimated cost: ~$$3.24');
+    const tracePrompt = readFileSync(join(tmp, '.codex', 'prompts', 'xm-trace.md'), 'utf8');
+    expect(tracePrompt).toContain('Budget: $$0.42 / $$5.00');
+    expect(reviewPrompt).toContain('BRANCH=$$(git branch --show-current');
+    const rawDollarHits = readdirSync(join(tmp, '.codex', 'prompts'))
+      .filter((file) => file.endsWith('.md'))
+      .flatMap((file) => {
+        const lines = readFileSync(join(tmp, '.codex', 'prompts', file), 'utf8').split(/\r?\n/);
+        return lines.flatMap((line, idx) => [...line.matchAll(/(?<!\$)\$(?!ARGUMENTS\b|\$)/g)]
+          .map((match) => `${file}:${idx + 1}:${match.index + 1}:${line.trim()}`));
+      });
+    expect(rawDollarHits).toEqual([]);
     expect(r.stdout).toContain('codex features enable hooks');
     expect(r.stdout).toContain('[features] hooks = true');
     expect(r.stdout).not.toContain('codex config set features.codex_hooks true');

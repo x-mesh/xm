@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# local_xm — run the xm CLI against this repo's source (no build/install step).
+# resolve_lib() in xm/scripts/xm picks $PWD when x-build/lib and xm/lib both
+# exist, so running from the repo root already resolves every plugin lib to
+# its local source (x-panel/lib, x-dashboard/lib, ...).
+set -euo pipefail
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/xm/scripts/xm" "$@"
