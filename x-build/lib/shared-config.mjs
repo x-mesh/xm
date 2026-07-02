@@ -216,6 +216,40 @@ function getNestedKey(obj, key) {
   return key.split('.').reduce((o, k) => o?.[k], obj);
 }
 
+// Loads cost-engine for role/profile data. Relative path resolves identically
+// in both trees (x-build/lib/ and the xm/lib/ bundle); dynamic import avoids a
+// static shared-config → cost-engine → config-loader cycle.
+function loadCostEngine() {
+  return import('./x-build/cost-engine.mjs');
+}
+
+/**
+ * expandPhaseAssignments — expand "slot=model" phase assignments into
+ * model_overrides entries. Pure UX sugar: no new config key.
+ * model "default" removes the slot's role keys (back to profile default).
+ */
+export function expandPhaseAssignments(assignments, phaseGroups, existingOverrides) {
+  const MODELS = new Set(['haiku', 'sonnet', 'opus', 'default']);
+  const overrides = { ...(existingOverrides || {}) };
+  const errors = [];
+  for (const a of assignments) {
+    const [slot, model] = String(a).split('=').map(s => s?.trim());
+    if (!phaseGroups[slot]) {
+      errors.push(`알 수 없는 phase: "${slot}" — plan, implement, review 중 선택`);
+      continue;
+    }
+    if (!MODELS.has(model)) {
+      errors.push(`모델: haiku, sonnet, opus, default 중 선택 ("${a}")`);
+      continue;
+    }
+    for (const role of phaseGroups[slot]) {
+      if (model === 'default') delete overrides[role];
+      else overrides[role] = model;
+    }
+  }
+  return { overrides, errors };
+}
+
 /**
  * cmdConfig — Interactive and CLI config management.
  *
@@ -224,6 +258,7 @@ function getNestedKey(obj, key) {
  *   cmdConfig(['show'])              → show current config
  *   cmdConfig(['set', key, value])   → set a key
  *   cmdConfig(['get', key])          → get a key
+ *   cmdConfig(['phase', ...])        → phase-based model presets (sugar over model_overrides)
  *   cmdConfig(['reset'])             → reset to defaults
  *
  * Flags: --local (project .xm/), --global (~/.xm/)
@@ -236,10 +271,61 @@ export async function cmdConfig(args = [], flags = {}) {
   if (sub === 'show') return showConfig(flags);
   if (sub === 'get' && args[1]) return getConfig(args[1], flags);
   if (sub === 'set' && args[1] != null && args[2] != null) return setConfig(args[1], args[2], flags);
+  if (sub === 'phase') return configPhase(args.slice(1), flags);
   if (sub === 'reset') return resetConfig(flags);
 
   console.log(`${C.red}Unknown config command: ${sub}${C.reset}`);
-  console.log(`Usage: config [show|set <key> <value>|get <key>|reset]`);
+  console.log(`Usage: config [show|set <key> <value>|get <key>|phase [plan=M implement=M review=M]|reset]`);
+}
+
+const PHASE_LABELS = { plan: '설계 (plan)', implement: '구현 (implement)', review: '리뷰 (review)' };
+
+function printPhaseMatrix(ce, cfg) {
+  const profile = ce.resolveProfileName(cfg.model_profile);
+  const overrides = cfg.model_overrides || {};
+  console.log(`\n${C.bold}⚙️  페이즈별 모델${C.reset} ${C.dim}(profile: ${profile})${C.reset}\n`);
+  for (const [slot, roles] of Object.entries(ce.PHASE_ROLE_GROUPS)) {
+    console.log(`  ${C.bold}${PHASE_LABELS[slot] || slot}${C.reset}`);
+    for (const role of roles) {
+      const model = ce.getModelForRole(role, 'medium', cfg);
+      const src = overrides[role] ? `${C.yellow}override${C.reset}` : `${C.dim}profile${C.reset}`;
+      console.log(`    ${role.padEnd(14)} ${C.cyan}${model.padEnd(7)}${C.reset} ${src}`);
+    }
+  }
+  console.log(`\n  ${C.dim}설정: xm config phase plan=opus implement=sonnet review=opus${C.reset}`);
+  console.log(`  ${C.dim}복원: xm config phase <slot>=default  (프로필 기본값으로)${C.reset}\n`);
+}
+
+function writePhaseAssignments(ce, assignments, scope) {
+  const root = resolveSharedRoot(scope);
+  const configPath = join(root, 'config.json');
+  const existing = readJSON(configPath) ?? {};
+  const { overrides, errors } = expandPhaseAssignments(assignments, ce.PHASE_ROLE_GROUPS, existing.model_overrides || {});
+  if (errors.length) {
+    for (const e of errors) console.log(`${C.red}${e}${C.reset}`);
+    process.exitCode = 1;
+    return false;
+  }
+  existing.model_overrides = overrides;
+  writeJSONAtomic(configPath, existing);
+
+  const scopeLabel = scope.global ? 'global' : 'local';
+  for (const a of assignments) {
+    const [slot, model] = a.split('=').map(s => s.trim());
+    const roles = ce.PHASE_ROLE_GROUPS[slot].join(', ');
+    const label = model === 'default' ? '프로필 기본값' : model;
+    console.log(`${C.green}✅${C.reset} ${PHASE_LABELS[slot] || slot} → ${C.cyan}${label}${C.reset} ${C.dim}(${roles}) (${scopeLabel})${C.reset}`);
+  }
+  return true;
+}
+
+async function configPhase(assignments, flags) {
+  const ce = await loadCostEngine();
+  if (!assignments.length) {
+    printPhaseMatrix(ce, readSharedConfig(flags.local ? {} : flags));
+    return;
+  }
+  writePhaseAssignments(ce, assignments, resolveScope('model_overrides', flags));
 }
 
 function showConfig(flags) {
@@ -344,6 +430,7 @@ async function interactiveConfig(flags) {
   console.log(`  ${C.bold}3)${C.reset} 에이전트 수     병렬 에이전트 수 (1-10)`);
   console.log(`  ${C.bold}4)${C.reset} 모드            developer / normal`);
   console.log(`  ${C.bold}5)${C.reset} 역할별 오버라이드`);
+  console.log(`  ${C.bold}6)${C.reset} 페이즈별 모델     설계/구현/리뷰 단위 일괄 지정`);
   console.log(`  ${C.bold}0)${C.reset} 나가기\n`);
 
   try {
@@ -354,9 +441,29 @@ async function interactiveConfig(flags) {
     else if (choice === '3') await configAgentCount(rl, config);
     else if (choice === '4') await configMode(rl, config);
     else if (choice === '5') await configOverrides(rl, config);
+    else if (choice === '6') await configPhaseModels(rl, config);
   } finally {
     rl.close();
   }
+}
+
+async function configPhaseModels(rl, config) {
+  const ce = await loadCostEngine();
+  printPhaseMatrix(ce, config);
+
+  const SHORT_LABELS = { plan: '설계', implement: '구현', review: '리뷰' };
+  const choices = { '1': 'default', '2': 'haiku', '3': 'sonnet', '4': 'opus' };
+  const assignments = [];
+  for (const slot of Object.keys(ce.PHASE_ROLE_GROUPS)) {
+    const input = (await ask(rl, `  ${SHORT_LABELS[slot]} 모델 [1) 프로필 기본값 2) haiku 3) sonnet 4) opus, Enter=유지]: `)).trim();
+    if (!input) continue;
+    const model = choices[input];
+    if (!model) { console.log(`  ${C.red}1-4 또는 Enter를 입력하세요${C.reset}`); continue; }
+    assignments.push(`${slot}=${model}`);
+  }
+
+  if (!assignments.length) { console.log(`  ${C.dim}변경 없음${C.reset}`); return; }
+  writePhaseAssignments(ce, assignments, { global: true });
 }
 
 async function configProfile(rl, config) {
@@ -423,14 +530,15 @@ async function configMode(rl, config) {
 }
 
 async function configOverrides(rl, config) {
-  const roles = ['architect', 'reviewer', 'security', 'executor', 'designer', 'debugger', 'explorer', 'writer'];
+  const ce = await loadCostEngine();
+  const roles = Object.keys(ce.MODEL_PROFILES.default);
   const models = ['haiku', 'sonnet', 'opus'];
   const current = config.model_overrides || {};
 
   console.log(`\n  역할별 모델 오버라이드 (프로필 위에 적용):\n`);
   for (const role of roles) {
     const override = current[role];
-    console.log(`  ${role.padEnd(12)} ${override ? `${C.yellow}${override}${C.reset}` : `${C.dim}(프로필 기본)${C.reset}`}`);
+    console.log(`  ${role.padEnd(14)} ${override ? `${C.yellow}${override}${C.reset}` : `${C.dim}(프로필 기본)${C.reset}`}`);
   }
 
   console.log(`\n  형식: role=model (예: architect=opus)  /  clear로 초기화  /  Enter로 나가기\n`);

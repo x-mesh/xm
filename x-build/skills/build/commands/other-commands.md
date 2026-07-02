@@ -8,7 +8,7 @@ When `research` is invoked:
 
 1. Run: `$XMB research [goal]`
 2. Parse JSON output (`action: "research"`)
-3. Spawn 4 agents (fan-out) with `run_in_background: true`:
+3. Spawn 4 agents (fan-out) with `run_in_background: true`, one per `agents_spec[]` entry, using each entry's `role` and `model` (never hardcode the model):
 
 | Agent | Perspective | Prompt Focus |
 |-------|------------|--------------|

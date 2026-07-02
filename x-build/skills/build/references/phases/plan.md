@@ -32,7 +32,7 @@ Determine PRD size based on task count expectation or `--size` flag:
 
 When generating the PRD, include only the sections for the determined tier. The delegate prompt should specify: "Generate PRD with {tier} tier — include only sections: {section list}."
 
-delegate (foreground, opus recommended):
+delegate (foreground, `model` = `prd_writer.model` from the `plan`/`next --json` output — never hardcode):
 ```
 "## PRD Generation: {project_name}
 {IF mode === 'normal': '언어: 한국어로 작성. 섹션 제목은 영문 유지, 내용은 한국어. 기술 용어는 원어 유지.'}
@@ -144,7 +144,7 @@ When the user selects "Consensus review", 4 agents review the PRD from multiple 
 $XMB consensus [--round N] [--max-rounds N]
 ```
 
-Read `agents`, `prd`, `round` from the output JSON and perform the following.
+Read `agents`, `prd`, `round` from the output JSON and perform the following. Spawn each agent with its `agents[n].model` from the JSON — models are resolved from `model_profile`/`model_overrides`, never hardcode. (`--cross-vendor` replaces the executor per references/cross-vendor-consensus.md but keeps the same roles.)
 
 **Round 1: broadcast (4 agents)**
 ```
