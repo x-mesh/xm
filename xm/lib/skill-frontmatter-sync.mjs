@@ -60,16 +60,22 @@ const MODEL_PROFILES = {
     architect: 'sonnet', reviewer: 'sonnet', security: 'sonnet',
     executor:  'sonnet', designer:  'sonnet', debugger: 'sonnet',
     explorer:  'haiku',  writer:    'haiku',
+    'deep-executor': 'sonnet', planner: 'sonnet', critic: 'sonnet',
+    verifier: 'sonnet', researcher: 'haiku',
   },
   default: {
     architect: 'opus', reviewer: 'opus',   security: 'opus',
     executor:  'opus', designer:  'sonnet', debugger: 'opus',
     explorer:  'sonnet', writer:  'haiku',
+    'deep-executor': 'opus', planner: 'opus', critic: 'opus',
+    verifier: 'sonnet', researcher: 'sonnet',
   },
   max: {
     architect: 'opus', reviewer: 'opus', security: 'opus',
     executor:  'opus', designer:  'opus', debugger: 'opus',
     explorer:  'sonnet', writer:  'haiku',
+    'deep-executor': 'opus', planner: 'opus', critic: 'opus',
+    verifier: 'opus', researcher: 'sonnet',
   },
 };
 

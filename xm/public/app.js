@@ -2429,8 +2429,9 @@ const CFG_PANEL_MODEL_HINTS = {
   cursor: ['auto', 'claude-sonnet-4-6', 'claude-opus-4-8', 'gpt-5.5', 'gpt-5.4', 'gemini-3.5-flash', 'gemini-3.1-pro-preview'],
   kiro: ['auto', 'claude-sonnet-4.6', 'claude-opus-4.8', 'claude-opus-4.7', 'claude-haiku-4.5', 'deepseek-3.2'],
 };
-const CFG_ROLE_NAMES = ['architect', 'reviewer', 'security', 'executor', 'designer', 'debugger', 'explorer', 'writer', 'planner', 'critic', 'verifier', 'documenter'];
+const CFG_ROLE_NAMES = ['architect', 'planner', 'critic', 'security', 'researcher', 'executor', 'deep-executor', 'designer', 'debugger', 'reviewer', 'verifier', 'explorer', 'writer'];
 const CFG_ROLE_MODELS = ['haiku', 'sonnet', 'opus'];
+let _configRouting = null; // resolved role→model matrix from /config/model-routing (null when unavailable)
 
 function renderConfig() {
   _configTier = 'project';
@@ -2442,10 +2443,11 @@ function renderConfig() {
 async function loadConfigEditor() {
   const app = document.getElementById('app');
   const seq = ++_configLoadSeq;
-  const [cfg, prov, modelCat] = await Promise.all([
+  const [cfg, prov, modelCat, routing] = await Promise.all([
     fetchJSON(apiUrl(`/config?tier=${_configTier}`)),
     fetchJSON(apiUrl('/panel/providers')),
     fetchJSON(apiUrl('/panel/models')),
+    fetchJSON(apiUrl(`/config/model-routing?tier=${_configTier}`)),
   ]);
   // A newer load (tier switch / reload) started while we awaited — discard this one.
   if (seq !== _configLoadSeq || getPath() !== '/config') return;
@@ -2455,6 +2457,7 @@ async function loadConfigEditor() {
   }
   _configProviders = (prov && !prov.error && Array.isArray(prov.providers)) ? prov.providers : [];
   _configLiveModels = (modelCat && !modelCat.error && modelCat.models && typeof modelCat.models === 'object') ? modelCat.models : {};
+  _configRouting = (routing && !routing.error && routing.roles && routing.phase_groups) ? routing : null;
   const esc = (v) => escapeHtmlHumble(String(v ?? ''));
 
   const { panel, _tier, _path, _empty, ...rest } = cfg;
@@ -2577,6 +2580,7 @@ async function loadConfigEditor() {
       <div class="cfg-label">budget.projects <span>(project → max_usd JSON)</span></div>
       <textarea id="cfg-budget-projects" class="cfg-json cfg-json-compact" spellcheck="false">${budgetProjectsJson}</textarea>
     </div>
+    ${cfgPhaseModelsSection(_configRouting)}
     <div class="cfg-section">
       <div class="cfg-label">model_overrides <span>(role → haiku/sonnet/opus)</span></div>
       <div id="cfg-role-overrides">${roleRows}</div>
@@ -2732,6 +2736,61 @@ function cfgPresetRow(name = '', models = '') {
     <input class="cfg-preset-models cfg-control cfg-control-wide" placeholder="claude,codex" value="${esc(models)}">
     <button onclick="this.parentNode.remove()" class="badge badge-gray cfg-remove-btn">×</button>
   </div>`;
+}
+
+// Phase models — UX sugar over the role repeater below. Each select expands to
+// model_overrides rows for its phase's roles (PHASE_ROLE_GROUPS from cost-engine
+// via /config/model-routing); the unchanged configSaveShared gather then persists
+// them. Renders nothing when the routing endpoint is unavailable.
+const CFG_PHASE_LABELS = { plan: '설계 (plan)', implement: '구현 (implement)', review: '리뷰 (review)' };
+
+function cfgPhaseModelsSection(routing) {
+  if (!routing) return '';
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const rows = Object.entries(routing.phase_groups || {}).map(([slot, roles]) => {
+    // Preselect only when every role in the group carries the same override;
+    // any profile-sourced or diverging role → '' (프로필 기본값 / mixed).
+    const marks = new Set(roles.map((r) => (routing.roles?.[r]?.source === 'override' ? routing.roles[r].model : '')));
+    const uniform = marks.size === 1 ? [...marks][0] : '';
+    const chips = roles.map((r) => {
+      const info = routing.roles?.[r];
+      if (!info) return '';
+      const cls = info.source === 'override' ? 'badge-indigo' : 'badge-gray';
+      return `<span class="badge ${cls}">${esc(r)}→${esc(info.model)}</span>`;
+    }).join(' ');
+    const opt = (v, label) => `<option value="${v}" ${uniform === v ? 'selected' : ''}>${label}</option>`;
+    return `<div class="cfg-phase-row cfg-row">
+      <span class="cfg-phase-label">${esc(CFG_PHASE_LABELS[slot] || slot)}</span>
+      <select class="cfg-phase-model cfg-control" data-phase="${esc(slot)}" onchange="configPhaseSelectChanged(this)">
+        ${opt('', '프로필 기본값')}${opt('haiku', 'haiku')}${opt('sonnet', 'sonnet')}${opt('opus', 'opus')}
+      </select>
+      <span class="cfg-phase-chips">${chips}</span>
+    </div>`;
+  }).join('');
+  return `<div class="cfg-section">
+    <div class="cfg-label">phase models <span>(설계/구현/리뷰 일괄 지정 — 아래 model_overrides로 전개 · profile: ${esc(routing.profile)})</span></div>
+    ${rows}
+  </div>`;
+}
+
+function configPhaseSelectChanged(sel) {
+  const phase = sel?.dataset?.phase;
+  const model = sel?.value || '';
+  const roles = _configRouting?.phase_groups?.[phase] || [];
+  const container = document.getElementById('cfg-role-overrides');
+  if (!container || !roles.length) return;
+  for (const role of roles) {
+    const row = [...container.querySelectorAll('.cfg-role-row')]
+      .find((r) => r.querySelector('.cfg-role-name')?.value.trim() === role);
+    if (!model) {
+      if (row) row.remove();
+    } else if (row) {
+      row.querySelector('.cfg-role-model').value = model;
+    } else {
+      container.insertAdjacentHTML('beforeend', cfgRoleOverrideRow(role, model));
+    }
+  }
+  setConfigStatus(`${CFG_PHASE_LABELS[phase] || phase} → ${model || '프로필 기본값'} — 아래 role overrides에 반영됨. "Save shared settings"로 저장하세요.`, true);
 }
 
 function cfgRoleOverrideRow(role = '', model = '') {

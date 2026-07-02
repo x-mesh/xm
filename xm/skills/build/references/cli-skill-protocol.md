@@ -56,20 +56,22 @@ After parsing, execute the recommended action:
 ```
 
 - `agent_type`: `"executor"` (small/medium) or `"deep-executor"` (large)
-- `model`: `"sonnet"` (default) or `"opus"` (large tasks)
+- `model`: **always use the `model` field emitted in the CLI JSON — never hardcode.** It is resolved from `model_profile` + `model_overrides` in `.xm/config.json`.
 - `on_complete`/`on_fail`: Callback commands to update task status after agent finishes
 
 ## Mapping to Agent Tool
 
-| CLI `agent_type` | Agent `subagent_type` | Fallback (x-agent preset) | `model` |
-|-----------------|----------------------|---------------------------|---------|
-| `executor` | `oh-my-claudecode:executor` | `se` | `sonnet` |
-| `deep-executor` | `oh-my-claudecode:deep-executor` | `architect` | `opus` |
-| `planner` | `oh-my-claudecode:planner` | `planner` | `opus` |
-| `verifier` | `oh-my-claudecode:verifier` | `verifier` | `sonnet` |
-| `critic` | `oh-my-claudecode:critic` | `critic` | `opus` |
-| `test-engineer` | `oh-my-claudecode:test-engineer` | `test-engineer` | `sonnet` |
-| `build-fixer` | `oh-my-claudecode:build-fixer` | `build-fixer` | `sonnet` |
+The model ALWAYS comes from the CLI JSON `model` field (`task.model`, `agents[n].model`, `agents_spec[n].model`, `prd_writer.model`). This table maps only `agent_type` → `subagent_type`:
+
+| CLI `agent_type` | Agent `subagent_type` | Fallback (x-agent preset) |
+|-----------------|----------------------|---------------------------|
+| `executor` | `oh-my-claudecode:executor` | `se` |
+| `deep-executor` | `oh-my-claudecode:deep-executor` | `architect` |
+| `planner` | `oh-my-claudecode:planner` | `planner` |
+| `verifier` | `oh-my-claudecode:verifier` | `verifier` |
+| `critic` | `oh-my-claudecode:critic` | `critic` |
+| `test-engineer` | `oh-my-claudecode:test-engineer` | `test-engineer` |
+| `build-fixer` | `oh-my-claudecode:build-fixer` | `build-fixer` |
 
 ## Applies to
 

@@ -176,6 +176,8 @@ export const ROLE_MODEL_MAP_HR = {
   architect: 'opus', reviewer: 'opus', security: 'opus',
   executor: 'sonnet', designer: 'sonnet', debugger: 'sonnet',
   explorer: 'haiku', writer: 'haiku',
+  'deep-executor': 'opus', planner: 'opus', critic: 'opus',
+  verifier: 'sonnet', researcher: 'sonnet',
 };
 
 // ── MODEL_PROFILES ────────────────────────────────────────────────────
@@ -196,6 +198,8 @@ export const MODEL_PROFILES = {
     architect: 'sonnet', reviewer: 'sonnet', security: 'sonnet',
     executor:  'sonnet', designer:  'sonnet', debugger: 'sonnet',
     explorer:  'haiku',  writer:    'haiku',
+    'deep-executor': 'sonnet', planner: 'sonnet', critic: 'sonnet',
+    verifier: 'sonnet', researcher: 'haiku',
   },
   // Opus-centric. The reasonable default in the Opus 4.7 era.
   // Selective downgrades: designer + explorer to sonnet, writer to haiku.
@@ -203,6 +207,8 @@ export const MODEL_PROFILES = {
     architect: 'opus', reviewer: 'opus',   security: 'opus',
     executor:  'opus', designer:  'sonnet', debugger: 'opus',
     explorer:  'sonnet', writer:  'haiku',
+    'deep-executor': 'opus', planner: 'opus', critic: 'opus',
+    verifier: 'sonnet', researcher: 'sonnet',
   },
   // Quality-first. Opus everywhere except trivial roles (explorer, writer)
   // where Opus is over-investment.
@@ -210,6 +216,8 @@ export const MODEL_PROFILES = {
     architect: 'opus', reviewer: 'opus', security: 'opus',
     executor:  'opus', designer:  'opus', debugger: 'opus',
     explorer:  'sonnet', writer:  'haiku',
+    'deep-executor': 'opus', planner: 'opus', critic: 'opus',
+    verifier: 'opus', researcher: 'sonnet',
   },
 };
 
@@ -225,6 +233,30 @@ export function resolveProfileName(name) {
   return LEGACY_PROFILE_MAP[name] || name;
 }
 
+// ── ROLE_ALIASES / PHASE_ROLE_GROUPS ──────────────────────────────────
+// Aliases map role names that appear in docs/presets but are not routing
+// keys onto their canonical MODEL_PROFILES role.
+
+export const ROLE_ALIASES = {
+  'test-engineer': 'verifier',
+  'build-fixer': 'executor',
+  documenter: 'writer',
+  se: 'executor',
+};
+
+export function resolveRole(role) {
+  return ROLE_ALIASES[role] || role;
+}
+
+// Phase presets in the config wizard / dashboard expand a per-phase model
+// choice into model_overrides for these role groups. explorer/writer are
+// deliberately in no group — they stay profile/override-driven.
+export const PHASE_ROLE_GROUPS = {
+  plan:      ['architect', 'planner', 'critic', 'security', 'researcher'],
+  implement: ['executor', 'deep-executor', 'designer', 'debugger'],
+  review:    ['reviewer', 'verifier'],
+};
+
 // ── getModelForRole ───────────────────────────────────────────────────
 // Override priority chain:
 //   1. model_overrides[role]   — user explicit setting, ALWAYS wins
@@ -233,6 +265,7 @@ export function resolveProfileName(name) {
 
 export function getModelForRole(role, size, config) {
   if (!config) config = loadSharedConfig();
+  role = resolveRole(role);
 
   // 1. User explicit override — ALWAYS wins
   const overrides = config.model_overrides || {};

@@ -10,6 +10,8 @@ xm manages shared settings at `.xm/config.json` that all tools (x-build, x-solve
 | `xm config show` | Show current settings (global + local + merged) |
 | `xm config set <key> <value>` | Change a setting |
 | `xm config get <key>` | Get a setting value |
+| `xm config phase` | Show resolved per-phase model matrix (설계/구현/리뷰) |
+| `xm config phase plan=M implement=M review=M` | Set models per phase — sugar over `model_overrides`, no new config key |
 | `xm config reset` | Reset config to defaults |
 
 ## Scope
@@ -33,6 +35,18 @@ Exception: `budget` defaults to **local** (per-project budgets are more natural)
 | `agent_max_count` | number (1-10) | `4` | global | Max parallel agents |
 | `budget.max_usd` | number or null | `null` | local | Session budget limit ($) |
 | `model_overrides` | `{"role": "model"}` | `{}` | global | Per-role model overrides on top of profile |
+
+### Phase presets (`xm config phase`)
+
+`phase` expands a per-phase model choice into `model_overrides` for that phase's roles (defined by `PHASE_ROLE_GROUPS` in cost-engine):
+
+| Slot | Roles |
+|------|-------|
+| `plan` (설계) | architect, planner, critic, security, researcher |
+| `implement` (구현) | executor, deep-executor, designer, debugger |
+| `review` (리뷰) | reviewer, verifier |
+
+Values: `haiku` / `sonnet` / `opus` / `default` (`default` removes the slot's overrides → back to profile). Example: `xm config phase plan=opus implement=sonnet review=opus`.
 
 ## Config Resolution
 
@@ -63,6 +77,7 @@ Use AskUserQuestion:
 3) 에이전트 수 — 병렬 에이전트 수 (1-10)
 4) 모드 — developer / normal
 5) 역할별 오버라이드 — 프로필 위에 개별 역할 모델 지정
+6) 페이즈별 모델 — 설계/구현/리뷰 단위 일괄 지정
 0) 나가기
 ```
 
@@ -75,6 +90,7 @@ Use AskUserQuestion:
 | 3 | AskUserQuestion: "에이전트 수 (1-10):" → run `cmdConfig(['set', 'agent_max_count', value])` |
 | 4 | AskUserQuestion: "1) developer 2) normal" → run `cmdConfig(['set', 'mode', selected])` |
 | 5 | AskUserQuestion: "형식: role=model (예: architect=opus), done으로 종료" → loop: run `cmdConfig(['set', 'model_overrides', JSON.stringify(overrides)])` |
+| 6 | First print the resolved matrix as markdown (run `cmdConfig(['phase'])` and show its output), THEN one AskUserQuestion per phase slot (설계 → 구현 → 리뷰) with exactly 4 options: 프로필 기본값 / haiku / sonnet / opus. Finally run `cmdConfig(['phase', 'plan=<m>', 'implement=<m>', 'review=<m>'])` with only the slots the user changed. |
 | 0 | Exit |
 
 After each setting change, show the updated value and ask "다른 설정도 변경할까요? (y/n)". If y, return to Step 2.
