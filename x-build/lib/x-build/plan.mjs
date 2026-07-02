@@ -17,6 +17,15 @@ import {
 import { taskList } from './tasks.mjs';
 import { stepsStatus, computeSteps } from './tasks.mjs';
 
+// ── prdWriterSpec ───────────────────────────────────────────────────
+// Deterministic role/model for the PRD-writing delegate. The PRD is the
+// costliest artifact to get wrong, so it routes as a large planner task.
+
+function prdWriterSpec(sharedCfg) {
+  const cfg = sharedCfg || loadSharedConfig();
+  return { role: 'planner', model: getModelForRole('planner', 'large', cfg) };
+}
+
 // ── cmdPlan ─────────────────────────────────────────────────────────
 
 function parsePlanArgs(args) {
@@ -60,6 +69,7 @@ export function cmdPlan(args) {
     flow: quick ? 'quick' : 'full',
     skip_research: quick,
     current_phase: PHASES.find(p => p.id === manifest?.current_phase)?.name,
+    prd_writer: prdWriterSpec(),
     existing_tasks: readJSON(tasksPath(project))?.tasks?.length || 0,
     templates_available: existsSync(templatesDir())
       ? readdirSync(join(templatesDir(), 'tasks')).map(f => f.replace('.md', ''))
@@ -419,13 +429,17 @@ export function cmdResearch(args) {
   const manifest = readJSON(manifestPath(project));
   const goal = positional.join(' ') || manifest.display_name || project;
 
+  const perspectives = ['stack', 'features', 'architecture', 'pitfalls'];
+  const model = opts.model || getModelForRole('researcher', 'medium', loadSharedConfig());
+
   const output = {
     action: 'research',
     project,
     goal,
     agents: parseInt(opts.agents || String(getAgentCount())),
-    perspectives: ['stack', 'features', 'architecture', 'pitfalls'],
-    model: opts.model || 'sonnet',
+    perspectives,
+    model,
+    agents_spec: perspectives.map(p => ({ perspective: p, role: 'researcher', model })),
     existing_requirements: existsSync(join(contextDir(project), 'REQUIREMENTS.md'))
       ? readMD(join(contextDir(project), 'REQUIREMENTS.md'))?.slice(0, 500)
       : null,
@@ -511,10 +525,11 @@ export function cmdConsensus(args) {
   const prevPath = join(phaseDir(project, '02-plan'), `consensus-r${round - 1}.json`);
   const previousRound = (round > 1 && existsSync(prevPath)) ? readJSON(prevPath) : null;
 
+  const sharedCfg = loadSharedConfig();
   const agents = [
     {
       role: 'architect',
-      model: 'opus',
+      model: getModelForRole('architect', 'medium', sharedCfg),
       prompt_focus: [
         'Module boundaries are clear',
         'Interfaces and dependencies are defined',
@@ -523,7 +538,7 @@ export function cmdConsensus(args) {
     },
     {
       role: 'critic',
-      model: 'sonnet',
+      model: getModelForRole('critic', 'medium', sharedCfg),
       prompt_focus: [
         'No missing requirements or scenarios',
         'No contradictions between sections',
@@ -532,7 +547,7 @@ export function cmdConsensus(args) {
     },
     {
       role: 'planner',
-      model: 'opus',
+      model: getModelForRole('planner', 'medium', sharedCfg),
       prompt_focus: [
         'Structure is decomposable into tasks',
         'Success criteria are measurable',
@@ -541,7 +556,7 @@ export function cmdConsensus(args) {
     },
     {
       role: 'security',
-      model: 'sonnet',
+      model: getModelForRole('security', 'medium', sharedCfg),
       prompt_focus: [
         'Security requirements are not missing',
         'Risk mitigations are concrete and actionable',
@@ -658,7 +673,7 @@ function resolveNext(project) {
           const goalMatch = ctx.match(/^## Goal\s*\n+(.+)/m);
           if (goalMatch) goal = goalMatch[1].trim();
         }
-        return { ...base, action: 'plan', args: goal ? [goal] : [], reason: R('PRD.md is missing. Generate and save a PRD before executing.', 'PRD가 없습니다. 실행 전에 PRD를 생성하고 저장하세요.'), goal, task_count: tasks.length, ready: false };
+        return { ...base, action: 'plan', args: goal ? [goal] : [], reason: R('PRD.md is missing. Generate and save a PRD before executing.', 'PRD가 없습니다. 실행 전에 PRD를 생성하고 저장하세요.'), goal, task_count: tasks.length, ready: false, prd_writer: prdWriterSpec() };
       }
       if (tasks.length === 0) {
         let goal = null;
@@ -672,7 +687,7 @@ function resolveNext(project) {
           const goalMatch = ctx.match(/^## Goal\s*\n+(.+)/m);
           if (goalMatch) goal = goalMatch[1].trim();
         }
-        return { ...base, action: 'plan', args: goal ? [goal] : [], reason: goal ? R(`Auto-extracted goal: "${goal}"`, `목표를 자동으로 찾았습니다: "${goal}"`) : R('No tasks yet. Run plan with a goal.', '할 일이 없습니다. 목표를 정해서 계획을 세우세요.'), goal };
+        return { ...base, action: 'plan', args: goal ? [goal] : [], reason: goal ? R(`Auto-extracted goal: "${goal}"`, `목표를 자동으로 찾았습니다: "${goal}"`) : R('No tasks yet. Run plan with a goal.', '할 일이 없습니다. 목표를 정해서 계획을 세우세요.'), goal, prd_writer: prdWriterSpec() };
       }
       if (!planCheckExists) {
         return { ...base, action: 'plan-check', args: [], reason: R(`${tasks.length} tasks defined but not validated. Run plan-check.`, `할 일 ${tasks.length}개가 있지만 검증되지 않았습니다. 계획을 점검하세요.`), task_count: tasks.length };

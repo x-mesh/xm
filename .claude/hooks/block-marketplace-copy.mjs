@@ -30,16 +30,23 @@ const PLUGINS_WITH_SOURCE_SKILL = new Set([
   'x-trace',
 ]);
 
-// x-build lib files copied into xm/lib/x-build/. Keep in sync with sync-bundle.sh:34.
+// x-build lib files copied into xm/lib/x-build/. Keep in sync with sync-bundle.sh
+// (which mirrors x-build/lib/x-build/*.mjs wholesale).
 const X_BUILD_LIB_FILES = new Set([
+  'config-loader.mjs',
   'core.mjs',
-  'project.mjs',
+  'cost-engine.mjs',
+  'drift.mjs',
+  'export.mjs',
+  'later.mjs',
+  'misc.mjs',
   'phase.mjs',
   'plan.mjs',
+  'project.mjs',
+  'release.mjs',
+  'root.mjs',
   'tasks.mjs',
   'verify.mjs',
-  'export.mjs',
-  'misc.mjs',
 ]);
 
 // x-trace lib files copied into xm/lib/x-trace/. Keep in sync with sync-bundle.sh.
