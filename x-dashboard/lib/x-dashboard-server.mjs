@@ -697,6 +697,64 @@ function handleConfig(xmRoot, req) {
   }
 }
 
+// ── cost-engine (lazy, for resolved model routing) ────────────────────
+// Resolves across the xm bundle (sibling x-build/) and the standalone source
+// tree. null when unavailable — the routing endpoint then degrades to 503 and
+// the UI hides its phase-models section.
+let _costEngine;
+async function getCostEngine() {
+  if (_costEngine !== undefined) return _costEngine;
+  const here = import.meta.dirname;
+  const candidates = [
+    join(here, 'x-build', 'cost-engine.mjs'),                                // xm bundle: xm/lib/x-build/
+    join(here, '..', '..', 'x-build', 'lib', 'x-build', 'cost-engine.mjs'), // source tree
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      try { _costEngine = await import(p); return _costEngine; } catch { /* try next */ }
+    }
+  }
+  _costEngine = null;
+  return _costEngine;
+}
+
+// GET /api/config/model-routing?tier= — resolved role→model matrix so the UI
+// never duplicates MODEL_PROFILES. tier=global resolves against the global
+// config only; default resolves the effective (global + project) view.
+async function handleModelRouting(xmRoot, req) {
+  const ce = await getCostEngine();
+  if (!ce) return jsonResponseWithETag({ error: 'routing_unavailable' }, req, 503);
+
+  const url = new URL(req.url);
+  const tier = url.searchParams.get('tier') === 'global' ? 'global' : 'project';
+  const readTier = (t) => {
+    const p = configPathForTier(xmRoot, t);
+    if (!p || !existsSync(p)) return {};
+    try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return {}; }
+  };
+  const globalCfg = readTier('global');
+  const effective = tier === 'global' ? globalCfg : { ...globalCfg, ...readTier('project') };
+
+  const profile = ce.resolveProfileName(effective.model_profile);
+  const profileMap = ce.MODEL_PROFILES[profile] || ce.MODEL_PROFILES.default;
+  const overrides = (effective.model_overrides && typeof effective.model_overrides === 'object')
+    ? effective.model_overrides : {};
+
+  const roles = {};
+  for (const role of new Set([...Object.keys(profileMap), ...Object.keys(overrides)])) {
+    roles[role] = {
+      model: ce.getModelForRole(role, 'medium', effective),
+      source: overrides[role] ? 'override' : 'profile',
+    };
+  }
+  return jsonResponseWithETag({
+    profile,
+    models: ['haiku', 'sonnet', 'opus'],
+    phase_groups: ce.PHASE_ROLE_GROUPS,
+    roles,
+  }, req);
+}
+
 function deleteConfigPath(obj, path) {
   if (!obj || typeof obj !== 'object' || typeof path !== 'string') return;
   const parts = path.split('.').map((p) => p.trim()).filter(Boolean);
@@ -2588,6 +2646,11 @@ server = Bun.serve({
           return handleConfig(xmRoot, req);
         }
 
+        // GET /api/ws/:wsId/config/model-routing
+        if (subPath === '/config/model-routing') {
+          return handleModelRouting(xmRoot, req);
+        }
+
         // GET /api/ws/:wsId/projects
         if (subPath === '/projects') {
           return handleProjects(xmRoot, req);
@@ -2833,6 +2896,11 @@ server = Bun.serve({
       }
 
       // ── Legacy unscoped routes (backward compatible) ──────────
+
+      // GET /api/config/model-routing
+      if (path === '/api/config/model-routing') {
+        return handleModelRouting(XM_ROOT, req);
+      }
 
       // GET /api/config
       if (path === '/api/config') {
