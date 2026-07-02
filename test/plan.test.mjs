@@ -470,6 +470,81 @@ describe('task features', () => {
   });
 });
 
+describe('failure-mode-coverage dimension', () => {
+  test('warns when PRD has no Failure Modes section', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePRD(tmp, name, '# PRD\n## 1. Goal\nBuild API\n## 8. Architecture\n[x]\n');
+      addTasks(tmp, [{ name: 'Setup config [R1]', size: 'small' }]);
+      const r = run(['plan-check'], { cwd: tmp });
+      expect(r.stdout).toContain('failure-mode-coverage');
+      expect(r.stdout).toContain('no Failure Modes section');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('warns per-task when a risk-domain task lacks stress done_criteria', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      addTasks(tmp, [{ name: 'Build regex matcher [R1]', size: 'small' }]);
+      const r = run(['plan-check'], { cwd: tmp });
+      expect(r.stdout).toContain('failure-mode-coverage');
+      expect(r.stdout).toContain('touches a risk domain');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('no warn when section present and task has stress done_criteria', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePRD(tmp, name, '# PRD\n## 1. Goal\nBuild\n## 7.5 Failure Modes\n- [R1] ReDoS → 검증: stress\n## 8. Architecture\n[x]\n');
+      addTasks(tmp, [{ name: 'Build regex matcher [R1]', size: 'small' }]);
+      run(['tasks', 'update', 't1', '--done-criteria', '스트레스: ReDoS (검증: stress test)'], { cwd: tmp });
+      const r = run(['plan-check'], { cwd: tmp });
+      expect(r.stdout).not.toContain('no Failure Modes section');
+      expect(r.stdout).not.toContain('touches a risk domain');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('failure-mode done_criteria derivation', () => {
+  test('injects stress criteria from PRD Failure Modes section', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePRD(tmp, name, '# PRD\n## 7.5 Failure Modes & Adversarial Inputs\n- [R1] adversarial 100k regex input → catastrophic backtracking → 검증: stress test < 100ms\n## 8. Architecture\n[x]\n');
+      addTasks(tmp, [{ name: 'Build regex matcher [R1]', size: 'medium' }]);
+      const r = run(['tasks', 'done-criteria'], { cwd: tmp });
+      expect(r.stdout).toContain('done_criteria generated');
+      expect(r.stdout).toContain('스트레스:');
+      expect(r.stdout).toContain('catastrophic backtracking');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('no injection when PRD has no Failure Modes section', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePRD(tmp, name, '# PRD\n## 8. Acceptance Criteria\n- [ ] Works [R1]\n');
+      addTasks(tmp, [{ name: 'Build regex matcher [R1]', size: 'medium' }]);
+      const r = run(['tasks', 'done-criteria'], { cwd: tmp });
+      expect(r.stdout).toContain('done_criteria generated');
+      expect(r.stdout).not.toContain('스트레스:');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('scope creep detection', () => {
   test('warns when task matches Out of Scope', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));

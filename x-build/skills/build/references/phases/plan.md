@@ -25,8 +25,8 @@ Determine PRD size based on task count expectation or `--size` flag:
 | Tier | Condition | PRD Sections |
 |------|-----------|-------------|
 | **small** | ≤5 expected tasks or `--size small` | 1.Goal, 2.Success Criteria, 3.Constraints, 5.Requirements Traceability, 7.Risks, 8.Architecture, 12.Acceptance Criteria (7 sections) |
-| **medium** | 6-15 tasks (default) | Above + 4.NFR, 6.Out of Scope, 9.Key Scenarios (10 sections) |
-| **large** | 15+ tasks or `--size large` | All 12 sections (current full template) |
+| **medium** | 6-15 tasks (default) | Above + 4.NFR, 6.Out of Scope, 7.5 Failure Modes & Adversarial Inputs, 9.Key Scenarios (11 sections) |
+| **large** | 15+ tasks or `--size large` | All sections including 7.5 Failure Modes & Adversarial Inputs (current full template) |
 
 **Rationale for small tier change:** Previous small tier (5 sections) omitted Risks and Architecture, producing PRDs that lacked actionable context for executors. Every project has risks and structure — even small ones.
 
@@ -176,6 +176,7 @@ Evaluate:
 - What assumption, if wrong, would invalidate this entire plan?
 - Are there contradictions between requirements, constraints, or success criteria?
 - Where does the PRD say 'TBD' or imply deferred decisions?
+- Does every risk-domain requirement enumerate its failure modes (pathological inputs, unbounded loops, performance blow-ups)? Flag any that don't.
 
 Good OBJECT: '[R3] requires real-time sync but [C2] prohibits WebSocket — contradiction.'
 Bad OBJECT: 'Some requirements seem incomplete.'
@@ -210,6 +211,7 @@ Evaluate:
 - Are auth, authz, and data protection explicitly addressed (not assumed)?
 - Do data flows crossing trust boundaries have handling specified?
 - Are security risks listed with specific mitigations (not 'follow best practices')?
+- Are adversarial inputs and resource-exhaustion failure modes (e.g. ReDoS-class) specified with verification?
 
 Good OBJECT: 'No mention of API rate limiting — [R1] public endpoint is DoS-vulnerable without it.'
 Bad OBJECT: 'Security could be improved.'

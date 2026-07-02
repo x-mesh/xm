@@ -143,6 +143,38 @@ export function taskDoneCriteria(project) {
     }
   }
 
+  // Failure Modes & Adversarial Inputs — parse per-R# stress verification (R3).
+  // Header number is flexible (mirrors the AC parser's `(?:8\.)?` pattern); the
+  // section ends at the next `## ` header. `- [R#] <mode> → 검증: <method>` items
+  // are collected by R#; `none — ...` declarations are skipped.
+  // Section end mirrors the AC parser's lenience: next `## ` OR `##8`-style header
+  // (space-optional) both terminate — otherwise a space-less next header would
+  // over-capture into it. Fenced ``` blocks are stripped first so the template's
+  // Format:/Examples: fences (with their own `- [R#] ...` sample lines) are never
+  // parsed as real failure modes.
+  const fmSection = prd.match(/##\s*(?:7\.5\.?)?\s*Failure Modes[\s\S]*?(?=\n##[ \t\d]|$)/i);
+  const fmByRid = new Map();
+  if (fmSection) {
+    const fmBody = fmSection[0].replace(/```[\s\S]*?```/g, '');
+    for (const m of fmBody.matchAll(/^\s*-\s*\[(R\d+)\]\s*(.+)$/gim)) {
+      const rid = m[1].toLowerCase();
+      const body = m[2].trim();
+      if (/^none\b/i.test(body)) continue; // explicit "none — <justification>"
+      // Split at the `→ 검증:` marker (the mode may itself contain intermediate
+      // `→ consequence` arrows, so anchor on the 검증/verification keyword, not the
+      // first arrow). Everything before is the failure mode; after is the method.
+      const vMatch = body.match(/(?:→|->)?\s*(?:검증|verification)\s*:?\s*(.+)$/i);
+      let mode = body, verification = null;
+      if (vMatch) {
+        verification = vMatch[1].trim() || null;
+        mode = body.slice(0, vMatch.index).replace(/(?:→|->)\s*$/, '').trim();
+      }
+      if (!mode) continue;
+      if (!fmByRid.has(rid)) fmByRid.set(rid, []);
+      fmByRid.get(rid).push({ mode, verification });
+    }
+  }
+
   let updated = 0;
   for (const task of data.tasks) {
     if (task.done_criteria?.length) continue;
@@ -159,6 +191,17 @@ export function taskDoneCriteria(project) {
     if (criteria.length === 0) {
       criteria.push(`${task.name} — happy path verified`);
       criteria.push(`${task.name} — primary error case handled`);
+    }
+
+    // R3: inject stress criteria from PRD Failure Modes for this task's R#s.
+    // Placed after the happy/error fallback so a task with only failure modes
+    // still gets its happy/error baseline. Existing done_criteria untouched (:148).
+    for (const rid of reqIds) {
+      for (const fm of (fmByRid.get(rid) || [])) {
+        criteria.push(fm.verification
+          ? `스트레스: ${fm.mode} (검증: ${fm.verification})`
+          : `스트레스: ${fm.mode}`);
+      }
     }
 
     // Size-based test expectations

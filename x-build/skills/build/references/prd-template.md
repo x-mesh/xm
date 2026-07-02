@@ -60,6 +60,26 @@ Full Project Requirements Document template with per-section quality criteria. U
 - {risk 2} — Likelihood: L, Impact: H → Mitigation: {specific action}
 {Anti-pattern: 'Security risks' without specifics. Name the attack vector and the mitigation.}
 
+## 7.5 Failure Modes & Adversarial Inputs
+
+**Enumerate, per requirement, the pathological/adversarial inputs and states that could break the implementation — the things a plan usually leaves implicit and an executor therefore never defends against.** Each entry MUST carry an `[R#]` tag and a verification method.
+
+Format (one line per failure mode):
+```
+- [R#] <failure mode: pathological/adversarial input, performance blow-up, unbounded loop, resource exhaustion, boundary value> → 검증: <stress / long-running / adversarial-input test method>
+```
+
+Coverage rule:
+- **Minimum 1 failure mode per risk-domain requirement** (parsing, matching/regex, caching, concurrency/locking, queues, auth, crypto, input handling, streaming, protocol).
+- If a requirement genuinely has no failure mode, write `- [R#] none — <justification>` explicitly. Silence is not allowed — an unenumerated failure mode is an undefended one.
+
+Examples:
+```
+- [R1] regex matcher fed a 100k-char adversarial string with nested quantifiers → catastrophic backtracking (ReDoS) → 검증: stress test with pathological input, assert completion < 100ms
+- [R3] parser receives deeply-nested/truncated input → stack overflow or infinite loop → 검증: fuzz with malformed + boundary-length inputs, assert graceful error
+- [R4] none — pure display command, no untrusted input, no loops
+```
+
 ## 8. Architecture
 
 **Express the system structure with an ASCII diagram.** Select the appropriate type from the guide below.
@@ -245,6 +265,7 @@ Core rules (always apply):
 - Constraints: Only hard constraints — non-negotiable. Preferences go to NFR.
 - Requirements Traceability: Every R# maps to at least one SC#. IDs must be sequential — no gaps.
 - Risks: Minimum 2. Each with likelihood × impact + specific mitigation. 'Security risks' without specifics = rejected.
+- Failure Modes & Adversarial Inputs (medium+ tier): Every risk-domain requirement (parser/matcher/regex/cache/concurrency/auth/input) has ≥1 enumerated failure mode with an `[R#]` tag and a `→ 검증:` verification method. Requirements with no failure mode must say `none — <justification>` — empty or omitted = rejected.
 - Architecture: ALWAYS include a diagram (even for small projects). A box-and-arrow showing data flow is sufficient.
 - Acceptance Criteria: Each item must be testable by command or state check. Minimum 1 per SC.
 - Boundaries: 3-tier (Always / Ask first / Never) with minimum 2 items per tier. Empty or "TBD" tiers = rejected. Each item must be imperative and observable.

@@ -334,13 +334,34 @@ export function cmdPlanCheck(args) {
     }
   }
 
+  // 13. Failure-mode coverage — pathological/adversarial inputs are the failure
+  // class plans leave implicit. ALL warn (never error): pre-existing PRDs without
+  // a Failure Modes section must not fail plan-check (backward compat).
+  if (prd && !/##\s*(?:7\.5\.?)?\s*Failure Modes/i.test(prd)) {
+    checks.push({ dim: 'failure-mode-coverage', level: 'warn', msg: `PRD has no Failure Modes section — pathological/adversarial inputs are unenumerated; implementers will not defend against them` });
+  }
+  // Word-start anchored (\b) to cut substring false-positives — "mismatch",
+  // "sparse", "mainstream", "deadlock" no longer trip the parser/cache/stream/lock
+  // stems. Warn-only, so an occasional false negative (e.g. "unlock") is acceptable.
+  const RISK_DOMAIN_RE = /\b(pars|match|regex|cach|concurren|lock|queue|auth|crypto|input|stream|proto)/i;
+  const STRESS_RE = /스트레스|stress|pathological|adversarial|병적|timeout|hang|무한/i;
+  for (const t of tasks) {
+    const haystack = `${t.name} ${t.description || ''}`;
+    if (RISK_DOMAIN_RE.test(haystack)) {
+      const dc = (t.done_criteria || []).join(' ');
+      if (!STRESS_RE.test(dc)) {
+        checks.push({ dim: 'failure-mode-coverage', level: 'warn', task: t.id, msg: `"${t.name}" touches a risk domain (parser/matcher/cache/concurrency/auth/input) but has no stress/adversarial done_criteria — add a Failure Modes section, then run: tasks done-criteria` });
+      }
+    }
+  }
+
   // Output
   const errors = checks.filter(c => c.level === 'error');
   const warns = checks.filter(c => c.level === 'warn');
 
   console.log(`\n${C.bold}Plan Check — ${tasks.length} tasks${C.reset}\n`);
 
-  const dims = ['atomicity', 'dependencies', 'coverage', 'granularity', 'completeness', 'context', 'naming', 'tech-leakage', 'scope-clarity', 'risk-ordering', 'expected-files', 'overall'];
+  const dims = ['atomicity', 'dependencies', 'coverage', 'granularity', 'completeness', 'context', 'naming', 'tech-leakage', 'scope-clarity', 'risk-ordering', 'expected-files', 'failure-mode-coverage', 'overall'];
   for (const dim of dims) {
     const dimChecks = checks.filter(c => c.dim === dim);
     if (dimChecks.length === 0) {
@@ -511,7 +532,7 @@ export function cmdPrdGate(args) {
     { criterion: 'feasibility', weight: 0.20, description: 'Tasks are realistic given constraints and tech stack' },
     { criterion: 'atomicity', weight: 0.20, description: 'Tasks are properly decomposed and independently executable' },
     { criterion: 'clarity', weight: 0.20, description: 'PRD is unambiguous — no room for misinterpretation' },
-    { criterion: 'risk-coverage', weight: 0.15, description: 'Edge cases, failure modes, and risks are identified' },
+    { criterion: 'risk-coverage', weight: 0.15, description: 'Edge cases, failure modes (incl. pathological/adversarial inputs) are enumerated per requirement with verification' },
   ];
 
   const output = {
@@ -570,6 +591,7 @@ export function cmdConsensus(args) {
         'No missing requirements or scenarios',
         'No contradictions between sections',
         'Risks are not underestimated',
+        'Per-requirement failure modes (pathological inputs, unbounded loops, performance blow-ups) are enumerated — flag any requirement missing them',
       ],
     },
     {
@@ -588,6 +610,7 @@ export function cmdConsensus(args) {
         'Security requirements are not missing',
         'Risk mitigations are concrete and actionable',
         'Sensitive data handling is specified',
+        'Adversarial inputs and resource-exhaustion failure modes (e.g. ReDoS-class) are specified with verification',
       ],
     },
   ];
