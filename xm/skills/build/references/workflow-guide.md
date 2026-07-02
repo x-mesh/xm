@@ -104,7 +104,7 @@ Agent 3: "architecture" — How should this be structured? What patterns apply?
 Agent 4: "pitfalls" — What could go wrong? Common mistakes? Edge cases?
 ```
 
-All agents run with `run_in_background: true`, `model: "sonnet"`.
+All agents run with `run_in_background: true`, `model` from the research JSON `agents_spec[].model` — never hardcode.
 
 4. Collect results, synthesize into:
    - **REQUIREMENTS.md**: Scoped features with IDs (`[R1]`, `[R2]`, ...)

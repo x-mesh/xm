@@ -657,6 +657,18 @@ tbody td {
   font-family: var(--font-mono);
   opacity: 0.75;
 }
+.cfg-phase-row {
+  grid-template-columns: minmax(120px, 160px) minmax(140px, 180px) 1fr;
+}
+.cfg-phase-label {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+.cfg-phase-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
 .cfg-remove-btn {
   min-height: 32px;
   justify-content: center;

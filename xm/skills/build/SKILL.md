@@ -253,6 +253,8 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 - `discuss [--mode interview|assumptions|validate]` — Gather & validate requirements
 - `research [goal]` — Parallel agent investigation
 
+> **Agent models always come from CLI JSON** (`task.model`, `agents[n].model`, `agents_spec[n].model`, `prd_writer.model`) — resolved from `model_profile`/`model_overrides` in `.xm/config.json`. Never hardcode a model when spawning agents.
+
 ### Deliberation (cross-phase)
 - `discuss --mode interview [--round N]` — Multi-round requirements interview with drill-down
 - `discuss --mode assumptions` — Codebase-driven assumption generation
