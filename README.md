@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.34-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.35-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -455,8 +455,9 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 | **Traceability matrix** | R# ↔ Task ↔ AC ↔ Done Criteria with gap detection |
 | **Scope creep detection** | Warns when new tasks overlap with PRD "Out of Scope" items |
 | **Error recovery** | Auto-retry with exponential backoff, circuit breaker, git rollback |
-| **plan-check (11 dims)** | atomicity, deps, coverage (incl. done_criteria), granularity (upper bound >15), completeness, context, naming (44-verb dict), tech-leakage, scope-clarity (Out of Scope match), risk-ordering (DAG-based), overall |
+| **plan-check (13 dims)** | atomicity, deps, coverage (incl. done_criteria), granularity (upper bound >15), completeness, context, naming (44-verb dict), tech-leakage, scope-clarity (Out of Scope match), risk-ordering (DAG-based), expected-files, failure-mode-coverage, overall |
 | **Domain-aware done_criteria** | Auto-generated based on task domain, size tier, and PRD NFR targets |
+| **Failure-mode enumeration** | PRD §7.5 forces per-requirement pathological/adversarial inputs (`[R#] <mode> → 검증: <method>`); `tasks done-criteria` injects them as stress checks, `plan-check`'s `failure-mode-coverage` warns when a risk-domain task lacks them. Measured to let a cheaper implementer model match a costlier one on robustness — see `docs/phase-model-routing-experiment.md` |
 | **Worktree execution** | `run --worktrees` fans parallel-safe tasks out into isolated `git-kit` worktrees; each task's patch must clear `gate-panel` (a cross-model panel review gate) before it merges — see [Worktree pipeline](#worktree-pipeline) |
 
 | Category | Commands |

@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.34-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.35-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -455,8 +455,9 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 | **추적성 매트릭스** | R# ↔ Task ↔ AC ↔ Done Criteria, 갭 탐지 |
 | **범위 초과 감지** | 새 태스크가 PRD "범위 밖" 항목과 겹치면 경고 |
 | **에러 복구** | 지수 백오프 자동 재시도, 서킷 브레이커, git 롤백 |
-| **plan-check (11차원)** | 원자성, 의존성, 커버리지 (done_criteria 포함), 세분도 (상한 >15), 완전성, 컨텍스트, 네이밍 (44-동사 사전), 기술 누출, 스코프 명확성 (범위 밖 매칭), 리스크 순서 (DAG 기반), 종합 |
+| **plan-check (13차원)** | 원자성, 의존성, 커버리지 (done_criteria 포함), 세분도 (상한 >15), 완전성, 컨텍스트, 네이밍 (44-동사 사전), 기술 누출, 스코프 명확성 (범위 밖 매칭), 리스크 순서 (DAG 기반), expected-files, failure-mode-coverage, 종합 |
 | **도메인별 done_criteria** | 태스크 도메인, 크기, PRD 비기능 요구사항 기반 자동 생성 |
+| **실패 모드 열거** | PRD §7.5가 요구사항별 병적/적대 입력을 강제 (`[R#] <실패모드> → 검증: <방법>`). `tasks done-criteria`가 스트레스 검증으로 주입하고, `plan-check`의 `failure-mode-coverage`가 위험 도메인 태스크에 누락 시 경고. 실측상 저렴한 실행 모델이 견고성에서 고비용 모델을 따라잡게 함 — `docs/phase-model-routing-experiment.md` 참고 |
 | **워크트리 실행** | `run --worktrees`가 병렬 안전한 태스크를 독립된 `git-kit` 워크트리로 나눠 실행. 각 태스크 patch는 머지 전 `gate-panel`(크로스 모델 패널 리뷰 게이트)을 통과해야 함 — [워크트리 파이프라인](#worktree-pipeline-ko) 참고 |
 
 | 카테고리 | 커맨드 |
