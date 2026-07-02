@@ -17,6 +17,8 @@ import { cmdQuality, cmdVerifyCoverage, cmdVerifyTraceability, cmdVerifyContract
 import { cmdExport, cmdImport } from './x-build/export.mjs';
 import { cmdAlias, cmdDemo, cmdWatch, cmdMetrics, cmdMode, cmdContext, cmdPhaseContext, cmdDecisions, cmdTemplates, printHelp } from './x-build/misc.mjs';
 import { cmdRelease } from './x-build/release.mjs';
+import { cmdGatePanel } from './x-build/gate-panel.mjs';
+import { cmdWorktrees, cmdReviewIntegration } from './x-build/worktrees.mjs';
 
 // Skip top-level execution when imported by xm-server
 if (process.env.XKIT_SERVER !== '1') {
@@ -117,6 +119,9 @@ switch (cmd) {
   case 'alias':         cmdAlias(args); break;
   case 'demo':          cmdDemo(args); break;
   case 'release':       cmdRelease(args); break;
+  case 'gate-panel':    cmdGatePanel(args); break;
+  case 'worktrees':     cmdWorktrees(args); break;
+  case 'review-integration': cmdReviewIntegration(args); break;
   case 'circuit-breaker': {
     const project = resolveProject(args[1]);
     if (args[0] === 'reset') { resetCircuitBreaker(project); }

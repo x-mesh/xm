@@ -307,13 +307,40 @@ export function cmdPlanCheck(args) {
     }
   } catch (e) { /* cycle already caught in deps check */ }
 
+  // 12. Expected files — the worktree pipeline batches parallel-safe tasks by
+  // comparing per-task expected_files. A task with no/empty list is excluded from
+  // parallel batching (runs sequentially), so this is a warn, never an error —
+  // existing plans without the field must not fail plan-check.
+  for (const t of tasks) {
+    const ef = t.expected_files;
+    if (ef === undefined || ef === null) {
+      checks.push({ dim: 'expected-files', level: 'warn', task: t.id, msg: `"${t.name}" has no expected_files — excluded from parallel worktree batching (runs sequentially). Add: tasks update ${t.id} --expected-files "a.mjs,b.mjs"` });
+      continue;
+    }
+    if (!Array.isArray(ef)) {
+      checks.push({ dim: 'expected-files', level: 'warn', task: t.id, msg: `expected_files must be an array of relative paths` });
+      continue;
+    }
+    if (ef.length === 0) {
+      checks.push({ dim: 'expected-files', level: 'warn', task: t.id, msg: `"${t.name}" has empty expected_files — excluded from parallel worktree batching (runs sequentially)` });
+      continue;
+    }
+    for (const f of ef) {
+      if (typeof f !== 'string' || !f.trim()) {
+        checks.push({ dim: 'expected-files', level: 'warn', task: t.id, msg: `expected_files contains a non-string or empty entry` });
+      } else if (f.startsWith('/') || /^[A-Za-z]:[\\/]/.test(f)) {
+        checks.push({ dim: 'expected-files', level: 'warn', task: t.id, msg: `expected_files entry "${f}" is an absolute path — use a project-relative path` });
+      }
+    }
+  }
+
   // Output
   const errors = checks.filter(c => c.level === 'error');
   const warns = checks.filter(c => c.level === 'warn');
 
   console.log(`\n${C.bold}Plan Check — ${tasks.length} tasks${C.reset}\n`);
 
-  const dims = ['atomicity', 'dependencies', 'coverage', 'granularity', 'completeness', 'context', 'naming', 'tech-leakage', 'scope-clarity', 'risk-ordering', 'overall'];
+  const dims = ['atomicity', 'dependencies', 'coverage', 'granularity', 'completeness', 'context', 'naming', 'tech-leakage', 'scope-clarity', 'risk-ordering', 'expected-files', 'overall'];
   for (const dim of dims) {
     const dimChecks = checks.filter(c => c.dim === dim);
     if (dimChecks.length === 0) {

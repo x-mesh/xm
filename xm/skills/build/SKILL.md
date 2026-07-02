@@ -273,17 +273,23 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 - `checkpoint <type> [message]` — Record checkpoint
 
 ### Execute Phase
-- `tasks add <name> [--desc "what + why"] [--deps t1,t2] [--size small|medium|large] [--done-criteria "..."] [--team <name>]` — always pass `--desc`; the name is a title, the description is what the executor reads
-- `tasks list` / `tasks remove <id>` / `tasks update <id> --status <s> [--desc "..."] [--done-criteria "..."]`
+- `tasks add <name> [--desc "what + why"] [--deps t1,t2] [--size small|medium|large] [--done-criteria "..."] [--team <name>] [--expected-files "a,b"]` — always pass `--desc`; the name is a title, the description is what the executor reads. `--expected-files` is the parallel-batching signal for worktree mode (see [Worktree Execution Mode](#worktree-execution-mode))
+- `tasks list` / `tasks remove <id>` / `tasks update <id> --status <s> [--desc "..."] [--done-criteria "..."] [--expected-files "a,b"]` (pass an empty string to clear expected files)
 - `tasks done-criteria` — Auto-derive done criteria from PRD for all tasks
 - `later add|list|promote|dismiss|verify-scope` — Capture off-scope work discovered during a task without editing it; verify open later files stayed untouched
 - `steps compute` — Calculate step groups from dependencies
 - `steps status` / `steps next` — Step progress
 - `run` — Execute current step via agents
-- `run --json` — Machine-readable execution plan (also marks ready tasks RUNNING; always emits JSON)
-- `run --reconcile [--dry-run] [--stale-min N]` — Reclaim stale RUNNING tasks (interrupted/abandoned agents) to PENDING
-- `run-status [--json]` — Execution progress; `--json` gives structured state (`all_done`, `steps`, `stale_running`, `blocked_tasks`, `next_action`) for orchestrator routing
+- `run --json` — Machine-readable execution plan (also marks ready tasks RUNNING; always emits JSON). Also emits `worktree_signal` (see [Worktree Execution Mode](#worktree-execution-mode))
+- `run --reconcile [--dry-run] [--stale-min N]` — Reclaim stale RUNNING tasks (interrupted/abandoned agents) to PENDING; `protected[]` lists NEEDS_FIX/BLOCKED/MERGING worktree tasks kept from reconcile
+- `run-status [--json]` — Execution progress; `--json` gives structured state (`all_done`, `steps`, `stale_running`, `blocked_tasks`, `worktree_tasks`, `next_action`) for orchestrator routing
 - `templates list` / `templates use <name>` — Use task templates
+
+**Worktree backend** (optional Execute-phase fan-out — see [Worktree Execution Mode](#worktree-execution-mode)):
+- `run --worktrees [--dry-run] [--max-parallel N] [--base X] [--branch-prefix P] [--no-worktrees] [--json]` — route Execute through the worktree backend
+- `worktrees plan|status|resume [task-id...]|cleanup [--json]` — plan/observe/finish worktree runs (`resume` runs the serialized `gk finish` queue)
+- `gate-panel --project <p> --task <id> --phase before|after|release --patch <path> --json` — panel verdict → merge-gate exit code (0 pass / 1 policy block / 2 wrapper|panel error)
+- `review-integration [--base main] [--target develop] [--max-bytes N] [--json]` — release-time `main...develop` batch review via gate-panel
 
 ### Verify & Close
 - `quality` — Run test/lint/build checks
@@ -323,9 +329,39 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 
 ---
 
+## Worktree Execution Mode
+
+Optional Execute-phase backend: fan parallel-safe tasks out into isolated `gk` worktrees, gate each feature with a panel review before it merges to `base` (default `develop`). JSON schemas: `references/cli-skill-protocol.md`; artifact layout: `references/data-model.md`.
+
+### 3-layer mode decision (no separate wizard or dashboard)
+
+Worktree fan-out is the Execute-phase run backend, decided on top of existing conventions — not a new pipeline:
+1. **config** — `worktree.*` in `.xm/build/config.json` or `.xm/config.json` (persistent project policy). Priority: CLI flag > `.xm/build/config.json` > `.xm/config.json` > defaults; `gate_policy` merges per-key.
+2. **CLI flag** — `run --worktrees` / `run --no-worktrees` overrides config for one run. When a flag is present, skip the layer-3 question.
+3. **phase gate (computed, not asked)** — `run --json` always emits `worktree_signal { enabled, parallel_safe_count, sequential_count, recommend }`; `recommend` is `true` only when `enabled && parallel_safe_count >= 2`.
+   - `recommend: true` → offer fan-out as an option in the EXISTING Execute-entry AskUserQuestion (do not add a new confirmation point).
+   - `recommend: false` → do NOT ask; run sequentially and print one line of reason (≤1 parallel-safe task, or no `expected_files`).
+
+Parallel-safety comes from per-task `expected_files[]`: non-overlapping expected files → parallel-safe; missing or overlapping → sequential (when in doubt, sequential). Set via `tasks add|update --expected-files "a,b"`.
+
+**Dashboard is observe-only** — never a control plane. It reads `worktree_tasks[]`; intervention (resume, resume-accept) happens at the terminal.
+
+Two drive modes share the same command surface: interactive orchestrator (`/xm:build` fans subagents into worktree cwds) and headless CLI (a human works each worktree, finishes with the same `worktrees resume` / `gate-panel`).
+
+### Execution & finish (agent path)
+
+- Real fan-out (`run --worktrees`, non-dry-run, gk gate-capable) acquires the first parallel batch, writes `run.json` + a `TASK-CONTEXT.md` snapshot per worktree, and emits `tasks[]` with `branch` / `worktree` / `env` / `acquired` / `worktree_status`. **Inject `entry.env` (`X_BUILD_ROOT` / `X_PANEL_ROOT` / `XM_ROOT`) into every spawned worktree subagent** — without it the agent reads the main repo's `.xm/` as empty. When no task is parallel-safe, the plan falls back to acquiring the first sequential task alone (`sequential_fallback: true`, `parallel: false`).
+- Worktree `tasks[]` entries carry NO `on_complete`/`on_fail` — only a `completion_note`. Worktree subagents must NOT run `tasks update ... completed`; the gk finish gate is the sole completion path (the orchestrator flips tasks.json to completed only after the gate passes).
+- `finish.auto` is always `false`. After agents complete AND local verify passes, call `worktrees resume [task-id...]` — that drives the serialized `gk finish` queue (one at a time under the target merge lock). NEVER auto-run finish from the run plan.
+- `--dry-run` emits the plan only (no gk). Degraded mode (preflight found no gk `--gate`) falls back to `mode: "manual-handoff"`: print the commands for the human to run; xm does not drive gk.
+
+### After-gate paused is a human decision
+
+When a finish returns after-gate `paused` (`worktree_status: BLOCKED`, `recover[]` saved), do NOT auto-run `gk ... --resume-accept`. `worktrees resume` drives every resumable task (all worktree statuses EXCEPT `BLOCKED`/`DONE`/`READY`, so happy-path `WORKTREE_CREATED`/`RUNNING`/`VERIFYING`/`REVIEWING` and `NEEDS_FIX`/`MERGING` all enter the finish queue); it skips `BLOCKED` with guidance. The accept (merge kept) vs rewind (`recover[]`) call belongs to the user.
+
 ## CLI↔Skill JSON Protocol
 
-See `references/cli-skill-protocol.md` — JSON output schema for next/discuss/research/plan/run commands, action types, run task schema, agent_type → subagent_type mapping.
+See `references/cli-skill-protocol.md` — JSON output schema for next/discuss/research/plan/run commands, action types, run task schema, agent_type → subagent_type mapping, and the worktree-mode / worktree_signal / worktree_tasks schemas.
 
 ---
 
@@ -416,6 +452,9 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | "next phase" | `phase next` |
 | "approve", "LGTM" | `gate pass` |
 | "execute", "run" | `run` |
+| "worktree로 병렬 실행", "병렬 브랜치로 실행" | `run --worktrees` |
+| "worktree 상태", "병렬 작업 상태" / "worktree 재개", "gate 다시 태우기" | `worktrees status` / `worktrees resume` |
+| "release 전 통합 리뷰", "develop 배치 리뷰" | `review-integration` |
 | "cost" | `forecast` |
 | "coverage" | `verify-coverage` |
 | "save session" | `handoff` |
