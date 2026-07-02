@@ -56,6 +56,12 @@ function writeRequirements(tmp, name, content) {
   writeFileSync(join(ctxDir, 'REQUIREMENTS.md'), content);
 }
 
+function writeSharedConfig(tmp, cfg) {
+  const xmDir = join(tmp, '.xm');
+  mkdirSync(xmDir, { recursive: true });
+  writeFileSync(join(xmDir, 'config.json'), JSON.stringify(cfg, null, 2));
+}
+
 describe('plan-check dimensions', () => {
   test('scope-clarity warns on missing done_criteria', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
@@ -294,6 +300,101 @@ describe('consensus', () => {
       expect(output.agents).toBeArray();
       expect(output.agents.length).toBe(4);
       expect(output.agents.map(a => a.role)).toEqual(['architect', 'critic', 'planner', 'security']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('agent models follow model_profile from shared config (economy → all sonnet)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePRD(tmp, name, '# PRD\n## 1. Goal\nBuild API\n');
+      writeSharedConfig(tmp, { model_profile: 'economy' });
+      const r = run(['consensus'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const output = JSON.parse(r.stdout);
+      expect(output.agents.map(a => a.model)).toEqual(['sonnet', 'sonnet', 'sonnet', 'sonnet']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('model_overrides beats profile for consensus agents', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePRD(tmp, name, '# PRD\n## 1. Goal\nBuild API\n');
+      writeSharedConfig(tmp, { model_profile: 'economy', model_overrides: { critic: 'opus' } });
+      const r = run(['consensus'], { cwd: tmp });
+      const output = JSON.parse(r.stdout);
+      expect(output.agents.find(a => a.role === 'critic').model).toBe('opus');
+      expect(output.agents.find(a => a.role === 'architect').model).toBe('sonnet');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('deterministic model emission (research / plan / next)', () => {
+  test('research emits agents_spec with researcher role and profile-driven model', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeSharedConfig(tmp, { model_profile: 'economy' });
+      const r = run(['research', 'topic'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const output = JSON.parse(r.stdout);
+      expect(output.agents_spec).toBeArray();
+      expect(output.agents_spec.length).toBe(4);
+      for (const spec of output.agents_spec) {
+        expect(spec.role).toBe('researcher');
+        expect(spec.model).toBe('haiku'); // economy.researcher
+      }
+      expect(output.model).toBe('haiku');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('research --model flag overrides profile-driven model', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeSharedConfig(tmp, { model_profile: 'economy' });
+      const r = run(['research', 'topic', '--model', 'opus'], { cwd: tmp });
+      const output = JSON.parse(r.stdout);
+      expect(output.model).toBe('opus');
+      expect(output.agents_spec.every(s => s.model === 'opus')).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('plan emits prd_writer spec routed as large planner task', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeSharedConfig(tmp, { model_profile: 'economy' });
+      const r = run(['plan', 'Build API'], { cwd: tmp });
+      const output = JSON.parse(r.stdout);
+      expect(output.prd_writer).toEqual({ role: 'planner', model: 'sonnet' }); // economy.planner
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('next --json plan action includes prd_writer spec', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['phase', 'set', 'plan'], { cwd: tmp });
+      writePRD(tmp, name, '# PRD\n\n## 1. Goal\nBuild API\n');
+      writeSharedConfig(tmp, { model_profile: 'default' });
+      const r = run(['next', '--json'], { cwd: tmp });
+      const output = JSON.parse(r.stdout);
+      expect(output.action).toBe('plan');
+      expect(output.prd_writer).toEqual({ role: 'planner', model: 'opus' }); // default.planner
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

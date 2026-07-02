@@ -28,4 +28,13 @@ describe('repo consistency', () => {
     expect(readBadgeVersion('README.md')).toBe(pkg.version);
     expect(readBadgeVersion('README.ko.md')).toBe(pkg.version);
   });
+
+  test('dashboard CFG_ROLE_NAMES matches the canonical MODEL_PROFILES role set', async () => {
+    const ce = await import(join(REPO, 'x-build', 'lib', 'x-build', 'cost-engine.mjs'));
+    const appJs = readFileSync(join(REPO, 'x-dashboard', 'public', 'app.js'), 'utf8');
+    const match = appJs.match(/const CFG_ROLE_NAMES = (\[[^\]]*\])/);
+    expect(match).not.toBeNull();
+    const uiRoles = JSON.parse(match[1].replace(/'/g, '"'));
+    expect([...uiRoles].sort()).toEqual(Object.keys(ce.MODEL_PROFILES.default).sort());
+  });
 });
