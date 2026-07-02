@@ -425,6 +425,7 @@ export function setCmdInit(fn) { _cmdInit = fn; }
 // not needed because each `node` invocation owns its own module state.
 let _explicitProject = null;
 export function setExplicitProject(name) { _explicitProject = name || null; }
+export function getExplicitProject() { return _explicitProject; }
 
 export function resolveProject(explicit, { autoInit = false } = {}) {
   const name = explicit || _explicitProject || findCurrentProject();

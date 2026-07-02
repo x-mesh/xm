@@ -32,9 +32,42 @@ Directory layout and JSON schemas for `.xm/build/` project state.
 │   └── 05-close/
 │       └── summary.md
 ├── checkpoints/               # Manual markers
-└── metrics/
-    └── sessions.jsonl         # Append-only metrics (auto-rotated at 5MB)
+├── metrics/
+│   └── sessions.jsonl         # Append-only metrics (auto-rotated at 5MB)
+└── worktrees/                 # Worktree pipeline artifacts (worktree mode only)
+    ├── preflight.json         # Capability probe (gate_capable, degraded, panel_ok)
+    └── <task-id>/
+        ├── run.json           # Per-task worktree run record (see below)
+        ├── task-context.md    # CANONICAL task context (worktree TASK-CONTEXT.md is a snapshot of this)
+        ├── panel-before.json  # gate-panel verdict artifacts (before/after)
+        ├── panel-after.json
+        ├── patch-before.diff  # gate patches (before/after; release under __integration__)
+        └── patch-after.diff
 ```
+
+## Worktree Run Schema (`worktrees/<task-id>/run.json`)
+
+Single writer: the orchestrator. Worktree agents never write it. `worktree_status` is a separate axis from canonical `task_status` (no new `tasks.json` enum is introduced).
+
+```json
+{
+  "task_id": "t3",
+  "branch": "feat/t3-search-index",
+  "worktree": "/path/to/worktree",
+  "base": "develop",
+  "task_status": "running | completed | failed",
+  "worktree_status": "READY | WORKTREE_CREATED | RUNNING | VERIFYING | REVIEWING | MERGING | DONE | BLOCKED | NEEDS_FIX",
+  "gk_runs": [],
+  "panel_artifacts": [],
+  "gk_gate_run_id": "gk audit run id | null",
+  "last_error": null,
+  "recover": []
+}
+```
+
+The reserved `__integration__` task id holds release-time `main...develop` batch review artifacts (`patch-release.diff` + panel verdict).
+
+Worktree `worktree.*` config resolves: CLI flag > `.xm/build/config.json` > `.xm/config.json` > defaults; `gate_policy` merges per-key across layers.
 
 ## Task Schema (`tasks.json`)
 
@@ -50,6 +83,7 @@ Directory layout and JSON schemas for `.xm/build/` project state.
     "done_criteria": [
       "Acceptance criteria or verification contract"
     ],
+    "expected_files": ["src/a.mjs", "src/b.mjs"],
     "strategy": "refine | review | null",
     "team": "team name | null",
     "created_at": "ISO8601",
@@ -60,6 +94,8 @@ Directory layout and JSON schemas for `.xm/build/` project state.
   }]
 }
 ```
+
+`expected_files[]` (added for worktree mode): the parallel-batching signal. Tasks with non-overlapping expected files are parallel-safe; missing/empty or overlapping → sequential. Set via `tasks add|update --expected-files "a,b"`. Absent on tasks written before the field existed (normalizes to `[]`).
 
 ## Steps Schema (`steps.json`)
 
