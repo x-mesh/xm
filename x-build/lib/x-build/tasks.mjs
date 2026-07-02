@@ -15,7 +15,23 @@ import {
   getCircuitState, resetCircuitBreaker,
   existsSync, join, mkdirSync,
   createRL, ask, pickMenu, E, exitFail,
+  readdirSync, repoRoot,
 } from './core.mjs';
+// Worktree orchestration lives in worktrees.mjs; the expected_files utils and
+// config resolver live in the shared leaf. tasks.mjs imports both ONE-DIRECTION
+// (nothing here is imported back), so there is no cycle — see worktree-shared.mjs.
+import {
+  worktreesDir, readRun, WORKTREE_STATUS,
+  planWorktrees, runPreflight, acquireWorktree, buildAgentEnv,
+  listExistingBranches,
+} from './worktrees.mjs';
+import {
+  isParallelSafe, normalizeExpectedFiles, expectedFilesOverlap, loadWorktreeConfig,
+} from './worktree-shared.mjs';
+
+// Re-export the expected_files utils so existing importers (tests) that pull them
+// from tasks.mjs keep working after the move to the shared leaf.
+export { isParallelSafe, normalizeExpectedFiles, expectedFilesOverlap };
 
 // ── cmdTasks ────────────────────────────────────────────────────────
 
@@ -76,6 +92,28 @@ function expandReqRefs(name, reqMap) {
   }
   return out;
 }
+
+// ── expected_files (worktree parallel-batching signal) ──────────────
+//
+// Plan-phase produces per-task `expected_files[]` so the worktree pipeline can
+// decide which ready tasks are safe to run in parallel. The canonical rule is
+// "when in doubt, run sequentially": a task with no/empty expected_files, or one
+// whose files intersect another task's, is NOT parallel-safe.
+
+// Parse a comma-separated --expected-files value into a normalized string[].
+// undefined  → [] (field absent — treated as no expected files)
+// true / ""  → [] (flag given without value → explicit empty)
+// "a,b"      → ['a', 'b'] (trimmed, blanks dropped)
+function parseExpectedFiles(raw) {
+  if (raw === undefined) return [];
+  if (raw === true || raw === '') return [];
+  if (typeof raw !== 'string') return [];
+  return raw.split(',').map(f => f.trim()).filter(Boolean);
+}
+
+// normalizeExpectedFiles / expectedFilesOverlap / isParallelSafe now live in
+// worktree-shared.mjs (imported + re-exported at the top of this file) so
+// worktrees.mjs can use them without importing tasks.mjs (cycle relief, t10 §4).
 
 export function taskDoneCriteria(project) {
   const data = readJSON(tasksPath(project));
@@ -176,7 +214,7 @@ export function taskAdd(project, args) {
   const name = positional.join(' ');
 
   if (!name) {
-    console.error('Usage: x-build tasks add <name> [--desc "what+why"] [--deps t1,t2] [--size small|medium|large] [--strategy refine] [--rubric general]');
+    console.error('Usage: x-build tasks add <name> [--desc "what+why"] [--deps t1,t2] [--size small|medium|large] [--strategy refine] [--rubric general] [--expected-files a.mjs,b.mjs]');
     exitFail(1);
   }
 
@@ -208,6 +246,11 @@ export function taskAdd(project, args) {
   const description = typeof opts.desc === 'string' && opts.desc.trim() ? opts.desc.trim() : null;
   const rawCriteria = opts['done-criteria'] || null;
   const doneCriteria = rawCriteria ? rawCriteria.split(';').map(c => c.trim()).filter(Boolean) : null;
+  if (opts['expected-files'] !== undefined && typeof opts['expected-files'] !== 'string') {
+    console.error('❌ --expected-files requires a value. Usage: --expected-files "a.mjs,b.mjs"');
+    exitFail(1);
+  }
+  const expectedFiles = parseExpectedFiles(opts['expected-files']);
 
   const task = {
     id,
@@ -221,6 +264,7 @@ export function taskAdd(project, args) {
     team,
     score: null,
     done_criteria: doneCriteria,
+    expected_files: expectedFiles,
     status: TASK_STATES.PENDING,
     created_at: new Date().toISOString(),
   };
@@ -366,13 +410,14 @@ export function taskUpdate(project, args) {
   const id = positional[0];
   const rawStatus = opts.status;
 
-  if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined && opts.desc === undefined)) {
+  if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined && opts.desc === undefined && opts['expected-files'] === undefined)) {
     console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed> [--no-commit]');
     console.error('       x-build tasks update <task-id> --status completed --tokens-in <n> --tokens-out <n>  (record actual cost)');
     console.error('       x-build tasks update <task-id> --score <number>');
     console.error('       x-build tasks update <task-id> --desc "what + why"  (set task description)');
     console.error('       x-build tasks update <task-id> --done-criteria "criteria text"');
     console.error('       x-build tasks update <task-id> --deps t1,t2  (replace dependency list; pass empty string to clear)');
+    console.error('       x-build tasks update <task-id> --expected-files a.mjs,b.mjs  (replace expected file list; pass empty string to clear)');
     exitFail(1);
   }
 
@@ -409,6 +454,13 @@ export function taskUpdate(project, args) {
       }
       task.done_criteria = opts['done-criteria'].split(';').map(c => c.trim()).filter(Boolean);
       updatedFields.push('done_criteria updated');
+    }
+
+    if (opts['expected-files'] !== undefined) {
+      // parseOptions collapses `--expected-files` (no value) and `--expected-files ""`
+      // to `true`; both mean "clear". A string is parsed as comma-separated paths.
+      task.expected_files = parseExpectedFiles(opts['expected-files']);
+      updatedFields.push(`expected_files: [${task.expected_files.join(', ')}]`);
     }
 
     if (opts.deps !== undefined) {
@@ -871,7 +923,7 @@ function taskUpdateCommand(taskId, status) {
 
 // ── Execution Engine ────────────────────────────────────────────────
 
-function buildAgentPrompt(project, task, briefContent, decisionsContent, { manifest, taskData, stepData } = {}) {
+function buildAgentPrompt(project, task, briefContent, decisionsContent, { manifest, taskData, stepData, worktree = false } = {}) {
   manifest = manifest || readJSON(manifestPath(project));
   const lines = [
     `## Task: ${task.name}`,
@@ -945,10 +997,26 @@ function buildAgentPrompt(project, task, briefContent, decisionsContent, { manif
     'Follow existing code patterns and conventions.',
     'Write clean, tested code.',
     '',
-    '## On Completion',
-    `After completing this task, run: ${taskUpdateCommand(task.id, 'completed')}`,
-    `If the task fails, run: ${taskUpdateCommand(task.id, 'failed')}`,
   );
+
+  if (worktree) {
+    // Worktree tasks merge through a gk finish gate. Completion is marked by the
+    // orchestrator ONLY after the gate passes — never by the agent (F1). Marking
+    // it here would flip tasks.json to completed before the gate ran, and a gate
+    // failure would leave a false "completed" that unblocks downstream tasks.
+    lines.push(
+      '## On Completion',
+      'This task runs in a dedicated git worktree behind a merge gate.',
+      'Do NOT mark the task complete or failed yourself — the orchestrator marks completion ONLY after `gk worktree finish` passes the gate.',
+      'When your work is done and local quality checks pass, stop and report back; the orchestrator runs the finish/gate step.',
+    );
+  } else {
+    lines.push(
+      '## On Completion',
+      `After completing this task, run: ${taskUpdateCommand(task.id, 'completed')}`,
+      `If the task fails, run: ${taskUpdateCommand(task.id, 'failed')}`,
+    );
+  }
 
   return lines.join('\n');
 }
@@ -957,32 +1025,91 @@ function buildAgentPrompt(project, task, briefContent, decisionsContent, { manif
 // from a crashed/abandoned agent) is considered stale and reclaimable.
 const DEFAULT_STALE_RUNNING_MS = 30 * 60 * 1000; // 30 min
 
+// worktree_status values that mean "a human/orchestrator must act" — a stale
+// RUNNING task carrying one of these is NOT an abandoned orphan, so it must be
+// protected from the RUNNING→PENDING reconcile (plan "상태 모델": NEEDS_FIX/
+// BLOCKED must not be reverted to a plain stale RUNNING).
+// The tasks.mjs ↔ worktrees.mjs cycle was removed in t10 (worktrees.mjs no
+// longer imports tasks.mjs — the shared utils moved to worktree-shared.mjs), so
+// WORKTREE_STATUS is no longer at TDZ risk. The lazy init is kept as cheap
+// defense-in-depth; it is only ever read at call time regardless.
+let _reconcileProtected = null;
+function reconcileProtectedWorktreeStatus() {
+  if (!_reconcileProtected) {
+    _reconcileProtected = new Set([
+      WORKTREE_STATUS.NEEDS_FIX,
+      WORKTREE_STATUS.BLOCKED,
+      WORKTREE_STATUS.MERGING,
+    ]);
+  }
+  return _reconcileProtected;
+}
+
+// Decide whether a stale RUNNING task should be reclaimed to PENDING, using its
+// worktree artifact (run.json) as evidence. Reclaim only when there is no live
+// worktree behind the RUNNING status:
+//   - no run.json artifact        -> orphan from a crashed agent  -> reclaim
+//   - artifact + worktree path gone -> worktree lost              -> reclaim
+// Otherwise protect it (NEEDS_FIX/BLOCKED/MERGING, or an artifact whose worktree
+// still exists) and surface the reason — never a silent exclusion.
+// Returns { reconcile, reason, worktree_status }.
+function classifyStaleRunning(project, task) {
+  let run = null;
+  try { run = readRun(project, task.id); } catch { run = null; }
+  if (!run) return { reconcile: true, reason: 'no_worktree_artifact', worktree_status: null };
+  const ws = run.worktree_status ?? null;
+  // run.json exists but no worktree path (acquire never produced one — e.g. a
+  // BLOCKED acquire) → there is nothing live behind the RUNNING status, so it is
+  // reclaimable, not "active" (F8). Empty/whitespace strings count as absent.
+  if (!run.worktree || (typeof run.worktree === 'string' && !run.worktree.trim())) {
+    return { reconcile: true, reason: 'no_worktree_path', worktree_status: ws };
+  }
+  if (!existsSync(run.worktree)) {
+    return { reconcile: true, reason: 'worktree_missing', worktree_status: ws };
+  }
+  const reason = ws && reconcileProtectedWorktreeStatus().has(ws)
+    ? `worktree_status:${ws}`
+    : `worktree_active:${ws ?? 'unknown'}`;
+  return { reconcile: false, reason, worktree_status: ws };
+}
+
 // Reclaim stale RUNNING tasks back to PENDING so an interrupted session can
 // resume. Explicit (run --reconcile) rather than automatic — RUNNING→PENDING is
-// a state mutation, so it should be a deliberate recovery action. Returns the
-// reclaimed task descriptors; dryRun reports without writing.
+// a state mutation, so it should be a deliberate recovery action.
+// Returns { reclaimed, protected } — `protected` lists stale RUNNING tasks that
+// were deliberately NOT reclaimed (with a reason), so exclusions stay visible.
+// dryRun reports without writing.
 function reconcileStaleRunning(project, { staleMs = DEFAULT_STALE_RUNNING_MS, dryRun = false } = {}) {
   const now = Date.now();
   const reclaimed = [];
+  const protectedTasks = [];
   const isStale = (t) => {
     if (t.status !== TASK_STATES.RUNNING) return false;
     const age = t.started_at ? now - new Date(t.started_at).getTime() : Infinity;
     return age > staleMs;
   };
 
-  if (dryRun) {
-    const data = readJSON(tasksPath(project));
-    for (const t of data?.tasks || []) {
-      if (isStale(t)) reclaimed.push({ id: t.id, name: t.name });
-    }
-    return reclaimed;
+  // Partition stale RUNNING tasks into reclaimable vs protected up front so both
+  // the dry-run and write paths share one decision (no drift between preview and
+  // effect). classifyStaleRunning reads run.json, which is not mutated here.
+  const data = readJSON(tasksPath(project));
+  const decisions = new Map();
+  for (const t of data?.tasks || []) {
+    if (!isStale(t)) continue;
+    const d = classifyStaleRunning(project, t);
+    decisions.set(t.id, d);
+    if (d.reconcile) reclaimed.push({ id: t.id, name: t.name, reason: d.reason });
+    else protectedTasks.push({ id: t.id, name: t.name, reason: d.reason, worktree_status: d.worktree_status });
   }
 
-  modifyJSON(tasksPath(project), (data) => {
-    if (!data?.tasks) return data;
-    for (const t of data.tasks) {
+  if (dryRun) return { reclaimed, protected: protectedTasks };
+
+  modifyJSON(tasksPath(project), (fresh) => {
+    if (!fresh?.tasks) return fresh;
+    for (const t of fresh.tasks) {
       if (!isStale(t)) continue;
-      reclaimed.push({ id: t.id, name: t.name });
+      const d = decisions.get(t.id) ?? classifyStaleRunning(project, t);
+      if (!d.reconcile) continue;
       t.reopen_history = t.reopen_history || [];
       t.reopen_history.push({ at: new Date().toISOString(), reason: 'stale_running_reconciled', from_status: 'running' });
       t.status = TASK_STATES.PENDING;
@@ -992,9 +1119,36 @@ function reconcileStaleRunning(project, { staleMs = DEFAULT_STALE_RUNNING_MS, dr
       delete t._estimated_cost;
       delete t.next_retry_at;
     }
-    return data;
+    return fresh;
   });
-  return reclaimed;
+  return { reclaimed, protected: protectedTasks };
+}
+
+// Read every worktree run.json under a project and project the plan's
+// worktree_tasks[] shape. Empty array when no artifacts exist (back-compat:
+// callers keep their existing fields). Non-directory entries (preflight.json)
+// and dirs without run.json are skipped via readRun returning null.
+function collectWorktreeTasks(project) {
+  const dir = worktreesDir(project);
+  if (!existsSync(dir)) return [];
+  const out = [];
+  let entries = [];
+  try { entries = readdirSync(dir); } catch { return []; }
+  for (const entry of entries) {
+    let run = null;
+    try { run = readRun(project, entry); } catch { run = null; }
+    if (!run) continue;
+    out.push({
+      task_id: run.task_id ?? entry,
+      branch: run.branch ?? null,
+      worktree: run.worktree ?? null,
+      worktree_status: run.worktree_status ?? null,
+      task_status: run.task_status ?? null,
+      gk_gate_run_id: run.gk_gate_run_id ?? null,
+      last_error: run.last_error ?? null,
+    });
+  }
+  return out;
 }
 
 // Mark ready tasks RUNNING and stamp routing/cost/start metadata, then persist.
@@ -1024,6 +1178,153 @@ function markTasksRunning(taskData, readyTasks, sharedCfg, project, step) {
   return marked;
 }
 
+// Build one agent execution-plan entry (shared by the normal --json path and the
+// worktree fan-out path so both emit an identical task schema). Model prefers the
+// routing decision persisted by markTasksRunning (_assigned_model) so the emitted
+// model matches the one recorded on completion.
+function buildPlanEntry(project, task, { briefContent, decisionsContent, manifest, taskData, stepData, sharedCfg }, { worktree = false } = {}) {
+  const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
+  const model = task._assigned_model || getModelForRole(role, task.size, sharedCfg);
+  const entry = {
+    task_id: task.id,
+    task_name: task.name,
+    size: task.size,
+    role,
+    agent_type: role === 'deep-executor' || model === 'opus' ? 'deep-executor' : 'executor',
+    model,
+    prompt: buildAgentPrompt(project, task, briefContent, decisionsContent, { manifest, taskData, stepData, worktree }),
+  };
+  if (worktree) {
+    // Worktree entries carry NO task-status mutation commands (F1): the gk finish
+    // gate is the ONLY completion path (finishWorktrees ok → markTaskCompleted).
+    entry.completion_note = 'Managed worktree task — do NOT self-mark complete/failed. The orchestrator marks completion only after the gk finish gate passes.';
+  } else {
+    entry.on_complete = taskUpdateCommand(task.id, 'completed');
+    entry.on_fail = taskUpdateCommand(task.id, 'failed');
+  }
+  if (task.strategy) {
+    entry.strategy = task.strategy;
+    entry.strategy_hint = `Use /xm:op ${task.strategy} for this task`;
+  } else {
+    const suggested = suggestStrategy(task.name);
+    if (suggested) entry.strategy_suggestion = suggested;
+  }
+  if (task.team) {
+    entry.team = task.team;
+    entry.team_hint = `Use /x-agent team assign ${task.team} "${task.name}"`;
+  }
+  return entry;
+}
+
+// Worktree fan-out — the Execute-phase backend (plan "실행 모드 결정"). Emits a
+// machine-readable plan for the skill orchestrator. gk is NEVER auto-finished
+// here: after agents complete + verify, the orchestrator calls
+// `worktrees resume` / finishWorktrees (finish is serialized under the merge
+// lock). Preflight-degraded or --dry-run emit the plan WITHOUT touching gk.
+function runWorktreeMode(ctx) {
+  const {
+    project, currentStep, stepData, readyTasks, config, opts,
+    budgetExceeded, worktreeSignal, planEntryCtx, taskData, sharedCfg,
+  } = ctx;
+  const dryRun = opts['dry-run'] !== undefined;
+  const cwd = process.cwd();
+
+  // Budget hard stop mirrors the normal path: no plan, exit 1.
+  if (budgetExceeded) {
+    console.log(JSON.stringify({
+      project, step: currentStep.id, total_steps: stepData.steps.length,
+      mode: 'worktree', tasks: [], blocked: true, blocked_reason: 'budget_exceeded',
+      worktree_signal: worktreeSignal,
+    }, null, 2));
+    process.exitCode = 1;
+    return;
+  }
+
+  // Capability preflight. Degraded (gk has no --gate) → manual handoff: emit the
+  // plan (commands to run by hand) but never drive gk. dry-run doesn't depend on
+  // the gate surface either, so both short-circuit before any gk execution.
+  const preflight = config.preflight === false ? null : runPreflight({ project, cwd });
+  const degraded = preflight ? preflight.degraded : false;
+
+  // Feed existing local branches so planWorktrees's collision suffix (feat/x,
+  // feat/x-2, …) actually avoids branches already on disk (F9/F11). spawnSync,
+  // no shell.
+  const existingBranches = listExistingBranches(cwd);
+  const plan = planWorktrees({ project, tasks: readyTasks, config, existingBranches, degraded });
+  plan.step = currentStep.id;
+  plan.total_steps = stepData.steps.length;
+  plan.worktree_signal = worktreeSignal;
+  plan.preflight = preflight;
+
+  if (dryRun || degraded) {
+    // planWorktrees already set mode to 'manual-handoff' (degraded) or 'dry-run'.
+    console.log(JSON.stringify(plan, null, 2));
+    return;
+  }
+
+  // Real fan-out: acquire the first parallel batch (bounded by max_parallel via
+  // planWorktrees's batching). Each acquire inits run.json + drops the
+  // TASK-CONTEXT snapshot. finish stays with the orchestrator.
+  // Prefer the first parallel batch. When NO task is parallel-safe (batch empty)
+  // but sequential tasks exist, fall back to acquiring the FIRST sequential task
+  // alone (F4/F5) — otherwise a step made entirely of overlapping/unknown-file
+  // tasks would acquire nothing and the pipeline would stall. Each subsequent
+  // `run --worktrees` picks up the next sequential task once this one completes.
+  let sequentialFallback = false;
+  let selectedIds = plan.parallel_batches[0] || [];
+  if (selectedIds.length === 0 && plan.sequential.length > 0) {
+    selectedIds = [plan.sequential[0]];
+    sequentialFallback = true;
+  }
+  const batchTasks = selectedIds.map((id) => readyTasks.find((t) => t.id === id)).filter(Boolean);
+  // Use the branch planWorktrees computed (collision-adjusted) so acquire and the
+  // emitted plan agree on the branch name.
+  const branchByTask = new Map(plan.tasks.map((e) => [e.task_id, e.branch]));
+
+  const agentEnv = buildAgentEnv(repoRoot());
+  const acquireResults = batchTasks.map((task) => ({
+    task,
+    res: acquireWorktree({ project, task, config, branch: branchByTask.get(task.id) || null, cwd }),
+  }));
+
+  // Mark only the successfully-acquired tasks RUNNING (routing/cost/started_at)
+  // so a later `tasks update completed` records a metric with the right model.
+  const acquired = acquireResults.filter((a) => a.res.ok).map((a) => a.task);
+  if (acquired.length) markTasksRunning(taskData, acquired, sharedCfg, project, currentStep.id);
+
+  const entries = acquireResults.map(({ task, res }) => {
+    const entry = buildPlanEntry(project, task, planEntryCtx, { worktree: true });
+    entry.branch = res.branch;
+    entry.worktree = res.worktree || null;
+    entry.env = agentEnv;                       // root env injection (X_BUILD_ROOT/X_PANEL_ROOT/XM_ROOT)
+    entry.acquired = res.ok;
+    entry.worktree_status = res.ok ? WORKTREE_STATUS.WORKTREE_CREATED : WORKTREE_STATUS.BLOCKED;
+    if (!res.ok) entry.acquire_error = res.error;
+    return entry;
+  });
+
+  console.log(JSON.stringify({
+    project,
+    step: currentStep.id,
+    total_steps: stepData.steps.length,
+    mode: 'worktree',
+    base: config.base,
+    max_parallel: config.max_parallel,
+    parallel: acquired.length > 1,
+    sequential_fallback: sequentialFallback,
+    degraded: false,
+    worktree_signal: worktreeSignal,
+    tasks: entries,
+    batches: plan.parallel_batches,
+    sequential: plan.sequential,
+    // finish is NOT auto-run — the orchestrator drives it after agents complete.
+    finish: {
+      auto: false,
+      hint: 'After agents complete + verify, run: xm build worktrees resume [task-id...] (orchestrator finishWorktrees). gk finish is serialized under the target merge lock.',
+    },
+  }, null, 2));
+}
+
 export function cmdRun(args) {
   const { opts } = parseOptions(args);
   const project = resolveProject(null);
@@ -1038,13 +1339,26 @@ export function cmdRun(args) {
   if (opts.reconcile) {
     const staleMs = opts['stale-min'] != null ? Number(opts['stale-min']) * 60000 : DEFAULT_STALE_RUNNING_MS;
     const dryRun = opts['dry-run'] !== undefined;
-    const reclaimed = reconcileStaleRunning(project, { staleMs, dryRun });
+    const { reclaimed, protected: protectedTasks } = reconcileStaleRunning(project, { staleMs, dryRun });
     if (opts.json) {
-      console.log(JSON.stringify({ project, reconciled: reclaimed.map((r) => r.id), count: reclaimed.length, dry_run: dryRun }, null, 2));
-    } else if (reclaimed.length) {
-      console.log(`${C.yellow}🩹 ${dryRun ? 'Would reconcile' : 'Reconciled'} ${reclaimed.length} stale RUNNING task(s) → PENDING:${C.reset} ${reclaimed.map((r) => r.id).join(', ')}`);
+      console.log(JSON.stringify({
+        project,
+        reconciled: reclaimed.map((r) => r.id),
+        count: reclaimed.length,
+        // Stale RUNNING tasks deliberately kept (NEEDS_FIX/BLOCKED/MERGING or a
+        // live worktree) — surfaced so the exclusion is never silent.
+        protected: protectedTasks.map((p) => ({ id: p.id, reason: p.reason, worktree_status: p.worktree_status })),
+        dry_run: dryRun,
+      }, null, 2));
     } else {
-      console.log(`${C.green}✓ No stale RUNNING tasks to reconcile.${C.reset}`);
+      if (reclaimed.length) {
+        console.log(`${C.yellow}🩹 ${dryRun ? 'Would reconcile' : 'Reconciled'} ${reclaimed.length} stale RUNNING task(s) → PENDING:${C.reset} ${reclaimed.map((r) => r.id).join(', ')}`);
+      } else {
+        console.log(`${C.green}✓ No stale RUNNING tasks to reconcile.${C.reset}`);
+      }
+      if (protectedTasks.length) {
+        console.log(`${C.dim}🛡 Kept ${protectedTasks.length} stale RUNNING task(s) with active worktrees:${C.reset} ${protectedTasks.map((p) => `${p.id} (${p.worktree_status || p.reason})`).join(', ')}`);
+      }
     }
     return;
   }
@@ -1171,40 +1485,44 @@ export function cmdRun(args) {
   const budgetStatus = checkBudget(cost);
   const budgetExceeded = !!(budgetStatus.budget && budgetStatus.level === 'exceeded');
 
+  // Worktree execution-mode decision (plan "실행 모드 결정"). The recommendation
+  // is COMPUTED, not asked: worktree fan-out is only worth it when ≥2 ready tasks
+  // are parallel-safe (non-overlapping expected_files) AND config enables it. The
+  // signal is emitted on run --json regardless of mode so the Execute phase gate
+  // can suggest fan-out. Flags: --worktrees/--no-worktrees override config.enabled.
+  const wtFlags = {};
+  if (typeof opts.base === 'string') wtFlags.base = opts.base;
+  if (opts['max-parallel'] != null && opts['max-parallel'] !== true) wtFlags.max_parallel = Number(opts['max-parallel']);
+  if (typeof opts['branch-prefix'] === 'string') wtFlags.branch_prefix = opts['branch-prefix'];
+  if (opts['no-worktrees'] !== undefined) wtFlags.enabled = false;
+  else if (opts.worktrees !== undefined) wtFlags.enabled = true;
+  const wtConfig = loadWorktreeConfig({ flags: wtFlags });
+  const { safe: wtSafe, sequential: wtSeq } = isParallelSafe(readyTasks);
+  const worktreeSignal = {
+    enabled: wtConfig.enabled !== false,
+    parallel_safe_count: wtSafe.length,
+    sequential_count: wtSeq.length,
+    recommend: (wtConfig.enabled !== false) && wtSafe.length >= 2,
+  };
+
+  const planEntryCtx = { briefContent, decisionsContent, manifest, taskData, stepData, sharedCfg };
+
+  // Explicit --worktrees opt-in routes execution through the worktree backend
+  // (dry-run/degraded emit a plan only; real mode acquires + fans out). --no-
+  // worktrees stays on the normal path even when config enables worktrees.
+  if (opts.worktrees !== undefined && opts['no-worktrees'] === undefined) {
+    return runWorktreeMode({
+      project, currentStep, stepData, readyTasks, config: wtConfig, opts,
+      budgetExceeded, worktreeSignal, planEntryCtx, taskData, sharedCfg,
+    });
+  }
+
   if (opts.json) {
     // Mark RUNNING on the spawn path too (skip when over budget — plan is []),
     // so a later `tasks update completed` records a metric with the right model
     // and the budget rolling window sees real spend.
     if (!budgetExceeded) markTasksRunning(taskData, readyTasks, sharedCfg, project, currentStep.id);
-    const plan = readyTasks.map(task => {
-      const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
-      // Model comes from the same routing call markTasksRunning persisted, so the
-      // emitted plan model == the model recorded on completion (profile-aware).
-      const model = task._assigned_model || getModelForRole(role, task.size, sharedCfg);
-      const entry = {
-        task_id: task.id,
-        task_name: task.name,
-        size: task.size,
-        role,
-        agent_type: role === 'deep-executor' || model === 'opus' ? 'deep-executor' : 'executor',
-        model,
-        prompt: buildAgentPrompt(project, task, briefContent, decisionsContent, { manifest, taskData, stepData }),
-        on_complete: taskUpdateCommand(task.id, 'completed'),
-        on_fail: taskUpdateCommand(task.id, 'failed'),
-      };
-      if (task.strategy) {
-        entry.strategy = task.strategy;
-        entry.strategy_hint = `Use /xm:op ${task.strategy} for this task`;
-      } else {
-        const suggested = suggestStrategy(task.name);
-        if (suggested) entry.strategy_suggestion = suggested;
-      }
-      if (task.team) {
-        entry.team = task.team;
-        entry.team_hint = `Use /x-agent team assign ${task.team} "${task.name}"`;
-      }
-      return entry;
-    });
+    const plan = readyTasks.map(task => buildPlanEntry(project, task, planEntryCtx));
 
     const output = {
       project,
@@ -1213,6 +1531,7 @@ export function cmdRun(args) {
       tasks: budgetExceeded ? [] : plan,
       parallel: !budgetExceeded && readyTasks.length > 1,
       estimated_cost_usd: Number(cost.toFixed(4)),
+      worktree_signal: worktreeSignal,
     };
     if (budgetStatus.budget) {
       output.budget = {
@@ -1306,21 +1625,31 @@ export function cmdRunStatus(args) {
         if (t.blocked_by) blocked.push({ id: t.id, blocked_by: t.blocked_by });
         if (t.status === TASK_STATES.RUNNING) {
           const age = t.started_at ? now - new Date(t.started_at).getTime() : Infinity;
-          if (age > DEFAULT_STALE_RUNNING_MS) staleRunning.push(t.id);
+          // Only count as stale/reclaimable when the worktree artifact agrees:
+          // NEEDS_FIX/BLOCKED/MERGING or a live worktree must not read as an
+          // orphan RUNNING (which would advise `run --reconcile`).
+          if (age > DEFAULT_STALE_RUNNING_MS && classifyStaleRunning(project, t).reconcile) staleRunning.push(t.id);
         }
       }
     }
+    // Expose worktree artifacts (empty when none — existing fields unchanged).
+    const worktreeTasks = collectWorktreeTasks(project);
+    const needsAttention = worktreeTasks.filter(
+      (w) => w.worktree_status === WORKTREE_STATUS.NEEDS_FIX || w.worktree_status === WORKTREE_STATUS.BLOCKED,
+    );
     const cb = getCircuitState(project);
     let next_action;
     if (allDone) next_action = 'phase next';
     else if (cb.state === 'open') next_action = 'wait for circuit breaker cooldown';
     else if (staleRunning.length) next_action = 'run --reconcile';
+    else if (needsAttention.length) next_action = `worktrees resume or resolve NEEDS_FIX/BLOCKED worktrees: ${needsAttention.map((w) => w.task_id).join(', ')}`;
     else if (stepsOut.some((s) => s.running > 0)) next_action = 'wait for running tasks; poll run-status --json';
     else if (blocked.length || stepsOut.some((s) => s.failed > 0)) next_action = 'investigate failed/blocked tasks';
     else next_action = 'run --json';
     console.log(JSON.stringify({
       project, step: currentStepId, total_steps: stepData.steps.length,
       all_done: allDone, steps: stepsOut, blocked_tasks: blocked, stale_running: staleRunning,
+      worktree_tasks: worktreeTasks,
       circuit_breaker: { state: cb.state, cooldown_until: cb.cooldown_until || null },
       next_action,
     }, null, 2));

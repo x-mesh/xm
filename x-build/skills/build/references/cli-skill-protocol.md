@@ -73,6 +73,125 @@ The model ALWAYS comes from the CLI JSON `model` field (`task.model`, `agents[n]
 | `test-engineer` | `oh-my-claudecode:test-engineer` | `test-engineer` |
 | `build-fixer` | `oh-my-claudecode:build-fixer` | `build-fixer` |
 
+## Worktree Mode JSON
+
+The worktree pipeline is the optional Execute-phase backend. See the SKILL.md "Worktree Execution Mode" section for the decision rules; this section documents the JSON surfaces.
+
+### `worktree_signal` (on every `run --json`)
+
+Emitted regardless of mode so the Execute phase gate can decide whether to offer fan-out:
+
+```json
+{
+  "worktree_signal": {
+    "enabled": true,
+    "parallel_safe_count": 3,
+    "sequential_count": 1,
+    "recommend": true
+  }
+}
+```
+
+- `enabled`: `worktree.enabled` after config + flag resolution (`--worktrees` / `--no-worktrees`).
+- `parallel_safe_count` / `sequential_count`: partition of ready tasks by `expected_files[]` overlap.
+- `recommend`: `true` iff `enabled && parallel_safe_count >= 2`. The skill offers fan-out only when `true`; otherwise runs sequentially with a one-line reason.
+
+### `run --worktrees` — real fan-out plan
+
+Non-dry-run, gk gate-capable. Acquires the first parallel batch, inits `run.json`, drops the `TASK-CONTEXT.md` snapshot, and emits:
+
+```json
+{
+  "project": "my-project",
+  "step": 1,
+  "total_steps": 3,
+  "mode": "worktree",
+  "base": "develop",
+  "max_parallel": 4,
+  "parallel": true,
+  "degraded": false,
+  "worktree_signal": { "...": "..." },
+  "tasks": [{
+    "task_id": "t3",
+    "branch": "feat/t3-search-index",
+    "worktree": "/path/to/worktree",
+    "env": { "X_BUILD_ROOT": "...", "X_PANEL_ROOT": "...", "XM_ROOT": "..." },
+    "acquired": true,
+    "worktree_status": "WORKTREE_CREATED",
+    "prompt": "...", "model": "...", "on_complete": "...", "on_fail": "..."
+  }],
+  "batches": [["t3", "t4"]],
+  "sequential": ["t5"],
+  "finish": { "auto": false, "hint": "After agents complete + verify, run: xm build worktrees resume [task-id...]" }
+}
+```
+
+- Inject `tasks[].env` into every spawned worktree subagent (root env contract). `acquired: false` sets `worktree_status: "BLOCKED"` and adds `acquire_error`.
+- `finish.auto` is always `false` — the orchestrator finishes via `worktrees resume`, never from this plan.
+
+### `run --worktrees --dry-run` / degraded (manual-handoff)
+
+`--dry-run` (or degraded, when preflight found no gk `--gate`) emits the plan WITHOUT touching gk:
+
+```json
+{
+  "project": "my-project", "base": "develop", "branch_prefix": "feat/",
+  "max_parallel": 4, "gate": "panel", "gate_phase": "before",
+  "degraded": false,
+  "mode": "dry-run",
+  "parallel_batches": [["t3", "t4"]],
+  "sequential": ["t5"],
+  "reason": "t5: no expected_files (unknown → sequential)",
+  "tasks": [{
+    "task_id": "t3", "name": "...", "parallel_safe": true,
+    "branch": "feat/t3-search-index", "worktree_hint": "/path/.gk/worktree/repo/feat/t3-...",
+    "acquire": "GK_AGENT=1 git-kit worktree acquire feat/t3-... --from develop",
+    "finish": "GK_AGENT=1 git-kit worktree finish --to develop --gate \"xm build gate-panel ...\" --gate-phase before --cleanup"
+  }],
+  "preflight": { "gate_capable": true, "degraded": false, "panel_ok": true, "...": "..." }
+}
+```
+
+Degraded mode sets `mode: "manual-handoff"` and `degraded: true` — print the `acquire`/`finish` commands for the human; xm will not drive gk.
+
+### `run-status --json` — `worktree_tasks[]`
+
+```json
+{
+  "worktree_tasks": [{
+    "task_id": "t3",
+    "branch": "feat/t3-search-index",
+    "worktree": "/path/to/worktree",
+    "worktree_status": "NEEDS_FIX",
+    "task_status": "running",
+    "gk_gate_run_id": "20260702-...",
+    "last_error": null
+  }],
+  "next_action": "worktrees resume or resolve NEEDS_FIX/BLOCKED worktrees: t3"
+}
+```
+
+`worktree_status` ∈ `READY | WORKTREE_CREATED | RUNNING | VERIFYING | REVIEWING | MERGING | DONE | BLOCKED | NEEDS_FIX` (artifact axis, separate from canonical `task_status`).
+
+### `run --reconcile --json` — `protected[]`
+
+Stale RUNNING tasks kept out of reconcile because their worktree artifact says a human/orchestrator must act:
+
+```json
+{
+  "reconciled": ["t7"],
+  "count": 1,
+  "protected": [{ "id": "t3", "reason": "worktree_status:NEEDS_FIX", "worktree_status": "NEEDS_FIX" }],
+  "dry_run": false
+}
+```
+
+NEEDS_FIX / BLOCKED / MERGING or a live worktree are never reconciled to PENDING.
+
+### `gate-panel` / `review-integration`
+
+`gate-panel --project <p> --task <id> --phase before|after|release --patch <path> --json` returns `{ decision: "pass"|"fail"|"error", exit_code, blocking_findings[], ... }` and exits 0/1/2. `review-integration` builds the `main...develop` patch and runs gate-panel under the reserved `__integration__` id / `release` phase.
+
 ## Applies to
 
 Used by x-build skill routing when parsing CLI JSON output and dispatching to agents.
