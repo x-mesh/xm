@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.33-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.34-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -457,20 +457,44 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 | **에러 복구** | 지수 백오프 자동 재시도, 서킷 브레이커, git 롤백 |
 | **plan-check (11차원)** | 원자성, 의존성, 커버리지 (done_criteria 포함), 세분도 (상한 >15), 완전성, 컨텍스트, 네이밍 (44-동사 사전), 기술 누출, 스코프 명확성 (범위 밖 매칭), 리스크 순서 (DAG 기반), 종합 |
 | **도메인별 done_criteria** | 태스크 도메인, 크기, PRD 비기능 요구사항 기반 자동 생성 |
+| **워크트리 실행** | `run --worktrees`가 병렬 안전한 태스크를 독립된 `git-kit` 워크트리로 나눠 실행. 각 태스크 patch는 머지 전 `gate-panel`(크로스 모델 패널 리뷰 게이트)을 통과해야 함 — [워크트리 파이프라인](#worktree-pipeline-ko) 참고 |
 
 | 카테고리 | 커맨드 |
 |----------|----------|
 | **프로젝트** | `init`, `list`, `status`, `next [--json]`, `close`, `dashboard` |
 | **페이즈** | `phase next/set`, `gate pass/fail`, `checkpoint`, `handoff --full`, `handon` |
 | **계획** | `plan "목표"`, `plan-check [--strict]`, `prd-gate [--threshold N]`, `consensus [--round N]` |
-| **태스크** | `tasks add [--desc] [--deps] [--size] [--strategy] [--team] [--done-criteria]`, `tasks done-criteria`, `tasks list`, `tasks remove [--cascade]`, `tasks update [--desc] [--no-commit]`, `tasks reopen <id> --reason "..." [--cascade]`, `later add/list/promote/dismiss/verify-scope` |
+| **태스크** | `tasks add [--desc] [--deps] [--size] [--strategy] [--team] [--done-criteria] [--expected-files]`, `tasks done-criteria`, `tasks list`, `tasks remove [--cascade]`, `tasks update [--desc] [--no-commit] [--expected-files]`, `tasks reopen <id> --reason "..." [--cascade]`, `later add/list/promote/dismiss/verify-scope` |
 | **스텝** | `steps compute/status/next` |
-| **실행** | `run`, `run --json`, `run-status` |
+| **실행** | `run`, `run --worktrees [--dry-run] [--max-parallel N]`, `run --json`, `run-status` |
+| **워크트리** | `worktrees plan/status/resume/cleanup`, `gate-panel --project --task --phase --patch`, `review-integration [--base --target]` |
 | **검증** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts`, `verify-review-fix [--init]` |
 | **분석** | `forecast`, `metrics`, `decisions`, `summarize` |
 | **내보내기** | `export --format md/csv/jira/confluence`, `import` |
 | **릴리스** | `release detect`, `release squash`, `release bump`, `release commit`, `release test`, `release trace`, `release diff-report` |
 | **설정** | `mode developer/normal`, `config set/get/show` |
+
+</details>
+
+<a id="worktree-pipeline-ko"></a>
+<details>
+<summary>워크트리 파이프라인 (병렬 실행, 패널 게이트)</summary>
+
+서로 다른 파일을 건드리는 태스크가 2개 이상(`tasks add --expected-files`로 선언)이면, `run --worktrees`는 메인 트리에서 순차 실행하는 대신 태스크마다 독립된 `git-kit` 워크트리에서 실행합니다:
+
+```bash
+/xm:build run --worktrees --dry-run    # 계획만 — git-kit 호출 없음, batch와 branch명만 출력
+/xm:build run --worktrees              # 워크트리 확보, 태스크를 RUNNING으로 마킹
+# ... 에이전트가 각자 워크트리에서 구현·커밋 ...
+/xm:build worktrees resume             # 완료된 워크트리를 순차로 게이트·머지
+```
+
+- **게이트**: 워크트리 branch가 머지되기 전, 패치가 `gate-panel`(크로스 모델 `xm panel` 리뷰)을 거칩니다 — policy 심각도 이상의 `confirmed`/`unreviewed`/`contested` finding이 있으면 CLI가 죽는 게 아니라 머지가 차단됩니다(`NEEDS_FIX`).
+- **직렬화**: 게이트가 도는 동안 target branch가 잠기므로 머지(`git-kit worktree finish`)는 한 번에 하나씩 직렬화됩니다 — 태스크 구현 자체는 여전히 병렬입니다.
+- **배치 선정**: `expected_files` 겹침 여부로 병렬 가능 여부를 판단하고, 모르거나 겹치는 태스크는 순차로 폴백합니다.
+- **릴리스 전 점검**: `review-integration --base main --target develop`이 누적된 전체 diff에 게이트를 다시 돌려, 개별 태스크 게이트로는 못 잡는 교차 회귀를 잡습니다.
+
+설정은 `.xm/config.json`의 `worktree` 키(`base`, `branch_prefix`, `max_parallel`, `gate_policy`)에 있습니다. 전체 스키마는 `x-build/skills/build/references/data-model.md`, 설계는 `docs/x-build-worktree-pipeline-plan.md`를 참고하세요.
 
 </details>
 
