@@ -133,6 +133,68 @@ describe('getModelForRole — override priority chain', () => {
   });
 });
 
+// ── 1b. Role registry — new roles, aliases, phase groups ──────────────────────
+
+describe('getModelForRole — extended roles and aliases', () => {
+  function captureWarnings(fn) {
+    const warnings = [];
+    const c = console.warn, e = console.error;
+    console.warn = (...a) => warnings.push(a.join(' '));
+    console.error = (...a) => warnings.push(a.join(' '));
+    try { fn(); } finally { console.warn = c; console.error = e; }
+    return warnings;
+  }
+
+  test('deep-executor resolves per profile without unknown-role warning', () => {
+    const warnings = captureWarnings(() => {
+      expect(ce.getModelForRole('deep-executor', 'large', { model_profile: 'economy' })).toBe('sonnet');
+      expect(ce.getModelForRole('deep-executor', 'large', { model_profile: 'default' })).toBe('opus');
+      expect(ce.getModelForRole('deep-executor', 'large', { model_profile: 'max' })).toBe('opus');
+    });
+    expect(warnings.some(w => w.includes('Unknown role'))).toBe(false);
+  });
+
+  test('planner/critic/researcher/verifier resolve without unknown-role warning', () => {
+    const warnings = captureWarnings(() => {
+      expect(ce.getModelForRole('planner', 'medium', { model_profile: 'default' })).toBe('opus');
+      expect(ce.getModelForRole('critic', 'medium', { model_profile: 'default' })).toBe('opus');
+      expect(ce.getModelForRole('verifier', 'medium', { model_profile: 'default' })).toBe('sonnet');
+      expect(ce.getModelForRole('researcher', 'medium', { model_profile: 'economy' })).toBe('haiku');
+    });
+    expect(warnings.some(w => w.includes('Unknown role'))).toBe(false);
+  });
+
+  test('alias roles resolve to their canonical role model', () => {
+    expect(ce.resolveRole('test-engineer')).toBe('verifier');
+    expect(ce.getModelForRole('test-engineer', 'medium', { model_profile: 'max' })).toBe('opus'); // max.verifier
+    expect(ce.getModelForRole('documenter', 'small', { model_profile: 'default' })).toBe('haiku'); // default.writer
+  });
+
+  test('override on the canonical role also applies to its alias', () => {
+    const result = ce.getModelForRole('test-engineer', 'medium', {
+      model_overrides: { verifier: 'opus' },
+      model_profile: 'economy',
+    });
+    expect(result).toBe('opus');
+  });
+
+  test('every PHASE_ROLE_GROUPS role exists in every profile', () => {
+    const allGroupRoles = Object.values(ce.PHASE_ROLE_GROUPS).flat();
+    for (const profile of Object.keys(ce.MODEL_PROFILES)) {
+      for (const role of allGroupRoles) {
+        expect(ce.MODEL_PROFILES[profile][role]).toBeDefined();
+      }
+    }
+  });
+
+  test('truly unknown role still warns and falls back to executor model', () => {
+    const warnings = captureWarnings(() => {
+      expect(ce.getModelForRole('nonexistent-role', 'medium', { model_profile: 'default' })).toBe('opus');
+    });
+    expect(warnings.some(w => w.includes('Unknown role'))).toBe(true);
+  });
+});
+
 // ── 2. Spinlock concurrency (appendMetric) ────────────────────────────────────
 
 describe('appendMetric — write lock', () => {

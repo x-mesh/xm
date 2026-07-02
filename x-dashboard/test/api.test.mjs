@@ -283,6 +283,31 @@ describe('GET /api/config', () => {
   });
 });
 
+describe('GET /api/config/model-routing', () => {
+  it('returns the resolved role→model matrix with phase groups', async () => {
+    const { res, body } = await getJSON('/api/config/model-routing');
+    expect(res.status).toBe(200);
+    expect(['economy', 'default', 'max']).toContain(body.profile);
+    expect(body.models).toEqual(['haiku', 'sonnet', 'opus']);
+    expect(Object.keys(body.phase_groups).sort()).toEqual(['implement', 'plan', 'review']);
+    // every phase-group role resolves with a valid model + source
+    for (const roles of Object.values(body.phase_groups)) {
+      for (const role of roles) {
+        expect(body.roles[role]).toBeDefined();
+        expect(body.models).toContain(body.roles[role].model);
+        expect(['profile', 'override']).toContain(body.roles[role].source);
+      }
+    }
+  });
+
+  it('tier=global also resolves (structure only — content is user config)', async () => {
+    const { res, body } = await getJSON('/api/config/model-routing?tier=global');
+    expect(res.status).toBe(200);
+    expect(body.roles).toBeDefined();
+    expect(body.phase_groups).toBeDefined();
+  });
+});
+
 describe('GET /api/projects', () => {
   it('returns 200 with a data array', async () => {
     const { res, body } = await getJSON('/api/projects');
