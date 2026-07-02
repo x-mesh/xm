@@ -105,6 +105,11 @@ GK_AGENT=1 git-kit worktree finish \
 ### finish 결과 envelope (agent mode)
 `state`로 분기한다. `result.gate`가 gate 결과를 싣는다.
 
+**2026-07-02 실측 보정 (v0.106.0)** — 계약 문서와 실제 출력의 차이 3가지, xm 파서는 이에 맞춰 구현됨:
+- before gate 실패 시 `result.gate`는 **null**이고 gate exit code는 `error.message` 텍스트(`"... (exit 2)"`)에만 있다 — exit 1/2 구분(NEEDS_FIX vs BLOCKED)은 message 파싱으로.
+- envelope 스트림이 케이스별로 다르다: `ok`/`paused`는 stdout, `blocked`는 **stderr**. paused 런은 stderr에 사람용 promote 진행 텍스트가 함께 나온다 — 파서는 두 스트림 모두 probe하고 혼합 스트림에서 JSON을 추출해야 한다.
+- gate 자식 프로세스는 호출자 environ을 상속하고 cwd는 worktree다 (env 주입 유효).
+
 - **성공**: `state:"ok"`, `result.gate = {phase, before, after, merged:true, run_id}` (before/after ∈ `passed|failed|skipped`).
 - **before gate 실패**: `state:"blocked"` (exit 1), `error.code:"worktree_gate_before_failed"`, target 무변경. merge 안 됨.
 - **after gate 실패**: `state:"paused"` (exit 3), `result.gate.{paused:true, merged:true, patch, recover[]}`. merge는 유지, cleanup 보류. `recover[]`는 resume/abort 쌍:
@@ -134,7 +139,7 @@ X_PANEL_ROOT=<main-repo>/.xm
 XM_ROOT=<main-repo>/.xm        # shared-config 계통용
 ```
 
-2. **gate wrapper 자체 해석** — gk gate는 shell 미경유 argv 실행이라 env 상속 여부가 gk 구현에 달려 있다(v0.106.0에서 gate 자식 프로세스가 environ을 상속하는지 확인 필요). env가 없더라도 동작하도록, `xm build gate-panel`은 `git rev-parse --git-common-dir`로 main repo root를 스스로 해석해 artifact 경로와 `X_PANEL_ROOT`를 설정한 뒤 `xm panel`을 실행한다.
+2. **gate wrapper 자체 해석** — gk gate는 shell 미경유 argv 실행이다. **2026-07-02 실측(v0.106.0): gate 자식 프로세스는 호출자 environ을 상속하며 cwd는 worktree다** — env 주입 전략은 유효하다. 그래도 env가 없는 경로(수동 실행 등)에서도 동작하도록, `xm build gate-panel`은 `git rev-parse --git-common-dir`로 main repo root를 스스로 해석해 artifact 경로와 `X_PANEL_ROOT`를 설정한 뒤 `xm panel`을 실행한다.
 
 ## panel gate wrapper
 `xm build gate-panel`은 x-build가 추가해야 하는 얇은 wrapper다. 이유는 명확하다: `gk` gate는 exit code만 판정하고, `xm panel --json`은 consensus findings가 있어도 정상 실행이면 exit 0으로 끝날 수 있다. 따라서 자동 merge gate에는 "panel 실행"과 "panel verdict policy"를 분리하면 안 된다.
