@@ -131,6 +131,9 @@ remove_obsolete_file "xm/lib/x-build/parking-lot.mjs"
 sync_file "x-build/lib/x-build-cli.mjs" "xm/lib/x-build-cli.mjs"
 sync_file "x-build/lib/x-config-cli.mjs" "xm/lib/x-config-cli.mjs"
 sync_file "x-build/lib/shared-config.mjs" "xm/lib/shared-config.mjs"
+sync_file "x-build/lib/config-schema.mjs" "xm/lib/config-schema.mjs"
+sync_file "x-build/lib/cli-prompts.mjs" "xm/lib/cli-prompts.mjs"
+sync_file "x-build/lib/cli-messages.mjs" "xm/lib/cli-messages.mjs"
 sync_file "x-build/lib/default-config.json" "xm/lib/default-config.json"
 
 echo ""
@@ -330,6 +333,9 @@ shopt -u nullglob
 
 for pair in \
   "x-build/lib/shared-config.mjs:xm/lib/shared-config.mjs" \
+  "x-build/lib/config-schema.mjs:xm/lib/config-schema.mjs" \
+  "x-build/lib/cli-prompts.mjs:xm/lib/cli-prompts.mjs" \
+  "x-build/lib/cli-messages.mjs:xm/lib/cli-messages.mjs" \
   "x-build/lib/default-config.json:xm/lib/default-config.json"; do
   src="${pair%%:*}"; dst="${pair##*:}"
   if ! diff -q "$src" "$dst" > /dev/null 2>&1; then
