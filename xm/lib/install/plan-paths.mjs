@@ -12,11 +12,12 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { TARGET_TOOLS, targetDirFor } from './types.mjs';
 import { xmName, flattenRefPath } from './util/flatten-namespace.mjs';
+import { codexVendorRelativePaths } from './transform/codex-vendor.mjs';
 
 /**
  * @typedef {Object} PlanEntry
  * @property {string} absolutePath
- * @property {'rule'|'command'|'hook'|'index'|'prompt'|'steering'|'skill-doc'|'reference'|'bundle'} kind
+ * @property {'rule'|'command'|'hook'|'index'|'prompt'|'steering'|'skill-doc'|'reference'|'bundle'|'vendor-config'} kind
  * @property {string} skill           Owning skill identifier (e.g. xm-build).
  * @property {'overwrite'|'merge-marker'} writeMode
  * @property {0o600|0o644} mode
@@ -201,6 +202,18 @@ function planSharedFiles(target, scope, root) {
       writeMode: 'overwrite',
       mode: modeFor(scope),
     });
+    // Vendor layer (t7): role layers + profile TOMLs, xm-owned. Rendered as
+    // kind:'overwrite' + recorded in the manifest; enumerated here so --list /
+    // --dry-run show the plan against the exact paths the renderer writes.
+    for (const rel of codexVendorRelativePaths()) {
+      out.push({
+        absolutePath: join(root, rel),
+        kind: 'vendor-config',
+        skill: '*',
+        writeMode: 'overwrite',
+        mode: modeFor(scope),
+      });
+    }
   }
   if (target === 'antigravity') {
     const agents = scope === 'global' ? join(root, '.gemini', 'AGENTS.md') : join(root, 'AGENTS.md');

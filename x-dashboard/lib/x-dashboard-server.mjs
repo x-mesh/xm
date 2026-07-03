@@ -747,9 +747,25 @@ async function handleModelRouting(xmRoot, req) {
       source: overrides[role] ? 'override' : 'profile',
     };
   }
+  // Tiers + vendor model mappings come straight from cost-engine so the UI never
+  // re-hardcodes them. vendor_models exposes both the built-in defaults (t1's
+  // VENDOR_MODELS table) and the resolution effective under the merged config.
+  const tiers = Object.keys(ce.MODEL_COSTS ?? {});
+  const vendorDefaults = ce.VENDOR_MODELS ?? {};
+  const vendorEffective = {};
+  if (typeof ce.resolveVendorModel === 'function') {
+    for (const vendor of Object.keys(vendorDefaults)) {
+      vendorEffective[vendor] = {};
+      for (const tier of tiers) {
+        vendorEffective[vendor][tier] = ce.resolveVendorModel(tier, vendor, effective).spec;
+      }
+    }
+  }
+
   return jsonResponseWithETag({
     profile,
-    models: ['haiku', 'sonnet', 'opus'],
+    models: tiers,
+    vendor_models: { defaults: vendorDefaults, effective: vendorEffective },
     phase_groups: ce.PHASE_ROLE_GROUPS,
     roles,
   }, req);
@@ -2071,18 +2087,70 @@ function handleSearch(xmRoot, url, req) {
 
 // ── R3: Traces API ────────────────────────────────────────────────────
 
-const MODEL_PRICING = {
-  haiku:  { input: 0.80 / 1_000_000, output: 4.00 / 1_000_000 },
-  sonnet: { input: 3.00 / 1_000_000, output: 15.00 / 1_000_000 },
-  opus:   { input: 15.00 / 1_000_000, output: 75.00 / 1_000_000 },
+// Trace-cost pricing is DERIVED from cost-engine MODEL_COSTS (single source of
+// truth), never a hand-maintained copy — a copy is exactly what drifted here
+// before (haiku input 0.80 vs cost-engine 1.00). cost-engine stores USD per 1M
+// tokens; the dashboard multiplies raw token counts, so we pre-divide by 1e6
+// into a per-token map. ensureModelPricing() primes the cache once at startup
+// through the same dynamic import the routing endpoint uses (getCostEngine).
+//
+// The FALLBACK values MUST equal cost-engine MODEL_COSTS. They are only reached
+// when the cost-engine import fails — a "something is badly wrong" state we
+// surface loudly (L6) rather than silently serving invented numbers. The
+// sync-guard test (test/dashboard-pricing-sync.test.mjs) fails if the served
+// pricing drifts from MODEL_COSTS.
+const FALLBACK_MODEL_COSTS = {
+  haiku:  { input: 1.00,  output: 5.00 },
+  sonnet: { input: 3.00,  output: 15.00 },
+  opus:   { input: 15.00, output: 75.00 },
 };
 
+let _modelPricing = null;  // { tier: { input: perToken, output: perToken } }
+let _tierKeys = null;      // canonical tier keys, in cost-engine's declared order
+
+function toPerTokenPricing(modelCosts) {
+  const out = {};
+  for (const [tier, p] of Object.entries(modelCosts)) {
+    out[tier] = { input: p.input / 1_000_000, output: p.output / 1_000_000 };
+  }
+  return out;
+}
+
+// Prime the pricing cache from cost-engine. Idempotent; awaited once at startup
+// so the synchronous trace-cost consumers can read the cache without awaiting.
+async function ensureModelPricing() {
+  if (_modelPricing) return _modelPricing;
+  const ce = await getCostEngine();
+  if (ce && ce.MODEL_COSTS) {
+    _modelPricing = toPerTokenPricing(ce.MODEL_COSTS);
+    _tierKeys = Object.keys(ce.MODEL_COSTS);
+  } else {
+    console.error('[x-dashboard-server] cost-engine unavailable — trace costs fall back to last-known prices (may be stale). Fix the cost-engine import to restore single-source pricing.');
+    _modelPricing = toPerTokenPricing(FALLBACK_MODEL_COSTS);
+    _tierKeys = Object.keys(FALLBACK_MODEL_COSTS);
+  }
+  return _modelPricing;
+}
+
+// Synchronous accessors for the request path. The cache is primed at startup
+// (top-level await before Bun.serve), so these never see null in practice; the
+// fallback only guards the theoretical unprimed case, never silently.
+function getModelPricing() {
+  return _modelPricing ?? toPerTokenPricing(FALLBACK_MODEL_COSTS);
+}
+function getTierKeys() {
+  return _tierKeys ?? Object.keys(FALLBACK_MODEL_COSTS);
+}
+
+// Map an arbitrary model string ("claude-haiku-4-5") to its canonical tier by
+// substring-matching against the tiers cost-engine actually defines — so a tier
+// added to MODEL_COSTS is recognized here without touching this function.
 function resolveModelKey(model) {
   if (!model) return null;
-  const m = model.toLowerCase();
-  if (m.includes('haiku'))  return 'haiku';
-  if (m.includes('opus'))   return 'opus';
-  if (m.includes('sonnet')) return 'sonnet';
+  const m = String(model).toLowerCase();
+  for (const tier of getTierKeys()) {
+    if (m.includes(tier)) return tier;
+  }
   return null;
 }
 
@@ -2166,7 +2234,7 @@ function handleTraces(xmRoot, req) {
       traceTokensIn += inTok;
       traceTokensOut += outTok;
       const mk = resolveModelKey(ln.agent?.model ?? ln.model);
-      const pr = mk ? MODEL_PRICING[mk] : null;
+      const pr = mk ? getModelPricing()[mk] : null;
       if (pr) traceCost += inTok * pr.input + outTok * pr.output;
     }
 
@@ -2255,7 +2323,7 @@ function handleCosts(xmRoot, req) {
       if (!inputTokens && !outputTokens) continue;
 
       const modelKey = resolveModelKey(line.agent?.model ?? line.model);
-      const pricing = modelKey ? MODEL_PRICING[modelKey] : null;
+      const pricing = modelKey ? getModelPricing()[modelKey] : null;
       const cost = pricing
         ? inputTokens * pricing.input + outputTokens * pricing.output
         : 0;
@@ -2400,7 +2468,7 @@ function getWorkspaceStats(ws) {
           const inTok = ln.input_tokens_est ?? ln.tokens_est?.input ?? 0;
           const outTok = ln.output_tokens_est ?? ln.tokens_est?.output ?? 0;
           const mk = resolveModelKey(ln.agent?.model ?? ln.model);
-          const pr = mk ? MODEL_PRICING[mk] : null;
+          const pr = mk ? getModelPricing()[mk] : null;
           if (pr) totalCost += inTok * pr.input + outTok * pr.output;
         }
       }
@@ -2496,6 +2564,10 @@ if (STOP_MODE) {
 // ── Pre-start checks ─────────────────────────────────────────────────
 
 checkDuplicateInstance();
+
+// Prime the trace-cost pricing cache from cost-engine before we accept requests,
+// so the synchronous cost handlers read live single-source prices, not a copy.
+await ensureModelPricing();
 
 // ── HTTP Server ─────────────────────────────────────────────────────
 

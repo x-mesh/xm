@@ -24,6 +24,7 @@ import { renderCursorWithDiagnostics } from './transform/cursor.mjs';
 import { renderCursorShared, discoverPluginRoots } from './transform/cursor-shared.mjs';
 import { renderCodexWithDiagnostics } from './transform/codex.mjs';
 import { renderCodexShared, assertAgentsBlockSize } from './transform/codex-shared.mjs';
+import { renderCodexVendor } from './transform/codex-vendor.mjs';
 import { renderKiroWithDiagnostics } from './transform/kiro.mjs';
 import { renderKiroShared } from './transform/kiro-shared.mjs';
 import { renderAntigravityWithDiagnostics } from './transform/antigravity.mjs';
@@ -842,7 +843,15 @@ export function run(argv) {
       } else if (target === 'codex') {
         const codex = renderCodexWithDiagnostics(skills, ctx);
         skillOuts = { outputs: codex.outputs, warnings: codex.warnings };
-        sharedOuts = renderCodexShared({ projectRoot: cwd, scope: args.scope });
+        const shared = renderCodexShared({ projectRoot: cwd, scope: args.scope });
+        // Vendor layer (t7): xm-owned role/profile TOMLs + feature-gate note.
+        // Merged into sharedOuts so its outputs flow through the manifest and its
+        // notes print alongside the hooks notes.
+        const vendor = renderCodexVendor({ scope: args.scope });
+        sharedOuts = {
+          outputs: [...shared.outputs, ...vendor.outputs],
+          notes: [...shared.notes, ...vendor.notes],
+        };
       } else if (target === 'kiro') {
         const kiro = renderKiroWithDiagnostics(skills, ctx);
         skillOuts = { outputs: kiro.outputs, warnings: kiro.warnings };

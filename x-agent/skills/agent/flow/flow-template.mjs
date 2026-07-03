@@ -109,7 +109,12 @@ const PLAN_SCHEMA = {
           role: { type: 'string' },
           prompt: { type: 'string' },
           deps: { type: 'array', items: { type: 'string' } },
-          model: { type: 'string', enum: ['haiku', 'sonnet', 'opus'] },
+          // Accept the built-in tiers (haiku/sonnet/opus) AND vendor model
+          // strings ("gpt-5.5:high", "claude-opus-4-8") — the value is passed
+          // straight through to agent() opts.model. The pattern still rejects
+          // empty/whitespace junk: it must start alphanumeric and contain only
+          // model-token characters.
+          model: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]*$' },
         },
         required: ['id', 'prompt', 'deps'],
       },

@@ -37,6 +37,58 @@ function escapeCodexPromptPlaceholders(value) {
 }
 
 /**
+ * The x-build SKILL.md body speaks Claude Code's orchestration vocabulary — it
+ * tells the agent to spawn subagents via the `Agent` tool with a `subagent_type`,
+ * and to gate phases with `AskUserQuestion`. Under Codex CLI none of those
+ * primitives exist. This overlay is appended (append-only — the original body is
+ * never rewritten) ONLY to the x-build prompt, re-mapping each Claude-only
+ * instruction onto the Codex mechanisms this project already ships: native
+ * subagents (multi_agent), the installed `[agents.xm-*]` role layers, the
+ * `codex exec … resume` continuation contract, and `run --json`'s
+ * `task.model_by_vendor.codex` model spec. Text is intentionally literal — it is
+ * NOT run through expandPaths / escapeCodexPromptPlaceholders (it carries no path
+ * tokens and no `$`), so it lands verbatim.
+ */
+const CODEX_BUILD_OVERLAY = `## Codex Orchestration Overlay
+
+> You are running under **Codex CLI**, not Claude Code. The \`Agent\` tool and the
+> \`subagent_type\` spawning this prompt refers to DO NOT EXIST here. Re-map every
+> such instruction to the Codex equivalents below; the rest of the prompt stands.
+
+**Parallel task execution** (replaces "spawn an Agent with subagent_type per task"):
+- Read each task's model from \`xm build run --json\` →
+  \`task.model_by_vendor.codex\`, a "model[:effort]" string ("gpt-5.4", "gpt-5.5:high").
+- With \`multi_agent\` (stable+enabled): spawn one Codex subagent per parallel-safe
+  task, preferring the installed \`[agents.xm-executor]\` role layer
+  (\`.codex/xm/agents/xm-executor.config.toml\`).
+- Fallback (multi_agent off): run each task as its own
+  \`codex exec -c model=<model> [-c model_reasoning_effort=<effort>] "<task prompt>"\`.
+
+**Phase transition** (Research→Plan→Execute→Verify→Close):
+- Continue the session under the phase model:
+  \`codex exec [exec-level flags] -m <model> resume --last\`.
+- WARNING on order: exec-level flags (\`--sandbox\`, \`--json\`, \`--skip-git-repo-check\`)
+  AND \`-m\`/\`-c\` MUST precede the \`resume\` subcommand — \`resume … --sandbox\` is a
+  usage error.
+
+**AskUserQuestion**: use Codex's structured-question tool when available; otherwise
+ask the question inline in chat and wait for the user's reply before advancing.
+
+Additive only — never skip a step above; execute it through these Codex tools.`;
+
+/**
+ * The x-build prompt is the only one that carries Claude Code orchestration
+ * directives worth translating for Codex. Its SkillIR skillName is the SKILL.md
+ * frontmatter \`name: build\` (scan.mjs derives skillName from frontmatter.name,
+ * falling back to the plugin dir name, which is also "build"). Match on that.
+ * @param {import('../types.mjs').SkillIR} skill
+ * @returns {boolean}
+ */
+function isCodexBuildSkill(skill) {
+  return skill.skillName === 'build';
+}
+
+/**
  * Build the AGENTS.md xm block body (without BEGIN/END markers — merge.mjs adds those).
  * @param {import('../types.mjs').SkillIR[]} skills
  * @returns {string}
@@ -89,6 +141,11 @@ export function renderCodexPrompt(skill, ctx) {
       body += `<!-- [See: ${ref.name}] -->\n\n`;
       body += escapeCodexPromptPlaceholders(expandPaths(ref.body, { target: 'codex', scope: ctx.scope })).trimEnd() + '\n\n';
     }
+  }
+  // x-build only: translate Claude-tool orchestration semantics into Codex ones.
+  // Append-only — the source body above is left byte-for-byte intact.
+  if (isCodexBuildSkill(skill)) {
+    body = body.trimEnd() + '\n\n' + CODEX_BUILD_OVERLAY;
   }
   return head + body.trimEnd() + '\n';
 }

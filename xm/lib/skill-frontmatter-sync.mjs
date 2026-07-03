@@ -30,16 +30,13 @@
 import { readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MODEL_PROFILES, resolveProfileName } from './x-build/cost-engine.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Config / mapping load ───────────────────────────────────────────────
-
-const LEGACY_PROFILE_MAP = { balanced: 'default', performance: 'max' };
-function resolveProfileName(name) {
-  if (!name) return 'default';
-  return LEGACY_PROFILE_MAP[name] || name;
-}
+// LEGACY_PROFILE_MAP / resolveProfileName / MODEL_PROFILES are imported from
+// cost-engine (single source of truth) rather than duplicated here.
 
 function loadMapping(mapPath) {
   return JSON.parse(readFileSync(mapPath, 'utf8'));
@@ -52,32 +49,6 @@ async function loadProfile(repoRoot, override) {
   const cfg = shared.readSharedConfig();
   return resolveProfileName(cfg.model_profile);
 }
-
-// MODEL_PROFILES copied from cost-engine to keep this tool dependency-light.
-// If cost-engine.MODEL_PROFILES changes, update here too (low churn).
-const MODEL_PROFILES = {
-  economy: {
-    architect: 'sonnet', reviewer: 'sonnet', security: 'sonnet',
-    executor:  'sonnet', designer:  'sonnet', debugger: 'sonnet',
-    explorer:  'haiku',  writer:    'haiku',
-    'deep-executor': 'sonnet', planner: 'sonnet', critic: 'sonnet',
-    verifier: 'sonnet', researcher: 'haiku',
-  },
-  default: {
-    architect: 'opus', reviewer: 'opus',   security: 'opus',
-    executor:  'opus', designer:  'sonnet', debugger: 'opus',
-    explorer:  'sonnet', writer:  'haiku',
-    'deep-executor': 'opus', planner: 'opus', critic: 'opus',
-    verifier: 'sonnet', researcher: 'sonnet',
-  },
-  max: {
-    architect: 'opus', reviewer: 'opus', security: 'opus',
-    executor:  'opus', designer:  'opus', debugger: 'opus',
-    explorer:  'sonnet', writer:  'haiku',
-    'deep-executor': 'opus', planner: 'opus', critic: 'opus',
-    verifier: 'opus', researcher: 'sonnet',
-  },
-};
 
 function resolveRoleModel(role, profile) {
   const map = MODEL_PROFILES[profile] || MODEL_PROFILES.default;

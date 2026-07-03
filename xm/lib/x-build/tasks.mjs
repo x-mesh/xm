@@ -9,7 +9,7 @@ import {
   manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, decisionsPath, projectDir,
   resolveProject, logDecision, addDecision, appendMetric, emitHook,
   parseOptions, renderBar, fmtDuration,
-  estimateTaskCost, costFromTokens,
+  estimateTaskCost, costFromTokens, resolveVendorModel,
   gitAutoCommit, gitRollbackTask,
   updateCircuitBreaker, isCircuitOpen, beginHalfOpenProbe, scheduleRetry,
   getCircuitState, resetCircuitBreaker,
@@ -1221,6 +1221,26 @@ function markTasksRunning(taskData, readyTasks, sharedCfg, project, step) {
   return marked;
 }
 
+// Additive vendor-model fields for an execution-plan / consensus / prd spec.
+// The canonical `model` (a Claude tier) stays the Agent-tool routing contract —
+// these fields sit ALONGSIDE it and NEVER replace or mutate it. `model_vendor`
+// names the orchestrator's own vendor ('claude'); `model_by_vendor.claude` is
+// always the emitted tier, and a codex spec is appended only when
+// resolveVendorModel yields one cleanly. FM1/FM7: on ANY warning (non-object
+// vendor_models, malformed override, unmapped tier) we print it to stderr and
+// omit the codex key so a misconfigured vendor_models degrades to claude-only
+// rather than a silently wrong spec — the run itself never crashes.
+export function vendorModelFields(model, cfg) {
+  const byVendor = { claude: model };
+  const codex = resolveVendorModel(model, 'codex', cfg || {});
+  if (codex.warning) {
+    console.error(`⚠ vendor model (codex): ${codex.warning}`);
+  } else if (codex.spec != null) {
+    byVendor.codex = codex.spec;
+  }
+  return { model_vendor: 'claude', model_by_vendor: byVendor };
+}
+
 // Build one agent execution-plan entry (shared by the normal --json path and the
 // worktree fan-out path so both emit an identical task schema). Model prefers the
 // routing decision persisted by markTasksRunning (_assigned_model) so the emitted
@@ -1235,6 +1255,7 @@ function buildPlanEntry(project, task, { briefContent, decisionsContent, manifes
     role,
     agent_type: role === 'deep-executor' || model === 'opus' ? 'deep-executor' : 'executor',
     model,
+    ...vendorModelFields(model, sharedCfg),
     prompt: buildAgentPrompt(project, task, briefContent, decisionsContent, { manifest, taskData, stepData, worktree }),
   };
   if (worktree) {

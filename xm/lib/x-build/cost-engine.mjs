@@ -139,6 +139,183 @@ export function costFromTokens(model, inputTokens, outputTokens) {
   return (i / 1_000_000) * costs.input + (o / 1_000_000) * costs.output;
 }
 
+// ── Vendor abstraction layer ──────────────────────────────────────────
+// Adds a vendor dimension (claude, codex, …) on top of the canonical tier
+// vocabulary WITHOUT touching getModelForRole's contract: role→tier routing
+// keeps returning the plain 'haiku'/'sonnet'/'opus' strings that 15 consumers
+// compare and index by. Vendor resolution is a SEPARATE, opt-in step layered
+// after routing (option A), so no existing lookup path changes.
+
+/**
+ * Canonical tier → vendor-specific model spec.
+ *
+ * The keys `haiku` / `sonnet` / `opus` are CANONICAL TIER ALIASES, not literal
+ * Claude model names — they denote the light / standard / max capability tiers
+ * that role routing already speaks in. Under vendor `claude` each tier maps to
+ * itself; under other vendors it maps to that vendor's model spec (optionally
+ * `model:effort`). Human-facing display labels (light / standard / max) are the
+ * UI layer's job, NOT this table's — never surface these tier keys to users.
+ */
+export const VENDOR_MODELS = {
+  claude: { haiku: 'haiku',        sonnet: 'sonnet', opus: 'opus' },
+  codex:  { haiku: 'gpt-5.4-mini', sonnet: 'gpt-5.4', opus: 'gpt-5.5:high' },
+};
+
+// Reasoning-effort levels accepted in a `model:effort` spec, ordered low→high.
+// Used to validate the optional effort suffix before it reaches a vendor CLI.
+export const MODEL_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+
+// Per-vendor prices per 1M tokens (USD). The `claude` block mirrors the flat
+// MODEL_COSTS above (single source: same numbers, kept in sync intentionally —
+// the flat map stays for backward-compatible MODEL_COSTS[model] lookups).
+//
+// 출처: OpenAI pricing, 2026-07 확인 — 수동 관리
+// TODO(cost): GPT-5.4 / 5.5 official per-1M pricing is NOT fully confirmed at
+// authoring time (2026-07). The codex numbers below are CONSERVATIVE
+// APPROXIMATIONS chosen to avoid silently under-reporting spend — revisit and
+// replace with published figures. Surfacing an approximate-but-labeled number
+// beats a silent wrong estimate (FM4).
+export const MODEL_COSTS_BY_VENDOR = {
+  claude: {
+    haiku:  { input: 1.00,  output: 5.00 },
+    sonnet: { input: 3.00,  output: 15.00 },
+    opus:   { input: 15.00, output: 75.00 },
+  },
+  codex: {
+    haiku:  { input: 0.25, output: 2.00 },   // gpt-5.4-mini  (approx, unverified)
+    sonnet: { input: 1.25, output: 10.00 },  // gpt-5.4       (approx, unverified)
+    opus:   { input: 2.50, output: 20.00 },  // gpt-5.5:high  (approx, unverified)
+  },
+};
+
+/**
+ * Parse a `"model[:effort]"` spec into its parts.
+ *
+ * The optional trailing `:effort` segment is validated against
+ * MODEL_EFFORT_LEVELS. On a typo the model is still returned with
+ * `effort: null` plus a `warning` string, so the caller can decide whether to
+ * surface it or proceed with a default effort (FM2 — never swallow the signal).
+ *
+ * Rules:
+ *  - No colon → whole string is the model, effort null, no warning.
+ *  - Multiple colons ("a:b:c") → split at the LAST colon; only the final
+ *    segment is an effort candidate ("a:b" is the model).
+ *  - Empty / non-string input → { model:null, effort:null, warning }.
+ *
+ * @param {string} spec
+ * @returns {{ model: string|null, effort: string|null, warning: string|null }}
+ */
+export function parseModelSpec(spec) {
+  if (typeof spec !== 'string' || spec.trim() === '') {
+    return {
+      model: null,
+      effort: null,
+      warning: `parseModelSpec: spec must be a non-empty string (got ${spec === '' ? '""' : typeof spec})`,
+    };
+  }
+  const trimmed = spec.trim();
+  const idx = trimmed.lastIndexOf(':');
+  if (idx === -1) {
+    return { model: trimmed, effort: null, warning: null };
+  }
+  const model = trimmed.slice(0, idx);
+  const effortCandidate = trimmed.slice(idx + 1);
+  if (model === '') {
+    return { model: null, effort: null, warning: `parseModelSpec: empty model in spec "${trimmed}"` };
+  }
+  if (effortCandidate === '') {
+    return { model, effort: null, warning: `parseModelSpec: trailing ':' with no effort in "${trimmed}"` };
+  }
+  if (!MODEL_EFFORT_LEVELS.includes(effortCandidate)) {
+    return {
+      model,
+      effort: null,
+      warning: `parseModelSpec: unknown effort "${effortCandidate}" (expected one of ${MODEL_EFFORT_LEVELS.join(', ')})`,
+    };
+  }
+  return { model, effort: effortCandidate, warning: null };
+}
+
+/**
+ * Resolve a canonical tier into a vendor model spec.
+ *
+ * Priority chain:
+ *   1. cfg.vendor_models[vendor][tier]  — user override, always wins
+ *   2. VENDOR_MODELS[vendor][tier]      — built-in table
+ *   3. vendor === 'claude'              — tier passed through as-is
+ *   4. otherwise                        — { spec:null, warning } (FM1)
+ *
+ * FM1: an unknown vendor/tier returns a null spec plus a warning so the caller
+ * can fall back to claude rather than get a silently wrong model.
+ * FM7: a non-object cfg.vendor_models is warned about and ignored.
+ *
+ * @param {string} tier   canonical tier ('haiku'|'sonnet'|'opus')
+ * @param {string} [vendor='claude']
+ * @param {object} [cfg={}] shared config (reads cfg.vendor_models)
+ * @returns {{ spec: string|null, source: string|null, warning: string|null }}
+ */
+export function resolveVendorModel(tier, vendor = 'claude', cfg = {}) {
+  const warnings = [];
+
+  // FM7: config.vendor_models must be a plain object; otherwise warn and ignore.
+  let vendorModels = cfg?.vendor_models ?? null;
+  if (vendorModels != null && (typeof vendorModels !== 'object' || Array.isArray(vendorModels))) {
+    warnings.push(`resolveVendorModel: config.vendor_models must be an object (got ${Array.isArray(vendorModels) ? 'array' : typeof vendorModels}) — ignoring`);
+    vendorModels = null;
+  }
+
+  // 1. Config override — highest priority.
+  const override = vendorModels?.[vendor]?.[tier];
+  if (override != null) {
+    if (typeof override === 'string' && override.trim() !== '') {
+      return { spec: override, source: 'config', warning: warnings.join('; ') || null };
+    }
+    warnings.push(`resolveVendorModel: config.vendor_models.${vendor}.${tier} is not a non-empty string — ignoring`);
+  }
+
+  // 2. Built-in vendor table.
+  const builtin = VENDOR_MODELS[vendor]?.[tier];
+  if (typeof builtin === 'string' && builtin) {
+    return { spec: builtin, source: 'builtin', warning: warnings.join('; ') || null };
+  }
+
+  // 3. Claude passthrough — role routing already emits tier names.
+  if (vendor === 'claude') {
+    return { spec: tier, source: 'claude-passthrough', warning: warnings.join('; ') || null };
+  }
+
+  // 4. FM1: unknown vendor/tier — null spec + warning, caller falls back to claude.
+  warnings.push(`resolveVendorModel: no mapping for tier "${tier}" under vendor "${vendor}" — caller should fall back to claude`);
+  return { spec: null, source: null, warning: warnings.join('; ') };
+}
+
+/**
+ * Measured cost (USD) for a vendor+tier, mirroring costFromTokens() but on the
+ * vendor-nested price table. On a missing vendor or tier it falls back to
+ * claude/sonnet pricing AND returns a `warning` — never a silent wrong estimate
+ * (FM4). Callers should log the warning; the numeric cost is best-effort.
+ *
+ * @returns {{ cost_usd: number, warning: string|null }}
+ */
+export function costFromTokensVendor(vendor, tier, inputTokens, outputTokens) {
+  let warning = null;
+  let costs;
+  const vendorTable = MODEL_COSTS_BY_VENDOR[vendor];
+  if (!vendorTable) {
+    warning = `costFromTokensVendor: unknown vendor "${vendor}" — falling back to claude/sonnet pricing`;
+    costs = MODEL_COSTS_BY_VENDOR.claude.sonnet;
+  } else if (!vendorTable[tier]) {
+    warning = `costFromTokensVendor: unknown tier "${tier}" for vendor "${vendor}" — falling back to sonnet pricing`;
+    costs = vendorTable.sonnet || MODEL_COSTS_BY_VENDOR.claude.sonnet;
+  } else {
+    costs = vendorTable[tier];
+  }
+  const i = Math.max(0, Number(inputTokens) || 0);
+  const o = Math.max(0, Number(outputTokens) || 0);
+  const cost_usd = (i / 1_000_000) * costs.input + (o / 1_000_000) * costs.output;
+  return { cost_usd, warning };
+}
+
 // ── SIZE_TOKEN_ESTIMATES ──────────────────────────────────────────────
 
 export const SIZE_TOKEN_ESTIMATES = {

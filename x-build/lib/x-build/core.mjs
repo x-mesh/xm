@@ -365,7 +365,7 @@ export function decisionsPath(project) {
 }
 
 // ── Cost Engine (re-exports) ─────────────────────────────────────────
-export { MODEL_COSTS, MODEL_PROFILES, ROLE_MODEL_MAP_HR, ROLE_ALIASES, resolveRole, PHASE_ROLE_GROUPS, SIZE_TOKEN_ESTIMATES, STRATEGY_MULTIPLIERS, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, estimateTaskCost, costFromTokens, checkBudget, appendMetric, metricsPath, METRICS_MAX_BYTES, EVENT_SCHEMA_VERSION, adaptEvent } from './cost-engine.mjs';
+export { MODEL_COSTS, MODEL_PROFILES, ROLE_MODEL_MAP_HR, ROLE_ALIASES, resolveRole, PHASE_ROLE_GROUPS, SIZE_TOKEN_ESTIMATES, STRATEGY_MULTIPLIERS, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, estimateTaskCost, costFromTokens, checkBudget, appendMetric, metricsPath, METRICS_MAX_BYTES, EVENT_SCHEMA_VERSION, adaptEvent, VENDOR_MODELS, MODEL_EFFORT_LEVELS, MODEL_COSTS_BY_VENDOR, parseModelSpec, resolveVendorModel, costFromTokensVendor } from './cost-engine.mjs';
 
 // ── Lifecycle Hooks ──────────────────────────────────────────────────
 
