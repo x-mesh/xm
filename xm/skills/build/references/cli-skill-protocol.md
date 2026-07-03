@@ -49,6 +49,8 @@ After parsing, execute the recommended action:
   "size": "medium",
   "agent_type": "executor",
   "model": "sonnet",
+  "model_vendor": "claude",
+  "model_by_vendor": { "claude": "sonnet", "codex": "gpt-5.4" },
   "prompt": "...",
   "on_complete": "node .../x-build-cli.mjs tasks update t1 --status completed",
   "on_fail": "node .../x-build-cli.mjs tasks update t1 --status failed"
@@ -56,7 +58,9 @@ After parsing, execute the recommended action:
 ```
 
 - `agent_type`: `"executor"` (small/medium) or `"deep-executor"` (large)
-- `model`: **always use the `model` field emitted in the CLI JSON — never hardcode.** It is resolved from `model_profile` + `model_overrides` in `.xm/config.json`.
+- `model`: **always use the `model` field emitted in the CLI JSON — never hardcode.** It is resolved from `model_profile` + `model_overrides` in `.xm/config.json`. This is the Claude tier and is the Agent-tool routing contract.
+- `model_vendor` (additive): the vendor the orchestrator itself runs on — always `"claude"`. Present alongside `model`, never replaces it.
+- `model_by_vendor` (additive): per-vendor spec map. `claude` mirrors `model`; `codex` is a GPT spec derived from `vendor_models` in `.xm/config.json` (falls back to a built-in table). The `codex` key is **omitted** when `vendor_models` is malformed or the tier has no mapping — consumers must fall back to `claude` in that case. Present for `task[]`, consensus `agents[]`, and `prd_writer`.
 - `on_complete`/`on_fail`: Callback commands to update task status after agent finishes
 
 ## Mapping to Agent Tool

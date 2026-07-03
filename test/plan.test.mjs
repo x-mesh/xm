@@ -378,7 +378,7 @@ describe('deterministic model emission (research / plan / next)', () => {
       writeSharedConfig(tmp, { model_profile: 'economy' });
       const r = run(['plan', 'Build API'], { cwd: tmp });
       const output = JSON.parse(r.stdout);
-      expect(output.prd_writer).toEqual({ role: 'planner', model: 'sonnet' }); // economy.planner
+      expect(output.prd_writer).toMatchObject({ role: 'planner', model: 'sonnet' }); // economy.planner (+vendor additive 필드 허용)
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -394,7 +394,7 @@ describe('deterministic model emission (research / plan / next)', () => {
       const r = run(['next', '--json'], { cwd: tmp });
       const output = JSON.parse(r.stdout);
       expect(output.action).toBe('plan');
-      expect(output.prd_writer).toEqual({ role: 'planner', model: 'opus' }); // default.planner
+      expect(output.prd_writer).toMatchObject({ role: 'planner', model: 'opus' }); // default.planner (+vendor additive 필드 허용)
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

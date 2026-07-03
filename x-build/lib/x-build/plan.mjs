@@ -14,7 +14,7 @@ import {
   readdirSync,
   exitFail,
 } from './core.mjs';
-import { taskList } from './tasks.mjs';
+import { taskList, vendorModelFields } from './tasks.mjs';
 import { stepsStatus, computeSteps } from './tasks.mjs';
 
 // ── prdWriterSpec ───────────────────────────────────────────────────
@@ -23,7 +23,8 @@ import { stepsStatus, computeSteps } from './tasks.mjs';
 
 function prdWriterSpec(sharedCfg) {
   const cfg = sharedCfg || loadSharedConfig();
-  return { role: 'planner', model: getModelForRole('planner', 'large', cfg) };
+  const model = getModelForRole('planner', 'large', cfg);
+  return { role: 'planner', model, ...vendorModelFields(model, cfg) };
 }
 
 // ── cmdPlan ─────────────────────────────────────────────────────────
@@ -574,10 +575,12 @@ export function cmdConsensus(args) {
   const previousRound = (round > 1 && existsSync(prevPath)) ? readJSON(prevPath) : null;
 
   const sharedCfg = loadSharedConfig();
-  const agents = [
+  // Roles + their review focus; model (and the additive vendor fields) are
+  // resolved per role below so each consensus agent carries the same
+  // model_vendor / model_by_vendor contract the execution plan emits.
+  const consensusRoles = [
     {
       role: 'architect',
-      model: getModelForRole('architect', 'medium', sharedCfg),
       prompt_focus: [
         'Module boundaries are clear',
         'Interfaces and dependencies are defined',
@@ -586,7 +589,6 @@ export function cmdConsensus(args) {
     },
     {
       role: 'critic',
-      model: getModelForRole('critic', 'medium', sharedCfg),
       prompt_focus: [
         'No missing requirements or scenarios',
         'No contradictions between sections',
@@ -596,7 +598,6 @@ export function cmdConsensus(args) {
     },
     {
       role: 'planner',
-      model: getModelForRole('planner', 'medium', sharedCfg),
       prompt_focus: [
         'Structure is decomposable into tasks',
         'Success criteria are measurable',
@@ -605,7 +606,6 @@ export function cmdConsensus(args) {
     },
     {
       role: 'security',
-      model: getModelForRole('security', 'medium', sharedCfg),
       prompt_focus: [
         'Security requirements are not missing',
         'Risk mitigations are concrete and actionable',
@@ -614,6 +614,10 @@ export function cmdConsensus(args) {
       ],
     },
   ];
+  const agents = consensusRoles.map(({ role, prompt_focus }) => {
+    const model = getModelForRole(role, 'medium', sharedCfg);
+    return { role, model, ...vendorModelFields(model, sharedCfg), prompt_focus };
+  });
 
   const output = {
     action: 'consensus',

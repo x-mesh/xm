@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus } from '../x-panel/lib/x-panel/synth.mjs';
-import { extractJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs } from '../x-panel/lib/x-panel/adapters.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
 const STUB = join(import.meta.dirname, 'fixtures', 'panel-stub-model.mjs');
@@ -297,6 +297,127 @@ describe('structured streaming (adapters)', () => {
     expect(d.events).toEqual([{ kind: 'text', delta: '봄' }]);
     const echo = parseStreamLine('cursor', { type: 'user', message: { content: [{ type: 'text', text: 'PROMPT' }] } }, 'm');
     expect(echo.events).toEqual([]); // user echo must not leak into the response tail
+  });
+});
+
+describe('codex reasoning-effort spec (model[:effort])', () => {
+  // Capture stderr around a builder call so FM2 warnings can be asserted without
+  // leaking into the test runner's own output.
+  const captureStderr = (fn) => {
+    const orig = process.stderr.write;
+    const out = [];
+    process.stderr.write = (s) => { out.push(String(s)); return true; };
+    try { return { value: fn(), stderr: out.join('') }; }
+    finally { process.stderr.write = orig; }
+  };
+
+  test('raw builder: "gpt-5.5:high" → --model gpt-5.5 + -c model_reasoning_effort=high', () => {
+    const [bin, args] = resolveCommand('codex', 'the prompt', 'gpt-5.5:high');
+    expect(bin).toBe('codex');
+    const mi = args.indexOf('--model');
+    // exact contiguous fragment, in the order the CLI expects
+    expect(args.slice(mi, mi + 4)).toEqual(['--model', 'gpt-5.5', '-c', 'model_reasoning_effort=high']);
+    expect(args).not.toContain('gpt-5.5:high');   // effort must not leak into the model id
+    expect(args[args.length - 1]).toBe('the prompt'); // prompt stays the trailing positional
+  });
+
+  test('stream builder: "gpt-5.5:high" gets the same --model + -c fragment (plus --json)', () => {
+    const [, args] = streamCommand('codex', 'p', 'gpt-5.5:high');
+    const mi = args.indexOf('--model');
+    expect(args.slice(mi, mi + 4)).toEqual(['--model', 'gpt-5.5', '-c', 'model_reasoning_effort=high']);
+    expect(args).toContain('--json'); // streaming profile intact
+  });
+
+  test('each valid effort level maps through', () => {
+    for (const lvl of ['minimal', 'low', 'medium', 'high', 'xhigh']) {
+      const [, args] = resolveCommand('codex', 'p', `gpt-5.5:${lvl}`);
+      expect(args.join(' ')).toContain(`-c model_reasoning_effort=${lvl}`);
+    }
+  });
+
+  test('FM2: typo effort ("hgh") → effort dropped, model kept, warning on stderr', () => {
+    const { value, stderr } = captureStderr(() => resolveCommand('codex', 'p', 'gpt-5.5:hgh'));
+    const args = value[1];
+    expect(args[args.indexOf('--model') + 1]).toBe('gpt-5.5'); // model still used
+    expect(args).not.toContain('-c');                          // bad effort dropped, not passed on
+    expect(args.join(' ')).not.toContain('model_reasoning_effort');
+    expect(stderr).toContain('unknown reasoning effort');      // signal surfaced, not swallowed
+    expect(stderr).toContain('hgh');
+  });
+
+  test('multiple colons: only the LAST segment is the effort candidate ("a:b:c")', () => {
+    const { value, stderr } = captureStderr(() => resolveCommand('codex', 'p', 'a:b:c'));
+    const args = value[1];
+    expect(args[args.indexOf('--model') + 1]).toBe('a:b'); // model = everything up to the last colon
+    expect(args).not.toContain('-c');                      // "c" is not a valid effort → dropped
+    expect(stderr).toContain('unknown reasoning effort "c"');
+  });
+
+  test('multiple colons with a valid final effort applies it ("org/model:v2:high")', () => {
+    const [, args] = resolveCommand('codex', 'p', 'org/model:v2:high');
+    expect(args[args.indexOf('--model') + 1]).toBe('org/model:v2');
+    expect(args.join(' ')).toContain('-c model_reasoning_effort=high');
+  });
+
+  test('empty / null / non-string model is safe: default model, no effort, NO warning', () => {
+    // resolveCommand coerces '' → null; the stream builder receives '' verbatim — both must be silent.
+    const { value, stderr } = captureStderr(() => [
+      resolveCommand('codex', 'p', '')[1],
+      resolveCommand('codex', 'p', null)[1],
+      streamCommand('codex', 'p', '')[1],
+    ]);
+    for (const args of value) {
+      expect(args).not.toContain('--model');
+      expect(args).not.toContain('-c');
+      expect(args[args.length - 1]).toBe('p');
+    }
+    expect(stderr).toBe(''); // legitimate "use CLI default" is NOT a warning
+  });
+});
+
+describe('buildCodexResumeArgs (exec flags precede the resume subcommand)', () => {
+  test('exec-level flags come BEFORE resume; session id + prompt follow', () => {
+    const [bin, args] = buildCodexResumeArgs({
+      execFlags: ['--sandbox', 'read-only', '--json', '--skip-git-repo-check'],
+      sessionId: 'sess-123', prompt: 'continue please',
+    });
+    expect(bin).toBe('codex');
+    expect(args[0]).toBe('exec');
+    const ri = args.indexOf('resume');
+    expect(ri).toBeGreaterThan(0);
+    // the pinned invariant: every exec-level flag must sit before `resume`
+    // (codex rejects `resume … --sandbox` with a usage error).
+    for (const f of ['--sandbox', '--json', '--skip-git-repo-check']) {
+      expect(args.indexOf(f)).toBeGreaterThan(-1);
+      expect(args.indexOf(f)).toBeLessThan(ri);
+    }
+    expect(args[ri + 1]).toBe('sess-123');            // session id immediately follows resume
+    expect(args[args.length - 1]).toBe('continue please'); // prompt is the trailing positional
+  });
+
+  test('omitted sessionId defaults to --last (matches the Codex Overlay contract)', () => {
+    const [, args] = buildCodexResumeArgs({ execFlags: ['--json'], prompt: 'go on' });
+    const ri = args.indexOf('resume');
+    expect(args[ri + 1]).toBe('--last');       // prompt must NOT be parsed as SESSION_ID
+    expect(args[args.length - 1]).toBe('go on');
+  });
+
+  test('model:effort is applied and also precedes resume', () => {
+    const [, args] = buildCodexResumeArgs({
+      execFlags: ['--json'], sessionId: 's1', model: 'gpt-5.5:high', prompt: 'go',
+    });
+    const ri = args.indexOf('resume');
+    const mi = args.indexOf('--model');
+    expect(mi).toBeGreaterThan(-1);
+    expect(mi).toBeLessThan(ri);                         // --model before resume
+    expect(args.slice(mi, mi + 4)).toEqual(['--model', 'gpt-5.5', '-c', 'model_reasoning_effort=high']);
+    expect(args.indexOf('-c')).toBeLessThan(ri);         // -c before resume too
+  });
+
+  test('defaults are safe: session id only → a valid, minimal resume argv', () => {
+    const [bin, args] = buildCodexResumeArgs({ sessionId: 'only-session' });
+    expect(bin).toBe('codex');
+    expect(args).toEqual(['exec', 'resume', 'only-session']); // no stray flags/prompt
   });
 });
 

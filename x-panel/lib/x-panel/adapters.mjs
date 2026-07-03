@@ -25,6 +25,79 @@ export function normalizeKiroModel(model) {
   return value.replace(/^claude-(opus|sonnet|haiku)-(\d+)-(\d+)(.*)$/i, 'claude-$1-$2.$3$4');
 }
 
+// Reasoning-effort levels codex accepts via `-c model_reasoning_effort=<level>`.
+// Kept in lockstep with x-build/cost-engine.mjs MODEL_EFFORT_LEVELS — DO NOT import
+// that module: adapters.mjs is a zero-import leaf (node builtins only), and an
+// x-panel→x-build edge would invert the plugin dependency AND dies under the
+// versioned plugin-cache layout (see x-memory cache-crash lesson). Mirror, never couple.
+const CODEX_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+
+/**
+ * Split a codex `"model[:effort]"` spec into { model, effort, warning }.
+ * Local re-implementation of cost-engine.parseModelSpec (see the note above on why
+ * it is copied, not imported). Rules mirror it exactly:
+ *  - falsy / empty / non-string spec → no model requested (CLI default), NOT an error.
+ *  - no colon → the whole string is the model.
+ *  - multiple colons ("a:b:c") → split at the LAST colon; only the final segment is
+ *    an effort candidate ("a:b" stays the model).
+ *  - trailing ':' or an unknown effort (typo) → drop the effort, keep the model, and
+ *    return a warning (FM2: never swallow the signal — the caller surfaces it).
+ */
+function parseCodexSpec(spec) {
+  if (typeof spec !== 'string' || spec.trim() === '') {
+    return { model: null, effort: null, warning: null }; // no model → CLI default, not a user error
+  }
+  const trimmed = spec.trim();
+  const idx = trimmed.lastIndexOf(':');
+  if (idx === -1) return { model: trimmed, effort: null, warning: null };
+  const model = trimmed.slice(0, idx);
+  const effortCandidate = trimmed.slice(idx + 1);
+  if (model === '') return { model: null, effort: null, warning: `codex: empty model in spec "${trimmed}"` };
+  if (effortCandidate === '') return { model, effort: null, warning: `codex: trailing ':' with no reasoning effort in "${trimmed}"` };
+  if (!CODEX_EFFORT_LEVELS.includes(effortCandidate)) {
+    return { model, effort: null, warning: `codex: unknown reasoning effort "${effortCandidate}" (expected ${CODEX_EFFORT_LEVELS.join('|')})` };
+  }
+  return { model, effort: effortCandidate, warning: null };
+}
+
+// Turn a codex "model[:effort]" spec into its argv fragment
+// (`--model <id> -c model_reasoning_effort=<effort>`), surfacing any parse warning
+// on stderr — a dropped/typo'd effort must be visible, never silent (FM2, L6).
+function codexModelArgs(spec) {
+  const { model, effort, warning } = parseCodexSpec(spec);
+  if (warning) process.stderr.write(`[x-panel] ${warning}\n`);
+  return [
+    ...(model ? ['--model', model] : []),
+    ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []),
+  ];
+}
+
+/**
+ * Assemble a `codex exec … resume` argv. Exec-level flags (--sandbox / --json /
+ * --skip-git-repo-check) AND --model / -c MUST precede the `resume` subcommand:
+ * codex parses them as `exec` options, so `resume … --sandbox` errors out with a
+ * usage failure (verified locally). The session id and prompt are resume's own
+ * positionals and come last. No consumer yet — this is the contract t8+ builds on.
+ *
+ * sessionId를 생략하면 `--last`(가장 최근 세션 재개)를 넣는다 — codex 문서의
+ * "If omitted, use --last" 및 t8 Codex Overlay의 `resume --last` 지시와 정합
+ * (E2E에서 발견: 생략 시 prompt가 SESSION_ID 위치 인자로 오파싱되어 실패).
+ *
+ * @param {{ execFlags?: string[], sessionId?: string|null, model?: string|null, prompt?: string }} opts
+ * @returns {[string, string[]]} [bin, args]
+ */
+export function buildCodexResumeArgs({ execFlags = [], sessionId = null, model = null, prompt = '' } = {}) {
+  const args = [
+    'exec',
+    ...(Array.isArray(execFlags) ? execFlags : []),
+    ...codexModelArgs(model),
+    'resume',
+    ...(sessionId ? [String(sessionId)] : ['--last']),
+    ...(prompt ? [String(prompt)] : []),
+  ];
+  return ['codex', args];
+}
+
 // THE single source of provider command definitions — shared by panel review
 // AND every cross-vendor consumer (x-review/op/agent/eval/solver/build), which
 // all reach these via `xm panel cross`. Providers live in CODE, not config:
@@ -33,7 +106,8 @@ export function normalizeKiroModel(model) {
 const BUILTIN = {
   claude: (prompt, model) => ['claude', ['-p', ...(model ? ['--model', model] : []), prompt]],
   // --sandbox read-only matches the streaming codex path: review/cross prompts never edit the repo.
-  codex: (prompt, model) => ['codex', ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', ...(model ? ['--model', model] : []), prompt]],
+  // A "model[:effort]" spec maps to --model <id> + -c model_reasoning_effort=<effort> (codexModelArgs).
+  codex: (prompt, model) => ['codex', ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', ...codexModelArgs(model), prompt]],
   // agy's -p/--print CONSUMES the next token as the prompt value, so --model must
   // precede -p (unlike claude/codex whose -p is a boolean with a positional prompt).
   // Wrong order (`-p --model X <prompt>`) makes -p eat "--model", dropping the real
@@ -351,9 +425,9 @@ const STREAM_BUILTIN = {
   claude: (prompt, model, partial) => ['claude', ['-p', '--output-format', 'stream-json', ...(partial ? ['--include-partial-messages'] : []), '--verbose', ...(model ? ['--model', model] : []), prompt]],
   cursor: (prompt, model, partial) => ['cursor-agent', ['-p', '-f', '--output-format', 'stream-json', ...(partial ? ['--stream-partial-output'] : []), ...(model ? ['--model', model] : []), prompt]], // -f bypasses workspace-trust
   codex: (prompt, model) => {
-    const m = model || null;
     // --sandbox read-only prevents the agent from editing the repo; --json streams JSONL events.
-    return ['codex', ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', ...(m ? ['--model', m] : []), prompt]];
+    // "model[:effort]" → --model <id> + -c model_reasoning_effort=<effort> (codexModelArgs).
+    return ['codex', ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', ...codexModelArgs(model), prompt]];
   },
 };
 

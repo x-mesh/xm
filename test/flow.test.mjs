@@ -150,6 +150,19 @@ describe('flow-template engine: schema contracts', () => {
     expect(PLAN_SCHEMA.required).toContain('leaves');
     expect(PLAN_SCHEMA.properties.leaves.items.required).toEqual(['id', 'prompt', 'deps']);
   });
+
+  test('PLAN_SCHEMA.model accepts built-in tiers and vendor strings, rejects junk', () => {
+    const model = PLAN_SCHEMA.properties.leaves.items.properties.model;
+    // relaxed from a fixed enum to a token pattern so vendor models pass through
+    expect(model.enum).toBeUndefined();
+    const re = new RegExp(model.pattern);
+    for (const ok of ['haiku', 'sonnet', 'opus', 'gpt-5.5:high', 'claude-opus-4-8', 'gpt-5-mini']) {
+      expect(re.test(ok)).toBe(true);
+    }
+    for (const bad of ['', ' ', 'gpt 5', ':leading', '-dash']) {
+      expect(re.test(bad)).toBe(false);
+    }
+  });
 });
 
 describe('flow-template engine: parseArgs', () => {
