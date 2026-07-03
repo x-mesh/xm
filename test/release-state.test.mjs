@@ -23,6 +23,17 @@ describe('release state checks', () => {
     );
   });
 
+  test('release bump updates README version badges (2회 재발한 수동 치환 제거)', () => {
+    const source = readFileSync(join(REPO, 'x-build/lib/x-build/release.mjs'), 'utf8');
+    // bump가 배지를 직접 갱신하는 코드가 존재하고, verify-release-state와 동일 배지 패턴을 쓴다.
+    expect(source).toContain('img\\.shields\\.io\\/badge\\/version-');
+    expect(source).toContain('README.ko.md');
+    const badgeIndex = source.indexOf('version badge');
+    const syncIndex = source.indexOf('Running sync-bundle');
+    expect(badgeIndex).toBeGreaterThan(-1);
+    expect(badgeIndex).toBeLessThan(syncIndex); // sync-bundle(미러 복사) 전에 배지 갱신
+  });
+
   test('release bump is wired to the release-state gate before tests', () => {
     const source = readFileSync(join(REPO, 'x-build/lib/x-build/release.mjs'), 'utf8');
     const checksumIndex = source.indexOf('skills-checksum.mjs');

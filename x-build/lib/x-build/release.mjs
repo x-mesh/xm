@@ -381,6 +381,23 @@ export function cmdReleaseBump(args) {
     writeJSON(pkgPath, pkg);
   }
 
+  // 5.5 README version badges = xm version. verify-release-state가 이 배지를
+  // 검사하는데 bump가 갱신하지 않아 릴리스마다 수동 치환이 재발했다(2회) —
+  // 여기서 함께 갱신한다. 패턴은 verify-release-state.mjs의 badgeVersion과 동일.
+  for (const readme of ['README.md', 'README.ko.md']) {
+    const readmePath = join(cwd, readme);
+    if (!existsSync(readmePath)) continue;
+    const body = readFileSync(readmePath, 'utf8');
+    const updated = body.replace(
+      /(img\.shields\.io\/badge\/version-)[0-9]+\.[0-9]+\.[0-9]+(-blue)/g,
+      `$1${xkitNew}$2`,
+    );
+    if (updated !== body) {
+      writeFileSync(readmePath, updated);
+      console.log(`  ${readme} version badge → ${xkitNew}`);
+    }
+  }
+
   // 6. sync-bundle
   const syncScript = join(cwd, 'scripts', 'sync-bundle.sh');
   if (existsSync(syncScript)) {
