@@ -226,3 +226,14 @@ console.log('✅ Restored settings.json from ' + latest);
 console.log('  Remaining backups: ' + backups.length);
 "
 ```
+
+## Optional: xm-last-inject SessionStart hook (global)
+
+`xm-last-inject.sh` surfaces the `.xm/last.json` activity ledger (what each tool last touched, and how many commits ago) at the start of every session. To run it across **all** projects, wire it into your global `~/.claude/settings.json` yourself — `xm init` never edits global settings, so this is guidance only:
+
+```jsonc
+// ~/.claude/settings.json → hooks.SessionStart[] (timeout in seconds)
+{ "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/xm-last-inject.sh\"", "timeout": 10 } ] }
+```
+
+The hook is a no-op (`{}`) outside an xm project or when the ledger is empty, so a global registration is safe. `xm doctor` reports whether it is installed and registered.

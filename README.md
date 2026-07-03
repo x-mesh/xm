@@ -869,6 +869,19 @@ See what your agents actually did. Walk the timeline, check the cost, replay any
 /xm:trace diff <id1> <id2>      # Compare two execution runs
 ```
 
+**Activity ledger (terminal CLI).** Beyond per-session traces, x-trace keeps a cross-tool "last activity" pointer in `.xm/last.json`: which of review / build / panel / op / eval / ship last ran, on which commit, and how far `HEAD` has moved since. The `xm` dispatcher records an entry after every mutating command automatically; tools like x-review also record explicitly.
+
+```bash
+xm last                                    # Last activity per tool (ref, status, age)
+xm last review --json                      # One tool's record as JSON
+xm status                                  # Commits on HEAD since each tool last acted
+xm trace record review --ref HEAD --status done   # Record an activity pointer
+xm trace since <ref>                       # Tools + trace sessions active since <ref>
+xm trace doctor --rebuild                  # Rebuild last.json from git-bearing traces
+```
+
+Coverage is best-effort: only activity that flows through the `xm` dispatcher or an explicit `xm trace record` is logged. A tool run by calling its `node …-cli.mjs` file directly, or an LLM-only skill that never touches the CLI, leaves no ledger entry.
+
 ---
 
 ### x-memory

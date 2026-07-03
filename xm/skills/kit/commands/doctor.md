@@ -48,6 +48,31 @@ check('hooks/trace-session.mjs', () => {
   return { status: '✅', detail: 'installed' };
 });
 
+// xm-last-inject: SessionStart hook that surfaces the .xm/last.json ledger.
+// Needs BOTH the script present AND a SessionStart entry wired into settings —
+// the file alone does nothing until it is registered (project or global).
+check('hooks/xm-last-inject.sh', () => {
+  const dst = path.join(PROJECT, '.claude/hooks/xm-last-inject.sh');
+  if (!fs.existsSync(dst)) return { status: '❌', detail: 'missing — run xm init', fixable: true };
+  const src = path.join(MARKETPLACE, '.claude/hooks/xm-last-inject.sh');
+  if (fs.existsSync(src) && fs.readFileSync(src,'utf8') !== fs.readFileSync(dst,'utf8'))
+    return { status: '⚠️', detail: 'out of date', fixable: true };
+  const settingsFiles = [
+    path.join(PROJECT, '.claude/settings.json'),
+    path.join(process.env.HOME || '', '.claude/settings.json'),
+  ];
+  let registered = false;
+  for (const sp of settingsFiles) {
+    if (!fs.existsSync(sp)) continue;
+    try {
+      const ss = (JSON.parse(fs.readFileSync(sp,'utf8')).hooks || {}).SessionStart || [];
+      if (ss.some(e => (e.hooks || []).some(h => (h.command || '').includes('xm-last-inject.sh')))) { registered = true; break; }
+    } catch (_) { /* ignore malformed settings — the settings.json check reports that */ }
+  }
+  if (!registered) return { status: '⚠️', detail: 'installed but not registered in a SessionStart entry', fixable: true };
+  return { status: '✅', detail: 'installed + registered' };
+});
+
 check('hooks/block-marketplace-copy.mjs', () => {
   // This hook is xm-repo-specific — intentionally omitted from per-project installs.
   // Only report presence inside the xm repo itself; everywhere else, mark as not applicable.
