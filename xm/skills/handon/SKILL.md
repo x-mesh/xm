@@ -38,6 +38,12 @@ If the command returns `{"error":"no_session_state"}` or fails, output:
 
 And stop.
 
+Then, best-effort, read the last recorded review verdict for the 🔍 Review line (omit that line if this returns nothing):
+
+```bash
+xm last review --json 2>/dev/null
+```
+
 **Step 2: Parse and absorb as context**
 
 The JSON contains these sections that you MUST use as your working context:
@@ -77,6 +83,7 @@ After absorbing, show a human-readable summary:
   ✗ Ruled out: {narrative.rejected_alternatives.length}   (omit if 0)
   → Carryover: {narrative.next_session_should_know.length} note(s)  (omit if 0)
   💤 Last stopped: {why_stopped}
+  🔍 Review: last {ref} ({N} commits ago, {verdict})           (omit line if no recorded review)
 
   Since handoff: {new_commits} new commits
 
@@ -87,6 +94,8 @@ Ready to continue. What would you like to work on?
 - If `narrative` is missing or all fields empty, omit the entire 🧭/❓/✗/→ block.
 - If `open_questions` has ≥3 items, render as a bulleted sublist instead of inline count, so the user actually sees them.
 - Never silently drop `rejected_alternatives` or `next_session_should_know` — they exist precisely because the prior session decided you need to see them.
+
+**Rendering rule for the 🔍 Review line**: its source is a separate `xm last review --json` read (NOT the handon JSON above). If that returns no record (empty / error), omit the 🔍 line entirely. `{ref}` = short sha of `.ref`, `{verdict}` = `.status` (`lgtm` / `request-changes` / `block`); `{N}` = `git rev-list --count <.ref>..HEAD` — if that fails, render `last {ref} ({verdict})` without the commits-ago count.
 
 **Step 4: Wait for user direction**
 

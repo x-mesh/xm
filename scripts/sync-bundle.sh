@@ -187,7 +187,16 @@ sync_file "x-sync/lib/x-sync-server.mjs" "xm/lib/x-sync-server.mjs"
 
 echo ""
 echo "=== Syncing x-trace lib files ==="
-sync_file "x-trace/lib/x-trace/trace-writer.mjs" "xm/lib/x-trace/trace-writer.mjs"
+sync_file "x-trace/lib/x-trace-cli.mjs" "xm/lib/x-trace-cli.mjs"
+ensure_dir "xm/lib/x-trace"
+# Mirror all *.mjs wholesale so dependency modules (trace-writer.mjs, last-store.mjs)
+# ship automatically — a hardcoded trace-writer-only sync silently drops last-store.mjs
+# and the CLI (L8).
+shopt -s nullglob
+for f in x-trace/lib/x-trace/*.mjs; do
+  sync_file "$f" "xm/lib/x-trace/$(basename "$f")"
+done
+shopt -u nullglob
 
 echo ""
 echo "=== Syncing x-dashboard lib + public ==="
@@ -409,10 +418,19 @@ if ! diff -q "x-sync/lib/x-sync-server.mjs" "xm/lib/x-sync-server.mjs" > /dev/nu
   DIVERGED=$((DIVERGED + 1))
 fi
 
-if ! diff -q "x-trace/lib/x-trace/trace-writer.mjs" "xm/lib/x-trace/trace-writer.mjs" > /dev/null 2>&1; then
-  echo "  DIVERGED: xm/lib/x-trace/trace-writer.mjs"
+if ! diff -q "x-trace/lib/x-trace-cli.mjs" "xm/lib/x-trace-cli.mjs" > /dev/null 2>&1; then
+  echo "  DIVERGED: xm/lib/x-trace-cli.mjs"
   DIVERGED=$((DIVERGED + 1))
 fi
+shopt -s nullglob
+for f in x-trace/lib/x-trace/*.mjs; do
+  dst="xm/lib/x-trace/$(basename "$f")"
+  if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
+    echo "  DIVERGED: $dst"
+    DIVERGED=$((DIVERGED + 1))
+  fi
+done
+shopt -u nullglob
 
 if ! diff -q "x-dashboard/lib/x-dashboard-server.mjs" "xm/lib/x-dashboard-server.mjs" > /dev/null 2>&1; then
   echo "  DIVERGED: xm/lib/x-dashboard-server.mjs"

@@ -868,6 +868,19 @@ Claude Code Agent 도구 위에 얹은 프리미티브와 자율 행동입니다
 /xm:trace diff <id1> <id2>      # 두 실행 비교
 ```
 
+**활동 원장 (터미널 CLI).** 세션별 trace 외에, x-trace는 도구 전반의 "마지막 활동" 포인터를 `.xm/last.json`에 유지합니다. review / build / panel / op / eval / ship 중 무엇이 마지막으로 어떤 커밋에서 실행됐는지, 그 뒤 `HEAD`가 얼마나 이동했는지 기록합니다. `xm` 디스패처가 상태를 바꾸는 명령마다 자동으로 항목을 남기고, x-review 같은 도구는 명시적으로도 기록합니다.
+
+```bash
+xm last                                    # 도구별 마지막 활동 (ref, status, 경과)
+xm last review --json                      # 한 도구의 기록을 JSON으로
+xm status                                  # 각 도구가 마지막으로 활동한 이후 HEAD 커밋 수
+xm trace record review --ref HEAD --status done   # 활동 포인터 기록
+xm trace since <ref>                       # <ref> 이후 활동한 도구 + trace 세션
+xm trace doctor --rebuild                  # git 정보가 담긴 trace로 last.json 재구성
+```
+
+커버리지는 best-effort입니다. `xm` 디스패처를 거치거나 명시적 `xm trace record`로 들어온 활동만 기록됩니다. `node …-cli.mjs` 파일을 직접 호출해 실행한 도구나, CLI를 전혀 건드리지 않는 LLM 전용 스킬은 원장에 항목을 남기지 않습니다.
+
 ---
 
 ### x-memory

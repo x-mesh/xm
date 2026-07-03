@@ -77,26 +77,32 @@ When called without arguments, **automatically determines the review scope**. Ru
 **Step 1: Context detection (order = routing priority)**
 
 ```bash
-# Priority 1: PR detection (highest priority)
+# Priority 1: Trace ledger — last recorded review, durable across sessions/clears.
+# Authoritative "already reviewed up to here"; use its ref unless the chain is broken.
+LAST_REVIEW=$(xm last review --json 2>/dev/null | jq -r 'if (.chain_broken // false) then empty else (.ref // empty) end' 2>/dev/null || echo "")
+
+# Priority 2: PR detection
 BRANCH=$(git branch --show-current 2>/dev/null)
 PR_NUM=$(gh pr view --json number -q .number 2>/dev/null || echo "")
 BASE=$(git merge-base main HEAD 2>/dev/null || git merge-base master HEAD 2>/dev/null || echo "")
 
-# Priority 2: Last reviewed commit (for main branch)
-LAST_REVIEW=$(jq -r '.reviewed_commit // empty' .xm/review/last-result.json 2>/dev/null || echo "")
+# Priority 3: Last reviewed commit (last-result.json) — legacy fallback when ledger unrecorded
+if [ -z "$LAST_REVIEW" ]; then
+  LAST_REVIEW=$(jq -r '.reviewed_commit // empty' .xm/review/last-result.json 2>/dev/null || echo "")
+fi
 
-# Priority 3: Last release commit
+# Priority 4: Last release commit
 if [ -z "$LAST_REVIEW" ]; then
   LAST_REVIEW=$(git log --grep="^release:" --format=%H -1 2>/dev/null || echo "")
 fi
 
-# Priority 4: Last tag
+# Priority 5: Last tag
 if [ -z "$LAST_REVIEW" ]; then
   TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
   [ -n "$TAG" ] && LAST_REVIEW=$(git rev-parse -- "$TAG" 2>/dev/null || echo "")
 fi
 
-# Priority 5: Fallback
+# Priority 6: Fallback
 if [ -z "$LAST_REVIEW" ]; then
   LAST_REVIEW="HEAD~10"
 fi
@@ -215,6 +221,21 @@ See `references/review-workflow.md` — full pipeline:
 
 ---
 
+## Verdict Recording (mandatory)
+
+Immediately after Phase 4 finalizes the verdict, record it to the trace ledger — **in addition to** the existing `last-result.json` write (which stays):
+
+```bash
+xm trace record review --ref <reviewed HEAD sha> --status <lgtm|request-changes|block>
+```
+
+- `--ref` — the HEAD sha of the reviewed scope (the commit the verdict applies to).
+- `--status` — the final verdict, lowercased and hyphenated: `lgtm`, `request-changes`, or `block`.
+
+This is not optional. The next session's Smart Router reads `xm last review --json` as its **priority-1** reference point (Step 1) to skip already-reviewed commits; without the record it falls back to the stale-prone chain.
+
+---
+
 ## Cross-Vendor Mode (opt-in)
 
 By default Phase 3 fans out single-vendor Claude agents (one per lens). With `--cross-vendor`,
@@ -265,7 +286,8 @@ Phase 3 (cross-vendor) replaces the Claude fan-out with:
    1-vendor findings are diversity (keep, do not drop), multi-vendor are high-confidence. **Also
    surface `contested[]`** (one vendor raised, another refuted): vendor disagreement is a signal to
    show the user, NOT a silent drop (false-negative risk in review). Note which vendors raised each
-   finding, then map to LGTM / Request Changes / Block.
+   finding, then map to LGTM / Request Changes / Block. Once the verdict is set, run the same
+   mandatory `xm trace record review --ref <reviewed HEAD sha> --status <verdict>` (see Verdict Recording).
 
 Single-vendor remains the default for everyone; cross-vendor is purely additive.
 
@@ -347,3 +369,4 @@ Anti-patterns:
 | "The author knows what they're doing" | Author expertise doesn't catch author blind spots — that's literally what review is for. Every "they know better" approval you give is a bug that will reach production with no outside check. |
 | "I'll mark it LGTM and move on" | LGTM without cited evidence is not a review. State what you checked and what you found (including "nothing") — or don't approve. |
 | "This issue is outside the diff, not my problem" | True most of the time — but when a change *worsens* an existing problem, it becomes the reviewer's problem. Don't hide behind "pre-existing". |
+| "Recording the verdict is extra busywork — skip it" | Without the record, the next session's Smart Router re-reviews commits already reviewed (real incident: a May stale value sat unfixed until July). One command — `xm trace record review` — stops paying the re-review cost. |
