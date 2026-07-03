@@ -19,6 +19,10 @@ coverage/
 # Local settings
 .claude/settings.local.json
 
+# Local skill installs (personal, not part of this repo)
+.claude/skills/impeccable/
+.opencode/skills/impeccable/
+
 # Local session state (codex consult session ids, etc. — per-machine, not shared)
 .context/
 
