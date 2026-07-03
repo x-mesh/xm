@@ -142,6 +142,47 @@ export function padDisplay(s, width) {
   return s + ' '.repeat(Math.max(0, gap));
 }
 
+/**
+ * Truncate `s` to at most `maxCols` display columns — CJK-aware (2 cols) and
+ * skipping ANSI escapes (zero display width, preserved verbatim). Appends a
+ * reset when it cuts inside styled text so color never bleeds past the cut.
+ *
+ * rawSelect repaints in place by moving the cursor up a fixed number of lines
+ * (bodyLines), which assumes one logical line = one physical terminal row. On a
+ * terminal narrower than a rendered line, that line wraps to 2+ rows, the
+ * cursor-up count under-shoots, and the menu "walks" down the screen on every
+ * keypress (the reported 글씨 밀림). Clamping each painted line to the terminal
+ * width guarantees one row per line and keeps the repaint math correct.
+ */
+export function clampAnsi(s, maxCols) {
+  const str = String(s);
+  if (maxCols <= 0) return '';
+  let out = '';
+  let w = 0;
+  let cut = false;
+  for (let i = 0; i < str.length;) {
+    if (str[i] === '\x1b' && str[i + 1] === '[') {
+      // CSI escape — keep it whole, count zero width. Per ECMA-48 the final byte
+      // is 0x40–0x7E (not just letters), so match that whole range: a sequence
+      // like ESC[1@ must terminate at '@', or the following text is swallowed.
+      // (In practice only SGR 'm' reaches here, but stay correct if reused.)
+      let j = i + 2;
+      while (j < str.length && !/[\x40-\x7e]/.test(str[j])) j++;
+      out += str.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    const ch = String.fromCodePoint(str.codePointAt(i));
+    const cw = dwidth(ch);
+    if (w + cw > maxCols) { cut = true; break; }
+    out += ch;
+    w += cw;
+    i += ch.length;
+  }
+  if (cut) out += '\x1b[0m';
+  return out;
+}
+
 // ── menuSelect — the single-choice prompt (dual mode) ───────────────────
 
 function renderOption(opt, { active = false, labelWidth = 0 } = {}) {
@@ -206,14 +247,23 @@ function rawSelect(rl, { title, header, options, labelWidth, backKey, initialKey
     stdin.resume();
 
     const bodyLines = header.length + (header.length ? 1 : 0) + options.length;
+    const blockLines = 1 + bodyLines; // title row + body — the full repainted block
 
     const paint = (first = false) => {
-      if (!first) out.write(`\x1b[${bodyLines}A`);
-      if (first) console.log(`\n${P.cyan(G.active)} ${P.bold(title)}`);
-      for (const h of header) out.write(`\x1b[2K${P.dim(G.rail)}  ${h}\n`);
+      // Clamp every painted line to the terminal width (1-col margin) so no line
+      // wraps — a wrapped line spans 2+ physical rows and desyncs the fixed
+      // cursor-up, walking the menu down the screen on narrow terminals. Read
+      // columns each paint so a mid-navigation resize self-corrects. The TITLE is
+      // repainted with the body (not printed once) so its one-row guarantee also
+      // survives a resize — otherwise finish()'s collapse would misalign on it.
+      const cols = Math.max(1, (out.columns || 80) - 1);
+      if (first) out.write('\n');             // one-time blank separator above the block
+      else out.write(`\x1b[${blockLines}A`);  // back up to the title row
+      out.write(`\x1b[2K${clampAnsi(`${P.cyan(G.active)} ${P.bold(title)}`, cols)}\n`);
+      for (const h of header) out.write(`\x1b[2K${clampAnsi(`${P.dim(G.rail)}  ${h}`, cols)}\n`);
       if (header.length) out.write(`\x1b[2K${P.dim(G.rail)}\n`);
       options.forEach((o, i) => {
-        out.write(`\x1b[2K  ${renderOption(o, { active: i === idx, labelWidth })}\n`);
+        out.write(`\x1b[2K${clampAnsi(`  ${renderOption(o, { active: i === idx, labelWidth })}`, cols)}\n`);
       });
     };
 
@@ -226,11 +276,14 @@ function rawSelect(rl, { title, header, options, labelWidth, backKey, initialKey
 
     const finish = (key, label) => {
       cleanup();
-      // 목록을 접고 결과 한 줄로 치환 (clack collapse)
-      out.write(`\x1b[${bodyLines}A`);
-      for (let i = 0; i < bodyLines; i++) out.write('\x1b[2K\x1b[1B');
-      out.write(`\x1b[${bodyLines}A`);
-      out.write(`\x1b[1A\x1b[2K${P.cyan(G.section)} ${P.bold(title)}  ${P.cyan(label)}\n`);
+      // 목록을 접고 결과 한 줄로 치환 (clack collapse). Clear the whole block
+      // (title + body) and write the result on the title row. Clamp it too, and
+      // drive off blockLines so a resized/re-wrapped title can't misalign it.
+      const cols = Math.max(1, (out.columns || 80) - 1);
+      out.write(`\x1b[${blockLines}A`);                          // up to the title row
+      for (let i = 0; i < blockLines; i++) out.write('\x1b[2K\x1b[1B'); // clear the block
+      out.write(`\x1b[${blockLines}A`);                          // back to the title row
+      out.write(`\x1b[2K${clampAnsi(`${P.cyan(G.section)} ${P.bold(title)}  ${P.cyan(label)}`, cols)}\n`);
       resolve(key);
     };
 
