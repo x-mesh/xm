@@ -1,6 +1,6 @@
 {
   "name": "xm",
-  "version": "2.4.37",
+  "version": "2.4.39",
   "description": "All-in-one x-mesh toolkit: x-build (project harness), x-op (strategy orchestration), x-agent (agent primitives), x-solver (problem solving)",
   "author": {
     "name": "x-mesh"
