@@ -897,7 +897,7 @@ export function finishWorktrees({ project, taskIds = [], config = WORKTREE_CONFI
   const base = config.base ?? 'develop';
   const gatePhase = config.gate_phase ?? 'before';
   const cleanup = config.cleanup !== false;
-  const backoffMs = config.gate_lock_backoff_ms ?? 250;
+  const backoffMs = config.gate_lock_backoff_ms ?? WORKTREE_CONFIG_DEFAULTS.gate_lock_backoff_ms;
   // cwd may be a linked worktree — resolve the MAIN repo root via git-common-dir
   // so the injected root env points at the main .xm/, not the worktree's (F6/F7).
   const mainRepoRoot = resolveMainRepoRoot(cwd) || resolve(cwd);

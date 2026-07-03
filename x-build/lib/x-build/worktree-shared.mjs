@@ -188,6 +188,10 @@ export const WORKTREE_CONFIG_DEFAULTS = {
   // Patch-size guard for review-integration. null = no cap (plan: the number
   // must come from measured panel-quality degradation, not judgment — L9).
   review_integration_max_bytes: null,
+  // Backoff (ms) before retrying a finish that hit a target-merge gate lock.
+  // Centralized here so it resolves through config like every other worktree key
+  // (was an inline `?? 250` in worktrees.mjs).
+  gate_lock_backoff_ms: 250,
 };
 
 // Read the raw `worktree` sub-objects from both config layers (no defaults

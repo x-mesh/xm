@@ -6,25 +6,11 @@
     "verify-exit": "quality",
     "close-exit": "auto"
   },
-  "execution": {
-    "parallel": true,
-    "max_concurrent": 3
-  },
   "mode": "developer",
   "agent_max_count": 4,
-  "workflow": "interactive",
-  "granularity": "standard",
   "model_profile": "default",
   "budget": {
     "max_usd": null
-  },
-  "discussion": {
-    "default_mode": "interview",
-    "max_questions": 6
-  },
-  "research": {
-    "agents": 4,
-    "perspectives": ["stack", "features", "architecture", "pitfalls"]
   },
   "drift": {
     "drift_threshold": 0.7

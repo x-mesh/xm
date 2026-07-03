@@ -1171,14 +1171,54 @@ Catalog located at `xm/agent-catalog/catalog.json`. Each agent has a full rules 
 
 ## Configuration
 
+`xm config` manages the settings every tool (x-build, x-solver, x-op) reads. Run it with no arguments for an interactive wizard, or use the `show` / `get` / `set` / `phase` / `reset` subcommands directly. Keys, types, and default scopes live in one registry (`config-schema.mjs`, 30 keys).
+
 ```bash
-/xm config set agent_max_count 10              # 10 agents parallel
-/xm config set team_default_leader_model opus  # Team Leader model
-/xm config set team_max_members 5              # Max members per team
-/xm config show
+/xm config                                     # interactive wizard (7 categories)
+/xm config set agent_max_count 10              # 10 agents in parallel
+/xm config set model_profile economy           # cost profile
+/xm config get mode                            # merged value + source tier (on stderr)
+/xm config show                                # global + local + effective
 ```
 
-Settings stored in `.xm/config.json` (project-level).
+### Interactive wizard
+
+A bare `xm config` opens a menu-driven wizard with seven categories:
+
+| # | Category | Covers |
+|---|----------|--------|
+| 1 | Model | `model_profile` · per-role `model_overrides` · per-phase models (plan / implement / review) |
+| 2 | Budget | `budget.max_usd` · `budget.window_hours` · per-project `budget.projects` |
+| 3 | Execution | `agent_max_count` (1–10) |
+| 4 | Gates | five phase-exit gates (`research/plan/execute/verify/close-exit`) — `auto` / `human-verify` / `quality` |
+| 5 | Worktree | parallel-worktree keys over a 3-tier scope (build-local > shared > global) + `gate_policy` severity lists |
+| 6 | Misc | `mode` · `drift.drift_threshold` · `scan_roots` · `pipelines` |
+| 7 | Panel | cross-vendor providers — read-only, managed by `xm panel setup` |
+
+Each item shows its **effective value and the tier it came from**, lets you **choose the write scope** (defaulting to the schema's tier), and **warns when a higher-priority tier would shadow** the write. Every key is validated against the registry on `set`: an unknown key or out-of-range value prints a warning but still saves (back-compat). The wizard needs a TTY — under a pipe or redirect a bare `xm config` exits with a pointer to the `show` / `get` / `set` / `phase` subcommands instead of hanging.
+
+### Scope
+
+| Flag | Writes to |
+|------|-----------|
+| (default) | `~/.xm/config.json` (global) |
+| `--local` | `.xm/config.json` (project) |
+| `--global` | `~/.xm/config.json` (explicit) |
+
+Defaults follow the schema: `budget.*` writes to local, `worktree.*` resolves over its own 3-tier chain (`.xm/build/config.json` > `.xm/config.json` > `~/.xm/config.json` > defaults), and everything else to global. `xm config get <key>` reports the merged effective value with its source tier.
+
+### Multi-vendor models
+
+Model routing speaks in three canonical tiers — `haiku` / `sonnet` / `opus` (display labels *light* / *standard* / *max*). By default each tier maps to the matching Claude model, but xm can route a tier to another vendor's model. The built-in table (`VENDOR_MODELS` in cost-engine) ships Claude and Codex; two config keys layer overrides on top:
+
+```bash
+/xm config set vendor_models.codex.opus "gpt-5.5:high"   # tier → model[:effort]
+/xm config set vendor_profiles.codex economy             # per-vendor profile (unset → inherits model_profile)
+```
+
+`vendor_models` is `{ vendor: { tier: "model[:effort]" } }`; the optional `:effort` suffix (`minimal`/`low`/`medium`/`high`/`xhigh`) is validated on write. Resolution priority is `vendor_models[vendor][tier]` → built-in table → claude passthrough. The wizard's **Model** category adds a **vendor model mapping** menu that shows which harnesses are detected, validates the effort suffix, and supports `clear` to drop an override.
+
+**Codex support.** `xm install --target codex` writes per-role agent configs (`<.codex>/xm/agents/xm-{planner,executor,reviewer}.config.toml`) and per-profile configs (`<.codex>/xm-{economy,default,max}.config.toml`), gates multi-agent features, and adds a Codex Orchestration Overlay to the x-build prompt. `xm build run --json` emits additive `model_vendor` / `model_by_vendor` fields per task while leaving `task.model` unchanged, and the Codex adapter passes effort as `-c model_reasoning_effort=<level>` (on `resume`, exec flags precede the `resume` subcommand).
 
 ### Cost Efficiency
 

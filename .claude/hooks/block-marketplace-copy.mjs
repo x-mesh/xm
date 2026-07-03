@@ -169,6 +169,18 @@ function findSourcePath(rel, projectRoot) {
     return 'x-build/lib/shared-config.mjs';
   }
 
+  if (rel === 'xm/lib/config-schema.mjs') {
+    return 'x-build/lib/config-schema.mjs';
+  }
+
+  if (rel === 'xm/lib/cli-prompts.mjs') {
+    return 'x-build/lib/cli-prompts.mjs';
+  }
+
+  if (rel === 'xm/lib/cli-messages.mjs') {
+    return 'x-build/lib/cli-messages.mjs';
+  }
+
   if (rel === 'xm/lib/default-config.json') {
     return 'x-build/lib/default-config.json';
   }
