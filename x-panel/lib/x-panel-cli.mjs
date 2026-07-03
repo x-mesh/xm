@@ -994,25 +994,8 @@ async function cmdPreflight(pos, flags) {
   const results = new Array(entries.length);
   if (!flags.json) console.log(`${C.bold}x-panel preflight${C.reset} — live model check (one tiny real call per model)\n`);
 
-  // Hard-truncate a colored string to `max` VISIBLE chars without cutting an ANSI
-  // escape sequence in half — so a line can never wrap. The cursor-up overwrite
-  // scheme below assumes exactly one physical terminal row per provider; a single
-  // wrapped line desyncs the row count and every following tick redraws on top of
-  // (instead of over) the previous frame, printing duplicate lines down the screen.
-  const truncateVisible = (s, max) => {
-    if (max <= 0) return '';
-    let out = '', visible = 0, i = 0;
-    while (i < s.length) {
-      if (s[i] === '\x1b' && s[i + 1] === '[') {
-        const end = s.indexOf('m', i);
-        if (end !== -1) { out += s.slice(i, end + 1); i = end + 1; continue; }
-      }
-      if (visible < max) { out += s[i]; visible++; }
-      i++;
-    }
-    return out;
-  };
-
+  // truncateVisible (module scope) keeps each provider on exactly one physical terminal row;
+  // the cursor-up overwrite scheme below desyncs into duplicate lines if a row ever wraps.
   if (isTTY) {
     // Live block: one line per model, a spinner while pending, filled in place the moment
     // its probe resolves — so a slow provider (codex ~25s) doesn't blank the whole screen.
@@ -1128,7 +1111,10 @@ Commands:
                                 tokens/cost · freshness), a per-run round progress (n/N done),
                                 refreshed every N seconds (default 2); combine with --all to watch
                                 every project at once. --lines N (or config panel.watch_lines) shows
-                                the last N lines each agent is actually producing/reasoning under it.
+                                an INTERPRETED tail under each agent: a findings/verdicts JSON answer
+                                becomes one line per item (severity · file:line · claim / stance ·
+                                ref · reason), a still-streaming answer a progress note, an echoed
+                                prompt a waiting note; free-form text renders as-is.
                                 --watch --json emits one COMPACT JSON snapshot per tick (JSONL, no
                                 ANSI) for agent/pipe consumers. Watching a RUN ID ends when the run
                                 finishes: exit 0 on done, 1 on stalled (dead process) — both for
@@ -1271,13 +1257,182 @@ function stripAnsiCli(s) {
   return String(s || '').replace(CLI_ANSI_RE, '');
 }
 
-// The last `n` non-empty lines of an agent's live output — the ACTUAL content it is reasoning /
-// producing right now (not just a byte count). Prefer stdout (the model's answer); fall back to
-// stderr, where some CLIs (codex) stream their reasoning. ANSI-stripped; width-trimmed at print.
-function statusTailLines(m, n) {
+// Hard-truncate a colored string to `max` VISIBLE chars without cutting an ANSI escape
+// sequence in half — so a line can never wrap. A wrapped line desyncs every repaint scheme
+// (preflight's cursor-up overwrite, --watch's clear-and-redraw) into duplicate rows.
+function truncateVisible(s, max) {
+  if (max <= 0) return '';
+  let out = '', visible = 0, i = 0;
+  while (i < s.length) {
+    if (s[i] === '\x1b' && s[i + 1] === '[') {
+      const end = s.indexOf('m', i);
+      if (end !== -1) { out += s.slice(i, end + 1); i = end + 1; continue; }
+    }
+    if (visible < max) { out += s[i]; visible++; }
+    i++;
+  }
+  return out;
+}
+
+// ── live-output interpretation (status/--watch tails) ────────────────
+// Round answers are contract JSON ({"findings":[…]} / {"verdicts":[…]}) — dumped raw on the
+// watch board they are unreadable, and some provider CLIs (codex) echo OUR prompt into their
+// stream before answering, so the tail can even show our own instructions back. Interpret
+// instead: drop the echo, summarize a JSON answer one item per line, and only fall through
+// to raw lines when the output is genuine free-form text (reasoning, cross runs).
+
+// Fragments of the contract lines this CLI appends LAST to every round prompt
+// (FINDINGS_CONTRACT / refutePrompt). In an echoed stream everything up to the last
+// matching line is our prompt; everything after it is genuine model output. Each mark
+// must be a literal that can only exist in the CONTRACT, never in a real answer — the
+// schema placeholders ("critical|high|medium|low", "refute|concede") qualify; a bare
+// '{"verdicts":[{"ref":' would also match the model's actual verdict JSON.
+const PROMPT_ECHO_MARKS = [
+  'Return ONLY a JSON object',
+  'If there are no real issues, return',
+  '"severity":"critical|high|medium|low"',
+  '"stance":"refute|concede"',
+  '- refute = wrong, not real',
+  '- concede = a real issue worth fixing',
+];
+
+function dropPromptEcho(lines) {
+  const markerAt = [];
+  for (let i = 0; i < lines.length; i++) {
+    // A JSON answer line may QUOTE a contract fragment inside a claim (e.g. when the diff under
+    // review contains these very marks) — never treat a JSON-shaped line as echo. The echoed
+    // contract always ends in PROSE lines, so the cut point still lands after a full echo.
+    if (lines[i].trimStart().startsWith('{')) continue;
+    if (PROMPT_ECHO_MARKS.some((s) => lines[i].includes(s))) markerAt.push(i);
+  }
+  // A real echoed contract is a BLOCK: both rounds end in 2+ prose marker lines. A single
+  // match is far more likely a genuine prose answer QUOTING one contract phrase — cutting
+  // there would hide real output (logic-lens finding). Trade-off: while an echo is still
+  // streaming in (only its first marker line arrived), that one line shows raw for a tick
+  // or two until the rest of the block lands — transient noise beats lost content.
+  if (markerAt.length < 2) return lines;
+  return lines.slice(markerAt[markerAt.length - 1] + 1);
+}
+
+// JSON.parse turns \u001b (and other control-char) ESCAPES into real bytes AFTER the raw-text
+// ANSI strip already ran — a decoded claim/reason/file could repaint or clear the operator's
+// terminal (panel security consensus finding, CoVe-confirmed). Sanitize every decoded field
+// at render time: strip well-formed ANSI, then any remaining control byte.
+const CONTROL_RE = /[\u0000-\u001f\u007f]/g;
+function cleanField(v) {
+  return stripAnsiCli(String(v ?? '')).replace(CONTROL_RE, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// The model's own output lines: ANSI-stripped, echo-dropped, blanks removed. Prefer stdout
+// (the answer); fall back to stderr, where some CLIs stream reasoning. A stream that is ALL
+// prompt echo counts as "no content yet", so the stderr fallback can still kick in.
+function tailContentLines(m) {
+  for (const raw of [m.stdout_tail, m.stderr_tail]) {
+    if (!raw || !String(raw).trim()) continue;
+    const lines = dropPromptEcho(stripAnsiCli(raw).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim()));
+    if (lines.length) return lines;
+  }
+  return [];
+}
+
+// Longest balanced {...} prefix of `s`, or null while the object is still streaming (unclosed).
+// Brace counting respects strings/escapes so a brace inside a "claim" doesn't derail it.
+function jsonPrefix(s) {
+  let depth = 0, str = false, esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (esc) { esc = false; continue; }
+    if (str) { if (c === '\\') esc = true; else if (c === '"') str = false; continue; }
+    if (c === '"') str = true;
+    else if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) return s.slice(0, i + 1);
+  }
+  return null;
+}
+
+// Find the round's contract JSON inside free-form output. Complete object → {kind, items};
+// object opened but not yet closed (still streaming) → {kind, partial: items so far};
+// nothing recognizable → null (caller shows the raw lines).
+function parseAnswerJSON(text) {
+  for (const [key, probe] of [['findings', /"claim"\s*:/g], ['verdicts', /"stance"\s*:/g]]) {
+    const k = text.lastIndexOf(`"${key}"`);
+    if (k < 0) continue;
+    const open = text.lastIndexOf('{', k);
+    if (open < 0 || k - open > 20) continue; // `"findings"` mentioned in prose, not an object key
+    const body = jsonPrefix(text.slice(open));
+    if (body == null) return { kind: key, partial: (text.slice(k).match(probe) || []).length };
+    try {
+      const items = JSON.parse(body)[key];
+      // Models sometimes emit null/non-object array elements — drop them here so no renderer
+      // ever dereferences one (a null finding crashed the live watch loop on real data).
+      if (Array.isArray(items)) return { kind: key, items: items.filter((x) => x && typeof x === 'object') };
+    } catch { /* malformed close — fall through to raw lines */ }
+  }
+  return null;
+}
+
+const SEV_ORDER = ['critical', 'high', 'medium', 'low'];
+const worstSeverity = (items) => SEV_ORDER.find((s) => items.some((f) => cleanField(f.severity).toLowerCase() === s)) || 'low';
+
+function summarizeFindings(items, n) {
+  if (!items.length) return [`${C.green}✓ no issues found${C.reset}`];
+  // A one-line budget can't fit "finding + overflow marker" (two lines) — collapse to a count.
+  if (n === 1 && items.length > 1) return [`${sev(worstSeverity(items))} ${items.length} findings — ${cleanField(items[0].claim)}`];
+  const shown = items.slice(0, items.length > n ? Math.max(1, n - 1) : n);
+  const out = shown.map((f) => {
+    const file = cleanField(f.file), lineNo = cleanField(f.line);
+    const loc = file ? `${C.cyan}${file}${lineNo ? ':' + lineNo : ''}${C.reset}  ` : '';
+    return `${sev(cleanField(f.severity) || 'low')} ${loc}${cleanField(f.claim)}`;
+  });
+  if (items.length > shown.length) out.push(`… +${items.length - shown.length} more`);
+  return out;
+}
+
+function summarizeVerdicts(items, n) {
+  if (!items.length) return ['verdicts: none'];
+  if (n === 1 && items.length > 1) {
+    const conc = items.filter((v) => v.stance === 'concede').length;
+    return [`${items.length} verdicts — ${C.green}${items.length - conc} refute${C.reset} · ${C.yellow}${conc} concede${C.reset}`];
+  }
+  const shown = items.slice(0, items.length > n ? Math.max(1, n - 1) : n);
+  const out = shown.map((v) => {
+    // stance renders as one of two LITERAL words (never the raw field) — nothing to sanitize.
+    const stance = v.stance === 'concede' ? `${C.yellow}concede${C.reset}` : `${C.green}refute${C.reset}`;
+    return `${stance} ${C.cyan}${cleanField(v.ref) || '?'}${C.reset}  ${cleanField(v.reason)}`;
+  });
+  if (items.length > shown.length) out.push(`… +${items.length - shown.length} more`);
+  return out;
+}
+
+// Colored, human-readable tail for the text renderers (watch board + run detail):
+// a findings/verdicts answer → one line per item, a still-streaming answer → a progress
+// note, an all-echo stream → an explicit waiting note, anything else → the raw lines.
+function renderTailSummary(m, n) {
   if (n <= 0) return [];
-  const raw = (m.stdout_tail && m.stdout_tail.trim()) ? m.stdout_tail : (m.stderr_tail || '');
-  return stripAnsiCli(raw).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim()).slice(-n);
+  try {
+    const lines = tailContentLines(m);
+    if (!lines.length) {
+      const sawEcho = (m.stdout_tail && m.stdout_tail.trim()) || (m.stderr_tail && m.stderr_tail.trim());
+      return sawEcho ? [`${C.cyan}⋯${C.reset} prompt echoed — waiting for the model's answer`] : [];
+    }
+    const ans = parseAnswerJSON(lines.join('\n'));
+    if (!ans) return lines.slice(-n);
+    if (ans.partial != null) {
+      const unit = ans.kind === 'findings' ? 'finding' : 'verdict';
+      return [`${C.cyan}⋯ answering${C.reset}${ans.partial ? ` — ${ans.partial} ${unit}${ans.partial === 1 ? '' : 's'} so far` : '…'}`];
+    }
+    return ans.kind === 'findings' ? summarizeFindings(ans.items, n) : summarizeVerdicts(ans.items, n);
+  } catch (err) {
+    // One malformed record must not kill the whole live watch loop — surface it loudly
+    // on the offending row instead of crashing the board (Lesson L6: no silent failures).
+    return [`${C.red}tail interpret failed: ${cleanField(err && err.message)}${C.reset}`];
+  }
+}
+
+// The last `n` non-empty lines of an agent's live output for --json consumers — echo-dropped
+// but otherwise verbatim (machines parse the JSON answer themselves).
+function statusTailLines(m, n) {
+  return n <= 0 ? [] : tailContentLines(m).slice(-n);
 }
 
 // All runs under one .xm root, newest first. THREE namespaces: .xm/panel (native panel),
@@ -1329,7 +1484,7 @@ function printStatusRow(r) {
 // tokens/cost prefer the round-scoped live fields and fall back to the cumulative ones, so
 // a model between rounds still shows what it has consumed so far.
 function watchModelJSON(m, linesN) {
-  return {
+  const out = {
     label: m.label,
     vendor: vendorOf(m.label),
     state: m.state,
@@ -1343,6 +1498,10 @@ function watchModelJSON(m, linesN) {
     updated_at: m.updated_at || null,
     ...(linesN > 0 ? { tail: statusTailLines(m, linesN) } : {}),
   };
+  // The text board interprets the tail from the raw record (full stdout/stderr tails);
+  // non-enumerable so --watch --json snapshots keep their compact, stable shape.
+  Object.defineProperty(out, '_rec', { value: m });
+  return out;
 }
 
 // How many lines of each agent's live output to show under it — the "what is it reasoning"
@@ -1423,27 +1582,31 @@ function watchRunSnapshot(runArg, linesN = 0) {
 // footer count. Empty when nothing is running.
 function renderStatusWatch(flags) {
   const snap = watchBoardSnapshot(flags);
+  const linesN = watchLinesN(flags);
   const width = Math.max(24, (process.stdout.columns || 100) - 12);
   const clock = new Date().toTimeString().slice(0, 8);
   console.log(`${C.bold}panel watch${C.reset} · ${snap.live.length ? `${C.yellow}${snap.live.length} live${C.reset}` : `${C.dim}0 live${C.reset}`} · ${C.dim}${clock}${C.reset}`);
   if (!snap.live.length) console.log(`\n${C.dim}(no active panels — a run appears here while it is in progress)${C.reset}`);
   for (const r of snap.live) {
-    console.log(`\n${C.bold}▸ ${r.project}${C.reset}  ${C.cyan}${r.source}${C.reset}  ${r.title || r.run}   ${C.dim}${r.phase} · ${r.progress.done}/${r.progress.total} done · ${r.elapsed_s}s${C.reset}`);
+    // The phase/progress fragment is the header's load-bearing info — full contrast, not dim.
+    console.log(`\n${C.bold}▸ ${r.project}${C.reset}  ${C.cyan}${r.source}${C.reset}  ${r.title || r.run}   ${C.yellow}${r.phase}${C.reset} · ${r.progress.done}/${r.progress.total} done · ${r.elapsed_s}s`);
     for (const m of r.models) {
       const glyph = m.state === 'done' ? `${C.green}✓${C.reset} ` : m.state === 'failed' ? `${C.red}✗${C.reset} `
         : m.state === 'running' ? `${C.yellow}⏳${C.reset}` : `${C.dim}·${C.reset} `;
       const el = m.elapsed_s != null ? `${m.elapsed_s}s` : '';
       const hint = m.state === 'failed' ? `${C.red}${m.error || 'failed'}${C.reset}`
-        : m.state === 'running' ? `${C.dim}${modelProgress(m).join(' · ')}${C.reset}` : '';
-      console.log(`    ${glyph} ${m.vendor.padEnd(8)} ${C.dim}${el.padEnd(5)}${C.reset} ${hint}`);
-      // Content lines (opt-in via --lines N / panel.watch_lines): the tail of what this agent is
-      // actually producing/reasoning, indented under it.
-      for (const line of (m.tail || [])) {
-        console.log(`        ${C.dim}│ ${line.slice(0, width)}${C.reset}`);
+        : m.state === 'running' ? modelProgress(m).join(' · ') : '';
+      console.log(`    ${glyph} ${m.vendor.padEnd(8)} ${el.padEnd(5)} ${hint}`);
+      // Content lines (opt-in via --lines N / panel.watch_lines): what this agent's output
+      // MEANS — findings/verdicts summarized, prompt echo dropped — not a raw JSON dump.
+      // Only the gutter bar is dim; the content itself stays full-contrast.
+      for (const line of renderTailSummary(m._rec || m, linesN)) {
+        console.log(`        ${C.dim}│${C.reset} ${truncateVisible(line, width)}`);
       }
     }
   }
-  console.log(`\n${C.dim}idle · ${snap.done} done · ${snap.stalled} stalled · ${snap.projects} project${snap.projects === 1 ? '' : 's'}${flags.all ? '' : ' (--all for every project)'}${C.reset}`);
+  const stalled = snap.stalled ? `${C.reset}${C.yellow}${snap.stalled} stalled${C.reset}${C.dim}` : `${snap.stalled} stalled`;
+  console.log(`\n${C.dim}idle · ${snap.done} done · ${stalled} · ${snap.projects} project${snap.projects === 1 ? '' : 's'}${flags.all ? '' : ' (--all for every project)'}${C.reset}`);
 }
 
 // `xm panel status [run] [--json] [--watch]` — read run state straight from disk so an IN-PROGRESS
@@ -1498,7 +1661,6 @@ function cmdStatus(pos, flags) {
 }
 
 function renderStatusOnce(pos, flags) {
-  const ESC = String.fromCharCode(27); // ANSI escape, for stripping colorized model output
   const runArg = pos[0];
 
   // --all: every registered project's runs, grouped — the CLI equivalent of the dashboard Activity
@@ -1586,12 +1748,13 @@ function renderStatusOnce(pos, flags) {
   const phaseTxt = detailDone ? 'done' : stale ? `stalled · ${statusAge(st.updated_at)} ago (process gone — states below are frozen)` : `${st.phase} · ${mDone}/${mTotal} done`;
   const phaseColor = detailDone ? C.green : stale ? C.dim : C.yellow;
   console.log(`${C.bold}${runArg}${C.reset}  ${phaseColor}[${phaseTxt}]${C.reset}  ${st.target_title || ''}`);
+  const detailWidth = Math.max(24, (process.stdout.columns || 100) - 6);
   for (const m of (st.models || [])) {
-    // strip ANSI SGR (kiro colorizes its output) + collapse whitespace so the tail stays one line
-    const tail = (m.stdout_tail || '').replace(new RegExp(ESC+'\\[[0-9;]*m','g'), '').replace(/\s+/g, ' ').trim().slice(-200);
     const err = m.error ? ` ${C.red}${m.error}${C.reset}` : '';
     console.log(`\n${C.bold}${m.label}${C.reset} ${m.state}${m.elapsed_s != null ? ` (${m.elapsed_s}s)` : ''}${err}`);
-    console.log(`  ${C.dim}${m.last_event || ''}${C.reset} ${tail}`);
+    if (m.last_event) console.log(`  ${C.dim}${m.last_event}${C.reset}`);
+    // Same interpreted view as the --watch board: findings/verdicts summarized, echo dropped.
+    for (const line of renderTailSummary(m, 4)) console.log(`  ${C.dim}│${C.reset} ${truncateVisible(line, detailWidth)}`);
   }
 }
 

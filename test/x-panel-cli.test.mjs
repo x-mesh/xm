@@ -3,7 +3,7 @@
  * - synth/adapters: pure-function unit tests
  * - CLI: full review flow driven by stub model commands (no real models)
  */
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -806,6 +806,159 @@ describe('panel status (staleness + project scope + --all)', () => {
       { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 2500 });
     expect(r.stdout).toContain('ZZMARKER final reasoning line'); // the actual content is rendered
     expect(r.stdout).toContain('panel watch');                   // it is the live board, not the list
+  });
+
+  // ── interpreted tails: the board shows what the output MEANS, not raw contract JSON ──
+
+  // Tail fixtures are removed after EACH test: a leftover live run pollutes every later board
+  // frame (its tail lines leak into other tests' assertions) and pushes older cross/review
+  // fixtures out of the status list's 20-run window.
+  const seededTails = [];
+  const seedTailRun = (run, models) => {
+    const d = join(SDIR, '.xm', 'panel', run);
+    mkdirSync(d, { recursive: true });
+    seededTails.push(d);
+    writeFileSync(join(d, 'status.json'), JSON.stringify({
+      run, phase: 'round1 (review)', target_kind: 'git-diff', target_title: 'diff: a.js',
+      updated_at: new Date().toISOString(),
+      models: models.map((m) => ({ state: 'done', elapsed_s: 10, updated_at: new Date().toISOString(), ...m })),
+    }));
+  };
+  afterEach(() => { while (seededTails.length) rmSync(seededTails.pop(), { recursive: true, force: true }); });
+  const watchFrame = (lines) => spawnSync('node', [CLI, 'status', '--watch', '--lines', String(lines), '--interval', '1'],
+    { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 2500 }).stdout;
+
+  test('a findings JSON tail renders one summarized line per finding, not the raw JSON', () => {
+    seedTailRun('panel-tailfind-fixture', [
+      { label: 'agy', stdout_tail: '{"findings":[{"severity":"medium","file":"x-build/lib/cli-prompts.mjs","line":165,"claim":"The regex misses multiline flags","evidence":"e"}]}' },
+      { label: 'codex', stdout_tail: '{"findings":[]}' },
+    ]);
+    const out = watchFrame(4);
+    expect(out).toContain('[medium] x-build/lib/cli-prompts.mjs:165');  // severity + location
+    expect(out).toContain('The regex misses multiline flags');          // the claim itself
+    expect(out).toContain('no issues found');                           // [] → explicit clean verdict
+    expect(out).not.toContain('{"findings"');                           // never the raw dump
+  });
+
+  test('a verdicts JSON tail renders stance + ref + reason per verdict', () => {
+    seedTailRun('panel-tailverd-fixture', [
+      { label: 'codex', stdout_tail: '{"verdicts":[{"ref":"agy#0","stance":"refute","reason":"path is unreachable"},{"ref":"agy#1","stance":"concede","reason":"real regression"}]}' },
+    ]);
+    const out = watchFrame(4);
+    expect(out).toContain('refute agy#0');
+    expect(out).toContain('path is unreachable');
+    expect(out).toContain('concede agy#1');
+    expect(out).not.toContain('{"verdicts"');
+  });
+
+  test('a tail that is ONLY our echoed prompt shows a waiting note, never our own instructions', () => {
+    seedTailRun('panel-tailecho-fixture', [
+      { label: 'codex', state: 'running', stdout_tail: [
+        'Return ONLY a JSON object, no prose. Use the exact bracketed [id] string as "ref":',
+        '{"verdicts":[{"ref":"<id, e.g. codex#0>","stance":"refute|concede","reason":"one line"}]}',
+        '- refute = wrong, not real, or not actionable.',
+        '- concede = a real issue worth fixing.',
+      ].join('\n') },
+    ]);
+    const out = watchFrame(4);
+    expect(out).toContain("prompt echoed — waiting for the model's answer");
+    expect(out).not.toContain('Return ONLY a JSON object'); // the echo itself is suppressed
+  });
+
+  test('a still-streaming findings object shows live progress, not truncated JSON', () => {
+    seedTailRun('panel-tailpartial-fixture', [
+      { label: 'agy', state: 'running', stdout_tail: '{"findings":[{"severity":"low","file":"a.js","line":1,"claim":"first","evidence":"e"},{"severity":"low","file":"b.js","line":2,"claim":"second","evi' },
+    ]);
+    const out = watchFrame(4);
+    expect(out).toContain('2 findings so far');   // counted from the unterminated object
+    expect(out).not.toContain('"evidence"');      // no raw JSON fragments
+  });
+
+  test('more findings than --lines collapses the overflow into a "+N more" line', () => {
+    const finding = (i) => `{"severity":"low","file":"f${i}.js","line":${i},"claim":"issue ${i}","evidence":"e"}`;
+    seedTailRun('panel-tailmore-fixture', [
+      { label: 'agy', stdout_tail: `{"findings":[${[1, 2, 3, 4, 5].map(finding).join(',')}]}` },
+    ]);
+    const out = watchFrame(4);
+    expect(out).toContain('issue 3');    // budget-1 findings shown…
+    expect(out).toContain('+2 more');    // …the rest collapsed, not silently dropped
+    expect(out).not.toContain('issue 4');
+  });
+
+  test('--lines 1 with many findings emits ONE count line, not finding+overflow (budget breach)', () => {
+    const finding = (i) => `{"severity":"low","file":"f${i}.js","line":${i},"claim":"issue ${i}","evidence":"e"}`;
+    seedTailRun('panel-tailone-fixture', [
+      { label: 'agy', stdout_tail: `{"findings":[${[1, 2, 3].map(finding).join(',')}]}` },
+    ]);
+    const out = watchFrame(1);
+    expect(out).toContain('3 findings — issue 1'); // single collapsed line
+    expect(out).not.toContain('+2 more');          // no second overflow line
+  });
+
+  test('a null element in the findings array must not crash the watch loop (live-crash regression)', () => {
+    seedTailRun('panel-tailnull-fixture', [
+      { label: 'agy', stdout_tail: '{"findings":[null,{"severity":"low","file":"a.js","line":1,"claim":"the real one","evidence":"e"}]}' },
+    ]);
+    const out = watchFrame(4);
+    expect(out).toContain('[low] a.js:1');        // surviving finding still renders
+    expect(out).toContain('the real one');
+    expect(out).not.toContain('TypeError');       // no crash, no stack trace
+  });
+
+  test('JSON-escaped ANSI in decoded fields never reaches the terminal (reinjection)', () => {
+    const ESCB = String.fromCharCode(27);
+    seedTailRun('panel-tailansi-fixture', [
+      //  inside the JSON string survives the raw-text ANSI strip as a 6-char literal,
+      // then JSON.parse decodes it into a REAL escape byte — cleanField must remove it.
+      { label: 'agy', stdout_tail: '{"findings":[{"severity":"low","file":"a.js\\u001b[2J","line":1,"claim":"x \\u001b[31mINJECTED\\u001b[0m y","evidence":"e"}]}' },
+    ]);
+    const out = watchFrame(4);
+    expect(out).toContain('INJECTED');            // text content survives…
+    expect(out).not.toContain(ESCB);              // …but no escape byte does (NO_COLOR run)
+  });
+
+  test('a real answer QUOTING a contract fragment is not mistaken for prompt echo', () => {
+    seedTailRun('panel-tailquote-fixture', [
+      { label: 'codex', stdout_tail: '{"findings":[{"severity":"low","file":"p.mjs","line":3,"claim":"echoes Return ONLY a JSON object in help text","evidence":"e"}]}' },
+    ]);
+    const out = watchFrame(4);
+    expect(out).toContain('[low] p.mjs:3');       // parsed as an answer…
+    expect(out).not.toContain('prompt echoed');   // …not dropped as echo
+  });
+
+  test('PROSE output quoting ONE contract phrase keeps everything (2-marker echo rule)', () => {
+    seedTailRun('panel-tailprose-fixture', [
+      { label: 'codex', state: 'running', stdout_tail: [
+        'the docs say - concede = a real issue worth fixing here',  // 1 marker line = a quote, not echo
+        'now tracing the diff for real problems',
+      ].join('\n') },
+    ]);
+    const out = watchFrame(4);
+    expect(out).toContain('the docs say');                     // content BEFORE the quote survives
+    expect(out).toContain('now tracing the diff');
+    expect(out).not.toContain('prompt echoed');
+  });
+
+  test('--watch --json tails are echo-dropped but verbatim (machines parse the JSON themselves)', () => {
+    seedTailRun('panel-tailjson-fixture', [
+      { label: 'codex', stdout_tail: 'Return ONLY a JSON object, with no prose before or after:\nIf there are no real issues, return {"findings":[]}.\n{"findings":[]}' },
+    ]);
+    const r = spawnSync('node', [CLI, 'status', '--watch', '--json', '--lines', '4', '--interval', '1'],
+      { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 2500 });
+    const snap = JSON.parse(r.stdout.trim().split('\n')[0]);
+    const run = snap.live.find((x) => x.run === 'panel-tailjson-fixture');
+    expect(run.models[0].tail).toEqual(['{"findings":[]}']); // echo gone, answer verbatim
+  });
+
+  test('status <run> detail also interprets the tail (findings summary instead of a JSON dump)', () => {
+    seedTailRun('panel-taildetail-fixture', [
+      { label: 'agy', stdout_tail: '{"findings":[{"severity":"high","file":"lib/x.mjs","line":9,"claim":"Detail view claim","evidence":"e"}]}' },
+    ]);
+    const r = panelRaw(['status', 'panel-taildetail-fixture'], statusEnv());
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('[high] lib/x.mjs:9');
+    expect(r.stdout).toContain('Detail view claim');
+    expect(r.stdout).not.toContain('{"findings"');
   });
 
   test('status <run> --watch live-tails that run (loops the detail, not a one-shot)', () => {
