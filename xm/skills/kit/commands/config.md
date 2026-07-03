@@ -106,11 +106,13 @@ Misc (global):
 | `drift.drift_threshold` | number 0–1 | `0.7` |
 | `pipelines` | `{ "name": [plugin, ...] }` | `{}` |
 
-Panel (read-only — owned by x-panel, managed by `xm panel setup` / `doctor` / `models`):
+Panel (owned by x-panel; editable from BOTH `xm panel setup` and the `xm config` wizard). `models` / `judge` delegate to `xm panel setup` (panel owns their validation); `timeout_s` / `model_overrides` are direct config writes:
 
 | Key | Values | Default |
 |-----|--------|---------|
 | `panel` | object | `{}` |
+| `panel.timeout_s` | integer ≥ 30 | `600` |
+| `panel.model_overrides` | `{ "vendor": "model" }` | `{}` |
 
 ## Phase presets (`xm config phase`)
 
@@ -155,7 +157,7 @@ xm config show
 4) 게이트      페이즈 종료 게이트 (auto / human-verify / quality)
 5) worktree    병렬 worktree 실행 (build-local 3-tier)
 6) 기타        mode · drift · scan_roots · pipelines
-7) panel       cross-vendor 프로바이더 (읽기 전용)
+7) panel       cross-vendor 프로바이더 (models/judge · timeout_s · model_overrides)
 0) 나가기
 ```
 
@@ -169,7 +171,7 @@ xm config show
 | 4 게이트 | Pick a gate (research/plan/execute/verify/close-exit), then a value → `xm config set gates.<name> <auto\|human-verify\|quality>`. |
 | 5 worktree | Scalar keys → `xm config set worktree.<key> <value>` (global) or add `--local` for the shared tier. gate_policy severity lists → read `xm config get worktree.gate_policy`, merge the one subkey, write the full object. **build-local tier is not writable via `set`** — tell the user to run `xm config` in a real terminal (category 5) for `.xm/build/config.json`. |
 | 6 기타 | mode → `xm config set mode <developer\|normal>`. drift → `xm config set drift.drift_threshold <0–1>`. scan_roots → `xm config set scan_roots '["~/work"]'`. pipelines → `xm config set pipelines '{"review":["x-review","x-eval"]}'`. |
-| 7 panel | Read-only. Show the `panel.*` block from `xm config show`; do NOT set it via `xm config`. Point the user to `xm panel setup`, `xm panel doctor`, `xm panel models <vendor>`. |
+| 7 panel | Editable. `models` → `xm panel setup --models claude,codex,agy [--global]` (delegated; panel validates + merges per-key). `judge` → `xm panel setup --judge rule [--global]` (only `rule` is implemented). `timeout_s` → `xm config set panel.timeout_s <n≥30>` (direct). `model_overrides` (`{ vendor: model }`, bare `--models` names resolve to it) → read `xm config get panel.model_overrides`, merge, `xm config set panel.model_overrides '{"cursor":"kimi-k2.5"}'`. Note panel's own merge is per-key project(.xm) > global(~/.xm). |
 
 After each change, re-run `xm config get <key>` to confirm the new value and source, then ask "다른 설정도 변경할까요? (y/n)". If yes, return to Step 2.
 

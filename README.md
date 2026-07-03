@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.36-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.37-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -1193,7 +1193,7 @@ A bare `xm config` opens a menu-driven wizard with seven categories:
 | 4 | Gates | five phase-exit gates (`research/plan/execute/verify/close-exit`) — `auto` / `human-verify` / `quality` |
 | 5 | Worktree | parallel-worktree keys over a 3-tier scope (build-local > shared > global) + `gate_policy` severity lists |
 | 6 | Misc | `mode` · `drift.drift_threshold` · `scan_roots` · `pipelines` |
-| 7 | Panel | cross-vendor providers — read-only, managed by `xm panel setup` |
+| 7 | Panel | cross-vendor providers — `models` / `judge` delegate to `xm panel setup`; `timeout_s` / `model_overrides` are written directly |
 
 Each item shows its **effective value and the tier it came from**, lets you **choose the write scope** (defaulting to the schema's tier), and **warns when a higher-priority tier would shadow** the write. Every key is validated against the registry on `set`: an unknown key or out-of-range value prints a warning but still saves (back-compat). The wizard needs a TTY — under a pipe or redirect a bare `xm config` exits with a pointer to the `show` / `get` / `set` / `phase` subcommands instead of hanging.
 

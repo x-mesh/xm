@@ -483,25 +483,71 @@ const MESSAGES = {
   'cat.misc.pipe': { ko: '파이프라인(pipelines)', en: 'Pipelines (pipelines)' },
   'cat.misc.lang': { ko: '출력 언어(lang)', en: 'Output language (lang)' },
 
-  // ── category: panel (read-only) ──
+  // ── category: panel (cross-vendor providers — editable) ──
+  //
+  // Edited from BOTH this wizard and `xm panel setup`. models/judge are delegated
+  // to setup (panel owns their validation); timeout_s and model_overrides are
+  // direct config writes. panel's own merge is per-key project(.xm) > global(~/.xm),
+  // which differs from shared-config's wholesale top-level replacement — surfaced
+  // via panel.merge_note before any edit.
   'cat.panel.title': {
     ko: 'panel (cross-vendor 프로바이더)',
     en: 'panel (cross-vendor providers)',
   },
-  'panel.readonly': { ko: '읽기 전용', en: 'read-only' },
+  'cat.panel.models': { ko: '모델 목록 (models)', en: 'Models (models)' },
+  'cat.panel.judge': { ko: '판정기 (judge)', en: 'Judge (judge)' },
+  'cat.panel.timeout': { ko: '타임아웃 (timeout_s)', en: 'Timeout (timeout_s)' },
+  'cat.panel.overrides': { ko: '모델 오버라이드 (model_overrides)', en: 'Model overrides (model_overrides)' },
   'panel.rule_default': { ko: 'rule (기본)', en: 'rule (default)' },
-  'panel.timeout_default': { ko: '600s (기본)', en: '600s (default)' },
-  'panel.no_edit': {
-    ko: '이 값들은 여기서 수정하지 않습니다.',
-    en: 'These values are not edited here.',
+  'panel.merge_note': {
+    ko: 'panel 병합: project(.xm) > global(~/.xm) — 키 단위 병합 (shared-config의 최상위 통째 교체와 다름)',
+    en: 'panel merge: project(.xm) > global(~/.xm) — per-key (differs from shared-config wholesale top-level replace)',
   },
-  'panel.manage_dedicated': {
-    ko: '전용 도구로 관리하세요:',
-    en: 'Manage them with the dedicated tools:',
+  'panel.detected_providers': {
+    ko: (list) => `PATH에서 감지된 프로바이더: ${list}`,
+    en: (list) => `providers detected on PATH: ${list}`,
   },
-  'panel.label_setup': { ko: '설정:', en: 'setup:' },
-  'panel.label_check': { ko: '·  점검:', en: '·  check:' },
-  'panel.label_models': { ko: '·  모델:', en: '·  models:' },
+  'panel.none_detected': { ko: 'PATH에서 감지된 프로바이더 없음', en: 'no providers detected on PATH' },
+  'panel.detect_unavailable': { ko: '(프로바이더 감지 불가)', en: '(provider detection unavailable)' },
+  // models / judge → delegated to `xm panel setup`
+  'panel.delegate_note': {
+    ko: 'models/judge는 xm panel setup에 위임됩니다 (검증 로직 중복 방지)',
+    en: 'models/judge are delegated to xm panel setup (validation not duplicated here)',
+  },
+  'panel.models_format': {
+    ko: '형식: claude,codex,agy 또는 cursor:kimi-k2.5 (쉼표 구분)  ·  Enter=취소',
+    en: 'Format: claude,codex,agy or cursor:kimi-k2.5 (comma-separated)  ·  Enter=cancel',
+  },
+  'panel.judge_format': {
+    ko: "형식: 판정기 값 (현재 유효값은 'rule' 하나)  ·  Enter=취소",
+    en: "Format: judge value (only 'rule' is currently valid)  ·  Enter=cancel",
+  },
+  'panel.judge_confirm_nonrule': {
+    ko: (v) => `'${v}'은(는) 알려진 판정기가 아닙니다 (유효: rule). 계속할까요? (y/N): `,
+    en: (v) => `'${v}' is not a known judge (valid: rule). Continue? (y/N): `,
+  },
+  'panel.setup_failed': {
+    ko: (code) => `xm panel setup 실패 (exit ${code}) — 저장되지 않았습니다`,
+    en: (code) => `xm panel setup failed (exit ${code}) — not saved`,
+  },
+  'panel.setup_not_found': {
+    ko: 'xm panel setup을 실행할 수 없습니다 (xm 미설치 및 x-panel-cli.mjs 미발견)',
+    en: 'cannot run xm panel setup (xm not on PATH and x-panel-cli.mjs not found)',
+  },
+  'panel.via_setup': { ko: 'xm panel setup 경유', en: 'via xm panel setup' },
+  // model_overrides → direct row-by-row write
+  'panel.overrides_header': {
+    ko: 'panel 모델 오버라이드 { vendor: model } — --models의 bare 이름이 이 모델로 해석됩니다:',
+    en: 'panel model overrides { vendor: model } — bare names in --models resolve to this model:',
+  },
+  'panel.overrides_format': {
+    ko: '형식: vendor=full-model-id (예: cursor=kimi-k2.5)  ·  del <vendor> (삭제)  ·  Enter=끝',
+    en: 'Format: vendor=full-model-id (e.g. cursor=kimi-k2.5)  ·  del <vendor> (delete)  ·  Enter=done',
+  },
+  'panel.overrides_format_short': {
+    ko: '형식: vendor=full-model-id 또는 del <vendor>',
+    en: 'Format: vendor=full-model-id or del <vendor>',
+  },
 
   // ── category: vendor (harness tier→model mapping) ──
   //
@@ -586,8 +632,8 @@ const MESSAGES = {
     en: 'per-harness tier→model mapping · profiles',
   },
   'menu.panel_hint': {
-    ko: 'cross-vendor 프로바이더 (읽기 전용)',
-    en: 'cross-vendor providers (read-only)',
+    ko: 'cross-vendor 프로바이더 (models/judge·timeout·overrides)',
+    en: 'cross-vendor providers (models/judge · timeout · overrides)',
   },
 
   // ── session summary + wizard chrome ──

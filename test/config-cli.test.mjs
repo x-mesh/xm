@@ -861,35 +861,169 @@ describe('xm config misc category (t9)', () => {
   });
 });
 
+// ── panel category (t9) — now EDITABLE (models/judge delegate to `xm panel
+// setup`; timeout_s / model_overrides are direct writes) ─────────────────────
+//
+// The old policy (read-only, no submenu) was replaced by a user decision to allow
+// editing from BOTH the wizard and `xm panel setup`, without duplicating panel's
+// validation. Delegation is exercised via XM_PANEL_SETUP_STUB: pointing it at the
+// real x-panel-cli.mjs runs the actual setup (verifying config reflection + panel's
+// per-key merge), pointing it at a recorder verifies the delegated argv (--global).
+// Menu path (line mode): main 7=panel · panel: 1=models 2=judge 3=timeout_s
+//   4=model_overrides 0=뒤로 · scope: 1=global 2=local.
+const PANEL_CLI = join(__dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
+
+// A stand-in for `xm panel setup` that records the argv it was spawned with (so a
+// test can assert --models / --global) and prints a setup-shaped success line so
+// the wizard treats the delegation as saved.
+const PANEL_RECORDER = `
+import { writeFileSync } from 'node:fs';
+writeFileSync(process.env.REC_OUT, JSON.stringify(process.argv.slice(2)));
+console.log('saved panel defaults -> ' + process.env.REC_OUT);
+`;
+
 describe('xm config panel category (t9)', () => {
-  test('panel 카테고리는 읽기 전용 — config를 수정하지 않고 안내만 출력 (DoD)', () => {
+  test('panel 카테고리는 편집 가능 — 병합 안내를 표시하고 "읽기 전용" 문구가 없다 (신규 계약)', () => {
     withRoot((root) => {
-      // panel(7) → 나가기(0)
-      const w = runWizard('7\n0\n', root);
+      // panel(7) → 뒤로(0) → 나가기(0). Entering + backing out writes nothing.
+      const w = runWizard('7\n0\n0\n', root);
       expect(w.exitCode).toBe(0);
       const out = stripAnsi(w.stdout);
-      expect(out).toContain('읽기 전용');
-      expect(out).toContain('xm panel setup');
-      expect(out).toContain('xm panel doctor');
-      // The category writes nothing — no config file is created, summary is empty.
+      expect(out).toContain('panel (cross-vendor 프로바이더)'); // editable submenu title
+      expect(out).toContain('키 단위 병합');                    // panel.merge_note surfaced
+      expect(out).not.toContain('읽기 전용');                   // old read-only wording gone
+      // No edit made → no config file, empty summary.
       expect(existsSync(join(root, 'config.json'))).toBe(false);
       expect(out).toContain('변경된 항목 없음');
     });
   });
 
-  test('panel 요약은 기존 panel.* effective 값(models/judge/timeout_s)을 표시', () => {
+  test('timeout_s 편집 → panel.timeout_s 직접 저장 (DoD: config 반영)', () => {
     withRoot((root) => {
-      writeFileSync(join(root, 'config.json'),
-        JSON.stringify({ panel: { models: ['claude', 'codex'], judge: 'rule', timeout_s: 900 } }));
-      // panel(7) → 나가기(0)
-      const w = runWizard('7\n0\n', root);
+      // panel(7) → timeout(3) → 300 → scope global(1) → 뒤로(0) → 나가기(0)
+      const w = runWizard('7\n3\n300\n1\n0\n0\n', root);
+      expect(w.exitCode).toBe(0);
+      const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+      expect(written.panel.timeout_s).toBe(300);
+    });
+  });
+
+  test('timeout_s min(30) 미만은 재질문 후 유효값 저장', () => {
+    withRoot((root) => {
+      // panel(7) → timeout(3) → 10(<min, 재질문) → 300(유효) → scope(1) → 뒤로 → 나가기
+      const w = runWizard('7\n3\n10\n300\n1\n0\n0\n', root);
       expect(w.exitCode).toBe(0);
       const out = stripAnsi(w.stdout);
-      expect(out).toContain('claude, codex');
-      expect(out).toContain('900s');
-      // Read-only: the pre-existing panel config is unchanged by entering the category.
+      expect(out).toContain('최솟값 30'); // validate.min replayed for the sub-30 input
       const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
-      expect(written.panel).toEqual({ models: ['claude', 'codex'], judge: 'rule', timeout_s: 900 });
+      expect(written.panel.timeout_s).toBe(300);
+    });
+  });
+
+  test('model_overrides 행 추가/삭제 → 병합 보존 (DoD)', () => {
+    withRoot((root) => {
+      // panel(7) → overrides(4) → scope global(1) → cursor=kimi-k2.5 → codex=gpt-5.5
+      //   → del cursor → Enter(끝) → 뒤로(0) → 나가기(0)
+      const w = runWizard('7\n4\n1\ncursor=kimi-k2.5\ncodex=gpt-5.5\ndel cursor\n\n0\n0\n', root);
+      expect(w.exitCode).toBe(0);
+      const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+      // cursor removed, codex sibling preserved through the per-key writes.
+      expect(written.panel.model_overrides).toEqual({ codex: 'gpt-5.5' });
+    });
+  });
+
+  test('models 편집은 xm panel setup에 위임되고 panel.models가 반영됨 (실제 CLI 위임)', () => {
+    withRoot((root) => {
+      // Stub = the real x-panel-cli.mjs → runs the actual `setup` command.
+      // panel(7) → models(1) → claude,codex → scope global(1) → 뒤로(0) → 나가기(0)
+      const w = runVendorWizard('7\n1\nclaude,codex\n1\n0\n0\n', root, { XM_PANEL_SETUP_STUB: PANEL_CLI });
+      expect(w.exitCode).toBe(0);
+      const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+      expect(written.panel.models).toEqual(['claude', 'codex']);
+    });
+  });
+
+  test('models 위임은 panel의 per-key 병합으로 기존 judge를 보존', () => {
+    withRoot((root) => {
+      writeFileSync(join(root, 'config.json'), JSON.stringify({ panel: { judge: 'rule' } }));
+      const w = runVendorWizard('7\n1\nagy,codex\n1\n0\n0\n', root, { XM_PANEL_SETUP_STUB: PANEL_CLI });
+      expect(w.exitCode).toBe(0);
+      const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+      expect(written.panel.judge).toBe('rule');            // untouched sibling
+      expect(written.panel.models).toEqual(['agy', 'codex']);
+    });
+  });
+
+  test('위임 argv 검증 — global 스코프는 --global 포함, local은 미포함 (recorder stub)', () => {
+    withRoot((root) => {
+      const stub = join(root, 'rec.mjs');
+      const recOut = join(root, 'rec.json');
+      writeFileSync(stub, PANEL_RECORDER);
+      const env = { XM_PANEL_SETUP_STUB: stub, REC_OUT: recOut };
+
+      // global(1)
+      runVendorWizard('7\n1\nclaude,codex\n1\n0\n0\n', root, env);
+      const gArgs = JSON.parse(readFileSync(recOut, 'utf8'));
+      expect(gArgs).toEqual(['setup', '--models', 'claude,codex', '--global']);
+
+      // local(2)
+      runVendorWizard('7\n1\nclaude,codex\n2\n0\n0\n', root, env);
+      const lArgs = JSON.parse(readFileSync(recOut, 'utf8'));
+      expect(lArgs).toEqual(['setup', '--models', 'claude,codex']);
+    });
+  });
+
+  test('judge 편집: rule 외 값은 확인 질문, 취소 시 위임하지 않음', () => {
+    withRoot((root) => {
+      const stub = join(root, 'rec.mjs');
+      const recOut = join(root, 'rec.json');
+      writeFileSync(stub, PANEL_RECORDER);
+      // panel(7) → judge(2) → 'llm' → 확인(N) → 뒤로(0) → 나가기(0)
+      const w = runVendorWizard('7\n2\nllm\nN\n0\n0\n', root, { XM_PANEL_SETUP_STUB: stub, REC_OUT: recOut });
+      expect(w.exitCode).toBe(0);
+      const out = stripAnsi(w.stdout);
+      expect(out).toContain('알려진 판정기가 아닙니다'); // non-rule confirm prompt
+      expect(existsSync(recOut)).toBe(false);           // cancelled → setup never spawned
+    });
+  });
+});
+
+describe('xm config panel.* schema validation (F-panel)', () => {
+  test('panel.timeout_s 유효값은 경고 없이 저장', () => {
+    withRoot((root) => {
+      const w = run(['set', 'panel.timeout_s', '450'], root);
+      expect(w.exitCode).toBe(0);
+      expect(stripAnsi(w.stdout)).not.toContain('⚠');
+      const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+      expect(written.panel.timeout_s).toBe(450);
+    });
+  });
+
+  test('panel.timeout_s min(30) 미만은 경고하되 저장은 됨 (back-compat)', () => {
+    withRoot((root) => {
+      const w = run(['set', 'panel.timeout_s', '5'], root);
+      expect(w.exitCode).toBe(0);
+      expect(stripAnsi(w.stdout)).toContain('최솟값 30');
+      const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+      expect(written.panel.timeout_s).toBe(5); // warning, not a block
+    });
+  });
+
+  test('panel.model_overrides 객체는 타입 경고 없이 저장', () => {
+    withRoot((root) => {
+      const w = run(['set', 'panel.model_overrides', '{"codex":"gpt-5.5"}'], root);
+      expect(w.exitCode).toBe(0);
+      expect(stripAnsi(w.stdout)).not.toContain('⚠');
+      const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+      expect(written.panel.model_overrides.codex).toBe('gpt-5.5');
+    });
+  });
+
+  test('그 외 panel.* dotted 키는 미등록 경고 (managed leaf가 아님)', () => {
+    withRoot((root) => {
+      const w = run(['set', 'panel.foo', 'bar'], root);
+      expect(w.exitCode).toBe(0);
+      expect(stripAnsi(w.stdout)).toContain('미등록');
     });
   });
 });

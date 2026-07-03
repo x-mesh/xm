@@ -287,13 +287,27 @@ export const SCHEMA = [
   },
 
   // ── owned by another plugin (discovery only) ──
+  //
+  // panel.* is owned by x-panel, but two leaves are editable through the `xm config`
+  // panel category: panel.timeout_s (direct write, registered below) and
+  // panel.model_overrides (object, validated as a panel.* special case in
+  // shared-config's validateSet). models/judge stay delegated to `xm panel setup`.
   {
     key: 'panel',
     type: 'object',
     scope: 'global',
     owner: 'x-panel',
     default: {},
-    description: 'cross-vendor 프로바이더 설정 — xm panel setup/doctor/models로 관리',
+    description: 'cross-vendor 프로바이더 설정 — xm panel setup/doctor/models 또는 xm config 위저드로 관리',
+  },
+  {
+    key: 'panel.timeout_s',
+    type: 'integer',
+    scope: 'global',
+    owner: 'x-panel',
+    min: 30,
+    default: 600,
+    description: '패널/cross-vendor 모델별 idle 타임아웃(초) — xm panel setup 또는 xm config 위저드에서 편집',
   },
 ];
 
