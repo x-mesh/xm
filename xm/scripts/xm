@@ -90,6 +90,61 @@ plugin_lib() {
 
 self_register
 
+# --- Terminal instrumentation (best-effort dispatcher ledger) ---
+# Record a `dispatcher` activity trace after the real command finishes, on every
+# exit path (natural end, explicit `exit N`, or `set -e` abort) WITHOUT changing
+# its exit code. Only mutating commands are recorded — read-only/meta commands
+# and `dashboard` (which daemonizes) are excluded, so the ~50-100ms node spawn is
+# paid only where an activity trace is actually useful (RV cost concern).
+#
+# Why a trap and not code after `esac`: `set -e` makes a non-zero `node ...`
+# abort the script AT the dispatch line, so post-`esac` code would never run on
+# the very failures worth recording. The EXIT trap fires on all paths.
+#
+# Exit-code fidelity: the trap captures $? first, then `set +e` — otherwise a
+# failing best-effort write under `set -e` aborts the trap before `exit $code`
+# runs, letting the trap's last command status leak out as the script's exit code
+# (verified). Capturing $CMD/$1 now, before any case-local `shift` consumes them.
+XM_TRACE_CMD="$CMD"
+XM_TRACE_SUB="${1:-}"
+XM_TRACE_SUB2="${2:-}"
+_xm_trace_record() {
+  local code=$?
+  set +e
+  # Excluded top-level commands: help/version/which/doctor/init/update are meta,
+  # trace/last/status are the ledger's own read views, dashboard daemonizes.
+  case "$XM_TRACE_CMD" in
+    help|--help|-h|""|version|--version|-v|which|doctor|init|update|dashboard|dash|trace|last|status)
+      exit "$code" ;;
+  esac
+  # Excluded read-only sub-ops. The read verb is $1 for flat verbs (`config get`)
+  # but $2 for noun-verb commands (`build tasks list`, `build task show`), so both
+  # positions are checked. Trade-off: a write whose $2 *value* is literally
+  # list/get/show is wrongly skipped — negligible in this CLI's grammar (writes
+  # take keys/ids/text there), and a rare miss is fine for a best-effort ledger.
+  case "$XM_TRACE_SUB" in
+    list|get|show) exit "$code" ;;
+  esac
+  case "$XM_TRACE_SUB2" in
+    list|get|show) exit "$code" ;;
+  esac
+  local libp
+  libp="$(plugin_lib trace 2>/dev/null)"
+  if [ -n "$libp" ] && [ -f "$libp/x-trace-cli.mjs" ]; then
+    local status="error"
+    [ "$code" -eq 0 ] && status="ok"
+    local note="$XM_TRACE_CMD"
+    [ -n "$XM_TRACE_SUB" ] && note="$XM_TRACE_CMD $XM_TRACE_SUB"
+    if [ "${XM_TRACE_DEBUG:-0}" = "1" ]; then
+      node "$libp/x-trace-cli.mjs" record dispatcher --note "$note" --status "$status" >&2 || true
+    else
+      node "$libp/x-trace-cli.mjs" record dispatcher --note "$note" --status "$status" >/dev/null 2>&1 || true
+    fi
+  fi
+  exit "$code"
+}
+trap _xm_trace_record EXIT
+
 # --- Subcommand dispatch ---
 case "$CMD" in
   dashboard|dash)
@@ -194,13 +249,35 @@ case "$CMD" in
 
   trace)
     LIB_PATH="$(plugin_lib trace)"
-    if [ -f "$LIB_PATH/x-trace-cli.mjs" ]; then
-      node "$LIB_PATH/x-trace-cli.mjs" "$@"
-    else
-      echo "xm trace: CLI not yet available (only writer lib present)." >&2
-      echo "  Trace files: ~/.xm/traces/ or ./.xm/traces/" >&2
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-trace-cli.mjs" ]; then
+      echo "xm trace: x-trace-cli.mjs not found under $LIB" >&2
+      echo "  Update xm: xm update" >&2
       exit 1
     fi
+    node "$LIB_PATH/x-trace-cli.mjs" "$@"
+    ;;
+
+  # Shortcuts for the two most-used read-only trace views. `xm last` == `xm trace
+  # last`; `xm status` == `xm trace status`. No top-level `last`/`status` case
+  # exists elsewhere (dashboard's `status` is a nested sub-case), so no conflict.
+  last)
+    LIB_PATH="$(plugin_lib trace)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-trace-cli.mjs" ]; then
+      echo "xm last: x-trace-cli.mjs not found under $LIB" >&2
+      echo "  Update xm: xm update" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-trace-cli.mjs" last "$@"
+    ;;
+
+  status)
+    LIB_PATH="$(plugin_lib trace)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-trace-cli.mjs" ]; then
+      echo "xm status: x-trace-cli.mjs not found under $LIB" >&2
+      echo "  Update xm: xm update" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-trace-cli.mjs" status "$@"
     ;;
 
   sync)
@@ -690,6 +767,8 @@ Commands:
   build <subcmd>                      Phase-based project harness
   config <subcmd>                     Shared toolkit config (--local|--global)
   trace <subcmd>                      Execution traces
+  last [tool]                         Shortcut for 'trace last' — last activity per tool
+  status [--json]                     Shortcut for 'trace status' — commits since each tool acted
   sync <subcmd>                       Multi-machine .xm sync
                                         push|pull             Sync current project (cwd-based)
                                         push-all|pull-all     Sync all .xm/ projects under --root (default: ~/work)
