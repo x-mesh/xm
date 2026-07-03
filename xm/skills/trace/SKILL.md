@@ -5,8 +5,10 @@ model: opus
 ---
 
 <Purpose>
-x-trace tracks xm tool executions. It records agent call trees, estimated token counts, costs, and elapsed time. It provides timeline visualization, execution replay, and cross-session diff.
-No external dependencies. All state is stored as JSONL files in `.xm/traces/`.
+x-trace tracks xm tool executions across two artifacts:
+- **Per-session traces** in `.xm/traces/*.jsonl` — agent call trees, estimated tokens, cost, elapsed time, and a git snapshot per session. These power the timeline / cost / replay / diff views, which the LLM renders by parsing JSONL.
+- **A cross-tool activity ledger** in `.xm/last.json` — which tool last ran, on which commit, and how far HEAD has moved since. This is maintained by the `x-trace` CLI (`record` / `last` / `status` / `since` / `doctor`), not by LLM parsing.
+No external dependencies.
 </Purpose>
 
 <Use_When>
@@ -30,12 +32,16 @@ No external dependencies. All state is stored as JSONL files in `.xm/traces/`.
 | Subcommand | Model | Reason |
 |------------|-------|--------|
 | `show`, `list`, `cost`, `diff` | **haiku** (Agent tool) | Read-only log parsing and display |
+| `record`, `last`, `status`, `since`, `doctor` | **haiku** (Agent tool) | Deterministic CLI output — script decides, model relays |
 | `replay` | **sonnet** | Requires agent re-execution |
 
 For haiku-eligible commands, delegate via: `Agent tool: { model: "sonnet", prompt: "Run: [command]" }` <!-- managed-model: explorer -->
 
-Reads and writes JSONL files using Claude Code's native Bash tool.
-No external dependencies. Works as long as the `.xm/traces/` directory exists.
+Two command families:
+- **LLM-rendered views** (`show` / `cost` / `diff` / `list` / `start` / `stop` / `clean`) — the LLM reads `.xm/traces/*.jsonl` with the Bash/Read tools and renders the output described in each subcommand file.
+- **CLI-backed ledger ops** (`record` / `last` / `status` / `since` / `doctor`) — run `x-trace-cli.mjs` through the `xm` dispatcher; the LLM only relays what the script prints. See [Activity Ledger (CLI)](#activity-ledger-cli).
+
+No external dependencies. Works as long as the `.xm/` directory exists.
 
 ## Mode Detection
 
@@ -66,6 +72,7 @@ User provided: $ARGUMENTS
 
 Determine the subcommand from the first word of `$ARGUMENTS`:
 
+- `record`, `last`, `status`, `since`, `doctor` → [Activity Ledger (CLI)] — run `xm trace <subcommand>` and relay its output
 - `start` → [Subcommand: start]
 - `stop` → [Subcommand: stop]
 - `show` → [Subcommand: show]
@@ -130,6 +137,48 @@ See `subcommands/list.md` — tabular listing of all saved sessions with duratio
 ## Subcommand: clean
 
 See `subcommands/clean.md` — finds old trace files and deletes with confirmation.
+
+---
+
+## Activity Ledger (CLI)
+
+`record` / `last` / `status` / `since` / `doctor` are backed by `x-trace-cli.mjs`, which reads and writes `.xm/last.json` — a per-tool "last activity" pointer map, distinct from the per-session `.xm/traces/*.jsonl` files. Run them through the `xm` dispatcher and relay the output; do not re-implement their logic in Bash.
+
+> **⚠ Call `xm trace <command>` directly (or the `xm last` / `xm status` shortcuts). Claude Code's Bash tool starts a fresh shell on every invocation — shell functions (`xmt()`) defined in one call do NOT persist to the next, causing `command not found: xmt`. Never define a helper across calls; always use the dispatcher.**
+>
+> **Fallback** (only when `xm` is not in PATH — rare; `${CLAUDE_PLUGIN_ROOT}` is NOT exported to Bash subprocesses, so don't rely on it bare):
+> ```bash
+> XMT_CLI=$(ls -d ~/.claude/plugins/cache/xm/{trace,xm}/*/lib/x-trace-cli.mjs 2>/dev/null | sort -V | tail -1)
+> node "$XMT_CLI" last [args]
+> ```
+>
+> **Forbidden:** `XMT="node ..."; $XMT last` — zsh treats the quoted string as a single command and fails.
+
+| Command | What it does |
+|---------|-------------|
+| `xm trace record <tool> [--ref R] [--status S] [--note N] [--artifact A] [--session S]` | Write a tool's latest-activity pointer. Best-effort: an omitted `--ref` defaults to the current git HEAD; a lock contention or unknown tool name warns but still exits 0. |
+| `xm last [tool] [--json]` | One line per tool (ref, status, relative age), or the raw map with `--json`. Shortcut: `xm last`. |
+| `xm status [--json]` | Commits on HEAD since each tool last acted. Shortcut: `xm status`. |
+| `xm trace since <ref>` | Tools + trace sessions recorded after `<ref>`'s commit time. |
+| `xm trace doctor [--rebuild]` | Validate `last.json`; `--rebuild` reconstructs it from traces that recorded a git head. |
+
+A record auto-chains `base` to the tool's previous head. If that base is unreachable (rebase / force-push), the record is flagged `chain_broken` and shown with `⚠ chain broken` — a signal to re-establish the tool's baseline.
+
+### Coverage — what the ledger catches
+
+The ledger is honest about its blind spots: it only knows about activity that ran through the dispatcher or an explicit `record`.
+
+| Activity | In `last.json`? | Why |
+|----------|:---------------:|-----|
+| Mutating `xm <plugin> <cmd>` (e.g. `xm build tasks update`) | ✅ as `dispatcher` | The dispatcher's EXIT trap records after every mutating command. |
+| Explicit `xm trace record <tool>` | ✅ as `<tool>` | Direct ledger write — e.g. x-review's mandatory record contract. |
+| Read-only / meta `xm` commands (`help`, `version`, `last`, `status`, `trace`, `dashboard`, `init`, `update`, `doctor`, `which`) | ❌ | Deliberately excluded — no mutating activity to attribute. |
+| Read-only sub-ops (`… list` / `… get` / `… show`) | ❌ | Excluded at the `$1`/`$2` verb position to avoid logging queries. |
+| Direct `node x-*-cli.mjs …` (bypassing `xm`) | ❌ | Skips the dispatcher EXIT trap entirely. |
+| LLM-only skill reasoning with no CLI call (an x-op strategy, x-review's analysis) | ❌ unless it calls `xm trace record` | Nothing runs through the dispatcher. |
+| `session_start` / `session_end` in `.xm/traces/` | ✅ (traces) | Written by the trace-session hook; `doctor --rebuild` can reconstruct `last.json` from the git-bearing ones. |
+
+When ledger output is empty or partial, the CLI appends a coverage note (`activity may exist that was never recorded`). Surface it — do not present the ledger as a complete record.
 
 ---
 
