@@ -392,14 +392,15 @@ function showConfig(flags) {
     console.log(`  ${C.cyan}${k}${C.reset}: ${typeof v === 'object' ? JSON.stringify(v) : v}`);
   }
 
-  // Cross-vendor provider config lives under the `panel.*` key but is NOT
-  // panel-private — it's the shared multi-vendor provider setup that x-review/op/
-  // solver/eval/build all reuse. `xm config` can't edit or validate it, so point
-  // users at its dedicated wizard/diagnostics instead of leaving a dead end (PMC-1).
+  // Cross-vendor provider config lives under the `panel.*` key — the shared multi-
+  // vendor provider setup that x-review/op/solver/eval/build all reuse. It is now
+  // editable from BOTH `xm panel setup` and the `xm config` wizard's panel category
+  // (models/judge delegate to setup; timeout_s/model_overrides are direct writes),
+  // so point users at either entry instead of framing it as read-only (PMC-1).
   const hasPanel = effective && effective.panel && typeof effective.panel === 'object'
     && Object.keys(effective.panel).length > 0;
   console.log(`\n${C.dim}Cross-vendor providers${hasPanel ? ' (see panel.* above)' : ''}:${C.reset}`);
-  console.log(`  ${C.dim}configure:${C.reset} xm panel setup   ${C.dim}·  check (install+auth):${C.reset} xm panel doctor   ${C.dim}·  models:${C.reset} xm panel models <vendor>`);
+  console.log(`  ${C.dim}edit:${C.reset} xm config (panel) 또는 xm panel setup   ${C.dim}·  check (install+auth):${C.reset} xm panel doctor   ${C.dim}·  models:${C.reset} xm panel models <vendor>`);
   console.log('');
 }
 
@@ -507,6 +508,21 @@ function validateSet(key, value) {
     } else {
       const parsed = parseModelSpec(value);
       if (parsed.warning) warnings.push(parsed.warning);
+    }
+    return warnings;
+  }
+
+  // panel.* — owned by x-panel but editable via the `xm config` panel category.
+  // panel.timeout_s is a registered leaf → falls through to the exact-match checks
+  // below (integer + min). panel.model_overrides must be an object. Any other
+  // panel.<dotted> key is not a managed leaf, so it keeps the historical
+  // unregistered warning (the bare `panel` parent entry alone would suppress it).
+  if (key.startsWith('panel.') && key !== 'panel.timeout_s') {
+    if (key === 'panel.model_overrides') {
+      const actual = describeType(value);
+      if (actual !== 'object') warnings.push(t('validate.type', key, t('type.expected_object', actual)));
+    } else {
+      warnings.push(t('validate.unregistered', key));
     }
     return warnings;
   }
@@ -1822,25 +1838,226 @@ async function categoryMisc(rl, session) {
   }
 }
 
-// ── Panel category (read-only — owned by x-panel, PMC-1) ─────────────────
+// ── Panel category (editable — owned by x-panel, edited both here + `xm panel setup`) ──
 //
-// panel.* is the cross-vendor provider config owned by x-panel. `xm config` must
-// NOT edit or validate it (config-schema marks it owner:'x-panel'), so this shows
-// a read-only effective summary and points at the dedicated tooling. No ask, no
-// write — it returns immediately after printing.
-async function categoryPanel() {
-  const cfg = readSharedConfig();
-  const panel = (cfg && typeof cfg.panel === 'object' && cfg.panel) ? cfg.panel : {};
-  section(t('cat.panel.title'), t('panel.readonly'));
-  const models = Array.isArray(panel.models) && panel.models.length
+// panel.* is the cross-vendor provider config owned by x-panel. It is now editable
+// from BOTH `xm panel setup` and this wizard, WITHOUT duplicating panel's validation:
+//   • models / judge → DELEGATED to `xm panel setup` (panel owns the validation +
+//     autodetect semantics; we only collect input and spawn it).
+//   • timeout_s → direct write (registered config-schema leaf: integer, min 30).
+//   • model_overrides → direct write (row-by-row { vendor: model }).
+// panel's OWN merge is per-key project(.xm) > global(~/.xm) — different from
+// shared-config's wholesale top-level replacement — so the category surfaces that
+// before any edit (panel.merge_note).
+
+// Locate the x-panel CLI for the `xm`-absent fallback. Dual-path: bundle mirror
+// (xm/lib/x-panel-cli.mjs) then source (x-panel/lib/x-panel-cli.mjs). Returns the
+// path, or null when neither exists (caller surfaces this — never a silent skip).
+function findPanelCli() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(here, 'x-panel-cli.mjs'),                                 // xm bundle: xm/lib/x-panel-cli.mjs
+    join(here, '..', '..', 'x-panel', 'lib', 'x-panel-cli.mjs'),   // source: x-build/lib → x-panel/lib
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+// Delegate a models/judge write to `xm panel setup` so panel's validation + merge
+// stay the single source of truth (no duplicated validation here). Scope maps to
+// the --global flag. Under XM_ROOT (collapsed tiers) both panel roots point at that
+// one file so the delegated write lands where the wizard reads it back. Resolution:
+// XM_PANEL_SETUP_STUB (tests) → `xm panel setup` → direct x-panel-cli.mjs fallback
+// when `xm` is not on PATH (ENOENT). Returns spawnSync's result object.
+function runPanelSetup(setupArgs, scope) {
+  const env = { ...process.env };
+  if (process.env.XM_ROOT) {
+    env.X_PANEL_ROOT = process.env.XM_ROOT;
+    env.X_PANEL_GLOBAL_ROOT = process.env.XM_ROOT;
+  }
+  const args = ['setup', ...setupArgs];
+  if (scope.global) args.push('--global');
+
+  const stub = process.env.XM_PANEL_SETUP_STUB;
+  if (stub) return spawnSync('node', [stub, ...args], { env, encoding: 'utf8' });
+
+  const viaXm = spawnSync('xm', ['panel', ...args], { env, encoding: 'utf8' });
+  if (!(viaXm.error && viaXm.error.code === 'ENOENT')) return viaXm;
+
+  const cli = findPanelCli();
+  if (!cli) return { error: new Error(t('panel.setup_not_found')), status: null, stdout: '', stderr: '' };
+  return spawnSync('node', [cli, ...args], { env, encoding: 'utf8' });
+}
+
+// Surface the delegated setup's outcome (L6: never silence a failure). On success,
+// echo setup's own output (it prints the saved path), parse that path for the exit
+// summary, and record the item. On failure, print exit code + any stdout/stderr.
+function reportPanelSetup(r, session, key, value, scopeLabel) {
+  const stdout = (r.stdout || '').trim();
+  const stderr = (r.stderr || '').trim();
+  if (r.status !== 0) {
+    if (r.error && r.status == null) {
+      console.log(`  ${C.red}${G.warn} ${t('panel.setup_not_found')}${C.reset}`);
+      console.log(`  ${C.dim}${r.error.message}${C.reset}`);
+    } else {
+      console.log(`  ${C.red}${G.warn} ${t('panel.setup_failed', r.status)}${C.reset}`);
+    }
+    if (stdout) console.log(`  ${C.dim}${stdout}${C.reset}`);
+    if (stderr) console.log(`  ${C.dim}${stderr}${C.reset}`);
+    return;
+  }
+  if (stdout) for (const line of stdout.split('\n')) console.log(`  ${line}`);
+  const m = stdout.match(/→\s*(\S+)/);
+  const path = m ? m[1] : t('panel.via_setup');
+  session.saved.push({ key, value, scope: scopeLabel, path });
+}
+
+// Detected-provider header for the panel category. Reuses x-panel adapters'
+// autodetectModels (dual-path loader shared with the vendor category). Returns a
+// localized line; detection unavailable → "(감지 안내 없음)" rather than a crash.
+async function detectPanelProviders() {
+  const adapters = await loadPanelAdapters();
+  if (!adapters || typeof adapters.autodetectModels !== 'function') return t('panel.detect_unavailable');
+  try {
+    const found = adapters.autodetectModels();
+    return Array.isArray(found) && found.length
+      ? t('panel.detected_providers', found.join(', '))
+      : t('panel.none_detected');
+  } catch {
+    return t('panel.detect_unavailable');
+  }
+}
+
+function describePanelModels(panel) {
+  return Array.isArray(panel.models) && panel.models.length
     ? `${C.cyan}${panel.models.join(', ')}${C.reset}` : `${C.dim}(autodetect)${C.reset}`;
-  const judge = panel.judge ? `${C.cyan}${panel.judge}${C.reset}` : `${C.dim}${t('panel.rule_default')}${C.reset}`;
-  const timeout = panel.timeout_s ? `${C.cyan}${panel.timeout_s}s${C.reset}` : `${C.dim}${t('panel.timeout_default')}${C.reset}`;
-  console.log(`  models      : ${models}`);
-  console.log(`  judge       : ${judge}`);
-  console.log(`  timeout_s   : ${timeout}`);
-  console.log(`\n  ${C.yellow}${t('panel.no_edit')}${C.reset} ${t('panel.manage_dedicated')}`);
-  console.log(`  ${C.dim}${t('panel.label_setup')}${C.reset} xm panel setup   ${C.dim}${t('panel.label_check')}${C.reset} xm panel doctor   ${C.dim}${t('panel.label_models')}${C.reset} xm panel models <vendor>\n`);
+}
+
+function describePanelOverrides(panel) {
+  const o = (panel.model_overrides && typeof panel.model_overrides === 'object') ? panel.model_overrides : {};
+  const n = Object.keys(o).length;
+  if (n === 0) return `${C.dim}${t('common.none')}${C.reset}`;
+  return `${C.cyan}${t('count.items', n)}${C.reset} ${C.dim}(${resolveValueSource('panel')})${C.reset}`;
+}
+
+// models edit — collect a comma-separated model list, then delegate to `xm panel
+// setup --models <list>`. panel owns the validation, so we do NOT parse/validate here.
+async function editPanelModels(rl, session) {
+  const panel = getNestedKey(readSharedConfig(), 'panel') || {};
+  console.log(`  ${t('common.current')} ${describePanelModels(panel)}`);
+  console.log(`  ${C.dim}${t('panel.delegate_note')}${C.reset}`);
+  console.log(`  ${C.dim}${t('panel.models_format')}${C.reset}`);
+  const raw = (await ask(rl, t('prompt.enter_value_suffix', ''))).trim();
+  if (raw === '') { console.log(`  ${C.dim}${t('common.no_change')}${C.reset}`); return; }
+  const scope = await chooseScope(rl, 'panel');
+  const scopeLabel = scope.global ? 'global' : 'local';
+  const r = runPanelSetup(['--models', raw], scope);
+  reportPanelSetup(r, session, 'panel.models', raw, scopeLabel);
+}
+
+// judge edit — free input, but anything other than 'rule' (the only implemented
+// judge) asks for confirmation first, then delegates to `xm panel setup --judge`.
+async function editPanelJudge(rl, session) {
+  const panel = getNestedKey(readSharedConfig(), 'panel') || {};
+  console.log(`  ${t('common.current')} ${C.cyan}${panel.judge || t('panel.rule_default')}${C.reset}`);
+  console.log(`  ${C.dim}${t('panel.judge_format')}${C.reset}`);
+  const raw = (await ask(rl, t('prompt.enter_value_suffix', ''))).trim();
+  if (raw === '') { console.log(`  ${C.dim}${t('common.no_change')}${C.reset}`); return; }
+  if (raw !== 'rule') {
+    const cont = (await ask(rl, t('panel.judge_confirm_nonrule', raw))).trim().toLowerCase();
+    if (cont !== 'y' && cont !== 'yes') { console.log(`  ${C.dim}${t('common.cancelled_nosave')}${C.reset}`); return; }
+  }
+  const scope = await chooseScope(rl, 'panel');
+  const scopeLabel = scope.global ? 'global' : 'local';
+  const r = runPanelSetup(['--judge', raw], scope);
+  reportPanelSetup(r, session, 'panel.judge', raw, scopeLabel);
+}
+
+// timeout_s edit — direct write via the shared schema-value + saveKey engine
+// (registered leaf: integer, min 30). No delegation: it is a plain config key.
+async function editPanelTimeout(rl, session) {
+  const r = await promptSchemaValue(rl, 'panel.timeout_s');
+  if (r.cancelled) { console.log(`  ${C.dim}${t('common.no_change')}${C.reset}`); return; }
+  await saveKey(rl, session, 'panel.timeout_s', r.value);
+}
+
+// model_overrides edit — direct row-by-row editor for { vendor: model }. A bare
+// vendor name in --models resolves to this model (panel's resolveModelSpec). Scope
+// chosen once (like editOverrides); each line sets `vendor=model` or deletes with
+// `del <vendor>`, written per-key so sibling overrides survive.
+async function editPanelOverrides(rl, session) {
+  const key = 'panel.model_overrides';
+  const current = getNestedKey(readSharedConfig(), key) || {};
+  console.log(`\n  ${t('panel.overrides_header')}`);
+  const names = Object.keys(current);
+  if (names.length === 0) console.log(`    ${C.dim}${t('common.none')}${C.reset}`);
+  else for (const v of names) console.log(`    ${v.padEnd(16)} ${C.cyan}${current[v]}${C.reset}`);
+  console.log(`\n  ${t('panel.overrides_format')}\n`);
+
+  const scope = await chooseScope(rl, 'panel');
+  const scopeLabel = scope.global ? 'global' : 'local';
+  const targetPath = join(resolveSharedRoot(scope), 'config.json');
+  console.log(`  ${C.dim}${t('common.save_target', targetPath, scopeLabel)}${C.reset}`);
+  if (!(await confirmShadow(rl, key, scope))) return;
+
+  let changed = false;
+  while (true) {
+    const input = (await ask(rl, '  > ')).trim();
+    if (!input) break;
+    const existing = readJSON(targetPath) ?? {};
+    const overrides = { ...(getNestedKey(existing, key) || {}) };
+    if (input.startsWith('del ')) {
+      const name = input.slice(4).trim();
+      if (!(name in overrides)) { console.log(`  ${C.red}${t('budget.no_such_project', name)}${C.reset}`); continue; }
+      delete overrides[name];
+      setNestedKey(existing, key, overrides);
+      writeJSONAtomic(targetPath, existing);
+      console.log(`  ${C.green}${G.ok}${C.reset} ${t('budget.deleted', name)} ${C.dim}(${scopeLabel})${C.reset}`);
+      session.saved.push({ key: `${key}.${name}`, value: t('common.deleted_marker'), scope: scopeLabel, path: targetPath });
+      changed = true;
+      continue;
+    }
+    const [vendor, model] = input.split('=').map(s => s?.trim());
+    if (!vendor || !model) { console.log(`  ${C.red}${t('panel.overrides_format_short')}${C.reset}`); continue; }
+    overrides[vendor] = model;
+    setNestedKey(existing, key, overrides);
+    writeJSONAtomic(targetPath, existing);
+    console.log(`  ${C.green}${G.ok}${C.reset} ${vendor} → ${C.cyan}${model}${C.reset} ${C.dim}(${scopeLabel})${C.reset}`);
+    session.saved.push({ key: `${key}.${vendor}`, value: model, scope: scopeLabel, path: targetPath });
+    changed = true;
+  }
+  if (!changed) console.log(`  ${C.dim}${t('common.no_change')}${C.reset}`);
+}
+
+// Panel category menu (while-loop). Detection runs once on entry (state can't change
+// mid-session). Each render shows the panel-specific merge note + detected providers,
+// then routes to the delegated (models/judge) or direct (timeout_s/model_overrides)
+// editors.
+async function categoryPanel(rl, session) {
+  const providers = await detectPanelProviders();
+  while (true) {
+    const panel = getNestedKey(readSharedConfig(), 'panel') || {};
+    console.log(`\n  ${C.dim}${t('panel.merge_note')}${C.reset}`);
+    console.log(`  ${C.dim}${providers}${C.reset}`);
+    const ch = await menuSelect(rl, {
+      title: t('cat.panel.title'),
+      options: [
+        { key: '1', label: t('cat.panel.models'), hint: describePanelModels(panel) },
+        { key: '2', label: t('cat.panel.judge'), hint: panel.judge ? `${C.cyan}${panel.judge}${C.reset}` : `${C.dim}${t('panel.rule_default')}${C.reset}` },
+        { key: '3', label: t('cat.panel.timeout'), hint: `${t('common.current')} ${describeEffective('panel.timeout_s')}` },
+        { key: '4', label: t('cat.panel.overrides'), hint: describePanelOverrides(panel) },
+        { key: '0', label: t('common.back') },
+      ],
+    });
+    if (ch === '0' || ch === '') return;
+    if (ch === '1') await editPanelModels(rl, session);
+    else if (ch === '2') await editPanelJudge(rl, session);
+    else if (ch === '3') await editPanelTimeout(rl, session);
+    else if (ch === '4') await editPanelOverrides(rl, session);
+    else console.log(`  ${C.dim}${t('common.enter_range', '0-4')}${C.reset}`);
+  }
 }
 
 // ── Wizard core (while-loop menu) ───────────────────────────────────────
