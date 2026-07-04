@@ -118,6 +118,20 @@ export function appendMetric(data) {
   }
 }
 
+// ── INHERIT_MODEL ─────────────────────────────────────────────────────
+// Sentinel tier meaning "use the session model the user picked via /model".
+// It is NOT a billable tier: it must never become a key of MODEL_COSTS /
+// VENDOR_MODELS, and it must never reach the Agent tool as a literal value —
+// the orchestrating layer expresses inherit by OMITTING the model parameter.
+export const INHERIT_MODEL = 'inherit';
+
+// Roles whose output quality scales directly with model capability — these are
+// the roles MODEL_PROFILES routes to 'inherit' under default/max, and the ones
+// agent_type promotion treats as deep work even without a concrete 'opus'.
+export const JUDGMENT_ROLES = [
+  'architect', 'reviewer', 'security', 'planner', 'critic', 'debugger', 'deep-executor',
+];
+
 // ── MODEL_COSTS ───────────────────────────────────────────────────────
 
 // Prices per 1M tokens (USD). Last updated: 2026-04 (Claude 4.x family).
@@ -133,7 +147,11 @@ export const MODEL_COSTS = {
 // lets computeTokenActuals() learn from ground truth instead of recycling its
 // own estimates.
 export function costFromTokens(model, inputTokens, outputTokens) {
-  const costs = MODEL_COSTS[model] || MODEL_COSTS.sonnet;
+  // 'inherit' has no price of its own: bill at the opus ceiling so the number
+  // errs high, never low. Callers that know the real session model should pass
+  // it instead (tasks update --resolved-model).
+  const costs = model === INHERIT_MODEL ? MODEL_COSTS.opus
+    : (MODEL_COSTS[model] || MODEL_COSTS.sonnet);
   const i = Math.max(0, Number(inputTokens) || 0);
   const o = Math.max(0, Number(outputTokens) || 0);
   return (i / 1_000_000) * costs.input + (o / 1_000_000) * costs.output;
@@ -348,6 +366,10 @@ export const STRATEGY_MULTIPLIERS = {
 };
 
 // ── ROLE_MODEL_MAP_HR ─────────────────────────────────────────────────
+// FIXED concrete-tier table consumed by the codex installer transform
+// (resolveCodexSpec throws on specs it cannot resolve). NEVER put 'inherit'
+// here — this table must always resolve to a billable tier. Session-model
+// routing lives in MODEL_PROFILES below.
 
 export const ROLE_MODEL_MAP_HR = {
   architect: 'opus', reviewer: 'opus', security: 'opus',
@@ -368,9 +390,15 @@ export const ROLE_MODEL_MAP_HR = {
 // Legacy names ("balanced", "performance") are accepted and remapped via
 // LEGACY_PROFILE_MAP below.
 
+// default/max route JUDGMENT roles (architect, reviewer, security, planner,
+// critic, debugger, deep-executor) to 'inherit' — "use the session model the
+// user picked via /model". The profile decides WHERE to save; /model decides
+// what quality means. economy keeps every role on a fixed tier: its whole
+// point is a spend ceiling, and an inherited session model can be arbitrarily
+// expensive (getModelForRole enforces this even against model_overrides).
 export const MODEL_PROFILES = {
   // Sonnet-centric. For users without Opus budget — still usable quality.
-  // haiku reserved for cheap roles (explorer, writer).
+  // haiku reserved for cheap roles (explorer, writer). No 'inherit' here.
   economy: {
     architect: 'sonnet', reviewer: 'sonnet', security: 'sonnet',
     executor:  'sonnet', designer:  'sonnet', debugger: 'sonnet',
@@ -378,22 +406,22 @@ export const MODEL_PROFILES = {
     'deep-executor': 'sonnet', planner: 'sonnet', critic: 'sonnet',
     verifier: 'sonnet', researcher: 'haiku',
   },
-  // Opus-centric. The reasonable default in the Opus 4.7 era.
-  // Selective downgrades: designer + explorer to sonnet, writer to haiku.
+  // Judgment roles ride the session model; mechanical/execution roles keep
+  // their fixed tiers (executor opus, designer sonnet, explorer sonnet, …).
   default: {
-    architect: 'opus', reviewer: 'opus',   security: 'opus',
-    executor:  'opus', designer:  'sonnet', debugger: 'opus',
+    architect: 'inherit', reviewer: 'inherit', security: 'inherit',
+    executor:  'opus', designer:  'sonnet', debugger: 'inherit',
     explorer:  'sonnet', writer:  'haiku',
-    'deep-executor': 'opus', planner: 'opus', critic: 'opus',
+    'deep-executor': 'inherit', planner: 'inherit', critic: 'inherit',
     verifier: 'sonnet', researcher: 'sonnet',
   },
-  // Quality-first. Opus everywhere except trivial roles (explorer, writer)
-  // where Opus is over-investment.
+  // Quality-first. Judgment roles inherit; remaining execution roles stay on
+  // opus except trivial ones (explorer, writer) where opus is over-investment.
   max: {
-    architect: 'opus', reviewer: 'opus', security: 'opus',
-    executor:  'opus', designer:  'opus', debugger: 'opus',
+    architect: 'inherit', reviewer: 'inherit', security: 'inherit',
+    executor:  'opus', designer:  'opus', debugger: 'inherit',
     explorer:  'sonnet', writer:  'haiku',
-    'deep-executor': 'opus', planner: 'opus', critic: 'opus',
+    'deep-executor': 'inherit', planner: 'inherit', critic: 'inherit',
     verifier: 'opus', researcher: 'sonnet',
   },
 };
@@ -444,17 +472,28 @@ export function getModelForRole(role, size, config) {
   if (!config) config = loadSharedConfig();
   role = resolveRole(role);
 
-  // 1. User explicit override — ALWAYS wins
-  const overrides = config.model_overrides || {};
-  if (overrides[role]) return overrides[role];
-
-  // 2. Static profile (with legacy name remap: balanced→default, performance→max)
+  // Profile resolves first so the economy gate below can see it.
   const rawProfile = config.model_profile || 'default';
   const profile = resolveProfileName(rawProfile);
   if (!MODEL_PROFILES[profile]) {
     console.error(`⚠ Unknown model_profile "${rawProfile}" — falling back to default`);
   }
   const baseMap = MODEL_PROFILES[profile] || MODEL_PROFILES.default;
+
+  // 1. User explicit override — ALWAYS wins, with one exception: economy never
+  //    resolves to 'inherit'. economy is a spend ceiling, and an inherited
+  //    session model can be arbitrarily expensive.
+  const overrides = config.model_overrides || {};
+  if (overrides[role]) {
+    if (overrides[role] === INHERIT_MODEL && profile === 'economy') {
+      const fallback = baseMap[role] || baseMap.executor || 'sonnet';
+      console.warn(`⚠ model_overrides.${role}="inherit" is ignored under the economy profile — using "${fallback}"`);
+      return fallback;
+    }
+    return overrides[role];
+  }
+
+  // 2. Static profile (with legacy name remap: balanced→default, performance→max)
   if (!baseMap[role]) {
     console.warn(`⚠ Unknown role "${role}" — falling back to executor model`);
   }
@@ -506,9 +545,12 @@ export function computeTokenActuals() {
         const m = JSON.parse(line);
         // Exclude estimated samples — only token-measured ('actual') or legacy
         // untagged costs feed actuals. Newly-recorded estimates carry
-        // cost_source:'estimated' and must never recycle back as "actuals":
-        // that loop was circular (estimate → metric → average → reused as actual).
-        if (m.type === 'task_complete' && m.cost_source !== 'estimated'
+        // cost_source:'estimated' (or 'estimated_inherit') and must never
+        // recycle back as "actuals": that loop was circular (estimate → metric
+        // → average → reused as actual). model:'inherit' samples are excluded
+        // too — their cost was billed at the opus ceiling, not a real rate.
+        if (m.type === 'task_complete' && !String(m.cost_source || '').startsWith('estimated')
+            && m.model !== INHERIT_MODEL
             && typeof m.cost_usd === 'number' && m.size && groups[m.size]) {
           groups[m.size].push(m.cost_usd);
         }
@@ -546,7 +588,14 @@ export function computeTokenActuals() {
 export function estimateTaskCost(task, model = 'sonnet') {
   const size = task.size || 'medium';
   const base = SIZE_TOKEN_ESTIMATES[size] || SIZE_TOKEN_ESTIMATES.medium;
-  const costs = MODEL_COSTS[model] || MODEL_COSTS.sonnet;
+  // 'inherit' is priced at the opus ceiling (err high, never low — FM4
+  // direction): the actual session model is unknown until run time.
+  const isInherit = model === INHERIT_MODEL;
+  const costs = isInherit ? MODEL_COSTS.opus : (MODEL_COSTS[model] || MODEL_COSTS.sonnet);
+  const inheritFields = isInherit ? {
+    confidence: 'low',
+    warning: 'model "inherit" — cost assumes the opus ceiling; the actual session model is unknown until run time',
+  } : {};
 
   // Complexity adjustments
   const depCount = task.depends_on?.length || 0;
@@ -579,6 +628,7 @@ export function estimateTaskCost(task, model = 'sonnet') {
       model,
       confidence: 'high',
       multiplier: totalMultiplier,
+      ...inheritFields,
     };
   }
 
@@ -594,6 +644,7 @@ export function estimateTaskCost(task, model = 'sonnet') {
     model,
     confidence,
     multiplier: totalMultiplier,
+    ...inheritFields,
   };
 }
 

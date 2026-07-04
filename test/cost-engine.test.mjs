@@ -148,16 +148,16 @@ describe('getModelForRole — extended roles and aliases', () => {
   test('deep-executor resolves per profile without unknown-role warning', () => {
     const warnings = captureWarnings(() => {
       expect(ce.getModelForRole('deep-executor', 'large', { model_profile: 'economy' })).toBe('sonnet');
-      expect(ce.getModelForRole('deep-executor', 'large', { model_profile: 'default' })).toBe('opus');
-      expect(ce.getModelForRole('deep-executor', 'large', { model_profile: 'max' })).toBe('opus');
+      expect(ce.getModelForRole('deep-executor', 'large', { model_profile: 'default' })).toBe('inherit');
+      expect(ce.getModelForRole('deep-executor', 'large', { model_profile: 'max' })).toBe('inherit');
     });
     expect(warnings.some(w => w.includes('Unknown role'))).toBe(false);
   });
 
   test('planner/critic/researcher/verifier resolve without unknown-role warning', () => {
     const warnings = captureWarnings(() => {
-      expect(ce.getModelForRole('planner', 'medium', { model_profile: 'default' })).toBe('opus');
-      expect(ce.getModelForRole('critic', 'medium', { model_profile: 'default' })).toBe('opus');
+      expect(ce.getModelForRole('planner', 'medium', { model_profile: 'default' })).toBe('inherit');
+      expect(ce.getModelForRole('critic', 'medium', { model_profile: 'default' })).toBe('inherit');
       expect(ce.getModelForRole('verifier', 'medium', { model_profile: 'default' })).toBe('sonnet');
       expect(ce.getModelForRole('researcher', 'medium', { model_profile: 'economy' })).toBe('haiku');
     });

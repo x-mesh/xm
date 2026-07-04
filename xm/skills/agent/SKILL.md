@@ -1,7 +1,6 @@
 ---
 name: agent
 description: Agent primitives and autonomous behaviors — fan-out, delegate, broadcast, research, solve, consensus, swarm for Claude Code native multi-agent orchestration
-model: opus
 ---
 
 <Purpose>
@@ -248,7 +247,7 @@ When all agents complete:
 From `$ARGUMENTS`:
 - Word after `delegate` = role
 - Remainder = prompt
-- `--model sonnet|opus|haiku` = model (default sonnet; auto-selects opus for roles like "architect")
+- `--model sonnet|opus|haiku` = model (default sonnet; judgment roles like "architect" inherit the session model)
 - `--background` = run in background (default: foreground)
 - `--context <text>` = additional context
 
@@ -256,11 +255,11 @@ From `$ARGUMENTS`:
 
 | Role keyword | Model |
 |------------|------|
-| architect, analyst, critic, planner | opus |
-| se, sre, reviewer, security, debugger, optimizer, executor, builder, fixer, tester, verifier, test-engineer, build-fixer | sonnet |
+| architect, analyst, critic, planner, reviewer, security, debugger | **omit `model`** — runs on the harness-inherited default (session/parent model; never below opus in measured sessions) |
+| se, sre, optimizer, executor, builder, fixer, tester, verifier, test-engineer, build-fixer | sonnet |
 | explorer, documenter, scanner, linter | haiku |
 
-Explicit `--model` overrides automatic routing.
+Explicit `--model` overrides automatic routing. Never pass the literal string `"inherit"` as a model value — inherit is expressed only by omitting the parameter.
 
 ### Automatic role preset injection
 

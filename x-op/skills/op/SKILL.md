@@ -1,7 +1,6 @@
 ---
 name: op
 description: Strategy orchestration — 17 strategies including refine, tournament, chain, review, debate, red-team, brainstorm, distribute, council, socratic, persona, scaffold, compose, decompose, hypothesis, investigate, monitor
-model: opus
 allowed-tools:
   - AskUserQuestion
 ---
@@ -43,8 +42,8 @@ Easy/normal mode: accessible Korean is the goal — polite guidance ("~해 보�
 | Subcommand | Model | Reason |
 |------------|-------|--------|
 | `list` | **haiku** (Agent tool) | Catalog display, no reasoning |
-| Auto-route (strategy detection) | **sonnet** | Requires AskUserQuestion for confirmation |
-| Strategy execution | **sonnet** | Multi-agent orchestration |
+| Auto-route (strategy detection) | **session** (leader) | Requires AskUserQuestion — leader-only |
+| Strategy execution | **session** (leader) | Judgment work runs on the model the user picked via /model — never downgrade |
 
 For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }`
 

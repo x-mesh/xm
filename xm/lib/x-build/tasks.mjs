@@ -4,7 +4,7 @@
 
 import {
   PHASES, TASK_STATES, STATUS_ALIASES, C,
-  ROLE_MODEL_MAP_HR, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, checkBudget, loadSharedConfig, XM_GLOBAL, ROOT,
+  ROLE_MODEL_MAP_HR, INHERIT_MODEL, JUDGMENT_ROLES, MODEL_COSTS, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, checkBudget, loadSharedConfig, XM_GLOBAL, ROOT,
   readJSON, writeJSON, modifyJSON, readMD,
   manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, decisionsPath, projectDir,
   resolveProject, logDecision, addDecision, appendMetric, emitHook,
@@ -456,6 +456,7 @@ export function taskUpdate(project, args) {
   if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined && opts.desc === undefined && opts['expected-files'] === undefined)) {
     console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed> [--no-commit]');
     console.error('       x-build tasks update <task-id> --status completed --tokens-in <n> --tokens-out <n>  (record actual cost)');
+    console.error('       x-build tasks update <task-id> --status completed --resolved-model <haiku|sonnet|opus>  (record the model an inherit task actually ran on)');
     console.error('       x-build tasks update <task-id> --score <number>');
     console.error('       x-build tasks update <task-id> --desc "what + why"  (set task description)');
     console.error('       x-build tasks update <task-id> --done-criteria "criteria text"');
@@ -562,18 +563,40 @@ export function taskUpdate(project, args) {
   // cost_source:'actual' so computeTokenActuals() learns from ground truth.
   // Without them the metric falls back to the estimate (cost_source:'estimated'),
   // which is excluded from actuals to avoid the circular estimate→actual loop.
+  //
+  // --resolved-model: an 'inherit' task's real model is only knowable by the
+  // orchestrator at run time. When reported, the metric records that concrete
+  // tier instead of the 'inherit' sentinel; an inherit task completed WITHOUT
+  // it is tagged cost_source:'estimated_inherit' (cost = opus ceiling), which
+  // computeTokenActuals() also excludes.
+  let _resolvedModel = null;
+  if (opts['resolved-model'] != null) {
+    if (typeof opts['resolved-model'] === 'string' && MODEL_COSTS[opts['resolved-model']]) {
+      _resolvedModel = opts['resolved-model'];
+    } else {
+      console.error(`❌ --resolved-model must be one of: ${Object.keys(MODEL_COSTS).join(', ')} (got "${opts['resolved-model']}") — ignoring`);
+    }
+  }
   const _tokensIn = opts['tokens-in'] != null ? Number(opts['tokens-in']) : NaN;
   const _tokensOut = opts['tokens-out'] != null ? Number(opts['tokens-out']) : NaN;
   const _hasActuals = Number.isFinite(_tokensIn) && Number.isFinite(_tokensOut) && _tokensIn >= 0 && _tokensOut >= 0;
-  const _metricModel = taskRef._assigned_model || 'sonnet';
+  const _assignedModel = taskRef._assigned_model || 'sonnet';
+  const _metricModel = _resolvedModel || _assignedModel;
   const _actualCost = _hasActuals ? costFromTokens(_metricModel, _tokensIn, _tokensOut) : null;
+  // A resolved model without token counts still improves the estimate: re-price
+  // the task at the real tier instead of the inherit opus ceiling.
+  const _estimatedCost = (_resolvedModel && !_hasActuals)
+    ? estimateTaskCost(taskRef, _resolvedModel).cost_usd
+    : (taskRef._estimated_cost || 0);
   const _costFields = {
-    cost_usd: _hasActuals ? _actualCost : (taskRef._estimated_cost || 0),
-    cost_source: _hasActuals ? 'actual' : 'estimated',
+    cost_usd: _hasActuals ? _actualCost : _estimatedCost,
+    cost_source: _hasActuals ? 'actual'
+      : (_assignedModel === INHERIT_MODEL && !_resolvedModel ? 'estimated_inherit' : 'estimated'),
     actual_cost_usd: _actualCost,
     estimated_cost_usd: taskRef._estimated_cost ?? null,
     tokens_in: _hasActuals ? _tokensIn : null,
     tokens_out: _hasActuals ? _tokensOut : null,
+    ...(_resolvedModel ? { assigned_model: _assignedModel } : {}),
   };
 
   emitHook('task:post-update', { project, taskId: id, from: oldStatus, to: newStatus });
@@ -596,7 +619,7 @@ export function taskUpdate(project, args) {
       appendMetric({
         type: 'task_complete', project, taskId: id, taskName: taskRef.name,
         role: taskRef.role || 'executor',
-        model: taskRef._assigned_model || 'sonnet',
+        model: _metricModel,
         size: taskRef.size || 'medium',
         strategy: taskRef.strategy || null,
         ..._costFields,
@@ -642,7 +665,7 @@ export function taskUpdate(project, args) {
       appendMetric({
         type: 'task_failed', project, taskId: id, taskName: taskRef.name,
         role: taskRef.role || 'executor',
-        model: taskRef._assigned_model || 'sonnet',
+        model: _metricModel,
         size: taskRef.size || 'medium',
         strategy: taskRef.strategy || null,
         ..._costFields,
@@ -1232,7 +1255,12 @@ function markTasksRunning(taskData, readyTasks, sharedCfg, project, step) {
 // rather than a silently wrong spec — the run itself never crashes.
 export function vendorModelFields(model, cfg) {
   const byVendor = { claude: model };
-  const codex = resolveVendorModel(model, 'codex', cfg || {});
+  // 'inherit' is a session-relative value only the claude host understands
+  // (the orchestrator omits the Agent-tool model parameter). Cross-vendor
+  // lookup needs a concrete tier: fall back to 'opus' — the tier these
+  // judgment roles resolved to before inherit existed (decision D3).
+  const codexTier = model === INHERIT_MODEL ? 'opus' : model;
+  const codex = resolveVendorModel(codexTier, 'codex', cfg || {});
   if (codex.warning) {
     console.error(`⚠ vendor model (codex): ${codex.warning}`);
   } else if (codex.spec != null) {
@@ -1253,7 +1281,11 @@ function buildPlanEntry(project, task, { briefContent, decisionsContent, manifes
     task_name: task.name,
     size: task.size,
     role,
-    agent_type: role === 'deep-executor' || model === 'opus' ? 'deep-executor' : 'executor',
+    // 'inherit' on a judgment role is session-grade work — promote to
+    // deep-executor exactly as a concrete 'opus' assignment would.
+    agent_type: role === 'deep-executor' || model === 'opus'
+      || (model === INHERIT_MODEL && JUDGMENT_ROLES.includes(role))
+      ? 'deep-executor' : 'executor',
     model,
     ...vendorModelFields(model, sharedCfg),
     prompt: buildAgentPrompt(project, task, briefContent, decisionsContent, { manifest, taskData, stepData, worktree }),

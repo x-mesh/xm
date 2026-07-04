@@ -290,11 +290,13 @@ describe('GET /api/config/model-routing', () => {
     expect(['economy', 'default', 'max']).toContain(body.profile);
     expect(body.models).toEqual(['haiku', 'sonnet', 'opus']);
     expect(Object.keys(body.phase_groups).sort()).toEqual(['implement', 'plan', 'review']);
-    // every phase-group role resolves with a valid model + source
+    // every phase-group role resolves with a valid model + source.
+    // 'inherit' (session-model routing) is a valid role model but NOT a
+    // billable tier, so it is absent from body.models by design.
     for (const roles of Object.values(body.phase_groups)) {
       for (const role of roles) {
         expect(body.roles[role]).toBeDefined();
-        expect(body.models).toContain(body.roles[role].model);
+        expect([...body.models, 'inherit']).toContain(body.roles[role].model);
         expect(['profile', 'override']).toContain(body.roles[role].source);
       }
     }

@@ -1,7 +1,6 @@
 ---
 name: eval
 description: Agent output quality evaluation — multi-rubric scoring, strategy benchmarking, and A/B prompt experiments
-model: opus
 ---
 
 <Purpose>

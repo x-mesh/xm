@@ -13,6 +13,15 @@
  *   - frontmatter contains `managed: false` → skip (manual override)
  *   - otherwise (no marker or `managed: true`) → update `model:` field
  *
+ * Inherit semantics ("absence = inherit"):
+ *   - target 'inherit' means the skill must run on the SESSION model — the
+ *     frontmatter `model:` line is REMOVED (never written as a literal
+ *     `model: inherit`; Claude Code has no such value), and drift flips to
+ *     "field present = drift".
+ *   - Body markers on judgment roles have their `model: "X"` token REMOVED
+ *     from the example (Agent tool inherits when the parameter is omitted);
+ *     switching back to a concrete tier re-inserts the token after `{`.
+ *
  * Body sync (P3):
  *   - Lines ending with `<!-- managed-model: <role> -->` get their `model: "X"`
  *     token rewritten based on current profile + role (via cost-engine).
@@ -29,7 +38,7 @@
 
 import { readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MODEL_PROFILES, resolveProfileName } from './x-build/cost-engine.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -57,7 +66,7 @@ function resolveRoleModel(role, profile) {
 
 // ── Frontmatter parser (line-based, no YAML dep) ────────────────────────
 
-function splitFrontmatter(text) {
+export function splitFrontmatter(text) {
   if (!text.startsWith('---\n')) return null;
   const end = text.indexOf('\n---', 4);
   if (end === -1) return null;
@@ -68,7 +77,7 @@ function splitFrontmatter(text) {
   };
 }
 
-function parseSimple(front) {
+export function parseSimple(front) {
   // Returns { model, managed, lines } where lines is the raw split for rewriting.
   const lines = front.split('\n');
   let model = null;
@@ -85,9 +94,28 @@ function parseSimple(front) {
 // ── Body model rewriter (P3) ────────────────────────────────────────────
 // Scans body lines for `<!-- managed-model: <role> -->` markers and rewrites
 // the `model: "X"` token on the same line based on the role + current profile.
+// target 'inherit' REMOVES the token (Agent tool inherits the session model
+// when the parameter is omitted — a literal model:"inherit" is invalid);
+// a concrete target re-inserts the token after the opening `{` if absent.
 // Returns { newBody, changes: [{ line, role, from, to }] }.
 
-function rewriteBodyModels(body, profile) {
+const BODY_MODEL_TOKEN = /model:\s*"(haiku|sonnet|opus)"/;
+const INHERIT = 'inherit';
+
+export function removeBodyModelToken(line) {
+  // Try token + trailing comma first ("model: "X", rest"), then a leading
+  // comma (", model: "X""), then the bare token — keeps the example valid JS.
+  for (const re of [
+    /model:\s*"(?:haiku|sonnet|opus)"\s*,\s*/,
+    /,\s*model:\s*"(?:haiku|sonnet|opus)"/,
+    BODY_MODEL_TOKEN,
+  ]) {
+    if (re.test(line)) return line.replace(re, '');
+  }
+  return line;
+}
+
+export function rewriteBodyModels(body, profile) {
   const lines = body.split('\n');
   const changes = [];
   for (let i = 0; i < lines.length; i++) {
@@ -95,16 +123,32 @@ function rewriteBodyModels(body, profile) {
     if (!m) continue;
     const role = m[1];
     const target = resolveRoleModel(role, profile);
-    const modelMatch = lines[i].match(/model:\s*"(haiku|sonnet|opus)"/);
-    if (!modelMatch) continue;
-    if (modelMatch[1] === target) continue;
-    lines[i] = lines[i].replace(/model:\s*"(haiku|sonnet|opus)"/, `model: "${target}"`);
-    changes.push({ line: i + 1, role, from: modelMatch[1], to: target });
+    const modelMatch = lines[i].match(BODY_MODEL_TOKEN);
+
+    if (target === INHERIT) {
+      if (!modelMatch) continue; // already omitted — absence IS the target state
+      const newLine = removeBodyModelToken(lines[i]);
+      if (newLine === lines[i]) continue;
+      lines[i] = newLine;
+      changes.push({ line: i + 1, role, from: modelMatch[1], to: '(omit — session model)' });
+      continue;
+    }
+
+    if (modelMatch) {
+      if (modelMatch[1] === target) continue;
+      lines[i] = lines[i].replace(BODY_MODEL_TOKEN, `model: "${target}"`);
+      changes.push({ line: i + 1, role, from: modelMatch[1], to: target });
+    } else if (lines[i].includes('{')) {
+      // Token was removed by an earlier inherit pass — re-insert after `{`.
+      lines[i] = lines[i].replace(/\{\s*/, `{ model: "${target}", `);
+      changes.push({ line: i + 1, role, from: '(omitted)', to: target });
+    }
+    // No token and no `{` anchor: nothing safe to rewrite — leave untouched.
   }
   return { newBody: lines.join('\n'), changes };
 }
 
-function rewriteFrontmatter(front, newModel) {
+export function rewriteFrontmatter(front, newModel) {
   const lines = front.split('\n');
   let modelLineIdx = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -119,6 +163,11 @@ function rewriteFrontmatter(front, newModel) {
     else lines.push(`model: ${newModel}`);
   }
   return lines.join('\n');
+}
+
+// target 'inherit' → the model: line must not exist at all.
+export function removeModelLine(front) {
+  return front.split('\n').filter(l => !/^model:\s*/.test(l)).join('\n');
 }
 
 // ── Skill source resolution ─────────────────────────────────────────────
@@ -217,8 +266,12 @@ async function main() {
       continue;
     }
 
-    // Frontmatter check
-    const frontmatterDrift = parsed.model !== targetModel;
+    // Frontmatter check. target 'inherit' means "no model: field at all"
+    // (absence = inherit) — drift flips to "field present = drift".
+    const targetIsInherit = targetModel === INHERIT;
+    const frontmatterDrift = targetIsInherit
+      ? parsed.model !== null
+      : parsed.model !== targetModel;
 
     // Body markers — always evaluate
     const bodyResult = rewriteBodyModels(split.rest, profile);
@@ -230,20 +283,24 @@ async function main() {
       continue;
     }
 
+    const targetLabel = targetIsInherit ? '(remove — session model)' : targetModel;
+
     if (args.check) {
       results.drift.push({ skill, path, current: parsed.model, target: targetModel, body: bodyResult.changes });
       const bodyMsg = bodyDrift ? ` + ${bodyResult.changes.length} body markers` : '';
-      console.log(`  DRIFT  ${skill}  ${parsed.model || '(none)'} → ${targetModel}${bodyMsg}`);
+      console.log(`  DRIFT  ${skill}  ${parsed.model || '(none)'} → ${targetLabel}${bodyMsg}`);
       continue;
     }
 
-    const newFront = frontmatterDrift ? rewriteFrontmatter(split.front, targetModel) : split.front;
+    const newFront = frontmatterDrift
+      ? (targetIsInherit ? removeModelLine(split.front) : rewriteFrontmatter(split.front, targetModel))
+      : split.front;
     const newRest = bodyDrift ? bodyResult.newBody : split.rest;
     const newText = `---\n${newFront}\n---${newRest}`;
     writeAtomic(path, newText);
     results.updated.push({ skill, path, from: parsed.model, to: targetModel, bodyChanges: bodyResult.changes.length });
     const bodyMsg = bodyDrift ? ` + ${bodyResult.changes.length} body` : '';
-    console.log(`  update ${skill}  ${parsed.model || '(none)'} → ${targetModel}${bodyMsg}`);
+    console.log(`  update ${skill}  ${parsed.model || '(none)'} → ${targetLabel}${bodyMsg}`);
   }
 
   console.log(`\nsummary: ${results.updated.length} updated, ${results.unchanged.length} unchanged, ${results.skipped.length} skipped, ${results.missing.length} missing, ${results.drift.length} drift`);
@@ -257,4 +314,7 @@ async function main() {
   }
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+// Run only as a CLI — guarded so tests can import the exported helpers.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(e => { console.error(e); process.exit(1); });
+}

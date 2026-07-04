@@ -1,7 +1,6 @@
 ---
 name: build
 description: Phase-based project harness — manage project lifecycle, DAG execution, cost forecasting, and agent orchestration
-model: opus
 allowed-tools:
   - AskUserQuestion
 ---
@@ -31,10 +30,10 @@ x-build manages the full project lifecycle (Research → Plan → Execute → Ve
 | Subcommand | Model | Reason |
 |------------|-------|--------|
 | `list`, `status`, `tasks list`, `decisions` | **haiku** (Agent tool) | Read-only status display |
-| `init` (interactive) | **sonnet** | Requires AskUserQuestion |
-| `plan`, `forecast`, `research`, `run` | **sonnet** | Complex reasoning / orchestration |
+| `init` (interactive) | **session** (leader) | Requires AskUserQuestion — leader-only |
+| `plan`, `forecast`, `research`, `run` | **session** (leader) | Judgment work runs on the model the user picked via /model — never downgrade |
 
-For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }` <!-- managed-model: explorer -->
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }` <!-- managed-model: writer -->
 
 ## Mode Detection
 
@@ -254,6 +253,8 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 - `research [goal]` — Parallel agent investigation
 
 > **Agent models always come from CLI JSON** (`task.model`, `agents[n].model`, `agents_spec[n].model`, `prd_writer.model`) — resolved from `model_profile`/`model_overrides` in `.xm/config.json`. Never hardcode a model when spawning agents.
+>
+> **`inherit` means OMIT the parameter**: when the CLI JSON says `"model": "inherit"`, spawn the agent WITHOUT a `model` parameter — the subagent then runs on the harness-inherited default (the session/parent model as the harness resolves it; measured 2026-07: a Fable session inherited opus for subagents, never below opus). NEVER pass the literal string `"inherit"` to the Agent tool (it is not a valid value) and never substitute a hardcoded tier for it.
 
 ### Deliberation (cross-phase)
 - `discuss --mode interview [--round N]` — Multi-round requirements interview with drill-down
