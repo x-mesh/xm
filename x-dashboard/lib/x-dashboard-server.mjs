@@ -455,14 +455,36 @@ function collectPanelRuns(xmRoot) {
           status: null, verdict: null,
         });
       } else {
-        // result.json not written yet — surface the run as in-progress using whatever
-        // per-vendor files have landed, so a live cross run isn't invisible.
+        // result.json not written yet — a live cross run flushes a status.json
+        // heartbeat (same per-model shape as review: state/elapsed_s/stdout_bytes/
+        // tails). Surface it so the run has live per-model rows, and use its
+        // freshness to tell running from stalled — a crashed cross must never
+        // stay "running" forever (the CLI already treats cross staleness this way).
+        let status = null;
+        try { status = JSON.parse(readFileSync(join(rdir, 'status.json'), 'utf8')); } catch { /* pre-heartbeat run */ }
+        if (status) {
+          const t = Date.parse(status.updated_at || '');
+          const fresh = Number.isFinite(t) && (Date.now() - t) < PANEL_STALE_MS;
+          runs.push({
+            run: entry.name, kind: 'cross',
+            source: status.source || 'cross', title: status.title || null,
+            models: (status.models || []).map((m) => m.label || m.provider),
+            vendor_count: (status.models || []).length,
+            prompt_chars: status.prompt_chars || null,
+            created_at: status.started_at || null,
+            phase: fresh ? 'running' : 'stalled',
+            status, verdict: null,
+          });
+          continue;
+        }
+        // No heartbeat either (legacy run) — per-vendor files are all we have; such a
+        // run is by definition not producing updates, so it is stalled, not running.
         const labels = readdirSync(rdir).filter((f) => f.endsWith('.json') && f !== 'result.json').map((f) => f.replace(/\.json$/, ''));
         if (!labels.length) continue;
         runs.push({
           run: entry.name, kind: 'cross', source: 'cross', title: null,
           models: labels, vendor_count: labels.length, prompt_chars: null,
-          created_at: null, phase: 'running', status: null, verdict: null,
+          created_at: null, phase: 'stalled', status: null, verdict: null,
         });
       }
     }
@@ -576,14 +598,30 @@ function handleCrossDetail(xmRoot, run, req) {
   let result = null;
   try { result = JSON.parse(readFileSync(join(rdir, 'result.json'), 'utf8')); } catch { /* in-progress */ }
   if (!result) {
-    // result.json not written yet — assemble from the per-vendor files that have landed.
+    // result.json not written yet — assemble from the per-vendor files that have landed,
+    // PLUS the status.json heartbeat (live per-model state/elapsed/tails). Without the
+    // heartbeat a live run 404s until its first vendor finishes and shows nothing while
+    // vendors are thinking; with it the detail view is live from second one.
+    let status = null;
+    try { status = JSON.parse(readFileSync(join(rdir, 'status.json'), 'utf8')); } catch { /* pre-heartbeat run */ }
     const results = [];
     for (const f of readdirSync(rdir)) {
-      if (!f.endsWith('.json') || f === 'result.json') continue;
+      if (!f.endsWith('.json') || f === 'result.json' || f === 'status.json') continue;
       try { results.push(JSON.parse(readFileSync(join(rdir, f), 'utf8'))); } catch { /* skip partial */ }
     }
-    if (!results.length) return jsonResponseWithETag({ error: 'not_found', run }, req, 404);
-    return jsonResponseWithETag({ run, kind: 'cross', source: 'cross', title: null, models: results.map((r) => r.model), phase: 'running', results }, req);
+    if (!results.length && !status) return jsonResponseWithETag({ error: 'not_found', run }, req, 404);
+    const t = status && Date.parse(status.updated_at || '');
+    const fresh = Number.isFinite(t) && (Date.now() - t) < PANEL_STALE_MS;
+    return jsonResponseWithETag({
+      run, kind: 'cross',
+      source: (status && status.source) || 'cross',
+      title: (status && status.title) || null,
+      models: status ? (status.models || []).map((m) => m.label || m.provider) : results.map((r) => r.model),
+      prompt_chars: (status && status.prompt_chars) || null,
+      created_at: (status && status.started_at) || null,
+      phase: fresh ? 'running' : 'stalled',
+      status, results,
+    }, req);
   }
   return jsonResponseWithETag({
     run, kind: 'cross',

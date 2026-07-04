@@ -659,7 +659,7 @@ async function renderAggregateHome() {
   const sessionState = { active: allActive, recent: [], decisions: allDecisions.slice(-10) };
 
   const handoffHtml = sessionHandoff ? `
-    <div class="card" style="margin-bottom:1rem;border-left:4px solid var(--accent)">
+    <div class="card" style="margin-bottom:1rem;border:1px solid var(--accent)">
       <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
         <strong>Session Handoff</strong>
         <span class="text-muted" style="font-size:12px">${timeAgo(sessionHandoff.saved_at)}</span>
@@ -870,7 +870,7 @@ async function renderHome() {
       </div>
 
       ${sessionHandoff ? `
-      <div class="card" style="margin-top:1rem;border-left:4px solid var(--accent)">
+      <div class="card" style="margin-top:1rem;border:1px solid var(--accent)">
         <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
           <strong>Session Handoff</strong>
           <span class="text-muted" style="font-size:12px">${timeAgo(sessionHandoff.saved_at)}</span>
@@ -4804,7 +4804,9 @@ async function refreshActivity() {
     const phase = r.kind === 'cross' ? r.phase : (r.status ? r.status.phase : (r.verdict ? 'done' : 'unknown'));
     const badgeCls = live ? 'badge-yellow' : phase === 'failed' ? 'badge-red' : 'badge-green';
     const models = r.kind === 'cross'
-      ? (r.models || []).map((m) => esc(m)).join(' ')
+      ? (r.status && Array.isArray(r.status.models)
+          ? r.status.models.map((m) => `${icon(m.state)} ${esc(m.label || m.provider)}`).join('  ')
+          : (r.models || []).map((m) => esc(m)).join(' '))
       : (r.status ? r.status.models : (r.verdict ? (r.verdict.models || []).map((m) => ({ label: m, state: 'done' })) : []))
           .map((m) => `${icon(m.state)} ${esc(m.label)}`).join('  ');
     const title = r.title || r.target_title || r.run;
@@ -4874,10 +4876,16 @@ async function refreshPanel() {
 
     if (r.kind === 'cross') {
       const running = r.phase === 'running';
-      const badgeCls = running ? 'badge-yellow' : r.phase === 'failed' ? 'badge-red' : 'badge-green';
-      const modelLine = (r.models || []).map((m) => esc(m)).join('  ')
+      const stalledX = r.phase === 'stalled';
+      const badgeCls = running ? 'badge-yellow' : stalledX ? 'badge-gray' : r.phase === 'failed' ? 'badge-red' : 'badge-green';
+      // A live/stalled cross run carries a status heartbeat → per-model state + elapsed,
+      // same reading as review rows. Finished runs keep the bare vendor list.
+      const modelLine = (r.status && Array.isArray(r.status.models)
+        ? r.status.models.map((m) => `${icon(m.state)} ${esc(m.label || m.provider)}${m.elapsed_s != null ? ` <span class="text-muted">(${m.elapsed_s}s)</span>` : ''}`).join('   ')
+        : (r.models || []).map((m) => esc(m)).join('  '))
         + (r.vendor_count ? ` <span class="text-muted">· ${r.vendor_count} vendor${r.vendor_count === 1 ? '' : 's'}</span>` : '');
       const summary = running ? 'in progress…'
+        : stalledX ? 'stalled — no update'
         : `${r.ok_count ?? r.vendor_count}/${r.vendor_count} responded${r.prompt_chars ? ` · ${r.prompt_chars} char prompt` : ''}`;
       return header(r.phase || 'done', badgeCls, modelLine, summary);
     }
@@ -5142,12 +5150,27 @@ function renderCrossDetail(res) {
   const esc = (v) => escapeHtmlHumble(String(v ?? ''));
   const title = res.title || res.run;
   const running = res.phase === 'running';
-  const liveBadge = running ? ' <span class="badge badge-yellow" style="font-size:.7rem">● live</span>' : '';
+  const stalled = res.phase === 'stalled';
+  const liveBadge = running ? ' <span class="badge badge-yellow" style="font-size:.7rem">● live</span>'
+    : stalled ? ' <span class="badge badge-gray" style="font-size:.7rem">stalled</span>' : '';
   const meta = [
     res.models && res.models.length ? `${res.models.length} vendor${res.models.length === 1 ? '' : 's'}` : '',
     res.prompt_chars ? `${res.prompt_chars} char prompt` : '',
     res.created_at ? esc(String(res.created_at).slice(0, 16).replace('T', ' ')) : '',
   ].filter(Boolean).join(' · ');
+  // Live strip from the status heartbeat: per-vendor state/elapsed/output-volume while the
+  // run is in flight — the detail page is informative from second one, not only after the
+  // first vendor finishes.
+  const icon = (s) => s === 'done' ? '✓' : s === 'failed' ? '✗' : s === 'running' ? '⏳' : '·';
+  const liveStrip = (res.status && Array.isArray(res.status.models) && res.phase !== 'done')
+    ? `<div style="font-size:.82rem;padding:.5rem .75rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;margin-bottom:1rem;display:flex;gap:14px;flex-wrap:wrap">
+        ${res.status.models.map((m) => {
+          const cls = m.state === 'done' ? 'color:var(--success,#2a2)' : m.state === 'failed' ? 'color:var(--danger,#c00)' : 'color:var(--warning,#d80)';
+          const vol = m.stdout_bytes ? ` <span class="text-muted">↑${m.stdout_bytes >= 1000 ? (m.stdout_bytes / 1000).toFixed(1) + 'k' : m.stdout_bytes}</span>` : '';
+          return `<span style="${cls}">${icon(m.state)} ${esc(m.label || m.provider)}${m.elapsed_s != null ? ` <span class="text-muted">(${m.elapsed_s}s)</span>` : ''}${vol}</span>`;
+        }).join('')}
+      </div>`
+    : '';
   const cards = (res.results || []).map((r) => {
     const ok = r.ok !== false && !r.error;
     const badge = ok ? '<span class="badge badge-green" style="font-size:.7rem">ok</span>'
