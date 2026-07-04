@@ -448,6 +448,7 @@ Every strategy MUST save its result to `.xm/op/{strategy}-{YYYY-MM-DD}-{slug}.js
 | `options.agents` | agent count used — Agents column |
 | `self_score` | `{overall, criteria}` — Score column |
 | `status` | `completed` \| `failed` |
+| `cross_vendor` (cross-vendor runs ONLY) | provenance: `{requested, effective, failed[], run_ref, per_vendor_raw[]}` + timing from the cross run's status.json, never the summary-write moment — without it vendor attribution is unauditable (author-attribution hallucination) |
 
 See `references/x-op-result-persistence.md` for the full schema and per-strategy outcome mapping.
 
@@ -460,7 +461,7 @@ Before treating a strategy as done, emit this block as the last thing. Any unche
 - [x] Final Output emitted (strategy-specific format)
 - [x] Self-Score block emitted (1-10 scale + rubric)
 - [x] 4Q hallucination check emitted (⚠ flagged when 2+ items uncertain)
-- [x] Result file written with canonical keys (topic, created_at, completed_at, options.agents, self_score, status)
+- [x] Result file written with canonical keys (topic, created_at, completed_at, options.agents, self_score, status; + cross_vendor provenance when cross-vendor)
 - [x] Save path surfaced to user: `💾 Saved: .xm/op/{filename}`
 ```
 

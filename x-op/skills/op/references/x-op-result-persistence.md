@@ -26,6 +26,25 @@ Regardless of a strategy's internal vocabulary (debate→question, persona→sub
 
 Omitting any of the above is the root cause of `—` placeholders in the dashboard Ops list. Strategies that historically used `question`/`problem`/`subject` MUST still write `topic` (you may keep the original key for backward compatibility, but `topic` is the contract with the dashboard).
 
+### Cross-vendor provenance (REQUIRED when the run used `--cross-vendor`)
+
+An adversarial reviewer must be able to verify — from the saved JSON alone — that each
+vendor-attributed passage came from a real CLI call, not one model simulating vendors
+("author-attribution hallucination", flagged by an x-eval adversarial judge 2026-07-04).
+A cross-vendor result without these fields is unauditable:
+
+| Key | Type | Why |
+|---|---|---|
+| `cross_vendor.requested` / `cross_vendor.effective` | number | 5 requested ≠ 4 usable — a failed vendor must not silently vanish (L6). |
+| `cross_vendor.failed[]` | `[{vendor, reason}]` | Name each failed/invalid vendor and why its output was excluded. |
+| `cross_vendor.run_ref` | string | The `.xm/cross/<run>/` directory of the actual `xm panel cross` run — where per-vendor raw outputs, status.json (real per-vendor start/end/elapsed) live. |
+| `cross_vendor.per_vendor_raw[]` | string[] | Raw response filenames inside `run_ref` (e.g. `codex.json`) so attribution is checkable per vendor. |
+
+Timing rule: `created_at`/`completed_at` MUST come from the cross run's actual start/end
+(status.json), NEVER from the moment the summary JSON was written — identical
+microsecond timestamps are how a reviewer detects (and distrusts) a stamped-at-write
+artifact.
+
 ```json
 {
   "schema_version": 1,
