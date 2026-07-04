@@ -64,6 +64,28 @@ File system layout for x-eval outputs, result schemas, and rubric definitions st
 - `assertion_results` — present only when `--assert` flags were used. Each entry: `assertion` (text), `result` (`PASS` / `UNCERTAIN` / `HARD_FAIL`), `confidence` (judge agreement, e.g. `"2/3"`). A `HARD_FAIL` entry forces `passed = false`.
 - `judge_rationales` — preserved for `report --sample-transcript` (article H: "누군가 트랜스크립트를 읽기 전에는 점수를 액면 그대로 믿지 말라"). Optional — skip when `eval.persist_transcripts: false`.
 
+**Cross-vendor additions (present only when the panel ran `--cross-vendor`):**
+
+```json
+{
+  "judges": ["codex", "agy", "cursor"],
+  "scores": { "correctness": { "codex": 9, "agy": 8, "cursor": 9 } },
+  "sigma_cross_vendor": { "correctness": 0.47, "overall": 0.6 },
+  "cross_vendor": {
+    "requested": 4,
+    "effective": 3,
+    "failed": [{ "vendor": "kiro", "reason": "timeout 617s" }],
+    "run_ref": ".xm/cross/<run>/",
+    "per_vendor_raw": ["codex.json", "agy.json", "cursor.json"]
+  }
+}
+```
+
+- `judges` — the vendor list replaces the plain count; per-criterion `scores` are keyed by vendor, not array position.
+- `sigma_cross_vendor` — spread ACROSS vendors per criterion; a criterion with σ > 1.5 is genuine cross-model disagreement and must be surfaced, not averaged away.
+- `cross_vendor` — provenance block (same contract as x-op's cross-vendor persistence rule): every vendor-attributed score must be auditable against its raw output in `run_ref`. `failed[]` names excluded vendors — an N-1 panel is never presented as an N panel.
+- compare adds `order_by_vendor` — which A/B order each vendor saw (position-bias counterbalancing audit).
+
 ### Result Schema (compare)
 
 ```json

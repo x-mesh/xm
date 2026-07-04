@@ -120,6 +120,15 @@ xm panel cross --models "<available>" --prompt-file <hypothesize-prompt> --sourc
 ```
 Register each vendor's tagged hypotheses (with falsifiable predictions), then FALSIFY as usual.
 
+## Persist provenance (REQUIRED)
+
+When a strategy ran cross-vendor, its saved `.xm/op/` JSON MUST carry the provenance block —
+`cross_vendor: { requested, effective, failed[], run_ref: ".xm/cross/<run>/", per_vendor_raw[] }` —
+and take `created_at`/`completed_at` from the cross run's real timing (status.json), never from the
+summary-write moment. Without this an adversarial reviewer cannot distinguish real vendor outputs
+from one model simulating vendors (author-attribution hallucination — flagged in dogfooding
+2026-07-04). Schema details: `x-op-result-persistence.md` § Cross-vendor provenance.
+
 ## Cost & defaults
 
 Cross-vendor multiplies cost (vendors × rounds). Announce the model set + rough cost before

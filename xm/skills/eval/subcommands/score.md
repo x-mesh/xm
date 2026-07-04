@@ -177,6 +177,40 @@ Notable: Adversarial judge가 정확도 문제를 잡음 — 표준 judge만으�
 - Record `na_criteria: ["security"]` in the result JSON for auditability
 - Do NOT default N/A to 5 or any numeric value — silent substitution defeats the purpose
 
+### Cross-Vendor Judges (`--cross-vendor`)
+
+Replaces the same-model judge panel with one judge per model VENDOR. Resolution:
+`--cross-vendor` / `--no-cross-vendor` flag → `.xm/config.json` `cross_vendor.eval` ??
+`cross_vendor.default` ?? false.
+
+> **⚠ Call `xm panel …` directly via the dispatcher (Bash) — never import, never define shell helpers.**
+
+1. **Probe** — `xm panel detect --auth --json`. Fewer than 2 ready vendors → fall back to the
+   standard single-vendor panel above and SAY SO (loud, L6): "cross-vendor requested but only N
+   vendor(s) ready (<list>) — running single-vendor; `xm panel doctor` to fix auth."
+2. **Announce** — vendor set + rough cost (vendors × 1 judge call) BEFORE spending.
+3. **Judge** — write ONE judge prompt file (the standard Evaluation Judge prompt from
+   `judges/evaluation.md`, verbatim — same strict `Criterion: <name> | Score: <N> | Reason:` output
+   contract so parsing is unchanged), then a single call fans it to every vendor:
+   ```bash
+   xm panel cross --models "<ready-vendors>" --prompt-file <judge-prompt> --json \
+     --source eval:judge --title "<what is being judged>"
+   ```
+4. **Composition change (intentional)** — there is NO separate adversarial judge in cross-vendor
+   mode: genuinely different model families replace the adversarial role, and cross-vendor
+   disagreement IS the bias check. The leader still applies the fabrication sanity check from
+   `judges/adversarial.md` to the aggregate (flag unverifiable claims; do not score them).
+5. **Aggregate** — parse each vendor's `Criterion/Final` lines. Report per-criterion mean AND
+   **cross-vendor σ** (spread across vendors). σ > 1.5 on a criterion = real cross-model
+   disagreement → surface that criterion for human review instead of hiding it in the mean.
+   Name every vendor that failed/was excluded (a 2/4 panel is not a 4/4 panel). A vendor whose
+   output does not contain parseable `Criterion:` lines counts as FAILED (excluded + named),
+   never silently coerced.
+6. **Provenance (REQUIRED)** — the saved result JSON must carry
+   `cross_vendor: { requested, effective, failed[], run_ref: ".xm/cross/<run>/", per_vendor_raw[] }`
+   (same contract as x-op's cross-vendor persistence rule) so each vendor-attributed score is
+   auditable against its raw output. `judges` becomes the vendor list, not a count alone.
+
 ### Storage
 
 Save results to `.xm/eval/results/{timestamp}-score.json`.
