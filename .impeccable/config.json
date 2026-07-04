@@ -1,0 +1,9 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [
+      "x-dashboard/public/app.js"
+    ],
+    "ignoreValues": []
+  }
+}
