@@ -106,6 +106,63 @@ export const SCHEMA = [
     description: 'vendor별 프로필 오버라이드 { vendor: economy|default|max } (미설정=model_profile 상속)',
   },
 
+  // ── cross-vendor defaults (consumer opt-in fallback chain) ──
+  //
+  // Resolution per consumer: CLI flag (--cross-vendor / --no-cross-vendor)
+  // → cross_vendor.<consumer> → cross_vendor.default → false. Keys are
+  // nullable booleans: null = "fall through to the next link", so a user can
+  // set cross_vendor.default=true once and exempt a single consumer with
+  // cross_vendor.eval=false. Consumers: x-build consensus / x-op strategies /
+  // x-eval judges / x-review lenses / x-solver cross-check.
+  {
+    key: 'cross_vendor.default',
+    type: 'boolean',
+    nullable: true,
+    scope: 'either',
+    default: null,
+    description: '크로스벤더 기본값 — 플러그인별 키 미설정 시 폴백 (미설정=false)',
+  },
+  {
+    key: 'cross_vendor.build',
+    type: 'boolean',
+    nullable: true,
+    scope: 'either',
+    default: null,
+    description: 'x-build consensus 크로스벤더 여부 (미설정=cross_vendor.default)',
+  },
+  {
+    key: 'cross_vendor.op',
+    type: 'boolean',
+    nullable: true,
+    scope: 'either',
+    default: null,
+    description: 'x-op 전략(debate/council/persona/brainstorm 등) 크로스벤더 여부 (미설정=cross_vendor.default)',
+  },
+  {
+    key: 'cross_vendor.eval',
+    type: 'boolean',
+    nullable: true,
+    scope: 'either',
+    default: null,
+    description: 'x-eval 심판 패널 크로스벤더 여부 (미설정=cross_vendor.default)',
+  },
+  {
+    key: 'cross_vendor.review',
+    type: 'boolean',
+    nullable: true,
+    scope: 'either',
+    default: null,
+    description: 'x-review 렌즈 크로스벤더 여부 (미설정=cross_vendor.default)',
+  },
+  {
+    key: 'cross_vendor.solver',
+    type: 'boolean',
+    nullable: true,
+    scope: 'either',
+    default: null,
+    description: 'x-solver 교차검산 크로스벤더 여부 (미설정=cross_vendor.default)',
+  },
+
   // ── budget (local-default) ──
   {
     key: 'budget.max_usd',
