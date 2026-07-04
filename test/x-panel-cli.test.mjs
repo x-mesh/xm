@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus } from '../x-panel/lib/x-panel/synth.mjs';
-import { extractJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts } from '../x-panel/lib/x-panel/adapters.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
 const STUB = join(import.meta.dirname, 'fixtures', 'panel-stub-model.mjs');
@@ -1521,5 +1521,28 @@ describe('preflight (live model check, stubbed)', () => {
     expect(out.results[0].label).toBe('claude:some-model');
     expect(out.results[0].model).toBe('some-model');
     expect(out.results[0].status).toBe('ok');
+  });
+});
+
+// ── promptSpawnOpts — claude ambient-context isolation ─────────────────────
+// Regression for the cross-vendor echo bug (2026-07-05): claude -p spawned in a
+// repo cwd assembles CLAUDE.md + hook context around the prompt, and long
+// prompts made the model echo that scaffolding instead of answering (55-token
+// scaffold echo vs the 10.5KB real answer from a neutral cwd). Prompt runs must
+// spawn claude from a neutral tmp dir; every other vendor keeps the caller cwd
+// (codex --sandbox read-only reads the repo on purpose).
+describe('promptSpawnOpts — claude prompt runs are cwd-isolated', () => {
+  test('claude gets a neutral tmp cwd', () => {
+    const opts = promptSpawnOpts('claude');
+    expect(typeof opts.cwd).toBe('string');
+    expect(opts.cwd.length).toBeGreaterThan(0);
+    // never the repo cwd — that is the contamination this guards against
+    expect(opts.cwd).not.toBe(process.cwd());
+  });
+
+  test('other vendors keep the caller cwd (no override)', () => {
+    for (const name of ['codex', 'agy', 'cursor', 'kiro']) {
+      expect(promptSpawnOpts(name)).toEqual({});
+    }
   });
 });

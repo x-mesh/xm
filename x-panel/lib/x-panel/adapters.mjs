@@ -13,7 +13,7 @@
 import { spawnSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 
 // Each builds [bin, args]. `model` (optional) maps to that CLI's --model flag;
 // when null the CLI uses its own default model.
@@ -283,6 +283,21 @@ export function resolveCommand(name, prompt, model) {
   return fn ? fn(prompt, model || null) : null;
 }
 
+// Ambient-context isolation for PROMPT runs (not auth/list probes). In a repo
+// cwd the claude CLI auto-assembles project CLAUDE.md + hook-injected context
+// around the -p prompt; with long prompts the model then echoes that
+// scaffolding instead of answering (measured 2026-07-05: the identical 2.9KB
+// prompt returned a 55-output-token scaffold echo from the repo cwd vs the
+// full 10.5KB answer from a neutral cwd). A -p one-shot runs without tool
+// permissions, so a repo cwd buys claude nothing — spawn it from the OS temp
+// dir. Other vendors keep the caller's cwd ON PURPOSE (codex --sandbox
+// read-only reads the repo). Flag alternatives were tested and rejected:
+// --bare drops OAuth auth entirely; --setting-sources user still leaves
+// user-scope hook injection active.
+export function promptSpawnOpts(name) {
+  return name === 'claude' ? { cwd: tmpdir() } : {};
+}
+
 export function isAvailable(name) {
   const override = overridePath(name);
   if (override) return existsSync(override);
@@ -297,7 +312,7 @@ export function invokeProvider(name, prompt, { timeout = 180_000, model = null }
   const resolved = resolveCommand(name, prompt, model);
   if (!resolved) return { ok: false, error: `unknown provider: ${name}`, raw: '', json: null };
   const [cmd, args] = resolved;
-  const res = spawnSync(cmd, args, { encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024, env: process.env });
+  const res = spawnSync(cmd, args, { encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024, env: process.env, ...promptSpawnOpts(name) });
   if (res.error) {
     return { ok: false, error: String(res.error.message || res.error), raw: '', json: null };
   }
@@ -359,7 +374,7 @@ export function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeou
     try {
       // stdin must be closed (ignore) or non-interactive CLIs like codex/agy hang
       // waiting for input — spawnSync closes it automatically, spawn does not.
-      child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+      child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, ...promptSpawnOpts(name) });
     } catch (e) {
       return resolve({ ok: false, error: String(e.message || e), raw: '', json: null });
     }
@@ -550,7 +565,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
     if (!resolved) return resolve({ ok: false, error: `no stream profile: ${name}`, raw: '', json: null });
     const [cmd, args] = resolved;
     let child;
-    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env }); }
+    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, ...promptSpawnOpts(name) }); }
     catch (e) { return resolve({ ok: false, error: String(e.message || e), raw: '', json: null }); }
     emit({ type: 'spawn', provider: name, model, pid: child.pid, command: cmd, mode: partial ? 'stream-partial' : 'stream' });
 
@@ -634,7 +649,7 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
     if (!resolved) return resolve({ ok: false, output: '', error: `unknown provider: ${name}` });
     const [cmd, args] = resolved;
     let child;
-    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env }); }
+    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, ...promptSpawnOpts(name) }); }
     catch (e) { return resolve({ ok: false, output: '', error: String(e.message || e) }); }
     emit({ type: 'spawn', provider: name, model, pid: child.pid, command: cmd });
     let stdout = '', stderr = '';
@@ -688,7 +703,7 @@ export function probeProvider(name, { timeout = 45_000, model = null } = {}) {
     }
     const [cmd, args] = resolved;
     let child;
-    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env }); }
+    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, ...promptSpawnOpts(name) }); }
     catch (e) { return resolve({ ok: false, model: null, text: '', error: String(e.message || e) }); }
     let stdout = '', stderr = '', buf = '', text = '', actualModel = null, sawJson = false, settled = false;
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
