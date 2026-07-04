@@ -113,7 +113,7 @@ export const SCHEMA = [
   // nullable booleans: null = "fall through to the next link", so a user can
   // set cross_vendor.default=true once and exempt a single consumer with
   // cross_vendor.eval=false. Consumers: x-build consensus / x-op strategies /
-  // x-eval judges / x-review lenses / x-solver cross-check.
+  // x-eval judges / x-review lenses / x-solver cross-check / x-agent fan-out.
   {
     key: 'cross_vendor.default',
     type: 'boolean',
@@ -161,6 +161,14 @@ export const SCHEMA = [
     scope: 'either',
     default: null,
     description: 'x-solver 교차검산 크로스벤더 여부 (미설정=cross_vendor.default)',
+  },
+  {
+    key: 'cross_vendor.agent',
+    type: 'boolean',
+    nullable: true,
+    scope: 'either',
+    default: null,
+    description: 'x-agent fan-out/broadcast 크로스벤더 여부 (미설정=cross_vendor.default)',
   },
 
   // ── budget (local-default) ──
