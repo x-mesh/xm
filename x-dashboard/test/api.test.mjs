@@ -30,6 +30,8 @@ const TEST_SOLVER_SLUG = 'test-solver-api-fixture';
 const TEST_PANEL_RUN = 'panel-api-live-fixture';
 const TEST_PANEL_DONE_RUN = 'panel-api-done-fixture';
 const TEST_CROSS_RUN = 'panel-api-cross-fixture';
+const TEST_CROSS_LIVE_RUN = 'panel-api-cross-live-fixture';
+const TEST_CROSS_STALE_RUN = 'panel-api-cross-stale-fixture';
 
 /** Track only the top-level dirs we create so teardown is safe */
 const FIXTURE_ROOTS = [];
@@ -211,6 +213,33 @@ function setupFixtures() {
       { model: 'claude', provider: 'claude', ok: true, output: 'PRO argument body', error: null },
       { model: 'codex', provider: 'codex', ok: true, output: 'CON argument body', error: null },
     ],
+  });
+
+  // ── live cross run: heartbeat only (no result.json, no per-vendor files yet) ──
+  // The status.json heartbeat is what makes a just-started cross run visible with
+  // per-model live state instead of 404ing until the first vendor finishes.
+  const crossLiveDir = join(XM_ROOT, 'cross', TEST_CROSS_LIVE_RUN);
+  ensureDir(crossLiveDir);
+  FIXTURE_ROOTS.push(crossLiveDir);
+  writeJSON(join(crossLiveDir, 'status.json'), {
+    kind: 'cross', run: TEST_CROSS_LIVE_RUN, source: 'op:brainstorm', title: 'live heartbeat fixture',
+    prompt_chars: 987, started_at: new Date(Date.now() - 5000).toISOString(),
+    updated_at: new Date().toISOString(),
+    models: [
+      { label: 'claude', provider: 'claude', state: 'running', elapsed_s: 5, stdout_bytes: 1200, last_event: 'stdout' },
+      { label: 'codex', provider: 'codex', state: 'running', elapsed_s: 5, stdout_bytes: 0, last_event: 'spawn' },
+    ],
+  });
+
+  // ── stalled cross run: heartbeat exists but is old — must NOT report running ──
+  const crossStaleDir = join(XM_ROOT, 'cross', TEST_CROSS_STALE_RUN);
+  ensureDir(crossStaleDir);
+  FIXTURE_ROOTS.push(crossStaleDir);
+  writeJSON(join(crossStaleDir, 'status.json'), {
+    kind: 'cross', run: TEST_CROSS_STALE_RUN, source: 'op:debate', title: 'stalled heartbeat fixture',
+    started_at: new Date(Date.now() - 600000).toISOString(),
+    updated_at: new Date(Date.now() - 120000).toISOString(),
+    models: [ { label: 'claude', provider: 'claude', state: 'running', elapsed_s: 90, stdout_bytes: 0 } ],
   });
 }
 
@@ -548,6 +577,35 @@ describe('GET /api/panel (list)', () => {
     expect(cross.title).toBe('cross-vendor moat'); // human name, not a timestamp
     expect(cross.vendor_count).toBe(2);
     expect(cross.phase).toBe('done');
+  });
+
+  it('surfaces a live cross run from its status heartbeat with per-model state', async () => {
+    const { body } = await getJSON('/api/panel');
+    const live = (body.runs || []).find((r) => r.run === TEST_CROSS_LIVE_RUN);
+    expect(live).toBeDefined();
+    expect(live.phase).toBe('running');
+    expect(live.status).toBeDefined();
+    expect(live.status.models.length).toBe(2);
+    expect(live.status.models[0].state).toBe('running');
+    expect(live.models).toEqual(['claude', 'codex']);
+  });
+
+  it('marks a cross run with an old heartbeat as stalled, never running forever', async () => {
+    const { body } = await getJSON('/api/panel');
+    const stale = (body.runs || []).find((r) => r.run === TEST_CROSS_STALE_RUN);
+    expect(stale).toBeDefined();
+    expect(stale.phase).toBe('stalled');
+  });
+});
+
+describe('GET /api/panel/:run (live cross heartbeat detail)', () => {
+  it('serves a heartbeat-only cross run instead of 404 and includes live status', async () => {
+    const { res, body } = await getJSON(`/api/panel/${TEST_CROSS_LIVE_RUN}`);
+    expect(res.status).toBe(200);
+    expect(body.kind).toBe('cross');
+    expect(body.phase).toBe('running');
+    expect(body.status.models.length).toBe(2);
+    expect(Array.isArray(body.results)).toBe(true); // empty pre-vendor-files, present
   });
 });
 
