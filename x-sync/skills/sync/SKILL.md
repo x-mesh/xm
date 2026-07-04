@@ -1,7 +1,7 @@
 ---
 name: sync
 description: Multi-machine .xm/ state sync — server start/stop, push, pull, setup, status
-model: opus
+model: sonnet
 ---
 
 <Purpose>

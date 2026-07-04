@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.39-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.41-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -1240,9 +1240,9 @@ Model routing speaks in three canonical tiers — `haiku` / `sonnet` / `opus` (d
 Spend gets controlled with two knobs. **Model profiles** decide which model handles which role; **budget guards** stop a run before it blows past the cap.
 
 ```bash
-/xm config set model_profile economy           # Sonnet-centric, maximum savings
-/xm config set model_profile default           # Default — Opus-centric (Opus 4.7 era)
-/xm config set model_profile max               # Opus everywhere, quality-first
+/xm config set model_profile economy           # Sonnet-centric, maximum savings — every role pinned
+/xm config set model_profile default           # Default — judgment roles inherit the session model
+/xm config set model_profile max               # Quality-first — judgment inherit + opus execution
 /xm config set budget '{"max_usd": 5.0}'       # Set session budget limit
 ```
 
@@ -1250,13 +1250,15 @@ The `model_profile` key expresses **cost intent** (how much to spend) on a singl
 
 | Profile | architect | executor | designer | explorer | writer | Notes |
 |---------|-----------|----------|----------|----------|--------|-------|
-| economy | sonnet | sonnet | sonnet | haiku | haiku | ~70-85% savings vs default |
-| default | opus | opus | sonnet | sonnet | haiku | Opus-centric baseline |
-| max | opus | opus | opus | sonnet | haiku | ~1.5-2x vs default |
+| economy | sonnet | sonnet | sonnet | haiku | haiku | ~70-85% savings vs default — no inherit, ever |
+| default | inherit | opus | sonnet | sonnet | haiku | Judgment rides the session model |
+| max | inherit | opus | opus | sonnet | haiku | Judgment inherit + opus execution |
+
+**`inherit` means "run on the session model the user picked via `/model`"** — the profile decides *where to save*; `/model` decides *what quality means*. It is not a billable tier and is always expressed by **absence**: no `model:` frontmatter field on judgment skills, no `model` parameter on Agent-tool calls (never the literal string `"inherit"`). Judgment roles (architect, reviewer, security, planner, critic, debugger, deep-executor) inherit under default/max; economy pins every role — a spend ceiling can't inherit an arbitrarily expensive session model, even via `model_overrides`. Cost forecasting prices inherit tasks at the opus ceiling (errs high, never low); report the real model on completion with `tasks update <id> --status completed --resolved-model <haiku|sonnet|opus>`.
 
 Script-only commands (`config show`, `version`, `agents list`, …) still route to haiku regardless of profile (see Model Guardrail in `xm/skills/kit/SKILL.md`).
 
-Profile changes now automatically rewrite SKILL.md frontmatter `model:` fields and body markers (`<!-- managed-model: <role> -->`) via `xm/lib/skill-frontmatter-sync.mjs` — Claude Code runtime then enforces the chosen model deterministically per skill turn. Mapping table: `xm/lib/skill-model-map.json`.
+Profile changes now automatically rewrite SKILL.md frontmatter `model:` fields and body markers (`<!-- managed-model: <role> -->`) via `xm/lib/skill-frontmatter-sync.mjs` — a target of `inherit` **removes** the `model:` field and the example's `model` token entirely (absence = session model). Mapping table: `xm/lib/skill-model-map.json`.
 
 Key roles shown; full mapping includes reviewer, security, designer, debugger, writer. See `MODEL_PROFILES` in source.
 
@@ -1284,13 +1286,13 @@ Same coding task (`rateLimiter` — sliding window) across three models:
 
 #### Automatic Model Routing
 
-xm picks the cheapest model that can actually handle the request. Plain display commands fall to **haiku** (~78% cheaper); anything that needs to think escalates to sonnet or opus.
+xm picks the cheapest model that can actually handle the request. Plain display commands fall to **haiku** (~78% cheaper); judgment work rides the session model — never a downgrade.
 
 | Task type | Model | Examples |
 |-----------|-------|---------|
 | Display/query | **haiku** | `config show`, `version`, `agents list`, `status`, `task list` |
-| Interactive wizard | **sonnet** | `config` (interactive), `init`, `setup`, auto-route confirmation |
-| Reasoning | **sonnet** (escalate to **opus** when budget allows) | `plan`, `run`, strategy execution, code review |
+| Interactive wizard | **session** (leader) | `config` (interactive), `init`, `setup`, auto-route confirmation |
+| Reasoning / judgment | **session** (inherit — the model you picked via `/model`) | `plan`, `run`, strategy execution, code review |
 
 > Principle: if the output is determined by a script (not LLM reasoning), use haiku. The model is a messenger, not a thinker.
 

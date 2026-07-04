@@ -1,7 +1,7 @@
 ---
 name: memory
 description: Cross-session decision and pattern memory — persist learnings, auto-inject relevant context on session start
-model: opus
+model: sonnet
 ---
 
 <Purpose>
@@ -33,7 +33,7 @@ x-memory persists project decisions, patterns, failures, and learnings across se
 | `save`, `update`, `delete` | **haiku** (Agent tool) | Simple write operations |
 | `inject` (context injection) | **sonnet** | Requires reasoning about relevance |
 
-For haiku-eligible commands, delegate via: `Agent tool: { model: "sonnet", prompt: "Run: [command]" }` <!-- managed-model: explorer -->
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }` <!-- managed-model: writer -->
 
 ## Mode Detection
 

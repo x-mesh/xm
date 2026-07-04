@@ -242,10 +242,12 @@ describe('vendor tables — shape and backward compatibility', () => {
   });
 });
 
-// ── 5. getModelForRole return vocabulary is unchanged (DoD guard) ──────────────
+// ── 5. getModelForRole return vocabulary (DoD guard) ──────────────────────────
+// 'inherit' joined the canonical vocabulary (session-model routing): it is a
+// routing sentinel, NOT a billable tier — cost/vendor tables must never key it.
 
-describe('getModelForRole — return vocabulary stays haiku/sonnet/opus', () => {
-  const TIERS = new Set(['haiku', 'sonnet', 'opus']);
+describe('getModelForRole — return vocabulary stays haiku/sonnet/opus/inherit', () => {
+  const TIERS = new Set(['haiku', 'sonnet', 'opus', 'inherit']);
 
   test('every role in every profile resolves to a canonical tier string', () => {
     for (const profile of Object.keys(ce.MODEL_PROFILES)) {
@@ -268,7 +270,7 @@ describe('getModelForRole — return vocabulary stays haiku/sonnet/opus', () => 
   test('the vendor layer did NOT leak vendor specs into role routing', () => {
     // A codex-configured project must still route roles by tier vocabulary;
     // vendor translation is a separate, explicit step (option A).
-    const model = ce.getModelForRole('architect', 'medium', {
+    const model = ce.getModelForRole('executor', 'medium', {
       model_profile: 'default',
       vendor_models: { codex: { opus: 'gpt-5.5:high' } },
     });

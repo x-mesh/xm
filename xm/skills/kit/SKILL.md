@@ -1,7 +1,6 @@
 ---
 name: kit
 description: x-mesh toolkit — list available tools and their status
-model: opus
 ---
 
 <Purpose>
@@ -48,13 +47,13 @@ For a fuller picture (not just trace-session.mjs), suggest `xm doctor` — but t
 | `version`, `update`, `agents list/match/get` | **haiku** (Agent tool) | Read-only, no reasoning needed |
 | `cost`, `cost --session` | **haiku** (Agent tool) | Read-only aggregation |
 | `config show/set/get/reset` | **haiku** (Agent tool) | Simple command execution |
-| `config` (interactive wizard) | **sonnet** | Requires AskUserQuestion |
-| `init`, `init --dry-run`, `init --skip-sync`, `init --with-server`, `init --rollback` | **sonnet** | Multi-step install orchestration (backup + hooks + settings merge + curl) |
-| `doctor`, `doctor --fix` | **sonnet** | Diagnostic reasoning + conditional AskUserQuestion for network fixes |
+| `config` (interactive wizard) | **session** (leader) | Requires AskUserQuestion — leader-only |
+| `init`, `init --dry-run`, `init --skip-sync`, `init --with-server`, `init --rollback` | **session** (leader) | Multi-step install orchestration (backup + hooks + settings merge + curl) |
+| `doctor`, `doctor --fix` | **session** (leader) | Diagnostic reasoning + conditional AskUserQuestion for network fixes |
 | `pipeline list`, `validate` | **haiku** (Agent tool) | Read-only display |
-| `pipeline <name>` | **sonnet** | Multi-step orchestration with AskUserQuestion |
+| `pipeline <name>` | **session** (leader) | Multi-step orchestration with AskUserQuestion |
 
-For haiku-eligible commands, delegate via: `Agent tool: { model: "sonnet", prompt: "Run: [command]" }` <!-- managed-model: explorer -->
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }` <!-- managed-model: writer -->
 
 ### Model Guardrail
 

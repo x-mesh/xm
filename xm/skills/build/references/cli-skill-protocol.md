@@ -57,15 +57,16 @@ After parsing, execute the recommended action:
 }
 ```
 
-- `agent_type`: `"executor"` (small/medium) or `"deep-executor"` (large)
+- `agent_type`: `"executor"` (small/medium) or `"deep-executor"` (large, opus, or a judgment role on `"inherit"`)
 - `model`: **always use the `model` field emitted in the CLI JSON — never hardcode.** It is resolved from `model_profile` + `model_overrides` in `.xm/config.json`. This is the Claude tier and is the Agent-tool routing contract.
+- `model: "inherit"` → **OMIT the `model` parameter in the Agent tool call.** The subagent then runs on the harness-inherited default — the session/parent model as the harness resolves it (measured 2026-07: a Fable session inherited opus for subagents; the leader turn itself rides the session model). Never pass the literal string `"inherit"` (not a valid Agent-tool value) and never substitute a hardcoded tier. On completion, report the model it actually ran on via `tasks update <id> --status completed --resolved-model <haiku|sonnet|opus>` so the metric records ground truth.
 - `model_vendor` (additive): the vendor the orchestrator itself runs on — always `"claude"`. Present alongside `model`, never replaces it.
-- `model_by_vendor` (additive): per-vendor spec map. `claude` mirrors `model`; `codex` is a GPT spec derived from `vendor_models` in `.xm/config.json` (falls back to a built-in table). The `codex` key is **omitted** when `vendor_models` is malformed or the tier has no mapping — consumers must fall back to `claude` in that case. Present for `task[]`, consensus `agents[]`, and `prd_writer`.
+- `model_by_vendor` (additive): per-vendor spec map. `claude` mirrors `model`; `codex` is a GPT spec derived from `vendor_models` in `.xm/config.json` (falls back to a built-in table; an `"inherit"` tier resolves via the opus fallback before lookup). The `codex` key is **omitted** when `vendor_models` is malformed or the tier has no mapping — consumers must fall back to `claude` in that case. Present for `task[]`, consensus `agents[]`, and `prd_writer`.
 - `on_complete`/`on_fail`: Callback commands to update task status after agent finishes
 
 ## Mapping to Agent Tool
 
-The model ALWAYS comes from the CLI JSON `model` field (`task.model`, `agents[n].model`, `agents_spec[n].model`, `prd_writer.model`). This table maps only `agent_type` → `subagent_type`:
+The model ALWAYS comes from the CLI JSON `model` field (`task.model`, `agents[n].model`, `agents_spec[n].model`, `prd_writer.model`); if that field is `"inherit"`, omit the Agent-tool `model` parameter (see above). This table maps only `agent_type` → `subagent_type`:
 
 | CLI `agent_type` | Agent `subagent_type` | Fallback (x-agent preset) |
 |-----------------|----------------------|---------------------------|

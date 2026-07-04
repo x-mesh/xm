@@ -1,7 +1,7 @@
 ---
 name: trace
 description: Agent execution tracing — timeline, token/cost tracking, replay, and diff for multi-agent observability
-model: opus
+model: sonnet
 ---
 
 <Purpose>
@@ -35,7 +35,7 @@ No external dependencies.
 | `record`, `last`, `status`, `since`, `doctor` | **haiku** (Agent tool) | Deterministic CLI output — script decides, model relays |
 | `replay` | **sonnet** | Requires agent re-execution |
 
-For haiku-eligible commands, delegate via: `Agent tool: { model: "sonnet", prompt: "Run: [command]" }` <!-- managed-model: explorer -->
+For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }` <!-- managed-model: writer -->
 
 Two command families:
 - **LLM-rendered views** (`show` / `cost` / `diff` / `list` / `start` / `stop` / `clean`) — the LLM reads `.xm/traces/*.jsonl` with the Bash/Read tools and renders the output described in each subcommand file.

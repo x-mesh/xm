@@ -1,7 +1,6 @@
 ---
 name: solver
 description: Structured problem solving — decompose, iterate, constrain, or auto-pipeline with strategy recommendation
-model: sonnet
 allowed-tools:
   - AskUserQuestion
 ---
@@ -147,14 +146,14 @@ Do NOT hardcode agent counts. Always use the resolved value.
 ### fan-out (parallel agents)
 Call `AGENT_COUNT` Agent tools **simultaneously** in a single message:
 ```
-Agent tool 1: { description: "agent-1", prompt: "...", run_in_background: true, model: "sonnet" } <!-- managed-model: executor -->
-Agent tool 2: { description: "agent-2", prompt: "...", run_in_background: true, model: "sonnet" } <!-- managed-model: executor -->
+Agent tool 1: { description: "agent-1", prompt: "...", run_in_background: true, model: "opus" } <!-- managed-model: executor -->
+Agent tool 2: { description: "agent-2", prompt: "...", run_in_background: true, model: "opus" } <!-- managed-model: executor -->
 ...up to AGENT_COUNT agents
 ```
 
 ### delegate (single agent delegation)
 ```
-Agent tool: { description: "role name", prompt: "...", run_in_background: false, model: "sonnet" } <!-- managed-model: architect -->
+Agent tool: { description: "role name", prompt: "...", run_in_background: false } <!-- managed-model: architect -->
 ```
 
 ### broadcast (different prompts to each)

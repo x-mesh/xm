@@ -711,12 +711,13 @@ describe('MODEL_PROFILES', () => {
     expect(core.MODEL_PROFILES.economy.writer).toBe('haiku');
   });
 
-  test('default profile is opus-centric for critical reasoning', () => {
-    expect(core.MODEL_PROFILES.default.architect).toBe('opus');
+  test('default profile routes judgment roles to inherit (session model)', () => {
+    expect(core.MODEL_PROFILES.default.architect).toBe('inherit');
+    expect(core.MODEL_PROFILES.default.reviewer).toBe('inherit');
+    expect(core.MODEL_PROFILES.default.security).toBe('inherit');
+    expect(core.MODEL_PROFILES.default.debugger).toBe('inherit');
+    // Execution roles stay on fixed tiers — inherit is judgment-only.
     expect(core.MODEL_PROFILES.default.executor).toBe('opus');
-    expect(core.MODEL_PROFILES.default.reviewer).toBe('opus');
-    expect(core.MODEL_PROFILES.default.security).toBe('opus');
-    expect(core.MODEL_PROFILES.default.debugger).toBe('opus');
   });
 
   test('default profile keeps sonnet/haiku for lighter roles', () => {
@@ -727,7 +728,7 @@ describe('MODEL_PROFILES', () => {
 
   test('max profile upgrades designer to opus (quality-first)', () => {
     expect(core.MODEL_PROFILES.max.executor).toBe('opus');
-    expect(core.MODEL_PROFILES.max.debugger).toBe('opus');
+    expect(core.MODEL_PROFILES.max.debugger).toBe('inherit');
     expect(core.MODEL_PROFILES.max.designer).toBe('opus');
   });
 
@@ -738,9 +739,10 @@ describe('MODEL_PROFILES', () => {
 
 describe('getModelForRole', () => {
   test('returns model for known role', () => {
-    // Default profile is balanced (no .xm/config.json in test env)
+    // Default profile is balanced (no .xm/config.json in test env);
+    // architect is a judgment role → 'inherit' under default/max.
     const model = core.getModelForRole('architect');
-    expect(['opus', 'sonnet']).toContain(model);
+    expect(['opus', 'sonnet', 'inherit']).toContain(model);
   });
 
   test('falls back to executor model for unknown role', () => {

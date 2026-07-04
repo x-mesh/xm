@@ -10,7 +10,7 @@ Execute strategy-specific agent orchestration for the selected x-solver strategy
 ### Strategy: decompose
 
 #### Phase: decompose
-**delegate** (architect, sonnet; escalate to opus only for high-complexity architecture):
+**delegate** (architect — omit `model`; inherits the session model):
 ```
 {problem_solving_principles}
 
@@ -73,7 +73,7 @@ Advance: `$XMS solve-advance --phase evaluate`
 > `solve-advance` validates that the target phase belongs to the current strategy and normally only permits the next phase. The iterate `refine → hypothesize` retry path is the only intentional backward transition.
 
 #### Phase: evaluate
-**delegate** (reviewer, sonnet):
+**delegate** (reviewer — omit `model`; inherits the session model):
 ```
 {problem_solving_principles}
 
@@ -98,7 +98,7 @@ Use the result to call `$XMS candidates score <id> --constraint c1 --score 8`.
 Advance: `$XMS solve-advance --phase synthesize`
 
 #### Phase: synthesize
-**delegate** (architect, sonnet; escalate to opus only for high-complexity synthesis):
+**delegate** (architect — omit `model`; inherits the session model):
 ```
 {problem_solving_principles}
 
@@ -135,7 +135,7 @@ Use the result to create the final candidate + select.
 
 > **MUST — This phase cannot be skipped. The first solve of the iterate strategy must always start from diagnose.**
 
-**delegate** (debugger, sonnet):
+**delegate** (debugger — omit `model`; inherits the session model):
 ```
 {problem_solving_principles}
 
@@ -171,7 +171,7 @@ Output:
 
 If the diagnose result shows Delta = "unknown" or multiple possible layers, run a Fishbone analysis before hypothesizing:
 
-delegate (analyst, sonnet):
+delegate (analyst — omit `model`; inherits the session model):
 ```
 ## Fishbone (Ishikawa) Root Cause Analysis
 
@@ -210,7 +210,7 @@ $XMS solve-advance --phase hypothesize
 
 #### Phase: hypothesize
 
-**delegate** (debugger, sonnet):
+**delegate** (debugger — omit `model`; inherits the session model):
 
 > **Cross-vendor (opt-in):** with `--cross-vendor`, broadcast this hypothesis-generation prompt
 > across vendors via `xm panel cross` and merge the distinct hypothesis sets (dedup overlaps) —
@@ -371,7 +371,7 @@ $XMS close --summary "..."
 ### Strategy: constrain
 
 #### Phase: elicit
-**delegate** (analyst, sonnet):
+**delegate** (analyst — omit `model`; inherits the session model):
 ```
 {problem_solving_principles}
 
@@ -470,7 +470,7 @@ This makes tradeoffs visible at a glance before selection.
 Advance: `$XMS solve-advance --phase select`
 
 #### Phase: select
-**delegate** (architect, sonnet; escalate to opus only when the decision is high-risk or irreversible):
+**delegate** (architect — omit `model`; inherits the session model):
 ```
 {problem_solving_principles}
 
