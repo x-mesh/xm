@@ -5,7 +5,9 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-import { loadWorktreeConfig } from '../x-build/lib/x-build/worktree-shared.mjs';
+import { loadWorktreeConfig, WORKTREE_CONFIG_DEFAULTS } from '../x-build/lib/x-build/worktree-shared.mjs';
+import { SCHEMA } from '../x-build/lib/config-schema.mjs';
+import { validateSet, shadowingTiers, setNestedKey, getNestedKey } from '../x-build/lib/shared-config.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, '..', 'x-build', 'lib', 'x-config-cli.mjs');
@@ -1191,5 +1193,229 @@ describe('xm config vendor keys (t3)', () => {
       const r = run(['get', 'vendor_profiles.codex'], root);
       expect(r.stdout.trim()).toBe('economy');
     });
+  });
+});
+
+describe('config-schema group metadata (t3)', () => {
+  const VALID_GROUPS = new Set([
+    'model', 'vendor', 'cross_vendor', 'budget', 'gates', 'worktree', 'misc', 'panel',
+  ]);
+
+  test('every SCHEMA entry declares a group from the 8-category vocabulary', () => {
+    for (const entry of SCHEMA) {
+      expect(VALID_GROUPS.has(entry.group)).toBe(true);
+    }
+  });
+
+  test('SCHEMA still has no import statements (zero-import leaf)', () => {
+    const src = readFileSync(join(__dirname, '..', 'x-build', 'lib', 'config-schema.mjs'), 'utf8');
+    expect(/^import /m.test(src)).toBe(false);
+  });
+});
+
+// ── WORKTREE_CONFIG_DEFAULTS <-> config-schema worktree.* sync (P7, t8) ─────
+//
+// worktree-shared.mjs (runtime truth, per PRD A5) and config-schema.mjs
+// (dashboard/CLI registry) both hand-maintain the same 11 worktree.* fields.
+// The only defense against the two drifting apart is this field-by-field
+// comparison — see PRD Risks P7 and Acceptance Criteria item 9.
+
+describe('WORKTREE_CONFIG_DEFAULTS <-> config-schema worktree.* sync (P7)', () => {
+  const worktreeEntries = SCHEMA.filter((e) => e.key.startsWith('worktree.'));
+  const schemaLeaves = new Set(worktreeEntries.map((e) => e.key.slice('worktree.'.length)));
+  const runtimeLeaves = new Set(Object.keys(WORKTREE_CONFIG_DEFAULTS));
+
+  test('exactly 11 worktree.* fields on both sides (P7 field count parity)', () => {
+    expect(runtimeLeaves.size).toBe(11);
+    expect(worktreeEntries.length).toBe(11);
+  });
+
+  test('every WORKTREE_CONFIG_DEFAULTS key has a matching config-schema worktree.* entry', () => {
+    for (const leaf of runtimeLeaves) {
+      expect(schemaLeaves.has(leaf)).toBe(true);
+    }
+  });
+
+  test('every config-schema worktree.* entry has a matching WORKTREE_CONFIG_DEFAULTS key', () => {
+    for (const leaf of schemaLeaves) {
+      expect(runtimeLeaves.has(leaf)).toBe(true);
+    }
+  });
+
+  test('field-by-field default value parity (gate_policy deep-equal, scalars ===)', () => {
+    for (const entry of worktreeEntries) {
+      const leaf = entry.key.slice('worktree.'.length);
+      const runtimeDefault = WORKTREE_CONFIG_DEFAULTS[leaf];
+      if (leaf === 'gate_policy') {
+        expect(entry.default).toEqual(runtimeDefault); // nested object: deep equal
+      } else {
+        expect(entry.default).toBe(runtimeDefault); // scalar/null: strict equal
+      }
+    }
+  });
+});
+
+// ── shared-config exports: validateSet / shadowingTiers (t2) ────────────────
+//
+// Direct unit tests (no CLI subprocess) against the exported helpers, so t4/t5
+// can rely on the { code, severity, message } contract and the shadowingTiers
+// signature without re-deriving them from CLI stdout scraping.
+
+describe('validateSet (t2 structured findings)', () => {
+  test('unregistered key: severity warn, code unregistered, no throw', () => {
+    const findings = validateSet('totally.unknown.key', 'anything');
+    expect(findings.length).toBe(1);
+    expect(findings[0].code).toBe('unregistered');
+    expect(findings[0].severity).toBe('warn');
+    expect(typeof findings[0].message).toBe('string');
+  });
+
+  test('type violation (agent_max_count as string): severity error, code type', () => {
+    const findings = validateSet('agent_max_count', 'not-a-number');
+    const typeFinding = findings.find(f => f.code === 'type');
+    expect(typeFinding).toBeDefined();
+    expect(typeFinding.severity).toBe('error');
+  });
+
+  test('enum violation (mode out of range): severity error, code enum', () => {
+    const findings = validateSet('mode', 'bogus-mode');
+    expect(findings.length).toBe(1);
+    expect(findings[0].code).toBe('enum');
+    expect(findings[0].severity).toBe('error');
+  });
+
+  test('min violation (agent_max_count below range): severity error, code min', () => {
+    const findings = validateSet('agent_max_count', 0);
+    const minFinding = findings.find(f => f.code === 'min');
+    expect(minFinding).toBeDefined();
+    expect(minFinding.severity).toBe('error');
+  });
+
+  test('max violation (agent_max_count above range): severity error, code max', () => {
+    const findings = validateSet('agent_max_count', 999);
+    const maxFinding = findings.find(f => f.code === 'max');
+    expect(maxFinding).toBeDefined();
+    expect(maxFinding.severity).toBe('error');
+  });
+
+  test('null value against a non-nullable schema entry: severity error, no throw', () => {
+    expect(() => validateSet('mode', null)).not.toThrow();
+    const findings = validateSet('mode', null);
+    const typeFinding = findings.find(f => f.code === 'type');
+    expect(typeFinding).toBeDefined();
+    expect(typeFinding.severity).toBe('error');
+  });
+
+  test('huge string value against a numeric schema entry: severity error, no throw', () => {
+    const huge = 'x'.repeat(100000);
+    expect(() => validateSet('agent_max_count', huge)).not.toThrow();
+    const findings = validateSet('agent_max_count', huge);
+    const typeFinding = findings.find(f => f.code === 'type');
+    expect(typeFinding).toBeDefined();
+    expect(typeFinding.severity).toBe('error');
+  });
+
+  test('vendor tier enum violation: severity error, code enum', () => {
+    const findings = validateSet('vendor_models.claude.bogus-tier', 'sonnet');
+    expect(findings.length).toBe(1);
+    expect(findings[0].code).toBe('enum');
+    expect(findings[0].severity).toBe('error');
+  });
+
+  test('vendor tier type violation (non-string spec): severity error, code type', () => {
+    const findings = validateSet('vendor_models.claude.opus', 123);
+    expect(findings.length).toBe(1);
+    expect(findings[0].code).toBe('type');
+    expect(findings[0].severity).toBe('error');
+  });
+
+  test('panel.model_overrides wrong type: severity error, code type', () => {
+    const findings = validateSet('panel.model_overrides', 'not-an-object');
+    expect(findings.length).toBe(1);
+    expect(findings[0].code).toBe('type');
+    expect(findings[0].severity).toBe('error');
+  });
+
+  test('unmanaged panel.* leaf: severity warn, code unregistered', () => {
+    const findings = validateSet('panel.some_unmanaged_leaf', 'x');
+    expect(findings.length).toBe(1);
+    expect(findings[0].code).toBe('unregistered');
+    expect(findings[0].severity).toBe('warn');
+  });
+
+  test('clean value against a registered schema entry: empty findings', () => {
+    expect(validateSet('mode', 'developer')).toEqual([]);
+    expect(validateSet('agent_max_count', 4)).toEqual([]);
+  });
+});
+
+describe('shadowingTiers (t2 pure judgment)', () => {
+  test('empty layers: no shadow regardless of tier', () => {
+    expect(shadowingTiers('gate', 'global', {})).toEqual([]);
+    expect(shadowingTiers('gate', 'shared', {})).toEqual([]);
+  });
+
+  test('unknown tier: safe empty return, no throw', () => {
+    expect(() => shadowingTiers('gate', 'bogus-tier', {})).not.toThrow();
+    expect(shadowingTiers('gate', 'bogus-tier', { 'build-local': { gate: 'panel' } })).toEqual([]);
+  });
+
+  test('build-local is highest priority: never shadowed', () => {
+    const layers = {
+      'build-local': { gate: 'panel' },
+      shared: { gate: 'panel' },
+      global: { gate: 'panel' },
+    };
+    expect(shadowingTiers('gate', 'build-local', layers)).toEqual([]);
+  });
+
+  test('global write shadowed by build-local when build-local sets the key', () => {
+    const layers = { 'build-local': { gate: 'panel' }, shared: {}, global: {} };
+    expect(shadowingTiers('gate', 'global', layers)).toEqual(['build-local']);
+  });
+
+  test('global write shadowed by shared when only shared sets the key', () => {
+    const layers = { 'build-local': {}, shared: { gate: 'panel' }, global: {} };
+    expect(shadowingTiers('gate', 'global', layers)).toEqual(['shared']);
+  });
+
+  test('shared write shadowed by build-local, ignores global', () => {
+    const layers = { 'build-local': { gate: 'panel' }, shared: {}, global: { gate: 'panel' } };
+    expect(shadowingTiers('gate', 'shared', layers)).toEqual(['build-local']);
+  });
+
+  test('nested dotted keyPath (gate_policy.allow_low) resolves through layers', () => {
+    const layers = { 'build-local': { gate_policy: { allow_low: false } }, shared: {}, global: {} };
+    expect(shadowingTiers('gate_policy.allow_low', 'global', layers)).toEqual(['build-local']);
+  });
+
+  test('missing/null layer values: safe false, no throw', () => {
+    expect(() => shadowingTiers('gate', 'global', { 'build-local': null, shared: undefined })).not.toThrow();
+    expect(shadowingTiers('gate', 'global', { 'build-local': null, shared: undefined })).toEqual([]);
+  });
+
+  test('layers argument itself null/undefined: safe empty return, no throw', () => {
+    expect(() => shadowingTiers('gate', 'global', null)).not.toThrow();
+    expect(shadowingTiers('gate', 'global', null)).toEqual([]);
+    expect(shadowingTiers('gate', 'global', undefined)).toEqual([]);
+  });
+});
+
+describe('setNestedKey / getNestedKey (t2 exported)', () => {
+  test('round-trips a dotted path', () => {
+    const obj = {};
+    setNestedKey(obj, 'a.b.c', 42);
+    expect(getNestedKey(obj, 'a.b.c')).toBe(42);
+  });
+
+  test('rejects __proto__ / constructor / prototype segments', () => {
+    const obj = {};
+    expect(() => setNestedKey(obj, '__proto__.polluted', true)).toThrow();
+    expect(() => setNestedKey(obj, 'constructor.prototype.polluted', true)).toThrow();
+  });
+
+  test('getNestedKey on a missing path returns undefined, no throw', () => {
+    expect(() => getNestedKey({}, 'a.b.c')).not.toThrow();
+    expect(getNestedKey({}, 'a.b.c')).toBeUndefined();
   });
 });

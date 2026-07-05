@@ -20,6 +20,10 @@
  * `owner` marks a key managed by another plugin's dedicated tooling (panel.* →
  * x-panel). Registered here for discovery only; `xm config` must not edit it.
  *
+ * `group` is display/grouping metadata (wizard sections, dashboard categories),
+ * one of: 'model' | 'vendor' | 'cross_vendor' | 'budget' | 'gates' | 'worktree'
+ * | 'misc' | 'panel'. Every entry must set it; it has no effect on resolution.
+ *
  * Dead keys (workflow, granularity, execution.*, discussion.*, research.*) are
  * intentionally NOT registered — they have no runtime consumer and are being
  * removed from default-config.json.
@@ -43,6 +47,7 @@ export const SCHEMA = [
   // ── model / execution ──
   {
     key: 'mode',
+    group: 'model',
     type: 'string',
     enum: ['developer', 'normal'],
     scope: 'global',
@@ -51,6 +56,7 @@ export const SCHEMA = [
   },
   {
     key: 'agent_max_count',
+    group: 'model',
     type: 'integer',
     scope: 'global',
     default: 4,
@@ -60,6 +66,7 @@ export const SCHEMA = [
   },
   {
     key: 'lang',
+    group: 'model',
     type: 'string',
     enum: ['ko', 'en'],
     scope: 'global',
@@ -69,6 +76,7 @@ export const SCHEMA = [
   },
   {
     key: 'model_profile',
+    group: 'model',
     type: 'string',
     enum: ['economy', 'default', 'max'],
     scope: 'global',
@@ -77,6 +85,7 @@ export const SCHEMA = [
   },
   {
     key: 'model_overrides',
+    group: 'model',
     type: 'object',
     scope: 'global',
     default: {},
@@ -93,6 +102,7 @@ export const SCHEMA = [
   // cost-engine.mjs — never hardcode them here.
   {
     key: 'vendor_models',
+    group: 'vendor',
     type: 'object',
     scope: 'global',
     default: {},
@@ -100,6 +110,7 @@ export const SCHEMA = [
   },
   {
     key: 'vendor_profiles',
+    group: 'vendor',
     type: 'object',
     scope: 'global',
     default: {},
@@ -116,6 +127,7 @@ export const SCHEMA = [
   // x-eval judges / x-review lenses / x-solver cross-check / x-agent fan-out.
   {
     key: 'cross_vendor.default',
+    group: 'cross_vendor',
     type: 'boolean',
     nullable: true,
     scope: 'either',
@@ -124,6 +136,7 @@ export const SCHEMA = [
   },
   {
     key: 'cross_vendor.build',
+    group: 'cross_vendor',
     type: 'boolean',
     nullable: true,
     scope: 'either',
@@ -132,6 +145,7 @@ export const SCHEMA = [
   },
   {
     key: 'cross_vendor.op',
+    group: 'cross_vendor',
     type: 'boolean',
     nullable: true,
     scope: 'either',
@@ -140,6 +154,7 @@ export const SCHEMA = [
   },
   {
     key: 'cross_vendor.eval',
+    group: 'cross_vendor',
     type: 'boolean',
     nullable: true,
     scope: 'either',
@@ -148,6 +163,7 @@ export const SCHEMA = [
   },
   {
     key: 'cross_vendor.review',
+    group: 'cross_vendor',
     type: 'boolean',
     nullable: true,
     scope: 'either',
@@ -156,6 +172,7 @@ export const SCHEMA = [
   },
   {
     key: 'cross_vendor.solver',
+    group: 'cross_vendor',
     type: 'boolean',
     nullable: true,
     scope: 'either',
@@ -164,6 +181,7 @@ export const SCHEMA = [
   },
   {
     key: 'cross_vendor.agent',
+    group: 'cross_vendor',
     type: 'boolean',
     nullable: true,
     scope: 'either',
@@ -174,6 +192,7 @@ export const SCHEMA = [
   // ── budget (local-default) ──
   {
     key: 'budget.max_usd',
+    group: 'budget',
     type: 'number',
     nullable: true,
     scope: 'local',
@@ -182,6 +201,7 @@ export const SCHEMA = [
   },
   {
     key: 'budget.window_hours',
+    group: 'budget',
     type: 'number',
     nullable: true,
     scope: 'local',
@@ -190,6 +210,7 @@ export const SCHEMA = [
   },
   {
     key: 'budget.projects',
+    group: 'budget',
     type: 'object',
     scope: 'local',
     default: {},
@@ -199,6 +220,7 @@ export const SCHEMA = [
   // ── phase gates ──
   {
     key: 'gates.research-exit',
+    group: 'gates',
     type: 'string',
     enum: ['auto', 'human-verify', 'quality'],
     scope: 'global',
@@ -207,6 +229,7 @@ export const SCHEMA = [
   },
   {
     key: 'gates.plan-exit',
+    group: 'gates',
     type: 'string',
     enum: ['auto', 'human-verify', 'quality'],
     scope: 'global',
@@ -215,6 +238,7 @@ export const SCHEMA = [
   },
   {
     key: 'gates.execute-exit',
+    group: 'gates',
     type: 'string',
     enum: ['auto', 'human-verify', 'quality'],
     scope: 'global',
@@ -223,6 +247,7 @@ export const SCHEMA = [
   },
   {
     key: 'gates.verify-exit',
+    group: 'gates',
     type: 'string',
     enum: ['auto', 'human-verify', 'quality'],
     scope: 'global',
@@ -231,6 +256,7 @@ export const SCHEMA = [
   },
   {
     key: 'gates.close-exit',
+    group: 'gates',
     type: 'string',
     enum: ['auto', 'human-verify', 'quality'],
     scope: 'global',
@@ -241,6 +267,7 @@ export const SCHEMA = [
   // ── worktree (build-local 3-tier; runtime source = WORKTREE_CONFIG_DEFAULTS) ──
   {
     key: 'worktree.enabled',
+    group: 'worktree',
     type: 'boolean',
     scope: 'build-local',
     default: true,
@@ -248,6 +275,7 @@ export const SCHEMA = [
   },
   {
     key: 'worktree.base',
+    group: 'worktree',
     type: 'string',
     scope: 'build-local',
     default: 'develop',
@@ -255,6 +283,7 @@ export const SCHEMA = [
   },
   {
     key: 'worktree.branch_prefix',
+    group: 'worktree',
     type: 'string',
     scope: 'build-local',
     default: 'feat/',
@@ -262,6 +291,7 @@ export const SCHEMA = [
   },
   {
     key: 'worktree.max_parallel',
+    group: 'worktree',
     type: 'integer',
     scope: 'build-local',
     default: 4,
@@ -270,6 +300,7 @@ export const SCHEMA = [
   },
   {
     key: 'worktree.gate',
+    group: 'worktree',
     type: 'string',
     scope: 'build-local',
     default: 'panel',
@@ -277,6 +308,7 @@ export const SCHEMA = [
   },
   {
     key: 'worktree.gate_phase',
+    group: 'worktree',
     type: 'string',
     enum: ['before', 'after', 'release'],
     scope: 'build-local',
@@ -285,6 +317,7 @@ export const SCHEMA = [
   },
   {
     key: 'worktree.gate_policy',
+    group: 'worktree',
     type: 'object',
     scope: 'build-local',
     default: {
@@ -297,6 +330,7 @@ export const SCHEMA = [
   },
   {
     key: 'worktree.preflight',
+    group: 'worktree',
     type: 'boolean',
     scope: 'build-local',
     default: true,
@@ -304,6 +338,7 @@ export const SCHEMA = [
   },
   {
     key: 'worktree.cleanup',
+    group: 'worktree',
     type: 'boolean',
     scope: 'build-local',
     default: true,
@@ -311,6 +346,7 @@ export const SCHEMA = [
   },
   {
     key: 'worktree.review_integration_max_bytes',
+    group: 'worktree',
     type: 'number',
     nullable: true,
     scope: 'build-local',
@@ -319,6 +355,7 @@ export const SCHEMA = [
   },
   {
     key: 'worktree.gate_lock_backoff_ms',
+    group: 'worktree',
     type: 'integer',
     scope: 'build-local',
     default: 250,
@@ -329,6 +366,7 @@ export const SCHEMA = [
   // ── misc (global) ──
   {
     key: 'scan_roots',
+    group: 'misc',
     type: 'array',
     scope: 'global',
     default: [],
@@ -336,6 +374,7 @@ export const SCHEMA = [
   },
   {
     key: 'drift.drift_threshold',
+    group: 'misc',
     type: 'number',
     scope: 'global',
     default: 0.7,
@@ -345,6 +384,7 @@ export const SCHEMA = [
   },
   {
     key: 'pipelines',
+    group: 'misc',
     type: 'object',
     scope: 'global',
     default: {},
@@ -359,6 +399,7 @@ export const SCHEMA = [
   // shared-config's validateSet). models/judge stay delegated to `xm panel setup`.
   {
     key: 'panel',
+    group: 'panel',
     type: 'object',
     scope: 'global',
     owner: 'x-panel',
@@ -367,6 +408,7 @@ export const SCHEMA = [
   },
   {
     key: 'panel.timeout_s',
+    group: 'panel',
     type: 'integer',
     scope: 'global',
     owner: 'x-panel',

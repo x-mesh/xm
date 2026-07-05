@@ -771,7 +771,9 @@ CHECK-IN ──→ RECALL ──→ IDENTIFY ──→ ANALYZE ──→ ALTERNA
 
 ### x-dashboard
 
-`.xm/` 프로젝트 상태를 보는 웹 대시보드. 빌드, 프로브, 솔버, **리뷰, 평가, humble 레슨**, 트레이스, 메모리, 비용을 한 화면에서 읽기 전용으로 둘러봅니다. 빌드 단계 없이 그냥 띄우면 동작합니다.
+`.xm/` 프로젝트 상태를 보는 웹 대시보드. 빌드, 프로브, 솔버, **리뷰, 평가, humble 레슨**, 트레이스, 메모리, 비용을 한 화면에서 둘러봅니다. 빌드 단계 없이 그냥 띄우면 동작합니다.
+
+> **스키마 기반 Config 에디터** — Config 탭이 `config-schema` 레지스트리의 모든 키(38개)를 타입별 폼으로 렌더링합니다: enum 드롭다운, nullable boolean 3상 토글, `worktree.gate_policy` severity 그리드, 기본값 강조 + 원클릭 리셋. 3개 tier(global / project / **build-local**), CLI 위저드와 동일한 딥머지 저장 규칙(`setNestedKey` 공유), `If-Match` 낙관적 충돌 감지, 하드 위반 저장 차단(422) — 레지스트리에 키를 추가하면 UI 수정 없이 폼에 자동으로 나타납니다.
 
 <p align="center">
   <img src="docs/images/dashboard.png" alt="x-dashboard" width="800" />

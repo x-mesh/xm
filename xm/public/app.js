@@ -2417,8 +2417,11 @@ let _configTier = 'project';
 let _configProviders = [];
 let _configLiveModels = {};  // live per-vendor model catalogs from /panel/models (cursor kimi/glm, kiro glm…)
 let _configPanelRaw = {};   // full panel section as loaded — preserved on save
-let _configSharedRaw = {};  // non-panel config as loaded — preserves nested keys on structured saves
+let _configSharedRaw = {};  // non-panel config as loaded — schema-field diff baseline + Other-keys source
 let _configLoadSeq = 0;     // guards against a stale tier-switch fetch winning the race
+let _configSchemaEntries = null; // cached /config/schema entries — tier-independent, fetched once
+let _configEtag = null;     // ETag of the currently loaded tier's config, sent as If-Match on PATCH
+let _configModelRouting = null; // /api/config/model-routing for this tier — role/vendor/tier universes for the object widgets below (t7)
 
 // Hints only: the input stays free-form because provider model IDs change faster
 // than xm releases. Users can extend these from panel.model_catalog in config.
@@ -2429,9 +2432,6 @@ const CFG_PANEL_MODEL_HINTS = {
   cursor: ['auto', 'claude-sonnet-4-6', 'claude-opus-4-8', 'gpt-5.5', 'gpt-5.4', 'gemini-3.5-flash', 'gemini-3.1-pro-preview'],
   kiro: ['auto', 'claude-sonnet-4.6', 'claude-opus-4.8', 'claude-opus-4.7', 'claude-haiku-4.5', 'deepseek-3.2'],
 };
-const CFG_ROLE_NAMES = ['architect', 'planner', 'critic', 'security', 'researcher', 'executor', 'deep-executor', 'designer', 'debugger', 'reviewer', 'verifier', 'explorer', 'writer'];
-const CFG_ROLE_MODELS = ['haiku', 'sonnet', 'opus'];
-let _configRouting = null; // resolved role→model matrix from /config/model-routing (null when unavailable)
 
 function renderConfig() {
   _configTier = 'project';
@@ -2440,24 +2440,48 @@ function renderConfig() {
   loadConfigEditor();
 }
 
+// Raw fetch (not the shared fetchJSON helper) — the only config call that needs
+// the ETag response header, captured for If-Match on the next PATCH (409 = a
+// concurrent edit landed first; see patchConfigTier).
+async function fetchConfigTier(tier) {
+  try {
+    const res = await fetch(apiUrl(`/config?tier=${tier}`));
+    let body = {};
+    try { body = await res.json(); } catch { body = { error: true, message: 'parse_error' }; }
+    if (!res.ok && !body.error) body.error = `HTTP ${res.status}`;
+    return { body, etag: res.headers.get('etag') };
+  } catch (e) {
+    return { body: { error: true, message: e?.message || String(e) }, etag: null };
+  }
+}
+
 async function loadConfigEditor() {
   const app = document.getElementById('app');
   const seq = ++_configLoadSeq;
-  const [cfg, prov, modelCat, routing] = await Promise.all([
-    fetchJSON(apiUrl(`/config?tier=${_configTier}`)),
+  const [cfgRes, prov, modelCat, schema, modelRouting] = await Promise.all([
+    fetchConfigTier(_configTier),
     fetchJSON(apiUrl('/panel/providers')),
     fetchJSON(apiUrl('/panel/models')),
+    _configSchemaEntries ? Promise.resolve({ entries: _configSchemaEntries }) : fetchJSON(apiUrl('/config/schema')),
     fetchJSON(apiUrl(`/config/model-routing?tier=${_configTier}`)),
   ]);
   // A newer load (tier switch / reload) started while we awaited — discard this one.
   if (seq !== _configLoadSeq || getPath() !== '/config') return;
+  const cfg = cfgRes.body;
   if (cfg.error) {
     app.innerHTML = `<div class="view-header"><h1>Config</h1></div>${renderError(cfg.message || cfg.error)}`;
     return;
   }
+  _configEtag = cfgRes.etag;
   _configProviders = (prov && !prov.error && Array.isArray(prov.providers)) ? prov.providers : [];
   _configLiveModels = (modelCat && !modelCat.error && modelCat.models && typeof modelCat.models === 'object') ? modelCat.models : {};
-  _configRouting = (routing && !routing.error && routing.roles && routing.phase_groups) ? routing : null;
+  if (!schema.error && Array.isArray(schema.entries)) _configSchemaEntries = schema.entries;
+  // Role/vendor/tier universe for the model_overrides/vendor_models/vendor_profiles
+  // widgets below — never a hardcoded catalog (R15). 503 (routing unavailable) or
+  // a network error just means those widgets fall back to whatever's already in
+  // this tier's raw value; the rest of the config editor still works.
+  _configModelRouting = (modelRouting && !modelRouting.error) ? modelRouting : null;
+  const schemaEntries = _configSchemaEntries || [];
   const esc = (v) => escapeHtmlHumble(String(v ?? ''));
 
   const { panel, _tier, _path, _empty, ...rest } = cfg;
@@ -2466,135 +2490,100 @@ async function loadConfigEditor() {
   const panelCfg = panel || {};
   const savePath = esc(_path || '');
 
-  // tier toggle
+  // tier toggle — 3 tiers (R2/R4): project (.xm), global (~/.xm), build-local
+  // (.xm/build/config.json, worktree-only). build-local only ever holds
+  // worktree.* keys, so the Panel card and non-worktree schema groups hide there.
   const tierBtn = (t, label) => `<button onclick="configSetTier('${t}')" class="badge ${_configTier === t ? 'badge-indigo' : 'badge-gray'} cfg-tier-btn">${label}</button>`;
   const tierToggle = `<div class="cfg-tier-bar">
-    <span class="cfg-label">tier</span>${tierBtn('project', 'Project (.xm)')}${tierBtn('global', 'Global (~/.xm)')}
+    <span class="cfg-label">tier</span>${tierBtn('project', 'Project (.xm)')}${tierBtn('global', 'Global (~/.xm)')}${tierBtn('build-local', 'Build-local (.xm/build, worktree)')}
     <span class="cfg-path">${savePath}${_empty ? ' (new)' : ''}</span>
   </div>`;
 
-  // panel form — model checkboxes (union of detected providers + configured models)
-  const provNames = _configProviders.map((p) => p.name);
-  const allModels = [...new Set([...provNames, ...((panelCfg.models) || [])])];
-  const modelChecks = allModels.length ? allModels.map((name) => {
-    const prov = _configProviders.find((p) => p.name === name);
-    const onPath = prov ? prov.available : null;
-    const checked = ((panelCfg.models) || []).includes(name) ? 'checked' : '';
-    const note = onPath === false ? '<span class="cfg-note">(not on PATH)</span>' : '';
-    return `<label class="cfg-check">
-      <input type="checkbox" class="cfg-model" value="${esc(name)}" ${checked}> ${esc(name)}${note}</label>`;
-  }).join('') : '<span class="cfg-note">no providers detected</span>';
+  let panelForm = '';
+  if (_configTier !== 'build-local') {
+    // panel form — model checkboxes (union of detected providers + configured models)
+    const provNames = _configProviders.map((p) => p.name);
+    const allModels = [...new Set([...provNames, ...((panelCfg.models) || [])])];
+    const modelChecks = allModels.length ? allModels.map((name) => {
+      const prov = _configProviders.find((p) => p.name === name);
+      const onPath = prov ? prov.available : null;
+      const checked = ((panelCfg.models) || []).includes(name) ? 'checked' : '';
+      const note = onPath === false ? '<span class="cfg-note">(not on PATH)</span>' : '';
+      return `<label class="cfg-check">
+        <input type="checkbox" class="cfg-model" value="${esc(name)}" ${checked}> ${esc(name)}${note}</label>`;
+    }).join('') : '<span class="cfg-note">no providers detected</span>';
 
-  const judgeVal = panelCfg.judge || 'rule';
-  const overrideRows = Object.entries(panelCfg.model_overrides || {}).map(([k, v]) => cfgOverrideRow(k, v)).join('');
-  const presetRows = Object.entries(panelCfg.presets || {}).map(([k, v]) => cfgPresetRow(k, Array.isArray(v) ? v.join(',') : v)).join('');
-  const catalogRows = Object.entries(panelCfg.model_catalog || {}).map(([k, v]) => cfgCatalogRow(k, Array.isArray(v) ? v.join(',') : v)).join('');
-  const providerOptions = cfgPanelProviderOptions(panelCfg);
-  const datalists = [
-    cfgDatalist('cfg-provider-options', providerOptions),
-    cfgDatalist('cfg-panel-model-options', cfgPanelModelOptions(panelCfg)),
-    cfgPanelModelDatalists(panelCfg, providerOptions),
-    cfgDatalist('cfg-role-options', CFG_ROLE_NAMES),
-    cfgDatalist('cfg-role-model-options', CFG_ROLE_MODELS),
-  ].join('');
+    const judgeVal = panelCfg.judge || 'rule';
+    const overrideRows = Object.entries(panelCfg.model_overrides || {}).map(([k, v]) => cfgOverrideRow(k, v)).join('');
+    const presetRows = Object.entries(panelCfg.presets || {}).map(([k, v]) => cfgPresetRow(k, Array.isArray(v) ? v.join(',') : v)).join('');
+    const catalogRows = Object.entries(panelCfg.model_catalog || {}).map(([k, v]) => cfgCatalogRow(k, Array.isArray(v) ? v.join(',') : v)).join('');
+    const providerOptions = cfgPanelProviderOptions(panelCfg);
+    const datalists = [
+      cfgDatalist('cfg-provider-options', providerOptions),
+      cfgDatalist('cfg-panel-model-options', cfgPanelModelOptions(panelCfg)),
+      cfgPanelModelDatalists(panelCfg, providerOptions),
+    ].join('');
 
-  const panelForm = `<div class="card cfg-card">
-    <div class="cfg-card-head">
-      <h2>Panel</h2>
-      <span class="cfg-note">default providers, provider:model overrides, presets</span>
-    </div>
-    ${datalists}
-    <div class="cfg-section">
-      <div class="cfg-label">models</div>
-      <div class="cfg-check-grid">${modelChecks}</div>
-    </div>
-    <div class="cfg-field-grid">
-      <label class="cfg-field">judge
-        <select id="cfg-judge" class="cfg-control">
-          <option value="rule" ${judgeVal === 'rule' ? 'selected' : ''}>rule</option>
-        </select>
-      </label>
-      <label class="cfg-field">timeout_s
-        <input id="cfg-timeout" class="cfg-control" type="number" min="1" value="${esc(panelCfg.timeout_s ?? '')}" placeholder="240">
-      </label>
-    </div>
-    <div class="cfg-section">
-      <div class="cfg-label">model_overrides <span>(provider → model)</span></div>
-      <div id="cfg-overrides">${overrideRows}</div>
-      <button onclick="configAddOverrideRow()" class="badge badge-gray cfg-mini-action">+ override</button>
-    </div>
-    <div class="cfg-section">
-      <div class="cfg-label">model_catalog <span>(provider → model suggestions)</span></div>
-      <div id="cfg-catalog">${catalogRows}</div>
-      <button onclick="configAddCatalogRow()" class="badge badge-gray cfg-mini-action">+ catalog</button>
-    </div>
-    <div class="cfg-section">
-      <div class="cfg-label">presets <span>(name → models, comma-separated)</span></div>
-      <div id="cfg-presets">${presetRows}</div>
-      <button onclick="configAddPresetRow()" class="badge badge-gray cfg-mini-action">+ preset</button>
-    </div>
-    <button onclick="configSavePanel()" class="badge badge-green cfg-save-btn">Save panel</button>
-  </div>`;
+    panelForm = `<div class="card cfg-card" id="cfg-panel-card">
+      <div class="cfg-card-head">
+        <h2>Panel</h2>
+        <span class="cfg-note">default providers, provider:model overrides, presets</span>
+      </div>
+      ${datalists}
+      <div class="cfg-section">
+        <div class="cfg-label">models</div>
+        <div class="cfg-check-grid">${modelChecks}</div>
+      </div>
+      <div class="cfg-field-grid">
+        <label class="cfg-field">judge
+          <select id="cfg-judge" class="cfg-control">
+            <option value="rule" ${judgeVal === 'rule' ? 'selected' : ''}>rule</option>
+          </select>
+        </label>
+        <label class="cfg-field">timeout_s
+          <input id="cfg-timeout" class="cfg-control" type="number" min="1" value="${esc(panelCfg.timeout_s ?? '')}" placeholder="240">
+        </label>
+      </div>
+      <div class="cfg-section">
+        <div class="cfg-label">model_overrides <span>(provider → model)</span></div>
+        <div id="cfg-overrides">${overrideRows}</div>
+        <button onclick="configAddOverrideRow()" class="badge badge-gray cfg-mini-action">+ override</button>
+      </div>
+      <div class="cfg-section">
+        <div class="cfg-label">model_catalog <span>(provider → model suggestions)</span></div>
+        <div id="cfg-catalog">${catalogRows}</div>
+        <button onclick="configAddCatalogRow()" class="badge badge-gray cfg-mini-action">+ catalog</button>
+      </div>
+      <div class="cfg-section">
+        <div class="cfg-label">presets <span>(name → models, comma-separated)</span></div>
+        <div id="cfg-presets">${presetRows}</div>
+        <button onclick="configAddPresetRow()" class="badge badge-gray cfg-mini-action">+ preset</button>
+      </div>
+      <button onclick="configSavePanel()" class="badge badge-green cfg-save-btn">Save panel</button>
+    </div>`;
+  }
 
-  const sharedKeys = new Set(['model_profile', 'agent_max_count', 'mode', 'budget', 'model_overrides']);
-  const sharedRest = {};
-  for (const [k, v] of Object.entries(rest)) if (!sharedKeys.has(k)) sharedRest[k] = v;
-  const profile = rest.model_profile || '';
-  const mode = rest.mode || '';
-  const agentCount = rest.agent_max_count ?? '';
-  const budget = (rest.budget && typeof rest.budget === 'object' && !Array.isArray(rest.budget)) ? rest.budget : {};
-  const budgetProjectsJson = escapeHtmlHumble(JSON.stringify(budget.projects || {}, null, 2));
-  const roleRows = Object.entries(rest.model_overrides || {}).map(([k, v]) => cfgRoleOverrideRow(k, v)).join('');
-  const sharedForm = `<div class="card cfg-card">
-    <div class="cfg-card-head">
-      <h2>Shared settings</h2>
-      <span class="cfg-note">x-build, x-op, x-agent, x-solver defaults</span>
-    </div>
-    <div class="cfg-field-grid cfg-field-grid-wide">
-      <label class="cfg-field">model_profile
-        <select id="cfg-model-profile" class="cfg-control">
-          <option value="" ${profile === '' ? 'selected' : ''}>(unset)</option>
-          <option value="economy" ${profile === 'economy' ? 'selected' : ''}>economy</option>
-          <option value="default" ${profile === 'default' ? 'selected' : ''}>default</option>
-          <option value="max" ${profile === 'max' ? 'selected' : ''}>max</option>
-        </select>
-      </label>
-      <label class="cfg-field">mode
-        <select id="cfg-mode" class="cfg-control">
-          <option value="" ${mode === '' ? 'selected' : ''}>(unset)</option>
-          <option value="developer" ${mode === 'developer' ? 'selected' : ''}>developer</option>
-          <option value="normal" ${mode === 'normal' ? 'selected' : ''}>normal</option>
-        </select>
-      </label>
-      <label class="cfg-field">agent_max_count
-        <input id="cfg-agent-max" class="cfg-control" type="number" min="1" max="10" step="1" value="${esc(agentCount)}" placeholder="4">
-      </label>
-      <label class="cfg-field">budget.max_usd
-        <input id="cfg-budget-max" class="cfg-control" type="number" min="0" step="0.01" value="${esc(budget.max_usd ?? '')}" placeholder="unlimited">
-      </label>
-      <label class="cfg-field">budget.window_hours
-        <input id="cfg-budget-window" class="cfg-control" type="number" min="0" step="1" value="${esc(budget.window_hours ?? '')}" placeholder="all time">
-      </label>
-    </div>
-    <div class="cfg-section">
-      <div class="cfg-label">budget.projects <span>(project → max_usd JSON)</span></div>
-      <textarea id="cfg-budget-projects" class="cfg-json cfg-json-compact" spellcheck="false">${budgetProjectsJson}</textarea>
-    </div>
-    ${cfgPhaseModelsSection(_configRouting)}
-    <div class="cfg-section">
-      <div class="cfg-label">model_overrides <span>(role → haiku/sonnet/opus)</span></div>
-      <div id="cfg-role-overrides">${roleRows}</div>
-      <button onclick="configAddRoleOverrideRow()" class="badge badge-gray cfg-mini-action">+ role override</button>
-    </div>
-    <button onclick="configSaveShared()" class="badge badge-green cfg-save-btn">Save shared settings</button>
-  </div>`;
+  const schemaUnavailableNote = schemaEntries.length
+    ? ''
+    : `<p class="cfg-note" style="margin-bottom:10px;">스키마 로드 실패 — 아래 Other keys의 raw JSON에서 직접 편집하세요</p>`;
+  const schemaSectionsHtml = cfgSchemaSections(schemaEntries, _configTier, _configSharedRaw);
+  const schemaSaveBtn = schemaEntries.length
+    ? `<div class="cfg-actions"><button onclick="configSaveSchemaFields()" class="badge badge-green cfg-save-btn cfg-schema-save-btn">Save settings</button>
+       <span class="cfg-note">다음 실행부터 적용됩니다</span></div>`
+    : '';
 
-  // generic editor for everything else (non-panel top-level keys)
-  const otherJson = escapeHtmlHumble(JSON.stringify(sharedRest, null, 2));
+  // "Other keys" — a registry escape hatch, not a general-purpose editor: only
+  // top-level keys with no matching /config/schema entry land here (t3's SCHEMA
+  // covers everything else via the sections above).
+  const otherRest = {};
+  for (const [k, v] of Object.entries(_configSharedRaw)) {
+    if (!cfgIsRegisteredKey(schemaEntries, k)) otherRest[k] = v;
+  }
+  const otherJson = escapeHtmlHumble(JSON.stringify(otherRest, null, 2));
   const otherForm = `<div class="card cfg-card">
     <div class="cfg-card-head">
       <h2>Other keys</h2>
-      <span class="cfg-note">raw JSON, excluding panel and shared form keys</span>
+      <span class="cfg-note">raw JSON — registry-unregistered keys only</span>
     </div>
     <textarea id="cfg-other" class="cfg-json" spellcheck="false">${otherJson}</textarea>
     <div class="cfg-actions"><button onclick="configSaveOther()" class="badge badge-green cfg-save-btn">Save other keys</button>
@@ -2602,12 +2591,917 @@ async function loadConfigEditor() {
   </div>`;
 
   app.innerHTML = `
-    <div class="view-header"><h1>Config</h1><p>edit ${esc(_configTier)} config · panel + shared settings + raw keys</p></div>
+    <div class="view-header"><h1>Config</h1><p>edit ${esc(_configTier)} config · schema-driven form + raw keys</p></div>
     ${tierToggle}
     <div id="config-status" class="cfg-status"></div>
     ${panelForm}
-    ${sharedForm}
+    ${schemaUnavailableNote}
+    ${schemaSectionsHtml}
+    ${schemaSaveBtn}
     ${otherForm}`;
+
+  // Validate persisted values against the schema immediately (L6 — a value that
+  // already violates min/max/enum must surface on load, not stay hidden until
+  // the user happens to touch that field).
+  document.querySelectorAll('.cfg-schema-field .cfg-schema-control').forEach((el) => configValidateFieldEl(el));
+}
+
+// ── Schema-driven field renderer (R3/R4/R9b/R12) ──────────────────────
+// Every /config/schema entry gets a widget purely from its {type, enum,
+// nullable, min, max, owner} metadata — adding a key to config-schema.mjs
+// requires zero app.js changes to appear here.
+
+// build-local (.xm/build/config.json) only ever holds worktree.* keys; every
+// other tier shows everything else. Driven by entry.scope, not a key/group list.
+function cfgEntriesForTier(entries, tier) {
+  return entries.filter((e) => (tier === 'build-local') === (e.scope === 'build-local'));
+}
+
+function cfgGroupEntries(entries) {
+  const order = [];
+  const byGroup = new Map();
+  for (const e of entries) {
+    const g = e.group || 'misc';
+    if (!byGroup.has(g)) { byGroup.set(g, []); order.push(g); }
+    byGroup.get(g).push(e);
+  }
+  return order.map((g) => [g, byGroup.get(g)]);
+}
+
+// Generic label from the group key itself — no hardcoded group→label map, so a
+// new group value in config-schema.mjs still renders (just less prettified).
+function cfgGroupLabel(group) {
+  const s = String(group || '').trim();
+  if (!s) return 'Misc';
+  return s.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function cfgEffectiveDefault(entry) {
+  return entry.runtime_default !== undefined ? entry.runtime_default : entry.default;
+}
+
+// A top-level cfg key is "registered" (and thus excluded from the Other-keys
+// escape hatch) if any schema entry is that key or one of its dotted children.
+function cfgIsRegisteredKey(entries, topKey) {
+  return entries.some((e) => e.key === topKey || e.key.startsWith(topKey + '.'));
+}
+
+function cfgGetPath(obj, path) {
+  let cur = obj;
+  for (const part of String(path).split('.')) {
+    if (cur == null || typeof cur !== 'object') return undefined;
+    cur = cur[part];
+  }
+  return cur;
+}
+
+function cfgFieldId(key) {
+  return 'cfg-sf-' + String(key).replace(/[^a-zA-Z0-9_-]/g, '-');
+}
+
+function cfgSchemaSections(entries, tier, rawCfg) {
+  const groups = cfgGroupEntries(cfgEntriesForTier(entries, tier));
+  return groups.map(([group, list]) => {
+    const fields = list.map((entry) => renderSchemaField(entry, cfgGetPath(rawCfg, entry.key), cfgEffectiveDefault(entry))).join('');
+    return `<div class="card cfg-card" data-cfg-group="${escapeHtmlHumble(group)}">
+      <div class="cfg-card-head"><h2>${escapeHtmlHumble(cfgGroupLabel(group))}</h2></div>
+      ${fields}
+    </div>`;
+  }).join('');
+}
+
+// entry: one /config/schema entry. value: this tier's raw value at entry.key
+// (undefined = not set at this tier). effectiveValue: entry.runtime_default ??
+// entry.default — shown as a hint/placeholder, never as a pre-filled value (a
+// pre-filled default would be indistinguishable on save from "explicitly set").
+function renderSchemaField(entry, value, effectiveValue) {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const key = entry.key;
+  const id = cfgFieldId(key);
+  const isSet = value !== undefined;
+
+  if (entry.owner) {
+    return `<div class="cfg-field cfg-schema-field" data-cfg-key="${esc(key)}">
+      <span class="cfg-field-label">${esc(key)} <span class="cfg-note">${esc(entry.description || '')}</span></span><br>
+      <span class="badge badge-gray">owner: ${esc(entry.owner)} — <a href="#cfg-panel-card" onclick="document.getElementById('cfg-panel-card')?.scrollIntoView({behavior:'smooth'});return false;">전용 폼에서 편집</a></span>
+    </div>`;
+  }
+
+  // Known object-shaped keys get a structured widget instead of the raw-JSON
+  // fallback below (t7, config-gap-close). Each returns its own complete
+  // `.cfg-schema-field` wrapper (own marker/reset) and is saved through its own
+  // collector in configSaveSchemaFields — NOT the generic single-control path,
+  // since a single `.cfg-schema-control` can't represent a row/grid editor.
+  if (CFG_OBJECT_WIDGET_RENDERERS[key]) {
+    return CFG_OBJECT_WIDGET_RENDERERS[key](entry, value, effectiveValue);
+  }
+
+  const hintVal = effectiveValue === undefined ? '' : (typeof effectiveValue === 'object' ? JSON.stringify(effectiveValue) : String(effectiveValue));
+  const effectiveAttr = esc(JSON.stringify(effectiveValue === undefined ? null : effectiveValue));
+  const differsFromDefault = isSet && JSON.stringify(value) !== JSON.stringify(effectiveValue);
+  const wrapStyle = differsFromDefault ? ' style="border-left:3px solid var(--accent);padding-left:8px;"' : '';
+  // Non-nullable booleans have no unset affordance (see the boolean-widget
+  // branch below — a plain checkbox always resolves to a concrete true/false
+  // and clicking Save can't turn that back into "not set at this tier"), so
+  // showing "reset" there described an effect saving never produced (F1).
+  const resetBtn = (isSet && cfgFieldSupportsUnset(entry)) ? `<button type="button" class="badge badge-gray cfg-mini-action" onclick="configResetSchemaField('${esc(key)}')" title="이 tier에서 설정 해제">reset</button>` : '';
+  const validateAttrs = `onchange="configValidateFieldEl(this)" onblur="configValidateFieldEl(this)"`;
+
+  let widget;
+  const type = entry.type;
+  if (type === 'boolean' && !entry.nullable) {
+    // No unset affordance here (spec: plain checkbox) — toggling to the default
+    // value is the only way to "clear" an override; it can't delete the key.
+    const checked = (isSet ? !!value : !!effectiveValue) ? 'checked' : '';
+    widget = `<input id="${id}" type="checkbox" class="cfg-schema-control cfg-schema-bool" data-cfg-type="boolean" ${checked} ${validateAttrs}>`;
+  } else if (type === 'boolean' && entry.nullable) {
+    const cur = isSet ? (value === true ? 'true' : value === false ? 'false' : '') : '';
+    widget = `<select id="${id}" class="cfg-control cfg-schema-control" data-cfg-type="boolean-nullable" ${validateAttrs}>
+      <option value="" ${cur === '' ? 'selected' : ''}>(unset)</option>
+      <option value="true" ${cur === 'true' ? 'selected' : ''}>true</option>
+      <option value="false" ${cur === 'false' ? 'selected' : ''}>false</option>
+    </select>`;
+  } else if (type === 'string' && Array.isArray(entry.enum)) {
+    const cur = isSet ? String(value) : '';
+    const opts = [`<option value="" ${cur === '' ? 'selected' : ''}>(unset)</option>`]
+      .concat(entry.enum.map((opt) => `<option value="${esc(opt)}" ${cur === opt ? 'selected' : ''}>${esc(opt)}</option>`));
+    widget = `<select id="${id}" class="cfg-control cfg-schema-control" data-cfg-type="enum" ${validateAttrs}>${opts.join('')}</select>`;
+  } else if (type === 'integer' || type === 'number') {
+    const cur = isSet ? value : '';
+    const minAttr = entry.min != null ? ` min="${esc(entry.min)}"` : '';
+    const maxAttr = entry.max != null ? ` max="${esc(entry.max)}"` : '';
+    const step = type === 'integer' ? '1' : 'any';
+    widget = `<input id="${id}" class="cfg-control cfg-schema-control" type="number" step="${step}"${minAttr}${maxAttr} data-cfg-type="${type}" value="${esc(cur)}" placeholder="${esc(hintVal)}" ${validateAttrs}>`;
+  } else if (type === 'array') {
+    const cur = isSet ? cfgList(value).join(', ') : '';
+    // oninput clears a pending reset (F2): once the user edits the control
+    // again, the blank-vs-cleared ambiguity is moot — treat it as a normal edit.
+    widget = `<input id="${id}" class="cfg-control cfg-schema-control" type="text" data-cfg-type="array" value="${esc(cur)}" placeholder="${esc(hintVal)}" oninput="configClearUnsetFlag(this)" ${validateAttrs}>`;
+  } else if (type === 'string') {
+    const cur = isSet ? String(value ?? '') : '';
+    widget = `<input id="${id}" class="cfg-control cfg-schema-control" type="text" data-cfg-type="string" value="${esc(cur)}" placeholder="${esc(hintVal)}" oninput="configClearUnsetFlag(this)" ${validateAttrs}>`;
+  } else {
+    // object (without a structured widget above — e.g. budget.projects), and
+    // any future/unknown type — raw JSON textarea fallback.
+    const cur = isSet ? JSON.stringify(value, null, 2) : '';
+    widget = `<textarea id="${id}" class="cfg-json cfg-json-compact cfg-schema-control" data-cfg-type="json" spellcheck="false" placeholder="${esc(hintVal)}" ${validateAttrs}>${esc(cur)}</textarea>`;
+  }
+
+  return `<div class="cfg-field cfg-schema-field" data-cfg-key="${esc(key)}" data-cfg-effective="${effectiveAttr}"${wrapStyle}>
+    <label class="cfg-field-label" for="${id}">${esc(key)} <span class="cfg-note">${esc(entry.description || '')}${hintVal !== '' ? ` (default: ${esc(hintVal)})` : ''}</span></label>
+    <div style="display:flex;gap:6px;align-items:center;">${widget}${resetBtn}</div>
+    <div class="cfg-field-error" style="color:var(--danger,#c00);font-size:11px;min-height:14px;"></div>
+  </div>`;
+}
+
+// ── Structured object widgets (t7, config-gap-close) ───────────────────────
+// worktree.gate_policy (severity grid), model_overrides (role -> tier rows),
+// vendor_models / vendor_profiles (vendor row editors). These 4 known
+// object-shaped schema keys get a purpose-built widget instead of the raw
+// JSON textarea fallback in renderSchemaField. budget.projects deliberately
+// stays on the raw-JSON fallback (no known row/grid shape worth building).
+//
+// Each widget owns its own read/diff/save path (cfgCollect*Ops below) and is
+// explicitly excluded from the generic single-`.cfg-schema-control` path in
+// configSaveSchemaFields — a multi-control row/grid editor has no single DOM
+// value cfgReadWidgetValue could read.
+
+const CFG_OBJECT_WIDGET_RENDERERS = {
+  'worktree.gate_policy': cfgRenderGatePolicyWidget,
+  'model_overrides': cfgRenderModelOverridesWidget,
+  'vendor_models': cfgRenderVendorModelsWidget,
+  'vendor_profiles': cfgRenderVendorProfilesWidget,
+};
+
+// Keys handled by CFG_OBJECT_WIDGET_RENDERERS — configSaveSchemaFields uses
+// this to skip the generic per-control read/diff entirely for these 4 keys
+// (see cfgCollectObjectWidgetOps).
+const CFG_OBJECT_WIDGET_KEYS = new Set(Object.keys(CFG_OBJECT_WIDGET_RENDERERS));
+
+// Cached tier/profile lists for each widget's "+ add row" button, refreshed
+// on every render call — a freshly-added blank row needs the same tier/profile
+// options as the rows rendered from data, without re-deriving them from
+// _configModelRouting / _configSchemaEntries at click time.
+let _configModelOverrideTiersCache = ['haiku', 'sonnet', 'opus', 'inherit'];
+let _configVendorModelTiersCache = ['haiku', 'sonnet', 'opus'];
+let _configVendorProfilesCache = ['economy', 'default', 'max'];
+
+// ── Pure serialization/diff helpers ────────────────────────────────────────
+// Mirrored byte-for-byte in public/widget-serialize.mjs so they're unit-
+// testable without loading all of app.js; keep the two copies in sync.
+
+// Fixed domain vocabulary for worktree.gate_policy. No /config/schema or
+// /config/model-routing endpoint exposes these (unlike model/vendor tiers
+// below) — they mirror x-build/lib/shared-config.mjs's
+// GATE_POLICY_SEVERITY_KEYS / SEVERITY_VALUES verbatim. Update both sides
+// together if that vocabulary ever changes.
+const GATE_POLICY_ROWS = ['block_confirmed', 'block_unreviewed', 'block_contested'];
+const SEVERITY_VALUES = ['critical', 'high', 'medium', 'low'];
+
+// 'inherit' is a routing sentinel (run on the session model), never a
+// billable tier — cost-engine's MODEL_COSTS deliberately excludes it (see
+// cost-engine.mjs costFromTokens), so /api/config/model-routing's `models`
+// list never contains it and structurally never will. getModelForRole
+// honors 'inherit' for any role, so it is appended here in exactly one
+// place instead of re-declaring a role/tier array at each call site.
+const CFG_INHERIT_TIER = 'inherit';
+
+// True only for an array containing exclusively known severity strings —
+// the grid widget's "safe to render as checkboxes" test. Anything else
+// (wrong shape, unknown severity value) must fall back to a raw-JSON
+// editor instead of silently dropping data.
+function isKnownSeverityArray(v) {
+  return Array.isArray(v) && v.every((s) => SEVERITY_VALUES.includes(s));
+}
+
+// Billable tiers come from the server (/api/config/model-routing `models`);
+// 'inherit' is always appended. Falls back to the historical 3-tier list
+// only when the routing endpoint is unavailable (503/network error) — NOT
+// a reintroduction of a hardcoded role/tier catalog, just a degrade path.
+function cfgModelOverrideTiers(routingModels) {
+  const billable = Array.isArray(routingModels) ? routingModels : ['haiku', 'sonnet', 'opus'];
+  return [...billable, CFG_INHERIT_TIER];
+}
+
+// Diffs a flat (one-level) object against what is currently set at this
+// tier and the effective (merged) default, producing per-leaf dotted `_set`
+// / `_delete` ops relative to `prefix`. Mirrors configSaveSchemaFields'
+// scalar-field diff, generalized to object subkeys so sibling keys are
+// always preserved (only the changed leaves are ever sent).
+//
+//  - leaf present in `loaded` but missing from `edited` -> delete
+//  - leaf present in `edited`:
+//      - `loaded` has it and unchanged (deep-equal)      -> no-op
+//      - `loaded` doesn't have it, but equals `effective` -> no-op (still default)
+//      - otherwise                                        -> set
+//
+// `edited`/`loaded`/`effective` may be null/undefined/non-object; treated
+// as `{}`. Unknown keys in `edited` (preserved verbatim by the caller, e.g.
+// gate_policy's "other keys" passthrough) diff exactly like known ones —
+// no special-casing needed here.
+function diffFlatObjectSubkeys(prefix, edited, loaded, effective) {
+  const editedObj = (edited && typeof edited === 'object' && !Array.isArray(edited)) ? edited : {};
+  const loadedObj = (loaded && typeof loaded === 'object' && !Array.isArray(loaded)) ? loaded : {};
+  const effectiveObj = (effective && typeof effective === 'object' && !Array.isArray(effective)) ? effective : {};
+  const setOps = {};
+  const deleteOps = [];
+  for (const k of Object.keys(loadedObj)) {
+    if (!Object.prototype.hasOwnProperty.call(editedObj, k)) deleteOps.push(`${prefix}.${k}`);
+  }
+  for (const [k, v] of Object.entries(editedObj)) {
+    const wasSet = Object.prototype.hasOwnProperty.call(loadedObj, k);
+    if (wasSet) {
+      if (JSON.stringify(loadedObj[k]) === JSON.stringify(v)) continue;
+    } else if (JSON.stringify(effectiveObj[k]) === JSON.stringify(v)) {
+      continue;
+    }
+    setOps[`${prefix}.${k}`] = v;
+  }
+  return { setOps, deleteOps };
+}
+
+// { vendor: { tier: spec } } -> { 'vendor.tier': spec }. Skips a
+// non-object vendor entry defensively (never crashes on a malformed value)
+// rather than surfacing it — vendor_models has no "unknown shape" raw
+// fallback requirement like gate_policy does.
+function flattenTwoLevel(obj) {
+  const out = {};
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return out;
+  for (const [k, v] of Object.entries(obj)) {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+    for (const [k2, v2] of Object.entries(v)) out[`${k}.${k2}`] = v2;
+  }
+  return out;
+}
+
+// Row editor (key -> value) serialization shared by model_overrides
+// (role -> tier) and vendor_profiles (vendor -> profile). Blank key or
+// blank/undefined/null value drops the row — a blank value means "(unset)"
+// / "(profile default)" was selected, i.e. no override for that row.
+function rowsToFlatObject(rows) {
+  const out = {};
+  for (const r of (rows || [])) {
+    const key = String(r?.key ?? '').trim();
+    const value = r?.value;
+    if (!key || value === undefined || value === null || value === '') continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+// vendor_models row editor serialization: [{ vendor, tiers: { haiku, ... } }]
+// -> { vendor: { tier: spec } }. Blank tier values are dropped (no override
+// for that tier); a vendor left with zero populated tiers is dropped
+// entirely — this is how "remove a vendor row" round-trips to a delete.
+function rowsToVendorModelsObject(rows) {
+  const out = {};
+  for (const r of (rows || [])) {
+    const vendor = String(r?.vendor ?? '').trim();
+    if (!vendor) continue;
+    const tiersIn = (r?.tiers && typeof r.tiers === 'object') ? r.tiers : {};
+    const cleaned = {};
+    for (const [tier, spec] of Object.entries(tiersIn)) {
+      const s = String(spec ?? '').trim();
+      if (s) cleaned[tier] = s;
+    }
+    if (Object.keys(cleaned).length) out[vendor] = cleaned;
+  }
+  return out;
+}
+
+// Merges the gate_policy grid's resolved known fields (block_confirmed /
+// block_unreviewed / block_contested / allow_low — each already resolved
+// to its final JS value by the DOM layer) with any preserved unknown
+// subkeys. `otherRaw` spreads first so a known field always wins on
+// collision (it never should collide — otherRaw excludes known keys by
+// construction — but this keeps the merge direction unambiguous).
+function buildGatePolicyObject(known, otherRaw) {
+  const base = (otherRaw && typeof otherRaw === 'object' && !Array.isArray(otherRaw)) ? otherRaw : {};
+  return { ...base, ...(known || {}) };
+}
+
+// Mirrored in widget-serialize.mjs. Resolves what configSaveSchemaFields
+// (below) should do with one scalar schema field (everything except the 4
+// object widgets above), given:
+//  - wasSet: was this key present at this tier as loaded
+//  - unsetFlagged: did the user click "reset" this edit session (F2 sentinel
+//    — only ever set for string/array controls; see configResetSchemaField)
+//  - value: cfgReadWidgetValue's coerced current value (undefined means
+//    "unset" for every type except string/array, where '' / [] is a real value)
+//  - loadedValue / effectiveValue: this tier's loaded value and the merged
+//    default, for the "unchanged from loaded" / "still at default" skips
+//
+// string/array get a dedicated blank check (F2): those two types can hold a
+// legitimate '' / [] as a *set* value, so a blank, never-touched control
+// must stay a no-op rather than manufacturing a spurious empty override.
+function cfgResolveScalarFieldOp(entry, { wasSet, unsetFlagged, value, loadedValue, effectiveValue }) {
+  if (unsetFlagged) return wasSet ? { kind: 'delete' } : { kind: 'skip' };
+  if (value === undefined) return wasSet ? { kind: 'delete' } : { kind: 'skip' };
+  if (!wasSet && (entry.type === 'string' || entry.type === 'array')) {
+    const isBlank = entry.type === 'array' ? value.length === 0 : value === '';
+    if (isBlank) return { kind: 'skip' };
+  }
+  if (wasSet) {
+    if (JSON.stringify(loadedValue) === JSON.stringify(value)) return { kind: 'skip' };
+  } else if (entry.type === 'boolean' && !entry.nullable) {
+    // Plain checkboxes always resolve to a concrete boolean (never undefined)
+    // even when the field was never set — skip if it's still showing the
+    // default so an untouched checkbox never becomes a spurious _set.
+    if (value === effectiveValue) return { kind: 'skip' };
+  }
+  return { kind: 'set', value };
+}
+
+// ── worktree.gate_policy — severity grid widget ────────────────────────────
+
+function cfgRenderGatePolicyWidget(entry, value, effectiveValue) {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const key = entry.key;
+  const isSet = value !== undefined;
+  const gp = (value && typeof value === 'object') ? value : {};
+  const eff = (effectiveValue && typeof effectiveValue === 'object') ? effectiveValue : {};
+  const differsFromDefault = isSet && JSON.stringify(value) !== JSON.stringify(effectiveValue);
+  const wrapStyle = differsFromDefault ? 'border-left:3px solid var(--accent);padding-left:8px;' : '';
+
+  const rowsHtml = GATE_POLICY_ROWS.map((row) => {
+    const rowVal = Object.prototype.hasOwnProperty.call(gp, row) ? gp[row] : eff[row];
+    if (rowVal === undefined || isKnownSeverityArray(rowVal)) {
+      const arr = Array.isArray(rowVal) ? rowVal : [];
+      const checks = SEVERITY_VALUES.map((sev) => `<label class="cfg-check">
+        <input type="checkbox" class="cfg-gp-cell" data-row="${esc(row)}" data-sev="${esc(sev)}" ${arr.includes(sev) ? 'checked' : ''}> ${esc(sev)}</label>`).join('');
+      return `<div class="cfg-section" data-gp-row="${esc(row)}" data-gp-mode="grid">
+        <div class="cfg-label">${esc(row)}</div>
+        <div class="cfg-check-grid">${checks}</div>
+      </div>`;
+    }
+    // Unknown shape (not an array of known severities) — raw JSON fallback so
+    // the widget never crashes or silently drops an unexpected value.
+    return `<div class="cfg-section" data-gp-row="${esc(row)}" data-gp-mode="raw">
+      <div class="cfg-label">${esc(row)} <span class="cfg-note">알 수 없는 형식 — raw JSON으로 편집</span></div>
+      <textarea class="cfg-json cfg-json-compact cfg-gp-raw-row" spellcheck="false">${esc(JSON.stringify(rowVal, null, 2))}</textarea>
+    </div>`;
+  }).join('');
+
+  const allowLowVal = Object.prototype.hasOwnProperty.call(gp, 'allow_low') ? gp.allow_low : eff.allow_low;
+  const allowLowHtml = (allowLowVal === undefined || typeof allowLowVal === 'boolean')
+    ? `<div class="cfg-section">
+        <label class="cfg-check"><input type="checkbox" class="cfg-gp-allow-low" ${allowLowVal ? 'checked' : ''}> allow_low</label>
+      </div>`
+    : `<div class="cfg-section">
+        <div class="cfg-label">allow_low <span class="cfg-note">알 수 없는 형식 — raw JSON으로 편집</span></div>
+        <textarea class="cfg-json cfg-json-compact cfg-gp-allow-low-raw" spellcheck="false">${esc(JSON.stringify(allowLowVal, null, 2))}</textarea>
+      </div>`;
+
+  const knownKeys = new Set([...GATE_POLICY_ROWS, 'allow_low']);
+  const otherRaw = {};
+  for (const k of Object.keys(gp)) { if (!knownKeys.has(k)) otherRaw[k] = gp[k]; }
+  const hasOther = Object.keys(otherRaw).length > 0;
+  const otherHtml = `<div class="cfg-section"${hasOther ? '' : ' style="display:none"'}>
+    <div class="cfg-label">기타 키 <span class="cfg-note">raw JSON — 알 수 없는 서브키 보존</span></div>
+    <textarea class="cfg-json cfg-json-compact cfg-gp-other-raw" spellcheck="false">${esc(JSON.stringify(otherRaw, null, 2))}</textarea>
+  </div>`;
+
+  const resetBtn = differsFromDefault
+    ? `<button type="button" class="badge badge-gray cfg-mini-action" onclick="cfgResetObjectWidget('${esc(key)}')" title="이 tier에서 이 키 전체 초기화">기본값으로 리셋</button>`
+    : '';
+
+  return `<div class="cfg-field cfg-schema-field cfg-object-widget" data-cfg-key="${esc(key)}" data-cfg-widget="gate-policy" style="${wrapStyle}">
+    <div class="cfg-field-label">${esc(key)} <span class="cfg-note">${esc(entry.description || '')}</span> ${resetBtn}</div>
+    ${rowsHtml}
+    ${allowLowHtml}
+    ${otherHtml}
+    <div class="cfg-field-error" style="color:var(--danger,#c00);font-size:11px;min-height:14px;"></div>
+  </div>`;
+}
+
+// Reads gate_policy's current DOM state, diffs it, and appends per-subkey
+// ops into the shared setMap/deletePaths (sibling-preserving — CLI parity
+// with saveWorktreeKey/editGatePolicy). Returns an error string on a raw-JSON
+// parse failure (caller must abort the save), or null on success.
+function cfgCollectGatePolicyOps(entry, wrapper, loadedRaw, effectiveValue, setMap, deletePaths) {
+  const errEl = wrapper.querySelector('.cfg-field-error');
+  if (errEl) { errEl.textContent = ''; errEl.dataset.hasError = ''; }
+  const fail = (msg) => { if (errEl) { errEl.textContent = msg; errEl.dataset.hasError = '1'; } return msg; };
+
+  const known = {};
+  for (const row of GATE_POLICY_ROWS) {
+    const section = wrapper.querySelector(`[data-gp-row="${row}"]`);
+    if (section && section.dataset.gpMode === 'raw') {
+      const raw = (section.querySelector('.cfg-gp-raw-row')?.value ?? '').trim();
+      if (raw === '') continue;
+      try { known[row] = JSON.parse(raw); }
+      catch (e) { return fail(`${row}: JSON 파싱 오류: ${e.message}`); }
+    } else {
+      known[row] = SEVERITY_VALUES.filter((sev) =>
+        wrapper.querySelector(`.cfg-gp-cell[data-row="${row}"][data-sev="${sev}"]`)?.checked);
+    }
+  }
+  const allowLowCheckbox = wrapper.querySelector('.cfg-gp-allow-low');
+  if (allowLowCheckbox) {
+    known.allow_low = allowLowCheckbox.checked;
+  } else {
+    const raw = (wrapper.querySelector('.cfg-gp-allow-low-raw')?.value ?? '').trim();
+    if (raw !== '') {
+      try { known.allow_low = JSON.parse(raw); }
+      catch (e) { return fail(`allow_low: JSON 파싱 오류: ${e.message}`); }
+    }
+  }
+
+  const otherText = (wrapper.querySelector('.cfg-gp-other-raw')?.value ?? '').trim();
+  let otherRaw = {};
+  if (otherText !== '') {
+    let parsed;
+    try { parsed = JSON.parse(otherText); }
+    catch (e) { return fail(`기타 키: JSON 파싱 오류: ${e.message}`); }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fail('기타 키: JSON 객체여야 합니다');
+    otherRaw = parsed;
+  }
+
+  const edited = buildGatePolicyObject(known, otherRaw);
+  const loaded = (loadedRaw && typeof loadedRaw === 'object') ? loadedRaw : {};
+  const effective = (effectiveValue && typeof effectiveValue === 'object') ? effectiveValue : {};
+  const { setOps, deleteOps } = diffFlatObjectSubkeys(entry.key, edited, loaded, effective);
+  Object.assign(setMap, setOps);
+  deletePaths.push(...deleteOps);
+  return null;
+}
+
+// ── model_overrides — role -> tier row editor ──────────────────────────────
+
+function cfgModelOverrideRow(role, tier, tiers) {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const opts = [`<option value="">(profile default)</option>`]
+    .concat(tiers.map((t) => `<option value="${esc(t)}" ${tier === t ? 'selected' : ''}>${esc(t)}</option>`));
+  return `<div class="cfg-row cfg-modelovr-row">
+    <input class="cfg-control cfg-modelovr-role" list="cfg-role-options" placeholder="role" value="${esc(role)}">
+    <span class="cfg-arrow">→</span>
+    <select class="cfg-control cfg-modelovr-tier">${opts.join('')}</select>
+    <button type="button" onclick="this.parentNode.remove()" class="badge badge-gray cfg-remove-btn">×</button>
+  </div>`;
+}
+
+function cfgAddModelOverrideRow() {
+  document.getElementById('cfg-modelovr-rows')?.insertAdjacentHTML('beforeend', cfgModelOverrideRow('', '', _configModelOverrideTiersCache));
+}
+
+function cfgRenderModelOverridesWidget(entry, value, effectiveValue) {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const key = entry.key;
+  const isSet = value !== undefined;
+  const cur = (value && typeof value === 'object') ? value : {};
+  const differsFromDefault = isSet && JSON.stringify(value) !== JSON.stringify(effectiveValue);
+  const wrapStyle = differsFromDefault ? 'border-left:3px solid var(--accent);padding-left:8px;' : '';
+
+  // role universe = /api/config/model-routing's roles (profile map ∪ any
+  // already-configured override, server-side) ∪ this tier's own raw keys —
+  // never a hardcoded role list (R15).
+  const routingRoles = (_configModelRouting && _configModelRouting.roles && typeof _configModelRouting.roles === 'object')
+    ? Object.keys(_configModelRouting.roles) : [];
+  const roles = [...new Set([...routingRoles, ...Object.keys(cur)])];
+  const tiers = cfgModelOverrideTiers(_configModelRouting && _configModelRouting.models);
+  _configModelOverrideTiersCache = tiers;
+
+  const rowsHtml = roles.map((role) => cfgModelOverrideRow(role, Object.prototype.hasOwnProperty.call(cur, role) ? cur[role] : '', tiers)).join('');
+  const roleOptions = routingRoles.map((r) => `<option value="${esc(r)}"></option>`).join('');
+
+  const resetBtn = differsFromDefault
+    ? `<button type="button" class="badge badge-gray cfg-mini-action" onclick="cfgResetObjectWidget('${esc(key)}')" title="이 tier에서 이 키 전체 초기화">기본값으로 리셋</button>`
+    : '';
+
+  return `<div class="cfg-field cfg-schema-field cfg-object-widget" data-cfg-key="${esc(key)}" data-cfg-widget="model-overrides" style="${wrapStyle}">
+    <div class="cfg-field-label">${esc(key)} <span class="cfg-note">${esc(entry.description || '')}</span> ${resetBtn}</div>
+    <datalist id="cfg-role-options">${roleOptions}</datalist>
+    <div id="cfg-modelovr-rows">${rowsHtml}</div>
+    <button type="button" onclick="cfgAddModelOverrideRow()" class="badge badge-gray cfg-mini-action">+ role</button>
+    <div class="cfg-field-error" style="color:var(--danger,#c00);font-size:11px;min-height:14px;"></div>
+  </div>`;
+}
+
+function cfgCollectModelOverridesOps(entry, wrapper, loadedRaw, effectiveValue, setMap, deletePaths) {
+  const rows = [...wrapper.querySelectorAll('.cfg-modelovr-row')].map((row) => ({
+    key: row.querySelector('.cfg-modelovr-role')?.value ?? '',
+    value: row.querySelector('.cfg-modelovr-tier')?.value ?? '',
+  }));
+  const edited = rowsToFlatObject(rows);
+  const loaded = (loadedRaw && typeof loadedRaw === 'object') ? loadedRaw : {};
+  const effective = (effectiveValue && typeof effectiveValue === 'object') ? effectiveValue : {};
+  const { setOps, deleteOps } = diffFlatObjectSubkeys(entry.key, edited, loaded, effective);
+  Object.assign(setMap, setOps);
+  deletePaths.push(...deleteOps);
+  return null;
+}
+
+// ── vendor_models — vendor -> { tier: spec } nested row editor ────────────
+
+function cfgVendorModelRow(vendor, tiersObj, tierNames) {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const tiersSafe = (tiersObj && typeof tiersObj === 'object') ? tiersObj : {};
+  // Tier name shown as the placeholder (e.g. "haiku") rather than a separate
+  // label — avoids introducing a new CSS class just for this one widget.
+  const tierInputs = tierNames.map((t) => `<input class="cfg-control cfg-vm-tier" data-tier="${esc(t)}" placeholder="${esc(t)}" value="${esc(tiersSafe[t] ?? '')}" style="width:120px;">`).join('');
+  return `<div class="cfg-row cfg-vm-row">
+    <input class="cfg-control cfg-vm-vendor" list="cfg-vendor-options" placeholder="vendor" value="${esc(vendor)}">
+    <span class="cfg-arrow">→</span>
+    <span style="display:flex;gap:4px;flex-wrap:wrap;">${tierInputs}</span>
+    <button type="button" onclick="this.parentNode.remove()" class="badge badge-gray cfg-remove-btn">×</button>
+  </div>`;
+}
+
+function cfgAddVendorModelRow() {
+  document.getElementById('cfg-vm-rows')?.insertAdjacentHTML('beforeend', cfgVendorModelRow('', {}, _configVendorModelTiersCache));
+}
+
+function cfgRenderVendorModelsWidget(entry, value, effectiveValue) {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const key = entry.key;
+  const isSet = value !== undefined;
+  const cur = (value && typeof value === 'object') ? value : {};
+  const differsFromDefault = isSet && JSON.stringify(value) !== JSON.stringify(effectiveValue);
+  const wrapStyle = differsFromDefault ? 'border-left:3px solid var(--accent);padding-left:8px;' : '';
+
+  const routing = _configModelRouting || {};
+  const vendorDefaults = (routing.vendor_models && routing.vendor_models.defaults && typeof routing.vendor_models.defaults === 'object')
+    ? routing.vendor_models.defaults : {};
+  const vendors = [...new Set([...Object.keys(vendorDefaults), ...Object.keys(cur)])];
+  const tierNames = Array.isArray(routing.models) ? routing.models : ['haiku', 'sonnet', 'opus'];
+  _configVendorModelTiersCache = tierNames;
+
+  const rowsHtml = vendors.map((vendor) => cfgVendorModelRow(vendor, cur[vendor], tierNames)).join('');
+  const vendorOptions = Object.keys(vendorDefaults).map((v) => `<option value="${esc(v)}"></option>`).join('');
+
+  const resetBtn = differsFromDefault
+    ? `<button type="button" class="badge badge-gray cfg-mini-action" onclick="cfgResetObjectWidget('${esc(key)}')" title="이 tier에서 이 키 전체 초기화">기본값으로 리셋</button>`
+    : '';
+
+  return `<div class="cfg-field cfg-schema-field cfg-object-widget" data-cfg-key="${esc(key)}" data-cfg-widget="vendor-models" style="${wrapStyle}">
+    <div class="cfg-field-label">${esc(key)} <span class="cfg-note">${esc(entry.description || '')}</span> ${resetBtn}</div>
+    <datalist id="cfg-vendor-options">${vendorOptions}</datalist>
+    <div id="cfg-vm-rows">${rowsHtml}</div>
+    <button type="button" onclick="cfgAddVendorModelRow()" class="badge badge-gray cfg-mini-action">+ vendor</button>
+    <div class="cfg-field-error" style="color:var(--danger,#c00);font-size:11px;min-height:14px;"></div>
+  </div>`;
+}
+
+function cfgCollectVendorModelsOps(entry, wrapper, loadedRaw, effectiveValue, setMap, deletePaths) {
+  const rows = [...wrapper.querySelectorAll('.cfg-vm-row')].map((row) => {
+    const vendor = row.querySelector('.cfg-vm-vendor')?.value ?? '';
+    const tiers = {};
+    row.querySelectorAll('.cfg-vm-tier').forEach((input) => { tiers[input.dataset.tier] = input.value; });
+    return { vendor, tiers };
+  });
+  const edited = flattenTwoLevel(rowsToVendorModelsObject(rows));
+  const loaded = flattenTwoLevel((loadedRaw && typeof loadedRaw === 'object') ? loadedRaw : {});
+  const effective = flattenTwoLevel((effectiveValue && typeof effectiveValue === 'object') ? effectiveValue : {});
+  const { setOps, deleteOps } = diffFlatObjectSubkeys(entry.key, edited, loaded, effective);
+  Object.assign(setMap, setOps);
+  deletePaths.push(...deleteOps);
+  return null;
+}
+
+// ── vendor_profiles — vendor -> profile enum row editor ────────────────────
+
+function cfgVendorProfileRow(vendor, profile, profiles) {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const opts = [`<option value="">(model_profile 상속)</option>`]
+    .concat(profiles.map((p) => `<option value="${esc(p)}" ${profile === p ? 'selected' : ''}>${esc(p)}</option>`));
+  return `<div class="cfg-row cfg-vp-row">
+    <input class="cfg-control cfg-vp-vendor" list="cfg-vendor-profile-options" placeholder="vendor" value="${esc(vendor)}">
+    <span class="cfg-arrow">→</span>
+    <select class="cfg-control cfg-vp-tier">${opts.join('')}</select>
+    <button type="button" onclick="this.parentNode.remove()" class="badge badge-gray cfg-remove-btn">×</button>
+  </div>`;
+}
+
+function cfgAddVendorProfileRow() {
+  document.getElementById('cfg-vp-rows')?.insertAdjacentHTML('beforeend', cfgVendorProfileRow('', '', _configVendorProfilesCache));
+}
+
+function cfgRenderVendorProfilesWidget(entry, value, effectiveValue) {
+  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
+  const key = entry.key;
+  const isSet = value !== undefined;
+  const cur = (value && typeof value === 'object') ? value : {};
+  const differsFromDefault = isSet && JSON.stringify(value) !== JSON.stringify(effectiveValue);
+  const wrapStyle = differsFromDefault ? 'border-left:3px solid var(--accent);padding-left:8px;' : '';
+
+  const routing = _configModelRouting || {};
+  const vendorDefaults = (routing.vendor_models && routing.vendor_models.defaults && typeof routing.vendor_models.defaults === 'object')
+    ? routing.vendor_models.defaults : {};
+  const vendors = [...new Set([...Object.keys(vendorDefaults), ...Object.keys(cur)])];
+  // model_profile's own enum is the schema-registered source of truth for
+  // economy/default/max — reused here instead of a second hardcoded copy.
+  const profileEntry = (_configSchemaEntries || []).find((e) => e.key === 'model_profile');
+  const profiles = Array.isArray(profileEntry?.enum) ? profileEntry.enum : ['economy', 'default', 'max'];
+  _configVendorProfilesCache = profiles;
+
+  const rowsHtml = vendors.map((vendor) => cfgVendorProfileRow(vendor, Object.prototype.hasOwnProperty.call(cur, vendor) ? cur[vendor] : '', profiles)).join('');
+  const vendorOptions = Object.keys(vendorDefaults).map((v) => `<option value="${esc(v)}"></option>`).join('');
+
+  const resetBtn = differsFromDefault
+    ? `<button type="button" class="badge badge-gray cfg-mini-action" onclick="cfgResetObjectWidget('${esc(key)}')" title="이 tier에서 이 키 전체 초기화">기본값으로 리셋</button>`
+    : '';
+
+  return `<div class="cfg-field cfg-schema-field cfg-object-widget" data-cfg-key="${esc(key)}" data-cfg-widget="vendor-profiles" style="${wrapStyle}">
+    <div class="cfg-field-label">${esc(key)} <span class="cfg-note">${esc(entry.description || '')}</span> ${resetBtn}</div>
+    <datalist id="cfg-vendor-profile-options">${vendorOptions}</datalist>
+    <div id="cfg-vp-rows">${rowsHtml}</div>
+    <button type="button" onclick="cfgAddVendorProfileRow()" class="badge badge-gray cfg-mini-action">+ vendor</button>
+    <div class="cfg-field-error" style="color:var(--danger,#c00);font-size:11px;min-height:14px;"></div>
+  </div>`;
+}
+
+function cfgCollectVendorProfilesOps(entry, wrapper, loadedRaw, effectiveValue, setMap, deletePaths) {
+  const rows = [...wrapper.querySelectorAll('.cfg-vp-row')].map((row) => ({
+    key: row.querySelector('.cfg-vp-vendor')?.value ?? '',
+    value: row.querySelector('.cfg-vp-tier')?.value ?? '',
+  }));
+  const edited = rowsToFlatObject(rows);
+  const loaded = (loadedRaw && typeof loadedRaw === 'object') ? loadedRaw : {};
+  const effective = (effectiveValue && typeof effectiveValue === 'object') ? effectiveValue : {};
+  const { setOps, deleteOps } = diffFlatObjectSubkeys(entry.key, edited, loaded, effective);
+  Object.assign(setMap, setOps);
+  deletePaths.push(...deleteOps);
+  return null;
+}
+
+// Dispatches to the right cfgCollect*Ops for a known object-widget key.
+// Returns an error string to abort the save (mirrors configSaveSchemaFields'
+// own `if (!read.ok) { setConfigStatus(...); return; }` early-return shape),
+// or null on success.
+function cfgCollectObjectWidgetOps(key, entry, wrapper, loadedRaw, effectiveValue, setMap, deletePaths) {
+  if (key === 'worktree.gate_policy') return cfgCollectGatePolicyOps(entry, wrapper, loadedRaw, effectiveValue, setMap, deletePaths);
+  if (key === 'model_overrides') return cfgCollectModelOverridesOps(entry, wrapper, loadedRaw, effectiveValue, setMap, deletePaths);
+  if (key === 'vendor_models') return cfgCollectVendorModelsOps(entry, wrapper, loadedRaw, effectiveValue, setMap, deletePaths);
+  return cfgCollectVendorProfilesOps(entry, wrapper, loadedRaw, effectiveValue, setMap, deletePaths);
+}
+
+// "기본값으로 리셋" (R11) for an object widget — deletes every leaf currently
+// set at this tier under `key` in one shot (immediate PATCH + reload, unlike
+// configResetSchemaField's stage-then-Save flow: a nested widget has no
+// single control to blank out for staging). Arrays are treated as opaque
+// leaves (never recursed into) so a severity list doesn't get shredded into
+// index keys.
+function cfgResetObjectWidget(key) {
+  const loaded = cfgGetPath(_configSharedRaw, key);
+  const leaves = [];
+  const collectLeaves = (obj, prefix) => {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) { leaves.push(prefix); return; }
+    for (const [k, v] of Object.entries(obj)) collectLeaves(v, `${prefix}.${k}`);
+  };
+  if (loaded && typeof loaded === 'object' && !Array.isArray(loaded)) {
+    for (const [k, v] of Object.entries(loaded)) collectLeaves(v, `${key}.${k}`);
+  }
+  if (!leaves.length) { setConfigStatus('이미 기본값입니다 (이 tier에 설정된 값 없음)', true); return; }
+  patchConfigTier({ _delete: leaves });
+}
+
+// Reads one schema field's current DOM value, coerced to its target JS type.
+// Returns { ok:true, value } where value===undefined means "unset at this
+// tier" for every type EXCEPT string/array, where '' / [] is itself a valid
+// value (F2) — callers resolve those two via cfgResolveScalarFieldOp instead
+// of a blank check. { ok:false, error } is for a value that can't even be
+// parsed (bad JSON/number) — distinct from validateField's business-rule errors.
+function cfgReadWidgetValue(entry, wrapperEl) {
+  const control = wrapperEl.querySelector('.cfg-schema-control');
+  if (!control) return { ok: true, value: undefined };
+  const type = entry.type;
+  if (type === 'boolean' && !entry.nullable) return { ok: true, value: control.checked };
+  if (type === 'boolean' && entry.nullable) {
+    const raw = control.value;
+    return { ok: true, value: raw === '' ? undefined : raw === 'true' };
+  }
+  if (type === 'string' && Array.isArray(entry.enum)) {
+    const raw = control.value;
+    return { ok: true, value: raw === '' ? undefined : raw };
+  }
+  if (type === 'integer' || type === 'number') {
+    const raw = control.value.trim();
+    if (raw === '') return { ok: true, value: undefined };
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return { ok: false, error: '숫자가 아닙니다' };
+    return { ok: true, value: n };
+  }
+  if (type === 'array') {
+    // '' is a legitimate *set* value here (an explicitly-saved empty array),
+    // indistinguishable in the DOM from "never set" — cfgResolveScalarFieldOp
+    // (app.js/widget-serialize.mjs) uses wasSet + the reset sentinel to
+    // decide, not a blank-means-unset coercion done here (F2).
+    return { ok: true, value: cfgList(control.value.trim()) };
+  }
+  if (type === 'string') {
+    // Same reasoning as 'array' above — '' is a real value, not "unset".
+    return { ok: true, value: control.value };
+  }
+  const raw = control.value.trim();
+  if (raw === '') return { ok: true, value: undefined };
+  try {
+    return { ok: true, value: JSON.parse(raw) };
+  } catch (e) {
+    return { ok: false, error: 'JSON 파싱 오류: ' + e.message };
+  }
+}
+
+// Pure — DOM-independent. Mirrored byte-for-byte in public/validate-field.mjs
+// so it's unit-testable without loading all of app.js (a classic <script>
+// with top-level DOM side effects); keep the two copies in sync.
+function validateField(entry, value) {
+  if (!entry) return null;
+  if (value === undefined) return null; // "unset" always clears any override cleanly
+  if (value === null) {
+    return entry.nullable ? null : `${entry.key}는 null을 허용하지 않습니다`;
+  }
+  switch (entry.type) {
+    case 'string': {
+      if (typeof value !== 'string') return '문자열이어야 합니다';
+      if (Array.isArray(entry.enum) && !entry.enum.includes(value)) {
+        return `다음 중 하나여야 합니다: ${entry.enum.join(', ')}`;
+      }
+      return null;
+    }
+    case 'boolean':
+      return typeof value === 'boolean' ? null : 'true/false 값이어야 합니다';
+    case 'integer': {
+      if (typeof value !== 'number' || !Number.isInteger(value)) return '정수여야 합니다';
+      if (entry.min != null && value < entry.min) return `${entry.min} 이상이어야 합니다`;
+      if (entry.max != null && value > entry.max) return `${entry.max} 이하여야 합니다`;
+      return null;
+    }
+    case 'number': {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '숫자여야 합니다';
+      if (entry.min != null && value < entry.min) return `${entry.min} 이상이어야 합니다`;
+      if (entry.max != null && value > entry.max) return `${entry.max} 이하여야 합니다`;
+      return null;
+    }
+    case 'array':
+      return Array.isArray(value) ? null : '배열이어야 합니다';
+    case 'object':
+      return (typeof value === 'object' && !Array.isArray(value)) ? null : 'JSON 객체여야 합니다';
+    default:
+      return null;
+  }
+}
+
+// Pure — DOM-independent. Mirrored byte-for-byte in public/validate-field.mjs
+// alongside validateField (same reason — unit-testable without loading all
+// of app.js). True when this schema entry's widget can represent "unset"
+// through the reset button (renderSchemaField/configSaveSchemaFields, F1):
+// non-nullable booleans always resolve to a concrete true/false and have no
+// way to clear an override back to "not set at this tier".
+function cfgFieldSupportsUnset(entry) {
+  return !(entry && entry.type === 'boolean' && !entry.nullable);
+}
+
+function configValidateFieldEl(el) {
+  const wrapper = el.closest('[data-cfg-key]');
+  if (!wrapper) return true;
+  const key = wrapper.dataset.cfgKey;
+  const entry = (_configSchemaEntries || []).find((e) => e.key === key);
+  const errEl = wrapper.querySelector('.cfg-field-error');
+  if (!entry) return true;
+  const read = cfgReadWidgetValue(entry, wrapper);
+  const msg = !read.ok ? read.error : validateField(entry, read.value);
+  if (errEl) { errEl.textContent = msg || ''; errEl.dataset.hasError = msg ? '1' : ''; }
+  configUpdateSaveDisabled();
+  return !msg;
+}
+
+function configUpdateSaveDisabled() {
+  const anyError = !!document.querySelector('.cfg-field-error[data-has-error="1"]');
+  document.querySelectorAll('.cfg-schema-save-btn').forEach((btn) => { btn.disabled = anyError; });
+}
+
+// Toggles the F2 "explicit unset" sentinel on a field wrapper. `on=true` is
+// only ever set for string/array controls (configResetSchemaField below) —
+// every other type already round-trips "blank control" to undefined
+// unambiguously via cfgReadWidgetValue, so the sentinel would be redundant
+// there. Also flips a lightweight visual cue (index.html/style.css are out
+// of scope for this pass, hence inline style rather than a CSS class).
+function configSetUnsetFlag(wrapper, on) {
+  if (!wrapper) return;
+  if (on) {
+    wrapper.dataset.cfgUnset = '1';
+    wrapper.style.opacity = '0.55';
+    wrapper.title = '초기화됨 — Save settings로 저장하면 이 tier에서 제거됩니다';
+  } else {
+    delete wrapper.dataset.cfgUnset;
+    wrapper.style.opacity = '';
+    wrapper.title = '';
+  }
+}
+
+// Wired as oninput on string/array controls (renderSchemaField) — the
+// moment the user edits the control after a reset click, the pending delete
+// is no longer what they want; fall back to treating it as a normal edit.
+function configClearUnsetFlag(el) {
+  const wrapper = el.closest('.cfg-schema-field[data-cfg-key]');
+  if (wrapper?.dataset.cfgUnset) configSetUnsetFlag(wrapper, false);
+}
+
+function configResetSchemaField(key) {
+  const safeKey = String(key).replace(/"/g, '\\"');
+  const wrapper = document.querySelector(`.cfg-schema-field[data-cfg-key="${safeKey}"]`);
+  const control = wrapper?.querySelector('.cfg-schema-control');
+  if (!control) return;
+  if (control.tagName === 'SELECT') control.value = '';
+  else if (control.type !== 'checkbox') control.value = '';
+  // string/array can legitimately hold '' / [] as a *set* value (F2), so a
+  // blank control alone can't tell "explicitly cleared" apart from "never
+  // set" at save time — mark it explicitly instead of relying on blankness.
+  const ctype = control.dataset.cfgType;
+  if (ctype === 'string' || ctype === 'array') configSetUnsetFlag(wrapper, true);
+  configValidateFieldEl(control);
+  setConfigStatus('초기화됨 — Save settings로 저장하면 이 tier에서 제거됩니다', true);
+}
+
+// Collects every rendered schema field, diffs against the tier config as
+// loaded, and PATCHes only what changed via _set/_delete (sibling-preserving —
+// R7/t5 contract). Skips owner (read-only) fields entirely.
+function configSaveSchemaFields() {
+  const wrappers = [...document.querySelectorAll('.cfg-schema-field[data-cfg-key]')];
+  const setMap = {};
+  const deletePaths = [];
+  for (const wrapper of wrappers) {
+    const key = wrapper.dataset.cfgKey;
+    const entry = (_configSchemaEntries || []).find((e) => e.key === key);
+    if (!entry || entry.owner) continue;
+    // Object widgets (gate_policy/model_overrides/vendor_models/vendor_profiles)
+    // render many controls, not one — cfgReadWidgetValue's single
+    // `.cfg-schema-control` lookup would read as "unset" and, if the key was
+    // already set at this tier, wrongly queue a whole-key delete. Each has its
+    // own collector that emits per-subkey _set/_delete ops directly.
+    if (CFG_OBJECT_WIDGET_KEYS.has(key)) {
+      const loadedRaw = cfgGetPath(_configSharedRaw, key);
+      const effectiveValue = cfgEffectiveDefault(entry);
+      const err = cfgCollectObjectWidgetOps(key, entry, wrapper, loadedRaw, effectiveValue, setMap, deletePaths);
+      if (err) { setConfigStatus(`${key}: ${err}`, false); return; }
+      continue;
+    }
+    const read = cfgReadWidgetValue(entry, wrapper);
+    if (!read.ok) { setConfigStatus(`${key}: ${read.error}`, false); return; }
+    const err = validateField(entry, read.value);
+    if (err) { setConfigStatus(`${key}: ${err}`, false); return; }
+    const wasSet = cfgHasPath(_configSharedRaw, key);
+    let effectiveValue;
+    try { effectiveValue = JSON.parse(wrapper.dataset.cfgEffective ?? 'null'); } catch { effectiveValue = null; }
+    const op = cfgResolveScalarFieldOp(entry, {
+      wasSet,
+      unsetFlagged: wrapper.dataset.cfgUnset === '1',
+      value: read.value,
+      loadedValue: wasSet ? cfgGetPath(_configSharedRaw, key) : undefined,
+      effectiveValue,
+    });
+    if (op.kind === 'delete') { deletePaths.push(key); continue; }
+    if (op.kind === 'skip') continue;
+    setMap[key] = op.value;
+  }
+  if (!Object.keys(setMap).length && !deletePaths.length) {
+    setConfigStatus('저장할 변경이 없습니다', true);
+    return;
+  }
+  const body = {};
+  if (Object.keys(setMap).length) body._set = setMap;
+  if (deletePaths.length) body._delete = deletePaths;
+  patchConfigTier(body);
 }
 
 function cfgList(v) {
@@ -2738,71 +3632,6 @@ function cfgPresetRow(name = '', models = '') {
   </div>`;
 }
 
-// Phase models — UX sugar over the role repeater below. Each select expands to
-// model_overrides rows for its phase's roles (PHASE_ROLE_GROUPS from cost-engine
-// via /config/model-routing); the unchanged configSaveShared gather then persists
-// them. Renders nothing when the routing endpoint is unavailable.
-const CFG_PHASE_LABELS = { plan: '설계 (plan)', implement: '구현 (implement)', review: '리뷰 (review)' };
-
-function cfgPhaseModelsSection(routing) {
-  if (!routing) return '';
-  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
-  const rows = Object.entries(routing.phase_groups || {}).map(([slot, roles]) => {
-    // Preselect only when every role in the group carries the same override;
-    // any profile-sourced or diverging role → '' (프로필 기본값 / mixed).
-    const marks = new Set(roles.map((r) => (routing.roles?.[r]?.source === 'override' ? routing.roles[r].model : '')));
-    const uniform = marks.size === 1 ? [...marks][0] : '';
-    const chips = roles.map((r) => {
-      const info = routing.roles?.[r];
-      if (!info) return '';
-      const cls = info.source === 'override' ? 'badge-indigo' : 'badge-gray';
-      return `<span class="badge ${cls}">${esc(r)}→${esc(info.model)}</span>`;
-    }).join(' ');
-    const opt = (v, label) => `<option value="${v}" ${uniform === v ? 'selected' : ''}>${label}</option>`;
-    return `<div class="cfg-phase-row cfg-row">
-      <span class="cfg-phase-label">${esc(CFG_PHASE_LABELS[slot] || slot)}</span>
-      <select class="cfg-phase-model cfg-control" data-phase="${esc(slot)}" onchange="configPhaseSelectChanged(this)">
-        ${opt('', '프로필 기본값')}${opt('haiku', 'haiku')}${opt('sonnet', 'sonnet')}${opt('opus', 'opus')}
-      </select>
-      <span class="cfg-phase-chips">${chips}</span>
-    </div>`;
-  }).join('');
-  return `<div class="cfg-section">
-    <div class="cfg-label">phase models <span>(설계/구현/리뷰 일괄 지정 — 아래 model_overrides로 전개 · profile: ${esc(routing.profile)})</span></div>
-    ${rows}
-  </div>`;
-}
-
-function configPhaseSelectChanged(sel) {
-  const phase = sel?.dataset?.phase;
-  const model = sel?.value || '';
-  const roles = _configRouting?.phase_groups?.[phase] || [];
-  const container = document.getElementById('cfg-role-overrides');
-  if (!container || !roles.length) return;
-  for (const role of roles) {
-    const row = [...container.querySelectorAll('.cfg-role-row')]
-      .find((r) => r.querySelector('.cfg-role-name')?.value.trim() === role);
-    if (!model) {
-      if (row) row.remove();
-    } else if (row) {
-      row.querySelector('.cfg-role-model').value = model;
-    } else {
-      container.insertAdjacentHTML('beforeend', cfgRoleOverrideRow(role, model));
-    }
-  }
-  setConfigStatus(`${CFG_PHASE_LABELS[phase] || phase} → ${model || '프로필 기본값'} — 아래 role overrides에 반영됨. "Save shared settings"로 저장하세요.`, true);
-}
-
-function cfgRoleOverrideRow(role = '', model = '') {
-  const esc = (v) => escapeHtmlHumble(String(v ?? ''));
-  return `<div class="cfg-role-row cfg-row">
-    <input class="cfg-role-name cfg-control" list="cfg-role-options" placeholder="architect" value="${esc(role)}">
-    <span class="cfg-arrow">→</span>
-    <input class="cfg-role-model cfg-control" list="cfg-role-model-options" placeholder="opus" value="${esc(model)}">
-    <button onclick="this.parentNode.remove()" class="badge badge-gray cfg-remove-btn">×</button>
-  </div>`;
-}
-
 function configAddOverrideRow() {
   document.getElementById('cfg-overrides')?.insertAdjacentHTML('beforeend', cfgOverrideRow());
 }
@@ -2811,9 +3640,6 @@ function configAddCatalogRow() {
 }
 function configAddPresetRow() {
   document.getElementById('cfg-presets')?.insertAdjacentHTML('beforeend', cfgPresetRow());
-}
-function configAddRoleOverrideRow() {
-  document.getElementById('cfg-role-overrides')?.insertAdjacentHTML('beforeend', cfgRoleOverrideRow());
 }
 
 function configSyncModelOptions(providerInput) {
@@ -2837,7 +3663,7 @@ function configSyncModelOptions(providerInput) {
 }
 
 function configSetTier(tier) {
-  if (tier !== 'project' && tier !== 'global') return;
+  if (tier !== 'project' && tier !== 'global' && tier !== 'build-local') return;
   _configTier = tier;
   loadConfigEditor();
 }
@@ -2847,19 +3673,44 @@ function setConfigStatus(msg, ok) {
   if (el) el.innerHTML = `<span style="color:${ok ? 'var(--success,#2a2)' : 'var(--danger,#c00)'}">${escapeHtmlHumble(msg)}</span>`;
 }
 
+// Common PATCH path — every save function (panel, schema fields, other keys)
+// goes through this. Attaches If-Match from the last GET's ETag and surfaces
+// every failure mode explicitly (L6: no silent failure) — 409 (concurrent
+// edit elsewhere), 422 (schema violations), and 400/500 all get their own banner.
 async function patchConfigTier(body) {
   setConfigStatus('저장 중…', true);
   try {
+    const headers = { 'content-type': 'application/json' };
+    if (_configEtag) headers['If-Match'] = _configEtag;
     const res = await fetch(apiUrl(`/config?tier=${_configTier}`), {
-      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      method: 'PATCH', headers, body: JSON.stringify(body),
     });
     let data = {};
     try { data = await res.json(); } catch {}
+    if (res.status === 409) {
+      setConfigStatus('다른 곳에서 이 tier의 설정이 변경됨 — 새로고침 후 다시 시도하세요', false);
+      await loadConfigEditor();
+      return false;
+    }
+    if (res.status === 422) {
+      // Server shape: violations: [{ key, code, severity, message }, ...] (R9).
+      const violations = Array.isArray(data.violations)
+        ? data.violations.map((v) => (v && typeof v === 'object') ? `${v.key}: ${v.message || v.code || '유효하지 않음'}` : String(v)).join('; ')
+        : '';
+      setConfigStatus(`검증 실패: ${violations || data.error || ''}`, false);
+      return false;
+    }
     if (!res.ok || data.error) {
       setConfigStatus(`저장 실패 (HTTP ${res.status}): ${data.error || ''}${data.message ? ' — ' + data.message : ''}`, false);
       return false;
     }
-    setConfigStatus(`저장됨 → ${data.path || _configTier}`, true);
+    // Server shape: shadowed_by: [{ key, tiers: [...] }, ...] (R8) — a lower-
+    // priority tier's write still lands, but a higher tier already resolves
+    // that worktree.* key, so the value written here has no visible effect.
+    const shadowedNote = Array.isArray(data.shadowed_by) && data.shadowed_by.length
+      ? ` (주의: ${data.shadowed_by.map((s) => `${s.key} — ${(s.tiers || []).join(', ')}에 의해 가려짐`).join('; ')})`
+      : '';
+    setConfigStatus(`저장됨 → ${data.path || _configTier}${shadowedNote} — 다음 실행부터 적용됩니다`, true);
     await loadConfigEditor();
     return true;
   } catch (e) {
@@ -2907,84 +3758,10 @@ function configSavePanel() {
   patchConfigTier({ panel });
 }
 
-function configSaveShared() {
-  const body = {};
-  const deletePaths = [];
-  const profile = document.getElementById('cfg-model-profile')?.value || '';
-  const mode = document.getElementById('cfg-mode')?.value || '';
-  const agentRaw = document.getElementById('cfg-agent-max')?.value;
-  const budgetMaxRaw = document.getElementById('cfg-budget-max')?.value;
-  const budgetWindowRaw = document.getElementById('cfg-budget-window')?.value;
-  const budgetProjectsRaw = document.getElementById('cfg-budget-projects')?.value || '{}';
-
-  if (profile) body.model_profile = profile;
-  else if (cfgHasOwn(_configSharedRaw, 'model_profile')) deletePaths.push('model_profile');
-
-  if (mode) body.mode = mode;
-  else if (cfgHasOwn(_configSharedRaw, 'mode')) deletePaths.push('mode');
-
-  if (agentRaw !== '' && agentRaw != null) {
-    const n = Number(agentRaw);
-    if (!Number.isInteger(n) || n < 1 || n > 10) { setConfigStatus('agent_max_count는 1-10 사이 정수여야 합니다', false); return; }
-    body.agent_max_count = n;
-  } else if (cfgHasOwn(_configSharedRaw, 'agent_max_count')) {
-    deletePaths.push('agent_max_count');
-  }
-
-  const rawBudget = (_configSharedRaw.budget && typeof _configSharedRaw.budget === 'object' && !Array.isArray(_configSharedRaw.budget)) ? _configSharedRaw.budget : {};
-  const budget = { ...rawBudget };
-  let budgetTouched = false;
-  if (budgetMaxRaw !== '' && budgetMaxRaw != null) {
-    const n = Number(budgetMaxRaw);
-    if (!Number.isFinite(n) || n < 0) { setConfigStatus('budget.max_usd는 0 이상의 숫자여야 합니다', false); return; }
-    budget.max_usd = n > 0 ? n : null;
-    budgetTouched = true;
-  } else if (cfgHasPath(_configSharedRaw, 'budget.max_usd')) {
-    deletePaths.push('budget.max_usd');
-  }
-  if (budgetWindowRaw !== '' && budgetWindowRaw != null) {
-    const n = Number(budgetWindowRaw);
-    if (!Number.isFinite(n) || n < 0) { setConfigStatus('budget.window_hours는 0 이상의 숫자여야 합니다', false); return; }
-    if (n > 0) {
-      budget.window_hours = n;
-      budgetTouched = true;
-    } else if (cfgHasPath(_configSharedRaw, 'budget.window_hours')) {
-      deletePaths.push('budget.window_hours');
-    }
-  } else if (cfgHasPath(_configSharedRaw, 'budget.window_hours')) {
-    deletePaths.push('budget.window_hours');
-  }
-  let projects;
-  try { projects = JSON.parse(budgetProjectsRaw.trim() || '{}'); }
-  catch (e) { setConfigStatus('budget.projects JSON 파싱 오류: ' + e.message, false); return; }
-  if (!projects || typeof projects !== 'object' || Array.isArray(projects)) {
-    setConfigStatus('budget.projects는 JSON 객체여야 합니다', false); return;
-  }
-  if (Object.keys(projects).length) {
-    budget.projects = projects;
-    budgetTouched = true;
-  } else if (cfgHasPath(_configSharedRaw, 'budget.projects')) {
-    deletePaths.push('budget.projects');
-  }
-  if (budgetTouched) body.budget = budget;
-
-  const roleOverrides = {};
-  document.querySelectorAll('#cfg-role-overrides .cfg-role-row').forEach((row) => {
-    const k = row.querySelector('.cfg-role-name')?.value.trim();
-    const v = row.querySelector('.cfg-role-model')?.value.trim();
-    if (k) roleOverrides[k] = v || '';
-  });
-  if (Object.keys(roleOverrides).length) body.model_overrides = roleOverrides;
-  else if (cfgHasOwn(_configSharedRaw, 'model_overrides')) deletePaths.push('model_overrides');
-
-  if (deletePaths.length) body._delete = deletePaths;
-  if (Object.keys(body).length === 0) {
-    setConfigStatus('저장할 변경이 없습니다', true);
-    return;
-  }
-  patchConfigTier(body);
-}
-
+// Escape hatch only — anything the schema registry already knows about is
+// stripped back out (with a status warning) so the two save paths never
+// fight over the same key. Registry check is data-driven (cfgIsRegisteredKey),
+// so this list grows with config-schema.mjs automatically.
 function configSaveOther() {
   const ta = document.getElementById('cfg-other');
   if (!ta) return;
@@ -2994,15 +3771,14 @@ function configSaveOther() {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     setConfigStatus('JSON 객체여야 합니다 (배열·원시값 불가)', false); return;
   }
-  if ('panel' in parsed) {
-    setConfigStatus('panel 키는 위 Panel 폼에서 저장하세요 (여기선 제외됩니다)', false);
-    delete parsed.panel;
+  const entries = _configSchemaEntries || [];
+  const blocked = [];
+  if ('panel' in parsed) { blocked.push('panel'); delete parsed.panel; }
+  for (const key of Object.keys(parsed)) {
+    if (cfgIsRegisteredKey(entries, key)) { blocked.push(key); delete parsed[key]; }
   }
-  for (const key of ['model_profile', 'agent_max_count', 'mode', 'budget', 'model_overrides']) {
-    if (key in parsed) {
-      setConfigStatus(`${key} 키는 Shared settings 폼에서 저장하세요 (여기선 제외됩니다)`, false);
-      delete parsed[key];
-    }
+  if (blocked.length) {
+    setConfigStatus(`${blocked.join(', ')} 키는 위 폼에서 저장하세요 (여기선 제외됩니다)`, false);
   }
   patchConfigTier(parsed);
 }

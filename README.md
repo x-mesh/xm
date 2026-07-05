@@ -772,7 +772,9 @@ CHECK-IN ──→ RECALL ──→ IDENTIFY ──→ ANALYZE ──→ ALTERNA
 
 ### x-dashboard
 
-Web dashboard for `.xm/` project state. Browse builds, probes, solvers, **reviews, evals, humble lessons**, traces, memory, and costs in one read-only view. No build chain to set up.
+Web dashboard for `.xm/` project state. Browse builds, probes, solvers, **reviews, evals, humble lessons**, traces, memory, and costs in one view. No build chain to set up.
+
+> **Schema-driven Config editor** — the Config tab renders every key in the `config-schema` registry (38 entries) as a typed form: enum dropdowns, tri-state toggles for nullable booleans, a severity grid for `worktree.gate_policy`, defaults highlighted with one-click reset. Three tiers (global / project / **build-local**), the same deep-merge write semantics as the CLI wizard (`setNestedKey` shared), optimistic `If-Match` conflict detection, and hard-violation blocking (422) — add a key to the registry and it appears in the form with zero UI changes.
 
 <p align="center">
   <img src="docs/images/dashboard.png" alt="x-dashboard" width="800" />
