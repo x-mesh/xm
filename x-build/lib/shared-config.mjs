@@ -241,7 +241,10 @@ function loadCostEngine() {
  * model "default" removes the slot's role keys (back to profile default).
  */
 export function expandPhaseAssignments(assignments, phaseGroups, existingOverrides) {
-  const MODELS = new Set(['haiku', 'sonnet', 'opus', 'default']);
+  // 'inherit' = run on the session model (routing sentinel, not a billable
+  // tier). Valid here because phase presets expand into model_overrides, whose
+  // consumer (getModelForRole) already guards the economy-profile case.
+  const MODELS = new Set(['haiku', 'sonnet', 'opus', 'inherit', 'default']);
   const overrides = { ...(existingOverrides || {}) };
   const errors = [];
   for (const a of assignments) {
@@ -838,7 +841,7 @@ async function editProfile(rl, session) {
 async function editOverrides(rl, session) {
   const ce = await loadCostEngine();
   const roles = Object.keys(ce.MODEL_PROFILES.default);
-  const models = ['haiku', 'sonnet', 'opus'];
+  const models = ['haiku', 'sonnet', 'opus', 'inherit'];
   const current = readSharedConfig().model_overrides || {};
 
   console.log(`\n  ${t('overrides.header')}\n`);
@@ -883,15 +886,21 @@ async function editOverrides(rl, session) {
 async function editPhaseModels(rl, session) {
   const ce = await loadCostEngine();
   printPhaseMatrix(ce, readSharedConfig());
+  // The phase prompt is a GROUP bulk-set; single-role edits live in the
+  // overrides editor — say so up front, or users assume per-role control here.
+  console.log(`  ${C.dim}${t('phase.per_role_hint')}${C.reset}\n`);
 
   const SHORT_LABELS = {
     plan: t('phase.short.plan'),
     implement: t('phase.short.implement'),
     review: t('phase.short.review'),
   };
-  const choices = { '1': 'default', '2': 'haiku', '3': 'sonnet', '4': 'opus' };
+  const choices = { '1': 'default', '2': 'haiku', '3': 'sonnet', '4': 'opus', '5': 'inherit' };
   const assignments = [];
   for (const slot of Object.keys(ce.PHASE_ROLE_GROUPS)) {
+    // Show exactly which roles this one answer overwrites (their current
+    // values can differ — e.g. implement = opus/inherit/sonnet/inherit).
+    console.log(`${C.dim}${t('phase.slot_roles', ce.PHASE_ROLE_GROUPS[slot].join(' · '))}${C.reset}`);
     const input = (await ask(rl, t('phase.model_prompt', SHORT_LABELS[slot]))).trim();
     if (!input) continue;
     const model = choices[input];

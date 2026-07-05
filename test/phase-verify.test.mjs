@@ -813,11 +813,13 @@ describe('cost: actual-token ingestion + profile-aware --json (regression)', () 
     }
   });
 
-  test('run --json honors model_profile (economy → sonnet, default → opus)', () => {
+  test('run --json honors model_profile (economy → sonnet, max → opus)', () => {
     // A fresh project per profile: run --json now marks tasks RUNNING (keystone),
     // so a second run --json on the same project finds nothing ready — each
     // profile must be checked on its own first run.
-    for (const [profile, expected] of [['economy', 'sonnet'], ['default', 'opus']]) {
+    // default.executor is sonnet by measurement (docs/phase-model-routing-experiment.md);
+    // max keeps opus, so the profile axis is still observable end-to-end.
+    for (const [profile, expected] of [['economy', 'sonnet'], ['max', 'opus']]) {
       const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
       try {
         driveToExecute(tmp);
@@ -835,7 +837,7 @@ describe('cost: actual-token ingestion + profile-aware --json (regression)', () 
     try {
       const env = { HOME: CHOME };
       driveToExecute(tmp);
-      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({ model_profile: 'default' })); // executor -> opus
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({ model_profile: 'max' })); // executor -> opus
       const plan = JSON.parse(run(['run', '--json'], { cwd: tmp, env }).stdout);
       expect(plan.tasks.find((t) => t.task_id === 't1').model).toBe('opus');
 

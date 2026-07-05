@@ -131,8 +131,10 @@ describe('expected_files — CLI store/load + plan-check', () => {
     run(['tasks', 'add', 'Implement search index', '--expected-files', 'src/search.mjs, src/index.mjs'], { cwd: TMP });
     // t2: no expected-files on add (defaults to [])
     run(['tasks', 'add', 'Write docs'], { cwd: TMP });
-    // t3: set via update
-    run(['tasks', 'add', 'Build cache'], { cwd: TMP });
+    // t3: set via update. "cache" is a risk-domain stem for the model-aware
+    // failure-mode gate (error on sonnet-tier execution without stress
+    // done_criteria) — give it one so this fixture stays about expected_files.
+    run(['tasks', 'add', 'Build cache', '--done-criteria', '스트레스: 병적 키 입력에서 hang 없이 종료'], { cwd: TMP });
     run(['tasks', 'update', 't3', '--expected-files', 'src/cache.mjs'], { cwd: TMP });
   });
 

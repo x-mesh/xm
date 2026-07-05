@@ -7,7 +7,7 @@ import {
   ROLE_MODEL_MAP_HR, INHERIT_MODEL, JUDGMENT_ROLES, MODEL_COSTS, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, checkBudget, loadSharedConfig, XM_GLOBAL, ROOT,
   readJSON, writeJSON, modifyJSON, readMD,
   manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, decisionsPath, projectDir,
-  resolveProject, logDecision, addDecision, appendMetric, emitHook,
+  resolveProject, findCurrentProject, logDecision, addDecision, appendMetric, emitHook,
   parseOptions, renderBar, fmtDuration,
   estimateTaskCost, costFromTokens, resolveVendorModel,
   gitAutoCommit, gitRollbackTask,
@@ -294,6 +294,12 @@ export function taskAdd(project, args) {
     exitFail(1);
   }
   const expectedFiles = parseExpectedFiles(opts['expected-files']);
+  if (opts['interface-contract'] !== undefined && typeof opts['interface-contract'] !== 'string') {
+    console.error('❌ --interface-contract requires a value. Usage: --interface-contract "함수 시그니처·불변식 2-3줄"');
+    exitFail(1);
+  }
+  const interfaceContract = typeof opts['interface-contract'] === 'string' && opts['interface-contract'].trim()
+    ? opts['interface-contract'].trim() : null;
 
   const task = {
     id,
@@ -308,6 +314,7 @@ export function taskAdd(project, args) {
     score: null,
     done_criteria: doneCriteria,
     expected_files: expectedFiles,
+    interface_contract: interfaceContract,
     status: TASK_STATES.PENDING,
     created_at: new Date().toISOString(),
   };
@@ -453,7 +460,7 @@ export function taskUpdate(project, args) {
   const id = positional[0];
   const rawStatus = opts.status;
 
-  if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined && opts.desc === undefined && opts['expected-files'] === undefined)) {
+  if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined && opts.desc === undefined && opts['expected-files'] === undefined && opts['interface-contract'] === undefined)) {
     console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed> [--no-commit]');
     console.error('       x-build tasks update <task-id> --status completed --tokens-in <n> --tokens-out <n>  (record actual cost)');
     console.error('       x-build tasks update <task-id> --status completed --resolved-model <haiku|sonnet|opus>  (record the model an inherit task actually ran on)');
@@ -462,6 +469,7 @@ export function taskUpdate(project, args) {
     console.error('       x-build tasks update <task-id> --done-criteria "criteria text"');
     console.error('       x-build tasks update <task-id> --deps t1,t2  (replace dependency list; pass empty string to clear)');
     console.error('       x-build tasks update <task-id> --expected-files a.mjs,b.mjs  (replace expected file list; pass empty string to clear)');
+    console.error('       x-build tasks update <task-id> --interface-contract "..."  (delegation interface; pass empty string to clear)');
     exitFail(1);
   }
 
@@ -505,6 +513,13 @@ export function taskUpdate(project, args) {
       // to `true`; both mean "clear". A string is parsed as comma-separated paths.
       task.expected_files = parseExpectedFiles(opts['expected-files']);
       updatedFields.push(`expected_files: [${task.expected_files.join(', ')}]`);
+    }
+
+    if (opts['interface-contract'] !== undefined) {
+      // Same collapse rule: bare flag / empty string both mean "clear".
+      task.interface_contract = typeof opts['interface-contract'] === 'string' && opts['interface-contract'].trim()
+        ? opts['interface-contract'].trim() : null;
+      updatedFields.push(task.interface_contract ? 'interface_contract updated' : 'interface_contract cleared');
     }
 
     if (opts.deps !== undefined) {
@@ -1021,6 +1036,13 @@ function buildAgentPrompt(project, task, briefContent, decisionsContent, { manif
     lines.push('');
   }
 
+  // Delegation interface — the signatures/invariants the executor must not
+  // renegotiate. This is what makes a sonnet-tier delegate safe on a task it
+  // has no surrounding context for.
+  if (task.interface_contract) {
+    lines.push('## Interface Contract', task.interface_contract, '');
+  }
+
   // Step progress context
   try {
     const steps = stepData || readJSON(stepsPath(project));
@@ -1288,6 +1310,7 @@ function buildPlanEntry(project, task, { briefContent, decisionsContent, manifes
       ? 'deep-executor' : 'executor',
     model,
     ...vendorModelFields(model, sharedCfg),
+    ...(task.interface_contract ? { interface_contract: task.interface_contract } : {}),
     prompt: buildAgentPrompt(project, task, briefContent, decisionsContent, { manifest, taskData, stepData, worktree }),
   };
   if (worktree) {
@@ -1848,4 +1871,103 @@ export async function interactiveTasksAdd() {
   } finally {
     rl.close();
   }
+}
+
+// ── cmdDispatch ──────────────────────────────────────────────────────
+// Lightweight tracked execution: ONE instruction → one task → one agent plan
+// entry, without the PRD/phase ceremony. This is NOT a bypass of cmdRun's
+// gates — markTasksRunning/buildPlanEntry are gate-free helpers by design
+// (the gates live in cmdRun only); dispatch composes them directly and says
+// so out loud. The task still gets full metrics lineage (started_at,
+// _assigned_model, correlation id), so completion via `tasks update` records
+// a real task_complete metric. Budget IS checked here (dispatch must not be
+// a budget hole); the circuit breaker is intentionally not consulted (single
+// ad-hoc task, not a step loop) — failures still update it via taskUpdate.
+export function cmdDispatch(args) {
+  const { opts, positional } = parseOptions(args);
+  const instruction = positional.join(' ').trim();
+  if (!instruction) {
+    console.error('❌ dispatch requires an instruction: x-build dispatch "<지침>" [--model M|--role R] [--done-criteria "..."] [--json]');
+    exitFail(1);
+  }
+
+  // D1: attach to the active project when one exists; otherwise a standing
+  // `dispatch` project is auto-created (metrics/recall continuity either way).
+  const project = resolveProject(findCurrentProject() || 'dispatch', { autoInit: true });
+  const sharedCfg = loadSharedConfig();
+  const manifest = readJSON(manifestPath(project));
+
+  const role = opts.role || 'executor';
+  const size = opts.size || 'small';
+  let task;
+  modifyJSON(tasksPath(project), (data) => {
+    data = data || { tasks: [] };
+    data.tasks = data.tasks || [];
+    const id = `t${data.tasks.length + 1}`;
+    task = {
+      id,
+      name: instruction.length > 60 ? `${instruction.slice(0, 57)}...` : instruction,
+      description: instruction,
+      size, role,
+      status: TASK_STATES.PENDING,
+      depends_on: [],
+      done_criteria: opts['done-criteria']
+        ? String(opts['done-criteria']).split(';').map((c) => c.trim()).filter(Boolean)
+        : [instruction],
+      dispatch: true,
+      created_at: new Date().toISOString(),
+    };
+    if (typeof opts['interface-contract'] === 'string' && opts['interface-contract'].trim()) {
+      task.interface_contract = opts['interface-contract'].trim();
+    }
+    if (opts.model) task._assigned_model = String(opts.model); // explicit pin wins over routing
+    data.tasks.push(task);
+    return data;
+  });
+
+  // Budget gate — dispatch is lightweight, not budget-exempt.
+  const model = task._assigned_model || getModelForRole(role, size, sharedCfg);
+  const est = estimateTaskCost(task, model);
+  const budget = checkBudget(est.cost_usd, project);
+  if (budget.ok === false) {
+    console.error(`❌ budget block: +$${est.cost_usd.toFixed(2)} would exceed the limit (${budget.reason || 'budget.max_usd'})`);
+    exitFail(1);
+  }
+
+  // Mark RUNNING (metrics lineage) and build the same plan entry cmdRun emits.
+  const taskData = readJSON(tasksPath(project));
+  const taskRef = taskData.tasks.find((t) => t.id === task.id);
+  markTasksRunning(taskData, [taskRef], sharedCfg, project, 'dispatch');
+  if (opts.model) {
+    // markTasksRunning routes by role; an explicit --model pin overrides it
+    // (estimate too, so the recorded metric matches what actually runs).
+    taskRef._assigned_model = String(opts.model);
+    taskRef._estimated_cost = est.cost_usd;
+    writeJSON(tasksPath(project), taskData);
+  }
+
+  const briefContent = `# ${manifest?.display_name || project} — dispatch\n\n단발 지침 실행 (PRD/phase 게이트 미적용 경로).`;
+  const entry = buildPlanEntry(project, taskRef, {
+    briefContent, decisionsContent: '', manifest, taskData,
+    stepData: { steps: [] }, sharedCfg,
+  });
+
+  const dispatchCount = taskData.tasks.filter((t) => t.dispatch).length;
+  const notice = [
+    `⚡ dispatch: task ${taskRef.id} @ ${project} — PRD/phase 게이트 미적용 경로입니다 (단발 실행; 게이트-프리 헬퍼 조립).`,
+    ...(dispatchCount >= 2 ? [`⚠ 이 프로젝트에 dispatch 태스크가 ${dispatchCount}개 쌓였습니다 — 반복되는 작업이면 PRD로 승격하세요: x-build plan "<goal>"`] : []),
+  ];
+
+  if (opts.json !== undefined) {
+    console.log(JSON.stringify({
+      mode: 'dispatch', project, prd_exempt: true, notice,
+      estimated_cost_usd: Number(est.cost_usd.toFixed(4)),
+      task: entry,
+    }, null, 2));
+    return;
+  }
+  for (const n of notice) console.log(n);
+  console.log(`\n  ${taskRef.id}  ${C.cyan}${entry.model}${C.reset}  ${C.dim}$${est.cost_usd.toFixed(2)} est${C.reset}`);
+  console.log(`  ${C.dim}완료: ${entry.on_complete}${C.reset}`);
+  console.log(`  ${C.dim}(--json 으로 agent 실행 계획 전체를 받으세요)${C.reset}`);
 }

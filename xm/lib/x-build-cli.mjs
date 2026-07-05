@@ -10,9 +10,9 @@
 import { resolveProject, resetCircuitBreaker, getCircuitState, setExplicitProject } from './x-build/core.mjs';
 import { cmdInit, cmdList, cmdStatus, cmdClose, cmdDashboard, interactiveInit, interactiveDashboard, cmdHandoffFull, cmdHandon } from './x-build/project.mjs';
 import { cmdPhase, cmdGate, cmdCheckpoint } from './x-build/phase.mjs';
-import { cmdTasks, cmdSteps, cmdRun, cmdRunStatus, interactiveTasksAdd } from './x-build/tasks.mjs';
+import { cmdTasks, cmdSteps, cmdRun, cmdRunStatus, interactiveTasksAdd, cmdDispatch } from './x-build/tasks.mjs';
 import { cmdLater } from './x-build/later.mjs';
-import { cmdPlan, cmdPlanCheck, cmdPrdGate, cmdPrdCheck, cmdConsensus, cmdDiscuss, cmdResearch, cmdForecast, cmdNext, cmdHandoff, cmdSummarize, cmdSaveArtifact, cmdContextUsage } from './x-build/plan.mjs';
+import { cmdPlan, cmdPlanCheck, cmdPrdGate, cmdPrdCheck, cmdConsensus, cmdDiscuss, cmdResearch, cmdForecast, cmdNext, cmdHandoff, cmdSummarize, cmdSaveArtifact, cmdContextUsage, cmdResearchCheck } from './x-build/plan.mjs';
 import { cmdQuality, cmdVerifyCoverage, cmdVerifyTraceability, cmdVerifyContracts, cmdVerifyReviewFix, cmdVerifyDrift } from './x-build/verify.mjs';
 import { cmdExport, cmdImport } from './x-build/export.mjs';
 import { cmdAlias, cmdDemo, cmdWatch, cmdMetrics, cmdMode, cmdContext, cmdPhaseContext, cmdDecisions, cmdTemplates, printHelp } from './x-build/misc.mjs';
@@ -91,14 +91,16 @@ switch (cmd) {
   case 'mode':           cmdMode(args); break;
   case 'export':         cmdExport(args); break;
   case 'import':         cmdImport(args); break;
-  case 'plan':           cmdPlan(args); break;
+  case 'plan':           await cmdPlan(args); break;
   case 'discuss':        cmdDiscuss(args); break;
   case 'research':       cmdResearch(args); break;
   case 'plan-check':     cmdPlanCheck(args); break;
+  case 'research-check': await cmdResearchCheck(args); break;
+  case 'dispatch':       cmdDispatch(args); break;
   case 'prd-check':      cmdPrdCheck(args); break;
   case 'prd-gate':       cmdPrdGate(args); break;
   case 'consensus':      cmdConsensus(args); break;
-  case 'next':           cmdNext(args); break;
+  case 'next':           await cmdNext(args); break;
   case 'handoff':
     if (args.includes('--full')) { cmdHandoffFull(args); }
     else { cmdHandoff(args); }

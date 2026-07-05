@@ -717,7 +717,8 @@ describe('MODEL_PROFILES', () => {
     expect(core.MODEL_PROFILES.default.security).toBe('inherit');
     expect(core.MODEL_PROFILES.default.debugger).toBe('inherit');
     // Execution roles stay on fixed tiers — inherit is judgment-only.
-    expect(core.MODEL_PROFILES.default.executor).toBe('opus');
+    // executor = sonnet by measurement (docs/phase-model-routing-experiment.md).
+    expect(core.MODEL_PROFILES.default.executor).toBe('sonnet');
   });
 
   test('default profile keeps sonnet/haiku for lighter roles', () => {

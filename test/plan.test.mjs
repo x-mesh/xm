@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -34,6 +34,7 @@ function addTasks(tmp, tasks) {
     if (t.size) args.push('--size', t.size);
     if (t.strategy) args.push('--strategy', t.strategy);
     if (t.team) args.push('--team', t.team);
+    if (t.dc) args.push('--done-criteria', t.dc);
     run(args, { cwd: tmp });
   }
 }
@@ -553,6 +554,137 @@ describe('scope creep detection', () => {
       writePRD(tmp, name, '# PRD\n## 6. Out of Scope\n- Real-time notifications\n- Mobile app\n');
       const r = run(['tasks', 'add', 'Add notifications system [R5]'], { cwd: tmp });
       expect(r.stdout).toContain('Scope warning');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── failure-mode-coverage: model-aware gate ─────────────────────────────
+// The phase-routing experiment measured 0/3 pathological-input survival for
+// sonnet execution without failure-mode enumeration (vs opus 2/3), so a
+// risk-domain task resolving to sonnet-or-below without stress done_criteria
+// must BLOCK the plan gate (passed:false), while opus keeps warn, and an
+// explicit "none — <rationale>" waives the check.
+describe('failure-mode-coverage model-aware gate', () => {
+  const readPlanCheck = (tmp, name = 'test-proj') =>
+    JSON.parse(readFileSync(join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'plan-check.json'), 'utf8'));
+
+  test('escalates to ERROR when a risk-domain task executes on sonnet', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeSharedConfig(tmp, { model_profile: 'default' }); // default.executor = sonnet (measured)
+      addTasks(tmp, [{ name: 'Build regex matcher [R1]', size: 'small', dc: '341 test cases pass' }]);
+      const r = run(['plan-check'], { cwd: tmp });
+      expect(r.stdout).toContain('[FAIL] failure-mode-coverage');
+      expect(r.stdout).toContain('executes on sonnet');
+      expect(readPlanCheck(tmp).passed).toBe(false); // blocks the Plan gate
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('explicit "none — <rationale>" waiver passes the gate', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeSharedConfig(tmp, { model_profile: 'default' });
+      addTasks(tmp, [{ name: 'Build regex matcher [R1]', size: 'small', dc: 'none — read-only display of precompiled patterns, no adversarial input surface' }]);
+      const r = run(['plan-check'], { cwd: tmp });
+      expect(r.stdout).not.toContain('[FAIL] failure-mode-coverage'); // waived — no error (delegation-contract may still warn)
+      expect(readPlanCheck(tmp).passed).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('higher-tier execution keeps warn (probabilistic cushion, gate passes)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeSharedConfig(tmp, { model_profile: 'default', model_overrides: { executor: 'opus' } });
+      addTasks(tmp, [{ name: 'Build regex matcher [R1]', size: 'small', dc: '341 test cases pass' }]);
+      const r = run(['plan-check'], { cwd: tmp });
+      expect(r.stdout).toContain('failure-mode-coverage');
+      expect(r.stdout).toContain('executes on opus');
+      expect(r.stdout).not.toContain('[FAIL] failure-mode-coverage');
+      expect(readPlanCheck(tmp).passed).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── interface_contract: delegation interface field (R6/R7) ─────────────
+describe('interface_contract field', () => {
+  const tasksJSON = (tmp, name = 'test-proj') =>
+    JSON.parse(readFileSync(join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'tasks.json'), 'utf8'));
+
+  test('add + update + clear roundtrip, single-flag update passes the usage guard', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      run(['tasks', 'add', 'Write summary [R1]', '--interface-contract', 'summarize(text) → string; 500자 이내'], { cwd: tmp });
+      expect(tasksJSON(tmp).tasks[0].interface_contract).toContain('summarize');
+      // usage-guard regression: --interface-contract alone must not print usage
+      const upd = run(['tasks', 'update', 't1', '--interface-contract', 'summarize(text) → {title, body}'], { cwd: tmp });
+      expect(upd.stdout).not.toContain('Usage:');
+      expect(tasksJSON(tmp).tasks[0].interface_contract).toContain('{title, body}');
+      run(['tasks', 'update', 't1', '--interface-contract', ''], { cwd: tmp });
+      expect(tasksJSON(tmp).tasks[0].interface_contract).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('plan-check warns delegation-contract for delegation-shaped tasks lacking it', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeSharedConfig(tmp, { model_profile: 'default' }); // executor → sonnet (low tier)
+      run(['tasks', 'add', 'Write summary [R1]', '--done-criteria', 'summary exists'], { cwd: tmp });
+      const r = run(['plan-check'], { cwd: tmp });
+      expect(r.stdout).toContain('delegation-contract');
+      expect(r.stdout).toContain('no interface_contract');
+      // adding the contract silences the warning
+      run(['tasks', 'update', 't1', '--interface-contract', 'summarize(text) → string'], { cwd: tmp });
+      const r2 = run(['plan-check'], { cwd: tmp });
+      expect(r2.stdout).not.toContain('no interface_contract');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('stress: newline/quote/10KB/non-ASCII contract survives parse → prompt → JSON emit', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-dispatch-'));
+    try {
+      const contract = ('파서(s) → {"ok": true}\n불변식: "따옴표" 유지\n' + 'x'.repeat(10000)).slice(0, 10240);
+      const r = run(['dispatch', '계약 스트레스 확인용 태스크', '--json'], { cwd: tmp });
+      const out = JSON.parse(r.stdout.slice(r.stdout.indexOf('{')));
+      expect(out.task.task_id).toBe('t1');
+      const upd = run(['tasks', 'update', 't1', '--interface-contract', contract], { cwd: tmp });
+      expect(upd.exitCode).toBe(0);
+      const t = JSON.parse(readFileSync(join(tmp, '.xm', 'build', 'projects', 'dispatch', 'phases', '02-plan', 'tasks.json'), 'utf8')).tasks[0];
+      expect(t.interface_contract.length).toBeGreaterThan(9000);
+      expect(t.interface_contract).toContain('"따옴표"');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('interface_contract rides the plan entry and the agent prompt (dispatch --interface-contract)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-dispatch-'));
+    try {
+      const r = run(['dispatch', '요약 생성', '--interface-contract', 'summarize(text) → string; 500자 이내', '--json'], { cwd: tmp });
+      const out = JSON.parse(r.stdout.slice(r.stdout.indexOf('{')));
+      expect(out.task.interface_contract).toContain('summarize');
+      expect(out.task.prompt).toContain('## Interface Contract');
+      expect(out.task.prompt.indexOf('## Definition of Done')).toBeLessThan(out.task.prompt.indexOf('## Interface Contract'));
+      // no contract → field omitted cleanly
+      const r2 = run(['dispatch', '두번째: 계약 없음', '--json'], { cwd: tmp });
+      const out2 = JSON.parse(r2.stdout.slice(r2.stdout.indexOf('{')));
+      expect(out2.task.interface_contract).toBeUndefined();
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
