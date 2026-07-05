@@ -212,7 +212,7 @@ function resolveScope(key, opts) {
 // all waiters with WizardEOF so the wizard unwinds while keeping saved items (FM3).
 // createRL / ask / WizardEOF는 cli-prompts.mjs가 소유한다 (위저드 IO 단일 관문).
 
-function setNestedKey(obj, key, value) {
+export function setNestedKey(obj, key, value) {
   const parts = key.split('.');
   const forbidden = new Set(['__proto__', 'constructor', 'prototype']);
   if (parts.some(p => forbidden.has(p))) throw new Error(`Invalid config key: ${key}`);
@@ -224,7 +224,7 @@ function setNestedKey(obj, key, value) {
   cur[parts[parts.length - 1]] = value;
 }
 
-function getNestedKey(obj, key) {
+export function getNestedKey(obj, key) {
   return key.split('.').reduce((o, k) => o?.[k], obj);
 }
 
@@ -488,15 +488,26 @@ function schemaTypeError(entry, value) {
   }
 }
 
-// Validate a set against the config-schema registry. Returns a list of warning
-// strings — never throws, never blocks the write (back-compat: unknown/invalid
-// values still save). An empty list means the value is clean.
-function validateSet(key, value) {
-  const warnings = [];
+// Build one validateSet finding. severity is 'error' for enum/type/min/max/
+// vendor-model-spec violations, 'warn' for unregistered keys. CLI callers print
+// .message for every finding regardless of severity and still save the value
+// (back-compat — a warning never blocks a write). x-dashboard-server (t5) is
+// expected to treat severity === 'error' as blocking (422); this is a deliberate
+// divergence from the CLI's always-warn-and-save behavior, not an oversight.
+function finding(code, severity, message) {
+  return { code, severity, message };
+}
+
+// Validate a set against the config-schema registry. Returns a list of
+// findings ({ code, severity, message }) — never throws, never blocks the write
+// (back-compat: unknown/invalid values still save). An empty list means the
+// value is clean.
+export function validateSet(key, value) {
+  const findings = [];
   const entry = getSchemaEntry(key);
   if (!entry) {
-    warnings.push(t('validate.unregistered', key));
-    return warnings;
+    findings.push(finding('unregistered', 'warn', t('validate.unregistered', key)));
+    return findings;
   }
   // vendor_models.<vendor>.<tier> — dotted leaf라 exact 스키마가 없어 값 검증이
   // 통째로 건너뛰어졌다(cross-vendor 리뷰 F2). "model[:effort]" 스펙을 set 시점에도
@@ -505,14 +516,14 @@ function validateSet(key, value) {
   if (vm) {
     const VENDOR_TIERS = ['haiku', 'sonnet', 'opus'];
     if (!VENDOR_TIERS.includes(vm[1])) {
-      warnings.push(t('validate.enum', key, VENDOR_TIERS.join(', '), vm[1]));
+      findings.push(finding('enum', 'error', t('validate.enum', key, VENDOR_TIERS.join(', '), vm[1])));
     } else if (typeof value !== 'string' || String(value).trim() === '') {
-      warnings.push(t('validate.type', key, describeType(value)));
+      findings.push(finding('type', 'error', t('validate.type', key, describeType(value))));
     } else {
       const parsed = parseModelSpec(value);
-      if (parsed.warning) warnings.push(parsed.warning);
+      if (parsed.warning) findings.push(finding('vendor_model_spec', 'error', parsed.warning));
     }
-    return warnings;
+    return findings;
   }
 
   // panel.* — owned by x-panel but editable via the `xm config` panel category.
@@ -523,30 +534,30 @@ function validateSet(key, value) {
   if (key.startsWith('panel.') && key !== 'panel.timeout_s') {
     if (key === 'panel.model_overrides') {
       const actual = describeType(value);
-      if (actual !== 'object') warnings.push(t('validate.type', key, t('type.expected_object', actual)));
+      if (actual !== 'object') findings.push(finding('type', 'error', t('validate.type', key, t('type.expected_object', actual))));
     } else {
-      warnings.push(t('validate.unregistered', key));
+      findings.push(finding('unregistered', 'warn', t('validate.unregistered', key)));
     }
-    return warnings;
+    return findings;
   }
 
   // Enum/type/range checks need an exact key match. A bare parent key (e.g.
   // `budget`) resolves to its first child for scope purposes but carries no value
   // schema of its own, so skip value checks for it.
   const exact = SCHEMA_BY_KEY.get(key);
-  if (!exact) return warnings;
+  if (!exact) return findings;
 
   if (exact.enum && !exact.enum.includes(value)) {
-    warnings.push(t('validate.enum', key, exact.enum.join(', '), value));
+    findings.push(finding('enum', 'error', t('validate.enum', key, exact.enum.join(', '), value)));
   }
   const typeErr = schemaTypeError(exact, value);
-  if (typeErr) warnings.push(t('validate.type', key, typeErr));
+  if (typeErr) findings.push(finding('type', 'error', t('validate.type', key, typeErr)));
 
   if (typeof value === 'number') {
-    if (exact.min !== undefined && value < exact.min) warnings.push(t('validate.min', key, exact.min, value));
-    if (exact.max !== undefined && value > exact.max) warnings.push(t('validate.max', key, exact.max, value));
+    if (exact.min !== undefined && value < exact.min) findings.push(finding('min', 'error', t('validate.min', key, exact.min, value)));
+    if (exact.max !== undefined && value > exact.max) findings.push(finding('max', 'error', t('validate.max', key, exact.max, value)));
   }
-  return warnings;
+  return findings;
 }
 
 // Coerce a raw string arg to its JSON-ish value: JSON objects/arrays, booleans,
@@ -568,9 +579,10 @@ function setConfig(key, rawValue, flags) {
 
   // Registry validation — warn but do not block (back-compat). Warnings are
   // user-visible on stdout (L6: never silence); exit stays 0 since a warning is
-  // not a failure.
+  // not a failure. The CLI shows every finding regardless of severity — only
+  // x-dashboard-server (t5) is expected to branch on severity === 'error'.
   for (const w of validateSet(key, value)) {
-    console.log(`${C.yellow}⚠${C.reset} ${w}`);
+    console.log(`${C.yellow}⚠${C.reset} ${w.message}`);
   }
 
   const scope = resolveScope(key, flags);
@@ -752,7 +764,7 @@ async function promptSchemaValue(rl, key) {
     const value = coerceValue(entry.enum[Number(ch) - 1] ?? ch);
     const errs = validateSet(key, value);
     if (errs.length === 0) return { value };
-    for (const e of errs) console.log(`  ${C.red}${G.warn} ${e}${C.reset}`);
+    for (const e of errs) console.log(`  ${C.red}${G.warn} ${e.message}${C.reset}`);
     return { cancelled: true };
   }
 
@@ -782,7 +794,7 @@ async function promptSchemaValue(rl, key) {
     const value = coerceValue(candidate);
     const errs = validateSet(key, value);
     if (errs.length === 0) return { value };
-    for (const e of errs) console.log(`  ${C.red}⚠ ${e}${C.reset}`);
+    for (const e of errs) console.log(`  ${C.red}⚠ ${e.message}${C.reset}`);
     if (attempt < 3) console.log(`  ${C.dim}${t('common.retry_check_allowed', attempt)}${C.reset}`);
   }
   console.log(`  ${C.yellow}${t('common.max_attempts')}${C.reset}`);
@@ -1200,7 +1212,7 @@ async function promptBudgetNumber(rl, key, { zeroUnlimited = false } = {}) {
     if (zeroUnlimited && num === 0) return { value: null };
     const errs = validateSet(key, num);
     if (errs.length === 0) return { value: num };
-    for (const e of errs) console.log(`  ${C.red}⚠ ${e}${C.reset}`);
+    for (const e of errs) console.log(`  ${C.red}⚠ ${e.message}${C.reset}`);
     if (attempt < 3) console.log(`  ${C.dim}${t('common.retry_check_allowed', attempt)}${C.reset}`);
   }
   console.log(`  ${C.yellow}${t('common.max_attempts')}${C.reset}`);
@@ -1471,7 +1483,7 @@ function printWorktreeTable(ctx) {
 function validateWorktreeValue(key, value) {
   if (key === 'gate_phase') {
     if (!WORKTREE_GATE_PHASES.includes(value)) {
-      return [t('worktree.gate_phase_enum', WORKTREE_GATE_PHASES.join(', '), value)];
+      return [finding('enum', 'error', t('worktree.gate_phase_enum', WORKTREE_GATE_PHASES.join(', '), value))];
     }
     return [];
   }
@@ -1518,7 +1530,7 @@ async function promptWorktreeScalar(rl, key, ctx) {
     else value = coerceValue(raw);
     const errs = validateWorktreeValue(key, value);
     if (errs.length === 0) return { value };
-    for (const e of errs) console.log(`  ${C.red}⚠ ${e}${C.reset}`);
+    for (const e of errs) console.log(`  ${C.red}⚠ ${e.message}${C.reset}`);
     if (attempt < 3) console.log(`  ${C.dim}${t('common.retry_check_allowed', attempt)}${C.reset}`);
   }
   console.log(`  ${C.yellow}${t('common.max_attempts')}${C.reset}`);
@@ -1608,23 +1620,40 @@ async function chooseWorktreeTier(rl, ctx) {
   return null;
 }
 
+// Priority order (build-local highest) of tiers that outrank a given write tier.
+// build-local outranks nothing, so writing there is never shadowed.
+const WORKTREE_TIER_PRIORITY = {
+  global: ['build-local', 'shared'],
+  shared: ['build-local'],
+  'build-local': [],
+};
+
+// Pure decision: which higher-priority tiers already set `keyPath`, if any, when
+// about to write to `tier`. No I/O. `layers` is a plain per-tier map of each
+// tier's raw (un-merged) worktree sub-object — { 'build-local': obj, shared: obj,
+// global: obj } — mirroring the raw-layer shape worktree-shared.mjs's
+// readWorktreeLayers produces per tier. Order follows WORKTREE_TIER_PRIORITY
+// (highest priority first); callers that only need the top shadowing tier (for a
+// single warning message) can take result[0].
+export function shadowingTiers(keyPath, tier, layers) {
+  const higher = WORKTREE_TIER_PRIORITY[tier] || [];
+  return higher.filter(label => hasWorktreePath(layers?.[label], keyPath));
+}
+
 // Warn (before writing) when a higher-priority tier already sets keyPath, so the
 // write would not reach the effective value. build-local is highest, so a
 // build-local write is never shadowed. Returns true to proceed, false to cancel.
 async function confirmWorktreeShadow(rl, keyPath, tier, ctx) {
-  const higher = [];
-  if (tier === 'global') higher.push(['build-local', ctx.buildLocalRaw], ['shared', ctx.sharedRaw]);
-  else if (tier === 'shared') higher.push(['build-local', ctx.buildLocalRaw]);
-  for (const [label, obj] of higher) {
-    if (hasWorktreePath(obj, keyPath)) {
-      console.log(`  ${C.yellow}⚠${C.reset} ${t('worktree.tier_override', label, keyPath)}`);
-      const cont = (await ask(rl, t('worktree.confirm_tier', tier))).trim().toLowerCase();
-      if (cont !== 'y' && cont !== 'yes') {
-        console.log(`  ${C.dim}${t('common.cancelled_nosave')}${C.reset}`);
-        return false;
-      }
-      return true;
-    }
+  const layers = { 'build-local': ctx.buildLocalRaw, shared: ctx.sharedRaw, global: ctx.globalRaw };
+  const shadowedBy = shadowingTiers(keyPath, tier, layers);
+  if (shadowedBy.length === 0) return true;
+
+  const label = shadowedBy[0];
+  console.log(`  ${C.yellow}⚠${C.reset} ${t('worktree.tier_override', label, keyPath)}`);
+  const cont = (await ask(rl, t('worktree.confirm_tier', tier))).trim().toLowerCase();
+  if (cont !== 'y' && cont !== 'yes') {
+    console.log(`  ${C.dim}${t('common.cancelled_nosave')}${C.reset}`);
+    return false;
   }
   return true;
 }

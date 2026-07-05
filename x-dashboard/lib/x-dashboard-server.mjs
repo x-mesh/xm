@@ -30,7 +30,11 @@ const BUILD_ID_MODE = args.includes('--print-build-id') || args.includes('--buil
 const PORT = parseInt(getArg('--port') ?? String(DEFAULT_PORT), 10);
 const SESSION_MODE = args.includes('--session');
 const SCAN_DIR = getArg('--scan');
-const RUN_DIR = join(homedir(), '.xm', 'run');
+// Env-overridable (like X_PANEL_GLOBAL_ROOT below) so tests can run a second,
+// fully isolated instance without tripping checkDuplicateInstance() against a
+// real/other-test instance's PID file — the singleton guard is keyed on this
+// one fixed path, not on port.
+const RUN_DIR = process.env.XM_DASHBOARD_RUN_DIR ? resolve(process.env.XM_DASHBOARD_RUN_DIR) : join(homedir(), '.xm', 'run');
 const PID_FILE = join(RUN_DIR, 'xdashboard-server.pid');
 const SERVER_DIR = resolve(dirname(new URL(import.meta.url).pathname));
 const PUBLIC_DIR = resolve(SERVER_DIR, '..', 'public');
@@ -95,9 +99,16 @@ function hashSimple(str) {
   return h.toString(36);
 }
 
+// Extracted so PATCH's If-Match handling (R6) can compute the identical ETag a
+// GET would produce for the same payload shape, without duplicating the formula.
+function computeETag(data) {
+  const body = JSON.stringify(data);
+  return `"${body.length.toString(36)}-${hashSimple(body)}"`;
+}
+
 function jsonResponseWithETag(data, req, status = 200) {
   const body = JSON.stringify(data);
-  const etag = `"${body.length.toString(36)}-${hashSimple(body)}"`;
+  const etag = computeETag(data);
   if (req && req.headers.get('if-none-match') === etag) {
     return new Response(null, { status: 304, headers: { 'ETag': etag, 'Cache-Control': 'no-cache' } });
   }
@@ -710,18 +721,30 @@ async function handlePanelProviders(xmRoot, req) {
 // ── Route handler functions (accept xmRoot parameter) ────────────────
 
 // Resolve the config.json path for a tier. project = the workspace's .xm; global
-// = ~/.xm (matches x-panel's globalXmDir, env-overridable to keep tests hermetic).
+// = ~/.xm (matches x-panel's globalXmDir, env-overridable to keep tests hermetic);
+// build-local = the worktree 3-tier layer, `.xm/build/config.json` (R2).
 function configPathForTier(xmRoot, tier) {
   if (tier === 'global') {
     const root = process.env.X_PANEL_GLOBAL_ROOT ? resolve(process.env.X_PANEL_GLOBAL_ROOT) : join(homedir(), '.xm');
     return join(root, 'config.json');
   }
+  if (tier === 'build-local') {
+    return safeJoin(xmRoot, 'build', 'config.json');
+  }
   return safeJoin(xmRoot, 'config.json');
+}
+
+// Parse the `tier` query param into one of the three real tiers. Anything
+// else (missing, unknown value) defaults to 'project' — the historical
+// binary behavior for callers that only ever distinguished global/project.
+function resolveConfigTier(url) {
+  const t = url.searchParams.get('tier');
+  return (t === 'global' || t === 'build-local') ? t : 'project';
 }
 
 function handleConfig(xmRoot, req) {
   const url = new URL(req.url);
-  const tier = url.searchParams.get('tier') === 'global' ? 'global' : 'project';
+  const tier = resolveConfigTier(url);
   const filePath = configPathForTier(xmRoot, tier);
   if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
   // A missing config is a valid empty config (editable), not a 404 — the editor
@@ -764,7 +787,11 @@ async function handleModelRouting(xmRoot, req) {
   if (!ce) return jsonResponseWithETag({ error: 'routing_unavailable' }, req, 503);
 
   const url = new URL(req.url);
-  const tier = url.searchParams.get('tier') === 'global' ? 'global' : 'project';
+  // tier=build-local has no distinct meaning for model routing (it's a
+  // worktree-only concept) — resolveConfigTier can return it, but the merge
+  // below only ever branches on 'global' vs everything else, so build-local
+  // falls through and resolves exactly like 'project' (no error, no special case).
+  const tier = resolveConfigTier(url);
   const readTier = (t) => {
     const p = configPathForTier(xmRoot, t);
     if (!p || !existsSync(p)) return {};
@@ -809,6 +836,91 @@ async function handleModelRouting(xmRoot, req) {
   }, req);
 }
 
+// ── config-schema (lazy, dual-path) ───────────────────────────────────
+// Same resolution shape as getCostEngine: bundle (flat, sibling to this file)
+// then source tree. null when unavailable — the schema endpoint then degrades
+// to 503 instead of crashing.
+let _configSchema;
+async function getConfigSchema() {
+  if (_configSchema !== undefined) return _configSchema;
+  const here = import.meta.dirname;
+  const candidates = [
+    join(here, 'config-schema.mjs'),                                // xm bundle: xm/lib/config-schema.mjs (flat)
+    join(here, '..', '..', 'x-build', 'lib', 'config-schema.mjs'),  // source tree
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      try { _configSchema = await import(p); return _configSchema; } catch { /* try next */ }
+    }
+  }
+  _configSchema = null;
+  return _configSchema;
+}
+
+// worktree-shared (lazy, dual-path) — nested one level deeper than
+// config-schema in both layouts, so it gets its own candidate list.
+let _worktreeShared;
+async function getWorktreeShared() {
+  if (_worktreeShared !== undefined) return _worktreeShared;
+  const here = import.meta.dirname;
+  const candidates = [
+    join(here, 'x-build', 'worktree-shared.mjs'),                                 // xm bundle: xm/lib/x-build/
+    join(here, '..', '..', 'x-build', 'lib', 'x-build', 'worktree-shared.mjs'), // source tree
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      try { _worktreeShared = await import(p); return _worktreeShared; } catch { /* try next */ }
+    }
+  }
+  _worktreeShared = null;
+  return _worktreeShared;
+}
+
+// shared-config (lazy, dual-path) — same resolution shape as getConfigSchema:
+// bundle (flat, sibling to this file) then source tree. null when unavailable.
+// Only PATCH's `_set` path (R7/R8/R9) depends on this — every other config
+// route works without it, so a missing module degrades `_set` requests to 503
+// instead of failing the whole server.
+let _sharedConfigLib;
+async function getSharedConfigLib() {
+  if (_sharedConfigLib !== undefined) return _sharedConfigLib;
+  const here = import.meta.dirname;
+  const candidates = [
+    join(here, 'shared-config.mjs'),                                // xm bundle: xm/lib/shared-config.mjs (flat)
+    join(here, '..', '..', 'x-build', 'lib', 'shared-config.mjs'),  // source tree
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      try { _sharedConfigLib = await import(p); return _sharedConfigLib; } catch { /* try next */ }
+    }
+  }
+  _sharedConfigLib = null;
+  return _sharedConfigLib;
+}
+
+// GET /api/config/schema — the full config key registry (t3's SCHEMA) so the
+// wizard/editor never re-hardcodes key metadata. worktree.* entries also get a
+// `runtime_default` — the actual value WORKTREE_CONFIG_DEFAULTS resolves to —
+// alongside the schema's own display `default`. Degrades independently: a
+// missing worktree-shared module only drops runtime_default, it never fails
+// the whole response (schema itself doesn't depend on it).
+async function handleConfigSchema(xmRoot, req) {
+  const cs = await getConfigSchema();
+  if (!cs) return jsonResponseWithETag({ error: 'schema_unavailable' }, req, 503);
+
+  const wt = await getWorktreeShared();
+  const runtimeDefaults = wt?.WORKTREE_CONFIG_DEFAULTS ?? null;
+
+  const entries = cs.SCHEMA.map((entry) => {
+    if (!runtimeDefaults || !entry.key.startsWith('worktree.')) return entry;
+    const leaf = entry.key.slice('worktree.'.length);
+    if (!(leaf in runtimeDefaults)) return entry;
+    return { ...entry, runtime_default: runtimeDefaults[leaf] };
+  });
+
+  return jsonResponseWithETag({ entries }, req);
+}
+
 function deleteConfigPath(obj, path) {
   if (!obj || typeof obj !== 'object' || typeof path !== 'string') return;
   const parts = path.split('.').map((p) => p.trim()).filter(Boolean);
@@ -834,13 +946,51 @@ function deleteConfigPath(obj, path) {
   }
 }
 
+// ── _set key-path validation (R9 defense-in-depth) ────────────────────────
+// setNestedKey (shared-config.mjs) already throws on __proto__/constructor/
+// prototype segments, but does NOT reject an EMPTY segment (`a..b` silently
+// sets a literal '' key) — and this server must never rely solely on a
+// downstream throw to guard against prototype pollution. Checked here, before
+// any write, so a bad key always comes back as a clean 400.
+const FORBIDDEN_SET_KEY_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
+function isValidSetKeyPath(key) {
+  if (typeof key !== 'string' || key.trim() === '') return false;
+  return key.split('.').every((p) => p !== '' && !FORBIDDEN_SET_KEY_SEGMENTS.has(p));
+}
+
+// ── worktree shadow warnings (R8) ──────────────────────────────────────────
+// This file's own 3 tier names ('global'|'project'|'build-local', see
+// resolveConfigTier/configPathForTier) vs. the vocabulary shadowingTiers /
+// WORKTREE_TIER_PRIORITY use ('global'|'shared'|'build-local'): 'project' here
+// === 'shared' there — both mean the workspace's own .xm/config.json, as
+// opposed to ~/.xm (global) or .xm/build (build-local).
+function toShadowTier(configTier) {
+  return configTier === 'project' ? 'shared' : configTier;
+}
+
+// Raw `worktree` sub-object from one tier's file on disk — no defaults, no
+// merge. Mirrors shared-config.mjs's own (unexported) readWorktreeSub so the
+// shape matches exactly what shadowingTiers' `layers` param expects.
+function readWorktreeSubForTier(xmRoot, shadowTier) {
+  const configTier = shadowTier === 'shared' ? 'project' : shadowTier;
+  const fp = configPathForTier(xmRoot, configTier);
+  if (!fp || !existsSync(fp)) return {};
+  try {
+    const raw = JSON.parse(readFileSync(fp, 'utf8'));
+    return (raw.worktree && typeof raw.worktree === 'object') ? raw.worktree : {};
+  } catch {
+    return {};
+  }
+}
+
 // PATCH a tier's config.json — parse-validate the body, apply optional `_delete`
-// dot-path removals, then top-level merge into the existing config. Atomic
-// tmp+rename write. Never a silent failure (L6): every error returns a code.
+// dot-path removals, `_set` dotted-key deep-merges (R7), then top-level shallow
+// merge into the existing config. Atomic tmp+rename write. Never a silent
+// failure (L6): every error returns a code.
 const CONFIG_MAX_BYTES = 256 * 1024;
 async function handleConfigPatch(xmRoot, req) {
   const url = new URL(req.url);
-  const tier = url.searchParams.get('tier') === 'global' ? 'global' : 'project';
+  const tier = resolveConfigTier(url);
   const filePath = configPathForTier(xmRoot, tier);
   if (!filePath) return jsonResponseWithETag({ error: 'forbidden' }, req, 400);
 
@@ -854,18 +1004,134 @@ async function handleConfigPatch(xmRoot, req) {
     return jsonResponseWithETag({ error: 'too_large', max_bytes: CONFIG_MAX_BYTES }, req, 413);
   }
   const deletePaths = Array.isArray(body._delete) ? body._delete.map((p) => String(p)) : [];
+
+  // Consume `_set` BEFORE the meta-key strip loop below deletes underscore-
+  // prefixed keys — `_set` itself starts with `_` and would otherwise be lost.
+  let setEntries = null; // present (possibly {}) when the client sent `_set`
+  if (Object.prototype.hasOwnProperty.call(body, '_set')) {
+    const raw = body._set;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return jsonResponseWithETag({ error: 'invalid_set', message: '_set must be an object of {"dotted.key": value}' }, req, 400);
+    }
+    setEntries = raw;
+  }
+  const setKeys = setEntries ? Object.keys(setEntries) : [];
+
+  // `_set` needs shared-config.mjs (setNestedKey/validateSet/shadowingTiers).
+  // Loaded unconditionally (cheap: cached after the first call) so the 422
+  // registered-top-level-key check below can use it too, but only a request
+  // that actually uses `_set` hard-fails when the loader can't resolve it —
+  // every other PATCH path (delete-only, top-level shallow) has no such
+  // dependency and must keep working even if this module goes missing.
+  const sharedLib = await getSharedConfigLib();
+  if (setKeys.length && !sharedLib) {
+    return jsonResponseWithETag({ error: 'shared_config_unavailable' }, req, 503);
+  }
+
   // Strip GET-only metadata keys the client echoes back (_tier, _path, _empty)
-  // and control keys (_delete) so they never land in config.json.
+  // and control keys (_delete, _set) so they never land in config.json.
   for (const k of Object.keys(body)) {
     if (k.startsWith('_')) delete body[k];
   }
 
+  // ── _set key-path validation: reject empty/forbidden segments (400) ──────
+  if (setKeys.length) {
+    const badKeys = setKeys.filter((k) => !isValidSetKeyPath(k));
+    if (badKeys.length) {
+      return jsonResponseWithETag({ error: 'invalid_set_key', keys: badKeys }, req, 400);
+    }
+  }
+
+  // ── mutual exclusion: a _set key's top-level segment must not ALSO be a
+  // top-level shallow-merge key in the same body — the shallow merge below
+  // (`next = {...current, ...body}`) would otherwise silently clobber the
+  // nested _set write. ──────────────────────────────────────────────────────
+  if (setKeys.length) {
+    const setTopSegments = new Set(setKeys.map((k) => k.split('.')[0]));
+    const conflicts = [...setTopSegments].filter((seg) => Object.prototype.hasOwnProperty.call(body, seg));
+    if (conflicts.length) {
+      return jsonResponseWithETag({ error: 'set_toplevel_conflict', keys: conflicts }, req, 400);
+    }
+  }
+
   let current = {};
-  if (existsSync(filePath)) {
+  const existedBefore = existsSync(filePath);
+  if (existedBefore) {
     try { current = JSON.parse(readFileSync(filePath, 'utf8')); }
     catch { return jsonResponseWithETag({ error: 'parse_error', file: filePath }, req, 500); }
   }
+
+  // ── If-Match (R6): optimistic concurrency, checked against the same ETag a
+  // GET of this tier would report right now. No header = historical
+  // unconditional-write behavior (back-compat). ────────────────────────────
+  const ifMatch = req.headers.get('if-match');
+  if (ifMatch) {
+    const currentView = existedBefore
+      ? { ...current, _tier: tier, _path: filePath }
+      : { _tier: tier, _path: filePath, _empty: true };
+    const currentEtag = computeETag(currentView);
+    if (ifMatch !== currentEtag) {
+      return jsonResponseWithETag({ error: 'conflict', current: currentView, current_etag: currentEtag }, req, 409);
+    }
+  }
+
+  // ── validation (R9): severity==='error' findings block with 422. Applies to
+  // every _set dotted-key, plus top-level body keys that ARE registered in the
+  // schema (an unregistered top-level key keeps the historical warn-and-save
+  // escape hatch — C4, "other keys" path). This is a deliberate divergence
+  // from the CLI's `config set`, which only warns and always saves; the
+  // dashboard is a stricter, structured surface. ──────────────────────────
+  const cs = await getConfigSchema();
+  const violations = [];
+  if (sharedLib) {
+    for (const key of setKeys) {
+      for (const f of sharedLib.validateSet(key, setEntries[key])) {
+        if (f.severity === 'error') violations.push({ key, ...f });
+      }
+    }
+    if (cs) {
+      for (const key of Object.keys(body)) {
+        if (!cs.getSchemaEntry(key)) continue; // unregistered — warn/allow, not gated here
+        for (const f of sharedLib.validateSet(key, body[key])) {
+          if (f.severity === 'error') violations.push({ key, ...f });
+        }
+      }
+    }
+  }
+  if (violations.length) {
+    return jsonResponseWithETag({ error: 'validation_failed', violations }, req, 422);
+  }
+
   for (const p of deletePaths) deleteConfigPath(current, p);
+
+  // ── apply _set + shadow warnings (R8) ─────────────────────────────────────
+  const shadowedBy = [];
+  if (setKeys.length) {
+    let worktreeLayers = null;
+    try {
+      for (const key of setKeys) {
+        sharedLib.setNestedKey(current, key, setEntries[key]);
+        if (!key.startsWith('worktree.')) continue;
+        const subPath = key.slice('worktree.'.length);
+        if (!subPath) continue;
+        if (!worktreeLayers) {
+          worktreeLayers = {
+            'build-local': readWorktreeSubForTier(xmRoot, 'build-local'),
+            shared: readWorktreeSubForTier(xmRoot, 'shared'),
+            global: readWorktreeSubForTier(xmRoot, 'global'),
+          };
+        }
+        const tiers = sharedLib.shadowingTiers(subPath, toShadowTier(tier), worktreeLayers);
+        if (tiers.length) shadowedBy.push({ key, tiers });
+      }
+    } catch (e) {
+      // Defense in depth: isValidSetKeyPath above should already have caught
+      // every forbidden/empty segment, so this only fires on an unexpected
+      // setNestedKey error — never a silent 500 (L6).
+      return jsonResponseWithETag({ error: 'invalid_set_key', message: String(e?.message || e) }, req, 400);
+    }
+  }
+
   const next = { ...current, ...body };
   try {
     mkdirSync(dirname(filePath), { recursive: true });
@@ -875,7 +1141,9 @@ async function handleConfigPatch(xmRoot, req) {
   } catch (e) {
     return jsonResponseWithETag({ error: 'write_failed', message: String(e?.message || e) }, req, 500);
   }
-  return jsonResponseWithETag({ ok: true, tier, path: filePath, config: next }, req);
+  const result = { ok: true, tier, path: filePath, config: next };
+  if (shadowedBy.length) result.shadowed_by = shadowedBy;
+  return jsonResponseWithETag(result, req);
 }
 
 function extractGoal(projectDir) {
@@ -2761,6 +3029,11 @@ server = Bun.serve({
           return handleModelRouting(xmRoot, req);
         }
 
+        // GET /api/ws/:wsId/config/schema
+        if (subPath === '/config/schema') {
+          return handleConfigSchema(xmRoot, req);
+        }
+
         // GET /api/ws/:wsId/projects
         if (subPath === '/projects') {
           return handleProjects(xmRoot, req);
@@ -3010,6 +3283,11 @@ server = Bun.serve({
       // GET /api/config/model-routing
       if (path === '/api/config/model-routing') {
         return handleModelRouting(XM_ROOT, req);
+      }
+
+      // GET /api/config/schema
+      if (path === '/api/config/schema') {
+        return handleConfigSchema(XM_ROOT, req);
       }
 
       // GET /api/config

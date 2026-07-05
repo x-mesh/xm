@@ -29,12 +29,12 @@ describe('repo consistency', () => {
     expect(readBadgeVersion('README.ko.md')).toBe(pkg.version);
   });
 
-  test('dashboard CFG_ROLE_NAMES matches the canonical MODEL_PROFILES role set', async () => {
-    const ce = await import(join(REPO, 'x-build', 'lib', 'x-build', 'cost-engine.mjs'));
+  test('dashboard no longer hardcodes the role list (config-gap-close: roles come from /api/config/model-routing)', () => {
+    // The old guard asserted the CFG_ROLE_NAMES hardcode stayed in sync with
+    // MODEL_PROFILES. config-gap-close removed the hardcode entirely — the UI
+    // derives roles at runtime — so the guard now prevents reintroduction.
     const appJs = readFileSync(join(REPO, 'x-dashboard', 'public', 'app.js'), 'utf8');
-    const match = appJs.match(/const CFG_ROLE_NAMES = (\[[^\]]*\])/);
-    expect(match).not.toBeNull();
-    const uiRoles = JSON.parse(match[1].replace(/'/g, '"'));
-    expect([...uiRoles].sort()).toEqual(Object.keys(ce.MODEL_PROFILES.default).sort());
+    expect(appJs).not.toContain('CFG_ROLE_NAMES');
+    expect(appJs).not.toContain('CFG_ROLE_MODELS');
   });
 });
