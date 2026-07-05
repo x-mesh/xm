@@ -156,6 +156,7 @@ Rules:
 10. **PRD is MANDATORY** — every project MUST have `phases/02-plan/PRD.md` before Execute phase. If tasks were added without PRD (e.g., direct `tasks add`), generate PRD from existing tasks before proceeding.
 11. **Task documentation** — every task MUST have `done_criteria` before execution starts. If missing, auto-derive from PRD requirements using `$XMB tasks done-criteria`.
 12. **No phantom projects** — a project without `phases/02-plan/PRD.md` and CONTEXT.md is invisible to dashboard and untrackable. Always generate these artifacts.
+13. **PRD MUST be saved via `$XMB save plan`** — never `Write` PRD.md directly. A direct write skips the `<!-- prd-template-version -->` stamp, silently degrading the diagram gate (`prd-check` §8) from blocking to warning.
 
 Anti-patterns:
 - ❌ `plan "goal"` → `phase set plan` → PRD generation (skips Research)
@@ -220,8 +221,9 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 ### `plan "goal"` (with goal argument)
 1. Check for active project
 2. **If no project** → `$XMB init {slug}` → **start from Research phase** (interview → research → then plan):
+   - If the manifest's `project_kind` is `greenfield` and `round0_pending: true` (from `next --json`/`discuss --json`), run Round 0 (4-question problem framing) before Round 1 — see `references/workflow-guide.md`.
    - Run `$XMB discuss --mode interview` (gather requirements using the goal as seed)
-   - Run `$XMB research "{goal}"` (4-agent parallel investigation)
+   - Run `$XMB research "{goal}"` (4-agent parallel investigation; perspectives differ by `project_kind` — see workflow-guide)
    - Save CONTEXT.md, REQUIREMENTS.md, ROADMAP.md
    - `$XMB gate pass` → `$XMB phase next` (Research → Plan)
    - Then generate PRD and proceed with plan
@@ -449,6 +451,7 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | User says | Command |
 |-----------|---------|
 | "start project", "new project" | `init` |
+| "새 프로젝트인지 확인", "is this greenfield?" | `project-kind [--json]` |
 | "그냥 이거 하나 해줘", "빠르게 실행하고 기록만", "single instruction, tracked" | `dispatch "<instruction>"` |
 | "what should I do?", "what's next?" | `next` |
 | "gather requirements", "ask me questions" | `discuss` |
@@ -487,3 +490,4 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | "Planning is overhead, not value" | Planning is where wrong turns are found for free. Every hour spent in plan-phase saves multiple hours in exec-phase. |
 | "User is mid-task on a feature branch — invoking build is heavy, just apply it lightly" | git branch ≠ x-build project. Run `$XMB list` first; "lightly" / "skill spirit only" is not a valid bypass — it discards the PRD/tasks tracking the user explicitly invoked build to get. |
 | "User just wants quick help, no need for full Research → Plan flow" | If they wanted Quick Mode they would have said `--quick`. Default to full flow; do not auto-shortcut on the user's behalf. |
+| "This is a brand-new empty directory, the full interview is overkill" | The gauge decides, not vibes: `project_kind: greenfield` triggers Round 0 (4 questions, one round). Skipping problem-framing on a greenfield project is how PRDs get built on unvalidated premises. |

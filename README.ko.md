@@ -429,6 +429,8 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 
 > 작업 중 범위 밖 할 일을 발견했나요? 흐름을 깨지 말고 **`/xm:later add "..."`** 로 미뤄두세요 — 준비되면 `/xm:later promote <id>` 로 꺼내 작업합니다. `xm build later` 기반.
 
+> **Greenfield 인식** — `init`이 결정론적 게이지(manifest / lockfile / 소스 트리 / git 히스토리; `xm build project-kind --json`으로 확인)로 `project_kind`를 기록합니다. 완전히 새로 시작하는 프로젝트에는 Round 0 문제 정의 인터뷰(문제 / 현재 대안 / 성공의 모습 / MVP 웨지)와 웹 조사가 가능한 **landscape** 리서치 에이전트가 코드베이스 조사 대신 투입되고, 기존 프로젝트는 변화가 없습니다. 새 PRD는 쉬운 언어의 **At a Glance** 요약으로 시작하며, Section 8에 다이어그램이 없으면 `prd-check`가 Execute 진입을 차단합니다 — 기존 PRD는 warning으로 완화됩니다.
+
 ```
 리서치 ──→ PRD ──→ 계획 ──→ 실행 ──→ 검증 ──→ 종료
  [discuss]  [quality]  [critique]  [contract]  [quality]  [auto]

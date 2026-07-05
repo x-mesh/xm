@@ -17,6 +17,155 @@ import {
 import { taskList, vendorModelFields } from './tasks.mjs';
 import { stepsStatus, computeSteps } from './tasks.mjs';
 
+// ── PRD template version + diagram gate (R4/R5/R12) ──────────────────
+// PRD_TEMPLATE_VERSION marks the template revision where Section 8
+// (Architecture) started requiring a diagram. cmdSaveArtifact stamps new
+// PRDs with `<!-- prd-template-version: N -->`; prdBlockingFindings reads
+// that marker back to decide whether a missing diagram blocks (N >= this
+// constant) or only warns (no marker, or N below it — pre-existing PRDs).
+export const PRD_TEMPLATE_VERSION = 2;
+
+const VERSION_MARKER_RE = /<!--\s*prd-template-version:\s*(\d+)\s*-->/;
+const DIAGRAM_MARKER_RE = /■\s*Diagram\s*:/;
+const BOX_CHAR_RE = /[─│┌┐└┘├┤┬┴┼╌▶]/;
+const MERMAID_KEYWORD_RE = /graph\s+(td|lr|tb|rl)\b|sequencediagram|classdiagram|statediagram|erdiagram/i;
+
+// Line-based linear scan (no nested-regex backtracking) bounding a numbered
+// section's scope: from its `## N.` heading line up to (not including) the
+// next `## ` heading. Matches on the section NUMBER only — older PRDs reuse
+// different subtitle text under the same number (e.g. "## 8. CLI Surface"),
+// so matching on "Architecture" would false-negative on them.
+//
+// Fence-aware (F2): both the start search and the end-boundary search track
+// a ``` toggle (same recognition rule as extractFencedBlocks) so a `## N.`-
+// looking line INSIDE a fenced code block (e.g. a bash comment "## comment")
+// is never mistaken for a heading.
+//
+// End-boundary regex intentionally allows zero-or-more spaces after `##`
+// (F8) — symmetric with the start regex's `\s*` — so a tightly-spaced next
+// heading like `##9. Foo` still closes the current section's scope instead
+// of leaking into it. The negative lookahead excludes `###` sub-headings.
+const NEXT_HEADING_RE = /^##(?!#)/;
+
+function extractSectionScope(lines, headingNum) {
+  const headRe = new RegExp(`^##\\s*${headingNum}\\.`);
+  let start = -1;
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim().startsWith('```')) { inFence = !inFence; continue; }
+    if (!inFence && headRe.test(lines[i])) { start = i; break; }
+  }
+  if (start === -1) return null;
+  inFence = false;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].trim().startsWith('```')) { inFence = !inFence; continue; }
+    if (!inFence && NEXT_HEADING_RE.test(lines[i])) { end = i; break; }
+  }
+  return lines.slice(start, end);
+}
+
+// Single pass over a section's lines to collect fenced code blocks. An
+// unterminated fence is simply dropped (no crash) rather than throwing.
+function extractFencedBlocks(sectionLines) {
+  if (!sectionLines) return [];
+  const blocks = [];
+  let inFence = false;
+  let lang = '';
+  let body = [];
+  for (const raw of sectionLines) {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith('```')) {
+      if (!inFence) {
+        inFence = true;
+        lang = trimmed.slice(3).trim().toLowerCase();
+        body = [];
+      } else {
+        inFence = false;
+        blocks.push({ lang, body: body.join('\n') });
+      }
+      continue;
+    }
+    if (inFence) body.push(raw);
+  }
+  return blocks;
+}
+
+function countBoxChars(str) {
+  const m = str.match(new RegExp(BOX_CHAR_RE.source, 'g'));
+  return m ? m.length : 0;
+}
+
+function boxCharLineCount(str) {
+  return str.split('\n').filter((l) => BOX_CHAR_RE.test(l)).length;
+}
+
+// Diagram acceptance for a Section 8 scope — three independent paths, any one
+// suffices (validated by scripts/sim-diagram-gate.mjs: 0 false positives on
+// real corpus + adversarial synthetic fixtures):
+//   1. Primary: `■ Diagram:` marker anywhere in scope (fence-agnostic — a
+//      references-extraction PRD has the marker INSIDE the fence) AND at
+//      least one non-empty fenced block in scope.
+//   2. auxBox: a fenced block with >=6 box-drawing chars AND >=2 lines
+//      containing one — dual threshold; a single decorative divider line
+//      (e.g. a lone "───...") must NOT pass.
+//   3. auxMermaid: a fenced ```mermaid block, or a fenced block containing a
+//      mermaid keyword (graph TD/LR, sequenceDiagram, classDiagram, ...).
+function sectionHasDiagram(sectionLines) {
+  if (!sectionLines) return false;
+  const fences = extractFencedBlocks(sectionLines);
+  const hasNonEmptyFence = fences.some((f) => f.body.trim().length > 0);
+  if (hasNonEmptyFence && DIAGRAM_MARKER_RE.test(sectionLines.join('\n'))) return true;
+  for (const f of fences) {
+    if (countBoxChars(f.body) >= 6 && boxCharLineCount(f.body) >= 2) return true;
+  }
+  for (const f of fences) {
+    if (f.lang === 'mermaid') return true;
+    if (MERMAID_KEYWORD_RE.test(f.body)) return true;
+  }
+  return false;
+}
+
+// Longest run of consecutive numbered-list markers starting at 1 (1., 2.,
+// 3., ...) within a section's scope — a proxy for "a scenario walkthrough
+// with >=3 steps". Non-list lines (prose between steps) don't break a run;
+// seeing "1." again starts a new run (a second scenario in the same section).
+function maxNumberedRun(sectionLines) {
+  let maxRun = 0, run = 0, expected = 1;
+  const re = /^\s*(\d+)\.\s+/;
+  for (const raw of sectionLines) {
+    const m = re.exec(raw);
+    if (!m) continue;
+    const num = parseInt(m[1], 10);
+    if (num === expected) {
+      run++;
+      expected++;
+    } else if (num === 1) {
+      run = 1;
+      expected = 2;
+    } else {
+      run = 0;
+      expected = 1;
+    }
+    if (run > maxRun) maxRun = run;
+  }
+  return maxRun;
+}
+
+// Most `→` hops found on any single line within a section's scope — a Data
+// Flow Trace is conventionally one line (e.g. "Client → API → DB"), so a
+// per-line max avoids false-triggering on unrelated arrows scattered across
+// separate bullets.
+function maxArrowHopsPerLine(sectionLines) {
+  let max = 0;
+  for (const line of sectionLines) {
+    const matches = line.match(/→/g);
+    const count = matches ? matches.length : 0;
+    if (count > max) max = count;
+  }
+  return max;
+}
+
 // ── prdWriterSpec ───────────────────────────────────────────────────
 // Deterministic role/model for the PRD-writing delegate. The PRD is the
 // costliest artifact to get wrong, so it routes as a large planner task.
@@ -78,6 +227,7 @@ export async function cmdPlan(args) {
     flow: quick ? 'quick' : 'full',
     skip_research: quick,
     research_signal: researchSignal,
+    project_kind: manifest?.project_kind || 'brownfield',
     current_phase: PHASES.find(p => p.id === manifest?.current_phase)?.name,
     prd_writer: prdWriterSpec(),
     existing_tasks: readJSON(tasksPath(project))?.tasks?.length || 0,
@@ -124,6 +274,44 @@ export function prdBlockingFindings(prdText) {
   }
   if (!/^##\s*0\.\s*Assumptions/im.test(prdText)) warnings.push('Section 0 (Assumptions & Open Questions) is missing');
   if (!/^##\s*12\.\s*Acceptance Criteria/im.test(prdText)) warnings.push('Section 12 (Acceptance Criteria) is missing');
+
+  // ── Diagram gate (R4/R5/R12) ──────────────────────────────────────
+  const lines = prdText.split('\n');
+
+  // Section 8 (Architecture): missing diagram blocks ONLY for PRDs stamped
+  // at/above PRD_TEMPLATE_VERSION (R12 retroactive policy) — pre-existing
+  // PRDs (no marker, or an older version) get a warning instead, never a
+  // hard block on re-entry.
+  const section8 = extractSectionScope(lines, 8);
+  if (!sectionHasDiagram(section8)) {
+    const versionMatch = prdText.match(VERSION_MARKER_RE);
+    const version = versionMatch ? parseInt(versionMatch[1], 10) : 0;
+    const isNewTemplate = versionMatch != null && version >= PRD_TEMPLATE_VERSION;
+    const msg = section8
+      ? 'Section 8 (Architecture) has no diagram — add "■ Diagram:" + a fenced block, a box-drawing diagram, or a mermaid diagram'
+      : 'Section 8 (Architecture) is missing';
+    if (isNewTemplate) blocking.push(msg);
+    else warnings.push(msg);
+  }
+
+  // Section 9 (Key Scenarios): a >=3-step scenario without any diagram is a
+  // warning, regardless of template version — this never blocks.
+  const section9 = extractSectionScope(lines, 9);
+  if (section9 && maxNumberedRun(section9) >= 3 && extractFencedBlocks(section9).length === 0) {
+    warnings.push('Section 9 has ≥3-step scenarios but no sequence diagram');
+  }
+
+  // Section 10 (Data Flow / Data Model): a >=3-hop trace without any diagram
+  // is a warning, regardless of template version.
+  const section10 = extractSectionScope(lines, 10);
+  if (section10 && maxArrowHopsPerLine(section10) >= 3 && extractFencedBlocks(section10).length === 0) {
+    warnings.push('Section 10 has a ≥3-hop Data Flow Trace but no diagram');
+  }
+
+  if (!/^##\s*At a Glance/im.test(prdText)) {
+    warnings.push('"At a Glance" section is missing');
+  }
+
   return { blocking, warnings };
 }
 
@@ -450,6 +638,7 @@ export function cmdDiscuss(args) {
   const maxRounds = parseInt(opts['max-rounds'] || '3');
 
   const phaseName = PHASES.find(p => p.id === manifest.current_phase)?.name;
+  const projectKind = manifest.project_kind || 'brownfield';
 
   const output = {
     action: 'discuss',
@@ -459,12 +648,15 @@ export function cmdDiscuss(args) {
     max_rounds: maxRounds,
     goal: manifest.display_name || project,
     current_phase: phaseName,
+    project_kind: projectKind,
     existing_context: existsSync(join(contextDir(project), 'CONTEXT.md'))
       ? readMD(join(contextDir(project), 'CONTEXT.md'))?.slice(0, 500)
       : null,
   };
 
   if (mode === 'interview') {
+    // round > 1 naturally excludes round 0 from this prevPath auto-load, so
+    // Round 0's isolated filename (below) never feeds into the r{n} chain.
     const prevPath = join(phaseDir(project, '01-research'), `discuss-interview-r${round - 1}.json`);
     if (round > 1 && existsSync(prevPath)) {
       output.previous_round = readJSON(prevPath);
@@ -473,6 +665,17 @@ export function cmdDiscuss(args) {
       'functional_requirements', 'non_functional_requirements', 'constraints',
       'error_handling', 'security', 'performance', 'data_model', 'integrations',
     ];
+    // Round 0 (greenfield-only, pre-interview) saves to a name isolated from
+    // the discuss-interview-r{n} chain — round 1's prevPath lookup above only
+    // ever looks at r{round-1}, so "discuss-round0.json" is never mistaken
+    // for r0 in that chain.
+    const round0Path = join(phaseDir(project, '01-research'), 'discuss-round0.json');
+    output.save_path = round === 0
+      ? round0Path
+      : join(phaseDir(project, '01-research'), `discuss-interview-r${round}.json`);
+    if (projectKind === 'greenfield') {
+      output.round0_pending = !existsSync(round0Path);
+    }
   } else if (mode === 'validate') {
     output.requirements = existsSync(join(contextDir(project), 'REQUIREMENTS.md'))
       ? readMD(join(contextDir(project), 'REQUIREMENTS.md')) : null;
@@ -520,7 +723,13 @@ export function cmdResearch(args) {
   const manifest = readJSON(manifestPath(project));
   const goal = positional.join(' ') || manifest.display_name || project;
 
-  const perspectives = ['stack', 'features', 'architecture', 'pitfalls'];
+  const projectKind = manifest.project_kind || 'brownfield';
+  const isGreenfield = projectKind === 'greenfield';
+  // Greenfield has no existing stack/features to research — swap toward
+  // landscape scan + user-scenario framing instead.
+  const perspectives = isGreenfield
+    ? ['landscape', 'user-scenarios', 'architecture', 'pitfalls']
+    : ['stack', 'features', 'architecture', 'pitfalls'];
   const model = opts.model || getModelForRole('researcher', 'medium', loadSharedConfig());
 
   const output = {
@@ -530,7 +739,13 @@ export function cmdResearch(args) {
     agents: parseInt(opts.agents || String(getAgentCount())),
     perspectives,
     model,
-    agents_spec: perspectives.map(p => ({ perspective: p, role: 'researcher', model })),
+    project_kind: projectKind,
+    suggest_probe: isGreenfield,
+    agents_spec: perspectives.map(p => {
+      const spec = { perspective: p, role: 'researcher', model };
+      if (isGreenfield && p === 'landscape') spec.web = true;
+      return spec;
+    }),
     existing_requirements: existsSync(join(contextDir(project), 'REQUIREMENTS.md'))
       ? readMD(join(contextDir(project), 'REQUIREMENTS.md'))?.slice(0, 500)
       : null,
@@ -822,6 +1037,16 @@ export async function cmdNext(args) {
   const project = resolveProject(null);
   const jsonMode = args.includes('--json');
   const result = resolveNext(project);
+  const manifest = readJSON(manifestPath(project));
+
+  const projectKind = manifest?.project_kind || 'brownfield';
+  result.project_kind = projectKind;
+  result.suggest_probe = projectKind === 'greenfield';
+  // Greenfield gate: signal whether the pre-interview Round 0 has run yet, so
+  // the skill layer can insert it before Round 1 instead of re-running it.
+  if (projectKind === 'greenfield' && result.phase === 'research') {
+    result.round0_pending = !existsSync(join(phaseDir(project, '01-research'), 'discuss-round0.json'));
+  }
 
   // Attach the deterministic research gauge when the next action IS research —
   // the skill layer uses it to scale the fan-out (full/slim) or, only at 0/4,
@@ -830,7 +1055,7 @@ export async function cmdNext(args) {
     try {
       const ctx = readMD(join(contextDir(project), 'CONTEXT.md')) || '';
       const goalMatch = ctx.match(/^## Goal\s*\n+(.+)/m);
-      const goalText = goalMatch ? goalMatch[1].trim() : (readJSON(manifestPath(project))?.display_name || '');
+      const goalText = goalMatch ? goalMatch[1].trim() : (manifest?.display_name || '');
       result.research_signal = await gaugeResearch(goalText);
     } catch { /* gauge is advisory on next — absence means "treat as full" */ }
   }
@@ -840,7 +1065,6 @@ export async function cmdNext(args) {
     return;
   }
 
-  const manifest = readJSON(manifestPath(project));
   const phase = PHASES.find(p => p.id === manifest.current_phase);
 
   console.log(`\n${C.bold}Next Step${C.reset}\n`);
@@ -1051,6 +1275,13 @@ export function cmdSaveArtifact(args) {
     writeMD(dest, base + header + body);
     console.log(`Appended research note (agent=${agent}) to: ${dest}`);
     return;
+  }
+
+  // R12: stamp new PRDs with the template version so prdBlockingFindings can
+  // tell "written under the diagram-mandatory template" apart from
+  // pre-existing PRDs. Never re-stamp a PRD that already carries a marker.
+  if (type === 'plan' && !VERSION_MARKER_RE.test(content)) {
+    content = `<!-- prd-template-version: ${PRD_TEMPLATE_VERSION} -->\n${content}`;
   }
 
   writeMD(dest, content);

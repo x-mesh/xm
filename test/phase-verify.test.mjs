@@ -953,4 +953,251 @@ describe('prd-check + plan-exit gate (regression)', () => {
       expect(readJSON(projectPath(tmp, name, 'manifest.json')).current_phase).toBe('03-execute');
     } finally { rmSync(tmp, { recursive: true, force: true }); }
   });
+
+  // ── Diagram gate (R4/R5/R12): marker-versioned block vs warn ─────────
+  test('versioned PRD with no Section 8 diagram blocks', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, '<!-- prd-template-version: 2 -->\n# PRD\n\n## 8. Architecture\nNo diagram present, just prose.\n\n## 12. Acceptance Criteria\n- x\n');
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } }).stdout);
+      expect(out.blocked).toBe(true);
+      expect(out.blocking.some((b) => /Section 8/.test(b))).toBe(true);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test('versioned PRD with a "■ Diagram:" marker + fenced block in Section 8 passes', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, '<!-- prd-template-version: 2 -->\n# PRD\n\n## 8. Architecture\n\n■ Diagram:\n```\nClient -> Server -> DB\n```\n\n## 12. Acceptance Criteria\n- x\n');
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } }).stdout);
+      expect(out.blocked).toBe(false);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test('un-versioned (pre-existing) PRD with no Section 8 diagram only warns, never blocks', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, '# PRD\n\n## 8. Architecture\nProse only, no diagram.\n\n## 12. Acceptance Criteria\n- x\n');
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } }).stdout);
+      expect(out.blocked).toBe(false);
+      expect(out.warnings.some((w) => /Section 8/.test(w) && /diagram/i.test(w))).toBe(true);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test('a diagram in Section 9 does not satisfy Section 8\'s requirement (no scope leak)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, '<!-- prd-template-version: 2 -->\n# PRD\n\n## 9. Key Scenarios\n\n■ Diagram:\n```\nClient -> Server -> DB\n```\n\n## 12. Acceptance Criteria\n- x\n');
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } }).stdout);
+      expect(out.blocked).toBe(true);
+      expect(out.blocking.some((b) => /Section 8/.test(b) && /missing/i.test(b))).toBe(true);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test('a language-tagged code fence (```typescript) alone does not count as a diagram', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, '<!-- prd-template-version: 2 -->\n# PRD\n\n## 8. Architecture\n\n```typescript\ninterface Foo { bar: string; }\n```\n\n## 12. Acceptance Criteria\n- x\n');
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } }).stdout);
+      expect(out.blocked).toBe(true);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test('phase set execute: diagram-missing versioned PRD blocks (force overrides); un-versioned PRD passes without --force', () => {
+    const tmpBlocked = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    const tmpOld = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const nameBlocked = setupProject(tmpBlocked);
+      writePrd(tmpBlocked, nameBlocked, '<!-- prd-template-version: 2 -->\n# PRD\n\n## 8. Architecture\nNo diagram present, just prose.\n\n## 12. Acceptance Criteria\n- x\n');
+      run(['phase', 'set', 'execute'], { cwd: tmpBlocked, env: { HOME: H } });
+      expect(readJSON(projectPath(tmpBlocked, nameBlocked, 'manifest.json')).current_phase).not.toBe('03-execute');
+      run(['phase', 'set', 'execute', '--force'], { cwd: tmpBlocked, env: { HOME: H } });
+      expect(readJSON(projectPath(tmpBlocked, nameBlocked, 'manifest.json')).current_phase).toBe('03-execute');
+
+      const nameOld = setupProject(tmpOld);
+      writePrd(tmpOld, nameOld, '# PRD\n\n## 8. Architecture\nNo diagram, old template.\n\n## 12. Acceptance Criteria\n- x\n');
+      run(['phase', 'set', 'execute'], { cwd: tmpOld, env: { HOME: H } });
+      expect(readJSON(projectPath(tmpOld, nameOld, 'manifest.json')).current_phase).toBe('03-execute');
+    } finally {
+      rmSync(tmpBlocked, { recursive: true, force: true });
+      rmSync(tmpOld, { recursive: true, force: true });
+    }
+  });
+
+  test('save plan stamps the version marker once and never duplicates it on re-save', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      const body = '# PRD\n\n## 1. Goal\nTest project\n';
+      run(['save', 'plan', '--content', body], { cwd: tmp, env: { HOME: H } });
+      const prdFile = join(projectPath(tmp, name, 'phases', '02-plan'), 'PRD.md');
+      const saved = readFileSync(prdFile, 'utf8');
+      expect(saved.startsWith('<!-- prd-template-version: 2 -->')).toBe(true);
+      expect((saved.match(/prd-template-version/g) || []).length).toBe(1);
+
+      // Re-save with the already-stamped content, as a caller reading the file
+      // back and re-submitting it would. Must not stamp a second marker.
+      run(['save', 'plan', '--content', saved], { cwd: tmp, env: { HOME: H } });
+      const savedAgain = readFileSync(prdFile, 'utf8');
+      expect((savedAgain.match(/prd-template-version/g) || []).length).toBe(1);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test('a PRD written directly (bypassing save plan) carries no marker and is treated as pre-existing', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, '# PRD\n\n## 8. Architecture\nNo diagram here.\n\n## 12. Acceptance Criteria\n- x\n');
+      const prdFile = readFileSync(join(projectPath(tmp, name, 'phases', '02-plan'), 'PRD.md'), 'utf8');
+      expect(prdFile).not.toContain('prd-template-version');
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } }).stdout);
+      expect(out.blocked).toBe(false);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  // ── F1: auxBox rule — box-drawing diagram without the "■ Diagram:" marker ─
+  test('versioned PRD with a box-drawing fence (no "■ Diagram:" marker) passes via the auxBox rule', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, [
+        '<!-- prd-template-version: 2 -->',
+        '# PRD',
+        '',
+        '## 8. Architecture',
+        '',
+        'The system flow:',
+        '',
+        '```',
+        '┌────────┐     ┌────────┐',
+        '│ Client │────▶│ Server │',
+        '└────────┘     └────────┘',
+        '```',
+        '',
+        '## 12. Acceptance Criteria',
+        '- x',
+        '',
+      ].join('\n'));
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } }).stdout);
+      expect(out.blocked).toBe(false);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test('versioned PRD with only a decorative single-line divider fence still blocks (density guard)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, [
+        '<!-- prd-template-version: 2 -->',
+        '# PRD',
+        '',
+        '## 8. Architecture',
+        '',
+        'Some prose before a divider.',
+        '',
+        '```',
+        '──────────────────────────────',
+        '```',
+        '',
+        'More prose after.',
+        '',
+        '## 12. Acceptance Criteria',
+        '- x',
+        '',
+      ].join('\n'));
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } }).stdout);
+      expect(out.blocked).toBe(true);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  // ── F4: auxMermaid rule ────────────────────────────────────────────────
+  test('versioned PRD with a fenced ```mermaid graph LR``` block (no marker) passes via the auxMermaid rule', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, [
+        '<!-- prd-template-version: 2 -->',
+        '# PRD',
+        '',
+        '## 8. Architecture',
+        '',
+        '```mermaid',
+        'graph LR',
+        '  Client --> Server --> DB',
+        '```',
+        '',
+        '## 12. Acceptance Criteria',
+        '- x',
+        '',
+      ].join('\n'));
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } }).stdout);
+      expect(out.blocked).toBe(false);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  // ── F5: below-threshold version marker downgrades to warning ──────────
+  test('PRD stamped below PRD_TEMPLATE_VERSION with no Section 8 diagram warns but does not block', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, '<!-- prd-template-version: 1 -->\n# PRD\n\n## 8. Architecture\nNo diagram, prose only.\n\n## 12. Acceptance Criteria\n- x\n');
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } }).stdout);
+      expect(out.blocked).toBe(false);
+      expect(out.warnings.some((w) => /Section 8/.test(w))).toBe(true);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  // ── F2 regression: a `## comment` line inside a fence must not truncate
+  // Section 8's scope before it reaches the real diagram further down. ────
+  test('a "## comment" line inside a bash fence in Section 8 does not cut off a diagram further down (fence-aware scope)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, [
+        '<!-- prd-template-version: 2 -->',
+        '# PRD',
+        '',
+        '## 8. Architecture',
+        '',
+        'Setup script:',
+        '',
+        '```bash',
+        '#!/bin/bash',
+        '## comment explaining setup',
+        'echo "hello"',
+        '```',
+        '',
+        '■ Diagram: System Architecture',
+        '',
+        '```',
+        '[Client] ──▶ [Server] ──▶ [(DB)]',
+        '```',
+        '',
+        '## 12. Acceptance Criteria',
+        '- x',
+        '',
+      ].join('\n'));
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } }).stdout);
+      expect(out.blocked).toBe(false);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  // ── F10: `save requirements` (a non-`plan` artifact type) must never be
+  // stamped with the PRD template-version marker — that marker is specific
+  // to the PRD ("plan") artifact. ─────────────────────────────────────────
+  test('save requirements does not stamp a prd-template-version marker', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      const body = '# Requirements\n\n- [R1] Something\n';
+      run(['save', 'requirements', '--content', body], { cwd: tmp, env: { HOME: H } });
+      const saved = readFileSync(projectPath(tmp, name, 'context', 'REQUIREMENTS.md'), 'utf8');
+      expect(saved).not.toContain('prd-template-version');
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
 });

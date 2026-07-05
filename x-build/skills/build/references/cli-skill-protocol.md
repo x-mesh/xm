@@ -6,10 +6,10 @@ Several commands output JSON for the skill layer to parse and act on. The skill 
 
 | Command | `action` field | Key fields |
 |---------|---------------|------------|
-| `next --json` | varies | `phase`, `action`, `args`, `reason`, `artifacts`, `goal?`, `ready?` |
-| `discuss` | `"discuss"` | `mode`, `project`, `current_phase`, `round`, `max_rounds` + mode-specific fields |
-| `research` | `"research"` | `goal`, `project`, `perspectives[]` |
-| `plan` | `"auto-plan"` | `goal`, `project`, `existing_tasks`, `context_summary`, `requirements_summary`, `roadmap_summary` |
+| `next --json` | varies | `phase`, `action`, `args`, `reason`, `artifacts`, `goal?`, `ready?`, `project_kind`, `suggest_probe`, `round0_pending?` (research phase, greenfield only), `research_signal?` (when action is `research`/`discuss`) |
+| `discuss` | `"discuss"` | `mode`, `project`, `current_phase`, `round`, `max_rounds`, `project_kind` + mode-specific fields (interview: `save_path`, `round0_pending?`) |
+| `research` | `"research"` | `goal`, `project`, `perspectives[]`, `project_kind`, `suggest_probe`, `agents_spec[]` (each with `perspective`, `role`, `model`, `web?`) |
+| `plan` | `"auto-plan"` | `goal`, `project`, `existing_tasks`, `context_summary`, `requirements_summary`, `roadmap_summary`, `project_kind`, `research_signal`, `quick`, `flow`, `skip_research` |
 | `run --json` | (no action field) | `project`, `step`, `total_steps`, `tasks[]`, `parallel` |
 
 ## `next --json` — Smart Router (primary entry point)
@@ -26,9 +26,17 @@ Output schema:
   "reason": "No CONTEXT.md found. Start requirements interview.",
   "artifacts": { "context": false, "requirements": false, "roadmap": false, "prd": false, "plan_check": false },
   "goal": null,
-  "ready": false
+  "ready": false,
+  "project_kind": "greenfield",
+  "suggest_probe": true,
+  "round0_pending": true
 }
 ```
+
+- `project_kind`: `"greenfield"` | `"brownfield"` — deterministic gauge recorded once at `init` time (see `references/workflow-guide.md` Round 0 for the 4-signal detail). Always present.
+- `suggest_probe`: `true` iff `project_kind === "greenfield"`. Signals that `/xm:probe` should be offered (never auto-run) before the Research gate.
+- `round0_pending`: present only when `project_kind === "greenfield"` AND `phase === "research"`. `true` until `discuss-round0.json` has been saved — the skill must run Round 0 before Round 1 in that case. Absent for brownfield projects.
+- `research_signal`: attached only when `action` is `"research"` or `"discuss"` — the deterministic full/slim/quick-eligible gauge (see SKILL.md Interaction Protocol rule 3). Absent/failed reads as `full`.
 
 After parsing, execute the recommended action:
 - `action: "discuss"` → run `$XMB discuss` with args, then follow the discuss protocol below

@@ -429,6 +429,8 @@ Takes a project from idea to verified delivery. Generates the PRD, runs delibera
 
 > Spotted off-scope work mid-task? Park it with **`/xm:later add "..."`** instead of derailing — then `/xm:later promote <id>` when you're ready to pick it up. Backed by `xm build later`.
 
+> **Greenfield-aware** — `init` records `project_kind` via a deterministic gauge (manifest / lockfile / source tree / git history; inspect with `xm build project-kind --json`). Brand-new projects get a Round 0 problem-framing interview (problem / status quo / success / MVP wedge) and a web-enabled **landscape** research agent instead of codebase investigation; existing projects are unchanged. Every new PRD opens with a plain-language **At a Glance** summary, and `prd-check` blocks Execute when Section 8 has no diagram — older PRDs are grandfathered to warnings.
+
 ```
 Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──→ Close
  [discuss]  [quality]  [critique]  [contract]  [quality]  [auto]

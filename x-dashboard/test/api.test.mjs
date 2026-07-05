@@ -656,14 +656,15 @@ describe('GET /api/metrics/sessions', () => {
     const { body: page0 } = await getJSON('/api/metrics/sessions?limit=100&offset=0');
     const { body: page1 } = await getJSON('/api/metrics/sessions?limit=100&offset=1');
     if (page0.total > 1) {
-      expect(page1.data.length).toBe(page0.data.length - 1);
+      // page size is min(limit, remaining) — must hold whether total is under or over the limit
+      expect(page1.data.length).toBe(Math.min(100, page0.total - 1));
     }
   });
 
   it('returns total reflecting all records', async () => {
     const { body } = await getJSON('/api/metrics/sessions?limit=100&offset=0');
     expect(body.total).toBeGreaterThan(0);
-    expect(body.total).toBe(body.data.length + body.offset);
+    expect(body.data.length).toBe(Math.min(body.limit, body.total - body.offset));
   });
 });
 

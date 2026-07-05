@@ -7,6 +7,22 @@ Full Project Requirements Document template with per-section quality criteria. U
 ```
 # PRD: {project_name}
 
+## At a Glance
+
+**REQUIRED — first thing a non-expert reader sees. Answers: "can someone who didn't write this PRD understand what's being built in 30 seconds?"**
+
+> 쉽게 말하면: {one sentence, no jargon, that a non-engineer would understand}
+
+{2-3 short paragraphs: what this builds, why it matters, and the key safeguard/guardrail that keeps it safe — e.g., rollback path, permission boundary, rate limit}
+
+{One system diagram — pick from the 23-type guide in Section 8 (usually **System Architecture** or **Layers** for a first read). Use the same `■ Diagram / ■ Purpose / ASCII art / ■ Legend` format defined in Section 8.}
+
+**Tone by mode (structure is identical — only tone changes):**
+| Mode | Style |
+|------|-------|
+| `developer` | Concise technical summary |
+| `normal` | Easy Korean, no unexplained jargon, acronyms spelled out on first use |
+
 ## 0. Assumptions & Open Questions
 
 **REQUIRED section — gates task decomposition. Cannot be empty, cannot be "none".**
@@ -83,6 +99,8 @@ Examples:
 ## 8. Architecture
 
 **Express the system structure with an ASCII diagram.** Select the appropriate type from the guide below.
+
+**Gate rule**: `prd-check` blocks Execute entry if Section 8 contains no `■ Diagram:` marker followed by a fenced diagram block. Bypass only via `phase set execute --force`.
 
 ### Diagram Selection Guide (23 types)
 
@@ -171,6 +189,8 @@ Key decisions: Describe why this structure was chosen and what alternatives were
 
 Write 2-3 concrete scenarios as step-by-step flows:
 
+**Any scenario with ≥3 steps MUST include a Sequence diagram** (see Section 8 diagram guide). `prd-check` flags a missing one as a warning only — not a gate.
+
 ### Happy Path
 1. User runs `{command}`
 2. System does {specific action}
@@ -209,6 +229,8 @@ Errors: 400 (invalid input), 404 (not found)
 ### Data Flow Trace
 Trace one request end-to-end: `User input → Component A (does X) → Component B (does Y) → Output`
 Name actual files, functions, or variables at each step.
+
+**A Data Flow Trace with ≥3 hops MUST include a Pipeline diagram** (see Section 8 diagram guide). `prd-check` flags a missing one as a warning only — not a gate.
 
 ## 11. Decisions & Assumptions
 
@@ -259,6 +281,8 @@ Explicitly define agent autonomy scope for this project. Three tiers:
 ## Section Quality Criteria
 
 Core rules (always apply):
+- **At a Glance: REQUIRED. Plain 3-line summary (`> 쉽게 말하면: ...` line + 2-3 short paragraphs) + minimum 1 system diagram. Same structure in `developer`/`normal` mode — only tone changes.**
+- **Every section (1-13) opens with a one-sentence plain-language summary line (`> 쉽게 말하면: ...` in normal mode / concise technical summary in developer mode). First occurrence of a domain term is written as Korean(original). This rule is a template guideline only — explicitly NOT auto-verified by prd-check.**
 - **Section 0 (Assumptions & Open Questions): REQUIRED. Cannot be empty. Minimum 2 assumptions (confidence-tagged) + 1 open question. Any `[*, low]` assumption or `blocking` question HALTS task decomposition until user validates via AskUserQuestion. "No assumptions" is rejected — the agent hasn't thought hard enough.**
 - Goal: 2-3 sentences with WHAT + WHY + WHO. If it needs 'and' joining unrelated outcomes, split into two projects.
 - Success Criteria: Each must be measurable and binary (pass/fail). Minimum 2. 'Works correctly' is NEVER a valid SC.
