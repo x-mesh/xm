@@ -159,8 +159,8 @@ const MESSAGES = {
     en: (slot) => `unknown phase: "${slot}" — choose plan, implement, or review`,
   },
   'phase.model_choice': {
-    ko: (a) => `모델: haiku, sonnet, opus, default 중 선택 ("${a}")`,
-    en: (a) => `model: choose haiku, sonnet, opus, or default ("${a}")`,
+    ko: (a) => `모델: haiku, sonnet, opus, inherit, default 중 선택 ("${a}")`,
+    en: (a) => `model: choose haiku, sonnet, opus, inherit, or default ("${a}")`,
   },
   'phase.label.plan': { ko: '설계 (plan)', en: 'plan' },
   'phase.label.implement': { ko: '구현 (implement)', en: 'implement' },
@@ -170,8 +170,8 @@ const MESSAGES = {
   'phase.short.review': { ko: '리뷰', en: 'review' },
   'phase.matrix_title': { ko: '페이즈별 모델', en: 'Phase models' },
   'phase.hint_set': {
-    ko: '설정: xm config phase plan=opus implement=sonnet review=opus',
-    en: 'Set: xm config phase plan=opus implement=sonnet review=opus',
+    ko: '설정: xm config phase plan=opus implement=sonnet review=opus  (모델: haiku|sonnet|opus|inherit)',
+    en: 'Set: xm config phase plan=opus implement=sonnet review=opus  (models: haiku|sonnet|opus|inherit)',
   },
   'phase.hint_restore': {
     ko: '복원: xm config phase <slot>=default  (프로필 기본값으로)',
@@ -179,10 +179,18 @@ const MESSAGES = {
   },
   'phase.profile_default': { ko: '프로필 기본값', en: 'profile default' },
   'phase.model_prompt': {
-    ko: (label) => `  ${label} 모델 [1) 프로필 기본값 2) haiku 3) sonnet 4) opus, Enter=유지]: `,
-    en: (label) => `  ${label} model [1) profile default 2) haiku 3) sonnet 4) opus, Enter=keep]: `,
+    ko: (label) => `  ${label} 모델 [1) 프로필 기본값 2) haiku 3) sonnet 4) opus 5) inherit(세션 모델), Enter=유지]: `,
+    en: (label) => `  ${label} model [1) profile default 2) haiku 3) sonnet 4) opus 5) inherit (session model), Enter=keep]: `,
   },
-  'phase.enter_1_4': { ko: '1-4 또는 Enter를 입력하세요', en: 'Enter 1-4 or Enter' },
+  'phase.enter_1_4': { ko: '1-5 또는 Enter를 입력하세요', en: 'Enter 1-5 or Enter' },
+  'phase.slot_roles': {
+    ko: (roles) => `  ↳ 일괄 적용 대상: ${roles} — 현재값이 서로 달라도 전부 이 값으로 덮어씁니다`,
+    en: (roles) => `  ↳ applies to ALL of: ${roles} — overwrites each role even if their current values differ`,
+  },
+  'phase.per_role_hint': {
+    ko: '역할 하나만 바꾸려면(예: deep-executor만): 모델 설정 → 2) 역할 오버라이드',
+    en: 'To change a single role (e.g. only deep-executor): Model settings → 2) Role overrides',
+  },
 
   // ── cmdConfig dispatch ──
   'cmd.unknown': {
@@ -303,8 +311,8 @@ const MESSAGES = {
   },
   'overrides.profile_default_paren': { ko: '(프로필 기본)', en: '(profile default)' },
   'overrides.format': {
-    ko: '형식: role=model (예: architect=opus)  ·  clear=초기화  ·  Enter=끝',
-    en: 'Format: role=model (e.g. architect=opus)  ·  clear=reset  ·  Enter=done',
+    ko: '형식: role=model (예: architect=opus, executor=inherit)  ·  clear=초기화  ·  Enter=끝',
+    en: 'Format: role=model (e.g. architect=opus, executor=inherit)  ·  clear=reset  ·  Enter=done',
   },
   'overrides.cleared': { ko: '오버라이드 초기화', en: 'Overrides reset' },
   'overrides.unknown_role': {
@@ -312,8 +320,8 @@ const MESSAGES = {
     en: (role) => `Unknown role: ${role}`,
   },
   'overrides.model_choice': {
-    ko: '모델: haiku, sonnet, opus 중 선택',
-    en: 'Model: choose haiku, sonnet, or opus',
+    ko: '모델: haiku, sonnet, opus, inherit 중 선택',
+    en: 'Model: choose haiku, sonnet, opus, or inherit',
   },
 
   // ── category: execution ──

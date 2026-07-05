@@ -84,6 +84,7 @@ Worktree `worktree.*` config resolves: CLI flag > `.xm/build/config.json` > `.xm
       "Acceptance criteria or verification contract"
     ],
     "expected_files": ["src/a.mjs", "src/b.mjs"],
+    "interface_contract": "parse(s) → AST|null; 입력은 신뢰 불가; 예외 대신 null",
     "strategy": "refine | review | null",
     "team": "team name | null",
     "created_at": "ISO8601",
@@ -94,6 +95,8 @@ Worktree `worktree.*` config resolves: CLI flag > `.xm/build/config.json` > `.xm
   }]
 }
 ```
+
+`interface_contract` (optional string): the delegation interface — 2-3 lines of signatures/invariants a delegate must not renegotiate. Injected into the agent prompt (`## Interface Contract`) and emitted on `run --json` entries; plan-check warns (`delegation-contract`) when a delegation-shaped task (expected_files set, or low-tier execution) lacks it. Set via `tasks add|update --interface-contract "..."`; empty string clears.
 
 `expected_files[]` (added for worktree mode): the parallel-batching signal. Tasks with non-overlapping expected files are parallel-safe; missing/empty or overlapping → sequential. Set via `tasks add|update --expected-files "a,b"`. Absent on tasks written before the field existed (normalizes to `[]`).
 

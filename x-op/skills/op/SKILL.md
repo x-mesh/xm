@@ -250,9 +250,9 @@ This skill uses only Claude Code built-in tools:
 ### fan-out (same question to all)
 Invoke N Agent tools **simultaneously** in a single message:
 ```
-Agent tool call 1: { description: "agent-1", prompt: "...", run_in_background: true, model: "opus" } <!-- managed-model: executor -->
-Agent tool call 2: { description: "agent-2", prompt: "...", run_in_background: true, model: "opus" } <!-- managed-model: executor -->
-Agent tool call 3: { description: "agent-3", prompt: "...", run_in_background: true, model: "opus" } <!-- managed-model: executor -->
+Agent tool call 1: { description: "agent-1", prompt: "...", run_in_background: true, model: "sonnet" } <!-- managed-model: executor -->
+Agent tool call 2: { description: "agent-2", prompt: "...", run_in_background: true, model: "sonnet" } <!-- managed-model: executor -->
+Agent tool call 3: { description: "agent-3", prompt: "...", run_in_background: true, model: "sonnet" } <!-- managed-model: executor -->
 ```
 All agents receive the same prompt but respond independently.
 

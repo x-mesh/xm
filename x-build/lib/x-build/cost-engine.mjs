@@ -407,10 +407,15 @@ export const MODEL_PROFILES = {
     verifier: 'sonnet', researcher: 'haiku',
   },
   // Judgment roles ride the session model; mechanical/execution roles keep
-  // their fixed tiers (executor opus, designer sonnet, explorer sonnet, …).
+  // their fixed tiers. executor is SONNET by measurement, not thrift: the
+  // phase-routing experiment (docs/phase-model-routing-experiment.md, 2026-07)
+  // showed opus-designed plans make sonnet execution equal to opus execution
+  // on correctness at ~0.60x cost, and with failure-mode enumeration (§7.5)
+  // sonnet even beat opus on robustness (3/3 vs 2/3). Hard/large executions
+  // escape upward anyway: size=large routes to deep-executor = inherit.
   default: {
     architect: 'inherit', reviewer: 'inherit', security: 'inherit',
-    executor:  'opus', designer:  'sonnet', debugger: 'inherit',
+    executor:  'sonnet', designer:  'sonnet', debugger: 'inherit',
     explorer:  'sonnet', writer:  'haiku',
     'deep-executor': 'inherit', planner: 'inherit', critic: 'inherit',
     verifier: 'sonnet', researcher: 'sonnet',

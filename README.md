@@ -1251,7 +1251,7 @@ The `model_profile` key expresses **cost intent** (how much to spend) on a singl
 | Profile | architect | executor | designer | explorer | writer | Notes |
 |---------|-----------|----------|----------|----------|--------|-------|
 | economy | sonnet | sonnet | sonnet | haiku | haiku | ~70-85% savings vs default — no inherit, ever |
-| default | inherit | opus | sonnet | sonnet | haiku | Judgment rides the session model |
+| default | inherit | sonnet | sonnet | sonnet | haiku | Judgment rides the session model; sonnet execution is the measured sweet spot |
 | max | inherit | opus | opus | sonnet | haiku | Judgment inherit + opus execution |
 
 **`inherit` means "run on the session model the user picked via `/model`"** — the profile decides *where to save*; `/model` decides *what quality means*. It is not a billable tier and is always expressed by **absence**: no `model:` frontmatter field on judgment skills, no `model` parameter on Agent-tool calls (never the literal string `"inherit"`). Judgment roles (architect, reviewer, security, planner, critic, debugger, deep-executor) inherit under default/max; economy pins every role — a spend ceiling can't inherit an arbitrarily expensive session model, even via `model_overrides`. Cost forecasting prices inherit tasks at the opus ceiling (errs high, never low); report the real model on completion with `tasks update <id> --status completed --resolved-model <haiku|sonnet|opus>`.

@@ -44,7 +44,7 @@ function parsePlanArgs(args) {
   return { quick, positional };
 }
 
-export function cmdPlan(args) {
+export async function cmdPlan(args) {
   const { quick, positional } = parsePlanArgs(args);
   const goal = positional.join(' ');
   const project = resolveProject(null);
@@ -62,6 +62,14 @@ export function cmdPlan(args) {
   }
 
   const manifest = readJSON(manifestPath(project));
+  // Deterministic research gauge (R2): the skill layer reads this to scale
+  // Research (full/slim) or — ONLY at quick-eligible — suggest --quick via
+  // AskUserQuestion. Gauge failure degrades to null (skill treats null as
+  // full), never blocks planning.
+  let researchSignal = null;
+  if (!quick) {
+    try { researchSignal = await gaugeResearch(goal); } catch { researchSignal = null; }
+  }
   const output = {
     action: 'auto-plan',
     project,
@@ -69,6 +77,7 @@ export function cmdPlan(args) {
     quick,
     flow: quick ? 'quick' : 'full',
     skip_research: quick,
+    research_signal: researchSignal,
     current_phase: PHASES.find(p => p.id === manifest?.current_phase)?.name,
     prd_writer: prdWriterSpec(),
     existing_tasks: readJSON(tasksPath(project))?.tasks?.length || 0,
@@ -336,23 +345,56 @@ export function cmdPlanCheck(args) {
   }
 
   // 13. Failure-mode coverage — pathological/adversarial inputs are the failure
-  // class plans leave implicit. ALL warn (never error): pre-existing PRDs without
-  // a Failure Modes section must not fail plan-check (backward compat).
+  // class plans leave implicit. The PRD-section check stays warn (upstream nudge;
+  // pre-existing PRDs must not fail wholesale), but the PER-TASK check is
+  // MODEL-AWARE: the phase-routing experiment (docs/phase-model-routing-experiment.md)
+  // measured 0/3 pathological-input survival for sonnet execution WITHOUT
+  // failure-mode enumeration vs 2/3 for opus — so a risk-domain task that will
+  // execute on sonnet-or-below without stress done_criteria is an ERROR (blocks
+  // the plan gate), while opus/inherit executions keep the probabilistic cushion
+  // and stay warn. Escape valve: an explicit `none — <rationale>` in done_criteria
+  // waives the check (the §7.5 convention), so a false-positive regex hit is a
+  // one-line fix, never a dead end.
   if (prd && !/##\s*(?:7\.5\.?)?\s*Failure Modes/i.test(prd)) {
     checks.push({ dim: 'failure-mode-coverage', level: 'warn', msg: `PRD has no Failure Modes section — pathological/adversarial inputs are unenumerated; implementers will not defend against them` });
   }
   // Word-start anchored (\b) to cut substring false-positives — "mismatch",
   // "sparse", "mainstream", "deadlock" no longer trip the parser/cache/stream/lock
-  // stems. Warn-only, so an occasional false negative (e.g. "unlock") is acceptable.
+  // stems. An occasional false positive is waivable via `none — <rationale>`.
   const RISK_DOMAIN_RE = /\b(pars|match|regex|cach|concurren|lock|queue|auth|crypto|input|stream|proto)/i;
   const STRESS_RE = /스트레스|stress|pathological|adversarial|병적|timeout|hang|무한/i;
+  const WAIVER_RE = /\bnone\s*[—–-]/i; // "none — <why this task has no failure modes>"
+  const LOW_TIER = new Set(['haiku', 'sonnet']);
+  const fmCfg = loadSharedConfig();
   for (const t of tasks) {
     const haystack = `${t.name} ${t.description || ''}`;
     if (RISK_DOMAIN_RE.test(haystack)) {
       const dc = (t.done_criteria || []).join(' ');
-      if (!STRESS_RE.test(dc)) {
-        checks.push({ dim: 'failure-mode-coverage', level: 'warn', task: t.id, msg: `"${t.name}" touches a risk domain (parser/matcher/cache/concurrency/auth/input) but has no stress/adversarial done_criteria — add a Failure Modes section, then run: tasks done-criteria` });
+      if (STRESS_RE.test(dc)) continue;
+      if (WAIVER_RE.test(dc)) continue; // explicitly waived with rationale
+      const role = t.role || (t.size === 'large' ? 'deep-executor' : 'executor');
+      const model = getModelForRole(role, t.size, fmCfg);
+      if (LOW_TIER.has(model)) {
+        checks.push({ dim: 'failure-mode-coverage', level: 'error', task: t.id, msg: `"${t.name}" touches a risk domain and executes on ${model} — measured 0/3 pathological-input survival without failure-mode enumeration (docs/phase-model-routing-experiment.md). Add stress/adversarial done_criteria (tasks done-criteria), or waive with done_criteria "none — <rationale>", or route the task to a higher tier` });
+      } else {
+        checks.push({ dim: 'failure-mode-coverage', level: 'warn', task: t.id, msg: `"${t.name}" touches a risk domain (parser/matcher/cache/concurrency/auth/input) but has no stress/adversarial done_criteria — executes on ${model} (probabilistic cushion); add a Failure Modes section, then run: tasks done-criteria` });
       }
+    }
+  }
+
+  // 14. Delegation contract — a task headed for delegation (worktree
+  // parallel-safe via expected_files, or executing on a low tier) without an
+  // interface_contract leaves the delegate free to renegotiate signatures and
+  // invariants mid-task. Warn-only: the contract is the delegation interface,
+  // not a universal requirement.
+  for (const t of tasks) {
+    if (t.interface_contract) continue;
+    const role = t.role || (t.size === 'large' ? 'deep-executor' : 'executor');
+    const model = getModelForRole(role, t.size, fmCfg);
+    const parallelSafe = Array.isArray(t.expected_files) && t.expected_files.length > 0;
+    if (parallelSafe || LOW_TIER.has(model)) {
+      const why = parallelSafe ? 'worktree parallel-safe (expected_files set)' : `executes on ${model}`;
+      checks.push({ dim: 'delegation-contract', level: 'warn', task: t.id, msg: `"${t.name}" is delegation-shaped (${why}) but has no interface_contract — add: tasks update ${t.id} --interface-contract "시그니처·불변식 2-3줄"` });
     }
   }
 
@@ -362,7 +404,7 @@ export function cmdPlanCheck(args) {
 
   console.log(`\n${C.bold}Plan Check — ${tasks.length} tasks${C.reset}\n`);
 
-  const dims = ['atomicity', 'dependencies', 'coverage', 'granularity', 'completeness', 'context', 'naming', 'tech-leakage', 'scope-clarity', 'risk-ordering', 'expected-files', 'failure-mode-coverage', 'overall'];
+  const dims = ['atomicity', 'dependencies', 'coverage', 'granularity', 'completeness', 'context', 'naming', 'tech-leakage', 'scope-clarity', 'risk-ordering', 'expected-files', 'failure-mode-coverage', 'delegation-contract', 'overall'];
   for (const dim of dims) {
     const dimChecks = checks.filter(c => c.dim === dim);
     if (dimChecks.length === 0) {
@@ -776,10 +818,22 @@ function resolveNext(project) {
   }
 }
 
-export function cmdNext(args) {
+export async function cmdNext(args) {
   const project = resolveProject(null);
   const jsonMode = args.includes('--json');
   const result = resolveNext(project);
+
+  // Attach the deterministic research gauge when the next action IS research —
+  // the skill layer uses it to scale the fan-out (full/slim) or, only at 0/4,
+  // suggest --quick (user-confirmed; never auto-skip). Failure → absent field.
+  if (result.action === 'research' || result.action === 'discuss') {
+    try {
+      const ctx = readMD(join(contextDir(project), 'CONTEXT.md')) || '';
+      const goalMatch = ctx.match(/^## Goal\s*\n+(.+)/m);
+      const goalText = goalMatch ? goalMatch[1].trim() : (readJSON(manifestPath(project))?.display_name || '');
+      result.research_signal = await gaugeResearch(goalText);
+    } catch { /* gauge is advisory on next — absence means "treat as full" */ }
+  }
 
   if (jsonMode) {
     console.log(JSON.stringify(result, null, 2));
@@ -1056,4 +1110,137 @@ export function cmdContextUsage(args) {
     console.log(`  ${C.green}Context usage is healthy${C.reset}`);
   }
   console.log('');
+}
+
+// ── cmdResearchCheck ─────────────────────────────────────────────────
+// Deterministic research-routing gauge. Four signals decide whether a goal
+// may SUGGEST skipping the Research phase — the LLM layer never judges this
+// alone, and a --quick suggestion is only permitted at 0/4 hits (and even
+// then only as an AskUserQuestion suggestion, never an automatic skip).
+// Fail-safe direction: any signal that cannot be judged (empty goal,
+// x-memory unavailable, unreadable lessons) counts as a HIT, pushing the
+// recommendation TOWARD research, never away from it.
+// Named research-check (not *signals*) to avoid colliding with x-memory's
+// unrelated collectContextSignals.
+
+const RC_CONTRACT_RE = /\b(schema|contract|migration|rename|protocol|vocabulary|api)\b|스키마|계약|어휘|프로토콜|마이그레이션|필드/i;
+const RC_IRREVERSIBLE_RE = /\b(release|publish|deploy|marketplace|drop|delete|remove|deprecat)/i;
+const RC_IRREVERSIBLE_KO = /릴리스|배포|삭제|제거|외부/;
+
+// Dual-path import of x-memory's store (bundle first, then source tree) —
+// mirrors loadPanelAdapters in shared-config. Returns null when unavailable;
+// the caller treats that as fail-safe HIT, never a silent pass.
+async function loadMemoryStore() {
+  const { fileURLToPath } = await import('node:url');
+  const { dirname } = await import('node:path');
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(here, '..', 'x-memory', 'store.mjs'),                                   // xm bundle: xm/lib/x-build → xm/lib/x-memory
+    join(here, '..', '..', '..', 'x-memory', 'lib', 'x-memory', 'store.mjs'),    // source: x-build/lib/x-build → x-memory/lib/x-memory
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      try { return await import(p); } catch { /* try next */ }
+    }
+  }
+  return null;
+}
+
+function rcTokens(goal) {
+  return String(goal).toLowerCase().split(/[\s/\-_.,:;()[\]{}'"]+/).filter((t) => t.length >= 4);
+}
+
+// Reusable core for cmdPlan/cmdNext wiring — same fail-safe rules as the CLI.
+export async function gaugeResearch(goal) {
+  return _gauge(String(goal ?? '').trim());
+}
+
+export async function cmdResearchCheck(args) {
+  const { opts, positional } = parseOptions(args);
+  const goal = (opts.goal != null ? String(opts.goal) : positional.join(' ')).trim();
+  const out = await _gauge(goal);
+
+  if (opts.json !== undefined) {
+    console.log(JSON.stringify(out, null, 2));
+    return out;
+  }
+  const { signals, hits, recommendation } = out;
+  console.log(`\n${C.bold}Research check${C.reset} — ${hits}/${signals.length} signals\n`);
+  for (const s of signals) {
+    console.log(`  ${s.hit ? `${C.yellow}HIT ${C.reset}` : `${C.dim}miss${C.reset}`} ${s.id.padEnd(22)} ${C.dim}${s.evidence}${C.reset}`);
+  }
+  const label = recommendation === 'quick-eligible'
+    ? `${C.green}quick-eligible${C.reset} — --quick MAY be suggested (user confirmation still required; never auto-skip)`
+    : recommendation === 'slim'
+      ? `${C.yellow}slim${C.reset} — targeted research (1-2 agents) on the hit signals`
+      : `${C.red}full${C.reset} — full research (4 agents)`;
+  console.log(`\n  recommendation: ${label}\n`);
+  return out;
+}
+
+async function _gauge(goal) {
+  const signals = [];
+  const failSafe = (id, why) => signals.push({ id, hit: true, evidence: `judgment unavailable (${why}) — fail-safe HIT` });
+
+  if (goal.length < 10) {
+    // Too little text to judge anything — every signal fails safe toward research.
+    for (const id of ['contract-vocabulary', 'no-memory-map', 'irreversible-surface', 'lessons-match']) {
+      failSafe(id, 'goal too short to judge');
+    }
+  } else {
+    // 1. Contract/schema vocabulary — cross-cutting changes need consumer sweeps.
+    const m1 = goal.match(RC_CONTRACT_RE);
+    signals.push(m1
+      ? { id: 'contract-vocabulary', hit: true, evidence: `matched "${m1[0]}"` }
+      : { id: 'contract-vocabulary', hit: false, evidence: 'no contract/schema vocabulary in goal' });
+
+    // 2. Memory map — a goal with NO recall hits is unknown territory.
+    try {
+      const store = await loadMemoryStore();
+      if (!store || typeof store.searchIndex !== 'function') {
+        failSafe('no-memory-map', 'x-memory not installed');
+      } else {
+        const results = store.searchIndex(goal);
+        signals.push(results.length === 0
+          ? { id: 'no-memory-map', hit: true, evidence: 'no x-memory hits — unknown territory' }
+          : { id: 'no-memory-map', hit: false, evidence: `${results.length} x-memory hit(s) — map exists (top: "${results[0].title || results[0].id}")` });
+      }
+    } catch (e) {
+      failSafe('no-memory-map', `x-memory error: ${String(e?.message || e).slice(0, 60)}`);
+    }
+
+    // 3. Irreversible surface — released schemas/migrations/external contracts.
+    const m3 = goal.match(RC_IRREVERSIBLE_RE) || goal.match(RC_IRREVERSIBLE_KO);
+    signals.push(m3
+      ? { id: 'irreversible-surface', hit: true, evidence: `matched "${m3[0]}"` }
+      : { id: 'irreversible-surface', hit: false, evidence: 'no irreversibility vocabulary in goal' });
+
+    // 4. Lessons — a recorded STOP/START in this area means the trap is known.
+    try {
+      const lessonsDir = join(ROOT, '..', 'humble', 'lessons');
+      if (!existsSync(lessonsDir)) {
+        signals.push({ id: 'lessons-match', hit: false, evidence: 'no lessons directory — nothing recorded' });
+      } else {
+        const toks = rcTokens(goal);
+        let matched = null;
+        for (const f of readdirSync(lessonsDir).filter((f) => f.endsWith('.json'))) {
+          let lesson;
+          try { lesson = JSON.parse(readFileSync(join(lessonsDir, f), 'utf8')); } catch { continue; }
+          const text = `${lesson.content || ''} ${lesson.reason || ''}`.toLowerCase();
+          const tok = toks.find((t) => text.includes(t));
+          if (tok) { matched = { id: lesson.id || f, tok }; break; }
+        }
+        signals.push(matched
+          ? { id: 'lessons-match', hit: true, evidence: `lesson ${matched.id} mentions "${matched.tok}"` }
+          : { id: 'lessons-match', hit: false, evidence: 'no lesson overlaps the goal' });
+      }
+    } catch (e) {
+      failSafe('lessons-match', `lessons error: ${String(e?.message || e).slice(0, 60)}`);
+    }
+  }
+
+  const hits = signals.filter((s) => s.hit).length;
+  // quick-eligible ONLY at 0/4 — one hit scales the research, it never re-opens quick.
+  const recommendation = hits === 0 ? 'quick-eligible' : hits <= 2 ? 'slim' : 'full';
+  return { goal, signals, hits, total: signals.length, recommendation };
 }

@@ -84,15 +84,15 @@ describe('getModelForRole — override priority chain', () => {
     const result = ce.getModelForRole('executor', 'medium', {
       model_profile: 'default',
     });
-    expect(result).toBe('opus');
+    expect(result).toBe('sonnet');
   });
 
   test('unknown role falls back to executor model from profile', () => {
     const result = ce.getModelForRole('nonexistent-role', 'medium', {
       model_profile: 'default',
     });
-    // default.executor = opus; unknown role uses that fallback
-    expect(result).toBe('opus');
+    // default.executor = sonnet (measured sweet spot); unknown role uses that fallback
+    expect(result).toBe('sonnet');
   });
 
   test('large task with haiku-mapped role emits a console warning', () => {
@@ -117,7 +117,7 @@ describe('getModelForRole — override priority chain', () => {
   });
 
   test('legacy "balanced" is accepted and resolves to default', () => {
-    expect(ce.getModelForRole('executor', 'medium', { model_profile: 'balanced' })).toBe('opus');
+    expect(ce.getModelForRole('executor', 'medium', { model_profile: 'balanced' })).toBe('sonnet');
   });
 
   test('legacy "performance" is accepted and resolves to max', () => {
@@ -189,7 +189,7 @@ describe('getModelForRole — extended roles and aliases', () => {
 
   test('truly unknown role still warns and falls back to executor model', () => {
     const warnings = captureWarnings(() => {
-      expect(ce.getModelForRole('nonexistent-role', 'medium', { model_profile: 'default' })).toBe('opus');
+      expect(ce.getModelForRole('nonexistent-role', 'medium', { model_profile: 'default' })).toBe('sonnet');
     });
     expect(warnings.some(w => w.includes('Unknown role'))).toBe(true);
   });
@@ -340,7 +340,7 @@ describe('cold-start fallback — empty or missing metrics', () => {
   afterEach(() => { clearMetrics(); clearConfig(); });
 
   test('no metrics file — getModelForRole returns static profile model', () => {
-    expect(ce.getModelForRole('executor', 'medium', { model_profile: 'default' })).toBe('opus');
+    expect(ce.getModelForRole('executor', 'medium', { model_profile: 'default' })).toBe('sonnet');
   });
 
   test('no config overrides — static profile is used', () => {
@@ -620,7 +620,7 @@ describe('getModelForRoleWithCorrelation', () => {
     const { model, correlationId } = ce.getModelForRoleWithCorrelation('executor', 'medium', {
       model_profile: 'default',
     });
-    expect(model).toBe('opus');
+    expect(model).toBe('sonnet');
     expect(typeof correlationId).toBe('string');
     expect(correlationId.startsWith('ce-')).toBe(true);
   });

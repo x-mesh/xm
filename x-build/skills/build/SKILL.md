@@ -145,7 +145,7 @@ See `references/ask-user-question-rule.md` — the `question` field is invisible
 Rules:
 1. **AskUserQuestion is REQUIRED for all user confirmations** — PRD review, plan review, phase gate passes, and any decision point. Text-only questions do NOT enforce turn boundaries.
 2. **Phase transitions** — before calling `phase next`, MUST get user confirmation via AskUserQuestion.
-3. **NEVER skip Research** — `plan "goal"` without `--quick` MUST go through Research (interview + research) before PRD generation. Calling `phase set plan` to skip Research is FORBIDDEN except in Quick Mode.
+3. **NEVER skip Research silently** — `plan "goal"` without `--quick` goes through Research, SCALED by the deterministic gauge in the plan JSON's `research_signal` (from `research-check`): `full` → 4-agent research; `slim` → 1-2 targeted agents on the HIT signals; `quick-eligible` (0/4 hits ONLY) → you MAY suggest `--quick` via AskUserQuestion, and proceed quick ONLY if the user confirms. A missing/failed `research_signal` = treat as `full`. Auto-skipping without the user's explicit confirmation, or calling `phase set plan` to dodge Research, is FORBIDDEN.
 4. **Artifacts MUST be printed before review** — any LLM-produced artifact (research findings, PRD, task breakdown, forecast, critique, consensus result) MUST be output in FULL to the user **before** calling AskUserQuestion or advancing the phase. Save-and-ask-without-showing is FORBIDDEN. Saving to disk does NOT count as showing. A summary paragraph does NOT count as showing — print the artifact content. For long outputs, print the full content once and then offer `AskUserQuestion`.
 5. **Research output MUST be persisted** — after each research sub-agent (stack / features / architecture / pitfalls) completes, immediately call `$XMB save research-notes --agent <name> --content "..."` to append the RAW agent output to `phases/01-research/notes.md`. Never discard raw agent output by only saving the synthesized ROADMAP — the user must be able to audit the evidence chain.
 6. **PRD Review loop** — already uses AskUserQuestion (keep as-is).
@@ -159,6 +159,8 @@ Rules:
 
 Anti-patterns:
 - ❌ `plan "goal"` → `phase set plan` → PRD generation (skips Research)
+- ❌ `research_signal: quick-eligible` → quick 플로우 자동 진입 (제안 없이) — quick은 사용자 확인 후에만
+- ❌ 신호 1-2개 HIT인데 "거의 quick감"이라며 조사 생략 — 1개라도 HIT면 조사 규모만 조절(slim), quick 제안 금지
 - ❌ Research agents complete → synthesize to ROADMAP.md → save → advance (raw agent output never shown, never persisted to `notes.md`)
 - ❌ Task breakdown generated → `$XMB save plan` → AskUserQuestion (task list never shown to user)
 - ❌ PRD generated → "리뷰해주세요" without showing PRD content
@@ -223,14 +225,21 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
    - Save CONTEXT.md, REQUIREMENTS.md, ROADMAP.md
    - `$XMB gate pass` → `$XMB phase next` (Research → Plan)
    - Then generate PRD and proceed with plan
-   - **NEVER skip Research by calling `phase set plan` directly — Research produces the artifacts that PRD depends on.**
+   - **NEVER skip Research by calling `phase set plan` directly — Research produces the artifacts that PRD depends on.** Scale it instead: read `research_signal` from the plan JSON (`full` = 4 agents / `slim` = 1-2 targeted agents on HIT signals / `quick-eligible` = suggest `--quick` via AskUserQuestion, only at 0/4).
 3. **If project exists in Research phase** → check artifacts, continue Research if incomplete, then plan
 4. **If project exists in Plan phase** → `$XMB plan "{goal}"` (already past Research)
 
 ### `plan "goal" --quick` (explicit Quick Mode)
 1. `$XMB init quick-{timestamp}` → `$XMB phase set plan` → Quick Mode flow (see [Quick Mode](#quick-mode-one-shot-planrun))
-2. Only enters Quick Mode when `--quick` flag is **explicitly** provided
-3. Quick Mode is the ONLY case where Research is skipped — and only because `--quick` is an explicit user opt-in
+2. Only enters Quick Mode when `--quick` flag is **explicitly** provided, OR when `research_signal.recommendation === "quick-eligible"` (0/4 signals) AND the user confirmed a --quick suggestion via AskUserQuestion
+3. Research is skipped ONLY via explicit user opt-in — either the flag, or a confirmed suggestion. The gauge alone never skips anything.
+
+### `dispatch "<instruction>"` (lightweight tracked execution)
+1. `$XMB dispatch "<instruction>" [--model M|--role R] [--done-criteria "..."] --json` — one task, no PRD/phase ceremony; the CLI prints a LOUD exemption notice (relay it to the user verbatim).
+2. Spawn ONE agent with the returned `task.prompt`. Model rule is the standard contract: `model` field is a tier → pass it; `"inherit"` → OMIT the model parameter.
+3. Verify the result against `done_criteria` yourself (leader), then run `task.on_complete` (append `--resolved-model <tier>` when the task ran on inherit).
+4. If the notice says dispatch tasks are piling up (≥2), suggest promoting to a PRD flow — do not keep dispatching a multi-step project.
+5. For delegation-critical instructions, set `--interface-contract`/`tasks update --interface-contract` (signatures/invariants, 2-3 lines) — it is injected into the prompt as `## Interface Contract`.
 
 ### Other commands
 - Route directly to the matching CLI command (init, status, discuss, research, run, etc.)
@@ -440,6 +449,7 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | User says | Command |
 |-----------|---------|
 | "start project", "new project" | `init` |
+| "그냥 이거 하나 해줘", "빠르게 실행하고 기록만", "single instruction, tracked" | `dispatch "<instruction>"` |
 | "what should I do?", "what's next?" | `next` |
 | "gather requirements", "ask me questions" | `discuss` |
 | "investigate", "research" | `research` |
@@ -468,6 +478,7 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | Rationalization | Reality |
 |---|---|
 | "We'll figure out edge cases during implementation" | Edge cases are why you plan. Discovering them mid-build means your plan was incomplete — and now rework is expensive. |
+| "신호가 1개뿐이고 애매하니 quick으로 가자" | The rule is deterministic: quick-eligible requires 0/4 HITs. One HIT scales research down to slim — it never re-opens quick. Ambiguity fails safe TOWARD research (measured: unjudgeable signals count as HIT). |
 | "This task is obvious, it doesn't need done_criteria" | Without done_criteria, "done" is subjective. If you can't write it in one sentence, the task is too big. |
 | "Adding more detail to the PRD slows us down" | Vague PRDs cause rework. Ten minutes of spec clarity saves hours of implementation churn. |
 | "The risk is unlikely, skip the mitigation" | Risks are ranked by likelihood × impact. Low-likelihood × high-impact still needs a plan. Silent risks become incidents. |

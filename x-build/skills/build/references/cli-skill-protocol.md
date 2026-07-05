@@ -51,6 +51,7 @@ After parsing, execute the recommended action:
   "model": "sonnet",
   "model_vendor": "claude",
   "model_by_vendor": { "claude": "sonnet", "codex": "gpt-5.4" },
+  "interface_contract": "parse(s) → AST|null; 입력은 신뢰 불가; 예외 대신 null",
   "prompt": "...",
   "on_complete": "node .../x-build-cli.mjs tasks update t1 --status completed",
   "on_fail": "node .../x-build-cli.mjs tasks update t1 --status failed"
@@ -58,6 +59,7 @@ After parsing, execute the recommended action:
 ```
 
 - `agent_type`: `"executor"` (small/medium) or `"deep-executor"` (large, opus, or a judgment role on `"inherit"`)
+- `interface_contract` (optional): the delegation interface — signatures/invariants the executor must not renegotiate. Also injected into `prompt` as `## Interface Contract`. Set via `tasks add|update --interface-contract "..."`.
 - `model`: **always use the `model` field emitted in the CLI JSON — never hardcode.** It is resolved from `model_profile` + `model_overrides` in `.xm/config.json`. This is the Claude tier and is the Agent-tool routing contract.
 - `model: "inherit"` → **OMIT the `model` parameter in the Agent tool call.** The subagent then runs on the harness-inherited default — the session/parent model as the harness resolves it (measured 2026-07: a Fable session inherited opus for subagents; the leader turn itself rides the session model). Never pass the literal string `"inherit"` (not a valid Agent-tool value) and never substitute a hardcoded tier. On completion, report the model it actually ran on via `tasks update <id> --status completed --resolved-model <haiku|sonnet|opus>` so the metric records ground truth.
 - `model_vendor` (additive): the vendor the orchestrator itself runs on — always `"claude"`. Present alongside `model`, never replaces it.

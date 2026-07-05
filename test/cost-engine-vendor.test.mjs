@@ -272,8 +272,8 @@ describe('getModelForRole — return vocabulary stays haiku/sonnet/opus/inherit'
     // vendor translation is a separate, explicit step (option A).
     const model = ce.getModelForRole('executor', 'medium', {
       model_profile: 'default',
-      vendor_models: { codex: { opus: 'gpt-5.5:high' } },
+      vendor_models: { codex: { sonnet: 'gpt-5.4' } },
     });
-    expect(model).toBe('opus'); // NOT 'gpt-5.5:high'
+    expect(model).toBe('sonnet'); // NOT 'gpt-5.4'
   });
 });
