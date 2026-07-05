@@ -25,8 +25,9 @@
  *   (b) Mermaid keyword/tag in a fenced block, WITHOUT requiring the marker.
  *
  * Retroactive policy: no `<!-- prd-template-version: N -->` marker anywhere
- * in the PRD text -> any "blocking" verdict from the primary/aux rules is
- * downgraded to "warning" (never blocks Execute entry for pre-existing PRDs).
+ * in the PRD text, OR a stamped N below PRD_TEMPLATE_VERSION -> any
+ * "blocking" verdict from the primary/aux rules is downgraded to "warning"
+ * (never blocks Execute entry for pre-existing PRDs).
  *
  * Usage: node scripts/sim-diagram-gate.mjs
  */
@@ -42,30 +43,55 @@ const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 // NOT import x-build/lib/x-build/plan.mjs)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Fence-aware (F2) + space-symmetric end boundary (F8) — mirrors
+// Fence-aware (F2) + space-symmetric end boundary (F8) + CommonMark
+// delimiter-length matching (F9) — mirrors
 // x-build/lib/x-build/plan.mjs:extractSectionScope exactly, per the
 // interface contract that this simulator's rules stay in lockstep with the
 // production implementation it validates.
 const NEXT_HEADING_RE = /^##(?!#)/;
 
+// Same delimiter-length rule as plan.mjs:matchFenceDelim (F9): a closing
+// fence only counts when its backtick run is >= the opening run's length, so
+// a nested ``` shown as literal content inside a ```` fence doesn't
+// prematurely close it.
+const FENCE_DELIM_RE = /^`{3,}/;
+function matchFenceDelim(trimmedLine) {
+  const m = FENCE_DELIM_RE.exec(trimmedLine);
+  return m ? m[0] : null;
+}
+
 function extractSection(fullText, headingNum) {
   const lines = fullText.split('\n');
   const headRe = new RegExp(`^##\\s*${headingNum}\\.`);
   let start = -1;
-  let inFence = false;
+  let fence = null;
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim().startsWith('```')) { inFence = !inFence; continue; }
-    if (!inFence && headRe.test(lines[i])) {
+    const trimmed = lines[i].trim();
+    if (fence) {
+      const closeDelim = matchFenceDelim(trimmed);
+      if (closeDelim && closeDelim.length >= fence.length) fence = null;
+      continue;
+    }
+    const openDelim = matchFenceDelim(trimmed);
+    if (openDelim) { fence = openDelim; continue; }
+    if (headRe.test(lines[i])) {
       start = i;
       break;
     }
   }
   if (start === -1) return null;
-  inFence = false;
+  fence = null;
   let end = lines.length;
   for (let i = start + 1; i < lines.length; i++) {
-    if (lines[i].trim().startsWith('```')) { inFence = !inFence; continue; }
-    if (!inFence && NEXT_HEADING_RE.test(lines[i])) {
+    const trimmed = lines[i].trim();
+    if (fence) {
+      const closeDelim = matchFenceDelim(trimmed);
+      if (closeDelim && closeDelim.length >= fence.length) fence = null;
+      continue;
+    }
+    const openDelim = matchFenceDelim(trimmed);
+    if (openDelim) { fence = openDelim; continue; }
+    if (NEXT_HEADING_RE.test(lines[i])) {
       end = i;
       break;
     }
@@ -73,21 +99,57 @@ function extractSection(fullText, headingNum) {
   return lines.slice(start, end).join('\n');
 }
 
+// Line-based scan (mirrors plan.mjs:extractFencedBlocks) rather than a
+// regex, so the same CommonMark delimiter-length rule applies here too — the
+// prior regex-based version treated ANY ``` as a closing delimiter,
+// mis-closing a ```` (4-backtick) fence at a nested ``` shown as literal
+// content.
 function extractFences(text) {
   const out = [];
-  const re = /```([^\n]*)\n([\s\S]*?)```/g;
-  let m;
-  while ((m = re.exec(text))) out.push({ lang: m[1].trim().toLowerCase(), body: m[2] });
+  const lines = text.split('\n');
+  let fence = null;
+  let lang = '';
+  let body = [];
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (fence) {
+      const closeDelim = matchFenceDelim(trimmed);
+      if (closeDelim && closeDelim.length >= fence.length) {
+        out.push({ lang, body: body.join('\n') });
+        fence = null;
+        continue;
+      }
+      body.push(raw);
+      continue;
+    }
+    const openDelim = matchFenceDelim(trimmed);
+    if (openDelim) {
+      fence = openDelim;
+      lang = trimmed.slice(openDelim.length).trim().toLowerCase();
+      body = [];
+    }
+  }
   return out;
 }
 
 const MARKER_RE = /■\s*Diagram\s*:/;
-const VERSION_MARKER_RE = /<!--\s*prd-template-version\s*:\s*\d+\s*-->/;
+// Captures the version number (F3) — production blocks only when the
+// stamped version is >= PRD_TEMPLATE_VERSION, not merely "a marker exists".
+const VERSION_MARKER_RE = /<!--\s*prd-template-version\s*:\s*(\d+)\s*-->/;
 const BOX_CHAR_RE = /[─│┌┐└┘├┤┬┴┼╌▶]/;
 const MERMAID_KEYWORD_RE = /graph\s+(td|lr|tb|rl)\b|sequencediagram|classdiagram|statediagram|erdiagram/i;
 
-function hasVersionMarker(fullText) {
-  return VERSION_MARKER_RE.test(fullText);
+// Mirrors x-build/lib/x-build/plan.mjs:PRD_TEMPLATE_VERSION — kept as a
+// local constant per the "standalone, no production imports" interface
+// contract; update both if the template version ever bumps.
+const PRD_TEMPLATE_VERSION = 2;
+
+// F3: production's isNewTemplate = versionMatch != null && version >=
+// PRD_TEMPLATE_VERSION — "has a marker" alone is not sufficient.
+function isNewTemplateVersion(fullText) {
+  const m = fullText.match(VERSION_MARKER_RE);
+  if (!m) return false;
+  return parseInt(m[1], 10) >= PRD_TEMPLATE_VERSION;
 }
 
 /** Primary rule: marker line present in scope AND a non-empty fence in scope. */
@@ -125,7 +187,9 @@ function auxBoxRule(section8Text, { minChars = 6, minLines = 2 } = {}) {
 function auxMermaidRule(section8Text) {
   if (!section8Text) return { pass: false, reason: 'no Section 8 found' };
   for (const { lang, body } of extractFences(section8Text)) {
-    if (lang === 'mermaid') return { pass: true, reason: 'fenced ```mermaid block' };
+    // F1: an empty ```mermaid fence must not count as a diagram — mirrors
+    // plan.mjs:sectionHasDiagram's non-empty-body check on the mermaid path.
+    if (lang === 'mermaid' && body.trim().length > 0) return { pass: true, reason: 'fenced ```mermaid block' };
     if (MERMAID_KEYWORD_RE.test(body)) return { pass: true, reason: 'mermaid keyword inside fenced block' };
   }
   return { pass: false, reason: 'no mermaid tag/keyword found' };
@@ -141,11 +205,11 @@ function evaluate(fullText, { useBox = false, useMermaid = false } = {}) {
   const box = useBox ? auxBoxRule(section8) : { pass: false, reason: 'aux rule not enabled' };
   const mermaid = useMermaid ? auxMermaidRule(section8) : { pass: false, reason: 'aux rule not enabled' };
   const diagramPresent = primary.pass || box.pass || mermaid.pass;
-  const versioned = hasVersionMarker(fullText);
+  const versioned = isNewTemplateVersion(fullText);
   // Gate only ever "blocks" when diagram is absent; if it's present there's
   // nothing to downgrade in the first place.
   const wouldBlock = !diagramPresent;
-  const finalBlocked = wouldBlock && versioned; // retroactive downgrade when unversioned
+  const finalBlocked = wouldBlock && versioned; // retroactive downgrade when unversioned/below-threshold
   const verdict = diagramPresent ? 'pass' : finalBlocked ? 'block' : 'warning';
   return { diagramPresent, versioned, verdict, primary, box, mermaid, hasSection8: !!section8 };
 }
