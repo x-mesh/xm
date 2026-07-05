@@ -47,46 +47,77 @@ const MERMAID_KEYWORD_RE = /graph\s+(td|lr|tb|rl)\b|sequencediagram|classdiagram
 // of leaking into it. The negative lookahead excludes `###` sub-headings.
 const NEXT_HEADING_RE = /^##(?!#)/;
 
+// CommonMark-style fence-delimiter matching (F9): a fence line is a run of
+// >=3 backticks. Returns that exact run (e.g. '```' or '````') or null. Used
+// so a fence's CLOSE is only recognized when it's the same character run
+// length-or-longer as its OPEN — a nested ``` (3 backticks) shown as literal
+// content inside a ```` (4-backtick) fence must not prematurely close it.
+const FENCE_DELIM_RE = /^`{3,}/;
+function matchFenceDelim(trimmedLine) {
+  const m = FENCE_DELIM_RE.exec(trimmedLine);
+  return m ? m[0] : null;
+}
+
 function extractSectionScope(lines, headingNum) {
   const headRe = new RegExp(`^##\\s*${headingNum}\\.`);
   let start = -1;
-  let inFence = false;
+  let fence = null; // active opening delimiter (e.g. '```'/'````'), or null
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim().startsWith('```')) { inFence = !inFence; continue; }
-    if (!inFence && headRe.test(lines[i])) { start = i; break; }
+    const trimmed = lines[i].trim();
+    if (fence) {
+      const closeDelim = matchFenceDelim(trimmed);
+      if (closeDelim && closeDelim.length >= fence.length) fence = null;
+      continue;
+    }
+    const openDelim = matchFenceDelim(trimmed);
+    if (openDelim) { fence = openDelim; continue; }
+    if (headRe.test(lines[i])) { start = i; break; }
   }
   if (start === -1) return null;
-  inFence = false;
+  fence = null;
   let end = lines.length;
   for (let i = start + 1; i < lines.length; i++) {
-    if (lines[i].trim().startsWith('```')) { inFence = !inFence; continue; }
-    if (!inFence && NEXT_HEADING_RE.test(lines[i])) { end = i; break; }
+    const trimmed = lines[i].trim();
+    if (fence) {
+      const closeDelim = matchFenceDelim(trimmed);
+      if (closeDelim && closeDelim.length >= fence.length) fence = null;
+      continue;
+    }
+    const openDelim = matchFenceDelim(trimmed);
+    if (openDelim) { fence = openDelim; continue; }
+    if (NEXT_HEADING_RE.test(lines[i])) { end = i; break; }
   }
   return lines.slice(start, end);
 }
 
 // Single pass over a section's lines to collect fenced code blocks. An
 // unterminated fence is simply dropped (no crash) rather than throwing.
+// Same CommonMark delimiter-length rule as extractSectionScope (F9): a
+// closing line only counts when its backtick run is >= the opening run.
 function extractFencedBlocks(sectionLines) {
   if (!sectionLines) return [];
   const blocks = [];
-  let inFence = false;
+  let fence = null;
   let lang = '';
   let body = [];
   for (const raw of sectionLines) {
     const trimmed = raw.trim();
-    if (trimmed.startsWith('```')) {
-      if (!inFence) {
-        inFence = true;
-        lang = trimmed.slice(3).trim().toLowerCase();
-        body = [];
-      } else {
-        inFence = false;
+    if (fence) {
+      const closeDelim = matchFenceDelim(trimmed);
+      if (closeDelim && closeDelim.length >= fence.length) {
         blocks.push({ lang, body: body.join('\n') });
+        fence = null;
+        continue;
       }
+      body.push(raw);
       continue;
     }
-    if (inFence) body.push(raw);
+    const openDelim = matchFenceDelim(trimmed);
+    if (openDelim) {
+      fence = openDelim;
+      lang = trimmed.slice(openDelim.length).trim().toLowerCase();
+      body = [];
+    }
   }
   return blocks;
 }
@@ -120,7 +151,7 @@ function sectionHasDiagram(sectionLines) {
     if (countBoxChars(f.body) >= 6 && boxCharLineCount(f.body) >= 2) return true;
   }
   for (const f of fences) {
-    if (f.lang === 'mermaid') return true;
+    if (f.lang === 'mermaid' && f.body.trim().length > 0) return true;
     if (MERMAID_KEYWORD_RE.test(f.body)) return true;
   }
   return false;
@@ -295,16 +326,19 @@ export function prdBlockingFindings(prdText) {
   }
 
   // Section 9 (Key Scenarios): a >=3-step scenario without any diagram is a
-  // warning, regardless of template version — this never blocks.
+  // warning, regardless of template version — this never blocks. Reuses
+  // sectionHasDiagram (marker/auxBox/auxMermaid) rather than "any fence
+  // exists" — an unrelated example fence (e.g. ```typescript) or an empty
+  // fence must not suppress this warning.
   const section9 = extractSectionScope(lines, 9);
-  if (section9 && maxNumberedRun(section9) >= 3 && extractFencedBlocks(section9).length === 0) {
+  if (section9 && maxNumberedRun(section9) >= 3 && !sectionHasDiagram(section9)) {
     warnings.push('Section 9 has ≥3-step scenarios but no sequence diagram');
   }
 
   // Section 10 (Data Flow / Data Model): a >=3-hop trace without any diagram
-  // is a warning, regardless of template version.
+  // is a warning, regardless of template version. Same sectionHasDiagram reuse.
   const section10 = extractSectionScope(lines, 10);
-  if (section10 && maxArrowHopsPerLine(section10) >= 3 && extractFencedBlocks(section10).length === 0) {
+  if (section10 && maxArrowHopsPerLine(section10) >= 3 && !sectionHasDiagram(section10)) {
     warnings.push('Section 10 has a ≥3-hop Data Flow Trace but no diagram');
   }
 
@@ -634,7 +668,7 @@ export function cmdDiscuss(args) {
   const project = resolveProject(null);
   const manifest = readJSON(manifestPath(project));
   const mode = opts.mode || 'interview';
-  const round = parseInt(opts.round || '1');
+  const round = parseInt(opts.round ?? '1');
   const maxRounds = parseInt(opts['max-rounds'] || '3');
 
   const phaseName = PHASES.find(p => p.id === manifest.current_phase)?.name;

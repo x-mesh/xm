@@ -837,6 +837,11 @@ describe('prd-check structural warnings (Section 9 / Section 10 / At a Glance)',
   // ── F12: a fenced diagram alongside the scenario/data-flow content must
   // suppress the "no diagram" warning for that section (extractFencedBlocks
   // scoped to that section's own boundary, not leaking in from elsewhere).
+  // Uses a "■ Diagram:" marker + non-empty fence so it's recognized by
+  // sectionHasDiagram's primary rule — a plain unmarked arrow-text fence is
+  // exactly the kind of "any fence exists" false pass the panel review
+  // caught (see the two tests below), so this fixture must itself qualify
+  // as a real diagram under the tightened check.
   test('a >=3-step scenario and a >=3-hop data flow with a fenced diagram present do NOT warn', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
@@ -849,6 +854,7 @@ describe('prd-check structural warnings (Section 9 / Section 10 / At a Glance)',
         '2. User logs in',
         '3. User sees the dashboard',
         '',
+        '■ Diagram: User flow',
         '```',
         'User -> App -> Login -> Dashboard',
         '```',
@@ -856,6 +862,7 @@ describe('prd-check structural warnings (Section 9 / Section 10 / At a Glance)',
         '## 10. Data Flow / Data Model',
         'Client → API → DB → Cache',
         '',
+        '■ Diagram: Data flow',
         '```',
         '[Client] -> [API] -> [DB] -> [Cache]',
         '```',
@@ -868,6 +875,62 @@ describe('prd-check structural warnings (Section 9 / Section 10 / At a Glance)',
       const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp }).stdout);
       expect(out.warnings.some((w) => /Section 9/.test(w))).toBe(false);
       expect(out.warnings.some((w) => /Section 10/.test(w))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // ── Panel-review fix: an unrelated example fence (e.g. ```typescript) is
+  // not a diagram — "any fence exists" previously suppressed the warning.
+  test('a >=3-step scenario with only a typescript example fence (not a diagram) still warns', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      const body = [
+        '# PRD',
+        '',
+        '## 9. Key Scenarios',
+        '1. User opens the app',
+        '2. User logs in',
+        '3. User sees the dashboard',
+        '',
+        '```typescript',
+        'interface Foo { bar: string; }',
+        '```',
+        '',
+        '## 12. Acceptance Criteria',
+        '- works',
+        '',
+      ].join('\n');
+      writePRD(tmp, name, body);
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp }).stdout);
+      expect(out.warnings.some((w) => /Section 9/.test(w))).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a >=3-hop data flow with only a typescript example fence (not a diagram) still warns', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      const body = [
+        '# PRD',
+        '',
+        '## 10. Data Flow / Data Model',
+        'Client → API → DB → Cache',
+        '',
+        '```typescript',
+        'interface Foo { bar: string; }',
+        '```',
+        '',
+        '## 12. Acceptance Criteria',
+        '- works',
+        '',
+      ].join('\n');
+      writePRD(tmp, name, body);
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp }).stdout);
+      expect(out.warnings.some((w) => /Section 10/.test(w))).toBe(true);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

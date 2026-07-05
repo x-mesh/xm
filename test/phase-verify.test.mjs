@@ -1140,6 +1140,69 @@ describe('prd-check + plan-exit gate (regression)', () => {
     } finally { rmSync(tmp, { recursive: true, force: true }); }
   });
 
+  // ── Panel-review fix: an EMPTY ```mermaid fence must not satisfy the
+  // auxMermaid rule — `lang === 'mermaid'` alone (no body check) previously
+  // let a blank fence through.
+  test('an empty ```mermaid fence (no content) does not satisfy the auxMermaid rule and blocks', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, [
+        '<!-- prd-template-version: 2 -->',
+        '# PRD',
+        '',
+        '## 8. Architecture',
+        '',
+        '```mermaid',
+        '```',
+        '',
+        '## 12. Acceptance Criteria',
+        '- x',
+        '',
+      ].join('\n'));
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } }).stdout);
+      expect(out.blocked).toBe(true);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  // ── F9 regression: a nested ``` shown as literal content inside a ````
+  // (4-backtick) fence must not prematurely close the outer fence. Without
+  // CommonMark delimiter-length matching, the naive toggle would treat the
+  // inner ``` pair as closing/reopening the fence, exposing a `## `-looking
+  // line as "outside a fence" and cutting Section 8's scope short before it
+  // reaches the real diagram below.
+  test('a nested ``` (3-backtick) inside a ```` (4-backtick) fence does not cut off a diagram further down', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePrd(tmp, name, [
+        '<!-- prd-template-version: 2 -->',
+        '# PRD',
+        '',
+        '## 8. Architecture',
+        '',
+        '````markdown',
+        'Example fence syntax:',
+        '```',
+        '## comment inside nested fence',
+        '```',
+        '````',
+        '',
+        '■ Diagram: System Architecture',
+        '',
+        '```',
+        '[Client] ──▶ [Server] ──▶ [(DB)]',
+        '```',
+        '',
+        '## 12. Acceptance Criteria',
+        '- x',
+        '',
+      ].join('\n'));
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp, env: { HOME: H } }).stdout);
+      expect(out.blocked).toBe(false);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
   // ── F5: below-threshold version marker downgrades to warning ──────────
   test('PRD stamped below PRD_TEMPLATE_VERSION with no Section 8 diagram warns but does not block', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
