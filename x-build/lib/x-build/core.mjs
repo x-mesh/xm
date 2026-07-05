@@ -2,7 +2,7 @@
  * x-build/core — Shared utilities, constants, and helpers
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, appendFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, appendFileSync, renameSync, statSync, unlinkSync, realpathSync } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
@@ -10,7 +10,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
 
 // Re-export node modules that sub-modules need
-export { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, appendFileSync, renameSync, statSync, unlinkSync };
+export { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, appendFileSync, renameSync, statSync, unlinkSync, realpathSync };
 export { join, resolve, dirname, basename };
 export { fileURLToPath };
 export { createInterface };
@@ -564,6 +564,162 @@ function packageScriptCommand(packageManager, scriptName) {
 
 function shouldSkipRecursiveTestScript(testScript) {
   return process.env.NODE_ENV === 'test' && /\bbun\s+test\b/.test(testScript);
+}
+
+// ── Project Kind Gauge ────────────────────────────────────────────────
+// Four-signal deterministic classifier: does `cwd` already hold a real
+// project (brownfield) or is it empty/new (greenfield)? Reports signals
+// only — makes no judgment beyond the fixed decision rule below. Mirrors
+// scripts/sim-project-kind.mjs exactly (0 misclassifications across 5 base
+// + 2 edge fixtures); do not change signal definitions here without
+// re-running that simulator.
+
+const PK_MANIFEST_FILES = ['package.json', 'go.mod', 'Cargo.toml', 'pyproject.toml', 'pom.xml', 'Gemfile', 'composer.json'];
+const PK_WORKSPACE_MARKERS = ['pnpm-workspace.yaml', 'turbo.json', 'nx.json', 'lerna.json'];
+const PK_GRADLE_PREFIX = 'build.gradle'; // build.gradle, build.gradle.kts, ...
+const PK_LOCKFILES = ['bun.lockb', 'pnpm-lock.yaml', 'yarn.lock', 'package-lock.json', 'poetry.lock', 'uv.lock', 'Cargo.lock', 'go.sum'];
+const PK_SRC_DIR_NAMES = ['src', 'lib', 'app', 'cmd', 'internal'];
+const PK_UPWARD_BOUND = 6;
+
+function pkHasManifestAt(dir) {
+  for (const f of PK_MANIFEST_FILES) if (existsSync(join(dir, f))) return true;
+  for (const f of PK_WORKSPACE_MARKERS) if (existsSync(join(dir, f))) return true;
+  try {
+    for (const f of readdirSync(dir)) if (f.startsWith(PK_GRADLE_PREFIX)) return true;
+  } catch { /* unreadable dir — treat as no manifest here */ }
+  return false;
+}
+
+function pkManifestPresentUpward(startDir, maxLevels) {
+  let dir = resolve(startDir);
+  const visited = new Set(); // realpaths already checked — blocks symlink cycles
+  for (let level = 0; level <= maxLevels; level++) {
+    let real;
+    try { real = realpathSync(dir); } catch { real = dir; }
+    if (visited.has(real)) return { hit: false, level, reason: 'symlink-cycle' };
+    visited.add(real);
+    if (pkHasManifestAt(dir)) return { hit: true, level };
+    const parent = dirname(dir);
+    if (parent === dir) return { hit: false, level, reason: 'reached-fs-root' };
+    dir = parent;
+  }
+  return { hit: false, level: maxLevels, reason: 'bound-exhausted' };
+}
+
+function pkLockfilePresent(dir) {
+  return PK_LOCKFILES.some((f) => existsSync(join(dir, f)));
+}
+
+function pkHasAnyFileRecursive(dir, depth = 0) {
+  if (depth > 20) return false; // pathological symlink loop guard
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const e of entries) {
+    const p = join(dir, e.name);
+    if (e.isFile()) return true;
+    if (e.isDirectory() && pkHasAnyFileRecursive(p, depth + 1)) return true;
+  }
+  return false;
+}
+
+function pkSourceTreePresent(dir) {
+  for (const name of PK_SRC_DIR_NAMES) {
+    const p = join(dir, name);
+    if (existsSync(p)) {
+      try {
+        if (statSync(p).isDirectory() && pkHasAnyFileRecursive(p)) return true;
+      } catch { /* ignore */ }
+    }
+  }
+  return false;
+}
+
+// git-history-present, with the absence-vs-error distinction the decision
+// rule depends on: no repo / 0 commits is a MISS (nothing wrong, just new);
+// git itself failing to run (ENOENT, or any other unrecognized non-zero
+// exit) is an ERROR that overrides the whole gauge to brownfield below —
+// we cannot safely call an unreadable directory "new".
+function pkGitHistorySignal(dir) {
+  // --max-count=2 (F9): the decision rule only needs to know count > 1, so
+  // cap rev-list's walk at 2 commits instead of enumerating full history.
+  // LC_ALL/LANG=C (F3): the stderr regexes below match git's ENGLISH
+  // messages ("not a git repository", "does not have any commits"). Without
+  // forcing the C locale, a non-English system locale makes git emit
+  // translated stderr, the regexes miss, and the signal falls through to the
+  // generic 'error' state — which overrides the whole gauge to brownfield
+  // (see gaugeProjectKind below), misclassifying an empty/new directory.
+  const res = spawnSync('git', ['rev-list', '--count', '--max-count=2', 'HEAD'], {
+    cwd: dir,
+    encoding: 'utf8',
+    env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+  });
+  if (res.error) {
+    return { hit: false, state: 'error', evidence: `error: git execution failed (${res.error.code || res.error.message})` };
+  }
+  if (res.status !== 0) {
+    const stderr = (res.stderr || '').toLowerCase();
+    if (/not a git repository/.test(stderr)) return { hit: false, state: 'miss-no-repo', evidence: 'not a git repository' };
+    if (/bad revision|unknown revision|ambiguous argument|does not have any commits/.test(stderr)) {
+      return { hit: false, state: 'miss-zero-commits', evidence: 'git repository with 0 commits' };
+    }
+    return { hit: false, state: 'error', evidence: `error: git exited ${res.status} (${stderr.trim().slice(0, 100) || 'unrecognized failure'})` };
+  }
+  const count = parseInt((res.stdout || '').trim(), 10) || 0;
+  return { hit: count > 1, state: count > 1 ? 'hit' : 'miss-zero-commits', evidence: `${count} commit(s) via git rev-list --count HEAD` };
+}
+
+/**
+ * gaugeProjectKind — deterministic greenfield/brownfield classifier for `cwd`.
+ * Decision rule: all 4 signals miss -> greenfield; 1+ hit -> brownfield;
+ * a git execution error overrides to brownfield regardless of the other 3
+ * signals (fail-safe: an unreadable state is never reported as "new").
+ * Reports signals only; callers decide what to do with the verdict.
+ */
+export function gaugeProjectKind(cwd) {
+  const dir = resolve(cwd);
+  const manifest = pkManifestPresentUpward(dir, PK_UPWARD_BOUND);
+  const lockfile = pkLockfilePresent(dir);
+  const sourceTree = pkSourceTreePresent(dir);
+  const git = pkGitHistorySignal(dir);
+
+  const signals = [
+    { id: 'manifest-present', hit: manifest.hit, evidence: manifest.hit ? `manifest/workspace marker found at upward level ${manifest.level}` : `no manifest within ${PK_UPWARD_BOUND} upward level(s) (${manifest.reason})` },
+    { id: 'lockfile-present', hit: lockfile, evidence: lockfile ? 'lockfile found in target directory' : 'no lockfile in target directory' },
+    { id: 'source-tree-present', hit: sourceTree, evidence: sourceTree ? 'src/lib/app/cmd/internal contains >=1 file' : 'no populated src/lib/app/cmd/internal subdir' },
+    { id: 'git-history-present', hit: git.hit, evidence: git.evidence },
+  ];
+
+  const hits = signals.filter((s) => s.hit).length;
+  const kind = git.state === 'error' ? 'brownfield' : (hits === 0 ? 'greenfield' : 'brownfield');
+
+  return { signals, hits, total: signals.length, kind };
+}
+
+export function cmdProjectKind(args) {
+  const { opts, positional } = parseOptions(args);
+  const targetCwd = resolve(opts.cwd != null ? String(opts.cwd) : (positional[0] || process.cwd()));
+  const gauge = gaugeProjectKind(targetCwd);
+  const out = { cwd: targetCwd, ...gauge };
+
+  if (opts.json !== undefined) {
+    console.log(JSON.stringify(out, null, 2));
+    return out;
+  }
+
+  console.log(`\n${C.bold}Project kind${C.reset} — ${out.hits}/${out.total} signals`);
+  console.log(`  ${C.dim}${out.cwd}${C.reset}\n`);
+  for (const s of out.signals) {
+    console.log(`  ${s.hit ? `${C.yellow}HIT ${C.reset}` : `${C.dim}miss${C.reset}`} ${s.id.padEnd(22)} ${C.dim}${s.evidence}${C.reset}`);
+  }
+  const label = out.kind === 'greenfield'
+    ? `${C.green}greenfield${C.reset} — no existing project detected`
+    : `${C.yellow}brownfield${C.reset} — existing project signal(s) found`;
+  console.log(`\n  kind: ${label}\n`);
+  return out;
 }
 
 function detectAndRunQualityChecks(project) {

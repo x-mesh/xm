@@ -33,6 +33,27 @@ $XMB discuss --mode interview
 1. Run: `$XMB discuss --mode interview`
 2. Parse JSON output (`action: "discuss"`, `mode: "interview"`)
 
+#### Round 0: Problem Framing (greenfield only)
+
+Runs before Round 1, and only when `next --json` (or `discuss --mode interview`) reports `round0_pending: true`. This field is only present when `project_kind === "greenfield"` — for `brownfield` projects, skip straight to Round 1; there is no gate to check.
+
+`project_kind` is a deterministic gauge recorded once at `init` time (4 signals: manifest found upward, lockfile present, populated source tree, >1 git commit — all miss ⇒ greenfield, any hit ⇒ brownfield, a git error fails safe to brownfield). It never re-computes mid-project, so an empty-repo project stays greenfield for its own lifetime even if files appear later. Inspect it directly with `$XMB project-kind [--json]`.
+
+Round 0 is exactly one round, one AskUserQuestion with 4 questions — it does not scale with ambiguity the way Round 1+ does:
+
+| Question | What it resolves |
+|----------|-------------------|
+| Problem definition | Is this eliminating repetitive work, adding a new capability, or something the user should just describe directly? |
+| Status quo | How is this handled today — manually, with another tool, or not at all? |
+| Shape of success | What does "it worked" look like — a metric moved, real users adopted it, or a demo lands? |
+| MVP wedge | What is the single thinnest slice worth building first — the most-used flow, the riskiest assumption to test, or one visible output? |
+
+Follow the dark-theme rule (`references/ask-user-question-rule.md`): decision-relevant text goes in `header`/`label`/`description`, not the `question` field.
+
+Save the answers to the JSON's `save_path` field (do not hardcode a filename — for round 0 the CLI returns `.../01-research/discuss-round0.json`; for round 1+ it returns the normal `discuss-interview-r{n}.json` chain). Also fold the answers into CONTEXT.md under a `## Round 0 — Problem Framing` section so later phases (PRD, research synthesis) can read them without opening the JSON.
+
+Round 0 does not replace Round 1's ambiguity gate — if dimension scores are still high after Round 0, Round 1's drill-down proceeds as usual.
+
 #### Round 1: Dimension Scan (mandatory)
 
 Ask exactly one question per dimension. Use AskUserQuestion with multiple questions:
@@ -91,18 +112,37 @@ The **Ambiguity Log** records how each dimension was clarified — this feeds in
 
 ### Step 2: Research (Research Phase)
 
-Parallel investigation with 4 agents:
+Parallel investigation with 4 agents. The JSON's `perspectives[]` (and `project_kind`) tell you which set of 4 to run — brownfield and greenfield use different perspectives because a greenfield project has no existing codebase to inspect:
 
 1. Run: `$XMB research "goal description"`
 2. Parse JSON output (`action: "research"`)
 3. Spawn 4 agents in parallel (fan-out), each investigating one perspective:
 
+**brownfield** (`project_kind: "brownfield"`) — inspects the existing codebase:
 ```
 Agent 1: "stack" — What tech stack is in use? What's available? What fits?
 Agent 2: "features" — Break down the goal into concrete feature requirements
 Agent 3: "architecture" — How should this be structured? What patterns apply?
 Agent 4: "pitfalls" — What could go wrong? Common mistakes? Edge cases?
 ```
+
+**greenfield** (`project_kind: "greenfield"`) — no codebase exists, so look outward instead:
+```
+Agent 1: "landscape" — Find 3-5 existing tools/products/OSS solving a similar problem
+                       (strengths / weaknesses / license). Identify common stack
+                       patterns for this domain (what people usually reach for —
+                       there is no existing codebase to inspect here). Derive 2-3
+                       differentiation opportunities.
+Agent 2: "user-scenarios" — Write 3-5 concrete scenarios ("As a {user}, when
+                       {situation}, I want {action} so that {outcome}"). Split
+                       MVP vs later using the Round 0 wedge answer. Derive [R#]
+                       requirements from scenarios — every R# must trace to at
+                       least one scenario. Conflicting scenarios become open questions.
+Agent 3: "architecture" — same as brownfield
+Agent 4: "pitfalls" — same as brownfield
+```
+
+Only the agent(s) whose `agents_spec[].web` is `true` (the greenfield `landscape` agent) may do live web research. When that agent needs it, apply this fallback chain and never fail silently: `mgrep --web` → `WebSearch` → if neither is available, do not skip the finding — record it as an explicit gap in ROADMAP.md ("web research unavailable for X").
 
 All agents run with `run_in_background: true`, `model` from the research JSON `agents_spec[].model` — never hardcode.
 
@@ -162,7 +202,10 @@ This step is triggered when the research goal contains technology comparison key
    - ❌ Assume defaults for unresolved decisions without asking
    - ✅ Present each unresolved decision with research-backed options → AskUserQuestion → update CONTEXT.md → gate pass
 
-7. Advance to Plan phase: `$XMB gate pass "Research complete — all decisions resolved"` → `$XMB phase next`
+7. **Before `gate pass` (greenfield only):** if the research JSON had `suggest_probe: true`, offer `/xm:probe` once as a one-line suggestion — never auto-run it:
+   - Developer mode: "Before locking scope: consider `/xm:probe` to pressure-test this idea's premise (optional)."
+   - Normal mode: `"본격적으로 만들기 전에 /xm:probe로 전제를 점검해볼 수 있어요 (선택)."`
+8. Advance to Plan phase: `$XMB gate pass "Research complete — all decisions resolved"` → `$XMB phase next`
 
 ### Step 3: Plan (Plan Phase)
 

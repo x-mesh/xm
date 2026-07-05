@@ -12,6 +12,12 @@ When `discuss` is invoked:
 
 Multi-round requirements gathering with drill-down.
 
+**Round 0** (greenfield only, precedes Round 1): present only when the JSON has `round0_pending: true` — a field that only ever appears when `project_kind === "greenfield"`. Brownfield projects never see this field and skip straight to Round 1.
+
+Round 0 is a single, fixed round — 4 questions in one AskUserQuestion, no ambiguity scoring: problem definition, status quo, shape of success, MVP wedge. See `references/workflow-guide.md` Step 1 for the exact question set.
+
+Save the answers to the JSON's `save_path` field, not a hardcoded filename — for round 0 this resolves to an isolated `01-research/discuss-round0.json`, kept out of the `discuss-interview-r{n}` chain so it never gets mistaken for round 1's `previous_round` lookup. Fold the answers into CONTEXT.md under `## Round 0 — Problem Framing` as well.
+
 **Round 1** (initial):
 - Identify 4-6 gray areas: technology choices, scope boundaries, performance requirements, auth strategy, data model, deployment target
 - For each area, present 2-4 options as numbered choices
@@ -41,7 +47,7 @@ A/B verified (2026-05-02): on the multi-tool install request, structured grillin
   ```bash
   $XMB save context --content "..." # Update CONTEXT.md
   ```
-  Also write round metadata to `01-research/discuss-interview-r{round}.json`:
+  Also write round metadata to the JSON's `save_path` field (do not hardcode the filename — it resolves to `01-research/discuss-interview-r{round}.json` for round 1+, or the isolated Round 0 path described above):
   ```json
   {
     "round": 1,
@@ -62,7 +68,7 @@ A/B verified (2026-05-02): on the multi-tool install request, structured grillin
 
 ## Assumptions Mode (Research phase)
 
-> **On-demand only** — not part of the default Research flow. Only triggered when `next --json` detects an existing codebase (presence of `package.json`, `go.mod`, `Cargo.toml`, etc.) or when the user explicitly calls `discuss --mode assumptions`. Skipped for greenfield projects.
+> **On-demand only** — not part of the default Research flow. Only triggered when the project manifest's `project_kind` is `brownfield` (a deterministic gauge recorded once at `init` time — see `references/workflow-guide.md` Round 0 for the signal detail; a manifest with no `project_kind` field is treated as `brownfield`) or when the user explicitly calls `discuss --mode assumptions`. Skipped for greenfield projects — there is no existing codebase to read assumptions from.
 
 - Read codebase files relevant to the goal
 - Generate 5-10 assumptions with format:

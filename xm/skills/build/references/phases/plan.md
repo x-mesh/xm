@@ -24,9 +24,11 @@ Determine PRD size based on task count expectation or `--size` flag:
 
 | Tier | Condition | PRD Sections |
 |------|-----------|-------------|
-| **small** | ≤5 expected tasks or `--size small` | 1.Goal, 2.Success Criteria, 3.Constraints, 5.Requirements Traceability, 7.Risks, 8.Architecture, 12.Acceptance Criteria (7 sections) |
-| **medium** | 6-15 tasks (default) | Above + 4.NFR, 6.Out of Scope, 7.5 Failure Modes & Adversarial Inputs, 9.Key Scenarios (11 sections) |
+| **small** | ≤5 expected tasks or `--size small` | At a Glance + 1.Goal, 2.Success Criteria, 3.Constraints, 5.Requirements Traceability, 7.Risks, 8.Architecture, 12.Acceptance Criteria (8 sections) |
+| **medium** | 6-15 tasks (default) | Above + 4.NFR, 6.Out of Scope, 7.5 Failure Modes & Adversarial Inputs, 9.Key Scenarios (12 sections) |
 | **large** | 15+ tasks or `--size large` | All sections including 7.5 Failure Modes & Adversarial Inputs (current full template) |
+
+**At a Glance is mandatory for every tier** — it is the non-expert-readable entry point (plain 3-line summary + 1 diagram) and is never omitted regardless of `--size`.
 
 **Rationale for small tier change:** Previous small tier (5 sections) omitted Risks and Architecture, producing PRDs that lacked actionable context for executors. Every project has risks and structure — even small ones.
 

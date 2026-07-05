@@ -7,7 +7,7 @@
  * Usage: node <plugin-root>/lib/x-build-cli.mjs <command> [args] [options]
  */
 
-import { resolveProject, resetCircuitBreaker, getCircuitState, setExplicitProject } from './x-build/core.mjs';
+import { resolveProject, resetCircuitBreaker, getCircuitState, setExplicitProject, cmdProjectKind } from './x-build/core.mjs';
 import { cmdInit, cmdList, cmdStatus, cmdClose, cmdDashboard, interactiveInit, interactiveDashboard, cmdHandoffFull, cmdHandon } from './x-build/project.mjs';
 import { cmdPhase, cmdGate, cmdCheckpoint } from './x-build/phase.mjs';
 import { cmdTasks, cmdSteps, cmdRun, cmdRunStatus, interactiveTasksAdd, cmdDispatch } from './x-build/tasks.mjs';
@@ -96,6 +96,7 @@ switch (cmd) {
   case 'research':       cmdResearch(args); break;
   case 'plan-check':     cmdPlanCheck(args); break;
   case 'research-check': await cmdResearchCheck(args); break;
+  case 'project-kind':   cmdProjectKind(args); break;
   case 'dispatch':       cmdDispatch(args); break;
   case 'prd-check':      cmdPrdCheck(args); break;
   case 'prd-gate':       cmdPrdGate(args); break;

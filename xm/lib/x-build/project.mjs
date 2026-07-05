@@ -16,6 +16,7 @@ import {
   decisionsPath, metricsPath,
   execSync,
   exitFail,
+  repoRoot, gaugeProjectKind,
 } from './core.mjs';
 
 // ── cmdInit ─────────────────────────────────────────────────────────
@@ -35,12 +36,17 @@ export function cmdInit(args) {
   }
 
   const now = new Date().toISOString();
+  // Computed once, at init time — kind() may change later (e.g. the user
+  // adds source files), but the manifest records what the project looked
+  // like the moment x-build started managing it.
+  const projectKind = gaugeProjectKind(repoRoot()).kind;
   const manifest = {
     name: slug,
     display_name: name,
     current_phase: '01-research',
     created_at: now,
     updated_at: now,
+    project_kind: projectKind,
   };
 
   writeJSON(manifestPath(slug), manifest);

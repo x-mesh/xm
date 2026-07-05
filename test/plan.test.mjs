@@ -690,3 +690,186 @@ describe('interface_contract field', () => {
     }
   });
 });
+
+// ── project_kind-aware planning (greenfield vs brownfield) ─────────────
+describe('project_kind-aware planning', () => {
+  test('research on a greenfield project swaps perspectives, flags landscape as web, and suggests probe', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp); // empty tmp dir → greenfield (no manifest/lockfile/source/git signal)
+      const r = run(['research', 'topic'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const output = JSON.parse(r.stdout);
+      expect(output.project_kind).toBe('greenfield');
+      expect(output.perspectives).toEqual(['landscape', 'user-scenarios', 'architecture', 'pitfalls']);
+      expect(output.suggest_probe).toBe(true);
+      const landscapeSpec = output.agents_spec.find((s) => s.perspective === 'landscape');
+      expect(landscapeSpec.web).toBe(true);
+      for (const spec of output.agents_spec) {
+        if (spec.perspective !== 'landscape') expect(spec.web).toBeUndefined();
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('research on a brownfield project (package.json present) keeps the existing perspectives with no web field', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      writeFileSync(join(tmp, 'package.json'), '{"name":"existing-project"}\n');
+      setupProject(tmp);
+      const r = run(['research', 'topic'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const output = JSON.parse(r.stdout);
+      expect(output.project_kind).toBe('brownfield');
+      expect(output.perspectives).toEqual(['stack', 'features', 'architecture', 'pitfalls']);
+      expect(output.suggest_probe).toBe(false);
+      for (const spec of output.agents_spec) expect(spec.web).toBeUndefined();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a manifest missing the project_kind field (pre-migration) falls back to brownfield on plan + next', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      const manifestFile = join(tmp, '.xm', 'build', 'projects', name, 'manifest.json');
+      const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
+      delete manifest.project_kind;
+      writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+
+      const planOut = JSON.parse(run(['plan', 'Build something'], { cwd: tmp }).stdout);
+      expect(planOut.project_kind).toBe('brownfield');
+
+      const nextOut = JSON.parse(run(['next', '--json'], { cwd: tmp }).stdout);
+      expect(nextOut.project_kind).toBe('brownfield');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('next --json signals round0_pending for a greenfield project until discuss-round0.json exists', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp); // greenfield; current_phase defaults to research
+      const before = JSON.parse(run(['next', '--json'], { cwd: tmp }).stdout);
+      expect(before.project_kind).toBe('greenfield');
+      expect(before.round0_pending).toBe(true);
+
+      const round0Path = join(tmp, '.xm', 'build', 'projects', name, 'phases', '01-research', 'discuss-round0.json');
+      mkdirSync(dirname(round0Path), { recursive: true });
+      writeFileSync(round0Path, JSON.stringify({ done: true }));
+
+      const after = JSON.parse(run(['next', '--json'], { cwd: tmp }).stdout);
+      expect(after.round0_pending).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('discuss round 0 saves to an isolated filename that never contaminates the round-1 chain', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      const round0 = JSON.parse(run(['discuss', '--mode', 'interview', '--round', '0'], { cwd: tmp }).stdout);
+      expect(round0.save_path.endsWith('discuss-round0.json')).toBe(true);
+
+      // Simulate a completed round 0.
+      writeFileSync(round0.save_path, JSON.stringify({ some: 'round0-data' }));
+
+      // A real round-1 result, distinct from round 0's content. Round 2's
+      // prevPath lookup is discuss-interview-r{2-1}.json = ...-r1.json.
+      const r1Path = join(dirname(round0.save_path), 'discuss-interview-r1.json');
+      writeFileSync(r1Path, JSON.stringify({ some: 'round1-data' }));
+
+      // Asserting round1.previous_round === undefined (the old assertion) is
+      // trivially true regardless of isolation: round 1's own prevPath lookup
+      // is discuss-interview-r0.json, a file round 0 never writes to (it
+      // writes discuss-round0.json instead), so that assertion passes even if
+      // the isolation were broken. Round 2 is the real test: its prevPath
+      // (discuss-interview-r1.json) DOES exist, so previous_round must carry
+      // ONLY round 1's data, never round 0's.
+      const round2 = JSON.parse(run(['discuss', '--mode', 'interview', '--round', '2'], { cwd: tmp }).stdout);
+      expect(round2.previous_round).toEqual({ some: 'round1-data' });
+
+      // And the round-1-chain filename round 1 would have looked up
+      // (discuss-interview-r0.json) must never have been created by round 0.
+      const r0ChainPath = join(dirname(round0.save_path), 'discuss-interview-r0.json');
+      expect(existsSync(r0ChainPath)).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── prd-check structural warnings (Section 9 / Section 10 / At a Glance) ──
+describe('prd-check structural warnings (Section 9 / Section 10 / At a Glance)', () => {
+  test('flags a >=3-step scenario without a diagram, a >=3-hop data flow without a diagram, and a missing At a Glance section', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      const body = [
+        '# PRD',
+        '',
+        '## 9. Key Scenarios',
+        '1. User opens the app',
+        '2. User logs in',
+        '3. User sees the dashboard',
+        '',
+        '## 10. Data Flow / Data Model',
+        'Client → API → DB → Cache',
+        '',
+        '## 12. Acceptance Criteria',
+        '- works',
+        '',
+      ].join('\n');
+      writePRD(tmp, name, body);
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp }).stdout);
+      expect(out.warnings.some((w) => /Section 9/.test(w))).toBe(true);
+      expect(out.warnings.some((w) => /Section 10/.test(w))).toBe(true);
+      expect(out.warnings.some((w) => /At a Glance/.test(w))).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // ── F12: a fenced diagram alongside the scenario/data-flow content must
+  // suppress the "no diagram" warning for that section (extractFencedBlocks
+  // scoped to that section's own boundary, not leaking in from elsewhere).
+  test('a >=3-step scenario and a >=3-hop data flow with a fenced diagram present do NOT warn', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      const body = [
+        '# PRD',
+        '',
+        '## 9. Key Scenarios',
+        '1. User opens the app',
+        '2. User logs in',
+        '3. User sees the dashboard',
+        '',
+        '```',
+        'User -> App -> Login -> Dashboard',
+        '```',
+        '',
+        '## 10. Data Flow / Data Model',
+        'Client → API → DB → Cache',
+        '',
+        '```',
+        '[Client] -> [API] -> [DB] -> [Cache]',
+        '```',
+        '',
+        '## 12. Acceptance Criteria',
+        '- works',
+        '',
+      ].join('\n');
+      writePRD(tmp, name, body);
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp }).stdout);
+      expect(out.warnings.some((w) => /Section 9/.test(w))).toBe(false);
+      expect(out.warnings.some((w) => /Section 10/.test(w))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
