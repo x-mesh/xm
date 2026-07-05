@@ -10,7 +10,7 @@
     {
       "name": "build",
       "description": "Phase-based project harness with PRD generation, consensus review, plan validation, multi-mode deliberation, DAG execution, cost forecasting, and decision memory",
-      "version": "2.13.0",
+      "version": "2.14.0",
       "author": {
         "name": "x-mesh"
       },
@@ -46,7 +46,7 @@
     {
       "name": "op",
       "description": "Strategy orchestration — 17 strategies with self-scoring, x-eval verification, and compose presets",
-      "version": "2.4.2",
+      "version": "2.4.3",
       "author": {
         "name": "x-mesh"
       },
@@ -64,7 +64,7 @@
     {
       "name": "solver",
       "description": "Structured problem solving — decompose, iterate, constrain, or auto-pipeline with strategy recommendation",
-      "version": "2.2.4",
+      "version": "2.2.5",
       "author": {
         "name": "x-mesh"
       },
@@ -207,7 +207,7 @@
     {
       "name": "dashboard",
       "description": "Web dashboard for .xm project state — visualize builds, probes, solvers, reviews, evals, humble lessons, traces, memory",
-      "version": "2.12.0",
+      "version": "2.12.1",
       "author": {
         "name": "x-mesh"
       },
@@ -260,7 +260,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.4.43",
+      "version": "2.4.45",
       "author": {
         "name": "x-mesh"
       },
