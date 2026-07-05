@@ -11,7 +11,7 @@ Full Project Requirements Document template with per-section quality criteria. U
 
 **REQUIRED — first thing a non-expert reader sees. Answers: "can someone who didn't write this PRD understand what's being built in 30 seconds?"**
 
-> 쉽게 말하면: {one sentence, no jargon, that a non-engineer would understand}
+> 요약: {one sentence, no jargon, that a non-engineer would understand}
 
 {2-3 short paragraphs: what this builds, why it matters, and the key safeguard/guardrail that keeps it safe — e.g., rollback path, permission boundary, rate limit}
 
@@ -281,8 +281,8 @@ Explicitly define agent autonomy scope for this project. Three tiers:
 ## Section Quality Criteria
 
 Core rules (always apply):
-- **At a Glance: REQUIRED. Plain 3-line summary (`> 쉽게 말하면: ...` line + 2-3 short paragraphs) + minimum 1 system diagram. Same structure in `developer`/`normal` mode — only tone changes.**
-- **Every section (1-13) opens with a one-sentence plain-language summary line (`> 쉽게 말하면: ...` in normal mode / concise technical summary in developer mode). First occurrence of a domain term is written as Korean(original). This rule is a template guideline only — explicitly NOT auto-verified by prd-check.**
+- **At a Glance: REQUIRED. Plain 3-line summary (`> 요약: ...` line + 2-3 short paragraphs) + minimum 1 system diagram. Same structure in `developer`/`normal` mode — only tone changes.**
+- **Every section (1-13) opens with a one-sentence plain-language summary line (`> 요약: ...` in normal mode / concise technical summary in developer mode). First occurrence of a domain term is written as Korean(original). This rule is a template guideline only — explicitly NOT auto-verified by prd-check.**
 - **Section 0 (Assumptions & Open Questions): REQUIRED. Cannot be empty. Minimum 2 assumptions (confidence-tagged) + 1 open question. Any `[*, low]` assumption or `blocking` question HALTS task decomposition until user validates via AskUserQuestion. "No assumptions" is rejected — the agent hasn't thought hard enough.**
 - Goal: 2-3 sentences with WHAT + WHY + WHO. If it needs 'and' joining unrelated outcomes, split into two projects.
 - Success Criteria: Each must be measurable and binary (pass/fail). Minimum 2. 'Works correctly' is NEVER a valid SC.

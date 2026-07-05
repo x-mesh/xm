@@ -475,26 +475,11 @@ function sanitizeHtml(html) {
 function renderMarkdown(text) {
   if (!text) return '';
   if (typeof marked !== 'undefined' && marked.parse) {
-    // Pre-process: wrap ASCII diagram blocks in code fences so marked renders them as <pre>
-    // Detect lines with box-drawing chars (─│┌┐└┘├┤┬┴┼), arrows (──▶ ◀── →), or tree chars (├── └──)
-    const lines = text.split('\n');
-    const processed = [];
-    let inDiagram = false;
-    for (const line of lines) {
-      const isDiagramLine = /[─│┌┐└┘├┤┬┴┼▶◀▼▲═║╔╗╚╝╠╣╦╩╬]/.test(line) ||
-        /^\s*[\[(\s].*──/.test(line) ||
-        /^\s*[│├└┌]/.test(line);
-      if (isDiagramLine && !inDiagram) {
-        processed.push('```');
-        inDiagram = true;
-      } else if (!isDiagramLine && inDiagram && line.trim() === '') {
-        processed.push('```');
-        inDiagram = false;
-      }
-      processed.push(line);
-    }
-    if (inDiagram) processed.push('```');
-    return sanitizeHtml(marked.parse(processed.join('\n')));
+    // Fence-aware preprocessing (render-helpers.js): diagrams already fenced in
+    // the source pass through untouched; only unfenced ASCII diagrams get wrapped.
+    // Re-fencing already-fenced blocks was corrupting every PRD diagram.
+    const processed = globalThis.XMRender.preprocessDiagrams(text);
+    return sanitizeHtml(marked.parse(processed));
   }
   // Fallback: escape HTML and preserve line breaks
   return text
