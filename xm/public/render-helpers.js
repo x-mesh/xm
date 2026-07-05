@@ -78,5 +78,58 @@
     return '—';
   }
 
-  g.XMRender = { escapeHtml, renderValue, renderEmpty, fmtAgents };
+  // Prepare markdown so ASCII diagrams survive marked.parse(). Two rules:
+  //  1. Content already inside a ``` / ~~~ fenced block is passed through
+  //     UNTOUCHED. The PRD template fences every diagram; re-fencing it is the
+  //     bug that broke every dashboard diagram — an injected ``` closes the
+  //     source fence, spilling box-drawing art into markdown context where
+  //     [..] becomes a link, blank lines split the block, and alignment dies.
+  //  2. Only *unfenced* runs of diagram lines (defensive: model output that
+  //     forgot to fence) get wrapped in a ``` fence. A blank line inside such a
+  //     run does not close it as long as the diagram continues afterward.
+  const DIAGRAM_RE = /[─│┌┐└┘├┤┬┴┼▶◀▼▲►◄═║╔╗╚╝╠╣╦╩╬]|──|╌╌/;
+  const FENCE_RE = /^\s*(```|~~~)/;
+  function preprocessDiagrams(text) {
+    const lines = String(text ?? '').split('\n');
+    const out = [];
+    let inSourceFence = false; // inside a ``` / ~~~ block authored in the source
+    let inAutoFence = false;   // inside a ``` we injected for an unfenced diagram
+    const isDiagram = (s) => s != null && DIAGRAM_RE.test(s);
+    const nextNonBlank = (i) => {
+      for (let j = i; j < lines.length; j++) {
+        if (lines[j].trim() !== '') return lines[j];
+      }
+      return null;
+    };
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (FENCE_RE.test(line)) {
+        if (inAutoFence) { out.push('```'); inAutoFence = false; }
+        inSourceFence = !inSourceFence;
+        out.push(line);
+        continue;
+      }
+      if (inSourceFence) { out.push(line); continue; }
+      if (isDiagram(line)) {
+        if (!inAutoFence) { out.push('```'); inAutoFence = true; }
+        out.push(line);
+        continue;
+      }
+      if (inAutoFence) {
+        // Keep a blank line inside the auto-fenced run only if the diagram
+        // resumes after it; otherwise the run is over — close the fence.
+        if (line.trim() === '' && isDiagram(nextNonBlank(i + 1))) {
+          out.push(line);
+          continue;
+        }
+        out.push('```');
+        inAutoFence = false;
+      }
+      out.push(line);
+    }
+    if (inAutoFence) out.push('```');
+    return out.join('\n');
+  }
+
+  g.XMRender = { escapeHtml, renderValue, renderEmpty, fmtAgents, preprocessDiagrams };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

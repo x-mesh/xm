@@ -5,7 +5,7 @@
 import { describe, test, expect } from 'bun:test';
 import '../public/render-helpers.js'; // IIFE sets globalThis.XMRender
 
-const { renderValue, renderEmpty, fmtAgents } = globalThis.XMRender;
+const { renderValue, renderEmpty, fmtAgents, preprocessDiagrams } = globalThis.XMRender;
 
 describe('renderValue', () => {
   test('never emits "[object Object]" for any shape', () => {
@@ -85,5 +85,58 @@ describe('fmtAgents', () => {
     expect(fmtAgents(3)).toBe('3');
     expect(fmtAgents('claude')).toBe('claude');
     expect(fmtAgents(null)).toBe('—');
+  });
+});
+
+describe('preprocessDiagrams', () => {
+  // Regression: the PRD template fences every ASCII diagram. The old heuristic
+  // re-fenced already-fenced content, and the injected ``` closed the source
+  // fence — spilling box-drawing art into markdown context (broke every
+  // dashboard diagram). Fenced content must now pass through untouched.
+  const F = '```';
+  const fenceCount = (s) => (s.match(/```/g) || []).length;
+
+  test('does not re-fence a diagram already inside a code fence (idempotent)', () => {
+    const md = [
+      '## 8. Architecture',
+      '',
+      F,
+      '[A] ──▶ [B]',
+      '        │',
+      '        ▼',
+      '[C]',
+      F,
+      '',
+      'prose after',
+    ].join('\n');
+    expect(preprocessDiagrams(md)).toBe(md);   // untouched
+    expect(fenceCount(preprocessDiagrams(md))).toBe(2); // no injected fences
+  });
+
+  test('leaves fenced blocks with a language info-string untouched', () => {
+    const md = ['text', F + 'bash', 'echo ──▶ x', F, 'end'].join('\n');
+    expect(preprocessDiagrams(md)).toBe(md);
+  });
+
+  test('wraps an unfenced ASCII diagram in exactly one fence pair', () => {
+    const md = ['before', '[A] ──▶ [B]', '   │      │', '   ▼      ▼', '[C] ◀── [D]', '', 'after'].join('\n');
+    const out = preprocessDiagrams(md);
+    expect(fenceCount(out)).toBe(2);
+    expect(out).toContain('[A] ──▶ [B]');
+    expect(out).toContain('[C] ◀── [D]');
+    // box art is fenced: the opening fence sits between prose and the diagram
+    expect(out.indexOf('before')).toBeLessThan(out.indexOf(F));
+    expect(out.indexOf(F)).toBeLessThan(out.indexOf('[A] ──▶ [B]'));
+  });
+
+  test('an internal blank line does not split an unfenced diagram', () => {
+    const md = ['[A] ──▶ [B]', '', '[C] ──▶ [D]'].join('\n');
+    expect(fenceCount(preprocessDiagrams(md))).toBe(2); // one pair, not two
+  });
+
+  test('empty / nullish input is safe', () => {
+    expect(preprocessDiagrams('')).toBe('');
+    expect(preprocessDiagrams(null)).toBe('');
+    expect(preprocessDiagrams(undefined)).toBe('');
   });
 });
