@@ -2903,8 +2903,15 @@ function detectDaemonSocketPath() {
     const p = process.env[key];
     if (p && existsSync(p)) return p;
   }
-  const fallback = join(process.env.TMPDIR || '/tmp', 'term-meshd.sock');
-  return existsSync(fallback) ? fallback : null;
+  // Check /tmp in addition to $TMPDIR: on macOS $TMPDIR is /var/folders/… but
+  // term-mesh creates the socket at /tmp/term-meshd.sock (plan §9). Mirrors
+  // detectDaemonSocket in x-panel/tm-events.mjs (mirror, never import).
+  for (const dir of [process.env.TMPDIR, '/tmp']) {
+    if (!dir) continue;
+    const p = join(dir, 'term-meshd.sock');
+    if (existsSync(p)) return p;
+  }
+  return null;
 }
 
 function sseBroadcast(event, data) {

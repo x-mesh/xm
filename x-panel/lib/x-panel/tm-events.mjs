@@ -34,16 +34,24 @@ const MAX_BUFFERED_BYTES = 64 * 1024;
 /**
  * Resolve the term-meshd daemon socket the same way tm-agent does
  * (detect_daemon_socket in daemon/term-mesh-cli/src/tm_agent.rs):
- * TERMMESH_DAEMON_SOCKET → TERMMESH_DAEMON_UNIX_PATH → $TMPDIR/term-meshd.sock.
+ * TERMMESH_DAEMON_SOCKET → TERMMESH_DAEMON_UNIX_PATH → $TMPDIR/term-meshd.sock → /tmp/term-meshd.sock.
  * Returns null when nothing exists — the caller stays silent in that case.
  */
-export function detectDaemonSocket(env = process.env) {
+export function detectDaemonSocket(env = process.env, tmpDirs = [env.TMPDIR, '/tmp']) {
   for (const key of ['TERMMESH_DAEMON_SOCKET', 'TERMMESH_DAEMON_UNIX_PATH']) {
     const p = env[key];
     if (p && existsSync(p)) return p;
   }
-  const fallback = join(env.TMPDIR || '/tmp', 'term-meshd.sock');
-  return existsSync(fallback) ? fallback : null;
+  // Fallback dirs, first hit wins. `/tmp` is checked in addition to $TMPDIR
+  // because on macOS $TMPDIR is a per-user /var/folders/… path while term-mesh
+  // creates its socket at /tmp/term-meshd.sock — without /tmp the zero-config
+  // path silently misses a running daemon (plan §9). Duplicates are harmless.
+  for (const dir of tmpDirs) {
+    if (!dir) continue;
+    const p = join(dir, 'term-meshd.sock');
+    if (existsSync(p)) return p;
+  }
+  return null;
 }
 
 const INACTIVE = Object.freeze({
