@@ -2958,6 +2958,22 @@ function ensureDaemonSubscription() {
 function handleEventsSSE(req) {
   let controller = null;
   let ping = null;
+  // Shared teardown: MUST run on BOTH the ReadableStream cancel() (consumer
+  // disconnect) AND the request 'abort' path (which only calls controller.close()
+  // and does NOT trigger cancel()). Idempotent so either/both can fire.
+  let cleanedUp = false;
+  const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    if (ping) clearInterval(ping);
+    sse.clients.delete(controller);
+    // Last client gone → release the daemon subscription (it re-arms on the next client).
+    if (sse.clients.size === 0 && sse.daemon) {
+      const d = sse.daemon;
+      sse.daemon = null;
+      try { d.destroy(); } catch { /* best-effort */ }
+    }
+  };
   const stream = new ReadableStream({
     start(c) {
       controller = c;
@@ -2965,23 +2981,14 @@ function handleEventsSSE(req) {
       c.enqueue(SSE_ENC.encode(`event: hello\ndata: ${JSON.stringify({ daemon: !!(sse.daemon || detectDaemonSocketPath()) })}\n\n`));
       ensureDaemonSubscription();
       ping = setInterval(() => {
-        try { c.enqueue(SSE_ENC.encode(': ping\n\n')); } catch { /* client gone — cancel() cleans up */ }
+        try { c.enqueue(SSE_ENC.encode(': ping\n\n')); } catch { /* client gone — cleanup() runs on cancel/abort */ }
       }, 25000);
       if (ping.unref) ping.unref();
     },
-    cancel() {
-      if (ping) clearInterval(ping);
-      sse.clients.delete(controller);
-      // Last client gone → release the daemon subscription (it re-arms on the next client).
-      if (sse.clients.size === 0 && sse.daemon) {
-        const d = sse.daemon;
-        sse.daemon = null;
-        try { d.destroy(); } catch { /* best-effort */ }
-      }
-    },
+    cancel() { cleanup(); },
   });
   try {
-    req.signal?.addEventListener?.('abort', () => { try { controller?.close(); } catch { /* already closed */ } });
+    req.signal?.addEventListener?.('abort', () => { cleanup(); try { controller?.close(); } catch { /* already closed */ } });
   } catch { /* no signal support */ }
   return new Response(stream, {
     headers: {
