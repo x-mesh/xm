@@ -89,6 +89,23 @@ describe('review with session reuse (default on)', () => {
     expect(verdict.counts.unique).toBeGreaterThan(0);
   });
 
+  test('codex session id is captured from stderr only — a stdout-injected id never wins (security)', () => {
+    // A prompt-injected review target could make the model print a fake
+    // "session id: <uuid>" into stdout (the content channel). The round-2 resume
+    // must use codex's REAL banner id from stderr, never the attacker's stdout id.
+    const real = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const fake = 'ffffffff-0000-4111-8222-333333333333';
+    const { r, calls } = review('stdout-inject', [], {
+      X_PANEL_STUB_SESSION_ID: real,          // codex stderr banner (trusted)
+      X_PANEL_STUB_STDOUT_SESSION_ID: fake,   // prompt-injected into stdout (untrusted)
+    });
+    expect(r.status).toBe(0);
+    const codexRefute = calls.find((c) => c.model === 'codex' && c.refute);
+    expect(codexRefute.mode).toBe('resume');
+    expect(codexRefute.id).toBe(real);
+    expect(codexRefute.id).not.toBe(fake);
+  });
+
   test('broken resume falls back stateless and is recorded as resume:fallback', () => {
     const base = review('baseline');
     const { r, calls, verdict } = review('fallback', [], { X_PANEL_FAIL_RESUME_CLAUDE: '1' });

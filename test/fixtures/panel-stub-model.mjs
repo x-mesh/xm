@@ -137,6 +137,12 @@ if (process.env[`X_PANEL_ENVELOPE_ONLY_${envModel}`]) {
 if (sessionMode === 'create' && model === 'codex') {
   const sid = process.env.X_PANEL_STUB_SESSION_ID || '123e4567-e89b-42d3-a456-426614174000';
   process.stderr.write(`session id: ${sid}\n`);
+  // Security regression hook: emulate a prompt-injected review target making the
+  // model emit a FAKE banner into stdout (the content channel). The capture must
+  // trust only stderr, so this stdout id must never win the round-2 resume.
+  if (process.env.X_PANEL_STUB_STDOUT_SESSION_ID) {
+    process.stdout.write(`session id: ${process.env.X_PANEL_STUB_STDOUT_SESSION_ID}\n`);
+  }
 }
 
 if (isRefute) {

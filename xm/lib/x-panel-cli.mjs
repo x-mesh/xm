@@ -668,7 +668,13 @@ async function cmdReview(pos, flags) {
   ), timeoutMs, onModelDone, (e, res) => {
     // Resume in round 2 only with a real session: claude echoes the caller's
     // uuid, codex must have disclosed one; a stateless fallback disables it.
-    if (e._session1) e._resumeId = res.resume === 'fallback' ? null : (res.session_id || null);
+    if (e._session1) {
+      // A round-1 create that fell back to stateless must surface in the verdict —
+      // otherwise round 2 (which goes stateless because there's no id) would record
+      // plain 'stateless' and hide that session support failed.
+      e._r1Fallback = res.resume === 'fallback';
+      e._resumeId = res.resume === 'fallback' ? null : (res.session_id || null);
+    }
     const findings = res.ok ? normalizeFindings(res.json, lensTag) : [];
     round1[e.label] = findings;
     writeJSON(join(dir, `${safeLabel(e.label)}.r1.json`), { model: e.label, ok: res.ok, error: res.error, findings, usage: res.usage || null, raw: res.raw });
@@ -689,7 +695,7 @@ async function cmdReview(pos, flags) {
     return { prompt: refutePromptResumed(otherLabel, otherFindings), session: { mode: 'resume', id: e._resumeId }, fallbackPrompt: full };
   }, timeoutMs, onModelDone, (e, res) => {
     if (!res.ok) abstained.add(e.label); // round2 failure ≠ silent concede
-    const resume = res.resume || 'stateless'; // 'ok' | 'fallback' | 'stateless'
+    const resume = res.resume || (e._r1Fallback ? 'fallback' : 'stateless'); // 'ok' | 'fallback' | 'stateless'
     const sm = status.models.find((x) => x.label === e.label);
     if (sm) sm.resume = resume;
     const verdicts = res.ok ? normalizeVerdicts(res.json) : [];

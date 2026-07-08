@@ -493,7 +493,11 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       let session_id = null;
       if (session && session.mode === 'create') {
         if (name === 'claude') session_id = session.id;
-        else session_id = (SESSION_ID_RE.exec(`${stdout}\n${stderr}`) || [])[1] || null;
+        // Capture ONLY from stderr: codex prints its session-id banner to stderr,
+        // while stdout is model output derived from the (untrusted) review target.
+        // Searching stdout first would let a prompt-injected target emit a fake
+        // "session id: <uuid>" line and steer the round-2 `--resume` id (trust-boundary).
+        else session_id = (SESSION_ID_RE.exec(stderr) || [])[1] || null;
       }
       finish({ ok: true, error: null, raw: stdout, json, usage, ...(session_id ? { session_id } : {}) });
     });
