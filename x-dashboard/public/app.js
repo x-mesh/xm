@@ -6957,6 +6957,28 @@ const ROUTES = [
   { pattern: /^\/activity$/, handler: () => renderActivity() },
 ];
 
+// t7: live xk_run push — /api/events (SSE; server-global, so no apiUrl
+// workspace prefix) relays term-mesh daemon events, and a burst-debounced
+// refresh of the CURRENT panel view lands progress <1s after a provider event.
+// The views' own 2s setTimeout polling stays authoritative: no daemon, an old
+// server build without the endpoint, or any SSE error just leaves polling
+// as-is (EventSource reconnects on its own; no error UI).
+(() => {
+  if (typeof EventSource === 'undefined') return;
+  let es = null;
+  try { es = new EventSource('/api/events'); } catch { return; }
+  let debounce = null;
+  es.addEventListener('xk_run', () => {
+    if (debounce) return;
+    debounce = setTimeout(() => {
+      debounce = null;
+      const path = getPath();
+      if (path === '/panel') refreshPanel();
+      else if (path.startsWith('/panel/')) renderPanelDetail(path.slice('/panel/'.length));
+    }, 200);
+  });
+})();
+
 function getPath() {
   const hash = window.location.hash;
   const raw = hash.startsWith('#') ? hash.slice(1) || '/' : '/';
