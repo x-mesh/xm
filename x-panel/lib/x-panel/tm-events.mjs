@@ -164,7 +164,10 @@ export function createTmEventsPublisher({
 
   const sock = createConnection(path);
   sock.on('error', (e) => fail(e.code || e.message || 'socket error'));
-  sock.on('close', () => { dead = true; });
+  // Route an UNEXPECTED close through fail() so it warns once (L6: a daemon that
+  // dies mid-run is a dead socket). A deliberate close() sets `dead` first, so
+  // fail()'s guard makes the resulting 'close' a silent no-op.
+  sock.on('close', () => fail('connection closed'));
   sock.on('data', () => { /* drain responses — publish is fire-and-forget */ });
   if (sock.unref) sock.unref();
   const connectTimer = setTimeout(() => {
