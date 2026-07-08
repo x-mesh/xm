@@ -25,7 +25,6 @@ import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, kn
 import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize } from './x-panel/synth.mjs';
 import { createTmEventsPublisher, subscribeXkRun } from './x-panel/tm-events.mjs';
-import { invokeViaTmPane, tmBackendAvailable } from './x-panel/tm-backend.mjs';
 
 // ── helpers ──────────────────────────────────────────────────────────
 
@@ -166,7 +165,6 @@ function parseFlags(raw) {
     else if (a === '--no-tm-events') flags.tmEvents = false;
     else if (a === '--session-reuse') flags.sessionReuse = true;
     else if (a === '--no-session-reuse') flags.sessionReuse = false;
-    else if (a === '--backend') flags.backend = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
     else if (a === '--partial') flags.partial = true;
     else if (a === '--no-partial') flags.partial = false;
     else if (a === '--watch' || a === '--follow') flags.watch = true;
@@ -328,8 +326,7 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
       // (t5 session reuse) — normalize here so round builders stay declarative.
       const req = makePrompt(e);
       const { prompt, session = null, fallbackPrompt = null } = typeof req === 'string' ? { prompt: req } : req;
-      // e._invoke = alternate backend (t8 tm experiment) — same result contract.
-      const res = await (e._invoke || invokeProviderAsync)(e.name, prompt, {
+      const res = await invokeProviderAsync(e.name, prompt, {
         timeout: timeoutMs,
         model: e.model,
         stream,
@@ -662,41 +659,13 @@ async function cmdReview(pos, flags) {
   writeEvent({ type: 'run_start', phase: status.phase, models: labels, target_kind: target.kind });
   flushStatus({ force: true });
 
-  // t8 EXPERIMENT: --backend tm (or panel.backend:"tm") routes providers with a
-  // panel.tm_agents mapping to persistent term-mesh panes via file handoff.
-  // Opt-in only — default adoption is gated on the live bench
-  // (x-panel/test/bench-tm-backend.mjs, ≥20% p50 + 0 JSON regressions).
-  // Anything unmapped or unavailable stays on the subprocess backend LOUDLY.
-  const backend = flags.backend || cfg.backend || 'subprocess';
-  if (backend === 'tm') {
-    if (!tmBackendAvailable()) {
-      console.error(`${C.yellow}⚠ --backend tm requested but tm-agent is not available — using the subprocess backend${C.reset}`);
-    } else {
-      const tmAgents = cfg.tm_agents || {};
-      for (const e of usable) {
-        const agent = tmAgents[e.name];
-        if (!agent) {
-          console.error(`${C.yellow}⚠ backend tm: no panel.tm_agents mapping for "${e.name}" — subprocess backend for this model${C.reset}`);
-          continue;
-        }
-        e._invoke = (_name, prompt, opts) => invokeViaTmPane({
-          agent, prompt, runDir: dir, label: e.label,
-          timeoutMs: opts.timeout, onEvent: opts.onEvent,
-        });
-      }
-    }
-  } else if (backend !== 'subprocess') {
-    console.error(`${C.yellow}⚠ unknown backend "${backend}" — using subprocess${C.reset}`);
-  }
-
   // t5 session reuse: round 1 creates a provider session (claude: caller uuid;
   // codex: id captured from the run banner), round 2 resumes it with only the
   // refute delta — the target never travels twice. Raw path only (--stream keeps
-  // its dogfooded argv; tm-backed panes are already persistent sessions).
+  // its dogfooded argv).
   // Opt out: --no-session-reuse / panel.session_reuse:false.
   const sessionReuse = !stream && (flags.sessionReuse != null ? flags.sessionReuse : cfg.session_reuse !== false);
   for (const e of usable) {
-    if (e._invoke) continue; // tm pane = its own persistent session
     if (sessionReuse && supportsResume(e.name)) {
       e._session1 = { mode: 'create', id: e.name === 'claude' ? randomUUID() : null };
     }
@@ -1204,11 +1173,6 @@ Commands:
                                 from the run banner (else stateless). Any resume failure retries
                                 stateless LOUDLY and is recorded as resume:"fallback" in the verdict.
                                 Auto-off under --stream (stream argv is kept exactly as dogfooded).
-    --backend tm                EXPERIMENT: route providers mapped in panel.tm_agents
-                                ({"claude":"reviewer",…}) to persistent term-mesh panes (file
-                                handoff via TM-PROTOCOL-v1 capsule). Opt-in; unmapped providers
-                                stay on the subprocess backend loudly. Default adoption is gated
-                                on the live bench: x-panel/test/bench-tm-backend.mjs.
     --partial | --no-partial    Token-level live text for claude/cursor (default on within --stream;
                                 config: panel.stream_partial). Auto-off when target > panel.partial_max_chars
                                 (default 50000) unless --partial forces it. codex/agy/kiro unaffected.
