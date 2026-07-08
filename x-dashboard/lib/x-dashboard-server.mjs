@@ -17,6 +17,7 @@ import { writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, readFile
 import { join, resolve, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
+import { createConnection } from 'node:net';
 
 // ── Config ──────────────────────────────────────────────────────────
 
@@ -2878,6 +2879,119 @@ await ensureModelPricing();
 // ── HTTP Server ─────────────────────────────────────────────────────
 
 let server;
+// ── /api/events — SSE push of term-mesh xk_run telemetry (t7) ────────────────
+//
+// When a term-meshd daemon is present, the server holds ONE subscription to the
+// event bus (XK-EVENTS-v1, xm/docs/x-panel-term-mesh-phase2.md §4) and fans
+// xk_run events out to every connected SSE client, so the panel views refresh
+// within <1s of a provider event instead of the poll interval. File polling
+// stays the authoritative fallback: without a daemon the endpoint still serves
+// (hello + keepalives only) and clients behave exactly as before.
+//
+// The daemon subscriber below MIRRORS x-panel's tm-events contract on purpose —
+// a cross-plugin import (x-dashboard → x-panel/lib) dies under the versioned
+// plugin-cache layout, so mirror, never couple (same rule as adapters.mjs).
+const SSE_ENC = new TextEncoder();
+const sse = {
+  clients: new Set(), // ReadableStream controllers
+  daemon: null,       // live net.Socket subscribed to term-meshd, or null
+  retryTimer: null,
+};
+
+function detectDaemonSocketPath() {
+  for (const key of ['TERMMESH_DAEMON_SOCKET', 'TERMMESH_DAEMON_UNIX_PATH']) {
+    const p = process.env[key];
+    if (p && existsSync(p)) return p;
+  }
+  const fallback = join(process.env.TMPDIR || '/tmp', 'term-meshd.sock');
+  return existsSync(fallback) ? fallback : null;
+}
+
+function sseBroadcast(event, data) {
+  const frame = SSE_ENC.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  for (const c of [...sse.clients]) {
+    try { c.enqueue(frame); } catch { sse.clients.delete(c); }
+  }
+}
+
+function ensureDaemonSubscription() {
+  if (sse.daemon || sse.retryTimer || sse.clients.size === 0) return;
+  const path = detectDaemonSocketPath();
+  if (!path) return; // not in term-mesh — SSE clients live on polling alone
+  let buf = '';
+  const sock = createConnection(path);
+  sse.daemon = sock;
+  const drop = () => {
+    if (sse.daemon !== sock) return;
+    sse.daemon = null;
+    try { sock.destroy(); } catch { /* already gone */ }
+    sseBroadcast('daemon', { connected: false });
+    // Retry while anyone is watching — the daemon may restart at any time.
+    if (sse.clients.size > 0 && !sse.retryTimer) {
+      sse.retryTimer = setTimeout(() => { sse.retryTimer = null; ensureDaemonSubscription(); }, 5000);
+      if (sse.retryTimer.unref) sse.retryTimer.unref();
+    }
+  };
+  sock.on('error', drop);
+  sock.on('close', drop);
+  sock.on('connect', () => {
+    // kinds is an explicit opt-in — xk_run is never in the daemon's default filter.
+    sock.write(JSON.stringify({ id: 1, method: 'events.subscribe', params: { kinds: ['xk_run'] } }) + '\n');
+    sseBroadcast('daemon', { connected: true });
+  });
+  sock.on('data', (d) => {
+    buf += d.toString('utf8');
+    let i;
+    while ((i = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, i);
+      buf = buf.slice(i + 1);
+      if (!line.trim()) continue;
+      let o;
+      try { o = JSON.parse(line); } catch { continue; }
+      // subscribe ack ({id, result}) and keepalive frames are skipped
+      if (o && o.kind === 'xk_run') sseBroadcast('xk_run', o);
+    }
+  });
+  if (sock.unref) sock.unref();
+}
+
+function handleEventsSSE(req) {
+  let controller = null;
+  let ping = null;
+  const stream = new ReadableStream({
+    start(c) {
+      controller = c;
+      sse.clients.add(c);
+      c.enqueue(SSE_ENC.encode(`event: hello\ndata: ${JSON.stringify({ daemon: !!(sse.daemon || detectDaemonSocketPath()) })}\n\n`));
+      ensureDaemonSubscription();
+      ping = setInterval(() => {
+        try { c.enqueue(SSE_ENC.encode(': ping\n\n')); } catch { /* client gone — cancel() cleans up */ }
+      }, 25000);
+      if (ping.unref) ping.unref();
+    },
+    cancel() {
+      if (ping) clearInterval(ping);
+      sse.clients.delete(controller);
+      // Last client gone → release the daemon subscription (it re-arms on the next client).
+      if (sse.clients.size === 0 && sse.daemon) {
+        const d = sse.daemon;
+        sse.daemon = null;
+        try { d.destroy(); } catch { /* best-effort */ }
+      }
+    },
+  });
+  try {
+    req.signal?.addEventListener?.('abort', () => { try { controller?.close(); } catch { /* already closed */ } });
+  } catch { /* no signal support */ }
+  return new Response(stream, {
+    headers: {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    },
+  });
+}
+
 server = Bun.serve({
   port: PORT,
   hostname: '127.0.0.1',
@@ -2899,6 +3013,11 @@ server = Bun.serve({
         port: PORT,
         pid: process.pid,
       });
+    }
+
+    // ── /api/events — SSE: xk_run push from a term-mesh daemon (t7) ──
+    if (path === '/api/events') {
+      return handleEventsSSE(req);
     }
 
     // ── /api/health ──────────────────────────────────────────────
