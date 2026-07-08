@@ -24,6 +24,8 @@ import {
 import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, supportsResume } from './x-panel/adapters.mjs';
 import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize } from './x-panel/synth.mjs';
+import { createTmEventsPublisher, subscribeXkRun } from './x-panel/tm-events.mjs';
+import { invokeViaTmPane, tmBackendAvailable } from './x-panel/tm-backend.mjs';
 
 // ── helpers ──────────────────────────────────────────────────────────
 
@@ -160,11 +162,15 @@ function parseFlags(raw) {
     else if (a === '--probe') flags.probe = true;
     else if (a === '--stream') flags.stream = true;
     else if (a === '--no-stream') flags.stream = false;
+    else if (a === '--tm-events') flags.tmEvents = true;
+    else if (a === '--no-tm-events') flags.tmEvents = false;
     else if (a === '--session-reuse') flags.sessionReuse = true;
     else if (a === '--no-session-reuse') flags.sessionReuse = false;
+    else if (a === '--backend') flags.backend = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
     else if (a === '--partial') flags.partial = true;
     else if (a === '--no-partial') flags.partial = false;
-    else if (a === '--watch') flags.watch = true;
+    else if (a === '--watch' || a === '--follow') flags.watch = true;
+    else if (a === '--fresh') flags.fresh = true;
     else if (a === '--interval') flags.interval = parseInt(raw[++i], 10) || undefined;
     else if (a === '--all') flags.all = true;
     // Only consume the next token as the count when it's actually numeric — a bare `--lines`
@@ -322,7 +328,8 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
       // (t5 session reuse) — normalize here so round builders stay declarative.
       const req = makePrompt(e);
       const { prompt, session = null, fallbackPrompt = null } = typeof req === 'string' ? { prompt: req } : req;
-      const res = await invokeProviderAsync(e.name, prompt, {
+      // e._invoke = alternate backend (t8 tm experiment) — same result contract.
+      const res = await (e._invoke || invokeProviderAsync)(e.name, prompt, {
         timeout: timeoutMs,
         model: e.model,
         stream,
@@ -511,6 +518,14 @@ async function cmdReview(pos, flags) {
       cum_credits: 0,
     })),
   };
+  // Live push to a term-mesh daemon when one is present (XK-EVENTS-v1, t3):
+  // mirrors every status flush onto the daemon event bus so in-term-mesh
+  // subscribers get sub-second updates. Best-effort — status.json above stays
+  // the authoritative record. Opt out: --no-tm-events / panel.tm_events:false.
+  const tmEvents = createTmEventsPublisher({
+    run, runKind: 'review', title: targetTitle(target),
+    enabled: flags.tmEvents != null ? flags.tmEvents : cfg.tm_events !== false,
+  });
   let lastStatusFlushMs = 0;
   const flushStatus = ({ force = false } = {}) => {
     const now = Date.now();
@@ -518,6 +533,7 @@ async function cmdReview(pos, flags) {
     lastStatusFlushMs = now;
     status.updated_at = new Date().toISOString();
     try { writeJSON(join(dir, 'status.json'), status); } catch { /* best-effort */ }
+    tmEvents.publishStatus(status);
   };
   const onModelDone = (ev) => {
     if (ev.event === 'model_done') {
@@ -646,12 +662,41 @@ async function cmdReview(pos, flags) {
   writeEvent({ type: 'run_start', phase: status.phase, models: labels, target_kind: target.kind });
   flushStatus({ force: true });
 
+  // t8 EXPERIMENT: --backend tm (or panel.backend:"tm") routes providers with a
+  // panel.tm_agents mapping to persistent term-mesh panes via file handoff.
+  // Opt-in only — default adoption is gated on the live bench
+  // (x-panel/test/bench-tm-backend.mjs, ≥20% p50 + 0 JSON regressions).
+  // Anything unmapped or unavailable stays on the subprocess backend LOUDLY.
+  const backend = flags.backend || cfg.backend || 'subprocess';
+  if (backend === 'tm') {
+    if (!tmBackendAvailable()) {
+      console.error(`${C.yellow}⚠ --backend tm requested but tm-agent is not available — using the subprocess backend${C.reset}`);
+    } else {
+      const tmAgents = cfg.tm_agents || {};
+      for (const e of usable) {
+        const agent = tmAgents[e.name];
+        if (!agent) {
+          console.error(`${C.yellow}⚠ backend tm: no panel.tm_agents mapping for "${e.name}" — subprocess backend for this model${C.reset}`);
+          continue;
+        }
+        e._invoke = (_name, prompt, opts) => invokeViaTmPane({
+          agent, prompt, runDir: dir, label: e.label,
+          timeoutMs: opts.timeout, onEvent: opts.onEvent,
+        });
+      }
+    }
+  } else if (backend !== 'subprocess') {
+    console.error(`${C.yellow}⚠ unknown backend "${backend}" — using subprocess${C.reset}`);
+  }
+
   // t5 session reuse: round 1 creates a provider session (claude: caller uuid;
   // codex: id captured from the run banner), round 2 resumes it with only the
   // refute delta — the target never travels twice. Raw path only (--stream keeps
-  // its dogfooded argv). Opt out: --no-session-reuse / panel.session_reuse:false.
+  // its dogfooded argv; tm-backed panes are already persistent sessions).
+  // Opt out: --no-session-reuse / panel.session_reuse:false.
   const sessionReuse = !stream && (flags.sessionReuse != null ? flags.sessionReuse : cfg.session_reuse !== false);
   for (const e of usable) {
+    if (e._invoke) continue; // tm pane = its own persistent session
     if (sessionReuse && supportsResume(e.name)) {
       e._session1 = { mode: 'create', id: e.name === 'claude' ? randomUUID() : null };
     }
@@ -725,6 +770,7 @@ async function cmdReview(pos, flags) {
   status.phase = 'done';
   writeEvent({ type: 'run_done', phase: status.phase, counts: verdict.counts });
   flushStatus({ force: true });
+  tmEvents.close();
 
   if (flags.json) console.log(JSON.stringify(record, null, 2));
   else console.log(renderVerdict(verdict, dir));
@@ -793,6 +839,12 @@ async function cmdCross(pos, flags) {
       retried: false, error: null,
     })),
   };
+  // Live push to a term-mesh daemon when present (XK-EVENTS-v1, t3) — same
+  // best-effort mirror as review; status.json stays authoritative.
+  const tmEvents = createTmEventsPublisher({
+    run, runKind: 'cross', title,
+    enabled: flags.tmEvents != null ? flags.tmEvents : cfg.tm_events !== false,
+  });
   let lastFlushMs = 0;
   const flushStatus = ({ force = false } = {}) => {
     const t = Date.now();
@@ -800,6 +852,7 @@ async function cmdCross(pos, flags) {
     lastFlushMs = t;
     status.updated_at = nowISO();
     try { writeJSON(join(dir, 'status.json'), status); } catch { /* best-effort */ }
+    tmEvents.publishStatus(status);
   };
   const t0 = Date.now();
   const hb = setInterval(() => {
@@ -862,6 +915,7 @@ async function cmdCross(pos, flags) {
   }
   status.phase = 'done';
   flushStatus({ force: true });
+  tmEvents.close();
   const record = { run, created_at: new Date().toISOString(), source, title, models: usable.map((e) => e.label), prompt_chars: prompt.length, results };
   writeJSON(join(dir, 'result.json'), record);
   if (flags.json) console.log(JSON.stringify(record, null, 2));
@@ -1007,6 +1061,15 @@ async function cmdPreflight(pos, flags) {
   }
   const timeoutMs = Math.max(5, (flags.timeout != null ? Number(flags.timeout) : 45)) * 1000;
 
+  // t6: TTL cache — every probe is one real (billed) model call, so repeated
+  // preflights within a session reuse recent LIVE verdicts. Only `ok` results
+  // are cached: a failed provider can be fixed at any moment (login, model
+  // rename) and must always re-probe. Bypass: --fresh; tune/disable:
+  // panel.preflight_ttl_s (default 1800, 0 = off).
+  const ttlS = flags.fresh ? 0 : (cfg.preflight_ttl_s != null ? Math.max(0, Number(cfg.preflight_ttl_s) || 0) : 1800);
+  const cachePath = join(PANEL_DIR, 'preflight-cache.json');
+  const cacheEntries = ttlS > 0 ? (((readJSONSafe(cachePath) || {}).entries) || {}) : {};
+
   // Probe one entry → result. `model` = the ACTUAL model the CLI resolved (probeProvider
   // reads it from the provider's own stream-json); `requested_model` = what we asked for.
   const probeOne = async (e) => {
@@ -1016,6 +1079,11 @@ async function cmdPreflight(pos, flags) {
     }
     if (!isAvailable(e.name)) {
       return { ...base, model: e.model, ok: false, status: 'not_installed', ms: 0, detail: 'CLI not on PATH' };
+    }
+    const hit = cacheEntries[e.label];
+    if (hit && hit.ok && Date.now() - hit.at_ms < ttlS * 1000) {
+      const age = Math.round((Date.now() - hit.at_ms) / 1000);
+      return { ...base, model: hit.model || e.model, ok: true, status: 'ok', ms: 0, cached: true, detail: `cached ${age}s ago (--fresh to re-probe)` };
     }
     const t0 = Date.now();
     let res;
@@ -1080,6 +1148,14 @@ async function cmdPreflight(pos, flags) {
     await Promise.all(entries.map((e, i) => probeOne(e).then((r) => { results[i] = r; if (!flags.json) console.log(fmtLine(r)); })));
   }
 
+  // Persist fresh `ok` verdicts (7-day hard prune so stale labels never pile up).
+  if (ttlS > 0) {
+    const now = Date.now();
+    const entries = Object.fromEntries(Object.entries(cacheEntries).filter(([, v]) => v && v.at_ms && now - v.at_ms < 7 * 86400_000));
+    for (const r of results) if (r && r.ok && !r.cached) entries[r.label] = { ok: true, model: r.model || null, at_ms: now };
+    try { ensureDir(PANEL_DIR); writeJSON(cachePath, { schema: 1, entries }); } catch { /* best-effort */ }
+  }
+
   const okN = results.filter((r) => r.ok).length;
   if (flags.json) {
     console.log(JSON.stringify({ ok: okN, total: results.length, cross_vendor: okN >= 2, results }, null, 2));
@@ -1119,6 +1195,8 @@ Commands:
                                 Auto-raised for large targets (cap panel.timeout_max_s=900); --timeout pins it.
     --stream | --no-stream      Structured streaming: live token/cost per model (claude/cursor/codex).
                                 Opt-in (default off; config: panel.stream). kiro/agy stay raw.
+    --tm-events | --no-tm-events  Live xk_run telemetry to a term-mesh daemon when one is detected
+                                (default on; config: panel.tm_events). Best-effort — never blocks a run.
     --session-reuse | --no-session-reuse
                                 Round 2 resumes each provider's round-1 session and sends only the
                                 refute delta — the target never travels twice (default on; config:
@@ -1126,6 +1204,11 @@ Commands:
                                 from the run banner (else stateless). Any resume failure retries
                                 stateless LOUDLY and is recorded as resume:"fallback" in the verdict.
                                 Auto-off under --stream (stream argv is kept exactly as dogfooded).
+    --backend tm                EXPERIMENT: route providers mapped in panel.tm_agents
+                                ({"claude":"reviewer",…}) to persistent term-mesh panes (file
+                                handoff via TM-PROTOCOL-v1 capsule). Opt-in; unmapped providers
+                                stay on the subprocess backend loudly. Default adoption is gated
+                                on the live bench: x-panel/test/bench-tm-backend.mjs.
     --partial | --no-partial    Token-level live text for claude/cursor (default on within --stream;
                                 config: panel.stream_partial). Auto-off when target > panel.partial_max_chars
                                 (default 50000) unless --partial forces it. codex/agy/kiro unaffected.
@@ -1139,13 +1222,16 @@ Commands:
   doctor [--probe] [--json]     Static readiness: is each provider installed AND
                                 authenticated? Catches logged-out CLIs before a run fails
                                 mid-panel. NO model call (except --probe, for agy only).
-  preflight [--models a,b,c] [--timeout N] [--json]
+  preflight [--models a,b,c] [--timeout N] [--json] [--fresh]
                                 LIVE check: send one tiny prompt to each model the panel
                                 would actually use (config/preset/--models, incl. name:model)
                                 and report which respond. Catches an authed provider whose
                                 CONFIGURED model is invalid/unavailable/rate-limited — which
                                 doctor cannot see. Costs one minimal call per model. Exit 0 if
                                 ≥1 live. Run this before a real panel when models are uncertain.
+                                Recent "live" verdicts are cached (default 30min; config
+                                panel.preflight_ttl_s, 0 = off) so repeated preflights in one
+                                session cost nothing — failures are never cached. --fresh re-probes.
   detect [--auth] [--json]      Print available (installed) + known providers — lets a
                                 caller decide single-vendor fallback BEFORE spending tokens.
                                 --auth narrows "available" to installed AND ready: authenticated,
@@ -1162,7 +1248,7 @@ Commands:
                                 --source tags the calling workflow (e.g. op:debate, build:consensus,
                                 solver:hypothesize, eval:judge) and --title names the run; both
                                 surface in the dashboard panel list so runs are identifiable.
-  status [run] [--all] [--json] [--watch [--interval N]]
+  status [run] [--all] [--json] [--watch|--follow [--interval N]]
                                 Read run state from disk — see an IN-PROGRESS panel from the CLI.
                                 Covers all three namespaces: .xm/panel (native), .xm/review
                                 (lens-injected x-review runs, labeled "x-review(...)"), .xm/cross.
@@ -1184,6 +1270,9 @@ Commands:
                                 finishes: exit 0 on done, 1 on stalled (dead process) — both for
                                 text and --json. Compact one-line-per-run list otherwise (vendor
                                 glyphs ✓✗●·, model-id in the run's detail view).
+                                --follow = --watch. With a term-mesh daemon present, xk_run events
+                                re-render immediately (<1s) between polls; if the daemon dies the
+                                watch says so and continues polling (--no-tm-events to disable).
   types                         List providers (install status) + how to query each
                                 one's live models (cursor/kiro are multi-vendor: kimi, deepseek, …)
   models [vendor] [--check m1,m2]
@@ -1682,7 +1771,8 @@ function cmdStatus(pos, flags) {
     const ESC = String.fromCharCode(27);
     const everyMs = Math.max(1, flags.interval || 2) * 1000;
     let iv = null;
-    const finish = (code) => { if (iv) clearInterval(iv); process.exit(code); };
+    // `let` — wrapped below so the t4 event subscription is torn down on finish.
+    let finish = (code) => { if (iv) clearInterval(iv); process.exit(code); };
     const tick = () => {
       // --watch --json: machine-readable watch — one COMPACT JSON snapshot per tick (JSONL),
       // no ANSI, no screen clears, so an agent/pipe consumer reads progress line by line.
@@ -1716,9 +1806,27 @@ function cmdStatus(pos, flags) {
       } else renderStatusWatch(flags);
       console.log(`${C.dim}every ${everyMs / 1000}s · Ctrl-C to exit${C.reset}`);
     };
+    // t4: push accelerator — with a term-mesh daemon present, xk_run events
+    // trigger an immediate re-render between polls (<1s latency instead of the
+    // interval). The poll loop stays authoritative (files are the source of
+    // truth); losing the daemon mid-watch falls back to plain polling LOUDLY.
+    let eventTimer = null;
+    const sub = (flags.tmEvents === false) ? { active: false, close() {} } : subscribeXkRun({
+      onEvent: (ev) => {
+        if (pos[0] && ev.run !== pos[0]) return; // watching one run — ignore others
+        if (eventTimer) return; // coalesce event bursts into one render per 150ms
+        eventTimer = setTimeout(() => { eventTimer = null; tick(); }, 150);
+      },
+      onDrop: (reason) => {
+        console.error(`${C.yellow}⚠ live events lost (${reason}) — continuing with ${everyMs / 1000}s polling${C.reset}`);
+      },
+    });
+    const cleanup = () => { if (eventTimer) clearTimeout(eventTimer); sub.close(); };
+    const _finish = finish;
+    finish = (code) => { cleanup(); _finish(code); };
     tick();
     iv = setInterval(tick, everyMs); // NOT unref'd — the interval is what keeps the CLI alive
-    process.on('SIGINT', () => { clearInterval(iv); process.stdout.write('\n'); process.exit(0); });
+    process.on('SIGINT', () => { cleanup(); clearInterval(iv); process.stdout.write('\n'); process.exit(0); });
     return;
   }
   renderStatusOnce(pos, flags);
