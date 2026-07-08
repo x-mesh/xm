@@ -4,8 +4,9 @@ Status: **implemented, split across two PRs.** Owner side: xm (this repo is the 
 of truth, mirroring the Phase 1 pattern). Counterpart doc: `term-mesh/docs/xk-panel-phase2.md`.
 
 > **PR split.** This PR carries **Track A** (real-time telemetry: tm-events publisher,
-> `status --follow`, dashboard SSE, preflight TTL cache) and **Track C** (the gated `--backend tm`
-> experiment). **Track B — round-2 session reuse (t0 + t5)** was split into its own PR
+> `status --follow`, dashboard SSE, preflight TTL cache). **Track C** (the `--backend tm`
+> experiment, t8) was built then **rejected and removed** (2026-07-09) — see t8's Progress
+> marker in §6. **Track B — round-2 session reuse (t0 + t5)** was split into its own PR
 > (`feature/panel-session-reuse` → `main`) because it is term-mesh-independent and pays off on
 > its own. The task table and requirements below still describe the full Phase 2 plan; the
 > Progress markers say where each task actually landed.
@@ -132,7 +133,7 @@ Risk-first ordering: the two unknowns (t5 resume spike, T1 daemon kind) go first
 | t6 | Cache preflight results per model id with TTL (default 30min, `panel.preflight_ttl_s`) | xm | — | R6 satisfied |
 | T2 | Extend `xk-bridge` to mirror `xk_run` → task board task per run | tm | T1, Phase-1 merge | R5 satisfied |
 | t7 | (stretch) Dashboard SSE: server subscribes to daemon, exposes `/api/events`; app.js `EventSource` + poll fallback | xm | t3 | Panel card updates < 1s after event with daemon up; identical behavior with daemon down |
-| t8 | (experiment) `--backend tm` provider adapter: route a model call to an idle matching term-mesh pane via task capsule, JSON written to the run dir by the agent | xm | T2 | Gated: adopt only if bench (tm-bench methodology) shows ≥20% p50 wall-clock improvement with 0 JSON-validity regressions; otherwise document rejection |
+| ~~t8~~ | ~~(experiment) `--backend tm` provider adapter~~ **REJECTED & REMOVED 2026-07-09** — mechanics shipped then deleted; the gate could not be met by the plan's own arithmetic (cold-start ~1–3s of a 30–120s call ⇒ <20% p50). See t8's Progress marker below. | xm | — | Rejected without running the bench (arithmetic-bounded below the ≥20% gate) |
 
 Parallelism: {t0, t1, t6} → {t2 ∥ T1} → t3 → {t4 ∥ t7}; t5 after t0 only; T2 after Phase-1 merge.
 
@@ -154,13 +155,15 @@ the codex banner-capture path was verified live on the real CLI. This Phase-2 br
 now carries **Tracks A & C only** — see the banner under §0 · **t7 done** (dashboard SSE: `/api/events` holds ONE daemon subscription and fans xk_run out
 to SSE clients — <1s relay proven in `x-dashboard/test/sse.test.mjs`; app.js refreshes the
 current panel view on push, 2s polling stays authoritative; endpoint serves hello+keepalives
-without a daemon) · **t8 mechanics done, GATE PENDING** (`--backend tm` + `panel.tm_agents`
-map routes providers to panes via TM-PROTOCOL-v1 capsule + file handoff — never socket text
-(1500-char truncation would corrupt JSON); tm entries skip t5 session logic (panes are already
-persistent); unmapped/unavailable ⇒ loud subprocess fallback; `test/tm-backend.test.mjs`
-covers the mechanics. **Adoption decision NOT made**: run
-`x-panel/test/bench-tm-backend.mjs` inside a live term-mesh team and record the p50/JSON
-table here — default stays subprocess until the ≥20%+0-regression gate passes) ·
+without a daemon) · **t8 REJECTED & REMOVED (2026-07-09)** (the mechanics shipped
+2026-07-08 — `--backend tm`, `panel.tm_agents`, TM-PROTOCOL-v1 file handoff — but the bench
+gate was never run; the decision was made on the plan's own arithmetic instead: a warm pane
+saves only CLI cold-start (~1–3s) of a 30–120s model call, i.e. ~1–10% p50, which cannot
+reach the ≥20% adoption gate, so keeping ~350 LOC of gated experimental surface alive had
+negative expected value. Removed: `x-panel/lib/x-panel/tm-backend.mjs` (+ bundle copy),
+`test/tm-backend.test.mjs`, `test/fixtures/tm-agent-stub.mjs`,
+`x-panel/test/bench-tm-backend.mjs`, the `--backend` flag and `e._invoke` indirection in
+`x-panel-cli.mjs`. Revisit only with a measurement showing cold-start dominates a real run) ·
 **T2 done** (xk-bridge mirrors runs onto the task board — the Phase-1 branch was merged
 into term-mesh's phase2 branch to provide the bridge; main-merge still the user's call) ·
 **T4 done** (`tests_v2/test_daemon_xk_run_events.py`; PASSED against a live term-meshd in
@@ -176,6 +179,11 @@ file handoff). The honest expectation is a small win at high complexity — so i
 flag with a measurement gate (Lesson L9: thresholds from measurement, not judgment), and the
 default backend remains the subprocess spawn.
 
+**Outcome (2026-07-09): rejected without running the gate.** The arithmetic above already
+bounds the win below the gate's own threshold — running the bench could only confirm the
+rejection, not overturn it. Building the mechanics before doing this arithmetic check was the
+process error; recorded so Phase 3 candidates get the back-of-envelope test *before* code.
+
 ## 7. Risks
 
 | Risk | L×I | Mitigation |
@@ -184,7 +192,7 @@ default backend remains the subprocess spawn.
 | `claude -p` resume unsupported / drifts across CLI versions | M×H | t0 spike first; runtime fallback to stateless with `resume:"fallback"` in status.json + verdict |
 | Event flood → daemon broadcast lag (`lagged by n events` path) | L×M | Publisher coalescing (§4.2) + opt-in filter + 4 KiB cap |
 | Two-repo schema drift | M×M | `v` field, single contract section (§4), term-mesh doc is a pointer not a copy |
-| tm backend contaminates panel JSON | M×H | t8 gated experiment, file-based handoff, off by default |
+| tm backend contaminates panel JSON | M×H | Moot — t8 (`--backend tm`) was rejected & removed 2026-07-09 (§6); no tm backend ships |
 
 ## 8. Boundaries
 
