@@ -18,9 +18,13 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { extractJSON } from './adapters.mjs';
+
+// A pane's panel answer is small JSON; cap the handoff read so a runaway or
+// misbehaving pane can't slurp an arbitrarily large file into memory.
+const MAX_HANDOFF_BYTES = 8 * 1024 * 1024;
 
 /** tm-agent argv prefix. X_PANEL_TM_AGENT points tests at a stub script. */
 export function tmAgentCommand(env = process.env) {
@@ -80,6 +84,13 @@ export async function invokeViaTmPane({ agent, prompt, runDir, label, timeoutMs 
   let lastRaw = '';
   while (Date.now() - t0 < timeoutMs) {
     if (existsSync(outPath)) {
+      let oversize = false;
+      try { oversize = statSync(outPath).size > MAX_HANDOFF_BYTES; } catch { /* mid-write; retry next tick */ }
+      if (oversize) {
+        const error = `tm backend: ${outPath} exceeds ${MAX_HANDOFF_BYTES} bytes — refusing to read`;
+        emit({ type: 'error', provider: agent, error });
+        return { ok: false, error, raw: '', json: null, backend: 'tm' };
+      }
       try { lastRaw = readFileSync(outPath, 'utf8'); } catch { lastRaw = ''; }
       const json = lastRaw ? extractJSON(lastRaw) : null;
       if (json) {
