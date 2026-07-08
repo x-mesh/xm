@@ -352,10 +352,74 @@ function makeTimeoutGuard(timeout, maxTimeout, onKill) {
   return { touch, clear };
 }
 
-export function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, stream = false, partial = true } = {}) {
+// ── round-to-round session reuse (t5, docs/x-panel-term-mesh-phase2.md) ──────
+//
+// Round 2 (refute) used to re-send the full target to a cold process. With a
+// provider session, round 1 creates it and round 2 resumes it with only the
+// delta (the others' findings) — the target is already in the session context.
+
+/** Providers whose CLI supports resuming a prior session non-interactively. */
+export function supportsResume(name) {
+  return name === 'claude' || name === 'codex';
+}
+
+// Matches the session id a CLI prints in its run banner (codex exec does; the
+// capture is tolerant of "session id:", "session_id=", etc.).
+const SESSION_ID_RE = /session[ _-]?id[:=\s]+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+
+/**
+ * Session-aware argv. `session = { mode: 'create'|'resume', id: string|null }`.
+ *  - claude: create ⇒ `--session-id <uuid>` (caller supplies the uuid — verified
+ *    print-mode round-trip in x-panel/test/spike-resume.mjs); resume ⇒ `--resume <uuid>`.
+ *  - codex: create ⇒ plain exec (the session is implicit; its id is CAPTURED from
+ *    the run banner); resume ⇒ `exec … resume <id>` via buildCodexResumeArgs.
+ *    NEVER `resume --last` here: a panel can hold several codex sessions (plus any
+ *    user codex activity), and "most recent" would silently splice the wrong
+ *    context — a wrong-session resume SUCCEEDS, so no fallback would catch it.
+ *  - other providers ignore `session` (stateless, argv unchanged).
+ * Returns null only for codex resume without an id — the caller must not ask for that.
+ */
+export function resolveSessionCommand(name, prompt, model, session) {
+  if (!session) return resolveCommand(name, prompt, model);
+  const override = overridePath(name);
+  if (override) {
+    return ['node', [override, name, prompt, '--session-mode', session.mode, ...(session.id ? ['--session-id', session.id] : [])]];
+  }
+  if (name === 'claude' && session.id) {
+    return ['claude', ['-p', ...(model ? ['--model', model] : []), session.mode === 'resume' ? '--resume' : '--session-id', session.id, prompt]];
+  }
+  if (name === 'codex' && session.mode === 'resume') {
+    if (!session.id) return null;
+    return buildCodexResumeArgs({ execFlags: ['--sandbox', 'read-only', '--skip-git-repo-check'], sessionId: session.id, model, prompt });
+  }
+  return resolveCommand(name, prompt, model);
+}
+
+export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, stream = false, partial = true, session = null, fallbackPrompt = null } = {}) {
   if (stream && supportsStream(name)) {
+    // Session reuse is a raw-path feature: the structured-stream argv is kept
+    // exactly as dogfooded. Callers already disable sessions under --stream.
     return invokeProviderStream(name, prompt, { timeout, maxTimeout, model, onEvent, partial });
   }
+  const use = session && supportsResume(name) ? session : null;
+  let res = await invokeProviderRaw(name, prompt, { timeout, maxTimeout, model, onEvent, session: use });
+  if (use) {
+    if (res.ok) {
+      if (use.mode === 'resume') res.resume = 'ok';
+    } else if (fallbackPrompt != null) {
+      // LOUD stateless fallback (contract R4): same semantics, just costlier —
+      // surfaced via a lifecycle event and the `resume: 'fallback'` marker.
+      if (onEvent) {
+        try { onEvent({ at: new Date().toISOString(), type: 'lifecycle', provider: name, model, note: `session ${use.mode} failed (${res.error}) — retrying stateless` }); } catch { /* observer only */ }
+      }
+      res = await invokeProviderRaw(name, fallbackPrompt, { timeout, maxTimeout, model, onEvent, session: null });
+      res.resume = 'fallback';
+    }
+  }
+  return res;
+}
+
+function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, session = null } = {}) {
   return new Promise((resolve) => {
     const emit = (event) => {
       if (!onEvent) return;
@@ -367,8 +431,14 @@ export function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeou
       settled = true;
       resolve(value);
     };
-    const resolved = resolveCommand(name, prompt, model);
-    if (!resolved) return resolve({ ok: false, error: `unknown provider: ${name}`, raw: '', json: null });
+    const resolved = resolveSessionCommand(name, prompt, model, session);
+    if (!resolved) {
+      return resolve({
+        ok: false,
+        error: session ? `resume requested for ${name} without a session id` : `unknown provider: ${name}`,
+        raw: '', json: null,
+      });
+    }
     const [cmd, args] = resolved;
     let child;
     try {
@@ -418,7 +488,14 @@ export function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeou
         return finish({ ok: false, error: 'no JSON object in output', raw: stdout, json: null, usage });
       }
       emit({ type: 'json_parsed', provider: name, model });
-      finish({ ok: true, error: null, raw: stdout, json, usage });
+      // Session establishment (t5): claude's id is caller-supplied (authoritative);
+      // codex discloses its id in the run banner — captured or null (⇒ no resume).
+      let session_id = null;
+      if (session && session.mode === 'create') {
+        if (name === 'claude') session_id = session.id;
+        else session_id = (SESSION_ID_RE.exec(`${stdout}\n${stderr}`) || [])[1] || null;
+      }
+      finish({ ok: true, error: null, raw: stdout, json, usage, ...(session_id ? { session_id } : {}) });
     });
   });
 }

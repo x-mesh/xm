@@ -10,6 +10,32 @@ const [model, prompt = ''] = process.argv.slice(2);
 const stream = process.argv.includes('--stream'); // resolveStreamCommand appends --stream
 const isRefute = /verdicts/i.test(prompt);
 
+// t5 session-reuse hints (resolveSessionCommand appends these for stubbed providers):
+//   --session-mode create|resume [--session-id <uuid>]
+const argAfter = (flag) => {
+  const i = process.argv.indexOf(flag);
+  return i !== -1 ? process.argv[i + 1] : null;
+};
+const sessionMode = argAfter('--session-mode');
+const sessionId = argAfter('--session-id');
+
+// Test hook: append one JSONL line per invocation so tests can assert exactly
+// which session argv each round used and that resumed prompts omit the target.
+if (process.env.X_PANEL_SESSION_LOG) {
+  try {
+    const { appendFileSync } = await import('node:fs');
+    appendFileSync(process.env.X_PANEL_SESSION_LOG, JSON.stringify({
+      model, refute: isRefute, mode: sessionMode, id: sessionId, hasTarget: /TARGET:/.test(prompt),
+    }) + '\n');
+  } catch { /* best-effort */ }
+}
+
+// Test hook: a provider whose resume path is broken (proves the loud stateless fallback).
+if (sessionMode === 'resume' && process.env[`X_PANEL_FAIL_RESUME_${String(model || '').toUpperCase().replace(/[^A-Z0-9_]/g, '_')}`]) {
+  process.stderr.write('resume failed (stub)\n');
+  process.exit(1);
+}
+
 // Test hook: dump the exact round-1 prompt the model received (for snapshot/override tests).
 if (process.env.X_PANEL_DUMP_R1 && !isRefute) {
   try { writeFileSync(process.env.X_PANEL_DUMP_R1, prompt); } catch { /* best-effort */ }
@@ -104,6 +130,13 @@ if (process.env[`X_PANEL_ENVELOPE_ONLY_${envModel}`]) {
     process.stdout.write('{"type":"system","subtype":"init"}');
   }
   process.exit(0);
+}
+
+// t5: codex discloses its session id in the run banner — emulate it on session
+// creation so the capture path (SESSION_ID_RE) is exercised end to end.
+if (sessionMode === 'create' && model === 'codex') {
+  const sid = process.env.X_PANEL_STUB_SESSION_ID || '123e4567-e89b-42d3-a456-426614174000';
+  process.stderr.write(`session id: ${sid}\n`);
 }
 
 if (isRefute) {

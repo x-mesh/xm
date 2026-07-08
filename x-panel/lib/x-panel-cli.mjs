@@ -21,7 +21,8 @@ import {
   PANEL_DIR, XM_ROOT, C, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
-import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels } from './x-panel/adapters.mjs';
+import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, supportsResume } from './x-panel/adapters.mjs';
+import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize } from './x-panel/synth.mjs';
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -159,6 +160,8 @@ function parseFlags(raw) {
     else if (a === '--probe') flags.probe = true;
     else if (a === '--stream') flags.stream = true;
     else if (a === '--no-stream') flags.stream = false;
+    else if (a === '--session-reuse') flags.sessionReuse = true;
+    else if (a === '--no-session-reuse') flags.sessionReuse = false;
     else if (a === '--partial') flags.partial = true;
     else if (a === '--no-partial') flags.partial = false;
     else if (a === '--watch') flags.watch = true;
@@ -268,6 +271,23 @@ Return ONLY a JSON object, no prose. Use the exact bracketed [id] string as "ref
 - concede = a real issue worth fixing.`;
 }
 
+// Refute prompt for a RESUMED provider session (t5): the target is already in
+// the session context from round 1, so only the others' findings travel — the
+// whole point of session reuse. MUST stay semantically identical to
+// refutePrompt minus the TARGET block; drift here skews the verdict.
+function refutePromptResumed(otherLabel, otherFindings) {
+  const list = otherFindings.map(f => `[${f.gref}] (${f.severity}) ${f.file ?? ''}:${f.line ?? ''} ${f.claim}`).join('\n') || '(none)';
+  return `You are now a skeptical second reviewer of the SAME code change you just reviewed — it is already in this conversation; do not ask for it again. Other reviewers (${otherLabel}) reported the findings below. For EACH finding decide whether it is a real, actionable issue.
+
+FINDINGS (each tagged with a [id]):
+${list}
+
+Return ONLY a JSON object, no prose. Use the exact bracketed [id] string as "ref":
+{"verdicts":[{"ref":"<id, e.g. codex#0>","stance":"refute|concede","reason":"one line"}]}
+- refute = wrong, not real, or not actionable.
+- concede = a real issue worth fixing.`;
+}
+
 // ── render ───────────────────────────────────────────────────────────
 
 function sev(s) {
@@ -298,11 +318,17 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
   try {
     const results = await Promise.all(usable.map(async (e) => {
       const s = Date.now();
-      const res = await invokeProviderAsync(e.name, makePrompt(e), {
+      // makePrompt may return a plain string OR { prompt, session, fallbackPrompt }
+      // (t5 session reuse) — normalize here so round builders stay declarative.
+      const req = makePrompt(e);
+      const { prompt, session = null, fallbackPrompt = null } = typeof req === 'string' ? { prompt: req } : req;
+      const res = await invokeProviderAsync(e.name, prompt, {
         timeout: timeoutMs,
         model: e.model,
         stream,
         partial,
+        session,
+        fallbackPrompt,
         onEvent: (ev) => onProviderEvent && onProviderEvent(e, ev),
       });
       pending.delete(e.label);
@@ -620,10 +646,29 @@ async function cmdReview(pos, flags) {
   writeEvent({ type: 'run_start', phase: status.phase, models: labels, target_kind: target.kind });
   flushStatus({ force: true });
 
+  // t5 session reuse: round 1 creates a provider session (claude: caller uuid;
+  // codex: id captured from the run banner), round 2 resumes it with only the
+  // refute delta — the target never travels twice. Raw path only (--stream keeps
+  // its dogfooded argv). Opt out: --no-session-reuse / panel.session_reuse:false.
+  const sessionReuse = !stream && (flags.sessionReuse != null ? flags.sessionReuse : cfg.session_reuse !== false);
+  for (const e of usable) {
+    if (sessionReuse && supportsResume(e.name)) {
+      e._session1 = { mode: 'create', id: e.name === 'claude' ? randomUUID() : null };
+    }
+  }
+
   // Round 1 — independent review (all models in parallel)
   startPhase('round1 (review)');
   const round1 = {};
-  await runRound('round 1 (review)', usable, () => reviewPrompt(target.text, reviewOverride), timeoutMs, onModelDone, (e, res) => {
+  const r1Prompt = reviewPrompt(target.text, reviewOverride);
+  await runRound('round 1 (review)', usable, (e) => (
+    // fallbackPrompt = the same prompt: a failed --session-id spawn retries
+    // stateless so session support can never cost a round (contract R4).
+    e._session1 ? { prompt: r1Prompt, session: e._session1, fallbackPrompt: r1Prompt } : r1Prompt
+  ), timeoutMs, onModelDone, (e, res) => {
+    // Resume in round 2 only with a real session: claude echoes the caller's
+    // uuid, codex must have disclosed one; a stateless fallback disables it.
+    if (e._session1) e._resumeId = res.resume === 'fallback' ? null : (res.session_id || null);
     const findings = res.ok ? normalizeFindings(res.json, lensTag) : [];
     round1[e.label] = findings;
     writeJSON(join(dir, `${safeLabel(e.label)}.r1.json`), { model: e.label, ok: res.ok, error: res.error, findings, usage: res.usage || null, raw: res.raw });
@@ -638,13 +683,19 @@ async function cmdReview(pos, flags) {
     const others = usable.filter(x => x.label !== e.label);
     // Tag each opponent finding with a global ref `owner#idx` so 3+ models don't collide.
     const otherFindings = others.flatMap(o => (round1[o.label] || []).map(f => ({ ...f, gref: `${o.label}#${f.idx}` })));
-    return refutePrompt(target.text, others.map(o => o.label).join('+'), otherFindings);
+    const otherLabel = others.map(o => o.label).join('+');
+    const full = refutePrompt(target.text, otherLabel, otherFindings);
+    if (!e._resumeId) return full;
+    return { prompt: refutePromptResumed(otherLabel, otherFindings), session: { mode: 'resume', id: e._resumeId }, fallbackPrompt: full };
   }, timeoutMs, onModelDone, (e, res) => {
     if (!res.ok) abstained.add(e.label); // round2 failure ≠ silent concede
+    const resume = res.resume || 'stateless'; // 'ok' | 'fallback' | 'stateless'
+    const sm = status.models.find((x) => x.label === e.label);
+    if (sm) sm.resume = resume;
     const verdicts = res.ok ? normalizeVerdicts(res.json) : [];
     round2[e.label] = verdicts;
-    writeJSON(join(dir, `${safeLabel(e.label)}.r2.json`), { model: e.label, ok: res.ok, error: res.error, verdicts, usage: res.usage || null, raw: res.raw });
-    writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 2, ok: res.ok, count: verdicts.length, error: res.error || null });
+    writeJSON(join(dir, `${safeLabel(e.label)}.r2.json`), { model: e.label, ok: res.ok, error: res.error, resume, verdicts, usage: res.usage || null, raw: res.raw });
+    writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 2, ok: res.ok, resume, count: verdicts.length, error: res.error || null });
   }, onProviderEvent, stream, partial);
 
   const verdict = synthesize(labels, round1, round2, abstained);
@@ -660,7 +711,7 @@ async function cmdReview(pos, flags) {
     timeout_s: timeoutS,
     usage: {
       totals: status.totals,
-      by_model: Object.fromEntries(status.models.map((m) => [m.label, { tokens: m.cum_tokens, cost_usd: m.cum_cost_usd, credits: m.cum_credits }])),
+      by_model: Object.fromEntries(status.models.map((m) => [m.label, { tokens: m.cum_tokens, cost_usd: m.cum_cost_usd, credits: m.cum_credits, resume: m.resume || 'stateless' }])),
     },
     ...verdict,
   };
@@ -1062,6 +1113,13 @@ Commands:
                                 Auto-raised for large targets (cap panel.timeout_max_s=900); --timeout pins it.
     --stream | --no-stream      Structured streaming: live token/cost per model (claude/cursor/codex).
                                 Opt-in (default off; config: panel.stream). kiro/agy stay raw.
+    --session-reuse | --no-session-reuse
+                                Round 2 resumes each provider's round-1 session and sends only the
+                                refute delta — the target never travels twice (default on; config:
+                                panel.session_reuse). claude + codex only; codex needs its session id
+                                from the run banner (else stateless). Any resume failure retries
+                                stateless LOUDLY and is recorded as resume:"fallback" in the verdict.
+                                Auto-off under --stream (stream argv is kept exactly as dogfooded).
     --partial | --no-partial    Token-level live text for claude/cursor (default on within --stream;
                                 config: panel.stream_partial). Auto-off when target > panel.partial_max_chars
                                 (default 50000) unless --partial forces it. codex/agy/kiro unaffected.
