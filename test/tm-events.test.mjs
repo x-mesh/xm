@@ -54,13 +54,19 @@ const model = (label, state, extra = {}) => ({
 });
 
 describe('detectDaemonSocket', () => {
-  test('env override wins, default path checked last, null when absent', () => {
+  test('env override wins, /tmp checked in addition to $TMPDIR, null when absent', () => {
     const { path } = fakeDaemon();
+    const sockDir = join(path, '..');
     expect(detectDaemonSocket({ TERMMESH_DAEMON_SOCKET: path })).toBe(path);
     expect(detectDaemonSocket({ TERMMESH_DAEMON_UNIX_PATH: path })).toBe(path);
-    // TMPDIR fallback: point TMPDIR at the fake socket's dir.
-    expect(detectDaemonSocket({ TMPDIR: join(path, '..') })).toBe(path);
-    expect(detectDaemonSocket({ TMPDIR: '/nonexistent-tmpdir-xyz' })).toBeNull();
+    // $TMPDIR fallback: point TMPDIR at the fake socket's dir.
+    expect(detectDaemonSocket({ TMPDIR: sockDir })).toBe(path);
+    // A later fallback dir is still checked — this is why prod appends /tmp after
+    // $TMPDIR (macOS puts the socket in /tmp, not the per-user $TMPDIR).
+    expect(detectDaemonSocket({}, ['/nonexistent-tmpdir-xyz', sockDir])).toBe(path);
+    // null only when NO candidate dir has a socket (inject only-missing dirs so
+    // the assertion stays hermetic regardless of a real /tmp/term-meshd.sock).
+    expect(detectDaemonSocket({ TMPDIR: '/nonexistent-a' }, ['/nonexistent-a', '/nonexistent-b'])).toBeNull();
   });
 });
 
