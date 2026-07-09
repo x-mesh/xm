@@ -1487,6 +1487,29 @@ describe('status --logs (raw event stream)', () => {
   });
 });
 
+describe('signal-killed model surfaces the signal', () => {
+  const SIGSTUB = join(import.meta.dirname, 'fixtures', 'panel-stub-signal.mjs');
+  test('exit null gains the signal name (exit null (SIGKILL)) instead of a bare code', () => {
+    // codex self-SIGKILLs (empty stderr, code null) — the real kiro "exit null" case.
+    // A signal death is retried once; the stub SIGKILLs every time, so both attempts die and
+    // the surfaced error still names the signal. claude (normal stub) carries the round.
+    const r = review(['signal target'], { X_PANEL_CMD_CODEX: SIGSTUB });
+    expect(r.stderr).toContain('exit null (SIGKILL)');
+    expect(r.stderr).toContain('retrying once'); // the retry path fired
+  });
+});
+
+describe('signal-killed model recovers instead of being dropped', () => {
+  const FLAKYSTUB = join(import.meta.dirname, 'fixtures', 'panel-stub-flaky-signal.mjs');
+  test('a transient signal death is survived — the model still contributes', () => {
+    const marker = join(mkdtempSync(join(tmpdir(), 'xpanel-flaky-')), 'hit');
+    const r = review(['flaky target'], { X_PANEL_CMD_CODEX: FLAKYSTUB, FLAKY_MARKER: marker });
+    expect(r.status).toBe(0);
+    expect(existsSync(marker)).toBe(true); // the first spawn really did die by signal (wrote the marker)
+    expect(r.stderr).toMatch(/✓ codex/);   // …yet a fresh spawn recovered it — not dropped from the panel
+  });
+});
+
 describe('help', () => {
   test('help prints usage', () => {
     const r = panelRaw(['help']);
