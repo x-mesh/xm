@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.47-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.49-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -1049,6 +1049,8 @@ xm panel doctor                  # readiness: each provider installed + authed (
 xm panel preflight               # live check: probe each configured model (cursor:kimi, kiro:glm…) before a run
 xm panel status --watch --lines 4   # live board: per-agent state + interpreted output tail
                                     # (findings/verdicts summarized per line, prompt echo hidden)
+xm panel status <run> --logs        # stream the RAW event log (events.jsonl): last N (--lines, default 200),
+                                    # or tail -f with --watch. Unlike the interpreted board, nothing is summarized
 ```
 
 Per-model `--model` via `name:model`, named `presets`, parallel calls, and results under `.xm/panel/` (queryable with `xm recall`). Different models have different blind spots — that's the point.
