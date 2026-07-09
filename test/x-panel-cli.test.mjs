@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus } from '../x-panel/lib/x-panel/synth.mjs';
 import { extractJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts } from '../x-panel/lib/x-panel/adapters.mjs';
+import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
 const STUB = join(import.meta.dirname, 'fixtures', 'panel-stub-model.mjs');
@@ -1390,6 +1391,99 @@ describe('review (stubbed models)', () => {
     const r = review(['x', '--models', 'claude,gemini']);
     expect(r.stderr).toContain('gemini');
     expect(r.status).toBe(1);
+  });
+});
+
+describe('events-log (readEventsLog / formatEventLine)', () => {
+  let EDIR;
+  const RECS = [
+    { seq: 1, at: '2026-07-09T00:00:01.000Z', type: 'spawn', model: 'claude' },
+    { seq: 2, at: '2026-07-09T00:00:02.000Z', type: 'stdout', model: 'claude', text: 'hello', bytes: 5 },
+    { seq: 3, at: '2026-07-09T00:00:03.000Z', type: 'stderr', model: 'codex', text: 'warn' },
+    { seq: 4, at: '2026-07-09T00:00:04.000Z', type: 'model_done', model: 'claude', ok: true },
+  ];
+  beforeAll(() => {
+    EDIR = mkdtempSync(join(tmpdir(), 'xpanel-events-'));
+    writeFileSync(join(EDIR, 'events.jsonl'), RECS.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  });
+  afterAll(() => { rmSync(EDIR, { recursive: true, force: true }); });
+
+  test('reads all records in file order when limit >= count', () => {
+    expect(readEventsLog(EDIR, { limit: 100 }).map((r) => r.seq)).toEqual([1, 2, 3, 4]);
+  });
+
+  test('limit keeps only the last N', () => {
+    expect(readEventsLog(EDIR, { limit: 2 }).map((r) => r.seq)).toEqual([3, 4]);
+  });
+
+  test('sinceSeq returns EVERY record after it, IGNORING limit (no burst dropped)', () => {
+    // limit:1 alone would keep only seq 4 — sinceSeq must override the cap so a >limit
+    // burst in one follow tick is never permanently lost (the panel-review finding).
+    expect(readEventsLog(EDIR, { sinceSeq: 1, limit: 1 }).map((r) => r.seq)).toEqual([2, 3, 4]);
+  });
+
+  test('types filter', () => {
+    expect(readEventsLog(EDIR, { types: ['stderr'] }).map((r) => r.seq)).toEqual([3]);
+  });
+
+  test('missing / unreadable log → [] (no throw)', () => {
+    expect(readEventsLog(join(EDIR, 'does-not-exist'), {})).toEqual([]);
+  });
+
+  test('maxSeq returns the highest seq, or the floor when empty', () => {
+    expect(maxSeq(readEventsLog(EDIR, {}))).toBe(4);
+    expect(maxSeq([], 7)).toBe(7);
+  });
+
+  test('formatEventLine color:false is plain (no ANSI) and carries model/type/text', () => {
+    const line = formatEventLine(RECS[1], { color: false });
+    expect(line).not.toContain('\x1b[');
+    expect(line).toContain('claude');
+    expect(line).toContain('stdout');
+    expect(line).toContain('hello');
+  });
+
+  test('formatEventLine renders an unknown type via the dot fallback (never blank)', () => {
+    const line = formatEventLine({ type: 'brand_new_type', at: RECS[0].at }, { color: false });
+    expect(line).toContain('brand_new_type');
+    expect(line.trim().length).toBeGreaterThan(0);
+  });
+
+  test('sanitizeEventText strips ANSI + control sequences, keeps \\t and \\n', () => {
+    expect(sanitizeEventText('safe\x1b[31mRED\x1b[0m\x1b]0;title\x07end\x00\x07')).toBe('safeREDend');
+    expect(sanitizeEventText('a\nb\tc')).toBe('a\nb\tc');
+    expect(sanitizeEventText(null)).toBe('');
+  });
+
+  test('formatEventLine sanitizes escapes embedded in text (terminal-injection guard)', () => {
+    const line = formatEventLine({ type: 'stdout', at: RECS[0].at, text: 'x\x1b[31mY' }, { color: false });
+    expect(line).not.toContain('\x1b');
+    expect(line).toContain('xY');
+  });
+});
+
+describe('status --logs (raw event stream)', () => {
+  test('dumps events.jsonl for a run', () => {
+    const r = review(['logs stream target']);
+    expect(r.status).toBe(0);
+    const runId = latestRunDir().split('/').pop();
+    const out = panelRaw(['status', runId, '--logs'], { NO_COLOR: '1' });
+    expect(out.status).toBe(0);
+    expect(out.stdout).toContain('spawn');       // every model spawns
+    expect(out.stdout).toContain('run_done');    // milestone marker always present
+    expect(out.stdout).toMatch(/claude|codex/);  // a model label appears
+  });
+
+  test('--logs without a run id errors (per-run only)', () => {
+    const out = panelRaw(['status', '--logs'], { NO_COLOR: '1' });
+    expect(out.status).not.toBe(0);
+    expect(out.stderr).toContain('needs a run id');
+  });
+
+  test('--logs on a nonexistent run errors', () => {
+    const out = panelRaw(['status', 'panel-nope', '--logs'], { NO_COLOR: '1' });
+    expect(out.status).not.toBe(0);
+    expect(out.stderr).toContain('not found');
   });
 });
 
