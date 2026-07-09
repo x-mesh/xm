@@ -18,7 +18,7 @@ import { appendFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname } from 'node:path';
 import {
-  PANEL_DIR, XM_ROOT, C, join, existsSync, ensureDir, writeJSON, readText, runId,
+  PANEL_DIR, XM_ROOT, C, provColor, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
 import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, supportsResume } from './x-panel/adapters.mjs';
@@ -1729,7 +1729,7 @@ function renderStatusWatch(flags) {
       const el = m.elapsed_s != null ? `${m.elapsed_s}s` : '';
       const hint = m.state === 'failed' ? `${C.red}${m.error || 'failed'}${C.reset}`
         : m.state === 'running' ? modelProgress(m).join(' · ') : '';
-      console.log(`    ${glyph} ${m.vendor.padEnd(8)} ${el.padEnd(5)} ${hint}`);
+      console.log(`    ${glyph} ${provColor(m.vendor)}${m.vendor.padEnd(8)}${C.reset} ${el.padEnd(5)} ${hint}`);
       // Content lines (opt-in via --lines N / panel.watch_lines): what this agent's output
       // MEANS — findings/verdicts summarized, prompt echo dropped — not a raw JSON dump.
       // Only the gutter bar is dim; the content itself stays full-contrast.
@@ -1808,12 +1808,40 @@ function cmdLogs(pos, flags) {
 // runs with their phase and per-model state. A run id → that run's per-model live state plus each
 // model's latest stdout tail (what it is producing right now). Read-only; --watch polls live.
 // --logs → cmdLogs (raw event stream instead of the interpreted board).
+
+// ── flicker-free live repaint ────────────────────────────────────────
+// Capture everything a render callback prints (console.log + direct writes) into one
+// string, so the --watch loop can repaint the whole frame in place instead of clearing
+// the screen first. A full-screen clear (2J) every tick blanks the terminal for an
+// instant before the redraw — that visible gap is the flicker.
+function captureFrame(fn) {
+  const chunks = [];
+  const origLog = console.log;
+  const origWrite = process.stdout.write;
+  console.log = (...args) => { chunks.push(args.map(String).join(' ') + '\n'); return undefined; };
+  process.stdout.write = (s) => { chunks.push(typeof s === 'string' ? s : String(s)); return true; };
+  try { fn(); } finally { console.log = origLog; process.stdout.write = origWrite; }
+  return chunks.join('');
+}
+
+// Repaint `frame` without a blank gap: home the cursor, overwrite each line clearing its
+// tail (\x1b[K, so a now-shorter line leaves no leftover chars), then erase any rows below
+// (\x1b[J, for when the frame got shorter). The FIRST frame does one full clear (+scrollback
+// wipe) to start on a clean canvas; every frame after only homes — never clears — so there
+// is no flicker. Non-TTY (piped) output just streams the frame verbatim.
+function paintFrame(frame, first) {
+  if (!process.stdout.isTTY) { process.stdout.write(frame); return; }
+  const ESC = String.fromCharCode(27);
+  const body = frame.replace(/\n$/, '').split('\n').map((l) => l + ESC + '[K').join('\n');
+  process.stdout.write((first ? `${ESC}[2J${ESC}[3J${ESC}[H` : `${ESC}[H`) + body + `${ESC}[J`);
+}
+
 function cmdStatus(pos, flags) {
   if (flags.logs) { cmdLogs(pos, flags); return; }
   if (flags.watch) {
-    const ESC = String.fromCharCode(27);
     const everyMs = Math.max(1, flags.interval || 2) * 1000;
     let iv = null;
+    let firstFrame = true;
     // `let` — wrapped below so the t4 event subscription is torn down on finish.
     let finish = (code) => { if (iv) clearInterval(iv); process.exit(code); };
     const tick = () => {
@@ -1831,23 +1859,32 @@ function cmdStatus(pos, flags) {
         }
         return;
       }
-      if (process.stdout.isTTY) process.stdout.write(`${ESC}[2J${ESC}[3J${ESC}[H`); // clear scrollback + home
-      // A run id → live-tail that run's detail; no run id → the cross-run activity board.
-      if (pos[0]) {
-        // Don't loop the red "run not found" error (renderStatusOnce sets exitCode) — a watched run
-        // may simply not exist yet; show a clean waiting line until it appears.
-        const snap = watchRunSnapshot(pos[0]);
-        if (snap.found) {
-          renderStatusOnce(pos, flags);
-          // Same end condition as the JSON path: a finished/stalled run stops the loop with its
-          // final frame on screen instead of re-rendering a terminal state forever.
-          if (snap.done || snap.stale) {
-            console.log(`${C.dim}run ${snap.done ? 'done' : 'stalled'} — watch ended${C.reset}`);
-            finish(snap.done ? 0 : 1);
-          }
-        } else console.log(`${C.dim}waiting for ${pos[0]} …${C.reset}`);
-      } else renderStatusWatch(flags);
-      console.log(`${C.dim}every ${everyMs / 1000}s · Ctrl-C to exit${C.reset}`);
+      // Render the whole frame off-screen, then repaint it in place (paintFrame) — no
+      // per-tick full-screen clear, so the board updates without the flicker a
+      // clear-then-redraw produces. The run's end condition is captured and applied
+      // AFTER the final frame is painted so its terminal state stays on screen.
+      let endCode = null;
+      const frame = captureFrame(() => {
+        // A run id → live-tail that run's detail; no run id → the cross-run activity board.
+        if (pos[0]) {
+          // Don't loop the red "run not found" error — a watched run may simply not exist
+          // yet; show a clean waiting line until it appears.
+          const snap = watchRunSnapshot(pos[0]);
+          if (snap.found) {
+            renderStatusOnce(pos, flags);
+            // A finished/stalled run stops the loop with its final frame on screen instead
+            // of re-rendering a terminal state forever.
+            if (snap.done || snap.stale) {
+              console.log(`${C.dim}run ${snap.done ? 'done' : 'stalled'} — watch ended${C.reset}`);
+              endCode = snap.done ? 0 : 1;
+            }
+          } else console.log(`${C.dim}waiting for ${pos[0]} …${C.reset}`);
+        } else renderStatusWatch(flags);
+        console.log(`${C.dim}every ${everyMs / 1000}s · Ctrl-C to exit${C.reset}`);
+      });
+      paintFrame(frame, firstFrame);
+      firstFrame = false;
+      if (endCode != null) finish(endCode);
     };
     // t4: push accelerator — with a term-mesh daemon present, xk_run events
     // trigger an immediate re-render between polls (<1s latency instead of the

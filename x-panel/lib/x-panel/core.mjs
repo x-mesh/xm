@@ -23,6 +23,26 @@ export const C = isTTY ? {
   red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', cyan: '\x1b[36m',
 } : Object.fromEntries(['reset', 'bold', 'dim', 'red', 'green', 'yellow', 'cyan'].map(k => [k, '']));
 
+// Per-provider name colors for the live board: distinct 256-color hues so each vendor is
+// scannable at a glance. Deliberately avoid red/green/yellow — those carry state meaning
+// (done/failed/running), so reusing them on the name would blur the signal. Non-TTY → empty.
+export const PROVIDER_COLOR = isTTY ? {
+  claude: '\x1b[38;5;208m', // orange
+  codex:  '\x1b[38;5;45m',  // cyan
+  agy:    '\x1b[38;5;111m', // sky blue (gemini)
+  cursor: '\x1b[38;5;207m', // magenta
+  kiro:   '\x1b[38;5;180m', // tan (AWS)
+} : {};
+
+// Color a vendor label by its provider, keyed on the leading token (`codex` in
+// `codex:gpt-5.5`). Unknown vendors fall through uncolored. Bold makes the hue read
+// clearly against the dim metadata around it.
+export function provColor(vendor) {
+  const key = String(vendor || '').toLowerCase().split(/[:\s]/)[0];
+  const c = PROVIDER_COLOR[key];
+  return c ? `${C.bold}${c}` : '';
+}
+
 export function ensureDir(p) {
   mkdirSync(p, { recursive: true });
 }
