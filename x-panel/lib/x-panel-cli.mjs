@@ -301,6 +301,11 @@ function sev(s) {
   return `${color}[${s}]${C.reset}`;
 }
 
+// A model killed by a SIGNAL surfaces as `exit null (SIGKILL)` etc (adapters.mjs exitLabel).
+// A signal death is an intermittent EXTERNAL kill (observed: kiro-cli self-aborts mid-review) —
+// not a deterministic failure like bad auth or a missing CLI, so it's worth ONE fresh retry.
+const SIGNAL_DEATH = /\(SIG[A-Z0-9]+\)/;
+
 // Run one round across all models in parallel, reporting start/heartbeat/elapsed
 // on stderr so a long round (large diff) isn't a silent black box.
 async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult, onProviderEvent, stream = false, partial = true) {
@@ -322,13 +327,12 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
   }, 2000);
   if (hb.unref) hb.unref();
   try {
-    const results = await Promise.all(usable.map(async (e) => {
-      const s = Date.now();
+    const invoke = (e) => {
       // makePrompt may return a plain string OR { prompt, session, fallbackPrompt }
       // (t5 session reuse) — normalize here so round builders stay declarative.
       const req = makePrompt(e);
       const { prompt, session = null, fallbackPrompt = null } = typeof req === 'string' ? { prompt: req } : req;
-      const res = await invokeProviderAsync(e.name, prompt, {
+      return invokeProviderAsync(e.name, prompt, {
         timeout: timeoutMs,
         model: e.model,
         stream,
@@ -337,6 +341,18 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
         fallbackPrompt,
         onEvent: (ev) => onProviderEvent && onProviderEvent(e, ev),
       });
+    };
+    const results = await Promise.all(usable.map(async (e) => {
+      const s = Date.now();
+      let res = await invoke(e);
+      // Retry a signal-killed model ONCE (a fresh spawn nearly always survives) instead of
+      // dropping it from the panel. One retry only — a second signal death is accepted as a
+      // genuine failure, and deterministic failures (numeric exit) are never retried.
+      if (!res.ok && SIGNAL_DEATH.test(res.error || '')) {
+        process.stderr.write(`  ${C.yellow}↻${C.reset} ${e.label} ${C.dim}(${res.error}) — retrying once${C.reset}\n`);
+        if (onProviderEvent) onProviderEvent(e, { type: 'lifecycle', event: 'retry', model: e.label, reason: res.error });
+        res = await invoke(e);
+      }
       pending.delete(e.label);
       const dt = Math.round((Date.now() - s) / 1000);
       process.stderr.write(res.ok
