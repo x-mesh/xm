@@ -15,6 +15,13 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 
+// A non-zero/absent exit code, labeled. A signal death gives code === null (the child
+// was KILLED, not a normal exit) — surface the signal so `exit null` isn't a dead end:
+// `exit null (SIGKILL)` = OOM/hard-kill, `(SIGABRT)` = crash/panic, `(SIGTERM)` = external
+// terminate. Our own timeout guard reports its own descriptive error, so a signal reaching
+// this close handler came from OUTSIDE (OS/OOM or the CLI self-aborting), not from us.
+const exitLabel = (code, signal) => (signal ? `exit ${code} (${signal})` : `exit ${code}`);
+
 // Each builds [bin, args]. `model` (optional) maps to that CLI's --model flag;
 // when null the CLI uses its own default model.
 export function normalizeKiroModel(model) {
@@ -255,10 +262,10 @@ export function listModelIds(name, { timeout = 20_000 } = {}) {
     child.stdout.on('data', (d) => { out += d; if (out.length > 8 * 1024 * 1024) out = out.slice(-8 * 1024 * 1024); });
     child.stderr.on('data', (d) => { err += d; if (err.length > 50_000) err = err.slice(-50_000); });
     child.on('error', (e) => { clearTimeout(timer); done({ ok: false, models: [], error: String(e.message || e) }); });
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       clearTimeout(timer);
       const models = parseModelIds(out);
-      if (code !== 0 && models.length === 0) return done({ ok: false, models: [], error: `exit ${code}: ${err.trim().slice(0, 100)}` });
+      if (code !== 0 && models.length === 0) return done({ ok: false, models: [], error: `${exitLabel(code, signal)}: ${err.trim().slice(0, 100)}` });
       done({ ok: true, models, error: null });
     });
   });
@@ -474,14 +481,14 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       emit({ type: 'error', provider: name, model, error });
       finish({ ok: false, error, raw: '', json: null });
     });
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       guard.clear();
       if (settled) return;
       emit({ type: 'exit', provider: name, model, code });
       // Some raw-mode CLIs (kiro) print a cost line on stderr — surface it as usage.
       const usage = parseStderrUsage(name, stderr);
       if (usage) emit({ type: 'usage_final', provider: name, model, usage });
-      if (code !== 0) return finish({ ok: false, error: `exit ${code}: ${stderr.trim().slice(0, 300)}`, raw: stdout, json: null, usage });
+      if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: stdout, json: null, usage });
       const json = extractJSON(stdout);
       if (!json) {
         emit({ type: 'json_missing', provider: name, model });
@@ -685,7 +692,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
     });
     child.stderr.on('data', (d) => { guard.touch(); stderr += d; if (stderr.length > ERR_CAP) stderr = stderr.slice(-ERR_CAP); emit({ type: 'stderr', provider: name, model, bytes: Buffer.byteLength(d), text: d }); });
     child.on('error', (e) => { guard.clear(); emit({ type: 'error', provider: name, model, error: String(e.message || e) }); finish({ ok: false, error: String(e.message || e), raw: '', json: null }); });
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       guard.clear();
       if (settled) return;
       if (buf.trim()) handleLine(buf); // flush the trailing (unterminated) line — carries final result/usage
@@ -694,7 +701,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
       // A non-zero exit is a failure REGARDLESS of any JSON in partial output —
       // otherwise a crashed provider whose stream happened to contain a JSON object
       // would be reported as a successful review (matches the raw path's contract).
-      if (code !== 0) return finish({ ok: false, error: `exit ${code}: ${stderr.trim().slice(0, 300)}`, raw: rawCap, json: null, usage });
+      if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: rawCap, json: null, usage });
       // Findings come from the final answer text (NOT the raw JSONL envelope).
       const text = finalText != null ? finalText : textBuf;
       let json = extractJSON(text);
@@ -749,11 +756,11 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
     child.stdout.on('data', (d) => { guard.touch(); stdout += d; if (stdout.length > 16 * 1024 * 1024) stdout = stdout.slice(-16 * 1024 * 1024); emit({ type: 'stdout', provider: name, model, bytes: Buffer.byteLength(d), text: d }); });
     child.stderr.on('data', (d) => { guard.touch(); stderr += d; if (stderr.length > 200_000) stderr = stderr.slice(-200_000); emit({ type: 'stderr', provider: name, model, bytes: Buffer.byteLength(d), text: d }); });
     child.on('error', (e) => { guard.clear(); const error = String(e.message || e); emit({ type: 'error', provider: name, model, error }); done({ ok: false, output: '', error }); });
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       guard.clear();
       if (settled) return;
       emit({ type: 'exit', provider: name, model, code });
-      if (code !== 0) return done({ ok: false, output: stdout, error: `exit ${code}: ${stderr.trim().slice(0, 300)}` });
+      if (code !== 0) return done({ ok: false, output: stdout, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}` });
       const out = stdout.trim();
       // exit 0 but EMPTY stdout: a gateway CLI (cursor especially, also agy) can return
       // success with no answer — transient rate-limit, silent auth refusal, or an empty
@@ -807,7 +814,7 @@ export function probeProvider(name, { timeout = 45_000, model = null } = {}) {
     child.stdout.on('data', (d) => { guard.touch(); stdout += d; buf += d; let nl; while ((nl = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); } });
     child.stderr.on('data', (d) => { guard.touch(); stderr += d; if (stderr.length > 200_000) stderr = stderr.slice(-200_000); });
     child.on('error', (e) => { guard.clear(); done({ ok: false, model: actualModel, text: '', error: String(e.message || e) }); });
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       guard.clear();
       if (buf.trim()) handleLine(buf);
       // Liveness = a real answer. If the CLI spoke stream-json (sawJson), require the
@@ -815,7 +822,7 @@ export function probeProvider(name, { timeout = 45_000, model = null } = {}) {
       // when the CLI emitted no JSON at all (e.g. kiro's plain-text mode) do we accept
       // raw stdout as the answer.
       const t = (sawJson ? text : (text || stdout)).trim();
-      if (code !== 0) return done({ ok: false, model: actualModel, text: t, error: `exit ${code}: ${stderr.trim().slice(0, 300)}` });
+      if (code !== 0) return done({ ok: false, model: actualModel, text: t, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}` });
       if (!t) return done({ ok: false, model: actualModel, text: '', error: `exit 0 but empty output${stderr.trim() ? `: ${stderr.trim().slice(0, 200)}` : ''}` });
       done({ ok: true, model: actualModel, text: t, error: null });
     });
