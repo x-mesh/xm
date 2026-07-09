@@ -25,6 +25,7 @@ import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, kn
 import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize } from './x-panel/synth.mjs';
 import { createTmEventsPublisher, subscribeXkRun } from './x-panel/tm-events.mjs';
+import { readEventsLog, formatEventLine, maxSeq } from './x-panel/events-log.mjs';
 
 // ── helpers ──────────────────────────────────────────────────────────
 
@@ -168,6 +169,7 @@ function parseFlags(raw) {
     else if (a === '--partial') flags.partial = true;
     else if (a === '--no-partial') flags.partial = false;
     else if (a === '--watch' || a === '--follow') flags.watch = true;
+    else if (a === '--logs') flags.logs = true;
     else if (a === '--fresh') flags.fresh = true;
     else if (a === '--interval') flags.interval = parseInt(raw[++i], 10) || undefined;
     else if (a === '--all') flags.all = true;
@@ -520,7 +522,7 @@ async function cmdReview(pos, flags) {
   // subscribers get sub-second updates. Best-effort — status.json above stays
   // the authoritative record. Opt out: --no-tm-events / panel.tm_events:false.
   const tmEvents = createTmEventsPublisher({
-    run, runKind: 'review', title: targetTitle(target),
+    run, runKind: 'review', title: targetTitle(target), logPath: eventPath,
     enabled: flags.tmEvents != null ? flags.tmEvents : cfg.tm_events !== false,
   });
   let lastStatusFlushMs = 0;
@@ -1212,7 +1214,7 @@ Commands:
                                 --source tags the calling workflow (e.g. op:debate, build:consensus,
                                 solver:hypothesize, eval:judge) and --title names the run; both
                                 surface in the dashboard panel list so runs are identifiable.
-  status [run] [--all] [--json] [--watch|--follow [--interval N]]
+  status [run] [--all] [--json] [--watch|--follow [--interval N]] [--logs]
                                 Read run state from disk — see an IN-PROGRESS panel from the CLI.
                                 Covers all three namespaces: .xm/panel (native), .xm/review
                                 (lens-injected x-review runs, labeled "x-review(...)"), .xm/cross.
@@ -1237,6 +1239,10 @@ Commands:
                                 --follow = --watch. With a term-mesh daemon present, xk_run events
                                 re-render immediately (<1s) between polls; if the daemon dies the
                                 watch says so and continues polling (--no-tm-events to disable).
+                                --logs <run> streams the RAW event log (events.jsonl: each model's
+                                stdout/stderr/spawn/exit lines) instead of the interpreted board —
+                                last N (--lines N, default 200), or tail -f with --watch. cross runs
+                                keep no event log (status.json + final output only).
   types                         List providers (install status) + how to query each
                                 one's live models (cursor/kiro are multi-vendor: kimi, deepseek, …)
   models [vendor] [--check m1,m2]
@@ -1654,16 +1660,26 @@ function watchBoardSnapshot(flags) {
 
 // One run's detail as a snapshot (JSONL line per tick under `status <run> --watch --json`).
 // `found:false` = the run dir doesn't exist yet (a watcher may start before the run does).
+// Resolve a run id to its on-disk dir across the THREE namespaces (panel → review → cross).
+// The single run→dir resolver — watchRunSnapshot AND `--logs` share it, so adding a namespace
+// happens in exactly one place. Returns null when the run doesn't exist yet.
+function resolveRunDir(runArg) {
+  const panel = join(PANEL_DIR, runArg);
+  if (existsSync(panel)) return { dir: panel, kind: 'review' };
+  const review = join(PANEL_DIR, '..', 'review', runArg);
+  if (existsSync(review)) return { dir: review, kind: 'review' };
+  const cross = join(PANEL_DIR, '..', 'cross', runArg);
+  if (existsSync(cross)) return { dir: cross, kind: 'cross' };
+  return null;
+}
+
 // done/stale drive the watch loop's end condition — a consumer needs the stream to END.
 function watchRunSnapshot(runArg, linesN = 0) {
   const at = new Date().toISOString();
-  // panel + review namespaces share the status.json format; try both (see collectStatusRuns).
-  let reviewDir = join(PANEL_DIR, runArg);
-  if (!existsSync(reviewDir)) {
-    const injected = join(PANEL_DIR, '..', 'review', runArg);
-    if (existsSync(injected)) reviewDir = injected;
-  }
-  if (existsSync(reviewDir)) {
+  // panel + review namespaces share the status.json format; cross has its own row shape.
+  const resolved = resolveRunDir(runArg);
+  if (resolved && resolved.kind === 'review') {
+    const reviewDir = resolved.dir;
     const st = readJSONSafe(join(reviewDir, 'status.json'));
     const done = (st && st.phase === 'done') || existsSync(join(reviewDir, 'verdict.json'));
     const t = st && Date.parse(st.updated_at || '');
@@ -1678,8 +1694,8 @@ function watchRunSnapshot(runArg, linesN = 0) {
       models,
     };
   }
-  const crossDir = join(PANEL_DIR, '..', 'cross', runArg);
-  if (existsSync(crossDir)) {
+  if (resolved && resolved.kind === 'cross') {
+    const crossDir = resolved.dir;
     const row = statusRunRow({ kind: 'cross', run: runArg, dir: crossDir });
     const models = (row.models || []).map((m) => watchModelJSON(m, linesN)); // tails exist while the heartbeat status.json is live
     return {
@@ -1726,11 +1742,74 @@ function renderStatusWatch(flags) {
   console.log(`\n${C.dim}idle · ${snap.done} done · ${stalled} · ${snap.projects} project${snap.projects === 1 ? '' : 's'}${flags.all ? '' : ' (--all for every project)'}${C.reset}`);
 }
 
+// `xm panel status <run> --logs [--watch]` — stream the run's RAW event log (events.jsonl:
+// spawn/stdout/stderr/exit/json_parsed/…) instead of the interpreted status board. One-shot
+// dumps the last N (default 200, or --lines N); --watch follows it tail -f style. This is the
+// "what is each model actually printing right now" view the status board deliberately does not
+// show (the board interprets tails into findings). cross runs keep no event log → say so.
+function cmdLogs(pos, flags) {
+  const runArg = pos[0];
+  if (!runArg) {
+    console.error(`${C.red}✗ --logs needs a run id: xm panel status <run> --logs${C.reset}`);
+    process.exitCode = 1;
+    return;
+  }
+  const color = !!process.stdout.isTTY && !process.env.NO_COLOR;
+  const width = Math.max(24, (process.stdout.columns || 100) - 2);
+  const backlog = flags.lines != null ? flags.lines : 200;
+  const dump = (recs) => { for (const r of recs) console.log(formatEventLine(r, { color, width })); };
+  // cross runs (.xm/cross/) never write events.jsonl — don't sit blank, point at what DOES exist.
+  const crossNote = () => console.error(`${C.yellow}⚠ ${runArg} is a cross run — no event log (cross persists only status.json + final output). Try: xm panel status ${runArg}${C.reset}`);
+
+  if (!flags.watch) {
+    const r = resolveRunDir(runArg);
+    if (!r) { console.error(`${C.red}✗ run not found: ${runArg}${C.reset}`); process.exitCode = 1; return; }
+    if (r.kind === 'cross') { crossNote(); process.exitCode = 1; return; }
+    dump(readEventsLog(r.dir, { limit: backlog }));
+    return;
+  }
+
+  // --watch: prime with the backlog, then append only records newer than lastSeq each tick
+  // (readEventsLog with sinceSeq is uncapped, so a >backlog burst is never dropped). No screen
+  // clear — the log scrolls like tail -f. The poll loop is authoritative; the run's own
+  // status.json (via watchRunSnapshot) supplies the end condition.
+  const everyMs = Math.max(300, (flags.interval || 1) * 1000);
+  let lastSeq = 0, primed = false, iv = null;
+  const finish = (code) => { if (iv) clearInterval(iv); process.exit(code); };
+  const tick = () => {
+    const r = resolveRunDir(runArg);
+    if (!r) { return; } // not created yet — keep waiting quietly (a watched run may not exist yet)
+    if (r.kind === 'cross') { crossNote(); finish(1); return; }
+    if (!primed) {
+      const recs = readEventsLog(r.dir, { limit: backlog });
+      dump(recs);
+      lastSeq = maxSeq(recs, 0);
+      primed = true;
+    } else {
+      const fresh = readEventsLog(r.dir, { sinceSeq: lastSeq });
+      if (fresh.length) { dump(fresh); lastSeq = maxSeq(fresh, lastSeq); }
+    }
+    const snap = watchRunSnapshot(runArg);
+    if (snap.done || snap.stale) {
+      const tail = readEventsLog(r.dir, { sinceSeq: lastSeq }); // final drain before we stop
+      dump(tail);
+      console.log(`${C.dim}— run ${snap.done ? 'done' : 'stalled'} · log ended${C.reset}`);
+      finish(snap.done ? 0 : 1);
+    }
+  };
+  tick();
+  iv = setInterval(tick, everyMs);
+  if (iv.unref) iv.unref();
+  process.on('SIGINT', () => finish(0));
+}
+
 // `xm panel status [run] [--json] [--watch]` — read run state straight from disk so an IN-PROGRESS
 // panel is visible from the CLI (not only the dashboard). No run id → list recent review + cross
 // runs with their phase and per-model state. A run id → that run's per-model live state plus each
 // model's latest stdout tail (what it is producing right now). Read-only; --watch polls live.
+// --logs → cmdLogs (raw event stream instead of the interpreted board).
 function cmdStatus(pos, flags) {
+  if (flags.logs) { cmdLogs(pos, flags); return; }
   if (flags.watch) {
     const ESC = String.fromCharCode(27);
     const everyMs = Math.max(1, flags.interval || 2) * 1000;

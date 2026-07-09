@@ -179,6 +179,29 @@ describe('createTmEventsPublisher', () => {
     expect(modelEv.state).toBe('spawned'); // first sighting = spawn transition
   });
 
+  test('advertises log_path on the run-level frame only (model frames omit it); absent when null', async () => {
+    const { path, lines } = fakeDaemon();
+    const pub = createTmEventsPublisher({
+      run: 'r', runKind: 'review', logPath: '/x/.xm/panel/r/events.jsonl', socketPath: path, now: () => 1000,
+    });
+    pub.publishStatus(statusWith('round1 (review)', [model('claude', 'running')]));
+    await drain();
+    pub.close();
+    const params = lines.map((l) => l.params);
+    const phaseEv = params.find((p) => p.model === '');
+    const modelEv = params.find((p) => p.model === 'claude');
+    expect(phaseEv.log_path).toBe('/x/.xm/panel/r/events.jsonl'); // run-level frame carries it
+    expect(modelEv.log_path).toBeUndefined();                     // per-model frames do not
+
+    // cross runs pass no logPath → the field never appears (nothing to tail).
+    const { path: p2, lines: l2 } = fakeDaemon();
+    const cross = createTmEventsPublisher({ run: 'r2', runKind: 'cross', socketPath: p2, now: () => 1000 });
+    cross.publishStatus(statusWith('running', [model('claude', 'running')]));
+    await drain();
+    cross.close();
+    expect(l2.map((l) => l.params).find((p) => p.model === '').log_path).toBeUndefined();
+  });
+
   test('coalesces running ticks to 1/s but always sends transitions', async () => {
     const { path, lines } = fakeDaemon();
     let t = 0;

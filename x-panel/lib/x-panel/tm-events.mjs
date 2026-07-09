@@ -129,6 +129,11 @@ export function subscribeXkRun({ onEvent, onDrop = () => {}, socketPath, env = p
  * @param {string} opts.run       run id (== .xm/{panel|cross}/<run>/ dir name)
  * @param {string} opts.runKind   "review" | "cross"
  * @param {string} [opts.title]   human run title (run-level events only)
+ * @param {string|null} [opts.logPath]  absolute path to this run's events.jsonl, advertised
+ *   once on the run-level frame so an in-term-mesh subscriber can tail the DURABLE log
+ *   (the richer per-model stdout/stderr) off disk — the socket itself stays a lean status
+ *   accelerator (256-char tail only). Only review/panel runs write events.jsonl; cross runs
+ *   pass null (nothing to advertise).
  * @param {string} [opts.source]  producer id (default "x-panel")
  * @param {boolean} [opts.enabled]  false ⇒ inert (--no-tm-events / panel.tm_events:false)
  * @param {string|null} [opts.socketPath]  explicit socket (tests); undefined ⇒ detect
@@ -141,6 +146,7 @@ export function createTmEventsPublisher({
   run,
   runKind,
   title = null,
+  logPath = null,
   source = 'x-panel',
   enabled = true,
   socketPath,
@@ -224,6 +230,7 @@ export function createTmEventsPublisher({
           state: phase === 'done' ? 'ok' : 'running',
           elapsed_ms: t - startedMs,
           ...(title ? { title } : {}),
+          ...(logPath ? { log_path: logPath } : {}),
         });
       }
       for (const m of status.models || []) {
