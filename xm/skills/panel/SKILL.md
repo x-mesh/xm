@@ -104,7 +104,10 @@ to `x-build plan` (Research→PRD lifecycle) or `/xm:panel consensus` to critiqu
 NOT auto-run x-build. For structure/breakdown instead of ideation, use `xm:op scaffold`/`decompose` (single-vendor — neither is cross-vendor-wired).
 
 Each consumer probes `xm panel detect --auth` / `doctor` itself and falls back to single-vendor
-loudly when <2 vendors are ready — don't duplicate that here.
+loudly when <2 vendors are ready — don't duplicate that here. The consumer's vendor fan-out — **and
+its single-vendor fallback** — MUST run through `xm panel cross`, which writes `.xm/cross/<run>/status.json`:
+that file is the only record `xm panel status --all` / `--watch` / dashboard can see. A consumer that
+fans out cross-vendor work with the Agent tool instead leaves the run completely unobservable to panel status.
 
 ### 2. Engine utility → run the CLI directly (no delegation)
 `cross | detect | doctor | preflight | types | models | setup` → `xm panel <cmd> [args]` straight through
@@ -151,6 +154,7 @@ Ask (ONE AskUserQuestion): **models**, per-model **overrides** (`name:model`, e.
 | "Some models timed out, I'll just present what I have as complete." | Report failures (timeouts, missing CLIs) honestly. A 2/4 panel is not a 4/4 panel. |
 | "It's installed, so it'll work." | Installed ≠ authenticated. `xm panel doctor` catches a logged-out CLI up front, instead of losing a round when it fails mid-panel. Run it (or `detect --auth`) before a cross-vendor run. |
 | "It's a panel verb, I'll just do the lens review / debate here myself." | Route-1 verbs **delegate** to the consumer (x-review/x-op/…) via the Skill tool. Panel routes, it doesn't reimplement domain logic — inlining it duplicates and drifts from the source skill. |
+| "Only one vendor is ready, so I'll just fan out with the Agent tool." | The single-vendor fallback still runs through `xm panel cross --models <one>`. The Agent tool writes no `.xm/cross/<run>/status.json`, so the run never appears in `xm panel status --all` / `--watch` / dashboard — a routed verb becomes invisible to the very tool that routed it. |
 
 ## Red Flags
 
@@ -158,6 +162,7 @@ Ask (ONE AskUserQuestion): **models**, per-model **overrides** (`name:model`, e.
 - You pasted raw per-model findings instead of the merged consensus view.
 - You hid a model failure (timeout / not-installed) to make the panel look complete.
 - You defined a shell helper/alias and reused it across Bash calls.
+- You (or the routed consumer) fanned out cross-vendor work — or its single-vendor fallback — with the Agent tool instead of `xm panel cross`, leaving the run invisible to `xm panel status --all`.
 
 ## Verification
 
