@@ -82,7 +82,7 @@
     {
       "name": "review",
       "description": "Multi-perspective code review orchestrator — PR diff analysis with severity-rated findings and LGTM verdict",
-      "version": "2.1.5",
+      "version": "2.1.6",
       "author": {
         "name": "x-mesh"
       },
@@ -242,7 +242,7 @@
     {
       "name": "panel",
       "description": "Cross-model adversarial review panel — run claude/codex/agy/cursor on the same target, refute, and synthesize a consensus verdict",
-      "version": "0.14.0",
+      "version": "0.14.1",
       "author": {
         "name": "x-mesh"
       },
@@ -260,7 +260,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.4.49",
+      "version": "2.4.50",
       "author": {
         "name": "x-mesh"
       },

@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus } from '../x-panel/lib/x-panel/synth.mjs';
-import { extractJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts } from '../x-panel/lib/x-panel/adapters.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
@@ -167,6 +167,33 @@ describe('synthesize abstain', () => {
   });
 });
 
+describe('synthesize r1Status (mem-mesh ed2ff3e3)', () => {
+  test('round-1 failure is visible in by_model and counts, not silent raised:0', () => {
+    const round1 = { claude: [{ idx: 0, severity: 'high', file: 'a', line: 1, claim: 'x' }], agy: [] };
+    const round2 = { claude: [], agy: [] };
+    const v = synthesize(['claude', 'agy'], round1, round2, new Set(),
+      { agy: { status: 'failed', error: 'no findings JSON in output' } });
+    expect(v.by_model.agy.r1).toBe('failed');
+    expect(v.by_model.agy.r1_error).toContain('no findings');
+    expect(v.by_model.claude.r1).toBe('ok');
+    expect(v.by_model.claude.r1_error).toBeUndefined();
+    expect(v.counts.r1_failed).toBe(1);
+    expect(v.counts.r1_suspect).toBe(0);
+  });
+  test('suspect_empty (ok=true, findings=[], prose in raw) is flagged distinctly', () => {
+    const v = synthesize(['claude', 'agy'], { claude: [], agy: [] }, { claude: [], agy: [] }, new Set(),
+      { agy: { status: 'suspect_empty' } });
+    expect(v.by_model.agy.r1).toBe('suspect_empty');
+    expect(v.counts.r1_suspect).toBe(1);
+    expect(v.counts.r1_failed).toBe(0);
+  });
+  test('default (no r1Status) marks every model ok — legacy callers unchanged', () => {
+    const v = synthesize(['claude', 'codex'], { claude: [], codex: [] }, { claude: [], codex: [] });
+    expect(v.by_model.claude.r1).toBe('ok');
+    expect(v.counts.r1_failed).toBe(0);
+  });
+});
+
 describe('extractJSON', () => {
   test('pulls a JSON object out of surrounding noise', () => {
     const obj = extractJSON('blah {"findings":[{"claim":"x"}]} trailing');
@@ -196,6 +223,61 @@ describe('extractJSON', () => {
       if (prevNoJson === undefined) delete process.env.X_PANEL_NO_JSON_NOJSON;
       else process.env.X_PANEL_NO_JSON_NOJSON = prevNoJson;
     }
+  });
+});
+
+describe('scanJSONObjects', () => {
+  test('finds every parseable object, skipping prose braces', () => {
+    const text = 'use the {curly} placeholder, then {"a":1} and later {"b":[2]}';
+    const objs = scanJSONObjects(text).map(c => c.obj);
+    expect(objs).toEqual([{ a: 1 }, { b: [2] }]);
+  });
+  test('finds a balanced inner object inside an unclosed outer brace', () => {
+    const objs = scanJSONObjects('{ broken and never closes... {"findings":[]}').map(c => c.obj);
+    expect(objs).toEqual([{ findings: [] }]);
+  });
+  test('spans cover the exact JSON substring', () => {
+    const text = 'pre {"x":1} post';
+    const [c] = scanJSONObjects(text);
+    expect(text.slice(c.start, c.end)).toBe('{"x":1}');
+  });
+});
+
+describe('extractContractJSON (mem-mesh ed2ff3e3)', () => {
+  test('prompt-echo {"findings":[]} before the real answer does NOT win', () => {
+    const text = 'If there are no real issues, return {"findings":[]}. My answer: {"findings":[{"claim":"x"}]}';
+    expect(extractContractJSON(text, ['findings']).findings.length).toBe(1);
+  });
+  test('real answer before a trailing contract echo still wins', () => {
+    const text = '{"findings":[{"claim":"x"},{"claim":"y"}]} (as instructed, empty would be {"findings":[]})';
+    expect(extractContractJSON(text, ['findings']).findings.length).toBe(2);
+  });
+  test('prose brace before the answer does not abort extraction (extractJSON regression)', () => {
+    const text = 'the {placeholder} syntax… {"findings":[{"claim":"z"}]}';
+    expect(extractJSON(text)).toBeNull(); // old behavior: first candidate fails → null
+    expect(extractContractJSON(text, ['findings']).findings[0].claim).toBe('z');
+  });
+  test('JSON without any contract key is a MISS, not a success', () => {
+    expect(extractContractJSON('{"reason":"hi"}', ['findings', 'verdicts'])).toBeNull();
+  });
+  test('genuine empty findings answer is accepted', () => {
+    expect(extractContractJSON('{"findings":[]}', ['findings'])).toEqual({ findings: [] });
+  });
+  test('selects by the requested key (verdicts round ignores findings echoes)', () => {
+    const text = '{"findings":[{"claim":"echo"}]} {"verdicts":[{"ref":"a#0","stance":"refute"}]}';
+    expect(extractContractJSON(text, ['verdicts']).verdicts[0].ref).toBe('a#0');
+  });
+});
+
+describe('proseOutsideJSON', () => {
+  test('compliant output (fenced JSON only) leaves ~nothing', () => {
+    expect(proseOutsideJSON('```json\n{"findings":[]}\n```').length).toBe(0);
+  });
+  test('a prose review around an empty contract echo is preserved', () => {
+    const prose = 'I reviewed the diff. 1) The retry loop never persists. 2) The mtime check races. ';
+    const out = proseOutsideJSON(prose + '{"findings":[]}');
+    expect(out).toContain('retry loop');
+    expect(out.length).toBeGreaterThan(50);
   });
 });
 
@@ -1325,7 +1407,27 @@ describe('review (stubbed models)', () => {
     expect(r.status).toBe(0);
     const r1 = JSON.parse(readFileSync(join(latestRunDir(), 'codex.r1.json'), 'utf8'));
     expect(r1.ok).toBe(false); // shape-guard rejects the envelope object
-    expect(r1.error).toContain('no JSON object');
+    expect(r1.error).toContain('no findings JSON'); // round-1 contract error names the missing key
+    expect(r1.r1_status).toBe('failed'); // and the failure is typed for the verdict
+    const v = latestVerdict();
+    expect(v.by_model.codex.r1).toBe('failed'); // never silently raised:0 (mem-mesh ed2ff3e3)
+    expect(v.counts.r1_failed).toBe(1);
+  });
+
+  test('prose review + empty contract echo → suspect_empty in verdict, warned in render', () => {
+    // The agy failure shape (mem-mesh ed2ff3e3): the model reviews in prose and only
+    // echoes {"findings":[]} — parses as ok=true/0 findings, which must NOT read as
+    // "reviewed and found nothing".
+    const r = review(['prose empty target'], { X_PANEL_PROSE_EMPTY_CLAUDE: '1' });
+    expect(r.status).toBe(0);
+    const r1 = JSON.parse(readFileSync(join(latestRunDir(), 'claude.r1.json'), 'utf8'));
+    expect(r1.ok).toBe(true);
+    expect(r1.findings.length).toBe(0);
+    expect(r1.r1_status).toBe('suspect_empty');
+    const v = latestVerdict();
+    expect(v.by_model.claude.r1).toBe('suspect_empty');
+    expect(v.counts.r1_suspect).toBe(1);
+    expect(r.stdout).toContain('0 findings but substantial prose'); // render warns the operator
   });
 
   test('--stream accumulates token-level deltas into the live stdout_tail', () => {

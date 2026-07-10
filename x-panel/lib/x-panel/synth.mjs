@@ -49,8 +49,13 @@ export function normalizeVerdicts(raw) {
  * @param round1  { [model]: normalizedFindings[] }
  * @param round2  { [model]: normalizedVerdicts[] }  — model's verdicts on the OTHER models'
  *                findings, each verdict referencing a finding by its global ref `owner#idx`
+ * @param abstained  Set<model> whose round-2 failed (their silence must not read as concede)
+ * @param r1Status  { [model]: { status: 'failed'|'suspect_empty', error? } } — models whose
+ *                round-1 produced no usable findings. Without this channel a parse failure
+ *                is indistinguishable from "reviewed and found nothing" (raised: 0), and
+ *                a 3/4 panel silently reads as 4/4 (mem-mesh ed2ff3e3).
  */
-export function synthesize(models, round1, round2, abstained = new Set()) {
+export function synthesize(models, round1, round2, abstained = new Set(), r1Status = {}) {
   const confirmed = [];
   const contested = [];
   const unreviewed = []; // every opponent's round-2 failed → nobody could vouch/refute
@@ -77,17 +82,29 @@ export function synthesize(models, round1, round2, abstained = new Set()) {
 
   const byModel = {};
   for (const m of models) {
+    const st = r1Status[m];
     byModel[m] = {
       raised: (round1[m] || []).length,
       confirmed: confirmed.filter(f => f.owner === m).length,
       contested: contested.filter(f => f.owner === m).length,
+      // 'ok' | 'failed' (round-1 errored/unparseable — findings missing from this verdict)
+      // | 'suspect_empty' (ok=true with 0 findings but substantial prose in raw)
+      r1: st ? st.status : 'ok',
+      ...(st && st.error ? { r1_error: st.error } : {}),
     };
   }
 
   const consensus = mergeConsensus(confirmed);
   return {
     models,
-    counts: { confirmed: confirmed.length, contested: contested.length, unreviewed: unreviewed.length, unique: consensus.length },
+    counts: {
+      confirmed: confirmed.length,
+      contested: contested.length,
+      unreviewed: unreviewed.length,
+      unique: consensus.length,
+      r1_failed: models.filter(m => byModel[m].r1 === 'failed').length,
+      r1_suspect: models.filter(m => byModel[m].r1 === 'suspect_empty').length,
+    },
     by_model: byModel,
     consensus,
     confirmed,
