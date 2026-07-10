@@ -280,6 +280,10 @@ Phase 3 (cross-vendor) replaces the Claude fan-out with:
      --models "$(xm panel detect --auth --json | jq -r '.available | join(",")')" --json
    ```
    Each run writes `.xm/review/<run>/verdict.json` (consensus[], confirmed[], contested[], by_model, usage).
+   **Check `by_model[*].r1` before trusting coverage**: a model with `r1: "failed"` (round-1 output
+   unparseable) or `r1: "suspect_empty"` (0 findings but substantial prose in raw) did NOT
+   contribute to this verdict — report coverage as N-1/M, never "all models agreed", and read that
+   model's `.xm/review/<run>/<model>.r1.json` raw for findings the parser could not lift.
 4. **Synthesize (Phase 4)** across lenses, feeding into the standard Phase 4 pipeline (CoVe /
    challenge / verdict): a finding's confidence scales with `consensus` (N/M vendors agreed) —
    1-vendor findings are diversity (keep, do not drop), multi-vendor are high-confidence. **Also

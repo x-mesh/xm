@@ -132,6 +132,18 @@ if (process.env[`X_PANEL_ENVELOPE_ONLY_${envModel}`]) {
   process.exit(0);
 }
 
+// Round-1-only: a model that reviews in PROSE and merely echoes the empty contract
+// object (the agy failure shape, mem-mesh ed2ff3e3) — parses as ok=true findings=[]
+// and must surface as r1_status=suspect_empty, never as a clean "0 findings".
+if (!isRefute && process.env[`X_PANEL_PROSE_EMPTY_${envModel}`]) {
+  const prose = 'I reviewed the change carefully. 1) The retry loop never persists its state to disk. '
+    + '2) The mtime-based prune races with concurrent writers. 3) The stream fallback duplicates '
+    + 'already-printed text on reconnect. 4) The config merge drops nested keys. 5) The error path '
+    + 'swallows the original stack. These are the issues I found in this diff, described in detail. ';
+  process.stdout.write(prose + 'If there are no real issues, return {"findings":[]}.');
+  process.exit(0);
+}
+
 // t5: codex discloses its session id in the run banner — emulate it on session
 // creation so the capture path (SESSION_ID_RE) is exercised end to end.
 if (sessionMode === 'create' && model === 'codex') {

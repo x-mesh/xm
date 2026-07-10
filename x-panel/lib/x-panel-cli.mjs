@@ -21,7 +21,7 @@ import {
   PANEL_DIR, XM_ROOT, C, provColor, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
-import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, supportsResume } from './x-panel/adapters.mjs';
+import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, supportsResume, proseOutsideJSON } from './x-panel/adapters.mjs';
 import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize } from './x-panel/synth.mjs';
 import { createTmEventsPublisher, subscribeXkRun } from './x-panel/tm-events.mjs';
@@ -308,7 +308,7 @@ const SIGNAL_DEATH = /\(SIG[A-Z0-9]+\)/;
 
 // Run one round across all models in parallel, reporting start/heartbeat/elapsed
 // on stderr so a long round (large diff) isn't a silent black box.
-async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult, onProviderEvent, stream = false, partial = true) {
+async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult, onProviderEvent, stream = false, partial = true, expectKeys = null) {
   process.stderr.write(`${C.dim}${roundLabel} — ${usable.length} models in parallel…${C.reset}\n`);
   const pending = new Set(usable.map((e) => e.label));
   const t0 = Date.now();
@@ -339,6 +339,7 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
         partial,
         session,
         fallbackPrompt,
+        expectKeys,
         onEvent: (ev) => onProviderEvent && onProviderEvent(e, ev),
       });
     };
@@ -373,6 +374,16 @@ function renderVerdict(v, dir) {
   const lines = [];
   const unrev = v.counts.unreviewed ? `, ${C.red}${v.counts.unreviewed} unreviewed${C.reset}` : '';
   lines.push(`${C.bold}Panel verdict${C.reset} — ${C.green}${v.counts.unique} issue(s)${C.reset} (from ${v.counts.confirmed} confirmed findings), ${C.yellow}${v.counts.contested} contested${C.reset}${unrev}  ${C.dim}(models: ${v.models.join(', ')})${C.reset}`);
+  // A model whose round 1 died or came back unparseable is NOT part of this verdict —
+  // saying so up top prevents the "N/N models agreed" over-read (mem-mesh ed2ff3e3).
+  for (const m of v.models) {
+    const r1 = (v.by_model[m] || {}).r1 || 'ok';
+    if (r1 === 'failed') {
+      lines.push(`${C.red}⚠ ${m}: round 1 FAILED${C.reset} (${(v.by_model[m].r1_error || 'error')}) — its findings are missing from this verdict; raw kept in ${safeLabel(m)}.r1.json`);
+    } else if (r1 === 'suspect_empty') {
+      lines.push(`${C.yellow}⚠ ${m}: 0 findings but substantial prose in its raw output${C.reset} — possibly an unparsed review; check ${safeLabel(m)}.r1.json`);
+    }
+  }
   lines.push('');
   lines.push(`${C.bold}ISSUES${C.reset} ${C.dim}(merged across models, by consensus)${C.reset}`);
   if (!v.consensus.length) lines.push('  (none)');
@@ -692,6 +703,15 @@ async function cmdReview(pos, flags) {
   // Round 1 — independent review (all models in parallel)
   startPhase('round1 (review)');
   const round1 = {};
+  // Models whose round 1 produced no usable findings: 'failed' (error/unparseable) or
+  // 'suspect_empty' (ok with 0 findings but substantial prose in raw — likely a review
+  // the parser couldn't lift). Threaded into synthesize so the verdict distinguishes
+  // "reviewed, found nothing" from "never entered the verdict" (mem-mesh ed2ff3e3).
+  const r1Status = {};
+  // Warn-only signal, never a gate: a compliant answer leaves ~0 chars of prose outside
+  // its JSON, a one-line "Here is the JSON:" preamble ~tens, a full prose review
+  // thousands (observed 3.9KB). 200 sits in the wide gap between those modes.
+  const SUSPECT_PROSE_MIN = 200;
   const r1Prompt = reviewPrompt(target.text, reviewOverride);
   await runRound('round 1 (review)', usable, (e) => (
     // fallbackPrompt = the same prompt: a failed --session-id spawn retries
@@ -709,9 +729,12 @@ async function cmdReview(pos, flags) {
     }
     const findings = res.ok ? normalizeFindings(res.json, lensTag) : [];
     round1[e.label] = findings;
-    writeJSON(join(dir, `${safeLabel(e.label)}.r1.json`), { model: e.label, ok: res.ok, error: res.error, findings, usage: res.usage || null, raw: res.raw });
-    writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 1, ok: res.ok, count: findings.length, error: res.error || null });
-  }, onProviderEvent, stream, partial);
+    if (!res.ok) r1Status[e.label] = { status: 'failed', error: res.error || 'failed' };
+    else if (!findings.length && proseOutsideJSON(res.raw || '').length >= SUSPECT_PROSE_MIN) r1Status[e.label] = { status: 'suspect_empty' };
+    const r1 = r1Status[e.label] ? r1Status[e.label].status : 'ok';
+    writeJSON(join(dir, `${safeLabel(e.label)}.r1.json`), { model: e.label, ok: res.ok, error: res.error, r1_status: r1, findings, usage: res.usage || null, raw: res.raw });
+    writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 1, ok: res.ok, r1_status: r1, count: findings.length, error: res.error || null });
+  }, onProviderEvent, stream, partial, ['findings']);
 
   // Round 2 — adversarial: each model refutes the others' findings (in parallel)
   startPhase('round2 (refute)');
@@ -734,9 +757,9 @@ async function cmdReview(pos, flags) {
     round2[e.label] = verdicts;
     writeJSON(join(dir, `${safeLabel(e.label)}.r2.json`), { model: e.label, ok: res.ok, error: res.error, resume, verdicts, usage: res.usage || null, raw: res.raw });
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 2, ok: res.ok, resume, count: verdicts.length, error: res.error || null });
-  }, onProviderEvent, stream, partial);
+  }, onProviderEvent, stream, partial, ['verdicts']);
 
-  const verdict = synthesize(labels, round1, round2, abstained);
+  const verdict = synthesize(labels, round1, round2, abstained, r1Status);
   const record = {
     run,
     created_at: new Date().toISOString(),

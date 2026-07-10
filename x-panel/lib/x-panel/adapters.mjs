@@ -314,8 +314,19 @@ export function isAvailable(name) {
   return r.status === 0;
 }
 
+// Contract extraction shared by every invoke path: with expectKeys the answer MUST
+// carry one of the contract arrays (findings/verdicts) — an unrelated JSON object in
+// the output is a parse failure, not a success. Without expectKeys the legacy
+// first-object behavior is kept for generic callers.
+function extractAnswerJSON(raw, expectKeys) {
+  return expectKeys ? extractContractJSON(raw, expectKeys) : extractJSON(raw);
+}
+function jsonMissingError(expectKeys) {
+  return expectKeys ? `no ${expectKeys.join('/')} JSON in output` : 'no JSON object in output';
+}
+
 /** Invoke a provider with a prompt; capture stdout and extract a JSON object. */
-export function invokeProvider(name, prompt, { timeout = 180_000, model = null } = {}) {
+export function invokeProvider(name, prompt, { timeout = 180_000, model = null, expectKeys = null } = {}) {
   const resolved = resolveCommand(name, prompt, model);
   if (!resolved) return { ok: false, error: `unknown provider: ${name}`, raw: '', json: null };
   const [cmd, args] = resolved;
@@ -327,8 +338,8 @@ export function invokeProvider(name, prompt, { timeout = 180_000, model = null }
     return { ok: false, error: `exit ${res.status}: ${(res.stderr || '').trim().slice(0, 300)}`, raw: res.stdout || '', json: null };
   }
   const raw = res.stdout || '';
-  const json = extractJSON(raw);
-  if (!json) return { ok: false, error: 'no JSON object in output', raw, json: null };
+  const json = extractAnswerJSON(raw, expectKeys);
+  if (!json) return { ok: false, error: jsonMissingError(expectKeys), raw, json: null };
   return { ok: true, error: null, raw, json };
 }
 
@@ -402,14 +413,14 @@ export function resolveSessionCommand(name, prompt, model, session) {
   return resolveCommand(name, prompt, model);
 }
 
-export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, stream = false, partial = true, session = null, fallbackPrompt = null } = {}) {
+export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, stream = false, partial = true, session = null, fallbackPrompt = null, expectKeys = null } = {}) {
   if (stream && supportsStream(name)) {
     // Session reuse is a raw-path feature: the structured-stream argv is kept
     // exactly as dogfooded. Callers already disable sessions under --stream.
-    return invokeProviderStream(name, prompt, { timeout, maxTimeout, model, onEvent, partial });
+    return invokeProviderStream(name, prompt, { timeout, maxTimeout, model, onEvent, partial, expectKeys });
   }
   const use = session && supportsResume(name) ? session : null;
-  let res = await invokeProviderRaw(name, prompt, { timeout, maxTimeout, model, onEvent, session: use });
+  let res = await invokeProviderRaw(name, prompt, { timeout, maxTimeout, model, onEvent, session: use, expectKeys });
   if (use) {
     if (res.ok) {
       if (use.mode === 'resume') res.resume = 'ok';
@@ -419,14 +430,14 @@ export async function invokeProviderAsync(name, prompt, { timeout = 180_000, max
       if (onEvent) {
         try { onEvent({ at: new Date().toISOString(), type: 'lifecycle', provider: name, model, note: `session ${use.mode} failed (${res.error}) — retrying stateless` }); } catch { /* observer only */ }
       }
-      res = await invokeProviderRaw(name, fallbackPrompt, { timeout, maxTimeout, model, onEvent, session: null });
+      res = await invokeProviderRaw(name, fallbackPrompt, { timeout, maxTimeout, model, onEvent, session: null, expectKeys });
       res.resume = 'fallback';
     }
   }
   return res;
 }
 
-function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, session = null } = {}) {
+function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, session = null, expectKeys = null } = {}) {
   return new Promise((resolve) => {
     const emit = (event) => {
       if (!onEvent) return;
@@ -489,10 +500,10 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       const usage = parseStderrUsage(name, stderr);
       if (usage) emit({ type: 'usage_final', provider: name, model, usage });
       if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: stdout, json: null, usage });
-      const json = extractJSON(stdout);
+      const json = extractAnswerJSON(stdout, expectKeys);
       if (!json) {
         emit({ type: 'json_missing', provider: name, model });
-        return finish({ ok: false, error: 'no JSON object in output', raw: stdout, json: null, usage });
+        return finish({ ok: false, error: jsonMissingError(expectKeys), raw: stdout, json: null, usage });
       }
       emit({ type: 'json_parsed', provider: name, model });
       // Session establishment (t5): claude's id is caller-supplied (authoritative);
@@ -644,7 +655,7 @@ export function parseStreamLine(name, obj, model) {
   return { events, finalText, usage };
 }
 
-function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, partial = true } = {}) {
+function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, partial = true, expectKeys = null } = {}) {
   return new Promise((resolve) => {
     const emit = (event) => { if (!onEvent) return; try { onEvent({ at: new Date().toISOString(), ...event }); } catch { /* observer only */ } };
     let settled = false;
@@ -704,15 +715,14 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
       if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: rawCap, json: null, usage });
       // Findings come from the final answer text (NOT the raw JSONL envelope).
       const text = finalText != null ? finalText : textBuf;
-      let json = extractJSON(text);
-      // rawCap fallback is shape-guarded: a JSONL envelope line (e.g. {"type":"system"})
-      // must NOT be mistaken for a successful review, so only accept it when it actually
-      // carries findings/verdicts.
+      let json = extractAnswerJSON(text, expectKeys);
+      // rawCap fallback is ALWAYS shape-guarded (even without expectKeys): a JSONL
+      // envelope line (e.g. {"type":"system"}) must NOT be mistaken for a successful
+      // review, so only an object actually carrying findings/verdicts is accepted.
       if (!json) {
-        const alt = extractJSON(rawCap);
-        if (alt && (Array.isArray(alt.findings) || Array.isArray(alt.verdicts))) json = alt;
+        json = extractContractJSON(rawCap, expectKeys || ['findings', 'verdicts']);
       }
-      if (!json) { emit({ type: 'json_missing', provider: name, model }); return finish({ ok: false, error: 'no JSON object in output', raw: rawCap, json: null, usage }); }
+      if (!json) { emit({ type: 'json_missing', provider: name, model }); return finish({ ok: false, error: jsonMissingError(expectKeys), raw: rawCap, json: null, usage }); }
       emit({ type: 'json_parsed', provider: name, model });
       finish({ ok: true, error: null, raw: rawCap, json, usage });
     });
@@ -855,4 +865,87 @@ export function extractJSON(text) {
     }
   }
   return null;
+}
+
+/**
+ * Scan EVERY balanced top-level {...} candidate in `text`, not just the first.
+ * A candidate that fails JSON.parse (a prose "{placeholder}") is skipped and the
+ * scan resumes right after its opening brace — extractJSON returns null in that
+ * case and drops any real answer that follows it. Returns [{ obj, start, end }]
+ * in document order. `limit` bounds the number of scan attempts so adversarial
+ * brace-floods can't go quadratic.
+ */
+export function scanJSONObjects(text, limit = 32) {
+  const out = [];
+  if (!text) return out;
+  let from = 0;
+  for (let attempts = 0; attempts < limit; attempts++) {
+    const start = text.indexOf('{', from);
+    if (start < 0) break;
+    let depth = 0, inStr = false, esc = false, end = -1;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) { end = i + 1; break; }
+      }
+    }
+    if (end < 0) { from = start + 1; continue; } // unbalanced — an inner object may still close
+    try {
+      out.push({ obj: JSON.parse(text.slice(start, end)), start, end });
+      from = end;
+    } catch {
+      from = start + 1; // prose brace — keep scanning past it
+    }
+  }
+  return out;
+}
+
+/**
+ * Contract-aware extraction: among ALL parseable JSON objects in `text`, return the
+ * one that actually carries an expected contract array (e.g. findings/verdicts).
+ * Selection: largest expected-key array wins; ties → the LATER object (final-answer
+ * position). Models that disobey "return ONLY JSON" tend to quote the prompt's
+ * `{"findings":[]}` example inside their prose — first-object extraction (extractJSON)
+ * picked that echo and silently reported 0 findings as a SUCCESS (mem-mesh ed2ff3e3).
+ * Returns null when no candidate carries any expected key: for a contract round that
+ * is a parse FAILURE (loud), never "0 findings".
+ */
+export function extractContractJSON(text, keys) {
+  let best = null, bestScore = -1;
+  for (const { obj } of scanJSONObjects(text)) {
+    let score = -1;
+    for (const k of keys) {
+      if (Array.isArray(obj[k])) score = Math.max(score, obj[k].length);
+    }
+    if (score < 0) continue; // no contract key — envelope/echo/random JSON
+    if (score >= bestScore) { best = obj; bestScore = score; } // ties → later wins
+  }
+  return best;
+}
+
+/**
+ * The prose left over once every parseable JSON object and code-fence marker is
+ * removed. A contract-compliant answer leaves ~nothing; a model that reviewed in
+ * prose (and only echoed an empty contract object) leaves its whole review here.
+ * Callers use the length as a "suspect empty findings" signal.
+ */
+export function proseOutsideJSON(text) {
+  if (!text) return '';
+  let out = '';
+  let cursor = 0;
+  for (const { start, end } of scanJSONObjects(text)) {
+    out += text.slice(cursor, start);
+    cursor = end;
+  }
+  out += text.slice(cursor);
+  return out.replace(/```[a-zA-Z]*/g, '').trim();
 }
