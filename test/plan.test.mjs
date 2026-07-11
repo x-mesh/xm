@@ -144,6 +144,24 @@ describe('forecast', () => {
     }
   });
 
+  test('roi refuses a routing suggestion from estimate-only data (빅뱃1 / L9)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      // a normal completion has no --tokens/--score → estimated cost, unscored
+      run(['tasks', 'add', 'A'], { cwd: tmp });
+      run(['tasks', 'update', 't1', '--status', 'running'], { cwd: tmp });
+      run(['tasks', 'update', 't1', '--status', 'completed', '--no-commit'], { cwd: tmp });
+      const r = run(['roi', '--json'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const out = JSON.parse(r.stdout);
+      expect(out.suggestion).toBeNull();                 // never guess from placeholders
+      expect(out.models.every(m => !m.calibrated)).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('forecast update aggregates measured actuals + is reachable from the CLI (빌드3)', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {

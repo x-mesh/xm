@@ -13,7 +13,7 @@ import { cmdPhase, cmdGate, cmdCheckpoint } from './x-build/phase.mjs';
 import { cmdTasks, cmdSteps, cmdRun, cmdRunStatus, interactiveTasksAdd, cmdDispatch } from './x-build/tasks.mjs';
 import { cmdLater } from './x-build/later.mjs';
 import { cmdHooks } from './x-build/hooks.mjs';
-import { cmdPlan, cmdPlanCheck, cmdPrdGate, cmdPrdCheck, cmdConsensus, cmdDiscuss, cmdResearch, cmdForecast, cmdNext, cmdHandoff, cmdSummarize, cmdSaveArtifact, cmdContextUsage, cmdResearchCheck } from './x-build/plan.mjs';
+import { cmdPlan, cmdPlanCheck, cmdPrdGate, cmdPrdCheck, cmdConsensus, cmdDiscuss, cmdResearch, cmdForecast, cmdRoi, cmdNext, cmdHandoff, cmdSummarize, cmdSaveArtifact, cmdContextUsage, cmdResearchCheck } from './x-build/plan.mjs';
 import { cmdQuality, cmdVerifyCoverage, cmdVerifyTraceability, cmdVerifyContracts, cmdVerifyReviewFix, cmdVerifyDrift } from './x-build/verify.mjs';
 import { cmdExport, cmdImport } from './x-build/export.mjs';
 import { cmdAlias, cmdDemo, cmdWatch, cmdMetrics, cmdMode, cmdContext, cmdPhaseContext, cmdDecisions, cmdTemplates, printHelp } from './x-build/misc.mjs';
@@ -89,6 +89,7 @@ switch (cmd) {
   case 'decisions':     cmdDecisions(args); break;
   case 'summarize':     cmdSummarize(args); break;
   case 'forecast':      cmdForecast(args); break;
+  case 'roi':           cmdRoi(args); break;
   case 'run':            cmdRun(args); break;
   case 'mode':           cmdMode(args); break;
   case 'export':         cmdExport(args); break;

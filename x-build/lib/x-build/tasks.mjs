@@ -643,6 +643,9 @@ export function taskUpdate(project, args) {
         strategy: taskRef.strategy || null,
         ..._costFields,
         quality_score: taskRef.score != null ? taskRef.score : 1,
+        // Distinguish a REAL score from the default: `roi` must not treat an unscored
+        // task's placeholder 1.0 as a measured quality signal (빅뱃1 / L9).
+        quality_scored: taskRef.score != null,
         success: true,
         retry_count: taskRef.retry_count || 0,
         failure_reason: null,

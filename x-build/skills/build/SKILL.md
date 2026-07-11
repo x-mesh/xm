@@ -318,6 +318,7 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 
 ### Analysis
 - `forecast` — Per-task cost estimation ($) with complexity-adjusted confidence levels
+- `roi [--by model|role|strategy] [--json]` — quality-per-dollar (Score/$) from MEASURED actuals only. Suggests a `model_overrides` change when one model clearly earns its spend — but only from calibrated groups (≥5 tasks that reported both `--tokens-in/--tokens-out` AND `--score`); estimated cost or the default 1.0 quality never counts, and it never writes config itself.
 - `metrics` — Phase duration, task velocity
 - `decisions add "..." [--type] [--rationale]` / `decisions list` / `decisions inject`
 - `summarize` — Step summaries

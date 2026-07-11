@@ -670,6 +670,85 @@ export function cmdForecastUpdate() {
   if (thin.length) console.log(`  ${thin.map(s => `${s} (${counts[s]}/10)`).join(', ')} — still estimate-only until 10 samples.`);
 }
 
+// ── ROI: Score/$ from measured actuals (빅뱃1) ─────────────────────────
+//
+// Aggregate task_complete metrics into quality-per-dollar per group (model / role /
+// strategy). The point of the whole kit's cost work: which model EARNS its spend.
+//
+// Two honesty rails (L6/L9), because a wrong routing recommendation is worse than none:
+//  - A group is `calibrated` only when it has ≥ROI_MIN_SAMPLES completions that are BOTH
+//    cost_source:'actual' AND quality_scored. Estimated cost (0/placeholder) or the
+//    default 1.0 quality never counts as signal.
+//  - roiSuggestion() recommends a model_overrides change ONLY between calibrated groups
+//    with a real Score/$ gap; otherwise it returns null and the CLI says so.
+
+export const ROI_MIN_SAMPLES = 5; // per-group calibrated completions before ROI is trusted
+
+// Pure aggregation over already-read task_complete rows. Returns per-group stats keyed
+// by the chosen dimension ('model' | 'role' | 'strategy').
+export function aggregateRoi(rows, dim = 'model') {
+  const groups = new Map();
+  for (const r of rows) {
+    if (r.type !== 'task_complete') continue;
+    const key = r[dim] != null ? String(r[dim]) : '(none)';
+    if (!groups.has(key)) {
+      groups.set(key, { key, tasks: 0, calibrated_samples: 0, cost_sum: 0, quality_sum: 0 });
+    }
+    const g = groups.get(key);
+    g.tasks++;
+    const isActual = String(r.cost_source || '') === 'actual';
+    const isScored = r.quality_scored === true;
+    if (isActual && isScored && typeof r.cost_usd === 'number' && r.cost_usd > 0) {
+      g.calibrated_samples++;
+      g.cost_sum += r.cost_usd;
+      g.quality_sum += (typeof r.quality_score === 'number' ? r.quality_score : 0);
+    }
+  }
+  return [...groups.values()].map((g) => {
+    const calibrated = g.calibrated_samples >= ROI_MIN_SAMPLES;
+    const avg_quality = g.calibrated_samples ? g.quality_sum / g.calibrated_samples : null;
+    const avg_cost = g.calibrated_samples ? g.cost_sum / g.calibrated_samples : null;
+    // Score/$ = quality earned per dollar spent. Only meaningful when calibrated.
+    const score_per_usd = (calibrated && avg_cost > 0) ? avg_quality / avg_cost : null;
+    return {
+      key: g.key,
+      tasks: g.tasks,
+      calibrated_samples: g.calibrated_samples,
+      calibrated,
+      avg_quality: avg_quality != null ? +avg_quality.toFixed(3) : null,
+      avg_cost_usd: avg_cost != null ? +avg_cost.toFixed(5) : null,
+      score_per_usd: score_per_usd != null ? +score_per_usd.toFixed(3) : null,
+    };
+  }).sort((a, b) => (b.score_per_usd ?? -1) - (a.score_per_usd ?? -1));
+}
+
+// Recommend a model_overrides direction from CALIBRATED groups only. Returns
+// { best, worst, ratio } when there is a real gap between two calibrated models, else
+// null (insufficient signal — the CLI must say "no recommendation", never guess).
+export function roiSuggestion(stats, { minRatio = 1.3 } = {}) {
+  const cal = stats.filter((s) => s.calibrated && s.score_per_usd != null);
+  if (cal.length < 2) return null;
+  const best = cal[0];            // sorted desc by score_per_usd
+  const worst = cal[cal.length - 1];
+  if (worst.score_per_usd <= 0) return null;
+  const ratio = best.score_per_usd / worst.score_per_usd;
+  if (ratio < minRatio) return null; // gap too small to act on
+  return { best: best.key, worst: worst.key, ratio: +ratio.toFixed(2) };
+}
+
+// Read task_complete rows from the metrics log (best-effort per line).
+export function readTaskMetrics() {
+  const mp = metricsPath();
+  if (!existsSync(mp)) return [];
+  const out = [];
+  for (const line of readFileSync(mp, 'utf8').split('\n')) {
+    const s = line.trim();
+    if (!s) continue;
+    try { const o = JSON.parse(s); if (o.type === 'task_complete') out.push(o); } catch { /* skip torn line */ }
+  }
+  return out;
+}
+
 // ── spendCachePath ────────────────────────────────────────────────────
 
 export function spendCachePath() {
