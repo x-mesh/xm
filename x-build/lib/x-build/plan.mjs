@@ -8,6 +8,7 @@ import {
   manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, projectDir, decisionsPath, archiveDir,
   resolveProject,
   loadConfig, loadSharedConfig, parseOptions, fmtDuration, estimateTaskCost, getModelForRole,
+  cmdForecastUpdate, loadTokenActuals,
   existsSync, join, readFileSync, mkdirSync,
   getAgentCount, isNormalMode,
   templatesDir,
@@ -287,6 +288,15 @@ export async function cmdPlan(args) {
 // (references/prd-template.md:23): "If any [A*, low] or Q* status: blocking
 // remains unresolved, Plan phase MUST halt." Only these unambiguous markers
 // block; missing top-level sections are warnings. Pure function over PRD text.
+// A delta PRD is the lightweight tier used by Quick Mode: Goal + Success Criteria
+// + Acceptance Criteria only, marked `<!-- prd-tier: delta -->` and (deliberately)
+// carrying NO template-version marker, so the diagram gate stays a warning instead
+// of blocking. It still satisfies the Execute-entry wall (a PRD exists) and feeds
+// the AC parser, traceability, and drift baseline. `full` is everything else.
+export function prdTier(prdText) {
+  return /<!--\s*prd-tier:\s*delta\s*-->/i.test(prdText || '') ? 'delta' : 'full';
+}
+
 export function prdBlockingFindings(prdText) {
   const blocking = [];
   const warnings = [];
@@ -362,10 +372,11 @@ export function cmdPrdCheck(args) {
   }
 
   const { blocking, warnings } = prdBlockingFindings(prd);
+  const tier = prdTier(prd);
   if (json) {
-    console.log(JSON.stringify({ project, exists: true, blocked: blocking.length > 0, blocking, warnings }, null, 2));
+    console.log(JSON.stringify({ project, exists: true, tier, blocked: blocking.length > 0, blocking, warnings }, null, 2));
   } else {
-    console.log(`\n${C.bold}📋 PRD Check${C.reset}\n`);
+    console.log(`\n${C.bold}📋 PRD Check${C.reset}${tier === 'delta' ? ` ${C.dim}(delta tier — lightweight; diagram/structure gaps are expected warnings)${C.reset}` : ''}\n`);
     if (!blocking.length && !warnings.length) console.log(`  ${C.green}✓ No blocking items or structural gaps.${C.reset}`);
     for (const b of blocking) console.log(`  ${C.red}✗ ${b}${C.reset}`);
     for (const w of warnings) console.log(`  ${C.yellow}⚠ ${w}${C.reset}`);
@@ -929,6 +940,10 @@ export function cmdConsensus(args) {
 // ── cmdForecast ─────────────────────────────────────────────────────
 
 export function cmdForecast(args) {
+  // `forecast update` re-aggregates measured token actuals from the metrics log
+  // so subsequent forecasts price from ground truth instead of static estimates.
+  if (args[0] === 'update') return cmdForecastUpdate();
+
   const project = resolveProject(null);
   const taskData = readJSON(tasksPath(project));
   const config = loadConfig();
@@ -966,6 +981,18 @@ export function cmdForecast(args) {
   console.log(`  ${'Total'.padEnd(30)} ${' '.repeat(17)} ${C.bold}${C.yellow}$${totalCost.toFixed(3)}${C.reset}`);
   console.log(`  ${C.dim}Input: ~${(totalInput / 1000).toFixed(0)}K tokens, Output: ~${(totalOutput / 1000).toFixed(0)}K tokens${C.reset}`);
   console.log(`  ${C.dim}Confidence: ≈ = low (complex/strategy), ~ = medium, (blank) = high${C.reset}`);
+
+  // Say whether these numbers are calibrated from measured actuals or still pure
+  // estimates — the forecaster only trusts an actual average at ≥10 samples/size.
+  const actuals = loadTokenActuals();
+  const counts = actuals?.sample_counts || {};
+  const calibrated = Object.keys(counts).filter(s => counts[s] >= 10);
+  if (calibrated.length) {
+    console.log(`  ${C.dim}Calibrated from actuals: ${calibrated.map(s => `${s} (${counts[s]})`).join(', ')}${C.reset}`);
+  } else {
+    const measured = Object.values(counts).reduce((a, b) => a + b, 0);
+    console.log(`  ${C.dim}Estimate-only (${measured} measured sample${measured === 1 ? '' : 's'}; ≥10/size calibrates). Record actuals: tasks update <id> --tokens-in N --tokens-out M${C.reset}`);
+  }
 
   const budget = config.budget?.max_usd;
   if (budget) {

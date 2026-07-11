@@ -40,6 +40,12 @@ if (sessionMode === 'resume' && process.env[`X_PANEL_FAIL_RESUME_${String(model 
 if (process.env.X_PANEL_DUMP_R1 && !isRefute) {
   try { writeFileSync(process.env.X_PANEL_DUMP_R1, prompt); } catch { /* best-effort */ }
 }
+// Test hook: dump the exact round-2 (refute) prompt, suffixed per model so the two
+// refuters' prompts don't clobber each other (evidence/consistency assertions).
+if (process.env.X_PANEL_DUMP_R2 && isRefute) {
+  try { writeFileSync(`${process.env.X_PANEL_DUMP_R2}.${envModelName(model)}`, prompt); } catch { /* best-effort */ }
+}
+function envModelName(m) { return String(m || '').toUpperCase().replace(/[^A-Z0-9_]/g, '_'); }
 const envModel = String(model || '').toUpperCase().replace(/[^A-Z0-9_]/g, '_');
 
 // Emit a payload as provider-shaped stream-json/JSONL so the structured path
@@ -146,7 +152,9 @@ if (!isRefute && process.env[`X_PANEL_PROSE_EMPTY_${envModel}`]) {
 
 // t5: codex discloses its session id in the run banner — emulate it on session
 // creation so the capture path (SESSION_ID_RE) is exercised end to end.
-if (sessionMode === 'create' && model === 'codex') {
+// X_PANEL_STUB_NO_BANNER suppresses the banner: a session was created but its id
+// is uncapturable → the run must record resume:"capture_failed", not "stateless".
+if (sessionMode === 'create' && model === 'codex' && !process.env.X_PANEL_STUB_NO_BANNER) {
   const sid = process.env.X_PANEL_STUB_SESSION_ID || '123e4567-e89b-42d3-a456-426614174000';
   process.stderr.write(`session id: ${sid}\n`);
   // Security regression hook: emulate a prompt-injected review target making the
@@ -159,8 +167,11 @@ if (sessionMode === 'create' && model === 'codex') {
 
 if (isRefute) {
   const refs = [...prompt.matchAll(/\[([^\]]+#\d+)\]/g)].map((m) => m[1]); // global ref "owner#idx" (owner may contain ':')
+  // Test hook: a refuter whose refs are mangled (hallucinated indices) — its verdicts
+  // must count as unmatched_refs and must NOT silently confirm the findings it missed.
+  const mangle = process.env[`X_PANEL_MANGLE_REFS_${envModel}`];
   const verdicts = refs.map((ref, i) => ({
-    ref,
+    ref: mangle ? ref.replace(/#\d+$/, '#99') : ref,
     // codex refutes the opponent's first finding → creates one CONTESTED entry
     stance: model === 'codex' && i === 0 ? 'refute' : 'concede',
     reason: 'stub reason',
@@ -169,14 +180,17 @@ if (isRefute) {
   if (stream) emitStream(model, payload);
   else process.stdout.write('noise before ' + payload + ' noise after');
 } else {
+  // Test hook: override the findings' evidence text (exercises evidence travel/truncation
+  // in the round-2 refute prompts).
+  const ev = process.env[`X_PANEL_EVIDENCE_${envModel}`] || 'ev';
   const findings = model === 'claude'
     ? [
-        { severity: 'high', file: 'a.js', line: 1, claim: 'shared issue', evidence: 'ev' },
-        { severity: 'low', file: 'b.js', line: 2, claim: 'claude-only issue', evidence: 'ev' },
+        { severity: 'high', file: 'a.js', line: 1, claim: 'shared issue', evidence: ev },
+        { severity: 'low', file: 'b.js', line: 2, claim: 'claude-only issue', evidence: ev },
       ]
     : [
-        { severity: 'high', file: 'a.js', line: 1, claim: 'shared issue (codex view)', evidence: 'ev' },
-        { severity: 'medium', file: 'c.js', line: 3, claim: 'codex-only issue', evidence: 'ev' },
+        { severity: 'high', file: 'a.js', line: 1, claim: 'shared issue (codex view)', evidence: ev },
+        { severity: 'medium', file: 'c.js', line: 3, claim: 'codex-only issue', evidence: ev },
       ];
   const payload = JSON.stringify({ findings });
   if (stream) emitStream(model, payload);

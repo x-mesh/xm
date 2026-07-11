@@ -14,6 +14,9 @@ import { initLang, t } from './cli-messages.mjs';
 // 상대 경로는 소스(x-build/lib)와 미러(xm/lib) 양쪽 레이아웃에서 동일하게 해석된다
 // (frontmatter-sync가 검증한 경로 패턴).
 import { parseModelSpec } from './x-build/cost-engine.mjs';
+// Single tier-merge rule shared with cost-engine/core (빌드5). config-loader only
+// imports root.mjs, so this direct import adds no cycle.
+import { mergeSharedTiers } from './x-build/config-loader.mjs';
 
 // ── Defaults ──────────────────────────────────────────────────────────
 
@@ -103,7 +106,7 @@ export function readSharedConfig(opts = {}) {
   const globalPath = join(homedir(), '.xm', 'config.json');
   const global = readJSON(globalPath) ?? {};
 
-  return { ...DEFAULT_CONFIG, ...global, ...local };
+  return { ...DEFAULT_CONFIG, ...mergeSharedTiers(global, local) };
 }
 
 /**

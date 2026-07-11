@@ -137,6 +137,23 @@ describe('forecast', () => {
       run(['steps', 'compute'], { cwd: tmp });
       const r = run(['forecast'], { cwd: tmp });
       expect(r.stdout).toContain('Confidence');
+      // With no measured samples, forecast must say it is estimate-only (빌드3).
+      expect(r.stdout).toContain('Estimate-only');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('forecast update aggregates measured actuals + is reachable from the CLI (빌드3)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      run(['tasks', 'add', 'Feature'], { cwd: tmp });
+      run(['tasks', 'update', 't1', '--status', 'running'], { cwd: tmp });
+      run(['tasks', 'update', 't1', '--status', 'completed', '--tokens-in', '100000', '--tokens-out', '40000', '--no-commit'], { cwd: tmp });
+      const r = run(['forecast', 'update'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('Token actuals updated');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -412,7 +429,7 @@ describe('verify-traceability', () => {
         { name: 'Implement auth [R1]', size: 'medium' },
       ]);
       const r = run(['verify-traceability'], { cwd: tmp });
-      expect(r.exitCode).toBe(0);
+      expect(r.exitCode).not.toBe(0); // R2 has no matching task — a gap now exits non-zero
       expect(r.stdout).toContain('Traceability Matrix');
       expect(r.stdout).toContain('[R1]');
       expect(r.stdout).toContain('[R2]');

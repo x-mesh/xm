@@ -119,19 +119,37 @@ export function cmdVerifyTraceability(args) {
   }
 
   if (reqs.length === 0) {
-    console.log(`${C.yellow}No structured requirements found.${C.reset}`);
+    // REQUIREMENTS.md exists but nothing parsed — a format/parse failure, not a pass.
+    // Write a fresh artifact (a stale one from a previous run must not masquerade as
+    // current) and fail the exit code: a traceability gate passing green with zero
+    // requirements is a vacuous pass.
+    console.log(`${C.yellow}No structured requirements found — expected "- [R1] ..." items. Traceability cannot be verified.${C.reset}`);
+    writeJSON(join(phaseDir(project, '04-verify'), 'traceability.json'), {
+      timestamp: new Date().toISOString(),
+      total: 0,
+      fully_covered: 0,
+      partial: 0,
+      gaps: 0,
+      matrix: [],
+    });
+    process.exitCode = 1;
     return;
   }
 
   // Parse PRD acceptance criteria
-  const acSection = prd?.match(/##\s*(?:8\.)?\s*Acceptance Criteria[\s\S]*?(?=##\s*\d|$)/i);
+  const acSection = prd?.match(/##\s*(?:\d+\.)?\s*Acceptance Criteria[\s\S]*?(?=##\s*\d|$)/i);
   const acItems = acSection ? [...acSection[0].matchAll(/- \[[ x]\] (.+)/gi)].map(m => m[1].trim()) : [];
+  if (prd && acItems.length === 0) {
+    console.log(`${C.yellow}PRD found but 0 acceptance criteria parsed — expected an "## N. Acceptance Criteria" section with "- [ ] ..." items.${C.reset}`);
+    console.log(`  Every requirement will show AC: NONE until the PRD gains a parseable AC section.`);
+  }
 
   console.log(`\n${C.bold}Traceability Matrix${C.reset} — R# ↔ Task ↔ AC ↔ Done Criteria\n`);
 
   let fullyCovered = 0;
   let partial = 0;
   let gaps = 0;
+  const matrix = [];
 
   for (const req of reqs) {
     const matchedTasks = tasks.filter(t => t.name.includes(req.id));
@@ -145,14 +163,24 @@ export function cmdVerifyTraceability(args) {
     const dcStr = hasDoneCriteria ? '✅' : `${C.yellow}—${C.reset}`;
 
     const coverage =
-      matchedTasks.length > 0 && matchedAC.length > 0 && hasDoneCriteria ? '✅' :
-      matchedTasks.length > 0 ? '⚠️' : '❌';
+      matchedTasks.length > 0 && matchedAC.length > 0 && hasDoneCriteria ? 'full' :
+      matchedTasks.length > 0 ? 'partial' : 'gap';
+    const glyph = coverage === 'full' ? '✅' : coverage === 'partial' ? '⚠️' : '❌';
 
-    if (coverage === '✅') fullyCovered++;
-    else if (coverage === '⚠️') partial++;
+    if (coverage === 'full') fullyCovered++;
+    else if (coverage === 'partial') partial++;
     else gaps++;
 
-    console.log(`  ${coverage} [${req.id}] ${req.desc.slice(0, 40).padEnd(40)} → Tasks: ${taskStr} | AC: ${acStr} | DC: ${dcStr}`);
+    matrix.push({
+      req_id: req.id,
+      coverage,
+      description: req.desc,
+      tasks: matchedTasks.map(t => t.id),
+      acceptance_criteria: matchedAC.length,
+      has_done_criteria: hasDoneCriteria,
+    });
+
+    console.log(`  ${glyph} [${req.id}] ${req.desc.slice(0, 40).padEnd(40)} → Tasks: ${taskStr} | AC: ${acStr} | DC: ${dcStr}`);
   }
 
   console.log(`\n  ${C.bold}Summary${C.reset}: ${fullyCovered} full, ${partial} partial, ${gaps} gaps (${reqs.length} total)`);
@@ -173,14 +201,14 @@ export function cmdVerifyTraceability(args) {
     fully_covered: fullyCovered,
     partial,
     gaps,
-    matrix: reqs.map(r => ({
-      requirement: r.id,
-      description: r.desc,
-      tasks: tasks.filter(t => t.name.includes(r.id)).map(t => t.id),
-      acceptance_criteria: acItems.filter(ac => ac.toLowerCase().includes(r.id.toLowerCase())).length,
-      has_done_criteria: tasks.filter(t => t.name.includes(r.id)).some(t => t.done_criteria?.length > 0),
-    })),
+    matrix,
   });
+
+  // A requirement with no matching task is a hard traceability failure —
+  // callers (CI, phase gates) must see it in the exit code, not just prose.
+  if (gaps > 0) {
+    process.exitCode = 1;
+  }
 
   console.log('');
 }

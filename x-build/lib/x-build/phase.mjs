@@ -8,7 +8,7 @@ import {
   manifestPath, phaseStatusPath, tasksPath, prdPath, contextDir, phaseDir, checkpointsDir,
   projectDir, decisionsPath,
   resolveProject, logDecision, appendMetric, emitHook,
-  loadConfig, parseOptions, E,
+  loadConfig, resolveGates, parseOptions, E,
   existsSync, join, resolve, repoRoot,
   spawnSync,
   runQualityChecks,
@@ -40,6 +40,17 @@ export function cmdPhase(args) {
   }
 }
 
+// Persist a gate decision into the phase's status.json (a durable ledger) so
+// `status --json` and CI/gate consumers can see which gate ran, whether it passed,
+// and who/what passed it — instead of the decision evaporating when the command
+// returns. Merged into the existing status object; never clobbers other fields.
+function recordGateOutcome(project, phaseId, gateType, passed, passedBy) {
+  const p = phaseStatusPath(project, phaseId);
+  const status = readJSON(p) || {};
+  status.gate = { gate_type: gateType, passed, passed_by: passedBy, ts: new Date().toISOString() };
+  writeJSON(p, status);
+}
+
 export function phaseNext(args) {
   const project = resolveProject(args[0], { autoInit: true });
   const manifest = readJSON(manifestPath(project));
@@ -53,7 +64,8 @@ export function phaseNext(args) {
 
   const currentPhase = PHASES[currentIdx];
   const gateKey = `${currentPhase.name}-exit`;
-  const gateType = config.gates?.[gateKey] || 'auto';
+  const gates = resolveGates();
+  const gateType = gates[gateKey] || 'auto';
 
   if (currentPhase.name === 'plan' && !existsSync(prdPath(project))) {
     console.error('⚠ PRD not generated yet. Run: /xm:build plan to generate PRD first.');
@@ -65,6 +77,8 @@ export function phaseNext(args) {
     if (status?.gate_passed !== true) {
       console.log(`⛔ Gate "${gateKey}" requires human verification.`);
       console.log(`   Run: x-build gate pass [message]`);
+      recordGateOutcome(project, currentPhase.id, gateType, false, null);
+      process.exitCode = 2; // a blocked gate must not exit 0 (CI / gate consumers)
       return;
     }
   }
@@ -129,6 +143,8 @@ export function phaseNext(args) {
       }
       if (!results.every(r => r.passed)) {
         console.log(`\n⛔ Quality gate failed. Fix issues and retry.`);
+        recordGateOutcome(project, currentPhase.id, gateType, false, null);
+        process.exitCode = 2;
         return;
       }
       console.log(`  ${C.green}All checks passed.${C.reset}`);
@@ -143,11 +159,22 @@ export function phaseNext(args) {
       const out = spawnSync(scripts[gateType], [], { shell: true, cwd: repoRoot(), stdio: 'pipe' });
       if (out.status !== 0) {
         console.log(`⛔ Custom gate "${gateType}" failed.`);
+        recordGateOutcome(project, currentPhase.id, gateType, false, `custom:${gateType}`);
+        process.exitCode = 2;
         return;
       }
       console.log(`  ${C.green}Custom gate passed.${C.reset}`);
     }
   }
+
+  // Gate cleared (every applicable check passed). Record WHAT gate cleared this
+  // phase and how, so status --json and CI consumers see the decision instead of
+  // it vanishing when the command returns.
+  const passedBy = gateType === 'human-verify' ? 'human'
+    : gateType === 'quality' ? 'quality'
+    : gateType === 'auto' ? 'auto'
+    : `custom:${gateType}`;
+  recordGateOutcome(project, currentPhase.id, gateType, true, passedBy);
 
   if (currentIdx >= PHASES.length - 1) {
     console.log('✅ Already at final phase (Close).');
@@ -213,7 +240,7 @@ export function phaseNext(args) {
   console.log(`✅ ${currentPhase.label} → ${nextPhase.label}`);
 
   const nextGateKey = `${nextPhase.name}-exit`;
-  const nextGateType = config.gates?.[nextGateKey] || 'auto';
+  const nextGateType = gates[nextGateKey] || 'auto';
   if (nextGateType !== 'auto') {
     console.log(`   Exit gate: ${nextGateType}`);
   }

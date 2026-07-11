@@ -390,6 +390,17 @@ export const SCHEMA = [
     default: {},
     description: '파이프라인 정의 { name: [plugin, ...] } (LLM 프롬프트 전용)',
   },
+  // x-op SKILL.md "Post-Strategy Eval Gate" reads eval.auto from the project's
+  // .xm/config.json — scope 'local' keeps `xm config set eval.auto` writing
+  // where that consumer reads.
+  {
+    key: 'eval.auto',
+    group: 'misc',
+    type: 'boolean',
+    scope: 'local',
+    default: false,
+    description: 'x-op 전략 완료 후 x-eval 자동 평가 훅 (Post-Strategy Eval Gate)',
+  },
 
   // ── owned by another plugin (discovery only) ──
   //

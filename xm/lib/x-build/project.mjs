@@ -8,7 +8,7 @@ import {
   manifestPath, phaseStatusPath, tasksPath, stepsPath, prdPath, contextDir, projectDir,
   projectsDir, checkpointsDir, phaseDir, toSlug,
   resolveProject, findCurrentProject, findActiveProjects, logDecision,
-  loadConfig, isNormalMode, L, renderBar, fmtDuration,
+  loadConfig, resolveGates, isNormalMode, L, renderBar, fmtDuration,
   setCmdInit,
   existsSync, readdirSync, mkdirSync, join, readFileSync, writeFileSync,
   createRL, ask, pickMenu,
@@ -120,10 +120,19 @@ export function buildProjectState(project) {
   const decisionsData = readJSON(decisionsPath(project));
   const decisions = decisionsData?.decisions || [];
 
-  // Phase progress
+  // Phase progress — carries the resolved exit-gate type and the last gate-decision
+  // ledger (gate_type/passed/passed_by/ts) so CI and dashboards see gate state, not
+  // just phase status.
+  const gates = resolveGates();
   const phases = PHASES.map(p => {
     const s = readJSON(phaseStatusPath(project, p.id));
-    return { id: p.id, name: p.name, label: p.label, status: s?.status || 'pending', started_at: s?.started_at || null, completed_at: s?.completed_at || null };
+    return {
+      id: p.id, name: p.name, label: p.label,
+      status: s?.status || 'pending',
+      started_at: s?.started_at || null, completed_at: s?.completed_at || null,
+      gate_type: gates[`${p.name}-exit`] || 'auto',
+      gate: s?.gate || null,
+    };
   });
   const completedPhases = phases.filter(p => p.status === 'completed').length;
 
@@ -166,6 +175,9 @@ export function buildProjectState(project) {
     display_name: manifest.display_name || project,
     phase: { id: phase?.id, name: phase?.name, label: phase?.label },
     phase_progress: { completed: completedPhases, total: PHASES.length },
+    // Per-phase detail carrying the resolved exit-gate type + last gate-decision
+    // ledger (gate_type/passed/passed_by/ts) so CI and dashboards can read gate state.
+    phases,
     tasks: {
       total: tasks.length,
       completed,
@@ -314,11 +326,12 @@ export function cmdStatus(args) {
   }
   console.log('');
 
+  const gates = resolveGates();
   for (const phase of PHASES) {
     const status = readJSON(phaseStatusPath(name, phase.id));
     const isCurrent = phase.id === manifest.current_phase;
     const gateKey = `${phase.name}-exit`;
-    const gateType = config.gates?.[gateKey] || 'auto';
+    const gateType = gates[gateKey] || 'auto';
 
     let icon = '⬜';
     let color = C.dim;
@@ -1060,7 +1073,7 @@ function getPhaseActions(manifest, config) {
   if (!currentPhase) return [];
 
   const gateKey = `${currentPhase.name}-exit`;
-  const gateType = config.gates?.[gateKey] || 'auto';
+  const gateType = resolveGates()[gateKey] || 'auto';
 
   const actions = [];
 

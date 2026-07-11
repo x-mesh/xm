@@ -24,6 +24,7 @@ process.env.X_BUILD_ROOT = TEST_ROOT;
 
 // Dynamic imports so ROOT_CE sees TEST_ROOT
 const ce = await import('../x-build/lib/x-build/cost-engine.mjs');
+const cl = await import('../x-build/lib/x-build/config-loader.mjs');
 
 afterAll(() => {
   if (ORIG_X_BUILD_ROOT !== undefined) {
@@ -68,6 +69,34 @@ function clearMetrics() {
 }
 
 // ── 1. Override priority chain (getModelForRole) ──────────────────────────────
+
+describe('mergeSharedTiers — global keys survive a local config (빌드5)', () => {
+  test('keeps global keys absent from local — the dropped-override bug', () => {
+    // Pre-fix, config-loader was first-match: a local .xm/config.json (even one
+    // holding only mode/pipelines) made getModelForRole/checkBudget read a config
+    // with NO model_overrides and NO budget. The merge restores them.
+    const global = { model_overrides: { architect: 'opus' }, budget: { max_usd: 5 } };
+    const local = { mode: 'normal', pipelines: { release: ['x-review'] } };
+    const merged = cl.mergeSharedTiers(global, local);
+    expect(merged.model_overrides).toEqual({ architect: 'opus' });
+    expect(merged.budget).toEqual({ max_usd: 5 });
+    expect(merged.mode).toBe('normal');
+    expect(merged.pipelines).toEqual({ release: ['x-review'] });
+  });
+  test('local wins on conflicting top-level keys (shallow merge contract)', () => {
+    const merged = cl.mergeSharedTiers(
+      { mode: 'developer', model_overrides: { a: 'opus' } },
+      { mode: 'normal' },
+    );
+    expect(merged.mode).toBe('normal');            // local wins
+    expect(merged.model_overrides).toEqual({ a: 'opus' }); // shallow: local lacks it → global's survives whole
+  });
+  test('null/undefined tiers are safe', () => {
+    expect(cl.mergeSharedTiers(null, { a: 1 })).toEqual({ a: 1 });
+    expect(cl.mergeSharedTiers({ a: 1 }, null)).toEqual({ a: 1 });
+    expect(cl.mergeSharedTiers(null, null)).toEqual({});
+  });
+});
 
 describe('getModelForRole — override priority chain', () => {
   afterEach(() => { clearConfig(); clearMetrics(); });
@@ -266,7 +295,9 @@ describe('checkBudget — rolling window', () => {
     expect(result.spent).toBeCloseTo(0.05, 5);
   });
 
-  test('no window_hours uses all metrics regardless of age', () => {
+  test('window_hours unset defaults to a 24h rolling window (docs contract)', () => {
+    // Docs + config-schema promise a 24h default; unset must NOT silently
+    // widen to full metrics lifetime (the pre-fix behavior).
     const old = new Date(Date.now() - 48 * 3_600_000).toISOString();
     appendLines(
       { type: 'task_complete', cost_usd: 0.40, timestamp: old },
@@ -275,8 +306,36 @@ describe('checkBudget — rolling window', () => {
     writeConfig({ budget: { max_usd: 0.50 } });
 
     const result = ce.checkBudget(0, null);
+    expect(result.ok).toBe(true); // 48h-old spend excluded by the default window
+    expect(result.spent).toBeCloseTo(0.40, 5);
+  });
+
+  test('window_hours: 0 disables the window and scans the full metrics lifetime', () => {
+    const old = new Date(Date.now() - 48 * 3_600_000).toISOString();
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.40, timestamp: old },
+      { type: 'task_complete', cost_usd: 0.40, timestamp: new Date().toISOString() },
+    );
+    writeConfig({ budget: { max_usd: 0.50, window_hours: 0 } });
+
+    const result = ce.checkBudget(0, null);
     expect(result.ok).toBe(false);
     expect(result.level).toBe('exceeded');
+  });
+
+  test('negative window_hours falls back to the 24h default, never the lifetime scan', () => {
+    // A sign typo (-24) is as invalid as NaN; it must not silently land in the
+    // "explicit 0" branch and widen accounting to the full metrics lifetime.
+    const old = new Date(Date.now() - 48 * 3_600_000).toISOString();
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.40, timestamp: old },
+      { type: 'task_complete', cost_usd: 0.05, timestamp: new Date().toISOString() },
+    );
+    writeConfig({ budget: { max_usd: 0.30, window_hours: -24 } });
+
+    const result = ce.checkBudget(0, null);
+    expect(result.ok).toBe(true); // 24h fallback excludes the 48h-old spend
+    expect(result.spent).toBeCloseTo(0.05, 5);
   });
 
   test('per-project budget is enforced independently of global budget', () => {
@@ -285,6 +344,55 @@ describe('checkBudget — rolling window', () => {
       { type: 'task_complete', cost_usd: 0.01, project: 'beta',  timestamp: new Date().toISOString() },
     );
     writeConfig({ budget: { max_usd: 1.00, projects: { alpha: 0.05 } } });
+
+    const result = ce.checkBudget(0, 'alpha');
+    expect(result.ok).toBe(false);
+    expect(result.level).toBe('exceeded');
+    expect(result.project).toBe('alpha');
+  });
+
+  test('documented {max_usd} object shape enforces the per-project cap', () => {
+    // Root CLAUDE.md + config wizard both produce { project: { max_usd: N } };
+    // Number({...}) is NaN, which used to make this cap silently disappear.
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.08, project: 'alpha', timestamp: new Date().toISOString() },
+    );
+    writeConfig({ budget: { max_usd: 1.00, projects: { alpha: { max_usd: 0.05 } } } });
+
+    const result = ce.checkBudget(0, 'alpha');
+    expect(result.ok).toBe(false);
+    expect(result.level).toBe('exceeded');
+    expect(result.project).toBe('alpha');
+  });
+
+  test('unparseable per-project value warns loudly and applies no cap', () => {
+    const chunks = [];
+    const origWrite = process.stderr.write;
+    process.stderr.write = (s) => { chunks.push(String(s)); return true; };
+    try {
+      appendLines(
+        { type: 'task_complete', cost_usd: 0.08, project: 'alpha', timestamp: new Date().toISOString() },
+      );
+      writeConfig({ budget: { max_usd: 1.00, projects: { alpha: { usd: 'two' } } } });
+
+      const result = ce.checkBudget(0, 'alpha');
+      expect(result.ok).toBe(true); // the global budget still governs
+      expect(result.project).toBeUndefined();
+
+      const err = chunks.join('');
+      expect(err).toContain('budget.projects["alpha"]'); // names the project
+      expect(err).toContain('"usd":"two"');              // names the bad value
+      expect(err).toContain('NOT applied');
+    } finally {
+      process.stderr.write = origWrite;
+    }
+  });
+
+  test('per-project cap applies even when no global budget.max_usd is set', () => {
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.08, project: 'alpha', timestamp: new Date().toISOString() },
+    );
+    writeConfig({ budget: { projects: { alpha: { max_usd: 0.05 } } } });
 
     const result = ce.checkBudget(0, 'alpha');
     expect(result.ok).toBe(false);
