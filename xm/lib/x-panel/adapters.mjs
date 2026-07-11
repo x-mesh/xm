@@ -11,7 +11,7 @@
  */
 
 import { spawnSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 
@@ -156,24 +156,43 @@ function kiroAgentDir() {
   // Overridable so tests stay hermetic (never touch the real ~/.kiro).
   return process.env.X_PANEL_KIRO_AGENT_DIR || join(homedir(), '.kiro', 'agents');
 }
+// The agent config we own: pulls in NO MCP, so every kiro request stays Bedrock-safe. A review
+// needs no tools — the diff travels in the prompt.
+function safeKiroAgent() {
+  return {
+    name: KIRO_REVIEW_AGENT,
+    description: 'x-panel cross-vendor review — no MCP tools (avoids Bedrock oneOf/allOf/anyOf schema rejection).',
+    includeMcpJson: false,
+    mcpServers: {},
+    tools: [],
+  };
+}
+// An existing xm-panel-review.json is only trustworthy if it loads NO MCP: includeMcpJson must be
+// falsy AND mcpServers must be empty. A stale/tampered/hand-edited copy that enables either would
+// reintroduce the exact Bedrock 400 we provision this agent to avoid (l5).
+function isNoMcpAgent(a) {
+  return a && typeof a === 'object'
+    && a.includeMcpJson !== true
+    && (!a.mcpServers || (typeof a.mcpServers === 'object' && !Array.isArray(a.mcpServers) && Object.keys(a.mcpServers).length === 0));
+}
 function kiroReviewAgent() {
   const override = (process.env.X_PANEL_KIRO_AGENT || '').trim();
   if (override) return override; // user's own agent — never provisioned/validated here
   try {
     const dir = kiroAgentDir();
     const file = join(dir, `${KIRO_REVIEW_AGENT}.json`);
-    if (existsSync(file)) return KIRO_REVIEW_AGENT;
+    if (existsSync(file)) {
+      let existing = null;
+      try { existing = JSON.parse(readFileSync(file, 'utf8')); } catch { /* corrupt → rewrite below */ }
+      if (isNoMcpAgent(existing)) return KIRO_REVIEW_AGENT; // already safe — trust it
+      // Ours by name but it loads MCP (or is unreadable) → do NOT trust it; rewrite to the safe
+      // config so kiro can't silently regress to the Bedrock 400. Loud so a customizer notices.
+      writeFileSync(file, JSON.stringify(safeKiroAgent(), null, 2), 'utf8');
+      process.stderr.write(`⚠ x-panel: kiro agent "${KIRO_REVIEW_AGENT}" was not no-MCP (would hit the Bedrock schema 400) — rewrote it to a no-MCP config. Point panel.kiro_agent at your own agent to keep a custom one.\n`);
+      return KIRO_REVIEW_AGENT;
+    }
     mkdirSync(dir, { recursive: true });
-    const agent = {
-      name: KIRO_REVIEW_AGENT,
-      description: 'x-panel cross-vendor review — no MCP tools (avoids Bedrock oneOf/allOf/anyOf schema rejection).',
-      // The whole point: do NOT pull in the global mcp.json. An empty MCP set keeps every
-      // kiro request Bedrock-safe. A review needs no tools — the diff travels in the prompt.
-      includeMcpJson: false,
-      mcpServers: {},
-      tools: [],
-    };
-    writeFileSync(file, JSON.stringify(agent, null, 2), 'utf8');
+    writeFileSync(file, JSON.stringify(safeKiroAgent(), null, 2), 'utf8');
     process.stderr.write(`ℹ x-panel: provisioned kiro agent "${KIRO_REVIEW_AGENT}" (no MCP) at ${file} — kiro's global mcp.json has a Bedrock-incompatible tool schema; this keeps kiro usable. Override with panel.kiro_agent.\n`);
     return KIRO_REVIEW_AGENT;
   } catch (e) {
@@ -393,7 +412,9 @@ export function isAvailable(name) {
 // --no-interactive output in color codes (\x1b[38;5;141m … \x1b[0m); those bytes land INSIDE
 // the emitted JSON and derail scanJSONObjects' brace/string matching — kiro produced valid
 // {findings:[...]} that failed to extract until stripped (dogfood run panel-20260711-224207-238).
-const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g;
+// Full CSI form ([@-~] final byte, not just letters) so cursor-movement/erase codes are stripped
+// too — matches the watch board's CLI_ANSI_RE so extraction and the live tail agree (l8).
+const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 export function stripAnsi(s) { return String(s == null ? '' : s).replace(ANSI_RE, ''); }
 
 // Contract extraction shared by every invoke path: with expectKeys the answer MUST
