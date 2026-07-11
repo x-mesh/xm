@@ -9,6 +9,16 @@
 import { appendFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+// verdict.usage.by_model[m].tokens is the panel's 4-bucket OBJECT
+// ({input, output, cached, reasoning}), not a scalar — testing it with `typeof === 'number'`
+// silently stored null for every run. Sum it; null (unknown) only when nothing was measured.
+function sumTokens(t) {
+  if (typeof t === 'number') return t > 0 ? t : null;         // legacy scalar rows
+  if (!t || typeof t !== 'object') return null;
+  const n = ['input', 'output', 'cached', 'reasoning'].reduce((a, k) => a + (Number(t[k]) || 0), 0);
+  return n > 0 ? n : null;
+}
+
 // Build one row per model from a finished review record (verdict.json shape:
 // { run, created_at, models[], by_model{}, usage: { by_model{} } }).
 export function historyRows(record) {
@@ -20,7 +30,7 @@ export function historyRows(record) {
   return models.map((m) => {
     const bm = byModel[m] || {};
     const u = usage[m] || {};
-    const tokens = (typeof u.tokens === 'number' && u.tokens > 0) ? u.tokens : null;
+    const tokens = sumTokens(u.tokens);
     const cost = (typeof u.cost_usd === 'number' && u.cost_usd > 0) ? u.cost_usd : null;
     return {
       ts, run, model: m,

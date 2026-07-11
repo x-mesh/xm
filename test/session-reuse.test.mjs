@@ -55,12 +55,14 @@ describe('resolveSessionCommand (argv shapes)', () => {
     delete process.env.X_PANEL_CMD_CLAUDE; // exercise the REAL argv, not the stub override
     delete process.env.X_PANEL_CMD_CODEX;
     const id = '11111111-2222-4333-8444-555555555555';
+    // --output-format json rides on BOTH session legs (패널1): without it round 2 loses
+    // usage and hands an un-unwrapped envelope to the verdict parser.
     expect(resolveSessionCommand('claude', 'p', 'haiku', { mode: 'create', id }))
-      .toEqual(['claude', ['-p', '--model', 'haiku', '--session-id', id, 'p']]);
+      .toEqual(['claude', ['-p', '--output-format', 'json', '--model', 'haiku', '--session-id', id, 'p']]);
     expect(resolveSessionCommand('claude', 'p', null, { mode: 'resume', id }))
-      .toEqual(['claude', ['-p', '--resume', id, 'p']]);
+      .toEqual(['claude', ['-p', '--output-format', 'json', '--resume', id, 'p']]);
     expect(resolveSessionCommand('codex', 'p', null, { mode: 'resume', id }))
-      .toEqual(buildCodexResumeArgs({ execFlags: ['--sandbox', 'read-only', '--skip-git-repo-check'], sessionId: id, prompt: 'p' }));
+      .toEqual(buildCodexResumeArgs({ execFlags: ['--json', '--sandbox', 'read-only', '--skip-git-repo-check'], sessionId: id, prompt: 'p' }));
     // codex create = plain exec (session implicit, id captured from the banner)
     expect(resolveSessionCommand('codex', 'p', null, { mode: 'create', id: null })[1]).not.toContain('resume');
     // resume without an id is a caller bug, never --last (wrong-session splice is silent)
