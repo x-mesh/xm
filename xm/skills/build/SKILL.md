@@ -303,6 +303,10 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 - `gate-panel --project <p> --task <id> --phase before|after|release --patch <path> --json` — panel verdict → merge-gate exit code (0 pass / 1 policy block / 2 wrapper|panel error)
 - `review-integration [--base main] [--target develop] [--max-bytes N] [--json]` — release-time `main...develop` batch review via gate-panel
 
+**Blocking hooks** (optional — make review-fix discipline machine-enforced, not prompt convention):
+- `hooks install` — write two native Claude Code hooks into `.claude/` (non-destructive, idempotent merge): a PreToolUse **scope-guard** that blocks Edit/Write to files outside `triage.fix_scope.allowed_files` during an active review-fix, and a Stop **stop-gate** that blocks ending a turn while a Critical/High `fix_now` finding is unresolved (last x-review verdict not LGTM). Disk-only, fail-open. Bypass any run with `XM_BUILD_HOOKS_OFF=1`.
+- `hooks status` / `hooks uninstall` — report / remove the two entries (other hooks untouched).
+
 ### Verify & Close
 - `quality` — Run test/lint/build checks
 - `verify-coverage` — Check requirement-to-task mapping

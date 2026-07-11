@@ -246,6 +246,19 @@ if [ -d "x-agent/skills/agent/flow" ]; then
 fi
 
 echo ""
+echo "=== Syncing build hook templates ==="
+# templates/hooks holds the blocking-hook scripts (.mjs, not *.md) that
+# `x-build hooks install` copies into a project's .claude/hooks/. Mirror the whole
+# tree by file type so the xm bundle (PLUGIN_ROOT=xm) can install them too (L8).
+if [ -d "x-build/templates/hooks" ]; then
+  while IFS= read -r f; do
+    rel="${f#x-build/templates/hooks/}"
+    ensure_dir "xm/templates/hooks/$(dirname "$rel")"
+    sync_file "$f" "xm/templates/hooks/$rel"
+  done < <(find x-build/templates/hooks -type f)
+fi
+
+echo ""
 echo "=== Syncing build references ==="
 mirror_md_dir "x-build/skills/build/references" "xm/skills/build/references"
 

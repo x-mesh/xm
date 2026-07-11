@@ -12,6 +12,7 @@ import { cmdInit, cmdList, cmdStatus, cmdClose, cmdDashboard, interactiveInit, i
 import { cmdPhase, cmdGate, cmdCheckpoint } from './x-build/phase.mjs';
 import { cmdTasks, cmdSteps, cmdRun, cmdRunStatus, interactiveTasksAdd, cmdDispatch } from './x-build/tasks.mjs';
 import { cmdLater } from './x-build/later.mjs';
+import { cmdHooks } from './x-build/hooks.mjs';
 import { cmdPlan, cmdPlanCheck, cmdPrdGate, cmdPrdCheck, cmdConsensus, cmdDiscuss, cmdResearch, cmdForecast, cmdNext, cmdHandoff, cmdSummarize, cmdSaveArtifact, cmdContextUsage, cmdResearchCheck } from './x-build/plan.mjs';
 import { cmdQuality, cmdVerifyCoverage, cmdVerifyTraceability, cmdVerifyContracts, cmdVerifyReviewFix, cmdVerifyDrift } from './x-build/verify.mjs';
 import { cmdExport, cmdImport } from './x-build/export.mjs';
@@ -78,6 +79,7 @@ switch (cmd) {
     else { cmdTasks(args); }
     break;
   case 'later': cmdLater(args); break;
+  case 'hooks': cmdHooks(args); break;
   case 'steps':      cmdSteps(args); break;
   case 'checkpoint': cmdCheckpoint(args); break;
   case 'context':       cmdContext(args); break;
