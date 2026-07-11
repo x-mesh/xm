@@ -38,6 +38,7 @@ const X_BUILD_LIB_FILES = new Set([
   'cost-engine.mjs',
   'drift.mjs',
   'export.mjs',
+  'hooks.mjs',
   'later.mjs',
   'misc.mjs',
   'phase.mjs',
@@ -157,6 +158,12 @@ function findSourcePath(rel, projectRoot) {
 
   if (rel === 'xm/lib/x-build-cli.mjs') {
     return 'x-build/lib/x-build-cli.mjs';
+  }
+
+  // xm/templates/hooks/<file> — blocking-hook scripts mirrored wholesale by sync-bundle.sh.
+  const hookTplMatch = rel.match(/^xm\/templates\/hooks\/(.+)$/);
+  if (hookTplMatch) {
+    return `x-build/templates/hooks/${hookTplMatch[1]}`;
   }
 
   // xm/lib/<file>.mjs from x-solver (whole *.mjs set mirrored to lib root)
