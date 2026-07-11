@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus, normalizeResponses, followupDelta } from '../x-panel/lib/x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
 import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
-import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings } from '../x-panel/lib/x-panel/adapters.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
 import { unwrapEnvelope } from '../x-panel/lib/x-panel/adapters.mjs';
 
@@ -684,6 +684,58 @@ describe('proseOutsideJSON', () => {
     const out = proseOutsideJSON(prose + '{"findings":[]}');
     expect(out).toContain('retry loop');
     expect(out.length).toBeGreaterThan(50);
+  });
+});
+
+describe('parseMarkdownFindings (agy/Gemini prose-review fallback)', () => {
+  test('recovers findings from the "### [severity] file:line — title" + Why/Fix lens shape', () => {
+    const md = `Here is my review.
+
+### [Medium] src/api/monitors.rs:351 — Webhook target lacks SSRF validation
+→ **Why**: put_webhook_settings accepts any url incl. 127.0.0.1.
+→ **Fix**: reject private IP ranges after resolving the host.
+
+### [Low] src/api/events.rs:422 — SSE endpoint leaks the session token in the URL
+→ **Why**: the access_token rides in the query string, kept in history.
+→ **Fix**: use a short-lived one-time ticket.`;
+    const out = parseMarkdownFindings(md);
+    expect(out.findings.length).toBe(2);
+    expect(out.findings[0]).toMatchObject({ severity: 'medium', file: 'src/api/monitors.rs', line: 351 });
+    expect(out.findings[0].claim).toContain('SSRF');
+    expect(out.findings[0].evidence).toContain('127.0.0.1');
+    expect(out.findings[1]).toMatchObject({ severity: 'low', file: 'src/api/events.rs', line: 422 });
+  });
+
+  test('handles bold-bullet headings and a heading with no file:line', () => {
+    const md = `- **[High]** src/auth/admin.rs:34 — password re-hashed every boot
+→ **Why**: save_hash runs on each startup.
+
+#### [critical] Missing auth on the internal metrics route
+The /internal/metrics route has no auth middleware.`;
+    const out = parseMarkdownFindings(md);
+    expect(out.findings.length).toBe(2);
+    expect(out.findings[0]).toMatchObject({ severity: 'high', file: 'src/auth/admin.rs', line: 34 });
+    expect(out.findings[1].severity).toBe('critical');
+    expect(out.findings[1].file).toBeNull();       // no file:line on the heading
+    expect(out.findings[1].line).toBeNull();
+    expect(out.findings[1].claim).toContain('metrics');
+  });
+
+  test('ordinary prose with no severity tag yields null (never false-parses a non-answer)', () => {
+    expect(parseMarkdownFindings('I reviewed the change and it looks solid; nothing to flag here.')).toBeNull();
+    expect(parseMarkdownFindings('')).toBeNull();
+    expect(parseMarkdownFindings('The word [high] appears mid-sentence but is not a heading.')).toBeNull();
+  });
+
+  test('end-to-end: a vendor that returns markdown (no JSON) has its findings recovered, r1=ok', () => {
+    // claude emits a structured markdown review instead of the JSON contract (the agy shape).
+    const r = review(['md target'], { X_PANEL_MD_FINDINGS_CLAUDE: '1' });
+    expect(r.status).toBe(0);
+    const v = latestVerdict();
+    // Recovered from prose → counted as real findings, NOT dropped as "no findings JSON".
+    expect(v.by_model.claude.raised).toBe(2);
+    expect(v.by_model.claude.r1).toBe('ok');   // not 'failed', not 'suspect_empty'
+    expect(r.stdout).not.toContain('claude: round 1 FAILED');
   });
 });
 
