@@ -9,6 +9,7 @@ import {
   resolveProject,
   loadConfig, loadSharedConfig, parseOptions, fmtDuration, estimateTaskCost, getModelForRole,
   cmdForecastUpdate, loadTokenActuals,
+  aggregateRoi, roiSuggestion, readTaskMetrics, ROI_MIN_SAMPLES,
   existsSync, join, readFileSync, mkdirSync,
   getAgentCount, isNormalMode,
   templatesDir,
@@ -938,6 +939,48 @@ export function cmdConsensus(args) {
 }
 
 // ── cmdForecast ─────────────────────────────────────────────────────
+
+// `x-build roi [--by model|role|strategy] [--json]` — quality earned per dollar, from
+// MEASURED actuals only. Answers "which model earns its spend" and suggests a
+// model_overrides change — but only when the data is calibrated (빅뱃1). Never guesses
+// from estimated cost or the default 1.0 quality, and never writes config itself.
+export function cmdRoi(args) {
+  const { opts } = parseOptions(args);
+  const dim = ['model', 'role', 'strategy'].includes(opts.by) ? opts.by : 'model';
+  const json = args.includes('--json');
+  const rows = readTaskMetrics();
+  const stats = aggregateRoi(rows, dim);
+  const suggestion = roiSuggestion(stats);
+  const calibrated = stats.filter((s) => s.calibrated);
+
+  if (json) {
+    console.log(JSON.stringify({ by: dim, min_samples: ROI_MIN_SAMPLES, models: stats, suggestion, calibrated: calibrated.length }, null, 2));
+    return;
+  }
+
+  console.log(`\n${C.bold}💵 ROI — quality per dollar${C.reset} ${C.dim}(by ${dim}; ≥${ROI_MIN_SAMPLES} measured+scored tasks to calibrate)${C.reset}\n`);
+  if (!stats.length) {
+    console.log(`  ${C.dim}No task metrics yet. ROI accrues as tasks report real cost + score:${C.reset}`);
+    console.log(`  ${C.dim}  tasks update <id> --status completed --tokens-in N --tokens-out M --score S${C.reset}\n`);
+    return;
+  }
+  for (const s of stats) {
+    if (s.calibrated) {
+      console.log(`  ${s.key.padEnd(12)} ${C.green}${s.score_per_usd}${C.reset} score/$  ${C.dim}(q ${s.avg_quality} ÷ $${s.avg_cost_usd}, n=${s.calibrated_samples})${C.reset}`);
+    } else {
+      console.log(`  ${s.key.padEnd(12)} ${C.dim}estimate-only — ${s.calibrated_samples}/${ROI_MIN_SAMPLES} calibrated of ${s.tasks} task(s)${C.reset}`);
+    }
+  }
+  console.log('');
+  if (suggestion) {
+    console.log(`  ${C.yellow}Suggestion:${C.reset} ${suggestion.best} earns ${suggestion.ratio}× the score/$ of ${suggestion.worst}.`);
+    console.log(`  ${C.dim}Consider: /xm config set model_overrides '{"<role>": "${suggestion.best}"}' — your call, not auto-applied.${C.reset}\n`);
+  } else if (calibrated.length < 2) {
+    console.log(`  ${C.dim}No routing suggestion: need ≥2 calibrated ${dim}s. Record actual cost + scores to unlock.${C.reset}\n`);
+  } else {
+    console.log(`  ${C.dim}No routing suggestion: the calibrated ${dim}s are within ${1.3}× score/$ of each other — no clear winner.${C.reset}\n`);
+  }
+}
 
 export function cmdForecast(args) {
   // `forecast update` re-aggregates measured token actuals from the metrics log

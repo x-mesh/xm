@@ -70,6 +70,48 @@ function clearMetrics() {
 
 // ── 1. Override priority chain (getModelForRole) ──────────────────────────────
 
+describe('ROI — Score/$ with L9 calibration guards (빅뱃1)', () => {
+  const scored = (model, cost, q, n) => Array.from({ length: n }, () => ({ type: 'task_complete', model, role: 'executor', cost_source: 'actual', cost_usd: cost, quality_score: q, quality_scored: true }));
+  const est = (model, n) => Array.from({ length: n }, () => ({ type: 'task_complete', model, role: 'executor', cost_source: 'estimated', cost_usd: 0, quality_score: 1, quality_scored: false }));
+
+  test('a group calibrates only with ≥ROI_MIN_SAMPLES actual+scored completions', () => {
+    const [g] = ce.aggregateRoi(scored('haiku', 0.01, 0.9, ce.ROI_MIN_SAMPLES), 'model');
+    expect(g.calibrated).toBe(true);
+    expect(g.score_per_usd).toBeCloseTo(0.9 / 0.01, 3);
+    const [thin] = ce.aggregateRoi(scored('haiku', 0.01, 0.9, ce.ROI_MIN_SAMPLES - 1), 'model');
+    expect(thin.calibrated).toBe(false);
+    expect(thin.score_per_usd).toBeNull(); // no Score/$ without calibration
+  });
+
+  test('estimated cost / unscored quality never counts as signal', () => {
+    const [g] = ce.aggregateRoi(est('sonnet', 20), 'model');
+    expect(g.tasks).toBe(20);
+    expect(g.calibrated_samples).toBe(0); // 20 tasks, 0 signal
+    expect(g.calibrated).toBe(false);
+    expect(g.score_per_usd).toBeNull();
+  });
+
+  test('suggestion fires only between calibrated groups with a real gap', () => {
+    const rows = [...scored('haiku', 0.01, 0.9, 6), ...scored('opus', 0.10, 0.95, 6), ...est('sonnet', 6)];
+    const stats = ce.aggregateRoi(rows, 'model');
+    const sug = ce.roiSuggestion(stats);
+    expect(sug.best).toBe('haiku');   // cheap + comparable quality wins
+    expect(sug.worst).toBe('opus');
+    expect(sug.ratio).toBeGreaterThan(1.3);
+    // sonnet (estimate-only) is excluded from the recommendation entirely
+    expect(stats.find(s => s.key === 'sonnet').calibrated).toBe(false);
+  });
+
+  test('no suggestion when calibrated groups are within the gap threshold', () => {
+    const rows = [...scored('haiku', 0.01, 0.90, 6), ...scored('sonnet', 0.011, 0.90, 6)];
+    expect(ce.roiSuggestion(ce.aggregateRoi(rows, 'model'))).toBeNull();
+  });
+
+  test('no suggestion from fewer than 2 calibrated groups (all estimate-only)', () => {
+    expect(ce.roiSuggestion(ce.aggregateRoi(est('sonnet', 30), 'model'))).toBeNull();
+  });
+});
+
 describe('mergeSharedTiers — global keys survive a local config (빌드5)', () => {
   test('keeps global keys absent from local — the dropped-override bug', () => {
     // Pre-fix, config-loader was first-match: a local .xm/config.json (even one
