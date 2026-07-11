@@ -25,6 +25,7 @@ import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, kn
 import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize } from './x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from './x-panel/gate.mjs';
+import { appendPanelHistory, readPanelHistory, aggregatePanelStats } from './x-panel/history.mjs';
 import { createTmEventsPublisher, subscribeXkRun } from './x-panel/tm-events.mjs';
 import { readEventsLog, formatEventLine, maxSeq } from './x-panel/events-log.mjs';
 
@@ -157,6 +158,7 @@ function parseFlags(raw) {
     else if (a === '--preset') flags.preset = raw[++i];
     else if (a === '--check') flags.check = raw[++i];
     else if (a === '--policy') flags.policy = raw[++i];
+    else if (a === '--roi') flags.roi = true;
     else if (a === '--fast') flags.preset = 'fast';
     else if (a === '--full') flags.preset = 'full';
     else if (a === '--global') flags.global = true;
@@ -931,6 +933,10 @@ async function cmdReview(pos, flags) {
     ...verdict,
   };
   writeJSON(join(dir, 'verdict.json'), record);
+  // Append per-model rows to the cross-run disagreement ledger (빅뱃2). Best-effort:
+  // the ledger is analytics, so a write failure warns but never fails the review (L6).
+  try { appendPanelHistory(PANEL_DIR, record); }
+  catch (e) { process.stderr.write(`${C.yellow}⚠ panel history append failed: ${e.message}${C.reset}\n`); }
   status.phase = 'done';
   writeEvent({ type: 'run_done', phase: status.phase, counts: verdict.counts });
   flushStatus({ force: true });
@@ -1457,6 +1463,12 @@ Commands:
                                 critical/high, contested critical, allow_low. --policy overrides per
                                 bucket, e.g. '{"block_confirmed":["critical","high"]}'. Writes an
                                 auditable gate-result.json next to the run.
+  stats [--roi] [--json]        Aggregate the cross-run disagreement ledger
+                                (.xm/panel/history.jsonl — one row per model per run,
+                                appended on every review) into per-vendor survival rate
+                                (confirmed/raised), catches, round-2 fidelity misses, and
+                                (--roi, when usage is known) cost per confirmed catch.
+                                Cost stays 'unknown' — never $0 — until usage capture lands.
   status [run] [--all] [--json] [--watch|--follow [--interval N]] [--logs]
                                 Read run state from disk — see an IN-PROGRESS panel from the CLI.
                                 Covers all three namespaces: .xm/panel (native), .xm/review
@@ -2109,6 +2121,36 @@ function paintFrame(frame, first) {
   process.stdout.write((first ? `${ESC}[2J${ESC}[3J${ESC}[H` : `${ESC}[H`) + body + `${ESC}[J`);
 }
 
+// `xm panel stats [--roi] [--json]` — aggregate the cross-run disagreement ledger
+// (.xm/panel/history.jsonl) into per-vendor survival rate, catches, round-2 fidelity,
+// and (with --roi / when usage is known) cost per confirmed catch. Evidence against
+// the "multi-model debate is just token burn" critique — which vendor actually earns
+// its spend, measured over this repo's own history.
+function cmdStats(pos, flags) {
+  const rows = readPanelHistory(PANEL_DIR);
+  if (!rows.length) {
+    console.log(`${C.dim}No panel history yet — run some reviews first. Ledger: ${join(PANEL_DIR, 'history.jsonl')}${C.reset}`);
+    return;
+  }
+  const stats = aggregatePanelStats(rows);
+  const runs = new Set(rows.map((r) => r.run)).size;
+  if (flags.json) {
+    console.log(JSON.stringify({ runs, model_rows: rows.length, roi: !!flags.roi, models: stats }, null, 2));
+    return;
+  }
+  console.log(`\n${C.bold}Panel model stats${C.reset} ${C.dim}(${runs} run${runs === 1 ? '' : 's'}, ${rows.length} model-rows)${C.reset}\n`);
+  for (const s of stats) {
+    const surv = s.survival_rate != null ? `${(s.survival_rate * 100).toFixed(0)}%` : '—';
+    const cost = s.cost_usd != null ? `$${s.cost_usd.toFixed(3)}` : 'unknown';
+    const roi = flags.roi
+      ? '  ' + (s.cost_per_confirmed != null ? `${C.dim}$${s.cost_per_confirmed.toFixed(4)}/catch${C.reset}` : `${C.dim}cost/catch unknown${C.reset}`)
+      : '';
+    const r1 = s.r1_failed ? ` ${C.red}r1-fail ${s.r1_failed}${C.reset}` : '';
+    console.log(`  ${provColor(s.model)}${s.model.padEnd(8)}${C.reset} survival ${surv.padStart(4)} ${C.dim}(${s.confirmed}/${s.raised})${C.reset}  contested ${s.contested}  fidelity-miss ${s.unmatched_refs}${r1}  ${C.dim}${cost}${C.reset}${roi}`);
+  }
+  console.log(`\n  ${C.dim}survival = confirmed / raised. cost 'unknown' until usage capture lands (never counted as $0).${C.reset}\n`);
+}
+
 // `xm panel gate <run> [--policy '<json>'] [--json]` — turn a finished run's
 // verdict.json into a merge-gate exit code (0 pass / 1 policy block / 2 error) for
 // CI and non-worktree users. Persists gate-result.json next to the run so the
@@ -2347,7 +2389,7 @@ function renderStatusOnce(pos, flags) {
 // ── entry ────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
-const SUB = new Set(['review', 'cross', 'gate', 'status', 'setup', 'types', 'models', 'detect', 'doctor', 'preflight', 'help', '--help', '-h']);
+const SUB = new Set(['review', 'cross', 'gate', 'stats', 'status', 'setup', 'types', 'models', 'detect', 'doctor', 'preflight', 'help', '--help', '-h']);
 let cmd = argv[0];
 let rest;
 if (!cmd) { cmd = 'review'; rest = []; }            // `x-panel` → review git diff
@@ -2368,6 +2410,7 @@ switch (cmd) {
   case 'review': await cmdReview(pos, flags); break;
   case 'cross': await cmdCross(pos, flags); break;
   case 'gate': cmdGate(pos, flags); break;
+  case 'stats': cmdStats(pos, flags); break;
   case 'status': cmdStatus(pos, flags); break;
   case 'setup': cmdSetup(pos, flags); break;
   case 'types': cmdTypes(); break;
