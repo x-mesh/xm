@@ -3,9 +3,11 @@
  *
  * Pure functions (no I/O, no model calls) so they're cheap to unit-test.
  *
- * Adversarial rule (N models): a finding raised by model P is CONFIRMED when no
- * opponent refuted it in round 2, and CONTESTED when at least one opponent
- * refuted it. Round-2 verdicts reference findings by a GLOBAL ref `owner#idx`
+ * Adversarial rule (N models): a finding raised by model P is CONTESTED when at
+ * least one opponent refuted it in round 2, CONFIRMED when no opponent refuted
+ * it AND at least one explicitly conceded, and UNREVIEWED otherwise (round-2
+ * failed, abstained, or never addressed it — silence is not a concede).
+ * Round-2 verdicts reference findings by a GLOBAL ref `owner#idx`
  * so 3+ models don't collide on per-model indices. Diversity = which model
  * uniquely surfaced each finding.
  */
@@ -37,11 +39,22 @@ function normalizeSeverity(s) {
 
 export function normalizeVerdicts(raw) {
   const arr = raw && Array.isArray(raw.verdicts) ? raw.verdicts : [];
-  return arr.map(v => ({
-    ref: String(v.ref ?? '').trim(), // global ref like "codex#0"
-    stance: String(v.stance || '').toLowerCase() === 'refute' ? 'refute' : 'concede',
-    reason: String(v.reason || '').trim(),
-  })).filter(v => v.ref);
+  // Empty-ref verdicts are kept (not filtered): they can never match a finding, so they
+  // surface as unmatched_refs — dropping them here hid exactly the fidelity failure the
+  // counters exist to expose.
+  return arr.map(v => {
+    const s = String(v.stance || '').trim().toLowerCase();
+    // Unrecognized stances become 'abstain', NOT 'concede' — a broken refuter must not
+    // silently vouch for every finding. `invalid` marks the coercion so synthesize can
+    // count it per model (invalid_stances) instead of losing the signal.
+    const recognized = s === 'refute' || s === 'concede' || s === 'abstain';
+    return {
+      ref: String(v.ref ?? '').trim(), // global ref like "codex#0"
+      stance: recognized ? s : 'abstain',
+      reason: String(v.reason || '').trim(),
+      ...(recognized ? {} : { invalid: true }),
+    };
+  });
 }
 
 /**
@@ -58,7 +71,14 @@ export function normalizeVerdicts(raw) {
 export function synthesize(models, round1, round2, abstained = new Set(), r1Status = {}) {
   const confirmed = [];
   const contested = [];
-  const unreviewed = []; // every opponent's round-2 failed → nobody could vouch/refute
+  const unreviewed = []; // nobody vouched: round-2 failed, abstained, or never addressed it
+  // Global ref universe — verdicts whose ref matches no known gref are a refuter fidelity
+  // failure (mangled/hallucinated refs). They used to be silently dropped, so a broken
+  // refuter silently vouched for every finding; now they are counted per model.
+  const knownRefs = new Set();
+  for (const owner of models) {
+    for (const f of round1[owner] || []) knownRefs.add(`${owner}#${f.idx}`);
+  }
   for (const owner of models) {
     const others = models.filter(m => m !== owner);
     const activeReviewers = others.filter(o => !abstained.has(o));
@@ -70,9 +90,11 @@ export function synthesize(models, round1, round2, abstained = new Set(), r1Stat
         if (v) opponents.push({ model: opp, stance: v.stance, reason: v.reason });
       }
       const entry = { owner, ...f, opponents, reviewers: activeReviewers.length };
+      // CONFIRMED requires an explicit concede — a finding no opponent addressed (mangled
+      // refs, abstains, failed round-2) is UNREVIEWED, never a silent confirmation.
       if (opponents.some(o => o.stance === 'refute')) contested.push(entry);
-      else if (activeReviewers.length === 0) unreviewed.push(entry); // round2 failed for all opponents
-      else confirmed.push(entry);
+      else if (opponents.some(o => o.stance === 'concede')) confirmed.push(entry);
+      else unreviewed.push(entry);
     }
   }
   const bySev = (a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9);
@@ -83,10 +105,17 @@ export function synthesize(models, round1, round2, abstained = new Set(), r1Stat
   const byModel = {};
   for (const m of models) {
     const st = r1Status[m];
+    const verdicts = round2[m] || [];
     byModel[m] = {
       raised: (round1[m] || []).length,
       confirmed: confirmed.filter(f => f.owner === m).length,
       contested: contested.filter(f => f.owner === m).length,
+      // Round-2 fidelity: refs that match no known finding (incl. empty refs and refs to
+      // the refuter's OWN findings — it was never asked to judge those), and stances
+      // coerced to 'abstain' because they weren't refute/concede/abstain. Non-zero = this
+      // model's verdicts did not cleanly cover the findings it was asked to judge.
+      unmatched_refs: verdicts.filter(v => !knownRefs.has(v.ref) || v.ref.startsWith(`${m}#`)).length,
+      invalid_stances: verdicts.filter(v => v.invalid).length,
       // 'ok' | 'failed' (round-1 errored/unparseable — findings missing from this verdict)
       // | 'suspect_empty' (ok=true with 0 findings but substantial prose in raw)
       r1: st ? st.status : 'ok',

@@ -1,0 +1,18 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.1
+--------
+workdir: /private/var/folders/zf/lxr8bs7x5yx12hg_dygqb_9w0000gn/T/xpanel-spike-cvT6Qx
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: high
+reasoning summaries: none
+session id: 019f4c6b-a049-7391-aeec-9f82b99afcd7
+--------
+user
+Remember this codeword: otter-2bd176a1. Reply with exactly: OK
+codex
+OK
+tokens used
+4,475

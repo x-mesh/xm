@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus } from '../x-panel/lib/x-panel/synth.mjs';
+import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
 import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts } from '../x-panel/lib/x-panel/adapters.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
 
@@ -72,6 +73,73 @@ function latestRunDir() {
 beforeAll(() => { DIR = mkdtempSync(join(tmpdir(), 'xpanel-')); });
 afterAll(() => { rmSync(DIR, { recursive: true, force: true }); });
 
+// ── panel gate (verdict → merge-gate exit code, 패널7) ──────────────
+describe('panel gate — verdict evaluation (pure)', () => {
+  test('mergePolicy overlays defaults per bucket', () => {
+    expect(mergePolicy()).toEqual(DEFAULT_POLICY);
+    const p = mergePolicy({ block_confirmed: ['critical'] });
+    expect(p.block_confirmed).toEqual(['critical']);
+    expect(p.block_unreviewed).toEqual(DEFAULT_POLICY.block_unreviewed); // untouched buckets keep defaults
+  });
+  test('confirmed high blocks; clean passes', () => {
+    const policy = mergePolicy();
+    expect(evaluateVerdict({ confirmed: [], contested: [], unreviewed: [] }, policy).decision).toBe('pass');
+    const fail = evaluateVerdict({ confirmed: [{ severity: 'high', file: 'a', line: 1, claim: 'x' }], contested: [], unreviewed: [] }, policy);
+    expect(fail.decision).toBe('fail');
+    expect(fail.blocking[0].kind).toBe('confirmed');
+  });
+  test('allow_low keeps low findings non-blocking even when listed', () => {
+    const policy = mergePolicy({ block_confirmed: ['critical', 'high', 'medium', 'low'] });
+    expect(evaluateVerdict({ confirmed: [{ severity: 'low', file: 'a', line: 1, claim: 'nit' }], contested: [], unreviewed: [] }, policy).decision).toBe('pass');
+  });
+  test('a relaxed policy lets an otherwise-blocking high through', () => {
+    const v = { confirmed: [{ severity: 'high', file: 'a', line: 1, claim: 'x' }], contested: [], unreviewed: [] };
+    expect(evaluateVerdict(v, mergePolicy()).decision).toBe('fail');
+    expect(evaluateVerdict(v, mergePolicy({ block_confirmed: ['critical'] })).decision).toBe('pass');
+  });
+});
+
+describe('panel gate — CLI', () => {
+  function seedRun(name, verdict) {
+    const dir = join(DIR, '.xm', 'panel', name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'verdict.json'), JSON.stringify(verdict));
+    return dir;
+  }
+
+  test('blocking verdict → exit 1, writes gate-result.json', () => {
+    const dir = seedRun('gate-fail', { confirmed: [{ severity: 'high', file: 'a.js', line: 9, claim: 'SQLi' }], contested: [], unreviewed: [], counts: { unique: 1 } });
+    const r = panelRaw(['gate', 'gate-fail', '--json']);
+    expect(r.status).toBe(1);
+    const out = JSON.parse(r.stdout);
+    expect(out.decision).toBe('fail');
+    expect(out.blocking_findings).toHaveLength(1);
+    const saved = JSON.parse(readFileSync(join(dir, 'gate-result.json'), 'utf8'));
+    expect(saved.exit_code).toBe(1);
+  });
+
+  test('clean verdict → exit 0', () => {
+    seedRun('gate-pass', { confirmed: [{ severity: 'low', file: 'b.js', line: 2, claim: 'nit' }], contested: [], unreviewed: [], counts: { unique: 1 } });
+    const r = panelRaw(['gate', 'gate-pass']);
+    expect(r.status).toBe(0);
+  });
+
+  test('--policy override relaxes the gate', () => {
+    seedRun('gate-relax', { confirmed: [{ severity: 'high', file: 'a', line: 1, claim: 'x' }], contested: [], unreviewed: [] });
+    const r = panelRaw(['gate', 'gate-relax', '--policy', '{"block_confirmed":["critical"]}']);
+    expect(r.status).toBe(0);
+  });
+
+  test('missing run → exit 2', () => {
+    expect(panelRaw(['gate', 'no-such-run']).status).toBe(2);
+  });
+
+  test('invalid --policy JSON → exit 2', () => {
+    seedRun('gate-badpolicy', { confirmed: [], contested: [], unreviewed: [] });
+    expect(panelRaw(['gate', 'gate-badpolicy', '--policy', 'not json']).status).toBe(2);
+  });
+});
+
 // ── unit: synth ──────────────────────────────────────────────────────
 
 describe('normalizeFindings', () => {
@@ -90,20 +158,60 @@ describe('normalizeFindings', () => {
 });
 
 describe('normalizeVerdicts', () => {
-  test('coerces stance + global ref, drops empty refs', () => {
+  test('coerces stance + global ref, KEEPS empty refs; unknown stance → abstain (never concede)', () => {
     const out = normalizeVerdicts({ verdicts: [
       { ref: 'codex#0', stance: 'REFUTE', reason: 'r' },
       { ref: 'codex#1', stance: 'maybe' },
       { ref: '', stance: 'refute' },
     ] });
-    expect(out.length).toBe(2);
+    // Empty refs are kept: they can never match a finding, so synthesize counts them as
+    // unmatched_refs — dropping them here hid exactly that fidelity failure.
+    expect(out.length).toBe(3);
     expect(out[0].ref).toBe('codex#0');
     expect(out[0].stance).toBe('refute');
-    expect(out[1].stance).toBe('concede'); // unknown → concede
+    expect(out[0].invalid).toBeUndefined();
+    expect(out[1].stance).toBe('abstain'); // unknown → abstain — a broken refuter must not vouch
+    expect(out[1].invalid).toBe(true);     // …and the coercion is counted, not lost
+    expect(out[2].ref).toBe('');
+  });
+  test('whitespace-padded stances are trimmed, not coerced to invalid abstain', () => {
+    const out = normalizeVerdicts({ verdicts: [
+      { ref: 'a#0', stance: ' concede ' },
+      { ref: 'a#1', stance: 'REFUTE\n' },
+    ] });
+    expect(out[0].stance).toBe('concede');
+    expect(out[0].invalid).toBeUndefined();
+    expect(out[1].stance).toBe('refute');
+    expect(out[1].invalid).toBeUndefined();
+  });
+  test('explicit abstain is recognized (not invalid); an EMPTY stance is invalid abstain', () => {
+    const out = normalizeVerdicts({ verdicts: [
+      { ref: 'a#0', stance: 'ABSTAIN' },
+      { ref: 'a#1' },
+    ] });
+    expect(out[0].stance).toBe('abstain');
+    expect(out[0].invalid).toBeUndefined();
+    expect(out[1].stance).toBe('abstain'); // '' used to become a silent concede
+    expect(out[1].invalid).toBe(true);
   });
 });
 
 describe('synthesize', () => {
+  test('empty and self refs count as unmatched_refs (round-2 fidelity)', () => {
+    const round1 = {
+      claude: [{ idx: 0, severity: 'high', file: 'a', line: 1, claim: 'c0', evidence: '' }],
+      codex: [{ idx: 0, severity: 'low', file: 'b', line: 2, claim: 'x0', evidence: '' }],
+    };
+    const round2 = {
+      claude: normalizeVerdicts({ verdicts: [{ ref: '', stance: 'refute' }] }),       // empty ref — kept, matches nothing
+      codex: normalizeVerdicts({ verdicts: [{ ref: 'codex#0', stance: 'refute' }] }), // its OWN finding — never asked to judge it
+    };
+    const v = synthesize(['claude', 'codex'], round1, round2);
+    expect(v.by_model.claude.unmatched_refs).toBe(1);
+    expect(v.by_model.codex.unmatched_refs).toBe(1);
+    expect(v.counts.confirmed).toBe(0); // neither verdict addressed the OTHER model's finding
+  });
+
   test('refuted finding → contested, others → confirmed', () => {
     const round1 = {
       claude: [{ idx: 0, severity: 'high', file: 'a', line: 1, claim: 'shared', evidence: '' }],
@@ -164,6 +272,44 @@ describe('synthesize abstain', () => {
     const v = synthesize(['claude', 'codex'], round1, round2, new Set(['codex']));
     expect(v.counts.unreviewed).toBe(1);
     expect(v.counts.confirmed).toBe(0);
+  });
+});
+
+describe('synthesize round-2 fidelity (no silent concede)', () => {
+  const f = (idx, claim) => ({ idx, severity: 'high', file: 'a.js', line: 1, claim, evidence: '' });
+
+  test('mangled refs count as unmatched_refs; the unaddressed finding is UNREVIEWED, not confirmed', () => {
+    const round1 = { claude: [f(0, 'real issue')], codex: [] };
+    const round2 = { claude: [], codex: [
+      { ref: 'claude#99', stance: 'concede', reason: '' }, // hallucinated index
+      { ref: 'bogus#0', stance: 'refute', reason: '' },    // unknown owner
+    ] };
+    const v = synthesize(['claude', 'codex'], round1, round2);
+    expect(v.by_model.codex.unmatched_refs).toBe(2);
+    expect(v.by_model.claude.unmatched_refs).toBe(0);
+    expect(v.counts.confirmed).toBe(0);   // verdicts that addressed nothing must not vouch
+    expect(v.counts.unreviewed).toBe(1);
+    expect(v.unreviewed[0].claim).toBe('real issue');
+  });
+
+  test('coerced abstain addresses a finding without vouching → unreviewed + invalid_stances counted', () => {
+    const round1 = { claude: [f(0, 'x')], codex: [] };
+    const round2 = { claude: [], codex: normalizeVerdicts({ verdicts: [{ ref: 'claude#0', stance: 'not-sure' }] }) };
+    const v = synthesize(['claude', 'codex'], round1, round2);
+    expect(v.by_model.codex.invalid_stances).toBe(1);
+    expect(v.by_model.codex.unmatched_refs).toBe(0); // the ref itself was fine
+    expect(v.counts.confirmed).toBe(0);
+    expect(v.counts.unreviewed).toBe(1);
+    expect(v.unreviewed[0].opponents[0].stance).toBe('abstain');
+  });
+
+  test('an explicit concede still confirms; clean refuters carry zero fidelity counters', () => {
+    const round1 = { claude: [f(0, 'x')], codex: [] };
+    const round2 = { claude: [], codex: [{ ref: 'claude#0', stance: 'concede', reason: 'real' }] };
+    const v = synthesize(['claude', 'codex'], round1, round2);
+    expect(v.counts.confirmed).toBe(1);
+    expect(v.by_model.codex.unmatched_refs).toBe(0);
+    expect(v.by_model.codex.invalid_stances).toBe(0);
   });
 });
 
@@ -607,6 +753,34 @@ If there are no real issues, return {"findings":[]}.`;
     expect(readdirSync(crossDir).length).toBeGreaterThan(0);
   });
 
+  test('cross writes events.jsonl (run_start/spawn/model_done/run_done) and --logs reads it', () => {
+    const r = panelRaw(['cross', '--models', 'claude,codex', '--prompt', 'events probe', '--json']);
+    expect(r.status).toBe(0);
+    const run = JSON.parse(r.stdout).run;
+    const events = readFileSync(join(DIR, '.xm', 'cross', run, 'events.jsonl'), 'utf8')
+      .trim().split(/\r?\n/).map((l) => JSON.parse(l));
+    expect(events[0].type).toBe('run_start');
+    expect(events.some((ev) => ev.type === 'spawn' && ev.model === 'claude')).toBe(true);
+    expect(events.some((ev) => ev.type === 'exit' && ev.model === 'codex')).toBe(true);
+    expect(events.some((ev) => ev.type === 'model_done' && ev.ok === true)).toBe(true);
+    expect(events[events.length - 1].type).toBe('run_done');
+
+    // cross runs are no longer rejected by --logs — forensics work uniformly
+    const logs = panelRaw(['status', run, '--logs'], { NO_COLOR: '1' });
+    expect(logs.status).toBe(0);
+    expect(logs.stdout).toContain('spawn');
+    expect(logs.stdout).toContain('run_done');
+  });
+
+  test('--logs on a LEGACY cross run (no events.jsonl) fails loudly with a clear note', () => {
+    const d = join(DIR, '.xm', 'cross', 'panel-legacy-cross-fixture');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'result.json'), JSON.stringify({ run: 'panel-legacy-cross-fixture', results: [] }));
+    const out = panelRaw(['status', 'panel-legacy-cross-fixture', '--logs'], { NO_COLOR: '1' });
+    expect(out.status).not.toBe(0);
+    expect(out.stderr).toContain('no event log');
+  });
+
   test('cross: exit-0 empty output is a loud failure, retried once (no silent blank)', () => {
     // cursor returns success with empty stdout (transient rate-limit) on every call → the guard
     // turns it into ok:false, cross retries once (still empty), and it ends as a surfaced FAILURE
@@ -794,6 +968,84 @@ If there are no real issues, return {"findings":[]}.`;
   });
 });
 
+describe('refute prompts carry evidence (both builders in sync)', () => {
+  // The stub dumps the exact round-2 prompt per model via X_PANEL_DUMP_R2.<MODEL>;
+  // claude's dump is its verdict prompt over CODEX's findings (and vice versa).
+  test('stateless refute prompt includes each finding\'s evidence + the TARGET block', () => {
+    const dump = join(DIR, 'r2-full');
+    const r = review(['evidence target', '--no-session-reuse'], { X_PANEL_DUMP_R2: dump });
+    expect(r.status).toBe(0);
+    const sent = readFileSync(`${dump}.CLAUDE`, 'utf8');
+    expect(sent).toContain('TARGET:');
+    expect(sent).toContain('[codex#0]');
+    expect(sent).toContain('evidence: ev'); // refuters no longer judge blind
+  });
+
+  test('resumed refute prompt carries the SAME findings list (shared builder — no drift), minus TARGET', () => {
+    const full = join(DIR, 'r2-fullsync');
+    const resumed = join(DIR, 'r2-resumed');
+    expect(review(['evidence target', '--no-session-reuse'], { X_PANEL_DUMP_R2: full }).status).toBe(0);
+    expect(review(['evidence target'], { X_PANEL_DUMP_R2: resumed }).status).toBe(0); // session reuse default on
+    const fullP = readFileSync(`${full}.CLAUDE`, 'utf8');
+    const resP = readFileSync(`${resumed}.CLAUDE`, 'utf8');
+    expect(resP).not.toContain('TARGET:');  // the whole point of session reuse
+    expect(resP).toContain('evidence: ev'); // evidence travels in BOTH builders
+    const section = (p) => p.slice(p.indexOf('FINDINGS (each tagged with a [id]):'));
+    expect(section(resP)).toBe(section(fullP)); // byte-identical from the findings list down
+  });
+
+  test('huge evidence is truncated per finding with an explicit marker, never silently', () => {
+    const dump = join(DIR, 'r2-big');
+    const big = 'E'.repeat(2000);
+    const r = review(['evidence target', '--no-session-reuse'], { X_PANEL_DUMP_R2: dump, X_PANEL_EVIDENCE_CODEX: big });
+    expect(r.status).toBe(0);
+    const sent = readFileSync(`${dump}.CLAUDE`, 'utf8'); // claude judged codex's big-evidence findings
+    expect(sent).toContain('… [evidence truncated]');    // explicit marker
+    expect(sent).not.toContain(big);                     // the full blob never travels
+  });
+});
+
+describe('pre-run guard (readiness gate + trivial target)', () => {
+  test('a stub provider failing readiness is excluded, reported loudly, and listed in skipped_providers', () => {
+    const r = review(['guard target', '--models', 'claude,codex,kiro', '--json'],
+      { X_PANEL_CMD_KIRO: STUB, X_PANEL_STUB_UNREADY_KIRO: '1' });
+    expect(r.status).toBe(0);                       // panel proceeds with the 2 ready models
+    expect(r.stderr).toContain('not ready');
+    expect(r.stderr).toContain('xm panel doctor');  // fix hint is loud
+    const rec = JSON.parse(r.stdout);
+    expect(rec.models).toEqual(['claude', 'codex']); // the dead-on-arrival provider never joined
+    expect(rec.skipped_providers.length).toBe(1);
+    expect(rec.skipped_providers[0]).toMatchObject({ name: 'kiro', reason: 'not_ready' });
+  });
+
+  test('readiness exclusions count toward the ≥2-models floor (exit 1, not a 1-model panel)', () => {
+    const r = review(['guard target'], { X_PANEL_STUB_UNREADY_CODEX: '1' });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('needs ≥2');
+  });
+
+  test('cross gates readiness too: unready provider skipped, run proceeds with the rest', () => {
+    const r = panelRaw(['cross', '--models', 'claude,codex', '--prompt', 'gate probe', '--json'],
+      { X_PANEL_STUB_UNREADY_CODEX: '1' });
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.results.length).toBe(1);
+    expect(out.results[0].provider).toBe('claude');
+    expect(out.skipped_providers.length).toBe(1);
+    expect(out.skipped_providers[0]).toMatchObject({ name: 'codex', reason: 'not_ready' });
+    expect(r.stderr).toContain('xm panel doctor');
+  });
+
+  test('an empty git diff exits 2 (no N-models × 2-rounds burn on a clean tree); --force overrides', () => {
+    // DIR is not a git repo → `git diff HEAD` yields the "(no diff against HEAD)" sentinel.
+    const r = panelRaw(['review', '--models', 'claude,codex']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('nothing to review');
+    const f = panelRaw(['review', '--force', '--models', 'claude,codex']);
+    expect(f.status).toBe(0); // --force proceeds
+  });
+});
+
 describe('providerReady (auth gate — fixes agy false-negative)', () => {
   test('verified-authed provider is ready', () => {
     expect(providerReady({ installed: true, authed: true, assumedReady: true })).toBe(true);
@@ -938,9 +1190,10 @@ describe('panel status (staleness + project scope + --all)', () => {
     seedTailRun('panel-tailecho-fixture', [
       { label: 'codex', state: 'running', stdout_tail: [
         'Return ONLY a JSON object, no prose. Use the exact bracketed [id] string as "ref":',
-        '{"verdicts":[{"ref":"<id, e.g. codex#0>","stance":"refute|concede","reason":"one line"}]}',
+        '{"verdicts":[{"ref":"<id, e.g. codex#0>","stance":"refute|concede|abstain","reason":"one line"}]}',
         '- refute = wrong, not real, or not actionable.',
         '- concede = a real issue worth fixing.',
+        '- abstain = cannot judge from the provided evidence.',
       ].join('\n') },
     ]);
     const out = watchFrame(4);
@@ -1175,6 +1428,25 @@ describe('panel status (staleness + project scope + --all)', () => {
     expect(snap.live.some((x) => x.run === 'panel-xreview-fixture')).toBe(true);
   });
 
+  test('status <run> detail + --watch --json surface round-2 fidelity counters', () => {
+    const d = join(SDIR, '.xm', 'panel', 'panel-fidelity-fixture');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'status.json'), JSON.stringify({
+      run: 'panel-fidelity-fixture', phase: 'done', target_kind: 'literal', target_title: 'seed',
+      updated_at: new Date().toISOString(),
+      models: [{ label: 'codex', state: 'done', elapsed_s: 9, unmatched_refs: 2, invalid_stances: 1 }],
+    }));
+    const detail = panelRaw(['status', 'panel-fidelity-fixture'], statusEnv());
+    expect(detail.status).toBe(0);
+    expect(detail.stdout).toContain('2 unmatched ref(s)');
+    expect(detail.stdout).toContain('1 invalid stance(s)');
+    const w = spawnSync('node', [CLI, 'status', 'panel-fidelity-fixture', '--watch', '--json', '--interval', '1'],
+      { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 5000 });
+    const last = JSON.parse(w.stdout.trim().split('\n').filter(Boolean).pop());
+    expect(last.models[0].unmatched_refs).toBe(2);
+    expect(last.models[0].invalid_stances).toBe(1);
+  });
+
   test('run-scoped text --watch also ends when the run is done', () => {
     const d = join(SDIR, '.xm', 'panel', 'panel-textdone-fixture');
     mkdirSync(d, { recursive: true });
@@ -1295,7 +1567,9 @@ describe('review (stubbed models)', () => {
 
   test('git-diff target_title summarizes the diff (not a timestamp)', () => {
     writeProjectConfig({ models: ['claude', 'codex'] });
-    const r = panelRaw(['review']); // no target → git diff HEAD
+    // no target → git diff HEAD; DIR is not a repo → empty-diff sentinel, so --force
+    // is required (the trivial-target guard exits 2 without it — tested separately).
+    const r = panelRaw(['review', '--force']);
     expect(r.status).toBe(0);
     expect(latestVerdict().target_title).toMatch(/^(diff:|git diff)/);
   });
@@ -1428,6 +1702,21 @@ describe('review (stubbed models)', () => {
     expect(v.by_model.claude.r1).toBe('suspect_empty');
     expect(v.counts.r1_suspect).toBe(1);
     expect(r.stdout).toContain('0 findings but substantial prose'); // render warns the operator
+  });
+
+  test('a mangled-ref refuter is surfaced end-to-end (verdict counters + render + status.json)', () => {
+    // codex hallucinates every ref index → its verdicts address nothing. claude's findings
+    // must land UNREVIEWED (not silently confirmed), and the fidelity counters must be
+    // visible in verdict.json, the terminal summary, and the live status file.
+    const r = review(['mangled refs target'], { X_PANEL_MANGLE_REFS_CODEX: '1' });
+    expect(r.status).toBe(0);
+    const v = latestVerdict();
+    expect(v.by_model.codex.unmatched_refs).toBe(2);
+    expect(v.counts.unreviewed).toBe(2); // claude's 2 findings were never addressed…
+    expect(v.confirmed.every((f) => f.owner !== 'claude')).toBe(true); // …and never confirmed
+    expect(r.stdout).toContain('round-2 fidelity'); // terminal summary warns the operator
+    const st = JSON.parse(readFileSync(join(latestRunDir(), 'status.json'), 'utf8'));
+    expect(st.models.find((m) => m.label === 'codex').unmatched_refs).toBe(2); // status/--watch surface
   });
 
   test('--stream accumulates token-level deltas into the live stdout_tail', () => {
@@ -1656,7 +1945,9 @@ describe('UX: config, presets, shortcut, setup', () => {
 
   test('bare "x-panel" runs review (shortcut, no subcommand)', () => {
     writeProjectConfig({ models: ['claude', 'codex'] });
-    const r = panelRaw([]);
+    // --force because DIR has no git repo → the default git-diff target trips the
+    // trivial-target guard; the flag still exercises the no-subcommand shortcut path.
+    const r = panelRaw(['--force']);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('Panel verdict');
   });

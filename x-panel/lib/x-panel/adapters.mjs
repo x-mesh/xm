@@ -164,8 +164,14 @@ export function checkAuth(name, { timeout = 12_000 } = {}) {
   const meta = PROVIDER_META[name];
   if (!meta) return { name, installed: false, authed: null, assumedReady: false, detail: 'unknown provider' };
   if (!isAvailable(name)) return { name, installed: false, authed: null, assumedReady: false, detail: 'not on PATH' };
-  // A test/env override stub stands in for the real CLI — treat as ready.
-  if (overridePath(name)) return { name, installed: true, authed: true, assumedReady: true, detail: 'X_PANEL_CMD override (assumed ready)' };
+  // A test/env override stub stands in for the real CLI — treat as ready, unless the
+  // test explicitly marks it unready (exercises the pre-run readiness gate hermetically).
+  if (overridePath(name)) {
+    if (process.env[`X_PANEL_STUB_UNREADY_${name.toUpperCase()}`]) {
+      return { name, installed: true, authed: false, assumedReady: false, detail: 'X_PANEL_STUB_UNREADY override (stub not authenticated)' };
+    }
+    return { name, installed: true, authed: true, assumedReady: true, detail: 'X_PANEL_CMD override (assumed ready)' };
+  }
   if (!meta.auth) {
     // No non-interactive auth-status command (agy). We can't confirm auth without a model call,
     // so authed stays null (?) — never promoted to ✓ (a present-but-expired token must not read as
@@ -382,8 +388,9 @@ export function supportsResume(name) {
 }
 
 // Matches the session id a CLI prints in its run banner (codex exec does; the
-// capture is tolerant of "session id:", "session_id=", etc.).
-const SESSION_ID_RE = /session[ _-]?id[:=\s]+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+// capture is tolerant of "session id:", "session_id=", etc.). Exported so the
+// live spike (x-panel/test/spike-resume.mjs) exercises the SHIPPED capture path.
+export const SESSION_ID_RE = /session[ _-]?id[:=\s]+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
 /**
  * Session-aware argv. `session = { mode: 'create'|'resume', id: string|null }`.
@@ -509,15 +516,24 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       // Session establishment (t5): claude's id is caller-supplied (authoritative);
       // codex discloses its id in the run banner — captured or null (⇒ no resume).
       let session_id = null;
+      let captureFailed = false;
       if (session && session.mode === 'create') {
         if (name === 'claude') session_id = session.id;
         // Capture ONLY from stderr: codex prints its session-id banner to stderr,
         // while stdout is model output derived from the (untrusted) review target.
         // Searching stdout first would let a prompt-injected target emit a fake
         // "session id: <uuid>" line and steer the round-2 `--resume` id (trust-boundary).
-        else session_id = (SESSION_ID_RE.exec(stderr) || [])[1] || null;
+        else {
+          session_id = (SESSION_ID_RE.exec(stderr) || [])[1] || null;
+          if (!session_id) {
+            // A missing banner is a CAPTURE FAILURE, distinct from a vendor that never
+            // supports resume — surface it (L6) so it can't hide as plain "stateless".
+            captureFailed = true;
+            emit({ type: 'lifecycle', provider: name, model, note: 'session capture failed — no session id in the run banner; round 2 will run stateless' });
+          }
+        }
       }
-      finish({ ok: true, error: null, raw: stdout, json, usage, ...(session_id ? { session_id } : {}) });
+      finish({ ok: true, error: null, raw: stdout, json, usage, ...(session_id ? { session_id } : {}), ...(captureFailed ? { session_capture_failed: true } : {}) });
     });
   });
 }
