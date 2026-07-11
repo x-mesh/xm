@@ -1058,11 +1058,15 @@ xm panel status <run> --logs        # stream the RAW event log (events.jsonl): l
                                     # or tail -f with --watch. Unlike the interpreted board, nothing is summarized
 xm panel gate <run> [--policy '{…}']  # turn a run's verdict into a merge-gate EXIT CODE (0 pass / 1 block / 2 error) — for CI
 xm panel stats [--roi]              # per-vendor survival rate, catches, and (with real cost) $/catch across every run
+xm panel review <target> --grounded # round-2 refuters that can read the repo (codex today) OPEN each cited file and verify the finding
+xm panel followup <run>             # debate round: resume each author's session, HOLD/CONCEDE/REVISE the findings an opponent refuted
 ```
 
 Per-model `--model` via `name:model`, named `presets`, parallel calls, and results under `.xm/panel/` (queryable with `xm recall`). Different models have different blind spots — that's the point.
 
 Every run **captures real per-model token usage and cost** — claude via `--output-format json`, codex via its `exec --json` event stream — so panel numbers price from measured actuals, not estimates. Each finished run appends a per-model row to a **disagreement ledger** (`.xm/panel/history.jsonl`); `xm panel stats [--roi]` aggregates it into per-vendor survival rate (confirmed/raised) and cost per confirmed catch — a per-repo data moat a stateless API council can't accumulate. `--stream` adds token-by-token live text for claude/cursor (`--partial`, on by default; auto-disabled on very large targets). When a model exits 0 with no usable answer, the panel surfaces the CLI's own stderr reason instead of a bare "no JSON". Timeouts auto-scale with target size (`--timeout` to pin).
+
+Two adversarial add-ons turn opinions into checked facts. **`--grounded`** makes round-2 refuters that can actually read the repo (codex today — `exec --sandbox read-only` from the repo cwd) OPEN each cited file and verify the finding against the real code, tagging the verdict with `{checked, observed}`; a text-only vendor is never asked to (a blind vendor told to "open the file" would just fake a `checked:true`). **`xm panel followup <run>`** runs a debate round: it resumes each author's own session and has them `HOLD` / `CONCEDE` / `REVISE` the findings an opponent refuted — a *held* finding (both models stand their ground) is the genuine disagreement a human must decide, a *conceded* one is resolved. It is additive (`followup-N.json`, verdict.json untouched) and needs the review to have run with `--session-reuse` (claude/codex).
 
 `xm panel cross` exposes this engine as a reusable primitive — one prompt across N vendors, each vendor's raw output returned — which is what backs the opt-in `--cross-vendor` mode in x-agent, x-solver, x-build, x-op, x-review, and x-eval. See [Cross-Vendor Verification](#cross-vendor-verification).
 

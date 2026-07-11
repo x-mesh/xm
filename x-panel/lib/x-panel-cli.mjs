@@ -23,7 +23,7 @@ import {
 } from './x-panel/core.mjs';
 import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, supportsResume, proseOutsideJSON, groundCapable } from './x-panel/adapters.mjs';
 import { randomUUID } from 'node:crypto';
-import { normalizeFindings, normalizeVerdicts, synthesize } from './x-panel/synth.mjs';
+import { normalizeFindings, normalizeVerdicts, synthesize, normalizeResponses, followupDelta } from './x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from './x-panel/gate.mjs';
 import { appendPanelHistory, readPanelHistory, aggregatePanelStats } from './x-panel/history.mjs';
 import { createTmEventsPublisher, subscribeXkRun } from './x-panel/tm-events.mjs';
@@ -336,6 +336,39 @@ FINDINGS (each tagged with a [id]):
 ${list}
 
 ${verdictContract(grounded)}`;
+}
+
+// ── followup / debate round (빅뱃5) ──────────────────────────────────
+// Render an author's refuted findings for the debate prompt: the claim they raised plus
+// each opponent's refutation reason, so they can rebut or concede on the specifics.
+function followupFindingsList(myFindings) {
+  return myFindings.map((f) => {
+    const head = `[${f.ref}] (${f.severity}) ${f.file ?? ''}:${f.line ?? ''}\n  your claim: ${f.claim}`;
+    const refs = (f.opponents || [])
+      .filter((o) => o.stance === 'refute')
+      .map((o) => `  refuted by ${o.model}: ${o.reason || '(no reason given)'}`)
+      .join('\n');
+    return refs ? `${head}\n${refs}` : head;
+  }).join('\n\n') || '(none)';
+}
+
+// Debate prompt. `resumed` = the model's round-1/2 session is being continued (it already
+// has the change in context); the stateless fallback debates on the embedded claim +
+// refutation only (the diff can't be re-embedded — the run stores findings, not the target).
+function followupPrompt(list, resumed) {
+  const intro = resumed
+    ? `You reviewed this SAME code change earlier in this conversation and raised the findings below — do not ask for the change again.`
+    : `You are the reviewer who raised the findings below on a code change. Judge each on the claim + refutation shown (the change itself is not re-sent).`;
+  return `${intro} In round 2, other reviewers REFUTED them (their reasons are shown). This is a debate: for EACH finding decide whether to HOLD it (you still believe it — give the rebuttal), CONCEDE it (they are right — withdraw it), or REVISE it (narrow the claim).
+
+YOUR REFUTED FINDINGS (each tagged with a [id]):
+${list}
+
+Return ONLY a JSON object, no prose. Use the exact bracketed [id] string as "ref":
+{"responses":[{"ref":"<id, e.g. claude#0>","resolution":"hold|concede|revise","reason":"one line"}]}
+- hold = you stand by the finding; give the rebuttal.
+- concede = the refutation is correct; withdraw it.
+- revise = partly right; state the narrowed claim.`;
 }
 
 // ── pre-run readiness gate (shared by review AND cross) ──────────────
@@ -977,6 +1010,17 @@ async function cmdReview(pos, flags) {
       totals: status.totals,
       by_model: Object.fromEntries(status.models.map((m) => [m.label, { tokens: m.cum_tokens, cost_usd: m.cum_cost_usd, credits: m.cum_credits, resume: m.resume || 'stateless' }])),
     },
+    // Persist each model's provider session so a later `xm panel followup <run>` can RESUME
+    // the same conversation thread and debate the contested findings (빅뱃5). id is the
+    // resume handle captured in round 1 (claude: our uuid; codex: thread.started thread_id);
+    // resumable=false when the vendor is stateless or its banner capture failed — followup
+    // then has no thread to continue for that model.
+    sessions: Object.fromEntries(usable.map((e) => [e.label, {
+      vendor: e.name,
+      model: e.model || null,
+      id: e._resumeId || null,
+      resumable: !!(e._resumeId && supportsResume(e.name)),
+    }])),
     ...verdict,
   };
   writeJSON(join(dir, 'verdict.json'), record);
@@ -1524,6 +1568,13 @@ Commands:
                                 (confirmed/raised), catches, round-2 fidelity misses, and
                                 (--roi, when usage is known) cost per confirmed catch.
                                 Cost stays 'unknown' — never $0 — until usage capture lands.
+  followup <run> [--json]       Debate round: RESUME each author's session and have them
+                                HOLD / CONCEDE / REVISE the findings an opponent refuted,
+                                classifying each contested finding (held = genuine disagreement
+                                a human must decide; conceded = resolved). Additive — writes
+                                followup-N.json, never touches verdict.json. Needs the review
+                                to have run with --session-reuse (claude/codex); authors whose
+                                session can't resume are skipped loudly. Re-runnable (followup-2…).
   status [run] [--all] [--json] [--watch|--follow [--interval N]] [--logs]
                                 Read run state from disk — see an IN-PROGRESS panel from the CLI.
                                 Covers all three namespaces: .xm/panel (native), .xm/review
@@ -2272,6 +2323,119 @@ function cmdGate(pos, flags) {
   process.exitCode = exitCode;
 }
 
+// `xm panel followup <run>` — debate round (빅뱃5). Resume each author's session and ask
+// them to HOLD/CONCEDE/REVISE the findings an opponent refuted, then classify the outcome.
+// Additive: writes followup-N.json, never touches verdict.json.
+async function cmdFollowup(pos, flags) {
+  const runArg = pos[0];
+  if (!runArg) {
+    console.error(`${C.red}✗ usage: xm panel followup <run-id> [--json]${C.reset}`);
+    console.error(`  Run a review with sessions (default --session-reuse), then debate its contested findings.`);
+    process.exitCode = 2;
+    return;
+  }
+  const r = resolveRunDir(runArg);
+  if (!r) { console.error(`${C.red}✗ run not found: ${runArg}${C.reset}`); process.exitCode = 2; return; }
+  const verdict = readJSONSafe(join(r.dir, 'verdict.json'));
+  if (!verdict) {
+    console.error(`${C.red}✗ ${runArg} has no readable verdict.json — the run is unfinished or corrupt (xm panel status ${runArg})${C.reset}`);
+    process.exitCode = 2;
+    return;
+  }
+
+  const contested = Array.isArray(verdict.contested) ? verdict.contested : [];
+  if (!contested.length) {
+    console.log(`${C.green}✓ nothing to debate${C.reset} — ${runArg} has 0 contested findings (no opponent refuted anyone).`);
+    return; // exit 0 — a clean panel needs no debate
+  }
+  const sessions = verdict.sessions || {};
+
+  // Each contested finding is defended by its AUTHOR (owner). Group by owner and keep only
+  // owners whose session can be resumed — the debate's whole premise is thread continuity.
+  const byOwner = {};
+  for (const f of contested) (byOwner[f.owner] ||= []).push({ ...f, ref: `${f.owner}#${f.idx}` });
+
+  const targets = [];
+  const skipped = [];
+  for (const [owner, findings] of Object.entries(byOwner)) {
+    const s = sessions[owner];
+    if (!s || !s.resumable || !s.id) {
+      skipped.push({ owner, reason: s ? (s.id ? 'not_resumable' : 'no_session_id') : 'no_session_record', count: findings.length });
+      continue;
+    }
+    targets.push({ owner, vendor: s.vendor, model: s.model || null, id: s.id, findings });
+  }
+  if (!targets.length) {
+    console.error(`${C.red}✗ no resumable sessions for the ${contested.length} contested finding(s)${C.reset} — re-run the review with --session-reuse (claude/codex support it).`);
+    for (const s of skipped) console.error(`${C.dim}  ${s.owner}: ${s.reason} (${s.count} finding(s))${C.reset}`);
+    process.exitCode = 2;
+    return;
+  }
+
+  const cfg = loadPanelConfig();
+  const timeoutMs = (flags.timeout || cfg.timeout_s || 600) * 1000;
+  console.error(`${C.dim}debating ${contested.length} contested finding(s) across ${targets.length} author session(s)…${C.reset}`);
+
+  const responsesByModel = {};
+  const perModel = [];
+  const results = await Promise.all(targets.map(async (t) => {
+    const list = followupFindingsList(t.findings);
+    const res = await invokeProviderAsync(t.vendor, followupPrompt(list, true), {
+      timeout: timeoutMs,
+      model: t.model,
+      session: { mode: 'resume', id: t.id },
+      fallbackPrompt: followupPrompt(list, false), // resume failure → loud stateless debate
+      expectKeys: ['responses'],
+    });
+    return { t, res };
+  }));
+  for (const { t, res } of results) {
+    const responses = res.ok ? normalizeResponses(res.json) : [];
+    responsesByModel[t.owner] = responses;
+    const resume = res.resume || 'stateless';
+    perModel.push({ owner: t.owner, vendor: t.vendor, ok: res.ok, resume, error: res.error || null, count: responses.length });
+    if (!res.ok) process.stderr.write(`${C.yellow}⚠ ${t.owner}: followup failed (${res.error || 'error'}) — its findings stay unresolved${C.reset}\n`);
+    else if (resume === 'fallback') process.stderr.write(`${C.yellow}⚠ ${t.owner}: session resume failed — debated stateless (no thread continuity)${C.reset}\n`);
+    writeJSON(join(r.dir, `${safeLabel(t.owner)}.followup.json`), { model: t.owner, vendor: t.vendor, ok: res.ok, resume, error: res.error || null, responses, raw: res.raw });
+  }
+
+  const delta = followupDelta(contested, responsesByModel);
+  // Additive index — never overwrite a prior debate round.
+  let n = 1;
+  while (existsSync(join(r.dir, `followup-${n}.json`))) n++;
+  const record = {
+    run: runArg, kind: r.kind, round: 2 + n, created_at: new Date().toISOString(),
+    contested_in: contested.length, delta, by_model: perModel, skipped,
+  };
+  const outPath = join(r.dir, `followup-${n}.json`);
+  writeJSON(outPath, record);
+
+  if (flags.json) console.log(JSON.stringify(record, null, 2));
+  else console.log(renderFollowup(record, outPath));
+}
+
+function renderFollowup(rec, outPath) {
+  const d = rec.delta;
+  const lines = [];
+  lines.push(`${C.bold}Debate round${C.reset} ${C.dim}(${rec.run}, round ${rec.round})${C.reset} — ${C.yellow}${d.counts.held} held${C.reset}, ${C.green}${d.counts.conceded} conceded${C.reset}, ${C.cyan}${d.counts.revised} revised${C.reset}, ${d.counts.no_response} no-response`);
+  const block = (title, arr, color) => {
+    if (!arr.length) return;
+    lines.push('');
+    lines.push(`${C.bold}${color}${title}${C.reset}`);
+    for (const f of arr) {
+      lines.push(`  ${sev(f.severity)} ${f.file ?? ''}${f.line ? ':' + f.line : ''}  ${f.claim}  ${C.dim}— ${f.owner}${f.reason ? ': ' + f.reason : ''}${C.reset}`);
+    }
+  };
+  // HELD is the signal: two models that both stand their ground → a human must decide.
+  block('HELD (genuine disagreement — human decides)', d.held, C.yellow);
+  block('CONCEDED (author withdrew — resolved)', d.conceded, C.green);
+  block('REVISED (author narrowed — re-check)', d.revised, C.cyan);
+  block('NO RESPONSE (session failed or unaddressed — still contested)', d.no_response, C.red);
+  for (const s of rec.skipped || []) lines.push(`${C.dim}skipped ${s.owner}: ${s.reason} (${s.count} finding(s) — not resumable)${C.reset}`);
+  lines.push(`${C.dim}saved: ${outPath}${C.reset}`);
+  return lines.join('\n');
+}
+
 function cmdStatus(pos, flags) {
   if (flags.logs) { cmdLogs(pos, flags); return; }
   if (flags.watch) {
@@ -2453,7 +2617,7 @@ function renderStatusOnce(pos, flags) {
 // ── entry ────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
-const SUB = new Set(['review', 'cross', 'gate', 'stats', 'status', 'setup', 'types', 'models', 'detect', 'doctor', 'preflight', 'help', '--help', '-h']);
+const SUB = new Set(['review', 'cross', 'gate', 'stats', 'followup', 'status', 'setup', 'types', 'models', 'detect', 'doctor', 'preflight', 'help', '--help', '-h']);
 let cmd = argv[0];
 let rest;
 if (!cmd) { cmd = 'review'; rest = []; }            // `x-panel` → review git diff
@@ -2475,6 +2639,7 @@ switch (cmd) {
   case 'cross': await cmdCross(pos, flags); break;
   case 'gate': cmdGate(pos, flags); break;
   case 'stats': cmdStats(pos, flags); break;
+  case 'followup': await cmdFollowup(pos, flags); break;
   case 'status': cmdStatus(pos, flags); break;
   case 'setup': cmdSetup(pos, flags); break;
   case 'types': cmdTypes(); break;

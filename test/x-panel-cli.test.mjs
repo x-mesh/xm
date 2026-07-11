@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, rmSync, readFileSync, readdirSync, mkdirSync, 
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus } from '../x-panel/lib/x-panel/synth.mjs';
+import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus, normalizeResponses, followupDelta } from '../x-panel/lib/x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
 import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
 import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable } from '../x-panel/lib/x-panel/adapters.mjs';
@@ -437,6 +437,55 @@ describe('synthesize', () => {
     const v = synthesize(['claude', 'codex'], round1, round2);
     expect(v.contested[0].opponents[0].grounded).toBeUndefined();
     expect(v.counts.grounded_verdicts).toBe(0);
+  });
+});
+
+describe('followup / debate round (빅뱃5) — normalizeResponses + followupDelta', () => {
+  test('normalizeResponses coerces resolution; unknown → hold (never a silent concede), keeps ref', () => {
+    const out = normalizeResponses({ responses: [
+      { ref: 'claude#0', resolution: 'HOLD', reason: 'stands' },
+      { ref: 'claude#1', resolution: 'maybe' },  // unknown → hold (must not drop a real finding)
+      { ref: ' codex#2 ', resolution: ' concede ' },
+    ] });
+    expect(out[0]).toEqual({ ref: 'claude#0', resolution: 'hold', reason: 'stands' });
+    expect(out[1].resolution).toBe('hold');
+    expect(out[1].invalid).toBe(true);
+    expect(out[2].ref).toBe('codex#2');       // trimmed
+    expect(out[2].resolution).toBe('concede');
+    expect(out[2].invalid).toBeUndefined();
+  });
+
+  test('followupDelta buckets each contested finding by its author\'s decision', () => {
+    const contested = [
+      { owner: 'claude', idx: 0, severity: 'high', file: 'a', line: 1, claim: 'held one' },
+      { owner: 'claude', idx: 1, severity: 'medium', file: 'b', line: 2, claim: 'conceded one' },
+      { owner: 'codex', idx: 0, severity: 'low', file: 'c', line: 3, claim: 'revised one' },
+      { owner: 'codex', idx: 1, severity: 'high', file: 'd', line: 4, claim: 'no answer' },
+    ];
+    const responsesByModel = {
+      claude: normalizeResponses({ responses: [
+        { ref: 'claude#0', resolution: 'hold', reason: 'still true' },
+        { ref: 'claude#1', resolution: 'concede', reason: 'fair' },
+      ] }),
+      codex: normalizeResponses({ responses: [
+        { ref: 'codex#0', resolution: 'revise', reason: 'narrower' },
+        // codex#1 intentionally unanswered → no_response
+      ] }),
+    };
+    const d = followupDelta(contested, responsesByModel);
+    expect(d.counts).toEqual({ held: 1, conceded: 1, revised: 1, no_response: 1 });
+    expect(d.held[0].ref).toBe('claude#0');
+    expect(d.conceded[0].ref).toBe('claude#1');
+    expect(d.revised[0].ref).toBe('codex#0');
+    expect(d.no_response[0].ref).toBe('codex#1');
+  });
+
+  test('a coerced-invalid resolution defaults to HELD, never silently resolving the finding', () => {
+    const contested = [{ owner: 'claude', idx: 0, severity: 'high', file: 'a', line: 1, claim: 'x' }];
+    const responsesByModel = { claude: normalizeResponses({ responses: [{ ref: 'claude#0', resolution: 'garbage' }] }) };
+    const d = followupDelta(contested, responsesByModel);
+    expect(d.counts.held).toBe(1);
+    expect(d.counts.conceded).toBe(0);
   });
 });
 
@@ -1254,6 +1303,70 @@ describe('grounded refutation (빅뱃3) — only capable vendors get the file-ve
     expect(v.grounded).toBe(false);
     expect(v.counts.grounded_verdicts).toBe(0);
     expect(r.stdout).not.toContain('🔎');
+  });
+});
+
+describe('followup / debate round (빅뱃5) — CLI end-to-end', () => {
+  function runIdOf(dir) { return dir.split('/').pop(); }
+  function followup(runId, args = [], env = {}) {
+    return spawnSync('node', [CLI, 'followup', runId, ...args], { cwd: DIR, env: STUB_ENV(env), encoding: 'utf8', timeout: 20000 });
+  }
+
+  test('review persists resumable sessions per model (the followup prerequisite)', () => {
+    const r = review(['debate target']); // session-reuse on by default
+    expect(r.status).toBe(0);
+    const v = latestVerdict();
+    expect(v.sessions).toBeDefined();
+    // claude created its own uuid; codex disclosed a thread id → both resumable.
+    expect(v.sessions.claude.resumable).toBe(true);
+    expect(v.sessions.claude.id).toBeTruthy();
+    expect(v.sessions.codex.resumable).toBe(true);
+  });
+
+  test('followup resumes the author of a contested finding and classifies HELD by default', () => {
+    const r = review(['debate target']);
+    expect(r.status).toBe(0);
+    const runId = runIdOf(latestRunDir());
+    // stub: codex refuted claude#0 (shared) → one contested finding owned by claude.
+    const f = followup(runId);
+    expect(f.status).toBe(0);
+    expect(f.stdout).toContain('Debate round');
+    expect(f.stdout).toContain('HELD'); // default stub resolution holds the finding
+    // artifact written additively, verdict.json untouched
+    const rec = JSON.parse(readFileSync(join(latestRunDir(), 'followup-1.json'), 'utf8'));
+    expect(rec.round).toBe(3);
+    expect(rec.delta.counts.held).toBe(1);
+    expect(rec.delta.counts.conceded).toBe(0);
+    expect(rec.by_model.find(m => m.owner === 'claude').resume).toBe('ok'); // real resume, not fallback
+  });
+
+  test('a conceding author resolves the disagreement (CONCEDED bucket)', () => {
+    const r = review(['debate target']);
+    expect(r.status).toBe(0);
+    const runId = runIdOf(latestRunDir());
+    const f = followup(runId, [], { X_PANEL_FOLLOWUP_CLAUDE: 'concede' });
+    expect(f.status).toBe(0);
+    const rec = JSON.parse(readFileSync(join(latestRunDir(), 'followup-1.json'), 'utf8'));
+    expect(rec.delta.counts.conceded).toBe(1);
+    expect(rec.delta.counts.held).toBe(0);
+  });
+
+  test('re-running followup writes an additive followup-2.json, never overwriting', () => {
+    const r = review(['debate target']);
+    expect(r.status).toBe(0);
+    const dir = latestRunDir();
+    const runId = runIdOf(dir);
+    expect(followup(runId).status).toBe(0);
+    expect(followup(runId).status).toBe(0);
+    expect(existsSync(join(dir, 'followup-1.json'))).toBe(true);
+    expect(existsSync(join(dir, 'followup-2.json'))).toBe(true);
+    expect(JSON.parse(readFileSync(join(dir, 'followup-2.json'), 'utf8')).round).toBe(4);
+  });
+
+  test('followup on an unknown run exits 2 with guidance', () => {
+    const f = followup('panel-nope-0000');
+    expect(f.status).toBe(2);
+    expect(f.stderr).toContain('run not found');
   });
 });
 

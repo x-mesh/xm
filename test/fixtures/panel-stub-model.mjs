@@ -8,7 +8,8 @@
 import { writeFileSync, existsSync } from 'node:fs';
 const [model, prompt = ''] = process.argv.slice(2);
 const stream = process.argv.includes('--stream'); // resolveStreamCommand appends --stream
-const isRefute = /verdicts/i.test(prompt);
+const isFollowup = /"responses"/.test(prompt); // debate round (빅뱃5) — must precede refute check
+const isRefute = !isFollowup && /verdicts/i.test(prompt);
 
 // t5 session-reuse hints (resolveSessionCommand appends these for stubbed providers):
 //   --session-mode create|resume [--session-id <uuid>]
@@ -184,7 +185,17 @@ if (!isRefute && process.env[`X_PANEL_PROSE_EMPTY_${envModel}`]) {
 // codex session disclosure now rides on emitRaw's thread.started JSONL event (the
 // stderr banner is gone under --json) — see emitRaw above.
 
-if (isRefute) {
+if (isFollowup) {
+  // Debate round (빅뱃5): resume the author's session and respond to each refuted finding.
+  // Default 'hold' (the safe default — never silently drop a finding); X_PANEL_FOLLOWUP_<MODEL>
+  // overrides the resolution to exercise the concede/revise buckets.
+  const refs = [...prompt.matchAll(/\[([^\]]+#\d+)\]/g)].map((m) => m[1]);
+  const resolution = process.env[`X_PANEL_FOLLOWUP_${envModel}`] || 'hold';
+  const responses = refs.map((ref) => ({ ref, resolution, reason: `${resolution} reason` }));
+  const payload = JSON.stringify({ responses });
+  if (stream) emitStream(model, payload);
+  else emitRaw(model, 'noise before ' + payload + ' noise after');
+} else if (isRefute) {
   const refs = [...prompt.matchAll(/\[([^\]]+#\d+)\]/g)].map((m) => m[1]); // global ref "owner#idx" (owner may contain ':')
   // Test hook: a refuter whose refs are mangled (hallucinated indices) — its verdicts
   // must count as unmatched_refs and must NOT silently confirm the findings it missed.
