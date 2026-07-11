@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus } from '../x-panel/lib/x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
+import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
 import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts } from '../x-panel/lib/x-panel/adapters.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
 
@@ -74,6 +75,63 @@ beforeAll(() => { DIR = mkdtempSync(join(tmpdir(), 'xpanel-')); });
 afterAll(() => { rmSync(DIR, { recursive: true, force: true }); });
 
 // ── panel gate (verdict → merge-gate exit code, 패널7) ──────────────
+describe('panel history ledger (빅뱃2)', () => {
+  const REC = {
+    run: 'panel-x', created_at: '2026-07-11T00:00:00Z', models: ['claude', 'codex'],
+    by_model: {
+      claude: { raised: 5, confirmed: 4, contested: 1, unmatched_refs: 0, r1: 'ok' },
+      codex: { raised: 3, confirmed: 1, contested: 2, unmatched_refs: 1, r1: 'ok' },
+    },
+    usage: { by_model: { claude: { tokens: 12000, cost_usd: 0.08 }, codex: { tokens: 0, cost_usd: 0 } } },
+  };
+
+  test('historyRows: one row per model; cost 0 → null (unknown, never 0)', () => {
+    const rows = historyRows(REC);
+    expect(rows).toHaveLength(2);
+    const claude = rows.find(r => r.model === 'claude');
+    expect(claude.raised).toBe(5);
+    expect(claude.confirmed).toBe(4);
+    expect(claude.cost_usd).toBe(0.08);
+    const codex = rows.find(r => r.model === 'codex');
+    expect(codex.unmatched_refs).toBe(1);
+    expect(codex.cost_usd).toBeNull(); // usage 0 → unknown, not 0
+    expect(codex.tokens).toBeNull();
+  });
+
+  test('aggregatePanelStats: survival = confirmed/raised; cost sums only known runs', () => {
+    const rows = [
+      { model: 'claude', run: 'r1', raised: 5, confirmed: 4, contested: 1, unmatched_refs: 0, r1: 'ok', cost_usd: null },
+      { model: 'claude', run: 'r2', raised: 5, confirmed: 4, contested: 1, unmatched_refs: 0, r1: 'ok', cost_usd: 0.08 },
+      { model: 'codex', run: 'r1', raised: 4, confirmed: 1, contested: 3, unmatched_refs: 2, r1: 'ok', cost_usd: null },
+    ];
+    const stats = aggregatePanelStats(rows);
+    const claude = stats.find(s => s.model === 'claude');
+    expect(claude.raised).toBe(10);
+    expect(claude.confirmed).toBe(8);
+    expect(claude.survival_rate).toBeCloseTo(0.8, 5);
+    expect(claude.cost_usd).toBeCloseTo(0.08, 5); // only the one run with usage
+    expect(claude.cost_per_confirmed).toBeCloseTo(0.08 / 8, 5);
+    const codex = stats.find(s => s.model === 'codex');
+    expect(codex.cost_usd).toBeNull(); // no run had usage → unknown
+    expect(codex.survival_rate).toBeCloseTo(0.25, 5);
+    // sorted by survival descending
+    expect(stats[0].model).toBe('claude');
+  });
+
+  test('a stubbed review appends per-model rows; stats reads them', () => {
+    const r = review(['some diff']);
+    expect(r.status).toBe(0);
+    const rows = readPanelHistory(join(DIR, '.xm', 'panel'));
+    expect(rows.length).toBeGreaterThanOrEqual(2); // one per model
+    const models = new Set(rows.map(x => x.model));
+    expect(models.has('claude')).toBe(true);
+    expect(models.has('codex')).toBe(true);
+    const statsOut = panelRaw(['stats', '--json']);
+    const parsed = JSON.parse(statsOut.stdout);
+    expect(parsed.models.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe('panel gate — verdict evaluation (pure)', () => {
   test('mergePolicy overlays defaults per bucket', () => {
     expect(mergePolicy()).toEqual(DEFAULT_POLICY);
