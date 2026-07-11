@@ -182,6 +182,20 @@ if (!isRefute && process.env[`X_PANEL_PROSE_EMPTY_${envModel}`]) {
   process.exit(0);
 }
 
+// Round-1-only: a model that reviews in structured MARKDOWN prose (the agy/Gemini shape)
+// instead of the JSON contract. The markdown-findings fallback must recover these, so the
+// review counts them (r1=ok) rather than discarding as "no findings JSON".
+if (!isRefute && !isFollowup && process.env[`X_PANEL_MD_FINDINGS_${envModel}`]) {
+  const md = 'Here is my review of the change.\n\n'
+    + '### [high] a.js:1 — shared issue surfaced in markdown\n'
+    + '→ **Why**: the guard is missing at this call site.\n'
+    + '→ **Fix**: add the bounds check before the write.\n\n'
+    + `### [low] b.js:2 — ${model}-only markdown nit\n`
+    + '→ **Why**: minor style inconsistency.\n';
+  if (stream) emitStream(model, md); else emitRaw(model, md);
+  process.exit(0);
+}
+
 // codex session disclosure now rides on emitRaw's thread.started JSONL event (the
 // stderr banner is gone under --json) — see emitRaw above.
 
