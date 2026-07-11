@@ -612,8 +612,18 @@ function renderVerdict(v, dir) {
 
 // ── commands ─────────────────────────────────────────────────────────
 
+// panel.kiro_agent override → X_PANEL_KIRO_AGENT (read lazily by the kiro adapter). When set,
+// kiro spawns under the user's own agent instead of the auto-provisioned no-MCP one. No-op when
+// unset — the adapter then auto-provisions xm-panel-review (a no-MCP agent) to dodge kiro's
+// Bedrock schema rejection. Set in the spawn-heavy commands only (review + cross).
+function applyKiroAgentConfig(cfg) {
+  const a = cfg && typeof cfg.kiro_agent === 'string' ? cfg.kiro_agent.trim() : '';
+  if (a) process.env.X_PANEL_KIRO_AGENT = a;
+}
+
 async function cmdReview(pos, flags) {
   const cfg = loadPanelConfig();
+  applyKiroAgentConfig(cfg);
   const specs = resolveModels(flags, cfg);
   if (specs.length < 2) {
     console.error(`${C.red}panel needs ≥2 models${C.reset} — found ${specs.length}. Configure once:\n  x-panel setup --models claude,codex,agy,kiro [--global]\nor pass --models claude,codex`);
@@ -1055,6 +1065,7 @@ function resolveEntries(flags, cfg) {
 // (e.g. x-op debate/council) does the deliberation. Output lands in .xm/cross/<run>/.
 async function cmdCross(pos, flags) {
   const cfg = loadPanelConfig();
+  applyKiroAgentConfig(cfg);
   // Warn (never silently drop — Lesson L6) when a requested provider is unknown/not installed:
   // a cross-vendor caller must SEE that it degraded toward single-vendor.
   const skippedProviders = []; // structured skip record — surfaced in --json output (B4a)

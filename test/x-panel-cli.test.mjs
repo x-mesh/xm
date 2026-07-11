@@ -695,6 +695,63 @@ describe('Kiro adapter', () => {
   });
 });
 
+describe('Kiro no-MCP agent provisioning (Bedrock oneOf/allOf/anyOf workaround)', () => {
+  let AGDIR;
+  const savedDir = process.env.X_PANEL_KIRO_AGENT_DIR;
+  const savedAgent = process.env.X_PANEL_KIRO_AGENT;
+  beforeAll(() => { AGDIR = mkdtempSync(join(tmpdir(), 'kiro-ag-')); process.env.X_PANEL_KIRO_AGENT_DIR = AGDIR; });
+  afterAll(() => {
+    rmSync(AGDIR, { recursive: true, force: true });
+    if (savedDir === undefined) delete process.env.X_PANEL_KIRO_AGENT_DIR; else process.env.X_PANEL_KIRO_AGENT_DIR = savedDir;
+    if (savedAgent === undefined) delete process.env.X_PANEL_KIRO_AGENT; else process.env.X_PANEL_KIRO_AGENT = savedAgent;
+  });
+  afterEach(() => { delete process.env.X_PANEL_KIRO_AGENT; });
+
+  test('a real spawn provisions a no-MCP agent and passes --agent xm-panel-review', () => {
+    const [bin, args] = resolveCommand('kiro', 'review this diff', null);
+    expect(bin).toBe('kiro-cli');
+    const i = args.indexOf('--agent');
+    expect(i).toBeGreaterThan(-1);
+    expect(args[i + 1]).toBe('xm-panel-review');
+    expect(args).toContain('--trust-tools='); // still trusts no tools
+    // the provisioned agent must NOT pull in the global mcp.json
+    const agent = JSON.parse(readFileSync(join(AGDIR, 'xm-panel-review.json'), 'utf8'));
+    expect(agent.includeMcpJson).toBe(false);
+    expect(agent.mcpServers).toEqual({});
+    expect(agent.tools).toEqual([]);
+  });
+
+  test('an availability check (empty prompt) does NOT provision or add --agent', () => {
+    const AGDIR2 = mkdtempSync(join(tmpdir(), 'kiro-ag2-'));
+    process.env.X_PANEL_KIRO_AGENT_DIR = AGDIR2;
+    const [, args] = resolveCommand('kiro', '', null);
+    expect(args).not.toContain('--agent');
+    expect(existsSync(join(AGDIR2, 'xm-panel-review.json'))).toBe(false); // no file written on a mere probe
+    process.env.X_PANEL_KIRO_AGENT_DIR = AGDIR;
+    rmSync(AGDIR2, { recursive: true, force: true });
+  });
+
+  test('panel.kiro_agent override (X_PANEL_KIRO_AGENT) is used verbatim, no provisioning', () => {
+    const AGDIR3 = mkdtempSync(join(tmpdir(), 'kiro-ag3-'));
+    process.env.X_PANEL_KIRO_AGENT_DIR = AGDIR3;
+    process.env.X_PANEL_KIRO_AGENT = 'my-clean-agent';
+    const [, args] = resolveCommand('kiro', 'review', null);
+    const i = args.indexOf('--agent');
+    expect(args[i + 1]).toBe('my-clean-agent');
+    expect(existsSync(join(AGDIR3, 'xm-panel-review.json'))).toBe(false); // user's agent → we don't write ours
+    process.env.X_PANEL_KIRO_AGENT_DIR = AGDIR;
+    rmSync(AGDIR3, { recursive: true, force: true });
+  });
+
+  test('provisioning is idempotent — a second spawn reuses the file, no throw', () => {
+    resolveCommand('kiro', 'first', null);
+    const [, args] = resolveCommand('kiro', 'second', 'claude-opus-4-8');
+    expect(args).toContain('--agent');
+    expect(args).toContain('--model');
+    expect(args).toContain('claude-opus-4.8'); // model still normalized + threaded
+  });
+});
+
 describe('structured streaming (adapters)', () => {
   test('streamCommand passes each provider its real streaming flags', () => {
     const claude = streamCommand('claude', 'p', 'm');
