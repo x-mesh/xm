@@ -21,7 +21,7 @@ import {
   PANEL_DIR, XM_ROOT, C, provColor, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
-import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, supportsResume, proseOutsideJSON } from './x-panel/adapters.mjs';
+import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, supportsResume, proseOutsideJSON, groundCapable } from './x-panel/adapters.mjs';
 import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize } from './x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from './x-panel/gate.mjs';
@@ -159,6 +159,8 @@ function parseFlags(raw) {
     else if (a === '--check') flags.check = raw[++i];
     else if (a === '--policy') flags.policy = raw[++i];
     else if (a === '--roi') flags.roi = true;
+    else if (a === '--grounded') flags.grounded = true;
+    else if (a === '--no-grounded') flags.grounded = false;
     else if (a === '--fast') flags.preset = 'fast';
     else if (a === '--full') flags.preset = 'full';
     else if (a === '--global') flags.global = true;
@@ -285,9 +287,32 @@ function refuteFindingsList(otherFindings) {
   }).join('\n') || '(none)';
 }
 
-function refutePrompt(target, otherLabel, otherFindings) {
+// Shared round-2 instruction + JSON contract, so refutePrompt and its resumed
+// twin cannot drift. `grounded` (빅뱃3) adds a filesystem-verification clause and
+// extends each verdict with a `verified` object — sent ONLY to vendors that can
+// actually read the repo (groundCapable), never to isolated ones (they'd fake it).
+function groundClause(grounded) {
+  return grounded
+    ? `\nYou are running INSIDE the repository with read-only file access. Before judging each finding, OPEN the cited file at the cited line and read the surrounding code. Base your stance on what the code ACTUALLY shows there, not on the finding's wording.`
+    : '';
+}
+function verdictContract(grounded) {
+  const shape = grounded
+    ? `{"verdicts":[{"ref":"<id, e.g. codex#0>","stance":"refute|concede|abstain","reason":"one line","verified":{"checked":true,"observed":"one line: what the code at that location actually shows"}}]}`
+    : `{"verdicts":[{"ref":"<id, e.g. codex#0>","stance":"refute|concede|abstain","reason":"one line"}]}`;
+  const groundedNote = grounded
+    ? `\n- verified.checked = true ONLY if you actually opened the file; false if you could not (missing file / no access). observed = what you saw there (or why not).`
+    : '';
+  return `Return ONLY a JSON object, no prose. Use the exact bracketed [id] string as "ref":
+${shape}
+- refute = wrong, not real, or not actionable.
+- concede = a real issue worth fixing.
+- abstain = cannot judge from the provided evidence.${groundedNote}`;
+}
+
+function refutePrompt(target, otherLabel, otherFindings, grounded = false) {
   const list = refuteFindingsList(otherFindings);
-  return `You are a skeptical second reviewer of a code change. Other reviewers (${otherLabel}) reported the findings below. For EACH finding decide whether it is a real, actionable issue.
+  return `You are a skeptical second reviewer of a code change. Other reviewers (${otherLabel}) reported the findings below. For EACH finding decide whether it is a real, actionable issue.${groundClause(grounded)}
 
 TARGET:
 ${target}
@@ -295,11 +320,7 @@ ${target}
 FINDINGS (each tagged with a [id]):
 ${list}
 
-Return ONLY a JSON object, no prose. Use the exact bracketed [id] string as "ref":
-{"verdicts":[{"ref":"<id, e.g. codex#0>","stance":"refute|concede|abstain","reason":"one line"}]}
-- refute = wrong, not real, or not actionable.
-- concede = a real issue worth fixing.
-- abstain = cannot judge from the provided evidence.`;
+${verdictContract(grounded)}`;
 }
 
 // Refute prompt for a RESUMED provider session (t5): the target is already in
@@ -307,18 +328,14 @@ Return ONLY a JSON object, no prose. Use the exact bracketed [id] string as "ref
 // whole point of session reuse. MUST stay semantically identical to
 // refutePrompt minus the TARGET block; drift here skews the verdict (the
 // findings list itself is shared via refuteFindingsList, so it cannot drift).
-function refutePromptResumed(otherLabel, otherFindings) {
+function refutePromptResumed(otherLabel, otherFindings, grounded = false) {
   const list = refuteFindingsList(otherFindings);
-  return `You are now a skeptical second reviewer of the SAME code change you just reviewed — it is already in this conversation; do not ask for it again. Other reviewers (${otherLabel}) reported the findings below. For EACH finding decide whether it is a real, actionable issue.
+  return `You are now a skeptical second reviewer of the SAME code change you just reviewed — it is already in this conversation; do not ask for it again. Other reviewers (${otherLabel}) reported the findings below. For EACH finding decide whether it is a real, actionable issue.${groundClause(grounded)}
 
 FINDINGS (each tagged with a [id]):
 ${list}
 
-Return ONLY a JSON object, no prose. Use the exact bracketed [id] string as "ref":
-{"verdicts":[{"ref":"<id, e.g. codex#0>","stance":"refute|concede|abstain","reason":"one line"}]}
-- refute = wrong, not real, or not actionable.
-- concede = a real issue worth fixing.
-- abstain = cannot judge from the provided evidence.`;
+${verdictContract(grounded)}`;
 }
 
 // ── pre-run readiness gate (shared by review AND cross) ──────────────
@@ -526,7 +543,11 @@ function renderVerdict(v, dir) {
     lines.push(`${C.bold}CONTESTED${C.reset} ${C.dim}(a model refuted)${C.reset}`);
     for (const f of v.contested) {
       const ref = f.opponents.find(o => o.stance === 'refute');
-      lines.push(`  ${sev(f.severity)} ${f.file ?? ''}${f.line ? ':' + f.line : ''}  ${f.claim}  ${C.dim}— ${f.owner} vs ${ref ? ref.model + ': ' + ref.reason : '?'}${C.reset}`);
+      // 🔎 = the refuter opened the cited file and refuted from the real code (빅뱃3),
+      // a stronger signal than a text-only refutation. observed is the proof it read.
+      const mark = ref && ref.grounded ? `${C.cyan}🔎 ${C.reset}` : '';
+      const seen = ref && ref.grounded && ref.observed ? ` ${C.dim}[saw: ${ref.observed}]${C.reset}` : '';
+      lines.push(`  ${sev(f.severity)} ${f.file ?? ''}${f.line ? ':' + f.line : ''}  ${f.claim}  ${C.dim}— ${f.owner} vs ${mark}${ref ? ref.model + ': ' + ref.reason : '?'}${C.reset}${seen}`);
     }
   }
   if (v.unreviewed && v.unreviewed.length) {
@@ -541,6 +562,17 @@ function renderVerdict(v, dir) {
   const single = v.consensus.filter(c => c.consensus === 1).length;
   const div = v.models.map(m => `${m}:${v.by_model[m].raised}`).join(' · ');
   lines.push(`${C.dim}Raised per model: ${div}  ·  ${unanimous} unanimous, ${single} single-model (diversity)${C.reset}`);
+  // Grounding summary (빅뱃3): only when the run actually verified something against the
+  // real code. Names who read files and how many verdicts they backed with observations.
+  if (v.counts && v.counts.grounded_verdicts > 0) {
+    const per = v.models
+      .filter(m => (v.by_model[m].grounded_verdicts || 0) > 0)
+      .map(m => `${m}:${v.by_model[m].grounded_verdicts}`)
+      .join(' · ');
+    lines.push(`${C.cyan}🔎 grounded: ${v.counts.grounded_verdicts} verdict(s) file-verified${C.reset} ${C.dim}(${per})${C.reset}`);
+  } else if (v.grounded) {
+    lines.push(`${C.yellow}🔎 grounded requested but 0 verdicts file-verified${C.reset} ${C.dim}(${(v.grounded_models || []).length ? 'capable: ' + v.grounded_models.join(', ') + ' — none reported a check' : 'no grounded-capable vendor in this panel'})${C.reset}`);
+  }
   lines.push(`${C.dim}saved: ${join(dir, 'verdict.json')}${C.reset}`);
   return lines.join('\n');
 }
@@ -565,6 +597,12 @@ async function cmdReview(pos, flags) {
   // Structured streaming (live tokens/cost) is opt-in until dogfooded — default off
   // keeps the proven raw flow intact. Enable per-run with --stream or config panel.stream.
   const stream = (flags.stream != null) ? flags.stream : !!cfg.stream;
+  // Grounded refutation (빅뱃3): round-2 refuters that CAN read the repo open the
+  // cited files and verify each finding against the real code. Opt-in per run
+  // (--grounded) or per repo (panel.grounded); only groundCapable vendors get the
+  // grounding prompt — others stay text-only. Off by default (costs the refuter
+  // extra tool turns).
+  const grounded = (flags.grounded != null) ? flags.grounded : !!cfg.grounded;
   const overrides = cfg.model_overrides || {};
 
   // Each spec is "name" or "name:model"; bare names fall back to model_overrides.
@@ -888,9 +926,12 @@ async function cmdReview(pos, flags) {
     // Tag each opponent finding with a global ref `owner#idx` so 3+ models don't collide.
     const otherFindings = others.flatMap(o => (round1[o.label] || []).map(f => ({ ...f, gref: `${o.label}#${f.idx}` })));
     const otherLabel = others.map(o => o.label).join('+');
-    const full = refutePrompt(target.text, otherLabel, otherFindings);
+    // Only ground vendors that can actually read the repo (codex today); the rest
+    // judge from the finding text as before. e.name is the vendor (label may be name:model).
+    const g = grounded && groundCapable(e.name);
+    const full = refutePrompt(target.text, otherLabel, otherFindings, g);
     if (!e._resumeId) return full;
-    return { prompt: refutePromptResumed(otherLabel, otherFindings), session: { mode: 'resume', id: e._resumeId }, fallbackPrompt: full };
+    return { prompt: refutePromptResumed(otherLabel, otherFindings, g), session: { mode: 'resume', id: e._resumeId }, fallbackPrompt: full };
   }, timeoutMs, onModelDone, (e, res) => {
     if (!res.ok) abstained.add(e.label); // round2 failure ≠ silent concede
     // 'ok' | 'fallback' | 'capture_failed' (session created but its banner id was not
@@ -924,6 +965,12 @@ async function cmdReview(pos, flags) {
     judge: 'rule',
     stream,
     partial: stream ? partial : false,
+    // Grounding provenance (빅뱃3): whether the run asked for grounded refutation and
+    // which participating vendors were actually capable of reading the repo. A verdict
+    // whose grounded_models is empty carried no file-verified refutations regardless of
+    // the flag — the consumer must not read `grounded:true` as "every refutation checked".
+    grounded,
+    grounded_models: grounded ? labels.filter((l) => groundCapable(String(l).split(':')[0])) : [],
     timeout_s: timeoutS,
     skipped_providers: skippedProviders,
     usage: {
@@ -943,7 +990,9 @@ async function cmdReview(pos, flags) {
   tmEvents.close();
 
   if (flags.json) console.log(JSON.stringify(record, null, 2));
-  else console.log(renderVerdict(verdict, dir));
+  // Pass the full record (superset of verdict: adds grounded/grounded_models) so the
+  // grounding summary can distinguish "verified N" from "requested but none checked".
+  else console.log(renderVerdict(record, dir));
 }
 
 // Resolve provider entries (name / name:model) from --models/preset/config — shared by review & cross.
@@ -1399,6 +1448,12 @@ Commands:
                                 Opt-in (default off; config: panel.stream). kiro/agy stay raw.
     --tm-events | --no-tm-events  Live xk_run telemetry to a term-mesh daemon when one is detected
                                 (default on; config: panel.tm_events). Best-effort — never blocks a run.
+    --grounded | --no-grounded  Round-2 refuters that can read the repo OPEN each cited file and
+                                verify the finding against the real code, tagging the verdict with
+                                {checked, observed} (default off; config: panel.grounded). Only
+                                grounded-capable vendors get it (codex today — exec --sandbox
+                                read-only); text-only vendors are unchanged. 🔎 marks file-verified
+                                refutations; verdict.json carries grounded_verdicts per model.
     --session-reuse | --no-session-reuse
                                 Round 2 resumes each provider's round-1 session and sends only the
                                 refute delta — the target never travels twice (default on; config:

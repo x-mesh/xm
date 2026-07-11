@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus } from '../x-panel/lib/x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
 import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
-import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable } from '../x-panel/lib/x-panel/adapters.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
 import { unwrapEnvelope } from '../x-panel/lib/x-panel/adapters.mjs';
 
@@ -349,6 +349,34 @@ describe('normalizeVerdicts', () => {
     expect(out[1].stance).toBe('abstain'); // '' used to become a silent concede
     expect(out[1].invalid).toBe(true);
   });
+
+  // 빅뱃3 grounded refutation: verified {checked, observed} passthrough + sanitation.
+  test('grounded verdict keeps verified {checked, observed}; a claimed check with no observation is downgraded', () => {
+    const out = normalizeVerdicts({ verdicts: [
+      { ref: 'a#0', stance: 'refute', verified: { checked: true, observed: 'saw the endsWith is gone' } },
+      { ref: 'a#1', stance: 'concede', verified: { checked: true, observed: '' } }, // claims checked but no proof
+      { ref: 'a#2', stance: 'refute', verified: { checked: false, observed: 'file missing' } },
+    ] });
+    expect(out[0].verified).toEqual({ checked: true, observed: 'saw the endsWith is gone' });
+    expect(out[1].verified).toEqual({ checked: false, observed: '' }); // no observation ⇒ not really checked
+    expect(out[2].verified).toEqual({ checked: false, observed: 'file missing' });
+  });
+  test('a verdict with no/garbage verified carries no verified field (ungrounded default)', () => {
+    const out = normalizeVerdicts({ verdicts: [
+      { ref: 'a#0', stance: 'refute' },
+      { ref: 'a#1', stance: 'refute', verified: 'nope' },
+      { ref: 'a#2', stance: 'refute', verified: null },
+    ] });
+    for (const v of out) expect('verified' in v).toBe(false);
+  });
+});
+
+describe('groundCapable (빅뱃3 — only file-readable vendors ground)', () => {
+  test('codex is grounded-capable (repo cwd + --sandbox read-only); the rest are not', () => {
+    expect(groundCapable('codex')).toBe(true);
+    // claude is tmpdir-isolated; cursor/agy/kiro have unconfirmed read tools → text-only.
+    for (const n of ['claude', 'cursor', 'agy', 'kiro', 'unknown']) expect(groundCapable(n)).toBe(false);
+  });
 });
 
 describe('synthesize', () => {
@@ -381,6 +409,34 @@ describe('synthesize', () => {
     expect(v.counts.confirmed).toBe(1);
     expect(v.contested[0].owner).toBe('claude');
     expect(v.confirmed[0].owner).toBe('codex');
+  });
+
+  // 빅뱃3: a grounded refuter's file-verified stance is tagged on the opponent + counted.
+  test('grounded refutation tags the opponent (grounded/observed) and counts per model + run', () => {
+    const round1 = {
+      claude: [{ idx: 0, severity: 'high', file: 'a', line: 1, claim: 'shared', evidence: '' }],
+      codex: [{ idx: 0, severity: 'low', file: 'b', line: 2, claim: 'codex-only', evidence: '' }],
+    };
+    const round2 = {
+      // codex read the file and refuted claude#0; claude judged codex#0 text-only.
+      codex: normalizeVerdicts({ verdicts: [{ ref: 'claude#0', stance: 'refute', reason: 'wrong', verified: { checked: true, observed: 'endsWith removed at line 1' } }] }),
+      claude: normalizeVerdicts({ verdicts: [{ ref: 'codex#0', stance: 'concede', reason: 'ok' }] }),
+    };
+    const v = synthesize(['claude', 'codex'], round1, round2);
+    const contested = v.contested.find(f => f.owner === 'claude');
+    const opp = contested.opponents.find(o => o.model === 'codex');
+    expect(opp.grounded).toBe(true);
+    expect(opp.observed).toBe('endsWith removed at line 1');
+    expect(v.by_model.codex.grounded_verdicts).toBe(1);
+    expect(v.by_model.claude.grounded_verdicts).toBe(0); // text-only refuter
+    expect(v.counts.grounded_verdicts).toBe(1);
+  });
+  test('an ungrounded run leaves opponents untagged and grounded_verdicts at 0', () => {
+    const round1 = { claude: [{ idx: 0, severity: 'high', file: 'a', line: 1, claim: 'x', evidence: '' }], codex: [] };
+    const round2 = { codex: [{ ref: 'claude#0', stance: 'refute', reason: 'r' }], claude: [] };
+    const v = synthesize(['claude', 'codex'], round1, round2);
+    expect(v.contested[0].opponents[0].grounded).toBeUndefined();
+    expect(v.counts.grounded_verdicts).toBe(0);
   });
 });
 
@@ -1157,6 +1213,47 @@ describe('refute prompts carry evidence (both builders in sync)', () => {
     const sent = readFileSync(`${dump}.CLAUDE`, 'utf8'); // claude judged codex's big-evidence findings
     expect(sent).toContain('… [evidence truncated]');    // explicit marker
     expect(sent).not.toContain(big);                     // the full blob never travels
+  });
+});
+
+describe('grounded refutation (빅뱃3) — only capable vendors get the file-verify contract', () => {
+  test('--grounded sends the verify clause to codex ONLY; claude (isolated) stays text-only', () => {
+    const dump = join(DIR, 'r2-grounded');
+    const r = review(['grounded target', '--grounded', '--no-session-reuse'], { X_PANEL_DUMP_R2: dump });
+    expect(r.status).toBe(0);
+    const codexP = readFileSync(`${dump}.CODEX`, 'utf8');
+    const claudeP = readFileSync(`${dump}.CLAUDE`, 'utf8');
+    // codex CAN read the repo → gets the grounding clause + the verified contract.
+    expect(codexP).toContain('read-only file access');
+    expect(codexP).toContain('"verified"');
+    // claude is tmpdir-isolated → must NOT be asked to open files (would fake checked:true).
+    expect(claudeP).not.toContain('read-only file access');
+    expect(claudeP).not.toContain('"verified"');
+  });
+
+  test('grounded run records grounded provenance + per-model verified counts + 🔎 in the report', () => {
+    const r = review(['grounded target', '--grounded', '--no-session-reuse']);
+    expect(r.status).toBe(0);
+    const v = latestVerdict();
+    expect(v.grounded).toBe(true);
+    expect(v.grounded_models).toEqual(['codex']);          // only the capable vendor
+    expect(v.by_model.codex.grounded_verdicts).toBeGreaterThan(0);
+    expect(v.by_model.claude.grounded_verdicts).toBe(0);
+    expect(v.counts.grounded_verdicts).toBe(v.by_model.codex.grounded_verdicts);
+    // codex refutes claude's shared finding after reading the file → 🔎 marks it in CONTESTED.
+    expect(r.stdout).toContain('🔎');
+    expect(r.stdout).toContain('grounded:');
+  });
+
+  test('without --grounded no verify contract is sent and grounded stays false', () => {
+    const dump = join(DIR, 'r2-plain');
+    const r = review(['grounded target', '--no-session-reuse'], { X_PANEL_DUMP_R2: dump });
+    expect(r.status).toBe(0);
+    expect(readFileSync(`${dump}.CODEX`, 'utf8')).not.toContain('"verified"');
+    const v = latestVerdict();
+    expect(v.grounded).toBe(false);
+    expect(v.counts.grounded_verdicts).toBe(0);
+    expect(r.stdout).not.toContain('🔎');
   });
 });
 

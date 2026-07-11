@@ -189,11 +189,17 @@ if (isRefute) {
   // Test hook: a refuter whose refs are mangled (hallucinated indices) — its verdicts
   // must count as unmatched_refs and must NOT silently confirm the findings it missed.
   const mangle = process.env[`X_PANEL_MANGLE_REFS_${envModel}`];
+  // Grounded refutation (빅뱃3): the CLI only sends the file-verification contract to
+  // grounded-capable vendors, so a prompt asking for "verified" means THIS model was
+  // asked to read the cited files — echo a plausible {checked, observed} back. A model
+  // that never got the clause emits no `verified`, exactly like a text-only vendor.
+  const groundedPrompt = /"verified"/.test(prompt);
   const verdicts = refs.map((ref, i) => ({
     ref: mangle ? ref.replace(/#\d+$/, '#99') : ref,
     // codex refutes the opponent's first finding → creates one CONTESTED entry
     stance: model === 'codex' && i === 0 ? 'refute' : 'concede',
     reason: 'stub reason',
+    ...(groundedPrompt ? { verified: { checked: true, observed: `read ${ref} at cited line` } } : {}),
   }));
   const payload = JSON.stringify({ verdicts });
   if (stream) emitStream(model, payload);

@@ -53,8 +53,21 @@ export function normalizeVerdicts(raw) {
       stance: recognized ? s : 'abstain',
       reason: String(v.reason || '').trim(),
       ...(recognized ? {} : { invalid: true }),
+      ...normalizeVerified(v.verified),
     };
   });
+}
+
+// Grounded-refutation evidence (빅뱃3). A grounded refuter opens the cited file and
+// returns `verified: {checked, observed}`. Only `checked === true` counts as grounded —
+// a refuter that claims `checked` but supplies no `observed` did not really verify, so it
+// is downgraded to unchecked (a string is the whole point: the observation IS the proof).
+// Returns {} when the field is absent/unusable, so the verdict simply carries no `verified`.
+function normalizeVerified(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const observed = String(raw.observed || '').trim();
+  const checked = raw.checked === true && observed.length > 0;
+  return { verified: { checked, observed } };
 }
 
 /**
@@ -87,7 +100,12 @@ export function synthesize(models, round1, round2, abstained = new Set(), r1Stat
       const opponents = [];
       for (const opp of others) {
         const v = (round2[opp] || []).find(x => x.ref === gref);
-        if (v) opponents.push({ model: opp, stance: v.stance, reason: v.reason });
+        if (v) opponents.push({
+          model: opp, stance: v.stance, reason: v.reason,
+          // Grounded refutation (빅뱃3): this opponent read the cited file before judging.
+          // Only attach when it actually verified, so ungrounded verdicts stay unchanged.
+          ...(v.verified && v.verified.checked ? { grounded: true, observed: v.verified.observed } : {}),
+        });
       }
       const entry = { owner, ...f, opponents, reviewers: activeReviewers.length };
       // CONFIRMED requires an explicit concede — a finding no opponent addressed (mangled
@@ -116,6 +134,10 @@ export function synthesize(models, round1, round2, abstained = new Set(), r1Stat
       // model's verdicts did not cleanly cover the findings it was asked to judge.
       unmatched_refs: verdicts.filter(v => !knownRefs.has(v.ref) || v.ref.startsWith(`${m}#`)).length,
       invalid_stances: verdicts.filter(v => v.invalid).length,
+      // Grounded refutation (빅뱃3): how many of this refuter's verdicts were backed by
+      // actually reading the cited file. 0 for text-only vendors; the moat signal is
+      // "who verifies vs who argues".
+      grounded_verdicts: verdicts.filter(v => v.verified && v.verified.checked).length,
       // 'ok' | 'failed' (round-1 errored/unparseable — findings missing from this verdict)
       // | 'suspect_empty' (ok=true with 0 findings but substantial prose in raw)
       r1: st ? st.status : 'ok',
@@ -133,6 +155,9 @@ export function synthesize(models, round1, round2, abstained = new Set(), r1Stat
       unique: consensus.length,
       r1_failed: models.filter(m => byModel[m].r1 === 'failed').length,
       r1_suspect: models.filter(m => byModel[m].r1 === 'suspect_empty').length,
+      // Total file-verified verdicts across all refuters (빅뱃3). 0 = no grounding happened
+      // this run (flag off, or no capable vendor participated).
+      grounded_verdicts: models.reduce((n, m) => n + byModel[m].grounded_verdicts, 0),
     },
     by_model: byModel,
     consensus,

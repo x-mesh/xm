@@ -317,6 +317,21 @@ export function promptSpawnOpts(name) {
   return name === 'claude' ? { cwd: tmpdir() } : {};
 }
 
+// Grounded-refutation capability (roadmap 빅뱃3): can this vendor OPEN the cited
+// files and verify a finding against the real code in round 2? Only when it runs
+// in the caller's repo cwd AND has a genuine read tool. In v1 that is exactly
+// codex — `exec --sandbox read-only` from the repo cwd gives it filesystem read
+// (never write). claude is tmpdir-isolated with no tool permissions in a -p
+// one-shot; cursor/agy/kiro run in the repo cwd but their read-tool access is
+// unconfirmed, so they are treated as ungrounded (they argue from the finding
+// text) until a live probe promotes them. Asking a vendor that CANNOT read to
+// "open the file" would invite a hallucinated `checked:true`, which is worse than
+// an honest text-only verdict — hence the allowlist, not a denylist.
+const GROUND_CAPABLE = new Set(['codex']);
+export function groundCapable(name) {
+  return GROUND_CAPABLE.has(name);
+}
+
 export function isAvailable(name) {
   const override = overridePath(name);
   if (override) return existsSync(override);
