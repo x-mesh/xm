@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus } from '../x-panel/lib/x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
 import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
-import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason } from '../x-panel/lib/x-panel/adapters.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
 import { unwrapEnvelope } from '../x-panel/lib/x-panel/adapters.mjs';
 
@@ -76,6 +76,26 @@ beforeAll(() => { DIR = mkdtempSync(join(tmpdir(), 'xpanel-')); });
 afterAll(() => { rmSync(DIR, { recursive: true, force: true }); });
 
 // ── panel gate (verdict → merge-gate exit code, 패널7) ──────────────
+describe('withStderrReason — surface the real failure cause (stderr surfacing)', () => {
+  test('exit-0-but-no-JSON: the stderr TAIL (ANSI-stripped) is appended as the cause', () => {
+    const stderr = '\x1b[1G\x1b[0mChatting…\n\x1b[38;5;9mValidationException: input_schema does not support oneOf, allOf, or anyOf\x1b[0m';
+    const out = withStderrReason('no findings JSON in output', '', stderr);
+    expect(out).toContain('no findings JSON in output — ');
+    expect(out).toContain('input_schema does not support oneOf'); // the real kiro cause
+    expect(out).not.toContain('\x1b['); // ANSI stripped
+  });
+  test('empty stdout AND empty stderr → says the CLI produced nothing', () => {
+    expect(withStderrReason('no findings JSON in output', '', '')).toContain('empty output — the CLI produced nothing');
+  });
+  test('non-empty stdout with no usable stderr → base error unchanged', () => {
+    expect(withStderrReason('no JSON object in output', 'some prose the parser rejected', '')).toBe('no JSON object in output');
+  });
+  test('only the tail is kept (long banners do not bury the message)', () => {
+    const stderr = 'x'.repeat(1000) + 'THE ACTUAL ERROR AT THE END';
+    expect(withStderrReason('base', '', stderr)).toContain('THE ACTUAL ERROR AT THE END');
+  });
+});
+
 describe('unwrapEnvelope (패널1 — structured usage capture)', () => {
   const ENVELOPE = {
     type: 'result', subtype: 'success', is_error: false,
