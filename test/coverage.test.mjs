@@ -44,6 +44,17 @@ function addTasks(tmp, count = 3) {
   }
 }
 
+// research/plan exit gates default to 'human-verify' (config-schema), so a plain
+// `phase next` now correctly BLOCKS on them (exit 2). Tests exercising transition
+// mechanics (not the gate itself) opt into auto gates to advance without a pass.
+function autoGates(tmp) {
+  const p = join(tmp, '.xm', 'config.json');
+  mkdirSync(dirname(p), { recursive: true });
+  const cfg = existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : {};
+  cfg.gates = { 'research-exit': 'auto', 'plan-exit': 'auto', 'execute-exit': 'auto', 'verify-exit': 'auto', 'close-exit': 'auto' };
+  writeFileSync(p, JSON.stringify(cfg));
+}
+
 // ── Export tests ────────────────────────────────────────────────────
 
 describe('export', () => {
@@ -379,6 +390,7 @@ describe('project commands', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-stat-'));
     try {
       setupProject(tmp);
+      autoGates(tmp);
       run(['phase', 'next'], { cwd: tmp }); // move to plan phase
       addTasks(tmp);
       const r = run(['status'], { cwd: tmp });
@@ -611,6 +623,7 @@ describe('phase lifecycle', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-pn-'));
     try {
       setupProject(tmp);
+      autoGates(tmp);
       const r = run(['phase', 'next'], { cwd: tmp });
       expect(r.exitCode).toBe(0);
       const status = run(['status'], { cwd: tmp });
@@ -624,6 +637,7 @@ describe('phase lifecycle', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-pn-'));
     try {
       setupProject(tmp);
+      autoGates(tmp);
       run(['phase', 'next'], { cwd: tmp }); // research → plan
       run(['phase', 'next'], { cwd: tmp }); // plan → execute
       const status = run(['status'], { cwd: tmp });

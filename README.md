@@ -1270,7 +1270,7 @@ Key roles shown; full mapping includes reviewer, security, designer, debugger, w
 
 Per-role overrides: `/xm config set model_overrides '{"architect": "opus"}'` on top of any profile.
 
-Budget guards warn at 80% usage and block execution at 100%, tracked via session metrics. Rolling spend is tracked in `.xm/spend-cache.json` over a configurable window (`budget.window_hours`, default 24h). Per-project caps use `budget.projects`:
+Budget guards warn at 80% usage and block execution at 100%, tracked via session metrics. Rolling spend is computed from `.xm/metrics.jsonl` over a configurable window (`budget.window_hours`, default 24h); setting it to `0` disables the window and uses the lifetime spend cache (`.xm/spend-cache.json`). Per-project caps use `budget.projects`:
 
 ```bash
 /xm config set budget '{"max_usd": 5.0, "window_hours": 48, "projects": {"my-proj": {"max_usd": 2.0}}}'

@@ -35,6 +35,16 @@ function setupProject(tmp, name = 'test-proj') {
   return name;
 }
 
+// research/plan exit gates default to 'human-verify' (config-schema), so a plain
+// `phase next` now BLOCKS on them. Mechanics tests opt into auto gates.
+function autoGates(tmp) {
+  const p = join(tmp, '.xm', 'config.json');
+  mkdirSync(dirname(p), { recursive: true });
+  const cfg = existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : {};
+  cfg.gates = { 'research-exit': 'auto', 'plan-exit': 'auto', 'execute-exit': 'auto', 'verify-exit': 'auto', 'close-exit': 'auto' };
+  writeFileSync(p, JSON.stringify(cfg));
+}
+
 function projectPath(tmp, name, ...segments) {
   return join(tmp, '.xm', 'build', 'projects', name, ...segments);
 }
@@ -48,10 +58,11 @@ function writePRD(tmp, name) {
 // ── Phase transitions ─────────────────────────────────────────────
 
 describe('phase transitions', () => {
-  test('phase next auto-advances from research to plan', () => {
+  test('phase next advances research to plan when research-exit gate is auto', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       const name = setupProject(tmp);
+      autoGates(tmp); // research-exit defaults to human-verify; opt into auto for the mechanics test
       const r = run(['phase', 'next'], { cwd: tmp });
       expect(r.stdout).toContain('Plan');
       const manifest = readJSON(projectPath(tmp, name, 'manifest.json'));
@@ -108,6 +119,105 @@ describe('phase transitions', () => {
       setupProject(tmp);
       const r = run(['phase', 'invalid'], { cwd: tmp });
       expect(r.exitCode).not.toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── Delta PRD tier makes the Quick Mode path reachable (빌드6) ──────
+// Quick Mode docs say "phase set execute" after a lightweight plan, but the
+// Execute-entry wall requires a PRD to exist. A delta PRD (Goal+SC+AC, no
+// template-version marker) satisfies the wall AND stays warning-only in prd-check.
+
+describe('delta PRD tier', () => {
+  const DELTA_PRD = '<!-- prd-tier: delta -->\n# PRD: Build X\n\n## Goal\nShip X.\n\n## Success Criteria\n- [ ] X works\n\n## 12. Acceptance Criteria\n- [ ] X returns 200 [R1]\n';
+
+  test('a delta PRD is not blocked by prd-check and is tagged tier=delta', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-delta-'));
+    try {
+      const name = setupProject(tmp);
+      const dir = projectPath(tmp, name, 'phases', '02-plan');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'PRD.md'), DELTA_PRD);
+      const pc = JSON.parse(run(['prd-check', '--json'], { cwd: tmp }).stdout);
+      expect(pc.blocked).toBe(false);
+      expect(pc.tier).toBe('delta');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('phase set execute reaches Execute with only a delta PRD (documented Quick Mode path)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-delta-'));
+    try {
+      const name = setupProject(tmp);
+      const dir = projectPath(tmp, name, 'phases', '02-plan');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'PRD.md'), DELTA_PRD);
+      run(['phase', 'set', 'execute'], { cwd: tmp });
+      expect(readJSON(projectPath(tmp, name, 'manifest.json')).current_phase).toBe('03-execute');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── Phase exit gates are actually enforced (빌드1) ─────────────────
+// Before 빌드1 every gate silently resolved to 'auto' (phase.mjs read gates from an
+// unwritten file). These lock in that the schema's human-verify default now blocks,
+// exits 2, records a ledger, and clears only on gate pass.
+
+describe('phase exit gates are enforced', () => {
+  test('human-verify default blocks phase next with exit 2 + a ledger entry', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-gate-'));
+    try {
+      const name = setupProject(tmp); // research-exit defaults to human-verify
+      const r = run(['phase', 'next'], { cwd: tmp });
+      expect(r.exitCode).toBe(2);
+      expect(r.stdout).toContain('requires human verification');
+      // did NOT advance
+      expect(readJSON(projectPath(tmp, name, 'manifest.json')).current_phase).toBe('01-research');
+      // ledger recorded the block
+      const status = readJSON(projectPath(tmp, name, 'phases', '01-research', 'status.json'));
+      expect(status.gate.gate_type).toBe('human-verify');
+      expect(status.gate.passed).toBe(false);
+      // status --json surfaces resolved type + ledger
+      const sj = JSON.parse(run(['status', '--json'], { cwd: tmp }).stdout);
+      const research = sj.phases.find(p => p.id === '01-research');
+      expect(research.gate_type).toBe('human-verify');
+      expect(research.gate.passed).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('gate pass clears the gate; ledger shows passed_by=human', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-gate-'));
+    try {
+      const name = setupProject(tmp);
+      writeFileSync(projectPath(tmp, name, 'context', 'CONTEXT.md'), '# Context\nGoal: test');
+      run(['gate', 'pass', 'Research verified'], { cwd: tmp });
+      run(['phase', 'next'], { cwd: tmp });
+      expect(readJSON(projectPath(tmp, name, 'manifest.json')).current_phase).toBe('02-plan');
+      const status = readJSON(projectPath(tmp, name, 'phases', '01-research', 'status.json'));
+      expect(status.gate.passed).toBe(true);
+      expect(status.gate.passed_by).toBe('human');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('an explicit auto gate passes and records passed_by=auto', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-gate-'));
+    try {
+      const name = setupProject(tmp);
+      autoGates(tmp);
+      run(['phase', 'next'], { cwd: tmp });
+      const status = readJSON(projectPath(tmp, name, 'phases', '01-research', 'status.json'));
+      expect(status.gate.gate_type).toBe('auto');
+      expect(status.gate.passed).toBe(true);
+      expect(status.gate.passed_by).toBe('auto');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -232,6 +342,138 @@ describe('verify-traceability', () => {
       const r = run(['verify-traceability'], { cwd: tmp });
       expect(r.stdout).toContain('partial');
       expect(r.stdout).toContain('gaps');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── AC parser vs current PRD template (regression) ────────────────
+// The parser hardcoded `(?:8\.)?` while the template numbers the section
+// "## 12. Acceptance Criteria" — every current-template PRD silently
+// parsed 0 ACs. The regex is now `(?:\d+\.)?`, a PRD-present/0-AC state
+// warns loudly, and verify-traceability exits non-zero on any gap.
+describe('AC parser + traceability artifact (regression)', () => {
+  test('REQUIREMENTS.md with no parseable R# items → loud failure, fresh artifact, non-zero exit', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writeFileSync(
+        projectPath(tmp, name, 'context', 'REQUIREMENTS.md'),
+        'free-form notes with no structured requirement items\n'
+      );
+      // A stale artifact from a previous run must be replaced, not left masquerading as current.
+      writeFileSync(
+        projectPath(tmp, name, 'phases', '04-verify', 'traceability.json'),
+        JSON.stringify({ total: 9, gaps: 0, matrix: [{ req_id: 'R9', coverage: 'full' }] })
+      );
+
+      const r = run(['verify-traceability'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0); // zero requirements is a vacuous pass, not a green gate
+      expect(r.stdout).toContain('No structured requirements');
+
+      const trace = readJSON(projectPath(tmp, name, 'phases', '04-verify', 'traceability.json'));
+      expect(trace.total).toBe(0);
+      expect(trace.matrix.length).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('ACs under "## 12. Acceptance Criteria" parse; full coverage exits 0 with coverage:"full"', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writeFileSync(
+        projectPath(tmp, name, 'context', 'REQUIREMENTS.md'),
+        '- [R1] Auth\n- [R2] API\n'
+      );
+      writeFileSync(
+        projectPath(tmp, name, 'phases', '02-plan', 'PRD.md'),
+        '# PRD\n## 12. Acceptance Criteria\n- [ ] User can login [R1]\n- [ ] CRUD works [R2]\n\n## 13. Boundaries\n- none\n'
+      );
+      run(['tasks', 'add', 'Auth [R1]', '--done-criteria', 'Login works'], { cwd: tmp });
+      run(['tasks', 'add', 'API [R2]', '--done-criteria', 'CRUD works'], { cwd: tmp });
+
+      const r = run(['verify-traceability'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).not.toContain('0 acceptance criteria parsed');
+
+      const trace = readJSON(projectPath(tmp, name, 'phases', '04-verify', 'traceability.json'));
+      expect(trace.fully_covered).toBe(2);
+      expect(trace.gaps).toBe(0);
+      for (const row of trace.matrix) {
+        expect(row.coverage).toBe('full');
+        expect(row.acceptance_criteria).toBe(1);
+      }
+      expect(trace.matrix.map((m) => m.req_id)).toEqual(['R1', 'R2']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('PRD present but 0 parseable ACs warns loudly in verify-traceability and tasks done-criteria', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writeFileSync(
+        projectPath(tmp, name, 'context', 'REQUIREMENTS.md'),
+        '- [R1] Auth\n'
+      );
+      writePRD(tmp, name); // "## 1. Goal" only — no AC section
+      run(['tasks', 'add', 'Auth [R1]'], { cwd: tmp });
+
+      const trace = run(['verify-traceability'], { cwd: tmp });
+      expect(trace.stdout).toContain('0 acceptance criteria parsed');
+
+      const dc = run(['tasks', 'done-criteria'], { cwd: tmp });
+      expect(dc.stdout).toContain('0 acceptance criteria parsed');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a requirement with no matching task writes coverage:"gap" and forces a non-zero exit', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writeFileSync(
+        projectPath(tmp, name, 'context', 'REQUIREMENTS.md'),
+        '- [R1] Auth\n- [R2] API\n'
+      );
+      writeFileSync(
+        projectPath(tmp, name, 'phases', '02-plan', 'PRD.md'),
+        '# PRD\n## 12. Acceptance Criteria\n- [ ] User can login [R1]\n'
+      );
+      run(['tasks', 'add', 'Auth [R1]', '--done-criteria', 'Login works'], { cwd: tmp });
+
+      const r = run(['verify-traceability'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+
+      const trace = readJSON(projectPath(tmp, name, 'phases', '04-verify', 'traceability.json'));
+      expect(trace.gaps).toBe(1);
+      expect(trace.matrix.find((m) => m.req_id === 'R1').coverage).toBe('full');
+      expect(trace.matrix.find((m) => m.req_id === 'R2').coverage).toBe('gap');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('tasks done-criteria derives criteria from a "## 12." AC section', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writeFileSync(
+        projectPath(tmp, name, 'phases', '02-plan', 'PRD.md'),
+        '# PRD\n## 12. Acceptance Criteria\n- [ ] Login works [R1]\n'
+      );
+      run(['tasks', 'add', 'Auth [R1]'], { cwd: tmp });
+
+      const r = run(['tasks', 'done-criteria'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+
+      const tasks = readJSON(projectPath(tmp, name, 'phases', '02-plan', 'tasks.json'));
+      expect(tasks.tasks[0].done_criteria).toContain('Login works [R1]');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -745,6 +987,33 @@ describe('run --json budget gate (regression)', () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  test('per-project {max_usd} cap blocks the --json plan (project passed through to checkBudget)', () => {
+    // Regression: cmdRun called checkBudget(cost) without the project, so
+    // budget.projects caps never applied on `run`. The documented object
+    // shape { max_usd } must gate the plan and be surfaced in the verdict.
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = driveToExecute(tmp);
+      const dir = join(tmp, '.xm');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'config.json'), JSON.stringify({
+        budget: { max_usd: 100, projects: { [name]: { max_usd: 0.0001 } } },
+      }, null, 2));
+
+      const r = run(['run', '--json'], { cwd: tmp, env: { HOME: BUDGET_HOME } });
+      const out = JSON.parse(r.stdout);
+      expect(out.blocked).toBe(true);
+      expect(out.blocked_reason).toBe('budget_exceeded');
+      expect(out.budget.ok).toBe(false);
+      expect(out.budget.level).toBe('exceeded');
+      expect(out.budget.project).toBe(name); // the binding cap is named
+      expect(out.budget.max_usd).toBe(0.0001);
+      expect(r.exitCode).toBe(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── cost: actual-token ingestion + profile-aware --json (regression) ─
@@ -808,6 +1077,25 @@ describe('cost: actual-token ingestion + profile-aware --json (regression)', () 
       const m = readMetrics(tmp).reverse().find((x) => x.type === 'task_complete' && x.taskId === 't1');
       expect(m.cost_source).toBe('estimated');
       expect(m.actual_cost_usd).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a measured completion auto-refreshes token-actuals.json (빌드3)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const env = { HOME: CHOME };
+      setupProject(tmp);
+      run(['tasks', 'add', 'Feature'], { cwd: tmp, env });
+      run(['tasks', 'update', 't1', '--status', 'running'], { cwd: tmp, env });
+      run(['tasks', 'update', 't1', '--status', 'completed', '--tokens-in', '100000', '--tokens-out', '40000', '--no-commit'], { cwd: tmp, env });
+      // computeTokenActuals ran automatically — no manual `forecast update` needed.
+      const actualsPath = join(tmp, '.xm', 'build', 'metrics', 'token-actuals.json');
+      expect(existsSync(actualsPath)).toBe(true);
+      const actuals = JSON.parse(readFileSync(actualsPath, 'utf8'));
+      const measured = Object.values(actuals.sample_counts).reduce((a, b) => a + b, 0);
+      expect(measured).toBe(1); // the one measured task, counted under its size
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

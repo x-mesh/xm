@@ -888,15 +888,26 @@ describe('checkBudget — rolling window (R3a)', () => {
     expect(result.spent).toBeCloseTo(0, 5);
   });
 
-  test('null window_hours sums all metrics', () => {
+  test('window_hours: 0 disables the window and sums all metrics', () => {
     const now = Date.now();
     makeMetricsFile([
       { cost_usd: 1.0, timestamp: now - 100 * 3600 * 1000 },
       { cost_usd: 2.0, timestamp: now - 200 * 3600 * 1000 },
     ]);
-    ceSetup(null);
+    ceSetup(0);
     const result = costEngine.checkBudget(0);
     expect(result.spent).toBeCloseTo(3.0, 5);
+  });
+
+  test('unset window_hours defaults to a 24h rolling window (docs contract)', () => {
+    const now = Date.now();
+    makeMetricsFile([
+      { cost_usd: 1.0, timestamp: now - 1 * 3600 * 1000 },    // 1h ago — inside
+      { cost_usd: 2.0, timestamp: now - 200 * 3600 * 1000 },  // 200h ago — outside
+    ]);
+    ceSetup(null); // no window_hours key at all
+    const result = costEngine.checkBudget(0);
+    expect(result.spent).toBeCloseTo(1.0, 5);
   });
 });
 
@@ -914,16 +925,18 @@ describe('checkBudget — spend-cache (R3b)', () => {
 
   afterEach(() => ceTeardown(savedMetrics, savedCache));
 
+  // The spend-cache path only runs with the rolling window disabled
+  // (window_hours: 0) — an unset window now defaults to 24h (docs contract).
   test('creates spend-cache.json after first call', () => {
     writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 1.5 }) + '\n', 'utf8');
-    ceSetup(null);
+    ceSetup(0);
     costEngine.checkBudget(0);
     expect(existsSync(CE_CACHE)).toBe(true);
   });
 
   test('incremental read: accumulates spend across two calls', () => {
     writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 1.0 }) + '\n', 'utf8');
-    ceSetup(null);
+    ceSetup(0);
     const r1 = costEngine.checkBudget(0);
     expect(r1.spent).toBeCloseTo(1.0, 5);
 
@@ -938,7 +951,7 @@ describe('checkBudget — spend-cache (R3b)', () => {
     // Write many entries so last_line_offset is large
     const manyLines = Array.from({ length: 20 }, (_, i) => JSON.stringify({ cost_usd: 0.1, seq: i })).join('\n') + '\n';
     writeFileSync(CE_METRICS, manyLines, 'utf8');
-    ceSetup(null);
+    ceSetup(0);
     costEngine.checkBudget(0);
 
     // Simulate rotation: replace with a single small entry (fileSize < last_line_offset)
@@ -962,13 +975,17 @@ describe('checkBudget — per-project budget (R3c)', () => {
 
   afterEach(() => ceTeardown(savedMetrics, savedCache));
 
-  function ceSetupWithProjects(projects) {
+  function ceSetupWithProjects(projects, budgetExtra = {}) {
     mkdirSync(join(CE_METRICS, '..'), { recursive: true });
-    writeFileSync(CE_CONFIG, JSON.stringify({ budget: { max_usd: 10, projects } }), 'utf8');
+    writeFileSync(CE_CONFIG, JSON.stringify({ budget: { max_usd: 10, projects, ...budgetExtra } }), 'utf8');
   }
 
+  // Fixtures carry a fresh timestamp: real appendMetric events always stamp
+  // one, and the default 24h rolling window drops timestamp-less lines.
+  const NOW = () => new Date().toISOString();
+
   test('no project arg: backward-compatible, ignores project budgets', () => {
-    writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 1.0 }) + '\n', 'utf8');
+    writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 1.0, timestamp: NOW() }) + '\n', 'utf8');
     ceSetupWithProjects({ 'my-project': 2.5 });
     const r = costEngine.checkBudget(0);
     expect(r.ok).toBe(true);
@@ -977,7 +994,7 @@ describe('checkBudget — per-project budget (R3c)', () => {
   });
 
   test('project under its limit: returns ok', () => {
-    writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 1.0, project: 'my-project' }) + '\n', 'utf8');
+    writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 1.0, project: 'my-project', timestamp: NOW() }) + '\n', 'utf8');
     ceSetupWithProjects({ 'my-project': 2.5 });
     const r = costEngine.checkBudget(0, 'my-project');
     expect(r.ok).toBe(true);
@@ -987,7 +1004,7 @@ describe('checkBudget — per-project budget (R3c)', () => {
   });
 
   test('project exceeds its limit: returns not-ok even if global ok', () => {
-    writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 3.0, project: 'my-project' }) + '\n', 'utf8');
+    writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 3.0, project: 'my-project', timestamp: NOW() }) + '\n', 'utf8');
     ceSetupWithProjects({ 'my-project': 2.5 });
     const r = costEngine.checkBudget(0, 'my-project');
     expect(r.ok).toBe(false);
@@ -999,8 +1016,8 @@ describe('checkBudget — per-project budget (R3c)', () => {
   test('global exceeds budget even if project is ok: returns global not-ok', () => {
     // global spend = 11 (exceeds 10), project spend = 1 (under 2.5)
     const lines = [
-      JSON.stringify({ cost_usd: 1.0, project: 'my-project' }),
-      JSON.stringify({ cost_usd: 10.0 }), // no project — global only
+      JSON.stringify({ cost_usd: 1.0, project: 'my-project', timestamp: NOW() }),
+      JSON.stringify({ cost_usd: 10.0, timestamp: NOW() }), // no project — global only
     ].join('\n') + '\n';
     writeFileSync(CE_METRICS, lines, 'utf8');
     ceSetupWithProjects({ 'my-project': 2.5 });
@@ -1013,8 +1030,8 @@ describe('checkBudget — per-project budget (R3c)', () => {
   test('project warning level (>80%) returned when more restrictive than global', () => {
     // global: 5/10 = 50% (normal); project: 2.1/2.5 = 84% (warning)
     const lines = [
-      JSON.stringify({ cost_usd: 2.1, project: 'my-project' }),
-      JSON.stringify({ cost_usd: 2.9 }),
+      JSON.stringify({ cost_usd: 2.1, project: 'my-project', timestamp: NOW() }),
+      JSON.stringify({ cost_usd: 2.9, timestamp: NOW() }),
     ].join('\n') + '\n';
     writeFileSync(CE_METRICS, lines, 'utf8');
     ceSetupWithProjects({ 'my-project': 2.5 });
@@ -1026,15 +1043,16 @@ describe('checkBudget — per-project budget (R3c)', () => {
   });
 
   test('project spend cached in spend-cache.json project_totals', () => {
-    writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 1.5, project: 'my-project' }) + '\n', 'utf8');
-    ceSetupWithProjects({ 'my-project': 5 });
+    // The spend cache only exists on the no-window path (window_hours: 0).
+    writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 1.5, project: 'my-project', timestamp: NOW() }) + '\n', 'utf8');
+    ceSetupWithProjects({ 'my-project': 5 }, { window_hours: 0 });
     costEngine.checkBudget(0, 'my-project');
     const cache = JSON.parse(readFileSync(CE_CACHE, 'utf8'));
     expect(cache.project_totals?.['my-project']).toBeCloseTo(1.5, 5);
   });
 
   test('unknown project (not in budget.projects): falls back to global check only', () => {
-    writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 1.0, project: 'other' }) + '\n', 'utf8');
+    writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 1.0, project: 'other', timestamp: NOW() }) + '\n', 'utf8');
     ceSetupWithProjects({ 'my-project': 2.5 });
     const r = costEngine.checkBudget(0, 'other');
     // 'other' has no limit configured — behaves as global check

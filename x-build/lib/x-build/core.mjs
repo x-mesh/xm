@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { execSync, spawnSync } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
+import { loadSharedConfig as _loadSharedConfig } from './config-loader.mjs';
+import { SCHEMA } from '../config-schema.mjs';
 
 // Re-export node modules that sub-modules need
 export { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, appendFileSync, renameSync, statSync, unlinkSync, realpathSync };
@@ -231,16 +233,46 @@ export function loadConfig() {
   return readJSON(join(ROOT, 'config.json')) || {};
 }
 
+// Delegates to config-loader's single tiered-merge resolver (빌드5). This used to
+// be a private first-match copy that returned local OR global (never merged), so a
+// project .xm/config.json shadowed the entire global config here too. One resolver
+// now — core, cost-engine, drift, and shared-config all combine tiers identically.
 export function loadSharedConfig() {
-  const sharedPath = join(ROOT, '..', 'config.json');
-  const local = readJSON(sharedPath);
-  if (local) return local;
-  const globalPath = join(homedir(), '.xm', 'config.json');
-  return readJSON(globalPath) || {};
+  return _loadSharedConfig();
 }
 
 export function readSharedConfig() {
   return loadSharedConfig();
+}
+
+// Phase-exit gate defaults, sourced from the config-schema registry (group
+// 'gates') so the two never drift. Computed once at module load.
+export const GATE_DEFAULTS = (() => {
+  const out = {};
+  for (const e of SCHEMA) {
+    if (e.group === 'gates' && typeof e.key === 'string' && e.key.startsWith('gates.')) {
+      out[e.key.slice('gates.'.length)] = e.default;
+    }
+  }
+  return out;
+})();
+
+// Resolve the effective gate type for every phase exit: schema defaults ← shared
+// config (.xm, global+local merged by 빌드5) ← build-local (.xm/build/config.json).
+//
+// Before 빌드1, phaseNext / cmdStatus / getPhaseActions each read
+// `config.gates?.[key] || 'auto'` from loadConfig() = `.xm/build/config.json`, a
+// file nothing writes — so EVERY gate silently resolved to 'auto', discarding both
+// the human-verify/quality schema defaults AND any `xm config set gates.*` (which
+// writes to the shared `.xm/config.json`). One resolver now feeds all consumers, so
+// a configured gate is actually honored and the marquee "gate the agent cannot talk
+// past" is no longer a no-op. Returns { [gateName]: type }.
+export function resolveGates() {
+  const shared = loadSharedConfig();
+  const sharedGates = (shared && typeof shared.gates === 'object' && shared.gates) ? shared.gates : {};
+  const buildLocal = loadConfig();
+  const buildGates = (buildLocal && typeof buildLocal.gates === 'object' && buildLocal.gates) ? buildLocal.gates : {};
+  return { ...GATE_DEFAULTS, ...sharedGates, ...buildGates };
 }
 
 export function writeSharedConfig(data) {
@@ -365,7 +397,7 @@ export function decisionsPath(project) {
 }
 
 // ── Cost Engine (re-exports) ─────────────────────────────────────────
-export { MODEL_COSTS, MODEL_PROFILES, ROLE_MODEL_MAP_HR, ROLE_ALIASES, resolveRole, PHASE_ROLE_GROUPS, SIZE_TOKEN_ESTIMATES, STRATEGY_MULTIPLIERS, INHERIT_MODEL, JUDGMENT_ROLES, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, estimateTaskCost, costFromTokens, checkBudget, appendMetric, metricsPath, METRICS_MAX_BYTES, EVENT_SCHEMA_VERSION, adaptEvent, VENDOR_MODELS, MODEL_EFFORT_LEVELS, MODEL_COSTS_BY_VENDOR, parseModelSpec, resolveVendorModel, costFromTokensVendor } from './cost-engine.mjs';
+export { MODEL_COSTS, MODEL_PROFILES, ROLE_MODEL_MAP_HR, ROLE_ALIASES, resolveRole, PHASE_ROLE_GROUPS, SIZE_TOKEN_ESTIMATES, STRATEGY_MULTIPLIERS, INHERIT_MODEL, JUDGMENT_ROLES, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, estimateTaskCost, costFromTokens, checkBudget, appendMetric, metricsPath, METRICS_MAX_BYTES, EVENT_SCHEMA_VERSION, adaptEvent, VENDOR_MODELS, MODEL_EFFORT_LEVELS, MODEL_COSTS_BY_VENDOR, parseModelSpec, resolveVendorModel, costFromTokensVendor, computeTokenActuals, loadTokenActuals, cmdForecastUpdate } from './cost-engine.mjs';
 
 // ── Lifecycle Hooks ──────────────────────────────────────────────────
 

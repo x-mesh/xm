@@ -227,6 +227,8 @@ See `phases/plan.md` — full Plan phase walkthrough: PRD generation, PRD review
      ```
    - `run_in_background: true` (parallel)
 3. On completion: `$XMB tasks update <id> --status completed|failed`
+   - **Record real token usage** whenever you know it (the subagent reports usage): append `--tokens-in <N> --tokens-out <M>`. This tags the metric `cost_source: actual` and auto-refreshes the forecaster's calibration, so future `forecast` numbers come from measured cost instead of static estimates. Without it the completion is priced from estimates (`cost_source: estimated`), which never calibrate. For an `inherit` task, also pass `--resolved-model <haiku|sonnet|opus>` so the cost is booked at the real tier, not the opus ceiling.
+   - After a batch of measured completions you can also force a re-aggregation with `$XMB forecast update`; `forecast` prints whether it is `Estimate-only` or `Calibrated from actuals` (≥10 measured samples per size).
 4. **Poll & route** with `$XMB run-status --json` (structured — do NOT scrape the human/emoji output). Branch on its fields:
    - `all_done: true` → confirm with the user, then `$XMB phase next` (see below)
    - `stale_running` non-empty (tasks stuck RUNNING after an interrupted or abandoned agent) → `$XMB run --reconcile` to reclaim them to PENDING, then `$XMB run --json` again
@@ -354,7 +356,21 @@ Goal → Init → Auto-Plan → Review → Execute → Verify → Close
 2. **Phase skip**: `$XMB phase set plan` (skip Research)
 3. **Auto-Plan**: `$XMB plan "{goal}"` → parse JSON → create 3-5 tasks
    - Task decomposition from goal text only, without research artifacts
-   - PRD generation skipped — task names and done_criteria are sufficient
+   - **Write a delta PRD** (NOT full). Quick Mode must not skip the PRD entirely — the Execute-entry wall requires one, and the AC parser + traceability + drift baseline all read it. Write a minimal PRD to `phases/02-plan/PRD.md` with ONLY these sections and the delta marker (deliberately NO `prd-template-version` marker, so the diagram gate stays a warning, not a block):
+     ```markdown
+     <!-- prd-tier: delta -->
+     # PRD: {goal}
+
+     ## Goal
+     {one sentence}
+
+     ## Success Criteria
+     - [ ] {measurable, binary}
+
+     ## 12. Acceptance Criteria
+     - [ ] {testable by command/state} [R1]
+     ```
+     Verify it clears the gate: `$XMB prd-check --json` (expect `blocked: false`, `tier: "delta"` — diagram/structure entries appear only as `warnings`).
    - Register tasks: `$XMB tasks add "..." --size small|medium`
    - Auto-generate done-criteria: `$XMB tasks done-criteria`
 4. **Quick Review**: Show task list via AskUserQuestion

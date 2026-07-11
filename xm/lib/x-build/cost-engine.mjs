@@ -656,8 +656,18 @@ export function estimateTaskCost(task, model = 'sonnet') {
 // ── cmdForecastUpdate ─────────────────────────────────────────────────
 
 export function cmdForecastUpdate() {
-  computeTokenActuals();
-  console.log('Token actuals updated.');
+  const actuals = computeTokenActuals();
+  if (!actuals) {
+    console.log('No metrics yet — nothing to aggregate. Actuals accrue as tasks report --tokens-in/--tokens-out.');
+    return;
+  }
+  const counts = actuals.sample_counts || {};
+  const parts = Object.keys(counts).map(size => `${size}: ${counts[size]}`).join(', ');
+  console.log(`Token actuals updated (${parts || 'no measured samples yet'}).`);
+  // The forecaster only trusts an averaged actual once ≥10 samples exist for a
+  // size (below that it stays on estimates); say which sizes are still estimate-only.
+  const thin = Object.keys(counts).filter(size => counts[size] > 0 && counts[size] < 10);
+  if (thin.length) console.log(`  ${thin.map(s => `${s} (${counts[s]}/10)`).join(', ')} — still estimate-only until 10 samples.`);
 }
 
 // ── spendCachePath ────────────────────────────────────────────────────
@@ -716,8 +726,21 @@ function readLinesFromOffset(filePath, offset) {
 function scanMetrics(config) {
   const projectBudgets = config.budget?.projects ?? {};
   const trackedProjectTotals = Object.keys(projectBudgets).length > 0;
-  const windowHours = config.budget?.window_hours ?? null;
-  const windowMs = windowHours != null ? Number(windowHours) * 3600000 : null;
+  // budget.window_hours defaults to a 24h rolling window (docs + config-schema
+  // promise it); unset must not silently widen to full metrics lifetime.
+  // Explicit 0 disables the window (lifetime scan via the spend cache).
+  const windowHoursRaw = config.budget?.window_hours;
+  let windowHours = 24;
+  if (windowHoursRaw != null) {
+    windowHours = Number(windowHoursRaw);
+    // Negatives are as invalid as NaN — without this they silently fell into the
+    // "explicit 0" lifetime-scan branch, the widest possible accounting window.
+    if (isNaN(windowHours) || windowHours < 0) {
+      process.stderr.write(`[x-build] checkBudget: budget.window_hours = ${JSON.stringify(windowHoursRaw)} is not a valid window — using the 24h default window\n`);
+      windowHours = 24;
+    }
+  }
+  const windowMs = windowHours > 0 ? windowHours * 3600000 : null;
   const cutoff = windowMs != null ? Date.now() - windowMs : null;
 
   const mp = metricsPath();
@@ -832,13 +855,32 @@ function mergeProjectBudget(globalResult, projectSpentMap, projectLimit, project
 export function checkBudget(additionalCost = 0, project = null) {
   const config = loadSharedConfig();
   const budget = Number(config.budget?.max_usd);
-  if (!budget || isNaN(budget)) return { ok: true, budget: null };
+  const hasGlobalBudget = !isNaN(budget) && budget > 0;
 
+  // Per-project caps accept BOTH shapes: a plain number and the documented
+  // { "max_usd": N }. A present-but-unparseable value must fail loudly —
+  // Number({...}) is NaN and used to make the cap silently disappear.
   const projectBudgets = config.budget?.projects ?? {};
-  const projectLimit = project != null ? Number(projectBudgets[project]) : NaN;
-  const hasProjectLimit = project != null && !isNaN(projectLimit) && projectLimit > 0;
+  let projectLimit = NaN;
+  if (project != null && projectBudgets[project] !== undefined) {
+    const raw = projectBudgets[project];
+    const value = (raw !== null && typeof raw === 'object') ? raw.max_usd : raw;
+    projectLimit = Number(value);
+    if (isNaN(projectLimit) || projectLimit <= 0) {
+      process.stderr.write(`[x-build] checkBudget: budget.projects["${project}"] = ${JSON.stringify(raw)} is unparseable — expected a positive number or {"max_usd": N}; the per-project cap is NOT applied\n`);
+    }
+  }
+  const hasProjectLimit = !isNaN(projectLimit) && projectLimit > 0;
+
+  if (!hasGlobalBudget && !hasProjectLimit) return { ok: true, budget: null };
 
   const { spent, projectSpentMap } = scanMetrics(config);
+
+  if (!hasGlobalBudget) {
+    // Project-only cap: no global budget.max_usd, but this project has a limit.
+    return { ...evaluateBudget(projectSpentMap[project] ?? 0, projectLimit, additionalCost), project };
+  }
+
   const globalResult = evaluateBudget(spent, budget, additionalCost);
 
   if (hasProjectLimit) {

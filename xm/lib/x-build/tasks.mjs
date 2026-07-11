@@ -9,7 +9,7 @@ import {
   manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, decisionsPath, projectDir,
   resolveProject, findCurrentProject, logDecision, addDecision, appendMetric, emitHook,
   parseOptions, renderBar, fmtDuration,
-  estimateTaskCost, costFromTokens, resolveVendorModel,
+  estimateTaskCost, costFromTokens, resolveVendorModel, computeTokenActuals,
   gitAutoCommit, gitRollbackTask,
   updateCircuitBreaker, isCircuitOpen, beginHalfOpenProbe, scheduleRetry,
   getCircuitState, resetCircuitBreaker,
@@ -130,8 +130,12 @@ export function taskDoneCriteria(project) {
     return;
   }
 
-  const acSection = prd.match(/##\s*(?:8\.)?\s*Acceptance Criteria[\s\S]*?(?=##\s*\d|$)/i);
+  const acSection = prd.match(/##\s*(?:\d+\.)?\s*Acceptance Criteria[\s\S]*?(?=##\s*\d|$)/i);
   const acItems = acSection ? [...acSection[0].matchAll(/- \[[ x]\] (.+)/gi)].map(m => m[1].trim()) : [];
+  if (acItems.length === 0) {
+    console.log(`${C.yellow}PRD found but 0 acceptance criteria parsed — expected an "## N. Acceptance Criteria" section with "- [ ] ..." items.${C.reset}`);
+    console.log(`  done_criteria derivation will fall back to task-name heuristics only.`);
+  }
 
   const acByRid = new Map();
   for (const ac of acItems) {
@@ -144,7 +148,7 @@ export function taskDoneCriteria(project) {
   }
 
   // Failure Modes & Adversarial Inputs — parse per-R# stress verification (R3).
-  // Header number is flexible (mirrors the AC parser's `(?:8\.)?` pattern); the
+  // Header number is flexible (mirrors the AC parser's `(?:\d+\.)?` pattern); the
   // section ends at the next `## ` header. `- [R#] <mode> → 검증: <method>` items
   // are collected by R#; `none — ...` declarations are skipped.
   // Section end mirrors the AC parser's lenience: next `## ` OR `##8`-style header
@@ -647,6 +651,12 @@ export function taskUpdate(project, args) {
         duration_ms: new Date(taskRef.completed_at) - new Date(taskRef.started_at),
         timestamp: taskRef.completed_at,
       });
+      // Re-aggregate token actuals after EVERY completion so token-actuals.json
+      // stays at least as fresh as the metrics log — loadTokenActuals invalidates
+      // actuals whenever metrics are newer, so skipping the estimated case would let
+      // a later estimated task discard hard-won measured actuals. The scan itself
+      // excludes estimated samples, so the aggregate only ever moves on real tokens.
+      computeTokenActuals();
     }
   }
 
@@ -1601,7 +1611,9 @@ export function cmdRun(args) {
     const model = getModelForRole(role, t.size, sharedCfg);
     return sum + estimateTaskCost(t, model).cost_usd;
   }, 0);
-  const budgetStatus = checkBudget(cost);
+  // Pass the project through so per-project caps (budget.projects) apply on
+  // `run` too — without it only the global budget ever gated this path.
+  const budgetStatus = checkBudget(cost, project);
   const budgetExceeded = !!(budgetStatus.budget && budgetStatus.level === 'exceeded');
 
   // Worktree execution-mode decision (plan "실행 모드 결정"). The recommendation
@@ -1654,11 +1666,15 @@ export function cmdRun(args) {
     };
     if (budgetStatus.budget) {
       output.budget = {
+        ok: budgetStatus.ok,
         level: budgetStatus.level,
         projected_usd: Number(budgetStatus.projected.toFixed(4)),
         max_usd: budgetStatus.budget,
         pct: Number(budgetStatus.pct.toFixed(1)),
       };
+      // When the binding cap is a per-project one, name it so consumers can
+      // tell a project cap from the global budget.
+      if (budgetStatus.project) output.budget.project = budgetStatus.project;
     }
     if (budgetExceeded) {
       output.blocked = true;
@@ -1678,13 +1694,19 @@ export function cmdRun(args) {
 
   // Budget check before execution (budgetStatus computed above, shared with --json).
   if (budgetStatus.budget) {
+    const capLabel = budgetStatus.project ? ` [project: ${budgetStatus.project}]` : '';
     if (budgetStatus.level === 'exceeded') {
-      console.log(`  ${C.red}Budget exceeded: $${budgetStatus.projected.toFixed(2)} / $${budgetStatus.budget} (${budgetStatus.pct.toFixed(0)}%)${C.reset}`);
-      console.log(`  ${C.red}Set higher budget with: /xm config set budget '{"max_usd": N}'${C.reset}\n`);
+      console.log(`  ${C.red}Budget exceeded: $${budgetStatus.projected.toFixed(2)} / $${budgetStatus.budget} (${budgetStatus.pct.toFixed(0)}%)${capLabel}${C.reset}`);
+      // Name the cap that actually blocked — pointing at the GLOBAL budget key when a
+      // per-project cap is binding sends the user to the wrong config key.
+      const remedy = budgetStatus.project
+        ? `/xm config set budget.projects '{"${budgetStatus.project}": {"max_usd": N}}'`
+        : `/xm config set budget '{"max_usd": N}'`;
+      console.log(`  ${C.red}Set a higher cap with: ${remedy}${C.reset}\n`);
       process.exitCode = 1; // align with the --json path; a hard budget stop must not exit 0
       return;
     } else if (budgetStatus.level === 'warning') {
-      console.log(`  ${C.yellow}Budget warning: $${budgetStatus.projected.toFixed(2)} / $${budgetStatus.budget} (${budgetStatus.pct.toFixed(0)}%)${C.reset}`);
+      console.log(`  ${C.yellow}Budget warning: $${budgetStatus.projected.toFixed(2)} / $${budgetStatus.budget} (${budgetStatus.pct.toFixed(0)}%)${capLabel}${C.reset}`);
     }
   }
   console.log('');

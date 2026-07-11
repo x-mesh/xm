@@ -1213,6 +1213,34 @@ describe('config-schema group metadata (t3)', () => {
   });
 });
 
+// ── eval.auto registration (x-op Post-Strategy Eval Gate) ───────────────
+//
+// x-op SKILL.md promises an auto-eval toggle read from the project's
+// .xm/config.json (`eval.auto`), but the key was never registered — so
+// `xm config set eval.auto` warned "미등록" and the wizard/dashboard never
+// showed it. Local scope keeps writes where the SKILL.md consumer reads.
+
+describe('config-schema eval.auto registration', () => {
+  test('eval.auto is a local-scope boolean defaulting to false', () => {
+    const entry = SCHEMA.find((e) => e.key === 'eval.auto');
+    expect(entry).toBeTruthy();
+    expect(entry.type).toBe('boolean');
+    expect(entry.scope).toBe('local');
+    expect(entry.default).toBe(false);
+    expect(entry.group).toBe('misc');
+  });
+
+  test('xm config set eval.auto true round-trips with no unregistered-key warning', () => {
+    withRoot((root) => {
+      const w = run(['set', 'eval.auto', 'true'], root);
+      expect(w.exitCode).toBe(0);
+      expect(stripAnsi(w.stdout)).not.toContain('미등록');
+      const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+      expect(written.eval.auto).toBe(true);
+    });
+  });
+});
+
 // ── WORKTREE_CONFIG_DEFAULTS <-> config-schema worktree.* sync (P7, t8) ─────
 //
 // worktree-shared.mjs (runtime truth, per PRD A5) and config-schema.mjs
