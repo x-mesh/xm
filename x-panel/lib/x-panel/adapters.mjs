@@ -337,6 +337,17 @@ function jsonMissingError(expectKeys) {
   return expectKeys ? `no ${expectKeys.join('/')} JSON in output` : 'no JSON object in output';
 }
 
+// Append the most likely CAUSE to a parse/empty failure. On exit 0 with no usable
+// answer, the reason is on stderr (a CLI/model error printed but exit-0'd) — surface its
+// TAIL (where the actual message sits, after banners/spinners). If stderr is empty too,
+// say the stdout was empty. Strips ANSI so the reason is readable in status/verdict.
+export function withStderrReason(baseError, stdout, stderr) {
+  const clean = String(stderr || '').replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').trim();
+  if (clean) return `${baseError} — ${clean.slice(-400)}`;
+  if (!String(stdout || '').trim()) return `${baseError} (empty output — the CLI produced nothing)`;
+  return baseError;
+}
+
 /** Invoke a provider with a prompt; capture stdout and extract a JSON object. */
 export function invokeProvider(name, prompt, { timeout = 180_000, model = null, expectKeys = null } = {}) {
   const resolved = resolveCommand(name, prompt, model);
@@ -351,7 +362,7 @@ export function invokeProvider(name, prompt, { timeout = 180_000, model = null, 
   }
   const raw = res.stdout || '';
   const json = extractAnswerJSON(raw, expectKeys);
-  if (!json) return { ok: false, error: jsonMissingError(expectKeys), raw, json: null };
+  if (!json) return { ok: false, error: withStderrReason(jsonMissingError(expectKeys), raw, res.stderr), raw, json: null };
   return { ok: true, error: null, raw, json };
 }
 
@@ -530,7 +541,11 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       const json = extractAnswerJSON(answer, expectKeys);
       if (!json) {
         emit({ type: 'json_missing', provider: name, model });
-        return finish({ ok: false, error: jsonMissingError(expectKeys), raw: answer, json: null, usage });
+        // Exit 0 but no parseable answer: the CLI almost always explained WHY on stderr
+        // (e.g. kiro's Bedrock "ValidationException: input_schema does not support oneOf")
+        // or via an empty stdout. Surfacing that turns a vague "no findings JSON" into the
+        // real cause, instead of forcing a dig through raw files (L6).
+        return finish({ ok: false, error: withStderrReason(jsonMissingError(expectKeys), answer, stderr), raw: answer, json: null, usage });
       }
       emit({ type: 'json_parsed', provider: name, model });
       // Session establishment (t5): claude's id is caller-supplied (authoritative);
@@ -870,7 +885,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
       if (!json) {
         json = extractContractJSON(rawCap, expectKeys || ['findings', 'verdicts']);
       }
-      if (!json) { emit({ type: 'json_missing', provider: name, model }); return finish({ ok: false, error: jsonMissingError(expectKeys), raw: rawCap, json: null, usage }); }
+      if (!json) { emit({ type: 'json_missing', provider: name, model }); return finish({ ok: false, error: withStderrReason(jsonMissingError(expectKeys), rawCap, stderr), raw: rawCap, json: null, usage }); }
       emit({ type: 'json_parsed', provider: name, model });
       finish({ ok: true, error: null, raw: rawCap, json, usage });
     });
