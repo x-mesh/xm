@@ -343,7 +343,10 @@ ${verdictContract(grounded)}`;
 // each opponent's refutation reason, so they can rebut or concede on the specifics.
 function followupFindingsList(myFindings) {
   return myFindings.map((f) => {
-    const head = `[${f.ref}] (${f.severity}) ${f.file ?? ''}:${f.line ?? ''}\n  your claim: ${f.claim}`;
+    // Location is optional — omit it entirely (no stray ":") when there's no file, and drop the
+    // ":line" when only the file is known (t9).
+    const loc = f.file ? ` ${f.file}${f.line != null ? ':' + f.line : ''}` : '';
+    const head = `[${f.ref}] (${f.severity})${loc}\n  your claim: ${f.claim}`;
     const refs = (f.opponents || [])
       .filter((o) => o.stance === 'refute')
       .map((o) => `  refuted by ${o.model}: ${o.reason || '(no reason given)'}`)
@@ -575,7 +578,11 @@ function renderVerdict(v, dir) {
     lines.push('');
     lines.push(`${C.bold}CONTESTED${C.reset} ${C.dim}(a model refuted)${C.reset}`);
     for (const f of v.contested) {
-      const ref = f.opponents.find(o => o.stance === 'refute');
+      // Prefer a GROUNDED refuter when one exists (t9): a file-verified refutation is the
+      // stronger signal, and picking the first refuter blindly hid the 🔎 whenever a text-only
+      // refuter happened to come earlier in the opponents array. Falls back to the first refuter.
+      const refuters = f.opponents.filter(o => o.stance === 'refute');
+      const ref = refuters.find(o => o.grounded) || refuters[0];
       // 🔎 = the refuter opened the cited file and refuted from the real code (빅뱃3),
       // a stronger signal than a text-only refutation. observed is the proof it read.
       const mark = ref && ref.grounded ? `${C.cyan}🔎 ${C.reset}` : '';
@@ -989,7 +996,10 @@ async function cmdReview(pos, flags) {
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 2, ok: res.ok, resume, count: verdicts.length, error: res.error || null });
   }, onProviderEvent, stream, partial, ['verdicts']);
 
-  const verdict = synthesize(labels, round1, round2, abstained, r1Status);
+  // Only models actually sent the grounded prompt may contribute grounding provenance (t8):
+  // labels that are grounded-capable in a grounded run. synth trusts `verified` only from these.
+  const groundedSet = new Set(grounded ? labels.filter((l) => groundCapable(String(l).split(':')[0])) : []);
+  const verdict = synthesize(labels, round1, round2, abstained, r1Status, groundedSet);
   // Surface round-2 fidelity per model in the live status too, so `status <run>` /
   // --watch (and their --json snapshots) show a broken refuter without opening verdict.json.
   for (const m of status.models) {
@@ -1013,7 +1023,7 @@ async function cmdReview(pos, flags) {
     // whose grounded_models is empty carried no file-verified refutations regardless of
     // the flag — the consumer must not read `grounded:true` as "every refutation checked".
     grounded,
-    grounded_models: grounded ? labels.filter((l) => groundCapable(String(l).split(':')[0])) : [],
+    grounded_models: [...groundedSet],
     timeout_s: timeoutS,
     skipped_providers: skippedProviders,
     usage: {
@@ -2427,6 +2437,12 @@ async function cmdFollowup(pos, flags) {
   const timeoutMs = (flags.timeout || cfg.timeout_s || 600) * 1000;
   console.error(`${C.dim}debating ${contested.length} contested finding(s) across ${targets.length} author session(s)…${C.reset}`);
 
+  // Debate-round index, computed BEFORE any write so per-model artifacts and the summary share
+  // it. Every followup file is round-scoped (…followup-N.json) — a re-run must NOT overwrite a
+  // prior round's per-model raw responses (its audit trail); only the summary was indexed before.
+  let n = 1;
+  while (existsSync(join(r.dir, `followup-${n}.json`))) n++;
+
   const responsesByModel = {};
   const perModel = [];
   const results = await Promise.all(targets.map(async (t) => {
@@ -2447,13 +2463,10 @@ async function cmdFollowup(pos, flags) {
     perModel.push({ owner: t.owner, vendor: t.vendor, ok: res.ok, resume, error: res.error || null, count: responses.length });
     if (!res.ok) process.stderr.write(`${C.yellow}⚠ ${t.owner}: followup failed (${res.error || 'error'}) — its findings stay unresolved${C.reset}\n`);
     else if (resume === 'fallback') process.stderr.write(`${C.yellow}⚠ ${t.owner}: session resume failed — debated stateless (no thread continuity)${C.reset}\n`);
-    writeJSON(join(r.dir, `${safeLabel(t.owner)}.followup.json`), { model: t.owner, vendor: t.vendor, ok: res.ok, resume, error: res.error || null, responses, raw: res.raw });
+    writeJSON(join(r.dir, `${safeLabel(t.owner)}.followup-${n}.json`), { model: t.owner, vendor: t.vendor, round: n, ok: res.ok, resume, error: res.error || null, responses, raw: res.raw });
   }
 
   const delta = followupDelta(contested, responsesByModel);
-  // Additive index — never overwrite a prior debate round.
-  let n = 1;
-  while (existsSync(join(r.dir, `followup-${n}.json`))) n++;
   const record = {
     run: runArg, kind: r.kind, round: 2 + n, created_at: new Date().toISOString(),
     contested_in: contested.length, delta, by_model: perModel, skipped,

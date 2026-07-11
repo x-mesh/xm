@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus, normalizeResponses, followupDelta } from '../x-panel/lib/x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
 import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
-import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings, stripAnsi } from '../x-panel/lib/x-panel/adapters.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
 import { unwrapEnvelope } from '../x-panel/lib/x-panel/adapters.mjs';
 
@@ -422,7 +422,7 @@ describe('synthesize', () => {
       codex: normalizeVerdicts({ verdicts: [{ ref: 'claude#0', stance: 'refute', reason: 'wrong', verified: { checked: true, observed: 'endsWith removed at line 1' } }] }),
       claude: normalizeVerdicts({ verdicts: [{ ref: 'codex#0', stance: 'concede', reason: 'ok' }] }),
     };
-    const v = synthesize(['claude', 'codex'], round1, round2);
+    const v = synthesize(['claude', 'codex'], round1, round2, new Set(), {}, new Set(['codex'])); // codex was sent the grounded prompt
     const contested = v.contested.find(f => f.owner === 'claude');
     const opp = contested.opponents.find(o => o.model === 'codex');
     expect(opp.grounded).toBe(true);
@@ -430,6 +430,18 @@ describe('synthesize', () => {
     expect(v.by_model.codex.grounded_verdicts).toBe(1);
     expect(v.by_model.claude.grounded_verdicts).toBe(0); // text-only refuter
     expect(v.counts.grounded_verdicts).toBe(1);
+  });
+
+  // t8: a `verified` field from a model that was NOT sent the grounded prompt is a forgery —
+  // it must not tag the opponent or inflate grounded_verdicts.
+  test('grounding provenance is gated on groundedModels — a self-reported verified is ignored', () => {
+    const round1 = { claude: [{ idx: 0, severity: 'high', file: 'a', line: 1, claim: 'shared', evidence: '' }], codex: [] };
+    // codex claims it verified, but it was NOT in groundedModels (never sent the grounded prompt).
+    const round2 = { codex: normalizeVerdicts({ verdicts: [{ ref: 'claude#0', stance: 'refute', reason: 'r', verified: { checked: true, observed: 'forged' } }] }), claude: [] };
+    const v = synthesize(['claude', 'codex'], round1, round2, new Set(), {}, new Set()); // nobody grounded
+    expect(v.contested[0].opponents[0].grounded).toBeUndefined();
+    expect(v.by_model.codex.grounded_verdicts).toBe(0);
+    expect(v.counts.grounded_verdicts).toBe(0);
   });
   test('an ungrounded run leaves opponents untagged and grounded_verdicts at 0', () => {
     const round1 = { claude: [{ idx: 0, severity: 'high', file: 'a', line: 1, claim: 'x', evidence: '' }], codex: [] };
@@ -630,6 +642,28 @@ describe('extractJSON', () => {
       else process.env.X_PANEL_NO_JSON_NOJSON = prevNoJson;
     }
   });
+
+  test('ANSI-colorized JSON (kiro shape) is stripped before extraction, findings recovered', () => {
+    const prevCmd = process.env.X_PANEL_CMD_ANSI, prevAnsi = process.env.X_PANEL_ANSI_ANSI;
+    process.env.X_PANEL_CMD_ANSI = STUB;
+    process.env.X_PANEL_ANSI_ANSI = '1';
+    try {
+      const res = invokeProvider('ansi', 'target', { expectKeys: ['findings'] });
+      expect(res.ok).toBe(true);                       // was false: ANSI codes derailed scanJSONObjects
+      expect(res.json.findings[0].claim).toBe('ansi-wrapped finding');
+    } finally {
+      if (prevCmd === undefined) delete process.env.X_PANEL_CMD_ANSI; else process.env.X_PANEL_CMD_ANSI = prevCmd;
+      if (prevAnsi === undefined) delete process.env.X_PANEL_ANSI_ANSI; else process.env.X_PANEL_ANSI_ANSI = prevAnsi;
+    }
+  });
+});
+
+describe('stripAnsi', () => {
+  test('removes SGR/CSI escapes, preserves the JSON content between them', () => {
+    expect(stripAnsi('\x1b[38;5;141m> \x1b[0m{"findings":[]}\x1b[0m')).toBe('> {"findings":[]}');
+    expect(stripAnsi('plain text')).toBe('plain text'); // no-op on clean input
+    expect(stripAnsi(null)).toBe('');
+  });
 });
 
 describe('scanJSONObjects', () => {
@@ -725,6 +759,15 @@ The /internal/metrics route has no auth middleware.`;
     expect(parseMarkdownFindings('I reviewed the change and it looks solid; nothing to flag here.')).toBeNull();
     expect(parseMarkdownFindings('')).toBeNull();
     expect(parseMarkdownFindings('The word [high] appears mid-sentence but is not a heading.')).toBeNull();
+  });
+
+  test('a file:line wrapped in backticks or bold is still parsed (t9)', () => {
+    const md = '### [medium] `src/x.js:42` — backtick-wrapped location\n### [low] **src/y.js:7** — bold-wrapped location';
+    const out = parseMarkdownFindings(md);
+    expect(out.findings[0]).toMatchObject({ severity: 'medium', file: 'src/x.js', line: 42 });
+    expect(out.findings[0].claim).toContain('backtick-wrapped');
+    expect(out.findings[1]).toMatchObject({ severity: 'low', file: 'src/y.js', line: 7 });
+    expect(out.findings[1].claim).toContain('bold-wrapped');
   });
 
   test('end-to-end: a vendor that returns markdown (no JSON) has its findings recovered, r1=ok', () => {

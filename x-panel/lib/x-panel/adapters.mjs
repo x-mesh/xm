@@ -388,20 +388,29 @@ export function isAvailable(name) {
   return r.status === 0;
 }
 
+// Canonical SGR/CSI escape stripper. ANSI control codes are never valid answer content, so
+// removing them before parsing is always safe. kiro (and other TTY-colorizing CLIs) wrap even
+// --no-interactive output in color codes (\x1b[38;5;141m … \x1b[0m); those bytes land INSIDE
+// the emitted JSON and derail scanJSONObjects' brace/string matching — kiro produced valid
+// {findings:[...]} that failed to extract until stripped (dogfood run panel-20260711-224207-238).
+const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g;
+export function stripAnsi(s) { return String(s == null ? '' : s).replace(ANSI_RE, ''); }
+
 // Contract extraction shared by every invoke path: with expectKeys the answer MUST
 // carry one of the contract arrays (findings/verdicts) — an unrelated JSON object in
 // the output is a parse failure, not a success. Without expectKeys the legacy
 // first-object behavior is kept for generic callers.
 function extractAnswerJSON(raw, expectKeys) {
-  if (!expectKeys) return extractJSON(raw);
-  const json = extractContractJSON(raw, expectKeys);
+  const text = stripAnsi(raw); // kiro et al. colorize their JSON — strip before any parse
+  if (!expectKeys) return extractJSON(text);
+  const json = extractContractJSON(text, expectKeys);
   if (json) return json;
   // Fallback: some vendors (agy/Gemini) ignore the JSON contract and return a structured
   // PROSE review instead. Only the findings contract has a stable markdown equivalent (the
   // "### [severity] file:line — title" + Why/Fix lens shape), so salvage that rather than
   // discard a real review as "no findings JSON". verdicts/responses are always JSON — never
   // reconstructed from prose. Strict: only fires after JSON extraction already failed.
-  if (expectKeys.includes('findings')) return parseMarkdownFindings(raw);
+  if (expectKeys.includes('findings')) return parseMarkdownFindings(text);
   return null;
 }
 function jsonMissingError(expectKeys) {
@@ -426,9 +435,12 @@ export function parseMarkdownFindings(raw) {
   for (let i = 0; i < heads.length; i++) {
     const h = heads[i];
     const body = text.slice(h.bodyAt, i + 1 < heads.length ? heads[i + 1].start : text.length);
-    // Optional "file:line" prefix on the heading remainder; whatever follows a separator is the claim.
+    // Optional "file:line" prefix on the heading remainder; whatever follows a separator is the
+    // claim. Tolerate a location wrapped in backticks or bold (`file:line`, **file:line**) — a
+    // very common LLM markdown habit (t9) — by peeling those markers off both ends first.
     let file = null, line = null, claim = h.rest;
-    const fl = h.rest.match(/^([A-Za-z0-9._/\\-]+?):(\d+)\b[ \t]*(.*)$/);
+    const restLoc = h.rest.replace(/^[`*_\s]+/, '');
+    const fl = restLoc.match(/^([A-Za-z0-9._/\\-]+?):(\d+)\b[`*_ \t]*(.*)$/);
     if (fl) { file = fl[1]; line = parseInt(fl[2], 10); claim = (fl[3] || '').trim(); }
     claim = claim.replace(/^[\s—–\-:)\]]+/, '').trim(); // strip a leading separator (— / - / : )
     const evidence = mdEvidence(body);

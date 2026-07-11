@@ -80,8 +80,12 @@ function normalizeVerified(raw) {
  *                round-1 produced no usable findings. Without this channel a parse failure
  *                is indistinguishable from "reviewed and found nothing" (raised: 0), and
  *                a 3/4 panel silently reads as 4/4 (mem-mesh ed2ff3e3).
+ * @param groundedModels  Set<model> that were actually SENT the grounded refute prompt. A
+ *                `verified.checked` field is honored ONLY from these — otherwise any model could
+ *                volunteer a forged `verified` and inflate the grounding provenance (panel
+ *                consensus, codex+cursor). Empty (default) = no grounding was requested.
  */
-export function synthesize(models, round1, round2, abstained = new Set(), r1Status = {}) {
+export function synthesize(models, round1, round2, abstained = new Set(), r1Status = {}, groundedModels = new Set()) {
   const confirmed = [];
   const contested = [];
   const unreviewed = []; // nobody vouched: round-2 failed, abstained, or never addressed it
@@ -102,9 +106,10 @@ export function synthesize(models, round1, round2, abstained = new Set(), r1Stat
         const v = (round2[opp] || []).find(x => x.ref === gref);
         if (v) opponents.push({
           model: opp, stance: v.stance, reason: v.reason,
-          // Grounded refutation (빅뱃3): this opponent read the cited file before judging.
-          // Only attach when it actually verified, so ungrounded verdicts stay unchanged.
-          ...(v.verified && v.verified.checked ? { grounded: true, observed: v.verified.observed } : {}),
+          // Grounded refutation (빅뱃3): this opponent read the cited file before judging. Only
+          // attach when it ACTUALLY verified AND was sent the grounded prompt — a `verified` from
+          // a non-grounded model is a forgery and must not tag/inflate provenance (t8).
+          ...(groundedModels.has(opp) && v.verified && v.verified.checked ? { grounded: true, observed: v.verified.observed } : {}),
         });
       }
       const entry = { owner, ...f, opponents, reviewers: activeReviewers.length };
@@ -135,9 +140,10 @@ export function synthesize(models, round1, round2, abstained = new Set(), r1Stat
       unmatched_refs: verdicts.filter(v => !knownRefs.has(v.ref) || v.ref.startsWith(`${m}#`)).length,
       invalid_stances: verdicts.filter(v => v.invalid).length,
       // Grounded refutation (빅뱃3): how many of this refuter's verdicts were backed by
-      // actually reading the cited file. 0 for text-only vendors; the moat signal is
-      // "who verifies vs who argues".
-      grounded_verdicts: verdicts.filter(v => v.verified && v.verified.checked).length,
+      // actually reading the cited file. 0 for text-only vendors and for any model NOT sent
+      // the grounded prompt (t8: a self-reported `verified` from an ungrounded model is not
+      // trusted). The moat signal is "who verifies vs who argues".
+      grounded_verdicts: groundedModels.has(m) ? verdicts.filter(v => v.verified && v.verified.checked).length : 0,
       // 'ok' | 'failed' (round-1 errored/unparseable — findings missing from this verdict)
       // | 'suspect_empty' (ok=true with 0 findings but substantial prose in raw)
       r1: st ? st.status : 'ok',
