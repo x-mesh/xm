@@ -1907,6 +1907,41 @@ function summarizeVerdicts(items, n) {
   return out;
 }
 
+// Unwrap a vendor's live STDOUT tail down to the raw answer TEXT, so parseAnswerJSON (which
+// only understands the plain findings/verdicts JSON that cursor prints) can read codex and
+// claude too. codex streams a JSONL event stream — the answer rides INSIDE item.completed's
+// agent_message text as an escaped JSON string; claude prints a result envelope ({..,"result":
+// "<answer>"}). Without this the watch board showed codex's raw {"type":...} lines and nothing
+// for claude. Returns: the inner answer text; '' when only envelope/plumbing events have
+// arrived so far (→ "working"); or null when the tail is NOT an envelope (cursor/agy/kiro plain
+// text → caller uses the raw lines unchanged). Tail-tolerant: a partial trailing line is skipped.
+function unwrapTailAnswer(text) {
+  // codex JSONL event stream (thread.*/turn.*/item.*): pull the model message text out.
+  if (/"type":"(thread\.|turn\.|item\.)/.test(text)) {
+    const msgs = [];
+    let sawEnvelope = false;
+    for (const ln of text.split('\n')) {
+      const s = ln.trim();
+      if (!s.startsWith('{') || !s.endsWith('}')) continue; // only complete JSONL objects
+      let ev; try { ev = JSON.parse(s); } catch { continue; }
+      if (ev && typeof ev.type === 'string') sawEnvelope = true;
+      const item = (ev && ev.item) || ev;
+      if (item && (item.type === 'agent_message' || item.type === 'assistant') && typeof item.text === 'string') msgs.push(item.text);
+    }
+    if (msgs.length) return msgs.join('\n');
+    return sawEnvelope ? '' : null;
+  }
+  // claude (and cursor --stream) result envelope: {"type":"result","result":"<answer>", …}.
+  if (/"type"\s*:\s*"result"/.test(text)) {
+    const open = text.indexOf('{');
+    const body = open >= 0 ? jsonPrefix(text.slice(open)) : null;
+    if (!body) return ''; // envelope still streaming in
+    try { const o = JSON.parse(body); if (typeof o.result === 'string') return o.result; } catch { /* fall through */ }
+    return '';
+  }
+  return null; // plain text (cursor raw / agy / kiro) → use the lines as-is
+}
+
 // Colored, human-readable tail for the text renderers (watch board + run detail):
 // a findings/verdicts answer → one line per item, a still-streaming answer → a progress
 // note, an all-echo stream → an explicit waiting note, anything else → the raw lines.
@@ -1918,8 +1953,13 @@ function renderTailSummary(m, n) {
       const sawEcho = (m.stdout_tail && m.stdout_tail.trim()) || (m.stderr_tail && m.stderr_tail.trim());
       return sawEcho ? [`${C.cyan}⋯${C.reset} prompt echoed — waiting for the model's answer`] : [];
     }
-    const ans = parseAnswerJSON(lines.join('\n'));
-    if (!ans) return lines.slice(-n);
+    // Unwrap codex JSONL / claude result envelopes to the answer text first; '' = only
+    // plumbing events so far (working); null = plain text, interpret the lines directly.
+    const unwrapped = unwrapTailAnswer(lines.join('\n'));
+    if (unwrapped === '') return [`${C.cyan}⋯${C.reset} working — no findings emitted yet`];
+    const content = unwrapped != null ? unwrapped : lines.join('\n');
+    const ans = parseAnswerJSON(content);
+    if (!ans) return (unwrapped != null ? unwrapped.split('\n').filter((l) => l.trim()) : lines).slice(-n);
     if (ans.partial != null) {
       const unit = ans.kind === 'findings' ? 'finding' : 'verdict';
       return [`${C.cyan}⋯ answering${C.reset}${ans.partial ? ` — ${ans.partial} ${unit}${ans.partial === 1 ? '' : 's'} so far` : '…'}`];

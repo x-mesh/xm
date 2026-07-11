@@ -1771,6 +1771,44 @@ describe('panel status (staleness + project scope + --all)', () => {
     expect(r.stdout).not.toContain('{"findings"');
   });
 
+  test('codex JSONL and claude result-envelope tails are unwrapped to findings, not dumped raw', () => {
+    const codexFindings = JSON.stringify({ findings: [{ severity: 'high', file: 'a.js', line: 1, claim: 'CODEX_CLAIM', evidence: 'e' }] });
+    const claudeFindings = JSON.stringify({ findings: [{ severity: 'medium', file: 'b.js', line: 2, claim: 'CLAUDE_CLAIM', evidence: 'e' }] });
+    seedTailRun('panel-tailenvelope-fixture', [
+      // codex streams a JSONL event stream — the answer rides inside item.completed.text
+      { label: 'codex', stdout_tail: [
+        JSON.stringify({ type: 'thread.started', thread_id: 't' }),
+        JSON.stringify({ type: 'turn.started' }),
+        JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: codexFindings } }),
+        JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1 } }),
+      ].join('\n') },
+      // claude prints a single result envelope carrying the answer in .result
+      { label: 'claude', stdout_tail: JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: claudeFindings }) },
+    ]);
+    const r = panelRaw(['status', 'panel-tailenvelope-fixture'], statusEnv());
+    expect(r.status).toBe(0);
+    // interpreted like cursor, not dumped as raw envelope JSON
+    expect(r.stdout).toContain('CODEX_CLAIM');
+    expect(r.stdout).toContain('[high] a.js:1');
+    expect(r.stdout).toContain('CLAUDE_CLAIM');
+    expect(r.stdout).toContain('[medium] b.js:2');
+    expect(r.stdout).not.toContain('"type":"thread.started"');
+    expect(r.stdout).not.toContain('"type":"result"');
+  });
+
+  test('a codex tail with only plumbing events (no message yet) shows "working", not raw JSONL', () => {
+    seedTailRun('panel-tailworking-fixture', [
+      { label: 'codex', state: 'running', stdout_tail: [
+        JSON.stringify({ type: 'thread.started', thread_id: 't' }),
+        JSON.stringify({ type: 'turn.started' }),
+      ].join('\n') },
+    ]);
+    const r = panelRaw(['status', 'panel-tailworking-fixture'], statusEnv());
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('working');
+    expect(r.stdout).not.toContain('"type":"thread.started"');
+  });
+
   test('status <run> --watch live-tails that run (loops the detail, not a one-shot)', () => {
     const d = join(SDIR, '.xm', 'panel', 'panel-runwatch-fixture');
     mkdirSync(d, { recursive: true });
