@@ -178,6 +178,59 @@ export function synthesize(models, round1, round2, abstained = new Set(), r1Stat
  * (null === null), a bug the panel caught reviewing itself. Such findings stay
  * separate (counted as single-model diversity).
  */
+/**
+ * Followup / debate round (빅뱃5). After the adversarial verdict, `xm panel followup`
+ * RESUMES each author's session and asks them to defend the findings an opponent refuted.
+ * normalizeResponses parses that reply; followupDelta classifies the outcome.
+ */
+export function normalizeResponses(raw) {
+  const arr = raw && Array.isArray(raw.responses) ? raw.responses : [];
+  return arr.map(r => {
+    const res = String(r.resolution || '').trim().toLowerCase();
+    const recognized = res === 'hold' || res === 'concede' || res === 'revise';
+    return {
+      ref: String(r.ref ?? '').trim(),
+      // Unknown → 'hold', NOT 'concede': a broken parser must never make the author silently
+      // CONCEDE and drop a possibly-real finding. Holding keeps it in the disagreement set for
+      // a human, mirroring round-2's "unknown stance → abstain, never a silent vouch".
+      resolution: recognized ? res : 'hold',
+      reason: String(r.reason || '').trim(),
+      ...(recognized ? {} : { invalid: true }),
+    };
+  });
+}
+
+/**
+ * Classify each CONTESTED finding by what its author decided when confronted with the
+ * refutation. contested = the verdict's `contested` entries (owner + idx + opponents);
+ * responsesByModel = { [owner]: normalizedResponses }.
+ *   held        — author stands by it (rebutted the refuter) → genuine disagreement, escalate
+ *   conceded    — author withdrew it → the refutation won, resolved
+ *   revised     — author narrowed it → re-check needed
+ *   no_response — author's session failed or never addressed it → still contested, unresolved
+ * A finding whose owner has NO matching response is no_response, never a silent hold/concede.
+ */
+export function followupDelta(contested, responsesByModel = {}) {
+  const held = [], conceded = [], revised = [], noResponse = [];
+  for (const f of Array.isArray(contested) ? contested : []) {
+    const gref = `${f.owner}#${f.idx}`;
+    const resp = (responsesByModel[f.owner] || []).find(r => r.ref === gref);
+    const entry = {
+      ref: gref, owner: f.owner, severity: f.severity,
+      file: f.file ?? null, line: f.line ?? null, claim: f.claim,
+      reason: resp ? resp.reason : null,
+    };
+    if (!resp) noResponse.push(entry);
+    else if (resp.resolution === 'concede') conceded.push(entry);
+    else if (resp.resolution === 'revise') revised.push(entry);
+    else held.push(entry); // 'hold' incl. coerced-invalid → never silently drop
+  }
+  return {
+    held, conceded, revised, no_response: noResponse,
+    counts: { held: held.length, conceded: conceded.length, revised: revised.length, no_response: noResponse.length },
+  };
+}
+
 export function mergeConsensus(findings, { lineTolerance = 2 } = {}) {
   const clusters = [];
   for (const f of findings) {
