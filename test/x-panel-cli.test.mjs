@@ -14,6 +14,7 @@ import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from '../x-panel/lib/x-p
 import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
 import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts } from '../x-panel/lib/x-panel/adapters.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
+import { unwrapEnvelope } from '../x-panel/lib/x-panel/adapters.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
 const STUB = join(import.meta.dirname, 'fixtures', 'panel-stub-model.mjs');
@@ -75,6 +76,46 @@ beforeAll(() => { DIR = mkdtempSync(join(tmpdir(), 'xpanel-')); });
 afterAll(() => { rmSync(DIR, { recursive: true, force: true }); });
 
 // ── panel gate (verdict → merge-gate exit code, 패널7) ──────────────
+describe('unwrapEnvelope (패널1 — structured usage capture)', () => {
+  const ENVELOPE = {
+    type: 'result', subtype: 'success', is_error: false,
+    result: '{"findings":[{"severity":"high","file":"a.js","line":1,"claim":"x"}]}',
+    session_id: '3d77d18b-c06c-4f8d-bf40-244f0b14abdb',
+    total_cost_usd: 0.3342975,
+    usage: { input_tokens: 2, output_tokens: 4, cache_creation_input_tokens: 32654, cache_read_input_tokens: 15295 },
+  };
+
+  test('lifts the answer text out of the envelope (findings must parse from .result)', () => {
+    const e = unwrapEnvelope(JSON.stringify(ENVELOPE));
+    expect(e.text).toBe(ENVELOPE.result);           // NOT the envelope
+    expect(e.error).toBeNull();
+    expect(JSON.parse(e.text).findings).toHaveLength(1); // extraction still works downstream
+  });
+
+  test('lifts real token counts + the CLI-computed cost in the CANONICAL bucket shape', () => {
+    const { usage } = unwrapEnvelope(JSON.stringify(ENVELOPE));
+    // must match what the status accumulator sums: {input, output, cached, reasoning}
+    expect(usage.input).toBe(2 + 32654);   // fresh input + cache CREATION (billed as input)
+    expect(usage.output).toBe(4);
+    expect(usage.cached).toBe(15295);      // cache READ = the cheap re-use bucket
+    expect(usage.reasoning).toBe(0);
+    expect(usage.cost_usd).toBeCloseTo(0.3342975, 6);
+  });
+
+  test('a provider-reported failure surfaces as an error, not an empty answer', () => {
+    const e = unwrapEnvelope(JSON.stringify({ ...ENVELOPE, is_error: true, subtype: 'error_max_turns' }));
+    expect(e.error).toContain('error_max_turns');
+  });
+
+  test('non-envelope output passes through untouched (stubs, plain-text vendors)', () => {
+    const plain = '{"findings":[]}';
+    expect(unwrapEnvelope(plain).text).toBe(plain);
+    expect(unwrapEnvelope(plain).usage).toBeNull();
+    expect(unwrapEnvelope('just prose').text).toBe('just prose');
+    expect(unwrapEnvelope('').text).toBe('');
+  });
+});
+
 describe('panel history ledger (빅뱃2)', () => {
   const REC = {
     run: 'panel-x', created_at: '2026-07-11T00:00:00Z', models: ['claude', 'codex'],
@@ -84,6 +125,21 @@ describe('panel history ledger (빅뱃2)', () => {
     },
     usage: { by_model: { claude: { tokens: 12000, cost_usd: 0.08 }, codex: { tokens: 0, cost_usd: 0 } } },
   };
+
+  test('historyRows sums the REAL 4-bucket token object (패널1 shape), not just a scalar', () => {
+    const rec = {
+      run: 'panel-y', created_at: 't', models: ['claude'],
+      by_model: { claude: { raised: 1, confirmed: 1, contested: 0, unmatched_refs: 0, r1: 'ok' } },
+      usage: { by_model: { claude: { tokens: { input: 32656, output: 4, cached: 15295, reasoning: 0 }, cost_usd: 0.334 } } },
+    };
+    const [row] = historyRows(rec);
+    expect(row.tokens).toBe(32656 + 4 + 15295); // was null: `typeof {} === 'number'` is false
+    expect(row.cost_usd).toBeCloseTo(0.334, 4);
+    // an all-zero bucket object is still "unknown", never 0
+    const zero = historyRows({ ...rec, usage: { by_model: { claude: { tokens: { input: 0, output: 0, cached: 0, reasoning: 0 }, cost_usd: 0 } } } });
+    expect(zero[0].tokens).toBeNull();
+    expect(zero[0].cost_usd).toBeNull();
+  });
 
   test('historyRows: one row per model; cost 0 → null (unknown, never 0)', () => {
     const rows = historyRows(REC);

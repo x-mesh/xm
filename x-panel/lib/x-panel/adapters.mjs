@@ -111,10 +111,16 @@ export function buildCodexResumeArgs({ execFlags = [], sessionId = null, model =
 // `panel.*` config only tunes panel-review behavior (models/judge/stream); the
 // lone config key the cross path also reads is `timeout_s` (cmdCross).
 const BUILTIN = {
-  claude: (prompt, model) => ['claude', ['-p', ...(model ? ['--model', model] : []), prompt]],
+  // --output-format json wraps the answer in a result envelope that also carries usage
+  // + total_cost_usd (unwrapEnvelope lifts both). Without it claude reports zero tokens,
+  // which is why every cost figure in the kit read "estimated".
+  claude: (prompt, model) => ['claude', ['-p', '--output-format', 'json', ...(model ? ['--model', model] : []), prompt]],
   // --sandbox read-only matches the streaming codex path: review/cross prompts never edit the repo.
   // A "model[:effort]" spec maps to --model <id> + -c model_reasoning_effort=<effort> (codexModelArgs).
-  codex: (prompt, model) => ['codex', ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', ...codexModelArgs(model), prompt]],
+  // --json emits the JSONL event stream (thread.started / item.completed / turn.completed)
+  // that carries the session id AND real token counts. It also REMOVES the stderr session
+  // banner (measured), so parseJsonlOutput's thread.started is now the only capture path.
+  codex: (prompt, model) => ['codex', ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', ...codexModelArgs(model), prompt]],
   // agy's -p/--print CONSUMES the next token as the prompt value, so --model must
   // precede -p (unlike claude/codex whose -p is a boolean with a positional prompt).
   // Wrong order (`-p --model X <prompt>`) makes -p eat "--model", dropping the real
@@ -411,11 +417,14 @@ export function resolveSessionCommand(name, prompt, model, session) {
     return ['node', [override, name, prompt, '--session-mode', session.mode, ...(session.id ? ['--session-id', session.id] : [])]];
   }
   if (name === 'claude' && session.id) {
-    return ['claude', ['-p', ...(model ? ['--model', model] : []), session.mode === 'resume' ? '--resume' : '--session-id', session.id, prompt]];
+    // Keep --output-format json on the session path too, or round 2 loses usage and
+    // (worse) returns an un-unwrapped envelope to the verdict parser.
+    return ['claude', ['-p', '--output-format', 'json', ...(model ? ['--model', model] : []), session.mode === 'resume' ? '--resume' : '--session-id', session.id, prompt]];
   }
   if (name === 'codex' && session.mode === 'resume') {
     if (!session.id) return null;
-    return buildCodexResumeArgs({ execFlags: ['--sandbox', 'read-only', '--skip-git-repo-check'], sessionId: session.id, model, prompt });
+    // --json on the resume leg too: round 2 must stay parseable (JSONL) and keep reporting usage.
+    return buildCodexResumeArgs({ execFlags: ['--json', '--sandbox', 'read-only', '--skip-git-repo-check'], sessionId: session.id, model, prompt });
   }
   return resolveCommand(name, prompt, model);
 }
@@ -503,14 +512,25 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       guard.clear();
       if (settled) return;
       emit({ type: 'exit', provider: name, model, code });
-      // Some raw-mode CLIs (kiro) print a cost line on stderr — surface it as usage.
-      const usage = parseStderrUsage(name, stderr);
+      // Structured-output vendors (claude --output-format json) wrap the answer in an
+      // envelope carrying usage + total_cost_usd. Unwrap FIRST: findings extraction must
+      // see the model's answer, not the envelope (which has no findings array). `raw`
+      // downstream means "what the model said", so it carries the unwrapped text too —
+      // the envelope's extras are lifted into usage/session instead of being re-parsed.
+      const env = parseStructuredOutput(name, stdout, model);
+      const answer = env.text;
+      // Structured usage wins; kiro still reports a cost line on stderr in raw mode.
+      const usage = env.usage || parseStderrUsage(name, stderr);
       if (usage) emit({ type: 'usage_final', provider: name, model, usage });
-      if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: stdout, json: null, usage });
-      const json = extractAnswerJSON(stdout, expectKeys);
+      if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: answer, json: null, usage });
+      if (env.error) {
+        emit({ type: 'error', provider: name, model, error: env.error });
+        return finish({ ok: false, error: env.error, raw: answer, json: null, usage });
+      }
+      const json = extractAnswerJSON(answer, expectKeys);
       if (!json) {
         emit({ type: 'json_missing', provider: name, model });
-        return finish({ ok: false, error: jsonMissingError(expectKeys), raw: stdout, json: null, usage });
+        return finish({ ok: false, error: jsonMissingError(expectKeys), raw: answer, json: null, usage });
       }
       emit({ type: 'json_parsed', provider: name, model });
       // Session establishment (t5): claude's id is caller-supplied (authoritative);
@@ -519,21 +539,23 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       let captureFailed = false;
       if (session && session.mode === 'create') {
         if (name === 'claude') session_id = session.id;
-        // Capture ONLY from stderr: codex prints its session-id banner to stderr,
-        // while stdout is model output derived from the (untrusted) review target.
-        // Searching stdout first would let a prompt-injected target emit a fake
-        // "session id: <uuid>" line and steer the round-2 `--resume` id (trust-boundary).
+        // codex: the id now comes from the CLI's own `thread.started` JSONL event
+        // (parseStructuredOutput). Under `exec --json` the stderr banner is gone entirely,
+        // so SESSION_ID_RE has nothing to match — but the trust boundary that motivated
+        // stderr-only capture still holds: model text is escaped INSIDE
+        // item.completed.item.text and cannot forge a top-level thread.started line.
+        // The stderr regex remains as a fallback for a CLI that still prints a banner.
         else {
-          session_id = (SESSION_ID_RE.exec(stderr) || [])[1] || null;
+          session_id = env.sessionId || (SESSION_ID_RE.exec(stderr) || [])[1] || null;
           if (!session_id) {
             // A missing banner is a CAPTURE FAILURE, distinct from a vendor that never
             // supports resume — surface it (L6) so it can't hide as plain "stateless".
             captureFailed = true;
-            emit({ type: 'lifecycle', provider: name, model, note: 'session capture failed — no session id in the run banner; round 2 will run stateless' });
+            emit({ type: 'lifecycle', provider: name, model, note: 'session capture failed — no thread.started event (nor a run banner); round 2 will run stateless' });
           }
         }
       }
-      finish({ ok: true, error: null, raw: stdout, json, usage, ...(session_id ? { session_id } : {}), ...(captureFailed ? { session_capture_failed: true } : {}) });
+      finish({ ok: true, error: null, raw: answer, json, usage, ...(session_id ? { session_id } : {}), ...(captureFailed ? { session_capture_failed: true } : {}) });
     });
   });
 }
@@ -598,6 +620,106 @@ export function costFromTokens(model, t) {
   const p = priceFor(model);
   const uncached = Math.max(0, (t.input || 0) - (t.cached || 0));
   return (uncached * p.input + (t.cached || 0) * p.cached + (t.output || 0) * p.output) / 1e6;
+}
+
+/**
+ * Unwrap a structured-output ENVELOPE into the model's answer text + usage.
+ *
+ * claude `-p --output-format json` returns ONE object:
+ *   { type:"result", subtype:"success", is_error:false, result:"<answer>",
+ *     session_id, total_cost_usd, usage:{ input_tokens, output_tokens,
+ *     cache_creation_input_tokens, cache_read_input_tokens }, … }
+ *
+ * The answer lives in `.result` — findings extraction MUST run on that, not on the
+ * envelope (which carries no findings/verdicts array, so every parse would fail).
+ * Cost is already computed by the CLI, so no per-token price math is needed.
+ *
+ * Detection is by SHAPE (`type:"result"`), not by vendor: a stubbed provider that
+ * prints plain findings JSON is passed through untouched, and a claude run that ever
+ * emits non-envelope output degrades gracefully to the plain path.
+ *
+ * @returns {{ text: string, usage: object|null, error: string|null }}
+ */
+export function unwrapEnvelope(stdout) {
+  const s = String(stdout || '').trim();
+  if (!s.startsWith('{')) return { text: stdout, usage: null, error: null };
+  let env;
+  try { env = JSON.parse(s); } catch { return { text: stdout, usage: null, error: null }; }
+  if (!env || typeof env !== 'object' || env.type !== 'result') {
+    return { text: stdout, usage: null, error: null };
+  }
+  const u = env.usage || {};
+  // Canonical panel token buckets — the same shape the stream path emits and the status
+  // accumulator sums ({input, output, cached, reasoning}). Emitting anything else leaves
+  // every bucket at zero while the cost silently lands (measured on the first live run).
+  // cache_creation is billed as fresh input; cache_read is the cheap re-use bucket.
+  const usage = {
+    input: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0),
+    output: u.output_tokens || 0,
+    cached: u.cache_read_input_tokens || 0,
+    reasoning: 0,
+    // The CLI already priced the turn (incl. cache tiers) — trust it over local rates.
+    cost_usd: typeof env.total_cost_usd === 'number' ? env.total_cost_usd : null,
+  };
+  const failed = env.is_error === true || (env.subtype && env.subtype !== 'success');
+  return {
+    text: typeof env.result === 'string' ? env.result : '',
+    usage,
+    error: failed ? `provider reported ${env.subtype || 'error'}${env.api_error_status ? ` (${env.api_error_status})` : ''}` : null,
+  };
+}
+
+/**
+ * Parse a JSONL structured-output stream (codex `exec --json`) from the RAW path.
+ *
+ *   {"type":"thread.started","thread_id":"019f…"}          ← the session id
+ *   {"type":"item.completed","item":{"type":"agent_message","text":"…"}}   ← the answer
+ *   {"type":"turn.completed","usage":{input_tokens, cached_input_tokens, …}}
+ *
+ * Reuses parseStreamLine — the same parser the streaming path has been running against
+ * this exact format — instead of introducing a second, unproven one.
+ *
+ * TRUST BOUNDARY: session capture used to read ONLY stderr, because stdout was raw model
+ * output and a prompt-injected review target could forge a `session id: <uuid>` line to
+ * steer round 2's `--resume`. Under `--json` that no longer holds: the model's text is
+ * ESCAPED INSIDE an `item.completed.item.text` string and cannot break out to become a
+ * top-level `thread.started` line. Taking the FIRST such event keeps it deterministic.
+ * (The stderr banner is gone entirely under --json — measured, so there is no fallback.)
+ */
+export function parseJsonlOutput(name, stdout, model) {
+  let text = '';
+  let usage = null;
+  let sessionId = null;
+  for (const line of String(stdout || '').split('\n')) {
+    const s = line.trim();
+    if (!s.startsWith('{')) continue;
+    let obj;
+    try { obj = JSON.parse(s); } catch { continue; } // a torn line is not fatal
+    if (!sessionId && obj.type === 'thread.started' && typeof obj.thread_id === 'string') {
+      sessionId = obj.thread_id;
+    }
+    const r = parseStreamLine(name, obj, model);
+    if (typeof r.finalText === 'string' && r.finalText) text = r.finalText;
+    if (r.usage) usage = r.usage;
+  }
+  return { text, usage, sessionId };
+}
+
+/**
+ * Route a vendor's stdout through the right structured-output reader.
+ * claude → single result envelope; codex → JSONL event stream; everything else → plain text.
+ * @returns {{ text: string, usage: object|null, error: string|null, sessionId: string|null }}
+ */
+export function parseStructuredOutput(name, stdout, model) {
+  if (name === 'claude') {
+    const e = unwrapEnvelope(stdout);
+    return { ...e, sessionId: null }; // claude's id is caller-supplied, never parsed
+  }
+  if (name === 'codex') {
+    const j = parseJsonlOutput(name, stdout, model);
+    return { text: j.text, usage: j.usage, error: null, sessionId: j.sessionId };
+  }
+  return { text: stdout, usage: null, error: null, sessionId: null };
 }
 
 /** kiro (raw mode) prints `▸ Credits: 0.30 • Time: 4s` on stderr (ANSI-wrapped). */
@@ -665,7 +787,17 @@ export function parseStreamLine(name, obj, model) {
       if (finalText) events.push({ kind: 'text', delta: finalText });
     } else if (obj.type === 'turn.completed') {
       const u = obj.usage || {};
-      setUsage({ input: u.input_tokens || 0, output: u.output_tokens || 0, cached: u.cached_input_tokens || 0, reasoning: u.reasoning_output_tokens || 0 });
+      // codex's input_tokens is the TOTAL prompt, of which cached_input_tokens were served
+      // from cache (OpenAI convention) — unlike claude, whose buckets are disjoint. Counting
+      // both whole double-billed the cached prefix in costFromTokens; subtract it so `input`
+      // means FRESH input, matching the claude mapping and the bucket's name.
+      const cached = u.cached_input_tokens || 0;
+      setUsage({
+        input: Math.max(0, (u.input_tokens || 0) - cached),
+        output: u.output_tokens || 0,
+        cached,
+        reasoning: u.reasoning_output_tokens || 0,
+      });
     }
   }
   return { events, finalText, usage };
@@ -786,8 +918,15 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
       guard.clear();
       if (settled) return;
       emit({ type: 'exit', provider: name, model, code });
-      if (code !== 0) return done({ ok: false, output: stdout, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}` });
-      const out = stdout.trim();
+      // Cross returns the vendor's RAW TEXT to its caller, so a structured-output envelope
+      // must be unwrapped here too — otherwise every cross consumer (debate/council/solve)
+      // would receive the JSON envelope instead of the model's prose. Usage rides along,
+      // giving the cross path the token/cost telemetry it never had.
+      const env = parseStructuredOutput(name, stdout, model);
+      if (env.usage) emit({ type: 'usage_final', provider: name, model, usage: env.usage });
+      if (code !== 0) return done({ ok: false, output: env.text, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, usage: env.usage || null });
+      if (env.error) { emit({ type: 'error', provider: name, model, error: env.error }); return done({ ok: false, output: env.text, error: env.error, usage: env.usage || null }); }
+      const out = String(env.text || '').trim();
       // exit 0 but EMPTY stdout: a gateway CLI (cursor especially, also agy) can return
       // success with no answer — transient rate-limit, silent auth refusal, or an empty
       // completion. The raw-text path used to pass this through as ok:true/output:'' →
@@ -795,7 +934,7 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
       // Treat empty-on-success as a failure so it's surfaced loud (L6) and is retryable,
       // forwarding any stderr as the reason.
       if (!out) return done({ ok: false, output: '', error: `exit 0 but empty output${stderr.trim() ? `: ${stderr.trim().slice(0, 200)}` : ' (no stdout from CLI)'}` });
-      done({ ok: true, output: out, error: null });
+      done({ ok: true, output: out, error: null, usage: env.usage || null });
     });
   });
 }

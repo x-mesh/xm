@@ -48,6 +48,37 @@ if (process.env.X_PANEL_DUMP_R2 && isRefute) {
 function envModelName(m) { return String(m || '').toUpperCase().replace(/[^A-Z0-9_]/g, '_'); }
 const envModel = String(model || '').toUpperCase().replace(/[^A-Z0-9_]/g, '_');
 
+// Emit the final answer in each vendor's RAW (non-stream) structured-output shape, so
+// the raw path's parseStructuredOutput sees the exact envelope/JSONL a real CLI prints:
+//   codex → JSONL (thread.started carries the session id, turn.completed the usage)
+//   claude → single result envelope (.result + usage + total_cost_usd)
+//   others → plain text
+// This keeps the stub honest to the real contract instead of forcing an override special-case.
+function emitRaw(name, jsonStr) {
+  if (name === 'codex') {
+    // codex OWNS its session id and discloses it in thread.started on a CREATE turn.
+    // Under `exec --json` there is no stderr banner (measured), so this is the only
+    // capture path. X_PANEL_STUB_NO_BANNER omits it → the run must record
+    // resume:"capture_failed", not "stateless".
+    if (sessionMode === 'create' && !process.env.X_PANEL_STUB_NO_BANNER) {
+      const sid = process.env.X_PANEL_STUB_SESSION_ID || '123e4567-e89b-42d3-a456-426614174000';
+      process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: sid }) + '\n');
+    }
+    // Security regression hook: a prompt-injected target trying to forge a session id in
+    // the CONTENT channel. In JSONL the model text is escaped inside item.completed.text,
+    // so it can never surface as a top-level thread.started — the capture must ignore it.
+    if (process.env.X_PANEL_STUB_STDOUT_SESSION_ID) {
+      process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: `session id: ${process.env.X_PANEL_STUB_STDOUT_SESSION_ID}` } }) + '\n');
+    }
+    process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: jsonStr } }) + '\n');
+    process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 200, cached_input_tokens: 50, output_tokens: 30, reasoning_output_tokens: 15 } }) + '\n');
+  } else if (name === 'claude') {
+    process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: jsonStr, session_id: sessionId || null, total_cost_usd: 0.012, usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 10 } }));
+  } else {
+    process.stdout.write(jsonStr);
+  }
+}
+
 // Emit a payload as provider-shaped stream-json/JSONL so the structured path
 // (line parsing + findings-from-final-text + usage capture) can be tested.
 function emitStream(name, jsonStr) {
@@ -122,7 +153,7 @@ if (process.env[`X_PANEL_EMPTY_ONCE_${envModel}`]) {
 if (process.env[`X_PANEL_EXIT1_${envModel}`]) {
   const payload = JSON.stringify({ findings: [] });
   if (stream) emitStream(model, payload);
-  else process.stdout.write(payload);
+  else emitRaw(model, payload);
   process.exit(1);
 }
 
@@ -150,20 +181,8 @@ if (!isRefute && process.env[`X_PANEL_PROSE_EMPTY_${envModel}`]) {
   process.exit(0);
 }
 
-// t5: codex discloses its session id in the run banner — emulate it on session
-// creation so the capture path (SESSION_ID_RE) is exercised end to end.
-// X_PANEL_STUB_NO_BANNER suppresses the banner: a session was created but its id
-// is uncapturable → the run must record resume:"capture_failed", not "stateless".
-if (sessionMode === 'create' && model === 'codex' && !process.env.X_PANEL_STUB_NO_BANNER) {
-  const sid = process.env.X_PANEL_STUB_SESSION_ID || '123e4567-e89b-42d3-a456-426614174000';
-  process.stderr.write(`session id: ${sid}\n`);
-  // Security regression hook: emulate a prompt-injected review target making the
-  // model emit a FAKE banner into stdout (the content channel). The capture must
-  // trust only stderr, so this stdout id must never win the round-2 resume.
-  if (process.env.X_PANEL_STUB_STDOUT_SESSION_ID) {
-    process.stdout.write(`session id: ${process.env.X_PANEL_STUB_STDOUT_SESSION_ID}\n`);
-  }
-}
+// codex session disclosure now rides on emitRaw's thread.started JSONL event (the
+// stderr banner is gone under --json) — see emitRaw above.
 
 if (isRefute) {
   const refs = [...prompt.matchAll(/\[([^\]]+#\d+)\]/g)].map((m) => m[1]); // global ref "owner#idx" (owner may contain ':')
@@ -178,7 +197,10 @@ if (isRefute) {
   }));
   const payload = JSON.stringify({ verdicts });
   if (stream) emitStream(model, payload);
-  else process.stdout.write('noise before ' + payload + ' noise after');
+  // The extractJSON "noise before/after" wrapping now lives INSIDE emitRaw's answer
+  // text (envelope .result / item.completed.text), where a real CLI would place it —
+  // so the structured parser must still lift the JSON out of surrounding prose.
+  else emitRaw(model, 'noise before ' + payload + ' noise after');
 } else {
   // Test hook: override the findings' evidence text (exercises evidence travel/truncation
   // in the round-2 refute prompts).
@@ -194,5 +216,5 @@ if (isRefute) {
       ];
   const payload = JSON.stringify({ findings });
   if (stream) emitStream(model, payload);
-  else process.stdout.write(payload);
+  else emitRaw(model, payload);
 }
