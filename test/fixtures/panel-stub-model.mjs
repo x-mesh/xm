@@ -131,6 +131,15 @@ if (process.env[`X_PANEL_NO_JSON_${envModel}`]) {
   process.exit(0);
 }
 
+// A TTY-colorizing raw vendor (kiro shape): valid findings JSON wrapped in SGR color codes
+// + a '> ' prompt echo. extractAnswerJSON must strip ANSI before parsing or the codes derail
+// scanJSONObjects and the valid findings are lost (dogfood: kiro emitted valid JSON, extract=null).
+if (process.env[`X_PANEL_ANSI_${envModel}`]) {
+  const payload = JSON.stringify({ findings: [{ severity: 'high', file: 'a.js', line: 1, claim: 'ansi-wrapped finding', evidence: 'e' }] });
+  process.stdout.write('\x1b[38;5;141m> \x1b[0m' + payload + '\x1b[0m\n');
+  process.exit(0);
+}
+
 // Emit NOTHING and exit 0 — a gateway CLI (cursor especially) that returns success with an
 // empty completion (transient rate-limit / silent auth refusal). The raw-text cross path must
 // treat this as a FAILURE (loud, retryable), not a silent blank. An optional stderr hint is
