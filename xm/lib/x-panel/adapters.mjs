@@ -11,7 +11,7 @@
  */
 
 import { spawnSync, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 
@@ -131,9 +131,56 @@ const BUILTIN = {
     const m = normalizeKiroModel(model);
     // --trust-tools= (empty) = trust NO tools, so a review prompt can't make kiro run
     // tools / hang waiting for approval under --no-interactive. (Harmless stderr warning.)
-    return ['kiro-cli', ['chat', '--no-interactive', '--wrap', 'never', '--trust-tools=', ...(m ? ['--model', m] : []), prompt]];
+    // --agent <no-MCP agent>: kiro otherwise loads the global ~/.kiro/settings/mcp.json,
+    // and a SINGLE MCP tool whose input_schema uses oneOf/allOf/anyOf at the top level makes
+    // Bedrock 400 the ENTIRE request ("input_schema does not support oneOf…") — every kiro
+    // review then fails regardless of prompt. --trust-tools= blocks EXECUTION, not schema
+    // TRANSMISSION, so it doesn't help. Spawning under an agent with no MCP keeps kiro
+    // Bedrock-safe. Provisioned lazily (only on a real spawn, prompt !== ''); availability
+    // checks pass '' and must not write files. Verified: --agent <no-MCP> succeeds where the
+    // default agent 400s.
+    const agent = prompt === '' ? null : kiroReviewAgent();
+    return ['kiro-cli', ['chat', '--no-interactive', '--wrap', 'never', '--trust-tools=',
+      ...(agent ? ['--agent', agent] : []),
+      ...(m ? ['--model', m] : []), prompt]];
   },
 };
+
+// Resolve the kiro agent to spawn under. panel.kiro_agent (via X_PANEL_KIRO_AGENT, set by the
+// CLI) wins and is used as-is — the user pointed us at their own no-MCP agent, so we don't
+// provision. Otherwise ensure a dedicated no-MCP agent exists and return its name. Returns null
+// only if provisioning failed (kiro then spawns without --agent = the old broken behavior, but
+// loudly warned). existsSync gates the write so repeated spawns are idempotent and log ONCE.
+const KIRO_REVIEW_AGENT = 'xm-panel-review';
+function kiroAgentDir() {
+  // Overridable so tests stay hermetic (never touch the real ~/.kiro).
+  return process.env.X_PANEL_KIRO_AGENT_DIR || join(homedir(), '.kiro', 'agents');
+}
+function kiroReviewAgent() {
+  const override = (process.env.X_PANEL_KIRO_AGENT || '').trim();
+  if (override) return override; // user's own agent — never provisioned/validated here
+  try {
+    const dir = kiroAgentDir();
+    const file = join(dir, `${KIRO_REVIEW_AGENT}.json`);
+    if (existsSync(file)) return KIRO_REVIEW_AGENT;
+    mkdirSync(dir, { recursive: true });
+    const agent = {
+      name: KIRO_REVIEW_AGENT,
+      description: 'x-panel cross-vendor review — no MCP tools (avoids Bedrock oneOf/allOf/anyOf schema rejection).',
+      // The whole point: do NOT pull in the global mcp.json. An empty MCP set keeps every
+      // kiro request Bedrock-safe. A review needs no tools — the diff travels in the prompt.
+      includeMcpJson: false,
+      mcpServers: {},
+      tools: [],
+    };
+    writeFileSync(file, JSON.stringify(agent, null, 2), 'utf8');
+    process.stderr.write(`ℹ x-panel: provisioned kiro agent "${KIRO_REVIEW_AGENT}" (no MCP) at ${file} — kiro's global mcp.json has a Bedrock-incompatible tool schema; this keeps kiro usable. Override with panel.kiro_agent.\n`);
+    return KIRO_REVIEW_AGENT;
+  } catch (e) {
+    process.stderr.write(`⚠ x-panel: could not provision kiro no-MCP agent (${e.message}) — kiro may fail with a Bedrock schema error. Set panel.kiro_agent to a no-MCP agent.\n`);
+    return null;
+  }
+}
 
 export function knownProviders() {
   return Object.keys(BUILTIN);
