@@ -845,6 +845,32 @@ describe('Kiro no-MCP agent provisioning (Bedrock oneOf/allOf/anyOf workaround)'
     expect(args).toContain('--model');
     expect(args).toContain('claude-opus-4.8'); // model still normalized + threaded
   });
+
+  test('an existing agent that loads MCP is rewritten to no-MCP, not trusted (l5)', () => {
+    const AGDIR4 = mkdtempSync(join(tmpdir(), 'kiro-ag4-'));
+    process.env.X_PANEL_KIRO_AGENT_DIR = AGDIR4;
+    const f = join(AGDIR4, 'xm-panel-review.json');
+    // a stale/tampered agent that WOULD reintroduce the Bedrock 400
+    writeFileSync(f, JSON.stringify({ name: 'xm-panel-review', includeMcpJson: true, mcpServers: { 'mem-mesh': {} } }));
+    const [, args] = resolveCommand('kiro', 'review', null);
+    expect(args).toContain('xm-panel-review');
+    const rewritten = JSON.parse(readFileSync(f, 'utf8'));
+    expect(rewritten.includeMcpJson).toBe(false);   // no longer pulls in global mcp.json
+    expect(rewritten.mcpServers).toEqual({});
+    process.env.X_PANEL_KIRO_AGENT_DIR = AGDIR;
+    rmSync(AGDIR4, { recursive: true, force: true });
+  });
+
+  test('an existing no-MCP agent is preserved (custom description survives, not clobbered)', () => {
+    const AGDIR5 = mkdtempSync(join(tmpdir(), 'kiro-ag5-'));
+    process.env.X_PANEL_KIRO_AGENT_DIR = AGDIR5;
+    const f = join(AGDIR5, 'xm-panel-review.json');
+    writeFileSync(f, JSON.stringify({ name: 'xm-panel-review', includeMcpJson: false, mcpServers: {}, description: 'my custom safe agent' }));
+    resolveCommand('kiro', 'review', null);
+    expect(JSON.parse(readFileSync(f, 'utf8')).description).toBe('my custom safe agent'); // untouched
+    process.env.X_PANEL_KIRO_AGENT_DIR = AGDIR;
+    rmSync(AGDIR5, { recursive: true, force: true });
+  });
 });
 
 describe('structured streaming (adapters)', () => {
@@ -1850,6 +1876,32 @@ describe('panel status (staleness + project scope + --all)', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('working');
     expect(r.stdout).not.toContain('"type":"thread.started"');
+  });
+
+  test('a result envelope preceded by other JSON events is still unwrapped (l6, not first-brace)', () => {
+    const findings = JSON.stringify({ findings: [{ severity: 'high', file: 'z.js', line: 3, claim: 'PRE_ENVELOPE_CLAIM', evidence: 'e' }] });
+    seedTailRun('panel-tailpre-fixture', [
+      { label: 'claude', stdout_tail: [
+        JSON.stringify({ type: 'system', subtype: 'init', session_id: 's' }),   // emitted BEFORE the result
+        JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: findings }),
+      ].join('\n') },
+    ]);
+    const r = panelRaw(['status', 'panel-tailpre-fixture'], statusEnv());
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('PRE_ENVELOPE_CLAIM'); // the result object was located, not the first '{'
+    expect(r.stdout).not.toContain('"type":"system"');
+  });
+
+  test('a kiro-style ANSI-colorized findings tail renders interpreted, not raw (l8)', () => {
+    const findings = JSON.stringify({ findings: [{ severity: 'medium', file: 'k.js', line: 5, claim: 'KIRO_TAIL_CLAIM', evidence: 'e' }] });
+    seedTailRun('panel-tailansi-fixture', [
+      { label: 'kiro', stdout_tail: '\x1b[38;5;141m> \x1b[0m' + findings + '\x1b[0m' },
+    ]);
+    const r = panelRaw(['status', 'panel-tailansi-fixture'], statusEnv());
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('KIRO_TAIL_CLAIM');
+    expect(r.stdout).toContain('[medium] k.js:5');
+    expect(r.stdout).not.toContain('\x1b['); // ANSI stripped from the rendered line's content
   });
 
   test('status <run> --watch live-tails that run (loops the detail, not a one-shot)', () => {

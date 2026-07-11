@@ -1942,12 +1942,20 @@ function unwrapTailAnswer(text) {
     return sawEnvelope ? '' : null;
   }
   // claude (and cursor --stream) result envelope: {"type":"result","result":"<answer>", …}.
+  // Locate the RESULT object specifically — a streaming vendor may emit other JSON events (system
+  // init, message deltas) BEFORE the result, so unwrapping whatever the first '{' opens picks the
+  // wrong object (l6, raised by kiro during dogfood). Parse line-by-line and take the result-typed one.
   if (/"type"\s*:\s*"result"/.test(text)) {
-    const open = text.indexOf('{');
-    const body = open >= 0 ? jsonPrefix(text.slice(open)) : null;
-    if (!body) return ''; // envelope still streaming in
-    try { const o = JSON.parse(body); if (typeof o.result === 'string') return o.result; } catch { /* fall through */ }
-    return '';
+    let resultText = null, sawEnvelope = false;
+    for (const ln of text.split('\n')) {
+      const s = ln.trim();
+      if (!s.startsWith('{') || !s.endsWith('}')) continue; // only complete JSONL objects
+      let ev; try { ev = JSON.parse(s); } catch { continue; }
+      if (ev && typeof ev.type === 'string') sawEnvelope = true;
+      if (ev && ev.type === 'result' && typeof ev.result === 'string') resultText = ev.result; // last wins
+    }
+    if (resultText != null) return resultText;
+    return sawEnvelope ? '' : null; // envelope seen but result not complete yet → working
   }
   return null; // plain text (cursor raw / agy / kiro) → use the lines as-is
 }
@@ -2434,6 +2442,7 @@ async function cmdFollowup(pos, flags) {
   }
 
   const cfg = loadPanelConfig();
+  applyKiroAgentConfig(cfg); // followup spawns kiro too — honor panel.kiro_agent here as well (l7)
   const timeoutMs = (flags.timeout || cfg.timeout_s || 600) * 1000;
   console.error(`${C.dim}debating ${contested.length} contested finding(s) across ${targets.length} author session(s)…${C.reset}`);
 
