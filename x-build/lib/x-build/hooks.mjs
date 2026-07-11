@@ -10,6 +10,43 @@
 import {
   join, existsSync, readFileSync, writeFileSync, mkdirSync, C, repoRoot, PLUGIN_ROOT,
 } from './core.mjs';
+import { lstatSync, realpathSync } from 'node:fs';
+import { dirname, sep } from 'node:path';
+
+// Refuse to write anywhere that resolves OUTSIDE the project. lstat'ing only the leaf
+// hook file missed a symlinked `.claude` or `.claude/hooks` DIRECTORY, through which
+// mkdir + writeFileSync happily escape the repo (re-review N1, codex: critical). Resolve
+// the nearest EXISTING ancestor (before any mkdir) and require it to stay under root.
+function assertInsideRepo(target, root) {
+  const realRoot = realpathSync(root);
+  let probe = target;
+  // lstat-based existence: existsSync FOLLOWS symlinks, so a DANGLING link at
+  // .claude/hooks looked "absent", skipped the check, and later died with a raw EEXIST
+  // instead of the intended refusal (re-review L2). lexists() sees the link itself.
+  while (!lexists(probe) && dirname(probe) !== probe) probe = dirname(probe);
+  let real;
+  try {
+    real = realpathSync(probe);
+  } catch (e) {
+    // A dangling symlink lstat's fine but realpath's ENOENT — refuse, don't leak errno.
+    if (e.code === 'ENOENT') throw new Error(`${probe} is a broken symlink — refusing to write. Remove it and re-run.`);
+    throw e;
+  }
+  if (real !== realRoot && !real.startsWith(realRoot + sep)) {
+    throw new Error(`${target} resolves outside the project (${real}) — refusing to write. Remove the symlink and re-run.`);
+  }
+}
+
+function lexists(p) {
+  try { lstatSync(p); return true; } catch { return false; }
+}
+
+function isSymlink(p) {
+  try { return lstatSync(p).isSymbolicLink(); } catch (e) {
+    if (e.code === 'ENOENT') return false;
+    throw e;
+  }
+}
 
 // Scripts shipped with the plugin, copied verbatim into <repo>/.claude/hooks/.
 const HOOK_FILES = ['hook-state.mjs', 'xm-build-scope-guard.mjs', 'xm-build-stop-gate.mjs'];
@@ -40,8 +77,15 @@ function hasCommand(settings, event, cmd) {
 }
 
 function writeSettings(root, settings) {
-  mkdirSync(join(root, '.claude'), { recursive: true });
-  writeFileSync(settingsPath(root), JSON.stringify(settings, null, 2) + '\n', 'utf8');
+  // settings.json is the THIRD write target and was left unguarded while .claude/hooks/
+  // and the hook files were protected — a symlink here (or on .claude/) still wrote
+  // straight through to a file outside the project (re-review R4, the other half of F5/N1).
+  const claudeDir = join(root, '.claude');
+  assertInsideRepo(claudeDir, root);
+  mkdirSync(claudeDir, { recursive: true });
+  const p = settingsPath(root);
+  if (isSymlink(p)) throw new Error(`${p} is a symlink — refusing to write through it. Remove it and re-run.`);
+  writeFileSync(p, JSON.stringify(settings, null, 2) + '\n', 'utf8');
 }
 
 export function cmdHooks(args) {
@@ -63,11 +107,28 @@ export function cmdHooks(args) {
 function installHooks(root) {
   const src = templateHooksDir();
   const dest = join(root, '.claude', 'hooks');
+  // BEFORE mkdir: a symlinked .claude/ would otherwise have mkdir create the tree at the
+  // link's target and every write land outside the project.
+  assertInsideRepo(dest, root);
   mkdirSync(dest, { recursive: true });
+  // Validate EVERY destination before writing ANY of them. Checking inside the write
+  // loop left a half-installed .claude/hooks when a later file turned out to be a
+  // symlink — earlier files already overwritten, settings.json never merged (re-review L1).
+  // Never write THROUGH a symlink either: writeFileSync follows it, so a link planted at
+  // .claude/hooks/<name>.mjs would let a repo overwrite a file outside the project (F5).
   for (const f of HOOK_FILES) {
-    const s = join(src, f);
-    if (!existsSync(s)) throw new Error(`missing template ${s} (plugin templates/hooks not found)`);
-    writeFileSync(join(dest, f), readFileSync(s, 'utf8'), 'utf8');
+    if (!existsSync(join(src, f))) throw new Error(`missing template ${join(src, f)} (plugin templates/hooks not found)`);
+    const d = join(dest, f);
+    if (isSymlink(d)) throw new Error(`${d} is a symlink — refusing to write through it. Remove it and re-run.`);
+  }
+  // settings.json is written LAST but must be validated FIRST: checking it inside
+  // writeSettings meant a symlinked settings.json aborted the install only after every
+  // hook file had already been overwritten — a half-install again (re-review R5).
+  const sp = settingsPath(root);
+  if (isSymlink(sp)) throw new Error(`${sp} is a symlink — refusing to write through it. Remove it and re-run.`);
+
+  for (const f of HOOK_FILES) {
+    writeFileSync(join(dest, f), readFileSync(join(src, f), 'utf8'), 'utf8');
   }
 
   const settings = readSettings(root);

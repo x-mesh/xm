@@ -24,14 +24,46 @@ export const DEFAULT_POLICY = {
   allow_low: true,
 };
 
+const BUCKETS = ['block_confirmed', 'block_unreviewed', 'block_contested'];
+// A bucket holding an unknown severity matches no finding, so a single typo
+// (block_confirmed: ["critcal"]) would SILENTLY disable the gate — the worst possible
+// failure for a merge guard. Validate the values, not just the container (re-review N3).
+const SEVERITIES = ['critical', 'high', 'medium', 'low'];
+
 // Shallow per-key override on top of the defaults — a present key fully replaces
-// the default list (matches x-build gate-panel's mergePolicy semantics).
+// the default list (matches x-build gate-panel's mergePolicy semantics). The shape is
+// VALIDATED: a malformed bucket (e.g. --policy '{"block_confirmed":"critical"}') used to
+// reach blocksFor and die on `.map` with a raw TypeError instead of a controlled gate
+// error (F6). Callers map the throw to exit 2.
 export function mergePolicy(override = {}) {
-  return { ...DEFAULT_POLICY, ...(override || {}) };
+  // The override itself must be a plain object. null/array/string used to spread into
+  // something that still "looked like" a policy, so a caller passing garbage got a
+  // silently-default gate instead of an error (re-review M2). An explicit `null` is
+  // rejected too — it quietly swapped the caller's intended policy for the defaults (R4).
+  if (override !== undefined
+      && (override === null || typeof override !== 'object' || Array.isArray(override))) {
+    const kind = override === null ? 'null' : Array.isArray(override) ? 'array' : typeof override;
+    throw new Error(`policy must be a JSON object (got ${kind})`);
+  }
+  const merged = { ...DEFAULT_POLICY, ...(override || {}) };
+  for (const b of BUCKETS) {
+    if (!Array.isArray(merged[b])) {
+      throw new Error(`policy.${b} must be an array of severities (got ${merged[b] === null ? 'null' : typeof merged[b]})`);
+    }
+    for (const s of merged[b]) {
+      if (!SEVERITIES.includes(String(s).toLowerCase())) {
+        throw new Error(`policy.${b} has unknown severity "${s}" (expected ${SEVERITIES.join('|')}) — a typo here would silently disable the gate`);
+      }
+    }
+  }
+  if (typeof merged.allow_low !== 'boolean') {
+    throw new Error(`policy.allow_low must be a boolean (got ${typeof merged.allow_low})`);
+  }
+  return merged;
 }
 
 function blocksFor(findings, severities, allowLow) {
-  const set = new Set((severities || []).map(s => String(s).toLowerCase()));
+  const set = new Set((Array.isArray(severities) ? severities : []).map(s => String(s).toLowerCase()));
   const out = [];
   for (const f of findings || []) {
     const sev = String(f.severity || '').toLowerCase();
