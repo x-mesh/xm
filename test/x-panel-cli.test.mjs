@@ -196,6 +196,27 @@ describe('panel gate — CLI', () => {
     seedRun('gate-badpolicy', { confirmed: [], contested: [], unreviewed: [] });
     expect(panelRaw(['gate', 'gate-badpolicy', '--policy', 'not json']).status).toBe(2);
   });
+
+  test('F6: a malformed policy bucket is a controlled error (exit 2), not a TypeError crash', () => {
+    seedRun('gate-badbucket', { confirmed: [{ severity: 'high', file: 'a', line: 1, claim: 'x' }], contested: [], unreviewed: [] });
+    // string instead of array — used to reach blocksFor and die on `.map`
+    const r = panelRaw(['gate', 'gate-badbucket', '--policy', '{"block_confirmed":"critical"}']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('must be an array of severities');
+    expect(r.stderr).not.toContain('TypeError');
+    // allow_low shape is validated too
+    expect(panelRaw(['gate', 'gate-badbucket', '--policy', '{"allow_low":"yes"}']).status).toBe(2);
+  });
+
+  test('N3: an unknown severity in a policy bucket is rejected, not silently gate-disabling', () => {
+    seedRun('gate-typo', { confirmed: [{ severity: 'critical', file: 'a', line: 1, claim: 'x' }], contested: [], unreviewed: [] });
+    // "critcal" matches no finding → the gate would have silently PASSED a critical
+    const r = panelRaw(['gate', 'gate-typo', '--policy', '{"block_confirmed":["critcal"]}']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('unknown severity');
+    // the correctly-spelled policy still blocks
+    expect(panelRaw(['gate', 'gate-typo', '--policy', '{"block_confirmed":["critical"]}']).status).toBe(1);
+  });
 });
 
 // ── unit: synth ──────────────────────────────────────────────────────

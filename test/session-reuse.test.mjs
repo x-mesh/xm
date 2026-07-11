@@ -40,7 +40,12 @@ function review(name, args = [], env = {}) {
   });
   const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
   const runDir = join(sub, '.xm', 'panel');
-  const run = existsSync(runDir) ? readdirSync(runDir)[0] : null;
+  // .xm/panel holds run DIRECTORIES plus loose state files (readiness-cache.json,
+  // history.jsonl). Taking entry [0] blindly picks whichever sorts first and then
+  // tries to read <file>/verdict.json → ENOTDIR. Filter to run dirs, like the CLI does.
+  const run = existsSync(runDir)
+    ? (readdirSync(runDir).filter((n) => n.startsWith('panel-')).sort().pop() ?? null)
+    : null;
   const verdict = run ? JSON.parse(readFileSync(join(runDir, run, 'verdict.json'), 'utf8')) : null;
   return { r, calls, verdict };
 }

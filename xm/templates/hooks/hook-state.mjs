@@ -11,8 +11,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, relative, isAbsolute, resolve, sep } from 'node:path';
 
 // Global kill switch — either hook fails open when set. The documented escape hatch.
+// Explicit falsy spellings do NOT disable: a bare `!!process.env.X` treats the string
+// "0" as truthy, so `XM_BUILD_HOOKS_OFF=0` used to silently turn the guards OFF (F8).
 export function hooksOff() {
-  return !!process.env.XM_BUILD_HOOKS_OFF;
+  // Fail CLOSED on any spelling that reads as "not off" — `XM_BUILD_HOOKS_OFF=off`
+  // most naturally means "the off-switch is off", i.e. keep the guards ON.
+  const v = String(process.env.XM_BUILD_HOOKS_OFF ?? '').trim().toLowerCase();
+  return !['', '0', 'false', 'no', 'off'].includes(v);
 }
 
 function readJSON(p) {
@@ -46,7 +51,17 @@ export function reviewFixState(projectDir) {
 
   const result = readJSON(join(reviewDir, 'last-result.json'));
   const verdict = String(result?.verdict || '').trim().toLowerCase();
-  const lgtm = verdict === 'lgtm' || verdict === 'pass';
+  // The verdict only speaks for the review it came from: a LEFTOVER LGTM must not
+  // deactivate the guard for a fresh triage. This correlation FAILS CLOSED — an LGTM
+  // releases only when both artifacts carry the SAME reviewed_commit. The first attempt
+  // fell back to "verdict alone" whenever either side omitted the commit, which left the
+  // exact fail-open it was meant to close (re-review R5: a triage with no reviewed_commit
+  // was disarmed by ANY stale LGTM). `verify-review-fix --init` always stamps the commit,
+  // so the normal flow correlates; an un-stampable triage is released by regenerating it
+  // (--init) or by the documented XM_BUILD_HOOKS_OFF bypass.
+  const lgtm = (verdict === 'lgtm' || verdict === 'pass')
+    && !!triage.reviewed_commit
+    && result?.reviewed_commit === triage.reviewed_commit;
 
   const unresolvedBlocking = lgtm
     ? []
@@ -54,27 +69,58 @@ export function reviewFixState(projectDir) {
       .filter(f => BLOCKING_SEV.has(String(f.severity || '').trim().toLowerCase()))
       .map(f => ({ id: f.id ?? null, severity: f.severity, file: f.file ?? null, summary: f.summary || f.claim || '' }));
 
-  return { active: fixNow.length > 0, allowedFiles, unresolvedBlocking };
+  // A review-fix is ACTIVE only while it is unfinished. Deriving `active` from the mere
+  // presence of fix_now findings left the scope-guard blocking every out-of-scope edit
+  // FOREVER after the fix landed — nothing rewrites triage.json's decisions, so the
+  // repo stayed locked to the old allowed_files until the file was deleted by hand (F2).
+  // A fresh LGTM re-review is the same "done" signal unresolvedBlocking already uses.
+  return { active: fixNow.length > 0 && !lgtm, allowedFiles, unresolvedBlocking };
 }
 
-// Paths the scope guard must NEVER block: everything under .xm/ (review-fix state,
-// tasks, the later-queue) — blocking those would self-lock the harness and produce
-// the known later-queue false positives the design excludes.
+// The guard's OWN decision source. Hard-allowing all of .xm/ let a constrained agent
+// disarm the guard with one permitted Write — delete the fix_now decisions and it
+// evaporates (F4). triage.json is therefore NOT auto-allowed.
+//
+// last-result.json is deliberately NOT in this set: its LGTM is the ONLY thing that
+// releases the guard, so blocking it would stop the re-review from ever recording the
+// release — a self-lock worse than the hole it closed (re-review C-a). Forging an LGTM
+// there is a deliberate act on par with XM_BUILD_HOOKS_OFF, and the reviewed_commit
+// correlation below keeps a STALE verdict from silently disarming a fresh triage.
+//
+// Compared case-insensitively: macOS/APFS is case-insensitive by default, so a write to
+// `.xm/review/Triage.json` hits the same file and would otherwise slip past an exact
+// compare (re-review M1). Over-blocking a genuinely different casing on a case-sensitive
+// FS is the safe direction.
+const GUARD_INPUTS = new Set(['.xm/review/triage.json']);
+
+// Paths the scope guard must never block: the rest of .xm/ (tasks, phases, the
+// later-queue) — blocking those would self-lock the harness and produce the known
+// later-queue false positives the design excludes.
 export function isProtectedPath(rel) {
   if (!rel) return true;
   const norm = String(rel).split(sep).join('/');
+  if (GUARD_INPUTS.has(norm.toLowerCase())) return false; // never hard-allow the guard's own input
   return norm === '.xm' || norm.startsWith('.xm/');
 }
 
 // True when filePath (absolute or repo-relative) falls within the allowed set.
-// allowed_files entries are repo-relative; compare normalized POSIX paths with an
-// endsWith fallback so a different base prefix still matches the same file.
+// Match is EXACT, or the allowed entry is a directory that contains the file.
+// The old endsWith suffix/prefix fallback let a genuinely different file pass whenever
+// its path merely ENDED with an allowed entry — `nested/src/auth.ts` slipped through an
+// `src/auth.ts` scope, defeating the guard (F1, 3/3 vendor consensus).
 export function isAllowed(filePath, projectRoot, allowedFiles) {
   const abs = isAbsolute(filePath) ? filePath : resolve(projectRoot, filePath);
   const rel = relative(projectRoot, abs).split(sep).join('/');
   for (const raw of allowedFiles) {
-    const a = String(raw).split(sep).join('/');
-    if (rel === a || rel.endsWith('/' + a) || a.endsWith('/' + rel)) return true;
+    let a = String(raw);
+    // An ABSOLUTE allowed_files entry (hand-edited triage) would match nothing under a
+    // repo-relative compare, silently blocking every in-scope edit (re-review C-b).
+    // Relativize it against the project root first.
+    if (isAbsolute(a)) a = relative(projectRoot, a);
+    a = a.split(sep).join('/').replace(/^\.\//, '').replace(/\/+$/, '');
+    if (!a || a.startsWith('..')) continue; // outside the repo → cannot be in scope
+    if (rel === a) return true;                // exact file
+    if (rel.startsWith(a + '/')) return true;  // inside an allowed directory
   }
   return false;
 }

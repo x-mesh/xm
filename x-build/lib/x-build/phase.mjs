@@ -369,12 +369,18 @@ export function cmdGate(args) {
 
   const status = readJSON(phaseStatusPath(project, currentPhase.id));
   const now = new Date().toISOString();
+  // The human's sign-off is itself a gate decision — record it in the ledger too.
+  // Writing only gate_passed left the last blocked `phase next` entry (passed:false)
+  // sitting in status.json until the next transition, so `status --json` reported a
+  // gate as still-blocking after the user had already cleared it (F7).
+  const gateType = resolveGates()[`${currentPhase.name}-exit`] || 'auto';
 
   if (action === 'pass') {
     status.gate_passed = true;
     status.gate_message = message;
     status.gate_at = now;
     writeJSON(phaseStatusPath(project, currentPhase.id), status);
+    recordGateOutcome(project, currentPhase.id, gateType, true, 'human');
 
     const checkpoint = {
       type: 'gate-pass',
@@ -392,6 +398,7 @@ export function cmdGate(args) {
     status.gate_message = message;
     status.gate_at = now;
     writeJSON(phaseStatusPath(project, currentPhase.id), status);
+    recordGateOutcome(project, currentPhase.id, gateType, false, 'human');
 
     const checkpoint = {
       type: 'gate-fail',

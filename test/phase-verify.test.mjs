@@ -208,6 +208,25 @@ describe('phase exit gates are enforced', () => {
     }
   });
 
+  test('F7: gate pass refreshes the ledger — no stale "blocked" entry after sign-off', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-gate-'));
+    try {
+      const name = setupProject(tmp);
+      // 1) a blocked `phase next` records gate.passed = false
+      run(['phase', 'next'], { cwd: tmp });
+      let status = readJSON(projectPath(tmp, name, 'phases', '01-research', 'status.json'));
+      expect(status.gate.passed).toBe(false);
+      // 2) the human signs off — the ledger must follow, not keep claiming "blocked"
+      run(['gate', 'pass', 'verified'], { cwd: tmp });
+      status = readJSON(projectPath(tmp, name, 'phases', '01-research', 'status.json'));
+      expect(status.gate.passed).toBe(true);
+      expect(status.gate.passed_by).toBe('human');
+      expect(status.gate_passed).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('an explicit auto gate passes and records passed_by=auto', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-gate-'));
     try {

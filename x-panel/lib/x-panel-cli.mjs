@@ -2186,7 +2186,16 @@ function cmdGate(pos, flags) {
       return;
     }
   }
-  const policy = mergePolicy(override);
+  // mergePolicy validates the bucket shapes and throws — map that to a controlled
+  // gate error (exit 2) instead of an unhandled TypeError crash (F6).
+  let policy;
+  try {
+    policy = mergePolicy(override);
+  } catch (e) {
+    console.error(`${C.red}✗ --policy: ${e.message}${C.reset}`);
+    process.exitCode = 2;
+    return;
+  }
   const { decision, blocking } = evaluateVerdict(verdict, policy);
   const exitCode = decision === 'fail' ? 1 : 0;
   const result = {
