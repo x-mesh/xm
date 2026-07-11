@@ -24,6 +24,7 @@ import {
 import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, supportsResume, proseOutsideJSON } from './x-panel/adapters.mjs';
 import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize } from './x-panel/synth.mjs';
+import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from './x-panel/gate.mjs';
 import { createTmEventsPublisher, subscribeXkRun } from './x-panel/tm-events.mjs';
 import { readEventsLog, formatEventLine, maxSeq } from './x-panel/events-log.mjs';
 
@@ -138,7 +139,7 @@ function parseFlags(raw) {
     '--models': 'models', '-m': 'models', '--judge': 'judge', '--preset': 'preset',
     '--review-prompt-file': 'reviewPromptFile', '--review-prompt': 'reviewPrompt',
     '--lens-tag': 'lensTag', '--prompt-file': 'promptFile', '--prompt': 'prompt',
-    '--check': 'check', '--source': 'source', '--title': 'title',
+    '--check': 'check', '--source': 'source', '--title': 'title', '--policy': 'policy',
   };
   for (let i = 0; i < raw.length; i++) {
     const a = raw[i];
@@ -155,6 +156,7 @@ function parseFlags(raw) {
     else if (a === '--timeout') flags.timeout = parseInt(raw[++i], 10) || undefined;
     else if (a === '--preset') flags.preset = raw[++i];
     else if (a === '--check') flags.check = raw[++i];
+    else if (a === '--policy') flags.policy = raw[++i];
     else if (a === '--fast') flags.preset = 'fast';
     else if (a === '--full') flags.preset = 'full';
     else if (a === '--global') flags.global = true;
@@ -173,6 +175,7 @@ function parseFlags(raw) {
     else if (a === '--fresh') flags.fresh = true;
     else if (a === '--interval') flags.interval = parseInt(raw[++i], 10) || undefined;
     else if (a === '--all') flags.all = true;
+    else if (a === '--force') flags.force = true;
     // Only consume the next token as the count when it's actually numeric — a bare `--lines`
     // (or `--lines --all`) must NOT swallow the following flag. Bare → a sensible default of 3.
     else if (a === '--lines') { const nx = raw[i + 1]; flags.lines = (nx != null && /^\d+$/.test(nx)) ? (i++, Math.max(0, parseInt(nx, 10))) : 3; }
@@ -261,8 +264,27 @@ ${target}
 ${FINDINGS_CONTRACT}`;
 }
 
+// Per-finding evidence cap in the refute prompt. Evidence is model-authored and can be
+// huge; truncation is EXPLICIT (marker, never silent) so a refuter knows it judged a cut.
+const REFUTE_EVIDENCE_MAX = 500;
+
+// One findings list shared by BOTH refute prompt builders — refuters must see each
+// finding's evidence (normalizeFindings preserves it; dropping it here made round 2
+// judge blind), and building the list in one place keeps the two prompts in sync.
+function refuteFindingsList(otherFindings) {
+  return otherFindings.map((f) => {
+    const head = `[${f.gref}] (${f.severity}) ${f.file ?? ''}:${f.line ?? ''} ${f.claim}`;
+    const ev = String(f.evidence || '').replace(/\s+/g, ' ').trim();
+    if (!ev) return head;
+    const body = ev.length > REFUTE_EVIDENCE_MAX
+      ? `${ev.slice(0, REFUTE_EVIDENCE_MAX).trimEnd()} … [evidence truncated]`
+      : ev;
+    return `${head}\n  evidence: ${body}`;
+  }).join('\n') || '(none)';
+}
+
 function refutePrompt(target, otherLabel, otherFindings) {
-  const list = otherFindings.map(f => `[${f.gref}] (${f.severity}) ${f.file ?? ''}:${f.line ?? ''} ${f.claim}`).join('\n') || '(none)';
+  const list = refuteFindingsList(otherFindings);
   return `You are a skeptical second reviewer of a code change. Other reviewers (${otherLabel}) reported the findings below. For EACH finding decide whether it is a real, actionable issue.
 
 TARGET:
@@ -272,26 +294,121 @@ FINDINGS (each tagged with a [id]):
 ${list}
 
 Return ONLY a JSON object, no prose. Use the exact bracketed [id] string as "ref":
-{"verdicts":[{"ref":"<id, e.g. codex#0>","stance":"refute|concede","reason":"one line"}]}
+{"verdicts":[{"ref":"<id, e.g. codex#0>","stance":"refute|concede|abstain","reason":"one line"}]}
 - refute = wrong, not real, or not actionable.
-- concede = a real issue worth fixing.`;
+- concede = a real issue worth fixing.
+- abstain = cannot judge from the provided evidence.`;
 }
 
 // Refute prompt for a RESUMED provider session (t5): the target is already in
 // the session context from round 1, so only the others' findings travel — the
 // whole point of session reuse. MUST stay semantically identical to
-// refutePrompt minus the TARGET block; drift here skews the verdict.
+// refutePrompt minus the TARGET block; drift here skews the verdict (the
+// findings list itself is shared via refuteFindingsList, so it cannot drift).
 function refutePromptResumed(otherLabel, otherFindings) {
-  const list = otherFindings.map(f => `[${f.gref}] (${f.severity}) ${f.file ?? ''}:${f.line ?? ''} ${f.claim}`).join('\n') || '(none)';
+  const list = refuteFindingsList(otherFindings);
   return `You are now a skeptical second reviewer of the SAME code change you just reviewed — it is already in this conversation; do not ask for it again. Other reviewers (${otherLabel}) reported the findings below. For EACH finding decide whether it is a real, actionable issue.
 
 FINDINGS (each tagged with a [id]):
 ${list}
 
 Return ONLY a JSON object, no prose. Use the exact bracketed [id] string as "ref":
-{"verdicts":[{"ref":"<id, e.g. codex#0>","stance":"refute|concede","reason":"one line"}]}
+{"verdicts":[{"ref":"<id, e.g. codex#0>","stance":"refute|concede|abstain","reason":"one line"}]}
 - refute = wrong, not real, or not actionable.
-- concede = a real issue worth fixing.`;
+- concede = a real issue worth fixing.
+- abstain = cannot judge from the provided evidence.`;
+}
+
+// ── pre-run readiness gate (shared by review AND cross) ──────────────
+
+// A CLI on PATH but logged-out joins the panel and dies mid-round, burning every other
+// model's tokens. Gate participants on providerReady (install + auth/creds — the same
+// no-model-call check as `doctor`) BEFORE spawning anything. checkAuth costs up to ~12s
+// per provider, so `ready` verdicts are cached with a TTL (readiness-cache.json, same
+// pattern as the preflight cache): only ready=true is cached — a failing provider can be
+// fixed at any moment (login) and must always re-check. Bypass the cache with --fresh;
+// tune/disable with panel.readiness_ttl_s (default 1800, 0 = off). X_PANEL_CMD overrides
+// are instant, so they skip the cache entirely (keeps tests hermetic).
+// Returns { ready, skipped } — every exclusion is reported LOUDLY with a doctor hint.
+function gateReadiness(entries, cfg, { fresh = false } = {}) {
+  // --fresh bypasses cache READS only — a fresh ready=true probe still refreshes the
+  // cache (throwing away the evidence --fresh just paid ~12s for would force the NEXT
+  // run to probe again). readiness_ttl_s 0 disables the cache entirely (reads AND writes).
+  const ttlS = cfg.readiness_ttl_s != null ? Math.max(0, Number(cfg.readiness_ttl_s) || 0) : 1800;
+  const cacheOn = ttlS > 0;
+  const cachePath = join(PANEL_DIR, 'readiness-cache.json');
+  const cached = cacheOn ? (((readJSONSafe(cachePath) || {}).entries) || {}) : {};
+  const byName = new Map(); // one check per provider NAME — claude:opus/claude:sonnet share auth
+  const ready = [];
+  const skipped = [];
+  let wroteCache = false;
+  for (const e of entries) {
+    let v = byName.get(e.name);
+    if (!v) {
+      const overridden = !!process.env[`X_PANEL_CMD_${e.name.toUpperCase()}`];
+      const hit = !overridden && !fresh && cached[e.name];
+      if (hit && hit.ready && Date.now() - hit.at_ms < ttlS * 1000) {
+        v = { ready: true, detail: `cached ${Math.round((Date.now() - hit.at_ms) / 1000)}s ago (--fresh to re-check)` };
+      } else {
+        const c = checkAuth(e.name);
+        v = { ready: providerReady(c), detail: c.detail || '' };
+        if (v.ready && !overridden && cacheOn) {
+          cached[e.name] = { ready: true, at_ms: Date.now(), detail: v.detail };
+          wroteCache = true;
+        }
+      }
+      byName.set(e.name, v);
+    }
+    if (v.ready) {
+      ready.push(e);
+    } else {
+      skipped.push({ name: e.name, label: e.label, reason: 'not_ready', detail: v.detail });
+      console.error(`${C.yellow}⚠ ${e.label} not ready (${v.detail}) — excluded from this run. Check: xm panel doctor${C.reset}`);
+    }
+  }
+  if (wroteCache) {
+    // 7-day hard prune so stale provider names never pile up (mirrors the preflight cache).
+    const now = Date.now();
+    const entriesOut = Object.fromEntries(Object.entries(cached).filter(([, c]) => c && c.at_ms && now - c.at_ms < 7 * 86400_000));
+    try { ensureDir(PANEL_DIR); writeJSON(cachePath, { schema: 1, entries: entriesOut }); } catch { /* best-effort */ }
+  }
+  return { ready, skipped };
+}
+
+// ── event log (shared by review AND cross) ───────────────────────────
+
+// events.jsonl is the durable, pollable log — keep it MILESTONE-only so its size
+// (and every dashboard poll that reads it) stays bounded. High-frequency deltas
+// (text/thinking/stdout/stderr chunks) update the small, overwritten status.json
+// instead of appending a line each time.
+// stdout/stderr are kept (raw mode is coarse: 1–2 chunks, not the bloat source).
+// The high-frequency stream-mode deltas (text/thinking) are deliberately absent.
+const MILESTONE = new Set(['spawn', 'exit', 'timeout', 'error', 'json_parsed', 'json_missing', 'usage_final', 'lifecycle', 'stdout', 'stderr']);
+
+// Sequenced, redacted, tail-bounded appender for a run's events.jsonl. One factory for
+// review AND cross so both namespaces get identical forensics (cross had none — the
+// highest-traffic path was a black box on failure).
+function makeEventWriter(eventPath) {
+  let seq = 0;
+  let appendWarned = false;
+  return (event) => {
+    const record = { seq: ++seq, at: new Date().toISOString(), ...event };
+    if (record.text != null) {
+      const redacted = redactPanelText(record.text);
+      record.text = tailText(redacted, 2000);
+      record.truncated = redacted.length > record.text.length;
+    }
+    try {
+      appendFileSync(eventPath, JSON.stringify(record) + '\n', 'utf8');
+    } catch (err) {
+      // The event log is forensics, not the product — never kill the run over it. But a
+      // silently missing log later misreads as "legacy run" in --logs, so warn ONCE (L6).
+      if (!appendWarned) {
+        appendWarned = true;
+        process.stderr.write(`${C.yellow}⚠ events.jsonl append failed (${err?.code || err?.message || err}) — this run's event log will be incomplete${C.reset}\n`);
+      }
+    }
+  };
 }
 
 // ── render ───────────────────────────────────────────────────────────
@@ -377,11 +494,20 @@ function renderVerdict(v, dir) {
   // A model whose round 1 died or came back unparseable is NOT part of this verdict —
   // saying so up top prevents the "N/N models agreed" over-read (mem-mesh ed2ff3e3).
   for (const m of v.models) {
-    const r1 = (v.by_model[m] || {}).r1 || 'ok';
+    const bm = v.by_model[m] || {};
+    const r1 = bm.r1 || 'ok';
     if (r1 === 'failed') {
       lines.push(`${C.red}⚠ ${m}: round 1 FAILED${C.reset} (${(v.by_model[m].r1_error || 'error')}) — its findings are missing from this verdict; raw kept in ${safeLabel(m)}.r1.json`);
     } else if (r1 === 'suspect_empty') {
       lines.push(`${C.yellow}⚠ ${m}: 0 findings but substantial prose in its raw output${C.reset} — possibly an unparsed review; check ${safeLabel(m)}.r1.json`);
+    }
+    // Round-2 fidelity: a refuter whose refs don't match the findings (or whose stances
+    // had to be coerced to abstain) did NOT cleanly judge the panel — say so up top.
+    if (bm.unmatched_refs || bm.invalid_stances) {
+      const parts = [];
+      if (bm.unmatched_refs) parts.push(`${bm.unmatched_refs} unmatched ref(s)`);
+      if (bm.invalid_stances) parts.push(`${bm.invalid_stances} invalid stance(s)`);
+      lines.push(`${C.yellow}⚠ ${m}: round-2 fidelity — ${parts.join(', ')}${C.reset} — findings it never addressed are UNREVIEWED, not confirmed; check ${safeLabel(m)}.r2.json`);
     }
   }
   lines.push('');
@@ -403,7 +529,7 @@ function renderVerdict(v, dir) {
   }
   if (v.unreviewed && v.unreviewed.length) {
     lines.push('');
-    lines.push(`${C.bold}UNREVIEWED${C.reset} ${C.dim}(round 2 failed for all opponents — not vouched)${C.reset}`);
+    lines.push(`${C.bold}UNREVIEWED${C.reset} ${C.dim}(no opponent vouched — round 2 failed, abstained, or never addressed it)${C.reset}`);
     for (const f of v.unreviewed) {
       lines.push(`  ${sev(f.severity)} ${f.file ?? ''}${f.line ? ':' + f.line : ''}  ${f.claim}  ${C.dim}— raised by ${f.owner}${C.reset}`);
     }
@@ -448,26 +574,52 @@ async function cmdReview(pos, flags) {
     return { name, model, label: model ? `${name}:${model}` : name };
   });
 
-  const usable = [];
+  const skippedProviders = []; // structured skip record — surfaced in --json output (B4a)
+  let usable = [];
   for (const e of entries) {
     if (!knownProviders().includes(e.name) && !process.env[`X_PANEL_CMD_${e.name.toUpperCase()}`]) {
       console.error(`${C.yellow}⚠ unknown provider "${e.name}" — skipping${C.reset}`);
+      skippedProviders.push({ name: e.name, label: e.label, reason: 'unknown_provider', detail: 'not a known provider' });
       continue;
     }
     if (!isAvailable(e.name)) {
       console.error(`${C.yellow}⚠ ${e.name} CLI not found on PATH — skipping (install it or set X_PANEL_CMD_${e.name.toUpperCase()})${C.reset}`);
+      skippedProviders.push({ name: e.name, label: e.label, reason: 'not_installed', detail: 'CLI not on PATH' });
       continue;
     }
     usable.push(e);
   }
+  const target = resolveTarget(pos[0]);
+  // Trivial-target guard (B4b): a clean tree yields the "(no diff against HEAD)" sentinel
+  // (~25 chars) — running it still burns N models × 2 rounds for nothing. Blocks the
+  // empty-diff sentinel / sub-minimum git-diff and any fully empty target; an EXPLICIT
+  // literal/file target above the empty check is intentional and passes. --force overrides.
+  // Runs BEFORE the readiness gate: this check is free (local git diff) while the gate
+  // pays up to ~12s of checkAuth per provider — never spend that to say "nothing to review".
+  if (!flags.force) {
+    const trimmed = (target.text || '').trim();
+    const minChars = cfg.min_target_chars || 40;
+    const trivialDiff = target.kind === 'git-diff' && (trimmed === '(no diff against HEAD)' || trimmed.length < minChars);
+    if (!trimmed || trivialDiff) {
+      const why = target.kind === 'git-diff'
+        ? `git diff is empty/trivial (${trimmed.length} chars — clean tree?)`
+        : 'the target is empty';
+      console.error(`${C.red}✗ nothing to review${C.reset} — ${why}. A panel run burns ${usable.length} models × 2 rounds. Pass a file/text target, make changes, or --force to run anyway.`);
+      process.exitCode = 2;
+      return;
+    }
+  }
+  // Readiness gate: an installed-but-logged-out CLI must not join the panel and die
+  // mid-round. Exclusions are loud (stderr + skipped_providers in --json).
+  const gate = gateReadiness(usable, cfg, { fresh: flags.fresh });
+  usable = gate.ready;
+  skippedProviders.push(...gate.skipped);
   if (usable.length < 2) {
     console.error(`${C.red}panel needs ≥2 available models, found ${usable.length}${C.reset}`);
     process.exitCode = 1;
     return;
   }
   const labels = usable.map((e) => e.label);
-
-  const target = resolveTarget(pos[0]);
   // Injected per-lens prompt (cross-vendor review mode): overrides round-1 intro only.
   const reviewOverride = loadPromptOverride(flags);
   if (reviewOverride === undefined) return; // unreadable --review-prompt-file (error already logged)
@@ -499,22 +651,14 @@ async function cmdReview(pos, flags) {
   const dir = join(baseDir, run);
   ensureDir(dir);
   const eventPath = join(dir, 'events.jsonl');
-  let eventSeq = 0;
-  const writeEvent = (event) => {
-    const record = { seq: ++eventSeq, at: new Date().toISOString(), ...event };
-    if (record.text != null) {
-      const redacted = redactPanelText(record.text);
-      record.text = tailText(redacted, 2000);
-      record.truncated = redacted.length > record.text.length;
-    }
-    try { appendFileSync(eventPath, JSON.stringify(record) + '\n', 'utf8'); } catch { /* best-effort */ }
-  };
+  const writeEvent = makeEventWriter(eventPath);
 
   // Live status for polling (dashboard / xm recall / cat .xm/panel/<run>/status.json)
   const zeroTokens = () => ({ input: 0, output: 0, cached: 0, reasoning: 0 });
   const status = {
     run, started_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     phase: 'starting', target_kind: target.kind, target_title: targetTitle(target), stream, partial: stream ? partial : false, timeout_s: timeoutS,
+    skipped_providers: skippedProviders,
     // Cumulative cost/tokens across BOTH rounds (round-scoped live fields below are
     // reset each round by startPhase, so totals must live separately to be holdable).
     totals: { cost_usd: 0, credits: 0, tokens: zeroTokens() },
@@ -579,13 +723,7 @@ async function cmdReview(pos, flags) {
     }
     flushStatus({ force: ev.event === 'model_done' });
   };
-  // events.jsonl is the durable, pollable log — keep it MILESTONE-only so its size
-  // (and every dashboard poll that reads it) stays bounded. High-frequency deltas
-  // (text/thinking/stdout/stderr chunks) update the small, overwritten status.json
-  // instead of appending a line each time.
-  // stdout/stderr are kept (raw mode is coarse: 1–2 chunks, not the bloat source).
-  // The high-frequency stream-mode deltas (text/thinking) are deliberately absent.
-  const MILESTONE = new Set(['spawn', 'exit', 'timeout', 'error', 'json_parsed', 'json_missing', 'usage_final', 'lifecycle', 'stdout', 'stderr']);
+  // Milestone-only persistence — see MILESTONE / makeEventWriter (module scope, shared with cross).
   const onProviderEvent = (entry, ev) => {
     const m = status.models.find((x) => x.label === entry.label);
     const type = ev.type || 'event';
@@ -725,6 +863,9 @@ async function cmdReview(pos, flags) {
       // otherwise round 2 (which goes stateless because there's no id) would record
       // plain 'stateless' and hide that session support failed.
       e._r1Fallback = res.resume === 'fallback';
+      // Banner capture failed (codex): a session WAS created but its id is unknown —
+      // distinct from a vendor that never supports resume (adapters emitted the warning).
+      e._captureFailed = !!res.session_capture_failed;
       e._resumeId = res.resume === 'fallback' ? null : (res.session_id || null);
     }
     const findings = res.ok ? normalizeFindings(res.json, lensTag) : [];
@@ -750,7 +891,10 @@ async function cmdReview(pos, flags) {
     return { prompt: refutePromptResumed(otherLabel, otherFindings), session: { mode: 'resume', id: e._resumeId }, fallbackPrompt: full };
   }, timeoutMs, onModelDone, (e, res) => {
     if (!res.ok) abstained.add(e.label); // round2 failure ≠ silent concede
-    const resume = res.resume || (e._r1Fallback ? 'fallback' : 'stateless'); // 'ok' | 'fallback' | 'stateless'
+    // 'ok' | 'fallback' | 'capture_failed' (session created but its banner id was not
+    // captured — round 2 went stateless) | 'stateless' (vendor never supports resume /
+    // reuse disabled). capture_failed ≠ stateless: the former is a fixable capture bug.
+    const resume = res.resume || (e._r1Fallback ? 'fallback' : e._captureFailed ? 'capture_failed' : 'stateless');
     const sm = status.models.find((x) => x.label === e.label);
     if (sm) sm.resume = resume;
     const verdicts = res.ok ? normalizeVerdicts(res.json) : [];
@@ -760,6 +904,15 @@ async function cmdReview(pos, flags) {
   }, onProviderEvent, stream, partial, ['verdicts']);
 
   const verdict = synthesize(labels, round1, round2, abstained, r1Status);
+  // Surface round-2 fidelity per model in the live status too, so `status <run>` /
+  // --watch (and their --json snapshots) show a broken refuter without opening verdict.json.
+  for (const m of status.models) {
+    const bm = verdict.by_model[m.label];
+    if (bm) {
+      m.unmatched_refs = bm.unmatched_refs || 0;
+      m.invalid_stances = bm.invalid_stances || 0;
+    }
+  }
   const record = {
     run,
     created_at: new Date().toISOString(),
@@ -770,6 +923,7 @@ async function cmdReview(pos, flags) {
     stream,
     partial: stream ? partial : false,
     timeout_s: timeoutS,
+    skipped_providers: skippedProviders,
     usage: {
       totals: status.totals,
       by_model: Object.fromEntries(status.models.map((m) => [m.label, { tokens: m.cum_tokens, cost_usd: m.cum_cost_usd, credits: m.cum_credits, resume: m.resume || 'stateless' }])),
@@ -804,16 +958,25 @@ async function cmdCross(pos, flags) {
   const cfg = loadPanelConfig();
   // Warn (never silently drop — Lesson L6) when a requested provider is unknown/not installed:
   // a cross-vendor caller must SEE that it degraded toward single-vendor.
-  const usable = [];
+  const skippedProviders = []; // structured skip record — surfaced in --json output (B4a)
+  let usable = [];
   for (const e of resolveEntries(flags, cfg)) {
     if (!knownProviders().includes(e.name) && !process.env[`X_PANEL_CMD_${e.name.toUpperCase()}`]) {
-      console.error(`${C.yellow}⚠ unknown provider "${e.name}" — skipping${C.reset}`); continue;
+      console.error(`${C.yellow}⚠ unknown provider "${e.name}" — skipping${C.reset}`);
+      skippedProviders.push({ name: e.name, label: e.label, reason: 'unknown_provider', detail: 'not a known provider' });
+      continue;
     }
     if (!isAvailable(e.name)) {
-      console.error(`${C.yellow}⚠ ${e.name} CLI not installed — skipping${C.reset}`); continue;
+      console.error(`${C.yellow}⚠ ${e.name} CLI not installed — skipping${C.reset}`);
+      skippedProviders.push({ name: e.name, label: e.label, reason: 'not_installed', detail: 'CLI not on PATH' });
+      continue;
     }
     usable.push(e);
   }
+  // Readiness gate (same as review): a logged-out CLI must not join and die mid-run.
+  const gate = gateReadiness(usable, cfg, { fresh: flags.fresh });
+  usable = gate.ready;
+  skippedProviders.push(...gate.skipped);
   if (!usable.length) {
     console.error(`${C.red}cross needs ≥1 available model${C.reset} — none found. Install a model CLI or pass --models.`);
     process.exitCode = 1;
@@ -841,7 +1004,7 @@ async function cmdCross(pos, flags) {
   const nowISO = () => new Date().toISOString();
   const status = {
     run, kind: 'cross', source, title, started_at: nowISO(), updated_at: nowISO(), phase: 'running',
-    timeout_s: timeoutS, prompt_chars: prompt.length,
+    timeout_s: timeoutS, prompt_chars: prompt.length, skipped_providers: skippedProviders,
     models: usable.map((e) => ({
       label: e.label, provider: e.name, model: e.model,
       state: 'running', elapsed_s: 0, started_at: nowISO(), updated_at: nowISO(),
@@ -849,10 +1012,14 @@ async function cmdCross(pos, flags) {
       retried: false, error: null,
     })),
   };
+  // Durable event log (same machinery as review) — cross runs used to keep NO
+  // events.jsonl, so the highest-traffic path had zero forensics on a failure.
+  const eventPath = join(dir, 'events.jsonl');
+  const writeEvent = makeEventWriter(eventPath);
   // Live push to a term-mesh daemon when present (XK-EVENTS-v1, t3) — same
   // best-effort mirror as review; status.json stays authoritative.
   const tmEvents = createTmEventsPublisher({
-    run, runKind: 'cross', title,
+    run, runKind: 'cross', title, logPath: eventPath,
     enabled: flags.tmEvents != null ? flags.tmEvents : cfg.tm_events !== false,
   });
   let lastFlushMs = 0;
@@ -871,7 +1038,8 @@ async function cmdCross(pos, flags) {
     flushStatus();
   }, 2000);
   if (hb.unref) hb.unref();
-  // Per-provider progress → status.json (redacted + tail-bounded, same rules as review).
+  // Per-provider progress → status.json (redacted + tail-bounded, same rules as review),
+  // and milestone events → events.jsonl (spawn/stdout/stderr/timeout/error/exit).
   const onProviderEvent = (m) => (ev) => {
     m.updated_at = nowISO();
     if (ev.type === 'spawn') { m.pid = ev.pid; m.last_event = 'spawned'; }
@@ -883,8 +1051,23 @@ async function cmdCross(pos, flags) {
     } else if (ev.type === 'timeout') { m.last_event = 'timeout'; m.error = ev.error || 'timeout'; }
     else if (ev.type === 'error') { m.last_event = 'process error'; m.error = ev.error || 'process error'; }
     else if (ev.type === 'exit') { m.last_event = ev.code === 0 ? 'process exited' : `exit ${ev.code}`; }
+    if (MILESTONE.has(ev.type)) {
+      writeEvent({
+        type: ev.type,
+        phase: status.phase,
+        model: m.label,
+        provider: m.provider,
+        bytes: ev.bytes || null,
+        pid: ev.pid || null,
+        code: ev.code ?? null,
+        note: ev.note || null,
+        error: ev.error || null,
+        text: ev.text || null,
+      });
+    }
     flushStatus({ force: ev.type !== 'stdout' && ev.type !== 'stderr' });
   };
+  writeEvent({ type: 'run_start', phase: status.phase, models: usable.map((e) => e.label), source, title, prompt_chars: prompt.length });
   flushStatus({ force: true });
 
   let results;
@@ -902,6 +1085,7 @@ async function cmdCross(pos, flags) {
       // "timeout" (e.g. `exit 0 but empty output: ...timed out...`). Retries are surfaced (L6).
       if (!res.ok && !res.timedOut) {
         console.error(`${C.yellow}⚠ ${e.label} failed (${res.error}) — retrying once${C.reset}`);
+        writeEvent({ type: 'lifecycle', phase: status.phase, model: e.label, provider: e.name, note: `failed (${res.error}) — retrying once`, error: res.error });
         m.retried = true;
         m.last_event = 'retrying';
         m.error = null;
@@ -915,6 +1099,7 @@ async function cmdCross(pos, flags) {
       m.elapsed_s = Math.round((Date.now() - t0) / 1000);
       m.updated_at = nowISO();
       m.last_event = res.ok ? 'done' : 'failed';
+      writeEvent({ type: 'model_done', model: e.label, ok: res.ok, elapsed_s: m.elapsed_s, error: res.ok ? null : (res.error || null) });
       flushStatus({ force: true });
       const rec = { model: e.label, provider: e.name, ok: res.ok, output: res.output || '', error: res.error || null };
       writeJSON(join(dir, `${safeLabel(e.label)}.json`), rec);
@@ -924,9 +1109,10 @@ async function cmdCross(pos, flags) {
     clearInterval(hb);
   }
   status.phase = 'done';
+  writeEvent({ type: 'run_done', phase: status.phase, ok: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length });
   flushStatus({ force: true });
   tmEvents.close();
-  const record = { run, created_at: new Date().toISOString(), source, title, models: usable.map((e) => e.label), prompt_chars: prompt.length, results };
+  const record = { run, created_at: new Date().toISOString(), source, title, models: usable.map((e) => e.label), skipped_providers: skippedProviders, prompt_chars: prompt.length, results };
   writeJSON(join(dir, 'result.json'), record);
   if (flags.json) console.log(JSON.stringify(record, null, 2));
   else for (const r of results) console.log(`\n${C.bold}## ${r.model}${C.reset}${r.ok ? '' : ` ${C.red}(FAILED: ${r.error})${C.reset}`}\n${r.output || ''}`);
@@ -1217,6 +1403,13 @@ Commands:
     --partial | --no-partial    Token-level live text for claude/cursor (default on within --stream;
                                 config: panel.stream_partial). Auto-off when target > panel.partial_max_chars
                                 (default 50000) unless --partial forces it. codex/agy/kiro unaffected.
+    --force                     Override the trivial-target guard: an empty target, or a git-diff
+                                below panel.min_target_chars (default 40 — incl. the clean-tree
+                                "(no diff against HEAD)" sentinel), exits 2 instead of burning
+                                N models × 2 rounds. Review & cross also gate participants on
+                                provider readiness (install + auth, no model call — cached 30min;
+                                config panel.readiness_ttl_s, --fresh re-checks): excluded providers
+                                are reported on stderr and as skipped_providers in --json.
     --json
 
   setup [--models a,b] [--judge rule] [--global]
@@ -1249,10 +1442,21 @@ Commands:
                                 deliberation (debate/council) — caller does the synthesis.
                                 Output under .xm/cross/<run>/. Writes a live status.json
                                 heartbeat (~2s) while running, so status/--watch show per-model
-                                state · elapsed · output tail for cross runs too.
+                                state · elapsed · output tail for cross runs too, plus an
+                                events.jsonl milestone log (spawn/stderr/timeout/exit) so
+                                status <run> --logs works for cross runs as well.
                                 --source tags the calling workflow (e.g. op:debate, build:consensus,
                                 solver:hypothesize, eval:judge) and --title names the run; both
                                 surface in the dashboard panel list so runs are identifiable.
+  gate <run> [--policy '<json>'] [--json]
+                                Turn a finished run's verdict.json into a merge-gate EXIT CODE
+                                (0 pass / 1 policy block / 2 error) — for CI and non-worktree users
+                                (a panel --json run always exits 0, even with blocking findings).
+                                Run a panel first (xm panel review <target>), then gate it by run id.
+                                Policy defaults: block confirmed critical/high/medium, unreviewed
+                                critical/high, contested critical, allow_low. --policy overrides per
+                                bucket, e.g. '{"block_confirmed":["critical","high"]}'. Writes an
+                                auditable gate-result.json next to the run.
   status [run] [--all] [--json] [--watch|--follow [--interval N]] [--logs]
                                 Read run state from disk — see an IN-PROGRESS panel from the CLI.
                                 Covers all three namespaces: .xm/panel (native), .xm/review
@@ -1280,8 +1484,8 @@ Commands:
                                 watch says so and continues polling (--no-tm-events to disable).
                                 --logs <run> streams the RAW event log (events.jsonl: each model's
                                 stdout/stderr/spawn/exit lines) instead of the interpreted board —
-                                last N (--lines N, default 200), or tail -f with --watch. cross runs
-                                keep no event log (status.json + final output only).
+                                last N (--lines N, default 200), or tail -f with --watch. Works for
+                                review AND cross runs (legacy cross runs predate the log).
   types                         List providers (install status) + how to query each
                                 one's live models (cursor/kiro are multi-vendor: kimi, deepseek, …)
   models [vendor] [--check m1,m2]
@@ -1409,6 +1613,9 @@ function modelProgress(m) {
   if (m.cost_usd != null && m.cost_usd > 0) parts.push(`$${m.cost_usd.toFixed(2)}`);
   const age = statusAge(m.updated_at);
   if (age) parts.push(`${age} ago`);
+  // Round-2 fidelity (written post-synthesis): a refuter that mangled refs or stances.
+  if (m.unmatched_refs) parts.push(`${C.yellow}${m.unmatched_refs} unmatched ref(s)${C.reset}`);
+  if (m.invalid_stances) parts.push(`${C.yellow}${m.invalid_stances} invalid stance(s)${C.reset}`);
   if (!parts.length && m.last_event) parts.push(m.last_event);
   return parts;
 }
@@ -1453,9 +1660,10 @@ const PROMPT_ECHO_MARKS = [
   'Return ONLY a JSON object',
   'If there are no real issues, return',
   '"severity":"critical|high|medium|low"',
-  '"stance":"refute|concede"',
+  '"stance":"refute|concede|abstain"',
   '- refute = wrong, not real',
   '- concede = a real issue worth fixing',
+  '- abstain = cannot judge from the provided evidence',
 ];
 
 function dropPromptEcho(lines) {
@@ -1554,12 +1762,16 @@ function summarizeVerdicts(items, n) {
   if (!items.length) return ['verdicts: none'];
   if (n === 1 && items.length > 1) {
     const conc = items.filter((v) => v.stance === 'concede').length;
-    return [`${items.length} verdicts — ${C.green}${items.length - conc} refute${C.reset} · ${C.yellow}${conc} concede${C.reset}`];
+    const ref = items.filter((v) => v.stance === 'refute').length;
+    const abst = items.length - conc - ref;
+    return [`${items.length} verdicts — ${C.green}${ref} refute${C.reset} · ${C.yellow}${conc} concede${C.reset}${abst ? ` · ${C.dim}${abst} abstain${C.reset}` : ''}`];
   }
   const shown = items.slice(0, items.length > n ? Math.max(1, n - 1) : n);
   const out = shown.map((v) => {
-    // stance renders as one of two LITERAL words (never the raw field) — nothing to sanitize.
-    const stance = v.stance === 'concede' ? `${C.yellow}concede${C.reset}` : `${C.green}refute${C.reset}`;
+    // stance renders as one of three LITERAL words (never the raw field) — nothing to sanitize.
+    // Anything that isn't refute/concede reads as abstain, matching normalizeVerdicts.
+    const stance = v.stance === 'concede' ? `${C.yellow}concede${C.reset}`
+      : v.stance === 'refute' ? `${C.green}refute${C.reset}` : `${C.dim}abstain${C.reset}`;
     return `${stance} ${C.cyan}${cleanField(v.ref) || '?'}${C.reset}  ${cleanField(v.reason)}`;
   });
   if (items.length > shown.length) out.push(`… +${items.length - shown.length} more`);
@@ -1658,6 +1870,10 @@ function watchModelJSON(m, linesN) {
     tokens: m.tokens || ((m.cum_tokens && ((m.cum_tokens.input || 0) + (m.cum_tokens.output || 0) > 0)) ? m.cum_tokens : null),
     cost_usd: (m.cost_usd != null) ? m.cost_usd : (m.cum_cost_usd || null),
     updated_at: m.updated_at || null,
+    // Round-2 fidelity counters (post-synthesis) — only present when non-zero, so the
+    // compact snapshot shape stays stable for runs that never had a fidelity problem.
+    ...(m.unmatched_refs ? { unmatched_refs: m.unmatched_refs } : {}),
+    ...(m.invalid_stances ? { invalid_stances: m.invalid_stances } : {}),
     ...(linesN > 0 ? { tail: statusTailLines(m, linesN) } : {}),
   };
   // The text board interprets the tail from the raw record (full stdout/stderr tails);
@@ -1767,7 +1983,9 @@ function renderStatusWatch(flags) {
         : m.state === 'running' ? `${C.yellow}⏳${C.reset}` : `${C.dim}·${C.reset} `;
       const el = m.elapsed_s != null ? `${m.elapsed_s}s` : '';
       const hint = m.state === 'failed' ? `${C.red}${m.error || 'failed'}${C.reset}`
-        : m.state === 'running' ? modelProgress(m).join(' · ') : '';
+        : m.state === 'running' ? modelProgress(m).join(' · ')
+        : (m.unmatched_refs || m.invalid_stances)
+          ? `${C.yellow}⚠ ${m.unmatched_refs || 0} unmatched ref(s) · ${m.invalid_stances || 0} invalid stance(s)${C.reset}` : '';
       console.log(`    ${glyph} ${provColor(m.vendor)}${m.vendor.padEnd(8)}${C.reset} ${el.padEnd(5)} ${hint}`);
       // Content lines (opt-in via --lines N / panel.watch_lines): what this agent's output
       // MEANS — findings/verdicts summarized, prompt echo dropped — not a raw JSON dump.
@@ -1785,7 +2003,8 @@ function renderStatusWatch(flags) {
 // spawn/stdout/stderr/exit/json_parsed/…) instead of the interpreted status board. One-shot
 // dumps the last N (default 200, or --lines N); --watch follows it tail -f style. This is the
 // "what is each model actually printing right now" view the status board deliberately does not
-// show (the board interprets tails into findings). cross runs keep no event log → say so.
+// show (the board interprets tails into findings). Works across all three namespaces —
+// review, x-review, AND cross (legacy cross runs predate the log → explicit note).
 function cmdLogs(pos, flags) {
   const runArg = pos[0];
   if (!runArg) {
@@ -1797,13 +2016,21 @@ function cmdLogs(pos, flags) {
   const width = Math.max(24, (process.stdout.columns || 100) - 2);
   const backlog = flags.lines != null ? flags.lines : 200;
   const dump = (recs) => { for (const r of recs) console.log(formatEventLine(r, { color, width })); };
-  // cross runs (.xm/cross/) never write events.jsonl — don't sit blank, point at what DOES exist.
-  const crossNote = () => console.error(`${C.yellow}⚠ ${runArg} is a cross run — no event log (cross persists only status.json + final output). Try: xm panel status ${runArg}${C.reset}`);
+  // Cross runs write events.jsonl too now — logs work uniformly across all three
+  // namespaces. A missing file means either a LEGACY cross run (recorded before the
+  // event log existed) or a run that hasn't produced events yet — name the right one
+  // instead of blaming every miss on legacy cross runs.
+  const legacyNote = (r) => {
+    const why = r && r.kind === 'cross'
+      ? 'recorded before cross runs kept events.jsonl, or not started yet'
+      : 'the run has not written any events yet';
+    console.error(`${C.yellow}⚠ ${runArg} has no event log (${why}). Try: xm panel status ${runArg}${C.reset}`);
+  };
 
   if (!flags.watch) {
     const r = resolveRunDir(runArg);
     if (!r) { console.error(`${C.red}✗ run not found: ${runArg}${C.reset}`); process.exitCode = 1; return; }
-    if (r.kind === 'cross') { crossNote(); process.exitCode = 1; return; }
+    if (!existsSync(join(r.dir, 'events.jsonl'))) { legacyNote(r); process.exitCode = 1; return; }
     dump(readEventsLog(r.dir, { limit: backlog }));
     return;
   }
@@ -1818,7 +2045,14 @@ function cmdLogs(pos, flags) {
   const tick = () => {
     const r = resolveRunDir(runArg);
     if (!r) { return; } // not created yet — keep waiting quietly (a watched run may not exist yet)
-    if (r.kind === 'cross') { crossNote(); finish(1); return; }
+    // Mirror the one-shot missing-log check: a FINISHED run with no events.jsonl must fail
+    // loudly (legacy cross run), not print "log ended" with exit 0. A run that simply
+    // hasn't written events yet keeps being polled.
+    if (!existsSync(join(r.dir, 'events.jsonl'))) {
+      const snap = watchRunSnapshot(runArg);
+      if (snap.done || snap.stale) { legacyNote(r); finish(1); }
+      return;
+    }
     if (!primed) {
       const recs = readEventsLog(r.dir, { limit: backlog });
       dump(recs);
@@ -1873,6 +2107,63 @@ function paintFrame(frame, first) {
   const ESC = String.fromCharCode(27);
   const body = frame.replace(/\n$/, '').split('\n').map((l) => l + ESC + '[K').join('\n');
   process.stdout.write((first ? `${ESC}[2J${ESC}[3J${ESC}[H` : `${ESC}[H`) + body + `${ESC}[J`);
+}
+
+// `xm panel gate <run> [--policy '<json>'] [--json]` — turn a finished run's
+// verdict.json into a merge-gate exit code (0 pass / 1 policy block / 2 error) for
+// CI and non-worktree users. Persists gate-result.json next to the run so the
+// decision is auditable (L6). Policy defaults come from gate.mjs; --policy overrides
+// per bucket (e.g. '{"block_confirmed":["critical","high"]}').
+function cmdGate(pos, flags) {
+  const runArg = pos[0];
+  if (!runArg) {
+    console.error(`${C.red}✗ usage: xm panel gate <run-id> [--policy '<json>'] [--json]${C.reset}`);
+    console.error(`  Run a panel first (xm panel review <target>), then gate its verdict by run id.`);
+    process.exitCode = 2;
+    return;
+  }
+  const r = resolveRunDir(runArg);
+  if (!r) { console.error(`${C.red}✗ run not found: ${runArg}${C.reset}`); process.exitCode = 2; return; }
+  const verdictPath = join(r.dir, 'verdict.json');
+  if (!existsSync(verdictPath)) {
+    console.error(`${C.red}✗ ${runArg} has no verdict.json — the run is unfinished or failed. Check: xm panel status ${runArg}${C.reset}`);
+    process.exitCode = 2;
+    return;
+  }
+  const verdict = readJSONSafe(verdictPath);
+  if (!verdict) { console.error(`${C.red}✗ ${runArg} verdict.json is unreadable/corrupt${C.reset}`); process.exitCode = 2; return; }
+
+  let override = {};
+  if (flags.policy != null) {
+    try {
+      override = JSON.parse(flags.policy);
+      if (typeof override !== 'object' || Array.isArray(override)) throw new Error('policy must be a JSON object');
+    } catch (e) {
+      console.error(`${C.red}✗ --policy must be a JSON object: ${e.message}${C.reset}`);
+      process.exitCode = 2;
+      return;
+    }
+  }
+  const policy = mergePolicy(override);
+  const { decision, blocking } = evaluateVerdict(verdict, policy);
+  const exitCode = decision === 'fail' ? 1 : 0;
+  const result = {
+    run: runArg, kind: r.kind, decision, exit_code: exitCode,
+    policy, blocking_findings: blocking, counts: verdict.counts || null,
+    evaluated_at: new Date().toISOString(),
+  };
+  try { writeJSON(join(r.dir, 'gate-result.json'), result); }
+  catch (e) { process.stderr.write(`${C.yellow}⚠ failed to save gate-result.json: ${e.message}${C.reset}\n`); }
+
+  if (flags.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    const head = decision === 'pass' ? `${C.green}✓ gate pass${C.reset}` : `${C.red}✗ gate fail${C.reset}`;
+    console.log(`${head} ${C.dim}(${runArg})${C.reset} — ${blocking.length} blocking finding(s)`);
+    for (const b of blocking) console.log(`  ${C.red}✗${C.reset} [${b.kind}/${b.severity}] ${b.file || '?'}:${b.line ?? '?'} ${C.dim}${b.claim || ''}${C.reset}`);
+    console.log(`${C.dim}  policy: confirmed=[${policy.block_confirmed.join(',')}] unreviewed=[${policy.block_unreviewed.join(',')}] contested=[${policy.block_contested.join(',')}] allow_low=${policy.allow_low}${C.reset}`);
+  }
+  process.exitCode = exitCode;
 }
 
 function cmdStatus(pos, flags) {
@@ -2044,6 +2335,10 @@ function renderStatusOnce(pos, flags) {
     const err = m.error ? ` ${C.red}${m.error}${C.reset}` : '';
     console.log(`\n${C.bold}${m.label}${C.reset} ${m.state}${m.elapsed_s != null ? ` (${m.elapsed_s}s)` : ''}${err}`);
     if (m.last_event) console.log(`  ${C.dim}${m.last_event}${C.reset}`);
+    // Round-2 fidelity (post-synthesis): a refuter with mangled refs/stances must be visible here.
+    if (m.unmatched_refs || m.invalid_stances) {
+      console.log(`  ${C.yellow}⚠ round-2 fidelity: ${m.unmatched_refs || 0} unmatched ref(s), ${m.invalid_stances || 0} invalid stance(s)${C.reset}`);
+    }
     // Same interpreted view as the --watch board: findings/verdicts summarized, echo dropped.
     for (const line of renderTailSummary(m, 4)) console.log(`  ${C.dim}│${C.reset} ${truncateVisible(line, detailWidth)}`);
   }
@@ -2052,7 +2347,7 @@ function renderStatusOnce(pos, flags) {
 // ── entry ────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
-const SUB = new Set(['review', 'cross', 'status', 'setup', 'types', 'models', 'detect', 'doctor', 'preflight', 'help', '--help', '-h']);
+const SUB = new Set(['review', 'cross', 'gate', 'status', 'setup', 'types', 'models', 'detect', 'doctor', 'preflight', 'help', '--help', '-h']);
 let cmd = argv[0];
 let rest;
 if (!cmd) { cmd = 'review'; rest = []; }            // `x-panel` → review git diff
@@ -2072,6 +2367,7 @@ if (unknown.length && !['help', '--help', '-h'].includes(cmd)) {
 switch (cmd) {
   case 'review': await cmdReview(pos, flags); break;
   case 'cross': await cmdCross(pos, flags); break;
+  case 'gate': cmdGate(pos, flags); break;
   case 'status': cmdStatus(pos, flags); break;
   case 'setup': cmdSetup(pos, flags); break;
   case 'types': cmdTypes(); break;

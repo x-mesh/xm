@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveSessionCommand, buildCodexResumeArgs, supportsResume } from '../x-panel/lib/x-panel/adapters.mjs';
+import { resolveSessionCommand, buildCodexResumeArgs, supportsResume, SESSION_ID_RE } from '../x-panel/lib/x-panel/adapters.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
 const STUB = join(import.meta.dirname, 'fixtures', 'panel-stub-model.mjs');
@@ -121,6 +121,23 @@ describe('review with session reuse (default on)', () => {
     expect(verdict.counts).toEqual(base.verdict.counts);
   });
 
+  test('codex banner-capture failure → resume:"capture_failed" + a persisted event (not plain stateless)', () => {
+    // The session WAS created but its id never appeared in the banner — distinct from a
+    // vendor that never supports resume. Round 2 must go stateless AND say why.
+    const { r, calls, verdict } = review('nobanner', [], { X_PANEL_STUB_NO_BANNER: '1' });
+    expect(r.status).toBe(0);
+    expect(verdict.usage.by_model.codex.resume).toBe('capture_failed');
+    expect(verdict.usage.by_model.claude.resume).toBe('ok'); // claude's id is caller-supplied — unaffected
+    const codexRefute = calls.find((c) => c.model === 'codex' && c.refute);
+    expect(codexRefute).toMatchObject({ mode: null, hasTarget: true }); // stateless full prompt
+    // the warning is durable (events.jsonl via writeEvent), not just a stderr line
+    const panelDir = join(DIR, 'nobanner', '.xm', 'panel');
+    const run = readdirSync(panelDir)[0];
+    const events = readFileSync(join(panelDir, run, 'events.jsonl'), 'utf8')
+      .trim().split('\n').map((l) => JSON.parse(l));
+    expect(events.some((ev) => ev.type === 'lifecycle' && /session capture failed/.test(ev.note || ''))).toBe(true);
+  });
+
   test('--no-session-reuse keeps every call stateless', () => {
     const { r, calls, verdict } = review('off', ['--no-session-reuse']);
     expect(r.status).toBe(0);
@@ -133,5 +150,21 @@ describe('review with session reuse (default on)', () => {
     const { r, calls } = review('stream', ['--stream']);
     expect(r.status).toBe(0);
     expect(calls.every((c) => c.mode == null)).toBe(true);
+  });
+});
+
+// Real codex banner captured by the live spike (x-panel/test/spike-resume.mjs --capture-banner).
+// Regression-tests the SHIPPED capture regex against production output, not a synthetic banner.
+// Unconditional on purpose: an existsSync-gated describe.skip silently self-disabled on every
+// machine without the fixture (CI, fresh clones) — absence must be a loud failure, not green.
+const BANNER_FIXTURE = join(import.meta.dirname, 'fixtures', 'codex-banner-sample.txt');
+describe('SESSION_ID_RE vs a real codex banner (fixture)', () => {
+  test('extracts the session id from the captured banner sample', () => {
+    if (!existsSync(BANNER_FIXTURE)) {
+      throw new Error(`missing fixture ${BANNER_FIXTURE} — commit it, or regenerate with: node x-panel/test/spike-resume.mjs --only codex --capture-banner`);
+    }
+    const banner = readFileSync(BANNER_FIXTURE, 'utf8');
+    const id = (SESSION_ID_RE.exec(banner) || [])[1];
+    expect(id).toMatch(UUID_RE);
   });
 });
