@@ -629,6 +629,7 @@ case "$CMD" in
       echo "🔍 Dry run — would run:"
       echo "   claude plugin marketplace update xm"
       echo "   claude plugin update xm@xm"
+      echo "   claude plugin update <each installed @xm sub-plugin>  # panel@xm, build@xm, …"
       [ "$SKIP_CLI" = "0" ] && echo "   cp <cache>/xm/scripts/xm ~/.local/bin/xm"
       [ "$NO_PROPAGATE" = "0" ] && echo "   node <cache>/install-cli.mjs --propagate"
       exit 0
@@ -653,6 +654,29 @@ case "$CMD" in
     if [ ! -d "$EXPECTED_CACHE_DIR" ]; then
       echo "→ cache missing for $REMOTE_VERSION — reinstalling"
       claude plugin install xm@xm 2>&1 | tail -3
+    fi
+
+    # 4b. Update every INSTALLED sub-plugin too (panel@xm, build@xm, …). The dispatcher runs each
+    #     sub-command from that plugin's OWN cache dir (cache/xm/<plugin>/<version>), NOT the xm meta
+    #     bundle, so updating only xm@xm above leaves `xm panel` / `xm build` on stale code. This is
+    #     the same loop the /xm:kit update skill runs — the terminal path must match it.
+    if command -v node >/dev/null 2>&1; then
+      SUBPLUGINS="$(node -e '
+        try {
+          const fs = require("fs");
+          const d = JSON.parse(fs.readFileSync(process.env.HOME + "/.claude/plugins/installed_plugins.json", "utf8"));
+          const valid = /^[a-zA-Z0-9@._-]+$/;
+          const keys = Object.keys(d.plugins || {}).filter(k => k.endsWith("@xm") && k !== "xm@xm" && valid.test(k));
+          process.stdout.write(keys.join(" "));
+        } catch {}
+      ' 2>/dev/null)"
+      if [ -n "$SUBPLUGINS" ]; then
+        echo "→ updating sub-plugins: $SUBPLUGINS"
+        for p in $SUBPLUGINS; do
+          echo "   $p"
+          claude plugin update "$p" -s user 2>&1 | grep -iE "updated|latest|error" | tail -1
+        done
+      fi
     fi
 
     # 5. Refresh bash CLI binary from the newly-installed cache
