@@ -234,10 +234,16 @@ export function cmdReleaseDetect(args) {
     }
   } catch {}
 
-  // Changed plugins with versions
+  // Changed plugins with versions. xm is normally filtered out — its lib/ and skills/ are
+  // churn-heavy MIRRORS of the x-* sources, so it only ever meta-bumps alongside another plugin.
+  // EXCEPTION: a change to xm's OWN dispatcher (xm/scripts/, never a mirror of anything) is a
+  // genuine xm release; without this a dispatcher-only fix reports "no changes" and silently
+  // never ships (l9 — had to bump xm by hand for the xm@2.4.56 `xm update` fix).
   const changed = Object.entries(pluginChanges)
-    .filter(([name]) => name !== 'xm') // xm is meta-bumped
+    .filter(([name]) => name !== 'xm')
     .map(([name, files]) => ({ name, current: versions[name] || '?', files }));
+  const xmDispatcherFiles = (pluginChanges['xm'] || []).filter(f => f.startsWith('xm/scripts/'));
+  if (xmDispatcherFiles.length) changed.push({ name: 'xm', current: versions['xm'] || '?', files: xmDispatcherFiles });
 
   const unchanged = PLUGIN_DIRS.filter(d => !pluginChanges[d] && versions[d]);
 
@@ -356,19 +362,24 @@ export function cmdReleaseBump(args) {
     }
   }
 
-  // 3. xm meta bump (always patch)
+  // 3. xm meta bump (always patch) — but ONLY if xm wasn't already bumped as an explicit plugin
+  //    in the loop above. Bumping it in both places double-bumps and skips a version
+  //    (2.4.54 → 2.4.55 in the loop → 2.4.56 here), because xm IS the meta (l10).
   const xkitEntry = marketplace.plugins.find(p => p.name === 'xm');
   const xkitPluginJsonPath = join(cwd, 'xm', '.claude-plugin', 'plugin.json');
-  let xkitOld = xkitEntry?.version || '0.0.0';
-  let xkitNew = bumpVersion(xkitOld, 'patch');
-
-  if (xkitEntry) xkitEntry.version = xkitNew;
-  if (existsSync(xkitPluginJsonPath)) {
-    const xkitPj = readJSON(xkitPluginJsonPath);
-    xkitPj.version = xkitNew;
-    writeJSON(xkitPluginJsonPath, xkitPj);
+  let xkitNew = xkitEntry?.version || '0.0.0';
+  if (!pluginList.includes('xm')) {
+    const xkitOld = xkitNew;
+    xkitNew = bumpVersion(xkitOld, 'patch');
+    if (xkitEntry) xkitEntry.version = xkitNew;
+    if (existsSync(xkitPluginJsonPath)) {
+      const xkitPj = readJSON(xkitPluginJsonPath);
+      xkitPj.version = xkitNew;
+      writeJSON(xkitPluginJsonPath, xkitPj);
+    }
+    bumped.push({ name: 'xm', from: xkitOld, to: xkitNew, meta: true });
   }
-  bumped.push({ name: 'xm', from: xkitOld, to: xkitNew, meta: true });
+  // else: xm already bumped above; xkitNew holds its new version for package.json below.
 
   // 4. Write marketplace.json
   writeJSON(marketplacePath, marketplace);
