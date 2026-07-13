@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.58-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.59-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -986,9 +986,10 @@ Claude Code 안에서도 사용 가능: `/xm:sync push`, `/xm:sync pull`, `/xm:s
 | 기능 | 설명 |
 |------|------|
 | **릴리스 CLI** | 7개 서브커맨드: `detect`, `diff-report`, `squash`, `bump`, `test`, `commit`, `trace` |
-| **WIP 스쿼시** | WIP 커밋(tm(), fixup!, wip:)을 자동 분류하고 스쿼시 |
+| **태그 릴리스** | `release commit --tag v1.2.0 --push` — annotated 태그를 만들고 `--follow-tags`로 함께 푸시. CI가 `push: tags`로 트리거되는 프로젝트는 태그를 푸시해야 릴리스가 성립합니다(브랜치 푸시만으로는 워크플로가 안 돎). 기존 태그는 절대 옮기지 않음 |
+| **WIP 스쿼시** | WIP 커밋(`wip:`, `fixup!`, `tmp`)만 스쿼시. atomic한 conventional 커밋은 **보존** — 정리된 히스토리는 공들인 작업의 결과물이고, 푸시 후에는 un-squash가 불가능합니다 |
 | **품질 게이트** | 릴리스 전 선택적 테스트 + 리뷰 게이트 |
-| **독립 프로젝트 지원** | package.json, Cargo.toml, pyproject.toml, go.mod 자동 감지 |
+| **독립 프로젝트 지원** | package.json, Cargo.toml, pyproject.toml, go.mod 자동 감지. 버전 파일이 없으면 git 태그가 곧 버전 |
 | **릴리스 메트릭** | 버전, 범프 타입, 테스트/리뷰 결과를 `.xm/traces/`에 기록 |
 | **Diff 기반 분석** | 커밋별 diff 리포트로 지능적 스쿼시 그루핑 |
 

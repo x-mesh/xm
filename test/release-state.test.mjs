@@ -79,6 +79,69 @@ describe('release detect/bump — xm dispatcher handling (l9/l10)', () => {
   });
 });
 
+// A tag-versioned project (Cargo + a `on: push: tags` workflow) — the shape x-ship used to
+// mishandle: it never created a tag, so the release workflow never fired and the ship still
+// reported success.
+function makeRustFixture() {
+  const d = mkdtempSync(join(tmpdir(), 'xrust-'));
+  mkdirSync(join(d, '.github', 'workflows'), { recursive: true });
+  mkdirSync(join(d, '.xm', 'panel'), { recursive: true }); // xm artifacts: must NOT reach the commit
+  writeFileSync(join(d, 'Cargo.toml'), '[package]\nname = "gk"\nversion = "0.5.0"\n');
+  writeFileSync(join(d, '.github', 'workflows', 'release.yml'), 'on:\n  push:\n    tags: ["v*"]\n');
+  writeFileSync(join(d, '.xm', 'panel', 'leftover.json'), '{}\n');
+  writeFileSync(join(d, 'main.rs'), 'fn main(){}\n');
+  spawnSync('bash', ['-c', 'git init -q && git config user.email t@t && git config user.name t && git add Cargo.toml .github main.rs && git commit -qm "feat: init" && git tag v0.5.0'], { cwd: d });
+  return d;
+}
+
+describe('release commit — tag-versioned projects', () => {
+  test('bump --standalone reads Cargo.toml and names the tag the release needs', () => {
+    const d = makeRustFixture();
+    try {
+      const r = spawnSync('node', [CLI, 'release', 'bump', '--minor', '--standalone'], { cwd: d, encoding: 'utf8', timeout: 60000 });
+      expect(readFileSync(join(d, 'Cargo.toml'), 'utf8')).toContain('version = "0.6.0"');
+      expect(r.stdout).toContain('v0.6.0'); // the tag is surfaced, not left for the caller to guess
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test('commit --tag creates an ANNOTATED tag on the release commit (CI triggers on tags)', () => {
+    const d = makeRustFixture();
+    try {
+      writeFileSync(join(d, 'main.rs'), 'fn main(){ /* fix */ }\n');
+      const r = spawnSync('node', [CLI, 'release', 'commit', '--msg', 'release: gk@0.6.0', '--tag', 'v0.6.0'], { cwd: d, encoding: 'utf8', timeout: 30000 });
+      expect(r.stdout).toContain('Tagged: v0.6.0');
+      const at = spawnSync('bash', ['-c', 'git tag --points-at HEAD'], { cwd: d, encoding: 'utf8' }).stdout.trim();
+      expect(at).toBe('v0.6.0');
+      const kind = spawnSync('bash', ['-c', 'git cat-file -t v0.6.0'], { cwd: d, encoding: 'utf8' }).stdout.trim();
+      expect(kind).toBe('tag'); // annotated, not lightweight — `git push --follow-tags` only carries these
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test('an existing tag is never moved — the release stops instead', () => {
+    const d = makeRustFixture();
+    try {
+      writeFileSync(join(d, 'main.rs'), 'fn main(){ /* fix */ }\n');
+      const r = spawnSync('node', [CLI, 'release', 'commit', '--msg', 'release: gk@0.5.0', '--tag', 'v0.5.0'], { cwd: d, encoding: 'utf8', timeout: 30000 });
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain('already exists');
+      const at = spawnSync('bash', ['-c', 'git rev-list -n1 v0.5.0'], { cwd: d, encoding: 'utf8' }).stdout.trim();
+      const head = spawnSync('bash', ['-c', 'git rev-parse HEAD'], { cwd: d, encoding: 'utf8' }).stdout.trim();
+      expect(at).not.toBe(head); // the old tag still points at the old commit
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test('release commit does not sweep .xm/ artifacts into the release', () => {
+    const d = makeRustFixture();
+    try {
+      writeFileSync(join(d, 'main.rs'), 'fn main(){ /* fix */ }\n');
+      spawnSync('node', [CLI, 'release', 'commit', '--msg', 'release: gk@0.6.0'], { cwd: d, encoding: 'utf8', timeout: 30000 });
+      const files = spawnSync('bash', ['-c', 'git show --name-only --format= HEAD'], { cwd: d, encoding: 'utf8' }).stdout;
+      expect(files).toContain('main.rs');
+      expect(files).not.toContain('.xm/');
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+});
+
 describe('release state checks', () => {
   test('verify-release-state passes current repo as JSON', () => {
     const result = spawnSync('node', [join(REPO, 'scripts', 'verify-release-state.mjs'), '--json'], {
