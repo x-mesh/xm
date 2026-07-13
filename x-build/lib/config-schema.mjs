@@ -263,6 +263,19 @@ export const SCHEMA = [
     default: 'auto',
     description: 'Close 페이즈 종료 게이트',
   },
+  {
+    // Autopilot: when true, resolveGates() downgrades every `human-verify` gate
+    // to `auto` so phase transitions no longer block on `gate pass`. `quality`
+    // gates are DELIBERATELY left intact — a failing test/lint/build must still
+    // stop the pipeline. Also honored via the XMB_AUTOPILOT=1 env var for
+    // one-shot runs (env wins over config). See SKILL.md "Autopilot Mode".
+    key: 'autopilot',
+    group: 'gates',
+    type: 'boolean',
+    scope: 'global',
+    default: false,
+    description: 'Autopilot — human-verify 게이트를 자동 통과(quality 게이트는 유지)',
+  },
 
   // ── worktree (build-local 3-tier; runtime source = WORKTREE_CONFIG_DEFAULTS) ──
   {
