@@ -1753,6 +1753,101 @@ describe('panel status (staleness + project scope + --all)', () => {
     expect(out).not.toContain('"evidence"');      // no raw JSON fragments
   });
 
+  // stdout_tail keeps only the last 4000 chars, so a model whose answer is bigger (kiro emits
+  // ~6.6KB) loses the `{"findings":[` opener — the board used to dump its raw JSON at the user.
+  test('a head-truncated findings tail still renders findings, not raw JSON (kiro regression)', () => {
+    const finding = (i) => `{"severity":"medium","file":"internal/cli/fleet.go","line":null,"claim":"issue ${i}","evidence":"e"}`;
+    seedTailRun('panel-tailcut-fixture', [
+      // what the 4000-char window actually holds: mid-object garbage, then whole findings, then `]}`
+      { label: 'kiro', stdout_bytes: 6614, stdout_tail: `de.  ${'x'.repeat(20)}"},\n${[1, 2].map(finding).join(',\n')}\n]}` },
+    ]);
+    const out = watchFrame(4);
+    expect(out).toContain('[medium] internal/cli/fleet.go');
+    expect(out).toContain('issue 1');
+    expect(out).not.toContain('{"severity"'); // the raw dump is gone
+  });
+
+  // codex/claude carry the answer inside a JSON string; truncation can cut the envelope line's
+  // head, leaving only its escaped fragment. That is still an answer, not "working".
+  test('a head-truncated ESCAPED envelope fragment renders findings, not a false "working" note', () => {
+    seedTailRun('panel-tailesc-fixture', [
+      { label: 'codex', state: 'running', stdout_bytes: 9000, stdout_tail:
+        '{"type":"turn.started"}\ntext\":\"{\\"findings\\": [{\\"severity\\":\\"high\\",\\"file\\":\\"a.js\\",\\"line\\":3,\\"claim\\":\\"escaped survivor\\"}]}' },
+    ]);
+    const out = watchFrame(4);
+    expect(out).toContain('[high] a.js:3');
+    expect(out).toContain('escaped survivor');
+    expect(out).not.toContain('no findings emitted yet');
+  });
+
+  // x-review fans one panel out PER LENS, so two runs of the same project+target are live at the
+  // same time. Without the lens tag (and the run id) the board printed two identical rows and the
+  // operator read it as a duplicate / double-spend.
+  test('concurrent lens runs of one target are told apart by lens tag + run id', () => {
+    const seed = (run, lens) => {
+      const d = join(SDIR, '.xm', 'review', run);
+      mkdirSync(d, { recursive: true });
+      seededTails.push(d);
+      writeFileSync(join(d, 'status.json'), JSON.stringify({
+        run, phase: 'round1 (review)', target_kind: 'file', target_title: 'Review target.diff',
+        lens_tag: lens, updated_at: new Date().toISOString(),
+        models: [{ label: 'kiro', state: 'running', elapsed_s: 5, updated_at: new Date().toISOString() }],
+      }));
+    };
+    seed('panel-20260713-095008-731', 'security');
+    seed('panel-20260713-095016-619', 'logic');
+    const out = watchFrame(0);
+    expect(out).toContain('x-review(file · security)');
+    expect(out).toContain('x-review(file · logic)');
+    expect(out).toContain('095008-731'); // the run id disambiguates even same-lens reruns
+    expect(out).toContain('095016-619');
+  });
+
+  // A claim containing a newline or a quote arrives DOUBLE-escaped inside the envelope's JSON
+  // string (\\n, \\"). Unescaping `\\n`→newline before `\\`→backslash corrupted it into invalid
+  // JSON, so the finding was dropped and the raw dump came back — the exact bug this change set
+  // set out to kill. Raised by the panel's own claude+codex reviewers on this diff.
+  test('a double-escaped claim (newline/quote inside the text) still parses out of an envelope', () => {
+    // outer envelope string: the inner JSON is escaped once, the claim's own \n / " escaped twice
+    const inner = '{\\"findings\\": [{\\"severity\\":\\"high\\",\\"file\\":\\"a.js\\",\\"line\\":3,\\"claim\\":\\"line one\\\\nline \\\\\\"two\\\\\\"\\"}]}';
+    seedTailRun('panel-tailesc2-fixture', [
+      { label: 'codex', state: 'running', stdout_bytes: 9000, stdout_tail: `{"type":"turn.started"}\ntext":"${inner}` },
+    ]);
+    const out = watchFrame(4);
+    expect(out).toContain('[high] a.js:3');
+    expect(out).toContain('line one');   // survived the unescape…
+    expect(out).not.toContain('\\n');    // …and no escape sequence leaked into the board
+  });
+
+  // Our own contract TEMPLATE is item-shaped ("severity":"critical|high|medium|low"), so a vendor
+  // echoing the prompt into its stream must not have it salvaged as a real finding.
+  test('the echoed contract template is never salvaged as a finding', () => {
+    seedTailRun('panel-tailtmpl-fixture', [
+      { label: 'codex', state: 'running', stdout_bytes: 9000, stdout_tail:
+        '{"type":"turn.started"}\ntext":"…{\\"severity\\":\\"critical|high|medium|low\\",\\"file\\":\\"path\\",\\"claim\\":\\"one line\\"}' },
+    ]);
+    const out = watchFrame(4);
+    expect(out).not.toContain('one line');            // the template is not an answer
+    expect(out).toContain('no findings emitted yet'); // still working, honestly reported
+  });
+
+  // A Korean glyph occupies TWO terminal columns. Counting it as one made every line twice its
+  // assumed width → the terminal soft-wrapped it → paintFrame's line-by-line overwrite landed on
+  // the wrong rows and shredded the board.
+  test('a wide-glyph (Korean) finding is cut to the terminal width, never left to wrap', () => {
+    const cols = (s) => [...s.replace(/\x1b\[[0-9;?]*m/g, '')] // eslint-disable-line no-control-regex
+      .reduce((w, ch) => w + (/[ᄀ-ᅟ⺀-꓏가-힣豈-﫿＀-｠]/.test(ch) ? 2 : 1), 0);
+    const claim = '폴 자체의 실측 소요시간에 비례해 다음 폴을 미루는 듀티사이클 거버너가 정답이다'.repeat(3);
+    seedTailRun('panel-tailwide-fixture', [
+      { label: 'agy', stdout_tail: `{"findings":[{"severity":"medium","file":"internal/cli/fleet.go","line":1457,"claim":"${claim}","evidence":"e"}]}` },
+    ]);
+    const out = watchFrame(4);
+    const finding = out.split('\n').find((l) => l.includes('internal/cli/fleet.go:1457'));
+    expect(finding).toBeDefined();
+    expect(cols(finding)).toBeLessThanOrEqual(100); // the non-TTY default terminal width
+    expect(finding).toContain('…');                 // cut, and it reads as a cut
+  });
+
   test('more findings than --lines collapses the overflow into a "+N more" line', () => {
     const finding = (i) => `{"severity":"low","file":"f${i}.js","line":${i},"claim":"issue ${i}","evidence":"e"}`;
     seedTailRun('panel-tailmore-fixture', [

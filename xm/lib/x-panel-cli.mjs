@@ -748,6 +748,10 @@ async function cmdReview(pos, flags) {
   const status = {
     run, started_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     phase: 'starting', target_kind: target.kind, target_title: targetTitle(target), stream, partial: stream ? partial : false, timeout_s: timeoutS,
+    // x-review runs ONE panel PER LENS, so several runs of the same project/target are live at
+    // once and the board rendered them as identical rows — they read as a duplicate (or a
+    // double-spend) when they are actually different lenses. The tag is what tells them apart.
+    lens_tag: lensTag,
     skipped_providers: skippedProviders,
     // Cumulative cost/tokens across BOTH rounds (round-scoped live fields below are
     // reset each round by startPhase, so totals must live separately to be holdable).
@@ -1708,9 +1712,13 @@ function statusRunRow(entry) {
   const stale = !done && !live && !!st;
   const phase = done ? 'done' : stale ? 'stalled' : (st ? st.phase : 'unknown');
   // Namespace prefixes the source label ("x-review(file)" vs "review(file)") so a lens-injected
-  // run from x-review is distinguishable from a native panel review in the same list.
+  // run from x-review is distinguishable from a native panel review in the same list. The LENS is
+  // part of that label too ("x-review(file · security)"): x-review runs one panel per lens, so
+  // without it two concurrent lenses of the same target render as the same row twice.
   const srcBase = entry.ns || 'review';
-  return { kind: 'review', run: entry.run, source: st && st.target_kind ? `${srcBase}(${st.target_kind})` : srcBase,
+  const scope = [st && st.target_kind, st && st.lens_tag].filter(Boolean).join(' · ');
+  return { kind: 'review', run: entry.run, source: scope ? `${srcBase}(${scope})` : srcBase,
+    lens_tag: (st && st.lens_tag) || null,
     title: (st && st.target_title) || null, phase, live, stale, age: st ? statusAge(st.updated_at) : null,
     phaseRaw: st ? st.phase : null, models: st ? st.models : [] };
 }
@@ -1765,19 +1773,66 @@ function stripAnsiCli(s) {
   return String(s || '').replace(CLI_ANSI_RE, '');
 }
 
-// Hard-truncate a colored string to `max` VISIBLE chars without cutting an ANSI escape
-// sequence in half — so a line can never wrap. A wrapped line desyncs every repaint scheme
-// (preflight's cursor-up overwrite, --watch's clear-and-redraw) into duplicate rows.
+// Terminal COLUMNS a code point occupies. Hangul/CJK/kana/fullwidth glyphs and emoji take two
+// (East Asian Wide/Fullwidth); combining marks and variation selectors take none. Counting a
+// Korean finding as one column each made every line twice its assumed width, so the terminal
+// soft-wrapped it — and a soft-wrapped row desyncs paintFrame's line-by-line overwrite, which
+// is exactly the shredded board the operator sees. Not a full wcwidth table: the ranges the
+// panel actually prints (Korean/CJK text, the ⏳ glyph) plus the emoji planes.
+const WIDE_RANGES = [
+  [0x1100, 0x115f], [0x231a, 0x231b], [0x23e9, 0x23f3], [0x2329, 0x232a], [0x25fd, 0x25fe],
+  [0x2614, 0x2615], [0x2648, 0x2653], [0x267f, 0x267f], [0x2693, 0x2693], [0x26a1, 0x26a1],
+  [0x26aa, 0x26ab], [0x26bd, 0x26be], [0x26c4, 0x26c5], [0x26ce, 0x26ce], [0x26d4, 0x26d4],
+  [0x26ea, 0x26ea], [0x26f2, 0x26f3], [0x26f5, 0x26f5], [0x26fa, 0x26fa], [0x26fd, 0x26fd],
+  [0x2705, 0x2705], [0x270a, 0x270b], [0x2728, 0x2728], [0x274c, 0x274c], [0x274e, 0x274e],
+  [0x2753, 0x2755], [0x2757, 0x2757], [0x2795, 0x2797], [0x27b0, 0x27b0], [0x27bf, 0x27bf],
+  [0x2b1b, 0x2b1c], [0x2b50, 0x2b50], [0x2b55, 0x2b55], [0x2e80, 0x303e], [0x3041, 0x33ff],
+  [0x3400, 0x4dbf], [0x4e00, 0x9fff], [0xa000, 0xa4cf], [0xa960, 0xa97f], [0xac00, 0xd7a3],
+  [0xf900, 0xfaff], [0xfe10, 0xfe19], [0xfe30, 0xfe6f], [0xff00, 0xff60], [0xffe0, 0xffe6],
+  [0x1f300, 0x1f9ff], [0x20000, 0x3fffd],
+];
+const ZERO_RANGES = [[0x0300, 0x036f], [0x200b, 0x200f], [0xfe00, 0xfe0f], [0xfeff, 0xfeff]];
+const VS16 = 0xfe0f; // emoji presentation selector — renders the PRECEDING glyph two columns wide
+const inRanges = (cp, ranges) => ranges.some(([lo, hi]) => cp >= lo && cp <= hi);
+// `next` is the following code point, if any: a base glyph followed by VS16 (⚠️, ❗️) is drawn
+// wide even when the base alone (U+26A0) is narrow, so the selector's width rides on the base.
+function charWidth(cp, next) {
+  if (next === VS16) return 2;
+  if (cp < 0x0300) return 1; // ASCII + Latin-1 fast path (the bulk of every line)
+  if (inRanges(cp, ZERO_RANGES)) return 0;
+  return inRanges(cp, WIDE_RANGES) ? 2 : 1;
+}
+/** Terminal columns a colored string occupies (ANSI escapes are zero-width). */
+function visibleWidth(s) {
+  const cps = [...stripAnsiCli(s)].map((ch) => ch.codePointAt(0));
+  return cps.reduce((w, cp, i) => w + charWidth(cp, cps[i + 1]), 0);
+}
+
+// Hard-truncate a colored string to `max` terminal COLUMNS without cutting an ANSI escape
+// sequence (or a surrogate pair) in half — so a line can never wrap. A wrapped line desyncs
+// every repaint scheme (preflight's cursor-up overwrite, --watch's in-place paintFrame) into
+// duplicate rows. A truncated line ends in '…' so a cut reads as a cut, not as the model's
+// last word; the full text stays available via `xm panel status <run>`.
 function truncateVisible(s, max) {
   if (max <= 0) return '';
-  let out = '', visible = 0, i = 0;
+  if (visibleWidth(s) <= max) return s;
+  const budget = max - 1; // one column reserved for the '…' marker
+  let out = '', used = 0, cut = false, i = 0;
   while (i < s.length) {
     if (s[i] === '\x1b' && s[i + 1] === '[') {
       const end = s.indexOf('m', i);
+      // Escapes are kept even past the cut: dropping the trailing reset would bleed the last
+      // color into the rest of the board.
       if (end !== -1) { out += s.slice(i, end + 1); i = end + 1; continue; }
     }
-    if (visible < max) { out += s[i]; visible++; }
-    i++;
+    const cp = s.codePointAt(i);
+    const ch = String.fromCodePoint(cp);
+    if (!cut) {
+      const w = charWidth(cp, s.codePointAt(i + ch.length));
+      if (used + w <= budget) { out += ch; used += w; }
+      else { out += '…'; cut = true; } // the next wide glyph would overflow — stop here
+    }
+    i += ch.length;
   }
   return out;
 }
@@ -1859,9 +1914,54 @@ function jsonPrefix(s) {
   return null;
 }
 
+// Recover contract items from a tail whose HEAD was cut off. stdout_tail keeps only the last
+// 4000 chars, so a model whose answer exceeds that (kiro emits ~6.6KB) loses the `{"findings": [`
+// opener — the key scan below then finds nothing and the board used to dump raw JSON at the user.
+// Every balanced {...} that carries a contract field is one item, so collect the ones that
+// survived. Counts are partial by construction (the head is gone); that is honest for a tail.
+function salvageAnswerItems(text) {
+  const items = [];
+  let kind = null;
+  for (let i = text.indexOf('{'); i >= 0; i = text.indexOf('{', i + 1)) {
+    const body = jsonPrefix(text.slice(i));
+    if (body == null) continue; // unterminated (still streaming, or a stray '{' in prose) — skip it
+    let obj;
+    try { obj = JSON.parse(body); } catch { continue; } // a cut-open fragment — skip to the next '{'
+    const k = obj && typeof obj === 'object' && !Array.isArray(obj)
+      ? (typeof obj.claim === 'string' ? 'findings' : typeof obj.stance === 'string' ? 'verdicts' : null) : null;
+    if (!k || (kind && k !== kind)) continue; // not a contract item — keep scanning INSIDE it (a
+    // wrapper such as {"findings":[…]} carries the items we want)
+    // OUR OWN contract template ({"severity":"critical|high|medium|low", "stance":"refute|concede
+    // |abstain"}) is item-shaped, and a vendor that echoes the prompt into its stream would have it
+    // salvaged as a real finding. The alternation bar never appears in an answered field.
+    if (/\|/.test(String(obj.severity ?? obj.stance ?? ''))) continue;
+    kind = k;
+    items.push(obj);
+    i += body.length - 1; // an item is flat — never rescan its interior
+  }
+  return kind ? { kind, items } : null;
+}
+
+// codex/claude carry the answer INSIDE a JSON string, so a truncated tail keeps only its escaped
+// fragment (\"claim\": …) — no parser touches that. Unescape ONE JSON-string level so salvage can
+// read it. Single pass over the full escape table, NOT sequential `\\n`→NL then `\\"`→quote
+// replaces: a claim containing a newline arrives DOUBLE-escaped (\\n), which the sequential form
+// turns into backslash+real-newline — invalid JSON, so the finding was silently dropped and the
+// raw dump came back. Scanning left to right, `\\` consumes itself first and the escape it was
+// protecting survives to the inner parse, which is the whole point.
+const JSON_ESCAPES = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+function unescapeAnswerFragment(text) {
+  if (!/\\"(?:claim|stance)\\"\s*:/.test(text)) return null;
+  return text.replace(/\\(u[0-9a-fA-F]{4}|.)/g, (m, g) => (
+    g[0] === 'u' && g.length === 5 ? String.fromCharCode(parseInt(g.slice(1), 16))
+      : g in JSON_ESCAPES ? JSON_ESCAPES[g] : m // not a JSON escape — leave the pair intact
+  ));
+}
+
 // Find the round's contract JSON inside free-form output. Complete object → {kind, items};
 // object opened but not yet closed (still streaming) → {kind, partial: items so far};
-// nothing recognizable → null (caller shows the raw lines).
+// head-truncated stream → the items that survived (salvage); nothing recognizable → null
+// (caller shows the raw lines).
 function parseAnswerJSON(text) {
   for (const [key, probe] of [['findings', /"claim"\s*:/g], ['verdicts', /"stance"\s*:/g]]) {
     const k = text.lastIndexOf(`"${key}"`);
@@ -1875,9 +1975,10 @@ function parseAnswerJSON(text) {
       // Models sometimes emit null/non-object array elements — drop them here so no renderer
       // ever dereferences one (a null finding crashed the live watch loop on real data).
       if (Array.isArray(items)) return { kind: key, items: items.filter((x) => x && typeof x === 'object') };
-    } catch { /* malformed close — fall through to raw lines */ }
+    } catch { /* malformed close — fall through to salvage */ }
   }
-  return null;
+  const esc = unescapeAnswerFragment(text);
+  return salvageAnswerItems(text) || (esc ? salvageAnswerItems(esc) : null);
 }
 
 const SEV_ORDER = ['critical', 'high', 'medium', 'low'];
@@ -1973,11 +2074,16 @@ function renderTailSummary(m, n) {
     }
     // Unwrap codex JSONL / claude result envelopes to the answer text first; '' = only
     // plumbing events so far (working); null = plain text, interpret the lines directly.
-    const unwrapped = unwrapTailAnswer(lines.join('\n'));
-    if (unwrapped === '') return [`${C.cyan}⋯${C.reset} working — no findings emitted yet`];
-    const content = unwrapped != null ? unwrapped : lines.join('\n');
+    const raw = lines.join('\n');
+    const unwrapped = unwrapTailAnswer(raw);
+    // '' also happens when truncation swallowed the START of the envelope line that carried the
+    // answer, so parse the raw text in that case too — salvage may still recover its items.
+    const content = unwrapped ? unwrapped : raw;
     const ans = parseAnswerJSON(content);
-    if (!ans) return (unwrapped != null ? unwrapped.split('\n').filter((l) => l.trim()) : lines).slice(-n);
+    if (!ans) {
+      if (unwrapped === '') return [`${C.cyan}⋯${C.reset} working — no findings emitted yet`];
+      return (unwrapped != null ? unwrapped.split('\n').filter((l) => l.trim()) : lines).slice(-n);
+    }
     if (ans.partial != null) {
       const unit = ans.kind === 'findings' ? 'finding' : 'verdict';
       return [`${C.cyan}⋯ answering${C.reset}${ans.partial ? ` — ${ans.partial} ${unit}${ans.partial === 1 ? '' : 's'} so far` : '…'}`];
@@ -2164,7 +2270,10 @@ function renderStatusWatch(flags) {
   if (!snap.live.length) console.log(`\n${C.dim}(no active panels — a run appears here while it is in progress)${C.reset}`);
   for (const r of snap.live) {
     // The phase/progress fragment is the header's load-bearing info — full contrast, not dim.
-    console.log(`\n${C.bold}▸ ${r.project}${C.reset}  ${C.cyan}${r.source}${C.reset}  ${r.title || r.run}   ${C.yellow}${r.phase}${C.reset} · ${r.progress.done}/${r.progress.total} done · ${r.elapsed_s}s`);
+    // The short run id rides along dim: several runs of one project/target can be live at once
+    // (x-review fans a panel out per lens), and rows that differ in nothing visible read as a bug.
+    const shortRun = C.dim + String(r.run).replace(/^panel-\d{8}-/, '') + C.reset;
+    console.log(`\n${C.bold}▸ ${r.project}${C.reset}  ${C.cyan}${r.source}${C.reset}  ${r.title || r.run}  ${shortRun}   ${C.yellow}${r.phase}${C.reset} · ${r.progress.done}/${r.progress.total} done · ${r.elapsed_s}s`);
     for (const m of r.models) {
       const glyph = m.state === 'done' ? `${C.green}✓${C.reset} ` : m.state === 'failed' ? `${C.red}✗${C.reset} `
         : m.state === 'running' ? `${C.yellow}⏳${C.reset}` : `${C.dim}·${C.reset} `;
@@ -2292,7 +2401,14 @@ function captureFrame(fn) {
 function paintFrame(frame, first) {
   if (!process.stdout.isTTY) { process.stdout.write(frame); return; }
   const ESC = String.fromCharCode(27);
-  const body = frame.replace(/\n$/, '').split('\n').map((l) => l + ESC + '[K').join('\n');
+  // Last line of defence against a soft wrap: one row of frame MUST be one row of terminal, or
+  // the cursor-home overwrite below lands on the wrong rows and shreds the board. Renderers
+  // budget their own widths, but a header/title they forgot to clamp must not be able to break
+  // the whole paint scheme — so clamp every line to the terminal here as well.
+  // columns - 1, like the preflight renderer: writing INTO the last column leaves the cursor at
+  // the right margin, and terminals with autowrap pending then wrap the next write onto a new row.
+  const cols = Math.max(20, (process.stdout.columns || 100) - 1);
+  const body = frame.replace(/\n$/, '').split('\n').map((l) => truncateVisible(l, cols) + ESC + '[K').join('\n');
   process.stdout.write((first ? `${ESC}[2J${ESC}[3J${ESC}[H` : `${ESC}[H`) + body + `${ESC}[J`);
 }
 
