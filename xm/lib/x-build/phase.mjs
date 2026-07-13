@@ -104,8 +104,12 @@ export function phaseNext(args) {
     }
   }
 
-  // Plan-exit: verify plan-check passed + optional critique
-  if (currentPhase.name === 'plan' && gateType === 'human-verify') {
+  // Plan-exit HARD validation — runs regardless of gate type. These are
+  // deterministic failure conditions (no tasks / plan-check absent or failing),
+  // so autopilot's human-verify→auto downgrade must NOT skip them: a broken plan
+  // must never reach Execute, autopilot or not. This is the same safety floor as
+  // the `quality` gate — autopilot relaxes confirmation, never correctness.
+  if (currentPhase.name === 'plan') {
     const tasks = readJSON(tasksPath(project));
     if (!tasks?.tasks?.length) {
       console.log(`⚠️  No tasks defined. Run: x-build plan "goal"`);
@@ -114,20 +118,24 @@ export function phaseNext(args) {
     const planCheck = readJSON(join(phaseDir(project, '02-plan'), 'plan-check.json'));
     if (!planCheck) {
       console.log(`⚠️  Plan not validated. Run: x-build plan-check`);
-      console.log(`   Then: x-build gate pass`);
+      if (gateType === 'human-verify') console.log(`   Then: x-build gate pass`);
       return;
     }
     if (!planCheck.passed) {
       console.log(`⚠️  Plan check has errors. Fix them first.`);
       return;
     }
-    const critiqueResult = readJSON(join(phaseDir(project, '02-plan'), 'discuss-critique.json'));
-    if (!critiqueResult) {
-      console.log(`${C.dim}💡 Tip: Run "x-build discuss --mode critique" for strategic review before proceeding.${C.reset}`);
-    } else if (critiqueResult.verdict === 'revise') {
-      console.log(`⚠️  Critique recommends revision: ${critiqueResult.summary || 'see discuss-critique.json'}`);
-      console.log(`   Run: x-build discuss --mode critique --round ${(critiqueResult.round || 1) + 1} to address concerns`);
-      console.log(`   Or: x-build gate pass to proceed anyway`);
+    // Critique is ADVISORY (not a hard gate) — only surface it under human-verify.
+    // Autopilot skips the nudge; the hard checks above already ran.
+    if (gateType === 'human-verify') {
+      const critiqueResult = readJSON(join(phaseDir(project, '02-plan'), 'discuss-critique.json'));
+      if (!critiqueResult) {
+        console.log(`${C.dim}💡 Tip: Run "x-build discuss --mode critique" for strategic review before proceeding.${C.reset}`);
+      } else if (critiqueResult.verdict === 'revise') {
+        console.log(`⚠️  Critique recommends revision: ${critiqueResult.summary || 'see discuss-critique.json'}`);
+        console.log(`   Run: x-build discuss --mode critique --round ${(critiqueResult.round || 1) + 1} to address concerns`);
+        console.log(`   Or: x-build gate pass to proceed anyway`);
+      }
     }
   }
 

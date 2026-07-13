@@ -272,7 +272,32 @@ export function resolveGates() {
   const sharedGates = (shared && typeof shared.gates === 'object' && shared.gates) ? shared.gates : {};
   const buildLocal = loadConfig();
   const buildGates = (buildLocal && typeof buildLocal.gates === 'object' && buildLocal.gates) ? buildLocal.gates : {};
-  return { ...GATE_DEFAULTS, ...sharedGates, ...buildGates };
+  const merged = { ...GATE_DEFAULTS, ...sharedGates, ...buildGates };
+
+  // Autopilot overlay (highest precedence): downgrade every human-verify gate to
+  // auto so phase transitions stop blocking on `gate pass`. `quality` gates are
+  // left untouched on purpose — a failing test/lint/build must still halt the
+  // pipeline, which is the safety floor that separates autopilot from "blind run".
+  if (autopilotActive(shared, buildLocal)) {
+    for (const k of Object.keys(merged)) {
+      if (merged[k] === 'human-verify') merged[k] = 'auto';
+    }
+  }
+  return merged;
+}
+
+// Autopilot is active when the XMB_AUTOPILOT env var is set (one-shot, wins over
+// config) OR the `autopilot` config key is true in either the shared (.xm) or
+// build-local layer. Accepts already-loaded config objects to avoid re-reading.
+export function autopilotActive(shared, buildLocal) {
+  const env = process.env.XMB_AUTOPILOT;
+  if (env === '1' || env === 'true') return true;
+  if (env === '0' || env === 'false') return false; // explicit off overrides config
+  const s = shared !== undefined ? shared : loadSharedConfig();
+  if (s?.autopilot === true) return true;
+  const b = buildLocal !== undefined ? buildLocal : loadConfig();
+  if (b?.autopilot === true) return true;
+  return false;
 }
 
 export function writeSharedConfig(data) {
