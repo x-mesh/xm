@@ -8,7 +8,7 @@ import {
   manifestPath, phaseStatusPath, tasksPath, stepsPath, prdPath, contextDir, projectDir,
   projectsDir, checkpointsDir, phaseDir, toSlug,
   resolveProject, findCurrentProject, findActiveProjects, logDecision,
-  loadConfig, resolveGates, isNormalMode, L, renderBar, fmtDuration,
+  loadConfig, resolveGates, autopilotActive, isNormalMode, L, renderBar, fmtDuration,
   setCmdInit,
   existsSync, readdirSync, mkdirSync, join, readFileSync, writeFileSync,
   createRL, ask, pickMenu,
@@ -323,6 +323,11 @@ export function cmdStatus(args) {
   } else {
     console.log(`\n${C.bold}${C.cyan}📋 ${manifest.display_name || name}${C.reset}`);
     console.log(`   Created: ${manifest.created_at.slice(0, 10)}  ${renderBar(completedPhases, PHASES.length, 15)}`);
+  }
+  if (autopilotActive()) {
+    console.log(normal
+      ? `   ${C.yellow}🚀 오토파일럿 ON — 단계 확인 없이 자동 진행 (품질 검사·계획 검증은 유지)${C.reset}`
+      : `   ${C.yellow}🚀 autopilot ON — phase confirmations auto-passed (quality + plan-check still enforced)${C.reset}`);
   }
   console.log('');
 
