@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.58-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.59-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -987,9 +987,10 @@ Release automation: squash WIP commits, bump the version, push. Works on xm mark
 | Feature | Description |
 |---------|-------------|
 | **Release CLI** | 7 subcommands: `detect`, `diff-report`, `squash`, `bump`, `test`, `commit`, `trace` |
-| **WIP squash** | Auto-classifies WIP commits (tm(), fixup!, wip:) and squashes them |
+| **Tag releases** | `release commit --tag v1.2.0 --push` creates an annotated tag and pushes it with `--follow-tags`. A project whose CI triggers on `push: tags` is not released until the tag is pushed — a branch push alone fires nothing. An existing tag is never moved |
+| **WIP squash** | Squashes WIP commits (`wip:`, `fixup!`, `tmp`). Atomic conventional commits are **kept** — a clean history is the output of careful work, and you cannot un-squash after a push |
 | **Quality gates** | Optional test + review gates before release |
-| **Standalone support** | Auto-detects package.json, Cargo.toml, pyproject.toml, go.mod |
+| **Standalone support** | Auto-detects package.json, Cargo.toml, pyproject.toml, go.mod. No version file → the git tag *is* the version |
 | **Release metrics** | Records version, bump type, test/review results to `.xm/traces/` |
 | **Diff-based analysis** | Per-commit diff report for intelligent squash grouping |
 

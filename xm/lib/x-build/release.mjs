@@ -325,7 +325,10 @@ export function cmdReleaseBump(args) {
         console.log(`\n✅ Version bump complete:\n`);
         console.log(`  ${result.name.padEnd(14)} ${result.from} → ${result.to}${result.tag ? ` (tag: ${result.tag})` : ''}`);
         if (result.tag) {
-          console.log(`\n  Run: git tag ${result.tag} after committing`);
+          // The tag is not a footnote — for a tag-versioned project it IS the release, and
+          // tag-triggered CI (on: push: tags) never fires without it. Hand over the command that
+          // actually creates AND pushes it, instead of a bare `git tag` the caller may skip.
+          console.log(`\n  Tag with the release commit:\n    release commit --msg "release: ${result.name}@${result.to}" --tag ${result.tag} --push`);
         }
       } else {
         console.error('❌ Could not detect version file.');
@@ -504,15 +507,38 @@ export function cmdReleaseCommit(args) {
   const branch = git('branch --show-current');
   console.log(`\n✅ Committed: ${hash}`);
 
-  // Push if requested
-  if (opts.push) {
-    console.log(`\n🚀 Pushing to origin/${branch}...`);
-    try {
-      execSync(`git push origin ${branch}`, { stdio: 'inherit' });
-      console.log(`✅ Pushed to origin/${branch}`);
-    } catch {
-      console.error(`⚠ Push failed. Run manually: git push origin ${branch}`);
+  // Annotated tag. For a tag-versioned project (Rust/Go/anything without a version file) the TAG
+  // *is* the release: release workflows commonly trigger on `push: tags: v*`, so a commit without
+  // one ships nothing. bumpStandalone already computes `v<version>` — it used to only be PRINTED
+  // as a "run this yourself" hint, which is how a release could look complete while its CI never
+  // fired. Refuse a duplicate tag instead of moving it: a moved tag re-triggers CI on other code.
+  let tag = opts.tag && opts.tag !== true ? String(opts.tag) : null;
+  if (tag) {
+    if (git(`tag --list ${JSON.stringify(tag)}`)) {
+      console.error(`❌ Tag ${tag} already exists — bump the version or delete the tag first.`);
+      exitFail(1);
     }
+    try {
+      execSync(`git tag -a ${JSON.stringify(tag)} -m ${JSON.stringify(msg.split('\n')[0])}`, { stdio: 'inherit' });
+      console.log(`🏷  Tagged: ${tag}`);
+    } catch {
+      console.error(`❌ Tag failed: ${tag}`);
+      exitFail(1);
+    }
+  }
+
+  // Push if requested. --follow-tags carries the annotated tag with the branch push; without it
+  // the tag stays local and a tag-triggered workflow never runs.
+  if (opts.push) {
+    console.log(`\n🚀 Pushing to origin/${branch}${tag ? ` (+ tag ${tag})` : ''}...`);
+    try {
+      execSync(`git push --follow-tags origin ${branch}`, { stdio: 'inherit' });
+      console.log(`✅ Pushed to origin/${branch}${tag ? ` · tag ${tag}` : ''}`);
+    } catch {
+      console.error(`⚠ Push failed. Run manually: git push --follow-tags origin ${branch}`);
+    }
+  } else if (tag) {
+    console.log(`\n⚠ Tag ${tag} is LOCAL only — push it or CI will not fire: git push --follow-tags origin ${branch}`);
   }
 }
 
@@ -608,12 +634,15 @@ function bumpStandalone(cwd, bumpType) {
   const projectType = detectProjectType(cwd);
   const vf = getVersionFile(cwd, projectType);
 
+  // Every standalone project gets a SUGGESTED tag, not just the tag-versioned ones: a release
+  // workflow keyed on `push: tags: v*` is just as common in a Cargo/npm repo that also carries a
+  // version file, and the caller cannot ask for a tag it was never told about.
   if (vf.type === 'json' && vf.path && existsSync(vf.path)) {
     const data = readJSON(vf.path);
     const oldV = data.version;
     data.version = bumpVersion(oldV, bumpType);
     writeJSON(vf.path, data);
-    return { name: projectType, from: oldV, to: data.version };
+    return { name: projectType, from: oldV, to: data.version, tag: `v${data.version}` };
   }
 
   if (vf.type === 'toml' && vf.path && existsSync(vf.path)) {
@@ -624,7 +653,7 @@ function bumpStandalone(cwd, bumpType) {
       const newV = bumpVersion(oldV, bumpType);
       content = content.replace(m[0], m[1] + newV + m[3]);
       writeFileSync(vf.path, content, 'utf8');
-      return { name: projectType, from: oldV, to: newV };
+      return { name: projectType, from: oldV, to: newV, tag: `v${newV}` };
     }
   }
 
@@ -708,7 +737,8 @@ export function cmdRelease(args) {
   bump --patch --plugins a,b      Bump versions (xm marketplace)
   bump --patch --standalone       Bump version (standalone project)
   test [--command "..."]          Auto-detect and run tests
-  commit --msg "..." [--push]     Commit and optionally push
+  commit --msg "..." [--tag vX.Y.Z] [--push]
+                                  Commit, optionally tag (annotated) and push (--follow-tags)
   trace --from X --to Y           Record release metrics to .xm/traces/`);
   }
 }

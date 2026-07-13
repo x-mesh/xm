@@ -84,9 +84,28 @@ Decide once, upfront. Cache the result for the rest of the run.
 
 | Signal | Mode |
 |--------|------|
-| `marketplace.json` exists at repo root | marketplace (use `--plugins`) |
-| `.xm/` or `x-build/lib/` present | marketplace |
+| `.claude-plugin/marketplace.json` at repo root | marketplace (use `--plugins`) |
 | Otherwise | standalone (use `--standalone` or plain-git) |
+
+**`.xm/` is NOT a mode signal.** It is the data directory every xm tool writes into (panel runs,
+review artifacts, traces) — a Rust or Go repo where someone once ran `/xm:review` has one. Keying
+`marketplace` off it routes a non-plugin repo into `--plugins` versioning, which fits nothing there.
+Same for `x-build/lib/`: that means "you are standing in the x-kit repo", not "this is a plugin
+marketplace". Only the marketplace manifest decides.
+
+### Version Source (standalone)
+
+`release detect` reports the project type; do NOT assume `package.json`. What carries the version:
+
+| Project | Version source | Tag |
+|---------|----------------|-----|
+| node | `package.json` `"version"` | `v<version>` (conventional) |
+| rust | `Cargo.toml` `version` (workspace root or crate) | `v<version>` |
+| python | `pyproject.toml` `version` | `v<version>` |
+| go / no version file | **git tag only** — the tag IS the version | `v<version>`, required |
+
+A repo with no `package.json` is not a repo that cannot be released. Resolve the version source
+from the table before declaring a blocker.
 
 ## Routing
 
@@ -116,7 +135,10 @@ Always start here. Run all read-only probes in parallel. Reuse results downstrea
   echo "=== status ==="; git status --short
   echo "=== ahead ==="; git log --oneline @{u}..HEAD 2>/dev/null || echo "(no upstream)"
   echo "=== last-tag ==="; git describe --tags --abbrev=0 2>/dev/null || echo "(none)"
-  echo "=== mode-signal ==="; ls marketplace.json 2>/dev/null && echo "marketplace" || echo "standalone"
+  echo "=== mode-signal ==="; ls .claude-plugin/marketplace.json 2>/dev/null && echo "marketplace" || echo "standalone"
+  echo "=== version-source ==="; ls package.json Cargo.toml pyproject.toml VERSION 2>/dev/null || echo "(git-tag only)"
+  # Does CI fire on a TAG? If so, a pushed commit without a tag ships nothing.
+  echo "=== ci-tag-trigger ==="; grep -rlE '^\s*tags:' .github/workflows/ 2>/dev/null || echo "(none)"
   if [ -n "$XMB" ]; then
     echo "=== detect ==="; $XMB release detect
     echo "=== diff-report ==="; $XMB release diff-report 2>/dev/null || true
@@ -152,7 +174,8 @@ Markdown preview (always shown) must include:
 | Test gate failed (only when explicitly requested) | Shipping broken code | "1) 무시하고 계속  2) 중단" |
 | Review verdict = Block (only when explicitly requested) | Critical findings | exit (no question — Block means block) |
 | Working tree contains files outside change scope | Unintended WIP would be shipped | "1) 모두 포함  2) 의도한 파일만  3) 중단" |
-| `--standalone` 모드인데 `package.json` 없음 | Bump 대상 파일 미상 | "1) 버전 파일 지정  2) bump 생략  3) 중단" |
+| Version source unresolvable (no `package.json` / `Cargo.toml` / `pyproject.toml` / tag) | Bump 대상 미상 | "1) 버전 파일 지정  2) 태그로만 릴리스  3) 중단" |
+| CI triggers on tags but the plan has no tag | 커밋만 푸시하면 릴리스 워크플로가 아예 안 돎 | "1) 태그 생성 후 푸시  2) 태그 없이 커밋만  3) 중단" |
 
 ### No Blocker → Proceed Silently
 
@@ -186,6 +209,18 @@ Surface findings in the plan preview (pattern count + top 3 issues). Do NOT auto
 ---
 
 ## Step 2: Squash (if planned)
+
+**Default is `keep`.** Squash only when the history actually needs it — WIP markers (`wip`, `tmp`,
+`fixup!`, `squash!`, `.`, `asdf`), or several commits that are obviously one unit split by mistake.
+A history of atomic, conventional commits (`fix(x): …`, `feat(y): …`) is the OUTPUT of careful work;
+flattening it destroys the bisect/blame trail the author just built. When in doubt, keep — the user
+can always ask for a squash, but cannot un-squash after a push.
+
+| History | Strategy |
+|---------|----------|
+| WIP markers / same-scope dupes | squash (grouped, one commit per scope) |
+| Atomic conventional commits | **keep** — do not squash |
+| Mixed | squash only the WIP run; keep the atomic ones |
 
 For grouped squash:
 ```bash
@@ -223,17 +258,29 @@ Bump type rules:
 
 ---
 
-## Step 4: Commit + Push (single call)
+## Step 4: Commit + Tag + Push (single call)
 
 Inline the README check here — no separate step. If plan said README update needed, stage README changes alongside the version bump.
 
 ```bash
-$XMB release commit --msg "release: ..." --push
+$XMB release commit --msg "release: ..." --tag v<version> --push
 ```
+
+`--tag` creates an ANNOTATED tag and `--push` sends it with `--follow-tags`. Omit `--tag` only for
+marketplace releases (versioned by `plugin.json`, no tag convention).
+
+**A tag-versioned project is not released until the tag is pushed.** Release workflows keyed on
+`on: push: tags: v*` (Step 0's `ci-tag-trigger`) never fire from a branch push — the commit lands,
+CI stays silent, and the ship *looks* successful. If Step 0 found a tag trigger, or the version
+source is git-tag-only, `--tag` is mandatory.
 
 Plain-git:
 ```bash
-git add -A && git commit -m "release: ..." && git push
+# Stage the version file + the files this release actually touched — NEVER `git add -A`:
+# .xm/ (panel runs, review artifacts, traces) and unrelated WIP would ride along into the release.
+git add <version-file> <files-from-plan> && git commit -m "release: ..." \
+  && git tag -a v<version> -m "release: v<version>" \
+  && git push --follow-tags origin "$(git branch --show-current)"
 ```
 
 Commit format:
@@ -303,11 +350,12 @@ When `MODE=plain-git`, replace CLI calls with:
 | diff-report | `git diff --stat $(git describe --tags --abbrev=0)..HEAD` |
 | squash (single) | `git reset --soft $(git describe --tags --abbrev=0)` then `git commit` |
 | squash (grouped) | `git reset --soft <ref>` then stage+commit per group |
-| bump | edit `package.json` `"version"` field directly |
-| commit + push | `git add -A && git commit -m "..." && git push` |
+| bump | edit the version source from the table above (`package.json` / `Cargo.toml` / `pyproject.toml`) |
+| commit + push | `git add <version-file> <planned-files>` → `git commit` → `git tag -a v<ver>` → `git push --follow-tags` |
 | trace | skip (no-op) |
 
-Standalone projects without `package.json` skip bump entirely.
+Projects with no version file are versioned BY THE TAG — bump means `git tag -a v<next>`, not "skip
+bump". Never `git add -A`: it sweeps `.xm/` artifacts and unrelated WIP into the release commit.
 
 ---
 
@@ -333,6 +381,11 @@ Standalone projects without `package.json` skip bump entirely.
 | "confirming each step is safer" | Five step-confirms = five wasted turns. One plan preview + a single approval is safer — the full impact is visible at once. |
 | "guess the CLI path and try it" | resolve_xmb() auto-detects it. Guessing then failing is the worst pattern. |
 | "README update is a separate step" | Same transaction as the commit. Inline it in Step 4. |
+| "`.xm/` is here, so this is a marketplace repo" | `.xm/` is the data dir every xm tool writes. Only `.claude-plugin/marketplace.json` means marketplace. |
+| "no package.json → nothing to bump" | Check Cargo.toml / pyproject.toml / the tag. A version file is one of four possibilities, not a precondition. |
+| "the commit is pushed, so it's released" | If CI triggers on `push: tags`, a branch push ships NOTHING. The tag is the release. |
+| "squash makes the history cleaner" | Atomic conventional commits ARE the clean history. Squash WIP, keep the rest — you cannot un-squash after a push. |
+| "`git add -A` is faster than listing files" | It commits `.xm/` artifacts and unrelated WIP into the release. Stage the plan's files. |
 | "ship isn't done until I see trace results" | trace is for observability. Push success = ship done. Run trace in the background. |
 | "ask for go-ahead every time, to be safe" | Invoking /xm:ship is the consent. Confirm only when a blocker fires — asking every time wastes the user's time and forces the same answer ("proceed"). |
 | "the user might want to edit the commit message" | If they do, they will ask explicitly. Do not guess and prompt. |
@@ -350,4 +403,6 @@ Standalone projects without `package.json` skip bump entirely.
 After ship:
 - `git log -1 --format=%H` matches commit returned
 - `git rev-parse @{u}` matches `git rev-parse HEAD` (push succeeded)
-- Tag created (if applicable): `git tag --points-at HEAD`
+- Tag created AND pushed when the project is tag-versioned or CI triggers on tags:
+  `git tag --points-at HEAD` is non-empty, and `git ls-remote --tags origin | grep <tag>` finds it.
+  A local-only tag fires no workflow — that is a failed release, not a shipped one.
