@@ -1661,3 +1661,52 @@ describe('resolveProject edge cases', () => {
     }
   });
 });
+
+// ── autopilot / resolveGates overlay ─────────────────────────────
+describe('autopilot', () => {
+  const ORIG_AP = process.env.XMB_AUTOPILOT;
+
+  afterEach(() => {
+    if (ORIG_AP !== undefined) process.env.XMB_AUTOPILOT = ORIG_AP;
+    else delete process.env.XMB_AUTOPILOT;
+    // Scrub any autopilot flag a test wrote into the shared config.
+    const shared = core.loadSharedConfig() || {};
+    if ('autopilot' in shared) {
+      delete shared.autopilot;
+      core.writeSharedConfig(shared);
+    }
+  });
+
+  test('off by default — human-verify gates preserved', () => {
+    delete process.env.XMB_AUTOPILOT;
+    expect(core.autopilotActive()).toBe(false);
+    const g = core.resolveGates();
+    expect(g['research-exit']).toBe('human-verify');
+    expect(g['plan-exit']).toBe('human-verify');
+  });
+
+  test('env XMB_AUTOPILOT=1 downgrades human-verify→auto but KEEPS quality', () => {
+    process.env.XMB_AUTOPILOT = '1';
+    expect(core.autopilotActive()).toBe(true);
+    const g = core.resolveGates();
+    expect(g['research-exit']).toBe('auto');
+    expect(g['plan-exit']).toBe('auto');
+    expect(g['verify-exit']).toBe('quality'); // safety floor never relaxed
+    expect(Object.values(g)).not.toContain('human-verify');
+  });
+
+  test('config autopilot:true activates without any env var', () => {
+    delete process.env.XMB_AUTOPILOT;
+    core.writeSharedConfig({ ...(core.loadSharedConfig() || {}), autopilot: true });
+    expect(core.autopilotActive()).toBe(true);
+    expect(core.resolveGates()['plan-exit']).toBe('auto');
+  });
+
+  test('env XMB_AUTOPILOT=0 overrides config autopilot:true (explicit off wins)', () => {
+    core.writeSharedConfig({ ...(core.loadSharedConfig() || {}), autopilot: true });
+    expect(core.autopilotActive()).toBe(true);
+    process.env.XMB_AUTOPILOT = '0';
+    expect(core.autopilotActive()).toBe(false);
+    expect(core.resolveGates()['plan-exit']).toBe('human-verify');
+  });
+});
