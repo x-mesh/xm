@@ -146,7 +146,7 @@ Rules:
 1. **AskUserQuestion is REQUIRED for all user confirmations** — PRD review, plan review, phase gate passes, and any decision point. Text-only questions do NOT enforce turn boundaries.
 2. **Phase transitions** — before calling `phase next`, MUST get user confirmation via AskUserQuestion.
 3. **NEVER skip Research silently** — `plan "goal"` without `--quick` goes through Research, SCALED by the deterministic gauge in the plan JSON's `research_signal` (from `research-check`): `full` → 4-agent research; `slim` → 1-2 targeted agents on the HIT signals; `quick-eligible` (0/4 hits ONLY) → you MAY suggest `--quick` via AskUserQuestion, and proceed quick ONLY if the user confirms. A missing/failed `research_signal` = treat as `full`. Auto-skipping without the user's explicit confirmation, or calling `phase set plan` to dodge Research, is FORBIDDEN.
-4. **Artifacts MUST be printed before review** — any LLM-produced artifact (research findings, PRD, task breakdown, forecast, critique, consensus result) MUST be output in FULL to the user **before** calling AskUserQuestion or advancing the phase. Save-and-ask-without-showing is FORBIDDEN. Saving to disk does NOT count as showing. A summary paragraph does NOT count as showing — print the artifact content. For long outputs, print the full content once and then offer `AskUserQuestion`.
+4. **Artifacts MUST be printed before review (Output Gate)** — any LLM-produced artifact (research findings, PRD, task breakdown, forecast, critique, consensus result) MUST be output in FULL to the user **before** calling AskUserQuestion or advancing the phase. Save-and-ask-without-showing is FORBIDDEN. Saving to disk does NOT count as showing; a summary paragraph does NOT count as showing — print the artifact content. **Self-check gate (enforce, don't just intend):** immediately before the gating `AskUserQuestion`, confirm the full artifact text was printed in the CURRENT turn, and make the question's FIRST option cite a concrete detail from it (a task id, an `R#` requirement, or a `done_criteria` string). If you cannot cite one, you did not show it — print it first, then ask.
 5. **Research output MUST be persisted** — after each research sub-agent (stack / features / architecture / pitfalls) completes, immediately call `$XMB save research-notes --agent <name> --content "..."` to append the RAW agent output to `phases/01-research/notes.md`. Never discard raw agent output by only saving the synthesized ROADMAP — the user must be able to audit the evidence chain.
 6. **PRD Review loop** — already uses AskUserQuestion (keep as-is).
 7. **Plan Review** — MUST print the task breakdown (task list with done_criteria) to the user BEFORE calling AskUserQuestion for plan review. Saving `tasks.json` is not a substitute for showing.
@@ -164,7 +164,6 @@ Anti-patterns:
 - ❌ 신호 1-2개 HIT인데 "거의 quick감"이라며 조사 생략 — 1개라도 HIT면 조사 규모만 조절(slim), quick 제안 금지
 - ❌ Research agents complete → synthesize to ROADMAP.md → save → advance (raw agent output never shown, never persisted to `notes.md`)
 - ❌ Task breakdown generated → `$XMB save plan` → AskUserQuestion (task list never shown to user)
-- ❌ PRD generated → "리뷰해주세요" without showing PRD content
 - ❌ PRD generated → show to user → but forget `$XMB save plan` (PRD lost, not in dashboard)
 - ❌ Phase transition without AskUserQuestion
 - ❌ `init` → `tasks add` → `tasks update --status in_progress` (no PRD, no CONTEXT.md — dashboard blind spot)
@@ -196,7 +195,8 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 **Plan exit gate enforcement:** Before advancing from Plan → Execute, check:
 1. `phases/02-plan/PRD.md` exists and is non-empty
 2. All tasks have `done_criteria` (not null)
-3. If either check fails → block transition, generate missing artifacts first
+3. **Output Gate (Rule 4) satisfied** — the full PRD text AND the task list with done_criteria were printed to the user this session, and the plan-review `AskUserQuestion` cited a concrete artifact detail. A gate pass on save-only (nothing shown in chat) is FORBIDDEN.
+4. If any check fails → block transition; show the missing artifact (or generate it first), then re-ask.
 
 ## Routing
 
@@ -496,3 +496,4 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | "User is mid-task on a feature branch — invoking build is heavy, just apply it lightly" | git branch ≠ x-build project. Run `$XMB list` first; "lightly" / "skill spirit only" is not a valid bypass — it discards the PRD/tasks tracking the user explicitly invoked build to get. |
 | "User just wants quick help, no need for full Research → Plan flow" | If they wanted Quick Mode they would have said `--quick`. Default to full flow; do not auto-shortcut on the user's behalf. |
 | "This is a brand-new empty directory, the full interview is overkill" | The gauge decides, not vibes: `project_kind: greenfield` triggers Round 0 (4 questions, one round). Skipping problem-framing on a greenfield project is how PRDs get built on unvalidated premises. |
+| "I saved the PRD/tasks, so asking for review lets the user just open the file" | Saving is not showing — the user reviews what is in the chat, not what is on disk. Rule 4's Output Gate requires the full artifact text in the current turn, and the review AskUserQuestion must cite a detail from it (task id / R# / done_criteria) — impossible if you never printed it. |
