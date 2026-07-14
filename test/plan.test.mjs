@@ -9,9 +9,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, '..', 'x-build', 'lib', 'x-build-cli.mjs');
 
 function run(args, opts = {}) {
+  const cwd = opts.cwd ?? process.cwd();
+  // Pin the child's shared-config root to the temp project. Without XM_ROOT,
+  // readSharedConfig() merges the developer's real ~/.xm/config.json UNDER the temp
+  // one, and since `model_overrides` outranks `model_profile`, a maintainer with
+  // `model_overrides: { planner: 'opus' }` in their home config makes every
+  // "profile → model" assertion here fail on their machine and pass in CI. XM_ROOT
+  // makes readSharedConfig skip the global tier entirely (shared-config.mjs), so
+  // these tests read exactly the config the test wrote — and nothing else.
   const result = spawnSync('node', [CLI_PATH, ...args], {
-    cwd: opts.cwd ?? process.cwd(),
-    env: { ...process.env, XKIT_SERVER: undefined, ...opts.env },
+    cwd,
+    env: { ...process.env, XKIT_SERVER: undefined, XM_ROOT: join(cwd, '.xm'), ...opts.env },
     encoding: 'utf8',
     timeout: 10000,
   });
