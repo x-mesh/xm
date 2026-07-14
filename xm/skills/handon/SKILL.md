@@ -13,7 +13,7 @@ Restore session context from the last handoff. **Context injection is automatic*
 This skill is **haiku** (Agent tool). Steps 1-3 are JSON read + structured display. No reasoning involved in restoration itself.
 
 ```
-Agent tool: { model: "haiku", description: "x-handon", prompt: "Run: node x-build/lib/x-build-cli.mjs handon --json" } <!-- managed-model: writer -->
+Agent tool: { model: "haiku", description: "x-handon", prompt: "Run: xm build handon --json" } <!-- managed-model: writer -->
 ```
 
 The leader receives the JSON, formats the summary, and waits for user direction. **Step 4 (wait for user)** is the boundary — once the user asks for actual work based on the restored context, that work runs at its own appropriate model (typically sonnet).
@@ -29,14 +29,24 @@ The leader receives the JSON, formats the summary, and waits for user direction.
 
 **Step 1: Read session state as JSON**
 
+> **⚠ Call `xm build handon` directly. Never use a repo-relative path like `node x-build/lib/x-build-cli.mjs` — that path only exists inside the x-kit repo itself and fails with `Cannot find module` in every other project. Claude Code's Bash tool starts a fresh shell on every invocation, so never define shell helper functions across calls either.**
+>
+> **Fallback** (only when `xm` is not in PATH):
+> ```bash
+> XMB_CLI=$(ls -d ~/.claude/plugins/cache/xm/{build,xm}/*/lib/x-build-cli.mjs 2>/dev/null | sort -V | tail -1)
+> node "$XMB_CLI" handon --json
+> ```
+
 ```bash
-node x-build/lib/x-build-cli.mjs handon --json 2>/dev/null
+xm build handon --json
 ```
 
-If the command returns `{"error":"no_session_state"}` or fails, output:
+If the command prints `{"error":"no_session_state"}`, output:
 > No previous session state found. Run `/xm:handoff` at the end of a session to save.
 
 And stop.
+
+If the command itself fails (`command not found`, `Cannot find module`, non-JSON output), that is an **invocation failure, not a missing handoff** — report the actual error to the user and try the fallback above. Never translate a broken invocation into "no previous session state": the state file may exist and be perfectly readable.
 
 Then, best-effort, read the last recorded review verdict for the 🔍 Review line (omit that line if this returns nothing):
 
