@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.61-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.5.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -204,6 +204,7 @@ node xm/lib/install/install-cli.mjs --uninstall --target cursor,codex
 - 기존 파일은 첫 덮어쓰기 시 `.bak`, `.bak.1`, `.bak.2`로 회전(최대 3개). 심볼릭 링크는 abort.
 - Lock 파일은 `O_EXCL` atomic 생성 + 60초 stale TTL.
 - 설치 시 도구별 `xm/manifest.json` 경로(예: `.cursor/xm/manifest.json`, `~/.config/opencode/xm/manifest.json`)에 SHA-256 + HMAC self-checksum 기록. `--verify`는 해시 재계산, `--uninstall`은 기록된 파일만 정확히 제거.
+- `.codex/hooks.json`은 다른 도구(예: mem-mesh)와 공유되는 파일입니다 — install/uninstall은 핸들러 단위로 소유권을 추적해 xm 소유 항목만 병합/제거하며, 다른 도구가 추가한 hooks는 건드리지 않습니다.
 - `R-SEC-02` 공급망 가드: 소스 SKILL.md 해시를 `xm/skills.checksums.json`과 비교 후 렌더. `--allow-unverified`로 우회 가능 (audit entry 표시).
 - 설치는 멱등 — 동일 인자 재실행 시 diff 0.
 

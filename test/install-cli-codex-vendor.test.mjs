@@ -2,7 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import {
-  mkdtempSync, mkdirSync, copyFileSync, existsSync, readFileSync, readdirSync, statSync,
+  mkdtempSync, mkdirSync, copyFileSync, cpSync, existsSync, readFileSync, readdirSync, statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +41,7 @@ function seedTmp() {
   const tmp = mkdtempSync(join(tmpdir(), 'xm-codex-vendor-'));
   mkdirSync(join(tmp, '.claude'), { recursive: true });
   copyFileSync(join(REPO, '.claude', 'settings.json'), join(tmp, '.claude', 'settings.json'));
+  cpSync(join(REPO, '.claude', 'hooks'), join(tmp, '.claude', 'hooks'), { recursive: true });
   return tmp;
 }
 
@@ -312,6 +313,7 @@ describe('install-cli — codex vendor layer (dry-run / install / verify / unins
     const home = mkdtempSync(join(tmpdir(), 'xm-codex-home-'));
     mkdirSync(join(home, '.claude'), { recursive: true });
     copyFileSync(join(REPO, '.claude', 'settings.json'), join(home, '.claude', 'settings.json'));
+    cpSync(join(REPO, '.claude', 'hooks'), join(home, '.claude', 'hooks'), { recursive: true });
     const r = runCli(['--target', 'codex', '--global', '--skills-dir', SKILLS, '--lib-dir', LIB], {
       cwd: home, env: { HOME: home, XM_CODEX_FEATURES_STUB: '__ENOENT__' },
     });
@@ -319,6 +321,11 @@ describe('install-cli — codex vendor layer (dry-run / install / verify / unins
     const planner = join(home, '.codex', 'xm', 'agents', 'xm-planner.config.toml');
     expect(existsSync(planner)).toBe(true);
     expect(statSync(planner).mode & 0o777).toBe(0o600);
+    const installedHook = join(home, '.codex', 'xm', 'hooks', 'xm-last-inject.sh');
+    expect(existsSync(installedHook)).toBe(true);
+    expect(statSync(installedHook).mode & 0o777).toBe(0o600);
+    expect(readFileSync(join(home, '.codex', 'hooks.json'), 'utf8'))
+      .toContain('bash \\"$HOME/.codex/xm/hooks/xm-last-inject.sh\\"');
   });
 });
 
