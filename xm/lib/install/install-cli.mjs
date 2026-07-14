@@ -23,14 +23,21 @@ import { writeOverwrite, writeMergeMarker, removeMarkerBlock } from './merge.mjs
 import { renderCursorWithDiagnostics } from './transform/cursor.mjs';
 import { renderCursorShared, discoverPluginRoots } from './transform/cursor-shared.mjs';
 import { renderCodexWithDiagnostics } from './transform/codex.mjs';
-import { renderCodexShared, assertAgentsBlockSize } from './transform/codex-shared.mjs';
+import {
+  renderCodexShared,
+  assertAgentsBlockSize,
+  mergeCodexHooks,
+  removeOwnedCodexHooks,
+  removeLegacyXmCodexHooks,
+  missingOwnedCodexHooks,
+} from './transform/codex-shared.mjs';
 import { renderCodexVendor } from './transform/codex-vendor.mjs';
 import { renderKiroWithDiagnostics } from './transform/kiro.mjs';
 import { renderKiroShared } from './transform/kiro-shared.mjs';
 import { renderAntigravityWithDiagnostics } from './transform/antigravity.mjs';
 import { renderOpencodeWithDiagnostics } from './transform/opencode.mjs';
 import { CODEX_AGENTS_MAX_BYTES } from './types.mjs';
-import { buildManifest, writeManifest, readManifest, verifyManifest, manifestPath, discoverManifests, readManifestIfExists, shouldSkipTarget } from './manifest.mjs';
+import { buildManifest, writeManifest, readManifest, verifyManifest, verifySelfChecksum, manifestPath, discoverManifests, readManifestIfExists, shouldSkipTarget } from './manifest.mjs';
 import { existsSync, readFileSync, readdirSync, lstatSync, unlinkSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -536,6 +543,11 @@ export function run(argv) {
           const verification = verifyManifest(manifest);
           plannedFileCount = manifest.files.length;
           skip = verification.ok;
+          if (skip && target === 'codex' && manifest.hookOwnership) {
+            const hooksPath = safeJoin(manifest.installRoot, join('.codex', 'hooks.json'));
+            const hooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
+            skip = missingOwnedCodexHooks(hooks, manifest.hookOwnership).length === 0;
+          }
         } catch {
           // Plan failure → must re-install to surface the error properly.
           skip = false;
@@ -643,6 +655,22 @@ export function run(argv) {
         out.push(`  ${b.status.padEnd(8)} ${b.path}`);
       }
       if (bad.length > 10) out.push(`  ...and ${bad.length - 10} more`);
+      if (target === 'codex' && manifest.hookOwnership) {
+        const hooksPath = safeJoin(manifest.installRoot, join('.codex', 'hooks.json'));
+        try {
+          const hooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
+          const missing = missingOwnedCodexHooks(hooks, manifest.hookOwnership);
+          if (missing.length === 0) {
+            out.push('  hook ownership: ok');
+          } else {
+            out.push(`  hook ownership: FAIL (${missing.length} owned handler(s) missing)`);
+            ok = false;
+          }
+        } catch (err) {
+          out.push(`  hook ownership: FAIL (${/** @type {Error} */ (err).message})`);
+          ok = false;
+        }
+      }
       if (!result.ok) ok = false;
     }
     if (!anyChecked) {
@@ -677,9 +705,28 @@ export function run(argv) {
       let removed = 0;
       let preserved = 0;
       let skipped = 0;
+      const sharedHooksPath = target === 'codex'
+        ? safeJoin(manifest.installRoot, join('.codex', 'hooks.json'))
+        : null;
+      if (sharedHooksPath && existsSync(sharedHooksPath)) {
+        try {
+          const current = JSON.parse(readFileSync(sharedHooksPath, 'utf8'));
+          const cleaned = manifest.hookOwnership
+            ? removeOwnedCodexHooks(current, manifest.hookOwnership)
+            : removeLegacyXmCodexHooks(current);
+          writeOverwrite(sharedHooksPath, JSON.stringify(cleaned, null, 2) + '\n', {
+            mode: manifest.scope === 'global' ? 0o600 : 0o644,
+          });
+          preserved++;
+        } catch (err) {
+          out.push(`  WARN failed to remove xm handlers from ${sharedHooksPath}: ${/** @type {Error} */ (err).message}`);
+          exit = 1;
+        }
+      }
       for (const entry of manifest.files) {
         const abs = safeJoin(manifest.installRoot, entry.relativePath);
         if (!existsSync(abs)) { skipped++; continue; }
+        if (sharedHooksPath && abs === sharedHooksPath) continue;
         // merge-marker entries (AGENTS.md): peel xm region, preserve user content
         const isAgents = /(^|\/)AGENTS\.md$/.test(entry.relativePath);
         try {
@@ -878,7 +925,19 @@ export function run(argv) {
       return { exitCode: 2, stdout: '', stderr: `${target}: bundle failed: ${/** @type {Error} */ (err).message}\n` };
     }
     const allOutputs = [...skillOuts.outputs, ...sharedOuts.outputs, ...bundleOuts];
-    /** @type {{ relativePath: string, content: string|Buffer, mode: number }[]} */
+    const existingManifestPath = manifestPath(target, installRoot, args.scope);
+    let previousManifest = null;
+    if (existsSync(existingManifestPath)) {
+      try {
+        const candidate = readManifest(existingManifestPath);
+        previousManifest = verifySelfChecksum(candidate) ? candidate : null;
+      } catch {
+        previousManifest = null;
+      }
+    }
+    /** @type {{ hooks: Record<string, unknown[]> }|undefined} */
+    let hookOwnership;
+    /** @type {{ relativePath: string, content: string|Buffer, mode: number, shared?: 'codex-hooks' }[]} */
     const manifestEntries = [];
     let wrote = 0, unchanged = 0, rotated = 0, updated = 0;
     let mergeWarnings = '';
@@ -899,6 +958,17 @@ export function run(argv) {
           if (result.warning) {
             mergeWarnings += `WARN ${target} ${out.relativePath}: ${result.warning}\n`;
           }
+        } else if (out.kind === 'hook-merge') {
+          const desired = JSON.parse(String(out.content));
+          const current = existsSync(abs)
+            ? JSON.parse(readFileSync(abs, 'utf8'))
+            : { hooks: {} };
+          hookOwnership = desired;
+          const merged = mergeCodexHooks(current, desired, previousManifest?.hookOwnership);
+          const result = writeOverwrite(abs, JSON.stringify(merged, null, 2) + '\n', { mode: out.mode });
+          if (result.action === 'created') wrote++;
+          else if (result.action === 'unchanged') unchanged++;
+          else if (result.action === 'rotated-and-updated') rotated++;
         } else {
           const result = writeOverwrite(abs, out.content, { mode: out.mode });
           if (result.action === 'created') wrote++;
@@ -921,6 +991,7 @@ export function run(argv) {
         relativePath: out.relativePath,
         content: recordedContent,
         mode: out.mode,
+        ...(out.kind === 'hook-merge' ? { shared: /** @type {'codex-hooks'} */ ('codex-hooks') } : {}),
       });
     }
     // R-SEC-10 / R-SEC-13 / R-SEC-15: persist install manifest.
@@ -931,7 +1002,11 @@ export function run(argv) {
       const newEntriesByPath = new Map();
       for (const e of manifestEntries) {
         const buf = typeof e.content === 'string' ? Buffer.from(e.content, 'utf8') : e.content;
-        newEntriesByPath.set(e.relativePath, { sha256: createHash('sha256').update(buf).digest('hex'), mode: e.mode });
+        newEntriesByPath.set(e.relativePath, {
+          sha256: createHash('sha256').update(buf).digest('hex'),
+          mode: e.mode,
+          shared: e.shared,
+        });
       }
       const existingPath = manifestPath(target, installRoot, args.scope);
       let canSkip = false;
@@ -949,8 +1024,10 @@ export function run(argv) {
           prev.files.every((p) => {
             const want = newEntriesByPath.get(p.relativePath);
             return want && want.sha256 === p.sha256 && want.mode === p.mode &&
+                   want.shared === p.shared &&
                    Boolean(p.unverified) === Boolean(args.allowUnverified);
-          })
+          }) &&
+          JSON.stringify(prev.hookOwnership ?? null) === JSON.stringify(hookOwnership ?? null)
         ) {
           canSkip = true;
         }
@@ -961,6 +1038,7 @@ export function run(argv) {
           scope: args.scope,
           installRoot,
           entries: manifestEntries,
+          hookOwnership,
           unverified: args.allowUnverified,
         });
         writeManifest(manifest);

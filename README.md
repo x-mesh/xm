@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.61-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.5.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -204,6 +204,7 @@ node xm/lib/install/install-cli.mjs --uninstall --target cursor,codex
 - Existing files are rotated to `.bak`, `.bak.1`, `.bak.2` (max 3 generations) on first overwrite. Symbolic links abort.
 - Lock files use `O_EXCL` atomic creation with a 60-second stale TTL.
 - Each install writes a manifest under the target's `xm/manifest.json` directory (for example `.cursor/xm/manifest.json` or `~/.config/opencode/xm/manifest.json`) with SHA-256 + HMAC self-checksum. `--verify` recomputes hashes; `--uninstall` rolls back exactly the recorded files.
+- `.codex/hooks.json` is shared with other tools (e.g. mem-mesh): install/uninstall track ownership per handler and merge/remove only xm's own entries, leaving other tools' hooks untouched.
 - `R-SEC-02` supply-chain guard: source SKILL.md hashes are verified against `xm/skills.checksums.json` before render. `--allow-unverified` bypasses with a flagged audit entry.
 - Installs are idempotent — re-running with the same arguments produces zero diff.
 

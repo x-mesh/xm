@@ -36,6 +36,7 @@ function seedTmp() {
   const tmp = mkdtempSync(join(tmpdir(), 'xm-install-'));
   mkdirSync(join(tmp, '.claude'), { recursive: true });
   copyFileSync(join(REPO, '.claude', 'settings.json'), join(tmp, '.claude', 'settings.json'));
+  cpSync(join(REPO, '.claude', 'hooks'), join(tmp, '.claude', 'hooks'), { recursive: true });
   return tmp;
 }
 
@@ -46,6 +47,12 @@ function hashDir(dir) {
     if (!existsSync(fp) || !statSync(fp).isFile()) return '';
     return f + ':' + createHash('sha256').update(readFileSync(fp)).digest('hex').slice(0, 12);
   }).filter(Boolean).join('|');
+}
+
+function hookCommands(document) {
+  return Object.values(document.hooks ?? {}).flatMap((groups) =>
+    Array.isArray(groups) ? groups.flatMap((group) =>
+      Array.isArray(group?.hooks) ? group.hooks.map((hook) => hook.command) : []) : []);
 }
 
 const EXPECTED_SKILL_COUNT = readdirSync(SKILLS, { withFileTypes: true })
@@ -156,6 +163,13 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     expect(r.stdout).toContain('[features] hooks = true');
     expect(r.stdout).not.toContain('codex config set features.codex_hooks true');
     expect(r.stdout).not.toContain('codex_hooks');
+    const installedHook = join(tmp, '.codex', 'xm', 'hooks', 'xm-last-inject.sh');
+    expect(existsSync(installedHook)).toBe(true);
+    expect(readFileSync(installedHook, 'utf8'))
+      .toBe(readFileSync(join(REPO, '.claude', 'hooks', 'xm-last-inject.sh'), 'utf8'));
+    expect(readFileSync(join(tmp, '.codex', 'hooks.json'), 'utf8'))
+      .toContain('bash \\".codex/xm/hooks/xm-last-inject.sh\\"');
+    expect(r.stdout).toContain('mirrored 3 referenced hook file(s)');
   });
   test('kiro steering inclusion matches skill and reference counts', () => {
     const tmp = seedTmp();
@@ -183,6 +197,79 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     expect(readFileSync(skillFile, 'utf8')).toMatch(/^---\nname: "xm-build"\ndescription: /);
     expect(existsSync(join(tmp, '.opencode', 'xm', 'lib', 'x-build-cli.mjs'))).toBe(true);
     expect(existsSync(join(tmp, '.opencode', 'xm', 'manifest.json'))).toBe(true);
+  });
+});
+
+describe('install-cli — shared Codex hooks ownership', () => {
+  test('merges event/handler entries and preserves non-xm fields across re-install', () => {
+    const tmp = seedTmp();
+    mkdirSync(join(tmp, '.codex'), { recursive: true });
+    const externalCommand = 'bash "$HOME/.codex/hooks/mem-mesh-session-start.sh"';
+    writeFileSync(join(tmp, '.codex', 'hooks.json'), JSON.stringify({
+      version: 1,
+      custom: { owner: 'mem-mesh' },
+      hooks: {
+        SessionStart: [{ hooks: [{ type: 'command', command: externalCommand, timeout: 30 }] }],
+        Stop: [{ hooks: [{ type: 'command', command: 'bash "$HOME/.codex/hooks/mem-mesh-stop.sh"' }] }],
+      },
+    }, null, 2));
+
+    const first = run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
+    expect(first.status).toBe(0);
+    const installed = JSON.parse(readFileSync(join(tmp, '.codex', 'hooks.json'), 'utf8'));
+    expect(installed.version).toBe(1);
+    expect(installed.custom).toEqual({ owner: 'mem-mesh' });
+    expect(hookCommands(installed)).toContain(externalCommand);
+    expect(hookCommands(installed).some((command) => command.includes('.codex/xm/hooks/'))).toBe(true);
+    const ownership = JSON.parse(readFileSync(join(tmp, '.codex', 'xm', 'manifest.json'), 'utf8')).hookOwnership;
+    expect(ownership).toBeDefined();
+
+    const second = run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
+    expect(second.status).toBe(0);
+    const reinstalled = JSON.parse(readFileSync(join(tmp, '.codex', 'hooks.json'), 'utf8'));
+    expect(hookCommands(reinstalled).filter((command) => command === externalCommand)).toHaveLength(1);
+    const xmCommands = hookCommands(reinstalled).filter((command) => command.includes('.codex/xm/hooks/'));
+    expect(new Set(xmCommands).size).toBe(xmCommands.length);
+  });
+
+  test('verify allows external handler changes but detects a missing xm handler', () => {
+    const tmp = seedTmp();
+    run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
+    const hooksPath = join(tmp, '.codex', 'hooks.json');
+    const hooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
+    hooks.hooks.Stop = [{ hooks: [{ type: 'command', command: 'bash "$HOME/.codex/hooks/other-stop.sh"' }] }];
+    writeFileSync(hooksPath, JSON.stringify(hooks, null, 2) + '\n');
+    const externalChange = run(['--verify', '--target', 'codex'], { cwd: tmp });
+    expect(externalChange.status).toBe(0);
+    expect(externalChange.stdout).toContain('hook ownership: ok');
+
+    const event = Object.keys(hooks.hooks).find((name) =>
+      hooks.hooks[name].some((group) => group.hooks?.some((hook) => hook.command?.includes('.codex/xm/hooks/'))));
+    expect(event).toBeDefined();
+    const group = hooks.hooks[event].find((entry) =>
+      entry.hooks?.some((hook) => hook.command?.includes('.codex/xm/hooks/')));
+    group.hooks = group.hooks.filter((hook) => !hook.command?.includes('.codex/xm/hooks/'));
+    writeFileSync(hooksPath, JSON.stringify(hooks, null, 2) + '\n');
+    const missingOwned = run(['--verify', '--target', 'codex'], { cwd: tmp });
+    expect(missingOwned.status).not.toBe(0);
+    expect(missingOwned.stdout).toMatch(/hook ownership: FAIL \(1 owned handler\(s\) missing\)/);
+  });
+
+  test('uninstall removes only xm handlers and leaves the shared file', () => {
+    const tmp = seedTmp();
+    mkdirSync(join(tmp, '.codex'), { recursive: true });
+    const externalCommand = 'bash "$HOME/.codex/hooks/mem-mesh-session-start.sh"';
+    writeFileSync(join(tmp, '.codex', 'hooks.json'), JSON.stringify({
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: externalCommand }] }] },
+    }, null, 2));
+    run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
+
+    const removed = run(['--uninstall', '--target', 'codex'], { cwd: tmp });
+    expect(removed.status).toBe(0);
+    expect(existsSync(join(tmp, '.codex', 'hooks.json'))).toBe(true);
+    const remaining = JSON.parse(readFileSync(join(tmp, '.codex', 'hooks.json'), 'utf8'));
+    expect(hookCommands(remaining)).toContain(externalCommand);
+    expect(hookCommands(remaining).some((command) => command.includes('.codex/xm/hooks/'))).toBe(false);
   });
 });
 

@@ -56,6 +56,7 @@ export function fileSha256(absolutePath) {
  * @property {number} mode
  * @property {number} installedAt
  * @property {boolean} [unverified]       True when checksum verification was skipped (R-SEC-15).
+ * @property {'codex-hooks'} [shared]     Shared file whose owned handlers are verified separately.
  */
 
 /**
@@ -69,6 +70,7 @@ export function fileSha256(absolutePath) {
  * @property {number} installedAt
  * @property {ManifestEntry[]} files
  * @property {Record<string,string>} [bundleChecksums]   xm/lib/<file>.mjs → SHA-256 (R-SEC-13).
+ * @property {{ hooks: Record<string, unknown[]> }} [hookOwnership] Codex handlers owned by this install.
  * @property {string} nonce               Hex random; HMAC key salt.
  * @property {string} selfChecksum        HMAC of canonicalized fields keyed by nonce.
  */
@@ -80,8 +82,9 @@ export function fileSha256(absolutePath) {
  * @param {import('./types.mjs').TargetTool} args.target
  * @param {'global'|'local'} args.scope
  * @param {string} args.installRoot
- * @param {{ relativePath: string, content: string|Buffer, mode: number }[]} args.entries
+ * @param {{ relativePath: string, content: string|Buffer, mode: number, shared?: 'codex-hooks' }[]} args.entries
  * @param {Record<string,string>} [args.bundleChecksums]
+ * @param {{ hooks: Record<string, unknown[]> }} [args.hookOwnership]
  * @param {boolean} [args.unverified]
  * @param {number} [args.now]
  * @returns {Manifest}
@@ -92,6 +95,7 @@ export function buildManifest({
   installRoot,
   entries,
   bundleChecksums,
+  hookOwnership,
   unverified = false,
   now = Date.now(),
 }) {
@@ -106,6 +110,7 @@ export function buildManifest({
       installedAt: now,
     };
     if (unverified) entry.unverified = true;
+    if (e.shared) entry.shared = e.shared;
     return entry;
   });
   const nonce = randomBytes(16).toString('hex');
@@ -119,6 +124,7 @@ export function buildManifest({
     installedAt: now,
     files,
     ...(bundleChecksums ? { bundleChecksums } : {}),
+    ...(hookOwnership ? { hookOwnership } : {}),
     nonce,
   };
   const selfChecksum = computeSelfChecksum(body, nonce);
@@ -353,6 +359,10 @@ export function verifyManifest(manifest) {
     } else if (actual === null) {
       status = 'missing';
       allOk = false;
+    } else if (e.shared === 'codex-hooks') {
+      // hooks.json is shared with other installers. Its full-file hash is
+      // expected to change; owned handler presence is checked by install-cli.
+      status = 'ok';
     } else if (actual !== e.sha256) {
       status = 'changed';
       allOk = false;
