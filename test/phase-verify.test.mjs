@@ -13,9 +13,14 @@ const CLI_PATH = join(__dirname, '..', 'x-build', 'lib', 'x-build-cli.mjs');
 // task commit (RV-2 / X-9-class test-isolation failure). Isolate it to a temp dir.
 const RUN_DEFAULT_CWD = mkdtempSync(join(tmpdir(), 'xb-nocwd-'));
 function run(args, opts = {}) {
+  const cwd = opts.cwd ?? RUN_DEFAULT_CWD;
+  // Pin the child's shared-config root to the temp project. Without XM_ROOT, the
+  // developer's real ~/.xm/config.json merges in — and a maintainer who has turned on
+  // `autopilot: true` there silently downgrades every human-verify gate to auto, so
+  // the gate-blocking assertions below fail on their machine and pass in CI.
   const result = spawnSync('node', [CLI_PATH, ...args], {
-    cwd: opts.cwd ?? RUN_DEFAULT_CWD,
-    env: { ...process.env, XKIT_SERVER: undefined, ...opts.env },
+    cwd,
+    env: { ...process.env, XKIT_SERVER: undefined, XM_ROOT: join(cwd, '.xm'), ...opts.env },
     encoding: 'utf8',
     timeout: 10000,
   });
