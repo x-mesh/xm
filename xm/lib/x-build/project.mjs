@@ -8,7 +8,7 @@ import {
   manifestPath, phaseStatusPath, tasksPath, stepsPath, prdPath, contextDir, projectDir,
   projectsDir, checkpointsDir, phaseDir, toSlug,
   resolveProject, findCurrentProject, findActiveProjects, logDecision,
-  loadConfig, resolveGates, autopilotActive, isNormalMode, L, renderBar, fmtDuration,
+  loadConfig, resolveGates, requiresSignoff, autopilotActive, isNormalMode, L, renderBar, fmtDuration,
   setCmdInit,
   existsSync, readdirSync, mkdirSync, join, readFileSync, writeFileSync,
   createRL, ask, pickMenu,
@@ -325,9 +325,21 @@ export function cmdStatus(args) {
     console.log(`   Created: ${manifest.created_at.slice(0, 10)}  ${renderBar(completedPhases, PHASES.length, 15)}`);
   }
   if (autopilotActive()) {
+    // Name the decision gates that still block. Without this line an autopilot user
+    // who hits plan-exit thinks the flag is broken, instead of seeing it working as
+    // designed (confirmations passed, direction approval kept).
+    const blocking = PHASES
+      .map(p => [p, resolveGates()[`${p.name}-exit`]])
+      .filter(([, t]) => t === 'decision')
+      .map(([p]) => p.label);
     console.log(normal
       ? `   ${C.yellow}🚀 오토파일럿 ON — 단계 확인 없이 자동 진행 (품질 검사·계획 검증은 유지)${C.reset}`
       : `   ${C.yellow}🚀 autopilot ON — phase confirmations auto-passed (quality + plan-check still enforced)${C.reset}`);
+    if (blocking.length) {
+      console.log(normal
+        ? `   ${C.dim}   단, ${blocking.join(', ')} 종료 시 방향 승인은 그대로 멈춥니다 (gate pass 필요)${C.reset}`
+        : `   ${C.dim}   still blocking: ${blocking.join(', ')} exit (decision gate — needs gate pass)${C.reset}`);
+    }
   }
   console.log('');
 
@@ -1095,7 +1107,7 @@ function getPhaseActions(manifest, config) {
         { label: '📋 태스크 목록', action: 'task-list' },
         { label: '🔹 Step 계산', action: 'step-compute' },
       );
-      if (gateType === 'human-verify') {
+      if (requiresSignoff(gateType)) {
         actions.push({ label: '✅ 계획 승인 (gate pass)', action: 'gate-pass' });
       }
       actions.push({ label: '➡️  다음 단계 (Execute)로 이동', action: 'phase-next' });

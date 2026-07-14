@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.59-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.4.60-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -1223,7 +1223,7 @@ A bare `xm config` opens a menu-driven wizard with seven categories:
 | 1 | Model | `model_profile` · per-role `model_overrides` · per-phase models (plan / implement / review) |
 | 2 | Budget | `budget.max_usd` · `budget.window_hours` · per-project `budget.projects` |
 | 3 | Execution | `agent_max_count` (1–10) |
-| 4 | Gates | five phase-exit gates (`research/plan/execute/verify/close-exit`) — `auto` / `human-verify` / `quality` |
+| 4 | Gates | five phase-exit gates (`research/plan/execute/verify/close-exit`) — `auto` / `human-verify` / `quality` / `decision` · `autopilot` passes `human-verify` but never `quality` or `decision` (`plan-exit` defaults to `decision`: only a human can tell that a well-formed plan aims at the wrong goal) |
 | 5 | Worktree | parallel-worktree keys over a 3-tier scope (build-local > shared > global) + `gate_policy` severity lists |
 | 6 | Misc | `mode` · `drift.drift_threshold` · `scan_roots` · `pipelines` |
 | 7 | Panel | cross-vendor providers — `models` / `judge` delegate to `xm panel setup`; `timeout_s` / `model_overrides` are written directly |

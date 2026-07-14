@@ -8,7 +8,7 @@ import {
   manifestPath, phaseStatusPath, tasksPath, prdPath, contextDir, phaseDir, checkpointsDir,
   projectDir, decisionsPath,
   resolveProject, logDecision, appendMetric, emitHook,
-  loadConfig, resolveGates, parseOptions, E,
+  loadConfig, resolveGates, requiresSignoff, parseOptions, E,
   existsSync, join, resolve, repoRoot,
   spawnSync,
   runQualityChecks,
@@ -72,10 +72,18 @@ export function phaseNext(args) {
     return;
   }
 
-  if (gateType === 'human-verify') {
+  if (requiresSignoff(gateType)) {
     const status = readJSON(phaseStatusPath(project, currentPhase.id));
     if (status?.gate_passed !== true) {
-      console.log(`⛔ Gate "${gateKey}" requires human verification.`);
+      if (gateType === 'decision') {
+        // A decision gate survives autopilot, so say WHY it is still here — otherwise
+        // an autopilot user reads it as the flag not working.
+        console.log(`⛔ Gate "${gateKey}" needs a direction approval.`);
+        console.log(`   This gate is not skipped by autopilot: it asks whether the plan`);
+        console.log(`   matches what you actually wanted, which no automated check can answer.`);
+      } else {
+        console.log(`⛔ Gate "${gateKey}" requires human verification.`);
+      }
       console.log(`   Run: x-build gate pass [message]`);
       recordGateOutcome(project, currentPhase.id, gateType, false, null);
       process.exitCode = 2; // a blocked gate must not exit 0 (CI / gate consumers)
@@ -84,7 +92,7 @@ export function phaseNext(args) {
   }
 
   // Research-exit: verify artifacts exist + optional validation
-  if (currentPhase.name === 'research' && gateType === 'human-verify') {
+  if (currentPhase.name === 'research' && requiresSignoff(gateType)) {
     const hasContext = existsSync(join(contextDir(project), 'CONTEXT.md'));
     const hasReqs = existsSync(join(contextDir(project), 'REQUIREMENTS.md'));
     if (!hasContext && !hasReqs) {
@@ -118,16 +126,16 @@ export function phaseNext(args) {
     const planCheck = readJSON(join(phaseDir(project, '02-plan'), 'plan-check.json'));
     if (!planCheck) {
       console.log(`⚠️  Plan not validated. Run: x-build plan-check`);
-      if (gateType === 'human-verify') console.log(`   Then: x-build gate pass`);
+      if (requiresSignoff(gateType)) console.log(`   Then: x-build gate pass`);
       return;
     }
     if (!planCheck.passed) {
       console.log(`⚠️  Plan check has errors. Fix them first.`);
       return;
     }
-    // Critique is ADVISORY (not a hard gate) — only surface it under human-verify.
-    // Autopilot skips the nudge; the hard checks above already ran.
-    if (gateType === 'human-verify') {
+    // Critique is ADVISORY (not a hard gate) — only surface it when a human is going
+    // to sign off anyway. Autopilot skips the nudge; the hard checks above already ran.
+    if (requiresSignoff(gateType)) {
       const critiqueResult = readJSON(join(phaseDir(project, '02-plan'), 'discuss-critique.json'));
       if (!critiqueResult) {
         console.log(`${C.dim}💡 Tip: Run "x-build discuss --mode critique" for strategic review before proceeding.${C.reset}`);
@@ -178,7 +186,7 @@ export function phaseNext(args) {
   // Gate cleared (every applicable check passed). Record WHAT gate cleared this
   // phase and how, so status --json and CI consumers see the decision instead of
   // it vanishing when the command returns.
-  const passedBy = gateType === 'human-verify' ? 'human'
+  const passedBy = requiresSignoff(gateType) ? 'human'
     : gateType === 'quality' ? 'quality'
     : gateType === 'auto' ? 'auto'
     : `custom:${gateType}`;
@@ -455,6 +463,7 @@ export async function interactiveCheckpoint(rl, project) {
     { label: 'Human-verify (수동 확인)', value: 'human-verify' },
     { label: 'Human-action (사용자 행동)', value: 'human-action' },
     { label: 'Quality (품질 게이트)', value: 'quality' },
+    { label: 'Decision (방향 승인)', value: 'decision' },
   ]);
   if (!typeChoice) return;
 

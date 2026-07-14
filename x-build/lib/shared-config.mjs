@@ -1301,8 +1301,8 @@ async function categoryBudget(rl, session) {
 
 // ── Gates category (global-default enum) ────────────────────────────────
 //
-// The five phase-exit gates are enum keys (auto / human-verify / quality) with
-// scope 'global'. Each reuses promptSchemaValue (numbered enum) + saveKey, so the
+// The five phase-exit gates are enum keys (auto / human-verify / quality / decision)
+// with scope 'global'. Each reuses promptSchemaValue (numbered enum) + saveKey, so the
 // current value + source tier is shown before the edit and the scope is chosen per
 // item like every other scalar.
 const GATE_KEYS = ['research-exit', 'plan-exit', 'execute-exit', 'verify-exit', 'close-exit'];

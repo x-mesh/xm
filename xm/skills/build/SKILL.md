@@ -144,7 +144,7 @@ See `references/ask-user-question-rule.md` — the `question` field is invisible
 
 Rules:
 1. **AskUserQuestion is REQUIRED for all user confirmations** — PRD review, plan review, phase gate passes, and any decision point. Text-only questions do NOT enforce turn boundaries.
-2. **Phase transitions** — before calling `phase next`, MUST get user confirmation via AskUserQuestion. **Autopilot exception:** when autopilot is on (`autopilot: true` in config, or env `XMB_AUTOPILOT=1`), SKIP the phase-transition AskUserQuestion and advance automatically. Autopilot relaxes ONLY the confirmation — still print every artifact (Rule 4 Output Gate holds), and still STOP for a failed `quality` gate, a blocked gate (`phase next` exits 2, e.g. plan-check failing), an agent execution error, or any information/ambiguity AskUserQuestion (those are decisions, NOT phase-transition confirmations). `status` shows a 🚀 badge while autopilot is on. Turn it on with `$XMB config set autopilot true` (persistent) or an `XMB_AUTOPILOT=1` prefix (one-shot); off with `false`.
+2. **Phase transitions** — before calling `phase next`, MUST get user confirmation via AskUserQuestion. **Autopilot exception:** when autopilot is on (`autopilot: true` in config, or env `XMB_AUTOPILOT=1`), SKIP the phase-transition AskUserQuestion and advance automatically. Autopilot relaxes ONLY the confirmation — still print every artifact (Rule 4 Output Gate holds), and still STOP for a failed `quality` gate, a **`decision` gate (plan → execute by default — autopilot does NOT pass it; ask the user to approve the plan's direction)**, a blocked gate (`phase next` exits 2, e.g. plan-check failing), an agent execution error, or any information/ambiguity AskUserQuestion (those are decisions, NOT phase-transition confirmations). `status` shows a 🚀 badge while autopilot is on. Turn it on with `$XMB config set autopilot true` (persistent) or an `XMB_AUTOPILOT=1` prefix (one-shot); off with `false`.
 3. **NEVER skip Research silently** — `plan "goal"` without `--quick` goes through Research, SCALED by the deterministic gauge in the plan JSON's `research_signal` (from `research-check`): `full` → 4-agent research; `slim` → 1-2 targeted agents on the HIT signals; `quick-eligible` (0/4 hits ONLY) → you MAY suggest `--quick` via AskUserQuestion, and proceed quick ONLY if the user confirms. A missing/failed `research_signal` = treat as `full`. Auto-skipping without the user's explicit confirmation, or calling `phase set plan` to dodge Research, is FORBIDDEN.
 4. **Artifacts MUST be printed before review (Output Gate)** — any LLM-produced artifact (research findings, PRD, task breakdown, forecast, critique, consensus result) MUST be output in FULL to the user **before** calling AskUserQuestion or advancing the phase. Save-and-ask-without-showing is FORBIDDEN. Saving to disk does NOT count as showing; a summary paragraph does NOT count as showing — print the artifact content. **Self-check gate (enforce, don't just intend):** immediately before the gating `AskUserQuestion`, confirm the full artifact text was printed in the CURRENT turn, and make the question's FIRST option cite a concrete detail from it (a task id, an `R#` requirement, or a `done_criteria` string). If you cannot cite one, you did not show it — print it first, then ask.
 5. **Research output MUST be persisted** — after each research sub-agent (stack / features / architecture / pitfalls) completes, immediately call `$XMB save research-notes --agent <name> --content "..."` to append the RAW agent output to `phases/01-research/notes.md`. Never discard raw agent output by only saving the synthesized ROADMAP — the user must be able to audit the evidence chain.
@@ -187,10 +187,26 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 | Phase | Exit Gate | Condition |
 |-------|-----------|-----------|
 | Research | human-verify | CONTEXT.md or REQUIREMENTS.md must exist + no unresolved decisions in CONTEXT.md |
-| Plan | human-verify | PRD.md MUST exist + Tasks defined with done_criteria + plan-check passed (+ optional critique) |
+| Plan | **decision** | PRD.md MUST exist + Tasks defined with done_criteria + plan-check passed (+ optional critique) |
 | Execute | auto | All tasks completed |
 | Verify | quality | test/lint/build all pass |
 | Close | auto | — |
+
+**Gate types and what autopilot does to each:**
+
+| Type | Blocks? | Autopilot |
+|------|---------|-----------|
+| `auto` | no | — |
+| `human-verify` | yes — needs `gate pass` | **downgraded to `auto`** (it is a confirmation) |
+| `quality` | yes — test/lint/build must pass | untouched |
+| `decision` | yes — needs `gate pass` | **untouched** (it is a direction approval, not a confirmation) |
+
+`decision` exists because `plan → execute` is the one transition no automated check can guard.
+`plan-check` proves the plan is well-formed; `quality` proves the code is correct. Neither can tell
+that a well-formed plan produces correct code aimed at the wrong goal — e.g. the user asked to add an
+option and the plan changes the default instead. Only the person who holds the unexpressed intent can
+catch that, so autopilot must never pass this gate. Never route a phase to `decision` merely because
+it feels important: use it only where a human's intent is the sole possible check.
 
 **Plan exit gate enforcement:** Before advancing from Plan → Execute, check:
 1. `phases/02-plan/PRD.md` exists and is non-empty

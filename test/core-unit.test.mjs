@@ -1666,47 +1666,80 @@ describe('resolveProject edge cases', () => {
 describe('autopilot', () => {
   const ORIG_AP = process.env.XMB_AUTOPILOT;
 
+  // Config layers are INJECTED, never written to disk. These tests used to call
+  // writeSharedConfig() and read the value back, but the write target (ROOT, frozen at
+  // core.mjs import) and the read target (resolved per call from cwd/XM_ROOT) are not
+  // guaranteed to be the same file once another test file has imported core first —
+  // so the suite failed on a different subset of these tests on every run. Injection
+  // removes the ambient-file dependency entirely.
+  const OFF = {};
+  const ON = { autopilot: true };
+
   afterEach(() => {
     if (ORIG_AP !== undefined) process.env.XMB_AUTOPILOT = ORIG_AP;
     else delete process.env.XMB_AUTOPILOT;
-    // Scrub any autopilot flag a test wrote into the shared config.
-    const shared = core.loadSharedConfig() || {};
-    if ('autopilot' in shared) {
-      delete shared.autopilot;
-      core.writeSharedConfig(shared);
-    }
   });
 
-  test('off by default — human-verify gates preserved', () => {
+  test('off by default — human-verify preserved, plan-exit is a decision gate', () => {
     delete process.env.XMB_AUTOPILOT;
-    expect(core.autopilotActive()).toBe(false);
-    const g = core.resolveGates();
+    expect(core.autopilotActive(OFF, OFF)).toBe(false);
+    const g = core.resolveGates(OFF, OFF);
     expect(g['research-exit']).toBe('human-verify');
-    expect(g['plan-exit']).toBe('human-verify');
+    expect(g['plan-exit']).toBe('decision');
   });
 
-  test('env XMB_AUTOPILOT=1 downgrades human-verify→auto but KEEPS quality', () => {
+  test('env XMB_AUTOPILOT=1 downgrades human-verify→auto but KEEPS quality + decision', () => {
     process.env.XMB_AUTOPILOT = '1';
-    expect(core.autopilotActive()).toBe(true);
-    const g = core.resolveGates();
+    expect(core.autopilotActive(OFF, OFF)).toBe(true);
+    const g = core.resolveGates(OFF, OFF);
     expect(g['research-exit']).toBe('auto');
-    expect(g['plan-exit']).toBe('auto');
     expect(g['verify-exit']).toBe('quality'); // safety floor never relaxed
+    expect(g['plan-exit']).toBe('decision');  // direction approval survives autopilot
     expect(Object.values(g)).not.toContain('human-verify');
   });
 
   test('config autopilot:true activates without any env var', () => {
     delete process.env.XMB_AUTOPILOT;
-    core.writeSharedConfig({ ...(core.loadSharedConfig() || {}), autopilot: true });
-    expect(core.autopilotActive()).toBe(true);
-    expect(core.resolveGates()['plan-exit']).toBe('auto');
+    expect(core.autopilotActive(ON, OFF)).toBe(true);
+    expect(core.resolveGates(ON, OFF)['research-exit']).toBe('auto');
+  });
+
+  test('build-local autopilot:true activates too', () => {
+    delete process.env.XMB_AUTOPILOT;
+    expect(core.autopilotActive(OFF, ON)).toBe(true);
   });
 
   test('env XMB_AUTOPILOT=0 overrides config autopilot:true (explicit off wins)', () => {
-    core.writeSharedConfig({ ...(core.loadSharedConfig() || {}), autopilot: true });
-    expect(core.autopilotActive()).toBe(true);
+    delete process.env.XMB_AUTOPILOT;
+    expect(core.autopilotActive(ON, OFF)).toBe(true);
     process.env.XMB_AUTOPILOT = '0';
-    expect(core.autopilotActive()).toBe(false);
-    expect(core.resolveGates()['plan-exit']).toBe('human-verify');
+    expect(core.autopilotActive(ON, OFF)).toBe(false);
+    expect(core.resolveGates(ON, OFF)['research-exit']).toBe('human-verify');
+  });
+
+  // A decision gate is the ONE thing autopilot must not pass. If a user explicitly
+  // configures another phase as `decision`, autopilot must leave that one alone too —
+  // the immunity belongs to the gate TYPE, not to the plan phase specifically.
+  test('a decision gate configured on any phase survives autopilot', () => {
+    delete process.env.XMB_AUTOPILOT;
+    const g = core.resolveGates({ autopilot: true, gates: { 'research-exit': 'decision' } }, OFF);
+    expect(g['research-exit']).toBe('decision');
+    expect(g['plan-exit']).toBe('decision');
+  });
+
+  // The inverse: a user who explicitly downgrades plan-exit keeps that choice. The
+  // decision gate is a strong DEFAULT, not a lock — otherwise it is a policy, not a gate.
+  test('an explicitly configured plan-exit still wins over the decision default', () => {
+    delete process.env.XMB_AUTOPILOT;
+    const g = core.resolveGates({ gates: { 'plan-exit': 'auto' } }, OFF);
+    expect(g['plan-exit']).toBe('auto');
+  });
+
+  test('requiresSignoff covers human-verify + decision, and nothing else', () => {
+    expect(core.requiresSignoff('human-verify')).toBe(true);
+    expect(core.requiresSignoff('decision')).toBe(true);
+    expect(core.requiresSignoff('auto')).toBe(false);
+    expect(core.requiresSignoff('quality')).toBe(false);
+    expect(core.requiresSignoff('human-action')).toBe(false);
   });
 });
