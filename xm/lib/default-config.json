@@ -1,7 +1,7 @@
 {
   "gates": {
     "research-exit": "human-verify",
-    "plan-exit": "human-verify",
+    "plan-exit": "decision",
     "execute-exit": "auto",
     "verify-exit": "quality",
     "close-exit": "auto"

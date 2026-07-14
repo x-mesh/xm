@@ -365,8 +365,8 @@ const MESSAGES = {
 
   // ── category: gates ──
   'cat.gates.title': {
-    ko: '게이트 설정 (auto / human-verify / quality)',
-    en: 'Gate settings (auto / human-verify / quality)',
+    ko: '게이트 설정 (auto / human-verify / quality / decision)',
+    en: 'Gate settings (auto / human-verify / quality / decision)',
   },
 
   // ── category: worktree ──

@@ -102,7 +102,17 @@ export const STATUS_ALIASES = {
   todo: 'pending',
 };
 
-export const GATE_TYPES = ['auto', 'human-verify', 'human-action', 'quality'];
+export const GATE_TYPES = ['auto', 'human-verify', 'human-action', 'quality', 'decision'];
+
+// A gate that halts until a human runs `x-build gate pass`. Two types qualify, and
+// they differ ONLY in how autopilot treats them: `human-verify` is a confirmation
+// ("proceed?") and autopilot downgrades it to `auto`; `decision` is a direction
+// approval ("is this plan what you actually asked for?") and autopilot must NOT
+// touch it. Quality gates catch code that is wrong; only a decision gate catches
+// code that is correct but built toward the wrong goal.
+export function requiresSignoff(gateType) {
+  return gateType === 'human-verify' || gateType === 'decision';
+}
 
 // ── ANSI Colors ──────────────────────────────────────────────────────
 
@@ -267,17 +277,23 @@ export const GATE_DEFAULTS = (() => {
 // writes to the shared `.xm/config.json`). One resolver now feeds all consumers, so
 // a configured gate is actually honored and the marquee "gate the agent cannot talk
 // past" is no longer a no-op. Returns { [gateName]: type }.
-export function resolveGates() {
-  const shared = loadSharedConfig();
+// Both config layers may be injected. Production callers pass nothing and get the
+// on-disk config; tests pass explicit objects so a gate assertion never depends on
+// whatever `.xm/config.json` another test file happened to leave behind (that
+// coupling made the autopilot suite fail differently on every run).
+export function resolveGates(sharedIn, buildLocalIn) {
+  const shared = sharedIn !== undefined ? sharedIn : loadSharedConfig();
   const sharedGates = (shared && typeof shared.gates === 'object' && shared.gates) ? shared.gates : {};
-  const buildLocal = loadConfig();
+  const buildLocal = buildLocalIn !== undefined ? buildLocalIn : loadConfig();
   const buildGates = (buildLocal && typeof buildLocal.gates === 'object' && buildLocal.gates) ? buildLocal.gates : {};
   const merged = { ...GATE_DEFAULTS, ...sharedGates, ...buildGates };
 
   // Autopilot overlay (highest precedence): downgrade every human-verify gate to
-  // auto so phase transitions stop blocking on `gate pass`. `quality` gates are
-  // left untouched on purpose — a failing test/lint/build must still halt the
-  // pipeline, which is the safety floor that separates autopilot from "blind run".
+  // auto so phase transitions stop blocking on `gate pass`. `quality` and `decision`
+  // gates are left untouched on purpose — a failing test/lint/build must still halt
+  // the pipeline, and a direction approval is not a confirmation prompt. Those two
+  // are the safety floor that separates autopilot from "blind run": quality catches
+  // wrong code, decision catches correct code built toward the wrong goal.
   if (autopilotActive(shared, buildLocal)) {
     for (const k of Object.keys(merged)) {
       if (merged[k] === 'human-verify') merged[k] = 'auto';
@@ -333,6 +349,7 @@ export const NORMAL_LABELS = {
   'human-verify': '직접 확인',
   'human-action': '직접 작업',
   'quality': '품질 검사',
+  'decision': '방향 승인',
   'pending': '대기 중',
   'ready': '준비됨',
   'running': '진행 중',

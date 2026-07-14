@@ -33,7 +33,7 @@ if (!existsSync(sharedConfig)) {
     writeFileSync(sharedConfig, JSON.stringify({
       gates: {
         "research-exit": "auto",
-        "plan-exit": "human-verify",
+        "plan-exit": "decision",
         "execute-exit": "auto",
         "verify-exit": "quality",
         "close-exit": "auto"

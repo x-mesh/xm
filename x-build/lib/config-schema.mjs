@@ -222,25 +222,31 @@ export const SCHEMA = [
     key: 'gates.research-exit',
     group: 'gates',
     type: 'string',
-    enum: ['auto', 'human-verify', 'quality'],
+    enum: ['auto', 'human-verify', 'quality', 'decision'],
     scope: 'global',
     default: 'human-verify',
     description: 'Research 페이즈 종료 게이트',
   },
   {
+    // plan→execute is the ONE transition where a human's unexpressed intent is the
+    // only thing that can catch the failure. plan-check verifies the plan is
+    // well-formed and quality gates verify the code is correct — neither can tell
+    // that a well-formed plan builds correct code toward the wrong goal (e.g. the
+    // user asked to add an option, the plan changes the default). So this gate is
+    // `decision`, not `human-verify`: autopilot passes confirmations, never this.
     key: 'gates.plan-exit',
     group: 'gates',
     type: 'string',
-    enum: ['auto', 'human-verify', 'quality'],
+    enum: ['auto', 'human-verify', 'quality', 'decision'],
     scope: 'global',
-    default: 'human-verify',
-    description: 'Plan 페이즈 종료 게이트',
+    default: 'decision',
+    description: 'Plan 페이즈 종료 게이트 (기본 decision — autopilot도 통과 못 함)',
   },
   {
     key: 'gates.execute-exit',
     group: 'gates',
     type: 'string',
-    enum: ['auto', 'human-verify', 'quality'],
+    enum: ['auto', 'human-verify', 'quality', 'decision'],
     scope: 'global',
     default: 'auto',
     description: 'Execute 페이즈 종료 게이트',
@@ -249,7 +255,7 @@ export const SCHEMA = [
     key: 'gates.verify-exit',
     group: 'gates',
     type: 'string',
-    enum: ['auto', 'human-verify', 'quality'],
+    enum: ['auto', 'human-verify', 'quality', 'decision'],
     scope: 'global',
     default: 'quality',
     description: 'Verify 페이즈 종료 게이트',
@@ -258,23 +264,24 @@ export const SCHEMA = [
     key: 'gates.close-exit',
     group: 'gates',
     type: 'string',
-    enum: ['auto', 'human-verify', 'quality'],
+    enum: ['auto', 'human-verify', 'quality', 'decision'],
     scope: 'global',
     default: 'auto',
     description: 'Close 페이즈 종료 게이트',
   },
   {
     // Autopilot: when true, resolveGates() downgrades every `human-verify` gate
-    // to `auto` so phase transitions no longer block on `gate pass`. `quality`
-    // gates are DELIBERATELY left intact — a failing test/lint/build must still
-    // stop the pipeline. Also honored via the XMB_AUTOPILOT=1 env var for
-    // one-shot runs (env wins over config). See SKILL.md "Autopilot Mode".
+    // to `auto` so phase transitions no longer block on `gate pass`. `quality` and
+    // `decision` gates are DELIBERATELY left intact — a failing test/lint/build must
+    // still stop the pipeline, and a direction approval is not a confirmation prompt.
+    // Also honored via the XMB_AUTOPILOT=1 env var for one-shot runs (env wins over
+    // config). See SKILL.md "Autopilot Mode".
     key: 'autopilot',
     group: 'gates',
     type: 'boolean',
     scope: 'global',
     default: false,
-    description: 'Autopilot — human-verify 게이트를 자동 통과(quality 게이트는 유지)',
+    description: 'Autopilot — human-verify 게이트를 자동 통과(quality·decision 게이트는 유지)',
   },
 
   // ── worktree (build-local 3-tier; runtime source = WORKTREE_CONFIG_DEFAULTS) ──
