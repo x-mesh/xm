@@ -18,7 +18,7 @@ This skill is **hybrid**:
 | 2. Save state to disk | **haiku** (Agent tool) | writer | Mechanical JSON write — no reasoning |
 
 ```
-Agent tool: { model: "haiku", description: "x-handoff", prompt: "Run: node x-build/lib/x-build-cli.mjs handoff --full --narrative-json '<JSON>' \"$ARGUMENTS\"" } <!-- managed-model: writer -->
+Agent tool: { model: "haiku", description: "x-handoff", prompt: "Run: xm build handoff --full --narrative-json '<JSON>' \"$ARGUMENTS\"" } <!-- managed-model: writer -->
 ```
 
 **Guardrail**: never skip Step 1 to save tokens. Without the narrative, `/xm:handon` shows only "what was done," not "why we were doing it" — the next session has to re-derive the working direction from scratch.
@@ -50,8 +50,16 @@ Before dispatching to haiku, write a `narrative` object based on **this conversa
 
 Build the CLI command:
 
+> **⚠ Call `xm build handoff` directly. Never use a repo-relative path like `node x-build/lib/x-build-cli.mjs` — that path only exists inside the x-kit repo itself and fails with `Cannot find module` in every other project.**
+>
+> **Fallback** (only when `xm` is not in PATH):
+> ```bash
+> XMB_CLI=$(ls -d ~/.claude/plugins/cache/xm/{build,xm}/*/lib/x-build-cli.mjs 2>/dev/null | sort -V | tail -1)
+> node "$XMB_CLI" handoff --full --narrative-json '<JSON>' "$ARGUMENTS"
+> ```
+
 ```bash
-node x-build/lib/x-build-cli.mjs handoff --full \
+xm build handoff --full \
   --narrative-json '{"intent":"...","open_questions":[...],"rejected_alternatives":[...],"next_session_should_know":[...]}' \
   "$ARGUMENTS"
 ```
