@@ -20,6 +20,15 @@ The leader receives the JSON, formats the summary, and waits for user direction.
 
 **Guardrail**: never haiku if the user follows up with "what should I do next" or "analyze the prior session" — those are reasoning tasks, escalate to **sonnet**.
 
+## mem-mesh Backend (capability gate)
+
+Check ONCE at skill start whether `mcp__mem-mesh__*` tools are in your available toolset.
+
+- **Present** → **dual-write mode**: restore from `.xm/build/SESSION-STATE.json` as below AND enrich the summary with recent mem-mesh context (Step 3.5 below).
+- **Absent** → **file-only mode**: run exactly as documented, make ZERO mem-mesh calls, never mention mem-mesh.
+
+SESSION-STATE.json is the **primary** restore source; mem-mesh only augments. If a mem-mesh call errors, log it and render the file-based summary anyway. The **leader** makes the mem-mesh call (the haiku reader may lack the MCP tools).
+
 ## When to Use
 - Start of a new session
 - After `/clear` or context compaction
@@ -73,6 +82,7 @@ The JSON contains these sections that you MUST use as your working context:
 | `narrative.open_questions` | **Decisions still pending — surface these before starting new work; do not silently resolve them** |
 | `narrative.rejected_alternatives` | **Approaches already ruled out — do NOT re-propose; reference if the user asks "why not X"** |
 | `narrative.next_session_should_know` | **Non-obvious context the prior session captured for you — treat as binding facts** |
+| `session_log_summary` | **A count of tier-2 detail (rejected/open_forks/constraints_prefs/attempts). The full archive is deliberately NOT in this JSON — do not treat its absence as "no detail." Announce it (Step 3) and load on demand (below).** |
 | `why_stopped` | This is why the last session ended |
 | `since_handoff.new_commits` | This many changes happened since the handoff (by others or other sessions) |
 
@@ -92,6 +102,7 @@ After absorbing, show a human-readable summary:
   ❓ Open: {narrative.open_questions.length} question(s)   (omit if 0; list inline if ≤2)
   ✗ Ruled out: {narrative.rejected_alternatives.length}   (omit if 0)
   → Carryover: {narrative.next_session_should_know.length} note(s)  (omit if 0)
+  📚 Detailed log: {session_log_summary total} item(s) — say "자세히" to load   (omit line if no summary or total 0)
   💤 Last stopped: {why_stopped}
   🔍 Review: last {ref} ({N} commits ago, {verdict})           (omit line if no recorded review)
 
@@ -107,6 +118,26 @@ Ready to continue. What would you like to work on?
 
 **Rendering rule for the 🔍 Review line**: its source is a separate `xm last review --json` read (NOT the handon JSON above). If that returns no record (empty / error), omit the 🔍 line entirely. `{ref}` = short sha of `.ref`, `{verdict}` = `.status` (`lgtm` / `request-changes` / `block`); `{N}` = `git rev-list --count <.ref>..HEAD` — if that fails, render `last {ref} ({verdict})` without the commits-ago count.
 
+**Load the detailed log on demand (tier 2)**
+
+The 📚 line is a pointer, not the content. When the user asks for the detail ("자세히", "detailed log", "what did we rule out", "why did we try X"), load it then — never up front:
+
+```bash
+xm build handon --log
+```
+
+This prints the tier-2 archive (rejected reasoning / open forks / constraints & preferences / attempts). In dual-write mode you may instead pull it from mem-mesh (`search` for the last handoff digest, project = basename of cwd) — same content, richer if the log was mirrored thick. Keeping it out of the default restore is the whole point of the 2-tier split: the restore stays high-signal, the detail is one command away.
+
+**Step 3.5: Enrich from mem-mesh (dual-write mode only)**
+
+Only in dual-write mode (gate above). The leader calls `mcp__mem-mesh__context` (project = basename of cwd) to pull recent pins / open items / the last handoff archive, then appends one line to the summary:
+
+```
+  🧠 mem-mesh: {N} recent pins/items ({M} open)     (omit line if nothing returned)
+```
+
+Dedupe against `narrative.open_questions` already shown — do not repeat the same item. On error, omit the line silently. SESSION-STATE.json remains primary; mem-mesh is additive.
+
 **Step 4: Wait for user direction**
 
 Do NOT auto-start any work. Present the restored context and wait for the user to say what to do next.
@@ -118,4 +149,5 @@ The `decisions` array contains choices already made and agreed upon. When the us
 ## Arguments
 
 - `/xm:handon` — restore and show summary (default)
-- `/xm:handon --json` — same behavior (JSON is always used internally; flag is for backward compat)
+- `/xm:handon --json` — same behavior (JSON is always used internally; flag is for backward compat). Tier-2 `session_log` is withheld here as a `session_log_summary` count.
+- `xm build handon --log` — print the tier-2 detailed archive on demand (rejected reasoning, open forks, constraints & preferences, attempts)

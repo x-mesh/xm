@@ -76,6 +76,30 @@ Shorthand in this document: `$XMM` means `xm memory`.
 
 ---
 
+## mem-mesh Backend (capability gate)
+
+Check ONCE at skill start whether `mcp__mem-mesh__*` tools are in your available toolset.
+
+- **Present** → **dual-write mode**: keep every `.xm/memory/` write below unchanged AND mirror it to mem-mesh; prefer mem-mesh for reads.
+- **Absent** → **file-only mode**: run exactly as documented below, make ZERO mem-mesh calls, and never mention mem-mesh to the user.
+
+Rules that hold in dual-write mode:
+- The **leader (main agent)** performs all mem-mesh calls — a haiku sub-agent may lack the MCP tools. Delegate only the `xm memory ...` CLI file-writes to haiku; the leader does mem-mesh itself after the CLI returns.
+- The `.xm/memory/` file is the **source of truth**; mem-mesh is a mirror. If a mem-mesh call errors, log it and continue on the file result — never fail the skill over a mem-mesh error.
+- Use each tool's own schema; do not invent params. `project_id` = basename of the current working directory.
+
+### mem-mesh operation map (dual-write mode only)
+
+| x-memory step | Also call (leader) | Notes |
+|---|---|---|
+| `save` (after the CLI writes the file) | `mcp__mem-mesh__add` | type map: `decision`→decision, `pattern`→code_snippet, `failure`→bug, `learning`→idea. `content` = the saved memory body, pass `tags`. For code-tied types attach `anchors` from `git rev-parse HEAD`. |
+| `recall <query>` | `mcp__mem-mesh__search` **first** | Merge mem-mesh hits with `xm memory recall` file hits; dedupe by title. If mem-mesh returns nothing, fall back to file results only. |
+| `inject` (session start) | `mcp__mem-mesh__context` **first** | Merge with `xm memory inject` file matches; dedupe by title before prepending. Do not double-inject an item already present. |
+
+`forget` / `export` / `import` have **no** mem-mesh mirror — the file stays authoritative and no mem-mesh id mapping is tracked.
+
+---
+
 ## Commands
 
 ### Save
@@ -314,6 +338,8 @@ At the beginning of every session, run `inject` automatically to surface relevan
 ```
 
 5. Proceed with user request
+
+**Dual-write mode**: before step 4, also call `mcp__mem-mesh__context` and fold any relevant hits into the same injected block, deduped by title against the file matches. In file-only mode, skip this and run steps 1–5 as written.
 
 If no memories match, skip silently — do not mention memory to the user.
 

@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1784003127286,
+  "generatedAt": 1784073537934,
   "version": 1,
   "skills": [
     {
@@ -24,13 +24,13 @@
     },
     {
       "plugin": "handoff",
-      "sha256": "f0cb023bbb74efbd280915174654121aafae4baaac6c27e5f0ce13d240285211",
-      "bytes": 6865
+      "sha256": "2f3c9809229a4b8949eace677c4bcf813c80811ad1c759619e09a9fe52c6a1b7",
+      "bytes": 10891
     },
     {
       "plugin": "handon",
-      "sha256": "3d5f9a96dd5e9f0b679bd3296a721b422a710457328de9268a657dd01cc1f53b",
-      "bytes": 6197
+      "sha256": "cb92d1a12291a2366efb879498bcd142797a28f3b1bb22718f47eb7585ef1443",
+      "bytes": 8672
     },
     {
       "plugin": "humanize",
@@ -54,8 +54,8 @@
     },
     {
       "plugin": "memory",
-      "sha256": "c011850eb1eecd65d542b3fd404fc0a322d30fcd119d68f3a273136d8ba38045",
-      "bytes": 12363
+      "sha256": "7f2e66ea2da05dd7999b5cc21fbacb94482bf9da54e81c3c3fb86979933cd6ef",
+      "bytes": 14468
     },
     {
       "plugin": "op",
