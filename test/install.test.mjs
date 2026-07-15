@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import * as merge from '../xm/lib/install/merge.mjs';
 import { LOCK_TTL_MS } from '../xm/lib/install/types.mjs';
+import { buildManifest, writeManifest } from '../xm/lib/install/manifest.mjs';
+import { codexMarketplaceName } from '../xm/lib/install/transform/codex.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = join(__dirname, '..');
@@ -133,32 +135,26 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     expect(after).toBe(before);
     expect(r.stdout).toMatch(/unchanged: \d+/);
   });
-  test('codex AGENTS.md ≤ 16 KiB index + prompts', () => {
+  test('codex writes an xm Plugin with native Skills and marketplace entry', () => {
     const tmp = seedTmp();
     const r = run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
-    expect(statSync(join(tmp, 'AGENTS.md')).size).toBeLessThanOrEqual(16 * 1024);
-    expect(readdirSync(join(tmp, '.codex', 'prompts')).length).toBe(EXPECTED_SKILL_COUNT);
-    const panelPrompt = readFileSync(join(tmp, '.codex', 'prompts', 'xm-panel.md'), 'utf8');
-    expect(panelPrompt).toMatch(/^---\ndescription: Cross-vendor entry point \+ adversarial panel engine\./);
-    expect(panelPrompt).not.toMatch(/^description: "/m);
-    expect(panelPrompt).toContain('XPANEL_CLI=$$(');
-    expect(panelPrompt).toContain('node "$$XPANEL_CLI"');
-    const reviewPrompt = readFileSync(join(tmp, '.codex', 'prompts', 'xm-review.md'), 'utf8');
-    expect(reviewPrompt).toContain('User provided: $ARGUMENTS');
-    expect(reviewPrompt).toContain('id = $$1');
-    const opPrompt = readFileSync(join(tmp, '.codex', 'prompts', 'xm-op.md'), 'utf8');
-    expect(opPrompt).toContain('Estimated cost: ~$$3.24');
-    const tracePrompt = readFileSync(join(tmp, '.codex', 'prompts', 'xm-trace.md'), 'utf8');
-    expect(tracePrompt).toContain('Budget: $$0.42 / $$5.00');
-    expect(reviewPrompt).toContain('BRANCH=$$(git branch --show-current');
-    const rawDollarHits = readdirSync(join(tmp, '.codex', 'prompts'))
-      .filter((file) => file.endsWith('.md'))
-      .flatMap((file) => {
-        const lines = readFileSync(join(tmp, '.codex', 'prompts', file), 'utf8').split(/\r?\n/);
-        return lines.flatMap((line, idx) => [...line.matchAll(/(?<!\$)\$(?!ARGUMENTS\b|\$)/g)]
-          .map((match) => `${file}:${idx + 1}:${match.index + 1}:${line.trim()}`));
-      });
-    expect(rawDollarHits).toEqual([]);
+    expect(r.status).toBe(0);
+    expect(existsSync(join(tmp, 'AGENTS.md'))).toBe(false);
+    expect(existsSync(join(tmp, '.codex', 'prompts'))).toBe(false);
+    const pluginRoot = join(tmp, 'plugins', 'xm');
+    const plugin = JSON.parse(readFileSync(join(pluginRoot, '.codex-plugin', 'plugin.json'), 'utf8'));
+    expect(plugin.name).toBe('xm');
+    expect(plugin.version).toBe(JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version);
+    expect(plugin.skills).toBe('./skills/');
+    expect(readdirSync(join(pluginRoot, 'skills')).length).toBe(EXPECTED_SKILL_COUNT);
+    const opSkill = readFileSync(join(pluginRoot, 'skills', 'op', 'SKILL.md'), 'utf8');
+    expect(opSkill).toMatch(/^---\nname: op\ndescription: /);
+    expect(opSkill).toContain('`$xm:<skill>` mention');
+    const marketplace = JSON.parse(readFileSync(join(tmp, '.agents', 'plugins', 'marketplace.json'), 'utf8'));
+    expect(marketplace.name).toStartWith('xm-');
+    expect(marketplace.plugins.find((entry) => entry.name === 'xm')?.source.path).toBe('./plugins/xm');
+    expect(r.stdout).toContain('codex plugin marketplace add');
+    expect(r.stdout).toContain(`codex plugin add xm@${marketplace.name}`);
     expect(r.stdout).toContain('codex features enable hooks');
     expect(r.stdout).toContain('[features] hooks = true');
     expect(r.stdout).not.toContain('codex config set features.codex_hooks true');
@@ -171,6 +167,57 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
       .toContain('bash \\".codex/xm/hooks/xm-last-inject.sh\\"');
     expect(r.stdout).toContain('mirrored 3 referenced hook file(s)');
   });
+  test('codex marketplace merge preserves existing plugins and uninstall removes only xm', () => {
+    const tmp = seedTmp();
+    const marketplacePath = join(tmp, '.agents', 'plugins', 'marketplace.json');
+    mkdirSync(join(tmp, '.agents', 'plugins'), { recursive: true });
+    writeFileSync(marketplacePath, JSON.stringify({
+      name: 'team-local',
+      interface: { displayName: 'Team Local' },
+      plugins: [{ name: 'existing', source: { source: 'local', path: './plugins/existing' } }],
+    }, null, 2));
+    const installed = run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
+    expect(installed.status).toBe(0);
+    expect(installed.stdout).toContain('codex plugin add xm@team-local');
+    let marketplace = JSON.parse(readFileSync(marketplacePath, 'utf8'));
+    expect(marketplace.plugins.map((entry) => entry.name)).toEqual(['existing', 'xm']);
+    const removed = run(['--uninstall', '--target', 'codex'], { cwd: tmp });
+    expect(removed.status).toBe(0);
+    marketplace = JSON.parse(readFileSync(marketplacePath, 'utf8'));
+    expect(marketplace.name).toBe('team-local');
+    expect(marketplace.interface.displayName).toBe('Team Local');
+    expect(marketplace.plugins.map((entry) => entry.name)).toEqual(['existing']);
+  });
+  test('codex local marketplace names stay unique for projects with the same basename', () => {
+    const first = codexMarketplaceName({ scope: 'local', installRoot: '/workspace/a/project' });
+    const second = codexMarketplaceName({ scope: 'local', installRoot: '/workspace/b/project' });
+    expect(first).not.toBe(second);
+    expect(first).toMatch(/^xm-project-[0-9a-f]{8}$/);
+    expect(second).toMatch(/^xm-project-[0-9a-f]{8}$/);
+    expect(codexMarketplaceName({ scope: 'global', installRoot: '/ignored' })).toBe('personal');
+  });
+  test('codex migration removes unchanged legacy prompts and only the xm AGENTS block', () => {
+    const tmp = seedTmp();
+    const promptPath = join(tmp, '.codex', 'prompts', 'xm-op.md');
+    const agentsPath = join(tmp, 'AGENTS.md');
+    mkdirSync(dirname(promptPath), { recursive: true });
+    writeFileSync(promptPath, 'legacy prompt\n');
+    writeFileSync(agentsPath, '# user rules\n\n<!-- xm:BEGIN v2 -->\nlegacy index\n<!-- xm:END -->\n');
+    writeManifest(buildManifest({
+      target: 'codex',
+      scope: 'local',
+      installRoot: tmp,
+      entries: [
+        { relativePath: '.codex/prompts/xm-op.md', content: 'legacy prompt\n', mode: 0o644 },
+        { relativePath: 'AGENTS.md', content: readFileSync(agentsPath, 'utf8'), mode: 0o644 },
+      ],
+    }));
+    const migrated = run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
+    expect(migrated.status).toBe(0);
+    expect(existsSync(promptPath)).toBe(false);
+    expect(readFileSync(agentsPath, 'utf8')).toContain('# user rules');
+    expect(readFileSync(agentsPath, 'utf8')).not.toContain('xm:BEGIN');
+  });
   test('kiro steering inclusion matches skill and reference counts', () => {
     const tmp = seedTmp();
     run(['--target', 'kiro', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
@@ -181,7 +228,7 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     expect(counts.auto).toBe(EXPECTED_SKILL_COUNT);
     expect(counts.manual).toBe(EXPECTED_KIRO_MANUAL_COUNT);
   });
-  test('antigravity AGENTS.md shared with codex + .agent/skills', () => {
+  test('antigravity keeps its AGENTS.md index alongside codex Plugin output', () => {
     const tmp = seedTmp();
     run(['--target', 'codex,antigravity', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
     expect(readdirSync(tmp).filter((f) => f === 'AGENTS.md').length).toBe(1);

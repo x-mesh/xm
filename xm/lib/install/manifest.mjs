@@ -24,6 +24,7 @@ import { resolve as resolvePath } from 'node:path';
 import { writeOverwrite } from './merge.mjs';
 import { PRD_VERSION, TARGET_TOOLS, targetDirFor } from './types.mjs';
 import { safeJoin } from './security.mjs';
+import { canonicalJson, readCodexMarketplaceEntry } from './codex-marketplace.mjs';
 
 const MANIFEST_KIND = 'xm-install-manifest';
 const MANIFEST_VERSION = 1;
@@ -57,6 +58,8 @@ export function fileSha256(absolutePath) {
  * @property {number} installedAt
  * @property {boolean} [unverified]       True when checksum verification was skipped (R-SEC-15).
  * @property {'codex-hooks'} [shared]     Shared file whose owned handlers are verified separately.
+ * @property {'codex-marketplace-entry'} [management] Semantic shared-file management mode.
+ * @property {string} [pluginName]        Managed plugin entry name when management is set.
  */
 
 /**
@@ -82,7 +85,7 @@ export function fileSha256(absolutePath) {
  * @param {import('./types.mjs').TargetTool} args.target
  * @param {'global'|'local'} args.scope
  * @param {string} args.installRoot
- * @param {{ relativePath: string, content: string|Buffer, mode: number, shared?: 'codex-hooks' }[]} args.entries
+ * @param {{ relativePath: string, content: string|Buffer, mode: number, shared?: 'codex-hooks', management?: 'codex-marketplace-entry', pluginName?: string }[]} args.entries
  * @param {Record<string,string>} [args.bundleChecksums]
  * @param {{ hooks: Record<string, unknown[]> }} [args.hookOwnership]
  * @param {boolean} [args.unverified]
@@ -111,6 +114,8 @@ export function buildManifest({
     };
     if (unverified) entry.unverified = true;
     if (e.shared) entry.shared = e.shared;
+    if (e.management) entry.management = e.management;
+    if (e.pluginName) entry.pluginName = e.pluginName;
     return entry;
   });
   const nonce = randomBytes(16).toString('hex');
@@ -347,7 +352,17 @@ export function verifyManifest(manifest) {
       allOk = false;
       continue;
     }
-    const actual = fileSha256(abs);
+    let actual;
+    if (e.management === 'codex-marketplace-entry' && e.pluginName) {
+      try {
+        const managed = readCodexMarketplaceEntry(abs, e.pluginName);
+        actual = managed === null ? null : sha256(canonicalJson(managed));
+      } catch {
+        actual = null;
+      }
+    } else {
+      actual = fileSha256(abs);
+    }
     /** @type {'ok'|'missing'|'changed'|'unverified'} */
     let status;
     let actualMode = null;

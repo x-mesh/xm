@@ -8,7 +8,7 @@
  *
  * Each renderer has a different size budget:
  *   - Cursor `.mdc`        : ≤ 500 lines, refs become *separate* xm-<plug>-ref-<name>.mdc files.
- *   - Codex AGENTS.md      : index ≤ 16 KiB; SKILL bodies + refs go to ~/.codex/prompts/.
+ *   - Codex Plugin Skills : references are inlined into plugins/xm/skills/<skill>/SKILL.md.
  *   - Kiro steering        : no hard limit, refs use Kiro-native `#[[file:<name>.md]]` include.
  *   - Antigravity .agent/  : same as Codex, no per-file frontmatter.
  *

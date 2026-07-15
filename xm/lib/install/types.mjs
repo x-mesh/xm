@@ -65,7 +65,8 @@
  * @property {string} relativePath   Path relative to install root (e.g. ".cursor/rules/xm-build.mdc").
  * @property {string} content
  * @property {0o600|0o644} [mode]   File mode: 0o600 for --global, 0o644 for --local (R-SEC-08). Directory modes (0o700/0o755) are managed by merge.mjs/atomicWrite, not by renderers.
- * @property {'overwrite'|'merge-marker'|'hook-merge'} kind  marker = AGENTS.md style merge; hook-merge = shared Codex hooks.json handler merge.
+ * @property {'overwrite'|'merge-marker'|'hook-merge'|'marketplace-merge'} kind  marker = AGENTS.md style merge; hook-merge manages shared Codex hooks; marketplace-merge manages only the xm plugin entry.
+ * @property {string} [marketplaceName] Seed name when creating a new marketplace file.
  */
 
 /**
@@ -76,6 +77,7 @@
  * @property {string} libPath        Bundled xm/lib/ location (e.g. "$HOME/.cursor/xm/lib").
  * @property {boolean} dryRun
  * @property {boolean} allowUnverified
+ * @property {string} [pluginVersion] xm plugin semver when a target packages a native plugin.
  */
 
 /**
