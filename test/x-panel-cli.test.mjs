@@ -1337,8 +1337,9 @@ If there are no real issues, return {"findings":[]}.`;
     expect(r.status).toBe(0);
     const out = JSON.parse(r.stdout);
     const runDir = join(DIR, '.xm', 'cross', out.run);
-    // The whole prompt was written to a file for agy to read.
-    expect(existsSync(join(runDir, 'prompt.txt'))).toBe(true);
+    // The whole prompt was written to a file for agy to read, then cleaned up after the run
+    // (so no unredacted prompt persists on disk / replicates via x-sync).
+    expect(existsSync(join(runDir, 'prompt.txt'))).toBe(false);
     // agy received the tiny wrapper pointing at the file, NOT the huge inline prompt.
     const agySent = readFileSync(`${dump}.AGY`, 'utf8');
     expect(agySent).toContain('prompt.txt');
@@ -1368,10 +1369,11 @@ If there are no real issues, return {"findings":[]}.`;
     const r = review([bigTarget, '--models', 'claude,agy'],
       { X_PANEL_CMD_AGY: STUB, X_PANEL_DUMP_R1: r1, X_PANEL_DUMP_R2: r2 });
     expect(r.status).toBe(0);
-    // The full diff was written for agy to read.
+    // The full diff was written for agy to read, then cleaned up once both rounds finished
+    // (no unredacted diff persists on disk / replicates via x-sync).
     const runs = readdirSync(join(DIR, '.xm', 'panel')).filter((n) => n.startsWith('panel-')).sort();
     const runDir = join(DIR, '.xm', 'panel', runs[runs.length - 1]);
-    expect(existsSync(join(runDir, 'target.patch'))).toBe(true);
+    expect(existsSync(join(runDir, 'target.patch'))).toBe(false);
     // Round 1: agy got the file ref (small), claude got the full inline diff.
     const agyR1 = readFileSync(`${r1}.AGY`, 'utf8');
     expect(agyR1).toContain('target.patch');
