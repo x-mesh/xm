@@ -11,21 +11,44 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+import { execSync } from 'node:child_process';
 import { detectStop } from './convergence.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Resolve the .xm/ state dir — subdirectory/worktree-aware. Mirrors x-build's
+// resolveXmRoot. Rule: a local .xm/ wins → else THIS working tree's root via
+// `git rev-parse --show-toplevel`, so running from a subdirectory reuses the
+// repo's .xm instead of spawning a stray one → else cwd/.xm (created on
+// demand). show-toplevel stays inside the current checkout: a linked worktree
+// returns itself (not the main repo, so worktree state stays independent), and
+// a bare repo errors → cwd fallback. It never escapes into a separate parent repo.
+function resolveXmDir() {
+  const localXm = resolve(process.cwd(), '.xm');
+  if (existsSync(localXm)) return localXm;
+  try {
+    const top = execSync('git rev-parse --show-toplevel', {
+      cwd: process.cwd(), encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    if (top) {
+      const topXm = join(top, '.xm');
+      if (existsSync(topXm)) return topXm;
+    }
+  } catch {}
+  return localXm;
+}
+
 // ROOT resolution:
 // 1. XM_SOLVER_ROOT env var (explicit override)
 // 2. --global flag → ~/.xm/solver/
-// 3. default → cwd/.xm/solver/
+// 3. default → <repo>/.xm/solver/ (via resolveXmDir)
 const XM_GLOBAL = process.argv.includes('--global');
 const ROOT = process.env.XM_SOLVER_ROOT
   ? resolve(process.env.XM_SOLVER_ROOT)
   : XM_GLOBAL
     ? resolve(homedir(), '.xm', 'solver')
-    : resolve(process.cwd(), '.xm', 'solver');
+    : join(resolveXmDir(), 'solver');
 
 const PLUGIN_ROOT = resolve(__dirname, '..');
 

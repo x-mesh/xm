@@ -8,12 +8,35 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { execSync } from 'node:child_process';
 
 export { readFileSync, writeFileSync, existsSync, join, dirname };
 
+// Resolve the .xm/ state dir — subdirectory/worktree-aware. Mirrors x-build's
+// resolveXmRoot. Rule: a local .xm/ wins → else THIS working tree's root via
+// `git rev-parse --show-toplevel`, so running from a subdirectory reuses the
+// repo's .xm instead of spawning a stray one → else cwd/.xm (created on
+// demand). show-toplevel stays inside the current checkout: a linked worktree
+// returns itself (not the main repo, so worktree state stays independent), and
+// a bare repo errors → cwd fallback. It never escapes into a separate parent repo.
+function resolveXmDir() {
+  const localXm = resolve(process.cwd(), '.xm');
+  if (existsSync(localXm)) return localXm;
+  try {
+    const top = execSync('git rev-parse --show-toplevel', {
+      cwd: process.cwd(), encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    if (top) {
+      const topXm = join(top, '.xm');
+      if (existsSync(topXm)) return topXm;
+    }
+  } catch {}
+  return localXm;
+}
+
 export const XM_ROOT = process.env.X_PANEL_ROOT
   ? resolve(process.env.X_PANEL_ROOT)
-  : resolve(process.cwd(), '.xm');
+  : resolveXmDir();
 
 export const PANEL_DIR = join(XM_ROOT, 'panel');
 
