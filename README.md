@@ -195,7 +195,7 @@ node xm/lib/install/install-cli.mjs --uninstall --target cursor,codex
 | Tool | Skills | Slash invocation | Hook |
 |------|--------|-----------------|------|
 | Cursor | `.cursor/rules/xm-*.mdc` (frontmatter: `description`, `alwaysApply`) | agent-requested | `.cursor/hooks.json` (camelCase events) |
-| Codex CLI | `plugins/xm/.codex-plugin/plugin.json` + `plugins/xm/skills/<skill>/SKILL.md` + `.agents/plugins/marketplace.json` | `$xm:<skill>` after `codex plugin add xm@<marketplace>` | `.codex/hooks.json` / `~/.codex/hooks.json` (requires `codex features enable hooks` or `[features] hooks=true`) |
+| Codex CLI | `.agents/skills/xm/SKILL.md` dispatcher + `plugins/xm/.codex-plugin/plugin.json` + bundled Skills + marketplace | `$xm <skill>` or `$xm:<skill>` after `codex plugin add xm@<marketplace>` | `.codex/hooks.json` / `~/.codex/hooks.json` (requires `codex features enable hooks` or `[features] hooks=true`) |
 | Kiro | `.kiro/steering/xm-*.md` (frontmatter: `inclusion: auto\|manual`) | n/a | `.kiro/hooks/xm-*.kiro.hook` (informational only — Kiro cannot block) |
 | Antigravity | `.agent/skills/xm-*.md` (project) or `~/.gemini/antigravity/skills/xm-*.md` (`--global`) + shared `AGENTS.md` index | agent-requested | not supported (no programmable hook API) |
 | OpenCode | `.opencode/skills/xm-*/SKILL.md` (project) or `~/.config/opencode/skills/xm-*/SKILL.md` (`--global`) | native skill discovery | not emitted |
@@ -1253,7 +1253,7 @@ Model routing speaks in three canonical tiers — `haiku` / `sonnet` / `opus` (d
 
 `vendor_models` is `{ vendor: { tier: "model[:effort]" } }`; the optional `:effort` suffix (`minimal`/`low`/`medium`/`high`/`xhigh`) is validated on write. Resolution priority is `vendor_models[vendor][tier]` → built-in table → claude passthrough. The wizard's **Model** category adds a **vendor model mapping** menu that shows which harnesses are detected, validates the effort suffix, and supports `clear` to drop an override.
 
-**Codex support.** `xm install --target codex` emits the native `xm` Plugin (invoked as `$xm:<skill>`), writes per-role agent configs (`<.codex>/xm/agents/xm-{planner,executor,reviewer}.config.toml`) and per-profile configs (`<.codex>/xm-{economy,default,max}.config.toml`), gates multi-agent features, and adds a Codex Orchestration Overlay to the `build` Skill. `xm build run --json` emits additive `model_vendor` / `model_by_vendor` fields per task while leaving `task.model` unchanged, and the Codex adapter passes effort as `-c model_reasoning_effort=<level>` (on `resume`, exec flags precede the `resume` subcommand).
+**Codex support.** `xm install --target codex` emits a standalone `$xm <skill>` dispatcher plus the native `xm` Plugin (direct invocation: `$xm:<skill>`), writes per-role agent configs (`<.codex>/xm/agents/xm-{planner,executor,reviewer}.config.toml`) and per-profile configs (`<.codex>/xm-{economy,default,max}.config.toml`), gates multi-agent features, and adds a Codex Orchestration Overlay to the `build` Skill. `xm build run --json` emits additive `model_vendor` / `model_by_vendor` fields per task while leaving `task.model` unchanged, and the Codex adapter passes effort as `-c model_reasoning_effort=<level>` (on `resume`, exec flags precede the `resume` subcommand).
 
 ### Cost Efficiency
 

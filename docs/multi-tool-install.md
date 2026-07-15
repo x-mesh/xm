@@ -133,6 +133,7 @@ codex features enable hooks
 ```
 
 Writes:
+- `~/.agents/skills/xm/SKILL.md` (or `./.agents/skills/xm/SKILL.md` for `--local`) — standalone dispatcher for `$xm <skill> [args...]`
 - `~/plugins/xm/.codex-plugin/plugin.json` (or `./plugins/xm/...` for `--local`) — native Codex Plugin manifest
 - `~/plugins/xm/skills/<skill>/SKILL.md` — per-skill bodies invoked as `$xm:<skill>`
 - `~/.agents/plugins/marketplace.json` (or `./.agents/plugins/marketplace.json` for `--local`) — merges only the `xm` entry and preserves other plugins
@@ -141,7 +142,7 @@ Writes:
 
 Verify in Codex:
 1. For `--local`, run the printed `codex plugin marketplace add <project-root>` first. Then run the printed `codex plugin add xm@<marketplace>` and start a new Codex thread.
-2. Type `$xm:build plan a phased rollout`. `$` completion should list the installed xm Skills.
+2. Type `$xm op refine this draft` to use the dispatcher, or `$xm:build plan a phased rollout` to invoke a Plugin Skill directly. `$` completion should list both `$xm` and the installed xm Skills.
 3. Hooks: trigger a Bash tool call; `PreToolUse` hook should run (other matchers may be silently ignored — upstream tracking [openai/codex#16732](https://github.com/openai/codex/issues/16732)).
 
 ### Kiro

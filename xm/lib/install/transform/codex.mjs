@@ -3,6 +3,7 @@
  * Codex renderer — SkillIR[] → a native Codex plugin.
  *
  * Generated layout (both local and global installs, relative to installRoot):
+ *   .agents/skills/xm/SKILL.md          (standalone `$xm <skill>` dispatcher)
  *   plugins/xm/.codex-plugin/plugin.json
  *   plugins/xm/skills/<skill>/SKILL.md
  *   .agents/plugins/marketplace.json  (semantic entry merge by install-cli)
@@ -19,6 +20,7 @@ import { expandPaths } from '../util/expand-paths.mjs';
 export const CODEX_PLUGIN_NAME = 'xm';
 export const CODEX_PLUGIN_ROOT = join('plugins', CODEX_PLUGIN_NAME);
 export const CODEX_MARKETPLACE_PATH = join('.agents', 'plugins', 'marketplace.json');
+export const CODEX_DISPATCHER_PATH = join('.agents', 'skills', CODEX_PLUGIN_NAME, 'SKILL.md');
 
 function codexDescription(value, fallback) {
   const text = String(value || fallback || '').replace(/\s+/g, ' ').trim();
@@ -101,6 +103,36 @@ export function renderCodexSkill(skill, ctx) {
 // Backward-compatible export for focused renderer tests and downstream imports.
 export const renderCodexPrompt = renderCodexSkill;
 
+/** Render the standalone `$xm <subcommand> [args...]` compatibility entry point. */
+export function renderCodexDispatcherSkill(skills) {
+  const routes = skills
+    .map((skill) => ({
+      name: skill.skillName,
+      description: codexDescription(skill.description, `xm ${skill.skillName}`),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const routeNames = routes.map((route) => route.name).join(', ');
+  const routeTable = routes.map((route) => `- \`${route.name}\` → \`$xm:${route.name}\` — ${route.description}`).join('\n');
+  return `---
+name: xm
+description: Dispatch x-mesh workflows from "$xm <subcommand> [args...]"; use when the user invokes $xm or wants the xm command catalog.
+---
+
+# xm dispatcher
+
+Interpret the text following the \`$xm\` mention as \`<subcommand> [args...]\`.
+
+- With no subcommand, print the available routes below and stop.
+- When the first word matches a route, activate and follow the installed \`$xm:<subcommand>\` Plugin Skill. Pass the remaining text as that Skill's input context. Execute the routed workflow; do not merely describe it.
+- Route \`config\`, \`update\`, \`version\`, \`doctor\`, \`cost\`, \`pipeline\`, \`validate\`, and \`agents\` to \`$xm:kit\`, preserving the full input text.
+- For an unknown subcommand, respond with \`Unknown subcommand: <word>. Available: ${routeNames}\` and stop.
+
+## Routes
+
+${routeTable}
+`;
+}
+
 export function renderCodexPluginManifest(version) {
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version || '')) {
     throw new Error(`codex plugin version must be semver, got ${JSON.stringify(version)}`);
@@ -152,6 +184,12 @@ export function renderCodexWithDiagnostics(skills, ctx) {
   const outputs = [];
   const warnings = [];
   const version = ctx.pluginVersion;
+  outputs.push({
+    relativePath: CODEX_DISPATCHER_PATH,
+    content: renderCodexDispatcherSkill(skills),
+    kind: 'overwrite',
+    mode: ctx.scope === 'global' ? 0o600 : 0o644,
+  });
   outputs.push({
     relativePath: join(CODEX_PLUGIN_ROOT, '.codex-plugin', 'plugin.json'),
     content: renderCodexPluginManifest(version),
