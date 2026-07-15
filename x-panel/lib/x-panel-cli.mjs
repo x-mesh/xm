@@ -14,7 +14,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { appendFileSync, readFileSync, readdirSync, statSync, writeFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname } from 'node:path';
 import {
@@ -28,6 +28,7 @@ import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from './x-panel/gate.mjs
 import { appendPanelHistory, readPanelHistory, aggregatePanelStats } from './x-panel/history.mjs';
 import { createTmEventsPublisher, subscribeXkRun } from './x-panel/tm-events.mjs';
 import { readEventsLog, formatEventLine, maxSeq } from './x-panel/events-log.mjs';
+import { shrinkDiff, DIFF_INLINE_MAX_BYTES, AGY_INLINE_MAX_BYTES } from './x-panel/diff-budget.mjs';
 
 // ── helpers ──────────────────────────────────────────────────────────
 
@@ -256,6 +257,61 @@ If there are no real issues, return {"findings":[]}.`;
 
 // overrideBody (a custom per-lens instruction) replaces the default reviewer intro;
 // with overrideBody=null the returned string is byte-identical to the original prompt.
+// File handoff (A): the TARGET block for a provider that reads the diff from a file instead
+// of receiving it inline. Used for agy on oversized diffs — agy truncates a large inline
+// prompt, so we point it at the full diff on disk and make it open the file first.
+function fileTargetRef(path) {
+  return `The change under review is a diff too large to inline. It has been written to this file:
+${path}
+
+Open and read that file COMPLETELY before reviewing — it is the entire change under review. Do not ask for the diff; read it from the path above.`;
+}
+
+// Shared agy file-handoff gate (A) for BOTH cmdReview and cmdCross — the single place the
+// handoff decision, write, and its (L6-mandatory) logging live, so the two call sites can't
+// drift on the cap/gate/write/catch. agy silently truncates a large inline prompt; when the
+// content exceeds agy's inline cap we write it to `dir/fileName` and point agy at the file with
+// --add-dir read access instead of inlining. Returns { ref, addDir, path } on success (ref =
+// the wrapped prompt that tells agy to read the file), or null when the handoff doesn't apply
+// (agy absent, content fits, disabled) OR the write failed — in every null case agy falls back
+// to the inline path. `noun`/`what` only tune the human log wording ("diff" vs "prompt").
+function prepareAgyHandoff({ cfg, usable, dir, fileName, content, bytes, wrap, noun, what }) {
+  const cap = cfg.agy_inline_max_bytes || AGY_INLINE_MAX_BYTES;
+  if (cfg.agy_file_handoff === false || !usable.some((e) => e.name === 'agy') || (bytes || 0) <= cap) return null;
+  try {
+    const path = join(dir, fileName);
+    writeFileSync(path, content || '', 'utf8');
+    console.error(`${C.dim}ℹ agy: ${noun} ${bytes} bytes > ${cap} — handing agy ${what} as a file (${path}) instead of inlining (avoids agy's prompt-size truncation)${C.reset}`);
+    return { ref: wrap(path), addDir: dir, path };
+  } catch (e) {
+    // Non-fatal but consequential (L6): the inline fallback re-exposes agy to the exact truncation
+    // this avoids (bytes already > cap here), so name that outcome — not just the fallback.
+    console.error(`${C.yellow}⚠ agy file handoff failed (${e.message}) — falling back to inline. agy's ${noun} is ${bytes} bytes, above its ${cap} cap, so its result may be silently truncated/unreliable this run.${C.reset}`);
+    return null;
+  }
+}
+
+// Remove the agy handoff input file once the run is done reading it. It exists ONLY so agy can
+// read the diff/prompt during the rounds — nothing consumes it afterward, and the results
+// (verdict.json / *.r{1,2}.json / events.jsonl) are separate files. Deleting it keeps an
+// unredacted full diff/prompt from persisting on disk (and replicating via x-sync). Best-effort:
+// a missing file (never written / already gone) is not an error.
+function cleanupHandoffFile(handoff) {
+  if (!handoff || !handoff.path) return;
+  try { unlinkSync(handoff.path); } catch { /* already gone / never written — fine */ }
+}
+
+// File handoff (A) for cmdCross: the cross prompt is opaque (arbitrary consumer, output
+// contract usually at the END), so it can't be safely middle-truncated. Instead the WHOLE
+// prompt is written to a file and agy is told to read+follow it — nothing is cut, so any
+// trailing output contract survives intact. Wrapper stays tiny (dodges agy's inline cap).
+function crossFileWrapper(path) {
+  return `Your full task — including its output-format contract — is written in this file:
+${path}
+
+Read that file COMPLETELY and follow it EXACTLY. Produce only the output it asks for (including any required JSON/format contract at its end). Do not mention the file or ask for the task; read it from the path above.`;
+}
+
 function reviewPrompt(target, overrideBody = null) {
   const intro = overrideBody != null
     ? String(overrideBody).trim()
@@ -503,7 +559,7 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
       // makePrompt may return a plain string OR { prompt, session, fallbackPrompt }
       // (t5 session reuse) — normalize here so round builders stay declarative.
       const req = makePrompt(e);
-      const { prompt, session = null, fallbackPrompt = null } = typeof req === 'string' ? { prompt: req } : req;
+      const { prompt, session = null, fallbackPrompt = null, providerArgs = null } = typeof req === 'string' ? { prompt: req } : req;
       return invokeProviderAsync(e.name, prompt, {
         timeout: timeoutMs,
         model: e.model,
@@ -512,6 +568,7 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
         session,
         fallbackPrompt,
         expectKeys,
+        providerArgs,
         onEvent: (ev) => onProviderEvent && onProviderEvent(e, ev),
       });
     };
@@ -680,6 +737,19 @@ async function cmdReview(pos, flags) {
     usable.push(e);
   }
   const target = resolveTarget(pos[0]);
+  // Inline-diff safety net (B): `target.text` is embedded verbatim in every provider's
+  // -p argument. Cap it under ARG_MAX / model input limits, dropping noise files and
+  // omitting overflow LOUDLY. `target.text` stays the FULL diff (the file handoff (A)
+  // ships that to agy); `target.promptText` is the reduced copy every inline prompt uses.
+  {
+    const budget = cfg.diff_inline_max_bytes || DIFF_INLINE_MAX_BYTES;
+    const shrunk = shrinkDiff(target.text, budget);
+    target.promptText = shrunk.text;
+    target.fullBytes = Buffer.byteLength(target.text || '');
+    if (shrunk.reduced) {
+      console.error(`${C.yellow}⚠ target ${target.fullBytes} bytes > inline budget ${budget} — diff reduced for prompt embedding (${target.fullBytes - Buffer.byteLength(shrunk.text)} bytes trimmed). ${shrunk.omitted.length} file(s) omitted, ${shrunk.droppedNoise.length} generated/lock file(s) dropped.${C.reset}`);
+    }
+  }
   // Trivial-target guard (B4b): a clean tree yields the "(no diff against HEAD)" sentinel
   // (~25 chars) — running it still burns N models × 2 rounds for nothing. Blocks the
   // empty-diff sentinel / sub-minimum git-diff and any fully empty target; an EXPLICIT
@@ -742,6 +812,15 @@ async function cmdReview(pos, flags) {
   ensureDir(dir);
   const eventPath = join(dir, 'events.jsonl');
   const writeEvent = makeEventWriter(eventPath);
+
+  // agy file handoff (A): agy silently truncates a large inline prompt. When the FULL diff
+  // exceeds agy's inline cap, hand agy the diff as a file (--add-dir read access) instead of
+  // inlining. Other providers are unaffected — they still get the (B-shrunk) inline diff.
+  const agyHandoff = prepareAgyHandoff({
+    cfg, usable, dir, fileName: 'target.patch',
+    content: target.text, bytes: target.fullBytes || 0,
+    wrap: fileTargetRef, noun: 'diff', what: 'the full diff',
+  });
 
   // Live status for polling (dashboard / xm recall / cat .xm/panel/<run>/status.json)
   const zeroTokens = () => ({ input: 0, output: 0, cached: 0, reasoning: 0 });
@@ -944,12 +1023,15 @@ async function cmdReview(pos, flags) {
   // its JSON, a one-line "Here is the JSON:" preamble ~tens, a full prose review
   // thousands (observed 3.9KB). 200 sits in the wide gap between those modes.
   const SUSPECT_PROSE_MIN = 200;
-  const r1Prompt = reviewPrompt(target.text, reviewOverride);
-  await runRound('round 1 (review)', usable, (e) => (
+  const r1Prompt = reviewPrompt(target.promptText, reviewOverride);
+  // agy handoff (A): agy reads the full diff from a file instead of the inline (B-shrunk) copy.
+  const r1PromptAgy = agyHandoff ? reviewPrompt(agyHandoff.ref, reviewOverride) : null;
+  await runRound('round 1 (review)', usable, (e) => {
+    if (agyHandoff && e.name === 'agy') return { prompt: r1PromptAgy, providerArgs: { addDir: agyHandoff.addDir } };
     // fallbackPrompt = the same prompt: a failed --session-id spawn retries
     // stateless so session support can never cost a round (contract R4).
-    e._session1 ? { prompt: r1Prompt, session: e._session1, fallbackPrompt: r1Prompt } : r1Prompt
-  ), timeoutMs, onModelDone, (e, res) => {
+    return e._session1 ? { prompt: r1Prompt, session: e._session1, fallbackPrompt: r1Prompt } : r1Prompt;
+  }, timeoutMs, onModelDone, (e, res) => {
     // Resume in round 2 only with a real session: claude echoes the caller's
     // uuid, codex must have disclosed one; a stateless fallback disables it.
     if (e._session1) {
@@ -983,7 +1065,12 @@ async function cmdReview(pos, flags) {
     // Only ground vendors that can actually read the repo (codex today); the rest
     // judge from the finding text as before. e.name is the vendor (label may be name:model).
     const g = grounded && groundCapable(e.name);
-    const full = refutePrompt(target.text, otherLabel, otherFindings, g);
+    // agy handoff (A): agy has no session, so round 2 re-sends the target — point it at the
+    // file again (not the inline diff) so a large diff doesn't truncate the refute prompt too.
+    if (agyHandoff && e.name === 'agy') {
+      return { prompt: refutePrompt(agyHandoff.ref, otherLabel, otherFindings, g), providerArgs: { addDir: agyHandoff.addDir } };
+    }
+    const full = refutePrompt(target.promptText, otherLabel, otherFindings, g);
     if (!e._resumeId) return full;
     return { prompt: refutePromptResumed(otherLabel, otherFindings, g), session: { mode: 'resume', id: e._resumeId }, fallbackPrompt: full };
   }, timeoutMs, onModelDone, (e, res) => {
@@ -999,6 +1086,10 @@ async function cmdReview(pos, flags) {
     writeJSON(join(dir, `${safeLabel(e.label)}.r2.json`), { model: e.label, ok: res.ok, error: res.error, resume, verdicts, usage: res.usage || null, raw: res.raw });
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 2, ok: res.ok, resume, count: verdicts.length, error: res.error || null });
   }, onProviderEvent, stream, partial, ['verdicts']);
+
+  // Both rounds have read the diff — drop the agy handoff input file so no unredacted full
+  // diff persists on disk / replicates via x-sync (results live in separate files).
+  cleanupHandoffFile(agyHandoff);
 
   // Only models actually sent the grounded prompt may contribute grounding provenance (t8):
   // labels that are grounded-capable in a grounded run. synth trusts `verified` only from these.
@@ -1116,6 +1207,26 @@ async function cmdCross(pos, flags) {
   const run = runId(stamp());
   const dir = join(PANEL_DIR, '..', 'cross', run);
   ensureDir(dir);
+  // Oversize-prompt safety net for cross (mirrors review's B/A, adapted to an OPAQUE prompt).
+  // The cross prompt is assembled by the caller (op/agent/eval/solver/build): a diff can't be
+  // isolated from it and the output contract usually sits at the END, so blind truncation would
+  // corrupt the response format. So we do NOT shrink in place. Instead:
+  //  - agy (whose small inline cap is the one that actually truncates): hand it the WHOLE prompt
+  //    as a file (nothing cut → contract intact) via --add-dir read access. Mirrors handoff (A).
+  //  - every provider: LOUDLY warn past the inline budget — a prompt near ARG_MAX would E2BIG the
+  //    spawn for all of them, and we refuse to silently truncate a contract to hide it (Lesson L6).
+  const promptBytes = Buffer.byteLength(prompt || '');
+  const agyCrossHandoff = prepareAgyHandoff({
+    cfg, usable, dir, fileName: 'prompt.txt',
+    content: prompt, bytes: promptBytes,
+    wrap: crossFileWrapper, noun: 'prompt', what: 'the whole prompt',
+  });
+  if (promptBytes > (cfg.diff_inline_max_bytes || DIFF_INLINE_MAX_BYTES)) {
+    const inlineProviders = usable.filter((e) => !(agyCrossHandoff && e.name === 'agy')).map((e) => e.label);
+    if (inlineProviders.length) {
+      console.error(`${C.yellow}⚠ cross prompt ${promptBytes} bytes exceeds the inline budget — ${inlineProviders.join(', ')} receive it inline and may hit their input/ARG limits. Not truncating (would corrupt the output contract at the prompt's end); reduce the prompt upstream if a provider fails.${C.reset}`);
+    }
+  }
   // Provenance + human title, hoisted BEFORE the run so the live status.json can name an
   // in-progress run (not only a finished one). Title is redacted before truncation (same rule
   // as targetTitle): a caller may pass user text. Falls back to the prompt's first line.
@@ -1199,7 +1310,11 @@ async function cmdCross(pos, flags) {
     results = await Promise.all(usable.map(async (e, i) => {
       const m = status.models[i];
       const onEvent = onProviderEvent(m);
-      let res = await invokeProviderText(e.name, prompt, { timeout: timeoutMs, model: e.model, onEvent });
+      // agy reads the prompt from a file when it was too large to inline; others inline as before.
+      const useAgyFile = agyCrossHandoff && e.name === 'agy';
+      const sendPrompt = useAgyFile ? agyCrossHandoff.ref : prompt;
+      const providerArgs = useAgyFile ? { addDir: agyCrossHandoff.addDir } : null;
+      let res = await invokeProviderText(e.name, sendPrompt, { timeout: timeoutMs, model: e.model, onEvent, providerArgs });
       // One retry on a TRANSIENT failure (exit-0-empty / exit-N): cursor and other gateway CLIs
       // intermittently return an empty/failed result that succeeds on a second try. Do NOT retry a
       // timeout/stall — it already burned the full (600s+) window, so a retry just doubles the
@@ -1214,7 +1329,7 @@ async function cmdCross(pos, flags) {
         m.last_event = 'retrying';
         m.error = null;
         flushStatus({ force: true });
-        const retry = await invokeProviderText(e.name, prompt, { timeout: timeoutMs, model: e.model, onEvent });
+        const retry = await invokeProviderText(e.name, sendPrompt, { timeout: timeoutMs, model: e.model, onEvent, providerArgs });
         if (retry.ok) res = retry;
         else res = { ...res, error: `${res.error} (retried once, still failed: ${retry.error})` };
       }
@@ -1231,6 +1346,9 @@ async function cmdCross(pos, flags) {
     }));
   } finally {
     clearInterval(hb);
+    // Drop the agy handoff input file (all providers have run) so no unredacted full prompt
+    // persists on disk / replicates via x-sync. In finally so a mid-run throw still cleans up.
+    cleanupHandoffFile(agyCrossHandoff);
   }
   status.phase = 'done';
   writeEvent({ type: 'run_done', phase: status.phase, ok: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length });

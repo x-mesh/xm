@@ -125,7 +125,18 @@ const BUILTIN = {
   // precede -p (unlike claude/codex whose -p is a boolean with a positional prompt).
   // Wrong order (`-p --model X <prompt>`) makes -p eat "--model", dropping the real
   // prompt → agy replies with a generic self-intro that fails JSON parsing.
-  agy: (prompt, model) => ['agy', [...(model ? ['--model', model] : []), '-p', prompt]], // Antigravity CLI (formerly gemini)
+  // File handoff (A): when opts.addDir is set the diff is too large to inline, so it was
+  // written to a file inside addDir and the prompt references that path. --add-dir grants
+  // agy read access to exactly that directory — and NOTHING more. Verified: agy reads the
+  // file from an --add-dir'd workspace with stdin closed and NO permission prompt, so we do
+  // NOT pass --dangerously-skip-permissions here. That flag disables EVERY permission gate
+  // for the run (not just the read), which would let injected text in an untrusted review
+  // diff auto-approve arbitrary agy tool actions — a real escalation the scoped --add-dir
+  // avoids. No addDir → the normal inline path (diff embedded in the prompt), unchanged.
+  agy: (prompt, model, opts = {}) => ['agy', [
+    ...(opts.addDir ? ['--add-dir', opts.addDir] : []),
+    ...(model ? ['--model', model] : []), '-p', prompt,
+  ]], // Antigravity CLI (formerly gemini)
   cursor: (prompt, model) => ['cursor-agent', ['-p', '-f', ...(model ? ['--model', model] : []), prompt]], // -f bypasses workspace-trust
   kiro: (prompt, model) => {
     const m = normalizeKiroModel(model);
@@ -358,14 +369,17 @@ function overridePath(name) {
   return process.env[`X_PANEL_CMD_${name.toUpperCase()}`] || null;
 }
 
-export function resolveCommand(name, prompt, model) {
+// providerArgs: per-provider command tweaks that are NOT the prompt/model (e.g. agy's
+// { addDir } file-handoff). Ignored by the override (test-stub) path and by builders
+// that don't read it, so it's safe to always pass.
+export function resolveCommand(name, prompt, model, providerArgs = null) {
   const override = overridePath(name);
   if (override) {
     // override is a node script invoked as: node <script> <name> <prompt>
     return ['node', [override, name, prompt]];
   }
   const fn = BUILTIN[name];
-  return fn ? fn(prompt, model || null) : null;
+  return fn ? fn(prompt, model || null, providerArgs || {}) : null;
 }
 
 // Ambient-context isolation for PROMPT runs (not auth/list probes). In a repo
@@ -570,8 +584,8 @@ export const SESSION_ID_RE = /session[ _-]?id[:=\s]+([0-9a-f]{8}-[0-9a-f]{4}-[0-
  *  - other providers ignore `session` (stateless, argv unchanged).
  * Returns null only for codex resume without an id — the caller must not ask for that.
  */
-export function resolveSessionCommand(name, prompt, model, session) {
-  if (!session) return resolveCommand(name, prompt, model);
+export function resolveSessionCommand(name, prompt, model, session, providerArgs = null) {
+  if (!session) return resolveCommand(name, prompt, model, providerArgs);
   const override = overridePath(name);
   if (override) {
     return ['node', [override, name, prompt, '--session-mode', session.mode, ...(session.id ? ['--session-id', session.id] : [])]];
@@ -586,17 +600,17 @@ export function resolveSessionCommand(name, prompt, model, session) {
     // --json on the resume leg too: round 2 must stay parseable (JSONL) and keep reporting usage.
     return buildCodexResumeArgs({ execFlags: ['--json', '--sandbox', 'read-only', '--skip-git-repo-check'], sessionId: session.id, model, prompt });
   }
-  return resolveCommand(name, prompt, model);
+  return resolveCommand(name, prompt, model, providerArgs);
 }
 
-export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, stream = false, partial = true, session = null, fallbackPrompt = null, expectKeys = null } = {}) {
+export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, stream = false, partial = true, session = null, fallbackPrompt = null, expectKeys = null, providerArgs = null } = {}) {
   if (stream && supportsStream(name)) {
     // Session reuse is a raw-path feature: the structured-stream argv is kept
     // exactly as dogfooded. Callers already disable sessions under --stream.
     return invokeProviderStream(name, prompt, { timeout, maxTimeout, model, onEvent, partial, expectKeys });
   }
   const use = session && supportsResume(name) ? session : null;
-  let res = await invokeProviderRaw(name, prompt, { timeout, maxTimeout, model, onEvent, session: use, expectKeys });
+  let res = await invokeProviderRaw(name, prompt, { timeout, maxTimeout, model, onEvent, session: use, expectKeys, providerArgs });
   if (use) {
     if (res.ok) {
       if (use.mode === 'resume') res.resume = 'ok';
@@ -606,14 +620,14 @@ export async function invokeProviderAsync(name, prompt, { timeout = 180_000, max
       if (onEvent) {
         try { onEvent({ at: new Date().toISOString(), type: 'lifecycle', provider: name, model, note: `session ${use.mode} failed (${res.error}) — retrying stateless` }); } catch { /* observer only */ }
       }
-      res = await invokeProviderRaw(name, fallbackPrompt, { timeout, maxTimeout, model, onEvent, session: null, expectKeys });
+      res = await invokeProviderRaw(name, fallbackPrompt, { timeout, maxTimeout, model, onEvent, session: null, expectKeys, providerArgs });
       res.resume = 'fallback';
     }
   }
   return res;
 }
 
-function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, session = null, expectKeys = null } = {}) {
+function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, session = null, expectKeys = null, providerArgs = null } = {}) {
   return new Promise((resolve) => {
     const emit = (event) => {
       if (!onEvent) return;
@@ -625,7 +639,7 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       settled = true;
       resolve(value);
     };
-    const resolved = resolveSessionCommand(name, prompt, model, session);
+    const resolved = resolveSessionCommand(name, prompt, model, session, providerArgs);
     if (!resolved) {
       return resolve({
         ok: false,
@@ -1046,7 +1060,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
  * generic cross-vendor deliberation (debate/council) where the answer is free-form
  * prose, not findings JSON. ok = process exited 0.
  */
-export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null } = {}) {
+export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, providerArgs = null } = {}) {
   return new Promise((resolve) => {
     // Observer-only progress events (same shapes as invokeProviderAsync's raw path:
     // spawn/stdout/stderr/timeout/error/exit) so a cross-vendor caller can write a live
@@ -1055,7 +1069,7 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
       if (!onEvent) return;
       try { onEvent({ at: new Date().toISOString(), ...event }); } catch { /* observer only */ }
     };
-    const resolved = resolveCommand(name, prompt, model);
+    const resolved = resolveCommand(name, prompt, model, providerArgs);
     if (!resolved) return resolve({ ok: false, output: '', error: `unknown provider: ${name}` });
     const [cmd, args] = resolved;
     let child;

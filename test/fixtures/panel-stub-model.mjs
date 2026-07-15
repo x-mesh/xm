@@ -38,8 +38,11 @@ if (sessionMode === 'resume' && process.env[`X_PANEL_FAIL_RESUME_${String(model 
 }
 
 // Test hook: dump the exact round-1 prompt the model received (for snapshot/override tests).
+// Also writes a per-model copy (suffixed) so multi-model tests can assert each model's round-1
+// prompt independently — the bare path keeps its single-file back-compat for snapshot tests.
 if (process.env.X_PANEL_DUMP_R1 && !isRefute) {
   try { writeFileSync(process.env.X_PANEL_DUMP_R1, prompt); } catch { /* best-effort */ }
+  try { writeFileSync(`${process.env.X_PANEL_DUMP_R1}.${String(model || '').toUpperCase().replace(/[^A-Z0-9_]/g, '_')}`, prompt); } catch { /* best-effort */ }
 }
 // Test hook: dump the exact round-2 (refute) prompt, suffixed per model so the two
 // refuters' prompts don't clobber each other (evidence/consistency assertions).
@@ -47,6 +50,11 @@ if (process.env.X_PANEL_DUMP_R2 && isRefute) {
   try { writeFileSync(`${process.env.X_PANEL_DUMP_R2}.${envModelName(model)}`, prompt); } catch { /* best-effort */ }
 }
 function envModelName(m) { return String(m || '').toUpperCase().replace(/[^A-Z0-9_]/g, '_'); }
+// Test hook: dump the exact prompt a provider received in a cross run (suffixed per model),
+// so the agy file-handoff path (wrapper vs full inline prompt) can be asserted.
+if (process.env.X_PANEL_DUMP_CROSS) {
+  try { writeFileSync(`${process.env.X_PANEL_DUMP_CROSS}.${envModelName(model)}`, prompt); } catch { /* best-effort */ }
+}
 const envModel = String(model || '').toUpperCase().replace(/[^A-Z0-9_]/g, '_');
 
 // Emit the final answer in each vendor's RAW (non-stream) structured-output shape, so

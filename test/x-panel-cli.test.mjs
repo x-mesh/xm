@@ -14,6 +14,7 @@ import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from '../x-panel/lib/x-p
 import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
 import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings, stripAnsi } from '../x-panel/lib/x-panel/adapters.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
+import { shrinkDiff, splitDiffSections, DIFF_INLINE_MAX_BYTES } from '../x-panel/lib/x-panel/diff-budget.mjs';
 import { unwrapEnvelope } from '../x-panel/lib/x-panel/adapters.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
@@ -296,6 +297,115 @@ describe('panel gate — CLI', () => {
 });
 
 // ── unit: synth ──────────────────────────────────────────────────────
+
+describe('shrinkDiff — inline-diff safety net (B)', () => {
+  const fileSection = (path, bodyBytes) =>
+    `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n+${'x'.repeat(bodyBytes)}\n`;
+
+  test('under budget returns text verbatim, reduced=false', () => {
+    const diff = fileSection('src/a.ts', 100);
+    const r = shrinkDiff(diff, 1024);
+    expect(r.reduced).toBe(false);
+    expect(r.text).toBe(diff);
+  });
+
+  test('splitDiffSections keys each file by its diff --git header', () => {
+    const diff = fileSection('src/a.ts', 10) + fileSection('src/b.ts', 10);
+    const secs = splitDiffSections(diff);
+    expect(secs.map((s) => s.file)).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  test('drops noise files (lockfiles/generated) first, with an explicit marker', () => {
+    const code = fileSection('src/a.ts', 200);
+    const lock = fileSection('package-lock.json', 5000);
+    // Budget fits the code section but not code+lock: the lockfile must be the one dropped.
+    const r = shrinkDiff(code + lock, Buffer.byteLength(code) + 400);
+    expect(r.reduced).toBe(true);
+    expect(r.droppedNoise).toContain('package-lock.json');
+    expect(r.text).toContain('src/a.ts');
+    expect(r.text).not.toContain('package-lock.json b/'); // its body is gone
+    expect(r.text).toMatch(/diff reduced from \d+ bytes/);
+  });
+
+  test('omits overflow real files greedily and names them in the marker', () => {
+    const a = fileSection('src/a.ts', 100);
+    const b = fileSection('src/b.ts', 100);
+    const c = fileSection('src/c.ts', 5000);
+    const r = shrinkDiff(a + b + c, Buffer.byteLength(a + b) + 400);
+    expect(r.reduced).toBe(true);
+    expect(r.omitted).toContain('src/c.ts');
+    expect(r.text).toContain('src/a.ts');
+    expect(r.text).toContain('src/b.ts');
+    expect(r.text).toContain('more changed file(s) omitted');
+  });
+
+  test('single huge file is hard-truncated with a marker (never silently)', () => {
+    const huge = fileSection('src/big.ts', 10000); // one diff --git section → tail-truncation branch
+    const r = shrinkDiff(huge, 2000);
+    expect(r.reduced).toBe(true);
+    expect(r.truncatedFile).toBe('src/big.ts');
+    expect(Buffer.byteLength(r.text)).toBeLessThanOrEqual(2000); // strict: never exceeds the budget
+    expect(r.text).toContain('target truncated');
+  });
+
+  test('greedy keeps whatever fits and omits the oversized file (order-independent)', () => {
+    const big = fileSection('src/big.ts', 10000);   // alone exceeds budget → omitted
+    const small = fileSection('src/small.ts', 100);  // fits → kept
+    const r = shrinkDiff(big + small, 2000);
+    expect(r.reduced).toBe(true);
+    expect(r.text).toContain('src/small.ts');
+    expect(r.omitted).toContain('src/big.ts');
+  });
+
+  test('when NO file fits whole, the first is hard-truncated so output is never empty', () => {
+    const a = fileSection('src/a.ts', 10000);
+    const b = fileSection('src/b.ts', 10000);
+    const r = shrinkDiff(a + b, 2000); // neither fits → truncate first, omit rest
+    expect(r.reduced).toBe(true);
+    expect(r.text).toContain('src/a.ts');
+    expect(r.text).toContain('truncated to fit budget');
+    expect(r.omitted).toContain('src/b.ts');
+  });
+
+  test('non-diff literal text falls back to tail truncation', () => {
+    const blob = 'y'.repeat(5000);
+    const r = shrinkDiff(blob, 1000);
+    expect(r.reduced).toBe(true);
+    expect(Buffer.byteLength(r.text)).toBeLessThanOrEqual(1000); // strict
+    expect(r.text).toContain('target truncated');
+  });
+
+  test('output never exceeds ARG_MAX-scale default budget', () => {
+    // 40 files × ~30KB = ~1.2MB diff → must come back under the 512KiB default.
+    const diff = Array.from({ length: 40 }, (_, i) => fileSection(`src/f${i}.ts`, 30000)).join('');
+    const r = shrinkDiff(diff);
+    expect(Buffer.byteLength(r.text)).toBeLessThanOrEqual(DIFF_INLINE_MAX_BYTES);
+    expect(r.reduced).toBe(true);
+  });
+
+  test('long-path marker does NOT overflow the budget (marker-size reservation)', () => {
+    // Many dropped-noise + omitted files with LONG paths make the trailing marker's file
+    // lists run to 1-2KB — the fixed 300B reserve alone would overshoot. Assert the strict
+    // ceiling with NO slop: capUtf8 + marker-aware reservation must hold the contract.
+    const longNoise = Array.from({ length: 20 }, (_, i) =>
+      fileSection(`packages/very/deeply/nested/module-${i}/dist/bundle-${i}.min.js`, 4000));
+    const longReal = Array.from({ length: 20 }, (_, i) =>
+      fileSection(`packages/very/deeply/nested/module-${i}/src/component-${i}.tsx`, 4000));
+    const budget = 6000; // small enough that most files drop/omit → fat marker
+    const r = shrinkDiff([...longNoise, ...longReal].join(''), budget);
+    expect(r.reduced).toBe(true);
+    expect(Buffer.byteLength(r.text)).toBeLessThanOrEqual(budget); // strict — the whole point
+    expect(r.text).toMatch(/diff reduced from \d+ bytes/);
+  });
+
+  test('multibyte content is truncated on a codepoint boundary (no lone U+FFFD)', () => {
+    const blob = '가'.repeat(5000); // 3 bytes each in UTF-8 → byte cut lands mid-codepoint
+    const r = shrinkDiff(blob, 1000);
+    expect(r.reduced).toBe(true);
+    expect(Buffer.byteLength(r.text)).toBeLessThanOrEqual(1000);
+    expect(r.text).not.toContain('�'); // no replacement char from a split sequence
+  });
+});
 
 describe('normalizeFindings', () => {
   test('drops empty claims, defaults severity, keeps idx', () => {
@@ -901,6 +1011,33 @@ describe('structured streaming (adapters)', () => {
     expect(codex[1]).toContain('--skip-git-repo-check');
   });
 
+  test('agy file handoff (A): --add-dir + skip-permissions only when addDir is set', () => {
+    // Default inline path — no addDir → plain -p, model precedes -p (agy consumes the next token).
+    const inline = resolveCommand('agy', 'review this', 'gemini-3-pro');
+    expect(inline[0]).toBe('agy');
+    expect(inline[1]).toEqual(['--model', 'gemini-3-pro', '-p', 'review this']);
+    expect(inline[1]).not.toContain('--add-dir');
+
+    // Handoff path — addDir set → grants scoped read access to the diff file. It must NOT
+    // pass --dangerously-skip-permissions (that disables every gate; --add-dir alone suffices,
+    // verified live) — a security regression guard.
+    const handoff = resolveCommand('agy', 'read /run/target.patch', 'gemini-3-pro', { addDir: '/run/dir' });
+    expect(handoff[1]).not.toContain('--dangerously-skip-permissions');
+    const di = handoff[1].indexOf('--add-dir');
+    expect(di).toBeGreaterThanOrEqual(0);
+    expect(handoff[1][di + 1]).toBe('/run/dir');
+    // --model must still precede -p so agy doesn't eat "--model" as the prompt.
+    expect(handoff[1].indexOf('--model')).toBeLessThan(handoff[1].indexOf('-p'));
+    expect(handoff[1][handoff[1].length - 1]).toBe('read /run/target.patch');
+  });
+
+  test('providerArgs is ignored by providers that do not read it (claude/codex)', () => {
+    const claude = resolveCommand('claude', 'p', null, { addDir: '/x' });
+    expect(claude[1]).not.toContain('--add-dir');
+    const codex = resolveCommand('codex', 'p', null, { addDir: '/x' });
+    expect(codex[1]).not.toContain('--add-dir');
+  });
+
   test('supportsStream: structured providers yes, kiro/agy no', () => {
     expect(supportsStream('claude')).toBe(true);
     expect(supportsStream('codex')).toBe(true);
@@ -1189,6 +1326,63 @@ If there are no real issues, return {"findings":[]}.`;
     const crossDir = join(DIR, '.xm', 'cross');
     expect(existsSync(crossDir)).toBe(true);
     expect(readdirSync(crossDir).length).toBeGreaterThan(0);
+  });
+
+  test('cross agy handoff: oversized prompt → agy reads a file, others stay inline', () => {
+    // 600KB: above agy's cap (128KiB → handoff) AND above the 512KiB inline budget (→ ARG_MAX guard).
+    const big = 'diff --git a/x b/x\n' + 'x'.repeat(600 * 1024);
+    const dump = join(DIR, 'cross-dump');
+    const r = panelRaw(['cross', '--models', 'claude,agy', '--prompt', big, '--json'],
+      { X_PANEL_CMD_AGY: STUB, X_PANEL_DUMP_CROSS: dump });
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    const runDir = join(DIR, '.xm', 'cross', out.run);
+    // The whole prompt was written to a file for agy to read, then cleaned up after the run
+    // (so no unredacted prompt persists on disk / replicates via x-sync).
+    expect(existsSync(join(runDir, 'prompt.txt'))).toBe(false);
+    // agy received the tiny wrapper pointing at the file, NOT the huge inline prompt.
+    const agySent = readFileSync(`${dump}.AGY`, 'utf8');
+    expect(agySent).toContain('prompt.txt');
+    expect(agySent).toContain('Read that file');
+    expect(agySent.length).toBeLessThan(1000);
+    // claude still got the full inline prompt (no handoff for a provider that can't read files here).
+    const claudeSent = readFileSync(`${dump}.CLAUDE`, 'utf8');
+    expect(claudeSent.length).toBeGreaterThan(600 * 1024);
+    // Reductions/handoffs MUST stay loud (Lesson L6) — assert BOTH warnings actually fire.
+    expect(r.stderr).toContain('handing agy the whole prompt as a file');
+    expect(r.stderr).toContain('exceeds the inline budget'); // ARG_MAX guard for the inline (claude) provider
+  });
+
+  test('cross: a small prompt does NOT trigger the agy file handoff', () => {
+    const dump = join(DIR, 'cross-small-dump');
+    const r = panelRaw(['cross', '--models', 'agy', '--prompt', 'tiny task', '--json'],
+      { X_PANEL_CMD_AGY: STUB, X_PANEL_DUMP_CROSS: dump });
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(existsSync(join(DIR, '.xm', 'cross', out.run, 'prompt.txt'))).toBe(false);
+    expect(readFileSync(`${dump}.AGY`, 'utf8')).toBe('tiny task'); // inlined verbatim
+  });
+
+  test('review agy handoff: oversized target → agy reads target.patch in BOTH rounds, claude stays inline', () => {
+    const bigTarget = 'diff --git a/x b/x\n' + 'y'.repeat(200 * 1024); // > AGY_INLINE_MAX_BYTES
+    const r1 = join(DIR, 'rev-r1'), r2 = join(DIR, 'rev-r2');
+    const r = review([bigTarget, '--models', 'claude,agy'],
+      { X_PANEL_CMD_AGY: STUB, X_PANEL_DUMP_R1: r1, X_PANEL_DUMP_R2: r2 });
+    expect(r.status).toBe(0);
+    // The full diff was written for agy to read, then cleaned up once both rounds finished
+    // (no unredacted diff persists on disk / replicates via x-sync).
+    const runs = readdirSync(join(DIR, '.xm', 'panel')).filter((n) => n.startsWith('panel-')).sort();
+    const runDir = join(DIR, '.xm', 'panel', runs[runs.length - 1]);
+    expect(existsSync(join(runDir, 'target.patch'))).toBe(false);
+    // Round 1: agy got the file ref (small), claude got the full inline diff.
+    const agyR1 = readFileSync(`${r1}.AGY`, 'utf8');
+    expect(agyR1).toContain('target.patch');
+    expect(agyR1.length).toBeLessThan(2000);
+    expect(readFileSync(`${r1}.CLAUDE`, 'utf8').length).toBeGreaterThan(200 * 1024);
+    // Round 2 (refute): agy has no session, so it MUST be re-pointed at the file, not the inline diff.
+    const agyR2 = readFileSync(`${r2}.AGY`, 'utf8');
+    expect(agyR2).toContain('target.patch');
+    expect(agyR2.length).toBeLessThan(4000);
   });
 
   test('cross writes events.jsonl (run_start/spawn/model_done/run_done) and --logs reads it', () => {
