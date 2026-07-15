@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.6.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.7.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -37,7 +37,7 @@
 - [Quick Start](#quick-start)
 - [Why xm?](#why-xm)
 - [Cross-Vendor Verification](#cross-vendor-verification)
-- [Plugins](#plugins) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-humanize](#x-humanize) · [x-recall](#x-recall) · [x-panel](#x-panel)
+- [Plugins](#plugins) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-humanize](#x-humanize) · [x-recall](#x-recall) · [x-panel](#x-panel) · [x-wt](#x-wt)
 - [Quality & Learning Pipeline](#quality--learning-pipeline)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
@@ -108,7 +108,7 @@ bash xm/scripts/install.sh
 curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/xm/scripts/install.sh | bash
 ```
 
-The installer writes `~/.local/bin/xm` (override with `XM_BIN_DIR`; ensure it is on your `PATH`) and, when the `claude` CLI is on `PATH`, also runs `claude plugin install <p>@xm -s user` for every plugin in `marketplace.json` (x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-humanize, x-dashboard, x-recall, x-panel, xm). Run `/reload-plugins` inside Claude Code afterward to activate them. If `claude` is not on `PATH`, the CLI wrapper alone is installed and the plugin list is printed for manual install.
+The installer writes `~/.local/bin/xm` (override with `XM_BIN_DIR`; ensure it is on your `PATH`) and, when the `claude` CLI is on `PATH`, also runs `claude plugin install <p>@xm -s user` for every plugin in `marketplace.json` (x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-humanize, x-dashboard, x-recall, x-panel, x-wt, xm). Run `/reload-plugins` inside Claude Code afterward to activate them. If `claude` is not on `PATH`, the CLI wrapper alone is installed and the plugin list is printed for manual install.
 
 #### Global hook install (`xm init`)
 
@@ -412,6 +412,7 @@ This is a *capability*, available today; proving it produces measurably better o
 | [x-humanize](#x-humanize) | Remove AI writing patterns (v0.3.2, pre-stable) | `/xm:humanize audit text` |
 | [x-recall](#x-recall) | Cross-session artifact index | `xm recall list` |
 | [x-panel](#x-panel) | Cross-model adversarial review | `xm panel` |
+| [x-wt](#x-wt) | Session worktree — isolate & land back | `/xm:wt` |
 | xm | Bundle + config + pipeline | `/xm pipeline release` |
 
 **Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `x-sync` multi-machine sync server — see [x-ship](#x-ship) and [x-sync](#x-sync) below.
@@ -1072,6 +1073,20 @@ Every run **captures real per-model token usage and cost** — claude via `--out
 Two adversarial add-ons turn opinions into checked facts. **`--grounded`** makes round-2 refuters that can actually read the repo (codex today — `exec --sandbox read-only` from the repo cwd) OPEN each cited file and verify the finding against the real code, tagging the verdict with `{checked, observed}`; a text-only vendor is never asked to (a blind vendor told to "open the file" would just fake a `checked:true`). **`xm panel followup <run>`** runs a debate round: it resumes each author's own session and has them `HOLD` / `CONCEDE` / `REVISE` the findings an opponent refuted — a *held* finding (both models stand their ground) is the genuine disagreement a human must decide, a *conceded* one is resolved. It is additive (`followup-N.json`, verdict.json untouched) and needs the review to have run with `--session-reuse` (claude/codex).
 
 `xm panel cross` exposes this engine as a reusable primitive — one prompt across N vendors, each vendor's raw output returned — which is what backs the opt-in `--cross-vendor` mode in x-agent, x-solver, x-build, x-op, x-review, and x-eval. See [Cross-Vendor Verification](#cross-vendor-verification).
+
+---
+
+### x-wt
+
+Session worktree. Runs the **whole current session** in an isolated git worktree, then lands it back onto the branch you started from. Unlike `/xm:build run --worktrees` (one worktree PER task, gated), `/xm:wt` is the thin, ungated "work aside, then merge back" wrapper — two verbs, no task DAG.
+
+```
+/xm:wt              # create a worktree + switch the session into it
+/xm:wt land         # verify → git-kit promote (merge into parent, no push) → return
+/xm:wt status       # where the session is + git-kit worktree list
+```
+
+The harness `EnterWorktree`/`ExitWorktree` tools move the session cwd; `git-kit promote` does the merge-back (commit + merge into parent, no network). `start` records the parent as `branch.<name>.gk-parent` so `land` merges into the branch you actually came from. Nothing is pushed — you push the parent yourself when ready. State follows the worktree (each checkout keeps its own `.xm/`); config stays shared with the main repo.
 
 ---
 

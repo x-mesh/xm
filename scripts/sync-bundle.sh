@@ -98,7 +98,7 @@ mirror_md_dir() {
 }
 
 echo "=== Syncing SKILL.md files ==="
-for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel; do
+for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel wt; do
   src="x-$plugin/skills/$plugin/SKILL.md"
   dst="xm/skills/$plugin/SKILL.md"
   sync_file "$src" "$dst"
@@ -321,7 +321,7 @@ mirror_md_dir "x-humanize/skills/humanize/references" "xm/skills/humanize/refere
 echo ""
 echo "=== Verifying all synced ==="
 DIVERGED=0
-for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel; do
+for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel wt; do
   src="x-$plugin/skills/$plugin/SKILL.md"
   dst="xm/skills/$plugin/SKILL.md"
   if [ -f "$src" ] && [ -f "$dst" ] && ! diff -q "$src" "$dst" > /dev/null 2>&1; then

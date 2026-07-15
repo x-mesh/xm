@@ -1,0 +1,19 @@
+{
+  "name": "wt",
+  "version": "0.1.0",
+  "description": "Session worktree — isolate the whole session in a git worktree, then land it back to the parent branch",
+  "author": {
+    "name": "x-mesh"
+  },
+  "repository": "https://github.com/x-mesh/xm",
+  "homepage": "https://github.com/x-mesh/xm",
+  "license": "MIT",
+  "keywords": [
+    "worktree",
+    "isolation",
+    "git",
+    "branch",
+    "merge"
+  ],
+  "skills": "./skills/"
+}

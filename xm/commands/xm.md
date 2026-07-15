@@ -25,6 +25,7 @@ Parse the first whitespace-separated word of the arguments above as the subcomma
 | `dashboard` | dashboard | Web dashboard for .xm state |
 | `panel` | panel | Cross-model adversarial review panel (claude/codex/cursor…) |
 | `recall` | recall | Find past review/op/plan/eval/probe artifacts in this repo |
+| `wt` | wt | Session worktree — isolate the session, land back to parent |
 | `humanize` | humanize | Strip AI writing patterns from text (EN + KO) |
 | `kit` | kit | Toolkit overview |
 | `ship` | ship | Release automation |
@@ -46,7 +47,7 @@ Parse the first whitespace-separated word of the arguments above as the subcomma
 1. **If arguments are empty** → print the subcommand table above and stop. Do not invoke any skill.
 2. **If first word matches a subcommand in the table** → invoke the corresponding skill (from `skills/<subcommand>/SKILL.md`) and pass the remaining arguments as its input.
 3. **kit aliases** — treat `/xm <kit-cmd> [args...]` as equivalent to `/xm kit <kit-cmd> [args...]` for any of: `config`, `update`, `version`, `doctor`, `cost`, `pipeline`, `validate`, `agents`. Invoke the `kit` skill with the full original input (including the alias word itself) as its `$ARGUMENTS`.
-4. **If first word is unknown** → respond with `Unknown subcommand: <first-word>. Available: op, solver, build, eval, agent, review, trace, memory, humble, probe, dashboard, panel, recall, humanize, kit, ship, sync, handoff, handon, config, update, version, doctor, cost, pipeline, validate, agents, init` and stop.
+4. **If first word is unknown** → respond with `Unknown subcommand: <first-word>. Available: op, solver, build, eval, agent, review, trace, memory, humble, probe, dashboard, panel, recall, wt, humanize, kit, ship, sync, handoff, handon, config, update, version, doctor, cost, pipeline, validate, agents, init` and stop.
 5. **For `init`** there is no skill — it is a plain command; follow instructions in `commands/init.md`.
 
 ### Examples

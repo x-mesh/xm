@@ -127,6 +127,7 @@ Ops:
   /xm:dashboard .xm 상태 웹 대시보드                  쓸 때: 빌드/리뷰/op 상태를 한 화면에
   /xm:ship      릴리스 자동화 (commit→bump→push)      쓸 때: 릴리스 컷
   /xm:sync      다기기 .xm 동기화                     쓸 때: 여러 머신에서 상태 공유
+  /xm:wt        세션 worktree — 격리 후 부모로 land    쓸 때: 세션 전체를 worktree에서 작업
   /xm:kit       이 개요 + config/version/doctor/cost  쓸 때: 도구 목록·설치 상태·설정
 
 대부분 직접 호출. review/eval/solver/trace/humble는 op/build/panel 파이프라인 안에서도
