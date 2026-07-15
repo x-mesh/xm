@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import * as merge from '../xm/lib/install/merge.mjs';
 import { LOCK_TTL_MS } from '../xm/lib/install/types.mjs';
 import { buildManifest, writeManifest } from '../xm/lib/install/manifest.mjs';
-import { codexMarketplaceName, renderCodexSkill } from '../xm/lib/install/transform/codex.mjs';
+import { codexMarketplaceName, renderCodexPluginManifest, renderCodexSkill } from '../xm/lib/install/transform/codex.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = join(__dirname, '..');
@@ -185,6 +185,13 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     expect(alias).toMatch(/^---\nname: xm-op\ndescription: /);
     expect(alias).toContain('`$xm-op` or `$xm:op`');
   });
+  test('codex plugin manifest accepts prerelease with build metadata', () => {
+    const manifest = JSON.parse(renderCodexPluginManifest('1.2.3-rc.1+build.7'));
+    expect(manifest.version).toBe('1.2.3-rc.1+build.7');
+    expect(() => renderCodexPluginManifest('01.2.3')).toThrow(/must be semver/);
+    expect(() => renderCodexPluginManifest('1.2.3-01')).toThrow(/must be semver/);
+    expect(() => renderCodexPluginManifest('1.2.3+build..7')).toThrow(/must be semver/);
+  });
   test('codex marketplace merge preserves existing plugins and uninstall removes only xm', () => {
     const tmp = seedTmp();
     const marketplacePath = join(tmp, '.agents', 'plugins', 'marketplace.json');
@@ -241,6 +248,24 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     expect(existsSync(dispatcherPath)).toBe(false);
     expect(readFileSync(agentsPath, 'utf8')).toContain('# user rules');
     expect(readFileSync(agentsPath, 'utf8')).not.toContain('xm:BEGIN');
+  });
+  test('codex migration preserves AGENTS block owned by antigravity', () => {
+    const tmp = seedTmp();
+    const agentsPath = join(tmp, 'AGENTS.md');
+    const agentsContent = '# user rules\n\n<!-- xm:BEGIN v2 -->\nshared index\n<!-- xm:END -->\n';
+    writeFileSync(agentsPath, agentsContent);
+    for (const target of /** @type {const} */ (['codex', 'antigravity'])) {
+      writeManifest(buildManifest({
+        target,
+        scope: 'local',
+        installRoot: tmp,
+        entries: [{ relativePath: 'AGENTS.md', content: agentsContent, mode: 0o644 }],
+      }));
+    }
+    const migrated = run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
+    expect(migrated.status).toBe(0);
+    expect(migrated.stderr).toContain('preserved shared stale marker AGENTS.md');
+    expect(readFileSync(agentsPath, 'utf8')).toBe(agentsContent);
   });
   test('kiro steering inclusion matches skill and reference counts', () => {
     const tmp = seedTmp();
