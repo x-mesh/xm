@@ -21,6 +21,7 @@ export const CODEX_PLUGIN_NAME = 'xm';
 export const CODEX_PLUGIN_ROOT = join('plugins', CODEX_PLUGIN_NAME);
 export const CODEX_MARKETPLACE_PATH = join('.agents', 'plugins', 'marketplace.json');
 export const CODEX_STANDALONE_SKILLS_ROOT = join('.agents', 'skills');
+const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
 function codexDescription(value, fallback) {
   const text = String(value || fallback || '').replace(/\s+/g, ' ').trim();
@@ -107,7 +108,7 @@ export function renderCodexSkill(skill, ctx, name = skill.skillName) {
 export const renderCodexPrompt = renderCodexSkill;
 
 export function renderCodexPluginManifest(version) {
-  if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version || '')) {
+  if (!SEMVER_RE.test(version || '')) {
     throw new Error(`codex plugin version must be semver, got ${JSON.stringify(version)}`);
   }
   return JSON.stringify({

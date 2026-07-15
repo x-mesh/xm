@@ -77,6 +77,31 @@ function resolveXmPluginVersion(skillsDir) {
 const DEFAULT_PATHS = inferDefaultPaths(HERE);
 
 /**
+ * @param {import('./types.mjs').TargetTool} target
+ * @param {'global'|'local'} scope
+ * @param {string} installRoot
+ * @param {string} absolutePath
+ */
+function isOwnedByAnotherTarget(target, scope, installRoot, absolutePath) {
+  for (const otherTarget of TARGET_TOOLS) {
+    if (otherTarget === target) continue;
+    const otherManifestPath = manifestPath(otherTarget, installRoot, scope);
+    if (!existsSync(otherManifestPath)) continue;
+    try {
+      const otherManifest = readManifest(otherManifestPath);
+      if (!verifySelfChecksum(otherManifest)) continue;
+      if (otherManifest.files.some((entry) =>
+        safeJoin(otherManifest.installRoot, entry.relativePath) === absolutePath)) {
+        return true;
+      }
+    } catch {
+      // Ignore invalid manifests; only verified ownership prevents cleanup.
+    }
+  }
+  return false;
+}
+
+/**
  * @typedef {Object} ParsedArgs
  * @property {boolean} list
  * @property {boolean} dryRun
@@ -984,6 +1009,10 @@ export function run(argv) {
               continue;
             }
             if (/(^|\/)AGENTS\.md$/.test(entry.relativePath)) {
+              if (isOwnedByAnotherTarget(target, args.scope, installRoot, staleAbs)) {
+                mergeWarnings += `WARN ${target} preserved shared stale marker ${entry.relativePath}\n`;
+                continue;
+              }
               removeMarkerBlock(staleAbs);
               continue;
             }
