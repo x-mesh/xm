@@ -83,6 +83,17 @@ export function sessionStateToMarkdown(state) {
     lines.push('');
   }
 
+  const sl = state.session_log;
+  if (sl && (sl.rejected?.length || sl.open_forks?.length || sl.constraints_prefs?.length || sl.attempts?.length)) {
+    lines.push('## Detailed session log');
+    lines.push('_Retrieval-only detail; not auto-injected on restore._');
+    lines.push('');
+    if (sl.rejected?.length) { lines.push('### Rejected alternatives (full reasoning)'); lines.push(list(sl.rejected)); lines.push(''); }
+    if (sl.open_forks?.length) { lines.push('### Open questions & forks'); lines.push(list(sl.open_forks)); lines.push(''); }
+    if (sl.constraints_prefs?.length) { lines.push('### Constraints & user preferences'); lines.push(list(sl.constraints_prefs)); lines.push(''); }
+    if (sl.attempts?.length) { lines.push('### What was tried & why'); lines.push(list(sl.attempts)); lines.push(''); }
+  }
+
   if (w.last_commits && w.last_commits.length) {
     lines.push('## Recent commits');
     lines.push(list(w.last_commits.slice(0, 5)));

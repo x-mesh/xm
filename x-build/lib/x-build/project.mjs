@@ -805,6 +805,9 @@ export function cmdHandoffFull(args) {
   // Passed as `--narrative-json '{"intent":"...","open_questions":[...], ...}'`.
   // Fields: intent, open_questions, rejected_alternatives, next_session_should_know.
   let narrative = null;
+  // Tier-2 detailed archive (retrieval-only). Composed by the leader alongside
+  // the compact narrative but kept OUT of what handon auto-injects — see cmdHandon.
+  let sessionLog = null;
   let narrativeValueIdx = -1; // exclude from positional reason scan
   const njIdx = args.findIndex(a => a === '--narrative-json' || a.startsWith('--narrative-json='));
   if (njIdx !== -1) {
@@ -824,6 +827,18 @@ export function cmdHandoffFull(args) {
           rejected_alternatives: Array.isArray(parsed.rejected_alternatives) ? parsed.rejected_alternatives : [],
           next_session_should_know: Array.isArray(parsed.next_session_should_know) ? parsed.next_session_should_know : [],
         };
+        if (parsed.session_log && typeof parsed.session_log === 'object') {
+          const strArr = (x) => (Array.isArray(x) ? x.filter(v => typeof v === 'string' && v.trim()) : []);
+          const sl = {
+            rejected: strArr(parsed.session_log.rejected),
+            open_forks: strArr(parsed.session_log.open_forks),
+            constraints_prefs: strArr(parsed.session_log.constraints_prefs),
+            attempts: strArr(parsed.session_log.attempts),
+          };
+          if (sl.rejected.length || sl.open_forks.length || sl.constraints_prefs.length || sl.attempts.length) {
+            sessionLog = sl;
+          }
+        }
       } catch (e) {
         console.error(`⚠️  Invalid --narrative-json (${e.message}); narrative will be omitted.`);
       }
@@ -867,6 +882,11 @@ export function cmdHandoffFull(args) {
 
     narrative,
 
+    // Tier-2: detailed archive. Persisted here and rendered into HANDOFF.md, but
+    // stripped to a summary by `handon --json` so it never enters leader context
+    // by default. Load on demand with `handon --log`.
+    session_log: sessionLog,
+
     why_stopped: reason || 'Session handoff',
   };
 
@@ -897,6 +917,10 @@ export function cmdHandoffFull(args) {
     console.log(`   Narrative: intent${narrative.intent ? ' ✓' : ' —'}, ${oq} open Q, ${ra} rejected alt, ${nk} next-session note(s)`);
   } else {
     console.log(`   Narrative: (not provided — pass --narrative-json to capture intent / open questions)`);
+  }
+  if (sessionLog) {
+    const n = sessionLog.rejected.length + sessionLog.open_forks.length + sessionLog.constraints_prefs.length + sessionLog.attempts.length;
+    console.log(`   Session log: ${n} detailed item(s) archived (retrieval-only; load with handon --log)`);
   }
 }
 
@@ -931,6 +955,14 @@ function _sessionStateToHandoffMd(state) {
   if (nar.open_questions && nar.open_questions.length) L.push('## Open questions', list(nar.open_questions), '');
   if (nar.rejected_alternatives && nar.rejected_alternatives.length) L.push('## Ruled out (do not re-litigate)', list(nar.rejected_alternatives), '');
   if (nar.next_session_should_know && nar.next_session_should_know.length) L.push('## Next session should know', list(nar.next_session_should_know), '');
+  const sl = state.session_log;
+  if (sl && (sl.rejected?.length || sl.open_forks?.length || sl.constraints_prefs?.length || sl.attempts?.length)) {
+    L.push('## Detailed session log', '_Retrieval-only detail; not auto-injected on restore._', '');
+    if (sl.rejected?.length) L.push('### Rejected alternatives (full reasoning)', list(sl.rejected), '');
+    if (sl.open_forks?.length) L.push('### Open questions & forks', list(sl.open_forks), '');
+    if (sl.constraints_prefs?.length) L.push('### Constraints & user preferences', list(sl.constraints_prefs), '');
+    if (sl.attempts?.length) L.push('### What was tried & why', list(sl.attempts), '');
+  }
   if (w.last_commits && w.last_commits.length) L.push('## Recent commits', list(w.last_commits.slice(0, 5)), '');
   return L.join('\n');
 }
@@ -963,6 +995,26 @@ export function cmdHandon(args) {
     return;
   }
 
+  // On-demand: print the tier-2 detailed archive. handon --json deliberately
+  // withholds this (it only reports a count) so it never enters leader context
+  // by default; the user loads it explicitly with `handon --log`.
+  if (args.includes('--log')) {
+    const sl = state.session_log;
+    const has = sl && (sl.rejected?.length || sl.open_forks?.length || sl.constraints_prefs?.length || sl.attempts?.length);
+    if (!has) {
+      console.log(isJson ? JSON.stringify({ error: 'no_session_log' }) : 'No detailed session log in this handoff.');
+      return;
+    }
+    if (isJson) { console.log(JSON.stringify(sl, null, 2)); return; }
+    const sec = (title, items) => { if (items?.length) { console.log(`\n${C.bold}${title}${C.reset}`); for (const it of items) console.log(`  • ${it}`); } };
+    console.log(`${C.bold}📚 Detailed session log${C.reset} ${C.dim}(saved ${state.saved_at ? _timeAgo(state.saved_at) : '?'})${C.reset}`);
+    sec('Rejected alternatives (full reasoning)', sl.rejected);
+    sec('Open questions & forks', sl.open_forks);
+    sec('Constraints & user preferences', sl.constraints_prefs);
+    sec('What was tried & why', sl.attempts);
+    return;
+  }
+
   if (isJson) {
     let newCommits = [];
     try {
@@ -972,6 +1024,19 @@ export function cmdHandon(args) {
       }
     } catch {}
     state.since_handoff = { new_commits: newCommits.length, commits: newCommits.slice(0, 5) };
+    // Strip tier-2 detail from the injected payload — replace with a summary so
+    // the restore stays high-signal and the log loads only on `handon --log`.
+    if (state.session_log) {
+      const sl = state.session_log;
+      state.session_log_summary = {
+        available: true,
+        rejected: sl.rejected?.length || 0,
+        open_forks: sl.open_forks?.length || 0,
+        constraints_prefs: sl.constraints_prefs?.length || 0,
+        attempts: sl.attempts?.length || 0,
+      };
+      delete state.session_log;
+    }
     console.log(JSON.stringify(state, null, 2));
     return;
   }
@@ -1060,6 +1125,13 @@ export function cmdHandon(args) {
         for (const k of n.next_session_should_know) console.log(`       ${C.dim}→ ${k}${C.reset}`);
       }
     }
+  }
+
+  // Tier-2 archive — announce availability only; load with `handon --log`
+  {
+    const sl = state.session_log;
+    const n = sl ? (sl.rejected?.length || 0) + (sl.open_forks?.length || 0) + (sl.constraints_prefs?.length || 0) + (sl.attempts?.length || 0) : 0;
+    if (n) console.log(`\n  ${C.bold}📚 Detailed log:${C.reset} ${n} item(s) archived ${C.dim}— run 'xm build handon --log' to load${C.reset}`);
   }
 
   // Why stopped
