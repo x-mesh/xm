@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1784075968204,
+  "generatedAt": 1784114432948,
   "version": 1,
   "skills": [
     {
@@ -44,8 +44,8 @@
     },
     {
       "plugin": "kit",
-      "sha256": "f54b52ea3418c8b2da029b4e0c99f1dc7585e262489a480e4999c27812a59956",
-      "bytes": 14717
+      "sha256": "dd9b977301bc2f1e622d4514b7f4549d0824b03d6ccd26352f8dabc231f1adfa",
+      "bytes": 14830
     },
     {
       "plugin": "later",
@@ -101,6 +101,11 @@
       "plugin": "trace",
       "sha256": "dbb81ab01463a1ab5955789fe1e26bc344cb464ee88c625acbafc32dd2ed8b67",
       "bytes": 17020
+    },
+    {
+      "plugin": "wt",
+      "sha256": "b54c4c4c9dda73e94d9bcb475b581554acde83b3018448f2ad58d0b28180b45d",
+      "bytes": 8057
     }
   ]
 }
