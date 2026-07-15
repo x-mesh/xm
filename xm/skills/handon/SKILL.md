@@ -130,7 +130,7 @@ This prints the tier-2 archive (rejected reasoning / open forks / constraints & 
 
 **Step 3.5: Enrich from mem-mesh (dual-write mode only)**
 
-Only in dual-write mode (gate above). The leader calls `mcp__mem-mesh__context` (project = basename of cwd) to pull recent pins / open items / the last handoff archive, then appends one line to the summary:
+Only in dual-write mode (gate above). The leader calls `mcp__mem-mesh__search` with an empty `query`, `project_id` = basename of cwd, and a high `recency_weight` (e.g. 0.8) to pull recent items / the last handoff archive, then appends one line to the summary. (Do NOT use `mcp__mem-mesh__context` here — it requires a `memory_id`/`ids` and cannot list a project's recent memories.)
 
 ```
   🧠 mem-mesh: {N} recent pins/items ({M} open)     (omit line if nothing returned)
