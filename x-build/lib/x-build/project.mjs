@@ -744,7 +744,7 @@ export function cmdHandoffFull(args) {
 
   // Recent traces
   const traces = [];
-  const tracesDir = join(process.cwd(), '.xm', 'traces');
+  const tracesDir = join(repoRoot(), '.xm', 'traces');
   if (existsSync(tracesDir)) {
     const files = readdirSync(tracesDir).filter(f => f.endsWith('.jsonl')).sort().reverse().slice(0, 5);
     for (const f of files) {
@@ -759,7 +759,7 @@ export function cmdHandoffFull(args) {
 
   // Quality scores from .xm/eval — keep latest per target
   const qualityScores = {};
-  const evalDir = join(process.cwd(), '.xm', 'eval', 'results');
+  const evalDir = join(repoRoot(), '.xm', 'eval', 'results');
   if (existsSync(evalDir)) {
     const files = readdirSync(evalDir).filter(f => f.endsWith('-score.json')).sort();
     for (const f of files) {
@@ -891,7 +891,7 @@ export function cmdHandoffFull(args) {
   };
 
   // Save
-  const buildDir = join(process.cwd(), '.xm', 'build');
+  const buildDir = join(repoRoot(), '.xm', 'build');
   mkdirSync(buildDir, { recursive: true });
   const statePath = join(buildDir, 'SESSION-STATE.json');
   writeFileSync(statePath, JSON.stringify(state, null, 2) + '\n', 'utf8');
@@ -981,7 +981,7 @@ function _timeAgo(isoStr) {
 
 export function cmdHandon(args) {
   const isJson = args.includes('--json');
-  const statePath = join(process.cwd(), '.xm', 'build', 'SESSION-STATE.json');
+  const statePath = join(repoRoot(), '.xm', 'build', 'SESSION-STATE.json');
 
   if (!existsSync(statePath)) {
     if (isJson) { console.log(JSON.stringify({ error: 'no_session_state' })); return; }

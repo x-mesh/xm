@@ -10,6 +10,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
 import { loadSharedConfig as _loadSharedConfig } from './config-loader.mjs';
 import { SCHEMA } from '../config-schema.mjs';
+import { resolveXmRoot } from './xm-root.mjs';
 
 // Re-export node modules that sub-modules need
 export { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, appendFileSync, renameSync, statSync, unlinkSync, realpathSync };
@@ -27,13 +28,15 @@ const __dirname_core = dirname(__filename_core);
 // ROOT resolution:
 // 1. X_BUILD_ROOT env var (explicit override)
 // 2. --global flag → ~/.xm/build/
-// 3. default → cwd/.xm/build/
+// 3. default → cwd/.xm/build/, or the main repo's .xm/build/ (via
+//    resolveXmRoot's git-common-dir walk-up) when cwd has no local .xm/ —
+//    keeps subdirectories and worktrees from spawning a stray .xm/
 export const XM_GLOBAL = process.argv.includes('--global');
 export const ROOT = process.env.X_BUILD_ROOT
   ? resolve(process.env.X_BUILD_ROOT)
   : XM_GLOBAL
     ? resolve(homedir(), '.xm', 'build')
-    : resolve(process.cwd(), '.xm', 'build');
+    : resolve(resolveXmRoot(), 'build');
 
 // PLUGIN_ROOT: where templates and defaults live
 // Original: resolve(__dirname, '..') from x-build-cli.mjs which is at xm/lib/

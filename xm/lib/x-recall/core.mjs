@@ -7,6 +7,7 @@
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve, extname, basename } from 'node:path';
+import { execSync } from 'node:child_process';
 
 export { readFileSync, existsSync, readdirSync, statSync };
 export { join, resolve, extname, basename };
@@ -14,9 +15,32 @@ export { join, resolve, extname, basename };
 // ── ROOT resolution ─────────────────────────────────────────────────
 // recall scans the whole .xm/ tree, so ROOT is .xm itself (not a subdir).
 
+// Resolve the .xm/ state dir — subdirectory/worktree-aware. Mirrors x-build's
+// resolveXmRoot. Rule: a local .xm/ wins → else THIS working tree's root via
+// `git rev-parse --show-toplevel`, so running from a subdirectory reads the
+// repo's .xm instead of a stray empty one → else cwd/.xm. show-toplevel stays
+// inside the current checkout: a linked worktree returns itself (not the main
+// repo), and a bare repo errors → cwd fallback. It never escapes into a
+// separate parent repo. (recall is read-only, so the final fallback is only
+// ever read, never created.)
+function resolveXmDir() {
+  const localXm = resolve(process.cwd(), '.xm');
+  if (existsSync(localXm)) return localXm;
+  try {
+    const top = execSync('git rev-parse --show-toplevel', {
+      cwd: process.cwd(), encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    if (top) {
+      const topXm = join(top, '.xm');
+      if (existsSync(topXm)) return topXm;
+    }
+  } catch {}
+  return localXm;
+}
+
 export const XM_ROOT = process.env.X_RECALL_ROOT
   ? resolve(process.env.X_RECALL_ROOT)
-  : resolve(process.cwd(), '.xm');
+  : resolveXmDir();
 
 // ── ANSI colors (TTY-aware, NO_COLOR honored) ────────────────────────
 

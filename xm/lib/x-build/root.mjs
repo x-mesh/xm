@@ -1,6 +1,7 @@
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+import { resolveXmRoot } from './xm-root.mjs';
 
 const __filename_root = fileURLToPath(import.meta.url);
 const __dirname_root = dirname(__filename_root);
@@ -10,4 +11,4 @@ export const ROOT = process.env.X_BUILD_ROOT
   ? new URL('file://' + process.env.X_BUILD_ROOT).pathname
   : XM_GLOBAL
     ? join(homedir(), '.xm', 'build')
-    : join(process.cwd(), '.xm', 'build');
+    : join(resolveXmRoot(), 'build');

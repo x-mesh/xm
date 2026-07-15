@@ -54,12 +54,18 @@ function mergeWithDefaults(data) {
 // ── Public API ────────────────────────────────────────────────────────
 
 /**
- * Resolve the .xm/ root directory.
+ * Resolve the .xm/ root for shared CONFIG (.xm/config.json).
  * Priority: XM_ROOT env var → opts.global (~/.xm/) → cwd/.xm/ → main repo .xm/ (worktree)
  *
- * When running inside a git worktree, the local cwd may not have .xm/.
- * In that case, resolve the main repo root via `git rev-parse --git-common-dir`
- * and use its .xm/ so all worktrees share a single project state.
+ * Config is PROJECT-SHARED: when running inside a linked git worktree, the
+ * local cwd may not have .xm/, so resolve the MAIN repo root via
+ * `git rev-parse --git-common-dir` and use its .xm/config.json — all worktrees
+ * read one project config (git-like: working files are per-tree, config shared).
+ *
+ * This deliberately differs from STATE resolution (x-build/xm-root.mjs's
+ * resolveXmRoot uses --show-toplevel, keeping .xm/build state per-working-tree
+ * so a worktree's session state never clobbers the main checkout's). Do NOT
+ * re-couple the two: they must diverge in a worktree.
  */
 export function resolveSharedRoot(opts = {}) {
   if (process.env.XM_ROOT) {
@@ -72,10 +78,10 @@ export function resolveSharedRoot(opts = {}) {
   if (existsSync(localXm)) {
     return localXm;
   }
-  // Worktree fallback: resolve main repo's .xm/
+  // Worktree fallback: resolve main repo's .xm/ so config stays shared.
   try {
     const commonDir = execSync('git rev-parse --git-common-dir', {
-      cwd: process.cwd(), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: process.cwd(), encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
     const mainRoot = resolve(process.cwd(), commonDir, '..');
     const mainXm = join(mainRoot, '.xm');
