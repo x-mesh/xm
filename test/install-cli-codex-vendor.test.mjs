@@ -329,14 +329,14 @@ describe('install-cli — codex vendor layer (dry-run / install / verify / unins
   });
 });
 
-// ── x-build codex prompt overlay (t8) ──
+// ── Codex Plugin Skill runtime overlays (t8) ──
 // The x-build SKILL.md body is written in Claude Code's orchestration vocabulary
 // (Agent tool / subagent_type / AskUserQuestion). Under Codex those primitives
-// don't exist, so renderCodexPrompt appends a Codex Orchestration Overlay ONLY to
-// the x-build prompt, re-mapping each instruction onto the Codex mechanisms this
-// project already ships. Other skills' prompts must stay overlay-free.
+// don't exist, so renderCodexPrompt appends a Codex Orchestration Overlay to the
+// x-build Skill, re-mapping each instruction onto the Codex mechanisms this
+// project already ships. Every Skill also receives the shared runtime mapping.
 
-describe('codex prompt — x-build orchestration overlay (t8)', () => {
+describe('codex Plugin Skill — runtime overlays (t8)', () => {
   const ctx = { scope: 'local' };
   const loadPrompt = (pluginName) =>
     renderCodexPrompt(readSkill({ pluginName, skillsDir: SKILLS, libDir: LIB }), ctx);
@@ -346,23 +346,23 @@ describe('codex prompt — x-build orchestration overlay (t8)', () => {
     return idx === -1 ? '' : prompt.slice(idx);
   };
 
-  test('x-build prompt appends the Codex Orchestration Overlay section', () => {
+  test('x-build Skill appends the Codex Orchestration Overlay section', () => {
     expect(buildPrompt).toContain('## Codex Orchestration Overlay');
   });
 
-  test('overlay names the Claude-only primitives it is replacing', () => {
-    const overlay = overlayOf(buildPrompt);
-    // The Agent-tool / subagent_type spawning the body assumes is called out as absent.
-    expect(overlay).toContain('subagent_type');
-    expect(overlay).toContain('`Agent` tool');
-    expect(overlay).toMatch(/DO NOT EXIST/);
+  test('every skill defines the Codex mapping for host-specific primitives', () => {
+    const opSkill = loadPrompt('op');
+    expect(opSkill).toContain('## Codex Runtime Mapping');
+    expect(opSkill).toContain('`$ARGUMENTS` means');
+    expect(opSkill).toContain('`Agent` tool');
+    expect(opSkill).toContain('`AskUserQuestion`');
+    expect(opSkill).toContain('structured user-input tool');
   });
 
   test('overlay supplies the Codex substitute for parallel task spawning', () => {
     const overlay = overlayOf(buildPrompt);
     // Native subagent spawn + installed role layer + run --json model spec.
     expect(overlay).toMatch(/spawn one Codex subagent/i);
-    expect(overlay).toContain('multi_agent');
     expect(overlay).toContain('[agents.xm-executor]');
     expect(overlay).toContain('task.model_by_vendor.codex');
   });
@@ -371,13 +371,7 @@ describe('codex prompt — x-build orchestration overlay (t8)', () => {
     const overlay = overlayOf(buildPrompt);
     expect(overlay).toContain('resume --last');
     // t6 buildCodexResumeArgs contract: exec flags + model precede the subcommand.
-    expect(overlay).toMatch(/MUST precede the `resume` subcommand/);
-  });
-
-  test('overlay re-maps AskUserQuestion to a Codex substitute', () => {
-    const overlay = overlayOf(buildPrompt);
-    expect(overlay).toContain('AskUserQuestion');
-    expect(overlay).toMatch(/structured-question tool/);
+    expect(overlay).toMatch(/must precede `resume`/i);
   });
 
   test('overlay is append-only — the original body precedes it untouched', () => {
@@ -389,14 +383,13 @@ describe('codex prompt — x-build orchestration overlay (t8)', () => {
     expect(markerIdx).toBeLessThan(idx);
   });
 
-  test('overlay introduces no raw (unescaped) $ tokens', () => {
-    // install.test.mjs enforces this repo-wide; assert it here for the appended text.
-    const overlay = overlayOf(buildPrompt);
-    expect([...overlay.matchAll(/(?<!\$)\$(?!ARGUMENTS\b|\$)/g)]).toEqual([]);
+  test('skill frontmatter keeps the unprefixed name so Plugin namespace yields $xm:build', () => {
+    expect(buildPrompt).toMatch(/^---\nname: build\n/);
   });
 
-  test('non-build skills get no overlay', () => {
+  test('non-build skills get runtime mapping but no build-only overlay', () => {
     for (const plugin of ['solver', 'op', 'review']) {
+      expect(loadPrompt(plugin)).toContain('Codex Runtime Mapping');
       expect(loadPrompt(plugin)).not.toContain('Codex Orchestration Overlay');
     }
   });

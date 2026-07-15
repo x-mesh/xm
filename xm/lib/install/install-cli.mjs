@@ -43,6 +43,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { writeCodexMarketplaceEntry, removeCodexMarketplaceEntry, canonicalJson } from './codex-marketplace.mjs';
 import { createInterface } from 'node:readline/promises';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -59,6 +60,19 @@ function inferDefaultPaths(here) {
   }
   const repoRoot = resolve(here, '..', '..', '..');
   return { skillsDir: resolve(repoRoot, 'xm', 'skills'), libDir: resolve(repoRoot, 'xm', 'lib') };
+}
+
+function resolveXmPluginVersion(skillsDir) {
+  const candidates = [
+    resolve(skillsDir, '..', '.claude-plugin', 'plugin.json'),
+    resolve(skillsDir, '..', 'package.json'),
+  ];
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    const parsed = JSON.parse(readFileSync(candidate, 'utf8'));
+    if (typeof parsed.version === 'string' && parsed.version.length > 0) return parsed.version;
+  }
+  throw new Error(`xm plugin version not found next to skillsDir: ${skillsDir}`);
 }
 const DEFAULT_PATHS = inferDefaultPaths(HERE);
 
@@ -730,7 +744,10 @@ export function run(argv) {
         // merge-marker entries (AGENTS.md): peel xm region, preserve user content
         const isAgents = /(^|\/)AGENTS\.md$/.test(entry.relativePath);
         try {
-          if (isAgents) {
+          if (entry.management === 'codex-marketplace-entry' && entry.pluginName) {
+            const r = removeCodexMarketplaceEntry(abs, entry.pluginName, entry.mode);
+            if (r.removed) removed++; else preserved++;
+          } else if (isAgents) {
             const r = removeMarkerBlock(abs);
             if (r.removed) removed++; else preserved++;
           } else {
@@ -834,6 +851,14 @@ export function run(argv) {
 
   // If --target is unset, plan for all known tools (overview).
   const targets = args.targets ?? [...TARGET_TOOLS];
+  let codexPluginVersion;
+  if (targets.includes('codex') && !args.list && !args.dryRun) {
+    try {
+      codexPluginVersion = resolveXmPluginVersion(args.skillsDir);
+    } catch (err) {
+      return { exitCode: 2, stdout: '', stderr: `codex: ${/** @type {Error} */ (err).message}\n` };
+    }
+  }
 
   // Build plan.
   /** @type {Record<string, ReturnType<typeof planTarget>>} */
@@ -874,6 +899,7 @@ export function run(argv) {
       libPath: (args.scope === 'global' ? '$HOME/' : '') + targetDirFor(target, args.scope) + '/xm/lib',
       dryRun: false,
       allowUnverified: args.allowUnverified,
+      pluginVersion: codexPluginVersion,
     };
     /** @type {{ outputs: import('./types.mjs').RenderOutput[], warnings: string[] }} */
     let skillOuts;
@@ -937,12 +963,42 @@ export function run(argv) {
     }
     /** @type {{ hooks: Record<string, unknown[]> }|undefined} */
     let hookOwnership;
-    /** @type {{ relativePath: string, content: string|Buffer, mode: number, shared?: 'codex-hooks' }[]} */
+    /** @type {{ relativePath: string, content: string|Buffer, mode: number, shared?: 'codex-hooks', management?: 'codex-marketplace-entry', pluginName?: string }[]} */
     const manifestEntries = [];
     let wrote = 0, unchanged = 0, rotated = 0, updated = 0;
     let mergeWarnings = '';
+    let codexMarketplaceName = null;
+
+    // Remove files owned by the previous renderer that are no longer in the
+    // output set. This migrates deprecated .codex/prompts files and the old
+    // AGENTS.md marker block without touching user-modified standalone files.
+    if (previousManifest) {
+        const nextPaths = new Set(allOutputs.map((output) => output.relativePath));
+        for (const entry of previousManifest.files) {
+          if (nextPaths.has(entry.relativePath)) continue;
+          const staleAbs = safeJoin(previousManifest.installRoot, entry.relativePath);
+          if (!existsSync(staleAbs)) continue;
+          try {
+            if (entry.management === 'codex-marketplace-entry' && entry.pluginName) {
+              removeCodexMarketplaceEntry(staleAbs, entry.pluginName, entry.mode);
+              continue;
+            }
+            if (/(^|\/)AGENTS\.md$/.test(entry.relativePath)) {
+              removeMarkerBlock(staleAbs);
+              continue;
+            }
+            const current = createHash('sha256').update(readFileSync(staleAbs)).digest('hex');
+            if (current === entry.sha256) unlinkSync(staleAbs);
+            else mergeWarnings += `WARN ${target} preserved modified stale file ${entry.relativePath}\n`;
+          } catch (err) {
+            mergeWarnings += `WARN ${target} failed stale cleanup ${entry.relativePath}: ${/** @type {Error} */ (err).message}\n`;
+          }
+        }
+    }
+
     for (const out of allOutputs) {
       const abs = safeJoin(installRoot, out.relativePath);
+      let marketplaceManagedContent = null;
       try {
         if (out.kind === 'merge-marker') {
           // Codex / Antigravity AGENTS.md — enforce 32 KiB headroom.
@@ -969,6 +1025,14 @@ export function run(argv) {
           if (result.action === 'created') wrote++;
           else if (result.action === 'unchanged') unchanged++;
           else if (result.action === 'rotated-and-updated') rotated++;
+        } else if (out.kind === 'marketplace-merge') {
+          const entry = JSON.parse(out.content);
+          const result = writeCodexMarketplaceEntry(abs, entry, out.mode, out.marketplaceName);
+          codexMarketplaceName = result.marketplaceName;
+          marketplaceManagedContent = result.managedContent;
+          if (result.action === 'created') wrote++;
+          else if (result.action === 'unchanged') unchanged++;
+          else if (result.action === 'rotated-and-updated') rotated++;
         } else {
           const result = writeOverwrite(abs, out.content, { mode: out.mode });
           if (result.action === 'created') wrote++;
@@ -987,12 +1051,18 @@ export function run(argv) {
           warnings += `  WARN: could not re-read ${abs} for manifest hash: ${/** @type {Error} */ (e).message}\n`;
         }
       }
-      manifestEntries.push({
+      if (out.kind === 'marketplace-merge') recordedContent = marketplaceManagedContent ?? canonicalJson(JSON.parse(out.content));
+      const manifestEntry = {
         relativePath: out.relativePath,
         content: recordedContent,
         mode: out.mode,
         ...(out.kind === 'hook-merge' ? { shared: /** @type {'codex-hooks'} */ ('codex-hooks') } : {}),
-      });
+      };
+      if (out.kind === 'marketplace-merge') {
+        manifestEntry.management = 'codex-marketplace-entry';
+        manifestEntry.pluginName = 'xm';
+      }
+      manifestEntries.push(manifestEntry);
     }
     // R-SEC-10 / R-SEC-13 / R-SEC-15: persist install manifest.
     // Idempotency guard: if every entry's SHA-256 matches the prior manifest,
@@ -1006,6 +1076,8 @@ export function run(argv) {
           sha256: createHash('sha256').update(buf).digest('hex'),
           mode: e.mode,
           shared: e.shared,
+          management: e.management,
+          pluginName: e.pluginName,
         });
       }
       const existingPath = manifestPath(target, installRoot, args.scope);
@@ -1025,6 +1097,8 @@ export function run(argv) {
             const want = newEntriesByPath.get(p.relativePath);
             return want && want.sha256 === p.sha256 && want.mode === p.mode &&
                    want.shared === p.shared &&
+                   want.management === p.management &&
+                   want.pluginName === p.pluginName &&
                    Boolean(p.unverified) === Boolean(args.allowUnverified);
           }) &&
           JSON.stringify(prev.hookOwnership ?? null) === JSON.stringify(hookOwnership ?? null)
@@ -1051,6 +1125,12 @@ export function run(argv) {
     if (args.allowUnverified) lines.push(`  ⚠ --allow-unverified: manifest entries flagged unverified=true (R-SEC-15).`);
     for (const w of skillOuts.warnings) lines.push(`  WARN ${w}`);
     for (const n of sharedOuts.notes) lines.push(`  note: ${n}`);
+    if (codexMarketplaceName) {
+      if (args.scope === 'local') {
+        lines.push(`  note: register this project marketplace once with \`codex plugin marketplace add ${JSON.stringify(installRoot)}\`.`);
+      }
+      lines.push(`  note: install or refresh the Plugin with \`codex plugin add xm@${codexMarketplaceName}\`, then start a new thread.`);
+    }
     stderrMergeWarnings += mergeWarnings;
   }
   return { exitCode: 0, stdout: warnings + lines.join('\n') + '\n', stderr: stderrMergeWarnings };

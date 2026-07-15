@@ -39,9 +39,9 @@ Claude Code is the reference target — every other tool is a compiled subset sh
 
 | Capability | Claude Code | Cursor | Codex CLI | Kiro | Antigravity | OpenCode |
 |------------|:-:|:-:|:-:|:-:|:-:|:-:|
-| 16 SKILL bodies | ✅ | ✅ `.cursor/rules/*.mdc` | ✅ `.codex/prompts/*.md` (or `~/.codex/prompts/` with `--global`) | ✅ `.kiro/steering/*.md` | ✅ `.agent/skills/*.md` (or `~/.gemini/antigravity/skills/`) | ✅ `.opencode/skills/*/SKILL.md` (or `~/.config/opencode/skills/*/SKILL.md`) |
-| Auto rule loading | ✅ | △ agent-requested via description | ❌ user-invoked `/prompts:xm-<plug>` | △ inclusion: auto/manual | △ agent-requested | ✅ native skill discovery |
-| Slash command discovery | ✅ `/xm:build` | △ `.cursor/commands/` (no commands declared yet) | △ `/prompts:xm-build` | ❌ | △ workflows file | ❌ skill-only |
+| xm SKILL bodies | ✅ | ✅ `.cursor/rules/*.mdc` | ✅ `plugins/xm/skills/*/SKILL.md` | ✅ `.kiro/steering/*.md` | ✅ `.agent/skills/*.md` (or `~/.gemini/antigravity/skills/`) | ✅ `.opencode/skills/*/SKILL.md` (or `~/.config/opencode/skills/*/SKILL.md`) |
+| Auto rule loading | ✅ | △ agent-requested via description | ✅ native Plugin Skill discovery | △ inclusion: auto/manual | △ agent-requested | ✅ native skill discovery |
+| Explicit discovery | ✅ `/xm:build` | △ `.cursor/commands/` (no commands declared yet) | ✅ `$xm:build` via `/skills` or `$` completion | ❌ | △ workflows file | ❌ skill-only |
 | Blocking hook (exit 2) | ✅ | ✅ `.cursor/hooks.json` (camelCase) | △ Bash/shell only (issue #16732) | ❌ run-only, no block | ❌ no programmable API | ❌ not emitted |
 | References as separate files | ✅ | ✅ `xm-*-ref-*.mdc` | △ inlined in prompt body | ✅ `#[[file:…]]` include | △ inlined | △ inlined |
 | CLI bundling (build/solver/memory) | ✅ `${CLAUDE_PLUGIN_ROOT}` | ✅ `~/.cursor/xm/lib/` | ✅ `~/.codex/xm/lib/` | ✅ `~/.kiro/xm/lib/` | ✅ `~/.gemini/xm/lib/` | ✅ `~/.config/opencode/xm/lib/` |
@@ -116,8 +116,14 @@ Verify in Cursor:
 ### Codex CLI
 
 ```bash
-# global (recommended for Codex — the prompts/ dir is user-scoped)
+# local — register the project marketplace once
+node xm/lib/install/install-cli.mjs --target codex --local
+codex plugin marketplace add "$PWD"
+codex plugin add xm@<marketplace-printed-by-installer>
+
+# global (recommended for Codex)
 node xm/lib/install/install-cli.mjs --target codex --global
+codex plugin add xm@personal
 
 # enable hooks (one-time)
 codex features enable hooks
@@ -127,14 +133,15 @@ codex features enable hooks
 ```
 
 Writes:
-- `~/.codex/AGENTS.md` (or `./AGENTS.md` for `--local`) — index block ≤ 16 KiB inside `xm:BEGIN v2 / xm:END` markers, listing every available `/prompts:xm-*`
-- `~/.codex/prompts/xm-<plug>.md` × 16 — per-skill prompt bodies, user-invoked
+- `~/plugins/xm/.codex-plugin/plugin.json` (or `./plugins/xm/...` for `--local`) — native Codex Plugin manifest
+- `~/plugins/xm/skills/<skill>/SKILL.md` — per-skill bodies invoked as `$xm:<skill>`
+- `~/.agents/plugins/marketplace.json` (or `./.agents/plugins/marketplace.json` for `--local`) — merges only the `xm` entry and preserves other plugins
 - `~/.codex/hooks.json` — PascalCase Claude-style hooks, sanitized commands
 - `~/.codex/xm/manifest.json`
 
 Verify in Codex:
-1. `codex` (start session). The session prompt should mention the AGENTS.md index ("xm — multi-agent orchestration toolkit").
-2. Type `/prompts:xm-build "plan a phased rollout"`. Codex should expand the SKILL body and execute it.
+1. For `--local`, run the printed `codex plugin marketplace add <project-root>` first. Then run the printed `codex plugin add xm@<marketplace>` and start a new Codex thread.
+2. Type `$xm:build plan a phased rollout`. `$` completion should list the installed xm Skills.
 3. Hooks: trigger a Bash tool call; `PreToolUse` hook should run (other matchers may be silently ignored — upstream tracking [openai/codex#16732](https://github.com/openai/codex/issues/16732)).
 
 ### Kiro
@@ -169,7 +176,7 @@ node xm/lib/install/install-cli.mjs --target antigravity
 ```
 
 Writes:
-- `AGENTS.md` index block (shared with Codex format, intentional — same body)
+- `AGENTS.md` index block
 - `.agent/skills/xm-<plug>.md` × 16 (project) or `~/.gemini/antigravity/skills/xm-<plug>.md` (`--global`) — per-skill bodies, plain Markdown (no frontmatter)
 - `.gemini/xm/manifest.json`
 
@@ -291,7 +298,7 @@ The CI tests verify file shape and content. To verify the rules are *consumed* c
 | Tool | How to verify rules are loaded |
 |------|-------------------------------|
 | Cursor | Open the project; chat "plan a phased rollout" — the `xm-build.mdc` rule should attach (visible in `@Files` panel or inspector) |
-| Codex CLI | `codex` then `/prompts:xm-build` — output should be the SKILL body, not "unknown command" |
+| Codex CLI | install the Plugin, start a new thread, then type `$xm:build` — `$` completion should list the Skill and invoke it |
 | Kiro | Open project; the "Steering" panel should list xm-* entries with their `inclusion` mode |
 | Antigravity | Open project; ask "what xm tools are available?" — agent should reference the AGENTS.md index |
 
@@ -328,7 +335,7 @@ node xm/scripts/skills-checksum.mjs --check   # CI gate (exit 1 on stale)
 | `marker mismatch in AGENTS.md` | The xm marker block was edited manually or partially deleted | Inspect the file and either restore the marker pair manually or delete the corrupt block — the installer refuses to auto-recover by design |
 | `refusing to back up symlink: …` | The target path is a symlink (R-SEC-05) | Replace with a regular file or relocate the symlink |
 | Cursor doesn't pick up rules | `.cursor/rules/*.mdc` hot reload is unreliable; rules attach at session start | Open a new Cursor chat or restart the IDE |
-| Codex `/prompts:xm-build` returns "unknown" | `~/.codex/prompts/` not on Codex's prompt path, or stale install | Re-run `xm install --target codex --global`; check `codex config get prompts.path` |
+| Codex `$xm:build` is not listed | Plugin was not installed/refreshed, or the current thread predates installation | Re-run `xm install --target codex --global`, run the printed `codex plugin add xm@<marketplace>`, then start a new thread |
 | `xm-op.mdc body has 522 lines (> 500)` warning | Cursor's recommended cap | Acknowledged; tracked in PRD §16. Use `--target codex` if line limit matters |
 | Kiro hook didn't block a write | Kiro doesn't support exit-code denial (R-SEC-09) | Use Cursor or Codex if blocking semantics are required |
 | `~/.gemini/GEMINI.md` mysteriously rewritten | gemini-cli also uses this path ([#16058](https://github.com/google-gemini/gemini-cli/issues/16058)) | We default to `~/.gemini/AGENTS.md`; if you must use `GEMINI.md`, install with `--local` only |

@@ -17,7 +17,7 @@ import { codexVendorRelativePaths } from './transform/codex-vendor.mjs';
 /**
  * @typedef {Object} PlanEntry
  * @property {string} absolutePath
- * @property {'rule'|'command'|'hook'|'index'|'prompt'|'steering'|'skill-doc'|'reference'|'bundle'|'vendor-config'} kind
+ * @property {'rule'|'command'|'hook'|'index'|'prompt'|'plugin-manifest'|'marketplace'|'steering'|'skill-doc'|'reference'|'bundle'|'vendor-config'} kind
  * @property {string} skill           Owning skill identifier (e.g. xm-build).
  * @property {'overwrite'|'merge-marker'} writeMode
  * @property {0o600|0o644} mode
@@ -94,11 +94,10 @@ function planCursor(s, scope, root) {
  * @returns {PlanEntry[]}
  */
 function planCodex(s, scope, root) {
-  const promptsDir = join(root, '.codex', 'prompts');
   return [
     {
-      absolutePath: join(promptsDir, `${xmName(s.pluginName, s.skillName)}.md`),
-      kind: 'prompt',
+      absolutePath: join(root, 'plugins', 'xm', 'skills', s.skillName, 'SKILL.md'),
+      kind: 'skill-doc',
       skill: xmName(s.pluginName, s.skillName),
       writeMode: 'overwrite',
       mode: modeFor(scope),
@@ -187,12 +186,18 @@ function planSharedFiles(target, scope, root) {
   /** @type {PlanEntry[]} */
   const out = [];
   if (target === 'codex') {
-    const agents = scope === 'global' ? join(root, '.codex', 'AGENTS.md') : join(root, 'AGENTS.md');
     out.push({
-      absolutePath: agents,
-      kind: 'index',
+      absolutePath: join(root, 'plugins', 'xm', '.codex-plugin', 'plugin.json'),
+      kind: 'plugin-manifest',
       skill: '*',
-      writeMode: 'merge-marker',
+      writeMode: 'overwrite',
+      mode: modeFor(scope),
+    });
+    out.push({
+      absolutePath: join(root, '.agents', 'plugins', 'marketplace.json'),
+      kind: 'marketplace',
+      skill: '*',
+      writeMode: 'overwrite',
       mode: modeFor(scope),
     });
     out.push({
