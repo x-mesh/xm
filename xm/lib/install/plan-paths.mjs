@@ -94,11 +94,19 @@ function planCursor(s, scope, root) {
  * @returns {PlanEntry[]}
  */
 function planCodex(s, scope, root) {
+  const name = xmName(s.pluginName, s.skillName);
   return [
+    {
+      absolutePath: join(root, '.agents', 'skills', name, 'SKILL.md'),
+      kind: 'skill-doc',
+      skill: name,
+      writeMode: 'overwrite',
+      mode: modeFor(scope),
+    },
     {
       absolutePath: join(root, 'plugins', 'xm', 'skills', s.skillName, 'SKILL.md'),
       kind: 'skill-doc',
-      skill: xmName(s.pluginName, s.skillName),
+      skill: name,
       writeMode: 'overwrite',
       mode: modeFor(scope),
     },
@@ -186,13 +194,6 @@ function planSharedFiles(target, scope, root) {
   /** @type {PlanEntry[]} */
   const out = [];
   if (target === 'codex') {
-    out.push({
-      absolutePath: join(root, '.agents', 'skills', 'xm', 'SKILL.md'),
-      kind: 'skill-doc',
-      skill: 'xm',
-      writeMode: 'overwrite',
-      mode: modeFor(scope),
-    });
     out.push({
       absolutePath: join(root, 'plugins', 'xm', '.codex-plugin', 'plugin.json'),
       kind: 'plugin-manifest',

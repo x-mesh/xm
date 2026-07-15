@@ -3,7 +3,7 @@
  * Codex renderer — SkillIR[] → a native Codex plugin.
  *
  * Generated layout (both local and global installs, relative to installRoot):
- *   .agents/skills/xm/SKILL.md          (standalone `$xm <skill>` dispatcher)
+ *   .agents/skills/xm-<skill>/SKILL.md  (searchable standalone aliases)
  *   plugins/xm/.codex-plugin/plugin.json
  *   plugins/xm/skills/<skill>/SKILL.md
  *   .agents/plugins/marketplace.json  (semantic entry merge by install-cli)
@@ -20,7 +20,7 @@ import { expandPaths } from '../util/expand-paths.mjs';
 export const CODEX_PLUGIN_NAME = 'xm';
 export const CODEX_PLUGIN_ROOT = join('plugins', CODEX_PLUGIN_NAME);
 export const CODEX_MARKETPLACE_PATH = join('.agents', 'plugins', 'marketplace.json');
-export const CODEX_DISPATCHER_PATH = join('.agents', 'skills', CODEX_PLUGIN_NAME, 'SKILL.md');
+export const CODEX_STANDALONE_SKILLS_ROOT = join('.agents', 'skills');
 
 function codexDescription(value, fallback) {
   const text = String(value || fallback || '').replace(/\s+/g, ' ').trim();
@@ -33,17 +33,20 @@ function codexDescription(value, fallback) {
  * Codex without rewriting the original instructions and defines `$ARGUMENTS`,
  * which is a custom-prompt placeholder rather than a native Skill variable.
  */
-const CODEX_SKILL_OVERLAY = `## Codex Runtime Mapping
+function renderCodexSkillOverlay(skill) {
+  const standaloneName = xmName(skill.pluginName, skill.skillName);
+  return `## Codex Runtime Mapping
 
-You are running this workflow as a Codex Plugin Skill.
+You are running this workflow as a Codex Skill.
 
-- \`$ARGUMENTS\` means the user text following the current \`$xm:<skill>\` mention. Treat it as input context, not as a literal shell environment variable unless a quoted command explicitly requires one.
+- \`$ARGUMENTS\` means the user text following the current Skill mention (\`$${standaloneName}\` or \`$xm:${skill.skillName}\`). Treat it as input context, not as a literal shell environment variable unless a quoted command explicitly requires one.
 - Map Claude Code's \`Agent\` tool or \`subagent_type\` instructions to Codex subagents and the installed \`[agents.xm-*]\` role layers.
 - Map \`AskUserQuestion\` to Codex's structured user-input tool when available; otherwise ask one concise inline question and wait.
 - Map Claude Code's \`Skill\` tool delegation to the corresponding installed \`$xm:<skill>\` Skill.
 - Keep CLI calls dispatcher-first: run \`xm <command>\` exactly as documented when it is available on \`PATH\`.
 
 These mappings replace host-specific mechanics only. Preserve the workflow's gates, ordering, and output contracts.`;
+}
 
 const CODEX_BUILD_OVERLAY = `## Codex Orchestration Overlay
 
@@ -77,11 +80,11 @@ export function renderCodexIndex(skills) {
 }
 
 /** Render one Codex-native SKILL.md. */
-export function renderCodexSkill(skill, ctx) {
+export function renderCodexSkill(skill, ctx, name = skill.skillName) {
   const description = codexDescription(skill.description, `xm ${skill.skillName}`);
   const head = [
     '---',
-    `name: ${skill.skillName}`,
+    `name: ${name}`,
     `description: ${JSON.stringify(description)}`,
     '---',
     '',
@@ -95,43 +98,13 @@ export function renderCodexSkill(skill, ctx) {
       body += expandPaths(ref.body, { target: 'codex', scope: ctx.scope }).trimEnd() + '\n\n';
     }
   }
-  body = body.trimEnd() + '\n\n' + CODEX_SKILL_OVERLAY;
+  body = body.trimEnd() + '\n\n' + renderCodexSkillOverlay(skill);
   if (isCodexBuildSkill(skill)) body += '\n\n' + CODEX_BUILD_OVERLAY;
   return head + body.trimEnd() + '\n';
 }
 
 // Backward-compatible export for focused renderer tests and downstream imports.
 export const renderCodexPrompt = renderCodexSkill;
-
-/** Render the standalone `$xm <subcommand> [args...]` compatibility entry point. */
-export function renderCodexDispatcherSkill(skills) {
-  const routes = skills
-    .map((skill) => ({
-      name: skill.skillName,
-      description: codexDescription(skill.description, `xm ${skill.skillName}`),
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  const routeNames = routes.map((route) => route.name).join(', ');
-  const routeTable = routes.map((route) => `- \`${route.name}\` → \`$xm:${route.name}\` — ${route.description}`).join('\n');
-  return `---
-name: xm
-description: Dispatch x-mesh workflows from "$xm <subcommand> [args...]"; use when the user invokes $xm or wants the xm command catalog.
----
-
-# xm dispatcher
-
-Interpret the text following the \`$xm\` mention as \`<subcommand> [args...]\`.
-
-- With no subcommand, print the available routes below and stop.
-- When the first word matches a route, activate and follow the installed \`$xm:<subcommand>\` Plugin Skill. Pass the remaining text as that Skill's input context. Execute the routed workflow; do not merely describe it.
-- Route \`config\`, \`update\`, \`version\`, \`doctor\`, \`cost\`, \`pipeline\`, \`validate\`, and \`agents\` to \`$xm:kit\`, preserving the full input text.
-- For an unknown subcommand, respond with \`Unknown subcommand: <word>. Available: ${routeNames}\` and stop.
-
-## Routes
-
-${routeTable}
-`;
-}
 
 export function renderCodexPluginManifest(version) {
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version || '')) {
@@ -185,12 +158,6 @@ export function renderCodexWithDiagnostics(skills, ctx) {
   const warnings = [];
   const version = ctx.pluginVersion;
   outputs.push({
-    relativePath: CODEX_DISPATCHER_PATH,
-    content: renderCodexDispatcherSkill(skills),
-    kind: 'overwrite',
-    mode: ctx.scope === 'global' ? 0o600 : 0o644,
-  });
-  outputs.push({
     relativePath: join(CODEX_PLUGIN_ROOT, '.codex-plugin', 'plugin.json'),
     content: renderCodexPluginManifest(version),
     kind: 'overwrite',
@@ -204,6 +171,13 @@ export function renderCodexWithDiagnostics(skills, ctx) {
     mode: ctx.scope === 'global' ? 0o600 : 0o644,
   });
   for (const skill of skills) {
+    const standaloneName = xmName(skill.pluginName, skill.skillName);
+    outputs.push({
+      relativePath: join(CODEX_STANDALONE_SKILLS_ROOT, standaloneName, 'SKILL.md'),
+      content: renderCodexSkill(skill, ctx, standaloneName),
+      kind: 'overwrite',
+      mode: ctx.scope === 'global' ? 0o600 : 0o644,
+    });
     outputs.push({
       relativePath: join(CODEX_PLUGIN_ROOT, 'skills', skill.skillName, 'SKILL.md'),
       content: renderCodexSkill(skill, ctx),

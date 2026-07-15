@@ -39,9 +39,9 @@ Claude Code is the reference target — every other tool is a compiled subset sh
 
 | Capability | Claude Code | Cursor | Codex CLI | Kiro | Antigravity | OpenCode |
 |------------|:-:|:-:|:-:|:-:|:-:|:-:|
-| xm SKILL bodies | ✅ | ✅ `.cursor/rules/*.mdc` | ✅ `plugins/xm/skills/*/SKILL.md` | ✅ `.kiro/steering/*.md` | ✅ `.agent/skills/*.md` (or `~/.gemini/antigravity/skills/`) | ✅ `.opencode/skills/*/SKILL.md` (or `~/.config/opencode/skills/*/SKILL.md`) |
+| xm SKILL bodies | ✅ | ✅ `.cursor/rules/*.mdc` | ✅ `.agents/skills/xm-*/SKILL.md` + `plugins/xm/skills/*/SKILL.md` | ✅ `.kiro/steering/*.md` | ✅ `.agent/skills/*.md` (or `~/.gemini/antigravity/skills/`) | ✅ `.opencode/skills/*/SKILL.md` (or `~/.config/opencode/skills/*/SKILL.md`) |
 | Auto rule loading | ✅ | △ agent-requested via description | ✅ native Plugin Skill discovery | △ inclusion: auto/manual | △ agent-requested | ✅ native skill discovery |
-| Explicit discovery | ✅ `/xm:build` | △ `.cursor/commands/` (no commands declared yet) | ✅ `$xm:build` via `/skills` or `$` completion | ❌ | △ workflows file | ❌ skill-only |
+| Explicit discovery | ✅ `/xm:build` | △ `.cursor/commands/` (no commands declared yet) | ✅ `$xm-build` via `$` completion; `$xm:build` direct | ❌ | △ workflows file | ❌ skill-only |
 | Blocking hook (exit 2) | ✅ | ✅ `.cursor/hooks.json` (camelCase) | △ Bash/shell only (issue #16732) | ❌ run-only, no block | ❌ no programmable API | ❌ not emitted |
 | References as separate files | ✅ | ✅ `xm-*-ref-*.mdc` | △ inlined in prompt body | ✅ `#[[file:…]]` include | △ inlined | △ inlined |
 | CLI bundling (build/solver/memory) | ✅ `${CLAUDE_PLUGIN_ROOT}` | ✅ `~/.cursor/xm/lib/` | ✅ `~/.codex/xm/lib/` | ✅ `~/.kiro/xm/lib/` | ✅ `~/.gemini/xm/lib/` | ✅ `~/.config/opencode/xm/lib/` |
@@ -133,7 +133,7 @@ codex features enable hooks
 ```
 
 Writes:
-- `~/.agents/skills/xm/SKILL.md` (or `./.agents/skills/xm/SKILL.md` for `--local`) — standalone dispatcher for `$xm <skill> [args...]`
+- `~/.agents/skills/xm-<skill>/SKILL.md` (or `./.agents/skills/xm-<skill>/SKILL.md` for `--local`) — searchable standalone aliases such as `$xm-op`
 - `~/plugins/xm/.codex-plugin/plugin.json` (or `./plugins/xm/...` for `--local`) — native Codex Plugin manifest
 - `~/plugins/xm/skills/<skill>/SKILL.md` — per-skill bodies invoked as `$xm:<skill>`
 - `~/.agents/plugins/marketplace.json` (or `./.agents/plugins/marketplace.json` for `--local`) — merges only the `xm` entry and preserves other plugins
@@ -142,7 +142,7 @@ Writes:
 
 Verify in Codex:
 1. For `--local`, run the printed `codex plugin marketplace add <project-root>` first. Then run the printed `codex plugin add xm@<marketplace>` and start a new Codex thread.
-2. Type `$xm op refine this draft` to use the dispatcher, or `$xm:build plan a phased rollout` to invoke a Plugin Skill directly. `$` completion should list both `$xm` and the installed xm Skills.
+2. Type `$xm-op refine this draft` to use a searchable standalone alias, or `$xm:build plan a phased rollout` to invoke a Plugin Skill directly. `$` completion lists the standalone `$xm-*` aliases.
 3. Hooks: trigger a Bash tool call; `PreToolUse` hook should run (other matchers may be silently ignored — upstream tracking [openai/codex#16732](https://github.com/openai/codex/issues/16732)).
 
 ### Kiro
