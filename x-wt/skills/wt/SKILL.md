@@ -86,7 +86,7 @@ project's task DAG. `/xm:wt` has no tasks and no gate panel — it is the thin
    - `ok` → merged. Continue to step 4.
    - `paused` (conflict) → **STOP.** Report the resume/abort command from `result`; do NOT ExitWorktree — the branch is not merged.
    - `blocked` / `error` → report `error.remedies[0]` (check its `safety` first); do not remove the worktree.
-4. **Exit and clean up** — call `ExitWorktree` with `action: "remove"` (the branch is merged into the parent, so removal is clean). If it refuses (leftover commits / dirty), retry with `action: "keep"` and report what was left.
+4. **Exit and clean up** — call `ExitWorktree` with `action: "remove"`. It will almost always REFUSE the first call with "N commits on <branch>": after a fast-forward promote the worktree branch and the parent point at the SAME commit, but ExitWorktree compares against the branch's ENTRY baseline, not the advanced parent — so it still counts the promoted commits as unmerged. Since step 3 reached `ok` (the parent now contains them), this is expected and the branch is redundant: re-invoke `ExitWorktree` with `action: "remove", discard_changes: true`. This is safe ONLY because promote already merged the commits into the parent — **never pass `discard_changes: true` if step 3 did not reach `ok`** (then the commits are genuinely unmerged and would be lost; use `action: "keep"` and report instead).
 5. **Report** (normal mode → Korean):
    ```
    ✅ <NEW> → <PARENT> 머지 완료 (push 안 함).
@@ -111,6 +111,7 @@ Read-only — never create or remove anything under `status`.
 | "Only one vendor / no gate, so I'll add a panel review here." | `/xm:wt` is the ungated wrapper by design. Gated per-task merges are `/xm:build run --worktrees`. Don't reinvent the gate here. |
 | "I'll define a shell alias for the long git-kit command." | The Bash tool is stateless per call — an alias/function from one call is gone in the next. Call `git-kit` (or `GK_AGENT=1 git-kit`) directly every time. |
 | "I'm in a worktree already, I'll just start another." | `EnterWorktree` refuses a nested create, and a `gk-parent` already set means you are mid-session. Land or exit first. |
+| "ExitWorktree refused remove, so the land failed — I'll keep the worktree." | Expected: after a ff promote, ExitWorktree still counts the promoted commits against the branch's ENTRY baseline. If step 3 promote reached `ok`, the commits ARE on the parent — re-invoke with `discard_changes: true` (safe). Falling back to `keep` here just litters orphan worktrees. |
 
 ## Red Flags
 
@@ -124,6 +125,6 @@ Read-only — never create or remove anything under `status`.
 ## Verification
 
 - After `start`: `git branch --show-current` is the new branch AND `git config --get branch.<new>.gk-parent` returns the original branch.
-- After `land` success: `git-kit promote` returned `state=ok`, the session cwd is back on the parent, and the worktree is gone (or kept + reported if removal was refused).
+- After `land` success: `git-kit promote` returned `ok` AND the parent branch now contains the worktree branch's HEAD (`git branch --contains` / the parent log shows the commit), the session cwd is back on the parent, and the worktree is gone (removed via `discard_changes: true` after the expected first-call refusal). Only fall back to `keep` when promote did NOT reach `ok`.
 - You never pushed unless the user asked.
 - On a `promote` conflict you stopped and surfaced the resume/abort command instead of removing the worktree.

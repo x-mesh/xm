@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1784114432948,
+  "generatedAt": 1784125550736,
   "version": 1,
   "skills": [
     {
@@ -104,8 +104,8 @@
     },
     {
       "plugin": "wt",
-      "sha256": "b54c4c4c9dda73e94d9bcb475b581554acde83b3018448f2ad58d0b28180b45d",
-      "bytes": 8057
+      "sha256": "43d0e3c1ed5462260663c746b09162934d2396e0014ddad087eeec484f26261a",
+      "bytes": 9213
     }
   ]
 }
