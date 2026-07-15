@@ -10,6 +10,11 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+### xm 2.5.2 → 2.6.0
+
+- Added native Codex Plugin packaging in `xm/lib/install/`: installs bundled Skills and a semantic marketplace entry while keeping searchable `$xm-<skill>` aliases, so users can discover `$xm-op` and invoke the namespaced `$xm:op` form after plugin registration.
+- Replaced the legacy Codex prompt/dispatcher compatibility path and hardened migrations: stale `AGENTS.md` cleanup now preserves blocks still owned by Antigravity, and generated plugin manifests accept complete SemVer prerelease + build versions.
+
 ### dashboard 2.4.4 → 2.4.5
 
 - Surface nested workspaces. `scanWorkspaces` no longer stops at the first `.xm/` it finds — it registers the workspace and keeps recursing, so independent repos living inside a container workspace (e.g. `agentic/httprove`, `agentic/x-kit`) now appear instead of being silently swallowed by the parent. Each workspace carries a `parentId`; `/api/workspaces` adds `parentId` + `childCount`. The switcher and home cards render the parent→child hierarchy (tree indent + `└` glyph, `↳ nested in <parent>` label, `N nested` badge). IDs are disambiguated on basename collision.
