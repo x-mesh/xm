@@ -11,8 +11,7 @@ import { createHash } from 'node:crypto';
 import * as merge from '../xm/lib/install/merge.mjs';
 import { LOCK_TTL_MS } from '../xm/lib/install/types.mjs';
 import { buildManifest, writeManifest } from '../xm/lib/install/manifest.mjs';
-import { codexMarketplaceName, renderCodexDispatcherSkill } from '../xm/lib/install/transform/codex.mjs';
-import { scanAll } from '../xm/lib/install/scan.mjs';
+import { codexMarketplaceName, renderCodexSkill } from '../xm/lib/install/transform/codex.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = join(__dirname, '..');
@@ -142,12 +141,13 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     expect(r.status).toBe(0);
     expect(existsSync(join(tmp, 'AGENTS.md'))).toBe(false);
     expect(existsSync(join(tmp, '.codex', 'prompts'))).toBe(false);
-    const dispatcherPath = join(tmp, '.agents', 'skills', 'xm', 'SKILL.md');
-    expect(existsSync(dispatcherPath)).toBe(true);
-    const dispatcher = readFileSync(dispatcherPath, 'utf8');
-    expect(dispatcher).toMatch(/^---\nname: xm\ndescription: /);
-    expect(dispatcher).toContain('`op` → `$xm:op`');
-    expect(dispatcher).toContain('text following the `$xm` mention');
+    const standaloneSkills = readdirSync(join(tmp, '.agents', 'skills'));
+    expect(standaloneSkills.length).toBe(EXPECTED_SKILL_COUNT);
+    const standaloneOp = readFileSync(join(tmp, '.agents', 'skills', 'xm-op', 'SKILL.md'), 'utf8');
+    expect(standaloneOp).toMatch(/^---\nname: xm-op\ndescription: /);
+    expect(standaloneOp).toContain('`$xm-op` or `$xm:op`');
+    const standaloneBuild = readFileSync(join(tmp, '.agents', 'skills', 'xm-build', 'SKILL.md'), 'utf8');
+    expect(standaloneBuild).toContain('`$xm-build` or `$xm:build`');
     const pluginRoot = join(tmp, 'plugins', 'xm');
     const plugin = JSON.parse(readFileSync(join(pluginRoot, '.codex-plugin', 'plugin.json'), 'utf8'));
     expect(plugin.name).toBe('xm');
@@ -156,7 +156,7 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     expect(readdirSync(join(pluginRoot, 'skills')).length).toBe(EXPECTED_SKILL_COUNT);
     const opSkill = readFileSync(join(pluginRoot, 'skills', 'op', 'SKILL.md'), 'utf8');
     expect(opSkill).toMatch(/^---\nname: op\ndescription: /);
-    expect(opSkill).toContain('`$xm:<skill>` mention');
+    expect(opSkill).toContain('`$xm-op` or `$xm:op`');
     const marketplace = JSON.parse(readFileSync(join(tmp, '.agents', 'plugins', 'marketplace.json'), 'utf8'));
     expect(marketplace.name).toStartWith('xm-');
     expect(marketplace.plugins.find((entry) => entry.name === 'xm')?.source.path).toBe('./plugins/xm');
@@ -174,12 +174,16 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
       .toContain('bash \\".codex/xm/hooks/xm-last-inject.sh\\"');
     expect(r.stdout).toContain('mirrored 3 referenced hook file(s)');
   });
-  test('codex standalone $xm dispatcher routes subcommands and kit aliases', () => {
-    const dispatcher = renderCodexDispatcherSkill(scanAll({ skillsDir: SKILLS, libDir: LIB }));
-    expect(dispatcher).toContain('activate and follow the installed `$xm:<subcommand>` Plugin Skill');
-    expect(dispatcher).toContain('`op` → `$xm:op`');
-    expect(dispatcher).toContain('Route `config`, `update`, `version`, `doctor`');
-    expect(dispatcher).toContain('to `$xm:kit`');
+  test('codex standalone alias uses the searchable xm-prefixed name', () => {
+    const alias = renderCodexSkill({
+      pluginName: 'op',
+      skillName: 'op',
+      description: 'Strategy orchestration',
+      body: '# op',
+      references: [],
+    }, { scope: 'local' }, 'xm-op');
+    expect(alias).toMatch(/^---\nname: xm-op\ndescription: /);
+    expect(alias).toContain('`$xm-op` or `$xm:op`');
   });
   test('codex marketplace merge preserves existing plugins and uninstall removes only xm', () => {
     const tmp = seedTmp();
@@ -197,7 +201,7 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     expect(marketplace.plugins.map((entry) => entry.name)).toEqual(['existing', 'xm']);
     const removed = run(['--uninstall', '--target', 'codex'], { cwd: tmp });
     expect(removed.status).toBe(0);
-    expect(existsSync(join(tmp, '.agents', 'skills', 'xm', 'SKILL.md'))).toBe(false);
+    expect(existsSync(join(tmp, '.agents', 'skills', 'xm-op', 'SKILL.md'))).toBe(false);
     marketplace = JSON.parse(readFileSync(marketplacePath, 'utf8'));
     expect(marketplace.name).toBe('team-local');
     expect(marketplace.interface.displayName).toBe('Team Local');
@@ -214,9 +218,12 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
   test('codex migration removes unchanged legacy prompts and only the xm AGENTS block', () => {
     const tmp = seedTmp();
     const promptPath = join(tmp, '.codex', 'prompts', 'xm-op.md');
+    const dispatcherPath = join(tmp, '.agents', 'skills', 'xm', 'SKILL.md');
     const agentsPath = join(tmp, 'AGENTS.md');
     mkdirSync(dirname(promptPath), { recursive: true });
+    mkdirSync(dirname(dispatcherPath), { recursive: true });
     writeFileSync(promptPath, 'legacy prompt\n');
+    writeFileSync(dispatcherPath, 'legacy dispatcher\n');
     writeFileSync(agentsPath, '# user rules\n\n<!-- xm:BEGIN v2 -->\nlegacy index\n<!-- xm:END -->\n');
     writeManifest(buildManifest({
       target: 'codex',
@@ -224,12 +231,14 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
       installRoot: tmp,
       entries: [
         { relativePath: '.codex/prompts/xm-op.md', content: 'legacy prompt\n', mode: 0o644 },
+        { relativePath: '.agents/skills/xm/SKILL.md', content: 'legacy dispatcher\n', mode: 0o644 },
         { relativePath: 'AGENTS.md', content: readFileSync(agentsPath, 'utf8'), mode: 0o644 },
       ],
     }));
     const migrated = run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
     expect(migrated.status).toBe(0);
     expect(existsSync(promptPath)).toBe(false);
+    expect(existsSync(dispatcherPath)).toBe(false);
     expect(readFileSync(agentsPath, 'utf8')).toContain('# user rules');
     expect(readFileSync(agentsPath, 'utf8')).not.toContain('xm:BEGIN');
   });
