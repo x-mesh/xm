@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.5.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.5.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -145,8 +145,9 @@ xm build <subcmd>      # build status / list / ...
 xm config <subcmd>     # show | get <key> | set <key> <val> | reset (--local | --global)
 xm trace <subcmd>      # execution traces
 xm solver <subcmd>     # structured problem solving
-xm handoff [reason]    # save session state
+xm handoff [reason]    # save session state (+ tier-2 detail archive)
 xm handon              # restore session state
+xm handon --log        # print the tier-2 detailed archive on demand
 xm which               # show resolved lib paths
 xm version
 xm help

@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.5.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.5.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -145,8 +145,9 @@ xm build <subcmd>      # build status / list / ...
 xm config <subcmd>     # show | get <key> | set <key> <val> | reset (--local | --global)
 xm trace <subcmd>      # 실행 트레이스
 xm solver <subcmd>     # 구조화된 문제 해결
-xm handoff [reason]    # 세션 상태 저장
+xm handoff [reason]    # 세션 상태 저장 (+ tier-2 상세 아카이브)
 xm handon              # 세션 상태 복원
+xm handon --log        # tier-2 상세 아카이브 온디맨드 출력
 xm which               # 해석된 lib 경로 확인
 xm version
 xm help
