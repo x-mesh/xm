@@ -14,7 +14,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, readdirSync, statSync, writeFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname } from 'node:path';
 import {
@@ -289,6 +289,16 @@ function prepareAgyHandoff({ cfg, usable, dir, fileName, content, bytes, wrap, n
     console.error(`${C.yellow}⚠ agy file handoff failed (${e.message}) — falling back to inline. agy's ${noun} is ${bytes} bytes, above its ${cap} cap, so its result may be silently truncated/unreliable this run.${C.reset}`);
     return null;
   }
+}
+
+// Remove the agy handoff input file once the run is done reading it. It exists ONLY so agy can
+// read the diff/prompt during the rounds — nothing consumes it afterward, and the results
+// (verdict.json / *.r{1,2}.json / events.jsonl) are separate files. Deleting it keeps an
+// unredacted full diff/prompt from persisting on disk (and replicating via x-sync). Best-effort:
+// a missing file (never written / already gone) is not an error.
+function cleanupHandoffFile(handoff) {
+  if (!handoff || !handoff.path) return;
+  try { unlinkSync(handoff.path); } catch { /* already gone / never written — fine */ }
 }
 
 // File handoff (A) for cmdCross: the cross prompt is opaque (arbitrary consumer, output
@@ -1077,6 +1087,10 @@ async function cmdReview(pos, flags) {
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 2, ok: res.ok, resume, count: verdicts.length, error: res.error || null });
   }, onProviderEvent, stream, partial, ['verdicts']);
 
+  // Both rounds have read the diff — drop the agy handoff input file so no unredacted full
+  // diff persists on disk / replicates via x-sync (results live in separate files).
+  cleanupHandoffFile(agyHandoff);
+
   // Only models actually sent the grounded prompt may contribute grounding provenance (t8):
   // labels that are grounded-capable in a grounded run. synth trusts `verified` only from these.
   const groundedSet = new Set(grounded ? labels.filter((l) => groundCapable(String(l).split(':')[0])) : []);
@@ -1332,6 +1346,9 @@ async function cmdCross(pos, flags) {
     }));
   } finally {
     clearInterval(hb);
+    // Drop the agy handoff input file (all providers have run) so no unredacted full prompt
+    // persists on disk / replicates via x-sync. In finally so a mid-run throw still cleans up.
+    cleanupHandoffFile(agyCrossHandoff);
   }
   status.phase = 'done';
   writeEvent({ type: 'run_done', phase: status.phase, ok: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length });
