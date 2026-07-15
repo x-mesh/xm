@@ -133,6 +133,7 @@ codex features enable hooks
 ```
 
 생성:
+- `~/.agents/skills/xm/SKILL.md` (`--local`이면 `./.agents/skills/xm/SKILL.md`) — `$xm <skill> [args...]` standalone dispatcher
 - `~/plugins/xm/.codex-plugin/plugin.json` (`--local`이면 `./plugins/xm/...`) — native Codex Plugin manifest
 - `~/plugins/xm/skills/<skill>/SKILL.md` — `$xm:<skill>`로 호출하는 스킬별 본문
 - `~/.agents/plugins/marketplace.json` (`--local`이면 `./.agents/plugins/marketplace.json`) — 다른 plugin은 보존하고 `xm` 엔트리만 병합
@@ -141,7 +142,7 @@ codex features enable hooks
 
 Codex에서 검증:
 1. `--local`이면 먼저 출력된 `codex plugin marketplace add <project-root>`를 실행. 그다음 `codex plugin add xm@<marketplace>` 실행 후 새 Codex thread 시작.
-2. `$xm:build phased rollout 계획` 입력. `$` 자동완성에 xm Skill이 표시되어야 함.
+2. `$xm op refine 초안`으로 dispatcher를 사용하거나 `$xm:build phased rollout 계획`으로 Plugin Skill을 직접 호출. `$` 자동완성에 `$xm`과 xm Skill이 모두 표시되어야 함.
 3. 훅: Bash 도구 호출 시 `PreToolUse` 훅 동작 (다른 matcher는 silently 무시될 수 있음 — 업스트림 [openai/codex#16732](https://github.com/openai/codex/issues/16732)).
 
 ### Kiro

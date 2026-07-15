@@ -187,6 +187,13 @@ function planSharedFiles(target, scope, root) {
   const out = [];
   if (target === 'codex') {
     out.push({
+      absolutePath: join(root, '.agents', 'skills', 'xm', 'SKILL.md'),
+      kind: 'skill-doc',
+      skill: 'xm',
+      writeMode: 'overwrite',
+      mode: modeFor(scope),
+    });
+    out.push({
       absolutePath: join(root, 'plugins', 'xm', '.codex-plugin', 'plugin.json'),
       kind: 'plugin-manifest',
       skill: '*',
