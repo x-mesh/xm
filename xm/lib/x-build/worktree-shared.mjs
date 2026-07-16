@@ -177,12 +177,27 @@ export const WORKTREE_CONFIG_DEFAULTS = {
   max_parallel: 4,
   gate: 'panel',
   gate_phase: 'before',
+  // Default calibration (docs/worktree-gate-optimization-plan.md §3A): per-task
+  // gates block critical/high only — confirmed medium becomes advisory (recorded,
+  // never dropped) and the `release` phase overlay re-adds it so the pre-release
+  // integration review still blocks on medium. Phase overlay keys merge as single
+  // keys across layers (a layer's overlay replaces the lower layer's wholesale).
   gate_policy: {
-    block_confirmed: ['critical', 'high', 'medium'],
+    block_confirmed: ['critical', 'high'],
     block_unreviewed: ['critical', 'high'],
     block_contested: ['critical'],
     allow_low: true,
+    release: { block_confirmed: ['critical', 'high', 'medium'] },
   },
+  // Round cap (plan §3E): past this many consecutive panel-fail rounds for a
+  // task+phase, medium demotes from blocking to advisory (critical/high never
+  // demote). 0 = no cap. Default 2 comes from one measured dogfooding case —
+  // configurable, revisit when more data lands.
+  gate_max_rounds: 2,
+  // Pre-gate (plan §3F): cheap command template run BEFORE the expensive panel
+  // ({patch} substituted; exit 0 = proceed, 1 = fail-fast block, ≥2 = warn +
+  // proceed). null = disabled.
+  pre_gate: null,
   preflight: true,
   cleanup: true,
   // Patch-size guard for review-integration. null = no cap (plan: the number

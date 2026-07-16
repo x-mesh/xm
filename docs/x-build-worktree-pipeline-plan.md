@@ -1,5 +1,11 @@
 # x-build worktree pipeline plan
 
+> **2026-07 update**: 이 문서의 gate_policy 기본값(`block_confirmed`에 medium 포함)과
+> per-task 게이트 반복 구조는 `docs/worktree-gate-optimization-plan.md`로 대체되었다 —
+> 현행 기본은 per-task critical/high 블로킹 + release 오버레이 medium, 라운드 캡,
+> pre-gate, findings 자동 피드백, `gate_phase: release` 실배선. 아래 본문은 원 설계
+> 기록으로 유지한다.
+
 > **검증 이력 (2026-07-02)**: 로컬 gk v0.106.0에서 gate 계약 전체(`--gate`/`--gate-phase`/`--gate-timeout`/`--gate-keep-patch`/`--panel-review`/`--resume-accept`) 실측 확인. codex 교차검증으로 3가지 보정 반영 — (1) root env 주입 계약(`X_BUILD_ROOT`/`X_PANEL_ROOT`) 신설, (2) gate-panel에 `--project` 필수화, (3) task-context 위치를 `.xm/` 밖으로 이동 + canonical 규칙. 추가로 finish 직렬화, `expected_files[]` 스키마, gate policy 보강(`block_contested`/transient 재시도), 실행 모드 결정 흐름을 반영했다.
 
 ## 한 줄 요약

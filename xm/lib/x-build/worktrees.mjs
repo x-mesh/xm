@@ -516,19 +516,26 @@ export function planWorktrees({
   const gatePhase = config.gate_phase ?? 'before';
   const cleanup = config.cleanup !== false;
 
+  // gate_phase 'release' defers ALL gating to the pre-release integration review
+  // (review-integration): per-task finishes merge UNGATED. This also fixes the
+  // pass-through bug where 'release' leaked into gk's --gate-phase, which only
+  // accepts before|after|both (plan §3B).
+  const gateDeferred = gatePhase === 'release';
+
   const { safe, sequential, reason } = isParallelSafe(tasks);
   const taken = new Set(existingBranches);
 
   const entries = [];
   for (const t of tasks) {
     const branch = uniqueBranch(branchNameFor(prefix, t), taken);
-    const gateCmd = gateCommandString(project, t.id);
     const finishParts = [
       'GK_AGENT=1 git-kit worktree finish',
       `--to ${base}`,
-      `--gate ${JSON.stringify(gateCmd)}`,
-      `--gate-phase ${gatePhase}`,
     ];
+    if (!gateDeferred) {
+      const gateCmd = gateCommandString(project, t.id);
+      finishParts.push(`--gate ${JSON.stringify(gateCmd)}`, `--gate-phase ${gatePhase}`);
+    }
     if (cleanup) finishParts.push('--cleanup');
     entries.push({
       task_id: t.id,
@@ -550,7 +557,7 @@ export function planWorktrees({
 
   return {
     project, base, branch_prefix: prefix, max_parallel: maxParallel,
-    gate: config.gate ?? 'panel', gate_phase: gatePhase,
+    gate: config.gate ?? 'panel', gate_phase: gatePhase, gate_deferred: gateDeferred,
     degraded, mode: degraded ? 'manual-handoff' : 'dry-run',
     parallel_batches, sequential, reason,
     tasks: entries,
@@ -597,6 +604,13 @@ export function renderTaskContext(task) {
     '## Verification',
     '- Run the project quality checks before finishing.',
     '- Confirm every Done Criteria item above is met.',
+    '- Before finishing, self-review your FULL diff at low cost (async/race state',
+    '  transitions, error paths, boundary values, resource cleanup). The merge gate',
+    '  is an expensive cross-vendor panel (~10-15 min per round) — converge cheaply',
+    '  first.',
+    '- If the gate fails, fix the whole CATEGORY of each finding (one async-race',
+    '  finding → audit every similar transition in your diff), not just the quoted',
+    '  line. Partial fixes cost another full gate round.',
     '',
   ].join('\n');
 }
@@ -652,6 +666,90 @@ export function writeTaskContextSnapshot(project, task, worktreePath) {
   writeFileSync(snapshotPath, content, 'utf8');
   const excl = registerWorktreeExclude(worktreePath, 'TASK-CONTEXT.md');
   return { artifactPath, snapshotPath, excludePath: excl.excludePath };
+}
+
+// ── gate findings feedback (plan §3G) ────────────────────────────────
+//
+// On a gate fail the findings used to reach the fix agent only via a manual
+// orchestrator relay. Instead, fold them straight into the task context: a
+// marker-delimited section is REPLACED (never appended twice) in both the
+// canonical task-context artifact and the worktree TASK-CONTEXT.md snapshot,
+// so round N always shows the latest findings exactly once.
+
+const GATE_FINDINGS_START = '<!-- xm:gate-findings:start -->';
+const GATE_FINDINGS_END = '<!-- xm:gate-findings:end -->';
+
+// Replace the marker-delimited section in `content` (or append when absent).
+export function upsertGateFindingsSection(content, section) {
+  const start = content.indexOf(GATE_FINDINGS_START);
+  const end = content.indexOf(GATE_FINDINGS_END);
+  if (start !== -1 && end !== -1 && end > start) {
+    return content.slice(0, start) + section + content.slice(end + GATE_FINDINGS_END.length);
+  }
+  const sep = content.endsWith('\n') ? '\n' : '\n\n';
+  return content + sep + section + '\n';
+}
+
+export function renderGateFindingsSection(gateArtifact) {
+  const blocking = gateArtifact.blocking_findings || [];
+  const advisory = gateArtifact.advisory_findings || [];
+  const lines = [
+    GATE_FINDINGS_START,
+    `## Gate Findings — ${gateArtifact.phase} round ${gateArtifact.round ?? 1} (BLOCKED)`,
+    '',
+    'The merge gate blocked this branch. Fix every blocking finding below, run the',
+    'quality checks, commit in this worktree, then the orchestrator resumes the merge.',
+    'Fix the whole CATEGORY of each finding (one async-race finding → audit every',
+    'similar transition in your diff), not just the quoted line — partial fixes cost',
+    'another full gate round.',
+    '',
+    '### Blocking',
+    ...(blocking.length
+      ? blocking.map(b => `- [${b.severity ?? '?'}/${b.kind ?? '?'}] ${b.file ?? '?'}:${b.line ?? '?'} — ${b.claim ?? ''}`)
+      : ['- (none recorded — see the gate artifact / pre-gate output)']),
+  ];
+  if (gateArtifact.pre_gate?.status === 'fail' && gateArtifact.pre_gate.output_tail) {
+    lines.push('', '### Pre-gate output', '```', gateArtifact.pre_gate.output_tail, '```');
+  }
+  if (advisory.length) {
+    lines.push('', '### Advisory (non-blocking — fix alongside if cheap, else they queue for the release review)',
+      ...advisory.map(a => `- [${a.severity ?? '?'}] ${a.file ?? '?'}:${a.line ?? '?'} — ${a.claim ?? ''}`));
+  }
+  lines.push(GATE_FINDINGS_END);
+  return lines.join('\n');
+}
+
+/**
+ * Fold a failed gate's findings into the task context (canonical artifact +
+ * worktree snapshot). No-op unless the gate artifact exists with decision
+ * 'fail'. Failures WARN on stderr but never break the finish flow — feedback
+ * injection is assistance, not a gate.
+ * @returns {{ injected: boolean, reason?: string }}
+ */
+export function injectGateFindings({ project, taskId, phase, worktreePath }) {
+  try {
+    const art = readJSON(join(worktreeRunDir(project, taskId), `panel-${phase}.json`));
+    if (!art || art.decision !== 'fail') return { injected: false, reason: 'no failed gate artifact' };
+    const section = renderGateFindingsSection(art);
+
+    const canonicalPath = taskContextArtifactPath(project, taskId);
+    const canonical = existsSync(canonicalPath) ? readFileSync(canonicalPath, 'utf8') : '';
+    const nextCanonical = upsertGateFindingsSection(canonical, section);
+    writeFileAtomic(canonicalPath, nextCanonical);
+
+    if (worktreePath && existsSync(worktreePath)) {
+      const snapshotPath = join(worktreePath, 'TASK-CONTEXT.md');
+      const snapshot = existsSync(snapshotPath) ? readFileSync(snapshotPath, 'utf8') : nextCanonical;
+      writeFileSync(snapshotPath, upsertGateFindingsSection(snapshot, section), 'utf8');
+      // Re-assert the exclude: the snapshot must never dirty the worktree, or the
+      // resume dirty-guard would trip on our own feedback file.
+      registerWorktreeExclude(worktreePath, 'TASK-CONTEXT.md');
+    }
+    return { injected: true };
+  } catch (e) {
+    process.stderr.write(`${C.yellow}⚠ gate findings feedback failed for ${taskId} (${phase}): ${e.message}${C.reset}\n`);
+    return { injected: false, reason: e.message };
+  }
 }
 
 /**
@@ -817,8 +915,13 @@ function sleepMs(ms) {
 // inside the worktree (plan "root env 주입 계약").
 function runGkFinishOnce({ project, taskId, base, gatePhase, cleanup, worktreeCwd, agentEnv }) {
   const gk = gkBaseArgv();
-  const gateCmd = gateCommandString(project, taskId);
-  const args = [...gk.slice(1), 'worktree', 'finish', '--to', base, '--gate', gateCmd, '--gate-phase', gatePhase];
+  const args = [...gk.slice(1), 'worktree', 'finish', '--to', base];
+  // gate_phase 'release' = UNGATED per-task merge; gating happens once at
+  // review-integration (plan §3B). Never pass 'release' to gk — its --gate-phase
+  // only accepts before|after|both.
+  if (gatePhase !== 'release') {
+    args.push('--gate', gateCommandString(project, taskId), '--gate-phase', gatePhase);
+  }
   if (cleanup) args.push('--cleanup');
   args.push('--json');
   return spawnSync(gk[0], args, {
@@ -867,6 +970,15 @@ function finishOne({ project, taskId, base, gatePhase, cleanup, cwd, agentEnv, b
     outcome = applyFinishResult(project, taskId, runGkFinishOnce(spawnArgs));
   }
   if (outcome.task_status === TASK_STATUS.COMPLETED) markTaskCompleted(project, taskId);
+
+  // Gate fail → fold the findings into the task context so the fix agent gets
+  // them without a manual orchestrator relay (plan §3G). NEEDS_FIX from other
+  // causes (dirty guard) is a no-op inside — it requires a failed gate artifact.
+  // Only a REAL worktree path gets the snapshot (never the fallback cwd).
+  if (outcome.worktree_status === WORKTREE_STATUS.NEEDS_FIX) {
+    const wtPath = run?.worktree && existsSync(run.worktree) ? run.worktree : null;
+    injectGateFindings({ project, taskId, phase: gatePhase, worktreePath: wtPath });
+  }
 
   return {
     task_id: taskId,
@@ -1134,8 +1246,23 @@ export function resumeWorktrees({ project, taskIds = null, config = WORKTREE_CON
 
 export const INTEGRATION_TASK_ID = '__integration__';
 
+// Resolve a ref's commit sha; null when unresolvable (missing branch, not a repo).
+function gitHeadOf(cwd, ref) {
+  const res = spawnSync('git', ['rev-parse', '--verify', `${ref}^{commit}`], { cwd, encoding: 'utf8' });
+  if (res.error || res.status !== 0) return null;
+  return (res.stdout || '').trim() || null;
+}
+
+// Sidecar recording WHAT the integration review judged (target head sha) so
+// `worktrees status` can tell a pass from a stale pass after develop moved
+// (plan §3B release guard, v1 = visibility).
+export function integrationStatePath(project) {
+  return join(worktreeRunDir(project, INTEGRATION_TASK_ID), 'integration-state.json');
+}
+
 export function reviewIntegration({ project, base = 'main', target = 'develop', cwd = process.cwd(), maxPatchBytes = null } = {}) {
   if (!project) throw new Error('reviewIntegration: project is required');
+  const targetHead = gitHeadOf(cwd, target);
   const res = spawnSync('git', ['diff', '--binary', `${base}...${target}`], {
     cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024,
   });
@@ -1155,8 +1282,17 @@ export function reviewIntegration({ project, base = 'main', target = 'develop', 
 
   const gate = runGatePanel({ project, taskId: INTEGRATION_TASK_ID, phase: 'release', patch: patchPath, cwd });
 
+  writeJSON(integrationStatePath(project), {
+    base, target, target_head: targetHead,
+    patch_bytes: patchBytes,
+    decision: gate.result.decision,
+    exit_code: gate.exitCode,
+    artifact_path: gate.artifactPath,
+    evaluated_at: new Date().toISOString(),
+  });
+
   return {
-    project, base, target,
+    project, base, target, target_head: targetHead,
     patch_path: patchPath,
     patch_bytes: patchBytes,
     empty: patchBytes === 0,
@@ -1165,6 +1301,27 @@ export function reviewIntegration({ project, base = 'main', target = 'develop', 
     exit_code: gate.exitCode,
     artifact_path: gate.artifactPath,
   };
+}
+
+/**
+ * Release-gate visibility for gate_phase=release projects (plan §3B, v1):
+ *   pending — no integration review has run yet
+ *   pass / fail / error — last review's decision, still current
+ *   stale   — the target branch moved since the last review (re-run required)
+ * Never throws; unresolvable git state degrades to the recorded decision.
+ */
+export function releaseGateStatus({ project, cwd = process.cwd() } = {}) {
+  const state = readJSON(integrationStatePath(project));
+  if (!state) return { state: 'pending', reason: 'no integration review recorded — run x-build review-integration' };
+  const currentHead = gitHeadOf(cwd, state.target);
+  if (state.target_head && currentHead && state.target_head !== currentHead) {
+    return {
+      state: 'stale',
+      reason: `${state.target} moved since the last review (${state.target_head.slice(0, 8)} → ${currentHead.slice(0, 8)}) — re-run x-build review-integration`,
+      last: state,
+    };
+  }
+  return { state: state.decision === 'pass' ? 'pass' : state.decision, reason: null, last: state };
 }
 
 // ── CLI: worktrees <plan|status|cleanup> ─────────────────────────────
@@ -1207,6 +1364,9 @@ function worktreesPlan(args) {
   if (json) { console.log(JSON.stringify(plan, null, 2)); return; }
 
   console.log(`\n${C.bold}🌿 worktree plan — ${project}${C.reset} ${C.dim}(base: ${plan.base}, max-parallel: ${plan.max_parallel})${C.reset}`);
+  if (plan.gate_deferred) {
+    console.log(`${C.yellow}⚠ gate deferred to release: per-task merges run UNGATED; run \`x-build review-integration\` before releasing (worktree.gate_phase=release).${C.reset}`);
+  }
   if (degraded) {
     console.log(`${C.yellow}⚠ degraded (manual-handoff): ${preflight?.gk_reason || 'gk gate unavailable'} — run the commands below by hand; xm will not drive gk.${C.reset}`);
   }
@@ -1249,8 +1409,17 @@ function worktreesStatus(args) {
       });
     }
   }
-  if (json) { console.log(JSON.stringify({ project, worktree_tasks: tasks }, null, 2)); return; }
+  // gate_phase=release → per-task merges were ungated; surface whether the
+  // one-shot integration review is pending/stale/pass (plan §3B, v1 guard).
+  const config = loadWorktreeConfig();
+  const releaseGate = config.gate_phase === 'release' ? releaseGateStatus({ project }) : null;
+
+  if (json) { console.log(JSON.stringify({ project, worktree_tasks: tasks, release_gate: releaseGate }, null, 2)); return; }
   console.log(`\n${C.bold}🌿 worktree status — ${project}${C.reset}`);
+  if (releaseGate) {
+    const rgColor = releaseGate.state === 'pass' ? C.green : releaseGate.state === 'pending' || releaseGate.state === 'stale' ? C.yellow : C.red;
+    console.log(`  release gate: ${rgColor}${releaseGate.state}${C.reset}${releaseGate.reason ? ` ${C.dim}— ${releaseGate.reason}${C.reset}` : ''}`);
+  }
   if (!tasks.length) { console.log(`  ${C.dim}no worktree runs recorded.${C.reset}\n`); return; }
   for (const t of tasks) {
     console.log(`  ${C.cyan}${t.task_id}${C.reset} ${t.worktree_status} ${C.dim}(${t.task_status})${C.reset} ${t.branch || ''}`);

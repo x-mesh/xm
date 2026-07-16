@@ -24,7 +24,7 @@ import {
 import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, supportsResume, proseOutsideJSON, groundCapable } from './x-panel/adapters.mjs';
 import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize, normalizeResponses, followupDelta } from './x-panel/synth.mjs';
-import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from './x-panel/gate.mjs';
+import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, GATE_PHASES, DEFAULT_POLICY } from './x-panel/gate.mjs';
 import { appendPanelHistory, readPanelHistory, aggregatePanelStats } from './x-panel/history.mjs';
 import { createTmEventsPublisher, subscribeXkRun } from './x-panel/tm-events.mjs';
 import { readEventsLog, formatEventLine, maxSeq } from './x-panel/events-log.mjs';
@@ -142,6 +142,7 @@ function parseFlags(raw) {
     '--review-prompt-file': 'reviewPromptFile', '--review-prompt': 'reviewPrompt',
     '--lens-tag': 'lensTag', '--prompt-file': 'promptFile', '--prompt': 'prompt',
     '--check': 'check', '--source': 'source', '--title': 'title', '--policy': 'policy',
+    '--phase': 'phase',
   };
   for (let i = 0; i < raw.length; i++) {
     const a = raw[i];
@@ -159,6 +160,7 @@ function parseFlags(raw) {
     else if (a === '--preset') flags.preset = raw[++i];
     else if (a === '--check') flags.check = raw[++i];
     else if (a === '--policy') flags.policy = raw[++i];
+    else if (a === '--phase') flags.phase = raw[++i];
     else if (a === '--roi') flags.roi = true;
     else if (a === '--grounded') flags.grounded = true;
     else if (a === '--no-grounded') flags.grounded = false;
@@ -1696,15 +1698,18 @@ Commands:
                                 --source tags the calling workflow (e.g. op:debate, build:consensus,
                                 solver:hypothesize, eval:judge) and --title names the run; both
                                 surface in the dashboard panel list so runs are identifiable.
-  gate <run> [--policy '<json>'] [--json]
+  gate <run> [--policy '<json>'] [--phase <before|after|release>] [--json]
                                 Turn a finished run's verdict.json into a merge-gate EXIT CODE
                                 (0 pass / 1 policy block / 2 error) — for CI and non-worktree users
                                 (a panel --json run always exits 0, even with blocking findings).
                                 Run a panel first (xm panel review <target>), then gate it by run id.
-                                Policy defaults: block confirmed critical/high/medium, unreviewed
-                                critical/high, contested critical, allow_low. --policy overrides per
-                                bucket, e.g. '{"block_confirmed":["critical","high"]}'. Writes an
-                                auditable gate-result.json next to the run.
+                                Policy defaults: block confirmed critical/high (release phase overlay
+                                re-adds medium), unreviewed critical/high, contested critical,
+                                allow_low. Non-blocked confirmed findings surface as advisory.
+                                --policy overrides per bucket and may carry phase overlays, e.g.
+                                '{"block_confirmed":["critical"],"release":{"block_confirmed":["critical","high","medium"]}}';
+                                --phase applies the matching overlay. Writes an auditable
+                                gate-result.json next to the run.
   stats [--roi] [--json]        Aggregate the cross-run disagreement ledger
                                 (.xm/panel/history.jsonl — one row per model per run,
                                 appended on every review) into per-vendor survival rate
@@ -2560,16 +2565,24 @@ function cmdStats(pos, flags) {
   console.log(`\n  ${C.dim}survival = confirmed / raised. cost 'unknown' until usage capture lands (never counted as $0).${C.reset}\n`);
 }
 
-// `xm panel gate <run> [--policy '<json>'] [--json]` — turn a finished run's
-// verdict.json into a merge-gate exit code (0 pass / 1 policy block / 2 error) for
-// CI and non-worktree users. Persists gate-result.json next to the run so the
-// decision is auditable (L6). Policy defaults come from gate.mjs; --policy overrides
-// per bucket (e.g. '{"block_confirmed":["critical","high"]}').
+// `xm panel gate <run> [--policy '<json>'] [--phase <before|after|release>] [--json]`
+// — turn a finished run's verdict.json into a merge-gate exit code (0 pass / 1 policy
+// block / 2 error) for CI and non-worktree users. Persists gate-result.json next to
+// the run so the decision is auditable (L6). Policy defaults come from gate.mjs;
+// --policy overrides per bucket (e.g. '{"block_confirmed":["critical","high"]}') and
+// may carry phase overlays; --phase applies the matching overlay (no --phase = flat
+// base — note the default releases medium from blocking; see DEFAULT_POLICY).
 function cmdGate(pos, flags) {
   const runArg = pos[0];
   if (!runArg) {
-    console.error(`${C.red}✗ usage: xm panel gate <run-id> [--policy '<json>'] [--json]${C.reset}`);
+    console.error(`${C.red}✗ usage: xm panel gate <run-id> [--policy '<json>'] [--phase <${GATE_PHASES.join('|')}>] [--json]${C.reset}`);
     console.error(`  Run a panel first (xm panel review <target>), then gate its verdict by run id.`);
+    process.exitCode = 2;
+    return;
+  }
+  const phase = typeof flags.phase === 'string' ? flags.phase : null;
+  if (phase !== null && !GATE_PHASES.includes(phase)) {
+    console.error(`${C.red}✗ --phase must be one of ${GATE_PHASES.join('|')} (got "${phase}")${C.reset}`);
     process.exitCode = 2;
     return;
   }
@@ -2595,21 +2608,23 @@ function cmdGate(pos, flags) {
       return;
     }
   }
-  // mergePolicy validates the bucket shapes and throws — map that to a controlled
-  // gate error (exit 2) instead of an unhandled TypeError crash (F6).
+  // mergePolicy validates the bucket shapes (flat + phase overlays) and throws —
+  // map that to a controlled gate error (exit 2) instead of an unhandled TypeError
+  // crash (F6). resolvePolicyForPhase flattens the overlay for the chosen phase.
   let policy;
   try {
-    policy = mergePolicy(override);
+    policy = resolvePolicyForPhase(mergePolicy(override), phase);
   } catch (e) {
     console.error(`${C.red}✗ --policy: ${e.message}${C.reset}`);
     process.exitCode = 2;
     return;
   }
-  const { decision, blocking } = evaluateVerdict(verdict, policy);
+  const { decision, blocking, advisory } = evaluateVerdict(verdict, policy);
   const exitCode = decision === 'fail' ? 1 : 0;
   const result = {
     run: runArg, kind: r.kind, decision, exit_code: exitCode,
-    policy, blocking_findings: blocking, counts: verdict.counts || null,
+    policy, policy_phase: phase, blocking_findings: blocking, advisory_findings: advisory,
+    counts: verdict.counts || null,
     evaluated_at: new Date().toISOString(),
   };
   try { writeJSON(join(r.dir, 'gate-result.json'), result); }
@@ -2619,8 +2634,9 @@ function cmdGate(pos, flags) {
     console.log(JSON.stringify(result, null, 2));
   } else {
     const head = decision === 'pass' ? `${C.green}✓ gate pass${C.reset}` : `${C.red}✗ gate fail${C.reset}`;
-    console.log(`${head} ${C.dim}(${runArg})${C.reset} — ${blocking.length} blocking finding(s)`);
+    console.log(`${head} ${C.dim}(${runArg}${phase ? `, phase ${phase}` : ''})${C.reset} — ${blocking.length} blocking finding(s)`);
     for (const b of blocking) console.log(`  ${C.red}✗${C.reset} [${b.kind}/${b.severity}] ${b.file || '?'}:${b.line ?? '?'} ${C.dim}${b.claim || ''}${C.reset}`);
+    for (const a of advisory) console.log(`  ${C.yellow}◦${C.reset} advisory [${a.severity}] ${a.file || '?'}:${a.line ?? '?'} ${C.dim}${a.claim || ''}${C.reset}`);
     console.log(`${C.dim}  policy: confirmed=[${policy.block_confirmed.join(',')}] unreviewed=[${policy.block_unreviewed.join(',')}] contested=[${policy.block_contested.join(',')}] allow_low=${policy.allow_low}${C.reset}`);
   }
   process.exitCode = exitCode;

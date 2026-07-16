@@ -1350,12 +1350,17 @@ async function categoryGates(rl, session) {
 // through its own submenu (per-key severity lists), so it is excluded here.
 const WORKTREE_SCALAR_KEYS = [
   'enabled', 'base', 'branch_prefix', 'max_parallel', 'gate', 'gate_phase',
+  'gate_max_rounds', 'pre_gate',
   'preflight', 'cleanup', 'gate_lock_backoff_ms', 'review_integration_max_bytes',
 ];
 
-// gate_phase's config-schema enum is stale (before/after only). The RUNTIME
-// consumer — gate-panel.mjs VALID_PHASES — also accepts 'release', so the wizard
-// offers all three and validates against this list, not the schema enum.
+// gate_policy's menu number always follows the scalar list — hardcoding it caused
+// a silent collision risk whenever a scalar key was added.
+const GATE_POLICY_MENU_KEY = String(WORKTREE_SCALAR_KEYS.length + 1);
+
+// Mirrors gate-panel.mjs VALID_PHASES (the runtime source of truth). The schema
+// enum now lists all three as well; the wizard keeps validating against this
+// list so a schema drift can never silently narrow the offered phases.
 const WORKTREE_GATE_PHASES = ['before', 'after', 'release'];
 
 const GATE_POLICY_SEVERITY_KEYS = ['block_confirmed', 'block_unreviewed', 'block_contested'];
@@ -1723,12 +1728,12 @@ async function categoryWorktree(rl, session) {
       title: t('cat.worktree.title'),
       options: [
         ...WORKTREE_SCALAR_KEYS.map((k, i) => ({ key: String(i + 1), label: k })),
-        { key: '11', label: 'gate_policy', hint: t('worktree.gate_policy_hint') },
+        { key: GATE_POLICY_MENU_KEY, label: 'gate_policy', hint: t('worktree.gate_policy_hint') },
         { key: '0', label: t('common.back') },
       ],
     });
     if (ch === '0' || ch === '') return;
-    if (ch === '11') { await editGatePolicy(rl, session, ctx); continue; }
+    if (ch === GATE_POLICY_MENU_KEY) { await editGatePolicy(rl, session, ctx); continue; }
     const idx = Number(ch);
     if (Number.isInteger(idx) && idx >= 1 && idx <= WORKTREE_SCALAR_KEYS.length) {
       const key = WORKTREE_SCALAR_KEYS[idx - 1];
@@ -1736,7 +1741,7 @@ async function categoryWorktree(rl, session) {
       if (r.cancelled) { console.log(`  ${C.dim}${t('common.no_change')}${C.reset}`); continue; }
       await saveWorktreeKey(rl, session, ctx, key, r.value);
     } else {
-      console.log(`  ${C.dim}${t('common.enter_range', '0-11')}${C.reset}`);
+      console.log(`  ${C.dim}${t('common.enter_range', `0-${GATE_POLICY_MENU_KEY}`)}${C.reset}`);
     }
   }
 }

@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus, normalizeResponses, followupDelta } from '../x-panel/lib/x-panel/synth.mjs';
-import { mergePolicy, evaluateVerdict, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
+import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
 import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
 import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings, stripAnsi } from '../x-panel/lib/x-panel/adapters.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
@@ -232,6 +232,23 @@ describe('panel gate — verdict evaluation (pure)', () => {
     expect(evaluateVerdict(v, mergePolicy()).decision).toBe('fail');
     expect(evaluateVerdict(v, mergePolicy({ block_confirmed: ['critical'] })).decision).toBe('pass');
   });
+
+  test('phase overlays: default blocks medium only at release; non-blocked confirmed → advisory', () => {
+    const v = { confirmed: [{ severity: 'medium', file: 'a', line: 1, claim: 'race' }], contested: [], unreviewed: [] };
+    const flat = resolvePolicyForPhase(mergePolicy(), null);
+    const flatR = evaluateVerdict(v, flat);
+    expect(flatR.decision).toBe('pass');
+    expect(flatR.advisory).toHaveLength(1); // never silently dropped
+    const release = resolvePolicyForPhase(mergePolicy(), 'release');
+    expect(evaluateVerdict(v, release).decision).toBe('fail');
+  });
+
+  test('overlay validation: unknown overlay key / severity typo inside an overlay throws', () => {
+    expect(() => mergePolicy({ release: { block_confirmd: ['critical'] } })).toThrow(/overlay key/);
+    expect(() => mergePolicy({ release: { block_confirmed: ['critcal'] } })).toThrow(/unknown severity/);
+    expect(() => mergePolicy({ release: 'strict' })).toThrow(/partial policy object/);
+    expect(() => resolvePolicyForPhase(mergePolicy(), 'launch')).toThrow(/unknown gate phase/);
+  });
 });
 
 describe('panel gate — CLI', () => {
@@ -263,6 +280,17 @@ describe('panel gate — CLI', () => {
     seedRun('gate-relax', { confirmed: [{ severity: 'high', file: 'a', line: 1, claim: 'x' }], contested: [], unreviewed: [] });
     const r = panelRaw(['gate', 'gate-relax', '--policy', '{"block_confirmed":["critical"]}']);
     expect(r.status).toBe(0);
+  });
+
+  test('--phase release re-adds medium via the default overlay; no --phase passes with advisory', () => {
+    seedRun('gate-phase', { confirmed: [{ severity: 'medium', file: 'a', line: 1, claim: 'race' }], contested: [], unreviewed: [] });
+    const flat = panelRaw(['gate', 'gate-phase', '--json']);
+    expect(flat.status).toBe(0);
+    expect(JSON.parse(flat.stdout).advisory_findings).toHaveLength(1);
+    const release = panelRaw(['gate', 'gate-phase', '--phase', 'release', '--json']);
+    expect(release.status).toBe(1);
+    expect(JSON.parse(release.stdout).policy_phase).toBe('release');
+    expect(panelRaw(['gate', 'gate-phase', '--phase', 'launch']).status).toBe(2); // unknown phase → controlled error
   });
 
   test('missing run → exit 2', () => {

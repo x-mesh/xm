@@ -86,6 +86,25 @@ describe('planWorktrees — branch names + collision', () => {
     const plan = planWorktrees({ project: 'p', tasks: [{ id: 't1', name: 'Foo', expected_files: ['a'] }], config: cfg, worktreeBase: '/base' });
     expect(plan.tasks[0].worktree_hint).toBe('/base/feat/t1-foo');
   });
+
+  test("gate_phase 'release' defers gating: finish command carries NO --gate (plan §3B)", () => {
+    const plan = planWorktrees({
+      project: 'demo', tasks: [{ id: 't1', name: 'Foo', expected_files: ['a'] }],
+      config: { ...cfg, gate_phase: 'release' },
+    });
+    expect(plan.gate_deferred).toBe(true);
+    const t = plan.tasks[0];
+    expect(t.finish).toContain('--to develop');
+    // 'release' must never leak into gk (--gate-phase only accepts before|after|both)
+    expect(t.finish).not.toContain('--gate');
+    expect(t.finish).not.toContain('--gate-phase');
+  });
+
+  test("default gate_phase 'before' keeps the gate (gate_deferred=false)", () => {
+    const plan = planWorktrees({ project: 'demo', tasks: [{ id: 't1', name: 'Foo', expected_files: ['a'] }], config: cfg });
+    expect(plan.gate_deferred).toBe(false);
+    expect(plan.tasks[0].finish).toContain('--gate ');
+  });
 });
 
 // ── pure: degraded mode + ready selection ────────────────────────────
