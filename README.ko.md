@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.7.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.7.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -500,12 +500,13 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 /xm:build worktrees resume             # 완료된 워크트리를 순차로 게이트·머지
 ```
 
-- **게이트**: 워크트리 branch가 머지되기 전, 패치가 `gate-panel`(크로스 모델 `xm panel` 리뷰)을 거칩니다 — policy 심각도 이상의 `confirmed`/`unreviewed`/`contested` finding이 있으면 CLI가 죽는 게 아니라 머지가 차단됩니다(`NEEDS_FIX`).
+- **게이트**: 워크트리 branch가 머지되기 전, 패치가 `gate-panel`(크로스 모델 `xm panel` 리뷰)을 거칩니다 — policy 심각도 이상의 `confirmed`/`unreviewed`/`contested` finding이 있으면 CLI가 죽는 게 아니라 머지가 차단됩니다(`NEEDS_FIX`). 기본 per-task 정책은 **critical/high만 블로킹**하며, confirmed medium은 비블로킹 `advisory_findings`로 기록되고 릴리스 페이즈 리뷰에서 다시 블로킹됩니다(`gate_policy` 페이즈 오버레이).
+- **라운드 경제성**: 게이트 fail 시 finding이 워크트리의 `TASK-CONTEXT.md`에 자동 주입되고(수동 릴레이 불필요), 연속 패널-fail 라운드가 `gate_max_rounds`(기본 2)를 넘으면 medium이 advisory로 자동 강등되며, 선택적 `pre_gate` 명령이 비싼 패널 전에 싼 결함을 fail-fast로 걸러냅니다.
 - **직렬화**: 게이트가 도는 동안 target branch가 잠기므로 머지(`git-kit worktree finish`)는 한 번에 하나씩 직렬화됩니다 — 태스크 구현 자체는 여전히 병렬입니다.
 - **배치 선정**: `expected_files` 겹침 여부로 병렬 가능 여부를 판단하고, 모르거나 겹치는 태스크는 순차로 폴백합니다.
-- **릴리스 전 점검**: `review-integration --base main --target develop`이 누적된 전체 diff에 게이트를 다시 돌려, 개별 태스크 게이트로는 못 잡는 교차 회귀를 잡습니다.
+- **릴리스 전 점검**: `review-integration --base main --target develop`이 누적된 전체 diff에 게이트를 다시 돌려, 개별 태스크 게이트로는 못 잡는 교차 회귀를 잡습니다. `gate_phase: release`로 설정하면 per-task 머지는 게이트를 건너뛰고 이 통합 리뷰가 유일한 게이트가 됩니다(`worktrees status`가 pending/stale/pass 상태를 표시).
 
-설정은 `.xm/config.json`의 `worktree` 키(`base`, `branch_prefix`, `max_parallel`, `gate_policy`)에 있습니다. 전체 스키마는 `x-build/skills/build/references/data-model.md`, 설계는 `docs/x-build-worktree-pipeline-plan.md`를 참고하세요.
+설정은 `.xm/config.json`의 `worktree` 키(`base`, `branch_prefix`, `max_parallel`, `gate_policy`, `gate_max_rounds`, `pre_gate`)에 있습니다. 전체 스키마는 `x-build/skills/build/references/data-model.md`, 게이트 설계는 `docs/worktree-gate-optimization-plan.md`를 참고하세요.
 
 </details>
 
@@ -781,7 +782,7 @@ CHECK-IN ──→ RECALL ──→ IDENTIFY ──→ ANALYZE ──→ ALTERNA
 
 `.xm/` 프로젝트 상태를 보는 웹 대시보드. 빌드, 프로브, 솔버, **리뷰, 평가, humble 레슨**, 트레이스, 메모리, 비용을 한 화면에서 둘러봅니다. 빌드 단계 없이 그냥 띄우면 동작합니다.
 
-> **스키마 기반 Config 에디터** — Config 탭이 `config-schema` 레지스트리의 모든 키(38개)를 타입별 폼으로 렌더링합니다: enum 드롭다운, nullable boolean 3상 토글, `worktree.gate_policy` severity 그리드, 기본값 강조 + 원클릭 리셋. 3개 tier(global / project / **build-local**), CLI 위저드와 동일한 딥머지 저장 규칙(`setNestedKey` 공유), `If-Match` 낙관적 충돌 감지, 하드 위반 저장 차단(422) — 레지스트리에 키를 추가하면 UI 수정 없이 폼에 자동으로 나타납니다.
+> **스키마 기반 Config 에디터** — Config 탭이 `config-schema` 레지스트리의 모든 키(42개)를 타입별 폼으로 렌더링합니다: enum 드롭다운, nullable boolean 3상 토글, `worktree.gate_policy` severity 그리드, 기본값 강조 + 원클릭 리셋. 3개 tier(global / project / **build-local**), CLI 위저드와 동일한 딥머지 저장 규칙(`setNestedKey` 공유), `If-Match` 낙관적 충돌 감지, 하드 위반 저장 차단(422) — 레지스트리에 키를 추가하면 UI 수정 없이 폼에 자동으로 나타납니다.
 
 <p align="center">
   <img src="docs/images/dashboard.png" alt="x-dashboard" width="800" />

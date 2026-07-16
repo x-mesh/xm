@@ -695,8 +695,8 @@ describe('xm config worktree category (t5)', () => {
 
   test('gate_policy 서브키는 per-key로 저장되고 형제 severity 목록은 병합으로 유지', () => {
     withRoot((root) => {
-      // worktree(5) → gate_policy(11) → block_confirmed(1) → "1 2"(critical,high) → tier build-local(1) → 뒤로(0) → 나가기(0)
-      const w = runWizard('5\n11\n1\n1 2\n1\n0\n0\n', root);
+      // worktree(5) → gate_policy(13, 스칼라 12개 뒤) → block_confirmed(1) → "1 2"(critical,high) → tier build-local(1) → 뒤로(0) → 나가기(0)
+      const w = runWizard('5\n13\n1\n1 2\n1\n0\n0\n', root);
       expect(w.exitCode).toBe(0);
 
       // Only block_confirmed was written to disk — siblings are NOT materialized.
@@ -1244,7 +1244,8 @@ describe('config-schema eval.auto registration', () => {
 // ── WORKTREE_CONFIG_DEFAULTS <-> config-schema worktree.* sync (P7, t8) ─────
 //
 // worktree-shared.mjs (runtime truth, per PRD A5) and config-schema.mjs
-// (dashboard/CLI registry) both hand-maintain the same 11 worktree.* fields.
+// (dashboard/CLI registry) both hand-maintain the same 13 worktree.* fields
+// (11 + gate_max_rounds/pre_gate from the gate-optimization plan §3E/§3F).
 // The only defense against the two drifting apart is this field-by-field
 // comparison — see PRD Risks P7 and Acceptance Criteria item 9.
 
@@ -1253,9 +1254,9 @@ describe('WORKTREE_CONFIG_DEFAULTS <-> config-schema worktree.* sync (P7)', () =
   const schemaLeaves = new Set(worktreeEntries.map((e) => e.key.slice('worktree.'.length)));
   const runtimeLeaves = new Set(Object.keys(WORKTREE_CONFIG_DEFAULTS));
 
-  test('exactly 11 worktree.* fields on both sides (P7 field count parity)', () => {
-    expect(runtimeLeaves.size).toBe(11);
-    expect(worktreeEntries.length).toBe(11);
+  test('exactly 13 worktree.* fields on both sides (P7 field count parity)', () => {
+    expect(runtimeLeaves.size).toBe(13);
+    expect(worktreeEntries.length).toBe(13);
   });
 
   test('every WORKTREE_CONFIG_DEFAULTS key has a matching config-schema worktree.* entry', () => {

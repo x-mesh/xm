@@ -11,7 +11,10 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { mergePolicy, evaluateVerdict, resolveMainRoots } from '../../x-build/lib/x-build/gate-panel.mjs';
+import {
+  mergePolicy, evaluateVerdict, resolveMainRoots,
+  resolvePolicyForPhase, nextRound, applyRoundCap, preGateArgv,
+} from '../../x-build/lib/x-build/gate-panel.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI = join(__dirname, '..', '..', 'x-build', 'lib', 'x-build-cli.mjs');
@@ -30,6 +33,7 @@ const out = (v) => process.stdout.write(JSON.stringify(v));
 const base = { consensus: [], confirmed: [], contested: [], unreviewed: [] };
 if (mode === 'clean') { out({ run: 'fk-clean', counts: {}, ...base }); process.exit(0); }
 if (mode === 'confirmed-high') { out({ run: 'fk-ch', counts: {}, ...base, confirmed: [{ owner: 'claude', severity: 'high', file: 'src/auth.ts', line: 42, claim: 'missing authz' }] }); process.exit(0); }
+if (mode === 'confirmed-medium') { out({ run: 'fk-cm', counts: {}, ...base, confirmed: [{ owner: 'claude', severity: 'medium', file: 'src/ui.ts', line: 7, claim: 'race on retry' }] }); process.exit(0); }
 if (mode === 'contested-critical') { out({ run: 'fk-cc', counts: {}, ...base, contested: [{ owner: 'claude', severity: 'critical', file: 'src/x.ts', line: 1, claim: 'rce' }] }); process.exit(0); }
 if (mode === 'confirmed-low') { out({ run: 'fk-cl', counts: {}, ...base, confirmed: [{ owner: 'c', severity: 'low', file: 'a', line: 1, claim: 'nit' }] }); process.exit(0); }
 if (mode === 'transient-fail') { process.stderr.write('provider timeout: ETIMEDOUT reaching endpoint\\n'); process.exit(1); }
@@ -41,6 +45,8 @@ let main;       // main repo root
 let wt;         // linked worktree root
 let fakePanel;  // fake panel script path
 let patchFile;  // dummy patch
+let preFail;    // fake pre-gate: exit 1 + findings JSON
+let preErr;     // fake pre-gate: exit 2 (infra error)
 
 const PROJECT = 'demo';
 const gitq = (cwd, c) => execSync(`git ${c}`, { cwd, stdio: 'pipe', shell: '/bin/bash' });
@@ -91,6 +97,15 @@ beforeAll(() => {
   writeFileSync(fakePanel, FAKE_PANEL);
   patchFile = join(main, 'gate.patch');
   writeFileSync(patchFile, 'diff --git a/f.txt b/f.txt\n');
+
+  // Fake pre-gate scripts (plan §3F): block with structured findings / infra error.
+  preFail = join(main, 'pre-fail.mjs');
+  writeFileSync(preFail, `
+process.stdout.write(JSON.stringify({ findings: [{ severity: 'high', file: 'src/a.ts', line: 3, claim: 'unhandled rejection' }] }));
+process.exit(1);
+`);
+  preErr = join(main, 'pre-err.mjs');
+  writeFileSync(preErr, 'process.stderr.write("boom\\n"); process.exit(2);\n');
 });
 
 afterAll(() => {
@@ -142,6 +157,81 @@ describe('gate-panel policy logic (pure)', () => {
     } finally {
       if (prev === undefined) delete process.env.X_BUILD_ROOT; else process.env.X_BUILD_ROOT = prev;
     }
+  });
+});
+
+describe('gate-panel policy — phase overlays + advisory (plan §3A)', () => {
+  test('default per-task (before) policy blocks critical/high only; release overlay re-adds medium', () => {
+    const before = mergePolicy({ phase: 'before' });
+    expect(before.block_confirmed).toEqual(['critical', 'high']);
+    expect(before.release).toBeUndefined(); // resolved policy is FLAT
+    const release = mergePolicy({ phase: 'release' });
+    expect(release.block_confirmed).toEqual(['critical', 'high', 'medium']);
+  });
+
+  test('confirmed medium at before → pass with advisory (never silently dropped)', () => {
+    const policy = mergePolicy({ phase: 'before' });
+    const r = evaluateVerdict({ confirmed: [{ severity: 'medium', file: 'a', line: 1, claim: 'race' }], contested: [], unreviewed: [] }, policy);
+    expect(r.decision).toBe('pass');
+    expect(r.advisory).toHaveLength(1);
+    expect(r.advisory[0].severity).toBe('medium');
+  });
+
+  test('confirmed medium at release → fail (deferred, not dropped)', () => {
+    const policy = mergePolicy({ phase: 'release' });
+    const r = evaluateVerdict({ confirmed: [{ severity: 'medium', file: 'a', line: 1, claim: 'race' }], contested: [], unreviewed: [] }, policy);
+    expect(r.decision).toBe('fail');
+  });
+
+  test('config/task overlays override the default overlay wholesale (per-key)', () => {
+    const p = mergePolicy({
+      config: { worktree: { gate_policy: { release: { block_confirmed: ['critical'] } } } },
+      phase: 'release',
+    });
+    expect(p.block_confirmed).toEqual(['critical']);
+  });
+
+  test('resolvePolicyForPhase strips overlay keys and applies the matching one', () => {
+    const merged = mergePolicy({});
+    const flat = resolvePolicyForPhase(merged, 'after');
+    expect(Object.keys(flat).sort()).toEqual(['allow_low', 'block_confirmed', 'block_contested', 'block_unreviewed'].sort());
+    expect(flat.block_confirmed).toEqual(['critical', 'high']); // 'after' has no default overlay
+  });
+});
+
+describe('gate-panel rounds + cap (plan §3E, pure)', () => {
+  test('nextRound: no artifact → 1; prior pass → 1 (base-drift re-gate resets)', () => {
+    expect(nextRound(null)).toBe(1);
+    expect(nextRound({ decision: 'pass', panel_run: 'r1', round: 3 })).toBe(1);
+  });
+
+  test('nextRound: panel fail increments; pre-gate fail (panel_run null) holds', () => {
+    expect(nextRound({ decision: 'fail', panel_run: 'r1', round: 1 })).toBe(2);
+    expect(nextRound({ decision: 'fail', panel_run: null, round: 2 })).toBe(2);
+  });
+
+  test('applyRoundCap demotes medium past the cap; critical/high never demote', () => {
+    const policy = { block_confirmed: ['critical', 'high', 'medium'], block_unreviewed: ['critical', 'high'], block_contested: ['critical'], allow_low: true };
+    const under = applyRoundCap(policy, 2, 2);
+    expect(under.demotions).toHaveLength(0);
+    expect(under.policy.block_confirmed).toContain('medium');
+    const over = applyRoundCap(policy, 3, 2);
+    expect(over.demotions).toHaveLength(1);
+    expect(over.policy.block_confirmed).toEqual(['critical', 'high']);
+    expect(over.policy.block_unreviewed).toEqual(['critical', 'high']); // untouched — no medium there
+  });
+
+  test('applyRoundCap: max 0 disables the cap', () => {
+    const policy = { block_confirmed: ['medium'], block_unreviewed: [], block_contested: [], allow_low: true };
+    expect(applyRoundCap(policy, 99, 0).demotions).toHaveLength(0);
+  });
+});
+
+describe('pre-gate argv (plan §3F, pure)', () => {
+  test('{patch} token substitutes; missing token appends the patch path', () => {
+    expect(preGateArgv('xm review --quick {patch}', '/p/x.diff')).toEqual(['xm', 'review', '--quick', '/p/x.diff']);
+    expect(preGateArgv('node check.mjs', '/p/x.diff')).toEqual(['node', 'check.mjs', '/p/x.diff']);
+    expect(preGateArgv('   ', '/p/x.diff')).toBeNull();
   });
 });
 
@@ -223,5 +313,84 @@ describe('gate-panel CLI (integration, fake panel)', () => {
     expect(r.parsed.decision).toBe('pass');
     expect(r.parsed.policy_overridden).toBe(true);
     expect(r.parsed.policy.block_confirmed).toEqual(['critical']);
+  });
+});
+
+describe('gate-panel CLI — advisory, rounds, cap, pre-gate (integration, fake panel)', () => {
+  const buildCfgPath = () => join(main, '.xm', 'build', 'config.json');
+  const writeCfg = (worktree) => writeFileSync(buildCfgPath(), JSON.stringify({ worktree }));
+  const clearCfg = () => { try { rmSync(buildCfgPath()); } catch { /* absent is fine */ } };
+
+  test('confirmed medium → pass with advisory under the default per-task policy (§3A)', () => {
+    const r = runGate({ mode: 'confirmed-medium', task: 'adv' });
+    expect(r.status).toBe(0);
+    expect(r.parsed.decision).toBe('pass');
+    expect(r.parsed.advisory_findings).toHaveLength(1);
+    expect(r.parsed.advisory_findings[0].severity).toBe('medium');
+  });
+
+  test('confirmed medium at release phase → exit 1 (default overlay re-adds medium)', () => {
+    const r = runGate({ mode: 'confirmed-medium', task: 'rel', phase: 'release' });
+    expect(r.status).toBe(1);
+    expect(r.parsed.decision).toBe('fail');
+    expect(r.parsed.policy.block_confirmed).toEqual(['critical', 'high', 'medium']);
+  });
+
+  test('rounds: consecutive panel fails increment round and preserve the prior artifact (§3E)', () => {
+    const r1 = runGate({ mode: 'confirmed-high', task: 'rnd' });
+    expect(r1.status).toBe(1);
+    expect(r1.parsed.round).toBe(1);
+    const r2 = runGate({ mode: 'confirmed-high', task: 'rnd' });
+    expect(r2.parsed.round).toBe(2);
+    const attempt1 = join(main, '.xm', 'build', 'projects', PROJECT, 'worktrees', 'rnd', 'panel-before.attempt-1.json');
+    expect(existsSync(attempt1)).toBe(true);
+    expect(JSON.parse(readFileSync(attempt1, 'utf8')).round).toBe(1);
+  });
+
+  test('rounds: a pass resets the counter (base-drift re-gate is not a fix round)', () => {
+    const f = runGate({ mode: 'confirmed-high', task: 'rst' });
+    expect(f.parsed.round).toBe(1);
+    const p = runGate({ mode: 'clean', task: 'rst' });
+    expect(p.parsed.round).toBe(2);      // the fix attempt that passed IS round 2
+    const again = runGate({ mode: 'clean', task: 'rst' });
+    expect(again.parsed.round).toBe(1);  // after a pass, a re-gate starts fresh
+  });
+
+  test('round cap: past gate_max_rounds a blocking medium demotes to advisory (§3E)', () => {
+    writeCfg({ gate_policy: { block_confirmed: ['critical', 'high', 'medium'] }, gate_max_rounds: 1 });
+    try {
+      const r1 = runGate({ mode: 'confirmed-medium', task: 'cap' });
+      expect(r1.status).toBe(1); // round 1: config re-adds medium → blocks
+      const r2 = runGate({ mode: 'confirmed-medium', task: 'cap' });
+      expect(r2.status).toBe(0); // round 2 > cap 1 → demoted
+      expect(r2.parsed.demotions).toHaveLength(1);
+      expect(r2.parsed.demotions[0]).toMatchObject({ severity: 'medium', reason: 'round_cap' });
+      expect(r2.parsed.advisory_findings).toHaveLength(1); // demoted ≠ dropped
+    } finally { clearCfg(); }
+  });
+
+  test('pre-gate exit 1 → fail-fast: the panel never runs, findings adopted (§3F)', () => {
+    writeCfg({ pre_gate: `node ${preFail} {patch}` });
+    try {
+      const counter = join(main, 'pg-count.txt');
+      const r = runGate({ mode: 'clean', task: 'pgf', counter });
+      expect(r.status).toBe(1);
+      expect(r.parsed.decision).toBe('fail');
+      expect(r.parsed.pre_gate.status).toBe('fail');
+      expect(r.parsed.blocking_findings).toHaveLength(1);
+      expect(r.parsed.blocking_findings[0].kind).toBe('pre_gate');
+      expect(existsSync(counter)).toBe(false); // fake panel was never invoked
+    } finally { clearCfg(); }
+  });
+
+  test('pre-gate exit 2 (infra error) → loud warn, panel proceeds (§3F)', () => {
+    writeCfg({ pre_gate: `node ${preErr}` });
+    try {
+      const r = runGate({ mode: 'clean', task: 'pge' });
+      expect(r.status).toBe(0);
+      expect(r.parsed.decision).toBe('pass');
+      expect(r.parsed.pre_gate.status).toBe('error');
+      expect(r.stderr).toContain('pre-gate');
+    } finally { clearCfg(); }
   });
 });

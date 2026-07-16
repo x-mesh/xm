@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.7.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.7.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -500,12 +500,13 @@ For projects with ≥2 tasks that touch disjoint files (declared via `tasks add 
 /xm:build worktrees resume             # gate + merge every finished worktree, serialized
 ```
 
-- **Gate**: before a worktree's branch merges, its patch runs through `gate-panel`, a cross-model (`xm panel`) review — `confirmed`/`unreviewed`/`contested` findings above policy severity block the merge (`NEEDS_FIX`), not just crash the CLI.
+- **Gate**: before a worktree's branch merges, its patch runs through `gate-panel`, a cross-model (`xm panel`) review — `confirmed`/`unreviewed`/`contested` findings above policy severity block the merge (`NEEDS_FIX`), not just crash the CLI. The default per-task policy blocks **critical/high only**; confirmed medium findings surface as non-blocking `advisory_findings` and are re-blocked at the release-phase review (`gate_policy` phase overlays).
+- **Round economics**: a gate fail feeds its findings straight into the worktree's `TASK-CONTEXT.md` (no manual relay), consecutive panel-fail rounds past `gate_max_rounds` (default 2) auto-demote medium to advisory, and an optional `pre_gate` command fail-fasts cheap defects before the expensive panel runs.
 - **Serialization**: merges are serialized (one `git-kit worktree finish` at a time) since the target branch is locked during a gate run; task implementation itself still runs in parallel.
 - **Batch selection**: `expected_files` overlap decides what can run in parallel; tasks with unknown or overlapping file sets fall back to sequential.
-- **Release-time check**: `review-integration --base main --target develop` re-runs the gate against the full accumulated diff before a release, catching cross-task regressions no single-task gate would see.
+- **Release-time check**: `review-integration --base main --target develop` re-runs the gate against the full accumulated diff before a release, catching cross-task regressions no single-task gate would see. With `gate_phase: release`, per-task merges skip the gate entirely and this integration review becomes the single gate (`worktrees status` shows its pending/stale/pass state).
 
-Config lives under `.xm/config.json`'s `worktree` key (`base`, `branch_prefix`, `max_parallel`, `gate_policy`); see `x-build/skills/build/references/data-model.md` for the full schema and `docs/x-build-worktree-pipeline-plan.md` for the design.
+Config lives under `.xm/config.json`'s `worktree` key (`base`, `branch_prefix`, `max_parallel`, `gate_policy`, `gate_max_rounds`, `pre_gate`); see `x-build/skills/build/references/data-model.md` for the full schema and `docs/worktree-gate-optimization-plan.md` for the gate design.
 
 </details>
 
@@ -782,7 +783,7 @@ CHECK-IN ──→ RECALL ──→ IDENTIFY ──→ ANALYZE ──→ ALTERNA
 
 Web dashboard for `.xm/` project state. Browse builds, probes, solvers, **reviews, evals, humble lessons**, traces, memory, and costs in one view. No build chain to set up.
 
-> **Schema-driven Config editor** — the Config tab renders every key in the `config-schema` registry (38 entries) as a typed form: enum dropdowns, tri-state toggles for nullable booleans, a severity grid for `worktree.gate_policy`, defaults highlighted with one-click reset. Three tiers (global / project / **build-local**), the same deep-merge write semantics as the CLI wizard (`setNestedKey` shared), optimistic `If-Match` conflict detection, and hard-violation blocking (422) — add a key to the registry and it appears in the form with zero UI changes.
+> **Schema-driven Config editor** — the Config tab renders every key in the `config-schema` registry (42 entries) as a typed form: enum dropdowns, tri-state toggles for nullable booleans, a severity grid for `worktree.gate_policy`, defaults highlighted with one-click reset. Three tiers (global / project / **build-local**), the same deep-merge write semantics as the CLI wizard (`setNestedKey` shared), optimistic `If-Match` conflict detection, and hard-violation blocking (422) — add a key to the registry and it appears in the form with zero UI changes.
 
 <p align="center">
   <img src="docs/images/dashboard.png" alt="x-dashboard" width="800" />

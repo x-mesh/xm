@@ -67,7 +67,7 @@ Single writer: the orchestrator. Worktree agents never write it. `worktree_statu
 
 The reserved `__integration__` task id holds release-time `main...develop` batch review artifacts (`patch-release.diff` + panel verdict).
 
-Worktree `worktree.*` config resolves: CLI flag > `.xm/build/config.json` > `.xm/config.json` > defaults; `gate_policy` merges per-key across layers.
+Worktree `worktree.*` config resolves: CLI flag > `.xm/build/config.json` > `.xm/config.json` > defaults; `gate_policy` merges per-key across layers. `gate_policy` supports phase overlays (`before`/`after`/`release` partial policies over the flat base; default blocks critical/high per-task and re-adds medium at release — non-blocked confirmed findings surface as `advisory_findings`). Related keys: `gate_max_rounds` (consecutive panel-fail rounds before medium auto-demotes to advisory; 0 = no cap), `pre_gate` (cheap command template run before the panel; `{patch}` substituted; exit 1 = fail-fast block), `gate_phase: release` (per-task merges run UNGATED; `review-integration` is the single gate — `worktrees status` shows pending/stale/pass).
 
 ## Task Schema (`tasks.json`)
 
