@@ -32,17 +32,23 @@ export function normalizeKiroModel(model) {
   return value.replace(/^claude-(opus|sonnet|haiku)-(\d+)-(\d+)(.*)$/i, 'claude-$1-$2.$3$4');
 }
 
-// Reasoning-effort levels codex accepts via `-c model_reasoning_effort=<level>`.
-// Kept in lockstep with x-build/cost-engine.mjs MODEL_EFFORT_LEVELS — DO NOT import
-// that module: adapters.mjs is a zero-import leaf (node builtins only), and an
-// x-panel→x-build edge would invert the plugin dependency AND dies under the
-// versioned plugin-cache layout (see x-memory cache-crash lesson). Mirror, never couple.
+// Reasoning-effort levels each vendor's CLI accepts. codex maps them to
+// `-c model_reasoning_effort=<level>`; kiro maps them to `--effort <level>`. The two
+// sets DIFFER (kiro adds `max` and drops `minimal`) — each is kept in lockstep with
+// its own CLI's `--help`. codex's set also mirrors x-build/cost-engine.mjs
+// MODEL_EFFORT_LEVELS — DO NOT import that module: adapters.mjs is a zero-import leaf
+// (node builtins only), and an x-panel→x-build edge would invert the plugin dependency
+// AND dies under the versioned plugin-cache layout (see x-memory cache-crash lesson).
+// Mirror, never couple.
 const CODEX_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+const KIRO_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
- * Split a codex `"model[:effort]"` spec into { model, effort, warning }.
- * Local re-implementation of cost-engine.parseModelSpec (see the note above on why
- * it is copied, not imported). Rules mirror it exactly:
+ * Split a `"model[:effort]"` spec into { model, effort, warning }, validating the
+ * effort against `levels`. `label` names the vendor in warning text. Shared by codex
+ * and kiro — same grammar, different effort sets + target flag. Local re-implementation
+ * of cost-engine.parseModelSpec (see the note above on why it is copied, not imported).
+ * Rules mirror it exactly:
  *  - falsy / empty / non-string spec → no model requested (CLI default), NOT an error.
  *  - no colon → the whole string is the model.
  *  - multiple colons ("a:b:c") → split at the LAST colon; only the final segment is
@@ -50,7 +56,7 @@ const CODEX_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'];
  *  - trailing ':' or an unknown effort (typo) → drop the effort, keep the model, and
  *    return a warning (FM2: never swallow the signal — the caller surfaces it).
  */
-function parseCodexSpec(spec) {
+function parseModelEffortSpec(spec, levels, label) {
   if (typeof spec !== 'string' || spec.trim() === '') {
     return { model: null, effort: null, warning: null }; // no model → CLI default, not a user error
   }
@@ -59,10 +65,10 @@ function parseCodexSpec(spec) {
   if (idx === -1) return { model: trimmed, effort: null, warning: null };
   const model = trimmed.slice(0, idx);
   const effortCandidate = trimmed.slice(idx + 1);
-  if (model === '') return { model: null, effort: null, warning: `codex: empty model in spec "${trimmed}"` };
-  if (effortCandidate === '') return { model, effort: null, warning: `codex: trailing ':' with no reasoning effort in "${trimmed}"` };
-  if (!CODEX_EFFORT_LEVELS.includes(effortCandidate)) {
-    return { model, effort: null, warning: `codex: unknown reasoning effort "${effortCandidate}" (expected ${CODEX_EFFORT_LEVELS.join('|')})` };
+  if (model === '') return { model: null, effort: null, warning: `${label}: empty model in spec "${trimmed}"` };
+  if (effortCandidate === '') return { model, effort: null, warning: `${label}: trailing ':' with no reasoning effort in "${trimmed}"` };
+  if (!levels.includes(effortCandidate)) {
+    return { model, effort: null, warning: `${label}: unknown reasoning effort "${effortCandidate}" (expected ${levels.join('|')})` };
   }
   return { model, effort: effortCandidate, warning: null };
 }
@@ -71,7 +77,7 @@ function parseCodexSpec(spec) {
 // (`--model <id> -c model_reasoning_effort=<effort>`), surfacing any parse warning
 // on stderr — a dropped/typo'd effort must be visible, never silent (FM2, L6).
 function codexModelArgs(spec) {
-  const { model, effort, warning } = parseCodexSpec(spec);
+  const { model, effort, warning } = parseModelEffortSpec(spec, CODEX_EFFORT_LEVELS, 'codex');
   if (warning) process.stderr.write(`[x-panel] ${warning}\n`);
   return [
     ...(model ? ['--model', model] : []),
@@ -139,7 +145,13 @@ const BUILTIN = {
   ]], // Antigravity CLI (formerly gemini)
   cursor: (prompt, model) => ['cursor-agent', ['-p', '-f', ...(model ? ['--model', model] : []), prompt]], // -f bypasses workspace-trust
   kiro: (prompt, model) => {
-    const m = normalizeKiroModel(model);
+    // "model[:effort]" → --model <id> + --effort <lvl>. kiro-cli's `chat --effort`
+    // accepts low|medium|high|xhigh|max (KIRO_EFFORT_LEVELS); a dropped/typo'd effort
+    // warns on stderr (FM2, L6) but never blocks the model. Parse BEFORE normalizing so
+    // the effort segment is stripped off the model id first.
+    const { model: spec, effort, warning } = parseModelEffortSpec(model, KIRO_EFFORT_LEVELS, 'kiro');
+    if (warning) process.stderr.write(`[x-panel] ${warning}\n`);
+    const m = normalizeKiroModel(spec);
     // --trust-tools= (empty) = trust NO tools, so a review prompt can't make kiro run
     // tools / hang waiting for approval under --no-interactive. (Harmless stderr warning.)
     // --agent <no-MCP agent>: kiro otherwise loads the global ~/.kiro/settings/mcp.json,
@@ -153,7 +165,9 @@ const BUILTIN = {
     const agent = prompt === '' ? null : kiroReviewAgent();
     return ['kiro-cli', ['chat', '--no-interactive', '--wrap', 'never', '--trust-tools=',
       ...(agent ? ['--agent', agent] : []),
-      ...(m ? ['--model', m] : []), prompt]];
+      ...(m ? ['--model', m] : []),
+      ...(effort ? ['--effort', effort] : []),
+      prompt]];
   },
 };
 

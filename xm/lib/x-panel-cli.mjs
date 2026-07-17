@@ -21,7 +21,7 @@ import {
   PANEL_DIR, XM_ROOT, C, provColor, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
-import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, supportsResume, proseOutsideJSON, groundCapable } from './x-panel/adapters.mjs';
+import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, parseModelIds, supportsResume, proseOutsideJSON, groundCapable } from './x-panel/adapters.mjs';
 import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize, synthesizeRound1, normalizeResponses, followupDelta } from './x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, GATE_PHASES, DEFAULT_POLICY } from './x-panel/gate.mjs';
@@ -1437,15 +1437,79 @@ function cmdTypes() {
   console.log(`Full live catalog for a vendor: ${C.bold}xm panel models <vendor>${C.reset} (e.g. cursor → kimi, glm, grok).`);
 }
 
-// `xm panel models [vendor] [--check m1,m2]` — print a vendor's REAL model catalog
-// fetched live from its own --list-models (never hardcoded → always current, so cursor's
-// kimi-k2.5 shows up). With --check, verify specific model IDs exist in that catalog —
-// the way to confirm a config / --models entry is valid before a run uses it.
+// Provider picker for a bare `xm panel models` (no vendor, no --check, no --all). Lists
+// every known provider with install + auth status (doctor-grade — NO live --list-models
+// fan-out, which is what made the old all-dump slow) so the user, or the panel SKILL's
+// AskUserQuestion picker, can choose ONE and re-run `xm panel models <vendor>` for its
+// live catalog. `--json` emits the same rows structured. Only agy/cursor/kiro expose a
+// live catalog (listCmd); claude/codex ship fixed IDs and are flagged as such.
+function cmdModelsMenu(flags) {
+  const meta = providerMeta();
+  const rows = knownProviders().map((name) => {
+    const a = checkAuth(name);
+    return {
+      name,
+      vendor: meta[name]?.vendor || '',
+      installed: a.installed,
+      authed: a.authed,
+      ready: providerReady(a),
+      hasCatalog: !!meta[name]?.listCmd,
+      listHint: meta[name]?.list || null,
+      detail: a.detail,
+    };
+  });
+  if (flags.json) { console.log(JSON.stringify({ providers: rows }, null, 2)); return; }
+  console.log(`${C.bold}x-panel models${C.reset} — pick a provider, then run ${C.bold}xm panel models <vendor>${C.reset}\n`);
+  for (const r of rows) {
+    let icon, label;
+    if (!r.installed) { icon = `${C.dim}○${C.reset}`; label = `${C.dim}not installed${C.reset}`; }
+    else if (r.authed === true) { icon = `${C.green}●${C.reset}`; label = `${C.green}ready${C.reset}`; }
+    else if (r.authed === false) { icon = `${C.red}●${C.reset}`; label = `${C.red}not authenticated${C.reset}`; }
+    else if (r.ready) { icon = `${C.cyan}●${C.reset}`; label = `${C.cyan}likely ready${C.reset}`; }
+    else { icon = `${C.yellow}●${C.reset}`; label = `${C.yellow}auth unknown${C.reset}`; }
+    const tail = r.hasCatalog ? '' : `  ${C.dim}· fixed IDs${C.reset}`;
+    console.log(`  ${icon} ${C.bold}${r.name.padEnd(7)}${C.reset} ${label}  ${C.dim}${r.vendor}${C.reset}${tail}`);
+  }
+  const catalogged = rows.filter((r) => r.hasCatalog).map((r) => r.name).join(' · ');
+  console.log(`\n${C.dim}live catalog →${C.reset} ${C.bold}xm panel models <vendor>${C.reset} ${C.dim}(${catalogged})${C.reset}`);
+  console.log(`${C.dim}full dump    →${C.reset} ${C.bold}xm panel models --all${C.reset}`);
+}
+
+// `xm panel models <vendor> [--check m1,m2] [--all]` — print a provider's REAL model
+// catalog fetched live from its own --list-models (never hardcoded → always current, so
+// cursor's kimi-k2.5 shows up). No vendor → cmdModelsMenu (a cheap picker) unless --all
+// forces the every-provider dump. With --check, verify specific model IDs exist in that
+// catalog — the way to confirm a config / --models entry is valid before a run uses it.
+// `xm panel models <vendor> --json` → structured model IDs for step 2 of the interactive
+// picker (the SKILL builds AskUserQuestion options from `models[]`). Live-catalog vendors
+// (agy/cursor/kiro) are parsed from their --list-models dump; fixed-ID vendors (claude/codex)
+// fall back to their static `examples` seed. Shape: { vendor, hasCatalog, models, error }.
+function cmdModelsCatalogJson(vendor) {
+  const m = providerMeta(vendor);
+  if (!m) { console.log(JSON.stringify({ vendor, hasCatalog: false, models: [], error: 'unknown provider' }, null, 2)); return; }
+  const hasCatalog = !!m.listCmd;
+  let models = [], error = null;
+  if (hasCatalog) {
+    const r = listModels(vendor);
+    if (r.ok) models = parseModelIds(r.output);
+    else error = r.error;
+  } else {
+    models = String(m.examples || '').split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  console.log(JSON.stringify({ vendor, hasCatalog, models, error }, null, 2));
+}
+
 function cmdModels(pos, flags) {
   const meta = providerMeta();
   const target = pos[0];
-  const names = target ? [target] : knownProviders();
   const check = flags.check ? flags.check.split(',').map((s) => s.trim()).filter(Boolean) : null;
+  // Bare `models` (no vendor / no --check / no --all) → cheap provider picker menu,
+  // NOT the every-provider live dump (kept behind --all).
+  if (!target && !check && !flags.all) return cmdModelsMenu(flags);
+  // `models <vendor> --json` → structured model IDs (picker step 2). --check keeps the
+  // existing per-ID verification output, so only the plain catalog form goes structured.
+  if (target && flags.json && !check) return cmdModelsCatalogJson(target);
+  const names = target ? [target] : knownProviders();
   let shown = false;
   for (const name of names) {
     if (!meta[name]) { console.log(`${C.red}unknown provider: ${name}${C.reset}`); continue; }
@@ -1789,9 +1853,11 @@ Commands:
                                 review AND cross runs (legacy cross runs predate the log).
   types                         List providers (install status) + how to query each
                                 one's live models (cursor/kiro are multi-vendor: kimi, deepseek, …)
-  models [vendor] [--check m1,m2]
-                                Print a vendor's REAL live model catalog (cursor → kimi-k2.5, glm,
-                                grok…). --check verifies model IDs exist — vet a config/--models entry.
+  models [vendor] [--check m1,m2] [--all] [--json]
+                                No vendor → provider picker (install/auth status; pick one, then
+                                run: xm panel models <vendor>). <vendor> → its REAL live catalog
+                                (cursor → kimi-k2.5, glm…). --all dumps every provider; --json emits
+                                the picker rows. --check verifies model IDs exist — vet a --models entry.
 
   Review-prompt injection (programmatic — for cross-vendor review by other plugins):
     --review-prompt-file <path>   Override round-1 reviewer prompt with a custom lens prompt
