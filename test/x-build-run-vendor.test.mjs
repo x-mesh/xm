@@ -69,8 +69,8 @@ describe('run --json vendor-model additive fields', () => {
     expect(entry.model_vendor).toBe('claude');
     expect(entry.model_by_vendor).toBeDefined();
     expect(entry.model_by_vendor.claude).toBe(entry.model);
-    // Built-in codex table maps sonnet → gpt-5.4.
-    expect(entry.model_by_vendor.codex).toBe('gpt-5.4');
+    // Built-in codex table maps sonnet → gpt-5.6-terra.
+    expect(entry.model_by_vendor.codex).toBe('gpt-5.6-terra');
   });
 
   test('codex spec honors a vendor_models config override', () => {

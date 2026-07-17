@@ -58,7 +58,7 @@ After parsing, execute the recommended action:
   "agent_type": "executor",
   "model": "sonnet",
   "model_vendor": "claude",
-  "model_by_vendor": { "claude": "sonnet", "codex": "gpt-5.4" },
+  "model_by_vendor": { "claude": "sonnet", "codex": "gpt-5.6-terra" },
   "review_group": "build",
   "task_checks": [{ "name": "test", "command": "bun test" }],
   "task_check_command": "x-build task-check t1",

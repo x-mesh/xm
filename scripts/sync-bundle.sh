@@ -98,7 +98,7 @@ mirror_md_dir() {
 }
 
 echo "=== Syncing SKILL.md files ==="
-for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel wt; do
+for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel remote wt; do
   src="x-$plugin/skills/$plugin/SKILL.md"
   dst="xm/skills/$plugin/SKILL.md"
   sync_file "$src" "$dst"
@@ -186,6 +186,18 @@ done
 shopt -u nullglob
 # Server entry — sync-server.mjs resolves it at ../x-sync-server.mjs relative to lib/x-sync/
 sync_file "x-sync/lib/x-sync-server.mjs" "xm/lib/x-sync-server.mjs"
+
+echo ""
+echo "=== Syncing x-remote lib files ==="
+sync_file "x-remote/lib/x-remote-cli.mjs" "xm/lib/x-remote-cli.mjs"
+sync_file "x-remote/lib/x-remote-host.mjs" "xm/lib/x-remote-host.mjs"
+sync_file "x-remote/lib/x-remote-gateway.mjs" "xm/lib/x-remote-gateway.mjs"
+ensure_dir "xm/lib/x-remote"
+shopt -s nullglob
+for f in x-remote/lib/x-remote/*.mjs; do
+  sync_file "$f" "xm/lib/x-remote/$(basename "$f")"
+done
+shopt -u nullglob
 
 echo ""
 echo "=== Syncing x-trace lib files ==="
@@ -321,7 +333,7 @@ mirror_md_dir "x-humanize/skills/humanize/references" "xm/skills/humanize/refere
 echo ""
 echo "=== Verifying all synced ==="
 DIVERGED=0
-for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel wt; do
+for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel remote wt; do
   src="x-$plugin/skills/$plugin/SKILL.md"
   dst="xm/skills/$plugin/SKILL.md"
   if [ -f "$src" ] && [ -f "$dst" ] && ! diff -q "$src" "$dst" > /dev/null 2>&1; then
@@ -432,6 +444,26 @@ if ! diff -q "x-sync/lib/x-sync-server.mjs" "xm/lib/x-sync-server.mjs" > /dev/nu
   echo "  DIVERGED: xm/lib/x-sync-server.mjs"
   DIVERGED=$((DIVERGED + 1))
 fi
+
+for pair in \
+  "x-remote/lib/x-remote-cli.mjs:xm/lib/x-remote-cli.mjs" \
+  "x-remote/lib/x-remote-host.mjs:xm/lib/x-remote-host.mjs" \
+  "x-remote/lib/x-remote-gateway.mjs:xm/lib/x-remote-gateway.mjs"; do
+  src="${pair%%:*}"; dst="${pair##*:}"
+  if ! diff -q "$src" "$dst" > /dev/null 2>&1; then
+    echo "  DIVERGED: $dst"
+    DIVERGED=$((DIVERGED + 1))
+  fi
+done
+shopt -s nullglob
+for f in x-remote/lib/x-remote/*.mjs; do
+  dst="xm/lib/x-remote/$(basename "$f")"
+  if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
+    echo "  DIVERGED: $dst"
+    DIVERGED=$((DIVERGED + 1))
+  fi
+done
+shopt -u nullglob
 
 if ! diff -q "x-trace/lib/x-trace-cli.mjs" "xm/lib/x-trace-cli.mjs" > /dev/null 2>&1; then
   echo "  DIVERGED: xm/lib/x-trace-cli.mjs"

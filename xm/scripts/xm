@@ -285,6 +285,15 @@ case "$CMD" in
     node "$LIB_PATH/x-sync/sync-${1:-config}.mjs" "${@:2}"
     ;;
 
+  remote)
+    LIB_PATH="$(plugin_lib remote)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-remote-cli.mjs" ]; then
+      echo "xm remote: x-remote-cli.mjs not found under $LIB" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-remote-cli.mjs" "$@"
+    ;;
+
   project|projects)
     LIB_PATH="$(plugin_lib xm lib)"
     if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-projects-cli.mjs" ]; then
