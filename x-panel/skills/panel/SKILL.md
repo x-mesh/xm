@@ -14,8 +14,8 @@ model: sonnet
    the matching consumer (x-review/x-op/x-solver/x-eval/x-build/x-agent) in `--cross-vendor` mode.
    The domain logic stays in the consumer; panel just picks the door. This is why "do it with
    several models" has ONE obvious entry point instead of remembering each plugin's flag.
-2. **Engine** — `/xm:panel <target>` runs the native adversarial panel: N model CLIs review the
-   same target, one refute round, and a verdict that separates **consensus** (how many models
+2. **Engine** — `/xm:panel <target>` runs the native panel: N model CLIs review the
+   same target in one round by default, and a verdict separates **consensus** (how many models
    agreed — confidence) from **diversity** (what only one model saw). The orchestrator is a
    tool-neutral CLI, so the "leader" is not a fixed model.
 
@@ -121,7 +121,8 @@ When a run failed and it's unclear whether a provider/model is actually broken, 
 
 ### 3. Target or model flags → the native panel engine
 `/xm:panel <file|diff|--models|--preset>` or `/xm:panel quick [target]` → N model CLIs review the
-SAME target, one refute round, consensus verdict:
+SAME target, one-round consensus/diversity verdict by default. Use `--rounds 2` only when an
+adversarial refutation round is explicitly worth the extra cost:
 1. `xm panel setup` shows detected CLIs + config defaults (skip if `--models` was given). Models:
    config default / preset / `--full` / custom `name:model`. **cursor & kiro are multi-vendor** —
    `cursor:kimi-k2.5`, `kiro:deepseek-3.2` work; `xm panel models <vendor>` lists the live catalog,
