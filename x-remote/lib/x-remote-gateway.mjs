@@ -4,13 +4,54 @@ import { join } from 'node:path';
 import { GatewayStore } from './x-remote/gateway-store.mjs';
 import { DiscordBridge } from './x-remote/discord.mjs';
 import { createEnvelope, parseEnvelope } from './x-remote/protocol.mjs';
+import { createPeerRelay } from './x-remote-peer-bridge.mjs';
+import { createPeerPanel } from './x-remote-peer-panel.mjs';
 
 const port = Number(process.env.XM_REMOTE_GATEWAY_PORT || 19843);
 const hostToken = process.env.XM_REMOTE_HOST_TOKEN || '';
 const store = new GatewayStore(process.env.XM_REMOTE_DB_PATH || join(homedir(), '.xm', 'remote', 'gateway.db'));
 const hosts = new Map();
-const discordDeliveries = new Set();
+const deliveryPromises = new Map();
+const outputBatches = new Map();
 let gatewaySeq = store.nextCommandSeq();
+// Peer-surface relay (term-mesh surfaces). Shells out to `tm-agent peer`
+// snapshot/send-key against XR_PEER_HOST/XR_PEER_SOCKET; invoked only by the
+// snap/type/key Discord commands, so it costs nothing when unused.
+const peer = createPeerRelay();
+
+function batchKey(event) { return `${event.host_id}:${event.session_id || 'host'}`; }
+function flushOutputBatch(key) {
+  const batch = outputBatches.get(key);
+  if (!batch) return Promise.resolve();
+  outputBatches.delete(key);
+  clearTimeout(batch.timer);
+  return discord.publishBatch(batch.events).then(() => {
+    for (const entry of batch.entries) { store.markDiscordDelivered(entry.event.event_id); entry.resolve(); }
+  }).catch((error) => { for (const entry of batch.entries) entry.reject(error); });
+}
+function queueOutput(event) {
+  const key = batchKey(event);
+  let batch = outputBatches.get(key);
+  if (!batch) {
+    batch = { events: [], entries: [], timer: null };
+    batch.timer = setTimeout(() => flushOutputBatch(key), 1200);
+    outputBatches.set(key, batch);
+  }
+  batch.events.push(event);
+  const promise = new Promise((resolve, reject) => batch.entries.push({ event, resolve, reject }));
+  return promise;
+}
+function deliverEvent(event) {
+  if (event.type === 'host.heartbeat') { store.markDiscordDelivered(event.event_id); return Promise.resolve(); }
+  const existing = deliveryPromises.get(event.event_id);
+  if (existing) return existing;
+  const promise = (event.type === 'session.progress' || event.type === 'session.output')
+    ? queueOutput(event)
+    : flushOutputBatch(batchKey(event)).then(() => discord.publish(event)).then(() => store.markDiscordDelivered(event.event_id));
+  deliveryPromises.set(event.event_id, promise);
+  promise.then(() => deliveryPromises.delete(event.event_id), () => deliveryPromises.delete(event.event_id));
+  return promise;
+}
 
 function sendHost(hostId, message) {
   store.queueCommand(message);
@@ -19,7 +60,12 @@ function sendHost(hostId, message) {
 }
 
 async function onDiscordCommand(command) {
-  if (command.kind === 'help') return discord.send('`!xr sessions`, `!xr steer <session> <text>`, `!xr interrupt <session>`, `!xr resume <session> <text>`, `!xr decide <decision> <text>`');
+  if (command.kind === 'help') return discord.send('**panel:** `/xr` — buttons + Type modal\ntext — sessions: `!xr sessions|steer|resume|interrupt|decide` · peer: `!xr peers`, `!xr use <surface>`, `!xr snap`, `!xr type <text>`, `!xr key <keys>`');
+  if (command.kind === 'peers') return discord.send(await peer.peers());
+  if (command.kind === 'use') return discord.send('current surface: `' + peer.setSurface(command.target) + '`');
+  if (command.kind === 'snap') return discord.send(await peer.snapshot());
+  if (command.kind === 'type') return discord.send(await peer.type(command.text));
+  if (command.kind === 'key') return discord.send(await peer.keys(command.text));
   if (command.kind === 'sessions') return discord.send('```json\n' + JSON.stringify(store.sessions(), null, 2).slice(0, 1850) + '\n```');
   if (command.kind === 'decide') {
     const decision = store.pendingDecisions().find((d) => d.decision_id === command.target);
@@ -37,8 +83,20 @@ async function onDiscordCommand(command) {
 
 const allowedUserIds = String(process.env.DISCORD_ALLOWED_USER_IDS || '').split(',').map((v) => v.trim()).filter(Boolean);
 if (!allowedUserIds.length) throw new Error('DISCORD_ALLOWED_USER_IDS is required');
-const discord = new DiscordBridge({ token: process.env.DISCORD_BOT_TOKEN, channelId: process.env.DISCORD_CHANNEL_ID, allowedUserIds, onCommand: onDiscordCommand });
+let panel;
+const discord = new DiscordBridge({ token: process.env.DISCORD_BOT_TOKEN, channelId: process.env.DISCORD_CHANNEL_ID, allowedUserIds, onCommand: onDiscordCommand, onInteraction: (i) => panel?.handleInteraction(i) });
 await discord.connect();
+// Wait for READY (appId known), resolve the guild from the channel, register /xr.
+for (let i = 0; i < 50 && !discord.appId; i++) await new Promise((r) => setTimeout(r, 100));
+let guildId = process.env.XR_PEER_GUILD_ID || '';
+if (!guildId) { try { guildId = (await discord.request(`/channels/${process.env.DISCORD_CHANNEL_ID}`)).guild_id; } catch (e) { console.error(`[x-remote gateway] guild resolve failed: ${e.message}`); } }
+panel = createPeerPanel({ bridge: discord, relay: peer, guildId });
+if (discord.appId && guildId) {
+  try { await panel.registerCommand(); console.log('[x-remote gateway] /xr slash command registered'); }
+  catch (e) { console.error(`[x-remote gateway] /xr register failed: ${e.message}`); }
+} else {
+  console.error(`[x-remote gateway] /xr NOT registered (appId=${!!discord.appId} guild=${!!guildId})`);
+}
 
 const server = Bun.serve({
   port,
@@ -64,15 +122,24 @@ const server = Bun.serve({
         if (event.host_id !== ws.data.hostId) throw new Error('host_id mismatch');
         if (event.type === 'ack') store.ackCommand(event.payload.eventId);
         store.ingest(event);
-        if (event.type !== 'ack' && store.needsDiscordDelivery(event.event_id)) {
-          if (discordDeliveries.has(event.event_id)) return;
-          discordDeliveries.add(event.event_id);
-          try {
-            await discord.publish(event);
-            store.markDiscordDelivered(event.event_id);
-          } finally { discordDeliveries.delete(event.event_id); }
-        }
+        // ACK reflects protocol-level receipt (store.ingest already happened above),
+        // NOT downstream Discord delivery — send it immediately instead of awaiting
+        // deliverEvent(). Previously this awaited deliverEvent() first, which for
+        // session.progress/output events blocked the ACK up to the full 1200ms batch
+        // window (kiro MEDIUM), and a Discord publish failure rejected that same await,
+        // landing in the outer catch and sending the HOST an `error` envelope for an
+        // event that was actually ingested successfully (agy MEDIUM) — panel review
+        // 2026-07-17. Discord delivery now runs fire-and-forget; its own failure is
+        // swallowed here (already logged via store bookkeeping / entry.reject in
+        // flushOutputBatch) and never reaches the host.
         ws.send(JSON.stringify(createEnvelope({ type: 'ack', hostId: event.host_id, sessionId: event.session_id, seq: gatewaySeq++, payload: { eventId: event.event_id } })));
+        // Heartbeats are liveness telemetry for the gateway, not human-facing
+        // Discord updates. Keep ingest/ACK semantics intact while avoiding a
+        // noisy channel and unnecessary Discord rate-limit pressure.
+        const publishToDiscord = event.type !== 'ack';
+        if (publishToDiscord && store.needsDiscordDelivery(event.event_id)) {
+          deliverEvent(event).catch((error) => console.error(`[x-remote gateway] discord delivery failed for ${event.event_id}: ${error.message}`));
+        }
       } catch (error) {
         ws.send(JSON.stringify(createEnvelope({ type: 'error', hostId: ws.data.hostId, seq: gatewaySeq++, payload: { message: error.message } })));
       }

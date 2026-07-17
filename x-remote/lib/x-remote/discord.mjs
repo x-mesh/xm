@@ -1,4 +1,4 @@
-import { discordChunks } from './protocol.mjs';
+import { discordBatchChunks, discordChunks } from './protocol.mjs';
 
 export function parseDiscordCommand(text) {
   const input = String(text || '').trimStart();
@@ -7,6 +7,14 @@ export function parseDiscordCommand(text) {
   if (!match) return { kind: 'help' };
   const [, verb, target, originalText] = match;
   if (verb === 'sessions') return { kind: 'sessions' };
+  // peer-surface commands act on the current surface (set via `use`); the
+  // interactive `/xr` panel is the richer alternative to these.
+  if (verb === 'peers') return { kind: 'peers' };
+  if (verb === 'use' && target) return { kind: 'use', target };
+  if (verb === 'snap') return { kind: 'snap' };
+  if (verb === 'type' || verb === 'key') {
+    return { kind: verb, text: [target, originalText].filter((s) => s != null && s !== '').join(' ') };
+  }
   if (['steer', 'resume', 'decide'].includes(verb) && target && originalText != null) {
     return { kind: verb, target, text: originalText };
   }
@@ -15,11 +23,18 @@ export function parseDiscordCommand(text) {
 }
 
 export class DiscordBridge {
-  constructor({ token, channelId, allowedUserIds, onCommand, fetchImpl = fetch, WebSocketImpl = WebSocket }) {
-    this.token = token; this.channelId = channelId; this.onCommand = onCommand;
+  constructor({ token, channelId, allowedUserIds, onCommand, onInteraction, fetchImpl = fetch, WebSocketImpl = WebSocket }) {
+    this.token = token; this.channelId = channelId; this.onCommand = onCommand; this.onInteraction = onInteraction;
     this.allowedUserIds = new Set(allowedUserIds || []);
     this.fetch = fetchImpl; this.WebSocketImpl = WebSocketImpl;
-    this.sequence = null; this.heartbeat = null; this.socket = null;
+    this.sequence = null; this.heartbeat = null; this.socket = null; this.appId = null;
+    // Every send() below is chained through this so concurrent callers (e.g. two
+    // different flushOutputBatch keys, or a non-batched publish() racing a queued
+    // publishBatch()) can never post to Discord out of order — each POST is an
+    // independent HTTP request with no ordering guarantee from the API itself, so
+    // without this a slower earlier request could land AFTER a faster later one —
+    // panel review 2026-07-17 (agy MEDIUM).
+    this._sendQueue = Promise.resolve();
   }
   async request(path, init = {}) {
     const res = await this.fetch(`https://discord.com/api/v10${path}`, {
@@ -28,11 +43,24 @@ export class DiscordBridge {
     if (!res.ok) throw new Error(`Discord API ${res.status}: ${await res.text()}`);
     return res.status === 204 ? null : res.json();
   }
-  async send(text) {
-    if (!this.token || !this.channelId) return;
-    await this.request(`/channels/${this.channelId}/messages`, { method: 'POST', body: JSON.stringify({ content: String(text).slice(0, 2000), allowed_mentions: { parse: [] } }) });
+  send(text) {
+    if (!this.token || !this.channelId) return Promise.resolve();
+    const post = () => this.request(`/channels/${this.channelId}/messages`, { method: 'POST', body: JSON.stringify({ content: String(text).slice(0, 2000), allowed_mentions: { parse: [] } }) });
+    // Run after the PRIOR send settles either way, so one failure doesn't jump the
+    // queue for the next message but also doesn't block it forever.
+    const task = this._sendQueue.then(post, post);
+    this._sendQueue = task.catch(() => {}); // keep the queue itself always-fulfilled; `task` still carries the real outcome to this call's caller
+    return task;
   }
   async publish(event) { for (const chunk of discordChunks(event)) await this.send(chunk); }
+  async publishBatch(events) { for (const chunk of discordBatchChunks(events)) await this.send(chunk); }
+  // Interaction (slash command / button / select / modal) responses.
+  respondInteraction(id, token, body) {
+    return this.request(`/interactions/${id}/${token}/callback`, { method: 'POST', body: JSON.stringify(body) });
+  }
+  editInteraction(token, body) {
+    return this.request(`/webhooks/${this.appId}/${token}/messages/@original`, { method: 'PATCH', body: JSON.stringify(body) });
+  }
   async connect() {
     if (!this.token || !this.channelId) throw new Error('DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID are required');
     const gateway = await this.request('/gateway/bot');
@@ -49,6 +77,18 @@ export class DiscordBridge {
       return;
     }
     if (packet.op === 7) { this.socket.close(); return; }
+    if (packet.t === 'READY') { this.appId = packet.d.application?.id || this.appId; return; }
+    if (packet.t === 'INTERACTION_CREATE') {
+      const i = packet.d;
+      const userId = i.member?.user?.id || i.user?.id;
+      if (this.onInteraction && this.allowedUserIds.has(userId)) {
+        Promise.resolve(this.onInteraction(i)).catch((err) => console.error('[x-remote] interaction error:', err.message));
+      } else if (this.onInteraction) {
+        // Must answer within 3s or Discord shows "interaction failed".
+        this.respondInteraction(i.id, i.token, { type: 4, data: { content: 'not allowed', flags: 64 } }).catch(() => {});
+      }
+      return;
+    }
     if (packet.t !== 'MESSAGE_CREATE' || packet.d.channel_id !== this.channelId || packet.d.author?.bot) return;
     if (!this.allowedUserIds.has(packet.d.author?.id)) return;
     const command = parseDiscordCommand(packet.d.content);
