@@ -75,7 +75,16 @@ if command -v claude >/dev/null 2>&1; then
     warn "Could not fetch plugin list. Install plugins manually:"
     warn "  claude plugin install xm@xm -s user"
   else
+    # Skip plugins already in the registry: `claude plugin install` is a no-op
+    # for them but still costs ~5-6s each (CLI boot + network) — on a re-run of
+    # install.sh that serial loop dominated the wall-clock. `xm update` is the
+    # tool that moves installed plugins to new versions.
+    INSTALLED_REG="$HOME/.claude/plugins/installed_plugins.json"
     for p in $PLUGINS; do
+      if [ -f "$INSTALLED_REG" ] && grep -q "\"$p@xm\"" "$INSTALLED_REG" 2>/dev/null; then
+        info "  → $p (already installed — skipping; use 'xm update' to upgrade)"
+        continue
+      fi
       info "  → $p"
       if ! claude plugin install "$p@xm" -s user >/dev/null 2>&1; then
         warn "    install failed (try manually: claude plugin install $p@xm -s user)"
