@@ -31,7 +31,7 @@ import {
 } from './worktree-shared.mjs';
 import {
   loadBuildPolicy, resolveTaskChecks, taskReviewGroup, reviewGroupStatus,
-  startReviewGroup, reviewBuildGroup, taskCheckContractHash, taskCheckFingerprint,
+  startReviewGroup, reviewBuildGroup, runGroupChecks, taskCheckContractHash, taskCheckFingerprint,
 } from './build-policy.mjs';
 import { readPlanState, setRequestedAction, validatePlanApproval } from './plan-state.mjs';
 
@@ -1980,7 +1980,8 @@ export function cmdRunStatus(args) {
     );
     const cb = getCircuitState(project);
     let next_action;
-    if (groupSummary.review_required) next_action = `review-group ${groupSummary.active_group}`;
+    if (allDone && groupSummary.active_group && !groupSummary.groups.find(g => g.id === groupSummary.active_group)?.group_quality?.passed) next_action = `group-check ${groupSummary.active_group}`;
+    else if (groupSummary.review_required) next_action = `review-group ${groupSummary.active_group}`;
     else if (allDone && groupSummary.all_passed) next_action = 'phase next';
     else if (cb.state === 'open') next_action = 'wait for circuit breaker cooldown';
     else if (staleRunning.length) next_action = 'run --reconcile';
@@ -2058,6 +2059,21 @@ export function cmdReviewGroup(args) {
   if (opts.json) console.log(JSON.stringify({ project, ...result }, null, 2));
   else if (result.ok) console.log(`✅ Review group "${positional[0] || result.group?.id}" passed. Continue: x-build run`);
   else console.log(`⛔ Review group failed: ${result.error || result.group?.decision || 'panel failure'}`);
+  if (!result.ok) process.exitCode = result.exitCode || 2;
+}
+
+export function cmdGroupCheck(args) {
+  const { opts, positional } = parseOptions(args);
+  const project = resolveProject(null);
+  const taskData = readJSON(tasksPath(project));
+  const summary = reviewGroupStatus(project, taskData?.tasks || [], { cwd: process.cwd() });
+  const groupId = positional[0] || summary.active_group;
+  const group = summary.groups.find(g => g.id === groupId);
+  if (!group) { console.error(`❌ Unknown review group: ${groupId || '(none)'}`); process.exitCode = 2; return; }
+  if (!group.completed) { console.error(`⛔ Review group "${group.id}" is incomplete.`); process.exitCode = 2; return; }
+  const result = runGroupChecks(project, group.id, { cwd: process.cwd() });
+  if (opts.json) console.log(JSON.stringify({ project, group: group.id, ...result }, null, 2));
+  else console.log(result.ok ? `✅ Group checks "${group.id}" passed.` : `⛔ Group checks failed: ${result.error || 'check failure'}`);
   if (!result.ok) process.exitCode = result.exitCode || 2;
 }
 

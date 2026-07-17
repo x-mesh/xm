@@ -10,7 +10,7 @@
 import { resolveProject, resetCircuitBreaker, getCircuitState, setExplicitProject, cmdProjectKind } from './x-build/core.mjs';
 import { cmdInit, cmdList, cmdStatus, cmdClose, cmdDashboard, interactiveInit, interactiveDashboard, cmdHandoffFull, cmdHandon } from './x-build/project.mjs';
 import { cmdPhase, cmdGate, cmdCheckpoint } from './x-build/phase.mjs';
-import { cmdTasks, cmdTaskCheck, cmdSteps, cmdRun, cmdRunStatus, cmdReviewGroup, interactiveTasksAdd, cmdDispatch } from './x-build/tasks.mjs';
+import { cmdTasks, cmdTaskCheck, cmdSteps, cmdRun, cmdRunStatus, cmdReviewGroup, cmdGroupCheck, interactiveTasksAdd, cmdDispatch } from './x-build/tasks.mjs';
 import { cmdLater } from './x-build/later.mjs';
 import { cmdHooks } from './x-build/hooks.mjs';
 import { cmdPlan, cmdPlanCheck, cmdPrdGate, cmdPrdCheck, cmdConsensus, cmdDiscuss, cmdResearch, cmdForecast, cmdRoi, cmdNext, cmdHandoff, cmdSummarize, cmdSaveArtifact, cmdContextUsage, cmdResearchCheck } from './x-build/plan.mjs';
@@ -121,6 +121,7 @@ switch (cmd) {
   case 'save':           cmdSaveArtifact(args); break;
   case 'run-status':     cmdRunStatus(args); break;
   case 'review-group':   cmdReviewGroup(args); break;
+  case 'group-check':    cmdGroupCheck(args); break;
   case 'watch':         cmdWatch(args); break;
   case 'dashboard':     cmdDashboard(); break;
   case 'metrics':       cmdMetrics(args); break;
