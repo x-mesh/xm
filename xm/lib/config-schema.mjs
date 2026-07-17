@@ -216,6 +216,24 @@ export const SCHEMA = [
     default: {},
     description: '프로젝트별 예산 상한 { project: { max_usd } }',
   },
+  {
+    key: 'build.serial_quality_command',
+    group: 'misc',
+    type: 'string',
+    nullable: true,
+    scope: 'either',
+    default: null,
+    description: '품질 검사 authoritative serial command (설정 시 auto-detect 대체)',
+  },
+  {
+    key: 'build.quality_timeout_ms',
+    group: 'misc',
+    type: 'number',
+    nullable: true,
+    scope: 'either',
+    default: 300000,
+    description: 'serial quality command timeout(ms)',
+  },
 
   // ── phase gates ──
   {
@@ -319,6 +337,14 @@ export const SCHEMA = [
     scope: 'either',
     default: ['test', 'lint'],
     description: '모든 실행 backend에서 task 완료 전에 수행할 공통 check 이름 목록',
+  },
+  {
+    key: 'build.group_checks',
+    group: 'misc',
+    type: 'string[]',
+    scope: 'either',
+    default: ['test', 'lint'],
+    description: 'Full checks executed once when a review group completes',
   },
 
   // ── worktree (build-local 3-tier; runtime source = WORKTREE_CONFIG_DEFAULTS) ──
