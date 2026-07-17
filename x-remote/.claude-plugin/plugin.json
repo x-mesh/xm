@@ -1,0 +1,11 @@
+{
+  "name": "remote",
+  "version": "0.1.0",
+  "description": "Linux-first remote control plane for managed Claude and Codex sessions over Discord",
+  "author": { "name": "x-mesh" },
+  "repository": "https://github.com/x-mesh/xm",
+  "homepage": "https://github.com/x-mesh/xm",
+  "license": "MIT",
+  "keywords": ["remote", "discord", "codex", "claude", "agent"],
+  "skills": "./skills/"
+}
