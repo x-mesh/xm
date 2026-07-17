@@ -1,4 +1,4 @@
-import { discordChunks } from './protocol.mjs';
+import { discordBatchChunks, discordChunks } from './protocol.mjs';
 
 export function parseDiscordCommand(text) {
   const input = String(text || '').trimStart();
@@ -20,6 +20,13 @@ export class DiscordBridge {
     this.allowedUserIds = new Set(allowedUserIds || []);
     this.fetch = fetchImpl; this.WebSocketImpl = WebSocketImpl;
     this.sequence = null; this.heartbeat = null; this.socket = null;
+    // Every send() below is chained through this so concurrent callers (e.g. two
+    // different flushOutputBatch keys, or a non-batched publish() racing a queued
+    // publishBatch()) can never post to Discord out of order — each POST is an
+    // independent HTTP request with no ordering guarantee from the API itself, so
+    // without this a slower earlier request could land AFTER a faster later one —
+    // panel review 2026-07-17 (agy MEDIUM).
+    this._sendQueue = Promise.resolve();
   }
   async request(path, init = {}) {
     const res = await this.fetch(`https://discord.com/api/v10${path}`, {
@@ -28,11 +35,17 @@ export class DiscordBridge {
     if (!res.ok) throw new Error(`Discord API ${res.status}: ${await res.text()}`);
     return res.status === 204 ? null : res.json();
   }
-  async send(text) {
-    if (!this.token || !this.channelId) return;
-    await this.request(`/channels/${this.channelId}/messages`, { method: 'POST', body: JSON.stringify({ content: String(text).slice(0, 2000), allowed_mentions: { parse: [] } }) });
+  send(text) {
+    if (!this.token || !this.channelId) return Promise.resolve();
+    const post = () => this.request(`/channels/${this.channelId}/messages`, { method: 'POST', body: JSON.stringify({ content: String(text).slice(0, 2000), allowed_mentions: { parse: [] } }) });
+    // Run after the PRIOR send settles either way, so one failure doesn't jump the
+    // queue for the next message but also doesn't block it forever.
+    const task = this._sendQueue.then(post, post);
+    this._sendQueue = task.catch(() => {}); // keep the queue itself always-fulfilled; `task` still carries the real outcome to this call's caller
+    return task;
   }
   async publish(event) { for (const chunk of discordChunks(event)) await this.send(chunk); }
+  async publishBatch(events) { for (const chunk of discordBatchChunks(events)) await this.send(chunk); }
   async connect() {
     if (!this.token || !this.channelId) throw new Error('DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID are required');
     const gateway = await this.request('/gateway/bot');
