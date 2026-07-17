@@ -51,7 +51,13 @@ These mappings replace host-specific mechanics only. Preserve the workflow's gat
 
 const CODEX_BUILD_OVERLAY = `## Codex Orchestration Overlay
 
-For parallel build tasks, read \`task.model_by_vendor.codex\` from \`xm build run --json\` and spawn one Codex subagent per parallel-safe task, preferring \`[agents.xm-executor]\`. If native subagents are unavailable, use \`codex exec -c model=<model> [-c model_reasoning_effort=<effort>] "<task prompt>"\`.
+Use the structured x-build JSON as the authoritative routing source. Consume \`prd_writer.model_by_vendor.codex\` for PRD generation, each \`agents_spec[*].model_by_vendor.codex\` for Research, each \`agents[*].model_by_vendor.codex\` for consensus, and each Execute task's \`task.model_by_vendor.codex\` to spawn one Codex subagent for each parallel-safe task execution. These additive vendor fields are authoritative for Codex; do not infer Codex routing from Claude-tier \`model\` alone.
+
+Static named-agent config is exact-match only: use the installed \`[agents.xm-*]\` layer only when the role/phase matches that layer exactly (for example \`[agents.xm-executor]\` for \`executor/implement\`, \`planner/plan\`, \`reviewer/review\`). Otherwise fall back to \`codex exec\` with the exact spec from x-build JSON: \`codex exec -c model=<model> [-c model_reasoning_effort=<effort>] "<task prompt>"\`.
+
+If a Codex spec is missing or malformed, fail loud and use the provider default only when no exact spec is available; never guess a model from the Claude tier. Never pass the literal string \`inherit\` to Codex; inherit is represented by omission upstream and must be resolved before Codex invocation.
+
+Deterministic gates and human approval gates are workflow controls, not LLM-routing targets. Do not map gate evaluation itself onto Codex agent selection.
 
 For phase continuation, exec-level flags and \`-m\`/\`-c\` must precede \`resume\`: \`codex exec [flags] -m <model> resume --last\`.`;
 
