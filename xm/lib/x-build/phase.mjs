@@ -15,6 +15,8 @@ import {
   ask, pickMenu, exitFail,
 } from './core.mjs';
 import { prdBlockingFindings } from './plan.mjs';
+import { approvePlan, readPlanState, validatePlanApproval } from './plan-state.mjs';
+import { reviewGroupStatus } from './build-policy.mjs';
 
 // ── cmdPhase ────────────────────────────────────────────────────────
 
@@ -133,6 +135,21 @@ export function phaseNext(args) {
       console.log(`⚠️  Plan check has errors. Fix them first.`);
       return;
     }
+    const approval = validatePlanApproval(project);
+    if (!approval.ok) {
+      const message = approval.reason === 'plan_changed_after_approval'
+        ? 'Plan changed after approval. Review the updated Plan Bundle and approve it again.'
+        : 'Plan is not ready and approved.';
+      console.log(`⛔ ${message}`);
+      console.log('   Run: x-build plan-check && x-build gate pass');
+      process.exitCode = 2;
+      return;
+    }
+    if (approval.requested_action === 'plan_only') {
+      console.log('✅ Plan Bundle is approved. Plan-only mode stops before Execute.');
+      console.log('   To continue later, run: x-build run');
+      return;
+    }
     // Critique is ADVISORY (not a hard gate) — only surface it when a human is going
     // to sign off anyway. Autopilot skips the nudge; the hard checks above already ran.
     if (requiresSignoff(gateType)) {
@@ -144,6 +161,21 @@ export function phaseNext(args) {
         console.log(`   Run: x-build discuss --mode critique --round ${(critiqueResult.round || 1) + 1} to address concerns`);
         console.log(`   Or: x-build gate pass to proceed anyway`);
       }
+    }
+  }
+
+  // Execute-exit is a hard group boundary for both normal and worktree
+  // backends. Task completion alone is insufficient: every build group must
+  // have one passing final review before Verify can begin.
+  if (currentPhase.name === 'execute' && readPlanState(project)) {
+    const tasks = readJSON(tasksPath(project))?.tasks || [];
+    const groups = reviewGroupStatus(project, tasks, { cwd: process.cwd() });
+    if (!groups.all_passed) {
+      console.log(`⛔ Execute review is incomplete.`);
+      if (groups.review_required) console.log(`   Run: x-build review-group ${groups.active_group}`);
+      else console.log(`   Complete the active review group first: ${groups.active_group || 'build'}`);
+      process.exitCode = 2;
+      return;
     }
   }
 
@@ -325,9 +357,22 @@ function phaseSet(args) {
     return;
   }
 
+  // Approval is never force-skippable for a new lifecycle. --force only
+  // overrides deterministic PRD blockers below; legacy projects without a
+  // plan-state remain compatible through validatePlanApproval().legacy.
+  if (targetIdx >= executeIdx) {
+    const approval = validatePlanApproval(project);
+    if (!approval.ok) {
+      console.error(`⛔ Cannot enter Execute: ${approval.reason}.`);
+      console.error('   Run: x-build plan-check && x-build gate pass');
+      process.exitCode = 2;
+      return;
+    }
+  }
+
   // Enforce the PRD template's own Gate rule before entering Execute: any
   // unresolved low-confidence assumption or blocking open question must be
-  // settled first. Override with --force.
+  // settled first. Override only this artifact rule with --force.
   if (targetIdx >= executeIdx && !opts.force) {
     const { blocking } = prdBlockingFindings(readMD(prdPath(project)));
     if (blocking.length) {
@@ -392,6 +437,14 @@ export function cmdGate(args) {
   const gateType = resolveGates()[`${currentPhase.name}-exit`] || 'auto';
 
   if (action === 'pass') {
+    if (currentPhase.name === 'plan') {
+      const approval = approvePlan(project);
+      if (approval?.approval_error) {
+        console.log('⛔ Plan is not ready for approval. Resolve intent gaps and run: x-build plan-check');
+        process.exitCode = 2;
+        return;
+      }
+    }
     status.gate_passed = true;
     status.gate_message = message;
     status.gate_at = now;

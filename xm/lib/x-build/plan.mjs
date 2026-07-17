@@ -6,7 +6,7 @@ import {
   PHASES, TASK_STATES, C, ROOT,
   readJSON, writeJSON, readMD, writeMD,
   manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, projectDir, decisionsPath, archiveDir,
-  resolveProject,
+  resolveProject, getExplicitProject,
   loadConfig, loadSharedConfig, parseOptions, fmtDuration, estimateTaskCost, getModelForRole,
   cmdForecastUpdate, loadTokenActuals,
   aggregateRoi, roiSuggestion, readTaskMetrics, ROI_MIN_SAMPLES,
@@ -18,6 +18,8 @@ import {
 } from './core.mjs';
 import { taskList, vendorModelFields } from './tasks.mjs';
 import { stepsStatus, computeSteps } from './tasks.mjs';
+import { savePlanIntent, markPlanReady, validatePlanApproval, readPlanState } from './plan-state.mjs';
+import { reviewGroupStatus, taskReviewGroup } from './build-policy.mjs';
 
 // ── PRD template version + diagram gate (R4/R5/R12) ──────────────────
 // PRD_TEMPLATE_VERSION marks the template revision where Section 8
@@ -214,20 +216,74 @@ function prdWriterSpec(sharedCfg) {
 function parsePlanArgs(args) {
   const positional = [];
   let quick = false;
+  let interview = false;
+  let draft = false;
+  let execute = false;
 
   for (const arg of args) {
     if (arg === '--quick') {
       quick = true;
+    } else if (arg === '--interview') {
+      interview = true;
+    } else if (arg === '--draft') {
+      draft = true;
+    } else if (arg === '--execute') {
+      execute = true;
     } else {
       positional.push(arg);
     }
   }
 
-  return { quick, positional };
+  return { quick, interview, draft, execute, positional };
+}
+
+/**
+ * Separate user-only ambiguity from facts the agent can discover itself.
+ * Questions are intentionally capped at three so planning converges in one
+ * user turn. Repository facts never become questions here; they are probes for
+ * research-check.
+ */
+export function gaugeIntent(goal, { forceInterview = false } = {}) {
+  const text = String(goal || '').trim();
+  const lower = text.toLowerCase();
+  const gaps = [];
+  const questions = [];
+  const add = (kind, code, question, why) => {
+    gaps.push({ kind, code, why });
+    if (question && questions.length < 3) questions.push({ code, question });
+  };
+
+  const vagueOnly = text.split(/\s+/).length < 4
+    && /^(개선|수정|정리|최적화|만들어|구현|fix|improve|optimize|refactor|build|update)/i.test(text);
+  if (vagueOnly) add('intent_gap', 'scope', '어떤 대상과 사용자 흐름을 이번 작업 범위에 포함할까요?', 'scope changes the task graph');
+  if (/(성능|빠르게|최적화|performance|faster|optimi[sz]e)/i.test(text)
+      && !/(ms|초|s\b|%|p\d{2}|throughput|latency|기준|목표)/i.test(text)) {
+    add('intent_gap', 'success_criteria', '완료를 판단할 성능 기준이나 측정 지표는 무엇인가요?', 'success criteria are user-owned');
+  }
+  if (/(삭제|폐기|drop|delete|purge|마이그레이션|migration|배포|deploy|public api|공개 api|schema)/i.test(lower)
+      && !/(승인|허용|backward compatible|하위 호환|rollback|롤백)/i.test(lower)) {
+    add('authority_gap', 'authority', '데이터·외부 contract 변경과 rollback 범위를 어디까지 승인할까요?', 'irreversible or external contract change');
+  }
+  if (/( 또는 |\bor\b|\bvs\b|어느|선택)/i.test(lower)) {
+    // Implementation alternatives are agent-owned by default: inspect the
+    // repository and choose by existing conventions. Only public behavior,
+    // authority, scope, or success criteria justify another user turn.
+    add('implementation_choice', 'choice', null, 'resolve from repository conventions unless it changes public behavior');
+  }
+  if (forceInterview && questions.length === 0) {
+    add('intent_gap', 'refinement', '원하는 결과, 제외 범위, 완료 기준 중 더 구체화할 부분은 무엇인가요?', 'detailed interview was explicitly requested');
+  }
+
+  return {
+    readiness: questions.length ? 'clarify' : 'ready',
+    gaps,
+    questions,
+    fact_probes: ['repository_structure', 'existing_behavior', 'tests_and_conventions'],
+  };
 }
 
 export async function cmdPlan(args) {
-  const { quick, positional } = parsePlanArgs(args);
+  const { quick, interview, draft, execute, positional } = parsePlanArgs(args);
   const goal = positional.join(' ');
   const project = resolveProject(null);
 
@@ -244,6 +300,24 @@ export async function cmdPlan(args) {
   }
 
   const manifest = readJSON(manifestPath(project));
+  if (!getExplicitProject() && manifest?.goal && manifest.goal.trim() !== goal.trim()) {
+    console.log(JSON.stringify({
+      action: 'select-project',
+      blocked: true,
+      reason: 'explicit_goal_does_not_match_active_project',
+      active_project: project,
+      active_goal: manifest.goal,
+      requested_goal: goal,
+      next_action: 'pass --project <name> or initialize a new project',
+    }, null, 2));
+    process.exitCode = 2;
+    return;
+  }
+  const requestedAction = execute ? 'build' : 'plan_only';
+  const intentCheck = gaugeIntent(goal, { forceInterview: interview });
+  const planState = savePlanIntent(project, {
+    goal, requestedAction, intentCheck, forcedInterview: interview, draft,
+  });
   // Deterministic research gauge (R2): the skill layer reads this to scale
   // Research (full/slim) or — ONLY at quick-eligible — suggest --quick via
   // AskUserQuestion. Gauge failure degrades to null (skill treats null as
@@ -256,6 +330,15 @@ export async function cmdPlan(args) {
     action: 'auto-plan',
     project,
     goal,
+    requested_action: requestedAction,
+    stop_after: requestedAction === 'plan_only' ? 'plan_bundle' : 'execute_complete',
+    plan_state: planState.state,
+    executable: planState.executable,
+    intent_check: intentCheck,
+    next_action: intentCheck.readiness === 'clarify'
+      ? (draft ? 'produce_non_executable_draft' : 'ask_blocking_questions_once')
+      : 'research_then_generate_plan',
+    research_may_reopen_intent: true,
     quick,
     flow: quick ? 'quick' : 'full',
     skip_research: quick,
@@ -632,13 +715,34 @@ export function cmdPlanCheck(args) {
     }
   }
 
+  // 15. Review-group order — groups are sequential review boundaries. An
+  // earlier group may not depend on a later one or execution would deadlock
+  // while the later group is intentionally held behind the earlier review.
+  const groupOrder = new Map();
+  for (const t of tasks) {
+    const group = taskReviewGroup(t);
+    if (!groupOrder.has(group)) groupOrder.set(group, groupOrder.size);
+  }
+  for (const t of tasks) {
+    const taskRank = groupOrder.get(taskReviewGroup(t));
+    for (const depId of (t.depends_on || [])) {
+      const dep = tasks.find((candidate) => candidate.id === depId);
+      if (dep && groupOrder.get(taskReviewGroup(dep)) > taskRank) {
+        checks.push({
+          dim: 'review-groups', level: 'error', task: t.id,
+          msg: `Earlier review group "${taskReviewGroup(t)}" depends on later group "${taskReviewGroup(dep)}" via ${depId}`,
+        });
+      }
+    }
+  }
+
   // Output
   const errors = checks.filter(c => c.level === 'error');
   const warns = checks.filter(c => c.level === 'warn');
 
   console.log(`\n${C.bold}Plan Check — ${tasks.length} tasks${C.reset}\n`);
 
-  const dims = ['atomicity', 'dependencies', 'coverage', 'granularity', 'completeness', 'context', 'naming', 'tech-leakage', 'scope-clarity', 'risk-ordering', 'expected-files', 'failure-mode-coverage', 'delegation-contract', 'overall'];
+  const dims = ['atomicity', 'dependencies', 'coverage', 'granularity', 'completeness', 'context', 'naming', 'tech-leakage', 'scope-clarity', 'risk-ordering', 'expected-files', 'failure-mode-coverage', 'delegation-contract', 'review-groups', 'overall'];
   for (const dim of dims) {
     const dimChecks = checks.filter(c => c.dim === dim);
     if (dimChecks.length === 0) {
@@ -669,6 +773,7 @@ export function cmdPlanCheck(args) {
     checks,
     passed: errors.length === 0,
   });
+  markPlanReady(project, errors.length === 0);
 
   console.log('');
 }
@@ -776,7 +881,8 @@ export function cmdResearch(args) {
   const perspectives = isGreenfield
     ? ['landscape', 'user-scenarios', 'architecture', 'pitfalls']
     : ['stack', 'features', 'architecture', 'pitfalls'];
-  const model = opts.model || getModelForRole('researcher', 'medium', loadSharedConfig());
+  const sharedCfg = loadSharedConfig();
+  const model = opts.model || getModelForRole('researcher', 'medium', sharedCfg);
 
   const output = {
     action: 'research',
@@ -788,7 +894,7 @@ export function cmdResearch(args) {
     project_kind: projectKind,
     suggest_probe: isGreenfield,
     agents_spec: perspectives.map(p => {
-      const spec = { perspective: p, role: 'researcher', model };
+      const spec = { perspective: p, role: 'researcher', model, ...vendorModelFields(model, sharedCfg) };
       if (isGreenfield && p === 'landscape') spec.web = true;
       return spec;
     }),
@@ -1111,6 +1217,27 @@ function resolveNext(project) {
       if (!checkResult?.passed) {
         return { ...base, action: 'plan-check', args: [], reason: R('Plan-check failed. Fix issues and re-run.', '계획 점검에서 문제가 발견되었습니다. 수정 후 다시 점검하세요.'), plan_check_passed: false };
       }
+      const approval = validatePlanApproval(project);
+      if (!approval.ok) {
+        return {
+          ...base,
+          action: 'approve-plan',
+          args: [],
+          reason: R('Plan is ready but still needs final approval.', '계획이 준비되었습니다. 최종 승인만 남았습니다.'),
+          ready: false,
+          approval_reason: approval.reason,
+        };
+      }
+      if (approval.requested_action === 'plan_only') {
+        return {
+          ...base,
+          action: 'plan-complete',
+          args: [],
+          reason: R('Approved Plan Bundle is complete. Execution is intentionally paused.', '승인된 Plan Bundle이 완성되었습니다. 실행은 의도적으로 멈춘 상태입니다.'),
+          ready: true,
+          resume_command: 'x-build run',
+        };
+      }
       return { ...base, action: 'phase', args: ['next'], reason: R('Plan validated. Advance to Execute phase.', '계획이 확인되었습니다. 실행 단계로 넘어가세요.'), ready: true };
     }
     case 'execute': {
@@ -1121,7 +1248,28 @@ function resolveNext(project) {
       const allDone = (taskData?.tasks || []).every(t =>
         [TASK_STATES.COMPLETED, TASK_STATES.CANCELLED].includes(t.status)
       );
+      const groupSummary = readPlanState(project)
+        ? reviewGroupStatus(project, taskData?.tasks || [], { cwd: process.cwd() })
+        : { review_required: false, all_passed: true, active_group: null };
+      if (groupSummary.review_required) {
+        return {
+          ...base,
+          action: 'review-group',
+          args: [groupSummary.active_group],
+          reason: R(`Review group "${groupSummary.active_group}" is ready. Review it before continuing.`, `리뷰 그룹 "${groupSummary.active_group}"이 준비되었습니다. 계속하기 전에 리뷰하세요.`),
+          ready: true,
+        };
+      }
       if (allDone) {
+        if (!groupSummary.all_passed) {
+          return {
+            ...base,
+            action: 'review-group',
+            args: [groupSummary.active_group].filter(Boolean),
+            reason: R('Task execution is complete but its review group has not passed.', '작업 실행은 끝났지만 리뷰 그룹이 통과하지 않았습니다.'),
+            ready: false,
+          };
+        }
         return { ...base, action: 'phase', args: ['next'], reason: R('All tasks completed. Advance to Verify phase.', '모든 할 일이 끝났습니다. 확인 단계로 넘어가세요.'), ready: true };
       }
       return { ...base, action: 'run', args: [], reason: R('Execute next step via agent orchestration.', '다음 할 일을 실행하세요.') };

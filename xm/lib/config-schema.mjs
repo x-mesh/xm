@@ -284,6 +284,43 @@ export const SCHEMA = [
     description: 'Autopilot — human-verify 게이트를 자동 통과(quality·decision 게이트는 유지)',
   },
 
+  // ── build execution policy (shared by normal + worktree backends) ──
+  {
+    key: 'build.review_mode',
+    group: 'misc',
+    type: 'string',
+    enum: ['manual', 'auto'],
+    scope: 'either',
+    default: 'manual',
+    description: 'Execute review 정책 — manual(기본, 선택 실행) / auto(그룹 종료 hard gate)',
+  },
+  {
+    key: 'build.review_scope',
+    group: 'misc',
+    type: 'string',
+    enum: ['group', 'task'],
+    scope: 'either',
+    default: 'group',
+    description: 'Execute review 단위 — group(기본, 그룹 종료 시 1회) / task(고위험 호환 모드)',
+  },
+  {
+    key: 'build.panel_rounds',
+    group: 'misc',
+    type: 'integer',
+    enum: [1, 2],
+    scope: 'either',
+    default: 1,
+    description: '명시적 build review-group panel round 수 — 1(기본) / 2(반박 포함)',
+  },
+  {
+    key: 'build.task_checks',
+    group: 'misc',
+    type: 'array',
+    scope: 'either',
+    default: ['test', 'lint'],
+    description: '모든 실행 backend에서 task 완료 전에 수행할 공통 check 이름 목록',
+  },
+
   // ── worktree (build-local 3-tier; runtime source = WORKTREE_CONFIG_DEFAULTS) ──
   {
     key: 'worktree.enabled',
@@ -465,6 +502,16 @@ export const SCHEMA = [
     min: 30,
     default: 600,
     description: '패널/cross-vendor 모델별 idle 타임아웃(초) — xm panel setup 또는 xm config 위저드에서 편집',
+  },
+  {
+    key: 'panel.rounds',
+    group: 'panel',
+    type: 'integer',
+    enum: [1, 2],
+    scope: 'global',
+    owner: 'x-panel',
+    default: 1,
+    description: 'native panel review round 수 — 1(기본 consensus/diversity) / 2(adversarial refutation)',
   },
 ];
 

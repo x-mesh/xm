@@ -619,8 +619,10 @@ ${C.bold}Research Phase:${C.reset}
   research [goal]                Parallel agent investigation (stack/features/arch/pitfalls)
 
 ${C.bold}Plan Phase:${C.reset}
-  plan ["goal"] [--quick]        Show plan or auto-decompose goal into tasks (--quick: explicit fast path)
-  plan-check [--strict]          Validate plan across 11 dimensions (--strict: coverage errors block gate)
+  plan ["goal"] [--interview|--draft|--quick]
+                                 Plan-only; inspect intent and stop after the Plan Bundle
+  build "goal"                   Plan first, then continue after content-bound approval
+  plan-check [--strict]          Validate plan across 15 dimensions (--strict: coverage errors block gate)
   prd-gate [--threshold N]       Judge panel PRD quality evaluation (default threshold: 7)
   consensus [--round N]          4-agent consensus review (architect/critic/planner/security)
   phase <next|set|status>        Manage phases
@@ -634,7 +636,11 @@ ${C.bold}Execute Phase:${C.reset}
   later <add|list|promote|dismiss|verify-scope>
                                  Capture off-scope work and verify it stayed deferred
   steps <compute|status|next>    DAG-based step management
-  run                            Execute next step via agent orchestration
+  run                            Execute next step via normal/worktree backend
+  run-status [--json]            Show task + review-group state and next action
+  task-check <id> [--json]       Run task-local test/lint checks and save evidence
+  review-group [name] [--rounds 1|2] [--json]
+                                  Run an optional group review (default: 1 round)
   checkpoint <type> [message]    Record a checkpoint
 
 ${C.bold}Verify & Close:${C.reset}
