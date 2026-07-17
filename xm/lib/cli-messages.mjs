@@ -368,6 +368,10 @@ const MESSAGES = {
     ko: '게이트 설정 (auto / human-verify / quality / decision)',
     en: 'Gate settings (auto / human-verify / quality / decision)',
   },
+  'gates.enum_note': {
+    ko: 'auto=자동 통과 · human-verify=사람 확인 · quality=품질 체크 통과 필요 · decision=방향 승인(autopilot 불가)',
+    en: 'auto=pass automatically · human-verify=human confirms · quality=quality checks must pass · decision=direction approval (autopilot cannot pass)',
+  },
 
   // ── category: worktree ──
   'worktree.title': { ko: 'worktree 설정', en: 'worktree settings' },
@@ -433,6 +437,14 @@ const MESSAGES = {
   'gp.merge_note': {
     ko: 'per-key 병합: 한 항목만 저장해도 나머지 severity 목록은 tier 병합으로 유지됩니다 (전량 교체 아님).',
     en: 'per-key merge: saving one item keeps the other severity lists via tier merge (not a wholesale replace).',
+  },
+  'gp.bucket_note': {
+    ko: 'confirmed=패널 합의 finding · unreviewed=단독 제기(미검증) · contested=반박됨 · allow_low=low는 항상 통과',
+    en: 'confirmed=panel-agreed · unreviewed=single-model (unverified) · contested=refuted · allow_low=low never blocks',
+  },
+  'gp.overlay_note': {
+    ko: '페이즈 오버레이(before/after/release 부분 정책)는 JSON으로 편집: xm config set worktree.gate_policy',
+    en: 'phase overlays (before/after/release partial policies): edit as JSON via xm config set worktree.gate_policy',
   },
 
   // ── scan_roots editor ──
