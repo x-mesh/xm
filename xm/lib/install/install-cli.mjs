@@ -37,7 +37,7 @@ import { renderKiroShared } from './transform/kiro-shared.mjs';
 import { renderAntigravityWithDiagnostics } from './transform/antigravity.mjs';
 import { renderOpencodeWithDiagnostics } from './transform/opencode.mjs';
 import { CODEX_AGENTS_MAX_BYTES } from './types.mjs';
-import { buildManifest, writeManifest, readManifest, verifyManifest, verifySelfChecksum, manifestPath, discoverManifests, readManifestIfExists, shouldSkipTarget } from './manifest.mjs';
+import { buildManifest, writeManifest, readManifest, verifyManifest, verifySelfChecksum, manifestPath, discoverManifests, readManifestIfExists } from './manifest.mjs';
 import { existsSync, readFileSync, readdirSync, lstatSync, unlinkSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -541,11 +541,10 @@ export function run(argv) {
       return { exitCode: 0, stdout: JSON.stringify(empty, null, 2) + '\n', stderr: '' };
     }
 
-    // Scan skills once for all targets.
-    /** @type {import('./types.mjs').SkillIR[]} */
-    let skills;
+    // Fail-fast scan: one broken skill must fail the propagate ONCE, loudly,
+    // before the target loop — not once per installed target inside run().
     try {
-      skills = scanAll({ skillsDir: args.skillsDir, libDir: args.libDir, only: undefined });
+      scanAll({ skillsDir: args.skillsDir, libDir: args.libDir, only: undefined });
     } catch (err) {
       return { exitCode: 2, stdout: '', stderr: `scan failed: ${/** @type {Error} */ (err).message}\n` };
     }
@@ -556,7 +555,7 @@ export function run(argv) {
     for (const entry of entries) {
       const { target, scope } = entry;
 
-      // Check manifest validity to decide skip vs re-install.
+      // Check manifest validity to decide migrate vs plain re-render.
       let manifest = null;
       let migrating = false;
       try {
@@ -567,38 +566,36 @@ export function run(argv) {
         manifest = null;
       }
 
-      // Build planned files via full render to enable shouldSkipTarget comparison.
-      // The recursive run() is the v1 install mechanism; this pre-check avoids it
-      // when content hasn't changed.
-      let plannedFileCount = 0;
-      let skip = false;
+      // Pre-state: is the install INTACT (disk matches its own manifest)?
+      // This is a repair detector only — it must NEVER gate the re-install.
+      // The old code used verifyManifest.ok as the skip condition, which froze
+      // intact-but-OUTDATED installs forever: an overlay that matched its
+      // install-day manifest was "skipped" on every propagate, so new bundle
+      // releases never reached codex/kiro/cursor (kiro sat months stale).
+      // Only re-rendering against the CURRENT bundle can tell "outdated".
+      let intactBefore = false;
       if (!migrating && manifest) {
         try {
-          planAll({ skills, targets: [target], scope, cwd: process.cwd() });
-          // Run through the same install path to produce rendered content, then
-          // compare. Since v1 uses recursive run() anyway, we use verifyManifest
-          // as a lightweight proxy: if all files on disk still match the manifest
-          // SHA-256s, and manifest selfChecksum is valid, the install is a no-op.
-          const verification = verifyManifest(manifest);
-          plannedFileCount = manifest.files.length;
-          skip = verification.ok;
-          if (skip && target === 'codex' && manifest.hookOwnership) {
+          intactBefore = verifyManifest(manifest).ok;
+          if (intactBefore && target === 'codex' && manifest.hookOwnership) {
             const hooksPath = safeJoin(manifest.installRoot, join('.codex', 'hooks.json'));
             const hooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
-            skip = missingOwnedCodexHooks(hooks, manifest.hookOwnership).length === 0;
+            intactBefore = missingOwnedCodexHooks(hooks, manifest.hookOwnership).length === 0;
           }
         } catch {
-          // Plan failure → must re-install to surface the error properly.
-          skip = false;
+          intactBefore = false;
         }
       }
 
-      if (skip) {
-        results.push({ target, scope, status: 'skipped', filesChanged: 0, filesSkipped: plannedFileCount, error: null });
-        continue;
-      }
+      // ALWAYS re-render via the real install path (idempotent per file:
+      // writeOverwrite/writeMergeMarker report 'unchanged' and the manifest
+      // rewrite self-skips when every SHA matches — see canSkip guard). The
+      // manifest bytes before/after are the change signal.
+      const readManifestBytes = () => {
+        try { return readFileSync(entry.path, 'utf8'); } catch { return null; }
+      };
+      const manifestBytesBefore = readManifestBytes();
 
-      // Re-install via recursive run().
       if (migrating) {
         stderrNotes += `note: migrating ${target} from incompatible manifest schema\n`;
       }
@@ -606,11 +603,24 @@ export function run(argv) {
                        '--skills-dir', args.skillsDir, '--lib-dir', args.libDir];
       const sub = run(subArgv);
       const subWarnings = sub.stderr.split('\n').filter((line) => line.includes('marker block content changed'));
-      if (sub.exitCode === 0) {
-        const status = migrating ? 'migrated' : 'updated';
-        results.push({ target, scope, status, filesChanged: plannedFileCount || manifest?.files.length || 0, filesSkipped: 0, warnings: subWarnings, error: null });
-      } else {
+      if (sub.exitCode !== 0) {
         results.push({ target, scope, status: 'failed', filesChanged: 0, filesSkipped: 0, warnings: subWarnings, error: sub.stderr.trim() });
+        continue;
+      }
+
+      let fileCount = manifest?.files.length ?? 0;
+      try { fileCount = readManifest(entry.path).files.length; } catch { /* keep prior count */ }
+
+      // skipped  — install was intact AND the re-render changed nothing
+      // updated  — repair (!intactBefore) or new bundle content (manifest moved)
+      // migrated — manifest schema was incompatible and got rebuilt
+      const status = migrating ? 'migrated'
+        : (!intactBefore || readManifestBytes() !== manifestBytesBefore) ? 'updated'
+        : 'skipped';
+      if (status === 'skipped') {
+        results.push({ target, scope, status, filesChanged: 0, filesSkipped: fileCount, error: null });
+      } else {
+        results.push({ target, scope, status, filesChanged: fileCount, filesSkipped: 0, warnings: subWarnings, error: null });
       }
     }
 

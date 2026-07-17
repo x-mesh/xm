@@ -325,11 +325,29 @@ case "$CMD" in
     ;;
 
   version|--version|-v)
-    # Prefer local repo plugin.json, fallback to cache
+    # Report the ACTIVE lib's version + provenance. During development the
+    # local source (XM_LIB / source-repo cwd) and the marketplace cache
+    # diverge — `xm which` may pick one while the user expects the other, so
+    # version must name WHICH lib answered.
+    _vread() {
+      [ -f "$1" ] || { echo ""; return; }
+      grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$1" | head -1 \
+        | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
+    }
     if [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
-      grep '"version"' "$LIB/xm/.claude-plugin/plugin.json" | head -1
+      SRC="local source: $LIB"
+      [ -n "${XM_LIB:-${X_KIT_LIB:-}}" ] && SRC="local source via XM_LIB: $LIB"
+      echo "xm $(_vread "$LIB/xm/.claude-plugin/plugin.json") ($SRC)"
     else
-      ls "$LIB/xm"/ 2>/dev/null | head -1
+      # Marketplace cache: pick the HIGHEST version dir. Plain `ls | head -1`
+      # is alphabetical — it ranked 2.4.35 above 2.7.2 and printed a version
+      # that was long gone.
+      PJ="$(ls -d "$LIB/xm"/*/.claude-plugin/plugin.json 2>/dev/null | sort -V | tail -1)"
+      if [ -n "$PJ" ]; then
+        echo "xm $(_vread "$PJ") (marketplace cache)"
+      else
+        echo "xm unknown (no plugin.json under $LIB/xm)"
+      fi
     fi
     ;;
 
@@ -757,6 +775,23 @@ case "$CMD" in
           echo "⚠️  propagate snapshot incomplete — skipping fan-out"
         fi
       fi
+    fi
+
+    # 8. Runtime-override notice. `xm update` converges everything it OWNS to
+    #    the marketplace state (cache, bin, hooks, overlays) — but resolve_lib
+    #    still prefers XM_LIB / a source-repo cwd at runtime. On a dev machine
+    #    that means commands keep running LOCAL SOURCE after a successful
+    #    update ("update did nothing" confusion) — say so, loudly.
+    OVERRIDE_LIB="${XM_LIB:-${X_KIT_LIB:-}}"
+    if [ -n "$OVERRIDE_LIB" ] && [ -d "$OVERRIDE_LIB" ]; then
+      echo ""
+      echo "⚠ XM_LIB override active: $OVERRIDE_LIB"
+      echo "   xm commands keep running from that LOCAL SOURCE, not the market install ($REMOTE_VERSION)."
+      echo "   → unset XM_LIB (and X_KIT_LIB) to switch to the market install."
+    elif [ -d "x-build/lib" ] && [ -d "xm/lib" ]; then
+      echo ""
+      echo "⚠ current directory is an xm source repo — xm commands run from ./ (local source), not the market install ($REMOTE_VERSION)."
+      echo "   → run xm outside this directory for the market install; keep cwd/XM_LIB for release-less local development."
     fi
 
     echo ""

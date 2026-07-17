@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { join, dirname } from 'node:path';
-import { mkdtempSync, mkdirSync, writeFileSync, unlinkSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, unlinkSync, existsSync, readdirSync, cpSync, readFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -371,6 +371,54 @@ describe('--propagate', () => {
     expect(parsed.results[0].status).toBe('skipped');
     expect(parsed.summary.skipped).toBe(1);
     expect(parsed.summary.success).toBe(0);
+  });
+
+  test('updates an INTACT install when the bundle content changed (stale-overlay regression)', () => {
+    // The historical bug: propagate used verifyManifest.ok as the skip signal,
+    // so an install whose files matched its OWN (old) manifest was skipped
+    // forever — new bundle releases never reached codex/kiro/cursor overlays.
+    const home = mkdtempSync(join(tmpdir(), 'xm-prop-stale-'));
+    const skillsCopy = mkdtempSync(join(tmpdir(), 'xm-prop-skills-'));
+    cpSync(SKILLS, skillsCopy, { recursive: true });
+
+    // Install from the copied skills dir, then propagate against the SAME dir
+    // → converged, skipped.
+    const installResult = spawnSync('node', [CLI, '--target', 'cursor', '--global', '--yes', '--force',
+      '--skills-dir', skillsCopy, '--lib-dir', LIB], {
+      encoding: 'utf8', timeout: 60_000, env: { ...process.env, HOME: home }, cwd: REPO,
+    });
+    expect(installResult.status).toBe(0);
+
+    // Simulate a new release: one skill's content changes upstream. Disk still
+    // matches the old manifest (install is intact) — only a render-and-compare
+    // can see the difference.
+    const firstSkillMd = readdirSync(skillsCopy).map((d) => join(skillsCopy, d, 'SKILL.md')).find(existsSync);
+    expect(firstSkillMd).toBeTruthy();
+    appendFileSync(firstSkillMd, '\nStale-overlay regression marker.\n');
+
+    const result = spawnSync('node', [CLI, '--propagate', '--skills-dir', skillsCopy, '--lib-dir', LIB], {
+      encoding: 'utf8', timeout: 60_000, env: { ...process.env, HOME: home }, cwd: REPO,
+    });
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.results).toHaveLength(1);
+    expect(parsed.results[0].status).toBe('updated');   // NOT 'skipped'
+    expect(parsed.summary.success).toBe(1);
+
+    // The new content actually landed on disk.
+    const skillName = dirname(firstSkillMd).split('/').pop();
+    const installedDirs = readdirSync(join(home, '.cursor', 'skills'));
+    const installedSkill = installedDirs.find((d) => d.includes(skillName));
+    expect(installedSkill).toBeTruthy();
+    const installed = readFileSync(join(home, '.cursor', 'skills', installedSkill, 'SKILL.md'), 'utf8');
+    expect(installed).toContain('Stale-overlay regression marker.');
+
+    // Convergence: a second propagate with the same inputs is a no-op.
+    const again = spawnSync('node', [CLI, '--propagate', '--skills-dir', skillsCopy, '--lib-dir', LIB], {
+      encoding: 'utf8', timeout: 60_000, env: { ...process.env, HOME: home }, cwd: REPO,
+    });
+    expect(again.status).toBe(0);
+    expect(JSON.parse(again.stdout).results[0].status).toBe('skipped');
   });
 
   test('migrates incompatible schema', () => {
