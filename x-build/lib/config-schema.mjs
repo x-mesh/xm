@@ -106,7 +106,7 @@ export const SCHEMA = [
     type: 'object',
     scope: 'global',
     default: {},
-    description: 'harness(vendor)별 tier(haiku/sonnet/opus)→모델 매핑 { vendor: { tier: model[:effort] } } — model_overrides(role→tier)·panel.*(패널 프리셋)와 다른 축',
+    description: 'vendor별 tier(haiku/sonnet/opus)→모델 매핑 { vendor: { tier: model[:effort] } } — 역할축(model_overrides)·패널축(panel.*)과 별개',
   },
   {
     key: 'vendor_profiles',
@@ -347,7 +347,7 @@ export const SCHEMA = [
       allow_low: true,
       release: { block_confirmed: ['critical', 'high', 'medium'] },
     },
-    description: 'worktree 게이트 severity 정책 (계층별 per-key 병합; before/after/release 페이즈 오버레이 지원 — 기본은 per-task critical/high 블로킹, release에서 medium 재블로킹)',
+    description: '게이트 severity 정책 (per-key 병합, 페이즈 오버레이 지원) — 기본: per-task는 critical/high 블로킹, medium은 advisory 기록 후 release에서 재블로킹',
   },
   {
     key: 'worktree.gate_max_rounds',
@@ -356,7 +356,7 @@ export const SCHEMA = [
     scope: 'build-local',
     default: 2,
     min: 0,
-    description: '게이트 패널-fail 라운드 상한 — 초과 시 medium을 advisory로 자동 강등 (critical/high는 불변). 0=무제한',
+    description: '연속 패널-fail 라운드 상한 — 초과 시 medium만 advisory로 강등 (critical/high 불변). 0=무제한',
   },
   {
     key: 'worktree.pre_gate',
@@ -365,7 +365,7 @@ export const SCHEMA = [
     nullable: true,
     scope: 'build-local',
     default: null,
-    description: '패널 앞 저비용 프리게이트 명령 템플릿 ({patch} 치환, exit 0=통과, 1=차단 fail-fast, ≥2=경고 후 진행). null=비활성',
+    description: '패널 앞 저비용 검사 명령 — {patch} 치환, exit 0=통과 / 1=차단(패널 생략) / ≥2=경고 후 진행. null=비활성',
   },
   {
     key: 'worktree.preflight',
@@ -419,7 +419,7 @@ export const SCHEMA = [
     default: 0.7,
     min: 0,
     max: 1,
-    description: 'goal drift 게이트 임계값 (0-1)',
+    description: 'goal drift 차단 임계값 (0-1) — goal 점수가 이 값 미만이면 차단, 높일수록 엄격',
   },
   {
     key: 'pipelines',
