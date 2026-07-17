@@ -190,6 +190,7 @@ sync_file "x-sync/lib/x-sync-server.mjs" "xm/lib/x-sync-server.mjs"
 echo ""
 echo "=== Syncing x-remote lib files ==="
 sync_file "x-remote/lib/x-remote-cli.mjs" "xm/lib/x-remote-cli.mjs"
+sync_file "x-remote/lib/x-remote-prompts.mjs" "xm/lib/x-remote-prompts.mjs"
 sync_file "x-remote/lib/x-remote-host.mjs" "xm/lib/x-remote-host.mjs"
 sync_file "x-remote/lib/x-remote-gateway.mjs" "xm/lib/x-remote-gateway.mjs"
 ensure_dir "xm/lib/x-remote"
@@ -447,6 +448,7 @@ fi
 
 for pair in \
   "x-remote/lib/x-remote-cli.mjs:xm/lib/x-remote-cli.mjs" \
+  "x-remote/lib/x-remote-prompts.mjs:xm/lib/x-remote-prompts.mjs" \
   "x-remote/lib/x-remote-host.mjs:xm/lib/x-remote-host.mjs" \
   "x-remote/lib/x-remote-gateway.mjs:xm/lib/x-remote-gateway.mjs"; do
   src="${pair%%:*}"; dst="${pair##*:}"
