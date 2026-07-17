@@ -24,6 +24,8 @@ import {
   readJSON, existsSync, mkdirSync, writeFileSync, renameSync,
   parseOptions, getExplicitProject, exitFail, C,
 } from './core.mjs';
+import { loadSharedConfig } from './config-loader.mjs';
+import { getModelForRole, resolveVendorModel, ROLE_MODEL_MAP_HR } from './cost-engine.mjs';
 // Unified worktree config resolver + shared trust-boundary/root helpers (leaf
 // module — no cycle back to worktrees.mjs).
 import {
@@ -177,11 +179,23 @@ function panelBaseArgv() {
   return ['xm', 'panel'];
 }
 
+function resolveRoutedPanelModelOverrides(task) {
+  const sharedCfg = loadSharedConfig();
+  const reviewerRoute = getModelForRole('reviewer', task?.size || 'medium', sharedCfg);
+  const reviewerTier = reviewerRoute === 'inherit' ? ROLE_MODEL_MAP_HR.reviewer : reviewerRoute;
+  const codex = resolveVendorModel(reviewerTier, 'codex', sharedCfg);
+  if (codex.warning && !codex.spec) {
+    process.stderr.write(`${C.yellow}⚠ gate-panel: reviewer→codex routing warning — ${codex.warning}${C.reset}\n`);
+  }
+  if (!codex.spec) return null;
+  return { codex: codex.spec };
+}
+
 /**
  * Run `xm panel <patch> --json` once (no retry).
  * @returns {{ ok: true, verdict: object } | { ok: false, transient: boolean, error: string }}
  */
-function runPanelOnce({ patch, taskId, phase, cwd, panelRoot, buildRoot }) {
+function runPanelOnce({ patch, taskId, phase, cwd, panelRoot, buildRoot, routedModelOverrides = null, rounds = 1 }) {
   const base = panelBaseArgv();
   const cmd = base[0];
   const args = [
@@ -189,8 +203,12 @@ function runPanelOnce({ patch, taskId, phase, cwd, panelRoot, buildRoot }) {
     patch, '--json',
     '--source', 'build:worktree',
     '--title', `${taskId} ${phase}`,
+    '--rounds', String(rounds),
   ];
   const env = { ...process.env, X_PANEL_ROOT: panelRoot, XM_ROOT: panelRoot, X_BUILD_ROOT: buildRoot };
+  if (routedModelOverrides && Object.keys(routedModelOverrides).length) {
+    env.X_PANEL_ROUTED_MODEL_OVERRIDES = JSON.stringify(routedModelOverrides);
+  }
   const timeoutMs = Number(process.env.X_BUILD_GATE_TIMEOUT_MS) || 600000;
 
   const res = spawnSync(cmd, args, {
@@ -383,7 +401,7 @@ function writeArtifact(path, data) {
  *
  * @returns {{ result: object, exitCode: number, artifactPath: string }}
  */
-export function runGatePanel({ project, taskId, phase, patch, cwd = process.cwd() }) {
+export function runGatePanel({ project, taskId, phase, patch, cwd = process.cwd(), rounds = 1 }) {
   const { buildRoot, panelRoot } = resolveMainRoots(cwd);
 
   const artifactPath = join(buildRoot, 'projects', project, 'worktrees', taskId, `panel-${phase}.json`);
@@ -395,6 +413,7 @@ export function runGatePanel({ project, taskId, phase, patch, cwd = process.cwd(
   const wtConfig = loadWorktreeConfig({ buildRootDir: buildRoot });
   const tasksJson = readJSON(join(buildRoot, 'projects', project, 'phases', '02-plan', 'tasks.json'));
   const task = tasksJson?.tasks?.find(t => t.id === taskId) || null;
+  const routedModelOverrides = resolveRoutedPanelModelOverrides(task);
   let policy = mergePolicy({ config: { worktree: wtConfig }, task, phase });
   const policyOverridden = !!(task?.gate_policy) || worktreeGatePolicyConfigured(buildRoot);
 
@@ -420,6 +439,7 @@ export function runGatePanel({ project, taskId, phase, patch, cwd = process.cwd(
     policy,
     policy_overridden: policyOverridden,
     round,
+    panel_rounds: rounds,
     demotions,
   };
 
@@ -446,7 +466,7 @@ export function runGatePanel({ project, taskId, phase, patch, cwd = process.cwd(
     }
   }
 
-  const panel = runPanel({ patch, taskId, phase, cwd, panelRoot, buildRoot });
+  const panel = runPanel({ patch, taskId, phase, cwd, panelRoot, buildRoot, routedModelOverrides, rounds });
 
   if (!panel.ok) {
     const result = {
@@ -509,6 +529,7 @@ export function cmdGatePanel(args) {
   const phase = typeof opts.phase === 'string' ? opts.phase : null;
   const patch = typeof opts.patch === 'string' ? opts.patch : null;
   const json = !!opts.json;
+  const rounds = opts.rounds == null ? 1 : Number(opts.rounds);
 
   if (!taskId) { console.error('❌ gate-panel requires --task <id>.'); exitFail(2); return; }
   const taskErr = validateIdSegment(taskId, '--task');
@@ -519,8 +540,9 @@ export function cmdGatePanel(args) {
   }
   if (!patch) { console.error('❌ gate-panel requires --patch <path>.'); exitFail(2); return; }
   if (!existsSync(patch)) { console.error(`❌ gate-panel: patch file not found: ${patch}`); exitFail(2); return; }
+  if (![1, 2].includes(rounds)) { console.error('❌ gate-panel: --rounds must be 1 or 2.'); exitFail(2); return; }
 
-  const { result, exitCode, artifactPath } = runGatePanel({ project, taskId, phase, patch });
+  const { result, exitCode, artifactPath } = runGatePanel({ project, taskId, phase, patch, rounds });
 
   if (json) {
     console.log(JSON.stringify(result, null, 2));

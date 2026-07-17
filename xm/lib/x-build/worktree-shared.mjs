@@ -25,7 +25,7 @@
  * No module imported here imports back, so there is no import cycle and no TDZ.
  */
 
-import { resolve, join, ROOT, readJSON, execSync } from './core.mjs';
+import { resolve, join, ROOT, readJSON, existsSync, execSync } from './core.mjs';
 import { readSharedConfig } from '../shared-config.mjs';
 
 // ── input validation (shared trust-boundary guard) ───────────────────
@@ -214,18 +214,22 @@ export const WORKTREE_CONFIG_DEFAULTS = {
 // worktreeGatePolicyConfigured (provenance) so there is a single reader.
 function readWorktreeLayers(buildRootDir) {
   let shared = {};
+  let sharedBuild = {};
   try {
     const sc = readSharedConfig();
     if (sc && typeof sc.worktree === 'object' && sc.worktree) shared = sc.worktree;
+    if (sc && typeof sc.build === 'object' && sc.build) sharedBuild = sc.build;
   } catch { shared = {}; }
 
   let local = {};
+  let localBuild = {};
   try {
     const bc = readJSON(join(buildRootDir || buildRoot(), 'config.json'));
     if (bc && typeof bc.worktree === 'object' && bc.worktree) local = bc.worktree;
+    if (bc && typeof bc.build === 'object' && bc.build) localBuild = bc.build;
   } catch { local = {}; }
 
-  return { shared, local };
+  return { shared, local, sharedBuild, localBuild };
 }
 
 // Apply run-level CLI flag overrides (highest priority). Mutates + returns cfg.
@@ -250,14 +254,36 @@ function applyFlags(cfg, flags = {}) {
  * @param {{ flags?: object, buildRootDir?: string|null }} [opts]
  */
 export function loadWorktreeConfig({ flags = {}, buildRootDir = null } = {}) {
-  const { shared, local } = readWorktreeLayers(buildRootDir);
+  const { shared, local, sharedBuild, localBuild } = readWorktreeLayers(buildRootDir);
   const merged = { ...WORKTREE_CONFIG_DEFAULTS, ...shared, ...local };
   merged.gate_policy = {
     ...WORKTREE_CONFIG_DEFAULTS.gate_policy,
     ...(shared.gate_policy || {}),
     ...(local.gate_policy || {}),
   };
-  return applyFlags(merged, flags);
+  const withFlags = applyFlags(merged, flags);
+  // Worktrees are an execution backend, not a separate lifecycle. Under the
+  // common group-review policy their per-task gk finish is intentionally
+  // ungated; the shared review-group boundary performs the one expensive panel.
+  const reviewScope = localBuild.review_scope || sharedBuild.review_scope || 'group';
+  const explicitGatePhase = flags.gate_phase !== undefined
+    || Object.prototype.hasOwnProperty.call(local, 'gate_phase')
+    || Object.prototype.hasOwnProperty.call(shared, 'gate_phase');
+  if (reviewScope === 'group' && !explicitGatePhase) {
+    withFlags.gate_phase = 'release';
+    withFlags.gate_deferred_to = 'review_group';
+  }
+  return withFlags;
+}
+
+/** Legacy projects have no final group lifecycle, so never defer their gk gate. */
+export function applyLifecycleWorktreePolicy(config, project, buildRootDir = buildRoot()) {
+  const planState = join(buildRootDir, 'projects', project, 'phases', '02-plan', 'plan-state.json');
+  if (!existsSync(planState) && config?.gate_deferred_to === 'review_group') {
+    config.gate_phase = 'before';
+    delete config.gate_deferred_to;
+  }
+  return config;
 }
 
 /**

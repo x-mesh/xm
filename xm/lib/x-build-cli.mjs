@@ -10,7 +10,7 @@
 import { resolveProject, resetCircuitBreaker, getCircuitState, setExplicitProject, cmdProjectKind } from './x-build/core.mjs';
 import { cmdInit, cmdList, cmdStatus, cmdClose, cmdDashboard, interactiveInit, interactiveDashboard, cmdHandoffFull, cmdHandon } from './x-build/project.mjs';
 import { cmdPhase, cmdGate, cmdCheckpoint } from './x-build/phase.mjs';
-import { cmdTasks, cmdSteps, cmdRun, cmdRunStatus, interactiveTasksAdd, cmdDispatch } from './x-build/tasks.mjs';
+import { cmdTasks, cmdTaskCheck, cmdSteps, cmdRun, cmdRunStatus, cmdReviewGroup, interactiveTasksAdd, cmdDispatch } from './x-build/tasks.mjs';
 import { cmdLater } from './x-build/later.mjs';
 import { cmdHooks } from './x-build/hooks.mjs';
 import { cmdPlan, cmdPlanCheck, cmdPrdGate, cmdPrdCheck, cmdConsensus, cmdDiscuss, cmdResearch, cmdForecast, cmdRoi, cmdNext, cmdHandoff, cmdSummarize, cmdSaveArtifact, cmdContextUsage, cmdResearchCheck } from './x-build/plan.mjs';
@@ -78,6 +78,7 @@ switch (cmd) {
     if (args[0] === 'add' && args.length <= 1) { await interactiveTasksAdd(); }
     else { cmdTasks(args); }
     break;
+  case 'task-check':  cmdTaskCheck(args); break;
   case 'later': cmdLater(args); break;
   case 'hooks': cmdHooks(args); break;
   case 'steps':      cmdSteps(args); break;
@@ -90,11 +91,12 @@ switch (cmd) {
   case 'summarize':     cmdSummarize(args); break;
   case 'forecast':      cmdForecast(args); break;
   case 'roi':           cmdRoi(args); break;
-  case 'run':            cmdRun(args); break;
+  case 'run':            await cmdRun(args); break;
   case 'mode':           cmdMode(args); break;
   case 'export':         cmdExport(args); break;
   case 'import':         cmdImport(args); break;
   case 'plan':           await cmdPlan(args); break;
+  case 'build':          await cmdPlan(['--execute', ...args]); break;
   case 'discuss':        cmdDiscuss(args); break;
   case 'research':       cmdResearch(args); break;
   case 'plan-check':     cmdPlanCheck(args); break;
@@ -118,6 +120,7 @@ switch (cmd) {
   case 'context-usage':  cmdContextUsage(args); break;
   case 'save':           cmdSaveArtifact(args); break;
   case 'run-status':     cmdRunStatus(args); break;
+  case 'review-group':   cmdReviewGroup(args); break;
   case 'watch':         cmdWatch(args); break;
   case 'dashboard':     cmdDashboard(); break;
   case 'metrics':       cmdMetrics(args); break;
