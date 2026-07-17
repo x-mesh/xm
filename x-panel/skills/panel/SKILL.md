@@ -143,12 +143,30 @@ Ask (ONE AskUserQuestion): **models**, per-model **overrides** (`name:model`, e.
 > `setup` saves **panel-engine** defaults (route 3). Cross-vendor consumers don't read `models`/
 > `judge`/`stream` — they detect vendors and pass `--models` themselves (only `timeout_s` is shared).
 
+### `/xm:panel models` → interactive model picker (provider → model, two steps)
+Bare `xm panel models` (no vendor) drills DOWN to a single model with TWO AskUserQuestions —
+never dump every catalog:
+1. **Provider** — `xm panel models --json` → provider rows (`installed`/`ready`/`hasCatalog`).
+   Print them as markdown FIRST (dark-theme rule), then ONE AskUserQuestion. The 4-option cap:
+   offer the installed providers (prefer `hasCatalog` = agy/cursor/kiro; claude/codex are fixed-ID),
+   overflow → Other.
+2. **Model** — `xm panel models <vendor> --json` → `{ models:[…] }`. Print the FULL catalog as
+   markdown first (`xm panel models <vendor>` shows credits/desc), then ONE AskUserQuestion. A
+   catalog can be 18+ IDs, past the 4-option cap → offer a few common ones + Other so the user types
+   any ID they see in the printed list.
+
+End state: the chosen `vendor:model` (e.g. `kiro:claude-opus-4.8`). Show it + how to use it
+(`--models <vendor>:<model>`, or persist via `xm panel setup`). Do NOT save or run it unless asked.
+Shortcuts: `xm panel models <vendor>` (vendor named) → skip step 1; `--all` → non-interactive full
+dump; `--check <id>` → verify an ID exists.
+
 ## Common Rationalizations
 
 | Excuse | Reality |
 |--------|---------|
 | "I'll just hardcode `--models claude,codex`." | The user has a configured default/preset — respect it (or ask). Hardcoding ignores their setup. |
 | "Interactive is slow, I'll pick the models myself." | Bare `/xm:panel` exists precisely to let the user choose. Decide for them only when they gave a target/flags. |
+| "User asked about models, I'll run `xm panel models` and dump every catalog." | Bare `models` is a provider picker now — dumping all live catalogs is slow and unasked-for. Pick a provider (AskUserQuestion), then query that one. `--all` only when the user explicitly wants the full dump. |
 | "One model's review is enough, skip the panel." | The whole value is cross-model diversity + consensus; a single model misses what others catch (proven in dogfooding). |
 | "I'll define a bash function for the long command." | Bash tool is stateless per call; the function vanishes → `command not found`. Use `xm panel` directly. |
 | "The verdict has duplicate findings, I'll dedupe by hand." | `consensus[]` already merges same file+line across models with an N/M tag. Read consensus, not raw `confirmed`. |

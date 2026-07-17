@@ -1032,6 +1032,85 @@ describe('Kiro no-MCP agent provisioning (Bedrock oneOf/allOf/anyOf workaround)'
   });
 });
 
+describe('kiro reasoning-effort spec (model[:effort] → --effort)', () => {
+  // Pin a panel.kiro_agent override so the builder returns immediately (no ~/.kiro
+  // provisioning, no stderr banner) — captureStderr then sees ONLY effort warnings.
+  const savedAgent = process.env.X_PANEL_KIRO_AGENT;
+  beforeAll(() => { process.env.X_PANEL_KIRO_AGENT = 'test-effort-agent'; });
+  afterAll(() => {
+    if (savedAgent === undefined) delete process.env.X_PANEL_KIRO_AGENT; else process.env.X_PANEL_KIRO_AGENT = savedAgent;
+  });
+
+  const captureStderr = (fn) => {
+    const orig = process.stderr.write;
+    const out = [];
+    process.stderr.write = (s) => { out.push(String(s)); return true; };
+    try { return { value: fn(), stderr: out.join('') }; }
+    finally { process.stderr.write = orig; }
+  };
+
+  test('raw builder: "claude-opus-4.8:high" → --model claude-opus-4.8 + --effort high', () => {
+    const [bin, args] = resolveCommand('kiro', 'the prompt', 'claude-opus-4.8:high');
+    expect(bin).toBe('kiro-cli');
+    const mi = args.indexOf('--model');
+    expect(args.slice(mi, mi + 4)).toEqual(['--model', 'claude-opus-4.8', '--effort', 'high']);
+    expect(args).not.toContain('claude-opus-4.8:high'); // effort must not leak into the model id
+    expect(args[args.length - 1]).toBe('the prompt');   // prompt stays the trailing positional
+  });
+
+  test('effort segment is stripped BEFORE Kiro model normalization ("claude-opus-4-8:high")', () => {
+    const [, args] = resolveCommand('kiro', 'p', 'claude-opus-4-8:high');
+    expect(args[args.indexOf('--model') + 1]).toBe('claude-opus-4.8'); // dash-form normalized, effort peeled off first
+    expect(args[args.indexOf('--effort') + 1]).toBe('high');
+  });
+
+  test('each valid Kiro effort level maps through (incl. Kiro-only "max")', () => {
+    for (const lvl of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      const [, args] = resolveCommand('kiro', 'p', `claude-opus-4.8:${lvl}`);
+      expect(args[args.indexOf('--effort') + 1]).toBe(lvl);
+    }
+  });
+
+  test('divergence: codex-only "minimal" is NOT a Kiro level → dropped + warned', () => {
+    const { value, stderr } = captureStderr(() => resolveCommand('kiro', 'p', 'claude-opus-4.8:minimal'));
+    const args = value[1];
+    expect(args[args.indexOf('--model') + 1]).toBe('claude-opus-4.8'); // model still used
+    expect(args).not.toContain('--effort');                            // unknown level dropped
+    expect(stderr).toContain('unknown reasoning effort');
+    expect(stderr).toContain('minimal');
+  });
+
+  test('FM2: typo effort ("hgh") → effort dropped, model kept, warning on stderr', () => {
+    const { value, stderr } = captureStderr(() => resolveCommand('kiro', 'p', 'claude-opus-4.8:hgh'));
+    const args = value[1];
+    expect(args[args.indexOf('--model') + 1]).toBe('claude-opus-4.8');
+    expect(args).not.toContain('--effort');
+    expect(stderr).toContain('unknown reasoning effort');
+    expect(stderr).toContain('hgh');
+  });
+
+  test('no effort segment → --model only, no --effort, no warning', () => {
+    const { value, stderr } = captureStderr(() => resolveCommand('kiro', 'p', 'deepseek-3.2'));
+    const args = value[1];
+    expect(args[args.indexOf('--model') + 1]).toBe('deepseek-3.2');
+    expect(args).not.toContain('--effort');
+    expect(stderr).toBe('');
+  });
+
+  test('empty / null model is safe: no --model, no --effort, NO warning', () => {
+    const { value, stderr } = captureStderr(() => [
+      resolveCommand('kiro', 'p', '')[1],
+      resolveCommand('kiro', 'p', null)[1],
+    ]);
+    for (const args of value) {
+      expect(args).not.toContain('--model');
+      expect(args).not.toContain('--effort');
+      expect(args[args.length - 1]).toBe('p');
+    }
+    expect(stderr).toBe(''); // legitimate "use CLI default" is NOT a warning
+  });
+});
+
 describe('structured streaming (adapters)', () => {
   test('streamCommand passes each provider its real streaming flags', () => {
     const claude = streamCommand('claude', 'p', 'm');
@@ -1646,6 +1725,73 @@ If there are no real issues, return {"findings":[]}.`;
     const info = JSON.parse(r.stdout);
     expect(info.available).toContain('claude');
     expect(info.available).toContain('codex');
+  });
+
+  const ALL_STUB = { X_PANEL_CMD_AGY: STUB, X_PANEL_CMD_CURSOR: STUB, X_PANEL_CMD_KIRO: STUB };
+
+  test('panel models (no vendor) → provider picker menu, NOT the every-provider dump', () => {
+    const r = panelRaw(['models'], ALL_STUB);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('pick a provider');          // the picker menu
+    expect(r.stdout).toContain('xm panel models <vendor>'); // next-step hint
+    expect(r.stdout).toContain('--all');                    // escape hatch advertised
+    for (const n of ['claude', 'codex', 'agy', 'cursor', 'kiro']) expect(r.stdout).toContain(n);
+    expect(r.stdout).not.toContain('──'); // no per-vendor live-catalog section header (that's the dump path)
+  });
+
+  test('panel models --json → structured picker rows; hasCatalog splits live vs fixed-ID vendors', () => {
+    const r = panelRaw(['models', '--json'], ALL_STUB);
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.providers.length).toBe(5);
+    const by = Object.fromEntries(out.providers.map((p) => [p.name, p]));
+    // agy/cursor/kiro front live catalogs (listCmd); claude/codex ship fixed IDs
+    expect(by.kiro.hasCatalog).toBe(true);
+    expect(by.cursor.hasCatalog).toBe(true);
+    expect(by.agy.hasCatalog).toBe(true);
+    expect(by.claude.hasCatalog).toBe(false);
+    expect(by.codex.hasCatalog).toBe(false);
+    for (const p of out.providers) expect(p.installed).toBe(true); // all stubbed → installed
+  });
+
+  // listModels() spawns the REAL vendor binary (kiro-cli/cursor-agent/agy) — X_PANEL_CMD
+  // overrides don't redirect it. Point the overrides at a NON-EXISTENT path so isAvailable()
+  // is false → listModels short-circuits at "not installed", never touching a real CLI.
+  const NO_CATALOG_CLIS = {
+    X_PANEL_CMD_AGY: '/x-panel-noexist-cli', X_PANEL_CMD_CURSOR: '/x-panel-noexist-cli',
+    X_PANEL_CMD_KIRO: '/x-panel-noexist-cli',
+  };
+
+  test('panel models --all → the every-provider dump path, NOT the picker menu', () => {
+    const r = panelRaw(['models', '--all'], NO_CATALOG_CLIS);
+    expect(r.status).toBe(0);
+    expect(r.stdout).not.toContain('pick a provider'); // --all bypasses the picker
+  });
+
+  test('panel models <vendor> still routes to the catalog path, never the picker', () => {
+    const r = panelRaw(['models', 'kiro'], NO_CATALOG_CLIS);
+    expect(r.status).toBe(0);
+    expect(r.stdout).not.toContain('pick a provider'); // a named vendor is never the picker
+  });
+
+  test('panel models <fixed-ID vendor> --json → static examples as models (no spawn)', () => {
+    const r = panelRaw(['models', 'claude', '--json']);
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.vendor).toBe('claude');
+    expect(out.hasCatalog).toBe(false);            // claude ships fixed IDs, no live list
+    expect(out.models).toContain('claude-opus-4-8'); // seeded from PROVIDER_META.examples
+    expect(out.error).toBeNull();
+  });
+
+  test('panel models <catalog vendor> --json → structured shape even when not installed', () => {
+    const r = panelRaw(['models', 'kiro', '--json'], NO_CATALOG_CLIS);
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.vendor).toBe('kiro');
+    expect(out.hasCatalog).toBe(true);   // kiro has a listCmd
+    expect(out.models).toEqual([]);      // not installed → no live fetch
+    expect(out.error).toBe('not installed');
   });
 });
 
