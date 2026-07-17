@@ -176,7 +176,7 @@ export function costFromTokens(model, inputTokens, outputTokens) {
  */
 export const VENDOR_MODELS = {
   claude: { haiku: 'haiku',        sonnet: 'sonnet', opus: 'opus' },
-  codex:  { haiku: 'gpt-5.4-mini', sonnet: 'gpt-5.4', opus: 'gpt-5.5:high' },
+  codex:  { haiku: 'gpt-5.6-luna', sonnet: 'gpt-5.6-terra', opus: 'gpt-5.6-sol' },
 };
 
 // Reasoning-effort levels accepted in a `model:effort` spec, ordered low→high.
@@ -188,11 +188,8 @@ export const MODEL_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh']
 // the flat map stays for backward-compatible MODEL_COSTS[model] lookups).
 //
 // 출처: OpenAI pricing, 2026-07 확인 — 수동 관리
-// TODO(cost): GPT-5.4 / 5.5 official per-1M pricing is NOT fully confirmed at
-// authoring time (2026-07). The codex numbers below are CONSERVATIVE
-// APPROXIMATIONS chosen to avoid silently under-reporting spend — revisit and
-// replace with published figures. Surfacing an approximate-but-labeled number
-// beats a silent wrong estimate (FM4).
+// OpenAI API pricing, verified 2026-07: Luna $1/$6, Terra $2.50/$15,
+// Sol $5/$30 per 1M input/output tokens.
 export const MODEL_COSTS_BY_VENDOR = {
   claude: {
     haiku:  { input: 1.00,  output: 5.00 },
@@ -200,9 +197,9 @@ export const MODEL_COSTS_BY_VENDOR = {
     opus:   { input: 15.00, output: 75.00 },
   },
   codex: {
-    haiku:  { input: 0.25, output: 2.00 },   // gpt-5.4-mini  (approx, unverified)
-    sonnet: { input: 1.25, output: 10.00 },  // gpt-5.4       (approx, unverified)
-    opus:   { input: 2.50, output: 20.00 },  // gpt-5.5:high  (approx, unverified)
+    haiku:  { input: 1.00, output: 6.00 },   // gpt-5.6-luna
+    sonnet: { input: 2.50, output: 15.00 },  // gpt-5.6-terra
+    opus:   { input: 5.00, output: 30.00 },  // gpt-5.6-sol
   },
 };
 

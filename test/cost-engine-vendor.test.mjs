@@ -35,11 +35,11 @@ afterAll(() => {
 
 describe('parseModelSpec', () => {
   test('no colon — whole string is the model, no effort, no warning', () => {
-    expect(ce.parseModelSpec('gpt-5.4')).toEqual({ model: 'gpt-5.4', effort: null, warning: null });
+    expect(ce.parseModelSpec('gpt-5.6-terra')).toEqual({ model: 'gpt-5.6-terra', effort: null, warning: null });
   });
 
   test('valid effort suffix is split out', () => {
-    expect(ce.parseModelSpec('gpt-5.5:high')).toEqual({ model: 'gpt-5.5', effort: 'high', warning: null });
+    expect(ce.parseModelSpec('gpt-5.6-sol:high')).toEqual({ model: 'gpt-5.6-sol', effort: 'high', warning: null });
   });
 
   test('every MODEL_EFFORT_LEVELS value parses as a valid effort', () => {
@@ -51,8 +51,8 @@ describe('parseModelSpec', () => {
   });
 
   test('typo effort — model kept, effort null, warning set (FM2)', () => {
-    const r = ce.parseModelSpec('gpt-5.5:hihg');
-    expect(r.model).toBe('gpt-5.5');
+    const r = ce.parseModelSpec('gpt-5.6-sol:hihg');
+    expect(r.model).toBe('gpt-5.6-sol');
     expect(r.effort).toBeNull();
     expect(r.warning).toContain('unknown effort');
     expect(r.warning).toContain('hihg');
@@ -95,14 +95,14 @@ describe('parseModelSpec', () => {
   });
 
   test('trailing colon — model kept, effort null, warning about trailing colon', () => {
-    const r = ce.parseModelSpec('gpt-5.4:');
-    expect(r.model).toBe('gpt-5.4');
+    const r = ce.parseModelSpec('gpt-5.6-terra:');
+    expect(r.model).toBe('gpt-5.6-terra');
     expect(r.effort).toBeNull();
     expect(r.warning).toContain("trailing ':'");
   });
 
   test('surrounding whitespace is trimmed before parsing', () => {
-    expect(ce.parseModelSpec('  gpt-5.5:high  ')).toEqual({ model: 'gpt-5.5', effort: 'high', warning: null });
+    expect(ce.parseModelSpec('  gpt-5.6-sol:high  ')).toEqual({ model: 'gpt-5.6-sol', effort: 'high', warning: null });
   });
 });
 
@@ -110,17 +110,17 @@ describe('parseModelSpec', () => {
 
 describe('resolveVendorModel', () => {
   test('config override wins over the built-in table', () => {
-    const cfg = { vendor_models: { codex: { opus: 'gpt-5.5:xhigh' } } };
+    const cfg = { vendor_models: { codex: { opus: 'gpt-5.6-sol:xhigh' } } };
     const r = ce.resolveVendorModel('opus', 'codex', cfg);
-    expect(r.spec).toBe('gpt-5.5:xhigh');
+    expect(r.spec).toBe('gpt-5.6-sol:xhigh');
     expect(r.source).toBe('config');
     expect(r.warning).toBeNull();
   });
 
   test('built-in vendor table resolves codex tiers', () => {
-    expect(ce.resolveVendorModel('haiku', 'codex', {})).toMatchObject({ spec: 'gpt-5.4-mini', source: 'builtin' });
-    expect(ce.resolveVendorModel('sonnet', 'codex', {})).toMatchObject({ spec: 'gpt-5.4', source: 'builtin' });
-    expect(ce.resolveVendorModel('opus', 'codex', {})).toMatchObject({ spec: 'gpt-5.5:high', source: 'builtin' });
+    expect(ce.resolveVendorModel('haiku', 'codex', {})).toMatchObject({ spec: 'gpt-5.6-luna', source: 'builtin' });
+    expect(ce.resolveVendorModel('sonnet', 'codex', {})).toMatchObject({ spec: 'gpt-5.6-terra', source: 'builtin' });
+    expect(ce.resolveVendorModel('opus', 'codex', {})).toMatchObject({ spec: 'gpt-5.6-sol', source: 'builtin' });
   });
 
   test('claude vendor maps each tier to itself via the built-in table', () => {
@@ -159,7 +159,7 @@ describe('resolveVendorModel', () => {
   test('FM7: non-object vendor_models is ignored with a warning, still resolves via built-in', () => {
     for (const bad of ['nope', 42, ['x']]) {
       const r = ce.resolveVendorModel('opus', 'codex', { vendor_models: bad });
-      expect(r.spec).toBe('gpt-5.5:high'); // fell through to built-in
+      expect(r.spec).toBe('gpt-5.6-sol'); // fell through to built-in
       expect(r.source).toBe('builtin');
       expect(r.warning).toContain('must be an object');
     }
@@ -168,7 +168,7 @@ describe('resolveVendorModel', () => {
   test('invalid override value (non-string) is ignored and falls through to built-in', () => {
     const cfg = { vendor_models: { codex: { opus: 123 } } };
     const r = ce.resolveVendorModel('opus', 'codex', cfg);
-    expect(r.spec).toBe('gpt-5.5:high');
+    expect(r.spec).toBe('gpt-5.6-sol');
     expect(r.source).toBe('builtin');
     expect(r.warning).toContain('not a non-empty string');
   });
@@ -190,9 +190,9 @@ describe('costFromTokensVendor', () => {
   });
 
   test('codex/opus uses the vendor-nested price table', () => {
-    // opus (gpt-5.5:high) approx: input 2.50, output 20.00 per 1M
+    // opus (gpt-5.6-sol) approx: input 2.50, output 20.00 per 1M
     const { cost_usd, warning } = ce.costFromTokensVendor('codex', 'opus', 1_000_000, 1_000_000);
-    expect(cost_usd).toBeCloseTo(2.5 + 20.0, 6);
+    expect(cost_usd).toBeCloseTo(5.0 + 30.0, 6);
     expect(warning).toBeNull();
   });
 
@@ -204,7 +204,7 @@ describe('costFromTokensVendor', () => {
 
   test('FM4: unknown tier falls back to that vendor sonnet pricing WITH a warning', () => {
     const { cost_usd, warning } = ce.costFromTokensVendor('codex', 'mega', 1_000_000, 0);
-    expect(cost_usd).toBeCloseTo(1.25, 6); // codex sonnet input price
+    expect(cost_usd).toBeCloseTo(2.5, 6); // codex sonnet input price
     expect(warning).toContain('unknown tier');
   });
 
@@ -272,8 +272,8 @@ describe('getModelForRole — return vocabulary stays haiku/sonnet/opus/inherit'
     // vendor translation is a separate, explicit step (option A).
     const model = ce.getModelForRole('executor', 'medium', {
       model_profile: 'default',
-      vendor_models: { codex: { sonnet: 'gpt-5.4' } },
+      vendor_models: { codex: { sonnet: 'gpt-5.6-terra' } },
     });
-    expect(model).toBe('sonnet'); // NOT 'gpt-5.4'
+    expect(model).toBe('sonnet'); // NOT 'gpt-5.6-terra'
   });
 });

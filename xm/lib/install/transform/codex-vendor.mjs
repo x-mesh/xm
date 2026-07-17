@@ -187,7 +187,7 @@ export function renderProfileToml(profile) {
   const policy = CODEX_PROFILE_POLICY[profile];
   if (!policy) throw new Error(`codex-vendor: unknown profile "${profile}"`);
   const resolved = resolveCodexSpec(policy.tier);
-  // Spec-pinned effort wins (e.g. opus → gpt-5.5:high); otherwise the profile's
+  // Spec-pinned effort wins (e.g. opus → gpt-5.6-sol); otherwise the profile's
   // effort ladder fills in.
   const effort = resolved.effort ?? policy.effort;
   const head = [
@@ -367,7 +367,7 @@ export function renderCodexVendor({ scope, feature } = /** @type {any} */ ({})) 
   // run --json linkage (t5): explain how model_by_vendor.codex feeds these layers.
   notes.push(
     'codex: `xm build run --json` emits task.model_by_vendor.codex as a "model[:effort]" ' +
-    'string (e.g. "gpt-5.4" or "gpt-5.5:high") from the same VENDOR_MODELS.codex table these ' +
+    'string (e.g. "gpt-5.6-terra" or "gpt-5.6-sol") from the same VENDOR_MODELS.codex table these ' +
     'layers pin — pass it to codex via `-c model=<model>` (+ `-c model_reasoning_effort=<effort>`) ' +
     'or match it to a [agents.xm-*] stanza.'
   );

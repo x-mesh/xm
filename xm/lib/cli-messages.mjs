@@ -602,8 +602,8 @@ const MESSAGES = {
   'vendor.tier.opus': { ko: 'opus (max)', en: 'opus (max)' },
   // model spec entry
   'vendor.format': {
-    ko: '형식: vendor.tier=model[:effort] (예: codex.opus=gpt-5.5:high)  ·  clear=초기화  ·  Enter=끝',
-    en: 'Format: vendor.tier=model[:effort] (e.g. codex.opus=gpt-5.5:high)  ·  clear=reset  ·  Enter=done',
+    ko: '형식: vendor.tier=model[:effort] (예: codex.opus=gpt-5.6-sol)  ·  clear=초기화  ·  Enter=끝',
+    en: 'Format: vendor.tier=model[:effort] (e.g. codex.opus=gpt-5.6-sol)  ·  clear=reset  ·  Enter=done',
   },
   'vendor.cleared': { ko: 'vendor 매핑 초기화', en: 'Vendor mapping reset' },
   // effort suffix — mirrors cost-engine parseModelSpec (MODEL_EFFORT_LEVELS)

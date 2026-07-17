@@ -154,14 +154,14 @@ describe('codex-vendor — detectCodexFeature', () => {
 // ── Model resolution derives from cost-engine VENDOR_MODELS.codex ──
 
 describe('codex-vendor — resolveCodexSpec', () => {
-  test('opus tier → gpt-5.5 + high effort (spec-pinned)', () => {
-    expect(resolveCodexSpec('opus')).toEqual({ model: 'gpt-5.5', effort: 'high', spec: 'gpt-5.5:high' });
+  test('opus tier → gpt-5.6-sol + high effort (spec-pinned)', () => {
+    expect(resolveCodexSpec('opus')).toEqual({ model: 'gpt-5.6-sol', effort: null, spec: 'gpt-5.6-sol' });
   });
-  test('sonnet tier → gpt-5.4, no effort', () => {
-    expect(resolveCodexSpec('sonnet')).toEqual({ model: 'gpt-5.4', effort: null, spec: 'gpt-5.4' });
+  test('sonnet tier → gpt-5.6-terra, no effort', () => {
+    expect(resolveCodexSpec('sonnet')).toEqual({ model: 'gpt-5.6-terra', effort: null, spec: 'gpt-5.6-terra' });
   });
-  test('haiku tier → gpt-5.4-mini, no effort', () => {
-    expect(resolveCodexSpec('haiku')).toEqual({ model: 'gpt-5.4-mini', effort: null, spec: 'gpt-5.4-mini' });
+  test('haiku tier → gpt-5.6-luna, no effort', () => {
+    expect(resolveCodexSpec('haiku')).toEqual({ model: 'gpt-5.6-luna', effort: null, spec: 'gpt-5.6-luna' });
   });
   test('unknown tier fails loud', () => {
     expect(() => resolveCodexSpec('nonsense')).toThrow(/could not resolve/);
@@ -170,20 +170,20 @@ describe('codex-vendor — resolveCodexSpec', () => {
 
 describe('codex-vendor — TOML rendering', () => {
   test('role layer with effort emits both keys', () => {
-    const toml = renderRoleLayerToml({ role: 'planner', phase: 'plan', tier: 'opus', spec: { model: 'gpt-5.5', effort: 'high' } });
-    expect(toml).toMatch(/^model = "gpt-5\.5"$/m);
+    const toml = renderRoleLayerToml({ role: 'planner', phase: 'plan', tier: 'opus', spec: { model: 'gpt-5.6-sol', effort: 'high' } });
+    expect(toml).toMatch(/^model = "gpt-5\.6-sol"$/m);
     expect(toml).toMatch(/^model_reasoning_effort = "high"$/m);
     expect(toml).toMatch(/plan phase/);
   });
   test('role layer without effort omits the effort key', () => {
-    const toml = renderRoleLayerToml({ role: 'executor', phase: 'implement', tier: 'sonnet', spec: { model: 'gpt-5.4', effort: null } });
-    expect(toml).toMatch(/^model = "gpt-5\.4"$/m);
+    const toml = renderRoleLayerToml({ role: 'executor', phase: 'implement', tier: 'sonnet', spec: { model: 'gpt-5.6-terra', effort: null } });
+    expect(toml).toMatch(/^model = "gpt-5\.6-terra"$/m);
     expect(toml).not.toMatch(/model_reasoning_effort/);
   });
   test('profiles: economy=mini+low, default=5.4+medium, max=5.5+high', () => {
-    expect(renderProfileToml('economy')).toMatch(/model = "gpt-5\.4-mini"[\s\S]*model_reasoning_effort = "low"/);
-    expect(renderProfileToml('default')).toMatch(/model = "gpt-5\.4"[\s\S]*model_reasoning_effort = "medium"/);
-    expect(renderProfileToml('max')).toMatch(/model = "gpt-5\.5"[\s\S]*model_reasoning_effort = "high"/);
+    expect(renderProfileToml('economy')).toMatch(/model = "gpt-5\.6-luna"[\s\S]*model_reasoning_effort = "low"/);
+    expect(renderProfileToml('default')).toMatch(/model = "gpt-5\.6-terra"[\s\S]*model_reasoning_effort = "medium"/);
+    expect(renderProfileToml('max')).toMatch(/model = "gpt-5\.6-sol"[\s\S]*model_reasoning_effort = "high"/);
   });
   test('every profile carries a generation + approx-pricing header', () => {
     for (const p of Object.keys(CODEX_PROFILE_POLICY)) {
@@ -258,8 +258,8 @@ describe('install-cli — codex vendor layer (dry-run / install / verify / unins
       expect(existsSync(join(tmp, rel))).toBe(true);
     }
     const planner = readFileSync(join(tmp, '.codex', 'xm', 'agents', 'xm-planner.config.toml'), 'utf8');
-    expect(planner).toMatch(/model = "gpt-5\.5"/);
-    expect(planner).toMatch(/model_reasoning_effort = "high"/);
+      expect(planner).toMatch(/model = "gpt-5\.6-sol"/);
+    expect(planner).not.toMatch(/model_reasoning_effort/);
     expect(r.stdout).toContain('[agents.xm-planner]');
     expect(r.stdout).toContain('model_by_vendor.codex');
   });

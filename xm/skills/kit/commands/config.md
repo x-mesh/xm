@@ -165,7 +165,7 @@ xm config show
 
 | Category | AskUserQuestion → apply |
 |----------|-------------------------|
-| 1 모델 | (a) 프로필: economy / default / max → `xm config set model_profile <v>`. (b) 역할별 오버라이드: read `xm config get model_overrides`, merge the chosen `role=model`, write the full object with `xm config set model_overrides '{...}'`. (c) 페이즈별 모델: run `xm config phase` to show the matrix, ask one question per slot (프로필 기본값 / haiku / sonnet / opus), then `xm config phase plan=<m> implement=<m> review=<m>` with only the changed slots. (d) vendor 모델 매핑: `xm config set vendor_models.<vendor>.<tier> <model[:effort]>` (예: `vendor_models.codex.opus "gpt-5.5:high"`); 벤더별 프로필은 `xm config set vendor_profiles.<vendor> <economy\|default\|max>`. effort 접미사 허용값: `minimal`/`low`/`medium`/`high`/`xhigh`. |
+| 1 모델 | (a) 프로필: economy / default / max → `xm config set model_profile <v>`. (b) 역할별 오버라이드: read `xm config get model_overrides`, merge the chosen `role=model`, write the full object with `xm config set model_overrides '{...}'`. (c) 페이즈별 모델: run `xm config phase` to show the matrix, ask one question per slot (프로필 기본값 / haiku / sonnet / opus), then `xm config phase plan=<m> implement=<m> review=<m>` with only the changed slots. (d) vendor 모델 매핑: `xm config set vendor_models.<vendor>.<tier> <model[:effort]>` (예: `vendor_models.codex.opus "gpt-5.6-sol"`); 벤더별 프로필은 `xm config set vendor_profiles.<vendor> <economy\|default\|max>`. effort 접미사 허용값: `minimal`/`low`/`medium`/`high`/`xhigh`. |
 | 2 예산 | 세션 최대 비용 → `xm config set budget.max_usd <n> --local` (0 or `null` = 무제한). 추적 윈도우 → `xm config set budget.window_hours <n> --local`. 프로젝트별 예산 → read current, merge, `xm config set budget.projects '{"my-app":{"max_usd":5}}' --local`. |
 | 3 실행 | 에이전트 수 (1–10) → `xm config set agent_max_count <n>`. |
 | 4 게이트 | Pick a gate (research/plan/execute/verify/close-exit), then a value → `xm config set gates.<name> <auto\|human-verify\|quality>`. |
@@ -184,7 +184,7 @@ xm config show
 xm config get mode                       # value on stdout, source tier on stderr
 xm config set agent_max_count 10         # global (schema default)
 xm config set budget.max_usd 5 --local   # project .xm/
-xm config set vendor_models.codex.opus "gpt-5.5:high"   # vendor tier → model[:effort]
+xm config set vendor_models.codex.opus "gpt-5.6-sol"   # vendor tier → model[:effort]
 xm config phase plan=opus implement=sonnet review=opus
 xm config reset --local
 ```
