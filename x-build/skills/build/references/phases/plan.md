@@ -320,7 +320,7 @@ Create tasks informed by research artifacts:
    ```bash
    $XMB plan-check
    ```
-   This checks 11 dimensions: atomicity, dependencies, coverage, granularity, completeness, context, naming, tech-leakage, scope-clarity, risk-ordering, overall. Fix any errors.
+   This checks 15 dimensions, including dependencies, coverage, failure modes, delegation contracts, and review-group ordering. Fix any errors.
 
 6. **(Conditional) Strategic critique** — auto-skip when task count ≤ 5 (small project):
    ```bash
@@ -349,4 +349,3 @@ Create tasks informed by research artifacts:
    - "Consensus review" → run [Consensus Loop] against the full plan (PRD + tasks + DAG)
    - "Re-plan" → restart from PRD Review
 9. Advance: `$XMB gate pass` → `$XMB phase next`
-

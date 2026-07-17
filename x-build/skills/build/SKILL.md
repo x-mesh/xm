@@ -140,18 +140,17 @@ See `references/ask-user-question-rule.md` — the `question` field is invisible
 
 ## Interaction Protocol
 
-**CRITICAL: x-build phase transitions and reviews MUST use AskUserQuestion.**
+**CRITICAL: AskUserQuestion is reserved for user-owned intent and decision gaps. Do not create a turn boundary for routine task completion, phase movement, or per-task review.**
 
 Rules:
-1. **AskUserQuestion is REQUIRED for all user confirmations** — PRD review, plan review, phase gate passes, and any decision point. Text-only questions do NOT enforce turn boundaries.
-2. **Phase transitions** — before calling `phase next`, MUST get user confirmation via AskUserQuestion. **Autopilot exception:** when autopilot is on (`autopilot: true` in config, or env `XMB_AUTOPILOT=1`), SKIP the phase-transition AskUserQuestion and advance automatically. Autopilot relaxes ONLY the confirmation — still print every artifact (Rule 4 Output Gate holds), and still STOP for a failed `quality` gate, a **`decision` gate (plan → execute by default — autopilot does NOT pass it; ask the user to approve the plan's direction)**, a blocked gate (`phase next` exits 2, e.g. plan-check failing), an agent execution error, or any information/ambiguity AskUserQuestion (those are decisions, NOT phase-transition confirmations). `status` shows a 🚀 badge while autopilot is on. Turn it on with `$XMB config set autopilot true` (persistent) or an `XMB_AUTOPILOT=1` prefix (one-shot); off with `false`.
+1. **AskUserQuestion is REQUIRED only when a user-only answer materially changes** scope/task graph, public behavior, success criteria, irreversible/high-risk contracts, authority, external coordination, or compliance. Batch at most 3 blocking questions into one turn.
+2. **Routine transitions are automatic once their deterministic gates pass.** Plan → Execute remains a `decision` gate because it approves direction. A failed quality/group-review gate, agent execution error, or newly discovered user-only ambiguity still stops. Autopilot does not pass `decision` gates.
 3. **NEVER skip Research silently** — `plan "goal"` without `--quick` goes through Research, SCALED by the deterministic gauge in the plan JSON's `research_signal` (from `research-check`): `full` → 4-agent research; `slim` → 1-2 targeted agents on the HIT signals; `quick-eligible` (0/4 hits ONLY) → you MAY suggest `--quick` via AskUserQuestion, and proceed quick ONLY if the user confirms. A missing/failed `research_signal` = treat as `full`. Auto-skipping without the user's explicit confirmation, or calling `phase set plan` to dodge Research, is FORBIDDEN.
 4. **Artifacts MUST be printed before review (Output Gate)** — any LLM-produced artifact (research findings, PRD, task breakdown, forecast, critique, consensus result) MUST be output in FULL to the user **before** calling AskUserQuestion or advancing the phase. Save-and-ask-without-showing is FORBIDDEN. Saving to disk does NOT count as showing; a summary paragraph does NOT count as showing — print the artifact content. **Self-check gate (enforce, don't just intend):** immediately before the gating `AskUserQuestion`, confirm the full artifact text was printed in the CURRENT turn, and make the question's FIRST option cite a concrete detail from it (a task id, an `R#` requirement, or a `done_criteria` string). If you cannot cite one, you did not show it — print it first, then ask.
 5. **Research output MUST be persisted** — after each research sub-agent (stack / features / architecture / pitfalls) completes, immediately call `$XMB save research-notes --agent <name> --content "..."` to append the RAW agent output to `phases/01-research/notes.md`. Never discard raw agent output by only saving the synthesized ROADMAP — the user must be able to audit the evidence chain.
-6. **PRD Review loop** — already uses AskUserQuestion (keep as-is).
-7. **Plan Review** — MUST print the task breakdown (task list with done_criteria) to the user BEFORE calling AskUserQuestion for plan review. Saving `tasks.json` is not a substitute for showing.
-8. **Execute → Verify** — after all tasks complete, MUST use AskUserQuestion before advancing.
-9. **Verify → Close** — after quality checks, MUST use AskUserQuestion before closing.
+6. **Plan Review** — present one Plan Bundle (intent/PRD/tasks/groups/checks), then ask for the single Plan → Execute direction approval. Approval is bound to `plan_hash`; any plan change invalidates it.
+7. **Execute review** — do not review every task. Run configured task-local checks in each task cwd. With the default `build.review_mode=manual`, expose `review-group` after a group completes but continue without it; with `auto`, run one group panel as the Execute hard boundary. Explicit reviews default to one round (`--rounds 2` opts into adversarial refutation).
+8. **Verify → Close** — advance after deterministic quality checks unless a new user decision is required.
 
 10. **PRD is MANDATORY** — every project MUST have `phases/02-plan/PRD.md` before Execute phase. If tasks were added without PRD (e.g., direct `tasks add`), generate PRD from existing tasks before proceeding.
 11. **Task documentation** — every task MUST have `done_criteria` before execution starts. If missing, auto-derive from PRD requirements using `$XMB tasks done-criteria`.
@@ -165,16 +164,16 @@ Anti-patterns:
 - ❌ Research agents complete → synthesize to ROADMAP.md → save → advance (raw agent output never shown, never persisted to `notes.md`)
 - ❌ Task breakdown generated → `$XMB save plan` → AskUserQuestion (task list never shown to user)
 - ❌ PRD generated → show to user → but forget `$XMB save plan` (PRD lost, not in dashboard)
-- ❌ Phase transition without AskUserQuestion
+- ❌ Per-task implementation → expensive panel → user confirmation (repeated for every task)
 - ❌ `init` → `tasks add` → `tasks update --status in_progress` (no PRD, no CONTEXT.md — dashboard blind spot)
-- ✅ `plan "goal"` → init → interview → research → **print each agent's raw findings** → `save research-notes --agent <name>` per agent → synthesize ROADMAP → **print ROADMAP** → gate pass → phase next → PRD → `save plan` → **print PRD** → AskUserQuestion
+- ✅ `plan "goal"` → init → intent-check → **interview only if needed** → research → persist findings → PRD/tasks → print one Plan Bundle → direction approval
 - ✅ Plan phase: generate tasks → **print task list with done_criteria** → `save plan` → AskUserQuestion for plan review
 - ✅ If tasks added directly: generate PRD from task list before first `tasks update --status in_progress`
 
 More anti-patterns:
-- ❌ All tasks complete → immediately run `phase next`
+- ❌ All tasks complete → `phase next` without the final group review
 - ❌ Show plan and ask "Shall we proceed?" as text (must use AskUserQuestion)
-- ✅ All tasks complete → print execution summary → AskUserQuestion("모든 태스크 완료. Verify 단계로 넘어갈까요?")
+- ✅ All tasks in `build` complete → optional `review-group build` → Verify (`review_mode=auto` makes it mandatory)
 
 ## Phase Lifecycle
 
@@ -187,8 +186,8 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 | Phase | Exit Gate | Condition |
 |-------|-----------|-----------|
 | Research | human-verify | CONTEXT.md or REQUIREMENTS.md must exist + no unresolved decisions in CONTEXT.md |
-| Plan | **decision** | PRD.md MUST exist + Tasks defined with done_criteria + plan-check passed (+ optional critique) |
-| Execute | auto | All tasks completed |
+| Plan | **decision** | PRD.md + tasks/groups + plan-check + current `plan_hash` approval |
+| Execute | auto | All tasks completed + every review group passed exactly once at its boundary |
 | Verify | quality | test/lint/build all pass |
 | Close | auto | — |
 
@@ -218,7 +217,7 @@ it feels important: use it only where a human's intent is the sole possible chec
 
 Parse user's `$ARGUMENTS` and current project state to determine the action.
 
-**MANDATORY first step (all branches):** Run `$XMB list` BEFORE any routing decision. Never decide "new project vs existing" from user phrasing or git branch state alone. If an active (non-closed) x-build project exists, route to `$XMB next` regardless of user wording. A git feature branch is NOT an x-build project — they are independent. "Skill is heavy, just apply its spirit lightly" is a forbidden bypass; if the user invoked `build`, deliver the build flow.
+**MANDATORY first step (all branches):** Run `$XMB list` BEFORE any routing decision. Never decide "new project vs existing" from user phrasing or git branch state alone. With no new goal, resume the active project via `$XMB next`. With an explicit new goal, never silently bind it to an unrelated active project: pass `--project` when the target is known, otherwise honor the CLI's `select-project` stop or initialize a new project. A git feature branch is NOT an x-build project.
 
 ### No arguments (empty)
 1. Run `$XMB list` to check for existing projects
@@ -226,7 +225,10 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 3. **If no project exists** → immediately ask the user for a goal (AskUserQuestion):
    - Developer mode: `"What do you want to build? Describe the goal in 1-2 sentences."`
    - Normal mode: `"어떤 것을 만들고 싶으세요? 1-2문장으로 목표를 알려주세요."`
-4. After receiving goal → `$XMB init {slug}` → full flow (Research → Plan)
+4. After receiving goal → treat it as a bare build goal below.
+
+### Bare goal (no `plan` verb)
+`$xm-build "goal"` means build: run the same Plan lifecycle first, then continue to Execute only after Plan Bundle approval. Route to `$XMB build "{goal}"`; never bypass Plan.
 
 ### `plan` (no goal argument)
 1. Check for active project
@@ -235,10 +237,19 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 4. **If no project exists** → same as "No arguments" above — ask for goal immediately
 
 ### `plan "goal"` (with goal argument)
+`plan` is plan-only: it always enters planning, produces a Plan Bundle, and stops after approval. It never silently continues to Execute.
+
+Before Research, run the emitted `intent_check`:
+1. Inspect repository/memory silently for discoverable facts.
+2. Classify gaps as `fact_gap`, `intent_gap`, `implementation_choice`, or `authority_gap`.
+3. Ask only user-owned blockers, at most 3 in one turn. Do not ask repository facts.
+4. Research runs after intent is ready; research may reopen clarification if it discovers a new user-only blocker.
+
+Use `plan --interview` when the user explicitly wants detailed refinement. Use `plan --draft` to produce a non-executable draft without blocking questions.
 1. Check for active project
-2. **If no project** → `$XMB init {slug}` → **start from Research phase** (interview → research → then plan):
-   - If the manifest's `project_kind` is `greenfield` and `round0_pending: true` (from `next --json`/`discuss --json`), run Round 0 (4-question problem framing) before Round 1 — see `references/workflow-guide.md`.
-   - Run `$XMB discuss --mode interview` (gather requirements using the goal as seed)
+2. **If no project** → `$XMB init {slug}` → **start from Research phase** (intent-check → research → then plan):
+   - Do not infer that greenfield means interview. Run Round 0 / `discuss --mode interview` only when `intent_check.readiness=clarify`, the user passed `--interview`, or research reopens a user-only blocker.
+   - When clarification is needed, ask the emitted questions together (maximum 3), persist the refined intent, then continue without another confirmation.
    - Run `$XMB research "{goal}"` (4-agent parallel investigation; perspectives differ by `project_kind` — see workflow-guide)
    - Save CONTEXT.md, REQUIREMENTS.md, ROADMAP.md
    - `$XMB gate pass` → `$XMB phase next` (Research → Plan)
@@ -291,8 +302,9 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 - `discuss --mode adapt ["topic"]` — Adaptive review between execution steps (Execute phase)
 
 ### Plan Phase
-- `plan "goal"` — AI auto-decomposes goal into tasks
-- `plan-check` — Validate plan across 11 quality dimensions
+- `plan "goal" [--interview|--draft]` — plan-only; emit intent-check and stop after the Plan Bundle
+- `build "goal"` — same Plan lifecycle, then continue Execute only after content-bound approval
+- `plan-check` — Validate plan across 15 quality dimensions, including review-group ordering
 - `prd-check [--json]` — Deterministic PRD gate (blocks Execute on unresolved `[A*, low]` / `Status: blocking`); `phase set execute --force` to override
 - `prd-gate [--threshold N]` — Judge panel PRD quality evaluation (rubric-based scoring)
 - `consensus [--round N] [--cross-vendor]` — 4-agent consensus review (architect/critic/planner/security); `--cross-vendor` assigns each role to a different model vendor via `xm panel cross` (opt-in, graceful single-vendor fallback). Default without the flag: `.xm/config.json` `cross_vendor.build` ?? `cross_vendor.default`; `--no-cross-vendor` forces single — see `references/cross-vendor-consensus.md`
@@ -301,7 +313,7 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 - `checkpoint <type> [message]` — Record checkpoint
 
 ### Execute Phase
-- `tasks add <name> [--desc "what + why"] [--deps t1,t2] [--size small|medium|large] [--done-criteria "..."] [--team <name>] [--expected-files "a,b"]` — always pass `--desc`; the name is a title, the description is what the executor reads. `--expected-files` is the parallel-batching signal for worktree mode (see [Worktree Execution Mode](#worktree-execution-mode))
+- `tasks add <name> ... [--review-group build]` — every task belongs to a shared normal/worktree review group; default is `build`
 - `tasks list` / `tasks remove <id>` / `tasks update <id> --status <s> [--desc "..."] [--done-criteria "..."] [--expected-files "a,b"]` (pass an empty string to clear expected files)
 - `tasks done-criteria` — Auto-derive done criteria from PRD for all tasks
 - `later add|list|promote|dismiss|verify-scope` — Capture off-scope work discovered during a task without editing it; verify open later files stayed untouched
@@ -311,6 +323,8 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 - `run --json` — Machine-readable execution plan (also marks ready tasks RUNNING; always emits JSON). Also emits `worktree_signal` (see [Worktree Execution Mode](#worktree-execution-mode))
 - `run --reconcile [--dry-run] [--stale-min N]` — Reclaim stale RUNNING tasks (interrupted/abandoned agents) to PENDING; `protected[]` lists NEEDS_FIX/BLOCKED/MERGING worktree tasks kept from reconcile
 - `run-status [--json]` — Execution progress; `--json` gives structured state (`all_done`, `steps`, `stale_running`, `blocked_tasks`, `worktree_tasks`, `next_action`) for orchestrator routing
+- `task-check <task-id> [--json]` — run configured `build.task_checks` in the current task cwd and persist completion evidence; required for newly planned normal and worktree tasks
+- `review-group [name] [--rounds 1|2] [--json]` — after all group tasks complete, run an explicit panel; one round by default, two only when requested/configured
 - `templates list` / `templates use <name>` — Use task templates
 
 **Worktree backend** (optional Execute-phase fan-out — see [Worktree Execution Mode](#worktree-execution-mode)):
@@ -364,7 +378,7 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 
 ## Worktree Execution Mode
 
-Optional Execute-phase backend: fan parallel-safe tasks out into isolated `gk` worktrees, gate each feature with a panel review before it merges to `base` (default `develop`). JSON schemas: `references/cli-skill-protocol.md`; artifact layout: `references/data-model.md`.
+Optional Execute-phase backend: fan parallel-safe tasks out into isolated `gk` worktrees. It uses the same tasks, `task_checks`, review groups, and lifecycle as normal execution; only the cwd/isolation backend differs. With default `build.review_scope=group`, per-task `gk finish` is ungated. `build.review_mode=manual` exposes an optional group review without blocking; `auto` makes it the shared hard boundary. Set `build.review_scope=task` only for an explicit high-risk compatibility policy.
 
 ### 3-layer mode decision (no separate wizard or dashboard)
 
@@ -372,7 +386,7 @@ Worktree fan-out is the Execute-phase run backend, decided on top of existing co
 1. **config** — `worktree.*` in `.xm/build/config.json` or `.xm/config.json` (persistent project policy). Priority: CLI flag > `.xm/build/config.json` > `.xm/config.json` > defaults; `gate_policy` merges per-key.
 2. **CLI flag** — `run --worktrees` / `run --no-worktrees` overrides config for one run. When a flag is present, skip the layer-3 question.
 3. **phase gate (computed, not asked)** — `run --json` always emits `worktree_signal { enabled, parallel_safe_count, sequential_count, recommend }`; `recommend` is `true` only when `enabled && parallel_safe_count >= 2`.
-   - `recommend: true` → offer fan-out as an option in the EXISTING Execute-entry AskUserQuestion (do not add a new confirmation point).
+   - `recommend: true` → use worktree fan-out when config/CLI selected it; emit the recommendation for observability, but do not add a confirmation turn.
    - `recommend: false` → do NOT ask; run sequentially and print one line of reason (≤1 parallel-safe task, or no `expected_files`).
 
 Parallel-safety comes from per-task `expected_files[]`: non-overlapping expected files → parallel-safe; missing or overlapping → sequential (when in doubt, sequential). Set via `tasks add|update --expected-files "a,b"`.
@@ -383,10 +397,10 @@ Two drive modes share the same command surface: interactive orchestrator (`/xm:b
 
 ### Execution & finish (agent path)
 
-- Real fan-out (`run --worktrees`, non-dry-run, gk gate-capable) acquires the first parallel batch, writes `run.json` + a `TASK-CONTEXT.md` snapshot per worktree, and emits `tasks[]` with `branch` / `worktree` / `env` / `acquired` / `worktree_status`. **Inject `entry.env` (`X_BUILD_ROOT` / `X_PANEL_ROOT` / `XM_ROOT`) into every spawned worktree subagent** — without it the agent reads the main repo's `.xm/` as empty. When no task is parallel-safe, the plan falls back to acquiring the first sequential task alone (`sequential_fallback: true`, `parallel: false`).
-- Worktree `tasks[]` entries carry NO `on_complete`/`on_fail` — only a `completion_note`. Worktree subagents must NOT run `tasks update ... completed`; the gk finish gate is the sole completion path (the orchestrator flips tasks.json to completed only after the gate passes).
-- `finish.auto` is always `false`. After agents complete AND local verify passes, call `worktrees resume [task-id...]` — that drives the serialized `gk finish` queue (one at a time under the target merge lock). NEVER auto-run finish from the run plan.
-- `--dry-run` emits the plan only (no gk). Degraded mode (preflight found no gk `--gate`) falls back to `mode: "manual-handoff"`: print the commands for the human to run; xm does not drive gk.
+- Real fan-out (`run --worktrees`, non-dry-run) acquires the first parallel batch, writes `run.json` + a `TASK-CONTEXT.md` snapshot per worktree, and emits `tasks[]` with `branch` / `worktree` / `env` / `acquired` / `worktree_status`. **Inject `entry.env` (`X_BUILD_ROOT` / `X_PANEL_ROOT` / `XM_ROOT`) into every spawned worktree subagent** — without it the agent reads the main repo's `.xm/` as empty. When no task is parallel-safe, the plan falls back to acquiring the first sequential task alone (`sequential_fallback: true`, `parallel: false`).
+- Worktree `tasks[]` entries carry NO `on_complete`/`on_fail` — only a `completion_note`. Worktree subagents must NOT run `tasks update ... completed`; the orchestrator flips tasks.json only after `gk finish` succeeds. Under group review, that finish is intentionally per-task ungated and the group panel is the review boundary.
+- `finish.auto` is always `false`. After agents complete, run `task-check <task-id>` in each task worktree, then call `worktrees resume [task-id...]` — that drives the serialized `gk finish` queue (one at a time under the target merge lock). NEVER auto-run finish from the run plan.
+- `--dry-run` emits the plan only (no gk). In explicit per-task review mode, missing gk `--gate` falls back to `mode: "manual-handoff"`; default group review does not require that unused capability.
 
 ### After-gate paused is a human decision
 
@@ -418,7 +432,7 @@ See `commands/discuss.md` — multi-mode deliberation engine (interview/assumpti
 
 ## Commands Reference
 
-See `commands/other-commands.md` — research (4-agent parallel investigation), plan-check (11-dimension validation including quality-bar / scope-guard / tech-leakage), next (smart routing), handoff (session preservation), context-usage (token budget), verify-coverage (requirement coverage).
+See `commands/other-commands.md` — research (scaled investigation), plan-check (15-dimension validation including review-group ordering), next (smart routing), handoff (session preservation), context-usage (token budget), verify-coverage (requirement coverage).
 
 ---
 
@@ -478,7 +492,8 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | "gather requirements", "ask me questions" | `discuss` |
 | "investigate", "research" | `research` |
 | "validate requirements", "anything missing?" | `discuss --mode validate` |
-| "make a plan", "build me ~" (goal) | `plan "goal"` |
+| "make a plan" | `plan "goal"` (plan-only) |
+| bare goal, "build me ~" | `build "goal"` (Plan first, then Execute) |
 | "validate plan", "is the plan ok?" | `plan-check` |
 | "critical review", "review the plan", "critique" | `discuss --mode critique` |
 | "cross-vendor consensus", "review the PRD with different models", "multi-vendor consensus" | `consensus --cross-vendor` |

@@ -9,7 +9,7 @@ Several commands output JSON for the skill layer to parse and act on. The skill 
 | `next --json` | varies | `phase`, `action`, `args`, `reason`, `artifacts`, `goal?`, `ready?`, `project_kind`, `suggest_probe`, `round0_pending?` (research phase, greenfield only), `research_signal?` (when action is `research`/`discuss`) |
 | `discuss` | `"discuss"` | `mode`, `project`, `current_phase`, `round`, `max_rounds`, `project_kind` + mode-specific fields (interview: `save_path`, `round0_pending?`) |
 | `research` | `"research"` | `goal`, `project`, `perspectives[]`, `project_kind`, `suggest_probe`, `agents_spec[]` (each with `perspective`, `role`, `model`, `web?`) |
-| `plan` | `"auto-plan"` | `goal`, `project`, `existing_tasks`, `context_summary`, `requirements_summary`, `roadmap_summary`, `project_kind`, `research_signal`, `quick`, `flow`, `skip_research` |
+| `plan` / `build` | `"auto-plan"` | `goal`, `requested_action`, `stop_after`, `plan_state`, `executable`, `intent_check`, `research_signal` |
 | `run --json` | (no action field) | `project`, `step`, `total_steps`, `tasks[]`, `parallel` |
 
 ## `next --json` — Smart Router (primary entry point)
@@ -59,6 +59,9 @@ After parsing, execute the recommended action:
   "model": "sonnet",
   "model_vendor": "claude",
   "model_by_vendor": { "claude": "sonnet", "codex": "gpt-5.4" },
+  "review_group": "build",
+  "task_checks": [{ "name": "test", "command": "bun test" }],
+  "task_check_command": "x-build task-check t1",
   "interface_contract": "parse(s) → AST|null; 입력은 신뢰 불가; 예외 대신 null",
   "prompt": "...",
   "on_complete": "node .../x-build-cli.mjs tasks update t1 --status completed",
@@ -72,7 +75,8 @@ After parsing, execute the recommended action:
 - `model: "inherit"` → **OMIT the `model` parameter in the Agent tool call.** The subagent then runs on the harness-inherited default — the session/parent model as the harness resolves it (measured 2026-07: a Fable session inherited opus for subagents; the leader turn itself rides the session model). Never pass the literal string `"inherit"` (not a valid Agent-tool value) and never substitute a hardcoded tier. On completion, report the model it actually ran on via `tasks update <id> --status completed --resolved-model <haiku|sonnet|opus>` so the metric records ground truth.
 - `model_vendor` (additive): the vendor the orchestrator itself runs on — always `"claude"`. Present alongside `model`, never replaces it.
 - `model_by_vendor` (additive): per-vendor spec map. `claude` mirrors `model`; `codex` is a GPT spec derived from `vendor_models` in `.xm/config.json` (falls back to a built-in table; an `"inherit"` tier resolves via the opus fallback before lookup). The `codex` key is **omitted** when `vendor_models` is malformed or the tier has no mapping — consumers must fall back to `claude` in that case. Present for `task[]`, consensus `agents[]`, and `prd_writer`.
-- `on_complete`/`on_fail`: Callback commands to update task status after agent finishes
+- `on_complete`/`on_fail`: Callback commands to update task status after agent finishes. For newly planned tasks, run `task_check_command` before `on_complete`.
+- `review_group` / `task_checks` / `task_check_command`: common normal/worktree execution contract. Run the command in the task cwd to execute and persist every available check; completion/finish fails closed without passing evidence. The expensive panel runs only after the whole group completes.
 
 ## Mapping to Agent Tool
 
@@ -151,7 +155,7 @@ Non-dry-run, gk gate-capable. Acquires the first parallel batch, inits `run.json
 ```json
 {
   "project": "my-project", "base": "develop", "branch_prefix": "feat/",
-  "max_parallel": 4, "gate": "panel", "gate_phase": "before",
+  "max_parallel": 4, "gate": "panel", "gate_phase": "release",
   "degraded": false,
   "mode": "dry-run",
   "parallel_batches": [["t3", "t4"]],
@@ -161,13 +165,15 @@ Non-dry-run, gk gate-capable. Acquires the first parallel batch, inits `run.json
     "task_id": "t3", "name": "...", "parallel_safe": true,
     "branch": "feat/t3-search-index", "worktree_hint": "/path/.gk/worktree/repo/feat/t3-...",
     "acquire": "GK_AGENT=1 git-kit worktree acquire feat/t3-... --from develop",
-    "finish": "GK_AGENT=1 git-kit worktree finish --to develop --gate \"xm build gate-panel ...\" --gate-phase before --cleanup"
+    "finish": "GK_AGENT=1 git-kit worktree finish --to develop --cleanup"
   }],
   "preflight": { "gate_capable": true, "degraded": false, "panel_ok": true, "...": "..." }
 }
 ```
 
 Degraded mode sets `mode: "manual-handoff"` and `degraded: true` — print the `acquire`/`finish` commands for the human; xm will not drive gk.
+
+The default `build.review_scope=group` deliberately omits the per-task `--gate` in both real and dry-run worktree finishes. When `run-status --json` emits `review_required: true`, run `review-group <active_group>` once before dispatching the next group or advancing to Verify.
 
 ### `run-status --json` — `worktree_tasks[]`
 

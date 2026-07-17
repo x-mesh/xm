@@ -21,7 +21,7 @@ When `research` is invoked:
 5. Synthesize into REQUIREMENTS.md and ROADMAP.md
 6. Save raw outputs via `$XMB save research-notes --agent <name> --content "..."`, then save synthesized artifacts via `$XMB save requirements` and `$XMB save roadmap`
 
-## Plan-Check Command (11-Dimension Validation)
+## Plan-Check Command (15-Dimension Validation)
 
 Validates the plan across:
 
@@ -38,6 +38,10 @@ Validates the plan across:
 | quality-bar | CONTEXT.md Quality Bar items are mapped to tasks |
 | scope-clarity | Scope guard: warns if task name matches PRD Out of Scope keywords (G1) |
 | risk-ordering | Uses DAG step position, not array index (G3) |
+| expected-files | Worktree parallel-safety file declarations |
+| failure-mode-coverage | Adversarial/stress criteria for risk-domain tasks |
+| delegation-contract | Explicit interface invariants for delegated tasks |
+| review-groups | Sequential review-boundary dependency order |
 | overall | Combined assessment |
 
 Run: `$XMB plan-check`
