@@ -63,15 +63,50 @@ export function parseEnvelope(line) {
 export function eventText(event) {
   const payload = event.payload || {};
   const original = payload.original ?? payload.text ?? payload.message ?? payload.prompt ?? '';
-  return typeof original === 'string' ? original : JSON.stringify(original, null, 2);
+  if (typeof original === 'string') return cleanDisplayText(original, event.type);
+  if (!original || typeof original !== 'object') return '';
+  // Provider progress objects contain protocol metadata, tool internals, and
+  // sometimes injected system context. Discord should receive human-facing
+  // text only; structured progress is retained in the gateway store.
+  const text = original.text ?? original.delta ?? original.output ?? original.message ?? original.result ?? original.note ?? '';
+  return typeof text === 'string' ? cleanDisplayText(text, event.type) : '';
+}
+
+// The (?:"|')(?:stdout|stderr|...)(?:"|')\s*: branch requires quotes around the key so
+// it matches a raw JSON blob leaking through (e.g. `"stdout": "..."`) without also
+// matching ordinary prose that happens to mention these words before a colon (e.g. a
+// reviewer note reading "stdout: build succeeded"), which used to drop the entire
+// message — panel review 2026-07-17 (agy HIGH + kiro MEDIUM, same root cause).
+const INTERNAL_OUTPUT = /(?:injected context is absent|pin gate|pin_add\(|mem-mesh|session\.progress|<environment_context>|AGENTS\.md instructions|xm activity|hookSpecificOutput|additionalContext|rate_limit_event|unverified-anchor|report_anchor_status|(?:"|')(?:stdout|stderr|outcome|uuid|session_id)(?:"|')\s*:)/i;
+export function cleanDisplayText(value, type = '') {
+  const text = String(value || '').replace(/\r\n/g, '\n').trim();
+  if (!text) return '';
+  if ((type === 'session.progress' || type === 'session.output') && INTERNAL_OUTPUT.test(text)) return '';
+  return text;
+}
+
+export function displayableEvent(event) { return Boolean(eventText(event)); }
+
+export function eventHeader(event) {
+  return `[${event.type}] host=${event.host_id}${event.session_id ? ` session=${event.session_id}` : ''}${event.provider ? ` provider=${event.provider}` : ''}`;
 }
 
 export function discordChunks(event, max = 1900) {
-  const prefix = `[${event.type}] host=${event.host_id}${event.session_id ? ` session=${event.session_id}` : ''}${event.provider ? ` provider=${event.provider}` : ''}\n`;
-  const body = eventText(event) || '(no text payload)';
+  const body = eventText(event);
+  if (!body) return [];
+  const prefix = `${eventHeader(event)}\n`;
   const chunks = [];
   for (let i = 0; i < body.length || i === 0; i += max - prefix.length) {
     chunks.push(prefix + body.slice(i, i + max - prefix.length));
   }
+  return chunks;
+}
+
+export function discordBatchChunks(events, max = 1900) {
+  const rows = events.filter(displayableEvent).map((event) => `${eventHeader(event)}\n${eventText(event)}`);
+  if (!rows.length) return [];
+  const body = rows.join('\n\n');
+  const chunks = [];
+  for (let i = 0; i < body.length; i += max) chunks.push(body.slice(i, i + max));
   return chunks;
 }
