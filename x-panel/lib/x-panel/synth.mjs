@@ -174,6 +174,63 @@ export function synthesize(models, round1, round2, abstained = new Set(), r1Stat
 }
 
 /**
+ * Honest one-round synthesis. Independent cross-model agreement may confirm a
+ * cluster, but a finding raised by only one model remains unreviewed: without a
+ * refutation round, silence from the other models is not a concession.
+ */
+export function synthesizeRound1(models, round1, r1Status = {}) {
+  const findings = models.flatMap((owner) => (round1[owner] || []).map((finding) => ({ owner, ...finding })));
+  const consensus = mergeConsensus(findings);
+  const toEntry = (cluster) => ({
+    owner: cluster.models.join('+'),
+    idx: null,
+    severity: cluster.severity,
+    file: cluster.file,
+    line: cluster.line,
+    claim: cluster.claims.map((item) => item.claim).join(' | '),
+    evidence: cluster.consensus > 1 ? 'independent round-1 agreement' : 'single-model round-1 finding',
+    opponents: [],
+    reviewers: 0,
+    models: cluster.models,
+    consensus: cluster.consensus,
+    claims: cluster.claims,
+  });
+  const confirmed = consensus.filter((cluster) => cluster.consensus > 1).map(toEntry);
+  const unreviewed = consensus.filter((cluster) => cluster.consensus === 1).map(toEntry);
+  const byModel = {};
+  for (const model of models) {
+    const st = r1Status[model];
+    byModel[model] = {
+      raised: (round1[model] || []).length,
+      confirmed: confirmed.filter((entry) => entry.models.includes(model)).length,
+      contested: 0,
+      unmatched_refs: 0,
+      invalid_stances: 0,
+      grounded_verdicts: 0,
+      r1: st ? st.status : 'ok',
+      ...(st?.error ? { r1_error: st.error } : {}),
+    };
+  }
+  return {
+    models,
+    counts: {
+      confirmed: confirmed.length,
+      contested: 0,
+      unreviewed: unreviewed.length,
+      unique: consensus.length,
+      r1_failed: models.filter((model) => byModel[model].r1 === 'failed').length,
+      r1_suspect: models.filter((model) => byModel[model].r1 === 'suspect_empty').length,
+      grounded_verdicts: 0,
+    },
+    by_model: byModel,
+    consensus,
+    confirmed,
+    contested: [],
+    unreviewed,
+  };
+}
+
+/**
  * Merge findings that point at the same issue (same file, line within tolerance)
  * across models into one entry. Collapses the duplicate explosion that grows with
  * model count, and surfaces consensus (how many models agreed) vs single-model
