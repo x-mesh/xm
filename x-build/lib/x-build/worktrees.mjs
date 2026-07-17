@@ -24,6 +24,7 @@ import {
   toSlug, tasksPath, resolveProject, getExplicitProject, parseOptions, exitFail,
 } from './core.mjs';
 import { runGatePanel } from './gate-panel.mjs';
+import { taskCheckContractHash, taskCheckFingerprint } from './build-policy.mjs';
 import { appendMetric, generateCorrelationId } from './cost-engine.mjs';
 // Shared leaf module — see worktree-shared.mjs header for the DAG rationale.
 // isParallelSafe/normalizeExpectedFiles used to come from tasks.mjs (the cycle);
@@ -31,7 +32,7 @@ import { appendMetric, generateCorrelationId } from './cost-engine.mjs';
 // in the leaf so imports flow one direction only.
 import {
   isParallelSafe, normalizeExpectedFiles,
-  buildRoot, WORKTREE_CONFIG_DEFAULTS, loadWorktreeConfig,
+  buildRoot, WORKTREE_CONFIG_DEFAULTS, loadWorktreeConfig, applyLifecycleWorktreePolicy,
   validateIdSegment, resolveMainRepoRoot,
 } from './worktree-shared.mjs';
 
@@ -852,6 +853,20 @@ function taskDataPath(project) {
   return join(buildRoot(), 'projects', project, 'phases', '02-plan', 'tasks.json');
 }
 
+function plannedTaskCheckPassed(project, taskId, cwd) {
+  const planState = join(buildRoot(), 'projects', project, 'phases', '02-plan', 'plan-state.json');
+  if (!existsSync(planState)) return true; // legacy projects
+  const task = readJSON(taskDataPath(project))?.tasks?.find((row) => row.id === taskId);
+  const evidence = task?.task_check;
+  const currentFingerprint = taskCheckFingerprint(cwd);
+  return evidence?.passed === true
+    && !!evidence.worktree_fingerprint
+    && !!currentFingerprint
+    && resolve(evidence.cwd || '.') === resolve(cwd)
+    && evidence.contract_hash === taskCheckContractHash(cwd)
+    && evidence.worktree_fingerprint === currentFingerprint;
+}
+
 // Mark a task completed in tasks.json. Uses core.modifyJSON (locked, atomic)
 // directly rather than importing tasks.mjs — worktrees.mjs and tasks.mjs already
 // have a runtime-bound circular import, and pulling tasks.mjs in here for a
@@ -959,6 +974,19 @@ function applyFinishResult(project, taskId, res) {
 function finishOne({ project, taskId, base, gatePhase, cleanup, cwd, agentEnv, backoffMs }) {
   const run = readRun(project, taskId);
   const worktreeCwd = run?.worktree && existsSync(run.worktree) ? run.worktree : cwd;
+  if (!plannedTaskCheckPassed(project, taskId, worktreeCwd)) {
+    updateRun(project, taskId, {
+      worktree_status: WORKTREE_STATUS.BLOCKED,
+      last_error: { code: 'task_checks_missing', message: `run x-build task-check ${taskId} in the task worktree before finish` },
+    });
+    return {
+      task_id: taskId,
+      task_status: TASK_STATUS.RUNNING,
+      worktree_status: WORKTREE_STATUS.BLOCKED,
+      retried: false,
+      error: 'task_checks_missing',
+    };
+  }
   const spawnArgs = { project, taskId, base, gatePhase, cleanup, worktreeCwd, agentEnv };
 
   let outcome = applyFinishResult(project, taskId, runGkFinishOnce(spawnArgs));
@@ -1342,7 +1370,7 @@ function worktreesPlan(args) {
   const json = !!opts.json;
   const project = getExplicitProject() || resolveProject(null);
   const cwd = process.cwd();
-  const config = loadWorktreeConfig();
+  const config = applyLifecycleWorktreePolicy(loadWorktreeConfig(), project);
 
   // Run-level flag overrides on top of config.
   if (typeof opts.base === 'string') config.base = opts.base;
@@ -1352,7 +1380,9 @@ function worktreesPlan(args) {
   // Preflight (capability probe) unless suppressed. dry-run never depends on the
   // gk gate surface, but the probe drives the degraded-mode label.
   const preflight = opts['no-preflight'] ? null : runPreflight({ project, cwd });
-  const degraded = preflight ? preflight.degraded : false;
+  // Group review does not ask gk to run a per-task gate. A missing gk gate
+  // capability therefore cannot degrade the worktree execution backend.
+  const degraded = preflight ? (preflight.degraded && config.gate_phase !== 'release') : false;
 
   const taskData = readJSON(tasksPath(project));
   const ready = selectReadyTasks(taskData);
@@ -1411,7 +1441,7 @@ function worktreesStatus(args) {
   }
   // gate_phase=release → per-task merges were ungated; surface whether the
   // one-shot integration review is pending/stale/pass (plan §3B, v1 guard).
-  const config = loadWorktreeConfig();
+  const config = applyLifecycleWorktreePolicy(loadWorktreeConfig(), project);
   const releaseGate = config.gate_phase === 'release' ? releaseGateStatus({ project }) : null;
 
   if (json) { console.log(JSON.stringify({ project, worktree_tasks: tasks, release_gate: releaseGate }, null, 2)); return; }
@@ -1441,7 +1471,7 @@ function worktreesResume(args) {
     if (idErr) { console.error(`worktrees resume: ${idErr}`); exitFail(2, `worktrees resume: ${idErr}`); }
   }
   const cwd = process.cwd();
-  const config = loadWorktreeConfig();
+  const config = applyLifecycleWorktreePolicy(loadWorktreeConfig(), project);
   if (typeof opts.base === 'string') config.base = opts.base;
 
   const taskIds = positional.length ? positional : null;
