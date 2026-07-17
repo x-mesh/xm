@@ -182,7 +182,7 @@ describe('worktrees plan CLI — no gk execution', () => {
     expect(worktreeList()).toBe(before);
   });
 
-  test('degraded mode when gk gate surface is missing', () => {
+  test('legacy project degrades when the required per-task gk gate is missing', () => {
     const before = worktreeList();
     const r = runPlan({ FAKE_GK_NO_GATE: '1' });
     expect(r.status).toBe(0);

@@ -91,6 +91,23 @@ function readTasks() {
 // ── serialization ───────────────────────────────────────────────────────
 
 describe('finishWorktrees — serialization', () => {
+  test('planned worktree refuses finish without current task-check evidence', () => {
+    const planState = join(process.env.X_BUILD_ROOT, 'projects', PROJECT, 'phases', '02-plan', 'plan-state.json');
+    mkdirSync(dirname(planState), { recursive: true });
+    writeFileSync(planState, JSON.stringify({ version: 1, state: 'approved' }));
+    try {
+      seedTasks(['needs-check']);
+      seedRun('needs-check');
+      const out = withEnv({ X_BUILD_GK_ARGV: GK_ARGV, FAKE_GK_SCENARIO: 'ok', FAKE_GK_LOG: logFile },
+        () => wt.finishWorktrees({ project: PROJECT, taskIds: ['needs-check'], config: { base: 'develop' }, cwd: main }));
+      expect(out.results[0].error).toBe('task_checks_missing');
+      expect(out.results[0].worktree_status).toBe(wt.WORKTREE_STATUS.BLOCKED);
+      expect(existsSync(logFile)).toBe(false); // gk finish was never invoked
+    } finally {
+      rmSync(planState, { force: true });
+    }
+  });
+
   test('3 finishes run one at a time (non-overlapping), in order', () => {
     const ids = ['s1', 's2', 's3'];
     seedTasks(ids);

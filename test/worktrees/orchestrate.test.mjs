@@ -115,13 +115,28 @@ describe('run --worktrees CLI', () => {
     expect(plan.parallel_batches).toEqual([['t1', 't2']]);
     expect(plan.tasks).toHaveLength(2);
     expect(plan.tasks[0].acquire).toContain('git-kit worktree acquire');
-    expect(plan.tasks[0].finish).toContain('--project demo');
+    // Legacy projects have no final group lifecycle, so they retain the
+    // per-task gate instead of silently deferring it to a nonexistent review.
+    expect(plan.tasks[0].finish).toContain('--gate');
     expect(plan.worktree_signal.recommend).toBe(true);
     // invariant: dry-run created no worktree, tasks.json untouched (still pending)
     expect(worktreeCount()).toBe(before);
     const tasks = JSON.parse(readFileSync(proj('phases', '02-plan', 'tasks.json'), 'utf8'));
     expect(tasks.tasks.every((t) => t.status === 'pending' || t.status === 'ready')).toBe(true);
     expect(tasks.tasks.some((t) => t.status === 'running')).toBe(false);
+  });
+
+  test('--dry-run does not bind a planned lifecycle review-group baseline', () => {
+    writeJSON(proj('phases', '02-plan', 'plan-state.json'), { status: 'approved' });
+    const statePath = proj('phases', '03-execute', 'review-groups.json');
+    try { rmSync(statePath, { force: true }); } catch {}
+
+    const r = run(['--worktrees', '--dry-run']);
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout).mode).toBe('dry-run');
+    expect(existsSync(statePath)).toBe(false);
+
+    rmSync(proj('phases', '02-plan', 'plan-state.json'), { force: true });
   });
 
   test('real: fan-out acquires batch, marks RUNNING, inits run.json + env', () => {
@@ -207,17 +222,30 @@ describe('run --worktrees CLI', () => {
     }
   });
 
-  test('degraded (no gk --gate): manual-handoff, never acquires', () => {
+  test('legacy project keeps the per-task gate and degrades when it is unavailable', () => {
     const before = worktreeCount();
     const r = run(['--worktrees'], { FAKE_GK_NO_GATE: '1' });
     expect(r.status).toBe(0);
     const plan = JSON.parse(r.stdout);
     expect(plan.degraded).toBe(true);
     expect(plan.mode).toBe('manual-handoff');
-    expect(plan.tasks[0].acquire).toContain('git-kit worktree acquire');
-    // no acquire executed → no run.json, tasks stay pending
     expect(existsSync(proj('worktrees', 't1', 'run.json'))).toBe(false);
     expect(worktreeCount()).toBe(before);
+  });
+
+  test('planned group lifecycle does not require the unused per-task gk gate capability', () => {
+    const planState = proj('phases', '02-plan', 'plan-state.json');
+    writeFileSync(planState, JSON.stringify({ version: 1, state: 'approved' }));
+    try {
+      const r = run(['--worktrees'], { FAKE_GK_NO_GATE: '1' });
+      expect(r.status).toBe(0);
+      const plan = JSON.parse(r.stdout);
+      expect(plan.degraded).toBe(false);
+      expect(plan.mode).toBe('worktree');
+      expect(existsSync(proj('worktrees', 't1', 'run.json'))).toBe(true);
+    } finally {
+      rmSync(planState, { force: true });
+    }
   });
 
   test('worktree_signal on run --json: 2 safe → recommend true', () => {
@@ -291,6 +319,18 @@ describe('loadWorktreeConfig — resolution priority', () => {
     const cfg = shared.loadWorktreeConfig();
     expect(cfg.base).toBe('develop');
     expect(cfg.max_parallel).toBe(4);
+    expect(cfg.gate_phase).toBe('release');
+    expect(cfg.gate_deferred_to).toBe('review_group');
+  });
+
+  test('build.review_scope=task restores the per-task worktree gate', () => {
+    const xm = join(dir, '.xm');
+    mkdirSync(xm, { recursive: true });
+    writeFileSync(join(xm, 'config.json'), JSON.stringify({ build: { review_scope: 'task' } }));
+    setEnv({ XM_ROOT: xm, X_BUILD_ROOT: join(dir, 'nobuild', '.xm', 'build') });
+    const cfg = shared.loadWorktreeConfig();
+    expect(cfg.gate_phase).toBe('before');
+    expect(cfg.gate_deferred_to).toBeUndefined();
   });
 
   test('shared (.xm/config.json) overrides default', () => {
