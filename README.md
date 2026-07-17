@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.7.2-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.7.4-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -464,6 +464,7 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 | **Domain-aware done_criteria** | Auto-generated based on task domain, size tier, and PRD NFR targets |
 | **Failure-mode enumeration** | PRD §7.5 forces per-requirement pathological/adversarial inputs (`[R#] <mode> → 검증: <method>`); `tasks done-criteria` injects them as stress checks, `plan-check`'s `failure-mode-coverage` warns when a risk-domain task lacks them. Measured to let a cheaper implementer model match a costlier one on robustness — see `docs/phase-model-routing-experiment.md` |
 | **Worktree execution** | `run --worktrees` fans parallel-safe tasks out into isolated `git-kit` worktrees; each task's patch must clear `gate-panel` (a cross-model panel review gate) before it merges — see [Worktree pipeline](#worktree-pipeline) |
+| **Group-level review** | `build.review_scope` (`group` default / `task`) batches a review group's tasks into one panel run instead of per-task; `build.review_mode` (`manual` default / `auto`) decides whether the group review is optional (exposed, non-blocking) or the mandatory Execute→Verify boundary. `review-group <name> [--rounds 2]` runs one explicitly. |
 | **Enforced phase gates** | Exit gates are read from config-schema defaults merged over your config, recorded to each phase's `status.json` (visible in `status --json`), and a blocked gate exits non-zero — the marquee "gate the agent can't talk past" is real, not a no-op |
 | **Blocking hooks** | `hooks install` ships two native Claude Code hooks: a PreToolUse **scope-guard** that blocks edits outside `triage.fix_scope.allowed_files` during a review-fix, and a Stop **stop-gate** that blocks ending a turn with an unresolved Critical/High finding. Disk-only, fail-open; bypass any run with `XM_BUILD_HOOKS_OFF=1` |
 | **ROI routing signal** | `roi` reports quality-per-dollar (Score/$) per model/role/strategy from *measured* actuals and suggests a `model_overrides` change — but only from calibrated data (≥5 tasks with real cost **and** a score); it never guesses from estimates or writes config itself |
@@ -1046,7 +1047,7 @@ Artifact types: `review op plan eval probe humble solver research prd handoff`. 
 
 ### x-panel
 
-Cross-model adversarial review panel. Runs multiple model CLIs (claude/codex/agy/cursor) on the same target, has each refute the others' findings, and synthesizes a verdict that separates **consensus** (N/M agreement — confidence) from **diversity** (what only one model caught). The orchestrator is a tool-neutral CLI, so the leader isn't a fixed model.
+Cross-model review panel. Runs multiple model CLIs (claude/codex/agy/cursor) on the same target and synthesizes a verdict that separates **consensus** (N/M agreement — confidence) from **diversity** (what only one model caught). Default is 1 round (independent, no cross-talk); `--rounds 2` makes it adversarial — each model refutes the others' findings before the final verdict. The orchestrator is a tool-neutral CLI, so the leader isn't a fixed model.
 
 ```bash
 /xm:panel                        # interactive (Claude Code skill): pick models, then review
@@ -1054,6 +1055,7 @@ xm panel                         # CLI: review current git diff with your defaul
 xm panel ./file --full           # all installed model CLIs
 xm panel --models codex:gpt-5.2,cursor:gpt-5.3-codex,claude:opus
 xm panel --stream                # live: per-model tokens, cost, and streaming text
+xm panel --rounds 2              # 2 rounds: adds round-2 refutation (default 1: independent consensus only, no refutation)
 xm panel setup --models codex,agy --global   # save defaults
 xm panel doctor                  # readiness: each provider installed + authed (no model call)
 xm panel preflight               # live check: probe each configured model (cursor:kimi, kiro:glm…) before a run
