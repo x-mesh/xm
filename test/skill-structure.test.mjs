@@ -334,14 +334,14 @@ describe('x-build SKILL.md structure', () => {
     expect(modelRouting).not.toContain('model: "sonnet"');
   });
 
-  test('plan-check is documented as 11 dimensions', () => {
+  test('plan-check is documented as 15 dimensions', () => {
     const otherCommands = readFileSync(
       join(buildRoot, 'commands', 'other-commands.md'),
       'utf8'
     );
 
-    expect(content).toContain('11 quality dimensions');
-    expect(otherCommands).toContain('11-Dimension Validation');
+    expect(content).toContain('15 quality dimensions');
+    expect(otherCommands).toContain('15-Dimension Validation');
     expect(otherCommands).not.toContain('8-Dimension Validation');
   });
 

@@ -367,6 +367,33 @@ describe('codex Plugin Skill — runtime overlays (t8)', () => {
     expect(overlay).toContain('task.model_by_vendor.codex');
   });
 
+  test('overlay treats x-build JSON routing fields as authoritative across plan/research/consensus/execute', () => {
+    const overlay = overlayOf(buildPrompt);
+    expect(overlay).toContain('prd_writer.model_by_vendor.codex');
+    expect(overlay).toContain('agents_spec[*].model_by_vendor.codex');
+    expect(overlay).toContain('agents[*].model_by_vendor.codex');
+    expect(overlay).toContain('task.model_by_vendor.codex');
+    expect(overlay).toMatch(/authoritative/i);
+  });
+
+  test('overlay restricts static named-agent configs to exact matches and otherwise falls back to exact codex exec specs', () => {
+    const overlay = overlayOf(buildPrompt);
+    expect(overlay).toMatch(/exact-match only/i);
+    expect(overlay).toContain('planner/plan');
+    expect(overlay).toContain('reviewer/review');
+    expect(overlay).toContain('executor/implement');
+    expect(overlay).toMatch(/fall back to `codex exec`/i);
+    expect(overlay).toMatch(/exact spec from x-build JSON/i);
+  });
+
+  test('overlay documents loud fallback, inherit omission, and non-routing gates', () => {
+    const overlay = overlayOf(buildPrompt);
+    expect(overlay).toMatch(/missing or malformed/i);
+    expect(overlay).toMatch(/fail loud/i);
+    expect(overlay).toContain('Never pass the literal string `inherit` to Codex');
+    expect(overlay).toContain('Deterministic gates and human approval gates are workflow controls');
+  });
+
   test('overlay carries the codex exec … resume phase-transition contract with the flag-order caveat', () => {
     const overlay = overlayOf(buildPrompt);
     expect(overlay).toContain('resume --last');

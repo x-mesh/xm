@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, rmSync, readFileSync, readdirSync, mkdirSync, 
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { normalizeFindings, normalizeVerdicts, synthesize, mergeConsensus, normalizeResponses, followupDelta } from '../x-panel/lib/x-panel/synth.mjs';
+import { normalizeFindings, normalizeVerdicts, synthesize, synthesizeRound1, mergeConsensus, normalizeResponses, followupDelta } from '../x-panel/lib/x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
 import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
 import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings, stripAnsi } from '../x-panel/lib/x-panel/adapters.mjs';
@@ -33,7 +33,8 @@ const STUB_ENV = (extra) => ({
 
 function review(args, env = {}) {
   // default to the two stubbed models so tests never invoke real autodetected CLIs
-  const finalArgs = args.includes('--models') ? args : ['--models', 'claude,codex', ...args];
+  const withRounds = args.includes('--rounds') ? args : ['--rounds', '2', ...args];
+  const finalArgs = withRounds.includes('--models') ? withRounds : ['--models', 'claude,codex', ...withRounds];
   return spawnSync('node', [CLI, 'review', ...finalArgs], { cwd: DIR, env: STUB_ENV(env), encoding: 'utf8', timeout: 20000 });
 }
 
@@ -514,6 +515,26 @@ describe('groundCapable (빅뱃3 — only file-readable vendors ground)', () => 
     expect(groundCapable('codex')).toBe(true);
     // claude is tmpdir-isolated; cursor/agy/kiro have unconfirmed read tools → text-only.
     for (const n of ['claude', 'cursor', 'agy', 'kiro', 'unknown']) expect(groundCapable(n)).toBe(false);
+  });
+});
+
+describe('synthesizeRound1', () => {
+  test('confirms only independent agreement and keeps single-model diversity unreviewed', () => {
+    const round1 = {
+      claude: [
+        { idx: 0, severity: 'high', file: 'a.js', line: 10, claim: 'shared bug', evidence: '' },
+        { idx: 1, severity: 'medium', file: 'b.js', line: 4, claim: 'claude only', evidence: '' },
+      ],
+      codex: [
+        { idx: 0, severity: 'medium', file: 'a.js', line: 11, claim: 'same shared bug', evidence: '' },
+      ],
+    };
+    const verdict = synthesizeRound1(['claude', 'codex'], round1);
+    expect(verdict.counts.confirmed).toBe(1);
+    expect(verdict.confirmed[0].consensus).toBe(2);
+    expect(verdict.counts.unreviewed).toBe(1);
+    expect(verdict.unreviewed[0].claim).toContain('claude only');
+    expect(verdict.counts.contested).toBe(0);
   });
 });
 
@@ -2441,6 +2462,22 @@ describe('panel status (staleness + project scope + --all)', () => {
 // ── integration: full panel flow via stubs ───────────────────────────
 
 describe('review (stubbed models)', () => {
+  test('defaults to one round, persists rounds=1, and does not write refute artifacts', () => {
+    const r = panelRaw(['review', 'some code change long enough for a useful review', '--models', 'claude,codex', '--json']);
+    expect(r.status).toBe(0);
+    const v = JSON.parse(r.stdout);
+    expect(v.rounds).toBe(1);
+    expect(readdirSync(latestRunDir()).some((name) => name.endsWith('.r2.json'))).toBe(false);
+    expect(v.confirmed.every((finding) => finding.consensus > 1)).toBe(true);
+    expect(v.unreviewed.every((finding) => finding.consensus === 1)).toBe(true);
+  });
+
+  test('rejects an invalid round count before spawning models', () => {
+    const r = panelRaw(['review', 'some code change long enough for a useful review', '--models', 'claude,codex', '--rounds', '3', '--json']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('--rounds must be 1 or 2');
+  });
+
   test('runs both rounds and writes verdict.json', () => {
     const r = review(['some code change']);
     expect(r.status).toBe(0);
@@ -2893,6 +2930,35 @@ describe('UX: config, presets, shortcut, setup', () => {
     const r = panelRaw(['review', 'target']);
     expect(r.status).toBe(0);
     expect(latestVerdict().models).toEqual(['claude', 'codex:gpt-5']);
+  });
+
+  test('applies routed fallback env to bare names without changing the provider roster', () => {
+    writeProjectConfig({ models: ['claude', 'codex'] });
+    const r = panelRaw(['review', 'target'], { X_PANEL_ROUTED_MODEL_OVERRIDES: JSON.stringify({ codex: 'gpt-5.5:high' }) });
+    expect(r.status).toBe(0);
+    expect(latestVerdict().models).toEqual(['claude', 'codex:gpt-5.5:high']);
+  });
+
+  test('panel.model_overrides beats routed fallback env', () => {
+    writeProjectConfig({ models: ['claude', 'codex'], model_overrides: { codex: 'gpt-5' } });
+    const r = panelRaw(['review', 'target'], { X_PANEL_ROUTED_MODEL_OVERRIDES: JSON.stringify({ codex: 'gpt-5.5:high' }) });
+    expect(r.status).toBe(0);
+    expect(latestVerdict().models).toEqual(['claude', 'codex:gpt-5']);
+  });
+
+  test('explicit provider:model beats routed fallback env', () => {
+    writeProjectConfig({ models: ['claude', 'codex'] });
+    const r = panelRaw(['review', 'target', '--models', 'claude,codex:gpt-5'], { X_PANEL_ROUTED_MODEL_OVERRIDES: JSON.stringify({ codex: 'gpt-5.5:high' }) });
+    expect(r.status).toBe(0);
+    expect(latestVerdict().models).toEqual(['claude', 'codex:gpt-5']);
+  });
+
+  test('malformed routed override env warns and is ignored', () => {
+    writeProjectConfig({ models: ['claude', 'codex'] });
+    const r = panelRaw(['review', 'target'], { X_PANEL_ROUTED_MODEL_OVERRIDES: '{oops' });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('malformed X_PANEL_ROUTED_MODEL_OVERRIDES ignored');
+    expect(latestVerdict().models).toEqual(['claude', 'codex']);
   });
 
   test('config preset resolves to its model list', () => {

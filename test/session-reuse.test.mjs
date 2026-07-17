@@ -23,7 +23,9 @@ afterAll(() => rmSync(DIR, { recursive: true, force: true }));
 function review(name, args = [], env = {}) {
   const sub = join(DIR, name);
   const log = join(DIR, `${name}.session.jsonl`);
-  const r = spawnSync('node', [CLI, 'review', 'some diff', '--models', 'claude,codex', ...args], {
+  // Session reuse is a round-2 compatibility contract. Native panel now defaults
+  // to one round, so this suite opts into the refutation round explicitly.
+  const r = spawnSync('node', [CLI, 'review', 'some diff', '--models', 'claude,codex', '--rounds', '2', ...args], {
     cwd: DIR,
     encoding: 'utf8',
     timeout: 30000,

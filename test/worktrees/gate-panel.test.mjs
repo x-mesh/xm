@@ -24,11 +24,15 @@ const FAKE_PANEL = `
 import { writeFileSync, readFileSync } from 'node:fs';
 const mode = process.env.FAKE_PANEL_MODE || 'clean';
 const counter = process.env.FAKE_PANEL_COUNTER;
+const captureEnv = process.env.FAKE_PANEL_CAPTURE_ENV;
+const captureArgv = process.env.FAKE_PANEL_CAPTURE_ARGV;
 if (counter) {
   let n = 0;
   try { n = parseInt(readFileSync(counter, 'utf8'), 10) || 0; } catch {}
   writeFileSync(counter, String(n + 1));
 }
+if (captureEnv) writeFileSync(captureEnv, process.env.X_PANEL_ROUTED_MODEL_OVERRIDES || '');
+if (captureArgv) writeFileSync(captureArgv, JSON.stringify(process.argv.slice(2)));
 const out = (v) => process.stdout.write(JSON.stringify(v));
 const base = { consensus: [], confirmed: [], contested: [], unreviewed: [] };
 if (mode === 'clean') { out({ run: 'fk-clean', counts: {}, ...base }); process.exit(0); }
@@ -51,7 +55,7 @@ let preErr;     // fake pre-gate: exit 2 (infra error)
 const PROJECT = 'demo';
 const gitq = (cwd, c) => execSync(`git ${c}`, { cwd, stdio: 'pipe', shell: '/bin/bash' });
 
-function runGate({ mode, task = 't1', phase = 'before', json = true, project = PROJECT, counter, cwd = wt, extraArgs = [] }) {
+function runGate({ mode, task = 't1', phase = 'before', json = true, project = PROJECT, counter, cwd = wt, extraArgs = [], captureEnv = null, captureArgv = null }) {
   const args = ['gate-panel'];
   if (project !== null) args.push('--project', project);
   if (task !== null) args.push('--task', task);
@@ -69,6 +73,8 @@ function runGate({ mode, task = 't1', phase = 'before', json = true, project = P
   env.X_BUILD_PANEL_ARGV = JSON.stringify(['node', fakePanel]);
   env.FAKE_PANEL_MODE = mode;
   if (counter) env.FAKE_PANEL_COUNTER = counter;
+  if (captureEnv) env.FAKE_PANEL_CAPTURE_ENV = captureEnv;
+  if (captureArgv) env.FAKE_PANEL_CAPTURE_ARGV = captureArgv;
   env.NO_COLOR = '1';
 
   const res = spawnSync('node', [CLI, ...args], { cwd, env, encoding: 'utf8' });
@@ -157,6 +163,15 @@ describe('gate-panel policy logic (pure)', () => {
     } finally {
       if (prev === undefined) delete process.env.X_BUILD_ROOT; else process.env.X_BUILD_ROOT = prev;
     }
+  });
+
+  test('gate-panel passes reviewer routed fallback to panel as a per-run env override', () => {
+    const capture = join(main, `env-${Date.now()}.json`);
+    const tasksPath = join(main, '.xm', 'build', 'projects', PROJECT, 'phases', '02-plan', 'tasks.json');
+    writeFileSync(tasksPath, JSON.stringify({ tasks: [{ id: 'tr', size: 'large' }] }));
+    const r = runGate({ mode: 'clean', task: 'tr', captureEnv: capture });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(readFileSync(capture, 'utf8'))).toEqual({ codex: 'gpt-5.5:high' });
   });
 });
 
@@ -320,6 +335,22 @@ describe('gate-panel CLI — advisory, rounds, cap, pre-gate (integration, fake 
   const buildCfgPath = () => join(main, '.xm', 'build', 'config.json');
   const writeCfg = (worktree) => writeFileSync(buildCfgPath(), JSON.stringify({ worktree }));
   const clearCfg = () => { try { rmSync(buildCfgPath()); } catch { /* absent is fine */ } };
+
+  test('panel execution defaults to one round and forwards an explicit two-round escalation', () => {
+    const onePath = join(main, 'panel-argv-one.json');
+    const one = runGate({ mode: 'clean', task: 'round-one', captureArgv: onePath });
+    expect(one.status).toBe(0);
+    expect(one.parsed.panel_rounds).toBe(1);
+    expect(JSON.parse(readFileSync(onePath, 'utf8'))).toContain('--rounds');
+    expect(JSON.parse(readFileSync(onePath, 'utf8'))).toContain('1');
+
+    const twoPath = join(main, 'panel-argv-two.json');
+    const two = runGate({ mode: 'clean', task: 'round-two', extraArgs: ['--rounds', '2'], captureArgv: twoPath });
+    expect(two.status).toBe(0);
+    expect(two.parsed.panel_rounds).toBe(2);
+    const argv = JSON.parse(readFileSync(twoPath, 'utf8'));
+    expect(argv[argv.indexOf('--rounds') + 1]).toBe('2');
+  });
 
   test('confirmed medium → pass with advisory under the default per-task policy (§3A)', () => {
     const r = runGate({ mode: 'confirmed-medium', task: 'adv' });

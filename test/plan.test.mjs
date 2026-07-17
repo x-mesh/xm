@@ -394,6 +394,10 @@ describe('deterministic model emission (research / plan / next)', () => {
       for (const spec of output.agents_spec) {
         expect(spec.role).toBe('researcher');
         expect(spec.model).toBe('haiku'); // economy.researcher
+        expect(spec.model_vendor).toBe('claude');
+        expect(spec.model_by_vendor?.claude).toBe('haiku');
+        expect(typeof spec.model_by_vendor?.codex).toBe('string');
+        expect(spec.model_by_vendor?.codex.length).toBeGreaterThan(0);
       }
       expect(output.model).toBe('haiku');
     } finally {
@@ -410,6 +414,62 @@ describe('deterministic model emission (research / plan / next)', () => {
       const output = JSON.parse(r.stdout);
       expect(output.model).toBe('opus');
       expect(output.agents_spec.every(s => s.model === 'opus')).toBe(true);
+      expect(output.agents_spec.every(s => s.model_by_vendor?.claude === 'opus')).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('research agents_spec preserves role/model while honoring configured vendor override additively', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeSharedConfig(tmp, {
+        model_profile: 'economy',
+        vendor_models: {
+          codex: {
+            haiku: 'gpt-5-codex-nano',
+          },
+        },
+      });
+      const output = JSON.parse(run(['research', 'topic'], { cwd: tmp }).stdout);
+      for (const spec of output.agents_spec) {
+        expect(spec).toMatchObject({
+          role: 'researcher',
+          model: 'haiku',
+          model_vendor: 'claude',
+        });
+        expect(spec.model_by_vendor).toMatchObject({
+          claude: 'haiku',
+          codex: 'gpt-5-codex-nano',
+        });
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('research agents_spec omits malformed vendor mapping but preserves existing perspective role model fields', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeSharedConfig(tmp, {
+        model_profile: 'economy',
+        vendor_models: {
+          codex: {
+            haiku: '',
+          },
+        },
+      });
+      const r = run(['research', 'topic'], { cwd: tmp });
+      const output = JSON.parse(r.stdout);
+      for (const spec of output.agents_spec) {
+        expect(spec.role).toBe('researcher');
+        expect(spec.model).toBe('haiku');
+        expect(spec.model_vendor).toBe('claude');
+        expect(spec.model_by_vendor).toEqual({ claude: 'haiku' });
+      }
+      expect(r.stderr).toContain('config.vendor_models.codex.haiku is not a non-empty string');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
