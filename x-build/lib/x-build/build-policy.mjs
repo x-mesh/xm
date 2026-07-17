@@ -6,8 +6,8 @@
  * or in a linked worktree; only the backend/cwd differs.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -21,6 +21,7 @@ export const DEFAULT_BUILD_POLICY = {
   review_scope: 'group',
   panel_rounds: 1,
   task_checks: ['test', 'lint'],
+  group_checks: ['test', 'lint'],
 };
 
 export function loadBuildPolicy() {
@@ -33,7 +34,46 @@ export function loadBuildPolicy() {
   else merged.panel_rounds = Number(merged.panel_rounds);
   if (!Array.isArray(merged.task_checks)) merged.task_checks = DEFAULT_BUILD_POLICY.task_checks;
   merged.task_checks = merged.task_checks.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim());
+  if (!Array.isArray(merged.group_checks)) merged.group_checks = DEFAULT_BUILD_POLICY.group_checks;
+  merged.group_checks = merged.group_checks.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim());
   return merged;
+}
+
+export function resolveGroupChecks(cwd = repoRoot(), policy = loadBuildPolicy()) {
+  return resolveTaskChecks(cwd, { ...policy, task_checks: policy.group_checks || [] });
+}
+
+/** Execute one group's full checks. Evidence is exact-snapshot and fail-closed. */
+export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
+  const state = readReviewGroupState(project);
+  const saved = state.groups[groupId] || {};
+  const commands = resolveGroupChecks(cwd);
+  const canonicalCwd = resolve(cwd);
+  const fingerprintPolicy = { ...loadBuildPolicy(), task_checks: commands.map(({ name }) => name) };
+  const fingerprint = taskCheckFingerprint(cwd, fingerprintPolicy);
+  const descriptor = createHash('sha256').update(JSON.stringify(commands.map(({ name, command }) => ({ name, command })))).digest('hex');
+  const existing = saved.group_quality;
+  if (existing && existing.passed === true && existing.fingerprint === fingerprint && existing.command_hash === descriptor && existing.cwd === canonicalCwd) {
+    return { ok: true, reused: true, evidence: existing };
+  }
+  const lock = join(phaseDir(project, '03-execute'), `.group-${groupId}.quality.lock`);
+  try { mkdirSync(lock); } catch { return { ok: false, error: 'group_quality_in_progress', exitCode: 2 }; }
+  try {
+    const before = taskCheckFingerprint(cwd, fingerprintPolicy);
+    const results = commands.map(({ name, command }) => {
+      // The compatibility defaults (test/lint) are aliases: a project without
+      // that optional script may skip it. Any other configured/missing command
+      // is an explicit contract and fails closed.
+      if (!command) return { name, command: null, passed: ['test', 'lint'].includes(name), skipped: true, ...( ['test', 'lint'].includes(name) ? {} : { error: 'configured_check_not_found' }) };
+      const out = spawnSync(command, [], { cwd, shell: true, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
+      return { name, command, passed: !out.error && out.status === 0, skipped: false, exit_code: out.status, output: `${out.stdout || ''}${out.stderr || ''}`.trim().slice(-4000), ...(out.error ? { error: out.error.message } : {}) };
+    });
+    const after = taskCheckFingerprint(cwd, fingerprintPolicy);
+    const evidence = { passed: before !== null && after === before && results.every((r) => r.passed), cwd: canonicalCwd, fingerprint: after, command_hash: descriptor, checked_at: new Date().toISOString(), results, ...(after !== before ? { error: 'workspace_changed_during_check' } : {}) };
+    state.groups[groupId] = { ...saved, group_quality: evidence };
+    writeJSON(statePath(project), state);
+    return { ok: evidence.passed, reused: false, evidence, exitCode: evidence.passed ? 0 : 2 };
+  } finally { try { rmdirSync(lock); } catch {} }
 }
 
 export function taskReviewGroup(task) {
@@ -222,9 +262,12 @@ export function reviewGroupStatus(project, tasks = [], { cwd = repoRoot() } = {}
     review_available: policy.review_mode === 'manual' && policy.review_scope === 'group' && active?.status === 'review_required',
     review_command: active?.status === 'review_required' ? `review-group ${active.id}` : null,
     all_tasks_completed: tasks.length > 0 && tasks.every((t) => ['completed', 'cancelled'].includes(t.status)),
-    all_passed: policy.review_mode === 'manual' || policy.review_scope !== 'group'
+    // Optional panel review never weakens the required full group checks.
+    // Manual mode may skip the panel, but Execute can advance only after every
+    // completed group has a passing, exact-snapshot group_quality evidence.
+    all_passed: policy.review_scope !== 'group'
       ? tasks.length > 0 && tasks.every((t) => ['completed', 'cancelled'].includes(t.status))
-      : groups.length > 0 && groups.every((g) => g.status === 'passed'),
+      : groups.length > 0 && groups.every((g) => g.group_quality?.passed === true),
     head,
   };
 }
