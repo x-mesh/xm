@@ -11,6 +11,7 @@ import { homedir, tmpdir } from 'node:os';
 import { loadSharedConfig as _loadSharedConfig } from './config-loader.mjs';
 import { SCHEMA } from '../config-schema.mjs';
 import { resolveXmRoot } from './xm-root.mjs';
+import { resolveEffectiveQualityConfig, runQualityPipeline } from './quality-pipeline.mjs';
 
 // Re-export node modules that sub-modules need
 export { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, appendFileSync, renameSync, statSync, unlinkSync, realpathSync };
@@ -622,6 +623,25 @@ export function gitRollbackTask(task) {
 // ── Quality Gate Runner ──────────────────────────────────────────────
 
 export function runQualityChecks(project) {
+  const config = resolveEffectiveQualityConfig(repoRoot());
+  if (config.serial_quality_command || config.config_error) {
+    // Reuse only a passing final main-checkout group evidence with the same
+    // command/content fingerprint; worktree or partial evidence is ignored.
+    let evidence = null;
+    const groups = readJSON(join(phaseDir(project, '03-execute'), 'review-groups.json'));
+    const root = resolve(repoRoot());
+    const candidates = Object.values(groups?.groups || {}).map((g) => g.group_quality).filter(Boolean);
+    const match = candidates.find((e) => e.passed === true && resolve(e.cwd || '') === root && e.fingerprint);
+    if (match) evidence = { ...match, content_fingerprint: match.fingerprint };
+    const result = runQualityPipeline({ cwd: root, config, evidence });
+    for (const [name, script] of Object.entries(config.gate_scripts || {})) {
+      const out = spawnSync(script, [], { shell: true, cwd: repoRoot(), stdio: 'pipe', timeout: 120000 });
+      result.push({ check: name, passed: out.status === 0, failed: out.status !== 0, exit_code: out.status === 0 ? 0 : 2, output: (out.stderr || '').toString().slice(-2000) });
+    }
+    const outPath = join(phaseDir(project, '04-verify'), 'quality-results.json');
+    writeJSON(outPath, { timestamp: new Date().toISOString(), results: result, passed: result.every(r => r.passed) });
+    return result;
+  }
   return detectAndRunQualityChecks(project);
 }
 
