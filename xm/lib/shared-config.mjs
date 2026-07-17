@@ -671,6 +671,14 @@ function globalHasKey(topKey) {
   return Object.prototype.hasOwnProperty.call(globalRaw, topKey);
 }
 
+// One dim line explaining the key being edited — schema `description` is the
+// single source (the same text the dashboard shows), so the wizard never grows
+// a second explanation catalog. No-op for keys without a schema entry.
+function printKeyDesc(key) {
+  const d = SCHEMA_BY_KEY.get(key)?.description;
+  if (d) console.log(`  ${C.dim}${d}${C.reset}`);
+}
+
 // Render "<effective value> (<source tier>)" for a key, reusing t2's
 // resolveValueSource. Undefined → "(미설정)".
 function describeEffective(key) {
@@ -753,6 +761,7 @@ async function saveKey(rl, session, key, value) {
 // value. Returns { value } or { cancelled: true }.
 async function promptSchemaValue(rl, key) {
   const entry = SCHEMA_BY_KEY.get(key);
+  printKeyDesc(key); // what this key does — before any value prompt
 
   // raw TTY: enum 키는 화살표 select (현재값이 초기 하이라이트, '0'=유지)
   if (entry?.enum && isRawCapable()) {
@@ -1206,6 +1215,7 @@ function describeBudgetProjects() {
 // replays guidance and re-asks; 3 failures cancel the item (FM4). Returns { value }
 // (value may be null) or { cancelled: true }.
 async function promptBudgetNumber(rl, key, { zeroUnlimited = false } = {}) {
+  printKeyDesc(key);
   console.log(`  ${t('common.current')} ${describeEffective(key)}`);
   const hint = zeroUnlimited ? t('budget.hint_zero_unlimited') : t('budget.hint_null_unset');
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -1317,6 +1327,7 @@ async function categoryGates(rl, session) {
   while (true) {
     const ch = await menuSelect(rl, {
       title: t('cat.gates.title'),
+      header: [`${C.dim}${t('gates.enum_note')}${C.reset}`],
       options: [
         ...GATE_KEYS.map((g, i) => ({
           key: String(i + 1), label: g, hint: `${t('common.current')} ${describeEffective(`gates.${g}`)}`,
@@ -1511,6 +1522,7 @@ function validateWorktreeValue(key, value) {
 // { cancelled: true }.
 async function promptWorktreeScalar(rl, key, ctx) {
   const entry = SCHEMA_BY_KEY.get(`worktree.${key}`);
+  printKeyDesc(`worktree.${key}`);
   console.log(`  ${t('common.current')} ${fmtWtVal(ctx.effective[key])} ${C.dim}(${worktreeKeySource(key, ctx)})${C.reset}`);
 
   const isBool = entry?.type === 'boolean';
@@ -1697,7 +1709,9 @@ async function saveWorktreeKey(rl, session, ctx, keyPath, value) {
 async function editGatePolicy(rl, session, ctx) {
   const gp = ctx.effective.gate_policy || {};
   console.log(`\n${C.bold}${t('gp.title')}${C.reset}`);
-  console.log(`  ${C.dim}${t('gp.merge_note')}${C.reset}\n`);
+  console.log(`  ${C.dim}${t('gp.merge_note')}${C.reset}`);
+  console.log(`  ${C.dim}${t('gp.bucket_note')}${C.reset}`);
+  console.log(`  ${C.dim}${t('gp.overlay_note')}${C.reset}\n`);
   GATE_POLICY_SEVERITY_KEYS.forEach((sub, i) => {
     console.log(`  ${C.bold}${i + 1})${C.reset} ${sub.padEnd(16)} ${t('common.current')} ${fmtWtVal(gp[sub])} ${C.dim}(${gatePolicySource(sub, ctx)})${C.reset}`);
   });
@@ -2122,7 +2136,7 @@ function mainMenuOptions() {
     { key: '3', label: t('menu.exec'), hint: t('menu.exec_hint') },
     { key: '4', label: t('menu.gates'), hint: t('menu.gates_hint') },
     { key: '5', label: 'worktree', hint: t('menu.worktree_hint') },
-    { key: '6', label: t('menu.misc'), hint: 'mode · drift · scan_roots · pipelines' },
+    { key: '6', label: t('menu.misc'), hint: 'mode · drift · scan_roots · pipelines · lang' },
     { key: '7', label: 'panel', hint: t('menu.panel_hint') },
     { key: '0', label: t('common.exit') },
   ];
