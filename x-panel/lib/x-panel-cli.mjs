@@ -23,7 +23,7 @@ import {
 } from './x-panel/core.mjs';
 import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, supportsResume, proseOutsideJSON, groundCapable } from './x-panel/adapters.mjs';
 import { randomUUID } from 'node:crypto';
-import { normalizeFindings, normalizeVerdicts, synthesize, normalizeResponses, followupDelta } from './x-panel/synth.mjs';
+import { normalizeFindings, normalizeVerdicts, synthesize, synthesizeRound1, normalizeResponses, followupDelta } from './x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, GATE_PHASES, DEFAULT_POLICY } from './x-panel/gate.mjs';
 import { appendPanelHistory, readPanelHistory, aggregatePanelStats } from './x-panel/history.mjs';
 import { createTmEventsPublisher, subscribeXkRun } from './x-panel/tm-events.mjs';
@@ -143,6 +143,7 @@ function parseFlags(raw) {
     '--lens-tag': 'lensTag', '--prompt-file': 'promptFile', '--prompt': 'prompt',
     '--check': 'check', '--source': 'source', '--title': 'title', '--policy': 'policy',
     '--phase': 'phase',
+    '--rounds': 'rounds',
   };
   for (let i = 0; i < raw.length; i++) {
     const a = raw[i];
@@ -161,6 +162,7 @@ function parseFlags(raw) {
     else if (a === '--check') flags.check = raw[++i];
     else if (a === '--policy') flags.policy = raw[++i];
     else if (a === '--phase') flags.phase = raw[++i];
+    else if (a === '--rounds') flags.rounds = raw[++i];
     else if (a === '--roi') flags.roi = true;
     else if (a === '--grounded') flags.grounded = true;
     else if (a === '--no-grounded') flags.grounded = false;
@@ -247,6 +249,29 @@ function resolveModels(flags, cfg) {
   }
   if (Array.isArray(cfg.models) && cfg.models.length) return cfg.models;
   return autodetectModels();
+}
+
+function parseRoutedModelOverridesEnv() {
+  const raw = process.env.X_PANEL_ROUTED_MODEL_OVERRIDES;
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('must be a JSON object');
+    }
+    const overrides = {};
+    for (const [name, model] of Object.entries(parsed)) {
+      if (typeof model !== 'string' || !model.trim()) {
+        console.error(`${C.yellow}⚠ X_PANEL_ROUTED_MODEL_OVERRIDES.${name} ignored: value must be a non-empty string${C.reset}`);
+        continue;
+      }
+      overrides[name] = model.trim();
+    }
+    return overrides;
+  } catch (e) {
+    console.error(`${C.yellow}⚠ malformed X_PANEL_ROUTED_MODEL_OVERRIDES ignored: ${e.message}${C.reset}`);
+    return {};
+  }
 }
 
 // ── prompts ──────────────────────────────────────────────────────────
@@ -689,6 +714,12 @@ function applyKiroAgentConfig(cfg) {
 
 async function cmdReview(pos, flags) {
   const cfg = loadPanelConfig();
+  const rounds = Number(flags.rounds ?? cfg.rounds ?? 1);
+  if (![1, 2].includes(rounds)) {
+    console.error(`${C.red}✗ --rounds must be 1 or 2${C.reset}`);
+    process.exitCode = 2;
+    return;
+  }
   applyKiroAgentConfig(cfg);
   const specs = resolveModels(flags, cfg);
   if (specs.length < 2) {
@@ -711,17 +742,12 @@ async function cmdReview(pos, flags) {
   // (--grounded) or per repo (panel.grounded); only groundCapable vendors get the
   // grounding prompt — others stay text-only. Off by default (costs the refuter
   // extra tool turns).
-  const grounded = (flags.grounded != null) ? flags.grounded : !!cfg.grounded;
-  const overrides = cfg.model_overrides || {};
-
-  // Each spec is "name" or "name:model"; bare names fall back to model_overrides.
-  // label distinguishes same-CLI/different-model entries (e.g. codex:gpt-5 vs codex:o3).
-  const entries = specs.map((spec) => {
-    const i = String(spec).indexOf(':');
-    const name = (i < 0 ? spec : spec.slice(0, i)).trim();
-    const model = (i < 0 ? (overrides[name] || null) : spec.slice(i + 1).trim()) || null;
-    return { name, model, label: model ? `${name}:${model}` : name };
-  });
+  const groundedRequested = (flags.grounded != null) ? flags.grounded : !!cfg.grounded;
+  const grounded = rounds === 2 && groundedRequested;
+  if (rounds === 1 && groundedRequested) {
+    console.error(`${C.yellow}⚠ --grounded applies to refutation and is ignored with --rounds 1${C.reset}`);
+  }
+  const entries = resolveEntries(flags, cfg);
 
   const skippedProviders = []; // structured skip record — surfaced in --json output (B4a)
   let usable = [];
@@ -766,7 +792,7 @@ async function cmdReview(pos, flags) {
       const why = target.kind === 'git-diff'
         ? `git diff is empty/trivial (${trimmed.length} chars — clean tree?)`
         : 'the target is empty';
-      console.error(`${C.red}✗ nothing to review${C.reset} — ${why}. A panel run burns ${usable.length} models × 2 rounds. Pass a file/text target, make changes, or --force to run anyway.`);
+      console.error(`${C.red}✗ nothing to review${C.reset} — ${why}. A panel run burns ${usable.length} models × ${rounds} round${rounds === 1 ? '' : 's'}. Pass a file/text target, make changes, or --force to run anyway.`);
       process.exitCode = 2;
       return;
     }
@@ -828,7 +854,7 @@ async function cmdReview(pos, flags) {
   const zeroTokens = () => ({ input: 0, output: 0, cached: 0, reasoning: 0 });
   const status = {
     run, started_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    phase: 'starting', target_kind: target.kind, target_title: targetTitle(target), stream, partial: stream ? partial : false, timeout_s: timeoutS,
+    phase: 'starting', rounds, target_kind: target.kind, target_title: targetTitle(target), stream, partial: stream ? partial : false, timeout_s: timeoutS,
     // x-review runs ONE panel PER LENS, so several runs of the same project/target are live at
     // once and the board rendered them as identical rows — they read as a duplicate (or a
     // double-spend) when they are actually different lenses. The tag is what tells them apart.
@@ -1055,11 +1081,12 @@ async function cmdReview(pos, flags) {
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 1, ok: res.ok, r1_status: r1, count: findings.length, error: res.error || null });
   }, onProviderEvent, stream, partial, ['findings']);
 
-  // Round 2 — adversarial: each model refutes the others' findings (in parallel)
-  startPhase('round2 (refute)');
   const round2 = {};
   const abstained = new Set();
-  await runRound('round 2 (refute)', usable, (e) => {
+  if (rounds === 2) {
+    // Round 2 — adversarial: each model refutes the others' findings (in parallel)
+    startPhase('round2 (refute)');
+    await runRound('round 2 (refute)', usable, (e) => {
     const others = usable.filter(x => x.label !== e.label);
     // Tag each opponent finding with a global ref `owner#idx` so 3+ models don't collide.
     const otherFindings = others.flatMap(o => (round1[o.label] || []).map(f => ({ ...f, gref: `${o.label}#${f.idx}` })));
@@ -1087,7 +1114,8 @@ async function cmdReview(pos, flags) {
     round2[e.label] = verdicts;
     writeJSON(join(dir, `${safeLabel(e.label)}.r2.json`), { model: e.label, ok: res.ok, error: res.error, resume, verdicts, usage: res.usage || null, raw: res.raw });
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 2, ok: res.ok, resume, count: verdicts.length, error: res.error || null });
-  }, onProviderEvent, stream, partial, ['verdicts']);
+    }, onProviderEvent, stream, partial, ['verdicts']);
+  }
 
   // Both rounds have read the diff — drop the agy handoff input file so no unredacted full
   // diff persists on disk / replicates via x-sync (results live in separate files).
@@ -1096,7 +1124,9 @@ async function cmdReview(pos, flags) {
   // Only models actually sent the grounded prompt may contribute grounding provenance (t8):
   // labels that are grounded-capable in a grounded run. synth trusts `verified` only from these.
   const groundedSet = new Set(grounded ? labels.filter((l) => groundCapable(String(l).split(':')[0])) : []);
-  const verdict = synthesize(labels, round1, round2, abstained, r1Status, groundedSet);
+  const verdict = rounds === 1
+    ? synthesizeRound1(labels, round1, r1Status)
+    : synthesize(labels, round1, round2, abstained, r1Status, groundedSet);
   // Surface round-2 fidelity per model in the live status too, so `status <run>` /
   // --watch (and their --json snapshots) show a broken refuter without opening verdict.json.
   for (const m of status.models) {
@@ -1113,6 +1143,7 @@ async function cmdReview(pos, flags) {
     target_ref: target.ref || null,
     target_title: targetTitle(target),
     judge: 'rule',
+    rounds,
     stream,
     partial: stream ? partial : false,
     // Grounding provenance (빅뱃3): whether the run asked for grounded refutation and
@@ -1159,10 +1190,12 @@ async function cmdReview(pos, flags) {
 // Resolve provider entries (name / name:model) from --models/preset/config — shared by review & cross.
 function resolveEntries(flags, cfg) {
   const overrides = cfg.model_overrides || {};
+  const routedOverrides = parseRoutedModelOverridesEnv();
   return resolveModels(flags, cfg).map((spec) => {
     const i = String(spec).indexOf(':');
     const name = (i < 0 ? spec : spec.slice(0, i)).trim();
-    const model = (i < 0 ? (overrides[name] || null) : spec.slice(i + 1).trim()) || null;
+    const explicitModel = i < 0 ? null : spec.slice(i + 1).trim();
+    const model = explicitModel || overrides[name] || routedOverrides[name] || null;
     return { name, model, label: model ? `${name}:${model}` : name };
   });
 }
@@ -1615,8 +1648,8 @@ async function cmdPreflight(pos, flags) {
 function printHelp() {
   console.log(`x-panel — Cross-Model Adversarial Review Panel (PoC)
 
-Calls multiple model CLIs headlessly, has each review the same target, runs one
-adversarial round, and synthesizes a verdict with consensus merge. Tool-neutral.
+Calls multiple model CLIs headlessly, has each review the same target, and
+synthesizes a consensus/diversity verdict. Tool-neutral. Refutation is opt-in.
 
 Commands:
   (review) [target]             Run the panel — "review" is optional:
@@ -1628,6 +1661,8 @@ Commands:
                                 multi-vendor; list a provider's live models with \`xm panel types\`.
     --fast | --full | --preset NAME   fast=claude,codex · full=all installed · or a named preset
     --judge rule                Synthesis (PoC: rule only)
+    --rounds 1|2                1=independent consensus/diversity (default),
+                                2=add adversarial refutation (config: panel.rounds).
     --timeout SECONDS           Per-model idle timeout (default 600; config: panel.timeout_s).
                                 Resets on stdout activity (a working model keeps going); a model
                                 silent this long is killed as stalled. Auto-raised for large
@@ -1656,7 +1691,7 @@ Commands:
     --force                     Override the trivial-target guard: an empty target, or a git-diff
                                 below panel.min_target_chars (default 40 — incl. the clean-tree
                                 "(no diff against HEAD)" sentinel), exits 2 instead of burning
-                                N models × 2 rounds. Review & cross also gate participants on
+                                N models × the selected rounds. Review & cross also gate participants on
                                 provider readiness (install + auth, no model call — cached 30min;
                                 config panel.readiness_ttl_s, --fresh re-checks): excluded providers
                                 are reported on stderr and as skipped_providers in --json.
