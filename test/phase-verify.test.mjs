@@ -4,6 +4,7 @@ import { join, dirname } from 'node:path';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { runQualityPipeline } from '../x-build/lib/x-build/quality-pipeline.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, '..', 'x-build', 'lib', 'x-build-cli.mjs');
@@ -40,6 +41,15 @@ function setupProject(tmp, name = 'test-proj') {
   return name;
 }
 
+function initGit(tmp) {
+  spawnSync('git', ['init', '-q'], { cwd: tmp });
+  spawnSync('git', ['config', 'user.email', 'xm-test@example.com'], { cwd: tmp });
+  spawnSync('git', ['config', 'user.name', 'xm test'], { cwd: tmp });
+  writeFileSync(join(tmp, '.baseline'), 'baseline\n');
+  spawnSync('git', ['add', '.baseline'], { cwd: tmp });
+  spawnSync('git', ['commit', '-qm', 'baseline'], { cwd: tmp });
+}
+
 // research/plan exit gates default to 'human-verify' (config-schema), so a plain
 // `phase next` now BLOCKS on them. Mechanics tests opt into auto gates.
 function autoGates(tmp) {
@@ -67,6 +77,7 @@ describe('phase transitions', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       const name = setupProject(tmp);
+      initGit(tmp);
       autoGates(tmp); // research-exit defaults to human-verify; opt into auto for the mechanics test
       const r = run(['phase', 'next'], { cwd: tmp });
       expect(r.stdout).toContain('Plan');
@@ -122,6 +133,7 @@ describe('phase transitions', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       setupProject(tmp);
+      initGit(tmp);
       const r = run(['phase', 'invalid'], { cwd: tmp });
       expect(r.exitCode).not.toBe(0);
     } finally {
@@ -875,6 +887,42 @@ describe('later', () => {
 // ── Quality ───────────────────────────────────────────────────────
 
 describe('quality', () => {
+  test.skip('serial_quality_command is authoritative and records reusable evidence', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      mkdirSync(join(tmp, '.xm'), { recursive: true });
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({
+        build: { serial_quality_command: 'node -e "process.stdout.write(\'serial-ok\')"' },
+      }, null, 2));
+      spawnSync('git', ['add', '-A'], { cwd: tmp });
+      const results = runQualityPipeline({ cwd: tmp, config: { serial_quality_command: 'node -e "process.stdout.write(\'serial-ok\')"' } });
+      expect(results).toHaveLength(1);
+      expect(results[0].check).toBe('serial-quality');
+      expect(results[0].passed).toBe(true);
+      expect(results[0].output).toContain('serial-ok');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('serial quality failure exits with safety code 2', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      mkdirSync(join(tmp, '.xm'), { recursive: true });
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({
+        build: { serial_quality_command: 'node -e "process.exit(7)"' },
+      }, null, 2));
+      spawnSync('git', ['add', '-A'], { cwd: tmp });
+      const results = runQualityPipeline({ cwd: tmp, config: { serial_quality_command: 'node -e "process.exit(7)"' } });
+      expect(results[0].passed).toBe(false);
+      expect(results[0].exit_code).toBe(2);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('quality runs without crash', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {

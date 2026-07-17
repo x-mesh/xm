@@ -255,7 +255,11 @@ describe('content-bound approval and shared review groups', () => {
       expect(status.review_required).toBe(false);
       expect(status.review_available).toBe(true);
       expect(status.review_command).toBe('review-group build');
-      expect(status.next_action).toBe('phase next');
+      expect(status.next_action).toBe('group-check build');
+      const checked = run(tmp, ['group-check', 'build', '--json']);
+      expect(JSON.parse(checked.stdout).ok).toBe(true);
+      const afterCheck = JSON.parse(run(tmp, ['run-status', '--json']).stdout);
+      expect(afterCheck.next_action).toBe('phase next');
       const routed = JSON.parse(run(tmp, ['next', '--json']).stdout);
       expect(routed.action).toBe('phase');
       expect(routed.args).toEqual(['next']);
