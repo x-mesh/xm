@@ -647,7 +647,7 @@ case "$CMD" in
       echo "🔍 Dry run — would run:"
       echo "   claude plugin marketplace update xm"
       echo "   claude plugin update xm@xm"
-      echo "   claude plugin update <each installed @xm sub-plugin>  # panel@xm, build@xm, …"
+      echo "   claude plugin update <each OUTDATED @xm sub-plugin>  # version-gated vs market; --force updates all"
       [ "$SKIP_CLI" = "0" ] && echo "   cp <cache>/xm/scripts/xm ~/.local/bin/xm"
       [ "$NO_PROPAGATE" = "0" ] && echo "   node <cache>/install-cli.mjs --propagate"
       exit 0
@@ -674,20 +674,44 @@ case "$CMD" in
       claude plugin install xm@xm 2>&1 | tail -3
     fi
 
-    # 4b. Update every INSTALLED sub-plugin too (panel@xm, build@xm, …). The dispatcher runs each
+    # 4b. Update INSTALLED sub-plugins (panel@xm, build@xm, …). The dispatcher runs each
     #     sub-command from that plugin's OWN cache dir (cache/xm/<plugin>/<version>), NOT the xm meta
-    #     bundle, so updating only xm@xm above leaves `xm panel` / `xm build` on stale code. This is
-    #     the same loop the /xm:kit update skill runs — the terminal path must match it.
+    #     bundle, so updating only xm@xm above leaves `xm panel` / `xm build` on stale code.
+    #
+    #     VERSION-GATED: one `claude plugin update` costs ~5-6s wall-clock even as a
+    #     no-op (CLI boot + registry + network), so updating all ~14 installed
+    #     sub-plugins serially dominated `xm update` (~80s measured). The remote
+    #     marketplace.json is already in $REMOTE_JSON — only plugins whose installed
+    #     version differs from the market version get the expensive call. --force
+    #     disables the gate (repair semantics: reinstall everything).
     if command -v node >/dev/null 2>&1; then
-      SUBPLUGINS="$(node -e '
-        try {
-          const fs = require("fs");
-          const d = JSON.parse(fs.readFileSync(process.env.HOME + "/.claude/plugins/installed_plugins.json", "utf8"));
-          const valid = /^[a-zA-Z0-9@._-]+$/;
-          const keys = Object.keys(d.plugins || {}).filter(k => k.endsWith("@xm") && k !== "xm@xm" && valid.test(k));
-          process.stdout.write(keys.join(" "));
-        } catch {}
-      ' 2>/dev/null)"
+      SUBPLUGIN_PLAN="$(printf '%s' "$REMOTE_JSON" | XM_UPDATE_FORCE="$FORCE" node -e '
+        let s = "";
+        process.stdin.on("data", c => s += c).on("end", () => {
+          try {
+            const fs = require("fs");
+            const remote = JSON.parse(s);
+            const marketVer = new Map((remote.plugins || []).map(p => [p.name, p.version]));
+            const d = JSON.parse(fs.readFileSync(process.env.HOME + "/.claude/plugins/installed_plugins.json", "utf8"));
+            const valid = /^[a-zA-Z0-9@._-]+$/;
+            const force = process.env.XM_UPDATE_FORCE === "1";
+            const outdated = [];
+            let current = 0;
+            for (const k of Object.keys(d.plugins || {})) {
+              if (!k.endsWith("@xm") || k === "xm@xm" || !valid.test(k)) continue;
+              const e = Array.isArray(d.plugins[k]) ? d.plugins[k][0] : d.plugins[k];
+              const want = marketVer.get(k.slice(0, -3)); // strip "@xm"
+              // Unknown-to-market or unreadable version → keep the update call
+              // (degrade to the old update-everything behavior, never silently skip).
+              if (force || !want || !e || !e.version || e.version !== want) outdated.push(k);
+              else current++;
+            }
+            process.stdout.write(outdated.join(" ") + "\n" + current);
+          } catch {}
+        })' 2>/dev/null)"
+      SUBPLUGINS="$(printf '%s' "$SUBPLUGIN_PLAN" | sed -n 1p)"
+      SUB_CURRENT="$(printf '%s' "$SUBPLUGIN_PLAN" | sed -n 2p)"
+      [ -n "$SUB_CURRENT" ] && [ "$SUB_CURRENT" != "0" ] && echo "→ sub-plugins already at market version: $SUB_CURRENT (skipped)"
       if [ -n "$SUBPLUGINS" ]; then
         echo "→ updating sub-plugins: $SUBPLUGINS"
         for p in $SUBPLUGINS; do
