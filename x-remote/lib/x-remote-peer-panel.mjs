@@ -40,8 +40,14 @@ export function createPeerPanel({ bridge, relay, guildId }) {
   }
 
   async function selectRow() {
-    const list = await relay.surfaces();
+    let list = await relay.surfaces();
     if (list.length <= 1) return []; // nothing to pick among 0–1 surfaces
+    // A Discord select caps at 25 options; keep the current surface in view so
+    // it is never stuck-unselectable when more than 25 surfaces are exposed.
+    if (list.length > 25) {
+      const cur = list.find((s) => s.name === relay.current);
+      list = [cur, ...list.filter((s) => s.name !== relay.current)].filter(Boolean);
+    }
     return [
       {
         type: 1,
@@ -100,11 +106,36 @@ export function createPeerPanel({ bridge, relay, guildId }) {
     });
   }
 
+  // Build + push the panel, but never leave the interaction stuck on the
+  // deferred spinner: if the build or the edit fails (e.g. an invalid
+  // component), fall back to a plain error message so the user always gets a
+  // resolved response instead of an endless "thinking…".
+  async function showPanel(token) {
+    let body;
+    try {
+      body = await panel();
+    } catch (e) {
+      body = { content: `panel build failed: ${String(e.message).slice(0, 300)}`, components: [] };
+    }
+    try {
+      await bridge.editInteraction(token, body);
+    } catch (e) {
+      try {
+        await bridge.editInteraction(token, {
+          content: `panel update failed: ${String(e.message).slice(0, 300)}`,
+          components: [],
+        });
+      } catch {
+        /* discord.mjs already logged the interaction error; nothing else to do */
+      }
+    }
+  }
+
   async function handleInteraction(i) {
     // i.type: 2 = slash command, 3 = component, 5 = modal submit
     if (i.type === 2) {
       await bridge.respondInteraction(i.id, i.token, { type: 5, data: { flags: 64 } }); // deferred, ephemeral
-      return bridge.editInteraction(i.token, await panel());
+      return showPanel(i.token);
     }
     if (i.type === 3) {
       const cid = i.data.custom_id;
@@ -115,13 +146,13 @@ export function createPeerPanel({ bridge, relay, guildId }) {
       if (cid === 'xr:use') relay.setSurface(i.data.values?.[0]);
       else if (cid.startsWith('xr:key:')) await relay.sendKeys(cid.slice('xr:key:'.length));
       // 'xr:snap' falls through to a plain refresh
-      return bridge.editInteraction(i.token, await panel());
+      return showPanel(i.token);
     }
     if (i.type === 5) {
       await bridge.respondInteraction(i.id, i.token, { type: 6 }); // deferred update
       const text = i.data.components?.[0]?.components?.[0]?.value || '';
       if (text) await relay.sendText(text);
-      return bridge.editInteraction(i.token, await panel());
+      return showPanel(i.token);
     }
   }
 
