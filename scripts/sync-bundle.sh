@@ -189,12 +189,14 @@ sync_file "x-sync/lib/x-sync-server.mjs" "xm/lib/x-sync-server.mjs"
 
 echo ""
 echo "=== Syncing x-remote lib files ==="
-sync_file "x-remote/lib/x-remote-cli.mjs" "xm/lib/x-remote-cli.mjs"
-sync_file "x-remote/lib/x-remote-prompts.mjs" "xm/lib/x-remote-prompts.mjs"
-sync_file "x-remote/lib/x-remote-host.mjs" "xm/lib/x-remote-host.mjs"
-sync_file "x-remote/lib/x-remote-gateway.mjs" "xm/lib/x-remote-gateway.mjs"
-ensure_dir "xm/lib/x-remote"
+# Mirror x-remote/lib wholesale so new top-level files (e.g. the peer
+# bridge/panel) ship automatically — no hardcoded per-file list to keep in
+# lockstep (L8).
 shopt -s nullglob
+for f in x-remote/lib/*.mjs; do
+  sync_file "$f" "xm/lib/$(basename "$f")"
+done
+ensure_dir "xm/lib/x-remote"
 for f in x-remote/lib/x-remote/*.mjs; do
   sync_file "$f" "xm/lib/x-remote/$(basename "$f")"
 done
@@ -446,18 +448,14 @@ if ! diff -q "x-sync/lib/x-sync-server.mjs" "xm/lib/x-sync-server.mjs" > /dev/nu
   DIVERGED=$((DIVERGED + 1))
 fi
 
-for pair in \
-  "x-remote/lib/x-remote-cli.mjs:xm/lib/x-remote-cli.mjs" \
-  "x-remote/lib/x-remote-prompts.mjs:xm/lib/x-remote-prompts.mjs" \
-  "x-remote/lib/x-remote-host.mjs:xm/lib/x-remote-host.mjs" \
-  "x-remote/lib/x-remote-gateway.mjs:xm/lib/x-remote-gateway.mjs"; do
-  src="${pair%%:*}"; dst="${pair##*:}"
-  if ! diff -q "$src" "$dst" > /dev/null 2>&1; then
+shopt -s nullglob
+for f in x-remote/lib/*.mjs; do
+  dst="xm/lib/$(basename "$f")"
+  if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
     echo "  DIVERGED: $dst"
     DIVERGED=$((DIVERGED + 1))
   fi
 done
-shopt -s nullglob
 for f in x-remote/lib/x-remote/*.mjs; do
   dst="xm/lib/x-remote/$(basename "$f")"
   if ! diff -q "$f" "$dst" > /dev/null 2>&1; then

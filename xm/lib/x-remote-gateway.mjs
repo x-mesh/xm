@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { GatewayStore } from './x-remote/gateway-store.mjs';
 import { DiscordBridge } from './x-remote/discord.mjs';
 import { createEnvelope, parseEnvelope } from './x-remote/protocol.mjs';
+import { createPeerRelay } from './x-remote-peer-bridge.mjs';
+import { createPeerPanel } from './x-remote-peer-panel.mjs';
 
 const port = Number(process.env.XM_REMOTE_GATEWAY_PORT || 19843);
 const hostToken = process.env.XM_REMOTE_HOST_TOKEN || '';
@@ -12,6 +14,10 @@ const hosts = new Map();
 const deliveryPromises = new Map();
 const outputBatches = new Map();
 let gatewaySeq = store.nextCommandSeq();
+// Peer-surface relay (term-mesh surfaces). Shells out to `tm-agent peer`
+// snapshot/send-key against XR_PEER_HOST/XR_PEER_SOCKET; invoked only by the
+// snap/type/key Discord commands, so it costs nothing when unused.
+const peer = createPeerRelay();
 
 function batchKey(event) { return `${event.host_id}:${event.session_id || 'host'}`; }
 function flushOutputBatch(key) {
@@ -54,7 +60,12 @@ function sendHost(hostId, message) {
 }
 
 async function onDiscordCommand(command) {
-  if (command.kind === 'help') return discord.send('`!xr sessions`, `!xr steer <session> <text>`, `!xr interrupt <session>`, `!xr resume <session> <text>`, `!xr decide <decision> <text>`');
+  if (command.kind === 'help') return discord.send('**panel:** `/xr` — buttons + Type modal\ntext — sessions: `!xr sessions|steer|resume|interrupt|decide` · peer: `!xr peers`, `!xr use <surface>`, `!xr snap`, `!xr type <text>`, `!xr key <keys>`');
+  if (command.kind === 'peers') return discord.send(await peer.peers());
+  if (command.kind === 'use') return discord.send('current surface: `' + peer.setSurface(command.target) + '`');
+  if (command.kind === 'snap') return discord.send(await peer.snapshot());
+  if (command.kind === 'type') return discord.send(await peer.type(command.text));
+  if (command.kind === 'key') return discord.send(await peer.keys(command.text));
   if (command.kind === 'sessions') return discord.send('```json\n' + JSON.stringify(store.sessions(), null, 2).slice(0, 1850) + '\n```');
   if (command.kind === 'decide') {
     const decision = store.pendingDecisions().find((d) => d.decision_id === command.target);
@@ -72,8 +83,20 @@ async function onDiscordCommand(command) {
 
 const allowedUserIds = String(process.env.DISCORD_ALLOWED_USER_IDS || '').split(',').map((v) => v.trim()).filter(Boolean);
 if (!allowedUserIds.length) throw new Error('DISCORD_ALLOWED_USER_IDS is required');
-const discord = new DiscordBridge({ token: process.env.DISCORD_BOT_TOKEN, channelId: process.env.DISCORD_CHANNEL_ID, allowedUserIds, onCommand: onDiscordCommand });
+let panel;
+const discord = new DiscordBridge({ token: process.env.DISCORD_BOT_TOKEN, channelId: process.env.DISCORD_CHANNEL_ID, allowedUserIds, onCommand: onDiscordCommand, onInteraction: (i) => panel?.handleInteraction(i) });
 await discord.connect();
+// Wait for READY (appId known), resolve the guild from the channel, register /xr.
+for (let i = 0; i < 50 && !discord.appId; i++) await new Promise((r) => setTimeout(r, 100));
+let guildId = process.env.XR_PEER_GUILD_ID || '';
+if (!guildId) { try { guildId = (await discord.request(`/channels/${process.env.DISCORD_CHANNEL_ID}`)).guild_id; } catch (e) { console.error(`[x-remote gateway] guild resolve failed: ${e.message}`); } }
+panel = createPeerPanel({ bridge: discord, relay: peer, guildId });
+if (discord.appId && guildId) {
+  try { await panel.registerCommand(); console.log('[x-remote gateway] /xr slash command registered'); }
+  catch (e) { console.error(`[x-remote gateway] /xr register failed: ${e.message}`); }
+} else {
+  console.error(`[x-remote gateway] /xr NOT registered (appId=${!!discord.appId} guild=${!!guildId})`);
+}
 
 const server = Bun.serve({
   port,

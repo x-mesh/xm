@@ -10,7 +10,7 @@
     {
       "name": "build",
       "description": "Phase-based project harness with PRD generation, consensus review, plan validation, multi-mode deliberation, DAG execution, cost forecasting, and decision memory",
-      "version": "2.20.0",
+      "version": "2.20.1",
       "author": {
         "name": "x-mesh"
       },
@@ -242,7 +242,7 @@
     {
       "name": "panel",
       "description": "Cross-model adversarial review panel — run claude/codex/agy/cursor on the same target, refute, and synthesize a consensus verdict",
-      "version": "0.18.0",
+      "version": "0.19.0",
       "author": {
         "name": "x-mesh"
       },
@@ -278,7 +278,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.7.4",
+      "version": "2.7.6",
       "author": {
         "name": "x-mesh"
       },
