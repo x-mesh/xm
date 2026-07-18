@@ -1054,6 +1054,8 @@ Cross-model review panel. Runs multiple model CLIs (claude/codex/agy/cursor) on 
 xm panel                         # CLI: review current git diff with your default models
 xm panel ./file --full           # all installed model CLIs
 xm panel --models codex:gpt-5.2,cursor:gpt-5.3-codex,claude:opus
+xm panel --models kiro:glm-4.6:high,codex:gpt-5.2:xhigh   # per-model reasoning effort — name:model:effort
+xm panel models                  # interactive model picker (provider → model); `<vendor>` = its live catalog; `--all` dumps all
 xm panel --stream                # live: per-model tokens, cost, and streaming text
 xm panel --rounds 2              # 2 rounds: adds round-2 refutation (default 1: independent consensus only, no refutation)
 xm panel setup --models codex,agy --global   # save defaults
@@ -1069,7 +1071,7 @@ xm panel review <target> --grounded # round-2 refuters that can read the repo (c
 xm panel followup <run>             # debate round: resume each author's session, HOLD/CONCEDE/REVISE the findings an opponent refuted
 ```
 
-Per-model `--model` via `name:model`, named `presets`, parallel calls, and results under `.xm/panel/` (queryable with `xm recall`). Different models have different blind spots — that's the point.
+Per-model selection via `--models name:model[:effort]`. The optional `:effort` sets reasoning depth per model — codex `minimal|low|medium|high|xhigh` (→ `model_reasoning_effort`) and kiro `low|medium|high|xhigh|max` (→ `--effort`); the sets differ by vendor, and an unknown level warns and is dropped rather than blocking the run. Bare `xm panel models` is a two-step provider→model picker (`--json` for structured rows; live-catalog vendors agy/cursor/kiro vs fixed-ID claude/codex); named `presets`, parallel calls, and results land under `.xm/panel/` (queryable with `xm recall`). Different models have different blind spots — that's the point.
 
 Every run **captures real per-model token usage and cost** — claude via `--output-format json`, codex via its `exec --json` event stream — so panel numbers price from measured actuals, not estimates. Each finished run appends a per-model row to a **disagreement ledger** (`.xm/panel/history.jsonl`); `xm panel stats [--roi]` aggregates it into per-vendor survival rate (confirmed/raised) and cost per confirmed catch — a per-repo data moat a stateless API council can't accumulate. `--stream` adds token-by-token live text for claude/cursor (`--partial`, on by default; auto-disabled on very large targets). When a model returns a structured markdown review instead of the JSON contract (agy/Gemini does this intermittently), the panel salvages the findings from the `### [severity] file:line — title` + Why/Fix shape rather than discarding a real review as "no JSON"; when a model exits 0 with no usable answer at all, it surfaces the CLI's own stderr reason instead. Timeouts auto-scale with target size (`--timeout` to pin). kiro is spawned under an auto-provisioned no-MCP agent (`~/.kiro/agents/xm-panel-review.json`), because kiro otherwise loads the global `mcp.json` and a single MCP tool whose schema uses `oneOf`/`allOf`/`anyOf` at the top level makes Bedrock reject the whole request — set `panel.kiro_agent` to point at your own agent instead.
 

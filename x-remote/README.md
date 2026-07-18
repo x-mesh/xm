@@ -2,6 +2,8 @@
 
 `x-remote` is a term-mesh-independent, Linux-first control plane for x-kit-managed Claude and Codex sessions. A host daemon makes one outbound WebSocket connection to a central Bun gateway; the gateway mirrors semantic events to Discord and routes steer, interrupt, resume, and decision commands back to the host.
 
+Beyond those managed sessions, the same Discord bot can also drive a **live term-mesh peer surface** — the shell or agent session you are already using — through a `/xr` control panel (buttons + a Type modal) or `!xr` text commands. See [Peer-surface control](#peer-surface-control-term-mesh).
+
 ## 1-host PoC
 
 ```text
@@ -64,6 +66,50 @@ xm remote run --provider codex --prompt "Run the repository tests and report fai
 ```
 
 The PoC intentionally does not adopt pre-existing tmux or shell sessions. A later optional term-mesh adapter can publish/consume the same `XK-REMOTE-v1` envelope without changing the core.
+
+## Peer-surface control (term-mesh)
+
+Managed sessions are ones `x-remote` starts (`xm remote run …`). A **peer surface** is the opposite: the gateway attaches to a *live* term-mesh surface you are already using and drives it — the way Claude's `/remote-control` drives a session, but to Discord. Reads render the surface's current screen; writes inject keystrokes over term-mesh's peer federation, so the human at the terminal and the bot share one PTY (true back-and-forth) instead of forking a new session.
+
+**Prerequisite:** a `term-meshd` *peer host* exposing one or more surfaces (see the term-mesh `peer-linux-host.md`), reachable from the gateway. The gateway shells out to the term-mesh CLI, so it needs, alongside the Discord vars:
+
+```bash
+export TM_AGENT=/path/to/tm-agent              # term-mesh CLI (with the peer contract)
+export XR_PEER_HOST=root@linux-1               # ssh target of the peer host …
+# export XR_PEER_SOCKET=/run/user/0/tm-peer.sock   # … OR a local peer socket
+export XR_PEER_SURFACE=shell                   # default surface
+```
+
+The gateway registers a `/xr` guild slash command on startup.
+
+### `/xr` interactive panel (recommended)
+
+Type `/xr` in the channel for a private (ephemeral) control panel:
+
+```text
+`shell`
+[ current screen — rendered from the surface's vt100 grid ]
+─────────────
+[↑] [↓] [←] [→] [🔄]
+[⏎ Enter] [⎋ Esc] [^C] [⌨ Type…]
+[ surface ▾ ]          ← shown when more than one surface is exposed
+```
+
+Tap a key button to send that key and refresh the panel in place. **⌨ Type…** opens a modal text box (its content is sent to the surface followed by Enter). The dropdown switches the current surface. A menu decision is just `↓`/a number + `⏎`.
+
+### `!xr` text commands
+
+The same actions as plain messages, acting on the current surface:
+
+| Command | Action |
+|---|---|
+| `!xr snap` | show the current screen |
+| `!xr type <text>` | type a line + Enter |
+| `!xr key <keys>` | send keys (`Down Down Enter`, `2`, `C-c`) |
+| `!xr peers` | list exposed surfaces |
+| `!xr use <surface>` | switch the current surface |
+
+Reads are a **vt100 grid snapshot** — one current screen, not the raw output history, so full-screen TUIs (watch/vim/claude) come back clean rather than as a flood of repaints. It is snapshot-driven: the bot never streams every terminal redraw.
 
 ## Discord output policy
 
