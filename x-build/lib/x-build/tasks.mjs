@@ -31,7 +31,8 @@ import {
 } from './worktree-shared.mjs';
 import {
   loadBuildPolicy, resolveTaskChecks, taskReviewGroup, reviewGroupStatus,
-  startReviewGroup, reviewBuildGroup, runGroupChecks, taskCheckContractHash, taskCheckFingerprint,
+  startReviewGroup, reviewBuildGroup, recordSoloReviewVerdict, runGroupChecks,
+  taskCheckContractHash, taskCheckFingerprint, REVIEW_DEPTHS,
 } from './build-policy.mjs';
 import { readPlanState, setRequestedAction, validatePlanApproval } from './plan-state.mjs';
 
@@ -2048,6 +2049,27 @@ export function cmdReviewGroup(args) {
   const { opts, positional } = parseOptions(args);
   const project = resolveProject(null);
   const taskData = readJSON(tasksPath(project));
+
+  // --verdict pass|fail — close out a pending solo review (2nd step of the
+  // solo flow; the 1st step below emitted the pending spec).
+  if (opts.verdict !== undefined) {
+    const verdict = String(opts.verdict);
+    if (!['pass', 'fail'].includes(verdict)) {
+      console.error('❌ --verdict must be pass or fail.');
+      process.exitCode = 2;
+      return;
+    }
+    const summary = reviewGroupStatus(project, taskData?.tasks || [], { cwd: process.cwd() });
+    const groupId = positional[0] || summary.active_group;
+    if (!groupId) { console.error('❌ No review group to record a verdict for.'); process.exitCode = 2; return; }
+    const result = recordSoloReviewVerdict(project, groupId, verdict, { cwd: process.cwd(), notes: typeof opts.notes === 'string' ? opts.notes : null });
+    if (opts.json) console.log(JSON.stringify({ project, group_id: groupId, ...result }, null, 2));
+    else if (result.ok) console.log(`✅ Solo review "${groupId}" passed. Continue: x-build run`);
+    else console.log(`⛔ Solo review verdict not recorded as pass: ${result.error || result.group?.decision || verdict}`);
+    if (!result.ok) process.exitCode = result.exitCode || 2;
+    return;
+  }
+
   const rawRounds = opts.rounds;
   const rounds = rawRounds == null ? null : Number(rawRounds);
   if (rounds != null && ![1, 2].includes(rounds)) {
@@ -2055,8 +2077,19 @@ export function cmdReviewGroup(args) {
     process.exitCode = 2;
     return;
   }
-  const result = reviewBuildGroup(project, taskData?.tasks || [], positional[0] || null, { cwd: process.cwd(), rounds });
+  const depth = opts.depth == null ? null : String(opts.depth);
+  if (depth != null && !REVIEW_DEPTHS.includes(depth)) {
+    console.error(`❌ --depth must be one of: ${REVIEW_DEPTHS.join(', ')}.`);
+    process.exitCode = 2;
+    return;
+  }
+  const result = reviewBuildGroup(project, taskData?.tasks || [], positional[0] || null, { cwd: process.cwd(), rounds, depth });
   if (opts.json) console.log(JSON.stringify({ project, ...result }, null, 2));
+  else if (result.pending === 'solo') {
+    console.log(`📋 Solo review pending for "${result.solo.group}" — spawn ONE reviewer agent (model: ${result.solo.model}) on:`);
+    console.log(`   ${result.solo.patch}`);
+    console.log(`   Then record: ${result.solo.verdict_command}`);
+  }
   else if (result.ok) console.log(`✅ Review group "${positional[0] || result.group?.id}" passed. Continue: x-build run`);
   else console.log(`⛔ Review group failed: ${result.error || result.group?.decision || 'panel failure'}`);
   if (!result.ok) process.exitCode = result.exitCode || 2;

@@ -269,6 +269,95 @@ describe('content-bound approval and shared review groups', () => {
     }
   });
 
+  test('solo depth (default) issues a pending spec, voids it on git drift, then records the verdict', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-solo-'));
+    try {
+      const project = setup(tmp);
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({ build: { review_mode: 'auto' } }, null, 2));
+      writeFileSync(join(tmp, 'package.json'), JSON.stringify({ scripts: { test: 'echo ok', lint: 'echo ok' } }));
+      git(tmp, ['add', 'package.json']);
+      git(tmp, ['commit', '-qm', 'add package']);
+      run(tmp, ['phase', 'set', 'plan']);
+      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
+      run(tmp, ['steps', 'compute']);
+      const planDir = join(project, 'phases', '02-plan');
+      mkdirSync(planDir, { recursive: true });
+      writeFileSync(join(planDir, 'PRD.md'), '# PRD\n\n## 1. Goal\nFeature\n');
+      run(tmp, ['plan-check']);
+      run(tmp, ['gate', 'pass', 'approved']);
+      run(tmp, ['run', '--json']);
+      // real work AFTER the baseline bind → non-empty group patch
+      writeFileSync(join(tmp, 'feature.js'), 'export const value = 1;\n');
+      git(tmp, ['add', 'feature.js']);
+      git(tmp, ['commit', '-qm', 'feature']);
+      run(tmp, ['task-check', 't1']);
+      run(tmp, ['tasks', 'update', 't1', '--status', 'completed', '--no-commit']);
+
+      const pending = JSON.parse(run(tmp, ['review-group', 'build', '--json']).stdout);
+      expect(pending.pending).toBe('solo');
+      expect(pending.solo.model).toBeTruthy();
+      expect(readFileSync(pending.solo.patch, 'utf8')).toContain('feature.js');
+
+      // git moved under the pending review → verdict is void, fail-closed
+      writeFileSync(join(tmp, 'drift.js'), 'export const drift = 1;\n');
+      git(tmp, ['add', 'drift.js']);
+      git(tmp, ['commit', '-qm', 'drift']);
+      const voided = JSON.parse(run(tmp, ['review-group', 'build', '--verdict', 'pass', '--json']).stdout);
+      expect(voided.ok).toBe(false);
+      expect(voided.error).toBe('git_target_changed_during_review');
+
+      // re-issue against the new target, then record the verdict
+      const again = JSON.parse(run(tmp, ['review-group', 'build', '--json']).stdout);
+      expect(again.pending).toBe('solo');
+      const verdict = JSON.parse(run(tmp, ['review-group', 'build', '--verdict', 'pass', '--notes', 'lgtm', '--json']).stdout);
+      expect(verdict.ok).toBe(true);
+      const state = JSON.parse(readFileSync(join(project, 'phases', '03-execute', 'review-groups.json')));
+      expect(state.groups.build.status).toBe('passed');
+      expect(state.groups.build.decision).toBe('solo-pass');
+      expect(state.groups.build.reviewer_model).toBeTruthy();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('checks-only depth passes the group on group checks without any LLM review', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-checks-'));
+    try {
+      const project = setup(tmp);
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({ build: { review_mode: 'auto', review_depth: 'checks-only' } }, null, 2));
+      writeFileSync(join(tmp, 'package.json'), JSON.stringify({ scripts: { test: 'echo ok', lint: 'echo ok' } }));
+      git(tmp, ['add', 'package.json']);
+      git(tmp, ['commit', '-qm', 'add package']);
+      run(tmp, ['phase', 'set', 'plan']);
+      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
+      run(tmp, ['steps', 'compute']);
+      const planDir = join(project, 'phases', '02-plan');
+      mkdirSync(planDir, { recursive: true });
+      writeFileSync(join(planDir, 'PRD.md'), '# PRD\n\n## 1. Goal\nFeature\n');
+      run(tmp, ['plan-check']);
+      run(tmp, ['gate', 'pass', 'approved']);
+      run(tmp, ['run', '--json']);
+      writeFileSync(join(tmp, 'feature.js'), 'export const value = 1;\n');
+      git(tmp, ['add', 'feature.js']);
+      git(tmp, ['commit', '-qm', 'feature']);
+      run(tmp, ['task-check', 't1']);
+      run(tmp, ['tasks', 'update', 't1', '--status', 'completed', '--no-commit']);
+
+      const reviewed = JSON.parse(run(tmp, ['review-group', 'build', '--json']).stdout);
+      expect(reviewed.ok).toBe(true);
+      expect(reviewed.depth).toBe('checks-only');
+      const state = JSON.parse(readFileSync(join(project, 'phases', '03-execute', 'review-groups.json')));
+      expect(state.groups.build.status).toBe('passed');
+      expect(state.groups.build.decision).toBe('checks-only-pass');
+      expect(state.groups.build.group_quality?.passed).toBe(true);
+      expect(run(tmp, ['phase', 'next']).code).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('review group dispatch fails closed when git baseline is unavailable', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-no-git-'));
     try {

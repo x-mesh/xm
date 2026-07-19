@@ -86,7 +86,7 @@ describe('xm config phase', () => {
     withRoot((root) => {
       const w = run(['phase', 'plan=gpt5'], root);
       expect(w.exitCode).not.toBe(0);
-      expect(w.stdout + w.stderr).toContain('haiku, sonnet, opus, inherit, default');
+      expect(w.stdout + w.stderr).toContain('haiku, sonnet, opus, fable, inherit, default');
     });
   });
 

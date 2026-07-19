@@ -159,8 +159,8 @@ const MESSAGES = {
     en: (slot) => `unknown phase: "${slot}" — choose plan, implement, or review`,
   },
   'phase.model_choice': {
-    ko: (a) => `모델: haiku, sonnet, opus, inherit, default 중 선택 ("${a}")`,
-    en: (a) => `model: choose haiku, sonnet, opus, inherit, or default ("${a}")`,
+    ko: (a) => `모델: haiku, sonnet, opus, fable, inherit, default 중 선택 ("${a}")`,
+    en: (a) => `model: choose haiku, sonnet, opus, fable, inherit, or default ("${a}")`,
   },
   'phase.label.plan': { ko: '설계 (plan)', en: 'plan' },
   'phase.label.implement': { ko: '구현 (implement)', en: 'implement' },
@@ -170,19 +170,26 @@ const MESSAGES = {
   'phase.short.review': { ko: '리뷰', en: 'review' },
   'phase.matrix_title': { ko: '페이즈별 모델', en: 'Phase models' },
   'phase.hint_set': {
-    ko: '설정: xm config phase plan=opus implement=sonnet review=opus  (모델: haiku|sonnet|opus|inherit)',
-    en: 'Set: xm config phase plan=opus implement=sonnet review=opus  (models: haiku|sonnet|opus|inherit)',
+    ko: '설정: xm config phase plan=fable implement=sonnet review=opus  (모델: haiku|sonnet|opus|fable|inherit)',
+    en: 'Set: xm config phase plan=fable implement=sonnet review=opus  (models: haiku|sonnet|opus|fable|inherit)',
   },
   'phase.hint_restore': {
     ko: '복원: xm config phase <slot>=default  (프로필 기본값으로)',
     en: 'Restore: xm config phase <slot>=default  (back to profile default)',
   },
   'phase.profile_default': { ko: '프로필 기본값', en: 'profile default' },
-  'phase.model_prompt': {
-    ko: (label) => `  ${label} 모델 [1) 프로필 기본값 2) haiku 3) sonnet 4) opus 5) inherit(세션 모델), Enter=유지]: `,
-    en: (label) => `  ${label} model [1) profile default 2) haiku 3) sonnet 4) opus 5) inherit (session model), Enter=keep]: `,
+  'phase.slot_title': {
+    ko: (label) => `${label} 모델 선택`,
+    en: (label) => `Select ${label} model`,
   },
-  'phase.enter_1_4': { ko: '1-5 또는 Enter를 입력하세요', en: 'Enter 1-5 or Enter' },
+  'phase.keep': { ko: '유지 (변경 없음)', en: 'Keep (no change)' },
+  'phase.enter_0_6': { ko: '0-6 또는 Enter를 입력하세요', en: 'Enter 0-6 or Enter' },
+  'phase.hint.default': { ko: '프로필 기본값으로 복원', en: 'restore profile default' },
+  'phase.hint.haiku': { ko: '최저가 · 단순 실행/표시용', en: 'cheapest · display/simple tasks' },
+  'phase.hint.sonnet': { ko: '균형 (실행 역할 검증값)', en: 'balanced (verified for execution roles)' },
+  'phase.hint.opus': { ko: '고성능', en: 'high capability' },
+  'phase.hint.fable': { ko: '최고 성능 · $10/$50 per MTok (설계 역할 검증값)', en: 'top capability · $10/$50 per MTok (verified for plan roles)' },
+  'phase.hint.inherit': { ko: '세션 모델(/model) 사용', en: 'use the session model (/model)' },
   'phase.slot_roles': {
     ko: (roles) => `  ↳ 일괄 적용 대상: ${roles} — 현재값이 서로 달라도 전부 이 값으로 덮어씁니다`,
     en: (roles) => `  ↳ applies to ALL of: ${roles} — overwrites each role even if their current values differ`,
@@ -320,8 +327,8 @@ const MESSAGES = {
     en: (role) => `Unknown role: ${role}`,
   },
   'overrides.model_choice': {
-    ko: '모델: haiku, sonnet, opus, inherit 중 선택',
-    en: 'Model: choose haiku, sonnet, opus, or inherit',
+    ko: '모델: haiku, sonnet, opus, fable, inherit 중 선택',
+    en: 'Model: choose haiku, sonnet, opus, fable, or inherit',
   },
 
   // ── category: execution ──
