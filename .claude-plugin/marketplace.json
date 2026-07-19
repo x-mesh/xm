@@ -10,7 +10,7 @@
     {
       "name": "build",
       "description": "Phase-based project harness with PRD generation, consensus review, plan validation, multi-mode deliberation, DAG execution, cost forecasting, and decision memory",
-      "version": "2.20.1",
+      "version": "2.21.0",
       "author": {
         "name": "x-mesh"
       },
@@ -207,7 +207,7 @@
     {
       "name": "dashboard",
       "description": "Web dashboard for .xm project state — visualize builds, probes, solvers, reviews, evals, humble lessons, traces, memory",
-      "version": "2.14.0",
+      "version": "2.14.1",
       "author": {
         "name": "x-mesh"
       },
@@ -278,7 +278,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.7.6",
+      "version": "2.8.1",
       "author": {
         "name": "x-mesh"
       },
@@ -294,7 +294,7 @@
     {
       "name": "wt",
       "description": "Session worktree — isolate the whole session in a git worktree, then land it back to the parent branch (no gate, no task DAG)",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": {
         "name": "x-mesh"
       },
