@@ -319,7 +319,7 @@ describe('GET /api/config/model-routing', () => {
     const { res, body } = await getJSON('/api/config/model-routing');
     expect(res.status).toBe(200);
     expect(['economy', 'default', 'max']).toContain(body.profile);
-    expect(body.models).toEqual(['haiku', 'sonnet', 'opus']);
+    expect(body.models).toEqual(['haiku', 'sonnet', 'opus', 'fable']);
     expect(Object.keys(body.phase_groups).sort()).toEqual(['implement', 'plan', 'review']);
     // every phase-group role resolves with a valid model + source.
     // 'inherit' (session-model routing) is a valid role model but NOT a

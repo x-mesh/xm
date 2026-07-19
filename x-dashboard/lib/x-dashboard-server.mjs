@@ -2410,6 +2410,7 @@ const FALLBACK_MODEL_COSTS = {
   haiku:  { input: 1.00,  output: 5.00 },
   sonnet: { input: 3.00,  output: 15.00 },
   opus:   { input: 15.00, output: 75.00 },
+  fable:  { input: 10.00, output: 50.00 },
 };
 
 let _modelPricing = null;  // { tier: { input: perToken, output: perToken } }
