@@ -43,6 +43,11 @@
       "bytes": 14311
     },
     {
+      "plugin": "inbox",
+      "sha256": "449f1784a9dbec4c174136718510d67cf8b438f0737ed31502eff41f54d3a875",
+      "bytes": 7528
+    },
+    {
       "plugin": "kit",
       "sha256": "dd9b977301bc2f1e622d4514b7f4549d0824b03d6ccd26352f8dabc231f1adfa",
       "bytes": 14830
@@ -101,6 +106,11 @@
       "plugin": "sync",
       "sha256": "65d158f08d60bf0e7dec0401afc748ffbcdb1f3fdf306d33a4d1b450b98ad91e",
       "bytes": 8717
+    },
+    {
+      "plugin": "toss",
+      "sha256": "7d38410a8b3ff1e2923d155e06e3f66dca953dcddf21aa6a5ea8fc9390a86069",
+      "bytes": 9602
     },
     {
       "plugin": "trace",

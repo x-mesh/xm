@@ -171,7 +171,7 @@ describe('gate-panel policy logic (pure)', () => {
     writeFileSync(tasksPath, JSON.stringify({ tasks: [{ id: 'tr', size: 'large' }] }));
     const r = runGate({ mode: 'clean', task: 'tr', captureEnv: capture });
     expect(r.status).toBe(0);
-    expect(JSON.parse(readFileSync(capture, 'utf8'))).toEqual({ codex: 'gpt-5.5:high' });
+    expect(JSON.parse(readFileSync(capture, 'utf8'))).toEqual({ codex: 'gpt-5.6-sol' });
   });
 });
 

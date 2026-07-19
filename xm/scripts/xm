@@ -232,6 +232,24 @@ case "$CMD" in
     node "$LIB_PATH/x-panel-cli.mjs" "$@"
     ;;
 
+  toss)
+    LIB_PATH="$(plugin_lib xm lib)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-inbox-cli.mjs" ]; then
+      echo "xm toss: x-inbox-cli.mjs not found under $LIB" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-inbox-cli.mjs" toss "$@"
+    ;;
+
+  inbox)
+    LIB_PATH="$(plugin_lib xm lib)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-inbox-cli.mjs" ]; then
+      echo "xm inbox: x-inbox-cli.mjs not found under $LIB" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-inbox-cli.mjs" "$@"
+    ;;
+
   build)
     LIB_PATH="$(plugin_lib build)"
     node "$LIB_PATH/x-build-cli.mjs" "$@"
