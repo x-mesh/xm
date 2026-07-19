@@ -26,7 +26,7 @@ project's task DAG. `/xm:wt` has no tasks and no gate panel — it is the thin
 
 **Mechanism split** (do not blur):
 - The harness tools `EnterWorktree` / `ExitWorktree` own the SESSION cwd switch.
-- `git-kit promote` owns the merge-back (commit + merge into parent, no network).
+- `git-kit worktree finish` owns the merge-back: it wraps `promote` (commit + one-hop merge into `gk-parent`, no push) AND owns worktree/branch cleanup.
 - The skill just sequences them and records the parent so `land` merges correctly.
 
 > `EnterWorktree` / `ExitWorktree` are harness (Claude Code) tools, not xm CLIs.
@@ -78,18 +78,20 @@ project's task DAG. `/xm:wt` has no tasks and no gate panel — it is the thin
 
 1. **Confirm you are in a `/xm:wt` worktree**: `PARENT=$(git config --get branch.$(git branch --show-current).gk-parent)`. If empty, this session was not started by `/xm:wt` — do NOT ExitWorktree; say so and stop.
 2. **Verify before merge** (announce, keep light): run the project's quick check if one exists (`bun test` here, or the repo's verify). Report failures; ask before merging broken code.
-3. **Merge into the parent** — `git-kit promote` commits any pending work, then merges the current branch into its `gk-parent` (the value from step 1). No push.
+3. **Dirty-tree gate BEFORE finish.** Run `git status --porcelain`. If it is non-empty, list the files to the user and ask them to choose: commit the intended work first, OR acknowledge that `finish` will auto-commit EVERYTHING — including unrelated and untracked files (e.g. `package-lock.json`) — via the kiro classifier as separate, unreviewed commits onto the parent. gk's OWN gated finish path refuses a dirty tree for exactly this reason ("gate must review exactly what merges"); the ungated default path has no such guard, so you are the guard. Do not proceed silently.
+4. **Merge + clean up — one command.** `git-kit worktree finish` wraps `promote` (commit + one-hop merge into `gk-parent`, no push) and then removes the worktree and deletes the branch.
    ```bash
-   GK_AGENT=1 git-kit promote
+   GK_AGENT=1 git-kit worktree finish --cleanup --delete-branch
    ```
-   Branch on the agent-mode `state`:
-   - `ok` → merged. Continue to step 4.
-   - `paused` (conflict) → **STOP.** Report the resume/abort command from `result`; do NOT ExitWorktree — the branch is not merged.
-   - `blocked` / `error` → report `error.remedies[0]` (check its `safety` first); do not remove the worktree.
-4. **Exit and clean up** — call `ExitWorktree` with `action: "remove"`. It will almost always REFUSE the first call with "N commits on <branch>": after a fast-forward promote the worktree branch and the parent point at the SAME commit, but ExitWorktree compares against the branch's ENTRY baseline, not the advanced parent — so it still counts the promoted commits as unmerged. Since step 3 reached `ok` (the parent now contains them), this is expected and the branch is redundant: re-invoke `ExitWorktree` with `action: "remove", discard_changes: true`. This is safe ONLY because promote already merged the commits into the parent — **never pass `discard_changes: true` if step 3 did not reach `ok`** (then the commits are genuinely unmerged and would be lost; use `action: "keep"` and report instead).
-5. **Report** (normal mode → Korean):
+   Branch STRICTLY on the JSON `state` — NEVER the exit code (the shell exits 1 when cleanup removes the cwd even on success, and gated finish uses exit 3 as a normal paused flow):
+   - `ok` → merged and cleaned. Note `removed` / `branch_deleted` from `result`; continue to step 5.
+   - `error` whose message contains `promote failed` / `exit 3` → a merge CONFLICT paused in disguise: the child promote exited paused but the ungated wrapper flattened it to a plain error, so the resume contract is lost and the merge is mid-flight INSIDE the worktree. Do NOT ExitWorktree and do NOT discard anything: run `GK_AGENT=1 git-kit context` in the worktree, report the conflict state and the resume/abort options, then **STOP**.
+   - `blocked` / any other `error` → check whether the parent already contains the branch (`git branch --contains`). If yes, the merge STANDS and only cleanup failed (a `git branch -d` refusal or a `git worktree remove` blocked on leftover untracked files) — report that distinction, do not re-merge. If no, follow `error.remedies[0]` after checking its `safety`. Never remove the worktree yourself.
+5. **Return the session** — call `ExitWorktree` with `action: "keep"`. It restores the session cwd to the parent directory. Its "Your work is preserved at <path>" message is FALSE after `--cleanup` (that directory is already deleted) — never relay it; report from the finish JSON fields (`branch`, `to`, `removed`, `branch_deleted`).
+6. **Report** (normal mode → Korean):
    ```
    ✅ <NEW> → <PARENT> 머지 완료 (push 안 함).
+      worktree / 브랜치 정리됨 (removed / branch_deleted).
       세션이 <PARENT>로 복귀했습니다.
       원격 반영은 git-kit land / push 로 직접 하세요.
    ```
@@ -104,19 +106,25 @@ Read-only — never create or remove anything under `status`.
 
 | Excuse | Reality |
 |--------|---------|
-| "I'll just `git merge` the branch by hand." | Use `git-kit promote`: it commits, resolves the fast-forward / merge-tree path, needs no parent checkout, and reads `gk-parent` so it merges into the branch you actually started from. Raw merge loses that and can land on the wrong base. |
-| "I'll skip recording the parent — land will figure it out." | `land` is a SEPARATE invocation; nothing carries the parent across turns except the `branch.<name>.gk-parent` config you set at start. Skip it and `promote` falls back to the configured base, merging into the wrong branch. |
+| "I'll just `git merge` the branch by hand." | Use `git-kit worktree finish`: it wraps `promote` (commits, resolves the fast-forward / merge-tree path, needs no parent checkout, reads `gk-parent` so it merges into the branch you actually started from) and owns cleanup. Raw merge loses that and can land on the wrong base. |
+| "I'll skip recording the parent — land will figure it out." | `land` is a SEPARATE invocation; nothing carries the parent across turns except the `branch.<name>.gk-parent` config you set at start. Skip it and `finish`'s inner `promote` falls back to the configured base, merging into the wrong branch. |
 | "The tree is dirty but I'll enter a fresh worktree anyway." | With `worktree.baseRef=fresh` (default) the new worktree branches from origin/<default>; uncommitted changes in the current dir do NOT come along. Commit first, or set `worktree.baseRef=head` to branch from where you are. |
-| "I'll push after promote to be safe." | `promote` is deliberately no-network (local integration). Never push without the user asking — pushing the parent is their call. |
+| "I'll push after promote to be safe." | `promote` is deliberately no-network (local integration), and `finish` inherits that. Never push without the user asking — pushing the parent is their call. |
 | "Only one vendor / no gate, so I'll add a panel review here." | `/xm:wt` is the ungated wrapper by design. Gated per-task merges are `/xm:build run --worktrees`. Don't reinvent the gate here. |
 | "I'll define a shell alias for the long git-kit command." | The Bash tool is stateless per call — an alias/function from one call is gone in the next. Call `git-kit` (or `GK_AGENT=1 git-kit`) directly every time. |
 | "I'm in a worktree already, I'll just start another." | `EnterWorktree` refuses a nested create, and a `gk-parent` already set means you are mid-session. Land or exit first. |
-| "ExitWorktree refused remove, so the land failed — I'll keep the worktree." | Expected: after a ff promote, ExitWorktree still counts the promoted commits against the branch's ENTRY baseline. If step 3 promote reached `ok`, the commits ARE on the parent — re-invoke with `discard_changes: true` (safe). Falling back to `keep` here just litters orphan worktrees. |
+| "A couple of unrelated dirty files can ride along." | `finish` auto-commits them via the kiro classifier as separate, unreviewed commits on the parent; gk's own gated path refuses dirty trees for exactly this reason. Gate on `git status --porcelain` first. |
+| "Non-zero exit code, so the finish failed." | The shell exits 1 when cleanup removes the cwd even on `state:"ok"`, and gated finish uses exit 3 as its normal paused flow. Branch only on the `state` field. |
+| "finish returned an error, so the worktree is junk — I'll remove it." | An error containing `exit 3` is a wrapped merge conflict: the merge is half-done inside the worktree. Preserve it and surface the conflict; do not discard. |
+| "I'll pass ExitWorktree's message through to the user." | Its "preserved at <path>" claim points at a directory gk already deleted by `--cleanup`. Report from the finish JSON instead. |
 
 ## Red Flags
 
 - You called `EnterWorktree` without recording the parent branch first.
-- You ran `ExitWorktree remove` while `git-kit promote` was `paused`/`error` — the branch was not merged and the work is now gone.
+- You judged `finish` by its exit code instead of the `state` field.
+- You exited/removed the worktree after a finish `error` without checking for a wrapped conflict (`exit 3`).
+- You relayed ExitWorktree's "preserved at" message to the user.
+- You ran `finish` on a dirty tree without showing the file list to the user first.
 - You pushed (`git push` / `git-kit land`) during `land` without the user asking.
 - You put the session into a worktree when the user never said "worktree".
 - You inlined a task-gate / panel review — that belongs to `/xm:build run --worktrees`, not here.
@@ -125,6 +133,6 @@ Read-only — never create or remove anything under `status`.
 ## Verification
 
 - After `start`: `git branch --show-current` is the new branch AND `git config --get branch.<new>.gk-parent` returns the original branch.
-- After `land` success: `git-kit promote` returned `ok` AND the parent branch now contains the worktree branch's HEAD (`git branch --contains` / the parent log shows the commit), the session cwd is back on the parent, and the worktree is gone (removed via `discard_changes: true` after the expected first-call refusal). Only fall back to `keep` when promote did NOT reach `ok`.
+- After `land` success: `git-kit worktree finish` returned `state:"ok"` with `removed:true` (and `branch_deleted:true`), the parent branch now contains the worktree branch's commits (`git branch --contains` / the parent log shows them), the session cwd is back on the parent via `ExitWorktree(keep)`, and nothing was discarded.
 - You never pushed unless the user asked.
-- On a `promote` conflict you stopped and surfaced the resume/abort command instead of removing the worktree.
+- On a wrapped conflict (`error` containing `exit 3`) you stopped, preserved the worktree, and surfaced the resume/abort options instead of removing anything.
