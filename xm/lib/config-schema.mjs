@@ -313,6 +313,15 @@ export const SCHEMA = [
     description: 'Execute review 정책 — manual(기본, 선택 실행) / auto(그룹 종료 hard gate)',
   },
   {
+    key: 'build.review_depth',
+    group: 'misc',
+    type: 'string',
+    enum: ['checks-only', 'solo', 'panel'],
+    scope: 'either',
+    default: 'solo',
+    description: 'Execute review 중량 — checks-only(test/lint만) / solo(기본, reviewer 1명) / panel(크로스벤더 적대 패널, 수동 opt-in)',
+  },
+  {
     key: 'build.review_scope',
     group: 'misc',
     type: 'string',

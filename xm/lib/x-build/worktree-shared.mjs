@@ -264,7 +264,8 @@ export function loadWorktreeConfig({ flags = {}, buildRootDir = null } = {}) {
   const withFlags = applyFlags(merged, flags);
   // Worktrees are an execution backend, not a separate lifecycle. Under the
   // common group-review policy their per-task gk finish is intentionally
-  // ungated; the shared review-group boundary performs the one expensive panel.
+  // ungated; the shared review-group boundary performs the one group review
+  // (depth-configurable: checks-only / solo / panel — see build-policy).
   const reviewScope = localBuild.review_scope || sharedBuild.review_scope || 'group';
   const explicitGatePhase = flags.gate_phase !== undefined
     || Object.prototype.hasOwnProperty.call(local, 'gate_phase')

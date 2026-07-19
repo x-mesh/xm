@@ -35,6 +35,21 @@ x-build manages the full project lifecycle (Research → Plan → Execute → Ve
 
 For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }` <!-- managed-model: writer -->
 
+### Model Disclosure (required every phase)
+
+The user pays per token and cannot see which model an agent ran on. Before spawning any
+agent batch — research, consensus, execute step, review group — print one line naming the
+models, read from the CLI JSON (`.model` per agent/task), never from memory:
+
+```
+🤖 Execute step 2 — 3개 병렬: T4·T5 executor=sonnet · T6 deep-executor=opus
+```
+
+Rules: state the tier the Agent tool actually receives. For `"model": "inherit"` print
+`inherit(세션=<current session model>)`, since the parameter is omitted. When a step mixes
+tiers, name each — never collapse to one label. Report the same after a phase completes
+only if the resolved model differed from the announced one (e.g. an `inherit` task).
+
 ## Mode Detection
 
 Check mode before every command:
@@ -149,8 +164,9 @@ Rules:
 4. **Artifacts MUST be printed before review (Output Gate)** — any LLM-produced artifact (research findings, PRD, task breakdown, forecast, critique, consensus result) MUST be output in FULL to the user **before** calling AskUserQuestion or advancing the phase. Save-and-ask-without-showing is FORBIDDEN. Saving to disk does NOT count as showing; a summary paragraph does NOT count as showing — print the artifact content. **Self-check gate (enforce, don't just intend):** immediately before the gating `AskUserQuestion`, confirm the full artifact text was printed in the CURRENT turn, and make the question's FIRST option cite a concrete detail from it (a task id, an `R#` requirement, or a `done_criteria` string). If you cannot cite one, you did not show it — print it first, then ask.
 5. **Research output MUST be persisted** — after each research sub-agent (stack / features / architecture / pitfalls) completes, immediately call `$XMB save research-notes --agent <name> --content "..."` to append the RAW agent output to `phases/01-research/notes.md`. Never discard raw agent output by only saving the synthesized ROADMAP — the user must be able to audit the evidence chain.
 6. **Plan Review** — present one Plan Bundle (intent/PRD/tasks/groups/checks), then ask for the single Plan → Execute direction approval. Approval is bound to `plan_hash`; any plan change invalidates it.
-7. **Execute review** — do not review every task. Run configured task-local checks in each task cwd. With the default `build.review_mode=manual`, expose `review-group` after a group completes but continue without it; with `auto`, run one group panel as the Execute hard boundary. Explicit reviews default to one round (`--rounds 2` opts into adversarial refutation).
+7. **Execute review** — do not review every task. Run configured task-local checks in each task cwd. `build.review_mode` decides WHEN (manual = optional after a group completes, auto = hard boundary); `build.review_depth` decides HOW HEAVY. Default depth is `solo`: `review-group` returns a pending spec — spawn ONE reviewer agent on `solo.patch` with `solo.model` (announce it per Model Disclosure), triage its findings, then record `review-group <g> --verdict pass|fail --notes "..."`. NEVER escalate to the cross-vendor panel on your own: `--depth panel` (or `/xm:panel review`) is user-invoked only. `checks-only` passes the group on test/lint alone. Explicit panel reviews default to one round (`--rounds 2` opts into adversarial refutation).
 8. **Verify → Close** — advance after deterministic quality checks unless a new user decision is required.
+9. **Announce models before every agent batch** — see [Model Disclosure](#model-disclosure-required-every-phase). Spawning agents without naming their tiers is FORBIDDEN; the user must be able to see cost as it is incurred, not reconstruct it afterward.
 
 10. **PRD is MANDATORY** — every project MUST have `phases/02-plan/PRD.md` before Execute phase. If tasks were added without PRD (e.g., direct `tasks add`), generate PRD from existing tasks before proceeding.
 11. **Task documentation** — every task MUST have `done_criteria` before execution starts. If missing, auto-derive from PRD requirements using `$XMB tasks done-criteria`.
@@ -165,6 +181,7 @@ Anti-patterns:
 - ❌ Task breakdown generated → `$XMB save plan` → AskUserQuestion (task list never shown to user)
 - ❌ PRD generated → show to user → but forget `$XMB save plan` (PRD lost, not in dashboard)
 - ❌ Per-task implementation → expensive panel → user confirmation (repeated for every task)
+- ❌ Spawn 4 research agents → results appear → user never learns which tier burned the tokens
 - ❌ `init` → `tasks add` → `tasks update --status in_progress` (no PRD, no CONTEXT.md — dashboard blind spot)
 - ✅ `plan "goal"` → init → intent-check → **interview only if needed** → research → persist findings → PRD/tasks → print one Plan Bundle → direction approval
 - ✅ Plan phase: generate tasks → **print task list with done_criteria** → `save plan` → AskUserQuestion for plan review
@@ -324,7 +341,7 @@ Use `plan --interview` when the user explicitly wants detailed refinement. Use `
 - `run --reconcile [--dry-run] [--stale-min N]` — Reclaim stale RUNNING tasks (interrupted/abandoned agents) to PENDING; `protected[]` lists NEEDS_FIX/BLOCKED/MERGING worktree tasks kept from reconcile
 - `run-status [--json]` — Execution progress; `--json` gives structured state (`all_done`, `steps`, `stale_running`, `blocked_tasks`, `worktree_tasks`, `next_action`) for orchestrator routing
 - `task-check <task-id> [--json]` — run configured `build.task_checks` in the current task cwd and persist completion evidence; required for newly planned normal and worktree tasks
-- `review-group [name] [--rounds 1|2] [--json]` — after all group tasks complete, run an explicit panel; one round by default, two only when requested/configured
+- `review-group [name] [--depth checks-only|solo|panel] [--rounds 1|2] [--json]` — group-boundary review at the configured depth (default `solo`). Solo flow: the CLI returns `{pending:"solo", solo:{patch, model}}` → spawn ONE reviewer agent on that patch with that model → `review-group <name> --verdict pass|fail [--notes "..."]` records it (fail-closed if the git target moved). `--depth panel` runs the cross-vendor panel — only when the user asks
 - `templates list` / `templates use <name>` — Use task templates
 
 **Worktree backend** (optional Execute-phase fan-out — see [Worktree Execution Mode](#worktree-execution-mode)):
@@ -525,6 +542,8 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | "The scope is fine as is" | Scope is defined by exclusion. If you haven't decided what NOT to build, you haven't scoped anything. |
 | "Planning is overhead, not value" | Planning is where wrong turns are found for free. Every hour spent in plan-phase saves multiple hours in exec-phase. |
 | "User is mid-task on a feature branch — invoking build is heavy, just apply it lightly" | git branch ≠ x-build project. Run `$XMB list` first; "lightly" / "skill spirit only" is not a valid bypass — it discards the PRD/tasks tracking the user explicitly invoked build to get. |
+| "This diff is big/risky, solo review feels thin — I'll escalate to the panel" | Depth escalation is the user's call, not yours. Run the solo review, report what makes the diff risky, and OFFER `--depth panel` — a panel the user didn't ask for is exactly the turn-explosion review_depth=solo exists to prevent. |
+| "Announcing the model every step is noise — I'll summarize the cost at the end" | The user is paying while the agents run, not afterward. A tier named before the batch lets them stop a fable fan-out they didn't want; the same number in a closing summary only tells them what they already spent. One line per batch is not noise. |
 | "User just wants quick help, no need for full Research → Plan flow" | If they wanted Quick Mode they would have said `--quick`. Default to full flow; do not auto-shortcut on the user's behalf. |
 | "This is a brand-new empty directory, the full interview is overkill" | The gauge decides, not vibes: `project_kind: greenfield` triggers Round 0 (4 questions, one round). Skipping problem-framing on a greenfield project is how PRDs get built on unvalidated premises. |
 | "I saved the PRD/tasks, so asking for review lets the user just open the file" | Saving is not showing — the user reviews what is in the chat, not what is on disk. Rule 4's Output Gate requires the full artifact text in the current turn, and the review AskUserQuestion must cite a detail from it (task id / R# / done_criteria) — impossible if you never printed it. |

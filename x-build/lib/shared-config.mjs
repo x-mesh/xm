@@ -253,7 +253,7 @@ export function expandPhaseAssignments(assignments, phaseGroups, existingOverrid
   // 'inherit' = run on the session model (routing sentinel, not a billable
   // tier). Valid here because phase presets expand into model_overrides, whose
   // consumer (getModelForRole) already guards the economy-profile case.
-  const MODELS = new Set(['haiku', 'sonnet', 'opus', 'inherit', 'default']);
+  const MODELS = new Set(['haiku', 'sonnet', 'opus', 'fable', 'inherit', 'default']);
   const overrides = { ...(existingOverrides || {}) };
   const errors = [];
   for (const a of assignments) {
@@ -871,7 +871,7 @@ async function editProfile(rl, session) {
 async function editOverrides(rl, session) {
   const ce = await loadCostEngine();
   const roles = Object.keys(ce.MODEL_PROFILES.default);
-  const models = ['haiku', 'sonnet', 'opus', 'inherit'];
+  const models = ['haiku', 'sonnet', 'opus', 'fable', 'inherit'];
   const current = readSharedConfig().model_overrides || {};
 
   console.log(`\n  ${t('overrides.header')}\n`);
@@ -925,16 +925,31 @@ async function editPhaseModels(rl, session) {
     implement: t('phase.short.implement'),
     review: t('phase.short.review'),
   };
-  const choices = { '1': 'default', '2': 'haiku', '3': 'sonnet', '4': 'opus', '5': 'inherit' };
+  // Same arrow-key select as every other wizard page. key '0' (= Enter on the
+  // default, Esc/q, or empty line-mode input) keeps the slot unchanged.
+  const choices = { '1': 'default', '2': 'haiku', '3': 'sonnet', '4': 'opus', '5': 'fable', '6': 'inherit' };
   const assignments = [];
   for (const slot of Object.keys(ce.PHASE_ROLE_GROUPS)) {
-    // Show exactly which roles this one answer overwrites (their current
-    // values can differ — e.g. implement = opus/inherit/sonnet/inherit).
-    console.log(`${C.dim}${t('phase.slot_roles', ce.PHASE_ROLE_GROUPS[slot].join(' · '))}${C.reset}`);
-    const input = (await ask(rl, t('phase.model_prompt', SHORT_LABELS[slot]))).trim();
-    if (!input) continue;
-    const model = choices[input];
-    if (!model) { console.log(`  ${C.red}${t('phase.enter_1_4')}${C.reset}`); continue; }
+    const ch = await menuSelect(rl, {
+      title: t('phase.slot_title', SHORT_LABELS[slot]),
+      // Show exactly which roles this one answer overwrites (their current
+      // values can differ — e.g. implement = opus/inherit/sonnet/inherit).
+      header: [t('phase.slot_roles', ce.PHASE_ROLE_GROUPS[slot].join(' · '))],
+      options: [
+        { key: '0', label: t('phase.keep') },
+        { key: '1', label: t('phase.profile_default'), hint: t('phase.hint.default') },
+        { key: '2', label: 'haiku', hint: t('phase.hint.haiku') },
+        { key: '3', label: 'sonnet', hint: t('phase.hint.sonnet') },
+        { key: '4', label: 'opus', hint: t('phase.hint.opus') },
+        { key: '5', label: 'fable', hint: t('phase.hint.fable') },
+        { key: '6', label: 'inherit', hint: t('phase.hint.inherit') },
+      ],
+      backKey: '0',
+      initialKey: '0',
+    });
+    if (ch === '0' || ch === '') continue;
+    const model = choices[ch];
+    if (!model) { console.log(`  ${C.red}${t('phase.enter_0_6')}${C.reset}`); continue; }
     assignments.push(`${slot}=${model}`);
   }
   if (!assignments.length) { console.log(`  ${C.dim}${t('common.no_change')}${C.reset}`); return; }

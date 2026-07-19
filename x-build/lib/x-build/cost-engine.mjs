@@ -134,11 +134,14 @@ export const JUDGMENT_ROLES = [
 
 // ── MODEL_COSTS ───────────────────────────────────────────────────────
 
-// Prices per 1M tokens (USD). Last updated: 2026-04 (Claude 4.x family).
+// Prices per 1M tokens (USD). Last updated: 2026-07 (fable added — Fable 5,
+// the tier above opus; used for plan-phase roles under the verified
+// plan=fable + implement=sonnet split).
 export const MODEL_COSTS = {
   'haiku':  { input: 1.00, output: 5.00 },
   'sonnet': { input: 3.00, output: 15.00 },
   'opus':   { input: 15.00, output: 75.00 },
+  'fable':  { input: 10.00, output: 50.00 },
 };
 
 // Real cost (USD) from measured token counts. Use when actual usage is known —
@@ -195,6 +198,7 @@ export const MODEL_COSTS_BY_VENDOR = {
     haiku:  { input: 1.00,  output: 5.00 },
     sonnet: { input: 3.00,  output: 15.00 },
     opus:   { input: 15.00, output: 75.00 },
+    fable:  { input: 10.00, output: 50.00 },
   },
   codex: {
     haiku:  { input: 1.00, output: 6.00 },   // gpt-5.6-luna
