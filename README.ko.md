@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.7.6-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.8.1-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -464,7 +464,7 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 | **도메인별 done_criteria** | 태스크 도메인, 크기, PRD 비기능 요구사항 기반 자동 생성 |
 | **실패 모드 열거** | PRD §7.5가 요구사항별 병적/적대 입력을 강제 (`[R#] <실패모드> → 검증: <방법>`). `tasks done-criteria`가 스트레스 검증으로 주입하고, `plan-check`의 `failure-mode-coverage`가 위험 도메인 태스크에 누락 시 경고. 실측상 저렴한 실행 모델이 견고성에서 고비용 모델을 따라잡게 함 — `docs/phase-model-routing-experiment.md` 참고 |
 | **워크트리 실행** | `run --worktrees`가 병렬 안전한 태스크를 독립된 `git-kit` 워크트리로 나눠 실행. 각 태스크 patch는 머지 전 `gate-panel`(크로스 모델 패널 리뷰 게이트)을 통과해야 함 — [워크트리 파이프라인](#worktree-pipeline-ko) 참고 |
-| **그룹 단위 리뷰** | `build.review_scope`(기본 `group` / `task`)가 리뷰 그룹의 태스크를 태스크별이 아닌 패널 1회 실행으로 묶습니다. `build.review_mode`(기본 `manual` / `auto`)가 그룹 리뷰를 선택적(노출만, 비차단)으로 둘지 Execute→Verify 필수 경계로 둘지 결정합니다. `review-group <name> [--rounds 2]`로 직접 실행할 수 있습니다. |
+| **그룹 단위 리뷰** | `build.review_scope`(기본 `group` / `task`)가 리뷰 그룹의 태스크를 태스크별이 아닌 리뷰 1회 실행으로 묶습니다. `build.review_mode`(기본 `manual` / `auto`)가 그룹 리뷰를 선택적(노출만, 비차단)으로 둘지 Execute→Verify 필수 경계로 둘지, `build.review_depth`(기본 `solo` / `checks-only` / `panel`)가 리뷰 중량을 결정합니다 — `solo`는 reviewer 에이전트 1명이 그룹 패치를 리뷰하고 `review-group <name> --verdict pass\|fail`로 판정을 기록하며, `checks-only`는 test/lint만으로 통과, 크로스벤더 `panel`은 명시적 `review-group <name> --depth panel [--rounds 2]`일 때만 실행됩니다. |
 | **강제 페이즈 게이트** | exit 게이트를 config-schema 기본값 위에 설정을 머지해 해석하고, 각 페이즈 `status.json`에 판정을 기록(`status --json`에 노출), 막히면 non-zero exit — "에이전트가 말로 못 넘는 게이트"가 실제로 작동(no-op 아님) |
 | **Blocking hooks** | `hooks install`이 네이티브 Claude Code 훅 2개를 설치: review-fix 중 `triage.fix_scope.allowed_files` 밖 편집을 막는 PreToolUse **scope-guard**, 미해결 Critical/High가 있으면 턴 종료를 막는 Stop **stop-gate**. 디스크만 읽고 fail-open; `XM_BUILD_HOOKS_OFF=1`로 우회 |
 | **ROI 라우팅 신호** | `roi`가 model/role/strategy별 실측 기반 quality-per-dollar(Score/$)를 보고하고 `model_overrides` 변경을 제안 — 단 calibrated 데이터(실측 비용 **및** 점수 있는 태스크 ≥5개)에서만. 추정치로 추측하거나 config를 자동 수정하지 않음 |
