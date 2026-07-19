@@ -107,9 +107,9 @@ Read-only — never create or remove anything under `status`.
 | Excuse | Reality |
 |--------|---------|
 | "I'll just `git merge` the branch by hand." | Use `git-kit worktree finish`: it wraps `promote` (commits, resolves the fast-forward / merge-tree path, needs no parent checkout, reads `gk-parent` so it merges into the branch you actually started from) and owns cleanup. Raw merge loses that and can land on the wrong base. |
-| "I'll skip recording the parent — land will figure it out." | `land` is a SEPARATE invocation; nothing carries the parent across turns except the `branch.<name>.gk-parent` config you set at start. Skip it and `promote` falls back to the configured base, merging into the wrong branch. |
+| "I'll skip recording the parent — land will figure it out." | `land` is a SEPARATE invocation; nothing carries the parent across turns except the `branch.<name>.gk-parent` config you set at start. Skip it and `finish`'s inner `promote` falls back to the configured base, merging into the wrong branch. |
 | "The tree is dirty but I'll enter a fresh worktree anyway." | With `worktree.baseRef=fresh` (default) the new worktree branches from origin/<default>; uncommitted changes in the current dir do NOT come along. Commit first, or set `worktree.baseRef=head` to branch from where you are. |
-| "I'll push after promote to be safe." | `promote` is deliberately no-network (local integration). Never push without the user asking — pushing the parent is their call. |
+| "I'll push after promote to be safe." | `promote` is deliberately no-network (local integration), and `finish` inherits that. Never push without the user asking — pushing the parent is their call. |
 | "Only one vendor / no gate, so I'll add a panel review here." | `/xm:wt` is the ungated wrapper by design. Gated per-task merges are `/xm:build run --worktrees`. Don't reinvent the gate here. |
 | "I'll define a shell alias for the long git-kit command." | The Bash tool is stateless per call — an alias/function from one call is gone in the next. Call `git-kit` (or `GK_AGENT=1 git-kit`) directly every time. |
 | "I'm in a worktree already, I'll just start another." | `EnterWorktree` refuses a nested create, and a `gk-parent` already set means you are mid-session. Land or exit first. |
@@ -133,5 +133,6 @@ Read-only — never create or remove anything under `status`.
 ## Verification
 
 - After `start`: `git branch --show-current` is the new branch AND `git config --get branch.<new>.gk-parent` returns the original branch.
-- After `land` success: `git-kit worktree finish` returned `state:"ok"` with `removed:true` (and `branch_deleted:true`), the parent branch now contains the worktree branch's commits (`git branch --contains` / the parent log shows them), the session cwd is back on the parent via `ExitWorktree(keep)`, and nothing was discarded. On a wrapped conflict (`error` + `exit 3`) you STOPPED, preserved the worktree, and surfaced the resume/abort options instead.
+- After `land` success: `git-kit worktree finish` returned `state:"ok"` with `removed:true` (and `branch_deleted:true`), the parent branch now contains the worktree branch's commits (`git branch --contains` / the parent log shows them), the session cwd is back on the parent via `ExitWorktree(keep)`, and nothing was discarded.
 - You never pushed unless the user asked.
+- On a wrapped conflict (`error` containing `exit 3`) you stopped, preserved the worktree, and surfaced the resume/abort options instead of removing anything.
