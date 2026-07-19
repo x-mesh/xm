@@ -9,8 +9,15 @@ export const EVENT_TYPES = new Set([
   'ack', 'error',
 ]);
 
-const SECRET_TERM = '(?:password|passwd|passphrase|secret|token|api[_ -]?key|credential|private[_ -]?key|otp|2fa|mfa|비밀번호|암호|토큰|인증정보)';
-const SECRET_RE = new RegExp(`(?:enter|provide|paste|type|input|supply|입력|붙여넣|제공).{0,40}${SECRET_TERM}|${SECRET_TERM}.{0,20}(?::|\\?|입력|provide|enter)|(?:sk|xox[baprs]|gh[pousr])-[A-Za-z0-9_-]{8,}`, 'i');
+// Exported so xm/lib/x-inbox/redact.mjs can extend this same vocabulary to mask
+// secret *values* in captured command output, instead of forking a second regex
+// system for the same concept (CLAUDE.md Edit Policy / Lessons).
+export const SECRET_TERM = '(?:password|passwd|passphrase|secret|token|api[_ -]?key|credential|private[_ -]?key|otp|2fa|mfa|비밀번호|암호|토큰|인증정보)';
+// Shape of common provider-issued key/token prefixes (Stripe/OpenAI-style `sk-`,
+// Slack `xox[baprs]-`, GitHub `gh[pousr]-`). Exported alongside SECRET_TERM for the
+// same reuse reason.
+export const PROVIDER_KEY_TERM = '(?:sk|xox[baprs]|gh[pousr])-[A-Za-z0-9_-]{8,}';
+const SECRET_RE = new RegExp(`(?:enter|provide|paste|type|input|supply|입력|붙여넣|제공).{0,40}${SECRET_TERM}|${SECRET_TERM}.{0,20}(?::|\\?|입력|provide|enter)|${PROVIDER_KEY_TERM}`, 'i');
 
 export function isSensitivePrompt(value) {
   if (value && typeof value === 'object') {

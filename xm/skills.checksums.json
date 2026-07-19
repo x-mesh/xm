@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1784299157623,
+  "generatedAt": 1784441869890,
   "version": 1,
   "skills": [
     {
@@ -41,6 +41,11 @@
       "plugin": "humble",
       "sha256": "dffbeee0ef657ab7fedc56cc33764425e2e641199f4e9f9fef1ef2f11c45aabc",
       "bytes": 14311
+    },
+    {
+      "plugin": "inbox",
+      "sha256": "449f1784a9dbec4c174136718510d67cf8b438f0737ed31502eff41f54d3a875",
+      "bytes": 7528
     },
     {
       "plugin": "kit",
@@ -101,6 +106,11 @@
       "plugin": "sync",
       "sha256": "65d158f08d60bf0e7dec0401afc748ffbcdb1f3fdf306d33a4d1b450b98ad91e",
       "bytes": 8717
+    },
+    {
+      "plugin": "toss",
+      "sha256": "7d38410a8b3ff1e2923d155e06e3f66dca953dcddf21aa6a5ea8fc9390a86069",
+      "bytes": 9602
     },
     {
       "plugin": "trace",
