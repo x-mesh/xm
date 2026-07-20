@@ -237,14 +237,30 @@ export function cmdReleaseDetect(args) {
 
   // Changed plugins with versions. xm is normally filtered out — its lib/ and skills/ are
   // churn-heavy MIRRORS of the x-* sources, so it only ever meta-bumps alongside another plugin.
-  // EXCEPTION: a change to xm's OWN dispatcher (xm/scripts/, never a mirror of anything) is a
-  // genuine xm release; without this a dispatcher-only fix reports "no changes" and silently
-  // never ships (l9 — had to bump xm by hand for the xm@2.4.56 `xm update` fix).
+  // EXCEPTIONS — files under xm/ that mirror nothing and are therefore genuine xm changes:
+  //   1. xm/scripts/**            — xm's own dispatcher (xm@2.4.56 `xm update` fix had to be
+  //                                 hand-bumped before this existed)
+  //   2. xm/skills/<name>/**      — ONLY when no x-<name> source dir exists. Skills like
+  //                                 handoff/handon/ship/kit/later/inbox/toss live solely here,
+  //                                 so treating all of xm/skills as mirror churn made a
+  //                                 SKILL-only fix report "no changes" and silently never ship.
+  //   3. xm/commands/<name>.md    — same rule: xm-native commands (xm.md, handoff.md, …) have no
+  //                                 x-<name> source and sync-bundle leaves them untouched.
+  // Membership is derived from the filesystem, never a hardcoded list, so a new xm-native skill
+  // or command is picked up automatically (Lesson L8).
   const changed = Object.entries(pluginChanges)
     .filter(([name]) => name !== 'xm')
     .map(([name, files]) => ({ name, current: versions[name] || '?', files }));
-  const xmDispatcherFiles = (pluginChanges['xm'] || []).filter(f => f.startsWith('xm/scripts/'));
-  if (xmDispatcherFiles.length) changed.push({ name: 'xm', current: versions['xm'] || '?', files: xmDispatcherFiles });
+
+  const xmOwnFiles = (pluginChanges['xm'] || []).filter(f => {
+    if (f.startsWith('xm/scripts/')) return true;
+    const skill = f.match(/^xm\/skills\/([^/]+)\//);
+    if (skill) return !existsSync(join(cwd, `x-${skill[1]}`));
+    const cmd = f.match(/^xm\/commands\/([^/]+)\.md$/);
+    if (cmd) return !existsSync(join(cwd, `x-${cmd[1]}`));
+    return false;
+  });
+  if (xmOwnFiles.length) changed.push({ name: 'xm', current: versions['xm'] || '?', files: xmOwnFiles });
 
   const unchanged = PLUGIN_DIRS.filter(d => !pluginChanges[d] && versions[d]);
 

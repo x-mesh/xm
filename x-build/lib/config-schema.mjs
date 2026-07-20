@@ -200,6 +200,15 @@ export const SCHEMA = [
     description: '세션당 최대 비용(USD). null=무제한',
   },
   {
+    key: 'memmesh.mirror',
+    group: 'misc',
+    type: 'boolean',
+    nullable: true,
+    scope: 'either',
+    default: null,
+    description: 'handoff가 mem-mesh 미러 payload를 만들지 여부. false면 파일 전용(pending 경고 없음), 미설정=true',
+  },
+  {
     key: 'budget.window_hours',
     group: 'budget',
     type: 'number',

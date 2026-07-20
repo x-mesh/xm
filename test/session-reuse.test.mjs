@@ -141,7 +141,13 @@ describe('review with session reuse (default on)', () => {
     expect(codexRefute).toMatchObject({ mode: null, hasTarget: true }); // stateless full prompt
     // the warning is durable (events.jsonl via writeEvent), not just a stderr line
     const panelDir = join(DIR, 'nobanner', '.xm', 'panel');
-    const run = readdirSync(panelDir)[0];
+    // Same filter the review() helper above already applies: `.xm/panel/` holds run
+    // DIRECTORIES plus loose state files (history.jsonl, readiness-cache.json), and
+    // readdirSync guarantees no ordering. Taking [0] blindly picked history.jsonl
+    // whenever it happened to come first → ENOTDIR. The helper was fixed for this;
+    // this inline copy was missed, which is what made the suite flaky.
+    const run = readdirSync(panelDir).filter((n) => n.startsWith('panel-')).sort().pop();
+    expect(run).toBeDefined();
     const events = readFileSync(join(panelDir, run, 'events.jsonl'), 'utf8')
       .trim().split('\n').map((l) => JSON.parse(l));
     expect(events.some((ev) => ev.type === 'lifecycle' && /session capture failed/.test(ev.note || ''))).toBe(true);

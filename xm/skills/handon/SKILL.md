@@ -125,11 +125,13 @@ The 📚 line is a pointer, not the content. When the user asks for the detail (
 xm build handon --log
 ```
 
-This prints the tier-2 archive (rejected reasoning / open forks / constraints & preferences / attempts). In dual-write mode you may instead pull it from mem-mesh (`search` for the last handoff digest, project = basename of cwd) — same content, richer if the log was mirrored thick. Keeping it out of the default restore is the whole point of the 2-tier split: the restore stays high-signal, the detail is one command away.
+This prints the tier-2 archive (rejected reasoning / open forks / constraints & preferences / attempts). In dual-write mode you may instead pull it from mem-mesh (`search` for the last handoff digest, using the repo-root `project_id` — see Step 3.5) — same content, richer if the log was mirrored thick. Keeping it out of the default restore is the whole point of the 2-tier split: the restore stays high-signal, the detail is one command away.
 
 **Step 3.5: Enrich from mem-mesh (dual-write mode only)**
 
-Only in dual-write mode (gate above). Call `mcp__mem-mesh__search` with an empty `query`, `project_id` = basename of cwd, and a high `recency_weight` (e.g. 0.8) to pull recent items / the last handoff archive, then append one line to the summary. (Do NOT use `mcp__mem-mesh__context` here — it requires a `memory_id`/`ids` and cannot list a project's recent memories.)
+Only in dual-write mode (gate above). Call `mcp__mem-mesh__search` with an empty `query`, the **repo-root** `project_id`, and a high `recency_weight` (e.g. 0.8) to pull recent items / the last handoff archive, then append one line to the summary. (Do NOT use `mcp__mem-mesh__context` here — it requires a `memory_id`/`ids` and cannot list a project's recent memories.)
+
+> **`project_id` = basename of the REPO ROOT, not of cwd.** `handoff` writes mirrors under the repo-root name so the id stays stable no matter which subdirectory the CLI ran from; searching by cwd basename from a subdirectory silently returns nothing. When a mirror exists, `xm build handoff --mirror-status` reports the exact `payload.project_id` — prefer that over deriving it yourself.
 
 ```
   🧠 mem-mesh: {N} recent pins/items ({M} open)     (omit line if nothing returned)

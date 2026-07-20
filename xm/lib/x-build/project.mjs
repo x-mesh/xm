@@ -8,7 +8,7 @@ import {
   manifestPath, phaseStatusPath, tasksPath, stepsPath, prdPath, contextDir, projectDir,
   projectsDir, checkpointsDir, phaseDir, toSlug,
   resolveProject, findCurrentProject, findActiveProjects, logDecision,
-  loadConfig, resolveGates, requiresSignoff, autopilotActive, isNormalMode, L, renderBar, fmtDuration,
+  loadConfig, loadSharedConfig, resolveGates, requiresSignoff, autopilotActive, isNormalMode, L, renderBar, fmtDuration,
   setCmdInit,
   existsSync, readdirSync, mkdirSync, join, readFileSync, writeFileSync,
   createRL, ask, pickMenu,
@@ -906,7 +906,23 @@ export function cmdHandoffFull(args) {
 
   // Render the mem-mesh payload deterministically so the skill only has to hand
   // it to `mcp__mem-mesh__add` — no hand-built JSON, no schema guessing.
-  const mirror = buildMemMeshMirror(state);
+  // Overwriting an unrepaired mirror destroys the only copy of a session that
+  // never reached mem-mesh. We still overwrite (this handoff is the current
+  // state) but never silently — the user gets one chance to notice.
+  const prevMirror = readMirrorState();
+  if (prevMirror?.status === 'pending') {
+    console.error(`⚠️  Overwriting a PENDING mem-mesh mirror from ${prevMirror.created_at || 'an earlier handoff'} — that session never reached mem-mesh and its payload is now lost.`);
+  } else if (prevMirror?.status === 'unreadable') {
+    console.error(`⚠️  Replacing an unreadable mem-mesh mirror file (${prevMirror.error}).`);
+  }
+
+  // `memmesh.mirror: false` opts a file-only setup out entirely — without it the
+  // pending warning recurs on every restore for users who have no mem-mesh at all,
+  // and --mirror-skip only silences one handoff at a time.
+  // scope 'either' → the shared local/global resolver, NOT loadConfig() (which
+  // reads .xm/build/config.json, a different layer).
+  const mirrorEnabled = loadSharedConfig()?.memmesh?.mirror !== false;
+  const mirror = mirrorEnabled ? buildMemMeshMirror(state) : null;
   let mirrorWritten = false;
   if (mirror) {
     try {
@@ -952,8 +968,15 @@ export function cmdHandoffFull(args) {
   } else if (mirror) {
     // Payload rendered but the file write failed — the warning went to stderr above.
     console.log(`   mem-mesh mirror: NOT WRITTEN (payload rendered, file write failed — see warning above)`);
+  } else if (!mirrorEnabled) {
+    console.log(`   mem-mesh mirror: disabled (memmesh.mirror=false)`);
   } else if (!narrative && !sessionLog) {
     console.log(`   mem-mesh mirror: skipped (no narrative to mirror)`);
+  } else if (!_narrativeHasContent(narrative, sessionLog)) {
+    // A narrative object was passed but every field is empty — that is "nothing
+    // to say", not a length failure. Blaming the 100-char floor sends the skill
+    // (and the user) chasing a limit that was never reached.
+    console.log(`   mem-mesh mirror: skipped (narrative present but empty)`);
   } else {
     console.log(`   mem-mesh mirror: skipped (narrative too thin — under the ${MIRROR_MIN_CONTENT}-char minimum mem-mesh requires)`);
   }
@@ -1038,15 +1061,19 @@ function _mirrorAnchors(state) {
   return Object.keys(anchors).length ? anchors : null;
 }
 
+// Does this narrative/session_log carry anything at all? Shared by the payload
+// builder and the CLI's reporting so "empty" and "too short" never get conflated.
+function _narrativeHasContent(nar, sl) {
+  const hasNarrative = nar && (nar.intent || nar.open_questions?.length || nar.rejected_alternatives?.length || nar.next_session_should_know?.length);
+  const hasLog = sl && (sl.rejected?.length || sl.open_forks?.length || sl.constraints_prefs?.length || sl.attempts?.length);
+  return Boolean(hasNarrative || hasLog);
+}
+
 // Build the mem-mesh `add` payload for a session state. Returns null when the
 // session carries no narrative worth mirroring — a bare `handoff --full` with
 // no `--narrative-json` has nothing mem-mesh can serve that the file cannot.
 export function buildMemMeshMirror(state) {
-  const nar = state.narrative;
-  const sl = state.session_log;
-  const hasNarrative = nar && (nar.intent || nar.open_questions?.length || nar.rejected_alternatives?.length || nar.next_session_should_know?.length);
-  const hasLog = sl && (sl.rejected?.length || sl.open_forks?.length || sl.constraints_prefs?.length || sl.attempts?.length);
-  if (!hasNarrative && !hasLog) return null;
+  if (!_narrativeHasContent(state.narrative, state.session_log)) return null;
 
   const content = _mirrorContent(state);
   if (content.length < MIRROR_MIN_CONTENT) return null;
@@ -1108,6 +1135,12 @@ export function cmdHandoffMirror(args) {
       console.error(`Inspect or delete it manually, then re-run the handoff.`);
       exitFail(1);
     }
+    // Dismissing an already-mirrored record would drop a real memory_id and
+    // relabel a completed dual-write as "never sent".
+    if (state.status === 'mirrored') {
+      console.error(`Already mirrored (${state.memory_id}) — nothing to dismiss.`);
+      exitFail(1);
+    }
     state.status = 'skipped';
     state.skipped_at = new Date().toISOString();
     writeFileSync(p, JSON.stringify(state, null, 2) + '\n', 'utf8');
@@ -1138,7 +1171,16 @@ export function cmdHandoffMirror(args) {
     state.status = 'mirrored';
     state.memory_id = memoryId;
     state.mirrored_at = new Date().toISOString();
-    writeFileSync(p, JSON.stringify(state, null, 2) + '\n', 'utf8');
+    try {
+      writeFileSync(p, JSON.stringify(state, null, 2) + '\n', 'utf8');
+    } catch (e) {
+      // The add already succeeded — the memory exists in mem-mesh. Losing this
+      // write only loses the bookkeeping, so surface the id the caller must not
+      // drop rather than dying with a bare stack trace.
+      console.error(`⚠️  mem-mesh add succeeded (${memoryId}) but the mirror status could not be written: ${e.message}`);
+      console.error(`   The memory EXISTS. Record it manually or re-run: xm build handoff --mirror-done ${memoryId}`);
+      exitFail(1);
+    }
     console.log(`🧠 mem-mesh mirror recorded: ${memoryId}`);
     return;
   }
@@ -1146,11 +1188,26 @@ export function cmdHandoffMirror(args) {
   // --mirror-status
   const state = readMirrorState();
   if (!state) { console.log(JSON.stringify({ status: 'none' })); return; }
+  if (state.status === 'unreadable') {
+    // Carry the parse reason — a machine caller cannot act on a bare status.
+    console.log(JSON.stringify({ status: 'unreadable', error: state.error }, null, 2));
+    return;
+  }
+
+  // Age the record against the CURRENT session state, exactly as handon does.
+  // Reporting the raw status here called a previous session's record `mirrored`
+  // while handon correctly called the same record `stale`.
+  let sessionState = null;
+  try { sessionState = JSON.parse(readFileSync(join(repoRoot(), '.xm', 'build', 'SESSION-STATE.json'), 'utf8')); } catch { /* no state yet */ }
+  const aged = sessionState ? _mirrorStatusFor(sessionState) : { status: state.status };
+
   console.log(JSON.stringify({
-    status: state.status,
+    status: aged.status,
+    from_earlier_handoff: aged.from_earlier_handoff,
     memory_id: state.memory_id,
     created_at: state.created_at,
     mirrored_at: state.mirrored_at,
+    skipped_at: state.skipped_at,
     payload: state.payload,
   }, null, 2));
 }
@@ -1232,8 +1289,14 @@ function _mirrorStatusFor(state) {
     return { status: 'pending', created_at: m.created_at, from_earlier_handoff: !matchesCurrent };
   }
 
-  // `mirrored`/other statuses genuinely go stale — that record describes a
-  // session state this one has moved past, and there is nothing left to repair.
+  // `skipped` means the user deliberately dismissed it. Ageing that into `stale`
+  // would read as "already mirrored", which is the opposite of what happened.
+  if (status === 'skipped') {
+    return { status: 'skipped', created_at: m.created_at, from_earlier_handoff: !matchesCurrent };
+  }
+
+  // Only `mirrored` genuinely goes stale — that record describes a session state
+  // this one has moved past, and there is nothing left to repair.
   if (!matchesCurrent) return { status: 'stale', memory_id: m.memory_id, created_at: m.created_at };
   return { status, memory_id: m.memory_id, mirrored_at: m.mirrored_at };
 }
