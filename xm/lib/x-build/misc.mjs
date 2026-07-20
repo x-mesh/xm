@@ -612,6 +612,9 @@ ${C.bold}Project:${C.reset}
   status [project]               Show project status (with progress bar)
   next                           Suggest the next action
   handoff [--restore]            Save/restore session state for continuity
+  handoff --mirror-status        Show the pending/mirrored mem-mesh payload
+  handoff --mirror-done <id>     Record a successful mem-mesh add
+  handoff --mirror-skip          Dismiss a pending mirror (file-only setups)
 
 ${C.bold}Research Phase:${C.reset}
   discuss [--mode interview|assumptions|critique|validate|adapt] [--round N]
