@@ -8,7 +8,7 @@
  */
 
 import { resolveProject, resetCircuitBreaker, getCircuitState, setExplicitProject, cmdProjectKind } from './x-build/core.mjs';
-import { cmdInit, cmdList, cmdStatus, cmdClose, cmdDashboard, interactiveInit, interactiveDashboard, cmdHandoffFull, cmdHandon } from './x-build/project.mjs';
+import { cmdInit, cmdList, cmdStatus, cmdClose, cmdDashboard, interactiveInit, interactiveDashboard, cmdHandoffFull, cmdHandoffMirror, cmdHandon } from './x-build/project.mjs';
 import { cmdPhase, cmdGate, cmdCheckpoint } from './x-build/phase.mjs';
 import { cmdTasks, cmdTaskCheck, cmdSteps, cmdRun, cmdRunStatus, cmdReviewGroup, cmdGroupCheck, interactiveTasksAdd, cmdDispatch } from './x-build/tasks.mjs';
 import { cmdLater } from './x-build/later.mjs';
@@ -108,7 +108,8 @@ switch (cmd) {
   case 'consensus':      cmdConsensus(args); break;
   case 'next':           await cmdNext(args); break;
   case 'handoff':
-    if (args.includes('--full')) { cmdHandoffFull(args); }
+    if (args.includes('--mirror-status') || args.includes('--mirror-skip') || args.some(a => a === '--mirror-done' || a.startsWith('--mirror-done='))) { cmdHandoffMirror(args); }
+    else if (args.includes('--full')) { cmdHandoffFull(args); }
     else { cmdHandoff(args); }
     break;
   case 'handon':         cmdHandon(args); break;

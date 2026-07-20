@@ -904,6 +904,19 @@ export function cmdHandoffFull(args) {
     writeFileSync(join(buildDir, 'HANDOFF.md'), _sessionStateToHandoffMd(state), 'utf8');
   } catch { /* best-effort mirror */ }
 
+  // Render the mem-mesh payload deterministically so the skill only has to hand
+  // it to `mcp__mem-mesh__add` — no hand-built JSON, no schema guessing.
+  const mirror = buildMemMeshMirror(state);
+  let mirrorWritten = false;
+  if (mirror) {
+    try {
+      writeFileSync(mirrorPath(), JSON.stringify(mirror, null, 2) + '\n', 'utf8');
+      mirrorWritten = true;
+    } catch (e) {
+      console.error(`⚠️  Could not write mem-mesh mirror payload: ${e.message}`);
+    }
+  }
+
   console.log(`✅ Session state saved: ${statePath}`);
   console.log(`   Branch: ${branch} (+${ahead} ahead)`);
   console.log(`   Commits today: ${commitsToday.length}`);
@@ -922,6 +935,224 @@ export function cmdHandoffFull(args) {
     const n = sessionLog.rejected.length + sessionLog.open_forks.length + sessionLog.constraints_prefs.length + sessionLog.attempts.length;
     console.log(`   Session log: ${n} detailed item(s) archived (retrieval-only; load with handon --log)`);
   }
+
+  // The mirror is only half-done until the leader actually calls mem-mesh.
+  // Say so loudly — a silent pending state is what let dual-write rot.
+  //
+  // EVERY branch prints exactly one line. An earlier version only spoke when the
+  // mirror was written or when there was no narrative at all, so a narrative that
+  // rendered no payload (too thin, or a failed write) produced silence — the very
+  // failure mode this feature exists to remove.
+  if (mirrorWritten) {
+    console.log('');
+    console.log(`🧠 mem-mesh mirror PENDING → ${mirrorPath()}`);
+    console.log(`   Pass that file's .payload verbatim to mcp__mem-mesh__add, then run:`);
+    console.log(`   xm build handoff --mirror-done <memory_id>`);
+    console.log(`   (no mem-mesh tools available → xm build handoff --mirror-skip; the file handoff above is complete on its own)`);
+  } else if (mirror) {
+    // Payload rendered but the file write failed — the warning went to stderr above.
+    console.log(`   mem-mesh mirror: NOT WRITTEN (payload rendered, file write failed — see warning above)`);
+  } else if (!narrative && !sessionLog) {
+    console.log(`   mem-mesh mirror: skipped (no narrative to mirror)`);
+  } else {
+    console.log(`   mem-mesh mirror: skipped (narrative too thin — under the ${MIRROR_MIN_CONTENT}-char minimum mem-mesh requires)`);
+  }
+}
+
+// ── mem-mesh mirror (dual-write) ─────────────────────────────────────
+//
+// The file half of a handoff is written by this CLI, so it always lands. The
+// mem-mesh half used to depend on the skill remembering to call
+// `mcp__mem-mesh__add` with a hand-built payload — a probabilistic step that
+// silently no-opped (zero mirrors ever landed). The CLI now renders the exact
+// payload to disk and tracks whether it was mirrored, so a skipped mirror is
+// visible state instead of an invisible gap.
+//
+// Payload shape follows the mem-mesh `add` tool schema exactly: `category`
+// (NOT `type`) and `content` of at least MIRROR_MIN_CONTENT chars.
+
+const MIRROR_MIN_CONTENT = 100;
+
+export function mirrorPath() {
+  return join(repoRoot(), '.xm', 'build', 'memmesh-mirror.json');
+}
+
+// mem-mesh project_id pattern: ^[a-zA-Z0-9_-]{1,100}$
+function _mirrorProjectId() {
+  const base = repoRoot().split('/').filter(Boolean).pop() || 'project';
+  return (base.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 100)) || 'project';
+}
+
+function _mirrorContent(state) {
+  const nar = state.narrative || {};
+  const sl = state.session_log || {};
+  const w = state.where || {};
+  const ctx = state.context || {};
+  const L = [];
+
+  L.push(nar.intent || ctx.current_focus || 'Session handoff');
+  L.push(`Stopped: ${state.why_stopped || '—'}`);
+  L.push('');
+
+  const sec = (title, items) => {
+    if (!items || !items.length) return;
+    L.push(`## ${title}`);
+    for (const it of items) L.push(`- ${it}`);
+    L.push('');
+  };
+
+  // Tier-2 detail when present, tier-1 narrative as fallback.
+  sec('Open questions & forks', sl.open_forks?.length ? sl.open_forks : nar.open_questions);
+  sec('Rejected (with reasoning)', sl.rejected?.length ? sl.rejected : nar.rejected_alternatives);
+  sec('Constraints & preferences', sl.constraints_prefs);
+  sec('What was tried & why', sl.attempts);
+  sec('Next session should know', nar.next_session_should_know);
+
+  let content = L.join('\n').trim();
+
+  // `add` rejects content under 100 chars. A thin session would fail schema
+  // validation, so top it up with the git facts rather than dropping the mirror.
+  if (content.length < MIRROR_MIN_CONTENT) {
+    const tail = [];
+    if (w.branch) tail.push(`Branch: ${w.branch}`);
+    if (state.what_done?.length) tail.push(`Commits this session: ${state.what_done.length}`);
+    if (w.last_commits?.length) tail.push(`Last commit: ${w.last_commits[0]}`);
+    if (ctx.test_status) tail.push(`Tests: ${ctx.test_status}`);
+    if (state.saved_at) tail.push(`Saved: ${state.saved_at}`);
+    if (tail.length) content = `${content}\n\n## Session facts\n${tail.map(t => `- ${t}`).join('\n')}`;
+  }
+
+  return content;
+}
+
+function _mirrorAnchors(state) {
+  const anchors = {};
+  try {
+    const commit = execSync('git rev-parse HEAD 2>/dev/null', { encoding: 'utf8' }).trim();
+    if (/^[0-9a-fA-F]{7,64}$/.test(commit)) anchors.commit_hash = commit;
+  } catch { /* not a git repo — anchors stay empty */ }
+  const branch = state.where?.branch;
+  if (branch) anchors.branch = branch;
+  const files = (state.context?.key_files || []).filter(f => f && !f.startsWith('/') && !f.includes('..')).slice(0, 20);
+  if (files.length) anchors.file_paths = files;
+  return Object.keys(anchors).length ? anchors : null;
+}
+
+// Build the mem-mesh `add` payload for a session state. Returns null when the
+// session carries no narrative worth mirroring — a bare `handoff --full` with
+// no `--narrative-json` has nothing mem-mesh can serve that the file cannot.
+export function buildMemMeshMirror(state) {
+  const nar = state.narrative;
+  const sl = state.session_log;
+  const hasNarrative = nar && (nar.intent || nar.open_questions?.length || nar.rejected_alternatives?.length || nar.next_session_should_know?.length);
+  const hasLog = sl && (sl.rejected?.length || sl.open_forks?.length || sl.constraints_prefs?.length || sl.attempts?.length);
+  if (!hasNarrative && !hasLog) return null;
+
+  const content = _mirrorContent(state);
+  if (content.length < MIRROR_MIN_CONTENT) return null;
+
+  const anchors = _mirrorAnchors(state);
+  return {
+    v: 1,
+    status: 'pending',
+    created_at: state.saved_at,
+    memory_id: null,
+    mirrored_at: null,
+    // Pass this object straight to mcp__mem-mesh__add — no reshaping.
+    payload: {
+      content,
+      project_id: _mirrorProjectId(),
+      category: 'idea',
+      tags: ['handoff', 'session-state'],
+      client: 'claude_code',
+      ...(anchors ? { anchors } : {}),
+    },
+  };
+}
+
+// Returns null only when there genuinely is no mirror. A file that exists but
+// cannot be read or parsed is NOT "no mirror" — reporting it as absent hides a
+// pending dual-write behind the same silence this feature removes (Lesson L6).
+export function readMirrorState() {
+  const p = mirrorPath();
+  if (!existsSync(p)) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(p, 'utf8'));
+  } catch (e) {
+    console.error(`⚠️  mem-mesh mirror file unreadable (${p}): ${e.message}`);
+    return { status: 'unreadable', error: e.message };
+  }
+  // Parsing is not enough: `null`, an array, or a bare string all parse fine and
+  // would become a phantom mirror with `payload: undefined`. Shape-check too.
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !parsed.payload) {
+    const why = 'not a mirror object (missing .payload)';
+    console.error(`⚠️  mem-mesh mirror file unreadable (${p}): ${why}`);
+    return { status: 'unreadable', error: why };
+  }
+  return parsed;
+}
+
+// `handoff --mirror-status` / `--mirror-done <memory_id>` / `--mirror-skip`
+export function cmdHandoffMirror(args) {
+  const p = mirrorPath();
+  const doneIdx = args.findIndex(a => a === '--mirror-done' || a.startsWith('--mirror-done='));
+
+  // File-only users never call --mirror-done, so a pending mirror would warn on
+  // every restore forever. Let them dismiss it without pretending it was saved.
+  if (args.includes('--mirror-skip')) {
+    const state = readMirrorState();
+    if (!state) { console.log('No mirror payload to skip.'); return; }
+    if (state.status === 'unreadable') {
+      console.error(`Refusing to overwrite an unreadable mirror file: ${p}`);
+      console.error(`Inspect or delete it manually, then re-run the handoff.`);
+      exitFail(1);
+    }
+    state.status = 'skipped';
+    state.skipped_at = new Date().toISOString();
+    writeFileSync(p, JSON.stringify(state, null, 2) + '\n', 'utf8');
+    console.log('🧠 mem-mesh mirror dismissed (file-only). The file handoff is unaffected.');
+    return;
+  }
+
+  if (doneIdx !== -1) {
+    const memoryId = args[doneIdx].startsWith('--mirror-done=')
+      ? args[doneIdx].slice('--mirror-done='.length)
+      : args[doneIdx + 1];
+    if (!memoryId || memoryId.startsWith('--')) {
+      console.error('Usage: xm build handoff --mirror-done <memory_id>');
+      exitFail(1);
+    }
+    const state = readMirrorState();
+    if (!state) {
+      console.error(`No mirror payload found at ${p}. Run: xm build handoff --full --narrative-json '...'`);
+      exitFail(1);
+    }
+    // Never rewrite a file we could not parse — that would destroy the only copy
+    // of a payload whose add may well have succeeded.
+    if (state.status === 'unreadable') {
+      console.error(`Refusing to overwrite an unreadable mirror file: ${p}`);
+      console.error(`The memory id ${memoryId} was NOT recorded. Inspect or delete the file, then re-run the handoff.`);
+      exitFail(1);
+    }
+    state.status = 'mirrored';
+    state.memory_id = memoryId;
+    state.mirrored_at = new Date().toISOString();
+    writeFileSync(p, JSON.stringify(state, null, 2) + '\n', 'utf8');
+    console.log(`🧠 mem-mesh mirror recorded: ${memoryId}`);
+    return;
+  }
+
+  // --mirror-status
+  const state = readMirrorState();
+  if (!state) { console.log(JSON.stringify({ status: 'none' })); return; }
+  console.log(JSON.stringify({
+    status: state.status,
+    memory_id: state.memory_id,
+    created_at: state.created_at,
+    mirrored_at: state.mirrored_at,
+    payload: state.payload,
+  }, null, 2));
 }
 
 // Render SESSION-STATE into a tool-neutral HANDOFF.md. Mirrors
@@ -979,6 +1210,34 @@ function _timeAgo(isoStr) {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+// Did the handoff that produced THIS state actually reach mem-mesh? A mirror
+// file from an older handoff says nothing about the current one, so match on
+// created_at before reporting.
+function _mirrorStatusFor(state) {
+  const m = readMirrorState();
+  if (!m) return { status: 'none' };
+
+  // Unreadable is its own outcome — not "none", and not silently pending.
+  if (m.status === 'unreadable') return { status: 'unreadable', error: m.error };
+
+  const matchesCurrent = !m.created_at || !state.saved_at || m.created_at === state.saved_at;
+  const status = m.status || 'pending';
+
+  // A PENDING mirror stays visible even when it predates the current state.
+  // Ageing it out to `stale` is how an unrepaired dual-write disappeared: a
+  // narrative-less handoff bumps saved_at without rewriting the mirror, and the
+  // warning silently stopped. Flag the age instead of hiding the failure — the
+  // payload is still on disk and still the only copy of that session.
+  if (status === 'pending') {
+    return { status: 'pending', created_at: m.created_at, from_earlier_handoff: !matchesCurrent };
+  }
+
+  // `mirrored`/other statuses genuinely go stale — that record describes a
+  // session state this one has moved past, and there is nothing left to repair.
+  if (!matchesCurrent) return { status: 'stale', memory_id: m.memory_id, created_at: m.created_at };
+  return { status, memory_id: m.memory_id, mirrored_at: m.mirrored_at };
+}
+
 export function cmdHandon(args) {
   const isJson = args.includes('--json');
   const statePath = join(repoRoot(), '.xm', 'build', 'SESSION-STATE.json');
@@ -1024,6 +1283,7 @@ export function cmdHandon(args) {
       }
     } catch {}
     state.since_handoff = { new_commits: newCommits.length, commits: newCommits.slice(0, 5) };
+    state.memmesh_mirror = _mirrorStatusFor(state);
     // Strip tier-2 detail from the injected payload — replace with a summary so
     // the restore stays high-signal and the log loads only on `handon --log`.
     if (state.session_log) {
@@ -1137,6 +1397,21 @@ export function cmdHandon(args) {
   // Why stopped
   if (state.why_stopped) {
     console.log(`\n  ${C.dim}💤 Stopped: ${state.why_stopped}${C.reset}`);
+  }
+
+  // mem-mesh mirror — surface a pending mirror so a silently skipped dual-write
+  // is visible on the next restore instead of vanishing.
+  {
+    const m = _mirrorStatusFor(state);
+    if (m.status === 'mirrored') {
+      console.log(`  ${C.dim}🧠 mem-mesh: mirrored (${m.memory_id})${C.reset}`);
+    } else if (m.status === 'pending') {
+      const from = m.from_earlier_handoff ? ' from an earlier handoff' : '';
+      console.log(`  ${C.yellow}🧠 mem-mesh: mirror PENDING${C.reset}${C.dim}${from} — never reached mem-mesh${C.reset}`);
+      console.log(`     ${C.dim}repair it, or run 'xm build handoff --mirror-skip' if you don't use mem-mesh${C.reset}`);
+    } else if (m.status === 'unreadable') {
+      console.log(`  ${C.red}🧠 mem-mesh: mirror file UNREADABLE${C.reset} ${C.dim}(${m.error})${C.reset}`);
+    }
   }
 
   // Since handoff

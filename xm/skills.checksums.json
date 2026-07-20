@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1784472189916,
+  "generatedAt": 1784511850076,
   "version": 1,
   "skills": [
     {
@@ -24,13 +24,13 @@
     },
     {
       "plugin": "handoff",
-      "sha256": "2f3c9809229a4b8949eace677c4bcf813c80811ad1c759619e09a9fe52c6a1b7",
-      "bytes": 10891
+      "sha256": "230b10eb699bd6c160c7632dc66ae28e5ee3ab786d1504c79759aa7d9138a28d",
+      "bytes": 17164
     },
     {
       "plugin": "handon",
-      "sha256": "2a27870936e36b148faa260dc88a45086691b0c0fad7adb06c2a384df5d3ab95",
-      "bytes": 8849
+      "sha256": "a53f922bac93096de648112c9ad4dc06973df73b96de350cc473e652ab217326",
+      "bytes": 12796
     },
     {
       "plugin": "humanize",
