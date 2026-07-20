@@ -262,3 +262,35 @@ describe('xm inbox list — never attempts network pin reconciliation (t11)', ()
     }
   });
 });
+
+describe('xm inbox materialize — memory body to local inbox only', () => {
+  test('materializes once, is idempotent, and rejects a wrong target without writes', () => {
+    const home = mkdtempSync(join(tmpdir(), 'x-inbox-cli-home-'));
+    const projectDir = mkdtempSync(join(tmpdir(), 'x-inbox-cli-project-'));
+    try {
+      mkdirSync(join(projectDir, '.mem-mesh'), { recursive: true });
+      writeFileSync(join(projectDir, '.mem-mesh', 'project-id'), 'receiver\n');
+      const payload = {
+        id: 'memory-item', from_project: 'sender', to_project: 'receiver',
+        created_at: '2026-07-20T00:00:00.000Z', status: 'captured', title: 'report', why: '',
+        repro: { command: 'cmd', output: 'out', truncated: false }, anchors: { to_files: [] },
+        fix_direction: 'fix', mem_mesh: {},
+      };
+      const first = runCli(['materialize', '--content', JSON.stringify(payload), '--memory-id', 'mem-1', '--json'], { home, cwd: projectDir });
+      expect(first.status).toBe(0);
+      expect(JSON.parse(first.stdout).created).toBe(true);
+      const second = runCli(['materialize', '--content', JSON.stringify(payload), '--json'], { home, cwd: projectDir });
+      expect(second.status).toBe(0);
+      expect(JSON.parse(second.stdout).created).toBe(false);
+      expect(JSON.parse(readFileSync(join(projectDir, '.xm', 'inbox', 'memory-item.json'), 'utf8')).status).toBe('delivered');
+
+      const wrong = runCli(['materialize', '--content', JSON.stringify({ ...payload, id: 'wrong-item', to_project: 'other' }), '--json'], { home, cwd: projectDir });
+      expect(wrong.status).toBe(1);
+      expect(JSON.parse(wrong.stdout).reason).toBe('rejected');
+      expect(existsSync(join(projectDir, '.xm', 'inbox', 'wrong-item.json'))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+});

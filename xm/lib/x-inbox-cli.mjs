@@ -14,6 +14,7 @@
  *   take <id>
  *   drop <id>
  *   record <id> [--pin-id <id>] [--memory-id <id>] [--scope outbox|inbox] [--json]
+ *   materialize --content <memory-json> [--memory-id <id>] [--pin-id <id>] [--json]
  *
  * NO NETWORK CALLS ANYWHERE IN THIS FILE (t11 invariant). This process is a
  * plain `node` subprocess — it shares neither Claude Code's MCP session nor
@@ -38,6 +39,7 @@ import { join } from 'node:path';
 import { toss, describeCapture } from './x-inbox/toss.mjs';
 import {
   list as listLedger, take, drop, InboxItemNotFoundError,
+  materializeMemory, InboxMaterializationError,
 } from './x-inbox/inbox.mjs';
 import { recordMemMesh, LedgerItemNotFoundError } from './x-inbox/ledger.mjs';
 import { archiveExpired } from './x-inbox/retention.mjs';
@@ -47,6 +49,7 @@ import { archiveExpired } from './x-inbox/retention.mjs';
 const KNOWN_FLAGS = new Set([
   '--command', '--output', '--output-file', '--fix', '--why', '--to-files',
   '--from-commit', '--pin-id', '--memory-id', '--scope', '--json', '--help',
+  '--content',
 ]);
 
 /**
@@ -333,6 +336,51 @@ async function recordCmd(args) {
   }
 }
 
+function materializeUsage() {
+  return 'Usage: xm inbox materialize --content <memory-json> [--memory-id <id>] [--pin-id <id>] [--json]\n';
+}
+
+/**
+ * Persist a memory body the SKILL already fetched through MCP. This remains
+ * disk-only: it neither searches mem-mesh nor writes outside this cwd's
+ * `.xm/inbox`. Duplicate ids preserve the local item/status unchanged.
+ */
+async function materializeCmd(args) {
+  const content = getFlag(args, '--content');
+  const memoryId = getFlag(args, '--memory-id');
+  const pinId = getFlag(args, '--pin-id');
+  const json = hasFlag(args, '--json');
+  if (!nonEmptyStr(content)) {
+    process.stderr.write(materializeUsage());
+    return 2;
+  }
+  if (memoryId === true || pinId === true) {
+    process.stderr.write('xm inbox materialize: --memory-id and --pin-id require values\n');
+    return 2;
+  }
+
+  try {
+    const result = materializeMemory(inboxDirFor(process.cwd()), content, {
+      cwd: process.cwd(),
+      ...(typeof memoryId === 'string' ? { memoryId } : {}),
+      ...(typeof pinId === 'string' ? { pinId } : {}),
+    });
+    if (json) {
+      process.stdout.write(`${JSON.stringify({ ok: true, created: result.created, item: result.item }, null, 2)}\n`);
+    } else {
+      process.stdout.write(`${result.created ? 'materialized' : 'already materialized'}: ${result.item.id}\n`);
+    }
+    return 0;
+  } catch (err) {
+    if (err instanceof InboxMaterializationError) {
+      if (json) process.stdout.write(`${JSON.stringify({ ok: false, reason: 'rejected', message: err.message }, null, 2)}\n`);
+      else process.stderr.write(`xm inbox materialize: ${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
+}
+
 function helpCmd() {
   process.stdout.write(`xm toss / xm inbox — cross-project handoff (PRD cross-project-handoff)
 
@@ -343,6 +391,7 @@ Usage:
   xm inbox take <id>
   xm inbox drop <id>
   xm inbox record <id> --pin-id <id> [--memory-id <id>] [--scope outbox|inbox] [--json]
+  xm inbox materialize --content <memory-json> [--memory-id <id>] [--pin-id <id>] [--json]
 
 This CLI never calls mem-mesh itself — \`toss --json\` prints the MCP call
 arguments for the skill to use, and \`record\` writes the resulting ids back.
@@ -360,6 +409,7 @@ switch (sub) {
   case 'take': code = await takeCmd(rest); break;
   case 'drop': code = await dropCmd(rest); break;
   case 'record': code = await recordCmd(rest); break;
+  case 'materialize': code = await materializeCmd(rest); break;
   case 'help': case '--help': case '-h': code = helpCmd(); break;
   default:
     process.stderr.write(`Unknown subcommand: ${sub}\nRun: xm inbox help\n`);

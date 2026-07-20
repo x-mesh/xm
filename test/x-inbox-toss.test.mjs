@@ -161,8 +161,17 @@ describe('buildMemMeshPayload — pure MCP call-argument construction (no I/O, t
     expect(payload.add.project_id).toBe('git-kit');
     expect(payload.add.category).toBe('bug');
     expect(payload.add.tags).toEqual([INBOX_PIN_TAG]);
-    // Round-trip fidelity: the memory body is the full item as JSON.
-    expect(JSON.parse(payload.add.content)).toEqual(item);
+    // The memory body is the full item except the receiver-facing identity.
+    expect(JSON.parse(payload.add.content)).toEqual({ ...item, to_project: 'git-kit' });
+  });
+
+  test('normalizes only the transport copy target when registry and mem-mesh identities differ', () => {
+    const item = captureTossItem(baseInput({ toProject: 'registry-aic' }));
+    const payload = buildMemMeshPayload(item, 'mesh-aic-worktree');
+
+    expect(item.to_project).toBe('registry-aic');
+    expect(JSON.parse(payload.add.content).to_project).toBe('mesh-aic-worktree');
+    expect(payload.add.project_id).toBe('mesh-aic-worktree');
   });
 
   test('add args include anchors (commit_hash + file_paths) when from_commit is present', () => {

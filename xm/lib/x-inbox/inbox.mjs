@@ -23,7 +23,10 @@
  * touching this file.
  */
 
-import { readLedger, writeLedger, reconcile, RECONCILE_ACTIONS } from './ledger.mjs';
+import {
+  readLedger, writeLedger, reconcile, RECONCILE_ACTIONS, validateItem,
+} from './ledger.mjs';
+import { resolveMemMeshProjectId } from './target.mjs';
 
 /**
  * Sort rank for `list()` — unresolved items first, then actioned, then
@@ -42,6 +45,67 @@ export class InboxItemNotFoundError extends Error {
     this.name = 'InboxItemNotFoundError';
     this.id = id;
   }
+}
+
+/** Thrown when a mem-mesh memory body cannot safely become a local inbox item. */
+export class InboxMaterializationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'InboxMaterializationError';
+  }
+}
+
+/**
+ * Materialize one durable mem-mesh memory body into this project's inbox.
+ *
+ * The caller supplies the memory's `content` (the JSON body produced by
+ * `buildMemMeshPayload()`), because this module intentionally has no MCP
+ * client. The receiving skill obtains that content through mem-mesh and
+ * passes it here. The transport payload normalizes `to_project` to the
+ * target's mem-mesh project id, so strict equality with this cwd's identity
+ * prevents one project's memory search result from entering another ledger.
+ *
+ * Existing ids are deliberately left byte-for-byte untouched. In particular,
+ * a repeated memory search must not reset a locally `actioned` or `dismissed`
+ * item back to `delivered`. This makes materialization idempotent while the
+ * local ledger remains authoritative for receiving-side status.
+ *
+ * @param {string} dir receiving `.xm/inbox` directory
+ * @param {string|object} memoryContent JSON memory content or an already-parsed item
+ * @param {{ cwd?: string, projectId?: string, memoryId?: string, pinId?: string }} [opts]
+ * @returns {{ item: object, created: boolean }}
+ */
+export function materializeMemory(dir, memoryContent, opts = {}) {
+  let payload;
+  try {
+    payload = typeof memoryContent === 'string' ? JSON.parse(memoryContent) : memoryContent;
+  } catch {
+    throw new InboxMaterializationError('memory content is not valid JSON');
+  }
+
+  try {
+    validateItem(payload);
+  } catch (err) {
+    throw new InboxMaterializationError(`memory content is not a valid inbox item: ${err.message}`);
+  }
+
+  const cwd = opts.cwd ?? process.cwd();
+  const receiverProject = opts.projectId ?? resolveMemMeshProjectId(cwd, { allowEnvOverride: true });
+  if (payload.to_project !== receiverProject) {
+    throw new InboxMaterializationError(
+      `memory item targets ${JSON.stringify(payload.to_project)}, not receiving project ${JSON.stringify(receiverProject)}`,
+    );
+  }
+
+  const existing = readLedger(dir).find((item) => item.id === payload.id);
+  if (existing) return { item: existing, created: false };
+
+  const mem_mesh = { ...payload.mem_mesh };
+  if (typeof opts.memoryId === 'string' && opts.memoryId.length > 0) mem_mesh.memory_id = opts.memoryId;
+  if (typeof opts.pinId === 'string' && opts.pinId.length > 0) mem_mesh.pin_id = opts.pinId;
+  const item = { ...payload, status: 'delivered', mem_mesh };
+  writeLedger(dir, item, { cwd });
+  return { item, created: true };
 }
 
 function findItemOrThrow(dir, id) {
