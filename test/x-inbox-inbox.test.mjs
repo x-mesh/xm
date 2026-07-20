@@ -19,6 +19,8 @@ import {
   drop,
   reconcileItemPin,
   reconcileAllPins,
+  materializeMemory,
+  InboxMaterializationError,
 } from '../xm/lib/x-inbox/inbox.mjs';
 
 function makeItem(overrides = {}) {
@@ -155,6 +157,35 @@ describe('drop — status -> dismissed', () => {
   test('does not exist at all in an empty dir — throws, no directory created', () => {
     expect(existsSync(dir)).toBe(false);
     expect(() => drop(dir, 'anything', { cwd: root })).toThrow(InboxItemNotFoundError);
+    expect(existsSync(dir)).toBe(false);
+  });
+});
+
+describe('materializeMemory — durable mem-mesh body to owned inbox ledger', () => {
+  test('creates a delivered inbox item once and preserves local status on repeat', () => {
+    const payload = makeItem({ id: 'memory-item', to_project: 'receiver', status: 'captured', mem_mesh: {} });
+    const first = materializeMemory(dir, JSON.stringify(payload), {
+      cwd: root, projectId: 'receiver', memoryId: 'memory-1', pinId: 'pin-1',
+    });
+    expect(first.created).toBe(true);
+    expect(first.item.status).toBe('delivered');
+    expect(first.item.mem_mesh).toEqual({ memory_id: 'memory-1', pin_id: 'pin-1' });
+
+    take(dir, 'memory-item', { cwd: root });
+    const repeat = materializeMemory(dir, JSON.stringify(payload), {
+      cwd: root, projectId: 'receiver', memoryId: 'memory-1', pinId: 'pin-1',
+    });
+    expect(repeat.created).toBe(false);
+    expect(repeat.item.status).toBe('actioned');
+    expect(readLedger(dir)).toHaveLength(1);
+  });
+
+  test('rejects malformed or wrong-project payload without creating files', () => {
+    expect(() => materializeMemory(dir, '{bad json', { cwd: root, projectId: 'receiver' }))
+      .toThrow(InboxMaterializationError);
+    expect(() => materializeMemory(dir, JSON.stringify(makeItem({ to_project: 'other-project' })), {
+      cwd: root, projectId: 'receiver',
+    })).toThrow(InboxMaterializationError);
     expect(existsSync(dir)).toBe(false);
   });
 });

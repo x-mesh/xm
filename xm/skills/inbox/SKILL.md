@@ -49,18 +49,28 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 
 ## Core Process
 
-1. **`xm inbox list`** — always the first move. Prints unresolved items first, then
+1. **먼저 mem-mesh에서 수신 항목을 materialize합니다.** MCP의 memory 검색에서
+   `project_id=<현재 프로젝트의 mem-mesh id>`, `tags=["inbox"]`로 조회합니다. 각
+   결과의 `content`는 toss가 보낸 JSON 본문이므로, 각 결과마다 아래 명령을 실행합니다.
+   ```bash
+   xm inbox materialize --content '<memory content JSON>' --memory-id <memory id> --json
+   ```
+   pin id가 검색 결과에 있으면 `--pin-id <pin id>`도 전달합니다. 이 CLI는 네트워크를
+   호출하지 않고 **현재 cwd의** `.xm/inbox/<id>.json`에만 기록합니다. malformed JSON이나
+   `to_project`가 현재 프로젝트와 다른 항목은 거부하고, 이미 같은 id가 있으면 로컬 상태를
+   바꾸지 않습니다. MCP 검색을 할 수 없으면 그 사실을 밝히고 기존 로컬 원장만 조회합니다.
+2. **`xm inbox list`** — materialize 뒤에 실행합니다. Prints unresolved items first, then
    actioned, then dismissed; add `--json` when you need to act on fields programmatically.
-2. **Address items by `id` only**, never by a remembered list position — re-run `list`
+3. **Address items by `id` only**, never by a remembered list position — re-run `list`
    if unsure, since the sort order and the opportunistic archive sweep can shift between
    calls.
-3. **`xm inbox take <id>`** when starting work on one: relay the full returned body
+4. **`xm inbox take <id>`** when starting work on one: relay the full returned body
    (why / repro command+output / fix direction) to the user, or use it directly as the
    starting point for a fix — don't re-derive it from scratch.
-4. **`xm inbox drop <id>`** when it doesn't need action. If it's ambiguous whether an
+5. **`xm inbox drop <id>`** when it doesn't need action. If it's ambiguous whether an
    item is relevant, confirm with the user before dropping — treat the drop as final in
    conversation even though dismissed items remain recoverable in the archive on disk.
-5. **Re-notify a dead pin yourself, when relevant.** For any `delivered`/`actioned` item
+6. **Re-notify a dead pin yourself, when relevant.** For any `delivered`/`actioned` item
    whose `mem_mesh.pin_id` is set (visible via `xm inbox list --json`):
    - Call `mcp__mem-mesh__pin_get(pin_id)` yourself.
    - If it comes back not-found, OR `status: "completed"` (mem-mesh's 7-day auto-close —

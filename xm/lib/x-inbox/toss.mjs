@@ -230,10 +230,12 @@ export function captureTossItem(input) {
  * expiring notification) and `mcp__mem-mesh__add` (the durable body). Pure —
  * no I/O, never throws, does not itself call anything.
  *
- * `add`'s `content` is the full item as JSON so the receiving side can
- * reconstruct it losslessly; t7/t5 have not landed a parsing contract yet, so
- * round-trip fidelity is the safest default over inventing a markdown shape
- * that might not match.
+ * `add`'s `content` is the full item as JSON. The outbox's `to_project` is a
+ * registry id chosen by the sender, while the receiving side identifies
+ * itself by mem-mesh project id; those can differ. The transport copy
+ * therefore normalizes only `to_project` to `memMeshProjectId`, preserving
+ * the sender's local outbox record unchanged while making receiver ownership
+ * validation unambiguous.
  *
  * @param {object} item a ledger item from `captureTossItem()`
  * @param {string} memMeshProjectId the TARGET project's mem-mesh identity
@@ -246,6 +248,7 @@ export function captureTossItem(input) {
  */
 export function buildMemMeshPayload(item, memMeshProjectId, opts = {}) {
   const { importance = DEFAULT_PIN_IMPORTANCE } = opts;
+  const transportItem = { ...item, to_project: memMeshProjectId };
 
   return {
     pin_add: {
@@ -255,7 +258,7 @@ export function buildMemMeshPayload(item, memMeshProjectId, opts = {}) {
       importance,
     },
     add: {
-      content: JSON.stringify(item),
+      content: JSON.stringify(transportItem),
       project_id: memMeshProjectId,
       category: 'bug',
       tags: [INBOX_PIN_TAG],
