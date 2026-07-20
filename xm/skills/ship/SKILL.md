@@ -58,25 +58,21 @@ Universal (both modes) — these read as machine-generated in any register:
 Developer mode: terse and direct — lead with the result; state findings/actions without a 권고형 결말 pile-up ("~해야 한다" sentence after sentence).
 Easy/normal mode: accessible Korean is the goal — polite guidance ("~해 보세요"), one line of context for non-experts. Keep commands, flags, paths, and proper nouns in English; on first use write a domain term as Korean(original), e.g. 결론(verdict). Still apply the universal rules; accessible ≠ padded or vague.
 
-## CLI Auto-Resolve
+## CLI Invocation
 
-Define `XMB` once at session start. Try local repo, then plugin cache, then fall back to plain-git mode. Never hardcode a single path.
+> **⚠ Call `xm build <command>` directly. Claude Code's Bash tool starts a fresh shell on every invocation — shell functions (`resolve_xmb()`) and variables (`XMB=…`) defined in one call do NOT persist to the next, so the following call fails with `command not found`. Never define a helper across calls; always use the dispatcher.**
+>
+> **Fallback** (only when `xm` is not in PATH — rare; `${CLAUDE_PLUGIN_ROOT}` is NOT exported to Bash subprocesses, so don't rely on it bare):
+> ```bash
+> XMB_CLI=$(ls -d ~/.claude/plugins/cache/xm/{build,xm}/*/lib/x-build-cli.mjs 2>/dev/null | sort -V | tail -1)
+> node "$XMB_CLI" release detect
+> ```
+>
+> **Forbidden:** `XMB="node …"; $XMB release detect` — zsh expands `$XMB` as a SINGLE token, so it looks for a command literally named `node /path/x-build-cli.mjs` and fails. A path-only variable plus `node "$XMB_CLI"` is the working form.
 
-```bash
-resolve_xmb() {
-  if [ -f "x-build/lib/x-build-cli.mjs" ]; then
-    echo "node x-build/lib/x-build-cli.mjs"; return
-  fi
-  local cached
-  cached=$(ls -t ~/.claude/plugins/cache/xm/x-build/*/lib/x-build-cli.mjs 2>/dev/null | head -1)
-  if [ -n "$cached" ]; then echo "node $cached"; return; fi
-  echo ""  # signal plain-git mode
-}
-XMB=$(resolve_xmb)
-MODE=${XMB:+xmb}; MODE=${MODE:-plain-git}
-```
+**Mode detection (once, at the first CLI call):** run `xm build release detect`. If it succeeds, you are in **xmb mode** — use `xm build …` for every step below. If it fails (`command not found`, `Cannot find module`, or the fallback above also finds nothing), you are in **plain-git mode**: skip every `xm build` call and use the **Plain-Git Fallback** procedure (bottom of file).
 
-If `MODE=plain-git`, skip all `$XMB` calls and use the **Plain-Git Fallback** procedure (bottom of file).
+Do NOT cache this in a shell variable — it will not survive to the next Bash call. Carry the decision in your own reasoning for the rest of the run.
 
 ## Project Mode Detection
 
@@ -139,12 +135,9 @@ Always start here. Run all read-only probes in parallel. Reuse results downstrea
   echo "=== version-source ==="; ls package.json Cargo.toml pyproject.toml VERSION 2>/dev/null || echo "(git-tag only)"
   # Does CI fire on a TAG? If so, a pushed commit without a tag ships nothing.
   echo "=== ci-tag-trigger ==="; grep -rlE '^\s*tags:' .github/workflows/ 2>/dev/null || echo "(none)"
-  if [ -n "$XMB" ]; then
-    echo "=== detect ==="; $XMB release detect
-    echo "=== diff-report ==="; $XMB release diff-report 2>/dev/null || true
-  else
-    echo "=== diff-stat ==="; git diff --stat HEAD~5..HEAD 2>/dev/null
-  fi
+  echo "=== detect ==="; xm build release detect 2>/dev/null || echo "(plain-git mode — xm build unavailable)"
+  echo "=== diff-report ==="; xm build release diff-report 2>/dev/null || true
+  echo "=== diff-stat ==="; git diff --stat HEAD~5..HEAD 2>/dev/null
 } 2>&1
 ```
 
@@ -188,7 +181,7 @@ Skip the entire gate (including blocker checks for test/review) in `auto` mode.
 If user explicitly requested test/review gates in their prompt:
 
 ```bash
-$XMB release test [--command "bun test"]   # only if requested
+xm build release test [--command "bun test"]   # only if requested
 ```
 
 For review gate, invoke x-review with refs already collected in Step 0:
@@ -224,13 +217,13 @@ can always ask for a squash, but cannot un-squash after a push.
 
 For grouped squash:
 ```bash
-$XMB release squash --since <ref>
+xm build release squash --since <ref>
 # Then re-commit in groups (LLM stages files per group)
 ```
 
 For single squash:
 ```bash
-$XMB release squash
+xm build release squash
 ```
 
 Plain-git: see fallback section.
@@ -243,8 +236,8 @@ Plain-git: see fallback section.
 
 | Mode | Command |
 |------|---------|
-| marketplace | `$XMB release bump --<type> --plugins <list>` |
-| standalone (with CLI) | `$XMB release bump --<type> --standalone` |
+| marketplace | `xm build release bump --<type> --plugins <list>` |
+| standalone (with CLI) | `xm build release bump --<type> --standalone` |
 | plain-git | edit `package.json`/`VERSION` directly |
 
 Bump type rules:
@@ -263,7 +256,7 @@ Bump type rules:
 Inline the README check here — no separate step. If plan said README update needed, stage README changes alongside the version bump.
 
 ```bash
-$XMB release commit --msg "release: ..." --tag v<version> --push
+xm build release commit --msg "release: ..." --tag v<version> --push
 ```
 
 `--tag` creates an ANNOTATED tag and `--push` sends it with `--follow-tags`. Omit `--tag` only for
@@ -311,7 +304,7 @@ Trace is fire-and-forget. Don't block the success message.
 
 ```bash
 # run_in_background: true
-$XMB release trace --from {old} --to {new} --bump {type} \
+xm build release trace --from {old} --to {new} --bump {type} \
   --test-passed {true|false} --review-verdict {LGTM|null}
 ```
 
@@ -342,7 +335,7 @@ Step 0 + Step 2 only. No bump, no push.
 
 ## Plain-Git Fallback (no x-build CLI available)
 
-When `MODE=plain-git`, replace CLI calls with:
+When mode detection (see CLI Invocation) landed on plain-git, replace CLI calls with:
 
 | Step | Plain-git equivalent |
 |------|---------------------|
@@ -379,7 +372,8 @@ bump". Never `git add -A`: it sweeps `.xm/` artifacts and unrelated WIP into the
 | "standalone project — can't ship without the CLI" | The Plain-Git Fallback delivers the same result. A missing CLI is not a blocker. |
 | "re-running detect is safer" | Same SHA = same result. Reuse the Step 0 output; re-running just wastes a turn. |
 | "confirming each step is safer" | Five step-confirms = five wasted turns. One plan preview + a single approval is safer — the full impact is visible at once. |
-| "guess the CLI path and try it" | resolve_xmb() auto-detects it. Guessing then failing is the worst pattern. |
+| "guess the CLI path and try it" | `xm build …` resolves the path internally. Guessing then failing is the worst pattern. |
+| "I'll define `XMB` once and reuse it across steps" | The Bash tool starts a fresh shell every call — the variable is gone by the next step, and `XMB="node …"` breaks in zsh anyway (single-token expansion). Type `xm build …` each time. |
 | "README update is a separate step" | Same transaction as the commit. Inline it in Step 4. |
 | "`.xm/` is here, so this is a marketplace repo" | `.xm/` is the data dir every xm tool writes. Only `.claude-plugin/marketplace.json` means marketplace. |
 | "no package.json → nothing to bump" | Check Cargo.toml / pyproject.toml / the tag. A version file is one of four possibilities, not a precondition. |
@@ -395,7 +389,7 @@ bump". Never `git add -A`: it sweeps `.xm/` artifacts and unrelated WIP into the
 - Entering Step 1 without Step 0 results → acting on missing information
 - Running the same git command 2+ times → cached result not reused
 - AskUserQuestion 3+ times (interactive mode) → decision gates scattered instead of batched
-- Hardcoding the CLI path then failing → resolve_xmb() not used
+- Hardcoding the CLI path, or defining a `XMB` variable / shell helper to hold it → call `xm build …` directly; a fresh shell per Bash call discards both
 - Waiting synchronously on trace → blocking on observability
 
 ## Verification
