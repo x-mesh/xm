@@ -54,6 +54,25 @@ function runCli(args, { home, cwd }) {
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
+describe('xm inbox help', () => {
+  test('documents the separate start and completion commands', () => {
+    const home = mkdtempSync(join(tmpdir(), 'x-inbox-cli-home-'));
+    const projectDir = mkdtempSync(join(tmpdir(), 'x-inbox-cli-project-'));
+    try {
+      const { status, stdout, stderr } = runCli(['help'], { home, cwd: projectDir });
+
+      expect(status).toBe(0);
+      expect(stderr).toBe('');
+      expect(stdout).toContain('xm inbox take <id>');
+      expect(stdout).toContain('xm inbox resolve <id>');
+      expect(stdout).toContain('alias: done');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('xm toss --json — capture only, zero network, prints MCP payload', () => {
   test('writes the outbox with an empty mem_mesh and prints pin_add/add args', () => {
     const home = mkdtempSync(join(tmpdir(), 'x-inbox-cli-home-'));
@@ -256,6 +275,37 @@ describe('xm inbox list — never attempts network pin reconciliation (t11)', ()
       expect(items[0].id).toBe('toss-item');
       // The pin_id is exactly what was on disk — list never queried or mutated it.
       expect(items[0].mem_mesh.pin_id).toBe('pin-nonexistent');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('xm inbox take / resolve — start and completion are separate', () => {
+  test('take writes in_progress; resolve writes terminal resolved status exposed by list --json', () => {
+    const home = mkdtempSync(join(tmpdir(), 'x-inbox-cli-home-'));
+    const projectDir = mkdtempSync(join(tmpdir(), 'x-inbox-cli-project-'));
+    try {
+      const inboxDir = join(projectDir, '.xm', 'inbox');
+      mkdirSync(inboxDir, { recursive: true });
+      const itemPath = join(inboxDir, 'toss-state.json');
+      writeFileSync(itemPath, JSON.stringify({
+        id: 'toss-state', from_project: 'sender', to_project: 'receiver',
+        created_at: '2026-07-21T00:00:00.000Z', status: 'delivered', title: 'state split', why: '',
+        repro: { command: 'cmd', output: 'out', truncated: false }, anchors: { to_files: [] },
+        fix_direction: 'fix', mem_mesh: {},
+      }, null, 2));
+
+      expect(runCli(['take', 'toss-state'], { home, cwd: projectDir }).status).toBe(0);
+      expect(JSON.parse(readFileSync(itemPath, 'utf8')).status).toBe('in_progress');
+
+      const resolved = runCli(['done', 'toss-state', '--json'], { home, cwd: projectDir });
+      expect(resolved.status).toBe(0);
+      expect(JSON.parse(resolved.stdout).item.status).toBe('resolved');
+      const listed = JSON.parse(runCli(['list', '--json'], { home, cwd: projectDir }).stdout);
+      expect(listed.items[0].status).toBe('resolved');
+      expect(typeof listed.items[0].resolved_at).toBe('string');
     } finally {
       rmSync(home, { recursive: true, force: true });
       rmSync(projectDir, { recursive: true, force: true });

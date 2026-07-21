@@ -229,6 +229,8 @@ describe('recordMemMesh — write-back for skill-obtained pin_id/memory_id (t11)
 
 describe('reconcile — 5 state-consistency rules (PRD §8)', () => {
   const unresolved = { status: 'delivered' };
+  const inProgress = { status: 'in_progress' };
+  const resolved = { status: 'resolved' };
   const dismissed = { status: 'dismissed' };
 
   test('rule 1: pin present + ledger present -> none (normal)', () => {
@@ -273,6 +275,20 @@ describe('reconcile — 5 state-consistency rules (PRD §8)', () => {
     });
   });
 
+  test('pin absent + ledger explicitly resolved -> none, not a renotify', () => {
+    expect(reconcile(null, resolved)).toEqual({
+      action: RECONCILE_ACTIONS.NONE,
+      reason: 'resolved',
+    });
+  });
+
+  test('pin absent + ledger in progress -> renotify', () => {
+    expect(reconcile(null, inProgress)).toEqual({
+      action: RECONCILE_ACTIONS.RENOTIFY,
+      reason: 'pin_expired',
+    });
+  });
+
   test('pin present (in_progress) + ledger dismissed -> none (both terminal)', () => {
     expect(reconcile({ status: 'in_progress' }, dismissed)).toEqual({
       action: RECONCILE_ACTIONS.NONE,
@@ -287,9 +303,16 @@ describe('reconcile — 5 state-consistency rules (PRD §8)', () => {
     });
   });
 
+  test('pin completed + ledger resolved -> none, not a spurious sync_status', () => {
+    expect(reconcile({ status: 'completed' }, resolved)).toEqual({
+      action: RECONCILE_ACTIONS.NONE,
+      reason: 'normal',
+    });
+  });
+
   test('is a total function over the full pin x ledger truth table (no unhandled combo)', () => {
     const pinStates = [null, { status: 'in_progress' }, { status: 'completed' }];
-    const ledgerStates = [null, unresolved, dismissed];
+    const ledgerStates = [null, unresolved, inProgress, resolved, dismissed];
     for (const pin of pinStates) {
       for (const ledger of ledgerStates) {
         const result = reconcile(pin, ledger);
@@ -358,7 +381,7 @@ describe('recordMemMesh — capture→delivered promotion (review-fix)', () => {
     }
   });
 
-  test('an already actioned/dismissed item is never re-opened by a late id', () => {
+  test('an already progressed/terminal item is never re-opened by a late id', () => {
     const dir = mkdtempSync(join(tmpdir(), 'x-inbox-promote4-'));
     try {
       const item = seed(dir, { status: 'dismissed' });

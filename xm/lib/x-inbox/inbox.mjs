@@ -1,11 +1,11 @@
 /**
- * x-inbox inbox operations — list/take/drop over a ledger dir, plus pin
+ * x-inbox inbox operations — list/take/resolve/drop over a ledger dir, plus pin
  * re-notification (cross-project-handoff R7, R9).
  *
  * This module is the receiving side's interaction surface: a user (or the
  * `/xm:inbox` skill, wired separately in t9) lists what landed in
- * `.xm/inbox/`, takes one to start working on it, or drops one they don't
- * want. All three only ever touch the ledger's `status` field via
+ * `.xm/inbox/`, takes one to start working on it, resolves completed work,
+ * or drops one they don't want. These transitions use
  * `ledger.mjs`'s `readLedger`/`writeLedger` — this module owns no I/O of its
  * own beyond that.
  *
@@ -29,14 +29,21 @@ import {
 import { resolveMemMeshProjectId } from './target.mjs';
 
 /**
- * Sort rank for `list()` — unresolved items first, then actioned, then
- * dismissed last. Ties keep `readLedger`'s existing created_at-ascending
+ * Sort rank for `list()` — new work first, then work in progress, then
+ * terminal items. Ties keep `readLedger`'s existing created_at-ascending
  * order (Array#sort is a stable sort in both V8 and JavaScriptCore/Bun).
  * An item somehow carrying a status outside `ledger.mjs`'s `STATUSES` (only
  * possible via a hand-edited or corrupted-but-parseable file, since
  * `readLedger` does not itself call `validateItem`) sorts last, defensively.
  */
-const STATUS_RANK = Object.freeze({ delivered: 0, actioned: 1, dismissed: 2 });
+const STATUS_RANK = Object.freeze({
+  captured: 0,
+  delivered: 0,
+  in_progress: 1,
+  actioned: 1,
+  resolved: 2,
+  dismissed: 3,
+});
 
 /** Thrown by take()/drop()/reconcileItemPin() when `id` matches no ledger item. */
 export class InboxItemNotFoundError extends Error {
@@ -66,7 +73,7 @@ export class InboxMaterializationError extends Error {
  * prevents one project's memory search result from entering another ledger.
  *
  * Existing ids are deliberately left byte-for-byte untouched. In particular,
- * a repeated memory search must not reset a locally `actioned` or `dismissed`
+ * a repeated memory search must not reset a locally progressed or terminal
  * item back to `delivered`. This makes materialization idempotent while the
  * local ledger remains authoritative for receiving-side status.
  *
@@ -123,7 +130,7 @@ function findItemOrThrow(dir, id) {
  * once anything else in the dir changes; `id` cannot.
  *
  * @param {string} dir
- * @returns {object[]} full ledger items, sorted delivered < actioned < dismissed
+ * @returns {object[]} full ledger items, sorted new < in-progress < terminal
  */
 export function list(dir) {
   const items = readLedger(dir);
@@ -135,7 +142,7 @@ export function list(dir) {
 }
 
 /**
- * Mark an item `actioned` — the caller has started working on it. Returns
+ * Mark an item `in_progress` — the caller has started working on it. Returns
  * the full updated item (why/repro/fix_direction included) so the caller can
  * act on its content; this function does no promotion of its own (see
  * module header). Throws `InboxItemNotFoundError` and writes nothing when
@@ -148,7 +155,31 @@ export function list(dir) {
  */
 export function take(dir, id, opts = {}) {
   const item = findItemOrThrow(dir, id);
-  const updated = { ...item, status: 'actioned' };
+  const { resolved_at: _resolvedAt, ...openItem } = item;
+  const updated = {
+    ...openItem,
+    status: 'in_progress',
+    updated_at: new Date(opts.now ?? Date.now()).toISOString(),
+  };
+  writeLedger(dir, updated, opts);
+  return updated;
+}
+
+/**
+ * Mark an item `resolved` after its fix has actually completed. This is
+ * deliberately separate from `take`: starting work is not proof of
+ * completion. The terminal timestamp drives the retention clock.
+ *
+ * @param {string} dir
+ * @param {string} id
+ * @param {{ cwd?: string, now?: Date|string|number }} [opts]
+ * @returns {object} the updated item
+ */
+export function resolveItem(dir, id, opts = {}) {
+  const item = findItemOrThrow(dir, id);
+  if (item.status === 'resolved') return item;
+  const at = new Date(opts.now ?? Date.now()).toISOString();
+  const updated = { ...item, status: 'resolved', updated_at: at, resolved_at: at };
   writeLedger(dir, updated, opts);
   return updated;
 }
@@ -165,7 +196,8 @@ export function take(dir, id, opts = {}) {
  */
 export function drop(dir, id, opts = {}) {
   const item = findItemOrThrow(dir, id);
-  const updated = { ...item, status: 'dismissed' };
+  const at = new Date(opts.now ?? Date.now()).toISOString();
+  const updated = { ...item, status: 'dismissed', updated_at: at, resolved_at: at };
   writeLedger(dir, updated, opts);
   return updated;
 }
@@ -231,7 +263,7 @@ export function drop(dir, id, opts = {}) {
  * the `NONE` branch — no new pin gets created. Calling this repeatedly with
  * the same `pinPort` (e.g. once per session start) is therefore safe.
  *
- * Nothing is recreated for an already-`dismissed` item — `reconcile()`'s
+ * Nothing is recreated for an already-terminal item — `reconcile()`'s
  * `ledgerUnresolved` check already excludes it from both RENOTIFY and
  * SYNC_STATUS, so a dead pin on a dismissed item is correctly left alone.
  *

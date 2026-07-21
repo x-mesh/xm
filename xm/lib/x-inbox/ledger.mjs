@@ -35,10 +35,13 @@ import { join, resolve, sep } from 'node:path';
  * comes back. On the receiving side an item materializes at `delivered`, which
  * is true by construction there.
  *
- * Non-terminal: captured, delivered. Terminal: actioned, dismissed
- * (see retention.mjs TERMINAL_STATUSES).
+ * Non-terminal: captured, delivered, in_progress. Terminal: resolved,
+ * dismissed (see retention.mjs TERMINAL_STATUSES). `actioned` remains valid
+ * as a legacy non-terminal value written by older `take` implementations.
  */
-export const STATUSES = Object.freeze(['captured', 'delivered', 'actioned', 'dismissed']);
+export const STATUSES = Object.freeze([
+  'captured', 'delivered', 'in_progress', 'actioned', 'resolved', 'dismissed',
+]);
 
 /** Ledger id charset: safe as a bare filename component, no path separators or traversal. */
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
@@ -200,7 +203,7 @@ export function recordMemMesh(dir, id, patch, opts = {}) {
   const mem_mesh = { ...item.mem_mesh, ...patch };
   // Promote capture-time state once transport actually produced an id. Only
   // `captured` is promoted — never re-open an item the receiver already
-  // actioned or dismissed just because a pin id was recorded later.
+  // in-progress/terminal items just because a pin id was recorded later.
   const delivered = Boolean(mem_mesh.pin_id || mem_mesh.memory_id);
   const status = item.status === 'captured' && delivered ? 'delivered' : item.status;
 
@@ -225,7 +228,9 @@ export function reconcile(pinState, ledgerItem) {
   const pinExists = pinState != null;
   const pinCompleted = pinExists && pinState.status === 'completed';
   const ledgerExists = ledgerItem != null;
-  const ledgerUnresolved = ledgerExists && ledgerItem.status !== 'dismissed';
+  const ledgerUnresolved = ledgerExists
+    && ledgerItem.status !== 'resolved'
+    && ledgerItem.status !== 'dismissed';
 
   // Rule 5: pin exists but is completed while the ledger still shows the
   // item unresolved — a status update was missed. Reflect pin state into
@@ -252,6 +257,6 @@ export function reconcile(pinState, ledgerItem) {
   }
 
   // Rule 4 (both absent = closed) and the remaining case (pin absent,
-  // ledger present but already dismissed) both resolve to no action.
+  // ledger present but already terminal) both resolve to no action.
   return { action: RECONCILE_ACTIONS.NONE, reason: pinExists || ledgerExists ? 'resolved' : 'closed' };
 }
