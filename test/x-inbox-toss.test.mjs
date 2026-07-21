@@ -32,6 +32,7 @@ import {
   INBOX_PIN_TAG,
   MAX_CAPTURED_OUTPUT_CHARS,
   DEFAULT_PIN_IMPORTANCE,
+  inboxPinContent,
   captureTossItem,
   buildMemMeshPayload,
   describeCapture,
@@ -142,16 +143,21 @@ describe('captureTossItem — capture gate (validation, redact, truncate)', () =
 });
 
 describe('buildMemMeshPayload — pure MCP call-argument construction (no I/O, t11)', () => {
-  test('pin_add args: title as content, target project id, INBOX_PIN_TAG, default importance', () => {
+  test('pin_add args: searchable toss id plus title, target project id, INBOX_PIN_TAG, default importance', () => {
     const item = captureTossItem(baseInput());
     const payload = buildMemMeshPayload(item, 'git-kit');
 
     expect(payload.pin_add).toEqual({
-      content: item.title,
+      content: `${item.id} — ${item.title}`,
       project_id: 'git-kit',
       tags: [INBOX_PIN_TAG],
       importance: DEFAULT_PIN_IMPORTANCE,
     });
+  });
+
+  test('inboxPinContent keeps the toss id as the exact receiving-side search key', () => {
+    const item = captureTossItem(baseInput({ id: 'toss-20260721-deadbeef' }));
+    expect(inboxPinContent(item)).toBe(`toss-20260721-deadbeef — ${item.title}`);
   });
 
   test('add args: full item JSON as content, target project id, category bug, INBOX_PIN_TAG', () => {

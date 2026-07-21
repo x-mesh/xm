@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1784557782050,
+  "generatedAt": 1784604386188,
   "version": 1,
   "skills": [
     {
@@ -9,8 +9,8 @@
     },
     {
       "plugin": "build",
-      "sha256": "926b589b221f6270d7499f31ccd9213e0a64052247c81c9cf2c68e7cfc17dd59",
-      "bytes": 41763
+      "sha256": "a766ea13a775c812b6baf0195bc0e49f4d138b597caced6344f87994a0ce4bce",
+      "bytes": 44072
     },
     {
       "plugin": "dashboard",
@@ -24,13 +24,13 @@
     },
     {
       "plugin": "handoff",
-      "sha256": "230b10eb699bd6c160c7632dc66ae28e5ee3ab786d1504c79759aa7d9138a28d",
-      "bytes": 17164
+      "sha256": "085a134120cb9d2cf6b3af12ecd1ee0d093f8b7843014aade45beca564a492ef",
+      "bytes": 18242
     },
     {
       "plugin": "handon",
-      "sha256": "9a1abb063e6f54e3e482372bc13ec27c5149453019ed7c335ae47ac743fb2cb2",
-      "bytes": 13212
+      "sha256": "95ad099b1c92d626076140fef56e76cfea30b5bc17ce612543a3e34027db1dc0",
+      "bytes": 15337
     },
     {
       "plugin": "humanize",
@@ -44,8 +44,8 @@
     },
     {
       "plugin": "inbox",
-      "sha256": "7cc782c7de416f911d2d5f75afccee6faba4507c3e60e241da87dac47ce2b28d",
-      "bytes": 8410
+      "sha256": "5a6dbd2b7e0612d1feffb99af33a640613c71d52efd71b2aebe22b95148fe2e5",
+      "bytes": 9336
     },
     {
       "plugin": "kit",
@@ -56,6 +56,11 @@
       "plugin": "later",
       "sha256": "09ae606cbf48081bc5faf7b69adf1fe3541901f7cd07116a0a79e138ff524459",
       "bytes": 7210
+    },
+    {
+      "plugin": "local-fix",
+      "sha256": "27366b55fdc7bb02267287686e6364a1e2f7186f46a01d2d6969617bf94ee096",
+      "bytes": 2646
     },
     {
       "plugin": "memory",
@@ -109,8 +114,8 @@
     },
     {
       "plugin": "toss",
-      "sha256": "7d38410a8b3ff1e2923d155e06e3f66dca953dcddf21aa6a5ea8fc9390a86069",
-      "bytes": 9602
+      "sha256": "2d15e71d7f890cf85f6e7933ba59564de56329c81a4f89b419b817c9b2cc497b",
+      "bytes": 9812
     },
     {
       "plugin": "trace",

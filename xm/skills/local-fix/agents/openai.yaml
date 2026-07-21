@@ -1,0 +1,4 @@
+interface:
+  display_name: "Local Fix"
+  short_description: "Fix a registered local project in a worktree"
+  default_prompt: "Use $local-fix to fix a registered local project safely."

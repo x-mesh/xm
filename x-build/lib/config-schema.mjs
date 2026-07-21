@@ -364,6 +364,22 @@ export const SCHEMA = [
     default: ['test', 'lint'],
     description: 'Full checks executed once when a review group completes',
   },
+  {
+    key: 'build.allow_live_provider_checks',
+    group: 'misc',
+    type: 'boolean',
+    scope: 'either',
+    default: false,
+    description: 'task/group check에서 외부 AI provider credential 전달 허용(명시 opt-in)',
+  },
+  {
+    key: 'build.check_timeout_ms',
+    group: 'misc',
+    type: 'integer',
+    scope: 'either',
+    default: 120000,
+    description: '개별 task/group check command 제한 시간(ms, 1000-600000)',
+  },
 
   // ── worktree (build-local 3-tier; runtime source = WORKTREE_CONFIG_DEFAULTS) ──
   {

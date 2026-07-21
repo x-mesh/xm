@@ -784,10 +784,41 @@ describe('interface_contract field', () => {
       expect(out.task.interface_contract).toContain('summarize');
       expect(out.task.prompt).toContain('## Interface Contract');
       expect(out.task.prompt.indexOf('## Definition of Done')).toBeLessThan(out.task.prompt.indexOf('## Interface Contract'));
+      expect(out.task.prompt).toContain('## Completion Report Contract');
+      expect(out.task.prompt).toContain('## 완료 보고');
+      expect(out.task.completion_contract).toEqual({ task_check_required: true, final_report_heading: '## 완료 보고' });
       // no contract → field omitted cleanly
       const r2 = run(['dispatch', '두번째: 계약 없음', '--json'], { cwd: tmp });
       const out2 = JSON.parse(r2.stdout.slice(r2.stdout.indexOf('{')));
       expect(out2.task.interface_contract).toBeUndefined();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('dispatch task cannot complete without current task-check evidence', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-dispatch-'));
+    try {
+      for (const args of [
+        ['init'],
+        ['config', 'user.email', 'tests@example.invalid'],
+        ['config', 'user.name', 'x-build tests'],
+        ['commit', '--allow-empty', '-m', 'test fixture'],
+      ]) spawnSync('git', args, { cwd: tmp, encoding: 'utf8' });
+
+      const r = run(['dispatch', '완료 증거 확인', '--json'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+
+      const premature = run(['tasks', 'update', 't1', '--status', 'completed'], { cwd: tmp });
+      expect(premature.exitCode).toBe(2);
+      expect(premature.stderr).toContain('no current passing task-check evidence');
+
+      const check = run(['task-check', 't1', '--json'], { cwd: tmp });
+      expect(check.exitCode).toBe(0);
+      expect(JSON.parse(check.stdout).passed).toBe(true);
+
+      const completed = run(['tasks', 'update', 't1', '--status', 'completed'], { cwd: tmp });
+      expect(completed.exitCode).toBe(0);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

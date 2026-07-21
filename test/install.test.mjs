@@ -185,6 +185,22 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     expect(alias).toMatch(/^---\nname: xm-op\ndescription: /);
     expect(alias).toContain('`$xm-op` or `$xm:op`');
   });
+  test('codex cachebuster replaces existing build metadata for an active-cache refresh', () => {
+    const tmp = seedTmp();
+    const env = { ...process.env, XM_CODEX_CACHEBUSTER: 'local-20260721-120000' };
+    const r = run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp, env });
+    expect(r.status).toBe(0);
+    const plugin = JSON.parse(readFileSync(join(tmp, 'plugins', 'xm', '.codex-plugin', 'plugin.json'), 'utf8'));
+    const base = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version.split('+', 1)[0];
+    expect(plugin.version).toBe(`${base}+codex.local-20260721-120000`);
+  });
+  test('codex cachebuster rejects invalid SemVer build tokens', () => {
+    const tmp = seedTmp();
+    const env = { ...process.env, XM_CODEX_CACHEBUSTER: 'bad token' };
+    const r = run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp, env });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('invalid XM_CODEX_CACHEBUSTER');
+  });
   test('codex plugin manifest accepts prerelease with build metadata', () => {
     const manifest = JSON.parse(renderCodexPluginManifest('1.2.3-rc.1+build.7'));
     expect(manifest.version).toBe('1.2.3-rc.1+build.7');

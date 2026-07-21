@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.11.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.12.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -215,7 +215,7 @@ node xm/lib/install/install-cli.mjs --uninstall --target cursor,codex
 
 #### update 시 자동 전파
 
-`xm update`가 설치된 모든 LLM target(Cursor, Codex CLI, Kiro, Antigravity, OpenCode)의 global manifest를 감지하고 SKILL을 자동 재렌더링합니다. 파일별 SHA-256 비교로 변경 없는 target은 건너뜁니다. Claude만 갱신하려면 `--no-propagate` 플래그를 사용하세요.
+`xm update`가 설치된 모든 LLM target(Cursor, Codex CLI, Kiro, Antigravity, OpenCode)의 global manifest를 감지하고 SKILL을 자동 재렌더링합니다 — Claude 자체가 이미 원격 버전이어도 마찬가지입니다. 파일별 SHA-256 비교로 변경 없는 target은 건너뛰며, Codex는 추가로 cachebuster를 받아 자동 `codex plugin add`를 실행하므로 활성 플러그인 캐시가 stale 상태로 남지 않습니다. Claude만 갱신하려면 `--no-propagate` 플래그를 사용하세요.
 
 ```bash
 xm update                   # 플러그인 업데이트 + 설치된 모든 target에 전파

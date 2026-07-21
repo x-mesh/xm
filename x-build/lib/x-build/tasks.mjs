@@ -32,7 +32,7 @@ import {
 import {
   loadBuildPolicy, resolveTaskChecks, taskReviewGroup, reviewGroupStatus,
   startReviewGroup, reviewBuildGroup, recordSoloReviewVerdict, runGroupChecks,
-  taskCheckContractHash, taskCheckFingerprint, REVIEW_DEPTHS,
+  taskCheckContractHash, taskCheckFingerprint, resolveCheckRuntime, REVIEW_DEPTHS,
 } from './build-policy.mjs';
 import { readPlanState, setRequestedAction, validatePlanApproval } from './plan-state.mjs';
 
@@ -90,10 +90,15 @@ export function cmdTaskCheck(args) {
   }
 
   const cwd = process.cwd();
-  const checks = resolveTaskChecks(cwd);
+  const policy = loadBuildPolicy();
+  const runtime = resolveCheckRuntime(policy);
+  const checks = resolveTaskChecks(cwd, policy);
   const results = checks.map((check) => {
     if (!check.command) return { name: check.name, command: null, passed: true, skipped: true, exit_code: null };
-    const out = spawnSync(check.command, [], { cwd, shell: true, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
+    const out = spawnSync(check.command, [], {
+      cwd, shell: true, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024,
+      env: runtime.env, timeout: runtime.timeout_ms,
+    });
     const output = `${out.stdout || ''}${out.stderr || ''}`.trim();
     return {
       name: check.name,
@@ -112,6 +117,11 @@ export function cmdTaskCheck(args) {
     results,
     contract_hash: taskCheckContractHash(cwd),
     worktree_fingerprint: taskCheckFingerprint(cwd),
+    network_policy: {
+      allow_live_provider_checks: runtime.allow_live_provider_checks,
+      suppressed_env: runtime.suppressed_env,
+      timeout_ms: runtime.timeout_ms,
+    },
   };
   modifyJSON(tasksPath(project), (data) => {
     const row = data?.tasks?.find((candidate) => candidate.id === id);
@@ -121,6 +131,9 @@ export function cmdTaskCheck(args) {
 
   if (opts.json) console.log(JSON.stringify({ project, task_id: id, ...evidence }, null, 2));
   else {
+    if (runtime.suppressed_env.length) {
+      console.log(`Offline checks: suppressed ${runtime.suppressed_env.join(', ')} (set build.allow_live_provider_checks=true to opt in)`);
+    }
     for (const result of results) {
       console.log(`${result.skipped ? '↷' : result.passed ? '✅' : '❌'} ${result.name}${result.skipped ? ' (not detected)' : ''}`);
     }
@@ -536,8 +549,15 @@ export function taskUpdate(project, args) {
   const rawStatus = opts.status;
 
   const intendedStatus = rawStatus ? (STATUS_ALIASES[rawStatus] || rawStatus) : null;
-  if (intendedStatus === TASK_STATES.COMPLETED && readPlanState(project)) {
-    const currentTask = readJSON(tasksPath(project))?.tasks?.find((task) => task.id === id);
+  const currentTask = intendedStatus === TASK_STATES.COMPLETED
+    ? readJSON(tasksPath(project))?.tasks?.find((task) => task.id === id)
+    : null;
+  // A dispatch task has no plan-state.json by design, but it is still executed
+  // by an agent. Letting that path self-report COMPLETED without task-check
+  // evidence turns a harness "completed" notification into a false task result.
+  // Planned tasks retain their existing gate; dispatch tasks now use the same
+  // evidence requirement without inventing a PRD just to get the safety check.
+  if (intendedStatus === TASK_STATES.COMPLETED && (readPlanState(project) || currentTask?.dispatch === true)) {
     const evidence = currentTask?.task_check;
     const currentFingerprint = taskCheckFingerprint(process.cwd());
     const stale = !evidence?.worktree_fingerprint || !currentFingerprint
@@ -1230,6 +1250,13 @@ function buildAgentPrompt(project, task, briefContent, decisionsContent, { manif
       `First run: x-build task-check ${task.id}`,
       `After completing this task, run: ${taskUpdateCommand(task.id, 'completed')}`,
       `If the task fails, run: ${taskUpdateCommand(task.id, 'failed')}`,
+      '',
+      '## Completion Report Contract',
+      'Do not stop after a progress update.',
+      'Your final response must end with "## 완료 보고" and include:',
+      '- each Definition of Done item with its fulfillment status',
+      `- the result of \`x-build task-check ${task.id}\``,
+      '- changed files and any remaining limitation',
     );
   }
 
@@ -1367,10 +1394,10 @@ function collectWorktreeTasks(project) {
 }
 
 // Mark ready tasks RUNNING and stamp routing/cost/start metadata, then persist.
-// Shared by BOTH the human and --json paths: the skill spawns agents from the
-// --json plan, so without marking here a later `tasks update completed` recorded
-// no metric (the appendMetric guard needs started_at) or defaulted the model to
-// sonnet (_assigned_model unset). Idempotent — tasks already RUNNING are skipped
+// This is ONLY for a path that hands task specs to a real executor: `run --json`
+// is consumed by the skill, which spawns agents immediately after this command.
+// The human-readable `run` path is a preview and must never create RUNNING tasks;
+// it has no executor to own them. Idempotent — tasks already RUNNING are skipped
 // so a re-emitted plan does not restart the duration clock. readyTasks are live
 // references into taskData, so the single writeJSON persists their mutations.
 function markTasksRunning(taskData, readyTasks, sharedCfg, project, step) {
@@ -1451,6 +1478,10 @@ function buildPlanEntry(project, task, { briefContent, decisionsContent, manifes
   } else {
     entry.on_complete = taskUpdateCommand(task.id, 'completed');
     entry.on_fail = taskUpdateCommand(task.id, 'failed');
+    entry.completion_contract = {
+      task_check_required: true,
+      final_report_heading: '## 완료 보고',
+    };
   }
   if (task.strategy) {
     entry.strategy = task.strategy;
@@ -1922,12 +1953,8 @@ export async function cmdRun(args) {
   const totalCount = allTasks.length;
   const pct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
   console.log(`\n  📊 Progress: ${doneCount}/${totalCount} tasks (${pct}%) | Step ${currentStep.id}/${stepData.steps.length}`);
-  console.log(`${C.dim}  To execute, the /x-build skill will spawn agents for each task.${C.reset}`);
-  console.log(`${C.dim}  Or run with --json for machine-readable output.${C.reset}\n`);
-
-  const _marked = markTasksRunning(taskData, readyTasks, sharedCfg, project, currentStep.id);
-
-  console.log(`${C.green}✅ ${_marked} tasks marked as RUNNING.${C.reset}`);
+  console.log(`${C.dim}  Preview only — no task status changed and no agent was spawned.${C.reset}`);
+  console.log(`${C.dim}  To execute, run through the /x-build skill or use: x-build run --json${C.reset}\n`);
 }
 
 export function cmdRunStatus(args) {

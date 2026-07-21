@@ -49,16 +49,22 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 
 ## Core Process
 
-1. **먼저 mem-mesh에서 수신 항목을 materialize합니다.** MCP의 memory 검색에서
-   `project_id=<현재 프로젝트의 mem-mesh id>`, `tags=["inbox"]`로 조회합니다. 각
-   결과의 `content`는 toss가 보낸 JSON 본문이므로, 각 결과마다 아래 명령을 실행합니다.
+1. **먼저 mem-mesh에서 수신 항목을 materialize합니다.** `search`에는 현재 `tags`
+   필터가 없으므로 `query="inbox"` 같은 넓은 검색으로 수신함을 판단하면 안 됩니다.
+   먼저 `mcp__mem-mesh__pin_list(project_id=<현재 프로젝트의 mem-mesh id>,
+   tags=["inbox"], limit=10)`을 호출합니다. `limit`은 반드시 10 이하로 둡니다.
+   새 toss pin의 `content`는 `<toss id> — <title>` 형식입니다. 각 pin의 toss id로
+   `mcp__mem-mesh__search(query=<toss id>, project_id=<현재 프로젝트의 mem-mesh id>,
+   limit=10)`을 호출하고, **같은 `id`를 가진 JSON 본문**만 고릅니다. 그 결과의
+   `content`를 아래 명령으로 materialize합니다.
    ```bash
-   xm inbox materialize --content '<memory content JSON>' --memory-id <memory id> --json
+   xm inbox materialize --content '<memory content JSON>' --memory-id <memory id> --pin-id <pin id> --json
    ```
-   pin id가 검색 결과에 있으면 `--pin-id <pin id>`도 전달합니다. 이 CLI는 네트워크를
-   호출하지 않고 **현재 cwd의** `.xm/inbox/<id>.json`에만 기록합니다. malformed JSON이나
-   `to_project`가 현재 프로젝트와 다른 항목은 거부하고, 이미 같은 id가 있으면 로컬 상태를
-   바꾸지 않습니다. MCP 검색을 할 수 없으면 그 사실을 밝히고 기존 로컬 원장만 조회합니다.
+   기존 pin처럼 toss id가 없는 항목은 title 또는 일반어로 추측 검색하지 않습니다. pin id와
+   title을 보여 주고 발신 측에 재전달을 요청합니다. 이 CLI는 네트워크를 호출하지 않고
+   **현재 cwd의** `.xm/inbox/<id>.json`에만 기록합니다. malformed JSON이나 `to_project`가
+   현재 프로젝트와 다른 항목은 거부하고, 이미 같은 id가 있으면 로컬 상태를 바꾸지 않습니다.
+   MCP 검색을 할 수 없으면 그 사실을 밝히고 기존 로컬 원장만 조회합니다.
 2. **`xm inbox list`** — materialize 뒤에 실행합니다. Prints unresolved items first, then
    actioned, then dismissed; add `--json` when you need to act on fields programmatically.
 3. **Address items by `id` only**, never by a remembered list position — re-run `list`
@@ -75,7 +81,7 @@ plus `xm inbox record --scope inbox` — see step 5 below.
    - Call `mcp__mem-mesh__pin_get(pin_id)` yourself.
    - If it comes back not-found, OR `status: "completed"` (mem-mesh's 7-day auto-close —
      never a real user action on a delivery pin), the pin is dead: call
-     `mcp__mem-mesh__pin_add(content=item.title, project_id=<this project's mem-mesh id>,
+     `mcp__mem-mesh__pin_add(content="<item id> — <item title>", project_id=<this project's mem-mesh id>,
      tags=["inbox"])` to recreate it, then persist the new id:
      ```bash
      xm inbox record <id> --pin-id <new pin id> --scope inbox --json
@@ -93,6 +99,7 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 |--------|---------|
 | "I'll remember item #2 from the last list and take() it later." | Lists are re-sorted (unresolved-first) and re-swept (archive) on every call — position 2 can point at a different item next time. Always address by `id`. |
 | "Inbox is empty, something's broken." | An empty inbox is a normal, valid state — say so; don't assume the CLI or mem-mesh is malfunctioning. |
+| "`search(query=\"inbox\")`가 비었으니 새 수신함도 비었다." | `search`는 `tags` 필터가 없고 넓은 질의는 랭킹에서 밀린다. 먼저 `pin_list(tags=[\"inbox\"], limit=10)`으로 알림을 찾고 toss id로 정확히 검색한다. |
 | "list didn't print anything about pins, so they must all still be fine." | `list` never checks pin state (t11 — no network in the CLI). Silence from `list` says nothing about pin health; you have to actually call `pin_get` yourself to know. |
 | "take() gave me the item, I'll now `later promote` it to keep the body." | `later promote` has no field for why/repro/fix_direction — the body does not survive that trip. Use the returned item content directly instead. |
 | "I'll drop an item I'm not sure about, just to clean up the list." | Drop is for items that genuinely don't need action. When unsure, leave it `delivered` (or `take` it) and ask the user rather than guessing it away. |
@@ -103,6 +110,7 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 ## Red Flags
 
 - You referenced an inbox item by list position instead of `id`.
+- You used a generic memory search instead of an inbox pin's toss id to materialize a delivery.
 - You dropped an item without the user's confirmation when its relevance was unclear.
 - You claimed pin re-notification happened without actually calling `pin_get`/`pin_add`.
 - You called `pin_add` to renotify but never ran `xm inbox record --scope inbox` afterward.

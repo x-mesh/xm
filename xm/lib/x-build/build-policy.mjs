@@ -11,7 +11,7 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  readJSON, writeJSON, loadConfig, loadSharedConfig, phaseDir, repoRoot,
+  readJSON, writeJSON, loadConfig, loadSharedConfig, phaseDir, tasksPath, repoRoot,
 } from './core.mjs';
 import { runGatePanel } from './gate-panel.mjs';
 import { getModelForRole } from './cost-engine.mjs';
@@ -30,7 +30,25 @@ export const DEFAULT_BUILD_POLICY = {
   panel_rounds: 1,
   task_checks: ['test', 'lint'],
   group_checks: ['test', 'lint'],
+  allow_live_provider_checks: false,
+  check_timeout_ms: 120000,
 };
+
+export const LIVE_PROVIDER_ENV_VARS = [
+  'ANTHROPIC_API_KEY',
+  'COHERE_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'FIREWORKS_API_KEY',
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'GROQ_API_KEY',
+  'MISTRAL_API_KEY',
+  'OPENAI_API_KEY',
+  'OPENROUTER_API_KEY',
+  'PERPLEXITY_API_KEY',
+  'TOGETHER_API_KEY',
+  'XAI_API_KEY',
+];
 
 export function loadBuildPolicy() {
   const shared = loadSharedConfig()?.build || {};
@@ -45,7 +63,35 @@ export function loadBuildPolicy() {
   merged.task_checks = merged.task_checks.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim());
   if (!Array.isArray(merged.group_checks)) merged.group_checks = DEFAULT_BUILD_POLICY.group_checks;
   merged.group_checks = merged.group_checks.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim());
+  merged.allow_live_provider_checks = merged.allow_live_provider_checks === true;
+  const timeout = Number(merged.check_timeout_ms);
+  merged.check_timeout_ms = Number.isFinite(timeout) && timeout >= 1000 && timeout <= 600000
+    ? Math.floor(timeout)
+    : DEFAULT_BUILD_POLICY.check_timeout_ms;
   return merged;
+}
+
+/** Keep routine checks local unless a project explicitly opts into paid/live providers. */
+export function resolveCheckRuntime(policy = loadBuildPolicy(), sourceEnv = process.env) {
+  const env = { ...sourceEnv };
+  const suppressed_env = [];
+  if (policy.allow_live_provider_checks !== true) {
+    for (const name of LIVE_PROVIDER_ENV_VARS) {
+      if (env[name] !== undefined) {
+        delete env[name];
+        suppressed_env.push(name);
+      }
+    }
+  }
+  const timeout = Number(policy.check_timeout_ms);
+  return {
+    env,
+    suppressed_env,
+    allow_live_provider_checks: policy.allow_live_provider_checks === true,
+    timeout_ms: Number.isFinite(timeout) && timeout >= 1000 && timeout <= 600000
+      ? Math.floor(timeout)
+      : DEFAULT_BUILD_POLICY.check_timeout_ms,
+  };
 }
 
 export function resolveGroupChecks(cwd = repoRoot(), policy = loadBuildPolicy()) {
@@ -56,14 +102,50 @@ export function resolveGroupChecks(cwd = repoRoot(), policy = loadBuildPolicy())
 export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
   const state = readReviewGroupState(project);
   const saved = state.groups[groupId] || {};
+  const policy = loadBuildPolicy();
   const commands = resolveGroupChecks(cwd);
   const canonicalCwd = resolve(cwd);
-  const fingerprintPolicy = { ...loadBuildPolicy(), task_checks: commands.map(({ name }) => name) };
+  const fingerprintPolicy = { ...policy, task_checks: commands.map(({ name }) => name) };
   const fingerprint = taskCheckFingerprint(cwd, fingerprintPolicy);
-  const descriptor = createHash('sha256').update(JSON.stringify(commands.map(({ name, command }) => ({ name, command })))).digest('hex');
+  const runtime = resolveCheckRuntime(policy);
+  const descriptor = taskCheckContractHash(cwd, fingerprintPolicy);
   const existing = saved.group_quality;
   if (existing && existing.passed === true && existing.fingerprint === fingerprint && existing.command_hash === descriptor && existing.cwd === canonicalCwd) {
     return { ok: true, reused: true, evidence: existing };
+  }
+
+  // A one-task/reopened group commonly reaches this boundary immediately after
+  // task-check. If every member already carries evidence for this exact
+  // workspace + command contract, promote it instead of running the same full
+  // suite again. Multi-task groups only reuse when every member was checked at
+  // the final snapshot, so earlier/stale task evidence still fails closed.
+  const taskRows = readJSON(tasksPath(project))?.tasks || [];
+  const reusable = (saved.task_ids || []).length > 0 && saved.task_ids.every((id) => {
+    const evidence = taskRows.find((task) => task.id === id)?.task_check;
+    return evidence?.passed === true
+      && resolve(evidence.cwd || '.') === canonicalCwd
+      && evidence.contract_hash === descriptor
+      && evidence.worktree_fingerprint === fingerprint;
+  });
+  if (reusable) {
+    const evidence = {
+      passed: true,
+      cwd: canonicalCwd,
+      fingerprint,
+      command_hash: descriptor,
+      checked_at: new Date().toISOString(),
+      reused_task_checks: true,
+      task_ids: [...saved.task_ids],
+      network_policy: {
+        allow_live_provider_checks: runtime.allow_live_provider_checks,
+        suppressed_env: runtime.suppressed_env,
+        timeout_ms: runtime.timeout_ms,
+      },
+      results: [],
+    };
+    state.groups[groupId] = { ...saved, group_quality: evidence };
+    writeJSON(statePath(project), state);
+    return { ok: true, reused: true, reused_task_checks: true, evidence };
   }
   const lock = join(phaseDir(project, '03-execute'), `.group-${groupId}.quality.lock`);
   try { mkdirSync(lock); } catch { return { ok: false, error: 'group_quality_in_progress', exitCode: 2 }; }
@@ -74,11 +156,24 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
       // that optional script may skip it. Any other configured/missing command
       // is an explicit contract and fails closed.
       if (!command) return { name, command: null, passed: ['test', 'lint'].includes(name), skipped: true, ...( ['test', 'lint'].includes(name) ? {} : { error: 'configured_check_not_found' }) };
-      const out = spawnSync(command, [], { cwd, shell: true, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
+      const out = spawnSync(command, [], {
+        cwd, shell: true, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024,
+        env: runtime.env, timeout: runtime.timeout_ms,
+      });
       return { name, command, passed: !out.error && out.status === 0, skipped: false, exit_code: out.status, output: `${out.stdout || ''}${out.stderr || ''}`.trim().slice(-4000), ...(out.error ? { error: out.error.message } : {}) };
     });
     const after = taskCheckFingerprint(cwd, fingerprintPolicy);
-    const evidence = { passed: before !== null && after === before && results.every((r) => r.passed), cwd: canonicalCwd, fingerprint: after, command_hash: descriptor, checked_at: new Date().toISOString(), results, ...(after !== before ? { error: 'workspace_changed_during_check' } : {}) };
+    const evidence = {
+      passed: before !== null && after === before && results.every((r) => r.passed),
+      cwd: canonicalCwd, fingerprint: after, command_hash: descriptor,
+      checked_at: new Date().toISOString(), results,
+      network_policy: {
+        allow_live_provider_checks: runtime.allow_live_provider_checks,
+        suppressed_env: runtime.suppressed_env,
+        timeout_ms: runtime.timeout_ms,
+      },
+      ...(after !== before ? { error: 'workspace_changed_during_check' } : {}),
+    };
     state.groups[groupId] = { ...saved, group_quality: evidence };
     writeJSON(statePath(project), state);
     return { ok: evidence.passed, reused: false, evidence, exitCode: evidence.passed ? 0 : 2 };
@@ -146,7 +241,11 @@ export function resolveTaskChecks(cwd = repoRoot(), policy = loadBuildPolicy()) 
 
 export function taskCheckContractHash(cwd = repoRoot(), policy = loadBuildPolicy()) {
   const contract = resolveTaskChecks(cwd, policy).map(({ name, command }) => ({ name, command }));
-  return createHash('sha256').update(JSON.stringify(contract)).digest('hex');
+  return createHash('sha256').update(JSON.stringify({
+    contract,
+    allow_live_provider_checks: policy.allow_live_provider_checks === true,
+    check_timeout_ms: resolveCheckRuntime(policy, {}).timeout_ms,
+  })).digest('hex');
 }
 
 /** Bind check evidence to both configured commands and the current git worktree. */
@@ -432,16 +531,20 @@ export function recordSoloReviewVerdict(project, groupId, verdict, { cwd = repoR
     writeJSON(statePath(project), state);
     return { ok: false, error: 'git_target_changed_during_review', exitCode: 2 };
   }
-  state.groups[groupId] = {
-    ...saved,
-    status: verdict === 'pass' ? 'passed' : 'failed',
+  const checks = verdict === 'pass' ? runGroupChecks(project, groupId, { cwd }) : null;
+  const latest = readReviewGroupState(project);
+  const current = latest.groups[groupId] || saved;
+  const passed = verdict === 'pass' && checks?.ok === true;
+  latest.groups[groupId] = {
+    ...current,
+    status: passed ? 'passed' : 'failed',
     target_sha: head,
     target_patch_hash: diff.hash,
     reviewed_at: new Date().toISOString(),
-    decision: verdict === 'pass' ? 'solo-pass' : 'solo-fail',
+    decision: passed ? 'solo-pass' : verdict === 'pass' ? 'solo-checks-fail' : 'solo-fail',
     reviewer_model: saved.solo.model,
     ...(notes ? { notes: String(notes).slice(0, 2000) } : {}),
   };
-  writeJSON(statePath(project), state);
-  return { ok: verdict === 'pass', group: state.groups[groupId], exitCode: verdict === 'pass' ? 0 : 2 };
+  writeJSON(statePath(project), latest);
+  return { ok: passed, group: latest.groups[groupId], checks, exitCode: passed ? 0 : 2 };
 }

@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.11.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.12.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -215,7 +215,7 @@ See [`docs/multi-tool-install.md`](docs/multi-tool-install.md) for the complete 
 
 #### Auto-propagation on update
 
-`xm update` automatically re-renders skills to every installed LLM target (Cursor, Codex CLI, Kiro, Antigravity, OpenCode) when their global manifests are present. Per-file SHA-256 diffing skips unchanged targets. Pass `--no-propagate` to update only the Claude plugin.
+`xm update` automatically re-renders skills to every installed LLM target (Cursor, Codex CLI, Kiro, Antigravity, OpenCode) when their global manifests are present, even when Claude is already at the remote version. Per-file SHA-256 diffing skips unchanged targets; Codex also receives a cachebuster and automatic `codex plugin add` so its active plugin cache cannot remain stale. Pass `--no-propagate` to update only the Claude plugin.
 
 ```bash
 xm update                   # update plugin + propagate to all installed targets

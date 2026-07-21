@@ -141,6 +141,19 @@ Store as `{base_branch}` and use it for all branch comparisons in PRD / plan / t
 
 For Node projects, read `package.json` scripts once to discover available entries (`type-check`, `typecheck`, `tsc`, `lint`, `lint:fix`, `test`, `test:unit`, `build`) and prefer them over generic defaults.
 
+Task and group checks are offline by default. `x-build` removes known live AI-provider credentials such as `GROQ_API_KEY` from the check process and stops each command after 120 seconds. A project that intentionally runs live-provider integration checks must opt in explicitly:
+
+```json
+{
+  "build": {
+    "allow_live_provider_checks": true,
+    "check_timeout_ms": 120000
+  }
+}
+```
+
+Keep deterministic unit checks as the default. Put live-provider coverage behind the explicit opt-in.
+
 ### When to use
 
 - Writing `done_criteria` in tasks (Plan phase): pull commands from detection, not memory
@@ -160,7 +173,7 @@ See `references/ask-user-question-rule.md` — the `question` field is invisible
 Rules:
 1. **AskUserQuestion is REQUIRED only when a user-only answer materially changes** scope/task graph, public behavior, success criteria, irreversible/high-risk contracts, authority, external coordination, or compliance. Batch at most 3 blocking questions into one turn.
 2. **Routine transitions are automatic once their deterministic gates pass.** Plan → Execute remains a `decision` gate because it approves direction. A failed quality/group-review gate, agent execution error, or newly discovered user-only ambiguity still stops. Autopilot does not pass `decision` gates.
-3. **NEVER skip Research silently** — `plan "goal"` without `--quick` goes through Research, SCALED by the deterministic gauge in the plan JSON's `research_signal` (from `research-check`): `full` → 4-agent research; `slim` → 1-2 targeted agents on the HIT signals; `quick-eligible` (0/4 hits ONLY) → you MAY suggest `--quick` via AskUserQuestion, and proceed quick ONLY if the user confirms. A missing/failed `research_signal` = treat as `full`. Auto-skipping without the user's explicit confirmation, or calling `phase set plan` to dodge Research, is FORBIDDEN.
+3. **NEVER skip Research silently** — `plan "goal"` without `--quick` goes through Research, SCALED by the deterministic gauge in the plan JSON's `research_signal` (from `research-check`): `full` → 4-agent research; `slim` → 1-2 targeted agents on the HIT signals; `quick-eligible` (0/4 hits ONLY) → you MAY suggest `--quick` via AskUserQuestion, and proceed quick ONLY if the user confirms. In yolo/explicit autonomous mode, `quick-eligible` is enough to choose `--quick`. A missing/failed `research_signal` = treat as `full`. Outside that mode, auto-skipping without explicit confirmation, or calling `phase set plan` to dodge Research, is FORBIDDEN.
 4. **Artifacts MUST be printed before review (Output Gate)** — any LLM-produced artifact (research findings, PRD, task breakdown, forecast, critique, consensus result) MUST be output in FULL to the user **before** calling AskUserQuestion or advancing the phase. Save-and-ask-without-showing is FORBIDDEN. Saving to disk does NOT count as showing; a summary paragraph does NOT count as showing — print the artifact content. **Self-check gate (enforce, don't just intend):** immediately before the gating `AskUserQuestion`, confirm the full artifact text was printed in the CURRENT turn, and make the question's FIRST option cite a concrete detail from it (a task id, an `R#` requirement, or a `done_criteria` string). If you cannot cite one, you did not show it — print it first, then ask.
 5. **Research output MUST be persisted** — after each research sub-agent (stack / features / architecture / pitfalls) completes, immediately call `$XMB save research-notes --agent <name> --content "..."` to append the RAW agent output to `phases/01-research/notes.md`. Never discard raw agent output by only saving the synthesized ROADMAP — the user must be able to audit the evidence chain.
 6. **Plan Review** — present one Plan Bundle (intent/PRD/tasks/groups/checks), then ask for the single Plan → Execute direction approval. Approval is bound to `plan_hash`; any plan change invalidates it.
@@ -173,9 +186,19 @@ Rules:
 12. **No phantom projects** — a project without `phases/02-plan/PRD.md` and CONTEXT.md is invisible to dashboard and untrackable. Always generate these artifacts.
 13. **PRD MUST be saved via `$XMB save plan`** — never `Write` PRD.md directly. A direct write skips the `<!-- prd-template-version -->` stamp, silently degrading the diagram gate (`prd-check` §8) from blocking to warning.
 
+### Yolo / fully autonomous mode
+
+When the host is in yolo mode, or the user explicitly asks to proceed autonomously, do not turn routine choices into questions. The CLI cannot see that host setting; the skill layer applies this policy and records every assumed choice in `CONTEXT.md` or the decision log.
+
+- Continue automatically through research scale, task decomposition, implementation, review boundaries, Verify, and Close once deterministic checks pass.
+- At `research_signal: quick-eligible`, enter `--quick` without an extra confirmation. For `slim`/`full`, keep the required research but choose its scale automatically.
+- Pass the Plan → Execute gate automatically only when the generated plan stays within the stated goal and has no new public behavior, irreversible change, external action, security/compliance impact, or material cost/scope expansion.
+- Ask only when the user must own the choice: one of those conditions is present, or no safe default preserves the stated goal. Batch the necessary questions once; do not ask for routine confirmation.
+- A yolo setting never bypasses failed tests, a failed quality gate, missing task-check evidence, or an explicit user constraint.
+
 Anti-patterns:
 - ❌ `plan "goal"` → `phase set plan` → PRD generation (skips Research)
-- ❌ `research_signal: quick-eligible` → quick 플로우 자동 진입 (제안 없이) — quick은 사용자 확인 후에만
+- ❌ 일반 모드에서 `research_signal: quick-eligible` → quick 플로우 자동 진입 — yolo/명시적 자율 실행일 때만 자동 진입 가능
 - ❌ 신호 1-2개 HIT인데 "거의 quick감"이라며 조사 생략 — 1개라도 HIT면 조사 규모만 조절(slim), quick 제안 금지
 - ❌ Research agents complete → synthesize to ROADMAP.md → save → advance (raw agent output never shown, never persisted to `notes.md`)
 - ❌ Task breakdown generated → `$XMB save plan` → AskUserQuestion (task list never shown to user)
@@ -183,8 +206,8 @@ Anti-patterns:
 - ❌ Per-task implementation → expensive panel → user confirmation (repeated for every task)
 - ❌ Spawn 4 research agents → results appear → user never learns which tier burned the tokens
 - ❌ `init` → `tasks add` → `tasks update --status in_progress` (no PRD, no CONTEXT.md — dashboard blind spot)
-- ✅ `plan "goal"` → init → intent-check → **interview only if needed** → research → persist findings → PRD/tasks → print one Plan Bundle → direction approval
-- ✅ Plan phase: generate tasks → **print task list with done_criteria** → `save plan` → AskUserQuestion for plan review
+- ✅ `plan "goal"` → init → intent-check → **interview only if needed** → research → persist findings → PRD/tasks → print one Plan Bundle → direction approval (yolo에서는 안전 범위 내 자동 승인)
+- ✅ Plan phase: generate tasks → **print task list with done_criteria** → `save plan` → AskUserQuestion for plan review (yolo에서는 중요 결정일 때만)
 - ✅ If tasks added directly: generate PRD from task list before first `tasks update --status in_progress`
 
 More anti-patterns:
@@ -271,21 +294,22 @@ Use `plan --interview` when the user explicitly wants detailed refinement. Use `
    - Save CONTEXT.md, REQUIREMENTS.md, ROADMAP.md
    - `$XMB gate pass` → `$XMB phase next` (Research → Plan)
    - Then generate PRD and proceed with plan
-   - **NEVER skip Research by calling `phase set plan` directly — Research produces the artifacts that PRD depends on.** Scale it instead: read `research_signal` from the plan JSON (`full` = 4 agents / `slim` = 1-2 targeted agents on HIT signals / `quick-eligible` = suggest `--quick` via AskUserQuestion, only at 0/4).
+   - **NEVER skip Research by calling `phase set plan` directly — Research produces the artifacts that PRD depends on.** Scale it instead: read `research_signal` from the plan JSON (`full` = 4 agents / `slim` = 1-2 targeted agents on HIT signals / `quick-eligible` = suggest `--quick` via AskUserQuestion, only at 0/4; yolo/explicit autonomous mode may choose it directly).
 3. **If project exists in Research phase** → check artifacts, continue Research if incomplete, then plan
 4. **If project exists in Plan phase** → `$XMB plan "{goal}"` (already past Research)
 
 ### `plan "goal" --quick` (explicit Quick Mode)
 1. `$XMB init quick-{timestamp}` → `$XMB phase set plan` → Quick Mode flow (see [Quick Mode](#quick-mode-one-shot-planrun))
-2. Only enters Quick Mode when `--quick` flag is **explicitly** provided, OR when `research_signal.recommendation === "quick-eligible"` (0/4 signals) AND the user confirmed a --quick suggestion via AskUserQuestion
-3. Research is skipped ONLY via explicit user opt-in — either the flag, or a confirmed suggestion. The gauge alone never skips anything.
+2. Only enters Quick Mode when `--quick` flag is **explicitly** provided, OR when `research_signal.recommendation === "quick-eligible"` (0/4 signals) and the user confirmed it; in yolo/explicit autonomous mode, that safe recommendation is sufficient.
+3. Outside yolo/explicit autonomous mode, Research is skipped ONLY via explicit user opt-in.
 
 ### `dispatch "<instruction>"` (lightweight tracked execution)
 1. `$XMB dispatch "<instruction>" [--model M|--role R] [--done-criteria "..."] --json` — one task, no PRD/phase ceremony; the CLI prints a LOUD exemption notice (relay it to the user verbatim).
 2. Spawn ONE agent with the returned `task.prompt`. Model rule is the standard contract: `model` field is a tier → pass it; `"inherit"` → OMIT the model parameter.
-3. Verify the result against `done_criteria` yourself (leader), then run `task.on_complete` (append `--resolved-model <tier>` when the task ran on inherit).
-4. If the notice says dispatch tasks are piling up (≥2), suggest promoting to a PRD flow — do not keep dispatching a multi-step project.
-5. For delegation-critical instructions, set `--interface-contract`/`tasks update --interface-contract` (signatures/invariants, 2-3 lines) — it is injected into the prompt as `## Interface Contract`.
+3. A harness `completed` notification is not task completion. Require the returned `completion_contract`: final response ends with `## 완료 보고`, every done criterion is addressed, and `x-build task-check <id>` passed. If any is absent, resume the same agent with the missing requirement up to twice; then run `task.on_fail`, never `task.on_complete`.
+4. Only after that evidence, verify the result against `done_criteria` yourself and run `task.on_complete` (append `--resolved-model <tier>` when the task ran on inherit).
+5. If the notice says dispatch tasks are piling up (≥2), suggest promoting to a PRD flow — do not keep dispatching a multi-step project.
+6. For delegation-critical instructions, set `--interface-contract`/`tasks update --interface-contract` (signatures/invariants, 2-3 lines) — it is injected into the prompt as `## Interface Contract`.
 
 ### Other commands
 - Route directly to the matching CLI command (init, status, discuss, research, run, etc.)

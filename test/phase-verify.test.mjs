@@ -1043,6 +1043,22 @@ describe('run --json budget gate (regression)', () => {
     }
   });
 
+  test('human-readable run is a preview and never leaves orphan RUNNING tasks', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = driveToExecute(tmp);
+      const r = run(['run'], { cwd: tmp, env: { HOME: BUDGET_HOME } });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('Preview only — no task status changed');
+
+      const tasks = readJSON(projectPath(tmp, name, 'phases', '02-plan', 'tasks.json')).tasks;
+      expect(tasks.some((task) => task.status === 'running')).toBe(false);
+      expect(tasks.every((task) => task.status === 'pending' || task.status === 'ready')).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('blocks the --json plan when projected cost exceeds budget', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
