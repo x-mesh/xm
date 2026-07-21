@@ -32,33 +32,75 @@ export function cmdQuality(args) {
   console.log(`\n${renderBar(passCount, results.length)} quality checks`);
 }
 
+// ── structured requirements (shared by coverage + traceability) ─────
+//
+// Requirements live in two places depending on which flow produced the project:
+// the research artifact REQUIREMENTS.md, or — for plan/PRD-first projects — the
+// PRD's "Requirements Traceability" section (`- [R1] {text} → SC1`). Reading only
+// REQUIREMENTS.md made the Verify gate vacuously fail on PRD-first projects whose
+// approved R1..Rn never touched that file (toss-20260721-666aa5a0). PRD wins per
+// R# id: it is the document that passed the approval gate.
+
+function parseReqItems(text) {
+  if (!text) return [];
+  // Strip fenced blocks first so template Format:/Examples: samples never parse
+  // as real requirements (same rule as the AC / failure-mode parsers in tasks.mjs).
+  const body = text.replace(/```[\s\S]*?```/g, '');
+  const out = [];
+  for (const m of body.matchAll(/^\s*-\s*\[(R(?:EQ-?)?\d+)\]\s*(.+)$/gim)) {
+    // PRD traceability items carry a "→ SC1" pointer tail — not requirement text.
+    const desc = m[2].replace(/\s*(?:→|->)\s*SC[\d,\s]*$/i, '').trim();
+    if (desc) out.push({ id: m[1], desc });
+  }
+  return out;
+}
+
+export function parseStructuredRequirements(project) {
+  const reqMd = readMD(join(contextDir(project), 'REQUIREMENTS.md'));
+  const prd = readMD(prdPath(project));
+  // Header number is flexible (mirrors the AC parser); "Non-Functional
+  // Requirements" cannot match because "Requirements" must directly follow the
+  // number. The section ends at the next `##` header.
+  const section = prd?.match(/##\s*(?:\d+\.?)?\s*Requirements(?:\s+Traceability)?\s*\n[\s\S]*?(?=\n##[ \t\d]|$)/i);
+  const fromPrd = section ? parseReqItems(section[0]) : [];
+  const fromReqMd = parseReqItems(reqMd);
+  const byId = new Map();
+  for (const r of fromReqMd) byId.set(r.id.toLowerCase(), r);
+  for (const r of fromPrd) byId.set(r.id.toLowerCase(), r); // PRD wins on collision
+  const reqs = [...byId.values()].sort(
+    (a, b) => Number(a.id.match(/\d+/)?.[0] || 0) - Number(b.id.match(/\d+/)?.[0] || 0));
+  return {
+    reqs,
+    sources: { prd: fromPrd.length, requirements_md: fromReqMd.length },
+    // readMD returns '' for a missing file — truthiness IS the existence check.
+    files: { prd: !!prd, requirements_md: !!reqMd },
+  };
+}
+
+function describeReqSources(sources) {
+  return `PRD §Requirements Traceability: ${sources.prd} · REQUIREMENTS.md: ${sources.requirements_md}`;
+}
+
 // ── cmdVerifyCoverage ───────────────────────────────────────────────
 
 export function cmdVerifyCoverage(args) {
   const project = resolveProject(null);
-  const requirements = readMD(join(contextDir(project), 'REQUIREMENTS.md'));
   const taskData = readJSON(tasksPath(project));
   const tasks = taskData?.tasks || [];
+  const { reqs, sources, files } = parseStructuredRequirements(project);
 
-  if (!requirements) {
-    console.log('No REQUIREMENTS.md found. Run: x-build research');
+  if (!files.requirements_md && !files.prd) {
+    console.log('No REQUIREMENTS.md or PRD found. Run: x-build research (or: x-build plan)');
     return;
   }
 
-  const reqPattern = /^-\s*\[(R(?:EQ-?)?\d+)\]\s*(.+)/gm;
-  const reqs = [];
-  let match;
-  while ((match = reqPattern.exec(requirements)) !== null) {
-    reqs.push({ id: match[1], desc: match[2].trim() });
-  }
-
   if (reqs.length === 0) {
-    console.log(`${C.yellow}No structured requirements found in REQUIREMENTS.md${C.reset}`);
+    console.log(`${C.yellow}No structured requirements found — searched PRD §Requirements Traceability and REQUIREMENTS.md${C.reset}`);
     console.log(`  Expected format: - [R1] Description`);
     return;
   }
 
-  console.log(`\n${C.bold}Requirement Coverage${C.reset}\n`);
+  console.log(`\n${C.bold}Requirement Coverage${C.reset} ${C.dim}(${describeReqSources(sources)})${C.reset}\n`);
 
   let covered = 0;
   let uncovered = 0;
@@ -90,6 +132,7 @@ export function cmdVerifyCoverage(args) {
     total: reqs.length,
     covered,
     uncovered,
+    sources,
     details: reqs.map(r => ({ ...r, covered: tasks.some(t => t.name.includes(r.id)) })),
   });
 
@@ -100,36 +143,29 @@ export function cmdVerifyCoverage(args) {
 
 export function cmdVerifyTraceability(args) {
   const project = resolveProject(null);
-  const requirements = readMD(join(contextDir(project), 'REQUIREMENTS.md'));
   const prd = readMD(prdPath(project));
   const taskData = readJSON(tasksPath(project));
   const tasks = taskData?.tasks || [];
+  const { reqs, sources, files } = parseStructuredRequirements(project);
 
-  if (!requirements) {
-    console.log('No REQUIREMENTS.md found. Run: x-build research');
+  if (!files.requirements_md && !files.prd) {
+    console.log('No REQUIREMENTS.md or PRD found. Run: x-build research (or: x-build plan)');
     return;
   }
 
-  // Parse requirements
-  const reqPattern = /^-\s*\[(R(?:EQ-?)?\d+)\]\s*(.+)/gm;
-  const reqs = [];
-  let match;
-  while ((match = reqPattern.exec(requirements)) !== null) {
-    reqs.push({ id: match[1], desc: match[2].trim() });
-  }
-
   if (reqs.length === 0) {
-    // REQUIREMENTS.md exists but nothing parsed — a format/parse failure, not a pass.
+    // Requirement docs exist but nothing parsed — a format/parse failure, not a pass.
     // Write a fresh artifact (a stale one from a previous run must not masquerade as
     // current) and fail the exit code: a traceability gate passing green with zero
     // requirements is a vacuous pass.
-    console.log(`${C.yellow}No structured requirements found — expected "- [R1] ..." items. Traceability cannot be verified.${C.reset}`);
+    console.log(`${C.yellow}No structured requirements found — searched PRD §Requirements Traceability and REQUIREMENTS.md for "- [R1] ..." items. Traceability cannot be verified.${C.reset}`);
     writeJSON(join(phaseDir(project, '04-verify'), 'traceability.json'), {
       timestamp: new Date().toISOString(),
       total: 0,
       fully_covered: 0,
       partial: 0,
       gaps: 0,
+      sources,
       matrix: [],
     });
     process.exitCode = 1;
@@ -144,7 +180,7 @@ export function cmdVerifyTraceability(args) {
     console.log(`  Every requirement will show AC: NONE until the PRD gains a parseable AC section.`);
   }
 
-  console.log(`\n${C.bold}Traceability Matrix${C.reset} — R# ↔ Task ↔ AC ↔ Done Criteria\n`);
+  console.log(`\n${C.bold}Traceability Matrix${C.reset} — R# ↔ Task ↔ AC ↔ Done Criteria ${C.dim}(${describeReqSources(sources)})${C.reset}\n`);
 
   let fullyCovered = 0;
   let partial = 0;
@@ -201,6 +237,7 @@ export function cmdVerifyTraceability(args) {
     fully_covered: fullyCovered,
     partial,
     gaps,
+    sources,
     matrix,
   });
 

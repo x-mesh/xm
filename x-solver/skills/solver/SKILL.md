@@ -50,7 +50,9 @@ See `references/ask-user-question-rule.md` — the `question` field is invisible
 
 ## Mode Detection
 
-Check mode before every command:
+Check mode ONCE at session start, then cache it for the whole session — never re-probe
+per command (a per-command probe nearly doubles CLI invocations for zero information).
+Re-check only after an explicit `mode set`:
 ```bash
 xm solver mode show
 ```

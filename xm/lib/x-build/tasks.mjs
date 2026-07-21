@@ -5,6 +5,7 @@
 import {
   PHASES, TASK_STATES, STATUS_ALIASES, C,
   ROLE_MODEL_MAP_HR, INHERIT_MODEL, JUDGMENT_ROLES, MODEL_COSTS, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, checkBudget, loadSharedConfig, XM_GLOBAL, ROOT,
+  getMode, autopilotActive,
   readJSON, writeJSON, modifyJSON, readMD,
   manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, decisionsPath, projectDir,
   resolveProject, findCurrentProject, logDecision, addDecision, appendMetric, emitHook,
@@ -1621,6 +1622,14 @@ function runWorktreeMode(ctx) {
   }, null, 2));
 }
 
+// Session-invariant context echoed in run/run-status JSON envelopes so the
+// skill layer never spends a turn on a separate `mode show` probe (turn-diet, t13).
+// Named ui_mode because `mode` is already the worktree-backend marker in the
+// run --json contract — colliding with it would clobber that signal.
+function envelopeContext() {
+  return { ui_mode: getMode(), autopilot: autopilotActive() };
+}
+
 export async function cmdRun(args) {
   const { opts } = parseOptions(args);
   const project = resolveProject(null);
@@ -1741,7 +1750,7 @@ export async function cmdRun(args) {
 
   if (!currentStep) {
     if (opts.json) {
-      console.log(JSON.stringify({ project, total_steps: stepData.steps.length, tasks: [], status: 'all_done' }, null, 2));
+      console.log(JSON.stringify({ project, total_steps: stepData.steps.length, tasks: [], status: 'all_done', ...envelopeContext() }, null, 2));
       return;
     }
     console.log('✅ All steps completed. Run: x-build phase next');
@@ -1780,6 +1789,7 @@ export async function cmdRun(args) {
       console.log(JSON.stringify({
         project, step: currentStep.id, total_steps: stepData.steps.length,
         tasks: [], status: running.length ? 'in_progress' : 'waiting', running,
+        ...envelopeContext(),
       }, null, 2));
       return;
     }
@@ -1911,7 +1921,7 @@ export async function cmdRun(args) {
       process.exitCode = 1;
     }
 
-    console.log(JSON.stringify(output, null, 2));
+    console.log(JSON.stringify({ ...output, ...envelopeContext() }, null, 2));
     return;
   }
 
@@ -1967,7 +1977,7 @@ export function cmdRunStatus(args) {
     : { review_scope: 'task', active_group: null, review_required: false, all_passed: true, groups: [] };
 
   if (!stepData?.steps?.length) {
-    if (opts.json) { console.log(JSON.stringify({ project, steps: [], all_done: false, error: 'no_steps', next_action: 'steps compute' }, null, 2)); return; }
+    if (opts.json) { console.log(JSON.stringify({ project, steps: [], all_done: false, error: 'no_steps', next_action: 'steps compute', ...envelopeContext() }, null, 2)); return; }
     console.log('No steps. Run: x-build steps compute');
     return;
   }
@@ -2027,6 +2037,7 @@ export function cmdRunStatus(args) {
       review_command: groupSummary.review_command || null,
       circuit_breaker: { state: cb.state, cooldown_until: cb.cooldown_until || null },
       next_action,
+      ...envelopeContext(),
     }, null, 2));
     return;
   }

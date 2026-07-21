@@ -414,10 +414,11 @@ function phaseSet(args) {
 export function cmdGate(args) {
   const action = args[0];
   if (!action || !['pass', 'fail'].includes(action)) {
-    console.error('Usage: x-build gate <pass|fail> [message] [project]');
+    console.error('Usage: x-build gate <pass|fail> [message] [--advance] [project]');
     exitFail(1);
   }
 
+  const advance = args.includes('--advance');
   const message = args.slice(1).filter(a => !a.startsWith('--')).join(' ') || null;
   const project = resolveProject(null);
   const manifest = readJSON(manifestPath(project));
@@ -461,7 +462,14 @@ export function cmdGate(args) {
 
     logDecision(project, `Gate passed: ${currentPhase.label}${message ? ` — ${message}` : ''}`);
     console.log(`✅ Gate passed for ${currentPhase.label}.`);
-    console.log(`   Run: x-build phase next`);
+    if (advance) {
+      // The command after a successful gate pass is always `phase next` (the CLI
+      // itself used to print it as a hint) — a deterministic transition, so chain
+      // it here and save the round-trip turn.
+      console.log(`⏩ --advance → phase next`);
+      return phaseNext([]);
+    }
+    console.log(`   Run: x-build phase next  (or chain it: gate pass --advance)`);
   } else {
     status.gate_passed = false;
     status.gate_message = message;
