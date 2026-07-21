@@ -250,6 +250,15 @@ case "$CMD" in
     node "$LIB_PATH/x-inbox-cli.mjs" "$@"
     ;;
 
+  local-fix)
+    LIB_PATH="$(plugin_lib xm lib)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-local-fix-cli.mjs" ]; then
+      echo "xm local-fix: x-local-fix-cli.mjs not found under $LIB" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-local-fix-cli.mjs" "$@"
+    ;;
+
   build)
     LIB_PATH="$(plugin_lib build)"
     node "$LIB_PATH/x-build-cli.mjs" "$@"
@@ -663,20 +672,34 @@ case "$CMD" in
     echo "Local:  ${LOCAL_VERSION:-unknown}"
     echo "Remote: $REMOTE_VERSION"
 
-    # 3. Decide whether to proceed
+    # 3. Decide whether Claude itself needs an update. Do NOT exit merely
+    #    because Claude is current: Codex/Cursor/Kiro overlays can still be
+    #    stale and must converge from the current bundle.
+    CLAUDE_UPDATE_NEEDED=1
     if [ -n "$LOCAL_VERSION" ] && [ "$LOCAL_VERSION" = "$REMOTE_VERSION" ] && [ "$FORCE" = "0" ]; then
-      echo "✅ already up to date. Pass --force to reinstall anyway."
-      exit 0
+      CLAUDE_UPDATE_NEEDED=0
+      echo "Claude marketplace is already current; checking installed overlays."
+      if [ "$NO_PROPAGATE" = "1" ]; then
+        echo "✅ already up to date."
+        exit 0
+      fi
     fi
 
     echo ""
     if [ "$DRY" = "1" ]; then
       echo "🔍 Dry run — would run:"
-      echo "   claude plugin marketplace update xm"
-      echo "   claude plugin update xm@xm"
-      echo "   claude plugin update <each OUTDATED @xm sub-plugin>  # version-gated vs market; --force updates all"
+      if [ "$CLAUDE_UPDATE_NEEDED" = "1" ]; then
+        echo "   claude plugin marketplace update xm"
+        echo "   claude plugin update xm@xm"
+        echo "   claude plugin update <each OUTDATED @xm sub-plugin>  # version-gated vs market; --force updates all"
+      else
+        echo "   skip Claude marketplace/plugin update (already current)"
+      fi
       [ "$SKIP_CLI" = "0" ] && echo "   cp <cache>/xm/scripts/xm ~/.local/bin/xm"
-      [ "$NO_PROPAGATE" = "0" ] && echo "   node <cache>/install-cli.mjs --propagate"
+      if [ "$NO_PROPAGATE" = "0" ]; then
+        echo "   node <cache>/install-cli.mjs --propagate"
+        echo "   codex plugin add xm@<local-marketplace>  # when Codex is installed"
+      fi
       exit 0
     fi
 
@@ -685,20 +708,22 @@ case "$CMD" in
     #      sees only the stale cached marketplace.json and skips the upgrade.
     #    - `plugin update` (not `install`) is required: `install` is a no-op
     #      when the plugin is already installed at any version.
-    if ! command -v claude >/dev/null 2>&1; then
-      echo "xm update: 'claude' CLI not on PATH. Install it first." >&2
-      exit 1
-    fi
-    echo "→ claude plugin marketplace update xm"
-    claude plugin marketplace update xm 2>&1 | tail -2
-    echo "→ claude plugin update xm@xm"
-    claude plugin update xm@xm 2>&1 | tail -3
-    # If the expected version directory is still missing (update reported "already at latest"
-    # but cache was wiped), force a reinstall to materialize the files.
     EXPECTED_CACHE_DIR="$HOME/.claude/plugins/cache/xm/xm/$REMOTE_VERSION"
-    if [ ! -d "$EXPECTED_CACHE_DIR" ]; then
-      echo "→ cache missing for $REMOTE_VERSION — reinstalling"
-      claude plugin install xm@xm 2>&1 | tail -3
+    if [ "$CLAUDE_UPDATE_NEEDED" = "1" ]; then
+      if ! command -v claude >/dev/null 2>&1; then
+        echo "xm update: 'claude' CLI not on PATH. Install it first." >&2
+        exit 1
+      fi
+      echo "→ claude plugin marketplace update xm"
+      claude plugin marketplace update xm 2>&1 | tail -2
+      echo "→ claude plugin update xm@xm"
+      claude plugin update xm@xm 2>&1 | tail -3
+      # If the expected version directory is still missing (update reported "already at latest"
+      # but cache was wiped), force a reinstall to materialize the files.
+      if [ ! -d "$EXPECTED_CACHE_DIR" ]; then
+        echo "→ cache missing for $REMOTE_VERSION — reinstalling"
+        claude plugin install xm@xm 2>&1 | tail -3
+      fi
     fi
 
     # 4b. Update INSTALLED sub-plugins (panel@xm, build@xm, …). The dispatcher runs each
@@ -711,7 +736,7 @@ case "$CMD" in
     #     marketplace.json is already in $REMOTE_JSON — only plugins whose installed
     #     version differs from the market version get the expensive call. --force
     #     disables the gate (repair semantics: reinstall everything).
-    if command -v node >/dev/null 2>&1; then
+    if [ "$CLAUDE_UPDATE_NEEDED" = "1" ] && command -v node >/dev/null 2>&1; then
       SUBPLUGIN_PLAN="$(printf '%s' "$REMOTE_JSON" | XM_UPDATE_FORCE="$FORCE" node -e '
         let s = "";
         process.stdin.on("data", c => s += c).on("end", () => {
@@ -778,7 +803,7 @@ case "$CMD" in
     #    a frequent UX regression for new aliases or hook updates.
     NEW_SETUP="$HOME/.claude/plugins/cache/xm/xm/$REMOTE_VERSION/scripts/setup-global.mjs"
     if [ ! -f "$NEW_SETUP" ]; then
-      NEW_SETUP="$(ls -td "$HOME/.claude/plugins/cache/xm/xm"/*/scripts/setup-global.mjs 2>/dev/null | head -1)"
+      NEW_SETUP="$(ls -td "$HOME/.claude/plugins/cache/xm/xm"/*/scripts/setup-global.mjs 2>/dev/null | head -1 || true)"
     fi
     if [ -n "$NEW_SETUP" ] && [ -f "$NEW_SETUP" ] && command -v node >/dev/null 2>&1; then
       echo "→ refreshing global hooks/dispatcher"
@@ -789,7 +814,7 @@ case "$CMD" in
     if [ "$NO_PROPAGATE" = "0" ]; then
       NEW_CLI="$HOME/.claude/plugins/cache/xm/xm/$REMOTE_VERSION/lib/install/install-cli.mjs"
       if [ ! -f "$NEW_CLI" ]; then
-        NEW_CLI="$(ls -td "$HOME/.claude/plugins/cache/xm/xm"/*/lib/install/install-cli.mjs 2>/dev/null | head -1)"
+        NEW_CLI="$(ls -td "$HOME/.claude/plugins/cache/xm/xm"/*/lib/install/install-cli.mjs 2>/dev/null | head -1 || true)"
       fi
       if [ -n "$NEW_CLI" ] && [ -f "$NEW_CLI" ]; then
         # Snapshot lib + skills to tmpdir to avoid source-race when plugin cache
@@ -799,13 +824,26 @@ case "$CMD" in
         trap 'rm -rf "$SNAPSHOT_DIR"' EXIT INT TERM
         cp -R "$NEW_CACHE_ROOT/lib" "$SNAPSHOT_DIR/lib" 2>/dev/null
         cp -R "$NEW_CACHE_ROOT/skills" "$SNAPSHOT_DIR/skills" 2>/dev/null
+        [ ! -f "$NEW_CACHE_ROOT/skills.checksums.json" ] || cp "$NEW_CACHE_ROOT/skills.checksums.json" "$SNAPSHOT_DIR/skills.checksums.json"
+        # Codex rendering needs the plugin version next to skills/. The old
+        # snapshot omitted both metadata candidates, so only the Codex target
+        # failed while other overlays appeared to update successfully.
+        if [ -d "$NEW_CACHE_ROOT/.claude-plugin" ]; then
+          cp -R "$NEW_CACHE_ROOT/.claude-plugin" "$SNAPSHOT_DIR/.claude-plugin" 2>/dev/null
+        elif [ -f "$NEW_CACHE_ROOT/package.json" ]; then
+          cp "$NEW_CACHE_ROOT/package.json" "$SNAPSHOT_DIR/package.json" 2>/dev/null
+        fi
         SNAP_CLI="$SNAPSHOT_DIR/lib/install/install-cli.mjs"
         SNAP_LIB="$SNAPSHOT_DIR/lib"
         SNAP_SKILLS="$SNAPSHOT_DIR/skills"
 
         if [ -f "$SNAP_CLI" ] && [ -d "$SNAP_LIB" ] && [ -d "$SNAP_SKILLS" ]; then
           echo "→ propagating to other LLM targets"
-          PROPAGATE_OUT="$(node "$SNAP_CLI" --propagate --lib-dir "$SNAP_LIB" --skills-dir "$SNAP_SKILLS" 2>&1)"
+          # Codex caches local plugins by version. Give its rendered manifest a
+          # fresh SemVer build suffix so `codex plugin add` cannot retain stale
+          # Skill files when the Claude release version itself is unchanged.
+          CODEX_CACHEBUSTER="local-$(date -u +%Y%m%d-%H%M%S)-$$"
+          PROPAGATE_OUT="$(XM_CODEX_CACHEBUSTER="$CODEX_CACHEBUSTER" node "$SNAP_CLI" --propagate --lib-dir "$SNAP_LIB" --skills-dir "$SNAP_SKILLS" 2>&1)"
           PROPAGATE_EXIT=$?
           if [ "$PROPAGATE_EXIT" = "0" ]; then
             SUMMARY="$(printf '%s' "$PROPAGATE_OUT" | node -e '
@@ -818,6 +856,50 @@ case "$CMD" in
                 } catch { process.stdout.write("(parse error)"); }
               })' 2>/dev/null)"
             echo "    $SUMMARY"
+
+            CODEX_FAILED="$(printf '%s' "$PROPAGATE_OUT" | node -e '
+              let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
+                try {
+                  const j=JSON.parse(s);
+                  const row=(j.results||[]).find(x=>x.target==="codex");
+                  if(row && row.status==="failed") process.stdout.write(row.error||"Codex propagation failed");
+                } catch {}
+              })' 2>/dev/null)"
+            if [ -n "$CODEX_FAILED" ]; then
+              echo "xm update: $CODEX_FAILED" >&2
+              exit 1
+            fi
+            CODEX_PROPAGATED="$(printf '%s' "$PROPAGATE_OUT" | node -e '
+              let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
+                try {
+                  const j=JSON.parse(s);
+                  const row=(j.results||[]).find(x=>x.target==="codex");
+                  if(row && row.status!=="failed") process.stdout.write("1");
+                } catch {}
+              })' 2>/dev/null)"
+            if [ "$CODEX_PROPAGATED" = "1" ]; then
+              if command -v codex >/dev/null 2>&1; then
+                CODEX_MARKETPLACE="$(node -e '
+                  try {
+                    const fs=require("fs"), path=require("path");
+                    const p=path.join(process.env.HOME,".agents/plugins/marketplace.json");
+                    const j=JSON.parse(fs.readFileSync(p,"utf8"));
+                    if((j.plugins||[]).some(x=>x.name==="xm") && typeof j.name==="string") process.stdout.write(j.name);
+                  } catch {}
+                ' 2>/dev/null)"
+                if [ -n "$CODEX_MARKETPLACE" ]; then
+                  echo "→ refreshing Codex plugin cache"
+                  if ! codex plugin add "xm@$CODEX_MARKETPLACE" 2>&1 | tail -3; then
+                    echo "xm update: Codex plugin refresh failed" >&2
+                    exit 1
+                  fi
+                else
+                  echo "⚠️  Codex marketplace entry for xm not found — run xm install --target codex --global once" >&2
+                fi
+              else
+                echo "⚠️  Codex overlay updated, but 'codex' CLI is not on PATH" >&2
+              fi
+            fi
           else
             echo "⚠️  propagate exited $PROPAGATE_EXIT"
             echo "$PROPAGATE_OUT" | sed "s/^/    /" | tail -10
@@ -886,6 +968,7 @@ Commands:
                                         setup                 Configure server URL + API key
                                         server start|stop     Local sync server
   solver <subcmd>                     Structured problem solving
+  local-fix <project> ...             Prepare an audited target-project worktree fix
   score --parts ... --weights ...     Compute weighted score (shared utility)
   install [--target T] [--global]     Install xm SKILLs into Cursor/Codex/Kiro/Antigravity/OpenCode
   install --list-installed            List all installed manifests as JSON

@@ -57,6 +57,7 @@ Handoff is **2-tier**. Compose both from **this conversation**:
 | `open_questions` | string[] | Decisions not yet made, ambiguities flagged but unresolved, "later" follow-ups. |
 | `rejected_alternatives` | string[] | One-line each: `"alternative — why rejected"`. (Full reasoning goes in tier 2.) |
 | `next_session_should_know` | string[] | Non-obvious context: user preferences, discovered constraints, surprising findings. |
+| `memory_refs` | `{id, reason}[]` | 현재 세션의 결정에 실제로 쓴 mem-mesh memory만. 최대 5개, id와 다음 세션에 필요한 이유 한 줄만 기록. |
 
 ### Tier 2 — `session_log` (optional object; each key a `string[]`, omit or `[]` when empty)
 
@@ -70,6 +71,10 @@ Handoff is **2-tier**. Compose both from **this conversation**:
 Tier 1 is the searchlight; tier 2 is the archive behind it. A trivial session → tier 1 only. A multi-hour session with abandoned approaches and unresolved forks → a full tier 2, and that is correct.
 
 **Still forbidden in BOTH tiers:** step-by-step recap of what you did (the diff says that), and anything already in `what_done` / `decisions`.
+
+`memory_refs`는 검색 결과 전체를 넣는 기능이 아닙니다. 자동 검색으로 나온 memory,
+제목만 비슷한 memory, 본문 복사본은 넣지 않습니다. 현재 판단을 바꾸는 memory id만
+선택하고, 복원 시 `handon`이 id로 다시 조회합니다.
 
 ## Step 2 — Dispatch the Save
 
@@ -85,7 +90,7 @@ Build the CLI command:
 
 ```bash
 xm build handoff --full \
-  --narrative-json '{"intent":"...","open_questions":[...],"rejected_alternatives":[...],"next_session_should_know":[...],"session_log":{"rejected":[...],"open_forks":[...],"constraints_prefs":[...],"attempts":[...]}}' \
+  --narrative-json '{"intent":"...","open_questions":[...],"rejected_alternatives":[...],"next_session_should_know":[...],"memory_refs":[{"id":"837fbc8a-9834-4a4a-8506-c6998ba62e65","reason":"latest remote handoff"}],"session_log":{"rejected":[...],"open_forks":[...],"constraints_prefs":[...],"attempts":[...]}}' \
   "$ARGUMENTS"
 ```
 
@@ -98,6 +103,11 @@ xm build handoff --full \
 ## Step 3 — Mirror to mem-mesh (dual-write mode only)
 
 **You do not build this payload.** Step 2's CLI already rendered it — correct schema, tier-2 content, git anchors, and the ≥100-char minimum `add` enforces. Hand-writing it is how the old version failed: it used `type:` (the real key is `category:`) and could fall under the length minimum, so the call was rejected.
+
+`mcp__mem-mesh__add`를 standalone handoff 저장으로 호출하지 않습니다. **반드시 Step
+2가 먼저** 실행되어 `.xm/build/SESSION-STATE.json`과 `HANDOFF.md`를 쓴 뒤, 그
+실행이 만든 mirror payload만 전송합니다. 이 순서가 파일과 mem-mesh의 시간축을
+같게 유지합니다.
 
 When Step 2 printed `🧠 mem-mesh mirror PENDING → <path>`:
 
@@ -128,6 +138,7 @@ If the `add` call fails, do NOT run `--mirror-done`. Leave it pending (the next 
 | key files | most changed files | `git diff --stat` |
 | **narrative** (tier 1) | **leader-composed (Step 1)** | **`--narrative-json` flag** |
 | **session_log** (tier 2) | **leader-composed (Step 1), retrieval-only** | **`--narrative-json` flag** |
+| **memory_refs** | **leader-selected mem-mesh ids, max 5** | **`--narrative-json` flag; id + reason only** |
 
 ## Output
 
@@ -154,7 +165,8 @@ Three files, all written by the CLI:
     "intent": "User wanted to add conversation-level context to /xm:handoff because git artifacts alone lose the 'why'.",
     "open_questions": ["Whether narrative.intent should be auto-summarized from the last 20 turns if leader leaves it empty"],
     "rejected_alternatives": ["MEMORY auto-indexing — too broad for handoff scope"],
-    "next_session_should_know": ["Leader must run at sonnet+ for narrative quality; haiku-only handoff is now disallowed"]
+    "next_session_should_know": ["Leader must run at sonnet+ for narrative quality; haiku-only handoff is now disallowed"],
+    "memory_refs": [{"id":"837fbc8a-9834-4a4a-8506-c6998ba62e65","reason":"latest remote handoff"}]
   },
   "session_log": {
     "rejected": ["mem-mesh-only tier 2 — rejected because file-only users would lose the archive; dual-write keeps .xm portable"],

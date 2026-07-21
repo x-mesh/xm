@@ -24,7 +24,10 @@ Decide by **attempting**, in this order:
 2. If it is listed as a deferred tool → load it first (`ToolSearch` with `select:mcp__mem-mesh__search`), then dual-write mode.
 3. Only if the tool does not exist at all, or the call fails after loading → **file-only mode**: make ZERO further mem-mesh calls and never mention mem-mesh in the output.
 
-SESSION-STATE.json is the **primary** restore source; mem-mesh only augments. If a mem-mesh call errors, omit the enrichment line and render the file-based summary anyway.
+복원 원본은 **가장 최신의 검증된 handoff**입니다. 로컬 `SESSION-STATE.json`은
+mem-mesh에 더 새 `handoff` + `session-state` 레코드가 없을 때 primary입니다. 더
+새 원격 레코드가 있으면 그 본문을 primary context로 사용하고, 오래된 로컬 파일은
+보조 자료로만 씁니다. 원격 조회가 실패했을 때만 파일 기반으로 계속합니다.
 
 ## When to Use
 - Start of a new session
@@ -47,10 +50,11 @@ SESSION-STATE.json is the **primary** restore source; mem-mesh only augments. If
 xm build handon --json
 ```
 
-If the command prints `{"error":"no_session_state"}`, output:
+If the command prints `{"error":"no_session_state"}`, 로컬 상태가 없다고만 기록하고
+멈추지 않습니다. Step 3.5에서 mem-mesh handoff를 조회합니다. 원격에도 없을 때만:
 > No previous session state found. Run `/xm:handoff` at the end of a session to save.
 
-And stop.
+를 출력하고 멈춥니다.
 
 If the command itself fails (`command not found`, `Cannot find module`, non-JSON output), that is an **invocation failure, not a missing handoff** — report the actual error to the user and try the fallback above. Never translate a broken invocation into "no previous session state": the state file may exist and be perfectly readable.
 
@@ -60,13 +64,13 @@ Then, best-effort, read the last recorded review verdict for the 🔍 Review lin
 xm last review --json 2>/dev/null
 ```
 
-**Step 2: Parse and absorb as context**
+**Step 2: Parse the local candidate**
 
 The JSON contains these sections that you MUST use as your working context:
 
 | Field | How to use |
 |-------|-----------|
-| `where.branch` | You are on this git branch |
+| `where.branch` | 이 파일이 선택됐을 때의 git branch |
 | `where.last_commits` | These are the most recent changes |
 | `what_done` | This work was completed in the last session |
 | `what_remains.active_projects` | These projects need attention |
@@ -75,39 +79,52 @@ The JSON contains these sections that you MUST use as your working context:
 | `context.current_focus` | This was the working direction |
 | `context.test_status` | This is the test health |
 | `context.quality_scores` | These are the quality benchmarks |
-| `narrative.intent` | **Why the last session was started — load this as your interpretive frame before suggesting next steps** |
+| `narrative.intent` | **이 파일이 선택됐을 때의 세션 의도** |
 | `narrative.open_questions` | **Decisions still pending — surface these before starting new work; do not silently resolve them** |
 | `narrative.rejected_alternatives` | **Approaches already ruled out — do NOT re-propose; reference if the user asks "why not X"** |
 | `narrative.next_session_should_know` | **Non-obvious context the prior session captured for you — treat as binding facts** |
+| `narrative.memory_refs` | handoff가 명시적으로 고른 중요한 mem-mesh memory id와 이유. 최대 5개만 exact-id로 다시 조회한다. |
 | `session_log_summary` | **A count of tier-2 detail (rejected/open_forks/constraints_prefs/attempts). The full archive is deliberately NOT in this JSON — do not treat its absence as "no detail." Announce it (Step 3) and load on demand (below).** |
 | `why_stopped` | This is why the last session ended |
 | `since_handoff.new_commits` | This many changes happened since the handoff (by others or other sessions) |
 | `memmesh_mirror.status` | Did the last handoff reach mem-mesh? `mirrored` / `pending` (it did not — surface this, even when `from_earlier_handoff` is true) / `skipped` (user dismissed it) / `stale` (an already-mirrored record from an older handoff) / `unreadable` (mirror file is corrupt — report it, offer no repair, never overwrite it) / `none` |
 
-**Step 3: Output summary to user**
+**Step 3: Select the newest handoff, then output the summary**
 
-After absorbing, show a human-readable summary:
+먼저 Step 3.5의 원격 후보와 로컬 후보를 고릅니다. `created_at`/`saved_at`이 모두
+유효하면 더 늦은 시각을 선택합니다. 같은 시각 또는 원격 시각이 없으면 로컬을
+선택합니다. 원격 선택 시 memory의 `content`를 **그대로 읽어 작업 context로
+흡수**합니다. 요약의 첫 줄에 아래 중 하나를 반드시 표시합니다.
 
 ```
-📋 Session Restored
+  📦 Source: local SESSION-STATE.json
+  📦 Source: mem-mesh handoff (newer than local by {duration})
+  📦 Source: mem-mesh handoff (no local state)
+```
 
-  📍 Branch: {branch} (+{ahead} ahead)
-  ✅ Done: {what_done count} commits last session
-  📌 Active: {active_projects count} projects
-  🔒 Decisions: {decisions count} carried forward
-  🎯 Focus: {current_focus}
-  🧭 Intent: {narrative.intent}                     (omit line if empty)
-  ❓ Open: {narrative.open_questions.length} question(s)   (omit if 0; list inline if ≤2)
-  ✗ Ruled out: {narrative.rejected_alternatives.length}   (omit if 0)
-  → Carryover: {narrative.next_session_should_know.length} note(s)  (omit if 0)
-  📚 Detailed log: {session_log_summary total} item(s) — say "자세히" to load   (omit line if no summary or total 0)
-  💤 Last stopped: {why_stopped}
-  ⚠️ mem-mesh: 지난 handoff가 mem-mesh에 미러되지 않음 (pending)   (ONLY when memmesh_mirror.status == "pending")
-  🔍 Review: last {ref} ({N} commits ago, {verdict})           (omit line if no recorded review)
+원격 레코드는 handoff의 portable JSON 전체가 아닐 수 있으므로, 그것을 보고
+`SESSION-STATE.json`을 추측해 덮어쓰지 않습니다. 다음 정상 `/xm:handoff`가 현재
+세션을 로컬·mem-mesh에 함께 저장해 두 원본을 다시 맞춥니다.
 
-  Since handoff: {new_commits} new commits
+선택한 후보를 흡수한 뒤 다음 형식으로 요약합니다. 원격이 선택된 경우 로컬에서만
+나오는 필드는 생략하고 원격 본문에 있는 사실만 말합니다.
 
-Ready to continue. What would you like to work on?
+```
+Session Restore
+State: {branch} (+{ahead}/-{behind}) | saved {age} | +{new_commits} commits | {uncommitted} uncommitted files
+Focus: {current_focus}
+
+Carry forward:
+  - {active project + next pending task}
+  - {next_session_should_know item}
+
+Decisions ({count}):
+  - {up to 3 relevant decisions}
+
+Attention:
+  - mem-mesh mirror pending/unreadable, or handoff far behind HEAD
+
+Details: {session_log_summary total} archived items — run `xm build handon --log`
 ```
 
 **Rendering rules for narrative**:
@@ -127,27 +144,42 @@ xm build handon --log
 
 This prints the tier-2 archive (rejected reasoning / open forks / constraints & preferences / attempts). In dual-write mode you may instead pull it from mem-mesh (`search` for the last handoff digest, using the repo-root `project_id` — see Step 3.5) — same content, richer if the log was mirrored thick. Keeping it out of the default restore is the whole point of the 2-tier split: the restore stays high-signal, the detail is one command away.
 
-**Step 3.5: Enrich from mem-mesh (dual-write mode only)**
+**Step 3.5: Find the mem-mesh handoff candidate (dual-write mode only)**
 
-Only in dual-write mode (gate above). Call `mcp__mem-mesh__search` with an empty `query`, the **repo-root** `project_id`, and a high `recency_weight` (e.g. 0.8) to pull recent items / the last handoff archive, then append one line to the summary. (Do NOT use `mcp__mem-mesh__context` here — it requires a `memory_id`/`ids` and cannot list a project's recent memories.)
+Only in dual-write mode (gate above), call `mcp__mem-mesh__search` with an empty
+`query`, the **repo-root** `project_id`, a high `recency_weight` (e.g. `0.8`), and
+`limit: 10`. Do NOT request a limit above 10. Filter the returned results locally:
+keep only the same `project_id` whose `tags` contain **both** `handoff` and
+`session-state`; then choose the greatest valid `created_at`. Do NOT treat a random
+recent memory or a pin as a handoff candidate. (Do NOT use `mcp__mem-mesh__context`
+here — it requires a `memory_id`/`ids` and cannot list a project's recent memories.)
 
 > **`project_id` = basename of the REPO ROOT, not of cwd.** `handoff` writes mirrors under the repo-root name so the id stays stable no matter which subdirectory the CLI ran from; searching by cwd basename from a subdirectory silently returns nothing. When a mirror exists, `xm build handoff --mirror-status` reports the exact `payload.project_id` — prefer that over deriving it yourself.
 
 ```
-  🧠 mem-mesh: {N} recent pins/items ({M} open)     (omit line if nothing returned)
+  Mem-mesh handoff: {memory id} at {created_at}
 ```
 
-Dedupe against `narrative.open_questions` already shown — do not repeat the same item. SESSION-STATE.json remains primary; mem-mesh is additive.
+Dedupe against `narrative.open_questions` already shown — do not repeat the same item. The
+newest verified handoff is primary; mem-mesh is additive only when its candidate is not newer.
+
+로컬 handoff를 선택했다면 `narrative.memory_refs`를, 원격 handoff를 선택했다면
+본문의 `## Referenced mem-mesh memories` 항목을 읽습니다. 각 id를
+`search(query=<id>, project_id=<현재 repo root id>, limit=10)`으로 조회하고 **결과
+id가 정확히 같은 것만** 읽습니다. 한 ref의 조회 실패는 해당 ref만 `unavailable`로
+표시하고 복원을 막지 않습니다. 제목·일반어 검색으로 대체하지 않습니다.
 
 **Distinguish "nothing there" from "it broke":**
 
 | Outcome | Line |
 |---|---|
-| search returned items | `🧠 mem-mesh: {N} recent pins/items ({M} open)` |
-| search returned nothing | *(omit the line — an empty project is not an error)* |
-| search **failed** | `🧠 mem-mesh: 조회 실패 (<error>) — 파일 기반 복원만 표시` |
+| matching handoff returned | select it against the local timestamp, then print the source line and `Mem-mesh handoff: …` |
+| no matching handoff and local exists | select local; omit the mem-mesh line |
+| no matching handoff and no local exists | print the no-session-state message and stop |
+| search **failed** and local exists | `Mem-mesh lookup failed (<error>) — file-based restore only` |
+| search **failed** and no local exists | report the lookup failure and that no restorable state is available |
 
-A failed search rendered as silence is indistinguishable from an empty project, so the user never learns their mem-mesh is down. Report it and continue with the file-based summary.
+A failed search rendered as silence is indistinguishable from an empty project, so the user never learns their mem-mesh is down. Never let the existence of an older local file hide a newer verified remote handoff.
 
 **Step 3.6: Offer to repair a pending mirror (dual-write mode only)**
 
@@ -182,7 +214,7 @@ The `decisions` array contains choices already made and agreed upon. When the us
 | Excuse | Reality |
 |--------|---------|
 | "I don't see `mcp__mem-mesh__search` in my tools" | Deferred tools are listed by name with no schema loaded. Load it with `ToolSearch` and try. Not-seen ≠ not-available — this misread is why the mem-mesh half never ran. |
-| "The file restore worked, so handon is done" | In dual-write mode the restore is file + mem-mesh. A file-only restore silently drops everything mem-mesh accumulated between handoffs. |
+| "The file restore worked, so handon is done" | 파일이 있어도 최신이라는 뜻은 아니다. 같은 project의 최신 `handoff` + `session-state` memory와 시간을 비교해야 한다. |
 | "`pending` mirror is the last session's problem" | It is this session's only chance to fix it. The payload is on disk now; after the next handoff overwrites it, that context is gone for good. |
 | "Restoring is mechanical, haiku is enough" | The MCP calls in Steps 3.5-3.6 may not exist in a sub-agent. Mechanical ≠ delegable when tool availability differs. |
 | "Just re-run the search instead of reading the mirror file" | `search` returns what mem-mesh already has. A pending mirror is precisely what it does NOT have — only the file holds it. |
@@ -190,7 +222,8 @@ The `decisions` array contains choices already made and agreed upon. When the us
 ## Red Flags
 
 - Deciding the mem-mesh gate from what you *see* rather than by attempting the call.
-- Rendering the summary with no 🧠 line while in dual-write mode and search returned results.
+- 일반 최근 memory를 handoff로 고르거나, `handoff` + `session-state` tag 두 개를 확인하지 않고 원격 본문을 복원에 쓰는 것.
+- 원격 handoff가 더 새로운데도 로컬 `SESSION-STATE.json`을 primary로 표시하는 것.
 - Seeing `memmesh_mirror.status == "pending"` and moving on without mentioning it.
 - Running `--mirror-done` for a `stale` mirror, or without a successful `add` first.
 - Starting work before Step 4 (the user has not given direction yet).
@@ -199,7 +232,7 @@ The `decisions` array contains choices already made and agreed upon. When the us
 
 Before handing control back to the user:
 
-1. The summary reflects `SESSION-STATE.json` — branch, decisions, and narrative all rendered.
-2. In dual-write mode, either the 🧠 enrichment line is present or search genuinely returned nothing.
+1. 요약이 선택된 최신 원본을 반영하며, 원격이 더 새면 `📦 Source: mem-mesh handoff`가 표시된다.
+2. In dual-write mode, either a filtered handoff candidate was compared or search genuinely returned no matching handoff.
 3. If `memmesh_mirror.status` was `pending`, you surfaced it — and if the user accepted the repair, `xm build handoff --mirror-status` now reports `mirrored`.
 4. No work has started. Step 4 means wait.

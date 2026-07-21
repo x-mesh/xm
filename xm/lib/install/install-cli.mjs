@@ -74,6 +74,15 @@ function resolveXmPluginVersion(skillsDir) {
   }
   throw new Error(`xm plugin version not found next to skillsDir: ${skillsDir}`);
 }
+
+export function applyCodexCachebuster(version, cachebuster = process.env.XM_CODEX_CACHEBUSTER) {
+  const token = String(cachebuster || '').trim();
+  if (!token) return version;
+  if (!/^[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*$/.test(token)) {
+    throw new Error(`invalid XM_CODEX_CACHEBUSTER: ${JSON.stringify(token)}`);
+  }
+  return `${String(version).split('+', 1)[0]}+codex.${token}`;
+}
 const DEFAULT_PATHS = inferDefaultPaths(HERE);
 
 /**
@@ -889,7 +898,7 @@ export function run(argv) {
   let codexPluginVersion;
   if (targets.includes('codex') && !args.list && !args.dryRun) {
     try {
-      codexPluginVersion = resolveXmPluginVersion(args.skillsDir);
+      codexPluginVersion = applyCodexCachebuster(resolveXmPluginVersion(args.skillsDir));
     } catch (err) {
       return { exitCode: 2, stdout: '', stderr: `codex: ${/** @type {Error} */ (err).message}\n` };
     }

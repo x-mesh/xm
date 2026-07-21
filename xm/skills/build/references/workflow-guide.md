@@ -226,16 +226,17 @@ See `phases/plan.md` — full Plan phase walkthrough: PRD generation, PRD review
      Upon completion, report the fulfillment status of each condition.
      ```
    - `run_in_background: true` (parallel)
-3. On completion: `$XMB tasks update <id> --status completed|failed`
+3. A harness `completed` notification only means the agent turn ended. Before status update, require the final `## 완료 보고`, every acceptance condition's result, and passing `$XMB task-check <id>` evidence. If any is missing, resume the same agent with the missing requirement up to twice; then mark `failed`, not `completed`.
+4. On verified completion: `$XMB tasks update <id> --status completed|failed`
    - **Record real token usage** whenever you know it (the subagent reports usage): append `--tokens-in <N> --tokens-out <M>`. This tags the metric `cost_source: actual` and auto-refreshes the forecaster's calibration, so future `forecast` numbers come from measured cost instead of static estimates. Without it the completion is priced from estimates (`cost_source: estimated`), which never calibrate. For an `inherit` task, also pass `--resolved-model <haiku|sonnet|opus>` so the cost is booked at the real tier, not the opus ceiling.
    - After a batch of measured completions you can also force a re-aggregation with `$XMB forecast update`; `forecast` prints whether it is `Estimate-only` or `Calibrated from actuals` (≥10 measured samples per size).
-4. **Poll & route** with `$XMB run-status --json` (structured — do NOT scrape the human/emoji output). Branch on its fields:
-   - `all_done: true` → confirm with the user, then `$XMB phase next` (see below)
+5. **Poll & route** with `$XMB run-status --json` (structured — do NOT scrape the human/emoji output). Branch on its fields:
+   - `all_done: true` → advance to Verify unless a new user-owned decision emerged
    - `stale_running` non-empty (tasks stuck RUNNING after an interrupted or abandoned agent) → `$XMB run --reconcile` to reclaim them to PENDING, then `$XMB run --json` again
    - otherwise → follow `next_action` (`run --json` for the next step's ready tasks, `wait` while tasks are running, or `investigate failed/blocked tasks`)
    Re-running `$XMB run --json` is a safe resume — RUNNING tasks are not re-dispatched.
 
-**Call AskUserQuestion before advancing to Verify phase.** When all tasks complete, ask the user to confirm before advancing (e.g., "All tasks completed. Proceed to the Verify phase?" in developer mode, or `"모든 태스크 완료. Verify 단계로 넘어갈까요?"` in normal mode). Do NOT run `phase next` without user confirmation.
+Advance to Verify automatically after all tasks complete unless a new user-owned decision emerged. In yolo/explicit autonomous mode, record safe defaults and ask only for scope, irreversible, external, security/compliance, or material cost decisions.
 
 #### Later Queue
 
@@ -373,7 +374,7 @@ Goal → Init → Auto-Plan → Review → Execute → Verify → Close
      Verify it clears the gate: `$XMB prd-check --json` (expect `blocked: false`, `tier: "delta"` — diagram/structure entries appear only as `warnings`).
    - Register tasks: `$XMB tasks add "..." --size small|medium`
    - Auto-generate done-criteria: `$XMB tasks done-criteria`
-4. **Quick Review**: Show task list via AskUserQuestion
+4. **Quick Review**: Show task list and ask for approval in normal mode. In yolo/explicit autonomous mode, record the plan and proceed unless it introduces a user-owned decision.
    ```
    Quick Plan:
    - t1: {task1} (small)

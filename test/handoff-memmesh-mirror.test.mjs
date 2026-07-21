@@ -36,6 +36,9 @@ const FULL_NARRATIVE = JSON.stringify({
   open_questions: ['Should the gate try-then-fallback or probe first'],
   rejected_alternatives: ['Leaving the mirror to model discretion — it never fired'],
   next_session_should_know: ['CLI renders the payload deterministically now'],
+  memory_refs: [
+    { id: '837fbc8a-9834-4a4a-8506-c6998ba62e65', reason: 'Latest remote handoff to compare during restore' },
+  ],
   session_log: {
     rejected: ['Hand-built payload with a `type` key — the real schema key is `category`'],
     open_forks: ['Whether handon should auto-repair a pending mirror'],
@@ -77,10 +80,30 @@ test('renders a mem-mesh payload matching the add schema', () => {
   // Tier-2 detail is what makes the mirror worth storing.
   expect(m.payload.content).toContain('## Rejected (with reasoning)');
   expect(m.payload.content).toContain('## What was tried & why');
+  expect(m.payload.content).toContain('## Referenced mem-mesh memories');
+  expect(m.payload.content).toContain('837fbc8a-9834-4a4a-8506-c6998ba62e65');
   expect(m.payload.content).toContain('Stopped: testing dual-write');
 
   // Anchors are client-collected — the server has no git access.
   expect(m.payload.anchors.commit_hash).toMatch(/^[0-9a-fA-F]{7,64}$/);
+});
+
+test('keeps at most five valid, unique memory references', () => {
+  const refs = Array.from({ length: 7 }, (_, i) => ({
+    id: `memoryref-${String(i).padStart(8, '0')}`,
+    reason: `Needed for restore ${i}`,
+  }));
+  refs.push({ id: 'bad id', reason: 'invalid' }, { id: refs[0].id, reason: 'duplicate' });
+  const narrative = JSON.stringify({
+    intent: 'Preserve selected memory context', open_questions: [],
+    rejected_alternatives: [], next_session_should_know: [], memory_refs: refs,
+  });
+  cli('handoff', '--full', '--narrative-json', narrative, 'refs');
+
+  const state = JSON.parse(cli('handon', '--json'));
+  expect(state.narrative.memory_refs).toHaveLength(5);
+  expect(state.narrative.memory_refs.map(ref => ref.id)).toEqual(refs.slice(0, 5).map(ref => ref.id));
+  expect(mirror().payload.content).not.toContain(refs[5].id);
 });
 
 test('pads thin sessions past the 100-char content minimum', () => {
@@ -120,7 +143,20 @@ test('with no mirror file, status is none on both paths', () => {
 
   expect(JSON.parse(cli('handoff', '--mirror-status')).status).toBe('none');
   expect(JSON.parse(cli('handon', '--json')).memmesh_mirror.status).toBe('none');
-  expect(cli('handon')).not.toContain('mem-mesh');
+  expect(cli('handon')).not.toContain('Mem-mesh mirror:');
+});
+
+test('handon default is a delta-first briefing without emoji or commit replay', () => {
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'briefing');
+  const out = cli('handon');
+
+  expect(out).toContain('Session Restore');
+  expect(out).toContain('State:');
+  expect(out).toContain('Carry forward:');
+  expect(out).toContain('Attention:');
+  expect(out).not.toContain('📋');
+  expect(out).not.toContain('✅ Done');
+  expect(out).not.toContain('📚');
 });
 
 test('--mirror-done rejects a missing memory id', () => {
@@ -213,7 +249,7 @@ test('handon surfaces a pending mirror so a skipped dual-write stays visible', (
 
   const pending = JSON.parse(cli('handon', '--json'));
   expect(pending.memmesh_mirror.status).toBe('pending');
-  expect(cli('handon')).toContain('mem-mesh: mirror PENDING');
+  expect(cli('handon')).toContain('mem-mesh mirror is pending');
 
   cli('handoff', '--mirror-done', 'mem_done');
   const mirrored = JSON.parse(cli('handon', '--json'));
@@ -231,7 +267,7 @@ test('a MIRRORED record from an older handoff reports stale, not pending', () =>
   const state = JSON.parse(cli('handon', '--json'));
   expect(state.memmesh_mirror.status).toBe('stale');
   // Already mirrored — nothing left to repair, so no outstanding action.
-  expect(cli('handon')).not.toContain('mirror PENDING');
+  expect(cli('handon')).not.toContain('mem-mesh mirror is pending');
 });
 
 // Regression: ageing a PENDING mirror out to `stale` silently dropped the only
@@ -248,7 +284,7 @@ test('a PENDING mirror survives a later narrative-less handoff', () => {
   expect(state.memmesh_mirror.from_earlier_handoff).toBe(true);
 
   const pretty = cli('handon');
-  expect(pretty).toContain('mirror PENDING');
+  expect(pretty).toContain('mem-mesh mirror is pending');
   expect(pretty).toContain('from an earlier handoff');
 });
 
@@ -336,7 +372,7 @@ test('a corrupt mirror file reports unreadable, never none', () => {
 
   expect(JSON.parse(cli('handoff', '--mirror-status')).status).toBe('unreadable');
   expect(JSON.parse(cli('handon', '--json')).memmesh_mirror.status).toBe('unreadable');
-  expect(cli('handon')).toContain('UNREADABLE');
+  expect(cli('handon')).toContain('mem-mesh mirror is unreadable');
 });
 
 // Regression: only JSON.parse failure counted as unreadable, so `null`, an array,
@@ -378,5 +414,5 @@ test('--mirror-skip dismisses a pending mirror without claiming it was saved', (
   expect(m.skipped_at).toBeTruthy();
 
   // A dismissed mirror stops nagging on restore.
-  expect(cli('handon')).not.toContain('mirror PENDING');
+  expect(cli('handon')).not.toContain('mem-mesh mirror is pending');
 });

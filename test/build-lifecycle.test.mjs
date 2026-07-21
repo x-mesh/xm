@@ -9,10 +9,10 @@ import { resolveTaskChecks, taskCheckFingerprint } from '../x-build/lib/x-build/
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI = join(__dirname, '..', 'x-build', 'lib', 'x-build-cli.mjs');
 
-function run(cwd, args) {
+function run(cwd, args, env = {}) {
   const out = spawnSync('node', [CLI, ...args], {
     cwd, encoding: 'utf8', timeout: 10000,
-    env: { ...process.env, XKIT_SERVER: undefined, XM_ROOT: join(cwd, '.xm') },
+    env: { ...process.env, XKIT_SERVER: undefined, XM_ROOT: join(cwd, '.xm'), ...env },
   });
   return { stdout: out.stdout || '', stderr: out.stderr || '', code: out.status ?? 1 };
 }
@@ -98,6 +98,33 @@ describe('content-bound approval and shared review groups', () => {
         { name: 'test', command: 'cargo test' },
         { name: 'lint', command: 'cargo clippy' },
       ]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('task-check suppresses live-provider credentials unless explicitly opted in', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-offline-'));
+    try {
+      setup(tmp);
+      writeFileSync(join(tmp, 'package.json'), JSON.stringify({
+        scripts: { test: 'node -e "process.exit(process.env.GROQ_API_KEY ? 9 : 0)"' },
+      }));
+      run(tmp, ['tasks', 'add', 'Offline check']);
+
+      const offline = run(tmp, ['task-check', 't1', '--json'], { GROQ_API_KEY: 'live-secret' });
+      expect(offline.code).toBe(0);
+      const evidence = JSON.parse(offline.stdout);
+      expect(evidence.passed).toBe(true);
+      expect(evidence.network_policy.allow_live_provider_checks).toBe(false);
+      expect(evidence.network_policy.suppressed_env).toContain('GROQ_API_KEY');
+
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({
+        build: { allow_live_provider_checks: true },
+      }, null, 2));
+      const optedIn = run(tmp, ['task-check', 't1', '--json'], { GROQ_API_KEY: 'live-secret' });
+      expect(optedIn.code).toBe(2);
+      expect(JSON.parse(optedIn.stdout).network_policy.allow_live_provider_checks).toBe(true);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -310,12 +337,26 @@ describe('content-bound approval and shared review groups', () => {
       // re-issue against the new target, then record the verdict
       const again = JSON.parse(run(tmp, ['review-group', 'build', '--json']).stdout);
       expect(again.pending).toBe('solo');
+      expect(run(tmp, ['task-check', 't1']).code).toBe(0);
       const verdict = JSON.parse(run(tmp, ['review-group', 'build', '--verdict', 'pass', '--notes', 'lgtm', '--json']).stdout);
       expect(verdict.ok).toBe(true);
+      expect(verdict.checks.reused_task_checks).toBe(true);
       const state = JSON.parse(readFileSync(join(project, 'phases', '03-execute', 'review-groups.json')));
       expect(state.groups.build.status).toBe('passed');
       expect(state.groups.build.decision).toBe('solo-pass');
       expect(state.groups.build.reviewer_model).toBeTruthy();
+      expect(state.groups.build.group_quality.reused_task_checks).toBe(true);
+
+      // Reopening without changing the reviewed target keeps both the solo pass
+      // and exact-snapshot checks valid. It must not create another review loop.
+      run(tmp, ['tasks', 'reopen', 't1', '--reason', 'metadata-only follow-up']);
+      run(tmp, ['run', '--json']);
+      run(tmp, ['task-check', 't1']);
+      run(tmp, ['tasks', 'update', 't1', '--status', 'completed', '--no-commit']);
+      const resumed = JSON.parse(run(tmp, ['run-status', '--json']).stdout);
+      expect(resumed.review_required).toBe(false);
+      expect(resumed.next_action).toBe('phase next');
+      expect(run(tmp, ['phase', 'next']).code).toBe(0);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

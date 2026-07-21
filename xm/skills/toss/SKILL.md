@@ -81,6 +81,9 @@ Code with a live MCP session, make the calls yourself.
    - Do not alter `content`, `project_id`, or `tags` — they were built by the CLI from
      the captured item and the resolved target identity; the target's `tags` MUST stay
      `["inbox"]` so the receiving side (mem-mesh reading tags) recognizes it as a toss.
+   - `pin_add.content` deliberately starts with `<toss id> —`. The receiver uses that
+     exact id to find the durable JSON memory because mem-mesh `search` cannot filter
+     by tags. Preserve it verbatim.
 
 5. **Record what happened back into the ledger:**
    ```bash

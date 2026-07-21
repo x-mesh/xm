@@ -57,6 +57,17 @@ import { resolveTarget, resolveMemMeshProjectId } from './target.mjs';
 export const INBOX_PIN_TAG = 'inbox';
 
 /**
+ * Stable, searchable notification text for a toss delivery pin. The durable
+ * memory contains the whole JSON item, but mem-mesh search cannot currently
+ * filter memories by tag. Keeping the item id in the pin gives the receiving
+ * skill an exact query key instead of making it search generic words such as
+ * "inbox" or a possibly non-unique title.
+ */
+export function inboxPinContent(item) {
+  return `${item.id} — ${item.title}`;
+}
+
+/**
  * Default `pin_add` importance for a toss notification when the caller
  * doesn't override it. Mid-scale on x-kit's own 1-5 convention (architecture
  * decisions = 5, feature work = 3-4, minor fixes = 1-2) — a cross-project bug
@@ -252,7 +263,7 @@ export function buildMemMeshPayload(item, memMeshProjectId, opts = {}) {
 
   return {
     pin_add: {
-      content: item.title,
+      content: inboxPinContent(item),
       project_id: memMeshProjectId,
       tags: [INBOX_PIN_TAG],
       importance,

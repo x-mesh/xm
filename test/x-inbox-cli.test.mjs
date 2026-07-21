@@ -84,7 +84,7 @@ describe('xm toss --json — capture only, zero network, prints MCP payload', ()
       expect(parsed.mem_mesh_project_id).toBe('git-kit');
       expect(parsed.item_id).toMatch(/^toss-\d{8}-[a-f0-9]{8}$/);
       expect(parsed.mcp_calls.pin_add).toEqual({
-        content: 'land reports paused as ok',
+        content: `${parsed.item_id} — land reports paused as ok`,
         project_id: 'git-kit',
         tags: ['inbox'],
         importance: 3,

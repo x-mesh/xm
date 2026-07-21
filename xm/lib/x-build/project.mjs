@@ -670,6 +670,25 @@ export async function interactiveDashboard() {
 
 // ── cmdHandoffFull ───────────────────────────────────────────────────
 
+const MAX_MEMORY_REFS = 5;
+
+function normalizeMemoryRefs(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const refs = [];
+  for (const ref of value) {
+    if (!ref || typeof ref !== 'object') continue;
+    const id = typeof ref.id === 'string' ? ref.id.trim() : '';
+    const reason = typeof ref.reason === 'string' ? ref.reason.trim() : '';
+    // Current ids are UUIDs; accept future opaque ids but reject malformed data.
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(id) || !reason || reason.length > 240 || seen.has(id)) continue;
+    seen.add(id);
+    refs.push({ id, reason });
+    if (refs.length === MAX_MEMORY_REFS) break;
+  }
+  return refs;
+}
+
 export function cmdHandoffFull(args) {
   const opts = parseOptions(args);
 
@@ -803,7 +822,7 @@ export function cmdHandoffFull(args) {
 
   // Narrative: conversation-level context the leader composes before dispatch.
   // Passed as `--narrative-json '{"intent":"...","open_questions":[...], ...}'`.
-  // Fields: intent, open_questions, rejected_alternatives, next_session_should_know.
+  // Fields: intent, open_questions, rejected_alternatives, next_session_should_know, memory_refs.
   let narrative = null;
   // Tier-2 detailed archive (retrieval-only). Composed by the leader alongside
   // the compact narrative but kept OUT of what handon auto-injects — see cmdHandon.
@@ -826,6 +845,7 @@ export function cmdHandoffFull(args) {
           open_questions: Array.isArray(parsed.open_questions) ? parsed.open_questions : [],
           rejected_alternatives: Array.isArray(parsed.rejected_alternatives) ? parsed.rejected_alternatives : [],
           next_session_should_know: Array.isArray(parsed.next_session_should_know) ? parsed.next_session_should_know : [],
+          memory_refs: normalizeMemoryRefs(parsed.memory_refs),
         };
         if (parsed.session_log && typeof parsed.session_log === 'object') {
           const strArr = (x) => (Array.isArray(x) ? x.filter(v => typeof v === 'string' && v.trim()) : []);
@@ -943,7 +963,7 @@ export function cmdHandoffFull(args) {
     const oq = narrative.open_questions.length;
     const ra = narrative.rejected_alternatives.length;
     const nk = narrative.next_session_should_know.length;
-    console.log(`   Narrative: intent${narrative.intent ? ' ✓' : ' —'}, ${oq} open Q, ${ra} rejected alt, ${nk} next-session note(s)`);
+    console.log(`   Narrative: intent${narrative.intent ? ' ✓' : ' —'}, ${oq} open Q, ${ra} rejected alt, ${nk} next-session note(s), ${narrative.memory_refs.length} memory ref(s)`);
   } else {
     console.log(`   Narrative: (not provided — pass --narrative-json to capture intent / open questions)`);
   }
@@ -1030,6 +1050,7 @@ function _mirrorContent(state) {
   sec('Constraints & preferences', sl.constraints_prefs);
   sec('What was tried & why', sl.attempts);
   sec('Next session should know', nar.next_session_should_know);
+  sec('Referenced mem-mesh memories', nar.memory_refs?.map(ref => `${ref.id} — ${ref.reason}`));
 
   let content = L.join('\n').trim();
 
@@ -1064,7 +1085,7 @@ function _mirrorAnchors(state) {
 // Does this narrative/session_log carry anything at all? Shared by the payload
 // builder and the CLI's reporting so "empty" and "too short" never get conflated.
 function _narrativeHasContent(nar, sl) {
-  const hasNarrative = nar && (nar.intent || nar.open_questions?.length || nar.rejected_alternatives?.length || nar.next_session_should_know?.length);
+  const hasNarrative = nar && (nar.intent || nar.open_questions?.length || nar.rejected_alternatives?.length || nar.next_session_should_know?.length || nar.memory_refs?.length);
   const hasLog = sl && (sl.rejected?.length || sl.open_forks?.length || sl.constraints_prefs?.length || sl.attempts?.length);
   return Boolean(hasNarrative || hasLog);
 }
@@ -1243,6 +1264,7 @@ function _sessionStateToHandoffMd(state) {
   if (nar.open_questions && nar.open_questions.length) L.push('## Open questions', list(nar.open_questions), '');
   if (nar.rejected_alternatives && nar.rejected_alternatives.length) L.push('## Ruled out (do not re-litigate)', list(nar.rejected_alternatives), '');
   if (nar.next_session_should_know && nar.next_session_should_know.length) L.push('## Next session should know', list(nar.next_session_should_know), '');
+  if (nar.memory_refs && nar.memory_refs.length) L.push('## Referenced mem-mesh memories', list(nar.memory_refs, ref => `- ${ref.id} — ${ref.reason}`), '');
   const sl = state.session_log;
   if (sl && (sl.rejected?.length || sl.open_forks?.length || sl.constraints_prefs?.length || sl.attempts?.length)) {
     L.push('## Detailed session log', '_Retrieval-only detail; not auto-injected on restore._', '');
@@ -1328,8 +1350,8 @@ export function cmdHandon(args) {
       return;
     }
     if (isJson) { console.log(JSON.stringify(sl, null, 2)); return; }
-    const sec = (title, items) => { if (items?.length) { console.log(`\n${C.bold}${title}${C.reset}`); for (const it of items) console.log(`  • ${it}`); } };
-    console.log(`${C.bold}📚 Detailed session log${C.reset} ${C.dim}(saved ${state.saved_at ? _timeAgo(state.saved_at) : '?'})${C.reset}`);
+    const sec = (title, items) => { if (items?.length) { console.log(`\n${C.bold}${title}${C.reset}`); for (const it of items) console.log(`  - ${it}`); } };
+    console.log(`${C.bold}Session log${C.reset} ${C.dim}(saved ${state.saved_at ? _timeAgo(state.saved_at) : '?'})${C.reset}`);
     sec('Rejected alternatives (full reasoning)', sl.rejected);
     sec('Open questions & forks', sl.open_forks);
     sec('Constraints & user preferences', sl.constraints_prefs);
@@ -1364,134 +1386,62 @@ export function cmdHandon(args) {
     return;
   }
 
-  // Pretty print
+  // Pretty print: delta-first. A restore should answer what changed and what
+  // to do next, not replay a stale handoff in full. `--log` remains the audit
+  // path for the narrative archive.
   const ago = state.saved_at ? _timeAgo(state.saved_at) : '?';
+  let newCommits = 0;
+  try {
+    const lastHash = (state.where?.last_commits?.[0] || '').split(' ')[0];
+    if (lastHash) newCommits = parseInt(execSync(`git rev-list --count ${lastHash}..HEAD 2>/dev/null`, { encoding: 'utf8' }).trim()) || 0;
+  } catch {}
+  let currentUncommitted = 0;
+  try { currentUncommitted = execSync('git status --short', { encoding: 'utf8' }).trim().split('\n').filter(Boolean).length; } catch {}
 
-  console.log(`\n${C.bold}📋 Session Restore${C.reset} — saved ${ago}\n`);
+  console.log(`\n${C.bold}Session Restore${C.reset}`);
+  console.log(`State: ${state.where?.branch || '?'} (+${state.where?.ahead || 0}/-${state.where?.behind || 0}) | saved ${ago} | +${newCommits} commits | ${currentUncommitted} uncommitted files`);
+  if (state.context?.current_focus) console.log(`Focus: ${state.context.current_focus}`);
 
-  // Where
-  console.log(`  ${C.cyan}📍 Branch:${C.reset} ${state.where?.branch || '?'} (+${state.where?.ahead || 0} ahead, -${state.where?.behind || 0} behind)`);
-  if (state.where?.last_commits?.length) {
-    console.log(`     Last: ${C.dim}${state.where.last_commits[0]}${C.reset}`);
+  const active = state.what_remains?.active_projects || [];
+  const n = state.narrative || {};
+  const mirrorStatus = _mirrorStatusFor(state);
+  const carry = [];
+  for (const p of active.slice(0, 3)) carry.push(`${p.name} (${p.phase}, ${p.tasks})${p.pending?.length ? ` — next: ${p.pending[0]}` : ''}`);
+  for (const note of (n.next_session_should_know || []).slice(0, 2)) carry.push(note);
+  if (carry.length) {
+    console.log('\nCarry forward:');
+    for (const item of carry) console.log(`  - ${item}`);
   }
 
-  // What done
-  if (state.what_done?.length) {
-    console.log(`\n  ${C.green}✅ Done${C.reset} (${state.what_done.length} commits):`);
-    for (const c of state.what_done.slice(0, 5)) {
-      console.log(`     ${C.dim}${c}${C.reset}`);
-    }
-    if (state.what_done.length > 5) console.log(`     ${C.dim}... +${state.what_done.length - 5} more${C.reset}`);
-  }
-
-  // What remains
-  if (state.what_remains?.active_projects?.length) {
-    console.log(`\n  ${C.yellow}📌 Active Projects:${C.reset}`);
-    for (const p of state.what_remains.active_projects) {
-      console.log(`     ${p.name}  ${C.dim}${p.phase}  ${p.tasks} tasks${C.reset}`);
-      if (p.pending?.length) {
-        for (const t of p.pending) console.log(`       ${C.dim}→ ${t}${C.reset}`);
-      }
-    }
-  }
-  if (state.what_remains?.uncommitted?.length) {
-    console.log(`\n  ${C.red}📝 Uncommitted:${C.reset} ${state.what_remains.uncommitted.length} files`);
-    for (const f of state.what_remains.uncommitted.slice(0, 5)) {
-      console.log(`     ${C.dim}${f}${C.reset}`);
-    }
-  }
-  if (state.what_remains?.ideas?.length) {
-    console.log(`\n  ${C.blue}💡 Ideas:${C.reset}`);
-    for (const idea of state.what_remains.ideas) console.log(`     ${C.dim}${idea}${C.reset}`);
-  }
-
-  // Decisions
   if (state.decisions?.length) {
-    console.log(`\n  ${C.cyan}🔒 Decisions:${C.reset}`);
-    for (const d of state.decisions.slice(0, 5)) {
-      console.log(`     • ${d.what}${d.why ? ` ${C.dim}(${d.why})${C.reset}` : ''}`);
-    }
+    console.log(`\nDecisions (${state.decisions.length}):`);
+    for (const d of state.decisions.slice(-3)) console.log(`  - ${d.what}`);
   }
 
-  // Context
-  if (state.context) {
-    console.log(`\n  ${C.bold}🎯 Focus:${C.reset} ${state.context.current_focus || '—'}`);
-    if (state.context.test_status) console.log(`     Tests: ${state.context.test_status}`);
-    if (state.context.diff_summary) console.log(`     Changes: ${state.context.diff_summary}`);
-    if (state.context.stashes?.length) {
-      console.log(`     ${C.yellow}Stashes:${C.reset}`);
-      for (const s of state.context.stashes) console.log(`       ${C.dim}${s}${C.reset}`);
-    }
-    if (state.context.quality_scores && Object.keys(state.context.quality_scores).length) {
-      for (const [k, v] of Object.entries(state.context.quality_scores)) {
-        console.log(`     Quality: ${k} → ${v}/10`);
-      }
-    }
+  const attention = [];
+  if (mirrorStatus.status === 'pending') {
+    const from = mirrorStatus.from_earlier_handoff ? ' from an earlier handoff' : '';
+    attention.push(`mem-mesh mirror is pending${from}; repair or explicitly skip it`);
   }
-
-  // Narrative — conversation-level context that disk artifacts can't capture
-  if (state.narrative) {
-    const n = state.narrative;
-    if (n.intent || n.open_questions?.length || n.rejected_alternatives?.length || n.next_session_should_know?.length) {
-      console.log(`\n  ${C.bold}🧭 Narrative${C.reset}`);
-      if (n.intent) console.log(`     ${C.cyan}Intent:${C.reset} ${n.intent}`);
-      if (n.open_questions?.length) {
-        console.log(`     ${C.yellow}Open questions:${C.reset}`);
-        for (const q of n.open_questions) console.log(`       ${C.dim}? ${q}${C.reset}`);
-      }
-      if (n.rejected_alternatives?.length) {
-        console.log(`     ${C.dim}Rejected alternatives:${C.reset}`);
-        for (const r of n.rejected_alternatives) console.log(`       ${C.dim}✗ ${r}${C.reset}`);
-      }
-      if (n.next_session_should_know?.length) {
-        console.log(`     ${C.green}Next session should know:${C.reset}`);
-        for (const k of n.next_session_should_know) console.log(`       ${C.dim}→ ${k}${C.reset}`);
-      }
-    }
+  else if (mirrorStatus.status === 'unreadable') attention.push(`mem-mesh mirror is unreadable: ${mirrorStatus.error}`);
+  if (newCommits >= 20) attention.push(`handoff is ${newCommits} commits behind HEAD; treat saved working-tree details as historical`);
+  if (attention.length) {
+    console.log('\nAttention:');
+    for (const item of attention) console.log(`  - ${item}`);
   }
 
   // Tier-2 archive — announce availability only; load with `handon --log`
   {
     const sl = state.session_log;
     const n = sl ? (sl.rejected?.length || 0) + (sl.open_forks?.length || 0) + (sl.constraints_prefs?.length || 0) + (sl.attempts?.length || 0) : 0;
-    if (n) console.log(`\n  ${C.bold}📚 Detailed log:${C.reset} ${n} item(s) archived ${C.dim}— run 'xm build handon --log' to load${C.reset}`);
+    if (n) console.log(`\nDetails: ${n} archived items — run 'xm build handon --log'`);
   }
 
   // Why stopped
   if (state.why_stopped) {
-    console.log(`\n  ${C.dim}💤 Stopped: ${state.why_stopped}${C.reset}`);
+    console.log(`Stopped: ${state.why_stopped}`);
   }
 
-  // mem-mesh mirror — surface a pending mirror so a silently skipped dual-write
-  // is visible on the next restore instead of vanishing.
-  {
-    const m = _mirrorStatusFor(state);
-    if (m.status === 'mirrored') {
-      console.log(`  ${C.dim}🧠 mem-mesh: mirrored (${m.memory_id})${C.reset}`);
-    } else if (m.status === 'pending') {
-      const from = m.from_earlier_handoff ? ' from an earlier handoff' : '';
-      console.log(`  ${C.yellow}🧠 mem-mesh: mirror PENDING${C.reset}${C.dim}${from} — never reached mem-mesh${C.reset}`);
-      console.log(`     ${C.dim}repair it, or run 'xm build handoff --mirror-skip' if you don't use mem-mesh${C.reset}`);
-    } else if (m.status === 'unreadable') {
-      console.log(`  ${C.red}🧠 mem-mesh: mirror file UNREADABLE${C.reset} ${C.dim}(${m.error})${C.reset}`);
-    }
-  }
-
-  // Since handoff
-  let newCommits = 0;
-  try {
-    const lastHash = (state.where?.last_commits?.[0] || '').split(' ')[0];
-    if (lastHash) {
-      newCommits = parseInt(execSync(`git rev-list --count ${lastHash}..HEAD 2>/dev/null`, { encoding: 'utf8' }).trim()) || 0;
-    }
-  } catch {}
-
-  let currentUncommitted = 0;
-  try {
-    currentUncommitted = execSync('git status --short', { encoding: 'utf8' }).trim().split('\n').filter(Boolean).length;
-  } catch {}
-
-  console.log(`\n  ${C.dim}Since handoff: ${newCommits} new commits, ${currentUncommitted} uncommitted files${C.reset}`);
   console.log('');
 }
 

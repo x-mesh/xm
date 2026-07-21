@@ -7,7 +7,7 @@
  */
 import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +20,17 @@ function run(args, cwd) {
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', exitCode: r.status ?? 1 };
 }
 
+// task-check binds evidence to the git worktree fingerprint, so completing a
+// dispatch task needs a real HEAD to fingerprint against.
+function gitInit(cwd) {
+  spawnSync('git', ['init', '-q'], { cwd });
+  spawnSync('git', ['config', 'user.email', 'xm-test@example.com'], { cwd });
+  spawnSync('git', ['config', 'user.name', 'xm test'], { cwd });
+  writeFileSync(join(cwd, '.baseline'), 'baseline\n');
+  spawnSync('git', ['add', '.baseline'], { cwd });
+  spawnSync('git', ['commit', '-qm', 'baseline'], { cwd });
+}
+
 function dispatchJSON(tmp, extra = []) {
   const r = run(['dispatch', 'README의 오탈자 3곳을 수정한다', ...extra, '--json'], tmp);
   const raw = r.stdout;
@@ -30,6 +41,7 @@ describe('dispatch — lightweight tracked execution', () => {
   test('runs without a PRD, emits a run-shaped entry, and records a metric on completion', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-dispatch-'));
     try {
+      gitInit(tmp);
       const out = dispatchJSON(tmp);
       expect(out.mode).toBe('dispatch');
       expect(out.prd_exempt).toBe(true);
@@ -38,6 +50,7 @@ describe('dispatch — lightweight tracked execution', () => {
       expect(out.task.prompt).toContain('## Definition of Done');
       expect(out.task.on_complete).toContain('tasks update t1');
 
+      expect(run(['task-check', 't1'], tmp).exitCode).toBe(0);
       const done = run(['tasks', 'update', 't1', '--status', 'completed', '--no-commit'], tmp);
       expect(done.stdout).toContain('completed');
       const metrics = readFileSync(join(tmp, '.xm', 'build', 'metrics', 'sessions.jsonl'), 'utf8')
