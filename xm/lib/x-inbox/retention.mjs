@@ -5,7 +5,7 @@
  * Confirmed policy (Q1, decided over ledger-append growth from x-build's
  * later.mjs — see file header there for the anti-pattern this avoids):
  *
- *   - Only TERMINAL items (`status` is `actioned` or `dismissed`) are ever
+ *   - Only TERMINAL items (`status` is `resolved` or `dismissed`) are ever
  *     archived, and only after `DEFAULT_RETENTION_DAYS` (30) have passed.
  *   - `delivered` (unresolved) items are kept forever, no matter their age.
  *     An open-count cap was rejected on purpose: capping would make `toss`
@@ -18,7 +18,7 @@
  * The shared ledger schema (`ledger.mjs`, deliberately not modified here)
  * requires `created_at` but does not mandate a status-transition timestamp —
  * no future writer is guaranteed to stamp `resolved_at`/`updated_at` when it
- * flips `status` to `actioned`/`dismissed`. `terminalSince()` below prefers
+ * flips `status` to `resolved`/`dismissed`. `terminalSince()` below prefers
  * `resolved_at`, then `updated_at`, then falls back to `created_at`. Falling
  * back can only make the clock start EARLIER than the true transition time
  * (an item can't become terminal before it was created), never later — so
@@ -26,7 +26,7 @@
  * since it closed." That costs nothing because archiving relocates, it does
  * not delete (see below), and it only ever affects items already terminal —
  * it can never pull in an unresolved item early. If a later writer (the
- * `/xm:inbox take|drop` CLI, R9) starts stamping `resolved_at` on transition,
+ * `/xm:inbox resolve|drop` CLI stamps `resolved_at` on transition,
  * this module picks it up automatically with no changes needed here.
  *
  * ── Where archived items go, and why ───────────────────────────────────────
@@ -84,7 +84,7 @@ export const DEFAULT_RETENTION_DAYS = 30;
 
 /** `status` values that make an item eligible for archiving. `delivered`
  * (unresolved) is deliberately absent — see file header. */
-export const TERMINAL_STATUSES = Object.freeze(['actioned', 'dismissed']);
+export const TERMINAL_STATUSES = Object.freeze(['resolved', 'dismissed']);
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 

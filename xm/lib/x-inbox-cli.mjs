@@ -12,6 +12,7 @@
  *        [--from-commit <hash>] [--json]
  *   list [--json]
  *   take <id>
+ *   resolve|done <id> [--json]
  *   drop <id>
  *   record <id> [--pin-id <id>] [--memory-id <id>] [--scope outbox|inbox] [--json]
  *   materialize --content <memory-json> [--memory-id <id>] [--pin-id <id>] [--json]
@@ -38,7 +39,7 @@ import { join } from 'node:path';
 
 import { toss, describeCapture } from './x-inbox/toss.mjs';
 import {
-  list as listLedger, take, drop, InboxItemNotFoundError,
+  list as listLedger, take, resolveItem, drop, InboxItemNotFoundError,
   materializeMemory, InboxMaterializationError,
 } from './x-inbox/inbox.mjs';
 import { recordMemMesh, LedgerItemNotFoundError } from './x-inbox/ledger.mjs';
@@ -213,7 +214,9 @@ async function listCmd(args) {
     return 0;
   }
 
-  const STATUS_ICON = { delivered: '📬', actioned: '🔧', dismissed: '🗑' };
+  const STATUS_ICON = {
+    delivered: '📬', in_progress: '🔧', actioned: '🔧', resolved: '✅', dismissed: '🗑',
+  };
   process.stdout.write(`📥 Inbox (${items.length})\n\n`);
   for (const item of items) {
     const icon = STATUS_ICON[item.status] || '  ';
@@ -244,6 +247,31 @@ async function takeCmd(args) {
   } catch (err) {
     if (err instanceof InboxItemNotFoundError) {
       process.stderr.write(`xm inbox take: ${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
+}
+
+async function resolveCmd(args) {
+  const id = args[0];
+  const json = hasFlag(args, '--json');
+  if (!nonEmptyStr(id)) {
+    process.stderr.write('Usage: xm inbox resolve <id> [--json]\n');
+    return 2;
+  }
+  const cwd = process.cwd();
+  const dir = inboxDirFor(cwd);
+  archiveExpired(dir, { cwd });
+
+  try {
+    const item = resolveItem(dir, id, { cwd });
+    if (json) process.stdout.write(`${JSON.stringify({ ok: true, item }, null, 2)}\n`);
+    else process.stdout.write(`✅ resolved: ${item.id}  ${item.title}\n`);
+    return 0;
+  } catch (err) {
+    if (err instanceof InboxItemNotFoundError) {
+      process.stderr.write(`xm inbox resolve: ${err.message}\n`);
       return 1;
     }
     throw err;
@@ -389,6 +417,7 @@ Usage:
           [--why <text>] [--output-file <path>] [--to-files a,b,c] [--from-commit <hash>] [--json]
   xm inbox list [--json]
   xm inbox take <id>
+  xm inbox resolve <id> [--json]   # alias: done
   xm inbox drop <id>
   xm inbox record <id> --pin-id <id> [--memory-id <id>] [--scope outbox|inbox] [--json]
   xm inbox materialize --content <memory-json> [--memory-id <id>] [--pin-id <id>] [--json]
@@ -407,6 +436,7 @@ switch (sub) {
   case 'toss': code = await tossCmd(rest); break;
   case 'list': case 'ls': code = await listCmd(rest); break;
   case 'take': code = await takeCmd(rest); break;
+  case 'resolve': case 'done': code = await resolveCmd(rest); break;
   case 'drop': code = await dropCmd(rest); break;
   case 'record': code = await recordCmd(rest); break;
   case 'materialize': code = await materializeCmd(rest); break;

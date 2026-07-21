@@ -1,6 +1,6 @@
 /**
  * x-inbox retention — pure archivability decision + archiveExpired() sweep.
- * Covers cross-project-handoff t8 done_criteria: terminal items (actioned /
+ * Covers cross-project-handoff t8 done_criteria: terminal items (resolved /
  * dismissed) move to archive after 30 days; unresolved (delivered) items
  * never do, no matter their age.
  */
@@ -52,9 +52,11 @@ afterEach(() => {
 });
 
 describe('isTerminal / terminalSince', () => {
-  test('isTerminal is true only for actioned/dismissed', () => {
+  test('isTerminal is true only for resolved/dismissed', () => {
     expect(isTerminal(makeItem({ status: 'delivered' }))).toBe(false);
-    expect(isTerminal(makeItem({ status: 'actioned' }))).toBe(true);
+    expect(isTerminal(makeItem({ status: 'in_progress' }))).toBe(false);
+    expect(isTerminal(makeItem({ status: 'actioned' }))).toBe(false);
+    expect(isTerminal(makeItem({ status: 'resolved' }))).toBe(true);
     expect(isTerminal(makeItem({ status: 'dismissed' }))).toBe(true);
     expect(isTerminal(makeItem({ status: 'bogus' }))).toBe(false);
     expect(isTerminal(null)).toBe(false);
@@ -84,12 +86,12 @@ describe('isArchivable — pure, caller-supplied clock', () => {
   });
 
   test('boundary: 29 days since terminal -> kept (not yet archivable)', () => {
-    const item = makeItem({ status: 'actioned', created_at: daysAgoISO(29, NOW) });
+    const item = makeItem({ status: 'resolved', created_at: daysAgoISO(29, NOW) });
     expect(isArchivable(item, NOW)).toBe(false);
   });
 
   test('boundary: exactly 30 days since terminal -> archivable', () => {
-    const item = makeItem({ status: 'actioned', created_at: daysAgoISO(30, NOW) });
+    const item = makeItem({ status: 'resolved', created_at: daysAgoISO(30, NOW) });
     expect(isArchivable(item, NOW)).toBe(true);
   });
 
@@ -99,15 +101,15 @@ describe('isArchivable — pure, caller-supplied clock', () => {
   });
 
   test('respects a custom retentionDays override', () => {
-    const item = makeItem({ status: 'actioned', created_at: daysAgoISO(10, NOW) });
+    const item = makeItem({ status: 'resolved', created_at: daysAgoISO(10, NOW) });
     expect(isArchivable(item, NOW, 7)).toBe(true);
     expect(isArchivable(item, NOW, 14)).toBe(false);
   });
 
   test('uses resolved_at over created_at when both present (recent resolution keeps an old item)', () => {
-    // Created 300 days ago but only actioned 5 days ago -> not yet archivable.
+    // Created 300 days ago but only resolved 5 days ago -> not yet archivable.
     const item = makeItem({
-      status: 'actioned',
+      status: 'resolved',
       created_at: daysAgoISO(300, NOW),
       resolved_at: daysAgoISO(5, NOW),
     });
@@ -115,7 +117,7 @@ describe('isArchivable — pure, caller-supplied clock', () => {
   });
 
   test('a malformed/missing terminal timestamp is never archived (stays visible, not silently dropped)', () => {
-    const item = makeItem({ status: 'actioned', created_at: 'not-a-date' });
+    const item = makeItem({ status: 'resolved', created_at: 'not-a-date' });
     expect(isArchivable(item, NOW)).toBe(false);
   });
 
@@ -128,13 +130,13 @@ describe('partitionForArchive', () => {
   test('splits a mixed batch into keep vs archive correctly', () => {
     const items = [
       makeItem({ id: 'a-delivered-old', status: 'delivered', created_at: daysAgoISO(300, NOW) }),
-      makeItem({ id: 'b-actioned-recent', status: 'actioned', created_at: daysAgoISO(1, NOW) }),
-      makeItem({ id: 'c-actioned-expired', status: 'actioned', created_at: daysAgoISO(45, NOW) }),
+      makeItem({ id: 'b-progress-old', status: 'in_progress', created_at: daysAgoISO(300, NOW) }),
+      makeItem({ id: 'c-resolved-expired', status: 'resolved', created_at: daysAgoISO(45, NOW) }),
       makeItem({ id: 'd-dismissed-expired', status: 'dismissed', created_at: daysAgoISO(30, NOW) }),
     ];
     const { keep, archive } = partitionForArchive(items, NOW);
-    expect(keep.map((i) => i.id).sort()).toEqual(['a-delivered-old', 'b-actioned-recent']);
-    expect(archive.map((i) => i.id).sort()).toEqual(['c-actioned-expired', 'd-dismissed-expired']);
+    expect(keep.map((i) => i.id).sort()).toEqual(['a-delivered-old', 'b-progress-old']);
+    expect(archive.map((i) => i.id).sort()).toEqual(['c-resolved-expired', 'd-dismissed-expired']);
   });
 
   test('empty input -> empty output, no throw', () => {
@@ -147,24 +149,24 @@ describe('archiveExpired — I/O sweep', () => {
   test('moves only expired terminal items; unresolved (delivered) survives at 300 days', () => {
     const dir = join(root, '.xm', 'inbox');
     writeLedger(dir, makeItem({ id: 'keep-delivered', status: 'delivered', created_at: daysAgoISO(300, NOW) }), { cwd: root });
-    writeLedger(dir, makeItem({ id: 'keep-actioned-recent', status: 'actioned', created_at: daysAgoISO(2, NOW) }), { cwd: root });
-    writeLedger(dir, makeItem({ id: 'archive-actioned', status: 'actioned', created_at: daysAgoISO(30, NOW) }), { cwd: root });
+    writeLedger(dir, makeItem({ id: 'keep-progress-old', status: 'in_progress', created_at: daysAgoISO(300, NOW) }), { cwd: root });
+    writeLedger(dir, makeItem({ id: 'archive-resolved', status: 'resolved', created_at: daysAgoISO(30, NOW) }), { cwd: root });
     writeLedger(dir, makeItem({ id: 'archive-dismissed', status: 'dismissed', created_at: daysAgoISO(90, NOW) }), { cwd: root });
 
     const result = archiveExpired(dir, { now: NOW, cwd: root });
 
-    expect(result.archivedIds.sort()).toEqual(['archive-actioned', 'archive-dismissed']);
-    expect(result.keptItems.map((i) => i.id).sort()).toEqual(['keep-actioned-recent', 'keep-delivered']);
+    expect(result.archivedIds.sort()).toEqual(['archive-dismissed', 'archive-resolved']);
+    expect(result.keptItems.map((i) => i.id).sort()).toEqual(['keep-delivered', 'keep-progress-old']);
 
     // Live ledger only has the kept items left.
     const remaining = readLedger(dir);
-    expect(remaining.map((i) => i.id).sort()).toEqual(['keep-actioned-recent', 'keep-delivered']);
+    expect(remaining.map((i) => i.id).sort()).toEqual(['keep-delivered', 'keep-progress-old']);
 
     // Archived items are readable back (recoverable), with content intact.
     const archived = readArchive(dir);
-    expect(archived.map((i) => i.id).sort()).toEqual(['archive-actioned', 'archive-dismissed']);
-    const one = archived.find((i) => i.id === 'archive-actioned');
-    expect(one.status).toBe('actioned');
+    expect(archived.map((i) => i.id).sort()).toEqual(['archive-dismissed', 'archive-resolved']);
+    const one = archived.find((i) => i.id === 'archive-resolved');
+    expect(one.status).toBe('resolved');
     expect(one.title).toBe('sample item');
   });
 
@@ -192,7 +194,7 @@ describe('archiveExpired — I/O sweep', () => {
 
   test('archive lives in a subdirectory that readLedger(ledgerDir) never mistakes for a live item', () => {
     const dir = join(root, '.xm', 'inbox');
-    writeLedger(dir, makeItem({ id: 'archive-me', status: 'actioned', created_at: daysAgoISO(40, NOW) }), { cwd: root });
+    writeLedger(dir, makeItem({ id: 'archive-me', status: 'resolved', created_at: daysAgoISO(40, NOW) }), { cwd: root });
     archiveExpired(dir, { now: NOW, cwd: root });
 
     // The archive subdirectory itself must not surface as a bogus item when
@@ -208,7 +210,7 @@ describe('archiveExpired — I/O sweep', () => {
 
   test('respects a custom retentionDays option', () => {
     const dir = join(root, '.xm', 'inbox');
-    writeLedger(dir, makeItem({ id: 'short-ttl', status: 'actioned', created_at: daysAgoISO(10, NOW) }), { cwd: root });
+    writeLedger(dir, makeItem({ id: 'short-ttl', status: 'resolved', created_at: daysAgoISO(10, NOW) }), { cwd: root });
 
     const result = archiveExpired(dir, { now: NOW, cwd: root, retentionDays: 7 });
     expect(result.archivedIds).toEqual(['short-ttl']);

@@ -1,6 +1,6 @@
 ---
 name: inbox
-description: Receiving side of /xm:toss — list, take, or drop cross-project bug reports that landed in this project's .xm/inbox/. Use when the user asks to check the inbox, "받은 편지함 봐줘", "what did other projects toss at us", or wants to start/dismiss a specific handed-off item.
+description: Receiving side of /xm:toss — list, take, resolve, or drop cross-project bug reports that landed in this project's .xm/inbox/. Use when the user asks to check the inbox, "받은 편지함 봐줘", "what did other projects toss at us", or wants to start/finish/dismiss a specific handed-off item.
 model: haiku
 ---
 
@@ -10,7 +10,8 @@ model: haiku
 
 The receiving side of `/xm:toss`: `.xm/inbox/<id>.json` holds bug reports other
 registered projects tossed at this one. `/xm:inbox` lists them, marks one as being
-worked on (`take`), or dismisses one that isn't relevant (`drop`). Every read
+worked on (`take`), marks verified work complete (`resolve`), or dismisses one
+that isn't relevant (`drop`). Every read
 opportunistically archives resolved items older than 30 days locally (no network) —
 neither this nor anything else in this CLI ever discards an unresolved item.
 
@@ -26,6 +27,7 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 - Starting work and want to check for cross-project reports before diving in
 - "이거 처리할게" / "I'll work on this one" → `take <id>` (marks in-progress, returns
   the full repro/fix body to act on)
+- "수정 끝났어" / "done" → `resolve <id>` after implementation and verification
 - "이건 아니다" / "not relevant, drop it" → `drop <id>`
 
 ## Do NOT Use When
@@ -66,17 +68,22 @@ plus `xm inbox record --scope inbox` — see step 5 below.
    현재 프로젝트와 다른 항목은 거부하고, 이미 같은 id가 있으면 로컬 상태를 바꾸지 않습니다.
    MCP 검색을 할 수 없으면 그 사실을 밝히고 기존 로컬 원장만 조회합니다.
 2. **`xm inbox list`** — materialize 뒤에 실행합니다. Prints unresolved items first, then
-   actioned, then dismissed; add `--json` when you need to act on fields programmatically.
+   in-progress, then resolved, then dismissed; add `--json` when you need to act on fields programmatically.
 3. **Address items by `id` only**, never by a remembered list position — re-run `list`
    if unsure, since the sort order and the opportunistic archive sweep can shift between
    calls.
 4. **`xm inbox take <id>`** when starting work on one: relay the full returned body
    (why / repro command+output / fix direction) to the user, or use it directly as the
-   starting point for a fix — don't re-derive it from scratch.
-5. **`xm inbox drop <id>`** when it doesn't need action. If it's ambiguous whether an
+   starting point for a fix — don't re-derive it from scratch. `take` writes
+   `status: "in_progress"`; it never claims completion.
+5. **`xm inbox resolve <id>`** only after the implementation and relevant verification
+   have completed. `done` is an alias. This writes the terminal `status: "resolved"`
+   and starts the retention clock independently of `take`.
+6. **`xm inbox drop <id>`** when it doesn't need action. If it's ambiguous whether an
    item is relevant, confirm with the user before dropping — treat the drop as final in
    conversation even though dismissed items remain recoverable in the archive on disk.
-6. **Re-notify a dead pin yourself, when relevant.** For any `delivered`/`actioned` item
+7. **Re-notify a dead pin yourself, when relevant.** For any `delivered`/`in_progress`
+   item (plus legacy `actioned` items)
    whose `mem_mesh.pin_id` is set (visible via `xm inbox list --json`):
    - Call `mcp__mem-mesh__pin_get(pin_id)` yourself.
    - If it comes back not-found, OR `status: "completed"` (mem-mesh's 7-day auto-close —
@@ -86,7 +93,7 @@ plus `xm inbox record --scope inbox` — see step 5 below.
      ```bash
      xm inbox record <id> --pin-id <new pin id> --scope inbox --json
      ```
-   - If the pin is still `in_progress`, or the item is `dismissed`, do nothing — this
+   - If the pin is still `in_progress`, or the item is `resolved`/`dismissed`, do nothing — this
      matches `ledger.mjs`'s `reconcile()` rules exactly (dead pin + unresolved item →
      renotify; anything else → no action).
    - **If you have no MCP tools available at all** (plain shell, no Claude Code MCP
@@ -102,6 +109,7 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 | "`search(query=\"inbox\")`가 비었으니 새 수신함도 비었다." | `search`는 `tags` 필터가 없고 넓은 질의는 랭킹에서 밀린다. 먼저 `pin_list(tags=[\"inbox\"], limit=10)`으로 알림을 찾고 toss id로 정확히 검색한다. |
 | "list didn't print anything about pins, so they must all still be fine." | `list` never checks pin state (t11 — no network in the CLI). Silence from `list` says nothing about pin health; you have to actually call `pin_get` yourself to know. |
 | "take() gave me the item, I'll now `later promote` it to keep the body." | `later promote` has no field for why/repro/fix_direction — the body does not survive that trip. Use the returned item content directly instead. |
+| "take means the issue is done." | `take` means work started. Only `resolve` is terminal, and only after the fix and checks complete. |
 | "I'll drop an item I'm not sure about, just to clean up the list." | Drop is for items that genuinely don't need action. When unsure, leave it `delivered` (or `take` it) and ask the user rather than guessing it away. |
 | "No MCP tools here, I'll just tell the user the inbox looks fine." | The listed items are accurate (local files), but you silently skipped pin re-notification. Say explicitly that you couldn't check/renew pin state — don't imply you did. |
 | "I recreated the pin via pin_add but that's the whole job, no need to persist it." | Without `xm inbox record --scope inbox`, the new pin id only lives in your chat output — the next session's ledger still points at the dead pin id and would recreate ANOTHER one. Always record it. |
@@ -112,6 +120,7 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 - You referenced an inbox item by list position instead of `id`.
 - You used a generic memory search instead of an inbox pin's toss id to materialize a delivery.
 - You dropped an item without the user's confirmation when its relevance was unclear.
+- You called `resolve` before implementation and verification completed.
 - You claimed pin re-notification happened without actually calling `pin_get`/`pin_add`.
 - You called `pin_add` to renotify but never ran `xm inbox record --scope inbox` afterward.
 - You had no MCP tools available and didn't tell the user re-notification was skipped.
@@ -121,6 +130,7 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 
 - Every item referenced by `id`, matching what `list` printed.
 - `take`'s full body (why/repro/fix) was relayed or acted on, not summarized away.
+- Completed work was closed with `resolve`, while unfinished work remained `in_progress`.
 - Any pin re-notification you performed was via real `pin_get`/`pin_add` MCP calls, followed by `xm inbox record --scope inbox` — never assumed or skipped silently.
 - If no MCP tools were available, that limitation was stated plainly, not glossed over.
 - No direct file edits under `.xm/inbox/` — only via the CLI subcommands.

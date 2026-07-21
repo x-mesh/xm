@@ -1,7 +1,7 @@
 /**
- * x-inbox inbox — list/take/drop over a ledger dir, plus pin
+ * x-inbox inbox — list/take/resolve/drop over a ledger dir, plus pin
  * re-notification. Covers cross-project-handoff t7 done_criteria: status
- * updates from list/take/drop, and — after forcing a pin to `completed`
+ * updates from list/take/resolve/drop, and — after forcing a pin to `completed`
  * (simulating mem-mesh's 7-day auto-close) — renotify recreating exactly one
  * new pin, even across repeated calls (PRD §7.5 R7: "3 consecutive session
  * starts after expiry, pin stays at 1 per item").
@@ -16,6 +16,7 @@ import {
   InboxItemNotFoundError,
   list,
   take,
+  resolveItem,
   drop,
   reconcileItemPin,
   reconcileAllPins,
@@ -86,13 +87,14 @@ afterEach(() => {
 });
 
 describe('list — unresolved first, addressed by id', () => {
-  test('sorts delivered before actioned before dismissed', () => {
+  test('sorts delivered before in-progress before resolved before dismissed', () => {
     writeLedger(dir, makeItem({ id: 'c-dismissed', status: 'dismissed', created_at: '2026-07-19T00:00:00.000Z' }), { cwd: root });
     writeLedger(dir, makeItem({ id: 'a-delivered', status: 'delivered', created_at: '2026-07-19T01:00:00.000Z' }), { cwd: root });
-    writeLedger(dir, makeItem({ id: 'b-actioned', status: 'actioned', created_at: '2026-07-19T02:00:00.000Z' }), { cwd: root });
+    writeLedger(dir, makeItem({ id: 'b-progress', status: 'in_progress', created_at: '2026-07-19T02:00:00.000Z' }), { cwd: root });
+    writeLedger(dir, makeItem({ id: 'd-resolved', status: 'resolved', created_at: '2026-07-19T03:00:00.000Z' }), { cwd: root });
 
     const items = list(dir);
-    expect(items.map((i) => i.id)).toEqual(['a-delivered', 'b-actioned', 'c-dismissed']);
+    expect(items.map((i) => i.id)).toEqual(['a-delivered', 'b-progress', 'd-resolved', 'c-dismissed']);
   });
 
   test('every item is addressable by a stable id field, not array position', () => {
@@ -110,18 +112,18 @@ describe('list — unresolved first, addressed by id', () => {
   });
 });
 
-describe('take — status -> actioned, returns full body', () => {
+describe('take — status -> in_progress, returns full body', () => {
   test('updates status on disk and returns why/repro/fix_direction', () => {
     writeLedger(dir, makeItem(), { cwd: root });
     const result = take(dir, 'toss-20260719-a1b2c3', { cwd: root });
 
-    expect(result.status).toBe('actioned');
+    expect(result.status).toBe('in_progress');
     expect(result.why).toBe('land after commit is paused but reported ok, later steps proceed wrongly');
     expect(result.repro.command).toBe('GK_AGENT=1 git-kit land');
     expect(result.fix_direction).toContain('state judgement');
 
     const [onDisk] = readLedger(dir);
-    expect(onDisk.status).toBe('actioned');
+    expect(onDisk.status).toBe('in_progress');
   });
 
   test('unknown id throws InboxItemNotFoundError and writes nothing', () => {
@@ -134,6 +136,29 @@ describe('take — status -> actioned, returns full body', () => {
     expect(filesAfter).toEqual(filesBefore);
     const [onDisk] = readLedger(dir);
     expect(onDisk.status).toBe('delivered');
+  });
+});
+
+describe('resolveItem — explicit terminal transition', () => {
+  test('marks completed work resolved and stamps the terminal time', () => {
+    writeLedger(dir, makeItem({ status: 'in_progress' }), { cwd: root });
+    const now = '2026-07-21T07:00:00.000Z';
+    const result = resolveItem(dir, 'toss-20260719-a1b2c3', { cwd: root, now });
+    expect(result.status).toBe('resolved');
+    expect(result.resolved_at).toBe(now);
+    expect(readLedger(dir)[0].status).toBe('resolved');
+  });
+
+  test('is idempotent and does not restart the retention clock', () => {
+    writeLedger(dir, makeItem({ status: 'in_progress' }), { cwd: root });
+    const first = resolveItem(dir, 'toss-20260719-a1b2c3', { cwd: root, now: '2026-07-21T07:00:00.000Z' });
+    const second = resolveItem(dir, 'toss-20260719-a1b2c3', { cwd: root, now: '2026-07-22T07:00:00.000Z' });
+    expect(second.resolved_at).toBe(first.resolved_at);
+  });
+
+  test('unknown id throws and writes nothing', () => {
+    expect(() => resolveItem(dir, 'nope', { cwd: root })).toThrow(InboxItemNotFoundError);
+    expect(existsSync(dir)).toBe(false);
   });
 });
 
@@ -176,7 +201,7 @@ describe('materializeMemory — durable mem-mesh body to owned inbox ledger', ()
       cwd: root, projectId: 'receiver', memoryId: 'memory-1', pinId: 'pin-1',
     });
     expect(repeat.created).toBe(false);
-    expect(repeat.item.status).toBe('actioned');
+    expect(repeat.item.status).toBe('in_progress');
     expect(readLedger(dir)).toHaveLength(1);
   });
 
