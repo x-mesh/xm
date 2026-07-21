@@ -8,7 +8,7 @@ import {
   manifestPath, phaseStatusPath, tasksPath, stepsPath, prdPath, contextDir, projectDir,
   projectsDir, checkpointsDir, phaseDir, toSlug,
   resolveProject, findCurrentProject, findActiveProjects, logDecision,
-  loadConfig, loadSharedConfig, resolveGates, requiresSignoff, autopilotActive, isNormalMode, L, renderBar, fmtDuration,
+  loadConfig, loadSharedConfig, resolveGates, requiresSignoff, autopilotActive, getMode, isNormalMode, L, renderBar, fmtDuration,
   setCmdInit,
   existsSync, readdirSync, mkdirSync, join, readFileSync, writeFileSync,
   createRL, ask, pickMenu,
@@ -291,10 +291,12 @@ export function cmdStatus(args) {
     }
   }
 
-  // --json: output structured state for API/Claude consumption
+  // --json: output structured state for API/Claude consumption. ui_mode/autopilot
+  // are echoed here (state wins on collision) so the skill layer never needs a
+  // separate `mode show` probe (turn-diet, t13).
   if (isJson) {
     const state = buildProjectState(name);
-    console.log(JSON.stringify(state, null, 2));
+    console.log(JSON.stringify({ ui_mode: getMode(), autopilot: autopilotActive(), ...state }, null, 2));
     return;
   }
 

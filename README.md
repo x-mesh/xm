@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.12.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.12.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -475,7 +475,7 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 | Category | Commands |
 |----------|----------|
 | **Project** | `init`, `list`, `status`, `next [--json]`, `close`, `dashboard` |
-| **Phase** | `phase next/set`, `gate pass/fail`, `checkpoint`, `handoff --full`, `handon` |
+| **Phase** | `phase next/set`, `gate pass [--advance]/fail` (`--advance` chains `phase next`), `checkpoint`, `handoff --full`, `handon` |
 | **Governance** | `hooks install/uninstall/status` (native blocking hooks; bypass with `XM_BUILD_HOOKS_OFF=1`) |
 | **Plan** | `plan "goal"`, `plan-check [--strict]`, `prd-gate [--threshold N]`, `consensus [--round N]` |
 | **Tasks** | `tasks add [--desc] [--deps] [--size] [--strategy] [--team] [--done-criteria] [--expected-files]`, `tasks done-criteria`, `tasks list`, `tasks remove [--cascade]`, `tasks update [--desc] [--no-commit] [--expected-files]`, `tasks reopen <id> --reason "..." [--cascade]`, `later add/list/promote/dismiss/verify-scope` |

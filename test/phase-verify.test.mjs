@@ -322,9 +322,9 @@ describe('verify-coverage', () => {
   test('no requirements file shows message', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
-      setupProject(tmp);
+      setupProject(tmp); // init creates neither REQUIREMENTS.md nor PRD.md
       const r = run(['verify-coverage'], { cwd: tmp });
-      expect(r.stdout).toContain('No REQUIREMENTS');
+      expect(r.stdout).toContain('No REQUIREMENTS.md or PRD found');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -378,6 +378,126 @@ describe('verify-traceability', () => {
       const r = run(['verify-traceability'], { cwd: tmp });
       expect(r.stdout).toContain('partial');
       expect(r.stdout).toContain('gaps');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── structured requirements fallback (toss-20260721-666aa5a0) ─────
+// PRD-first projects keep their approved R# list in the PRD's
+// "Requirements Traceability" section, not in REQUIREMENTS.md. Verify
+// commands must read both (PRD wins per R#), or the Verify gate fails
+// vacuously on projects whose requirements were approved via the PRD.
+describe('structured requirements fallback (PRD §Requirements Traceability)', () => {
+  test('PRD-only project: both verify commands read R# from the PRD section', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writeFileSync(
+        projectPath(tmp, name, 'phases', '02-plan', 'PRD.md'),
+        '# PRD\n## 5. Requirements Traceability\n- [R1] Auth → SC1\n- [R2] API → SC2\n\n## 8. Acceptance Criteria\n- [ ] User can login [R1]\n- [ ] CRUD works [R2]\n'
+      );
+      run(['tasks', 'add', 'Auth [R1]', '--done-criteria', 'Login works'], { cwd: tmp });
+      run(['tasks', 'add', 'API [R2]', '--done-criteria', 'CRUD works'], { cwd: tmp });
+
+      const cov = run(['verify-coverage'], { cwd: tmp });
+      expect(cov.exitCode).toBe(0);
+      expect(cov.stdout).toContain('2/2');
+
+      const r = run(['verify-traceability'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('Traceability Matrix');
+
+      const trace = readJSON(projectPath(tmp, name, 'phases', '04-verify', 'traceability.json'));
+      expect(trace.total).toBe(2);
+      expect(trace.gaps).toBe(0);
+      expect(trace.sources.prd).toBe(2);
+      expect(trace.sources.requirements_md).toBe(0);
+      // The "→ SC1" pointer tail is not requirement text.
+      expect(trace.matrix.find(m => m.req_id === 'R1').description).toBe('Auth');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('PRD wins over REQUIREMENTS.md on the same R#; disjoint ids merge', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writeFileSync(
+        projectPath(tmp, name, 'context', 'REQUIREMENTS.md'),
+        '- [R1] Old auth requirement\n- [R3] Reporting\n'
+      );
+      writeFileSync(
+        projectPath(tmp, name, 'phases', '02-plan', 'PRD.md'),
+        '# PRD\n## 5. Requirements Traceability\n- [R1] New auth requirement → SC1\n'
+      );
+      run(['tasks', 'add', 'Auth [R1]'], { cwd: tmp });
+      run(['tasks', 'add', 'Reporting [R3]'], { cwd: tmp });
+
+      const r = run(['verify-coverage'], { cwd: tmp });
+      expect(r.stdout).toContain('2/2');
+      expect(r.stdout).toContain('New auth requirement');
+      expect(r.stdout).not.toContain('Old auth requirement');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('neither REQUIREMENTS.md nor PRD parseable → loud fail names both locations', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writeFileSync(
+        projectPath(tmp, name, 'context', 'REQUIREMENTS.md'),
+        'free-form prose, no structured items\n'
+      );
+      writeFileSync(
+        projectPath(tmp, name, 'phases', '02-plan', 'PRD.md'),
+        '# PRD\n## 1. Goal\nno requirements section\n'
+      );
+      const r = run(['verify-traceability'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('No structured requirements');
+      expect(r.stdout).toContain('REQUIREMENTS.md');
+      expect(r.stdout).toContain('Requirements Traceability');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── gate pass --advance (turn-diet chain) ─────────────────────────
+describe('gate pass --advance', () => {
+  test('chains phase next in the same invocation', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-gate-'));
+    try {
+      const name = setupProject(tmp); // research-exit defaults to human-verify
+      writeFileSync(projectPath(tmp, name, 'context', 'CONTEXT.md'), '# Context\nGoal: test');
+      const r = run(['gate', 'pass', 'ok', '--advance'], { cwd: tmp });
+      expect(r.stdout).toContain('Gate passed');
+      // one command, phase already advanced — no separate `phase next` turn
+      expect(readJSON(projectPath(tmp, name, 'manifest.json')).current_phase).toBe('02-plan');
+      // --advance must not leak into the recorded gate message
+      const status = readJSON(projectPath(tmp, name, 'phases', '01-research', 'status.json'));
+      expect(status.gate_message).toBe('ok');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── JSON envelopes echo mode/autopilot (turn-diet, t13) ───────────
+describe('json envelopes echo session context', () => {
+  test('run-status --json carries ui_mode and autopilot', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      const r = run(['run-status', '--json'], { cwd: tmp });
+      const j = JSON.parse(r.stdout);
+      expect(['developer', 'normal']).toContain(j.ui_mode);
+      expect(typeof j.autopilot).toBe('boolean');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

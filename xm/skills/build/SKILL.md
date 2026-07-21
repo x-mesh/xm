@@ -52,10 +52,15 @@ only if the resolved model differed from the announced one (e.g. an `inherit` ta
 
 ## Mode Detection
 
-Check mode before every command:
+Check mode ONCE at session start, then cache it for the whole session — never re-probe
+per command (a per-command probe nearly doubles CLI invocations for zero information):
 ```bash
 xm build mode show 2>/dev/null | head -1
 ```
+`run`, `run-status`, and `status` `--json` envelopes also echo `ui_mode` and `autopilot`
+(`ui_mode`, not `mode` — `mode` is the worktree-backend marker in run --json), so any
+command you were about to run anyway refreshes the cache for free. Re-check only after
+an explicit `mode set`.
 
 **Developer mode**: Use technical terms (DAG, phase, gate, step, context, retry, circuit breaker). Concise.
 
@@ -240,6 +245,15 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 | `quality` | yes — test/lint/build must pass | untouched |
 | `decision` | yes — needs `gate pass` | **untouched** (it is a direction approval, not a confirmation) |
 
+**Turn economy (yolo runs):** when the user asks for an autonomous/yolo run, set
+`autopilot: true` in `.xm/config.json` (or `XMB_AUTOPILOT=1` for one shot) — every
+`human-verify` confirmation gate self-downgrades to `auto`, while `quality` and `decision`
+gates still block (broken code / wrong direction stay human-checked). Chain deterministic
+transitions instead of spending turns on them: `gate pass --advance` runs `phase next` in
+the same invocation, and `run` already auto-advances an approved plan into Execute. Never
+spend a turn on a probe whose answer is already in JSON you hold (`ui_mode`, `autopilot`,
+`next_action`, steps summaries).
+
 `decision` exists because `plan → execute` is the one transition no automated check can guard.
 `plan-check` proves the plan is well-formed; `quality` proves the code is correct. Neither can tell
 that a well-formed plan produces correct code aimed at the wrong goal — e.g. the user asked to add an
@@ -291,7 +305,7 @@ Use `plan --interview` when the user explicitly wants detailed refinement. Use `
    - Do not infer that greenfield means interview. Run Round 0 / `discuss --mode interview` only when `intent_check.readiness=clarify`, the user passed `--interview`, or research reopens a user-only blocker.
    - When clarification is needed, ask the emitted questions together (maximum 3), persist the refined intent, then continue without another confirmation.
    - Run `$XMB research "{goal}"` (4-agent parallel investigation; perspectives differ by `project_kind` — see workflow-guide)
-   - Save CONTEXT.md, REQUIREMENTS.md, ROADMAP.md
+   - Save CONTEXT.md, REQUIREMENTS.md, ROADMAP.md — REQUIREMENTS.md MUST list each requirement as a `- [R1] <text>` item with sequential IDs; free-form prose cannot be read by verify-coverage/verify-traceability (the Verify gate then fails on a vacuous 0-requirement parse)
    - `$XMB gate pass` → `$XMB phase next` (Research → Plan)
    - Then generate PRD and proceed with plan
    - **NEVER skip Research by calling `phase set plan` directly — Research produces the artifacts that PRD depends on.** Scale it instead: read `research_signal` from the plan JSON (`full` = 4 agents / `slim` = 1-2 targeted agents on HIT signals / `quick-eligible` = suggest `--quick` via AskUserQuestion, only at 0/4; yolo/explicit autonomous mode may choose it directly).
