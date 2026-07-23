@@ -149,6 +149,11 @@ for f in x-build/lib/x-build/*.mjs; do
   sync_file "$f" "xm/lib/x-build/$(basename "$f")"
 done
 shopt -u nullglob
+shopt -s nullglob
+for f in x-build/lib/cost/*.mjs; do
+  sync_file "$f" "xm/lib/cost/$(basename "$f")"
+done
+shopt -u nullglob
 remove_obsolete_file "xm/lib/x-build/parking-lot.mjs"
 sync_file "x-build/lib/x-build-cli.mjs" "xm/lib/x-build-cli.mjs"
 sync_file "x-build/lib/x-config-cli.mjs" "xm/lib/x-config-cli.mjs"
@@ -381,6 +386,16 @@ shopt -u nullglob
 shopt -s nullglob
 for f in x-build/lib/x-build/*.mjs; do
   dst="xm/lib/x-build/$(basename "$f")"
+  if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
+    echo "  DIVERGED: $dst"
+    DIVERGED=$((DIVERGED + 1))
+  fi
+done
+shopt -u nullglob
+
+shopt -s nullglob
+for f in x-build/lib/cost/*.mjs; do
+  dst="xm/lib/cost/$(basename "$f")"
   if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
     echo "  DIVERGED: $dst"
     DIVERGED=$((DIVERGED + 1))

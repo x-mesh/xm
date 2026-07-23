@@ -13,8 +13,10 @@ import {
   mkdtempSync, rmSync, writeFileSync, mkdirSync,
   existsSync, readFileSync, utimesSync,
 } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createFakeLLM } from './fixtures/fake-llm.mjs';
 
 // ── One shared temp root — created and injected before dynamic imports ──────
 
@@ -63,7 +65,7 @@ function appendLines(...objects) {
 
 function clearMetrics() {
   try { rmSync(metricsFile()); }             catch { /* ok */ }
-  try { rmSync(metricsFile() + '.lock'); }   catch { /* ok */ }
+  try { rmSync(metricsFile() + '.lock', { recursive: true, force: true }); } catch { /* ok */ }
   try { rmSync(ce.spendCachePath()); }       catch { /* ok */ }
   try { rmSync(tokenActualsPath()); }        catch { /* ok */ }
 }
@@ -268,17 +270,17 @@ describe('getModelForRole — extended roles and aliases', () => {
 
 // ── 2. Spinlock concurrency (appendMetric) ────────────────────────────────────
 
-describe('appendMetric — write lock', () => {
+describe('appendCostEvent — payload and write lock', () => {
   beforeEach(() => { clearMetrics(); });
   afterEach(() => { clearMetrics(); });
 
-  test('multiple sequential appendMetric calls produce valid JSONL', () => {
+  test('multiple sequential appendCostEvent calls produce valid JSONL', () => {
     const entries = [
       { type: 'task_complete', cost_usd: 0.01 },
       { type: 'task_complete', cost_usd: 0.02 },
       { type: 'task_complete', cost_usd: 0.03 },
     ];
-    for (const e of entries) ce.appendMetric(e);
+    for (const e of entries) ce.appendCostEvent(e);
 
     expect(existsSync(metricsFile())).toBe(true);
     const lines = readFileSync(metricsFile(), 'utf8').trim().split('\n');
@@ -288,9 +290,9 @@ describe('appendMetric — write lock', () => {
     expect(parsed[2].cost_usd).toBe(0.03);
   });
 
-  test('20 rapid appendMetric calls each produce a valid JSON line', () => {
+  test('20 rapid appendCostEvent calls each produce a valid JSON line', () => {
     for (let i = 0; i < 20; i++) {
-      ce.appendMetric({ type: 'task_complete', cost_usd: i * 0.001 });
+      ce.appendCostEvent({ type: 'task_complete', cost_usd: i * 0.001 });
     }
     const lines = readFileSync(metricsFile(), 'utf8').trim().split('\n').filter(Boolean);
     expect(lines.length).toBe(20);
@@ -302,18 +304,71 @@ describe('appendMetric — write lock', () => {
   test('stale lock file (> 10s old) is cleaned up and write succeeds', () => {
     mkdirSync(metricsDir(), { recursive: true });
     const lockPath = metricsFile() + '.lock';
-    writeFileSync(lockPath, '99999', 'utf8');
+    mkdirSync(lockPath);
     // Backdate lock mtime to simulate stale lock
     const staleTimeSec = (Date.now() - 15_000) / 1000;
     try { utimesSync(lockPath, staleTimeSec, staleTimeSec); } catch { /* skip if unavailable */ }
 
-    expect(() => ce.appendMetric({ type: 'task_complete', cost_usd: 0.05 })).not.toThrow();
+    expect(() => ce.appendCostEvent({ type: 'task_complete', cost_usd: 0.05 })).not.toThrow();
     expect(existsSync(metricsFile())).toBe(true);
   });
 
+  test('legacy stale regular-file lock is reclaimed during migration', () => {
+    mkdirSync(metricsDir(), { recursive: true });
+    const lockPath = metricsFile() + '.lock';
+    writeFileSync(lockPath, '99999', 'utf8');
+    const staleTimeSec = (Date.now() - 15_000) / 1000;
+    utimesSync(lockPath, staleTimeSec, staleTimeSec);
+
+    expect(() => ce.appendCostEvent({ type: 'task_complete', cost_usd: 0.05 })).not.toThrow();
+    expect(existsSync(metricsFile())).toBe(true);
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
   test('lock file is released after a successful write', () => {
-    ce.appendMetric({ type: 'task_complete', cost_usd: 0.01 });
+    ce.appendCostEvent({ type: 'task_complete', cost_usd: 0.01 });
     expect(existsSync(metricsFile() + '.lock')).toBe(false);
+  });
+
+  test('payloads over 4KB fail with a refs-out hint', () => {
+    expect(() => ce.appendCostEvent({
+      type: 'task_complete',
+      detail: 'x'.repeat(ce.COST_EVENT_MAX_BYTES),
+    })).toThrow(/4096 bytes.*refs-out/i);
+    expect(existsSync(metricsFile())).toBe(false);
+  });
+
+  test('appendMetric remains a backward-compatible alias', () => {
+    expect(ce.appendMetric).toBe(ce.appendCostEvent);
+  });
+
+  test('10 concurrent processes produce valid, complete JSONL', async () => {
+    const moduleUrl = new URL('../x-build/lib/x-build/cost-engine.mjs', import.meta.url).href;
+    const children = Array.from({ length: 10 }, (_, index) => new Promise((resolve, reject) => {
+      const script = [
+        `import { appendCostEvent } from ${JSON.stringify(moduleUrl)};`,
+        `appendCostEvent({ type: 'task_complete', worker: ${index}, cost_usd: ${index} / 1000 });`,
+      ].join('\n');
+      const child = spawn('node', ['--input-type=module', '--eval', script], {
+        env: { ...process.env, X_BUILD_ROOT: TEST_ROOT },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.on('error', reject);
+      child.on('close', code => {
+        if (code === 0) resolve();
+        else reject(new Error(`append child ${index} exited ${code}: ${stderr}`));
+      });
+    }));
+
+    await Promise.all(children);
+    const lines = readFileSync(metricsFile(), 'utf8').trim().split('\n');
+    expect(lines).toHaveLength(10);
+    const events = lines.map(line => JSON.parse(line));
+    expect(new Set(events.map(event => event.worker)).size).toBe(10);
+    expect(new Set(events.map(event => event.event_id)).size).toBe(10);
   });
 });
 
@@ -682,6 +737,98 @@ describe('computeTokenActuals — averages from metrics', () => {
   });
 });
 
+// ── Cost prediction (t6) ────────────────────────────────────────────────────
+
+describe('predictTaskCost — measured hierarchical lookup (t6)', () => {
+  const actual = (cost_usd, overrides = {}) => ({
+    type: 'task_complete', cost_source: 'actual', cost_usd,
+    role: 'executor', strategy: null, size: 'medium',
+    taskName: 'implement login endpoint', ...overrides,
+  });
+
+  test('uses an exact role+strategy+size tuple and interpolated IQR', () => {
+    const result = ce.predictTaskCost({ description: 'Implement: login endpoint!', role: 'executor', size: 'medium' }, [
+      actual(0.10, { taskName: 'implement auth endpoint' }),
+      actual(0.20, { taskName: 'add login validation' }),
+      actual(0.90, { taskName: 'wire session handling' }),
+    ]);
+    expect(result.source).toBe('exact');
+    expect(result.sample_count).toBe(3);
+    expect(result.p25_usd).toBeCloseTo(0.15, 8);
+    expect(result.p50_usd).toBeCloseTo(0.20, 8);
+    expect(result.p75_usd).toBeCloseTo(0.55, 8);
+  });
+
+  test('uses Jaccard candidates when an exact tuple is unavailable', () => {
+    const result = ce.predictTaskCost({ description: 'implement secure login endpoint', role: 'executor', size: 'medium' }, [
+      actual(0.10, { taskName: 'implement secure login feature', size: 'small' }),
+      actual(0.20, { taskName: 'implement secure login feature', size: 'small' }),
+      actual(0.30, { taskName: 'implement secure login feature', size: 'small' }),
+      actual(9.99, { taskName: 'unrelated task', role: 'reviewer' }),
+    ]);
+    expect(result.source).toBe('jaccard');
+    expect(result.sample_count).toBe(3);
+    expect(result.p50_usd).toBeCloseTo(0.20, 8);
+  });
+
+  test('thin exact/Jaccard candidates fall back to global median', () => {
+    const result = ce.predictTaskCost({ description: 'implement login endpoint', role: 'executor', size: 'medium' }, [
+      actual(0.10), actual(0.20),
+      actual(1.00, { taskName: 'different task', role: 'reviewer' }),
+      actual(1.10, { taskName: 'different task', role: 'reviewer' }),
+      actual(1.20, { taskName: 'different task', role: 'reviewer' }),
+    ]);
+    expect(result.source).toBe('global');
+    expect(result.sample_count).toBe(5);
+    expect(result.p50_usd).toBeCloseTo(1.00, 8);
+  });
+
+  test('keeps strategy medians separate before the all-history global fallback', () => {
+    const result = ce.predictTaskCost({ description: 'new task', role: 'executor', strategy: 'review', size: 'medium' }, [
+      actual(0.10, { strategy: 'review', size: 'small', taskName: 'other review' }),
+      actual(0.20, { strategy: 'review', size: 'small', taskName: 'other review' }),
+      actual(0.30, { strategy: 'review', size: 'small', taskName: 'other review' }),
+      actual(1.00, { strategy: 'refine', taskName: 'other refine' }),
+      actual(1.10, { strategy: 'refine', taskName: 'other refine' }),
+      actual(1.20, { strategy: 'refine', taskName: 'other refine' }),
+    ]);
+    expect(result.source).toBe('strategy-global');
+    expect(result.sample_count).toBe(3);
+    expect(result.p50_usd).toBeCloseTo(0.20, 8);
+  });
+
+  test('excludes estimated events from the prediction population', () => {
+    const result = ce.predictTaskCost({ description: 'implement login endpoint', role: 'executor', size: 'medium' }, [
+      actual(0.10), actual(0.20), actual(0.30),
+      { ...actual(99.99), cost_source: 'estimated' },
+    ]);
+    expect(result.source).toBe('exact');
+    expect(result.sample_count).toBe(3);
+    expect(result.p50_usd).toBeCloseTo(0.20, 8);
+  });
+
+  test('keeps untagged legacy actuals but excludes estimated and inherit rows', () => {
+    const result = ce.predictTaskCost({ description: 'implement login endpoint', role: 'executor', size: 'medium' }, [
+      actual(0.10),
+      { ...actual(0.20), cost_source: undefined }, // schema-v1 measured completion
+      actual(0.30),
+      { ...actual(99.99), cost_source: 'estimated_inherit' },
+      { ...actual(88.88), model: ce.INHERIT_MODEL },
+    ]);
+    expect(result.source).toBe('exact');
+    expect(result.sample_count).toBe(3);
+    expect(result.p50_usd).toBeCloseTo(0.20, 8);
+  });
+
+  test('fresh history uses a non-zero heuristic without inventing samples', () => {
+    const result = ce.predictTaskCost({ description: 'fresh task', size: 'small' }, []);
+    expect(result.source).toBe('heuristic');
+    expect(result.sample_count).toBe(0);
+    expect(result.p50_usd).toBeGreaterThan(0);
+    expect(ce.formatCostPrediction(result)).toMatch(/^est\. \$\d+\.\d{2} \(p50, n=0, range \$\d+\.\d{2}–\$\d+\.\d{2}\)$/);
+  });
+});
+
 // ── costFromTokens — measured cost ────────────────────────────────────────────
 
 describe('costFromTokens — measured cost', () => {
@@ -760,6 +907,89 @@ describe('checkBudget — 80% boundary precision', () => {
     const result = ce.checkBudget(0.02);
     expect(result.ok).toBe(false);
     expect(result.level).toBe('exceeded');
+  });
+});
+
+// ── 12b. checkBudget — explicit warn_at_usd (t11) ──────────────────────────
+
+describe('checkBudget — explicit warn_at_usd thresholds', () => {
+  beforeEach(() => { clearMetrics(); clearConfig(); });
+  afterEach(() => { clearMetrics(); clearConfig(); });
+
+  test('explicit global warning is exclusive at its exact USD boundary', () => {
+    appendLines({ type: 'task_complete', cost_usd: 0.35, timestamp: new Date().toISOString() });
+    writeConfig({ budget: { max_usd: 0.50, warn_at_usd: 0.35 } });
+    expect(ce.checkBudget(0)).toMatchObject({ ok: true, level: 'normal', warn_at_usd: 0.35 });
+    expect(ce.checkBudget(0.0001)).toMatchObject({ ok: true, level: 'warning', warn_at_usd: 0.35 });
+  });
+
+  test('invalid or missing warning threshold safely falls back to the legacy 80% threshold', () => {
+    appendLines({ type: 'task_complete', cost_usd: 0.41, timestamp: new Date().toISOString() });
+    writeConfig({ budget: { max_usd: 0.50, warn_at_usd: 0.50 } }); // warn must be below max
+    expect(ce.checkBudget(0)).toMatchObject({ ok: true, level: 'warning', warn_at_usd: 0.40 });
+    writeConfig({ budget: { max_usd: 0.50 } });
+    expect(ce.checkBudget(0)).toMatchObject({ ok: true, level: 'warning', warn_at_usd: 0.40 });
+  });
+
+  test('project max/warn takes precedence when it is the more restrictive cap', () => {
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.41, project: 'alpha', timestamp: new Date().toISOString() },
+    );
+    writeConfig({
+      budget: {
+        max_usd: 1.00, warn_at_usd: 0.90,
+        projects: { alpha: { max_usd: 0.50, warn_at_usd: 0.40 } },
+      },
+    });
+    expect(ce.checkBudget(0, 'alpha')).toMatchObject({
+      ok: true, level: 'warning', project: 'alpha',
+      reason: 'budget.projects.alpha.max_usd', warn_at_usd: 0.40,
+    });
+    expect(ce.checkBudget(0.10, 'alpha')).toMatchObject({
+      ok: false, level: 'exceeded', reason: 'budget.projects.alpha.max_usd',
+    });
+  });
+
+  test('global warning beats a project normal result even at a lower percentage', () => {
+    appendLines({ type: 'task_complete', cost_usd: 0.20, project: 'alpha', timestamp: new Date().toISOString() });
+    writeConfig({
+      budget: {
+        max_usd: 1.00, warn_at_usd: 0.10,
+        projects: { alpha: { max_usd: 0.50, warn_at_usd: 0.40 } },
+      },
+    });
+    expect(ce.checkBudget(0, 'alpha')).toMatchObject({
+      ok: true, level: 'warning', reason: 'budget.max_usd', warn_at_usd: 0.10,
+    });
+  });
+
+  test('project warning beats a global normal result', () => {
+    appendLines({ type: 'task_complete', cost_usd: 0.20, project: 'alpha', timestamp: new Date().toISOString() });
+    writeConfig({
+      budget: {
+        max_usd: 1.00, warn_at_usd: 0.90,
+        projects: { alpha: { max_usd: 0.50, warn_at_usd: 0.10 } },
+      },
+    });
+    expect(ce.checkBudget(0, 'alpha')).toMatchObject({
+      ok: true, level: 'warning', project: 'alpha',
+      reason: 'budget.projects.alpha.max_usd', warn_at_usd: 0.10,
+    });
+  });
+
+  test('global cap wins when it is more restrictive than the project cap', () => {
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.49, project: 'alpha', timestamp: new Date().toISOString() },
+    );
+    writeConfig({
+      budget: {
+        max_usd: 0.50,
+        projects: { alpha: { max_usd: 1.00, warn_at_usd: 0.80 } },
+      },
+    });
+    expect(ce.checkBudget(0.02, 'alpha')).toMatchObject({
+      ok: false, level: 'exceeded', reason: 'budget.max_usd',
+    });
   });
 });
 
@@ -847,5 +1077,105 @@ describe('event schema v2 migration (t1)', () => {
     expect(ce.adaptEvent(null)).toBeNull();
     expect(ce.adaptEvent(undefined)).toBeUndefined();
     expect(ce.adaptEvent('string')).toBe('string');
+  });
+});
+
+// ── FakeLLM fixture harness (t17) ───────────────────────────────────────────
+
+describe('FakeLLM — deterministic cost fixture injection (t17)', () => {
+  beforeEach(() => { clearMetrics(); clearConfig(); });
+  afterEach(() => { clearMetrics(); clearConfig(); });
+
+  test('an exact-prompt fixture returns stable tokens, cost, and virtual latency', async () => {
+    const llm = createFakeLLM({
+      prompts: {
+        'summarize the diff': {
+          content: 'deterministic summary', input_tokens: 120, output_tokens: 30,
+          cost_usd: 0.0012, latency_ms: 45,
+        },
+      },
+    });
+
+    const first = await llm.complete('summarize the diff');
+    const second = await llm.complete('summarize the diff');
+
+    expect(first).toEqual({
+      prompt: 'summarize the diff', content: 'deterministic summary',
+      input_tokens: 120, output_tokens: 30, cost_usd: 0.0012,
+      latency_ms: 45, model: 'fake-llm', call_index: 0,
+    });
+    expect(second).toMatchObject({ input_tokens: 120, output_tokens: 30, cost_usd: 0.0012, latency_ms: 45, call_index: 1 });
+    expect(llm.totalLatencyMs).toBe(90); // virtual: no timer/network dependency
+  });
+
+  test('cache-style caller avoids a second FakeLLM invocation for the same prompt', async () => {
+    const llm = createFakeLLM({
+      'cacheable prompt': {
+        content: 'cached result', input_tokens: 80, output_tokens: 20,
+        cost_usd: 0.0008, latency_ms: 30,
+      },
+    });
+    const cache = new Map();
+    const completeWithCache = async (prompt) => {
+      if (cache.has(prompt)) return { ...cache.get(prompt), cache_hit: true };
+      const response = await llm.complete(prompt);
+      cache.set(prompt, response);
+      return { ...response, cache_hit: false };
+    };
+
+    const miss = await completeWithCache('cacheable prompt');
+    const hit = await completeWithCache('cacheable prompt');
+
+    expect(miss.cache_hit).toBe(false);
+    expect(hit.cache_hit).toBe(true);
+    expect(hit.cost_usd).toBe(miss.cost_usd);
+    expect(llm.callCount).toBe(1);
+    expect(llm.totalLatencyMs).toBe(30);
+  });
+
+  test('hard-cap check consumes the fixture cost deterministically', async () => {
+    const llm = createFakeLLM({
+      'expensive prompt': {
+        content: 'would exceed the cap', input_tokens: 100, output_tokens: 50,
+        cost_usd: 0.11, latency_ms: 10,
+      },
+    });
+    appendLines({ type: 'task_complete', cost_usd: 0.90, timestamp: new Date().toISOString() });
+    writeConfig({ budget: { max_usd: 1 } });
+
+    const proposed = await llm.complete('expensive prompt');
+    const guard = ce.checkBudget(proposed.cost_usd);
+
+    expect(guard.ok).toBe(false);
+    expect(guard.projected).toBeCloseTo(1.01, 6);
+    expect(llm.callCount).toBe(1);
+  });
+
+  test('prediction calibration consumes repeatable fixture cost samples', async () => {
+    const prompts = Object.fromEntries(Array.from({ length: 10 }, (_, index) => [
+      `prediction sample ${index}`,
+      {
+        content: `result ${index}`, input_tokens: 100, output_tokens: 20,
+        cost_usd: 0.025, latency_ms: 5,
+      },
+    ]));
+    const llm = createFakeLLM({ prompts });
+
+    for (const prompt of Object.keys(prompts)) {
+      const response = await llm.complete(prompt);
+      appendLines({
+        type: 'task_complete', size: 'small', cost_source: 'actual',
+        cost_usd: response.cost_usd, input_tokens: response.input_tokens,
+        output_tokens: response.output_tokens, timestamp: new Date().toISOString(),
+      });
+    }
+    const actuals = ce.computeTokenActuals();
+    const forecast = ce.estimateTaskCost({ name: 'fixture prediction', size: 'small' }, 'sonnet');
+
+    expect(actuals.sample_counts.small).toBe(10);
+    expect(actuals.estimates.small.avg_cost_usd).toBeCloseTo(0.025, 6);
+    expect(forecast.confidence).toBe('high');
+    expect(forecast.cost_usd).toBeCloseTo(0.025, 6);
+    expect(llm.totalLatencyMs).toBe(50);
   });
 });

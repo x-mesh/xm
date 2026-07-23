@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, '..', 'x-build', 'lib', 'x-build-cli.mjs');
+const XM_CLI_PATH = join(__dirname, '..', 'xm', 'scripts', 'xm');
+const REPO_ROOT = join(__dirname, '..');
 
 function run(args, opts = {}) {
   const cwd = opts.cwd ?? process.cwd();
@@ -180,6 +182,40 @@ describe('forecast', () => {
       const r = run(['forecast', 'update'], { cwd: tmp });
       expect(r.exitCode).toBe(0);
       expect(r.stdout).toContain('Token actuals updated');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('xm cost predict (t6)', () => {
+  test('is reachable through the public xm dispatcher on a fresh state root', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xm-cost-predict-'));
+    try {
+      const result = spawnSync('bash', [XM_CLI_PATH, 'cost', 'predict', 'fresh task', '--size', 'small'], {
+        cwd: tmp,
+        env: { ...process.env, XM_LIB: REPO_ROOT, XM_ROOT: join(tmp, '.xm') },
+        encoding: 'utf8',
+        timeout: 10000,
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/est\. \$\d+\.\d{2} \(p50, n=0, range \$\d+\.\d{2}–\$\d+\.\d{2}\)/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('returns a non-zero exit code for an unknown public cost subcommand', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xm-cost-invalid-'));
+    try {
+      const result = spawnSync('bash', [XM_CLI_PATH, 'cost', 'nonsense'], {
+        cwd: tmp,
+        env: { ...process.env, XM_LIB: REPO_ROOT, XM_ROOT: join(tmp, '.xm') },
+        encoding: 'utf8',
+        timeout: 10000,
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Usage: xm cost predict');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
