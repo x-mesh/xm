@@ -200,6 +200,15 @@ export const SCHEMA = [
     description: '세션당 최대 비용(USD). null=무제한',
   },
   {
+    key: 'budget.warn_at_usd',
+    group: 'budget',
+    type: 'number',
+    nullable: true,
+    scope: 'local',
+    default: null,
+    description: '세션 비용 경고 임계값(USD). max_usd보다 작을 때만 적용; 미설정 시 max_usd의 80%',
+  },
+  {
     key: 'memmesh.mirror',
     group: 'misc',
     type: 'boolean',
