@@ -2,12 +2,19 @@
  * x-build/cost-engine — Cost estimation, model profiles, and budget guard
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync, statSync, unlinkSync, renameSync, openSync, readSync, closeSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir, hostname } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { ROOT } from './root.mjs';
 import { loadSharedConfig } from './config-loader.mjs';
+import {
+  COST_EVENT_MAX_BYTES as CORE_COST_EVENT_MAX_BYTES,
+  appendCostEvent as appendSharedCostEvent,
+  checkHardCap,
+  computeSpend,
+  readCostEvents,
+} from '../cost/index.mjs';
 
 // ── Event schema version ─────────────────────────────────────────────
 // v1 = legacy (no schema_v field). v2 = adds schema_v, machine_id, event_id.
@@ -50,42 +57,11 @@ function tokenActualsPath() {
 }
 
 export const METRICS_MAX_BYTES = 5 * 1024 * 1024; // 5MB rotation threshold
-
-// ── Write lock helpers ────────────────────────────────────────────────
-
-function acquireWriteLock(lockPath, maxRetries = 50, intervalMs = 20) {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      writeFileSync(lockPath, String(process.pid), { flag: 'wx' }); // exclusive create
-      return true;
-    } catch (e) {
-      if (e.code === 'EEXIST') {
-        // Stale lock detection: if lock file is older than 10s, remove it
-        try {
-          const stat = statSync(lockPath);
-          if (Date.now() - stat.mtimeMs > 10000) {
-            unlinkSync(lockPath);
-            continue;
-          }
-        } catch { /* lock may have been removed by another process */ }
-        // Busy wait
-        const start = Date.now();
-        while (Date.now() - start < intervalMs) {} // spin
-        continue;
-      }
-      throw e;
-    }
-  }
-  return false;
-}
-
-function releaseWriteLock(lockPath) {
-  try { unlinkSync(lockPath); } catch { /* best effort */ }
-}
+export const COST_EVENT_MAX_BYTES = CORE_COST_EVENT_MAX_BYTES;
 
 // ── appendMetric ─────────────────────────────────────────────────────
 
-export function appendMetric(data) {
+export function appendCostEvent(data) {
   // Inject v2 schema fields if absent. Callers may preset schema_v/machine_id/
   // event_id (e.g., for dedup replay from remote); we only fill the gaps.
   const event = {
@@ -94,29 +70,17 @@ export function appendMetric(data) {
     event_id: generateEventId(),
     ...data,
   };
-  const p = metricsPath();
-  mkdirSync(dirname(p), { recursive: true });
-  const lockPath = p + '.lock';
-  const acquired = acquireWriteLock(lockPath);
-  if (!acquired) {
-    // Graceful degradation: log warning and proceed without lock
-    process.stderr.write('[x-build] appendMetric: failed to acquire write lock (' + lockPath + '), proceeding without lock\n');
-  }
-  try {
-    if (existsSync(p)) {
-      try {
-        const sz = statSync(p).size;
-        if (sz > METRICS_MAX_BYTES) {
-          const rotated = p + '.1';
-          renameSync(p, rotated);
-        }
-      } catch { /* ignore rotation errors */ }
-    }
-    appendFileSync(p, JSON.stringify(event) + '\n', 'utf8');
-  } finally {
-    if (acquired) releaseWriteLock(lockPath);
-  }
+  return appendSharedCostEvent({
+    filePath: metricsPath(),
+    event,
+    maxBytes: COST_EVENT_MAX_BYTES,
+    rotateAtBytes: METRICS_MAX_BYTES,
+  });
 }
+
+// Backward-compatible alias for external consumers. Internal writers use the
+// cost-specific API so every cost event goes through the same size/lock guard.
+export const appendMetric = appendCostEvent;
 
 // ── INHERIT_MODEL ─────────────────────────────────────────────────────
 // Sentinel tier meaning "use the session model the user picked via /model".
@@ -654,6 +618,146 @@ export function estimateTaskCost(task, model = 'sonnet') {
   };
 }
 
+// ── Cost prediction (M2 / R10-R12) ───────────────────────────────────
+//
+// This deliberately learns only from measured task completions. Estimated
+// events are predictions, not observations; feeding them back here would make
+// a bad estimate increasingly confident without any new evidence.
+export const COST_PREDICTION_MIN_SAMPLES = 3;
+export const COST_PREDICTION_JACCARD_THRESHOLD = 0.5;
+
+function predictionText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLocaleLowerCase('en-US')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function metricTaskDescription(metric) {
+  // taskName is emitted by `tasks update`; name/task_description keep the
+  // reader compatible with imported and pre-v2 records.
+  return metric.task_description || metric.taskName || metric.name || '';
+}
+
+function jaccardSimilarity(left, right) {
+  const a = new Set(predictionText(left));
+  const b = new Set(predictionText(right));
+  if (!a.size || !b.size) return 0;
+  let intersection = 0;
+  for (const token of a) if (b.has(token)) intersection++;
+  return intersection / (a.size + b.size - intersection);
+}
+
+function samePredictionTuple(metric, query) {
+  return (metric.role || 'executor') === query.role
+    && (metric.strategy || null) === query.strategy
+    && (metric.size || 'medium') === query.size;
+}
+
+function quantile(sorted, percentile) {
+  if (!sorted.length) return null;
+  // Linear interpolation between adjacent observations gives deterministic
+  // p25/p50/p75 for both even and odd sample counts.
+  const index = (sorted.length - 1) * percentile;
+  const low = Math.floor(index);
+  const high = Math.ceil(index);
+  if (low === high) return sorted[low];
+  return sorted[low] + (sorted[high] - sorted[low]) * (index - low);
+}
+
+function summarizePrediction(samples, source) {
+  const costs = samples.map(sample => sample.cost_usd).sort((a, b) => a - b);
+  const p50 = quantile(costs, 0.5);
+  return {
+    estimate_usd: p50,
+    p25_usd: quantile(costs, 0.25),
+    p50_usd: p50,
+    p75_usd: quantile(costs, 0.75),
+    sample_count: costs.length,
+    source,
+  };
+}
+
+/**
+ * Predict a task's measured cost through a narrow-to-broad lookup.
+ *
+ * exact: same role+strategy+size tuple
+ * jaccard: same role+strategy, descriptions with Jaccard >= threshold
+ * global: strategy-specific history first, then all measured history
+ *
+ * Candidate pools below three samples continue to the global fallback. When
+ * no measured history exists at all, the established token heuristic remains
+ * a visible cold-start baseline (n=0), rather than pretending $0 is measured.
+ */
+export function predictTaskCost(query, metrics = readTaskMetrics()) {
+  const normalizedQuery = {
+    description: String(query?.description || query?.name || '').trim(),
+    role: query?.role || 'executor',
+    strategy: query?.strategy || null,
+    size: query?.size || 'medium',
+    model: query?.model || 'sonnet',
+  };
+  const actuals = metrics
+    .filter(metric => metric?.type === 'task_complete'
+      // schema-v1 did not have cost_source; those legacy completions are the
+      // measured history that prediction must continue to learn from. New
+      // records must explicitly say actual. Estimated and inherit-price rows
+      // are never observations, even if they carry a numeric cost.
+      && (metric.cost_source === 'actual' || metric.cost_source == null)
+      && metric.model !== INHERIT_MODEL
+      && Number.isFinite(metric.cost_usd)
+      && metric.cost_usd >= 0)
+    .map(metric => ({ ...metric, task_description: metricTaskDescription(metric) }));
+  const tuple = actuals.filter(metric => samePredictionTuple(metric, normalizedQuery));
+
+  if (tuple.length >= COST_PREDICTION_MIN_SAMPLES) return summarizePrediction(tuple, 'exact');
+
+  // Jaccard is the next, deliberately broader tier: it retains role+strategy
+  // (R12) but lets a semantically similar task differ in size. Stable ordering
+  // makes ties reproducible: score desc → description → timestamp/event id.
+  const similar = actuals
+    .filter(metric => (metric.role || 'executor') === normalizedQuery.role
+      && (metric.strategy || null) === normalizedQuery.strategy)
+    .map(metric => ({ metric, score: jaccardSimilarity(normalizedQuery.description, metric.task_description) }))
+    .filter(candidate => candidate.score >= COST_PREDICTION_JACCARD_THRESHOLD)
+    .sort((a, b) => b.score - a.score
+      || a.metric.task_description.localeCompare(b.metric.task_description, 'en')
+      || String(a.metric.timestamp || '').localeCompare(String(b.metric.timestamp || ''))
+      || String(a.metric.event_id || '').localeCompare(String(b.metric.event_id || '')))
+    .map(candidate => candidate.metric);
+  if (similar.length >= COST_PREDICTION_MIN_SAMPLES) return summarizePrediction(similar, 'jaccard');
+
+  // Preserve R12 whenever enough strategy-specific history exists. A thin
+  // strategy group is less reliable than the global median and also falls through.
+  const strategyGlobal = normalizedQuery.strategy == null
+    ? []
+    : actuals.filter(metric => (metric.strategy || null) === normalizedQuery.strategy);
+  if (strategyGlobal.length >= COST_PREDICTION_MIN_SAMPLES) return summarizePrediction(strategyGlobal, 'strategy-global');
+  if (actuals.length) return summarizePrediction(actuals, 'global');
+
+  const heuristic = estimateTaskCost({
+    name: normalizedQuery.description,
+    size: normalizedQuery.size,
+    strategy: normalizedQuery.strategy,
+  }, normalizedQuery.model).cost_usd;
+  return {
+    estimate_usd: heuristic,
+    p25_usd: heuristic,
+    p50_usd: heuristic,
+    p75_usd: heuristic,
+    sample_count: 0,
+    source: 'heuristic',
+  };
+}
+
+export function formatCostPrediction(prediction) {
+  const money = value => `$${Number(value || 0).toFixed(2)}`;
+  return `est. ${money(prediction.estimate_usd)} (p50, n=${prediction.sample_count}, range ${money(prediction.p25_usd)}–${money(prediction.p75_usd)})`;
+}
+
 // ── cmdForecastUpdate ─────────────────────────────────────────────────
 
 export function cmdForecastUpdate() {
@@ -739,15 +843,7 @@ export function roiSuggestion(stats, { minRatio = 1.3 } = {}) {
 
 // Read task_complete rows from the metrics log (best-effort per line).
 export function readTaskMetrics() {
-  const mp = metricsPath();
-  if (!existsSync(mp)) return [];
-  const out = [];
-  for (const line of readFileSync(mp, 'utf8').split('\n')) {
-    const s = line.trim();
-    if (!s) continue;
-    try { const o = JSON.parse(s); if (o.type === 'task_complete') out.push(o); } catch { /* skip torn line */ }
-  }
-  return out;
+  return readCostEvents({ filePath: metricsPath() }).filter((event) => event.type === 'task_complete');
 }
 
 // ── spendCachePath ────────────────────────────────────────────────────
@@ -762,10 +858,8 @@ function readSpendCache() {
   const cp = spendCachePath();
   if (!existsSync(cp)) return null;
   try {
-    const obj = JSON.parse(readFileSync(cp, 'utf8'));
-    if (typeof obj.total_usd === 'number' && typeof obj.last_line_offset === 'number') {
-      return obj;
-    }
+    const cached = JSON.parse(readFileSync(cp, 'utf8'));
+    if (typeof cached.total_usd === 'number' && typeof cached.last_line_offset === 'number') return cached;
   } catch { /* malformed cache */ }
   return null;
 }
@@ -787,18 +881,30 @@ function readLinesFromOffset(filePath, offset) {
     const fileSize = statSync(filePath).size;
     if (offset >= fileSize) return { text: '', endOffset: fileSize };
     const length = fileSize - offset;
-    const buf = Buffer.allocUnsafe(length);
+    const buffer = Buffer.allocUnsafe(length);
     const fd = openSync(filePath, 'r');
     let bytesRead;
     try {
-      bytesRead = readSync(fd, buf, 0, length, offset);
+      bytesRead = readSync(fd, buffer, 0, length, offset);
     } finally {
       closeSync(fd);
     }
-    return { text: buf.subarray(0, bytesRead).toString('utf8'), endOffset: fileSize };
+    return { text: buffer.subarray(0, bytesRead).toString('utf8'), endOffset: fileSize };
   } catch {
     return { text: '', endOffset: offset };
   }
+}
+
+function parseCostEventLines(text) {
+  const events = [];
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    try {
+      const event = JSON.parse(line);
+      if (event && typeof event === 'object' && !Array.isArray(event)) events.push(event);
+    } catch { /* skip malformed/torn JSONL rows */ }
+  }
+  return events;
 }
 
 // ── scanMetrics ───────────────────────────────────────────────────────
@@ -824,110 +930,55 @@ function scanMetrics(config) {
   const cutoff = windowMs != null ? Date.now() - windowMs : null;
 
   const mp = metricsPath();
-  let spent = 0;
-  let projectSpentMap = {};
-
-  if (!existsSync(mp)) return { spent, projectSpentMap };
-
   try {
     if (cutoff != null) {
-      // Rolling window: must scan all lines to filter by timestamp — cache not applicable
-      const lines = readFileSync(mp, 'utf8').trim().split('\n');
-      for (const line of lines) {
-        if (!line) continue;
-        try {
-          const m = JSON.parse(line);
-          if (typeof m.cost_usd === 'number') {
-            const ts = typeof m.timestamp === 'number'
-              ? m.timestamp
-              : (m.timestamp ? new Date(m.timestamp).getTime() : 0);
-            if (ts >= cutoff) {
-              spent += m.cost_usd;
-              if (trackedProjectTotals && m.project) {
-                projectSpentMap[m.project] = (projectSpentMap[m.project] ?? 0) + m.cost_usd;
-              }
-            }
-          }
-        } catch { /* skip malformed */ }
-      }
-    } else {
-      // No rolling window: use spend-cache for incremental reads
-      const fileSize = statSync(mp).size;
-      const cache = readSpendCache();
-
-      let startOffset = 0;
-      let cachedTotal = 0;
-      let cachedProjectTotals = {};
-
-      if (cache) {
-        if (fileSize < cache.last_line_offset) {
-          // File was rotated — invalidate cache, start from beginning
-        } else {
-          startOffset = cache.last_line_offset;
-          cachedTotal = cache.total_usd;
-          cachedProjectTotals = cache.project_totals ?? {};
-        }
-      }
-
-      const { text: newText, endOffset } = readLinesFromOffset(mp, startOffset);
-      let newSpend = 0;
-      const newProjectSpend = {};
-      if (newText) {
-        for (const line of newText.split('\n')) {
-          if (!line) continue;
-          try {
-            const m = JSON.parse(line);
-            if (typeof m.cost_usd === 'number') {
-              newSpend += m.cost_usd;
-              if (trackedProjectTotals && m.project) {
-                newProjectSpend[m.project] = (newProjectSpend[m.project] ?? 0) + m.cost_usd;
-              }
-            }
-          } catch { /* skip malformed */ }
-        }
-      }
-
-      spent = cachedTotal + newSpend;
-
-      // Merge project totals
-      projectSpentMap = { ...cachedProjectTotals };
-      for (const [proj, val] of Object.entries(newProjectSpend)) {
-        projectSpentMap[proj] = (projectSpentMap[proj] ?? 0) + val;
-      }
-
-      writeSpendCache(spent, endOffset, projectSpentMap);
+      const result = computeSpend(readCostEvents({ filePath: mp }), { since: cutoff });
+      return { spent: result.spent, projectSpentMap: trackedProjectTotals ? result.projectSpentMap : {} };
     }
-  } catch (e) { process.stderr.write('[x-build] checkBudget read error: ' + (e?.message || e) + '\n'); }
 
-  return { spent, projectSpentMap };
+    // Lifetime accounting keeps the offset cache: reads grow with new rows,
+    // while the shared core owns validity and aggregation of those new rows.
+    const fileSize = existsSync(mp) ? statSync(mp).size : 0;
+    const cache = readSpendCache();
+    const reusableCache = cache && fileSize >= cache.last_line_offset;
+    const startOffset = reusableCache ? cache.last_line_offset : 0;
+    const cachedTotal = reusableCache ? cache.total_usd : 0;
+    const cachedProjectTotals = reusableCache ? (cache.project_totals ?? {}) : {};
+    const { text, endOffset } = readLinesFromOffset(mp, startOffset);
+    const incremental = computeSpend(parseCostEventLines(text));
+    const projectSpentMap = { ...cachedProjectTotals };
+    if (trackedProjectTotals) {
+      for (const [project, cost] of Object.entries(incremental.projectSpentMap)) {
+        projectSpentMap[project] = (projectSpentMap[project] ?? 0) + cost;
+      }
+    }
+    const spent = cachedTotal + incremental.spent;
+    writeSpendCache(spent, endOffset, projectSpentMap);
+    return { spent, projectSpentMap };
+  } catch (e) {
+    process.stderr.write('[x-build] checkBudget read error: ' + (e?.message || e) + '\n');
+    return { spent: 0, projectSpentMap: {} };
+  }
 }
 
 // ── evaluateBudget ────────────────────────────────────────────────────
 
-function evaluateBudget(spent, budget, additionalCost) {
-  const projected = spent + additionalCost;
-  const pct = projected / budget * 100;
-  if (projected > budget) {
-    return { ok: false, spent, projected, budget, pct, level: 'exceeded' };
-  }
-  if (pct > 80) {
-    return { ok: true, spent, projected, budget, pct, level: 'warning' };
-  }
-  return { ok: true, spent, projected, budget, pct, level: 'normal' };
-}
-
-// ── mergeProjectBudget ────────────────────────────────────────────────
-
-function mergeProjectBudget(globalResult, projectSpentMap, projectLimit, project, additionalCost) {
+function mergeProjectBudget(globalResult, projectSpentMap, projectLimit, projectWarnAt, project, additionalCost) {
   const projSpent = projectSpentMap[project] ?? 0;
-  const projectResult = { ...evaluateBudget(projSpent, projectLimit, additionalCost), project };
+  const projectResult = {
+    ...checkHardCap({ spent: projSpent, cap: projectLimit, additionalCost, warnAtUsd: projectWarnAt }),
+    project,
+    reason: `budget.projects.${project}.max_usd`,
+  };
 
-  // Return the more restrictive result (prefer not-ok, then higher pct)
-  const globalPct = globalResult.pct;
-  if (!projectResult.ok && globalResult.ok) return projectResult;
-  if (!globalResult.ok && projectResult.ok) return globalResult;
-  // Both ok or both not-ok: return whichever has higher pct (more restrictive)
-  return projectResult.pct >= globalPct ? projectResult : globalResult;
+  // Severity is authoritative: a warning must beat a normal result even when
+  // the normal cap has a higher percentage. Within one level, higher pct has
+  // the smaller remaining margin and is the more restrictive cap.
+  const levelRank = { normal: 0, warning: 1, exceeded: 2 };
+  const projectRank = levelRank[projectResult.level] ?? 0;
+  const globalRank = levelRank[globalResult.level] ?? 0;
+  if (projectRank !== globalRank) return projectRank > globalRank ? projectResult : globalResult;
+  return projectResult.pct >= globalResult.pct ? projectResult : globalResult;
 }
 
 // ── checkBudget ───────────────────────────────────────────────────────
@@ -936,15 +987,18 @@ export function checkBudget(additionalCost = 0, project = null) {
   const config = loadSharedConfig();
   const budget = Number(config.budget?.max_usd);
   const hasGlobalBudget = !isNaN(budget) && budget > 0;
+  const globalWarnAt = config.budget?.warn_at_usd;
 
   // Per-project caps accept BOTH shapes: a plain number and the documented
   // { "max_usd": N }. A present-but-unparseable value must fail loudly —
   // Number({...}) is NaN and used to make the cap silently disappear.
   const projectBudgets = config.budget?.projects ?? {};
   let projectLimit = NaN;
+  let projectWarnAt;
   if (project != null && projectBudgets[project] !== undefined) {
     const raw = projectBudgets[project];
     const value = (raw !== null && typeof raw === 'object') ? raw.max_usd : raw;
+    projectWarnAt = (raw !== null && typeof raw === 'object') ? raw.warn_at_usd : undefined;
     projectLimit = Number(value);
     if (isNaN(projectLimit) || projectLimit <= 0) {
       process.stderr.write(`[x-build] checkBudget: budget.projects["${project}"] = ${JSON.stringify(raw)} is unparseable — expected a positive number or {"max_usd": N}; the per-project cap is NOT applied\n`);
@@ -958,13 +1012,20 @@ export function checkBudget(additionalCost = 0, project = null) {
 
   if (!hasGlobalBudget) {
     // Project-only cap: no global budget.max_usd, but this project has a limit.
-    return { ...evaluateBudget(projectSpentMap[project] ?? 0, projectLimit, additionalCost), project };
+    return {
+      ...checkHardCap({ spent: projectSpentMap[project] ?? 0, cap: projectLimit, additionalCost, warnAtUsd: projectWarnAt }),
+      project,
+      reason: `budget.projects.${project}.max_usd`,
+    };
   }
 
-  const globalResult = evaluateBudget(spent, budget, additionalCost);
+  const globalResult = {
+    ...checkHardCap({ spent, cap: budget, additionalCost, warnAtUsd: globalWarnAt }),
+    reason: 'budget.max_usd',
+  };
 
   if (hasProjectLimit) {
-    return mergeProjectBudget(globalResult, projectSpentMap, projectLimit, project, additionalCost);
+    return mergeProjectBudget(globalResult, projectSpentMap, projectLimit, projectWarnAt, project, additionalCost);
   }
 
   return globalResult;

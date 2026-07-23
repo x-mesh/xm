@@ -8,7 +8,7 @@ import {
   manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, projectDir, decisionsPath, archiveDir,
   resolveProject, getExplicitProject,
   loadConfig, loadSharedConfig, parseOptions, fmtDuration, estimateTaskCost, getModelForRole,
-  cmdForecastUpdate, loadTokenActuals,
+  cmdForecastUpdate, loadTokenActuals, predictTaskCost, formatCostPrediction,
   aggregateRoi, roiSuggestion, readTaskMetrics, ROI_MIN_SAMPLES,
   existsSync, join, readFileSync, mkdirSync,
   getAgentCount, isNormalMode,
@@ -1146,6 +1146,36 @@ export function cmdForecast(args) {
   }
 
   console.log('');
+}
+
+// ── cmdCostPredict ──────────────────────────────────────────────────
+
+export function cmdCostPredict(args) {
+  const { opts, positional } = parseOptions(args);
+  const description = positional.join(' ').trim();
+  if (!description) {
+    console.error('Usage: xm cost predict <task-description> [--role executor] [--strategy name] [--size small|medium|large] [--model sonnet]');
+    process.exitCode = 1;
+    return;
+  }
+  const size = opts.size || 'medium';
+  if (!['small', 'medium', 'large'].includes(size)) {
+    console.error('xm cost predict: --size must be small, medium, or large');
+    process.exitCode = 1;
+    return;
+  }
+
+  const prediction = predictTaskCost({
+    description,
+    role: opts.role || 'executor',
+    strategy: opts.strategy || null,
+    size,
+    model: opts.model || 'sonnet',
+  });
+  console.log(formatCostPrediction(prediction));
+  if (prediction.source === 'heuristic') {
+    console.log(`${C.dim}No measured actual-cost samples yet; showing the cold-start heuristic.${C.reset}`);
+  }
 }
 
 // ── cmdNext ─────────────────────────────────────────────────────────

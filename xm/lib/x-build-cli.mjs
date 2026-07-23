@@ -13,7 +13,7 @@ import { cmdPhase, cmdGate, cmdCheckpoint } from './x-build/phase.mjs';
 import { cmdTasks, cmdTaskCheck, cmdSteps, cmdRun, cmdRunStatus, cmdReviewGroup, cmdGroupCheck, interactiveTasksAdd, cmdDispatch } from './x-build/tasks.mjs';
 import { cmdLater } from './x-build/later.mjs';
 import { cmdHooks } from './x-build/hooks.mjs';
-import { cmdPlan, cmdPlanCheck, cmdPrdGate, cmdPrdCheck, cmdConsensus, cmdDiscuss, cmdResearch, cmdForecast, cmdRoi, cmdNext, cmdHandoff, cmdSummarize, cmdSaveArtifact, cmdContextUsage, cmdResearchCheck } from './x-build/plan.mjs';
+import { cmdPlan, cmdPlanCheck, cmdPrdGate, cmdPrdCheck, cmdConsensus, cmdDiscuss, cmdResearch, cmdForecast, cmdCostPredict, cmdRoi, cmdNext, cmdHandoff, cmdSummarize, cmdSaveArtifact, cmdContextUsage, cmdResearchCheck } from './x-build/plan.mjs';
 import { cmdQuality, cmdVerifyCoverage, cmdVerifyTraceability, cmdVerifyContracts, cmdVerifyReviewFix, cmdVerifyDrift } from './x-build/verify.mjs';
 import { cmdExport, cmdImport } from './x-build/export.mjs';
 import { cmdAlias, cmdDemo, cmdWatch, cmdMetrics, cmdMode, cmdContext, cmdPhaseContext, cmdDecisions, cmdTemplates, printHelp } from './x-build/misc.mjs';
@@ -90,6 +90,13 @@ switch (cmd) {
   case 'decisions':     cmdDecisions(args); break;
   case 'summarize':     cmdSummarize(args); break;
   case 'forecast':      cmdForecast(args); break;
+  case 'cost':
+    if (args[0] === 'predict') cmdCostPredict(args.slice(1));
+    else {
+      console.error('Usage: xm cost predict <task-description> [--role executor] [--strategy name] [--size small|medium|large]');
+      process.exitCode = 1;
+    }
+    break;
   case 'roi':           cmdRoi(args); break;
   case 'run':            await cmdRun(args); break;
   case 'mode':           cmdMode(args); break;
@@ -138,7 +145,7 @@ switch (cmd) {
     if (args[0] === 'reset') { resetCircuitBreaker(project); }
     else if (args[0] === 'status') {
       const cb = getCircuitState(project);
-      console.log(`⚡ Circuit breaker: ${cb.state} (failures: ${cb.consecutive_failures})`);
+      console.log(`⚡ Circuit breaker: ${cb.state} (${cb.reason}; failures: ${cb.consecutive_failures})`);
       if (cb.cooldown_until) console.log(`  Cooldown until: ${cb.cooldown_until}`);
     }
     else { console.error('Usage: x-build circuit-breaker <reset|status>'); }

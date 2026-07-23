@@ -78,6 +78,124 @@
     return '—';
   }
 
+  // ── Cost dashboard mock data + aggregation ─────────────────────────────
+  // t4 deliberately keeps this browser-only and deterministic.  t5 owns the
+  // live /api/costs/* contract; do not let a dashboard prototype invent it.
+  const COST_MODELS = ['haiku', 'sonnet', 'opus'];
+  const COST_STRATEGIES = ['direct', 'review', 'debate', 'tournament'];
+  const COST_PROJECTS = ['x-build', 'x-panel', 'x-dashboard'];
+  const COST_ROLES = ['executor', 'reviewer', 'planner', 'critic', 'verifier', 'researcher', 'security', 'debugger', 'optimizer', 'documenter', 'architect', 'test-engineer'];
+  const COST_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+  function utcDay(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toISOString().slice(0, 10);
+  }
+
+  function addUtcDays(date, amount) {
+    const result = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 12));
+    result.setUTCDate(result.getUTCDate() + amount);
+    return result;
+  }
+
+  // Fixed formula, not fixed calendar dates: a screen opened months later still
+  // has a complete 90-day mock range, while tests can pass a fixed reference.
+  function makeCostMockEvents(reference = new Date()) {
+    const today = new Date(reference);
+    const anchor = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 12));
+    const events = [];
+    for (let i = 0; i < 120; i++) {
+      const timestamp = addUtcDays(anchor, -i);
+      timestamp.setUTCHours(7 + ((i * 5) % 13), (i * 11) % 60, 0, 0);
+      events.push({
+        timestamp: timestamp.toISOString(),
+        model: COST_MODELS[i % COST_MODELS.length],
+        strategy: COST_STRATEGIES[(i * 3) % COST_STRATEGIES.length],
+        project: COST_PROJECTS[(i * 5) % COST_PROJECTS.length],
+        role: COST_ROLES[(i * 7) % COST_ROLES.length],
+        cost: Number((0.008 + ((i * 17) % 29) / 1000).toFixed(4)),
+      });
+      // A second call creates visible stacking and a non-uniform heatmap.
+      if (i % 3 === 0) {
+        const followUp = new Date(timestamp);
+        followUp.setUTCHours((timestamp.getUTCHours() + 4) % 24);
+        events.push({
+          timestamp: followUp.toISOString(),
+          model: COST_MODELS[(i + 1) % COST_MODELS.length],
+          strategy: COST_STRATEGIES[(i + 1) % COST_STRATEGIES.length],
+          project: COST_PROJECTS[(i + 1) % COST_PROJECTS.length],
+          role: COST_ROLES[(i + 3) % COST_ROLES.length],
+          cost: Number((0.004 + ((i * 7) % 17) / 1000).toFixed(4)),
+        });
+      }
+    }
+    return events;
+  }
+
+  function filterCostEvents(events, filters = {}, reference = new Date()) {
+    const period = Number(filters.period || 30);
+    const safePeriod = [7, 30, 90].includes(period) ? period : 30;
+    const start = addUtcDays(reference, -(safePeriod - 1));
+    start.setUTCHours(0, 0, 0, 0);
+    return (Array.isArray(events) ? events : []).filter((event) => {
+      const timestamp = new Date(event.timestamp);
+      if (Number.isNaN(timestamp.getTime()) || timestamp < start) return false;
+      return (!filters.model || filters.model === 'all' || event.model === filters.model)
+        && (!filters.strategy || filters.strategy === 'all' || event.strategy === filters.strategy)
+        && (!filters.project || filters.project === 'all' || event.project === filters.project);
+    });
+  }
+
+  function buildCostChartModel(events, filters = {}, reference = new Date()) {
+    const period = [7, 30, 90].includes(Number(filters.period)) ? Number(filters.period) : 30;
+    const filtered = filterCostEvents(events, { ...filters, period }, reference);
+    const days = Array.from({ length: period }, (_, index) => utcDay(addUtcDays(reference, -(period - 1) + index)));
+    const costsByDay = new Map(days.map((day) => [day, 0]));
+    const strategyCosts = new Map();
+    const strategyModelCosts = new Map();
+    const roleCosts = new Map();
+    const heatmap = Array.from({ length: 7 }, () => Array(24).fill(0));
+
+    for (const event of filtered) {
+      const cost = Number(event.cost) || 0;
+      const day = utcDay(event.timestamp);
+      if (costsByDay.has(day)) costsByDay.set(day, costsByDay.get(day) + cost);
+      strategyCosts.set(event.strategy, (strategyCosts.get(event.strategy) || 0) + cost);
+      const strategyModelKey = `${event.strategy}\u0000${event.model}`;
+      strategyModelCosts.set(strategyModelKey, (strategyModelCosts.get(strategyModelKey) || 0) + cost);
+      roleCosts.set(event.role, (roleCosts.get(event.role) || 0) + cost);
+      const timestamp = new Date(event.timestamp);
+      heatmap[timestamp.getUTCDay()][timestamp.getUTCHours()] += cost;
+    }
+
+    const strategies = [...strategyCosts.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([label, value]) => ({ label, value: Number(value.toFixed(4)) }));
+    const strategyModels = [...new Set(filtered.map((event) => event.model))].sort();
+    const roles = [...roleCosts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 10)
+      .map(([label, value]) => ({ label, value: Number(value.toFixed(4)) }));
+    const total = filtered.reduce((sum, event) => sum + (Number(event.cost) || 0), 0);
+
+    return {
+      events: filtered,
+      total: Number(total.toFixed(4)),
+      daily: { labels: days, values: days.map((day) => Number((costsByDay.get(day) || 0).toFixed(4))) },
+      strategies,
+      strategyBars: {
+        labels: strategyModels,
+        datasets: strategies.map(({ label }) => ({
+          label,
+          values: strategyModels.map((model) => Number((strategyModelCosts.get(`${label}\u0000${model}`) || 0).toFixed(4))),
+        })),
+      },
+      roles,
+      heatmap: { weekdays: COST_WEEKDAYS, values: heatmap.map((row) => row.map((value) => Number(value.toFixed(4)))) },
+    };
+  }
+
   // Prepare markdown so ASCII diagrams survive marked.parse(). Two rules:
   //  1. Content already inside a ``` / ~~~ fenced block is passed through
   //     UNTOUCHED. The PRD template fences every diagram; re-fencing it is the
@@ -131,5 +249,8 @@
     return out.join('\n');
   }
 
-  g.XMRender = { escapeHtml, renderValue, renderEmpty, fmtAgents, preprocessDiagrams };
+  g.XMRender = {
+    escapeHtml, renderValue, renderEmpty, fmtAgents, preprocessDiagrams,
+    makeCostMockEvents, filterCostEvents, buildCostChartModel,
+  };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

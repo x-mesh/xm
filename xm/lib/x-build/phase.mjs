@@ -7,7 +7,7 @@ import {
   readJSON, writeJSON, readMD,
   manifestPath, phaseStatusPath, tasksPath, prdPath, contextDir, phaseDir, checkpointsDir,
   projectDir, decisionsPath,
-  resolveProject, logDecision, appendMetric, emitHook,
+  resolveProject, logDecision, appendCostEvent, emitHook,
   loadConfig, resolveGates, requiresSignoff, parseOptions, E,
   existsSync, join, resolve, repoRoot,
   spawnSync,
@@ -279,7 +279,7 @@ export function phaseNext(args) {
   emitHook('phase:post-enter', { project, phase: nextPhase.name, from: currentPhase.name });
 
   if (currentStatus.started_at) {
-    appendMetric({
+    appendCostEvent({
       type: 'phase_complete', project, phase: currentPhase.name,
       duration_ms: new Date(now) - new Date(currentStatus.started_at),
       timestamp: now,

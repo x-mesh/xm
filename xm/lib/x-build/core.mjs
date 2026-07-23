@@ -448,7 +448,7 @@ export function decisionsPath(project) {
 }
 
 // ── Cost Engine (re-exports) ─────────────────────────────────────────
-export { MODEL_COSTS, MODEL_PROFILES, ROLE_MODEL_MAP_HR, ROLE_ALIASES, resolveRole, PHASE_ROLE_GROUPS, SIZE_TOKEN_ESTIMATES, STRATEGY_MULTIPLIERS, INHERIT_MODEL, JUDGMENT_ROLES, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, estimateTaskCost, costFromTokens, checkBudget, appendMetric, metricsPath, METRICS_MAX_BYTES, EVENT_SCHEMA_VERSION, adaptEvent, VENDOR_MODELS, MODEL_EFFORT_LEVELS, MODEL_COSTS_BY_VENDOR, parseModelSpec, resolveVendorModel, costFromTokensVendor, computeTokenActuals, loadTokenActuals, cmdForecastUpdate, aggregateRoi, roiSuggestion, readTaskMetrics, ROI_MIN_SAMPLES } from './cost-engine.mjs';
+export { MODEL_COSTS, MODEL_PROFILES, ROLE_MODEL_MAP_HR, ROLE_ALIASES, resolveRole, PHASE_ROLE_GROUPS, SIZE_TOKEN_ESTIMATES, STRATEGY_MULTIPLIERS, INHERIT_MODEL, JUDGMENT_ROLES, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, estimateTaskCost, costFromTokens, checkBudget, appendCostEvent, appendMetric, metricsPath, METRICS_MAX_BYTES, COST_EVENT_MAX_BYTES, EVENT_SCHEMA_VERSION, adaptEvent, VENDOR_MODELS, MODEL_EFFORT_LEVELS, MODEL_COSTS_BY_VENDOR, parseModelSpec, resolveVendorModel, costFromTokensVendor, computeTokenActuals, loadTokenActuals, cmdForecastUpdate, aggregateRoi, roiSuggestion, readTaskMetrics, ROI_MIN_SAMPLES, COST_PREDICTION_MIN_SAMPLES, COST_PREDICTION_JACCARD_THRESHOLD, predictTaskCost, formatCostPrediction } from './cost-engine.mjs';
 
 // ── Lifecycle Hooks ──────────────────────────────────────────────────
 
@@ -951,6 +951,8 @@ function detectAndRunQualityChecks(project) {
 
 const RETRY_DEFAULTS = { max_retries: 3, base_delay_ms: 2000, max_delay_ms: 60000, jitter: 0.25 };
 const CIRCUIT_DEFAULTS = { threshold: 3, cooldown_ms: 30000 };
+const CIRCUIT_STATES = new Set(['closed', 'open', 'half-open']);
+const CIRCUIT_REASONS = new Set(['failure', 'budget']);
 
 function getRetryConfig() {
   const config = loadConfig();
@@ -973,63 +975,165 @@ function circuitBreakerPath(project) {
   return join(projectDir(project), 'circuit-breaker.json');
 }
 
-export function getCircuitState(project) {
-  return readJSON(circuitBreakerPath(project)) || {
-    state: 'closed', consecutive_failures: 0,
-    opened_at: null, cooldown_until: null,
+function validTimestamp(value) {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
+function asTimestamp(value) {
+  return validTimestamp(value) ? value : null;
+}
+
+/**
+ * Read-time adapter for v1 circuit-breaker files. Invalid persisted state is
+ * fail-open: a damaged status file must not indefinitely block all work.
+ */
+export function normalizeCircuitState(raw) {
+  const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const state = CIRCUIT_STATES.has(input.state) ? input.state : 'closed';
+  const reason = CIRCUIT_REASONS.has(input.reason) ? input.reason : 'failure';
+  const malformedReason = input.reason != null && !CIRCUIT_REASONS.has(input.reason);
+  const cooldownUntil = asTimestamp(input.cooldown_until);
+  // An open failure breaker without a usable deadline cannot safely recover.
+  // Treat it as closed instead of reproducing the v1 permanent-block edge case.
+  const usableState = malformedReason || (state === 'open' && reason === 'failure' && !cooldownUntil) ? 'closed' : state;
+  const failures = Number(input.consecutive_failures);
+  return {
+    ...input,
+    state: usableState,
+    reason,
+    consecutive_failures: Number.isInteger(failures) && failures >= 0 ? failures : 0,
+    opened_at: asTimestamp(input.opened_at),
+    cooldown_until: usableState === 'open' && reason === 'failure' ? cooldownUntil : null,
+    half_open_at: usableState === 'half-open' ? asTimestamp(input.half_open_at) : null,
   };
+}
+
+function nowMs(now) {
+  const value = typeof now === 'number' ? now : Date.parse(now);
+  return Number.isFinite(value) ? value : Date.now();
+}
+
+function iso(now) {
+  return new Date(nowMs(now)).toISOString();
+}
+
+/**
+ * Deterministic circuit state machine. Callers provide `now` so state
+ * transitions are unit-testable without clocks or filesystem state.
+ */
+export function transitionCircuitState(raw, event, { now, threshold = CIRCUIT_DEFAULTS.threshold, cooldown_ms = CIRCUIT_DEFAULTS.cooldown_ms } = {}) {
+  const cb = normalizeCircuitState(raw);
+  const current = nowMs(now);
+  const timestamp = iso(current);
+  const cooldown = Number.isFinite(Number(cooldown_ms)) && Number(cooldown_ms) >= 0
+    ? Number(cooldown_ms) : CIRCUIT_DEFAULTS.cooldown_ms;
+  const failureThreshold = Number.isFinite(Number(threshold)) && Number(threshold) > 0
+    ? Number(threshold) : CIRCUIT_DEFAULTS.threshold;
+
+  if (event === 'failure') {
+    const failures = cb.consecutive_failures + 1;
+    const mustOpen = cb.state === 'half-open' || (cb.state === 'closed' && failures >= failureThreshold);
+    if (!mustOpen) return { ...cb, consecutive_failures: failures, last_failure_at: timestamp };
+    return {
+      ...cb, state: 'open', reason: 'failure', consecutive_failures: failures,
+      last_failure_at: timestamp, opened_at: timestamp,
+      cooldown_until: iso(current + cooldown), half_open_at: null,
+    };
+  }
+
+  if (event === 'success') {
+    // A task success is never evidence that a budget cap recovered.
+    if (cb.reason === 'budget' && cb.state !== 'closed') return cb;
+    if (cb.state === 'half-open') {
+      return { ...cb, state: 'closed', reason: 'failure', consecutive_failures: 0, opened_at: null, cooldown_until: null, half_open_at: null };
+    }
+    if (cb.state === 'closed') return { ...cb, consecutive_failures: Math.max(0, cb.consecutive_failures - 1) };
+    return cb;
+  }
+
+  if (event === 'budget_exceeded') {
+    // Failure protection wins. A budget check must not replace its recovery
+    // deadline or failure counter with budget state.
+    if (cb.reason === 'failure' && cb.state !== 'closed') return cb;
+    return { ...cb, state: 'open', reason: 'budget', opened_at: timestamp, cooldown_until: null, half_open_at: null };
+  }
+
+  if (event === 'budget_recovered') {
+    if (cb.state === 'open' && cb.reason === 'budget') {
+      return { ...cb, state: 'closed', opened_at: null, cooldown_until: null, half_open_at: null };
+    }
+    return cb;
+  }
+
+  if (event === 'probe') {
+    if (cb.reason !== 'failure') return cb;
+    const cooldownUntil = Date.parse(cb.cooldown_until);
+    const probeStarted = Date.parse(cb.half_open_at);
+    const openReady = cb.state === 'open' && Number.isFinite(cooldownUntil) && current >= cooldownUntil;
+    // v1 persisted half-open state has no half_open_at lease. It was
+    // intentionally non-blocking, so adapt it into exactly one fresh probe.
+    const legacyHalfOpen = cb.state === 'half-open' && !Number.isFinite(probeStarted);
+    const abandonedProbe = cb.state === 'half-open' && Number.isFinite(probeStarted) && current >= probeStarted + cooldown;
+    if (openReady || legacyHalfOpen || abandonedProbe) {
+      return { ...cb, state: 'half-open', reason: 'failure', half_open_at: timestamp };
+    }
+  }
+  return cb;
+}
+
+/** Pure gate predicate used by the project-backed reader and tests. */
+export function shouldBlockCircuit(raw, { now, cooldown_ms = CIRCUIT_DEFAULTS.cooldown_ms } = {}) {
+  const cb = normalizeCircuitState(raw);
+  const current = nowMs(now);
+  if (cb.reason === 'budget') return false; // budget is re-evaluated by checkBudget.
+  if (cb.state === 'open') {
+    const deadline = Date.parse(cb.cooldown_until);
+    return !Number.isFinite(deadline) || current < deadline;
+  }
+  if (cb.state === 'half-open') {
+    const probeStarted = Date.parse(cb.half_open_at);
+    const cooldown = Number(cooldown_ms);
+    // Missing half_open_at is a v1 state with no probe lease. Let the caller
+    // atomically claim it through beginHalfOpenProbe instead of wedging work.
+    if (!Number.isFinite(probeStarted)) return false;
+    return !Number.isFinite(cooldown) || current < probeStarted + cooldown;
+  }
+  return false;
+}
+
+export function getCircuitState(project) {
+  return normalizeCircuitState(readJSON(circuitBreakerPath(project)));
 }
 
 export function updateCircuitBreaker(project, taskFailed) {
   const cfg = getCircuitConfig();
-  const cb = getCircuitState(project);
-
-  if (taskFailed) {
-    cb.consecutive_failures++;
-    cb.last_failure_at = new Date().toISOString();
-    if (cb.state === 'half-open') {
-      // half-open probe failed → back to open immediately
-      cb.state = 'open';
-      cb.cooldown_until = new Date(Date.now() + cfg.cooldown_ms).toISOString();
-      console.log(`  ${C.red}⚡ Circuit breaker OPEN — half-open probe failed. Cooldown restarted.${C.reset}`);
-    } else if (cb.consecutive_failures >= cfg.threshold && cb.state === 'closed') {
-      cb.state = 'open';
-      cb.opened_at = new Date().toISOString();
-      cb.cooldown_until = new Date(Date.now() + cfg.cooldown_ms).toISOString();
-      console.log(`  ${C.red}⚡ Circuit breaker OPEN — ${cb.consecutive_failures} consecutive failures. Step paused.${C.reset}`);
-      console.log(`  ${C.dim}Cooldown until: ${cb.cooldown_until}${C.reset}`);
-    }
-  } else {
-    if (cb.state === 'half-open') {
-      // half-open probe succeeded → close and fully reset
-      cb.state = 'closed';
-      cb.consecutive_failures = 0;
-      cb.opened_at = null;
-      cb.cooldown_until = null;
-      console.log(`  ${C.green}⚡ Circuit breaker CLOSED — half-open probe succeeded.${C.reset}`);
-    } else if (cb.state === 'closed') {
-      // Gradual reset: decrement instead of zeroing (prevents flapping)
-      cb.consecutive_failures = Math.max(0, cb.consecutive_failures - 1);
-    }
+  const before = getCircuitState(project);
+  const cb = modifyJSON(circuitBreakerPath(project), (raw) => transitionCircuitState(raw, taskFailed ? 'failure' : 'success', { ...cfg, now: Date.now() }));
+  if (taskFailed && before.state === 'half-open' && cb.state === 'open') {
+    console.log(`  ${C.red}⚡ Circuit breaker OPEN — half-open probe failed. Cooldown restarted.${C.reset}`);
+  } else if (taskFailed && before.state === 'closed' && cb.state === 'open') {
+    console.log(`  ${C.red}⚡ Circuit breaker OPEN — ${cb.consecutive_failures} consecutive failures. Step paused.${C.reset}`);
+    console.log(`  ${C.dim}Cooldown until: ${cb.cooldown_until}${C.reset}`);
+  } else if (!taskFailed && before.state === 'half-open' && cb.state === 'closed') {
+    console.log(`  ${C.green}⚡ Circuit breaker CLOSED — half-open probe succeeded.${C.reset}`);
   }
-
-  writeJSON(circuitBreakerPath(project), cb);
   return cb;
+}
+
+/** Update only the budget-owned circuit state; failure state is never replaced. */
+export function updateBudgetCircuitBreaker(project, budgetStatus) {
+  const event = budgetStatus?.level === 'exceeded' ? 'budget_exceeded' : 'budget_recovered';
+  return modifyJSON(circuitBreakerPath(project), (raw) => transitionCircuitState(raw, event, { now: Date.now() }));
 }
 
 // PURE predicate (F4): never writes. Returns whether work should be blocked.
 // The open→half-open transition lives in beginHalfOpenProbe() so that callers
 // using this for display/logging can't accidentally flip the breaker's state.
-// Half-open is treated as non-blocking: the probe run is permitted, and its
-// outcome (updateCircuitBreaker) closes or re-opens the breaker. This mirrors
-// the original self-recovering behavior — a probe that is started but never
-// resolved (the run/`tasks update` split means abandonment is common) leaves
-// the breaker half-open and still runnable, never wedged.
+// A v2 half-open state has a short, exclusive probe lease. A legacy v1
+// half-open state without that lease remains immediately recoverable.
 export function isCircuitOpen(project) {
   const cb = getCircuitState(project);
-  if (cb.state !== 'open') return false; // closed or half-open → not blocking
-  if (cb.cooldown_until && new Date() > new Date(cb.cooldown_until)) return false; // cooldown elapsed → probe permitted
-  return true;
+  return shouldBlockCircuit(cb, { now: Date.now(), cooldown_ms: getCircuitConfig().cooldown_ms });
 }
 
 // MUTATING transition (F4): call right before dispatching the recovery probe,
@@ -1037,10 +1141,18 @@ export function isCircuitOpen(project) {
 // has elapsed. Moves open→half-open. No-op (returns false) when the breaker is
 // not in that ready-to-probe state, so it is safe to call unconditionally.
 export function beginHalfOpenProbe(project) {
-  const cb = getCircuitState(project);
-  if (cb.state === 'open' && cb.cooldown_until && new Date() > new Date(cb.cooldown_until)) {
-    cb.state = 'half-open';
-    writeJSON(circuitBreakerPath(project), cb);
+  const cfg = getCircuitConfig();
+  const now = Date.now();
+  let claimed = false;
+  const cb = modifyJSON(circuitBreakerPath(project), (raw) => {
+    const before = normalizeCircuitState(raw);
+    const next = transitionCircuitState(before, 'probe', { ...cfg, now });
+    // This comparison runs while holding the JSON lock. A stale read outside
+    // the lock let multiple processes believe they had won the same probe.
+    claimed = next.state === 'half-open' && next.half_open_at !== before.half_open_at;
+    return next;
+  });
+  if (claimed) {
     console.log(`  ${C.yellow}⚡ Circuit breaker HALF-OPEN — probe allowed.${C.reset}`);
     return true;
   }
@@ -1048,7 +1160,7 @@ export function beginHalfOpenProbe(project) {
 }
 
 export function resetCircuitBreaker(project) {
-  const cb = { state: 'closed', consecutive_failures: 0, opened_at: null, cooldown_until: null };
+  const cb = { state: 'closed', reason: 'failure', consecutive_failures: 0, opened_at: null, cooldown_until: null, half_open_at: null };
   writeJSON(circuitBreakerPath(project), cb);
   console.log(`  ${C.green}⚡ Circuit breaker manually reset to CLOSED.${C.reset}`);
   return cb;

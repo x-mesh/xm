@@ -8,11 +8,11 @@ import {
   getMode, autopilotActive,
   readJSON, writeJSON, modifyJSON, readMD,
   manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, decisionsPath, projectDir,
-  resolveProject, findCurrentProject, logDecision, addDecision, appendMetric, emitHook,
+  resolveProject, findCurrentProject, logDecision, addDecision, appendCostEvent, emitHook,
   parseOptions, renderBar, fmtDuration,
   estimateTaskCost, costFromTokens, resolveVendorModel, computeTokenActuals,
   gitAutoCommit, gitRollbackTask,
-  updateCircuitBreaker, isCircuitOpen, beginHalfOpenProbe, scheduleRetry,
+  updateCircuitBreaker, updateBudgetCircuitBreaker, isCircuitOpen, beginHalfOpenProbe, scheduleRetry,
   getCircuitState, resetCircuitBreaker,
   existsSync, join, resolve, mkdirSync,
   spawnSync,
@@ -845,7 +845,7 @@ export function taskUpdate(project, args) {
       console.log(`  ${C.dim}📎 commit: ${sha.slice(0, 8)}${C.reset}`);
     }
     if (taskRef.started_at) {
-      appendMetric({
+      appendCostEvent({
         type: 'task_complete', project, taskId: id, taskName: taskRef.name,
         role: taskRef.role || 'executor',
         model: _metricModel,
@@ -900,7 +900,7 @@ export function taskUpdate(project, args) {
     }
 
     if (taskRef.started_at) {
-      appendMetric({
+      appendCostEvent({
         type: 'task_failed', project, taskId: id, taskName: taskRef.name,
         role: taskRef.role || 'executor',
         model: _metricModel,
@@ -931,7 +931,7 @@ export function taskUpdate(project, args) {
         .filter(t => t.started_at && t.completed_at)
         .map(t => new Date(t.completed_at) - new Date(t.started_at));
       const scores = allTasks.filter(t => t.score != null).map(t => t.score);
-      appendMetric({
+      appendCostEvent({
         type: 'run_complete', project, task_count: allTasks.length,
         completed: completedCount, failed: failedCount,
         total_duration_ms: durations.reduce((a, b) => a + b, 0),
@@ -1885,10 +1885,16 @@ export async function cmdRun(args) {
     return;
   }
 
-  // A real probe is about to be dispatched — now transition open→half-open.
-  // Doing this only at dispatch (not at the gate) means a no-op run never
-  // trips the breaker into half-open. No-op when the breaker isn't ready.
-  beginHalfOpenProbe(project);
+  // A real probe is about to be dispatched — atomically claim open→half-open.
+  // A second runner that passed the read-only gate first must not dispatch a
+  // second recovery probe while the first one owns the half-open lease.
+  const circuitBeforeProbe = getCircuitState(project);
+  const needsFailureProbe = circuitBeforeProbe.reason === 'failure'
+    && (circuitBeforeProbe.state === 'open' || circuitBeforeProbe.state === 'half-open');
+  if (needsFailureProbe && !beginHalfOpenProbe(project)) {
+    console.error(`❌ Circuit breaker probe is already running. Wait for it to finish or for its cooldown.`);
+    exitFail(1);
+  }
 
   // Generate context brief inline (avoid circular import with misc.mjs)
   const briefContent = (() => {
@@ -1927,6 +1933,7 @@ export async function cmdRun(args) {
   // Pass the project through so per-project caps (budget.projects) apply on
   // `run` too — without it only the global budget ever gated this path.
   const budgetStatus = checkBudget(cost, project);
+  updateBudgetCircuitBreaker(project, budgetStatus);
   const budgetExceeded = !!(budgetStatus.budget && budgetStatus.level === 'exceeded');
 
   // Worktree execution-mode decision (plan "실행 모드 결정"). The recommendation
@@ -2123,7 +2130,7 @@ export function cmdRunStatus(args) {
       review_required: groupSummary.review_required,
       review_available: groupSummary.review_available || false,
       review_command: groupSummary.review_command || null,
-      circuit_breaker: { state: cb.state, cooldown_until: cb.cooldown_until || null },
+      circuit_breaker: { state: cb.state, reason: cb.reason, cooldown_until: cb.cooldown_until || null },
       next_action,
       ...envelopeContext(),
     }, null, 2));
@@ -2164,7 +2171,7 @@ export function cmdRunStatus(args) {
 
   const cb = getCircuitState(project);
   if (cb.state !== 'closed') {
-    console.log(`\n  ${C.red}⚡ Circuit breaker: ${cb.state.toUpperCase()}${C.reset}`);
+    console.log(`\n  ${C.red}⚡ Circuit breaker: ${cb.state.toUpperCase()} (${cb.reason})${C.reset}`);
     if (cb.cooldown_until) console.log(`  ${C.dim}Cooldown until: ${cb.cooldown_until}${C.reset}`);
   }
 
@@ -2349,6 +2356,7 @@ export function cmdDispatch(args) {
   const model = task._assigned_model || getModelForRole(role, size, sharedCfg);
   const est = estimateTaskCost(task, model);
   const budget = checkBudget(est.cost_usd, project);
+  updateBudgetCircuitBreaker(project, budget);
   if (budget.ok === false) {
     console.error(`❌ budget block: +$${est.cost_usd.toFixed(2)} would exceed the limit (${budget.reason || 'budget.max_usd'})`);
     exitFail(1);
