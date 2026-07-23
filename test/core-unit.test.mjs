@@ -3,6 +3,7 @@
  */
 import { describe, test, expect, beforeEach, afterEach, afterAll } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync, utimesSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -663,6 +664,29 @@ describe('config helpers', () => {
   test('getMode returns a valid mode string', () => {
     const mode = core.getMode();
     expect(['developer', 'normal']).toContain(mode);
+  });
+
+  test('getMode uses local mode over the global shared-config tier', () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'xb-mode-precedence-'));
+    const home = join(sandbox, 'home');
+    const project = join(sandbox, 'project');
+    try {
+      mkdirSync(join(home, '.xm'), { recursive: true });
+      mkdirSync(join(project, '.xm'), { recursive: true });
+      writeFileSync(join(home, '.xm', 'config.json'), JSON.stringify({ mode: 'developer' }));
+      writeFileSync(join(project, '.xm', 'config.json'), JSON.stringify({ mode: 'normal' }));
+
+      const modulePath = join(process.cwd(), 'x-build', 'lib', 'x-build', 'core.mjs');
+      const result = spawnSync('node', ['--input-type=module', '--eval', `import { getMode } from ${JSON.stringify(modulePath)}; console.log(getMode());`], {
+        cwd: project,
+        env: { ...process.env, HOME: home, X_BUILD_ROOT: undefined, XM_ROOT: undefined },
+        encoding: 'utf8',
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe('normal');
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 
   test('isNormalMode matches getMode', () => {

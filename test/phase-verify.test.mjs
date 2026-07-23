@@ -1007,20 +1007,104 @@ describe('later', () => {
 // ── Quality ───────────────────────────────────────────────────────
 
 describe('quality', () => {
-  test.skip('serial_quality_command is authoritative and records reusable evidence', () => {
+  test('serial_quality_command is authoritative and records reusable evidence', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
-      const name = setupProject(tmp);
+      setupProject(tmp);
       mkdirSync(join(tmp, '.xm'), { recursive: true });
       writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({
         build: { serial_quality_command: 'node -e "process.stdout.write(\'serial-ok\')"' },
       }, null, 2));
-      spawnSync('git', ['add', '-A'], { cwd: tmp });
+      initGit(tmp);
       const results = runQualityPipeline({ cwd: tmp, config: { serial_quality_command: 'node -e "process.stdout.write(\'serial-ok\')"' } });
       expect(results).toHaveLength(1);
       expect(results[0].check).toBe('serial-quality');
       expect(results[0].passed).toBe(true);
       expect(results[0].output).toContain('serial-ok');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('reuses exact Verify serial evidence for phase next while custom gates still run', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-quality-reuse-'));
+    try {
+      const name = setupProject(tmp);
+      const serial = 'node -e "const fs=require(\'node:fs\');const p=process.env.QCOUNT;const n=Number(fs.existsSync(p)?fs.readFileSync(p,\'utf8\'):0)+1;fs.writeFileSync(p,String(n))"';
+      const gate = 'node -e "const fs=require(\'node:fs\');const p=\'.xm/gate-count\';const n=Number(fs.existsSync(p)?fs.readFileSync(p,\'utf8\'):0)+1;fs.writeFileSync(p,String(n))"';
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({
+        build: { serial_quality_command: serial, serial_quality_env: { QCOUNT: '.xm/serial-count' } },
+        gate_scripts: { marker: gate },
+        gates: { 'verify-exit': 'quality' },
+      }, null, 2));
+      initGit(tmp);
+
+      expect(run(['quality'], { cwd: tmp }).exitCode).toBe(0);
+      expect(readFileSync(join(tmp, '.xm', 'serial-count'), 'utf8')).toBe('1');
+      expect(readFileSync(join(tmp, '.xm', 'gate-count'), 'utf8')).toBe('1');
+
+      // Model the normal handoff: a user runs `quality`, then Verify exits via
+      // `phase next`. The phase gate must reuse only the exact serial record.
+      const manifestFile = projectPath(tmp, name, 'manifest.json');
+      const manifest = readJSON(manifestFile);
+      manifest.current_phase = '04-verify';
+      writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+      const next = run(['phase', 'next'], { cwd: tmp });
+
+      expect(next.exitCode).toBe(0);
+      expect(readFileSync(join(tmp, '.xm', 'serial-count'), 'utf8')).toBe('1');
+      expect(readFileSync(join(tmp, '.xm', 'gate-count'), 'utf8')).toBe('2');
+      const evidence = readJSON(projectPath(tmp, name, 'phases', '04-verify', 'quality-results.json'));
+      expect(evidence.results.find((result) => result.check === 'serial-quality')?.reused).toBe(true);
+
+      // A broken persisted artifact must not be rescued from stale fallback
+      // evidence: run the serial command again and overwrite it safely.
+      writeFileSync(projectPath(tmp, name, 'phases', '04-verify', 'quality-results.json'), '{not-json');
+      expect(run(['quality'], { cwd: tmp }).exitCode).toBe(0);
+      expect(readFileSync(join(tmp, '.xm', 'serial-count'), 'utf8')).toBe('2');
+      expect(readFileSync(join(tmp, '.xm', 'gate-count'), 'utf8')).toBe('3');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('serial quality reruns for stale, non-passing, skipped, or malformed evidence', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-quality-evidence-'));
+    try {
+      const command = 'node -e "const fs=require(\'node:fs\');const p=\'.xm/serial-count\';const n=Number(fs.existsSync(p)?fs.readFileSync(p,\'utf8\'):0)+1;fs.writeFileSync(p,String(n))"';
+      const config = { serial_quality_command: command };
+      mkdirSync(join(tmp, '.xm'), { recursive: true });
+      initGit(tmp);
+      const first = runQualityPipeline({ cwd: tmp, config })[0];
+
+      writeFileSync(join(tmp, '.baseline'), 'tracked change\n');
+      expect(runQualityPipeline({ cwd: tmp, config, evidence: first })[0].reused).toBe(false);
+      spawnSync('git', ['add', '.baseline'], { cwd: tmp });
+      expect(runQualityPipeline({ cwd: tmp, config, evidence: first })[0].reused).toBe(false);
+      writeFileSync(join(tmp, 'untracked.txt'), 'untracked change\n');
+      expect(runQualityPipeline({ cwd: tmp, config, evidence: first })[0].reused).toBe(false);
+      expect(runQualityPipeline({ cwd: tmp, config: { serial_quality_command: `${command} ` }, evidence: first })[0].reused).toBe(false);
+      expect(runQualityPipeline({ cwd: tmp, config: { ...config, serial_quality_env: { QUALITY_MODE: 'changed' } }, evidence: first })[0].reused).toBe(false);
+      const other = mkdtempSync(join(tmpdir(), 'xb-quality-other-cwd-'));
+      try {
+        mkdirSync(join(other, '.xm'), { recursive: true });
+        initGit(other);
+        expect(runQualityPipeline({ cwd: other, config, evidence: first })[0].reused).toBe(false);
+      } finally {
+        rmSync(other, { recursive: true, force: true });
+      }
+
+      // Refresh against the changed snapshot, then prove that a bad record is
+      // never accepted merely because its fingerprints happen to match.
+      const fresh = runQualityPipeline({ cwd: tmp, config })[0];
+      for (const evidence of [
+        { ...fresh, passed: false, failed: true },
+        { ...fresh, skipped: true },
+        { ...fresh, malformed: true },
+      ]) {
+        expect(runQualityPipeline({ cwd: tmp, config, evidence })[0].reused).toBe(false);
+      }
+      expect(Number(readFileSync(join(tmp, '.xm', 'serial-count'), 'utf8'))).toBeGreaterThanOrEqual(10);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
