@@ -8,7 +8,7 @@ Reference for x-build prompts using AskUserQuestion.
 
 | Element | Visible | Use for |
 |---------|---------|---------|
-| `header` | YES | Short context tag, for example `x-build`, `PRD Review`, or `Phase Gate` |
+| `header` | YES | Short context tag, for example `x-build`, `Plan Bundle`, or `User Decision` |
 | `question` | NO | Keep minimal; user may not see this text |
 | option `label` | YES | Primary info; must be self-explanatory |
 | option `description` | YES | Supplementary detail |
@@ -27,4 +27,4 @@ Reference for x-build prompts using AskUserQuestion.
 
 ## Applies to
 
-x-build PRD review, plan review, phase gates, and other user confirmation boundaries.
+x-build Plan Bundle direction approval and other user-owned decision boundaries. Routine phase transitions and the deterministic group-check do not use AskUserQuestion.

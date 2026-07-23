@@ -182,7 +182,7 @@ Rules:
 4. **Artifacts MUST be printed before review (Output Gate)** — any LLM-produced artifact (research findings, PRD, task breakdown, forecast, critique, consensus result) MUST be output in FULL to the user **before** calling AskUserQuestion or advancing the phase. Save-and-ask-without-showing is FORBIDDEN. Saving to disk does NOT count as showing; a summary paragraph does NOT count as showing — print the artifact content. **Self-check gate (enforce, don't just intend):** immediately before the gating `AskUserQuestion`, confirm the full artifact text was printed in the CURRENT turn, and make the question's FIRST option cite a concrete detail from it (a task id, an `R#` requirement, or a `done_criteria` string). If you cannot cite one, you did not show it — print it first, then ask.
 5. **Research output MUST be persisted** — after each research sub-agent (stack / features / architecture / pitfalls) completes, immediately call `$XMB save research-notes --agent <name> --content "..."` to append the RAW agent output to `phases/01-research/notes.md`. Never discard raw agent output by only saving the synthesized ROADMAP — the user must be able to audit the evidence chain.
 6. **Plan Review** — present one Plan Bundle (intent/PRD/tasks/groups/checks), then ask for the single Plan → Execute direction approval. Approval is bound to `plan_hash`; any plan change invalidates it.
-7. **Execute review** — do not review every task. Run configured task-local checks in each task cwd. `build.review_mode` decides WHEN (manual = optional after a group completes, auto = hard boundary); `build.review_depth` decides HOW HEAVY. Default depth is `solo`: `review-group` returns a pending spec — spawn ONE reviewer agent on `solo.patch` with `solo.model` (announce it per Model Disclosure), triage its findings, then record `review-group <g> --verdict pass|fail --notes "..."`. NEVER escalate to the cross-vendor panel on your own: `--depth panel` (or `/xm:panel review`) is user-invoked only. `checks-only` passes the group on test/lint alone. Explicit panel reviews default to one round (`--rounds 2` opts into adversarial refutation).
+7. **Execute review** — do not review every task. Run configured task-local checks in each task cwd. `build.review_mode` decides whether the LLM review is optional (`manual`) or a hard boundary (`auto`); every mode still requires the deterministic `group-check <g>` after all group tasks complete. `build.review_depth` decides HOW HEAVY the LLM review is. Default depth is `solo`: `review-group` returns a pending spec — spawn ONE reviewer agent on `solo.patch` with `solo.model` (announce it per Model Disclosure), triage its findings, then record `review-group <g> --verdict pass|fail --notes "..."`. NEVER escalate to the cross-vendor panel on your own: `--depth panel` (or `/xm:panel review`) is user-invoked only. Explicit panel reviews default to one round (`--rounds 2` opts into adversarial refutation).
 8. **Verify → Close** — advance after deterministic quality checks unless a new user decision is required.
 9. **Announce models before every agent batch** — see [Model Disclosure](#model-disclosure-required-every-phase). Spawning agents without naming their tiers is FORBIDDEN; the user must be able to see cost as it is incurred, not reconstruct it afterward.
 
@@ -197,9 +197,12 @@ When the host is in yolo mode, or the user explicitly asks to proceed autonomous
 
 - Continue automatically through research scale, task decomposition, implementation, review boundaries, Verify, and Close once deterministic checks pass.
 - At `research_signal: quick-eligible`, enter `--quick` without an extra confirmation. For `slim`/`full`, keep the required research but choose its scale automatically.
-- Pass the Plan → Execute gate automatically only when the generated plan stays within the stated goal and has no new public behavior, irreversible change, external action, security/compliance impact, or material cost/scope expansion.
-- Ask only when the user must own the choice: one of those conditions is present, or no safe default preserves the stated goal. Batch the necessary questions once; do not ask for routine confirmation.
-- A yolo setting never bypasses failed tests, a failed quality gate, missing task-check evidence, or an explicit user constraint.
+- The Plan Bundle direction approval remains required. Current CLI state does not record or bypass a
+  `decision` gate, so do not claim that yolo/autopilot approved it automatically.
+- Ask for that direction approval and for any additional user-owned choice; batch additional
+  choices when possible. Do not ask for routine confirmations.
+- A yolo setting never bypasses a `decision` gate, failed tests, a failed quality gate, missing
+  task-check evidence, or an explicit user constraint.
 
 Anti-patterns:
 - ❌ `plan "goal"` → `phase set plan` → PRD generation (skips Research)
@@ -211,14 +214,14 @@ Anti-patterns:
 - ❌ Per-task implementation → expensive panel → user confirmation (repeated for every task)
 - ❌ Spawn 4 research agents → results appear → user never learns which tier burned the tokens
 - ❌ `init` → `tasks add` → `tasks update --status in_progress` (no PRD, no CONTEXT.md — dashboard blind spot)
-- ✅ `plan "goal"` → init → intent-check → **interview only if needed** → research → persist findings → PRD/tasks → print one Plan Bundle → direction approval (yolo에서는 안전 범위 내 자동 승인)
-- ✅ Plan phase: generate tasks → **print task list with done_criteria** → `save plan` → AskUserQuestion for plan review (yolo에서는 중요 결정일 때만)
+- ✅ `plan "goal"` → init → intent-check → **interview only if needed** → research → persist findings → PRD/tasks → print one Plan Bundle → direction approval
+- ✅ Plan phase: generate tasks → **print full PRD + task list with done_criteria + groups/checks** → `save plan` → AskUserQuestion once for the direction approval
 - ✅ If tasks added directly: generate PRD from task list before first `tasks update --status in_progress`
 
 More anti-patterns:
 - ❌ All tasks complete → `phase next` without the final group review
 - ❌ Show plan and ask "Shall we proceed?" as text (must use AskUserQuestion)
-- ✅ All tasks in `build` complete → optional `review-group build` → Verify (`review_mode=auto` makes it mandatory)
+- ✅ All tasks in `build` complete → optional `review-group build` in manual mode → mandatory `group-check build` → Verify (`review_mode=auto` makes the LLM review mandatory too)
 
 ## Phase Lifecycle
 
@@ -433,7 +436,7 @@ Use `plan --interview` when the user explicitly wants detailed refinement. Use `
 
 ## Worktree Execution Mode
 
-Optional Execute-phase backend: fan parallel-safe tasks out into isolated `gk` worktrees. It uses the same tasks, `task_checks`, review groups, and lifecycle as normal execution; only the cwd/isolation backend differs. With default `build.review_scope=group`, per-task `gk finish` is ungated. `build.review_mode=manual` exposes an optional group review without blocking; `auto` makes it the shared hard boundary. Set `build.review_scope=task` only for an explicit high-risk compatibility policy.
+Optional Execute-phase backend: fan parallel-safe tasks out into isolated `gk` worktrees. It uses the same tasks, `task_checks`, review groups, and lifecycle as normal execution; only the cwd/isolation backend differs. With default `build.review_scope=group`, per-task `gk finish` is ungated. `build.review_mode=manual` makes the LLM group review optional, while the final deterministic `group-check` remains mandatory; `auto` makes both the LLM review and deterministic check shared hard boundaries. Set `build.review_scope=task` only for an explicit high-risk compatibility policy.
 
 ### 3-layer mode decision (no separate wizard or dashboard)
 

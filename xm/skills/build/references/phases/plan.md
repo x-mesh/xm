@@ -53,50 +53,25 @@ $XMB save plan --content "{PRD content}"
 ```
 If `save plan` is not called, the PRD will not appear in the dashboard and will be lost on session end.
 
-After saving, proceed to PRD Review.
+After saving, proceed directly to task decomposition. Do **not** create a separate PRD approval loop.
 
-#### PRD Review (user review and revision)
+#### PRD Improvement (before the Plan Bundle)
 
-After PRD generation, **the leader MUST output the full PRD text to the user**. This is non-negotiable — the user cannot review what they cannot see.
+The PRD is a draft that is refined while tasks, groups, checks, DAG, and forecast are prepared.
+The only direction approval in the full flow is the later **Plan Bundle** approval, which
+contains the full PRD and all of those execution details.
 
-**Output protocol:**
-1. **Print the entire PRD as text output** — every section, every table, every diagram. Do NOT summarize. Do NOT say "PRD가 생성되었습니다" without showing the content.
-2. **After the full text output**, call AskUserQuestion for review.
+- Do not call AskUserQuestion merely to approve the PRD.
+- Revisions, rewrites, quality review, and consensus review improve the draft; they do not add
+  an approval boundary.
+- Re-save every revised PRD with `$XMB save plan --content "{revised PRD content}"`.
+- Before the single Plan Bundle approval, print the entire current PRD (including tables and
+  diagrams), task list with `done_criteria`, review groups, configured checks, DAG, and forecast.
 
 Anti-patterns:
-- ❌ Save PRD to file → immediately ask for review without showing content
-- ❌ Show only section titles or a summary instead of the full PRD
-- ✅ Output full PRD text → then AskUserQuestion for review
-
-1. **Show full PRD**: Output the ENTIRE PRD.md content as text (mandatory — not a file reference)
-2. **Request feedback**: Collect review results via AskUserQuestion:
-   ```
-   Please review the PRD:
-   1) Approve — proceed as-is
-   2) Needs revision — tell me what to change
-   3) Quality review — Judge Panel scores first; if score < 7.0, auto-escalates to Consensus Review
-   4) Rewrite — regenerate the PRD from scratch
-   ```
-3. **Action per selection**:
-   - "Approve" → proceed to task decomposition
-   - "Needs revision" → revise PRD with user feedback, then show again (repeat)
-   - "Quality review" → run [PRD Quality Gate]; if score < 7.0, automatically run [Consensus Loop] with judge feedback as context
-   - "Rewrite" → re-run PRD Generation from scratch
-
-4. **Re-save on revision**:
-   ```bash
-   $XMB save plan --content "{revised PRD content}"
-   ```
-
-5. **Record PRD confirmation**:
-   ```
-   ✅ PRD reviewed and approved by user.
-   Proceeding to task decomposition.
-   ```
-
-> Important: The PRD Review loop repeats until the user selects "Approve". Cannot be auto-skipped.
-> Loop limit: The entire PRD Review loop (including revisions + rewrites + quality checks + consensus reviews) repeats at most 5 times.
-> On reaching 5: Show the current PRD and offer only 2 options: "Approve" or "Abort project".
+- ❌ Save PRD → separate approval → decompose tasks → separate Plan approval
+- ❌ Show only a PRD summary in the Plan Bundle
+- ✅ Generate/revise PRD → decompose and validate → show one complete Plan Bundle → request one direction approval
 
 #### PRD Quality Gate (on-demand)
 
@@ -133,10 +108,11 @@ Read `rubric`, `prd`, `requirements` from the output JSON and perform the follow
    $XMB save plan --content "PRD Score: {score}/10"
    ```
 
-5. **Return to PRD Review options** — Judge results are provided as reference; the final decision is the user's.
+5. **Return to plan preparation** — Judge results inform a revision or the next Plan Bundle;
+   they never require a separate PRD approval.
 
-> Call limit: Quality check can run at most 2 times within the same PRD Review session. Resets on "Rewrite".
-> After 2 attempts: `"⚠ Quality check limit reached. Select 'Approve', 'Needs revision', or 'Consensus review'."`
+> Call limit: Quality check can run at most 2 times within the same plan iteration. Resets on
+> "Rewrite". After 2 attempts, continue with a revised draft or the Plan Bundle review.
 
 #### Consensus Loop (consensus review)
 
@@ -222,16 +198,16 @@ Conclusion: AGREE or OBJECT + specific feedback. 200 words max."
 ```
 
 **Consensus judgment:**
-- **All AGREE** → Consensus reached; show results to user, return to PRD Review options
+- **All AGREE** → Consensus reached; show results to user, return to plan preparation
 - **1+ OBJECT** → Leader synthesizes OBJECT feedback to revise PRD → broadcast again (max 3 rounds)
 - **No consensus after 3 rounds** → Summarize key disagreements for the user, request user judgment
 
-> Re-entry limit: Consensus Loop can run at most 2 times within the same PRD Review session.
-> After 2 attempts: "⚠ Consensus review limit reached. Select 'Approve' or 'Needs revision'."
+> Re-entry limit: Consensus Loop can run at most 2 times within the same plan iteration. After
+> 2 attempts, carry the remaining trade-off into the Plan Bundle as a user-owned decision.
 
 **Consensus result output:**
 ```
-🏛️ [consensus] PRD Review — Round {n}/{max}
+🏛️ [consensus] Plan preparation — Round {n}/{max}
 
 | Agent | Role | Verdict | Key Feedback |
 |-------|------|---------|-------------|
@@ -242,7 +218,8 @@ Conclusion: AGREE or OBJECT + specific feedback. 200 words max."
 → Incorporating critic feedback to revise PRD...
 ```
 
-After consensus, return to PRD Review options — user must give final "Approve" to proceed.
+After consensus, return to plan preparation. Incorporate accepted findings, regenerate dependent
+tasks/checks when needed, and refresh the single Plan Bundle. Do not ask for a final PRD approval.
 
 **Cross-Vendor Mode (opt-in):** when the user requests cross-vendor consensus
 (`consensus --cross-vendor`, or "review the PRD with different models"), assign the 4 roles to
@@ -336,16 +313,22 @@ Create tasks informed by research artifacts:
    $XMB steps compute
    $XMB forecast
    ```
-8. **Plan Review** — Show task list + DAG + forecast to the user and AskUserQuestion:
+8. **Plan Bundle Review** — Show the full current PRD, task list with `done_criteria`, review
+   groups, configured checks, DAG, and forecast to the user, then call AskUserQuestion once for
+   the Plan → Execute direction approval:
    ```
-   Please review the plan:
-   1) Approve — proceed to Execute
+   Please review the Plan Bundle:
+   1) Approve direction — proceed to Execute
    2) Needs revision — add/remove/change tasks
-   3) Consensus review — 4 agents review the full plan (PRD + tasks + DAG)
-   4) Re-plan — start over from plan
+   3) Quality review — judge the full plan, then refresh this bundle
+   4) Consensus review — 4 agents review the full plan, then refresh this bundle
+   5) Re-plan — regenerate the PRD and dependent plan artifacts
    ```
-   - "Approve" → gate pass
+   - "Approve direction" → gate pass
    - "Needs revision" → apply user feedback then re-run plan-check
-   - "Consensus review" → run [Consensus Loop] against the full plan (PRD + tasks + DAG)
-   - "Re-plan" → restart from PRD Review
+   - "Quality review" → run [PRD Quality Gate] against the full plan, revise if needed, then
+     show the refreshed Plan Bundle
+   - "Consensus review" → run [Consensus Loop] against the full plan (PRD + tasks + DAG), then
+     show the refreshed Plan Bundle
+   - "Re-plan" → restart from PRD generation and rebuild dependent plan artifacts
 9. Advance: `$XMB gate pass` → `$XMB phase next`

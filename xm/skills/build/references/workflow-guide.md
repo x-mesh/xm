@@ -209,7 +209,7 @@ This step is triggered when the research goal contains technology comparison key
 
 ### Step 3: Plan (Plan Phase)
 
-See `phases/plan.md` — full Plan phase walkthrough: PRD generation, PRD review (automatic + consensus), task decomposition, DAG design, plan-check validation (strict vs standard), and the 9-step orchestration. Covers PRD schema, consensus loop, strategy selection, and done_criteria definition.
+See `phases/plan.md` — full Plan phase walkthrough: PRD generation and improvement, task decomposition, DAG design, plan-check validation (strict vs standard), and the single Plan Bundle direction approval. Covers PRD schema, consensus loop, strategy selection, and done_criteria definition.
 
 ### Step 4: Execute (Execute Phase)
 
@@ -327,8 +327,10 @@ Recommendation only — not auto-applied. User must specify via `--strategy`.
    $XMB verify-review-fix
    ```
    Review-fix edits MUST be limited to `fix_now` findings and `fix_scope.allowed_files`. After applying fixes, run `$XMB quality`, `$XMB verify-review-fix`, and `/xm:review diff` again before closing.
-5. **Call AskUserQuestion before closing.** Show quality check results first, then ask the user to confirm before advancing (e.g., "Quality checks passed. Proceed to the Close phase?" in developer mode, or `"품질 검사 완료. 프로젝트를 Close 단계로 넘어갈까요?"` in normal mode). Do NOT run `phase next` without user confirmation.
-6. If user confirms: `$XMB phase next`
+5. When quality, coverage, and contracts pass, advance automatically with `$XMB phase next`.
+   Show the results, but do not call AskUserQuestion for this routine transition. Stop only when
+   the checks reveal a new user-owned decision (scope, irreversible/high-risk contract,
+   authority, external coordination, or compliance).
 
 ### Step 6: Close
 
@@ -374,7 +376,10 @@ Goal → Init → Auto-Plan → Review → Execute → Verify → Close
      Verify it clears the gate: `$XMB prd-check --json` (expect `blocked: false`, `tier: "delta"` — diagram/structure entries appear only as `warnings`).
    - Register tasks: `$XMB tasks add "..." --size small|medium`
    - Auto-generate done-criteria: `$XMB tasks done-criteria`
-4. **Quick Review**: Show task list and ask for approval in normal mode. In yolo/explicit autonomous mode, record the plan and proceed unless it introduces a user-owned decision.
+4. **Quick Plan Bundle Review**: Show the delta PRD, task list with `done_criteria`, groups,
+   checks, and execution order, then ask for the same direction approval in every mode. Yolo and
+   explicit autonomous mode remove routine confirmations after that approval; they do not bypass
+   the CLI `decision` gate.
    ```
    Quick Plan:
    - t1: {task1} (small)

@@ -296,4 +296,4 @@ Core rules (always apply):
 
 ## Applies to
 
-Used by x-build plan phase (PRD generation delegate prompt), PRD review loop, PRD Quality Gate, and consensus review. The x-build delegate prompt reads this file before generating the PRD; the agent returns a completed PRD that goes through review → plan-check → task decomposition.
+Used by x-build plan phase (PRD generation delegate prompt), the on-demand PRD Quality Gate, consensus review, and the single Plan Bundle review. The x-build delegate prompt reads this file before generating the PRD; the agent returns a draft that goes through plan preparation, plan-check, and task decomposition before appearing in the complete Plan Bundle.
