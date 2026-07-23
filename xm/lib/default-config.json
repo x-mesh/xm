@@ -10,7 +10,8 @@
   "agent_max_count": 4,
   "model_profile": "default",
   "budget": {
-    "max_usd": null
+    "max_usd": null,
+    "warn_at_usd": null
   },
   "drift": {
     "drift_threshold": 0.7

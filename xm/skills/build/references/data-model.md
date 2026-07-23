@@ -117,11 +117,16 @@ Worktree `worktree.*` config resolves: CLI flag > `.xm/build/config.json` > `.xm
 ```json
 {
   "state": "closed | open | half-open",
+  "reason": "failure | budget",
   "consecutive_failures": 0,
   "opened_at": "ISO8601 | null",
-  "cooldown_until": "ISO8601 | null"
+  "cooldown_until": "ISO8601 | null",
+  "half_open_at": "ISO8601 | null"
 }
 ```
+
+`reason`과 `half_open_at`은 v2 확장 필드다. v1 파일에 이 필드가 없으면
+reader는 `reason: "failure"`로 적응한다.
 
 ## Applies to
 

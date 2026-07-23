@@ -264,6 +264,11 @@ case "$CMD" in
     node "$LIB_PATH/x-build-cli.mjs" "$@"
     ;;
 
+  cost)
+    LIB_PATH="$(plugin_lib build)"
+    node "$LIB_PATH/x-build-cli.mjs" cost "$@"
+    ;;
+
   config)
     LIB_PATH="$(plugin_lib build)"
     if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-config-cli.mjs" ]; then
@@ -957,6 +962,7 @@ Commands:
   handon                              Restore session state
   memory <subcmd>                     Cross-session decision memory
   build <subcmd>                      Phase-based project harness
+  cost predict <task-description>     Estimate cost from measured task history
   config <subcmd>                     Shared toolkit config (--local|--global)
   trace <subcmd>                      Execution traces
   last [tool]                         Shortcut for 'trace last' — last activity per tool
