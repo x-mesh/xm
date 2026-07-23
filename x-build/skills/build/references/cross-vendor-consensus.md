@@ -83,15 +83,15 @@ executor changes.
 > abstain that prevents declaring consensus until resolved. A failed role is never a passing role.
 
 **Consensus judgment** (identical to single-vendor):
-- **All AGREE** → consensus reached; show results, return to PRD Review options.
+- **All AGREE** → consensus reached; show results, return to plan preparation and refresh the Plan Bundle.
 - **1+ OBJECT** → leader (Claude) synthesizes the OBJECT feedback, revises the PRD, re-broadcasts
-  (max 3 rounds). Same re-entry limit: the Consensus Loop runs at most 2× per PRD Review session.
+  (max 3 rounds). Same re-entry limit: the Consensus Loop runs at most 2× per plan iteration.
 - **No consensus after 3 rounds** → summarize disagreements for the user, request user judgment.
 
 ## Result output (add a Vendor column)
 
 ```
-🏛️ [consensus · cross-vendor] PRD Review — Round {n}/{max}
+🏛️ [consensus · cross-vendor] Plan preparation — Round {n}/{max}
    roles: architect=claude · critic=codex · planner=cursor · security=kiro
 
 | Role      | Vendor | Verdict  | Key Feedback |
