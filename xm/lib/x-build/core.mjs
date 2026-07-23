@@ -11,7 +11,10 @@ import { homedir, tmpdir } from 'node:os';
 import { loadSharedConfig as _loadSharedConfig } from './config-loader.mjs';
 import { SCHEMA } from '../config-schema.mjs';
 import { resolveXmRoot } from './xm-root.mjs';
-import { resolveEffectiveQualityConfig, runQualityPipeline } from './quality-pipeline.mjs';
+import {
+  commandDescriptor, contentFingerprint, readPersistedSerialQualityEvidence,
+  resolveEffectiveQualityConfig, runQualityPipeline, validateEvidence,
+} from './quality-pipeline.mjs';
 
 // Re-export node modules that sub-modules need
 export { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, appendFileSync, renameSync, statSync, unlinkSync, realpathSync };
@@ -326,10 +329,12 @@ export function writeSharedConfig(data) {
 }
 
 export function getMode() {
-  // Mode is global — read from ~/.xm/config.json via loadSharedConfig fallback
-  const globalPath = join(homedir(), '.xm', 'config.json');
-  const globalConfig = readJSON(globalPath);
-  if (globalConfig?.mode) return globalConfig.mode;
+  // Mode follows the same effective-config precedence as every other shared
+  // setting: global ~/.xm/config.json under local .xm/config.json. Reading the
+  // global file directly made a project's explicit normal mode invisible to
+  // x-build's own output layer.
+  const shared = loadSharedConfig();
+  if (shared?.mode) return shared.mode;
   return 'developer';
 }
 
@@ -625,20 +630,36 @@ export function gitRollbackTask(task) {
 export function runQualityChecks(project) {
   const config = resolveEffectiveQualityConfig(repoRoot());
   if (config.serial_quality_command || config.config_error) {
-    // Reuse only a passing final main-checkout group evidence with the same
-    // command/content fingerprint; worktree or partial evidence is ignored.
-    let evidence = null;
-    const groups = readJSON(join(phaseDir(project, '03-execute'), 'review-groups.json'));
     const root = resolve(repoRoot());
-    const candidates = Object.values(groups?.groups || {}).map((g) => g.group_quality).filter(Boolean);
-    const match = candidates.find((e) => e.passed === true && resolve(e.cwd || '') === root && e.fingerprint);
-    if (match) evidence = { ...match, content_fingerprint: match.fingerprint };
+    const outPath = join(phaseDir(project, '04-verify'), 'quality-results.json');
+    // Consider both the previous Verify result and group-boundary evidence.
+    // Only an exact candidate survives below, so a malformed/stale artifact
+    // cannot force reuse or shadow a newer valid result.
+    const candidates = [];
+    const persisted = readPersistedSerialQualityEvidence(outPath);
+    if (persisted.evidence) candidates.push(persisted.evidence);
+    const groups = readJSON(join(phaseDir(project, '03-execute'), 'review-groups.json'));
+    candidates.push(...Object.values(groups?.groups || {})
+      .map((group) => group.group_quality?.serial_quality)
+      .filter(Boolean));
+
+    // A stale or malformed Verify artifact must not shadow newer exact group
+    // evidence. Validate every candidate against the current command/env/cwd
+    // and content fingerprint, then prefer the most recent exact record.
+    let evidence = null;
+    if (typeof config.serial_quality_command === 'string' && config.serial_quality_command) {
+      const descriptor = commandDescriptor(config.serial_quality_command, root, config.serial_quality_env || {});
+      const fingerprint = contentFingerprint(root);
+      const expected = { cwd: root, command_hash: descriptor.command_hash, content_fingerprint: fingerprint };
+      evidence = candidates
+        .filter((candidate) => validateEvidence(candidate, expected).valid)
+        .sort((a, b) => Date.parse(b.checked_at || '') - Date.parse(a.checked_at || ''))[0] || null;
+    }
     const result = runQualityPipeline({ cwd: root, config, evidence });
     for (const [name, script] of Object.entries(config.gate_scripts || {})) {
       const out = spawnSync(script, [], { shell: true, cwd: repoRoot(), stdio: 'pipe', timeout: 120000 });
       result.push({ check: name, passed: out.status === 0, failed: out.status !== 0, exit_code: out.status === 0 ? 0 : 2, output: (out.stderr || '').toString().slice(-2000) });
     }
-    const outPath = join(phaseDir(project, '04-verify'), 'quality-results.json');
     writeJSON(outPath, { timestamp: new Date().toISOString(), results: result, passed: result.every(r => r.passed) });
     return result;
   }

@@ -19,7 +19,7 @@ import {
 import { taskList, vendorModelFields } from './tasks.mjs';
 import { stepsStatus, computeSteps } from './tasks.mjs';
 import { savePlanIntent, markPlanReady, validatePlanApproval, readPlanState } from './plan-state.mjs';
-import { reviewGroupStatus, taskReviewGroup } from './build-policy.mjs';
+import { reviewGroupStatus, resolveReviewAction, taskReviewGroup } from './build-policy.mjs';
 
 // ── PRD template version + diagram gate (R4/R5/R12) ──────────────────
 // PRD_TEMPLATE_VERSION marks the template revision where Section 8
@@ -663,15 +663,14 @@ export function cmdPlanCheck(args) {
 
   // 13. Failure-mode coverage — pathological/adversarial inputs are the failure
   // class plans leave implicit. The PRD-section check stays warn (upstream nudge;
-  // pre-existing PRDs must not fail wholesale), but the PER-TASK check is
-  // MODEL-AWARE: the phase-routing experiment (docs/phase-model-routing-experiment.md)
-  // measured 0/3 pathological-input survival for sonnet execution WITHOUT
-  // failure-mode enumeration vs 2/3 for opus — so a risk-domain task that will
-  // execute on sonnet-or-below without stress done_criteria is an ERROR (blocks
-  // the plan gate), while opus/inherit executions keep the probabilistic cushion
-  // and stay warn. Escape valve: an explicit `none — <rationale>` in done_criteria
-  // waives the check (the §7.5 convention), so a false-positive regex hit is a
-  // one-line fix, never a dead end.
+  // pre-existing PRDs must not fail wholesale), but every risk-domain TASK must
+  // state its failure-mode contract. Model choice can change implementation
+  // quality, but cannot prove that a parser/matcher/cache/auth/input task has no
+  // pathological input surface — especially `inherit`, whose session model is
+  // unresolved here. Missing stress/adversarial criteria are therefore an ERROR
+  // for every model. Escape valve: an explicit `none — <rationale>` in
+  // done_criteria waives the check (the §7.5 convention), so a false-positive
+  // regex hit is a one-line fix, never a dead end.
   if (prd && !/##\s*(?:7\.5\.?)?\s*Failure Modes/i.test(prd)) {
     checks.push({ dim: 'failure-mode-coverage', level: 'warn', msg: `PRD has no Failure Modes section — pathological/adversarial inputs are unenumerated; implementers will not defend against them` });
   }
@@ -680,7 +679,7 @@ export function cmdPlanCheck(args) {
   // stems. An occasional false positive is waivable via `none — <rationale>`.
   const RISK_DOMAIN_RE = /\b(pars|match|regex|cach|concurren|lock|queue|auth|crypto|input|stream|proto)/i;
   const STRESS_RE = /스트레스|stress|pathological|adversarial|병적|timeout|hang|무한/i;
-  const WAIVER_RE = /\bnone\s*[—–-]/i; // "none — <why this task has no failure modes>"
+  const WAIVER_RE = /\bnone\s*[—–-]\s*\S/i; // "none — <why this task has no failure modes>"
   const LOW_TIER = new Set(['haiku', 'sonnet']);
   const fmCfg = loadSharedConfig();
   for (const t of tasks) {
@@ -691,11 +690,7 @@ export function cmdPlanCheck(args) {
       if (WAIVER_RE.test(dc)) continue; // explicitly waived with rationale
       const role = t.role || (t.size === 'large' ? 'deep-executor' : 'executor');
       const model = getModelForRole(role, t.size, fmCfg);
-      if (LOW_TIER.has(model)) {
-        checks.push({ dim: 'failure-mode-coverage', level: 'error', task: t.id, msg: `"${t.name}" touches a risk domain and executes on ${model} — measured 0/3 pathological-input survival without failure-mode enumeration (docs/phase-model-routing-experiment.md). Add stress/adversarial done_criteria (tasks done-criteria), or waive with done_criteria "none — <rationale>", or route the task to a higher tier` });
-      } else {
-        checks.push({ dim: 'failure-mode-coverage', level: 'warn', task: t.id, msg: `"${t.name}" touches a risk domain (parser/matcher/cache/concurrency/auth/input) but has no stress/adversarial done_criteria — executes on ${model} (probabilistic cushion); add a Failure Modes section, then run: tasks done-criteria` });
-      }
+      checks.push({ dim: 'failure-mode-coverage', level: 'error', task: t.id, msg: `"${t.name}" touches a risk domain but has no stress/adversarial done_criteria (resolved model: ${model}; model tier does not waive this contract). Add stress/adversarial done_criteria (tasks done-criteria), or waive with done_criteria "none — <rationale>"` });
     }
   }
 
@@ -1251,22 +1246,26 @@ function resolveNext(project) {
       const groupSummary = readPlanState(project)
         ? reviewGroupStatus(project, taskData?.tasks || [], { cwd: process.cwd() })
         : { review_required: false, all_passed: true, active_group: null };
-      if (groupSummary.review_required) {
+      const reviewAction = resolveReviewAction(groupSummary, { allDone });
+      if (reviewAction) {
+        const isGroupCheck = reviewAction.action === 'group-check';
         return {
           ...base,
-          action: 'review-group',
-          args: [groupSummary.active_group],
-          reason: R(`Review group "${groupSummary.active_group}" is ready. Review it before continuing.`, `리뷰 그룹 "${groupSummary.active_group}"이 준비되었습니다. 계속하기 전에 리뷰하세요.`),
-          ready: true,
+          action: reviewAction.action,
+          args: reviewAction.args,
+          reason: isGroupCheck
+            ? R(`Task execution is complete. Run deterministic checks for review group "${reviewAction.args[0]}".`, `작업 실행이 끝났습니다. 리뷰 그룹 "${reviewAction.args[0]}"의 확인을 실행하세요.`)
+            : R(`Review group "${reviewAction.args[0]}" is ready. Review it before continuing.`, `리뷰 그룹 "${reviewAction.args[0]}"이 준비되었습니다. 계속하기 전에 리뷰하세요.`),
+          ready: !isGroupCheck,
         };
       }
       if (allDone) {
         if (!groupSummary.all_passed) {
           return {
             ...base,
-            action: 'review-group',
+            action: 'group-check',
             args: [groupSummary.active_group].filter(Boolean),
-            reason: R('Task execution is complete but its review group has not passed.', '작업 실행은 끝났지만 리뷰 그룹이 통과하지 않았습니다.'),
+            reason: R('Task execution is complete but group quality has not passed.', '작업 실행은 끝났지만 그룹 확인이 통과하지 않았습니다.'),
             ready: false,
           };
         }

@@ -16,7 +16,7 @@ import {
 } from './core.mjs';
 import { prdBlockingFindings } from './plan.mjs';
 import { approvePlan, readPlanState, validatePlanApproval } from './plan-state.mjs';
-import { reviewGroupStatus } from './build-policy.mjs';
+import { reviewGroupStatus, resolveReviewAction } from './build-policy.mjs';
 
 // ── cmdPhase ────────────────────────────────────────────────────────
 
@@ -172,7 +172,8 @@ export function phaseNext(args) {
     const groups = reviewGroupStatus(project, tasks, { cwd: process.cwd() });
     if (!groups.all_passed) {
       console.log(`⛔ Execute review is incomplete.`);
-      if (groups.review_required) console.log(`   Run: x-build review-group ${groups.active_group}`);
+      const reviewAction = resolveReviewAction(groups, { allDone: groups.all_tasks_completed });
+      if (reviewAction) console.log(`   Run: x-build ${reviewAction.command}`);
       else console.log(`   Complete the active review group first: ${groups.active_group || 'build'}`);
       process.exitCode = 2;
       return;

@@ -15,6 +15,7 @@ import {
 } from './core.mjs';
 import { runGatePanel } from './gate-panel.mjs';
 import { getModelForRole } from './cost-engine.mjs';
+import { commandDescriptor, contentFingerprint } from './quality-pipeline.mjs';
 
 export const DEFAULT_REVIEW_GROUP = 'build';
 export const REVIEW_DEPTHS = ['checks-only', 'solo', 'panel'];
@@ -151,6 +152,7 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
   try { mkdirSync(lock); } catch { return { ok: false, error: 'group_quality_in_progress', exitCode: 2 }; }
   try {
     const before = taskCheckFingerprint(cwd, fingerprintPolicy);
+    const beforeContent = contentFingerprint(cwd);
     const results = commands.map(({ name, command }) => {
       // The compatibility defaults (test/lint) are aliases: a project without
       // that optional script may skip it. Any other configured/missing command
@@ -163,16 +165,37 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
       return { name, command, passed: !out.error && out.status === 0, skipped: false, exit_code: out.status, output: `${out.stdout || ''}${out.stderr || ''}`.trim().slice(-4000), ...(out.error ? { error: out.error.message } : {}) };
     });
     const after = taskCheckFingerprint(cwd, fingerprintPolicy);
+    const afterContent = contentFingerprint(cwd);
+    const stable = before !== null && after === before
+      && beforeContent !== null && afterContent === beforeContent;
+    const serialResult = results.length === 1 && results[0].command && results[0].passed
+      ? results[0] : null;
     const evidence = {
-      passed: before !== null && after === before && results.every((r) => r.passed),
+      passed: stable && results.every((r) => r.passed),
       cwd: canonicalCwd, fingerprint: after, command_hash: descriptor,
       checked_at: new Date().toISOString(), results,
+      ...(stable && serialResult ? {
+        serial_quality: {
+          check: 'serial-quality',
+          command: serialResult.command,
+          cwd: canonicalCwd,
+          command_hash: commandDescriptor(serialResult.command, canonicalCwd, {}).command_hash,
+          content_fingerprint: afterContent,
+          passed: true,
+          failed: false,
+          skipped: false,
+          exit_code: 0,
+          checked_at: new Date().toISOString(),
+          reused_from: `group:${groupId}`,
+          output: serialResult.output,
+        },
+      } : {}),
       network_policy: {
         allow_live_provider_checks: runtime.allow_live_provider_checks,
         suppressed_env: runtime.suppressed_env,
         timeout_ms: runtime.timeout_ms,
       },
-      ...(after !== before ? { error: 'workspace_changed_during_check' } : {}),
+      ...(!stable ? { error: 'workspace_changed_during_check' } : {}),
     };
     state.groups[groupId] = { ...saved, group_quality: evidence };
     writeJSON(statePath(project), state);
@@ -246,6 +269,42 @@ export function taskCheckContractHash(cwd = repoRoot(), policy = loadBuildPolicy
     allow_live_provider_checks: policy.allow_live_provider_checks === true,
     check_timeout_ms: resolveCheckRuntime(policy, {}).timeout_ms,
   })).digest('hex');
+}
+
+// The evidence is a tiny state machine rather than a bare "passed" bit.  A
+// separate process may have already started the (potentially slow) checks when
+// an executor returns, so callers need to distinguish "wait" from "run it
+// again" and from "the workspace changed after it passed".
+export function taskCheckEvidenceStatus(evidence, cwd = repoRoot(), policy = loadBuildPolicy()) {
+  if (!evidence) return { state: 'missing', reason: 'no_task_check_evidence' };
+
+  if (evidence.state === 'running') {
+    const startedAt = Date.parse(evidence.started_at || '');
+    // Each configured command receives its own timeout and commands run
+    // sequentially. A one-timeout lease would let another executor steal a
+    // healthy multi-command check while a later command is still running.
+    const runnableChecks = Math.max(1, resolveTaskChecks(cwd, policy).filter((check) => check.command).length);
+    const deadline = (Number(policy.check_timeout_ms || DEFAULT_BUILD_POLICY.check_timeout_ms) * runnableChecks) + 5000;
+    if (!Number.isFinite(startedAt) || Date.now() - startedAt > deadline) {
+      return { state: 'stale', reason: 'task_check_running_expired' };
+    }
+    return { state: 'running', reason: 'task_check_in_progress' };
+  }
+
+  if (evidence.passed !== true || evidence.state === 'failed') {
+    return { state: 'failed', reason: 'task_check_not_passing' };
+  }
+
+  const canonicalCwd = resolve(cwd);
+  const currentContract = taskCheckContractHash(cwd, policy);
+  const currentFingerprint = taskCheckFingerprint(cwd, policy);
+  if (!evidence.worktree_fingerprint || !currentFingerprint
+    || resolve(evidence.cwd || '.') !== canonicalCwd
+    || evidence.contract_hash !== currentContract
+    || evidence.worktree_fingerprint !== currentFingerprint) {
+    return { state: 'stale', reason: 'task_check_workspace_changed' };
+  }
+  return { state: 'valid', reason: null };
 }
 
 /** Bind check evidence to both configured commands and the current git worktree. */
@@ -378,6 +437,45 @@ export function reviewGroupStatus(project, tasks = [], { cwd = repoRoot() } = {}
       : groups.length > 0 && groups.every((g) => g.group_quality?.passed === true),
     head,
   };
+}
+
+/**
+ * Resolve the command that must run at an Execute review boundary.
+ *
+ * This is deliberately policy-only: callers use the same result for their
+ * router, status envelope, and phase-exit guidance without starting a review
+ * or running checks here. In manual mode LLM review remains an optional
+ * `review_available` signal; deterministic group quality is still required
+ * before Execute can exit.
+ */
+export function resolveReviewAction(summary, { allDone = false } = {}) {
+  if (!summary || summary.review_scope !== 'group') return null;
+
+  const activeGroup = summary.active_group
+    || summary.groups?.find((group) => group.group_quality?.passed !== true)?.id
+    || null;
+  if (!activeGroup) return null;
+
+  if (summary.review_mode === 'auto' && summary.review_required) {
+    return {
+      action: 'review-group',
+      args: [activeGroup],
+      command: `review-group ${activeGroup}`,
+    };
+  }
+
+  // Manual mode never routes to an LLM review. Once all work is done, the
+  // exact-snapshot deterministic checks are the remaining fail-closed exit
+  // condition for the active group.
+  if (summary.review_mode === 'manual' && allDone && !summary.all_passed) {
+    return {
+      action: 'group-check',
+      args: [activeGroup],
+      command: `group-check ${activeGroup}`,
+    };
+  }
+
+  return null;
 }
 
 /** Record the immutable baseline immediately before a group's first dispatch. */
