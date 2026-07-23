@@ -107,6 +107,7 @@ export function cmdVerifyCoverage(args) {
 
   for (const req of reqs) {
     const found = tasks.some(t =>
+      Array.isArray(t.requirements) && t.requirements.some(id => String(id).toLowerCase() === req.id.toLowerCase()) ||
       t.name.includes(req.id) ||
       t.name.toLowerCase().includes(req.desc.toLowerCase().slice(0, 30))
     );
@@ -188,7 +189,9 @@ export function cmdVerifyTraceability(args) {
   const matrix = [];
 
   for (const req of reqs) {
-    const matchedTasks = tasks.filter(t => t.name.includes(req.id));
+    const matchedTasks = tasks.filter(t =>
+      (Array.isArray(t.requirements) && t.requirements.some(id => String(id).toLowerCase() === req.id.toLowerCase())) ||
+      t.name.includes(req.id));
     const matchedAC = acItems.filter(ac => ac.toLowerCase().includes(req.id.toLowerCase()));
     const hasDoneCriteria = matchedTasks.some(t => t.done_criteria?.length > 0);
 

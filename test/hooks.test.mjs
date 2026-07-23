@@ -330,12 +330,14 @@ describe('hooks install/uninstall/status CLI', () => {
     expect(runCli(['hooks', 'install']).status).toBe(0);
     expect(existsSync(join(DIR, '.claude', 'hooks', 'hook-state.mjs'))).toBe(true);
     expect(existsSync(join(DIR, '.claude', 'hooks', 'xm-build-scope-guard.mjs'))).toBe(true);
+    expect(existsSync(join(DIR, '.claude', 'hooks', 'block-when-over-budget.mjs'))).toBe(true);
     expect(runCli(['hooks', 'status']).status).toBe(0); // installed
     expect(runCli(['hooks', 'install']).stdout).toContain('0 settings entries added'); // idempotent
 
     let s = JSON.parse(readFileSync(join(DIR, '.claude', 'settings.json'), 'utf8'));
     expect(s.hooks.PreToolUse.some(e => e.hooks.some(h => h.command === 'node existing.mjs'))).toBe(true); // existing kept
     expect(s.hooks.PreToolUse.some(e => e.hooks.some(h => h.command.includes('scope-guard')))).toBe(true);
+    expect(s.hooks.PreToolUse.some(e => e.matcher === 'Agent' && e.hooks.some(h => h.command.includes('block-when-over-budget')))).toBe(true);
     expect(s.hooks.Stop.some(e => e.hooks.some(h => h.command.includes('stop-gate')))).toBe(true);
 
     expect(runCli(['hooks', 'uninstall']).status).toBe(0);

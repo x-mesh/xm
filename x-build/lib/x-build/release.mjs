@@ -14,7 +14,7 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
-import { exitFail } from './core.mjs';
+import { checkBudget, exitFail, findCurrentProject } from './core.mjs';
 
 // ── Constants ─────────────────────────────────────────────────────────
 
@@ -736,6 +736,18 @@ export function cmdReleaseTrace(args) {
 export function cmdRelease(args) {
   const sub = args[0];
   const rest = args.slice(1);
+
+  // Release actions alone may consume the separately configured emergency
+  // reserve. An active project's own cap remains authoritative; reserve is a
+  // global critical-path allowance, never a per-project-cap bypass. Discovery
+  // remains read-only and available for diagnosis.
+  if (!['detect', 'diff-report'].includes(sub)) {
+    const budget = checkBudget(0, findCurrentProject(), { release: true });
+    if (budget.ok === false) {
+      console.error(`❌ release budget block: $${budget.projected.toFixed(2)} exceeds $${budget.budget.toFixed(2)} (${budget.reason || 'budget.max_usd'})`);
+      exitFail(1);
+    }
+  }
 
   switch (sub) {
     case 'detect':      cmdReleaseDetect(rest); break;

@@ -8,12 +8,13 @@
 
 import {
   appendFileSync, existsSync, mkdirSync, renameSync, rmdirSync, statSync,
-  truncateSync, unlinkSync, readFileSync, writeFileSync,
+  truncateSync, unlinkSync, readFileSync, writeFileSync, readdirSync, lstatSync,
 } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { dirname, join, normalize, relative, resolve } from 'node:path';
 
 export const COST_EVENT_MAX_BYTES = 4 * 1024;
+export const CACHE_DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const LOCK_RETRIES = 50;
 const LOCK_RETRY_MS = 20;
@@ -351,6 +352,202 @@ function cacheTimestamp(now) {
   return new Date(time).toISOString();
 }
 
+/**
+ * Resolve cache expiry with a deliberately small configuration surface.
+ * `ttlMs` / `ttlDays` are call-site overrides; `config.cache.ttl_days` is
+ * the persisted setting. Zero and invalid values are rejected rather than
+ * silently turning a seven-day cache into a permanent cache.
+ */
+export function resolveCacheTtlMs({ ttlMs, ttlDays, config } = {}) {
+  let value = ttlMs;
+  let multiplier = 1;
+  if (value === undefined && ttlDays !== undefined) {
+    value = ttlDays;
+    multiplier = 24 * 60 * 60 * 1000;
+  }
+  if (value === undefined && config?.cache?.ttl_days !== undefined) {
+    value = config.cache.ttl_days;
+    multiplier = 24 * 60 * 60 * 1000;
+  }
+  if (value === undefined || value === null) return CACHE_DEFAULT_TTL_MS;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    throw new TypeError('cache TTL must be a positive finite number');
+  }
+  const result = numeric * multiplier;
+  if (!Number.isFinite(result) || result <= 0) {
+    throw new TypeError('cache TTL must be a positive finite number');
+  }
+  return result;
+}
+
+/**
+ * Pure expiry classification. Exact expiry is a miss (`age >= ttl`). Future
+ * timestamps are retained: a clock-skewed row must not make GC delete data.
+ * Entries without a usable timestamp are misses, but are not automatically
+ * destructive candidates for GC.
+ */
+export function cacheExpiry(entry, { now = Date.now(), ttlMs, ttlDays, config } = {}) {
+  const current = Number(now);
+  if (!Number.isFinite(current)) throw new TypeError('now must be a finite epoch millisecond value');
+  const ttl = resolveCacheTtlMs({ ttlMs, ttlDays, config });
+  const lastHit = timestampMs(entry?.last_hit);
+  const created = timestampMs(entry?.created);
+  const timestamp = Number.isFinite(lastHit) ? lastHit : created;
+  if (!Number.isFinite(timestamp)) return { expired: true, prune: false, reason: 'invalid_timestamp', ttl_ms: ttl };
+  const age = current - timestamp;
+  if (age < 0) return { expired: false, prune: false, reason: 'future_timestamp', timestamp_ms: timestamp, age_ms: age, ttl_ms: ttl };
+  return {
+    expired: age >= ttl,
+    prune: age >= ttl,
+    reason: age >= ttl ? 'expired' : 'fresh',
+    timestamp_ms: timestamp,
+    age_ms: age,
+    ttl_ms: ttl,
+  };
+}
+
+// These are deliberately recognizers rather than redactors. Cache records are
+// long-lived local artifacts, so a likely credential must fail closed before a
+// cache directory, record, or index row is created. The minimum token lengths
+// avoid treating prose such as "sk-test" or a document heading containing
+// "BEGIN" as a secret.
+const CACHE_SECRET_PATTERNS = [
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bsk-[A-Za-z0-9_-]{8,}\b/,
+  /-----BEGIN [A-Z0-9 ]*(?:PRIVATE KEY|CERTIFICATE|OPENSSH PRIVATE KEY)-----/i,
+];
+const CACHE_HASH_FIELD_RE = /(?:^|[_-])(?:hash|sha|sha256|digest)(?:$|[_-])/i;
+const CACHE_FRAGMENT_FIELD_RE = /(?:part|chunk|fragment|segment|token|content|text|prompt|response|input|output|file)/i;
+
+function isPlainObject(value) {
+  return value && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function hasSecretText(value) {
+  if (CACHE_SECRET_PATTERNS.some((pattern) => pattern.test(value))) return true;
+  // Credentials are commonly wrapped by transport or formatted output. Removing
+  // whitespace (including zero-width separators) catches a split token without
+  // joining arbitrary punctuation-delimited prose into a new credential.
+  const compact = value.replace(/[\s\u200B\u200C\u200D]+/g, '');
+  return compact !== value && CACHE_SECRET_PATTERNS.some((pattern) => pattern.test(compact));
+}
+
+function hasAdjacentSecret(values) {
+  let previous = null;
+  for (const value of values) {
+    if (typeof value !== 'string') {
+      previous = null;
+      continue;
+    }
+    const compact = value.replace(/[\s\u200B\u200C\u200D]+/g, '');
+    if (previous !== null && hasSecretText(previous + compact)) return true;
+    previous = compact;
+  }
+  return false;
+}
+
+function hasAdjacentObjectSecret(record) {
+  let previous = null;
+  for (const [key, value] of Object.entries(record)) {
+    // Object fields are often unrelated metadata. Only join explicit fragment
+    // carriers; arrays already preserve caller order and are always checked.
+    if (typeof value !== 'string' || !CACHE_FRAGMENT_FIELD_RE.test(key)) {
+      previous = null;
+      continue;
+    }
+    const compact = value.replace(/[\s\u200B\u200C\u200D]+/g, '');
+    if (previous !== null && hasSecretText(previous + compact)) return true;
+    previous = compact;
+  }
+  return false;
+}
+
+function hasCacheSecret(value, ancestors = new Set()) {
+  if (typeof value === 'string') return hasSecretText(value);
+  if (Buffer.isBuffer(value)) return hasCacheSecret(value.toString('utf8'), ancestors);
+  if (!value || typeof value !== 'object') return false;
+  if (ancestors.has(value)) return false;
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.some((item) => hasCacheSecret(item, ancestors)) || hasAdjacentSecret(value);
+    }
+    if (isPlainObject(value)) {
+      const values = Object.values(value);
+      return values.some((item) => hasCacheSecret(item, ancestors)) || hasAdjacentObjectSecret(value);
+    }
+    return false;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function cacheContentHash(value) {
+  return createHash('sha256').update('xm-cache-content-v1\0').update(value, 'utf8').digest('hex');
+}
+
+function hashOnlyCacheEntry(value, ancestors = new Set()) {
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    return { sha256: cacheContentHash(value), bytes: Buffer.byteLength(value, 'utf8') };
+  }
+  if (Array.isArray(value)) {
+    if (ancestors.has(value)) throw new TypeError('cache entry must not contain cyclic values');
+    ancestors.add(value);
+    try {
+      return value.map((item) => typeof item === 'string'
+        ? { sha256: cacheContentHash(item), bytes: Buffer.byteLength(item, 'utf8') }
+        : hashOnlyCacheEntry(item, ancestors));
+    } finally {
+      ancestors.delete(value);
+    }
+  }
+  if (!isPlainObject(value)) throw new TypeError('cache entry must contain only JSON-compatible values');
+  if (ancestors.has(value)) throw new TypeError('cache entry must not contain cyclic values');
+  ancestors.add(value);
+  try {
+    const result = {};
+    for (const key of Object.keys(value).sort()) {
+      const item = value[key];
+      if (typeof item === 'string' && !CACHE_HASH_FIELD_RE.test(key)) {
+        const hashKey = Object.hasOwn(value, `${key}_hash`) ? `${key}_content_hash` : `${key}_hash`;
+        result[hashKey] = cacheContentHash(item);
+        result[`${key}_bytes`] = Buffer.byteLength(item, 'utf8');
+      } else if (typeof item === 'string') {
+        // Hash/digest fields are already the non-content compatibility format
+        // used by the R15 API; retain them byte-for-byte.
+        result[key] = item;
+      } else {
+        result[key] = hashOnlyCacheEntry(item, ancestors);
+      }
+    }
+    return result;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+/**
+ * Prepare an opaque cache record without retaining request/response content by
+ * default. `storeContent` (or `config.cache.store_content`) must be explicitly
+ * true to preserve raw fields; hashes and byte counts remain sufficient for the
+ * default audit/index use case.
+ */
+export function prepareCacheEntry(entry, { storeContent, config } = {}) {
+  if (!entry || !isPlainObject(entry)) throw new TypeError('cache entry must be an object');
+  if (storeContent !== undefined && typeof storeContent !== 'boolean') {
+    throw new TypeError('storeContent must be a boolean when supplied');
+  }
+  if (hasCacheSecret(entry)) {
+    const error = new Error('cache write rejected: secret-like content detected');
+    error.code = 'CACHE_SECRET_DETECTED';
+    throw error;
+  }
+  const enabled = storeContent === true || (storeContent === undefined && config?.cache?.store_content === true);
+  return enabled ? canonicalize(entry) : canonicalize(hashOnlyCacheEntry(entry));
+}
+
 function readStoredCacheEntry(filePath) {
   try {
     const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
@@ -416,17 +613,29 @@ function throwCacheRollbackError(originalError, rollbackErrors) {
 }
 
 /**
- * Atomically persist one opaque cache record and append its index observation.
+ * Atomically persist one cache record and append its index observation. Raw
+ * content is hash-only unless the caller explicitly opts in with
+ * `storeContent: true` or `config.cache.store_content: true`. A suspected
+ * credential rejects before this function creates any cache path.
+ *
  * The first writer for a hash wins; later writes retain that record and only
- * advance last_hit. R16's content policy intentionally belongs to its follow-up
- * task, so this function neither inspects nor synthesizes response content.
+ * advance last_hit.
  */
-export function writeCacheEntry({ cacheDir = '.xm/cache', model, hash, entry, now = Date.now() } = {}) {
+export function writeCacheEntry({
+  cacheDir = '.xm/cache', model, hash, entry, now = Date.now(), storeContent, config,
+  // `request`, `input`, `content`, and `files` are optional non-persisted
+  // caller payloads. Supporting them lets an integration reject a secret in
+  // source material even when only its hash is placed in `entry`.
+  request, input, content, files,
+} = {}) {
+  if (hasCacheSecret(request) || hasCacheSecret(input) || hasCacheSecret(content) || hasCacheSecret(files)) {
+    const error = new Error('cache write rejected: secret-like content detected');
+    error.code = 'CACHE_SECRET_DETECTED';
+    throw error;
+  }
+  const preparedEntry = prepareCacheEntry(entry, { storeContent, config });
   const filePath = cacheEntryPath({ cacheDir, model, hash });
   const indexPath = cacheIndexPath(cacheDir, model);
-  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-    throw new TypeError('cache entry must be an object');
-  }
   const last_hit = cacheTimestamp(now);
   mkdirSync(dirname(filePath), { recursive: true });
   // Keep record persistence and the matching index observation in one index
@@ -458,7 +667,7 @@ export function writeCacheEntry({ cacheDir = '.xm/cache', model, hash, entry, no
         stored.last_hit = last_hit;
       } else {
         created = last_hit;
-        stored = { schema_v: 1, hash, created, last_hit, entry: canonicalize(entry) };
+        stored = { schema_v: 1, hash, created, last_hit, entry: preparedEntry };
         written = true;
       }
       size = atomicWriteJson(filePath, stored);
@@ -481,10 +690,148 @@ export function writeCacheEntry({ cacheDir = '.xm/cache', model, hash, entry, no
 }
 
 /** Read an R15 record; missing entries are a cache miss rather than an error. */
-export function readCacheEntry({ cacheDir = '.xm/cache', model, hash } = {}) {
+export function readCacheEntry({ cacheDir = '.xm/cache', model, hash, now, ttlMs, ttlDays, config } = {}) {
   const filePath = cacheEntryPath({ cacheDir, model, hash });
   if (!existsSync(filePath)) return null;
-  return readStoredCacheEntry(filePath);
+  let record;
+  try {
+    record = readStoredCacheEntry(filePath);
+  } catch (error) {
+    // GC may unlink an expired entry between existsSync and readFileSync. That
+    // is indistinguishable from an ordinary miss to a lookup caller.
+    if (error?.cause?.code === 'ENOENT' || error?.code === 'ENOENT') return null;
+    throw error;
+  }
+  // Expired and legacy timestamp-less records remain on disk until a deliberate
+  // GC pass. Lookup treats both as a miss, so an interrupted or concurrent GC
+  // can never cause a false hit or force destructive cleanup on the read path.
+  if (cacheExpiry(record, { now, ttlMs, ttlDays, config }).expired) return null;
+  return record;
+}
+
+/**
+ * Append the explicit cost avoided by a cache hit. The caller must provide a
+ * measured/quoted model cost; missing, estimated, or non-positive values do
+ * not create a made-up saving event.
+ */
+export function recordCacheHit({ filePath, savedUsd, model, hash, timestamp = new Date().toISOString(), project } = {}) {
+  const saved = Number(savedUsd);
+  if (!Number.isFinite(saved) || saved <= 0) return null;
+  const event = { type: 'cache_hit', saved_usd: saved, timestamp };
+  if (typeof model === 'string' && model) event.model = model;
+  if (typeof hash === 'string' && CACHE_HASH_RE.test(hash)) event.cache_hash = hash;
+  if (typeof project === 'string' && project) event.project = project;
+  return appendCostEvent({ filePath, event });
+}
+
+function safeCacheNode(path) {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function safeCacheEntryNode(cacheDir, model, hash) {
+  const root = resolveCacheRoot(cacheDir);
+  const parts = [root, join(root, model), join(root, model, hash.slice(0, 2)), join(root, model, hash.slice(0, 2), hash.slice(2, 4))];
+  for (const part of parts) {
+    const node = safeCacheNode(part);
+    if (node?.isSymbolicLink()) return null;
+  }
+  const filePath = cacheEntryPath({ cacheDir, model, hash });
+  const file = safeCacheNode(filePath);
+  return file?.isFile() && !file.isSymbolicLink() ? { filePath, file } : null;
+}
+
+function readCacheIndexRows(indexPath) {
+  const index = safeCacheNode(indexPath);
+  if (!index?.isFile() || index.isSymbolicLink()) return [];
+  try {
+    const rows = [];
+    for (const line of readFileSync(indexPath, 'utf8').split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const row = JSON.parse(trimmed);
+        if (row && typeof row === 'object' && !Array.isArray(row) && typeof row.hash === 'string' && CACHE_HASH_RE.test(row.hash)) rows.push(row);
+      } catch { /* malformed/torn index rows are compacted away */ }
+    }
+    return rows;
+  } catch { return []; }
+}
+
+function atomicReplaceIndex(indexPath, rows) {
+  return atomicWriteText(indexPath, rows.map((row) => JSON.stringify(row)).join(rows.length ? '\n' : '') + (rows.length ? '\n' : ''));
+}
+
+/**
+ * Compact append-only indexes and prune only entries proved expired. It never
+ * follows symlinks, ignores torn rows, and keeps timestamp-less/future records
+ * as non-destructive "unverifiable" rows. `dryRun` computes exactly the same
+ * result without changing entries or indexes.
+ */
+export function gcCache({ cacheDir = '.xm/cache', model, now = Date.now(), ttlMs, ttlDays, config, dryRun = false } = {}) {
+  if (typeof dryRun !== 'boolean') throw new TypeError('dryRun must be a boolean');
+  const root = resolveCacheRoot(cacheDir);
+  const ttl = resolveCacheTtlMs({ ttlMs, ttlDays, config });
+  const models = model === undefined || model === null
+    ? (safeCacheNode(root)?.isDirectory() ? readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && MODEL_SEGMENT_RE.test(entry.name))
+      .map((entry) => entry.name) : [])
+    : [validateModelSegment(model)];
+  const result = { models: 0, index_rows_before: 0, index_rows_after: 0, pruned: 0, retained_unverifiable: 0, missing: 0, malformed: 0, dry_run: dryRun, ttl_ms: ttl };
+
+  for (const safeModel of models) {
+    const modelDir = join(root, safeModel);
+    const modelNode = safeCacheNode(modelDir);
+    if (!modelNode?.isDirectory()) continue;
+    const indexPath = cacheIndexPath(root, safeModel);
+    const indexNode = safeCacheNode(indexPath);
+    if (indexNode?.isSymbolicLink()) continue;
+    result.models += 1;
+    // Index lock ordering matches writeCacheEntry: index first, then entry.
+    const release = acquireWriteLock(indexPath);
+    try {
+      const rows = readCacheIndexRows(indexPath);
+      result.index_rows_before += rows.length;
+      const latest = new Map();
+      for (const row of rows) latest.set(row.hash, row);
+      const compacted = [];
+      for (const [hash, row] of latest) {
+        let node;
+        try { node = safeCacheEntryNode(root, safeModel, hash); } catch { node = null; }
+        if (!node) { result.missing += 1; continue; }
+        const releaseEntry = acquireWriteLock(node.filePath);
+        try {
+          // Re-check after acquiring the lock: a concurrent GC/writer (or a
+          // hostile symlink swap) must not make us follow the pre-lock inode.
+          node = safeCacheEntryNode(root, safeModel, hash);
+          if (!node) { result.missing += 1; continue; }
+          let record;
+          try { record = readStoredCacheEntry(node.filePath); } catch { result.malformed += 1; continue; }
+          if (record.hash !== hash) { result.malformed += 1; continue; }
+          const expiry = cacheExpiry(record, { now, ttlMs: ttl });
+          if (expiry.prune) {
+            result.pruned += 1;
+            if (!dryRun) unlinkSync(node.filePath);
+            continue;
+          }
+          if (expiry.reason === 'invalid_timestamp') result.retained_unverifiable += 1;
+          const size = node.file.size;
+          compacted.push({ hash, created: record.created, last_hit: record.last_hit, size });
+        } finally {
+          releaseEntry();
+        }
+      }
+      result.index_rows_after += compacted.length;
+      if (!dryRun && indexNode?.isFile()) atomicReplaceIndex(indexPath, compacted);
+    } finally {
+      release();
+    }
+  }
+  return result;
 }
 
 /**

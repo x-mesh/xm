@@ -111,6 +111,30 @@ describe('phase lifecycle', () => {
   });
 });
 
+describe('cache gitignore initialization', () => {
+  test('init adds .xm/cache/ once and preserves existing newline conventions', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-cache-ignore-'));
+    try {
+      run(['init', 'first'], { cwd: tmp });
+      expect(readFileSync(join(tmp, '.gitignore'), 'utf8')).toBe('.xm/cache/\n');
+
+      run(['init', 'second'], { cwd: tmp });
+      expect(readFileSync(join(tmp, '.gitignore'), 'utf8')).toBe('.xm/cache/\n');
+
+      const crlf = mkdtempSync(join(tmpdir(), 'xb-cache-ignore-crlf-'));
+      try {
+        writeFileSync(join(crlf, '.gitignore'), 'node_modules/\r\ncustom-rule');
+        run(['init', 'first'], { cwd: crlf });
+        expect(readFileSync(join(crlf, '.gitignore'), 'utf8')).toBe('node_modules/\r\ncustom-rule\r\n.xm/cache/\r\n');
+      } finally {
+        rmSync(crlf, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 // ── Task CRUD ─────────────────────────────────────────────────────
 
 describe('task CRUD', () => {

@@ -1,9 +1,8 @@
 /**
  * x-build/hooks — `x-build hooks <install|uninstall|status>`.
  *
- * Installs the two native Claude Code blocking hooks (scope-guard on PreToolUse,
- * stop-gate on Stop) into the project's .claude/, making x-build's review-fix scope
- * and Critical/High obligation machine-enforced instead of prompt convention (빅뱃4).
+ * Installs native Claude Code blocking hooks (scope-guard on PreToolUse,
+ * budget guard on Agent PreToolUse, stop-gate on Stop) into the project's .claude/.
  * The settings.json merge is non-destructive and idempotent.
  */
 
@@ -49,11 +48,12 @@ function isSymlink(p) {
 }
 
 // Scripts shipped with the plugin, copied verbatim into <repo>/.claude/hooks/.
-const HOOK_FILES = ['hook-state.mjs', 'xm-build-scope-guard.mjs', 'xm-build-stop-gate.mjs'];
+const HOOK_FILES = ['hook-state.mjs', 'xm-build-scope-guard.mjs', 'xm-build-stop-gate.mjs', 'budget-reservations.mjs', 'block-when-over-budget.mjs'];
 
 // The exact command strings we own — the identity used for idempotency + uninstall.
 const SCOPE_CMD = 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/xm-build-scope-guard.mjs"';
 const STOP_CMD = 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/xm-build-stop-gate.mjs"';
+const BUDGET_CMD = 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/block-when-over-budget.mjs"';
 
 function templateHooksDir() { return join(PLUGIN_ROOT, 'templates', 'hooks'); }
 function settingsPath(root) { return join(root, '.claude', 'settings.json'); }
@@ -139,6 +139,11 @@ function installHooks(root) {
     settings.hooks.PreToolUse.push({ matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: SCOPE_CMD }] });
     added++;
   }
+  if (!hasCommand(settings, 'PreToolUse', BUDGET_CMD)) {
+    settings.hooks.PreToolUse = settings.hooks.PreToolUse || [];
+    settings.hooks.PreToolUse.push({ matcher: 'Agent', hooks: [{ type: 'command', command: BUDGET_CMD }] });
+    added++;
+  }
   if (!hasCommand(settings, 'Stop', STOP_CMD)) {
     settings.hooks.Stop = settings.hooks.Stop || [];
     settings.hooks.Stop.push({ hooks: [{ type: 'command', command: STOP_CMD }] });
@@ -147,13 +152,13 @@ function installHooks(root) {
   writeSettings(root, settings);
 
   console.log(`${C.green}✓ x-build hooks installed${C.reset} — ${added} settings entr${added === 1 ? 'y' : 'ies'} added, ${HOOK_FILES.length} scripts in .claude/hooks/`);
-  console.log(`  ${C.dim}scope-guard (PreToolUse) + stop-gate (Stop). Bypass any run with XM_BUILD_HOOKS_OFF=1.${C.reset}`);
+  console.log(`  ${C.dim}scope-guard + budget guard (PreToolUse) + stop-gate (Stop).${C.reset}`);
 }
 
 function uninstallHooks(root) {
   const settings = readSettings(root);
   let removed = 0;
-  for (const [event, cmd] of [['PreToolUse', SCOPE_CMD], ['Stop', STOP_CMD]]) {
+  for (const [event, cmd] of [['PreToolUse', SCOPE_CMD], ['PreToolUse', BUDGET_CMD], ['Stop', STOP_CMD]]) {
     const entries = settings?.hooks?.[event];
     if (!Array.isArray(entries)) continue;
     const before = entries.length;
@@ -173,8 +178,9 @@ function uninstallHooks(root) {
 function statusHooks(root) {
   const settings = readSettings(root);
   const scope = hasCommand(settings, 'PreToolUse', SCOPE_CMD);
+  const budget = hasCommand(settings, 'PreToolUse', BUDGET_CMD);
   const stop = hasCommand(settings, 'Stop', STOP_CMD);
   const mark = (on) => (on ? `${C.green}installed${C.reset}` : `${C.dim}not installed${C.reset}`);
-  console.log(`x-build hooks — scope-guard: ${mark(scope)}, stop-gate: ${mark(stop)}`);
-  process.exitCode = scope && stop ? 0 : 1;
+  console.log(`x-build hooks — scope-guard: ${mark(scope)}, budget-guard: ${mark(budget)}, stop-gate: ${mark(stop)}`);
+  process.exitCode = scope && budget && stop ? 0 : 1;
 }

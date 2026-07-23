@@ -435,6 +435,27 @@ describe('checkBudget — rolling window', () => {
     expect(result.spent).toBeCloseTo(0.05, 5);
   });
 
+  test('emergency reserve is release-only and has an exact hard boundary', () => {
+    appendLines({ type: 'task_complete', cost_usd: 0.95, timestamp: new Date().toISOString() });
+    writeConfig({ budget: { max_usd: 1, emergency_reserve_usd: 0.20 } });
+
+    expect(ce.checkBudget(0.10, null)).toMatchObject({ ok: false, level: 'exceeded' });
+    expect(ce.checkBudget(0.10, null, { release: true })).toMatchObject({
+      ok: true,
+      emergency_reserve_usd: 0.20,
+      using_emergency_reserve: true,
+    });
+    // The reserve itself is an upper bound, not a second unlimited budget.
+    expect(ce.checkBudget(0.26, null, { release: true })).toMatchObject({ ok: false, level: 'exceeded' });
+  });
+
+  test('downgradeBudgetModel follows only opus → sonnet → haiku', () => {
+    expect(ce.downgradeBudgetModel('opus')).toBe('sonnet');
+    expect(ce.downgradeBudgetModel('sonnet')).toBe('haiku');
+    expect(ce.downgradeBudgetModel('haiku')).toBeNull();
+    expect(ce.downgradeBudgetModel('inherit')).toBeNull();
+  });
+
   test('per-project budget is enforced independently of global budget', () => {
     appendLines(
       { type: 'task_complete', cost_usd: 0.08, project: 'alpha', timestamp: new Date().toISOString() },

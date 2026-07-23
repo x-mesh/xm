@@ -21,6 +21,22 @@ import {
 
 // ── cmdInit ─────────────────────────────────────────────────────────
 
+/** Keep the cache out of source control without rewriting a user's ignore file. */
+export function ensureCacheGitignore(root = repoRoot()) {
+  const filePath = join(root, '.gitignore');
+  const current = existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
+  const ignored = current.split(/\r?\n/).some((line) => {
+    const rule = line.trim();
+    return rule === '.xm/cache/' || rule === '/.xm/cache/' || rule === '.xm/cache';
+  });
+  if (ignored) return false;
+
+  const eol = current.includes('\r\n') ? '\r\n' : '\n';
+  const separator = current && !current.endsWith('\n') && !current.endsWith('\r') ? eol : '';
+  writeFileSync(filePath, `${current}${separator}.xm/cache/${eol}`, 'utf8');
+  return true;
+}
+
 export function cmdInit(args) {
   const name = args[0];
   if (!name) {
@@ -34,6 +50,8 @@ export function cmdInit(args) {
     console.error(`❌ Project "${slug}" already exists.`);
     exitFail(1);
   }
+
+  ensureCacheGitignore();
 
   const now = new Date().toISOString();
   // Computed once, at init time — kind() may change later (e.g. the user

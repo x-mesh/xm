@@ -983,11 +983,25 @@ function mergeProjectBudget(globalResult, projectSpentMap, projectLimit, project
 
 // ── checkBudget ───────────────────────────────────────────────────────
 
-export function checkBudget(additionalCost = 0, project = null) {
+export function downgradeBudgetModel(model) {
+  if (model === 'opus') return 'sonnet';
+  if (model === 'sonnet') return 'haiku';
+  return null;
+}
+
+/**
+ * Check the ordinary budget, optionally allowing the separate emergency pool
+ * for the release command only.  Callers cannot opt into it accidentally:
+ * the third argument is an internal named capability, never a config default.
+ */
+export function checkBudget(additionalCost = 0, project = null, { release = false } = {}) {
   const config = loadSharedConfig();
   const budget = Number(config.budget?.max_usd);
   const hasGlobalBudget = !isNaN(budget) && budget > 0;
   const globalWarnAt = config.budget?.warn_at_usd;
+  const configuredReserve = Number(config.budget?.emergency_reserve_usd);
+  const emergencyReserve = release && Number.isFinite(configuredReserve) && configuredReserve > 0
+    ? configuredReserve : 0;
 
   // Per-project caps accept BOTH shapes: a plain number and the documented
   // { "max_usd": N }. A present-but-unparseable value must fail loudly —
@@ -1020,8 +1034,13 @@ export function checkBudget(additionalCost = 0, project = null) {
   }
 
   const globalResult = {
-    ...checkHardCap({ spent, cap: budget, additionalCost, warnAtUsd: globalWarnAt }),
+    ...checkHardCap({ spent, cap: budget + emergencyReserve, additionalCost, warnAtUsd: globalWarnAt }),
     reason: 'budget.max_usd',
+    ...(emergencyReserve > 0 ? {
+      base_budget: budget,
+      emergency_reserve_usd: emergencyReserve,
+      using_emergency_reserve: spent + Number(additionalCost || 0) > budget,
+    } : {}),
   };
 
   if (hasProjectLimit) {

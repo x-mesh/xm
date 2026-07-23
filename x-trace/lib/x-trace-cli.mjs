@@ -37,6 +37,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gitSnapshot, resolveTraceDir } from './x-trace/trace-writer.mjs';
 import { lastRead, lastWrite } from './x-trace/last-store.mjs';
+import { createReplay, promoteReplayToEval } from './x-trace/replay.mjs';
 
 /** Tools the dispatcher is expected to record. Anything else warns then records (FM4). */
 const KNOWN_TOOLS = new Set(['review', 'build', 'panel', 'op', 'eval', 'ship', 'dispatcher']);
@@ -47,7 +48,7 @@ const COVERAGE_NOTE =
 
 // ── helpers ──────────────────────────────────────────────────────────
 
-/** Split raw args into { opts, pos }. `--json`/`--rebuild` are boolean; other `--k v` take a value. */
+/** Split raw args into { opts, pos }. Boolean flags never consume a following positional argument. */
 function parseArgs(args) {
   const opts = {};
   const pos = [];
@@ -55,6 +56,7 @@ function parseArgs(args) {
     const a = args[i];
     if (a === '--json') { opts.json = true; continue; }
     if (a === '--rebuild') { opts.rebuild = true; continue; }
+    if (a === '--promote-to-eval') { opts.promoteToEval = true; continue; }
     if (a.startsWith('--')) { opts[a.slice(2)] = args[++i]; continue; }
     pos.push(a);
   }
@@ -296,6 +298,55 @@ function cmdDoctor(opts) {
   console.log("Run 'xm trace doctor --rebuild' to reconstruct last.json from traces (new traces only).");
 }
 
+/** replay <trace-id> --span <span-id> — persist deterministic replay inputs. */
+function cmdReplay(pos, opts) {
+  const traceId = pos[0];
+  const spanId = opts.span;
+  if (!traceId || !spanId) {
+    console.error('Usage: xm trace replay <trace-id> --span <span-id> [--model M] [--prompt-override FILE] [--result FILE] [--promote-to-eval] [--json]');
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    const { manifest, manifestPath, repoRoot } = createReplay(traceId, spanId, {
+      model: opts.model,
+      promptOverride: opts['prompt-override'],
+      result: opts.result,
+    });
+    const evalCase = opts.promoteToEval
+      ? promoteReplayToEval({ root: repoRoot, traceId, spanId, seed: manifest.seed, diff: manifest.replay_diff, manifestPath })
+      : null;
+    const warnings = manifest.warnings || [];
+    if (opts.json) {
+      console.log(JSON.stringify({
+        replay_of: manifest.replay_of,
+        seed: manifest.seed,
+        manifest: manifestPath,
+        snapshot: manifest.snapshot,
+        diff: manifest.replay_diff,
+        eval_case: evalCase,
+        warnings,
+      }, null, 2));
+      return;
+    }
+    console.log(`Replay artifact created: ${manifestPath}`);
+    console.log(`  replay_of: ${manifest.replay_of}`);
+    console.log(`  seed: ${manifest.seed}`);
+    console.log(`  snapshot: ${manifest.snapshot.archive} (${manifest.snapshot.archive_bytes} bytes)`);
+    const diff = manifest.replay_diff;
+    console.log('  diff (original | replay):');
+    console.log(`    output: ${diff.output.comparison} (${diff.output.original.sha256 ?? 'unavailable'} | ${diff.output.replay.sha256 ?? 'unavailable'})`);
+    console.log(`    tokens: ${diff.tokens.total.original ?? 'unavailable'} | ${diff.tokens.total.replay ?? 'unavailable'}`);
+    console.log(`    cost: ${diff.cost.original ?? 'unavailable'} | ${diff.cost.replay ?? 'unavailable'}`);
+    console.log(`    quality (${diff.quality.rubric}): ${diff.quality.score.original ?? 'unavailable'} | ${diff.quality.score.replay ?? 'awaiting x-eval'}`);
+    if (evalCase) console.log(`  x-eval case: ${evalCase.path} (${evalCase.created ? 'created' : 'already exists'})`);
+    for (const warning of warnings) console.warn(`[x-trace] warning: ${warning.code} (${warning.phase}, ${warning.bytes} bytes)`);
+  } catch (err) {
+    console.error(`[x-trace] replay failed: ${err.message}`);
+    process.exitCode = 1;
+  }
+}
+
 /**
  * Reconstruct last.json by tail-scanning .xm/traces/*.jsonl for the latest
  * session_end carrying a git.head, per skill. Only traces written by t1 (which
@@ -370,6 +421,10 @@ Commands:
   since <ref>                   Tools + trace sessions recorded since <ref>.
   doctor [--rebuild]            Validate last.json; --rebuild reconstructs it
                                 from traces that recorded git state.
+  replay <trace-id> --span <id> Freeze a deterministic replay manifest, four-axis
+                                diff, and safe filesystem snapshot (max 3 forks/trace).
+                                --result FILE accepts output hash/metrics only;
+                                --promote-to-eval creates an idempotent eval case.
   help                          Show this help.
 
 Known tools: ${[...KNOWN_TOOLS].join(', ')}`);
@@ -384,6 +439,7 @@ function main() {
     case 'status': cmdStatus(pos, opts); break;
     case 'since':  cmdSince(pos); break;
     case 'doctor': cmdDoctor(opts); break;
+    case 'replay': cmdReplay(pos, opts); break;
     case 'help':
     case '--help':
     case '-h':
@@ -405,4 +461,4 @@ const isMain = (() => {
 })();
 if (isMain) main();
 
-export { cmdRecord, cmdLast, cmdStatus, cmdSince, cmdDoctor, commitsSince, relativeTime, shortRef, sessionFileTime };
+export { cmdRecord, cmdLast, cmdStatus, cmdSince, cmdDoctor, cmdReplay, commitsSince, relativeTime, shortRef, sessionFileTime };

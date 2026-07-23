@@ -2,15 +2,17 @@ import { afterEach, describe, expect, mock, test } from 'bun:test';
 import * as realFs from 'node:fs';
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
-  statSync, writeFileSync,
+  statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { SCHEMA } from '../x-build/lib/config-schema.mjs';
 import {
   COST_EVENT_MAX_BYTES, appendCostEvent, checkHardCap, computeSpend,
   buildCacheKeyInput, cacheEntryPath, getCacheKey, getRequestCacheKey,
-  readCacheEntry, readCostEvents, writeCacheEntry,
+  prepareCacheEntry, readCacheEntry, readCostEvents, writeCacheEntry,
+  cacheExpiry, gcCache, recordCacheHit, resolveCacheTtlMs,
 } from '../x-build/lib/cost/index.mjs';
 const bundledCore = await import('../xm/lib/cost/index.mjs');
 // Capture values before mock.module mutates the process-wide module registry.
@@ -33,10 +35,19 @@ afterEach(() => {
 });
 
 describe('shared cost core', () => {
+  test('R16 registers cache.store_content as a local false-by-default setting', () => {
+    expect(SCHEMA.find((entry) => entry.key === 'cache.store_content')).toMatchObject({
+      group: 'misc', type: 'boolean', scope: 'local', default: false,
+    });
+    expect(JSON.parse(readFileSync('x-build/lib/default-config.json', 'utf8')).cache.store_content).toBe(false);
+    expect(JSON.parse(readFileSync('xm/lib/default-config.json', 'utf8')).cache.store_content).toBe(false);
+  });
+
   test('bundled xm/lib/cost entry exports the shared cost and cache APIs', () => {
     const publicFunctions = [
       'readCostEvents', 'appendCostEvent', 'computeSpend', 'getCacheKey', 'checkHardCap',
-      'buildCacheKeyInput', 'getRequestCacheKey', 'cacheEntryPath', 'writeCacheEntry', 'readCacheEntry',
+      'buildCacheKeyInput', 'getRequestCacheKey', 'cacheEntryPath', 'writeCacheEntry', 'readCacheEntry', 'prepareCacheEntry',
+      'cacheExpiry', 'gcCache', 'recordCacheHit', 'resolveCacheTtlMs',
     ];
     for (const name of publicFunctions) expect(typeof bundledCore[name]).toBe('function');
   });
@@ -202,7 +213,7 @@ describe('shared cost core', () => {
     expect(second.created).toBe(first.created);
     expect(second.last_hit).not.toBe(first.last_hit);
     expect(second.size).toBe(statSync(expectedPath).size);
-    expect(readCacheEntry({ cacheDir, model, hash })).toMatchObject({
+    expect(readCacheEntry({ cacheDir, model, hash, now: 1_700_000_001_000 })).toMatchObject({
       schema_v: 1, hash, created: first.created, last_hit: second.last_hit,
       entry: { response_hash: 'first' },
     });
@@ -219,6 +230,83 @@ describe('shared cost core', () => {
       expect(() => buildCacheKeyInput({ model })).toThrow(/safe path segment/i);
       expect(() => cacheEntryPath({ cacheDir: '/tmp/cache', model, hash })).toThrow(/safe path segment/i);
     }
+  });
+
+  test('R16 stores content hashes by default and preserves raw content only on explicit opt-in', () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'xm-cache-pii-'));
+    tempDirs.push(cacheDir);
+    const model = 'gpt-5.6';
+    const hash = getRequestCacheKey({ model, prompt: 'safe prompt' });
+    const rawResponse = 'customer@example.test: private answer';
+    const rawFile = 'const privateValue = 1;';
+
+    const first = writeCacheEntry({
+      cacheDir, model, hash,
+      entry: { response: rawResponse, nested: { file_content: rawFile }, label: 'private label', response_hash: 'known-response' },
+      now: 1_700_000_000_000,
+    });
+    const disk = readFileSync(first.path, 'utf8');
+    expect(disk).not.toContain(rawResponse);
+    expect(disk).not.toContain(rawFile);
+    expect(disk).not.toContain('private label');
+    expect(readCacheEntry({ cacheDir, model, hash, now: 1_700_000_000_000 }).entry).toMatchObject({
+      response_hash: 'known-response', response_content_hash: expect.any(String), response_bytes: Buffer.byteLength(rawResponse),
+      nested: { file_content_hash: expect.any(String), file_content_bytes: Buffer.byteLength(rawFile) },
+      label_hash: expect.any(String), label_bytes: Buffer.byteLength('private label'),
+    });
+
+    const optInHash = getRequestCacheKey({ model, prompt: 'opt in prompt' });
+    const optIn = writeCacheEntry({
+      cacheDir, model, hash: optInHash, entry: { response: rawResponse },
+      config: { cache: { store_content: true } }, now: 1_700_000_000_000,
+    });
+    expect(readFileSync(optIn.path, 'utf8')).toContain(rawResponse);
+    expect(prepareCacheEntry({ response: rawResponse }, { storeContent: true })).toEqual({ response: rawResponse });
+  });
+
+  test('R16 rejects likely secrets in nested cache payloads before creating an entry or index', () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'xm-cache-secret-'));
+    tempDirs.push(cacheDir);
+    const model = 'gpt-5.6';
+    const hash = getRequestCacheKey({ model, prompt: 'safe prompt' });
+    const secret = 'AKIA1234567890ABCDEF';
+    const path = cacheEntryPath({ cacheDir, model, hash });
+
+    let error;
+    try {
+      writeCacheEntry({ cacheDir, model, hash, entry: { nested: [{ file_content: secret }] } });
+    } catch (caught) { error = caught; }
+    expect(error?.code).toBe('CACHE_SECRET_DETECTED');
+    expect(error?.message).not.toContain(secret);
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(join(cacheDir, model, 'index.jsonl'))).toBe(false);
+
+    for (const [label, payload] of [
+      ['adjacent array fragments', { nested: ['AKIA12345678', '90ABCDEF'] }],
+      ['whitespace-split key', { response: 'sk-abcde\nfghijklmno' }],
+      ['explicit object fragments', { content_part_1: 'AKIA12345678', content_part_2: '90ABCDEF' }],
+      ['lowercase PEM header', { file_content: '-----begin private key-----' }],
+    ]) {
+      const splitHash = getRequestCacheKey({ model, prompt: label });
+      let splitError;
+      try {
+        writeCacheEntry({ cacheDir, model, hash: splitHash, entry: payload });
+      } catch (caught) { splitError = caught; }
+      expect(splitError?.code).toBe('CACHE_SECRET_DETECTED');
+      expect(existsSync(cacheEntryPath({ cacheDir, model, hash: splitHash }))).toBe(false);
+    }
+
+    expect(() => writeCacheEntry({
+      cacheDir, model, hash, entry: { response_hash: 'safe' }, input: { prompt: 'sk-short' },
+    })).not.toThrow(); // short labels are not credentials
+    expect(() => writeCacheEntry({
+      cacheDir, model, hash: getRequestCacheKey({ model, prompt: 'unrelated fragments' }),
+      entry: { fragments: ['AKIA12345678', 'documentation separator', '90ABCDEF'] },
+    })).not.toThrow(); // only immediately adjacent structured fragments are joined
+    expect(() => writeCacheEntry({
+      cacheDir, model, hash: getRequestCacheKey({ model, prompt: 'pem' }), entry: { response: 'safe' },
+      request: { files: [{ content: '-----BEGIN PRIVATE KEY-----' }] },
+    })).toThrow(/secret-like content detected/);
   });
 
   test('R15 removes a newly-created entry when index append fails', () => {
@@ -273,7 +361,7 @@ describe('shared cost core', () => {
 
     expect(readFileSync(first.path, 'utf8')).toBe(entryBefore);
     expect(readFileSync(first.index_path, 'utf8')).toBe(indexBefore);
-    expect(readCacheEntry({ cacheDir, model, hash })).toMatchObject({
+    expect(readCacheEntry({ cacheDir, model, hash, now: 1_700_000_000_000 })).toMatchObject({
       last_hit: first.last_hit, entry: { response_hash: 'keep-me' },
     });
     expect(readdirSync(dirname(first.path)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
@@ -340,6 +428,105 @@ describe('shared cost core', () => {
     expect(rows.every((row) => row.hash === hash && row.created === stored.created)).toBe(true);
     expect(stored.last_hit).toBe(rows.at(-1).last_hit);
     expect(stored.entry.response_hash).toMatch(/^child-[0-3]$/);
+  });
+
+  test('R18 lookup uses a seven-day TTL with exact-expiry, config override, future, and legacy boundaries', () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'xm-cache-ttl-'));
+    tempDirs.push(cacheDir);
+    const model = 'gpt-5.6';
+    const hash = getRequestCacheKey({ model, prompt: 'ttl' });
+    const start = 1_700_000_000_000;
+    const ttl = 7 * 24 * 60 * 60 * 1000;
+    const saved = writeCacheEntry({ cacheDir, model, hash, entry: { response_hash: 'ttl' }, now: start });
+    expect(readCacheEntry({ cacheDir, model, hash, now: start + ttl - 1 })).not.toBeNull();
+    expect(readCacheEntry({ cacheDir, model, hash, now: start + ttl })).toBeNull();
+    expect(readCacheEntry({ cacheDir, model, hash, now: start + 24 * 60 * 60 * 1000, config: { cache: { ttl_days: 1 } } })).toBeNull();
+    expect(resolveCacheTtlMs({ ttlDays: 2 })).toBe(2 * 24 * 60 * 60 * 1000);
+    expect(cacheExpiry({ last_hit: new Date(start + ttl).toISOString() }, { now: start })).toMatchObject({ expired: false, reason: 'future_timestamp' });
+    writeFileSync(saved.path, JSON.stringify({ schema_v: 1, hash, entry: {} }) + '\n');
+    expect(readCacheEntry({ cacheDir, model, hash, now: start })).toBeNull();
+    expect(cacheExpiry({ hash }, { now: start })).toMatchObject({ expired: true, prune: false, reason: 'invalid_timestamp' });
+    expect(() => resolveCacheTtlMs({ ttlDays: 0 })).toThrow(/positive finite/i);
+  });
+
+  test('R18 gc deduplicates indexes, deletes only provably expired records, and keeps legacy rows', () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'xm-cache-gc-'));
+    tempDirs.push(cacheDir);
+    const model = 'gpt-5.6';
+    const now = 1_700_700_000_000;
+    const oldHash = getRequestCacheKey({ model, prompt: 'old' });
+    const freshHash = getRequestCacheKey({ model, prompt: 'fresh' });
+    const legacyHash = getRequestCacheKey({ model, prompt: 'legacy' });
+    const old = writeCacheEntry({ cacheDir, model, hash: oldHash, entry: { response_hash: 'old' }, now: now - 8 * 24 * 60 * 60 * 1000 });
+    const fresh = writeCacheEntry({ cacheDir, model, hash: freshHash, entry: { response_hash: 'fresh' }, now: now - 1 });
+    const legacyPath = cacheEntryPath({ cacheDir, model, hash: legacyHash });
+    mkdirSync(dirname(legacyPath), { recursive: true });
+    writeFileSync(legacyPath, JSON.stringify({ schema_v: 1, hash: legacyHash, entry: {} }) + '\n');
+    writeFileSync(old.index_path, [
+      readFileSync(old.index_path, 'utf8').trim(),
+      JSON.stringify({ hash: freshHash, created: fresh.created, last_hit: fresh.last_hit, size: fresh.size }),
+      JSON.stringify({ hash: legacyHash, size: statSync(legacyPath).size }),
+      '{torn', '',
+    ].join('\n'));
+    const preview = gcCache({ cacheDir, model, now, dryRun: true });
+    expect(preview).toMatchObject({ pruned: 1, retained_unverifiable: 1, dry_run: true });
+    expect(readFileSync(old.path, 'utf8')).toContain(oldHash);
+    const result = gcCache({ cacheDir, model, now });
+    expect(result).toMatchObject({ pruned: 1, retained_unverifiable: 1, index_rows_after: 2, dry_run: false });
+    expect(existsSync(old.path)).toBe(false);
+    const rows = readFileSync(old.index_path, 'utf8').trim().split('\n').map(JSON.parse);
+    expect(rows.map((row) => row.hash).sort()).toEqual([freshHash, legacyHash].sort());
+  });
+
+  test('R18 exposes GC through xm cost cache gc with dry-run semantics', () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'xm-cache-gc-cli-'));
+    tempDirs.push(cacheDir);
+    const model = 'gpt-5.6';
+    const hash = getRequestCacheKey({ model, prompt: 'cli-old' });
+    const entry = writeCacheEntry({
+      cacheDir, model, hash, entry: { response_hash: 'old' }, now: Date.now() - 8 * 24 * 60 * 60 * 1000,
+    });
+    const cli = join(import.meta.dir, '..', 'x-build', 'lib', 'x-build-cli.mjs');
+    const run = (extra = []) => Bun.spawnSync([process.execPath, cli, 'cost', 'cache', 'gc', '--cache-dir', cacheDir, '--ttl-days', '7', '--json', ...extra]);
+    const dry = run(['--dry-run']);
+    expect(dry.exitCode).toBe(0);
+    expect(JSON.parse(dry.stdout.toString())).toMatchObject({ dry_run: true, pruned: 1 });
+    expect(existsSync(entry.path)).toBe(true);
+    const actual = run();
+    expect(actual.exitCode).toBe(0);
+    expect(JSON.parse(actual.stdout.toString())).toMatchObject({ dry_run: false, pruned: 1 });
+    expect(existsSync(entry.path)).toBe(false);
+  });
+
+  test('R18 GC ignores symlinked model trees and remains index-consistent with a writer', async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'xm-cache-gc-safe-'));
+    const outside = mkdtempSync(join(tmpdir(), 'xm-cache-outside-'));
+    tempDirs.push(cacheDir, outside);
+    const model = 'gpt-5.6';
+    symlinkSync(outside, join(cacheDir, model));
+    expect(gcCache({ cacheDir, now: Date.now() })).toMatchObject({ models: 0, pruned: 0 });
+
+    rmSync(join(cacheDir, model));
+    const hash = getRequestCacheKey({ model, prompt: 'race' });
+    const old = writeCacheEntry({ cacheDir, model, hash, entry: { response_hash: 'old' }, now: 1_700_000_000_000 });
+    const moduleUrl = pathToFileURL(join(import.meta.dir, '..', 'x-build', 'lib', 'cost', 'index.mjs')).href;
+    const fresh = { cacheDir, model, hash, entry: { response_hash: 'fresh' }, now: 1_700_700_000_000 };
+    const child = Bun.spawn([process.execPath, '-e', `const {writeCacheEntry}=await import(${JSON.stringify(moduleUrl)});writeCacheEntry(${JSON.stringify(fresh)});`], { stdout: 'pipe', stderr: 'pipe' });
+    gcCache({ cacheDir, model, now: fresh.now });
+    expect(await child.exited).toBe(0);
+    const rows = readFileSync(old.index_path, 'utf8').trim().split('\n').map(JSON.parse);
+    expect(rows.every((row) => row.hash === hash)).toBe(true);
+    expect(readCacheEntry({ cacheDir, model, hash, now: fresh.now })).not.toBeNull();
+  });
+
+  test('R19 records only explicit, positive cache-hit savings without raw content', () => {
+    const filePath = tempFile();
+    const hash = 'a'.repeat(64);
+    expect(recordCacheHit({ filePath, savedUsd: undefined, model: 'gpt-5.6', hash })).toBeNull();
+    expect(recordCacheHit({ filePath, savedUsd: 0, model: 'gpt-5.6', hash })).toBeNull();
+    const event = recordCacheHit({ filePath, savedUsd: 0.0123, model: 'gpt-5.6', hash, timestamp: '2026-01-01T00:00:00.000Z' });
+    expect(event).toEqual(expect.objectContaining({ type: 'cache_hit', saved_usd: 0.0123, cache_hash: hash }));
+    expect(readCostEvents({ filePath })).toEqual([event]);
   });
 
   test('checkHardCap distinguishes normal, warning, and exceeded states', () => {

@@ -1280,6 +1280,101 @@ describe('run --json budget gate (regression)', () => {
     }
   });
 
+  test('uses task predictions with existing spend before emitting any Agent plan', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = driveToExecute(tmp);
+      writeBudget(tmp, 0.10);
+      const metrics = join(tmp, '.xm', 'build', 'metrics');
+      mkdirSync(metrics, { recursive: true });
+      const now = new Date().toISOString();
+      // spent $0.05 plus two task predictions of $0.03 exceeds the cap. The
+      // rows are deliberately task-bound; a global estimate cannot satisfy it.
+      writeFileSync(join(metrics, 'sessions.jsonl'), JSON.stringify({ type: 'task_complete', cost_usd: 0.05, timestamp: now }) + '\n');
+      writeFileSync(join(metrics, 'prediction_log.jsonl'), [
+        { type: 'prediction', event_id: 'pred-a', timestamp: now, correlation_id: `task:${name}:t1`, predicted_cost_usd: 0.03, model: 'sonnet' },
+        { type: 'prediction', event_id: 'pred-b', timestamp: now, correlation_id: `task:${name}:t2`, predicted_cost_usd: 0.03, model: 'sonnet' },
+      ].map(JSON.stringify).join('\n') + '\n');
+
+      const r = run(['run', '--json'], { cwd: tmp, env: { HOME: BUDGET_HOME } });
+      const out = JSON.parse(r.stdout);
+      expect(r.exitCode).toBe(1);
+      expect(out.blocked_reason).toBe('budget_exceeded');
+      expect(out.tasks).toEqual([]);
+      expect(out.predictions.map((row) => row.predicted_cost_usd)).toEqual([0.03, 0.03]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('fallback:downgrade changes only the automatic route in the emitted plan', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      driveToExecute(tmp);
+      const dir = join(tmp, '.xm');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'config.json'), JSON.stringify({ budget: { max_usd: 100, fallback: 'downgrade' } }));
+      const r = run(['run', '--json'], { cwd: tmp, env: { HOME: BUDGET_HOME } });
+      const out = JSON.parse(r.stdout);
+      expect(r.exitCode).toBe(0);
+      expect(out.fallback).toMatchObject({ mode: 'downgrade' });
+      expect(out.tasks.every((task) => task.model === 'haiku')).toBe(true);
+      expect(out.predictions.every((row) => row.model === 'haiku')).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('fallback:downgrade never overrides an explicit dispatch model pin', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      const dir = join(tmp, '.xm');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'config.json'), JSON.stringify({ budget: { max_usd: 100, fallback: 'downgrade' } }));
+      const r = run(['dispatch', 'keep explicit model', '--model', 'opus', '--json'], { cwd: tmp, env: { HOME: BUDGET_HOME } });
+      expect(r.exitCode).toBe(0);
+      const out = JSON.parse(r.stdout);
+      expect(out.task.model).toBe('opus');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('release reserve permits its exact global boundary but still respects the active project cap', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      const xm = join(tmp, '.xm');
+      const metrics = join(xm, 'build', 'metrics');
+      mkdirSync(metrics, { recursive: true });
+      writeFileSync(join(xm, 'config.json'), JSON.stringify({ budget: {
+        max_usd: 0.10,
+        emergency_reserve_usd: 0.10,
+        projects: { [name]: { max_usd: 0.20 } },
+      } }));
+      writeFileSync(join(metrics, 'sessions.jsonl'), JSON.stringify({
+        type: 'task_complete', project: name, cost_usd: 0.20, timestamp: new Date().toISOString(),
+      }) + '\n');
+
+      const atReserveBoundary = run(['release', 'test', '--command', 'true'], { cwd: tmp, env: { HOME: BUDGET_HOME } });
+      expect(atReserveBoundary.exitCode).toBe(0);
+      expect(JSON.parse(atReserveBoundary.stdout)).toMatchObject({ passed: true });
+
+      // The release-only reserve extends the global cap, not this project's cap.
+      writeFileSync(join(xm, 'config.json'), JSON.stringify({ budget: {
+        max_usd: 100,
+        emergency_reserve_usd: 10,
+        projects: { [name]: { max_usd: 0.10 } },
+      } }));
+      const projectExceeded = run(['release', 'test', '--command', 'true'], { cwd: tmp, env: { HOME: BUDGET_HOME } });
+      expect(projectExceeded.exitCode).toBe(1);
+      expect(projectExceeded.stderr).toContain('release budget block');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('per-project {max_usd} cap blocks the --json plan (project passed through to checkBudget)', () => {
     // Regression: cmdRun called checkBudget(cost) without the project, so
     // budget.projects caps never applied on `run`. The documented object
