@@ -185,11 +185,12 @@ describe('cost dashboard static asset contract', () => {
     expect(indexHtml).toContain('href="#/cost" data-route="/cost"');
     expect(appSource).toContain("{ pattern: /^\\/cost$/, handler: () => renderCostDashboard() }");
     expect(appSource).toContain("{ pattern: /^\\/costs$/, handler: () => renderCostsPage() }");
-    expect(appSource).toContain("if (path !== '/cost') destroyCostDashboardCharts();");
+    expect(appSource).toContain("if (path !== '/cost') {");
+    expect(appSource).toContain('stopCostDashboard();');
   });
 
   test('renders four distinct chart surfaces and four wired filters', () => {
-    for (const id of ['cost-daily-chart', 'cost-strategy-chart', 'cost-role-chart', 'cost-heatmap-chart']) {
+    for (const id of ['cost-daily-chart', 'cost-strategy-chart', 'cost-role-chart', 'cost-mape-chart', 'cost-heatmap-chart']) {
       expect(appSource).toContain(`id="${id}"`);
     }
     for (const name of ['period', 'model', 'strategy', 'project']) {
@@ -197,6 +198,23 @@ describe('cost dashboard static asset contract', () => {
     }
     expect(appSource).toContain('Strategy by model');
     expect(appSource).toContain('stacked: true');
+  });
+
+  test('keeps replay cost out of primary charts and provides a persistent accessible separate-cost toggle', () => {
+    expect(appSource).toContain("const COST_REPLAY_TOGGLE_KEY = 'xm-cost-show-replays';");
+    expect(appSource).toContain('name="show_replays"');
+    expect(appSource).toContain('Show replay cost separately');
+    expect(appSource).toContain('Replay cost is excluded from primary totals and charts.');
+    expect(appSource).toContain('replay cost (excluded)');
+  });
+
+  test('polls all live rollup endpoints and keeps mock data out of the Cost route', () => {
+    for (const endpoint of ['/costs/timeline?', '/costs/breakdown?', '/costs/role-top?', '/costs/heatmap?', '/costs/calibration?']) {
+      expect(appSource).toContain(endpoint);
+    }
+    expect(appSource).toContain('startPolling(refresh, 5000)');
+    expect(appSource).toContain('Live cost API error:');
+    expect(appSource).not.toContain('Mock dataset. Live cost API wiring follows in t5.');
   });
 
   test('resolves chart tokens from body so the light theme overrides apply', () => {

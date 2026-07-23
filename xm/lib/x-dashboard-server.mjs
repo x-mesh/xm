@@ -13,7 +13,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, readFileSync, statSync, renameSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, readFileSync, statSync, renameSync, openSync, readSync, closeSync } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
@@ -2593,6 +2593,587 @@ function handleTraceDetail(xmRoot, file, req, url) {
 
 // ── R5: Costs API ─────────────────────────────────────────────────────
 
+// The cost engine owns the append-only source log.  The dashboard deliberately
+// reads its own compact daily projection: a 5-second poll must not repeatedly
+// parse an ever-growing sessions.jsonl file.  The legacy build/metrics location
+// remains a read-only fallback for older workspaces.
+const COST_ROLLUP_VERSION = 1;
+const COST_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function costMetricsFile(xmRoot) {
+  const current = safeJoin(xmRoot, 'metrics', 'sessions.jsonl');
+  if (current && (existsSync(current) || existsSync(current + '.1'))) return current;
+  const legacy = safeJoin(xmRoot, 'build', 'metrics', 'sessions.jsonl');
+  return legacy && (existsSync(legacy) || existsSync(legacy + '.1')) ? legacy : null;
+}
+
+function costRollupFiles(xmRoot) {
+  const metricsDir = safeJoin(xmRoot, 'metrics');
+  if (!metricsDir) return null;
+  return {
+    metricsDir,
+    daily: join(metricsDir, 'daily.jsonl'),
+    // This is the authoritative transactional snapshot. daily.jsonl remains a
+    // portable, inspectable mirror, but is never used as the cursor authority.
+    snapshot: join(metricsDir, 'daily.rollup.json'),
+  };
+}
+
+function predictionLogFile(xmRoot) {
+  const current = safeJoin(xmRoot, 'metrics', 'prediction_log.jsonl');
+  if (current && (existsSync(current) || existsSync(current + '.1'))) return current;
+  const legacy = safeJoin(xmRoot, 'build', 'metrics', 'prediction_log.jsonl');
+  return legacy && (existsSync(legacy) || existsSync(legacy + '.1')) ? legacy : null;
+}
+
+function readCompleteJsonl(filePath) {
+  if (!filePath) return [];
+  try {
+    // A final non-newline record may be mid-append. Ignore it until the next
+    // poll sees a complete line, matching the cost rollup's torn-write rule.
+    const text = readFileSync(filePath, 'utf8');
+    const complete = text.lastIndexOf('\n');
+    if (complete < 0) return [];
+    const rows = [];
+    for (const line of text.slice(0, complete + 1).split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const row = JSON.parse(line);
+        if (row && typeof row === 'object' && !Array.isArray(row)) rows.push(row);
+      } catch { /* malformed rows never break a polling response */ }
+    }
+    return rows;
+  } catch { return []; }
+}
+
+function finiteNonNegativeNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+/** Build MAPE pairs from the dedicated prediction ledger without counting an
+ * event twice. Actual zero-cost rows are retained for disclosure but excluded
+ * from MAPE because the denominator is undefined. */
+function readPredictionCalibration(xmRoot) {
+  const source = predictionLogFile(xmRoot);
+  const events = source ? [...readCompleteJsonl(`${source}.1`), ...readCompleteJsonl(source)] : [];
+  const seen = new Set();
+  const predictions = new Map();
+  const actuals = [];
+  for (const event of events) {
+    if (typeof event?.event_id !== 'string' || !event.event_id || seen.has(event.event_id)) continue;
+    seen.add(event.event_id);
+    if (event.type === 'prediction' && finiteNonNegativeNumber(event.predicted_cost_usd)) {
+      predictions.set(event.event_id, event);
+    } else if (event.type === 'actual' && typeof event.prediction_event_id === 'string'
+      && finiteNonNegativeNumber(event.actual_cost_usd) && Number.isFinite(new Date(event.timestamp).getTime())) {
+      actuals.push(event);
+    }
+  }
+  return actuals.map((actual) => {
+    const prediction = predictions.get(actual.prediction_event_id);
+    if (!prediction) return null;
+    // v1 calibration rows created before dimension metadata are retained only
+    // for the unfiltered view. A specific dashboard filter never guesses a
+    // dimension from task text, so legacy rows are represented as `unknown`.
+    return {
+      timestamp: actual.timestamp,
+      predicted: prediction.predicted_cost_usd,
+      actual: actual.actual_cost_usd,
+      project: costDimension(actual.project ?? prediction.project),
+      model: costDimension(prediction.model),
+      strategy: costDimension(prediction.strategy),
+    };
+  }).filter(Boolean);
+}
+
+function meanAbsolutePercentageError(pairs) {
+  const usable = pairs.filter((pair) => pair.actual > 0);
+  if (!usable.length) return null;
+  return Number((usable.reduce((sum, pair) => sum + Math.abs(pair.predicted - pair.actual) / pair.actual, 0) / usable.length * 100).toFixed(6));
+}
+
+function handleCostCalibration(xmRoot, url, req) {
+  const filters = costFilters(url);
+  const { period } = filters;
+  const now = new Date();
+  const startDay = isoDateDaysAgo(now, period - 1);
+  const labels = Array.from({ length: period }, (_, index) => isoDateDaysAgo(now, period - 1 - index));
+  const byDay = new Map(labels.map((label) => [label, []]));
+  const pairs = readPredictionCalibration(xmRoot).filter((pair) =>
+    (filters.model === 'all' || pair.model === filters.model)
+    && (filters.strategy === 'all' || pair.strategy === filters.strategy)
+    && (filters.project === 'all' || pair.project === filters.project));
+  for (const pair of pairs) {
+    const timestampMs = new Date(pair.timestamp).getTime();
+    // A machine with a fast clock must not make tomorrow's calibration look
+    // like a current-day regression. Equality is intentionally included: an
+    // observation stamped exactly at the poll's `now` belongs to this result.
+    if (timestampMs > now.getTime()) continue;
+    const day = new Date(timestampMs).toISOString().slice(0, 10);
+    if (day >= startDay && byDay.has(day)) byDay.get(day).push(pair);
+  }
+  const dayStats = labels.map((date) => {
+    const rows = byDay.get(date) || [];
+    const usable = rows.filter((row) => row.actual > 0);
+    return {
+      date,
+      mape_percent: meanAbsolutePercentageError(rows),
+      sample_count: usable.length,
+      zero_actual_count: rows.length - usable.length,
+    };
+  });
+  const lowerBound = now.getTime() - 24 * 60 * 60 * 1000;
+  const last24h = pairs.filter((pair) => {
+    const timestampMs = new Date(pair.timestamp).getTime();
+    return timestampMs >= lowerBound && timestampMs <= now.getTime();
+  });
+  const last24Usable = last24h.filter((pair) => pair.actual > 0);
+  const last24Mape = meanAbsolutePercentageError(last24h);
+  return jsonResponseWithETag({
+    filters,
+    daily: {
+      labels,
+      values: dayStats.map((row) => row.mape_percent),
+      sample_counts: dayStats.map((row) => row.sample_count),
+      zero_actual_counts: dayStats.map((row) => row.zero_actual_count),
+    },
+    last_24h: {
+      mape_percent: last24Mape,
+      sample_count: last24Usable.length,
+      zero_actual_count: last24h.length - last24Usable.length,
+      alert: last24Mape != null && last24Mape > 100,
+    },
+  }, req);
+}
+
+function readJsonObject(filePath, fallback = null) {
+  try { return JSON.parse(readFileSync(filePath, 'utf8')); } catch { return fallback; }
+}
+
+function writeAtomic(filePath, content) {
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(temporary, content, 'utf8');
+    renameSync(temporary, filePath);
+  } finally {
+    try { if (existsSync(temporary)) unlinkSync(temporary); } catch {}
+  }
+}
+
+function readCostJsonlDelta(filePath, offset, fileSize) {
+  const start = Math.max(0, Number(offset) || 0);
+  if (start >= fileSize) return { events: [], endOffset: fileSize };
+  const length = fileSize - start;
+  const buffer = Buffer.allocUnsafe(length);
+  let bytesRead = 0;
+  let fd;
+  try {
+    fd = openSync(filePath, 'r');
+    bytesRead = readSync(fd, buffer, 0, length, start);
+  } catch {
+    return { events: [], endOffset: start };
+  } finally {
+    try { if (fd != null) closeSync(fd); } catch {}
+  }
+
+  // Do not consume an unterminated final record.  An append writer can leave a
+  // torn suffix briefly; retaining its offset lets the next bounded update read
+  // the repaired record exactly once.
+  const completeAt = buffer.subarray(0, bytesRead).lastIndexOf(0x0a);
+  if (completeAt < 0) return { events: [], endOffset: start };
+  const events = [];
+  for (const line of buffer.subarray(0, completeAt + 1).toString('utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line);
+      if (event && typeof event === 'object' && !Array.isArray(event)) events.push(event);
+    } catch { /* malformed complete lines are intentionally skipped */ }
+  }
+  return { events, endOffset: start + completeAt + 1 };
+}
+
+function costDimension(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : 'unknown';
+}
+
+function toDailyCostRow(event) {
+  const cost = event?.cost_usd;
+  if (typeof cost !== 'number' || !Number.isFinite(cost)) return null;
+  const timestamp = new Date(event.timestamp);
+  if (Number.isNaN(timestamp.getTime())) return null;
+  return {
+    date: timestamp.toISOString().slice(0, 10),
+    weekday: timestamp.getUTCDay(),
+    hour: timestamp.getUTCHours(),
+    model: costDimension(event.model),
+    strategy: costDimension(event.strategy),
+    project: costDimension(event.project),
+    role: costDimension(event.role),
+    // Store only a classification bit. `replay_of` can be a correlation id or
+    // other provenance metadata, neither of which belongs in a public
+    // aggregate response or the rollup mirror.
+    is_replay: isReplayCostEvent(event),
+    cost_usd: cost,
+    event_count: 1,
+  };
+}
+
+/**
+ * A replay link is deliberately strict: null, empty, object-shaped, and
+ * unsafe values remain ordinary cost events rather than silently vanishing
+ * from the primary spend total. This matches x-trace's safe trace-id contract
+ * while accepting routing correlation ids that include ':' when supplied by
+ * another producer.
+ */
+function isReplayCostEvent(event) {
+  const replayOf = event?.replay_of;
+  return typeof replayOf === 'string'
+    && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(replayOf)
+    && !replayOf.includes('..');
+}
+
+function eventIdentity(event) {
+  if (typeof event?.machine_id !== 'string' || !event.machine_id
+    || typeof event?.event_id !== 'string' || !event.event_id) return null;
+  return `${event.machine_id}\u0000${event.event_id}`;
+}
+
+function dailyRowKey(row) {
+  return [row.date, row.weekday, row.hour, row.model, row.strategy, row.project, row.role, row.is_replay ? 'replay' : 'primary'].join('\u0000');
+}
+
+function readDailyRollup(filePath) {
+  if (!existsSync(filePath)) return [];
+  const rows = [];
+  try {
+    for (const line of readFileSync(filePath, 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const row = JSON.parse(line);
+        if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(row.date)
+          || !Number.isInteger(row.weekday) || row.weekday < 0 || row.weekday > 6
+          || !Number.isInteger(row.hour) || row.hour < 0 || row.hour > 23
+          || typeof row.cost_usd !== 'number' || !Number.isFinite(row.cost_usd)
+          || typeof row.event_count !== 'number' || !Number.isFinite(row.event_count)) continue;
+        rows.push({
+          date: row.date, weekday: row.weekday, hour: row.hour,
+          model: costDimension(row.model), strategy: costDimension(row.strategy),
+          project: costDimension(row.project), role: costDimension(row.role),
+          is_replay: row.is_replay === true,
+          cost_usd: row.cost_usd, event_count: row.event_count,
+        });
+      } catch { /* malformed/torn daily records are ignored */ }
+    }
+  } catch { return []; }
+  return rows;
+}
+
+function mergeDailyRows(rows, events, seenEventIds = []) {
+  const grouped = new Map(rows.map((row) => [dailyRowKey(row), { ...row }]));
+  const seen = new Set(seenEventIds);
+  for (const event of events) {
+    const identity = eventIdentity(event);
+    if (identity && seen.has(identity)) continue;
+    const row = toDailyCostRow(event);
+    if (!row) continue;
+    if (identity) seen.add(identity);
+    const key = dailyRowKey(row);
+    const prior = grouped.get(key);
+    if (prior) {
+      prior.cost_usd += row.cost_usd;
+      prior.event_count += 1;
+    } else {
+      grouped.set(key, row);
+    }
+  }
+  return {
+    rows: [...grouped.values()].sort((a, b) => dailyRowKey(a).localeCompare(dailyRowKey(b))),
+    seenEventIds: [...seen].sort(),
+  };
+}
+
+function fileIdentity(filePath) {
+  try {
+    const stat = statSync(filePath);
+    return { dev: stat.dev, ino: stat.ino, size: stat.size };
+  } catch { return null; }
+}
+
+function isSameFileIdentity(left, right) {
+  return !!left && !!right && left.dev === right.dev && left.ino === right.ino;
+}
+
+function readCostRollupSnapshot(filePath) {
+  const snapshot = readJsonObject(filePath, null);
+  if (!snapshot || snapshot.version !== COST_ROLLUP_VERSION
+    || !Array.isArray(snapshot.rows) || !Number.isInteger(snapshot.last_byte_offset)
+    || snapshot.last_byte_offset < 0) return null;
+  // Re-parse through the defensive JSONL row adapter, keeping snapshot input
+  // validation identical to the public daily mirror validation.
+  let rows = [];
+  try {
+    // Avoid a second schema implementation: these rows are already objects, so
+    // validate the exact fields inline instead of trusting a corrupted snapshot.
+    rows = snapshot.rows.filter((row) => row && typeof row === 'object'
+      && /^\d{4}-\d{2}-\d{2}$/.test(row.date)
+      && Number.isInteger(row.weekday) && row.weekday >= 0 && row.weekday <= 6
+      && Number.isInteger(row.hour) && row.hour >= 0 && row.hour <= 23
+      && typeof row.cost_usd === 'number' && Number.isFinite(row.cost_usd)
+      && typeof row.event_count === 'number' && Number.isFinite(row.event_count))
+      .map((row) => ({
+        date: row.date, weekday: row.weekday, hour: row.hour,
+        model: costDimension(row.model), strategy: costDimension(row.strategy),
+        project: costDimension(row.project), role: costDimension(row.role),
+        is_replay: row.is_replay === true,
+        cost_usd: row.cost_usd, event_count: row.event_count,
+      }));
+  } catch { return null; }
+  const seenEventIds = Array.isArray(snapshot.seen_event_ids)
+    ? [...new Set(snapshot.seen_event_ids.filter((id) => typeof id === 'string' && id.includes('\u0000')))].sort()
+    : [];
+  return { ...snapshot, rows, seen_event_ids: seenEventIds };
+}
+
+function writeCostRollup(files, snapshot) {
+  mkdirSync(files.metricsDir, { recursive: true });
+  // Cursor, source identity, aggregate rows, and dedup identities move in one
+  // rename. A crash can only leave the old complete snapshot or the new one.
+  writeAtomic(files.snapshot, JSON.stringify(snapshot) + '\n');
+  // daily.jsonl is a best-effort human/sync mirror. It is intentionally written
+  // AFTER the authoritative snapshot, so an interruption cannot double-count.
+  writeDailyMirror(files, snapshot.rows);
+}
+
+function writeDailyMirror(files, rows) {
+  const serialized = rows.map((row) => JSON.stringify(row)).join('\n');
+  writeAtomic(files.daily, serialized ? serialized + '\n' : '');
+}
+
+/**
+ * Keep daily.jsonl in sync using only appended source bytes after startup.
+ * The snapshot is an atomic transaction. It also records inode identity so a
+ * rename-based sessions.jsonl rotation can consume the old file's unseen tail
+ * before moving to the new active file.
+ */
+function ensureCostRollup(xmRoot) {
+  const files = costRollupFiles(xmRoot);
+  if (!files) return [];
+  const source = costMetricsFile(xmRoot);
+  const snapshot = readCostRollupSnapshot(files.snapshot);
+  if (!source) return snapshot?.rows ?? [];
+
+  const active = fileIdentity(source);
+  // appendCostEvent keeps exactly one previous segment at `${filePath}.1`
+  // (rename overwrite) before beginning a new active file. Fresh dashboard
+  // startup must backfill that retained segment before the active file; older
+  // rotations are intentionally outside the writer's retention contract.
+  const rotatedPath = `${source}.1`;
+  const rotated = fileIdentity(rotatedPath);
+  if (!snapshot) {
+    let rows = [];
+    let seenEventIds = [];
+    let retained = null;
+    if (rotated) {
+      const oldDelta = readCostJsonlDelta(rotatedPath, 0, rotated.size);
+      ({ rows, seenEventIds } = mergeDailyRows(rows, oldDelta.events, seenEventIds));
+      retained = { identity: { dev: rotated.dev, ino: rotated.ino }, last_byte_offset: oldDelta.endOffset };
+    }
+    if (active) {
+      const activeDelta = readCostJsonlDelta(source, 0, active.size);
+      ({ rows, seenEventIds } = mergeDailyRows(rows, activeDelta.events, seenEventIds));
+      const next = {
+        version: COST_ROLLUP_VERSION, source,
+        source_identity: { dev: active.dev, ino: active.ino },
+        last_byte_offset: activeDelta.endOffset, source_size: active.size,
+        rotated_identity: retained?.identity ?? null,
+        rotated_last_byte_offset: retained?.last_byte_offset ?? 0,
+        rows, seen_event_ids: seenEventIds, updated_at: new Date().toISOString(),
+      };
+      writeCostRollup(files, next);
+    } else if (rotated) {
+      const next = {
+        version: COST_ROLLUP_VERSION, source, source_identity: null,
+        last_byte_offset: 0, source_size: 0,
+        rotated_identity: retained?.identity ?? null,
+        rotated_last_byte_offset: retained?.last_byte_offset ?? 0,
+        rows, seen_event_ids: seenEventIds, updated_at: new Date().toISOString(),
+      };
+      writeCostRollup(files, next);
+    }
+    return rows;
+  }
+  if (!active) return snapshot.rows;
+  const base = snapshot && snapshot.source === source ? snapshot : null;
+  if (base && isSameFileIdentity(base.source_identity, active)
+    && base.last_byte_offset === active.size) {
+    // Recover the non-authoritative mirror after an interruption between the
+    // snapshot rename and daily.jsonl replacement, without replaying events.
+    if (!existsSync(files.daily)) writeDailyMirror(files, base.rows);
+    return base.rows;
+  }
+
+  let rows = base?.rows ?? [];
+  let seenEventIds = base?.seen_event_ids ?? [];
+  let activeOffset = 0;
+  let mustWrite = !base || !isSameFileIdentity(base.source_identity, active);
+  const retainedBaseline = base && !base.source_identity
+    && isSameFileIdentity(base.rotated_identity, rotated)
+    && base.rotated_last_byte_offset === rotated?.size;
+
+  if (retainedBaseline) {
+    // A crash can land after `sessions.jsonl -> sessions.jsonl.1` but before
+    // appendFileSync creates the new active file. The .1-only snapshot is a
+    // verified baseline; preserve it and consume the new active from byte 0.
+    activeOffset = 0;
+  } else if (base && isSameFileIdentity(base.source_identity, active)
+    && base.last_byte_offset <= active.size) {
+    activeOffset = base.last_byte_offset;
+  } else if (base && !isSameFileIdentity(base.source_identity, active)) {
+    // The old active file was renamed to .1. Consume only its unseen suffix
+    // when its inode matches the cursor identity, then consume the new active
+    // file from zero. This is the rotation-before-poll no-loss path.
+    if (isSameFileIdentity(base.source_identity, rotated) && base.last_byte_offset <= rotated.size) {
+      const oldDelta = readCostJsonlDelta(rotatedPath, base.last_byte_offset, rotated.size);
+      ({ rows, seenEventIds } = mergeDailyRows(rows, oldDelta.events, seenEventIds));
+    } else {
+      // Unknown replacement/truncation cannot be reconciled safely by offset.
+      // Rebuild from the current bounded source rather than risk duplicate spend.
+      rows = [];
+      seenEventIds = [];
+    }
+  } else if (base && base.last_byte_offset > active.size) {
+    // Same inode but truncated in place: a full rebuild is the only safe choice.
+    rows = [];
+    seenEventIds = [];
+    mustWrite = true;
+  }
+
+  const activeDelta = readCostJsonlDelta(source, activeOffset, active.size);
+  if (activeDelta.endOffset === activeOffset && base && !mustWrite) return rows;
+  ({ rows, seenEventIds } = mergeDailyRows(rows, activeDelta.events, seenEventIds));
+  const next = {
+    version: COST_ROLLUP_VERSION,
+    source,
+    source_identity: { dev: active.dev, ino: active.ino },
+    last_byte_offset: activeDelta.endOffset,
+    source_size: active.size,
+    rotated_identity: retainedBaseline ? base.rotated_identity : null,
+    rotated_last_byte_offset: retainedBaseline ? base.rotated_last_byte_offset : 0,
+    rows,
+    seen_event_ids: seenEventIds,
+    updated_at: new Date().toISOString(),
+  };
+  writeCostRollup(files, next);
+  return rows;
+}
+
+function costFilters(url) {
+  const requestedPeriod = Number(url.searchParams.get('period') ?? '30');
+  const period = [7, 30, 90].includes(requestedPeriod) ? requestedPeriod : 30;
+  const value = (name) => {
+    const raw = url.searchParams.get(name);
+    return raw && raw !== 'all' ? raw : 'all';
+  };
+  return { period, model: value('model'), strategy: value('strategy'), project: value('project') };
+}
+
+function isoDateDaysAgo(reference, days) {
+  const date = new Date(Date.UTC(reference.getUTCFullYear(), reference.getUTCMonth(), reference.getUTCDate()));
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
+}
+
+function filterDailyRows(rows, filters, reference = new Date()) {
+  const start = isoDateDaysAgo(reference, filters.period - 1);
+  return rows.filter((row) => row.date >= start
+    && (filters.model === 'all' || row.model === filters.model)
+    && (filters.strategy === 'all' || row.strategy === filters.strategy)
+    && (filters.project === 'all' || row.project === filters.project));
+}
+
+function costSummary(rows) {
+  return {
+    total: Number(rows.reduce((sum, row) => sum + row.cost_usd, 0).toFixed(6)),
+    event_count: rows.reduce((sum, row) => sum + row.event_count, 0),
+  };
+}
+
+function collectCostRows(xmRoot, url) {
+  const filters = costFilters(url);
+  const rows = filterDailyRows(ensureCostRollup(xmRoot), filters);
+  // Primary cost metrics never include replay executions. Consumers that need
+  // to inspect replay spend receive only a separate summary, never the raw
+  // replay linkage that could identify a trace or correlation.
+  return {
+    filters,
+    rows: rows.filter((row) => !row.is_replay),
+    replayRows: rows.filter((row) => row.is_replay),
+  };
+}
+
+function handleCostTimeline(xmRoot, url, req) {
+  const { filters, rows, replayRows } = collectCostRows(xmRoot, url);
+  const labels = Array.from({ length: filters.period }, (_, index) => isoDateDaysAgo(new Date(), filters.period - 1 - index));
+  const valuesByDate = new Map(labels.map((label) => [label, 0]));
+  for (const row of rows) valuesByDate.set(row.date, (valuesByDate.get(row.date) ?? 0) + row.cost_usd);
+  return jsonResponseWithETag({
+    filters,
+    ...costSummary(rows),
+    replay: costSummary(replayRows),
+    daily: { labels, values: labels.map((label) => Number((valuesByDate.get(label) ?? 0).toFixed(6))) },
+  }, req);
+}
+
+function handleCostBreakdown(xmRoot, url, req) {
+  const { filters, rows, replayRows } = collectCostRows(xmRoot, url);
+  const strategyTotals = new Map();
+  const strategyModelTotals = new Map();
+  const models = new Set();
+  for (const row of rows) {
+    strategyTotals.set(row.strategy, (strategyTotals.get(row.strategy) ?? 0) + row.cost_usd);
+    strategyModelTotals.set(`${row.strategy}\u0000${row.model}`, (strategyModelTotals.get(`${row.strategy}\u0000${row.model}`) ?? 0) + row.cost_usd);
+    models.add(row.model);
+  }
+  const strategies = [...strategyTotals.entries()].sort(([a], [b]) => a.localeCompare(b))
+    .map(([label, value]) => ({ label, value: Number(value.toFixed(6)) }));
+  const labels = [...models].sort();
+  return jsonResponseWithETag({
+    filters,
+    ...costSummary(rows),
+    replay: costSummary(replayRows),
+    strategies,
+    strategyBars: {
+      labels,
+      datasets: strategies.map(({ label }) => ({
+        label,
+        values: labels.map((model) => Number((strategyModelTotals.get(`${label}\u0000${model}`) ?? 0).toFixed(6))),
+      })),
+    },
+  }, req);
+}
+
+function handleCostRoleTop(xmRoot, url, req) {
+  const { filters, rows, replayRows } = collectCostRows(xmRoot, url);
+  const totals = new Map();
+  for (const row of rows) totals.set(row.role, (totals.get(row.role) ?? 0) + row.cost_usd);
+  const roles = [...totals.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 10).map(([label, value]) => ({ label, value: Number(value.toFixed(6)) }));
+  return jsonResponseWithETag({ filters, ...costSummary(rows), replay: costSummary(replayRows), roles }, req);
+}
+
+function handleCostHeatmap(xmRoot, url, req) {
+  const { filters, rows, replayRows } = collectCostRows(xmRoot, url);
+  const values = Array.from({ length: 7 }, () => Array(24).fill(0));
+  for (const row of rows) values[row.weekday][row.hour] += row.cost_usd;
+  return jsonResponseWithETag({
+    filters,
+    ...costSummary(rows),
+    replay: costSummary(replayRows),
+    heatmap: { weekdays: COST_WEEKDAYS, values: values.map((day) => day.map((value) => Number(value.toFixed(6)))) },
+  }, req);
+}
+
 function handleCosts(xmRoot, req) {
   const tracesDir = safeJoin(xmRoot, 'traces');
   if (!tracesDir || !existsSync(tracesDir)) {
@@ -2876,6 +3457,9 @@ checkDuplicateInstance();
 // Prime the trace-cost pricing cache from cost-engine before we accept requests,
 // so the synchronous cost handlers read live single-source prices, not a copy.
 await ensureModelPricing();
+// Build the initial daily projection once at startup. Subsequent cost endpoint
+// polls only inspect the source size and process appended complete JSONL rows.
+ensureCostRollup(XM_ROOT);
 
 // ── HTTP Server ─────────────────────────────────────────────────────
 
@@ -3541,6 +4125,21 @@ server = Bun.serve({
       }
 
       // GET /api/costs
+      if (path === '/api/costs/timeline') {
+        return handleCostTimeline(XM_ROOT, url, req);
+      }
+      if (path === '/api/costs/breakdown') {
+        return handleCostBreakdown(XM_ROOT, url, req);
+      }
+      if (path === '/api/costs/role-top') {
+        return handleCostRoleTop(XM_ROOT, url, req);
+      }
+      if (path === '/api/costs/heatmap') {
+        return handleCostHeatmap(XM_ROOT, url, req);
+      }
+      if (path === '/api/costs/calibration') {
+        return handleCostCalibration(XM_ROOT, url, req);
+      }
       if (path === '/api/costs') {
         return handleCosts(XM_ROOT, req);
       }

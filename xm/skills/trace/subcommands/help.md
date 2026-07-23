@@ -12,7 +12,7 @@ Commands:
   stop                           Stop current session and save
   show [session]                 Show trace timeline (default: latest)
   cost [session]                 Show cost breakdown by agent/task
-  replay <session> [--from step] Replay execution from specific step
+  replay <trace> --span <id>     Create deterministic replay artifact + FS snapshot
   diff <session1> <session2>     Compare two trace sessions
   list                           List saved trace sessions
   clean [--older-than 7d]        Clean old trace files
@@ -24,7 +24,7 @@ Examples:
   /xm:trace show
   /xm:trace cost feature-auth-20260325
   /xm:trace diff run-1 run-2
-  /xm:trace replay feature-auth-20260325 --from 3
+  xm trace replay feature-auth-20260325 --span agent-1
   /xm:trace clean --older-than 7d
 ```
 

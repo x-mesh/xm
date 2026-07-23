@@ -10,7 +10,7 @@ import {
   manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, decisionsPath, projectDir,
   resolveProject, findCurrentProject, logDecision, addDecision, appendCostEvent, emitHook,
   parseOptions, renderBar, fmtDuration,
-  estimateTaskCost, costFromTokens, resolveVendorModel, computeTokenActuals,
+  estimateTaskCost, costFromTokens, resolveVendorModel, computeTokenActuals, downgradeBudgetModel,
   gitAutoCommit, gitRollbackTask,
   updateCircuitBreaker, updateBudgetCircuitBreaker, isCircuitOpen, beginHalfOpenProbe, scheduleRetry,
   getCircuitState, resetCircuitBreaker,
@@ -37,6 +37,7 @@ import {
   taskCheckContractHash, taskCheckFingerprint, taskCheckEvidenceStatus, resolveCheckRuntime, REVIEW_DEPTHS,
 } from './build-policy.mjs';
 import { readPlanState, setRequestedAction, validatePlanApproval } from './plan-state.mjs';
+import { appendPredictionActual, ensureTaskPrediction, DEFAULT_PREDICTION_MAX_AGE_MS } from './prediction-calibration.mjs';
 
 // Re-export the expected_files utils so existing importers (tests) that pull them
 // from tasks.mjs keep working after the move to the shared leaf.
@@ -864,6 +865,17 @@ export function taskUpdate(project, args) {
         duration_ms: new Date(taskRef.completed_at) - new Date(taskRef.started_at),
         timestamp: taskRef.completed_at,
       });
+      // Calibration is deliberately a second, dedicated ledger. Only a
+      // token-measured completion is an observation; estimated costs would
+      // compare one estimate with another and manufacture a misleading MAPE.
+      appendPredictionActual({
+        project,
+        taskId: id,
+        completedAt: taskRef.completed_at,
+        actualCostUsd: _actualCost,
+        costSource: _costFields.cost_source,
+        completionId: taskRef.completed_at,
+      });
       // Re-aggregate token actuals after EVERY completion so token-actuals.json
       // stays at least as fresh as the metrics log — loadTokenActuals invalidates
       // actuals whenever metrics are newer, so skipping the estimated case would let
@@ -1494,7 +1506,11 @@ function markTasksRunning(taskData, readyTasks, sharedCfg, project, step) {
   for (const task of readyTasks) {
     if (task.status === TASK_STATES.RUNNING) continue;
     const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
-    const { model, correlationId } = getModelForRoleWithCorrelation(role, task.size, sharedCfg);
+    const routing = getModelForRoleWithCorrelation(role, task.size, sharedCfg);
+    // A downgrade is computed before the hard-cap preflight and is only ever
+    // set for automatic routing.  Explicit assignments remain untouched.
+    const model = task._budget_fallback_model || routing.model;
+    const correlationId = routing.correlationId;
     task._assigned_model = model;
     task._routing_decision_id = correlationId;
     task._estimated_cost = estimateTaskCost(task, model).cost_usd;
@@ -1508,6 +1524,58 @@ function markTasksRunning(taskData, readyTasks, sharedCfg, project, step) {
     emitHook('task:pre-update', { project, step, tasks: readyTasks.map((t) => t.id) });
   }
   return marked;
+}
+
+function predictionMaxAgeMs(config) {
+  const hours = Number(config?.budget?.prediction_max_age_hours);
+  return Number.isFinite(hours) && hours >= 0
+    ? hours * 60 * 60 * 1000
+    : DEFAULT_PREDICTION_MAX_AGE_MS;
+}
+
+/** Apply the documented opus → sonnet → haiku fallback only to auto-routing. */
+function applyBudgetDowngrade(tasks, sharedCfg) {
+  if (sharedCfg?.budget?.fallback !== 'downgrade') return [];
+  const changed = [];
+  for (const task of tasks) {
+    // `_assigned_model` is a user/orchestrator pin from an earlier dispatch;
+    // never silently weaken that explicit choice.
+    if (task._assigned_model) continue;
+    const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
+    const current = getModelForRole(role, task.size, sharedCfg);
+    const fallback = downgradeBudgetModel(current);
+    if (!fallback) continue;
+    task._budget_fallback_model = fallback;
+    changed.push({ task_id: task.id, from: current, to: fallback });
+  }
+  return changed;
+}
+
+/**
+ * Predictions are produced before an Agent plan is emitted, so a blocked run
+ * cannot reach a provider.  This guard intentionally does not create a
+ * reservation: the PreToolUse hook owns the atomic reservation ledger and
+ * runs once per actual Agent dispatch.
+ */
+function preflightPredictions(project, tasks, sharedCfg) {
+  const predictions = [];
+  for (const task of tasks) {
+    const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
+    const model = task._budget_fallback_model || task._assigned_model || getModelForRole(role, task.size, sharedCfg);
+    const prediction = ensureTaskPrediction({
+      project,
+      task,
+      model,
+      maxAgeMs: predictionMaxAgeMs(sharedCfg),
+    });
+    // A prediction writer failure must not turn a task into a free dispatch.
+    // Keep the established size/model estimate as a conservative fallback.
+    const estimate = Number(prediction?.estimate_usd);
+    const cost_usd = Number.isFinite(estimate) && estimate >= 0
+      ? estimate : estimateTaskCost(task, model).cost_usd;
+    predictions.push({ task_id: task.id, model, cost_usd, source: prediction?.source || 'fallback-estimate' });
+  }
+  return predictions;
 }
 
 // Additive vendor-model fields for an execution-plan / consensus / prd spec.
@@ -1925,11 +1993,12 @@ export async function cmdRun(args) {
   // must run here too — it previously guarded only the human path, letting
   // --json runs bypass the configured budget entirely.
   const sharedCfg = loadSharedConfig();
-  const cost = readyTasks.reduce((sum, t) => {
-    const role = t.role || (t.size === 'large' ? 'deep-executor' : 'executor');
-    const model = getModelForRole(role, t.size, sharedCfg);
-    return sum + estimateTaskCost(t, model).cost_usd;
-  }, 0);
+  const downgraded = applyBudgetDowngrade(readyTasks, sharedCfg);
+  const predictions = preflightPredictions(project, readyTasks, sharedCfg);
+  // This is deliberately spent + current task predictions, not a generic
+  // routing estimate.  It is evaluated before markTasksRunning/buildPlanEntry,
+  // therefore before the skill can issue the provider Agent calls.
+  const cost = predictions.reduce((sum, prediction) => sum + prediction.cost_usd, 0);
   // Pass the project through so per-project caps (budget.projects) apply on
   // `run` too — without it only the global budget ever gated this path.
   const budgetStatus = checkBudget(cost, project);
@@ -1995,9 +2064,16 @@ export async function cmdRun(args) {
       tasks: budgetExceeded ? [] : plan,
       parallel: !budgetExceeded && readyTasks.length > 1,
       estimated_cost_usd: Number(cost.toFixed(4)),
+      predictions: predictions.map((prediction) => ({
+        task_id: prediction.task_id,
+        model: prediction.model,
+        predicted_cost_usd: Number(prediction.cost_usd.toFixed(4)),
+        source: prediction.source,
+      })),
       worktree_signal: worktreeSignal,
       review_group: activeGroup,
     };
+    if (downgraded.length) output.fallback = { mode: 'downgrade', tasks: downgraded };
     if (budgetStatus.budget) {
       output.budget = {
         ok: budgetStatus.ok,
@@ -2025,6 +2101,9 @@ export async function cmdRun(args) {
 
   console.log(`  Tasks: ${readyTasks.length} (${readyTasks.length > 1 ? 'parallel' : 'sequential'})`);
   console.log(`  Estimated cost: ${C.yellow}$${cost.toFixed(3)}${C.reset}`);
+  if (downgraded.length) {
+    console.log(`  Budget fallback: ${downgraded.map((row) => `${row.task_id} ${row.from}→${row.to}`).join(', ')}`);
+  }
 
   // Budget check before execution (budgetStatus computed above, shared with --json).
   if (budgetStatus.budget) {
@@ -2353,8 +2432,22 @@ export function cmdDispatch(args) {
   });
 
   // Budget gate — dispatch is lightweight, not budget-exempt.
-  const model = task._assigned_model || getModelForRole(role, size, sharedCfg);
-  const est = estimateTaskCost(task, model);
+  let model = task._assigned_model || getModelForRole(role, size, sharedCfg);
+  // An explicit `--model` is a caller pin.  Only the automatic route may use
+  // the configured cheaper fallback.
+  if (!opts.model && sharedCfg?.budget?.fallback === 'downgrade') {
+    const fallback = downgradeBudgetModel(model);
+    if (fallback) {
+      task._budget_fallback_model = fallback;
+      model = fallback;
+    }
+  }
+  const prediction = ensureTaskPrediction({ project, task, model, maxAgeMs: predictionMaxAgeMs(sharedCfg) });
+  const est = {
+    cost_usd: Number.isFinite(Number(prediction?.estimate_usd)) && Number(prediction.estimate_usd) >= 0
+      ? Number(prediction.estimate_usd)
+      : estimateTaskCost(task, model).cost_usd,
+  };
   const budget = checkBudget(est.cost_usd, project);
   updateBudgetCircuitBreaker(project, budget);
   if (budget.ok === false) {
@@ -2365,11 +2458,12 @@ export function cmdDispatch(args) {
   // Mark RUNNING (metrics lineage) and build the same plan entry cmdRun emits.
   const taskData = readJSON(tasksPath(project));
   const taskRef = taskData.tasks.find((t) => t.id === task.id);
+  if (task._budget_fallback_model) taskRef._budget_fallback_model = task._budget_fallback_model;
   markTasksRunning(taskData, [taskRef], sharedCfg, project, 'dispatch');
-  if (opts.model) {
-    // markTasksRunning routes by role; an explicit --model pin overrides it
-    // (estimate too, so the recorded metric matches what actually runs).
-    taskRef._assigned_model = String(opts.model);
+  if (opts.model || task._budget_fallback_model) {
+    // markTasksRunning routes by role; an explicit --model pin overrides it.
+    // A fallback is already persisted there as the actual assigned model.
+    if (opts.model) taskRef._assigned_model = String(opts.model);
     taskRef._estimated_cost = est.cost_usd;
     writeJSON(tasksPath(project), taskData);
   }

@@ -11,7 +11,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import { spawn } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, mkdtempSync, statSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { SCHEMA } from '../../x-build/lib/config-schema.mjs';
 
@@ -34,9 +34,15 @@ const TEST_PANEL_DONE_RUN = 'panel-api-done-fixture';
 const TEST_CROSS_RUN = 'panel-api-cross-fixture';
 const TEST_CROSS_LIVE_RUN = 'panel-api-cross-live-fixture';
 const TEST_CROSS_STALE_RUN = 'panel-api-cross-stale-fixture';
+const COST_METRICS_PATH = join(XM_ROOT, 'metrics', 'sessions.jsonl');
+const COST_ROTATED_METRICS_PATH = join(XM_ROOT, 'metrics', 'sessions.jsonl.1');
+const COST_DAILY_PATH = join(XM_ROOT, 'metrics', 'daily.jsonl');
+const COST_ROLLUP_SNAPSHOT_PATH = join(XM_ROOT, 'metrics', 'daily.rollup.json');
+const PREDICTION_LOG_PATH = join(XM_ROOT, 'metrics', 'prediction_log.jsonl');
 
 /** Track only the top-level dirs we create so teardown is safe */
 const FIXTURE_ROOTS = [];
+const COST_FILE_BACKUPS = new Map();
 
 function ensureDir(p) {
   mkdirSync(p, { recursive: true });
@@ -46,7 +52,67 @@ function writeJSON(p, data) {
   writeFileSync(p, JSON.stringify(data, null, 2) + '\n');
 }
 
+function backupCostFixtureFile(filePath) {
+  COST_FILE_BACKUPS.set(filePath, existsSync(filePath) ? readFileSync(filePath) : null);
+}
+
+function setupCostFixtures() {
+  for (const filePath of [COST_METRICS_PATH, COST_ROTATED_METRICS_PATH, COST_DAILY_PATH, COST_ROLLUP_SNAPSHOT_PATH, PREDICTION_LOG_PATH]) {
+    backupCostFixtureFile(filePath);
+  }
+  ensureDir(dirname(COST_METRICS_PATH));
+  const now = new Date();
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000);
+  writeFileSync(COST_METRICS_PATH, [
+    JSON.stringify({ type: 'task_complete', timestamp: now.toISOString(), model: 'sonnet', strategy: 'review', project: 'alpha', role: 'executor', cost_usd: 0.2 }),
+    JSON.stringify({ type: 'task_complete', timestamp: now.toISOString(), model: 'opus', strategy: 'debate', project: 'beta', role: 'reviewer', cost_usd: 0.3 }),
+    JSON.stringify({ type: 'task_complete', timestamp: yesterday.toISOString(), model: 'sonnet', strategy: 'review', project: 'alpha', role: 'executor', cost_usd: 0.1 }),
+    JSON.stringify({ type: 'task_complete', timestamp: eightDaysAgo.toISOString(), model: 'haiku', strategy: 'direct', project: 'alpha', role: 'planner', cost_usd: 0.4 }),
+    '{"timestamp":"torn', // no trailing newline: ignored until a later complete append
+  ].join('\n'));
+  try { rmSync(COST_DAILY_PATH, { force: true }); } catch {}
+  try { rmSync(COST_ROLLUP_SNAPSHOT_PATH, { force: true }); } catch {}
+  try { rmSync(COST_ROTATED_METRICS_PATH, { force: true }); } catch {}
+  // Fresh startup must read the retained rotation segment before active log.
+  writeFileSync(COST_ROTATED_METRICS_PATH, JSON.stringify({
+    type: 'task_complete', timestamp: now.toISOString(), model: 'haiku', strategy: 'direct', project: 'archived', role: 'archiver', cost_usd: 0.6,
+  }) + '\n');
+  const nowMs = Date.now();
+  writeFileSync(PREDICTION_LOG_PATH, [
+    JSON.stringify({ type: 'prediction', event_id: 'pred-100', timestamp: new Date(nowMs - 1_000).toISOString(), predicted_cost_usd: 2, project: 'alpha', model: 'sonnet', strategy: 'review' }),
+    JSON.stringify({ type: 'actual', event_id: 'actual-100', prediction_event_id: 'pred-100', timestamp: new Date(nowMs - 900).toISOString(), actual_cost_usd: 1, project: 'alpha' }),
+    JSON.stringify({ type: 'prediction', event_id: 'pred-200', timestamp: new Date(nowMs - 2_000).toISOString(), predicted_cost_usd: 3, project: 'beta', model: 'opus', strategy: 'debate' }),
+    JSON.stringify({ type: 'actual', event_id: 'actual-200', prediction_event_id: 'pred-200', timestamp: new Date(nowMs - 1_900).toISOString(), actual_cost_usd: 1, project: 'beta' }),
+    JSON.stringify({ type: 'prediction', event_id: 'pred-zero', timestamp: new Date(nowMs - 3_000).toISOString(), predicted_cost_usd: 9, project: 'alpha', model: 'sonnet', strategy: 'review' }),
+    JSON.stringify({ type: 'actual', event_id: 'actual-zero', prediction_event_id: 'pred-zero', timestamp: new Date(nowMs - 2_900).toISOString(), actual_cost_usd: 0, project: 'alpha' }),
+    // Clock-skewed future rows must not leak into either today's trend or the
+    // rolling alert. A timestamp at `now` is included by the <= policy above;
+    // this strictly future pair is the regression guard for the opposite edge.
+    JSON.stringify({ type: 'prediction', event_id: 'pred-future', timestamp: new Date(nowMs + 60 * 60 * 1000).toISOString(), predicted_cost_usd: 100, project: 'alpha', model: 'sonnet', strategy: 'review' }),
+    JSON.stringify({ type: 'actual', event_id: 'actual-future', prediction_event_id: 'pred-future', timestamp: new Date(nowMs + 60 * 60 * 1000).toISOString(), actual_cost_usd: 1, project: 'alpha' }),
+    // Duplicate event id, malformed line, and an unterminated record must not
+    // turn an otherwise valid calibration response into a bogus MAPE.
+    JSON.stringify({ type: 'actual', event_id: 'actual-200', prediction_event_id: 'pred-100', timestamp: new Date(nowMs - 1_800).toISOString(), actual_cost_usd: 100 }),
+    '{"type":"actual","event_id":"broken"}',
+    '{"type":"actual","event_id":"torn',
+  ].join('\n'));
+}
+
+function teardownCostFixtures() {
+  for (const [filePath, backup] of COST_FILE_BACKUPS) {
+    if (backup == null) {
+      try { rmSync(filePath, { force: true }); } catch {}
+    } else {
+      mkdirSync(dirname(filePath), { recursive: true });
+      writeFileSync(filePath, backup);
+    }
+  }
+  COST_FILE_BACKUPS.clear();
+}
+
 function setupFixtures() {
+  setupCostFixtures();
   // ── project fixture ──────────────────────────────────────────────
   const projectDir = join(XM_ROOT, 'build', 'projects', TEST_PROJECT_SLUG);
   ensureDir(projectDir);
@@ -246,6 +312,7 @@ function setupFixtures() {
 }
 
 function teardownFixtures() {
+  teardownCostFixtures();
   for (const p of FIXTURE_ROOTS) {
     try { rmSync(p, { recursive: true, force: true }); } catch {}
   }
@@ -747,6 +814,170 @@ describe('GET /api/metrics/sessions', () => {
     const { body } = await getJSON('/api/metrics/sessions?limit=100&offset=0');
     expect(body.total).toBeGreaterThan(0);
     expect(body.data.length).toBe(Math.min(body.limit, body.total - body.offset));
+  });
+});
+
+describe('GET /api/costs/* (daily rollup)', () => {
+  it('fresh startup backfills retained .1 before active sessions and ignores a torn suffix', () => {
+    expect(existsSync(COST_DAILY_PATH)).toBe(true);
+    expect(existsSync(COST_ROLLUP_SNAPSHOT_PATH)).toBe(true);
+    const rows = readFileSync(COST_DAILY_PATH, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+    expect(rows.reduce((total, row) => total + row.cost_usd, 0)).toBeCloseTo(1.6, 6);
+  });
+
+  it('timeline returns filtered 7-day data with a dense daily series', async () => {
+    const { res, body } = await getJSON('/api/costs/timeline?period=7&project=alpha');
+    expect(res.status).toBe(200);
+    expect(body.filters).toEqual({ period: 7, model: 'all', strategy: 'all', project: 'alpha' });
+    expect(body.daily.labels).toHaveLength(7);
+    expect(body.daily.values).toHaveLength(7);
+    expect(body.total).toBeCloseTo(0.3, 6);
+    expect(body.event_count).toBe(2);
+  });
+
+  it('breakdown, role-top, and heatmap return the t4 chart response shapes', async () => {
+    const [breakdown, roles, heatmap] = await Promise.all([
+      getJSON('/api/costs/breakdown?period=30'),
+      getJSON('/api/costs/role-top?period=30'),
+      getJSON('/api/costs/heatmap?period=30'),
+    ]);
+    expect(breakdown.res.status).toBe(200);
+    expect(breakdown.body.strategies.find((row) => row.label === 'review')?.value).toBeCloseTo(0.3, 6);
+    expect(breakdown.body.strategyBars.labels).toContain('sonnet');
+    expect(breakdown.body.strategyBars.datasets.every((set) => set.values.length === breakdown.body.strategyBars.labels.length)).toBe(true);
+
+    expect(roles.res.status).toBe(200);
+    expect(roles.body.roles[0]).toEqual({ label: 'archiver', value: 0.6 });
+
+    expect(heatmap.res.status).toBe(200);
+    expect(heatmap.body.heatmap.weekdays).toEqual(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
+    expect(heatmap.body.heatmap.values).toHaveLength(7);
+    expect(heatmap.body.heatmap.values.every((day) => day.length === 24)).toBe(true);
+    expect(heatmap.body.total).toBeCloseTo(1.6, 6);
+  });
+
+  it('advances the rollup from only a newly completed JSONL suffix', async () => {
+    const stateBefore = JSON.parse(readFileSync(COST_ROLLUP_SNAPSHOT_PATH, 'utf8'));
+    // Finish the deliberately torn record as an invalid-timestamp row, then
+    // append one valid event. The endpoint must retain prior rows and consume
+    // only this suffix; malformed data never makes the request fail.
+    writeFileSync(COST_METRICS_PATH, `\"}\n${JSON.stringify({
+      type: 'task_complete', timestamp: new Date().toISOString(), model: 'haiku', strategy: 'direct', project: 'alpha', role: 'documenter', cost_usd: 0.05,
+    })}\n`, { flag: 'a' });
+    const { res, body } = await getJSON('/api/costs/timeline?period=30');
+    expect(res.status).toBe(200);
+    expect(body.total).toBeCloseTo(1.65, 6);
+    const stateAfter = JSON.parse(readFileSync(COST_ROLLUP_SNAPSHOT_PATH, 'utf8'));
+    expect(stateAfter.last_byte_offset).toBeGreaterThan(stateBefore.last_byte_offset);
+    expect(stateAfter.last_byte_offset).toBe(statSync(COST_METRICS_PATH).size);
+  });
+
+  it('consumes the old active tail before a rename rotation and the new active file after it', async () => {
+    // This row lands after the snapshot cursor and is intentionally NOT polled
+    // before the active log is renamed to .1.
+    writeFileSync(COST_METRICS_PATH, JSON.stringify({
+      type: 'task_complete', timestamp: new Date().toISOString(), model: 'sonnet', strategy: 'review', project: 'alpha', role: 'executor', cost_usd: 0.2,
+    }) + '\n', { flag: 'a' });
+    renameSync(COST_METRICS_PATH, COST_ROTATED_METRICS_PATH);
+    writeFileSync(COST_METRICS_PATH, JSON.stringify({
+      type: 'task_complete', timestamp: new Date().toISOString(), model: 'sonnet', strategy: 'review', project: 'alpha', role: 'executor', cost_usd: 0.1,
+    }) + '\n');
+    const { body } = await getJSON('/api/costs/timeline?period=30');
+    expect(body.total).toBeCloseTo(1.95, 6);
+  });
+
+  it('recovers from a post-snapshot daily mirror interruption without double counting v2 event ids', async () => {
+    // A crash after the snapshot rename but before daily.jsonl is replaced
+    // leaves the mirror absent. The next request must trust the one-file
+    // snapshot, then rebuild the mirror only while applying new records once.
+    rmSync(COST_DAILY_PATH, { force: true });
+    const recovered = await getJSON('/api/costs/timeline?period=30');
+    expect(recovered.body.total).toBeCloseTo(1.95, 6);
+    expect(existsSync(COST_DAILY_PATH)).toBe(true);
+    const duplicate = {
+      type: 'task_complete', timestamp: new Date().toISOString(), model: 'haiku', strategy: 'direct', project: 'alpha', role: 'documenter',
+      machine_id: 'fixture-host', event_id: 'ev-dedup', cost_usd: 0.05,
+    };
+    writeFileSync(COST_METRICS_PATH, `${JSON.stringify(duplicate)}\n${JSON.stringify(duplicate)}\n`, { flag: 'a' });
+    const { body } = await getJSON('/api/costs/timeline?period=30');
+    expect(body.total).toBeCloseTo(2.0, 6);
+  });
+
+  it('preserves a .1-only startup baseline when a new active file appears after rename-before-append crash', async () => {
+    // Simulate: sessions.jsonl was renamed to .1, the process crashed before
+    // appendFileSync recreated sessions.jsonl, then a later process appends B.
+    rmSync(COST_METRICS_PATH, { force: true });
+    rmSync(COST_DAILY_PATH, { force: true });
+    rmSync(COST_ROLLUP_SNAPSHOT_PATH, { force: true });
+    writeFileSync(COST_ROTATED_METRICS_PATH, JSON.stringify({
+      type: 'task_complete', timestamp: new Date().toISOString(), model: 'haiku', strategy: 'direct', project: 'rotation-crash', role: 'executor', cost_usd: 0.4,
+    }) + '\n');
+    const onlyRotated = await getJSON('/api/costs/timeline?period=30');
+    expect(onlyRotated.body.total).toBeCloseTo(0.4, 6);
+    writeFileSync(COST_METRICS_PATH, JSON.stringify({
+      type: 'task_complete', timestamp: new Date().toISOString(), model: 'sonnet', strategy: 'review', project: 'rotation-crash', role: 'reviewer', cost_usd: 0.2,
+    }) + '\n');
+    const { body } = await getJSON('/api/costs/timeline?period=30');
+    expect(body.total).toBeCloseTo(0.6, 6);
+    // A second poll must remain idempotent rather than re-appending A or B.
+    const repeated = await getJSON('/api/costs/timeline?period=30');
+    expect(repeated.body.total).toBeCloseTo(0.6, 6);
+  });
+
+  it('keeps valid replay cost out of every primary aggregate and exposes only a separate safe summary', async () => {
+    const timestamp = new Date().toISOString();
+    const event = (cost_usd, replay_of) => ({
+      type: 'task_complete', timestamp, model: 'sonnet', strategy: 'review',
+      project: 'replay-fixture', role: 'executor', cost_usd,
+      ...(replay_of !== undefined ? { replay_of } : {}),
+    });
+    // A valid replay link is separate. Null, empty, object, and unsafe values
+    // must remain primary events so malformed metadata cannot hide spend.
+    writeFileSync(COST_METRICS_PATH, [
+      event(0.2), event(0.9, 'original-trace-01'), event(0.3, null),
+      event(0.4, ''), event(0.5, { trace_id: 'original-trace-01' }), event(0.6, 'unsafe replay id'),
+    ].map(JSON.stringify).join('\n') + '\n', { flag: 'a' });
+
+    const query = 'period=30&project=replay-fixture&model=sonnet&strategy=review';
+    const [timeline, breakdown, roles, heatmap] = await Promise.all([
+      getJSON(`/api/costs/timeline?${query}`), getJSON(`/api/costs/breakdown?${query}`),
+      getJSON(`/api/costs/role-top?${query}`), getJSON(`/api/costs/heatmap?${query}`),
+    ]);
+    for (const response of [timeline, breakdown, roles, heatmap]) {
+      expect(response.body.total).toBeCloseTo(2.0, 6);
+      expect(response.body.event_count).toBe(5);
+      expect(response.body.replay).toEqual({ total: 0.9, event_count: 1 });
+      expect(JSON.stringify(response.body)).not.toContain('original-trace-01');
+    }
+    expect(timeline.body.daily.values.reduce((sum, value) => sum + value, 0)).toBeCloseTo(2.0, 6);
+    expect(breakdown.body.strategies).toEqual([{ label: 'review', value: 2.0 }]);
+    expect(roles.body.roles).toEqual([{ label: 'executor', value: 2.0 }]);
+    expect(heatmap.body.heatmap.values.flat().reduce((sum, value) => sum + value, 0)).toBeCloseTo(2.0, 6);
+  });
+});
+
+describe('GET /api/costs/calibration', () => {
+  it('returns UTC daily MAPE, includes the now boundary, and excludes future/torn/duplicate/zero-denominator records', async () => {
+    const { res, body } = await getJSON('/api/costs/calibration?period=7');
+    expect(res.status).toBe(200);
+    expect(body.daily.labels).toHaveLength(7);
+    const today = new Date().toISOString().slice(0, 10);
+    const index = body.daily.labels.indexOf(today);
+    expect(body.daily.values[index]).toBeCloseTo(150, 6); // (100% + 200%) / 2; future 9900% is excluded
+    expect(body.daily.sample_counts[index]).toBe(2);
+    expect(body.daily.zero_actual_counts[index]).toBe(1);
+    expect(body.last_24h).toEqual({ mape_percent: 150, sample_count: 2, zero_actual_count: 1, alert: true });
+  });
+
+  it('applies Cost dashboard dimension filters and excludes legacy rows with unknown dimensions from a specific filter', async () => {
+    const { body } = await getJSON('/api/costs/calibration?period=7&project=alpha&model=sonnet&strategy=review');
+    const today = new Date().toISOString().slice(0, 10);
+    const index = body.daily.labels.indexOf(today);
+    expect(body.filters).toEqual({ period: 7, model: 'sonnet', strategy: 'review', project: 'alpha' });
+    expect(body.daily.values[index]).toBeCloseTo(100, 6);
+    expect(body.daily.sample_counts[index]).toBe(1);
+    expect(body.daily.zero_actual_counts[index]).toBe(1);
+    expect(body.last_24h).toEqual({ mape_percent: 100, sample_count: 1, zero_actual_count: 1, alert: false });
   });
 });
 

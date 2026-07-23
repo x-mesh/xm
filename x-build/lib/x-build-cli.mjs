@@ -20,6 +20,7 @@ import { cmdAlias, cmdDemo, cmdWatch, cmdMetrics, cmdMode, cmdContext, cmdPhaseC
 import { cmdRelease } from './x-build/release.mjs';
 import { cmdGatePanel } from './x-build/gate-panel.mjs';
 import { cmdWorktrees, cmdReviewIntegration } from './x-build/worktrees.mjs';
+import { cmdCostCache } from './x-build/cost-cache.mjs';
 
 // Skip top-level execution when imported by xm-server
 if (process.env.XKIT_SERVER !== '1') {
@@ -92,8 +93,9 @@ switch (cmd) {
   case 'forecast':      cmdForecast(args); break;
   case 'cost':
     if (args[0] === 'predict') cmdCostPredict(args.slice(1));
+    else if (args[0] === 'cache') cmdCostCache(args.slice(1));
     else {
-      console.error('Usage: xm cost predict <task-description> [--role executor] [--strategy name] [--size small|medium|large]');
+      console.error('Usage: xm cost predict <task-description> [--role executor] [--strategy name] [--size small|medium|large]\n       xm cost cache gc [--dry-run] [--model model] [--ttl-days days]');
       process.exitCode = 1;
     }
     break;

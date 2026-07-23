@@ -7003,7 +7003,10 @@ function route() {
   _pollSequence++;
   _lastAppHtml = null;  // invalidate paint cache on navigation so a returning view re-renders past its loading placeholder (P2)
   const path = getPath();
-  if (path !== '/cost') destroyCostDashboardCharts();
+  if (path !== '/cost') {
+    stopCostDashboard();
+    destroyCostDashboardCharts();
+  }
   updateActiveNav(path);
 
   for (const { pattern, handler } of ROUTES) {
@@ -7189,10 +7192,22 @@ fetchJSON('/api/health').then(h => {
   nav.appendChild(btn);
 })();
 
-// ── Cost dashboard (t4 mock visualisation) ─────────────────────────
-// This route intentionally has no fetch. t5 owns the live /api/costs/* data
-// contract; #/costs below stays as the legacy live summary until that lands.
+// ── Cost dashboard ─────────────────────────────────────────────────
+
+const COST_REPLAY_TOGGLE_KEY = 'xm-cost-show-replays';
+
+function readCostReplayToggle() {
+  try { return localStorage.getItem(COST_REPLAY_TOGGLE_KEY) === 'true'; } catch { return false; }
+}
+
+function writeCostReplayToggle(value) {
+  try { localStorage.setItem(COST_REPLAY_TOGGLE_KEY, String(Boolean(value))); } catch { /* private mode */ }
+}
+// Live chart data comes from the t5 /api/costs/* rollup endpoints. The server
+// polls its compact daily projection, never the raw sessions.jsonl log.
 const costDashboardCharts = new Map();
+let stopCostDashboardPolling = null;
+let lastCostDashboardModel = null;
 
 function destroyCostDashboardCharts() {
   for (const chart of costDashboardCharts.values()) chart.destroy();
@@ -7316,53 +7331,117 @@ function renderCostDashboardCharts(model) {
     data: { labels: model.roles.map(({ label }) => label), datasets: [{ label: 'Cost', data: model.roles.map(({ value }) => value), backgroundColor: palette.series[0] || palette.line }] },
     options: { ...common, indexAxis: 'y', plugins: { ...common.plugins, legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { callback: (value) => `$${value}` } } } },
   });
+  renderCostChart('cost-mape-chart', {
+    type: 'line',
+    data: {
+      labels: model.calibration.daily.labels.map((day) => day.slice(5)),
+      datasets: [{ label: 'MAPE', data: model.calibration.daily.values, borderColor: palette.series[2] || palette.line, backgroundColor: colorWithAlpha(palette.series[2] || palette.line, 0.12), fill: true, spanGaps: false, tension: 0.2, pointRadius: 2 }],
+    },
+    options: { ...common, scales: { y: { beginAtZero: true, ticks: { callback: (value) => `${value}%` } }, x: { ticks: { maxTicksLimit: 8 } } } },
+  });
   renderCostHeatmap(model, palette);
 }
 
+function stopCostDashboard() {
+  if (stopCostDashboardPolling) stopCostDashboardPolling();
+  stopCostDashboardPolling = null;
+  lastCostDashboardModel = null;
+}
+
 function renderCostDashboard(initialFilters = {}) {
+  stopCostDashboard();
   const app = document.getElementById('app');
-  const { makeCostMockEvents, buildCostChartModel } = globalThis.XMRender;
-  // One captured clock serves generation and every filter recomputation. Without
-  // it, a tab open across UTC midnight could pair one day's mock events with a
-  // different rolling window.
-  const reference = new Date();
-  const events = makeCostMockEvents(reference);
   const filters = { period: '30', model: 'all', strategy: 'all', project: 'all', ...initialFilters };
+  let showReplayCost = readCostReplayToggle();
   const options = (values, selected) => values.map((value) => `<option value="${value}"${selected === value ? ' selected' : ''}>${value}</option>`).join('');
   app.innerHTML = `
-    <div class="view-header"><h1>Cost</h1><p>Mock dataset. Live cost API wiring follows in t5.</p></div>
+    <div class="view-header"><h1>Cost</h1><p>Live cost events · UTC rollup</p></div>
     <form class="cost-filter-bar" id="cost-filters" aria-label="Cost dashboard filters">
       <label>Period<select name="period"><option value="7"${filters.period === '7' ? ' selected' : ''}>Last 7 days</option><option value="30"${filters.period === '30' ? ' selected' : ''}>Last 30 days</option><option value="90"${filters.period === '90' ? ' selected' : ''}>Last 90 days</option></select></label>
       <label>Model<select name="model"><option value="all"${filters.model === 'all' ? ' selected' : ''}>All models</option>${options(['haiku', 'sonnet', 'opus'], filters.model)}</select></label>
       <label>Strategy<select name="strategy"><option value="all"${filters.strategy === 'all' ? ' selected' : ''}>All strategies</option>${options(['direct', 'review', 'debate', 'tournament'], filters.strategy)}</select></label>
       <label>Project<select name="project"><option value="all"${filters.project === 'all' ? ' selected' : ''}>All projects</option>${options(['x-build', 'x-panel', 'x-dashboard'], filters.project)}</select></label>
+      <label class="cost-replay-toggle"><input type="checkbox" name="show_replays"${showReplayCost ? ' checked' : ''} aria-describedby="cost-replay-help">Show replay cost separately</label>
     </form>
+    <p class="sr-only" id="cost-replay-help">Replay cost is excluded from primary totals and charts. This option shows its separate aggregate.</p>
     <p class="cost-filter-status text-muted" id="cost-filter-status" aria-live="polite"></p>
+    <p class="cost-filter-status" id="cost-calibration-alert" aria-live="polite"></p>
     <section class="cost-chart-grid" aria-label="Cost visualisations">
       <figure class="card cost-chart-card"><figcaption><strong>Daily cost</strong><span>line · UTC day</span></figcaption><div class="cost-canvas"><canvas id="cost-daily-chart" role="img" aria-label="Daily cost line chart"></canvas></div></figure>
       <figure class="card cost-chart-card"><figcaption><strong>Strategy by model</strong><span>stacked bar</span></figcaption><div class="cost-canvas"><canvas id="cost-strategy-chart" role="img" aria-label="Strategy cost stacked bar chart"></canvas></div></figure>
       <figure class="card cost-chart-card"><figcaption><strong>Top roles</strong><span>top 10 · horizontal bar</span></figcaption><div class="cost-canvas"><canvas id="cost-role-chart" role="img" aria-label="Top ten roles by cost horizontal bar chart"></canvas></div></figure>
+      <figure class="card cost-chart-card"><figcaption><strong>Prediction calibration</strong><span>daily MAPE · UTC completion day</span></figcaption><div class="cost-canvas"><canvas id="cost-mape-chart" role="img" aria-label="Daily prediction MAPE line chart"></canvas></div></figure>
       <figure class="card cost-chart-card"><figcaption><strong>Weekday × hour</strong><span>UTC heatmap</span></figcaption><canvas id="cost-heatmap-chart" role="img" aria-label="Cost by weekday and hour heatmap"></canvas><div class="sr-only" id="cost-heatmap-summary"></div></figure>
     </section>`;
 
   const form = document.getElementById('cost-filters');
-  const update = () => {
-    const model = buildCostChartModel(events, filters, reference);
-    document.getElementById('cost-filter-status').textContent = `${model.events.length} mock calls · ${costMoney(model.total)} total`;
-    document.getElementById('cost-heatmap-summary').textContent = `Heatmap has ${model.events.length} filtered mock calls across UTC weekday and hour.`;
+  const status = document.getElementById('cost-filter-status');
+  const calibrationAlert = document.getElementById('cost-calibration-alert');
+  const params = () => new URLSearchParams(filters).toString();
+  const refresh = async () => {
+    const query = params();
+    status.textContent = lastCostDashboardModel ? 'Refreshing live rollup…' : 'Loading live rollup…';
+    const [timeline, breakdown, roleTop, heatmap, calibration] = await Promise.all([
+      fetchJSON(apiUrl(`/costs/timeline?${query}`)),
+      fetchJSON(apiUrl(`/costs/breakdown?${query}`)),
+      fetchJSON(apiUrl(`/costs/role-top?${query}`)),
+      fetchJSON(apiUrl(`/costs/heatmap?${query}`)),
+      fetchJSON(apiUrl(`/costs/calibration?${query}`)),
+    ]);
+    if (getPath() !== '/cost') return;
+    const failed = [timeline, breakdown, roleTop, heatmap, calibration].find((result) => result?.error);
+    if (failed) {
+      status.textContent = `Live cost API error: ${failed.message || failed.error}`;
+      return;
+    }
+    const model = {
+      total: timeline.total ?? 0,
+      event_count: timeline.event_count ?? 0,
+      replay: timeline.replay ?? { total: 0, event_count: 0 },
+      daily: timeline.daily,
+      strategyBars: breakdown.strategyBars,
+      roles: roleTop.roles,
+      heatmap: heatmap.heatmap,
+      calibration,
+    };
+    if (!model.daily || !model.strategyBars || !model.roles || !model.heatmap || !model.calibration?.daily) {
+      status.textContent = 'Live cost API returned an incomplete chart payload.';
+      return;
+    }
+    lastCostDashboardModel = model;
+    const replayStatus = showReplayCost
+      ? ` · ${model.replay.event_count || 0} replay calls · ${costMoney(model.replay.total || 0)} replay cost (excluded)`
+      : '';
+    status.textContent = `${model.event_count} live calls · ${costMoney(model.total)} total${replayStatus}`;
+    const calibration24h = model.calibration.last_24h || {};
+    if (calibration24h.alert) {
+      calibrationAlert.textContent = `Prediction calibration alert: ${Number(calibration24h.mape_percent).toFixed(1)}% MAPE in the last 24h.`;
+      calibrationAlert.className = 'cost-filter-status text-error';
+    } else if (calibration24h.mape_percent != null) {
+      calibrationAlert.textContent = `Prediction MAPE: ${Number(calibration24h.mape_percent).toFixed(1)}% in the last 24h (${calibration24h.sample_count || 0} measured completions).`;
+      calibrationAlert.className = 'cost-filter-status text-muted';
+    } else {
+      calibrationAlert.textContent = 'Prediction MAPE: no non-zero measured completions in the last 24h.';
+      calibrationAlert.className = 'cost-filter-status text-muted';
+    }
+    document.getElementById('cost-heatmap-summary').textContent = `Heatmap has ${model.event_count} filtered live calls across UTC weekday and hour.`;
     renderCostDashboardCharts(model);
   };
   form.addEventListener('change', (event) => {
+    if (event.target.name === 'show_replays') {
+      showReplayCost = event.target.checked;
+      writeCostReplayToggle(showReplayCost);
+      refresh();
+      return;
+    }
     filters[event.target.name] = event.target.value;
-    update();
+    refresh();
   });
-  update();
+  stopCostDashboardPolling = startPolling(refresh, 5000);
 }
 
 function refreshCostDashboardForTheme() {
-  const form = document.getElementById('cost-filters');
-  if (!form) return;
-  renderCostDashboard(Object.fromEntries(new FormData(form)));
+  if (lastCostDashboardModel) renderCostDashboardCharts(lastCostDashboardModel);
 }
 
 // ── Costs page + cost-by-role stacked area (legacy live summary) ───────────

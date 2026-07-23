@@ -16,6 +16,7 @@ import {
   readdirSync,
   exitFail,
 } from './core.mjs';
+import { appendPredictionLog } from './prediction-calibration.mjs';
 import { taskList, vendorModelFields } from './tasks.mjs';
 import { stepsStatus, computeSteps } from './tasks.mjs';
 import { savePlanIntent, markPlanReady, validatePlanApproval, readPlanState } from './plan-state.mjs';
@@ -1152,9 +1153,25 @@ export function cmdForecast(args) {
 
 export function cmdCostPredict(args) {
   const { opts, positional } = parseOptions(args);
-  const description = positional.join(' ').trim();
+  let project = null;
+  let taskId = typeof opts['task-id'] === 'string' ? opts['task-id'] : null;
+  let description = positional.join(' ').trim();
+  if (taskId) {
+    project = resolveProject(null);
+    const task = readJSON(tasksPath(project))?.tasks?.find((row) => row.id === taskId);
+    if (!task) {
+      console.error(`xm cost predict: task "${taskId}" not found in project "${project}"`);
+      process.exitCode = 1;
+      return;
+    }
+    // The task id is the durable correlation contract. Prefer the stored name
+    // so an accidental shell quoting change cannot make a prediction impossible
+    // to correlate later; a supplied description is still allowed for ad hoc
+    // refinement and is never persisted to the calibration ledger.
+    description = description || task.description || task.name || '';
+  }
   if (!description) {
-    console.error('Usage: xm cost predict <task-description> [--role executor] [--strategy name] [--size small|medium|large] [--model sonnet]');
+    console.error('Usage: xm cost predict <task-description> [--task-id t1] [--role executor] [--strategy name] [--size small|medium|large] [--model sonnet]');
     process.exitCode = 1;
     return;
   }
@@ -1165,14 +1182,17 @@ export function cmdCostPredict(args) {
     return;
   }
 
-  const prediction = predictTaskCost({
+  const query = {
     description,
     role: opts.role || 'executor',
     strategy: opts.strategy || null,
     size,
     model: opts.model || 'sonnet',
-  });
+  };
+  const prediction = predictTaskCost(query);
+  appendPredictionLog({ project, taskId, prediction, query });
   console.log(formatCostPrediction(prediction));
+  if (!taskId) console.log(`${C.dim}Use --task-id <id> to include this prediction in completion calibration.${C.reset}`);
   if (prediction.source === 'heuristic') {
     console.log(`${C.dim}No measured actual-cost samples yet; showing the cold-start heuristic.${C.reset}`);
   }

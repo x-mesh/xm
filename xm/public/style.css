@@ -1220,6 +1220,9 @@ body.theme-light .sidebar-search-input { background: #fff; border-color: #ccc; c
 }
 .cost-filter-bar select:hover { border-color: var(--accent); }
 .cost-filter-bar select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cost-filter-bar .cost-replay-toggle { display: flex; align-items: center; gap: 8px; letter-spacing: normal; text-transform: none; cursor: pointer; }
+.cost-filter-bar .cost-replay-toggle input { width: 16px; height: 16px; accent-color: var(--accent); }
+.cost-filter-bar .cost-replay-toggle input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .cost-filter-status { min-height: 20px; margin: 0 0 12px; font: 11px var(--font-mono); }
 .cost-chart-grid {
   display: grid;
