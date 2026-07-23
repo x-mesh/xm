@@ -6938,6 +6938,7 @@ const ROUTES = [
   { pattern: /^\/memory\/(.+)$/, handler: (m) => renderMemoryDetail(decodeURIComponent(m[1])) },
   { pattern: /^\/reviews$/, handler: () => renderReviewsList() },
   { pattern: /^\/reviews\/(.+)$/, handler: (m) => renderReviewDetail(decodeURIComponent(m[1])) },
+  { pattern: /^\/cost$/, handler: () => renderCostDashboard() },
   { pattern: /^\/costs$/, handler: () => renderCostsPage() },
   { pattern: /^\/eval$/, handler: () => renderEvalList() },
   { pattern: /^\/eval\/([^/]+)\/(.+)$/, handler: (m) => renderEvalDetail(decodeURIComponent(m[1]), decodeURIComponent(m[2])) },
@@ -7002,6 +7003,7 @@ function route() {
   _pollSequence++;
   _lastAppHtml = null;  // invalidate paint cache on navigation so a returning view re-renders past its loading placeholder (P2)
   const path = getPath();
+  if (path !== '/cost') destroyCostDashboardCharts();
   updateActiveNav(path);
 
   for (const { pattern, handler } of ROUTES) {
@@ -7182,11 +7184,188 @@ fetchJSON('/api/health').then(h => {
     localStorage.setItem('xm-theme', isLight ? 'light' : 'dark');
     btn.textContent = isLight ? '● DARK' : '◐ LIGHT';
     btn.setAttribute('aria-label', isLight ? 'Switch to dark theme' : 'Switch to light theme');
+    if (getPath() === '/cost') refreshCostDashboardForTheme();
   });
   nav.appendChild(btn);
 })();
 
-// ── Costs page + cost-by-role stacked area ─────────────────────────
+// ── Cost dashboard (t4 mock visualisation) ─────────────────────────
+// This route intentionally has no fetch. t5 owns the live /api/costs/* data
+// contract; #/costs below stays as the legacy live summary until that lands.
+const costDashboardCharts = new Map();
+
+function destroyCostDashboardCharts() {
+  for (const chart of costDashboardCharts.values()) chart.destroy();
+  costDashboardCharts.clear();
+}
+
+function costComputedStyles() {
+  // Theme overrides live on body.theme-light, so reading documentElement would
+  // inherit the dark :root values even after the user switches theme.
+  return getComputedStyle(document.body || document.documentElement);
+}
+
+function configureCostChartTheme() {
+  const styles = costComputedStyles();
+  const palette = {
+    line: styles.getPropertyValue('--chart-line').trim() || '#FFAB40',
+    series: ['--chart-series-1', '--chart-series-2', '--chart-series-3', '--chart-series-4']
+      .map((token) => styles.getPropertyValue(token).trim())
+      .filter(Boolean),
+    heatmapRgb: styles.getPropertyValue('--chart-heatmap-rgb').trim() || '255, 171, 64',
+  };
+  if (window.Chart) {
+    Chart.defaults.color = styles.getPropertyValue('--text-muted').trim() || '#B0BEC5';
+    Chart.defaults.borderColor = '#444';
+  }
+  return palette;
+}
+
+function colorWithAlpha(hex, alpha) {
+  const match = /^#([0-9a-f]{6})$/i.exec(hex || '');
+  if (!match) return hex;
+  const value = match[1];
+  return `rgba(${parseInt(value.slice(0, 2), 16)}, ${parseInt(value.slice(2, 4), 16)}, ${parseInt(value.slice(4, 6), 16)}, ${alpha})`;
+}
+
+function costMoney(value) {
+  return `$${Number(value || 0).toFixed(3)}`;
+}
+
+function renderCostChart(id, config) {
+  const canvas = document.getElementById(id);
+  if (!canvas || !window.Chart) return;
+  // Chart.js also guards its own registry; this map owns our re-render lifecycle.
+  window.Chart.getChart(canvas)?.destroy();
+  const chart = new Chart(canvas, config);
+  costDashboardCharts.set(id, chart);
+}
+
+function renderCostHeatmap(model, palette) {
+  const canvas = document.getElementById('cost-heatmap-chart');
+  if (!canvas) return;
+  const context = canvas.getContext('2d');
+  if (!context) return;
+  const pixelRatio = window.devicePixelRatio || 1;
+  const width = Math.max(canvas.clientWidth || 620, 320);
+  const height = 250;
+  canvas.width = Math.round(width * pixelRatio);
+  canvas.height = Math.round(height * pixelRatio);
+  canvas.style.height = `${height}px`;
+  context.scale(pixelRatio, pixelRatio);
+
+  const styles = costComputedStyles();
+  const bg = styles.getPropertyValue('--surface').trim() || '#263238';
+  const text = styles.getPropertyValue('--text-muted').trim() || '#B0BEC5';
+  const values = model.heatmap.values.flat();
+  const maximum = Math.max(...values, 0.0001);
+  const padLeft = 38;
+  const padTop = 24;
+  const padRight = 4;
+  const padBottom = 8;
+  const cellWidth = (width - padLeft - padRight) / 24;
+  const cellHeight = (height - padTop - padBottom) / 7;
+  context.fillStyle = bg;
+  context.fillRect(0, 0, width, height);
+  context.font = '10px monospace';
+  context.textBaseline = 'middle';
+  context.fillStyle = text;
+  for (let hour = 0; hour < 24; hour += 3) {
+    context.fillText(String(hour).padStart(2, '0'), padLeft + hour * cellWidth + 2, 10);
+  }
+  model.heatmap.weekdays.forEach((weekday, day) => {
+    const y = padTop + day * cellHeight;
+    context.fillStyle = text;
+    context.fillText(weekday, 0, y + cellHeight / 2);
+    for (let hour = 0; hour < 24; hour++) {
+      const value = model.heatmap.values[day][hour];
+      const alpha = value ? 0.18 + 0.82 * (value / maximum) : 0.04;
+      context.fillStyle = `rgba(${palette.heatmapRgb}, ${alpha.toFixed(3)})`;
+      context.fillRect(padLeft + hour * cellWidth + 1, y + 1, Math.max(1, cellWidth - 2), Math.max(1, cellHeight - 2));
+    }
+  });
+}
+
+function renderCostDashboardCharts(model) {
+  destroyCostDashboardCharts();
+  const palette = configureCostChartTheme();
+  const common = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    plugins: { legend: { labels: { boxWidth: 10, font: { family: 'var(--font-mono)', size: 10 } } } },
+  };
+  renderCostChart('cost-daily-chart', {
+    type: 'line',
+    data: {
+      labels: model.daily.labels.map((day) => day.slice(5)),
+      datasets: [{ label: 'Cost', data: model.daily.values, borderColor: palette.line, backgroundColor: colorWithAlpha(palette.line, 0.16), fill: true, tension: 0.2, pointRadius: 2 }],
+    },
+    options: { ...common, scales: { y: { beginAtZero: true, ticks: { callback: (value) => `$${value}` } }, x: { ticks: { maxTicksLimit: 8 } } } },
+  });
+  renderCostChart('cost-strategy-chart', {
+    type: 'bar',
+    data: {
+      labels: model.strategyBars.labels,
+      datasets: model.strategyBars.datasets.map((dataset, index) => ({ label: dataset.label, data: dataset.values, backgroundColor: palette.series[index % palette.series.length] || palette.line })),
+    },
+    options: { ...common, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { callback: (value) => `$${value}` } } } },
+  });
+  renderCostChart('cost-role-chart', {
+    type: 'bar',
+    data: { labels: model.roles.map(({ label }) => label), datasets: [{ label: 'Cost', data: model.roles.map(({ value }) => value), backgroundColor: palette.series[0] || palette.line }] },
+    options: { ...common, indexAxis: 'y', plugins: { ...common.plugins, legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { callback: (value) => `$${value}` } } } },
+  });
+  renderCostHeatmap(model, palette);
+}
+
+function renderCostDashboard(initialFilters = {}) {
+  const app = document.getElementById('app');
+  const { makeCostMockEvents, buildCostChartModel } = globalThis.XMRender;
+  // One captured clock serves generation and every filter recomputation. Without
+  // it, a tab open across UTC midnight could pair one day's mock events with a
+  // different rolling window.
+  const reference = new Date();
+  const events = makeCostMockEvents(reference);
+  const filters = { period: '30', model: 'all', strategy: 'all', project: 'all', ...initialFilters };
+  const options = (values, selected) => values.map((value) => `<option value="${value}"${selected === value ? ' selected' : ''}>${value}</option>`).join('');
+  app.innerHTML = `
+    <div class="view-header"><h1>Cost</h1><p>Mock dataset. Live cost API wiring follows in t5.</p></div>
+    <form class="cost-filter-bar" id="cost-filters" aria-label="Cost dashboard filters">
+      <label>Period<select name="period"><option value="7"${filters.period === '7' ? ' selected' : ''}>Last 7 days</option><option value="30"${filters.period === '30' ? ' selected' : ''}>Last 30 days</option><option value="90"${filters.period === '90' ? ' selected' : ''}>Last 90 days</option></select></label>
+      <label>Model<select name="model"><option value="all"${filters.model === 'all' ? ' selected' : ''}>All models</option>${options(['haiku', 'sonnet', 'opus'], filters.model)}</select></label>
+      <label>Strategy<select name="strategy"><option value="all"${filters.strategy === 'all' ? ' selected' : ''}>All strategies</option>${options(['direct', 'review', 'debate', 'tournament'], filters.strategy)}</select></label>
+      <label>Project<select name="project"><option value="all"${filters.project === 'all' ? ' selected' : ''}>All projects</option>${options(['x-build', 'x-panel', 'x-dashboard'], filters.project)}</select></label>
+    </form>
+    <p class="cost-filter-status text-muted" id="cost-filter-status" aria-live="polite"></p>
+    <section class="cost-chart-grid" aria-label="Cost visualisations">
+      <figure class="card cost-chart-card"><figcaption><strong>Daily cost</strong><span>line · UTC day</span></figcaption><div class="cost-canvas"><canvas id="cost-daily-chart" role="img" aria-label="Daily cost line chart"></canvas></div></figure>
+      <figure class="card cost-chart-card"><figcaption><strong>Strategy by model</strong><span>stacked bar</span></figcaption><div class="cost-canvas"><canvas id="cost-strategy-chart" role="img" aria-label="Strategy cost stacked bar chart"></canvas></div></figure>
+      <figure class="card cost-chart-card"><figcaption><strong>Top roles</strong><span>top 10 · horizontal bar</span></figcaption><div class="cost-canvas"><canvas id="cost-role-chart" role="img" aria-label="Top ten roles by cost horizontal bar chart"></canvas></div></figure>
+      <figure class="card cost-chart-card"><figcaption><strong>Weekday × hour</strong><span>UTC heatmap</span></figcaption><canvas id="cost-heatmap-chart" role="img" aria-label="Cost by weekday and hour heatmap"></canvas><div class="sr-only" id="cost-heatmap-summary"></div></figure>
+    </section>`;
+
+  const form = document.getElementById('cost-filters');
+  const update = () => {
+    const model = buildCostChartModel(events, filters, reference);
+    document.getElementById('cost-filter-status').textContent = `${model.events.length} mock calls · ${costMoney(model.total)} total`;
+    document.getElementById('cost-heatmap-summary').textContent = `Heatmap has ${model.events.length} filtered mock calls across UTC weekday and hour.`;
+    renderCostDashboardCharts(model);
+  };
+  form.addEventListener('change', (event) => {
+    filters[event.target.name] = event.target.value;
+    update();
+  });
+  update();
+}
+
+function refreshCostDashboardForTheme() {
+  const form = document.getElementById('cost-filters');
+  if (!form) return;
+  renderCostDashboard(Object.fromEntries(new FormData(form)));
+}
+
+// ── Costs page + cost-by-role stacked area (legacy live summary) ───────────
 async function renderCostsPage() {
   const app = document.getElementById('app');
   app.innerHTML = `<div class="view-header"><h1>Costs</h1></div>${renderLoading()}`;
@@ -7374,7 +7553,7 @@ const PALETTE_ROUTES = [
   { path: '/memory', label: 'Memory', kind: 'route' },
   { path: '/probes', label: 'Probes', kind: 'route' },
   { path: '/solvers', label: 'Solvers', kind: 'route' },
-  { path: '/costs', label: 'Costs', kind: 'route' },
+  { path: '/cost', label: 'Cost', kind: 'route' },
   { path: '/config', label: 'Config', kind: 'route' },
   { path: '/sync', label: 'Sync', kind: 'route' },
   { path: '/handoffs', label: 'Handoffs', kind: 'route' },
