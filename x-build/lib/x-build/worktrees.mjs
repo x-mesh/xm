@@ -25,7 +25,7 @@ import {
 } from './core.mjs';
 import { runGatePanel } from './gate-panel.mjs';
 import { taskCheckContractHash, taskCheckFingerprint } from './build-policy.mjs';
-import { appendMetric, generateCorrelationId } from './cost-engine.mjs';
+import { appendCostEvent, generateCorrelationId } from './cost-engine.mjs';
 // Shared leaf module — see worktree-shared.mjs header for the DAG rationale.
 // isParallelSafe/normalizeExpectedFiles used to come from tasks.mjs (the cycle);
 // buildRoot/config used to be defined here (the gate-panel cycle). Both now live
@@ -892,7 +892,7 @@ function markTaskCompleted(project, taskId) {
     return data;
   });
   if (taskRef?.started_at) {
-    appendMetric({
+    appendCostEvent({
       type: 'task_complete', project, taskId, taskName: taskRef.name,
       role: taskRef.role || 'executor',
       model: taskRef._assigned_model || 'sonnet',
