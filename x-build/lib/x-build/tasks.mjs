@@ -32,8 +32,9 @@ import {
 } from './worktree-shared.mjs';
 import {
   loadBuildPolicy, resolveTaskChecks, taskReviewGroup, reviewGroupStatus,
+  resolveReviewAction,
   startReviewGroup, reviewBuildGroup, recordSoloReviewVerdict, runGroupChecks,
-  taskCheckContractHash, taskCheckFingerprint, resolveCheckRuntime, REVIEW_DEPTHS,
+  taskCheckContractHash, taskCheckFingerprint, taskCheckEvidenceStatus, resolveCheckRuntime, REVIEW_DEPTHS,
 } from './build-policy.mjs';
 import { readPlanState, setRequestedAction, validatePlanApproval } from './plan-state.mjs';
 
@@ -84,16 +85,86 @@ export function cmdTaskCheck(args) {
     console.error('Usage: x-build task-check <task-id> [--json]');
     exitFail(1);
   }
-  const task = readJSON(tasksPath(project))?.tasks?.find((row) => row.id === id);
-  if (!task) {
-    console.error(`❌ ${E('task-not-found', { id })}`);
-    exitFail(1);
-  }
-
   const cwd = process.cwd();
   const policy = loadBuildPolicy();
   const runtime = resolveCheckRuntime(policy);
+  const contractHash = taskCheckContractHash(cwd, policy);
+  const currentFingerprint = taskCheckFingerprint(cwd, policy);
+  let alreadyRunning = false;
+  let taskFound = false;
+  let reusedEvidence = null;
+  const runningEvidence = {
+    state: 'running',
+    cwd,
+    started_at: new Date().toISOString(),
+    contract_hash: contractHash,
+    network_policy: {
+      allow_live_provider_checks: runtime.allow_live_provider_checks,
+      suppressed_env: runtime.suppressed_env,
+      timeout_ms: runtime.timeout_ms,
+    },
+  };
+
+  // Claim the check before executing it.  This is deliberately the same
+  // tasks.json lock used by completion, so two executors cannot launch the
+  // same expensive suite after they both observe missing evidence.
+  modifyJSON(tasksPath(project), (data) => {
+    const row = data?.tasks?.find((candidate) => candidate.id === id);
+    if (!row) return data;
+    taskFound = true;
+    const status = taskCheckEvidenceStatus(row.task_check, cwd, policy);
+    if (status.state === 'running') {
+      alreadyRunning = true;
+      return data;
+    }
+    // Task identity is not part of the check contract. If another task in the
+    // same project already ran the identical commands against the identical
+    // workspace, copying that exact evidence is safer and cheaper than running
+    // the suite again. Completion still revalidates the copied fingerprint
+    // while holding this same tasks.json lock.
+    const reusable = currentFingerprint && data.tasks.find((candidate) => {
+      const evidence = candidate.id === id ? null : candidate.task_check;
+      return evidence?.passed === true
+        && evidence.state !== 'running'
+        && resolve(evidence.cwd || '.') === resolve(cwd)
+        && evidence.contract_hash === contractHash
+        && evidence.worktree_fingerprint === currentFingerprint;
+    });
+    if (reusable) {
+      reusedEvidence = {
+        ...reusable.task_check,
+        state: 'passed',
+        passed: true,
+        reused: true,
+        reused_from_task: reusable.id,
+        reused_at: new Date().toISOString(),
+      };
+      row.task_check = reusedEvidence;
+      return data;
+    }
+    row.task_check = runningEvidence;
+    return data;
+  });
+  if (!taskFound) {
+    console.error(`❌ ${E('task-not-found', { id })}`);
+    exitFail(1);
+  }
+  if (alreadyRunning) {
+    const evidence = { project, task_id: id, ...runningEvidence, state: 'running', passed: false, error: 'task_check_in_progress' };
+    if (opts.json) console.log(JSON.stringify(evidence, null, 2));
+    else console.error(`⏳ Task checks are already running for ${id}; wait for that process to finish.`);
+    process.exitCode = 2;
+    return evidence;
+  }
+  if (reusedEvidence) {
+    const evidence = { project, task_id: id, ...reusedEvidence };
+    if (opts.json) console.log(JSON.stringify(evidence, null, 2));
+    else console.log(`✅ Reused exact task-check evidence from ${reusedEvidence.reused_from_task}`);
+    return evidence;
+  }
+
   const checks = resolveTaskChecks(cwd, policy);
+  const beforeFingerprint = taskCheckFingerprint(cwd, policy);
   const results = checks.map((check) => {
     if (!check.command) return { name: check.name, command: null, passed: true, skipped: true, exit_code: null };
     const out = spawnSync(check.command, [], {
@@ -111,18 +182,21 @@ export function cmdTaskCheck(args) {
       ...(out.error ? { error: out.error.message } : {}),
     };
   });
+  const afterFingerprint = taskCheckFingerprint(cwd, policy);
   const evidence = {
-    passed: results.every((result) => result.passed),
+    state: beforeFingerprint !== null && afterFingerprint === beforeFingerprint && results.every((result) => result.passed) ? 'passed' : 'failed',
+    passed: beforeFingerprint !== null && afterFingerprint === beforeFingerprint && results.every((result) => result.passed),
     cwd,
     checked_at: new Date().toISOString(),
     results,
-    contract_hash: taskCheckContractHash(cwd),
-    worktree_fingerprint: taskCheckFingerprint(cwd),
+    contract_hash: contractHash,
+    worktree_fingerprint: afterFingerprint,
     network_policy: {
       allow_live_provider_checks: runtime.allow_live_provider_checks,
       suppressed_env: runtime.suppressed_env,
       timeout_ms: runtime.timeout_ms,
     },
+    ...(afterFingerprint !== beforeFingerprint ? { error: 'workspace_changed_during_check' } : {}),
   };
   modifyJSON(tasksPath(project), (data) => {
     const row = data?.tasks?.find((candidate) => candidate.id === id);
@@ -548,31 +622,6 @@ export function taskUpdate(project, args) {
   const { opts, positional } = parseOptions(args);
   const id = positional[0];
   const rawStatus = opts.status;
-
-  const intendedStatus = rawStatus ? (STATUS_ALIASES[rawStatus] || rawStatus) : null;
-  const currentTask = intendedStatus === TASK_STATES.COMPLETED
-    ? readJSON(tasksPath(project))?.tasks?.find((task) => task.id === id)
-    : null;
-  // A dispatch task has no plan-state.json by design, but it is still executed
-  // by an agent. Letting that path self-report COMPLETED without task-check
-  // evidence turns a harness "completed" notification into a false task result.
-  // Planned tasks retain their existing gate; dispatch tasks now use the same
-  // evidence requirement without inventing a PRD just to get the safety check.
-  if (intendedStatus === TASK_STATES.COMPLETED && (readPlanState(project) || currentTask?.dispatch === true)) {
-    const evidence = currentTask?.task_check;
-    const currentFingerprint = taskCheckFingerprint(process.cwd());
-    const stale = !evidence?.worktree_fingerprint || !currentFingerprint
-      || resolve(evidence?.cwd || '.') !== resolve(process.cwd())
-      || evidence?.contract_hash !== taskCheckContractHash(process.cwd())
-      || evidence.worktree_fingerprint !== currentFingerprint;
-    if (currentTask && (evidence?.passed !== true || stale)) {
-      console.error(`⛔ Task "${id}" has no current passing task-check evidence.`);
-      console.error(`   Run in the task working directory: x-build task-check ${id}`);
-      process.exitCode = 2;
-      return;
-    }
-  }
-
   if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined && opts.desc === undefined && opts['expected-files'] === undefined && opts['interface-contract'] === undefined && opts['review-group'] === undefined)) {
     console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed> [--no-commit]');
     console.error('       x-build tasks update <task-id> --status completed --tokens-in <n> --tokens-out <n>  (record actual cost)');
@@ -591,6 +640,8 @@ export function taskUpdate(project, args) {
   let taskFound = false;
   let oldStatus, newStatus, updatedFields = [];
   let taskRef = null;
+  let completionEvidenceError = null;
+  let alreadyCompleted = false;
 
   modifyJSON(tasksPath(project), (data) => {
     if (!data) { console.error('❌ No tasks data found.'); exitFail(1); }
@@ -598,6 +649,30 @@ export function taskUpdate(project, args) {
     if (!task) { console.error(`❌ ${E('task-not-found', { id })}`); exitFail(1); }
     taskFound = true;
     taskRef = task;
+
+    // Validate and transition under ONE lock.  Reading evidence before this
+    // callback allowed a second executor to replace it or complete the task
+    // between validation and write (TOCTOU).
+    if (rawStatus) {
+      newStatus = STATUS_ALIASES[rawStatus] || rawStatus;
+      if (!Object.values(TASK_STATES).includes(newStatus)) {
+        console.error(`❌ Invalid status: "${rawStatus}". Valid: ${Object.values(TASK_STATES).join(', ')}`);
+        exitFail(1);
+      }
+      if (newStatus === TASK_STATES.COMPLETED && task.status === TASK_STATES.COMPLETED) {
+        alreadyCompleted = true;
+        return data;
+      }
+      // Dispatch tasks have no plan state but must not self-report completion
+      // without the same evidence contract as planned tasks.
+      if (newStatus === TASK_STATES.COMPLETED && (readPlanState(project) || task.dispatch === true)) {
+        const evidenceStatus = taskCheckEvidenceStatus(task.task_check, process.cwd());
+        if (evidenceStatus.state !== 'valid') {
+          completionEvidenceError = evidenceStatus;
+          return data;
+        }
+      }
+    }
 
     if (opts.score !== undefined) {
       task.score = parseFloat(opts.score);
@@ -674,12 +749,6 @@ export function taskUpdate(project, args) {
 
     if (!rawStatus) return data;
 
-    newStatus = STATUS_ALIASES[rawStatus] || rawStatus;
-    if (!Object.values(TASK_STATES).includes(newStatus)) {
-      console.error(`❌ Invalid status: "${rawStatus}". Valid: ${Object.values(TASK_STATES).join(', ')}`);
-      exitFail(1);
-    }
-
     oldStatus = task.status;
     task.status = newStatus;
     if (newStatus === TASK_STATES.COMPLETED) task.completed_at = new Date().toISOString();
@@ -693,6 +762,25 @@ export function taskUpdate(project, args) {
     }
     return data;
   });
+
+  if (completionEvidenceError) {
+    const labels = {
+      missing: 'has no current passing task-check evidence (missing task-check evidence)',
+      running: 'has no current passing task-check evidence (task checks still running)',
+      stale: 'has no current passing task-check evidence (stale task-check evidence)',
+      failed: 'has no current passing task-check evidence (failing task-check evidence)',
+    };
+    console.error(`⛔ Task "${id}" ${labels[completionEvidenceError.state] || 'has no current passing task-check evidence'}.`);
+    if (completionEvidenceError.state === 'running') console.error('   Wait for the existing task-check process; do not start another one.');
+    else console.error(`   Run in the task working directory: x-build task-check ${id}`);
+    process.exitCode = 2;
+    return;
+  }
+
+  if (alreadyCompleted) {
+    console.log(`✅ Task "${id}" is already completed.`);
+    return;
+  }
 
   if (!rawStatus) {
     console.log(`✅ Task "${id}" ${updatedFields.join(', ')}`);
@@ -2017,9 +2105,9 @@ export function cmdRunStatus(args) {
       (w) => w.worktree_status === WORKTREE_STATUS.NEEDS_FIX || w.worktree_status === WORKTREE_STATUS.BLOCKED,
     );
     const cb = getCircuitState(project);
+    const reviewAction = resolveReviewAction(groupSummary, { allDone });
     let next_action;
-    if (allDone && groupSummary.active_group && !groupSummary.groups.find(g => g.id === groupSummary.active_group)?.group_quality?.passed) next_action = `group-check ${groupSummary.active_group}`;
-    else if (groupSummary.review_required) next_action = `review-group ${groupSummary.active_group}`;
+    if (reviewAction) next_action = reviewAction.command;
     else if (allDone && groupSummary.all_passed) next_action = 'phase next';
     else if (cb.state === 'open') next_action = 'wait for circuit breaker cooldown';
     else if (staleRunning.length) next_action = 'run --reconcile';

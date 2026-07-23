@@ -69,6 +69,35 @@ export function validateEvidence(evidence, expected = {}) {
   return { valid: true, reason: null };
 }
 
+/**
+ * Pull the sole authoritative serial-quality record out of a persisted Verify
+ * result.  Treat an incomplete or malformed envelope as unusable rather than
+ * guessing from another check in the file: callers can then fail closed by
+ * rerunning the command through validateEvidence().
+ */
+export function serialQualityEvidence(qualityResults) {
+  if (!qualityResults || qualityResults.malformed || qualityResults.error || !Array.isArray(qualityResults.results)) return null;
+  const serial = qualityResults.results.filter((result) => result && typeof result === 'object' && result.check === 'serial-quality');
+  return serial.length === 1 ? serial[0] : null;
+}
+
+/** Read persisted Verify evidence without JSON recovery; malformed evidence reruns. */
+export function readPersistedSerialQualityEvidence(path) {
+  if (!existsSync(path)) return { exists: false, evidence: null };
+  try {
+    const payload = JSON.parse(readFileSync(path, 'utf8'));
+    const evidence = serialQualityEvidence(payload);
+    return {
+      exists: true,
+      evidence: evidence && !evidence.checked_at && payload.timestamp
+        ? { ...evidence, checked_at: payload.timestamp }
+        : evidence,
+    };
+  } catch {
+    return { exists: true, evidence: null };
+  }
+}
+
 /** Execute the authoritative quality command, fail-closed on config/timeout. */
 export function runQualityPipeline({ cwd = process.cwd(), config = {}, evidence = null } = {}) {
   const root = resolve(cwd);
