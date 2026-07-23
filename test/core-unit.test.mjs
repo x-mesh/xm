@@ -448,7 +448,16 @@ describe('circuit breaker (direct)', () => {
   test('getCircuitState returns closed by default', () => {
     const state = core.getCircuitState(projName);
     expect(state.state).toBe('closed');
+    expect(state.reason).toBe('failure');
     expect(state.consecutive_failures).toBe(0);
+  });
+
+  test('normalizes v1 state without deleting its existing fields', () => {
+    const cbPath = join(projDir, 'circuit-breaker.json');
+    core.writeJSON(cbPath, { state: 'closed', consecutive_failures: 2, legacy_marker: 'keep' });
+    expect(core.getCircuitState(projName)).toMatchObject({
+      state: 'closed', reason: 'failure', consecutive_failures: 2, legacy_marker: 'keep',
+    });
   });
 
   test('updateCircuitBreaker increments on failure', () => {
@@ -520,16 +529,56 @@ describe('circuit breaker (direct)', () => {
     expect(core.beginHalfOpenProbe(projName)).toBe(false);
   });
 
-  test('half-open is non-blocking — never wedges (F4 self-recovery)', () => {
-    // A probe that is started but never resolved (the run/`tasks update` split
-    // makes abandonment common) must leave the breaker runnable, not stuck.
+  test('half-open blocks a concurrent probe but releases an abandoned lease', () => {
     const cbPath = join(projDir, 'circuit-breaker.json');
     core.writeJSON(cbPath, {
       state: 'half-open', consecutive_failures: 3,
       opened_at: new Date().toISOString(), cooldown_until: null,
+      half_open_at: new Date().toISOString(),
     });
-    expect(core.isCircuitOpen(projName)).toBe(false); // half-open does not block
-    expect(core.readJSON(cbPath).state).toBe('half-open'); // and isCircuitOpen stays pure
+    expect(core.isCircuitOpen(projName)).toBe(true);
+    const cb = core.readJSON(cbPath);
+    cb.half_open_at = new Date(Date.now() - 31_000).toISOString();
+    core.writeJSON(cbPath, cb);
+    expect(core.isCircuitOpen(projName)).toBe(false);
+  });
+
+  test('v1 half-open without half_open_at is immediately recoverable, then gains an exclusive lease', () => {
+    const cbPath = join(projDir, 'circuit-breaker.json');
+    core.writeJSON(cbPath, {
+      state: 'half-open', consecutive_failures: 3,
+      opened_at: new Date(Date.now() - 60_000).toISOString(),
+      cooldown_until: new Date(Date.now() - 30_000).toISOString(),
+    });
+    expect(core.isCircuitOpen(projName)).toBe(false);
+    expect(core.beginHalfOpenProbe(projName)).toBe(true);
+    expect(core.getCircuitState(projName).half_open_at).toBeTruthy();
+    expect(core.isCircuitOpen(projName)).toBe(true);
+    expect(core.beginHalfOpenProbe(projName)).toBe(false);
+  });
+
+  test('concurrent recovery callers receive exactly one half-open probe claim', async () => {
+    const cbPath = join(projDir, 'circuit-breaker.json');
+    core.writeJSON(cbPath, {
+      state: 'open', reason: 'failure', consecutive_failures: 3,
+      opened_at: new Date(Date.now() - 60_000).toISOString(),
+      cooldown_until: new Date(Date.now() - 1_000).toISOString(),
+    });
+    const moduleUrl = new URL('../x-build/lib/x-build/core.mjs', import.meta.url).href;
+    const script = [
+      `process.env.X_BUILD_ROOT=${JSON.stringify(TEST_ROOT)};`,
+      `process.env.HOME=${JSON.stringify(TEST_HOME)};`,
+      'console.log = () => {};',
+      `const core = await import(${JSON.stringify(moduleUrl)});`,
+      `process.stdout.write(String(core.beginHalfOpenProbe(${JSON.stringify(projName)})));`,
+    ].join('');
+    const children = Array.from({ length: 8 }, () => Bun.spawn([process.execPath, '-e', script], { stdout: 'pipe', stderr: 'pipe' }));
+    const results = await Promise.all(children.map(async (child) => {
+      expect(await child.exited).toBe(0);
+      return (await new Response(child.stdout).text()).trim();
+    }));
+    expect(results.filter((result) => result === 'true')).toHaveLength(1);
+    expect(results.filter((result) => result === 'false')).toHaveLength(7);
   });
 
   test('half-open failure reopens circuit', () => {
@@ -552,6 +601,51 @@ describe('circuit breaker (direct)', () => {
     const s = core.updateCircuitBreaker(projName, false);
     expect(s.state).toBe('closed');
     expect(s.consecutive_failures).toBe(0);
+  });
+
+  test('pure transition is exact at the cooldown boundary', () => {
+    const now = Date.parse('2026-01-01T00:00:00.000Z');
+    const open = {
+      state: 'open', reason: 'failure', consecutive_failures: 3,
+      opened_at: new Date(now - 1000).toISOString(),
+      cooldown_until: new Date(now).toISOString(),
+    };
+    expect(core.shouldBlockCircuit(open, { now: now - 1, cooldown_ms: 1000 })).toBe(true);
+    expect(core.shouldBlockCircuit(open, { now, cooldown_ms: 1000 })).toBe(false);
+    expect(core.transitionCircuitState(open, 'probe', { now, cooldown_ms: 1000 }).state).toBe('half-open');
+  });
+
+  test('budget state does not overwrite failure state or its counter', () => {
+    const now = Date.parse('2026-01-01T00:00:00.000Z');
+    const failureOpen = {
+      state: 'open', reason: 'failure', consecutive_failures: 3,
+      opened_at: new Date(now).toISOString(), cooldown_until: new Date(now + 1000).toISOString(),
+    };
+    expect(core.transitionCircuitState(failureOpen, 'budget_exceeded', { now })).toMatchObject(failureOpen);
+    const budgetOpen = core.transitionCircuitState({ state: 'closed', consecutive_failures: 2 }, 'budget_exceeded', { now });
+    expect(budgetOpen).toMatchObject({ state: 'open', reason: 'budget', consecutive_failures: 2 });
+    expect(core.transitionCircuitState(budgetOpen, 'success', { now })).toMatchObject({ state: 'open', reason: 'budget' });
+    expect(core.transitionCircuitState(budgetOpen, 'budget_recovered', { now })).toMatchObject({ state: 'closed', consecutive_failures: 2 });
+  });
+
+  test('budget writer opens and recovers its own reason without replacing an open failure breaker', () => {
+    core.updateBudgetCircuitBreaker(projName, { level: 'exceeded' });
+    expect(core.getCircuitState(projName)).toMatchObject({ state: 'open', reason: 'budget' });
+    core.updateBudgetCircuitBreaker(projName, { level: 'warning' });
+    expect(core.getCircuitState(projName)).toMatchObject({ state: 'closed', reason: 'budget' });
+    core.updateCircuitBreaker(projName, true);
+    core.updateCircuitBreaker(projName, true);
+    core.updateCircuitBreaker(projName, true);
+    core.updateBudgetCircuitBreaker(projName, { level: 'exceeded' });
+    expect(core.getCircuitState(projName)).toMatchObject({ state: 'open', reason: 'failure', consecutive_failures: 3 });
+  });
+
+  test('malformed persisted circuit fields fail open instead of permanently blocking', () => {
+    const malformed = { state: 'open', reason: 'unknown', consecutive_failures: 'NaN', cooldown_until: 'not-a-date' };
+    expect(core.normalizeCircuitState(malformed)).toMatchObject({ state: 'closed', reason: 'failure', consecutive_failures: 0 });
+    expect(core.shouldBlockCircuit(malformed, { now: Date.now() })).toBe(false);
+    const unknownReason = { state: 'open', reason: 'future-reason', cooldown_until: new Date(Date.now() + 60_000).toISOString() };
+    expect(core.shouldBlockCircuit(unknownReason, { now: Date.now() })).toBe(false);
   });
 });
 

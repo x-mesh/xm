@@ -3,9 +3,13 @@
 // shapes reached the UI as "[object Object]" or raw JSON dumps and were caught
 // only by the user after a release. These assert the contract instead.
 import { describe, test, expect } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import '../public/render-helpers.js'; // IIFE sets globalThis.XMRender
 
-const { renderValue, renderEmpty, fmtAgents, preprocessDiagrams } = globalThis.XMRender;
+const {
+  renderValue, renderEmpty, fmtAgents, preprocessDiagrams,
+  makeCostMockEvents, filterCostEvents, buildCostChartModel,
+} = globalThis.XMRender;
 
 describe('renderValue', () => {
   test('never emits "[object Object]" for any shape', () => {
@@ -138,5 +142,68 @@ describe('preprocessDiagrams', () => {
     expect(preprocessDiagrams('')).toBe('');
     expect(preprocessDiagrams(null)).toBe('');
     expect(preprocessDiagrams(undefined)).toBe('');
+  });
+});
+
+describe('cost dashboard aggregation (mock-only t4)', () => {
+  const reference = new Date('2026-07-23T12:00:00.000Z');
+  const events = makeCostMockEvents(reference);
+
+  test('mock fixture is deterministic for a fixed reference time', () => {
+    expect(makeCostMockEvents(reference)).toEqual(events);
+    expect(events.length).toBeGreaterThan(120);
+  });
+
+  test('period and dimension filters constrain the source events', () => {
+    const sevenDays = filterCostEvents(events, { period: '7' }, reference);
+    const modelOnly = filterCostEvents(events, { period: '90', model: 'opus' }, reference);
+    const projectOnly = filterCostEvents(events, { period: '90', project: 'x-panel' }, reference);
+    expect(sevenDays.length).toBeGreaterThan(0);
+    expect(sevenDays.length).toBeLessThan(events.length);
+    expect(modelOnly.every((event) => event.model === 'opus')).toBe(true);
+    expect(projectOnly.every((event) => event.project === 'x-panel')).toBe(true);
+  });
+
+  test('builds line, stacked-bar, horizontal-bar, and weekday-hour models from one filter', () => {
+    const model = buildCostChartModel(events, { period: '30', strategy: 'review' }, reference);
+    expect(model.daily.labels).toHaveLength(30);
+    expect(model.daily.values).toHaveLength(30);
+    expect(model.strategyBars.datasets.length).toBeGreaterThan(0);
+    expect(model.roles.length).toBeLessThanOrEqual(10);
+    expect(model.heatmap.values).toHaveLength(7);
+    expect(model.heatmap.values.every((row) => row.length === 24)).toBe(true);
+    expect(model.events.every((event) => event.strategy === 'review')).toBe(true);
+    expect(model.total).toBeGreaterThan(0);
+  });
+});
+
+describe('cost dashboard static asset contract', () => {
+  const indexHtml = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const appSource = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  test('ships the canonical Cost nav while retaining the legacy costs route', () => {
+    expect(indexHtml).toContain('href="#/cost" data-route="/cost"');
+    expect(appSource).toContain("{ pattern: /^\\/cost$/, handler: () => renderCostDashboard() }");
+    expect(appSource).toContain("{ pattern: /^\\/costs$/, handler: () => renderCostsPage() }");
+    expect(appSource).toContain("if (path !== '/cost') destroyCostDashboardCharts();");
+  });
+
+  test('renders four distinct chart surfaces and four wired filters', () => {
+    for (const id of ['cost-daily-chart', 'cost-strategy-chart', 'cost-role-chart', 'cost-heatmap-chart']) {
+      expect(appSource).toContain(`id="${id}"`);
+    }
+    for (const name of ['period', 'model', 'strategy', 'project']) {
+      expect(appSource).toContain(`name="${name}"`);
+    }
+    expect(appSource).toContain('Strategy by model');
+    expect(appSource).toContain('stacked: true');
+  });
+
+  test('resolves chart tokens from body so the light theme overrides apply', () => {
+    expect(appSource).toContain('getComputedStyle(document.body || document.documentElement)');
+    const css = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+    expect(css).toContain('body.theme-light');
+    expect(css).toContain('--chart-line: #9a3e00');
+    expect(css).toContain('--chart-heatmap-rgb: 154, 62, 0');
   });
 });
