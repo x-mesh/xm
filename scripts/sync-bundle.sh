@@ -97,6 +97,28 @@ mirror_md_dir() {
   shopt -u nullglob
 }
 
+# Mirror a Markdown documentation tree, including nested directories.  A flat
+# glob is easy to extend incorrectly: new subdirectories then ship from the
+# standalone plugin but are silently absent from xm/.  Treat the standalone
+# tree as authoritative, so --check also catches stale bundle-only documents.
+mirror_md_tree() {
+  local src="$1" dst="$2" f rel
+  [ -d "$src" ] || return 0
+
+  while IFS= read -r -d '' f; do
+    rel="${f#"$src"/}"
+    sync_file "$f" "$dst/$rel"
+  done < <(find "$src" -type f -name '*.md' -print0)
+
+  [ -d "$dst" ] || return 0
+  while IFS= read -r -d '' f; do
+    rel="${f#"$dst"/}"
+    if [ ! -f "$src/$rel" ]; then
+      remove_obsolete_file "$f"
+    fi
+  done < <(find "$dst" -type f -name '*.md' -print0)
+}
+
 echo "=== Syncing SKILL.md files ==="
 for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel remote wt; do
   src="x-$plugin/skills/$plugin/SKILL.md"
@@ -275,15 +297,11 @@ fi
 
 echo ""
 echo "=== Syncing build references ==="
-mirror_md_dir "x-build/skills/build/references" "xm/skills/build/references"
+mirror_md_tree "x-build/skills/build/references" "xm/skills/build/references"
 
 echo ""
 echo "=== Syncing build commands ==="
 mirror_md_dir "x-build/skills/build/commands" "xm/skills/build/commands"
-
-echo ""
-echo "=== Syncing build phases ==="
-mirror_md_dir "x-build/skills/build/references/phases" "xm/skills/build/references/phases"
 
 echo ""
 echo "=== Syncing review lenses ==="

@@ -95,22 +95,42 @@ function planCursor(s, scope, root) {
  */
 function planCodex(s, scope, root) {
   const name = xmName(s.pluginName, s.skillName);
-  return [
+  const standaloneRoot = join(root, '.agents', 'skills', name);
+  const pluginRoot = join(root, 'plugins', 'xm', 'skills', s.skillName);
+  /** @type {PlanEntry[]} */
+  const out = [
     {
-      absolutePath: join(root, '.agents', 'skills', name, 'SKILL.md'),
+      absolutePath: join(standaloneRoot, 'SKILL.md'),
       kind: 'skill-doc',
       skill: name,
       writeMode: 'overwrite',
       mode: modeFor(scope),
     },
     {
-      absolutePath: join(root, 'plugins', 'xm', 'skills', s.skillName, 'SKILL.md'),
+      absolutePath: join(pluginRoot, 'SKILL.md'),
       kind: 'skill-doc',
       skill: name,
       writeMode: 'overwrite',
       mode: modeFor(scope),
     },
   ];
+  for (const reference of s.references) {
+    const normalizedPath = reference.relativePath.replace(/\\/g, '/');
+    const segments = normalizedPath.split('/');
+    if (!normalizedPath.startsWith('references/') || segments.some((segment) => segment === '..' || segment === '')) {
+      throw new Error(`invalid Codex reference path: ${JSON.stringify(reference.relativePath)}`);
+    }
+    for (const skillRoot of [standaloneRoot, pluginRoot]) {
+      out.push({
+        absolutePath: join(skillRoot, ...segments),
+        kind: 'reference',
+        skill: name,
+        writeMode: 'overwrite',
+        mode: modeFor(scope),
+      });
+    }
+  }
+  return out;
 }
 
 /**

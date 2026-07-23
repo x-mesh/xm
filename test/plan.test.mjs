@@ -663,54 +663,38 @@ describe('scope creep detection', () => {
   });
 });
 
-// ── failure-mode-coverage: model-aware gate ─────────────────────────────
-// The phase-routing experiment measured 0/3 pathological-input survival for
-// sonnet execution without failure-mode enumeration (vs opus 2/3), so a
-// risk-domain task resolving to sonnet-or-below without stress done_criteria
-// must BLOCK the plan gate (passed:false), while opus keeps warn, and an
-// explicit "none — <rationale>" waives the check.
-describe('failure-mode-coverage model-aware gate', () => {
+// ── failure-mode-coverage: model-independent contract ───────────────────
+// A risk-domain task needs a stress/adversarial criterion regardless of the
+// selected model. `inherit` is unresolved at plan time, and concrete high-tier
+// routing cannot establish that the task has no pathological-input surface.
+describe('failure-mode-coverage risk contract', () => {
   const readPlanCheck = (tmp, name = 'test-proj') =>
     JSON.parse(readFileSync(join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'plan-check.json'), 'utf8'));
 
-  test('escalates to ERROR when a risk-domain task executes on sonnet', () => {
-    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
-    try {
-      setupProject(tmp);
-      writeSharedConfig(tmp, { model_profile: 'default' }); // default.executor = sonnet (measured)
-      addTasks(tmp, [{ name: 'Build regex matcher [R1]', size: 'small', dc: '341 test cases pass' }]);
-      const r = run(['plan-check'], { cwd: tmp });
-      expect(r.stdout).toContain('[FAIL] failure-mode-coverage');
-      expect(r.stdout).toContain('executes on sonnet');
-      expect(readPlanCheck(tmp).passed).toBe(false); // blocks the Plan gate
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
+  for (const model of ['sonnet', 'opus', 'inherit']) {
+    test(`blocks a risk-domain task without a contract when it resolves to ${model}`, () => {
+      const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+      try {
+        setupProject(tmp);
+        writeSharedConfig(tmp, { model_profile: 'default', model_overrides: { executor: model } });
+        addTasks(tmp, [{ name: 'Build regex matcher [R1]', size: 'small', dc: '341 test cases pass' }]);
+        const r = run(['plan-check'], { cwd: tmp });
+        expect(r.stdout).toContain('[FAIL] failure-mode-coverage');
+        expect(r.stdout).toContain(`resolved model: ${model}`);
+        expect(readPlanCheck(tmp).passed).toBe(false);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+  }
 
   test('explicit "none — <rationale>" waiver passes the gate', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       setupProject(tmp);
-      writeSharedConfig(tmp, { model_profile: 'default' });
+      writeSharedConfig(tmp, { model_profile: 'default', model_overrides: { executor: 'inherit' } });
       addTasks(tmp, [{ name: 'Build regex matcher [R1]', size: 'small', dc: 'none — read-only display of precompiled patterns, no adversarial input surface' }]);
       const r = run(['plan-check'], { cwd: tmp });
-      expect(r.stdout).not.toContain('[FAIL] failure-mode-coverage'); // waived — no error (delegation-contract may still warn)
-      expect(readPlanCheck(tmp).passed).toBe(true);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  test('higher-tier execution keeps warn (probabilistic cushion, gate passes)', () => {
-    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
-    try {
-      setupProject(tmp);
-      writeSharedConfig(tmp, { model_profile: 'default', model_overrides: { executor: 'opus' } });
-      addTasks(tmp, [{ name: 'Build regex matcher [R1]', size: 'small', dc: '341 test cases pass' }]);
-      const r = run(['plan-check'], { cwd: tmp });
-      expect(r.stdout).toContain('failure-mode-coverage');
-      expect(r.stdout).toContain('executes on opus');
       expect(r.stdout).not.toContain('[FAIL] failure-mode-coverage');
       expect(readPlanCheck(tmp).passed).toBe(true);
     } finally {

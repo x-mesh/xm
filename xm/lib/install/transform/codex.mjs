@@ -4,8 +4,10 @@
  *
  * Generated layout (both local and global installs, relative to installRoot):
  *   .agents/skills/xm-<skill>/SKILL.md  (searchable standalone aliases)
+ *   .agents/skills/xm-<skill>/references/<path>.md
  *   plugins/xm/.codex-plugin/plugin.json
  *   plugins/xm/skills/<skill>/SKILL.md
+ *   plugins/xm/skills/<skill>/references/<path>.md
  *   .agents/plugins/marketplace.json  (semantic entry merge by install-cli)
  *
  * A plugin named `xm` with a skill named `op` is invoked as `$xm:op`. This
@@ -97,17 +99,40 @@ export function renderCodexSkill(skill, ctx, name = skill.skillName) {
     '',
   ].join('\n');
   let body = expandPaths(skill.body, { target: 'codex', scope: ctx.scope });
-  if (skill.references.length > 0) {
-    body = body.trimEnd() + '\n\n';
-    for (const ref of skill.references) {
-      body += '---\n';
-      body += `<!-- [See: ${ref.name}] -->\n\n`;
-      body += expandPaths(ref.body, { target: 'codex', scope: ctx.scope }).trimEnd() + '\n\n';
-    }
-  }
   body = body.trimEnd() + '\n\n' + renderCodexSkillOverlay(skill);
   if (isCodexBuildSkill(skill)) body += '\n\n' + CODEX_BUILD_OVERLAY;
   return head + body.trimEnd() + '\n';
+}
+
+/**
+ * Render a source reference as a native Codex Skill sidecar.  The source
+ * body deliberately retains relative `references/...` links, so preserving
+ * the directory hierarchy keeps those links valid without inflating SKILL.md
+ * context at load time.
+ *
+ * @param {import('../types.mjs').ReferenceFile} reference
+ * @param {import('../types.mjs').RenderContext} ctx
+ * @returns {string}
+ */
+export function renderCodexReference(reference, ctx) {
+  return expandPaths(reference.body, { target: 'codex', scope: ctx.scope });
+}
+
+/**
+ * `ReferenceFile.relativePath` is source-relative (for example
+ * `references/phases/plan.md`).  Keep that nesting below each rendered Skill
+ * root and reject anything that could escape it if an external caller builds
+ * a SkillIR by hand.
+ *
+ * @param {string} skillRoot
+ * @param {string} referencePath
+ */
+function codexReferencePath(skillRoot, referencePath) {
+  const normalized = String(referencePath).replace(/\\/g, '/');
+  if (!normalized.startsWith('references/') || normalized.split('/').some((part) => part === '..' || part === '')) {
+    throw new Error(`invalid Codex reference path: ${JSON.stringify(referencePath)}`);
+  }
+  return join(skillRoot, ...normalized.split('/'));
 }
 
 // Backward-compatible export for focused renderer tests and downstream imports.
@@ -179,18 +204,31 @@ export function renderCodexWithDiagnostics(skills, ctx) {
   });
   for (const skill of skills) {
     const standaloneName = xmName(skill.pluginName, skill.skillName);
+    const standaloneRoot = join(CODEX_STANDALONE_SKILLS_ROOT, standaloneName);
+    const pluginRoot = join(CODEX_PLUGIN_ROOT, 'skills', skill.skillName);
     outputs.push({
-      relativePath: join(CODEX_STANDALONE_SKILLS_ROOT, standaloneName, 'SKILL.md'),
+      relativePath: join(standaloneRoot, 'SKILL.md'),
       content: renderCodexSkill(skill, ctx, standaloneName),
       kind: 'overwrite',
       mode: ctx.scope === 'global' ? 0o600 : 0o644,
     });
     outputs.push({
-      relativePath: join(CODEX_PLUGIN_ROOT, 'skills', skill.skillName, 'SKILL.md'),
+      relativePath: join(pluginRoot, 'SKILL.md'),
       content: renderCodexSkill(skill, ctx),
       kind: 'overwrite',
       mode: ctx.scope === 'global' ? 0o600 : 0o644,
     });
+    for (const reference of skill.references) {
+      const content = renderCodexReference(reference, ctx);
+      for (const root of [standaloneRoot, pluginRoot]) {
+        outputs.push({
+          relativePath: codexReferencePath(root, reference.relativePath),
+          content,
+          kind: 'overwrite',
+          mode: ctx.scope === 'global' ? 0o600 : 0o644,
+        });
+      }
+    }
   }
   return { outputs, warnings, indexBytes: 0 };
 }

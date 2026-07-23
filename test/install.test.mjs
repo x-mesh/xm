@@ -105,6 +105,8 @@ describe('install-cli — --list and --dry-run (no fs writes)', () => {
     expect(r.stdout).toMatch(/# kiro/);
     expect(r.stdout).toMatch(/# antigravity/);
     expect(r.stdout).toMatch(/# opencode/);
+    expect(r.stdout).toContain(join('plugins', 'xm', 'skills', 'build', 'references', 'phases', 'plan.md'));
+    expect(r.stdout).toContain(join('.agents', 'skills', 'xm-build', 'references', 'phases', 'plan.md'));
     expect(r.stdout).not.toMatch(/CLI reference\(s\) point to missing files/);
     expect(existsSync(join(tmp, '.cursor'))).toBe(false);
     expect(existsSync(join(tmp, '.codex'))).toBe(false);
@@ -148,6 +150,8 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     expect(standaloneOp).toContain('`$xm-op` or `$xm:op`');
     const standaloneBuild = readFileSync(join(tmp, '.agents', 'skills', 'xm-build', 'SKILL.md'), 'utf8');
     expect(standaloneBuild).toContain('`$xm-build` or `$xm:build`');
+    expect(standaloneBuild).not.toContain('<!-- [See:');
+    expect(Buffer.byteLength(standaloneBuild, 'utf8')).toBeLessThan(60 * 1024);
     const pluginRoot = join(tmp, 'plugins', 'xm');
     const plugin = JSON.parse(readFileSync(join(pluginRoot, '.codex-plugin', 'plugin.json'), 'utf8'));
     expect(plugin.name).toBe('xm');
@@ -157,6 +161,11 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     const opSkill = readFileSync(join(pluginRoot, 'skills', 'op', 'SKILL.md'), 'utf8');
     expect(opSkill).toMatch(/^---\nname: op\ndescription: /);
     expect(opSkill).toContain('`$xm-op` or `$xm:op`');
+    const sourceReference = join(SKILLS, 'build', 'references', 'phases', 'plan.md');
+    const pluginReference = join(pluginRoot, 'skills', 'build', 'references', 'phases', 'plan.md');
+    const standaloneReference = join(tmp, '.agents', 'skills', 'xm-build', 'references', 'phases', 'plan.md');
+    expect(readFileSync(pluginReference, 'utf8')).toBe(readFileSync(sourceReference, 'utf8'));
+    expect(readFileSync(standaloneReference, 'utf8')).toBe(readFileSync(sourceReference, 'utf8'));
     const marketplace = JSON.parse(readFileSync(join(tmp, '.agents', 'plugins', 'marketplace.json'), 'utf8'));
     expect(marketplace.name).toStartWith('xm-');
     expect(marketplace.plugins.find((entry) => entry.name === 'xm')?.source.path).toBe('./plugins/xm');
@@ -184,6 +193,27 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     }, { scope: 'local' }, 'xm-op');
     expect(alias).toMatch(/^---\nname: xm-op\ndescription: /);
     expect(alias).toContain('`$xm-op` or `$xm:op`');
+  });
+  test('codex cleans up sidecars for a deleted source reference', () => {
+    const tmp = seedTmp();
+    const sourceRoot = mkdtempSync(join(tmpdir(), 'xm-codex-sidecars-'));
+    const skillsCopy = join(sourceRoot, 'skills');
+    cpSync(SKILLS, skillsCopy, { recursive: true });
+    copyFileSync(join(REPO, 'package.json'), join(sourceRoot, 'package.json'));
+    const reference = join('references', 'ask-user-question-rule.md');
+    const pluginReference = join(tmp, 'plugins', 'xm', 'skills', 'build', reference);
+    const standaloneReference = join(tmp, '.agents', 'skills', 'xm-build', reference);
+
+    expect(run(['--target', 'codex', '--skills-dir', skillsCopy, '--lib-dir', LIB], { cwd: tmp }).status).toBe(0);
+    expect(existsSync(pluginReference)).toBe(true);
+    expect(existsSync(standaloneReference)).toBe(true);
+
+    unlinkSync(join(skillsCopy, 'build', reference));
+    const reinstall = run(['--target', 'codex', '--skills-dir', skillsCopy, '--lib-dir', LIB], { cwd: tmp });
+    expect(reinstall.status).toBe(0);
+    expect(existsSync(pluginReference)).toBe(false);
+    expect(existsSync(standaloneReference)).toBe(false);
+    expect(run(['--verify', '--target', 'codex'], { cwd: tmp }).status).toBe(0);
   });
   test('codex cachebuster replaces existing build metadata for an active-cache refresh', () => {
     const tmp = seedTmp();
@@ -448,6 +478,32 @@ describe('install-cli — supply-chain guard (R-SEC-02)', () => {
     }));
     const r = run(['--target', 'cursor', '--skills-dir', fakeSkills, '--lib-dir', LIB, '--list', '--allow-unverified'], { cwd: tmp });
     expect(r.status).toBe(0);
+  });
+  test('reference-only checksum drift aborts install', () => {
+    const tmp = seedTmp();
+    const fakeSkillsRoot = mkdtempSync(join(tmpdir(), 'xm-fake-reference-drift-'));
+    const fakeSkills = join(fakeSkillsRoot, 'skills');
+    const fakeSkillDir = join(fakeSkills, 'handoff');
+    mkdirSync(join(fakeSkillDir, 'references', 'nested'), { recursive: true });
+    copyFileSync(join(SKILLS, 'handoff', 'SKILL.md'), join(fakeSkillDir, 'SKILL.md'));
+    writeFileSync(join(fakeSkillDir, 'references', 'nested', 'contract.md'), 'tampered reference\n');
+    const skillBytes = readFileSync(join(fakeSkillDir, 'SKILL.md'));
+    writeFileSync(join(fakeSkillsRoot, 'skills.checksums.json'), JSON.stringify({
+      version: 2,
+      skills: [{
+        plugin: 'handoff',
+        sha256: createHash('sha256').update(skillBytes).digest('hex'),
+        bytes: skillBytes.length,
+        referencesSha256: '0'.repeat(64),
+        referenceFiles: 1,
+        referenceBytes: 19,
+      }],
+    }));
+
+    const r = run(['--target', 'codex', '--skills-dir', fakeSkills, '--lib-dir', LIB, '--list'], { cwd: tmp });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/R-SEC-02/);
+    expect(r.stderr).toMatch(/refs:/);
   });
 });
 

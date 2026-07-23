@@ -58,4 +58,29 @@ describe('sync-bundle.sh --check', () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  test('detects a missing nested x-build reference', () => {
+    const tmp = copyTrackedRepo();
+    try {
+      const sourceFile = join(
+        tmp,
+        'x-build',
+        'skills',
+        'build',
+        'references',
+        'future',
+        'nested-reference.md',
+      );
+      mkdirSync(dirname(sourceFile), { recursive: true });
+      writeFileSync(sourceFile, '# Nested reference\n');
+
+      const r = runSync(tmp);
+      expect(r.status).not.toBe(0);
+      expect(`${r.stdout}\n${r.stderr}`).toContain('MISSING');
+      expect(`${r.stdout}\n${r.stderr}`).toContain('nested-reference.md');
+      expect(readFileSync(sourceFile, 'utf8')).toBe('# Nested reference\n');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });

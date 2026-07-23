@@ -356,6 +356,27 @@ describe('--propagate', () => {
     expect(parsed.summary.success).toBeGreaterThanOrEqual(1);
   });
 
+  test('restores a deleted nested Codex reference sidecar through propagation', () => {
+    const home = mkdtempSync(join(tmpdir(), 'xm-prop-codex-reference-'));
+    expect(runInstall(home, ['codex']).status).toBe(0);
+
+    const relativeReference = join('references', 'phases', 'plan.md');
+    const pluginReference = join(home, 'plugins', 'xm', 'skills', 'build', relativeReference);
+    const standaloneReference = join(home, '.agents', 'skills', 'xm-build', relativeReference);
+    expect(existsSync(pluginReference)).toBe(true);
+    expect(existsSync(standaloneReference)).toBe(true);
+
+    unlinkSync(pluginReference);
+    const result = runPropagate(home);
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.results).toHaveLength(1);
+    expect(parsed.results[0].target).toBe('codex');
+    expect(parsed.results[0].status).toBe('updated');
+    expect(existsSync(pluginReference)).toBe(true);
+    expect(existsSync(standaloneReference)).toBe(true);
+  });
+
   test('skips when content matches and files exist', () => {
     const home = mkdtempSync(join(tmpdir(), 'xm-prop-skip-'));
     // Do a real install for cursor

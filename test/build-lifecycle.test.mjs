@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,6 +17,21 @@ function run(cwd, args, env = {}) {
   return { stdout: out.stdout || '', stderr: out.stderr || '', code: out.status ?? 1 };
 }
 
+function runAsync(cwd, args, env = {}) {
+  return new Promise((done) => {
+    const child = spawn('node', [CLI, ...args], {
+      cwd,
+      env: { ...process.env, XKIT_SERVER: undefined, XM_ROOT: join(cwd, '.xm'), ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('close', (code) => done({ stdout, stderr, code: code ?? 1 }));
+  });
+}
+
 function git(cwd, args) {
   const out = spawnSync('git', args, { cwd, encoding: 'utf8' });
   if (out.status !== 0) throw new Error(out.stderr || `git ${args.join(' ')} failed`);
@@ -31,6 +46,24 @@ function setup(cwd) {
   git(cwd, ['commit', '-qm', 'baseline']);
   run(cwd, ['init', 'demo']);
   return join(cwd, '.xm', 'build', 'projects', 'demo');
+}
+
+function prepareRunnableTask(cwd) {
+  const project = setup(cwd);
+  run(cwd, ['phase', 'set', 'plan']);
+  run(cwd, ['plan', 'Add a settings export command']);
+  run(cwd, ['tasks', 'add', 'Implement export', '--done-criteria', 'works']);
+  const planDir = join(project, 'phases', '02-plan');
+  writeFileSync(join(planDir, 'PRD.md'), '# PRD\n\n## 1. Goal\nExport settings\n');
+  run(cwd, ['steps', 'compute']);
+  run(cwd, ['plan-check']);
+  run(cwd, ['gate', 'pass', 'approved']);
+  expect(run(cwd, ['run', '--json']).code).toBe(0);
+  return project;
+}
+
+function projectTasksPath(project) {
+  return join(project, 'phases', '02-plan', 'tasks.json');
 }
 
 describe('plan entry and conditional interview', () => {
@@ -73,6 +106,117 @@ describe('plan entry and conditional interview', () => {
 });
 
 describe('content-bound approval and shared review groups', () => {
+  test('task-check claims running evidence once and completion is atomic under contention', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-race-'));
+    try {
+      const project = prepareRunnableTask(tmp);
+      writeFileSync(join(tmp, 'package.json'), JSON.stringify({
+        scripts: { test: 'node -e "setTimeout(() => {}, 350)"', lint: 'node -e "setTimeout(() => {}, 350)"' },
+      }));
+
+      const firstCheck = runAsync(tmp, ['task-check', 't1', '--json']);
+      let running = false;
+      for (let attempt = 0; attempt < 40 && !running; attempt++) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+        const tasks = JSON.parse(readFileSync(projectTasksPath(project))).tasks;
+        running = tasks[0].task_check?.state === 'running';
+      }
+      expect(running).toBe(true);
+
+      const duplicate = await runAsync(tmp, ['task-check', 't1', '--json']);
+      expect(duplicate.code).toBe(2);
+      expect(JSON.parse(duplicate.stdout).error).toBe('task_check_in_progress');
+      expect((await firstCheck).code).toBe(0);
+
+      const tasksPath = projectTasksPath(project);
+      const taskData = JSON.parse(readFileSync(tasksPath));
+      taskData.tasks.push({
+        ...taskData.tasks[0], id: 't2', name: 'Second task', status: 'running',
+        task_check: undefined, created_at: new Date().toISOString(),
+      });
+      writeFileSync(tasksPath, JSON.stringify(taskData, null, 2));
+      const reusedCheck = await runAsync(tmp, ['task-check', 't2', '--json']);
+      expect(reusedCheck.code).toBe(0);
+      const reusedEvidence = JSON.parse(reusedCheck.stdout);
+      expect(reusedEvidence.reused).toBe(true);
+      expect(reusedEvidence.reused_from_task).toBe('t1');
+
+      const [firstComplete, secondComplete] = await Promise.all([
+        runAsync(tmp, ['tasks', 'update', 't1', '--status', 'completed', '--no-commit']),
+        runAsync(tmp, ['tasks', 'update', 't1', '--status', 'completed', '--no-commit']),
+      ]);
+      expect(firstComplete.code).toBe(0);
+      expect(secondComplete.code).toBe(0);
+      expect([firstComplete.stdout, secondComplete.stdout].join('')).toContain('already completed');
+      expect(JSON.parse(readFileSync(projectTasksPath(project))).tasks[0].status).toBe('completed');
+      const metrics = readFileSync(join(tmp, '.xm', 'build', 'metrics', 'sessions.jsonl'), 'utf8')
+        .trim().split('\n').map((line) => JSON.parse(line));
+      expect(metrics.filter((event) => event.type === 'task_complete' && event.taskId === 't1')).toHaveLength(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('completion reports missing, running, and stale task-check evidence separately', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-evidence-'));
+    try {
+      const project = prepareRunnableTask(tmp);
+      const missing = run(tmp, ['tasks', 'update', 't1', '--status', 'completed', '--no-commit']);
+      expect(missing.code).toBe(2);
+      expect(missing.stderr).toContain('missing task-check evidence');
+
+      const tasksPath = projectTasksPath(project);
+      const data = JSON.parse(readFileSync(tasksPath));
+      data.tasks[0].task_check = { state: 'running', cwd: tmp, started_at: new Date().toISOString() };
+      writeFileSync(tasksPath, JSON.stringify(data, null, 2));
+      const running = run(tmp, ['tasks', 'update', 't1', '--status', 'completed', '--no-commit']);
+      expect(running.code).toBe(2);
+      expect(running.stderr).toContain('task checks still running');
+
+      expect(run(tmp, ['task-check', 't1', '--json']).code).toBe(2);
+      data.tasks[0].task_check = {
+        state: 'passed', passed: true, cwd: join(tmp, 'wrong-cwd'),
+        contract_hash: 'wrong', worktree_fingerprint: 'wrong', checked_at: new Date().toISOString(),
+      };
+      writeFileSync(tasksPath, JSON.stringify(data, null, 2));
+      const stale = run(tmp, ['tasks', 'update', 't1', '--status', 'completed', '--no-commit']);
+      expect(stale.code).toBe(2);
+      expect(stale.stderr).toContain('stale task-check evidence');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('running evidence lease covers every sequential task-check command', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-running-lease-'));
+    try {
+      const project = prepareRunnableTask(tmp);
+      writeFileSync(join(tmp, 'package.json'), JSON.stringify({ scripts: { test: 'echo test', lint: 'echo lint' } }));
+      const tasksPath = projectTasksPath(project);
+      const data = JSON.parse(readFileSync(tasksPath));
+      data.tasks = [{ id: 't1', status: 'running', task_check: {
+        state: 'running', cwd: tmp, started_at: new Date(Date.now() - 1500).toISOString(),
+      } }];
+      writeFileSync(tasksPath, JSON.stringify(data, null, 2));
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({ build: {
+        task_checks: ['test', 'lint'], check_timeout_ms: 1000,
+      } }));
+
+      const stillRunning = run(tmp, ['tasks', 'update', 't1', '--status', 'completed', '--no-commit']);
+      expect(stillRunning.code).toBe(2);
+      expect(stillRunning.stderr).toContain('task checks still running');
+
+      const expired = JSON.parse(readFileSync(tasksPath));
+      expired.tasks[0].task_check.started_at = new Date(Date.now() - 8000).toISOString();
+      writeFileSync(tasksPath, JSON.stringify(expired, null, 2));
+      const stale = run(tmp, ['tasks', 'update', 't1', '--status', 'completed', '--no-commit']);
+      expect(stale.code).toBe(2);
+      expect(stale.stderr).toContain('stale task-check evidence');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('untracked task-check fingerprint streams content through git and changes with the blob', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-'));
     try {
@@ -283,6 +427,12 @@ describe('content-bound approval and shared review groups', () => {
       expect(status.review_available).toBe(true);
       expect(status.review_command).toBe('review-group build');
       expect(status.next_action).toBe('group-check build');
+      const preCheckRoute = JSON.parse(run(tmp, ['next', '--json']).stdout);
+      expect(preCheckRoute.action).toBe('group-check');
+      expect(preCheckRoute.args).toEqual(['build']);
+      const preCheckPhase = run(tmp, ['phase', 'next']);
+      expect(preCheckPhase.code).toBe(2);
+      expect(preCheckPhase.stdout).toContain('x-build group-check build');
       const checked = run(tmp, ['group-check', 'build', '--json']);
       expect(JSON.parse(checked.stdout).ok).toBe(true);
       const afterCheck = JSON.parse(run(tmp, ['run-status', '--json']).stdout);
@@ -366,7 +516,12 @@ describe('content-bound approval and shared review groups', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-checks-'));
     try {
       const project = setup(tmp);
-      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({ build: { review_mode: 'auto', review_depth: 'checks-only' } }, null, 2));
+      const serialCommand = 'node -e "const fs=require(\'node:fs\');const p=\'.xm/group-quality-count\';const n=Number(fs.existsSync(p)?fs.readFileSync(p,\'utf8\'):0)+1;fs.writeFileSync(p,String(n))"';
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({ build: {
+        review_mode: 'auto', review_depth: 'checks-only',
+        task_checks: ['git diff --check'], group_checks: [serialCommand],
+        serial_quality_command: serialCommand,
+      } }, null, 2));
       writeFileSync(join(tmp, 'package.json'), JSON.stringify({ scripts: { test: 'echo ok', lint: 'echo ok' } }));
       git(tmp, ['add', 'package.json']);
       git(tmp, ['commit', '-qm', 'add package']);
@@ -393,7 +548,14 @@ describe('content-bound approval and shared review groups', () => {
       expect(state.groups.build.status).toBe('passed');
       expect(state.groups.build.decision).toBe('checks-only-pass');
       expect(state.groups.build.group_quality?.passed).toBe(true);
+      expect(state.groups.build.group_quality?.serial_quality?.reused_from).toBe('group:build');
+      expect(readFileSync(join(tmp, '.xm', 'group-quality-count'), 'utf8')).toBe('1');
       expect(run(tmp, ['phase', 'next']).code).toBe(0);
+      // A broken older Verify artifact must not shadow the newer exact group
+      // evidence and force the same serial command to run again.
+      writeFileSync(join(project, 'phases', '04-verify', 'quality-results.json'), '{not-json');
+      expect(run(tmp, ['quality']).code).toBe(0);
+      expect(readFileSync(join(tmp, '.xm', 'group-quality-count'), 'utf8')).toBe('1');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
