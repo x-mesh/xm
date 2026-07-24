@@ -1673,6 +1673,7 @@ function runWorktreeMode(ctx) {
       project, step: currentStep.id, total_steps: stepData.steps.length,
       mode: 'worktree', tasks: [], blocked: true, blocked_reason: 'budget_exceeded',
       worktree_signal: worktreeSignal,
+      ...envelopeContext(),
     }, null, 2));
     process.exitCode = 1;
     return;
@@ -1696,7 +1697,7 @@ function runWorktreeMode(ctx) {
 
   if (dryRun || degraded) {
     // planWorktrees already set mode to 'manual-handoff' (degraded) or 'dry-run'.
-    console.log(JSON.stringify(plan, null, 2));
+    console.log(JSON.stringify({ ...plan, ...envelopeContext() }, null, 2));
     return;
   }
 
@@ -1709,6 +1710,7 @@ function runWorktreeMode(ctx) {
       console.log(JSON.stringify({
         project, tasks: [], status: 'blocked', blocked_reason: started.error,
         review_group: groupId, ref,
+        ...envelopeContext(),
       }, null, 2));
       process.exitCode = 2;
       return;
@@ -1775,6 +1777,7 @@ function runWorktreeMode(ctx) {
       auto: false,
       hint: 'After agents complete + verify, run: xm build worktrees resume [task-id...] (orchestrator finishWorktrees). gk finish is serialized under the target merge lock.',
     },
+    ...envelopeContext(),
   }, null, 2));
 }
 
