@@ -111,6 +111,9 @@ describe('run --worktrees CLI', () => {
     expect(r.status).toBe(0);
     const plan = JSON.parse(r.stdout);
     expect(plan.mode).toBe('dry-run');
+    // ui_mode must not overwrite the worktree backend's `mode` marker (t13).
+    expect(['developer', 'normal']).toContain(plan.ui_mode);
+    expect(typeof plan.autopilot).toBe('boolean');
     expect(plan.degraded).toBe(false);
     expect(plan.parallel_batches).toEqual([['t1', 't2']]);
     expect(plan.tasks).toHaveLength(2);
