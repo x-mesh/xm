@@ -106,6 +106,19 @@ Code with a live MCP session, make the calls yourself.
    - *Target unregistered/ambiguous* — relay the exact message and candidate list;
      ask the user to re-run with the exact id. Never silently pick one.
 
+7. **Check terminal receipts when you need to know whether the target acted.** A delivered
+   toss is not proof of a fix. The receiving inbox sends an immutable `inbox-receipt`
+   memory after resolve/drop. Materialize it only after obtaining the receipt content from
+   mem-mesh, then run:
+   ```bash
+   xm inbox receipt materialize <toss-id> --content '<receipt JSON>' --json
+   xm inbox receipt status <toss-id> --json
+   ```
+   The CLI rejects a receipt for another source project, a receipt whose origin does not
+   match this outbox's recorded target mem-mesh identity, and contradictory late receipts.
+   Replaying the same receipt is idempotent. Do not infer completion from `take`: only a
+   materialized receiver terminal receipt closes the sender outbox lifecycle.
+
 ## Common Rationalizations
 
 | Excuse | Reality |

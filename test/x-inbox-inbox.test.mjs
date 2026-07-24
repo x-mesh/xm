@@ -213,6 +213,41 @@ describe('materializeMemory — durable mem-mesh body to owned inbox ledger', ()
     })).toThrow(InboxMaterializationError);
     expect(existsSync(dir)).toBe(false);
   });
+
+  test('never materializes through another owned ledger or changes an existing item after rejection', () => {
+    const payload = makeItem({ id: 'same-id', to_project: 'receiver', mem_mesh: {} });
+    writeLedger(dir, { ...payload, status: 'in_progress', title: 'local progress' }, { cwd: root });
+
+    expect(() => materializeMemory(join(root, '.xm', 'outbox'), JSON.stringify(payload), {
+      cwd: root, projectId: 'receiver',
+    })).toThrow(InboxMaterializationError);
+    expect(readLedger(dir)).toEqual([expect.objectContaining({
+      id: 'same-id', status: 'in_progress', title: 'local progress',
+    })]);
+
+    expect(() => materializeMemory(dir, JSON.stringify({ ...payload, to_project: 'other-project' }), {
+      cwd: root, projectId: 'receiver',
+    })).toThrow(InboxMaterializationError);
+    expect(readLedger(dir)[0]).toEqual(expect.objectContaining({
+      id: 'same-id', status: 'in_progress', title: 'local progress',
+    }));
+  });
+
+  test('preserves a take that wins between materialization validation and atomic create', () => {
+    const payload = makeItem({ id: 'race-item', to_project: 'receiver', mem_mesh: {} });
+    const result = materializeMemory(dir, JSON.stringify(payload), {
+      cwd: root,
+      projectId: 'receiver',
+      beforePersist: () => {
+        materializeMemory(dir, JSON.stringify(payload), { cwd: root, projectId: 'receiver' });
+        take(dir, 'race-item', { cwd: root });
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({ created: false }));
+    expect(result.item.status).toBe('in_progress');
+    expect(readLedger(dir)).toEqual([expect.objectContaining({ id: 'race-item', status: 'in_progress' })]);
+  });
 });
 
 describe('reconcileItemPin / reconcileAllPins — renotify, at most 1 pin per item', () => {

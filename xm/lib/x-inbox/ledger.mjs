@@ -20,8 +20,12 @@
  * acting on the returned decision.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
+import {
+  existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, lstatSync,
+  realpathSync, unlinkSync, linkSync,
+} from 'node:fs';
 import { join, resolve, sep } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 /**
  * Allowed values for item.status. Presence of a file alone never implies status.
@@ -113,7 +117,69 @@ export function assertOwnedLedgerDir(dir, cwd = process.cwd()) {
   if (absDir !== ownerXmRoot && !absDir.startsWith(ownerXmRoot + sep)) {
     throw new Error(`assertOwnedLedgerDir: refusing to write outside owned .xm/ (dir="${absDir}", owner="${ownerXmRoot}")`);
   }
+
+  // `resolve()` is lexical. A symlink such as `.xm/inbox -> /other/project`
+  // would otherwise make an apparently owned write mutate a foreign checkout.
+  // Reject any existing symlink from `.xm` through the requested ledger dir;
+  // absent components remain valid because writeLedger() creates them later.
+  let current = ownerXmRoot;
+  const suffix = absDir.slice(ownerXmRoot.length).split(sep).filter(Boolean);
+  for (const component of ['.xm', ...suffix]) {
+    if (component !== '.xm') current = join(current, component);
+    if (existsSync(current) && lstatSync(current).isSymbolicLink()) {
+      throw new Error(`assertOwnedLedgerDir: refusing symlinked ledger path (path="${current}")`);
+    }
+  }
   return absDir;
+}
+
+/**
+ * Capture a concrete, non-symlinked ledger directory identity.  The initial
+ * lexical guard above is necessary but not sufficient: another process can
+ * replace `.xm/inbox` between validation and a later filesystem operation.
+ * Every mutating step rechecks this snapshot, so a swap is rejected before
+ * the next write/link/rename rather than silently following the new target.
+ */
+function openOwnedLedgerDir(dir, cwd) {
+  const absDir = assertOwnedLedgerDir(dir, cwd);
+  mkdirSync(absDir, { recursive: true });
+  const stat = lstatSync(absDir);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error(`openOwnedLedgerDir: refusing non-directory ledger path (path="${absDir}")`);
+  }
+  const ownerReal = realpathSync(resolve(cwd));
+  const xmReal = realpathSync(join(resolve(cwd), '.xm'));
+  const dirReal = realpathSync(absDir);
+  if ((xmReal !== ownerReal && !xmReal.startsWith(ownerReal + sep))
+    || (dirReal !== xmReal && !dirReal.startsWith(xmReal + sep))) {
+    throw new Error(`openOwnedLedgerDir: refusing canonical path outside owned .xm/ (path="${dirReal}")`);
+  }
+  return { absDir, cwd, dev: stat.dev, ino: stat.ino, xmReal, dirReal };
+}
+
+function assertStableOwnedLedgerDir(guard) {
+  assertOwnedLedgerDir(guard.absDir, guard.cwd);
+  const stat = lstatSync(guard.absDir);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== guard.dev || stat.ino !== guard.ino) {
+    throw new Error(`writeLedger: ledger directory changed during write (path="${guard.absDir}")`);
+  }
+  const dirReal = realpathSync(guard.absDir);
+  if (dirReal !== guard.dirReal || (dirReal !== guard.xmReal && !dirReal.startsWith(guard.xmReal + sep))) {
+    throw new Error(`writeLedger: ledger directory no longer belongs to this cwd (path="${guard.absDir}")`);
+  }
+}
+
+function makeTempPath(target) {
+  return `${target}.${randomUUID()}.tmp`;
+}
+
+function cleanupTemp(temp, guard) {
+  try {
+    assertStableOwnedLedgerDir(guard);
+    if (existsSync(temp)) unlinkSync(temp);
+  } catch {
+    // If the directory was swapped, do not follow it merely to clean up.
+  }
 }
 
 /**
@@ -156,8 +222,8 @@ export function readLedger(dir) {
  */
 export function writeLedger(dir, item, opts = {}) {
   validateItem(item);
-  const absDir = assertOwnedLedgerDir(dir, opts.cwd ?? process.cwd());
-  mkdirSync(absDir, { recursive: true });
+  const guard = openOwnedLedgerDir(dir, opts.cwd ?? process.cwd());
+  const absDir = guard.absDir;
 
   const target = resolve(absDir, `${item.id}.json`);
   if (!target.startsWith(absDir + sep)) {
@@ -166,10 +232,61 @@ export function writeLedger(dir, item, opts = {}) {
     throw new Error(`writeLedger: refusing to write outside ledger dir (id=${JSON.stringify(item.id)})`);
   }
 
-  const tmp = `${target}.tmp`;
-  writeFileSync(tmp, JSON.stringify(item, null, 2) + '\n');
-  renameSync(tmp, target);
-  return item;
+  const tmp = makeTempPath(target);
+  try {
+    // Test-only injection point for the deterministic symlink-swap harness.
+    // Production callers do not pass it; the subsequent stability assertion
+    // is the same check used immediately before every mutating operation.
+    opts.beforeCommit?.();
+    assertStableOwnedLedgerDir(guard);
+    writeFileSync(tmp, JSON.stringify(item, null, 2) + '\n', { flag: 'wx' });
+    assertStableOwnedLedgerDir(guard);
+    renameSync(tmp, target);
+    assertStableOwnedLedgerDir(guard);
+    return item;
+  } catch (err) {
+    cleanupTemp(tmp, guard);
+    throw err;
+  }
+}
+
+/**
+ * Atomically create an item only if its id does not exist yet. This is the
+ * receiving ingress primitive: unlike writeLedger(), it can never overwrite
+ * a concurrent `take`/`resolve` transition with the transport's `delivered`
+ * snapshot. The temp file is linked into place, so readers observe either no
+ * item or a complete item; `linkSync` fails with EEXIST when another writer
+ * won the same id race.
+ *
+ * @returns {{ item: object, created: boolean }}
+ */
+export function writeLedgerIfAbsent(dir, item, opts = {}) {
+  validateItem(item);
+  const guard = openOwnedLedgerDir(dir, opts.cwd ?? process.cwd());
+  const target = resolve(guard.absDir, `${item.id}.json`);
+  if (!target.startsWith(guard.absDir + sep)) {
+    throw new Error(`writeLedgerIfAbsent: refusing to write outside ledger dir (id=${JSON.stringify(item.id)})`);
+  }
+  const tmp = makeTempPath(target);
+  try {
+    opts.beforeCommit?.();
+    assertStableOwnedLedgerDir(guard);
+    writeFileSync(tmp, JSON.stringify(item, null, 2) + '\n', { flag: 'wx' });
+    assertStableOwnedLedgerDir(guard);
+    try {
+      linkSync(tmp, target);
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err;
+      assertStableOwnedLedgerDir(guard);
+      const existing = readLedger(guard.absDir).find((candidate) => candidate.id === item.id);
+      if (existing) return { item: existing, created: false };
+      throw new Error(`writeLedgerIfAbsent: existing item ${JSON.stringify(item.id)} was unreadable`);
+    }
+    assertStableOwnedLedgerDir(guard);
+    return { item, created: true };
+  } finally {
+    cleanupTemp(tmp, guard);
+  }
 }
 
 /**

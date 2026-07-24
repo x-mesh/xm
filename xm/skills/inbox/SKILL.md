@@ -64,8 +64,10 @@ plus `xm inbox record --scope inbox` — see step 5 below.
    ```
    기존 pin처럼 toss id가 없는 항목은 title 또는 일반어로 추측 검색하지 않습니다. pin id와
    title을 보여 주고 발신 측에 재전달을 요청합니다. 이 CLI는 네트워크를 호출하지 않고
-   **현재 cwd의** `.xm/inbox/<id>.json`에만 기록합니다. malformed JSON이나 `to_project`가
-   현재 프로젝트와 다른 항목은 거부하고, 이미 같은 id가 있으면 로컬 상태를 바꾸지 않습니다.
+   **현재 cwd의** `.xm/inbox/<id>.json`에만 기록합니다. 따라서 materialize 명령은 반드시
+   수신 프로젝트를 cwd로 하여 실행하고, 발신 프로젝트 경로·outbox·다른 checkout을 인자로
+   넘기지 않습니다. malformed JSON이나 `to_project`가 현재 프로젝트와 다른 항목은 거부하고,
+   이미 같은 id가 있으면 로컬 상태를 바꾸지 않습니다.
    MCP 검색을 할 수 없으면 그 사실을 밝히고 기존 로컬 원장만 조회합니다.
 2. **`xm inbox list`** — materialize 뒤에 실행합니다. Prints unresolved items first, then
    in-progress, then resolved, then dismissed; add `--json` when you need to act on fields programmatically.
@@ -76,10 +78,17 @@ plus `xm inbox record --scope inbox` — see step 5 below.
    (why / repro command+output / fix direction) to the user, or use it directly as the
    starting point for a fix — don't re-derive it from scratch. `take` writes
    `status: "in_progress"`; it never claims completion.
-5. **`xm inbox resolve <id>`** only after the implementation and relevant verification
-   have completed. `done` is an alias. This writes the terminal `status: "resolved"`
-   and starts the retention clock independently of `take`.
-6. **`xm inbox drop <id>`** when it doesn't need action. If it's ambiguous whether an
+5. **`xm inbox resolve <id> --summary "..." --verification "..." --json`** only after the implementation and relevant verification
+   have completed. `done` is an alias. This writes the terminal `status: "resolved"`,
+   creates an immutable receipt (terminal state, time, summary and verification evidence),
+   and returns `mcp_calls.add`. Call `mcp__mem-mesh__add` with that object **verbatim**;
+   then record its returned memory id with `xm inbox receipt record <id> --memory-id <id>`.
+   If MCP delivery fails or is unavailable, the terminal receipt remains locally `pending`;
+   do not claim the sender was notified. Use `xm inbox receipt retry <id> --json` in a
+   later MCP-capable session to obtain the same payload, and `receipt status <id>` to
+   report the local transport state.
+6. **`xm inbox drop <id> --json`** when it doesn't need action. It follows the same
+   receipt-delivery process as resolve. If it's ambiguous whether an
    item is relevant, confirm with the user before dropping — treat the drop as final in
    conversation even though dismissed items remain recoverable in the archive on disk.
 7. **Re-notify a dead pin yourself, when relevant.** For any `delivered`/`in_progress`
@@ -121,6 +130,7 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 - You used a generic memory search instead of an inbox pin's toss id to materialize a delivery.
 - You dropped an item without the user's confirmation when its relevance was unclear.
 - You called `resolve` before implementation and verification completed.
+- You treated a terminal local state as proof that the sender received its receipt.
 - You claimed pin re-notification happened without actually calling `pin_get`/`pin_add`.
 - You called `pin_add` to renotify but never ran `xm inbox record --scope inbox` afterward.
 - You had no MCP tools available and didn't tell the user re-notification was skipped.
@@ -131,6 +141,8 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 - Every item referenced by `id`, matching what `list` printed.
 - `take`'s full body (why/repro/fix) was relayed or acted on, not summarized away.
 - Completed work was closed with `resolve`, while unfinished work remained `in_progress`.
+- For resolve/drop, the receipt MCP call was delivered verbatim and its memory id recorded;
+  otherwise the pending transport state was stated plainly and left retryable.
 - Any pin re-notification you performed was via real `pin_get`/`pin_add` MCP calls, followed by `xm inbox record --scope inbox` — never assumed or skipped silently.
 - If no MCP tools were available, that limitation was stated plainly, not glossed over.
 - No direct file edits under `.xm/inbox/` — only via the CLI subcommands.

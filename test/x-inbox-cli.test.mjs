@@ -11,9 +11,9 @@
  * or this repo's own .xm/outbox / .xm/inbox.
  */
 import { describe, test, expect } from 'bun:test';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import {
-  mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync,
+  mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -52,6 +52,17 @@ function runCli(args, { home, cwd }) {
     timeout: 10000,
   });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+function runCliAsync(args, { home, cwd }) {
+  return new Promise((resolveRun, reject) => {
+    const child = spawn('node', [CLI_PATH, ...args], { env: { ...process.env, HOME: home }, cwd });
+    let stdout = ''; let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', (status) => resolveRun({ status, stdout, stderr }));
+  });
 }
 
 describe('xm inbox help', () => {
@@ -306,6 +317,66 @@ describe('xm inbox take / resolve — start and completion are separate', () => 
       const listed = JSON.parse(runCli(['list', '--json'], { home, cwd: projectDir }).stdout);
       expect(listed.items[0].status).toBe('resolved');
       expect(typeof listed.items[0].resolved_at).toBe('string');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('xm inbox terminal receipt CLI idempotency', () => {
+  test('a repeated resolve returns the original immutable receipt payload; take cannot reopen it', () => {
+    const home = mkdtempSync(join(tmpdir(), 'x-inbox-cli-home-'));
+    const projectDir = mkdtempSync(join(tmpdir(), 'x-inbox-cli-project-'));
+    try {
+      const inbox = join(projectDir, '.xm', 'inbox');
+      mkdirSync(inbox, { recursive: true });
+      writeFileSync(join(inbox, 'toss-terminal-repeat.json'), JSON.stringify({
+        id: 'toss-terminal-repeat', from_project: 'sender-mesh', to_project: 'receiver-mesh',
+        created_at: '2026-07-24T00:00:00.000Z', status: 'delivered', title: 'repeat safely',
+        why: '', repro: { command: 'cmd', output: 'out', truncated: false },
+        anchors: { from_commit: null, to_files: [] }, fix_direction: 'fix', mem_mesh: {},
+      }, null, 2));
+
+      const first = runCli(['resolve', 'toss-terminal-repeat', '--summary', 'fixed', '--verification', 'bun test', '--json'], { home, cwd: projectDir });
+      const second = runCli(['resolve', 'toss-terminal-repeat', '--json'], { home, cwd: projectDir });
+      expect(first.status).toBe(0);
+      expect(second.status).toBe(0);
+      expect(JSON.parse(second.stdout).mcp_calls).toEqual(JSON.parse(first.stdout).mcp_calls);
+
+      const takeTerminal = runCli(['take', 'toss-terminal-repeat'], { home, cwd: projectDir });
+      expect(takeTerminal.status).toBe(0);
+      const onDisk = JSON.parse(readFileSync(join(inbox, 'toss-terminal-repeat.json'), 'utf8'));
+      expect(onDisk.status).toBe('resolved');
+      expect(onDisk.receipt.summary).toBe('fixed');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  test('concurrent resolve/drop choose exactly one terminal state and one immutable receipt', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'x-inbox-cli-home-'));
+    const projectDir = mkdtempSync(join(tmpdir(), 'x-inbox-cli-project-'));
+    try {
+      const inbox = join(projectDir, '.xm', 'inbox');
+      mkdirSync(inbox, { recursive: true });
+      writeFileSync(join(inbox, 'toss-terminal-race.json'), JSON.stringify({
+        id: 'toss-terminal-race', from_project: 'sender-mesh', to_project: 'receiver-mesh',
+        created_at: '2026-07-24T00:00:00.000Z', status: 'delivered', title: 'race safely',
+        why: '', repro: { command: 'cmd', output: 'out', truncated: false },
+        anchors: { from_commit: null, to_files: [] }, fix_direction: 'fix', mem_mesh: {},
+      }, null, 2));
+      const commands = Array.from({ length: 30 }, (_, i) => [i % 2 ? 'resolve' : 'drop', 'toss-terminal-race', '--json']);
+      const results = await Promise.all(commands.map((args) => runCliAsync(args, { home, cwd: projectDir })));
+      // Exactly one state wins; same-state callers may then be idempotent 0,
+      // opposite-state callers must reject rather than create another receipt.
+      expect(results.some((result) => result.status === 0)).toBe(true);
+      const item = JSON.parse(readFileSync(join(inbox, 'toss-terminal-race.json'), 'utf8'));
+      expect(['resolved', 'dismissed']).toContain(item.status);
+      expect(item.receipt.terminal_state).toBe(item.status);
+      const receiptFiles = readdirSync(join(projectDir, '.xm', 'receipts')).filter((file) => file.includes('toss-terminal-race'));
+      expect(receiptFiles).toHaveLength(1);
     } finally {
       rmSync(home, { recursive: true, force: true });
       rmSync(projectDir, { recursive: true, force: true });
