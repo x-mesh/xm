@@ -21,15 +21,34 @@ import {
 
 // ── cmdInit ─────────────────────────────────────────────────────────
 
-/** Keep the cache out of source control without rewriting a user's ignore file. */
+/** Keep the cache out of source control without creating an untracked root file. */
 export function ensureCacheGitignore(root = repoRoot()) {
-  const filePath = join(root, '.gitignore');
-  const current = existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
-  const ignored = current.split(/\r?\n/).some((line) => {
+  const rootIgnore = join(root, '.gitignore');
+  const rootRules = existsSync(rootIgnore) ? readFileSync(rootIgnore, 'utf8') : '';
+  // A tracked project rule already covers the cache. Never rewrite it: doing so
+  // creates an untracked .gitignore that correctly fails the review-group
+  // dirty-worktree guard before the user has a chance to commit it.
+  const hasCacheRule = (text) => text.split(/\r?\n/).some((line) => {
     const rule = line.trim();
     return rule === '.xm/cache/' || rule === '/.xm/cache/' || rule === '.xm/cache';
   });
-  if (ignored) return false;
+  if (hasCacheRule(rootRules)) return false;
+
+  let filePath;
+  try {
+    const gitDir = execSync('git rev-parse --absolute-git-dir', {
+      cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (!gitDir) return false;
+    filePath = join(gitDir, 'info', 'exclude');
+  } catch {
+    // x-build also works outside a Git checkout; there is no local exclude
+    // file in that case, and no review-group worktree to protect.
+    return false;
+  }
+
+  const current = existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
+  if (hasCacheRule(current)) return false;
 
   const eol = current.includes('\r\n') ? '\r\n' : '\n';
   const separator = current && !current.endsWith('\n') && !current.endsWith('\r') ? eol : '';

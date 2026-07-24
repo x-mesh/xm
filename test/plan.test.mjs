@@ -21,7 +21,9 @@ function run(args, opts = {}) {
   // these tests read exactly the config the test wrote — and nothing else.
   const result = spawnSync('node', [CLI_PATH, ...args], {
     cwd,
-    env: { ...process.env, XKIT_SERVER: undefined, XM_ROOT: join(cwd, '.xm'), ...opts.env },
+    // X_BUILD_ROOT outranks XM_ROOT in core.mjs, and sibling test files set it at
+    // module scope — clear it so an inherited value can't redirect this child.
+    env: { ...process.env, XKIT_SERVER: undefined, X_BUILD_ROOT: undefined, XM_ROOT: join(cwd, '.xm'), ...opts.env },
     encoding: 'utf8',
     timeout: 10000,
   });
