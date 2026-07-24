@@ -12,8 +12,8 @@
  *        [--from-commit <hash>] [--json]
  *   list [--json]
  *   take <id>
- *   resolve|done <id> [--json]
- *   drop <id>
+ *   resolve|done <id> [--summary <text>] [--verification <text>] [--json]
+ *   drop <id> [--summary <text>] [--verification <text>] [--json]
  *   record <id> [--pin-id <id>] [--memory-id <id>] [--scope outbox|inbox] [--json]
  *   materialize --content <memory-json> [--memory-id <id>] [--pin-id <id>] [--json]
  *
@@ -39,11 +39,15 @@ import { join } from 'node:path';
 
 import { toss, describeCapture } from './x-inbox/toss.mjs';
 import {
-  list as listLedger, take, resolveItem, drop, InboxItemNotFoundError,
+  list as listLedger, take, InboxItemNotFoundError,
   materializeMemory, InboxMaterializationError,
 } from './x-inbox/inbox.mjs';
-import { recordMemMesh, LedgerItemNotFoundError } from './x-inbox/ledger.mjs';
+import { recordMemMesh, LedgerItemNotFoundError, readLedger } from './x-inbox/ledger.mjs';
 import { archiveExpired } from './x-inbox/retention.mjs';
+import {
+  buildReceiptPayload, materializeReceipt,
+  recordReceiptTransport, receiptStatus, transitionWithReceipt, ReceiptError,
+} from './x-inbox/receipt.mjs';
 
 /** Every flag this CLI defines. Used to tell "flag with no value" apart from
  *  "flag whose value merely looks like a flag" — see getFlag(). */
@@ -51,6 +55,7 @@ const KNOWN_FLAGS = new Set([
   '--command', '--output', '--output-file', '--fix', '--why', '--to-files',
   '--from-commit', '--pin-id', '--memory-id', '--scope', '--json', '--help',
   '--content',
+  '--summary', '--verification', '--receipt-memory-id',
 ]);
 
 /**
@@ -257,7 +262,7 @@ async function resolveCmd(args) {
   const id = args[0];
   const json = hasFlag(args, '--json');
   if (!nonEmptyStr(id)) {
-    process.stderr.write('Usage: xm inbox resolve <id> [--json]\n');
+    process.stderr.write('Usage: xm inbox resolve <id> [--summary <text>] [--verification <text>] [--json]\n');
     return 2;
   }
   const cwd = process.cwd();
@@ -265,12 +270,16 @@ async function resolveCmd(args) {
   archiveExpired(dir, { cwd });
 
   try {
-    const item = resolveItem(dir, id, { cwd });
-    if (json) process.stdout.write(`${JSON.stringify({ ok: true, item }, null, 2)}\n`);
-    else process.stdout.write(`✅ resolved: ${item.id}  ${item.title}\n`);
+    const result = transitionWithReceipt(dir, id, 'resolved', {
+      cwd, summary: getFlag(args, '--summary') || '', verification: getFlag(args, '--verification') || '',
+    });
+    const { item: withReceipt, receipt } = result;
+    const payload = buildReceiptPayload(receipt);
+    if (json) process.stdout.write(`${JSON.stringify({ ok: true, item: withReceipt, mcp_calls: payload }, null, 2)}\n`);
+    else process.stdout.write(`✅ resolved: ${withReceipt.id}  ${withReceipt.title}\n`);
     return 0;
   } catch (err) {
-    if (err instanceof InboxItemNotFoundError) {
+    if (err instanceof InboxItemNotFoundError || err instanceof ReceiptError) {
       process.stderr.write(`xm inbox resolve: ${err.message}\n`);
       return 1;
     }
@@ -281,7 +290,7 @@ async function resolveCmd(args) {
 async function dropCmd(args) {
   const id = args[0];
   if (!nonEmptyStr(id)) {
-    process.stderr.write('Usage: xm inbox drop <id>\n');
+    process.stderr.write('Usage: xm inbox drop <id> [--summary <text>] [--verification <text>] [--json]\n');
     return 2;
   }
   const cwd = process.cwd();
@@ -289,12 +298,59 @@ async function dropCmd(args) {
   archiveExpired(dir, { cwd });
 
   try {
-    const item = drop(dir, id, { cwd });
-    process.stdout.write(`🗑 dropped: ${item.id}  ${item.title}\n`);
+    const result = transitionWithReceipt(dir, id, 'dismissed', {
+      cwd, summary: getFlag(args, '--summary') || '', verification: getFlag(args, '--verification') || '',
+    });
+    const { item: withReceipt, receipt } = result;
+    if (hasFlag(args, '--json')) process.stdout.write(`${JSON.stringify({ ok: true, item: withReceipt, mcp_calls: buildReceiptPayload(receipt) }, null, 2)}\n`);
+    else process.stdout.write(`🗑 dropped: ${withReceipt.id}  ${withReceipt.title}\n`);
     return 0;
   } catch (err) {
-    if (err instanceof InboxItemNotFoundError) {
+    if (err instanceof InboxItemNotFoundError || err instanceof ReceiptError) {
       process.stderr.write(`xm inbox drop: ${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
+}
+
+async function receiptCmd(args) {
+  const action = args[0];
+  const rest = args.slice(1);
+  const cwd = process.cwd();
+  const id = rest[0];
+  const json = hasFlag(rest, '--json');
+  if (!nonEmptyStr(id)) { process.stderr.write('Usage: xm inbox receipt <status|retry|record|materialize> <toss-id> [--content JSON] [--memory-id id] [--json]\n'); return 2; }
+  try {
+    if (action === 'status') {
+      const value = receiptStatus(cwd, id);
+      process.stdout.write(json ? `${JSON.stringify({ ok: true, ...value }, null, 2)}\n` : `${value.scope}: ${value.status}; receipt=${value.receipt?.transport ?? 'none'}\n`);
+      return 0;
+    }
+    if (action === 'retry') {
+      const receipt = readLedger(join(cwd, '.xm', 'receipts')).find((entry) => entry.receipt?.toss_id === id)?.receipt;
+      if (!receipt) throw new ReceiptError(`no local receipt for ${id}`);
+      process.stdout.write(`${JSON.stringify({ ok: true, mcp_calls: buildReceiptPayload(receipt) }, null, 2)}\n`);
+      return 0;
+    }
+    if (action === 'record') {
+      const memoryId = getFlag(rest, '--memory-id');
+      const item = recordReceiptTransport(inboxDirFor(cwd), id, memoryId, { cwd });
+      process.stdout.write(json ? `${JSON.stringify({ ok: true, item }, null, 2)}\n` : `receipt delivery recorded: ${id}\n`);
+      return 0;
+    }
+    if (action === 'materialize') {
+      const content = getFlag(rest, '--content');
+      if (!nonEmptyStr(content)) throw new ReceiptError('--content is required');
+      const result = materializeReceipt(outboxDirFor(cwd), content, { cwd });
+      process.stdout.write(json ? `${JSON.stringify({ ok: true, ...result }, null, 2)}\n` : `receipt ${result.applied ? 'applied' : 'already applied'}: ${id}\n`);
+      return 0;
+    }
+    throw new ReceiptError('receipt action must be status, retry, record, or materialize');
+  } catch (err) {
+    if (err instanceof ReceiptError || err instanceof LedgerItemNotFoundError) {
+      if (json) process.stdout.write(`${JSON.stringify({ ok: false, reason: 'receipt_rejected', message: err.message }, null, 2)}\n`);
+      else process.stderr.write(`xm inbox receipt: ${err.message}\n`);
       return 1;
     }
     throw err;
@@ -417,10 +473,11 @@ Usage:
           [--why <text>] [--output-file <path>] [--to-files a,b,c] [--from-commit <hash>] [--json]
   xm inbox list [--json]
   xm inbox take <id>
-  xm inbox resolve <id> [--json]   # alias: done
-  xm inbox drop <id>
+  xm inbox resolve <id> [--summary <text>] [--verification <text>] [--json]   # alias: done
+  xm inbox drop <id> [--summary <text>] [--verification <text>] [--json]
   xm inbox record <id> --pin-id <id> [--memory-id <id>] [--scope outbox|inbox] [--json]
   xm inbox materialize --content <memory-json> [--memory-id <id>] [--pin-id <id>] [--json]
+  xm inbox receipt <status|retry|record|materialize> <toss-id> [...]
 
 This CLI never calls mem-mesh itself — \`toss --json\` prints the MCP call
 arguments for the skill to use, and \`record\` writes the resulting ids back.
@@ -440,6 +497,7 @@ switch (sub) {
   case 'drop': code = await dropCmd(rest); break;
   case 'record': code = await recordCmd(rest); break;
   case 'materialize': code = await materializeCmd(rest); break;
+  case 'receipt': code = await receiptCmd(rest); break;
   case 'help': case '--help': case '-h': code = helpCmd(); break;
   default:
     process.stderr.write(`Unknown subcommand: ${sub}\nRun: xm inbox help\n`);

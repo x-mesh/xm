@@ -354,6 +354,10 @@ export async function toss(params = {}) {
 
   const outboxDir = join(cwd, '.xm', 'outbox');
   const outboxPath = join(outboxDir, `${item.id}.json`);
+  // Keep the canonical target identity locally. The registry id in
+  // `to_project` is intentionally allowed to differ from its mem-mesh id;
+  // terminal receipts use the latter and are rejected unless it matches.
+  item = { ...item, delivery_target_project: target.memMeshProjectId };
   try {
     writeLedger(outboxDir, item, { cwd });
   } catch (err) {

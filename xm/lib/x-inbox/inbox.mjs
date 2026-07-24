@@ -24,9 +24,10 @@
  */
 
 import {
-  readLedger, writeLedger, reconcile, RECONCILE_ACTIONS, validateItem,
+  readLedger, writeLedger, writeLedgerIfAbsent, reconcile, RECONCILE_ACTIONS, validateItem,
 } from './ledger.mjs';
 import { resolveMemMeshProjectId } from './target.mjs';
+import { join, resolve } from 'node:path';
 
 /**
  * Sort rank for `list()` — new work first, then work in progress, then
@@ -63,6 +64,26 @@ export class InboxMaterializationError extends Error {
 }
 
 /**
+ * Materialization is intentionally narrower than the shared ledger writer:
+ * it is the receiving-side ingress and may only create files in this cwd's
+ * `.xm/inbox`. `writeLedger()` also supports other owned ledgers such as an
+ * outbox, which is right for its generic callers but wrong for a body read
+ * from mem-mesh. Check before reading for a duplicate too, so this API cannot
+ * be used to inspect another project's ledger.
+ */
+function assertOwnedInboxDir(dir, cwd) {
+  const owner = resolve(cwd);
+  const expected = join(owner, '.xm', 'inbox');
+  const received = resolve(owner, dir);
+  if (received !== expected) {
+    throw new InboxMaterializationError(
+      `refusing to materialize outside receiving inbox (dir=${JSON.stringify(received)}, expected=${JSON.stringify(expected)})`,
+    );
+  }
+  return expected;
+}
+
+/**
  * Materialize one durable mem-mesh memory body into this project's inbox.
  *
  * The caller supplies the memory's `content` (the JSON body produced by
@@ -79,7 +100,7 @@ export class InboxMaterializationError extends Error {
  *
  * @param {string} dir receiving `.xm/inbox` directory
  * @param {string|object} memoryContent JSON memory content or an already-parsed item
- * @param {{ cwd?: string, projectId?: string, memoryId?: string, pinId?: string }} [opts]
+ * @param {{ cwd?: string, projectId?: string, memoryId?: string, pinId?: string, beforePersist?: () => void }} [opts]
  * @returns {{ item: object, created: boolean }}
  */
 export function materializeMemory(dir, memoryContent, opts = {}) {
@@ -97,6 +118,7 @@ export function materializeMemory(dir, memoryContent, opts = {}) {
   }
 
   const cwd = opts.cwd ?? process.cwd();
+  const inboxDir = assertOwnedInboxDir(dir, cwd);
   const receiverProject = opts.projectId ?? resolveMemMeshProjectId(cwd, { allowEnvOverride: true });
   if (payload.to_project !== receiverProject) {
     throw new InboxMaterializationError(
@@ -104,15 +126,14 @@ export function materializeMemory(dir, memoryContent, opts = {}) {
     );
   }
 
-  const existing = readLedger(dir).find((item) => item.id === payload.id);
-  if (existing) return { item: existing, created: false };
-
   const mem_mesh = { ...payload.mem_mesh };
   if (typeof opts.memoryId === 'string' && opts.memoryId.length > 0) mem_mesh.memory_id = opts.memoryId;
   if (typeof opts.pinId === 'string' && opts.pinId.length > 0) mem_mesh.pin_id = opts.pinId;
   const item = { ...payload, status: 'delivered', mem_mesh };
-  writeLedger(dir, item, { cwd });
-  return { item, created: true };
+  // `writeLedgerIfAbsent` performs the duplicate check atomically. A second
+  // materialization can race with another session's take/resolve, but it may
+  // only return that local state — never overwrite it with `delivered`.
+  return writeLedgerIfAbsent(inboxDir, item, { cwd, beforeCommit: opts.beforePersist });
 }
 
 function findItemOrThrow(dir, id) {
@@ -155,6 +176,10 @@ export function list(dir) {
  */
 export function take(dir, id, opts = {}) {
   const item = findItemOrThrow(dir, id);
+  // A terminal report has an immutable receipt/provenance chain. Re-opening
+  // it through `take` would leave that receipt attached to an in-progress
+  // item and make a later terminal transition contradictory.
+  if (item.status === 'resolved' || item.status === 'dismissed') return item;
   const { resolved_at: _resolvedAt, ...openItem } = item;
   const updated = {
     ...openItem,
@@ -177,7 +202,9 @@ export function take(dir, id, opts = {}) {
  */
 export function resolveItem(dir, id, opts = {}) {
   const item = findItemOrThrow(dir, id);
-  if (item.status === 'resolved') return item;
+  // Terminal states are immutable. A late resolve must not turn a prior
+  // dismissal into a contradictory terminal receipt (or vice versa).
+  if (item.status === 'resolved' || item.status === 'dismissed') return item;
   const at = new Date(opts.now ?? Date.now()).toISOString();
   const updated = { ...item, status: 'resolved', updated_at: at, resolved_at: at };
   writeLedger(dir, updated, opts);
@@ -196,6 +223,7 @@ export function resolveItem(dir, id, opts = {}) {
  */
 export function drop(dir, id, opts = {}) {
   const item = findItemOrThrow(dir, id);
+  if (item.status === 'resolved' || item.status === 'dismissed') return item;
   const at = new Date(opts.now ?? Date.now()).toISOString();
   const updated = { ...item, status: 'dismissed', updated_at: at, resolved_at: at };
   writeLedger(dir, updated, opts);

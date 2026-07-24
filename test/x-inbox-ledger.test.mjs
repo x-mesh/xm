@@ -4,7 +4,9 @@
  * Covers cross-project-handoff t2 done_criteria.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync, existsSync, symlinkSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -168,6 +170,38 @@ describe('writeLedger — cwd-ownership path-escape guard', () => {
       expect(existsSync(otherXm)).toBe(false);
     } finally {
       rmSync(otherProject, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a symlinked inbox instead of writing into its external target', () => {
+    const external = mkdtempSync(join(tmpdir(), 'x-inbox-external-'));
+    try {
+      mkdirSync(join(root, '.xm'), { recursive: true });
+      symlinkSync(external, join(root, '.xm', 'inbox'));
+
+      expect(() => writeLedger(join(root, '.xm', 'inbox'), makeItem(), { cwd: root }))
+        .toThrow(/symlinked ledger path/);
+      expect(existsSync(join(external, 'toss-20260719-a1b2c3.json'))).toBe(false);
+    } finally {
+      rmSync(external, { recursive: true, force: true });
+    }
+  });
+
+  test('detects a deterministic symlink swap before any external write', () => {
+    const external = mkdtempSync(join(tmpdir(), 'x-inbox-external-'));
+    const inbox = join(root, '.xm', 'inbox');
+    try {
+      mkdirSync(inbox, { recursive: true });
+      expect(() => writeLedger(inbox, makeItem(), {
+        cwd: root,
+        beforeCommit: () => {
+          rmSync(inbox, { recursive: true, force: true });
+          symlinkSync(external, inbox);
+        },
+      })).toThrow(/symlinked ledger path|ledger directory changed/);
+      expect(existsSync(join(external, 'toss-20260719-a1b2c3.json'))).toBe(false);
+    } finally {
+      rmSync(external, { recursive: true, force: true });
     }
   });
 
