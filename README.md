@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.12.2-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.13.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -417,7 +417,7 @@ This is a *capability*, available today; proving it produces measurably better o
 | [x-wt](#x-wt) | Session worktree — isolate & land back | `/xm:wt` |
 | xm | Bundle + config + pipeline | `/xm pipeline release` |
 
-**Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `x-sync` multi-machine sync server — see [x-ship](#x-ship) and [x-sync](#x-sync) below.
+**Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `x-sync` multi-machine sync server · `/xm:toss` + `/xm:inbox` cross-project bug handoff — see [x-ship](#x-ship), [x-sync](#x-sync) and [toss / inbox](#cross-project-handoff--toss--inbox) below.
 
 ---
 
@@ -1094,6 +1094,31 @@ Session worktree. Runs the **whole current session** in an isolated git worktree
 ```
 
 The harness `EnterWorktree`/`ExitWorktree` tools move the session cwd; `git-kit promote` does the merge-back (commit + merge into parent, no network). `start` records the parent as `branch.<name>.gk-parent` so `land` merges into the branch you actually came from. Nothing is pushed — you push the parent yourself when ready. State follows the worktree (each checkout keeps its own `.xm/`); config stays shared with the main repo.
+
+---
+
+### Cross-project handoff — toss / inbox
+
+A repro found while working in project A often implicates project B. `/xm:toss` files the report into B without switching sessions or directories; `/xm:inbox` is the receiving end.
+
+```
+/xm:toss git-kit "worktree add drops gitignored state"   # send a report to another registered project
+/xm:inbox                                                # see what other projects sent here
+```
+
+Toss captures the repro command **and its actual output** (secret-redacted, tail-bounded) plus a concrete fix direction — it refuses a "be careful"-level report with no repro. The sender writes a durable record into its own `.xm/outbox/<id>.json` and never touches the target's `.xm/`. Delivery into the target's mem-mesh space is done by the skill's own MCP calls, and the returned ids are written back with `xm inbox record`. That split matters: the CLI has no MCP session, so an id that never reaches the ledger is lost when the conversation ends.
+
+On the receiving side an item moves `take` → `resolve`, or `drop` if it needs no action:
+
+```
+xm inbox list                    # unresolved items first
+xm inbox take <id>               # start work on one
+xm inbox resolve <id> --summary "..." --verification "..."
+xm inbox drop <id>               # no action needed
+xm inbox receipt status <id>     # did the sender actually receive the receipt?
+```
+
+`take` only marks an item as picked up — `resolve` is what closes it, and it expects the fix to be verified first. Resolving sends a receipt back to the sender; when that delivery fails, `xm inbox receipt retry <id>` re-sends it rather than silently reporting success.
 
 ---
 

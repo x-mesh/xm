@@ -9,10 +9,18 @@ import { resolveTaskChecks, taskCheckFingerprint } from '../x-build/lib/x-build/
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI = join(__dirname, '..', 'x-build', 'lib', 'x-build-cli.mjs');
 
+// X_BUILD_ROOT wins over XM_ROOT in core.mjs's ROOT resolution, and sibling test
+// files (core-unit, cost-engine) set it at module scope — under bun's shared
+// process that value leaks into our children and points them at a foreign root,
+// so every spawned CLI must clear it explicitly.
+function childEnv(cwd, env) {
+  return { ...process.env, XKIT_SERVER: undefined, X_BUILD_ROOT: undefined, XM_ROOT: join(cwd, '.xm'), ...env };
+}
+
 function run(cwd, args, env = {}) {
   const out = spawnSync('node', [CLI, ...args], {
     cwd, encoding: 'utf8', timeout: 10000,
-    env: { ...process.env, XKIT_SERVER: undefined, XM_ROOT: join(cwd, '.xm'), ...env },
+    env: childEnv(cwd, env),
   });
   return { stdout: out.stdout || '', stderr: out.stderr || '', code: out.status ?? 1 };
 }
@@ -21,7 +29,7 @@ function runAsync(cwd, args, env = {}) {
   return new Promise((done) => {
     const child = spawn('node', [CLI, ...args], {
       cwd,
-      env: { ...process.env, XKIT_SERVER: undefined, XM_ROOT: join(cwd, '.xm'), ...env },
+      env: childEnv(cwd, env),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';

@@ -178,6 +178,20 @@ export function writeJSON(path, data) {
   renameSync(tmp, path);
 }
 
+// Park the thread without burning CPU. Every modifyJSON caller is synchronous,
+// so there is no await to yield on; Atomics.wait on a private SharedArrayBuffer
+// is the only real sleep available here.
+const SLEEP_SAB = new Int32Array(new SharedArrayBuffer(4));
+function sleepSync(ms) {
+  if (!(ms > 0)) return;
+  Atomics.wait(SLEEP_SAB, 0, 0, ms);
+}
+
+// How long a writer waits for a contended lock before failing loud. Stays well
+// under the 10s stale-reclaim window, so a lock left by a crashed process gets
+// reclaimed rather than waited out.
+const LOCK_WAIT_MS = 2500;
+
 /**
  * Atomic read-modify-write with file locking.
  * Use for high-contention files (e.g., tasks.json) where parallel agents
@@ -192,7 +206,9 @@ export function modifyJSON(path, mutator) {
   // Acquire the lock FIRST (separate from running the mutator), so a mutator's
   // CliError propagates cleanly instead of being mistaken for lock contention.
   let acquired = false;
-  for (let attempt = 0; attempt < 50 && !acquired; attempt++) {
+  const waitStarted = Date.now();
+  let backoffMs = 1;
+  while (!acquired && Date.now() - waitStarted < LOCK_WAIT_MS) {
     try {
       writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
       acquired = true;
@@ -203,16 +219,20 @@ export function modifyJSON(path, mutator) {
       try {
         if (Date.now() - statSync(lockPath).mtimeMs > 10000) { unlinkSync(lockPath); continue; }
       } catch { continue; /* lock vanished between stat and now — retry immediately */ }
-      // Lock genuinely held by a live writer — brief spin, then retry.
-      const deadline = Date.now() + 20;
-      while (Date.now() < deadline) { /* spin */ }
+      // Lock genuinely held by a live writer. Sleep for real instead of spinning:
+      // a busy-spin burns the very CPU the lock holder needs to finish, so under
+      // load (N concurrent writers) every waiter slowed everyone down and the old
+      // fixed 50×20ms budget ran out. Jittered backoff also breaks the lockstep
+      // retries that made waiters collide on the same instant.
+      sleepSync(Math.max(1, Math.round(backoffMs * (0.5 + Math.random()))));
+      backoffMs = Math.min(backoffMs * 2, 40);
     }
   }
 
   if (!acquired) {
     // Fail loud (L6): never silently write unlocked — a concurrent writer may be
     // mid-update and an unlocked write would clobber it. Surface the contention.
-    process.stderr.write(`[x-build] modifyJSON: lock contention on ${path} — could not acquire ${lockPath} after 50 attempts.\n`);
+    process.stderr.write(`[x-build] modifyJSON: lock contention on ${path} — could not acquire ${lockPath} within ${LOCK_WAIT_MS}ms.\n`);
     process.stderr.write(`           If a process crashed, remove the stale lock: rm ${JSON.stringify(lockPath)}\n`);
     throw new Error(`modifyJSON: could not acquire lock for ${path}`);
   }

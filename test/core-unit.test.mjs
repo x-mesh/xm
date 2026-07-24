@@ -566,7 +566,11 @@ describe('circuit breaker (direct)', () => {
     });
     const moduleUrl = new URL('../x-build/lib/x-build/core.mjs', import.meta.url).href;
     const script = [
-      `process.env.X_BUILD_ROOT=${JSON.stringify(TEST_ROOT)};`,
+      // core.ROOT, not TEST_ROOT: core.mjs freezes ROOT at first import, and under
+      // bun a sibling test file (cost-engine) may have imported it first with its
+      // own X_BUILD_ROOT. The parent writes under core.ROOT, so the children must
+      // resolve the same root or they probe a breaker file that isn't there.
+      `process.env.X_BUILD_ROOT=${JSON.stringify(core.ROOT)};`,
       `process.env.HOME=${JSON.stringify(TEST_HOME)};`,
       'console.log = () => {};',
       `const core = await import(${JSON.stringify(moduleUrl)});`,

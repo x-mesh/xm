@@ -10,7 +10,7 @@
     {
       "name": "build",
       "description": "Phase-based project harness with PRD generation, consensus review, plan validation, multi-mode deliberation, DAG execution, cost forecasting, and decision memory",
-      "version": "2.25.0",
+      "version": "2.26.0",
       "author": {
         "name": "x-mesh"
       },
@@ -100,7 +100,7 @@
     {
       "name": "trace",
       "description": "Agent execution tracing — timeline, token/cost tracking, replay, and diff for multi-agent observability",
-      "version": "2.1.1",
+      "version": "2.2.0",
       "author": {
         "name": "x-mesh"
       },
@@ -207,7 +207,7 @@
     {
       "name": "dashboard",
       "description": "Web dashboard for .xm project state — visualize builds, probes, solvers, reviews, evals, humble lessons, traces, memory",
-      "version": "2.14.1",
+      "version": "2.15.0",
       "author": {
         "name": "x-mesh"
       },
@@ -278,7 +278,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.12.2",
+      "version": "2.13.0",
       "author": {
         "name": "x-mesh"
       },

@@ -111,24 +111,19 @@ describe('phase lifecycle', () => {
   });
 });
 
-describe('cache gitignore initialization', () => {
-  test('init adds .xm/cache/ once and preserves existing newline conventions', () => {
+describe('cache ignore initialization', () => {
+  test('init keeps the root .gitignore untouched and adds a local Git exclusion once', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-cache-ignore-'));
     try {
+      spawnSync('git', ['init', '-q'], { cwd: tmp, encoding: 'utf8' });
+      writeFileSync(join(tmp, '.gitignore'), 'node_modules/\r\ncustom-rule');
       run(['init', 'first'], { cwd: tmp });
-      expect(readFileSync(join(tmp, '.gitignore'), 'utf8')).toBe('.xm/cache/\n');
+      expect(readFileSync(join(tmp, '.gitignore'), 'utf8')).toBe('node_modules/\r\ncustom-rule');
+      const exclude = readFileSync(join(tmp, '.git', 'info', 'exclude'), 'utf8');
+      expect(exclude).toContain('.xm/cache/\n');
 
       run(['init', 'second'], { cwd: tmp });
-      expect(readFileSync(join(tmp, '.gitignore'), 'utf8')).toBe('.xm/cache/\n');
-
-      const crlf = mkdtempSync(join(tmpdir(), 'xb-cache-ignore-crlf-'));
-      try {
-        writeFileSync(join(crlf, '.gitignore'), 'node_modules/\r\ncustom-rule');
-        run(['init', 'first'], { cwd: crlf });
-        expect(readFileSync(join(crlf, '.gitignore'), 'utf8')).toBe('node_modules/\r\ncustom-rule\r\n.xm/cache/\r\n');
-      } finally {
-        rmSync(crlf, { recursive: true, force: true });
-      }
+      expect(readFileSync(join(tmp, '.git', 'info', 'exclude'), 'utf8').split('.xm/cache/')).toHaveLength(2);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
