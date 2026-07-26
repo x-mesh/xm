@@ -1,0 +1,35 @@
+{
+  "name": "xm",
+  "version": "2.13.0",
+  "description": "x-mesh structured orchestration toolkit for Codex",
+  "author": {
+    "name": "x-mesh"
+  },
+  "homepage": "https://github.com/x-mesh/xm",
+  "repository": "https://github.com/x-mesh/xm",
+  "license": "MIT",
+  "keywords": [
+    "orchestration",
+    "multi-agent",
+    "review",
+    "planning"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "xm",
+    "shortDescription": "Structured orchestration workflows for Codex",
+    "longDescription": "Planning, review, problem solving, tracing, and multi-agent orchestration workflows.",
+    "developerName": "x-mesh",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/x-mesh/xm",
+    "defaultPrompt": [
+      "$xm:op debate two implementation options",
+      "$xm:review review the current branch",
+      "$xm:probe test whether this feature is worth building"
+    ]
+  }
+}
