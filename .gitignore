@@ -24,6 +24,9 @@ coverage/
 .opencode/skills/impeccable/
 .agents/skills/impeccable/
 
+# Local impeccable state (per-machine critique output, hook cache)
+.impeccable/
+
 # Local session state (codex consult session ids, etc. — per-machine, not shared)
 .context/
 
