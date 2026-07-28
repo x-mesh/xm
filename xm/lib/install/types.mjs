@@ -2,7 +2,7 @@
 /**
  * SkillIR — Intermediate Representation between SKILL.md sources and per-tool renderers.
  *
- * Source: xm/skills/<plug>/SKILL.md (+ references/*.md)
+ * Source: xm/skills/<plug>/SKILL.md (+ references/*.md + sibling sidecars)
  * Sinks: cursor / codex / kiro / antigravity / opencode renderers
  *
  * Frozen interface (PRD v2.1 §5.1, ADR-001).
@@ -48,6 +48,7 @@
  * @property {string} description    One-sentence trigger (used for Cursor agent-requested, Kiro auto inclusion).
  * @property {string} body           Original SKILL.md body (frontmatter stripped).
  * @property {ReferenceFile[]} references
+ * @property {ReferenceFile[]} [assets]  Non-`references/` sidecars (lenses/, strategies/, judges/, root companions, non-markdown payloads). Structure-preserving targets mirror these; flattening targets (cursor/kiro rules) ignore them.
  * @property {CliCall[]} cliCalls
  * @property {HookSpec[]} hooks
  * @property {SkillSize} size

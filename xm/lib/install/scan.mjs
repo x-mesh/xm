@@ -17,6 +17,8 @@ import { validateName } from './security.mjs';
 import { MAX_REF_DEPTH } from './types.mjs';
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+/** Dotfiles, editor swap/backup files, and merge leftovers are never skill content. */
+const IGNORED_ASSET_ENTRY = /^\.|(\.bak|\.tmp|\.orig|\.rej|\.swp|~)$/i;
 const CLI_TOKEN_RE = /\$\{?CLAUDE_PLUGIN_ROOT\}?\/lib\/([A-Za-z0-9_./-]+\.mjs)/g;
 
 /**
@@ -122,6 +124,62 @@ function readReferences(pluginDir) {
 }
 
 /**
+ * Every other file a skill ships beside its SKILL.md — `lenses/`, `strategies/`,
+ * `judges/`, `commands/`, `subcommands/`, `autonomous/`, `flow/`, `sessions/`,
+ * `agents/`, plus root-level companions like `PRD-GUIDE.md` and non-markdown
+ * payloads (`verdict-schema.json`, `flow-template.mjs`, `openai.yaml`).
+ *
+ * These were invisible to the installer, which only ever walked `references/`.
+ * A SKILL.md that says "read `lenses/{name}.md`" therefore shipped a dangling
+ * instruction: the path resolved correctly against the skill root, and nothing
+ * was there. That is how `/xm:review` lost all 11 lenses on a Codex install.
+ *
+ * Enumerated by exclusion, not by an allowlist of known directory names —
+ * a per-directory list is exactly what let this rot silently as skills grew
+ * new sidecars (same failure as the bundle-script file lists, lesson L8).
+ *
+ * @param {string} pluginDir
+ * @returns {import('./types.mjs').ReferenceFile[]}
+ */
+function readAssets(pluginDir) {
+  /** @type {import('./types.mjs').ReferenceFile[]} */
+  const out = [];
+  /** @param {string} dir @param {number} depth */
+  function walk(dir, depth) {
+    if (depth > MAX_REF_DEPTH + 1) {
+      throw new Error(`asset depth exceeds ${MAX_REF_DEPTH + 1}: ${relPath(pluginDir, dir)}`);
+    }
+    for (const entry of readdirSync(dir)) {
+      // `references/` has its own reader (and its own per-target rendering as
+      // flattened rules); SKILL.md is the skill doc itself.
+      if (depth === 0 && (entry === 'references' || entry === 'SKILL.md')) continue;
+      // Because this walker is defined by exclusion, editor and tooling
+      // detritus would otherwise be published as if it were skill content —
+      // including the installer's own `.bak` files when a previous output
+      // directory is ever used as a source.
+      if (IGNORED_ASSET_ENTRY.test(entry)) continue;
+      const abs = join(dir, entry);
+      const st = statSync(abs);
+      if (st.isDirectory()) {
+        walk(abs, depth + 1);
+      } else if (st.isFile()) {
+        const relativePath = relPath(pluginDir, abs).replace(/\\/g, '/');
+        const body = readFileSync(abs, 'utf8');
+        out.push({
+          name: relativePath.replace(/\.[^./]+$/, ''),
+          relativePath,
+          body,
+          bytes: Buffer.byteLength(body, 'utf8'),
+          depth,
+        });
+      }
+    }
+  }
+  walk(pluginDir, 0);
+  return out;
+}
+
+/**
  * Resolve an `xm/lib/<file>.mjs` reference relative to a plugin root.
  * Plugin SKILL.md typically lives at <repo>/xm/skills/<plug>/SKILL.md, and
  * the bundled CLI lives at <repo>/xm/lib/. We pass the explicit libDir so
@@ -194,6 +252,7 @@ export function readSkill({ pluginName, skillsDir, libDir }) {
   const description = frontmatter.description ?? '';
 
   const references = readReferences(pluginDir);
+  const assets = readAssets(pluginDir);
   const cliCalls = extractCliCalls(body, pluginName, libDir);
 
   const lines = body.split(/\r?\n/).length;
@@ -206,6 +265,7 @@ export function readSkill({ pluginName, skillsDir, libDir }) {
     description,
     body,
     references,
+    assets,
     cliCalls,
     hooks: [],
     size: { lines, bytes },

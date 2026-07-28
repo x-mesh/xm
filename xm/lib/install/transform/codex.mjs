@@ -129,10 +129,20 @@ export function renderCodexReference(reference, ctx) {
  */
 function codexReferencePath(skillRoot, referencePath) {
   const normalized = String(referencePath).replace(/\\/g, '/');
-  if (!normalized.startsWith('references/') || normalized.split('/').some((part) => part === '..' || part === '')) {
-    throw new Error(`invalid Codex reference path: ${JSON.stringify(referencePath)}`);
+  // Containment, not a `references/` allowlist: sidecars legitimately live in
+  // `lenses/`, `strategies/`, `judges/`, at the skill root, and so on. What
+  // must never happen is escaping the rendered skill root.
+  const parts = normalized.split('/');
+  if (normalized === '' || normalized.startsWith('/')
+    || parts.some((part) => part === '..' || part === '' || part === '.')) {
+    throw new Error(`invalid Codex sidecar path: ${JSON.stringify(referencePath)}`);
   }
-  return join(skillRoot, ...normalized.split('/'));
+  return join(skillRoot, ...parts);
+}
+
+/** Only prose gets `${CLAUDE_PLUGIN_ROOT}`-style path expansion. */
+function isMarkdown(relativePath) {
+  return /\.mdx?$/i.test(String(relativePath));
 }
 
 // Backward-compatible export for focused renderer tests and downstream imports.
@@ -224,6 +234,23 @@ export function renderCodexWithDiagnostics(skills, ctx) {
         outputs.push({
           relativePath: codexReferencePath(root, reference.relativePath),
           content,
+          kind: 'overwrite',
+          mode: ctx.scope === 'global' ? 0o600 : 0o644,
+        });
+      }
+    }
+    // Sidecars outside `references/` (lenses, strategies, judges, schemas...).
+    // Codex is the structure-preserving target, so a SKILL.md instruction like
+    // "read `lenses/{name}.md`" resolves here exactly as it does in the source
+    // tree. Copied verbatim: a JSON schema or .mjs template is payload, not
+    // prose, and path expansion would corrupt it.
+    for (const asset of skill.assets ?? []) {
+      for (const root of [standaloneRoot, pluginRoot]) {
+        outputs.push({
+          relativePath: codexReferencePath(root, asset.relativePath),
+          content: isMarkdown(asset.relativePath)
+            ? expandPaths(asset.body, { target: 'codex', scope: ctx.scope })
+            : asset.body,
           kind: 'overwrite',
           mode: ctx.scope === 'global' ? 0o600 : 0o644,
         });

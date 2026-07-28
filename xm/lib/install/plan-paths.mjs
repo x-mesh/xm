@@ -114,11 +114,17 @@ function planCodex(s, scope, root) {
       mode: modeFor(scope),
     },
   ];
-  for (const reference of s.references) {
+  // References plus every other sidecar (lenses/, strategies/, judges/, root
+  // companions, non-markdown payloads). Codex preserves structure, so the
+  // relative paths a SKILL.md instructs agents to open resolve as authored.
+  // The guard is containment only — a `references/` prefix requirement is what
+  // silently dropped all 11 x-review lenses.
+  for (const reference of [...s.references, ...(s.assets ?? [])]) {
     const normalizedPath = reference.relativePath.replace(/\\/g, '/');
     const segments = normalizedPath.split('/');
-    if (!normalizedPath.startsWith('references/') || segments.some((segment) => segment === '..' || segment === '')) {
-      throw new Error(`invalid Codex reference path: ${JSON.stringify(reference.relativePath)}`);
+    if (normalizedPath === '' || normalizedPath.startsWith('/')
+      || segments.some((segment) => segment === '..' || segment === '' || segment === '.')) {
+      throw new Error(`invalid Codex sidecar path: ${JSON.stringify(reference.relativePath)}`);
     }
     for (const skillRoot of [standaloneRoot, pluginRoot]) {
       out.push({
