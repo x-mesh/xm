@@ -55,13 +55,35 @@ plus `xm inbox record --scope inbox` — see step 5 below.
    필터가 없으므로 `query="inbox"` 같은 넓은 검색으로 수신함을 판단하면 안 됩니다.
    먼저 `mcp__mem-mesh__pin_list(project_id=<현재 프로젝트의 mem-mesh id>,
    tags=["inbox"], limit=10)`을 호출합니다. `limit`은 반드시 10 이하로 둡니다.
-   새 toss pin의 `content`는 `<toss id> — <title>` 형식입니다. 각 pin의 toss id로
+
+   그 결과를 파일로 저장한 뒤 **`xm inbox reconcile`에 먹여 무엇을 해야 하는지 판정합니다.**
+   눈으로 대조하지 마십시오 — 이 명령이 pin 쪽과 원장 쪽 양방향 drift를 모두 계산합니다.
+   ```bash
+   # pin_list 결과(전체 envelope 또는 pins 배열)를 파일에 기록한 뒤
+   xm inbox reconcile --pins-file <path> --json
+   ```
+   출력의 action별로:
+   - `materialize` — pin은 살아 있는데 로컬 원장에 항목이 없습니다. 아래 3단계로 가져옵니다.
+   - `renotify` — 미종결 항목의 pin이 죽었습니다(목록에 없거나 `completed`). 7번 절차를 따릅니다.
+   - `unmappable` — toss id 없는 구 포맷 pin입니다. 추측하지 말고 pin id와 title을 보여 준 뒤
+     발신 측에 재전달을 요청합니다.
+   - `none` — 할 일 없음.
+
+   `pin_list`가 `limit`에 걸려 잘렸다면 `--partial`을 붙입니다. 그러면 "목록에 없음"을
+   pin이 죽었다는 증거로 쓰지 않아 잘못된 재알림을 막습니다.
+
+   새 toss pin의 `content`는 `<toss id> — <title>` 형식입니다. `materialize` 대상의 toss id로
    `mcp__mem-mesh__search(query=<toss id>, project_id=<현재 프로젝트의 mem-mesh id>,
    limit=10)`을 호출하고, **같은 `id`를 가진 JSON 본문**만 고릅니다. 그 결과의
-   `content`를 아래 명령으로 materialize합니다.
+   `content`를 아래 명령으로 materialize합니다. **memory 본문은 파일로 먼저 쓰고
+   `--content-file`로 넘깁니다** — 본문은 repro 명령과 캡처된 출력을 품은 JSON 문서라,
+   셸 인자로 넘기면 중첩 escape를 손으로 다시 맞춰야 하고 한 글자만 어긋나도 repro가
+   조용히 손상됩니다.
    ```bash
-   xm inbox materialize --content '<memory content JSON>' --memory-id <memory id> --pin-id <pin id> --json
+   # memory content를 그대로 파일에 기록한 뒤
+   xm inbox materialize --content-file <path> --memory-id <memory id> --pin-id <pin id> --json
    ```
+   `--content <json>` 인라인 형태도 여전히 동작하며, 둘 다 주면 인라인이 이깁니다.
    기존 pin처럼 toss id가 없는 항목은 title 또는 일반어로 추측 검색하지 않습니다. pin id와
    title을 보여 주고 발신 측에 재전달을 요청합니다. 이 CLI는 네트워크를 호출하지 않고
    **현재 cwd의** `.xm/inbox/<id>.json`에만 기록합니다. 따라서 materialize 명령은 반드시
@@ -79,16 +101,28 @@ plus `xm inbox record --scope inbox` — see step 5 below.
    starting point for a fix — don't re-derive it from scratch. `take` writes
    `status: "in_progress"`; it never claims completion.
 5. **`xm inbox resolve <id> --summary "..." --verification "..." --json`** only after the implementation and relevant verification
-   have completed. `done` is an alias. This writes the terminal `status: "resolved"`,
+   have completed. `done` is an alias. Both flags are **required** and the command
+   refuses the transition without them — a receipt is the only thing the sender ever
+   sees, so one claiming "resolved" with no evidence closes the report against a fix
+   that may not exist. `--verification` must name the concrete check you actually ran
+   (command and its result, or the files/lines you confirmed); restating the summary
+   is not verification. This writes the terminal `status: "resolved"`,
    creates an immutable receipt (terminal state, time, summary and verification evidence),
-   and returns `mcp_calls.add`. Call `mcp__mem-mesh__add` with that object **verbatim**;
-   then record its returned memory id with `xm inbox receipt record <id> --memory-id <id>`.
+   and returns `mcp_calls`. Then, in order:
+   - Call `mcp__mem-mesh__add` with `mcp_calls.add` **verbatim**, and record the
+     returned memory id with `xm inbox receipt record <id> --memory-id <id>`.
+   - If `mcp_calls.pin_complete` is present, call `mcp__mem-mesh__pin_complete` with it.
+     The delivery pin otherwise stays `in_progress` forever and every later session
+     start announces a report that is already closed.
+
    If MCP delivery fails or is unavailable, the terminal receipt remains locally `pending`;
    do not claim the sender was notified. Use `xm inbox receipt retry <id> --json` in a
-   later MCP-capable session to obtain the same payload, and `receipt status <id>` to
-   report the local transport state.
-6. **`xm inbox drop <id> --json`** when it doesn't need action. It follows the same
-   receipt-delivery process as resolve. If it's ambiguous whether an
+   later MCP-capable session to obtain the same payload (including `pin_complete`), and
+   `receipt status <id>` to report the local transport state.
+6. **`xm inbox drop <id> --summary "..." --json`** when it doesn't need action.
+   `--summary` is required — say why this project is not acting on the report — but
+   verification is not, since nothing was fixed. It follows the same receipt-delivery
+   and `pin_complete` process as resolve. If it's ambiguous whether an
    item is relevant, confirm with the user before dropping — treat the drop as final in
    conversation even though dismissed items remain recoverable in the archive on disk.
 7. **Re-notify a dead pin yourself, when relevant.** For any `delivered`/`in_progress`
@@ -116,8 +150,12 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 | "I'll remember item #2 from the last list and take() it later." | Lists are re-sorted (unresolved-first) and re-swept (archive) on every call — position 2 can point at a different item next time. Always address by `id`. |
 | "Inbox is empty, something's broken." | An empty inbox is a normal, valid state — say so; don't assume the CLI or mem-mesh is malfunctioning. |
 | "`search(query=\"inbox\")`가 비었으니 새 수신함도 비었다." | `search`는 `tags` 필터가 없고 넓은 질의는 랭킹에서 밀린다. 먼저 `pin_list(tags=[\"inbox\"], limit=10)`으로 알림을 찾고 toss id로 정확히 검색한다. |
+| "I compared the pin list against `list`'s output by eye — same count, so nothing is missing." | Counting agrees even when a pin points at an id the ledger never had. `reconcile` diffs both directions by id; eyeballing missed exactly this for five days (`toss-20260721-666aa5a0`, taken 07-21, local file gone by 07-26, pin still `in_progress`). Run the command. |
 | "list didn't print anything about pins, so they must all still be fine." | `list` never checks pin state (t11 — no network in the CLI). Silence from `list` says nothing about pin health; you have to actually call `pin_get` yourself to know. |
+| "The memory body is short enough — I'll just paste it into `--content '...'`." | Bodies embed a repro command and its captured output, both of which routinely contain quotes, backslashes and newlines. Re-quoting them by hand corrupts the repro with no error — nothing validates the repro against its source. Write the body to a file and use `--content-file`. |
 | "take() gave me the item, I'll now `later promote` it to keep the body." | `later promote` has no field for why/repro/fix_direction — the body does not survive that trip. Use the returned item content directly instead. |
+| "The fix is obvious, I'll put 'fixed' in --verification and move on." | `--verification` is the sender's only evidence that this project checked anything. A restatement of the summary is what let 5 x-kit items sit marked done while only 2 were actually fixed. Name the command you ran and its result, or the file:line you confirmed. |
+| "I resolved it and delivered the receipt — the pin will sort itself out." | Nothing closes a delivery pin but you. Left open it reads as an unhandled report at every future session start. If `mcp_calls.pin_complete` is in the output, call `mcp__mem-mesh__pin_complete` with it. |
 | "take means the issue is done." | `take` means work started. Only `resolve` is terminal, and only after the fix and checks complete. |
 | "I'll drop an item I'm not sure about, just to clean up the list." | Drop is for items that genuinely don't need action. When unsure, leave it `delivered` (or `take` it) and ask the user rather than guessing it away. |
 | "No MCP tools here, I'll just tell the user the inbox looks fine." | The listed items are accurate (local files), but you silently skipped pin re-notification. Say explicitly that you couldn't check/renew pin state — don't imply you did. |
@@ -127,9 +165,12 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 ## Red Flags
 
 - You referenced an inbox item by list position instead of `id`.
+- You decided what to materialize or renotify by reading the pin list yourself instead of running `xm inbox reconcile`.
 - You used a generic memory search instead of an inbox pin's toss id to materialize a delivery.
 - You dropped an item without the user's confirmation when its relevance was unclear.
 - You called `resolve` before implementation and verification completed.
+- You passed a `--verification` that restates the summary instead of naming a check you ran.
+- You delivered a terminal receipt but skipped the `mcp_calls.pin_complete` call it returned.
 - You treated a terminal local state as proof that the sender received its receipt.
 - You claimed pin re-notification happened without actually calling `pin_get`/`pin_add`.
 - You called `pin_add` to renotify but never ran `xm inbox record --scope inbox` afterward.
@@ -141,6 +182,7 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 - Every item referenced by `id`, matching what `list` printed.
 - `take`'s full body (why/repro/fix) was relayed or acted on, not summarized away.
 - Completed work was closed with `resolve`, while unfinished work remained `in_progress`.
+- For resolve/drop, `mcp_calls.pin_complete` was called when present, so no closed item leaves an open pin.
 - For resolve/drop, the receipt MCP call was delivered verbatim and its memory id recorded;
   otherwise the pending transport state was stated plainly and left retryable.
 - Any pin re-notification you performed was via real `pin_get`/`pin_add` MCP calls, followed by `xm inbox record --scope inbox` — never assumed or skipped silently.

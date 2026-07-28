@@ -22,6 +22,8 @@ import {
   reconcileAllPins,
   materializeMemory,
   InboxMaterializationError,
+  pinInventory,
+  INVENTORY_ACTIONS,
 } from '../xm/lib/x-inbox/inbox.mjs';
 
 function makeItem(overrides = {}) {
@@ -352,5 +354,82 @@ describe('reconcileItemPin / reconcileAllPins — renotify, at most 1 pin per it
     const secondPass = await reconcileAllPins(dir, pinPort, { cwd: root });
     expect(secondPass.every((r) => !r.recreated)).toBe(true);
     expect(pinPort.createCalls).toBe(2);
+  });
+});
+
+/**
+ * The direction `reconcileAllPins` structurally cannot see: it walks the
+ * LEDGER, so a live pin whose local file never landed (or was lost) is
+ * invisible to it — `reconcile()`'s Rule 3 is unreachable that way. This is
+ * the drift that hid `toss-20260721-666aa5a0` for five days in the real
+ * x-kit inbox while its pin stayed `in_progress`.
+ */
+describe('pinInventory — pin-side drift against the ledger', () => {
+  const pin = (id, content, status = 'in_progress') => ({ id, content, status });
+
+  test('a live pin with no ledger item is reported as materialize', () => {
+    writeLedger(dir, makeItem({ id: 'toss-20260719-a1b2c3d4', mem_mesh: { pin_id: 'pin-known' } }), { cwd: root });
+
+    const report = pinInventory(dir, [
+      pin('pin-known', 'toss-20260719-a1b2c3d4 — already here'),
+      pin('pin-orphan', 'toss-20260721-666aa5a0 — never materialized'),
+    ]);
+
+    const orphan = report.pins.find((p) => p.pin_id === 'pin-orphan');
+    expect(orphan.action).toBe(INVENTORY_ACTIONS.MATERIALIZE);
+    expect(orphan.toss_id).toBe('toss-20260721-666aa5a0');
+    expect(report.pins.find((p) => p.pin_id === 'pin-known').action).toBe(INVENTORY_ACTIONS.NONE);
+    expect(report.summary.materialize).toBe(1);
+  });
+
+  test('a pin without a toss id is unmappable, never guessed by title', () => {
+    writeLedger(dir, makeItem({ id: 'toss-20260719-a1b2c3d4', mem_mesh: { pin_id: 'pin-known' } }), { cwd: root });
+
+    const report = pinInventory(dir, [
+      pin('pin-known', 'toss-20260719-a1b2c3d4 — already here'),
+      pin('pin-legacy', 'land reports paused as ok'),
+    ]);
+
+    const legacy = report.pins.find((p) => p.pin_id === 'pin-legacy');
+    expect(legacy.action).toBe(INVENTORY_ACTIONS.UNMAPPABLE);
+    expect(legacy.toss_id).toBeNull();
+    // The title matches an existing item verbatim — it still must not map.
+    expect(report.summary.materialize).toBe(0);
+  });
+
+  test('an unresolved item whose pin is absent from a complete listing needs renotify', () => {
+    writeLedger(dir, makeItem({ id: 'toss-20260719-a1b2c3d4', mem_mesh: { pin_id: 'pin-dead' } }), { cwd: root });
+
+    const report = pinInventory(dir, []);
+    expect(report.items[0].action).toBe(INVENTORY_ACTIONS.RENOTIFY);
+    expect(report.summary.renotify).toBe(1);
+
+    // --partial: a truncated page is not evidence the pin died.
+    expect(pinInventory(dir, [], { complete: false }).summary.renotify).toBe(0);
+  });
+
+  test('a completed pin on an unresolved item needs renotify; terminal items are left alone', () => {
+    writeLedger(dir, makeItem({ id: 'toss-20260719-a1b2c3d4', mem_mesh: { pin_id: 'pin-open' } }), { cwd: root });
+    writeLedger(dir, makeItem({
+      id: 'toss-20260719-d4e5f6a7', status: 'resolved', mem_mesh: { pin_id: 'pin-done' },
+    }), { cwd: root });
+
+    const report = pinInventory(dir, [
+      pin('pin-open', 'toss-20260719-a1b2c3d4 — still open', 'completed'),
+      pin('pin-done', 'toss-20260719-d4e5f6a7 — finished', 'completed'),
+    ]);
+
+    expect(report.pins.find((p) => p.pin_id === 'pin-open').action).toBe(INVENTORY_ACTIONS.RENOTIFY);
+    expect(report.pins.find((p) => p.pin_id === 'pin-done').action).toBe(INVENTORY_ACTIONS.NONE);
+    expect(report.summary.renotify).toBe(1);
+  });
+
+  test('an agreeing ledger and listing report no work, and a non-array is rejected', () => {
+    writeLedger(dir, makeItem({ id: 'toss-20260719-a1b2c3d4', mem_mesh: { pin_id: 'pin-known' } }), { cwd: root });
+
+    const report = pinInventory(dir, [pin('pin-known', 'toss-20260719-a1b2c3d4 — fine')]);
+    expect(report.summary).toEqual({ materialize: 0, renotify: 0, unmappable: 0, none: 2 });
+
+    expect(() => pinInventory(dir, { pins: [] })).toThrow(TypeError);
   });
 });

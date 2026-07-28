@@ -1110,14 +1110,17 @@ toss는 재현 명령과 **실제 출력**(시크릿 마스킹, 뒷부분만 보
 받는 쪽에서 항목은 `take` → `resolve`로 진행하고, 조치가 필요 없으면 `drop`합니다:
 
 ```
+xm inbox reconcile --pins-file <path>   # mem-mesh pin 목록과 원장을 대조
 xm inbox list                    # 미해결 항목부터 표시
 xm inbox take <id>               # 작업 시작
-xm inbox resolve <id> --summary "..." --verification "..."
-xm inbox drop <id>               # 조치 불필요
+xm inbox resolve <id> --summary "..." --verification "..."   # 둘 다 필수
+xm inbox drop <id> --summary "..."   # 조치 불필요 — 이유를 남김
 xm inbox receipt status <id>     # 보낸 쪽이 실제로 수신했는지 확인
 ```
 
-`take`는 항목을 집어들었다는 표시일 뿐이고, 닫는 것은 `resolve`입니다 — 수정이 먼저 검증되어 있어야 합니다. resolve는 보낸 쪽에 receipt를 보내며, 전달이 실패하면 성공한 척하지 않고 `xm inbox receipt retry <id>`로 재전송합니다.
+`take`는 항목을 집어들었다는 표시일 뿐이고, 닫는 것은 `resolve`입니다 — `--summary`와 `--verification` 없이는 전이를 거부합니다. receipt는 보낸 쪽이 보는 유일한 것이라, 근거 없이 "resolved"라고 주장하는 receipt는 존재하지 않을 수도 있는 수정에 대고 리포트를 닫아버립니다. `--verification`에는 요약을 되풀이하지 말고 실제로 돌린 검사를 적습니다. resolve는 보낸 쪽에 receipt를 보내는 동시에 배달 pin을 닫는 `pin_complete` 호출을 반환합니다 — 이를 건너뛰면 이후 모든 세션 시작에서 이미 닫힌 리포트가 계속 알림으로 뜹니다. receipt 전달이 실패하면 성공한 척하지 않고 `xm inbox receipt retry <id>`로 재전송합니다.
+
+`reconcile`은 `list`보다 먼저 실행합니다. 이 CLI는 네트워크를 호출하지 않으므로 본문이 디스크에 올라오기 전에는 배달의 존재 자체를 알 수 없습니다 — 로컬 파일이 끝내 안 만들어졌거나 유실된 pin은 다른 모든 읽기 경로에서 보이지 않습니다. 스킬이 받은 `pin_list` 결과를 넘기면 양방향을 id로 대조해 `materialize`(살아 있는 pin, 로컬 항목 없음), `renotify`(미종결 항목, 죽은 pin), `unmappable`(toss id 이전 포맷 pin — 추측하지 말고 재전달 요청)로 분류합니다. pin 목록이 잘렸다면 `--partial`을 붙여 "목록에 없음"을 "pin이 죽었다"로 읽지 않게 합니다.
 
 ---
 

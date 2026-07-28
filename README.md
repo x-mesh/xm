@@ -1111,14 +1111,17 @@ Toss captures the repro command **and its actual output** (secret-redacted, tail
 On the receiving side an item moves `take` → `resolve`, or `drop` if it needs no action:
 
 ```
+xm inbox reconcile --pins-file <path>   # diff mem-mesh's pin list against the ledger
 xm inbox list                    # unresolved items first
 xm inbox take <id>               # start work on one
-xm inbox resolve <id> --summary "..." --verification "..."
-xm inbox drop <id>               # no action needed
+xm inbox resolve <id> --summary "..." --verification "..."   # both required
+xm inbox drop <id> --summary "..."   # no action needed; say why
 xm inbox receipt status <id>     # did the sender actually receive the receipt?
 ```
 
-`take` only marks an item as picked up — `resolve` is what closes it, and it expects the fix to be verified first. Resolving sends a receipt back to the sender; when that delivery fails, `xm inbox receipt retry <id>` re-sends it rather than silently reporting success.
+`take` only marks an item as picked up — `resolve` is what closes it, and it refuses to without `--summary` and `--verification`. The receipt is the only thing the sender ever sees, so one asserting "resolved" with nothing behind it closes the report against a fix that may not exist; `--verification` must name the check actually run, not restate the summary. Resolving sends a receipt back to the sender and returns a `pin_complete` call that closes the delivery pin — skip it and every later session start announces a report that is already closed. When receipt delivery fails, `xm inbox receipt retry <id>` re-sends it rather than silently reporting success.
+
+`reconcile` runs first, before `list`. The CLI makes no network calls, so it cannot know a delivery exists until its body is on disk — a pin whose local file never landed, or was lost, is invisible to every other read path. Feed it the skill's `pin_list` result and it reports both directions by id: `materialize` (live pin, no local item), `renotify` (unresolved item, dead pin), and `unmappable` (a pre-toss-id pin that must be re-sent rather than guessed at). Add `--partial` when the pin listing was truncated, so "absent from the list" is not read as "the pin died".
 
 ---
 

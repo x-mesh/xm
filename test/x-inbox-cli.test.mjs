@@ -311,7 +311,7 @@ describe('xm inbox take / resolve — start and completion are separate', () => 
       expect(runCli(['take', 'toss-state'], { home, cwd: projectDir }).status).toBe(0);
       expect(JSON.parse(readFileSync(itemPath, 'utf8')).status).toBe('in_progress');
 
-      const resolved = runCli(['done', 'toss-state', '--json'], { home, cwd: projectDir });
+      const resolved = runCli(['done', 'toss-state', '--summary', 'fixed the collapse branch', '--verification', 'bun test test/land.test.mjs', '--json'], { home, cwd: projectDir });
       expect(resolved.status).toBe(0);
       expect(JSON.parse(resolved.stdout).item.status).toBe('resolved');
       const listed = JSON.parse(runCli(['list', '--json'], { home, cwd: projectDir }).stdout);
@@ -367,7 +367,9 @@ describe('xm inbox terminal receipt CLI idempotency', () => {
         why: '', repro: { command: 'cmd', output: 'out', truncated: false },
         anchors: { from_commit: null, to_files: [] }, fix_direction: 'fix', mem_mesh: {},
       }, null, 2));
-      const commands = Array.from({ length: 30 }, (_, i) => [i % 2 ? 'resolve' : 'drop', 'toss-terminal-race', '--json']);
+      const commands = Array.from({ length: 30 }, (_, i) => (i % 2
+        ? ['resolve', 'toss-terminal-race', '--summary', 'fixed', '--verification', 'bun test', '--json']
+        : ['drop', 'toss-terminal-race', '--summary', 'not our layer', '--json']));
       const results = await Promise.all(commands.map((args) => runCliAsync(args, { home, cwd: projectDir })));
       // Exactly one state wins; same-state callers may then be idempotent 0,
       // opposite-state callers must reject rather than create another receipt.
@@ -409,6 +411,94 @@ describe('xm inbox materialize — memory body to local inbox only', () => {
       expect(wrong.status).toBe(1);
       expect(JSON.parse(wrong.stdout).reason).toBe('rejected');
       expect(existsSync(join(projectDir, '.xm', 'inbox', 'wrong-item.json'))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  test('--content-file reads the body from disk, and an unreadable path writes nothing', () => {
+    const home = mkdtempSync(join(tmpdir(), 'x-inbox-cli-home-'));
+    const projectDir = mkdtempSync(join(tmpdir(), 'x-inbox-cli-project-'));
+    try {
+      mkdirSync(join(projectDir, '.mem-mesh'), { recursive: true });
+      writeFileSync(join(projectDir, '.mem-mesh', 'project-id'), 'receiver\n');
+      // A body whose repro carries nested quotes — the case that made passing
+      // this as a shell argument lossy in the first place.
+      const payload = {
+        id: 'file-item', from_project: 'sender', to_project: 'receiver',
+        created_at: '2026-07-20T00:00:00.000Z', status: 'captured', title: 'report', why: '',
+        repro: { command: 'python3 -c "print(\\"x\\")"', output: 'line1\nline2\n', truncated: false },
+        anchors: { to_files: [] }, fix_direction: 'fix', mem_mesh: {},
+      };
+      const bodyPath = join(projectDir, 'body.json');
+      writeFileSync(bodyPath, JSON.stringify(payload));
+
+      const ok = runCli(['materialize', '--content-file', bodyPath, '--pin-id', 'pin-1', '--json'], { home, cwd: projectDir });
+      expect(ok.status).toBe(0);
+      const created = JSON.parse(ok.stdout);
+      expect(created.created).toBe(true);
+      // The repro must survive the trip byte-for-byte.
+      expect(created.item.repro.command).toBe(payload.repro.command);
+      expect(created.item.repro.output).toBe(payload.repro.output);
+      expect(created.item.mem_mesh.pin_id).toBe('pin-1');
+
+      const missing = runCli(['materialize', '--content-file', join(projectDir, 'absent.json'), '--json'], { home, cwd: projectDir });
+      expect(missing.status).toBe(1);
+      expect(missing.stderr).toContain('failed to read --content-file');
+      expect(readdirSync(join(projectDir, '.xm', 'inbox'))).toEqual(['file-item.json']);
+
+      const neither = runCli(['materialize', '--json'], { home, cwd: projectDir });
+      expect(neither.status).toBe(2);
+      expect(neither.stderr).toContain('--content-file');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('xm inbox resolve — evidence gate and delivery-pin close', () => {
+  test('refuses an evidence-free resolve, still allows the idempotent repeat, and emits pin_complete', () => {
+    const home = mkdtempSync(join(tmpdir(), 'x-inbox-cli-home-'));
+    const projectDir = mkdtempSync(join(tmpdir(), 'x-inbox-cli-project-'));
+    try {
+      mkdirSync(join(projectDir, '.mem-mesh'), { recursive: true });
+      writeFileSync(join(projectDir, '.mem-mesh', 'project-id'), 'receiver\n');
+      const inboxDir = join(projectDir, '.xm', 'inbox');
+      mkdirSync(inboxDir, { recursive: true });
+      writeFileSync(join(inboxDir, 'toss-gate.json'), JSON.stringify({
+        id: 'toss-gate', from_project: 'sender', to_project: 'receiver',
+        created_at: '2026-07-24T00:00:00.000Z', status: 'in_progress', title: 'bug',
+        mem_mesh: { pin_id: 'pin-live' },
+      }));
+
+      const bare = runCli(['resolve', 'toss-gate', '--json'], { home, cwd: projectDir });
+      expect(bare.status).toBe(1);
+      expect(bare.stderr).toContain('requires a summary');
+      // Nothing terminal may have been written by the refusal.
+      expect(JSON.parse(readFileSync(join(inboxDir, 'toss-gate.json'), 'utf8')).status).toBe('in_progress');
+
+      const noVerify = runCli(['resolve', 'toss-gate', '--summary', 'fixed', '--json'], { home, cwd: projectDir });
+      expect(noVerify.status).toBe(1);
+      expect(noVerify.stderr).toContain('requires verification');
+
+      const ok = runCli([
+        'resolve', 'toss-gate', '--summary', 'fixed the collapse branch',
+        '--verification', 'bun test test/land.test.mjs — 12 pass', '--json',
+      ], { home, cwd: projectDir });
+      expect(ok.status).toBe(0);
+      const parsed = JSON.parse(ok.stdout);
+      expect(parsed.item.status).toBe('resolved');
+      expect(parsed.mcp_calls.pin_complete).toEqual({ pin_id: 'pin-live' });
+
+      // The gate must not break re-running resolve on an already-terminal
+      // item: that path returns the existing receipt before any body is built.
+      const repeat = runCli(['resolve', 'toss-gate', '--json'], { home, cwd: projectDir });
+      expect(repeat.status).toBe(0);
+      const repeated = JSON.parse(repeat.stdout);
+      expect(repeated.item.receipt.verification).toBe(parsed.item.receipt.verification);
+      expect(repeated.mcp_calls.pin_complete).toEqual({ pin_id: 'pin-live' });
     } finally {
       rmSync(home, { recursive: true, force: true });
       rmSync(projectDir, { recursive: true, force: true });

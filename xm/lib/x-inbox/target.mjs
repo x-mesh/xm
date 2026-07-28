@@ -19,7 +19,8 @@
  *     --get mem-mesh.project-id` → `.mem-mesh/project-id` file at the git
  *     root → `basename(git rev-parse --show-toplevel)`.
  *
- * `resolveMemMeshProjectId()` below reimplements mem-mesh's chain verbatim
+ * `resolveMemMeshProjectId()` (re-exported from ../mem-mesh-identity.mjs)
+ * follows mem-mesh's chain verbatim
  * (not x-kit's `resolveCanonicalPath()`) so the id handed to `pin_add` is the
  * same id mem-mesh would compute for itself if it ran in that directory. See
  * PRD `cross-project-handoff` §7 Risks ("x-kit과 mem-mesh의 프로젝트 정체성
@@ -34,85 +35,25 @@
  * confirmation gate; deferred here on purpose.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join, resolve, basename } from 'node:path';
-import { execSync } from 'node:child_process';
 
 import { loadRegistry } from '../x-projects-registry.mjs';
 
-/** mem-mesh's own priority-chain constants (app/cli/project_identity.py:15-17). */
-export const MEM_MESH_ENV_VAR = 'MEM_MESH_PROJECT_ID';
-export const MEM_MESH_GIT_CONFIG_KEY = 'mem-mesh.project-id';
-export const MEM_MESH_PROJECT_ID_RELPATH = join('.mem-mesh', 'project-id');
+// The identity chain itself lives one tier up: x-build's handoff mirror needs
+// the exact same answer, and a second implementation is how the two drift.
+// Imported for local use AND re-exported, so this module's public surface is
+// unchanged — `export ... from` alone re-exports without binding the name
+// locally, and resolveTarget() below calls it.
+import { resolveMemMeshProjectId } from '../mem-mesh-identity.mjs';
 
-function runGitLine(cwd, args) {
-  try {
-    const out = execSync(`git ${args}`, {
-      cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    return out || null;
-  } catch {
-    return null;
-  }
-}
+export {
+  resolveMemMeshProjectId,
+  MEM_MESH_ENV_VAR,
+  MEM_MESH_GIT_CONFIG_KEY,
+  MEM_MESH_PROJECT_ID_RELPATH,
+} from '../mem-mesh-identity.mjs';
 
-function readMemMeshProjectIdFile(root) {
-  try {
-    const raw = readFileSync(join(root, MEM_MESH_PROJECT_ID_RELPATH), 'utf8').trim();
-    return raw || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Resolve the project id mem-mesh would compute for `path`, following its
- * priority chain exactly (mem-mesh `resolved_project_identity()`,
- * app/cli/project_identity.py:188-204):
- *
- *   1. `MEM_MESH_PROJECT_ID` env var
- *   2. `git config --local --get mem-mesh.project-id` in `path`
- *   3. `.mem-mesh/project-id` file at `path`'s git root
- *   4. `basename(git rev-parse --show-toplevel)` — or `basename(path)` when
- *      `path` is not inside a git repo at all
- *
- * Deliberately NOT `resolveCanonicalPath()` from x-projects-registry.mjs —
- * that function collapses worktrees to their main checkout, which is exactly
- * the x-kit-side behavior mem-mesh does not share. Using it here would
- * reintroduce the identity mismatch this function exists to avoid.
- */
-export function resolveMemMeshProjectId(path, opts = {}) {
-  const abs = resolve(path);
-
-  // MEM_MESH_PROJECT_ID is a PROCESS-WIDE override: mem-mesh defines it as the
-  // top of the identity chain for "what project am I?". That makes it correct
-  // when resolving the CALLER's own identity, and wrong when resolving some
-  // OTHER checkout's — it ignores `path` entirely, so with the variable
-  // exported every toss would address the sender's own project id no matter
-  // which target was named.
-  //
-  // Cross-vendor review split on this exactly: claude/cursor called it
-  // misrouting, codex called it mem-mesh's documented override. Both hold —
-  // for different call sites. So the env step is opt-in and the two callers
-  // declare intent: toss() passes allowEnvOverride (self), resolveTarget()
-  // does not (foreign).
-  const { allowEnvOverride = false } = opts;
-  if (allowEnvOverride) {
-    const envValue = (process.env[MEM_MESH_ENV_VAR] || '').trim();
-    if (envValue) return envValue;
-  }
-
-  const configValue = runGitLine(abs, `config --local --get ${MEM_MESH_GIT_CONFIG_KEY}`);
-  if (configValue) return configValue;
-
-  const gitRoot = runGitLine(abs, 'rev-parse --show-toplevel');
-  const root = gitRoot ? resolve(gitRoot) : abs;
-
-  const fileValue = readMemMeshProjectIdFile(root);
-  if (fileValue) return fileValue;
-
-  return basename(root);
-}
 
 function normalizeForFuzzy(value) {
   return String(value).toLowerCase().replace(/[-_\s]+/g, '');

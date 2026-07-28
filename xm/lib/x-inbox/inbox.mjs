@@ -356,3 +356,110 @@ export async function reconcileAllPins(dir, pinPort, opts = {}) {
   }
   return reports;
 }
+
+/**
+ * A new toss pin's content is `<toss id> — <title>`. Pins predating that
+ * convention carry only a title, which is why they cannot be mapped back to
+ * a delivery: a title search is a guess, and guessing here would materialize
+ * the wrong body into this ledger.
+ */
+const TOSS_ID_IN_PIN = /^(toss-\d{8}-[0-9a-f]{8})\b/;
+
+function pinTossId(content) {
+  const match = typeof content === 'string' ? TOSS_ID_IN_PIN.exec(content.trim()) : null;
+  return match ? match[1] : null;
+}
+
+/** Actions `pinInventory()` reports. `RECONCILE_ACTIONS` names the decision;
+ *  these name the work the skill must then perform through MCP. */
+export const INVENTORY_ACTIONS = Object.freeze({
+  NONE: 'none',
+  MATERIALIZE: 'materialize',
+  RENOTIFY: 'renotify',
+  UNMAPPABLE: 'unmappable',
+});
+
+/**
+ * Compare a mem-mesh pin listing against this project's ledger and report
+ * what the skill has to do about each side. Pure and network-free (the t11
+ * invariant): the caller — which is the only party holding an MCP session —
+ * passes in `pin_list`'s result and acts on the report.
+ *
+ * This exists because `reconcileAllPins()` iterates the LEDGER, so
+ * `reconcile()`'s Rule 3 (`SELF_CREATE`: a live pin with no local item) is
+ * unreachable through it — a delivery whose local file never landed, or was
+ * lost, is invisible to every read path the CLI has. That is not
+ * hypothetical: `toss-20260721-666aa5a0` was taken on 2026-07-21 and its
+ * local file was gone by 2026-07-26 while its pin stayed `in_progress`, and
+ * nothing surfaced the gap. Driving the same decision function from the pin
+ * side closes that direction.
+ *
+ * The reverse direction comes for free and needs no per-pin `pin_get`: a
+ * ledger item whose `mem_mesh.pin_id` does not appear in a complete listing
+ * is a pin that no longer exists.
+ *
+ * @param {string} dir
+ * @param {Array<{ id: string, content?: string, status?: string }>} pins
+ *   `mcp__mem-mesh__pin_list(tags:["inbox"])`'s `pins` array.
+ * @param {{ complete?: boolean }} [opts]
+ *   `complete` (default true) asserts `pins` is the whole inbox-tagged
+ *   listing, not a truncated page. When false, absent-from-listing is not
+ *   treated as evidence a pin died, so no `renotify` is reported.
+ * @returns {{ pins: Array<object>, items: Array<object>, summary: object }}
+ */
+export function pinInventory(dir, pins, opts = {}) {
+  if (!Array.isArray(pins)) {
+    throw new TypeError('pinInventory: pins must be an array (pin_list\'s `pins`)');
+  }
+  const complete = opts.complete !== false;
+  const items = readLedger(dir);
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const listedPinIds = new Set(pins.map((pin) => pin?.id).filter((id) => typeof id === 'string'));
+
+  const pinReports = pins.map((pin) => {
+    const tossId = pinTossId(pin?.content);
+    const base = { pin_id: pin?.id ?? null, toss_id: tossId, content: pin?.content ?? null };
+    if (tossId === null) {
+      // Report it rather than guessing — the skill asks the sender to re-toss.
+      return { ...base, action: INVENTORY_ACTIONS.UNMAPPABLE, reason: 'pin_has_no_toss_id' };
+    }
+    const item = byId.get(tossId) ?? null;
+    // A listed pin exists by construction; mem-mesh's 7-day auto-close is the
+    // only way it reads `completed` (see reconcileGivenItem's note).
+    const pinState = { status: pin?.status === 'completed' ? 'completed' : 'in_progress' };
+    const decision = reconcile(pinState, item);
+    if (decision.action === RECONCILE_ACTIONS.SELF_CREATE) {
+      return { ...base, action: INVENTORY_ACTIONS.MATERIALIZE, reason: decision.reason };
+    }
+    if (decision.action === RECONCILE_ACTIONS.SYNC_STATUS) {
+      return { ...base, action: INVENTORY_ACTIONS.RENOTIFY, reason: decision.reason };
+    }
+    return { ...base, action: INVENTORY_ACTIONS.NONE, reason: decision.reason };
+  });
+
+  const itemReports = items.map((item) => {
+    const pinId = item.mem_mesh?.pin_id ?? null;
+    const base = { id: item.id, status: item.status, pin_id: pinId };
+    if (!complete) return { ...base, action: INVENTORY_ACTIONS.NONE, reason: 'listing_incomplete' };
+    if (pinId !== null && listedPinIds.has(pinId)) {
+      return { ...base, action: INVENTORY_ACTIONS.NONE, reason: 'pin_listed' };
+    }
+    const decision = reconcile(null, item);
+    return {
+      ...base,
+      action: decision.action === RECONCILE_ACTIONS.RENOTIFY
+        ? INVENTORY_ACTIONS.RENOTIFY
+        : INVENTORY_ACTIONS.NONE,
+      reason: decision.reason,
+    };
+  });
+
+  const summary = { materialize: 0, renotify: 0, unmappable: 0, none: 0 };
+  for (const report of [...pinReports, ...itemReports]) {
+    if (report.action === INVENTORY_ACTIONS.MATERIALIZE) summary.materialize += 1;
+    else if (report.action === INVENTORY_ACTIONS.RENOTIFY) summary.renotify += 1;
+    else if (report.action === INVENTORY_ACTIONS.UNMAPPABLE) summary.unmappable += 1;
+    else summary.none += 1;
+  }
+  return { pins: pinReports, items: itemReports, summary };
+}

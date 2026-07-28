@@ -12,10 +12,12 @@
  *        [--from-commit <hash>] [--json]
  *   list [--json]
  *   take <id>
- *   resolve|done <id> [--summary <text>] [--verification <text>] [--json]
- *   drop <id> [--summary <text>] [--verification <text>] [--json]
+ *   resolve|done <id> --summary <text> --verification <text> [--json]
+ *   drop <id> --summary <text> [--json]
  *   record <id> [--pin-id <id>] [--memory-id <id>] [--scope outbox|inbox] [--json]
- *   materialize --content <memory-json> [--memory-id <id>] [--pin-id <id>] [--json]
+ *   materialize --content <memory-json> | --content-file <path>
+ *               [--memory-id <id>] [--pin-id <id>] [--json]
+ *   reconcile --pins <pin_list-json> | --pins-file <path> [--partial] [--json]
  *
  * NO NETWORK CALLS ANYWHERE IN THIS FILE (t11 invariant). This process is a
  * plain `node` subprocess — it shares neither Claude Code's MCP session nor
@@ -41,6 +43,7 @@ import { toss, describeCapture } from './x-inbox/toss.mjs';
 import {
   list as listLedger, take, InboxItemNotFoundError,
   materializeMemory, InboxMaterializationError,
+  pinInventory, INVENTORY_ACTIONS,
 } from './x-inbox/inbox.mjs';
 import { recordMemMesh, LedgerItemNotFoundError, readLedger } from './x-inbox/ledger.mjs';
 import { archiveExpired } from './x-inbox/retention.mjs';
@@ -54,7 +57,7 @@ import {
 const KNOWN_FLAGS = new Set([
   '--command', '--output', '--output-file', '--fix', '--why', '--to-files',
   '--from-commit', '--pin-id', '--memory-id', '--scope', '--json', '--help',
-  '--content',
+  '--content', '--content-file', '--pins', '--pins-file', '--partial',
   '--summary', '--verification', '--receipt-memory-id',
 ]);
 
@@ -262,7 +265,7 @@ async function resolveCmd(args) {
   const id = args[0];
   const json = hasFlag(args, '--json');
   if (!nonEmptyStr(id)) {
-    process.stderr.write('Usage: xm inbox resolve <id> [--summary <text>] [--verification <text>] [--json]\n');
+    process.stderr.write('Usage: xm inbox resolve <id> --summary <text> --verification <text> [--json]\n');
     return 2;
   }
   const cwd = process.cwd();
@@ -274,7 +277,7 @@ async function resolveCmd(args) {
       cwd, summary: getFlag(args, '--summary') || '', verification: getFlag(args, '--verification') || '',
     });
     const { item: withReceipt, receipt } = result;
-    const payload = buildReceiptPayload(receipt);
+    const payload = buildReceiptPayload(receipt, { pinId: withReceipt.mem_mesh?.pin_id });
     if (json) process.stdout.write(`${JSON.stringify({ ok: true, item: withReceipt, mcp_calls: payload }, null, 2)}\n`);
     else process.stdout.write(`✅ resolved: ${withReceipt.id}  ${withReceipt.title}\n`);
     return 0;
@@ -290,7 +293,7 @@ async function resolveCmd(args) {
 async function dropCmd(args) {
   const id = args[0];
   if (!nonEmptyStr(id)) {
-    process.stderr.write('Usage: xm inbox drop <id> [--summary <text>] [--verification <text>] [--json]\n');
+    process.stderr.write('Usage: xm inbox drop <id> --summary <text> [--json]\n');
     return 2;
   }
   const cwd = process.cwd();
@@ -302,7 +305,7 @@ async function dropCmd(args) {
       cwd, summary: getFlag(args, '--summary') || '', verification: getFlag(args, '--verification') || '',
     });
     const { item: withReceipt, receipt } = result;
-    if (hasFlag(args, '--json')) process.stdout.write(`${JSON.stringify({ ok: true, item: withReceipt, mcp_calls: buildReceiptPayload(receipt) }, null, 2)}\n`);
+    if (hasFlag(args, '--json')) process.stdout.write(`${JSON.stringify({ ok: true, item: withReceipt, mcp_calls: buildReceiptPayload(receipt, { pinId: withReceipt.mem_mesh?.pin_id }) }, null, 2)}\n`);
     else process.stdout.write(`🗑 dropped: ${withReceipt.id}  ${withReceipt.title}\n`);
     return 0;
   } catch (err) {
@@ -330,7 +333,11 @@ async function receiptCmd(args) {
     if (action === 'retry') {
       const receipt = readLedger(join(cwd, '.xm', 'receipts')).find((entry) => entry.receipt?.toss_id === id)?.receipt;
       if (!receipt) throw new ReceiptError(`no local receipt for ${id}`);
-      process.stdout.write(`${JSON.stringify({ ok: true, mcp_calls: buildReceiptPayload(receipt) }, null, 2)}\n`);
+      // Same two calls the original terminal transition emitted: a retry
+      // re-sends the receipt, and the delivery pin is still open if the
+      // first attempt died before completing it.
+      const pinId = readLedger(inboxDirFor(cwd)).find((entry) => entry.id === id)?.mem_mesh?.pin_id;
+      process.stdout.write(`${JSON.stringify({ ok: true, mcp_calls: buildReceiptPayload(receipt, { pinId }) }, null, 2)}\n`);
       return 0;
     }
     if (action === 'record') {
@@ -421,19 +428,37 @@ async function recordCmd(args) {
 }
 
 function materializeUsage() {
-  return 'Usage: xm inbox materialize --content <memory-json> [--memory-id <id>] [--pin-id <id>] [--json]\n';
+  return 'Usage: xm inbox materialize --content <memory-json> | --content-file <path> '
+    + '[--memory-id <id>] [--pin-id <id>] [--json]\n';
 }
 
 /**
  * Persist a memory body the SKILL already fetched through MCP. This remains
  * disk-only: it neither searches mem-mesh nor writes outside this cwd's
  * `.xm/inbox`. Duplicate ids preserve the local item/status unchanged.
+ *
+ * `--content-file` exists because a memory body is a whole JSON document
+ * carrying an embedded repro command and its captured output — passing that
+ * as a shell argument means re-quoting nested escapes by hand, and a single
+ * slip corrupts the repro silently. Same fallback shape as toss's
+ * `--output-file`: the inline flag wins when both are given.
  */
 async function materializeCmd(args) {
-  const content = getFlag(args, '--content');
+  const contentFlag = getFlag(args, '--content');
+  const contentFile = getFlag(args, '--content-file');
   const memoryId = getFlag(args, '--memory-id');
   const pinId = getFlag(args, '--pin-id');
   const json = hasFlag(args, '--json');
+
+  let content = typeof contentFlag === 'string' ? contentFlag : null;
+  if (content === null && typeof contentFile === 'string') {
+    try {
+      content = readFileSync(contentFile, 'utf8');
+    } catch (err) {
+      process.stderr.write(`xm inbox materialize: failed to read --content-file ${contentFile}: ${err.message}\n`);
+      return 1;
+    }
+  }
   if (!nonEmptyStr(content)) {
     process.stderr.write(materializeUsage());
     return 2;
@@ -465,6 +490,81 @@ async function materializeCmd(args) {
   }
 }
 
+function reconcileUsage() {
+  return 'Usage: xm inbox reconcile --pins <pin_list-json> | --pins-file <path> [--partial] [--json]\n';
+}
+
+/**
+ * Diff a mem-mesh pin listing against this ledger and print what the SKILL
+ * must do about each side. Still no network here (t11): the skill holds the
+ * MCP session, calls `pin_list` itself, and pipes the result in.
+ *
+ * Accepts either `pin_list`'s whole envelope (`{pins:[...]}`) or a bare
+ * array, because the skill copies whichever is at hand.
+ */
+async function reconcileCmd(args) {
+  const pinsFlag = getFlag(args, '--pins');
+  const pinsFile = getFlag(args, '--pins-file');
+  const json = hasFlag(args, '--json');
+  const complete = !hasFlag(args, '--partial');
+
+  let raw = typeof pinsFlag === 'string' ? pinsFlag : null;
+  if (raw === null && typeof pinsFile === 'string') {
+    try {
+      raw = readFileSync(pinsFile, 'utf8');
+    } catch (err) {
+      process.stderr.write(`xm inbox reconcile: failed to read --pins-file ${pinsFile}: ${err.message}\n`);
+      return 1;
+    }
+  }
+  if (!nonEmptyStr(raw)) {
+    process.stderr.write(reconcileUsage());
+    return 2;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    process.stderr.write(`xm inbox reconcile: pin listing is not valid JSON: ${err.message}\n`);
+    return 1;
+  }
+  const pins = Array.isArray(parsed) ? parsed : parsed?.pins;
+  if (!Array.isArray(pins)) {
+    process.stderr.write('xm inbox reconcile: expected pin_list\'s `pins` array (or the whole envelope)\n');
+    return 1;
+  }
+
+  const report = pinInventory(inboxDirFor(process.cwd()), pins, { complete });
+  if (json) {
+    process.stdout.write(`${JSON.stringify({ ok: true, ...report }, null, 2)}\n`);
+    return 0;
+  }
+
+  const { summary } = report;
+  process.stdout.write(
+    `pins ${pins.length} · materialize ${summary.materialize} · renotify ${summary.renotify} · unmappable ${summary.unmappable}\n`,
+  );
+  for (const pin of report.pins) {
+    if (pin.action === INVENTORY_ACTIONS.MATERIALIZE) {
+      process.stdout.write(`  📥 materialize ${pin.toss_id} (pin ${pin.pin_id})\n`);
+    } else if (pin.action === INVENTORY_ACTIONS.RENOTIFY) {
+      process.stdout.write(`  🔁 renotify ${pin.toss_id} (pin ${pin.pin_id} — ${pin.reason})\n`);
+    } else if (pin.action === INVENTORY_ACTIONS.UNMAPPABLE) {
+      process.stdout.write(`  ❓ unmappable pin ${pin.pin_id} — ${pin.content ?? ''}\n`);
+    }
+  }
+  for (const item of report.items) {
+    if (item.action === INVENTORY_ACTIONS.RENOTIFY) {
+      process.stdout.write(`  🔁 renotify ${item.id} (${item.status} — ${item.reason})\n`);
+    }
+  }
+  if (summary.materialize + summary.renotify + summary.unmappable === 0) {
+    process.stdout.write('  ✅ ledger and pins agree — nothing to do\n');
+  }
+  return 0;
+}
+
 function helpCmd() {
   process.stdout.write(`xm toss / xm inbox — cross-project handoff (PRD cross-project-handoff)
 
@@ -473,10 +573,12 @@ Usage:
           [--why <text>] [--output-file <path>] [--to-files a,b,c] [--from-commit <hash>] [--json]
   xm inbox list [--json]
   xm inbox take <id>
-  xm inbox resolve <id> [--summary <text>] [--verification <text>] [--json]   # alias: done
-  xm inbox drop <id> [--summary <text>] [--verification <text>] [--json]
+  xm inbox resolve <id> --summary <text> --verification <text> [--json]   # alias: done
+  xm inbox drop <id> --summary <text> [--json]
   xm inbox record <id> --pin-id <id> [--memory-id <id>] [--scope outbox|inbox] [--json]
-  xm inbox materialize --content <memory-json> [--memory-id <id>] [--pin-id <id>] [--json]
+  xm inbox materialize --content <memory-json> | --content-file <path>
+                       [--memory-id <id>] [--pin-id <id>] [--json]
+  xm inbox reconcile --pins <pin_list-json> | --pins-file <path> [--partial] [--json]
   xm inbox receipt <status|retry|record|materialize> <toss-id> [...]
 
 This CLI never calls mem-mesh itself — \`toss --json\` prints the MCP call
@@ -497,6 +599,7 @@ switch (sub) {
   case 'drop': code = await dropCmd(rest); break;
   case 'record': code = await recordCmd(rest); break;
   case 'materialize': code = await materializeCmd(rest); break;
+  case 'reconcile': code = await reconcileCmd(rest); break;
   case 'receipt': code = await receiptCmd(rest); break;
   case 'help': case '--help': case '-h': code = helpCmd(); break;
   default:

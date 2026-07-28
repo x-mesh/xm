@@ -60,7 +60,23 @@ function withTerminalLock(dir, tossId, cwd, fn) {
   }
 }
 
-/** Build the immutable, receiver-authored receipt body. */
+/**
+ * Build the immutable, receiver-authored receipt body.
+ *
+ * Evidence is required here rather than in the CLI, for two reasons. It is an
+ * invariant of the record — a terminal receipt is the only thing the sender
+ * ever sees, and one asserting "resolved" with nothing behind it is worse
+ * than no receipt, because it closes the report against a fix that may not
+ * exist. And placing it here keeps a REPEAT terminal call idempotent:
+ * `transitionWithReceipt` returns an existing receipt before reaching this
+ * function, so re-running `resolve <id>` with no flags still succeeds
+ * unchanged. Gating on argument parsing instead would have broken that.
+ *
+ * `validateReceipt` deliberately does NOT enforce this — it reads receipts
+ * back, including ones written before the requirement existed.
+ *
+ * A dismissal needs a reason but not a verification: nothing was fixed.
+ */
 export function buildTerminalReceipt(item, opts = {}) {
   if (!item || !TERMINAL.has(item.status)) throw new ReceiptError('a receipt requires a terminal inbox item');
   const receiver = opts.receiverProject ?? resolveMemMeshProjectId(opts.cwd ?? process.cwd(), { allowEnvOverride: true });
@@ -68,6 +84,14 @@ export function buildTerminalReceipt(item, opts = {}) {
   const state = item.status;
   const summary = typeof opts.summary === 'string' ? opts.summary.trim() : '';
   const verification = typeof opts.verification === 'string' ? opts.verification.trim() : '';
+  if (!summary) {
+    throw new ReceiptError(state === 'resolved'
+      ? 'resolving requires a summary of what actually changed'
+      : 'dismissing requires a summary of why this project is not acting on the report');
+  }
+  if (state === 'resolved' && !verification) {
+    throw new ReceiptError('resolving requires verification — the check that shows the fix works, named concretely (command run, files/lines confirmed). Restating the summary is not verification');
+  }
   const tossId = nonEmpty(item.id, 'toss_id');
   const toProject = nonEmpty(item.from_project, 'source_project');
   return {
@@ -128,10 +152,23 @@ export function validateReceipt(receipt) {
   return receipt;
 }
 
-/** Exact MCP call arguments the skill must pass verbatim to mem-mesh add. */
-export function buildReceiptPayload(receipt) {
+/**
+ * Exact MCP call arguments the skill must pass verbatim to mem-mesh.
+ *
+ * `pin_complete` is included whenever the terminal item still carries a
+ * delivery pin id. Without it the pin stays `in_progress` forever and the
+ * receiving project's session context keeps announcing a report that is
+ * already closed — the pin outlives the work it was announcing. It is a
+ * separate key rather than part of `add` because the skill makes two
+ * distinct MCP calls, and the receipt must be delivered even if completing
+ * the pin fails.
+ *
+ * @param {object} receipt
+ * @param {{ pinId?: string|null }} [opts]
+ */
+export function buildReceiptPayload(receipt, opts = {}) {
   validateReceipt(receipt);
-  return {
+  const payload = {
     add: {
       content: JSON.stringify(receipt),
       project_id: receipt.to_project,
@@ -139,6 +176,11 @@ export function buildReceiptPayload(receipt) {
       tags: [RECEIPT_TAG],
     },
   };
+  const pinId = opts.pinId;
+  if (typeof pinId === 'string' && pinId.trim().length > 0) {
+    payload.pin_complete = { pin_id: pinId };
+  }
+  return payload;
 }
 
 /** Atomically choose (or reuse) exactly one terminal state and receipt. */
