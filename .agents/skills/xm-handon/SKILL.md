@@ -153,7 +153,9 @@ keep only the same `project_id` whose `tags` contain **both** `handoff` and
 recent memory or a pin as a handoff candidate. (Do NOT use `mcp__mem-mesh__context`
 here — it requires a `memory_id`/`ids` and cannot list a project's recent memories.)
 
-> **`project_id` = basename of the REPO ROOT, not of cwd.** `handoff` writes mirrors under the repo-root name so the id stays stable no matter which subdirectory the CLI ran from; searching by cwd basename from a subdirectory silently returns nothing. When a mirror exists, `xm build handoff --mirror-status` reports the exact `payload.project_id` — prefer that over deriving it yourself.
+> **`project_id` is whatever mem-mesh itself resolves — never derive it from a directory name.** The chain is: `MEM_MESH_PROJECT_ID` → `git config --local mem-mesh.project-id` → `.mem-mesh/project-id` → `basename(git rev-parse --show-toplevel)`. It is stable across subdirectories, and it is deliberately NOT the `.xm` state root. When a mirror exists, `xm build handoff --mirror-status` reports the exact `payload.project_id` — prefer that over deriving it yourself.
+>
+> **In a linked worktree the id is the WORKTREE's basename, not the main checkout's** — mem-mesh treats a worktree as its own project (step 4 is `--show-toplevel`, not `--git-common-dir`). So a handoff saved from the main checkout is genuinely not in the worktree's project, and searching from the worktree correctly returns nothing. That is not a lookup failure: report it as "no handoff for this project id", name the id you searched, and — when the two should share history — point the user at `git config --local mem-mesh.project-id <parent id>` inside the worktree.
 
 ```
   Mem-mesh handoff: {memory id} at {created_at}

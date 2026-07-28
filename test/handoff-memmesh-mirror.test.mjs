@@ -11,7 +11,7 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const CLI = join(import.meta.dir, '..', 'x-build', 'lib', 'x-build-cli.mjs');
@@ -415,4 +415,45 @@ test('--mirror-skip dismisses a pending mirror without claiming it was saved', (
 
   // A dismissed mirror stops nagging on restore.
   expect(cli('handon')).not.toContain('mem-mesh mirror is pending');
+});
+
+/**
+ * The mirror's project_id must equal what mem-mesh itself resolves, because
+ * handon finds the mirror by searching that id — disagree and the search
+ * returns nothing, silently. These pin the VALUE, not just the schema shape:
+ * the shape assertions above passed throughout the whole period the id was
+ * being derived from the wrong place.
+ */
+test('project_id follows mem-mesh\'s identity chain, not the .xm state root', () => {
+  // A nested .xm makes repoRoot() resolve to the SUBDIRECTORY (xm-root.mjs
+  // returns cwd/.xm before consulting git). The old derivation therefore
+  // produced the subdirectory's name, contradicting handon's documented
+  // "basename of the REPO ROOT, not of cwd" guarantee — with no worktree
+  // involved at all.
+  const nested = join(repo, 'packages', 'inner');
+  mkdirSync(join(nested, '.xm'), { recursive: true });
+  execFileSync('node', [CLI, 'handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'from a nested .xm'],
+    { cwd: nested, encoding: 'utf8' });
+
+  const m = JSON.parse(readFileSync(join(nested, '.xm', 'build', 'memmesh-mirror.json'), 'utf8'));
+  expect(m.payload.project_id).toBe(basename(repo));
+  expect(m.payload.project_id).not.toBe('inner');
+});
+
+test('git config mem-mesh.project-id overrides the mirror id — the documented remedy', () => {
+  // Step 2 of mem-mesh's chain. It is the sanctioned fix for identity drift
+  // (e.g. pointing a linked worktree at its parent project), and it used to
+  // have zero effect here because only step 4 was implemented.
+  git('config', '--local', 'mem-mesh.project-id', 'chosen-identity');
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'with an explicit id');
+
+  expect(mirror().payload.project_id).toBe('chosen-identity');
+});
+
+test('MEM_MESH_PROJECT_ID overrides the mirror id — self-identity call site', () => {
+  const out = spawnSync('node', [CLI, 'handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'env override'], {
+    cwd: repo, encoding: 'utf8', env: { ...process.env, MEM_MESH_PROJECT_ID: 'env-identity' },
+  });
+  expect(out.status).toBe(0);
+  expect(mirror().payload.project_id).toBe('env-identity');
 });

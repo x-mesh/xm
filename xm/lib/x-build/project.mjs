@@ -18,6 +18,7 @@ import {
   exitFail,
   repoRoot, gaugeProjectKind,
 } from './core.mjs';
+import { resolveMemMeshProjectId } from '../mem-mesh-identity.mjs';
 
 // ── cmdInit ─────────────────────────────────────────────────────────
 
@@ -1060,9 +1061,25 @@ export function mirrorPath() {
 }
 
 // mem-mesh project_id pattern: ^[a-zA-Z0-9_-]{1,100}$
+//
+// The id must be whatever mem-mesh itself would resolve, because `handon`
+// finds this mirror by searching that id: disagree, and handoff writes under
+// one project while the search returns nothing — silently, since an empty
+// result set is indistinguishable from "no handoff exists".
+//
+// This deliberately does NOT derive from repoRoot(). repoRoot() is `.xm`-
+// anchored (xm-root.mjs: a local `.xm` wins before git is consulted), so a
+// nested `.xm` yielded the subdirectory's name — contradicting handon's
+// documented "basename of the REPO ROOT, not of cwd" guarantee without any
+// worktree involved. It also skipped the env / git-config / .mem-mesh steps
+// of the chain, which is why `git config --local mem-mesh.project-id <id>` —
+// the documented remedy for identity drift — had no effect on the mirror.
+//
+// allowEnvOverride: this resolves THIS project's own identity, which is the
+// call-site MEM_MESH_PROJECT_ID is defined for.
 function _mirrorProjectId() {
-  const base = repoRoot().split('/').filter(Boolean).pop() || 'project';
-  return (base.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 100)) || 'project';
+  const resolved = resolveMemMeshProjectId(process.cwd(), { allowEnvOverride: true });
+  return (resolved.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 100)) || 'project';
 }
 
 function _mirrorContent(state) {
