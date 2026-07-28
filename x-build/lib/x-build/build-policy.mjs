@@ -380,6 +380,31 @@ export function readReviewGroupState(project) {
   return readJSON(statePath(project)) || { version: 1, groups: {} };
 }
 
+/**
+ * Judge stored `group_quality` against the CURRENT workspace, using the exact
+ * predicate `runGroupChecks()` applies when deciding it may reuse that same
+ * evidence (see its `existing` guard). Anything weaker at the gate would
+ * accept a snapshot the checker itself would have rejected and re-run.
+ *
+ * This exists because `all_passed` used to read `group_quality.passed` alone.
+ * `reviewGroupStatus` demotes a group to `review_required` when HEAD moved
+ * after its review, but that demotion touched only `status` — the untouched
+ * stale evidence still satisfied the gate, so `phase next` could leave Execute
+ * on a patch nobody reviewed. Deliberately NOT keyed on `status === 'passed'`:
+ * manual mode may skip the panel review by design and still owes the checks.
+ *
+ * Fails closed when the fingerprint cannot be computed, matching
+ * `taskCheckEvidenceStatus`'s treatment of a missing fingerprint.
+ */
+function groupQualityFreshness(evidence, { fingerprint, descriptor, canonicalCwd }) {
+  if (evidence?.passed !== true) return { fresh: false, reason: 'no_passing_group_quality' };
+  if (!fingerprint) return { fresh: false, reason: 'git_fingerprint_unavailable' };
+  if (evidence.cwd !== canonicalCwd) return { fresh: false, reason: 'group_quality_other_workspace' };
+  if (evidence.command_hash !== descriptor) return { fresh: false, reason: 'group_quality_command_contract_changed' };
+  if (evidence.fingerprint !== fingerprint) return { fresh: false, reason: 'group_quality_workspace_changed' };
+  return { fresh: true, reason: null };
+}
+
 export function reviewGroupStatus(project, tasks = [], { cwd = repoRoot() } = {}) {
   const policy = loadBuildPolicy();
   const definitions = reviewGroupsForTasks(tasks);
@@ -418,6 +443,28 @@ export function reviewGroupStatus(project, tasks = [], { cwd = repoRoot() } = {}
       finalGroup.stale_reason = !target.head || !target.diff.ok ? 'git_target_unavailable' : 'head_changed_after_review';
     }
   }
+  // Only group scope gates on group_quality, and the fingerprint costs several
+  // git calls — skip it entirely when no stored evidence could be consulted.
+  const gatesOnQuality = policy.review_scope === 'group'
+    && groups.some((g) => g.group_quality !== undefined);
+  let qualityContext = null;
+  if (gatesOnQuality) {
+    const checkNames = resolveGroupChecks(cwd).map(({ name }) => name);
+    const fingerprintPolicy = { ...policy, task_checks: checkNames };
+    qualityContext = {
+      canonicalCwd: resolve(cwd),
+      descriptor: taskCheckContractHash(cwd, fingerprintPolicy),
+      fingerprint: taskCheckFingerprint(cwd, fingerprintPolicy),
+    };
+    for (const group of groups) {
+      if (group.group_quality === undefined) continue;
+      const { fresh, reason } = groupQualityFreshness(group.group_quality, qualityContext);
+      if (!fresh && group.group_quality?.passed === true) {
+        group.group_quality_stale = true;
+        group.group_quality_stale_reason = reason;
+      }
+    }
+  }
   const active = groups.find((g) => g.status !== 'passed') || null;
   const head = gitHead(cwd, active?.ref || groups.at(-1)?.ref || 'HEAD');
   return {
@@ -431,10 +478,13 @@ export function reviewGroupStatus(project, tasks = [], { cwd = repoRoot() } = {}
     all_tasks_completed: tasks.length > 0 && tasks.every((t) => ['completed', 'cancelled'].includes(t.status)),
     // Optional panel review never weakens the required full group checks.
     // Manual mode may skip the panel, but Execute can advance only after every
-    // completed group has a passing, exact-snapshot group_quality evidence.
+    // completed group has a passing, exact-snapshot group_quality evidence —
+    // "exact-snapshot" judged against the workspace as it is NOW, not merely as
+    // it was when the evidence was written.
     all_passed: policy.review_scope !== 'group'
       ? tasks.length > 0 && tasks.every((t) => ['completed', 'cancelled'].includes(t.status))
-      : groups.length > 0 && groups.every((g) => g.group_quality?.passed === true),
+      : groups.length > 0 && qualityContext !== null
+        && groups.every((g) => groupQualityFreshness(g.group_quality, qualityContext).fresh),
     head,
   };
 }
@@ -451,8 +501,12 @@ export function reviewGroupStatus(project, tasks = [], { cwd = repoRoot() } = {}
 export function resolveReviewAction(summary, { allDone = false } = {}) {
   if (!summary || summary.review_scope !== 'group') return null;
 
+  // `group_quality_stale` matters on its own: only the final group gets a
+  // freshness demotion in `reviewGroupStatus`, so an earlier group can still
+  // read `status: 'passed'` while holding evidence the gate no longer accepts.
+  // Without this the caller blocks on all_passed and prints no command at all.
   const activeGroup = summary.active_group
-    || summary.groups?.find((group) => group.group_quality?.passed !== true)?.id
+    || summary.groups?.find((group) => group.group_quality?.passed !== true || group.group_quality_stale === true)?.id
     || null;
   if (!activeGroup) return null;
 

@@ -569,6 +569,80 @@ describe('content-bound approval and shared review groups', () => {
     }
   });
 
+  test('a reviewed group whose workspace moved afterwards cannot advance Execute', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-stale-quality-'));
+    try {
+      const project = setup(tmp);
+      // Default review_mode is 'manual', so `review_required` is always false and
+      // phase.mjs gates on all_passed ALONE. That makes group_quality freshness
+      // the only thing standing between a reopened task and an unreviewed
+      // Execute exit — the fail-open this test pins down.
+      writeFileSync(join(tmp, '.xm', 'config.json'), JSON.stringify({ build: {
+        review_depth: 'checks-only', task_checks: ['git diff --check'], group_checks: ['git diff --check'],
+      } }, null, 2));
+      writeFileSync(join(tmp, 'package.json'), JSON.stringify({ scripts: { test: 'echo ok', lint: 'echo ok' } }));
+      git(tmp, ['add', 'package.json']);
+      git(tmp, ['commit', '-qm', 'add package']);
+      run(tmp, ['phase', 'set', 'plan']);
+      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
+      run(tmp, ['steps', 'compute']);
+      const planDir = join(project, 'phases', '02-plan');
+      mkdirSync(planDir, { recursive: true });
+      writeFileSync(join(planDir, 'PRD.md'), '# PRD\n\n## 1. Goal\nFeature\n');
+      run(tmp, ['plan-check']);
+      run(tmp, ['gate', 'pass', 'approved']);
+      run(tmp, ['run', '--json']);
+      writeFileSync(join(tmp, 'feature.js'), 'export const value = 1;\n');
+      git(tmp, ['add', 'feature.js']);
+      git(tmp, ['commit', '-qm', 'feature']);
+      run(tmp, ['task-check', 't1']);
+      run(tmp, ['tasks', 'update', 't1', '--status', 'completed', '--no-commit']);
+
+      const reviewed = JSON.parse(run(tmp, ['review-group', 'build', '--json']).stdout);
+      expect(reviewed.ok).toBe(true);
+      const passedState = JSON.parse(readFileSync(join(project, 'phases', '03-execute', 'review-groups.json')));
+      expect(passedState.groups.build.status).toBe('passed');
+      expect(passedState.groups.build.group_quality?.passed).toBe(true);
+      const reviewedFingerprint = passedState.groups.build.group_quality.fingerprint;
+
+      // Reopen, then ship a REAL change — the reviewed snapshot is now history.
+      run(tmp, ['tasks', 'reopen', 't1', '--reason', 'follow-up fix']);
+      run(tmp, ['run', '--json']);
+      writeFileSync(join(tmp, 'feature.js'), 'export const value = 2; // unreviewed\n');
+      git(tmp, ['add', 'feature.js']);
+      git(tmp, ['commit', '-qm', 'unreviewed change']);
+      run(tmp, ['task-check', 't1']);
+      run(tmp, ['tasks', 'update', 't1', '--status', 'completed', '--no-commit']);
+
+      // review-groups.json still carries the OLD passing evidence verbatim:
+      // reopen never rewrites it. That is exactly what used to satisfy the gate.
+      const afterState = JSON.parse(readFileSync(join(project, 'phases', '03-execute', 'review-groups.json')));
+      expect(afterState.groups.build.group_quality.passed).toBe(true);
+      expect(afterState.groups.build.group_quality.fingerprint).toBe(reviewedFingerprint);
+
+      const status = JSON.parse(run(tmp, ['run-status', '--json']).stdout);
+      expect(status.next_action).not.toBe('phase next');
+
+      const blocked = run(tmp, ['phase', 'next']);
+      expect(blocked.code).toBe(2);
+      expect(blocked.stdout).toContain('Execute review is incomplete');
+      // Blocking without naming the escape is a dead end — route the command.
+      expect(blocked.stdout).toContain('x-build group-check build');
+      const stale = JSON.parse(run(tmp, ['run-status', '--json']).stdout);
+      expect(stale.review_groups?.find((g) => g.id === 'build')?.group_quality_stale).toBe(true);
+      expect(stale.review_groups?.find((g) => g.id === 'build')?.group_quality_stale_reason).toBe('group_quality_workspace_changed');
+
+      // Re-running the group checks against the current workspace clears it.
+      expect(JSON.parse(run(tmp, ['group-check', 'build', '--json']).stdout).ok).toBe(true);
+      const refreshed = JSON.parse(readFileSync(join(project, 'phases', '03-execute', 'review-groups.json')));
+      expect(refreshed.groups.build.group_quality.fingerprint).not.toBe(reviewedFingerprint);
+      expect(run(tmp, ['phase', 'next']).code).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('review group dispatch fails closed when git baseline is unavailable', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-no-git-'));
     try {
