@@ -1501,22 +1501,50 @@ describe('appendMetric rotation', () => {
 
 // ── detectAndRunQualityChecks ────────────────────────────────────
 
-describe('runQualityChecks', () => {
-  let proj;
-  beforeEach(() => { proj = setupTestProject('qc-test'); });
-  afterEach(() => { rmSync(proj.projDir, { recursive: true, force: true }); });
+// runQualityChecks() resolves its config from repoRoot(), i.e. from core.ROOT,
+// and will spawn whatever serial_quality_command it finds there. The
+// X_BUILD_ROOT sandbox at the top of this file only takes effect when no
+// earlier test file has imported core.mjs — an ES module is a per-process
+// singleton, so `bun test` runs where build-lifecycle.test.mjs (alphabetically
+// earlier) loaded core.mjs first got the REAL repo root here, ran this repo's
+// own `bun test ...` quality command, and timed out after ~90s.
+//
+// These two run in their own process so the sandbox is guaranteed, whatever
+// ran before them.
+const QUALITY_SANDBOX = join(import.meta.dir, 'fixtures', 'quality-sandbox.mjs');
 
+function runQualityInSandbox({ buildConfig = null } = {}) {
+  const sandbox = mkdtempSync(join(tmpdir(), 'xb-qc-'));
+  const xmDir = join(sandbox, '.xm');
+  const project = 'qc-test';
+  const projDir = join(xmDir, 'build', 'projects', project);
+  for (const phase of core.PHASES) mkdirSync(join(projDir, 'phases', phase.id), { recursive: true });
+  writeFileSync(join(projDir, 'manifest.json'),
+    JSON.stringify({ display_name: project, current_phase: '03-execute' }), 'utf8');
+  if (buildConfig) {
+    writeFileSync(join(xmDir, 'build', 'config.json'), JSON.stringify(buildConfig), 'utf8');
+  }
+  const out = spawnSync(process.execPath, [QUALITY_SANDBOX, xmDir, project], { encoding: 'utf8' });
+  rmSync(sandbox, { recursive: true, force: true });
+  if (out.status !== 0) throw new Error(`quality sandbox failed (${out.status}): ${out.stderr}`);
+  return { ...JSON.parse(out.stdout), xmDir };
+}
+
+describe('runQualityChecks', () => {
   test('runs with no detectable tools and saves results', () => {
-    // In a temp project with no package.json/go.mod etc, should return empty results
-    const results = core.runQualityChecks(proj.name);
+    // A sandbox repo with no package.json/go.mod etc: no checks to detect.
+    const { root, xmDir, results, saved } = runQualityInSandbox();
+
+    // Guard the guard: if the child ever loses its sandbox it would run the
+    // real repo's checks and the assertions below would stop meaning anything.
+    expect(root).toBe(join(xmDir, 'build'));
+
     expect(Array.isArray(results)).toBe(true);
     expect(results.some((r) => r.check === 'npm-test')).toBe(false);
 
     // Quality results file should be saved
-    const qrPath = join(proj.projDir, 'phases', '04-verify', 'quality-results.json');
-    const qr = core.readJSON(qrPath);
-    expect(qr.timestamp).toBeTruthy();
-    expect(qr.passed).toBe(true); // no checks = passed
+    expect(saved.timestamp).toBeTruthy();
+    expect(saved.passed).toBe(true); // no checks = passed
   });
 });
 
@@ -1659,27 +1687,18 @@ describe('git integration', () => {
 // ── quality checks with gate_scripts ─────────────────────────────
 
 describe('quality checks with gate scripts', () => {
-  let proj;
-
-  beforeEach(() => {
-    proj = setupTestProject('qc-gate-test');
-    // Configure gate scripts
-    core.writeJSON(join(core.ROOT, 'config.json'), {
-      gate_scripts: {
-        'echo-check': 'echo "pass"',
-        'fail-check': 'exit 1',
+  // Own process, same reason as runQualityChecks above.
+  test('runs custom gate scripts and captures pass/fail', () => {
+    const { root, xmDir, results } = runQualityInSandbox({
+      buildConfig: {
+        gate_scripts: {
+          'echo-check': 'echo "pass"',
+          'fail-check': 'exit 1',
+        },
       },
     });
-  });
+    expect(root).toBe(join(xmDir, 'build'));
 
-  afterEach(() => {
-    rmSync(proj.projDir, { recursive: true, force: true });
-    const configPath = join(core.ROOT, 'config.json');
-    if (existsSync(configPath)) rmSync(configPath);
-  });
-
-  test('runs custom gate scripts and captures pass/fail', () => {
-    const results = core.runQualityChecks(proj.name);
     const echoResult = results.find(r => r.check === 'echo-check');
     const failResult = results.find(r => r.check === 'fail-check');
     expect(echoResult).toBeTruthy();
