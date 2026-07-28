@@ -1940,19 +1940,49 @@ export async function cmdRun(args) {
     : [];
 
   if (readyTasks.length === 0) {
+    // RUNNING tasks are filtered out of `readyTasks` above, so they are the
+    // most common reason this branch is reached — and the old message blamed
+    // "retries or dependencies" unconditionally, which is actively misleading
+    // when (as in the reported deadlock) deps are empty and retries are 0.
+    //
+    // Split them by whether a worktree artifact stands behind the RUNNING
+    // status. Without one there is NOTHING that can tell a live agent apart
+    // from a task orphaned by a run whose leader never spawned it — so name
+    // the ambiguity and the recovery, and let the caller decide. Never advise
+    // reconcile as if it were known-safe: on a non-worktree run it would
+    // reclaim a task a live agent is still working.
+    const runningTasks = currentStep.tasks
+      .map((id) => taskData.tasks.find((t) => t.id === id))
+      .filter((t) => t && t.status === TASK_STATES.RUNNING);
+    const unbacked = runningTasks.filter((t) => classifyStaleRunning(project, t).reconcile).map((t) => t.id);
+    const backed = runningTasks.filter((t) => !unbacked.includes(t.id)).map((t) => t.id);
+
     if (opts.json) {
-      const running = currentStep.tasks
-        .map((id) => taskData.tasks.find((t) => t.id === id))
-        .filter((t) => t && t.status === TASK_STATES.RUNNING)
-        .map((t) => t.id);
       console.log(JSON.stringify({
         project, step: currentStep.id, total_steps: stepData.steps.length,
-        tasks: [], status: running.length ? 'in_progress' : 'waiting', running,
+        tasks: [], status: runningTasks.length ? 'in_progress' : 'waiting',
+        running: runningTasks.map((t) => t.id),
+        // Distinguishable only here: `running` alone cannot tell the
+        // orchestrator whether waiting will ever end.
+        running_with_worktree: backed,
+        running_without_worktree_artifact: unbacked,
         ...envelopeContext(),
       }, null, 2));
       return;
     }
-    console.log(`⏳ No ready tasks in Step ${currentStep.id}. Some may be waiting for retries or dependencies.`);
+    if (runningTasks.length === 0) {
+      console.log(`⏳ No ready tasks in Step ${currentStep.id}. Some may be waiting for retries or dependencies.`);
+      return;
+    }
+    console.log(`⏳ No ready tasks in Step ${currentStep.id} — ${runningTasks.length} task(s) are already RUNNING: ${runningTasks.map((t) => t.id).join(', ')}`);
+    if (backed.length) {
+      console.log(`   ${backed.length} with a live worktree (${backed.join(', ')}) — still executing, wait.`);
+    }
+    if (unbacked.length) {
+      console.log(`   ${unbacked.length} with no worktree artifact (${unbacked.join(', ')}) — either an agent is executing them, or the run that started them never dispatched.`);
+      console.log(`   If no agent is running them: x-build run --reconcile --stale-min 0`);
+      console.log(`   Preview first with: x-build run --reconcile --stale-min 0 --dry-run --json`);
+    }
     return;
   }
 
@@ -2163,6 +2193,10 @@ export function cmdRunStatus(args) {
   // instead of scraping ANSI/emoji text.
   if (opts.json) {
     const now = Date.now();
+    // Same override `run --reconcile` accepts, so the orchestrator can ASK
+    // about a shorter window instead of being told to wait out a fixed 30
+    // minutes it cannot see the end of. Default is unchanged.
+    const staleMs = opts['stale-min'] != null ? Number(opts['stale-min']) * 60000 : DEFAULT_STALE_RUNNING_MS;
     const stepsOut = [];
     const blocked = [];
     const staleRunning = [];
@@ -2184,7 +2218,7 @@ export function cmdRunStatus(args) {
           // Only count as stale/reclaimable when the worktree artifact agrees:
           // NEEDS_FIX/BLOCKED/MERGING or a live worktree must not read as an
           // orphan RUNNING (which would advise `run --reconcile`).
-          if (age > DEFAULT_STALE_RUNNING_MS && classifyStaleRunning(project, t).reconcile) staleRunning.push(t.id);
+          if (age > staleMs && classifyStaleRunning(project, t).reconcile) staleRunning.push(t.id);
         }
       }
     }

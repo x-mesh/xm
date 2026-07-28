@@ -236,6 +236,8 @@ See `phases/plan.md` — full Plan phase walkthrough: PRD generation and improve
    - otherwise → follow `next_action` (`run --json` for the next step's ready tasks, `wait` while tasks are running, or `investigate failed/blocked tasks`)
    Re-running `$XMB run --json` is a safe resume — RUNNING tasks are not re-dispatched.
 
+   **"wait" is only correct while something is actually executing.** Nothing records task ownership, so a RUNNING task with no worktree artifact is indistinguishable from one whose leader was interrupted before it spawned anything — and `stale_running` stays empty for the first 30 minutes either way. If you are told to wait but did not dispatch those task ids yourself this session, verify instead of waiting: `$XMB run-status --stale-min 0 --json` reports them immediately, and `$XMB run --json` names them under `running_without_worktree_artifact`. When you are confident no agent is executing them, reclaim with `$XMB run --reconcile --stale-min 0` (preview first with `--dry-run --json`). Never run that while agents you dispatched are still working — it would reclaim live tasks.
+
 Advance to Verify automatically after all tasks complete unless a new user-owned decision emerged. In yolo/explicit autonomous mode, record safe defaults and ask only for scope, irreversible, external, security/compliance, or material cost decisions.
 
 #### Later Queue

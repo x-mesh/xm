@@ -1568,6 +1568,74 @@ describe('cost: actual-token ingestion + profile-aware --json (regression)', () 
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  /**
+   * The reported deadlock: `run` marks tasks RUNNING and hands the leader a
+   * plan; if the leader never spawns them, every later `run` filters those
+   * same tasks out as "not ready". Nothing records ownership, so a live agent
+   * and an orphan are indistinguishable — which is exactly why the output must
+   * say so instead of blaming retries/dependencies, and why recovery stays an
+   * explicit opt-in rather than something `run` decides on its own.
+   */
+  test('an unspawned run reports RUNNING tasks truthfully instead of blaming retries/deps', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const env = { HOME: CHOME };
+      const name = driveToExecute(tmp);
+      run(['run', '--json'], { cwd: tmp, env }); // leader never spawns → orphans
+
+      const tf = join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'tasks.json');
+      const running = JSON.parse(readFileSync(tf, 'utf8')).tasks.filter((t) => t.status === 'running');
+      expect(running.length).toBeGreaterThan(0);
+      // The repro's premise: no dependency and no retry is pending.
+      for (const t of running) {
+        expect(t.depends_on).toEqual([]);
+        expect(t.next_retry_at ?? null).toBeNull();
+      }
+
+      const text = run(['run'], { cwd: tmp, env }).stdout;
+      expect(text).toContain('already RUNNING');
+      expect(text).toContain('run --reconcile --stale-min 0');
+      expect(text).not.toContain('waiting for retries or dependencies');
+
+      const json = JSON.parse(run(['run', '--json'], { cwd: tmp, env }).stdout);
+      expect(json.status).toBe('in_progress');
+      expect(json.running_without_worktree_artifact.sort()).toEqual(running.map((t) => t.id).sort());
+      expect(json.running_with_worktree).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('run-status honors --stale-min so the wedge is visible before 30 minutes', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const env = { HOME: CHOME };
+      driveToExecute(tmp);
+      run(['run', '--json'], { cwd: tmp, env }); // started_at = now
+
+      // Default window: fresh RUNNING tasks are not stale, and the orchestrator
+      // is told to wait — correct, since they may be genuinely executing.
+      const def = JSON.parse(run(['run-status', '--json'], { cwd: tmp, env }).stdout);
+      expect(def.stale_running).toEqual([]);
+      expect(def.next_action).not.toBe('run --reconcile');
+
+      // Asking about a zero-minute window surfaces them, so a wedged session is
+      // diagnosable without waiting out a fixed 30 minutes.
+      const probe = JSON.parse(run(['run-status', '--stale-min', '0', '--json'], { cwd: tmp, env }).stdout);
+      expect(probe.stale_running.length).toBeGreaterThan(0);
+      expect(probe.next_action).toBe('run --reconcile');
+
+      // And the recovery actually unwedges it: reclaimed tasks are dispatchable.
+      const rec = JSON.parse(run(['run', '--reconcile', '--stale-min', '0', '--json'], { cwd: tmp, env }).stdout);
+      expect(rec.count).toBeGreaterThan(0);
+      const resumed = JSON.parse(run(['run', '--json'], { cwd: tmp, env }).stdout);
+      expect(resumed.tasks.length).toBeGreaterThan(0);
+      expect(resumed.tasks.every((t) => typeof t.task_id === 'string')).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── prd-check + plan-exit gate (regression) ──────────────────────────
