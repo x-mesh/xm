@@ -58,18 +58,40 @@ Easy/normal mode: accessible Korean is the goal — polite guidance ("~해 보�
 
 ## Routing
 
-Parse the first word of `$ARGUMENTS`:
+Parse options before deciding what text to edit. Do not assume the first token is
+the mode: global options may appear before or after it.
 
-| First word | Action |
+| Token | Action |
 |-----------|--------|
 | `audit` | Detect-only mode — list findings with pattern numbers + severity, NO rewrite |
 | `rewrite` (default) | Detect + rewrite + final anti-AI audit pass |
 | `light` | Minimal edit — remove obvious AI tells while preserving most wording |
 | `strong` | Heavier edit — rebuild sentence flow while preserving every factual claim |
 | `voice <file>` | Voice calibration — use `<file>` as style sample, then process the rest |
-| `--lang en` / `--lang ko` | Force language (auto-detected otherwise) |
+| `--lang en` / `--lang ko` | Force language (auto-detected otherwise); accepted anywhere before the target |
 
 If `$ARGUMENTS` is empty, ask the user to paste text or specify a file.
+
+### Argument parsing contract
+
+Parse left to right using these rules:
+
+1. Consume at most one mode: `audit`, `rewrite`, `light`, `strong`, or `voice`.
+   If none is present, use `rewrite` with `medium` intensity.
+2. Consume `--lang en|ko` wherever it appears before `--`. Reject any other
+   language value instead of silently auto-detecting.
+3. For `voice`, consume the next argument as the sample file, then continue
+   parsing global options. The first remaining non-option starts the target; all
+   following content belongs to that target. If the sample or target is missing,
+   ask for only the missing item.
+4. `--` ends option parsing. Treat everything after it as target text, even if it
+   begins with `audit`, `strong`, or `--lang`.
+5. An existing path is a file input. A non-existent path-looking token is target
+   prose unless the user explicitly called it a file; in that case, report the
+   missing file instead of rewriting the path itself.
+
+Examples: `--lang ko audit draft.md`, `light --lang en -- Not just fast...`,
+and `voice samples/me.md --lang ko draft.md` are all valid.
 
 ## Input Handling
 
@@ -86,6 +108,21 @@ If a file contains code plus prose, only humanize prose comments/docs that the u
 
 When the target text is too short to infer register, preserve the user's phrasing and make a light edit. Do not invent a stronger personality just to satisfy the skill.
 
+### Protected-span pass
+
+Before detection, temporarily mask content that is outside prose scope:
+
+- fenced and inline code
+- Markdown link destinations, autolinks, and raw URLs
+- commands, flags, paths, JSON keys, versions, metrics, dates, and citations
+- quoted user-facing strings, unless the user explicitly asked to edit them
+
+Keep a lossless map from each placeholder to the original span. Run pattern
+detection and rewriting only on unmasked prose, then restore every protected span
+byte-for-byte before the fact check and change-rate measurement. If a sentence
+cannot be rewritten naturally without changing a protected span, keep the
+sentence closer to the source; never rewrite inside a placeholder.
+
 ## Rewrite Intensity
 
 Default intensity is `medium`: remove AI patterns and improve flow without changing the writer's apparent intent.
@@ -100,12 +137,13 @@ If the user asks for "AI 티만 빼줘", use `light`. If they ask for "완전히
 
 ### Auto-downshift triggers
 
-If Step 2 detection returns either signal, start with `light` instead of the user-specified intensity and tell the user in one line that you downshifted. These two patterns alone tend to inflate change rate past the hard stop because their fixes collapse multiple sentences:
+If Step 2 detection returns at least one signal, start with `light` instead of the user-specified intensity and tell the user in one line that you downshifted. These patterns tend to inflate change rate past the hard stop because their fixes collapse multiple sentences:
 
 - **KO-26** (권고형 결말 "~해야 한다") ≥ 5 hits — repeated 권고 sentences typically merge into one, dropping length sharply.
 - **KO-31** (단문 일변도) with 5+ consecutive short sentences in a single paragraph — combining them into one complex sentence is the right edit but eats the change-rate budget on its own.
 
-When both fire together, start `light` even if the user asked for `medium` or `strong`. Output once, then let the user opt in to a stronger pass.
+When both fire together, the same rule applies; do not downshift twice or add a
+second warning. Output once, then let the user opt in to a stronger pass.
 
 ## Change Rate Guardrails
 
@@ -113,7 +151,12 @@ Naturalness without preserved meaning is just a different lie. Set hard ceilings
 
 ### Thresholds
 
-Measure character-level change rate as `edit_distance(original, rewrite) / len(original)`. Approximate via diff coverage when exact computation is impractical — count substituted/inserted/deleted character spans.
+Measure character-level change rate as
+`levenshtein(original, rewrite) / max(len(original), len(rewrite), 1)` after
+protected spans have been restored. Normalize line endings first and exclude only
+the non-counting changes listed below. If exact measurement is impractical,
+approximate from substituted/inserted/deleted character spans and label the value
+as approximate.
 
 | Rate | Action | Rationale |
 |------|--------|-----------|
@@ -161,7 +204,16 @@ Scan the input against the loaded pattern catalog. For each match, record:
 - Span (exact substring)
 - Severity (High = breaks naturalness immediately / Medium = noticeably AI / Low = minor tic)
 
-Then **infer the genre** from the first 200 chars (column / report / blog / formal / marketing / README — see `references/genre-rules.md`) and apply the per-genre allowance matrix to drop or downgrade findings the genre actually permits. Mark dropped findings as `dropped (genre: <name>)` in the audit output rather than removing them silently — the user should be able to trace why a pattern was not fixed. Voice sample overrides genre rules; genre rules override the catalog default.
+Then **infer the genre** from the first 200 prose chars, ignoring protected spans
+(column / report / blog / formal / marketing / README — see
+`references/genre-rules.md`). Apply the per-genre allowance matrix to drop or
+downgrade findings the genre actually permits. If signals conflict, prefer an
+explicit user label, then the target's structural evidence; otherwise use the
+catalog default without a genre allowance and mark the genre `uncertain`. Do not
+pause solely to ask the user to classify the genre. Mark dropped findings as
+`dropped (genre: <name>)` in the audit output rather than removing them silently
+— the user should be able to trace why a pattern was not fixed. Voice sample
+overrides genre rules; genre rules override the catalog default.
 
 Also make a quick fact inventory before rewriting:
 - Named entities, product names, file names, commands, metrics, dates, versions, citations, URLs
@@ -204,7 +256,12 @@ Internally ask: **"What still makes this obviously AI-generated?"** List remaini
 
 Common tells caught at this stage: leftover em-dashes, residual rule-of-three lists, sycophantic openers like "Great question!", trailing chatbot disclaimers ("Let me know if…").
 
-Also compare against the fact inventory from Step 2. If the rewrite dropped a fact, restore it. If it added a fact, remove it.
+Restore the protected-span map and verify it losslessly: the count, order, and
+contents of protected spans must match the source exactly. A mismatch invalidates
+the draft; repair it before continuing.
+
+Then compare the fully restored draft against the fact inventory from Step 2. If
+the rewrite dropped a fact, restore it. If it added a fact, remove it.
 
 Then measure the change rate against the source per `## Change Rate Guardrails`. If above the warn threshold, re-verify fact inventory once more. If above the hard-stop threshold, do not output — restart with lower intensity or tell the user.
 
@@ -268,6 +325,7 @@ Before returning output, internally confirm:
 
 - [ ] Step 5 (final audit pass) executed. List the 1-2 tells you found and confirm they were fixed.
 - [ ] Meaning preserved. No invented facts, no dropped citations without flagging them.
+- [ ] Protected spans restored byte-for-byte in the same count and order.
 - [ ] Register matches source (formal/casual/technical, 반말/존댓말).
 - [ ] If voice calibration was used, the rewrite matches the sample's sentence-length distribution within ±20%.
 - [ ] Output language matches input language (do not translate).

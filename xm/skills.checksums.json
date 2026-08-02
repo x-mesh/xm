@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1785757367307,
+  "generatedAt": 1785758254627,
   "version": 2,
   "skills": [
     {
@@ -52,8 +52,8 @@
     },
     {
       "plugin": "humanize",
-      "sha256": "fe1e2e7b21f96a8f0b26eed25cf91374e08356f615e60c54f00c4802727c5203",
-      "bytes": 19174,
+      "sha256": "0ff9250a47797ac62b861d9c27a7e1a989abd45d7064f65249e81934f7c08b2c",
+      "bytes": 21846,
       "referencesSha256": "4221a257128e8e8ea6ae3a064804400132c14b85248cf2df5cb94b91e69aa62c",
       "referenceFiles": 4,
       "referenceBytes": 39459
