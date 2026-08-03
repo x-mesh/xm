@@ -48,12 +48,17 @@ resolve_lib() {
   if [ -d "$legacy" ]; then
     echo "$legacy"; return
   fi
+  # Codex-only global install. The multi-tool installer mirrors its runtime
+  # bundle here, so xm must not require a Claude marketplace cache to start.
+  if [ -d "$HOME/.codex/xm/lib" ]; then
+    echo "$HOME/.codex/xm"; return
+  fi
   echo ""
 }
 
 LIB="$(resolve_lib)"
 if [ -z "$LIB" ]; then
-  echo "xm: no lib found. Install Claude plugins or set XM_LIB." >&2
+  echo "xm: no lib found. Re-run the xm installer, install Claude plugins, or set XM_LIB." >&2
   exit 1
 fi
 
@@ -69,6 +74,11 @@ fi
 plugin_lib() {
   local plugin="$1" sub="${2:-lib}"
   local long="x-$plugin"
+
+  # Codex global bundle: every xm CLI module is mirrored into one lib tree.
+  if [ "$sub" = "lib" ] && [ -d "$LIB/lib" ]; then
+    echo "$LIB/lib"; return 0
+  fi
 
   # 1. Local repo with x- prefix (source tree for most plugins)
   if [ -d "$LIB/$long/$sub" ]; then echo "$LIB/$long/$sub"; return 0; fi
@@ -375,7 +385,9 @@ case "$CMD" in
       grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$1" | head -1 \
         | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
     }
-    if [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
+    if [ "$LIB" = "$HOME/.codex/xm" ] && [ -f "$HOME/plugins/xm/.codex-plugin/plugin.json" ]; then
+      echo "xm $(_vread "$HOME/plugins/xm/.codex-plugin/plugin.json") (Codex global bundle)"
+    elif [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
       SRC="local source: $LIB"
       [ -n "${XM_LIB:-${X_KIT_LIB:-}}" ] && SRC="local source via XM_LIB: $LIB"
       echo "xm $(_vread "$LIB/xm/.claude-plugin/plugin.json") ($SRC)"
@@ -421,7 +433,9 @@ case "$CMD" in
       [ -n "$LOCAL_VERSION" ] && LOCAL_SRC="installed_plugins.json"
     fi
     if [ -z "$LOCAL_VERSION" ]; then
-      if [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
+      if [ "$LIB" = "$HOME/.codex/xm" ] && [ -f "$HOME/plugins/xm/.codex-plugin/plugin.json" ]; then
+        LOCAL_VERSION="$(_read_version "$HOME/plugins/xm/.codex-plugin/plugin.json")"
+      elif [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
         LOCAL_VERSION="$(_read_version "$LIB/xm/.claude-plugin/plugin.json")"
         LOCAL_SRC="$LIB/xm/.claude-plugin/plugin.json"
       else
@@ -646,7 +660,9 @@ case "$CMD" in
       ' 2>/dev/null)"
     fi
     if [ -z "$LOCAL_VERSION" ]; then
-      if [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
+      if [ "$LIB" = "$HOME/.codex/xm" ] && [ -f "$HOME/plugins/xm/.codex-plugin/plugin.json" ]; then
+        LOCAL_VERSION="$(_read_version "$HOME/plugins/xm/.codex-plugin/plugin.json")"
+      elif [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
         LOCAL_VERSION="$(_read_version "$LIB/xm/.claude-plugin/plugin.json")"
       else
         _cached_pj="$(ls -td "$LIB/xm"/*/.claude-plugin/plugin.json 2>/dev/null | head -1)"
@@ -672,6 +688,33 @@ case "$CMD" in
     if [ -z "$REMOTE_VERSION" ]; then
       echo "xm update: could not parse remote version" >&2
       exit 1
+    fi
+
+    # The active Codex bundle has no Claude marketplace cache capable of
+    # materializing a new source bundle. Detect it from LIB rather than the
+    # presence of a `claude` binary (mixed-tool hosts may have both CLIs).
+    if [ "$LIB" = "$HOME/.codex/xm" ] && command -v codex >/dev/null 2>&1; then
+      echo "Local:  ${LOCAL_VERSION:-unknown}"
+      echo "Remote: $REMOTE_VERSION"
+      if [ -n "$LOCAL_VERSION" ] && [ "$LOCAL_VERSION" = "$REMOTE_VERSION" ] && [ "$FORCE" = "0" ]; then
+        echo "✅ Codex installation is already up to date."
+        exit 0
+      fi
+      if [ "$DRY" = "1" ]; then
+        echo "🔍 Dry run — would run the xm installer and refresh xm@personal."
+        exit 0
+      fi
+      echo "→ Codex-only installation detected; running the xm installer"
+      if [ -n "${XM_INSTALL_SCRIPT:-}" ]; then
+        bash "$XM_INSTALL_SCRIPT" --yes
+      else
+        UPDATE_INSTALLER="$(mktemp "${TMPDIR:-/tmp}/xm-installer-XXXXXX.sh")"
+        trap 'rm -f "$UPDATE_INSTALLER"' EXIT INT TERM
+        curl -fsSL "$REPO_URL/xm/scripts/install.sh" -o "$UPDATE_INSTALLER"
+        bash "$UPDATE_INSTALLER" --yes
+      fi
+      echo "✅ Codex installation updated to $REMOTE_VERSION"
+      exit 0
     fi
 
     echo "Local:  ${LOCAL_VERSION:-unknown}"

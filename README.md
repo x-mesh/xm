@@ -108,7 +108,7 @@ bash xm/scripts/install.sh
 curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/xm/scripts/install.sh | bash
 ```
 
-The installer writes `~/.local/bin/xm` (override with `XM_BIN_DIR`; ensure it is on your `PATH`) and, when the `claude` CLI is on `PATH`, also runs `claude plugin install <p>@xm -s user` for every plugin in `marketplace.json` (x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-humanize, x-dashboard, x-recall, x-panel, x-wt, xm). Run `/reload-plugins` inside Claude Code afterward to activate them. If `claude` is not on `PATH`, the CLI wrapper alone is installed and the plugin list is printed for manual install.
+The installer writes `~/.local/bin/xm` (override with `XM_BIN_DIR`; ensure it is on your `PATH`). On an existing installation it compares versions and asks before applying an available update; use `--yes` for unattended installs. When `claude` is on `PATH`, it installs missing marketplace plugins and updates installed ones after confirmation. When `codex` is on `PATH` (including Linux Codex-only hosts), it also generates the global Codex Skills/plugin manifest, runs `codex plugin add xm@personal`, and enables hooks. Start a new Codex thread after installation; run `/reload-plugins` in Claude Code.
 
 #### Global hook install (`xm init`)
 
@@ -155,7 +155,7 @@ xm version
 xm help
 ```
 
-The CLI dispatches to plugin libs in `~/.claude/plugins/cache/xm/` (or `$XM_LIB`), so the Claude Code plugin must be installed first. The `sync` subcommand reuses the `x-sync` plugin lib, so you do **not** need to run `x-sync/install.sh client` separately.
+The CLI dispatches to plugin libs in `~/.claude/plugins/cache/xm/`, the Codex-only bundle in `~/.codex/xm/`, or `$XM_LIB`. A Claude Code plugin installation is therefore not required on a Codex-only host. The `sync` subcommand reuses the bundled `x-sync` lib, so you do **not** need to run `x-sync/install.sh client` separately.
 
 #### Project Registry (`xm project`)
 

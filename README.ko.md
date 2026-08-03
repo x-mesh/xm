@@ -108,7 +108,7 @@ bash xm/scripts/install.sh
 curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/xm/scripts/install.sh | bash
 ```
 
-인스톨러는 `~/.local/bin/xm`을 설치하고(`XM_BIN_DIR`로 경로 변경 가능, `PATH`에 있어야 함), `claude` CLI가 `PATH`에 있으면 `marketplace.json`의 모든 플러그인(x-build, x-agent, x-op, x-solver, x-review, x-trace, x-memory, x-eval, x-probe, x-humble, x-humanize, x-dashboard, x-recall, x-panel, x-wt, xm)을 `claude plugin install <p>@xm -s user`로 일괄 설치합니다. 설치 후 Claude Code에서 `/reload-plugins`로 활성화하세요. `claude`가 `PATH`에 없으면 CLI 래퍼만 설치되고 수동 설치용 플러그인 목록이 출력됩니다.
+인스톨러는 `~/.local/bin/xm`을 설치합니다(`XM_BIN_DIR`로 경로 변경 가능, `PATH`에 있어야 함). 기존 설치에서는 버전을 비교해 업데이트가 있을 때 적용할지 묻고, 무인 설치에서는 `--yes`로 확인을 생략할 수 있습니다. `claude`가 `PATH`에 있으면 누락된 마켓플레이스 플러그인을 설치하고, 확인 후 기존 플러그인을 업데이트합니다. Linux의 Codex 전용 호스트를 포함해 `codex`가 `PATH`에 있으면 global Codex Skill/플러그인 manifest를 생성하고 `codex plugin add xm@personal` 및 훅 활성화까지 실행합니다. 설치 후 Codex는 새 thread를 시작하고, Claude Code는 `/reload-plugins`를 실행하세요.
 
 #### 전역 훅 설치 (`xm init`)
 
@@ -155,7 +155,7 @@ xm version
 xm help
 ```
 
-CLI는 `~/.claude/plugins/cache/xm/` (또는 `$XM_LIB`)의 플러그인 lib을 호출하므로 Claude Code 플러그인이 먼저 설치되어 있어야 합니다. `sync` 서브커맨드는 `x-sync` 플러그인 lib을 그대로 재사용하므로 `x-sync/install.sh client`를 별도로 실행할 **필요 없습니다**.
+CLI는 `~/.claude/plugins/cache/xm/`, Codex 전용 번들인 `~/.codex/xm/`, 또는 `$XM_LIB`의 플러그인 lib을 호출합니다. 따라서 Codex-only 호스트에서는 Claude Code 플러그인을 먼저 설치할 필요가 없습니다. `sync` 서브커맨드는 번들된 `x-sync` lib을 재사용하므로 `x-sync/install.sh client`를 별도로 실행할 **필요 없습니다**.
 
 #### 프로젝트 레지스트리 (`xm project`)
 
