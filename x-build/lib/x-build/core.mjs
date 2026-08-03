@@ -329,18 +329,19 @@ export function resolveGates(sharedIn, buildLocalIn) {
   return merged;
 }
 
-// Autopilot is active when the XMB_AUTOPILOT env var is set (one-shot, wins over
-// config) OR the `autopilot` config key is true in either the shared (.xm) or
-// build-local layer. Accepts already-loaded config objects to avoid re-reading.
+// Autopilot defaults to ON. XMB_AUTOPILOT is the one-shot highest-precedence
+// override, followed by build-local config, then shared config. An explicit false
+// at either config layer therefore remains a real opt-out instead of being lost
+// behind the true default. Accepts injected config objects for deterministic tests.
 export function autopilotActive(shared, buildLocal) {
   const env = process.env.XMB_AUTOPILOT;
   if (env === '1' || env === 'true') return true;
   if (env === '0' || env === 'false') return false; // explicit off overrides config
   const s = shared !== undefined ? shared : loadSharedConfig();
-  if (s?.autopilot === true) return true;
   const b = buildLocal !== undefined ? buildLocal : loadConfig();
-  if (b?.autopilot === true) return true;
-  return false;
+  if (typeof b?.autopilot === 'boolean') return b.autopilot;
+  if (typeof s?.autopilot === 'boolean') return s.autopilot;
+  return true;
 }
 
 export function writeSharedConfig(data) {

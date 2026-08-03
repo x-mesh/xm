@@ -1211,6 +1211,15 @@ describe('config-schema group metadata (t3)', () => {
     const src = readFileSync(join(__dirname, '..', 'x-build', 'lib', 'config-schema.mjs'), 'utf8');
     expect(/^import /m.test(src)).toBe(false);
   });
+
+  test('autopilot is a global boolean defaulting to true', () => {
+    const entry = SCHEMA.find((e) => e.key === 'autopilot');
+    expect(entry).toBeTruthy();
+    expect(entry.type).toBe('boolean');
+    expect(entry.scope).toBe('global');
+    expect(entry.default).toBe(true);
+    expect(entry.group).toBe('gates');
+  });
 });
 
 // ── eval.auto registration (x-op Post-Strategy Eval Gate) ───────────────

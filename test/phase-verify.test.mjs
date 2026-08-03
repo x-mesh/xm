@@ -62,6 +62,14 @@ function autoGates(tmp) {
   writeFileSync(p, JSON.stringify(cfg));
 }
 
+function manualVerification(tmp) {
+  const p = join(tmp, '.xm', 'config.json');
+  mkdirSync(dirname(p), { recursive: true });
+  const cfg = existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : {};
+  cfg.autopilot = false;
+  writeFileSync(p, JSON.stringify(cfg));
+}
+
 function projectPath(tmp, name, ...segments) {
   return join(tmp, '.xm', 'build', 'projects', name, ...segments);
 }
@@ -184,14 +192,15 @@ describe('delta PRD tier', () => {
 
 // ── Phase exit gates are actually enforced (빌드1) ─────────────────
 // Before 빌드1 every gate silently resolved to 'auto' (phase.mjs read gates from an
-// unwritten file). These lock in that the schema's human-verify default now blocks,
-// exits 2, records a ledger, and clears only on gate pass.
+// unwritten file). These explicitly opt out of default-on autopilot and lock in that
+// a human-verify gate blocks, exits 2, records a ledger, and clears on gate pass.
 
 describe('phase exit gates are enforced', () => {
   test('human-verify default blocks phase next with exit 2 + a ledger entry', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-gate-'));
     try {
       const name = setupProject(tmp); // research-exit defaults to human-verify
+      manualVerification(tmp);
       const r = run(['phase', 'next'], { cwd: tmp });
       expect(r.exitCode).toBe(2);
       expect(r.stdout).toContain('requires human verification');
@@ -215,6 +224,7 @@ describe('phase exit gates are enforced', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-gate-'));
     try {
       const name = setupProject(tmp);
+      manualVerification(tmp);
       writeFileSync(projectPath(tmp, name, 'context', 'CONTEXT.md'), '# Context\nGoal: test');
       run(['gate', 'pass', 'Research verified'], { cwd: tmp });
       run(['phase', 'next'], { cwd: tmp });
@@ -231,6 +241,7 @@ describe('phase exit gates are enforced', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-gate-'));
     try {
       const name = setupProject(tmp);
+      manualVerification(tmp);
       // 1) a blocked `phase next` records gate.passed = false
       run(['phase', 'next'], { cwd: tmp });
       let status = readJSON(projectPath(tmp, name, 'phases', '01-research', 'status.json'));

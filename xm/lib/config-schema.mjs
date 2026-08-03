@@ -370,7 +370,7 @@ export const SCHEMA = [
     group: 'gates',
     type: 'boolean',
     scope: 'global',
-    default: false,
+    default: true,
     description: 'Autopilot — human-verify 게이트를 자동 통과(quality·decision 게이트는 유지)',
   },
 

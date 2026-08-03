@@ -246,8 +246,9 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 | `quality` | yes — test/lint/build must pass | untouched |
 | `decision` | yes — needs `gate pass` | **untouched** (it is a direction approval, not a confirmation) |
 
-**Turn economy (yolo runs):** when the user asks for an autonomous/yolo run, set
-`autopilot: true` in `.xm/config.json` (or `XMB_AUTOPILOT=1` for one shot) — every
+**Turn economy:** autopilot defaults to `true`. Set `autopilot: false` in
+`.xm/config.json` (or `XMB_AUTOPILOT=0` for one shot) to require every
+`human-verify` confirmation gate; when enabled, every
 `human-verify` confirmation gate self-downgrades to `auto`, while `quality` and `decision`
 gates still block (broken code / wrong direction stay human-checked). Chain deterministic
 transitions instead of spending turns on them: `gate pass --advance` runs `phase next` in

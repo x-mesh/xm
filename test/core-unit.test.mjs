@@ -1813,7 +1813,8 @@ describe('autopilot', () => {
   // guaranteed to be the same file once another test file has imported core first —
   // so the suite failed on a different subset of these tests on every run. Injection
   // removes the ambient-file dependency entirely.
-  const OFF = {};
+  const DEFAULT = {};
+  const OFF = { autopilot: false };
   const ON = { autopilot: true };
 
   afterEach(() => {
@@ -1821,18 +1822,18 @@ describe('autopilot', () => {
     else delete process.env.XMB_AUTOPILOT;
   });
 
-  test('off by default — human-verify preserved, plan-exit is a decision gate', () => {
+  test('on by default — human-verify becomes auto, plan-exit stays a decision gate', () => {
     delete process.env.XMB_AUTOPILOT;
-    expect(core.autopilotActive(OFF, OFF)).toBe(false);
-    const g = core.resolveGates(OFF, OFF);
-    expect(g['research-exit']).toBe('human-verify');
+    expect(core.autopilotActive(DEFAULT, DEFAULT)).toBe(true);
+    const g = core.resolveGates(DEFAULT, DEFAULT);
+    expect(g['research-exit']).toBe('auto');
     expect(g['plan-exit']).toBe('decision');
   });
 
   test('env XMB_AUTOPILOT=1 downgrades human-verify→auto but KEEPS quality + decision', () => {
     process.env.XMB_AUTOPILOT = '1';
-    expect(core.autopilotActive(OFF, OFF)).toBe(true);
-    const g = core.resolveGates(OFF, OFF);
+    expect(core.autopilotActive(DEFAULT, DEFAULT)).toBe(true);
+    const g = core.resolveGates(DEFAULT, DEFAULT);
     expect(g['research-exit']).toBe('auto');
     expect(g['verify-exit']).toBe('quality'); // safety floor never relaxed
     expect(g['plan-exit']).toBe('decision');  // direction approval survives autopilot
@@ -1841,21 +1842,29 @@ describe('autopilot', () => {
 
   test('config autopilot:true activates without any env var', () => {
     delete process.env.XMB_AUTOPILOT;
-    expect(core.autopilotActive(ON, OFF)).toBe(true);
-    expect(core.resolveGates(ON, OFF)['research-exit']).toBe('auto');
+    expect(core.autopilotActive(ON, DEFAULT)).toBe(true);
+    expect(core.resolveGates(ON, DEFAULT)['research-exit']).toBe('auto');
   });
 
   test('build-local autopilot:true activates too', () => {
     delete process.env.XMB_AUTOPILOT;
-    expect(core.autopilotActive(OFF, ON)).toBe(true);
+    expect(core.autopilotActive(DEFAULT, ON)).toBe(true);
+  });
+
+  test('explicit config false disables the true default (build-local wins over shared)', () => {
+    delete process.env.XMB_AUTOPILOT;
+    expect(core.autopilotActive(OFF, DEFAULT)).toBe(false);
+    expect(core.autopilotActive(DEFAULT, OFF)).toBe(false);
+    expect(core.autopilotActive(ON, OFF)).toBe(false);
+    expect(core.resolveGates(DEFAULT, OFF)['research-exit']).toBe('human-verify');
   });
 
   test('env XMB_AUTOPILOT=0 overrides config autopilot:true (explicit off wins)', () => {
     delete process.env.XMB_AUTOPILOT;
-    expect(core.autopilotActive(ON, OFF)).toBe(true);
+    expect(core.autopilotActive(ON, DEFAULT)).toBe(true);
     process.env.XMB_AUTOPILOT = '0';
-    expect(core.autopilotActive(ON, OFF)).toBe(false);
-    expect(core.resolveGates(ON, OFF)['research-exit']).toBe('human-verify');
+    expect(core.autopilotActive(ON, DEFAULT)).toBe(false);
+    expect(core.resolveGates(ON, DEFAULT)['research-exit']).toBe('human-verify');
   });
 
   // A decision gate is the ONE thing autopilot must not pass. If a user explicitly
@@ -1863,7 +1872,7 @@ describe('autopilot', () => {
   // the immunity belongs to the gate TYPE, not to the plan phase specifically.
   test('a decision gate configured on any phase survives autopilot', () => {
     delete process.env.XMB_AUTOPILOT;
-    const g = core.resolveGates({ autopilot: true, gates: { 'research-exit': 'decision' } }, OFF);
+    const g = core.resolveGates({ autopilot: true, gates: { 'research-exit': 'decision' } }, DEFAULT);
     expect(g['research-exit']).toBe('decision');
     expect(g['plan-exit']).toBe('decision');
   });
@@ -1872,7 +1881,7 @@ describe('autopilot', () => {
   // decision gate is a strong DEFAULT, not a lock — otherwise it is a policy, not a gate.
   test('an explicitly configured plan-exit still wins over the decision default', () => {
     delete process.env.XMB_AUTOPILOT;
-    const g = core.resolveGates({ gates: { 'plan-exit': 'auto' } }, OFF);
+    const g = core.resolveGates({ gates: { 'plan-exit': 'auto' } }, DEFAULT);
     expect(g['plan-exit']).toBe('auto');
   });
 

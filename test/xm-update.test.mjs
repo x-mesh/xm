@@ -17,6 +17,60 @@ function executable(path, body) {
 }
 
 describe('xm update cross-target convergence', () => {
+  test('Codex-only dispatcher delegates update to the umbrella installer', () => {
+    const home = mkdtempSync(join(tmpdir(), 'xm-update-codex-only-'));
+    const bin = join(home, 'bin');
+    const calls = join(home, 'calls.log');
+    const installer = join(home, 'install.sh');
+    mkdirSync(join(home, '.codex', 'xm', 'lib'), { recursive: true });
+    mkdirSync(join(home, 'plugins', 'xm', '.codex-plugin'), { recursive: true });
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(home, 'plugins', 'xm', '.codex-plugin', 'plugin.json'), JSON.stringify({ version: VERSION }));
+    executable(join(bin, 'codex'), 'exit 0');
+    executable(join(bin, 'curl'), `printf '%s' '{"plugins":[{"name":"xm","version":"${VERSION}"}]}'`);
+    executable(installer, 'echo "installer $*" >> "$XM_TEST_CALLS"');
+
+    const result = spawnSync('bash', [SCRIPT, 'update', '--force'], {
+      cwd: home,
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}`,
+        XM_INSTALL_SCRIPT: installer,
+        XM_TEST_CALLS: calls,
+      },
+      encoding: 'utf8',
+    });
+    if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+    expect(result.stdout).toContain('Codex-only installation detected');
+    expect(result.stdout).toContain(`Codex installation updated to ${VERSION}`);
+    expect(readFileSync(calls, 'utf8')).toContain('installer --yes');
+  });
+
+  test('Codex-only dry-run does not invoke the installer', () => {
+    const home = mkdtempSync(join(tmpdir(), 'xm-update-codex-dry-'));
+    const bin = join(home, 'bin');
+    mkdirSync(join(home, '.codex', 'xm', 'lib'), { recursive: true });
+    mkdirSync(join(home, 'plugins', 'xm', '.codex-plugin'), { recursive: true });
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(home, 'plugins', 'xm', '.codex-plugin', 'plugin.json'), JSON.stringify({ version: '0.1.0' }));
+    executable(join(bin, 'codex'), 'exit 0');
+    executable(join(bin, 'curl'), `printf '%s' '{"plugins":[{"name":"xm","version":"${VERSION}"}]}'`);
+
+    const result = spawnSync('bash', [SCRIPT, 'update', '--dry-run'], {
+      cwd: home,
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}`,
+        XM_INSTALL_SCRIPT: join(home, 'must-not-exist.sh'),
+      },
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Dry run — would run the xm installer');
+  });
+
   test('refreshes Codex even when the Claude marketplace version is already current', () => {
     const home = mkdtempSync(join(tmpdir(), 'xm-update-'));
     const bin = join(home, 'bin');

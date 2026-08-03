@@ -248,8 +248,9 @@ Each phase has an exit gate. The gate blocks advancement until conditions are me
 | `quality` | yes — test/lint/build must pass | untouched |
 | `decision` | yes — needs `gate pass` | **untouched** (it is a direction approval, not a confirmation) |
 
-**Turn economy (yolo runs):** when the user asks for an autonomous/yolo run, set
-`autopilot: true` in `.xm/config.json` (or `XMB_AUTOPILOT=1` for one shot) — every
+**Turn economy:** autopilot defaults to `true`. Set `autopilot: false` in
+`.xm/config.json` (or `XMB_AUTOPILOT=0` for one shot) to require every
+`human-verify` confirmation gate; when enabled, every
 `human-verify` confirmation gate self-downgrades to `auto`, while `quality` and `decision`
 gates still block (broken code / wrong direction stay human-checked). Chain deterministic
 transitions instead of spending turns on them: `gate pass --advance` runs `phase next` in
@@ -513,6 +514,7 @@ x-build references the shared configuration in `.xm/config.json`:
 | Setting | Key | Default | Effect |
 |---------|-----|---------|--------|
 | Mode | `mode` | `developer` | Output style (technical terms vs simple language) |
+| Autopilot | `autopilot` | `true` | Auto-pass confirmation gates; quality and direction approval still block |
 | Agent count | `agent_max_count` | `4` | Number of research agents, parallel run concurrency |
 | TL model | `team_default_leader_model` | `opus` | Team Leader model for `--team` tasks |
 | Team member count | `team_max_members` | `5` | Max members per team |
