@@ -13,6 +13,15 @@ function executable(path, body) {
   chmodSync(path, 0o755);
 }
 
+// Drop every PATH entry that holds a real `claude`, keeping the rest so node
+// and curl stay reachable.
+function pathWithoutClaude() {
+  return (process.env.PATH || '')
+    .split(':')
+    .filter((dir) => dir && !existsSync(join(dir, 'claude')))
+    .join(':');
+}
+
 function fixture({ installedVersion, withClaude = false } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'xm-install-script-'));
   const bin = join(home, 'bin');
@@ -26,12 +35,19 @@ function fixture({ installedVersion, withClaude = false } = {}) {
       plugins: { 'xm@xm': [{ version: installedVersion }] },
     }));
   }
+  // The inherited PATH keeps node/curl reachable but must not leak a real
+  // `claude`: these fixtures decide Claude availability via the stub above, and
+  // a developer's own claude would send install.sh down the Claude branch and
+  // pull the *published* xm into `home`. resolve_lib prefers that marketplace
+  // cache over the Codex bundle, so `xm version` would then report the released
+  // version instead of the one under test — green only while the source and
+  // remote versions coincide, and red on every release bump.
   const env = {
     ...process.env,
     HOME: home,
     XM_BIN_DIR: join(home, '.local', 'bin'),
     XM_TEST_CALLS: calls,
-    PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}`,
+    PATH: `${bin}:${dirname(process.execPath)}:${pathWithoutClaude()}`,
   };
   return { home, calls, env };
 }

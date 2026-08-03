@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.14.1-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.15.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -1274,7 +1274,7 @@ xm은 37개 전문가 에이전트를 함께 가지고 다닙니다. 코어 역�
 | 1 | 모델 | `model_profile` · 역할별 `model_overrides` · 페이즈별 모델 (plan / implement / review) |
 | 2 | 예산 | `budget.max_usd` · `budget.window_hours` · 프로젝트별 `budget.projects` |
 | 3 | 실행 | `agent_max_count` (1–10) |
-| 4 | 게이트 | 페이즈 종료 게이트 5개 (`research/plan/execute/verify/close-exit`) — `auto` / `human-verify` / `quality` / `decision` · `autopilot`은 `human-verify`만 통과시키고 `quality`·`decision`은 건드리지 않음 (`plan-exit` 기본값이 `decision` — 잘 짜인 계획이 엉뚱한 목표를 향하는 건 사람만 잡을 수 있음) |
+| 4 | 게이트 | 페이즈 종료 게이트 5개 (`research/plan/execute/verify/close-exit`) — `auto` / `human-verify` / `quality` / `decision` · `autopilot`(기본값 `true`)은 `human-verify`만 통과시키고 `quality`·`decision`은 건드리지 않음. 모든 확인 게이트를 되살리려면 `autopilot: false`(한 번만 끌 때는 `XMB_AUTOPILOT=0`) (`plan-exit` 기본값이 `decision` — 잘 짜인 계획이 엉뚱한 목표를 향하는 건 사람만 잡을 수 있음) |
 | 5 | worktree | 병렬 worktree 키를 3-tier 스코프(build-local > shared > global)로 편집 + `gate_policy` severity 목록 |
 | 6 | 기타 | `mode` · `drift.drift_threshold` · `scan_roots` · `pipelines` · `memmesh.mirror` (`false`면 파일 전용 — handoff가 mem-mesh 미러를 아예 만들지 않음) |
 | 7 | panel | cross-vendor 프로바이더 — `models` / `judge`는 `xm panel setup`에 위임, `timeout_s` / `model_overrides`는 직접 저장 |
