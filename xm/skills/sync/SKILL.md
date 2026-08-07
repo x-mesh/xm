@@ -151,6 +151,10 @@ Reports the running PID and a `/dashboard/health` probe, or `Server not running`
 
 Push local .xm/ state (full snapshot) to the sync server.
 
+Canonical handoff files (`build/SESSION-STATE.json` and `build/HANDOFF.md`) are
+included. Machine-local mem-mesh mirror bookkeeping and legacy namespaced
+handoff copies are excluded.
+
 ```bash
 xm sync push
 ```
@@ -189,6 +193,13 @@ Output example:
 ```
 
 `removed` = machine-namespaced copies deleted because their source was tombstoned. Your own local files at non-namespaced paths are never touched.
+
+Handoff files use a separate rule from ordinary `.xm` files: pull selects one
+newest valid `SESSION-STATE.json`, writes it to the canonical path (never a
+machine-namespaced filename), and brings along `HANDOFF.md` from the same
+machine. `handoff_generation` wins when all candidates provide it; `saved_at`
+is the compatibility fallback for older clients. Remote tombstones never
+delete a locally restorable handoff.
 
 ---
 

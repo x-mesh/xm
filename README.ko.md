@@ -81,7 +81,7 @@ powershell -c "irm bun.sh/install.ps1 | iex"
 /plugin install xm@xm -s user
 ```
 
-### 최초 초기화 (전역)
+### 최초 설정 (전역)
 
 설치 후 머신당 한 번 실행하여 trace-session 훅을 `~/.claude/hooks/`에 복사하고 `~/.claude/settings.json`에 Skill matcher를 등록합니다:
 
@@ -89,12 +89,24 @@ powershell -c "irm bun.sh/install.ps1 | iex"
 /xm init              # trace-session 훅을 ~/.claude/에 설치
 /xm init status       # 설치 상태 확인
 /xm init uninstall    # 훅 파일 + settings.json 항목 제거
-/xm init --no-hooks   # CLI만 설치 (현재는 no-op, 예약됨)
+/xm init --no-hooks   # 훅을 복사하지 않고 CLI 디스패처만 설치
 ```
 
 Idempotent: 재실행 안전. 기존 훅(mem-mesh 등)은 보존되고, 매 쓰기 시 `settings.json`의 타임스탬프 백업이 생성됩니다. 트레이스는 각 프로젝트의 `.xm/traces/`에 기록됩니다.
 
-터미널에서 동일한 설치를 하려면 `xm init`을 쓰세요 ([터미널 CLI](#terminal-cli-optional) 참고).
+터미널에서 동일한 설치를 하려면 `xm setup`을 쓰세요 ([터미널 CLI](#terminal-cli-optional) 참고).
+
+### 프로젝트 시작하기
+
+`init`은 첫 인자에 따라 동작이 갈립니다 — 이름을 주면 `~/.claude/`를 건드리지 않고 프로젝트를 만듭니다:
+
+```bash
+xm init aic           # .xm/build/projects/aic 생성 + 레지스트리 등록
+xm init .             # 현재 디렉토리 이름으로 생성
+xm init --here        # `xm init .`과 동일
+```
+
+예약어(`status`, `uninstall`, `install`, `help` 및 `--here`를 제외한 flag)는 항상 전역 설치 경로로 가므로 프로젝트명으로 쓸 수 없습니다. 그런 이름이 필요하면 `xm build init <name>`을 쓰세요.
 
 ### 터미널 CLI (선택)
 
@@ -110,18 +122,20 @@ curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/xm/scripts/install.s
 
 인스톨러는 `~/.local/bin/xm`을 설치합니다(`XM_BIN_DIR`로 경로 변경 가능, `PATH`에 있어야 함). 기존 설치에서는 버전을 비교해 업데이트가 있을 때 적용할지 묻고, 무인 설치에서는 `--yes`로 확인을 생략할 수 있습니다. `claude`가 `PATH`에 있으면 누락된 마켓플레이스 플러그인을 설치하고, 확인 후 기존 플러그인을 업데이트합니다. Linux의 Codex 전용 호스트를 포함해 `codex`가 `PATH`에 있으면 global Codex Skill/플러그인 manifest를 생성하고 `codex plugin add xm@personal` 및 훅 활성화까지 실행합니다. 설치 후 Codex는 새 thread를 시작하고, Claude Code는 `/reload-plugins`를 실행하세요.
 
-#### 전역 훅 설치 (`xm init`)
+#### 전역 훅 설치 (`xm setup`)
 
-bash `xm init` 서브커맨드는 `/xm init` 슬래시 커맨드와 동일한 동작을 합니다 — Skill 트레이싱 훅을 **사용자 스코프**(`~/.claude/`)에 설치합니다 (머신당 1회):
+`xm setup`은 Skill 트레이싱 훅을 **사용자 스코프**(`~/.claude/`)에 설치합니다 (머신당 1회). 인자 없는 `xm init`도 같은 동작을 합니다 — 기존 이름이며 계속 동작합니다:
 
 ```bash
-xm init                 # trace-session 훅을 ~/.claude/에 설치
-xm init status          # 설치 상태 확인
-xm init uninstall       # 훅 파일 + settings.json 항목 제거
-xm init --no-hooks      # CLI만 설치 (현재는 no-op, 예약됨)
+xm setup                # trace-session 훅을 ~/.claude/에 설치
+xm setup status         # 설치 상태 확인
+xm setup uninstall      # 훅 파일 + settings.json 항목 제거
+xm setup --no-hooks     # 훅을 복사하지 않고 CLI 디스패처만 설치
 ```
 
 `~/.claude/hooks/xm-trace-session.mjs`를 복사하고 `~/.claude/settings.json`의 `PreToolUse`/`PostToolUse`에 Skill matcher를 병합합니다. 기존 훅(mem-mesh 등)은 보존되며, 수정 시 타임스탬프 백업이 생성됩니다. Claude Code 밖에서 실행해야 할 때는 bash 경로를 쓰고, 그 외에는 `/xm init`을 권장합니다.
+
+새 스크립트와 문서에서는 `setup`을 쓰세요: 다른 생태계에서 `init`은 "프로젝트 시작"으로 읽히며, 다음 메이저 버전에서 인자 없는 `xm init`도 프로젝트 경로로 넘어갈 예정입니다.
 
 ```bash
 xm dashboard                       # 시작 — `~/.xm/projects.json` 레지스트리에 등록된 모든 프로젝트 표시
@@ -966,12 +980,17 @@ x-sync pull-all   # ~/work 아래 모든 .xm/ 프로젝트 pull
 x-sync status     # 설정 + 현재 cwd projectId + 마지막 pull/push 상태
 ```
 
+`handoff`는 이기종 머신 동기화를 지원합니다. `push`는 canonical
+`SESSION-STATE.json`/`HANDOFF.md`를 보내고, `pull`은 `handoff_generation`과
+`saved_at` fallback으로 가장 최신의 유효한 handoff를 canonical 로컬 경로에
+승격합니다. 일반 `.xm` 충돌 파일은 기존처럼 머신별 namespaced 경로를 사용합니다.
+
 Claude Code 안에서도 사용 가능: `/xm:sync push`, `/xm:sync pull`, `/xm:sync setup`
 
 | 기능 | 상세 |
 |------|------|
 | **Push** | SHA-256 해시 중복 제거, batch POST |
-| **Pull** | 타임스탬프 기반 증분, 자기 머신 데이터 skip |
+| **Pull** | cursor 기반 증분, 자기 머신 데이터 skip, 최신 handoff 승격 |
 | **인증** | API key (`X-Api-Key` 헤더) |
 | **저장** | 서버 SQLite WAL |
 | **오프라인** | SessionEnd hook이 `.sync-queue/`에 저장, 다음 push 시 drain |

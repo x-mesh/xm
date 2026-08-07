@@ -56,6 +56,10 @@ If the command prints `{"error":"no_session_state"}`, 로컬 상태가 없다고
 
 를 출력하고 멈춥니다.
 
+`xm sync pull` may have promoted another machine's newest verified JSON to this
+canonical local path. Treat it exactly like any other local candidate; its
+`handoff_generation` and `saved_at` were already reconciled by x-sync.
+
 If the command itself fails (`command not found`, `Cannot find module`, non-JSON output), that is an **invocation failure, not a missing handoff** — report the actual error to the user and try the fallback above. Never translate a broken invocation into "no previous session state": the state file may exist and be perfectly readable.
 
 Then, best-effort, read the last recorded review verdict for the 🔍 Review line (omit that line if this returns nothing):
@@ -91,10 +95,14 @@ The JSON contains these sections that you MUST use as your working context:
 
 **Step 3: Select the newest handoff, then output the summary**
 
-먼저 Step 3.5의 원격 후보와 로컬 후보를 고릅니다. `created_at`/`saved_at`이 모두
-유효하면 더 늦은 시각을 선택합니다. 같은 시각 또는 원격 시각이 없으면 로컬을
-선택합니다. 원격 선택 시 memory의 `content`를 **그대로 읽어 작업 context로
-흡수**합니다. 요약의 첫 줄에 아래 중 하나를 반드시 표시합니다.
+먼저 Step 3.5에서 필터링한 원격 후보 전부와 로컬 후보로 하나의 후보 집합을 만듭니다.
+모든 후보에 원격 content의 `Handoff generation: N` 또는 로컬
+`handoff_generation`이 유효하면 generation이 큰 후보를 선택하고, 같을 때만
+`created_at`/`saved_at`을 비교합니다. 어느 한 후보라도 generation이 없으면 이전 버전
+호환을 위해 전체 집합을 timestamp만으로 비교합니다. 원격끼리 먼저 generation으로
+하나를 고른 뒤 로컬과 비교하지 않습니다. 같은 시각 또는 원격 시각이 없으면 로컬을
+선택합니다. 원격 선택 시 memory의 `content`를 **그대로
+읽어 작업 context로 흡수**합니다. 요약의 첫 줄에 아래 중 하나를 반드시 표시합니다.
 
 ```
   📦 Source: local SESSION-STATE.json
@@ -150,7 +158,11 @@ Only in dual-write mode (gate above), call `mcp__mem-mesh__search` with an empty
 `query`, the **repo-root** `project_id`, a high `recency_weight` (e.g. `0.8`), and
 `limit: 10`. Do NOT request a limit above 10. Filter the returned results locally:
 keep only the same `project_id` whose `tags` contain **both** `handoff` and
-`session-state`; then choose the greatest valid `created_at`. Do NOT treat a random
+`session-state`. Parse `Handoff generation: N` from every valid candidate, but do
+not reduce the remote list yet. Return every filtered candidate to Step 3, which
+selects once across the complete local+remote set. This prevents both timestamp-first
+and generation-first preselection from losing a valid handoff under clock skew or
+mixed legacy/modern state. Do NOT treat a random
 recent memory or a pin as a handoff candidate. (Do NOT use `mcp__mem-mesh__context`
 here — it requires a `memory_id`/`ids` and cannot list a project's recent memories.)
 

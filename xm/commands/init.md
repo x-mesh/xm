@@ -1,23 +1,39 @@
 ---
 name: init
-description: Install xm global hooks (trace-session) and settings into ~/.claude/
+description: Start a project (init <name>) or install xm global hooks into ~/.claude/ (init with no args)
 ---
 
-# xm init — Global Install
+# xm init — Project Start / Global Install
 
-Install the `trace-session` hook globally into `~/.claude/hooks/` and register Skill matchers in `~/.claude/settings.json`. Idempotent — safe to re-run.
+`init` is overloaded on its first argument:
+
+- **`init <name>`** → start a project: create `.xm/build/projects/<name>` and register it. This is the common case.
+- **`init`** (no args) → install the `trace-session` hook into `~/.claude/hooks/` and register Skill matchers in `~/.claude/settings.json`. Machine-level, once per machine, idempotent. `setup` is the explicit name for this and is preferred in new docs.
 
 ## Arguments
 
 User provided: $ARGUMENTS
 
-Routing:
-- Empty → `install`
-- `status` → show current install state and exit
-- `uninstall` → remove hook + settings entries
-- `--no-hooks` → install CLI dispatcher only (skip hook copy)
+Routing — check the FIRST token:
+- Empty → global `install` (then tell the user `xm init <name>` starts a project)
+- `status`, `uninstall`, `install`, or `help` → global install route
+- `--no-hooks` (and every flag except `--here`) → global install route; `--no-hooks` installs the CLI dispatcher without copying hooks
+- `.` or `--here` → start a project named after the current directory
+- **anything else** → treat it as a project name → run the project route below
 
-## Locate the setup script
+Reserved words above can never be project names. When the user genuinely wants a project called `status`, use `xm build init status`.
+
+## Project route
+
+Do NOT load `setup-global.mjs` for this route. Run:
+
+```bash
+xm init <name>
+```
+
+The dispatcher creates the project via `x-build init` and registers it in `~/.xm/projects.json`. Report the created path and the suggested next step verbatim, then stop — do not chain into the phase workflow unless asked.
+
+## Global install route — locate the setup script
 
 Run this bash to resolve the setup-global.mjs path (prefers local repo, falls back to plugin cache latest version):
 
@@ -58,8 +74,18 @@ Print the command output as-is. On success (`overall: OK`), close with:
 
 On `NOT installed` after `install`, surface the stderr lines so the user can see which step failed.
 
+When the invocation had no arguments, close with one extra line so the user learns the project form:
+
+```
+💡 프로젝트를 시작하려면: xm init <name>
+```
+
 ## When to use
 
+Project route:
+- The user names a project to start ("aic 프로젝트 만들어줘", "start a project called aic")
+
+Global install route:
 - First-time setup on a new machine
 - After `~/.claude/settings.json` was reset
 - After the user asks "install xm globally" / "xm 전역 설치"

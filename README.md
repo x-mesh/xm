@@ -81,7 +81,7 @@ After installation, verify with `bun --version` (requires v1.0+).
 /plugin install xm@xm -s user
 ```
 
-### First-Run Init (Global)
+### First-Run Setup (Global)
 
 After installing, run once per machine to copy the trace-session hook into `~/.claude/hooks/` and register Skill matchers in `~/.claude/settings.json`:
 
@@ -89,12 +89,24 @@ After installing, run once per machine to copy the trace-session hook into `~/.c
 /xm init              # install trace-session hook into ~/.claude/
 /xm init status       # verify install state
 /xm init uninstall    # remove hook + settings entries
-/xm init --no-hooks   # CLI-only install (no-op today — reserved)
+/xm init --no-hooks   # install CLI dispatchers without copying hooks
 ```
 
 Idempotent: safe to re-run. Existing hooks (e.g. mem-mesh) are preserved, and each write creates a timestamped backup of `settings.json`. Traces land in each project's `.xm/traces/`.
 
-The same install flow is available from a terminal via `xm init` (see [Terminal CLI](#terminal-cli-optional)).
+The same install flow is available from a terminal via `xm setup` (see [Terminal CLI](#terminal-cli-optional)).
+
+### Starting a Project
+
+`init` is overloaded on its first argument — with a name it starts a project instead of touching `~/.claude/`:
+
+```bash
+xm init aic           # create .xm/build/projects/aic + register it
+xm init .             # name the project after the current directory
+xm init --here        # same as `xm init .`
+```
+
+Reserved words (`status`, `uninstall`, `install`, `help`, and flags other than `--here`) always take the global-install route, so they cannot be used as project names — use `xm build init <name>` for those.
 
 ### Terminal CLI (optional)
 
@@ -110,18 +122,20 @@ curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/xm/scripts/install.s
 
 The installer writes `~/.local/bin/xm` (override with `XM_BIN_DIR`; ensure it is on your `PATH`). On an existing installation it compares versions and asks before applying an available update; use `--yes` for unattended installs. When `claude` is on `PATH`, it installs missing marketplace plugins and updates installed ones after confirmation. When `codex` is on `PATH` (including Linux Codex-only hosts), it also generates the global Codex Skills/plugin manifest, runs `codex plugin add xm@personal`, and enables hooks. Start a new Codex thread after installation; run `/reload-plugins` in Claude Code.
 
-#### Global hook install (`xm init`)
+#### Global hook install (`xm setup`)
 
-The bash `xm init` subcommand is equivalent to the `/xm init` slash command — it installs the Skill-tracing hook into **user-scoped** `~/.claude/` (once per machine):
+`xm setup` installs the Skill-tracing hook into **user-scoped** `~/.claude/` (once per machine). `xm init` with no arguments does the same thing — it is the original name, kept working:
 
 ```bash
-xm init                 # install trace-session hook into ~/.claude/
-xm init status          # verify install state
-xm init uninstall       # remove hook + settings entries
-xm init --no-hooks      # CLI-only install (no-op today — reserved)
+xm setup                # install trace-session hook into ~/.claude/
+xm setup status         # verify install state
+xm setup uninstall      # remove hook + settings entries
+xm setup --no-hooks     # install CLI dispatchers without copying hooks
 ```
 
 Writes `~/.claude/hooks/xm-trace-session.mjs` and merges `PreToolUse`/`PostToolUse` Skill matchers into `~/.claude/settings.json` (existing hooks such as mem-mesh are preserved; a timestamped backup is created on every write). Use the bash route when you are outside Claude Code; otherwise `/xm init` is the preferred entry point.
+
+Prefer `setup` in new scripts and docs: `init` reads as "start a project" everywhere else in the ecosystem, and a future major version will hand bare `xm init` over to the project route.
 
 ```bash
 xm dashboard                       # start — uses ~/.xm/projects.json registry (all registered projects)
@@ -967,12 +981,17 @@ x-sync pull-all   # pull every .xm/ project under ~/work
 x-sync status     # show config, current cwd projectId, last pull/push
 ```
 
+`handoff` is cross-machine aware: `push` sends the canonical
+`SESSION-STATE.json`/`HANDOFF.md`, and `pull` promotes the newest valid remote
+handoff to the canonical local path using `handoff_generation` with a
+`saved_at` fallback. Ordinary `.xm` conflicts remain machine-namespaced.
+
 Or use directly in Claude Code: `/xm:sync push`, `/xm:sync pull`, `/xm:sync setup`
 
 | Feature | Detail |
 |---------|--------|
 | **Push** | SHA-256 hash dedup, batch POST |
-| **Pull** | Since-timestamp incremental, skip own machine |
+| **Pull** | Cursor-based incremental, skip own machine, newest-handoff promotion |
 | **Auth** | API key (`X-Api-Key` header) |
 | **Storage** | SQLite WAL on server |
 | **Offline** | SessionEnd hook queues to `.sync-queue/`, drains on next push |

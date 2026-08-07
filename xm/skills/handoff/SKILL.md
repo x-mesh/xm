@@ -156,6 +156,7 @@ Three files, all written by the CLI:
 {
   "v": 1,
   "saved_at": "2026-04-11T...",
+  "handoff_generation": 3,
   "where": { "branch": "develop", "last_commits": [...], "uncommitted_files": [...] },
   "what_done": ["commit1", "commit2"],
   "what_remains": { "active_projects": [...], "uncommitted": [...], "ideas": [] },
@@ -177,6 +178,12 @@ Three files, all written by the CLI:
   "why_stopped": "reason"
 }
 ```
+
+`handoff_generation` is incremented from the current local state. When that
+state came from `xm sync pull`, the next handoff becomes generation N+1, so
+cross-machine ordering does not depend only on wall-clock agreement. The same
+generation is embedded in the mem-mesh mirror content, allowing handon to use
+the same ordering rule for both x-sync and mem-mesh candidates.
 
 `session_log` is present only when the leader composed one. `handon --json` replaces it with a `session_log_summary` count; `handon --log` prints the full archive.
 
