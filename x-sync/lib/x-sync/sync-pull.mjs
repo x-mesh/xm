@@ -14,6 +14,11 @@ import { writeFileSync, readFileSync, mkdirSync, existsSync, rmSync } from 'node
 import { join, resolve, dirname, basename, extname, relative, isAbsolute } from 'node:path';
 import { execSync } from 'node:child_process';
 import { readSyncConfig } from './sync-config.mjs';
+import {
+  isCanonicalHandoffPath,
+  isExcludedHandoffPath,
+  reconcileHandoff,
+} from './sync-handoff.mjs';
 
 // Files excluded from sync (per-machine local settings)
 const SYNC_EXCLUDE = new Set(['config.json']);
@@ -120,9 +125,15 @@ async function main() {
       // shared paths (multiple machines → same path).
       const byPath = new Map();
       const tombstones = [];
+      const handoffFiles = [];
       for (const f of files) {
         if (f.machine_id === config.machine_id) continue; // skip own
         if (SYNC_EXCLUDE.has(f.path) || SYNC_EXCLUDE.has(basename(f.path))) continue; // skip excluded
+        if (isExcludedHandoffPath(f.path)) continue;
+        if (isCanonicalHandoffPath(f.path)) {
+          handoffFiles.push(f);
+          continue;
+        }
         if (f.deleted) { tombstones.push(f); continue; }
         if (!byPath.has(f.path)) byPath.set(f.path, []);
         byPath.get(f.path).push(f);
@@ -132,6 +143,7 @@ async function main() {
       let namespaced = 0;
       let removed = 0; // tombstoned remote copies deleted locally
       let rejected = 0; // server-supplied paths that escape xmDir
+      const handoff = reconcileHandoff(xmDir, handoffFiles);
       const skippedOwn = files.filter(f => f.machine_id === config.machine_id).length;
       const skippedExcluded = files.filter(f =>
         f.machine_id !== config.machine_id &&
@@ -186,6 +198,12 @@ async function main() {
       if (skippedOwn > 0) parts.push(`${skippedOwn} skipped (own machine)`);
       if (skippedExcluded > 0) parts.push(`${skippedExcluded} excluded`);
       if (rejected > 0) parts.push(`${rejected} rejected (unsafe path)`);
+      if (handoff.status === 'updated') {
+        parts.push(`handoff updated from ${handoff.machine_id} (${handoff.saved_at})`);
+      } else if (handoff.status === 'kept-local') {
+        parts.push('handoff kept local (newer or same age)');
+      }
+      if (handoff.invalid > 0) parts.push(`${handoff.invalid} invalid handoff(s) ignored`);
       console.log(`[x-sync pull] ${parts.join(', ')}`);
     }
 

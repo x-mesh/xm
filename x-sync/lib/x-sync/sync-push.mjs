@@ -9,6 +9,7 @@ import { join, resolve, relative, basename, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { readSyncConfig, getMachineId } from './sync-config.mjs';
+import { isExcludedHandoffPath } from './sync-handoff.mjs';
 
 // Resolve .xm/ directory (worktree-aware — same logic as shared-config.mjs)
 function resolveXmDir() {
@@ -25,8 +26,8 @@ function resolveXmDir() {
 }
 
 // Recursively scan .xm/ for syncable files
-// Include: traces/*.jsonl, op/*.json, probe/**/*.json, build/projects/**/*, solver/**/*
-// Exclude: .sync-queue/, run/, config.json.bak, *.tmp
+// Include: traces, plans, build projects, and canonical handoff files.
+// Exclude: per-machine config/mirror state, legacy namespaced handoffs, run/, *.tmp.
 function scanXmFiles(xmDir) {
   const files = [];
   const SKIP = new Set(['run', '.sync-queue', 'node_modules']);
@@ -41,6 +42,8 @@ function scanXmFiles(xmDir) {
 
       const fullPath = join(dir, entry.name);
       const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+
+      if (isExcludedHandoffPath(relPath)) continue;
 
       if (entry.isDirectory()) {
         walk(fullPath, relPath);
