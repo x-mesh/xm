@@ -15,6 +15,7 @@ import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const CLI = join(import.meta.dir, '..', 'x-build', 'lib', 'x-build-cli.mjs');
+const HANDON_SKILL = join(import.meta.dir, '..', 'xm', 'skills', 'handon', 'SKILL.md');
 
 let repo;
 
@@ -81,11 +82,34 @@ test('renders a mem-mesh payload matching the add schema', () => {
   expect(m.payload.content).toContain('## Rejected (with reasoning)');
   expect(m.payload.content).toContain('## What was tried & why');
   expect(m.payload.content).toContain('## Referenced mem-mesh memories');
+  expect(m.payload.content).toContain('Handoff generation: 1');
   expect(m.payload.content).toContain('837fbc8a-9834-4a4a-8506-c6998ba62e65');
   expect(m.payload.content).toContain('Stopped: testing dual-write');
 
   // Anchors are client-collected — the server has no git access.
   expect(m.payload.anchors.commit_hash).toMatch(/^[0-9a-fA-F]{7,64}$/);
+});
+
+test('increments handoff_generation so cross-machine restores survive clock skew', () => {
+  cli('handoff', '--full', 'first');
+  const first = JSON.parse(cli('handon', '--json'));
+  cli('handoff', '--full', 'second');
+  const second = JSON.parse(cli('handon', '--json'));
+
+  expect(first.handoff_generation).toBe(1);
+  expect(second.handoff_generation).toBe(2);
+});
+
+test('handon selects once across the complete local and mem-mesh candidate set', () => {
+  const skill = readFileSync(HANDON_SKILL, 'utf8');
+  const candidateSection = skill.slice(
+    skill.indexOf('**Step 3.5:'),
+    skill.indexOf('**Distinguish "nothing there"', skill.indexOf('**Step 3.5:')),
+  );
+
+  expect(candidateSection).toContain('Parse `Handoff generation: N` from every valid candidate');
+  expect(candidateSection).toMatch(/do\s+not reduce the remote list yet/);
+  expect(candidateSection).toContain('complete local+remote set');
 });
 
 test('keeps at most five valid, unique memory references', () => {

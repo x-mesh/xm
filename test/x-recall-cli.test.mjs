@@ -88,7 +88,7 @@ beforeAll(() => {
 
   // SESSION-STATE for handoff-md
   writeJSON(join(XM, 'build', 'SESSION-STATE.json'), {
-    v: 1, saved_at: '2026-04-11T03:44:25.191Z',
+    v: 1, saved_at: '2026-04-11T03:44:25.191Z', handoff_generation: 4,
     where: { branch: 'develop', last_commits: ['aaa1234 first', 'bbb5678 second'], uncommitted_files: ['x.mjs'] },
     what_done: ['shipped X'],
     what_remains: { active_projects: [{ name: 'p1', phase: 'Plan' }] },
@@ -224,6 +224,7 @@ describe('handoff-md', () => {
     const r = run(['handoff-md']);
     expect(r.status).toBe(0);
     const md = readFileSync(join(XM, 'build', 'HANDOFF.md'), 'utf8');
+    expect(md).toContain('**Generation:** 4');
     expect(md).toContain('# Session Handoff');
     expect(md).toContain('build recall');          // narrative.intent
     expect(md).toContain('naming?');               // open question
