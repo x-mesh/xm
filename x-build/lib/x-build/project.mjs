@@ -907,9 +907,22 @@ export function cmdHandoffFull(args) {
 
   const reason = args.find((a, i) => i !== narrativeValueIdx && !a.startsWith('--')) || opts.reason || opts.summary || null;
 
+  // Lamport-style generation survives clock skew across machines: a handoff
+  // created after pulling generation N becomes N+1. Legacy states start at 1.
+  const buildDir = join(repoRoot(), '.xm', 'build');
+  const statePath = join(buildDir, 'SESSION-STATE.json');
+  let handoffGeneration = 1;
+  try {
+    const previous = JSON.parse(readFileSync(statePath, 'utf8'));
+    if (Number.isInteger(previous.handoff_generation) && previous.handoff_generation > 0) {
+      handoffGeneration = previous.handoff_generation + 1;
+    }
+  } catch {}
+
   const state = {
     v: 1,
     saved_at: new Date().toISOString(),
+    handoff_generation: handoffGeneration,
 
     where: {
       branch,
@@ -951,9 +964,7 @@ export function cmdHandoffFull(args) {
   };
 
   // Save
-  const buildDir = join(repoRoot(), '.xm', 'build');
   mkdirSync(buildDir, { recursive: true });
-  const statePath = join(buildDir, 'SESSION-STATE.json');
   writeFileSync(statePath, JSON.stringify(state, null, 2) + '\n', 'utf8');
 
   // Also emit a tool-neutral HANDOFF.md so sessions that cannot run the
@@ -1089,6 +1100,7 @@ function _mirrorContent(state) {
   const ctx = state.context || {};
   const L = [];
 
+  if (state.handoff_generation) L.push(`Handoff generation: ${state.handoff_generation}`);
   L.push(nar.intent || ctx.current_focus || 'Session handoff');
   L.push(`Stopped: ${state.why_stopped || '—'}`);
   L.push('');
@@ -1302,6 +1314,7 @@ function _sessionStateToHandoffMd(state) {
   L.push('# Session Handoff', '');
   L.push('> Tool-neutral handoff generated from `.xm/build/SESSION-STATE.json`. Readable by any session (Claude, Codex, Cursor).', '');
   L.push(`- **Saved:** ${state.saved_at || '—'}`);
+  if (state.handoff_generation) L.push(`- **Generation:** ${state.handoff_generation}`);
   L.push(`- **Branch:** ${w.branch || '—'}${w.ahead != null ? ` (+${w.ahead}/-${w.behind || 0})` : ''}`);
   if (state.why_stopped) L.push(`- **Stopped because:** ${state.why_stopped}`);
   if (ctx.current_focus) L.push(`- **Focus:** ${ctx.current_focus}`);

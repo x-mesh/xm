@@ -32,6 +32,7 @@ export function sessionStateToMarkdown(state) {
   lines.push(`> Tool-neutral handoff generated from \`.xm/build/SESSION-STATE.json\`. Readable by any session (Claude, Codex, Cursor).`);
   lines.push('');
   lines.push(`- **Saved:** ${state.saved_at || '—'}`);
+  if (state.handoff_generation) lines.push(`- **Generation:** ${state.handoff_generation}`);
   lines.push(`- **Branch:** ${w.branch || '—'}${w.ahead != null ? ` (+${w.ahead}/-${w.behind || 0})` : ''}`);
   if (state.why_stopped) lines.push(`- **Stopped because:** ${state.why_stopped}`);
   if (ctx.current_focus) lines.push(`- **Focus:** ${ctx.current_focus}`);

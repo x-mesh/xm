@@ -18,7 +18,7 @@ self_register() {
   # Best-effort only — must always return 0 so `set -e` does not kill the
   # whole script when called from a directory without .xm/.git.
   case "$CMD" in
-    help|--help|-h|version|--version|-v|which|init|project) return 0 ;;
+    help|--help|-h|version|--version|-v|which|init|setup|project) return 0 ;;
   esac
   [ -d ".xm" ] || [ -f ".git" ] || [ -d ".git" ] || return 0
   local libPath
@@ -98,6 +98,62 @@ plugin_lib() {
   fi
 }
 
+# --- init/setup helpers ---
+# `init` carries two meanings in this CLI: the machine-level hook install (once
+# per machine) and starting a project (once per project). `setup` is the
+# canonical name for the former; `init <name>` routes to the latter so the short
+# verb belongs to the command that is actually run often.
+_xm_global_setup() {
+  # Resolve setup-global.mjs: local repo > plugin cache
+  local setup=""
+  if [ -f "$LIB/xm/scripts/setup-global.mjs" ]; then
+    setup="$LIB/xm/scripts/setup-global.mjs"
+  else
+    setup="$(ls -td "$LIB/xm"/*/scripts/setup-global.mjs 2>/dev/null | head -1)"
+  fi
+  if [ -z "$setup" ] || [ ! -f "$setup" ]; then
+    echo "xm $CMD: setup-global.mjs not found under $LIB" >&2
+    exit 1
+  fi
+  # setup-global.mjs expects an explicit subcommand. The public CLI keeps the
+  # documented shorthand `xm setup --no-hooks` (and legacy `xm init
+  # --no-hooks`), so normalize that flag-only form to `install --no-hooks`.
+  if [ "${1:-}" = "--no-hooks" ]; then
+    XM_SETUP_VERB="$CMD" node "$setup" install "$@"
+  else
+    XM_SETUP_VERB="$CMD" node "$setup" "$@"
+  fi
+}
+
+_xm_init_project() {
+  local name="$1"; shift
+  local libPath
+  libPath="$(plugin_lib build)"
+  if [ -z "$libPath" ] || [ ! -f "$libPath/x-build-cli.mjs" ]; then
+    echo "xm init: x-build-cli.mjs not found under $LIB" >&2
+    echo "  Update xm: xm update" >&2
+    exit 1
+  fi
+  node "$libPath/x-build-cli.mjs" init "$name" "$@"
+  # self_register skips CMD=init (it also serves the global-setup route), so the
+  # project route registers explicitly. Creation and registration are one user
+  # contract: make a failed registry write visible instead of silently leaving
+  # the new project absent from dashboard discovery.
+  local xmLib
+  xmLib="$(plugin_lib xm lib 2>/dev/null || true)"
+  if [ -n "$xmLib" ] && [ -f "$xmLib/x-projects-cli.mjs" ]; then
+    if ! node "$xmLib/x-projects-cli.mjs" register --quiet; then
+      echo "xm init: project was created, but registry registration failed." >&2
+      echo "  Fix ~/.xm access and run: xm project add \"$PWD\"" >&2
+      return 1
+    fi
+  else
+    echo "xm init: project was created, but the registry CLI is unavailable." >&2
+    echo "  Update xm, then run: xm project add \"$PWD\"" >&2
+    return 1
+  fi
+}
+
 self_register
 
 # --- Terminal instrumentation (best-effort dispatcher ledger) ---
@@ -121,10 +177,12 @@ XM_TRACE_SUB2="${2:-}"
 _xm_trace_record() {
   local code=$?
   set +e
-  # Excluded top-level commands: help/version/which/doctor/init/update are meta,
-  # trace/last/status are the ledger's own read views, dashboard daemonizes.
+  # Excluded top-level commands: help/version/which/doctor/init/setup/update are
+  # meta, trace/last/status are the ledger's own read views, dashboard daemonizes.
+  # `init` is excluded as the global-install route only — its project route
+  # rewrites XM_TRACE_CMD to init-project so project creation IS recorded.
   case "$XM_TRACE_CMD" in
-    help|--help|-h|""|version|--version|-v|which|doctor|init|update|dashboard|dash|trace|last|status)
+    help|--help|-h|""|version|--version|-v|which|doctor|init|setup|update|dashboard|dash|trace|last|status)
       exit "$code" ;;
   esac
   # Excluded read-only sub-ops. The read verb is $1 for flat verbs (`config get`)
@@ -345,19 +403,39 @@ case "$CMD" in
     node "$LIB_PATH/x-projects-cli.mjs" "$@"
     ;;
 
+  setup)
+    _xm_global_setup "$@"
+    ;;
+
   init)
-    # Resolve setup-global.mjs: local repo > plugin cache
-    SETUP=""
-    if [ -f "$LIB/xm/scripts/setup-global.mjs" ]; then
-      SETUP="$LIB/xm/scripts/setup-global.mjs"
-    else
-      SETUP="$(ls -td "$LIB/xm"/*/scripts/setup-global.mjs 2>/dev/null | head -1)"
-    fi
-    if [ -z "$SETUP" ] || [ ! -f "$SETUP" ]; then
-      echo "xm init: setup-global.mjs not found under $LIB" >&2
-      exit 1
-    fi
-    node "$SETUP" "$@"
+    # Overloaded on the first positional arg:
+    #   (none) / reserved word / flag  → global hook install (unchanged)
+    #   . | --here                     → project named after the cwd
+    #   <name>                         → project named <name>
+    # Reserved words can never be project names; `xm build init <name>` remains
+    # the unambiguous escape hatch for those.
+    case "${1:-}" in
+      '')
+        _xm_global_setup
+        echo ""
+        echo "💡 To start a project instead: xm init <name>   (or: xm setup, the explicit name for this install)"
+        ;;
+      .|--here)
+        # MUST precede the `-*` catch-all below: bash case takes the first
+        # match, so a trailing `--here` arm would never be reached.
+        shift
+        XM_TRACE_CMD="init-project"
+        _xm_init_project "$(basename "$PWD")" "$@"
+        ;;
+      install|uninstall|status|help|--help|-h|--no-hooks|--skip-sync|--dry-run|--with-server|--rollback|-*)
+        _xm_global_setup "$@"
+        ;;
+      *)
+        INIT_NAME="$1"; shift
+        XM_TRACE_CMD="init-project"
+        _xm_init_project "$INIT_NAME" "$@"
+        ;;
+    esac
     ;;
 
   solver)
@@ -998,7 +1076,10 @@ xm — x-mesh toolkit CLI
 Usage: xm <command> [args...]
 
 Commands:
-  init [--no-hooks|uninstall|status]  Set up global hooks in ~/.claude/
+  init <name>                         Start a project (.xm/projects/<name>) + register it
+  init . | --here                     Start a project named after the current directory
+  init [--no-hooks|uninstall|status]  Set up global hooks in ~/.claude/ (same as 'setup')
+  setup [--no-hooks|uninstall|status] Set up global hooks in ~/.claude/ (once per machine)
   project <subcmd>                    Project registry: list|add|remove|import|gc|...
   dashboard start|stop|restart|status|open  Web dashboard server (uses ~/.xm/projects.json)
   handoff [reason]                    Save session state

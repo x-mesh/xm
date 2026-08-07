@@ -56,8 +56,13 @@ function resolveNodeBin() {
   return process.execPath;
 }
 
-function log(msg) { process.stdout.write(`[xm init] ${msg}\n`); }
-function warn(msg) { process.stderr.write(`[xm init] ${msg}\n`); }
+// Both `xm setup` (canonical) and `xm init` (legacy, no-arg only) land here.
+// The dispatcher passes the verb the user actually typed so the log prefix and
+// usage text never tell them to run a command they did not invoke.
+const VERB = process.env.XM_SETUP_VERB === 'setup' ? 'setup' : 'init';
+
+function log(msg) { process.stdout.write(`[xm ${VERB}] ${msg}\n`); }
+function warn(msg) { process.stderr.write(`[xm ${VERB}] ${msg}\n`); }
 function die(msg) { warn(msg); process.exit(1); }
 
 function resolveHookSource() {
@@ -90,6 +95,10 @@ function resolveHookSource() {
 
 function resolveXmCommandSource() {
   const candidates = [];
+  // Explicit source-repo override, used by the terminal dispatcher and tests.
+  if (process.env.XM_LIB) {
+    candidates.push(path.join(process.env.XM_LIB, 'xm', 'commands', 'xm.md'));
+  }
   // Local repo (cwd)
   candidates.push(path.join(process.cwd(), 'xm', 'commands', 'xm.md'));
   // Plugin cache: ~/.claude/plugins/cache/xm/xm/<ver>/commands/xm.md (new) or legacy xm path
@@ -241,6 +250,9 @@ function install(opts) {
 /** Resolve the newest xm/scripts/xm dispatcher source (local repo > plugin cache). */
 function resolveBashDispatcher() {
   const candidates = [];
+  if (process.env.XM_LIB) {
+    candidates.push(path.join(process.env.XM_LIB, 'xm', 'scripts', 'xm'));
+  }
   // Local repo
   candidates.push(path.join(process.cwd(), 'xm', 'scripts', 'xm'));
   // Plugin cache (sorted semver desc)
@@ -322,16 +334,19 @@ switch (cmd) {
   case '--help':
   case '-h':
   case 'help':
-    process.stdout.write(`xm init — install global hooks into ~/.claude/\n\n`
+    process.stdout.write(`xm ${VERB} — install global hooks into ~/.claude/ (once per machine)\n\n`
       + `Usage:\n`
-      + `  xm init                 # install trace-session hook globally\n`
-      + `  xm init --no-hooks      # skip hook install (CLI only)\n`
-      + `  xm init status          # check install state\n`
-      + `  xm init uninstall       # remove hook + settings entries\n\n`
+      + `  xm ${VERB}                 # install trace-session hook globally\n`
+      + `  xm ${VERB} --no-hooks      # skip hook install (CLI only)\n`
+      + `  xm ${VERB} status          # check install state\n`
+      + `  xm ${VERB} uninstall       # remove hook + settings entries\n\n`
+      + `To start a PROJECT (not a machine install):\n`
+      + `  xm init <name>          # create .xm/build/projects/<name> + register it\n`
+      + `  xm init . | --here      # name it after the current directory\n\n`
       + `Env:\n`
       + `  XM_HOOK_SRC   override hook source path\n`
       + `  XM_LIB        override lib root (used for resolving hook source)\n`);
     break;
   default:
-    die(`unknown subcommand: ${cmd}. Try 'xm init --help'.`);
+    die(`unknown subcommand: ${cmd}. Try 'xm ${VERB} --help'.`);
 }

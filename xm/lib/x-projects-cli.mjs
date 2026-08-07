@@ -141,7 +141,10 @@ function gcCmd(args) {
 
 function registerCmd(args) {
   // Internal — used by the dispatcher self-register hook. Silent on no-op.
-  const cwd = args[0] || process.cwd();
+  // The cwd is the first POSITIONAL arg: every real caller passes `--quiet`,
+  // and taking args[0] blindly made the flag itself the path, so detectXmOwner
+  // never matched and self-registration silently no-op'd on every invocation.
+  const cwd = args.find((a) => !a.startsWith('-')) || process.cwd();
   const quiet = hasFlag(args, '--quiet');
   const result = registerProject(cwd);
   if (!quiet && result.action === 'added') {
