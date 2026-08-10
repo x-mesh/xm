@@ -12,7 +12,7 @@ import {
   CONTEXT_MANIFESTS,
   existsSync, join, readdirSync, mkdirSync, readFileSync, appendFileSync,
   homedir, tmpdir, resolve, basename, dirname, fileURLToPath,
-  isNormalMode, getMode,
+  isNormalMode, getMode, autopilotActive,
   exitFail,
 } from './core.mjs';
 import { stepsStatus } from './tasks.mjs';
@@ -208,7 +208,16 @@ export function cmdMode(args) {
 
   if (!sub || sub === 'show') {
     const mode = getMode();
-    console.log(`\n현재 모드: ${C.bold}${mode === 'normal' ? '🟢 일반인 모드' : '🔧 개발자 모드'}${C.reset}`);
+    if (args.includes('--json')) {
+      console.log(JSON.stringify({ ui_mode: mode, autopilot: autopilotActive() }));
+      return;
+    }
+    // No leading newline: the skill layer's documented probe is
+    // `mode show 2>/dev/null | head -1`, so line 1 must carry the mode. A
+    // blank first line made every cached mode detection read as empty and
+    // silently fall back to developer mode.
+    console.log(`ui_mode=${mode}`);
+    console.log(`현재 모드: ${C.bold}${mode === 'normal' ? '🟢 일반인 모드' : '🔧 개발자 모드'}${C.reset}`);
     if (mode === 'normal') {
       console.log(`  모든 안내가 쉬운 말로 표시됩니다.`);
     } else {
@@ -611,23 +620,30 @@ ${C.bold}Project:${C.reset}
   list                           List all projects
   status [project]               Show project status (with progress bar)
   next                           Suggest the next action
+  project-kind [--json]          Classify greenfield vs existing project
+  mode [show|developer|normal] [--json]
+                                 Output style (show prints ui_mode= on line 1)
   handoff [--restore]            Save/restore session state for continuity
   handoff --mirror-status        Show the pending/mirrored mem-mesh payload
   handoff --mirror-done <id>     Record a successful mem-mesh add
   handoff --mirror-skip          Dismiss a pending mirror (file-only setups)
+  handon                         Restore the last handoff into this session
 
 ${C.bold}Research Phase:${C.reset}
   discuss [--mode interview|assumptions|critique|validate|adapt] [--round N]
                                  Phase-aware deliberation (interview/critique/validate/adapt)
   research [goal]                Parallel agent investigation (stack/features/arch/pitfalls)
+  research-check [--json]        Deterministic full/slim/quick-eligible research gauge
 
 ${C.bold}Plan Phase:${C.reset}
   plan ["goal"] [--interview|--draft|--quick]
                                  Plan-only; inspect intent and stop after the Plan Bundle
   build "goal"                   Plan first, then continue after content-bound approval
   plan-check [--strict]          Validate plan across 15 dimensions (--strict: coverage errors block gate)
+  prd-check [--json]             Deterministic PRD gate (blocks Execute on unresolved items)
   prd-gate [--threshold N]       Judge panel PRD quality evaluation (default threshold: 7)
-  consensus [--round N]          4-agent consensus review (architect/critic/planner/security)
+  consensus [--round N] [--cross-vendor]
+                                 4-agent consensus review (architect/critic/planner/security)
   phase <next|set|status>        Manage phases
   gate <pass|fail> [message]     Resolve current phase gate
 
@@ -636,31 +652,59 @@ ${C.bold}Execute Phase:${C.reset}
     tasks add "name" [--strategy refine] [--team eng] [--done-criteria "..."]  Add task
     tasks update <id> --score 7.8 [--done-criteria "..."]         Update task
     tasks done-criteria                                           Auto-derive from PRD
+  dispatch "<instruction>"       One tracked task, no PRD/phase ceremony
   later <add|list|promote|dismiss|verify-scope>
                                  Capture off-scope work and verify it stayed deferred
   steps <compute|status|next>    DAG-based step management
   run                            Execute next step via normal/worktree backend
   run-status [--json]            Show task + review-group state and next action
   task-check <id> [--json]       Run task-local test/lint checks and save evidence
-  review-group [name] [--rounds 1|2] [--json]
-                                  Run an optional group review (default: 1 round)
+  review-group [name] [--depth checks-only|solo|panel] [--rounds 1|2] [--json]
+                                  Group-boundary review at the configured depth (default: solo)
+  group-check <name>             Run the group's full deterministic checks
+  templates <list|use <name>>    Task templates
   checkpoint <type> [message]    Record a checkpoint
+  circuit-breaker <status|reset> Inspect / clear the failure circuit breaker
+
+${C.bold}Worktree Backend (optional Execute fan-out):${C.reset}
+  run --worktrees [--dry-run] [--max-parallel N] [--base X]
+                                 Route Execute through isolated gk worktrees
+  worktrees <plan|status|resume|cleanup> [--json]
+                                 Plan / observe / finish worktree runs
+  gate-panel --task <id> --patch <path> --json
+                                 Panel verdict → merge-gate exit code
+  review-integration [--base main] [--target develop]
+                                 Release-time batch review via gate-panel
 
 ${C.bold}Verify & Close:${C.reset}
   quality                        Run quality checks (test/lint/build)
-  verify-coverage                Check requirement coverage across tasks
+  verify-coverage [--strict]     Check requirement coverage (--strict: uncovered exits 1)
   verify-traceability            R# ↔ Task ↔ AC ↔ Done Criteria matrix
-  verify-contracts               Check task done_criteria fulfillment
+  verify-contracts               List acceptance contracts for completed tasks (advisory)
   verify-review-fix [--init]     Gate review-fix changes against x-review triage
+  verify-drift [--threshold N]   PRD baseline goal-coverage drift gate
   context [project]              Generate context brief
   close [--summary "..."]        Close project with summary
 
 ${C.bold}Analysis & Utilities:${C.reset}
   context-usage                  Show project artifact token usage
+  forecast [update]              Per-task cost estimation ($) with confidence
+  forecast accuracy [--all] [--json]
+                                 MAPE of past predictions vs measured actuals
+  cost predict "<desc>"          Estimate one task's cost before dispatch
+  cost cache gc [--dry-run]      Prune the cost prediction cache
+  roi [--by model|role|strategy] [--json]
+                                 Quality-per-dollar from measured actuals only
+  metrics                        Show phase/task analytics
+  decisions <add|list|inject>    Record and recall project decisions
   save <type>                    Save artifact (context|requirements|roadmap|project|plan|research-notes)
+  export --format md|csv|jira|confluence
+                                 Export tasks to an external tracker
+  import <file> --from csv|jira  Import tasks from an external tracker
+  hooks <install|status|uninstall>
+                                 Blocking scope-guard / stop-gate hooks in .claude/
   watch [--interval N]           Auto-refresh status every N seconds
   dashboard                      Multi-project overview
-  metrics                        Show phase/task analytics
   phase-context                  Show phase-aware context loading
   alias install                  Install 'xmb' shell alias
   help                           Show this help
@@ -678,7 +722,10 @@ ${C.bold}Examples:${C.reset}
   xm build tasks add "Create DB schema" --size small
   xm build steps compute
   xm build run
+  xm build task-check t1
+  xm build group-check build
   xm build verify-coverage
+  xm build forecast
   xm build handoff
   xm build context-usage
 `);

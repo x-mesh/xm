@@ -81,9 +81,37 @@ function describeReqSources(sources) {
   return `PRD §Requirements Traceability: ${sources.prd} · REQUIREMENTS.md: ${sources.requirements_md}`;
 }
 
+/**
+ * Tasks explicitly tagged with this requirement id. This is the strict link
+ * traceability reports on: an `R#` in `requirements[]` or in the task name.
+ */
+function tasksTaggedWith(req, tasks) {
+  return tasks.filter(t =>
+    (Array.isArray(t.requirements) && t.requirements.some(id => String(id).toLowerCase() === req.id.toLowerCase()))
+    || String(t.name || '').includes(req.id));
+}
+
+/**
+ * Coverage is intentionally looser than traceability: it also accepts a task
+ * whose name echoes the requirement's opening text, since many plans name tasks
+ * after the requirement rather than tagging the id. So a name-echo requirement
+ * reads `covered` here while traceability still reports `Tasks: NONE` — that gap
+ * is the signal to add the explicit `R#` link, not a bug.
+ *
+ * What this helper DOES guarantee is that one command never contradicts itself:
+ * the verdict printed to the user and the persisted `details[].covered` come
+ * from this single predicate.
+ */
+function requirementCovered(req, tasks) {
+  if (tasksTaggedWith(req, tasks).length > 0) return true;
+  const prefix = req.desc.toLowerCase().slice(0, 30);
+  return prefix.length > 0 && tasks.some(t => String(t.name || '').toLowerCase().includes(prefix));
+}
+
 // ── cmdVerifyCoverage ───────────────────────────────────────────────
 
 export function cmdVerifyCoverage(args) {
+  const { opts } = parseOptions(args);
   const project = resolveProject(null);
   const taskData = readJSON(tasksPath(project));
   const tasks = taskData?.tasks || [];
@@ -104,13 +132,10 @@ export function cmdVerifyCoverage(args) {
 
   let covered = 0;
   let uncovered = 0;
+  const details = [];
 
   for (const req of reqs) {
-    const found = tasks.some(t =>
-      Array.isArray(t.requirements) && t.requirements.some(id => String(id).toLowerCase() === req.id.toLowerCase()) ||
-      t.name.includes(req.id) ||
-      t.name.toLowerCase().includes(req.desc.toLowerCase().slice(0, 30))
-    );
+    const found = requirementCovered(req, tasks);
 
     if (found) {
       console.log(`  [covered] [${req.id}] ${req.desc.slice(0, 60)}`);
@@ -119,6 +144,10 @@ export function cmdVerifyCoverage(args) {
       console.log(`  [missing] [${req.id}] ${req.desc.slice(0, 60)} ${C.red}— no matching task${C.reset}`);
       uncovered++;
     }
+    // Persist the SAME verdict that was printed. This used to recompute with a
+    // name-only predicate, so a run could print "All requirements covered" while
+    // writing covered:false for most rows.
+    details.push({ ...req, covered: found });
   }
 
   console.log(`\n  Coverage: ${covered}/${reqs.length} (${Math.round(covered/reqs.length*100)}%)`);
@@ -134,8 +163,18 @@ export function cmdVerifyCoverage(args) {
     covered,
     uncovered,
     sources,
-    details: reqs.map(r => ({ ...r, covered: tasks.some(t => t.name.includes(r.id)) })),
+    strict: opts.strict === true,
+    details,
   });
+
+  // Coverage is advisory by default (a requirement can legitimately be covered by
+  // a task whose name shares no keywords). `--strict` is the opt-in that makes an
+  // uncovered requirement visible to CI in the exit code, matching the
+  // plan-check --strict convention.
+  if (uncovered > 0 && opts.strict) {
+    console.log(`  ${C.red}--strict: ${uncovered} uncovered requirement${uncovered === 1 ? '' : 's'} fails the check.${C.reset}`);
+    process.exitCode = 1;
+  }
 
   console.log('');
 }
@@ -189,9 +228,7 @@ export function cmdVerifyTraceability(args) {
   const matrix = [];
 
   for (const req of reqs) {
-    const matchedTasks = tasks.filter(t =>
-      (Array.isArray(t.requirements) && t.requirements.some(id => String(id).toLowerCase() === req.id.toLowerCase())) ||
-      t.name.includes(req.id));
+    const matchedTasks = tasksTaggedWith(req, tasks);
     const matchedAC = acItems.filter(ac => ac.toLowerCase().includes(req.id.toLowerCase()));
     const hasDoneCriteria = matchedTasks.some(t => t.done_criteria?.length > 0);
 
