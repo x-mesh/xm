@@ -38,13 +38,23 @@ Output schema:
 - `round0_pending`: present only when `project_kind === "greenfield"` AND `phase === "research"`. `true` until `discuss-round0.json` has been saved — the skill must run Round 0 before Round 1 in that case. Absent for brownfield projects.
 - `research_signal`: attached only when `action` is `"research"` or `"discuss"` — the deterministic full/slim/quick-eligible gauge (see SKILL.md Interaction Protocol rule 3). Absent/failed reads as `full`.
 
-After parsing, execute the recommended action:
+After parsing, execute the recommended action. `cmdNext` emits exactly these 16 values — an
+unlisted `action` means the CLI is newer than this document; stop and report rather than guessing:
+
+- `action: "select-project"` → several projects are active and none was named. Pass `--project <name>`, or init a new one. NEVER silently bind a new goal to an unrelated active project.
+- `action: "auto-plan"` → emitted by `plan`/`build` (not the phase router). Run the `intent_check` first, then Research at the `research_signal` scale.
 - `action: "discuss"` → run `$XMB discuss` with args, then follow the discuss protocol below
 - `action: "research"` → run `$XMB research`, then follow the research protocol below
 - `action: "plan"` → if `goal` is set, run `$XMB plan "goal"`; otherwise ask user for goal
 - `action: "plan-check"` → run `$XMB plan-check`
+- `action: "prd-gate"` → run `$XMB prd-gate`, print the rubric result, then continue
+- `action: "consensus"` → run `$XMB consensus`, print each role's verdict in full before advancing
+- `action: "approve-plan"` → the plan is well-formed but unapproved. Print the full Plan Bundle (PRD + tasks with done_criteria + groups/checks), then ask for the single Plan → Execute direction approval via AskUserQuestion citing a concrete artifact detail. `approval_reason` says what is missing. Autopilot must NOT self-approve this.
+- `action: "plan-complete"` → an approved `plan_only` bundle is finished and execution is intentionally paused. Report the bundle and STOP; resume only when the user asks (`resume_command`, normally `x-build run`).
 - `action: "phase"` + `args: ["next"]` → run `$XMB phase next` (phase gate transition)
+- `action: "steps"` + `args: ["compute"]` → run `$XMB steps compute` to build the DAG before running
 - `action: "run"` → run `$XMB run --json`, then orchestrate agents
+- `action: "group-check"` → every task in the group is done; run `$XMB group-check <group>` for the deterministic boundary evidence Execute cannot exit without
 - `action: "quality"` → run `$XMB quality`
 - `action: "close"` → run `$XMB close --summary "..."`
 
@@ -193,6 +203,19 @@ The default `build.review_scope=group` deliberately omits the per-task `--gate` 
 ```
 
 `worktree_status` ∈ `READY | WORKTREE_CREATED | RUNNING | VERIFYING | REVIEWING | MERGING | DONE | BLOCKED | NEEDS_FIX` (artifact axis, separate from canonical `task_status`).
+
+### `run-status --json` — `later`
+
+```json
+{
+  "later": { "open": 1, "touched": ["l1:src/parse.mjs"], "ids": ["l1"] }
+}
+```
+
+ADVISORY, never a gate: `later` never changes `next_action` and never affects an exit code.
+`touched[]` names a `<later-id>:<file>` pair where a file the queue deferred changed anyway.
+When it is non-empty, tell the user and resolve it — `later promote <id>` to bring the work
+into scope, or revert the edit. Do not silently continue past a `touched` entry.
 
 ### `run --reconcile --json` — `protected[]`
 

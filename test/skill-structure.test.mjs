@@ -339,8 +339,15 @@ describe('x-build SKILL.md structure', () => {
       join(buildRoot, 'commands', 'other-commands.md'),
       'utf8'
     );
+    // The command catalog moved out of SKILL.md into references/commands.md
+    // (2026-08-11, 500-line cap). The guarded fact is the dimension COUNT, not
+    // which file states it — assert on the file that now owns the catalog.
+    const commandsRef = readFileSync(
+      join(buildRoot, 'references', 'commands.md'),
+      'utf8'
+    );
 
-    expect(content).toContain('15 quality dimensions');
+    expect(commandsRef).toContain('15 quality dimensions');
     expect(otherCommands).toContain('15-Dimension Validation');
     expect(otherCommands).not.toContain('8-Dimension Validation');
   });
