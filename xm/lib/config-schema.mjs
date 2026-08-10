@@ -306,6 +306,27 @@ export const SCHEMA = [
     default: 300000,
     description: 'serial quality command timeout(ms)',
   },
+  {
+    key: 'build.serial_quality_env',
+    group: 'misc',
+    type: 'object',
+    scope: 'either',
+    default: {},
+    description: 'serial quality command에 주입할 환경변수 { KEY: value } — command_hash에 포함되어 값 변경 시 캐시된 evidence가 무효화됨',
+  },
+  {
+    // Arbitrary shell commands keyed by gate name, executed by `gate pass` for a
+    // non-standard gate type and appended to every `quality` run. Registered so
+    // the wizard/dashboard can DISCLOSE it; it is deliberately not wizard-editable
+    // (a text field that runs shell on the next gate is the wrong affordance —
+    // edit .xm/config.json directly).
+    key: 'gate_scripts',
+    group: 'gates',
+    type: 'object',
+    scope: 'either',
+    default: {},
+    description: '커스텀 게이트/품질 스크립트 { gateName: shell command } — gate pass·quality에서 셸로 실행되므로 위저드 편집 불가, config.json 직접 수정',
+  },
 
   // ── phase gates ──
   {
