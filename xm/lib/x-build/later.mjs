@@ -89,6 +89,29 @@ function nextTaskId(tasks) {
   return `t${max + 1}`;
 }
 
+/**
+ * Non-blocking summary of the later queue for status envelopes.
+ *
+ * Deliberately NOT a gate: `verify-scope` stays the explicit command a user or
+ * CI runs. This exists because the queue was previously invisible — an item
+ * deferred in one turn left no trace in `run-status`/`next`, so the next turn
+ * had no reason to remember it existed. Reporting `touched[]` surfaces a
+ * deferred file that changed anyway without blocking the run on it.
+ *
+ * @returns {{ open: number, touched: string[], ids: string[] }}
+ */
+export function laterSignal(project) {
+  const openItems = (readLater(project).items || []).filter(item => item.status === 'open');
+  const touched = [];
+  for (const item of openItems) {
+    if (!Array.isArray(item.file_snapshots)) continue;
+    for (const result of item.file_snapshots.map(compareSnapshot)) {
+      if (result.changed) touched.push(`${item.id}:${result.file}`);
+    }
+  }
+  return { open: openItems.length, touched, ids: openItems.map(item => item.id) };
+}
+
 // ── cmdLater ────────────────────────────────────────────────────────
 
 export function cmdLater(args) {

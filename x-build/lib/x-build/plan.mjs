@@ -16,7 +16,7 @@ import {
   readdirSync,
   exitFail,
 } from './core.mjs';
-import { appendPredictionLog } from './prediction-calibration.mjs';
+import { appendPredictionLog, readPredictionAccuracy } from './prediction-calibration.mjs';
 import { taskList, vendorModelFields } from './tasks.mjs';
 import { stepsStatus, computeSteps } from './tasks.mjs';
 import { savePlanIntent, markPlanReady, validatePlanApproval, readPlanState } from './plan-state.mjs';
@@ -1088,6 +1088,10 @@ export function cmdForecast(args) {
   // `forecast update` re-aggregates measured token actuals from the metrics log
   // so subsequent forecasts price from ground truth instead of static estimates.
   if (args[0] === 'update') return cmdForecastUpdate();
+  // `forecast accuracy` reads the prediction ledger back. Without it the ledger
+  // is write-only outside the dashboard and a terminal user has no way to judge
+  // whether the estimates above are worth anything.
+  if (args[0] === 'accuracy' || args.includes('--accuracy')) return cmdForecastAccuracy(args);
 
   const project = resolveProject(null);
   const taskData = readJSON(tasksPath(project));
@@ -1149,7 +1153,60 @@ export function cmdForecast(args) {
   console.log('');
 }
 
-// ── cmdCostPredict ──────────────────────────────────────────────────
+// ── cmdForecastAccuracy ─────────────────────────────────────────────
+
+/**
+ * Report how far past predictions landed from measured actuals (MAPE).
+ *
+ * Deliberately says "not enough data" rather than printing a number from one or
+ * two pairs: a MAPE over a single sample invites the reader to trust it. The
+ * ledger only ever pairs `--tokens-in/--tokens-out`-backed completions, so a
+ * project that never records actuals correctly reports zero samples instead of
+ * a flattering 0% error.
+ */
+export function cmdForecastAccuracy(args) {
+  const { opts } = parseOptions(args);
+  const scoped = opts.all === true ? null : resolveProject(null);
+  const { pairs, mape, samples, excluded_zero_actual } = readPredictionAccuracy({ project: scoped });
+
+  if (opts.json) {
+    console.log(JSON.stringify({
+      project: scoped, samples, mape, excluded_zero_actual,
+      pairs: pairs.slice(-50),
+    }, null, 2));
+    return;
+  }
+
+  console.log(`\n${C.bold}📏 Prediction Accuracy${C.reset} ${C.dim}(${scoped || 'all projects'})${C.reset}\n`);
+
+  if (samples === 0) {
+    console.log(`  ${C.dim}No calibrated pairs yet — a pair needs a prediction AND a measured actual.${C.reset}`);
+    console.log(`  ${C.dim}Record actuals: tasks update <id> --tokens-in N --tokens-out M${C.reset}`);
+    if (excluded_zero_actual > 0) {
+      console.log(`  ${C.dim}(${excluded_zero_actual} pair${excluded_zero_actual === 1 ? '' : 's'} had actual $0 — excluded, MAPE undefined)${C.reset}`);
+    }
+    console.log('');
+    return;
+  }
+
+  for (const pair of pairs.filter(p => p.actual > 0).slice(-10)) {
+    const err = Math.abs(pair.predicted - pair.actual) / pair.actual * 100;
+    const dir = pair.predicted > pair.actual ? 'over' : pair.predicted < pair.actual ? 'under' : 'exact';
+    const color = err <= 25 ? C.green : err <= 50 ? C.yellow : C.red;
+    console.log(`  ${(pair.task_id || '—').padEnd(6)} ${String(pair.model || '?').padEnd(8)} pred $${pair.predicted.toFixed(3)} → actual $${pair.actual.toFixed(3)}  ${color}${err.toFixed(0)}% ${dir}${C.reset}`);
+  }
+
+  console.log(`  ${'─'.repeat(60)}`);
+  const grade = mape <= 25 ? `${C.green}reliable${C.reset}` : mape <= 50 ? `${C.yellow}rough${C.reset}` : `${C.red}unreliable${C.reset}`;
+  console.log(`  MAPE: ${C.bold}${mape}%${C.reset} over ${samples} pair${samples === 1 ? '' : 's'} — ${grade}`);
+  if (samples < 5) {
+    console.log(`  ${C.yellow}Only ${samples} sample${samples === 1 ? '' : 's'}: treat this as a hint, not a measurement.${C.reset}`);
+  }
+  if (excluded_zero_actual > 0) {
+    console.log(`  ${C.dim}${excluded_zero_actual} pair${excluded_zero_actual === 1 ? '' : 's'} with actual $0 excluded (MAPE denominator undefined)${C.reset}`);
+  }
+  console.log('');
+}
 
 export function cmdCostPredict(args) {
   const { opts, positional } = parseOptions(args);

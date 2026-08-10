@@ -38,6 +38,7 @@ import {
 } from './build-policy.mjs';
 import { readPlanState, setRequestedAction, validatePlanApproval } from './plan-state.mjs';
 import { appendPredictionActual, ensureTaskPrediction, DEFAULT_PREDICTION_MAX_AGE_MS } from './prediction-calibration.mjs';
+import { laterSignal } from './later.mjs';
 
 // Re-export the expected_files utils so existing importers (tests) that pull them
 // from tasks.mjs keep working after the move to the shared leaf.
@@ -2247,6 +2248,10 @@ export function cmdRunStatus(args) {
       review_available: groupSummary.review_available || false,
       review_command: groupSummary.review_command || null,
       circuit_breaker: { state: cb.state, reason: cb.reason, cooldown_until: cb.cooldown_until || null },
+      // Advisory, never blocking: `later.touched[]` names a deferred file that
+      // changed anyway. Report it; the decision to promote or revert is the
+      // user's, and `later verify-scope` remains the explicit check.
+      later: laterSignal(project),
       next_action,
       ...envelopeContext(),
     }, null, 2));
@@ -2289,6 +2294,18 @@ export function cmdRunStatus(args) {
   if (cb.state !== 'closed') {
     console.log(`\n  ${C.red}⚡ Circuit breaker: ${cb.state.toUpperCase()} (${cb.reason})${C.reset}`);
     if (cb.cooldown_until) console.log(`  ${C.dim}Cooldown until: ${cb.cooldown_until}${C.reset}`);
+  }
+
+  // Advisory line only — a deferred item never blocks the run. `touched` means a
+  // file the queue said to leave alone changed anyway, which is worth seeing
+  // before the group boundary rather than after.
+  const later = laterSignal(project);
+  if (later.open > 0) {
+    console.log(`\n  ${C.dim}📌 Later: ${later.open} open (${later.ids.join(', ')})${C.reset}`);
+    if (later.touched.length) {
+      console.log(`  ${C.yellow}⚠ Deferred files changed anyway: ${later.touched.join(', ')}${C.reset}`);
+      console.log(`  ${C.dim}Promote it (later promote <id>) or revert the edit — details: later verify-scope${C.reset}`);
+    }
   }
 
   console.log('');
