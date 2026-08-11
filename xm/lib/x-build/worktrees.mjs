@@ -873,11 +873,10 @@ function plannedTaskCheckPassed(project, taskId, cwd) {
 // status flip would deepen it. Single canonical writer of tasks.json stays
 // modifyJSON. Returns true if a task row was updated.
 //
-// Bookkeeping parity with `tasks update --status completed --no-commit`
-// (tasks.mjs): stamp completed_at and emit the task_complete metric so
-// gate-driven completions show up in cost/quality observability exactly like
-// agent-driven ones. gitAutoCommit is intentionally skipped — the merge is
-// gk's, not x-build's.
+// Bookkeeping parity with `tasks update --status completed` (tasks.mjs): stamp
+// completed_at and emit the task_complete metric so gate-driven completions show
+// up in cost/quality observability exactly like agent-driven ones. Neither path
+// commits — committing is the user's decision (see core.mjs Git Integration).
 function markTaskCompleted(project, taskId) {
   const path = taskDataPath(project);
   if (!existsSync(path)) return false;
