@@ -102,30 +102,4 @@ decisions, and open questions in plain markdown.
 
 If `xm` is not on PATH, the CLI is at
 `~/.claude/plugins/cache/xm/{x-recall,recall,xm}/*/lib/x-recall-cli.mjs` — call it with `node`.
-<!-- xm:BEGIN v2 -->
-## xm — multi-agent orchestration toolkit
 
-Each entry below corresponds to a saved prompt under `~/.codex/prompts/`
-(or `.codex/prompts/` for project-local installs). Invoke with
-`/prompts:<filename>` followed by any required arguments.
-
-- `/prompts:xm-agent` — Agent primitives and autonomous behaviors — fan-out, delegate, broadcast, research, solve, consensus, swarm for Claude Code native multi-agent orchestration
-- `/prompts:xm-build` — Phase-based project harness — manage project lifecycle, DAG execution, cost forecasting, and agent orchestration
-- `/prompts:xm-dashboard` — Web dashboard for .xm project state — start, stop, open in browser
-- `/prompts:xm-eval` — Agent output quality evaluation — multi-rubric scoring, strategy benchmarking, and A/B prompt experiments
-- `/prompts:xm-handoff` — Session handoff — save comprehensive session state for cross-session continuity
-- `/prompts:xm-handon` — Session restore — resume from last handoff, inject context automatically
-- `/prompts:xm-humanize` — Remove AI writing patterns — detect and rewrite AI-generated text into natural, human-sounding prose. English + Korean pattern detection. Based on Wikipedia's "Signs of AI writing" guide and Korean...
-- `/prompts:xm-humble` — Structured retrospective — reflect on failures together, find root causes, explore alternatives, and grow
-- `/prompts:xm-kit` — x-mesh toolkit — list available tools and their status
-- `/prompts:xm-memory` — Cross-session decision and pattern memory — persist learnings, auto-inject relevant context on session start
-- `/prompts:xm-op` — Strategy orchestration — 17 strategies including refine, tournament, chain, review, debate, red-team, brainstorm, distribute, council, socratic, persona, scaffold, compose, decompose, hypothesis, i...
-- `/prompts:xm-probe` — Premise validation — challenge assumptions, kill bad ideas early, earn the right to build
-- `/prompts:xm-review` — Multi-perspective code review orchestrator — PR diff analysis with severity-rated findings and LGTM verdict
-- `/prompts:xm-ship` — Release automation — commit squash, version bump, changelog, push. Works with any project.
-- `/prompts:xm-solver` — Structured problem solving — decompose, iterate, constrain, or auto-pipeline with strategy recommendation
-- `/prompts:xm-sync` — Multi-machine .xm/ state sync — server start/stop, push, pull, setup, status
-- `/prompts:xm-trace` — Agent execution tracing — timeline, token/cost tracking, replay, and diff for multi-agent observability
-
-See https://github.com/x-mesh/xm for the source-of-truth SKILL.md files.
-<!-- xm:END -->
