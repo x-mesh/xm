@@ -1635,55 +1635,6 @@ describe('interactive helpers', () => {
   });
 });
 
-// ── gitAutoCommit / gitRollbackTask (isolated git repo) ──────────
-
-describe('git integration', () => {
-  let gitDir;
-  let origDir;
-
-  beforeEach(() => {
-    gitDir = mkdtempSync(join(tmpdir(), 'xb-git-'));
-    // Init a real git repo
-    const { execSync: ex } = require('node:child_process');
-    ex('git init', { cwd: gitDir, stdio: 'pipe' });
-    ex('git config user.email "test@test.com"', { cwd: gitDir, stdio: 'pipe' });
-    ex('git config user.name "Test"', { cwd: gitDir, stdio: 'pipe' });
-    // Create initial commit
-    writeFileSync(join(gitDir, 'README.md'), '# test\n');
-    ex('git add -A && git commit -m "init"', { cwd: gitDir, stdio: 'pipe', shell: true });
-
-    // Set up .xm/build structure inside gitDir
-    const buildDir = join(gitDir, '.xm', 'build');
-    mkdirSync(join(buildDir, 'projects', 'git-proj', 'phases', '02-plan'), { recursive: true });
-    core.writeJSON(join(buildDir, 'projects', 'git-proj', 'manifest.json'), {
-      display_name: 'git-proj',
-      current_phase: '03-execute',
-      updated_at: new Date().toISOString(),
-    });
-  });
-
-  afterEach(() => {
-    rmSync(gitDir, { recursive: true, force: true });
-  });
-
-  test('gitAutoCommit returns null when no changes', () => {
-    // No staged changes — should return null
-    const result = core.gitAutoCommit('git-proj', { id: 't1', name: 'test', status: 'completed' }, 'execute');
-    // Returns null because isGitRepo checks cwd relative to ROOT (not gitDir)
-    // This is expected — the function is designed for the actual project
-    expect(result === null || typeof result === 'string').toBe(true);
-  });
-
-  test('gitRollbackTask returns false without commit_sha', () => {
-    expect(core.gitRollbackTask({ id: 't1' })).toBe(false);
-  });
-
-  test('gitRollbackTask returns false with invalid sha', () => {
-    const result = core.gitRollbackTask({ id: 't1', commit_sha: 'deadbeef' });
-    expect(result === true || result === false).toBe(true);
-  });
-});
-
 // ── quality checks with gate_scripts ─────────────────────────────
 
 describe('quality checks with gate scripts', () => {

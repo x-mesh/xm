@@ -553,98 +553,32 @@ export function resolveProjectDir(name) {
 }
 
 // ── Git Integration ──────────────────────────────────────────────────
+//
+// x-build does NOT commit to the user's repository.
+//
+// A `gitAutoCommit()` used to fire on every `tasks update --status completed`,
+// writing `tm(<phase>/<id>): <name> [COMPLETED]`. It was removed 2026-08-11
+// because the ledger showed it only ever did harm:
+//
+//   - Of 89 tm() commits in this repo's history, 7 contained the `.xm/`
+//     metadata it was designed to record. The other 82 contained ONLY the
+//     user's own staged work, filed under a task name that did not describe it
+//     (one swept 110 unrelated `.codex/` files).
+//   - The cause was a half-scoped guard: `git add` was limited to the project
+//     directory, but `git commit` still committed the WHOLE index, so anything
+//     the user had staged for their own commit was swallowed.
+//   - The two guards were also mutually exclusive: the scoped `add` could only
+//     ever stage `.xm/` paths, which the metadata-only guard then rejected. The
+//     feature could not fire for its stated purpose at all.
+//
+// Committing is the user's decision. Task completion is recorded in
+// `.xm/build/**` (and in git only when the user commits that directory).
+//
+// `gitRollbackTask` went with it: its sole input was the `commit_sha` this
+// function produced, so with no producer it could never fire. A task that fails
+// now leaves its changes in the working tree for the user to inspect — which is
+// what an unattended `git reset --hard` was risking in the first place.
 
-function isGitRepo() {
-  try {
-    execSync('git rev-parse --git-dir', { stdio: 'pipe', cwd: repoRoot() });
-    return true;
-  } catch { return false; }
-}
-
-export function gitAutoCommit(project, task, phase) {
-  if (!isGitRepo()) return null;
-  const config = loadConfig();
-  if (config.git?.auto_commit === false) return null;
-
-  try {
-    const cwd = repoRoot();
-
-    // Stage only this project's tracking files (X-8). Previously `git add -A`
-    // swept the entire working tree, which caused two distinct failures:
-    //   1. user's in-progress edits got swallowed into task commits
-    //   2. test/core-unit.test.mjs gitAutoCommit tests, invoked from cwd=repo,
-    //      committed unstaged changes back to the host repo on every `bun test`
-    // Scoping the add to projectDir means: .xm/-gitignored repos commit nothing
-    // (which is correct), and other repos only get the metadata + whatever the
-    // user themselves staged.
-    const pdir = projectDir(project);
-    try {
-      execSync(`git add ${JSON.stringify(pdir)}`, { stdio: 'pipe', cwd });
-    } catch { /* path may be ignored or absent — fine */ }
-
-    const diff = execSync('git diff --cached --name-only', { stdio: 'pipe', cwd }).toString().trim();
-    if (!diff) return null;
-
-    // Skip metadata-only commits — when only x-build tracking files changed, no real code work happened.
-    // Without this guard the CLI emits a commit per metadata flip, polluting history with
-    // empty "[COMPLETED]" entries.
-    const stagedFiles = diff.split('\n').filter(Boolean);
-    const allMetadata = stagedFiles.every(f => f.startsWith('.xm/'));
-    if (allMetadata) return null;
-
-    const msg = `tm(${phase}/${task.id}): ${task.name} [${task.status.toUpperCase()}]`;
-    execSync(`git commit -m ${JSON.stringify(msg)}`, { stdio: 'pipe', cwd });
-    const sha = execSync('git rev-parse HEAD', { stdio: 'pipe', cwd }).toString().trim();
-    return sha;
-  } catch { return null; }
-}
-
-export function gitRollbackTask(task) {
-  if (!isGitRepo() || !task.commit_sha) return false;
-  const cwd = repoRoot();
-
-  // Validate sha BEFORE any side effects (X-9). Previously this function ran
-  // `git stash push` then `git reset --hard`; if the sha was invalid (e.g.,
-  // test fixture passing 'deadbeef'), the reset failed but the stash stayed
-  // behind, silently burying the user's working-tree changes. Now we verify
-  // the sha first and bail out cleanly.
-  try {
-    execSync(`git rev-parse --verify ${JSON.stringify(task.commit_sha + '^{commit}')}`, { stdio: 'pipe', cwd });
-  } catch { return false; }
-
-  // Blast-radius guard (F2): `git reset --hard <sha>` rewinds HEAD and discards
-  // EVERY commit made after <sha> — in a multi-task DAG run that silently throws
-  // away later tasks' commits. Only proceed when commit_sha is the current HEAD,
-  // so the reset merely drops uncommitted/working-tree changes (already stashed
-  // below) and never deletes intervening history. If HEAD has moved on, refuse
-  // and let the caller resolve manually instead of losing work.
-  let head;
-  try {
-    head = execSync('git rev-parse HEAD', { stdio: 'pipe', cwd }).toString().trim();
-  } catch {
-    console.error(`  ${C.yellow}⚠ rollback skipped for ${task.id}: unable to read HEAD (git rev-parse failed).${C.reset}`);
-    return false;
-  }
-  if (head !== task.commit_sha) {
-    console.error(`  ${C.yellow}⚠ rollback skipped for ${task.id}: ${task.commit_sha.slice(0, 8)} is not HEAD — a hard reset would discard later commits. Resolve manually.${C.reset}`);
-    return false;
-  }
-
-  let stashed = false;
-  try {
-    const out = execSync(`git stash push -m "tm-task-${task.id}-failed"`, { stdio: 'pipe', cwd }).toString();
-    stashed = !/No local changes/.test(out);
-    execSync(`git reset --hard ${task.commit_sha}`, { stdio: 'pipe', cwd });
-    return true;
-  } catch {
-    // Restore the stash so callers don't lose work if reset somehow failed
-    // after sha validation passed (e.g., concurrent ref change).
-    if (stashed) {
-      try { execSync('git stash pop', { stdio: 'pipe', cwd }); } catch { /* user must recover manually */ }
-    }
-    return false;
-  }
-}
 
 // ── Quality Gate Runner ──────────────────────────────────────────────
 

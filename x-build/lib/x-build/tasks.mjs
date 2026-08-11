@@ -11,7 +11,6 @@ import {
   resolveProject, findCurrentProject, logDecision, addDecision, appendCostEvent, emitHook,
   parseOptions, renderBar, fmtDuration,
   estimateTaskCost, costFromTokens, resolveVendorModel, computeTokenActuals, downgradeBudgetModel,
-  gitAutoCommit, gitRollbackTask,
   updateCircuitBreaker, updateBudgetCircuitBreaker, isCircuitOpen, beginHalfOpenProbe, scheduleRetry,
   getCircuitState, resetCircuitBreaker,
   existsSync, join, resolve, mkdirSync,
@@ -625,7 +624,7 @@ export function taskUpdate(project, args) {
   const id = positional[0];
   const rawStatus = opts.status;
   if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined && opts.desc === undefined && opts['expected-files'] === undefined && opts['interface-contract'] === undefined && opts['review-group'] === undefined)) {
-    console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed> [--no-commit]');
+    console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed>');
     console.error('       x-build tasks update <task-id> --status completed --tokens-in <n> --tokens-out <n>  (record actual cost)');
     console.error('       x-build tasks update <task-id> --status completed --resolved-model <haiku|sonnet|opus>  (record the model an inherit task actually ran on)');
     console.error('       x-build tasks update <task-id> --score <number>');
@@ -833,19 +832,6 @@ export function taskUpdate(project, args) {
   emitHook('task:post-update', { project, taskId: id, from: oldStatus, to: newStatus });
 
   if (newStatus === TASK_STATES.COMPLETED) {
-    const manifest = readJSON(manifestPath(project));
-    const phase = PHASES.find(p => p.id === manifest?.current_phase);
-    const sha = opts['no-commit'] !== undefined
-      ? null
-      : gitAutoCommit(project, taskRef, phase?.name || 'unknown');
-    if (sha) {
-      modifyJSON(tasksPath(project), (d) => {
-        const t = d.tasks.find(x => x.id === id);
-        if (t) t.commit_sha = sha;
-        return d;
-      });
-      console.log(`  ${C.dim}📎 commit: ${sha.slice(0, 8)}${C.reset}`);
-    }
     if (taskRef.started_at) {
       appendCostEvent({
         type: 'task_complete', project, taskId: id, taskName: taskRef.name,
@@ -889,10 +875,9 @@ export function taskUpdate(project, args) {
   if (newStatus === TASK_STATES.FAILED) {
     updateCircuitBreaker(project, true);
 
-    if (opts.rollback !== 'false' && taskRef.commit_sha) {
-      const rolled = gitRollbackTask(taskRef);
-      if (rolled) console.log(`  ${C.dim}🔄 rolled back to ${taskRef.commit_sha.slice(0, 8)}${C.reset}`);
-    }
+    // No auto-rollback: x-build no longer commits, so there is no task commit to
+    // reset to. A failed task's changes stay in the working tree for inspection
+    // rather than being discarded by an unattended `git reset --hard`.
 
     let _retryCount = taskRef.retry_count || 0;
     if (opts.retry !== 'false') {
