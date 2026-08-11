@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.15.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.15.3-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -638,12 +638,12 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 
 | 기능 | 설명 |
 |---------|-------------|
-| **기본 4개 렌즈** | security, logic, perf, tests (7개로 확장 가능: +architecture, docs, errors) |
+| **기본 7개 렌즈** | security, logic, perf, errors, tests, architecture, docs (migrations는 `--agents 8`부터; silent-failures / type-design / comments-stale은 `--lenses`로 opt-in) |
 | **--specialists** | 매칭되는 전문가 에이전트 규칙을 렌즈 서문으로 주입 |
 | **판단 프레임워크** | 렌즈별 원칙, 판단 기준, 심각도 보정, 무시 조건 |
 | **Why-line 필수** | 모든 발견은 어떤 심각도 기준이 적용되는지 명시해야 함 |
 | **Challenge 단계** | 리더가 각 발견의 심각도를 최종 보고 전 검증 |
-| **합의 상향** | 2+ 에이전트가 같은 이슈 보고 → 심각도 승격 + `[consensus]` 태그 |
+| **합의 상향** | 2+ 에이전트가 같은 이슈 보고 → 한 단계 승격 + `[consensus]` 태그. Critical은 원래 High였을 때만이라 합의만으로 Low가 Block이 되지 않음 |
 | **Recall Boost** | 심각도 필터링 후 2차 패스로 6개 카테고리(스텁, 모순, 교차 참조, 무음 동작 변경, 누락된 에러 경로, off-by-one)를 `[Observation]` 태그로 포착 |
 | **--thorough** | 별도 recall 에이전트가 fresh context로 스캔, 최대 10개 observation, 적극적 자동 승격 |
 | **심각도 판별** | Architecture 렌즈: "이 diff가 도입" → Medium vs "기존 컨벤션 따름" → Low |

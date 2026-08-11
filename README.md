@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.15.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.15.3-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -638,12 +638,12 @@ Multi-perspective code review that reasons about each finding instead of pattern
 
 | Feature | Description |
 |---------|-------------|
-| **4 default lenses** | security, logic, perf, tests (expandable to 7: +architecture, docs, errors) |
+| **7 default lenses** | security, logic, perf, errors, tests, architecture, docs (+migrations at `--agents 8`; silent-failures / type-design / comments-stale are opt-in via `--lenses`) |
 | **--specialists** | Injects matching specialist agent rules (security-agent, performance-agent, qa-agent, etc.) as lens preambles for deeper domain expertise |
 | **Judgment framework** | Each lens has principles, judgment criteria, severity calibration, ignore conditions |
 | **Why-line requirement** | Every finding must cite which severity criterion applies — no vague reports |
 | **Challenge stage** | Leader validates each finding's severity before final report |
-| **Consensus elevation** | 2+ agents report same issue → severity promoted + `[consensus]` tag |
+| **Consensus elevation** | 2+ agents on the same issue → one level + `[consensus]` tag; Critical requires an original High, so agreement alone cannot turn a Low into a Block |
 | **Recall Boost** | After severity filtering, second pass scans 6 categories (stubs, contradictions, cross-refs, silent behavior changes, missing error paths, off-by-one) as `[Observation]` tags |
 | **--thorough** | Dedicated recall agent with fresh context, 10 observations max, aggressive auto-promotion |
 | **Severity disambiguation** | Architecture lens: "this diff introduced it" → Medium vs "follows existing convention" → Low |
