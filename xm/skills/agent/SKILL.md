@@ -196,16 +196,15 @@ If the number of roles in `--roles` differs from `--agents N`, the roles count t
 ### Execution
 
 **Invoke N Agent tools in a SINGLE message — one call per agent.** That is what makes them
-concurrent. Do NOT set `run_in_background`: Result collection synthesizes every output, and a
-backgrounded call returns only the agent's name, not its result — treating that name as the
-answer is how a fan-out silently reports empty results. (`delegate` sets `false` for the same
-reason.) `subagent_type` is `general-purpose`; the role comes from the injected preset, never
-from a plugin-qualified type the host may not have.
+concurrent. ALWAYS set `run_in_background: false` — it defaults to TRUE, and a backgrounded call
+returns only the agent's name, not its result; that is how a fan-out silently reports empty
+results. `subagent_type` is `general-purpose` — never a plugin-qualified type the host may lack.
 
 ```
 Agent tool 1: {
   description: "agent-1: {role}",
   subagent_type: "general-purpose",
+  run_in_background: false,
   prompt: "{context if provided}\n\n{prompt}",
   model: "{model}"
 }
@@ -321,13 +320,14 @@ When `--roles` is omitted, roles are auto-assigned based on agent count:
 
 ### Execution
 
-Same rule as fan-out: all N calls in ONE message, no `run_in_background` — the Result section
-below consolidates every role's output, so the leader needs each result in hand.
+Same rule as fan-out: all N calls in ONE message, each with `run_in_background: false` (it
+defaults to TRUE) — the Result section below consolidates every role's output.
 
 ```
 Agent tool 1: {
   description: "agent-1: {role_1}",
   subagent_type: "general-purpose",
+  run_in_background: false,
   prompt: "{context}\n\n## Your Role: {role_1}\n{prompt}\n\nAnalyze from the {role_1} perspective.",
   model: "{model}"
 }

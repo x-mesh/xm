@@ -1,11 +1,11 @@
 {
-  "generatedAt": 1786409475704,
+  "generatedAt": 1786410015149,
   "version": 2,
   "skills": [
     {
       "plugin": "agent",
-      "sha256": "d5e7ca33b7ca07bbed091cf524614d6f82a6c52cc287e7d9179e128d7e3aee1b",
-      "bytes": 21840,
+      "sha256": "d7a1c03d487e6305b4e7dbacb91acc3717b101fe9880b6ddb8eb5ce0e0763227",
+      "bytes": 21753,
       "referencesSha256": "7aacc65c27acbf1d4cd4d11d3ac252230ae3659f645b2f12e71861f9ffb787cd",
       "referenceFiles": 3,
       "referenceBytes": 28029
@@ -150,9 +150,9 @@
       "plugin": "review",
       "sha256": "1f42e3628b6053f01639c5e678d0b99a419cb68538e4a10d2c47c6956a7d23e2",
       "bytes": 19610,
-      "referencesSha256": "bd08f660d8545f2c9f9dd5cda887f677e29aa2922e75b1bfe097d65315f4d76d",
+      "referencesSha256": "d4d8a776ab517817d08e2c05c9b547a07285dd7c860895409ec2cdcf133b2797",
       "referenceFiles": 6,
-      "referenceBytes": 28581
+      "referenceBytes": 28792
     },
     {
       "plugin": "ship",

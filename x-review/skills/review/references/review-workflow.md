@@ -125,21 +125,25 @@ These are NOT in the default preset — invoke explicitly: `--lenses "silent-fai
 Fan-out — send the diff + dedicated perspective prompt to each agent simultaneously.
 
 **Invoke N Agent tools in a SINGLE message — one tool call per lens, all in the same
-message.** That is what makes them run concurrently. Do NOT set `run_in_background`: Phase 4
-cannot synthesize until every lens has reported, and a backgrounded Agent call returns only
-the agent's name immediately, not its findings. Treating that name as the review output is
-how a fan-out silently produces an empty report.
+message.** That is what makes them run concurrently. **ALWAYS set `run_in_background: false`
+on every lens call** — the parameter defaults to TRUE, and a backgrounded Agent call returns
+only the agent's name immediately, not its findings. Treating that name as the review output
+is how a fan-out silently produces an empty report. Omitting the parameter does NOT make the
+call foreground; it leaves the default in place. Phase 4 cannot synthesize until every lens
+has reported.
 
 ```
 Agent tool 1: {
   description: "x-review: security",
   subagent_type: "general-purpose",
+  run_in_background: false,
   prompt: "{universal_principles}\n\n## Code Review: Security\n\n{diff_content}\n\n[lenses/security.md body]",
   model: "sonnet"
 }
 Agent tool 2: {
   description: "x-review: logic",
   subagent_type: "general-purpose",
+  run_in_background: false,
   prompt: "{universal_principles}\n\n## Code Review: Logic\n\n{diff_content}\n\n[lenses/logic.md body]",
   model: "sonnet"
 }
