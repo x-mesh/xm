@@ -124,23 +124,37 @@ These are NOT in the default preset — invoke explicitly: `--lenses "silent-fai
 
 Fan-out — send the diff + dedicated perspective prompt to each agent simultaneously.
 
-**Invoke N Agent tools simultaneously in a single message:**
+**Invoke N Agent tools in a SINGLE message — one tool call per lens, all in the same
+message.** That is what makes them run concurrently. Do NOT set `run_in_background`: Phase 4
+cannot synthesize until every lens has reported, and a backgrounded Agent call returns only
+the agent's name immediately, not its findings. Treating that name as the review output is
+how a fan-out silently produces an empty report.
 
 ```
 Agent tool 1: {
   description: "x-review: security",
-  prompt: "## Code Review: Security\n\n{diff_content}\n\n[perspective prompt]",
-  run_in_background: true,
+  subagent_type: "general-purpose",
+  prompt: "{universal_principles}\n\n## Code Review: Security\n\n{diff_content}\n\n[lenses/security.md body]",
   model: "sonnet"
 }
 Agent tool 2: {
   description: "x-review: logic",
-  prompt: "## Code Review: Logic\n\n{diff_content}\n\n[perspective prompt]",
-  run_in_background: true,
+  subagent_type: "general-purpose",
+  prompt: "{universal_principles}\n\n## Code Review: Logic\n\n{diff_content}\n\n[lenses/logic.md body]",
   model: "sonnet"
 }
 ... (N agents)
 ```
+
+`subagent_type` is `general-purpose` for every lens; the perspective comes from the lens
+prompt, not from a specialized agent type. Do NOT name a plugin-qualified subagent type
+(e.g. `oh-my-claudecode:code-reviewer`) — an agent type the host does not have fails the
+spawn, and x-review declares no third-party plugin dependency.
+
+**Before Phase 4, verify you have N findings reports for N dispatched lenses.** If any lens
+returned no report — or returned a generic greeting instead of findings — the prompt did not
+reach it. Re-dispatch that lens; do not synthesize a verdict from a partial fan-out, and do
+not report a lens as "no findings" when it never ran.
 
 ### Universal Review Principles
 

@@ -90,17 +90,31 @@ unlisted `action` means the CLI is newer than this document; stop and report rat
 
 ## Mapping to Agent Tool
 
-The model ALWAYS comes from the CLI JSON `model` field (`task.model`, `agents[n].model`, `agents_spec[n].model`, `prd_writer.model`); if that field is `"inherit"`, omit the Agent-tool `model` parameter (see above). This table maps only `agent_type` → `subagent_type`:
+The model ALWAYS comes from the CLI JSON `model` field (`task.model`, `agents[n].model`, `agents_spec[n].model`, `prd_writer.model`); if that field is `"inherit"`, omit the Agent-tool `model` parameter (see above).
 
-| CLI `agent_type` | Agent `subagent_type` | Fallback (x-agent preset) |
-|-----------------|----------------------|---------------------------|
-| `executor` | `oh-my-claudecode:executor` | `se` |
-| `deep-executor` | `oh-my-claudecode:deep-executor` | `architect` |
-| `planner` | `oh-my-claudecode:planner` | `planner` |
-| `verifier` | `oh-my-claudecode:verifier` | `verifier` |
-| `critic` | `oh-my-claudecode:critic` | `critic` |
-| `test-engineer` | `oh-my-claudecode:test-engineer` | `test-engineer` |
-| `build-fixer` | `oh-my-claudecode:build-fixer` | `build-fixer` |
+`agent_type` is a ROLE, not a `subagent_type`. Spawn every task on the built-in
+`general-purpose` agent and inject the role via the prompt, using the x-agent preset of the
+same name (`x-agent/skills/agent/references/role-presets.md`) for its `<role>`,
+`<success_criteria>`, and `<constraints>` blocks:
+
+| CLI `agent_type` | Agent `subagent_type` | Role preset to inject |
+|-----------------|----------------------|-----------------------|
+| `executor` | `general-purpose` | `se` |
+| `deep-executor` | `general-purpose` | `architect` |
+| `planner` | `general-purpose` | `planner` |
+| `verifier` | `general-purpose` | `verifier` |
+| `critic` | `general-purpose` | `critic` |
+| `test-engineer` | `general-purpose` | `test-engineer` |
+| `build-fixer` | `general-purpose` | `build-fixer` |
+
+This table previously routed to `oh-my-claudecode:*` subagent types. That made x-build
+silently depend on a third-party plugin: if OMC was absent the `subagent_type` did not
+resolve and the spawn failed, in a repo whose own skills declare no such dependency.
+Role presets carry the same behavioral contract in the prompt and ship in this repo.
+
+Do NOT invent a `subagent_type` that is not in the host's agent list. When a genuinely
+specialized agent is available and preferable, name it explicitly rather than guessing at a
+plugin-qualified string.
 
 ## Worktree Mode JSON
 

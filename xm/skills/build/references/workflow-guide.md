@@ -216,7 +216,7 @@ See `phases/plan.md` — full Plan phase walkthrough: PRD generation and improve
 0. **Entry gate**: `$XMB phase set execute` runs a deterministic `prd-check`. It BLOCKS entry to Execute if the PRD has unresolved low-confidence assumptions (`[A*, low]`) or unanswered `Status: blocking` open questions (the PRD template's own Gate rule). Resolve them via AskUserQuestion, or override with `$XMB phase set execute --force`. Inspect anytime: `$XMB prd-check --json`.
 1. `$XMB run --json` — emits the execution plan AND marks the step's ready tasks RUNNING (so a later completion is actually recorded). It always emits valid JSON: when no tasks are ready it returns `{tasks: [], status: "all_done" | "in_progress" | "waiting", running: [...]}` — never human text.
 2. Parse JSON → spawn Agent per task, using the plan's own fields (profile-aware — do NOT hardcode the model):
-   - `subagent_type`: `task.agent_type === "deep-executor"` → `"oh-my-claudecode:deep-executor"`, else `"oh-my-claudecode:executor"`
+   - `subagent_type`: `"general-purpose"`, with the role injected into the prompt from the x-agent preset named by `task.agent_type` (`deep-executor` → `architect`, else `se`). See `cli-skill-protocol.md` "Mapping to Agent Tool" — never route to a third-party plugin's subagent type.
    - `model`: use `task.model` from the plan (resolved from `model_profile`: economy/default/max)
    - `prompt`: use `task.prompt` value + **inject `done_criteria`** as acceptance contract:
      ```
