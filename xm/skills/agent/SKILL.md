@@ -195,26 +195,26 @@ If the number of roles in `--roles` differs from `--agents N`, the roles count t
 
 ### Execution
 
-**Invoke N Agent tools simultaneously in a single message:**
+**Invoke N Agent tools in a SINGLE message — one call per agent.** That is what makes them
+concurrent. ALWAYS set `run_in_background: false` — it defaults to TRUE, and a backgrounded call
+returns only the agent's name, not its result; that is how a fan-out silently reports empty
+results. `subagent_type` is `general-purpose` — never a plugin-qualified type the host may lack.
 
 ```
 Agent tool 1: {
   description: "agent-1: {role}",
+  subagent_type: "general-purpose",
+  run_in_background: false,
   prompt: "{context if provided}\n\n{prompt}",
-  run_in_background: true,
   model: "{model}"
 }
-Agent tool 2: {
-  description: "agent-2: {role}",
-  prompt: "{same prompt}",
-  run_in_background: true,
-  model: "{model}"
-}
-... (N total)
+... (N total, same shape, same prompt)
 ```
 
 ### Result collection
 
+Verify N results for N dispatched agents first. An agent that returned nothing — or a generic
+greeting instead of work — never received its prompt: re-dispatch it, don't report it empty.
 When all agents complete:
 1. Organize each agent's result with numbering
 2. Output consolidated results to the user:
@@ -320,22 +320,23 @@ When `--roles` is omitted, roles are auto-assigned based on agent count:
 
 ### Execution
 
+Same rule as fan-out: all N calls in ONE message, each with `run_in_background: false` (it
+defaults to TRUE) — the Result section below consolidates every role's output.
+
 ```
 Agent tool 1: {
   description: "agent-1: {role_1}",
+  subagent_type: "general-purpose",
+  run_in_background: false,
   prompt: "{context}\n\n## Your Role: {role_1}\n{prompt}\n\nAnalyze from the {role_1} perspective.",
-  run_in_background: true,
   model: "{model}"
 }
-Agent tool 2: {
-  description: "agent-2: {role_2}",
-  prompt: "{context}\n\n## Your Role: {role_2}\n{prompt}\n\nAnalyze from the {role_2} perspective.",
-  run_in_background: true,
-  model: "{model}"
-}
+Agent tool 2: { ...same shape with {role_2}... }   // one call per role, all in one message
 ```
 
 ### Result
+
+Verify one result per dispatched role; re-dispatch any role that returned nothing.
 
 ```
 📡 [broadcast] {N} agents ({roles}) completed
