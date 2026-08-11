@@ -11,6 +11,13 @@ const SKILLS = join(REPO, 'xm', 'skills');
 const LIB = join(REPO, 'xm', 'lib');
 const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
 
+// `xm/scripts/xm` resolves its lib from XM_LIB before anything else, so a
+// developer shell that exports it (pointing at this checkout) overrides the
+// fixture HOME these tests build: resolve_lib returns the repo, the Codex-only
+// branch is never reached, and the update tests fail for everyone with that
+// variable set while passing in CI. Strip it once here rather than per-spawn.
+const { XM_LIB: _ignoredXmLib, ...BASE_ENV } = process.env;
+
 function executable(path, body) {
   writeFileSync(path, `#!/bin/sh\n${body}\n`);
   chmodSync(path, 0o755);
@@ -33,7 +40,7 @@ describe('xm update cross-target convergence', () => {
     const result = spawnSync('bash', [SCRIPT, 'update', '--force'], {
       cwd: home,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         HOME: home,
         PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}`,
         XM_INSTALL_SCRIPT: installer,
@@ -60,7 +67,7 @@ describe('xm update cross-target convergence', () => {
     const result = spawnSync('bash', [SCRIPT, 'update', '--dry-run'], {
       cwd: home,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         HOME: home,
         PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}`,
         XM_INSTALL_SCRIPT: join(home, 'must-not-exist.sh'),
@@ -78,7 +85,7 @@ describe('xm update cross-target convergence', () => {
     mkdirSync(bin, { recursive: true });
 
     const env = {
-      ...process.env,
+      ...BASE_ENV,
       HOME: home,
       XM_LIB: REPO,
       PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}`,
