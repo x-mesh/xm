@@ -132,7 +132,7 @@ fi
 |----------|------|
 | 0 lines | Output "변경 사항이 없습니다", exit |
 | 1-500 lines | Run immediately |
-| 500-2000 lines | AskUserQuestion: choose `--preset thorough` (4 lenses) or `--preset quick` (2 lenses) |
+| 500-2000 lines | AskUserQuestion: choose `--preset standard` (4 lenses) or `--preset quick` (2 lenses) |
 | 2000+ lines | Force `--preset quick` (override: `--force-full`) |
 
 **Save reference point after review:**
@@ -171,7 +171,7 @@ Commands:
 
 Options:
   --lenses "security,logic,perf,tests"
-                                Review perspectives (default: all 4)
+                                Review perspectives (default: all 7)
   --severity critical|high|medium|low
                                 Minimum severity to show (default: low)
   --format markdown|github-comment
@@ -182,15 +182,20 @@ Options:
                                 via the x-panel engine — real cross-vendor consensus + diversity.
                                 Opt-in; falls back to single-vendor when <2 vendor CLIs installed.
 
-Lenses (default 4 + extended 3):
+Lenses (7 by default, listed in the priority order used when --agents is smaller):
   security       Injection, auth, secrets, OWASP Top 10
   logic          Bugs, edge cases, off-by-one, null handling
   perf           N+1, memory leaks, complexity, blocking I/O
+  errors         Error handling, recovery paths
   tests          Missing tests, untested paths, test quality
-  architecture   Module boundaries, coupling, SRP (--agents 5+)
-  docs           Public API docs, outdated comments (--agents 6+)
-  errors         Error handling, recovery paths (--agents 7+)
+  architecture   Module boundaries, coupling, SRP
+  docs           Public API docs, outdated comments
   migrations     Schema drift, missing migrations, ORM sync (--agents 8+)
+
+Opt-in lenses (--lenses only, never in a preset):
+  silent-failures  Empty catch, swallowed errors, ignored promise rejections
+  type-design      any overuse, nullable leaks (typed languages only)
+  comments-stale   Stale comments, TODO without ticket, commented-out code
 
 Presets:
   --preset quick       security + logic (2 agents, ~2min)
@@ -209,7 +214,7 @@ Examples:
 
 ---
 
-## Review Workflow (Phase 1-4)
+## Review Workflow (Phase 1-5)
 
 See `references/review-workflow.md` — full pipeline:
 - **Phase 1: TARGET** — collect diff/PR/file content, auto-detect language. `### full` mode uses Lens-first split: each agent scans all files with one lens (file-group split prohibited).
@@ -316,9 +321,9 @@ x-review references shared settings in `.xm/config.json`:
 
 | Setting | Key | Default | Effect |
 |---------|-----|---------|--------|
-| Agent count | `agent_max_count` | `4` | Default agent count when `--agents` is not specified |
+| Agent count | `agent_max_count` | `4` | Fallback only — x-review's own default is the lens count (7), see `references/review-workflow.md` "Agent Count" |
 
-`--agents` takes precedence over shared config when explicitly provided.
+`--agents` takes precedence over both.
 
 ---
 
@@ -345,21 +350,28 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | "Show critical ones only" | `diff --severity high` |
 | "GitHub comment format" | `diff --format github-comment` |
 | "여러 모델로 리뷰", "다른 모델로 교차검증", "cross-vendor review" | `diff --cross-vendor` |
+| "Usage" | `list` |
 
 ## Interaction Protocol
 
-**CRITICAL: x-review MUST use AskUserQuestion at key decision points.**
+**x-review uses AskUserQuestion where the choice is genuinely the user's — not as a turn-taking ritual.**
 
 Rules:
-1. Before starting review → AskUserQuestion to confirm target (file/PR/diff) and lens selection
-2. After showing review results → AskUserQuestion for verdict confirmation (LGTM or request changes)
-3. For multi-lens review → show each lens result, then AskUserQuestion before final synthesis
+1. **Resolved target, small diff → run.** When the user named the target (`pr 142`, `file x.ts`)
+   or the Smart Router resolved one under 500 lines, review immediately and print the pre-run
+   summary (Smart Router Step 3). Confirming a target the user already gave is a wasted round trip.
+2. **Ambiguous or large scope → ask.** Use AskUserQuestion when the Smart Router finds no usable
+   reference point, when several targets match, or when the diff crosses 500 lines — that is the
+   preset choice in Step 3's large-diff guard.
+3. **The verdict is x-review's to state, not the user's to ratify.** Print it with its rationale.
+   A verdict that needs user approval is not a review.
+4. **Synthesize in one pass.** Phase 4 consolidates every lens together; do not stop between
+   lenses to check in.
 
 Anti-patterns:
-- ❌ Auto-detect diff and immediately start reviewing
-- ❌ Show findings and declare LGTM without user confirmation
-- ✅ Show target + selected lenses, AskUserQuestion("이 설정으로 리뷰를 시작할까요?")
-| "Usage" | `list` |
+- ❌ Asking to confirm a target the user already named
+- ❌ Declaring a verdict with no findings section and no rationale
+- ❌ Running a 2000+ line diff at full preset without offering `--preset quick` first
 
 ## Common Rationalizations
 

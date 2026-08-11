@@ -32,6 +32,7 @@ Good finding example:
 
 For each finding, output exactly:
 [Critical|High|Medium|Low] file:line — description
+→ Code: the 3-5 diff lines the finding is about — Phase 4 verifies the claim against them
 → Why: cite the severity criterion that applies
 → Fix: one-line fix suggestion
 
