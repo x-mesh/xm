@@ -475,7 +475,7 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 | **Quality dashboard** | Per-task scores + project average in status output |
 | **Traceability matrix** | R# ↔ Task ↔ AC ↔ Done Criteria with gap detection |
 | **Scope creep detection** | Warns when new tasks overlap with PRD "Out of Scope" items |
-| **Error recovery** | Auto-retry with exponential backoff, circuit breaker, git rollback |
+| **Error recovery** | Auto-retry with exponential backoff, circuit breaker |
 | **plan-check (15 dims)** | atomicity, deps, coverage (incl. done_criteria), granularity (upper bound >15), completeness, context, naming (44-verb dict), tech-leakage, scope-clarity (Out of Scope match), risk-ordering (DAG-based), expected-files, failure-mode-coverage, delegation-contract, review-groups, overall |
 | **Domain-aware done_criteria** | Auto-generated based on task domain, size tier, and PRD NFR targets |
 | **Failure-mode enumeration** | PRD §7.5 forces per-requirement pathological/adversarial inputs (`[R#] <mode> → 검증: <method>`); `tasks done-criteria` injects them as stress checks, `plan-check`'s `failure-mode-coverage` warns when a risk-domain task lacks them. Measured to let a cheaper implementer model match a costlier one on robustness — see `docs/phase-model-routing-experiment.md` |
@@ -492,7 +492,7 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 | **Phase** | `phase next/set`, `gate pass [--advance]/fail` (`--advance` chains `phase next`), `checkpoint`, `handoff --full`, `handon` |
 | **Governance** | `hooks install/uninstall/status` (native blocking hooks; bypass with `XM_BUILD_HOOKS_OFF=1`) |
 | **Plan** | `plan "goal"`, `plan-check [--strict]`, `prd-gate [--threshold N]`, `consensus [--round N]` |
-| **Tasks** | `tasks add [--desc] [--deps] [--size] [--strategy] [--team] [--done-criteria] [--expected-files]`, `tasks done-criteria`, `tasks list`, `tasks remove [--cascade]`, `tasks update [--desc] [--no-commit] [--expected-files]`, `tasks reopen <id> --reason "..." [--cascade]`, `later add/list/promote/dismiss/verify-scope` |
+| **Tasks** | `tasks add [--desc] [--deps] [--size] [--strategy] [--team] [--done-criteria] [--expected-files]`, `tasks done-criteria`, `tasks list`, `tasks remove [--cascade]`, `tasks update [--desc] [--expected-files]`, `tasks reopen <id> --reason "..." [--cascade]`, `later add/list/promote/dismiss/verify-scope` |
 | **Steps** | `steps compute/status/next` |
 | **Execute** | `run`, `run --worktrees [--dry-run] [--max-parallel N]`, `run --json`, `run-status` |
 | **Worktrees** | `worktrees plan/status/resume/cleanup`, `gate-panel --project --task --phase --patch`, `review-integration [--base --target]` |
