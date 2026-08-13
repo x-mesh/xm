@@ -40,6 +40,9 @@ Rules:
   or bare "No findings" is not a completed review.
 - If the target was unavailable or could not be reviewed, use `status: "failed"`; the leader
   will re-dispatch it. Never claim `complete` without inspecting the supplied target.
+- The report must come from your own analysis of the supplied target. Do not invoke a review
+  skill/command and do not spawn subagents to produce it — see "Execution Boundary" in the
+  universal principles block prepended to this prompt.
 
 ## Applies to
 

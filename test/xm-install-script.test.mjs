@@ -8,6 +8,13 @@ const REPO = join(import.meta.dirname, '..');
 const SCRIPT = join(REPO, 'xm', 'scripts', 'install.sh');
 const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
 
+// `xm/scripts/xm` resolves its lib from XM_LIB before every other candidate, so a
+// developer shell exporting it (pointing at this checkout) overrides the fixture
+// HOME these tests build: `xm which` reports the repo instead of the fixture's
+// Codex bundle, and the resolve-order spec fails for everyone with the variable
+// set while passing in CI. Same leak already fixed for xm-update (81b9aa0).
+const { XM_LIB: _ignoredXmLib, ...BASE_ENV } = process.env;
+
 function executable(path, body) {
   writeFileSync(path, `#!/bin/sh\n${body}\n`);
   chmodSync(path, 0o755);
@@ -43,7 +50,7 @@ function fixture({ installedVersion, withClaude = false } = {}) {
   // version instead of the one under test — green only while the source and
   // remote versions coincide, and red on every release bump.
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     HOME: home,
     XM_BIN_DIR: join(home, '.local', 'bin'),
     XM_TEST_CALLS: calls,
