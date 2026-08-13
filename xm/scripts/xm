@@ -38,6 +38,12 @@ resolve_lib() {
   if [ -d "x-build/lib" ] && [ -d "xm/lib" ]; then
     echo "$PWD"; return
   fi
+  # Codex global bundle is an explicit machine-level install and may be newer
+  # than a separately cached Claude marketplace plugin. Prefer it whenever it
+  # exists so a global Codex install immediately updates the terminal CLI too.
+  if [ -d "$HOME/.codex/xm/lib" ]; then
+    echo "$HOME/.codex/xm"; return
+  fi
   # Marketplace cache (post-rename): ~/.claude/plugins/cache/xm
   local cache="$HOME/.claude/plugins/cache/xm"
   if [ -d "$cache" ]; then
@@ -47,11 +53,6 @@ resolve_lib() {
   local legacy="$HOME/.claude/plugins/cache/x-kit"
   if [ -d "$legacy" ]; then
     echo "$legacy"; return
-  fi
-  # Codex-only global install. The multi-tool installer mirrors its runtime
-  # bundle here, so xm must not require a Claude marketplace cache to start.
-  if [ -d "$HOME/.codex/xm/lib" ]; then
-    echo "$HOME/.codex/xm"; return
   fi
   echo ""
 }

@@ -68,6 +68,19 @@ describe('xm install.sh', () => {
     expect(cli.stdout).toContain(`xm ${VERSION}`);
   }, 30_000);
 
+  test('installed dispatcher prefers the explicit Codex bundle over a stale Claude cache', () => {
+    const { home, env } = fixture();
+    const result = spawnSync('bash', [SCRIPT, '--yes'], { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+    expect(result.status).toBe(0);
+
+    mkdirSync(join(home, '.claude', 'plugins', 'cache', 'xm', 'xm', '0.0.1', 'lib'), { recursive: true });
+    const which = spawnSync(join(home, '.local', 'bin', 'xm'), ['which'], { cwd: home, env, encoding: 'utf8' });
+
+    expect(which.status).toBe(0);
+    expect(which.stdout).toContain(`lib: ${join(home, '.codex', 'xm')}`);
+    expect(which.stdout).not.toContain(join(home, '.claude', 'plugins', 'cache', 'xm'));
+  }, 30_000);
+
   test('--no declines an available update before changing files', () => {
     const { home, env } = fixture({ installedVersion: '0.1.0', withClaude: true });
     const result = spawnSync('bash', [SCRIPT, '--no'], { cwd: home, env, encoding: 'utf8' });
