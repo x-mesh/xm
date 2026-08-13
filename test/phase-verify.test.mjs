@@ -853,6 +853,41 @@ describe('verify-review-fix', () => {
     }
   });
 
+  test('LGTM fails closed when a lifecycle-aware review loses its lifecycle file', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      rmSync(join(tmp, '.xm', 'review', 'finding-lifecycle.json'));
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('without finding-lifecycle.json');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('--init rejects duplicate content-derived finding ids', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, { findings: [
+        { severity: 'high', lens: 'logic', file: 'src/auth.ts', line: 10, summary: 'same defect' },
+        { severity: 'high', lens: 'logic', file: 'src/auth.ts', line: 20, summary: 'same defect' },
+      ] });
+      const r = run(['verify-review-fix', '--init'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('Duplicate stable finding_id');
+      expect(existsSync(join(tmp, '.xm', 'review', 'triage.json'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('LGTM rejects a resolved receipt after the fixed bytes change again', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
@@ -1017,6 +1052,25 @@ describe('verify-review-fix', () => {
       const afterFix = run(['verify-review-fix'], { cwd: tmp });
       expect(afterFix.exitCode).not.toBe(0);
       expect(afterFix.stdout).toContain('fix requires explicit reverification');
+
+      const unknown = run(['verify-review-fix', '--reverify', 'F9', '--outcome', 'resolved', '--evidence', 'test'], { cwd: tmp });
+      expect(unknown.exitCode).not.toBe(0);
+      expect(unknown.stdout).toContain('Unknown finding for --reverify');
+      const invalid = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'bogus', '--evidence', 'test'], { cwd: tmp });
+      expect(invalid.exitCode).not.toBe(0);
+      expect(invalid.stdout).toContain('--outcome must be resolved, persistent, or regression');
+      const missingEvidence = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved'], { cwd: tmp });
+      expect(missingEvidence.exitCode).not.toBe(0);
+      expect(missingEvidence.stdout).toContain('--evidence is required for reverification');
+
+      const persistent = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'persistent', '--evidence', 'bug still reproduces'], { cwd: tmp });
+      expect(persistent.exitCode).not.toBe(0);
+      expect(persistent.stdout).toContain('reverification outcome is persistent; expected resolved');
+      expect(readJSON(join(tmp, '.xm', 'review', 'review-fix-gate.json')).stage).toBe('awaiting_reverification');
+
+      const regression = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'regression', '--evidence', 'new failure observed'], { cwd: tmp });
+      expect(regression.exitCode).not.toBe(0);
+      expect(regression.stdout).toContain('reverification outcome is regression; expected resolved');
 
       const reverified = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'auth regression test passes'], { cwd: tmp });
       expect(reverified.exitCode).toBe(0);

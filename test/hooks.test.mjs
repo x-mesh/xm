@@ -60,6 +60,16 @@ describe('hook-state (unit)', () => {
     expect(s.unresolvedBlocking).toHaveLength(0); // nothing blocks a stop
     expect(s.active).toBe(false);                 // …and the scope-guard releases (was a permanent lock)
   });
+  test('LGTM fails closed when lifecycle-aware triage loses its lifecycle file', () => {
+    writeTriage({
+      ...ACTIVE_TRIAGE,
+      target_findings: [{ ...ACTIVE_TRIAGE.target_findings[0], finding_id: 'rf_auth' }],
+    });
+    writeResult(LGTM);
+    const s = reviewFixState(DIR);
+    expect(s.active).toBe(true);
+    expect(s.unresolvedBlocking).toHaveLength(1);
+  });
   test('LGTM cannot release a lifecycle-aware fix until every fix_now is reverified/resolved', () => {
     writeTriage(ACTIVE_TRIAGE); writeResult(LGTM);
     writeLifecycle({ schema: 1, findings: [{ id: 'F1', state: 'fixed', outcome: null }] });

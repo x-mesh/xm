@@ -366,6 +366,21 @@ function stableFindingId(finding) {
   return `rf_${sha256(JSON.stringify(identity)).slice(0, 16)}`;
 }
 
+function stableFindingIdFailures(findings) {
+  const seen = new Map();
+  const failures = [];
+  for (const finding of findings) {
+    const id = finding.finding_id || stableFindingId(finding);
+    const previous = seen.get(id);
+    if (previous) {
+      failures.push(`Duplicate stable finding_id ${id}: ${previous.id} and ${finding.id}; x-review must disambiguate their content before triage`);
+    } else {
+      seen.set(id, finding);
+    }
+  }
+  return failures;
+}
+
 function findingSummary(finding) {
   return finding.summary || finding.claim || finding.description || finding.title || '';
 }
@@ -453,6 +468,7 @@ function assessReviewFreshness(review) {
 
   const changed = [];
   const canonical = [];
+  const currentSnapshots = new Map();
   for (const file of files) {
     const expected = expectedByFile.get(file);
     if (!expected) {
@@ -474,6 +490,7 @@ function assessReviewFreshness(review) {
       continue;
     }
     const current = currentFileSnapshot(file);
+    currentSnapshots.set(file, current);
     if (current.invalid) {
       failures.push(`reviewed file path is unsafe or unreadable: ${file}`);
       continue;
@@ -491,6 +508,7 @@ function assessReviewFreshness(review) {
     changed: [...new Set(changed)].sort(),
     failures,
     digest: failures.length === 0 ? `sha256:${sha256(JSON.stringify(canonical))}` : null,
+    currentSnapshots,
   };
 }
 
@@ -613,8 +631,8 @@ function snapshotMatches(a, b) {
 }
 
 function lifecycleFileSnapshot(file, freshness) {
-  if (file) return currentFileSnapshot(file);
-  const current = freshness.files.map(currentFileSnapshot);
+  if (file) return freshness.currentSnapshots?.get(file) || currentFileSnapshot(file);
+  const current = freshness.files.map(path => freshness.currentSnapshots?.get(path) || currentFileSnapshot(path));
   if (current.some(snapshot => snapshot.invalid)) return { file: null, invalid: true, exists: null, sha256: null };
   return {
     file: null,
@@ -747,9 +765,10 @@ export function cmdVerifyReviewFix(args) {
     .map((finding, index) => ({ ...finding, id: findingId(index), finding_id: stableFindingId(finding), severity: normalizeSeverity(finding.severity) }))
     .filter(f => TRIAGE_REQUIRED_SEVERITY.has(f.severity));
   const freshness = assessReviewFreshness(review);
+  const findingIdFailures = stableFindingIdFailures(required);
 
   if (opts.init) {
-    const initFailures = [...freshness.failures];
+    const initFailures = [...freshness.failures, ...findingIdFailures];
     if (freshness.changed.length > 0) {
       initFailures.push(`Reviewed files changed since x-review: ${freshness.changed.join(', ')}. Re-run x-review before triage.`);
     }
@@ -776,6 +795,13 @@ export function cmdVerifyReviewFix(args) {
     const existingGate = readJSON(join(reviewDir(), 'review-fix-gate.json'));
     const fixNow = (Array.isArray(existingTriage?.target_findings) ? existingTriage.target_findings : [])
       .filter(item => String(item.decision || '').trim().toLowerCase() === 'fix_now');
+    const lifecycleAware = fixNow.some(item => !!item.finding_id);
+    if (lifecycleAware && !existingLifecycle) {
+      console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
+      console.log('  - LGTM cannot close a lifecycle-aware review-fix without finding-lifecycle.json');
+      process.exitCode = 1;
+      return;
+    }
     if (existingLifecycle && fixNow.length > 0) {
       const rows = Array.isArray(existingLifecycle.findings) ? existingLifecycle.findings : [];
       const incomplete = fixNow.filter((finding) => {
@@ -803,7 +829,7 @@ export function cmdVerifyReviewFix(args) {
     return;
   }
 
-  const failures = [];
+  const failures = [...findingIdFailures];
   const warnings = [];
   let lifecycle = null;
   let fixAuthorized = false;

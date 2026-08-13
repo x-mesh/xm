@@ -61,7 +61,8 @@ export function reviewFixState(projectDir) {
   // so the normal flow correlates; an un-stampable triage is released by regenerating it
   // (--init) or by the documented XM_BUILD_HOOKS_OFF bypass.
   const lifecycleRows = Array.isArray(lifecycle?.findings) ? lifecycle.findings : [];
-  const lifecycleComplete = !lifecycle || fixNow.every((finding) => {
+  const lifecycleAware = fixNow.some(finding => !!finding.finding_id);
+  const lifecycleComplete = !lifecycle ? !lifecycleAware : fixNow.every((finding) => {
     const row = lifecycleRows.find(item => item.id === finding.id || (finding.finding_id && item.finding_id === finding.finding_id));
     return row?.state === 'reverified' && row?.outcome === 'resolved';
   });
