@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { reviewFixState, isProtectedPath, isAllowed } from '../x-build/templates/hooks/hook-state.mjs';
 
 const ROOT = join(import.meta.dirname, '..');
@@ -32,6 +33,17 @@ afterEach(() => rmSync(DIR, { recursive: true, force: true }));
 function writeTriage(obj) { writeFileSync(join(DIR, '.xm', 'review', 'triage.json'), JSON.stringify(obj)); }
 function writeResult(obj) { writeFileSync(join(DIR, '.xm', 'review', 'last-result.json'), JSON.stringify(obj)); }
 function writeLifecycle(obj) { writeFileSync(join(DIR, '.xm', 'review', 'finding-lifecycle.json'), JSON.stringify(obj)); }
+function writeGate(obj) { writeFileSync(join(DIR, '.xm', 'review', 'review-fix-gate.json'), JSON.stringify(obj)); }
+function writeLifecycleState(triage, lifecycle) {
+  const triageDigest = `sha256:${createHash('sha256').update(JSON.stringify(triage)).digest('hex')}`;
+  const correlated = { reviewed_commit: triage.reviewed_commit, triage_digest: triageDigest, ...lifecycle };
+  writeTriage(triage);
+  writeLifecycle(correlated);
+  writeGate({
+    triage_digest: triageDigest,
+    lifecycle_digest: `sha256:${createHash('sha256').update(JSON.stringify(correlated)).digest('hex')}`,
+  });
+}
 function runHook(hook, input, env = {}) {
   return spawnSync('node', [hook], {
     input: typeof input === 'string' ? input : JSON.stringify(input),
@@ -63,6 +75,7 @@ describe('hook-state (unit)', () => {
   test('LGTM fails closed when lifecycle-aware triage loses its lifecycle file', () => {
     writeTriage({
       ...ACTIVE_TRIAGE,
+      schema: 1,
       target_findings: [{ ...ACTIVE_TRIAGE.target_findings[0], finding_id: 'rf_auth' }],
     });
     writeResult(LGTM);
@@ -71,17 +84,34 @@ describe('hook-state (unit)', () => {
     expect(s.unresolvedBlocking).toHaveLength(1);
   });
   test('LGTM cannot release a lifecycle-aware fix until every fix_now is reverified/resolved', () => {
-    writeTriage(ACTIVE_TRIAGE); writeResult(LGTM);
-    writeLifecycle({ schema: 1, findings: [{ id: 'F1', state: 'fixed', outcome: null }] });
+    const triage = { ...ACTIVE_TRIAGE, schema: 1, target_findings: [{ ...ACTIVE_TRIAGE.target_findings[0], finding_id: 'rf_auth' }] };
+    writeResult(LGTM);
+    writeLifecycleState(triage, { schema: 1, findings: [{ id: 'F1', finding_id: 'rf_auth', decision: 'fix_now', state: 'fixed', outcome: null }] });
     expect(reviewFixState(DIR).active).toBe(true);
     expect(reviewFixState(DIR).unresolvedBlocking).toHaveLength(1);
 
-    writeLifecycle({ schema: 1, findings: [{ id: 'F1', state: 'reverified', outcome: 'persistent' }] });
+    writeLifecycleState(triage, { schema: 1, findings: [{ id: 'F1', finding_id: 'rf_auth', decision: 'fix_now', state: 'reverified', outcome: 'persistent' }] });
     expect(reviewFixState(DIR).active).toBe(true);
 
-    writeLifecycle({ schema: 1, findings: [{ id: 'F1', state: 'reverified', outcome: 'resolved' }] });
+    writeLifecycleState(triage, { schema: 1, findings: [{ id: 'F1', finding_id: 'rf_auth', decision: 'fix_now', state: 'reverified', outcome: 'resolved' }] });
     expect(reviewFixState(DIR).active).toBe(false);
     expect(reviewFixState(DIR).unresolvedBlocking).toHaveLength(0);
+  });
+  test('lifecycle-aware LGTM rejects stale commits, stripped ids, and triage digest drift', () => {
+    const triage = { ...ACTIVE_TRIAGE, schema: 1, target_findings: [{ ...ACTIVE_TRIAGE.target_findings[0], finding_id: 'rf_auth' }] };
+    writeResult(LGTM);
+    writeLifecycleState(triage, { schema: 1, reviewed_commit: 'older', findings: [{ id: 'F1', finding_id: 'rf_auth', decision: 'fix_now', state: 'reverified', outcome: 'resolved' }] });
+    expect(reviewFixState(DIR).active).toBe(true);
+
+    writeLifecycleState(triage, { schema: 1, findings: [{ id: 'F1', finding_id: 'rf_auth', decision: 'fix_now', state: 'reverified', outcome: 'resolved' }] });
+    const stripped = { ...triage, target_findings: [{ ...triage.target_findings[0] }] };
+    delete stripped.target_findings[0].finding_id;
+    writeTriage(stripped);
+    expect(reviewFixState(DIR).active).toBe(true);
+
+    writeLifecycleState(triage, { schema: 1, findings: [{ id: 'F1', finding_id: 'rf_auth', decision: 'fix_now', state: 'reverified', outcome: 'resolved' }] });
+    writeTriage({ ...triage, note: 'tampered after authorization' });
+    expect(reviewFixState(DIR).active).toBe(true);
   });
   test('no triage.json → inactive', () => {
     expect(reviewFixState(DIR).active).toBe(false);

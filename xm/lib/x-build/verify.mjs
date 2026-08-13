@@ -559,6 +559,7 @@ function buildTriageTemplate(review) {
 
   const freshness = assessReviewFreshness(review);
   return {
+    schema: 1,
     initialized_at: new Date().toISOString(),
     reviewed_commit: review.reviewed_commit || null,
     review_snapshot_digest: freshness.digest,
@@ -793,24 +794,33 @@ export function cmdVerifyReviewFix(args) {
     const existingTriage = readJSON(triagePath);
     const existingLifecycle = readJSON(lifecyclePath());
     const existingGate = readJSON(join(reviewDir(), 'review-fix-gate.json'));
-    const fixNow = (Array.isArray(existingTriage?.target_findings) ? existingTriage.target_findings : [])
+    const currentTriageDigest = existingTriage ? `sha256:${sha256(JSON.stringify(existingTriage))}` : null;
+    const triageFixNow = (Array.isArray(existingTriage?.target_findings) ? existingTriage.target_findings : [])
       .filter(item => String(item.decision || '').trim().toLowerCase() === 'fix_now');
-    const lifecycleAware = fixNow.some(item => !!item.finding_id);
+    const lifecycleAware = existingTriage?.schema === 1 || (!!existingTriage?.initialized_at && !!existingTriage?.review_snapshot_digest);
     if (lifecycleAware && !existingLifecycle) {
       console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
       console.log('  - LGTM cannot close a lifecycle-aware review-fix without finding-lifecycle.json');
       process.exitCode = 1;
       return;
     }
+    const lifecycleFixNow = Array.isArray(existingLifecycle?.findings)
+      ? existingLifecycle.findings.filter(item => String(item.decision || '').trim().toLowerCase() === 'fix_now')
+      : [];
+    const fixNow = lifecycleAware ? lifecycleFixNow : triageFixNow;
     if (existingLifecycle && fixNow.length > 0) {
       const rows = Array.isArray(existingLifecycle.findings) ? existingLifecycle.findings : [];
       const incomplete = fixNow.filter((finding) => {
-        const row = rows.find(item => item.id === finding.id || (finding.finding_id && item.finding_id === finding.finding_id));
+        const row = lifecycleAware
+          ? rows.find(item => finding.finding_id && item.finding_id === finding.finding_id)
+          : rows.find(item => item.id === finding.id || (finding.finding_id && item.finding_id === finding.finding_id));
         const current = row ? lifecycleFileSnapshot(row.file, freshness) : null;
         return row?.state !== 'reverified' || row?.outcome !== 'resolved' || !snapshotMatches(row.file_snapshot, current);
       });
       const correlated = existingTriage?.reviewed_commit === (review.reviewed_commit || null)
         && existingLifecycle.reviewed_commit === existingTriage.reviewed_commit
+        && existingLifecycle.triage_digest === currentTriageDigest
+        && existingGate?.triage_digest === currentTriageDigest
         && existingGate?.lifecycle_digest === `sha256:${sha256(JSON.stringify(existingLifecycle))}`
         && freshness.failures.length === 0
         && freshness.changed.length === 0
@@ -833,6 +843,7 @@ export function cmdVerifyReviewFix(args) {
   const warnings = [];
   let lifecycle = null;
   let fixAuthorized = false;
+  let triageDigest = null;
   let lifecycleSummary = { open: 0, fix_authorized: 0, fixed: 0, reverified: 0 };
 
   if (!existsSync(triagePath)) {
@@ -845,7 +856,7 @@ export function cmdVerifyReviewFix(args) {
     const verification = getVerificationItems(triage);
     const baselineFiles = new Set(Array.isArray(triage.baseline_changed_files) ? triage.baseline_changed_files : []);
     const previousGate = readJSON(join(reviewDir(), 'review-fix-gate.json'));
-    const triageDigest = `sha256:${sha256(JSON.stringify(triage))}`;
+    triageDigest = `sha256:${sha256(JSON.stringify(triage))}`;
     fixAuthorized = (previousGate?.authorized === true || (previousGate?.passed === true && previousGate?.stage === 'ready_for_fix')) &&
       previousGate?.reviewed_commit === (review.reviewed_commit || null) &&
       previousGate?.review_snapshot_digest === freshness.digest &&
@@ -1005,7 +1016,7 @@ export function cmdVerifyReviewFix(args) {
     stage,
     authorized,
     review_snapshot_digest: freshness.digest,
-    triage_digest: existsSync(triagePath) ? `sha256:${sha256(JSON.stringify(readJSON(triagePath)))}` : null,
+    triage_digest: triageDigest,
     lifecycle_digest: lifecycle ? `sha256:${sha256(JSON.stringify(lifecycle))}` : null,
     passed: failures.length === 0,
     failures,

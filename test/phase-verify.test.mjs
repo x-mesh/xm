@@ -871,6 +871,28 @@ describe('verify-review-fix', () => {
     }
   });
 
+  test('LGTM fails closed when lifecycle markers or authorized triage decisions are stripped', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      const triagePath = join(tmp, '.xm', 'review', 'triage.json');
+      const triage = readJSON(triagePath);
+      delete triage.target_findings[0].finding_id;
+      triage.target_findings[0].decision = 'backlog';
+      writeFileSync(triagePath, JSON.stringify(triage, null, 2));
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('does not correlate with the authorized finding lifecycle receipt');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('--init rejects duplicate content-derived finding ids', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
