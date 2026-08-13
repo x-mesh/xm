@@ -404,6 +404,12 @@ Several of those CLIs are themselves multi-vendor gateways — `cursor` and `kir
 
 Precedence: `--cross-vendor` / `--no-cross-vendor` flag > `cross_vendor.<consumer>` > `cross_vendor.default` > false. Consumers: `review`, `op`, `eval`, `solver`, `build`, `agent`. A configured default still requires ≥2 installed + authenticated vendors (`xm panel doctor`); otherwise it falls back to single-vendor loudly.
 
+For x-review, x-panel is an optional Phase 3 backend, not a second review: x-review keeps ownership
+of lenses, severity, lifecycle, verdict, and convergence. Machines with a multi-model gateway may
+set `review.models` to exact slots (for example `codex:gpt-5.6-sol:xhigh` and
+`codex:claude-sonnet-5`) while enabling `cross_vendor.review`; other machines keep detection and
+the single-runtime default. Two slots on one provider are multi-model sources, not two vendors.
+
 This is a *capability*, available today; proving it produces measurably better outcomes is a separate, ongoing effort (see `docs/strategy/xm-differentiation.md`).
 
 ---

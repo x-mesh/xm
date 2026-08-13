@@ -104,6 +104,7 @@ describe('x-review SKILL.md structure', () => {
   const content = readSkill('x-review');
   const workflow = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'review-workflow.md'), 'utf8');
   const dataDirectory = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'data-directory.md'), 'utf8');
+  const integration = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'x-build-integration.md'), 'utf8');
 
   test('Smart Router detects PR, branch, and main', () => {
     expect(content).toContain('Smart Router');
@@ -222,6 +223,29 @@ describe('x-review SKILL.md structure', () => {
   test('allowed-tools includes AskUserQuestion', () => {
     expect(content).toContain('allowed-tools');
     expect(content).toContain('AskUserQuestion');
+  });
+
+  test('inherits the effective reviewer model instead of pinning sonnet', () => {
+    expect(workflow).not.toContain('model: "sonnet"');
+    expect(workflow).toContain('omit the Agent `model` parameter');
+    expect(workflow).toContain('may never silently substitute Sonnet');
+  });
+
+  test('uses panel only as the optional Phase 3 backend', () => {
+    expect(content).toContain('x-panel is only the Phase');
+    expect(content).toContain('must not run a native panel after x-review');
+    expect(content).toContain('review.models');
+    expect(content).toContain('two slots may share a provider');
+    expect(content).toContain('--models "$REVIEW_MODELS"');
+    expect(content).toContain('model sources agreed');
+  });
+
+  test('bounds review-fix convergence to one delta re-review', () => {
+    expect(content).toContain('One automatic re-review is the default maximum');
+    expect(integration).toContain('reviewed_commit');
+    expect(integration).toContain('stop and report it');
+    expect(integration).toContain('Do not run a');
+    expect(integration).toContain('native x-panel review after x-review');
   });
 });
 

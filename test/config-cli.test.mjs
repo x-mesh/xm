@@ -1250,6 +1250,27 @@ describe('config-schema eval.auto registration', () => {
   });
 });
 
+describe('config-schema review.models registration', () => {
+  test('review.models is an optional machine-local model-slot array', () => {
+    const entry = SCHEMA.find((e) => e.key === 'review.models');
+    expect(entry).toBeTruthy();
+    expect(entry.type).toBe('array');
+    expect(entry.scope).toBe('either');
+    expect(entry.default).toEqual([]);
+  });
+
+  test('xm config set review.models accepts a JSON slot array without warning', () => {
+    withRoot((root) => {
+      const value = '["codex:gpt-5.6-sol:xhigh","codex:claude-sonnet-5"]';
+      const w = run(['set', 'review.models', value], root);
+      expect(w.exitCode).toBe(0);
+      expect(stripAnsi(w.stdout)).not.toContain('⚠');
+      const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+      expect(written.review.models).toEqual(JSON.parse(value));
+    });
+  });
+});
+
 // ── WORKTREE_CONFIG_DEFAULTS <-> config-schema worktree.* sync (P7, t8) ─────
 //
 // worktree-shared.mjs (runtime truth, per PRD A5) and config-schema.mjs

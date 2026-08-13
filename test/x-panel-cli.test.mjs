@@ -3074,6 +3074,13 @@ describe('UX: config, presets, shortcut, setup', () => {
     expect(latestVerdict().models).toEqual(['claude:opus', 'codex:gpt-5']);
   });
 
+  test('keeps two model slots exposed by the same provider distinct', () => {
+    const models = 'codex:gpt-5.6-sol:xhigh,codex:claude-sonnet-5';
+    const r = panelRaw(['review', 'target', '--models', models]);
+    expect(r.status).toBe(0);
+    expect(latestVerdict().models).toEqual(models.split(','));
+  });
+
   test('applies model_overrides from config to bare names', () => {
     writeProjectConfig({ models: ['claude', 'codex'], model_overrides: { codex: 'gpt-5' } });
     const r = panelRaw(['review', 'target']);
@@ -3170,6 +3177,15 @@ describe('preflight (live model check, stubbed)', () => {
     expect(out.results[0].label).toBe('claude:some-model');
     expect(out.results[0].model).toBe('some-model');
     expect(out.results[0].status).toBe('ok');
+  });
+
+  test('preflight probes every same-provider model slot with distinct labels', () => {
+    const models = 'codex:gpt-5.6-sol:xhigh,codex:claude-sonnet-5';
+    const r = panelRaw(['preflight', '--models', models, '--json']);
+    const out = JSON.parse(r.stdout);
+    expect(out.ok).toBe(2);
+    expect(out.total).toBe(2);
+    expect(out.results.map((x) => x.label)).toEqual(models.split(','));
   });
 });
 

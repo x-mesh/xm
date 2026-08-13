@@ -116,11 +116,10 @@ These are NOT in the default preset — invoke explicitly: `--lenses "silent-fai
 
 ## Phase 3: REVIEW
 
-> **Cross-vendor mode (`--cross-vendor`):** this single-vendor Claude fan-out is replaced by
-> per-lens cross-vendor runs through the x-panel engine (`xm panel … --review-prompt-file
-> lenses/{lens}.md --lens-tag {lens} --models <detected vendors>`). See the "Cross-Vendor Mode"
-> section in `SKILL.md` for the probe → fallback → per-lens → synthesize flow. The rest of this
-> Phase 3 description applies to the default single-vendor path.
+> **Panel backend (`--cross-vendor`):** this current-runtime fan-out is replaced, not followed, by
+> per-lens x-panel runs. Exact slots come from machine-local `review.models` when present; otherwise
+> ready providers are detected. See "Multi-Model Panel Backend" in `SKILL.md`. The rest of this
+> Phase 3 description applies to the default current-runtime path.
 
 Fan-out — send the diff + dedicated perspective prompt to each agent simultaneously.
 
@@ -166,15 +165,13 @@ Agent tool 1: {
   description: "x-review: security",
   subagent_type: "general-purpose",
   run_in_background: false,
-  prompt: "{universal_principles}\n\n## Code Review: Security\n\n{diff_content}\n\n[lenses/security.md body]",
-  model: "sonnet"
+  prompt: "{universal_principles}\n\n## Code Review: Security\n\n{diff_content}\n\n[lenses/security.md body]"
 }
 Agent tool 2: {
   description: "x-review: logic",
   subagent_type: "general-purpose",
   run_in_background: false,
-  prompt: "{universal_principles}\n\n## Code Review: Logic\n\n{diff_content}\n\n[lenses/logic.md body]",
-  model: "sonnet"
+  prompt: "{universal_principles}\n\n## Code Review: Logic\n\n{diff_content}\n\n[lenses/logic.md body]"
 }
 ... (N agents)
 ```
@@ -183,6 +180,12 @@ Agent tool 2: {
 prompt, not from a specialized agent type. Do NOT name a plugin-qualified subagent type
 (e.g. `oh-my-claudecode:code-reviewer`) — an agent type the host does not have fails the
 spawn, and x-review declares no third-party plugin dependency.
+
+**Reviewer model routing:** omit the Agent `model` parameter unless the user or effective reviewer
+configuration explicitly pins it. Under default/max this inherits the session/runtime model; an
+economy profile may resolve to its configured lower tier. A standalone CLI escape hatch must carry
+the same effective reviewer model and may never silently substitute Sonnet. Disclose the resolved
+model when the runtime exposes it.
 
 **Recursion guard (mandatory).** A `general-purpose` lens agent has the full tool set, including
 Skill and Agent. Handed a prompt that reads "## Code Review: Security", it can decide the right
@@ -281,7 +284,7 @@ assuming the snippet exists.
 ### 2. Deduplicate + Consensus Confidence
 
 - If different agents report the same issue at the same `file:line` → merge into one and preserve every source identity.
-- Source identity is the lens in single-vendor mode (`logic`, `errors`) and `vendor:lens` in cross-vendor mode (`codex:logic`, `claude:logic`). Repeated agents for the same lens/vendor count once; redundancy is not independent corroboration.
+- Source identity is the lens in current-runtime mode (`logic`, `errors`) and `model-label:lens` in panel mode (`codex:gpt-5.6-sol:xhigh:logic`, `codex:claude-sonnet-5:logic`). Repeated agents for the same lens/model label count once; shared provider names do not collapse distinct model slots.
 - Preserve the highest severity assigned by any source as the candidate severity for Challenge. **Never raise severity because sources agree.** Severity answers impact (what breaks and how badly); agreement answers confidence that the claim is real.
 
 **Consensus confidence rules:**

@@ -178,9 +178,9 @@ Options:
                                 Output format (default: markdown)
   --agents N                    Number of review agents (default: from shared config)
   --thorough                    Enhanced recall: dedicated recall agent, 10 observations max
-  --cross-vendor                Run each lens across MULTIPLE model vendors (claude+codex+cursor…)
-                                via the x-panel engine — real cross-vendor consensus + diversity.
-                                Opt-in; falls back to single-vendor when <2 vendor CLIs installed.
+  --cross-vendor                Replace Phase 3 with the x-panel multi-model backend. Exact slots
+                                may come from review.models; otherwise ready providers are detected.
+                                Opt-in; falls back loudly when fewer than 2 model slots are ready.
 
 Lenses (7 by default, listed in the priority order used when --agents is smaller):
   security       Injection, auth, secrets, OWASP Top 10
@@ -241,14 +241,17 @@ This is not optional. The next session's Smart Router reads `xm last review --js
 
 ---
 
-## Cross-Vendor Mode (opt-in)
+## Multi-Model Panel Backend (opt-in)
 
-By default Phase 3 fans out single-vendor Claude agents (one per lens). With `--cross-vendor`,
-each lens is reviewed by MULTIPLE model vendors (claude + codex + cursor + …) through the
-x-panel engine, so findings carry real cross-vendor **consensus** (how many vendors independently
-agreed) and **diversity** (what only one vendor caught). A single-vendor harness structurally
-cannot produce this — it is x-review's edge over Claude-only review (e.g. `/code-review ultra`
-runs Claude alone).
+By default Phase 3 fans out reviewers in the current runtime (one per lens). With
+`--cross-vendor`, x-panel replaces that Phase 3 fan-out and runs each lens across multiple model
+slots. Slots may be different providers or different models exposed by one local gateway. Report
+the latter accurately as multi-model, not multi-vendor; both provide consensus and diversity.
+
+**Ownership boundary:** x-review remains the sole review orchestrator and owns target selection,
+lenses, report validation, severity, lifecycle, verdict, and convergence. x-panel is only the Phase
+3 execution backend. `/xm:panel review` routes here; it must not run a native panel after x-review,
+and native `xm panel <target>` does not replace x-review artifacts.
 
 > **⚠ Call `xm panel …` directly via the dispatcher (Bash) — do NOT import anything.** Same
 > dispatcher-first rule as elsewhere; a fresh shell each Bash call means no helper functions.
@@ -256,22 +259,31 @@ runs Claude alone).
 Trigger: `--cross-vendor` flag, or natural language ("여러 모델로 리뷰", "다른 모델로 교차검증",
 "cross-vendor review"). **Config default:** with neither `--cross-vendor` nor `--no-cross-vendor`,
 resolve `.xm/config.json` `cross_vendor.review` ?? `cross_vendor.default` ?? false — if true, default
-to cross-vendor (still needs ≥2 ready vendors; `--no-cross-vendor` forces single-vendor for one run).
+to the panel backend (`--no-cross-vendor` forces the current-runtime path for one run). Product
+default remains false; configuring `review.models` alone never enables it.
 
-Phase 3 (cross-vendor) replaces the Claude fan-out with:
+The Phase 3 panel backend replaces the current-runtime fan-out with:
 
-1. **Probe** ready vendors — installed AND ready — authenticated or assumed-ready (decide fallback BEFORE spending tokens):
+1. **Resolve and probe model slots before spending review tokens.**
+   - If merged config contains a non-empty `review.models` array, preserve those exact
+     `provider:model[:effort]` strings as `REVIEW_MODELS` and run `xm panel preflight --models
+     "$REVIEW_MODELS" --json`. Resolve the merged value through `xm config get review.models`
+     (project config overrides global config); do not read only one config file. Require at least two distinct successful
+     labels; two slots may share a provider. Do not replace this machine-local list with product
+     defaults.
+   - Otherwise detect installed + ready providers:
    ```bash
    xm panel detect --auth --json   # available = installed AND ready (authed, or assumed-ready like agy w/ creds; skips logged-out)
    ```
-2. **Loud fallback (never silent — Lesson L6):** if fewer than 2 vendors are ready, run the
-   normal single-vendor Claude flow and tell the user: "cross-vendor requested but only N
-   vendor(s) ready (installed + signed in) (<list>) — running single-vendor; run `xm panel doctor`
-   to check auth, or install another CLI (codex/cursor)."
-3. **Per-lens cross-vendor review.** Cost = lenses × vendors × 2 rounds, so default to `--preset
+   Join the resulting `available` entries into `REVIEW_MODELS`. From this point onward both paths
+   use the same variable, so configured slots cannot accidentally be replaced by auto-detection.
+2. **Loud fallback (never silent — Lesson L6):** if fewer than two distinct model labels are ready,
+   run the normal current-runtime flow and name the failed/missing slots. Suggest `xm panel
+   preflight --models …` for configured slots or `xm panel doctor` for auto-detected providers.
+3. **Per-lens panel review.** Cost = lenses × model slots × panel rounds, so default to `--preset
    quick` (security + logic) unless the user widens it; announce the model set + rough cost first.
-   - **Use the detected vendors** — derive `--models` from step 1's `available` array, NOT a
-     hardcoded set (a fixed `claude,codex,cursor` fails when the user has, say, claude+kiro).
+   - **Use configured slots when present; otherwise use detected providers** — never hardcode a
+     roster.
      `available` is a JSON array, so comma-join it with `jq` (piping the raw array through
      `tr` leaves the brackets/quotes in place and breaks `--models`).
    - **Pass the Phase-1 target explicitly** — write the diff/target that Phase 1 (TARGET) resolved
@@ -283,7 +295,7 @@ Phase 3 (cross-vendor) replaces the Claude fan-out with:
    xm panel <phase1-target-tmp> \
      --review-prompt-file <lens-prompt-tmp> \
      --lens-tag <lens> \
-     --models "$(xm panel detect --auth --json | jq -r '.available | join(",")')" --json
+     --models "$REVIEW_MODELS" --json
    ```
    Each run writes `.xm/review/<run>/verdict.json` (consensus[], confirmed[], contested[], by_model, usage).
    **Check `by_model[*].r1` before trusting coverage**: a model with `r1: "failed"` (round-1 output
@@ -291,14 +303,26 @@ Phase 3 (cross-vendor) replaces the Claude fan-out with:
    contribute to this verdict — report coverage as N-1/M, never "all models agreed", and read that
    model's `.xm/review/<run>/<model>.r1.json` raw for findings the parser could not lift.
 4. **Synthesize (Phase 4)** across lenses, feeding into the standard Phase 4 pipeline (CoVe /
-   challenge / verdict): a finding's confidence scales with `consensus` (N/M vendors agreed) —
-   1-vendor findings are diversity (keep, do not drop), multi-vendor are high-confidence. **Also
-   surface `contested[]`** (one vendor raised, another refuted): vendor disagreement is a signal to
-   show the user, NOT a silent drop (false-negative risk in review). Note which vendors raised each
+   challenge / verdict): a finding's confidence scales with `consensus` (N/M model sources agreed) —
+   single-source findings are diversity (keep, do not drop), multi-source findings are
+   high-confidence. **Also surface `contested[]`** (one model raised, another refuted): model
+   disagreement is a signal to show the user, NOT a silent drop (false-negative risk in review).
+   Note which model labels raised each
    finding, then map to LGTM / Request Changes / Block. Once the verdict is set, run the same
    mandatory `xm trace record review --ref <reviewed HEAD sha> --status <verdict>` (see Verdict Recording).
 
-Single-vendor remains the default for everyone; cross-vendor is purely additive.
+The current-runtime path remains the product default. Machine-local `review.models` only selects
+participants after panel mode is explicitly/configurationally enabled.
+
+## Review Convergence Policy
+
+- The first review of a target is full. After Request Changes/Block, authorize one bounded
+  `fix_now` pass through the Review-Fix Gate, then re-review only the fix delta since
+  `last-result.json.reviewed_commit` while retaining the original file coverage and byte receipts.
+- One automatic re-review is the default maximum. If it finds a new Critical/High, stop and report
+  it; do not start another edit/review loop automatically. Newly discovered Medium/Low items are
+  backlog unless they invalidate the current fix. A user may explicitly request another/full run.
+- Never append a native panel run as an extra review after either path.
 
 ---
 

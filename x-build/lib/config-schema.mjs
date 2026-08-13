@@ -171,6 +171,14 @@ export const SCHEMA = [
     description: 'x-review 렌즈 크로스벤더 여부 (미설정=cross_vendor.default)',
   },
   {
+    key: 'review.models',
+    group: 'cross_vendor',
+    type: 'array',
+    scope: 'either',
+    default: [],
+    description: 'x-review panel 백엔드 전용 provider:model[:effort] 슬롯 — 2개 이상일 때 명시된 모델을 그대로 사용; 미설정 시 ready provider 자동 감지',
+  },
+  {
     key: 'cross_vendor.solver',
     group: 'cross_vendor',
     type: 'boolean',

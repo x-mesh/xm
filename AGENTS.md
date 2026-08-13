@@ -19,8 +19,8 @@ Agent primitives are handled by `x-agent`; strategies by `x-op`; project lifecyc
 | se | sonnet | Implementation, refactoring, testing |
 | sre | sonnet | Infrastructure, monitoring, SLO, incidents |
 | architect | opus | System design, trade-offs, ADR |
-| reviewer | sonnet | Code review, quality, maintainability |
-| security | sonnet | OWASP, vulnerabilities, auth/authz |
+| reviewer | profile/session | Code review, quality, maintainability |
+| security | profile/session | OWASP, vulnerabilities, auth/authz |
 | debugger | sonnet | Error tracing, root cause, regression isolation |
 | optimizer | sonnet | Performance profiling, caching, query tuning |
 | documenter | haiku | API docs, README, changelog, onboarding |
@@ -102,4 +102,3 @@ decisions, and open questions in plain markdown.
 
 If `xm` is not on PATH, the CLI is at
 `~/.claude/plugins/cache/xm/{x-recall,recall,xm}/*/lib/x-recall-cli.mjs` — call it with `node`.
-

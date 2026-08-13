@@ -15,9 +15,9 @@ x-build verify-review-fix --init
 # edit .xm/review/triage.json
 x-build verify-review-fix
 
-# Then apply only fix_now changes, run quality, and re-review
+# Then apply only fix_now changes, run quality, and re-review the fix delta once
 x-build quality
-/xm:review diff
+/xm:review diff <last-result.reviewed_commit>
 ```
 
 ## x-build Verdict-to-Gate Mapping
@@ -27,6 +27,18 @@ x-build quality
 | LGTM | `x-build gate pass "x-review LGTM"` |
 | Request Changes | Run Review-Fix Gate, apply only triaged `fix_now` changes, then re-review |
 | Block | `x-build gate fail "Critical issues found"` — blocks phase next |
+
+## Bounded Convergence
+
+The initial run reviews the complete target. The Review-Fix Gate then permits one bounded fix pass
+and one automatic re-review of the delta since `.xm/review/last-result.json.reviewed_commit`; the
+original reviewed-file coverage and lifecycle byte receipts remain authoritative. Do not run a
+native x-panel review after x-review, and do not restart the full PR review after every fix.
+
+If that final re-review introduces a new Critical/High, stop and report it instead of opening
+another automatic edit/review round. Newly discovered Medium/Low findings go to `x-build later`
+unless they invalidate the current fix. Only an explicit user request may widen the scope or add
+another/full review round.
 
 ## Review-Fix Gate
 
