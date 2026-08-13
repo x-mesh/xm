@@ -168,7 +168,7 @@ if (process.env[`X_PANEL_EMPTY_ONCE_${envModel}`]) {
 
 // Emit valid JSON but exit non-zero — a crashed provider whose output still
 // contains JSON must be treated as FAILURE, not a successful review.
-if (process.env[`X_PANEL_EXIT1_${envModel}`]) {
+if (process.env[`X_PANEL_EXIT1_${envModel}`] || (isRefute && process.env[`X_PANEL_EXIT1_R2_${envModel}`])) {
   const payload = JSON.stringify({ findings: [] });
   if (stream) emitStream(model, payload);
   else emitRaw(model, payload);
@@ -253,7 +253,13 @@ if (isFollowup) {
   // Test hook: override the findings' evidence text (exercises evidence travel/truncation
   // in the round-2 refute prompts).
   const ev = process.env[`X_PANEL_EVIDENCE_${envModel}`] || 'ev';
-  const findings = model === 'claude'
+  const many = Number(process.env[`X_PANEL_MANY_FINDINGS_${envModel}`] || 0);
+  const findings = Number.isFinite(many) && many > 0
+    ? Array.from({ length: many }, (_, i) => ({
+        severity: 'high', file: `src/f${i}.js`, line: i + 1,
+        claim: `finding ${i} ${'c'.repeat(180)}`, evidence: 'e'.repeat(500),
+      }))
+    : model === 'claude'
     ? [
         { severity: 'high', file: 'a.js', line: 1, claim: 'shared issue', evidence: ev },
         { severity: 'low', file: 'b.js', line: 2, claim: 'claude-only issue', evidence: ev },
