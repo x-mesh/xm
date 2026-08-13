@@ -1457,9 +1457,11 @@ If there are no real issues, return {"findings":[]}.`;
   });
 
   test('cross agy handoff: oversized prompt → agy reads a file, others stay inline', () => {
-    // 600KB: above agy's cap (128KiB → handoff) AND above the 512KiB inline budget (→ ARG_MAX guard).
-    const big = 'diff --git a/x b/x\n' + 'x'.repeat(600 * 1024);
+    // Keep argv below the host's per-argument ceiling; lower the configurable
+    // thresholds so this still exercises both the agy handoff and inline-budget warning.
+    const big = 'diff --git a/x b/x\n' + 'x'.repeat(48 * 1024);
     const dump = join(DIR, 'cross-dump');
+    writeProjectConfig({ agy_inline_max_bytes: 16 * 1024, diff_inline_max_bytes: 32 * 1024 });
     const r = panelRaw(['cross', '--models', 'claude,agy', '--prompt', big, '--json'],
       { X_PANEL_CMD_AGY: STUB, X_PANEL_DUMP_CROSS: dump });
     expect(r.status).toBe(0);
@@ -1475,7 +1477,7 @@ If there are no real issues, return {"findings":[]}.`;
     expect(agySent.length).toBeLessThan(1000);
     // claude still got the full inline prompt (no handoff for a provider that can't read files here).
     const claudeSent = readFileSync(`${dump}.CLAUDE`, 'utf8');
-    expect(claudeSent.length).toBeGreaterThan(600 * 1024);
+    expect(claudeSent.length).toBeGreaterThan(48 * 1024);
     // Reductions/handoffs MUST stay loud (Lesson L6) — assert BOTH warnings actually fire.
     expect(r.stderr).toContain('handing agy the whole prompt as a file');
     expect(r.stderr).toContain('exceeds the inline budget'); // ARG_MAX guard for the inline (claude) provider
@@ -1492,8 +1494,9 @@ If there are no real issues, return {"findings":[]}.`;
   });
 
   test('review agy handoff: oversized target → agy reads target.patch in BOTH rounds, claude stays inline', () => {
-    const bigTarget = 'diff --git a/x b/x\n' + 'y'.repeat(200 * 1024); // > AGY_INLINE_MAX_BYTES
+    const bigTarget = 'diff --git a/x b/x\n' + 'y'.repeat(48 * 1024);
     const r1 = join(DIR, 'rev-r1'), r2 = join(DIR, 'rev-r2');
+    writeProjectConfig({ agy_inline_max_bytes: 16 * 1024 });
     const r = review([bigTarget, '--models', 'claude,agy'],
       { X_PANEL_CMD_AGY: STUB, X_PANEL_DUMP_R1: r1, X_PANEL_DUMP_R2: r2 });
     expect(r.status).toBe(0);
@@ -1506,7 +1509,7 @@ If there are no real issues, return {"findings":[]}.`;
     const agyR1 = readFileSync(`${r1}.AGY`, 'utf8');
     expect(agyR1).toContain('target.patch');
     expect(agyR1.length).toBeLessThan(2000);
-    expect(readFileSync(`${r1}.CLAUDE`, 'utf8').length).toBeGreaterThan(200 * 1024);
+    expect(readFileSync(`${r1}.CLAUDE`, 'utf8').length).toBeGreaterThan(48 * 1024);
     // Round 2 (refute): agy has no session, so it MUST be re-pointed at the file, not the inline diff.
     const agyR2 = readFileSync(`${r2}.AGY`, 'utf8');
     expect(agyR2).toContain('target.patch');

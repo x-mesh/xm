@@ -539,8 +539,15 @@ export function cmdClose(args) {
   const phaseDurations = PHASES.map(phase => readJSON(phaseStatusPath(project, phase.id)))
     .filter(status => status?.started_at && status?.completed_at)
     .map(status => new Date(status.completed_at) - new Date(status.started_at));
+  // `total === done` alone reads 0 === 0 as success, and close is gateless, so
+  // a project that picked a profile at `plan` and then closed without ever
+  // adding a task counted as a completed build and pushed completion_rate up.
+  // (A project that skips `plan` has no profile and is excluded from the rate
+  // either way — the inflation needs the profile.) A build that produced
+  // nothing did not complete; task_count stays on the payload so a consumer can
+  // still tell vacuous from failed.
   recordEffectiveness(project, 'build_complete', {
-    success: total === done, task_count: total, completed: done,
+    success: total > 0 && total === done, task_count: total, completed: done,
     duration_ms: phaseDurations.reduce((sum, value) => sum + value, 0),
   });
   console.log(`✅ Project "${project}" closed.`);

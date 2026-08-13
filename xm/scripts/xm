@@ -135,7 +135,16 @@ _xm_init_project() {
     echo "  Update xm: xm update" >&2
     exit 1
   fi
-  node "$libPath/x-build-cli.mjs" init "$name" "$@"
+  # The umbrella CLI accepts XM_ROOT as the repository-local state root. x-build
+  # uses X_BUILD_ROOT instead, so bridge the two explicitly; otherwise `xm init`
+  # invoked through a wrapper/test with XM_ROOT set writes into whichever repo
+  # resolveXmRoot() happens to discover from the dispatcher source tree.
+  local buildRoot="${X_BUILD_ROOT:-${XM_ROOT:+$XM_ROOT/build}}"
+  if [ -n "$buildRoot" ]; then
+    X_BUILD_ROOT="$buildRoot" node "$libPath/x-build-cli.mjs" init "$name" "$@"
+  else
+    node "$libPath/x-build-cli.mjs" init "$name" "$@"
+  fi
   # self_register skips CMD=init (it also serves the global-setup route), so the
   # project route registers explicitly. Creation and registration are one user
   # contract: make a failed registry write visible instead of silently leaving

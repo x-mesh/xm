@@ -102,6 +102,8 @@ describe('x-solver SKILL.md structure', () => {
 
 describe('x-review SKILL.md structure', () => {
   const content = readSkill('x-review');
+  const workflow = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'review-workflow.md'), 'utf8');
+  const dataDirectory = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'data-directory.md'), 'utf8');
 
   test('Smart Router detects PR, branch, and main', () => {
     expect(content).toContain('Smart Router');
@@ -147,6 +149,16 @@ describe('x-review SKILL.md structure', () => {
     expect(content).toContain('CoVe-downgraded');
   });
 
+  test('consensus changes confidence, never severity', () => {
+    expect(content).toContain('agreement never raises severity');
+    expect(workflow).toContain('Never raise severity because sources agree');
+    expect(workflow).toContain('A Low reported independently by');
+    expect(workflow).not.toContain('Promote severity one level');
+    expect(workflow).toContain('strongly-corroborated');
+    expect(dataDirectory).toContain('\"confidence\": \"corroborated\"');
+    expect(dataDirectory).toContain('\"source_count\": 2');
+  });
+
   test('CoVe uses agent snippets, not file re-reads', () => {
     expect(content).toContain('do not re-read the file');
     expect(content).toContain('snippet');
@@ -166,6 +178,22 @@ describe('x-review SKILL.md structure', () => {
     expect(content).toContain('last-result.md');
     expect(content).toContain('history/');
     expect(content).toContain('reviewed_commit');
+  });
+
+  test('review artifacts bind review-fix to Phase-1 target bytes', () => {
+    expect(content).toContain('reviewed_files_all');
+    expect(content).toContain('reviewed_file_snapshots');
+    expect(workflow).toContain('Capture these now, not');
+    expect(workflow).toContain('refuses stale findings');
+    expect(dataDirectory).toContain('raw bytes with SHA-256');
+    expect(dataDirectory).toContain('not eligible for review-fix');
+  });
+
+  test('review-fix documents byte-bound finding lifecycle', () => {
+    expect(workflow).toContain('open → fix_authorized → fixed → reverified');
+    expect(workflow).toContain('--outcome resolved');
+    expect(dataDirectory).toContain('finding-lifecycle.json');
+    expect(dataDirectory).toContain('stable content-derived `finding_id`');
   });
 
   test('contains review-fix triage contract', () => {

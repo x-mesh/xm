@@ -141,6 +141,10 @@ mkdir -p "$RUN_DIR/reports"
 # Write run.json with schema_version: 1, TASK_ID, TARGET_HASH, and expected_reports.
 # Each expected_reports entry is { "report_id": "security-1", "lens": "security" }.
 ```
+At the same Phase-1 boundary, resolve the complete target file list and snapshot each current
+file's raw-byte SHA-256 as `reviewed_files_all[]` + `reviewed_file_snapshots[]` for the final
+`last-result.json`. Deleted/absent paths use `exists: false, sha256: null`. Capture these now, not
+after review, so concurrent workspace edits make the later review-fix freshness gate fail closed.
 
 `run.json` is the dispatch manifest described by `references/lens-report-contract.md`. Append
 that contract to every lens prompt with the literal `task_id`, `target_hash`, `report_id`, and
@@ -274,24 +278,24 @@ Skip `[Info]` lines. The `Code` line is what step 2.5 verifies against — a fin
 arrives without one cannot be self-verified cheaply, so track it as snippet-less rather than
 assuming the snippet exists.
 
-### 2. Deduplicate + Consensus Promotion
+### 2. Deduplicate + Consensus Confidence
 
-- If different agents report the same issue at the same `file:line` → merge into one and list all source lenses
-- Merged findings are marked as "consensus"
+- If different agents report the same issue at the same `file:line` → merge into one and preserve every source identity.
+- Source identity is the lens in single-vendor mode (`logic`, `errors`) and `vendor:lens` in cross-vendor mode (`codex:logic`, `claude:logic`). Repeated agents for the same lens/vendor count once; redundancy is not independent corroboration.
+- Preserve the highest severity assigned by any source as the candidate severity for Challenge. **Never raise severity because sources agree.** Severity answers impact (what breaks and how badly); agreement answers confidence that the claim is real.
 
-**Consensus promotion rules:**
-| Agent Count | Action |
-|-------------|--------|
-| 1 | Keep original severity |
-| 2 | Promote severity one level (Medium → High) + `[consensus]` tag |
-| 3+ | Promote one level + `[strong consensus]` tag; promote to Critical only when the original was already High |
+**Consensus confidence rules:**
+| Distinct source count | `confidence` | Tag | Effect |
+|----------------------:|--------------|-----|--------|
+| 1 | `single-source` | none | Normal Challenge path |
+| 2 | `corroborated` | `[consensus]` | Prioritize for verification and sort first within the same severity |
+| 3+ | `strongly-corroborated` | `[strong consensus]` | Highest verification priority; still no severity change |
 
-Agreement is evidence that the finding is **real**, not that it is **severe** — severity still
-answers "what breaks, and how badly". Jumping straight to Critical inverted that: with the
-default 7 lenses, one missing error path is routinely flagged at the same line by `errors`,
-`logic`, and `silent-failures`, so three agreeing Lows forced a Block on an issue all three
-rated Low. Promotion caps at Critical. Order: Low → Medium → High → Critical.
-Preserve pre-promotion severity in parentheses: `[High←Medium] [consensus] file:line — issue`
+Persist `sources`, `source_count`, and `confidence` on the merged finding. Keep the existing
+`consensus` boolean for compatibility (`source_count >= 2`). A Low reported independently by
+three sources remains Low; a single-source High remains High until CoVe/Challenge changes it
+based on reachability and impact. Consensus may affect verification order and the verdict
+rationale, but verdict thresholds continue to consume severity only.
 
 ### 2.5. Self-Verify (Chain-of-Verification)
 
@@ -386,7 +390,7 @@ If nothing found, output: No additional observations.
 ### 4. Sort
 
 Sort by Critical → High → Medium → Low.
-Within the same severity, consensus findings come first.
+Within the same severity, `strongly-corroborated` → `corroborated` → `single-source`.
 
 ### 5. Apply --severity Filter
 
@@ -415,7 +419,8 @@ When the verdict is `Request Changes` or `Block`, the report MUST include a revi
    - `accept_risk` — allowed only with concrete evidence
    - `false_positive` — allowed only with concrete evidence
 5. Review-fix edits are limited to files listed in `.xm/review/triage.json` `fix_scope.allowed_files`.
-6. Unrelated issues discovered during review-fix are not fixed in place. If they do not affect the current fix, capture them with `x-build later add` and continue the current fix.
+6. `verify-review-fix --init` compares every `reviewed_file_snapshots` hash with the workspace and refuses stale findings. The first regular `verify-review-fix` authorizes edits; after that, only `fix_scope.allowed_files` may differ from the reviewed snapshots. Each `fix_now` finding then follows `open → fix_authorized → fixed → reverified`; record the final check with `--reverify <id> --outcome resolved --evidence <text>`. The receipt is bound to current file bytes and becomes stale after another edit.
+7. Unrelated issues discovered during review-fix are not fixed in place. If they do not affect the current fix, capture them with `x-build later add` and continue the current fix.
 
 Recommended gate commands:
 
@@ -454,7 +459,7 @@ Verdict: {LGTM ✅ | Request Changes 🔄 | Block 🚫}
 
 ## Review-Fix Triage Required
 
-Run `x-build verify-review-fix --init`, edit `.xm/review/triage.json`, then run `x-build verify-review-fix` before applying review fixes.
+Run `x-build verify-review-fix --init`, edit `.xm/review/triage.json`, then run `x-build verify-review-fix` before applying review fixes. After each `fix_now` edit, record byte-bound evidence with `x-build verify-review-fix --reverify <F#|finding_id> --outcome resolved|persistent|regression --evidence <text>`.
 
 | Finding | Required? | Allowed Decisions |
 |---------|-----------|-------------------|

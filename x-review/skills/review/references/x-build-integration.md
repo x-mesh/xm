@@ -34,13 +34,14 @@ x-build quality
 
 Required sequence:
 
-1. `x-build verify-review-fix --init` creates `.xm/review/triage.json` from `.xm/review/last-result.json` and records the current changed-file baseline.
+1. `x-build verify-review-fix --init` first verifies the complete `reviewed_files_all` SHA-256 snapshot, then creates `.xm/review/triage.json` and records the current changed-file baseline. Any target-byte change requires a new x-review.
 2. Triage every Medium+ finding:
    - `fix_now` for issues fixed in this loop
    - `backlog` for Medium/Low deferral only
    - `accept_risk` or `false_positive` only with evidence
 3. Keep `fix_scope.allowed_files` narrow. Add test files only when they verify a `fix_now` finding.
-4. Run `x-build verify-review-fix` before and after applying fixes.
+4. Run `x-build verify-review-fix` before applying fixes to authorize the exact triage. Only the authorized `fix_scope.allowed_files` may then differ from the reviewed snapshot. Editing triage invalidates the authorization and requires a fresh pre-fix gate.
+5. After a `fix_now` edit, reverify each finding with `x-build verify-review-fix --reverify <F#|finding_id> --outcome resolved|persistent|regression --evidence <text>`. The byte-bound lifecycle is `open → fix_authorized → fixed → reverified`; later file changes invalidate the receipt, and non-`resolved` outcomes block completion.
 5. Any new changed file outside `fix_scope.allowed_files` after the baseline fails the gate.
 6. Capture unrelated, non-blocking findings with `x-build later add` instead of editing them in the review-fix loop.
 

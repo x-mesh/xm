@@ -38,6 +38,7 @@ function xm(args) {
 }
 
 const projectDir = (name) => join(sandbox, '.xm', 'build', 'projects', name);
+const projectSlug = (name) => name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
 const hookFile = () => join(home, '.claude', 'hooks', 'xm-trace-session.mjs');
 const registryFile = () => join(home, '.xm', 'projects.json');
 
@@ -85,13 +86,13 @@ describe('xm init — project route', () => {
   test('`xm init .` names the project after the current directory', () => {
     const r = xm(['init', '.']);
     expect(r.exitCode).toBe(0);
-    expect(existsSync(join(projectDir(basename(sandbox)), 'manifest.json'))).toBe(true);
+    expect(existsSync(join(projectDir(projectSlug(basename(sandbox))), 'manifest.json'))).toBe(true);
   });
 
   test('`xm init --here` behaves like `xm init .`', () => {
     const r = xm(['init', '--here']);
     expect(r.exitCode).toBe(0);
-    expect(existsSync(join(projectDir(basename(sandbox)), 'manifest.json'))).toBe(true);
+    expect(existsSync(join(projectDir(projectSlug(basename(sandbox))), 'manifest.json'))).toBe(true);
   });
 
   test('a duplicate name fails loudly instead of silently reusing', () => {

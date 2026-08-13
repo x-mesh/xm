@@ -8,10 +8,12 @@ import {
   tasksPath, prdPath, contextDir, phaseDir,
   resolveProject, renderBar,
   runQualityChecks,
-  existsSync, join, resolve, ROOT, repoRoot, parseOptions, spawnSync,
+  existsSync, unlinkSync, realpathSync, join, resolve, ROOT, repoRoot, parseOptions, spawnSync,
 } from './core.mjs';
 import { parsePrdBaseline, computeDrift } from './drift.mjs';
 import { recordEffectiveness } from './effectiveness.mjs';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 // ── cmdQuality ──────────────────────────────────────────────────────
 
@@ -341,6 +343,7 @@ export function cmdVerifyContracts(args) {
 const TRIAGE_REQUIRED_SEVERITY = new Set(['critical', 'high', 'medium']);
 const BLOCKING_SEVERITY = new Set(['critical', 'high']);
 const VALID_TRIAGE_DECISIONS = new Set(['fix_now', 'backlog', 'accept_risk', 'false_positive']);
+const VALID_REVERIFY_OUTCOMES = new Set(['resolved', 'persistent', 'regression']);
 
 function normalizeSeverity(value) {
   return String(value || '').toLowerCase();
@@ -354,8 +357,17 @@ function findingId(index) {
   return `F${index + 1}`;
 }
 
+function stableFindingId(finding) {
+  const identity = {
+    file: finding.file || null,
+    lens: finding.lens || null,
+    summary: findingSummary(finding).trim().replace(/\s+/g, ' '),
+  };
+  return `rf_${sha256(JSON.stringify(identity)).slice(0, 16)}`;
+}
+
 function findingSummary(finding) {
-  return finding.summary || finding.description || finding.title || '';
+  return finding.summary || finding.claim || finding.description || finding.title || '';
 }
 
 function reviewDir() {
@@ -394,13 +406,101 @@ function collectChangedFilesSinceReview(reviewedCommit) {
   return [...changed].sort();
 }
 
+function sha256(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function safeWorkspacePath(file) {
+  const root = resolve(workspaceRoot());
+  const abs = resolve(root, String(file || ''));
+  if (abs === root || (!abs.startsWith(`${root}/`) && !abs.startsWith(`${root}\\`))) return null;
+  return abs;
+}
+
+function currentFileSnapshot(file) {
+  const abs = safeWorkspacePath(file);
+  if (!abs) return { file, invalid: true, exists: false, sha256: null };
+  if (!existsSync(abs)) return { file, exists: false, sha256: null };
+  try {
+    const root = realpathSync(workspaceRoot());
+    const real = realpathSync(abs);
+    if (real === root || (!real.startsWith(`${root}/`) && !real.startsWith(`${root}\\`))) {
+      return { file, invalid: true, exists: true, sha256: null };
+    }
+    return { file, exists: true, sha256: sha256(readFileSync(real)) };
+  } catch {
+    return { file, invalid: true, exists: true, sha256: null };
+  }
+}
+
+function assessReviewFreshness(review) {
+  const files = Array.isArray(review?.reviewed_files_all)
+    ? [...new Set(review.reviewed_files_all.filter(file => typeof file === 'string' && file.trim()).map(file => file.trim()))].sort()
+    : [];
+  const snapshots = Array.isArray(review?.reviewed_file_snapshots) ? review.reviewed_file_snapshots : [];
+  const expectedByFile = new Map();
+  const failures = [];
+
+  if (files.length === 0) failures.push('last-result.json is missing reviewed_files_all; re-run x-review');
+  for (const snapshot of snapshots) {
+    const file = typeof snapshot?.file === 'string' ? snapshot.file.trim() : '';
+    if (!file || expectedByFile.has(file)) {
+      failures.push(`last-result.json has an invalid or duplicate reviewed_file_snapshots entry: ${file || '<missing file>'}`);
+      continue;
+    }
+    expectedByFile.set(file, snapshot);
+  }
+
+  const changed = [];
+  const canonical = [];
+  for (const file of files) {
+    const expected = expectedByFile.get(file);
+    if (!expected) {
+      failures.push(`last-result.json has no reviewed_file_snapshots entry for ${file}; re-run x-review`);
+      continue;
+    }
+    const expectedExists = expected.exists === true;
+    const expectedSha = expectedExists && typeof expected.sha256 === 'string' ? expected.sha256.toLowerCase() : null;
+    if (expected.exists !== true && expected.exists !== false) {
+      failures.push(`reviewed_file_snapshots entry has invalid exists value: ${file}`);
+      continue;
+    }
+    if (expectedExists && !/^[0-9a-f]{64}$/.test(expectedSha || '')) {
+      failures.push(`reviewed_file_snapshots entry has invalid sha256: ${file}`);
+      continue;
+    }
+    if (!expectedExists && expected.sha256 != null) {
+      failures.push(`reviewed_file_snapshots entry for absent file must use sha256=null: ${file}`);
+      continue;
+    }
+    const current = currentFileSnapshot(file);
+    if (current.invalid) {
+      failures.push(`reviewed file path is unsafe or unreadable: ${file}`);
+      continue;
+    }
+    canonical.push({ file, exists: expectedExists, sha256: expectedSha });
+    if (current.exists !== expectedExists || current.sha256 !== expectedSha) changed.push(file);
+  }
+
+  for (const file of expectedByFile.keys()) {
+    if (!files.includes(file)) failures.push(`reviewed_file_snapshots contains a file outside reviewed_files_all: ${file}`);
+  }
+
+  return {
+    files,
+    changed: [...new Set(changed)].sort(),
+    failures,
+    digest: failures.length === 0 ? `sha256:${sha256(JSON.stringify(canonical))}` : null,
+  };
+}
+
 function toTriageMap(triage) {
   const items = triage?.target_findings || triage?.findings || [];
   const map = new Map();
   if (Array.isArray(items)) {
     for (const item of items) {
-      const id = item.id || item.finding_id;
-      if (id) map.set(id, item);
+      if (item.id) map.set(item.id, item);
+      if (item.finding_id) map.set(item.finding_id, item);
     }
   }
   return map;
@@ -422,6 +522,7 @@ function buildTriageTemplate(review) {
     const severity = normalizeSeverity(finding.severity);
     return {
       id: findingId(index),
+      finding_id: stableFindingId(finding),
       severity,
       file: finding.file || null,
       line: finding.line ?? null,
@@ -438,8 +539,11 @@ function buildTriageTemplate(review) {
     .filter(f => TRIAGE_REQUIRED_SEVERITY.has(f.severity) && f.file)
     .map(f => f.file))].sort();
 
+  const freshness = assessReviewFreshness(review);
   return {
+    initialized_at: new Date().toISOString(),
     reviewed_commit: review.reviewed_commit || null,
+    review_snapshot_digest: freshness.digest,
     verdict: review.verdict || null,
     baseline_changed_files: collectChangedFilesSinceReview(review.reviewed_commit),
     target_findings: targetFindings,
@@ -457,6 +561,101 @@ function buildTriageTemplate(review) {
       'Re-run x-review after review-fix changes',
     ],
   };
+}
+
+function lifecyclePath() {
+  return join(reviewDir(), 'finding-lifecycle.json');
+}
+
+function buildLifecycle(review, triage, freshness) {
+  const triageMap = toTriageMap(triage);
+  const findings = (Array.isArray(review.findings) ? review.findings : []).map((finding, index) => {
+    const id = findingId(index);
+    const findingIdStable = stableFindingId(finding);
+    const item = triageMap.get(findingIdStable) || triageMap.get(id);
+    return {
+      id,
+      finding_id: findingIdStable,
+      severity: normalizeSeverity(finding.severity),
+      file: finding.file || null,
+      line: finding.line ?? null,
+      summary: findingSummary(finding),
+      decision: String(item?.decision || '').trim().toLowerCase(),
+      state: 'open',
+      outcome: null,
+      evidence: null,
+      file_snapshot: null,
+      updated_at: new Date().toISOString(),
+    };
+  });
+  return {
+    schema: 1,
+    reviewed_commit: review.reviewed_commit || null,
+    reviewed_files_all: [...freshness.files],
+    review_snapshot_digest: freshness.digest,
+    triage_digest: `sha256:${sha256(JSON.stringify(triage))}`,
+    updated_at: new Date().toISOString(),
+    findings,
+  };
+}
+
+function lifecycleMatches(lifecycle, review, freshness, triageDigest) {
+  return lifecycle?.schema === 1 &&
+    lifecycle.reviewed_commit === (review.reviewed_commit || null) &&
+    lifecycle.review_snapshot_digest === freshness.digest &&
+    lifecycle.triage_digest === triageDigest &&
+    Array.isArray(lifecycle.findings);
+}
+
+function snapshotMatches(a, b) {
+  return !!a && !!b && a.invalid !== true && b.invalid !== true &&
+    a.file === b.file && a.exists === b.exists && a.sha256 === b.sha256;
+}
+
+function lifecycleFileSnapshot(file, freshness) {
+  if (file) return currentFileSnapshot(file);
+  const current = freshness.files.map(currentFileSnapshot);
+  if (current.some(snapshot => snapshot.invalid)) return { file: null, invalid: true, exists: null, sha256: null };
+  return {
+    file: null,
+    exists: null,
+    sha256: sha256(JSON.stringify(current.map(snapshot => ({ file: snapshot.file, exists: snapshot.exists, sha256: snapshot.sha256 })))),
+  };
+}
+
+function syncLifecycle(lifecycle, required, triageMap, freshness, fixAuthorized) {
+  const changed = new Set(freshness.changed);
+  const now = new Date().toISOString();
+  for (const finding of required) {
+    const findingIdStable = stableFindingId(finding);
+    const item = triageMap.get(findingIdStable) || triageMap.get(finding.id);
+    let row = lifecycle.findings.find(entry => entry.finding_id === findingIdStable || entry.id === finding.id);
+    if (!row) {
+      row = {
+        id: finding.id, finding_id: findingIdStable, severity: finding.severity,
+        file: finding.file || null, line: finding.line ?? null, summary: findingSummary(finding),
+        state: 'open', outcome: null, evidence: null, file_snapshot: null,
+      };
+      lifecycle.findings.push(row);
+    }
+    row.id = finding.id;
+    row.finding_id = findingIdStable;
+    row.decision = String(item?.decision || '').trim().toLowerCase();
+    if (row.decision !== 'fix_now') continue;
+    const current = lifecycleFileSnapshot(row.file, freshness);
+    if (row.state === 'reverified' && snapshotMatches(row.file_snapshot, current)) continue;
+    row.outcome = null;
+    row.evidence = null;
+    row.file_snapshot = null;
+    if (row.file ? changed.has(row.file) : freshness.changed.length > 0) {
+      row.state = 'fixed';
+    } else {
+      row.state = fixAuthorized ? 'fix_authorized' : 'open';
+    }
+    row.updated_at = now;
+  }
+  lifecycle.updated_at = now;
+  return lifecycle;
 }
 
 // ── cmdVerifyDrift ──────────────────────────────────────────────────
@@ -545,11 +744,26 @@ export function cmdVerifyReviewFix(args) {
   const review = readJSON(resultPath);
   const findings = Array.isArray(review?.findings) ? review.findings : [];
   const required = findings
-    .map((finding, index) => ({ ...finding, id: findingId(index), severity: normalizeSeverity(finding.severity) }))
+    .map((finding, index) => ({ ...finding, id: findingId(index), finding_id: stableFindingId(finding), severity: normalizeSeverity(finding.severity) }))
     .filter(f => TRIAGE_REQUIRED_SEVERITY.has(f.severity));
+  const freshness = assessReviewFreshness(review);
 
   if (opts.init) {
-    writeJSON(triagePath, buildTriageTemplate(review));
+    const initFailures = [...freshness.failures];
+    if (freshness.changed.length > 0) {
+      initFailures.push(`Reviewed files changed since x-review: ${freshness.changed.join(', ')}. Re-run x-review before triage.`);
+    }
+    if (initFailures.length > 0) {
+      console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
+      for (const failure of initFailures) console.log(`  - ${failure}`);
+      process.exitCode = 1;
+      return;
+    }
+    const previousGatePath = join(reviewDir(), 'review-fix-gate.json');
+    if (existsSync(previousGatePath)) unlinkSync(previousGatePath);
+    const triage = buildTriageTemplate(review);
+    writeJSON(triagePath, triage);
+    writeJSON(lifecyclePath(), buildLifecycle(review, triage, freshness));
     console.log(`${C.green}Created review-fix triage template:${C.reset} ${triagePath}`);
     console.log('  Edit decisions, allowed_files, and verification before applying review fixes.');
     return;
@@ -557,6 +771,33 @@ export function cmdVerifyReviewFix(args) {
 
   const verdict = normalizeVerdict(review?.verdict);
   if ((verdict === 'lgtm' || verdict === 'pass') && required.length === 0) {
+    const existingTriage = readJSON(triagePath);
+    const existingLifecycle = readJSON(lifecyclePath());
+    const existingGate = readJSON(join(reviewDir(), 'review-fix-gate.json'));
+    const fixNow = (Array.isArray(existingTriage?.target_findings) ? existingTriage.target_findings : [])
+      .filter(item => String(item.decision || '').trim().toLowerCase() === 'fix_now');
+    if (existingLifecycle && fixNow.length > 0) {
+      const rows = Array.isArray(existingLifecycle.findings) ? existingLifecycle.findings : [];
+      const incomplete = fixNow.filter((finding) => {
+        const row = rows.find(item => item.id === finding.id || (finding.finding_id && item.finding_id === finding.finding_id));
+        const current = row ? lifecycleFileSnapshot(row.file, freshness) : null;
+        return row?.state !== 'reverified' || row?.outcome !== 'resolved' || !snapshotMatches(row.file_snapshot, current);
+      });
+      const correlated = existingTriage?.reviewed_commit === (review.reviewed_commit || null)
+        && existingLifecycle.reviewed_commit === existingTriage.reviewed_commit
+        && existingGate?.lifecycle_digest === `sha256:${sha256(JSON.stringify(existingLifecycle))}`
+        && freshness.failures.length === 0
+        && freshness.changed.length === 0
+        && Array.isArray(existingLifecycle.reviewed_files_all)
+        && existingLifecycle.reviewed_files_all.every(file => freshness.files.includes(file));
+      if (!correlated || incomplete.length > 0) {
+        console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
+        if (!correlated) console.log('  - LGTM does not correlate with the authorized finding lifecycle receipt');
+        if (incomplete.length > 0) console.log(`  - LGTM cannot close unresolved or stale finding lifecycle entries: ${incomplete.map(item => item.id || item.finding_id).join(', ')}`);
+        process.exitCode = 1;
+        return;
+      }
+    }
     console.log(`${C.green}Review Fix Gate passed.${C.reset}`);
     console.log('  Last x-review verdict is LGTM and no triage-required findings remain.');
     return;
@@ -564,6 +805,9 @@ export function cmdVerifyReviewFix(args) {
 
   const failures = [];
   const warnings = [];
+  let lifecycle = null;
+  let fixAuthorized = false;
+  let lifecycleSummary = { open: 0, fix_authorized: 0, fixed: 0, reverified: 0 };
 
   if (!existsSync(triagePath)) {
     failures.push(`Missing triage file: ${triagePath}`);
@@ -574,6 +818,56 @@ export function cmdVerifyReviewFix(args) {
     const allowedFiles = getAllowedFiles(triage);
     const verification = getVerificationItems(triage);
     const baselineFiles = new Set(Array.isArray(triage.baseline_changed_files) ? triage.baseline_changed_files : []);
+    const previousGate = readJSON(join(reviewDir(), 'review-fix-gate.json'));
+    const triageDigest = `sha256:${sha256(JSON.stringify(triage))}`;
+    fixAuthorized = (previousGate?.authorized === true || (previousGate?.passed === true && previousGate?.stage === 'ready_for_fix')) &&
+      previousGate?.reviewed_commit === (review.reviewed_commit || null) &&
+      previousGate?.review_snapshot_digest === freshness.digest &&
+      previousGate?.triage_digest === triageDigest;
+
+    lifecycle = readJSON(lifecyclePath());
+    if (!lifecycleMatches(lifecycle, review, freshness, triageDigest)) {
+      lifecycle = buildLifecycle(review, triage, freshness);
+    }
+    const lifecycleDigestBeforeSync = `sha256:${sha256(JSON.stringify(lifecycle))}`;
+    if (previousGate?.lifecycle_digest && previousGate.lifecycle_digest !== lifecycleDigestBeforeSync) {
+      failures.push('finding-lifecycle.json changed since the last review-fix gate; re-run verify-review-fix --init');
+      fixAuthorized = false;
+    }
+    lifecycle = syncLifecycle(lifecycle, required, triageMap, freshness, fixAuthorized);
+
+    if (opts.reverify) {
+      const requested = String(opts.reverify);
+      const outcome = String(opts.outcome || '').trim().toLowerCase();
+      const evidence = String(opts.evidence || '').trim();
+      const row = lifecycle.findings.find(entry => entry.id === requested || entry.finding_id === requested);
+      if (!row) failures.push(`Unknown finding for --reverify: ${requested}`);
+      else if (row.decision !== 'fix_now') failures.push(`${requested}: only fix_now findings can be reverified`);
+      else if (!['fixed', 'reverified'].includes(row.state)) failures.push(`${requested}: finding bytes must change before reverification (current: ${row.state})`);
+      else if (!VALID_REVERIFY_OUTCOMES.has(outcome)) failures.push(`${requested}: --outcome must be resolved, persistent, or regression`);
+      else if (!evidence) failures.push(`${requested}: --evidence is required for reverification`);
+      else {
+        row.state = 'reverified';
+        row.outcome = outcome;
+        row.evidence = evidence;
+        row.file_snapshot = lifecycleFileSnapshot(row.file, freshness);
+        row.reverified_at = new Date().toISOString();
+        row.updated_at = row.reverified_at;
+      }
+    }
+
+    failures.push(...freshness.failures);
+    if (triage.review_snapshot_digest !== freshness.digest) {
+      failures.push('triage.json review_snapshot_digest does not match last-result.json; re-run verify-review-fix --init');
+    }
+    const unauthorizedChanges = fixAuthorized
+      ? freshness.changed.filter(file => !allowedFiles.includes(file))
+      : freshness.changed;
+    if (unauthorizedChanges.length > 0) {
+      failures.push(fixAuthorized
+        ? `Reviewed files changed outside fix_scope.allowed_files: ${unauthorizedChanges.join(', ')}`
+        : `Reviewed files changed before the review-fix gate authorized edits: ${unauthorizedChanges.join(', ')}. Re-run x-review.`);
+    }
 
     if (review.reviewed_commit && triage.reviewed_commit && review.reviewed_commit !== triage.reviewed_commit) {
       failures.push('triage.json reviewed_commit does not match last-result.json reviewed_commit');
@@ -610,7 +904,7 @@ export function cmdVerifyReviewFix(args) {
       }
     }
 
-    if (allowedFiles.length === 0 && required.some(f => triageMap.get(f.id)?.decision === 'fix_now')) {
+    if (allowedFiles.length === 0 && required.some(f => f.file && triageMap.get(f.id)?.decision === 'fix_now')) {
       failures.push('fix_scope.allowed_files must include every file that review fixes may touch');
     }
 
@@ -623,6 +917,7 @@ export function cmdVerifyReviewFix(args) {
       !baselineFiles.has(file) &&
       file !== '.xm/review/triage.json' &&
       file !== '.xm/review/review-fix-gate.json' &&
+      file !== '.xm/review/finding-lifecycle.json' &&
       !file.startsWith('.xm/review/history/') &&
       !allowedFiles.includes(file)
     );
@@ -642,6 +937,38 @@ export function cmdVerifyReviewFix(args) {
     if (baselineOutsideScope.length > 0) {
       warnings.push(`Baseline already includes files outside fix_scope.allowed_files; file-level drift is only enforced for new files: ${baselineOutsideScope.join(', ')}`);
     }
+
+    writeJSON(lifecyclePath(), lifecycle);
+    const fixNowRows = lifecycle.findings.filter(row => row.decision === 'fix_now');
+    lifecycleSummary = Object.fromEntries(['open', 'fix_authorized', 'fixed', 'reverified'].map(state => [state, lifecycle.findings.filter(row => row.state === state).length]));
+    if (fixAuthorized && freshness.changed.length > 0) {
+      for (const row of fixNowRows) {
+        if (row.state !== 'reverified') failures.push(`${row.id}: fix requires explicit reverification`);
+        else if (row.outcome !== 'resolved') failures.push(`${row.id}: reverification outcome is ${row.outcome}; expected resolved`);
+      }
+    }
+  }
+
+  const hasFixedBytes = freshness.changed.length > 0;
+  const resolvedCandidates = lifecycle?.findings?.filter(row => row.decision === 'fix_now') || [];
+  const allResolved = resolvedCandidates.length > 0 && resolvedCandidates.every(row => row.state === 'reverified' && row.outcome === 'resolved');
+  const authorized = fixAuthorized || (!hasFixedBytes && failures.length === 0);
+  const awaitingOnly = failures.length > 0 && failures.every(failure =>
+    /fix requires explicit reverification|reverification outcome is/.test(failure)
+  );
+  const stage = failures.length > 0
+    ? (fixAuthorized && hasFixedBytes && awaitingOnly ? 'awaiting_reverification' : 'blocked')
+    : (fixAuthorized && allResolved ? 'reverified' : 'ready_for_fix');
+  if (lifecycle && authorized && !hasFixedBytes && failures.length === 0) {
+    for (const row of lifecycle.findings) {
+      if (row.decision === 'fix_now' && row.state === 'open') {
+        row.state = 'fix_authorized';
+        row.updated_at = new Date().toISOString();
+      }
+    }
+    lifecycle.updated_at = new Date().toISOString();
+    lifecycleSummary = Object.fromEntries(['open', 'fix_authorized', 'fixed', 'reverified'].map(state => [state, lifecycle.findings.filter(row => row.state === state).length]));
+    writeJSON(lifecyclePath(), lifecycle);
   }
 
   const report = {
@@ -649,9 +976,15 @@ export function cmdVerifyReviewFix(args) {
     reviewed_commit: review.reviewed_commit || null,
     verdict: review.verdict || null,
     triage_required: required.length,
+    stage,
+    authorized,
+    review_snapshot_digest: freshness.digest,
+    triage_digest: existsSync(triagePath) ? `sha256:${sha256(JSON.stringify(readJSON(triagePath)))}` : null,
+    lifecycle_digest: lifecycle ? `sha256:${sha256(JSON.stringify(lifecycle))}` : null,
     passed: failures.length === 0,
     failures,
     warnings,
+    lifecycle: lifecycleSummary,
   };
   writeJSON(join(reviewDir(), 'review-fix-gate.json'), report);
 
@@ -664,5 +997,6 @@ export function cmdVerifyReviewFix(args) {
 
   console.log(`${C.green}Review Fix Gate passed.${C.reset}`);
   console.log(`  Triage-required findings: ${required.length}`);
+  if (stage === 'reverified') console.log(`  Reverified: ${lifecycleSummary.reverified} finding(s) resolved against current file bytes.`);
   for (const warning of warnings) console.log(`  ${C.yellow}Warning:${C.reset} ${warning}`);
 }

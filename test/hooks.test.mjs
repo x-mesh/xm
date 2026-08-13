@@ -31,6 +31,7 @@ afterEach(() => rmSync(DIR, { recursive: true, force: true }));
 
 function writeTriage(obj) { writeFileSync(join(DIR, '.xm', 'review', 'triage.json'), JSON.stringify(obj)); }
 function writeResult(obj) { writeFileSync(join(DIR, '.xm', 'review', 'last-result.json'), JSON.stringify(obj)); }
+function writeLifecycle(obj) { writeFileSync(join(DIR, '.xm', 'review', 'finding-lifecycle.json'), JSON.stringify(obj)); }
 function runHook(hook, input, env = {}) {
   return spawnSync('node', [hook], {
     input: typeof input === 'string' ? input : JSON.stringify(input),
@@ -59,6 +60,19 @@ describe('hook-state (unit)', () => {
     expect(s.unresolvedBlocking).toHaveLength(0); // nothing blocks a stop
     expect(s.active).toBe(false);                 // …and the scope-guard releases (was a permanent lock)
   });
+  test('LGTM cannot release a lifecycle-aware fix until every fix_now is reverified/resolved', () => {
+    writeTriage(ACTIVE_TRIAGE); writeResult(LGTM);
+    writeLifecycle({ schema: 1, findings: [{ id: 'F1', state: 'fixed', outcome: null }] });
+    expect(reviewFixState(DIR).active).toBe(true);
+    expect(reviewFixState(DIR).unresolvedBlocking).toHaveLength(1);
+
+    writeLifecycle({ schema: 1, findings: [{ id: 'F1', state: 'reverified', outcome: 'persistent' }] });
+    expect(reviewFixState(DIR).active).toBe(true);
+
+    writeLifecycle({ schema: 1, findings: [{ id: 'F1', state: 'reverified', outcome: 'resolved' }] });
+    expect(reviewFixState(DIR).active).toBe(false);
+    expect(reviewFixState(DIR).unresolvedBlocking).toHaveLength(0);
+  });
   test('no triage.json → inactive', () => {
     expect(reviewFixState(DIR).active).toBe(false);
   });
@@ -76,6 +90,7 @@ describe('hook-state (unit)', () => {
   test('isProtectedPath: .xm state hard-allowed, but NOT triage.json (F4 + C-a)', () => {
     expect(isProtectedPath('.xm/build/projects/p/later.json')).toBe(true);   // harness state → never self-lock
     expect(isProtectedPath('.xm/review/triage.json')).toBe(false);           // decides the block → not free to edit
+    expect(isProtectedPath('.xm/review/finding-lifecycle.json')).toBe(false); // decides lifecycle completion
     expect(isProtectedPath('.xm/review/last-result.json')).toBe(true);       // its LGTM RELEASES the guard → must stay writable
     expect(isProtectedPath('src/auth.ts')).toBe(false);
   });
@@ -126,6 +141,7 @@ describe('review-fix regressions', () => {
     // (last-result.json is deliberately still writable — see the C-a regression)
     expect(isProtectedPath('.xm/review/triage.json')).toBe(false);
     expect(runHook(SCOPE_HOOK, { tool_name: 'Write', tool_input: { file_path: '.xm/review/triage.json' } }).status).toBe(2);
+    expect(runHook(SCOPE_HOOK, { tool_name: 'Write', tool_input: { file_path: '.xm/review/finding-lifecycle.json' } }).status).toBe(2);
     // …while the rest of .xm/ state stays writable (no self-lock)
     expect(isProtectedPath('.xm/build/projects/p/tasks.json')).toBe(true);
     expect(runHook(SCOPE_HOOK, { tool_name: 'Write', tool_input: { file_path: '.xm/build/projects/p/tasks.json' } }).status).toBe(0);

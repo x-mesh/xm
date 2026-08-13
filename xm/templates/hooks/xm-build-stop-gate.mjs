@@ -42,7 +42,7 @@ async function main() {
     `✋ Blocked by xm-build-stop-gate — unresolved Critical/High review findings.\n\n` +
     `${state.unresolvedBlocking.length} fix_now finding(s) remain and the last x-review is not LGTM:\n` +
     `${lines.join('\n')}\n\n` +
-    `Fix them (edits are limited to the review-fix scope), then re-run x-review until LGTM.\n` +
+    `Fix them within scope, record resolved reverification, then re-run x-review until LGTM.\n` +
     `To stop anyway, set XM_BUILD_HOOKS_OFF=1.\n`
   );
   process.exit(2);

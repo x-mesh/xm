@@ -1408,8 +1408,12 @@ function reviewFixGateData(xmRoot) {
   const reviewDir = safeJoin(xmRoot, 'review');
   const resultPath = reviewDir ? safeJoin(reviewDir, 'last-result.json') : null;
   const triagePath = reviewDir ? safeJoin(reviewDir, 'triage.json') : null;
+  const gatePath = reviewDir ? safeJoin(reviewDir, 'review-fix-gate.json') : null;
+  const lifecyclePath = reviewDir ? safeJoin(reviewDir, 'finding-lifecycle.json') : null;
   const review = resultPath && existsSync(resultPath) ? readJSONFile(resultPath) : null;
   const triage = triagePath && existsSync(triagePath) ? readJSONFile(triagePath) : null;
+  const gate = gatePath && existsSync(gatePath) ? readJSONFile(gatePath) : null;
+  const lifecycle = lifecyclePath && existsSync(lifecyclePath) ? readJSONFile(lifecyclePath) : null;
   const findings = Array.isArray(review?.findings) ? review.findings : [];
   const requiredSeverities = new Set(['critical', 'high', 'medium']);
   const blockingSeverities = new Set(['critical', 'high']);
@@ -1418,6 +1422,12 @@ function reviewFixGateData(xmRoot) {
     .filter(finding => requiredSeverities.has(finding.severity));
   const triageItems = Array.isArray(triage?.target_findings) ? triage.target_findings : Array.isArray(triage?.findings) ? triage.findings : [];
   const triageMap = new Map(triageItems.map(item => [item.id || item.finding_id, item]));
+  const lifecycleItems = Array.isArray(lifecycle?.findings) ? lifecycle.findings : [];
+  const lifecycleMap = new Map();
+  for (const item of lifecycleItems) {
+    if (item.id) lifecycleMap.set(item.id, item);
+    if (item.finding_id) lifecycleMap.set(item.finding_id, item);
+  }
   const decisions = { fix_now: 0, backlog: 0, accept_risk: 0, false_positive: 0, undecided: 0 };
   const failures = [];
 
@@ -1461,11 +1471,36 @@ function reviewFixGateData(xmRoot) {
 
   const allowedFiles = Array.isArray(triage?.fix_scope?.allowed_files) ? triage.fix_scope.allowed_files : [];
   const verification = Array.isArray(triage?.verification) ? triage.verification : Array.isArray(triage?.fix_scope?.verification) ? triage.fix_scope.verification : [];
-  const status = failures.length > 0
+  let status = failures.length > 0
     ? 'blocked'
     : required.length === 0 && ['lgtm', 'pass'].includes(verdict)
       ? 'passed'
       : 'ready';
+
+  // The CLI owns freshness/scope authorization. Do not let this lightweight
+  // dashboard preview contradict a fail-closed `verify-review-fix` receipt. A
+  // receipt is reusable only for the exact review + triage bytes it validated;
+  // hand-editing triage after authorization must immediately show blocked.
+  if (gate && triage && gate.reviewed_commit === (review.reviewed_commit || null)) {
+    const triageDigest = `sha256:${createHash('sha256').update(JSON.stringify(triage)).digest('hex')}`;
+    if (gate.review_snapshot_digest !== triage.review_snapshot_digest) {
+      status = 'blocked';
+      failures.push('review snapshot changed since the last review-fix gate; run x-build verify-review-fix again');
+    } else if (gate.triage_digest !== triageDigest) {
+      status = 'blocked';
+      failures.push('triage changed since the last review-fix gate; run x-build verify-review-fix again');
+    } else if (lifecycle && gate.lifecycle_digest && gate.lifecycle_digest !== `sha256:${createHash('sha256').update(JSON.stringify(lifecycle)).digest('hex')}`) {
+      status = 'blocked';
+      failures.push('finding lifecycle changed since the last review-fix gate; run x-build verify-review-fix again');
+    } else if (gate.passed === false || ['blocked', 'awaiting_reverification'].includes(gate.stage)) {
+      status = 'blocked';
+      for (const failure of Array.isArray(gate.failures) ? gate.failures : []) {
+        if (!failures.includes(failure)) failures.push(failure);
+      }
+    } else if (gate.passed === true && ['ready_for_fix', 'reverified'].includes(gate.stage)) {
+      status = 'ready';
+    }
+  }
 
   return {
     status,
@@ -1487,9 +1522,19 @@ function reviewFixGateData(xmRoot) {
       line: finding.line ?? null,
       summary: finding.summary || finding.description || finding.title || '',
       decision: triageMap.get(finding.id)?.decision || '',
+      finding_id: triageMap.get(finding.id)?.finding_id || lifecycleMap.get(finding.id)?.finding_id || null,
+      lifecycle_state: lifecycleMap.get(triageMap.get(finding.id)?.finding_id || finding.id)?.state || 'open',
+      outcome: lifecycleMap.get(triageMap.get(finding.id)?.finding_id || finding.id)?.outcome || null,
+      reverify_evidence: lifecycleMap.get(triageMap.get(finding.id)?.finding_id || finding.id)?.evidence || null,
     })),
     decisions,
     failures,
+    gate: gate ? {
+      passed: gate.passed === true,
+      stage: gate.stage || null,
+      timestamp: gate.timestamp || null,
+      lifecycle: gate.lifecycle || null,
+    } : null,
     commands: triage ? ['x-build verify-review-fix', 'x-build quality', 'x-review diff'] : ['x-build verify-review-fix --init'],
   };
 }
