@@ -219,8 +219,8 @@ Examples:
 See `references/review-workflow.md` — full pipeline:
 - **Phase 1: TARGET** — collect diff/PR/file content, auto-detect language. `### full` mode uses Lens-first split: each agent scans all files with one lens (file-group split prohibited).
 - **Phase 2: ASSIGN** — select lenses (default 7 or preset), distribute to agents
-- **Phase 3: REVIEW** — fan-out N agents with Universal Principles + lens prompts (`lenses/{name}.md`)
-- **Phase 4: SYNTHESIZE** — parse → dedupe+consensus → Self-Verify (Chain-of-Verification: agents include code snippet 3-5 lines; leader verifies claim against snippet — do not re-read the file; contradicted findings tagged `[CoVe-removed]`, inconclusive tagged `[CoVe-downgraded]`) → challenge → recall boost → verdict (include verdict rationale in output) → output (markdown / github-comment)
+- **Phase 3: REVIEW** — fan-out N agents with Universal Principles + lens prompts (`lenses/{name}.md`), require the structured `references/lens-report-contract.md`, and gate coverage with `scripts/validate-reports.mjs`
+- **Phase 4: SYNTHESIZE** — enter only when validation says N/N contract-valid reports; parse → dedupe+consensus → Self-Verify (Chain-of-Verification: agents include code snippet 3-5 lines; leader verifies claim against snippet — do not re-read the file; contradicted findings tagged `[CoVe-removed]`, inconclusive tagged `[CoVe-downgraded]`) → challenge → recall boost → verdict (include verdict rationale in output) → output (markdown / github-comment). Partial/invalid coverage forbids LGTM, `last-result.*`, history, and trace verdict recording.
 - **Phase 5: REVIEW-FIX CONTRACT** — every finding gets a stable `F#` ID; Request Changes / Block output MUST include a triage checklist that classifies each Medium+ finding as `fix_now`, `backlog`, `accept_risk`, or `false_positive` before any review-fix edits start.
 
 ---

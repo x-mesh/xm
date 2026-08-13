@@ -174,6 +174,13 @@ describe('x-review SKILL.md structure', () => {
     expect(content).toContain('fix_now');
   });
 
+  test('fails closed on missing, stale, or empty lens reports before synthesis', () => {
+    expect(content).toContain('lens-report-contract.md');
+    expect(content).toContain('scripts/validate-reports.mjs');
+    expect(content).toContain('N/N contract-valid reports');
+    expect(content).toContain('Partial/invalid coverage forbids LGTM');
+  });
+
   test('all 7 lenses documented', () => {
     expect(content).toContain('security');
     expect(content).toContain('logic');

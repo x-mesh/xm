@@ -124,7 +124,32 @@ These are NOT in the default preset — invoke explicitly: `--lenses "silent-fai
 
 Fan-out — send the diff + dedicated perspective prompt to each agent simultaneously.
 
-**Invoke N Agent tools in a SINGLE message — one tool call per lens, all in the same
+### Run identity and result files (mandatory)
+
+Before dispatch, save the exact Phase 1 target bytes and bind every lens to one run identity:
+
+```bash
+TASK_ID="review-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+if command -v sha256sum >/dev/null 2>&1; then
+  TARGET_DIGEST=$(sha256sum "$TARGET_FILE" | awk '{print $1}')
+else
+  TARGET_DIGEST=$(shasum -a 256 "$TARGET_FILE" | awk '{print $1}')
+fi
+TARGET_HASH="sha256:$TARGET_DIGEST"
+RUN_DIR=".xm/review/runs/$TASK_ID"
+mkdir -p "$RUN_DIR/reports"
+# Write run.json with schema_version: 1, TASK_ID, TARGET_HASH, and expected_reports.
+# Each expected_reports entry is { "report_id": "security-1", "lens": "security" }.
+```
+
+`run.json` is the dispatch manifest described by `references/lens-report-contract.md`. Append
+that contract to every lens prompt with the literal `task_id`, `target_hash`, `report_id`, and
+lens filled in. Assign one unique `report_id` per agent execution (`security-1`, `security-2`,
+etc.), including redundant agents for the same lens. Save each response unchanged to
+`$RUN_DIR/reports/{report_id}.json`; do not repair prose
+or manufacture a zero-finding JSON object on the agent's behalf.
+
+**Invoke N Agent tools in a SINGLE message — one tool call per report instance, all in the same
 message.** That is what makes them run concurrently. **ALWAYS set `run_in_background: false`
 on every lens call** — the parameter defaults to TRUE, and a backgrounded Agent call returns
 only the agent's name immediately, not its findings. Treating that name as the review output
@@ -155,10 +180,28 @@ prompt, not from a specialized agent type. Do NOT name a plugin-qualified subage
 (e.g. `oh-my-claudecode:code-reviewer`) — an agent type the host does not have fails the
 spawn, and x-review declares no third-party plugin dependency.
 
-**Before Phase 4, verify you have N findings reports for N dispatched lenses.** If any lens
-returned no report — or returned a generic greeting instead of findings — the prompt did not
-reach it. Re-dispatch that lens; do not synthesize a verdict from a partial fan-out, and do
-not report a lens as "no findings" when it never ran.
+**Before Phase 4, validate N reports for N dispatched report instances with the shipped validator.** Set
+`REVIEW_SKILL_DIR` to the absolute directory containing the `SKILL.md` you loaded for this run
+(not the reviewed project's working directory), then invoke its sidecar:
+
+```bash
+node "$REVIEW_SKILL_DIR/scripts/validate-reports.mjs" \
+  --manifest "$RUN_DIR/run.json" \
+  --reports-dir "$RUN_DIR/reports" \
+  --out "$RUN_DIR/validation.json"
+```
+
+Exit 0 and `validation.json.ok: true` are the Phase 4 entry gate. A missing report, empty body,
+generic greeting, previous-task response, mismatched target, incomplete status, duplicate report,
+or unsubstantiated zero-finding response fails closed. Re-dispatch only failed lenses as **fresh
+agent tasks** using the same `task_id`, `target_hash`, and `report_id`, overwrite their report
+files, and rerun
+the validator. Do not use a continuation/follow-up on the stale agent. If complete coverage still
+cannot be obtained, stop with `Review incomplete` and list the invalid lenses. Never synthesize,
+emit LGTM, write `last-result.*`, append history, or record a review verdict from partial coverage.
+
+A valid no-finding lens still contains `checked[]`, `findings: []`, and a specific
+`no_findings_reason`; it is evidence, not an empty report.
 
 ### Universal Review Principles
 

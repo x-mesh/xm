@@ -119,6 +119,27 @@ mirror_md_tree() {
   done < <(find "$dst" -type f -name '*.md' -print0)
 }
 
+# Mirror every file under a source tree, preserving paths and deleting stale
+# bundle-only files. Used for executable skill sidecars that Markdown-only
+# helpers intentionally skip.
+mirror_file_tree() {
+  local src="$1" dst="$2" f rel
+  [ -d "$src" ] || return 0
+
+  while IFS= read -r -d '' f; do
+    rel="${f#"$src"/}"
+    sync_file "$f" "$dst/$rel"
+  done < <(find "$src" -type f -print0)
+
+  [ -d "$dst" ] || return 0
+  while IFS= read -r -d '' f; do
+    rel="${f#"$dst"/}"
+    if [ ! -f "$src/$rel" ]; then
+      remove_obsolete_file "$f"
+    fi
+  done < <(find "$dst" -type f -print0)
+}
+
 echo "=== Syncing SKILL.md files ==="
 for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel remote wt; do
   src="x-$plugin/skills/$plugin/SKILL.md"
@@ -316,6 +337,10 @@ mirror_md_dir "x-review/skills/review/lenses" "xm/skills/review/lenses"
 echo ""
 echo "=== Syncing review references ==="
 mirror_md_dir "x-review/skills/review/references" "xm/skills/review/references"
+
+echo ""
+echo "=== Syncing review executable sidecars ==="
+mirror_file_tree "x-review/skills/review/scripts" "xm/skills/review/scripts"
 
 echo ""
 echo "=== Syncing eval judges ==="
