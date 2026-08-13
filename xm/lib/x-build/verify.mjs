@@ -403,6 +403,18 @@ function runGit(args) {
   return result.stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 }
 
+function reviewedCommitCovers(originalCommit, reviewedCommit) {
+  if (!originalCommit || !reviewedCommit) return false;
+  if (originalCommit === reviewedCommit) return true;
+  if (!/^[0-9a-f]{7,40}$/i.test(originalCommit) || !/^[0-9a-f]{7,40}$/i.test(reviewedCommit)) return false;
+  const result = spawnSync('git', ['merge-base', '--is-ancestor', originalCommit, reviewedCommit], {
+    cwd: workspaceRoot(),
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+  return result.status === 0;
+}
+
 function collectChangedFilesSinceReview(reviewedCommit) {
   const changed = new Set();
   const add = files => {
@@ -797,30 +809,29 @@ export function cmdVerifyReviewFix(args) {
     const currentTriageDigest = existingTriage ? `sha256:${sha256(JSON.stringify(existingTriage))}` : null;
     const triageFixNow = (Array.isArray(existingTriage?.target_findings) ? existingTriage.target_findings : [])
       .filter(item => String(item.decision || '').trim().toLowerCase() === 'fix_now');
-    const lifecycleAware = existingTriage?.schema === 1 || (!!existingTriage?.initialized_at && !!existingTriage?.review_snapshot_digest);
-    if (lifecycleAware && !existingLifecycle) {
+    const lifecycleAware = existingTriage?.schema === 1
+      || (!!existingTriage?.initialized_at && !!existingTriage?.review_snapshot_digest)
+      || existingLifecycle?.schema === 1
+      || !!existingGate?.lifecycle_digest;
+    if (lifecycleAware && (!existingTriage || !existingLifecycle || !existingGate)) {
       console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
-      console.log('  - LGTM cannot close a lifecycle-aware review-fix without finding-lifecycle.json');
+      console.log('  - LGTM cannot close a lifecycle-aware review-fix with missing triage, lifecycle, or gate artifacts');
       process.exitCode = 1;
       return;
     }
-    const lifecycleFixNow = Array.isArray(existingLifecycle?.findings)
-      ? existingLifecycle.findings.filter(item => String(item.decision || '').trim().toLowerCase() === 'fix_now')
-      : [];
-    const fixNow = lifecycleAware ? lifecycleFixNow : triageFixNow;
-    if (existingLifecycle && fixNow.length > 0) {
+    const fixNow = triageFixNow;
+    if (lifecycleAware) {
       const rows = Array.isArray(existingLifecycle.findings) ? existingLifecycle.findings : [];
       const incomplete = fixNow.filter((finding) => {
-        const row = lifecycleAware
-          ? rows.find(item => finding.finding_id && item.finding_id === finding.finding_id)
-          : rows.find(item => item.id === finding.id || (finding.finding_id && item.finding_id === finding.finding_id));
+        const row = rows.find(item => finding.finding_id && item.finding_id === finding.finding_id);
         const current = row ? lifecycleFileSnapshot(row.file, freshness) : null;
         return row?.state !== 'reverified' || row?.outcome !== 'resolved' || !snapshotMatches(row.file_snapshot, current);
       });
-      const correlated = existingTriage?.reviewed_commit === (review.reviewed_commit || null)
+      const correlated = reviewedCommitCovers(existingTriage.reviewed_commit, review.reviewed_commit || null)
         && existingLifecycle.reviewed_commit === existingTriage.reviewed_commit
+        && existingGate.reviewed_commit === existingTriage.reviewed_commit
         && existingLifecycle.triage_digest === currentTriageDigest
-        && existingGate?.triage_digest === currentTriageDigest
+        && existingGate.triage_digest === currentTriageDigest
         && existingGate?.lifecycle_digest === `sha256:${sha256(JSON.stringify(existingLifecycle))}`
         && freshness.failures.length === 0
         && freshness.changed.length === 0

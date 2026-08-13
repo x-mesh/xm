@@ -865,7 +865,47 @@ describe('verify-review-fix', () => {
 
       const r = run(['verify-review-fix'], { cwd: tmp });
       expect(r.exitCode).not.toBe(0);
-      expect(r.stdout).toContain('without finding-lifecycle.json');
+      expect(r.stdout).toContain('with missing triage, lifecycle, or gate artifacts');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('LGTM fails closed when lifecycle decisions are edited to hide fix_now rows', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      const lifecyclePath = join(tmp, '.xm', 'review', 'finding-lifecycle.json');
+      const lifecycle = readJSON(lifecyclePath);
+      lifecycle.findings[0].decision = 'backlog';
+      writeFileSync(lifecyclePath, JSON.stringify(lifecycle, null, 2));
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('does not correlate with the authorized finding lifecycle receipt');
+      expect(r.stdout).toContain('unresolved or stale finding lifecycle entries');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('LGTM fails closed when triage is missing but lifecycle state remains', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      rmSync(join(tmp, '.xm', 'review', 'triage.json'));
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('with missing triage, lifecycle, or gate artifacts');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -944,6 +984,56 @@ describe('verify-review-fix', () => {
       const r = run(['verify-review-fix'], { cwd: tmp });
       expect(r.exitCode).not.toBe(0);
       expect(r.stdout).toContain('does not correlate with the authorized finding lifecycle receipt');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('LGTM at a descendant commit closes a resolved lifecycle with full fresh coverage', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      initGit(tmp);
+      mkdirSync(join(tmp, 'src'), { recursive: true });
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'vulnerable\n');
+      spawnSync('git', ['add', 'src/auth.ts'], { cwd: tmp });
+      spawnSync('git', ['commit', '-qm', 'review base'], { cwd: tmp });
+      const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: tmp, encoding: 'utf8' }).stdout.trim();
+      writeReviewResult(tmp, { reviewed_commit: base });
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'fixed\n');
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'test passed'], { cwd: tmp }).exitCode).toBe(0);
+      spawnSync('git', ['add', 'src/auth.ts'], { cwd: tmp });
+      spawnSync('git', ['commit', '-qm', 'fix auth'], { cwd: tmp });
+      const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: tmp, encoding: 'utf8' }).stdout.trim();
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_commit: head, reviewed_files_all: ['src/auth.ts'] });
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('Review Fix Gate passed');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('plain gate rejects a lifecycle receipt edited after authorization', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      const lifecyclePath = join(tmp, '.xm', 'review', 'finding-lifecycle.json');
+      const lifecycle = readJSON(lifecyclePath);
+      lifecycle.findings[0].state = 'reverified';
+      lifecycle.findings[0].outcome = 'resolved';
+      lifecycle.findings[0].evidence = 'forged';
+      writeFileSync(lifecyclePath, JSON.stringify(lifecycle, null, 2));
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('finding-lifecycle.json changed since the last review-fix gate');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
