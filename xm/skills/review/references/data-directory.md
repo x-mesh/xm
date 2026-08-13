@@ -58,6 +58,16 @@ Prepend metadata at the top of the file:
   "lenses": ["security", "logic", "perf", "tests"],
   "agents": 4,
   "coverage": { "expected": 4, "valid": 4, "complete": true },
+  "target_coverage": { "expected": 12, "checked": 12, "complete": true, "missing_files": [] },
+  "execution": {
+    "mode": "adaptive-fast",
+    "waves": 1,
+    "backend": "current-runtime|panel",
+    "models": ["resolved model labels"],
+    "duration_ms": 84000,
+    "retries": 0,
+    "escalation_reasons": []
+  },
   "task_id": "review-20260812T120000Z-123-456",
   "target_hash": "sha256:...",
   "reviewed_commit": "full HEAD commit SHA at Phase 1",
@@ -90,6 +100,8 @@ Prepend metadata at the top of the file:
 ```
 
 `reviewed_files_all` is the complete Phase-1 target file set, including files with no findings.
+`coverage` measures valid reviewer responses; `target_coverage` measures frozen target files
+actually inspected. Both must be complete before LGTM.
 At Phase 1, hash each current file's raw bytes with SHA-256 and persist it in
 `reviewed_file_snapshots`; deleted/absent target files use `{ "exists": false, "sha256": null }`.
 These snapshots bind the later review-fix gate to the bytes the agents actually reviewed. Do not

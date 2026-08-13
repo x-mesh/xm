@@ -40,15 +40,16 @@ Store the result as `{diff_content}`.
 
 Full codebase review. Targets entire source, not a diff.
 
-1. Collect files to review:
+1. Collect files to review without silent truncation:
    ```bash
-   git ls-files --cached | grep -E '\.(ts|js|py|go|java|rs|mjs)$' | head -100
+   git ls-files --cached | grep -E '\.(ts|js|py|go|java|rs|mjs)$'
    ```
 2. **Lens-first split** — assign agents by lens, not by file group:
-   - Default 4 lenses (security, logic, perf, tests) × full file list
+   - Default adaptive-fast profiles (correctness, risk) each inspect the complete file list
    - Each agent scans all files with **one lens** (file-group × 7-lens split is prohibited)
    - Agent count = min(lens count, `agent_max_count`)
-   - If 20+ files, split files in half per lens and assign 2 agents each
+   - If the target exceeds the planner limit, stop with `Review incomplete: target limit` until
+     automated chunk execution exists; never split coverage implicitly
 3. Merge results into Phase 4: SYNTHESIZE
 
 `full` mode is expensive — confirm before running:
@@ -64,7 +65,43 @@ Full codebase review. Targets entire source, not a diff.
 
 Assign review perspectives using `--lenses` option or automatically.
 
-### Default 7 Perspectives
+### Default: adaptive-fast one-wave plan
+
+After writing the exact Phase-1 target to `$TARGET_FILE`, run:
+
+```bash
+node "$REVIEW_SKILL_DIR/scripts/plan-review.mjs" \
+  --target "$TARGET_FILE" \
+  <repeat `--target-file <path>` for file/full targets> \
+  --max-profiles "$ADAPTIVE_MAX_PROFILES" > "$RUN_DIR/plan.json"
+```
+
+For a single `file` target, append `--target-file <path>` and the raw file body may be the frozen
+target. For multi-file and `full` targets, encode each file as a synthetic `diff --git a/<path>
+b/<path>` section with every content line prefixed by `+`; this preserves file-specific grounding.
+Diff/PR targets already provide those sections. Never leave `plan.files` empty for a non-empty
+review target, and never concatenate multiple raw files without section markers: either form
+cannot satisfy deterministic source coverage.
+
+Resolve `ADAPTIVE_MAX_PROFILES` from `--agents`, otherwise `agent_max_count`, clamped to 2-5. The
+planner always keeps `correctness` and `risk`, then adds `migrations`, `type-design`, or `docs` in
+that priority order for matching frozen-diff signals. Migration routing is path-based
+(`migration`/`schema`/`prisma`/`alembic`/`db` or `*.sql`) so DDL examples in tests and docs do not
+spend a reviewer. Dispatch all selected profiles in the same Agent message, so the common path
+remains one LLM wave. Copy `files` to `run.json.target_files` and
+`expected_reports` to its manifest. `requires_chunking: true` forbids dispatching the whole target
+as one prompt. Automated chunk execution is not implemented yet, so stop with
+`Review incomplete: target limit`; never truncate and claim coverage.
+
+| Profile | Combined concerns |
+|---------|-------------------|
+| correctness | logic, error handling, tests, silent failures |
+| risk | security, performance, architecture |
+| migrations | schema/migration changes only |
+| type-design | typed public-boundary changes only |
+| docs | undocumented public-API changes only |
+
+### Explicit 7-lens full preset
 
 | Agent | Lens | Focus Area |
 |-------|------|------------|
@@ -85,7 +122,9 @@ Assign review perspectives using `--lenses` option or automatically.
 | type-design | `any` overuse, missing discriminated unions, nullable leaks, over-broad enums (typed languages only: TS / Python typed / Go / Rust) |
 | comments-stale | Stale / contradictory comments, TODO without ticket, commented-out code, "what" comments instead of "why" |
 
-These are NOT in the default preset — invoke explicitly: `--lenses "silent-failures,type-design"`.
+`type-design` may be routed into adaptive-fast when a typed public boundary changes. The other
+specialized lenses are not independently selected by default; invoke them explicitly with
+`--lenses` when their standalone perspective is required.
 
 ### When --lenses Is Specified
 
@@ -103,13 +142,16 @@ These are NOT in the default preset — invoke explicitly: `--lenses "silent-fai
 | `--preset quick` | security, logic | 2 | Fast core check (~2 min) |
 | `--preset standard` | security, logic, perf, tests | 4 | Code quality focused (~5 min) |
 | `--preset security` | security only | 3 | Security focused (Self-Consistency) |
-| (default, no preset) | **all 7** | **7** | **Full review (default)** |
+| `--preset adaptive-fast` | correctness, risk + routed specialists | 2-5 | Default, one wave |
+| `--preset full` | **all 7** | **7** | Explicit exhaustive review |
 
 ### Agent Count
 
-- Default: agent count = lens count (**7 lenses = 7 agents**)
+- Default: 2 composite reviewers plus planner specialists, capped deterministically at
+  `agent_max_count` (minimum 2, maximum 5)
 - `--preset quick` → 2, `--preset standard` → 4
-- When `--agents N` is specified: N agents (lenses assigned to fit N)
+- For adaptive-fast, `--agents N` is clamped to 2-5 so both core profiles always run
+- For explicit lenses or non-default presets, `--agents N` requests N agents (lenses assigned to fit N)
 - If `--agents N` is less than lens count: assign highest-priority lenses first (security > logic > perf > errors > tests > architecture > docs)
 
 ---
@@ -137,7 +179,7 @@ fi
 TARGET_HASH="sha256:$TARGET_DIGEST"
 RUN_DIR=".xm/review/runs/$TASK_ID"
 mkdir -p "$RUN_DIR/reports"
-# Write run.json with schema_version: 1, TASK_ID, TARGET_HASH, and expected_reports.
+# Write run.json with schema_version: 1, TASK_ID, TARGET_HASH, target_files, and expected_reports.
 # Each expected_reports entry is { "report_id": "security-1", "lens": "security" }.
 ```
 At the same Phase-1 boundary, resolve the complete target file list and snapshot each current
@@ -205,10 +247,12 @@ descriptions repeating the same lens at increasing depth — stop the run, do no
 node "$REVIEW_SKILL_DIR/scripts/validate-reports.mjs" \
   --manifest "$RUN_DIR/run.json" \
   --reports-dir "$RUN_DIR/reports" \
+  --target "$TARGET_FILE" \
   --out "$RUN_DIR/validation.json"
 ```
 
-Exit 0 and `validation.json.ok: true` are the Phase 4 entry gate. A missing report, empty body,
+Exit 0 and `validation.json.ok: true` are the Phase 4 entry gate. It requires N/N report coverage
+and complete `target_coverage`. A missing report, empty body,
 generic greeting, previous-task response, mismatched target, incomplete status, duplicate report,
 or unsubstantiated zero-finding response fails closed. Re-dispatch only failed lenses as **fresh
 agent tasks** using the same `task_id`, `target_hash`, and `report_id`, overwrite their report
@@ -300,13 +344,15 @@ three sources remains Low; a single-source High remains High until CoVe/Challeng
 based on reachability and impact. Consensus may affect verification order and the verdict
 rationale, but verdict thresholds continue to consume severity only.
 
-### 2.5. Self-Verify (Chain-of-Verification)
+### 2.5. Ground + Conditional Self-Verify
 
-After deduplication, each finding is self-verified before challenge. For each High+ finding, the leader generates a verification question and checks the code independently:
+The validator first proves that each finding file and code snippet occurs in the frozen target.
+This deterministic grounding applies to every severity without another reviewer call. Only a
+contested or inconclusive Critical/High finding gets an independent semantic verifier.
 
-For each finding with severity >= High:
+For each escalated Critical/High finding:
 1. **Generate verification question:** "Does {file}:{line} actually do {claimed behavior}?"
-2. **Verify against agent output:** every lens prompt requires a `→ Code:` line carrying the 3-5 diff lines the finding is about (`lenses/*.md`, "output exactly" block). The leader verifies the claim against that snippet — **do not re-read the file.** Only use Read tool for findings that arrived without a `Code` line; if a lens omits it on most of its findings, the prompt did not reach it intact — re-dispatch that lens rather than reading the whole diff back.
+2. **Verify against the frozen target and canonical report**, never the mutable workspace.
 3. **Result:**
    - Verified → keep finding as-is
    - Contradicted → remove finding + tag `[CoVe-removed]`
@@ -314,7 +360,8 @@ For each finding with severity >= High:
 
 CoVe-removed findings are excluded from Step 3 Challenge. CoVe-downgraded findings proceed to Challenge with their new severity.
 
-This catches false positives where the agent claimed a vulnerability/bug that doesn't actually exist in the code. Only applies to High+ to limit cost — Low/Medium findings are validated in the Challenge step.
+This avoids a routine second model call. Low/Medium findings use deterministic grounding plus the
+leader Challenge; explicit `--thorough` may widen semantic verification.
 
 ### 3. Challenge (Severity Validation)
 
@@ -341,13 +388,14 @@ If all findings are removed after challenge, verdict is LGTM regardless of origi
 
 ### 3.5. Recall Boost (Completeness Check)
 
-After challenge filtering, the leader does a **second pass** to catch issues that strict severity rules might have filtered out.
+Do not run a default second pass. Recall is a latency-bearing escalation, not a universal gate.
 
 **Mode selection:**
 
 | Flag | Behavior | Observation limit | Agent |
 |------|----------|:-----------------:|-------|
-| (default) | Leader second pass, 6 categories | 5 | Leader only |
+| (default) | Disabled; finish after the grounded first wave | 0 | None |
+| Escalated | suspicious-empty, incomplete coverage, or contested High+ only | 5 | Leader |
 | `--thorough` | Dedicated recall agent, 6 categories, aggressive promotion | 10 | Separate agent via Agent tool |
 
 When `--thorough` is active, spawn a **separate recall agent** (not the leader) via Agent tool. The agent receives: (1) the full diff, (2) the list of already-reported findings, (3) the recall boost prompt below, and (4) the same "Execution Boundary (you are a leaf reviewer)" section from `{universal_principles}` — it is a leaf too, and without the boundary it can re-invoke the review skill and restart the fan-out. This provides genuine "fresh eyes" — a different context window from the leader who applied severity filters.

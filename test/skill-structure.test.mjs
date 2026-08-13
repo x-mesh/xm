@@ -132,9 +132,10 @@ describe('x-review SKILL.md structure', () => {
   });
 
   test('Smart Router has large diff guard', () => {
-    expect(content).toContain('500');
     expect(content).toContain('2000');
-    expect(content).toContain('force-full');
+    expect(content).toContain('requires_chunking');
+    expect(content).toContain('Review incomplete');
+    expect(content).not.toContain('force-full');
   });
 
   test('contains full mode with lens-first split', () => {
@@ -144,14 +145,13 @@ describe('x-review SKILL.md structure', () => {
   });
 
   test('contains CoVe self-verify step', () => {
-    expect(content).toContain('Self-Verify');
-    expect(content).toContain('Chain-of-Verification');
-    expect(content).toContain('CoVe-removed');
-    expect(content).toContain('CoVe-downgraded');
+    expect(workflow).toContain('Self-Verify');
+    expect(workflow).toContain('verification question');
+    expect(workflow).toContain('CoVe-removed');
+    expect(workflow).toContain('CoVe-downgraded');
   });
 
   test('consensus changes confidence, never severity', () => {
-    expect(content).toContain('agreement never raises severity');
     expect(workflow).toContain('Never raise severity because sources agree');
     expect(workflow).toContain('A Low reported independently by');
     expect(workflow).not.toContain('Promote severity one level');
@@ -161,18 +161,30 @@ describe('x-review SKILL.md structure', () => {
   });
 
   test('CoVe uses agent snippets, not file re-reads', () => {
-    expect(content).toContain('do not re-read the file');
-    expect(content).toContain('snippet');
+    expect(workflow).toContain('frozen target and canonical report');
+    expect(workflow).toContain('deterministic grounding');
   });
 
   test('contains presets (quick/standard/security)', () => {
+    expect(content).toContain('--preset adaptive-fast');
     expect(content).toContain('--preset quick');
     expect(content).toContain('--preset standard');
     expect(content).toContain('--preset security');
   });
 
+  test('adaptive-fast is one wave with conditional expensive gates', () => {
+    expect(content).toContain('one parallel LLM wave');
+    expect(content).toContain('scripts/plan-review.mjs');
+    expect(content).toContain('Recall/panel/another reviewer');
+    expect(workflow).toContain('correctness');
+    expect(workflow).toContain('risk');
+    expect(workflow).toContain('target_coverage');
+    expect(workflow).toContain('Disabled; finish after the grounded first wave');
+    expect(dataDirectory).toContain('duration_ms');
+  });
+
   test('verdict includes reason', () => {
-    expect(content).toContain('verdict rationale');
+    expect(workflow).toContain('Include verdict rationale');
   });
 
   test('review results saved as MD', () => {
@@ -206,8 +218,9 @@ describe('x-review SKILL.md structure', () => {
   test('fails closed on missing, stale, or empty lens reports before synthesis', () => {
     expect(content).toContain('lens-report-contract.md');
     expect(content).toContain('scripts/validate-reports.mjs');
-    expect(content).toContain('N/N contract-valid reports');
-    expect(content).toContain('Partial/invalid coverage forbids LGTM');
+    expect(workflow).toContain('N/N report coverage');
+    expect(workflow).toContain('missing report, empty body');
+    expect(content).toContain('Partial coverage forbids LGTM');
   });
 
   test('all 7 lenses documented', () => {
