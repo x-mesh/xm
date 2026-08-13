@@ -12,23 +12,29 @@ function rate(numerator, denominator) {
 
 export function aggregateEffectiveness(rows, { sinceDays = 30, profiles = null } = {}) {
   const cutoff = Date.now() - sinceDays * 86400000;
+  // build_id is the only per-row attribution key. Profile is a property of the
+  // build, not of the row: Research events are recorded before `plan` selects a
+  // profile, so requiring row.profile here would drop the entire research phase
+  // and leave research_change_rate permanently null.
   const semantic = rows.filter((row) => {
     if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
     const ts = Date.parse(row.timestamp || row.ts || '');
-    return row.build_id && row.profile && Number.isFinite(ts) && ts >= cutoff;
+    return row.build_id && Number.isFinite(ts) && ts >= cutoff;
   });
   const builds = new Map();
   for (const row of semantic) {
-    if (!builds.has(row.build_id)) builds.set(row.build_id, { id: row.build_id, profile: row.profile, profile_at: -Infinity, events: [] });
+    if (!builds.has(row.build_id)) builds.set(row.build_id, { id: row.build_id, profile: null, profile_at: -Infinity, events: [] });
     const build = builds.get(row.build_id);
     const rowTime = Date.parse(row.timestamp || row.ts || '');
-    if (rowTime >= build.profile_at) {
+    if (row.profile && rowTime >= build.profile_at) {
       build.profile = row.profile;
       build.profile_at = rowTime;
     }
     build.events.push(row);
   }
-  const observed = [...builds.values()].filter((build) => !profiles || profiles.includes(build.profile));
+  // A build that never reached `plan` has no profile to attribute it to; it is
+  // observed but not measurable, so it stays out of every per-profile rate.
+  const observed = [...builds.values()].filter((build) => build.profile && (!profiles || profiles.includes(build.profile)));
 
   const summaries = [];
   for (const profile of (profiles || BUILD_PROFILES)) {
@@ -68,5 +74,9 @@ export function aggregateEffectiveness(rows, { sinceDays = 30, profiles = null }
       completion_rate: rate(completed.size, group.length),
     });
   }
-  return { since_days: sinceDays, profiles: summaries, builds_observed: observed.length };
+  // Reported so callers can size the exclusion without re-deriving the rule:
+  // these builds have events in the window but never reached a profile, so no
+  // per-profile rate can include them.
+  const unattributed = [...builds.values()].filter((build) => !build.profile).map((build) => build.id);
+  return { since_days: sinceDays, profiles: summaries, builds_observed: observed.length, unattributed_build_ids: unattributed };
 }

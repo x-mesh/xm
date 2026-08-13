@@ -19,7 +19,7 @@ import {
   repoRoot, gaugeProjectKind,
 } from './core.mjs';
 import { resolveMemMeshProjectId } from '../mem-mesh-identity.mjs';
-import { recordEffectiveness } from './effectiveness.mjs';
+import { newBuildId, recordEffectiveness } from './effectiveness.mjs';
 
 // ── cmdInit ─────────────────────────────────────────────────────────
 
@@ -86,6 +86,12 @@ export function cmdInit(args) {
     created_at: now,
     updated_at: now,
     project_kind: projectKind,
+    // Minted here, not at `plan`: Research completes before `plan` runs, so an
+    // identity created later leaves every research-phase effectiveness event
+    // unattributable and silently dropped from aggregation. Manifest only —
+    // writing plan-state.json this early would take the project out of
+    // validatePlanApproval's legacy mode and demand approval it never had.
+    build_id: newBuildId(),
   };
 
   writeJSON(manifestPath(slug), manifest);

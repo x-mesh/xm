@@ -45,6 +45,10 @@ function activeTraceId() {
   try { return readFileSync(active, 'utf8').trim() || null; } catch { return null; }
 }
 
+export function newBuildId() {
+  return `b-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
+}
+
 export function buildIdentity(project) {
   const state = readJSON(planStatePath(project)) || {};
   const manifest = readJSON(manifestPath(project)) || {};
@@ -60,7 +64,7 @@ export function ensureBuildIdentity(project, profile = null) {
   const state = readJSON(statePath) || {};
   const manifest = readJSON(manifestPath(project)) || {};
   const previousProfile = state.profile || manifest.build_profile || null;
-  const buildId = state.build_id || manifest.build_id || `b-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
+  const buildId = state.build_id || manifest.build_id || newBuildId();
   const traceId = state.trace_id || manifest.trace_id || activeTraceId();
   const selectedProfile = profile || previousProfile || null;
   const now = new Date().toISOString();
@@ -204,7 +208,14 @@ export function cmdEffectiveness(args) {
   }
   const { rows, malformed } = readMetricRows();
   const result = aggregateEffectiveness(rows, opts);
-  const unlinked = rows.filter((row) => ['phase_complete', 'task_complete', 'run_complete'].includes(row.type) && (!row.build_id || !row.profile)).length;
+  // The aggregator drops a row when it has no build_id, and drops a whole build
+  // when none of its rows ever named a profile. Both exclusions are counted here
+  // from the aggregator's own verdict rather than re-derived, so the number
+  // cannot drift from the rule it reports on.
+  const unattributed = new Set(result.unattributed_build_ids || []);
+  const unlinked = rows.filter((row) => row && typeof row === 'object' && !Array.isArray(row)
+    && ['phase_complete', 'task_complete', 'run_complete'].includes(row.type)
+    && (!row.build_id || unattributed.has(row.build_id))).length;
   result.coverage = { malformed_rows: malformed, legacy_or_unlinked_events: unlinked };
   result.compare = opts.compare || null;
   if (opts.json) { console.log(JSON.stringify(result, null, 2)); return; }

@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.15.3-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.15.4-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -485,19 +485,20 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 | **Blocking hooks** | `hooks install` ships two native Claude Code hooks: a PreToolUse **scope-guard** that blocks edits outside `triage.fix_scope.allowed_files` during a review-fix, and a Stop **stop-gate** that blocks ending a turn with an unresolved Critical/High finding. Disk-only, fail-open; bypass any run with `XM_BUILD_HOOKS_OFF=1` |
 | **ROI routing signal** | `roi` reports quality-per-dollar (Score/$) per model/role/strategy from *measured* actuals and suggests a `model_overrides` change — but only from calibrated data (≥5 tasks with real cost **and** a score); it never guesses from estimates or writes config itself |
 | **Calibrated cost actuals** | `forecast update` re-aggregates measured token cost so forecasts price from ground truth; `forecast` labels each estimate `estimate-only` vs `calibrated` |
+| **Workflow effectiveness** | `plan --profile light\|standard\|deep` picks how much ceremony a build gets; `effectiveness` then measures whether that choice paid off — planning duration, research change rate, replan/reopen rates, verify first-pass, completion — attributed per build. Thin evidence is labelled (`sufficient_sample` needs ≥10 builds), and events the aggregator had to exclude are reported on a coverage line rather than silently dropped |
 
 | Category | Commands |
 |----------|----------|
 | **Project** | `init`, `list`, `status`, `next [--json]`, `close`, `dashboard` |
 | **Phase** | `phase next/set`, `gate pass [--advance]/fail` (`--advance` chains `phase next`), `checkpoint`, `handoff --full`, `handon` |
 | **Governance** | `hooks install/uninstall/status` (native blocking hooks; bypass with `XM_BUILD_HOOKS_OFF=1`) |
-| **Plan** | `plan "goal"`, `plan-check [--strict]`, `prd-gate [--threshold N]`, `consensus [--round N]` |
+| **Plan** | `plan "goal" [--profile light\|standard\|deep] [--quick]`, `plan-check [--strict]`, `prd-gate [--threshold N]`, `consensus [--round N]` |
 | **Tasks** | `tasks add [--desc] [--deps] [--size] [--strategy] [--team] [--done-criteria] [--expected-files]`, `tasks done-criteria`, `tasks list`, `tasks remove [--cascade]`, `tasks update [--desc] [--expected-files]`, `tasks reopen <id> --reason "..." [--cascade]`, `later add/list/promote/dismiss/verify-scope` |
 | **Steps** | `steps compute/status/next` |
 | **Execute** | `run`, `run --worktrees [--dry-run] [--max-parallel N]`, `run --json`, `run-status` |
 | **Worktrees** | `worktrees plan/status/resume/cleanup`, `gate-panel --project --task --phase --patch`, `review-integration [--base --target]` |
 | **Verify** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts`, `verify-review-fix [--init]` |
-| **Analysis** | `forecast`, `forecast update`, `roi [--by model\|role\|strategy]`, `metrics`, `decisions`, `summarize` |
+| **Analysis** | `forecast`, `forecast update`, `roi [--by model\|role\|strategy]`, `effectiveness [--since Nd] [--profile a,b] [--compare a,b]`, `metrics`, `decisions`, `summarize` |
 | **Export** | `export --format md/csv/jira/confluence`, `import` |
 | **Release** | `release detect`, `release squash`, `release bump`, `release commit`, `release test`, `release trace`, `release diff-report` |
 | **Settings** | `mode developer/normal`, `config set/get/show` |

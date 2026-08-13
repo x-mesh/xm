@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.15.3-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.15.4-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -485,19 +485,20 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 | **Blocking hooks** | `hooks install`이 네이티브 Claude Code 훅 2개를 설치: review-fix 중 `triage.fix_scope.allowed_files` 밖 편집을 막는 PreToolUse **scope-guard**, 미해결 Critical/High가 있으면 턴 종료를 막는 Stop **stop-gate**. 디스크만 읽고 fail-open; `XM_BUILD_HOOKS_OFF=1`로 우회 |
 | **ROI 라우팅 신호** | `roi`가 model/role/strategy별 실측 기반 quality-per-dollar(Score/$)를 보고하고 `model_overrides` 변경을 제안 — 단 calibrated 데이터(실측 비용 **및** 점수 있는 태스크 ≥5개)에서만. 추정치로 추측하거나 config를 자동 수정하지 않음 |
 | **보정된 비용 실측** | `forecast update`가 실측 토큰 비용을 재집계해 forecast가 실측 기반으로 산정; `forecast`는 각 추정을 `estimate-only` vs `calibrated`로 라벨 |
+| **워크플로 효과 측정** | `plan --profile light\|standard\|deep`으로 빌드에 들일 절차 무게를 고르고, `effectiveness`가 그 선택이 값을 했는지 측정 — 계획 소요 시간, research 변경률, 재계획/재오픈률, verify 1회 통과율, 완료율을 빌드 단위로 귀속. 근거가 얇으면 `sufficient_sample`(빌드 ≥10)로 표시하고, 집계에서 제외된 이벤트는 조용히 버리지 않고 coverage 줄에 보고 |
 
 | 카테고리 | 커맨드 |
 |----------|----------|
 | **프로젝트** | `init`, `list`, `status`, `next [--json]`, `close`, `dashboard` |
 | **페이즈** | `phase next/set`, `gate pass [--advance]/fail` (`--advance`는 `phase next`까지 체인), `checkpoint`, `handoff --full`, `handon` |
-| **계획** | `plan "목표"`, `plan-check [--strict]`, `prd-gate [--threshold N]`, `consensus [--round N]` |
+| **계획** | `plan "목표" [--profile light\|standard\|deep] [--quick]`, `plan-check [--strict]`, `prd-gate [--threshold N]`, `consensus [--round N]` |
 | **태스크** | `tasks add [--desc] [--deps] [--size] [--strategy] [--team] [--done-criteria] [--expected-files]`, `tasks done-criteria`, `tasks list`, `tasks remove [--cascade]`, `tasks update [--desc] [--expected-files]`, `tasks reopen <id> --reason "..." [--cascade]`, `later add/list/promote/dismiss/verify-scope` |
 | **스텝** | `steps compute/status/next` |
 | **거버넌스** | `hooks install/uninstall/status` (네이티브 blocking hooks; `XM_BUILD_HOOKS_OFF=1`로 우회) |
 | **실행** | `run`, `run --worktrees [--dry-run] [--max-parallel N]`, `run --json`, `run-status` |
 | **워크트리** | `worktrees plan/status/resume/cleanup`, `gate-panel --project --task --phase --patch`, `review-integration [--base --target]` |
 | **검증** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts`, `verify-review-fix [--init]` |
-| **분석** | `forecast`, `forecast update`, `roi [--by model\|role\|strategy]`, `metrics`, `decisions`, `summarize` |
+| **분석** | `forecast`, `forecast update`, `roi [--by model\|role\|strategy]`, `effectiveness [--since Nd] [--profile a,b] [--compare a,b]`, `metrics`, `decisions`, `summarize` |
 | **내보내기** | `export --format md/csv/jira/confluence`, `import` |
 | **릴리스** | `release detect`, `release squash`, `release bump`, `release commit`, `release test`, `release trace`, `release diff-report` |
 | **설정** | `mode developer/normal`, `config set/get/show` |

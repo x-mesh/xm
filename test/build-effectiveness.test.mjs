@@ -59,6 +59,45 @@ describe('build effectiveness aggregation', () => {
     expect(summary.sufficient_sample).toBe(true);
   });
 
+  test('attributes pre-plan research events to the profile selected later', () => {
+    // Research completes before `plan` runs, so its events carry a build_id but
+    // no profile yet. Dropping them made research_change_rate permanently null.
+    const early = '2026-08-01T00:00:00.000Z';
+    const late = '2026-08-01T01:00:00.000Z';
+    const rows = [
+      { build_id: 'b1', profile: null, type: 'phase_effect', phase: 'research', duration_ms: 150, delta: { requirements: 2 }, timestamp: early },
+      { build_id: 'b1', profile: null, type: 'gate_outcome', phase: 'research', passed: true, timestamp: early },
+      event('b1', 'light', 'profile_selected', { timestamp: late }),
+    ];
+
+    const summary = aggregateEffectiveness(rows, { sinceDays: 365, profiles: ['light'] }).profiles[0];
+    expect(summary.builds).toBe(1);
+    expect(summary.research_change_rate).toBe(1);
+    expect(summary.planning_duration_ms_avg).toBe(150);
+  });
+
+  test('leaves a build with no selected profile out of every per-profile rate', () => {
+    const rows = [
+      { build_id: 'never-planned', profile: null, type: 'phase_effect', phase: 'research', duration_ms: 90, delta: { requirements: 0 }, timestamp: now() },
+    ];
+
+    const result = aggregateEffectiveness(rows, { sinceDays: 365 });
+    expect(result.builds_observed).toBe(0);
+    expect(result.profiles.every((summary) => summary.builds === 0)).toBe(true);
+    // The exclusion has to stay visible: a build dropped for having no profile
+    // is what the coverage counter reports on.
+    expect(result.unattributed_build_ids).toEqual(['never-planned']);
+  });
+
+  test('reports no unattributed builds once a profile is resolved', () => {
+    const rows = [
+      { build_id: 'b1', profile: null, type: 'phase_effect', phase: 'research', duration_ms: 10, delta: {}, timestamp: now() },
+      event('b1', 'deep', 'profile_selected'),
+    ];
+
+    expect(aggregateEffectiveness(rows, { sinceDays: 365 }).unattributed_build_ids).toEqual([]);
+  });
+
   test('attributes a build and all of its events to its latest selected profile', () => {
     const early = '2026-08-01T00:00:00.000Z';
     const late = '2026-08-02T00:00:00.000Z';
