@@ -29,9 +29,9 @@ Full CLI surface. SKILL.md links here instead of inlining it — the catalog is 
 - `discuss --mode adapt ["topic"]` — Adaptive review between execution steps (Execute phase)
 
 ### Plan Phase
-- `plan "goal" [--interview|--draft]` — plan-only; emit intent-check and stop after the Plan Bundle
-- `build "goal"` — same Plan lifecycle, then continue Execute only after content-bound approval
-- `plan-check` — Validate plan across 15 quality dimensions, including review-group ordering
+- `plan "goal" [--interview|--draft] [--profile light|standard|deep]` — plan-only; emit intent-check and stop after the Plan Bundle
+- `build "goal" [--profile light|standard|deep]` — same Plan lifecycle, then continue Execute only after content-bound approval
+- `plan-check` — Validate the existing 15 quality dimensions for Execution Readiness plus 3 Decision Quality dimensions
 - `prd-check [--json]` — Deterministic PRD gate (blocks Execute on unresolved `[A*, low]` / `Status: blocking`); `phase set execute --force` to override
 - `prd-gate [--threshold N]` — Judge panel PRD quality evaluation (rubric-based scoring)
 - `consensus [--round N] [--cross-vendor]` — 4-agent consensus review (architect/critic/planner/security); `--cross-vendor` assigns each role to a different model vendor via `xm panel cross` (opt-in, graceful single-vendor fallback). Default without the flag: `.xm/config.json` `cross_vendor.build` ?? `cross_vendor.default`; `--no-cross-vendor` forces single — see `references/cross-vendor-consensus.md`
@@ -78,6 +78,7 @@ Full CLI surface. SKILL.md links here instead of inlining it — the catalog is 
 - `forecast accuracy [--all] [--json]` — MAPE of past predictions vs MEASURED actuals. Reports "no calibrated pairs" rather than a flattering 0% when nothing was measured, and flags <5 samples as a hint, not a measurement. Use it before trusting a `forecast` number.
 - `roi [--by model|role|strategy] [--json]` — quality-per-dollar (Score/$) from MEASURED actuals only. Suggests a `model_overrides` change when one model clearly earns its spend — but only from calibrated groups (≥5 tasks that reported both `--tokens-in/--tokens-out` AND `--score`); estimated cost or the default 1.0 quality never counts, and it never writes config itself.
 - `metrics` — Phase duration, task velocity
+- `effectiveness [--since 30d] [--profile ...] [--compare light,deep] [--json]` — aggregate local semantic workflow-value metrics. Artifact content is never recorded; `.xm/build/metrics/sessions.jsonl` stores hashes/counts and links to `xm-trace` with `trace_id`. Planning cost remains `null` and `planning_cost_coverage` remains below 1 until phase cost data is supplied or imported from a trace.
 - `decisions add "..." [--type] [--rationale]` / `decisions list` / `decisions inject`
 - `summarize` — Step summaries
 - `save <context|requirements|roadmap|project|plan>` — Save planning artifact
@@ -101,4 +102,3 @@ Full CLI surface. SKILL.md links here instead of inlining it — the catalog is 
 - `config show|set|get` — Shared config management (agent_max_count, mode)
 - `watch [--interval N]`
 - `alias install`
-

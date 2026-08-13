@@ -38,6 +38,7 @@ import {
 import { readPlanState, setRequestedAction, validatePlanApproval } from './plan-state.mjs';
 import { appendPredictionActual, ensureTaskPrediction, DEFAULT_PREDICTION_MAX_AGE_MS } from './prediction-calibration.mjs';
 import { laterSignal } from './later.mjs';
+import { buildIdentity, normalizeRevisionReason, recordEffectiveness } from './effectiveness.mjs';
 
 // Re-export the expected_files utils so existing importers (tests) that pull them
 // from tasks.mjs keep working after the move to the shared leaf.
@@ -410,6 +411,8 @@ export function taskDoneCriteria(project) {
 
 export function taskAdd(project, args) {
   const { opts, positional } = parseOptions(args);
+  let revisionReason = 'unknown';
+  try { revisionReason = normalizeRevisionReason(opts.reason); } catch (error) { console.error(`❌ ${error.message}`); exitFail(1); return; }
   const name = positional.join(' ');
 
   if (!name) {
@@ -503,6 +506,10 @@ export function taskAdd(project, args) {
 
   data.tasks.push(task);
   writeJSON(tasksPath(project), data);
+  const phase = readJSON(manifestPath(project))?.current_phase;
+  recordEffectiveness(project, phase === '03-execute' ? 'execution_replan' : 'plan_revision', {
+    reason: revisionReason, operation: 'task_add', task_id: id, delta: { tasks: 1 },
+  });
   console.log(`✅ Task added: ${id} — ${name}${deps.length ? ` (deps: ${deps.join(', ')})` : ''}`);
   if (description) console.log(`   ${C.dim}${description}${C.reset}`);
   if (!description) console.log(`   ${C.dim}↳ no description — add intent with: x-build tasks update ${id} --desc "what + why"${C.reset}`);
@@ -621,6 +628,8 @@ export function taskRemove(project, args) {
 
 export function taskUpdate(project, args) {
   const { opts, positional } = parseOptions(args);
+  let revisionReason = 'unknown';
+  try { revisionReason = normalizeRevisionReason(opts.reason); } catch (error) { console.error(`❌ ${error.message}`); exitFail(1); return; }
   const id = positional[0];
   const rawStatus = opts.status;
   if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined && opts.desc === undefined && opts['expected-files'] === undefined && opts['interface-contract'] === undefined && opts['review-group'] === undefined)) {
@@ -778,6 +787,14 @@ export function taskUpdate(project, args) {
     return;
   }
 
+  const planFieldsChanged = updatedFields.some(field => /description|done_criteria|expected_files|interface_contract|review_group|depends_on/.test(field));
+  if (planFieldsChanged) {
+    const phase = readJSON(manifestPath(project))?.current_phase;
+    recordEffectiveness(project, phase === '03-execute' ? 'execution_replan' : 'plan_revision', {
+      reason: revisionReason, operation: 'task_update', task_id: id, fields: updatedFields,
+    });
+  }
+
   if (alreadyCompleted) {
     console.log(`✅ Task "${id}" is already completed.`);
     return;
@@ -835,6 +852,7 @@ export function taskUpdate(project, args) {
     if (taskRef.started_at) {
       appendCostEvent({
         type: 'task_complete', project, taskId: id, taskName: taskRef.name,
+        ...buildIdentity(project),
         role: taskRef.role || 'executor',
         model: _metricModel,
         size: taskRef.size || 'medium',
@@ -931,6 +949,7 @@ export function taskUpdate(project, args) {
       const scores = allTasks.filter(t => t.score != null).map(t => t.score);
       appendCostEvent({
         type: 'run_complete', project, task_count: allTasks.length,
+        ...buildIdentity(project),
         completed: completedCount, failed: failedCount,
         total_duration_ms: durations.reduce((a, b) => a + b, 0),
         avg_quality_score: scores.length ? +(scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2) : null,
@@ -1016,6 +1035,10 @@ export function taskReopen(project, args) {
     emitHook('task:post-update', { project, taskId: r.id, from: r.from, to: TASK_STATES.PENDING });
     console.log(`✅ Reopened ${r.id} (${r.from} → pending): ${r.name}`);
   }
+  recordEffectiveness(project, 'task_reopened', {
+    reason: reason.trim(), root_task_id: id, cascade: opts.cascade !== undefined,
+    tasks: reopened.map(task => ({ id: task.id, from_status: task.from })), count: reopened.length,
+  });
   if (skipped.length) {
     for (const s of skipped) {
       console.log(`  ${C.dim}↳ ${s.id} skipped (status: ${s.status})${C.reset}`);

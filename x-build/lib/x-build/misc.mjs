@@ -636,10 +636,11 @@ ${C.bold}Research Phase:${C.reset}
   research-check [--json]        Deterministic full/slim/quick-eligible research gauge
 
 ${C.bold}Plan Phase:${C.reset}
-  plan ["goal"] [--interview|--draft|--quick]
+  plan ["goal"] [--interview|--draft|--quick|--profile light|standard|deep]
                                  Plan-only; inspect intent and stop after the Plan Bundle
-  build "goal"                   Plan first, then continue after content-bound approval
-  plan-check [--strict]          Validate plan across 15 dimensions (--strict: coverage errors block gate)
+  build "goal" [--profile light|standard|deep]
+                                 Plan first, then continue after content-bound approval
+  plan-check [--strict]          Validate decision quality separately from execution readiness
   prd-check [--json]             Deterministic PRD gate (blocks Execute on unresolved items)
   prd-gate [--threshold N]       Judge panel PRD quality evaluation (default threshold: 7)
   consensus [--round N] [--cross-vendor]
@@ -696,6 +697,8 @@ ${C.bold}Analysis & Utilities:${C.reset}
   roi [--by model|role|strategy] [--json]
                                  Quality-per-dollar from measured actuals only
   metrics                        Show phase/task analytics
+  effectiveness [--since 30d] [--profile light,standard,deep] [--compare light,deep] [--json]
+                                 Compare workflow value using local semantic metrics
   decisions <add|list|inject>    Record and recall project decisions
   save <type>                    Save artifact (context|requirements|roadmap|project|plan|research-notes)
   export --format md|csv|jira|confluence

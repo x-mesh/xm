@@ -45,6 +45,15 @@ Full Project Requirements Document template with per-section quality criteria. U
 {Anti-pattern: 1-line goals like 'Add feature X' — always include the motivation.}
 {If the goal needs 'and' joining two unrelated outcomes, split into two projects.}
 
+## Decision Plan
+- Selected approach: {what we will do and the criteria used to choose it}
+- Alternatives: {credible alternatives, or why this work has one obvious path}
+- Rejected choices: {choice + concrete trade-off; do not invent options for ceremony}
+- Risk-first order: {highest-risk assumption and the first task/check that tests it}
+
+`plan-check` reports this section under Decision Quality, separately from task/DAG
+Execution Readiness.
+
 ## 2. Success Criteria
 - [SC1] {verb + measurable outcome + threshold. e.g., 'Reduce API latency to <200ms p95'}
 - [SC2] {each SC must be binary pass/fail — no 'should be fast' or 'works correctly'}

@@ -21,6 +21,10 @@ import { taskList, vendorModelFields } from './tasks.mjs';
 import { stepsStatus, computeSteps } from './tasks.mjs';
 import { savePlanIntent, markPlanReady, validatePlanApproval, readPlanState } from './plan-state.mjs';
 import { reviewGroupStatus, resolveReviewAction, taskReviewGroup } from './build-policy.mjs';
+import {
+  normalizeBuildProfile, normalizeRevisionReason, ensureBuildIdentity, artifactSnapshot,
+  recordEffectiveness, recordPlanRevision,
+} from './effectiveness.mjs';
 
 // ── PRD template version + diagram gate (R4/R5/R12) ──────────────────
 // PRD_TEMPLATE_VERSION marks the template revision where Section 8
@@ -220,8 +224,10 @@ function parsePlanArgs(args) {
   let interview = false;
   let draft = false;
   let execute = false;
+  let profile = null;
 
-  for (const arg of args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
     if (arg === '--quick') {
       quick = true;
     } else if (arg === '--interview') {
@@ -230,12 +236,21 @@ function parsePlanArgs(args) {
       draft = true;
     } else if (arg === '--execute') {
       execute = true;
+    } else if (arg === '--profile') {
+      if (i + 1 >= args.length) throw new Error('--profile requires light|standard|deep');
+      profile = normalizeBuildProfile(args[++i]);
+    } else if (arg.startsWith('--profile=')) {
+      profile = normalizeBuildProfile(arg.slice('--profile='.length));
     } else {
       positional.push(arg);
     }
   }
 
-  return { quick, interview, draft, execute, positional };
+  if (quick && profile && profile !== 'light') {
+    throw new Error('--quick is an alias for --profile light and cannot be combined with another profile');
+  }
+  if (quick) profile = 'light';
+  return { quick, profile, interview, draft, execute, positional };
 }
 
 /**
@@ -284,7 +299,13 @@ export function gaugeIntent(goal, { forceInterview = false } = {}) {
 }
 
 export async function cmdPlan(args) {
-  const { quick, interview, draft, execute, positional } = parsePlanArgs(args);
+  let parsed;
+  try { parsed = parsePlanArgs(args); } catch (error) {
+    console.error(`❌ ${error.message}`);
+    exitFail(1);
+    return;
+  }
+  const { quick, profile, interview, draft, execute, positional } = parsed;
   const goal = positional.join(' ');
   const project = resolveProject(null);
 
@@ -316,15 +337,18 @@ export async function cmdPlan(args) {
   }
   const requestedAction = execute ? 'build' : 'plan_only';
   const intentCheck = gaugeIntent(goal, { forceInterview: interview });
+  const identity = ensureBuildIdentity(project, profile);
+  const effectiveProfile = identity.profile;
   const planState = savePlanIntent(project, {
-    goal, requestedAction, intentCheck, forcedInterview: interview, draft,
+    goal, requestedAction, intentCheck, forcedInterview: interview, draft, profile: effectiveProfile,
+    buildId: identity.build_id, traceId: identity.trace_id,
   });
   // Deterministic research gauge (R2): the skill layer reads this to scale
   // Research (full/slim) or — ONLY at quick-eligible — suggest --quick via
   // AskUserQuestion. Gauge failure degrades to null (skill treats null as
   // full), never blocks planning.
   let researchSignal = null;
-  if (!quick) {
+  if (effectiveProfile !== 'light') {
     try { researchSignal = await gaugeResearch(goal); } catch { researchSignal = null; }
   }
   const output = {
@@ -340,9 +364,15 @@ export async function cmdPlan(args) {
       ? (draft ? 'produce_non_executable_draft' : 'ask_blocking_questions_once')
       : 'research_then_generate_plan',
     research_may_reopen_intent: true,
+    profile: effectiveProfile,
+    profile_explicit: profile != null,
     quick,
-    flow: quick ? 'quick' : 'full',
-    skip_research: quick,
+    flow: quick ? 'quick' : (effectiveProfile || 'full'),
+    skip_research: effectiveProfile === 'light',
+    research_scope: effectiveProfile === 'light' ? 'none' : effectiveProfile === 'standard' ? 'slim' : effectiveProfile === 'deep' ? 'full' : 'adaptive-legacy',
+    required_artifacts: effectiveProfile === 'light' ? ['PRD:delta', 'tasks', 'checks']
+      : effectiveProfile === 'standard' ? ['CONTEXT', 'REQUIREMENTS', 'PRD:small|medium', 'tasks', 'checks']
+        : effectiveProfile === 'deep' ? ['CONTEXT', 'REQUIREMENTS', 'ROADMAP', 'PRD:full', 'tasks', 'checks'] : [],
     research_signal: researchSignal,
     project_kind: manifest?.project_kind || 'brownfield',
     current_phase: PHASES.find(p => p.id === manifest?.current_phase)?.name,
@@ -479,6 +509,18 @@ export function cmdPlanCheck(args) {
 
   const checks = [];
   const tasks = taskData?.tasks || [];
+  const prdText = readMD(prdPath(project));
+
+  // Decision quality is intentionally separate from execution readiness. A
+  // perfectly annotated task graph can still be aimed at the wrong approach.
+  if (!/##\s*(?:\d+\.?\s*)?Decision Plan\b/i.test(prdText || '')) {
+    checks.push({ dim: 'goal-fit', level: 'warn', msg: 'PRD has no Decision Plan section explaining why this approach fits the goal' });
+  } else {
+    const decision = (prdText.match(/##\s*(?:\d+\.?\s*)?Decision Plan\b[\s\S]*?(?=\n##\s|$)/i) || [''])[0];
+    if (!/(chosen|selected|approach|선택|접근)/i.test(decision)) checks.push({ dim: 'approach-rationale', level: 'warn', msg: 'Decision Plan does not identify the selected approach' });
+    if (!/(alternative|option|single path|only viable|대안|단일 경로)/i.test(decision)) checks.push({ dim: 'approach-rationale', level: 'warn', msg: 'Decision Plan neither compares alternatives nor explains why there is one obvious path' });
+    if (!/(risk-first|highest risk|risk order|위험.*먼저|리스크.*먼저)/i.test(decision)) checks.push({ dim: 'risk-first-ordering', level: 'warn', msg: 'Decision Plan does not state a risk-first execution order' });
+  }
 
   // 1. Atomicity — a "large" task exceeds the one-session unit, so each one is a
   // split candidate regardless of dependencies. Smaller tasks give the executor
@@ -565,7 +607,7 @@ export function cmdPlanCheck(args) {
     const techMatches = context.match(techRe) || [];
     for (const m of techMatches) declaredTechs.add(m.toLowerCase());
   }
-  const prd = readMD(prdPath(project));
+  const prd = prdText;
   if (prd) {
     const constraintSection = prd.match(/## 3\. Constraints[\s\S]*?(?=## \d|$)/);
     if (constraintSection) {
@@ -738,8 +780,12 @@ export function cmdPlanCheck(args) {
 
   console.log(`\n${C.bold}Plan Check — ${tasks.length} tasks${C.reset}\n`);
 
-  const dims = ['atomicity', 'dependencies', 'coverage', 'granularity', 'completeness', 'context', 'naming', 'tech-leakage', 'scope-clarity', 'risk-ordering', 'expected-files', 'failure-mode-coverage', 'delegation-contract', 'review-groups', 'overall'];
+  const decisionDims = ['goal-fit', 'approach-rationale', 'risk-first-ordering'];
+  const executionDims = ['atomicity', 'dependencies', 'coverage', 'granularity', 'completeness', 'context', 'naming', 'tech-leakage', 'scope-clarity', 'risk-ordering', 'expected-files', 'failure-mode-coverage', 'delegation-contract', 'review-groups', 'overall'];
+  const dims = [...decisionDims, ...executionDims];
+  console.log(`  ${C.bold}Decision Quality${C.reset}`);
   for (const dim of dims) {
+    if (dim === executionDims[0]) console.log(`  ${C.bold}Execution Readiness${C.reset}`);
     const dimChecks = checks.filter(c => c.dim === dim);
     if (dimChecks.length === 0) {
       console.log(`  [pass] ${dim}`);
@@ -768,6 +814,10 @@ export function cmdPlanCheck(args) {
     tasks_count: tasks.length,
     checks,
     passed: errors.length === 0,
+    groups: {
+      decision_quality: decisionDims.flatMap(dim => checks.filter(check => check.dim === dim)),
+      execution_readiness: executionDims.flatMap(dim => checks.filter(check => check.dim === dim)),
+    },
   });
   markPlanReady(project, errors.length === 0);
 
@@ -1635,6 +1685,12 @@ export function cmdSaveArtifact(args) {
     return;
   }
 
+  let revisionReason = 'unknown';
+  try { revisionReason = normalizeRevisionReason(opts.reason); } catch (error) {
+    console.error(`❌ ${error.message}`); exitFail(1); return;
+  }
+  const before = type === 'plan' ? readMD(dest) : null;
+
   // R12: stamp new PRDs with the template version so prdBlockingFindings can
   // tell "written under the diagram-mandatory template" apart from
   // pre-existing PRDs. Never re-stamp a PRD that already carries a marker.
@@ -1643,6 +1699,11 @@ export function cmdSaveArtifact(args) {
   }
 
   writeMD(dest, content);
+
+  if (type === 'plan') recordPlanRevision(project, before, content, revisionReason);
+  if (['context', 'requirements', 'roadmap'].includes(type)) {
+    recordEffectiveness(project, 'artifact_saved', { artifact: type, reason: revisionReason, artifact_hash: artifactSnapshot(project).artifact_hash });
+  }
   console.log(`Saved ${type} artifact: ${dest}`);
 }
 

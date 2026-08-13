@@ -11,6 +11,7 @@ import {
   existsSync, join, resolve, ROOT, repoRoot, parseOptions, spawnSync,
 } from './core.mjs';
 import { parsePrdBaseline, computeDrift } from './drift.mjs';
+import { recordEffectiveness } from './effectiveness.mjs';
 
 // ── cmdQuality ──────────────────────────────────────────────────────
 
@@ -21,6 +22,11 @@ export function cmdQuality(args) {
 
   if (results.length === 0) {
     console.log(`  ${C.dim}No test/lint/build tools detected.${C.reset}`);
+    const path = join(phaseDir(project, '04-verify'), 'effectiveness.json');
+    const previous = readJSON(path);
+    const outcome = { timestamp: new Date().toISOString(), attempts: (previous?.attempts || 0) + 1, passed: true, checks: 0, failures: 0, skipped: 'no_tools' };
+    writeJSON(path, outcome);
+    recordEffectiveness(project, 'verify_outcome', { ...outcome, first_pass: outcome.attempts === 1 });
     return;
   }
 
@@ -30,6 +36,13 @@ export function cmdQuality(args) {
 
   const passCount = results.filter(r => r.passed).length;
   console.log(`\n${renderBar(passCount, results.length)} quality checks`);
+  const previous = readJSON(join(phaseDir(project, '04-verify'), 'effectiveness.json'));
+  const outcome = {
+    timestamp: new Date().toISOString(), attempts: (previous?.attempts || 0) + 1,
+    passed: passCount === results.length, checks: results.length, failures: results.length - passCount,
+  };
+  writeJSON(join(phaseDir(project, '04-verify'), 'effectiveness.json'), outcome);
+  recordEffectiveness(project, 'verify_outcome', { ...outcome, first_pass: outcome.attempts === 1 && outcome.passed });
 }
 
 // ── structured requirements (shared by coverage + traceability) ─────

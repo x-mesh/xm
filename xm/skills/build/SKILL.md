@@ -23,7 +23,22 @@ x-build manages the full project lifecycle (Research → Plan → Execute → Ve
 - Git operations not related to x-build
 </Do_Not_Use_When>
 
-# x-build — Phase-Based Project Harness
+# x-build — Adaptive Project Harness
+
+## Build Profiles
+
+`plan` and `build` accept `--profile light|standard|deep`. Omitting it preserves
+the legacy routing; this release does not auto-select a profile.
+
+| Profile | Research | Planning artifacts | Intended use |
+|---------|----------|--------------------|--------------|
+| `light` | skipped | delta PRD + tasks/checks | clear local changes |
+| `standard` | 1–2 targeted perspectives | concise CONTEXT/REQUIREMENTS + small/medium PRD | normal brownfield work |
+| `deep` | full perspectives | CONTEXT/REQUIREMENTS/ROADMAP + full PRD | greenfield/high-risk/public contracts |
+
+`--quick` remains an alias for `--profile light`; conflicting profile flags fail.
+Storage and resume keep all five internal phases, while profile-aware status also
+shows the user-facing `Shape → Plan → Build` lifecycle.
 
 ## Model Routing
 
@@ -135,7 +150,7 @@ Rules:
 1. **AskUserQuestion is REQUIRED only when a user-only answer materially changes** scope/task graph, public behavior, success criteria, irreversible/high-risk contracts, authority, external coordination, or compliance. Batch at most 3 blocking questions into one turn.
 2. **Routine transitions are automatic once their deterministic gates pass.** Plan → Execute remains a `decision` gate because it approves direction. A failed quality/group-review gate, agent execution error, or newly discovered user-only ambiguity still stops. Autopilot does not pass `decision` gates.
 3. **NEVER skip Research silently** — `plan "goal"` without `--quick` goes through Research, SCALED by the deterministic gauge in the plan JSON's `research_signal` (from `research-check`): `full` → 4-agent research; `slim` → 1-2 targeted agents on the HIT signals; `quick-eligible` (0/4 hits ONLY) → you MAY suggest `--quick` via AskUserQuestion, and proceed quick ONLY if the user confirms. In yolo/explicit autonomous mode, `quick-eligible` is enough to choose `--quick`. A missing/failed `research_signal` = treat as `full`. Outside that mode, auto-skipping without explicit confirmation, or calling `phase set plan` to dodge Research, is FORBIDDEN.
-4. **Artifacts MUST be printed before review (Output Gate)** — any LLM-produced artifact (research findings, PRD, task breakdown, forecast, critique, consensus result) MUST be output in FULL to the user **before** calling AskUserQuestion or advancing the phase. Save-and-ask-without-showing is FORBIDDEN. Saving to disk does NOT count as showing; a summary paragraph does NOT count as showing — print the artifact content. **Self-check gate (enforce, don't just intend):** immediately before the gating `AskUserQuestion`, confirm the full artifact text was printed in the CURRENT turn, and make the question's FIRST option cite a concrete detail from it (a task id, an `R#` requirement, or a `done_criteria` string). If you cannot cite one, you did not show it — print it first, then ask.
+4. **Review the decision, link the details** — before Plan approval print the Decision Plan, task/DAG summary, material risks/constraints, validation commands, and full artifact path. Do not dump a long PRD merely as ceremony. The approval question's first option must cite a concrete task id, R#, or done criterion.
 5. **Research output MUST be persisted** — after each research sub-agent (stack / features / architecture / pitfalls) completes, immediately call `$XMB save research-notes --agent <name> --content "..."` to append the RAW agent output to `phases/01-research/notes.md`. Never discard raw agent output by only saving the synthesized ROADMAP — the user must be able to audit the evidence chain.
 6. **Plan Review** — present one Plan Bundle (intent/PRD/tasks/groups/checks), then ask for the single Plan → Execute direction approval. Approval is bound to `plan_hash`; any plan change invalidates it.
 7. **Execute review** — do not review every task. Run configured task-local checks in each task cwd. `build.review_mode` decides whether the LLM review is optional (`manual`) or a hard boundary (`auto`); every mode still requires the deterministic `group-check <g>` after all group tasks complete. `build.review_depth` decides HOW HEAVY the LLM review is. Default depth is `solo`: `review-group` returns a pending spec — spawn ONE reviewer agent on `solo.patch` with `solo.model` (announce it per Model Disclosure), triage its findings, then record `review-group <g> --verdict pass|fail --notes "..."`. NEVER escalate to the cross-vendor panel on your own: `--depth panel` (or `/xm:panel review`) is user-invoked only. Explicit panel reviews default to one round (`--rounds 2` opts into adversarial refutation).
@@ -250,7 +265,7 @@ Parse user's `$ARGUMENTS` and current project state to determine the action.
 3. **If active project in other phase** → show current phase, suggest `phase set plan` if appropriate
 4. **If no project exists** → same as "No arguments" above — ask for goal immediately
 
-### `plan "goal"` (with goal argument)
+### `plan "goal" [--profile light|standard|deep]` (with goal argument)
 `plan` is plan-only: it always enters planning, produces a Plan Bundle, and stops after approval. It never silently continues to Execute.
 
 Before Research, run the emitted `intent_check`:
@@ -276,6 +291,7 @@ Use `plan --interview` when the user explicitly wants detailed refinement. Use `
 1. `$XMB init quick-{timestamp}` → `$XMB phase set plan` → Quick Mode flow (see [Quick Mode](#quick-mode-one-shot-planrun))
 2. Only enters Quick Mode when `--quick` flag is **explicitly** provided, OR when `research_signal.recommendation === "quick-eligible"` (0/4 signals) and the user confirmed it; in yolo/explicit autonomous mode, that safe recommendation is sufficient.
 3. Outside yolo/explicit autonomous mode, Research is skipped ONLY via explicit user opt-in.
+4. `--quick` is equivalent to `--profile light`; use the profile spelling in new automation.
 
 ### `dispatch "<instruction>"` (lightweight tracked execution)
 1. `$XMB dispatch "<instruction>" [--model M|--role R] [--done-criteria "..."] --json` — one task, no PRD/phase ceremony; the CLI prints a LOUD exemption notice (relay it to the user verbatim).

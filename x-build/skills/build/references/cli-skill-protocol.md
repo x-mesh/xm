@@ -9,7 +9,7 @@ Several commands output JSON for the skill layer to parse and act on. The skill 
 | `next --json` | varies | `phase`, `action`, `args`, `reason`, `artifacts`, `goal?`, `ready?`, `project_kind`, `suggest_probe`, `round0_pending?` (research phase, greenfield only), `research_signal?` (when action is `research`/`discuss`) |
 | `discuss` | `"discuss"` | `mode`, `project`, `current_phase`, `round`, `max_rounds`, `project_kind` + mode-specific fields (interview: `save_path`, `round0_pending?`) |
 | `research` | `"research"` | `goal`, `project`, `perspectives[]`, `project_kind`, `suggest_probe`, `agents_spec[]` (each with `perspective`, `role`, `model`, `web?`) |
-| `plan` / `build` | `"auto-plan"` | `goal`, `requested_action`, `stop_after`, `plan_state`, `executable`, `intent_check`, `research_signal` |
+| `plan` / `build` | `"auto-plan"` | `goal`, `requested_action`, `stop_after`, `plan_state`, `executable`, `intent_check`, `profile?`, `research_scope`, `required_artifacts`, `research_signal` |
 | `run --json` | (no action field) | `project`, `step`, `total_steps`, `tasks[]`, `parallel` |
 
 ## `next --json` — Smart Router (primary entry point)
@@ -49,7 +49,7 @@ unlisted `action` means the CLI is newer than this document; stop and report rat
 - `action: "plan-check"` → run `$XMB plan-check`
 - `action: "prd-gate"` → run `$XMB prd-gate`, print the rubric result, then continue
 - `action: "consensus"` → run `$XMB consensus`, print each role's verdict in full before advancing
-- `action: "approve-plan"` → the plan is well-formed but unapproved. Print the full Plan Bundle (PRD + tasks with done_criteria + groups/checks), then ask for the single Plan → Execute direction approval via AskUserQuestion citing a concrete artifact detail. `approval_reason` says what is missing. Autopilot must NOT self-approve this.
+- `action: "approve-plan"` → the plan is well-formed but unapproved. Print the Decision Plan, task/DAG summary, material risks/checks, and artifact path, then ask for the single Plan → Execute direction approval citing a concrete detail. `approval_reason` says what is missing. Autopilot must NOT self-approve this.
 - `action: "plan-complete"` → an approved `plan_only` bundle is finished and execution is intentionally paused. Report the bundle and STOP; resume only when the user asks (`resume_command`, normally `x-build run`).
 - `action: "phase"` + `args: ["next"]` → run `$XMB phase next` (phase gate transition)
 - `action: "steps"` + `args: ["compute"]` → run `$XMB steps compute` to build the DAG before running

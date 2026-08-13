@@ -17,6 +17,7 @@ import {
 import { prdBlockingFindings } from './plan.mjs';
 import { approvePlan, readPlanState, validatePlanApproval } from './plan-state.mjs';
 import { reviewGroupStatus, resolveReviewAction } from './build-policy.mjs';
+import { buildIdentity, recordEffectiveness, recordPhaseEffect } from './effectiveness.mjs';
 
 // ── cmdPhase ────────────────────────────────────────────────────────
 
@@ -51,6 +52,10 @@ function recordGateOutcome(project, phaseId, gateType, passed, passedBy) {
   const status = readJSON(p) || {};
   status.gate = { gate_type: gateType, passed, passed_by: passedBy, ts: new Date().toISOString() };
   writeJSON(p, status);
+  recordEffectiveness(project, 'gate_outcome', {
+    phase: PHASES.find(phase => phase.id === phaseId)?.name || phaseId,
+    gate_type: gateType, passed, passed_by: passedBy, blocking: !passed,
+  });
 }
 
 export function phaseNext(args) {
@@ -279,11 +284,14 @@ export function phaseNext(args) {
   emitHook('phase:post-enter', { project, phase: nextPhase.name, from: currentPhase.name });
 
   if (currentStatus.started_at) {
+    const durationMs = new Date(now) - new Date(currentStatus.started_at);
     appendCostEvent({
       type: 'phase_complete', project, phase: currentPhase.name,
-      duration_ms: new Date(now) - new Date(currentStatus.started_at),
+      ...buildIdentity(project),
+      duration_ms: durationMs,
       timestamp: now,
     });
+    recordPhaseEffect(project, currentPhase.id, currentPhase.name, durationMs, nextPhase.id);
   }
 
   console.log(`✅ ${currentPhase.label} → ${nextPhase.label}`);

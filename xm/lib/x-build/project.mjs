@@ -19,6 +19,7 @@ import {
   repoRoot, gaugeProjectKind,
 } from './core.mjs';
 import { resolveMemMeshProjectId } from '../mem-mesh-identity.mjs';
+import { recordEffectiveness } from './effectiveness.mjs';
 
 // ── cmdInit ─────────────────────────────────────────────────────────
 
@@ -383,6 +384,17 @@ export function cmdStatus(args) {
   }
   console.log('');
 
+  if (manifest.build_profile) {
+    const compact = [
+      { label: 'Shape', done: ['02-plan', '03-execute', '04-verify', '05-close'].includes(manifest.current_phase), active: manifest.current_phase === '01-research' },
+      { label: 'Plan', done: ['03-execute', '04-verify', '05-close'].includes(manifest.current_phase), active: manifest.current_phase === '02-plan' },
+      { label: 'Build', done: manifest.current_phase === '05-close' && readJSON(phaseStatusPath(name, '05-close'))?.status === 'completed', active: ['03-execute', '04-verify', '05-close'].includes(manifest.current_phase) },
+    ];
+    console.log(`  Profile: ${C.cyan}${manifest.build_profile}${C.reset}`);
+    console.log(`  ${compact.map(stage => `${stage.done ? '✅' : stage.active ? '🔵' : '⬜'} ${stage.label}`).join(' → ')}`);
+    console.log(`  ${C.dim}Internal phases remain below for diagnostics and resume compatibility.${C.reset}\n`);
+  }
+
   const gates = resolveGates();
   for (const phase of PHASES) {
     const status = readJSON(phaseStatusPath(name, phase.id));
@@ -518,6 +530,13 @@ export function cmdClose(args) {
   writeJSON(manifestPath(project), manifest);
 
   logDecision(project, `Project closed.${summaryContent ? ` Summary: ${summaryContent}` : ''}`);
+  const phaseDurations = PHASES.map(phase => readJSON(phaseStatusPath(project, phase.id)))
+    .filter(status => status?.started_at && status?.completed_at)
+    .map(status => new Date(status.completed_at) - new Date(status.started_at));
+  recordEffectiveness(project, 'build_complete', {
+    success: total === done, task_count: total, completed: done,
+    duration_ms: phaseDurations.reduce((sum, value) => sum + value, 0),
+  });
   console.log(`✅ Project "${project}" closed.`);
   console.log(`📄 Summary: ${join(phaseDir(project, '05-close'), 'summary.md')}`);
 }
