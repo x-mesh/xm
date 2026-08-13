@@ -212,9 +212,13 @@ export function cmdEffectiveness(args) {
   // when none of its rows ever named a profile. Both exclusions are counted here
   // from the aggregator's own verdict rather than re-derived, so the number
   // cannot drift from the rule it reports on.
+  // No event-type allow-list: it named three legacy cost events and therefore
+  // stayed silent on the aggregated types (phase_effect, verify_outcome,
+  // build_complete, ...), which are the rows whose loss actually moves a rate.
+  // Every emitter now carries build identity, so a row without one is either
+  // pre-feature data or a genuine gap — both worth reporting.
   const unattributed = new Set(result.unattributed_build_ids || []);
   const unlinked = rows.filter((row) => row && typeof row === 'object' && !Array.isArray(row)
-    && ['phase_complete', 'task_complete', 'run_complete'].includes(row.type)
     && (!row.build_id || unattributed.has(row.build_id))).length;
   result.coverage = { malformed_rows: malformed, legacy_or_unlinked_events: unlinked };
   result.compare = opts.compare || null;

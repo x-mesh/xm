@@ -918,6 +918,7 @@ export function taskUpdate(project, args) {
     if (taskRef.started_at) {
       appendCostEvent({
         type: 'task_failed', project, taskId: id, taskName: taskRef.name,
+        ...buildIdentity(project),
         role: taskRef.role || 'executor',
         model: _metricModel,
         size: taskRef.size || 'medium',

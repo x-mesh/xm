@@ -26,6 +26,9 @@ import {
 import { runGatePanel } from './gate-panel.mjs';
 import { taskCheckContractHash, taskCheckFingerprint } from './build-policy.mjs';
 import { appendCostEvent, generateCorrelationId } from './cost-engine.mjs';
+// effectiveness.mjs only reaches core.mjs and effectiveness-aggregate.mjs, so it
+// stays downstream of this module — no cycle with the ones documented below.
+import { buildIdentity } from './effectiveness.mjs';
 // Shared leaf module — see worktree-shared.mjs header for the DAG rationale.
 // isParallelSafe/normalizeExpectedFiles used to come from tasks.mjs (the cycle);
 // buildRoot/config used to be defined here (the gate-panel cycle). Both now live
@@ -893,6 +896,7 @@ function markTaskCompleted(project, taskId) {
   if (taskRef?.started_at) {
     appendCostEvent({
       type: 'task_complete', project, taskId, taskName: taskRef.name,
+      ...buildIdentity(project),
       role: taskRef.role || 'executor',
       model: taskRef._assigned_model || 'sonnet',
       size: taskRef.size || 'medium',

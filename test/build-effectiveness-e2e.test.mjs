@@ -140,6 +140,18 @@ describe('adaptive build effectiveness E2E', () => {
       expect(compared.profiles.map(row => row.profile)).toEqual(['light', 'deep']);
       expect(compared.builds_observed).toBe(2);
       expect(compared.coverage).toEqual({ malformed_rows: 1, legacy_or_unlinked_events: 1 });
+
+      // An aggregated event type with no build_id is dropped from every rate.
+      // The counter used to allow-list three legacy cost events, so this row —
+      // the kind whose loss actually moves research_change_rate — went
+      // unreported. It must now be counted like any other orphan.
+      appendFileSync(metrics, JSON.stringify({
+        type: 'phase_effect', project: 'orphan', phase: 'research',
+        duration_ms: 10, delta: { requirements: 1 }, timestamp: new Date().toISOString(),
+      }) + '\n');
+      const widened = json(cwd, ['effectiveness', '--since', '30d', '--json']);
+      expect(widened.coverage).toEqual({ malformed_rows: 1, legacy_or_unlinked_events: 2 });
+      expect(widened.builds_observed).toBe(3);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
