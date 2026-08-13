@@ -9,6 +9,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join, relative, isAbsolute, resolve, sep } from 'node:path';
+import { createHash } from 'node:crypto';
 
 // Global kill switch — either hook fails open when set. The documented escape hatch.
 // Explicit falsy spellings do NOT disable: a bare `!!process.env.X` treats the string
@@ -26,6 +27,7 @@ function readJSON(p) {
 }
 
 const BLOCKING_SEV = new Set(['critical', 'high']);
+const sha256 = value => createHash('sha256').update(value).digest('hex');
 
 /**
  * Read the review-fix state from <projectDir>/.xm/review/.
@@ -50,6 +52,8 @@ export function reviewFixState(projectDir) {
   const allowedFiles = Array.isArray(rawAllowed) ? rawAllowed.map(String) : [];
 
   const result = readJSON(join(reviewDir, 'last-result.json'));
+  const lifecycle = readJSON(join(reviewDir, 'finding-lifecycle.json'));
+  const gate = readJSON(join(reviewDir, 'review-fix-gate.json'));
   const verdict = String(result?.verdict || '').trim().toLowerCase();
   // The verdict only speaks for the review it came from: a LEFTOVER LGTM must not
   // deactivate the guard for a fresh triage. This correlation FAILS CLOSED — an LGTM
@@ -59,9 +63,28 @@ export function reviewFixState(projectDir) {
   // was disarmed by ANY stale LGTM). `verify-review-fix --init` always stamps the commit,
   // so the normal flow correlates; an un-stampable triage is released by regenerating it
   // (--init) or by the documented XM_BUILD_HOOKS_OFF bypass.
+  const lifecycleRows = Array.isArray(lifecycle?.findings) ? lifecycle.findings : [];
+  const lifecycleAware = triage.schema === 1 || (!!triage.initialized_at && !!triage.review_snapshot_digest);
+  const triageDigest = `sha256:${sha256(JSON.stringify(triage))}`;
+  const lifecycleDigest = lifecycle ? `sha256:${sha256(JSON.stringify(lifecycle))}` : null;
+  const lifecycleCorrelated = !lifecycleAware || (!!lifecycle
+    && lifecycle.reviewed_commit === triage.reviewed_commit
+    && lifecycle.triage_digest === triageDigest
+    && gate?.triage_digest === triageDigest
+    && gate?.lifecycle_digest === lifecycleDigest);
+  const lifecycleFixNow = lifecycleAware
+    ? lifecycleRows.filter(finding => String(finding.decision || '').trim().toLowerCase() === 'fix_now')
+    : fixNow;
+  const lifecycleComplete = lifecycleCorrelated && (!lifecycle ? !lifecycleAware : lifecycleFixNow.every((finding) => {
+    const row = lifecycleAware
+      ? lifecycleRows.find(item => finding.finding_id && item.finding_id === finding.finding_id)
+      : lifecycleRows.find(item => item.id === finding.id || (finding.finding_id && item.finding_id === finding.finding_id));
+    return row?.state === 'reverified' && row?.outcome === 'resolved';
+  }));
   const lgtm = (verdict === 'lgtm' || verdict === 'pass')
     && !!triage.reviewed_commit
-    && result?.reviewed_commit === triage.reviewed_commit;
+    && result?.reviewed_commit === triage.reviewed_commit
+    && lifecycleComplete;
 
   const unresolvedBlocking = lgtm
     ? []
@@ -81,17 +104,16 @@ export function reviewFixState(projectDir) {
 // disarm the guard with one permitted Write — delete the fix_now decisions and it
 // evaporates (F4). triage.json is therefore NOT auto-allowed.
 //
-// last-result.json is deliberately NOT in this set: its LGTM is the ONLY thing that
-// releases the guard, so blocking it would stop the re-review from ever recording the
-// release — a self-lock worse than the hole it closed (re-review C-a). Forging an LGTM
-// there is a deliberate act on par with XM_BUILD_HOOKS_OFF, and the reviewed_commit
-// correlation below keeps a STALE verdict from silently disarming a fresh triage.
+// last-result.json is deliberately NOT in this set: its LGTM is part of the release
+// signal, so blocking it would stop the re-review from ever recording completion.
+// finding-lifecycle.json IS protected because forged reverified/resolved rows could
+// otherwise combine with LGTM to release both hooks without running the byte-bound gate.
 //
 // Compared case-insensitively: macOS/APFS is case-insensitive by default, so a write to
 // `.xm/review/Triage.json` hits the same file and would otherwise slip past an exact
 // compare (re-review M1). Over-blocking a genuinely different casing on a case-sensitive
 // FS is the safe direction.
-const GUARD_INPUTS = new Set(['.xm/review/triage.json']);
+const GUARD_INPUTS = new Set(['.xm/review/triage.json', '.xm/review/finding-lifecycle.json']);
 
 // Paths the scope guard must never block: the rest of .xm/ (tasks, phases, the
 // later-queue) — blocking those would self-lock the harness and produce the known

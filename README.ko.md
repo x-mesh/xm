@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.15.6-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.16.1-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -403,6 +403,13 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 ```
 
 우선순위: `--cross-vendor` / `--no-cross-vendor` 플래그 > `cross_vendor.<consumer>` > `cross_vendor.default` > false. 소비자: `review`, `op`, `eval`, `solver`, `build`, `agent`. config 기본값이 켜져도 설치+인증된 벤더가 2개 이상이어야 하며(`xm panel doctor`), 아니면 단일 벤더로 loud 폴백합니다.
+
+x-review에서 x-panel은 두 번째 리뷰가 아니라 선택적인 Phase 3 백엔드입니다. 렌즈·심각도·
+finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니다. 멀티모델 게이트웨이가 있는
+머신만 `cross_vendor.review`를 켜고 `review.models`에 정확한 슬롯(예:
+`codex:gpt-5.6-sol:xhigh`, `codex:claude-sonnet-5`)을 둘 수 있습니다. 다른 머신은 기존
+자동 감지와 단일 런타임 기본값을 유지합니다. 같은 provider의 두 슬롯은 서로 다른 모델
+소스이지, 서로 다른 벤더라고 부르지 않습니다.
 
 이것은 오늘 사용 가능한 *능력*입니다. 이 능력이 측정 가능한 더 나은 성과를 낸다는 입증은 별개의 진행 중 과제입니다 (`docs/strategy/xm-differentiation.md` 참조).
 

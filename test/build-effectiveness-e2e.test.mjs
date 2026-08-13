@@ -157,6 +157,35 @@ describe('adaptive build effectiveness E2E', () => {
     }
   }, 60_000);
 
+  test('closing a profiled project with no tasks does not inflate completion_rate', () => {
+    // `close` runs no gate — it force-marks every phase completed — so a project
+    // that picked a profile at `plan` can reach it with zero tasks. `total ===
+    // done` read that as 0 === 0, so an empty build counted as completed and
+    // completion_rate reported 100%. The profile matters: a build that skips
+    // `plan` has none and is excluded from the rate regardless of `success`.
+    const cwd = mkdtempSync(join(tmpdir(), 'xm-build-empty-close-'));
+    try {
+      initGit(cwd);
+      expect(xm(cwd, ['init', 'empty']).exitCode).toBe(0);
+      expect(xm(cwd, ['plan', 'Empty fixture', '--profile', 'light', '--draft']).exitCode).toBe(0);
+      expect(xm(cwd, ['close', '--summary', 'nothing was built']).exitCode).toBe(0);
+
+      const rows = readFileSync(join(cwd, '.xm', 'build', 'metrics', 'sessions.jsonl'), 'utf8')
+        .trim().split('\n').map(line => JSON.parse(line));
+      const closed = rows.find(row => row.type === 'build_complete');
+      expect(closed).toBeTruthy();
+      expect(closed.task_count).toBe(0);
+      expect(closed.success).toBe(false);
+
+      const report = json(cwd, ['effectiveness', '--since', '30d', '--json']);
+      const light = report.profiles.find(row => row.profile === 'light');
+      expect(light.builds).toBe(1);
+      expect(light.completion_rate).toBe(0);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   test('--quick remains the light alias and conflicts fail loudly', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'xm-build-profile-'));
     try {

@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1786595323557,
+  "generatedAt": 1786624094433,
   "version": 2,
   "skills": [
     {
@@ -12,11 +12,11 @@
     },
     {
       "plugin": "build",
-      "sha256": "f2066e3f6f1322712065bd9c39b4a4deae90c104da137ae211758d77386e70f9",
-      "bytes": 39647,
-      "referencesSha256": "81763ee35561e1c0025a30be350c51abcff7cc983c24faa3c3ffb1fa20aac7aa",
+      "sha256": "5772078db1fd1ac9536b6990bdb6f2df39be120e45058670ce55bb57e19f8434",
+      "bytes": 39736,
+      "referencesSha256": "18de04cc8c8f0ec62e6c9515cb3b5180054375bfac020bd9e62077ad23d3b7d6",
       "referenceFiles": 11,
-      "referenceBytes": 100543
+      "referenceBytes": 101311
     },
     {
       "plugin": "dashboard",
@@ -116,8 +116,8 @@
     },
     {
       "plugin": "panel",
-      "sha256": "9e44f3b062c75366269626c3bcde015739362bf17e43b279d9986c1ab0c9ff24",
-      "bytes": 14956,
+      "sha256": "9e96a9967b34634ee6cf754fd184d91c935d46b880895448ad165d0d2b85be19",
+      "bytes": 16024,
       "referencesSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "referenceFiles": 0,
       "referenceBytes": 0
@@ -148,11 +148,11 @@
     },
     {
       "plugin": "review",
-      "sha256": "f9c393a9e3768c013b9985b5d7a2b85cbef541eedd6d2414e6ba4bb52523a9c9",
-      "bytes": 22241,
-      "referencesSha256": "e6a5f110edea449e8d4abd357dde39c9c55efbedfbe7fa7dc2de3218e31793b7",
+      "sha256": "ede7c57b01d4ef0e930c6149e8cc6de26954db177d0e9f9a0c422666608c4a42",
+      "bytes": 25453,
+      "referencesSha256": "b020ad0d7bd8f9581bb0bf29d9323a0734b775b9e9c7231654f7ed9dcf0d0b60",
       "referenceFiles": 7,
-      "referenceBytes": 37381
+      "referenceBytes": 45797
     },
     {
       "plugin": "ship",

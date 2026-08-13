@@ -60,11 +60,11 @@ describe('resolveSessionCommand (argv shapes)', () => {
     // --output-format json rides on BOTH session legs (패널1): without it round 2 loses
     // usage and hands an un-unwrapped envelope to the verdict parser.
     expect(resolveSessionCommand('claude', 'p', 'haiku', { mode: 'create', id }))
-      .toEqual(['claude', ['-p', '--output-format', 'json', '--model', 'haiku', '--session-id', id, 'p']]);
+      .toEqual(['claude', ['-p', '--output-format', 'json', '--model', 'haiku', '--session-id', id], { stdin: 'p' }]);
     expect(resolveSessionCommand('claude', 'p', null, { mode: 'resume', id }))
-      .toEqual(['claude', ['-p', '--output-format', 'json', '--resume', id, 'p']]);
+      .toEqual(['claude', ['-p', '--output-format', 'json', '--resume', id], { stdin: 'p' }]);
     expect(resolveSessionCommand('codex', 'p', null, { mode: 'resume', id }))
-      .toEqual(buildCodexResumeArgs({ execFlags: ['--json', '--sandbox', 'read-only', '--skip-git-repo-check'], sessionId: id, prompt: 'p' }));
+      .toEqual(buildCodexResumeArgs({ execFlags: ['--json', '--sandbox', 'read-only', '--skip-git-repo-check'], sessionId: id, prompt: 'p', promptViaStdin: true }));
     // codex create = plain exec (session implicit, id captured from the banner)
     expect(resolveSessionCommand('codex', 'p', null, { mode: 'create', id: null })[1]).not.toContain('resume');
     // resume without an id is a caller bug, never --last (wrong-session splice is silent)

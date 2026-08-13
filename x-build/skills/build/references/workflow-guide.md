@@ -328,7 +328,17 @@ Recommendation only — not auto-applied. User must specify via `--strategy`.
    # edit .xm/review/triage.json
    $XMB verify-review-fix
    ```
-   Review-fix edits MUST be limited to `fix_now` findings and `fix_scope.allowed_files`. After applying fixes, run `$XMB quality`, `$XMB verify-review-fix`, and `/xm:review diff` again before closing.
+   `--init` fails if any Phase-1 reviewed file bytes changed after x-review. The first plain
+   `verify-review-fix` validates the exact triage and authorizes edits; do not edit before it
+   passes. Review-fix edits MUST be limited to `fix_now` findings and
+   `fix_scope.allowed_files`. Editing triage invalidates the authorization. After applying fixes,
+   record byte-bound reverification for every `fix_now` finding:
+   ```bash
+   $XMB verify-review-fix --reverify F1 --outcome resolved --evidence "targeted regression test passes"
+   ```
+   Findings move through `open → fix_authorized → fixed → reverified`; editing the file again
+   invalidates its receipt, while `persistent` and `regression` outcomes remain blocking. Then run
+   `$XMB quality`, `$XMB verify-review-fix`, and `/xm:review diff` again before closing.
 5. When quality, coverage, and contracts pass, advance automatically with `$XMB phase next`.
    Show the results, but do not call AskUserQuestion for this routine transition. Stop only when
    the checks reveal a new user-owned decision (scope, irreversible/high-risk contract,

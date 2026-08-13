@@ -1,18 +1,19 @@
 /**
  * Inline-diff safety net (B).
  *
- * A panel target (a diff) is embedded verbatim into every provider's `-p <prompt>`
- * argument. Two hard walls sit downstream: the OS arg limit (ARG_MAX, 1MiB on darwin)
- * fails the spawn for EVERY provider, and each model has its own input cap (agy
- * truncates silently → "no verdicts JSON"). This budget keeps the inlined diff
- * comfortably under both. It is a floor, not the fix for agy's smaller cap — that is
- * the file handoff (A). Reductions are always LOUD (explicit markers), matching the
- * REFUTE_EVIDENCE_MAX convention: a truncated target must never read as the full change.
+ * A panel target (a diff) is embedded in each provider prompt. Claude and Codex carry
+ * that prompt over stdin and can keep the full target; argv-only providers still face
+ * Linux's per-string MAX_ARG_STRLEN (about 128 KiB), regardless of the much larger
+ * aggregate ARG_MAX. This budget keeps those argv prompts below that hard wall while
+ * leaving room for the instructions and output contract around the target. It is not
+ * the fix for agy's smaller internal cap — that remains the file handoff (A).
+ * Reductions are always LOUD: a truncated target must never read as the full change.
  */
 
-// Default inline budget. Leaves ~512KiB of headroom under darwin's 1MiB ARG_MAX for the
-// instructions + JSON contract that wrap the diff. Tunable via `panel.diff_inline_max_bytes`.
-export const DIFF_INLINE_MAX_BYTES = 512 * 1024;
+// Default argv-inline target budget. Linux rejects a single argv string at roughly 128 KiB
+// even when ARG_MAX is multiple MiB, so reserve 32 KiB for prompt instructions/contracts.
+// Tunable via `panel.diff_inline_max_bytes`; stdin providers do not use the reduced target.
+export const DIFF_INLINE_MAX_BYTES = 96 * 1024;
 
 // agy (Antigravity) truncates a large `-p` prompt internally well below ARG_MAX, silently
 // dropping the tail → the panel sees "no verdicts JSON". Above this size the panel hands

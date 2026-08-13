@@ -1,14 +1,13 @@
 ---
 name: panel
 description: Cross-vendor entry point + adversarial panel engine. `/xm:panel <verb>` routes multi-model work to the matching consumer in --cross-vendor mode (review→x-review, plan(brainstorm)/debate/council→x-op, solve→x-solver, eval→x-eval, consensus→x-build, fan-out→x-agent); `/xm:panel <target>` runs the panel engine itself (N model CLIs refute each other → consensus verdict); bare `/xm:panel` is an interactive picker; cross/detect/doctor/preflight/types/models are engine utilities (preflight = live model check before a run). Use for "panel review", "다른 모델들로 같이 리뷰", "여러 LLM으로 적대 리뷰", "다중모델로 토론/문제해결/평가", "panel 돌리기 전에 모델/프로바이더 상태 점검", or /xm:panel.
-model: sonnet
 ---
 
 # x-panel — Cross-Model Adversarial Review Panel
 
 ## Overview
 
-`x-panel` is the **cross-vendor entry point**. It has two jobs:
+`x-panel` is the **multi-model entry point**. It has two jobs:
 
 1. **Router** — `/xm:panel <verb>` (review/debate/council/solve/eval/consensus/fan-out) delegates to
    the matching consumer (x-review/x-op/x-solver/x-eval/x-build/x-agent) in `--cross-vendor` mode.
@@ -22,10 +21,17 @@ model: sonnet
 Different models have different blind spots — in dogfooding, codex missed a perf issue claude/agy
 caught, and cursor missed a SQL injection. That diversity is the whole point of both jobs.
 
+For reviews, these jobs are alternatives, not consecutive stages. `/xm:panel review` routes once to
+x-review, which owns target selection, lenses, severity, lifecycle, verdict, and convergence; panel
+only replaces x-review Phase 3 as its execution backend. Never run the native panel afterward as a
+second review. A bare `xm panel <target>` is an ad-hoc consensus tool and does not create an
+x-review lifecycle/verdict artifact.
+
 ## When to Use
 
 - "여러 모델로 같이 리뷰", "다중모델로 토론/문제해결/평가" → route to the matching consumer (§1)
-- "panel review", cross-model second opinion, "적대적으로 교차검증" → engine (§3) or `review` route
+- "panel review" or a formal PR/code review with lifecycle artifacts → the `review` route
+- An ad-hoc cross-model second opinion on supplied text/file, with no x-review lifecycle → native engine (§3)
 - `/xm:panel` (picker), `/xm:panel <file>` (engine), `/xm:panel review|debate|solve|eval …` (route)
 
 ## Do NOT Use When
@@ -45,7 +51,7 @@ caught, and cursor missed a SQL injection. That diversity is the whole point of 
 >
 > **Forbidden:** `XP="node ..."; $XP review` — zsh treats the quoted string as one command and fails.
 
-## Programmatic API (for other plugins — cross-vendor review)
+## Programmatic API (for other plugins — multi-model review)
 
 The panel engine is reusable by other skills via the dispatcher (no imports — cache-safe).
 A consumer (e.g. x-review's opt-in cross-vendor mode) probes availability, then drives a
@@ -67,6 +73,11 @@ xm panel <target> \
   --models claude,codex,cursor --json
 ```
 
+`--models` identifies model slots, not necessarily distinct vendors. Slots such as
+`codex:gpt-5.6-sol:xhigh,codex:claude-sonnet-5` are valid when a local Codex provider exposes both.
+They count as two independent model sources while remaining one provider/runtime for provenance.
+Readiness/auth is checked once per provider name; each distinct slot is still executed and labeled.
+
 - The override replaces only the round-1 reviewer intro; a fixed output contract is appended
   so findings always come back JSON-shaped regardless of what the lens prompt asks for.
 - round-2 (refute) is unchanged. Injected (review-mode) runs write to `.xm/review/<run>/`,
@@ -75,8 +86,9 @@ xm panel <target> \
 - **Where providers/config live:** the provider set (which CLIs exist, how they're spawned) is
   code-defined in adapters `BUILTIN` — the ONE definition shared by panel review AND every
   cross-vendor consumer (x-review/op/agent/eval/solver/build) via `xm panel cross`. `panel.*`
-  config tunes panel-review behavior (models/judge/stream) only; the sole key the cross path
-  also reads is `timeout_s`. There is no separate per-consumer provider config to maintain.
+  config tunes native panel-review behavior (models/judge/stream). The cross path shares
+  `timeout_s`; x-review may additionally own `review.models`, a machine-local list of exact model
+  slots for its Phase 3 backend. This does not enable panel mode by itself.
 
 ## Core Process — route first
 
@@ -103,8 +115,9 @@ does NOT produce a formal PRD. **Loose handoff:** if the user then wants a real 
 to `x-build plan` (Research→PRD lifecycle) or `/xm:panel consensus` to critique an existing PRD — do
 NOT auto-run x-build. For structure/breakdown instead of ideation, use `xm:op scaffold`/`decompose` (single-vendor — neither is cross-vendor-wired).
 
-Each consumer probes `xm panel detect --auth` / `doctor` itself and falls back to single-vendor
-loudly when <2 vendors are ready — don't duplicate that here. The consumer's vendor fan-out — **and
+Each consumer probes its configured slots with `xm panel preflight --models …`, or uses
+`xm panel detect --auth` / `doctor` when it has no slot list, and falls back to single-model
+loudly when fewer than two model slots are ready — don't duplicate that here. The consumer's model fan-out — **and
 its single-vendor fallback** — MUST run through `xm panel cross`, which writes `.xm/cross/<run>/status.json`:
 that file is the only record `xm panel status --all` / `--watch` / dashboard can see. A consumer that
 fans out cross-vendor work with the Agent tool instead leaves the run completely unobservable to panel status.

@@ -21,7 +21,7 @@ import {
   PANEL_DIR, XM_ROOT, C, provColor, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
-import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, parseModelIds, supportsResume, proseOutsideJSON, groundCapable } from './x-panel/adapters.mjs';
+import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, parseModelIds, supportsResume, supportsPromptStdin, proseOutsideJSON, groundCapable } from './x-panel/adapters.mjs';
 import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize, synthesizeRound1, normalizeResponses, followupDelta } from './x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, GATE_PHASES, DEFAULT_POLICY } from './x-panel/gate.mjs';
@@ -406,6 +406,20 @@ ${list}
 ${verdictContract(grounded)}`;
 }
 
+// Round 2 appends model-authored findings after the target, so budgeting only the
+// target can still exceed Linux MAX_ARG_STRLEN. Reserve the exact fixed overhead,
+// then shrink the target into the remaining whole-prompt budget. Never truncate
+// findings silently; if they alone exceed the budget, fail before spawn.
+function boundedRefutePrompt(target, otherLabel, otherFindings, grounded = false) {
+  const fixed = refutePrompt('', otherLabel, otherFindings, grounded);
+  const fixedBytes = Buffer.byteLength(fixed);
+  if (fixedBytes > DIFF_INLINE_MAX_BYTES) {
+    return { error: `round-2 findings require ${fixedBytes} bytes, above the safe argv prompt limit ${DIFF_INLINE_MAX_BYTES}; provider has no stdin/file transport` };
+  }
+  const shrunk = shrinkDiff(target, DIFF_INLINE_MAX_BYTES - fixedBytes);
+  return { prompt: refutePrompt(shrunk.text, otherLabel, otherFindings, grounded), reduced: shrunk.reduced };
+}
+
 // Refute prompt for a RESUMED provider session (t5): the target is already in
 // the session context from round 1, so only the others' findings travel — the
 // whole point of session reuse. MUST stay semantically identical to
@@ -586,7 +600,8 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
       // makePrompt may return a plain string OR { prompt, session, fallbackPrompt }
       // (t5 session reuse) — normalize here so round builders stay declarative.
       const req = makePrompt(e);
-      const { prompt, session = null, fallbackPrompt = null, providerArgs = null } = typeof req === 'string' ? { prompt: req } : req;
+      const { prompt, session = null, fallbackPrompt = null, providerArgs = null, error = null } = typeof req === 'string' ? { prompt: req } : req;
+      if (error) return Promise.resolve({ ok: false, error, raw: '', json: null });
       return invokeProviderAsync(e.name, prompt, {
         timeout: timeoutMs,
         model: e.model,
@@ -765,12 +780,16 @@ async function cmdReview(pos, flags) {
     usable.push(e);
   }
   const target = resolveTarget(pos[0]);
-  // Inline-diff safety net (B): `target.text` is embedded verbatim in every provider's
-  // -p argument. Cap it under ARG_MAX / model input limits, dropping noise files and
-  // omitting overflow LOUDLY. `target.text` stays the FULL diff (the file handoff (A)
-  // ships that to agy); `target.promptText` is the reduced copy every inline prompt uses.
+  // Inline-diff safety net (B): stdin-capable providers can carry the full target without
+  // MAX_ARG_STRLEN/E2BIG. Keep a reduced copy for argv-only providers, dropping noise files
+  // and marking omissions LOUDLY. `target.text` also feeds agy's file handoff (A).
   {
-    const budget = cfg.diff_inline_max_bytes || DIFF_INLINE_MAX_BYTES;
+    // Configuration may lower the budget for a provider/model, but never raise it
+    // above the OS-safe argv ceiling and reintroduce E2BIG.
+    const configuredBudget = Number(cfg.diff_inline_max_bytes);
+    const budget = Number.isFinite(configuredBudget) && configuredBudget > 0
+      ? Math.min(configuredBudget, DIFF_INLINE_MAX_BYTES)
+      : DIFF_INLINE_MAX_BYTES;
     const shrunk = shrinkDiff(target.text, budget);
     target.promptText = shrunk.text;
     target.fullBytes = Buffer.byteLength(target.text || '');
@@ -1051,14 +1070,16 @@ async function cmdReview(pos, flags) {
   // its JSON, a one-line "Here is the JSON:" preamble ~tens, a full prose review
   // thousands (observed 3.9KB). 200 sits in the wide gap between those modes.
   const SUSPECT_PROSE_MIN = 200;
-  const r1Prompt = reviewPrompt(target.promptText, reviewOverride);
+  const r1PromptFull = reviewPrompt(target.text, reviewOverride);
+  const r1PromptInline = reviewPrompt(target.promptText, reviewOverride);
   // agy handoff (A): agy reads the full diff from a file instead of the inline (B-shrunk) copy.
   const r1PromptAgy = agyHandoff ? reviewPrompt(agyHandoff.ref, reviewOverride) : null;
   await runRound('round 1 (review)', usable, (e) => {
     if (agyHandoff && e.name === 'agy') return { prompt: r1PromptAgy, providerArgs: { addDir: agyHandoff.addDir } };
+    const prompt = supportsPromptStdin(e.name) ? r1PromptFull : r1PromptInline;
     // fallbackPrompt = the same prompt: a failed --session-id spawn retries
     // stateless so session support can never cost a round (contract R4).
-    return e._session1 ? { prompt: r1Prompt, session: e._session1, fallbackPrompt: r1Prompt } : r1Prompt;
+    return e._session1 ? { prompt, session: e._session1, fallbackPrompt: prompt } : prompt;
   }, timeoutMs, onModelDone, (e, res) => {
     // Resume in round 2 only with a real session: claude echoes the caller's
     // uuid, codex must have disclosed one; a stateless fallback disables it.
@@ -1083,7 +1104,14 @@ async function cmdReview(pos, flags) {
 
   const round2 = {};
   const abstained = new Set();
-  if (rounds === 2) {
+  const unusableR1 = new Set(['failed', 'suspect_empty']);
+  let coverageFailed = usable.every((e) => unusableR1.has(r1Status[e.label]?.status));
+  let coverageFailurePhase = coverageFailed ? 'round1' : null;
+  if (coverageFailed) {
+    console.error(`${C.red}✗ round 1 produced zero usable model results — coverage failed${C.reset}`);
+    writeEvent({ type: 'coverage_failed', phase: status.phase, failed: usable.length, total: usable.length });
+  }
+  if (rounds === 2 && !coverageFailed) {
     // Round 2 — adversarial: each model refutes the others' findings (in parallel)
     startPhase('round2 (refute)');
     await runRound('round 2 (refute)', usable, (e) => {
@@ -1097,11 +1125,26 @@ async function cmdReview(pos, flags) {
     // agy handoff (A): agy has no session, so round 2 re-sends the target — point it at the
     // file again (not the inline diff) so a large diff doesn't truncate the refute prompt too.
     if (agyHandoff && e.name === 'agy') {
-      return { prompt: refutePrompt(agyHandoff.ref, otherLabel, otherFindings, g), providerArgs: { addDir: agyHandoff.addDir } };
+      const prompt = refutePrompt(agyHandoff.ref, otherLabel, otherFindings, g);
+      if (Buffer.byteLength(prompt) > DIFF_INLINE_MAX_BYTES) {
+        return { error: `round-2 prompt exceeds the safe argv limit ${DIFF_INLINE_MAX_BYTES}; findings cannot be truncated safely` };
+      }
+      return { prompt, providerArgs: { addDir: agyHandoff.addDir } };
     }
-    const full = refutePrompt(target.promptText, otherLabel, otherFindings, g);
+    const bounded = supportsPromptStdin(e.name)
+      ? { prompt: refutePrompt(target.text, otherLabel, otherFindings, g), reduced: false }
+      : boundedRefutePrompt(target.promptText, otherLabel, otherFindings, g);
+    if (bounded.error) return bounded;
+    if (bounded.reduced) {
+      console.error(`${C.yellow}⚠ ${e.label} round-2 target reduced so the complete prompt stays below the safe argv limit${C.reset}`);
+    }
+    const full = bounded.prompt;
     if (!e._resumeId) return full;
-    return { prompt: refutePromptResumed(otherLabel, otherFindings, g), session: { mode: 'resume', id: e._resumeId }, fallbackPrompt: full };
+    const resumed = refutePromptResumed(otherLabel, otherFindings, g);
+    if (!supportsPromptStdin(e.name) && Buffer.byteLength(resumed) > DIFF_INLINE_MAX_BYTES) {
+      return { error: `resumed round-2 prompt exceeds the safe argv limit ${DIFF_INLINE_MAX_BYTES}; findings cannot be truncated safely` };
+    }
+    return { prompt: resumed, session: { mode: 'resume', id: e._resumeId }, fallbackPrompt: full };
   }, timeoutMs, onModelDone, (e, res) => {
     if (!res.ok) abstained.add(e.label); // round2 failure ≠ silent concede
     // 'ok' | 'fallback' | 'capture_failed' (session created but its banner id was not
@@ -1115,6 +1158,12 @@ async function cmdReview(pos, flags) {
     writeJSON(join(dir, `${safeLabel(e.label)}.r2.json`), { model: e.label, ok: res.ok, error: res.error, resume, verdicts, usage: res.usage || null, raw: res.raw });
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 2, ok: res.ok, resume, count: verdicts.length, error: res.error || null });
     }, onProviderEvent, stream, partial, ['verdicts']);
+    if (usable.every((e) => abstained.has(e.label))) {
+      coverageFailed = true;
+      coverageFailurePhase = 'round2';
+      console.error(`${C.red}✗ round 2 produced zero usable refutations — coverage failed${C.reset}`);
+      writeEvent({ type: 'coverage_failed', phase: status.phase, failed: usable.length, total: usable.length });
+    }
   }
 
   // Both rounds have read the diff — drop the agy handoff input file so no unredacted full
@@ -1153,6 +1202,8 @@ async function cmdReview(pos, flags) {
     grounded,
     grounded_models: [...groundedSet],
     timeout_s: timeoutS,
+    coverage_failed: coverageFailed,
+    coverage_failure_phase: coverageFailurePhase,
     skipped_providers: skippedProviders,
     usage: {
       totals: status.totals,
@@ -1185,6 +1236,7 @@ async function cmdReview(pos, flags) {
   // Pass the full record (superset of verdict: adds grounded/grounded_models) so the
   // grounding summary can distinguish "verified N" from "requested but none checked".
   else console.log(renderVerdict(record, dir));
+  if (coverageFailed) process.exitCode = 1;
 }
 
 // Resolve provider entries (name / name:model) from --models/preset/config — shared by review & cross.
@@ -1248,8 +1300,8 @@ async function cmdCross(pos, flags) {
   // corrupt the response format. So we do NOT shrink in place. Instead:
   //  - agy (whose small inline cap is the one that actually truncates): hand it the WHOLE prompt
   //    as a file (nothing cut → contract intact) via --add-dir read access. Mirrors handoff (A).
-  //  - every provider: LOUDLY warn past the inline budget — a prompt near ARG_MAX would E2BIG the
-  //    spawn for all of them, and we refuse to silently truncate a contract to hide it (Lesson L6).
+  //  - argv-only providers: LOUDLY warn past the inline budget — Claude/Codex use stdin and do
+  //    not face MAX_ARG_STRLEN; we refuse to truncate an opaque contract to hide the issue (L6).
   const promptBytes = Buffer.byteLength(prompt || '');
   const agyCrossHandoff = prepareAgyHandoff({
     cfg, usable, dir, fileName: 'prompt.txt',
@@ -1257,7 +1309,9 @@ async function cmdCross(pos, flags) {
     wrap: crossFileWrapper, noun: 'prompt', what: 'the whole prompt',
   });
   if (promptBytes > (cfg.diff_inline_max_bytes || DIFF_INLINE_MAX_BYTES)) {
-    const inlineProviders = usable.filter((e) => !(agyCrossHandoff && e.name === 'agy')).map((e) => e.label);
+    const inlineProviders = usable
+      .filter((e) => !supportsPromptStdin(e.name) && !(agyCrossHandoff && e.name === 'agy'))
+      .map((e) => e.label);
     if (inlineProviders.length) {
       console.error(`${C.yellow}⚠ cross prompt ${promptBytes} bytes exceeds the inline budget — ${inlineProviders.join(', ')} receive it inline and may hit their input/ARG limits. Not truncating (would corrupt the output contract at the prompt's end); reduce the prompt upstream if a provider fails.${C.reset}`);
     }
@@ -1349,7 +1403,14 @@ async function cmdCross(pos, flags) {
       const useAgyFile = agyCrossHandoff && e.name === 'agy';
       const sendPrompt = useAgyFile ? agyCrossHandoff.ref : prompt;
       const providerArgs = useAgyFile ? { addDir: agyCrossHandoff.addDir } : null;
-      let res = await invokeProviderText(e.name, sendPrompt, { timeout: timeoutMs, model: e.model, onEvent, providerArgs });
+      // Opaque cross prompts cannot be safely truncated because the response contract is often
+      // at the tail. Fail argv-only providers before spawn once the hard per-string ceiling is
+      // exceeded; stdin providers and agy's file handoff retain the complete prompt.
+      const argvTooLarge = promptBytes > DIFF_INLINE_MAX_BYTES
+        && !supportsPromptStdin(e.name) && !useAgyFile;
+      let res = argvTooLarge
+        ? { ok: false, output: '', error: `prompt ${promptBytes} bytes exceeds the safe argv limit ${DIFF_INLINE_MAX_BYTES}; provider has no stdin/file transport`, nonRetryable: true }
+        : await invokeProviderText(e.name, sendPrompt, { timeout: timeoutMs, model: e.model, onEvent, providerArgs });
       // One retry on a TRANSIENT failure (exit-0-empty / exit-N): cursor and other gateway CLIs
       // intermittently return an empty/failed result that succeeds on a second try. Do NOT retry a
       // timeout/stall — it already burned the full (600s+) window, so a retry just doubles the
@@ -1357,7 +1418,7 @@ async function cmdCross(pos, flags) {
       // (set by invokeProviderText's idle/cap guard), so we gate on the FLAG — never a substring of
       // the error text, which used to over-match exit-0-empty/exit-N messages that merely mention
       // "timeout" (e.g. `exit 0 but empty output: ...timed out...`). Retries are surfaced (L6).
-      if (!res.ok && !res.timedOut) {
+      if (!res.ok && !res.timedOut && !res.nonRetryable) {
         console.error(`${C.yellow}⚠ ${e.label} failed (${res.error}) — retrying once${C.reset}`);
         writeEvent({ type: 'lifecycle', phase: status.phase, model: e.label, provider: e.name, note: `failed (${res.error}) — retrying once`, error: res.error });
         m.retried = true;
@@ -1594,7 +1655,8 @@ async function cmdPreflight(pos, flags) {
   const entries = resolveEntries(flags, cfg).filter((e) => (_seen.has(e.label) ? false : (_seen.add(e.label), true)));
   if (entries.length === 0) {
     console.error(`${C.yellow}no models resolved — configure with: xm panel setup${C.reset}`);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   const timeoutMs = Math.max(5, (flags.timeout != null ? Number(flags.timeout) : 45)) * 1000;
 
@@ -1696,7 +1758,8 @@ async function cmdPreflight(pos, flags) {
   const okN = results.filter((r) => r.ok).length;
   if (flags.json) {
     console.log(JSON.stringify({ ok: okN, total: results.length, cross_vendor: okN >= 2, results }, null, 2));
-    process.exit(okN >= 1 ? 0 : 1);
+    process.exitCode = okN >= 1 ? 0 : 1;
+    return;
   }
 
   const tail = okN >= 2 ? `${C.green}cross-vendor OK${C.reset}`
@@ -1706,7 +1769,7 @@ async function cmdPreflight(pos, flags) {
   if (okN < results.length) {
     console.log(`${C.dim}auth issue → xm panel doctor   ·   bad model → xm panel models <vendor> --check <id>${C.reset}`);
   }
-  process.exit(okN >= 1 ? 0 : 1);
+  process.exitCode = okN >= 1 ? 0 : 1;
 }
 
 function printHelp() {

@@ -102,6 +102,9 @@ describe('x-solver SKILL.md structure', () => {
 
 describe('x-review SKILL.md structure', () => {
   const content = readSkill('x-review');
+  const workflow = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'review-workflow.md'), 'utf8');
+  const dataDirectory = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'data-directory.md'), 'utf8');
+  const integration = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'x-build-integration.md'), 'utf8');
 
   test('Smart Router detects PR, branch, and main', () => {
     expect(content).toContain('Smart Router');
@@ -129,9 +132,10 @@ describe('x-review SKILL.md structure', () => {
   });
 
   test('Smart Router has large diff guard', () => {
-    expect(content).toContain('500');
     expect(content).toContain('2000');
-    expect(content).toContain('force-full');
+    expect(content).toContain('requires_chunking');
+    expect(content).toContain('Review incomplete');
+    expect(content).not.toContain('force-full');
   });
 
   test('contains full mode with lens-first split', () => {
@@ -141,31 +145,68 @@ describe('x-review SKILL.md structure', () => {
   });
 
   test('contains CoVe self-verify step', () => {
-    expect(content).toContain('Self-Verify');
-    expect(content).toContain('Chain-of-Verification');
-    expect(content).toContain('CoVe-removed');
-    expect(content).toContain('CoVe-downgraded');
+    expect(workflow).toContain('Self-Verify');
+    expect(workflow).toContain('verification question');
+    expect(workflow).toContain('CoVe-removed');
+    expect(workflow).toContain('CoVe-downgraded');
+  });
+
+  test('consensus changes confidence, never severity', () => {
+    expect(workflow).toContain('Never raise severity because sources agree');
+    expect(workflow).toContain('A Low reported independently by');
+    expect(workflow).not.toContain('Promote severity one level');
+    expect(workflow).toContain('strongly-corroborated');
+    expect(dataDirectory).toContain('\"confidence\": \"corroborated\"');
+    expect(dataDirectory).toContain('\"source_count\": 2');
   });
 
   test('CoVe uses agent snippets, not file re-reads', () => {
-    expect(content).toContain('do not re-read the file');
-    expect(content).toContain('snippet');
+    expect(workflow).toContain('frozen target and canonical report');
+    expect(workflow).toContain('deterministic grounding');
   });
 
   test('contains presets (quick/standard/security)', () => {
+    expect(content).toContain('--preset adaptive-fast');
     expect(content).toContain('--preset quick');
     expect(content).toContain('--preset standard');
     expect(content).toContain('--preset security');
   });
 
+  test('adaptive-fast is one wave with conditional expensive gates', () => {
+    expect(content).toContain('one parallel LLM wave');
+    expect(content).toContain('scripts/plan-review.mjs');
+    expect(content).toContain('Recall/panel/another reviewer');
+    expect(workflow).toContain('correctness');
+    expect(workflow).toContain('risk');
+    expect(workflow).toContain('target_coverage');
+    expect(workflow).toContain('Disabled; finish after the grounded first wave');
+    expect(dataDirectory).toContain('duration_ms');
+  });
+
   test('verdict includes reason', () => {
-    expect(content).toContain('verdict rationale');
+    expect(workflow).toContain('Include verdict rationale');
   });
 
   test('review results saved as MD', () => {
     expect(content).toContain('last-result.md');
     expect(content).toContain('history/');
     expect(content).toContain('reviewed_commit');
+  });
+
+  test('review artifacts bind review-fix to Phase-1 target bytes', () => {
+    expect(content).toContain('reviewed_files_all');
+    expect(content).toContain('reviewed_file_snapshots');
+    expect(workflow).toContain('Capture these now, not');
+    expect(workflow).toContain('refuses stale findings');
+    expect(dataDirectory).toContain('raw bytes with SHA-256');
+    expect(dataDirectory).toContain('not eligible for review-fix');
+  });
+
+  test('review-fix documents byte-bound finding lifecycle', () => {
+    expect(workflow).toContain('open → fix_authorized → fixed → reverified');
+    expect(workflow).toContain('--outcome resolved');
+    expect(dataDirectory).toContain('finding-lifecycle.json');
+    expect(dataDirectory).toContain('stable content-derived `finding_id`');
   });
 
   test('contains review-fix triage contract', () => {
@@ -177,8 +218,9 @@ describe('x-review SKILL.md structure', () => {
   test('fails closed on missing, stale, or empty lens reports before synthesis', () => {
     expect(content).toContain('lens-report-contract.md');
     expect(content).toContain('scripts/validate-reports.mjs');
-    expect(content).toContain('N/N contract-valid reports');
-    expect(content).toContain('Partial/invalid coverage forbids LGTM');
+    expect(workflow).toContain('N/N report coverage');
+    expect(workflow).toContain('missing report, empty body');
+    expect(content).toContain('Partial coverage forbids LGTM');
   });
 
   test('all 7 lenses documented', () => {
@@ -194,6 +236,29 @@ describe('x-review SKILL.md structure', () => {
   test('allowed-tools includes AskUserQuestion', () => {
     expect(content).toContain('allowed-tools');
     expect(content).toContain('AskUserQuestion');
+  });
+
+  test('inherits the effective reviewer model instead of pinning sonnet', () => {
+    expect(workflow).not.toContain('model: "sonnet"');
+    expect(workflow).toContain('omit the Agent `model` parameter');
+    expect(workflow).toContain('may never silently substitute Sonnet');
+  });
+
+  test('uses panel only as the optional Phase 3 backend', () => {
+    expect(content).toContain('x-panel is only the Phase');
+    expect(content).toContain('must not run a native panel after x-review');
+    expect(content).toContain('review.models');
+    expect(content).toContain('two slots may share a provider');
+    expect(content).toContain('--models "$REVIEW_MODELS"');
+    expect(content).toContain('model sources agreed');
+  });
+
+  test('bounds review-fix convergence to one delta re-review', () => {
+    expect(content).toContain('One automatic re-review is the default maximum');
+    expect(integration).toContain('reviewed_commit');
+    expect(integration).toContain('stop and report it');
+    expect(integration).toContain('Do not run a');
+    expect(integration).toContain('native x-panel review after x-review');
   });
 });
 

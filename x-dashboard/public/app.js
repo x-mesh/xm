@@ -1657,11 +1657,14 @@ function renderProjectDetail(slug) {
     // Review-Fix Gate Snapshot — surface note near gate card if present
     const rfGate = projectResult.review_fix_gate_snapshot;
     if (rfGate && typeof rfGate === 'object') {
-      const rfStatus = rfGate.status || rfGate.gate_status || '';
-      const rfCls = rfStatus === 'passed' || rfStatus === 'ready' ? 'badge-green'
-        : rfStatus === 'blocked' ? 'badge-red'
+      const rfStatus = rfGate.stage || rfGate.status || rfGate.gate_status || '';
+      const rfCls = rfStatus === 'passed' || rfStatus === 'ready' || rfStatus === 'ready_for_fix' || rfStatus === 'reverified' ? 'badge-green'
+        : rfStatus === 'blocked' || rfStatus === 'awaiting_reverification' ? 'badge-red'
         : 'badge-amber';
-      const rfCount = rfGate.required_count ?? rfGate.open_count ?? null;
+      const rfCount = rfGate.triage_required ?? rfGate.required_count ?? rfGate.open_count ?? null;
+      const rfFailure = Array.isArray(rfGate.failures) && rfGate.failures.length > 0
+        ? rfGate.failures[0]
+        : '';
       html += `
         <div class="card" style="margin-top:0.5rem;padding:10px 16px;border-left:3px solid var(--border)">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -1669,6 +1672,7 @@ function renderProjectDetail(slug) {
             ${rfStatus ? `<span class="badge ${rfCls}">${escapeHtmlHumble(rfStatus)}</span>` : ''}
             ${rfCount != null ? `<span class="text-muted" style="font-size:0.8rem">${rfCount} finding${rfCount !== 1 ? 's' : ''} required</span>` : ''}
           </div>
+          ${rfFailure ? `<div class="text-muted" style="font-size:0.78rem;margin-top:6px">${escapeHtmlHumble(rfFailure)}</div>` : ''}
         </div>
       `;
     }
@@ -5162,6 +5166,7 @@ async function renderReviewsList() {
             <td>${f.file ? `<code>${escapeHtmlHumble(f.file)}${f.line ? ':' + escapeHtmlHumble(f.line) : ''}</code>` : '<span class="text-muted">—</span>'}</td>
             <td>${escapeHtmlHumble(f.summary || '')}</td>
             <td>${f.decision ? `<span class="badge badge-blue">${escapeHtmlHumble(f.decision)}</span>` : '<span class="badge badge-amber">undecided</span>'}</td>
+            <td><span class="badge ${f.lifecycle_state === 'reverified' && f.outcome === 'resolved' ? 'badge-green' : f.lifecycle_state === 'fixed' ? 'badge-amber' : 'badge-blue'}">${escapeHtmlHumble(f.lifecycle_state || 'open')}</span>${f.outcome ? ` <span class="text-muted">${escapeHtmlHumble(f.outcome)}</span>` : ''}</td>
           </tr>
         `).join('');
         const failures = (gate.failures || []).map(f => `<li>${escapeHtmlHumble(f)}</li>`).join('');
@@ -5182,7 +5187,7 @@ async function renderReviewsList() {
             ${requiredRows ? `
               <div class="table-wrapper">
                 <table class="table">
-                  <thead><tr><th>ID</th><th>Severity</th><th>File</th><th>Finding</th><th>Decision</th></tr></thead>
+                  <thead><tr><th>ID</th><th>Severity</th><th>File</th><th>Finding</th><th>Decision</th><th>Lifecycle</th></tr></thead>
                   <tbody>${requiredRows}</tbody>
                 </table>
               </div>
