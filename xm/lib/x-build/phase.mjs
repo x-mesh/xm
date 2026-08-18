@@ -76,6 +76,7 @@ export function phaseNext(args) {
 
   if (currentPhase.name === 'plan' && !existsSync(prdPath(project))) {
     console.error('⚠ PRD not generated yet. Run: /xm:build plan to generate PRD first.');
+    process.exitCode = 2; // refused to advance — must not exit 0 (CI / gate consumers)
     return;
   }
 
@@ -107,6 +108,7 @@ export function phaseNext(args) {
       console.log(`   1. x-build discuss`);
       console.log(`   2. x-build research`);
       console.log(`   Then: x-build gate pass`);
+      process.exitCode = 2;
       return;
     }
     const validateResult = readJSON(join(phaseDir(project, '01-research'), 'discuss-validate.json'));
@@ -128,16 +130,19 @@ export function phaseNext(args) {
     const tasks = readJSON(tasksPath(project));
     if (!tasks?.tasks?.length) {
       console.log(`⚠️  No tasks defined. Run: x-build plan "goal"`);
+      process.exitCode = 2;
       return;
     }
     const planCheck = readJSON(join(phaseDir(project, '02-plan'), 'plan-check.json'));
     if (!planCheck) {
       console.log(`⚠️  Plan not validated. Run: x-build plan-check`);
       if (requiresSignoff(gateType)) console.log(`   Then: x-build gate pass`);
+      process.exitCode = 2;
       return;
     }
     if (!planCheck.passed) {
       console.log(`⚠️  Plan check has errors. Fix them first.`);
+      process.exitCode = 2;
       return;
     }
     const approval = validatePlanApproval(project);
@@ -363,6 +368,7 @@ function phaseSet(args) {
 
   if (targetIdx >= executeIdx && !existsSync(prdPath(project))) {
     console.error('⚠ PRD not generated yet. Run: /xm:build plan to generate PRD first.');
+    process.exitCode = 2; // refused to advance — must not exit 0 (CI / gate consumers)
     return;
   }
 
@@ -388,6 +394,7 @@ function phaseSet(args) {
       console.error(`⚠ PRD has ${blocking.length} unresolved blocking item(s) (PRD template Gate rule):`);
       for (const b of blocking) console.error(`   - ${b}`);
       console.error('   Resolve them, or override: x-build phase set execute --force');
+      process.exitCode = 2;
       return;
     }
   }

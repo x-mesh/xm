@@ -99,6 +99,6 @@ Full CLI surface. SKILL.md links here instead of inlining it — the catalog is 
 
 ### Settings
 - `mode developer|normal`
-- `config show|set|get` — Shared config management (agent_max_count, mode)
+- Shared config (agent_max_count, mode) is managed by the top-level `xm config show|set|get` — `config` is NOT an x-build subcommand
 - `watch [--interval N]`
 - `alias install`

@@ -1189,15 +1189,18 @@ export function cmdForecast(args) {
   console.log(`  ${C.dim}Confidence: ≈ = low (complex/strategy), ~ = medium, (blank) = high${C.reset}`);
 
   // Say whether these numbers are calibrated from measured actuals or still pure
-  // estimates — the forecaster only trusts an actual average at ≥10 samples/size.
+  // estimates. The estimator prices from size:model buckets (model_sample_counts),
+  // so only those count as "calibrated" — a plain size bucket at ≥10 would claim
+  // calibration the estimator never actually uses.
   const actuals = loadTokenActuals();
-  const counts = actuals?.sample_counts || {};
-  const calibrated = Object.keys(counts).filter(s => counts[s] >= 10);
+  const modelCounts = actuals?.model_sample_counts || {};
+  const calibrated = Object.keys(modelCounts).filter(k => modelCounts[k] >= 10);
   if (calibrated.length) {
-    console.log(`  ${C.dim}Calibrated from actuals: ${calibrated.map(s => `${s} (${counts[s]})`).join(', ')}${C.reset}`);
+    console.log(`  ${C.dim}Calibrated from actuals: ${calibrated.map(k => `${k} (${modelCounts[k]})`).join(', ')}${C.reset}`);
   } else {
+    const counts = actuals?.sample_counts || {};
     const measured = Object.values(counts).reduce((a, b) => a + b, 0);
-    console.log(`  ${C.dim}Estimate-only (${measured} measured sample${measured === 1 ? '' : 's'}; ≥10/size calibrates). Record actuals: tasks update <id> --tokens-in N --tokens-out M${C.reset}`);
+    console.log(`  ${C.dim}Estimate-only (${measured} measured sample${measured === 1 ? '' : 's'}; ≥10 per size:model calibrates). Record actuals: tasks update <id> --tokens-in N --tokens-out M${C.reset}`);
   }
 
   const budget = config.budget?.max_usd;

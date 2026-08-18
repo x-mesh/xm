@@ -130,6 +130,18 @@ describe('shared cost core', () => {
     expect(result).toEqual({ spent: 0.1, projectSpentMap: { api: 0.1 } });
   });
 
+  test('computeSpend excludes timestamp-less rows from a windowed spend but keeps them lifetime', () => {
+    const now = Date.now();
+    const events = [
+      { cost_usd: 0.1, timestamp: now - 1_000 },
+      { cost_usd: 0.3 },                                  // no timestamp
+      { cost_usd: 0.5, timestamp: 'not-a-date' },         // unparseable timestamp
+    ];
+    // Documented contract: timestamp-less rows are excluded when `since` is set.
+    expect(computeSpend(events, { since: now - 10_000 }).spent).toBeCloseTo(0.1, 9);
+    expect(computeSpend(events).spent).toBeCloseTo(0.9, 9); // lifetime keeps all
+  });
+
   test('getCacheKey uses canonical object keys and preserves array semantics', () => {
     const first = getCacheKey({ model: 'sonnet', options: { temperature: 0, system: 'a' } });
     const same = getCacheKey({ options: { system: 'a', temperature: 0 }, model: 'sonnet' });

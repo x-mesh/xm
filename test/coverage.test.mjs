@@ -671,7 +671,11 @@ describe('phase lifecycle', () => {
   test('phase set to execute directly', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-ps-'));
     try {
-      setupProject(tmp);
+      const name = setupProject(tmp);
+      // Execute entry requires a PRD; without one, phase set refuses with exit 2.
+      const prdDir = join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan');
+      mkdirSync(prdDir, { recursive: true });
+      writeFileSync(join(prdDir, 'PRD.md'), '# PRD\n\n## 1. Goal\nTest project\n');
       const r = run(['phase', 'set', 'execute'], { cwd: tmp });
       expect(r.exitCode).toBe(0);
       const status = run(['status'], { cwd: tmp });

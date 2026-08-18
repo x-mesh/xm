@@ -118,7 +118,7 @@ plugin-qualified string.
 
 ## Worktree Mode JSON
 
-The worktree pipeline is the optional Execute-phase backend. See the SKILL.md "Worktree Execution Mode" section for the decision rules; this section documents the JSON surfaces.
+The worktree pipeline is the optional Execute-phase backend. SKILL.md "Worktree Execution Mode" keeps the hard rules; this section documents the JSON surfaces plus the extracted decision & finish protocol detail.
 
 ### `worktree_signal` (on every `run --json`)
 
@@ -249,6 +249,27 @@ NEEDS_FIX / BLOCKED / MERGING or a live worktree are never reconciled to PENDING
 ### `gate-panel` / `review-integration`
 
 `gate-panel --project <p> --task <id> --phase before|after|release --patch <path> --json` returns `{ decision: "pass"|"fail"|"error", exit_code, blocking_findings[], ... }` and exits 0/1/2. `review-integration` builds the `main...develop` patch and runs gate-panel under the reserved `__integration__` id / `release` phase.
+
+### Execution-mode decision & finish protocol
+
+Detail behind SKILL.md § Worktree Execution Mode (extracted 2026-08-18).
+
+**Review boundaries.** With default `build.review_scope=group`, per-task `gk finish` is ungated. `build.review_mode=manual` makes the LLM group review optional, while the final deterministic `group-check` remains mandatory; `auto` makes both the LLM review and deterministic check shared hard boundaries. Set `build.review_scope=task` only for an explicit high-risk compatibility policy.
+
+**3-layer mode decision** (no separate wizard or dashboard) — worktree fan-out is the Execute-phase run backend, decided on top of existing conventions, not a new pipeline:
+1. **config** — `worktree.*` in `.xm/build/config.json` or `.xm/config.json` (persistent project policy). Priority: CLI flag > `.xm/build/config.json` > `.xm/config.json` > defaults; `gate_policy` merges per-key.
+2. **CLI flag** — `run --worktrees` / `run --no-worktrees` overrides config for one run. When a flag is present, skip the layer-3 question.
+3. **phase gate (computed, not asked)** — the `worktree_signal` above. `recommend: true` → use worktree fan-out when config/CLI selected it; emit the recommendation for observability, but do not add a confirmation turn. `recommend: false` → run sequentially and print one line of reason (≤1 parallel-safe task, or no `expected_files`).
+
+**Parallel-safety derivation.** Per-task `expected_files[]`: non-overlapping expected files → parallel-safe; missing or overlapping → sequential (when in doubt, sequential). Set via `tasks add|update --expected-files "a,b"`.
+
+**Drive modes.** Two drive modes share the same command surface: interactive orchestrator (`/xm:build` fans subagents into worktree cwds) and headless CLI (a human works each worktree, finishes with the same `worktrees resume` / `gate-panel`).
+
+**Run-plan artifacts.** Real fan-out (`run --worktrees`, non-dry-run) acquires the first parallel batch, writes `run.json` + a `TASK-CONTEXT.md` snapshot per worktree, and emits `tasks[]` with `branch` / `worktree` / `env` / `acquired` / `worktree_status`. When no task is parallel-safe, the plan falls back to acquiring the first sequential task alone (`sequential_fallback: true`, `parallel: false`). Worktree `tasks[]` entries carry NO `on_complete`/`on_fail` — only a `completion_note`; under group review the per-task finish is intentionally ungated and the group panel is the review boundary.
+
+**Finish queue.** `worktrees resume [task-id...]` drives every resumable task through the serialized `gk finish` queue (one at a time under the target merge lock). Resumable = all worktree statuses EXCEPT `BLOCKED`/`DONE`/`READY`, so happy-path `WORKTREE_CREATED`/`RUNNING`/`VERIFYING`/`REVIEWING` and `NEEDS_FIX`/`MERGING` all enter the queue; `BLOCKED` is skipped with guidance. After-gate `paused` sets `worktree_status: BLOCKED` and saves `recover[]` — the accept (merge kept) vs rewind (`recover[]`) call belongs to the user.
+
+**Dry-run / degraded.** `--dry-run` emits the plan only (no gk). In explicit per-task review mode, missing gk `--gate` falls back to `mode: "manual-handoff"`; default group review does not require that unused capability.
 
 ## Applies to
 

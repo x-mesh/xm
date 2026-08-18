@@ -319,33 +319,16 @@ means OMIT the Agent tool parameter.
 
 ## Worktree Execution Mode
 
-Optional Execute-phase backend: fan parallel-safe tasks out into isolated `gk` worktrees. It uses the same tasks, `task_checks`, review groups, and lifecycle as normal execution; only the cwd/isolation backend differs. With default `build.review_scope=group`, per-task `gk finish` is ungated. `build.review_mode=manual` makes the LLM group review optional, while the final deterministic `group-check` remains mandatory; `auto` makes both the LLM review and deterministic check shared hard boundaries. Set `build.review_scope=task` only for an explicit high-risk compatibility policy.
+Optional Execute-phase backend: fan parallel-safe tasks out into isolated `gk` worktrees. Same tasks, `task_checks`, review groups, and lifecycle as normal execution — only the cwd/isolation backend differs; with default `build.review_scope=group` per-task `gk finish` is ungated and the group review is the boundary. Mode selection is deterministic (`run --worktrees`/`--no-worktrees` flag > config `worktree.*` in `.xm/build/config.json` > `.xm/config.json` > defaults, with the computed `worktree_signal` as the un-asked recommendation layer): on `recommend: true` proceed without adding a confirmation turn; on `recommend: false` do NOT ask — run sequentially and print one line of reason. Parallel-safety comes from non-overlapping per-task `expected_files[]`; when in doubt, sequential.
 
-### 3-layer mode decision (no separate wizard or dashboard)
+Protocol detail (config priority chain, `worktree_signal` semantics, review_mode/review_scope effects, drive modes, run-plan artifacts, `worktree_status` values, dry-run fallback): see `references/cli-skill-protocol.md` § Worktree Mode JSON.
 
-Worktree fan-out is the Execute-phase run backend, decided on top of existing conventions — not a new pipeline:
-1. **config** — `worktree.*` in `.xm/build/config.json` or `.xm/config.json` (persistent project policy). Priority: CLI flag > `.xm/build/config.json` > `.xm/config.json` > defaults; `gate_policy` merges per-key.
-2. **CLI flag** — `run --worktrees` / `run --no-worktrees` overrides config for one run. When a flag is present, skip the layer-3 question.
-3. **phase gate (computed, not asked)** — `run --json` always emits `worktree_signal { enabled, parallel_safe_count, sequential_count, recommend }`; `recommend` is `true` only when `enabled && parallel_safe_count >= 2`.
-   - `recommend: true` → use worktree fan-out when config/CLI selected it; emit the recommendation for observability, but do not add a confirmation turn.
-   - `recommend: false` → do NOT ask; run sequentially and print one line of reason (≤1 parallel-safe task, or no `expected_files`).
-
-Parallel-safety comes from per-task `expected_files[]`: non-overlapping expected files → parallel-safe; missing or overlapping → sequential (when in doubt, sequential). Set via `tasks add|update --expected-files "a,b"`.
-
-**Dashboard is observe-only** — never a control plane. It reads `worktree_tasks[]`; intervention (resume, resume-accept) happens at the terminal.
-
-Two drive modes share the same command surface: interactive orchestrator (`/xm:build` fans subagents into worktree cwds) and headless CLI (a human works each worktree, finishes with the same `worktrees resume` / `gate-panel`).
-
-### Execution & finish (agent path)
-
-- Real fan-out (`run --worktrees`, non-dry-run) acquires the first parallel batch, writes `run.json` + a `TASK-CONTEXT.md` snapshot per worktree, and emits `tasks[]` with `branch` / `worktree` / `env` / `acquired` / `worktree_status`. **Inject `entry.env` (`X_BUILD_ROOT` / `X_PANEL_ROOT` / `XM_ROOT`) into every spawned worktree subagent** — without it the agent reads the main repo's `.xm/` as empty. When no task is parallel-safe, the plan falls back to acquiring the first sequential task alone (`sequential_fallback: true`, `parallel: false`).
-- Worktree `tasks[]` entries carry NO `on_complete`/`on_fail` — only a `completion_note`. Worktree subagents must NOT run `tasks update ... completed`; the orchestrator flips tasks.json only after `gk finish` succeeds. Under group review, that finish is intentionally per-task ungated and the group panel is the review boundary.
-- `finish.auto` is always `false`. After agents complete, run `task-check <task-id>` in each task worktree, then call `worktrees resume [task-id...]` — that drives the serialized `gk finish` queue (one at a time under the target merge lock). NEVER auto-run finish from the run plan.
-- `--dry-run` emits the plan only (no gk). In explicit per-task review mode, missing gk `--gate` falls back to `mode: "manual-handoff"`; default group review does not require that unused capability.
-
-### After-gate paused is a human decision
-
-When a finish returns after-gate `paused` (`worktree_status: BLOCKED`, `recover[]` saved), do NOT auto-run `gk ... --resume-accept`. `worktrees resume` drives every resumable task (all worktree statuses EXCEPT `BLOCKED`/`DONE`/`READY`, so happy-path `WORKTREE_CREATED`/`RUNNING`/`VERIFYING`/`REVIEWING` and `NEEDS_FIX`/`MERGING` all enter the finish queue); it skips `BLOCKED` with guidance. The accept (merge kept) vs rewind (`recover[]`) call belongs to the user.
+Hard rules (agent path):
+- **Inject `entry.env`** (`X_BUILD_ROOT` / `X_PANEL_ROOT` / `XM_ROOT`) into every spawned worktree subagent — without it the agent reads the main repo's `.xm/` as empty.
+- Worktree subagents must NOT run `tasks update ... completed`; the orchestrator flips tasks.json only after `gk finish` succeeds.
+- `finish.auto` is always `false`. After agents complete, run `task-check <task-id>` in each task worktree, then `worktrees resume [task-id...]` drives the serialized `gk finish` queue. NEVER auto-run finish from the run plan.
+- After-gate `paused` (`worktree_status: BLOCKED`, `recover[]` saved) is a human decision — do NOT auto-run `gk ... --resume-accept`; `worktrees resume` skips `BLOCKED` with guidance. Accept (merge kept) vs rewind (`recover[]`) belongs to the user.
+- **Dashboard is observe-only** — never a control plane; intervention (resume, resume-accept) happens at the terminal.
 
 ## CLI↔Skill JSON Protocol
 
@@ -401,11 +384,11 @@ x-build references the shared configuration in `.xm/config.json`:
 | TL model | `team_default_leader_model` | `opus` | Team Leader model for `--team` tasks |
 | Team member count | `team_max_members` | `5` | Max members per team |
 
-Change settings:
+Change settings via the top-level `xm config` — `config` is NOT an `xm build` subcommand:
 ```bash
-$XMB config set agent_max_count 10   # max parallelism
-$XMB config set agent_max_count 2    # save tokens
-$XMB config show                     # show current settings
+xm config set agent_max_count 10   # max parallelism
+xm config set agent_max_count 2    # save tokens
+xm config show                     # show current settings
 ```
 
 ### Config Resolution Priority
@@ -452,7 +435,7 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | "save session" | `handoff` |
 | "export" | `export` |
 | "change mode" | `mode` |
-| "agent settings", "agent level" | `config show` / `config set agent_max_count` |
+| "agent settings", "agent level" | `xm config show` / `xm config set agent_max_count` (top-level, not `$XMB`) |
 
 ## Common Rationalizations
 

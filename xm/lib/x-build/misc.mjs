@@ -4,7 +4,7 @@
 
 import {
   PHASES, TASK_STATES, C, ROOT, PLUGIN_ROOT,
-  readJSON, writeJSON, readMD, writeMD,
+  readJSON, writeJSON, modifyJSON, readMD, writeMD, nextTaskId,
   manifestPath, phaseStatusPath, tasksPath, stepsPath, contextDir, phaseDir,
   projectDir, decisionsPath, metricsPath, templatesDir, adaptEvent,
   resolveProject, addDecision, loadPhaseContext,
@@ -447,15 +447,21 @@ export function cmdTemplates(args) {
       const size = sizeMatch?.[1] || 'medium';
       const name = titleMatch?.[1] || templateName;
 
-      const data = readJSON(tasksPath(project)) || { tasks: [] };
-      const id = `t${data.tasks.length + 1}`;
-      data.tasks.push({
-        id, name, depends_on: [], size,
-        status: 'pending',
-        created_at: new Date().toISOString(),
-        template: templateName,
+      // Locked + max-based id: length+1 on a lockless snapshot minted duplicate
+      // ids after `tasks remove` (same bug family as cmdDispatch/cmdImport).
+      let id;
+      modifyJSON(tasksPath(project), (data) => {
+        data = data || { tasks: [] };
+        data.tasks = data.tasks || [];
+        id = nextTaskId(data.tasks);
+        data.tasks.push({
+          id, name, depends_on: [], size,
+          status: 'pending',
+          created_at: new Date().toISOString(),
+          template: templateName,
+        });
+        return data;
       });
-      writeJSON(tasksPath(project), data);
       console.log(`  ➕ Task "${id}: ${name}" added (${size})`);
     }
 

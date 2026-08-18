@@ -222,6 +222,30 @@ describe('G3 — Risk-ordering DAG-based (risk-ordering dim)', () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it('does not crash when a hand-edited task lacks depends_on (l45)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-g3-'));
+    try {
+      const name = setupProject(tmp);
+      addTasks(tmp, [
+        { name: 'Add config loader [R1]', size: 'small' },
+        { name: 'Add API layer [R2]', size: 'small', deps: 't1' },
+      ]);
+      // Simulate a hand-edited tasks.json that dropped the field: computeSteps
+      // used to throw a raw TypeError that the narrowed G3 catch rethrows.
+      const file = tasksFilePath(tmp, name);
+      const data = JSON.parse(readFileSync(file, 'utf8'));
+      delete data.tasks[0].depends_on;
+      writeFileSync(file, JSON.stringify(data, null, 2));
+
+      const r = run(['plan-check'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(r.stderr).not.toContain('TypeError');
+      expect(r.stderr).not.toContain('is not iterable');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── G4: Atomicity 3+ large ──────────────────────────────────────────────────

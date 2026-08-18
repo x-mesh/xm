@@ -8,7 +8,7 @@ import {
   manifestPath, tasksPath, stepsPath, phaseDir, contextDir, decisionsPath,
   resolveProject, parseOptions,
   existsSync, join, readFileSync, writeFileSync,
-  parseCSVLine, normSize,
+  parseCSVLine, normSize, nextTaskId,
   exitFail,
 } from './core.mjs';
 
@@ -129,16 +129,6 @@ function findTaskStep(taskId, stepData) {
 }
 
 // ── cmdImport ───────────────────────────────────────────────────────
-
-// Max-based, not length-based (same scheme as tasks add / later promote):
-// after `tasks remove`, length+1 would collide with a surviving id.
-function nextTaskId(tasks) {
-  const max = tasks.reduce((n, task) => {
-    const parsed = parseInt(String(task.id || '').replace(/^t/, ''), 10);
-    return Number.isFinite(parsed) && parsed > n ? parsed : n;
-  }, 0);
-  return `t${max + 1}`;
-}
 
 export function cmdImport(args) {
   const { opts, positional } = parseOptions(args);

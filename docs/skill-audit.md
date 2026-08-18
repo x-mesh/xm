@@ -25,7 +25,7 @@ hand-maintained count went 181 lines stale (x-build was recorded as 411 while it
 | Lines | Plugin | Status |
 |-------|--------|--------|
 | 498 | `x-agent/skills/agent/SKILL.md` | ✅ OK |
-| 497 | `x-build/skills/build/SKILL.md` | ✅ OK |
+| 496 | `x-build/skills/build/SKILL.md` | ✅ OK |
 | 491 | `x-op/skills/op/SKILL.md` | ✅ OK |
 | 402 | `xm/skills/ship/SKILL.md` | ✅ OK |
 | 388 | `x-memory/skills/memory/SKILL.md` | ✅ OK |
@@ -86,7 +86,7 @@ Largest sub-files (non-SKILL.md) by line count. These don't fall under the 500-l
 | 494 | `x-agent/skills/agent/references/role-presets.md` | Per-primitive role presets |
 | 429 | `x-build/skills/build/references/workflow-guide.md` | Was 654; Step 3 Plan extracted to phases/plan.md |
 | 326 | `x-build/skills/build/references/phases/plan.md` | Full Plan-phase walkthrough (extracted 2026-04-17) |
-| 241 | `x-build/skills/build/references/cli-skill-protocol.md` | All 16 `next --json` actions + run-status envelopes |
+| 276 | `x-build/skills/build/references/cli-skill-protocol.md` | All 16 `next --json` actions + run-status envelopes; worktree decision/finish detail extracted from SKILL.md 2026-08-18 |
 | 104 | `x-build/skills/build/references/commands.md` | Full CLI surface (extracted from SKILL.md 2026-08-11) |
 | 59 | `x-build/skills/build/references/environment-detection.md` | Toolchain/base-branch detection (extracted 2026-08-11) |
 | 488 | `x-solver/skills/solver/commands/solve.md` | 4 strategy branches; already borderline |

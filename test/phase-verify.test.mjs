@@ -273,6 +273,39 @@ describe('phase exit gates are enforced', () => {
   });
 });
 
+// ── Deterministic refusal paths exit 2 (l31) ──────────────────────
+// phase next / phase set used to print the refusal but exit 0, so CI and
+// chained callers read "did not advance" as success.
+
+describe('deterministic refusals exit 2', () => {
+  test('phase next in plan without a PRD refuses with exit 2', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-refuse-'));
+    try {
+      const name = setupProject(tmp);
+      run(['phase', 'set', 'plan'], { cwd: tmp });
+      const r = run(['phase', 'next'], { cwd: tmp });
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain('PRD not generated');
+      expect(readJSON(projectPath(tmp, name, 'manifest.json')).current_phase).toBe('02-plan');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('phase set execute without a PRD refuses with exit 2', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-refuse-'));
+    try {
+      const name = setupProject(tmp);
+      const r = run(['phase', 'set', 'execute'], { cwd: tmp });
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain('PRD not generated');
+      expect(readJSON(projectPath(tmp, name, 'manifest.json')).current_phase).toBe('01-research');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 // ── Checkpoint ────────────────────────────────────────────────────
 
 describe('checkpoint', () => {
@@ -850,6 +883,59 @@ describe('verify-review-fix', () => {
       const verify = run(['verify-review-fix'], { cwd: tmp });
       expect(verify.exitCode).not.toBe(0);
       expect(verify.stdout).toContain('requires an explicit triage decision');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed when reviewed_commit is missing on either side (stale-triage guard)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      // Review side missing: JSON.stringify drops the undefined key entirely.
+      writeReviewResult(tmp, { reviewed_commit: undefined });
+      writeFileSync(join(tmp, '.xm', 'review', 'triage.json'), JSON.stringify({
+        reviewed_commit: 'abc1234',
+        target_findings: [{ id: 'F1', decision: 'fix_now', evidence: 'fixed' }],
+        fix_scope: { allowed_files: ['src/auth.ts'] },
+        verification: ['bun test auth'],
+      }, null, 2));
+      const reviewSide = run(['verify-review-fix'], { cwd: tmp });
+      expect(reviewSide.exitCode).not.toBe(0);
+      expect(reviewSide.stdout).toContain('cannot verify triage freshness');
+
+      // Triage side missing: an old hand-written triage with no commit anchor.
+      writeReviewResult(tmp);
+      writeFileSync(join(tmp, '.xm', 'review', 'triage.json'), JSON.stringify({
+        target_findings: [{ id: 'F1', decision: 'fix_now', evidence: 'fixed' }],
+        fix_scope: { allowed_files: ['src/auth.ts'] },
+        verification: ['bun test auth'],
+      }, null, 2));
+      const triageSide = run(['verify-review-fix'], { cwd: tmp });
+      expect(triageSide.exitCode).not.toBe(0);
+      expect(triageSide.stdout).toContain('cannot verify triage freshness');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('fails when a triage decision no longer matches the finding at its index', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      writeFileSync(join(tmp, '.xm', 'review', 'triage.json'), JSON.stringify({
+        reviewed_commit: 'abc1234',
+        target_findings: [
+          // Same id/index, but recorded against a different finding.
+          { id: 'F1', decision: 'fix_now', evidence: 'fixed', file: 'src/other.ts', summary: 'Different finding entirely' },
+        ],
+        fix_scope: { allowed_files: ['src/auth.ts', 'src/other.ts'] },
+        verification: ['bun test auth'],
+      }, null, 2));
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('does not match current finding');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

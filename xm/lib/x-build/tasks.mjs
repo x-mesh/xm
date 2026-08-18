@@ -16,7 +16,7 @@ import {
   existsSync, join, resolve, mkdirSync,
   spawnSync,
   createRL, ask, pickMenu, E, exitFail,
-  readdirSync, repoRoot,
+  readdirSync, repoRoot, nextTaskId,
 } from './core.mjs';
 // Worktree orchestration lives in worktrees.mjs; the expected_files utils and
 // config resolver live in the shared leaf. tasks.mjs imports both ONE-DIRECTION
@@ -409,16 +409,6 @@ export function taskDoneCriteria(project) {
   console.log('');
 }
 
-// Max-based, not length-based: after `tasks remove`, length+1 would collide
-// with a surviving id (remove t2 of [t1..t3] → next id must be t4, not t3).
-function nextTaskId(tasks) {
-  const max = tasks.reduce((n, t) => {
-    const parsed = parseInt(String(t.id || '').replace(/^t/, ''), 10);
-    return Number.isFinite(parsed) && parsed > n ? parsed : n;
-  }, 0);
-  return `t${max + 1}`;
-}
-
 export function taskAdd(project, args) {
   const { opts, positional } = parseOptions(args);
   let revisionReason = 'unknown';
@@ -634,8 +624,6 @@ export function taskRemove(project, args) {
 
 export function taskUpdate(project, args) {
   const { opts, positional } = parseOptions(args);
-  let revisionReason = 'unknown';
-  try { revisionReason = normalizeRevisionReason(opts.reason); } catch (error) { console.error(`❌ ${error.message}`); exitFail(1); return; }
   const id = positional[0];
   const rawStatus = opts.status;
   if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined && opts.desc === undefined && opts['expected-files'] === undefined && opts['interface-contract'] === undefined && opts['review-group'] === undefined)) {
@@ -652,17 +640,95 @@ export function taskUpdate(project, args) {
     exitFail(1);
   }
 
+  // Pure type/enum validation happens BEFORE the modifyJSON lock: exitFail is
+  // process.exit in CLI mode, which skips modifyJSON's finally-unlink and left
+  // tasks.json.lock behind, blocking parallel writers for up to 10s.
+  let newStatus;
+  if (rawStatus) {
+    newStatus = STATUS_ALIASES[rawStatus] || rawStatus;
+    if (!Object.values(TASK_STATES).includes(newStatus)) {
+      console.error(`❌ Invalid status: "${rawStatus}". Valid: ${Object.values(TASK_STATES).join(', ')}`);
+      exitFail(1);
+    }
+  }
+
+  // --reason serves two flags: plan-field updates require an enum revision
+  // reason (recordEffectiveness), while `--status failed` records it verbatim
+  // as failure_reason. Only validate the enum when a plan field is touched —
+  // a failure like --reason "tests timed out" must not abort the update.
+  const touchesPlanFields = ['desc', 'done-criteria', 'deps', 'expected-files', 'interface-contract', 'review-group']
+    .some(flag => opts[flag] !== undefined);
+  let revisionReason = 'unknown';
+  if (touchesPlanFields) {
+    try { revisionReason = normalizeRevisionReason(opts.reason); } catch (error) { console.error(`❌ ${error.message}`); exitFail(1); return; }
+  }
+
+  if (opts.score !== undefined && Number.isNaN(parseFloat(opts.score))) {
+    console.error('❌ --score requires a numeric value. Usage: --score <number>');
+    exitFail(1);
+  }
+
+  if (opts.desc !== undefined && typeof opts.desc !== 'string') {
+    console.error('❌ --desc requires a value. Usage: --desc "what + why"');
+    exitFail(1);
+  }
+
+  if (opts['done-criteria'] !== undefined && typeof opts['done-criteria'] !== 'string') {
+    console.error('❌ --done-criteria requires a value. Usage: --done-criteria "criteria text"');
+    exitFail(1);
+  }
+
+  if (opts['review-group'] !== undefined && (typeof opts['review-group'] !== 'string' || !opts['review-group'].trim())) {
+    console.error('❌ --review-group requires a non-empty value.');
+    exitFail(1);
+  }
+
+  let newDeps;
+  if (opts.deps !== undefined) {
+    // parseOptions collapses `--deps` (no value) and `--deps ""` to `true`
+    // because of the falsy-next-arg shortcut. Treat both as "clear".
+    if (opts.deps === true || opts.deps === '') {
+      newDeps = [];
+    } else if (typeof opts.deps === 'string') {
+      newDeps = opts.deps.split(',').map(d => d.trim()).filter(Boolean);
+    } else {
+      console.error('❌ --deps requires a value. Usage: --deps t1,t2  (or omit value to clear)');
+      exitFail(1);
+    }
+    if (newDeps.includes(id)) {
+      console.error(`❌ Self-dependency rejected: task "${id}" cannot depend on itself.`);
+      exitFail(1);
+    }
+  }
+
   // Use modifyJSON for atomic read-modify-write (parallel agent safe)
   let taskFound = false;
-  let oldStatus, newStatus, updatedFields = [];
+  let oldStatus, updatedFields = [];
   let taskRef = null;
   let completionEvidenceError = null;
   let alreadyCompleted = false;
+  // Data-dependent failures are latched and reported AFTER modifyJSON returns
+  // (same pattern as completionEvidenceError): exitFail inside the mutator
+  // would skip the finally-unlink and leak tasks.json.lock.
+  let dataError = null;
 
   modifyJSON(tasksPath(project), (data) => {
-    if (!data) { console.error('❌ No tasks data found.'); exitFail(1); }
+    if (!data) { dataError = '❌ No tasks data found.'; return data; }
     const task = data.tasks.find(t => t.id === id);
-    if (!task) { console.error(`❌ ${E('task-not-found', { id })}`); exitFail(1); }
+    if (!task) { dataError = `❌ ${E('task-not-found', { id })}`; return data; }
+
+    // Unknown-dep check needs fresh data, and must run before ANY mutation so
+    // a rejected update writes nothing back.
+    if (newDeps) {
+      const validIds = new Set(data.tasks.map(t => t.id));
+      for (const dep of newDeps) {
+        if (!validIds.has(dep)) {
+          dataError = `❌ Unknown dependency: "${dep}" does not exist.`;
+          return data;
+        }
+      }
+    }
+
     taskFound = true;
     taskRef = task;
 
@@ -670,11 +736,6 @@ export function taskUpdate(project, args) {
     // callback allowed a second executor to replace it or complete the task
     // between validation and write (TOCTOU).
     if (rawStatus) {
-      newStatus = STATUS_ALIASES[rawStatus] || rawStatus;
-      if (!Object.values(TASK_STATES).includes(newStatus)) {
-        console.error(`❌ Invalid status: "${rawStatus}". Valid: ${Object.values(TASK_STATES).join(', ')}`);
-        exitFail(1);
-      }
       if (newStatus === TASK_STATES.COMPLETED && task.status === TASK_STATES.COMPLETED) {
         alreadyCompleted = true;
         return data;
@@ -696,19 +757,11 @@ export function taskUpdate(project, args) {
     }
 
     if (opts.desc !== undefined) {
-      if (typeof opts.desc !== 'string') {
-        console.error('❌ --desc requires a value. Usage: --desc "what + why"');
-        exitFail(1);
-      }
       task.description = opts.desc.trim() || null;
       updatedFields.push('description updated');
     }
 
     if (opts['done-criteria'] !== undefined) {
-      if (typeof opts['done-criteria'] !== 'string') {
-        console.error('❌ --done-criteria requires a value. Usage: --done-criteria "criteria text"');
-        exitFail(1);
-      }
       task.done_criteria = opts['done-criteria'].split(';').map(c => c.trim()).filter(Boolean);
       updatedFields.push('done_criteria updated');
     }
@@ -728,37 +781,11 @@ export function taskUpdate(project, args) {
     }
 
     if (opts['review-group'] !== undefined) {
-      if (typeof opts['review-group'] !== 'string' || !opts['review-group'].trim()) {
-        console.error('❌ --review-group requires a non-empty value.');
-        exitFail(1);
-      }
       task.review_group = opts['review-group'].trim();
       updatedFields.push(`review_group: ${task.review_group}`);
     }
 
     if (opts.deps !== undefined) {
-      // parseOptions collapses `--deps` (no value) and `--deps ""` to `true`
-      // because of the falsy-next-arg shortcut. Treat both as "clear".
-      let newDeps;
-      if (opts.deps === true || opts.deps === '') {
-        newDeps = [];
-      } else if (typeof opts.deps === 'string') {
-        newDeps = opts.deps.split(',').map(d => d.trim()).filter(Boolean);
-      } else {
-        console.error('❌ --deps requires a value. Usage: --deps t1,t2  (or omit value to clear)');
-        exitFail(1);
-      }
-      const validIds = new Set(data.tasks.map(t => t.id));
-      for (const dep of newDeps) {
-        if (dep === id) {
-          console.error(`❌ Self-dependency rejected: task "${id}" cannot depend on itself.`);
-          exitFail(1);
-        }
-        if (!validIds.has(dep)) {
-          console.error(`❌ Unknown dependency: "${dep}" does not exist.`);
-          exitFail(1);
-        }
-      }
       task.depends_on = newDeps;
       updatedFields.push(`depends_on: [${newDeps.join(', ')}]`);
     }
@@ -778,6 +805,12 @@ export function taskUpdate(project, args) {
     }
     return data;
   });
+
+  if (dataError) {
+    console.error(dataError);
+    exitFail(1);
+    return;
+  }
 
   if (completionEvidenceError) {
     const labels = {
@@ -982,14 +1015,17 @@ export function taskReopen(project, args) {
   const REOPENABLE = new Set([TASK_STATES.COMPLETED, TASK_STATES.FAILED, TASK_STATES.CANCELLED]);
   const reopened = [];
   const skipped = [];
+  // Latched and reported AFTER modifyJSON returns: exitFail inside the mutator
+  // is process.exit in CLI mode, skipping the finally-unlink → leaked lock.
+  let dataError = null;
 
   modifyJSON(tasksPath(project), (data) => {
-    if (!data?.tasks?.length) { console.error('❌ No tasks data found.'); exitFail(1); }
+    if (!data?.tasks?.length) { dataError = '❌ No tasks data found.'; return data; }
     const root = data.tasks.find(t => t.id === id);
-    if (!root) { console.error(`❌ ${E('task-not-found', { id })}`); exitFail(1); }
+    if (!root) { dataError = `❌ ${E('task-not-found', { id })}`; return data; }
     if (!REOPENABLE.has(root.status)) {
-      console.error(`❌ Cannot reopen "${id}" — current status "${root.status}". Only completed/failed/cancelled can be reopened.`);
-      exitFail(1);
+      dataError = `❌ Cannot reopen "${id}" — current status "${root.status}". Only completed/failed/cancelled can be reopened.`;
+      return data;
     }
 
     // Collect targets: root + transitive dependents if --cascade
@@ -1032,6 +1068,12 @@ export function taskReopen(project, args) {
 
     return data;
   });
+
+  if (dataError) {
+    console.error(dataError);
+    exitFail(1);
+    return;
+  }
 
   if (reopened.length === 0) {
     console.log(`⚠ Nothing reopened.`);
@@ -1078,7 +1120,9 @@ export function computeSteps(tasks) {
   }
 
   for (const t of tasks) {
-    for (const dep of t.depends_on) {
+    // Hand-edited tasks.json may drop the field — treat missing as no deps
+    // instead of surfacing a raw TypeError through plan-check.
+    for (const dep of t.depends_on || []) {
       if (!adj.has(dep)) continue;
       adj.get(dep).push(t.id);
       indegree.set(t.id, indegree.get(t.id) + 1);
@@ -1214,11 +1258,19 @@ export function stepsNext(project) {
     });
 
     if (pendingTasks.length > 0) {
-      for (const id of pendingTasks) {
-        const t = taskData.tasks.find(t => t.id === id);
-        if (t) t.status = TASK_STATES.READY;
-      }
-      writeJSON(tasksPath(project), taskData);
+      // Flip only the intended rows on FRESH data under the tasks.json lock —
+      // writing the snapshot wholesale reverted updates parallel agents
+      // committed between our read and write (same rule as markTasksRunning).
+      const flip = new Set(pendingTasks);
+      modifyJSON(tasksPath(project), (fresh) => {
+        if (!fresh?.tasks) return fresh;
+        for (const row of fresh.tasks) {
+          if (!flip.has(row.id)) continue;
+          if (![TASK_STATES.PENDING, TASK_STATES.READY].includes(row.status)) continue;
+          row.status = TASK_STATES.READY;
+        }
+        return fresh;
+      });
 
       console.log(`🔹 Step ${step.id} ready — ${pendingTasks.length} tasks:`);
       for (const id of pendingTasks) {

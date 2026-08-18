@@ -76,6 +76,51 @@ describe('block-when-over-budget hook', () => {
     }
   });
 
+  test('unset window_hours counts a 24h window, not lifetime spend (l32)', () => {
+    // The beforeEach config has NO window_hours; an event older than 24h must
+    // not count against the cap (docs promise a 24h rolling window by default).
+    const sessions = join(DIR, '.xm', 'build', 'metrics', 'sessions.jsonl');
+    const old = new Date(Date.now() - 48 * 3600000).toISOString();
+    writeFileSync(sessions, JSON.stringify({ cost_usd: 10, timestamp: old }) + '\n');
+    expect(runHook({ tool_name: 'Agent', tool_input: {} }).status).toBe(0);
+
+    // Explicit 0 opts into lifetime accounting — the old $10 now blocks.
+    writeFileSync(join(DIR, '.xm', 'config.json'), JSON.stringify({ budget: {
+      enforce: true, max_usd: 0.04, reservation_usd: 0.01, reservation_ttl_ms: 60000, window_hours: 0,
+    } }));
+    expect(runHook({ tool_name: 'Agent', tool_input: {} }).status).toBe(2);
+
+    // NaN/negative fall back to the 24h default, audibly (L6: not silent).
+    writeFileSync(join(DIR, '.xm', 'config.json'), JSON.stringify({ budget: {
+      enforce: true, max_usd: 0.04, reservation_usd: 0.01, reservation_ttl_ms: 60000, window_hours: -5,
+    } }));
+    const negative = runHook({ tool_name: 'Agent', tool_input: {} });
+    expect(negative.status).toBe(0);
+    expect(negative.stderr).toContain('window_hours');
+    expect(negative.stderr).toContain('24h');
+  });
+
+  test('reservation_usd of 0 or a non-numeric value falls back to the default reservation instead of blocking (l33)', () => {
+    writeFileSync(join(DIR, '.xm', 'config.json'), JSON.stringify({ budget: {
+      enforce: true, max_usd: 0.04, reservation_usd: 0, reservation_ttl_ms: 60000,
+    } }));
+    const zero = runHook({ tool_name: 'Agent', tool_input: {} });
+    expect(zero.status).toBe(0);
+    expect(zero.stderr).toContain('reservation_usd'); // fallback is announced (L6)
+
+    writeFileSync(join(DIR, '.xm', 'config.json'), JSON.stringify({ budget: {
+      enforce: true, max_usd: 0.04, reservation_usd: 'abc', reservation_ttl_ms: 60000,
+    } }));
+    const nonNumeric = runHook({ tool_name: 'Agent', tool_input: {} });
+    expect(nonNumeric.status).toBe(0);
+    expect(nonNumeric.stderr).toContain('reservation_usd');
+
+    // Both dispatches reserved the min(cap, 0.01) default amount.
+    const rows = activeReservations(readFileSync(join(DIR, '.xm', 'build', 'metrics', 'reservations.jsonl'), 'utf8'));
+    expect(rows).toHaveLength(2);
+    for (const row of rows) expect(row.cost_usd).toBeCloseTo(0.01, 8);
+  });
+
   test('ten concurrent Agent sessions reserve atomically without oversubscribing the cap', async () => {
     const results = await Promise.all(Array.from({ length: 10 }, () => runHookAsync({ tool_name: 'Agent', tool_input: {} })));
     expect(results.filter((result) => result.code === 0)).toHaveLength(4);

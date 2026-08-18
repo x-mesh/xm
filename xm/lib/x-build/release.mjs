@@ -90,9 +90,16 @@ function writeJSON(path, data) {
 }
 
 function bumpVersion(version, type) {
-  const parts = version.split('.').map(Number);
+  // Strict plain semver only: '1.2.3-rc.1'.split('.').map(Number) yields NaN parts
+  // that would be written back to version files as "1.2.NaN". Refuse instead.
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(version));
+  if (!m) {
+    console.error(`❌ Cannot bump version "${version}" — expected plain MAJOR.MINOR.PATCH (prerelease/build suffixes are not supported).`);
+    exitFail(1);
+  }
+  const parts = [Number(m[1]), Number(m[2]), Number(m[3])];
   if (type === 'major') { parts[0]++; parts[1] = 0; parts[2] = 0; }
-  else if (type === 'minor') { parts[0]; parts[1]++; parts[2] = 0; }
+  else if (type === 'minor') { parts[1]++; parts[2] = 0; }
   else { parts[2]++; }
   return parts.join('.');
 }
@@ -556,6 +563,7 @@ export function cmdReleaseCommit(args) {
       console.log(`✅ Pushed to origin/${branch}${tag ? ` · tag ${tag}` : ''}`);
     } catch {
       console.error(`⚠ Push failed. Run manually: git push --follow-tags origin ${branch}`);
+      process.exitCode = 1; // the release is NOT on the remote — callers must not read this as success
     }
   } else if (tag) {
     console.log(`\n⚠ Tag ${tag} is LOCAL only — push it or CI will not fire: git push --follow-tags origin ${branch}`);

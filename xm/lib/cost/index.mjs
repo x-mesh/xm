@@ -146,7 +146,10 @@ export function computeSpend(events, { since = null } = {}) {
     if (!event || typeof event !== 'object') continue;
     const cost = event.cost_usd;
     if (typeof cost !== 'number' || !Number.isFinite(cost)) continue;
-    if (cutoff != null && (!Number.isFinite(cutoff) || timestampMs(event.timestamp) < cutoff)) continue;
+    if (cutoff != null) {
+      const ts = timestampMs(event.timestamp);
+      if (!Number.isFinite(cutoff) || !Number.isFinite(ts) || ts < cutoff) continue;
+    }
     spent += cost;
     if (typeof event.project === 'string' && event.project !== '') {
       spentByProject[event.project] = (spentByProject[event.project] ?? 0) + cost;

@@ -246,8 +246,22 @@ describe('xm config get/show consistency (t2)', () => {
       // --global reads only the global tier (developer), distinct from the merged
       // no-flag result (normal) — proving the flag still selects a single tier.
       expect(runIn(['get', 'mode', '--global'], { home, cwd: proj }).stdout.trim()).toBe('developer');
-      // --local preserves the historical (pre-fix) resolveScope read.
+      // --local reads only the local tier file, which holds 'normal' here.
       expect(runIn(['get', 'mode', '--local'], { home, cwd: proj }).stdout.trim()).toBe('normal');
+    });
+  });
+
+  test('get --local reads the local tier raw — a global-only key is not returned (l23)', () => {
+    withHomeAndProject(({ home, proj }) => {
+      writeXmConfig(home, { mode: 'developer' }); // set ONLY in the global tier
+      writeXmConfig(proj, {});
+
+      // Plain get resolves the merged value from global...
+      expect(runIn(['get', 'mode'], { home, cwd: proj }).stdout.trim()).toBe('developer');
+      // ...but --local must read the local file raw: no merge, no defaults.
+      const local = runIn(['get', 'mode', '--local'], { home, cwd: proj });
+      expect(local.exitCode).toBe(0);
+      expect(stripAnsi(local.stdout).trim()).toBe('(not set)');
     });
   });
 

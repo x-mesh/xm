@@ -445,9 +445,17 @@ function printGetResult(val, source) {
 }
 
 function getConfig(key, flags) {
-  // Explicit --global/--local keeps the historical tier-only read (back-compat):
-  // print just the value from that layer, no source annotation.
-  if (flags.global || flags.local) {
+  // Explicit --global/--local keeps the tier-only read (back-compat): print just
+  // the value from that layer, no source annotation.
+  if (flags.local) {
+    // Local tier only — mirror showConfig's raw local read. Feeding resolveScope's
+    // { global: false } into readSharedConfig returned the MERGED value, so a key
+    // set only globally leaked into `get --local`.
+    const localCfg = readJSON(join(resolveSharedRoot(), 'config.json')) ?? {};
+    printGetResult(getNestedKey(localCfg, key), null);
+    return;
+  }
+  if (flags.global) {
     const config = readSharedConfig(resolveScope(key, flags));
     printGetResult(getNestedKey(config, key), null);
     return;

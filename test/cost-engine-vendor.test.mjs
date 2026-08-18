@@ -223,7 +223,8 @@ describe('vendor tables — shape and backward compatibility', () => {
   });
 
   test('MODEL_COSTS_BY_VENDOR.claude mirrors the flat MODEL_COSTS (single source of numbers)', () => {
-    for (const tier of ['haiku', 'sonnet', 'opus']) {
+    // Every flat tier (fable included) — a hardcoded tier list let new tiers drift.
+    for (const tier of Object.keys(ce.MODEL_COSTS)) {
       expect(ce.MODEL_COSTS_BY_VENDOR.claude[tier]).toEqual(ce.MODEL_COSTS[tier]);
     }
   });

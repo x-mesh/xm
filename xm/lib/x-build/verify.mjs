@@ -575,7 +575,11 @@ export function cmdVerifyReviewFix(args) {
     const verification = getVerificationItems(triage);
     const baselineFiles = new Set(Array.isArray(triage.baseline_changed_files) ? triage.baseline_changed_files : []);
 
-    if (review.reviewed_commit && triage.reviewed_commit && review.reviewed_commit !== triage.reviewed_commit) {
+    // Freshness is unverifiable without both commits — fail closed instead of
+    // silently accepting an index-only match against a possibly different review.
+    if (!review.reviewed_commit || !triage.reviewed_commit) {
+      failures.push('cannot verify triage freshness — reviewed_commit missing; re-run: x-build verify-review-fix --init');
+    } else if (review.reviewed_commit !== triage.reviewed_commit) {
       failures.push('triage.json reviewed_commit does not match last-result.json reviewed_commit');
     }
 
@@ -583,6 +587,19 @@ export function cmdVerifyReviewFix(args) {
       const decision = triageMap.get(finding.id);
       if (!decision) {
         failures.push(`${finding.id}: missing triage decision for ${finding.severity} finding`);
+        continue;
+      }
+
+      // Findings are matched by index (F1, F2, ...). When the triage recorded a
+      // file/summary and it no longer matches the finding at that index, the triage
+      // was built against a different review — its decisions cannot be trusted.
+      if (decision.file && finding.file && decision.file !== finding.file) {
+        failures.push(`${finding.id}: triage file "${decision.file}" does not match current finding "${finding.file}" — re-run --init`);
+        continue;
+      }
+      const currentSummary = findingSummary(finding);
+      if (decision.summary && currentSummary && decision.summary !== currentSummary) {
+        failures.push(`${finding.id}: triage summary does not match current finding "${currentSummary}" — re-run --init`);
         continue;
       }
 

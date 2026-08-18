@@ -130,6 +130,32 @@ describe('release commit — tag-versioned projects', () => {
     } finally { rmSync(d, { recursive: true, force: true }); }
   });
 
+  test('bump refuses a prerelease version instead of writing NaN (l28)', () => {
+    const d = makeRustFixture();
+    try {
+      writeFileSync(join(d, 'Cargo.toml'), '[package]\nname = "gk"\nversion = "0.6.0-rc.1"\n');
+      const r = spawnSync('node', [CLI, 'release', 'bump', '--minor', '--standalone'], { cwd: d, encoding: 'utf8', timeout: 60000 });
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain('Cannot bump version "0.6.0-rc.1"');
+      // pre-fix: '0.6.0-rc.1'.split('.').map(Number) produced NaN parts that were WRITTEN to disk
+      expect(readFileSync(join(d, 'Cargo.toml'), 'utf8')).toContain('version = "0.6.0-rc.1"');
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test('commit --push exits non-zero when the push fails (l29)', () => {
+    const d = makeRustFixture();
+    try {
+      spawnSync('bash', ['-c', 'git remote add origin /nonexistent/xkit-push-target.git'], { cwd: d });
+      writeFileSync(join(d, 'main.rs'), 'fn main(){ /* fix */ }\n');
+      const r = spawnSync('node', [CLI, 'release', 'commit', '--msg', 'release: gk@0.6.0', '--push'], { cwd: d, encoding: 'utf8', timeout: 30000 });
+      expect(r.status).toBe(1); // pre-fix: the catch printed a remedy but the process still exited 0
+      expect(r.stderr).toContain('Push failed');
+      // only the push failed — the commit itself still landed locally
+      const head = spawnSync('bash', ['-c', 'git log -1 --format=%s'], { cwd: d, encoding: 'utf8' }).stdout.trim();
+      expect(head).toBe('release: gk@0.6.0');
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
   test('release commit does not sweep .xm/ artifacts into the release', () => {
     const d = makeRustFixture();
     try {

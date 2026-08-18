@@ -10,7 +10,7 @@ import {
   tasksPath, projectDir,
   resolveProject, parseOptions,
   existsSync, join, resolve, repoRoot, readFileSync,
-  exitFail,
+  exitFail, nextTaskId,
 } from './core.mjs';
 
 const VALID_STATUS = new Set(['open', 'promoted', 'dismissed']);
@@ -79,14 +79,6 @@ function compareSnapshot(snapshot) {
     before_exists: snapshot.exists,
     after_exists: exists,
   };
-}
-
-function nextTaskId(tasks) {
-  const max = tasks.reduce((n, task) => {
-    const parsed = parseInt(String(task.id || '').replace(/^t/, ''), 10);
-    return Number.isFinite(parsed) && parsed > n ? parsed : n;
-  }, 0);
-  return `t${max + 1}`;
 }
 
 /**

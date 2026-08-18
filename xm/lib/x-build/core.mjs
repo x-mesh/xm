@@ -241,6 +241,11 @@ export function modifyJSON(path, mutator) {
     const data = readJSON(path);
     const result = mutator(data);
     const out = result !== undefined ? result : data;
+    // A missing file whose mutator latched an error (returned the null it was given)
+    // must stay missing — writing would create a file containing literal `null`,
+    // flipping existsSync-gated consumers. Creating a file is an explicit act:
+    // return a real object for it.
+    if (out === null && data === null) return out;
     writeJSON(path, out);
     return out;
   } finally {
@@ -456,8 +461,23 @@ export function contextDir(project) {
   return join(projectDir(project), 'context');
 }
 
+// Unicode-aware: keeps letters/digits in any script (한글 프로젝트 names used to
+// collapse to '-' and collide). ASCII inputs produce byte-identical slugs to the
+// old [^a-z0-9-] form, so existing project dirs keep resolving.
 export function toSlug(name) {
-  return name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
+  return name.toLowerCase().replace(/[^\p{L}\p{N}-]/gu, '-').replace(/-+/g, '-');
+}
+
+// Max-based, not length-based: after `tasks remove`, length+1 would collide
+// with a surviving id (remove t2 of [t1..t3] → next id must be t4, not t3).
+// Shared by every t# minting path (tasks add/dispatch, import, later promote,
+// templates use) so no caller can regress to the length-based scheme.
+export function nextTaskId(tasks) {
+  const max = tasks.reduce((n, t) => {
+    const parsed = parseInt(String(t.id || '').replace(/^t/, ''), 10);
+    return Number.isFinite(parsed) && parsed > n ? parsed : n;
+  }, 0);
+  return `t${max + 1}`;
 }
 
 export function archiveDir(project) {

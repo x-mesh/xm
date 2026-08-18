@@ -66,6 +66,12 @@ export function cmdInit(args) {
   }
 
   const slug = toSlug(name);
+  // A name with no letters/digits collapses to '' or '-' — every such project
+  // would share one directory, so reject instead of silently colliding.
+  if (!slug || slug === '-') {
+    console.error(`❌ Project name "${name}" produces an empty slug. Use at least one letter or digit.`);
+    exitFail(1);
+  }
 
   if (existsSync(manifestPath(slug))) {
     console.error(`❌ Project "${slug}" already exists.`);

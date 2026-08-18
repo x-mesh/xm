@@ -74,15 +74,40 @@ async function main() {
   const cap = Number(budgetConfig.max_usd);
   if (!Number.isFinite(cap) || cap <= 0) process.exit(0);
 
+  // budget.window_hours mirrors cost-engine's normalization: unset → the
+  // documented 24h rolling window (unset must not silently widen to full
+  // metrics lifetime), explicit 0 → lifetime, NaN/negative → 24h with a notice.
+  const windowHoursRaw = budgetConfig.window_hours;
+  let windowHours = 24;
+  if (windowHoursRaw != null) {
+    windowHours = Number(windowHoursRaw);
+    if (isNaN(windowHours) || windowHours < 0) {
+      process.stderr.write(`budget guard: budget.window_hours = ${JSON.stringify(windowHoursRaw)} is not a valid window — using the 24h default window\n`);
+      windowHours = 24;
+    }
+  }
+
   const state = openCircuit(root);
   if (state) {
-    const spent = costEventsSpent(join(root, '.xm', 'build', 'metrics', 'sessions.jsonl'), Date.now(), Number(budgetConfig.window_hours));
+    const spent = costEventsSpent(join(root, '.xm', 'build', 'metrics', 'sessions.jsonl'), Date.now(), windowHours);
     block(`state=open spent=$${Number(spent || 0).toFixed(4)} cap=$${cap.toFixed(4)} recovers_at=${state.cooldown_until || 'budget-recheck'}`);
   }
 
-  const amount = Number(budgetConfig.reservation_usd ?? Math.min(cap, 0.01));
+  // reservation_usd must be a positive amount — 0/NaN would flow into
+  // checkAndReserve as invalid_reservation_input and block every dispatch.
+  // A set-but-invalid value falls back audibly; unset is the normal default path.
+  const rawReservation = Number(budgetConfig.reservation_usd);
+  let amount;
+  if (Number.isFinite(rawReservation) && rawReservation > 0) {
+    amount = rawReservation;
+  } else {
+    amount = Math.min(cap, 0.01);
+    if (budgetConfig.reservation_usd != null) {
+      process.stderr.write(`budget guard: budget.reservation_usd = ${JSON.stringify(budgetConfig.reservation_usd)} is not a positive amount — using the default reservation $${amount}\n`);
+    }
+  }
   const now = Date.now();
-  const spent = costEventsSpent(join(root, '.xm', 'build', 'metrics', 'sessions.jsonl'), now, Number(budgetConfig.window_hours));
+  const spent = costEventsSpent(join(root, '.xm', 'build', 'metrics', 'sessions.jsonl'), now, windowHours);
   if (spent == null) process.exit(0); // metrics unavailable: retain the non-disruptive hook contract
   const result = checkAndReserve({
     filePath: join(root, '.xm', 'build', 'metrics', 'reservations.jsonl'),
