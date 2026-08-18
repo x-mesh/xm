@@ -22,6 +22,12 @@ import { homedir, tmpdir } from 'node:os';
 // this close handler came from OUTSIDE (OS/OOM or the CLI self-aborting), not from us.
 const exitLabel = (code, signal) => (signal ? `exit ${code} (${signal})` : `exit ${code}`);
 
+// Matches the exitLabel form of a signal death (`exit null (SIGTERM)` etc). Shared with the
+// CLI's slot-retry policy: a signal death is an intermittent EXTERNAL kill worth one fresh
+// retry, but it is NOT a session problem — the stateless session fallback must not fire on it
+// (toss-20260818-0d0f3e9a: fallback-after-SIGTERM spawned a third codex exec per slot).
+export const SIGNAL_DEATH = /\(SIG[A-Z0-9]+\)/;
+
 // Each builds [bin, args]. `model` (optional) maps to that CLI's --model flag;
 // when null the CLI uses its own default model.
 export function normalizeKiroModel(model) {
@@ -557,13 +563,17 @@ export function invokeProvider(name, prompt, { timeout = 180_000, model = null, 
 // from a real exit-code/parse failure. Returns { touch, clear }: call touch() on every byte of
 // output, clear() when the process settles.
 function makeTimeoutGuard(timeout, maxTimeout, onKill) {
-  const cap = maxTimeout && maxTimeout > timeout ? maxTimeout : Math.max(timeout * 2, timeout + 120_000);
+  // An explicit maxTimeout is authoritative even when it is SMALLER than the idle window —
+  // a caller passing the remainder of a slot budget (runRound retry) must be able to shrink
+  // the cap, or a retried slot inherits a fresh full-size cap and the slot deadline is fiction.
+  const cap = (Number.isFinite(maxTimeout) && maxTimeout > 0) ? maxTimeout : Math.max(timeout * 2, timeout + 120_000);
+  const idleMs = Math.min(timeout, cap);
   let idleTimer = null, hardTimer = null, done = false;
   const clear = () => { done = true; if (idleTimer) clearTimeout(idleTimer); if (hardTimer) clearTimeout(hardTimer); idleTimer = hardTimer = null; };
   const touch = () => {
     if (done) return;
     if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => { clear(); onKill(`stalled: no output for ${Math.round(timeout / 1000)}s`, 'idle'); }, timeout);
+    idleTimer = setTimeout(() => { clear(); onKill(`stalled: no output for ${Math.round(idleMs / 1000)}s`, 'idle'); }, idleMs);
   };
   hardTimer = setTimeout(() => { clear(); onKill(`timeout ${Math.round(cap / 1000)}s wall-clock cap (was still producing output)`, 'cap'); }, cap);
   touch(); // arm immediately — silence from spawn to first byte also counts toward the idle window
@@ -628,14 +638,22 @@ export async function invokeProviderAsync(name, prompt, { timeout = 180_000, max
   if (use) {
     if (res.ok) {
       if (use.mode === 'resume') res.resume = 'ok';
-    } else if (fallbackPrompt != null) {
+    } else if (fallbackPrompt != null && !res.timedOut && !SIGNAL_DEATH.test(res.error || '')) {
       // LOUD stateless fallback (contract R4): same semantics, just costlier —
       // surfaced via a lifecycle event and the `resume: 'fallback'` marker.
+      // Only for SESSION-shaped failures: a guard timeout or a signal death says nothing
+      // about the session, and falling back on those stacked an extra spawn on top of the
+      // slot-level signal retry — up to 4 processes for one "retry once" slot
+      // (toss-20260818-0d0f3e9a). Those failures return to the caller untouched.
       if (onEvent) {
         try { onEvent({ at: new Date().toISOString(), type: 'lifecycle', provider: name, model, note: `session ${use.mode} failed (${res.error}) — retrying stateless` }); } catch { /* observer only */ }
       }
       res = await invokeProviderRaw(name, fallbackPrompt, { timeout, maxTimeout, model, onEvent, session: null, expectKeys, providerArgs });
       res.resume = 'fallback';
+    } else if (fallbackPrompt != null) {
+      if (onEvent) {
+        try { onEvent({ at: new Date().toISOString(), type: 'lifecycle', provider: name, model, note: `session ${use.mode} failed (${res.error}) — killed/timed out, NOT retrying stateless (slot retry policy owns this)` }); } catch { /* observer only */ }
+      }
     }
   }
   return res;
@@ -678,7 +696,9 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
     const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
       emit({ type: 'timeout', provider: name, model, error, reason });
       child.kill('SIGKILL');
-      finish({ ok: false, error, raw: stdout, json: null });
+      // timedOut marks a guard kill (idle/cap), distinct from a real exit — callers gate
+      // retry/fallback decisions on the FLAG, never on a substring of the error text.
+      finish({ ok: false, error, raw: stdout, json: null, timedOut: true, timeoutReason: reason });
     });
     child.stdout.on('data', (d) => {
       stdout += d;
@@ -802,8 +822,8 @@ function resolveStreamCommand(name, prompt, model, partial) {
 // cache-crash lesson). claude reports its own total_cost_usd (authoritative, used
 // directly); this table only estimates cursor/codex. PLACEHOLDER values — calibrate.
 const PRICE_PER_MTOK = {
-  'claude-opus-4-8': { input: 15, output: 75, cached: 1.5 },
-  'claude-opus-4.8': { input: 15, output: 75, cached: 1.5 },
+  'claude-opus-4-8': { input: 5, output: 25, cached: 0.5 },
+  'claude-opus-4.8': { input: 5, output: 25, cached: 0.5 },
   'claude-sonnet-4-6': { input: 3, output: 15, cached: 0.3 },
   default: { input: 5, output: 15, cached: 0.5 },
 };
@@ -1028,10 +1048,10 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    const guard = makeTimeoutGuard(timeout, maxTimeout, (error) => {
-      emit({ type: 'timeout', provider: name, model, error });
+    const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
+      emit({ type: 'timeout', provider: name, model, error, reason });
       child.kill('SIGKILL');
-      finish({ ok: false, error, raw: rawCap, json: null, usage });
+      finish({ ok: false, error, raw: rawCap, json: null, usage, timedOut: true, timeoutReason: reason });
     });
     child.stdout.on('data', (d) => {
       guard.touch(); // streaming tokens = alive → reset the idle window (working models keep going)

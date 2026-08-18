@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { normalizeFindings, normalizeVerdicts, synthesize, synthesizeRound1, mergeConsensus, normalizeResponses, followupDelta } from '../x-panel/lib/x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
 import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
-import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings, stripAnsi } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, invokeProviderAsync, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings, stripAnsi, SIGNAL_DEATH } from '../x-panel/lib/x-panel/adapters.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
 import { shrinkDiff, splitDiffSections, DIFF_INLINE_MAX_BYTES } from '../x-panel/lib/x-panel/diff-budget.mjs';
 import { unwrapEnvelope } from '../x-panel/lib/x-panel/adapters.mjs';
@@ -1200,6 +1200,14 @@ describe('structured streaming (adapters)', () => {
     const full = costFromTokens('default', { input: 1_000_000, output: 0, cached: 0 });
     const cachedHeavy = costFromTokens('default', { input: 1_000_000, output: 0, cached: 1_000_000 });
     expect(cachedHeavy).toBeLessThan(full);
+  });
+
+  test('opus 4.8 is priced at the current Anthropic Opus-tier rate ($5/$25, cache read 0.1×)', () => {
+    // Regression: the table carried a stale 15/75/1.5 opus entry.
+    const dashed = costFromTokens('claude-opus-4-8', { input: 1_000_000, output: 1_000_000, cached: 0 });
+    expect(dashed).toBeCloseTo(5 + 25, 6);
+    expect(costFromTokens('claude-opus-4.8', { input: 1_000_000, output: 1_000_000, cached: 0 })).toBeCloseTo(dashed, 6);
+    expect(costFromTokens('claude-opus-4-8', { input: 1_000_000, output: 0, cached: 1_000_000 })).toBeCloseTo(0.5, 6);
   });
 
   test('token-level partial flags are passed (claude/cursor)', () => {
@@ -3190,5 +3198,79 @@ describe('promptSpawnOpts — claude prompt runs are cwd-isolated', () => {
     for (const name of ['codex', 'agy', 'cursor', 'kiro']) {
       expect(promptSpawnOpts(name)).toEqual({});
     }
+  });
+});
+
+// ── slot retry/timeout discipline (toss-20260818-0d0f3e9a) ──────────────────
+// A hung codex slot ran 48+ min and "retry once" stacked a stateless session
+// fallback on top of the slot retry (up to 4 spawns). These pin the contract:
+// hard cap honored even below the idle window, no fallback on kills/timeouts,
+// and at most 2 spawns per slot.
+describe('slot retry/timeout discipline', () => {
+  const SLOT_ENV_KEYS = ['X_PANEL_CMD_HANGY', 'X_PANEL_HANG_HANGY', 'X_PANEL_CMD_CODEX', 'X_PANEL_SIGDIE_CODEX', 'X_PANEL_HANG_CODEX', 'X_PANEL_SPAWN_LOG'];
+  const prev = {};
+  beforeAll(() => { for (const k of SLOT_ENV_KEYS) prev[k] = process.env[k]; });
+  afterEach(() => {
+    for (const k of SLOT_ENV_KEYS) {
+      if (prev[k] === undefined) delete process.env[k];
+      else process.env[k] = prev[k];
+    }
+  });
+
+  test('SIGNAL_DEATH matches exitLabel signal deaths only', () => {
+    expect(SIGNAL_DEATH.test('exit null (SIGTERM): Reading additional input from stdin...')).toBe(true);
+    expect(SIGNAL_DEATH.test('exit 1: bad auth')).toBe(false);
+    expect(SIGNAL_DEATH.test('stalled: no output for 600s')).toBe(false);
+  });
+
+  test('maxTimeout below the idle window is honored as the hard cap', async () => {
+    process.env.X_PANEL_CMD_HANGY = STUB;
+    process.env.X_PANEL_HANG_HANGY = '1';
+    const t0 = Date.now();
+    const res = await invokeProviderAsync('hangy', 'p', { timeout: 30_000, maxTimeout: 1_000 });
+    expect(res.ok).toBe(false);
+    expect(res.timedOut).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(10_000);
+  });
+
+  test('a signal death does NOT trigger the stateless session fallback', async () => {
+    const log = join(DIR, 'spawns-sigdie.jsonl');
+    process.env.X_PANEL_CMD_CODEX = STUB;
+    process.env.X_PANEL_SIGDIE_CODEX = '1';
+    process.env.X_PANEL_SPAWN_LOG = log;
+    const res = await invokeProviderAsync('codex', 'p', { timeout: 10_000, session: { mode: 'create', id: null }, fallbackPrompt: 'p' });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/SIGTERM/);
+    expect(res.resume).toBeUndefined();
+    expect(readFileSync(log, 'utf8').trim().split('\n').length).toBe(1);
+  });
+
+  test('a guard timeout does NOT trigger the stateless session fallback', async () => {
+    const log = join(DIR, 'spawns-hang.jsonl');
+    process.env.X_PANEL_CMD_CODEX = STUB;
+    process.env.X_PANEL_HANG_CODEX = '1';
+    process.env.X_PANEL_SPAWN_LOG = log;
+    const res = await invokeProviderAsync('codex', 'p', { timeout: 400, maxTimeout: 800, session: { mode: 'create', id: null }, fallbackPrompt: 'p' });
+    expect(res.ok).toBe(false);
+    expect(res.timedOut).toBe(true);
+    expect(res.resume).toBeUndefined();
+    expect(readFileSync(log, 'utf8').trim().split('\n').length).toBe(1);
+  });
+
+  test('review slot: signal death retries exactly once — two spawns, then the slot fails', () => {
+    // --rounds 1: round 2 would legitimately spawn the codex refuter again, muddying the count.
+    const log = join(DIR, 'spawns-review-retry.jsonl');
+    const r = review(['sigdie retry target', '--rounds', '1'], { X_PANEL_SIGDIE_CODEX: '1', X_PANEL_SPAWN_LOG: log });
+    expect(r.stderr).toContain('retrying once');
+    const codexSpawns = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((x) => x.model === 'codex');
+    expect(codexSpawns.length).toBe(2);
+  });
+
+  test('review slot: retry is skipped when the remaining slot budget is under the floor', () => {
+    const log = join(DIR, 'spawns-review-floor.jsonl');
+    const r = review(['sigdie floor target', '--rounds', '1'], { X_PANEL_SIGDIE_CODEX: '1', X_PANEL_SPAWN_LOG: log, X_PANEL_RETRY_FLOOR_MS: '99999999' });
+    expect(r.stderr).toContain('slot budget exhausted');
+    const codexSpawns = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((x) => x.model === 'codex');
+    expect(codexSpawns.length).toBe(1);
   });
 });

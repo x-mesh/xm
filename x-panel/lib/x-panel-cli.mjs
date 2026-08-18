@@ -21,7 +21,7 @@ import {
   PANEL_DIR, XM_ROOT, C, provColor, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
-import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, parseModelIds, supportsResume, proseOutsideJSON, groundCapable } from './x-panel/adapters.mjs';
+import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, parseModelIds, supportsResume, proseOutsideJSON, groundCapable, SIGNAL_DEATH } from './x-panel/adapters.mjs';
 import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize, synthesizeRound1, normalizeResponses, followupDelta } from './x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, GATE_PHASES, DEFAULT_POLICY } from './x-panel/gate.mjs';
@@ -559,7 +559,12 @@ function sev(s) {
 // A model killed by a SIGNAL surfaces as `exit null (SIGKILL)` etc (adapters.mjs exitLabel).
 // A signal death is an intermittent EXTERNAL kill (observed: kiro-cli self-aborts mid-review) —
 // not a deterministic failure like bad auth or a missing CLI, so it's worth ONE fresh retry.
-const SIGNAL_DEATH = /\(SIG[A-Z0-9]+\)/;
+// The regex lives in adapters.mjs (SIGNAL_DEATH) so the session-fallback path applies the
+// same classification and cannot stack a stateless respawn on top of the slot retry.
+
+// A retry only starts when this much of the slot's wall-clock budget remains — a retry that
+// would be cap-killed almost immediately is pure spend. Env override is a test seam.
+const RETRY_FLOOR_MS = Number(process.env.X_PANEL_RETRY_FLOOR_MS) || 15_000;
 
 // Run one round across all models in parallel, reporting start/heartbeat/elapsed
 // on stderr so a long round (large diff) isn't a silent black box.
@@ -582,13 +587,19 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
   }, 2000);
   if (hb.unref) hb.unref();
   try {
-    const invoke = (e) => {
+    // Hard wall-clock budget per SLOT, spanning every spawn the slot makes (first attempt +
+    // signal retry). Mirrors the guard's default cap so a single clean attempt is unchanged;
+    // the retry only gets what REMAINS, so one slot can no longer hold a round for multiple
+    // full cap windows back to back (toss-20260818-0d0f3e9a: 48-min hung codex slot).
+    const slotBudgetMs = Math.max(timeoutMs * 2, timeoutMs + 120_000);
+    const invoke = (e, attempt = {}) => {
       // makePrompt may return a plain string OR { prompt, session, fallbackPrompt }
       // (t5 session reuse) — normalize here so round builders stay declarative.
       const req = makePrompt(e);
       const { prompt, session = null, fallbackPrompt = null, providerArgs = null } = typeof req === 'string' ? { prompt: req } : req;
       return invokeProviderAsync(e.name, prompt, {
-        timeout: timeoutMs,
+        timeout: attempt.timeout ?? timeoutMs,
+        maxTimeout: attempt.maxTimeout ?? slotBudgetMs,
         model: e.model,
         stream,
         partial,
@@ -605,10 +616,17 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
       // Retry a signal-killed model ONCE (a fresh spawn nearly always survives) instead of
       // dropping it from the panel. One retry only — a second signal death is accepted as a
       // genuine failure, and deterministic failures (numeric exit) are never retried.
+      // Guard kills (res.timedOut) are not signal deaths and are never retried here.
       if (!res.ok && SIGNAL_DEATH.test(res.error || '')) {
-        process.stderr.write(`  ${C.yellow}↻${C.reset} ${e.label} ${C.dim}(${res.error}) — retrying once${C.reset}\n`);
-        if (onProviderEvent) onProviderEvent(e, { type: 'lifecycle', event: 'retry', model: e.label, reason: res.error });
-        res = await invoke(e);
+        const remainingMs = s + slotBudgetMs - Date.now();
+        if (remainingMs < RETRY_FLOOR_MS) {
+          process.stderr.write(`  ${C.yellow}↻${C.reset} ${e.label} ${C.dim}(${res.error}) — slot budget exhausted (${Math.round(slotBudgetMs / 1000)}s), not retrying${C.reset}\n`);
+          if (onProviderEvent) onProviderEvent(e, { type: 'lifecycle', event: 'retry_skipped', model: e.label, reason: res.error, budget_ms: slotBudgetMs });
+        } else {
+          process.stderr.write(`  ${C.yellow}↻${C.reset} ${e.label} ${C.dim}(${res.error}) — retrying once (${Math.round(remainingMs / 1000)}s of slot budget left)${C.reset}\n`);
+          if (onProviderEvent) onProviderEvent(e, { type: 'lifecycle', event: 'retry', model: e.label, reason: res.error });
+          res = await invoke(e, { timeout: Math.min(timeoutMs, remainingMs), maxTimeout: remainingMs });
+        }
       }
       pending.delete(e.label);
       const dt = Math.round((Date.now() - s) / 1000);

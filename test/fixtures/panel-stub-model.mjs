@@ -57,6 +57,27 @@ if (process.env.X_PANEL_DUMP_CROSS) {
 }
 const envModel = String(model || '').toUpperCase().replace(/[^A-Z0-9_]/g, '_');
 
+// Test hook: append one line per SPAWN, so retry/fallback-discipline tests can count exactly
+// how many processes a slot started (toss-20260818-0d0f3e9a: retry-once must mean ≤2 spawns).
+if (process.env.X_PANEL_SPAWN_LOG) {
+  try {
+    const { appendFileSync } = await import('node:fs');
+    appendFileSync(process.env.X_PANEL_SPAWN_LOG, JSON.stringify({ model, mode: sessionMode }) + '\n');
+  } catch { /* best-effort */ }
+}
+// A bare never-resolving promise does NOT hold the event loop open — Node would exit
+// (code 13, unsettled top-level await) immediately. A far-future timer keeps us alive.
+const holdForever = () => new Promise((resolve) => setTimeout(resolve, 2_147_000_000));
+// Test hook: die by signal before producing any output (signal-death retry policy tests).
+if (process.env[`X_PANEL_SIGDIE_${envModel}`]) {
+  process.kill(process.pid, 'SIGTERM');
+  await holdForever(); // hold until the signal lands
+}
+// Test hook: hang silently forever (timeout-guard tests; the guard SIGKILLs us).
+if (process.env[`X_PANEL_HANG_${envModel}`]) {
+  await holdForever();
+}
+
 // Emit the final answer in each vendor's RAW (non-stream) structured-output shape, so
 // the raw path's parseStructuredOutput sees the exact envelope/JSONL a real CLI prints:
 //   codex → JSONL (thread.started carries the session id, turn.completed the usage)
