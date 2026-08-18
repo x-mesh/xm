@@ -64,9 +64,7 @@ After review completion, findings can be auto-scored via x-eval:
 
 Recurring Critical/High findings are auto-saved to x-memory:
 ```
-x-memory save --type failure --title "SQL injection in auth module"
-  --why "x-review detected SQLi in 3 consecutive reviews"
-  --tags "security,auth,recurring"
+x-memory save "SQL injection in auth module" --type failure --why "x-review detected SQLi in 3 consecutive reviews" --tags "security,auth,recurring"
 ```
 
 Condition: Auto-suggested when Critical/High is found 2+ times at the same file/pattern.

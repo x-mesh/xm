@@ -262,17 +262,13 @@ Once all agents complete, the leader generates a consolidated report.
 
 ### 1. Parse
 
-Parse findings from each agent's result:
-```
-[Severity] file:line — description
-→ Code: 3-5 diff lines the finding is about
-→ Why: ...
-→ Fix: ...
-```
+Iterate the validated JSON reports in `.xm/review/runs/{task-id}/reports/*.json`. Each report's
+`findings[]` entries carry `severity`, `file`, `line`, `description`, `code`, `why`, and `fix`
+(see `lens-report-contract.md`).
 
-Skip `[Info]` lines. The `Code` line is what step 2.5 verifies against — a finding that
-arrives without one cannot be self-verified cheaply, so track it as snippet-less rather than
-assuming the snippet exists.
+The `code` field is what step 2.5 verifies against — a finding whose `code` field is missing or
+empty cannot be self-verified cheaply, so track it as snippet-less rather than assuming the
+snippet exists.
 
 ### 2. Deduplicate + Consensus Promotion
 
@@ -299,7 +295,7 @@ After deduplication, each finding is self-verified before challenge. For each Hi
 
 For each finding with severity >= High:
 1. **Generate verification question:** "Does {file}:{line} actually do {claimed behavior}?"
-2. **Verify against agent output:** every lens prompt requires a `→ Code:` line carrying the 3-5 diff lines the finding is about (`lenses/*.md`, "output exactly" block). The leader verifies the claim against that snippet — **do not re-read the file.** Only use Read tool for findings that arrived without a `Code` line; if a lens omits it on most of its findings, the prompt did not reach it intact — re-dispatch that lens rather than reading the whole diff back.
+2. **Verify against agent output:** the lens report contract requires each finding's `code` field to carry the 3-5 diff lines the finding is about (`lens-report-contract.md`). The leader verifies the claim against that snippet — **do not re-read the file.** Only use Read tool for findings whose `code` field is missing or empty; if a lens omits it on most of its findings, the prompt did not reach it intact — re-dispatch that lens rather than reading the whole diff back.
 3. **Result:**
    - Verified → keep finding as-is
    - Contradicted → remove finding + tag `[CoVe-removed]`

@@ -38,8 +38,9 @@ Rules:
 - A real finding must populate every finding field. `line` is a positive integer.
 - With zero findings, return `findings: []` and a specific `no_findings_reason`. An empty response
   or bare "No findings" is not a completed review.
-- If the target was unavailable or could not be reviewed, use `status: "failed"`; the leader
-  will re-dispatch it. Never claim `complete` without inspecting the supplied target.
+- If the target was unavailable or could not be reviewed, use `status: "failed"`; the validator
+  reports it as a single `report_failed` issue and the leader re-dispatches that `report_id`.
+  Never claim `complete` without inspecting the supplied target.
 - The report must come from your own analysis of the supplied target. Do not invoke a review
   skill/command and do not spawn subagents to produce it — see "Execution Boundary" in the
   universal principles block prepended to this prompt.

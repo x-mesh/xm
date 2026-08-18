@@ -102,6 +102,11 @@ function validateReport(report, manifest, file) {
   } else if (report.lens !== expected.lens) {
     issues.push(issue('lens_mismatch', 'lens does not match the dispatched report_id', lens, file, reportId));
   }
+  if (report.status === 'failed') {
+    // Contract-sanctioned failure: there is no content to validate, only a report_id to re-dispatch.
+    issues.push(issue('report_failed', 'agent declared the target unreviewable — re-dispatch this report_id', lens, file, reportId));
+    return issues;
+  }
   if (report.status !== 'complete') {
     issues.push(issue('report_incomplete', 'status must be complete', lens, file, reportId));
   }

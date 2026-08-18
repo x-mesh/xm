@@ -154,6 +154,28 @@ describe('x-review lens report coverage contract', () => {
     }));
   });
 
+  test('reports a contract-sanctioned failed report as a single report_failed issue', () => {
+    const failed = zeroReport('security-1', 'security', {
+      status: 'failed',
+      checked: undefined,
+      findings: undefined,
+      no_findings_reason: undefined,
+    });
+    const result = validateReviewReports(MANIFEST, raws(failed, zeroReport('logic-1', 'logic')));
+    expect(result.ok).toBe(false);
+    expect(result.issues.filter((entry) => entry.report_id === 'security-1'))
+      .toEqual([expect.objectContaining({ code: 'report_failed' })]);
+    expect(result.missing_reports).toContainEqual({ report_id: 'security-1', lens: 'security' });
+  });
+
+  test('keeps report_incomplete for a non-failed, non-complete status', () => {
+    const partial = zeroReport('security-1', 'security', { status: 'partial' });
+    const result = validateReviewReports(MANIFEST, raws(partial, zeroReport('logic-1', 'logic')));
+    expect(result.ok).toBe(false);
+    expect(result.issues.map((entry) => entry.code)).toContain('report_incomplete');
+    expect(result.issues.map((entry) => entry.code)).not.toContain('report_failed');
+  });
+
   test('rejects a report whose lens does not match its dispatched instance', () => {
     const result = validateReviewReports(MANIFEST, raws(
       zeroReport('security-1', 'logic'),

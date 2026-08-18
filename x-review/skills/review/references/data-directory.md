@@ -57,6 +57,7 @@ Prepend metadata at the top of the file:
   "coverage": { "expected": 4, "valid": 4, "complete": true },
   "task_id": "review-20260812T120000Z-123-456",
   "target_hash": "sha256:...",
+  "reviewed_commit": "<git sha of HEAD at review time>",
   "verdict": "LGTM|Request Changes|Block",
   "findings": [
     {
@@ -77,6 +78,8 @@ Prepend metadata at the top of the file:
   }
 }
 ```
+
+`reviewed_commit` is required: `x-build verify-review-fix` anchors triage freshness on it and fails closed when it is missing.
 
 ## Applies to
 

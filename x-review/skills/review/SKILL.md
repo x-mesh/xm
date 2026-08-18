@@ -98,7 +98,7 @@ fi
 # Priority 5: Last tag
 if [ -z "$LAST_REVIEW" ]; then
   TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-  [ -n "$TAG" ] && LAST_REVIEW=$(git rev-parse -- "$TAG" 2>/dev/null || echo "")
+  [ -n "$TAG" ] && LAST_REVIEW=$(git rev-parse --verify "$TAG^{commit}" 2>/dev/null || echo "")
 fi
 
 # Priority 6: Fallback
