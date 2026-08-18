@@ -209,14 +209,17 @@ export function cmdReleaseDetect(args) {
     }
   }
 
-  // Current versions from marketplace.json
-  const marketplacePath = join(cwd, '.claude-plugin', 'marketplace.json');
-  const marketplace = readJSON(marketplacePath);
-  // versions keyed by source dir name for easy lookup (x-build → version from marketplace entry "build")
+  // Current versions from marketplace.json — only exists on xm-marketplace projects
+  // (projectType is derived from that file's presence); standalone projects use
+  // the version-file detection below instead.
   const versions = {};
-  for (const p of marketplace.plugins) {
-    const srcDir = Object.keys(PLUGIN_NAME_MAP).find(k => PLUGIN_NAME_MAP[k] === p.name) || p.name;
-    versions[srcDir] = p.version;
+  if (projectType === 'xm-marketplace') {
+    const marketplace = readJSON(join(cwd, '.claude-plugin', 'marketplace.json'));
+    // versions keyed by source dir name for easy lookup (x-build → version from marketplace entry "build")
+    for (const p of marketplace.plugins) {
+      const srcDir = Object.keys(PLUGIN_NAME_MAP).find(k => PLUGIN_NAME_MAP[k] === p.name) || p.name;
+      versions[srcDir] = p.version;
+    }
   }
 
   // Classify commits

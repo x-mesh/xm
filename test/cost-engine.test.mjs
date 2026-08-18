@@ -856,8 +856,8 @@ describe('costFromTokens — measured cost', () => {
   test('sonnet pricing: 1M in @$3 + 0.5M out @$15 = $10.50', () => {
     expect(ce.costFromTokens('sonnet', 1_000_000, 500_000)).toBeCloseTo(10.5, 6);
   });
-  test('opus pricing: 100k in @$15 + 50k out @$75 = $5.25', () => {
-    expect(ce.costFromTokens('opus', 100_000, 50_000)).toBeCloseTo(5.25, 6);
+  test('opus pricing: 100k in @$5 + 50k out @$25 = $1.75', () => {
+    expect(ce.costFromTokens('opus', 100_000, 50_000)).toBeCloseTo(1.75, 6);
   });
   test('unknown model falls back to sonnet; negative tokens clamp to 0', () => {
     expect(ce.costFromTokens('zzz', 1_000_000, 0)).toBeCloseTo(3, 6);

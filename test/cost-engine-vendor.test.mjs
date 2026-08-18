@@ -229,8 +229,8 @@ describe('vendor tables — shape and backward compatibility', () => {
   });
 
   test('flat MODEL_COSTS lookup path is unchanged (backward compatible)', () => {
-    expect(ce.MODEL_COSTS.opus).toEqual({ input: 15.0, output: 75.0 });
-    expect(ce.costFromTokens('opus', 100_000, 50_000)).toBeCloseTo(5.25, 6);
+    expect(ce.MODEL_COSTS.opus).toEqual({ input: 5.0, output: 25.0 });
+    expect(ce.costFromTokens('opus', 100_000, 50_000)).toBeCloseTo(1.75, 6);
   });
 
   test('every codex tier has a defined price entry', () => {

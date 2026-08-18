@@ -442,7 +442,9 @@ export function prdBlockingFindings(prdText) {
   if (!sectionHasDiagram(section8)) {
     const versionMatch = prdText.match(VERSION_MARKER_RE);
     const version = versionMatch ? parseInt(versionMatch[1], 10) : 0;
-    const isNewTemplate = versionMatch != null && version >= PRD_TEMPLATE_VERSION;
+    // Delta-tier PRDs never hard-block on the diagram gate — the tier is
+    // authoritative even when a marker was stamped by hand (see prdTier).
+    const isNewTemplate = versionMatch != null && version >= PRD_TEMPLATE_VERSION && prdTier(prdText) !== 'delta';
     const msg = section8
       ? 'Section 8 (Architecture) has no diagram — add "■ Diagram:" + a fenced block, a box-drawing diagram, or a mermaid diagram'
       : 'Section 8 (Architecture) is missing';
@@ -557,10 +559,12 @@ export function cmdPlanCheck(args) {
   if (requirements) {
     const reqIds = [...requirements.matchAll(/^-\s*\[R(\d+)\]/gm)].map(m => `R${m[1]}`);
     if (reqIds.length > 0) {
-      // G2: Search task names AND done_criteria for R# references
+      // G2: Search task names AND done_criteria for R# references.
+      // Token-boundary match — a bare substring test lets "R10" satisfy "R1".
       const taskText = tasks.map(t => [t.name, ...(t.done_criteria || [])].join(' ')).join(' ');
+      const referencedIds = new Set(taskText.match(/\bR\d+\b/g) || []);
       for (const rid of reqIds) {
-        if (!taskText.includes(rid)) {
+        if (!referencedIds.has(rid)) {
           checks.push({ dim: 'coverage', level: strict ? 'error' : 'warn', msg: `Requirement ${rid} not referenced in any task name or done_criteria` });
         }
       }
@@ -667,15 +671,18 @@ export function cmdPlanCheck(args) {
     const totalSteps = steps.length;
     if (totalSteps > 1) {
       for (const t of tasks) {
-        if (t.size === 'large' && !t.depends_on?.length) {
-          const stepIdx = steps.findIndex(s => s.includes(t.id));
+        if (t.size === 'large') {
+          const stepIdx = steps.findIndex(s => s.tasks.includes(t.id));
           if (stepIdx > totalSteps / 2) {
-            checks.push({ dim: 'risk-ordering', level: 'warn', task: t.id, msg: `Large root task "${t.name}" is in DAG step ${stepIdx + 1}/${totalSteps} — consider front-loading high-risk work` });
+            checks.push({ dim: 'risk-ordering', level: 'warn', task: t.id, msg: `Large task "${t.name}" is in DAG step ${stepIdx + 1}/${totalSteps} — consider front-loading high-risk work` });
           }
         }
       }
     }
-  } catch (e) { /* cycle already caught in deps check */ }
+  } catch (e) {
+    // Cycles are already reported by the deps check; anything else must surface.
+    if (!/circular dependency/i.test(e.message)) throw e;
+  }
 
   // 12. Expected files — the worktree pipeline batches parallel-safe tasks by
   // comparing per-task expected_files. A task with no/empty list is excluded from
@@ -1694,7 +1701,9 @@ export function cmdSaveArtifact(args) {
   // R12: stamp new PRDs with the template version so prdBlockingFindings can
   // tell "written under the diagram-mandatory template" apart from
   // pre-existing PRDs. Never re-stamp a PRD that already carries a marker.
-  if (type === 'plan' && !VERSION_MARKER_RE.test(content)) {
+  // Delta-tier PRDs (Quick Mode) deliberately stay unstamped so the diagram
+  // gate keeps warning instead of blocking (see prdTier).
+  if (type === 'plan' && prdTier(content) !== 'delta' && !VERSION_MARKER_RE.test(content)) {
     content = `<!-- prd-template-version: ${PRD_TEMPLATE_VERSION} -->\n${content}`;
   }
 

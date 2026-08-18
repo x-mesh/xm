@@ -111,6 +111,24 @@ test('a mirrored change alongside its source releases only the source plugin', (
   expect(names).not.toContain('xm');
 });
 
+// detect supports standalone (non-marketplace) projects too: without
+// .claude-plugin/marketplace.json it must fall back to the project's own
+// version file instead of crashing with ENOENT.
+test('a standalone node repo without marketplace.json reaches the standalone version path', () => {
+  rmSync(repo, { recursive: true, force: true });
+  repo = mkdtempSync(join(tmpdir(), 'xkit-detect-'));
+  git('init', '-q', '.');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'Test');
+  write('package.json', JSON.stringify({ name: 'standalone', version: '1.2.3' }));
+  git('add', '-A');
+  git('commit', '-qm', 'feat: initial');
+
+  const out = detect();
+  expect(out.project_type).toBe('node');
+  expect(out.current_version).toBe('1.2.3');
+});
+
 // Filesystem-derived membership (Lesson L8): a brand-new xm-native skill must be
 // picked up with no code change here.
 test('a newly added xm-native skill is detected without a hardcoded list', () => {

@@ -1092,3 +1092,53 @@ describe('prd-check structural warnings (Section 9 / Section 10 / At a Glance)',
     }
   });
 });
+
+// ── delta-tier PRD (Quick Mode): save must not stamp, prd-check must not block ──
+describe('delta-tier PRD save + prd-check', () => {
+  const DELTA_PRD = [
+    '<!-- prd-tier: delta -->',
+    '# PRD: Quick X',
+    '',
+    '## Goal',
+    'Ship X.',
+    '',
+    '## Success Criteria',
+    '- [ ] X works',
+    '',
+    '## 12. Acceptance Criteria',
+    '- [ ] X returns 200 [R1]',
+    '',
+  ].join('\n');
+
+  test('save plan does not stamp a version marker on a delta PRD, and prd-check does not block it', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['save', 'plan', '--content', DELTA_PRD], { cwd: tmp });
+      const prdFile = join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'PRD.md');
+      const saved = readFileSync(prdFile, 'utf8');
+      expect(saved).not.toContain('prd-template-version');
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp }).stdout);
+      expect(out.tier).toBe('delta');
+      expect(out.blocked).toBe(false);
+      // missing Section 8 stays a warning on the delta tier
+      expect(out.warnings.some((w) => /Section 8/.test(w))).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a hand-stamped delta PRD still does not block on the Section 8 gate', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePRD(tmp, name, `<!-- prd-template-version: 2 -->\n${DELTA_PRD}`);
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp }).stdout);
+      expect(out.tier).toBe('delta');
+      expect(out.blocked).toBe(false);
+      expect(out.warnings.some((w) => /Section 8/.test(w))).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
