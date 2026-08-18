@@ -165,6 +165,40 @@ describe('content-bound approval and shared review groups', () => {
     }
   });
 
+  // cmdRun's status writes must go through the tasks.json lock. Before this
+  // guard it wrote its full-file snapshot lockless, so a completion/task_check
+  // a parallel agent committed under the lock between run's read and write was
+  // silently reverted. A held (non-stale) lock therefore has to fail the run
+  // loudly and leave task statuses untouched.
+  test('run refuses to flip task statuses while another writer holds the tasks.json lock', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-lock-'));
+    try {
+      const project = setup(tmp);
+      run(tmp, ['phase', 'set', 'plan']);
+      run(tmp, ['plan', 'Add a settings export command']);
+      run(tmp, ['tasks', 'add', 'Implement export', '--done-criteria', 'works']);
+      writeFileSync(join(project, 'phases', '02-plan', 'PRD.md'), '# PRD\n\n## 1. Goal\nExport settings\n');
+      run(tmp, ['steps', 'compute']);
+      run(tmp, ['plan-check']);
+      run(tmp, ['gate', 'pass', 'approved']);
+
+      const tasksPath = projectTasksPath(project);
+      writeFileSync(tasksPath + '.lock', String(process.pid)); // live writer: fresh mtime, not stale-reclaimable
+      try {
+        const r = run(tmp, ['run', '--json']);
+        expect(r.code).not.toBe(0);
+        expect(r.stderr).toContain('lock contention');
+        const t1 = JSON.parse(readFileSync(tasksPath)).tasks[0];
+        expect(t1.status).toBe('pending');
+        expect(t1.started_at).toBeUndefined();
+      } finally {
+        rmSync(tasksPath + '.lock', { force: true });
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 30000);
+
   test('completion reports missing, running, and stale task-check evidence separately', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-evidence-'));
     try {

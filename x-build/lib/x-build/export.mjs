@@ -130,6 +130,16 @@ function findTaskStep(taskId, stepData) {
 
 // ── cmdImport ───────────────────────────────────────────────────────
 
+// Max-based, not length-based (same scheme as tasks add / later promote):
+// after `tasks remove`, length+1 would collide with a surviving id.
+function nextTaskId(tasks) {
+  const max = tasks.reduce((n, task) => {
+    const parsed = parseInt(String(task.id || '').replace(/^t/, ''), 10);
+    return Number.isFinite(parsed) && parsed > n ? parsed : n;
+  }, 0);
+  return `t${max + 1}`;
+}
+
 export function cmdImport(args) {
   const { opts, positional } = parseOptions(args);
   const format = opts.from || 'csv';
@@ -171,7 +181,7 @@ export function cmdImport(args) {
 
       const size = sizeIdx >= 0 ? normSize(parts[sizeIdx]?.trim()) : 'medium';
       const deps = depsIdx >= 0 ? (parts[depsIdx]?.trim().split(';').filter(Boolean)) : [];
-      const id = `t${data.tasks.length + 1}`;
+      const id = nextTaskId(data.tasks);
 
       data.tasks.push({
         id, name, depends_on: deps, size,
@@ -197,7 +207,7 @@ export function cmdImport(args) {
 
       const priority = issue.priority || issue.fields?.priority?.name || 'Medium';
       const size = normSize(priority);
-      const id = `t${data.tasks.length + 1}`;
+      const id = nextTaskId(data.tasks);
 
       data.tasks.push({
         id, name, depends_on: [], size,

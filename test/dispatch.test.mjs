@@ -89,6 +89,31 @@ describe('dispatch — lightweight tracked execution', () => {
     }
   });
 
+  test('dispatch after tasks remove mints a unique id and leaves the surviving task alone', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-dispatch-'));
+    try {
+      gitInit(tmp);
+      dispatchJSON(tmp); // t1
+      dispatchJSON(tmp); // t2
+      dispatchJSON(tmp); // t3
+      // Complete t3 so an id collision would visibly flip it back to RUNNING.
+      expect(run(['task-check', 't3'], tmp).exitCode).toBe(0);
+      run(['tasks', 'update', 't3', '--status', 'completed', '--no-commit'], tmp);
+      run(['tasks', 'remove', 't2'], tmp);
+      // Length-based ids would mint a second "t3" here ([t1, t3].length + 1).
+      const out = dispatchJSON(tmp);
+      expect(out.task.task_id).toBe('t4');
+      const tasks = JSON.parse(readFileSync(join(tmp, '.xm', 'build', 'projects', 'dispatch', 'phases', '02-plan', 'tasks.json'), 'utf8')).tasks;
+      const ids = tasks.map((t) => t.id);
+      expect(new Set(ids).size).toBe(ids.length);
+      const t3 = tasks.find((t) => t.id === 't3');
+      expect(t3.status).toBe('completed');
+      expect(t3.task_check).toBeTruthy();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('--model pin overrides routing in the emitted entry and persisted task', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-dispatch-'));
     try {

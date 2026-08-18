@@ -409,6 +409,16 @@ export function taskDoneCriteria(project) {
   console.log('');
 }
 
+// Max-based, not length-based: after `tasks remove`, length+1 would collide
+// with a surviving id (remove t2 of [t1..t3] → next id must be t4, not t3).
+function nextTaskId(tasks) {
+  const max = tasks.reduce((n, t) => {
+    const parsed = parseInt(String(t.id || '').replace(/^t/, ''), 10);
+    return Number.isFinite(parsed) && parsed > n ? parsed : n;
+  }, 0);
+  return `t${max + 1}`;
+}
+
 export function taskAdd(project, args) {
   const { opts, positional } = parseOptions(args);
   let revisionReason = 'unknown';
@@ -421,11 +431,7 @@ export function taskAdd(project, args) {
   }
 
   const data = readJSON(tasksPath(project)) || { tasks: [] };
-  const maxNum = data.tasks.reduce((max, t) => {
-    const n = parseInt(t.id?.replace('t', ''), 10);
-    return Number.isFinite(n) && n > max ? n : max;
-  }, 0);
-  const id = `t${maxNum + 1}`;
+  const id = nextTaskId(data.tasks);
   const deps = opts.deps ? opts.deps.split(',').map(d => d.trim()) : [];
   const size = opts.size || 'medium';
 
@@ -1509,10 +1515,14 @@ function collectWorktreeTasks(project) {
 // is consumed by the skill, which spawns agents immediately after this command.
 // The human-readable `run` path is a preview and must never create RUNNING tasks;
 // it has no executor to own them. Idempotent — tasks already RUNNING are skipped
-// so a re-emitted plan does not restart the duration clock. readyTasks are live
-// references into taskData, so the single writeJSON persists their mutations.
-function markTasksRunning(taskData, readyTasks, sharedCfg, project, step) {
-  let marked = 0;
+// so a re-emitted plan does not restart the duration clock. readyTasks stay live
+// references into the caller's snapshot (buildPlanEntry reads the stamps from
+// them), but persistence copies the stamps onto FRESH rows by id under the
+// tasks.json lock: the snapshot may be seconds old (worktree acquisition sits
+// between read and write), and writing it wholesale silently reverted
+// completions/task_check claims parallel agents committed in the meantime.
+function markTasksRunning(readyTasks, sharedCfg, project, step) {
+  const stamped = [];
   for (const task of readyTasks) {
     if (task.status === TASK_STATES.RUNNING) continue;
     const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
@@ -1527,13 +1537,31 @@ function markTasksRunning(taskData, readyTasks, sharedCfg, project, step) {
     task.status = TASK_STATES.RUNNING;
     task.started_at = new Date().toISOString();
     delete task.task_check;
-    marked++;
+    stamped.push(task);
   }
-  if (marked > 0) {
-    writeJSON(tasksPath(project), taskData);
+  if (stamped.length > 0) {
+    const byId = new Map(stamped.map((t) => [t.id, t]));
+    modifyJSON(tasksPath(project), (fresh) => {
+      if (!fresh?.tasks) return fresh;
+      for (const row of fresh.tasks) {
+        const src = byId.get(row.id);
+        if (!src) continue;
+        // A row a parallel writer already claimed or finished is left alone —
+        // re-stamping it would restart its clock or revert a terminal state.
+        if ([TASK_STATES.RUNNING, TASK_STATES.COMPLETED, TASK_STATES.CANCELLED, TASK_STATES.FAILED].includes(row.status)) continue;
+        row.status = src.status;
+        row.started_at = src.started_at;
+        row._assigned_model = src._assigned_model;
+        row._routing_decision_id = src._routing_decision_id;
+        row._estimated_cost = src._estimated_cost;
+        if (src._budget_fallback_model) row._budget_fallback_model = src._budget_fallback_model;
+        delete row.task_check;
+      }
+      return fresh;
+    });
     emitHook('task:pre-update', { project, step, tasks: readyTasks.map((t) => t.id) });
   }
-  return marked;
+  return stamped.length;
 }
 
 function predictionMaxAgeMs(config) {
@@ -1755,7 +1783,7 @@ function runWorktreeMode(ctx) {
   // Mark only the successfully-acquired tasks RUNNING (routing/cost/started_at)
   // so a later `tasks update completed` records a metric with the right model.
   const acquired = acquireResults.filter((a) => a.res.ok).map((a) => a.task);
-  if (acquired.length) markTasksRunning(taskData, acquired, sharedCfg, project, currentStep.id);
+  if (acquired.length) markTasksRunning(acquired, sharedCfg, project, currentStep.id);
 
   const entries = acquireResults.map(({ task, res }) => {
     const entry = buildPlanEntry(project, task, planEntryCtx, { worktree: true });
@@ -1944,7 +1972,20 @@ export async function cmdRun(args) {
       }
     }
   }
-  writeJSON(tasksPath(project), taskData);
+  // Persist the PENDING→READY flips onto FRESH rows by id under the tasks.json
+  // lock. taskData is a lockless snapshot; writing it back wholesale silently
+  // reverted completions/task_check claims parallel agents committed since the
+  // read (taskUpdate/task-check mutate this file under the modifyJSON lock).
+  if (readyTasks.length) {
+    const readyIds = new Set(readyTasks.map((t) => t.id));
+    modifyJSON(tasksPath(project), (fresh) => {
+      if (!fresh?.tasks) return fresh;
+      for (const row of fresh.tasks) {
+        if (readyIds.has(row.id) && row.status === TASK_STATES.PENDING) row.status = TASK_STATES.READY;
+      }
+      return fresh;
+    });
+  }
   const reviewGroupsToStart = groupSummary.review_scope === 'group'
     ? [...new Set(readyTasks.map(taskReviewGroup))]
     : [];
@@ -2097,7 +2138,7 @@ export async function cmdRun(args) {
     // Mark RUNNING on the spawn path too (skip when over budget — plan is []),
     // so a later `tasks update completed` records a metric with the right model
     // and the budget rolling window sees real spend.
-    if (!budgetExceeded) markTasksRunning(taskData, readyTasks, sharedCfg, project, currentStep.id);
+    if (!budgetExceeded) markTasksRunning(readyTasks, sharedCfg, project, currentStep.id);
     const plan = readyTasks.map(task => buildPlanEntry(project, task, planEntryCtx));
 
     const output = {
@@ -2472,7 +2513,7 @@ export function cmdDispatch(args) {
   modifyJSON(tasksPath(project), (data) => {
     data = data || { tasks: [] };
     data.tasks = data.tasks || [];
-    const id = `t${data.tasks.length + 1}`;
+    const id = nextTaskId(data.tasks);
     task = {
       id,
       name: instruction.length > 60 ? `${instruction.slice(0, 57)}...` : instruction,
@@ -2522,13 +2563,22 @@ export function cmdDispatch(args) {
   const taskData = readJSON(tasksPath(project));
   const taskRef = taskData.tasks.find((t) => t.id === task.id);
   if (task._budget_fallback_model) taskRef._budget_fallback_model = task._budget_fallback_model;
-  markTasksRunning(taskData, [taskRef], sharedCfg, project, 'dispatch');
+  markTasksRunning([taskRef], sharedCfg, project, 'dispatch');
   if (opts.model || task._budget_fallback_model) {
     // markTasksRunning routes by role; an explicit --model pin overrides it.
     // A fallback is already persisted there as the actual assigned model.
     if (opts.model) taskRef._assigned_model = String(opts.model);
     taskRef._estimated_cost = est.cost_usd;
-    writeJSON(tasksPath(project), taskData);
+    // Sequential (never nested) with markTasksRunning's locked write, and scoped
+    // to this row — a full-snapshot write here reverted parallel commits.
+    modifyJSON(tasksPath(project), (data) => {
+      const row = data?.tasks?.find((t) => t.id === taskRef.id);
+      if (row) {
+        row._assigned_model = taskRef._assigned_model;
+        row._estimated_cost = taskRef._estimated_cost;
+      }
+      return data;
+    });
   }
 
   const briefContent = `# ${manifest?.display_name || project} — dispatch\n\n단발 지침 실행 (PRD/phase 게이트 미적용 경로).`;
