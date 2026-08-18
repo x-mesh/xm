@@ -16,7 +16,7 @@
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -118,5 +118,17 @@ describe('dashboard pricing sync guard (t9, R9)', () => {
     expect(body.vendor_models.effective?.claude).toEqual(
       Object.fromEntries(Object.keys(MODEL_COSTS).map((t) => [t, t])),
     );
+  });
+
+  test('FALLBACK_MODEL_COSTS in the server source equals cost-engine MODEL_COSTS', () => {
+    // The fallback table is only served when the cost-engine import fails, so
+    // the live-server assertions above never exercise it — it drifted exactly
+    // this way once (opus stayed at the pre-2026-08 $15/$75 rate). Parse it out
+    // of the source text and pin it to MODEL_COSTS.
+    const src = readFileSync(SERVER_PATH, 'utf8');
+    const match = src.match(/const FALLBACK_MODEL_COSTS = \{([\s\S]*?)\n\};/);
+    expect(match, 'FALLBACK_MODEL_COSTS literal not found in server source').toBeTruthy();
+    const fallback = new Function(`return {${match[1]}};`)();
+    expect(fallback).toEqual({ ...MODEL_COSTS });
   });
 });
