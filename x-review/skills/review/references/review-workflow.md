@@ -40,15 +40,16 @@ Store the result as `{diff_content}`.
 
 Full codebase review. Targets entire source, not a diff.
 
-1. Collect files to review:
+1. Collect files to review without silent truncation:
    ```bash
-   git ls-files --cached | grep -E '\.(ts|js|py|go|java|rs|mjs)$' | head -100
+   git ls-files --cached | grep -E '\.(ts|js|py|go|java|rs|mjs)$'
    ```
 2. **Lens-first split** — assign agents by lens, not by file group:
-   - Default 4 lenses (security, logic, perf, tests) × full file list
+   - Default adaptive-fast profiles (correctness, risk) each inspect the complete file list
    - Each agent scans all files with **one lens** (file-group × 7-lens split is prohibited)
    - Agent count = min(lens count, `agent_max_count`)
-   - If 20+ files, split files in half per lens and assign 2 agents each
+   - If the target exceeds the planner limit, stop with `Review incomplete: target limit` until
+     automated chunk execution exists; never split coverage implicitly
 3. Merge results into Phase 4: SYNTHESIZE
 
 `full` mode is expensive — confirm before running:
@@ -64,7 +65,43 @@ Full codebase review. Targets entire source, not a diff.
 
 Assign review perspectives using `--lenses` option or automatically.
 
-### Default 7 Perspectives
+### Default: adaptive-fast one-wave plan
+
+After writing the exact Phase-1 target to `$TARGET_FILE`, run:
+
+```bash
+node "$REVIEW_SKILL_DIR/scripts/plan-review.mjs" \
+  --target "$TARGET_FILE" \
+  <repeat `--target-file <path>` for file/full targets> \
+  --max-profiles "$ADAPTIVE_MAX_PROFILES" > "$RUN_DIR/plan.json"
+```
+
+For a single `file` target, append `--target-file <path>` and the raw file body may be the frozen
+target. For multi-file and `full` targets, encode each file as a synthetic `diff --git a/<path>
+b/<path>` section with every content line prefixed by `+`; this preserves file-specific grounding.
+Diff/PR targets already provide those sections. Never leave `plan.files` empty for a non-empty
+review target, and never concatenate multiple raw files without section markers: either form
+cannot satisfy deterministic source coverage.
+
+Resolve `ADAPTIVE_MAX_PROFILES` from `--agents`, otherwise `agent_max_count`, clamped to 2-5. The
+planner always keeps `correctness` and `risk`, then adds `migrations`, `type-design`, or `docs` in
+that priority order for matching frozen-diff signals. Migration routing is path-based
+(`migration`/`schema`/`prisma`/`alembic`/`db` or `*.sql`) so DDL examples in tests and docs do not
+spend a reviewer. Dispatch all selected profiles in the same Agent message, so the common path
+remains one LLM wave. Copy `files` to `run.json.target_files` and
+`expected_reports` to its manifest. `requires_chunking: true` forbids dispatching the whole target
+as one prompt. Automated chunk execution is not implemented yet, so stop with
+`Review incomplete: target limit`; never truncate and claim coverage.
+
+| Profile | Combined concerns |
+|---------|-------------------|
+| correctness | logic, error handling, tests, silent failures |
+| risk | security, performance, architecture |
+| migrations | schema/migration changes only |
+| type-design | typed public-boundary changes only |
+| docs | undocumented public-API changes only |
+
+### Explicit 7-lens full preset
 
 | Agent | Lens | Focus Area |
 |-------|------|------------|
@@ -85,7 +122,9 @@ Assign review perspectives using `--lenses` option or automatically.
 | type-design | `any` overuse, missing discriminated unions, nullable leaks, over-broad enums (typed languages only: TS / Python typed / Go / Rust) |
 | comments-stale | Stale / contradictory comments, TODO without ticket, commented-out code, "what" comments instead of "why" |
 
-These are NOT in the default preset — invoke explicitly: `--lenses "silent-failures,type-design"`.
+`type-design` may be routed into adaptive-fast when a typed public boundary changes. The other
+specialized lenses are not independently selected by default; invoke them explicitly with
+`--lenses` when their standalone perspective is required.
 
 ### When --lenses Is Specified
 
@@ -103,24 +142,26 @@ These are NOT in the default preset — invoke explicitly: `--lenses "silent-fai
 | `--preset quick` | security, logic | 2 | Fast core check (~2 min) |
 | `--preset standard` | security, logic, perf, tests | 4 | Code quality focused (~5 min) |
 | `--preset security` | security only | 3 | Security focused (Self-Consistency) |
-| (default, no preset) | **all 7** | **7** | **Full review (default)** |
+| `--preset adaptive-fast` | correctness, risk + routed specialists | 2-5 | Default, one wave |
+| `--preset full` | **all 7** | **7** | Explicit exhaustive review |
 
 ### Agent Count
 
-- Default: agent count = lens count (**7 lenses = 7 agents**)
+- Default: 2 composite reviewers plus planner specialists, capped deterministically at
+  `agent_max_count` (minimum 2, maximum 5)
 - `--preset quick` → 2, `--preset standard` → 4
-- When `--agents N` is specified: N agents (lenses assigned to fit N)
+- For adaptive-fast, `--agents N` is clamped to 2-5 so both core profiles always run
+- For explicit lenses or non-default presets, `--agents N` requests N agents (lenses assigned to fit N)
 - If `--agents N` is less than lens count: assign highest-priority lenses first (security > logic > perf > errors > tests > architecture > docs)
 
 ---
 
 ## Phase 3: REVIEW
 
-> **Cross-vendor mode (`--cross-vendor`):** this single-vendor Claude fan-out is replaced by
-> per-lens cross-vendor runs through the x-panel engine (`xm panel … --review-prompt-file
-> lenses/{lens}.md --lens-tag {lens} --models <detected vendors>`). See the "Cross-Vendor Mode"
-> section in `SKILL.md` for the probe → fallback → per-lens → synthesize flow. The rest of this
-> Phase 3 description applies to the default single-vendor path.
+> **Panel backend (`--cross-vendor`):** this current-runtime fan-out is replaced, not followed, by
+> per-lens x-panel runs. Exact slots come from machine-local `review.models` when present; otherwise
+> ready providers are detected. See "Multi-Model Panel Backend" in `SKILL.md`. The rest of this
+> Phase 3 description applies to the default current-runtime path.
 
 Fan-out — send the diff + dedicated perspective prompt to each agent simultaneously.
 
@@ -138,9 +179,13 @@ fi
 TARGET_HASH="sha256:$TARGET_DIGEST"
 RUN_DIR=".xm/review/runs/$TASK_ID"
 mkdir -p "$RUN_DIR/reports"
-# Write run.json with schema_version: 1, TASK_ID, TARGET_HASH, and expected_reports.
+# Write run.json with schema_version: 1, TASK_ID, TARGET_HASH, target_files, and expected_reports.
 # Each expected_reports entry is { "report_id": "security-1", "lens": "security" }.
 ```
+At the same Phase-1 boundary, resolve the complete target file list and snapshot each current
+file's raw-byte SHA-256 as `reviewed_files_all[]` + `reviewed_file_snapshots[]` for the final
+`last-result.json`. Deleted/absent paths use `exists: false, sha256: null`. Capture these now, not
+after review, so concurrent workspace edits make the later review-fix freshness gate fail closed.
 
 `run.json` is the dispatch manifest described by `references/lens-report-contract.md`. Append
 that contract to every lens prompt with the literal `task_id`, `target_hash`, `report_id`, and
@@ -162,15 +207,13 @@ Agent tool 1: {
   description: "x-review: security",
   subagent_type: "general-purpose",
   run_in_background: false,
-  prompt: "{universal_principles}\n\n## Code Review: Security\n\n{diff_content}\n\n[lenses/security.md body]",
-  model: "sonnet"
+  prompt: "{universal_principles}\n\n## Code Review: Security\n\n{diff_content}\n\n[lenses/security.md body]"
 }
 Agent tool 2: {
   description: "x-review: logic",
   subagent_type: "general-purpose",
   run_in_background: false,
-  prompt: "{universal_principles}\n\n## Code Review: Logic\n\n{diff_content}\n\n[lenses/logic.md body]",
-  model: "sonnet"
+  prompt: "{universal_principles}\n\n## Code Review: Logic\n\n{diff_content}\n\n[lenses/logic.md body]"
 }
 ... (N agents)
 ```
@@ -179,6 +222,12 @@ Agent tool 2: {
 prompt, not from a specialized agent type. Do NOT name a plugin-qualified subagent type
 (e.g. `oh-my-claudecode:code-reviewer`) — an agent type the host does not have fails the
 spawn, and x-review declares no third-party plugin dependency.
+
+**Reviewer model routing:** omit the Agent `model` parameter unless the user or effective reviewer
+configuration explicitly pins it. Under default/max this inherits the session/runtime model; an
+economy profile may resolve to its configured lower tier. A standalone CLI escape hatch must carry
+the same effective reviewer model and may never silently substitute Sonnet. Disclose the resolved
+model when the runtime exposes it.
 
 **Recursion guard (mandatory).** A `general-purpose` lens agent has the full tool set, including
 Skill and Agent. Handed a prompt that reads "## Code Review: Security", it can decide the right
@@ -198,10 +247,12 @@ descriptions repeating the same lens at increasing depth — stop the run, do no
 node "$REVIEW_SKILL_DIR/scripts/validate-reports.mjs" \
   --manifest "$RUN_DIR/run.json" \
   --reports-dir "$RUN_DIR/reports" \
+  --target "$TARGET_FILE" \
   --out "$RUN_DIR/validation.json"
 ```
 
-Exit 0 and `validation.json.ok: true` are the Phase 4 entry gate. A missing report, empty body,
+Exit 0 and `validation.json.ok: true` are the Phase 4 entry gate. It requires N/N report coverage
+and complete `target_coverage`. A missing report, empty body,
 generic greeting, previous-task response, mismatched target, incomplete status, duplicate report,
 or unsubstantiated zero-finding response fails closed. Re-dispatch only failed lenses as **fresh
 agent tasks** using the same `task_id`, `target_hash`, and `report_id`, overwrite their report
@@ -270,32 +321,34 @@ The `code` field is what step 2.5 verifies against — a finding whose `code` fi
 empty cannot be self-verified cheaply, so track it as snippet-less rather than assuming the
 snippet exists.
 
-### 2. Deduplicate + Consensus Promotion
+### 2. Deduplicate + Consensus Confidence
 
-- If different agents report the same issue at the same `file:line` → merge into one and list all source lenses
-- Merged findings are marked as "consensus"
+- If different agents report the same issue at the same `file:line` → merge into one and preserve every source identity.
+- Source identity is the lens in current-runtime mode (`logic`, `errors`) and `model-label:lens` in panel mode (`codex:gpt-5.6-sol:xhigh:logic`, `codex:claude-sonnet-5:logic`). Repeated agents for the same lens/model label count once; shared provider names do not collapse distinct model slots.
+- Preserve the highest severity assigned by any source as the candidate severity for Challenge. **Never raise severity because sources agree.** Severity answers impact (what breaks and how badly); agreement answers confidence that the claim is real.
 
-**Consensus promotion rules:**
-| Agent Count | Action |
-|-------------|--------|
-| 1 | Keep original severity |
-| 2 | Promote severity one level (Medium → High) + `[consensus]` tag |
-| 3+ | Promote one level + `[strong consensus]` tag; promote to Critical only when the original was already High |
+**Consensus confidence rules:**
+| Distinct source count | `confidence` | Tag | Effect |
+|----------------------:|--------------|-----|--------|
+| 1 | `single-source` | none | Normal Challenge path |
+| 2 | `corroborated` | `[consensus]` | Prioritize for verification and sort first within the same severity |
+| 3+ | `strongly-corroborated` | `[strong consensus]` | Highest verification priority; still no severity change |
 
-Agreement is evidence that the finding is **real**, not that it is **severe** — severity still
-answers "what breaks, and how badly". Jumping straight to Critical inverted that: with the
-default 7 lenses, one missing error path is routinely flagged at the same line by `errors`,
-`logic`, and `silent-failures`, so three agreeing Lows forced a Block on an issue all three
-rated Low. Promotion caps at Critical. Order: Low → Medium → High → Critical.
-Preserve pre-promotion severity in parentheses: `[High←Medium] [consensus] file:line — issue`
+Persist `sources`, `source_count`, and `confidence` on the merged finding. Keep the existing
+`consensus` boolean for compatibility (`source_count >= 2`). A Low reported independently by
+three sources remains Low; a single-source High remains High until CoVe/Challenge changes it
+based on reachability and impact. Consensus may affect verification order and the verdict
+rationale, but verdict thresholds continue to consume severity only.
 
-### 2.5. Self-Verify (Chain-of-Verification)
+### 2.5. Ground + Conditional Self-Verify
 
-After deduplication, each finding is self-verified before challenge. For each High+ finding, the leader generates a verification question and checks the code independently:
+The validator first proves that each finding file and code snippet occurs in the frozen target.
+This deterministic grounding applies to every severity without another reviewer call. Only a
+contested or inconclusive Critical/High finding gets an independent semantic verifier.
 
-For each finding with severity >= High:
+For each escalated Critical/High finding:
 1. **Generate verification question:** "Does {file}:{line} actually do {claimed behavior}?"
-2. **Verify against agent output:** the lens report contract requires each finding's `code` field to carry the 3-5 diff lines the finding is about (`lens-report-contract.md`). The leader verifies the claim against that snippet — **do not re-read the file.** Only use Read tool for findings whose `code` field is missing or empty; if a lens omits it on most of its findings, the prompt did not reach it intact — re-dispatch that lens rather than reading the whole diff back.
+2. **Verify against the frozen target and canonical report**, never the mutable workspace: the lens report contract requires each finding's `code` field to carry the 3-5 diff lines the finding is about (`lens-report-contract.md`) — the leader verifies the claim against that snippet without re-reading files. Only consult the frozen target for findings whose `code` field is missing or empty; if a lens omits it on most of its findings, the prompt did not reach it intact — re-dispatch that lens rather than reading the whole diff back.
 3. **Result:**
    - Verified → keep finding as-is
    - Contradicted → remove finding + tag `[CoVe-removed]`
@@ -303,7 +356,8 @@ For each finding with severity >= High:
 
 CoVe-removed findings are excluded from Step 3 Challenge. CoVe-downgraded findings proceed to Challenge with their new severity.
 
-This catches false positives where the agent claimed a vulnerability/bug that doesn't actually exist in the code. Only applies to High+ to limit cost — Low/Medium findings are validated in the Challenge step.
+This avoids a routine second model call. Low/Medium findings use deterministic grounding plus the
+leader Challenge; explicit `--thorough` may widen semantic verification.
 
 ### 3. Challenge (Severity Validation)
 
@@ -330,13 +384,14 @@ If all findings are removed after challenge, verdict is LGTM regardless of origi
 
 ### 3.5. Recall Boost (Completeness Check)
 
-After challenge filtering, the leader does a **second pass** to catch issues that strict severity rules might have filtered out.
+Do not run a default second pass. Recall is a latency-bearing escalation, not a universal gate.
 
 **Mode selection:**
 
 | Flag | Behavior | Observation limit | Agent |
 |------|----------|:-----------------:|-------|
-| (default) | Leader second pass, 6 categories | 5 | Leader only |
+| (default) | Disabled; finish after the grounded first wave | 0 | None |
+| Escalated | suspicious-empty, incomplete coverage, or contested High+ only | 5 | Leader |
 | `--thorough` | Dedicated recall agent, 6 categories, aggressive promotion | 10 | Separate agent via Agent tool |
 
 When `--thorough` is active, spawn a **separate recall agent** (not the leader) via Agent tool. The agent receives: (1) the full diff, (2) the list of already-reported findings, (3) the recall boost prompt below, and (4) the same "Execution Boundary (you are a leaf reviewer)" section from `{universal_principles}` — it is a leaf too, and without the boundary it can re-invoke the review skill and restart the fan-out. This provides genuine "fresh eyes" — a different context window from the leader who applied severity filters.
@@ -382,7 +437,7 @@ If nothing found, output: No additional observations.
 ### 4. Sort
 
 Sort by Critical → High → Medium → Low.
-Within the same severity, consensus findings come first.
+Within the same severity, `strongly-corroborated` → `corroborated` → `single-source`.
 
 ### 5. Apply --severity Filter
 
@@ -411,7 +466,8 @@ When the verdict is `Request Changes` or `Block`, the report MUST include a revi
    - `accept_risk` — allowed only with concrete evidence
    - `false_positive` — allowed only with concrete evidence
 5. Review-fix edits are limited to files listed in `.xm/review/triage.json` `fix_scope.allowed_files`.
-6. Unrelated issues discovered during review-fix are not fixed in place. If they do not affect the current fix, capture them with `x-build later add` and continue the current fix.
+6. `verify-review-fix --init` compares every `reviewed_file_snapshots` hash with the workspace and refuses stale findings. The first regular `verify-review-fix` authorizes edits; after that, only `fix_scope.allowed_files` may differ from the reviewed snapshots. Each `fix_now` finding then follows `open → fix_authorized → fixed → reverified`; record the final check with `--reverify <id> --outcome resolved --evidence <text>`. The receipt is bound to current file bytes and becomes stale after another edit.
+7. Unrelated issues discovered during review-fix are not fixed in place. If they do not affect the current fix, capture them with `x-build later add` and continue the current fix.
 
 Recommended gate commands:
 
@@ -450,7 +506,7 @@ Verdict: {LGTM ✅ | Request Changes 🔄 | Block 🚫}
 
 ## Review-Fix Triage Required
 
-Run `x-build verify-review-fix --init`, edit `.xm/review/triage.json`, then run `x-build verify-review-fix` before applying review fixes.
+Run `x-build verify-review-fix --init`, edit `.xm/review/triage.json`, then run `x-build verify-review-fix` before applying review fixes. After each `fix_now` edit, record byte-bound evidence with `x-build verify-review-fix --reverify <F#|finding_id> --outcome resolved|persistent|regression --evidence <text>`.
 
 | Finding | Required? | Allowed Decisions |
 |---------|-----------|-------------------|

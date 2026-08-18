@@ -20,6 +20,7 @@
     "solver":    { "economy": "sonnet", "default": "inherit", "max": "inherit", "rationale": "judgment — structured problem solving rides the session model" },
     "ship":      { "economy": "sonnet", "default": "inherit", "max": "inherit", "rationale": "judgment — release decisions ride the session model" },
     "review":    { "economy": "sonnet", "default": "inherit", "max": "inherit", "rationale": "judgment — review depth rides the session model" },
+    "panel":     { "economy": "sonnet", "default": "inherit", "max": "inherit", "rationale": "judgment — routing and synthesis ride the session model" },
     "eval":      { "economy": "sonnet", "default": "inherit", "max": "inherit", "rationale": "judgment — quality scoring rides the session model" },
     "probe":     { "economy": "sonnet", "default": "inherit", "max": "inherit", "rationale": "judgment — investigation reasoning rides the session model" },
     "agent":     { "economy": "sonnet", "default": "inherit", "max": "inherit", "rationale": "judgment — agent orchestration rides the session model" },

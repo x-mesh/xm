@@ -28,8 +28,8 @@ const exitLabel = (code, signal) => (signal ? `exit ${code} (${signal})` : `exit
 // (toss-20260818-0d0f3e9a: fallback-after-SIGTERM spawned a third codex exec per slot).
 export const SIGNAL_DEATH = /\(SIG[A-Z0-9]+\)/;
 
-// Each builds [bin, args]. `model` (optional) maps to that CLI's --model flag;
-// when null the CLI uses its own default model.
+// Each builds [bin, args, optional transport]. `model` maps to that CLI's
+// --model flag; stdin-capable providers keep the prompt out of argv.
 export function normalizeKiroModel(model) {
   const value = String(model || '').trim();
   if (!value) return null;
@@ -103,18 +103,18 @@ function codexModelArgs(spec) {
  * (E2E에서 발견: 생략 시 prompt가 SESSION_ID 위치 인자로 오파싱되어 실패).
  *
  * @param {{ execFlags?: string[], sessionId?: string|null, model?: string|null, prompt?: string }} opts
- * @returns {[string, string[]]} [bin, args]
+ * @returns {[string, string[], ({stdin:string}|null)]} [bin, args, transport]
  */
-export function buildCodexResumeArgs({ execFlags = [], sessionId = null, model = null, prompt = '' } = {}) {
+export function buildCodexResumeArgs({ execFlags = [], sessionId = null, model = null, prompt = '', promptViaStdin = false } = {}) {
   const args = [
     'exec',
     ...(Array.isArray(execFlags) ? execFlags : []),
     ...codexModelArgs(model),
     'resume',
     ...(sessionId ? [String(sessionId)] : ['--last']),
-    ...(prompt ? [String(prompt)] : []),
+    ...(prompt ? [promptViaStdin ? '-' : String(prompt)] : []),
   ];
-  return ['codex', args];
+  return ['codex', args, prompt && promptViaStdin ? { stdin: String(prompt) } : null];
 }
 
 // THE single source of provider command definitions — shared by panel review
@@ -126,13 +126,13 @@ const BUILTIN = {
   // --output-format json wraps the answer in a result envelope that also carries usage
   // + total_cost_usd (unwrapEnvelope lifts both). Without it claude reports zero tokens,
   // which is why every cost figure in the kit read "estimated".
-  claude: (prompt, model) => ['claude', ['-p', '--output-format', 'json', ...(model ? ['--model', model] : []), prompt]],
+  claude: (prompt, model) => ['claude', ['-p', '--output-format', 'json', ...(model ? ['--model', model] : [])], { stdin: prompt }],
   // --sandbox read-only matches the streaming codex path: review/cross prompts never edit the repo.
   // A "model[:effort]" spec maps to --model <id> + -c model_reasoning_effort=<effort> (codexModelArgs).
   // --json emits the JSONL event stream (thread.started / item.completed / turn.completed)
   // that carries the session id AND real token counts. It also REMOVES the stderr session
   // banner (measured), so parseJsonlOutput's thread.started is now the only capture path.
-  codex: (prompt, model) => ['codex', ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', ...codexModelArgs(model), prompt]],
+  codex: (prompt, model) => ['codex', ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', ...codexModelArgs(model), '-'], { stdin: prompt }],
   // agy's -p/--print CONSUMES the next token as the prompt value, so --model must
   // precede -p (unlike claude/codex whose -p is a boolean with a positional prompt).
   // Wrong order (`-p --model X <prompt>`) makes -p eat "--model", dropping the real
@@ -402,6 +402,38 @@ export function resolveCommand(name, prompt, model, providerArgs = null) {
   return fn ? fn(prompt, model || null, providerArgs || {}) : null;
 }
 
+// Stdin transport avoids the per-string argv ceiling (about 128 KiB on Linux).
+// Keep this explicit because other providers still need bounded argv or file handoff.
+export function supportsPromptStdin(name) {
+  // Command overrides have an intentionally generic argv contract
+  // (`node <script> <name> <prompt>`), so do not claim stdin safety for them.
+  return !overridePath(name) && (name === 'claude' || name === 'codex');
+}
+
+function spawnResolved(resolved, options = {}) {
+  const [cmd, args, transport] = resolved;
+  const hasInput = transport && typeof transport.stdin === 'string';
+  const child = spawn(cmd, args, {
+    ...options,
+    stdio: [hasInput ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+  });
+  if (hasInput) {
+    child.stdin.on('error', () => {});
+    child.stdin.end(transport.stdin);
+  }
+  return child;
+}
+
+// Preflight probes are spawned as their own POSIX process group. Provider CLIs may
+// launch helpers which outlive the CLI process or keep its stdout/stderr pipes open;
+// killing only the direct child can therefore leave an orphan or keep preflight hung.
+function killProbeTree(child, signal) {
+  if (process.platform !== 'win32' && child?.pid) {
+    try { process.kill(-child.pid, signal); return; } catch { /* group already gone */ }
+  }
+  try { child?.kill(signal); } catch { /* already gone */ }
+}
+
 // Ambient-context isolation for PROMPT runs (not auth/list probes). In a repo
 // cwd the claude CLI auto-assembles project CLAUDE.md + hook-injected context
 // around the -p prompt; with long prompts the model then echoes that
@@ -535,8 +567,12 @@ export function withStderrReason(baseError, stdout, stderr) {
 export function invokeProvider(name, prompt, { timeout = 180_000, model = null, expectKeys = null } = {}) {
   const resolved = resolveCommand(name, prompt, model);
   if (!resolved) return { ok: false, error: `unknown provider: ${name}`, raw: '', json: null };
-  const [cmd, args] = resolved;
-  const res = spawnSync(cmd, args, { encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024, env: process.env, ...promptSpawnOpts(name) });
+  const [cmd, args, transport] = resolved;
+  const res = spawnSync(cmd, args, {
+    encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024, env: process.env,
+    ...(transport && typeof transport.stdin === 'string' ? { input: transport.stdin } : {}),
+    ...promptSpawnOpts(name),
+  });
   if (res.error) {
     return { ok: false, error: String(res.error.message || res.error), raw: '', json: null };
   }
@@ -617,12 +653,12 @@ export function resolveSessionCommand(name, prompt, model, session, providerArgs
   if (name === 'claude' && session.id) {
     // Keep --output-format json on the session path too, or round 2 loses usage and
     // (worse) returns an un-unwrapped envelope to the verdict parser.
-    return ['claude', ['-p', '--output-format', 'json', ...(model ? ['--model', model] : []), session.mode === 'resume' ? '--resume' : '--session-id', session.id, prompt]];
+    return ['claude', ['-p', '--output-format', 'json', ...(model ? ['--model', model] : []), session.mode === 'resume' ? '--resume' : '--session-id', session.id], { stdin: prompt }];
   }
   if (name === 'codex' && session.mode === 'resume') {
     if (!session.id) return null;
     // --json on the resume leg too: round 2 must stay parseable (JSONL) and keep reporting usage.
-    return buildCodexResumeArgs({ execFlags: ['--json', '--sandbox', 'read-only', '--skip-git-repo-check'], sessionId: session.id, model, prompt });
+    return buildCodexResumeArgs({ execFlags: ['--json', '--sandbox', 'read-only', '--skip-git-repo-check'], sessionId: session.id, model, prompt, promptViaStdin: true });
   }
   return resolveCommand(name, prompt, model, providerArgs);
 }
@@ -679,16 +715,15 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
         raw: '', json: null,
       });
     }
-    const [cmd, args] = resolved;
     let child;
     try {
       // stdin must be closed (ignore) or non-interactive CLIs like codex/agy hang
       // waiting for input — spawnSync closes it automatically, spawn does not.
-      child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, ...promptSpawnOpts(name) });
+      child = spawnResolved(resolved, { env: process.env, ...promptSpawnOpts(name) });
     } catch (e) {
       return resolve({ ok: false, error: String(e.message || e), raw: '', json: null });
     }
-    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: cmd });
+    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: resolved[0] });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');
@@ -786,12 +821,12 @@ const STREAM_BUILTIN = {
   // cursor → incremental assistant events). With partial off, the stream is still structured
   // (usage + final text) but the body arrives in one block — faster on very large inputs.
   // codex has no partial mode, so it stays final-block regardless.
-  claude: (prompt, model, partial) => ['claude', ['-p', '--output-format', 'stream-json', ...(partial ? ['--include-partial-messages'] : []), '--verbose', ...(model ? ['--model', model] : []), prompt]],
+  claude: (prompt, model, partial) => ['claude', ['-p', '--output-format', 'stream-json', ...(partial ? ['--include-partial-messages'] : []), '--verbose', ...(model ? ['--model', model] : [])], { stdin: prompt }],
   cursor: (prompt, model, partial) => ['cursor-agent', ['-p', '-f', '--output-format', 'stream-json', ...(partial ? ['--stream-partial-output'] : []), ...(model ? ['--model', model] : []), prompt]], // -f bypasses workspace-trust
   codex: (prompt, model) => {
     // --sandbox read-only prevents the agent from editing the repo; --json streams JSONL events.
     // "model[:effort]" → --model <id> + -c model_reasoning_effort=<effort> (codexModelArgs).
-    return ['codex', ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', ...codexModelArgs(model), prompt]];
+    return ['codex', ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', ...codexModelArgs(model), '-'], { stdin: prompt }];
   },
 };
 
@@ -1022,11 +1057,10 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
     const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
     const resolved = resolveStreamCommand(name, prompt, model, partial);
     if (!resolved) return resolve({ ok: false, error: `no stream profile: ${name}`, raw: '', json: null });
-    const [cmd, args] = resolved;
     let child;
-    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, ...promptSpawnOpts(name) }); }
+    try { child = spawnResolved(resolved, { env: process.env, ...promptSpawnOpts(name) }); }
     catch (e) { return resolve({ ok: false, error: String(e.message || e), raw: '', json: null }); }
-    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: cmd, mode: partial ? 'stream-partial' : 'stream' });
+    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: resolved[0], mode: partial ? 'stream-partial' : 'stream' });
 
     // Bounds — the async path has no maxBuffer, so cap every accumulator.
     const RAW_CAP = 2_000_000, TEXT_CAP = 1_000_000, LINE_CAP = 4_000_000, ERR_CAP = 200_000;
@@ -1105,11 +1139,10 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
     };
     const resolved = resolveCommand(name, prompt, model, providerArgs);
     if (!resolved) return resolve({ ok: false, output: '', error: `unknown provider: ${name}` });
-    const [cmd, args] = resolved;
     let child;
-    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, ...promptSpawnOpts(name) }); }
+    try { child = spawnResolved(resolved, { env: process.env, ...promptSpawnOpts(name) }); }
     catch (e) { return resolve({ ok: false, output: '', error: String(e.message || e) }); }
-    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: cmd });
+    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: resolved[0] });
     let stdout = '', stderr = '';
     let settled = false;
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
@@ -1166,16 +1199,38 @@ export function probeProvider(name, { timeout = 45_000, model = null } = {}) {
         .then((r) => resolve({ ok: r.ok, model: null, text: (r.output || '').trim(), error: r.error || null, timedOut: !!r.timedOut }))
         .catch((err) => resolve({ ok: false, model: null, text: '', error: String(err?.message || err) }));
     }
-    const [cmd, args] = resolved;
+    if (name === 'codex' && !overridePath(name)) {
+      const args = resolved[1];
+      args.splice(1, 0, '--ephemeral', '--disable', 'hooks', '-C', tmpdir());
+    }
     let child;
-    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, ...promptSpawnOpts(name) }); }
+    try {
+      child = spawnResolved(resolved, {
+        env: process.env,
+        ...promptSpawnOpts(name),
+        ...(process.platform !== 'win32' ? { detached: true } : {}),
+      });
+    }
     catch (e) { return resolve({ ok: false, model: null, text: '', error: String(e.message || e) }); }
     let stdout = '', stderr = '', buf = '', text = '', actualModel = null, sawJson = false, settled = false;
+    let terminationTimer = null;
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const stopAfterSuccess = () => {
+      killProbeTree(child, 'SIGTERM');
+      // A provider may trap SIGTERM. Keep this timer referenced so preflight waits
+      // at most the grace period, then force-close the entire provider process group.
+      // Do not cancel this merely because the direct child closes: a detached helper
+      // may still be alive after redirecting the inherited stdio handles.
+      terminationTimer = setTimeout(() => {
+        killProbeTree(child, 'SIGKILL');
+        terminationTimer = null;
+      }, 500);
+    };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    const guard = makeTimeoutGuard(timeout, null, (error) => { child.kill('SIGKILL'); done({ ok: false, model: actualModel, text: text.trim(), error, timedOut: true }); });
+    const guard = makeTimeoutGuard(timeout, null, (error) => { killProbeTree(child, 'SIGKILL'); done({ ok: false, model: actualModel, text: text.trim(), error, timedOut: true }); });
     const handleLine = (line) => {
+      if (settled) return;
       const s = line.trim();
       if (!s) return;
       let o; try { o = JSON.parse(s); } catch { return; }
@@ -1187,12 +1242,18 @@ export function probeProvider(name, { timeout = 45_000, model = null } = {}) {
       const r = parseStreamLine(name, o, model);
       for (const ev of r.events) if (ev.kind === 'text' && ev.delta) text += ev.delta;
       if (r.finalText != null) text = r.finalText;
+      if (/^ok[.!]?$/i.test(text.trim())) {
+        guard.clear();
+        done({ ok: true, model: actualModel || model || null, text: text.trim(), error: null });
+        stopAfterSuccess();
+      }
     };
     child.stdout.on('data', (d) => { guard.touch(); stdout += d; buf += d; let nl; while ((nl = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); } });
     child.stderr.on('data', (d) => { guard.touch(); stderr += d; if (stderr.length > 200_000) stderr = stderr.slice(-200_000); });
-    child.on('error', (e) => { guard.clear(); done({ ok: false, model: actualModel, text: '', error: String(e.message || e) }); });
+    child.on('error', (e) => { guard.clear(); if (terminationTimer && !settled) clearTimeout(terminationTimer); done({ ok: false, model: actualModel, text: '', error: String(e.message || e) }); });
     child.on('close', (code, signal) => {
       guard.clear();
+      if (terminationTimer && !settled) clearTimeout(terminationTimer);
       if (buf.trim()) handleLine(buf);
       // Liveness = a real answer. If the CLI spoke stream-json (sawJson), require the
       // PARSED answer text — a bare JSONL envelope with no answer is NOT alive. Only

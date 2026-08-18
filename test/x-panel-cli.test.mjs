@@ -12,13 +12,14 @@ import { tmpdir } from 'node:os';
 import { normalizeFindings, normalizeVerdicts, synthesize, synthesizeRound1, mergeConsensus, normalizeResponses, followupDelta } from '../x-panel/lib/x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
 import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
-import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, invokeProviderAsync, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings, stripAnsi, SIGNAL_DEATH } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, invokeProviderAsync, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, supportsPromptStdin, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings, stripAnsi, SIGNAL_DEATH } from '../x-panel/lib/x-panel/adapters.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
 import { shrinkDiff, splitDiffSections, DIFF_INLINE_MAX_BYTES } from '../x-panel/lib/x-panel/diff-budget.mjs';
 import { unwrapEnvelope } from '../x-panel/lib/x-panel/adapters.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
 const STUB = join(import.meta.dirname, 'fixtures', 'panel-stub-model.mjs');
+const SLOW_PREFLIGHT_STUB = join(import.meta.dirname, 'fixtures', 'panel-stub-preflight-ok-slow.mjs');
 let DIR;
 
 const STUB_ENV = (extra) => ({
@@ -405,10 +406,11 @@ describe('shrinkDiff — inline-diff safety net (B)', () => {
   });
 
   test('output never exceeds ARG_MAX-scale default budget', () => {
-    // 40 files × ~30KB = ~1.2MB diff → must come back under the 512KiB default.
+    // 40 files × ~30KB = ~1.2MB diff → must fit below Linux MAX_ARG_STRLEN.
     const diff = Array.from({ length: 40 }, (_, i) => fileSection(`src/f${i}.ts`, 30000)).join('');
     const r = shrinkDiff(diff);
     expect(Buffer.byteLength(r.text)).toBeLessThanOrEqual(DIFF_INLINE_MAX_BYTES);
+    expect(DIFF_INLINE_MAX_BYTES).toBeLessThan(128 * 1024);
     expect(r.reduced).toBe(true);
   });
 
@@ -1252,13 +1254,15 @@ describe('codex reasoning-effort spec (model[:effort])', () => {
   };
 
   test('raw builder: "gpt-5.5:high" → --model gpt-5.5 + -c model_reasoning_effort=high', () => {
-    const [bin, args] = resolveCommand('codex', 'the prompt', 'gpt-5.5:high');
+    const [bin, args, transport] = resolveCommand('codex', 'the prompt', 'gpt-5.5:high');
     expect(bin).toBe('codex');
     const mi = args.indexOf('--model');
     // exact contiguous fragment, in the order the CLI expects
     expect(args.slice(mi, mi + 4)).toEqual(['--model', 'gpt-5.5', '-c', 'model_reasoning_effort=high']);
     expect(args).not.toContain('gpt-5.5:high');   // effort must not leak into the model id
-    expect(args[args.length - 1]).toBe('the prompt'); // prompt stays the trailing positional
+    expect(args[args.length - 1]).toBe('-');
+    expect(args).not.toContain('the prompt');
+    expect(transport).toEqual({ stdin: 'the prompt' });
   });
 
   test('stream builder: "gpt-5.5:high" gets the same --model + -c fragment (plus --json)', () => {
@@ -1309,7 +1313,7 @@ describe('codex reasoning-effort spec (model[:effort])', () => {
     for (const args of value) {
       expect(args).not.toContain('--model');
       expect(args).not.toContain('-c');
-      expect(args[args.length - 1]).toBe('p');
+      expect(args[args.length - 1]).toBe('-');
     }
     expect(stderr).toBe(''); // legitimate "use CLI default" is NOT a warning
   });
@@ -1358,6 +1362,33 @@ describe('buildCodexResumeArgs (exec flags precede the resume subcommand)', () =
     const [bin, args] = buildCodexResumeArgs({ sessionId: 'only-session' });
     expect(bin).toBe('codex');
     expect(args).toEqual(['exec', 'resume', 'only-session']); // no stray flags/prompt
+  });
+
+  test('stdin mode keeps a resume prompt out of argv', () => {
+    const [bin, args, transport] = buildCodexResumeArgs({
+      sessionId: 'sess-stdin', prompt: 'continue safely', promptViaStdin: true,
+    });
+    expect(bin).toBe('codex');
+    expect(args).toEqual(['exec', 'resume', 'sess-stdin', '-']);
+    expect(args).not.toContain('continue safely');
+    expect(transport).toEqual({ stdin: 'continue safely' });
+  });
+});
+
+describe('large prompt transport', () => {
+  test('real Claude/Codex builders carry a 224 KiB prompt only over stdin', () => {
+    delete process.env.X_PANEL_CMD_CLAUDE;
+    delete process.env.X_PANEL_CMD_CODEX;
+    const prompt = 'x'.repeat(224 * 1024);
+    for (const command of [resolveCommand('claude', prompt), resolveCommand('codex', prompt), streamCommand('claude', prompt), streamCommand('codex', prompt)]) {
+      const [, args, transport] = command;
+      expect(args).not.toContain(prompt);
+      expect(args.every((arg) => Buffer.byteLength(arg) < 128 * 1024)).toBe(true);
+      expect(transport).toEqual({ stdin: prompt });
+    }
+    expect(supportsPromptStdin('claude')).toBe(true);
+    expect(supportsPromptStdin('codex')).toBe(true);
+    expect(supportsPromptStdin('cursor')).toBe(false);
   });
 });
 
@@ -1465,9 +1496,11 @@ If there are no real issues, return {"findings":[]}.`;
   });
 
   test('cross agy handoff: oversized prompt → agy reads a file, others stay inline', () => {
-    // 600KB: above agy's cap (128KiB → handoff) AND above the 512KiB inline budget (→ ARG_MAX guard).
-    const big = 'diff --git a/x b/x\n' + 'x'.repeat(600 * 1024);
+    // Keep argv below the host's per-argument ceiling; lower the configurable
+    // thresholds so this still exercises both the agy handoff and inline-budget warning.
+    const big = 'diff --git a/x b/x\n' + 'x'.repeat(48 * 1024);
     const dump = join(DIR, 'cross-dump');
+    writeProjectConfig({ agy_inline_max_bytes: 16 * 1024, diff_inline_max_bytes: 32 * 1024 });
     const r = panelRaw(['cross', '--models', 'claude,agy', '--prompt', big, '--json'],
       { X_PANEL_CMD_AGY: STUB, X_PANEL_DUMP_CROSS: dump });
     expect(r.status).toBe(0);
@@ -1483,7 +1516,7 @@ If there are no real issues, return {"findings":[]}.`;
     expect(agySent.length).toBeLessThan(1000);
     // claude still got the full inline prompt (no handoff for a provider that can't read files here).
     const claudeSent = readFileSync(`${dump}.CLAUDE`, 'utf8');
-    expect(claudeSent.length).toBeGreaterThan(600 * 1024);
+    expect(claudeSent.length).toBeGreaterThan(48 * 1024);
     // Reductions/handoffs MUST stay loud (Lesson L6) — assert BOTH warnings actually fire.
     expect(r.stderr).toContain('handing agy the whole prompt as a file');
     expect(r.stderr).toContain('exceeds the inline budget'); // ARG_MAX guard for the inline (claude) provider
@@ -1499,9 +1532,23 @@ If there are no real issues, return {"findings":[]}.`;
     expect(readFileSync(`${dump}.AGY`, 'utf8')).toBe('tiny task'); // inlined verbatim
   });
 
+  test('cross fails an oversized argv-only provider before spawn instead of E2BIG', () => {
+    const prompt = 'x'.repeat(DIFF_INLINE_MAX_BYTES + 1);
+    const dump = join(DIR, 'cross-argv-too-large');
+    const r = panelRaw(['cross', '--models', 'cursor', '--prompt', prompt, '--json'], {
+      X_PANEL_CMD_CURSOR: STUB, X_PANEL_DUMP_CROSS: dump,
+    });
+    expect(r.status).toBe(1);
+    const out = JSON.parse(r.stdout);
+    expect(out.results[0]).toMatchObject({ ok: false });
+    expect(out.results[0].error).toContain('exceeds the safe argv limit');
+    expect(existsSync(`${dump}.CURSOR`)).toBe(false);
+  });
+
   test('review agy handoff: oversized target → agy reads target.patch in BOTH rounds, claude stays inline', () => {
-    const bigTarget = 'diff --git a/x b/x\n' + 'y'.repeat(200 * 1024); // > AGY_INLINE_MAX_BYTES
+    const bigTarget = 'diff --git a/x b/x\n' + 'y'.repeat(48 * 1024);
     const r1 = join(DIR, 'rev-r1'), r2 = join(DIR, 'rev-r2');
+    writeProjectConfig({ agy_inline_max_bytes: 16 * 1024 });
     const r = review([bigTarget, '--models', 'claude,agy'],
       { X_PANEL_CMD_AGY: STUB, X_PANEL_DUMP_R1: r1, X_PANEL_DUMP_R2: r2 });
     expect(r.status).toBe(0);
@@ -1514,7 +1561,7 @@ If there are no real issues, return {"findings":[]}.`;
     const agyR1 = readFileSync(`${r1}.AGY`, 'utf8');
     expect(agyR1).toContain('target.patch');
     expect(agyR1.length).toBeLessThan(2000);
-    expect(readFileSync(`${r1}.CLAUDE`, 'utf8').length).toBeGreaterThan(200 * 1024);
+    expect(readFileSync(`${r1}.CLAUDE`, 'utf8').length).toBeGreaterThan(48 * 1024);
     // Round 2 (refute): agy has no session, so it MUST be re-pointed at the file, not the inline diff.
     const agyR2 = readFileSync(`${r2}.AGY`, 'utf8');
     expect(agyR2).toContain('target.patch');
@@ -2616,6 +2663,54 @@ describe('panel status (staleness + project scope + --all)', () => {
 // ── integration: full panel flow via stubs ───────────────────────────
 
 describe('review (stubbed models)', () => {
+  test('all round-1 providers failing is persisted as zero coverage and exits 1', () => {
+    const r = panelRaw([
+      'review', 'zero coverage target', '--models', 'claude,codex', '--rounds', '2', '--json',
+    ], { X_PANEL_EXIT1_CLAUDE: '1', X_PANEL_EXIT1_CODEX: '1' });
+    expect(r.status).toBe(1);
+    const v = JSON.parse(r.stdout);
+    expect(v.coverage_failed).toBe(true);
+    expect(v.counts.r1_failed).toBe(2);
+    expect(readdirSync(latestRunDir()).some((name) => name.endsWith('.r2.json'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(latestRunDir(), 'verdict.json'), 'utf8')).coverage_failed).toBe(true);
+  });
+
+  test('failed + suspect-empty is also zero usable coverage and exits 1', () => {
+    const r = panelRaw([
+      'review', 'mixed unusable coverage target', '--models', 'claude,codex', '--rounds', '2', '--json',
+    ], { X_PANEL_PROSE_EMPTY_CLAUDE: '1', X_PANEL_EXIT1_CODEX: '1' });
+    expect(r.status).toBe(1);
+    const v = JSON.parse(r.stdout);
+    expect(v.coverage_failed).toBe(true);
+    expect(v.counts).toMatchObject({ r1_failed: 1, r1_suspect: 1, unique: 0 });
+    expect(readdirSync(latestRunDir()).some((name) => name.endsWith('.r2.json'))).toBe(false);
+  });
+
+  test('argv-only round 2 bounds the complete prompt, not only the target', () => {
+    const target = 'x'.repeat(DIFF_INLINE_MAX_BYTES);
+    const dump = join(DIR, 'r2-bounded');
+    const r = panelRaw([
+      'review', target, '--models', 'cursor,kiro', '--rounds', '2', '--json',
+    ], {
+      X_PANEL_CMD_CURSOR: STUB, X_PANEL_CMD_KIRO: STUB,
+      X_PANEL_MANY_FINDINGS_CURSOR: '100', X_PANEL_DUMP_R2: dump,
+    });
+    expect(r.status).toBe(0);
+    const kiroR2 = JSON.parse(readFileSync(join(latestRunDir(), 'kiro.r2.json'), 'utf8'));
+    expect(kiroR2.ok).toBe(true);
+    expect(Buffer.byteLength(readFileSync(`${dump}.KIRO`, 'utf8'))).toBeLessThanOrEqual(DIFF_INLINE_MAX_BYTES);
+  });
+
+  test('all round-2 providers failing is zero refutation coverage and exits 1', () => {
+    const r = panelRaw([
+      'review', 'round two coverage target', '--models', 'claude,codex', '--rounds', '2', '--json',
+    ], { X_PANEL_EXIT1_R2_CLAUDE: '1', X_PANEL_EXIT1_R2_CODEX: '1' });
+    expect(r.status).toBe(1);
+    const v = JSON.parse(r.stdout);
+    expect(v).toMatchObject({ coverage_failed: true, coverage_failure_phase: 'round2' });
+    expect(v.counts.r1_failed).toBe(0);
+  });
+
   test('defaults to one round, persists rounds=1, and does not write refute artifacts', () => {
     const r = panelRaw(['review', 'some code change long enough for a useful review', '--models', 'claude,codex', '--json']);
     expect(r.status).toBe(0);
@@ -3079,6 +3174,13 @@ describe('UX: config, presets, shortcut, setup', () => {
     expect(latestVerdict().models).toEqual(['claude:opus', 'codex:gpt-5']);
   });
 
+  test('keeps two model slots exposed by the same provider distinct', () => {
+    const models = 'codex:gpt-5.6-sol:xhigh,codex:claude-sonnet-5';
+    const r = panelRaw(['review', 'target', '--models', models]);
+    expect(r.status).toBe(0);
+    expect(latestVerdict().models).toEqual(models.split(','));
+  });
+
   test('applies model_overrides from config to bare names', () => {
     writeProjectConfig({ models: ['claude', 'codex'], model_overrides: { codex: 'gpt-5' } });
     const r = panelRaw(['review', 'target']);
@@ -3146,6 +3248,47 @@ describe('parseModelIds (live model catalog)', () => {
 });
 
 describe('preflight (live model check, stubbed)', () => {
+  test('returns on the first parsed OK sentinel without waiting for provider exit', () => {
+    const started = Date.now();
+    const r = panelRaw(['preflight', '--models', 'claude', '--json'], {
+      X_PANEL_CMD_CLAUDE: SLOW_PREFLIGHT_STUB,
+    });
+    const elapsed = Date.now() - started;
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout).results[0]).toMatchObject({
+      ok: true, model: 'stub-preflight-model', detail: 'OK',
+    });
+    expect(elapsed).toBeLessThan(2500);
+  });
+
+  test('SIGKILLs a preflight child that ignores SIGTERM', () => {
+    const pidFile = join(DIR, 'preflight-ignore-sigterm.pid');
+    const r = panelRaw(['preflight', '--models', 'claude', '--fresh', '--json'], {
+      X_PANEL_CMD_CLAUDE: SLOW_PREFLIGHT_STUB, X_PANEL_IGNORE_SIGTERM: '1',
+      X_PANEL_PREFLIGHT_PID_FILE: pidFile,
+    });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout).results[0]).toMatchObject({ ok: true, detail: 'OK' });
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    const alive = spawnSync('sh', ['-c', `kill -0 ${pid} 2>/dev/null`]).status === 0;
+    expect(alive).toBe(false);
+  });
+
+  test('SIGKILLs provider helpers after the direct preflight child exits', () => {
+    const pidFile = join(DIR, 'preflight-helper.pid');
+    const r = panelRaw(['preflight', '--models', 'claude', '--fresh', '--json'], {
+      X_PANEL_CMD_CLAUDE: SLOW_PREFLIGHT_STUB,
+      X_PANEL_PREFLIGHT_GRANDCHILD_PID_FILE: pidFile,
+    });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout).results[0]).toMatchObject({ ok: true, detail: 'OK' });
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    // An orphaned grandchild may briefly remain as a zombie until PID 1 reaps it.
+    // That is already terminated; only a live/runnable state indicates a leak.
+    const state = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim();
+    expect(state === '' || state.startsWith('Z')).toBe(true);
+  });
+
   test('every resolved model is probed; ≥2 live → cross_vendor', () => {
     const r = panelRaw(['preflight', '--models', 'claude,codex', '--json']);
     expect(r.status).toBe(0);
@@ -3175,6 +3318,15 @@ describe('preflight (live model check, stubbed)', () => {
     expect(out.results[0].label).toBe('claude:some-model');
     expect(out.results[0].model).toBe('some-model');
     expect(out.results[0].status).toBe('ok');
+  });
+
+  test('preflight probes every same-provider model slot with distinct labels', () => {
+    const models = 'codex:gpt-5.6-sol:xhigh,codex:claude-sonnet-5';
+    const r = panelRaw(['preflight', '--models', models, '--json']);
+    const out = JSON.parse(r.stdout);
+    expect(out.ok).toBe(2);
+    expect(out.total).toBe(2);
+    expect(out.results.map((x) => x.label)).toEqual(models.split(','));
   });
 });
 

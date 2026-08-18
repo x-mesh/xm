@@ -487,7 +487,7 @@ claim that it finished.
 | "Requirements are covered" | `verify-coverage --strict` and `verify-traceability` (both exit 0) |
 | "Quality passes" | `quality` — every check `passed: true`, not merely "no checks detected" |
 | "We have not drifted from the PRD" | `verify-drift` |
-| "Review findings are handled" | `verify-review-fix` after triaging every Medium+ finding |
+| "Review findings are handled" | `verify-review-fix` after triaging every Medium+ finding, plus `--reverify <id> --outcome resolved --evidence <text>` for every `fix_now` finding |
 | "Cost estimates are trustworthy" | `forecast accuracy` — MAPE over ≥5 measured pairs, not an estimate-only run |
 
 A harness `completed` notification is NOT task completion. Require the task's

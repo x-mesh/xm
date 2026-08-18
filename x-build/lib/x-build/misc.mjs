@@ -688,7 +688,8 @@ ${C.bold}Verify & Close:${C.reset}
   verify-coverage [--strict]     Check requirement coverage (--strict: uncovered exits 1)
   verify-traceability            R# ↔ Task ↔ AC ↔ Done Criteria matrix
   verify-contracts               List acceptance contracts for completed tasks (advisory)
-  verify-review-fix [--init]     Gate review-fix changes against x-review triage
+  verify-review-fix [--init] [--reverify F# --outcome resolved|persistent|regression --evidence text]
+                                 Gate scoped fixes and byte-bound finding reverification
   verify-drift [--threshold N]   PRD baseline goal-coverage drift gate
   context [project]              Generate context brief
   close [--summary "..."]        Close project with summary

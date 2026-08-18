@@ -14,6 +14,7 @@ trailing prose.
   "lens": "{lens copied exactly from the dispatch}",
   "status": "complete",
   "checked": ["concrete path, boundary, or behavior examined"],
+  "checked_files": ["src/example.ts"],
   "findings": [
     {
       "severity": "Critical|High|Medium|Low",
@@ -35,6 +36,12 @@ Rules:
 - `report_id` identifies one agent execution, not merely a lens. Redundant runs use distinct IDs
   such as `security-1`, `security-2`, and `security-3`.
 - `checked` must contain at least one concrete path, branch, boundary, data flow, or behavior.
+- `checked_files` must list every frozen target file actually inspected. When `run.json` contains
+  `target_files`, the validator rejects paths outside that set and refuses finalization until their
+  union covers the target. Multi-file frozen targets must contain one `diff --git` section per file
+  and the section file set must exactly equal `target_files`, so finding snippets can be grounded
+  in the claimed file. This is source coverage, separate from
+  N/N report coverage.
 - A real finding must populate every finding field. `line` is a positive integer.
 - With zero findings, return `findings: []` and a specific `no_findings_reason`. An empty response
   or bare "No findings" is not a completed review.
