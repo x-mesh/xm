@@ -239,6 +239,26 @@ dispatch a lens prompt that starts with the lens body alone. Same rule for the `
 agent and any other Agent tool spawn in this workflow. If a run does explode, the tell is agent
 descriptions repeating the same lens at increasing depth — stop the run, do not let it drain.
 
+### Delegate transport recovery (artifact first)
+
+Treat delegate transport state and report coverage as separate signals. A non-zero delegate call,
+`Broken pipe`, or `outcome unknown` says the response channel failed; it does not prove that the
+worker failed or that its report is absent.
+
+1. Persist every structured report already returned or present in `$RUN_DIR/reports`.
+2. Run `validate-reports.mjs` against the full expected manifest **before** declaring a timeout,
+   retrying a worker, or returning `Review incomplete`.
+3. If `validation.json.ok` is `true`, enter Phase 4. Record the transport error only as a
+   diagnostic; it cannot downgrade complete N/N coverage.
+4. If validation fails, restrict recovery to `missing_reports` and invalid report ids. When the
+   delegate error provides a `request_id` and an exact recovery command, execute that command once,
+   persist any recovered report, and rerun validation. Never invent a provider-specific retry flag.
+5. Fresh-agent re-dispatch is the last step and applies only to report ids that remain missing or
+   invalid after request-id recovery.
+
+The validator receipt is authoritative for review completeness. Delegate process exit status is
+transport evidence, not a substitute for report validation.
+
 **Before Phase 4, validate N reports for N dispatched report instances with the shipped validator.** Set
 `REVIEW_SKILL_DIR` to the absolute directory containing the `SKILL.md` you loaded for this run
 (not the reviewed project's working directory), then invoke its sidecar:

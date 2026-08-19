@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1787105379658,
+  "generatedAt": 1787145453683,
   "version": 2,
   "skills": [
     {
@@ -148,11 +148,11 @@
     },
     {
       "plugin": "review",
-      "sha256": "703dc878659bedab7523e770940cdcaca45524b59ee4e90739084662f65c9013",
-      "bytes": 26655,
-      "referencesSha256": "33f7587ba6f08be5bb4b4a4887371b7503e339aa0d2fd25f8ee9d4944eade910",
+      "sha256": "58e17886200c38296bd6d714439cf02219947ed354734ee49820b391dcfbdf41",
+      "bytes": 27010,
+      "referencesSha256": "f9c3735ef445c663762a6798bc189f08d8c557007519392f575815cf7354a017",
       "referenceFiles": 7,
-      "referenceBytes": 46498
+      "referenceBytes": 47765
     },
     {
       "plugin": "ship",

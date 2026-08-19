@@ -234,6 +234,22 @@ describe('x-review SKILL.md structure', () => {
     expect(content).toContain('Partial coverage forbids LGTM');
   });
 
+  test('recovers delegate transport failures from validated artifacts first', () => {
+    expect(content).toContain('Artifact-first recovery');
+    expect(workflow).toContain('Delegate transport recovery (artifact first)');
+    expect(workflow).toContain('Broken pipe');
+    expect(workflow).toContain('validation.json.ok');
+    expect(workflow).toContain('request_id');
+    expect(workflow).toContain('Never invent a provider-specific retry flag');
+
+    const validatePos = workflow.indexOf('Run `validate-reports.mjs` against the full expected manifest');
+    const recoveryPos = workflow.indexOf('execute that command once');
+    const redispatchPos = workflow.indexOf('Fresh-agent re-dispatch is the last step');
+    expect(validatePos).toBeGreaterThan(0);
+    expect(recoveryPos).toBeGreaterThan(validatePos);
+    expect(redispatchPos).toBeGreaterThan(recoveryPos);
+  });
+
   test('all 7 lenses documented', () => {
     expect(content).toContain('security');
     expect(content).toContain('logic');
