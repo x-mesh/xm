@@ -19,6 +19,7 @@ import {
   isExcludedHandoffPath,
   reconcileHandoff,
 } from './sync-handoff.mjs';
+import { canonicalLessonPath, mergeLessonVersions, migrateLessonStore } from './sync-lessons.mjs';
 
 // Files excluded from sync (per-machine local settings)
 const SYNC_EXCLUDE = new Set(['config.json']);
@@ -117,9 +118,13 @@ async function main() {
 
     const data = await res.json();
     const files = data.files ?? [];
+    const lessonMigration = migrateLessonStore(xmDir);
 
     if (files.length === 0) {
-      console.log('[x-sync pull] Already up to date.');
+      const cleanup = lessonMigration.removed > 0
+        ? ` ${lessonMigration.removed} duplicate lesson file(s) removed.`
+        : '';
+      console.log(`[x-sync pull] Already up to date.${cleanup}`);
     } else {
       // Split into live writes and tombstones; group live files by path to detect
       // shared paths (multiple machines → same path).
@@ -135,14 +140,20 @@ async function main() {
           continue;
         }
         if (f.deleted) { tombstones.push(f); continue; }
-        if (!byPath.has(f.path)) byPath.set(f.path, []);
-        byPath.get(f.path).push(f);
+        const groupedPath = canonicalLessonPath(f.path) || f.path;
+        if (!byPath.has(groupedPath)) byPath.set(groupedPath, []);
+        byPath.get(groupedPath).push({ ...f, path: groupedPath });
       }
 
       let written = 0;
       let namespaced = 0;
       let removed = 0; // tombstoned remote copies deleted locally
       let rejected = 0; // server-supplied paths that escape xmDir
+      let lessonsMerged = 0;
+      let lessonsRemoved = 0;
+      let lessonsInvalid = 0;
+      lessonsRemoved += lessonMigration.removed;
+      lessonsInvalid += lessonMigration.invalid;
       const handoff = reconcileHandoff(xmDir, handoffFiles);
       const skippedOwn = files.filter(f => f.machine_id === config.machine_id).length;
       const skippedExcluded = files.filter(f =>
@@ -173,6 +184,12 @@ async function main() {
       }
 
       for (const [path, versions] of byPath) {
+        if (canonicalLessonPath(path)) {
+          const result = mergeLessonVersions(xmDir, path, versions);
+          if (result.written) { written++; lessonsMerged++; }
+          lessonsInvalid += result.invalid;
+          continue;
+        }
         const safeLocal = safeResolve(xmDir, path);
         const localExists = safeLocal ? existsSync(safeLocal) : false;
         const needsNamespace = versions.length > 1 || localExists;
@@ -194,6 +211,9 @@ async function main() {
 
       const parts = [`${written} files written`];
       if (namespaced > 0) parts.push(`${namespaced} namespaced`);
+      if (lessonsMerged > 0) parts.push(`${lessonsMerged} lesson(s) merged`);
+      if (lessonsRemoved > 0) parts.push(`${lessonsRemoved} duplicate lesson file(s) removed`);
+      if (lessonsInvalid > 0) parts.push(`${lessonsInvalid} invalid lesson file(s) ignored`);
       if (removed > 0) parts.push(`${removed} removed`);
       if (skippedOwn > 0) parts.push(`${skippedOwn} skipped (own machine)`);
       if (skippedExcluded > 0) parts.push(`${skippedExcluded} excluded`);
