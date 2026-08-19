@@ -10,6 +10,8 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.16.3] - 2026-08-19
+
 ### x-panel 0.20.1 → 0.20.2
 
 - Fixed `xm panel watch` being interpreted as a literal review target. It is now a read-only alias for `xm panel status --watch`, so monitoring never fans out model calls or triggers provider permission prompts.
