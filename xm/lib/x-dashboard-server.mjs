@@ -520,6 +520,49 @@ function isPanelRunLive(run) {
   return Number.isFinite(t) && (Date.now() - t) < PANEL_STALE_MS;
 }
 
+function panelRunActivityAt(run) {
+  return run?.status?.updated_at || run?.verdict?.created_at || run?.created_at || null;
+}
+
+function isPanelRunProblem(run) {
+  if (run?.phase === 'failed' || run?.phase === 'stalled') return true;
+  const st = run?.status;
+  if (st && st.phase !== 'done' && !isPanelRunLive(run)) return true;
+  return Array.isArray(st?.models) && st.models.some((m) => m?.state === 'failed');
+}
+
+function panelActivityRank(run) {
+  if (isPanelRunLive(run)) return 0;
+  if (isPanelRunProblem(run)) return 1;
+  return 2;
+}
+
+// Activity needs state, timing, and cost, not multi-kilobyte provider tails.
+// Detail endpoints keep the complete status for drill-down.
+function summarizePanelStatus(status) {
+  if (!status) return null;
+  return {
+    run: status.run || null,
+    started_at: status.started_at || null,
+    updated_at: status.updated_at || null,
+    phase: status.phase || null,
+    target_kind: status.target_kind || null,
+    target_title: status.target_title || null,
+    lens_tag: status.lens_tag || null,
+    source: status.source || null,
+    title: status.title || null,
+    prompt_chars: status.prompt_chars || null,
+    totals: status.totals || null,
+    models: Array.isArray(status.models) ? status.models.map((m) => ({
+      label: m?.label || null, provider: m?.provider || null, model: m?.model || null,
+      state: m?.state || null, round: m?.round || null, elapsed_s: m?.elapsed_s ?? null,
+      last_event: m?.last_event || null, error: m?.error || null, phase_label: m?.phase_label || null,
+      tokens: m?.tokens || null, cost_usd: m?.cost_usd ?? null, credits: m?.credits ?? null,
+      unmatched_refs: m?.unmatched_refs || 0, invalid_stances: m?.invalid_stances || 0,
+    })) : [],
+  };
+}
+
 function handlePanelList(xmRoot, req) {
   return jsonResponseWithETag({ runs: collectPanelRuns(xmRoot) }, req);
 }
@@ -537,10 +580,22 @@ function handlePanelsAll(req) {
     if (!runs.length) continue;
     const live = runs.filter(isPanelRunLive);
     const recent = runs.filter((r) => !isPanelRunLive(r)).slice(0, 8);
-    out.push({ id: ws.id, name: ws.name, path: ws.path || null, live_count: live.length, total: runs.length, runs: [...live, ...recent] });
+    const visible = [...live, ...recent]
+      .map((run) => ({ ...run, status: summarizePanelStatus(run.status), activity_at: panelRunActivityAt(run) }))
+      .sort((a, b) => panelActivityRank(a) - panelActivityRank(b)
+        || (Date.parse(b.activity_at || '') || 0) - (Date.parse(a.activity_at || '') || 0)
+        || String(b.run).localeCompare(String(a.run)));
+    const lastActivityAt = visible.reduce((latest, run) => {
+      const at = Date.parse(run.activity_at || '');
+      return Number.isFinite(at) && at > latest.ms ? { ms: at, iso: run.activity_at } : latest;
+    }, { ms: 0, iso: null }).iso;
+    out.push({ id: ws.id, name: ws.name, path: ws.path || null, live_count: live.length, total: runs.length, last_activity_at: lastActivityAt, runs: visible });
   }
-  // projects with live runs float to the top, then alphabetical — the eye lands on activity first.
-  out.sort((a, b) => (b.live_count - a.live_count) || String(a.name).localeCompare(String(b.name)));
+  // Active work first, then the freshest heartbeat. Alphabetical is only a stable tie-breaker.
+  out.sort((a, b) => (Number(b.live_count > 0) - Number(a.live_count > 0))
+    || (Date.parse(b.last_activity_at || '') || 0) - (Date.parse(a.last_activity_at || '') || 0)
+    || (b.live_count - a.live_count)
+    || String(a.name).localeCompare(String(b.name)));
   return jsonResponseWithETag({ workspaces: out, generated_at: new Date().toISOString() }, req);
 }
 

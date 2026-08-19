@@ -767,6 +767,15 @@ describe('GET /api/panels/all (cross-workspace aggregate)', () => {
     const ws = body.workspaces[0];
     expect(ws.id).toBeTruthy();
     expect(Array.isArray(ws.runs)).toBe(true);
+    expect(typeof ws.last_activity_at).toBe('string');
+    expect(ws.runs.every((r) => r.activity_at == null || typeof r.activity_at === 'string')).toBe(true);
+    expect(ws.runs.every((r) => (r.status?.models || []).every((m) => !Object.hasOwn(m, 'stdout_tail') && !Object.hasOwn(m, 'stderr_tail')))).toBe(true);
+    const ranks = ws.runs.map((r) => {
+      const live = r.kind === 'cross' ? r.phase === 'running' : r.status?.phase !== 'done' && Date.now() - Date.parse(r.status?.updated_at || '') < 30_000;
+      const problem = r.phase === 'failed' || r.phase === 'stalled' || r.status?.models?.some((m) => m.state === 'failed');
+      return live ? 0 : problem ? 1 : 2;
+    });
+    expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
     // the cross fixture + review fixtures all live in this project → surfaced in the aggregate
     const allRuns = body.workspaces.flatMap((w) => w.runs);
     expect(allRuns.find((r) => r.run === TEST_CROSS_RUN)).toBeTruthy();
