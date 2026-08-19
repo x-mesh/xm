@@ -27,6 +27,24 @@ x-review takes a PR diff, file, or directory as input and runs multiple review a
 Parallel review orchestrator built on Claude Code native Agent tool.
 No external dependencies. Only requires `git` and `gh` CLI.
 
+## Execution Boundary — Headless / Delegated Runtimes
+
+Before Phase 1, inspect the tools and execution context actually available in this invocation.
+
+- If native Agent/collaboration fan-out is unavailable, or the prompt says this is a headless,
+  rescue, delegated, leaf, or single-agent run, **do not spawn agents and do not call any
+  collaboration wait primitive**. Run a single-pass review in the current process: inspect the
+  complete frozen target once with the `correctness` and `risk` composite concerns, then synthesize
+  the ordinary severity/verdict output. State `single-pass-headless` in execution metadata.
+- Never emulate fan-out by launching nested review skills/commands or by waiting for workers that
+  this invocation did not successfully create.
+- After a successful fan-out, wait only while at least one known worker is live. If a wait returns
+  no worker update three consecutive times, interrupt remaining workers and return
+  `Review incomplete` with the completed reports; never wait indefinitely.
+
+This guard overrides the normal Phase 2/3 fan-out instructions below. A slower single-pass review
+is preferable to a headless process that makes no progress.
+
 ## Mode Detection
 
 Read mode from `.xm/config.json` (`mode` field). Default: `developer`.

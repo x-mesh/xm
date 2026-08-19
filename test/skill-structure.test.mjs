@@ -16,6 +16,17 @@ function readEvalFile(path) {
   return readFileSync(join(ROOT, 'x-eval', 'skills', 'eval', path), 'utf8');
 }
 
+describe('x-review headless execution boundary', () => {
+  const skill = readSkill('x-review');
+
+  test('degrades delegated headless runs instead of waiting forever', () => {
+    expect(skill).toContain('Execution Boundary — Headless / Delegated Runtimes');
+    expect(skill).toContain('single-pass-headless');
+    expect(skill).toContain('no worker update three consecutive times');
+    expect(skill).toContain('never wait indefinitely');
+  });
+});
+
 // --- x-solver SKILL.md structure ---
 
 describe('x-solver SKILL.md structure', () => {
