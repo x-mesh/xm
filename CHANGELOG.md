@@ -10,6 +10,8 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.16.5] - 2026-08-19
+
 ### x-review 2.3.3 → 2.3.4
 
 - Delegate transport failures such as `Broken pipe` no longer override complete review artifacts. x-review now validates `reports/*.json` first, enters synthesis when `validation.json.ok` proves N/N coverage, and limits request-id recovery or fresh re-dispatch to report ids that remain missing or invalid.
