@@ -10,6 +10,19 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+### x-dashboard 2.16.1 → 2.16.2
+
+- Activity now defaults to live-first, freshest-heartbeat ordering with `Active first`, `Latest`, and `Project name` sort modes plus `All`, `Live only`, and `Problems` filters. Choices persist locally, heartbeat age is visible, and SSE events refresh the view immediately.
+- Reduced the cross-workspace polling payload by omitting provider stdout/stderr tails from the aggregate API; detailed run pages retain full output. In the measured 14-workspace fixture this reduced the response from 568 KB to 104 KB while keeping 12–16 ms response time.
+
+### x-review 2.3.2 → 2.3.3
+
+- Headless and delegated review invocations now degrade to a bounded single-pass `correctness` + `risk` review instead of attempting unavailable fan-out and waiting indefinitely. Normal fan-out stops after three consecutive empty waits and reports incomplete coverage.
+
+### xm 2.16.3 → 2.16.4
+
+- Rebundled the Dashboard and review fixes. x-sync pull now canonicalizes humble lessons to `humble/lessons/L{N}.json`, deduplicates compounded machine suffixes without inflating confirmation counts, and migrates already polluted stores during the next pull.
+
 ## [2.16.3] - 2026-08-19
 
 ### x-panel 0.20.1 → 0.20.2
