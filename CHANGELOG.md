@@ -10,6 +10,15 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+### x-panel 0.20.1 → 0.20.2
+
+- Fixed `xm panel watch` being interpreted as a literal review target. It is now a read-only alias for `xm panel status --watch`, so monitoring never fans out model calls or triggers provider permission prompts.
+- Hardened parallel review execution: unique run ids prevent lens artifacts from overwriting each other, session fallback and signal retry share one wall-clock/spawn budget, real child signals replace stderr substring guesses, and same-provider model slots report multi-model rather than cross-vendor provenance.
+
+### xm 2.16.2 → 2.16.3
+
+- Rebundled the x-panel fixes and updated the panel skill, English/Korean usage docs, and installation checksums so installed dispatchers expose the safe `watch` alias.
+
 ### xm 2.5.2 → 2.6.0
 
 - Added native Codex Plugin packaging in `xm/lib/install/`: installs bundled Skills and a semantic marketplace entry while keeping searchable `$xm-<skill>` aliases, so users can discover `$xm-op` and invoke the namespaced `$xm:op` form after plugin registration.
