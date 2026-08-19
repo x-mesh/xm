@@ -10,6 +10,8 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.16.4] - 2026-08-19
+
 ### x-dashboard 2.16.1 → 2.16.2
 
 - Activity now defaults to live-first, freshest-heartbeat ordering with `Active first`, `Latest`, and `Project name` sort modes plus `All`, `Live only`, and `Problems` filters. Choices persist locally, heartbeat age is visible, and SSE events refresh the view immediately.
