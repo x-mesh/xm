@@ -12,7 +12,8 @@ import { tmpdir } from 'node:os';
 import { normalizeFindings, normalizeVerdicts, synthesize, synthesizeRound1, mergeConsensus, normalizeResponses, followupDelta } from '../x-panel/lib/x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
 import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
-import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, invokeProviderAsync, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, supportsPromptStdin, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings, stripAnsi, SIGNAL_DEATH } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, invokeProviderAsync, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, supportsPromptStdin, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings, stripAnsi } from '../x-panel/lib/x-panel/adapters.mjs';
+import { runId } from '../x-panel/lib/x-panel/core.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
 import { shrinkDiff, splitDiffSections, DIFF_INLINE_MAX_BYTES } from '../x-panel/lib/x-panel/diff-budget.mjs';
 import { unwrapEnvelope } from '../x-panel/lib/x-panel/adapters.mjs';
@@ -3116,6 +3117,23 @@ describe('help', () => {
     const r = panelRaw(['help']);
     expect(r.stdout).toContain('x-panel');
     expect(r.stdout).toContain('Commands:');
+    expect(r.stdout).toContain('watch [run]');
+  });
+});
+
+describe('watch alias', () => {
+  test('`watch --lines 5` opens the status board and never spawns review models', () => {
+    const spawnLog = join(DIR, 'watch-alias-spawns.jsonl');
+    const r = spawnSync('node', [CLI, 'watch', '--lines', '5', '--interval', '1', '--no-tm-events'], {
+      cwd: DIR,
+      env: STUB_ENV({ X_PANEL_SPAWN_LOG: spawnLog }),
+      encoding: 'utf8',
+      timeout: 1300,
+      killSignal: 'SIGTERM',
+    });
+    expect(r.signal).toBe('SIGTERM');
+    expect(r.stdout).toContain('panel watch');
+    expect(existsSync(spawnLog)).toBe(false);
   });
 });
 
@@ -3326,6 +3344,9 @@ describe('preflight (live model check, stubbed)', () => {
     const out = JSON.parse(r.stdout);
     expect(out.ok).toBe(2);
     expect(out.total).toBe(2);
+    expect(out.providers).toBe(1);
+    expect(out.multi_model).toBe(true);
+    expect(out.cross_vendor).toBe(false);
     expect(out.results.map((x) => x.label)).toEqual(models.split(','));
   });
 });
@@ -3359,7 +3380,7 @@ describe('promptSpawnOpts — claude prompt runs are cwd-isolated', () => {
 // hard cap honored even below the idle window, no fallback on kills/timeouts,
 // and at most 2 spawns per slot.
 describe('slot retry/timeout discipline', () => {
-  const SLOT_ENV_KEYS = ['X_PANEL_CMD_HANGY', 'X_PANEL_HANG_HANGY', 'X_PANEL_CMD_CODEX', 'X_PANEL_SIGDIE_CODEX', 'X_PANEL_HANG_CODEX', 'X_PANEL_SPAWN_LOG'];
+  const SLOT_ENV_KEYS = ['X_PANEL_CMD_HANGY', 'X_PANEL_HANG_HANGY', 'X_PANEL_CMD_CODEX', 'X_PANEL_SIGDIE_CODEX', 'X_PANEL_SIGDIE_STATELESS_CODEX', 'X_PANEL_FAIL_SESSION_CODEX', 'X_PANEL_DELAY_SESSION_CODEX', 'X_PANEL_HANG_CODEX', 'X_PANEL_SPAWN_LOG'];
   const prev = {};
   beforeAll(() => { for (const k of SLOT_ENV_KEYS) prev[k] = process.env[k]; });
   afterEach(() => {
@@ -3369,10 +3390,11 @@ describe('slot retry/timeout discipline', () => {
     }
   });
 
-  test('SIGNAL_DEATH matches exitLabel signal deaths only', () => {
-    expect(SIGNAL_DEATH.test('exit null (SIGTERM): Reading additional input from stdin...')).toBe(true);
-    expect(SIGNAL_DEATH.test('exit 1: bad auth')).toBe(false);
-    expect(SIGNAL_DEATH.test('stalled: no output for 600s')).toBe(false);
+  test('run ids stay unique when parallel lenses share the same timestamp', () => {
+    const first = runId('20260819-120000-000');
+    const second = runId('20260819-120000-000');
+    expect(first).not.toBe(second);
+    expect(first).toMatch(/^panel-20260819-120000-000-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
   });
 
   test('maxTimeout below the idle window is honored as the hard cap', async () => {
@@ -3393,7 +3415,7 @@ describe('slot retry/timeout discipline', () => {
     const res = await invokeProviderAsync('codex', 'p', { timeout: 10_000, session: { mode: 'create', id: null }, fallbackPrompt: 'p' });
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/SIGTERM/);
-    expect(res.resume).toBeUndefined();
+    expect(res.resume).toBe('failed');
     expect(readFileSync(log, 'utf8').trim().split('\n').length).toBe(1);
   });
 
@@ -3405,8 +3427,66 @@ describe('slot retry/timeout discipline', () => {
     const res = await invokeProviderAsync('codex', 'p', { timeout: 400, maxTimeout: 800, session: { mode: 'create', id: null }, fallbackPrompt: 'p' });
     expect(res.ok).toBe(false);
     expect(res.timedOut).toBe(true);
-    expect(res.resume).toBeUndefined();
+    expect(res.resume).toBe('failed');
     expect(readFileSync(log, 'utf8').trim().split('\n').length).toBe(1);
+  });
+
+  test('numeric exit text mentioning a signal still uses the session fallback', async () => {
+    process.env.X_PANEL_CMD_CODEX = STUB;
+    process.env.X_PANEL_FAIL_SESSION_CODEX = '1';
+    const res = await invokeProviderAsync('codex', 'p', { timeout: 10_000, session: { mode: 'create', id: null }, fallbackPrompt: 'p' });
+    expect(res.ok).toBe(true);
+    expect(res.resume).toBe('fallback');
+    expect(res.spawns).toBe(2);
+  });
+
+  test('session fallback is skipped below the shared deadline floor and preserves the original error', async () => {
+    process.env.X_PANEL_CMD_CODEX = STUB;
+    process.env.X_PANEL_FAIL_SESSION_CODEX = '1';
+    process.env.X_PANEL_DELAY_SESSION_CODEX = '500';
+    process.env.X_PANEL_HANG_CODEX = '1';
+    const t0 = Date.now();
+    const res = await invokeProviderAsync('codex', 'p', {
+      timeout: 10_000,
+      maxTimeout: 800,
+      deadlineMs: t0 + 800,
+      session: { mode: 'create', id: null },
+      fallbackPrompt: 'p',
+    });
+    expect(res.ok).toBe(false);
+    expect(res.timedOut).toBeUndefined();
+    expect(res.error).toContain('session worker reported (SIGSEGV)');
+    expect(res.resume).toBe('failed');
+    expect(res.spawns).toBe(1);
+    expect(Date.now() - t0).toBeLessThan(3_000);
+  });
+
+  test('session fallback reports spawn-budget exhaustion separately from timeout', async () => {
+    process.env.X_PANEL_CMD_CODEX = STUB;
+    process.env.X_PANEL_FAIL_SESSION_CODEX = '1';
+    const events = [];
+    const res = await invokeProviderAsync('codex', 'p', {
+      timeout: 10_000,
+      maxSpawns: 1,
+      session: { mode: 'create', id: null },
+      fallbackPrompt: 'p',
+      onEvent: (event) => events.push(event),
+    });
+    expect(res.resume).toBe('failed');
+    expect(events.some((event) => String(event.note || '').includes('slot spawn budget exhausted'))).toBe(true);
+    expect(events.every((event) => !String(event.note || '').includes('killed/timed out'))).toBe(true);
+  });
+
+  test('session fallback plus signal retry never exceeds two slot spawns', () => {
+    const log = join(DIR, 'spawns-fallback-signal.jsonl');
+    const r = review(['fallback signal target', '--rounds', '1'], {
+      X_PANEL_FAIL_SESSION_CODEX: '1',
+      X_PANEL_SIGDIE_STATELESS_CODEX: '1',
+      X_PANEL_SPAWN_LOG: log,
+    });
+    const codexSpawns = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((x) => x.model === 'codex');
+    expect(codexSpawns.length).toBe(2);
+    expect(r.stderr).not.toContain('retrying once');
   });
 
   test('review slot: signal death retries exactly once — two spawns, then the slot fails', () => {

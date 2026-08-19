@@ -22,11 +22,9 @@ import { homedir, tmpdir } from 'node:os';
 // this close handler came from OUTSIDE (OS/OOM or the CLI self-aborting), not from us.
 const exitLabel = (code, signal) => (signal ? `exit ${code} (${signal})` : `exit ${code}`);
 
-// Matches the exitLabel form of a signal death (`exit null (SIGTERM)` etc). Shared with the
-// CLI's slot-retry policy: a signal death is an intermittent EXTERNAL kill worth one fresh
-// retry, but it is NOT a session problem — the stateless session fallback must not fire on it
-// (toss-20260818-0d0f3e9a: fallback-after-SIGTERM spawned a third codex exec per slot).
-export const SIGNAL_DEATH = /\(SIG[A-Z0-9]+\)/;
+// Do not spend a provider spawn when the shared slot deadline leaves too little time for a
+// useful response. Shared by session fallback and the CLI's signal-retry path.
+export const RETRY_FLOOR_MS = Number(process.env.X_PANEL_RETRY_FLOOR_MS) || 15_000;
 
 // Each builds [bin, args, optional transport]. `model` maps to that CLI's
 // --model flag; stdin-capable providers keep the prompt out of argv.
@@ -663,18 +661,40 @@ export function resolveSessionCommand(name, prompt, model, session, providerArgs
   return resolveCommand(name, prompt, model, providerArgs);
 }
 
-export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, stream = false, partial = true, session = null, fallbackPrompt = null, expectKeys = null, providerArgs = null } = {}) {
+export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, deadlineMs = null, maxSpawns = 2, model = null, onEvent = null, stream = false, partial = true, session = null, fallbackPrompt = null, expectKeys = null, providerArgs = null } = {}) {
+  const budgetMs = (Number.isFinite(maxTimeout) && maxTimeout > 0) ? maxTimeout : Math.max(timeout * 2, timeout + 120_000);
+  const effectiveDeadlineMs = deadlineMs ?? (Date.now() + budgetMs);
   if (stream && supportsStream(name)) {
     // Session reuse is a raw-path feature: the structured-stream argv is kept
     // exactly as dogfooded. Callers already disable sessions under --stream.
-    return invokeProviderStream(name, prompt, { timeout, maxTimeout, model, onEvent, partial, expectKeys });
+    const remaining = effectiveDeadlineMs - Date.now();
+    if (remaining <= 0) {
+      return { ok: false, error: 'slot wall-clock budget exhausted', raw: '', json: null, timedOut: true, timeoutReason: 'cap', spawns: 0 };
+    }
+    return invokeProviderStream(name, prompt, {
+      timeout: Math.min(timeout, remaining),
+      maxTimeout: Math.min(maxTimeout ?? remaining, remaining),
+      model, onEvent, partial, expectKeys,
+    });
   }
   const use = session && supportsResume(name) ? session : null;
-  let res = await invokeProviderRaw(name, prompt, { timeout, maxTimeout, model, onEvent, session: use, expectKeys, providerArgs });
+  const invokeWithinBudget = (body, activeSession) => {
+    const remaining = effectiveDeadlineMs - Date.now();
+    if (remaining <= 0) {
+      return Promise.resolve({ ok: false, error: 'slot wall-clock budget exhausted', raw: '', json: null, timedOut: true, timeoutReason: 'cap', spawns: 0 });
+    }
+    return invokeProviderRaw(name, body, {
+      timeout: Math.min(timeout, remaining),
+      maxTimeout: Math.min(maxTimeout ?? remaining, remaining),
+      model, onEvent, session: activeSession, expectKeys, providerArgs,
+    });
+  };
+  let res = await invokeWithinBudget(prompt, use);
   if (use) {
+    const remainingMs = effectiveDeadlineMs - Date.now();
     if (res.ok) {
       if (use.mode === 'resume') res.resume = 'ok';
-    } else if (fallbackPrompt != null && !res.timedOut && !SIGNAL_DEATH.test(res.error || '')) {
+    } else if (fallbackPrompt != null && !res.timedOut && !res.signal && (res.spawns || 0) < maxSpawns && remainingMs >= RETRY_FLOOR_MS) {
       // LOUD stateless fallback (contract R4): same semantics, just costlier —
       // surfaced via a lifecycle event and the `resume: 'fallback'` marker.
       // Only for SESSION-shaped failures: a guard timeout or a signal death says nothing
@@ -684,12 +704,20 @@ export async function invokeProviderAsync(name, prompt, { timeout = 180_000, max
       if (onEvent) {
         try { onEvent({ at: new Date().toISOString(), type: 'lifecycle', provider: name, model, note: `session ${use.mode} failed (${res.error}) — retrying stateless` }); } catch { /* observer only */ }
       }
-      res = await invokeProviderRaw(name, fallbackPrompt, { timeout, maxTimeout, model, onEvent, session: null, expectKeys, providerArgs });
+      const firstSpawns = res.spawns || 0;
+      res = await invokeWithinBudget(fallbackPrompt, null);
+      res.spawns = firstSpawns + (res.spawns || 0);
       res.resume = 'fallback';
     } else if (fallbackPrompt != null) {
+      const reason = res.timedOut || res.signal
+        ? 'killed/timed out, NOT retrying stateless (slot retry policy owns this)'
+        : (res.spawns || 0) >= maxSpawns
+          ? 'slot spawn budget exhausted, NOT retrying stateless'
+          : `slot wall-clock budget too low (${Math.max(0, Math.round(remainingMs / 1000))}s left), NOT retrying stateless`;
       if (onEvent) {
-        try { onEvent({ at: new Date().toISOString(), type: 'lifecycle', provider: name, model, note: `session ${use.mode} failed (${res.error}) — killed/timed out, NOT retrying stateless (slot retry policy owns this)` }); } catch { /* observer only */ }
+        try { onEvent({ at: new Date().toISOString(), type: 'lifecycle', provider: name, model, note: `session ${use.mode} failed (${res.error}) — ${reason}` }); } catch { /* observer only */ }
       }
+      res.resume = 'failed';
     }
   }
   return res;
@@ -712,7 +740,7 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       return resolve({
         ok: false,
         error: session ? `resume requested for ${name} without a session id` : `unknown provider: ${name}`,
-        raw: '', json: null,
+        raw: '', json: null, spawns: 0,
       });
     }
     let child;
@@ -721,7 +749,7 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       // waiting for input — spawnSync closes it automatically, spawn does not.
       child = spawnResolved(resolved, { env: process.env, ...promptSpawnOpts(name) });
     } catch (e) {
-      return resolve({ ok: false, error: String(e.message || e), raw: '', json: null });
+      return resolve({ ok: false, error: String(e.message || e), raw: '', json: null, spawns: 1 });
     }
     emit({ type: 'spawn', provider: name, model, pid: child.pid, command: resolved[0] });
     let stdout = '';
@@ -733,7 +761,7 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       child.kill('SIGKILL');
       // timedOut marks a guard kill (idle/cap), distinct from a real exit — callers gate
       // retry/fallback decisions on the FLAG, never on a substring of the error text.
-      finish({ ok: false, error, raw: stdout, json: null, timedOut: true, timeoutReason: reason });
+      finish({ ok: false, error, raw: stdout, json: null, timedOut: true, timeoutReason: reason, spawns: 1 });
     });
     child.stdout.on('data', (d) => {
       stdout += d;
@@ -749,7 +777,7 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       guard.clear();
       const error = String(e.message || e);
       emit({ type: 'error', provider: name, model, error });
-      finish({ ok: false, error, raw: '', json: null });
+      finish({ ok: false, error, raw: '', json: null, spawns: 1 });
     });
     child.on('close', (code, signal) => {
       guard.clear();
@@ -765,10 +793,10 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       // Structured usage wins; kiro still reports a cost line on stderr in raw mode.
       const usage = env.usage || parseStderrUsage(name, stderr);
       if (usage) emit({ type: 'usage_final', provider: name, model, usage });
-      if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: answer, json: null, usage });
+      if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: answer, json: null, usage, signal: signal || null, spawns: 1 });
       if (env.error) {
         emit({ type: 'error', provider: name, model, error: env.error });
-        return finish({ ok: false, error: env.error, raw: answer, json: null, usage });
+        return finish({ ok: false, error: env.error, raw: answer, json: null, usage, spawns: 1 });
       }
       const json = extractAnswerJSON(answer, expectKeys);
       if (!json) {
@@ -777,7 +805,7 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
         // (e.g. kiro's Bedrock "ValidationException: input_schema does not support oneOf")
         // or via an empty stdout. Surfacing that turns a vague "no findings JSON" into the
         // real cause, instead of forcing a dig through raw files (L6).
-        return finish({ ok: false, error: withStderrReason(jsonMissingError(expectKeys), answer, stderr), raw: answer, json: null, usage });
+        return finish({ ok: false, error: withStderrReason(jsonMissingError(expectKeys), answer, stderr), raw: answer, json: null, usage, spawns: 1 });
       }
       emit({ type: 'json_parsed', provider: name, model });
       // Session establishment (t5): claude's id is caller-supplied (authoritative);
@@ -802,7 +830,7 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
           }
         }
       }
-      finish({ ok: true, error: null, raw: answer, json, usage, ...(session_id ? { session_id } : {}), ...(captureFailed ? { session_capture_failed: true } : {}) });
+      finish({ ok: true, error: null, raw: answer, json, usage, spawns: 1, ...(session_id ? { session_id } : {}), ...(captureFailed ? { session_capture_failed: true } : {}) });
     });
   });
 }
@@ -1056,10 +1084,10 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
     let settled = false;
     const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
     const resolved = resolveStreamCommand(name, prompt, model, partial);
-    if (!resolved) return resolve({ ok: false, error: `no stream profile: ${name}`, raw: '', json: null });
+    if (!resolved) return resolve({ ok: false, error: `no stream profile: ${name}`, raw: '', json: null, spawns: 0 });
     let child;
     try { child = spawnResolved(resolved, { env: process.env, ...promptSpawnOpts(name) }); }
-    catch (e) { return resolve({ ok: false, error: String(e.message || e), raw: '', json: null }); }
+    catch (e) { return resolve({ ok: false, error: String(e.message || e), raw: '', json: null, spawns: 1 }); }
     emit({ type: 'spawn', provider: name, model, pid: child.pid, command: resolved[0], mode: partial ? 'stream-partial' : 'stream' });
 
     // Bounds — the async path has no maxBuffer, so cap every accumulator.
@@ -1085,7 +1113,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
     const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
       emit({ type: 'timeout', provider: name, model, error, reason });
       child.kill('SIGKILL');
-      finish({ ok: false, error, raw: rawCap, json: null, usage, timedOut: true, timeoutReason: reason });
+      finish({ ok: false, error, raw: rawCap, json: null, usage, timedOut: true, timeoutReason: reason, spawns: 1 });
     });
     child.stdout.on('data', (d) => {
       guard.touch(); // streaming tokens = alive → reset the idle window (working models keep going)
@@ -1096,7 +1124,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
       while ((nl = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, nl); buf = buf.slice(nl + 1); handleLine(line); }
     });
     child.stderr.on('data', (d) => { guard.touch(); stderr += d; if (stderr.length > ERR_CAP) stderr = stderr.slice(-ERR_CAP); emit({ type: 'stderr', provider: name, model, bytes: Buffer.byteLength(d), text: d }); });
-    child.on('error', (e) => { guard.clear(); emit({ type: 'error', provider: name, model, error: String(e.message || e) }); finish({ ok: false, error: String(e.message || e), raw: '', json: null }); });
+    child.on('error', (e) => { guard.clear(); emit({ type: 'error', provider: name, model, error: String(e.message || e) }); finish({ ok: false, error: String(e.message || e), raw: '', json: null, spawns: 1 }); });
     child.on('close', (code, signal) => {
       guard.clear();
       if (settled) return;
@@ -1106,7 +1134,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
       // A non-zero exit is a failure REGARDLESS of any JSON in partial output —
       // otherwise a crashed provider whose stream happened to contain a JSON object
       // would be reported as a successful review (matches the raw path's contract).
-      if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: rawCap, json: null, usage });
+      if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: rawCap, json: null, usage, signal: signal || null, spawns: 1 });
       // Findings come from the final answer text (NOT the raw JSONL envelope).
       const text = finalText != null ? finalText : textBuf;
       let json = extractAnswerJSON(text, expectKeys);
@@ -1116,9 +1144,9 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
       if (!json) {
         json = extractContractJSON(rawCap, expectKeys || ['findings', 'verdicts']);
       }
-      if (!json) { emit({ type: 'json_missing', provider: name, model }); return finish({ ok: false, error: withStderrReason(jsonMissingError(expectKeys), rawCap, stderr), raw: rawCap, json: null, usage }); }
+      if (!json) { emit({ type: 'json_missing', provider: name, model }); return finish({ ok: false, error: withStderrReason(jsonMissingError(expectKeys), rawCap, stderr), raw: rawCap, json: null, usage, spawns: 1 }); }
       emit({ type: 'json_parsed', provider: name, model });
-      finish({ ok: true, error: null, raw: rawCap, json, usage });
+      finish({ ok: true, error: null, raw: rawCap, json, usage, spawns: 1 });
     });
   });
 }

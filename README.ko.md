@@ -1089,7 +1089,8 @@ xm panel --rounds 2              # 2라운드: round-2 반박 추가 (기본 1�
 xm panel setup --models codex,agy --global   # 기본값 저장
 xm panel doctor                  # 준비상태: 각 provider 설치+인증 확인 (모델 호출 없음)
 xm panel preflight               # 라이브 점검: 설정된 각 모델(cursor:kimi, kiro:glm…)에 실호출 전 확인
-xm panel status --watch --lines 4   # 라이브 보드: 에이전트별 상태 + 해석된 출력 tail
+xm panel watch --lines 4            # 라이브 보드 alias: 에이전트별 상태 + 해석된 출력 tail
+xm panel status --watch --lines 4   # 동일한 long form
                                     # (findings/verdicts를 줄 단위 요약, 프롬프트 에코 숨김)
 xm panel gate <run> [--policy '{…}']  # run의 verdict를 머지 게이트 EXIT CODE로(0 통과 / 1 차단 / 2 에러) — CI용
 xm panel stats [--roi]              # 벤더별 생존율·잡은 이슈·(실측 비용 있으면) catch당 $ 를 전체 run에 걸쳐 집계

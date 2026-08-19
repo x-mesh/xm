@@ -1089,7 +1089,8 @@ xm panel --rounds 2              # 2 rounds: adds round-2 refutation (default 1:
 xm panel setup --models codex,agy --global   # save defaults
 xm panel doctor                  # readiness: each provider installed + authed (no model call)
 xm panel preflight               # live check: probe each configured model (cursor:kimi, kiro:glm…) before a run
-xm panel status --watch --lines 4   # live board: per-agent state + interpreted output tail
+xm panel watch --lines 4            # live board alias: per-agent state + interpreted output tail
+xm panel status --watch --lines 4   # equivalent long form
                                     # (findings/verdicts summarized per line, prompt echo hidden)
 xm panel status <run> --logs        # stream the RAW event log (events.jsonl): last N (--lines, default 200),
                                     # or tail -f with --watch. Unlike the interpreted board, nothing is summarized

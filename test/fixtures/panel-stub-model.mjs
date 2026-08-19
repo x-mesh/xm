@@ -73,6 +73,16 @@ if (process.env[`X_PANEL_SIGDIE_${envModel}`]) {
   process.kill(process.pid, 'SIGTERM');
   await holdForever(); // hold until the signal lands
 }
+if (sessionMode && process.env[`X_PANEL_FAIL_SESSION_${envModel}`]) {
+  const delayMs = Number(process.env[`X_PANEL_DELAY_SESSION_${envModel}`]) || 0;
+  if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  process.stderr.write('session worker reported (SIGSEGV)\n');
+  process.exit(1);
+}
+if (!sessionMode && process.env[`X_PANEL_SIGDIE_STATELESS_${envModel}`]) {
+  process.kill(process.pid, 'SIGTERM');
+  await holdForever();
+}
 // Test hook: hang silently forever (timeout-guard tests; the guard SIGKILLs us).
 if (process.env[`X_PANEL_HANG_${envModel}`]) {
   await holdForever();

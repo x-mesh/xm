@@ -21,7 +21,7 @@ import {
   PANEL_DIR, XM_ROOT, C, provColor, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
-import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, parseModelIds, supportsResume, supportsPromptStdin, proseOutsideJSON, groundCapable, SIGNAL_DEATH } from './x-panel/adapters.mjs';
+import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, parseModelIds, supportsResume, supportsPromptStdin, proseOutsideJSON, groundCapable, RETRY_FLOOR_MS } from './x-panel/adapters.mjs';
 import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize, synthesizeRound1, normalizeResponses, followupDelta } from './x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, GATE_PHASES, DEFAULT_POLICY } from './x-panel/gate.mjs';
@@ -573,13 +573,6 @@ function sev(s) {
 // A model killed by a SIGNAL surfaces as `exit null (SIGKILL)` etc (adapters.mjs exitLabel).
 // A signal death is an intermittent EXTERNAL kill (observed: kiro-cli self-aborts mid-review) —
 // not a deterministic failure like bad auth or a missing CLI, so it's worth ONE fresh retry.
-// The regex lives in adapters.mjs (SIGNAL_DEATH) so the session-fallback path applies the
-// same classification and cannot stack a stateless respawn on top of the slot retry.
-
-// A retry only starts when this much of the slot's wall-clock budget remains — a retry that
-// would be cap-killed almost immediately is pure spend. Env override is a test seam.
-const RETRY_FLOOR_MS = Number(process.env.X_PANEL_RETRY_FLOOR_MS) || 15_000;
-
 // Run one round across all models in parallel, reporting start/heartbeat/elapsed
 // on stderr so a long round (large diff) isn't a silent black box.
 async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult, onProviderEvent, stream = false, partial = true, expectKeys = null) {
@@ -615,6 +608,8 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
       return invokeProviderAsync(e.name, prompt, {
         timeout: attempt.timeout ?? timeoutMs,
         maxTimeout: attempt.maxTimeout ?? slotBudgetMs,
+        deadlineMs: attempt.deadlineMs,
+        maxSpawns: attempt.maxSpawns ?? 2,
         model: e.model,
         stream,
         partial,
@@ -627,20 +622,23 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
     };
     const results = await Promise.all(usable.map(async (e) => {
       const s = Date.now();
-      let res = await invoke(e);
+      const deadlineMs = s + slotBudgetMs;
+      let res = await invoke(e, { deadlineMs });
       // Retry a signal-killed model ONCE (a fresh spawn nearly always survives) instead of
       // dropping it from the panel. One retry only — a second signal death is accepted as a
       // genuine failure, and deterministic failures (numeric exit) are never retried.
       // Guard kills (res.timedOut) are not signal deaths and are never retried here.
-      if (!res.ok && SIGNAL_DEATH.test(res.error || '')) {
-        const remainingMs = s + slotBudgetMs - Date.now();
+      if (!res.ok && res.signal && (res.spawns || 0) < 2) {
+        const remainingMs = deadlineMs - Date.now();
         if (remainingMs < RETRY_FLOOR_MS) {
           process.stderr.write(`  ${C.yellow}↻${C.reset} ${e.label} ${C.dim}(${res.error}) — slot budget exhausted (${Math.round(slotBudgetMs / 1000)}s), not retrying${C.reset}\n`);
           if (onProviderEvent) onProviderEvent(e, { type: 'lifecycle', event: 'retry_skipped', model: e.label, reason: res.error, budget_ms: slotBudgetMs });
         } else {
           process.stderr.write(`  ${C.yellow}↻${C.reset} ${e.label} ${C.dim}(${res.error}) — retrying once (${Math.round(remainingMs / 1000)}s of slot budget left)${C.reset}\n`);
           if (onProviderEvent) onProviderEvent(e, { type: 'lifecycle', event: 'retry', model: e.label, reason: res.error });
-          res = await invoke(e, { timeout: Math.min(timeoutMs, remainingMs), maxTimeout: remainingMs });
+          const priorSpawns = res.spawns || 0;
+          res = await invoke(e, { timeout: Math.min(timeoutMs, remainingMs), maxTimeout: remainingMs, deadlineMs, maxSpawns: 2 - priorSpawns });
+          res.spawns = priorSpawns + (res.spawns || 0);
         }
       }
       pending.delete(e.label);
@@ -1165,7 +1163,8 @@ async function cmdReview(pos, flags) {
     return { prompt: resumed, session: { mode: 'resume', id: e._resumeId }, fallbackPrompt: full };
   }, timeoutMs, onModelDone, (e, res) => {
     if (!res.ok) abstained.add(e.label); // round2 failure ≠ silent concede
-    // 'ok' | 'fallback' | 'capture_failed' (session created but its banner id was not
+    // 'ok' | 'fallback' | 'failed' (session failed and no stateless fallback ran) |
+    // 'capture_failed' (session created but its banner id was not
     // captured — round 2 went stateless) | 'stateless' (vendor never supports resume /
     // reuse disabled). capture_failed ≠ stateless: the former is a fixable capture bug.
     const resume = res.resume || (e._r1Fallback ? 'fallback' : e._captureFailed ? 'capture_failed' : 'stateless');
@@ -1773,14 +1772,19 @@ async function cmdPreflight(pos, flags) {
     try { ensureDir(PANEL_DIR); writeJSON(cachePath, { schema: 1, entries }); } catch { /* best-effort */ }
   }
 
-  const okN = results.filter((r) => r.ok).length;
+  const live = results.filter((r) => r.ok);
+  const okN = live.length;
+  const providerN = new Set(live.map((r) => r.name)).size;
+  const multiModel = okN >= 2;
+  const crossVendor = providerN >= 2;
   if (flags.json) {
-    console.log(JSON.stringify({ ok: okN, total: results.length, cross_vendor: okN >= 2, results }, null, 2));
+    console.log(JSON.stringify({ ok: okN, total: results.length, providers: providerN, multi_model: multiModel, cross_vendor: crossVendor, results }, null, 2));
     process.exitCode = okN >= 1 ? 0 : 1;
     return;
   }
 
-  const tail = okN >= 2 ? `${C.green}cross-vendor OK${C.reset}`
+  const tail = crossVendor ? `${C.green}cross-vendor OK${C.reset}`
+    : multiModel ? `${C.green}multi-model OK${C.reset} ${C.dim}(${providerN} provider)${C.reset}`
     : okN === 1 ? `${C.yellow}single-vendor only (cross-vendor needs ≥2)${C.reset}`
     : `${C.red}no live models — panel will fail${C.reset}`;
   console.log(`\n${okN}/${results.length} live — ${tail}`);
@@ -1827,8 +1831,9 @@ Commands:
                                 Round 2 resumes each provider's round-1 session and sends only the
                                 refute delta — the target never travels twice (default on; config:
                                 panel.session_reuse). claude + codex only; codex needs its session id
-                                from the run banner (else stateless). Any resume failure retries
-                                stateless LOUDLY and is recorded as resume:"fallback" in the verdict.
+                                from the run banner (else stateless). A resume failure retries
+                                stateless only with enough slot time/spawn budget; verdict records
+                                resume:"fallback" when retried or resume:"failed" when skipped.
                                 Auto-off under --stream (stream argv is kept exactly as dogfooded).
     --partial | --no-partial    Token-level live text for claude/cursor (default on within --stream;
                                 config: panel.stream_partial). Auto-off when target > panel.partial_max_chars
@@ -1903,6 +1908,9 @@ Commands:
                                 followup-N.json, never touches verdict.json. Needs the review
                                 to have run with --session-reuse (claude/codex); authors whose
                                 session can't resume are skipped loudly. Re-runnable (followup-2…).
+  watch [run] [--all] [--json] [--interval N] [--lines N]
+                                Read-only alias for status [run] --watch. With no run id,
+                                opens the live activity board; never starts a review.
   status [run] [--all] [--json] [--watch|--follow [--interval N]] [--logs]
                                 Read run state from disk — see an IN-PROGRESS panel from the CLI.
                                 Covers all three namespaces: .xm/panel (native), .xm/review
@@ -3122,7 +3130,7 @@ function renderStatusOnce(pos, flags) {
 // ── entry ────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
-const SUB = new Set(['review', 'cross', 'gate', 'stats', 'followup', 'status', 'setup', 'types', 'models', 'detect', 'doctor', 'preflight', 'help', '--help', '-h']);
+const SUB = new Set(['review', 'cross', 'gate', 'stats', 'followup', 'watch', 'status', 'setup', 'types', 'models', 'detect', 'doctor', 'preflight', 'help', '--help', '-h']);
 let cmd = argv[0];
 let rest;
 if (!cmd) { cmd = 'review'; rest = []; }            // `x-panel` → review git diff
@@ -3145,6 +3153,7 @@ switch (cmd) {
   case 'gate': cmdGate(pos, flags); break;
   case 'stats': cmdStats(pos, flags); break;
   case 'followup': await cmdFollowup(pos, flags); break;
+  case 'watch': cmdStatus(pos, { ...flags, watch: true }); break;
   case 'status': cmdStatus(pos, flags); break;
   case 'setup': cmdSetup(pos, flags); break;
   case 'types': cmdTypes(); break;

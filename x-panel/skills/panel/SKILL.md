@@ -123,8 +123,10 @@ that file is the only record `xm panel status --all` / `--watch` / dashboard can
 fans out cross-vendor work with the Agent tool instead leaves the run completely unobservable to panel status.
 
 ### 2. Engine utility → run the CLI directly (no delegation)
-`cross | detect | doctor | preflight | types | models | setup` → `xm panel <cmd> [args]` straight through
+`cross | detect | doctor | preflight | types | models | setup | watch | status` → `xm panel <cmd> [args]` straight through
 (see Programmatic API above for cross/detect/doctor/models).
+`xm panel watch [run]` is the read-only alias for `xm panel status [run] --watch`; it never runs
+the native review engine.
 
 **Readiness has two levels — `doctor` ≠ `preflight`:**
 - `xm panel doctor` — STATIC: each provider installed AND authenticated? No model call (cheap, instant). Catches logged-out CLIs.
