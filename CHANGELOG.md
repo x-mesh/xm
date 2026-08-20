@@ -10,6 +10,16 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.16.7] - 2026-08-20
+
+### x-panel 0.20.3 → 0.20.4
+
+- `xm panel status --watch` now prints the full `provider:model` slot label instead of the bare provider name, so concurrent slots fronted by one provider (for example `codex:gpt-5.6-sol` and `codex:glm-5`) stay distinguishable in the model list (`x-panel/lib/x-panel-cli.mjs`).
+
+### xm 2.16.6 → 2.16.7
+
+- Rebundle the x-panel watch label fix so installed `xm panel status --watch` separates multiple model slots served by the same provider (`xm/lib/x-panel-cli.mjs`).
+
 ## [2.16.6] - 2026-08-20
 
 ### x-panel 0.20.2 → 0.20.3
