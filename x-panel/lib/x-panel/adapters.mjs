@@ -986,7 +986,12 @@ export function parseJsonlOutput(name, stdout, model) {
       sessionId = obj.thread_id;
     }
     const r = parseStreamLine(name, obj, model);
-    if (typeof r.finalText === 'string' && r.finalText) text = r.finalText;
+    // Codex can emit more than one completed agent_message in a turn. Some models
+    // return the contract JSON first and a prose completion summary second. Keep
+    // every answer message so contract-aware extraction can select the real result.
+    if (typeof r.finalText === 'string' && r.finalText) {
+      text += (text ? '\n' : '') + r.finalText;
+    }
     if (r.usage) usage = r.usage;
   }
   return { text, usage, sessionId };
@@ -1107,6 +1112,13 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
     let rawCap = '', buf = '', textBuf = '', stderr = '';
     let finalText = null, usage = null;
 
+    const appendFinalText = (value) => {
+      if (typeof value !== 'string' || !value || (finalText || '').length >= TEXT_CAP) return;
+      const prefix = finalText ? '\n' : '';
+      const remaining = TEXT_CAP - (finalText || '').length;
+      finalText = (finalText || '') + (prefix + value).slice(0, remaining);
+    };
+
     const handleLine = (line) => {
       if (!line.trim()) return;
       let obj;
@@ -1116,7 +1128,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
         if (ev.kind === 'text' && ev.delta && textBuf.length < TEXT_CAP) textBuf += ev.delta;
         emit({ type: ev.kind, provider: name, model, ...ev });
       }
-      if (r.finalText != null) finalText = r.finalText;
+      appendFinalText(r.finalText);
       if (r.usage) usage = r.usage;
     };
 

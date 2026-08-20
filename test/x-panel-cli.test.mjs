@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { normalizeFindings, normalizeVerdicts, synthesize, synthesizeRound1, mergeConsensus, normalizeResponses, followupDelta } from '../x-panel/lib/x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
 import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
-import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, invokeProviderAsync, normalizeKiroModel, streamCommand, parseStreamLine, costFromTokens, supportsStream, supportsPromptStdin, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings, stripAnsi } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, invokeProviderAsync, normalizeKiroModel, streamCommand, parseStreamLine, parseJsonlOutput, costFromTokens, supportsStream, supportsPromptStdin, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings, stripAnsi } from '../x-panel/lib/x-panel/adapters.mjs';
 import { runId } from '../x-panel/lib/x-panel/core.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
 import { shrinkDiff, splitDiffSections, DIFF_INLINE_MAX_BYTES } from '../x-panel/lib/x-panel/diff-budget.mjs';
@@ -137,6 +137,26 @@ describe('unwrapEnvelope (패널1 — structured usage capture)', () => {
     expect(unwrapEnvelope(plain).usage).toBeNull();
     expect(unwrapEnvelope('just prose').text).toBe('just prose');
     expect(unwrapEnvelope('').text).toBe('');
+  });
+});
+
+describe('parseJsonlOutput (Codex multi-message answers)', () => {
+  const event = (text) => JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text } });
+  const findings = { findings: [{ severity: 'high', file: 'a.js', line: 7, claim: 'real regression', evidence: 'changed branch' }] };
+
+  test.each([
+    ['contract then summary', [JSON.stringify(findings), 'Review complete; findings were returned above.']],
+    ['summary then contract', ['Review complete; findings follow.', JSON.stringify(findings)]],
+  ])('preserves every message: %s', (_name, messages) => {
+    const stdout = [
+      JSON.stringify({ type: 'thread.started', thread_id: '019f0000-0000-7000-8000-000000000001' }),
+      ...messages.map(event),
+      JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 100, output_tokens: 20, cached_input_tokens: 0, reasoning_output_tokens: 0 } }),
+    ].join('\n');
+    const parsed = parseJsonlOutput('codex', stdout, 'glm-5');
+    expect(parsed.sessionId).toBe('019f0000-0000-7000-8000-000000000001');
+    expect(extractContractJSON(parsed.text, ['findings'])).toEqual(findings);
+    expect(parsed.usage.output).toBe(20);
   });
 });
 
@@ -2849,6 +2869,17 @@ describe('review (stubbed models)', () => {
     expect(v.usage.totals.cost_usd).toBeGreaterThan(0);
     expect(v.usage.totals.tokens.output).toBeGreaterThan(0);
     expect(v.usage.by_model.claude.cost_usd).toBeGreaterThan(0);
+  });
+
+  test.each([false, true])('codex keeps contract JSON before a later summary (stream=%s)', (stream) => {
+    const args = ['multi-message target', '--models', 'codex', '--rounds', '1', ...(stream ? ['--stream'] : [])];
+    const r = review(args, { X_PANEL_MULTI_MESSAGE_CODEX: '1' });
+    expect(r.status).toBe(0);
+    const round = JSON.parse(readFileSync(join(latestRunDir(), 'codex.r1.json'), 'utf8'));
+    expect(round.ok).toBe(true);
+    expect(round.r1_status).toBe('ok');
+    expect(round.findings).toHaveLength(2);
+    expect(round.raw).toContain('Review complete; the contract was returned above.');
   });
 
   test('--stream events.jsonl stays milestone-only (no per-delta text spam)', () => {

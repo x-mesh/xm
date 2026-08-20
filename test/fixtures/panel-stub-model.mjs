@@ -111,6 +111,9 @@ function emitRaw(name, jsonStr) {
       process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: `session id: ${process.env.X_PANEL_STUB_STDOUT_SESSION_ID}` } }) + '\n');
     }
     process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: jsonStr } }) + '\n');
+    if (process.env[`X_PANEL_MULTI_MESSAGE_${envModel}`]) {
+      process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Review complete; the contract was returned above.' } }) + '\n');
+    }
     process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 200, cached_input_tokens: 50, output_tokens: 30, reasoning_output_tokens: 15 } }) + '\n');
   } else if (name === 'claude') {
     process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: jsonStr, session_id: sessionId || null, total_cost_usd: 0.012, usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 10 } }));
@@ -132,6 +135,9 @@ function emitStream(name, jsonStr) {
     // codex has no partial mode: final block only
     w({ type: 'turn.started' });
     w({ type: 'item.completed', item: { type: 'agent_message', text: jsonStr } });
+    if (process.env[`X_PANEL_MULTI_MESSAGE_${envModel}`]) {
+      w({ type: 'item.completed', item: { type: 'agent_message', text: 'Review complete; the contract was returned above.' } });
+    }
     w({ type: 'turn.completed', usage: { input_tokens: 200, output_tokens: 30, cached_input_tokens: 50, reasoning_output_tokens: 15 } });
   } else if (name === 'cursor') {
     w({ type: 'thinking', message: { content: [{ type: 'text', text: 'thinking…' }] } });
