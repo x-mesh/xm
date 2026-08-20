@@ -759,6 +759,18 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
     const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
       emit({ type: 'timeout', provider: name, model, error, reason });
       child.kill('SIGKILL');
+      // A wall-clock cap can fire after the provider emitted its final contract but
+      // before its CLI process exited. Preserve that completed answer as partial.
+      // Idle kills remain failures: silence is not evidence of completion.
+      if (reason === 'cap') {
+        const env = parseStructuredOutput(name, stdout, model);
+        const answer = env.text;
+        const json = extractAnswerJSON(answer, expectKeys);
+        if (json) {
+          const usage = env.usage || parseStderrUsage(name, stderr);
+          return finish({ ok: true, partial: true, error, raw: answer, json, usage, timedOut: true, timeoutReason: reason, spawns: 1 });
+        }
+      }
       // timedOut marks a guard kill (idle/cap), distinct from a real exit — callers gate
       // retry/fallback decisions on the FLAG, never on a substring of the error text.
       finish({ ok: false, error, raw: stdout, json: null, timedOut: true, timeoutReason: reason, spawns: 1 });
@@ -1113,6 +1125,16 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
     const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
       emit({ type: 'timeout', provider: name, model, error, reason });
       child.kill('SIGKILL');
+      if (reason === 'cap') {
+        // The final JSONL event may lack a trailing newline when the cap lands.
+        if (buf.trim()) { handleLine(buf); buf = ''; }
+        const text = finalText != null ? finalText : textBuf;
+        const json = extractAnswerJSON(text, expectKeys)
+          || extractContractJSON(rawCap, expectKeys || ['findings', 'verdicts']);
+        if (json) {
+          return finish({ ok: true, partial: true, error, raw: rawCap, json, usage, timedOut: true, timeoutReason: reason, spawns: 1 });
+        }
+      }
       finish({ ok: false, error, raw: rawCap, json: null, usage, timedOut: true, timeoutReason: reason, spawns: 1 });
     });
     child.stdout.on('data', (d) => {

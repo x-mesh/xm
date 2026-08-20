@@ -145,6 +145,14 @@ function emitStream(name, jsonStr) {
     w({ type: 'result', result: jsonStr, usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 10 }, total_cost_usd: 0.012 });
   }
 }
+
+// Emit a complete round-1 contract, then stay alive until the wall-clock guard kills
+// the process. This models a CLI that finished its answer but kept flushing events.
+if (!isRefute && process.env[`X_PANEL_COMPLETE_THEN_HANG_${envModel}`]) {
+  const payload = JSON.stringify({ findings: [{ severity: 'high', file: 'partial.js', line: 7, claim: 'completed before cap', evidence: 'captured' }] });
+  if (stream) emitStream(model, payload); else emitRaw(model, payload);
+  await holdForever();
+}
 const delayMs = Number(process.env[`X_PANEL_DELAY_${isRefute ? 'R2' : 'R1'}_${envModel}_MS`] || process.env[`X_PANEL_DELAY_${envModel}_MS`] || 0);
 
 // Optional heartbeat: emit a stderr tick every X_PANEL_HB_<MODEL>_MS during the delay so the

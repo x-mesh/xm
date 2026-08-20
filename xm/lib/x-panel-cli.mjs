@@ -575,7 +575,7 @@ function sev(s) {
 // not a deterministic failure like bad auth or a missing CLI, so it's worth ONE fresh retry.
 // Run one round across all models in parallel, reporting start/heartbeat/elapsed
 // on stderr so a long round (large diff) isn't a silent black box.
-async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult, onProviderEvent, stream = false, partial = true, expectKeys = null) {
+async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult, onProviderEvent, stream = false, partial = true, expectKeys = null, maxTimeoutMs = null) {
   process.stderr.write(`${C.dim}${roundLabel} — ${usable.length} models in parallel…${C.reset}\n`);
   const pending = new Set(usable.map((e) => e.label));
   const t0 = Date.now();
@@ -598,7 +598,10 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
     // signal retry). Mirrors the guard's default cap so a single clean attempt is unchanged;
     // the retry only gets what REMAINS, so one slot can no longer hold a round for multiple
     // full cap windows back to back (toss-20260818-0d0f3e9a: 48-min hung codex slot).
-    const slotBudgetMs = Math.max(timeoutMs * 2, timeoutMs + 120_000);
+    const derivedSlotBudgetMs = Math.max(timeoutMs * 2, timeoutMs + 120_000);
+    const slotBudgetMs = Number.isFinite(maxTimeoutMs) && maxTimeoutMs > 0
+      ? Math.min(derivedSlotBudgetMs, maxTimeoutMs)
+      : derivedSlotBudgetMs;
     const invoke = (e, attempt = {}) => {
       // makePrompt may return a plain string OR { prompt, session, fallbackPrompt }
       // (t5 session reuse) — normalize here so round builders stay declarative.
@@ -745,7 +748,7 @@ function applyKiroAgentConfig(cfg) {
 
 async function cmdReview(pos, flags) {
   const cfg = loadPanelConfig();
-  const rounds = Number(flags.rounds ?? cfg.rounds ?? 1);
+  let rounds = Number(flags.rounds ?? cfg.rounds ?? 1);
   if (![1, 2].includes(rounds)) {
     console.error(`${C.red}✗ --rounds must be 1 or 2${C.reset}`);
     process.exitCode = 2;
@@ -753,10 +756,15 @@ async function cmdReview(pos, flags) {
   }
   applyKiroAgentConfig(cfg);
   const specs = resolveModels(flags, cfg);
-  if (specs.length < 2) {
+  const explicitSingleModel = flags.models != null && specs.length === 1;
+  if (specs.length < 2 && !explicitSingleModel) {
     console.error(`${C.red}panel needs ≥2 models${C.reset} — found ${specs.length}. Configure once:\n  x-panel setup --models claude,codex,agy,kiro [--global]\nor pass --models claude,codex`);
     process.exitCode = 1;
     return;
+  }
+  if (explicitSingleModel && rounds === 2) {
+    console.error(`${C.yellow}⚠ single-model recovery has no peer to refute — using --rounds 1${C.reset}`);
+    rounds = 1;
   }
   const judge = flags.judge || cfg.judge || 'rule';
   if (judge !== 'rule') {
@@ -837,10 +845,13 @@ async function cmdReview(pos, flags) {
   const gate = gateReadiness(usable, cfg, { fresh: flags.fresh });
   usable = gate.ready;
   skippedProviders.push(...gate.skipped);
-  if (usable.length < 2) {
+  if (usable.length < 2 && !(explicitSingleModel && usable.length === 1)) {
     console.error(`${C.red}panel needs ≥2 available models, found ${usable.length}${C.reset}`);
     process.exitCode = 1;
     return;
+  }
+  if (explicitSingleModel) {
+    console.error(`${C.yellow}⚠ single-model recovery run — no cross-model consensus will be produced${C.reset}`);
   }
   const labels = usable.map((e) => e.label);
   // Injected per-lens prompt (cross-vendor review mode): overrides round-1 intro only.
@@ -867,6 +878,14 @@ async function cmdReview(pos, flags) {
   const timeoutS = autoRaiseTimeoutS(baseTimeoutS, (target.text || '').length, flags.timeout != null, cfg,
     (scaled, MAX, tlen) => console.error(`${C.yellow}⚠ large target (${tlen} chars) — timeout auto-raised ${baseTimeoutS}s → ${scaled}s (cap ${MAX}s; --timeout to override)${C.reset}`));
   const timeoutMs = timeoutS * 1000;
+  const configuredMaxTimeoutS = Number(cfg.timeout_max_s);
+  const configuredTimeoutMaxS = Number.isFinite(configuredMaxTimeoutS) && configuredMaxTimeoutS > 0 ? configuredMaxTimeoutS : 1200;
+  // Explicit --timeout pins the requested idle window and keeps its derived cap.
+  // Config timeout_max_s bounds only automatically raised runs.
+  const timeoutMaxS = flags.timeout != null
+    ? Math.max(timeoutS * 2, timeoutS + 120)
+    : configuredTimeoutMaxS;
+  const maxTimeoutMs = timeoutMaxS * 1000;
   const run = runId(stamp());
   // Cross-vendor REVIEW runs go to a separate .xm/review/ namespace so they never
   // collide with native panel history under .xm/panel/.
@@ -889,7 +908,7 @@ async function cmdReview(pos, flags) {
   const zeroTokens = () => ({ input: 0, output: 0, cached: 0, reasoning: 0 });
   const status = {
     run, started_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    phase: 'starting', rounds, target_kind: target.kind, target_title: targetTitle(target), stream, partial: stream ? partial : false, timeout_s: timeoutS,
+    phase: 'starting', rounds, target_kind: target.kind, target_title: targetTitle(target), stream, partial: stream ? partial : false, timeout_s: timeoutS, timeout_max_s: timeoutMaxS,
     // x-review runs ONE panel PER LENS, so several runs of the same project/target are live at
     // once and the board rendered them as identical rows — they read as a duplicate (or a
     // double-spend) when they are actually different lenses. The tag is what tells them apart.
@@ -1111,12 +1130,13 @@ async function cmdReview(pos, flags) {
     }
     const findings = res.ok ? normalizeFindings(res.json, lensTag) : [];
     round1[e.label] = findings;
-    if (!res.ok) r1Status[e.label] = { status: 'failed', error: res.error || 'failed' };
+    if (res.partial) r1Status[e.label] = { status: 'partial', error: res.error || 'wall-clock cap reached after contract completion' };
+    else if (!res.ok) r1Status[e.label] = { status: 'failed', error: res.error || 'failed' };
     else if (!findings.length && proseOutsideJSON(res.raw || '').length >= SUSPECT_PROSE_MIN) r1Status[e.label] = { status: 'suspect_empty' };
     const r1 = r1Status[e.label] ? r1Status[e.label].status : 'ok';
     writeJSON(join(dir, `${safeLabel(e.label)}.r1.json`), { model: e.label, ok: res.ok, error: res.error, r1_status: r1, findings, usage: res.usage || null, raw: res.raw });
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 1, ok: res.ok, r1_status: r1, count: findings.length, error: res.error || null });
-  }, onProviderEvent, stream, partial, ['findings']);
+  }, onProviderEvent, stream, partial, ['findings'], maxTimeoutMs);
 
   const round2 = {};
   const abstained = new Set();
@@ -1174,7 +1194,7 @@ async function cmdReview(pos, flags) {
     round2[e.label] = verdicts;
     writeJSON(join(dir, `${safeLabel(e.label)}.r2.json`), { model: e.label, ok: res.ok, error: res.error, resume, verdicts, usage: res.usage || null, raw: res.raw });
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 2, ok: res.ok, resume, count: verdicts.length, error: res.error || null });
-    }, onProviderEvent, stream, partial, ['verdicts']);
+    }, onProviderEvent, stream, partial, ['verdicts'], maxTimeoutMs);
     if (usable.every((e) => abstained.has(e.label))) {
       coverageFailed = true;
       coverageFailurePhase = 'round2';
@@ -1219,6 +1239,7 @@ async function cmdReview(pos, flags) {
     grounded,
     grounded_models: [...groundedSet],
     timeout_s: timeoutS,
+    timeout_max_s: timeoutMaxS,
     coverage_failed: coverageFailed,
     coverage_failure_phase: coverageFailurePhase,
     skipped_providers: skippedProviders,
@@ -1815,8 +1836,8 @@ Commands:
     --timeout SECONDS           Per-model idle timeout (default 600; config: panel.timeout_s).
                                 Resets on stdout activity (a working model keeps going); a model
                                 silent this long is killed as stalled. Auto-raised for large
-                                targets (cap panel.timeout_max_s, default 1200).
-                                Auto-raised for large targets (cap panel.timeout_max_s=900); --timeout pins it.
+                                targets. The absolute wall-clock cap is
+                                panel.timeout_max_s (default 1200), including retries.
     --stream | --no-stream      Structured streaming: live token/cost per model (claude/cursor/codex).
                                 Opt-in (default off; config: panel.stream). kiro/agy stay raw.
     --tm-events | --no-tm-events  Live xk_run telemetry to a term-mesh daemon when one is detected
@@ -1978,6 +1999,13 @@ function statusAge(iso) {
   return `${Math.round(s / 86400)}d`;
 }
 
+function formatDuration(seconds) {
+  const s = Math.max(0, Math.round(Number(seconds) || 0));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`;
+  return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`;
+}
+
 // One run dir → a normalized status row. STALENESS: a non-done review whose status.json hasn't been
 // touched within STATUS_STALE_MS is a DEAD process (terminal closed / interrupted / crashed) — its
 // last-written phase says "running" forever, which is misleading. Mark it "stalled" instead, so a
@@ -2033,7 +2061,8 @@ function statusRunRow(entry) {
   return { kind: 'review', run: entry.run, source: scope ? `${srcBase}(${scope})` : srcBase,
     lens_tag: (st && st.lens_tag) || null,
     title: (st && st.target_title) || null, phase, live, stale, age: st ? statusAge(st.updated_at) : null,
-    phaseRaw: st ? st.phase : null, models: st ? st.models : [] };
+    phaseRaw: st ? st.phase : null, updated_at: st ? st.updated_at : null,
+    timeout_s: st ? st.timeout_s : null, timeout_max_s: st ? st.timeout_max_s : null, models: st ? st.models : [] };
 }
 
 // Canonical vendor order so the per-run glyph columns line up under one legend, run to run.
@@ -2071,8 +2100,15 @@ function modelProgress(m) {
   const tok = fmtTokens(m.tokens);
   if (tok) parts.push(tok);
   if (m.cost_usd != null && m.cost_usd > 0) parts.push(`$${m.cost_usd.toFixed(2)}`);
-  const age = statusAge(m.updated_at);
-  if (age) parts.push(`${age} ago`);
+  if (m.state === 'running') {
+    if (m.event_quiet_s != null) parts.push(`provider quiet ${formatDuration(m.event_quiet_s)}`);
+    if (m.idle_remaining_s != null) parts.push(`idle ${formatDuration(m.idle_remaining_s)} left`);
+    if (m.heartbeat_age_s != null) parts.push(`orchestrator alive ${formatDuration(m.heartbeat_age_s)} ago`);
+    if (m.cap_remaining_s != null) parts.push(`cap ${formatDuration(m.cap_remaining_s)} left`);
+  } else {
+    const age = statusAge(m.updated_at);
+    if (age) parts.push(`${age} ago`);
+  }
   // Round-2 fidelity (written post-synthesis): a refuter that mangled refs or stances.
   if (m.unmatched_refs) parts.push(`${C.yellow}${m.unmatched_refs} unmatched ref(s)${C.reset}`);
   if (m.invalid_stances) parts.push(`${C.yellow}${m.invalid_stances} invalid stance(s)${C.reset}`);
@@ -2463,7 +2499,21 @@ function printStatusRow(r) {
 // (state, elapsed, phase, output volume, tokens/cost, freshness, optional output tail).
 // tokens/cost prefer the round-scoped live fields and fall back to the cumulative ones, so
 // a model between rounds still shows what it has consumed so far.
-function watchModelJSON(m, linesN) {
+function watchModelJSON(m, linesN, run = null) {
+  const now = Date.now();
+  const eventAt = Date.parse(m.updated_at || '');
+  const heartbeatAt = Date.parse((run && run.updated_at) || '');
+  const startedAt = Date.parse(m.started_at || '');
+  const idleS = Number(run && run.timeout_s);
+  const capS = Number(run && run.timeout_max_s);
+  // The heartbeat only proves the local orchestrator is alive. The provider can still be
+  // silent or wedged, so expose the independent idle deadline driven by its last event.
+  const idleRemainingS = Number.isFinite(eventAt) && Number.isFinite(idleS) && idleS > 0
+    ? Math.max(0, Math.ceil((eventAt + idleS * 1000 - now) / 1000))
+    : null;
+  const capRemainingS = Number.isFinite(startedAt) && Number.isFinite(capS) && capS > 0
+    ? Math.max(0, Math.ceil((startedAt + capS * 1000 - now) / 1000))
+    : null;
   const out = {
     label: m.label,
     vendor: vendorOf(m.label),
@@ -2476,6 +2526,11 @@ function watchModelJSON(m, linesN) {
     tokens: m.tokens || ((m.cum_tokens && ((m.cum_tokens.input || 0) + (m.cum_tokens.output || 0) > 0)) ? m.cum_tokens : null),
     cost_usd: (m.cost_usd != null) ? m.cost_usd : (m.cum_cost_usd || null),
     updated_at: m.updated_at || null,
+    heartbeat_at: (run && run.updated_at) || null,
+    event_quiet_s: Number.isFinite(eventAt) ? Math.max(0, Math.floor((now - eventAt) / 1000)) : null,
+    idle_remaining_s: idleRemainingS,
+    heartbeat_age_s: Number.isFinite(heartbeatAt) ? Math.max(0, Math.floor((now - heartbeatAt) / 1000)) : null,
+    cap_remaining_s: capRemainingS,
     // Round-2 fidelity counters (post-synthesis) — only present when non-zero, so the
     // compact snapshot shape stays stable for runs that never had a fidelity problem.
     ...(m.unmatched_refs ? { unmatched_refs: m.unmatched_refs } : {}),
@@ -2504,7 +2559,7 @@ function watchBoardSnapshot(flags) {
   for (const p of projects) {
     for (const r of collectStatusRuns(p.xmRoot, 100)) {
       if (r.live && r.phase !== 'done') {
-        const models = (r.models || []).map((m) => watchModelJSON(m, linesN));
+        const models = (r.models || []).map((m) => watchModelJSON(m, linesN, r));
         live.push({
           project: p.name, kind: r.kind, run: r.run, source: r.source, title: r.title,
           phase: r.phaseRaw || r.phase,
@@ -2546,7 +2601,7 @@ function watchRunSnapshot(runArg, linesN = 0) {
     const t = st && Date.parse(st.updated_at || '');
     // no status.json yet ≠ stalled — the run may not have flushed its first status; keep waiting.
     const stale = !done && !!st && !(Number.isFinite(t) && (Date.now() - t) < STATUS_STALE_MS);
-    const models = ((st && st.models) || []).map((m) => watchModelJSON(m, linesN));
+    const models = ((st && st.models) || []).map((m) => watchModelJSON(m, linesN, st));
     return {
       at, run: runArg, kind: 'review', found: true,
       phase: done ? 'done' : stale ? 'stalled' : (st ? st.phase : 'starting'), done, stale,

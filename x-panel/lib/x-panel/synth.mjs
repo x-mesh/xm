@@ -144,7 +144,8 @@ export function synthesize(models, round1, round2, abstained = new Set(), r1Stat
       // the grounded prompt (t8: a self-reported `verified` from an ungrounded model is not
       // trusted). The moat signal is "who verifies vs who argues".
       grounded_verdicts: groundedModels.has(m) ? verdicts.filter(v => v.verified && v.verified.checked).length : 0,
-      // 'ok' | 'failed' (round-1 errored/unparseable — findings missing from this verdict)
+      // 'ok' | 'partial' (contract completed before the wall-clock cap)
+      // | 'failed' (round-1 errored/unparseable — findings missing from this verdict)
       // | 'suspect_empty' (ok=true with 0 findings but substantial prose in raw)
       r1: st ? st.status : 'ok',
       ...(st && st.error ? { r1_error: st.error } : {}),

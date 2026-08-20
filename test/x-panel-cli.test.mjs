@@ -2484,11 +2484,11 @@ describe('panel status (staleness + project scope + --all)', () => {
     mkdirSync(d, { recursive: true });
     writeFileSync(join(d, 'status.json'), JSON.stringify({
       run, phase: 'round1 (review)', target_kind: 'git-diff', target_title: 'diff: a.js',
-      updated_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(), timeout_s: 1800, timeout_max_s: 3600,
       models: [
         { label: 'claude', state: 'done', elapsed_s: 30 },
         { label: 'codex', state: 'running', elapsed_s: 45, phase_label: 'responding', stdout_bytes: 2130,
-          tokens: { input: 9000, output: 3300 }, cost_usd: 0.12, updated_at: new Date().toISOString(),
+          tokens: { input: 9000, output: 3300 }, cost_usd: 0.12, started_at: new Date(Date.now() - 45_000).toISOString(), updated_at: new Date().toISOString(),
           stdout_tail: 'YYMARKER live tail line' },
       ],
     }));
@@ -2502,6 +2502,10 @@ describe('panel status (staleness + project scope + --all)', () => {
     expect(r.stdout).toContain('responding');          // live phase of the running agent
     expect(r.stdout).toContain('12.3k tok');           // live token usage
     expect(r.stdout).toContain('$0.12');               // live cost
+    expect(r.stdout).toContain('provider quiet');      // provider event freshness
+    expect(r.stdout).toContain('idle 29m');            // silence kill deadline, separate from cap
+    expect(r.stdout).toContain('orchestrator alive');  // status heartbeat is distinct
+    expect(r.stdout).toContain('cap 59m');              // remaining absolute budget
     expect(r.stdout).toContain('YYMARKER live tail line'); // --lines content still renders
   });
 
@@ -2519,6 +2523,10 @@ describe('panel status (staleness + project scope + --all)', () => {
     expect(codex.phase_label).toBe('responding');
     expect(codex.cost_usd).toBe(0.12);
     expect(codex.tokens.output).toBe(3300);
+    expect(codex.event_quiet_s).toBeGreaterThanOrEqual(0);
+    expect(codex.idle_remaining_s).toBeGreaterThan(1700);
+    expect(codex.heartbeat_age_s).toBeGreaterThanOrEqual(0);
+    expect(codex.cap_remaining_s).toBeGreaterThan(3500);
     expect(codex.tail).toEqual(['YYMARKER live tail line']); // --lines flows into JSON too
   });
 
@@ -2874,6 +2882,33 @@ describe('review (stubbed models)', () => {
     const r = panelRaw(['review', big, '--stream', '--models', 'claude,codex']);
     expect(r.status).toBe(0);
     expect(latestVerdict().timeout_s).toBe(700); // 600 base + size-raise → capped at 700
+    expect(latestVerdict().timeout_max_s).toBe(700);
+  });
+
+  test('an explicit single model is allowed as a recovery run', () => {
+    const r = panelRaw(['review', 'recovery target', '--models', 'codex', '--json']);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('single-model recovery run');
+    expect(latestVerdict().models).toEqual(['codex']);
+  });
+
+  test('a completed contract survives the wall-clock cap as partial', () => {
+    writeProjectConfig({ timeout_s: 10, timeout_max_s: 1 });
+    try {
+      const r = panelRaw(['review', 'partial recovery target', '--models', 'codex', '--json'], {
+        X_PANEL_COMPLETE_THEN_HANG_CODEX: '1',
+      });
+      expect(r.status).toBe(0);
+      const round = JSON.parse(readFileSync(join(latestRunDir(), 'codex.r1.json'), 'utf8'));
+      const verdict = latestVerdict();
+      expect(round.ok).toBe(true);
+      expect(round.r1_status).toBe('partial');
+      expect(round.findings).toHaveLength(1);
+      expect(verdict.by_model.codex.r1).toBe('partial');
+      expect(verdict.timeout_max_s).toBe(1);
+    } finally {
+      writeProjectConfig({});
+    }
   });
 
   test('--stream: a non-zero exit is a failure even if JSON was emitted', () => {
@@ -2983,9 +3018,10 @@ describe('review (stubbed models)', () => {
     expect(rec.target_title).toBe('some code change');
   });
 
-  test('fewer than 2 models exits 1', () => {
+  test('an explicit single model is a supported recovery run', () => {
     const r = review(['x', '--models', 'claude']);
-    expect(r.status).toBe(1);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('single-model recovery run');
   });
 
   test('unknown / unavailable model is skipped with a warning', () => {
