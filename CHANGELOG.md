@@ -10,6 +10,8 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.16.6] - 2026-08-20
+
 ### x-panel 0.20.2 → 0.20.3
 
 - Preserve completed review contracts when a model reaches the wall-clock cap instead of discarding valid findings as an empty failure. Explicit single-model recovery runs can now retry only the failed slot, while `panel.timeout_max_s` bounds automatic runs and an explicit `--timeout` retains its derived absolute cap (`x-panel/lib/x-panel/adapters.mjs`, `x-panel/lib/x-panel-cli.mjs`).
