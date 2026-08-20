@@ -2131,6 +2131,23 @@ describe('panel status (staleness + project scope + --all)', () => {
     expect(r.stdout).toContain('panel watch');                   // it is the live board, not the list
   });
 
+  test('--watch shows the full model slot label when one provider fronts multiple models', () => {
+    const d = join(SDIR, '.xm', 'panel', 'panel-watch-model-label-fixture');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'status.json'), JSON.stringify({
+      run: 'panel-watch-model-label-fixture', phase: 'round1 (review)', target_kind: 'literal', target_title: 'model labels',
+      updated_at: new Date().toISOString(),
+      models: [
+        { label: 'codex:gpt-5.6-sol', state: 'running', elapsed_s: 7 },
+        { label: 'codex:glm-5', state: 'running', elapsed_s: 8 },
+      ],
+    }));
+    const r = spawnSync('node', [CLI, 'status', '--watch', '--interval', '1'],
+      { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 2500 });
+    expect(r.stdout).toContain('codex:gpt-5.6-sol');
+    expect(r.stdout).toContain('codex:glm-5');
+  });
+
   // ── interpreted tails: the board shows what the output MEANS, not raw contract JSON ──
 
   // Tail fixtures are removed after EACH test: a leftover live run pollutes every later board

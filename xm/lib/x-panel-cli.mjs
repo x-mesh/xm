@@ -2650,7 +2650,11 @@ function renderStatusWatch(flags) {
         : m.state === 'running' ? modelProgress(m).join(' · ')
         : (m.unmatched_refs || m.invalid_stances)
           ? `${C.yellow}⚠ ${m.unmatched_refs || 0} unmatched ref(s) · ${m.invalid_stances || 0} invalid stance(s)${C.reset}` : '';
-      console.log(`    ${glyph} ${provColor(m.vendor)}${m.vendor.padEnd(8)}${C.reset} ${el.padEnd(5)} ${hint}`);
+      // Keep the full slot label in view when one provider fronts several models.
+      // Showing only `codex` makes concurrent `codex:gpt-5.6-sol` / `codex:glm-5`
+      // rows indistinguishable. padEnd is a minimum width and never truncates labels.
+      const slotLabel = m.label || m.vendor;
+      console.log(`    ${glyph} ${provColor(m.vendor)}${slotLabel.padEnd(8)}${C.reset} ${el.padEnd(5)} ${hint}`);
       // Content lines (opt-in via --lines N / panel.watch_lines): what this agent's output
       // MEANS — findings/verdicts summarized, prompt echo dropped — not a raw JSON dump.
       // Only the gutter bar is dim; the content itself stays full-contrast.
