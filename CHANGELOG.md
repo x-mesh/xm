@@ -10,6 +10,15 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+### x-panel 0.20.2 → 0.20.3
+
+- Preserve completed review contracts when a model reaches the wall-clock cap instead of discarding valid findings as an empty failure. Explicit single-model recovery runs can now retry only the failed slot, while `panel.timeout_max_s` bounds automatic runs and an explicit `--timeout` retains its derived absolute cap (`x-panel/lib/x-panel/adapters.mjs`, `x-panel/lib/x-panel-cli.mjs`).
+- Make long reviews observable without confusing a live orchestrator heartbeat with provider progress. `xm panel status --watch` now separates provider silence, idle time remaining, orchestrator heartbeat freshness, and absolute cap remaining (`x-panel/lib/x-panel-cli.mjs`).
+
+### xm 2.16.5 → 2.16.6
+
+- Rebundle the x-panel recovery and progress signals so installed `xm panel` commands can recover one failed model and distinguish a quiet remote provider from a stalled local run (`xm/lib/x-panel-cli.mjs`, `xm/lib/x-panel/adapters.mjs`).
+
 ## [2.16.5] - 2026-08-19
 
 ### x-review 2.3.3 → 2.3.4
