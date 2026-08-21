@@ -10,6 +10,27 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.19.0] - 2026-08-21
+
+### x-build 3.2.3 → 3.2.4
+
+- Keep Claude and Codex plugin manifests on one version during release bumps, preventing `x-plan` packaging drift (`x-build/lib/x-build/release.mjs`).
+
+### x-panel 0.21.0 → 0.21.1
+
+- Stop stateless fallback after a Codex reviewer reaches `command_budget`, so the configured cap cannot be bypassed by retrying the same review (`x-panel/lib/x-panel/adapters.mjs`).
+
+### x-plan 0.1.0
+
+- Add the standalone JSON-only `PlanEnvelope v1` planner with literal, file, stdin, validation, deterministic normalization, task dependency checks, and stable compact/pretty output (`x-plan/lib/x-plan/`).
+- Add opt-in `--mode ultra` synthesis across multiple panel model slots, including bounded concurrency, process-tree timeout cleanup, provenance, disagreement preservation, ID remapping, and executable-plan safety invariants (`x-plan/lib/x-plan/ultra.mjs`, `x-plan/lib/x-plan/synthesize.mjs`).
+- Publish native Claude and Codex plugin manifests and expose `$xm-plan`, `/xm-plan`, `/xm:plan`, and `xm plan` entry points (`x-plan/.claude-plugin/plugin.json`, `x-plan/.codex-plugin/plugin.json`, `xm/commands/xm-plan.md`).
+
+### xm 2.18.0 → 2.19.0
+
+- Bundle `x-plan`, route `xm plan`, and install the managed `/xm-plan` alias while preserving and restoring an existing user-owned command (`xm/scripts/xm`, `xm/scripts/setup-global.mjs`).
+- Rebundle the release and panel fixes with deterministic regression coverage for schema validation, synthesis, aliases, Windows cleanup, and dual-manifest versioning.
+
 ## [2.18.0] - 2026-08-21
 
 ### x-build 3.2.2 → 3.2.3
