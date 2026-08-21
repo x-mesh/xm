@@ -544,11 +544,11 @@ export function validateSet(key, value) {
   }
 
   // panel.* — owned by x-panel but editable via the `xm config` panel category.
-  // panel.timeout_s is a registered leaf → falls through to the exact-match checks
+  // panel.timeout_s and panel.command_budget are registered leaves → fall through to the exact-match checks
   // below (integer + min). panel.model_overrides must be an object. Any other
   // panel.<dotted> key is not a managed leaf, so it keeps the historical
   // unregistered warning (the bare `panel` parent entry alone would suppress it).
-  if (key.startsWith('panel.') && key !== 'panel.timeout_s') {
+  if (key.startsWith('panel.') && !['panel.timeout_s', 'panel.command_budget'].includes(key)) {
     if (key === 'panel.model_overrides') {
       const actual = describeType(value);
       if (actual !== 'object') findings.push(finding('type', 'error', t('validate.type', key, t('type.expected_object', actual))));

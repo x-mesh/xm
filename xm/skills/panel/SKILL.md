@@ -83,6 +83,13 @@ Readiness/auth is checked once per provider name; each distinct slot is still ex
 - round-2 (refute) is unchanged. Injected (review-mode) runs write to `.xm/review/<run>/`,
   separate from native `.xm/panel/` history.
 - These flags are programmatic plumbing — interactive `/xm:panel` users don't need them.
+- Codex review slots enforce `panel.command_budget` (default `24`) using structured
+  `command_execution` completion events. The watch board shows `commands used/budget`,
+  `contract complete|incomplete`, `attempt`, and remaining wall-clock cap separately from raw
+  output freshness. Reaching the budget without a valid contract fails as `command_budget`.
+- x-review provider recovery is limited to one strict-subset retry. If the failed artifact does
+  not name an exact frozen target file, recovery stops as `Review incomplete` instead of sending
+  the full target again.
 - **Where providers/config live:** the provider set (which CLIs exist, how they're spawned) is
   code-defined in adapters `BUILTIN` — the ONE definition shared by panel review AND every
   cross-vendor consumer (x-review/op/agent/eval/solver/build) via `xm panel cross`. `panel.*`

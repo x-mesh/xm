@@ -502,6 +502,48 @@ function jsonMissingError(expectKeys) {
   return expectKeys ? `no ${expectKeys.join('/')} JSON in output` : 'no JSON object in output';
 }
 
+// Observe semantic progress in Codex JSONL without treating arbitrary stdout bytes
+// as useful review progress. The observer is deliberately Codex-only: other
+// providers keep their existing timeout/progress behavior until they expose an
+// equivalent structured tool event contract.
+export function createProviderProgressObserver(name, expectKeys) {
+  let buffer = '';
+  let commandsUsed = 0;
+  let contractState = 'incomplete';
+  let answerText = '';
+  const inspect = (obj) => {
+    if (name !== 'codex' || !obj || typeof obj !== 'object') return null;
+    if (obj.type === 'item.completed' && obj.item?.type === 'command_execution') commandsUsed += 1;
+    if (obj.type === 'item.completed' && obj.item?.type === 'agent_message' && typeof obj.item.text === 'string') {
+      answerText += `${answerText ? '\n' : ''}${obj.item.text}`;
+      if (expectKeys && extractContractJSON(stripAnsi(answerText), expectKeys)) contractState = 'complete';
+    }
+    return { commands_used: commandsUsed, contract_state: contractState };
+  };
+  return {
+    push(chunk) {
+      if (name !== 'codex') return null;
+      buffer += String(chunk || '');
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
+      let progress = null;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try { progress = inspect(JSON.parse(line)) || progress; } catch { /* incomplete/non-JSON output is not progress */ }
+      }
+      return progress;
+    },
+    finish() {
+      if (buffer.trim()) {
+        try { inspect(JSON.parse(buffer)); } catch { /* truncated JSON stays incomplete */ }
+      }
+      buffer = '';
+      return { commands_used: commandsUsed, contract_state: contractState };
+    },
+    snapshot() { return { commands_used: commandsUsed, contract_state: contractState }; },
+  };
+}
+
 // Recover findings from a structured markdown review when a vendor ignored the JSON contract.
 // Requires a bracketed severity ([critical|high|medium|low]) at a heading/bullet — ordinary
 // prose (no such tag) yields null, so this can't false-parse a chatty non-answer into findings.
@@ -661,7 +703,7 @@ export function resolveSessionCommand(name, prompt, model, session, providerArgs
   return resolveCommand(name, prompt, model, providerArgs);
 }
 
-export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, deadlineMs = null, maxSpawns = 2, model = null, onEvent = null, stream = false, partial = true, session = null, fallbackPrompt = null, expectKeys = null, providerArgs = null } = {}) {
+export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, deadlineMs = null, maxSpawns = 2, model = null, onEvent = null, stream = false, partial = true, session = null, fallbackPrompt = null, expectKeys = null, providerArgs = null, commandBudget = null } = {}) {
   const budgetMs = (Number.isFinite(maxTimeout) && maxTimeout > 0) ? maxTimeout : Math.max(timeout * 2, timeout + 120_000);
   const effectiveDeadlineMs = deadlineMs ?? (Date.now() + budgetMs);
   if (stream && supportsStream(name)) {
@@ -674,7 +716,7 @@ export async function invokeProviderAsync(name, prompt, { timeout = 180_000, max
     return invokeProviderStream(name, prompt, {
       timeout: Math.min(timeout, remaining),
       maxTimeout: Math.min(maxTimeout ?? remaining, remaining),
-      model, onEvent, partial, expectKeys,
+      model, onEvent, partial, expectKeys, commandBudget,
     });
   }
   const use = session && supportsResume(name) ? session : null;
@@ -686,7 +728,7 @@ export async function invokeProviderAsync(name, prompt, { timeout = 180_000, max
     return invokeProviderRaw(name, body, {
       timeout: Math.min(timeout, remaining),
       maxTimeout: Math.min(maxTimeout ?? remaining, remaining),
-      model, onEvent, session: activeSession, expectKeys, providerArgs,
+      model, onEvent, session: activeSession, expectKeys, providerArgs, commandBudget,
     });
   };
   let res = await invokeWithinBudget(prompt, use);
@@ -723,7 +765,7 @@ export async function invokeProviderAsync(name, prompt, { timeout = 180_000, max
   return res;
 }
 
-function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, session = null, expectKeys = null, providerArgs = null } = {}) {
+function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, session = null, expectKeys = null, providerArgs = null, commandBudget = null } = {}) {
   return new Promise((resolve) => {
     const emit = (event) => {
       if (!onEvent) return;
@@ -754,6 +796,10 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
     emit({ type: 'spawn', provider: name, model, pid: child.pid, command: resolved[0] });
     let stdout = '';
     let stderr = '';
+    const progressObserver = createProviderProgressObserver(name, expectKeys);
+    const effectiveCommandBudget = name === 'codex' && Number.isFinite(Number(commandBudget)) && Number(commandBudget) > 0
+      ? Number(commandBudget) : null;
+    let budgetKilled = false;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
@@ -779,6 +825,18 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       stdout += d;
       guard.touch(); // output = alive → extend the idle window
       emit({ type: 'stdout', provider: name, model, bytes: Buffer.byteLength(d), text: d });
+      const progress = progressObserver.push(d);
+      if (progress) {
+        emit({ type: 'semantic_progress', provider: name, model, command_budget: effectiveCommandBudget, ...progress });
+        if (!budgetKilled && effectiveCommandBudget != null && progress.commands_used >= effectiveCommandBudget && progress.contract_state !== 'complete') {
+          budgetKilled = true;
+          const error = `command budget exhausted (${progress.commands_used}/${effectiveCommandBudget}) before final contract`;
+          emit({ type: 'command_budget', provider: name, model, error, ...progress, command_budget: effectiveCommandBudget });
+          guard.clear();
+          child.kill('SIGKILL');
+          finish({ ok: false, error, raw: stdout, json: null, termination: 'command_budget', spawns: 1, progress });
+        }
+      }
     });
     child.stderr.on('data', (d) => {
       stderr += d;
@@ -794,6 +852,8 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
     child.on('close', (code, signal) => {
       guard.clear();
       if (settled) return;
+      const progress = progressObserver.finish();
+      emit({ type: 'semantic_progress', provider: name, model, command_budget: effectiveCommandBudget, ...progress });
       emit({ type: 'exit', provider: name, model, code });
       // Structured-output vendors (claude --output-format json) wrap the answer in an
       // envelope carrying usage + total_cost_usd. Unwrap FIRST: findings extraction must
@@ -1095,7 +1155,7 @@ export function parseStreamLine(name, obj, model) {
   return { events, finalText, usage };
 }
 
-function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, partial = true, expectKeys = null } = {}) {
+function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, partial = true, expectKeys = null, commandBudget = null } = {}) {
   return new Promise((resolve) => {
     const emit = (event) => { if (!onEvent) return; try { onEvent({ at: new Date().toISOString(), ...event }); } catch { /* observer only */ } };
     let settled = false;
@@ -1111,6 +1171,10 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
     const RAW_CAP = 2_000_000, TEXT_CAP = 1_000_000, LINE_CAP = 4_000_000, ERR_CAP = 200_000;
     let rawCap = '', buf = '', textBuf = '', stderr = '';
     let finalText = null, usage = null;
+    const progressObserver = createProviderProgressObserver(name, expectKeys);
+    const effectiveCommandBudget = name === 'codex' && Number.isFinite(Number(commandBudget)) && Number(commandBudget) > 0
+      ? Number(commandBudget) : null;
+    let budgetKilled = false;
 
     const appendFinalText = (value) => {
       if (typeof value !== 'string' || !value || (finalText || '').length >= TEXT_CAP) return;
@@ -1123,6 +1187,19 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
       if (!line.trim()) return;
       let obj;
       try { obj = JSON.parse(line); } catch { return; } // skip non-JSON notices
+      const progress = progressObserver.push(`${line}\n`);
+      if (progress) {
+        emit({ type: 'semantic_progress', provider: name, model, command_budget: effectiveCommandBudget, ...progress });
+        if (!budgetKilled && effectiveCommandBudget != null && progress.commands_used >= effectiveCommandBudget && progress.contract_state !== 'complete') {
+          budgetKilled = true;
+          const error = `command budget exhausted (${progress.commands_used}/${effectiveCommandBudget}) before final contract`;
+          emit({ type: 'command_budget', provider: name, model, error, ...progress, command_budget: effectiveCommandBudget });
+          guard.clear();
+          child.kill('SIGKILL');
+          finish({ ok: false, error, raw: rawCap, json: null, usage, termination: 'command_budget', spawns: 1, progress });
+          return;
+        }
+      }
       const r = parseStreamLine(name, obj, model);
       for (const ev of r.events) {
         if (ev.kind === 'text' && ev.delta && textBuf.length < TEXT_CAP) textBuf += ev.delta;

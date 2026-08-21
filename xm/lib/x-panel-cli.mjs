@@ -588,7 +588,7 @@ function sev(s) {
 // not a deterministic failure like bad auth or a missing CLI, so it's worth ONE fresh retry.
 // Run one round across all models in parallel, reporting start/heartbeat/elapsed
 // on stderr so a long round (large diff) isn't a silent black box.
-async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult, onProviderEvent, stream = false, partial = true, expectKeys = null, maxTimeoutMs = null) {
+async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult, onProviderEvent, stream = false, partial = true, expectKeys = null, maxTimeoutMs = null, commandBudget = null) {
   process.stderr.write(`${C.dim}${roundLabel} — ${usable.length} models in parallel…${C.reset}\n`);
   const pending = new Set(usable.map((e) => e.label));
   const t0 = Date.now();
@@ -633,6 +633,7 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
         fallbackPrompt,
         expectKeys,
         providerArgs,
+        commandBudget: e.name === 'codex' ? commandBudget : null,
         onEvent: (ev) => onProviderEvent && onProviderEvent(e, ev),
       });
     };
@@ -953,6 +954,12 @@ async function cmdReview(pos, flags) {
       stdout_tail: '',
       stderr_tail: '',
       error: null,
+      commands_used: 0,
+      command_budget: e.name === 'codex'
+        ? (Number.isFinite(Number(cfg.command_budget)) && Number(cfg.command_budget) > 0 ? Number(cfg.command_budget) : 24)
+        : null,
+      contract_state: 'incomplete',
+      attempt: 1,
       // live (round-scoped) usage + phase
       phase_label: null,
       tokens: null,
@@ -1042,17 +1049,25 @@ async function cmdReview(pos, flags) {
         m.last_event = 'usage final';
       } else if (type === 'json_parsed') {
         m.last_event = 'json parsed';
+      } else if (type === 'semantic_progress') {
+        if (Number.isInteger(ev.commands_used)) m.commands_used = ev.commands_used;
+        if (ev.contract_state === 'complete' || ev.contract_state === 'incomplete') m.contract_state = ev.contract_state;
+        m.last_event = m.contract_state === 'complete' ? 'contract complete' : `commands ${m.commands_used}/${m.command_budget}`;
       } else if (type === 'json_missing') {
         m.last_event = 'json missing';
       } else if (type === 'timeout') {
         m.last_event = 'timeout';
         m.error = ev.error || 'timeout';
+      } else if (type === 'command_budget') {
+        m.last_event = 'command budget exhausted';
+        m.error = ev.error || 'command budget exhausted';
       } else if (type === 'error') {
         m.last_event = 'process error';
         m.error = ev.error || 'process error';
       } else if (type === 'exit') {
         m.last_event = ev.code === 0 ? 'process exited' : `exit ${ev.code}`;
       } else if (type === 'lifecycle') {
+        if (ev.event === 'retry') m.attempt += 1;
         m.last_event = ev.note || 'lifecycle';
       }
     }
@@ -1159,7 +1174,7 @@ async function cmdReview(pos, flags) {
     const r1 = r1Status[e.label] ? r1Status[e.label].status : 'ok';
     writeJSON(join(dir, `${safeLabel(e.label)}.r1.json`), { model: e.label, ok: res.ok, error: res.error, r1_status: r1, findings, usage: res.usage || null, raw: res.raw });
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 1, ok: res.ok, r1_status: r1, count: findings.length, error: res.error || null });
-  }, onProviderEvent, stream, partial, ['findings'], maxTimeoutMs);
+  }, onProviderEvent, stream, partial, ['findings'], maxTimeoutMs, Number(cfg.command_budget) > 0 ? Number(cfg.command_budget) : 24);
 
   const round2 = {};
   const abstained = new Set();
@@ -1219,7 +1234,7 @@ async function cmdReview(pos, flags) {
     round2[e.label] = verdicts;
     writeJSON(join(dir, `${safeLabel(e.label)}.r2.json`), { model: e.label, ok: res.ok, error: res.error, resume, verdicts, usage: res.usage || null, raw: res.raw });
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 2, ok: res.ok, resume, count: verdicts.length, error: res.error || null });
-    }, onProviderEvent, stream, partial, ['verdicts'], maxTimeoutMs);
+    }, onProviderEvent, stream, partial, ['verdicts'], maxTimeoutMs, Number(cfg.command_budget) > 0 ? Number(cfg.command_budget) : 24);
     if (usable.every((e) => abstained.has(e.label))) {
       coverageFailed = true;
       coverageFailurePhase = 'round2';
@@ -2128,6 +2143,9 @@ function modelProgress(m) {
   const tok = fmtTokens(m.tokens);
   if (tok) parts.push(tok);
   if (m.cost_usd != null && m.cost_usd > 0) parts.push(`$${m.cost_usd.toFixed(2)}`);
+  if (m.command_budget != null) parts.push(`commands ${m.commands_used || 0}/${m.command_budget}`);
+  if (m.contract_state) parts.push(`contract ${m.contract_state}`);
+  if (m.attempt != null) parts.push(`attempt ${m.attempt}`);
   if (m.state === 'running') {
     if (m.event_quiet_s != null) parts.push(`provider quiet ${formatDuration(m.event_quiet_s)}`);
     if (m.idle_remaining_s != null) parts.push(`idle ${formatDuration(m.idle_remaining_s)} left`);
@@ -2559,6 +2577,10 @@ function watchModelJSON(m, linesN, run = null) {
     idle_remaining_s: idleRemainingS,
     heartbeat_age_s: Number.isFinite(heartbeatAt) ? Math.max(0, Math.floor((now - heartbeatAt) / 1000)) : null,
     cap_remaining_s: capRemainingS,
+    commands_used: m.commands_used || 0,
+    command_budget: m.command_budget ?? null,
+    contract_state: m.contract_state || 'incomplete',
+    attempt: m.attempt || 1,
     // Round-2 fidelity counters (post-synthesis) — only present when non-zero, so the
     // compact snapshot shape stays stable for runs that never had a fidelity problem.
     ...(m.unmatched_refs ? { unmatched_refs: m.unmatched_refs } : {}),

@@ -1025,6 +1025,16 @@ describe('xm config panel.* schema validation (F-panel)', () => {
     });
   });
 
+  test('panel.command_budget 유효값은 정수로 저장', () => {
+    withRoot((root) => {
+      const w = run(['set', 'panel.command_budget', '12'], root);
+      expect(w.exitCode).toBe(0);
+      expect(stripAnsi(w.stdout)).not.toContain('⚠');
+      const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+      expect(written.panel.command_budget).toBe(12);
+    });
+  });
+
   test('panel.model_overrides 객체는 타입 경고 없이 저장', () => {
     withRoot((root) => {
       const w = run(['set', 'panel.model_overrides', '{"codex":"gpt-5.5"}'], root);

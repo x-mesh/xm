@@ -358,6 +358,11 @@ participants after panel mode is explicitly/configurationally enabled.
   it; do not start another edit/review loop automatically. Newly discovered Medium/Low items are
   backlog unless they invalidate the current fix. A user may explicitly request another/full run.
 - Never append a native panel run as an extra review after either path.
+- A failed provider slot is retried at most once (`retry_count < 1`). For timeout, hard-cap,
+  or command-budget failures, build a strict frozen-target subset with
+  `scripts/retry-target.mjs`. Retry only when it returns `ok:true`; `unsafe_scope`,
+  `full_target_retry_forbidden`, or `retry_limit` means `Review incomplete`. Never resend the
+  same full frozen target stateless.
 
 ## Latency Policy
 

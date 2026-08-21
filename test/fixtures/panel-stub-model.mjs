@@ -110,6 +110,10 @@ function emitRaw(name, jsonStr) {
     if (process.env.X_PANEL_STUB_STDOUT_SESSION_ID) {
       process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: `session id: ${process.env.X_PANEL_STUB_STDOUT_SESSION_ID}` } }) + '\n');
     }
+    const commandCount = Number(process.env[`X_PANEL_COMMANDS_${envModel}`] || 0);
+    for (let i = 0; Number.isFinite(commandCount) && i < commandCount; i++) {
+      process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', id: `command-${i + 1}`, status: 'completed', exit_code: 0 } }) + '\n');
+    }
     process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: jsonStr } }) + '\n');
     if (process.env[`X_PANEL_MULTI_MESSAGE_${envModel}`]) {
       process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Review complete; the contract was returned above.' } }) + '\n');
@@ -157,6 +161,16 @@ function emitStream(name, jsonStr) {
 if (!isRefute && process.env[`X_PANEL_COMPLETE_THEN_HANG_${envModel}`]) {
   const payload = JSON.stringify({ findings: [{ severity: 'high', file: 'partial.js', line: 7, claim: 'completed before cap', evidence: 'captured' }] });
   if (stream) emitStream(model, payload); else emitRaw(model, payload);
+  await holdForever();
+}
+// Emit completed Codex command events without an answer, then remain alive. The
+// command-budget guard must terminate this before the wall-clock timeout.
+if (!isRefute && model === 'codex' && process.env.X_PANEL_COMMANDS_THEN_HANG_CODEX) {
+  const count = Number(process.env.X_PANEL_COMMANDS_THEN_HANG_CODEX);
+  for (let i = 0; Number.isFinite(count) && i < count; i++) {
+    process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', id: `command-${i + 1}`, status: 'completed', exit_code: 0 } }) + '\n');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
   await holdForever();
 }
 const delayMs = Number(process.env[`X_PANEL_DELAY_${isRefute ? 'R2' : 'R1'}_${envModel}_MS`] || process.env[`X_PANEL_DELAY_${envModel}_MS`] || 0);

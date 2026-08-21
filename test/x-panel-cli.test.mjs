@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { normalizeFindings, normalizeVerdicts, synthesize, synthesizeRound1, mergeConsensus, normalizeResponses, followupDelta } from '../x-panel/lib/x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, DEFAULT_POLICY } from '../x-panel/lib/x-panel/gate.mjs';
 import { historyRows, aggregatePanelStats, readPanelHistory } from '../x-panel/lib/x-panel/history.mjs';
-import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, invokeProviderAsync, normalizeKiroModel, streamCommand, parseStreamLine, parseJsonlOutput, costFromTokens, supportsStream, supportsPromptStdin, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings, stripAnsi } from '../x-panel/lib/x-panel/adapters.mjs';
+import { extractJSON, scanJSONObjects, extractContractJSON, proseOutsideJSON, autodetectModels, knownProviders, invokeProvider, invokeProviderAsync, normalizeKiroModel, streamCommand, parseStreamLine, parseJsonlOutput, costFromTokens, supportsStream, supportsPromptStdin, resolveCommand, providerReady, parseModelIds, buildCodexResumeArgs, promptSpawnOpts, withStderrReason, groundCapable, parseMarkdownFindings, stripAnsi, createProviderProgressObserver } from '../x-panel/lib/x-panel/adapters.mjs';
 import { runId } from '../x-panel/lib/x-panel/core.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
 import { shrinkDiff, splitDiffSections, DIFF_INLINE_MAX_BYTES } from '../x-panel/lib/x-panel/diff-budget.mjs';
@@ -172,6 +172,25 @@ describe('parseJsonlOutput (Codex multi-message answers)', () => {
     expect(parsed.sessionId).toBe('019f0000-0000-7000-8000-000000000001');
     expect(extractContractJSON(parsed.text, ['findings'])).toEqual(findings);
     expect(parsed.usage.output).toBe(20);
+  });
+});
+
+describe('Codex semantic progress accounting', () => {
+  test('counts completed commands and accepts only a complete findings contract', () => {
+    const observer = createProviderProgressObserver('codex', ['findings']);
+    observer.push(`${JSON.stringify({ type: 'item.completed', item: { type: 'command_execution' } })}\n`);
+    observer.push(`${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'findings: []' } })}\n`);
+    expect(observer.snapshot()).toEqual({ commands_used: 1, contract_state: 'incomplete' });
+    observer.push(`${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '{\"findings\":[' } })}\n`);
+    expect(observer.snapshot().contract_state).toBe('incomplete');
+    observer.push(`${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: ']}' } })}\n`);
+    expect(observer.finish()).toEqual({ commands_used: 1, contract_state: 'complete' });
+  });
+
+  test('leaves non-Codex providers unchanged', () => {
+    const observer = createProviderProgressObserver('claude', ['findings']);
+    expect(observer.push('{"type":"item.completed"}\n')).toBeNull();
+    expect(observer.finish()).toEqual({ commands_used: 0, contract_state: 'incomplete' });
   });
 });
 
@@ -2569,6 +2588,7 @@ describe('panel status (staleness + project scope + --all)', () => {
       models: [
         { label: 'claude', state: 'done', elapsed_s: 30 },
         { label: 'codex', state: 'running', elapsed_s: 45, phase_label: 'responding', stdout_bytes: 2130,
+          commands_used: 7, command_budget: 24, contract_state: 'incomplete', attempt: 1,
           tokens: { input: 9000, output: 3300 }, cost_usd: 0.12, started_at: new Date(Date.now() - 45_000).toISOString(), updated_at: new Date().toISOString(),
           stdout_tail: 'YYMARKER live tail line' },
       ],
@@ -2583,6 +2603,9 @@ describe('panel status (staleness + project scope + --all)', () => {
     expect(r.stdout).toContain('responding');          // live phase of the running agent
     expect(r.stdout).toContain('12.3k tok');           // live token usage
     expect(r.stdout).toContain('$0.12');               // live cost
+    expect(r.stdout).toContain('commands 7/24');
+    expect(r.stdout).toContain('contract incomplete');
+    expect(r.stdout).toContain('attempt 1');
     expect(r.stdout).toContain('provider quiet');      // provider event freshness
     expect(r.stdout).toContain('idle 29m');            // silence kill deadline, separate from cap
     expect(r.stdout).toContain('orchestrator alive');  // status heartbeat is distinct
@@ -2608,6 +2631,10 @@ describe('panel status (staleness + project scope + --all)', () => {
     expect(codex.idle_remaining_s).toBeGreaterThan(1700);
     expect(codex.heartbeat_age_s).toBeGreaterThanOrEqual(0);
     expect(codex.cap_remaining_s).toBeGreaterThan(3500);
+    expect(codex.commands_used).toBe(7);
+    expect(codex.command_budget).toBe(24);
+    expect(codex.contract_state).toBe('incomplete');
+    expect(codex.attempt).toBe(1);
     expect(codex.tail).toEqual(['YYMARKER live tail line']); // --lines flows into JSON too
   });
 
@@ -2982,6 +3009,20 @@ describe('review (stubbed models)', () => {
     expect(r.status).toBe(0);
     expect(r.stderr).toContain('single-model recovery run');
     expect(latestVerdict().models).toEqual(['codex']);
+  });
+
+  test('Codex command budget fails before an extra command and records typed status', () => {
+    writeProjectConfig({ command_budget: 2 });
+    const r = panelRaw(['review', 'budget target', '--models', 'codex', '--rounds', '1', '--json'], {
+      X_PANEL_COMMANDS_THEN_HANG_CODEX: '3',
+    });
+    expect(r.status).toBe(1);
+    const st = JSON.parse(readFileSync(join(latestRunDir(), 'status.json'), 'utf8'));
+    const codex = st.models.find((m) => m.label === 'codex');
+    expect(codex.commands_used).toBe(2);
+    expect(codex.command_budget).toBe(2);
+    expect(codex.contract_state).toBe('incomplete');
+    expect(codex.error).toContain('command budget exhausted');
   });
 
   test('a completed contract survives the wall-clock cap as partial', () => {

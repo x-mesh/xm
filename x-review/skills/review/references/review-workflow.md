@@ -257,6 +257,11 @@ worker failed or that its report is absent.
    persist any recovered report, and rerun validation. Never invent a provider-specific retry flag.
 5. Fresh-agent re-dispatch is the last step and applies only to report ids that remain missing or
    invalid after request-id recovery.
+6. **Bounded provider recovery:** timeout, wall-clock-cap, and command-budget failures get at most
+   one retry. Run `scripts/retry-target.mjs --target <frozen> --evidence <provider-artifact>
+   --attempt <count> --out <retry.patch>`. The helper selects exact target paths mentioned in the
+   evidence and copies their complete frozen diff sections. If it cannot derive a strict subset,
+   stop with `Review incomplete`; a stateless full-target retry is forbidden.
 
 The validator receipt is authoritative for review completeness. Delegate process exit status is
 transport evidence, not a substitute for report validation.

@@ -665,6 +665,16 @@ export const SCHEMA = [
     default: 1,
     description: 'native panel review round 수 — 1(기본 consensus/diversity) / 2(adversarial refutation)',
   },
+  {
+    key: 'panel.command_budget',
+    group: 'panel',
+    type: 'integer',
+    scope: 'global',
+    owner: 'x-panel',
+    min: 1,
+    default: 24,
+    description: 'Codex review slot당 완료 command_execution 상한 — final contract 전에 도달하면 command_budget으로 종료',
+  },
 ];
 
 // ── indexes ───────────────────────────────────────────────────────────

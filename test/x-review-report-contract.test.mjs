@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { validateReviewReports } from '../x-review/skills/review/scripts/validate-reports.mjs';
 import { planReview } from '../x-review/skills/review/scripts/plan-review.mjs';
 import { canonicalReviewContext, hashReviewContext, normalizeReviewContext } from '../x-review/skills/review/scripts/context-contract.mjs';
+import { buildRetryTarget, splitFrozenSections } from '../x-review/skills/review/scripts/retry-target.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(ROOT, 'x-review', 'skills', 'review', 'scripts', 'validate-reports.mjs');
@@ -35,6 +36,40 @@ function zeroReport(reportId, lens, overrides = {}) {
     ...overrides,
   };
 }
+
+describe('x-review bounded retry target', () => {
+  const patch = [
+    'diff --git a/src/a.ts b/src/a.ts', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1 +1 @@', '-a', '+aa',
+    'diff --git a/src/b.ts b/src/b.ts', '--- a/src/b.ts', '+++ b/src/b.ts', '@@ -1 +1 @@', '-b', '+bb',
+  ].join('\n');
+
+  test('copies complete frozen sections for exact evidence paths', () => {
+    const result = buildRetryTarget(patch, { evidence: 'suspected defect at src/b.ts:1' });
+    expect(result.ok).toBe(true);
+    expect(result.retry_count).toBe(1);
+    expect(result.target_files).toEqual(['src/b.ts']);
+    expect(splitFrozenSections(result.patch).map((entry) => entry.file)).toEqual(['src/b.ts']);
+    expect(result.patch).toContain('@@ -1 +1 @@');
+  });
+
+  test('fails closed for no scope, full-target scope, and a second retry', () => {
+    expect(buildRetryTarget(patch, { evidence: 'generic timeout' }).reason).toBe('unsafe_scope');
+    expect(buildRetryTarget(patch, { evidence: 'src/a.ts and src/b.ts' }).reason).toBe('full_target_retry_forbidden');
+    expect(buildRetryTarget(patch, { attempt: 1, evidence: 'src/a.ts' }).reason).toBe('retry_limit');
+  });
+
+  test('decodes quoted Git paths before selecting retry sections', () => {
+    const quoted = String.raw`diff --git "a/src/\355\225\234\352\270\200.ts" "b/src/\355\225\234\352\270\200.ts"
++++ b/src/한글.ts
++const value = true;
+diff --git a/src/other.ts b/src/other.ts
++++ b/src/other.ts
++const other = true;`;
+    const result = buildRetryTarget(quoted, { evidence: 'inspect src/한글.ts' });
+    expect(result.ok).toBe(true);
+    expect(result.target_files).toEqual(['src/한글.ts']);
+  });
+});
 
 const CONTEXT = {
   schema_version: 1,
