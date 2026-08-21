@@ -9,8 +9,8 @@ const ROOT = join(import.meta.dirname, '..');
 const XM = join(ROOT, 'xm', 'scripts', 'xm');
 
 describe('xm plan dispatch and packaging', () => {
-  test('xm plan routes to the JSON-only CLI', () => {
-    const r = spawnSync('bash', [XM, 'plan', '- Add export'], { cwd: ROOT, env: { ...process.env, XM_LIB: ROOT }, encoding: 'utf8' });
+  test('xm plan routes to the readable planner with JSON opt-in', () => {
+    const r = spawnSync('bash', [XM, 'plan', '--json', '--no-save', '- Add export'], { cwd: ROOT, env: { ...process.env, XM_LIB: ROOT }, encoding: 'utf8' });
     expect(r.status).toBe(0);
     const out = JSON.parse(r.stdout);
     expect(out.schema_version).toBe(1);
@@ -40,5 +40,15 @@ describe('xm plan dispatch and packaging', () => {
     const alias = rendered.outputs.find((item) => item.relativePath.endsWith('.agents/skills/xm-plan/SKILL.md'));
     expect(alias).toBeTruthy();
     expect(alias.content).toMatch(/^---\nname: xm-plan\n/);
+    expect(alias.content).toContain('allowed-tools:');
+    expect(alias.content).toContain('AskUserQuestion');
+    expect(alias.content).toContain('Standard (Recommended)');
+    expect(alias.content).toContain('Ultra');
+  });
+  test('Codex renderer preserves allowed-tools for interactive skills', () => {
+    const skills = scanAll({ skillsDir: join(ROOT, 'xm', 'skills'), libDir: join(ROOT, 'xm', 'lib') });
+    const rendered = renderCodexWithDiagnostics(skills, { scope: 'local', installRoot: ROOT, pluginVersion: '0.0.0' });
+    const plan = rendered.outputs.find((item) => item.relativePath.endsWith('plugins/xm/skills/plan/SKILL.md'));
+    expect(plan.content).toContain('allowed-tools:\n  - AskUserQuestion');
   });
 });

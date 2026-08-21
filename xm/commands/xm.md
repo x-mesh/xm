@@ -24,7 +24,7 @@ Parse the first whitespace-separated word of the arguments above as the subcomma
 | `probe` | probe | Premise validation |
 | `dashboard` | dashboard | Web dashboard for .xm state |
 | `panel` | panel | Cross-model adversarial review panel (claude/codex/cursor…) |
-| `plan` | plan | JSON-only PlanEnvelope scaffold and validator |
+| `plan` | plan | Quick scaffold, Standard interview, or Ultra multi-model plan |
 | `recall` | recall | Find past review/op/plan/eval/probe artifacts in this repo |
 | `wt` | wt | Session worktree — isolate the session, land back to parent |
 | `remote` | remote | Discord-based remote Claude/Codex sessions on Linux hosts |

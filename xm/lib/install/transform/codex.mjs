@@ -95,6 +95,7 @@ export function renderCodexSkill(skill, ctx, name = skill.skillName) {
     '---',
     `name: ${name}`,
     `description: ${JSON.stringify(description)}`,
+    ...(skill.allowedTools?.length ? ['allowed-tools:', ...skill.allowedTools.map((tool) => '  - ' + tool)] : []),
     '---',
     '',
   ].join('\n');

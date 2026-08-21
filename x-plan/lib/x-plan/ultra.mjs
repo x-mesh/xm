@@ -57,5 +57,6 @@ export async function runUltraPlan(requirements, models, options = {}) {
   await Promise.all(Array.from({ length: Math.min(maxParallel, entries.length) }, async () => {
     while (cursor < entries.length) { const index = cursor++; candidates[index] = await runOne(entries[index], requirements, options); }
   }));
-  return synthesizePlanCandidates(candidates, { requested_models: models, backend: options.command || process.env.X_PLAN_PANEL_CMD || 'xm panel cross' });
+  const synthesized = synthesizePlanCandidates(candidates, { requested_models: models, backend: options.command || process.env.X_PLAN_PANEL_CMD || 'xm panel cross' });
+  return { ...synthesized, rawCandidates: candidates };
 }
