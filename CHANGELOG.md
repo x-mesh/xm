@@ -12,6 +12,12 @@ bumps shipped in each marketplace release.
 
 ## [2.19.1] - 2026-08-21
 
+### Added
+
+- **plan:** add interactive planning modes
+
+## [2.19.1] - 2026-08-21
+
 ### x-plan 0.1.0 → 0.1.1
 
 - Replace JSON-only output with readable Markdown plans while retaining validated PlanEnvelope artifacts, so people can review plans without sacrificing machine-readable state (x-plan/lib/x-plan-cli.mjs, x-plan/lib/x-plan/artifact.mjs, x-plan/lib/x-plan/render.mjs).
