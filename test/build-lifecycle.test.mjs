@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { resolveTaskChecks, taskCheckFingerprint } from '../x-build/lib/x-build/build-policy.mjs';
@@ -75,6 +75,34 @@ function projectTasksPath(project) {
 }
 
 describe('plan entry and conditional interview', () => {
+  test('plan and build accept --json as transport metadata without appending it to the goal', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-'));
+    try {
+      setup(tmp);
+      const goal = 'Add a settings export command';
+      const plan = JSON.parse(run(tmp, ['plan', '--project', 'demo', goal, '--json']).stdout);
+      expect(plan.goal).toBe(goal);
+      const build = JSON.parse(run(tmp, ['build', '--project', 'demo', goal, '--json']).stdout);
+      expect(build.goal).toBe(goal);
+      expect(build.goal).not.toContain('--json');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('steps compute ignores trailing --json instead of treating it as a project', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-'));
+    try {
+      const project = setup(tmp);
+      run(tmp, ['tasks', 'add', 'Implement export', '--done-criteria', 'works']);
+      const result = run(tmp, ['steps', 'compute', '--project', 'demo', '--json']);
+      expect(result.code).toBe(0);
+      expect(readFileSync(join(project, 'phases', '02-plan', 'steps.json'), 'utf8')).toContain('t1');
+      expect(existsSync(join(tmp, '.xm', 'build', 'projects', '-json'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
   test('plan is plan-only, build continues after approval, interview asks at most three questions', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-'));
     try {
@@ -475,8 +503,13 @@ describe('content-bound approval and shared review groups', () => {
       const preCheckPhase = run(tmp, ['phase', 'next']);
       expect(preCheckPhase.code).toBe(2);
       expect(preCheckPhase.stdout).toContain('x-build group-check build');
+      const staleLock = join(project, 'phases', '03-execute', '.group-build.quality.lock');
+      mkdirSync(staleLock, { recursive: true });
+      const old = new Date(Date.now() - 10_000);
+      utimesSync(staleLock, old, old);
       const checked = run(tmp, ['group-check', 'build', '--json']);
       expect(JSON.parse(checked.stdout).ok).toBe(true);
+      expect(existsSync(staleLock)).toBe(false);
       const afterCheck = JSON.parse(run(tmp, ['run-status', '--json']).stdout);
       expect(afterCheck.next_action).toBe('phase next');
       const routed = JSON.parse(run(tmp, ['next', '--json']).stdout);

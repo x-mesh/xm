@@ -36,16 +36,25 @@ Store as `{base_branch}` and use it for all branch comparisons in PRD / plan / t
 
 For Node projects, read `package.json` scripts once to discover available entries (`type-check`, `typecheck`, `tsc`, `lint`, `lint:fix`, `test`, `test:unit`, `build`) and prefer them over generic defaults.
 
-Task and group checks are offline by default. `x-build` removes known live AI-provider credentials such as `GROQ_API_KEY` from the check process and stops each command after 120 seconds. A project that intentionally runs live-provider integration checks must opt in explicitly:
+Task and group checks are offline by default. `x-build` removes known live AI-provider credentials such as `GROQ_API_KEY` from the check process and stops each command after 600 seconds. A project that intentionally runs live-provider integration checks must opt in explicitly:
 
 ```json
 {
   "build": {
     "allow_live_provider_checks": true,
-    "check_timeout_ms": 120000
+    "check_timeout_ms": 600000
   }
 }
 ```
+
+Set this under the `build` object in either supported config layer:
+
+```json
+{ "build": { "check_timeout_ms": 600000 } }
+```
+
+Project shared: `.xm/config.json`. Build-local override: `.xm/build/config.json`.
+Putting `check_timeout_ms` at the top level is invalid and has no effect.
 
 Keep deterministic unit checks as the default. Put live-provider coverage behind the explicit opt-in.
 
@@ -56,4 +65,3 @@ Keep deterministic unit checks as the default. Put live-provider coverage behind
 - When a user's goal mentions tests/lint/build without specifying commands: detect and confirm
 
 If detection is ambiguous (multiple lockfiles, unknown manifest), ask the user via AskUserQuestion rather than guessing.
-

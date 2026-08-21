@@ -15,6 +15,7 @@ Review state is stored in `.xm/review/`.
 ├── finding-lifecycle.json              # Byte-bound per-finding lifecycle and evidence
 ├── runs/{task-id}/
 │   ├── run.json                        # Expected task, target hash, and report instances
+│   ├── context.json                    # Optional canonical host-authored review context
 │   ├── validation.json                 # Machine-readable coverage gate receipt
 │   └── reports/{report-id}.json        # Raw structured agent response
 └── history/
@@ -70,6 +71,8 @@ Prepend metadata at the top of the file:
   },
   "task_id": "review-20260812T120000Z-123-456",
   "target_hash": "sha256:...",
+  "context_status": "absent|bound",
+  "context_hash": "sha256:... (bound only)",
   "reviewed_commit": "full HEAD commit SHA at Phase 1",
   "reviewed_files_all": ["src/auth.ts"],
   "reviewed_file_snapshots": [
@@ -100,6 +103,7 @@ Prepend metadata at the top of the file:
 ```
 
 `reviewed_commit` is required: `x-build verify-review-fix` anchors triage freshness on it and fails closed when it is missing.
+`context_status` is explicit. Legacy runs use `absent` and omit `context_hash`. A supplied contract is validated, canonicalized, saved as `runs/{task-id}/context.json`, and bound by SHA-256. Changing it requires a new review.
 `reviewed_files_all` is the complete Phase-1 target file set, including files with no findings.
 `coverage` measures valid reviewer responses; `target_coverage` measures frozen target files
 actually inspected. Both must be complete before LGTM.

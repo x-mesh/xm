@@ -69,7 +69,7 @@ Full CLI surface. SKILL.md links here instead of inlining it — the catalog is 
 - `verify-coverage [--strict]` — Check requirement-to-task mapping (advisory; `--strict` exits 1 on uncovered)
 - `verify-traceability` — R# ↔ Task ↔ AC ↔ Done Criteria matrix (exits 1 on a gap)
 - `verify-contracts` — List each completed task's done_criteria as a checklist. ADVISORY ONLY: it prints contracts for you or an agent to inspect and always exits 0 — it does not verify fulfillment
-- `verify-review-fix [--init] [--reverify <F#|finding_id> --outcome resolved|persistent|regression --evidence <text>]` — Gate x-review fixes through Phase-1 snapshots, exact-triage authorization, allowed-file scope, and byte-bound finding reverification
+- `verify-review-fix [--init] [--reverify <F#|finding_id> --outcome resolved|persistent|regression --evidence <text>]` — Gate x-review fixes through Phase-1 snapshots, exact-triage authorization, allowed-file scope, and byte-bound finding reverification. A bound review context additionally requires finding-level references/evidence plus host evidence for every invariant and acceptance check, including LGTM reviews.
 - `verify-drift [--threshold N]` — Compute weighted PRD baseline drift (0.5×goal + 0.3×constraint + 0.2×ontology); writes phases/04-verify/drift-score.json and gates on threshold
 - `context-usage` — Show artifact token usage
 

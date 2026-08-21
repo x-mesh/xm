@@ -243,6 +243,7 @@ Examples:
 
 See `references/review-workflow.md` — full pipeline:
 - **Phase 1: TARGET** — collect diff/PR/file content, auto-detect language, and snapshot the complete target file set as `reviewed_files_all` + raw-byte SHA-256 `reviewed_file_snapshots` before dispatch. `### full` mode uses Lens-first split: each agent scans all files with one lens (file-group split prohibited).
+- **Phase 1 context binding** — supplied review context is validated/canonicalized and bound by SHA-256. Legacy runs record `context_status: absent`; supplied-invalid context fails closed.
 - **Phase 2: ASSIGN** — run `scripts/plan-review.mjs` against the frozen target. The default
   `adaptive-fast` plan dispatches two composite reviewers and signal-matched specialists in the
   same parallel wave. Explicit `--lenses` and non-default presets override the plan.

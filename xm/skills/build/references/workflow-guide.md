@@ -332,6 +332,8 @@ Recommendation only — not auto-applied. User must specify via `--strategy`.
    `verify-review-fix` validates the exact triage and authorizes edits; do not edit before it
    passes. Review-fix edits MUST be limited to `fix_now` findings and
    `fix_scope.allowed_files`. Editing triage invalidates the authorization. After applying fixes,
+   a bound review context also requires each Medium+ finding to cite real context IDs with host evidence,
+   and requires evidence for every invariant and acceptance check. LGTM does not bypass this context gate.
    record byte-bound reverification for every `fix_now` finding:
    ```bash
    $XMB verify-review-fix --reverify F1 --outcome resolved --evidence "targeted regression test passes"

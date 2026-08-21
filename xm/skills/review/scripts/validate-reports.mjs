@@ -115,6 +115,13 @@ function validateManifest(manifest) {
   if (typeof manifest.target_hash !== 'string' || !TARGET_HASH_RE.test(manifest.target_hash)) {
     issues.push(issue('manifest_target_hash', 'target_hash must be sha256:<64 lowercase hex>'));
   }
+  const contextStatus = manifest.context_status ?? 'absent';
+  if (!['absent', 'bound'].includes(contextStatus)) issues.push(issue('manifest_context_status', 'context_status must be absent or bound'));
+  else if (contextStatus === 'bound' && (typeof manifest.context_hash !== 'string' || !TARGET_HASH_RE.test(manifest.context_hash))) {
+    issues.push(issue('manifest_context_hash', 'bound context requires context_hash sha256:<64 lowercase hex>'));
+  } else if (contextStatus === 'absent' && manifest.context_hash !== undefined) {
+    issues.push(issue('manifest_context_hash_unexpected', 'absent context must not carry context_hash'));
+  }
   if (!Array.isArray(manifest.expected_reports) || manifest.expected_reports.length === 0) {
     issues.push(issue('manifest_reports', 'expected_reports must be a non-empty array'));
   } else {
@@ -189,6 +196,9 @@ function validateReport(report, manifest, file, targetSections = null) {
   }
   if (report.target_hash !== manifest.target_hash) {
     issues.push(issue('stale_target', 'target_hash does not match the dispatched target', lens, file, reportId));
+  }
+  if ((manifest.context_status ?? 'absent') === 'bound' && report.context_hash !== manifest.context_hash) {
+    issues.push(issue('stale_context', 'context_hash does not match the dispatched review context', lens, file, reportId));
   }
   const expected = manifest.expected_reports.find((entry) => entry.report_id === report.report_id);
   if (!expected) {
@@ -336,6 +346,8 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
     schema_version: 1,
     task_id: manifest.task_id,
     target_hash: manifest.target_hash,
+    context_status: manifest.context_status ?? 'absent',
+    ...((manifest.context_status ?? 'absent') === 'bound' ? { context_hash: manifest.context_hash } : {}),
     ok,
     coverage: { expected: expected.length, valid: validReports.length },
     ...(targetCoverage ? { target_coverage: targetCoverage } : {}),

@@ -254,7 +254,8 @@ export function cmdMode(args) {
 // ── cmdContext ───────────────────────────────────────────────────────
 
 export function cmdContext(args) {
-  const project = resolveProject(args[0] || null, { autoInit: true });
+  const { positional } = parseOptions(args);
+  const project = resolveProject(positional[0] || null, { autoInit: true });
   const manifest = readJSON(manifestPath(project));
   const currentPhase = PHASES.find(p => p.id === manifest.current_phase);
   const taskData = readJSON(tasksPath(project));
@@ -308,7 +309,8 @@ export function cmdContext(args) {
 // ── cmdPhaseContext ──────────────────────────────────────────────────
 
 export function cmdPhaseContext(args) {
-  const project = resolveProject(args[0] || null, { autoInit: true });
+  const { positional } = parseOptions(args);
+  const project = resolveProject(positional[0] || null, { autoInit: true });
   const manifest = readJSON(manifestPath(project));
   const currentPhase = PHASES.find(p => p.id === manifest.current_phase);
   const phaseName = currentPhase?.name || 'research';

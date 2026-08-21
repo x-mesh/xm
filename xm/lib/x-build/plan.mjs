@@ -236,11 +236,16 @@ function parsePlanArgs(args) {
       draft = true;
     } else if (arg === '--execute') {
       execute = true;
+    } else if (arg === '--json') {
+      // Plan output is already JSON. Accept the common transport flag without
+      // leaking it into the user goal.
     } else if (arg === '--profile') {
       if (i + 1 >= args.length) throw new Error('--profile requires light|standard|deep');
       profile = normalizeBuildProfile(args[++i]);
     } else if (arg.startsWith('--profile=')) {
       profile = normalizeBuildProfile(arg.slice('--profile='.length));
+    } else if (arg.startsWith('--')) {
+      throw new Error(`unknown plan option: ${arg}`);
     } else {
       positional.push(arg);
     }

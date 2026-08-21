@@ -194,6 +194,8 @@ etc.), including redundant agents for the same lens. Save each response unchange
 `$RUN_DIR/reports/{report_id}.json`; do not repair prose
 or manufacture a zero-finding JSON object on the agent's behalf.
 
+When the host supplies review context, validate and canonicalize it with `scripts/context-contract.mjs`, save it as `$RUN_DIR/context.json`, and set `context_status: "bound"` plus `context_hash` in `run.json`. Add the canonical contract in a `TRUSTED REVIEW CONTEXT` block before the untrusted `TARGET`; every bound lens report must echo the same hash. The `--cross-vendor` path passes the same context file to `xm panel review --context-file`, whose `status.json` and `verdict.json` must carry that hash. Otherwise set `context_status: "absent"` and disclose legacy compatibility mode. Supplied-invalid context fails closed. Persist the same status/hash and canonical contract in `last-result.json`; a changed hash requires a new review.
+
 **Invoke N Agent tools in a SINGLE message — one tool call per report instance, all in the same
 message.** That is what makes them run concurrently. **ALWAYS set `run_in_background: false`
 on every lens call** — the parameter defaults to TRUE, and a backgrounded Agent call returns

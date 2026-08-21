@@ -22,8 +22,8 @@ import { execSync, spawnSync } from 'node:child_process';
 const RUN_DIR = join(homedir(), '.xm', 'run');
 const PID_FILE = join(RUN_DIR, 'xkit-server.pid');
 const REQUEST_TIMEOUT_MS_DEFAULT = 30000;
-const REQUEST_TIMEOUT_MS_LONG = 600000; // 10 min for long-running commands (run, plan, quality)
-const LONG_COMMANDS = ['run', 'plan', 'quality', 'verify-contracts', 'discuss', 'research'];
+const REQUEST_TIMEOUT_MS_LONG = 660000; // build checks allow 10 min + transport overhead
+const LONG_COMMANDS = ['run', 'plan', 'quality', 'task-check', 'group-check', 'review-group', 'phase', 'close', 'verify-contracts', 'discuss', 'research'];
 const HEALTH_TIMEOUT_MS = 2000;
 const LIB_DIR = resolve(dirname(new URL(import.meta.url).pathname), '..');
 

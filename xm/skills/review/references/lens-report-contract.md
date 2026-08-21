@@ -10,6 +10,7 @@ trailing prose.
   "schema_version": 1,
   "task_id": "{task_id copied exactly from the dispatch}",
   "target_hash": "sha256:{hash copied exactly from the dispatch}",
+  "context_hash": "sha256:{context hash copied exactly for bound runs; omit for absent runs}",
   "report_id": "{unique report instance copied exactly from the dispatch}",
   "lens": "{lens copied exactly from the dispatch}",
   "status": "complete",
@@ -32,7 +33,7 @@ trailing prose.
 
 Rules:
 
-- Echo `task_id`, `target_hash`, `report_id`, and `lens` literally. Do not infer or regenerate them.
+- Echo `task_id`, `target_hash`, `report_id`, and `lens` literally. For `context_status: bound`, also echo `context_hash` literally. Omit it for legacy `absent` runs.
 - `report_id` identifies one agent execution, not merely a lens. Redundant runs use distinct IDs
   such as `security-1`, `security-2`, and `security-3`.
 - `checked` must contain at least one concrete path, branch, boundary, data flow, or behavior.

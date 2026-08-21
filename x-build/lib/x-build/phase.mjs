@@ -59,7 +59,8 @@ function recordGateOutcome(project, phaseId, gateType, passed, passedBy) {
 }
 
 export function phaseNext(args) {
-  const project = resolveProject(args[0], { autoInit: true });
+  const { positional } = parseOptions(args);
+  const project = resolveProject(positional[0], { autoInit: true });
   const manifest = readJSON(manifestPath(project));
   const config = loadConfig();
   const currentIdx = PHASES.findIndex(p => p.id === manifest.current_phase);

@@ -469,7 +469,7 @@ export const SCHEMA = [
     group: 'misc',
     type: 'integer',
     scope: 'either',
-    default: 120000,
+    default: 600000,
     description: '개별 task/group check command 제한 시간(ms, 1000-600000)',
   },
 

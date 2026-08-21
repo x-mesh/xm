@@ -437,6 +437,69 @@ function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+const REVIEW_CONTEXT_KEYS = new Set(['schema_version', 'goal', 'invariants', 'constraints', 'non_goals', 'acceptance_checks', 'provenance']);
+const REVIEW_CONTEXT_PROVENANCE_KEYS = new Set(['source', 'created_by', 'created_at']);
+const REVIEW_CONTEXT_ID_RE = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
+
+function plainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+}
+
+function canonicalObject(value) {
+  if (Array.isArray(value)) return value.map(canonicalObject);
+  if (!plainObject(value)) return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalObject(value[key])]));
+}
+
+function validateReviewContextContract(value) {
+  if (!plainObject(value) || value.schema_version !== 1) return null;
+  if (Object.keys(value).some(key => !REVIEW_CONTEXT_KEYS.has(key))) return null;
+  const text = (candidate, max = 4000) => typeof candidate === 'string' && candidate.trim() && candidate.trim().length <= max
+    ? candidate.trim()
+    : null;
+  const ids = new Set();
+  const items = (candidate, { required = false, acceptance = false } = {}) => {
+    if (!Array.isArray(candidate) || (required && candidate.length === 0) || candidate.length > 100) return null;
+    const normalized = [];
+    for (const item of candidate) {
+      const allowed = acceptance ? ['id', 'description', 'command'] : ['id', 'text'];
+      if (!plainObject(item) || Object.keys(item).some(key => !allowed.includes(key))) return null;
+      const id = text(item.id, 64);
+      const body = text(acceptance ? item.description : item.text);
+      if (!id || !REVIEW_CONTEXT_ID_RE.test(id) || ids.has(id) || !body) return null;
+      ids.add(id);
+      const normalizedItem = acceptance ? { id, description: body } : { id, text: body };
+      if (acceptance && item.command !== undefined) {
+        const command = text(item.command, 2000);
+        if (!command) return null;
+        normalizedItem.command = command;
+      }
+      normalized.push(normalizedItem);
+    }
+    return normalized;
+  };
+  const goal = text(value.goal);
+  const invariants = items(value.invariants, { required: true });
+  const constraints = items(value.constraints);
+  const nonGoals = items(value.non_goals);
+  const acceptanceChecks = items(value.acceptance_checks, { required: true, acceptance: true });
+  if (!goal || !invariants || !constraints || !nonGoals || !acceptanceChecks) return null;
+  const normalized = { schema_version: 1, goal, invariants, constraints, non_goals: nonGoals, acceptance_checks: acceptanceChecks };
+  if (value.provenance !== undefined) {
+    if (!plainObject(value.provenance) || Object.keys(value.provenance).some(key => !REVIEW_CONTEXT_PROVENANCE_KEYS.has(key))) return null;
+    normalized.provenance = {};
+    for (const key of REVIEW_CONTEXT_PROVENANCE_KEYS) {
+      if (value.provenance[key] === undefined) continue;
+      const entry = text(value.provenance[key], 500);
+      if (!entry) return null;
+      normalized.provenance[key] = entry;
+    }
+  }
+  const canonical = JSON.stringify(canonicalObject(normalized));
+  return Buffer.byteLength(canonical) <= 64 * 1024 ? canonical : null;
+}
+
 function safeWorkspacePath(file) {
   const root = resolve(workspaceRoot());
   const abs = resolve(root, String(file || ''));
@@ -546,8 +609,93 @@ function getVerificationItems(triage) {
   return Array.isArray(items) ? items : [];
 }
 
+function reviewContextProvenance(review) {
+  if (review?.context_status !== 'bound') return null;
+  const hash = typeof review.context_hash === 'string' ? review.context_hash : null;
+  const contract = review.context_contract || review.context || null;
+  const canonicalContract = validateReviewContextContract(contract);
+  const ids = (items) => Array.isArray(items)
+    ? items.map(item => typeof item?.id === 'string' ? item.id : null).filter(Boolean)
+    : [];
+  return {
+    hash,
+    contract_valid: canonicalContract !== null,
+    contract_hash: canonicalContract ? `sha256:${sha256(canonicalContract)}` : null,
+    invariant_ids: ids(contract?.invariants),
+    constraint_ids: ids(contract?.constraints),
+    non_goal_ids: ids(contract?.non_goals),
+    acceptance_check_ids: ids(contract?.acceptance_checks),
+  };
+}
+
+function nonEmptyEvidence(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function contextAssessmentFailures(triage, required, context) {
+  if (!context) return [];
+  const failures = [];
+  if (!context.hash) {
+    failures.push('bound review context is missing context_hash; re-run x-review');
+    return failures;
+  }
+  if (!context.contract_valid) {
+    failures.push('bound review context is missing or has an invalid canonical contract; re-run x-review');
+    return failures;
+  }
+  if (context.contract_hash !== context.hash) {
+    failures.push('bound review context does not match context_hash; re-run x-review');
+    return failures;
+  }
+  if (triage?.context_hash !== context.hash) {
+    failures.push('triage.json context_hash does not match last-result.json; re-run verify-review-fix --init');
+  }
+  const expectedInvariants = new Set(context.invariant_ids);
+  const expectedAcceptance = new Set(context.acceptance_check_ids);
+  const knownContextRefs = new Set([
+    ...expectedInvariants,
+    ...context.constraint_ids,
+    ...context.non_goal_ids,
+    ...expectedAcceptance,
+  ]);
+  const seenInvariants = new Set();
+  const seenAcceptance = new Set();
+  for (const finding of required) {
+    const item = toTriageMap(triage).get(finding.finding_id) || toTriageMap(triage).get(finding.id);
+    const assessment = item?.context_assessment;
+    if (!assessment || !['aligned', 'conflicts', 'not_applicable'].includes(assessment.alignment)) {
+      failures.push(`${finding.id}: context_assessment.alignment must be aligned, conflicts, or not_applicable`);
+      continue;
+    }
+    if (!Array.isArray(assessment.context_refs) || assessment.context_refs.length === 0 || !assessment.context_refs.every(ref => typeof ref === 'string' && ref.trim())) {
+      failures.push(`${finding.id}: context_assessment.context_refs must cite at least one context item`);
+    } else {
+      const unknownRefs = assessment.context_refs.filter(ref => !knownContextRefs.has(ref));
+      if (unknownRefs.length > 0) failures.push(`${finding.id}: context_assessment.context_refs contains unknown ids: ${unknownRefs.join(', ')}`);
+    }
+    if (!nonEmptyEvidence(assessment.evidence)) {
+      failures.push(`${finding.id}: context_assessment.evidence is required`);
+    }
+  }
+  const assessments = triage?.context_assessment || {};
+  for (const item of assessments.invariants || []) {
+    if (typeof item?.id === 'string' && nonEmptyEvidence(item.evidence)) seenInvariants.add(item.id);
+  }
+  for (const item of assessments.acceptance_checks || []) {
+    if (typeof item?.id === 'string' && nonEmptyEvidence(item.evidence)) seenAcceptance.add(item.id);
+  }
+  for (const id of expectedInvariants) {
+    if (!seenInvariants.has(id)) failures.push(`context invariant ${id} requires host evidence`);
+  }
+  for (const id of expectedAcceptance) {
+    if (!seenAcceptance.has(id)) failures.push(`context acceptance check ${id} requires host evidence`);
+  }
+  return failures;
+}
+
 function buildTriageTemplate(review) {
   const findings = Array.isArray(review.findings) ? review.findings : [];
+  const context = reviewContextProvenance(review);
   const targetFindings = findings.map((finding, index) => {
     const severity = normalizeSeverity(finding.severity);
     return {
@@ -562,6 +710,7 @@ function buildTriageTemplate(review) {
         : (TRIAGE_REQUIRED_SEVERITY.has(severity) ? '' : 'backlog'),
       evidence: '',
       fix_notes: '',
+      ...(context ? { context_assessment: { alignment: '', context_refs: [], evidence: '' } } : {}),
     };
   });
 
@@ -578,6 +727,13 @@ function buildTriageTemplate(review) {
     verdict: review.verdict || null,
     baseline_changed_files: collectChangedFilesSinceReview(review.reviewed_commit),
     target_findings: targetFindings,
+    ...(context ? {
+      context_hash: context.hash,
+      context_assessment: {
+        invariants: context.invariant_ids.map(id => ({ id, evidence: '' })),
+        acceptance_checks: context.acceptance_check_ids.map(id => ({ id, evidence: '' })),
+      },
+    } : {}),
     fix_scope: {
       allowed_files: allowedFiles,
       forbidden: [
@@ -782,6 +938,16 @@ export function cmdVerifyReviewFix(args) {
 
   if (opts.init) {
     const initFailures = [...freshness.failures, ...findingIdFailures];
+    const context = reviewContextProvenance(review);
+    if (review?.context_status === 'bound' && !context?.hash) {
+      initFailures.push('bound review context is missing context_hash; re-run x-review');
+    }
+    if (context && !context.contract_valid) {
+      initFailures.push('bound review context is missing or has an invalid canonical contract; re-run x-review');
+    }
+    if (context?.contract_valid && context.contract_hash !== context.hash) {
+      initFailures.push('bound review context does not match context_hash; re-run x-review');
+    }
     if (freshness.changed.length > 0) {
       initFailures.push(`Reviewed files changed since x-review: ${freshness.changed.join(', ')}. Re-run x-review before triage.`);
     }
@@ -803,6 +969,7 @@ export function cmdVerifyReviewFix(args) {
 
   const verdict = normalizeVerdict(review?.verdict);
   if ((verdict === 'lgtm' || verdict === 'pass') && required.length === 0) {
+    const context = reviewContextProvenance(review);
     const existingTriage = readJSON(triagePath);
     const existingLifecycle = readJSON(lifecyclePath());
     const existingGate = readJSON(join(reviewDir(), 'review-fix-gate.json'));
@@ -813,6 +980,30 @@ export function cmdVerifyReviewFix(args) {
       || (!!existingTriage?.initialized_at && !!existingTriage?.review_snapshot_digest)
       || existingLifecycle?.schema === 1
       || !!existingGate?.lifecycle_digest;
+    if (context) {
+      if (!existingTriage) {
+        console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
+        console.log('  - Bound LGTM requires host context evidence; run x-build verify-review-fix --init');
+        process.exitCode = 1;
+        return;
+      }
+      const contextFailures = [...freshness.failures, ...contextAssessmentFailures(existingTriage, [], context)];
+      if (freshness.changed.length > 0) contextFailures.push(`Reviewed files changed since x-review: ${freshness.changed.join(', ')}`);
+      if (existingTriage.reviewed_commit !== (review.reviewed_commit || null)) contextFailures.push('triage.json reviewed_commit does not match last-result.json reviewed_commit');
+      if (existingTriage.review_snapshot_digest !== freshness.digest) contextFailures.push('triage.json review_snapshot_digest does not match last-result.json');
+      if (existingLifecycle?.reviewed_commit !== existingTriage.reviewed_commit) contextFailures.push('finding lifecycle does not match triage reviewed_commit');
+      if (contextFailures.length > 0) {
+        console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
+        for (const failure of contextFailures) console.log(`  - ${failure}`);
+        process.exitCode = 1;
+        return;
+      }
+      if (!existingGate && existingLifecycle?.schema === 1) {
+        console.log(`${C.green}Review Fix Gate passed.${C.reset}`);
+        console.log('  Bound LGTM context evidence is complete and the review snapshot is fresh.');
+        return;
+      }
+    }
     if (lifecycleAware && (!existingTriage || !existingLifecycle || !existingGate)) {
       console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
       console.log('  - LGTM cannot close a lifecycle-aware review-fix with missing triage, lifecycle, or gate artifacts');
@@ -862,6 +1053,7 @@ export function cmdVerifyReviewFix(args) {
     failures.push('Run: x-build verify-review-fix --init');
   } else {
     const triage = readJSON(triagePath);
+    const context = reviewContextProvenance(review);
     const triageMap = toTriageMap(triage);
     const allowedFiles = getAllowedFiles(triage);
     const verification = getVerificationItems(triage);
@@ -905,6 +1097,7 @@ export function cmdVerifyReviewFix(args) {
     }
 
     failures.push(...freshness.failures);
+    failures.push(...contextAssessmentFailures(triage, required, context));
     if (triage.review_snapshot_digest !== freshness.digest) {
       failures.push('triage.json review_snapshot_digest does not match last-result.json; re-run verify-review-fix --init');
     }

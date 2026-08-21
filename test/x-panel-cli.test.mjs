@@ -17,6 +17,8 @@ import { runId } from '../x-panel/lib/x-panel/core.mjs';
 import { readEventsLog, formatEventLine, sanitizeEventText, maxSeq } from '../x-panel/lib/x-panel/events-log.mjs';
 import { shrinkDiff, splitDiffSections, DIFF_INLINE_MAX_BYTES } from '../x-panel/lib/x-panel/diff-budget.mjs';
 import { unwrapEnvelope } from '../x-panel/lib/x-panel/adapters.mjs';
+import { hashReviewContext as hashPanelContext } from '../x-panel/lib/x-panel/context-contract.mjs';
+import { hashReviewContext as hashReviewContext } from '../x-review/skills/review/scripts/context-contract.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-panel', 'lib', 'x-panel-cli.mjs');
 const STUB = join(import.meta.dirname, 'fixtures', 'panel-stub-model.mjs');
@@ -74,6 +76,19 @@ function latestRunDir() {
   const panelDir = join(DIR, '.xm', 'panel');
   const runs = readdirSync(panelDir).filter(n => n.startsWith('panel-')).sort();
   return join(panelDir, runs[runs.length - 1]);
+}
+
+function writeReviewContext() {
+  const path = join(DIR, 'review-context.json');
+  writeFileSync(path, JSON.stringify({
+    schema_version: 1,
+    goal: 'Preserve compatibility.',
+    invariants: [{ id: 'INV1', text: 'Existing callers keep defaults.' }],
+    constraints: [],
+    non_goals: [],
+    acceptance_checks: [{ id: 'AC1', description: 'Compatibility test passes.' }],
+  }));
+  return path;
 }
 
 beforeAll(() => { DIR = mkdtempSync(join(tmpdir(), 'xpanel-')); });
@@ -161,6 +176,35 @@ describe('parseJsonlOutput (Codex multi-message answers)', () => {
 });
 
 describe('panel history ledger (빅뱃2)', () => {
+  test('standalone panel and review packages keep context hashing compatible', () => {
+    const contract = JSON.parse(readFileSync(writeReviewContext(), 'utf8'));
+    expect(hashPanelContext(contract)).toBe(hashReviewContext(contract));
+  });
+
+  test('records a validated context hash in native review provenance', () => {
+    const context = writeReviewContext();
+    const r = review(['context target', '--rounds', '1', '--context-file', context, '--json']);
+    expect(r.status).toBe(0);
+    const verdict = latestVerdict();
+    const status = JSON.parse(readFileSync(join(latestRunDir(), 'status.json'), 'utf8'));
+    expect(verdict.context_status).toBe('bound');
+    expect(verdict.context_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(status.context_hash).toBe(verdict.context_hash);
+  });
+
+  test('fails coverage when a provider returns a different context hash', () => {
+    const context = writeReviewContext();
+    const r = review(['context target', '--rounds', '1', '--context-file', context, '--json'], {
+      X_PANEL_CONTEXT_HASH_CODEX: `sha256:${'f'.repeat(64)}`,
+      X_PANEL_CONTEXT_HASH_CLAUDE: `sha256:${'f'.repeat(64)}`,
+    });
+    expect(r.status).toBe(1);
+    const verdict = latestVerdict();
+    expect(verdict.coverage_failed).toBe(true);
+    expect(verdict.by_model.codex.r1).toBe('failed');
+    expect(verdict.by_model.claude.r1).toBe('failed');
+  });
+
   const REC = {
     run: 'panel-x', created_at: '2026-07-11T00:00:00Z', models: ['claude', 'codex'],
     by_model: {
