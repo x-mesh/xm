@@ -57,6 +57,10 @@ describe('x-review context contract', () => {
     expect(() => normalizeReviewContext({ ...CONTEXT, transcript: 'secret' })).toThrow('unknown fields');
     expect(() => normalizeReviewContext({ ...CONTEXT, invariants: [] })).toThrow('invariants');
     expect(() => normalizeReviewContext({ ...CONTEXT, acceptance_checks: [] })).toThrow('acceptance_checks');
+    expect(() => normalizeReviewContext({
+      ...CONTEXT,
+      acceptance_checks: [{ id: 'INV1', description: 'Collides with an invariant.' }],
+    })).toThrow('unique across all sections');
   });
 });
 

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { runQualityPipeline } from '../x-build/lib/x-build/quality-pipeline.mjs';
+import { hashReviewContext } from '../x-review/skills/review/scripts/context-contract.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, '..', 'x-build', 'lib', 'x-build-cli.mjs');
@@ -782,19 +783,24 @@ describe('verify-review-fix', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       setupProject(tmp);
+      const contextContract = {
+        schema_version: 1,
+        goal: 'Preserve compatibility',
+        invariants: [{ id: 'INV1', text: 'Preserve callers' }],
+        constraints: [],
+        non_goals: [],
+        acceptance_checks: [{ id: 'AC1', description: 'Compatibility passes' }],
+      };
       writeReviewResult(tmp, {
         context_status: 'bound',
-        context_hash: `sha256:${'c'.repeat(64)}`,
-        context_contract: {
-          invariants: [{ id: 'INV1', text: 'Preserve callers' }],
-          acceptance_checks: [{ id: 'AC1', description: 'Compatibility passes' }],
-        },
+        context_hash: hashReviewContext(contextContract),
+        context_contract: contextContract,
       });
       const triage = initAndEditTriage(tmp, value => {
         value.target_findings[0].evidence = 'Reproduced';
         value.verification = ['bun test'];
       });
-      expect(triage.context_hash).toBe(`sha256:${'c'.repeat(64)}`);
+      expect(triage.context_hash).toBe(hashReviewContext(contextContract));
       let result = run(['verify-review-fix'], { cwd: tmp });
       expect(result.exitCode).not.toBe(0);
       expect(result.stdout).toContain('context_assessment');
@@ -822,20 +828,58 @@ describe('verify-review-fix', () => {
     }
   });
 
+  test('bound review context without its canonical contract fails closed', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, { context_status: 'bound', context_hash: `sha256:${'e'.repeat(64)}` });
+      const result = run(['verify-review-fix', '--init'], { cwd: tmp });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout).toContain('invalid canonical contract');
+      expect(existsSync(join(tmp, '.xm', 'review', 'triage.json'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('bound review context whose contract no longer matches its hash fails closed', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      const contextContract = {
+        schema_version: 1, goal: 'Preserve compatibility',
+        invariants: [{ id: 'INV1', text: 'Preserve callers' }], constraints: [], non_goals: [],
+        acceptance_checks: [{ id: 'AC1', description: 'Compatibility passes' }],
+      };
+      writeReviewResult(tmp, { context_status: 'bound', context_hash: `sha256:${'f'.repeat(64)}`, context_contract: contextContract });
+      const result = run(['verify-review-fix', '--init'], { cwd: tmp });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout).toContain('does not match context_hash');
+      expect(existsSync(join(tmp, '.xm', 'review', 'triage.json'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('bound LGTM still requires host invariant and acceptance evidence', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       setupProject(tmp);
+      const contextContract = {
+        schema_version: 1,
+        goal: 'Preserve compatibility',
+        invariants: [{ id: 'INV1', text: 'Preserve callers' }],
+        constraints: [],
+        non_goals: [],
+        acceptance_checks: [{ id: 'AC1', description: 'Compatibility passes' }],
+      };
       writeReviewResult(tmp, {
         verdict: 'LGTM',
         findings: [],
         reviewed_files_all: ['src/auth.ts'],
         context_status: 'bound',
-        context_hash: `sha256:${'d'.repeat(64)}`,
-        context_contract: {
-          invariants: [{ id: 'INV1', text: 'Preserve callers' }],
-          acceptance_checks: [{ id: 'AC1', description: 'Compatibility passes' }],
-        },
+        context_hash: hashReviewContext(contextContract),
+        context_contract: contextContract,
       });
       let result = run(['verify-review-fix'], { cwd: tmp });
       expect(result.exitCode).not.toBe(0);

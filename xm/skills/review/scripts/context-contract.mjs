@@ -71,6 +71,11 @@ export function normalizeReviewContext(value) {
     non_goals: cleanItems(value.non_goals, 'non_goals'),
     acceptance_checks: cleanAcceptanceChecks(value.acceptance_checks),
   };
+  const ids = [...normalized.invariants, ...normalized.constraints, ...normalized.non_goals, ...normalized.acceptance_checks]
+    .map((item) => item.id);
+  if (new Set(ids).size !== ids.length) {
+    throw new Error('review context item ids must be unique across all sections');
+  }
   if (value.provenance !== undefined) {
     if (!plainObject(value.provenance) || Object.keys(value.provenance).some((key) => !PROVENANCE_KEYS.has(key))) {
       throw new Error('review context provenance must contain only source, created_by, and created_at');

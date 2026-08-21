@@ -437,6 +437,69 @@ function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+const REVIEW_CONTEXT_KEYS = new Set(['schema_version', 'goal', 'invariants', 'constraints', 'non_goals', 'acceptance_checks', 'provenance']);
+const REVIEW_CONTEXT_PROVENANCE_KEYS = new Set(['source', 'created_by', 'created_at']);
+const REVIEW_CONTEXT_ID_RE = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
+
+function plainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+}
+
+function canonicalObject(value) {
+  if (Array.isArray(value)) return value.map(canonicalObject);
+  if (!plainObject(value)) return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalObject(value[key])]));
+}
+
+function validateReviewContextContract(value) {
+  if (!plainObject(value) || value.schema_version !== 1) return null;
+  if (Object.keys(value).some(key => !REVIEW_CONTEXT_KEYS.has(key))) return null;
+  const text = (candidate, max = 4000) => typeof candidate === 'string' && candidate.trim() && candidate.trim().length <= max
+    ? candidate.trim()
+    : null;
+  const ids = new Set();
+  const items = (candidate, { required = false, acceptance = false } = {}) => {
+    if (!Array.isArray(candidate) || (required && candidate.length === 0) || candidate.length > 100) return null;
+    const normalized = [];
+    for (const item of candidate) {
+      const allowed = acceptance ? ['id', 'description', 'command'] : ['id', 'text'];
+      if (!plainObject(item) || Object.keys(item).some(key => !allowed.includes(key))) return null;
+      const id = text(item.id, 64);
+      const body = text(acceptance ? item.description : item.text);
+      if (!id || !REVIEW_CONTEXT_ID_RE.test(id) || ids.has(id) || !body) return null;
+      ids.add(id);
+      const normalizedItem = acceptance ? { id, description: body } : { id, text: body };
+      if (acceptance && item.command !== undefined) {
+        const command = text(item.command, 2000);
+        if (!command) return null;
+        normalizedItem.command = command;
+      }
+      normalized.push(normalizedItem);
+    }
+    return normalized;
+  };
+  const goal = text(value.goal);
+  const invariants = items(value.invariants, { required: true });
+  const constraints = items(value.constraints);
+  const nonGoals = items(value.non_goals);
+  const acceptanceChecks = items(value.acceptance_checks, { required: true, acceptance: true });
+  if (!goal || !invariants || !constraints || !nonGoals || !acceptanceChecks) return null;
+  const normalized = { schema_version: 1, goal, invariants, constraints, non_goals: nonGoals, acceptance_checks: acceptanceChecks };
+  if (value.provenance !== undefined) {
+    if (!plainObject(value.provenance) || Object.keys(value.provenance).some(key => !REVIEW_CONTEXT_PROVENANCE_KEYS.has(key))) return null;
+    normalized.provenance = {};
+    for (const key of REVIEW_CONTEXT_PROVENANCE_KEYS) {
+      if (value.provenance[key] === undefined) continue;
+      const entry = text(value.provenance[key], 500);
+      if (!entry) return null;
+      normalized.provenance[key] = entry;
+    }
+  }
+  const canonical = JSON.stringify(canonicalObject(normalized));
+  return Buffer.byteLength(canonical) <= 64 * 1024 ? canonical : null;
+}
+
 function safeWorkspacePath(file) {
   const root = resolve(workspaceRoot());
   const abs = resolve(root, String(file || ''));
@@ -550,11 +613,14 @@ function reviewContextProvenance(review) {
   if (review?.context_status !== 'bound') return null;
   const hash = typeof review.context_hash === 'string' ? review.context_hash : null;
   const contract = review.context_contract || review.context || null;
+  const canonicalContract = validateReviewContextContract(contract);
   const ids = (items) => Array.isArray(items)
     ? items.map(item => typeof item?.id === 'string' ? item.id : null).filter(Boolean)
     : [];
   return {
     hash,
+    contract_valid: canonicalContract !== null,
+    contract_hash: canonicalContract ? `sha256:${sha256(canonicalContract)}` : null,
     invariant_ids: ids(contract?.invariants),
     constraint_ids: ids(contract?.constraints),
     non_goal_ids: ids(contract?.non_goals),
@@ -571,6 +637,14 @@ function contextAssessmentFailures(triage, required, context) {
   const failures = [];
   if (!context.hash) {
     failures.push('bound review context is missing context_hash; re-run x-review');
+    return failures;
+  }
+  if (!context.contract_valid) {
+    failures.push('bound review context is missing or has an invalid canonical contract; re-run x-review');
+    return failures;
+  }
+  if (context.contract_hash !== context.hash) {
+    failures.push('bound review context does not match context_hash; re-run x-review');
     return failures;
   }
   if (triage?.context_hash !== context.hash) {
@@ -867,6 +941,12 @@ export function cmdVerifyReviewFix(args) {
     const context = reviewContextProvenance(review);
     if (review?.context_status === 'bound' && !context?.hash) {
       initFailures.push('bound review context is missing context_hash; re-run x-review');
+    }
+    if (context && !context.contract_valid) {
+      initFailures.push('bound review context is missing or has an invalid canonical contract; re-run x-review');
+    }
+    if (context?.contract_valid && context.contract_hash !== context.hash) {
+      initFailures.push('bound review context does not match context_hash; re-run x-review');
     }
     if (freshness.changed.length > 0) {
       initFailures.push(`Reviewed files changed since x-review: ${freshness.changed.join(', ')}. Re-run x-review before triage.`);
