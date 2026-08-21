@@ -10,6 +10,22 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.19.1] - 2026-08-21
+
+### x-plan 0.1.0 → 0.1.1
+
+- Replace JSON-only output with readable Markdown plans while retaining validated PlanEnvelope artifacts, so people can review plans without sacrificing machine-readable state (x-plan/lib/x-plan-cli.mjs, x-plan/lib/x-plan/artifact.mjs, x-plan/lib/x-plan/render.mjs).
+- Add explicit Quick, Standard, and Ultra workflows. Quick preserves the deterministic scaffold; Standard adds repository evidence, a bounded interview, critique, executable-plan gates, and resumable session artifacts; Ultra requires that Standard context before multi-model synthesis (x-plan/skills/plan/SKILL.md, x-plan/lib/x-plan/ultra.mjs).
+- Preserve interactive AskUserQuestion capability in generated Codex skills and refresh Claude/Codex plugin metadata for the new planning contract (xm/lib/install/transform/codex.mjs, x-plan/.claude-plugin/plugin.json, x-plan/.codex-plugin/plugin.json).
+
+### x-recall 0.1.4 → 0.1.5
+
+- Index both legacy flat Quick plans and resumable Standard/Ultra session directories, rendering plan.md when available so cross-session recall follows the new artifact layout (x-recall/lib/x-recall/scan.mjs).
+
+### xm 2.19.0 → 2.19.1
+
+- Bundle the three-mode x-plan workflow, session persistence, recall support, updated aliases, Codex interaction metadata, and regression coverage (xm/skills/plan/SKILL.md, xm/lib/x-plan/, xm/lib/x-recall/scan.mjs, xm/commands/xm-plan.md).
+
 ## [2.19.0] - 2026-08-21
 
 ### x-build 3.2.3 → 3.2.4

@@ -1,7 +1,7 @@
 {
   "name": "x-plan",
-  "version": "0.1.0",
-  "description": "JSON-only PlanEnvelope planning core with opt-in multi-model synthesis",
+  "version": "0.1.1",
+  "description": "Quick, Standard, and Ultra implementation planning with validated artifacts",
   "author": {
     "name": "x-mesh",
     "url": "https://github.com/x-mesh"
@@ -9,18 +9,26 @@
   "homepage": "https://github.com/x-mesh/xm",
   "repository": "https://github.com/x-mesh/xm",
   "license": "MIT",
-  "keywords": ["planning", "json", "multi-model", "requirements"],
+  "keywords": [
+    "planning",
+    "json",
+    "multi-model",
+    "requirements"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "x-plan",
-    "shortDescription": "Generate and validate PlanEnvelope JSON",
-    "longDescription": "Convert requirements into deterministic PlanEnvelope JSON or synthesize role-based multi-model candidates in ultra mode.",
+    "shortDescription": "Create readable plans with saved artifacts",
+    "longDescription": "Choose Quick scaffold, Standard interview and critique, or Ultra multi-model synthesis, then persist a validated PlanEnvelope artifact.",
     "developerName": "x-mesh",
     "category": "Productivity",
-    "capabilities": ["Planning", "Validation"],
+    "capabilities": [
+      "Planning",
+      "Validation"
+    ],
     "websiteURL": "https://github.com/x-mesh/xm",
     "defaultPrompt": [
-      "Turn these requirements into a PlanEnvelope JSON.",
+      "Plan these requirements and ask whether to use Quick, Standard, or Ultra mode.",
       "Create an ultra multi-model plan for this feature."
     ]
   }
