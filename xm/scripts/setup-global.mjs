@@ -22,6 +22,9 @@ const NODE_BIN = resolveNodeBin();
 const HOOK_CMD_PRE = `"${NODE_BIN}" "${HOOK_DEST}" pre`;
 const HOOK_CMD_POST = `"${NODE_BIN}" "${HOOK_DEST}" post`;
 const XM_CMD_DEST = path.join(COMMANDS_DIR, 'xm.md');
+const XM_PLAN_CMD_DEST = path.join(COMMANDS_DIR, 'xm-plan.md');
+const XM_PLAN_CMD_BACKUP = path.join(COMMANDS_DIR, 'xm-plan.md.pre-xm');
+const XM_PLAN_MARKER = '<!-- xm-managed:xm-plan -->';
 
 // Previous format (bare `node`) — cleaned up during install so users upgrading
 // from earlier xm versions don't end up with duplicate Skill hook entries.
@@ -115,6 +118,21 @@ function resolveXmCommandSource() {
     for (const v of versions) {
       candidates.push(path.join(cacheRoot, v, 'commands', 'xm.md'));
     }
+  }
+  return candidates.find((p) => fs.existsSync(p)) || null;
+}
+
+function resolveXmPlanCommandSource() {
+  const candidates = [];
+  if (process.env.XM_LIB) candidates.push(path.join(process.env.XM_LIB, 'xm', 'commands', 'xm-plan.md'));
+  candidates.push(path.join(process.cwd(), 'xm', 'commands', 'xm-plan.md'));
+  for (const cacheRoot of [
+    path.join(HOME, '.claude', 'plugins', 'cache', 'xm', 'xm'),
+    path.join(HOME, '.claude', 'plugins', 'cache', 'x-kit', 'x-kit'),
+  ]) {
+    if (!fs.existsSync(cacheRoot)) continue;
+    const versions = fs.readdirSync(cacheRoot).filter((v) => fs.statSync(path.join(cacheRoot, v)).isDirectory()).sort().reverse();
+    for (const v of versions) candidates.push(path.join(cacheRoot, v, 'commands', 'xm-plan.md'));
   }
   return candidates.find((p) => fs.existsSync(p)) || null;
 }
@@ -220,6 +238,26 @@ function install(opts) {
   } else {
     warn('xm.md not found (skipped user-level dispatcher). Plugin-qualified form /xm:<cmd> still works.');
   }
+  const xmPlanSrc = resolveXmPlanCommandSource();
+  if (xmPlanSrc) {
+    if (fs.existsSync(XM_PLAN_CMD_DEST)) {
+      const existing = fs.readFileSync(XM_PLAN_CMD_DEST, 'utf8');
+      if (!existing.includes(XM_PLAN_MARKER)) {
+        if (fs.existsSync(XM_PLAN_CMD_BACKUP)) {
+          let archive = `${XM_PLAN_CMD_BACKUP}.1`;
+          for (let i = 2; fs.existsSync(archive); i += 1) archive = `${XM_PLAN_CMD_BACKUP}.${i}`;
+          fs.renameSync(XM_PLAN_CMD_BACKUP, archive);
+          log(`archived previous plan backup: ${archive}`);
+        }
+        fs.copyFileSync(XM_PLAN_CMD_DEST, XM_PLAN_CMD_BACKUP);
+        log(`preserved existing plan command: ${XM_PLAN_CMD_BACKUP}`);
+      }
+    }
+    fs.copyFileSync(xmPlanSrc, XM_PLAN_CMD_DEST);
+    log(`copied plan alias: ${XM_PLAN_CMD_DEST}`);
+  } else {
+    warn('xm-plan.md not found (skipped /xm-plan alias). Plugin-qualified form /xm:plan still works.');
+  }
 
   // Refresh the bash CLI binary (~/.local/bin/xm) from the freshest xm/scripts/xm
   // available. Previously this was install.sh's responsibility; doing it here
@@ -284,6 +322,21 @@ function uninstall() {
     log(`removed ${XM_CMD_DEST}`);
     removed = true;
   }
+  if (fs.existsSync(XM_PLAN_CMD_DEST)) {
+    const managed = fs.readFileSync(XM_PLAN_CMD_DEST, 'utf8').includes(XM_PLAN_MARKER);
+    if (managed && fs.existsSync(XM_PLAN_CMD_BACKUP)) {
+      fs.copyFileSync(XM_PLAN_CMD_BACKUP, XM_PLAN_CMD_DEST);
+      fs.unlinkSync(XM_PLAN_CMD_BACKUP);
+      log(`restored ${XM_PLAN_CMD_DEST}`);
+      removed = true;
+    } else if (managed) {
+      fs.unlinkSync(XM_PLAN_CMD_DEST);
+      log(`removed ${XM_PLAN_CMD_DEST}`);
+      removed = true;
+    } else {
+      log(`preserved user-owned ${XM_PLAN_CMD_DEST}`);
+    }
+  }
   if (fs.existsSync(SETTINGS)) {
     const settings = readSettings();
     if (settings.hooks) {
@@ -306,14 +359,17 @@ function uninstall() {
 function status() {
   const hookExists = fs.existsSync(HOOK_DEST);
   const xmCmdExists = fs.existsSync(XM_CMD_DEST);
+  const xmPlanCmdExists = fs.existsSync(XM_PLAN_CMD_DEST)
+    && fs.readFileSync(XM_PLAN_CMD_DEST, 'utf8').includes(XM_PLAN_MARKER);
   const settings = readSettings();
   const pre = hasSkillHook(settings.hooks?.PreToolUse, HOOK_CMD_PRE);
   const post = hasSkillHook(settings.hooks?.PostToolUse, HOOK_CMD_POST);
   log(`hook file        : ${hookExists ? HOOK_DEST : '(missing)'}`);
   log(`xm dispatcher    : ${xmCmdExists ? XM_CMD_DEST : '(missing)'}`);
+  log(`xm-plan alias    : ${xmPlanCmdExists ? XM_PLAN_CMD_DEST : '(missing)'}`);
   log(`PreToolUse/Skill : ${pre ? 'registered' : '(missing)'}`);
   log(`PostToolUse/Skill: ${post ? 'registered' : '(missing)'}`);
-  const ok = hookExists && xmCmdExists && pre && post;
+  const ok = hookExists && xmCmdExists && xmPlanCmdExists && pre && post;
   log(`overall          : ${ok ? 'OK' : 'NOT installed'}`);
   process.exit(ok ? 0 : 1);
 }

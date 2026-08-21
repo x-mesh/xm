@@ -1,0 +1,27 @@
+{
+  "name": "x-plan",
+  "version": "0.1.0",
+  "description": "JSON-only PlanEnvelope planning core with opt-in multi-model synthesis",
+  "author": {
+    "name": "x-mesh",
+    "url": "https://github.com/x-mesh"
+  },
+  "homepage": "https://github.com/x-mesh/xm",
+  "repository": "https://github.com/x-mesh/xm",
+  "license": "MIT",
+  "keywords": ["planning", "json", "multi-model", "requirements"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "x-plan",
+    "shortDescription": "Generate and validate PlanEnvelope JSON",
+    "longDescription": "Convert requirements into deterministic PlanEnvelope JSON or synthesize role-based multi-model candidates in ultra mode.",
+    "developerName": "x-mesh",
+    "category": "Productivity",
+    "capabilities": ["Planning", "Validation"],
+    "websiteURL": "https://github.com/x-mesh/xm",
+    "defaultPrompt": [
+      "Turn these requirements into a PlanEnvelope JSON.",
+      "Create an ultra multi-model plan for this feature."
+    ]
+  }
+}

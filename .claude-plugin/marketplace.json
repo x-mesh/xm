@@ -116,6 +116,23 @@
       ]
     },
     {
+      "name": "plan",
+      "description": "JSON-only planning core and PlanEnvelope validator",
+      "version": "0.1.0",
+      "author": {
+        "name": "x-mesh"
+      },
+      "source": "./x-plan",
+      "category": "productivity",
+      "homepage": "https://github.com/x-mesh/xm",
+      "tags": [
+        "planning",
+        "json",
+        "requirements",
+        "dag"
+      ]
+    },
+    {
       "name": "memory",
       "description": "Cross-session decision and pattern memory — persist learnings, auto-inject relevant context on session start",
       "version": "2.1.2",

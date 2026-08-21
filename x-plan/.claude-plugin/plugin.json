@@ -1,0 +1,11 @@
+{
+  "name": "plan",
+  "version": "0.1.0",
+  "description": "JSON-only planning core and PlanEnvelope validator",
+  "author": { "name": "x-mesh" },
+  "repository": "https://github.com/x-mesh/xm",
+  "homepage": "https://github.com/x-mesh/xm",
+  "license": "MIT",
+  "keywords": ["planning", "json", "dag", "requirements"],
+  "skills": "./skills/"
+}

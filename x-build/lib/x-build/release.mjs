@@ -31,7 +31,7 @@ const PLUGIN_DIRS = [
   'x-build', 'x-agent', 'x-op', 'x-solver', 'x-review',
   'x-trace', 'x-memory', 'x-eval', 'x-probe', 'x-humble',
   'x-dashboard', 'x-humanize', 'xm', 'x-sync', 'x-ship', 'x-recall', 'x-panel',
-  'x-wt',
+  'x-wt', 'x-plan',
 ];
 
 // Maps source directory name → marketplace plugin name (xm namespace, no x- prefix)
@@ -40,7 +40,7 @@ const PLUGIN_NAME_MAP = {
   'x-review': 'review', 'x-trace': 'trace', 'x-memory': 'memory', 'x-eval': 'eval',
   'x-probe': 'probe', 'x-humble': 'humble', 'x-dashboard': 'dashboard',
   'x-humanize': 'humanize', 'xm': 'xm', 'x-sync': 'sync', 'x-ship': 'ship',
-  'x-recall': 'recall', 'x-panel': 'panel', 'x-wt': 'wt',
+  'x-recall': 'recall', 'x-panel': 'panel', 'x-wt': 'wt', 'x-plan': 'plan',
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -374,14 +374,20 @@ export function cmdReleaseBump(args) {
   const bumped = [];
 
   for (const pluginName of pluginList) {
-    // 1. Plugin's own plugin.json
-    const pluginJsonPath = join(cwd, pluginName, '.claude-plugin', 'plugin.json');
-    if (existsSync(pluginJsonPath)) {
-      const pj = readJSON(pluginJsonPath);
-      const oldV = pj.version;
-      pj.version = bumpVersion(oldV, bumpType);
-      writeJSON(pluginJsonPath, pj);
-      bumped.push({ name: pluginName, from: oldV, to: pj.version });
+    // 1. Plugin manifests. Claude and Codex manifests describe the same release,
+    // so derive one version and write it to every manifest that exists.
+    const pluginJsonPaths = ['.claude-plugin', '.codex-plugin']
+      .map((dir) => join(cwd, pluginName, dir, 'plugin.json'))
+      .filter(existsSync);
+    if (pluginJsonPaths.length) {
+      const oldV = readJSON(pluginJsonPaths[0]).version;
+      const newV = bumpVersion(oldV, bumpType);
+      for (const pluginJsonPath of pluginJsonPaths) {
+        const pj = readJSON(pluginJsonPath);
+        pj.version = newV;
+        writeJSON(pluginJsonPath, pj);
+      }
+      bumped.push({ name: pluginName, from: oldV, to: newV });
     }
 
     // 2. marketplace.json entry (plugin dir name → marketplace name via PLUGIN_NAME_MAP)
@@ -396,13 +402,15 @@ export function cmdReleaseBump(args) {
   //    in the loop above. Bumping it in both places double-bumps and skips a version
   //    (2.4.54 → 2.4.55 in the loop → 2.4.56 here), because xm IS the meta (l10).
   const xkitEntry = marketplace.plugins.find(p => p.name === 'xm');
-  const xkitPluginJsonPath = join(cwd, 'xm', '.claude-plugin', 'plugin.json');
+  const xkitPluginJsonPaths = ['.claude-plugin', '.codex-plugin']
+    .map((dir) => join(cwd, 'xm', dir, 'plugin.json'))
+    .filter(existsSync);
   let xkitNew = xkitEntry?.version || '0.0.0';
   if (!pluginList.includes('xm')) {
     const xkitOld = xkitNew;
     xkitNew = bumpVersion(xkitOld, 'patch');
     if (xkitEntry) xkitEntry.version = xkitNew;
-    if (existsSync(xkitPluginJsonPath)) {
+    for (const xkitPluginJsonPath of xkitPluginJsonPaths) {
       const xkitPj = readJSON(xkitPluginJsonPath);
       xkitPj.version = xkitNew;
       writeJSON(xkitPluginJsonPath, xkitPj);

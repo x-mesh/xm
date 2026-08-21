@@ -736,7 +736,7 @@ export async function invokeProviderAsync(name, prompt, { timeout = 180_000, max
     const remainingMs = effectiveDeadlineMs - Date.now();
     if (res.ok) {
       if (use.mode === 'resume') res.resume = 'ok';
-    } else if (fallbackPrompt != null && !res.timedOut && !res.signal && (res.spawns || 0) < maxSpawns && remainingMs >= RETRY_FLOOR_MS) {
+    } else if (fallbackPrompt != null && !res.timedOut && !res.signal && res.termination !== 'command_budget' && (res.spawns || 0) < maxSpawns && remainingMs >= RETRY_FLOOR_MS) {
       // LOUD stateless fallback (contract R4): same semantics, just costlier —
       // surfaced via a lifecycle event and the `resume: 'fallback'` marker.
       // Only for SESSION-shaped failures: a guard timeout or a signal death says nothing
@@ -751,7 +751,9 @@ export async function invokeProviderAsync(name, prompt, { timeout = 180_000, max
       res.spawns = firstSpawns + (res.spawns || 0);
       res.resume = 'fallback';
     } else if (fallbackPrompt != null) {
-      const reason = res.timedOut || res.signal
+      const reason = res.termination === 'command_budget'
+        ? 'command budget exhausted, NOT retrying stateless'
+        : res.timedOut || res.signal
         ? 'killed/timed out, NOT retrying stateless (slot retry policy owns this)'
         : (res.spawns || 0) >= maxSpawns
           ? 'slot spawn budget exhausted, NOT retrying stateless'

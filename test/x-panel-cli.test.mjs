@@ -3600,6 +3600,24 @@ describe('slot retry/timeout discipline', () => {
     expect(readFileSync(log, 'utf8').trim().split('\n').length).toBe(1);
   });
 
+  test('command-budget termination does NOT trigger the stateless session fallback', async () => {
+    const log = join(DIR, 'spawns-command-budget.jsonl');
+    process.env.X_PANEL_CMD_CODEX = STUB;
+    process.env.X_PANEL_COMMANDS_THEN_HANG_CODEX = '2';
+    process.env.X_PANEL_SPAWN_LOG = log;
+    const events = [];
+    const res = await invokeProviderAsync('codex', 'p', {
+      timeout: 10_000, maxTimeout: 20_000, commandBudget: 1, expectKeys: ['findings'],
+      session: { mode: 'create', id: null }, fallbackPrompt: 'must not run',
+      onEvent: (event) => events.push(event),
+    });
+    expect(res.ok).toBe(false);
+    expect(res.termination).toBe('command_budget');
+    expect(res.resume).toBe('failed');
+    expect(readFileSync(log, 'utf8').trim().split('\n').length).toBe(1);
+    expect(events.some((event) => String(event.note || '').includes('NOT retrying stateless'))).toBe(true);
+  });
+
   test('numeric exit text mentioning a signal still uses the session fallback', async () => {
     process.env.X_PANEL_CMD_CODEX = STUB;
     process.env.X_PANEL_FAIL_SESSION_CODEX = '1';

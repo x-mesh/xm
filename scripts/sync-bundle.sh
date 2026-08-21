@@ -141,7 +141,7 @@ mirror_file_tree() {
 }
 
 echo "=== Syncing SKILL.md files ==="
-for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel remote wt; do
+for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel remote wt plan; do
   src="x-$plugin/skills/$plugin/SKILL.md"
   dst="xm/skills/$plugin/SKILL.md"
   sync_file "$src" "$dst"
@@ -202,6 +202,11 @@ for f in x-recall/lib/x-recall/*.mjs; do
   sync_file "$f" "xm/lib/x-recall/$(basename "$f")"
 done
 shopt -u nullglob
+
+echo ""
+echo "=== Syncing x-plan lib files ==="
+sync_file "x-plan/lib/x-plan-cli.mjs" "xm/lib/x-plan-cli.mjs"
+mirror_file_tree "x-plan/lib/x-plan" "xm/lib/x-plan"
 
 echo ""
 echo "=== Syncing x-panel lib files ==="

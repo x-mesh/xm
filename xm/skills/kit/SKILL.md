@@ -112,6 +112,7 @@ Review & quality:
   /xm:review    PR 코드 리뷰 (severity + LGTM)       쓸 때: 변경 코드를 다관점 리뷰
   /xm:eval      출력 품질 채점 (multi-rubric, A/B)   쓸 때: 에이전트/프롬프트 출력을 점수화
   /xm:panel     크로스모델 적대 패널 (claude/codex…)  쓸 때: 여러 LLM으로 교차검증/적대 리뷰
+  /xm:plan      JSON PlanEnvelope 생성·검증            쓸 때: lifecycle 없이 요구사항을 계획 JSON으로 변환
   /xm:probe     전제 검증 — 나쁜 아이디어 조기 사살   쓸 때: 만들기 전에 가정이 맞는지
 
 Knowledge & memory:

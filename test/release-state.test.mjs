@@ -77,6 +77,23 @@ describe('release detect/bump — xm dispatcher handling (l9/l10)', () => {
       expect(mkt.plugins.find((p) => p.name === 'xm').version).toBe('1.2.4');    // xm meta-bumped once
     } finally { rmSync(d, { recursive: true, force: true }); }
   });
+
+  test('bump keeps Claude and Codex plugin manifest versions aligned', () => {
+    const d = makeReleaseFixture();
+    try {
+      for (const dir of ['x-plan/.claude-plugin', 'x-plan/.codex-plugin']) mkdirSync(join(d, dir), { recursive: true });
+      writeFileSync(join(d, 'x-plan', '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'plan', version: '0.1.0' }));
+      writeFileSync(join(d, 'x-plan', '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'x-plan', version: '0.0.7' }));
+      const marketplacePath = join(d, '.claude-plugin', 'marketplace.json');
+      const marketplace = JSON.parse(readFileSync(marketplacePath, 'utf8'));
+      marketplace.plugins.push({ name: 'plan', version: '0.1.0' });
+      writeFileSync(marketplacePath, JSON.stringify(marketplace, null, 2));
+
+      spawnSync('node', [CLI, 'release', 'bump', '--minor', '--plugins', 'x-plan'], { cwd: d, encoding: 'utf8', timeout: 60000 });
+      expect(JSON.parse(readFileSync(join(d, 'x-plan', '.claude-plugin', 'plugin.json'), 'utf8')).version).toBe('0.2.0');
+      expect(JSON.parse(readFileSync(join(d, 'x-plan', '.codex-plugin', 'plugin.json'), 'utf8')).version).toBe('0.2.0');
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
 });
 
 // A tag-versioned project (Cargo + a `on: push: tags` workflow) — the shape x-ship used to

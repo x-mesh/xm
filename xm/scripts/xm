@@ -310,6 +310,15 @@ case "$CMD" in
     node "$LIB_PATH/x-panel-cli.mjs" "$@"
     ;;
 
+  plan)
+    LIB_PATH="$(plugin_lib plan)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-plan-cli.mjs" ]; then
+      echo "xm plan: x-plan-cli.mjs not found under $LIB" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-plan-cli.mjs" "$@"
+    ;;
+
   toss)
     LIB_PATH="$(plugin_lib xm lib)"
     if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-inbox-cli.mjs" ]; then
@@ -688,7 +697,7 @@ case "$CMD" in
 
     echo ""
     echo "## Resolved lib paths"
-    for p in xm dashboard build memory trace sync solver; do
+    for p in xm dashboard build memory trace sync solver plan; do
       resolved="$(plugin_lib "$p")"
       if [ -n "$resolved" ]; then
         echo "  ✅ $(printf '%-12s' "$p") $resolved"
@@ -1095,6 +1104,7 @@ Commands:
   handoff [reason]                    Save session state
   handon                              Restore session state
   memory <subcmd>                     Cross-session decision memory
+  plan <requirements|--file path>    Emit a validated PlanEnvelope JSON scaffold
   build <subcmd>                      Phase-based project harness
   cost predict <task-description>     Estimate cost from measured task history
   config <subcmd>                     Shared toolkit config (--local|--global)
