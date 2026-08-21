@@ -12,6 +12,18 @@ bumps shipped in each marketplace release.
 
 ## [2.17.0] - 2026-08-21
 
+### Added
+
+- **review:** bind review context to host verification
+
+### Fixed
+
+- **review:** validate bound context provenance
+- **x-panel:** preserve Codex contract across messages
+- **x-panel:** show full model slot labels in watch status
+
+## [2.17.0] - 2026-08-21
+
 ### x-build 3.2.1 → 3.2.2
 
 - Bind host review-fix decisions to the same canonical review context used by reviewers. The gate now requires finding-level context references, invariant and acceptance evidence, and a matching recomputed digest before authorizing or closing fixes, so stale or altered intent cannot silently pass (`x-build/lib/x-build/verify.mjs`).
