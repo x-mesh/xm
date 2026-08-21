@@ -10,6 +10,25 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.18.0] - 2026-08-21
+
+### x-build 3.2.2 → 3.2.3
+
+- Register `panel.command_budget` in the shared config schema so operators can tune the Codex review command cap without an unregistered-key warning (`x-build/lib/config-schema.mjs`, `x-build/lib/shared-config.mjs`).
+
+### x-panel 0.20.6 → 0.21.0
+
+- Bound Codex review exploration with a configurable completed-command budget (default 24). Raw and streaming providers now stop with typed `command_budget` before a reviewer can spend the full wall-clock cap without producing a valid contract (`x-panel/lib/x-panel/adapters.mjs`).
+- Distinguish semantic progress from byte activity. `panel watch` now reports command usage, valid-contract state, attempt number, provider freshness, idle deadline, and hard-cap remaining (`x-panel/lib/x-panel-cli.mjs`).
+
+### x-review 2.3.5 → 2.4.0
+
+- Limit failed provider recovery to one strict-subset retry. The retry helper copies complete frozen diff sections only for exact target paths named in failure evidence; unsafe, full-target, and repeated retries fail closed as `Review incomplete` (`x-review/skills/review/scripts/retry-target.mjs`).
+
+### xm 2.17.0 → 2.18.0
+
+- Rebundle bounded review execution, progress telemetry, retry policy, config registration, and deterministic regression coverage for installed `xm panel` and `xm review` users.
+
 ## [2.17.0] - 2026-08-21
 
 ### x-build 3.2.1 → 3.2.2
