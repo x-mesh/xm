@@ -12,12 +12,6 @@ bumps shipped in each marketplace release.
 
 ## [2.19.0] - 2026-08-21
 
-### Added
-
-- **plan:** add JSON-only multi-model planning
-
-## [2.19.0] - 2026-08-21
-
 ### x-build 3.2.3 → 3.2.4
 
 - Keep Claude and Codex plugin manifests on one version during release bumps, preventing `x-plan` packaging drift (`x-build/lib/x-build/release.mjs`).
