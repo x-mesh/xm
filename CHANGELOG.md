@@ -10,6 +10,26 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.17.0] - 2026-08-21
+
+### x-build 3.2.1 → 3.2.2
+
+- Bind host review-fix decisions to the same canonical review context used by reviewers. The gate now requires finding-level context references, invariant and acceptance evidence, and a matching recomputed digest before authorizing or closing fixes, so stale or altered intent cannot silently pass (`x-build/lib/x-build/verify.mjs`).
+- Recover stale group-check locks and carry explicit long-check timeout settings through task execution, preventing crashed checks from wedging later verification runs (`x-build/lib/x-build/tasks.mjs`, `x-build/lib/x-build/phase.mjs`).
+
+### x-review 2.3.4 → 2.3.5
+
+- Add a bounded, allowlisted review context contract for goals, invariants, constraints, non-goals, and acceptance checks. Every reviewer report must echo the canonical hash, while source coverage and review-fix artifacts preserve the same provenance (`x-review/skills/review/scripts/context-contract.mjs`, `x-review/skills/review/scripts/validate-reports.mjs`).
+- Reject duplicate context IDs across all sections so host evidence cannot ambiguously refer to both an invariant and an acceptance check.
+
+### x-panel 0.20.5 → 0.20.6
+
+- Carry the trusted review context separately from untrusted target text through native and cross-model review prompts, and persist the verified digest in panel verdict and status artifacts (`x-panel/lib/x-panel/context-contract.mjs`, `x-panel/lib/x-panel-cli.mjs`).
+
+### xm 2.16.8 → 2.17.0
+
+- Rebundle the context-bound review pipeline and host verification gate so installed `xm review`, `xm panel`, and `xm build verify-review-fix` share one tamper-evident intent contract (`xm/skills/review/`, `xm/lib/x-panel/`, `xm/lib/x-build/`).
+
 ## [2.16.7] - 2026-08-20
 
 ### x-panel 0.20.3 → 0.20.4
