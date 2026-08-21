@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { validateReviewReports } from '../x-review/skills/review/scripts/validate-reports.mjs';
 import { planReview } from '../x-review/skills/review/scripts/plan-review.mjs';
+import { canonicalReviewContext, hashReviewContext, normalizeReviewContext } from '../x-review/skills/review/scripts/context-contract.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(ROOT, 'x-review', 'skills', 'review', 'scripts', 'validate-reports.mjs');
@@ -34,6 +35,30 @@ function zeroReport(reportId, lens, overrides = {}) {
     ...overrides,
   };
 }
+
+const CONTEXT = {
+  schema_version: 1,
+  goal: 'Preserve compatibility while validating review intent.',
+  invariants: [{ id: 'INV1', text: 'Existing callers retain their default behavior.' }],
+  constraints: [{ id: 'C1', text: 'Do not transmit repository contents.' }],
+  non_goals: [{ id: 'NG1', text: 'Do not store the full conversation transcript.' }],
+  acceptance_checks: [{ id: 'AC1', description: 'Compatibility fixture passes.', command: 'bun test test/compat.test.mjs' }],
+};
+
+describe('x-review context contract', () => {
+  test('normalizes and hashes reordered keys deterministically', () => {
+    const reordered = { acceptance_checks: CONTEXT.acceptance_checks, non_goals: CONTEXT.non_goals, constraints: CONTEXT.constraints, invariants: CONTEXT.invariants, goal: CONTEXT.goal, schema_version: 1 };
+    expect(canonicalReviewContext(reordered)).toBe(canonicalReviewContext(CONTEXT));
+    expect(hashReviewContext(reordered)).toBe(hashReviewContext(CONTEXT));
+  });
+
+  test('rejects malformed, unknown, and incomplete supplied contexts', () => {
+    expect(() => normalizeReviewContext({ ...CONTEXT, schema_version: 2 })).toThrow('schema_version');
+    expect(() => normalizeReviewContext({ ...CONTEXT, transcript: 'secret' })).toThrow('unknown fields');
+    expect(() => normalizeReviewContext({ ...CONTEXT, invariants: [] })).toThrow('invariants');
+    expect(() => normalizeReviewContext({ ...CONTEXT, acceptance_checks: [] })).toThrow('acceptance_checks');
+  });
+});
 
 describe('x-review adaptive-fast planner', () => {
   test('uses two composite reviewers for an ordinary patch', () => {
@@ -118,6 +143,30 @@ function raws(...reports) {
 }
 
 describe('x-review lens report coverage contract', () => {
+  test('keeps legacy context absence compatible and explicit', () => {
+    const result = validateReviewReports(MANIFEST, raws(zeroReport('security-1', 'security'), zeroReport('logic-1', 'logic')));
+    expect(result.ok).toBe(true);
+    expect(result.context_status).toBe('absent');
+    expect(result.context_hash).toBeUndefined();
+  });
+
+  test('requires every report to echo a bound context hash', () => {
+    const contextHash = hashReviewContext(CONTEXT);
+    const manifest = { ...MANIFEST, context_status: 'bound', context_hash: contextHash };
+    const valid = validateReviewReports(manifest, raws(
+      zeroReport('security-1', 'security', { context_hash: contextHash }),
+      zeroReport('logic-1', 'logic', { context_hash: contextHash }),
+    ));
+    expect(valid.ok).toBe(true);
+    expect(valid.context_hash).toBe(contextHash);
+
+    const stale = validateReviewReports(manifest, raws(
+      zeroReport('security-1', 'security'),
+      zeroReport('logic-1', 'logic', { context_hash: `sha256:${'b'.repeat(64)}` }),
+    ));
+    expect(stale.ok).toBe(false);
+    expect(stale.issues.filter((entry) => entry.code === 'stale_context')).toHaveLength(2);
+  });
   test('accepts explicit, evidenced zero-finding reports for every lens', () => {
     const result = validateReviewReports(MANIFEST, raws(zeroReport('security-1', 'security'), zeroReport('logic-1', 'logic')));
     expect(result.ok).toBe(true);

@@ -143,6 +143,9 @@ adversarial refutation round is explicitly worth the extra cost:
    `cursor:kimi-k2.5`, `kiro:deepseek-3.2` work; `xm panel models <vendor>` lists the live catalog,
    `--check <model>` validates an ID before use (doctor checks auth only, not model IDs).
 2. Run `xm panel [target] --models <list>` (or `--preset <name>`).
+   For a host-authored review contract, add `--context-file <context.json>`. The panel validates
+   and hashes it separately from the untrusted target; every provider must echo that exact hash or
+   the run fails coverage. `status.json` and `verdict.json` retain the provenance.
 3. Relay: **consensus (N/M) first**, then contested, then per-model diversity. Don't re-dump raw
    findings — consensus already merged duplicates. Name any model that failed (2/4 ≠ 4/4).
 

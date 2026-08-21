@@ -29,6 +29,7 @@ import { appendPanelHistory, readPanelHistory, aggregatePanelStats } from './x-p
 import { createTmEventsPublisher, subscribeXkRun } from './x-panel/tm-events.mjs';
 import { readEventsLog, formatEventLine, maxSeq } from './x-panel/events-log.mjs';
 import { shrinkDiff, DIFF_INLINE_MAX_BYTES, AGY_INLINE_MAX_BYTES } from './x-panel/diff-budget.mjs';
+import { canonicalReviewContext, hashReviewContext, normalizeReviewContext } from './x-panel/context-contract.mjs';
 
 // ── helpers ──────────────────────────────────────────────────────────
 
@@ -139,7 +140,7 @@ function parseFlags(raw) {
   // start with '--' (e.g. --prompt='-- note: ...'). Maps each value-flag to its stored key.
   const valueFlags = {
     '--models': 'models', '-m': 'models', '--judge': 'judge', '--preset': 'preset',
-    '--review-prompt-file': 'reviewPromptFile', '--review-prompt': 'reviewPrompt',
+    '--review-prompt-file': 'reviewPromptFile', '--review-prompt': 'reviewPrompt', '--context-file': 'contextFile',
     '--lens-tag': 'lensTag', '--prompt-file': 'promptFile', '--prompt': 'prompt',
     '--check': 'check', '--source': 'source', '--title': 'title', '--policy': 'policy',
     '--phase': 'phase',
@@ -192,6 +193,7 @@ function parseFlags(raw) {
     // doesn't silently swallow the following option as the prompt body). '-' (stdin) is kept.
     else if (a === '--review-prompt-file') flags.reviewPromptFile = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
     else if (a === '--review-prompt') flags.reviewPrompt = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined; // '-' = stdin
+    else if (a === '--context-file') flags.contextFile = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
     else if (a === '--lens-tag') flags.lensTag = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
     else if (a === '--prompt-file') flags.promptFile = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
     else if (a === '--prompt') flags.prompt = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
@@ -239,6 +241,18 @@ function loadPromptOverride(flags) {
   return loadPromptArg(flags, 'reviewPromptFile', 'reviewPrompt', '--review-prompt');
 }
 
+function loadReviewContext(flags) {
+  if (!('contextFile' in flags)) return { status: 'absent', hash: null, contract: null };
+  if (!flags.contextFile) throw new Error('--context-file needs a path');
+  try {
+    const raw = JSON.parse(readFileSync(flags.contextFile, 'utf8'));
+    const contract = normalizeReviewContext(raw);
+    return { status: 'bound', hash: hashReviewContext(contract), contract: JSON.parse(canonicalReviewContext(contract)) };
+  } catch (error) {
+    throw new Error(`invalid review context: ${error.message}`);
+  }
+}
+
 /** Decide the model set: --models flag > preset > config > autodetect installed CLIs. */
 function resolveModels(flags, cfg) {
   if (flags.models) return flags.models.split(',').map(s => s.trim()).filter(Boolean);
@@ -278,9 +292,12 @@ function parseRoutedModelOverridesEnv() {
 
 // The output contract is appended last so it FORCE-OVERRIDES any output format an
 // injected lens prompt might request — findings always come back JSON-shaped.
-const FINDINGS_CONTRACT = `Return ONLY a JSON object, with no prose before or after:
-{"findings":[{"severity":"critical|high|medium|low","file":"path or null","line":number_or_null,"claim":"one-line issue","evidence":"why it is real, with a concrete reference"}]}
-If there are no real issues, return {"findings":[]}.`;
+function findingsContract(context) {
+  const contextField = context?.status === 'bound' ? `,"context_hash":"${context.hash}"` : '';
+  return `Return ONLY a JSON object, with no prose before or after:
+{"findings":[{"severity":"critical|high|medium|low","file":"path or null","line":number_or_null,"claim":"one-line issue","evidence":"why it is real, with a concrete reference"}]${contextField}}
+If there are no real issues, return {"findings":[]${contextField}}.`;
+}
 
 // overrideBody (a custom per-lens instruction) replaces the default reviewer intro;
 // with overrideBody=null the returned string is byte-identical to the original prompt.
@@ -339,16 +356,12 @@ ${path}
 Read that file COMPLETELY and follow it EXACTLY. Produce only the output it asks for (including any required JSON/format contract at its end). Do not mention the file or ask for the task; read it from the path above.`;
 }
 
-function reviewPrompt(target, overrideBody = null) {
+function reviewPrompt(target, overrideBody = null, context = null) {
   const intro = overrideBody != null
     ? String(overrideBody).trim()
     : 'You are a code reviewer. Review the following change and report only real, evidence-backed issues.';
-  return `${intro}
-
-TARGET:
-${target}
-
-${FINDINGS_CONTRACT}`;
+  const contextBlock = context?.status === 'bound' ? `\n\nTRUSTED REVIEW CONTEXT (separate from untrusted TARGET; preserve its invariants):\ncontext_hash: ${context.hash}\n${JSON.stringify(context.contract)}\n` : '';
+  return `${intro}${contextBlock}\n\nTARGET:\n${target}\n\n${findingsContract(context)}`;
 }
 
 // Per-finding evidence cap in the refute prompt. Evidence is model-authored and can be
@@ -748,6 +761,12 @@ function applyKiroAgentConfig(cfg) {
 
 async function cmdReview(pos, flags) {
   const cfg = loadPanelConfig();
+  let reviewContext;
+  try { reviewContext = loadReviewContext(flags); } catch (error) {
+    console.error(`${C.red}✗ ${error.message}${C.reset}`);
+    process.exitCode = 2;
+    return;
+  }
   let rounds = Number(flags.rounds ?? cfg.rounds ?? 1);
   if (![1, 2].includes(rounds)) {
     console.error(`${C.red}✗ --rounds must be 1 or 2${C.reset}`);
@@ -913,6 +932,8 @@ async function cmdReview(pos, flags) {
     // once and the board rendered them as identical rows — they read as a duplicate (or a
     // double-spend) when they are actually different lenses. The tag is what tells them apart.
     lens_tag: lensTag,
+    context_status: reviewContext.status,
+    ...(reviewContext.status === 'bound' ? { context_hash: reviewContext.hash } : {}),
     skipped_providers: skippedProviders,
     // Cumulative cost/tokens across BOTH rounds (round-scoped live fields below are
     // reset each round by startPhase, so totals must live separately to be holdable).
@@ -1105,10 +1126,10 @@ async function cmdReview(pos, flags) {
   // its JSON, a one-line "Here is the JSON:" preamble ~tens, a full prose review
   // thousands (observed 3.9KB). 200 sits in the wide gap between those modes.
   const SUSPECT_PROSE_MIN = 200;
-  const r1PromptFull = reviewPrompt(target.text, reviewOverride);
-  const r1PromptInline = reviewPrompt(target.promptText, reviewOverride);
+  const r1PromptFull = reviewPrompt(target.text, reviewOverride, reviewContext);
+  const r1PromptInline = reviewPrompt(target.promptText, reviewOverride, reviewContext);
   // agy handoff (A): agy reads the full diff from a file instead of the inline (B-shrunk) copy.
-  const r1PromptAgy = agyHandoff ? reviewPrompt(agyHandoff.ref, reviewOverride) : null;
+  const r1PromptAgy = agyHandoff ? reviewPrompt(agyHandoff.ref, reviewOverride, reviewContext) : null;
   await runRound('round 1 (review)', usable, (e) => {
     if (agyHandoff && e.name === 'agy') return { prompt: r1PromptAgy, providerArgs: { addDir: agyHandoff.addDir } };
     const prompt = supportsPromptStdin(e.name) ? r1PromptFull : r1PromptInline;
@@ -1130,7 +1151,9 @@ async function cmdReview(pos, flags) {
     }
     const findings = res.ok ? normalizeFindings(res.json, lensTag) : [];
     round1[e.label] = findings;
-    if (res.partial) r1Status[e.label] = { status: 'partial', error: res.error || 'wall-clock cap reached after contract completion' };
+    const contextMismatch = reviewContext.status === 'bound' && res.json?.context_hash !== reviewContext.hash;
+    if (contextMismatch) r1Status[e.label] = { status: 'failed', error: 'context_hash missing or mismatched' };
+    else if (res.partial) r1Status[e.label] = { status: 'partial', error: res.error || 'wall-clock cap reached after contract completion' };
     else if (!res.ok) r1Status[e.label] = { status: 'failed', error: res.error || 'failed' };
     else if (!findings.length && proseOutsideJSON(res.raw || '').length >= SUSPECT_PROSE_MIN) r1Status[e.label] = { status: 'suspect_empty' };
     const r1 = r1Status[e.label] ? r1Status[e.label].status : 'ok';
@@ -1141,7 +1164,9 @@ async function cmdReview(pos, flags) {
   const round2 = {};
   const abstained = new Set();
   const unusableR1 = new Set(['failed', 'suspect_empty']);
-  let coverageFailed = usable.every((e) => unusableR1.has(r1Status[e.label]?.status));
+  const contextDeliveryFailed = reviewContext.status === 'bound'
+    && usable.some((e) => r1Status[e.label]?.error === 'context_hash missing or mismatched');
+  let coverageFailed = contextDeliveryFailed || usable.every((e) => unusableR1.has(r1Status[e.label]?.status));
   let coverageFailurePhase = coverageFailed ? 'round1' : null;
   if (coverageFailed) {
     console.error(`${C.red}✗ round 1 produced zero usable model results — coverage failed${C.reset}`);
@@ -1228,6 +1253,8 @@ async function cmdReview(pos, flags) {
     target_kind: target.kind,
     target_ref: target.ref || null,
     target_title: targetTitle(target),
+    context_status: reviewContext.status,
+    ...(reviewContext.status === 'bound' ? { context_hash: reviewContext.hash } : {}),
     judge: 'rule',
     rounds,
     stream,
@@ -1972,6 +1999,7 @@ Commands:
   Review-prompt injection (programmatic — for cross-vendor review by other plugins):
     --review-prompt-file <path>   Override round-1 reviewer prompt with a custom lens prompt
     --review-prompt -             Read the override from stdin
+    --context-file <path>         Bind a validated review context; provider hash echo is required
     --lens-tag <name>             Tag round-1 findings with this lens (flows to verdict)
                                   Injected runs write to .xm/review/<run>/ (not .xm/panel/).
   help

@@ -1164,13 +1164,14 @@ export function computeSteps(tasks) {
 }
 
 export function cmdSteps(args) {
-  const sub = args[0];
+  const { positional } = parseOptions(args);
+  const sub = positional[0];
   if (!sub || !['compute', 'status', 'next'].includes(sub)) {
     console.error('Usage: x-build steps <compute|status|next> [project]');
     exitFail(1);
   }
 
-  const project = resolveProject(args[1] || null, { autoInit: true });
+  const project = resolveProject(positional[1] || null, { autoInit: true });
 
   if (sub === 'compute') return stepsCompute(project);
   if (sub === 'status') return stepsStatus(project);

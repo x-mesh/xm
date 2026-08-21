@@ -84,6 +84,20 @@ function writePRD(tmp, name) {
 // ── Phase transitions ─────────────────────────────────────────────
 
 describe('phase transitions', () => {
+  test('phase next ignores trailing --json instead of auto-creating a -json project', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      initGit(tmp);
+      autoGates(tmp);
+      const r = run(['phase', 'next', '--project', name, '--json'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(readJSON(projectPath(tmp, name, 'manifest.json')).current_phase).toBe('02-plan');
+      expect(existsSync(projectPath(tmp, '-json'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
   test('phase next advances research to plan when research-exit gate is auto', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
@@ -759,6 +773,81 @@ describe('verify-review-fix', () => {
       expect(lifecycle.findings[0].state).toBe('open');
       expect(lifecycle.findings[0].finding_id).toBe(triage.target_findings[0].finding_id);
       expect(lifecycle.reviewed_files_all).toEqual(['src/auth.ts']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('bound review context requires host finding and acceptance evidence', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, {
+        context_status: 'bound',
+        context_hash: `sha256:${'c'.repeat(64)}`,
+        context_contract: {
+          invariants: [{ id: 'INV1', text: 'Preserve callers' }],
+          acceptance_checks: [{ id: 'AC1', description: 'Compatibility passes' }],
+        },
+      });
+      const triage = initAndEditTriage(tmp, value => {
+        value.target_findings[0].evidence = 'Reproduced';
+        value.verification = ['bun test'];
+      });
+      expect(triage.context_hash).toBe(`sha256:${'c'.repeat(64)}`);
+      let result = run(['verify-review-fix'], { cwd: tmp });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout).toContain('context_assessment');
+      initAndEditTriage(tmp, value => {
+        value.target_findings[0].evidence = 'Reproduced';
+        value.target_findings[0].context_assessment = { alignment: 'aligned', context_refs: ['FAKE'], evidence: 'Default caller path retained.' };
+        value.context_assessment.invariants[0].evidence = 'Existing caller test passes.';
+        value.context_assessment.acceptance_checks[0].evidence = 'bun test compatibility passes.';
+        value.verification = ['bun test'];
+      });
+      result = run(['verify-review-fix'], { cwd: tmp });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout).toContain('unknown ids: FAKE');
+      initAndEditTriage(tmp, value => {
+        value.target_findings[0].evidence = 'Reproduced';
+        value.target_findings[0].context_assessment = { alignment: 'aligned', context_refs: ['INV1'], evidence: 'Default caller path retained.' };
+        value.context_assessment.invariants[0].evidence = 'Existing caller test passes.';
+        value.context_assessment.acceptance_checks[0].evidence = 'bun test compatibility passes.';
+        value.verification = ['bun test'];
+      });
+      result = run(['verify-review-fix'], { cwd: tmp });
+      expect(result.exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('bound LGTM still requires host invariant and acceptance evidence', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, {
+        verdict: 'LGTM',
+        findings: [],
+        reviewed_files_all: ['src/auth.ts'],
+        context_status: 'bound',
+        context_hash: `sha256:${'d'.repeat(64)}`,
+        context_contract: {
+          invariants: [{ id: 'INV1', text: 'Preserve callers' }],
+          acceptance_checks: [{ id: 'AC1', description: 'Compatibility passes' }],
+        },
+      });
+      let result = run(['verify-review-fix'], { cwd: tmp });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout).toContain('Bound LGTM requires host context evidence');
+      expect(run(['verify-review-fix', '--init'], { cwd: tmp }).exitCode).toBe(0);
+      result = run(['verify-review-fix'], { cwd: tmp });
+      expect(result.exitCode).not.toBe(0);
+      initAndEditTriage(tmp, value => {
+        value.context_assessment.invariants[0].evidence = 'Existing caller test passes.';
+        value.context_assessment.acceptance_checks[0].evidence = 'Compatibility suite passes.';
+      });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

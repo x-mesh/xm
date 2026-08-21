@@ -56,17 +56,11 @@ if (_projectFlag) setExplicitProject(_projectFlag);
 
 const [cmd, ...args] = _cleanedArgv;
 
-// Backward-compat: a few commands (status, list) still accept `<project>` as
-// a positional. When --project was the only arg, pass it through positionally
-// so those commands keep working.
-if (_projectFlag && args.length === 0) {
-  args.unshift(_projectFlag);
-} else if (_projectFlag) {
-  const first = args[0];
-  if (first && first.startsWith('-')) {
-    args.unshift(_projectFlag);
-  }
-}
+// Do not re-inject --project as a positional argument. setExplicitProject above
+// is the single routing channel for the flag. Re-injection made trailing flags
+// such as `phase next --project demo --json` turn `--json` into the project
+// name (and auto-created a ghost project named `-json`). Commands that support
+// a legacy positional project still receive an actual positional unchanged.
 
 switch (cmd) {
   case 'init':

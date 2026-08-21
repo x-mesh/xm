@@ -232,7 +232,7 @@ const server = Bun.serve({
 
       // Request-level timeout with subprocess cleanup
       const config = readConfigCached();
-      const timeoutMs = config.exec_timeout_ms ?? 300000; // 5 min default
+      const timeoutMs = config.exec_timeout_ms ?? 660000; // covers 10 min build checks + transport overhead
       let childProc = null;
       let timedOut = false;
 

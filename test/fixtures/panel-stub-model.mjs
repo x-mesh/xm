@@ -313,7 +313,9 @@ if (isFollowup) {
         { severity: 'high', file: 'a.js', line: 1, claim: 'shared issue (codex view)', evidence: ev },
         { severity: 'medium', file: 'c.js', line: 3, claim: 'codex-only issue', evidence: ev },
       ];
-  const payload = JSON.stringify({ findings });
+  const promptContextHash = prompt.match(/context_hash:\s*(sha256:[0-9a-f]{64})/)?.[1];
+  const contextHash = process.env[`X_PANEL_CONTEXT_HASH_${envModel}`] || promptContextHash;
+  const payload = JSON.stringify({ findings, ...(contextHash ? { context_hash: contextHash } : {}) });
   if (stream) emitStream(model, payload);
   else emitRaw(model, payload);
 }
