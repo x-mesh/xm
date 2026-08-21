@@ -12,12 +12,6 @@ bumps shipped in each marketplace release.
 
 ## [2.18.0] - 2026-08-21
 
-### Added
-
-- **review:** bound provider exploration and retry
-
-## [2.18.0] - 2026-08-21
-
 ### x-build 3.2.2 → 3.2.3
 
 - Register `panel.command_budget` in the shared config schema so operators can tune the Codex review command cap without an unregistered-key warning (`x-build/lib/config-schema.mjs`, `x-build/lib/shared-config.mjs`).
