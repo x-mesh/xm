@@ -143,6 +143,12 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
   const runtime = resolveCheckRuntime(policy);
   const descriptor = taskCheckContractHash(cwd, fingerprintPolicy);
   const existing = saved.group_quality;
+  const reuseMissReason = !existing ? 'missing'
+    : existing.error || existing.malformed ? 'malformed'
+      : existing.passed !== true ? 'not_passing'
+      : existing.cwd !== canonicalCwd ? 'cwd_changed'
+        : existing.command_hash !== descriptor ? 'command_changed'
+          : existing.fingerprint !== fingerprint ? 'content_changed' : null;
   if (existing && existing.passed === true && existing.fingerprint === fingerprint && existing.command_hash === descriptor && existing.cwd === canonicalCwd) {
     return { ok: true, reused: true, evidence: existing };
   }
@@ -167,7 +173,7 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
       fingerprint,
       command_hash: descriptor,
       checked_at: new Date().toISOString(),
-      reused_task_checks: true,
+      reused_task_checks: true, reused: true, reuse_miss_reason: null, duration_ms: 0,
       task_ids: [...saved.task_ids],
       network_policy: {
         allow_live_provider_checks: runtime.allow_live_provider_checks,
@@ -190,11 +196,12 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
       // that optional script may skip it. Any other configured/missing command
       // is an explicit contract and fails closed.
       if (!command) return { name, command: null, passed: ['test', 'lint'].includes(name), skipped: true, ...( ['test', 'lint'].includes(name) ? {} : { error: 'configured_check_not_found' }) };
+      const startedAt = Date.now();
       const out = spawnSync(command, [], {
         cwd, shell: true, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024,
         env: runtime.env, timeout: runtime.timeout_ms,
       });
-      return { name, command, passed: !out.error && out.status === 0, skipped: false, exit_code: out.status, output: `${out.stdout || ''}${out.stderr || ''}`.trim().slice(-4000), ...(out.error ? { error: out.error.message } : {}) };
+      return { name, command, passed: !out.error && out.status === 0, skipped: false, exit_code: out.status, duration_ms: Date.now() - startedAt, output: `${out.stdout || ''}${out.stderr || ''}`.trim().slice(-4000), ...(out.error ? { error: out.error.message } : {}) };
     });
     const after = taskCheckFingerprint(cwd, fingerprintPolicy);
     const afterContent = contentFingerprint(cwd);
@@ -205,7 +212,8 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
     const evidence = {
       passed: stable && results.every((r) => r.passed),
       cwd: canonicalCwd, fingerprint: after, command_hash: descriptor,
-      checked_at: new Date().toISOString(), results,
+      checked_at: new Date().toISOString(), results, reused: false, reuse_miss_reason: reuseMissReason,
+      duration_ms: results.reduce((sum, result) => sum + (result.duration_ms || 0), 0),
       ...(stable && serialResult ? {
         serial_quality: {
           check: 'serial-quality',
@@ -219,6 +227,7 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
           exit_code: 0,
           checked_at: new Date().toISOString(),
           reused_from: `group:${groupId}`,
+          duration_ms: serialResult.duration_ms || 0, reuse_miss_reason: reuseMissReason,
           output: serialResult.output,
         },
       } : {}),

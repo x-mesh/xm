@@ -25,6 +25,7 @@ import {
   normalizeBuildProfile, normalizeRevisionReason, ensureBuildIdentity, artifactSnapshot,
   recordEffectiveness, recordPlanRevision,
 } from './effectiveness.mjs';
+import { recommendBuildProfile } from './profile-selection.mjs';
 
 // ── PRD template version + diagram gate (R4/R5/R12) ──────────────────
 // PRD_TEMPLATE_VERSION marks the template revision where Section 8
@@ -342,7 +343,19 @@ export async function cmdPlan(args) {
   }
   const requestedAction = execute ? 'build' : 'plan_only';
   const intentCheck = gaugeIntent(goal, { forceInterview: interview });
-  const identity = ensureBuildIdentity(project, profile);
+  const savedState = readPlanState(project);
+  const savedProfile = savedState?.profile_provisional || manifest?.build_profile_provisional
+    ? null : (savedState?.profile || manifest?.build_profile || null);
+  let researchSignal = null;
+  if (!profile && !savedProfile) {
+    try { researchSignal = await gaugeResearch(goal); } catch { researchSignal = null; }
+  }
+  const profileRecommendation = recommendBuildProfile({
+    explicitProfile: profile, savedProfile,
+    projectKind: manifest?.project_kind || 'brownfield', researchSignal,
+    intentReady: intentCheck.readiness === 'ready', goal,
+  });
+  const identity = ensureBuildIdentity(project, profileRecommendation.profile, profileRecommendation);
   const effectiveProfile = identity.profile;
   const planState = savePlanIntent(project, {
     goal, requestedAction, intentCheck, forcedInterview: interview, draft, profile: effectiveProfile,
@@ -352,8 +365,7 @@ export async function cmdPlan(args) {
   // Research (full/slim) or — ONLY at quick-eligible — suggest --quick via
   // AskUserQuestion. Gauge failure degrades to null (skill treats null as
   // full), never blocks planning.
-  let researchSignal = null;
-  if (effectiveProfile !== 'light') {
+  if (!researchSignal && effectiveProfile !== 'light') {
     try { researchSignal = await gaugeResearch(goal); } catch { researchSignal = null; }
   }
   const output = {
@@ -370,11 +382,13 @@ export async function cmdPlan(args) {
       : 'research_then_generate_plan',
     research_may_reopen_intent: true,
     profile: effectiveProfile,
+    profile_source: profileRecommendation.source,
+    profile_recommendation: profileRecommendation,
     profile_explicit: profile != null,
     quick,
     flow: quick ? 'quick' : (effectiveProfile || 'full'),
     skip_research: effectiveProfile === 'light',
-    research_scope: effectiveProfile === 'light' ? 'none' : effectiveProfile === 'standard' ? 'slim' : effectiveProfile === 'deep' ? 'full' : 'adaptive-legacy',
+    research_scope: effectiveProfile === 'light' ? 'none' : effectiveProfile === 'standard' ? 'slim' : 'full',
     required_artifacts: effectiveProfile === 'light' ? ['PRD:delta', 'tasks', 'checks']
       : effectiveProfile === 'standard' ? ['CONTEXT', 'REQUIREMENTS', 'PRD:small|medium', 'tasks', 'checks']
         : effectiveProfile === 'deep' ? ['CONTEXT', 'REQUIREMENTS', 'ROADMAP', 'PRD:full', 'tasks', 'checks'] : [],

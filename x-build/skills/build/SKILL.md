@@ -27,8 +27,9 @@ x-build manages the full project lifecycle (Research → Plan → Execute → Ve
 
 ## Build Profiles
 
-`plan` and `build` accept `--profile light|standard|deep`. Omitting it preserves
-the legacy routing; this release does not auto-select a profile.
+`plan` and `build` accept `--profile light|standard|deep`. When omitted, the CLI
+selects a concrete profile from project kind and deterministic research evidence.
+It never creates a new `adaptive-legacy`/null-profile build.
 
 | Profile | Research | Planning artifacts | Intended use |
 |---------|----------|--------------------|--------------|
@@ -39,6 +40,9 @@ the legacy routing; this release does not auto-select a profile.
 `--quick` remains an alias for `--profile light`; conflicting profile flags fail.
 Storage and resume keep all five internal phases, while profile-aware status also
 shows the user-facing `Shape → Plan → Build` lifecycle.
+The JSON `profile_recommendation.confirmation_required` flag is authoritative. Ask
+at most once only when it is true; non-interactive/autonomous callers use the
+returned safe fallback. Explicit and saved profiles never trigger the picker.
 
 ## Model Routing
 
@@ -149,7 +153,7 @@ See `references/ask-user-question-rule.md` — the `question` field is invisible
 Rules:
 1. **AskUserQuestion is REQUIRED only when a user-only answer materially changes** scope/task graph, public behavior, success criteria, irreversible/high-risk contracts, authority, external coordination, or compliance. Batch at most 3 blocking questions into one turn.
 2. **Routine transitions are automatic once their deterministic gates pass.** Plan → Execute remains a `decision` gate because it approves direction. A failed quality/group-review gate, agent execution error, or newly discovered user-only ambiguity still stops. Autopilot does not pass `decision` gates.
-3. **NEVER skip Research silently** — `plan "goal"` without `--quick` goes through Research, SCALED by the deterministic gauge in the plan JSON's `research_signal` (from `research-check`): `full` → 4-agent research; `slim` → 1-2 targeted agents on the HIT signals; `quick-eligible` (0/4 hits ONLY) → you MAY suggest `--quick` via AskUserQuestion, and proceed quick ONLY if the user confirms. In yolo/explicit autonomous mode, `quick-eligible` is enough to choose `--quick`. A missing/failed `research_signal` = treat as `full`. Outside that mode, auto-skipping without explicit confirmation, or calling `phase set plan` to dodge Research, is FORBIDDEN.
+3. **Follow the concrete profile** — the CLI's `profile_recommendation` is authoritative: `light` skips Research, `standard` runs 1-2 targeted agents, and `deep` runs full Research. Ask once only when `confirmation_required` is true. A missing/failed recommendation falls back to `deep`; never call `phase set plan` to dodge the selected profile.
 4. **Review the decision, link the details** — before Plan approval print the Decision Plan, task/DAG summary, material risks/constraints, validation commands, and full artifact path. Do not dump a long PRD merely as ceremony. The approval question's first option must cite a concrete task id, R#, or done criterion.
 5. **Research output MUST be persisted** — after each research sub-agent (stack / features / architecture / pitfalls) completes, immediately call `$XMB save research-notes --agent <name> --content "..."` to append the RAW agent output to `phases/01-research/notes.md`. Never discard raw agent output by only saving the synthesized ROADMAP — the user must be able to audit the evidence chain.
 6. **Plan Review** — present one Plan Bundle (intent/PRD/tasks/groups/checks), then ask for the single Plan → Execute direction approval. Approval is bound to `plan_hash`; any plan change invalidates it.
@@ -177,7 +181,7 @@ When the host is in yolo mode, or the user explicitly asks to proceed autonomous
 
 Anti-patterns:
 - ❌ `plan "goal"` → `phase set plan` → PRD generation (skips Research)
-- ❌ 일반 모드에서 `research_signal: quick-eligible` → quick 플로우 자동 진입 — yolo/명시적 자율 실행일 때만 자동 진입 가능
+- ❌ `profile_recommendation`을 무시하고 raw `research_signal`만으로 quick/deep을 다시 결정 — concrete profile이 authoritative
 - ❌ 신호 1-2개 HIT인데 "거의 quick감"이라며 조사 생략 — 1개라도 HIT면 조사 규모만 조절(slim), quick 제안 금지
 - ❌ Research agents complete → synthesize to ROADMAP.md → save → advance (raw agent output never shown, never persisted to `notes.md`)
 - ❌ Task breakdown generated → `$XMB save plan` → AskUserQuestion (task list never shown to user)
@@ -283,14 +287,14 @@ Use `plan --interview` when the user explicitly wants detailed refinement. Use `
    - Save CONTEXT.md, REQUIREMENTS.md, ROADMAP.md — REQUIREMENTS.md MUST list each requirement as a `- [R1] <text>` item with sequential IDs; free-form prose cannot be read by verify-coverage/verify-traceability (the Verify gate then fails on a vacuous 0-requirement parse)
    - `$XMB gate pass` → `$XMB phase next` (Research → Plan)
    - Then generate PRD and proceed with plan
-   - **NEVER skip Research by calling `phase set plan` directly — Research produces the artifacts that PRD depends on.** Scale it instead: read `research_signal` from the plan JSON (`full` = 4 agents / `slim` = 1-2 targeted agents on HIT signals / `quick-eligible` = suggest `--quick` via AskUserQuestion, only at 0/4; yolo/explicit autonomous mode may choose it directly).
+   - **NEVER bypass the selected profile with `phase set plan`.** Use `profile_recommendation`: `light` skips Research, `standard` runs 1-2 targeted agents, and `deep` runs full Research.
 3. **If project exists in Research phase** → check artifacts, continue Research if incomplete, then plan
 4. **If project exists in Plan phase** → `$XMB plan "{goal}"` (already past Research)
 
 ### `plan "goal" --quick` (explicit Quick Mode)
 1. `$XMB init quick-{timestamp}` → `$XMB phase set plan` → Quick Mode flow (see [Quick Mode](#quick-mode-one-shot-planrun))
-2. Only enters Quick Mode when `--quick` flag is **explicitly** provided, OR when `research_signal.recommendation === "quick-eligible"` (0/4 signals) and the user confirmed it; in yolo/explicit autonomous mode, that safe recommendation is sufficient.
-3. Outside yolo/explicit autonomous mode, Research is skipped ONLY via explicit user opt-in.
+2. Enters Quick Mode for an explicit `--quick`/`--profile light`, a saved `light` profile, or an automatic `light` recommendation whose `confirmation_required` is false.
+3. When `confirmation_required` is true, ask once and persist the chosen profile so resume does not ask again.
 4. `--quick` is equivalent to `--profile light`; use the profile spelling in new automation.
 
 ### `dispatch "<instruction>"` (lightweight tracked execution)

@@ -9,7 +9,7 @@ allowed-tools:
 
 ## Mode selection
 
-When the user did not already choose a mode, show this context as regular Markdown, then call AskUserQuestion once before planning:
+When the user did not already choose a mode, first run `xm plan --recommend --json <requirements>`. Use its recommendation directly unless `confirmation_required` is true. Only then show the context below and call AskUserQuestion once:
 
 Quick creates the deterministic scaffold immediately. Standard adds repository inspection, a focused interview, and critique. Ultra adds multi-model architect/implementer/critic synthesis to the Standard workflow.
 
@@ -18,7 +18,7 @@ Quick creates the deterministic scaffold immediately. Standard adds repository i
 - Quick: use the existing deterministic requirements-to-task scaffold without an interview.
 - Ultra: run the Standard workflow, then synthesize multi-model architect/implementer/critic candidates.
 
-Treat explicit quick, standard, ultra, --mode, or an exact model list as already selected. Do not ask during --validate, --persist, or other machine-oriented CLI operations. If AskUserQuestion is unavailable, ask one concise inline question and wait.
+Treat explicit quick, standard, ultra, --mode, or an exact model list as already selected. Ultra is always explicit and is never auto-selected. Do not ask during --validate, --persist, session continuation, or other machine-oriented CLI operations. If confirmation is required but AskUserQuestion is unavailable, use Standard as the safe fallback instead of blocking.
 
 ## Workflows
 

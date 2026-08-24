@@ -59,26 +59,29 @@ export function buildIdentity(project) {
   };
 }
 
-export function ensureBuildIdentity(project, profile = null) {
+export function ensureBuildIdentity(project, profile = null, selection = {}) {
   const statePath = planStatePath(project);
   const state = readJSON(statePath) || {};
   const manifest = readJSON(manifestPath(project)) || {};
   const previousProfile = state.profile || manifest.build_profile || null;
+  const previousProvisional = state.profile_provisional === true || manifest.build_profile_provisional === true;
   const buildId = state.build_id || manifest.build_id || newBuildId();
   const traceId = state.trace_id || manifest.trace_id || activeTraceId();
   const selectedProfile = profile || previousProfile || null;
+  const provisional = selection.provisional === true;
   const now = new Date().toISOString();
 
-  Object.assign(state, { build_id: buildId, trace_id: traceId, profile: selectedProfile, updated_at: now });
-  Object.assign(manifest, { build_id: buildId, trace_id: traceId, build_profile: selectedProfile, updated_at: now });
+  Object.assign(state, { build_id: buildId, trace_id: traceId, profile: selectedProfile, profile_provisional: provisional, profile_source: selection.source || state.profile_source || null, updated_at: now });
+  Object.assign(manifest, { build_id: buildId, trace_id: traceId, build_profile: selectedProfile, build_profile_provisional: provisional, build_profile_source: selection.source || manifest.build_profile_source || null, updated_at: now });
   writeJSON(statePath, state);
   writeJSON(manifestPath(project), manifest);
   if (manifest.current_phase) seedPhaseEffect(project, manifest.current_phase);
 
-  if (selectedProfile && selectedProfile !== previousProfile) {
+  if (selectedProfile && (selectedProfile !== previousProfile || provisional !== previousProvisional)) {
     appendCostEvent({
       type: 'profile_selected', project, build_id: buildId, trace_id: traceId,
-      profile: selectedProfile, selection: 'explicit', previous_profile: previousProfile, timestamp: now,
+      profile: selectedProfile, selection: selection.source || 'explicit', previous_profile: previousProfile,
+      confidence: selection.confidence || null, reasons: selection.reasons || [], timestamp: now,
     });
   }
   return { build_id: buildId, trace_id: traceId, profile: selectedProfile };

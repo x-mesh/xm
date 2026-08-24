@@ -226,6 +226,7 @@ describe('phase exit gates are enforced', () => {
       const status = readJSON(projectPath(tmp, name, 'phases', '01-research', 'status.json'));
       expect(status.gate.gate_type).toBe('human-verify');
       expect(status.gate.passed).toBe(false);
+      expect(typeof status.gate_wait_started_at).toBe('string');
       // status --json surfaces resolved type + ledger
       const sj = JSON.parse(run(['status', '--json'], { cwd: tmp }).stdout);
       const research = sj.phases.find(p => p.id === '01-research');
@@ -242,12 +243,20 @@ describe('phase exit gates are enforced', () => {
       const name = setupProject(tmp);
       manualVerification(tmp);
       writeFileSync(projectPath(tmp, name, 'context', 'CONTEXT.md'), '# Context\nGoal: test');
+      expect(run(['phase', 'next'], { cwd: tmp }).exitCode).toBe(2);
       run(['gate', 'pass', 'Research verified'], { cwd: tmp });
       run(['phase', 'next'], { cwd: tmp });
       expect(readJSON(projectPath(tmp, name, 'manifest.json')).current_phase).toBe('02-plan');
       const status = readJSON(projectPath(tmp, name, 'phases', '01-research', 'status.json'));
       expect(status.gate.passed).toBe(true);
       expect(status.gate.passed_by).toBe('human');
+      expect(status.gate_wait_started_at).toBeNull();
+      expect(status.gate_wait_duration_ms).toBeGreaterThanOrEqual(0);
+      const phaseMetric = readFileSync(join(tmp, '.xm', 'build', 'metrics', 'sessions.jsonl'), 'utf8')
+        .trim().split('\n').map((line) => JSON.parse(line)).reverse()
+        .find((event) => event.type === 'phase_complete' && event.phase === 'research');
+      expect(phaseMetric.human_wait_duration_ms).toBeGreaterThanOrEqual(0);
+      expect(phaseMetric.active_duration_ms + phaseMetric.human_wait_duration_ms).toBe(phaseMetric.wall_clock_duration_ms);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -1703,6 +1712,10 @@ describe('quality', () => {
       expect(runQualityPipeline({ cwd: tmp, config, evidence: first })[0].reused).toBe(false);
       expect(runQualityPipeline({ cwd: tmp, config: { serial_quality_command: `${command} ` }, evidence: first })[0].reused).toBe(false);
       expect(runQualityPipeline({ cwd: tmp, config: { ...config, serial_quality_env: { QUALITY_MODE: 'changed' } }, evidence: first })[0].reused).toBe(false);
+      const changedCommand = runQualityPipeline({ cwd: tmp, config: { serial_quality_command: `${command} ` }, evidence: first })[0];
+      expect(changedCommand.reuse_miss_reason).toBe('command_changed');
+      expect(changedCommand.duration_ms).toBeGreaterThanOrEqual(0);
+      expect(runQualityPipeline({ cwd: tmp, config })[0].reuse_miss_reason).toBe('missing');
       const other = mkdtempSync(join(tmpdir(), 'xb-quality-other-cwd-'));
       try {
         mkdirSync(join(other, '.xm'), { recursive: true });

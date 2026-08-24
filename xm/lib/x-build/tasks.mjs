@@ -986,12 +986,19 @@ export function taskUpdate(project, args) {
       const durations = allTasks
         .filter(t => t.started_at && t.completed_at)
         .map(t => new Date(t.completed_at) - new Date(t.started_at));
+      const starts = allTasks.filter(t => t.started_at).map(t => new Date(t.started_at).getTime()).filter(Number.isFinite);
+      const ends = allTasks.map(t => t.completed_at || t.failed_at).filter(Boolean).map(t => new Date(t).getTime()).filter(Number.isFinite);
+      const wallDuration = starts.length && ends.length ? Math.max(0, Math.max(...ends) - Math.min(...starts)) : 0;
       const scores = allTasks.filter(t => t.score != null).map(t => t.score);
       appendCostEvent({
         type: 'run_complete', project, task_count: allTasks.length,
         ...buildIdentity(project),
         completed: completedCount, failed: failedCount,
-        total_duration_ms: durations.reduce((a, b) => a + b, 0),
+        total_duration_ms: wallDuration,
+        task_duration_sum_ms: durations.reduce((a, b) => a + b, 0),
+        wall_clock_duration_ms: wallDuration,
+        active_duration_ms: null, human_wait_duration_ms: null,
+        duration_breakdown_available: false,
         avg_quality_score: scores.length ? +(scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2) : null,
         timestamp: new Date().toISOString(),
       });

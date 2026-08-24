@@ -50,7 +50,14 @@ export function cmdPhase(args) {
 function recordGateOutcome(project, phaseId, gateType, passed, passedBy) {
   const p = phaseStatusPath(project, phaseId);
   const status = readJSON(p) || {};
-  status.gate = { gate_type: gateType, passed, passed_by: passedBy, ts: new Date().toISOString() };
+  const now = new Date().toISOString();
+  if (!passed && requiresSignoff(gateType) && !status.gate_wait_started_at) status.gate_wait_started_at = now;
+  if (passed && status.gate_wait_started_at) {
+    const waited = Math.max(0, new Date(now) - new Date(status.gate_wait_started_at));
+    status.gate_wait_duration_ms = (status.gate_wait_duration_ms || 0) + waited;
+    status.gate_wait_started_at = null;
+  }
+  status.gate = { gate_type: gateType, passed, passed_by: passedBy, ts: now };
   writeJSON(p, status);
   recordEffectiveness(project, 'gate_outcome', {
     phase: PHASES.find(phase => phase.id === phaseId)?.name || phaseId,
@@ -291,10 +298,15 @@ export function phaseNext(args) {
 
   if (currentStatus.started_at) {
     const durationMs = new Date(now) - new Date(currentStatus.started_at);
+    const openWaitMs = currentStatus.gate_wait_started_at
+      ? Math.max(0, new Date(now) - new Date(currentStatus.gate_wait_started_at)) : 0;
+    const humanWaitMs = (currentStatus.gate_wait_duration_ms || 0) + openWaitMs;
     appendCostEvent({
       type: 'phase_complete', project, phase: currentPhase.name,
       ...buildIdentity(project),
-      duration_ms: durationMs,
+      duration_ms: durationMs, wall_clock_duration_ms: durationMs,
+      human_wait_duration_ms: humanWaitMs,
+      active_duration_ms: Math.max(0, durationMs - humanWaitMs),
       timestamp: now,
     });
     recordPhaseEffect(project, currentPhase.id, currentPhase.name, durationMs, nextPhase.id);

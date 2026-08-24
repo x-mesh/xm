@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -23,6 +23,53 @@ describe('x-plan CLI', () => {
       expect(out.executable).toBe(false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  test('recommends Quick only for a bounded local change and never auto-selects Ultra', () => {
+    const quick = run(['--recommend', '--json', 'Update test/x-plan-cli.test.mjs to cover the local mode selector without changing public contracts']);
+    expect(quick.status).toBe(0);
+    expect(JSON.parse(quick.stdout)).toMatchObject({ action: 'select-mode', mode: 'quick', source: 'auto', confirmation_required: false });
+
+    const risky = run(['--recommend', '--json', 'Migrate the public API schema and deploy the breaking change']);
+    expect(risky.status).toBe(0);
+    expect(JSON.parse(risky.stdout)).toMatchObject({ mode: 'standard', confidence: 'high', confirmation_required: false });
+
+    const ambiguous = run(['--recommend', '--json', 'Improve it']);
+    expect(JSON.parse(ambiguous.stdout)).toMatchObject({ mode: 'standard', confidence: 'low', confirmation_required: true });
+  });
+
+  test('explicit mode and exact models override recommendations', () => {
+    const standard = run(['--recommend', '--json', '--mode', 'standard', 'Update docs/README.md locally']);
+    expect(JSON.parse(standard.stdout)).toMatchObject({ mode: 'standard', source: 'explicit' });
+    const ultra = run(['--recommend', '--json', '--models', 'model-a,model-b', 'Update docs/README.md locally']);
+    expect(JSON.parse(ultra.stdout)).toMatchObject({ mode: 'ultra', source: 'explicit_models' });
+  });
+
+  test('recommend resumes a persisted session mode without another selection', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x-plan-recommend-session-'));
+    try {
+      const session = join(dir, '.xm', 'plan', 'existing');
+      mkdirSync(session, { recursive: true });
+      writeFileSync(join(session, 'manifest.json'), JSON.stringify({ mode: 'standard' }));
+      const resumed = run(['--recommend', '--session', 'existing', '--json', 'Improve it'], undefined, {}, dir);
+      expect(resumed.status).toBe(0);
+      expect(JSON.parse(resumed.stdout)).toMatchObject({ mode: 'standard', source: 'session', confirmation_required: false });
+      const missing = run(['--recommend', '--session', '../escape', '--json', 'Improve it'], undefined, {}, dir);
+      expect(missing.status).toBe(2);
+      expect(JSON.parse(missing.stdout).errors[0].message).toContain('plan session must stay under .xm/plan');
+      const explicit = run(['--recommend', '--mode', 'quick', '--session', '../escape', '--json', 'Improve it'], undefined, {}, dir);
+      expect(explicit.status).toBe(0);
+      expect(JSON.parse(explicit.stdout)).toMatchObject({ mode: 'quick', source: 'explicit' });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('recommend rejects validate and persist machine-operation combinations', () => {
+    for (const operation of ['--validate', '--persist']) {
+      const result = run(['--recommend', operation, '--json', '{"schema_version":1}']);
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).errors[0].message).toContain('--recommend cannot be combined');
+    }
+  });
+
   test('accepts stdin and file inputs', () => {
     const stdin = run(['--json', '--no-save'], '- One\n- Two');
     expect(JSON.parse(stdin.stdout).provenance.source).toBe('stdin');

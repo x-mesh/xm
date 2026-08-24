@@ -10,6 +10,23 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.19.2] - 2026-08-24
+
+### x-build 3.2.4 → 3.2.5
+
+- Select a concrete `light`, `standard`, or `deep` build profile from explicit input, saved project state, and deterministic repository risk signals, removing the legacy null-profile path while preserving fail-safe deep routing for greenfield and high-risk work.
+- Record profile provenance, phase gate wait time, run wall-clock duration, quality command duration, and exact evidence reuse failures so build latency can be attributed without weakening snapshot checks.
+- Align the build skill's Research and Quick Mode instructions with the adaptive profile contract so automatic `light` routing no longer conflicts with confirmation-only legacy rules.
+
+### x-plan 0.1.1 → 0.1.2
+
+- Add side-effect-free `xm plan --recommend --json` mode selection with bounded local-change detection, broad-scope protection, and explicit-only Ultra routing.
+- Reuse persisted session modes without another prompt, preserve explicit mode/model precedence, reject unsafe session paths, and reject incompatible `--recommend --validate|--persist` combinations.
+
+### xm 2.19.1 → 2.19.2
+
+- Bundle the adaptive build/plan routing, latency telemetry, synchronized skill contracts, updated checksums, and regression coverage for broad-scope, session-resume, and machine-CLI behavior.
+
 ## [2.19.1] - 2026-08-21
 
 ### Added

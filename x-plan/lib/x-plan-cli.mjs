@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 // @ts-check
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { savePlanArtifact } from './x-plan/artifact.mjs';
 import { createPlanEnvelope, parsePlanEnvelope, validatePlanEnvelope } from './x-plan/core.mjs';
 import { renderPlan, renderValidation } from './x-plan/render.mjs';
 import { runUltraPlan } from './x-plan/ultra.mjs';
+import { recommendPlanMode } from './x-plan/selection.mjs';
 
 function parseArgs(argv) {
-  const flags = { pretty: false, compact: false, json: false, validate: false, persist: false, noSave: false, output: null, file: null, mode: 'quick', models: null, evidence: null, questions: null, critique: null, session: null };
+  const flags = { pretty: false, compact: false, json: false, validate: false, persist: false, recommend: false, noSave: false, output: null, file: null, mode: null, modeExplicit: false, models: null, evidence: null, questions: null, critique: null, session: null };
   const positional = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -18,10 +20,11 @@ function parseArgs(argv) {
     else if (arg === '--json') flags.json = true;
     else if (arg === '--validate') flags.validate = true;
     else if (arg === '--persist') flags.persist = true;
+    else if (arg === '--recommend') flags.recommend = true;
     else if (arg === '--no-save') flags.noSave = true;
     else if (arg === '--output') { if (!argv[i + 1] || argv[i + 1].startsWith('--')) return { error: '--output requires a path' }; flags.output = argv[++i]; }
     else if (arg === '--file') { if (!argv[i + 1] || argv[i + 1].startsWith('--')) return { error: '--file requires a path' }; flags.file = argv[++i]; }
-    else if (arg === '--mode') { if (!argv[i + 1] || argv[i + 1].startsWith('--')) return { error: '--mode requires a value' }; flags.mode = argv[++i]; }
+    else if (arg === '--mode') { if (!argv[i + 1] || argv[i + 1].startsWith('--')) return { error: '--mode requires a value' }; flags.mode = argv[++i]; flags.modeExplicit = true; }
     else if (arg === '--models') { if (!argv[i + 1] || argv[i + 1].startsWith('--')) return { error: '--models requires a value' }; flags.models = argv[++i]; }
     else if (arg === '--evidence') { if (!argv[i + 1] || argv[i + 1].startsWith('--')) return { error: '--evidence requires a path' }; flags.evidence = argv[++i]; }
     else if (arg === '--questions') { if (!argv[i + 1] || argv[i + 1].startsWith('--')) return { error: '--questions requires a path' }; flags.questions = argv[++i]; }
@@ -32,6 +35,7 @@ function parseArgs(argv) {
   }
   if (flags.pretty && flags.compact) return { error: '--pretty and --compact conflict' };
   if (flags.output && flags.noSave) return { error: '--output and --no-save conflict' };
+  if (flags.recommend && (flags.validate || flags.persist)) return { error: '--recommend cannot be combined with --validate or --persist' };
   return { flags, positional };
 }
 
@@ -42,6 +46,26 @@ function reportError(flags, code, message) {
   else process.stderr.write('xm plan: ' + message + '\n');
 }
 function readArtifact(path) { return path ? JSON.parse(readFileSync(resolve(path), 'utf8')) : null; }
+function repositoryRoot(cwd = process.cwd()) {
+  if (existsSync(join(cwd, '.xm'))) return resolve(cwd);
+  try {
+    const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim();
+    if (root) return resolve(root);
+  } catch {}
+  return resolve(cwd);
+}
+function resumedSessionMode(sessionId, cwd = process.cwd()) {
+  if (!sessionId) return null;
+  const base = resolve(repositoryRoot(cwd), '.xm', 'plan');
+  const session = resolve(base, String(sessionId));
+  if (session === base || !session.startsWith(base + '/')) throw new Error('plan session must stay under .xm/plan');
+  const manifestPath = join(session, 'manifest.json');
+  if (!existsSync(manifestPath)) throw new Error('plan session not found: ' + sessionId);
+  let manifest;
+  try { manifest = JSON.parse(readFileSync(manifestPath, 'utf8')); } catch (error) { throw new Error('invalid plan session manifest: ' + error.message); }
+  if (!['quick', 'standard', 'ultra'].includes(manifest?.mode)) throw new Error('plan session manifest has an invalid mode');
+  return manifest.mode;
+}
 function validateUltraContext(flags) {
   if (!flags.session) return 'ultra mode requires the Standard interview session via --session';
   if (!flags.evidence) return 'ultra mode requires Standard inspection evidence via --evidence';
@@ -84,6 +108,16 @@ export async function main(argv = process.argv.slice(2), stdin = null) {
     else if (!process.stdin.isTTY) { body = readFileSync(0, 'utf8'); source = 'stdin'; }
   } catch (error) { reportError(flags, 'cli.input', error.message); return 2; }
   if (!body.trim()) { reportError(flags, 'cli.empty_input', 'requirements input is required'); return 2; }
+  if (flags.recommend) {
+    if (flags.modeExplicit && !['quick', 'standard', 'ultra', 'default'].includes(flags.mode)) { reportError(flags, 'cli.mode', 'unknown mode: ' + flags.mode); return 2; }
+    const models = String(flags.models || '').split(',').map((item) => item.trim()).filter(Boolean);
+    let resumedMode = null;
+    if (!flags.modeExplicit && models.length < 2) {
+      try { resumedMode = resumedSessionMode(flags.session); } catch (error) { reportError(flags, 'cli.session', error.message); return 2; }
+    }
+    output({ schema_version: 1, action: 'select-mode', ...recommendPlanMode(body, { explicitMode: flags.modeExplicit ? (flags.mode === 'default' ? 'quick' : flags.mode) : null, models: models.length >= 2 ? models : [], resumedMode }) }, flags.pretty);
+    return 0;
+  }
   if (flags.validate || flags.persist) {
     const result = parsePlanEnvelope(body);
     if (flags.persist && result.valid) {
@@ -94,7 +128,7 @@ export async function main(argv = process.argv.slice(2), stdin = null) {
     else process.stdout.write(renderValidation(result));
     return result.ok ? 0 : result.errors.some((entry) => entry.code === 'plan.invalid_json') ? 2 : 1;
   }
-  if (flags.mode === 'default') flags.mode = 'quick';
+  if (flags.mode == null || flags.mode === 'default') flags.mode = 'quick';
   if (!['quick', 'standard', 'ultra'].includes(flags.mode)) { reportError(flags, 'cli.mode', 'unknown mode: ' + flags.mode); return 2; }
   if (flags.mode === 'ultra') {
     const models = String(flags.models || '').split(',').map((item) => item.trim()).filter(Boolean);

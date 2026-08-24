@@ -64,6 +64,7 @@ export function savePlanIntent(project, { goal, requestedAction, intentCheck, fo
     state: 'draft',
     goal,
     profile: profile || previous.profile || null,
+    profile_provisional: previous.profile_provisional === true,
     build_id: buildId || previous.build_id || null,
     trace_id: traceId || previous.trace_id || null,
     requested_action: requestedAction,

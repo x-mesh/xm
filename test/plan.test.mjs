@@ -242,6 +242,36 @@ describe('plan routing protocol', () => {
     }
   });
 
+  test('plan without a profile always resolves a concrete adaptive profile', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-plan-profile-'));
+    try {
+      setupProject(tmp);
+      const r = run(['plan', 'Add a targeted local helper with tests and no public contract changes'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const output = JSON.parse(r.stdout);
+      expect(['light', 'standard', 'deep']).toContain(output.profile);
+      expect(output.research_scope).not.toBe('adaptive-legacy');
+      expect(output.profile_recommendation.profile).toBe(output.profile);
+      expect(JSON.parse(readFileSync(join(tmp, '.xm', 'build', 'projects', output.project, 'manifest.json'), 'utf8')).build_profile).toBe(output.profile);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('an unresolved-intent fallback profile is marked provisional for later reclassification', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-plan-provisional-'));
+    try {
+      setupProject(tmp);
+      const output = JSON.parse(run(['plan', 'Improve'], { cwd: tmp }).stdout);
+      expect(output.profile).toBe('standard');
+      expect(output.profile_recommendation.provisional).toBe(true);
+      const manifest = JSON.parse(readFileSync(join(tmp, '.xm', 'build', 'projects', output.project, 'manifest.json'), 'utf8'));
+      expect(manifest.build_profile_provisional).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('plan preserves flag-like text in the goal except --quick', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
