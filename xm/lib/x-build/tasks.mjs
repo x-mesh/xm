@@ -1395,7 +1395,13 @@ function buildAgentPrompt(project, task, briefContent, decisionsContent, { manif
     '## Instructions',
     `Complete the task "${task.name}" as described above.`,
     'Follow existing code patterns and conventions.',
-    'Write clean, tested code.',
+    'Make the smallest change that satisfies the actual user goal. Do not add unsolicited abstractions, compatibility layers, configuration, telemetry, or state tracking.',
+    'Treat the requested method as a hypothesis: verify it fits the repository and goal; if it does not, report concrete evidence and the simplest adequate alternative before changing code.',
+    'Add a fallback only for a concrete evidenced failure condition, and only when activation is observable, behavioral differences are explicit, and both paths can be tested. Otherwise fail clearly; never hide failure behind broad catches, empty results, or arbitrary defaults.',
+    'Do not claim quality, safety, or performance improvements that were not measured.',
+    'Sequential execution is the default. Use parallel execution only when files, shared state, dependencies, and validation environments are verified independent and the expected time saving exceeds orchestration cost.',
+    'Identify what this change can break and run only the smallest existing validation that directly observes that risk. Do not run test, lint, build, and review as a fixed checklist; explain any relevant check you intentionally omit.',
+    "Write clean code and use the repository's existing validation commands when they are relevant to the changed behavior.",
     '',
   );
 

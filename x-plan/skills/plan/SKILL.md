@@ -7,6 +7,16 @@ allowed-tools:
 
 # x-plan
 
+## Planning Principles
+
+- Keep the plan proportional to the work. Prefer the smallest approach that satisfies the user's actual goal; do not inflate a local change into a framework, migration, compatibility layer, or lifecycle.
+- Treat the request as a hypothesis. Verify that the requested method achieves the underlying goal, check whether the repository already provides it, and surface a simpler adequate alternative when one exists.
+- Do not invent fallbacks. A fallback belongs in the plan only when a concrete failure condition is evidenced, explicit failure would be worse, activation is observable, behavior differences are documented, and both paths have a test. Otherwise require a clear failure.
+- Separate verified repository facts, inferences, and unresolved user-owned decisions. Never make a plan executable by guessing paths, APIs, validation commands, or risk assumptions.
+- Identify what the change can break, then select only the smallest existing validation that directly observes that risk. Do not list test, lint, build, and review as a fixed checklist. Explain any intentionally omitted check. Propose a new gate only for a named failure that existing checks miss and only with a measurable unique-catch criterion.
+- Plan sequential execution by default. Mark tasks parallel only when their files, shared state, dependencies, and validation environments are verified independent and the expected time saving exceeds orchestration cost.
+- Stop or shrink the plan when the problem is not reproducible, a simpler path achieves the goal, complexity has no measurable benefit, or success cannot be observed.
+
 ## Mode selection
 
 When the user did not already choose a mode, first run `xm plan --recommend --json <requirements>`. Use its recommendation directly unless `confirmation_required` is true. Only then show the context below and call AskUserQuestion once:
@@ -33,7 +43,7 @@ Run inspect → clarify → draft → critique → finalize:
 1. Inspect the repository first. Record verified paths, APIs, conventions, and test commands as evidence. Do not ask discoverable questions.
 2. Classify ambiguity as discoverable, user_owned, safe_default, or blocking_unknown. Persist the incomplete session with evidence.json and questions.json before asking, so the interview is resumable. Show findings, then ask at most three user_owned or blocking questions in one AskUserQuestion call. Stop and wait for the answers.
 3. Draft a plan whose must requirements map to tasks or validation. Every task needs expected_files and done_criteria.
-4. Critique requirement coverage, dependency order, scope, failure modes, rollback or recovery, and validation. Revise before finalizing.
+4. Critique premise validity, requirement coverage, dependency order, scope, failure modes, rollback or recovery, and validation. Remove unjustified fallbacks and unnecessary machinery before finalizing.
 5. Set executable=true only when evidence exists, every question is answered, critique passes, every task names expected files, validation commands are verified, and no disagreement remains unresolved.
 6. Persist plan.md, envelope.json, evidence.json, questions.json, critique.json, and manifest.json in one .xm/plan/<run-id>/ session directory.
 

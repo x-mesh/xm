@@ -48,6 +48,12 @@ describe('dispatch — lightweight tracked execution', () => {
       expect(out.notice.join(' ')).toContain('PRD/phase 게이트 미적용');
       expect(out.task.task_id).toBe('t1');
       expect(out.task.prompt).toContain('## Definition of Done');
+      expect(out.task.prompt).toContain('Make the smallest change that satisfies the actual user goal');
+      expect(out.task.prompt).toContain('Add a fallback only for a concrete evidenced failure condition');
+      expect(out.task.prompt).toContain('Treat the requested method as a hypothesis');
+      expect(out.task.prompt).toContain('never hide failure behind broad catches, empty results, or arbitrary defaults');
+      expect(out.task.prompt).toContain('Sequential execution is the default');
+      expect(out.task.prompt).toContain('Do not run test, lint, build, and review as a fixed checklist');
       expect(out.task.on_complete).toContain('tasks update t1');
 
       expect(run(['task-check', 't1'], tmp).exitCode).toBe(0);
