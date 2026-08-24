@@ -9,8 +9,8 @@
   "plugins": [
     {
       "name": "build",
-      "description": "Phase-based project harness with PRD generation, consensus review, plan validation, multi-mode deliberation, DAG execution, cost forecasting, and decision memory",
-      "version": "3.2.5",
+      "description": "Repository-grounded planning with lean native execution; legacy phase, worktree, and gate workflows remain explicit opt-ins",
+      "version": "3.3.0",
       "author": {
         "name": "x-mesh"
       },
@@ -117,8 +117,8 @@
     },
     {
       "name": "plan",
-      "description": "JSON-only planning core and PlanEnvelope validator",
-      "version": "0.1.2",
+      "description": "Repository-grounded implementation planning with readable plans and validated PlanEnvelope artifacts",
+      "version": "0.2.0",
       "author": {
         "name": "x-mesh"
       },
@@ -295,7 +295,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.19.2",
+      "version": "2.20.0",
       "author": {
         "name": "x-mesh"
       },

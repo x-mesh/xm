@@ -10,6 +10,24 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.20.0] - 2026-08-25
+
+### x-build 3.2.5 → 3.3.0
+
+- Replace the default phase-heavy execution harness with a lean repository-evidence → single-plan → native-execution workflow after live A/B runs showed no pass-rate gain and higher wall-clock cost for the harness. Legacy phase, worktree, task-check, review-group, and quality-gate commands remain explicit compatibility opt-ins (`x-build/skills/build/SKILL.md`).
+- Add execution principles that prefer the smallest sufficient change, require observable and tested reasons for fallbacks, challenge whether the requested method serves the user's actual goal, default to sequential work, and select validation by concrete change risk instead of running test/lint/build/review as a ritual (`x-build/lib/x-build/tasks.mjs`).
+- Add deterministic native PlanEnvelope import and conflict-aware batch compilation for operators who explicitly retain the legacy execution surface, including safe expected-file metadata, dependency compilation, and untrusted validation-command handling (`x-build/lib/x-build/plan-import.mjs`, `x-build/lib/x-build/worktree-shared.mjs`).
+- Add a reproducible live execution benchmark covering independent and shared-file fixtures so future harness claims can be tested against native execution rather than inferred from structural replay (`scripts/benchmark-execution-harness.mjs`).
+
+### x-plan 0.1.2 → 0.2.0
+
+- Ground plans in the user's underlying goal, reject unjustified fallbacks and unnecessary machinery, use sequential execution by default, and select only validation that directly observes a named risk (`x-plan/skills/plan/SKILL.md`).
+- Parse structured requirements, validation commands, and repository paths into safer executable PlanEnvelopes while preserving unresolved questions and disagreements (`x-plan/lib/x-plan/core.mjs`).
+
+### xm 2.19.2 → 2.20.0
+
+- Bundle the lean build and planning contracts, native plan importer, conflict-aware scheduling compatibility surface, synchronized skill metadata, and regression coverage.
+
 ## [2.19.2] - 2026-08-24
 
 ### x-build 3.2.4 → 3.2.5
