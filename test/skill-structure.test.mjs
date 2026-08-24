@@ -421,15 +421,15 @@ describe('x-build SKILL.md structure', () => {
     }
   });
 
-  test('uses canonical PRD path in plan phase directory', () => {
-    expect(content).toContain('phases/02-plan/PRD.md');
+  test('default path does not create a duplicate build PRD', () => {
+    expect(content).toContain('같은 내용을 `.xm/build`에 복제하지 않습니다');
     expect(content).not.toContain('context/PRD.md');
   });
 
-  test('model routing example matches haiku display commands', () => {
-    const modelRouting = content.split('## Model Routing')[1]?.split('## Mode Detection')[0] || '';
-    expect(modelRouting).toContain('**haiku**');
-    expect(modelRouting).toContain('model: "haiku"');
+  test('native execution discloses actual models without pinning a tier', () => {
+    const modelRouting = content.split('## Model Disclosure')[1]?.split('### Korean output style')[0] || '';
+    expect(modelRouting).toContain('실제 model');
+    expect(modelRouting).toContain('provider default');
     expect(modelRouting).not.toContain('model: "sonnet"');
   });
 
