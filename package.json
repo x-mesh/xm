@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "bun test",
+    "bench:routing": "node scripts/benchmark-adaptive-routing.mjs",
     "sync": "bash scripts/sync-bundle.sh",
     "verify": "bun test && bash scripts/sync-bundle.sh --check"
   },

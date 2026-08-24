@@ -43,6 +43,7 @@ Full CLI surface. SKILL.md links here instead of inlining it — the catalog is 
 - `tasks add <name> ... [--review-group build]` — every task belongs to a shared normal/worktree review group; default is `build`
 - `tasks list` / `tasks remove <id>` / `tasks update <id> --status <s> [--desc "..."] [--done-criteria "..."] [--expected-files "a,b"]` (pass an empty string to clear expected files)
 - `tasks done-criteria` — Auto-derive done criteria from PRD for all tasks
+- `import-plan <envelope.json> [--json] [--replace]` — Validate a native PlanEnvelope and compile it into x-build tasks, steps, parallel metadata, requirements, and a delta PRD; approval remains required and existing artifacts require explicit replacement
 - `later add|list|promote|dismiss|verify-scope` — Capture off-scope work discovered during a task without editing it; verify open later files stayed untouched. `run-status` (text and `--json`) reports `later.open` and `later.touched[]` as ADVISORY signals — a touched deferred file never blocks the run, but you must act on it: promote the item, or revert the edit. Never leave a reported `touched` unmentioned to the user.
 - `steps compute` — Calculate step groups from dependencies
 - `steps status` / `steps next` — Step progress
