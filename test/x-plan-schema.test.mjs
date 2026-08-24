@@ -29,6 +29,22 @@ describe('PlanEnvelope v1', () => {
     expect(p.tasks).toHaveLength(2);
     expect(p.unresolved_questions.length).toBeGreaterThan(0);
   });
+  test('structured markdown preserves goal, explicit requirement ids, files, and validation', () => {
+    const p = createPlanEnvelope('# Goal\nUpdate src/a.mjs safely.\n\n# Requirements\n- R1: Preserve default behavior.\n- R2: Add coverage.\n\n# Validation\n- node --test');
+    expect(p.goal).toBe('Update src/a.mjs safely.');
+    expect(p.requirements.map((item) => item.id)).toEqual(['R1', 'R2']);
+    expect(p.tasks.every((task) => task.expected_files.includes('src/a.mjs'))).toBe(true);
+    expect(p.validation.commands).toEqual(['node --test']);
+    expect(p.executable).toBe(true);
+  });
+  test('structured path extraction strips prose punctuation', () => {
+    const p = createPlanEnvelope('# Goal\nUpdate client.\n\n# Requirements\n- R1: expose API from lib/client.mjs.\n\n# Validation\n- node --test');
+    expect(p.tasks[0].expected_files).toEqual(['lib/client.mjs']);
+  });
+  test('structured markdown ignores fenced examples inside requirements', () => {
+    const p = createPlanEnvelope('# Goal\nUpdate src/a.mjs.\n\n# Requirements\n~~~js\nconst example = true\n~~~\n- R1: Preserve behavior.\n\n# Validation\n- node --test');
+    expect(p.requirements).toEqual([{ id: 'R1', text: 'Preserve behavior.', priority: 'must' }]);
+  });
   test('rejects an input that claims executable while questions remain', () => {
     const p = validPlan(); p.unresolved_questions = ['Which API?'];
     expect(validatePlanEnvelope(p).errors.map((e) => e.code)).toContain('plan.executable_with_questions');

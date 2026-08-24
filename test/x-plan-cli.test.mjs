@@ -24,10 +24,10 @@ describe('x-plan CLI', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-  test('recommends Quick only for a bounded local change and never auto-selects Ultra', () => {
+  test('auto-selects Standard for quality while keeping Quick and Ultra explicit', () => {
     const quick = run(['--recommend', '--json', 'Update test/x-plan-cli.test.mjs to cover the local mode selector without changing public contracts']);
     expect(quick.status).toBe(0);
-    expect(JSON.parse(quick.stdout)).toMatchObject({ action: 'select-mode', mode: 'quick', source: 'auto', confirmation_required: false });
+    expect(JSON.parse(quick.stdout)).toMatchObject({ action: 'select-mode', mode: 'standard', source: 'auto', confirmation_required: false });
 
     const risky = run(['--recommend', '--json', 'Migrate the public API schema and deploy the breaking change']);
     expect(risky.status).toBe(0);
