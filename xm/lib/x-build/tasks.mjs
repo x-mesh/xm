@@ -2656,7 +2656,7 @@ export function cmdDispatch(args) {
   const dispatchCount = taskData.tasks.filter((t) => t.dispatch).length;
   const notice = [
     `⚡ dispatch: task ${taskRef.id} @ ${project} — PRD/phase 게이트 미적용 경로입니다 (단발 실행; 게이트-프리 헬퍼 조립).`,
-    ...(dispatchCount >= 2 ? [`⚠ 이 프로젝트에 dispatch 태스크가 ${dispatchCount}개 쌓였습니다 — 반복되는 작업이면 PRD로 승격하세요: x-build plan "<goal>"`] : []),
+    ...(dispatchCount >= 2 ? [`⚠ 이 프로젝트에 dispatch 태스크가 ${dispatchCount}개 쌓였습니다 — 반복되는 작업이면 PRD로 승격하세요: x-build legacy-plan "<goal>"`] : []),
   ];
 
   if (opts.json !== undefined) {

@@ -98,7 +98,7 @@ fallback은 다음 조건을 모두 만족할 때만 추가합니다.
 
 기존 CLI는 호환성을 위해 남아 있지만 사용자가 명령이나 기능을 명시한 경우에만 실행합니다.
 
-- `xm build init|status|next|research|plan|phase|gate|tasks|steps|run|quality|close`
+- `xm build init|status|next|research|legacy-plan|phase|gate|tasks|steps|run|quality|close`
 - `xm build run --worktrees`
 - `xm build task-check|review-group|group-check`
 - forecast, effectiveness, export와 기타 분석 명령
@@ -113,7 +113,8 @@ Legacy experimental opt-in only입니다. 사용자가 worktree 실행을 명시
 
 - no arguments: 사용자가 달성하려는 목표를 한 문장으로 묻습니다.
 - bare goal / `build me ...`: Default Workflow를 실행합니다.
-- `plan ...`: x-plan Standard로 plan만 만들고 멈춥니다.
+- `plan ...`: x-plan과 동일한 engine으로 계획을 만들어 `.xm/plan`에 저장하고, 계획이 executable이면 현재 프로젝트로 자동 import해 PRD·task·step을 생성합니다. draft이면 import하지 않고 이유를 알립니다. 이 alias는 deprecated이며 새 사용자는 `xm plan`을 사용합니다.
+- `legacy-plan ...`: 기존 x-build PRD·task·phase planner를 명시적으로 실행합니다.
 - 명시적인 legacy subcommand: 해당 `xm build` 명령만 실행합니다.
 - 병렬 실행, `worktree`, `task-check`, `review-group`, `group-check`는 명시적 요청이나 위의 독립성·효용 조건 없이는 자동 선택하지 않습니다.
 

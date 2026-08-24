@@ -83,7 +83,7 @@ export function phaseNext(args) {
   const gateType = gates[gateKey] || 'auto';
 
   if (currentPhase.name === 'plan' && !existsSync(prdPath(project))) {
-    console.error('⚠ PRD not generated yet. Run: /xm:build plan to generate PRD first.');
+    console.error('⚠ PRD not generated yet. Run: /xm:build legacy-plan to generate PRD first.');
     process.exitCode = 2; // refused to advance — must not exit 0 (CI / gate consumers)
     return;
   }
@@ -137,7 +137,7 @@ export function phaseNext(args) {
   if (currentPhase.name === 'plan') {
     const tasks = readJSON(tasksPath(project));
     if (!tasks?.tasks?.length) {
-      console.log(`⚠️  No tasks defined. Run: x-build plan "goal"`);
+      console.log(`⚠️  No tasks defined. Run: x-build legacy-plan "goal"`);
       process.exitCode = 2;
       return;
     }
@@ -380,7 +380,7 @@ function phaseSet(args) {
   const executeIdx = PHASES.findIndex(p => p.name === 'execute');
 
   if (targetIdx >= executeIdx && !existsSync(prdPath(project))) {
-    console.error('⚠ PRD not generated yet. Run: /xm:build plan to generate PRD first.');
+    console.error('⚠ PRD not generated yet. Run: /xm:build legacy-plan to generate PRD first.');
     process.exitCode = 2; // refused to advance — must not exit 0 (CI / gate consumers)
     return;
   }

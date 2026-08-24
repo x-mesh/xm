@@ -29,7 +29,8 @@ Full CLI surface. SKILL.md links here instead of inlining it — the catalog is 
 - `discuss --mode adapt ["topic"]` — Adaptive review between execution steps (Execute phase)
 
 ### Plan Phase
-- `plan "goal" [--interview|--draft] [--profile light|standard|deep]` — plan-only; emit intent-check and stop after the Plan Bundle
+- `plan <x-plan args> [--replace] [--no-import]` — deprecated alias for `xm plan`; saves the PlanEnvelope to `.xm/plan` and imports it into the current project when it is executable (`--replace` overwrites existing plan artifacts, `--no-import` keeps it out of the project)
+- `legacy-plan "goal" [--interview|--draft] [--profile light|standard|deep]` — former x-build PRD/task/phase planner; explicit compatibility use only
 - `build "goal" [--profile light|standard|deep]` — same Plan lifecycle, then continue Execute only after content-bound approval
 - `plan-check` — Validate the existing 15 quality dimensions for Execution Readiness plus 3 Decision Quality dimensions
 - `prd-check [--json]` — Deterministic PRD gate (blocks Execute on unresolved `[A*, low]` / `Status: blocking`); `phase set execute --force` to override

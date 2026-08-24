@@ -4445,7 +4445,7 @@ function handleHandoffs(xmRoot, req) {
 
 function handlePrdList(xmRoot, req) {
   const items = [];
-  // Standalone PRDs: .xm/prd/*.md (from `xm build plan` run without a project)
+  // Legacy standalone PRDs: .xm/prd/*.md (the x-plan engine writes .xm/plan instead)
   const prdDir = safeJoin(xmRoot, 'prd');
   if (prdDir && existsSync(prdDir)) {
     try {

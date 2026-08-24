@@ -229,7 +229,7 @@ describe('plan routing protocol', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       setupProject(tmp);
-      const r = run(['plan', 'Build a hello world app', '--quick'], { cwd: tmp });
+      const r = run(['legacy-plan', 'Build a hello world app', '--quick'], { cwd: tmp });
       expect(r.exitCode).toBe(0);
       const output = JSON.parse(r.stdout);
       expect(output.action).toBe('auto-plan');
@@ -246,7 +246,7 @@ describe('plan routing protocol', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-plan-profile-'));
     try {
       setupProject(tmp);
-      const r = run(['plan', 'Add a targeted local helper with tests and no public contract changes'], { cwd: tmp });
+      const r = run(['legacy-plan', 'Add a targeted local helper with tests and no public contract changes'], { cwd: tmp });
       expect(r.exitCode).toBe(0);
       const output = JSON.parse(r.stdout);
       expect(['light', 'standard', 'deep']).toContain(output.profile);
@@ -262,7 +262,7 @@ describe('plan routing protocol', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-plan-provisional-'));
     try {
       setupProject(tmp);
-      const output = JSON.parse(run(['plan', 'Improve'], { cwd: tmp }).stdout);
+      const output = JSON.parse(run(['legacy-plan', 'Improve'], { cwd: tmp }).stdout);
       expect(output.profile).toBe('standard');
       expect(output.profile_recommendation.provisional).toBe(true);
       const manifest = JSON.parse(readFileSync(join(tmp, '.xm', 'build', 'projects', output.project, 'manifest.json'), 'utf8'));
@@ -276,7 +276,7 @@ describe('plan routing protocol', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       setupProject(tmp);
-      const r = run(['plan', 'Build CLI --help docs', '--quick'], { cwd: tmp });
+      const r = run(['legacy-plan', 'Build CLI --help docs', '--quick'], { cwd: tmp });
       expect(r.exitCode).toBe(0);
       const output = JSON.parse(r.stdout);
       expect(output.goal).toBe('Build CLI --help docs');
@@ -548,7 +548,7 @@ describe('deterministic model emission (research / plan / next)', () => {
     try {
       setupProject(tmp);
       writeSharedConfig(tmp, { model_profile: 'economy' });
-      const r = run(['plan', 'Build API'], { cwd: tmp });
+      const r = run(['legacy-plan', 'Build API'], { cwd: tmp });
       const output = JSON.parse(r.stdout);
       expect(output.prd_writer).toMatchObject({ role: 'planner', model: 'sonnet' }); // economy.planner (+vendor additive 필드 허용)
     } finally {
@@ -925,7 +925,7 @@ describe('project_kind-aware planning', () => {
       delete manifest.project_kind;
       writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
 
-      const planOut = JSON.parse(run(['plan', 'Build something'], { cwd: tmp }).stdout);
+      const planOut = JSON.parse(run(['legacy-plan', 'Build something'], { cwd: tmp }).stdout);
       expect(planOut.project_kind).toBe('brownfield');
 
       const nextOut = JSON.parse(run(['next', '--json'], { cwd: tmp }).stdout);

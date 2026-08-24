@@ -468,7 +468,7 @@ export function cmdStatus(args) {
   const phase = PHASES.find(p => p.id === manifest.current_phase);
   const suggestions = {
     research: ['x-build discuss --mode interview', 'x-build research'],
-    plan: ['x-build plan "goal"', 'x-build plan-check', 'x-build phase next'],
+    plan: ['x-build legacy-plan "goal"', 'x-build plan-check', 'x-build phase next'],
     execute: ['x-build run', 'x-build run-status'],
     verify: ['x-build quality', 'x-build verify-coverage', 'x-build verify-traceability'],
     close: ['x-build close --summary "..."'],

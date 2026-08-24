@@ -59,7 +59,7 @@ function setup(cwd) {
 function prepareRunnableTask(cwd) {
   const project = setup(cwd);
   run(cwd, ['phase', 'set', 'plan']);
-  run(cwd, ['plan', 'Add a settings export command']);
+  run(cwd, ['legacy-plan', 'Add a settings export command']);
   run(cwd, ['tasks', 'add', 'Implement export', '--done-criteria', 'works']);
   const planDir = join(project, 'phases', '02-plan');
   writeFileSync(join(planDir, 'PRD.md'), '# PRD\n\n## 1. Goal\nExport settings\n');
@@ -80,7 +80,7 @@ describe('plan entry and conditional interview', () => {
     try {
       setup(tmp);
       const goal = 'Add a settings export command';
-      const plan = JSON.parse(run(tmp, ['plan', '--project', 'demo', goal, '--json']).stdout);
+      const plan = JSON.parse(run(tmp, ['legacy-plan', '--project', 'demo', goal, '--json']).stdout);
       expect(plan.goal).toBe(goal);
       const build = JSON.parse(run(tmp, ['build', '--project', 'demo', goal, '--json']).stdout);
       expect(build.goal).toBe(goal);
@@ -107,7 +107,7 @@ describe('plan entry and conditional interview', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-'));
     try {
       setup(tmp);
-      const plan = JSON.parse(run(tmp, ['plan', 'Add a settings export command']).stdout);
+      const plan = JSON.parse(run(tmp, ['legacy-plan', 'Add a settings export command']).stdout);
       expect(plan.requested_action).toBe('plan_only');
       expect(plan.stop_after).toBe('plan_bundle');
       expect(plan.intent_check.readiness).toBe('ready');
@@ -116,7 +116,7 @@ describe('plan entry and conditional interview', () => {
       expect(build.requested_action).toBe('build');
       expect(build.stop_after).toBe('execute_complete');
 
-      const interview = JSON.parse(run(tmp, ['plan', '--project', 'demo', '--interview', 'Improve it']).stdout);
+      const interview = JSON.parse(run(tmp, ['legacy-plan', '--project', 'demo', '--interview', 'Improve it']).stdout);
       expect(interview.intent_check.readiness).toBe('clarify');
       expect(interview.intent_check.questions.length).toBeLessThanOrEqual(3);
       expect(interview.executable).toBe(false);
@@ -129,8 +129,8 @@ describe('plan entry and conditional interview', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-'));
     try {
       setup(tmp);
-      run(tmp, ['plan', 'Add a settings export command']);
-      const second = run(tmp, ['plan', 'Replace authentication system']);
+      run(tmp, ['legacy-plan', 'Add a settings export command']);
+      const second = run(tmp, ['legacy-plan', 'Replace authentication system']);
       const out = JSON.parse(second.stdout);
       expect(second.code).toBe(2);
       expect(out.action).toBe('select-project');
@@ -203,7 +203,7 @@ describe('content-bound approval and shared review groups', () => {
     try {
       const project = setup(tmp);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Add a settings export command']);
+      run(tmp, ['legacy-plan', 'Add a settings export command']);
       run(tmp, ['tasks', 'add', 'Implement export', '--done-criteria', 'works']);
       writeFileSync(join(project, 'phases', '02-plan', 'PRD.md'), '# PRD\n\n## 1. Goal\nExport settings\n');
       run(tmp, ['steps', 'compute']);
@@ -349,7 +349,7 @@ describe('content-bound approval and shared review groups', () => {
     try {
       const project = setup(tmp);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Add a settings export command']);
+      run(tmp, ['legacy-plan', 'Add a settings export command']);
       for (const name of ['Create export model', 'Implement export command', 'Document export flow']) {
         run(tmp, ['tasks', 'add', name, '--done-criteria', `${name} works`]);
       }
@@ -373,7 +373,7 @@ describe('content-bound approval and shared review groups', () => {
     try {
       const project = setup(tmp);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Add a settings export command']);
+      run(tmp, ['legacy-plan', 'Add a settings export command']);
       run(tmp, ['tasks', 'add', 'Implement export', '--done-criteria', 'works']);
       const planDir = join(project, 'phases', '02-plan');
       writeFileSync(join(planDir, 'PRD.md'), '# PRD\n\n## 1. Goal\nExport settings\n');
@@ -430,7 +430,7 @@ describe('content-bound approval and shared review groups', () => {
       git(tmp, ['add', 'package.json']);
       git(tmp, ['commit', '-qm', 'add package']);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['legacy-plan', 'Implement feature']);
       run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
       run(tmp, ['steps', 'compute']);
       const planDir = join(project, 'phases', '02-plan');
@@ -479,7 +479,7 @@ describe('content-bound approval and shared review groups', () => {
       git(tmp, ['add', 'package.json']);
       git(tmp, ['commit', '-qm', 'add package']);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['legacy-plan', 'Implement feature']);
       run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
       run(tmp, ['steps', 'compute']);
       const planDir = join(project, 'phases', '02-plan');
@@ -530,7 +530,7 @@ describe('content-bound approval and shared review groups', () => {
       git(tmp, ['add', 'package.json']);
       git(tmp, ['commit', '-qm', 'add package']);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['legacy-plan', 'Implement feature']);
       run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
       run(tmp, ['steps', 'compute']);
       const planDir = join(project, 'phases', '02-plan');
@@ -601,7 +601,7 @@ describe('content-bound approval and shared review groups', () => {
       git(tmp, ['add', 'package.json']);
       git(tmp, ['commit', '-qm', 'add package']);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['legacy-plan', 'Implement feature']);
       run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
       run(tmp, ['steps', 'compute']);
       const planDir = join(project, 'phases', '02-plan');
@@ -651,7 +651,7 @@ describe('content-bound approval and shared review groups', () => {
       git(tmp, ['add', 'package.json']);
       git(tmp, ['commit', '-qm', 'add package']);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['legacy-plan', 'Implement feature']);
       run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
       run(tmp, ['steps', 'compute']);
       const planDir = join(project, 'phases', '02-plan');
@@ -716,7 +716,7 @@ describe('content-bound approval and shared review groups', () => {
       const project = join(tmp, '.xm', 'build', 'projects', 'demo');
       run(tmp, ['init', 'demo']);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['legacy-plan', 'Implement feature']);
       run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
       run(tmp, ['steps', 'compute']);
       const planDir = join(project, 'phases', '02-plan');

@@ -644,8 +644,11 @@ ${C.bold}Research Phase:${C.reset}
   research-check [--json]        Deterministic full/slim/quick-eligible research gauge
 
 ${C.bold}Plan Phase:${C.reset}
-  plan ["goal"] [--interview|--draft|--quick|--profile light|standard|deep]
-                                 Plan-only; inspect intent and stop after the Plan Bundle
+  plan <x-plan args> [--replace|--no-import]
+                                 Deprecated alias for xm plan; an executable plan is
+                                 imported into the current project, a draft is not
+  legacy-plan ["goal"] [--interview|--draft|--quick|--profile light|standard|deep]
+                                 Legacy PRD/task/phase planner (explicit compatibility path)
   build "goal" [--profile light|standard|deep]
                                  Plan first, then continue after content-bound approval
   plan-check [--strict]          Validate decision quality separately from execution readiness
@@ -728,7 +731,8 @@ ${C.bold}Examples:${C.reset}
   xm build init my-api
   xm build discuss --mode interview
   xm build research "Build a REST API with auth"
-  xm build plan "Build a REST API with auth and CRUD"
+  xm build plan --mode quick "Build a REST API with auth and CRUD"
+  xm build legacy-plan "Build a REST API with auth and CRUD"
   xm build plan-check
   xm build next
   xm build tasks add "Create DB schema" --size small

@@ -10,6 +10,22 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.20.2] - 2026-08-25
+
+### Added
+
+- **x-build:** `xm build plan --replace` overwrites existing plan artifacts when importing; `--no-import` saves the plan to `.xm/plan` without touching the project.
+
+### Changed
+
+- **x-build:** make x-plan the single planning engine. `xm build plan` delegates to x-plan, and an executable PlanEnvelope is compiled into the current project through `import-plan` (PRD, tasks, steps, Plan phase). A draft plan is saved to `.xm/plan` and reported as not imported, with the concrete reason. `xm build legacy-plan` preserves the former PRD/task/phase planner as an explicit compatibility path.
+- **x-build, x-dashboard:** retarget the PRD-missing and next-step hints in `phase`, `next`, `status`, `verify`, and the dashboard PRD empty state to `xm build legacy-plan`. They previously named a command that no longer produces a PRD, so following them left the Plan gate blocked.
+- Rewrite the English and Korean public documentation around the lean default workflow: repository evidence → x-plan → sequential native execution → risk-based validation. Phase, worktree, task-check, and meta-gate features are documented as legacy opt-ins rather than defaults.
+
+### Removed
+
+- **x-build (breaking):** `xm build plan --global` is refused with exit 2. x-plan resolves its own repository root, so the plan artifact and the x-build project would land in different trees. Use `xm plan` in the target repository, or `xm build legacy-plan --global`.
+
 ## [2.20.0] - 2026-08-25
 
 ### Added

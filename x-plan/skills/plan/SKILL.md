@@ -78,4 +78,4 @@ per slot and can still preserve unresolved disagreements as `executable=false`.
 Boundaries:
 - Owns PlanEnvelope schema, normalization, validation, readable rendering, and `.xm/plan` artifact persistence.
 - Does not create `.xm/build` projects, move phases, approve plans, or execute tasks. Only ultra mode calls providers, through `xm panel cross`.
-- `xm build plan` and `xm panel plan` retain their existing behavior in this release.
+- `xm build plan` is a deprecated CLI alias for this x-plan entry point; x-build imports the resulting envelope through its own `import-plan` compiler, so x-plan still never writes `.xm/build` itself. `xm build legacy-plan` retains the former PRD/task/phase planner for explicit compatibility use. `xm panel plan` retains its own behavior.

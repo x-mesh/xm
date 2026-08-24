@@ -6576,7 +6576,7 @@ async function renderPrdList() {
   if (items.length === 0) {
     app.innerHTML = `
       <div class="view-header"><h1>PRDs</h1><p>.xm/prd + build projects</p></div>
-      ${renderEmpty('No PRDs found', 'xm build plan', ['.xm/prd', '.xm/build/projects/*/phases'])}
+      ${renderEmpty('No PRDs found', 'xm build legacy-plan', ['.xm/prd', '.xm/build/projects/*/phases'])}
     `;
     return;
   }

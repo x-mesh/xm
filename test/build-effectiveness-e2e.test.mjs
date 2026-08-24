@@ -66,7 +66,7 @@ Ship the ${profile} fixture.
 function runLifecycle(cwd, profile) {
   const project = `profile-${profile}`;
   expect(xm(cwd, ['init', project]).exitCode).toBe(0);
-  const planned = json(cwd, ['plan', `Build and verify the ${profile} lifecycle fixture`, '--profile', profile]);
+  const planned = json(cwd, ['legacy-plan', `Build and verify the ${profile} lifecycle fixture`, '--profile', profile]);
   expect(planned.profile).toBe(profile);
   expect(planned.profile_explicit).toBe(true);
   expect(planned.research_scope).toBe(profile === 'light' ? 'none' : profile === 'standard' ? 'slim' : 'full');
@@ -167,7 +167,7 @@ describe('adaptive build effectiveness E2E', () => {
     try {
       initGit(cwd);
       expect(xm(cwd, ['init', 'empty']).exitCode).toBe(0);
-      expect(xm(cwd, ['plan', 'Empty fixture', '--profile', 'light', '--draft']).exitCode).toBe(0);
+      expect(xm(cwd, ['legacy-plan', 'Empty fixture', '--profile', 'light', '--draft']).exitCode).toBe(0);
       expect(xm(cwd, ['close', '--summary', 'nothing was built']).exitCode).toBe(0);
 
       const rows = readFileSync(join(cwd, '.xm', 'build', 'metrics', 'sessions.jsonl'), 'utf8')
@@ -191,16 +191,16 @@ describe('adaptive build effectiveness E2E', () => {
     try {
       initGit(cwd);
       expect(xm(cwd, ['init', 'alias']).exitCode).toBe(0);
-      const quick = json(cwd, ['plan', 'Build quick fixture', '--quick']);
+      const quick = json(cwd, ['legacy-plan', 'Build quick fixture', '--quick']);
       expect(quick.quick).toBe(true);
       expect(quick.profile).toBe('light');
       expect(quick.flow).toBe('quick');
-      const resumed = json(cwd, ['plan', 'Build quick fixture']);
+      const resumed = json(cwd, ['legacy-plan', 'Build quick fixture']);
       expect(resumed.profile).toBe('light');
       expect(resumed.profile_explicit).toBe(false);
       expect(resumed.research_scope).toBe('none');
       expect(resumed.required_artifacts).toEqual(['PRD:delta', 'tasks', 'checks']);
-      const conflict = xm(cwd, ['plan', 'Build conflict fixture', '--quick', '--profile', 'deep']);
+      const conflict = xm(cwd, ['legacy-plan', 'Build conflict fixture', '--quick', '--profile', 'deep']);
       expect(conflict.exitCode).not.toBe(0);
       expect(conflict.stderr).toContain('alias for --profile light');
     } finally {

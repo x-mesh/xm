@@ -319,7 +319,7 @@ export async function cmdPlan(args) {
     const taskData = readJSON(tasksPath(project));
     const stepData = readJSON(stepsPath(project));
     if (!taskData?.tasks?.length) {
-      console.log('No plan yet. Use: /xm:build plan "목표를 설명하세요"');
+      console.log('No plan yet. Use: /xm:build legacy-plan "목표를 설명하세요"');
       return;
     }
     taskList(project);
@@ -502,7 +502,7 @@ export function cmdPrdCheck(args) {
 
   if (!prd) {
     if (json) console.log(JSON.stringify({ project, exists: false, blocked: true, blocking: ['PRD not found'], warnings: [] }, null, 2));
-    else console.error('❌ No PRD found. Run: /xm:build plan');
+    else console.error('❌ No PRD found. Run: /xm:build legacy-plan');
     exitFail(1);
     return;
   }
@@ -1510,7 +1510,7 @@ export async function cmdNext(args) {
 
   const color = result.ready ? C.green : C.yellow;
   const cmd = result.action === 'phase' ? `x-build ${result.action} ${result.args.join(' ')}` :
-              result.action === 'plan' && result.goal ? `x-build plan "${result.goal}"` :
+              result.action === 'plan' && result.goal ? `x-build legacy-plan "${result.goal}"` :
               `x-build ${result.action}${result.args.length ? ' ' + result.args.join(' ') : ''}`;
   console.log(`  ${color}-> Run: ${cmd}${C.reset}`);
   console.log(`    ${result.reason}`);

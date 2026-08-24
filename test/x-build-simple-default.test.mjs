@@ -13,6 +13,8 @@ describe('x-build simple default workflow', () => {
     expect(buildSkill).toContain('bare goal / `build me ...`: Default Workflow');
     expect(buildSkill).toContain('host native agent');
     expect(buildSkill).toContain('Legacy experimental opt-in only');
+    expect(buildSkill).toContain('`plan ...`: x-plan과 동일한 engine');
+    expect(buildSkill).toContain('`legacy-plan ...`');
   });
 
   test('requires evidence for fallbacks and challenges the requested method', () => {

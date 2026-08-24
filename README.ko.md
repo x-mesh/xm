@@ -14,19 +14,19 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.20.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.20.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
 </p>
 
 <p align="center">
-  <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>용 플러그인 툴킷입니다. 시니어 엔지니어라면 거르지 않을 단계를 에이전트도 거르지 못하게 합니다 — 코딩 전에 계획하고, 머지 전에 리뷰하고, 완료라고 말하기 전에 검증하도록.
+  <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>용 플러그인 툴킷입니다. 저장소 근거로 계획하고, 목표를 충족하는 가장 작은 변경을 실행하며, 변경이 만들 수 있는 위험만 골라 검증합니다.
 </p>
 
 <p align="center">
-  <code>/xm:build plan "JWT 인증이 포함된 REST API 만들기"</code><br />
-  → PRD → 태스크 분해 → 병렬 에이전트 실행 → 검증 완료 ✅
+  <code>/xm:build "JWT 인증이 포함된 REST API 만들기"</code><br />
+  → 저장소 근거 → x-plan → native 실행 → 위험 기반 검증
 </p>
 
 ---
@@ -241,51 +241,35 @@ xm install --list-installed # 설치된 manifest 목록을 JSON으로 출력
 ## 빠른 시작
 
 ```bash
-/xm:build plan "JWT 인증이 포함된 REST API 만들기"
+/xm:build "JWT 인증이 포함된 REST API 만들기"
 ```
 
 이 한 줄로:
-1. 프로젝트를 생성하고 요구사항이 담긴 PRD를 자동 생성합니다
-2. 완료 기준이 포함된 태스크로 자동 분해합니다
-3. 계획을 검토할 수 있도록 보여줍니다 (사용자 승인)
-4. 에이전트가 태스크를 병렬 실행하고 → 품질을 검증합니다
+1. 관련 코드, contract, 기존 동작과 테스트를 조사합니다
+2. x-plan Standard로 근거 있는 계획과 PlanEnvelope를 만듭니다
+3. 요청한 방법의 타당성을 검토하고 필요할 때 계획 승인을 받습니다
+4. 순차 native 실행을 기본으로 하며 변경 위험에 직접 관련된 검증만 수행합니다
 
-리서치/PRD 단계를 건너뛰고 바로 실행하려면 `--quick`을 사용하세요:
+실행 없이 계획만 필요하면 x-plan을 직접 사용하세요:
 ```bash
-/xm:build plan "JWT 인증이 포함된 REST API 만들기" --quick
+xm plan --mode quick "src/auth.mjs와 관련 테스트 수정"
 ```
 
-실패했다면? `/xm:build run`을 다시 실행하세요. 완료된 태스크는 건너뛰고, 남은 것만 실행합니다.
+`xm build plan`은 `xm plan`의 deprecated alias입니다. 생성된 계획이 executable이면 현재 x-build 프로젝트로 import되어 PRD·task·step이 만들어지고, draft이면 `.xm/plan`에 저장만 됩니다. 기존 PRD·task·phase planner는 `xm build legacy-plan`으로만 남아 있습니다.
 
 <details>
 <summary>단계별 튜토리얼 (5분)</summary>
 
 ```bash
-# 1. 프로젝트 초기화
-/xm:build init my-project
+# 계획만: 저장소 조사 + 읽기 쉬운 PlanEnvelope artifact
+/xm:plan "JWT 인증 시스템 만들기"
 
-# 2. 요구사항 수집 (선택, 권장)
-/xm:build discuss --mode interview
-# → 에이전트가 질문하고, CONTEXT.md를 생성합니다
+# lean 기본 workflow로 계획하고 구현
+/xm:build "JWT 인증 시스템 만들기"
 
-# 3. PRD 생성 + 태스크 분해
-/xm:build plan "JWT 인증 시스템 만들기"
-# → PRD + 태스크 목록을 자동 생성합니다
-
-# 4. 계획 검증
-/xm:build plan-check
-# → 11개 차원을 검사합니다 (원자성, 커버리지, 스코프 명확성, ...)
-
-# 5. 실행
-/xm:build run
-# → 에이전트가 DAG 순서로 병렬 실행합니다
-
-# 6. 검증
-/xm:build quality                  # 테스트/린트/빌드 체크
-/xm:build verify-traceability      # R# ↔ Task ↔ AC 매트릭스
-
-# 7. 완료!
-/xm:build status
+# 기존 lifecycle 호환 경로만 명시적으로 사용
+xm build legacy-plan "JWT 인증 시스템 만들기"
+xm build run
 ```
 
 </details>
@@ -311,7 +295,7 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 | 수정 | `입력을 검증하세요.` | `db.query('SELECT * FROM users WHERE id = $1', [req.query.id])` |
 | 이유 | *(없음)* | `인증 없는 public 엔드포인트, 입력이 쿼리 싱크에 직접 흐름` |
 
-**프로젝트 계획 (x-build):**
+**프로젝트 계획 (x-plan, x-build가 실행):**
 
 | | 원칙 없이 | 원칙 적용 |
 |---|-------------------|-----------------|
@@ -337,9 +321,9 @@ xm은 그 질문들을 에이전트 프롬프트에 그대로 심어 둡니다. 
 | 코드 리뷰 | 맥락이 심각도를 결정 — 같은 패턴이라도 노출 범위에 따라 위험도 다름 | x-review |
 | 코드 리뷰 | 근거 없으면 발견 아님 — diff에서 추적하거나 보고하지 않음 | x-review |
 | 코드 리뷰 | 확신 없으면 낮추기 — 과잉 보고는 신뢰를 깎음 | x-review |
-| 프로젝트 계획 | 안 만들 것부터 정하기 — 제외로 스코프 정의 | x-build |
-| 프로젝트 계획 | 리스크를 먼저 일정에 넣기 — 빨리 실패, 늦게 말고 | x-build |
-| 프로젝트 계획 | 검증 못 하면 출시 못 함 — 모든 태스크에 완료 기준 필요 | x-build |
+| 프로젝트 계획 | 안 만들 것부터 정하기 — 제외로 스코프 정의 | x-plan |
+| 프로젝트 계획 | 요청한 방법도 가설로 보고 가장 단순한 적정 경로 선택 | x-plan |
+| 계획 실행 | 순차 실행 기본, 변경이 만들 수 있는 위험만 검증 | x-build |
 | 문제 해결 | 가설 전에 상태 진단 — 뭐가 잘못됐는지가 아니라, 뭐가 일어나고 있는지 | x-solver |
 | 문제 해결 | 정상 상태에 앵커 — baseline 없으면 찾기부터 | x-solver |
 | 문제 해결 | 복합 신호 — 로그 한 줄로 결론 내지 않음 | x-solver |
@@ -421,7 +405,7 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 
 | 플러그인 | 용도 | 주요 커맨드 |
 |--------|---------|-------------|
-| [x-build](#x-build) | 프로젝트 라이프사이클 & PRD 파이프라인 | `/xm:build plan "목표"` |
+| [x-build](#x-build) | 저장소 기반 계획 → native 실행 | `/xm:build "목표"` |
 | [x-op](#x-op) | 17가지 멀티 에이전트 전략 | `/xm:op debate "A vs B"` |
 | [x-review](#x-review) | 판단 기반 코드 리뷰 | `/xm:review diff` |
 | [x-solver](#x-solver) | 구조화된 문제 해결 | `/xm:solver init "버그"` |
@@ -444,28 +428,26 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 
 ### x-build
 
-프로젝트를 아이디어에서 검증된 결과물까지 이어 줍니다. PRD를 만들고, 토론 모드를 돌리고, 모든 태스크에 완료 기준을 붙이고, 실행은 품질 게이트로 막습니다.
+x-build는 x-plan을 감싸는 lean 실행 workflow입니다. 저장소 근거를 조사하고 x-plan 하나로 계획한 뒤, 순차 native 실행을 기본으로 하며 변경 위험을 직접 확인하는 검증만 선택합니다.
 
 ```bash
-/xm:build init my-api
-/xm:build discuss --mode interview       # 다중 라운드 요구사항 인터뷰
-/xm:build plan "JWT 인증이 포함된 REST API 만들기"
-/xm:build run                             # DAG 순서로 에이전트 실행
+/xm:build "JWT 인증이 포함된 REST API 만들기"  # 계획 + native 실행
+/xm:plan "JWT 인증이 포함된 REST API 만들기"   # Standard 계획만
+xm build plan --mode quick "..."                 # xm plan의 deprecated alias
 ```
 
-> 작업 중 범위 밖 할 일을 발견했나요? 흐름을 깨지 말고 **`/xm:later add "..."`** 로 미뤄두세요 — 준비되면 `/xm:later promote <id>` 로 꺼내 작업합니다. `xm build later` 기반.
+계획 artifact는 `.xm/plan`에 저장됩니다. 기본 경로는 x-build project, 중복 PRD, phase state, task DB, worktree 또는 meta-gate를 만들지 않습니다.
 
-> **Greenfield 인식** — `init`이 결정론적 게이지(manifest / lockfile / 소스 트리 / git 히스토리; `xm build project-kind --json`으로 확인)로 `project_kind`를 기록합니다. 완전히 새로 시작하는 프로젝트에는 Round 0 문제 정의 인터뷰(문제 / 현재 대안 / 성공의 모습 / MVP 웨지)와 웹 조사가 가능한 **landscape** 리서치 에이전트가 코드베이스 조사 대신 투입되고, 기존 프로젝트는 변화가 없습니다. 새 PRD는 쉬운 언어의 **At a Glance** 요약으로 시작하며, Section 8에 다이어그램이 없으면 `prd-check`가 Execute 진입을 차단합니다 — 기존 PRD는 warning으로 완화됩니다.
+`xm build plan`은 같은 x-plan entry point로 위임하며 deprecated입니다. 기존 PRD·task·phase planner는 명시적 호환 경로 `xm build legacy-plan`으로만 남아 있습니다.
 
 ```
-리서치 ──→ PRD ──→ 계획 ──→ 실행 ──→ 검증 ──→ 종료
- [discuss]  [quality]  [critique]  [contract]  [quality]  [auto]
-  interview   consensus   validate    adapt     verify-contracts
-  validate
+저장소 근거 → x-plan → PlanEnvelope → native 실행 → 선택 검증
 ```
 
 <details>
-<summary>기능 & 커맨드</summary>
+<summary>Legacy lifecycle 호환 기능과 커맨드</summary>
+
+아래 명령은 사용자가 명시적으로 호출할 때만 사용합니다. x-build 기본 workflow가 자동 선택하지 않습니다.
 
 | 기능 | 설명 |
 |---------|-------------|
@@ -514,7 +496,7 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 
 <a id="worktree-pipeline-ko"></a>
 <details>
-<summary>워크트리 파이프라인 (병렬 실행, 패널 게이트)</summary>
+<summary>Legacy opt-in: 워크트리 파이프라인 (병렬 실행, 패널 게이트)</summary>
 
 서로 다른 파일을 건드리는 태스크가 2개 이상(`tasks add --expected-files`로 선언)이면, `run --worktrees`는 메인 트리에서 순차 실행하는 대신 태스크마다 독립된 `git-kit` 워크트리에서 실행합니다:
 
@@ -1157,43 +1139,35 @@ xm inbox receipt status <id>     # 보낸 쪽이 실제로 수신했는지 확�
 한 플러그인의 사고 원칙은 다음 플러그인의 입력이 됩니다. 리뷰에서 잡힌 것은 다음 계획의 제약이 되고, solve에서 막힌 것은 humble 레슨이 됩니다.
 
 **예시: 결제 API 만들기**
-1. `x-build plan` → PRD 목표에 "and"가 있으면? 두 프로젝트로 분리. *(계획 원칙)*
-2. `x-build consensus` → critic이 "결제 게이트웨이 타임아웃 시 재시도 로직 미명시" 발견 *(사고)*
-3. `x-build run` → 에이전트가 done_criteria를 완료 조건으로 실행
-4. `x-review diff` → 미처리 에러 경로 발견, Challenge 단계에서 실제 High인지 검증 *(판단)*
-5. `x-solver iterate` → 상태 진단, 마지막 통과 테스트에 앵커, 근거로 추적 *(사고 프로토콜)*
-6. `x-humble reflect` → "재시도 갭이 왜 계획이 아닌 리뷰에서 발견됐나?" → 레슨 저장 *(회고)*
+1. `x-probe`가 요청한 결제 흐름의 전제와 필요성을 검토합니다.
+2. `x-plan`이 저장소를 조사하고 실행 가능한 PlanEnvelope 하나를 만듭니다.
+3. `x-build`가 승인된 계획을 native agent로 실행하며 순차 실행을 기본으로 합니다.
+4. 확인된 위험을 직접 관측하는 검증만 실행하고, diff 위험이 있을 때 `x-review`를 사용합니다.
+5. 실패하면 `x-solver`가 정상 baseline부터 진단하고 `x-humble`이 재사용할 레슨을 저장합니다.
 
 <details>
 <summary>전체 파이프라인 다이어그램</summary>
 
 ```
-x-probe → 전제 검증 (진행/재검토/중단)
+x-probe → 전제 검증
      ↓
-x-build plan → PRD 품질 게이트 (7.0+) → 합의 리뷰 (4명 에이전트)
+x-plan → 저장소 근거 + PlanEnvelope
      ↓
-x-build tasks done-criteria → PRD에서 완료 조건
+x-build → native 실행 (순차 기본)
      ↓
-x-op strategy --verify → 심사 패널 (편향 인식) → 자동 재시도
+명시된 위험에 맞는 test/lint/build/review 선택
      ↓
-x-eval score → 태스크별 품질 추적 → 프로젝트 품질 대시보드
-     ↓
-x-build verify-contracts → 완료 기준 충족 체크
-     ↓
-x-humble reflect → 근본 원인 + 편향 분석 → KEEP/STOP/START 레슨
-     ↓
-레슨 → CLAUDE.md + x-eval 심사 컨텍스트 → 다음 세션에 패턴 적용
+x-solver / x-humble → 진단과 재사용 레슨
 ```
 
 | 컴포넌트 | 메커니즘 |
 |-----------|-----------|
 | **자체 채점** | 모든 x-op 전략이 평가 기준 대비 자동 채점 |
 | **--verify 루프** | 심사 패널 (편향 인식) → 실패 → 피드백 → 재실행 (최대 2회) |
-| **PRD 합의** | architect + critic + planner + security, 원칙 기반 프롬프트 |
-| **완료 조건** | `done_criteria`를 PRD에서 자동 도출 → 에이전트에 주입 → 종료 시 검증 |
-| **자동 핸드오프** | 페이즈 전환 시 결정은 보존, 탐색 노이즈는 버림 |
-| **plan-check (15차원)** | 원자성, 의존성, 커버리지 (done_criteria 포함), 세분도 (상한 >15), 완전성, 컨텍스트, 네이밍 (44-동사 사전), 기술 누출, 스코프 명확성 (범위 밖 매칭), 리스크 순서 (DAG 기반), expected-files, failure-mode-coverage, delegation-contract, review-groups, 종합 |
-| **품질 대시보드** | `x-build status`로 태스크별 점수 + 프로젝트 평균 |
+| **단일 planner** | x-plan이 저장소 조사, 읽기 쉬운 계획, PlanEnvelope 검증과 `.xm/plan` 저장을 소유 |
+| **Lean 실행** | x-build가 native로 실행하며 기본 경로에서는 phase/task/gate 상태를 만들지 않음 |
+| **위험 기반 검증** | test/lint/build/review를 고정 checklist로 쓰지 않고 변경이 만들 수 있는 실패에 따라 선택 |
+| **Legacy 호환** | `xm build legacy-plan`과 lifecycle 명령은 명시적 opt-in으로 유지 |
 | **도메인 평가 기준** | 5가지 프리셋 (api-design, frontend, data-pipeline, security, architecture) |
 | **편향 점검 심사** | x-humble 레슨 (확인 3회+)이 심사 컨텍스트에 반영 |
 | **x-eval diff** | 스킬 변경 사항 + 품질 델타 측정 |
@@ -1214,9 +1188,11 @@ x-humble reflect → 근본 원인 + 편향 분석 → KEEP/STOP/START 레슨
 | x-solver | decompose | **0.917** | PASS |
 | x-review | multi-lens review | **0.890** | PASS |
 | x-probe | premise-extraction | **0.826** | PASS |
-| x-build | planning | **0.824** | PASS |
+| x-build | legacy planning benchmark | **0.824** | PASS |
 
-**평균: 0.899** | 7개 플러그인 전부 PASS | 판정 일관성: 100%
+**평균: 0.899** | 측정된 7개 legacy/plugin 전략 전부 PASS | 판정 일관성: 100%
+
+x-build 행은 x-plan 단일 planner 전환 이전 측정이며 현재 lean native 실행 workflow의 효용을 측정한 값이 아닙니다.
 
 A/B vs 기본 Claude Code: xm이 기본 F1 (0.857)에 매칭하면서 precision은 더 높음 (1.0 vs 0.75).
 
@@ -1228,7 +1204,8 @@ A/B vs 기본 Claude Code: xm이 기본 F1 (0.857)에 매칭하면서 precision�
 
 ```
 xm/                              마켓플레이스 레포
-├── x-build/                        프로젝트 관리 + PRD 파이프라인
+├── x-plan/                         단일 planning engine + PlanEnvelope
+├── x-build/                        Lean native 실행 + legacy lifecycle 호환
 ├── x-op/                           전략 오케스트레이션 (17가지 전략)
 ├── x-eval/                         품질 평가 + diff
 ├── x-humble/                       구조화된 회고
@@ -1247,14 +1224,15 @@ xm/                              마켓플레이스 레포
 <summary>동작 원리</summary>
 
 ```
-SKILL.md (스펙)  →  Claude (오케스트레이터)  →  Agent Tool (실행)
-       ↕                      ↕
-x-build CLI (상태)  ←  tasks update (콜백)
+x-plan → .xm/plan/PlanEnvelope
+   ↓
+x-build Skill → native agent → 선택 검증
+   └─ 명시적 legacy 명령 → .xm/build 상태
 ```
 
-- **SKILL.md**: Claude가 읽는 오케스트레이션 스펙. plan→run 흐름, 에이전트 스폰 패턴, 에러 복구를 정의.
-- **x-build CLI**: 상태 관리 레이어. 태스크/페이즈/체크포인트를 `.xm/build/`에 JSON으로 저장. 에이전트를 직접 실행하지 않음.
-- **Claude**: SKILL.md를 해석하고, Agent Tool로 에이전트를 실행하며, 완료 시 CLI 콜백 호출.
+- **x-plan**: 유일한 planning engine. 읽기 쉬운 계획과 검증된 PlanEnvelope를 `.xm/plan/`에 저장합니다.
+- **x-build Skill**: 기본 실행 workflow. native agent, 순차 실행, 구체적 위험에 맞춘 검증을 사용합니다.
+- **x-build CLI**: 명시적인 phase/task/worktree 명령을 위한 호환 표면. 해당 명령은 `.xm/build/`에 상태를 저장합니다.
 - **영속 서버**: Bun HTTP 서버가 CLI 호출을 캐시하여 반복 응답 가속. 요청별 격리에 AsyncLocalStorage 사용.
 - **번들 동기화**: `scripts/sync-bundle.sh`가 standalone ↔ bundle 파일 동기화를 강제.
 

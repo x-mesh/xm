@@ -133,7 +133,7 @@ export function cmdVerifyCoverage(args) {
   const { reqs, sources, files } = parseStructuredRequirements(project);
 
   if (!files.requirements_md && !files.prd) {
-    console.log('No REQUIREMENTS.md or PRD found. Run: x-build research (or: x-build plan)');
+    console.log('No REQUIREMENTS.md or PRD found. Run: x-build research (or: x-build legacy-plan)');
     return;
   }
 
@@ -204,7 +204,7 @@ export function cmdVerifyTraceability(args) {
   const { reqs, sources, files } = parseStructuredRequirements(project);
 
   if (!files.requirements_md && !files.prd) {
-    console.log('No REQUIREMENTS.md or PRD found. Run: x-build research (or: x-build plan)');
+    console.log('No REQUIREMENTS.md or PRD found. Run: x-build research (or: x-build legacy-plan)');
     return;
   }
 
@@ -855,7 +855,7 @@ export function cmdVerifyDrift(args) {
   const tasks = taskData?.tasks || [];
 
   if (!prd) {
-    console.log(`${C.yellow}No PRD.md found. Run: x-build plan${C.reset}`);
+    console.log(`${C.yellow}No PRD.md found. Run: x-build legacy-plan${C.reset}`);
     return;
   }
 

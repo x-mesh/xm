@@ -14,19 +14,19 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.20.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.20.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
 </p>
 
 <p align="center">
-  A plugin toolkit for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>. It adds the steps a senior engineer never skips: plan before coding, review before merging, verify before declaring done.
+  A plugin toolkit for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>. It grounds plans in repository evidence, executes the smallest sufficient change, and validates only the risks the change can introduce.
 </p>
 
 <p align="center">
-  <code>/xm:build plan "Build a REST API with JWT auth"</code><br />
-  → PRD → task decomposition → parallel agents → verified ✅
+  <code>/xm:build "Build a REST API with JWT auth"</code><br />
+  → repository evidence → x-plan → native execution → risk-based validation
 </p>
 
 ---
@@ -241,51 +241,35 @@ xm install --list-installed # print installed manifest inventory as JSON
 ## Quick Start
 
 ```bash
-/xm:build plan "Build a REST API with JWT auth"
+/xm:build "Build a REST API with JWT auth"
 ```
 
 That single line:
-1. Creates a project + generates a PRD with requirements
-2. Auto-decomposes into tasks with done criteria
-3. Presents the plan for review (user approval)
-4. Agents execute tasks in parallel → quality verification
+1. Inspects relevant code, contracts, tests, and existing behavior
+2. Uses x-plan Standard to produce one grounded plan and PlanEnvelope
+3. Challenges whether the requested method is justified and shows the plan when approval is needed
+4. Executes sequentially by default with native agents, then runs only validation relevant to the changed risk
 
-Want to skip Research/PRD and go straight to execution? Use `--quick`:
+Need a plan without execution? Use x-plan directly:
 ```bash
-/xm:build plan "Build a REST API with JWT auth" --quick
+xm plan --mode quick "Update src/auth.mjs and its focused tests"
 ```
 
-Failed? Run `/xm:build run` again. Completed tasks are skipped, only remaining ones execute.
+`xm build plan` is a deprecated alias for `xm plan`. When the resulting plan is executable it is imported into the current x-build project (PRD, tasks, steps); a draft is saved to `.xm/plan` and left there. The former PRD/task/phase planner remains available only as `xm build legacy-plan`.
 
 <details>
 <summary>Step-by-step tutorial (5 minutes)</summary>
 
 ```bash
-# 1. Initialize
-/xm:build init my-project
+# Plan only: repository inspection + readable PlanEnvelope artifact
+/xm:plan "Build a user auth system with JWT"
 
-# 2. Gather requirements (optional but recommended)
-/xm:build discuss --mode interview
-# → Agent asks clarifying questions, generates CONTEXT.md
+# Plan and implement through the lean default workflow
+/xm:build "Build a user auth system with JWT"
 
-# 3. Generate PRD + decompose into tasks
-/xm:build plan "Build a user auth system with JWT"
-# → Auto-generates PRD + task list
-
-# 4. Validate the plan
-/xm:build plan-check
-# → Checks 11 dimensions (atomicity, coverage, scope-clarity, ...)
-
-# 5. Execute
-/xm:build run
-# → Agents execute tasks in parallel (DAG order)
-
-# 6. Verify
-/xm:build quality                  # test/lint/build checks
-/xm:build verify-traceability      # R# ↔ Task ↔ AC matrix
-
-# 7. Done!
-/xm:build status
+# Legacy lifecycle compatibility only
+xm build legacy-plan "Build a user auth system with JWT"
+xm build run
 ```
 
 </details>
@@ -311,7 +295,7 @@ xm bakes those questions into every agent prompt. Agents end up reasoning about 
 | Fix | `Validate input.` | `db.query('SELECT * FROM users WHERE id = $1', [req.query.id])` |
 | Why | *(missing)* | `Unauthenticated public endpoint, input flows directly to query sink` |
 
-**Planning (x-build):**
+**Planning (x-plan, executed by x-build):**
 
 | | Without principles | With principles |
 |---|-------------------|-----------------|
@@ -337,9 +321,9 @@ xm bakes those questions into every agent prompt. Agents end up reasoning about 
 | Review code | Context determines severity — same pattern, different risk depending on exposure | x-review |
 | Review code | No evidence, no finding — trace it in the diff or don't report it | x-review |
 | Review code | When in doubt, downgrade — over-reporting erodes trust | x-review |
-| Plan a project | Decide what NOT to build first — scope by exclusion | x-build |
-| Plan a project | Name the risk, schedule it first — fail fast, not fail late | x-build |
-| Plan a project | Can't verify it? Can't ship it — every task needs done criteria | x-build |
+| Plan a project | Decide what NOT to build first — scope by exclusion | x-plan |
+| Plan a project | Treat the requested method as a hypothesis; prefer the simplest adequate path | x-plan |
+| Execute a plan | Sequential by default; validate only the risks the change can introduce | x-build |
 | Solve a problem | Diagnose state before hypothesizing — what's happening, not what's wrong | x-solver |
 | Solve a problem | Anchor to known good — no baseline, no chase | x-solver |
 | Solve a problem | Compound signals — never conclude from one log line | x-solver |
@@ -420,7 +404,7 @@ This is a *capability*, available today; proving it produces measurably better o
 
 | Plugin | Purpose | Key command |
 |--------|---------|-------------|
-| [x-build](#x-build) | Project lifecycle & PRD pipeline | `/xm:build plan "goal"` |
+| [x-build](#x-build) | Repository-grounded plan → native execution | `/xm:build "goal"` |
 | [x-op](#x-op) | 17 multi-agent strategies | `/xm:op debate "A vs B"` |
 | [x-review](#x-review) | Judgment-based code review | `/xm:review diff` |
 | [x-solver](#x-solver) | Structured problem solving | `/xm:solver init "bug"` |
@@ -443,28 +427,26 @@ This is a *capability*, available today; proving it produces measurably better o
 
 ### x-build
 
-Takes a project from idea to verified delivery. Generates the PRD, runs deliberation modes, attaches a written acceptance contract to every task, and gates execution on quality.
+x-build is the lean execution workflow around x-plan. It inspects repository evidence, uses x-plan as the single planning engine, executes sequentially by default through native agents, and selects only validation that directly observes a changed risk.
 
 ```bash
-/xm:build init my-api
-/xm:build discuss --mode interview       # Multi-round requirements interview
-/xm:build plan "Build a REST API with JWT auth"
-/xm:build run                             # Agents execute in DAG order
+/xm:build "Build a REST API with JWT auth"  # plan + native execution
+/xm:plan "Build a REST API with JWT auth"   # Standard plan only
+xm build plan --mode quick "..."            # deprecated alias for xm plan
 ```
 
-> Spotted off-scope work mid-task? Park it with **`/xm:later add "..."`** instead of derailing — then `/xm:later promote <id>` when you're ready to pick it up. Backed by `xm build later`.
+Planning artifacts live under `.xm/plan`. The default path does not create an x-build project, duplicate PRD, phase state, task database, worktree, or meta-gate.
 
-> **Greenfield-aware** — `init` records `project_kind` via a deterministic gauge (manifest / lockfile / source tree / git history; inspect with `xm build project-kind --json`). Brand-new projects get a Round 0 problem-framing interview (problem / status quo / success / MVP wedge) and a web-enabled **landscape** research agent instead of codebase investigation; existing projects are unchanged. Every new PRD opens with a plain-language **At a Glance** summary, and `prd-check` blocks Execute when Section 8 has no diagram — older PRDs are grandfathered to warnings.
+`xm build plan` delegates to the same x-plan entry point and is deprecated. `xm build legacy-plan` retains the former PRD/task/phase planner for explicit compatibility use.
 
 ```
-Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──→ Close
- [discuss]  [quality]  [critique]  [contract]  [quality]  [auto]
-  interview   consensus   validate    adapt     verify-contracts
-  validate
+repository evidence → x-plan → PlanEnvelope → native execution → selected validation
 ```
 
 <details>
-<summary>Features & commands</summary>
+<summary>Legacy lifecycle compatibility features and commands</summary>
+
+The commands below remain available only when explicitly invoked. The default x-build workflow does not select them automatically.
 
 | Feature | Description |
 |---------|-------------|
@@ -513,7 +495,7 @@ Research ──→ PRD ──→ Plan ──→ Execute ──→ Verify ──�
 
 <a id="worktree-pipeline"></a>
 <details>
-<summary>Worktree pipeline (parallel execution, panel-gated)</summary>
+<summary>Legacy opt-in: worktree pipeline (parallel execution, panel-gated)</summary>
 
 For projects with ≥2 tasks that touch disjoint files (declared via `tasks add --expected-files`), `run --worktrees` runs each task in its own isolated `git-kit` worktree instead of sequentially in the main tree:
 
@@ -1157,43 +1139,35 @@ xm inbox receipt status <id>     # did the sender actually receive the receipt?
 Each plugin's thinking principles feed the next one. What gets caught in review turns into a planning constraint; what fails in solve turns into a humble lesson.
 
 **Example: building a payment API**
-1. `x-build plan` → PRD goal has "and"? Split into two projects. *(planning principle)*
-2. `x-build consensus` → critic finds "retry logic not specified for payment gateway timeout" *(thinking)*
-3. `x-build run` → agents execute with done_criteria as acceptance contracts
-4. `x-review diff` → finds unhandled error path, Challenge stage validates it's genuinely High *(judgment)*
-5. `x-solver iterate` → diagnoses state, anchors to last passing test, traces with evidence *(thinking protocol)*
-6. `x-humble reflect` → "Why was the retry gap found during review, not planning?" → lesson saved *(retrospective)*
+1. `x-probe` challenges whether the requested payment flow is justified.
+2. `x-plan` inspects the repository and records one executable PlanEnvelope.
+3. `x-build` executes the approved plan sequentially by default with native agents.
+4. The workflow runs only checks that observe identified risks; `x-review` is used when the diff warrants review.
+5. `x-solver` diagnoses failures from a known-good baseline, and `x-humble` records reusable lessons.
 
 <details>
 <summary>Full pipeline diagram</summary>
 
 ```
-x-probe → Premise Validation (PROCEED/RETHINK/KILL)
+x-probe → premise validation
      ↓
-x-build plan → PRD Quality Gate (7.0+) → Consensus Review (4 agents)
+x-plan → repository evidence + PlanEnvelope
      ↓
-x-build tasks done-criteria → Acceptance contracts from PRD
+x-build → native execution (sequential by default)
      ↓
-x-op strategy --verify → Judge Panel (bias-aware) → Auto-retry
+selected test/lint/build/review for named risks
      ↓
-x-eval score → Per-task quality tracking → Project quality dashboard
-     ↓
-x-build verify-contracts → Done criteria fulfillment check
-     ↓
-x-humble reflect → Root cause + bias analysis → KEEP/STOP/START lessons
-     ↓
-lessons → CLAUDE.md + x-eval judge context → Next session applies patterns
+x-solver / x-humble → diagnosis and reusable lessons
 ```
 
 | Component | Mechanism |
 |-----------|-----------|
 | **Self-Score** | Every x-op strategy auto-scores against mapped rubric |
 | **--verify loop** | Judge panel (bias-aware) → fail → feedback → re-execute (max 2) |
-| **PRD consensus** | architect + critic + planner + security with principle-backed prompts |
-| **Acceptance contracts** | `done_criteria` auto-derived from PRD → injected into agents → verified at close |
-| **Auto-handoff** | Phase transitions preserve decisions, discard exploration noise |
-| **plan-check (15 dims)** | atomicity, deps, coverage (incl. done_criteria), granularity (upper bound >15), completeness, context, naming (44-verb dict), tech-leakage, scope-clarity (Out of Scope match), risk-ordering (DAG-based), expected-files, failure-mode-coverage, delegation-contract, review-groups, overall |
-| **Quality dashboard** | `x-build status` shows per-task scores + project avg |
+| **Single planner** | x-plan owns repository inspection, readable plans, PlanEnvelope validation, and `.xm/plan` persistence |
+| **Lean execution** | x-build executes natively and does not create phase/task/gate state by default |
+| **Risk-based validation** | test/lint/build/review are selected by the failure the change can cause, not used as a fixed checklist |
+| **Legacy compatibility** | `xm build legacy-plan` and lifecycle commands remain explicit opt-ins |
 | **Domain rubrics** | 5 presets (api-design, frontend, data-pipeline, security, architecture) |
 | **Bias-aware judging** | x-humble lessons (confirmed 3+) inform judge context |
 | **x-eval diff** | Measure how skills changed + quality delta |
@@ -1214,9 +1188,11 @@ Empirical consistency measurements across all plugins. Run with `/xm:eval consis
 | x-solver | decompose | **0.917** | PASS |
 | x-review | multi-lens review | **0.890** | PASS |
 | x-probe | premise-extraction | **0.826** | PASS |
-| x-build | planning | **0.824** | PASS |
+| x-build | legacy planning benchmark | **0.824** | PASS |
 
-**Average: 0.899** | All 7 plugins PASS | Verdict consistency: 100%
+**Average: 0.899** | All 7 measured legacy/plugin strategies PASS | Verdict consistency: 100%
+
+The x-build row predates the x-plan single-planner transition and does not measure the current lean native-execution workflow.
 
 A/B vs vanilla Claude Code: xm matches vanilla F1 (0.857) with superior precision (1.0 vs 0.75).
 
@@ -1228,7 +1204,8 @@ Full data: [`benchmarks/`](./benchmarks/SUMMARY.md)
 
 ```
 xm/                              Marketplace repo
-├── x-build/                        Project harness + PRD pipeline
+├── x-plan/                         Single planning engine + PlanEnvelope
+├── x-build/                        Lean native execution + legacy lifecycle compatibility
 ├── x-op/                           Strategy orchestration (17 strategies)
 ├── x-eval/                         Quality evaluation + diff
 ├── x-humble/                       Structured retrospective
@@ -1247,14 +1224,15 @@ xm/                              Marketplace repo
 <summary>How it works</summary>
 
 ```
-SKILL.md (spec)  →  Claude (orchestrator)  →  Agent Tool (execution)
-       ↕                      ↕
-x-build CLI (state)  ←  tasks update (callback)
+x-plan → .xm/plan/PlanEnvelope
+   ↓
+x-build Skill → native agents → selected validation
+   └─ explicit legacy commands → .xm/build state
 ```
 
-- **SKILL.md**: Orchestration spec that Claude reads. Defines plan→run flow, agent spawn patterns, error recovery.
-- **x-build CLI**: State management layer. Persists tasks/phases/checkpoints as JSON in `.xm/build/`. Does not spawn agents directly.
-- **Claude**: Interprets SKILL.md, spawns agents via Agent Tool, calls CLI callbacks on completion.
+- **x-plan**: The sole planning engine. It persists readable plans and validated PlanEnvelope artifacts under `.xm/plan/`.
+- **x-build Skill**: The default execution workflow. It uses native agents, sequential execution, and validation chosen from concrete risk.
+- **x-build CLI**: Compatibility surface for explicit phase/task/worktree commands. Those commands persist state under `.xm/build/`.
 - **Persistent Server**: Bun HTTP server caches CLI calls for fast repeated responses. AsyncLocalStorage for per-request isolation.
 - **Bundle sync**: `scripts/sync-bundle.sh` enforces standalone ↔ bundle file synchronization.
 
