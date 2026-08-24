@@ -12,6 +12,16 @@ bumps shipped in each marketplace release.
 
 ## [2.20.0] - 2026-08-25
 
+### Added
+
+- **xm:** add conflict-aware scheduling and scope-aware plan parsing
+
+### Changed
+
+- **build:** default to lean native execution
+
+## [2.20.0] - 2026-08-25
+
 ### x-build 3.2.5 → 3.3.0
 
 - Replace the default phase-heavy execution harness with a lean repository-evidence → single-plan → native-execution workflow after live A/B runs showed no pass-rate gain and higher wall-clock cost for the harness. Legacy phase, worktree, task-check, review-group, and quality-gate commands remain explicit compatibility opt-ins (`x-build/skills/build/SKILL.md`).
