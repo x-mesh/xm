@@ -34,7 +34,7 @@ import { buildIdentity } from './effectiveness.mjs';
 // buildRoot/config used to be defined here (the gate-panel cycle). Both now live
 // in the leaf so imports flow one direction only.
 import {
-  isParallelSafe, normalizeExpectedFiles,
+  isParallelSafe, compileParallelBatches, normalizeExpectedFiles,
   buildRoot, WORKTREE_CONFIG_DEFAULTS, loadWorktreeConfig, applyLifecycleWorktreePolicy,
   validateIdSegment, resolveMainRepoRoot,
 } from './worktree-shared.mjs';
@@ -526,7 +526,10 @@ export function planWorktrees({
   // accepts before|after|both (plan §3B).
   const gateDeferred = gatePhase === 'release';
 
-  const { safe, sequential, reason } = isParallelSafe(tasks);
+  const legacy = isParallelSafe(tasks);
+  const compiled = compileParallelBatches(tasks, maxParallel);
+  const safe = compiled.scheduled_parallel_tasks;
+  const { sequential, reason } = compiled;
   const taken = new Set(existingBranches);
 
   const entries = [];
@@ -554,16 +557,14 @@ export function planWorktrees({
     });
   }
 
-  const parallel_batches = [];
-  for (let i = 0; i < safe.length; i += maxParallel) {
-    parallel_batches.push(safe.slice(i, i + maxParallel));
-  }
+  const parallel_batches = compiled.parallel_batches;
 
   return {
     project, base, branch_prefix: prefix, max_parallel: maxParallel,
     gate: config.gate ?? 'panel', gate_phase: gatePhase, gate_deferred: gateDeferred,
     degraded, mode: degraded ? 'manual-handoff' : 'dry-run',
-    parallel_batches, sequential, reason,
+    parallel_batches, sequential, reason, conflict_edges: compiled.conflict_edges,
+    scheduler: { strategy: 'conflict-aware-greedy', legacy_parallel_safe: legacy.safe, recovered_conflict_tasks: safe.filter((id) => !legacy.safe.includes(id)) },
     tasks: entries,
   };
 }

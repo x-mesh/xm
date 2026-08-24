@@ -22,6 +22,7 @@ import { cmdGatePanel } from './x-build/gate-panel.mjs';
 import { cmdWorktrees, cmdReviewIntegration } from './x-build/worktrees.mjs';
 import { cmdCostCache } from './x-build/cost-cache.mjs';
 import { cmdEffectiveness } from './x-build/effectiveness.mjs';
+import { cmdImportPlan } from './x-build/plan-import.mjs';
 
 // Skip top-level execution when imported by xm-server
 if (process.env.XKIT_SERVER !== '1') {
@@ -99,6 +100,7 @@ switch (cmd) {
   case 'mode':           cmdMode(args); break;
   case 'export':         cmdExport(args); break;
   case 'import':         cmdImport(args); break;
+  case 'import-plan':    await cmdImportPlan(args); break;
   case 'plan':           await cmdPlan(args); break;
   case 'build':          await cmdPlan(['--execute', ...args]); break;
   case 'discuss':        cmdDiscuss(args); break;

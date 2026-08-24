@@ -27,7 +27,7 @@ import {
   listExistingBranches,
 } from './worktrees.mjs';
 import {
-  isParallelSafe, normalizeExpectedFiles, expectedFilesOverlap, loadWorktreeConfig, applyLifecycleWorktreePolicy,
+  isParallelSafe, compileParallelBatches, normalizeExpectedFiles, expectedFilesOverlap, loadWorktreeConfig, applyLifecycleWorktreePolicy,
 } from './worktree-shared.mjs';
 import {
   loadBuildPolicy, resolveTaskChecks, taskReviewGroup, reviewGroupStatus,
@@ -42,7 +42,7 @@ import { buildIdentity, normalizeRevisionReason, recordEffectiveness } from './e
 
 // Re-export the expected_files utils so existing importers (tests) that pull them
 // from tasks.mjs keep working after the move to the shared leaf.
-export { isParallelSafe, normalizeExpectedFiles, expectedFilesOverlap };
+export { isParallelSafe, compileParallelBatches, normalizeExpectedFiles, expectedFilesOverlap };
 
 // ── cmdTasks ────────────────────────────────────────────────────────
 
