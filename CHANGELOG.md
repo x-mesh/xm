@@ -10,6 +10,18 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.21.2] - 2026-08-26
+
+### Fixed
+
+- **release:** add the missing `2.21.1` history entry so the published version and changelog remain auditable after correcting the duplicate `2.21.0` heading.
+
+## [2.21.1] - 2026-08-26
+
+### Fixed
+
+- **release:** remove the duplicate `2.21.0` summary inserted while shipping and retain the detailed per-plugin release notes as the canonical entry.
+
 ## [2.21.0] - 2026-08-26
 
 ### x-build 3.4.2 → 3.5.0
