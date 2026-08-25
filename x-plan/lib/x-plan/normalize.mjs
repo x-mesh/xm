@@ -18,6 +18,12 @@ export function normalizePlanEnvelope(input = {}) {
     requirement_refs: strings(item?.requirement_refs).sort(), expected_files: strings(item?.expected_files).sort(),
     done_criteria: strings(item?.done_criteria),
   })).sort(byId);
+  // mode 'none — <justification>' is the explicit "no failure mode" form, so
+  // silence and "nothing to defend" stay distinguishable.
+  const failureModes = (Array.isArray(value.failure_modes) ? value.failure_modes : []).map((item) => ({
+    requirement_ref: text(item?.requirement_ref), mode: text(item?.mode),
+    mitigation: text(item?.mitigation), verification: text(item?.verification),
+  }));
   const validation = value.validation && typeof value.validation === 'object' && !Array.isArray(value.validation) ? value.validation : {};
   return {
     schema_version: Number(value.schema_version ?? PLAN_SCHEMA_VERSION),
@@ -27,6 +33,7 @@ export function normalizePlanEnvelope(input = {}) {
     decision: { selected: text(value.decision?.selected), alternatives: (Array.isArray(value.decision?.alternatives) ? value.decision.alternatives : []).map((item) => ({ name: text(item?.name), rejected_because: text(item?.rejected_because) })) },
     tasks, steps: (Array.isArray(value.steps) ? value.steps : []).map(strings),
     validation: { commands: strings(validation.commands), requirement_refs: strings(validation.requirement_refs).sort() },
+    failure_modes: failureModes,
     disagreements: (Array.isArray(value.disagreements) ? value.disagreements : []).map((item) => ({ topic: text(item?.topic), positions: strings(item?.positions), resolution: text(item?.resolution), confidence: text(item?.confidence) || 'unknown' })),
     unresolved_questions: unresolved,
     provenance: value.provenance && typeof value.provenance === 'object' && !Array.isArray(value.provenance) ? { ...value.provenance } : {},

@@ -404,7 +404,7 @@ describe('codex Plugin Skill — runtime overlays (t8)', () => {
   test('overlay is append-only — the original body precedes it untouched', () => {
     const idx = buildPrompt.indexOf('Codex Orchestration Overlay');
     // A stable marker from the real x-build body must appear before the overlay.
-    const bodyMarker = 'x-build의 기본 경로는 저장소 근거를 조사하고';
+    const bodyMarker = 'x-build의 기본 경로는 저장소 근거와 품질 관측 가능성을 조사하고';
     const markerIdx = buildPrompt.indexOf(bodyMarker);
     expect(markerIdx).toBeGreaterThan(-1);
     expect(markerIdx).toBeLessThan(idx);

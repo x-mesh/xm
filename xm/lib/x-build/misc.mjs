@@ -711,6 +711,19 @@ ${C.bold}Analysis & Utilities:${C.reset}
   metrics                        Show phase/task analytics
   effectiveness [--since 30d] [--profile light,standard,deep] [--compare light,deep] [--json]
                                  Compare workflow value using local semantic metrics
+  route decide --kind bugfix|feature|refactor|docs|test|config|dependency|schema|security|architecture --scope bounded --independent --files a,b --risk low --failure-modes N --gates test,boundary --json
+                                 Select direct/planned from quality observability and measured outcomes
+  route start --decision-id ID --expected-files a,b --gate-cmd gate=command
+  route verify --decision-id ID; route finish --decision-id ID
+                                 Bind native execution to baseline, files, CLI-run gates, and byte receipt
+  route status [--decision-id ID]; route abandon --decision-id ID
+                                 Recover or safely abandon interrupted leases
+  route prove --fixture A,B --benchmark FILE --blind FILE
+                                 Check 10 paired trials, quality, 20% cost, and 15% p50 latency
+  route record --class C --route direct|planned --outcome accepted|escalated|failed --quality pass|fail --gates-run G
+                                 Compatibility/recovery path for manually verified outcomes
+  route report [--class C] --json
+                                 Report quality, escalation, savings, and metric coverage
   decisions <add|list|inject>    Record and recall project decisions
   save <type>                    Save artifact (context|requirements|roadmap|project|plan|research-notes)
   export --format md|csv|jira|confluence

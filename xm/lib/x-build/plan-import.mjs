@@ -32,6 +32,15 @@ function taskSize(task) {
   return files >= 4 || criteria >= 6 ? 'large' : files >= 2 || criteria >= 3 ? 'medium' : 'small';
 }
 
+// A failure mode only defends the code if the executing agent sees it, so it
+// rides along as a done criterion on the tasks covering that requirement.
+function stressCriteria(plan, task) {
+  const refs = new Set(task.requirement_refs);
+  return plan.failure_modes
+    .filter((item) => refs.has(item.requirement_ref) && !/^none\b/i.test(item.mode))
+    .map((item) => '스트레스: ' + item.mode + (item.mitigation ? ' → ' + item.mitigation : ''));
+}
+
 function compileTasks(plan) {
   const idMap = new Map(plan.tasks.map((task, index) => [task.id, 't' + (index + 1)]));
   const now = new Date().toISOString();
@@ -40,7 +49,7 @@ function compileTasks(plan) {
     name: task.title + (task.requirement_refs.length ? ' ' + task.requirement_refs.map((ref) => '[' + ref + ']').join(' ') : ''),
     description: 'Imported from native PlanEnvelope task ' + task.id + '.',
     depends_on: task.depends_on.map((id) => idMap.get(id)), size: taskSize(task), role: null, strategy: null, rubric: null, team: null, score: null,
-    done_criteria: [...task.done_criteria], expected_files: task.expected_files.map(safeRelativePath), interface_contract: null,
+    done_criteria: [...task.done_criteria, ...stressCriteria(plan, task)], expected_files: task.expected_files.map(safeRelativePath), interface_contract: null,
     review_group: 'build', status: TASK_STATES.PENDING, created_at: now,
   }));
 }
@@ -59,8 +68,22 @@ function importFailures(plan, compiled) {
 }
 
 function requirementsMarkdown(plan) { return ['# Requirements', '', ...plan.requirements.map((item) => '- [' + item.id + '] ' + item.text), ''].join('\n'); }
+// Section 7.5 is what the phase-routing experiment measured as the robustness
+// lever (docs/phase-model-routing-experiment.md): enumeration plus a concrete
+// prescription moved sonnet execution from 0/3 to 3/3. Carry it across so an
+// imported plan reaches the executor with the same defence the PRD flow gives.
+function failureModeSection(plan) {
+  if (!plan.failure_modes.length) return [];
+  return ['', '## 7.5 Failure Modes & Adversarial Inputs', ...plan.failure_modes.map((item) => {
+    const parts = ['- [' + item.requirement_ref + '] ' + item.mode];
+    if (item.mitigation) parts.push(' → 처방: ' + item.mitigation);
+    if (item.verification) parts.push(' → 검증: ' + item.verification);
+    return parts.join('');
+  })];
+}
+
 function deltaPrd(plan) {
-  return ['<!-- prd-tier: delta -->', '# PRD: ' + plan.goal, '', '## Goal', plan.goal, '', '## Success Criteria', ...plan.requirements.map((item) => '- [ ] [' + item.id + '] ' + item.text), '', '## Decision Plan', '- Selected approach: imported native PlanEnvelope.', '', '## 12. Acceptance Criteria', ...plan.requirements.map((item) => '- [ ] ' + item.text + ' [' + item.id + ']'), '', '## Validation', ...plan.validation.commands.map((command) => '- ' + command), ''].join('\n');
+  return ['<!-- prd-tier: delta -->', '# PRD: ' + plan.goal, '', '## Goal', plan.goal, '', '## Success Criteria', ...plan.requirements.map((item) => '- [ ] [' + item.id + '] ' + item.text), '', '## Decision Plan', '- Selected approach: imported native PlanEnvelope.', ...failureModeSection(plan), '', '## 12. Acceptance Criteria', ...plan.requirements.map((item) => '- [ ] ' + item.text + ' [' + item.id + ']'), '', '## Validation', ...plan.validation.commands.map((command) => '- ' + command), ''].join('\n');
 }
 
 function parallelismForSteps(tasks, steps) {
