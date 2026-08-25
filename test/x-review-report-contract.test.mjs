@@ -1,16 +1,18 @@
 import { describe, test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { validateReviewReports } from '../x-review/skills/review/scripts/validate-reports.mjs';
-import { planReview } from '../x-review/skills/review/scripts/plan-review.mjs';
+import { chunkFrozenTarget, estimateTargetTokens, planReview } from '../x-review/skills/review/scripts/plan-review.mjs';
 import { canonicalReviewContext, hashReviewContext, normalizeReviewContext } from '../x-review/skills/review/scripts/context-contract.mjs';
 import { buildRetryTarget, splitFrozenSections } from '../x-review/skills/review/scripts/retry-target.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(ROOT, 'x-review', 'skills', 'review', 'scripts', 'validate-reports.mjs');
+const PLAN_CLI = join(ROOT, 'x-review', 'skills', 'review', 'scripts', 'plan-review.mjs');
 const HASH = `sha256:${'a'.repeat(64)}`;
 const MANIFEST = {
   schema_version: 1,
@@ -100,10 +102,55 @@ describe('x-review context contract', () => {
 });
 
 describe('x-review adaptive-fast planner', () => {
+  test('returns a no-changes plan without dispatching reviewers for an empty target', () => {
+    expect(planReview('')).toEqual(expect.objectContaining({
+      mode: 'no-changes',
+      changed_lines: 0,
+      estimated_target_tokens: 0,
+      chunks: [],
+      profiles: [],
+      expected_reports: [],
+      estimated_llm_waves: 0,
+      requires_chunking: false,
+      reviewable: false,
+      no_changes: true,
+    }));
+  });
+
+  test('reviews binary and rename-only Git changes even when changed_lines is zero', () => {
+    const binary = planReview([
+      'diff --git a/image.png b/image.png',
+      'index 111..222 100644',
+      'Binary files a/image.png and b/image.png differ',
+    ].join('\n'));
+    expect(binary).toEqual(expect.objectContaining({
+      mode: 'adaptive-fast', files: ['image.png'], changed_lines: 0, reviewable: true,
+    }));
+    expect(binary).not.toHaveProperty('no_changes');
+    expect(binary.profiles).toHaveLength(2);
+
+    const rename = planReview([
+      'diff --git a/old.js b/new.js',
+      'similarity index 100%',
+      'rename from old.js',
+      'rename to new.js',
+    ].join('\n'));
+    expect(rename).toEqual(expect.objectContaining({
+      mode: 'adaptive-fast', files: ['new.js'], changed_lines: 0, reviewable: true,
+    }));
+    expect(rename).not.toHaveProperty('no_changes');
+    expect(rename.profiles).toHaveLength(2);
+  });
+
   test('uses two composite reviewers for an ordinary patch', () => {
     const plan = planReview('diff --git a/src/a.js b/src/a.js\n+++ b/src/a.js\n+return value;');
     expect(plan.profiles.map((entry) => entry.profile)).toEqual(['correctness', 'risk']);
     expect(plan.estimated_llm_waves).toBe(1);
+    expect(plan.chunked).toBe(false);
+    expect(plan.expected_reports).toEqual([
+      { report_id: 'correctness-1', lens: 'correctness' },
+      { report_id: 'risk-1', lens: 'risk' },
+    ]);
   });
 
   test('reads literal and C-escaped UTF-8 paths from quoted Git headers', () => {
@@ -345,11 +392,132 @@ describe('x-review lens report coverage contract', () => {
     expect(result.issues.filter((entry) => entry.code === 'report_target_coverage_incomplete')).toHaveLength(2);
   });
 
-  test('marks only targets beyond the documented planner limit for chunking', () => {
-    const atLimit = Array.from({ length: 2000 }, () => '+line').join('\n');
-    const overLimit = `${atLimit}\n+line`;
-    expect(planReview(atLimit).requires_chunking).toBe(false);
-    expect(planReview(overLimit).requires_chunking).toBe(true);
+  test('requires every profile by chunk report and validates each chunk hash', () => {
+    const chunkA = `sha256:${'b'.repeat(64)}`;
+    const chunkB = `sha256:${'c'.repeat(64)}`;
+    const manifest = {
+      ...MANIFEST,
+      target_files: ['src/a.ts', 'src/b.ts'],
+      profiles: [{ profile: 'security' }],
+      chunks: [
+        { id: 'chunk-001', target_hash: chunkA, target_file: 'chunks/chunk-001.patch', files: ['src/a.ts'] },
+        { id: 'chunk-002', target_hash: chunkB, target_file: 'chunks/chunk-002.patch', files: ['src/b.ts'] },
+      ],
+      expected_reports: [
+        { report_id: 'security-chunk-001', lens: 'security', chunk_id: 'chunk-001', wave: 1, target_hash: chunkA, target_file: 'chunks/chunk-001.patch', target_files: ['src/a.ts'] },
+        { report_id: 'security-chunk-002', lens: 'security', chunk_id: 'chunk-002', wave: 2, target_hash: chunkB, target_file: 'chunks/chunk-002.patch', target_files: ['src/b.ts'] },
+      ],
+    };
+    const targetBody = [
+      'diff --git a/src/a.ts b/src/a.ts', '+const a = true;',
+      'diff --git a/src/b.ts b/src/b.ts', '+const b = true;',
+    ].join('\n');
+    const chunkBodies = {
+      'chunks/chunk-001.patch': 'a',
+      'chunks/chunk-002.patch': 'b',
+    };
+    manifest.expected_reports[0].target_hash = `sha256:${createHash('sha256').update('a').digest('hex')}`;
+    manifest.expected_reports[1].target_hash = `sha256:${createHash('sha256').update('b').digest('hex')}`;
+    manifest.chunks[0].target_hash = manifest.expected_reports[0].target_hash;
+    manifest.chunks[1].target_hash = manifest.expected_reports[1].target_hash;
+    const complete = validateReviewReports(manifest, raws(
+      zeroReport('security-chunk-001', 'security', { target_hash: manifest.expected_reports[0].target_hash, checked_files: ['src/a.ts'] }),
+      zeroReport('security-chunk-002', 'security', { target_hash: manifest.expected_reports[1].target_hash, checked_files: ['src/b.ts'] }),
+    ), { targetBody, chunkBodies });
+    expect(complete.ok).toBe(true);
+    expect(complete.coverage).toEqual({ expected: 2, valid: 2 });
+
+    const stale = validateReviewReports(manifest, raws(
+      zeroReport('security-chunk-001', 'security', { target_hash: manifest.expected_reports[0].target_hash, checked_files: ['src/a.ts'] }),
+      zeroReport('security-chunk-002', 'security', { target_hash: manifest.expected_reports[0].target_hash, checked_files: ['src/b.ts'] }),
+    ), { targetBody, chunkBodies });
+    expect(stale.ok).toBe(false);
+    expect(stale.issues).toContainEqual(expect.objectContaining({ code: 'stale_target', report_id: 'security-chunk-002' }));
+  });
+
+  test('rejects a chunk manifest that omits one profile by chunk report', () => {
+    const hash = `sha256:${createHash('sha256').update('a').digest('hex')}`;
+    const manifest = {
+      ...MANIFEST,
+      target_files: ['src/a.ts', 'src/b.ts'],
+      profiles: [{ profile: 'security' }, { profile: 'logic' }],
+      chunks: [
+        { id: 'chunk-001', target_hash: hash, target_file: 'chunks/chunk-001.patch', files: ['src/a.ts'] },
+        { id: 'chunk-002', target_hash: hash, target_file: 'chunks/chunk-002.patch', files: ['src/b.ts'] },
+      ],
+      expected_reports: [
+        { report_id: 'security-chunk-001', lens: 'security', chunk_id: 'chunk-001', wave: 1, target_hash: hash, target_file: 'chunks/chunk-001.patch', target_files: ['src/a.ts'] },
+        { report_id: 'security-chunk-002', lens: 'security', chunk_id: 'chunk-002', wave: 2, target_hash: hash, target_file: 'chunks/chunk-002.patch', target_files: ['src/b.ts'] },
+        { report_id: 'logic-chunk-001', lens: 'logic', chunk_id: 'chunk-001', wave: 1, target_hash: hash, target_file: 'chunks/chunk-001.patch', target_files: ['src/a.ts'] },
+      ],
+    };
+    const result = validateReviewReports(manifest, [], { targetBody: [
+      'diff --git a/src/a.ts b/src/a.ts', '+a', 'diff --git a/src/b.ts b/src/b.ts', '+b',
+    ].join('\n'), chunkBodies: { 'chunks/chunk-001.patch': 'a', 'chunks/chunk-002.patch': 'a' } });
+    expect(result.ok).toBe(false);
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'manifest_profile_chunk_missing' }));
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'manifest_profile_chunk_count' }));
+  });
+
+  test('does not reject a 2001-line target that fits the token budget', () => {
+    const target = Array.from({ length: 2001 }, () => '+x').join('\n');
+    const plan = planReview(target);
+    expect(plan.changed_lines).toBe(2001);
+    expect(plan.requires_chunking).toBe(false);
+    expect(plan.reviewable).toBe(true);
+  });
+
+  test('uses file dispersion as a chunk condition without rejecting 101 small files', () => {
+    const target = Array.from({ length: 101 }, (_, index) => [
+      `diff --git a/src/${index}.js b/src/${index}.js`, `+++ b/src/${index}.js`, '+export default true;',
+    ].join('\n')).join('\n');
+    const plan = planReview(target);
+    expect(plan.files).toHaveLength(101);
+    expect(plan.requires_chunking).toBe(true);
+    expect(plan.reviewable).toBe(true);
+    expect(plan.chunks.map((chunk) => chunk.files.length)).toEqual([100, 1]);
+    expect(plan.expected_reports).toHaveLength(plan.profiles.length * 2);
+  });
+
+  test('chunks a large target by file within the token budget and expands profile coverage', () => {
+    const section = (file, value) => [
+      `diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, '@@ -1 +1 @@', '-old', `+${value.repeat(2200)}`,
+    ].join('\n');
+    const target = [section('src/a.ts', 'a'), section('src/b.ts', 'b')].join('\n');
+    const plan = planReview(target, { chunkTokenBudget: 1_000 });
+    expect(plan.chunked).toBe(true);
+    expect(plan.reviewable).toBe(true);
+    expect(plan.chunks).toHaveLength(2);
+    expect(plan.estimated_llm_waves).toBe(2);
+    expect(plan.chunks.every((chunk) => chunk.estimated_target_tokens <= 1_000)).toBe(true);
+    expect(plan.expected_reports).toHaveLength(plan.profiles.length * plan.chunks.length);
+    expect(plan.expected_reports.map((entry) => entry.report_id)).toEqual([
+      'correctness-chunk-001', 'correctness-chunk-002', 'risk-chunk-001', 'risk-chunk-002',
+    ]);
+    expect(plan.expected_reports.map((entry) => entry.wave)).toEqual([1, 2, 1, 2]);
+  });
+
+  test('splits an oversized single-file hunk and fails closed for an unsplittable line', () => {
+    const header = ['diff --git a/src/big.ts b/src/big.ts', '--- a/src/big.ts', '+++ b/src/big.ts', '@@ -1,900 +1,900 @@'];
+    const target = [...header, ...Array.from({ length: 900 }, (_, index) => `+const value${index} = ${index};`)].join('\n');
+    const chunks = chunkFrozenTarget(target, 1_000);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => estimateTargetTokens(chunk.body) <= 1_000)).toBe(true);
+    expect(chunks.every((chunk) => chunk.files.includes('src/big.ts'))).toBe(true);
+
+    const unsplittable = [...header, `+${'x'.repeat(4_000)}`].join('\n');
+    const plan = planReview(unsplittable, { chunkTokenBudget: 1_000 });
+    expect(plan.reviewable).toBe(false);
+    expect(plan.incomplete_reason).toContain('cannot be split');
+  });
+
+  test('splits a raw file target by line range and preserves its explicit path', () => {
+    const target = Array.from({ length: 900 }, (_, index) => `const value${index} = ${index};`).join('\n');
+    const plan = planReview(target, { targetFiles: ['src/big.ts'], chunkTokenBudget: 1_000 });
+    expect(plan.chunked).toBe(true);
+    expect(plan.reviewable).toBe(true);
+    expect(plan.chunks.every((chunk) => chunk.files.join() === 'src/big.ts')).toBe(true);
+    expect(plan.expected_reports.every((entry) => entry.target_files.join() === 'src/big.ts')).toBe(true);
   });
 
   test('rejects unreviewed files and snippets fabricated outside the frozen target', () => {
@@ -461,6 +629,96 @@ describe('x-review lens report coverage contract', () => {
       const receipt = JSON.parse(run.stdout);
       expect(receipt.ok).toBe(false);
       expect(receipt.missing_reports).toEqual([{ report_id: 'logic-1', lens: 'logic' }]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('validator rejects an unsafe chunk path without reading outside the chunk directory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'x-review-unsafe-chunk-'));
+    try {
+      const reports = join(root, 'reports');
+      const chunks = join(root, 'chunks');
+      mkdirSync(reports);
+      mkdirSync(chunks);
+      const manifest = {
+        ...MANIFEST,
+        expected_reports: [{
+          report_id: 'security-chunk-001', lens: 'security', chunk_id: 'chunk-001', wave: 1,
+          target_hash: HASH, target_file: 'chunks/../../outside.patch', target_files: ['src/a.ts'],
+        }],
+      };
+      writeFileSync(join(root, 'run.json'), JSON.stringify(manifest));
+      writeFileSync(join(root, 'outside.patch'), 'sensitive');
+      const run = spawnSync('node', [
+        CLI, '--manifest', join(root, 'run.json'), '--reports-dir', reports, '--chunks-dir', chunks,
+      ], { encoding: 'utf8' });
+      expect(run.status).toBe(1);
+      expect(JSON.parse(run.stdout).issues).toContainEqual(expect.objectContaining({ code: 'manifest_report_target_file' }));
+      expect(run.stderr).not.toContain('frozen chunk read failed');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('planner and validator CLIs complete a token-chunked profile by chunk run', () => {
+    const root = mkdtempSync(join(tmpdir(), 'x-review-chunked-cli-'));
+    try {
+      const section = (file, value) => [
+        `diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, '@@ -1 +1 @@', '-old', `+${value.repeat(2_200)}`,
+      ].join('\n');
+      const targetBody = [section('src/a.ts', 'a'), section('src/b.ts', 'b')].join('\n');
+      const target = join(root, 'target.patch');
+      const chunksDir = join(root, 'chunks');
+      writeFileSync(target, targetBody);
+      const planned = spawnSync('node', [
+        PLAN_CLI, '--target', target, '--chunk-token-budget', '1000', '--chunks-dir', chunksDir,
+      ], { encoding: 'utf8' });
+      expect(planned.status).toBe(0);
+      const plan = JSON.parse(planned.stdout);
+      expect(plan).toMatchObject({ chunked: true, reviewable: true, estimated_llm_waves: 2 });
+      expect(plan.expected_reports).toHaveLength(plan.profiles.length * plan.chunks.length);
+
+      const manifest = {
+        schema_version: 1,
+        task_id: 'review-chunked-cli-001',
+        target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+        target_files: plan.files,
+        profiles: plan.profiles,
+        chunks: plan.chunks,
+        expected_reports: plan.expected_reports,
+      };
+      const reportsDir = join(root, 'reports');
+      mkdirSync(reportsDir);
+      writeFileSync(join(root, 'run.json'), JSON.stringify(manifest));
+      for (const expected of plan.expected_reports) {
+        writeFileSync(join(reportsDir, `${expected.report_id}.json`), JSON.stringify({
+          schema_version: 1,
+          task_id: manifest.task_id,
+          target_hash: expected.target_hash,
+          report_id: expected.report_id,
+          lens: expected.lens,
+          status: 'complete',
+          checked: [`${expected.lens}: inspected ${expected.chunk_id}`],
+          checked_files: expected.target_files,
+          findings: [],
+          no_findings_reason: `No ${expected.lens} defect found in ${expected.chunk_id} after checking every supplied file.`,
+        }));
+      }
+
+      const validated = spawnSync('node', [
+        CLI, '--manifest', join(root, 'run.json'), '--reports-dir', reportsDir,
+        '--target', target, '--chunks-dir', chunksDir,
+      ], { encoding: 'utf8' });
+      expect(validated.status).toBe(0);
+      const receipt = JSON.parse(validated.stdout);
+      expect(receipt.ok).toBe(true);
+      expect(receipt.coverage).toEqual({ expected: plan.expected_reports.length, valid: plan.expected_reports.length });
+      expect(receipt.target_coverage).toEqual({ expected: 2, checked: 2, complete: true, missing_files: [] });
+      for (const chunk of plan.chunks) {
+        const chunkBody = readFileSync(join(root, chunk.target_file), 'utf8');
+        expect(`sha256:${createHash('sha256').update(chunkBody).digest('hex')}`).toBe(chunk.target_hash);
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

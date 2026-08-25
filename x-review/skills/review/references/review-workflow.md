@@ -48,8 +48,8 @@ Full codebase review. Targets entire source, not a diff.
    - Default adaptive-fast profiles (correctness, risk) each inspect the complete file list
    - Each agent scans all files with **one lens** (file-group × 7-lens split is prohibited)
    - Agent count = min(lens count, `agent_max_count`)
-   - If the target exceeds the planner limit, stop with `Review incomplete: target limit` until
-     automated chunk execution exists; never split coverage implicitly
+   - If the target exceeds one review budget, use the planner's file/hunk chunks and require every
+     profile to review every chunk; never truncate coverage implicitly
 3. Merge results into Phase 4: SYNTHESIZE
 
 `full` mode is expensive — confirm before running:
@@ -73,8 +73,15 @@ After writing the exact Phase-1 target to `$TARGET_FILE`, run:
 node "$REVIEW_SKILL_DIR/scripts/plan-review.mjs" \
   --target "$TARGET_FILE" \
   <repeat `--target-file <path>` for file/full targets> \
-  --max-profiles "$ADAPTIVE_MAX_PROFILES" > "$RUN_DIR/plan.json"
+  --max-profiles "$ADAPTIVE_MAX_PROFILES" \
+  --chunk-token-budget "${X_REVIEW_CHUNK_TOKENS:-24000}" \
+  --chunk-file-budget "${X_REVIEW_CHUNK_FILES:-100}" \
+  --chunks-dir "$RUN_DIR/chunks" > "$RUN_DIR/plan.json"
 ```
+
+If the planner returns `mode: no-changes`, print "변경 사항이 없습니다" and exit without
+creating a run manifest or dispatching any reviewer. Binary and rename-only Git diffs still have
+reviewable file changes even when `changed_lines` is zero, so the planner must dispatch them.
 
 For a single `file` target, append `--target-file <path>` and the raw file body may be the frozen
 target. For multi-file and `full` targets, encode each file as a synthetic `diff --git a/<path>
@@ -88,10 +95,14 @@ planner always keeps `correctness` and `risk`, then adds `migrations`, `type-des
 that priority order for matching frozen-diff signals. Migration routing is path-based
 (`migration`/`schema`/`prisma`/`alembic`/`db` or `*.sql`) so DDL examples in tests and docs do not
 spend a reviewer. Dispatch all selected profiles in the same Agent message, so the common path
-remains one LLM wave. Copy `files` to `run.json.target_files` and
-`expected_reports` to its manifest. `requires_chunking: true` forbids dispatching the whole target
-as one prompt. Automated chunk execution is not implemented yet, so stop with
-`Review incomplete: target limit`; never truncate and claim coverage.
+remains one LLM wave. The token estimate uses UTF-8 bytes divided by 3 as a conservative,
+tokenizer-independent approximation; benchmark and adjust the default 24K budget rather than using
+changed-line thresholds. More than 100 files also triggers chunking because file dispersion raises
+coverage risk even when the token estimate is small. Copy `files` to `run.json.target_files` and copy `profiles`, `chunks`, and
+`expected_reports` to its manifest. Write the emitted chunk files under `$RUN_DIR/chunks`. When `chunked: true`, process chunks as
+bounded waves, dispatching all selected profiles in parallel for the current chunk using the
+manifest's `report_id`, `wave`, `target_hash`, and `target_files`.
+Only `reviewable: false` stops with `Review incomplete`; `requires_chunking` means execute chunks.
 
 | Profile | Combined concerns |
 |---------|-------------------|
@@ -275,11 +286,12 @@ node "$REVIEW_SKILL_DIR/scripts/validate-reports.mjs" \
   --manifest "$RUN_DIR/run.json" \
   --reports-dir "$RUN_DIR/reports" \
   --target "$TARGET_FILE" \
+  --chunks-dir "$RUN_DIR/chunks" \
   --out "$RUN_DIR/validation.json"
 ```
 
 Exit 0 and `validation.json.ok: true` are the Phase 4 entry gate. It requires N/N report coverage
-and complete `target_coverage`. A missing report, empty body,
+(including every `profile × chunk` entry) and complete `target_coverage`. A missing report, empty body,
 generic greeting, previous-task response, mismatched target, incomplete status, duplicate report,
 or unsubstantiated zero-finding response fails closed. Re-dispatch only failed lenses as **fresh
 agent tasks** using the same `task_id`, `target_hash`, and `report_id`, overwrite their report

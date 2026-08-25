@@ -142,10 +142,11 @@ describe('x-review SKILL.md structure', () => {
     expect(content).toContain('HEAD~');
   });
 
-  test('Smart Router has large diff guard', () => {
-    expect(content).toContain('2000');
-    expect(content).toContain('requires_chunking');
+  test('Smart Router uses token-budgeted chunk coverage', () => {
+    expect(content).toContain('24K tokens');
+    expect(content).toContain('token planner can chunk');
     expect(content).toContain('Review incomplete');
+    expect(content).toContain('N profiles × M chunks');
     expect(content).not.toContain('force-full');
   });
 

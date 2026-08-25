@@ -148,9 +148,11 @@ fi
 
 | Diff size | Behavior |
 |----------|------|
-| 0 lines | Output "변경 사항이 없습니다", exit |
-| 1-2000 lines | Run `adaptive-fast` immediately (one parallel wave) |
-| 2001+ lines or 101+ files | Set `requires_chunking`; until a chunk executor is available, stop with `Review incomplete` instead of truncating |
+| Empty target with no Git file change | Output "변경 사항이 없습니다", exit |
+| Estimated target ≤ 24K tokens | Run `adaptive-fast` immediately (one parallel wave) |
+| Estimated target > 24K tokens | Split by complete file sections, then hunk/line ranges; dispatch every profile across every chunk in bounded chunk waves |
+| Target spans > 100 files | Split into file-bounded chunks even when the token estimate fits one prompt |
+| A unit cannot fit the budget | Stop with `Review incomplete` and identify the unsplittable unit |
 
 **Save reference point after review:**
 
@@ -246,7 +248,9 @@ See `references/review-workflow.md` — full pipeline:
 - **Phase 1 context binding** — supplied review context is validated/canonicalized and bound by SHA-256. Legacy runs record `context_status: absent`; supplied-invalid context fails closed.
 - **Phase 2: ASSIGN** — run `scripts/plan-review.mjs` against the frozen target. The default
   `adaptive-fast` plan dispatches two composite reviewers and signal-matched specialists in the
-  same parallel wave. Explicit `--lenses` and non-default presets override the plan.
+  same parallel wave for an unchunked target. Targets above the token budget produce deterministic file/hunk chunks and
+  an `N profiles × M chunks` expected-report manifest. Explicit `--lenses` and non-default presets
+  override the plan.
 - **Phase 3: REVIEW** — fan-out N agents with Universal Principles + lens prompts (`lenses/{name}.md`), require the structured `references/lens-report-contract.md`, and gate coverage with `scripts/validate-reports.mjs`
   - **Artifact-first recovery:** a delegate transport error (including `Broken pipe` or
     `outcome unknown`) is not report failure. Persist every returned report, run the validator
@@ -366,7 +370,8 @@ participants after panel mode is explicitly/configurationally enabled.
 
 ## Latency Policy
 
-- A normal review has exactly **one parallel LLM wave**. Schema, target grounding, source coverage,
+- A normal unchunked review has exactly **one parallel LLM wave**. A chunked review has one bounded
+  wave per chunk, with all selected profiles running in parallel inside that wave. Schema, target grounding, source coverage,
   dedupe, verdict, and persistence are deterministic gates and spend no additional model call.
 - Add planner-selected specialists to wave 1; never wait for core reviewers and then start a serial
   specialist round.
@@ -434,12 +439,12 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 **x-review uses AskUserQuestion where the choice is genuinely the user's — not as a turn-taking ritual.**
 
 Rules:
-1. **Resolved target, bounded diff → run.** When the user named the target (`pr 142`, `file x.ts`)
-   or the Smart Router resolved one under 2000 lines and 100 files, review immediately and print the pre-run
+1. **Resolved target, reviewable diff → run.** When the user named the target (`pr 142`, `file x.ts`)
+   or the Smart Router resolved a target the token planner can chunk, review immediately and print the pre-run
    summary (Smart Router Step 3). Confirming a target the user already gave is a wasted round trip.
-2. **Ambiguous or oversized scope → ask or stop.** Use AskUserQuestion when the Smart Router finds
-   no usable reference point or several targets match. When the planner sets `requires_chunking`,
-   stop with `Review incomplete` until chunk execution is available; never silently truncate.
+2. **Ambiguous or unsplittable scope → ask or stop.** Use AskUserQuestion when the Smart Router finds
+   no usable reference point or several targets match. Stop with `Review incomplete` only when the
+   planner returns `reviewable: false`; never silently truncate.
 3. **The verdict is x-review's to state, not the user's to ratify.** Print it with its rationale.
    A verdict that needs user approval is not a review.
 4. **Synthesize in one pass.** Phase 4 consolidates every lens together; do not stop between
@@ -448,7 +453,7 @@ Rules:
 Anti-patterns:
 - ❌ Asking to confirm a target the user already named
 - ❌ Declaring a verdict with no findings section and no rationale
-- ❌ Claiming complete coverage for a `requires_chunking` target without a chunk executor
+- ❌ Claiming complete coverage unless every expected `profile × chunk` report validates
 
 ## Common Rationalizations
 
