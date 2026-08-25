@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -14,6 +14,11 @@ const TRIALS = Number(process.env.X_BUILD_AB_TRIALS || 3);
 const MODEL = process.env.X_BUILD_AB_MODEL || 'gpt-5.6-luna';
 const EFFORT = process.env.X_BUILD_AB_EFFORT || 'low';
 const KEEP = process.env.X_BUILD_AB_KEEP === '1';
+// Comma-separated fixture ids; empty runs them all. Lets a new fixture be
+// smoke-tested for a couple of minutes instead of a full 24-run sweep.
+const ONLY = (process.env.X_BUILD_AB_FIXTURES || '').split(',').map((id) => id.trim()).filter(Boolean);
+// Comma-separated variant ids; empty runs every variant.
+const ONLY_VARIANTS = (process.env.X_BUILD_AB_VARIANTS || '').split(',').map((id) => id.trim()).filter(Boolean);
 const OUTPUT_DIR = join(REPO, '.xm', 'eval', 'benchmarks');
 
 function task(id, title, instruction, expectedFiles) {
@@ -99,6 +104,44 @@ const FIXTURES = [
       task('C', 'Register gamma', 'Edit src/registry.mjs so registry includes gamma: 3 while preserving every existing entry.', ['src/registry.mjs']),
     ],
   },
+  // The three fixtures above are 3-line tasks with no room for a quality
+  // difference. This one asks for behaviour the test does NOT pin down —
+  // rejection of malformed input — so a blind rater has something to grade.
+  {
+    id: 'shared-validator',
+    files: {
+      '.gitignore': 'package-lock.json\n',
+      'package.json': JSON.stringify({ name: 'shared-validator', type: 'module', scripts: { test: 'node --test' } }, null, 2) + '\n',
+      'src/validate.mjs': [
+        '// Each rule takes a record and returns an array of error strings.',
+        'export const rules = [];',
+        '',
+        'export function validate(record) {',
+        '  return rules.flatMap((rule) => rule(record));',
+        '}',
+        '',
+      ].join('\n'),
+      'test/fixture.test.mjs': [
+        "import test from 'node:test';",
+        "import assert from 'node:assert/strict';",
+        "import { validate, rules } from '../src/validate.mjs';",
+        "test('accepts a valid record', () => {",
+        "  assert.deepEqual(validate({ name: 'ok', age: 30, email: 'a@b.co' }), []);",
+        "});",
+        "test('registered rules reject at least one violation', () => {",
+        "  assert.ok(rules.length > 0);",
+        "  const bad = [{ name: '', age: 30, email: 'a@b.co' }, { name: 'ok', age: -1, email: 'a@b.co' }, { name: 'ok', age: 30, email: 'nope' }];",
+        "  assert.ok(bad.some((record) => validate(record).length > 0));",
+        "});",
+        '',
+      ].join('\n'),
+    },
+    tasks: [
+      task('A', 'Add the name rule', 'Edit src/validate.mjs and push a rule onto rules that rejects a missing or empty name. Preserve every existing rule.', ['src/validate.mjs']),
+      task('B', 'Add the age rule', 'Edit src/validate.mjs and push a rule onto rules that rejects an age that is not a non-negative number. Preserve every existing rule.', ['src/validate.mjs']),
+      task('C', 'Add the email rule', 'Edit src/validate.mjs and push a rule onto rules that rejects an email without a local part, an @, and a domain. Preserve every existing rule.', ['src/validate.mjs']),
+    ],
+  },
 ];
 
 function run(command, args, options = {}) {
@@ -151,10 +194,25 @@ function initRepo(root, fixture) {
   must(git(root, ['commit', '-qm', 'test: seed benchmark fixture']), 'git commit fixture');
 }
 
-function promptFor(spec) {
+// Verbatim from x-build/lib/x-build/tasks.mjs buildAgentPrompt(). The harness
+// variant here never reaches that function — the runner drives codex directly —
+// so measuring x-build's prompt requires carrying the text across explicitly.
+const LEAN_INSTRUCTIONS = [
+  'Follow existing code patterns and conventions.',
+  'Make the smallest change that satisfies the actual user goal. Do not add unsolicited abstractions, compatibility layers, configuration, telemetry, or state tracking.',
+  'Treat the requested method as a hypothesis: verify it fits the repository and goal; if it does not, report concrete evidence and the simplest adequate alternative before changing code.',
+  'Add a fallback only for a concrete evidenced failure condition, and only when activation is observable, behavioral differences are explicit, and both paths can be tested. Otherwise fail clearly; never hide failure behind broad catches, empty results, or arbitrary defaults.',
+  'Do not claim quality, safety, or performance improvements that were not measured.',
+  'Sequential execution is the default. Use parallel execution only when files, shared state, dependencies, and validation environments are verified independent and the expected time saving exceeds orchestration cost.',
+  'Identify what this change can break and run only the smallest existing validation that directly observes that risk. Do not run test, lint, build, and review as a fixed checklist; explain any relevant check you intentionally omit.',
+  "Write clean code and use the repository's existing validation commands when they are relevant to the changed behavior.",
+];
+
+function promptFor(spec, lean = false) {
   return [
     'Implement only this bounded fixture task: ' + spec.instruction,
     'Do not edit any other file. Do not commit. Do not install dependencies or create lockfiles. Do not run project-management commands.',
+    ...(lean ? LEAN_INSTRUCTIONS : []),
     'Run node --test after editing, then report the result briefly.',
   ].join('\n');
 }
@@ -192,14 +250,33 @@ function mergeAttempts(first, second) {
   return { ...second, elapsed_ms: first.elapsed_ms + second.elapsed_ms, usage, attempts: 2 };
 }
 
-async function runAgents(entries) {
-  const initial = await Promise.all(entries.map(async (entry) => ({ ...entry, result: await runCodex(entry.cwd, promptFor(entry.task), entry.env) })));
+// One agent at a time on a single checkout. This is the control that separates
+// "serialization helped" from "the harness helped": the parallel native variant
+// lets three agents rewrite the same file simultaneously, which is where the
+// harness's structure-preservation win came from.
+async function runAgentsSerial(entries) {
+  const results = [];
+  let retries = 0;
+  for (const entry of entries) {
+    let result = await runCodex(entry.cwd, promptFor(entry.task), entry.env);
+    if (result.code !== 0) {
+      retries += 1;
+      const second = await runCodex(entry.cwd, promptFor(entry.task) + '\nThe previous attempt failed. Finish the same task.', entry.env);
+      result = mergeAttempts(result, second);
+    }
+    results.push({ ...entry, result });
+  }
+  return { results, retries };
+}
+
+async function runAgents(entries, lean = false) {
+  const initial = await Promise.all(entries.map(async (entry) => ({ ...entry, result: await runCodex(entry.cwd, promptFor(entry.task, lean), entry.env) })));
   const results = [];
   let retries = 0;
   for (const row of initial) {
     if (row.result.code === 0) { results.push(row); continue; }
     retries += 1;
-    const second = await runCodex(row.cwd, promptFor(row.task) + '\nThe previous attempt failed. Finish the same task.', row.env);
+    const second = await runCodex(row.cwd, promptFor(row.task, lean) + '\nThe previous attempt failed. Finish the same task.', row.env);
     results.push({ ...row, result: mergeAttempts(row.result, second) });
   }
   return { results, retries };
@@ -239,6 +316,26 @@ function validateFixture(cwd, fixture) {
         if (value.name !== name || value.enabled !== true) errors.push('invalid ' + name + ' config');
       } catch { errors.push('invalid JSON in ' + name + ' config'); }
     }
+  } else if (fixture.id === 'shared-validator') {
+    // Run the produced module and check each required violation is caught.
+    // The fixture test only demands ONE of them, so this is where a lost task
+    // shows up. Anything beyond these three cases is left for the blind rater.
+    const probe = [
+      'import { validate } from ' + JSON.stringify(pathToFileURL(join(cwd, 'src', 'validate.mjs')).href) + ';',
+      "const cases = [['name', { name: '', age: 30, email: 'a@b.co' }], ['age', { name: 'ok', age: -1, email: 'a@b.co' }], ['email', { name: 'ok', age: 30, email: 'nope' }]];",
+      'const missed = cases.filter(([, record]) => validate(record).length === 0).map(([key]) => key);',
+      "const falsePositive = validate({ name: 'ok', age: 30, email: 'a@b.co' }).length > 0;",
+      'process.stdout.write(JSON.stringify({ missed, falsePositive }));',
+    ].join('\n');
+    const result = run('node', ['--input-type=module', '-e', probe], { cwd, timeout: 30000 });
+    if (result.code !== 0) errors.push('validator probe failed: ' + (result.stderr || '').slice(-300));
+    else {
+      try {
+        const report = JSON.parse(result.stdout);
+        for (const key of report.missed) errors.push('rule not enforced: ' + key);
+        if (report.falsePositive) errors.push('valid record rejected');
+      } catch { errors.push('validator probe emitted non-JSON'); }
+    }
   } else {
     const text = readFileSync(join(cwd, 'src', 'registry.mjs'), 'utf8');
     for (const [name, value] of [['alpha', 1], ['beta', 2], ['gamma', 3]]) {
@@ -258,6 +355,17 @@ function changedFiles(cwd) {
   return must(git(cwd, ['status', '--porcelain', '--untracked-files=all']), 'git status').stdout.split('\n').filter(Boolean).map((line) => line.slice(3));
 }
 
+// The blind quality rater compares these bodies, never the directories: a
+// harness workspace carries .xm/build/** metadata that would reveal the variant.
+function artifacts(cwd, fixture) {
+  const out = {};
+  for (const file of [...new Set(fixture.tasks.flatMap((item) => item.expected_files))].sort()) {
+    const path = join(cwd, file);
+    out[file] = existsSync(path) ? readFileSync(path, 'utf8') : null;
+  }
+  return out;
+}
+
 function digest(cwd, fixture) {
   const hash = createHash('sha256');
   for (const file of [...new Set(fixture.tasks.flatMap((item) => item.expected_files))].sort()) {
@@ -266,14 +374,14 @@ function digest(cwd, fixture) {
   return hash.digest('hex');
 }
 
-async function nativeTrial(fixture, root, trial) {
+async function nativeTrial(fixture, root, trial, lean = false) {
   initRepo(root, fixture);
   const started = performance.now();
-  const agents = await runAgents(fixture.tasks.map((item) => ({ task: item, cwd: root, env: process.env })));
+  const agents = await runAgents(fixture.tasks.map((item) => ({ task: item, cwd: root, env: process.env })), lean);
   const verification = verify(root, fixture);
   return {
     fixture: fixture.id,
-    variant: 'native',
+    variant: lean ? 'native-lean-prompt' : 'native',
     trial,
     wall_ms: performance.now() - started,
     agents: summarizeAgents(agents.results),
@@ -281,6 +389,26 @@ async function nativeTrial(fixture, root, trial) {
     verification,
     changed_files: changedFiles(root),
     digest: digest(root, fixture),
+    artifacts: artifacts(root, fixture),
+  };
+}
+
+async function nativeSerialTrial(fixture, root, trial) {
+  initRepo(root, fixture);
+  const started = performance.now();
+  const agents = await runAgentsSerial(fixture.tasks.map((item) => ({ task: item, cwd: root, env: process.env })));
+  const verification = verify(root, fixture);
+  return {
+    fixture: fixture.id,
+    variant: 'native-serial',
+    trial,
+    wall_ms: performance.now() - started,
+    agents: summarizeAgents(agents.results),
+    retries: agents.retries,
+    verification,
+    changed_files: changedFiles(root),
+    digest: digest(root, fixture),
+    artifacts: artifacts(root, fixture),
   };
 }
 
@@ -418,6 +546,7 @@ async function harnessTrial(fixture, root, trial) {
       verification,
       changed_files: changedFiles(root),
       digest: digest(root, fixture),
+      artifacts: artifacts(root, fixture),
       batches,
       acquire_ms: acquireMs,
       task_check_ms: taskCheckMs,
@@ -441,9 +570,10 @@ function median(values) {
 
 function aggregate(rows) {
   const output = {};
-  for (const fixture of FIXTURES) {
+  // Only fixtures that actually ran — X_BUILD_AB_FIXTURES may select a subset.
+  for (const fixture of FIXTURES.filter((item) => rows.some((row) => row.fixture === item.id))) {
     output[fixture.id] = {};
-    for (const variant of ['native', 'x-build-worktree']) {
+    for (const variant of (ONLY_VARIANTS.length ? ONLY_VARIANTS : ['native', 'native-serial', 'x-build-worktree'])) {
       const samples = rows.filter((row) => row.fixture === fixture.id && row.variant === variant);
       output[fixture.id][variant] = {
         trials: samples.length,
@@ -456,12 +586,20 @@ function aggregate(rows) {
         recovery_rechecks: samples.reduce((sum, row) => sum + Number(row.recovery_rechecks || 0), 0),
       };
     }
-    const native = output[fixture.id].native;
-    const harness = output[fixture.id]['x-build-worktree'];
+    const empty = { median_wall_ms: 0, median_input_tokens: 0, pass_rate: 0 };
+    const native = output[fixture.id].native || empty;
+    const serial = output[fixture.id]['native-serial'] || empty;
+    const harness = output[fixture.id]['x-build-worktree'] || empty;
+    const ratio = (a, b) => (b ? a / b : null);
     output[fixture.id].comparison = {
-      wall_ratio_native_over_harness: harness.median_wall_ms ? native.median_wall_ms / harness.median_wall_ms : null,
-      token_ratio_harness_over_native: native.median_input_tokens ? harness.median_input_tokens / native.median_input_tokens : null,
+      wall_ratio_native_over_harness: ratio(native.median_wall_ms, harness.median_wall_ms),
+      token_ratio_harness_over_native: ratio(harness.median_input_tokens, native.median_input_tokens),
       pass_rate_delta_harness_minus_native: harness.pass_rate - native.pass_rate,
+      // native-serial is the control: it serializes without the harness, so a
+      // harness win over it is the harness's own, not serialization's.
+      wall_ratio_serial_over_harness: ratio(serial.median_wall_ms, harness.median_wall_ms),
+      wall_ratio_native_over_serial: ratio(native.median_wall_ms, serial.median_wall_ms),
+      pass_rate_delta_harness_minus_serial: harness.pass_rate - serial.pass_rate,
     };
   }
   return output;
@@ -469,17 +607,20 @@ function aggregate(rows) {
 
 async function main() {
   if (!Number.isInteger(TRIALS) || TRIALS < 1) throw new Error('X_BUILD_AB_TRIALS must be a positive integer');
+  const selected = ONLY.length ? FIXTURES.filter((item) => ONLY.includes(item.id)) : FIXTURES;
+  if (!selected.length) throw new Error('X_BUILD_AB_FIXTURES matched no fixture');
   const workspace = mkdtempSync(join(tmpdir(), 'x-build-ab-'));
   const rows = [];
   try {
     for (let trial = 1; trial <= TRIALS; trial += 1) {
-      const order = FIXTURES.map((_, index) => FIXTURES[(index + trial - 1) % FIXTURES.length]);
+      const order = selected.map((_, index) => selected[(index + trial - 1) % selected.length]);
       for (const fixture of order) {
-        const variants = trial % 2 ? ['native', 'x-build-worktree'] : ['x-build-worktree', 'native'];
+        const rotation = (ONLY_VARIANTS.length ? ONLY_VARIANTS : ['native', 'native-serial', 'x-build-worktree']);
+        const variants = rotation.map((_, index) => rotation[(index + trial - 1) % rotation.length]);
         for (const variant of variants) {
           const root = join(workspace, fixture.id + '-' + variant + '-t' + trial);
-          process.stderr.write('[' + (rows.length + 1) + '/' + (FIXTURES.length * TRIALS * 2) + '] ' + fixture.id + ' ' + variant + ' trial ' + trial + '\n');
-          const row = variant === 'native' ? await nativeTrial(fixture, root, trial) : await harnessTrial(fixture, root, trial);
+          process.stderr.write('[' + (rows.length + 1) + '/' + (selected.length * TRIALS * (ONLY_VARIANTS.length || 3)) + '] ' + fixture.id + ' ' + variant + ' trial ' + trial + '\n');
+          const row = variant === 'native' ? await nativeTrial(fixture, root, trial, false) : variant === 'native-lean-prompt' ? await nativeTrial(fixture, root, trial, true) : variant === 'native-serial' ? await nativeSerialTrial(fixture, root, trial) : await harnessTrial(fixture, root, trial);
           rows.push(row);
           process.stderr.write('  ' + (row.verification.passed ? 'PASS' : 'FAIL') + ' ' + (row.wall_ms / 1000).toFixed(1) + 's input=' + row.agents.usage.input_tokens + ' retries=' + row.retries + '\n');
         }
@@ -491,7 +632,7 @@ async function main() {
       model: MODEL,
       reasoning_effort: EFFORT,
       trials_per_variant: TRIALS,
-      fixtures: FIXTURES.map((fixture) => ({ id: fixture.id, tasks: fixture.tasks.length, expected_files: fixture.tasks.map((item) => item.expected_files) })),
+      fixtures: selected.map((fixture) => ({ id: fixture.id, tasks: fixture.tasks.length, expected_files: fixture.tasks.map((item) => item.expected_files) })),
       rows,
       aggregate: aggregate(rows),
     };
