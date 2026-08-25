@@ -1,4 +1,4 @@
-import { ASSUMPTION_CONFIDENCE, PLAN_SCHEMA_VERSION, PLAN_STATUSES, REQUIRED_PLAN_FIELDS, REQUIREMENT_PRIORITIES, SAFE_ID_RE } from './schema.mjs';
+import { ASSUMPTION_CONFIDENCE, PLAN_SCHEMA_VERSION, PLAN_STATUSES, REQUIRED_PLAN_FIELDS, REQUIREMENT_PRIORITIES, RISK_DOMAIN_RE, SAFE_ID_RE } from './schema.mjs';
 import { normalizePlanEnvelope } from './normalize.mjs';
 
 function issue(code, path, message) { return { code, path, message }; }
@@ -16,7 +16,7 @@ export function validatePlanEnvelope(input) {
   const errors = [], warnings = [];
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { valid: false, errors: [issue('plan.type', '$', 'plan must be an object')], warnings, value: null };
   for (const field of REQUIRED_PLAN_FIELDS) if (!(field in input)) errors.push(issue('plan.missing_field', field, `missing required field ${field}`));
-  for (const field of ['requirements', 'assumptions', 'tasks', 'steps', 'disagreements', 'unresolved_questions']) {
+  for (const field of ['requirements', 'assumptions', 'tasks', 'steps', 'disagreements', 'unresolved_questions', 'failure_modes']) {
     if (field in input && !Array.isArray(input[field])) errors.push(issue('plan.field_type', field, `${field} must be an array`));
   }
   for (const field of ['decision', 'validation', 'provenance']) {
@@ -55,6 +55,12 @@ export function validatePlanEnvelope(input) {
     else {
       for (const field of ['topic', 'resolution', 'confidence']) if (field in item && typeof item[field] !== 'string') errors.push(issue('disagreement.field_type', `disagreements[${index}].${field}`, `${field} must be a string`));
       if ('positions' in item && !stringArray(item.positions)) errors.push(issue('disagreement.field_type', `disagreements[${index}].positions`, 'positions must be a string array'));
+    }
+  });
+  if (Array.isArray(input.failure_modes)) input.failure_modes.forEach((item, index) => {
+    if (!object(item)) errors.push(issue('failure_mode.type', `failure_modes[${index}]`, 'failure mode must be an object'));
+    else for (const field of ['requirement_ref', 'mode', 'mitigation', 'verification']) {
+      if (field in item && typeof item[field] !== 'string') errors.push(issue('failure_mode.field_type', `failure_modes[${index}].${field}`, `${field} must be a string`));
     }
   });
   if (Array.isArray(input.unresolved_questions) && !stringArray(input.unresolved_questions)) errors.push(issue('plan.field_type', 'unresolved_questions', 'unresolved_questions must be a string array'));
@@ -103,6 +109,22 @@ export function validatePlanEnvelope(input) {
   if (value.unresolved_questions.length && requestedExecutable) errors.push(issue('plan.executable_with_questions', 'executable', 'unresolved questions require executable=false'));
   const hasUnresolvedDisagreement = value.disagreements.some((item) => item.resolution === 'unresolved');
   if (hasUnresolvedDisagreement && requestedExecutable) errors.push(issue('plan.executable_with_disagreement', 'executable', 'unresolved disagreements require executable=false'));
+  value.failure_modes.forEach((item, index) => {
+    if (!item.mode) errors.push(issue('failure_mode.mode', `failure_modes[${index}].mode`, 'mode is required'));
+    if (item.requirement_ref && !reqIds.has(item.requirement_ref)) errors.push(issue('failure_mode.unknown_requirement', `failure_modes[${index}].requirement_ref`, `unknown requirement ${item.requirement_ref}`));
+    // The experiment's finding was that enumeration alone is not the lever —
+    // the prescription's resolution is. A mode without one is half a defence.
+    if (item.mode && !/^none\b/i.test(item.mode) && !item.mitigation) {
+      warnings.push(issue('failure_mode.no_prescription', `failure_modes[${index}].mitigation`, `failure mode for ${item.requirement_ref || 'requirement'} states what breaks but not how the code should behave`));
+    }
+  });
+  if (requestedExecutable) {
+    const enumerated = new Set(value.failure_modes.map((item) => item.requirement_ref).filter(Boolean));
+    for (const requirement of value.requirements) {
+      if (enumerated.has(requirement.id) || !RISK_DOMAIN_RE.test(requirement.text)) continue;
+      warnings.push(issue('plan.failure_modes_missing', 'failure_modes', `risk-domain requirement ${requirement.id} has no enumerated failure mode; add one or state "none — <justification>"`));
+    }
+  }
   if (!value.unresolved_questions.length && !hasUnresolvedDisagreement && !value.executable) warnings.push(issue('plan.not_executable', 'executable', 'plan has no unresolved questions or disagreements but is not executable'));
   return { valid: errors.length === 0, errors, warnings, value };
 }

@@ -32,6 +32,13 @@ export function renderPlan(plan, { artifactPath = null } = {}) {
     }
   }
 
+  if (plan.failure_modes.length) {
+    sections.push('## Failure modes', list(plan.failure_modes.map((item) => {
+      const head = '[' + item.requirement_ref + '] ' + item.mode;
+      const tail = [item.mitigation ? '처방: ' + item.mitigation : '', item.verification ? '검증: ' + item.verification : ''].filter(Boolean);
+      return tail.length ? head + ' → ' + tail.join(' · ') : head;
+    })));
+  }
   sections.push('## Validation', list(plan.validation.commands, 'No commands recorded'));
   if (plan.disagreements.length) {
     sections.push('## Disagreements', list(plan.disagreements.map((item) => item.topic + ': ' + item.positions.join(' / ') + ' → ' + (item.resolution || 'unresolved'))));
