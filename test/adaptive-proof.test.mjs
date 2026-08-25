@@ -87,4 +87,14 @@ describe('adaptive A/B proof gate', () => {
     bad.rows[0].agents.usage.cached_input_tokens = bad.rows[0].agents.usage.input_tokens + 1;
     expect(() => proveAdaptiveBenefit([bad], [blind()])).toThrow('invalid token usage');
   });
+
+  test('rejects missing timing samples and blind rater errors', () => {
+    const missingTiming = benchmark();
+    delete missingTiming.rows[0].wall_ms;
+    expect(() => proveAdaptiveBenefit([missingTiming], [blind()])).toThrow('invalid non-negative metric sample');
+
+    const raterFailure = blind();
+    raterFailure.pairs[0].error = true;
+    expect(proveAdaptiveBenefit([benchmark()], [raterFailure]).results[0].blockers).toContain('blind_rating_error');
+  });
 });

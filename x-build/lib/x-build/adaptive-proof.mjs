@@ -14,6 +14,9 @@ const PRICES = {
 const PRICE_SOURCE = 'OpenAI Standard short-context pricing checked 2026-08-25; USD per 1M tokens';
 
 function median(values) {
+  if (!values.every((value) => Number.isFinite(value) && value >= 0)) {
+    throw new Error('invalid non-negative metric sample');
+  }
   const sorted = [...values].sort((a, b) => a - b);
   if (!sorted.length) return null;
   const middle = Math.floor(sorted.length / 2);
@@ -45,6 +48,7 @@ function blindPairs(blindReports) {
     benchmark_id: basename(report.source || report._source_path || ''), fixture: pair.fixture, trial: pair.trial, winner: pair.winner,
     variants: [report.left, report.right].filter(Boolean).sort(),
     labels: Object.values(pair.label_map || {}).sort(),
+    error: pair.error === true || Boolean(pair.verdict?.error),
   })));
 }
 
@@ -106,6 +110,7 @@ export function proveAdaptiveBenefit(reports, blindReports, options = {}) {
     if (fixtureBlind.some((pair) => JSON.stringify(pair.variants) !== JSON.stringify(expectedVariants)
       || JSON.stringify(pair.labels) !== JSON.stringify(expectedVariants))) blockers.push('blind_variant_mismatch');
     if (fixtureBlind.some((pair) => ![adaptive, baseline, 'tie'].includes(pair.winner))) blockers.push('invalid_blind_verdict');
+    if (fixtureBlind.some((pair) => pair.error === true)) blockers.push('blind_rating_error');
     if (adaptivePasses !== adaptiveRows.length || baselinePasses !== baselineRows.length) blockers.push('verification_failure');
     if (adaptiveBlindLosses > 0) blockers.push('quality_inferior');
     if (costSaving == null || costSaving < PROOF_MIN_COST_SAVING) blockers.push('cost_saving_below_20_percent');

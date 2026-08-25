@@ -158,7 +158,7 @@ for (const [index, pair] of pairs.entries()) {
   // Unblind only now, after the verdict exists.
   const map = { A: flip ? RIGHT : LEFT, B: flip ? LEFT : RIGHT };
   const winner = verdict.winner === 'tie' || !verdict.winner ? 'tie' : map[verdict.winner] || 'tie';
-  results.push({ fixture: pair.fixture, trial: pair.trial, label_map: map, verdict, winner });
+  results.push({ fixture: pair.fixture, trial: pair.trial, label_map: map, verdict, winner, error: Boolean(verdict.error) });
   process.stderr.write('  → ' + winner + (verdict.error ? ' (' + verdict.error + ')' : '') + '\n');
 }
 
