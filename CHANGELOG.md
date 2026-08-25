@@ -12,6 +12,20 @@ bumps shipped in each marketplace release.
 
 ## [2.21.0] - 2026-08-26
 
+### Added
+
+- **review:** add token-budgeted diff chunking
+- **build:** enforce adaptive routing evidence
+- **plan:** enumerate failure modes in the PlanEnvelope
+
+### Fixed
+
+- **review:** bind manifests to frozen targets
+- **benchmark:** reject unmatched proof evidence
+- **benchmark:** fail closed on incomplete proof evidence
+
+## [2.21.0] - 2026-08-26
+
 ### x-build 3.4.2 → 3.5.0
 
 - Add evidence-gated adaptive execution. `xm build route decide/start/verify/finish/status/abandon/report` routes only bounded, independently verifiable work directly; receipts bind the baseline commit, expected files, deterministic gates, byte hashes, elapsed time, and actual cost events (`x-build/lib/x-build/adaptive-routing.mjs`).
