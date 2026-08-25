@@ -14,6 +14,8 @@ x-review agents must follow these principles when producing findings.
 4. **Review only changed code** — Don't report pre-existing issues outside the diff. Exception: when a change worsens an existing problem.
 5. **One finding, one problem** — Never bundle multiple issues into a single finding.
 6. **When in doubt, downgrade** — Hesitating between severities? Choose lower. Over-reporting erodes trust faster than under-reporting.
+7. **Settle what you can reach** — No finding left conditional on something you could have opened and checked. If the other side is in this repo, follow it; if it truly is not reachable, say so in the finding.
+8. **Intended changes are not findings** — A diff that says it removes a guard or drops a feature, and stays in that scope, is not a defect report. Report it only when the blast radius exceeds the stated scope.
 
 ### Per-Lens Principles
 

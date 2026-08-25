@@ -107,7 +107,7 @@ Only `reviewable: false` stops with `Review incomplete`; `requires_chunking` mea
 | Profile | Combined concerns |
 |---------|-------------------|
 | correctness | logic, error handling, tests, silent failures |
-| risk | security, performance, architecture |
+| risk | security, performance, architecture, setup paths |
 | migrations | schema/migration changes only |
 | type-design | typed public-boundary changes only |
 | docs | undocumented public-API changes only |
@@ -316,6 +316,8 @@ The following principles are injected at the `{universal_principles}` position i
 4. **Review only changed code** — Do not report issues in existing code outside the diff. Exception: when a change worsens an existing problem.
 5. **One finding, one problem** — Do not bundle multiple issues into a single finding. "This is wrong AND that is wrong" is two findings.
 6. **When in doubt, downgrade** — If you hesitate between two severity levels, choose the lower one. Over-reporting erodes trust faster than under-reporting. A consistently accurate Low is more valuable than an inflated Medium.
+7. **Settle what you can reach** — Do not leave a finding conditional on something you could have checked. "The caller has issue X, but if the callee validates it this is fine" is unfinished work when the callee is in this repository: open it and settle the question. If the other side genuinely is not reachable from here, say so in the finding instead of implying you verified it.
+8. **Intended changes are not findings** — When the diff's stated purpose is to remove a guard, drop a feature, or change a behavior, and the change stays inside that stated scope, do not report it back to the author as a defect. Report it when the blast radius reaches past what the commit message or PR claims, or when the author appears unaware of a consequence.
 
 ## Execution Boundary (you are a leaf reviewer)
 

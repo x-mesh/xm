@@ -203,7 +203,7 @@ export function planReview(patch, options = {}) {
     : patchLines.map((line) => `+${line}`).join('\n');
   const selected = new Map([
     ['correctness', 'default core: logic, errors, tests, and silent failures'],
-    ['risk', 'default core: security, performance, and architecture'],
+    ['risk', 'default core: security, performance, architecture, and setup paths'],
   ]);
 
   const migrationPath = files.some((file) => {

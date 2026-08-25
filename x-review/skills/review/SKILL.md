@@ -203,7 +203,7 @@ Options:
 
 Adaptive-fast profiles (default, one parallel wave):
   correctness    Logic + errors + tests + silent failures
-  risk           Security + performance + architecture
+  risk           Security + performance + architecture + setup paths
   migrations     Added in wave 1 for schema/migration signals
   type-design    Added in wave 1 for typed public-boundary changes
   docs           Added in wave 1 for undocumented public-API changes
