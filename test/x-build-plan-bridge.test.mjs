@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -176,7 +176,7 @@ describe('xm build plan bridge', () => {
 
       const result = run(cwd, ['plan', '--persist', '--file', file, '--json']);
       expect(result.code, result.stderr).toBe(0);
-      expect(result.stderr).toContain('imported 2 tasks');
+      expect(result.stderr).toContain('Imported 2 tasks');
       expect(() => JSON.parse(result.stdout)).not.toThrow();
       expect(existsSync(join(cwd, '.xm', 'build', 'projects', 'demo', 'phases', '02-plan', 'PRD.md'))).toBe(true);
     } finally {
@@ -217,6 +217,65 @@ describe('xm build plan bridge', () => {
       expect(result.code, result.stderr).toBe(0);
       expect(result.stderr).toContain('no new plan artifact');
       expect(existsSync(join(cwd, '.xm', 'build', 'projects', 'demo', 'phases', '02-plan', 'PRD.md'))).toBe(false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // Discovery must identify THIS run's artifact. .xm/ is a shared tree, so an
+  // unrelated envelope with a newer mtime must never be imported instead.
+  test('ignores a pre-existing artifact even when its mtime is newer', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'x-build-plan-bridge-'));
+    try {
+      expect(run(cwd, ['init', 'demo']).code).toBe(0);
+      const planDir = join(cwd, '.xm', 'plan');
+      mkdirSync(planDir, { recursive: true });
+      const decoy = join(planDir, '00000000T000000Z-decoy.json');
+      const wrong = executableEnvelope();
+      wrong.tasks[0].title = 'WRONG TASK';
+      writeFileSync(decoy, JSON.stringify(wrong));
+      const future = new Date(Date.now() + 60_000);
+      utimesSync(decoy, future, future);
+
+      const file = join(cwd, 'envelope.json');
+      writeFileSync(file, JSON.stringify(executableEnvelope()));
+      const result = run(cwd, ['plan', '--persist', '--file', file]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stderr).not.toContain('decoy');
+
+      const tasks = JSON.parse(readFileSync(join(cwd, '.xm', 'build', 'projects', 'demo', 'phases', '02-plan', 'tasks.json'), 'utf8')).tasks;
+      expect(tasks.some((task) => task.name.includes('WRONG TASK'))).toBe(false);
+      expect(tasks[0].name).toContain('Implement API');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('modes that never persist an artifact draw no diagnostic', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'x-build-plan-bridge-'));
+    try {
+      expect(run(cwd, ['init', 'demo']).code).toBe(0);
+      const result = run(cwd, ['plan', '--recommend', 'Add an export command']);
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stderr).not.toContain('no new plan artifact');
+      expect(() => JSON.parse(result.stdout)).not.toThrow();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('the already-imported blocker points at --replace, not import-plan', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'x-build-plan-bridge-'));
+    try {
+      expect(run(cwd, ['init', 'demo']).code).toBe(0);
+      const file = join(cwd, 'envelope.json');
+      writeFileSync(file, JSON.stringify(executableEnvelope()));
+      expect(run(cwd, ['plan', '--persist', '--file', file]).code).toBe(0);
+
+      const second = run(cwd, ['plan', '--persist', '--file', file]);
+      expect(second.code, second.stderr).toBe(0);
+      expect(second.stderr).toContain('re-run with --replace');
+      expect(second.stderr).not.toContain('import-plan');
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

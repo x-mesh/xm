@@ -10,6 +10,15 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.20.4] - 2026-08-25
+
+### Fixed
+
+- **x-build:** identify the bridge's own plan artifact instead of scanning `.xm/plan` by mtime. The 2.20.3 fix made every pre-existing artifact a candidate, so a concurrent writer touching an unrelated envelope during delegation could get its plan compiled into the project (and overwrite PRD/tasks/steps under `--replace`). `xm build plan` now resolves `--session <id>` directly and otherwise falls back to the new-entry rule, which also removes the dependence on filesystem mtime resolution.
+- **x-build:** stop claiming a missing artifact on x-plan modes that never persist one. `--recommend`, `--validate` without `--persist`, and `--no-save` return 0 without saving, and the diagnostic blamed `--output`/`--no-save` for runs that passed neither.
+- **x-build:** point the already-imported blocker at `--replace`. It reused the generic advisory, which suggested `xm build import-plan <path>` — a command that refuses the same case with exit 2.
+- **x-build:** drop the duplicated import summary on `--json` runs; `cmdImportPlan --quiet` already reports the result on stderr.
+
 ## [2.20.3] - 2026-08-25
 
 ### Fixed
