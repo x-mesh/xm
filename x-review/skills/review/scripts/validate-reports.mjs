@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
 
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -28,6 +29,10 @@ function nonEmptyStrings(value) {
 
 function normalizedPath(value) {
   return typeof value === 'string' ? value.replace(/^\.\//, '').replace(/\\/g, '/') : '';
+}
+
+function sha256(value) {
+  return `sha256:${createHash('sha256').update(String(value)).digest('hex')}`;
 }
 
 function parseGitPathToken(value, start) {
@@ -139,6 +144,21 @@ function validateManifest(manifest) {
       if (typeof entry.lens !== 'string' || entry.lens.trim().length === 0) {
         issues.push(issue('manifest_report_lens', `expected_reports[${index}].lens must be a non-empty string`));
       }
+      if (entry.target_hash !== undefined && (typeof entry.target_hash !== 'string' || !TARGET_HASH_RE.test(entry.target_hash))) {
+        issues.push(issue('manifest_report_target_hash', `expected_reports[${index}].target_hash must be sha256:<64 lowercase hex>`));
+      }
+      if (entry.target_files !== undefined && !nonEmptyStrings(entry.target_files)) {
+        issues.push(issue('manifest_report_target_files', `expected_reports[${index}].target_files must be a non-empty string array`));
+      }
+      if (entry.target_file !== undefined && (typeof entry.target_file !== 'string' || !/^chunks\/chunk-[0-9]+\.patch$/.test(entry.target_file))) {
+        issues.push(issue('manifest_report_target_file', `expected_reports[${index}].target_file must name a chunks/chunk-N.patch file`));
+      }
+      if (entry.chunk_id !== undefined && (typeof entry.chunk_id !== 'string' || !/^chunk-[0-9]+$/.test(entry.chunk_id))) {
+        issues.push(issue('manifest_report_chunk_id', `expected_reports[${index}].chunk_id must be chunk-N`));
+      }
+      if (entry.wave !== undefined && (!Number.isInteger(entry.wave) || entry.wave < 1)) {
+        issues.push(issue('manifest_report_wave', `expected_reports[${index}].wave must be a positive integer`));
+      }
     });
     if (new Set(reportIds).size !== reportIds.length) {
       issues.push(issue('manifest_report_duplicate', 'expected report_id values must be unique'));
@@ -149,6 +169,69 @@ function validateManifest(manifest) {
       issues.push(issue('manifest_target_files', 'target_files must be a non-empty string array when provided'));
     } else if (new Set(manifest.target_files.map(normalizedPath)).size !== manifest.target_files.length) {
       issues.push(issue('manifest_target_files_duplicate', 'target_files must be unique'));
+    }
+  }
+  const chunked = Array.isArray(manifest.expected_reports)
+    && manifest.expected_reports.some((entry) => entry?.chunk_id !== undefined || entry?.target_file !== undefined);
+  if (chunked) {
+    if (!Array.isArray(manifest.profiles) || manifest.profiles.length === 0) {
+      issues.push(issue('manifest_profiles', 'chunked reviews require the planner profiles array'));
+    }
+    if (!Array.isArray(manifest.chunks) || manifest.chunks.length < 2) {
+      issues.push(issue('manifest_chunks', 'chunked reviews require at least two planner chunks'));
+    }
+    const profiles = Array.isArray(manifest.profiles)
+      ? manifest.profiles.map((entry) => entry?.profile).filter((value) => typeof value === 'string' && value.length > 0)
+      : [];
+    const chunks = Array.isArray(manifest.chunks) ? manifest.chunks : [];
+    if (profiles.length !== manifest.profiles?.length || new Set(profiles).size !== profiles.length) {
+      issues.push(issue('manifest_profiles_invalid', 'planner profiles must have unique non-empty profile names'));
+    }
+    const chunkIds = chunks.map((entry) => entry?.id);
+    if (chunkIds.some((value) => typeof value !== 'string' || !/^chunk-[0-9]+$/.test(value))
+      || new Set(chunkIds).size !== chunkIds.length) {
+      issues.push(issue('manifest_chunks_invalid', 'planner chunks must have unique chunk-N ids'));
+    }
+    chunks.forEach((chunk, index) => {
+      if (!chunk || typeof chunk !== 'object' || Array.isArray(chunk)) return;
+      if (typeof chunk.target_hash !== 'string' || !TARGET_HASH_RE.test(chunk.target_hash)) {
+        issues.push(issue('manifest_chunk_target_hash', `chunks[${index}].target_hash must be sha256:<64 lowercase hex>`));
+      }
+      if (typeof chunk.target_file !== 'string' || !/^chunks\/chunk-[0-9]+\.patch$/.test(chunk.target_file)) {
+        issues.push(issue('manifest_chunk_target_file', `chunks[${index}].target_file must name a chunks/chunk-N.patch file`));
+      }
+      if (!nonEmptyStrings(chunk.files)) {
+        issues.push(issue('manifest_chunk_files', `chunks[${index}].files must be a non-empty string array`));
+      }
+    });
+    if (profiles.length > 0 && chunks.length > 0 && Array.isArray(manifest.expected_reports)) {
+      const expectedPairs = new Map();
+      for (const entry of manifest.expected_reports) {
+        if (!entry || typeof entry !== 'object') continue;
+        const key = `${entry.lens}\0${entry.chunk_id}`;
+        if (expectedPairs.has(key)) {
+          issues.push(issue('manifest_profile_chunk_duplicate', `duplicate expected report for ${entry.lens} × ${entry.chunk_id}`));
+        }
+        expectedPairs.set(key, entry);
+      }
+      for (const profile of profiles) {
+        for (let index = 0; index < chunks.length; index += 1) {
+          const chunk = chunks[index];
+          const entry = expectedPairs.get(`${profile}\0${chunk.id}`);
+          if (!entry) {
+            issues.push(issue('manifest_profile_chunk_missing', `expected report is missing for ${profile} × ${chunk.id}`));
+            continue;
+          }
+          if (entry.target_hash !== chunk.target_hash || entry.target_file !== chunk.target_file
+            || entry.wave !== index + 1
+            || JSON.stringify(entry.target_files) !== JSON.stringify(chunk.files)) {
+            issues.push(issue('manifest_profile_chunk_mismatch', `expected report metadata does not match ${profile} × ${chunk.id}`));
+          }
+        }
+      }
+      if (manifest.expected_reports.length !== profiles.length * chunks.length) {
+        issues.push(issue('manifest_profile_chunk_count', 'expected_reports must contain exactly N profiles × M chunks entries'));
+      }
     }
   }
   return issues;
@@ -194,9 +277,6 @@ function validateReport(report, manifest, file, targetSections = null) {
   if (report.task_id !== manifest.task_id) {
     issues.push(issue('stale_task', 'task_id does not match this review run', lens, file, reportId));
   }
-  if (report.target_hash !== manifest.target_hash) {
-    issues.push(issue('stale_target', 'target_hash does not match the dispatched target', lens, file, reportId));
-  }
   if ((manifest.context_status ?? 'absent') === 'bound' && report.context_hash !== manifest.context_hash) {
     issues.push(issue('stale_context', 'context_hash does not match the dispatched review context', lens, file, reportId));
   }
@@ -205,6 +285,10 @@ function validateReport(report, manifest, file, targetSections = null) {
     issues.push(issue('unexpected_report', 'report_id was not dispatched for this review run', lens, file, reportId));
   } else if (report.lens !== expected.lens) {
     issues.push(issue('lens_mismatch', 'lens does not match the dispatched report_id', lens, file, reportId));
+  }
+  const expectedTargetHash = expected?.target_hash ?? manifest.target_hash;
+  if (report.target_hash !== expectedTargetHash) {
+    issues.push(issue('stale_target', 'target_hash does not match the dispatched target or chunk', lens, file, reportId));
   }
   if (report.status === 'failed') {
     // Contract-sanctioned failure: there is no content to validate, only a report_id to re-dispatch.
@@ -217,8 +301,10 @@ function validateReport(report, manifest, file, targetSections = null) {
   if (!nonEmptyStrings(report.checked)) {
     issues.push(issue('checked_missing', 'checked must name at least one concrete path or behavior reviewed', lens, file, reportId));
   }
-  const targetFiles = Array.isArray(manifest.target_files)
-    ? new Set(manifest.target_files.map(normalizedPath))
+  const targetFiles = Array.isArray(expected?.target_files)
+    ? new Set(expected.target_files.map(normalizedPath))
+    : Array.isArray(manifest.target_files)
+      ? new Set(manifest.target_files.map(normalizedPath))
     : null;
   if (targetFiles) {
     if (!nonEmptyStrings(report.checked_files)) {
@@ -268,9 +354,22 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
     ? new Set(manifest.target_files.map(normalizedPath))
     : null;
   const issues = [];
+  const chunkBodies = options.chunkBodies && typeof options.chunkBodies === 'object' ? options.chunkBodies : {};
+  for (const entry of expected) {
+    if (!entry.target_file) continue;
+    const chunkBody = chunkBodies[entry.target_file];
+    if (typeof chunkBody !== 'string') {
+      issues.push(issue('frozen_chunk_missing', `frozen chunk is unavailable: ${entry.target_file}`, entry.lens, null, entry.report_id));
+    } else if (sha256(chunkBody) !== entry.target_hash) {
+      issues.push(issue('frozen_chunk_hash_mismatch', `frozen chunk hash does not match the manifest: ${entry.target_file}`, entry.lens, null, entry.report_id));
+    }
+  }
   const hasFrozenTarget = typeof options.targetBody === 'string' && options.targetBody.length > 0;
   if (targetFiles && !hasFrozenTarget) {
     issues.push(issue('frozen_target_missing', 'target_files requires the frozen target body for deterministic grounding'));
+  }
+  if (hasFrozenTarget && sha256(options.targetBody) !== manifest.target_hash) {
+    issues.push(issue('frozen_target_hash_mismatch', 'frozen target hash does not match the manifest target_hash'));
   }
   const targetSections = hasFrozenTarget ? normalizedTargetSections(options.targetBody, targetFiles) : null;
   if (targetFiles && targetFiles.size > 1 && targetSections?.size === 0) {
@@ -299,7 +398,15 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
       issues.push(issue('malformed_report', 'report is not a single JSON object (greetings/prose are invalid)', null, raw.file));
       continue;
     }
-    const reportIssues = validateReport(parsed, manifest, raw.file, targetSections);
+    const expectedReport = expected.find((entry) => entry.report_id === parsed?.report_id);
+    const reportTargetFiles = Array.isArray(expectedReport?.target_files)
+      ? new Set(expectedReport.target_files.map(normalizedPath))
+      : targetFiles;
+    const reportTargetBody = expectedReport?.target_file ? chunkBodies[expectedReport.target_file] : options.targetBody;
+    const reportTargetSections = typeof reportTargetBody === 'string'
+      ? normalizedTargetSections(reportTargetBody, reportTargetFiles)
+      : targetSections;
+    const reportIssues = validateReport(parsed, manifest, raw.file, reportTargetSections);
     issues.push(...reportIssues);
     reports.push({ file: raw.file, report: parsed, valid: reportIssues.length === 0 });
   }
@@ -358,14 +465,14 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
 }
 
 function usage() {
-  return 'Usage: node validate-reports.mjs --manifest <run.json> --reports-dir <dir> [--target <frozen-target>] [--out <validation.json>]';
+  return 'Usage: node validate-reports.mjs --manifest <run.json> --reports-dir <dir> [--target <frozen-target>] [--chunks-dir <dir>] [--out <validation.json>]';
 }
 
 export function main(argv = process.argv.slice(2)) {
   const args = {};
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i];
-    if (!['--manifest', '--reports-dir', '--target', '--out'].includes(key) || !argv[i + 1]) {
+    if (!['--manifest', '--reports-dir', '--target', '--chunks-dir', '--out'].includes(key) || !argv[i + 1]) {
       process.stderr.write(`${usage()}\n`);
       return 2;
     }
@@ -399,7 +506,22 @@ export function main(argv = process.argv.slice(2)) {
       return 2;
     }
   }
-  const result = validateReviewReports(manifest, rawReports, { targetBody });
+  const chunkBodies = {};
+  if (args['chunks-dir']) {
+    try {
+      const chunksDir = resolve(args['chunks-dir']);
+      for (const entry of manifest.expected_reports || []) {
+        if (!entry.target_file || chunkBodies[entry.target_file] !== undefined) continue;
+        if (!/^chunks\/chunk-[0-9]+\.patch$/.test(entry.target_file)) continue;
+        const name = entry.target_file.slice('chunks/'.length);
+        chunkBodies[entry.target_file] = readFileSync(resolve(chunksDir, name), 'utf8');
+      }
+    } catch (error) {
+      process.stderr.write(`x-review frozen chunk read failed: ${error.message}\n`);
+      return 2;
+    }
+  }
+  const result = validateReviewReports(manifest, rawReports, { targetBody, chunkBodies });
   const rendered = `${JSON.stringify(result, null, 2)}\n`;
   if (args.out) writeFileSync(resolve(args.out), rendered);
   process.stdout.write(rendered);
