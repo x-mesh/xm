@@ -24,6 +24,8 @@ import { cmdCostCache } from './x-build/cost-cache.mjs';
 import { cmdEffectiveness } from './x-build/effectiveness.mjs';
 import { cmdImportPlan } from './x-build/plan-import.mjs';
 import { cmdXPlan } from './x-build/plan-bridge.mjs';
+import { cmdAdaptiveRoute } from './x-build/adaptive-routing.mjs';
+import { cmdAdaptiveProof } from './x-build/adaptive-proof.mjs';
 
 // Skip top-level execution when imported by xm-server
 if (process.env.XKIT_SERVER !== '1') {
@@ -138,6 +140,10 @@ switch (cmd) {
   case 'dashboard':     cmdDashboard(); break;
   case 'metrics':       cmdMetrics(args); break;
   case 'effectiveness': cmdEffectiveness(args); break;
+  case 'route':
+    if (args[0] === 'prove') cmdAdaptiveProof(args.slice(1));
+    else cmdAdaptiveRoute(args);
+    break;
   case 'phase-context': cmdPhaseContext(args); break;
   case 'alias':         cmdAlias(args); break;
   case 'demo':          cmdDemo(args); break;

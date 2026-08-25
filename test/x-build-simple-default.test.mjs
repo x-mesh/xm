@@ -8,10 +8,25 @@ const planSkill = readFileSync(join(ROOT, 'x-plan', 'skills', 'plan', 'SKILL.md'
 const taskSource = readFileSync(join(ROOT, 'x-build', 'lib', 'x-build', 'tasks.mjs'), 'utf8');
 
 describe('x-build simple default workflow', () => {
-  test('routes bare goals through one plan and native execution', () => {
-    expect(buildSkill).toContain('# x-build — Evidence → Plan → Native Execute');
+  test('routes bare goals through adaptive native execution', () => {
+    expect(buildSkill).toContain('# x-build — Evidence → Route → Native Execute');
     expect(buildSkill).toContain('bare goal / `build me ...`: Default Workflow');
     expect(buildSkill).toContain('host native agent');
+    expect(buildSkill).toContain('direct route');
+    expect(buildSkill).toContain('planned route');
+    expect(buildSkill).toContain('결정적 quality gate');
+    expect(buildSkill).toContain('clean state에서 planned route로 한 번만 escalation');
+    expect(buildSkill).toContain('xm build route decide');
+    expect(buildSkill).toContain('xm build route start');
+    expect(buildSkill).toContain('xm build route verify');
+    expect(buildSkill).toContain('xm build route finish');
+    expect(buildSkill).toContain('route start --decision-id <id> --fallback');
+    expect(buildSkill).toContain('xm build route status');
+    expect(buildSkill).toContain('route abandon --decision-id <id>');
+    expect(buildSkill).toContain('xm build route prove');
+    expect(buildSkill).toContain('escalation 비율이 40%');
+    expect(buildSkill).toContain('비용 20%');
+    expect(buildSkill).toContain('p50 시간 15%');
     expect(buildSkill).toContain('Legacy experimental opt-in only');
     expect(buildSkill).toContain('`plan ...`: x-plan과 동일한 engine');
     expect(buildSkill).toContain('`legacy-plan ...`');

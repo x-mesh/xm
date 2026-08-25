@@ -1,15 +1,15 @@
 ---
 name: build
-description: Repository-grounded planning with native execution and existing checks by default; legacy phase, worktree, and gate workflows are explicit opt-ins
+description: Repository-grounded adaptive execution with deterministic quality gates; planning and legacy orchestration are paid for only when needed
 allowed-tools:
   - AskUserQuestion
 ---
 
-# x-build — Evidence → Plan → Native Execute
+# x-build — Evidence → Route → Native Execute
 
 ## Purpose
 
-x-build의 기본 경로는 저장소 근거를 조사하고, 하나의 실행 가능한 계획을 만든 뒤, host native agent로 실행하고 기존 검증 명령을 수행하는 것입니다. 별도 project lifecycle, task database, worktree, meta-gate는 기본 경로에 포함하지 않습니다.
+x-build의 기본 경로는 저장소 근거와 품질 관측 가능성을 조사하고, direct 또는 planned 경로를 선택한 뒤 host native agent로 실행하는 것입니다. 결정적 검증으로 품질을 판정할 수 있는 bounded task는 direct로 실행하고, 그렇지 않은 작업만 planning 비용을 지불합니다. 별도 project lifecycle, task database, worktree, meta-gate는 기본 경로에 포함하지 않습니다.
 
 ## Use When
 
@@ -30,11 +30,46 @@ bare goal이나 `build me` 요청에는 다음 순서만 사용합니다.
 
 1. 관련 코드 경로, public contract, 기존 구현, 관례, 테스트와 검증 명령을 조사합니다.
 2. 사용자가 요청한 방법이 실제 목표를 달성하는지, 기능이 이미 있는지, 더 단순한 방법이 같은 결과를 내는지 판단합니다.
-3. 하나의 짧은 실행 계획을 제시합니다. 각 task에는 목적, 예상 수정 파일, 실제 dependency, done criteria와 검증 명령만 포함합니다.
-4. 방향 승인이 필요한 규모라면 계획을 보여주고 한 번만 승인받습니다. 저장소에서 확인할 수 있는 사실을 묻지 않습니다.
-5. 승인된 task는 순차적으로 host native agent에 실행하는 것이 기본입니다. 독립성이 확인되고 예상 시간 절감이 orchestration 비용보다 클 때만 병렬화합니다.
-6. 변경 때문에 실패할 수 있는 가장 가까운 기존 검증만 선택합니다. test, lint, build, review를 고정 checklist로 모두 실행하지 않습니다.
-7. 확인된 결과, 실행하지 못한 검증과 남은 제한만 보고합니다.
+3. 다음 조건을 모두 만족하면 direct route를 선택합니다: 변경 범위가 bounded이고, 예상 파일이 독립적이며, task-specific failure mode를 test·property test·boundary test·stress budget 같은 결정적 검증으로 관측할 수 있습니다.
+4. 공유 파일·넓은 설계 변경처럼 품질을 충분히 관측할 수 없거나 dependency가 불확실하면 planned route를 선택합니다. 각 task에는 목적, 예상 수정 파일, 실제 dependency, done criteria와 검증 명령만 포함합니다.
+5. 방향 승인이 필요한 규모라면 계획을 보여주고 한 번만 승인받습니다. 저장소에서 확인할 수 있는 사실을 묻지 않습니다.
+6. direct route는 task-specific failure mode와 done criteria를 prompt에 넣어 host native agent로 실행합니다. planned route는 x-plan Standard 결과를 host native agent로 실행합니다. 순차 실행이 기본이며, 독립성과 시간 이득이 확인될 때만 병렬화합니다.
+7. 변경 때문에 실패할 수 있는 가장 가까운 기존 검증만 선택합니다. test, lint, build, review를 고정 checklist로 모두 실행하지 않습니다.
+8. direct 결과가 결정적 quality gate에 실패하면 변경된 상태를 planning context로 재사용하지 않고 clean state에서 planned route로 한 번만 escalation합니다. escalation 사실과 두 경로의 비용·시간 차이를 관측 가능하게 남깁니다.
+9. 확인된 결과, 실행하지 못한 검증과 남은 제한만 보고합니다.
+
+### Runtime route contract
+
+route를 추측으로 정하지 않습니다. 조사 후 실행 전에 다음 명령을 호출하고 JSON의 `route`, `decision_id`, `blockers`, `max_escalations`를 따릅니다. `--kind`와 파일 구성을 이용해 안정적인 class를 만들며, 필요할 때만 호환용 `--class`로 명시합니다. public contract, 외부 dependency, migration, security-sensitive 변경은 입력 risk와 관계없이 planned로 승격됩니다.
+
+```bash
+xm build route decide --kind bugfix|feature|refactor|docs|test|config|dependency|schema|security|architecture --scope bounded|broad --independent|--shared --files <comma-separated-relative-paths> --risk low|medium|high --failure-modes <count> --gates test,boundary,property,schema,stress,typecheck,build [--public-contract|--external-dependency|--data-migration|--security-sensitive] --json
+```
+
+- `direct`: `route start`로 baseline·예상 파일·gate 명령을 고정한 뒤 task-specific failure mode를 prompt에 넣어 실행합니다. `route verify`가 gate를 직접 실행하고 byte-bound receipt를 생성합니다. 실패하면 결과를 채택하지 않고 clean state에서 `route start --fallback`으로 planned route를 한 번만 실행합니다.
+- `planned`: direct를 먼저 시도하지 않고 x-plan Standard → native execution으로 진행합니다.
+- route 결정에서 요구한 gate를 실행할 수 없게 되면 direct 결과를 채택하지 않습니다.
+
+실행은 다음 receipt 흐름을 사용합니다. `route verify`가 gate 명령을 직접 실행하며 command output은 receipt에 저장하지 않습니다. `route finish`는 receipt 이후 expected file이나 HEAD가 바뀌면 결과 기록을 거부합니다. 비용은 같은 decision에 결합된 actual cost event를 자동 합산하고, 없으면 추측하지 않고 `null`로 남깁니다.
+
+```bash
+xm build route start --decision-id <id> --expected-files a,b --gate-cmd 'test=bun test ...' --gate-cmd 'boundary=node ...' --json
+# host native agent 실행
+xm build route verify --decision-id <id> --json
+xm build route finish --decision-id <id> --json
+```
+
+Direct verification 실패 시 작업 트리를 baseline으로 복원하거나 clean worktree를 준비한 다음 `route start --decision-id <id> --fallback`을 실행합니다. fallback이 끝나면 같은 `verify → finish`를 사용하며 outcome은 자동으로 `escalated`가 됩니다. 비용은 같은 `decision_id`에 결합되고 `cost_source=actual`인 x-build cost event를 `finish`가 자동 합산하며, 없으면 null로 남깁니다. `route record`는 기존 호출자 호환과 수동 복구용이며 기본 workflow에서는 사용하지 않습니다.
+
+세션이 끊기면 `xm build route status [--decision-id <id>]`로 lease와 다음 action을 확인합니다. 작업 트리가 기록된 baseline과 완전히 같을 때만 `xm build route abandon --decision-id <id>`로 중단 lease를 닫습니다. 변경이 있으면 abandon하지 않고 `verify`하거나 변경을 보존한 채 복구합니다.
+
+Adaptive 개선을 완료로 주장하기 전에는 benchmark와 blind 산출물을 `route prove`로 판정합니다. fixture별 최소 10쌍, adaptive와 baseline verification 전부 통과, blind 품질 열세 0건, p50 비용 20% 이상 절감, p50 시간 15% 이상 단축을 모두 만족해야 합니다. 산출물 일부가 없거나 blind pair가 중복·불일치하면 실패합니다.
+
+```bash
+xm build route prove --fixture <a,b> --benchmark <run-1.json> --benchmark <run-2.json> --blind <quality-1.json> --blind <quality-2.json>
+```
+
+기록된 최종 품질 실패가 있거나, 최근 30개 결과의 direct 표본 10개에서 escalation 비율이 40%를 넘으면 해당 class는 planned로 전환합니다. 매 10번째 완료 뒤 다음 실행은 planned calibration으로 보내 direct만 관측하는 편향을 막습니다. 두 route가 각각 3개 이상 측정된 뒤 비용 20% 또는 p50 시간 15% 절감을 충족하지 못해도 planned로 전환합니다. `xm build route report --class <task-class> --json`으로 근거와 측정 coverage를 확인합니다. telemetry에는 task 내용, prompt와 파일명을 저장하지 않습니다.
 
 기본 경로에서는 `.xm/build` project, phase state, PRD 복제본, task status, `run`, `task-check`, `review-group`, `group-check`, circuit breaker, forecast 또는 lifecycle quality gate를 만들거나 호출하지 않습니다.
 
@@ -93,6 +128,8 @@ fallback은 다음 조건을 모두 만족할 때만 추가합니다.
 - 병렬화를 위해 task를 억지로 분해하거나 worktree를 만들지 않습니다.
 - agent의 완료 주장을 그대로 신뢰하지 않고 변경 파일과 기존 검증 결과를 확인합니다.
 - native 실행 실패 시 임의로 legacy harness로 fallback하지 않습니다. 실패 원인을 보고하고 같은 native 경로에서 수정하거나 사용자 결정을 요청합니다.
+- direct → planned escalation은 legacy harness fallback이 아닙니다. task-specific deterministic gate가 구체적인 실패를 검출했고 clean state에서 재실행할 때만 한 번 허용합니다.
+- public test 통과만으로 fast route 품질을 증명하지 않습니다. 숨은 경계와 실패 모드를 관측할 gate가 없으면 처음부터 planned route를 사용합니다.
 
 ## Explicit Legacy Opt-In
 
