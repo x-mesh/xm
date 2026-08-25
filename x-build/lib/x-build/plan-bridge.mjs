@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { PHASES, ROOT, XM_GLOBAL, findCurrentProject, getExplicitProject, manifestPath, readJSON, repoRoot } from './core.mjs';
+import { PHASES, ROOT, XM_GLOBAL, findCurrentProject, getExplicitProject, manifestPath, prdPath, readJSON, repoRoot, tasksPath } from './core.mjs';
 import { cmdImportPlan } from './plan-import.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -37,12 +37,25 @@ function artifactEntries() {
   return entries;
 }
 
+function envelopeMtime(path) {
+  try { return statSync(path).mtimeMs; } catch { return null; }
+}
+
+function artifactSnapshot() {
+  const snapshot = new Map();
+  for (const [name, path] of artifactEntries()) snapshot.set(name, envelopeMtime(path));
+  return snapshot;
+}
+
+// A resumed x-plan session keeps its directory name and rewrites envelope.json
+// in place (saveSession requires --session to name an existing manifest), so a
+// name-only comparison would never see the finalized plan. Compare mtime too.
 function newestArtifactSince(before) {
   let newest = null;
   for (const [name, path] of artifactEntries()) {
-    if (before.has(name) || !existsSync(path)) continue;
-    let mtime;
-    try { mtime = statSync(path).mtimeMs; } catch { continue; }
+    const mtime = envelopeMtime(path);
+    if (mtime === null) continue;
+    if (before.has(name) && !(mtime > (before.get(name) ?? -Infinity))) continue;
     if (!newest || mtime > newest.mtime) newest = { path, mtime };
   }
   return newest?.path || null;
@@ -98,7 +111,7 @@ async function delegateToXPlan(args) {
 }
 
 /** Returns null when the plan can be imported, otherwise the reason it cannot. */
-function importBlocker(planPath) {
+function importBlocker(planPath, replace) {
   const project = getExplicitProject() || findCurrentProject();
   if (!project) return 'this workspace has no x-build project';
   const manifest = readJSON(manifestPath(project));
@@ -108,6 +121,10 @@ function importBlocker(planPath) {
   let envelope;
   try { envelope = JSON.parse(readFileSync(planPath, 'utf8')); } catch (error) { return 'the plan artifact could not be read: ' + error.message; }
   if (envelope?.status !== 'complete' || envelope?.executable !== true) return 'the plan is still a draft (executable: no)';
+  // cmdImportPlan refuses this case with exit 2. Catching it here keeps every
+  // "plan saved, import skipped" outcome on the same exit-0 contract.
+  const hasPlanArtifacts = (readJSON(tasksPath(project))?.tasks || []).length > 0 || existsSync(prdPath(project));
+  if (hasPlanArtifacts && !replace) return `project "${project}" already has plan artifacts; re-run with --replace to overwrite them`;
   return null;
 }
 
@@ -118,15 +135,21 @@ export async function cmdXPlan(rawArgs) {
     return 2;
   }
   const { args, replace, skipImport } = splitBridgeFlags(rawArgs);
-  const before = new Set(artifactEntries().keys());
+  const before = artifactSnapshot();
   const code = await delegateToXPlan(args);
-  if (code !== 0) return code;
+  if (code !== 0 || skipImport) return code;
 
   const planPath = newestArtifactSince(before);
-  if (!planPath || skipImport) return code;
+  if (!planPath) {
+    // --output and --no-save put the envelope outside the scanned directory.
+    // Say so rather than exiting 0 with no sign that nothing was imported.
+    const dir = relative(repoRoot(), planArtifactsDir()) || planArtifactsDir();
+    console.error(`xm build plan: no new plan artifact under ${dir}; nothing was imported (--output and --no-save write elsewhere).`);
+    return code;
+  }
 
   const shown = relative(repoRoot(), planPath) || planPath;
-  const blocker = importBlocker(planPath);
+  const blocker = importBlocker(planPath, replace);
   if (blocker) {
     console.error(`xm build plan: plan saved to ${shown}; not imported because ${blocker}.`);
     console.error('xm build plan: use `xm build legacy-plan` for the PRD/task lifecycle, or `xm build import-plan <path>` once the plan is executable.');
@@ -134,7 +157,11 @@ export async function cmdXPlan(rawArgs) {
   }
 
   console.error(`xm build plan: importing ${shown} into the x-build project.`);
-  const report = await cmdImportPlan([planPath, ...(replace ? ['--replace'] : [])]);
+  // --json means stdout already carries x-plan's single JSON document, so the
+  // import report must not be appended there.
+  const quiet = args.includes('--json');
+  const report = await cmdImportPlan([planPath, ...(replace ? ['--replace'] : []), ...(quiet ? ['--quiet'] : [])]);
   if (!report) return process.exitCode || 2;
+  if (quiet) console.error(`xm build plan: imported ${report.tasks} tasks and ${report.steps} steps; next: xm build plan-check`);
   return 0;
 }

@@ -45,7 +45,7 @@ unlisted `action` means the CLI is newer than this document; stop and report rat
 - `action: "auto-plan"` → emitted by `plan`/`build` (not the phase router). Run the `intent_check` first, then Research at the `research_signal` scale.
 - `action: "discuss"` → run `$XMB discuss` with args, then follow the discuss protocol below
 - `action: "research"` → run `$XMB research`, then follow the research protocol below
-- `action: "plan"` → if `goal` is set, run `$XMB plan "goal"`; otherwise ask user for goal
+- `action: "legacy-plan"` → if `goal` is set, run `$XMB legacy-plan "goal"`; otherwise ask user for goal. Do NOT substitute `$XMB plan`: that alias bridges to x-plan and does not write the PRD this action is asking for.
 - `action: "plan-check"` → run `$XMB plan-check`
 - `action: "prd-gate"` → run `$XMB prd-gate`, print the rubric result, then continue
 - `action: "consensus"` → run `$XMB consensus`, print each role's verdict in full before advancing

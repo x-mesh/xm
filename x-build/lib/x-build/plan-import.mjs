@@ -103,6 +103,9 @@ function enterPlanPhase(project) {
 
 export async function cmdImportPlan(args) {
   const file = args.find((arg) => !arg.startsWith('--')); const json = args.includes('--json'); const replace = args.includes('--replace');
+  // --quiet keeps stdout free for a caller that already wrote a JSON document
+  // there (the `xm build plan` bridge). Reports go to stderr instead.
+  const emit = args.includes('--quiet') ? console.error : console.log;
   if (!file) { console.error('Usage: x-build import-plan <envelope.json> [--json] [--replace]'); exitFail(1); return; }
   const project = resolveProject(null); const manifest = readJSON(manifestPath(project));
   const currentPhase = PHASES.find((phase) => phase.id === manifest?.current_phase)?.name;
@@ -110,18 +113,18 @@ export async function cmdImportPlan(args) {
   const existingTasks = readJSON(tasksPath(project))?.tasks || [];
   const hadExistingPlan = existingTasks.length > 0 || existsSync(prdPath(project));
   if (!replace && hadExistingPlan) {
-    console.log(JSON.stringify({ action: 'import-plan', status: 'blocked', failures: ['project already has plan artifacts; pass --replace to overwrite them'] }, null, 2));
+    emit(JSON.stringify({ action: 'import-plan', status: 'blocked', failures: ['project already has plan artifacts; pass --replace to overwrite them'] }, null, 2));
     process.exitCode = 2; return;
   }
   let input; try { input = readFileSync(resolve(file), 'utf8'); } catch (error) { console.error('❌ Cannot read plan: ' + error.message); exitFail(1); return; }
   const core = await loadPlanCore();
   if (!core?.parsePlanEnvelope) { console.error('❌ x-plan validator is unavailable'); exitFail(1); return; }
   const checked = core.parsePlanEnvelope(input);
-  if (!checked.valid) { console.log(JSON.stringify({ action: 'import-plan', status: 'invalid', errors: checked.errors }, null, 2)); process.exitCode = 2; return; }
+  if (!checked.valid) { emit(JSON.stringify({ action: 'import-plan', status: 'invalid', errors: checked.errors }, null, 2)); process.exitCode = 2; return; }
   const plan = checked.value;
   if (!plan.executable || plan.status !== 'complete') { console.error('❌ Only complete executable PlanEnvelopes can be imported'); exitFail(1); return; }
   const tasks = compileTasks(plan); const failures = importFailures(plan, tasks);
-  if (failures.length) { console.log(JSON.stringify({ action: 'import-plan', status: 'blocked', failures }, null, 2)); process.exitCode = 2; return; }
+  if (failures.length) { emit(JSON.stringify({ action: 'import-plan', status: 'blocked', failures }, null, 2)); process.exitCode = 2; return; }
   let steps; try { steps = compileSteps(plan, tasks); } catch (error) { console.error('❌ ' + error.message); exitFail(1); return; }
   const parallel = parallelismForSteps(tasks, steps);
   const identity = ensureBuildIdentity(project, manifest?.build_profile || 'standard', { source: 'imported', confidence: 'high', reasons: ['native_plan_import'] });
@@ -133,5 +136,5 @@ export async function cmdImportPlan(args) {
   enterPlanPhase(project);
   const report = { action: 'import-plan', project, status: 'imported', replaced_existing: replace && hadExistingPlan, source: resolve(file), profile: identity.profile, tasks: tasks.length, steps: steps.length, validation_commands: plan.validation.commands, validation_commands_untrusted: true, parallelism: parallel, next_action: 'plan-check', approval_required: true };
   recordEffectiveness(project, 'plan_imported', { task_count: tasks.length, step_count: steps.length, parallel_safe_count: parallel.safe_tasks.length, source: 'PlanEnvelope' });
-  console.log(json ? JSON.stringify(report, null, 2) : '✅ Imported ' + tasks.length + ' tasks. Next: x-build plan-check'); return report;
+  emit(json ? JSON.stringify(report, null, 2) : '✅ Imported ' + tasks.length + ' tasks. Next: x-build plan-check'); return report;
 }

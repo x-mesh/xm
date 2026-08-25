@@ -296,7 +296,7 @@ describe('plan routing protocol', () => {
       expect(r.exitCode).toBe(0);
       const output = JSON.parse(r.stdout);
       expect(output.artifacts.prd).toBe(true);
-      expect(output.action).toBe('plan');
+      expect(output.action).toBe('legacy-plan');
       expect(output.goal).toBe('Build API');
       expect(output.args).toEqual(['Build API']);
     } finally {
@@ -315,7 +315,7 @@ describe('plan routing protocol', () => {
       expect(r.exitCode).toBe(0);
       const output = JSON.parse(r.stdout);
       expect(output.artifacts.prd).toBe(false);
-      expect(output.action).toBe('plan');
+      expect(output.action).toBe('legacy-plan');
       expect(output.ready).toBe(false);
       expect(output.reason).toContain('PRD');
     } finally {
@@ -565,7 +565,7 @@ describe('deterministic model emission (research / plan / next)', () => {
       writeSharedConfig(tmp, { model_profile: 'default' });
       const r = run(['next', '--json'], { cwd: tmp });
       const output = JSON.parse(r.stdout);
-      expect(output.action).toBe('plan');
+      expect(output.action).toBe('legacy-plan');
       expect(output.prd_writer).toMatchObject({ role: 'planner', model: 'inherit' }); // default.planner rides the session model (+vendor additive 필드 허용)
     } finally {
       rmSync(tmp, { recursive: true, force: true });

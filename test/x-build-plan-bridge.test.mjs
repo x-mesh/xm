@@ -138,6 +138,90 @@ describe('xm build plan bridge', () => {
     }
   });
 
+  // x-plan's standard/ultra modes finalize with --session, rewriting
+  // envelope.json inside a directory whose name already existed.
+  test('imports a resumed session whose directory name is unchanged', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'x-build-plan-bridge-'));
+    try {
+      spawnSync('git', ['init', '-q'], { cwd });
+      expect(run(cwd, ['init', 'demo']).code).toBe(0);
+      const file = join(cwd, 'envelope.json');
+      writeFileSync(file, JSON.stringify(executableEnvelope()));
+      writeFileSync(join(cwd, 'ev.json'), JSON.stringify({ schema_version: 1, items: [{ id: 'E1', path: 'src/api.mjs', note: 'entry point' }] }));
+      writeFileSync(join(cwd, 'q.json'), JSON.stringify({ schema_version: 1, items: [] }));
+      writeFileSync(join(cwd, 'cr.json'), JSON.stringify({ schema_version: 1, status: 'passed', findings: [] }));
+      const session = ['--persist', '--mode', 'standard', '--file', file, '--evidence', join(cwd, 'ev.json'), '--questions', join(cwd, 'q.json'), '--critique', join(cwd, 'cr.json')];
+
+      const first = run(cwd, ['plan', '--no-import', ...session]);
+      expect(first.code, first.stderr).toBe(0);
+      const sessionId = readdirSync(join(cwd, '.xm', 'plan'))[0];
+      expect(existsSync(join(cwd, '.xm', 'build', 'projects', 'demo', 'phases', '02-plan', 'PRD.md'))).toBe(false);
+
+      const resumed = run(cwd, ['plan', '--session', sessionId, ...session]);
+      expect(resumed.code, resumed.stderr).toBe(0);
+      expect(resumed.stderr).toContain('importing');
+      expect(readdirSync(join(cwd, '.xm', 'plan')).length).toBe(1);
+      expect(existsSync(join(cwd, '.xm', 'build', 'projects', 'demo', 'phases', '02-plan', 'PRD.md'))).toBe(true);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('--json keeps stdout a single parseable document through the import', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'x-build-plan-bridge-'));
+    try {
+      expect(run(cwd, ['init', 'demo']).code).toBe(0);
+      const file = join(cwd, 'envelope.json');
+      writeFileSync(file, JSON.stringify(executableEnvelope()));
+
+      const result = run(cwd, ['plan', '--persist', '--file', file, '--json']);
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stderr).toContain('imported 2 tasks');
+      expect(() => JSON.parse(result.stdout)).not.toThrow();
+      expect(existsSync(join(cwd, '.xm', 'build', 'projects', 'demo', 'phases', '02-plan', 'PRD.md'))).toBe(true);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // Every "plan saved, import skipped" outcome must share one exit code.
+  test('a second run without --replace is refused on exit 0 like the other blockers', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'x-build-plan-bridge-'));
+    try {
+      expect(run(cwd, ['init', 'demo']).code).toBe(0);
+      const file = join(cwd, 'envelope.json');
+      writeFileSync(file, JSON.stringify(executableEnvelope()));
+      expect(run(cwd, ['plan', '--persist', '--file', file]).code).toBe(0);
+
+      const second = run(cwd, ['plan', '--persist', '--file', file]);
+      expect(second.code, second.stderr).toBe(0);
+      expect(second.stderr).toContain('already has plan artifacts');
+      expect(second.stderr).toContain('--replace');
+
+      const replaced = run(cwd, ['plan', '--replace', '--persist', '--file', file]);
+      expect(replaced.code, replaced.stderr).toBe(0);
+      expect(replaced.stderr).toContain('importing');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('an artifact written outside .xm/plan is reported instead of silently skipped', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'x-build-plan-bridge-'));
+    try {
+      expect(run(cwd, ['init', 'demo']).code).toBe(0);
+      const file = join(cwd, 'envelope.json');
+      writeFileSync(file, JSON.stringify(executableEnvelope()));
+
+      const result = run(cwd, ['plan', '--persist', '--file', file, '--output', join(cwd, 'elsewhere.json')]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stderr).toContain('no new plan artifact');
+      expect(existsSync(join(cwd, '.xm', 'build', 'projects', 'demo', 'phases', '02-plan', 'PRD.md'))).toBe(false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   // Every standalone x-build install takes this branch: the plugin cache ships
   // no x-plan module tree, so loadXPlanMain() always throws there.
   test('delegates through the xm dispatcher when x-plan is not colocated', () => {

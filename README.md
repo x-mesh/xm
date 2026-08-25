@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.20.2-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.20.3-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -255,7 +255,7 @@ Need a plan without execution? Use x-plan directly:
 xm plan --mode quick "Update src/auth.mjs and its focused tests"
 ```
 
-`xm build plan` is a deprecated alias for `xm plan`. When the resulting plan is executable it is imported into the current x-build project (PRD, tasks, steps); a draft is saved to `.xm/plan` and left there. The former PRD/task/phase planner remains available only as `xm build legacy-plan`.
+`xm build plan` is a deprecated alias for `xm plan`. When the resulting plan is executable *and* the workspace has an x-build project in the Research or Plan phase, it is imported into that project (PRD, tasks, steps); pass `--replace` to overwrite existing plan artifacts, or `--no-import` to skip the import. Every other case — a draft plan, no project, a later phase — saves the plan to `.xm/plan` and reports why it was not imported. The former PRD/task/phase planner remains available only as `xm build legacy-plan`.
 
 <details>
 <summary>Step-by-step tutorial (5 minutes)</summary>

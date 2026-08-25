@@ -1375,7 +1375,7 @@ function resolveNext(project) {
           const goalMatch = ctx.match(/^## Goal\s*\n+(.+)/m);
           if (goalMatch) goal = goalMatch[1].trim();
         }
-        return { ...base, action: 'plan', args: goal ? [goal] : [], reason: R('PRD.md is missing. Generate and save a PRD before executing.', 'PRD가 없습니다. 실행 전에 PRD를 생성하고 저장하세요.'), goal, task_count: tasks.length, ready: false, prd_writer: prdWriterSpec() };
+        return { ...base, action: 'legacy-plan', args: goal ? [goal] : [], reason: R('PRD.md is missing. Generate and save a PRD before executing.', 'PRD가 없습니다. 실행 전에 PRD를 생성하고 저장하세요.'), goal, task_count: tasks.length, ready: false, prd_writer: prdWriterSpec() };
       }
       if (tasks.length === 0) {
         let goal = null;
@@ -1389,7 +1389,7 @@ function resolveNext(project) {
           const goalMatch = ctx.match(/^## Goal\s*\n+(.+)/m);
           if (goalMatch) goal = goalMatch[1].trim();
         }
-        return { ...base, action: 'plan', args: goal ? [goal] : [], reason: goal ? R(`Auto-extracted goal: "${goal}"`, `목표를 자동으로 찾았습니다: "${goal}"`) : R('No tasks yet. Run plan with a goal.', '할 일이 없습니다. 목표를 정해서 계획을 세우세요.'), goal, prd_writer: prdWriterSpec() };
+        return { ...base, action: 'legacy-plan', args: goal ? [goal] : [], reason: goal ? R(`Auto-extracted goal: "${goal}"`, `목표를 자동으로 찾았습니다: "${goal}"`) : R('No tasks yet. Run plan with a goal.', '할 일이 없습니다. 목표를 정해서 계획을 세우세요.'), goal, prd_writer: prdWriterSpec() };
       }
       if (!planCheckExists) {
         return { ...base, action: 'plan-check', args: [], reason: R(`${tasks.length} tasks defined but not validated. Run plan-check.`, `할 일 ${tasks.length}개가 있지만 검증되지 않았습니다. 계획을 점검하세요.`), task_count: tasks.length };
@@ -1510,7 +1510,7 @@ export async function cmdNext(args) {
 
   const color = result.ready ? C.green : C.yellow;
   const cmd = result.action === 'phase' ? `x-build ${result.action} ${result.args.join(' ')}` :
-              result.action === 'plan' && result.goal ? `x-build legacy-plan "${result.goal}"` :
+              result.action === 'legacy-plan' && result.goal ? `x-build legacy-plan "${result.goal}"` :
               `x-build ${result.action}${result.args.length ? ' ' + result.args.join(' ') : ''}`;
   console.log(`  ${color}-> Run: ${cmd}${C.reset}`);
   console.log(`    ${result.reason}`);

@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.20.2-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.20.3-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -255,7 +255,7 @@ xm install --list-installed # 설치된 manifest 목록을 JSON으로 출력
 xm plan --mode quick "src/auth.mjs와 관련 테스트 수정"
 ```
 
-`xm build plan`은 `xm plan`의 deprecated alias입니다. 생성된 계획이 executable이면 현재 x-build 프로젝트로 import되어 PRD·task·step이 만들어지고, draft이면 `.xm/plan`에 저장만 됩니다. 기존 PRD·task·phase planner는 `xm build legacy-plan`으로만 남아 있습니다.
+`xm build plan`은 `xm plan`의 deprecated alias입니다. 생성된 계획이 executable이고 워크스페이스에 Research 또는 Plan 페이즈의 x-build 프로젝트가 있으면 그 프로젝트로 import되어 PRD·task·step이 만들어집니다. 기존 plan 아티팩트를 덮어쓰려면 `--replace`, import를 건너뛰려면 `--no-import`를 씁니다. 그 밖의 경우(draft 계획, 프로젝트 없음, 이후 페이즈)에는 `.xm/plan`에 저장하고 import하지 않은 이유를 알립니다. 기존 PRD·task·phase planner는 `xm build legacy-plan`으로만 남아 있습니다.
 
 <details>
 <summary>단계별 튜토리얼 (5분)</summary>

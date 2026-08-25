@@ -10,6 +10,20 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.20.3] - 2026-08-25
+
+### Fixed
+
+- **x-build:** import a resumed x-plan session. Artifact discovery compared directory names only, so the Standard/Ultra path — which finalizes with `--session <id>` and rewrites `envelope.json` in place — never looked like a new artifact and the executable plan was skipped silently. Discovery now compares each entry's envelope mtime against a pre-delegation snapshot.
+- **x-build:** keep `xm build plan --json` stdout a single parseable document. The import report was appended after x-plan's JSON payload; `cmdImportPlan` gained a `--quiet` mode that the bridge uses for `--json` runs, and the summary goes to stderr.
+- **x-build:** exit 0 when a plan is saved but not imported because the project already has plan artifacts. That case fell through to `cmdImportPlan` and exited 2 while every other skip reason exited 0, so callers read a successful plan as a failure. Re-run with `--replace` to overwrite.
+- **x-build:** report when no new plan artifact is found instead of exiting silently. `--output` and `--no-save` write outside `.xm/plan`, which previously produced no output at all.
+- **x-build:** emit `action: "legacy-plan"` from `next`. `resolveNext` still returned `action: "plan"`, and `cli-skill-protocol.md` routed that action to `$XMB plan "goal"` — the alias that no longer writes a PRD, leaving the Plan gate blocked.
+
+### Changed
+
+- Document the auto-import preconditions in both READMEs: an x-build project in the Research or Plan phase, and `--replace` to overwrite existing plan artifacts.
+
 ## [2.20.2] - 2026-08-25
 
 ### Added
