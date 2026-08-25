@@ -368,6 +368,9 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
   if (targetFiles && !hasFrozenTarget) {
     issues.push(issue('frozen_target_missing', 'target_files requires the frozen target body for deterministic grounding'));
   }
+  if (hasFrozenTarget && sha256(options.targetBody) !== manifest.target_hash) {
+    issues.push(issue('frozen_target_hash_mismatch', 'frozen target hash does not match the manifest target_hash'));
+  }
   const targetSections = hasFrozenTarget ? normalizedTargetSections(options.targetBody, targetFiles) : null;
   if (targetFiles && targetFiles.size > 1 && targetSections?.size === 0) {
     issues.push(issue('frozen_target_unsectioned', 'multi-file frozen targets require diff --git sections for file-specific grounding'));

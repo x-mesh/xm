@@ -278,8 +278,10 @@ describe('x-review lens report coverage contract', () => {
   });
 
   test('grounds findings and source coverage in the frozen target without another reviewer call', () => {
-    const manifest = { ...MANIFEST, target_files: ['src/auth.ts'] };
+    const targetBody = 'diff --git a/src/auth.ts b/src/auth.ts\n+++ b/src/auth.ts\n+const tenant = req.params.id;\n+return db.find(tenant);';
+    const manifest = { ...MANIFEST, target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`, target_files: ['src/auth.ts'] };
     const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
       checked_files: ['src/auth.ts'],
       findings: [{
         severity: 'High',
@@ -292,8 +294,7 @@ describe('x-review lens report coverage contract', () => {
       }],
       no_findings_reason: undefined,
     });
-    const logic = zeroReport('logic-1', 'logic', { checked_files: ['src/auth.ts'] });
-    const targetBody = 'diff --git a/src/auth.ts b/src/auth.ts\n+++ b/src/auth.ts\n+const tenant = req.params.id;\n+return db.find(tenant);';
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/auth.ts'] });
     const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
     expect(result.ok).toBe(true);
     expect(result.target_coverage).toEqual({ expected: 1, checked: 1, complete: true, missing_files: [] });
@@ -309,20 +310,24 @@ describe('x-review lens report coverage contract', () => {
   });
 
   test('preserves a legitimate leading minus in finding code during grounding', () => {
-    const manifest = { ...MANIFEST, target_files: ['src/value.ts'] };
+    const targetBody = '+-1';
+    const manifest = { ...MANIFEST, target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`, target_files: ['src/value.ts'] };
     const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
       checked_files: ['src/value.ts'],
       findings: [{ severity: 'Low', file: 'src/value.ts', line: 1, description: 'Negative sentinel', code: '-1', why: 'Concrete value', fix: 'Use a named sentinel' }],
       no_findings_reason: undefined,
     });
-    const logic = zeroReport('logic-1', 'logic', { checked_files: ['src/value.ts'] });
-    const result = validateReviewReports(manifest, raws(security, logic), { targetBody: '+-1' });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/value.ts'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
     expect(result.ok).toBe(true);
   });
 
   test('preserves leading diff-like characters in a raw single-file target', () => {
-    const manifest = { ...MANIFEST, target_files: ['src/value.ts'] };
+    const targetBody = '-1\n+value';
+    const manifest = { ...MANIFEST, target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`, target_files: ['src/value.ts'] };
     const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
       checked_files: ['src/value.ts'],
       findings: [{
         severity: 'Low',
@@ -335,8 +340,8 @@ describe('x-review lens report coverage contract', () => {
       }],
       no_findings_reason: undefined,
     });
-    const logic = zeroReport('logic-1', 'logic', { checked_files: ['src/value.ts'] });
-    const result = validateReviewReports(manifest, raws(security, logic), { targetBody: '-1\n+value' });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/value.ts'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
     expect(result.ok).toBe(true);
   });
 
@@ -362,8 +367,10 @@ describe('x-review lens report coverage contract', () => {
   });
 
   test('grounds quoted Git target sections using the decoded filename', () => {
-    const manifest = { ...MANIFEST, target_files: ['src/한글.ts'] };
+    const targetBody = 'diff --git "a/src/\\355\\225\\234\\352\\270\\200.ts" "b/src/\\355\\225\\234\\352\\270\\200.ts"\n+const value = true;';
+    const manifest = { ...MANIFEST, target_hash: 'sha256:' + createHash('sha256').update(targetBody).digest('hex'), target_files: ['src/한글.ts'] };
     const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
       checked_files: manifest.target_files,
       findings: [{
         severity: 'Low', file: 'src/한글.ts', line: 1, description: 'Concrete value',
@@ -373,8 +380,8 @@ describe('x-review lens report coverage contract', () => {
     });
     const result = validateReviewReports(manifest, raws(
       security,
-      zeroReport('logic-1', 'logic', { checked_files: manifest.target_files }),
-    ), { targetBody: 'diff --git "a/src/\\355\\225\\234\\352\\270\\200.ts" "b/src/\\355\\225\\234\\352\\270\\200.ts"\n+const value = true;' });
+      zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: manifest.target_files }),
+    ), { targetBody });
     expect(result.ok).toBe(true);
   });
 
@@ -412,6 +419,7 @@ describe('x-review lens report coverage contract', () => {
       'diff --git a/src/a.ts b/src/a.ts', '+const a = true;',
       'diff --git a/src/b.ts b/src/b.ts', '+const b = true;',
     ].join('\n');
+    manifest.target_hash = 'sha256:' + createHash('sha256').update(targetBody).digest('hex');
     const chunkBodies = {
       'chunks/chunk-001.patch': 'a',
       'chunks/chunk-002.patch': 'b',
@@ -542,6 +550,22 @@ describe('x-review lens report coverage contract', () => {
     ));
     expect(result.ok).toBe(false);
     expect(result.issues).toContainEqual(expect.objectContaining({ code: 'frozen_target_missing' }));
+  });
+
+  test('rejects a manifest whose top-level target hash does not bind the supplied frozen target', () => {
+    const target = 'diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+const a = 1;';
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${'f'.repeat(64)}`,
+      target_files: ['src/a.ts'],
+    };
+    const reports = raws(
+      zeroReport('security-1', 'security', { target_hash: manifest.target_hash, checked_files: ['src/a.ts'] }),
+      zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/a.ts'] }),
+    );
+    const result = validateReviewReports(manifest, reports, { targetBody: target });
+    expect(result.ok).toBe(false);
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'frozen_target_hash_mismatch' }));
   });
 
   test('rejects unsectioned multi-file frozen targets', () => {
