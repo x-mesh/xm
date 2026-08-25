@@ -36,6 +36,11 @@ Rules:
 - Echo `task_id`, `target_hash`, `report_id`, and `lens` literally. For `context_status: bound`, also echo `context_hash` literally. Omit it for legacy `absent` runs.
 - `report_id` identifies one agent execution, not merely a lens. Redundant runs use distinct IDs
   such as `security-1`, `security-2`, and `security-3`.
+- For chunked reviews, each `expected_reports[]` entry binds one `chunk_id`, `wave`,
+  `target_hash`, and `target_files`. Echo that chunk hash. Coverage is complete only when every
+  selected profile returns a valid report for every chunk. The validator compares `profiles`,
+  `chunks`, and `expected_reports` as a Cartesian product, so a missing profile/chunk pair fails
+  before synthesis.
 - `checked` must contain at least one concrete path, branch, boundary, data flow, or behavior.
 - `checked_files` must list every frozen target file actually inspected. When `run.json` contains
   `target_files`, the validator rejects paths outside that set and refuses finalization until their
