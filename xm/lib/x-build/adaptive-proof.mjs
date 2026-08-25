@@ -87,6 +87,9 @@ export function proveAdaptiveBenefit(reports, blindReports, options = {}) {
     }
     const blindByTrial = new Map([...blindGroups].map(([blindKey, pairs]) => [blindKey, pairs[0]]));
     const coveredTrials = trialIds.filter((trial) => blindByTrial.has(trial));
+    const adaptiveKeys = [...adaptiveByTrial.keys()].sort();
+    const baselineKeys = [...baselineByTrial.keys()].sort();
+    const blindKeys = [...blindByTrial.keys()].sort();
     const adaptiveCosts = trialIds.map((trial) => rowCost(adaptiveByTrial.get(trial).row, adaptiveByTrial.get(trial).model));
     const baselineCosts = trialIds.map((trial) => rowCost(baselineByTrial.get(trial).row, baselineByTrial.get(trial).model));
     const adaptiveWall = trialIds.map((trial) => adaptiveByTrial.get(trial).row.wall_ms);
@@ -104,7 +107,9 @@ export function proveAdaptiveBenefit(reports, blindReports, options = {}) {
     const blockers = [];
     if (trialIds.length < minPairs) blockers.push('insufficient_paired_trials');
     if (duplicateExecutionRows) blockers.push('duplicate_execution_pair');
+    if (JSON.stringify(adaptiveKeys) !== JSON.stringify(baselineKeys)) blockers.push('unmatched_execution_pair');
     if (coveredTrials.length !== trialIds.length) blockers.push('incomplete_blind_coverage');
+    if (JSON.stringify(blindKeys) !== JSON.stringify(trialIds)) blockers.push('unmatched_blind_pair');
     if ([...blindGroups.values()].some((pairs) => pairs.length !== 1)) blockers.push('duplicate_blind_pair');
     const expectedVariants = [adaptive, baseline].sort();
     if (fixtureBlind.some((pair) => JSON.stringify(pair.variants) !== JSON.stringify(expectedVariants)

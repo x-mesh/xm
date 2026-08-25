@@ -97,4 +97,14 @@ describe('adaptive A/B proof gate', () => {
     raterFailure.pairs[0].error = true;
     expect(proveAdaptiveBenefit([benchmark()], [raterFailure]).results[0].blockers).toContain('blind_rating_error');
   });
+
+  test('rejects every unmatched execution or blind row instead of proving an intersection', () => {
+    const missingBaseline = benchmark();
+    missingBaseline.rows = missingBaseline.rows.filter((row) => !(row.variant === 'plan-sol-exec-sol' && row.trial === 10));
+    expect(proveAdaptiveBenefit([missingBaseline], [blind()]).results[0].blockers).toContain('unmatched_execution_pair');
+
+    const extraBlind = blind();
+    extraBlind.pairs.push({ ...extraBlind.pairs[0], trial: 99 });
+    expect(proveAdaptiveBenefit([benchmark()], [extraBlind]).results[0].blockers).toContain('unmatched_blind_pair');
+  });
 });
