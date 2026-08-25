@@ -57,13 +57,32 @@ function seededFlip(seed) {
   return ((hash >>> 0) % 2) === 1;
 }
 
-const RUBRIC = [
+const SHARED_FILE_RUBRIC = [
   'Correctness beyond the stated cases: does the code handle a null/undefined record, a non-string field, or an empty collection without throwing?',
   'Preservation: does it keep every pre-existing entry/rule intact rather than replacing the collection?',
   'Structure: is the addition consistent with the file it lives in, or bolted on in a different style?',
   'Restraint: does it change only what the task asked for, without unrelated rewrites, renames, or commentary?',
   'Clarity: would a reviewer understand the intent without running it?',
 ].map((line, index) => (index + 1) + '. ' + line).join('\n');
+
+const REDOS_RUBRIC = [
+  'Correctness beyond the stated cases: nested and nullable groups, malformed patterns, empty input, and whole-string matching.',
+  'Pathological-input safety: does the algorithm bound work without exponential backtracking, unbounded recursion, or epsilon-cycle loops?',
+  'Complexity: are time and memory bounds appropriate for long pattern and text input?',
+  'Restraint: does it implement only the requested matcher without delegating to RegExp or adding unrelated changes?',
+  'Clarity: are parser, state transitions, and termination behavior understandable from the code?',
+].map((line, index) => (index + 1) + '. ' + line).join('\n');
+
+function rubricFor(fixture) {
+  return fixture === 'redos-matcher' ? REDOS_RUBRIC : SHARED_FILE_RUBRIC;
+}
+
+function contextFor(fixture) {
+  if (fixture === 'redos-matcher') {
+    return 'Each candidate implemented a whole-string pattern matcher supporting literals, dot, *, +, and groups without RegExp. Both pass the public tests and the same nested-quantifier stress probe.';
+  }
+  return 'Three separate agents each added one piece to a shared file. Both candidates pass the project tests and satisfy the stated requirements.';
+}
 
 function renderSide(label, artifacts) {
   const parts = ['### Candidate ' + label];
@@ -77,10 +96,10 @@ function prompt(fixture, left, right) {
   return [
     'Two candidates independently produced the same file(s) for the same task. Judge which is higher quality.',
     '',
-    'Task context (' + fixture + '): three separate agents each added one piece to a shared file. The project test suite passes for BOTH candidates and both satisfy the stated requirements, so do not grade on whether the requirements are met — grade on how well it is done.',
+    'Task context (' + fixture + '): ' + contextFor(fixture) + ' Grade implementation quality beyond the public pass result.',
     '',
     'Rubric:',
-    RUBRIC,
+    rubricFor(fixture),
     '',
     renderSide('A', left),
     '',
