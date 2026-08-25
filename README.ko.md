@@ -430,6 +430,21 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 
 x-build는 x-plan을 감싸는 lean 실행 workflow입니다. 저장소 근거를 조사하고 x-plan 하나로 계획한 뒤, 순차 native 실행을 기본으로 하며 변경 위험을 직접 확인하는 검증만 선택합니다.
 
+기본 경로는 항상 계획을 만드는 방식이 아니라 adaptive 방식입니다. 범위가 작고 파일이 독립적이며 위험도가 낮은 작업도 failure mode를 결정적으로 검증할 gate가 있을 때만 direct route를 사용합니다. 공유 상태·고위험·관측하기 어려운 작업은 처음부터 x-plan으로 보냅니다. `route start → verify → finish`는 결정과 baseline commit, 예상 파일, CLI가 실행한 gate, byte hash, 실제 시간·비용 event를 묶습니다. Direct 검증 실패는 clean planned fallback으로 한 번만 재개하며, receipt가 없거나 오래된 상태는 fail-closed로 처리합니다.
+
+```bash
+xm build route decide --kind bugfix --scope bounded --independent \
+  --files src/a.mjs,test/a.test.mjs --risk low --failure-modes 2 \
+  --gates test,boundary --json
+xm build route start --decision-id <id> --expected-files src/a.mjs,test/a.test.mjs \
+  --gate-cmd 'test=bun test test/a.test.mjs' --gate-cmd 'boundary=node scripts/check-boundary.mjs'
+# native agent가 파일 수정
+xm build route verify --decision-id <id> --json
+xm build route finish --decision-id <id> --json
+```
+
+측정 범위도 명시합니다. 독립 모듈·설정 fixture를 각각 10쌍 비교했을 때 양쪽 모두 10/10 검증을 통과했고 blind 품질 열세 없이 p50 비용은 약 48%, p50 시간은 65~69% 줄었습니다. 반면 ReDoS fixture는 매번 escalation되어 더 느리고 비쌌으므로 해당 유형은 planned route로 보냅니다. `xm build route prove`는 최소 pair coverage, 품질 비열등, 비용 20%, p50 시간 15% 기준을 기계적으로 확인합니다.
+
 ```bash
 /xm:build "JWT 인증이 포함된 REST API 만들기"  # 계획 + native 실행
 /xm:plan "JWT 인증이 포함된 REST API 만들기"   # Standard 계획만
@@ -617,6 +632,8 @@ xm build plan --mode quick "..."                 # xm plan의 deprecated alias
 ### x-review
 
 체크리스트로 패턴을 맞히는 대신, 발견 하나하나의 맥락을 따져 보는 다관점 코드 리뷰.
+
+큰 리뷰도 임의의 줄 수에서 중단하지 않습니다. frozen target을 예상 token과 파일 분산도로 예산화하고 파일 → hunk → line range 순서로 나누며, 선택한 모든 profile × chunk 보고서를 요구합니다. validator는 전체 frozen-target hash와 각 chunk hash를 다시 계산하고, 안전하지 않은 chunk 경로·누락된 보고서·불완전한 파일 coverage를 fail-closed로 거부합니다.
 
 ```bash
 /xm:review diff                     # 마지막 커밋 리뷰

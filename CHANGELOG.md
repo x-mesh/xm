@@ -10,6 +10,28 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.21.0] - 2026-08-26
+
+### x-build 3.4.2 → 3.5.0
+
+- Add evidence-gated adaptive execution. `xm build route decide/start/verify/finish/status/abandon/report` routes only bounded, independently verifiable work directly; receipts bind the baseline commit, expected files, deterministic gates, byte hashes, elapsed time, and actual cost events (`x-build/lib/x-build/adaptive-routing.mjs`).
+- Add `xm build route prove`, which fails closed unless benchmark and blind-review artifacts provide at least 10 exact pairs per fixture, complete verification, no adaptive quality losses, at least 20% p50 cost savings, and at least 15% p50 latency savings (`x-build/lib/x-build/adaptive-proof.mjs`, `scripts/benchmark-execution-harness.mjs`, `scripts/blind-quality-rate.mjs`).
+- Preserve direct failures as planned-only evidence, require clean fallback execution, protect unrelated dirty work and symlink boundaries, and exclude manually reported outcomes from routing decisions.
+
+### x-plan 0.2.1 → 0.3.0
+
+- Add structured `failure_modes` to PlanEnvelope normalization, validation, rendering, and schema. Executable plans enumerate pathological inputs with mitigation and verification while legacy envelopes remain valid (`x-plan/lib/x-plan/`).
+- Carry failure modes through x-build import into PRD section 7.5 and task stress criteria so execution receives the robustness prescription instead of leaving it in planner prose (`x-build/lib/x-build/plan-import.mjs`).
+
+### x-review 2.4.0 → 2.5.0
+
+- Replace the fixed review line limit with token-budgeted frozen-target chunks split by file, hunk, then line range. Every selected profile × chunk report is required before synthesis (`x-review/skills/review/scripts/plan-review.mjs`).
+- Bind reports to the complete frozen target and each chunk hash, reject unsafe paths and incomplete file coverage, and fail closed when the top-level manifest hash does not match the target bytes (`x-review/skills/review/scripts/validate-reports.mjs`).
+
+### xm 2.20.4 → 2.21.0
+
+- Bundle adaptive execution receipts and proof, PlanEnvelope failure modes, token-budgeted review chunking, synchronized skill contracts, and regression coverage for installed Claude and Codex users.
+
 ## [2.20.4] - 2026-08-25
 
 ### Fixed

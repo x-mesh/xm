@@ -429,6 +429,21 @@ This is a *capability*, available today; proving it produces measurably better o
 
 x-build is the lean execution workflow around x-plan. It inspects repository evidence, uses x-plan as the single planning engine, executes sequentially by default through native agents, and selects only validation that directly observes a changed risk.
 
+The default is now adaptive rather than plan-always. Bounded, independent, low-risk work can take the direct route only when its failure modes have deterministic gates; shared, high-risk, or weakly observable work goes straight to x-plan. `route start → verify → finish` binds the decision to the baseline commit, expected files, CLI-run gates, byte hashes, elapsed time, and measured cost events. Failed direct verification can restart once from a clean planned fallback, while stale or incomplete receipts fail closed.
+
+```bash
+xm build route decide --kind bugfix --scope bounded --independent \
+  --files src/a.mjs,test/a.test.mjs --risk low --failure-modes 2 \
+  --gates test,boundary --json
+xm build route start --decision-id <id> --expected-files src/a.mjs,test/a.test.mjs \
+  --gate-cmd 'test=bun test test/a.test.mjs' --gate-cmd 'boundary=node scripts/check-boundary.mjs'
+# native agent edits the files
+xm build route verify --decision-id <id> --json
+xm build route finish --decision-id <id> --json
+```
+
+Measured A/B proof is deliberately scoped: across 10 paired runs each, independent module/config fixtures kept verification at 10/10 with no blind-quality losses while cutting p50 cost by about 48% and p50 latency by 65–69%. A ReDoS fixture escalated every time and was slower and more expensive, so that class is routed to planned execution instead of being presented as a universal win. `xm build route prove` machine-checks pair coverage, quality non-inferiority, ≥20% cost savings, and ≥15% p50 latency savings before a claim can pass.
+
 ```bash
 /xm:build "Build a REST API with JWT auth"  # plan + native execution
 /xm:plan "Build a REST API with JWT auth"   # Standard plan only
@@ -616,6 +631,8 @@ Not sure? Run `/xm:op list` to see all strategies with descriptions.
 ### x-review
 
 Multi-perspective code review that reasons about each finding instead of pattern-matching it against a checklist.
+
+Large reviews no longer stop at an arbitrary line count. The planner budgets the frozen target by estimated tokens and file dispersion, splits by file, hunk, then line range, and requires every selected profile × chunk report. Validation recomputes the top-level frozen-target hash and every chunk hash, rejects unsafe chunk paths, and fails closed on missing reports or incomplete file coverage.
 
 ```bash
 /xm:review diff                     # Review last commit
