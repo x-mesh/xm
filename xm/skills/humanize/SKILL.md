@@ -79,10 +79,14 @@ If `$ARGUMENTS` is empty, ask the user to paste text or specify a file.
 Parse left to right using these rules:
 
 1. Consume at most one mode: `audit`, `rewrite`, `light`, `strong`, `ui`, or `voice`.
-   If none is present, use `rewrite` with `medium` intensity. `ui` takes no
-   intensity and ignores `voice`; reject the combination instead of silently
-   dropping one. `ui audit` is valid and means detect-only, still JSON output
-   with `after` equal to `before` on every item.
+   `ui audit` is the one legal two-token combination and means detect-only: still
+   JSON output, with `after` equal to `before` on every item. `ui` takes neither an
+   intensity nor `voice`; when either appears beside it, ask which one was meant
+   instead of dropping one.
+   If no mode token is present, read the input shape before defaulting: an array of
+   short strings keyed by dotted identifiers (`settings.*.label`) enters `ui` (see
+   `## UI String Mode`), and ambiguous prose-vs-UI input is asked about once.
+   Everything else uses `rewrite` with `medium` intensity.
 2. Consume `--lang en|ko` wherever it appears before `--`. Reject any other
    language value instead of silently auto-detecting.
 3. For `voice`, consume the next argument as the sample file, then continue
@@ -210,7 +214,7 @@ Enter this mode when the user names `ui`, or when the input is an array of short
 | Auto-downshift triggers (KO-26 / KO-31) | Both count sentences across a document. A string array has no document. |
 | KO-5 / KO-31 / KO-32 | Uniform length and uniform endings are *required* on a settings screen, not a defect to fix. |
 
-Meaning preservation is **not** suspended. It is the only guardrail left, so hold it harder: `after` must not add a behavior, condition, or warning the source did not state.
+Meaning preservation is **not** suspended. It is the only guardrail left, so hold it harder: `after` must not add a behavior, condition, or warning the source did not state. Naming a consequence that follows from a fact the source already states is allowed; advice with no basis in the source is not. `references/ui-strings-ko.md` works that line through an example.
 
 ### Steps
 
@@ -218,6 +222,8 @@ Meaning preservation is **not** suspended. It is the only guardrail left, so hol
 2. **Load the glossary** — read `.xm/ui-glossary.json` if present; it overrides the default glossary. If absent, apply the default glossary only, and set `flag: true` on project-specific implementation terms you cannot confidently replace.
 3. **Group by screen** — items sharing a `key` prefix minus the last segment form one group. Judge S1-2 (label/description overlap) and S1-4 (mixed endings) inside a group, never globally.
 4. **Apply rules** — S1 on every hit, S2 only when the pattern repeats within a group.
+   Under `ui audit`, stop at detection: record each hit in `rules` and explain it in
+   `note`, but leave `after` byte-identical to `before` on every item.
 5. **Self-verify** against the checklist at the end of `references/ui-strings-ko.md`, then emit the JSON array alone — no preamble, no code fence, no trailing commentary.
 
 ## Core Process
