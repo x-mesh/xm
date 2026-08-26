@@ -18,7 +18,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, linkSync, unlinkSync, lstatSync, statSync, realpathSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { evalDir } from './root.mjs';
-import { ASSERTION_KINDS, parseSpec } from './assert.mjs';
+import { ASSERTION_KINDS, parseSpec, MAX_EXECUTABLE_ASSERTIONS } from './assert.mjs';
 
 export const CASE_SCHEMA_V = 1;
 export const RISK_LEVELS = ['normal', 'high'];
@@ -158,6 +158,7 @@ function validateTaskCase(payload, expectedId) {
   for (const tag of payload.tags) if (typeof tag !== 'string' || !TAG_RE.test(tag)) throw new Error(`case tag "${tag}" is invalid`);
   if (!RISK_LEVELS.includes(payload.risk)) throw new Error(`case risk must be one of ${RISK_LEVELS.join('|')}`);
   if (!Array.isArray(payload.assertions) || payload.assertions.length > MAX_ASSERTIONS) throw new Error(`case assertions must be an array of at most ${MAX_ASSERTIONS} items`);
+  if (payload.assertions.filter(item => item?.kind !== 'judge').length > MAX_EXECUTABLE_ASSERTIONS) throw new Error(`case exceeds ${MAX_EXECUTABLE_ASSERTIONS} executable assertions`);
   for (const item of payload.assertions) {
     const normalized = normalizeAssertion(item);
     if (canonicalJson(normalized) !== canonicalJson(item)) throw new Error('case assertion is not in canonical schema');

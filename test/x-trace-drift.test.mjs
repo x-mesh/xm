@@ -5,7 +5,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { collectEvalRows, collectPrecisionRows, compareWindows, parseTraceFileName, driftReport, MAX_EVAL_SCORE_BYTES, THRESHOLDS } from '../x-trace/lib/x-trace/drift.mjs';
+import {
+  collectCostRows, collectEvalRows, collectPrecisionRows, collectTraceRows,
+  compareWindows, driftReport, formatDriftReport, parseTraceFileName, readJsonl,
+  MAX_EVAL_SCORE_BYTES, THRESHOLDS,
+} from '../x-trace/lib/x-trace/drift.mjs';
 
 const CLI = fileURLToPath(new URL('../x-trace/lib/x-trace-cli.mjs', import.meta.url));
 const NOW = '2026-08-26T00:00:00.000Z';
@@ -128,6 +132,84 @@ describe('drift: pure helpers', () => {
     const report = driftReport({ xmDir: join(dir, '.xm'), now: NOW_MS, axes: ['quality'] });
     expect(report.coverage).toContain('quality: 10 invalid, oversized, or symlinked score file(s) skipped');
   });
+
+  test('JSONL reader rejects unsafe files and enforces file, line, and row bounds', () => {
+    const dir = makeXm();
+    const base = join(dir, '.xm');
+    const rowsPath = join(base, 'bounded.jsonl');
+    writeFileSync(rowsPath, ['{"id":1}', '{"id":2}', '{"id":3}'].join('\n') + '\n');
+    expect(readJsonl(rowsPath, { maxFileBytes: 1024, maxLineBytes: 64, maxRows: 2 })).toEqual({
+      rows: [{ id: 1 }, { id: 2 }], skipped: 1,
+    });
+
+    const longLinePath = join(base, 'long-line.jsonl');
+    writeFileSync(longLinePath, `${JSON.stringify({ pad: 'x'.repeat(80) })}\n{"ok":true}\n`);
+    expect(readJsonl(longLinePath, { maxFileBytes: 1024, maxLineBytes: 32, maxRows: 10 })).toEqual({
+      rows: [{ ok: true }], skipped: 1,
+    });
+
+    const oversizedPath = join(base, 'oversized.jsonl');
+    writeFileSync(oversizedPath, 'x'.repeat(65));
+    expect(readJsonl(oversizedPath, { maxFileBytes: 64 })).toEqual({ rows: [], skipped: 1 });
+    const linkedPath = join(base, 'linked.jsonl');
+    symlinkSync(rowsPath, linkedPath);
+    expect(readJsonl(linkedPath)).toEqual({ rows: [], skipped: 1 });
+    const directoryPath = join(base, 'directory.jsonl');
+    mkdirSync(directoryPath);
+    expect(readJsonl(directoryPath)).toEqual({ rows: [], skipped: 1 });
+    const fifoPath = join(base, 'fifo.jsonl');
+    expect(spawnSync('mkfifo', [fifoPath]).status).toBe(0);
+    expect(readJsonl(fifoPath)).toEqual({ rows: [], skipped: 1 });
+
+    const outside = mkdtempSync(join(tmpdir(), 'xm-drift-jsonl-outside-'));
+    tmpdirs.push(outside);
+    writeFileSync(join(outside, 'outside.jsonl'), '{"outside":true}\n');
+    symlinkSync(outside, join(base, 'linked-parent'), 'dir');
+    expect(readJsonl(join(base, 'linked-parent', 'outside.jsonl'), { boundary: base })).toEqual({ rows: [], skipped: 1 });
+  });
+
+  test('trace collector rejects a symlinked XM root instead of reading external traces', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'xm-drift-root-link-'));
+    const outside = mkdtempSync(join(tmpdir(), 'xm-drift-root-outside-'));
+    tmpdirs.push(dir, outside);
+    mkdirSync(join(outside, 'traces'), { recursive: true });
+    symlinkSync(outside, join(dir, '.xm'), 'dir');
+    const trace = join(outside, 'traces', 'review-20260825-120000-ab12.jsonl');
+    writeFileSync(trace, JSON.stringify({ type: 'agent_step', ts: NOW, duration_ms: 10, status: 'success' }) + '\n');
+
+    expect(collectTraceRows(join(dir, '.xm', 'traces'))).toMatchObject({ steps: [], sessions: [], skipped: 1 });
+  });
+
+  test('collectors canonicalize grouping identifiers and formatter strips terminal controls', () => {
+    const dir = makeXm();
+    const tracePath = join(dir, '.xm', 'traces', 'review-20260825-120000-ab12.jsonl');
+    writeFileSync(tracePath, [
+      { type: 'session_start', skill: '\x1b[31mReview\x1b[0m', session_id: 's1', ts: NOW },
+      { type: 'agent_step', id: 'a1', role: ' S\x1b[32mE ', model: 'Son\nnet', duration_ms: 10, session_id: 's1', ts: NOW },
+      { type: 'session_end', status: 'success', session_id: 's1', ts: NOW },
+    ].map(row => JSON.stringify(row)).join('\n') + '\n');
+    const trace = collectTraceRows(join(dir, '.xm', 'traces'));
+    expect(trace.steps[0]).toMatchObject({ skill: 'review', role: 'se', model: 'sonnet' });
+    expect(trace.sessions[0].skill).toBe('review');
+
+    const precisionPath = join(dir, '.xm', 'review', 'triage-ledger.jsonl');
+    mkdirSync(join(dir, '.xm', 'review'), { recursive: true });
+    writeFileSync(precisionPath, [
+      { schema_v: 1, type: 'triage_decision', ts: NOW, lens: '\x1b[31mLogic\x1b[0m', decision: 'fix_now' },
+      { schema_v: 1, type: 'triage_decision', ts: NOW, lens: 'bad lens', decision: 'false_positive' },
+    ].map(row => JSON.stringify(row)).join('\n') + '\n');
+    expect(collectPrecisionRows(precisionPath).rows.map(row => row.lens)).toEqual(['logic', 'unknown']);
+
+    const report = {
+      window: { spec: '7d', from: NOW, to: NOW }, baseline: { spec: '28d' }, min_samples: 1,
+      xm_version: null, thresholds: THRESHOLDS, coverage: [],
+      axes: { cost: { unit: 'cost', rows: [{ key: '\x1b[2Jmodel\nforged', baseline: { value: 1, n: 1 }, window: { value: 2, n: 1 }, delta: 1, delta_pct: 1, flagged: true, enough_samples: true }] } },
+      flags: [{ axis: 'cost', key: '\x1b]0;owned\x07model\nforged' }],
+    };
+    const output = formatDriftReport(report);
+    expect(output).not.toContain('\x1b');
+    expect(output).not.toContain('\nforged\n');
+  });
 });
 
 describe('drift: report over a seeded .xm', () => {
@@ -223,14 +305,22 @@ describe('drift: report over a seeded .xm', () => {
     mkdirSync(metrics, { recursive: true });
     const event = (eventId, daysAgo, cost, source) => ({ type: 'task_complete', event_id: eventId, timestamp: iso(daysAgo), model: 'sonnet', role: 'executor', cost_source: source, cost_usd: cost });
     const rotated = [event('b1', 10, 1, 'actual'), event('b2', 11, 1, 'actual'), event('dup', 12, 1, 'actual')];
-    const active = [event('w1', 1, 2, 'actual'), event('w2', 2, 2, 'actual'), event('dup', 12, 99, 'actual'), event('e1', 1, 50, 'estimated'), event('e2', 2, 50, 'estimated')];
+    const active = [
+      event('w1', 1, 2, 'actual'), event('w2', 2, 2, 'actual'), event('dup', 12, 99, 'actual'),
+      event('e1', 1, 50, 'estimated'), event('e2', 2, 50, 'estimated'),
+      event('negative', 1, -1, 'actual'), event('string', 1, '3', 'actual'),
+    ];
     writeFileSync(join(metrics, 'sessions.jsonl.1'), rotated.map(row => JSON.stringify(row)).join('\n') + '\n');
     writeFileSync(join(metrics, 'sessions.jsonl'), active.map(row => JSON.stringify(row)).join('\n') + '\n');
 
+    const collected = collectCostRows([join(metrics, 'sessions.jsonl.1'), join(metrics, 'sessions.jsonl')]);
+    expect(collected.invalid).toBe(2);
+    expect(collected.rows.every(row => typeof row.cost_usd === 'number' && row.cost_usd >= 0)).toBe(true);
     const report = driftReport({ xmDir: join(dir, '.xm'), now: NOW_MS, axes: ['cost'], minSamples: 2 });
     expect(report.axes.cost.rows.find(row => row.key === 'sonnet/executor/actual')).toMatchObject({ baseline: { n: 3, value: 1 }, window: { n: 2, value: 2 }, flagged: true });
     expect(report.axes.cost.rows.find(row => row.key === 'sonnet/executor/estimated')).toMatchObject({ baseline: { n: 0 }, window: { n: 2, value: 50 }, enough_samples: false, flagged: false });
     expect(report.coverage.some(note => note.includes('duplicate event_id'))).toBe(true);
+    expect(report.coverage).toContain('cost: 2 task_complete row(s) with invalid timestamp or cost that is not a finite non-negative number skipped');
   });
 
   test('CLI: --json schema, snapshot append, --axis filter, --fail-on-flag exit 2, bad --window exit 1', () => {

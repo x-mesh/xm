@@ -28,7 +28,7 @@ import {
   closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync,
   openSync, readFileSync, readSync, readdirSync, realpathSync, writeSync,
 } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { resolveXmDir } from './trace-writer.mjs';
 
 export const DEFAULT_WINDOW = '7d';
@@ -37,7 +37,13 @@ export const DEFAULT_MIN_SAMPLES = 5;
 export const AXES = ['latency', 'tokens', 'errors', 'quality', 'precision', 'cost'];
 export const MAX_EVAL_SCORE_BYTES = 1024 * 1024;
 export const MAX_DRIFT_SNAPSHOT_BYTES = 64 * 1024;
+export const MAX_JSONL_FILE_BYTES = 16 * 1024 * 1024;
+export const MAX_JSONL_LINE_BYTES = 256 * 1024;
+export const MAX_JSONL_ROWS = 100_000;
 const SCORE_IDENTIFIER_RE = /^[a-z0-9][a-z0-9._:|-]{0,63}$/;
+const GROUP_IDENTIFIER_RE = /^[a-z0-9][a-z0-9._:-]{0,63}$/;
+const ANSI_ESCAPE_RE = /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)?)/g;
+const FORMAT_CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g;
 /** Candidate thresholds (see header). ratio = relative change, pp = percentage points, abs = absolute. */
 export const THRESHOLDS = {
   latency: { kind: 'ratio', direction: 'up', value: 0.25 },
@@ -75,17 +81,50 @@ function round(value, digits = 2) {
   return Math.round(Number(value) * factor) / factor;
 }
 
-/** Tolerant JSONL reader — torn or malformed lines are skipped and counted. */
-export function readJsonl(path) {
+/** Tolerant, bounded JSONL reader — unsafe, torn, or malformed input is skipped. */
+export function readJsonl(path, {
+  maxFileBytes = MAX_JSONL_FILE_BYTES,
+  maxLineBytes = MAX_JSONL_LINE_BYTES,
+  maxRows = MAX_JSONL_ROWS,
+  boundary = null,
+} = {}) {
   const rows = [];
   let skipped = 0;
   if (!existsSync(path)) return { rows, skipped };
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
+  if (boundary && !safeReadPath(boundary, path)) return { rows, skipped: 1 };
+  let raw;
+  try { raw = readBoundedRegularFile(path, maxFileBytes); } catch { raw = null; }
+  if (raw == null) return { rows, skipped: 1 };
+  let sourceRows = 0;
+  for (const line of raw.split('\n')) {
+    if (Buffer.byteLength(line, 'utf8') > maxLineBytes) { skipped += 1; continue; }
     const trimmed = line.trim();
     if (!trimmed) continue;
+    sourceRows += 1;
+    if (sourceRows > maxRows) { skipped += 1; break; }
     try { rows.push(JSON.parse(trimmed)); } catch { skipped += 1; }
   }
   return { rows, skipped };
+}
+
+function safeReadPath(boundary, path) {
+  const root = resolve(boundary);
+  const target = resolve(path);
+  const rel = relative(root, target);
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return false;
+  try {
+    const rootInfo = lstatSync(root);
+    if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) return false;
+    let cursor = root;
+    const parentRel = relative(root, dirname(target));
+    if (parentRel === '..' || parentRel.startsWith(`..${sep}`) || isAbsolute(parentRel)) return false;
+    for (const part of parentRel ? parentRel.split(sep) : []) {
+      cursor = join(cursor, part);
+      const info = lstatSync(cursor);
+      if (info.isSymbolicLink() || !info.isDirectory()) return false;
+    }
+    return true;
+  } catch { return false; }
 }
 
 /** `{skill}-YYYYMMDD-HHMMSS-{hex}[.host-suffix].jsonl` → { skill, fileTime } */
@@ -105,14 +144,18 @@ function timeOf(value, fallback = NaN) {
 
 // ── collectors ───────────────────────────────────────────────────────
 
-export function collectTraceRows(traceDir) {
+export function collectTraceRows(traceDir, { minTs = -Infinity, maxTs = Infinity } = {}) {
   const steps = [];
   const sessions = [];
   const seenEvents = new Set();
   let files = 0;
   let skipped = 0;
   if (!existsSync(traceDir)) return { steps, sessions, files, skipped };
-  for (const name of readdirSync(traceDir)) {
+  try {
+    const dir = lstatSync(traceDir);
+    if (dir.isSymbolicLink() || !dir.isDirectory()) return { steps, sessions, files, skipped: 1 };
+  } catch { return { steps, sessions, files, skipped: 1 }; }
+  traceFiles: for (const name of readdirSync(traceDir)) {
     if (!name.endsWith('.jsonl')) continue;
     const path = join(traceDir, name);
     try { if (lstatSync(path).isSymbolicLink()) { skipped += 1; continue; } } catch { continue; }
@@ -120,15 +163,16 @@ export function collectTraceRows(traceDir) {
     const { skill: fileSkill, fileTime } = parseTraceFileName(name);
     const traceMatch = name.replace(/\.jsonl$/, '').match(/^(.*?-\d{8}-\d{6}-[0-9a-f]+)(?:\..*)?$/i);
     const fileSessionId = traceMatch?.[1] || name;
-    const parsed = readJsonl(path);
+    const parsed = readJsonl(path, { boundary: dirname(traceDir) });
     skipped += parsed.skipped;
-    let skill = fileSkill;
+    let skill = canonicalIdentifier(fileSkill);
     for (const entry of parsed.rows) {
-      if (entry.type === 'session_start' && typeof entry.skill === 'string' && entry.skill) skill = entry.skill;
+      if (entry.type === 'session_start' && typeof entry.skill === 'string' && entry.skill) skill = canonicalIdentifier(entry.skill);
     }
     for (const [entryIndex, entry] of parsed.rows.entries()) {
+      if (steps.length + sessions.length >= MAX_JSONL_ROWS) { skipped += 1; break traceFiles; }
       const ts = timeOf(entry.ts, fileTime);
-      if (!Number.isFinite(ts)) continue;
+      if (!Number.isFinite(ts) || ts < minTs || ts > maxTs) continue;
       const sessionId = typeof entry.session_id === 'string' && entry.session_id
         ? entry.session_id
         : fileSessionId;
@@ -143,7 +187,7 @@ export function collectTraceRows(traceDir) {
           ? (Number(entry.tokens_est.input) || 0) + (Number(entry.tokens_est.output) || 0)
           : null;
         steps.push({
-          ts, session_id: sessionId, skill, role: entry.role || 'unknown', model: entry.model || 'unknown',
+          ts, session_id: sessionId, skill, role: canonicalIdentifier(entry.role), model: canonicalIdentifier(entry.model),
           duration_ms: Number.isFinite(Number(entry.duration_ms)) ? Number(entry.duration_ms) : null,
           tokens_total: tokens != null && tokens > 0 ? tokens : null,
           status: entry.status || 'unknown',
@@ -190,20 +234,24 @@ export function collectEvalRows(resultsDir) {
 }
 
 function readBoundedRegularFile(path, maxBytes) {
-  if (!Number.isInteger(constants.O_NOFOLLOW)) return null;
+  if (!Number.isInteger(constants.O_NOFOLLOW) || !Number.isInteger(constants.O_NONBLOCK)) return null;
   let fd;
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // O_NONBLOCK lets us inspect and reject FIFOs/devices without blocking in
+    // open(2) before fstat can prove this is a regular file.
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const file = fstatSync(fd);
     if (!file.isFile() || file.size > maxBytes) return null;
-    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    // Read one byte beyond the observed size so concurrent growth still fails
+    // closed without allocating the full ceiling for every small source file.
+    const buffer = Buffer.allocUnsafe(Math.min(file.size, maxBytes) + 1);
     let bytes = 0;
     while (bytes < buffer.byteLength) {
       const read = readSync(fd, buffer, bytes, buffer.byteLength - bytes, bytes);
       if (read === 0) break;
       bytes += read;
     }
-    return bytes <= maxBytes ? buffer.subarray(0, bytes).toString('utf8') : null;
+    return bytes <= file.size && bytes <= maxBytes ? buffer.subarray(0, bytes).toString('utf8') : null;
   } finally {
     if (fd != null) closeSync(fd);
   }
@@ -216,52 +264,70 @@ function normalizeScoreIdentifier(value, fallback) {
   return SCORE_IDENTIFIER_RE.test(normalized) ? normalized : null;
 }
 
-export function collectCostRows(paths) {
+function stripFormatterControls(value) {
+  return String(value ?? '').replace(ANSI_ESCAPE_RE, '').replace(FORMAT_CONTROL_RE, '');
+}
+
+function canonicalIdentifier(value, fallback = 'unknown') {
+  if (value == null) return fallback;
+  if (typeof value !== 'string') return fallback;
+  const normalized = stripFormatterControls(value).trim().toLowerCase();
+  return GROUP_IDENTIFIER_RE.test(normalized) ? normalized : fallback;
+}
+
+export function collectCostRows(paths, { minTs = -Infinity, maxTs = Infinity, boundary = null } = {}) {
   const rows = [];
   const seenEventIds = new Set();
   let skipped = 0;
+  let invalid = 0;
   let duplicates = 0;
-  for (const path of paths) {
-    const parsed = readJsonl(path);
+  costFiles: for (const path of paths) {
+    const parsed = readJsonl(path, { boundary });
     skipped += parsed.skipped;
     for (const entry of parsed.rows) {
+      if (rows.length >= MAX_JSONL_ROWS) { skipped += 1; break costFiles; }
       if (entry.type !== 'task_complete') continue;
+      const cost = entry.cost_usd;
+      const ts = timeOf(entry.timestamp || entry.ts);
+      if (typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0 || !Number.isFinite(ts)) {
+        invalid += 1;
+        continue;
+      }
+      if (ts < minTs || ts > maxTs) continue;
       if (typeof entry.event_id === 'string' && entry.event_id) {
         if (seenEventIds.has(entry.event_id)) { duplicates += 1; continue; }
         seenEventIds.add(entry.event_id);
       }
-      const cost = Number(entry.cost_usd);
-      const ts = timeOf(entry.timestamp || entry.ts);
-      if (!Number.isFinite(cost) || !Number.isFinite(ts)) continue;
       rows.push({
         ts,
-        model: entry.model || 'unknown',
-        role: entry.role || 'unknown',
-        strategy: entry.strategy || 'unknown',
-        cost_source: entry.cost_source || 'legacy',
+        model: canonicalIdentifier(entry.model),
+        role: canonicalIdentifier(entry.role),
+        strategy: canonicalIdentifier(entry.strategy),
+        cost_source: canonicalIdentifier(entry.cost_source, 'legacy'),
         cost_usd: cost,
       });
     }
   }
-  return { rows, skipped, duplicates };
+  return { rows, skipped, invalid, duplicates };
 }
 
-export function collectPrecisionRows(ledgerPath) {
-  const parsed = readJsonl(ledgerPath);
+export function collectPrecisionRows(ledgerPath, { minTs = -Infinity, maxTs = Infinity, boundary = null } = {}) {
+  const parsed = readJsonl(ledgerPath, { boundary });
   const rows = [];
+  let limited = false;
   for (const entry of parsed.rows) {
     if (entry.schema_v !== 1 || entry.type !== 'triage_decision') continue;
     const ts = timeOf(entry.ts);
-    if (!Number.isFinite(ts)) continue;
+    if (!Number.isFinite(ts) || ts < minTs || ts > maxTs) continue;
     const values = [entry.lens, ...(Array.isArray(entry.lenses) ? entry.lenses : [])];
-    const lenses = [...new Set(values
-      .filter(value => typeof value === 'string' && value.trim())
-      .map(value => value.trim().toLowerCase()))];
+    const lenses = [...new Set(values.map(value => canonicalIdentifier(value, null)).filter(Boolean))];
     for (const lens of lenses.length > 0 ? lenses : ['unknown']) {
+      if (rows.length >= MAX_JSONL_ROWS) { limited = true; break; }
       rows.push({ ts, lens, decision: entry.decision });
     }
+    if (limited) break;
   }
-  return { rows, skipped: parsed.skipped };
+  return { rows, skipped: parsed.skipped + Number(limited) };
 }
 
 // ── comparison ───────────────────────────────────────────────────────
@@ -367,13 +433,14 @@ export function driftReport({ xmDir = resolveXmDir(), window = DEFAULT_WINDOW, b
     coverage,
   };
   const common = { now, windowMs, baselineMs, minSamples };
+  const sourceWindow = { minTs: now - windowMs - baselineMs, maxTs: now, boundary: xmDir };
   const need = axis => axes.includes(axis);
 
   let trace = null;
   if (need('latency') || need('tokens') || need('errors')) {
-    trace = collectTraceRows(join(xmDir, 'traces'));
+    trace = collectTraceRows(join(xmDir, 'traces'), sourceWindow);
     if (trace.files === 0) coverage.push('traces: no .xm/traces/*.jsonl files — latency, tokens, and errors axes have no data');
-    else if (trace.skipped > 0) coverage.push(`traces: ${trace.skipped} malformed line(s)/symlink(s) skipped`);
+    if (trace.skipped > 0) coverage.push(`traces: ${trace.skipped} malformed, oversized, or unsafe JSONL input(s)/line(s) skipped`);
   }
   if (need('latency')) {
     const rows = sessionMetricRows(trace.steps, 'duration_ms');
@@ -397,8 +464,9 @@ export function driftReport({ xmDir = resolveXmDir(), window = DEFAULT_WINDOW, b
     report.axes.quality = { unit: 'judge overall (mean, 1-10)', rows: compareWindows(evalRows.rows, { ...common, axis: 'quality', keyOf: r => `${r.rubric}/${r.strategy}`, statOf: rs => mean(rs.map(r => r.overall)) }) };
   }
   if (need('precision')) {
-    const ledger = collectPrecisionRows(join(xmDir, 'review', 'triage-ledger.jsonl'));
+    const ledger = collectPrecisionRows(join(xmDir, 'review', 'triage-ledger.jsonl'), sourceWindow);
     if (!ledger.rows.length) coverage.push('precision: no .xm/review/triage-ledger.jsonl decisions — x-build verify-review-fix writes them when a triage passes');
+    if (ledger.skipped) coverage.push(`precision: ${ledger.skipped} malformed, oversized, or unsafe JSONL input(s)/line(s) skipped`);
     const comparable = ledger.rows.filter(r => r.decision === 'fix_now' || r.decision === 'false_positive');
     report.axes.precision = { unit: 'fix_now / (fix_now + false_positive)', rows: compareWindows(comparable, { ...common, axis: 'precision', keyOf: r => r.lens, statOf: precisionOf }) };
   }
@@ -409,8 +477,10 @@ export function driftReport({ xmDir = resolveXmDir(), window = DEFAULT_WINDOW, b
       join(xmDir, 'build', 'metrics', 'sessions.jsonl'),
       join(xmDir, 'build', 'metrics', 'sessions.jsonl.1'),
     ];
-    const cost = collectCostRows(costPaths);
+    const cost = collectCostRows(costPaths, sourceWindow);
     if (!cost.rows.length) coverage.push('cost: no task_complete rows in .xm/metrics/sessions.jsonl — axis has no data (all cost figures are estimates when present)');
+    if (cost.skipped) coverage.push(`cost: ${cost.skipped} malformed, oversized, or unsafe JSONL input(s)/line(s) skipped`);
+    if (cost.invalid) coverage.push(`cost: ${cost.invalid} task_complete row(s) with invalid timestamp or cost that is not a finite non-negative number skipped`);
     if (cost.duplicates) coverage.push(`cost: ${cost.duplicates} duplicate event_id row(s) excluded across active/rotated logs`);
     report.axes.cost = { unit: 'cost_usd (p50, estimate)', rows: compareWindows(cost.rows, { ...common, axis: 'cost', keyOf: r => `${r.model}/${r.role}/${r.cost_source}`, statOf: rs => percentile50(rs.map(r => r.cost_usd)) }) };
   }
@@ -498,12 +568,12 @@ export function formatDriftReport(report) {
     for (const row of data.rows.slice(0, 40)) {
       const delta = row.delta == null ? '—' : (THRESHOLDS[axis].kind === 'ratio' && row.delta_pct != null ? `${row.delta_pct >= 0 ? '+' : ''}${Math.round(row.delta_pct * 100)}%` : `${row.delta >= 0 ? '+' : ''}${fmt(row.delta, axis)}`);
       const flag = row.flagged ? '⚠ drift' : row.enough_samples ? 'ok' : `n<${report.min_samples}`;
-      lines.push(`| ${row.key} | ${fmt(row.baseline.value, axis)} (${row.baseline.n}) | ${fmt(row.window.value, axis)} (${row.window.n}) | ${delta} | ${flag} |`);
+      lines.push(`| ${stripFormatterControls(row.key).replace(/\|/g, '\\|')} | ${fmt(row.baseline.value, axis)} (${row.baseline.n}) | ${fmt(row.window.value, axis)} (${row.window.n}) | ${delta} | ${flag} |`);
     }
     if (data.rows.length > 40) lines.push(`  … ${data.rows.length - 40} more key(s) (use --json)`);
   }
   lines.push('');
-  lines.push(report.flags.length ? `⚠ ${report.flags.length} flag(s): ${report.flags.map(f => `${f.axis}:${f.key}`).join(', ')}` : '✓ no drift flags');
+  lines.push(report.flags.length ? `⚠ ${report.flags.length} flag(s): ${report.flags.map(f => `${f.axis}:${stripFormatterControls(f.key)}`).join(', ')}` : '✓ no drift flags');
   for (const note of report.coverage) lines.push(`Note: ${note}`);
   lines.push('Note: activity that was never traced or recorded is invisible here — coverage is best-effort.');
   return lines.join('\n');

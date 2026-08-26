@@ -23,6 +23,9 @@ import { createHash } from 'node:crypto';
 
 export const ASSERTION_KINDS = ['cmd', 'file', 'grep', 'json'];
 export const DEFAULT_TIMEOUT_MS = 120_000;
+export const MAX_TIMEOUT_MS = 120_000;
+export const DEFAULT_SUITE_TIMEOUT_MS = 300_000;
+export const MAX_EXECUTABLE_ASSERTIONS = 64;
 export const DEFAULT_GREP_TIMEOUT_MS = 2_000;
 export const MAX_GREP_FILE_BYTES = 1024 * 1024;
 export const MAX_GREP_PATTERN_CHARS = 4_096;
@@ -31,6 +34,7 @@ const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 // allowed: `node -e process.exit(0)` is literal argv without a shell.
 const SHELL_META = new Set([';', '|', '&', '<', '>', '`', '$', '\n']);
 const ENV_ALLOWLIST = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'TERM', 'SHELL', 'USER', 'LOGNAME', 'XM_ROOT', 'NODE_ENV', 'CI', 'BUN_INSTALL'];
+const ENV_NAME_RE = /^[A-Z_][A-Z0-9_]*$/;
 
 const sha256 = (value) => createHash('sha256').update(String(value)).digest('hex');
 
@@ -114,6 +118,15 @@ function baseEnv(extraKeys = []) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
   return env;
+}
+
+function validateExecutionOptions(items, { timeoutMs, suiteTimeoutMs, envKeys }) {
+  if (!Array.isArray(items)) throw new Error('assertion suite items must be an array');
+  if (items.length > MAX_EXECUTABLE_ASSERTIONS) throw new Error(`assertion suite exceeds ${MAX_EXECUTABLE_ASSERTIONS} executable assertions`);
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) throw new Error(`assertion timeout must be an integer between 1 and ${MAX_TIMEOUT_MS}ms`);
+  if (!Number.isInteger(suiteTimeoutMs) || suiteTimeoutMs <= 0 || suiteTimeoutMs > DEFAULT_SUITE_TIMEOUT_MS) throw new Error(`assertion suite timeout must be an integer between 1 and ${DEFAULT_SUITE_TIMEOUT_MS}ms`);
+  const invalid = envKeys.filter(key => typeof key !== 'string' || !ENV_NAME_RE.test(key));
+  if (invalid.length) throw new Error(`assertion environment name is invalid: ${String(invalid[0])}`);
 }
 
 function finish(row, result, extra = {}) {
@@ -212,13 +225,24 @@ export function runJson({ name, spec, cwd }) {
  * Run a list of assertions. Each item: { kind, name, spec|command }.
  * Returns { results, passed, hard_fail } — `passed` is false on any HARD_FAIL.
  */
-export function runAssertions(items, { cwd = process.cwd(), timeoutMs = DEFAULT_TIMEOUT_MS, envKeys = [] } = {}) {
+export function runAssertions(items, { cwd = process.cwd(), timeoutMs = DEFAULT_TIMEOUT_MS, suiteTimeoutMs = DEFAULT_SUITE_TIMEOUT_MS, envKeys = [] } = {}) {
+  validateExecutionOptions(items, { timeoutMs, suiteTimeoutMs, envKeys });
   const results = [];
-  for (const item of items) {
+  const started = Date.now();
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index];
+    const remainingMs = suiteTimeoutMs - (Date.now() - started);
+    if (remainingMs <= 0) {
+      for (const pending of items.slice(index)) {
+        results.push({ name: pending.name || '?', kind: String(pending.kind), result: 'HARD_FAIL', error_code: 'ETIMEDOUT', error: `assertion suite timed out after ${suiteTimeoutMs}ms` });
+      }
+      break;
+    }
+    const itemTimeoutMs = Math.min(timeoutMs, remainingMs);
     switch (item.kind) {
-      case 'cmd': results.push(runCmd({ name: item.name, command: item.command ?? item.spec, cwd, timeoutMs, envKeys })); break;
+      case 'cmd': results.push(runCmd({ name: item.name, command: item.command ?? item.spec, cwd, timeoutMs: itemTimeoutMs, envKeys })); break;
       case 'file': results.push(runFile({ name: item.name, spec: item.spec, cwd })); break;
-      case 'grep': results.push(runGrep({ name: item.name, spec: item.spec, cwd, timeoutMs })); break;
+      case 'grep': results.push(runGrep({ name: item.name, spec: item.spec, cwd, timeoutMs: itemTimeoutMs })); break;
       case 'json': results.push(runJson({ name: item.name, spec: item.spec, cwd })); break;
       default: results.push({ name: item.name || '?', kind: String(item.kind), result: 'HARD_FAIL', error_code: 'EINVAL', error: `unknown assertion kind "${item.kind}"` });
     }

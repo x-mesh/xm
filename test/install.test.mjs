@@ -216,12 +216,12 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
     const pluginReference = join(tmp, 'plugins', 'xm', 'skills', 'build', reference);
     const standaloneReference = join(tmp, '.agents', 'skills', 'xm-build', reference);
 
-    expect(run(['--target', 'codex', '--skills-dir', skillsCopy, '--lib-dir', LIB], { cwd: tmp }).status).toBe(0);
+    expect(run(['--target', 'codex', '--skills-dir', skillsCopy, '--lib-dir', LIB, '--allow-unverified'], { cwd: tmp }).status).toBe(0);
     expect(existsSync(pluginReference)).toBe(true);
     expect(existsSync(standaloneReference)).toBe(true);
 
     unlinkSync(join(skillsCopy, 'build', reference));
-    const reinstall = run(['--target', 'codex', '--skills-dir', skillsCopy, '--lib-dir', LIB], { cwd: tmp });
+    const reinstall = run(['--target', 'codex', '--skills-dir', skillsCopy, '--lib-dir', LIB, '--allow-unverified'], { cwd: tmp });
     expect(reinstall.status).toBe(0);
     expect(existsSync(pluginReference)).toBe(false);
     expect(existsSync(standaloneReference)).toBe(false);
@@ -491,6 +491,34 @@ describe('install-cli — supply-chain guard (R-SEC-02)', () => {
     const r = run(['--target', 'cursor', '--skills-dir', fakeSkills, '--lib-dir', LIB, '--allow-unverified'], { cwd: tmp });
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/bypassed source verification/);
+    const manifest = JSON.parse(readFileSync(join(tmp, '.cursor', 'xm', 'manifest.json'), 'utf8'));
+    expect(manifest.files.length).toBeGreaterThan(0);
+    expect(manifest.files.every(entry => entry.unverified === true)).toBe(true);
+  });
+  test('missing checksum registry fails without an explicit opt-out', () => {
+    const tmp = seedTmp();
+    const sourceRoot = makeTmp('xm-missing-registry-');
+    const fakeSkills = join(sourceRoot, 'skills');
+    mkdirSync(join(fakeSkills, 'handoff'), { recursive: true });
+    copyFileSync(join(SKILLS, 'handoff', 'SKILL.md'), join(fakeSkills, 'handoff', 'SKILL.md'));
+
+    const r = run(['--target', 'cursor', '--skills-dir', fakeSkills, '--lib-dir', LIB, '--list'], { cwd: tmp });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('R-SEC-02');
+    expect(r.stderr).toContain('checksum registry not found');
+    expect(existsSync(join(tmp, '.cursor', 'xm', 'manifest.json'))).toBe(false);
+  });
+  test('missing registry opt-out is visible and marks every manifest entry unverified', () => {
+    const tmp = seedTmp();
+    const sourceRoot = makeTmp('xm-missing-registry-optout-');
+    const fakeSkills = join(sourceRoot, 'skills');
+    mkdirSync(join(fakeSkills, 'handoff'), { recursive: true });
+    copyFileSync(join(SKILLS, 'handoff', 'SKILL.md'), join(fakeSkills, 'handoff', 'SKILL.md'));
+
+    const r = run(['--target', 'cursor', '--skills-dir', fakeSkills, '--lib-dir', LIB, '--allow-unverified'], { cwd: tmp });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('bypassed source verification');
+    expect(r.stdout).toContain('manifest entries flagged unverified=true');
     const manifest = JSON.parse(readFileSync(join(tmp, '.cursor', 'xm', 'manifest.json'), 'utf8'));
     expect(manifest.files.length).toBeGreaterThan(0);
     expect(manifest.files.every(entry => entry.unverified === true)).toBe(true);

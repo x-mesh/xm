@@ -23,6 +23,13 @@ const REPO = resolve(HERE, '..', '..');
 const SKILLS_DIR = resolve(REPO, 'xm', 'skills');
 const LIB_DIR = resolve(REPO, 'xm', 'lib');
 const CHECKSUM_PATH = resolve(REPO, 'xm', 'skills.checksums.json');
+const REGISTRY_PLUGIN_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const REGISTRY_KEYS = new Set(['generatedAt', 'version', 'skills']);
+const REGISTRY_ROW_KEYS = new Set([
+  'plugin', 'sha256', 'bytes', 'referencesSha256', 'referenceFiles',
+  'referenceBytes', 'assetsSha256', 'assetFiles', 'assetBytes',
+]);
 
 /**
  * @returns {{ generatedAt: number, version: 3, skills: { plugin: string, sha256: string, bytes: number, referencesSha256: string, referenceFiles: number, referenceBytes: number, assetsSha256: string, assetFiles: number, assetBytes: number }[] }}
@@ -49,6 +56,40 @@ function build() {
   };
 }
 
+function validateStoredRegistry(stored, fresh) {
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) throw new Error('registry must be a JSON object');
+  const topLevelExtras = Object.keys(stored).filter((key) => !REGISTRY_KEYS.has(key));
+  if (topLevelExtras.length > 0) throw new Error(`registry contains unsupported field: ${topLevelExtras[0]}`);
+  if (stored.version !== fresh.version) throw new Error(`registry schema must be version ${fresh.version}`);
+  if (!Number.isInteger(stored.generatedAt) || stored.generatedAt < 0) throw new Error('registry generatedAt must be a non-negative integer');
+  if (!Array.isArray(stored.skills)) throw new Error('registry skills must be an array');
+
+  const seen = new Set();
+  for (const row of stored.skills) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error('registry skill rows must be JSON objects');
+    const rowExtras = Object.keys(row).filter((key) => !REGISTRY_ROW_KEYS.has(key));
+    if (rowExtras.length > 0) throw new Error(`registry skill row contains unsupported field: ${rowExtras[0]}`);
+    if (typeof row.plugin !== 'string' || !REGISTRY_PLUGIN_RE.test(row.plugin)) throw new Error(`invalid registry plugin identifier: ${String(row.plugin)}`);
+    if (seen.has(row.plugin)) throw new Error(`duplicate registry plugin: ${row.plugin}`);
+    seen.add(row.plugin);
+    for (const field of ['sha256', 'referencesSha256', 'assetsSha256']) {
+      if (typeof row[field] !== 'string' || !SHA256_RE.test(row[field])) throw new Error(`registry ${row.plugin}.${field} must be a SHA-256 digest`);
+    }
+    for (const field of ['bytes', 'referenceFiles', 'referenceBytes', 'assetFiles', 'assetBytes']) {
+      if (!Number.isInteger(row[field]) || row[field] < 0) throw new Error(`registry ${row.plugin}.${field} must be a non-negative integer`);
+    }
+  }
+
+  if (stored.skills.length !== fresh.skills.length) {
+    throw new Error(`registry row count ${stored.skills.length} does not match scanned skill count ${fresh.skills.length}`);
+  }
+  const storedPlugins = [...seen].sort();
+  const freshPlugins = fresh.skills.map((row) => row.plugin).sort();
+  if (JSON.stringify(storedPlugins) !== JSON.stringify(freshPlugins)) {
+    throw new Error('registry plugin set does not match the scanned skill set');
+  }
+}
+
 const argv = process.argv.slice(2);
 const checkMode = argv.includes('--check');
 
@@ -59,7 +100,14 @@ if (checkMode) {
     process.stderr.write(`skills.checksums.json missing — run: node xm/scripts/skills-checksum.mjs\n`);
     process.exit(2);
   }
-  const stored = JSON.parse(readFileSync(CHECKSUM_PATH, 'utf8'));
+  let stored;
+  try {
+    stored = JSON.parse(readFileSync(CHECKSUM_PATH, 'utf8'));
+    validateStoredRegistry(stored, fresh);
+  } catch (error) {
+    process.stderr.write(`skills.checksums.json invalid — ${error.message}\n`);
+    process.exit(1);
+  }
   const storedMap = new Map(stored.skills.map((s) => [s.plugin, s]));
   const freshMap = new Map(fresh.skills.map((s) => [s.plugin, s]));
   const drifted = [];
@@ -99,7 +147,7 @@ if (checkMode) {
 if (existsSync(CHECKSUM_PATH)) {
   try {
     const stored = JSON.parse(readFileSync(CHECKSUM_PATH, 'utf8'));
-    if (JSON.stringify(stored.skills || []) === JSON.stringify(fresh.skills)) {
+    if (stored.version === fresh.version && JSON.stringify(stored.skills || []) === JSON.stringify(fresh.skills)) {
       process.stdout.write(`skills.checksums.json already current (${fresh.skills.length} skills).\n`);
       process.exit(0);
     }

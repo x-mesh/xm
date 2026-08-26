@@ -403,9 +403,10 @@ describe('--propagate', () => {
     cpSync(SKILLS, skillsCopy, { recursive: true });
 
     // Install from the copied skills dir, then propagate against the SAME dir
-    // → converged, skipped.
+    // → converged, skipped. This fixture intentionally has no matching registry,
+    // so the audited opt-out makes that trust boundary explicit.
     const installResult = spawnSync('node', [CLI, '--target', 'cursor', '--global', '--yes', '--force',
-      '--skills-dir', skillsCopy, '--lib-dir', LIB], {
+      '--skills-dir', skillsCopy, '--lib-dir', LIB, '--allow-unverified'], {
       encoding: 'utf8', timeout: 60_000, env: { ...process.env, HOME: home }, cwd: REPO,
     });
     expect(installResult.status).toBe(0);
@@ -417,7 +418,7 @@ describe('--propagate', () => {
     expect(firstSkillMd).toBeTruthy();
     appendFileSync(firstSkillMd, '\nStale-overlay regression marker.\n');
 
-    const result = spawnSync('node', [CLI, '--propagate', '--skills-dir', skillsCopy, '--lib-dir', LIB], {
+    const result = spawnSync('node', [CLI, '--propagate', '--skills-dir', skillsCopy, '--lib-dir', LIB, '--allow-unverified'], {
       encoding: 'utf8', timeout: 60_000, env: { ...process.env, HOME: home }, cwd: REPO,
     });
     expect(result.status).toBe(0);
@@ -435,7 +436,7 @@ describe('--propagate', () => {
     expect(installed).toContain('Stale-overlay regression marker.');
 
     // Convergence: a second propagate with the same inputs is a no-op.
-    const again = spawnSync('node', [CLI, '--propagate', '--skills-dir', skillsCopy, '--lib-dir', LIB], {
+    const again = spawnSync('node', [CLI, '--propagate', '--skills-dir', skillsCopy, '--lib-dir', LIB, '--allow-unverified'], {
       encoding: 'utf8', timeout: 60_000, env: { ...process.env, HOME: home }, cwd: REPO,
     });
     expect(again.status).toBe(0);

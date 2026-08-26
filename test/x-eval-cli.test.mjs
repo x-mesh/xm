@@ -16,10 +16,10 @@ function makeProject() {
   return dir;
 }
 
-function cli(dir, args) {
+function cli(dir, args, env = {}) {
   const r = spawnSync('node', [CLI, ...args], {
     cwd: dir,
-    env: { ...process.env, XM_ROOT: join(dir, '.xm') },
+    env: { ...process.env, XM_ROOT: join(dir, '.xm'), ...env },
     encoding: 'utf8',
     timeout: 30000,
   });
@@ -144,8 +144,54 @@ describe('xm eval case', () => {
       symlinkSync(join(linked, 'src'), join(linked, '.xm', 'eval', 'cases'));
       const rejected = cli(linked, ['case', 'add', '--prompt', 'x']);
       expect(rejected.code).toBe(2);
-      expect(rejected.stderr).toContain('cases path must be a regular directory');
+      expect(rejected.stderr).toContain('must not contain symlinks');
     } finally { rmSync(linked, { recursive: true, force: true }); }
+  });
+
+  test('XM_ROOT and storage parents reject symlinks and writes outside the workspace', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'xe-root-outside-'));
+    const linkedRoot = makeProject();
+    try {
+      rmSync(join(linkedRoot, '.xm'), { recursive: true, force: true });
+      symlinkSync(outside, join(linkedRoot, '.xm'));
+      const rejected = cli(linkedRoot, ['case', 'add', '--prompt', 'must stay local']);
+      expect(rejected.code).toBe(2);
+      expect(rejected.stderr).toContain('XM_ROOT must be a regular non-symlink directory');
+      expect(existsSync(join(outside, 'eval'))).toBe(false);
+    } finally { rmSync(linkedRoot, { recursive: true, force: true }); }
+
+    const linkedParent = makeProject();
+    try {
+      symlinkSync(outside, join(linkedParent, '.xm', 'eval'));
+      const rejected = cli(linkedParent, ['case', 'add', '--prompt', 'must stay local']);
+      expect(rejected.code).toBe(2);
+      expect(rejected.stderr).toContain('x-eval storage path must not contain symlinks');
+      expect(existsSync(join(outside, 'cases'))).toBe(false);
+    } finally { rmSync(linkedParent, { recursive: true, force: true }); }
+
+    const externalRoot = makeProject();
+    try {
+      const rejected = cli(externalRoot, ['case', 'add', '--prompt', 'must stay local'], { XM_ROOT: outside });
+      expect(rejected.code).toBe(2);
+      expect(rejected.stderr).toContain('XM_ROOT must stay inside the workspace');
+      expect(existsSync(join(outside, 'eval'))).toBe(false);
+    } finally {
+      rmSync(externalRoot, { recursive: true, force: true });
+    }
+
+    const linkedRootParent = makeProject();
+    try {
+      mkdirSync(join(linkedRootParent, 'storage'));
+      symlinkSync(join(linkedRootParent, 'storage'), join(linkedRootParent, 'storage-link'));
+      const configured = join(linkedRootParent, 'storage-link', '.xm');
+      const rejected = cli(linkedRootParent, ['case', 'add', '--prompt', 'must stay local'], { XM_ROOT: configured });
+      expect(rejected.code).toBe(2);
+      expect(rejected.stderr).toContain('XM_ROOT must not contain symlinks');
+      expect(existsSync(join(linkedRootParent, 'storage', '.xm'))).toBe(false);
+    } finally {
+      rmSync(linkedRootParent, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   test('case id collisions with different payloads are rejected', () => {
@@ -197,6 +243,15 @@ describe('xm eval bench plan → record → finish', () => {
       const leak = cli(dir, ['bench', 'record', '--run', plan.run_id, '--job', job, '--score-file', scoreFile]);
       expect(leak.code).toBe(2);
       expect(leak.stderr).toContain('must not contain output text');
+      expect(readdirSync(join(dir, '.xm', 'eval', 'runs', plan.run_id, 'records')).length).toBe(0);
+
+      writeFileSync(scoreFile, JSON.stringify({
+        overall: 8.2,
+        assertion_results: Array.from({ length: 128 }, (_, index) => ({ assertion: `judge-${index}`, result: 'PASS', source: 'judge' })),
+      }));
+      const mergedOverflow = cli(dir, ['bench', 'record', '--run', plan.run_id, '--job', job, '--score-file', scoreFile, '--run-assertions']);
+      expect(mergedOverflow.code).toBe(2);
+      expect(mergedOverflow.stderr).toContain('merged assertion_results exceeds 128 rows');
       expect(readdirSync(join(dir, '.xm', 'eval', 'runs', plan.run_id, 'records')).length).toBe(0);
 
       writeFileSync(scoreFile, JSON.stringify({ overall: 8.2, judges: 3, cost_usd_est: 0.12, duration_ms: 900 }));

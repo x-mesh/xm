@@ -13,8 +13,12 @@
  */
 
 import { createHash } from 'node:crypto';
-import { writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, readFileSync, statSync, renameSync, openSync, readSync, closeSync } from 'node:fs';
-import { join, resolve, dirname, basename } from 'node:path';
+import {
+  writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, readFileSync,
+  statSync, renameSync, openSync, readSync, closeSync, lstatSync, fstatSync,
+  constants as FS_CONSTANTS,
+} from 'node:fs';
+import { join, resolve, dirname, basename, relative, isAbsolute, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { createConnection } from 'node:net';
@@ -23,6 +27,7 @@ import { createConnection } from 'node:net';
 
 const DEFAULT_PORT = 19841;
 const SESSION_IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
+const MAX_REVIEW_LEDGER_BYTES = 4 * 1024 * 1024;
 const VERSION = process.env.XM_SYNC_VERSION ?? '0.1.0';
 
 const args = process.argv.slice(2);
@@ -79,6 +84,67 @@ function safeJoin(base, ...segments) {
     return null;
   }
   return resolvedTarget;
+}
+
+function assertSafeReadPath(boundary, path) {
+  const root = resolve(boundary);
+  const target = resolve(path);
+  const rel = relative(root, target);
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw Object.assign(new Error('review precision ledger must stay inside the XM root'), { code: 'UNSAFE_LEDGER' });
+  }
+  let cursor = root;
+  const rootInfo = lstatSync(root);
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+    throw Object.assign(new Error('review precision XM root must be a regular non-symlink directory'), { code: 'UNSAFE_LEDGER' });
+  }
+  const parentRel = relative(root, dirname(target));
+  for (const part of parentRel ? parentRel.split(sep) : []) {
+    cursor = join(cursor, part);
+    const info = lstatSync(cursor);
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw Object.assign(new Error('review precision ledger parents must be regular non-symlink directories'), { code: 'UNSAFE_LEDGER' });
+    }
+  }
+}
+
+function readBoundedRegularFile(path, maxBytes, boundary) {
+  assertSafeReadPath(boundary, path);
+  const info = lstatSync(path);
+  if (info.isSymbolicLink() || !info.isFile()) {
+    throw Object.assign(new Error('review precision ledger must be a regular non-symlink file'), { code: 'UNSAFE_LEDGER' });
+  }
+  if (info.size > maxBytes) {
+    throw Object.assign(new Error(`review precision ledger exceeds ${maxBytes} bytes`), { code: 'LEDGER_TOO_LARGE' });
+  }
+  if (!Number.isInteger(FS_CONSTANTS.O_NOFOLLOW) || !Number.isInteger(FS_CONSTANTS.O_NONBLOCK)) {
+    throw Object.assign(new Error('safe review precision ledger read requires O_NOFOLLOW and O_NONBLOCK support'), { code: 'UNSAFE_LEDGER' });
+  }
+
+  let fd;
+  try {
+    fd = openSync(path, FS_CONSTANTS.O_RDONLY | FS_CONSTANTS.O_NOFOLLOW | FS_CONSTANTS.O_NONBLOCK);
+    const opened = fstatSync(fd);
+    if (!opened.isFile()) {
+      throw Object.assign(new Error('review precision ledger must be a regular file'), { code: 'UNSAFE_LEDGER' });
+    }
+    if (opened.size > maxBytes) {
+      throw Object.assign(new Error(`review precision ledger exceeds ${maxBytes} bytes`), { code: 'LEDGER_TOO_LARGE' });
+    }
+    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    let bytes = 0;
+    while (bytes < buffer.byteLength) {
+      const read = readSync(fd, buffer, bytes, buffer.byteLength - bytes, bytes);
+      if (read === 0) break;
+      bytes += read;
+    }
+    if (bytes > maxBytes) {
+      throw Object.assign(new Error(`review precision ledger exceeds ${maxBytes} bytes`), { code: 'LEDGER_TOO_LARGE' });
+    }
+    return buffer.subarray(0, bytes).toString('utf8');
+  } finally {
+    if (fd != null) closeSync(fd);
+  }
 }
 
 // ── Segment Validation ──────────────────────────────────────────────
@@ -2150,7 +2216,14 @@ async function handleReviewPrecision(xmRoot, req) {
   if (since && mod.parseDuration(since) == null) return jsonResponseWithETag({ status: 'bad_request', error: 'since must look like 30d, 12h, or 90m' }, req, 400);
   if (lastRaw && !(Number.isInteger(last) && last > 0)) return jsonResponseWithETag({ status: 'bad_request', error: 'last must be a positive integer' }, req, 400);
   let text;
-  try { text = readFileSync(ledgerPath, 'utf8'); } catch { return jsonResponseWithETag({ status: 'read_error' }, req, 500); }
+  try {
+    text = readBoundedRegularFile(ledgerPath, MAX_REVIEW_LEDGER_BYTES, xmRoot);
+  } catch (error) {
+    if (error?.code === 'LEDGER_TOO_LARGE') return jsonResponseWithETag({ status: 'ledger_too_large', error: error.message }, req, 413);
+    if (error?.code === 'UNSAFE_LEDGER' || error?.code === 'ELOOP') return jsonResponseWithETag({ status: 'unsafe_ledger', error: error.message }, req, 400);
+    if (error?.code === 'ENOENT') return jsonResponseWithETag({ status: 'no_ledger' }, req);
+    return jsonResponseWithETag({ status: 'read_error' }, req, 500);
+  }
   const { rows, skipped } = mod.parseTriageLedger(text);
   const normalizeSeverity = typeof mod.normalizeLedgerSeverity === 'function'
     ? mod.normalizeLedgerSeverity

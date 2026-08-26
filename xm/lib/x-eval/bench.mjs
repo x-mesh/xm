@@ -47,7 +47,7 @@ const MAX_BENCH_RESULT_BYTES = MAX_MANIFEST_BYTES;
 const MAX_CRITERIA = 64;
 const MAX_JUDGES = 16;
 const MAX_ASSERTION_RESULTS = 128;
-const ASSERTION_RESULT_KEYS = new Set(['result', 'source', 'name', 'assertion', 'kind', 'confidence', 'exit_code', 'duration_ms', 'command_sha256']);
+const ASSERTION_RESULT_KEYS = new Set(['result', 'source', 'name', 'assertion', 'kind', 'confidence', 'exit_code', 'error_code', 'duration_ms', 'command_sha256']);
 const RAW_RECORD_KEYS = new Set(['overall', 'per_criterion', 'judges', 'output_sha256', 'cost_usd_est', 'duration_ms', 'sigma', 'assertion_results', 'passed']);
 const STORED_RECORD_KEYS = new Set(['v', 'type', 'run_id', 'job_id', 'case_id', 'arm', 'trial', 'recorded_at', 'pass_threshold', 'cost_source', 'assertion_hard_fail', ...RAW_RECORD_KEYS]);
 const MANIFEST_CASE_KEYS = new Set(['id', 'rubric', 'risk', 'tags', 'trials', 'pass_threshold', 'assertions', 'case_sha256', 'case_meta_sha256']);
@@ -138,7 +138,7 @@ function finiteInRange(value, min, max, label, { nullable = false } = {}) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) throw new Error(`${label} must be a finite number between ${min} and ${max}`);
 }
 
-function validateBenchArm(arm, { expectedName = null, expectedTrials = null, allowDelta = true } = {}) {
+function validateBenchArm(arm, { expectedName = null, expectedTrials = null, allowDelta = true, passThreshold = null } = {}) {
   exactObjectKeys(arm, BENCH_ARM_KEYS, 'bench arm');
   if (typeof arm.name !== 'string' || !ARM_RE.test(arm.name) || (expectedName != null && arm.name !== expectedName)) throw new Error('bench arm has an invalid name');
   if (!Number.isInteger(arm.trials) || arm.trials < 0 || arm.trials > MAX_TOTAL_JOBS) throw new Error(`bench arm ${arm.name} has an invalid trial count`);
@@ -153,6 +153,9 @@ function validateBenchArm(arm, { expectedName = null, expectedTrials = null, all
   if (arm.pass_at_k_rate !== expectedRate) throw new Error(`bench arm ${arm.name} pass_at_k_rate is inconsistent with pass/trial counts`);
   if (!Array.isArray(arm.per_trial_overall) || arm.per_trial_overall.length !== arm.trials) throw new Error(`bench arm ${arm.name} per_trial_overall must match trials`);
   for (const score of arm.per_trial_overall) finiteInRange(score, 0, 10, `bench arm ${arm.name} trial score`);
+  if (passThreshold != null && arm.pass_at_k !== arm.per_trial_overall.filter(score => score >= passThreshold).length) {
+    throw new Error(`bench arm ${arm.name} pass_at_k does not match trial scores and case threshold`);
+  }
   const expectedAvg = arm.trials ? round(mean(arm.per_trial_overall), 2) : null;
   const expectedSigma = arm.trials ? round(sigma(arm.per_trial_overall), 2) : null;
   if (arm.avg_score !== expectedAvg || arm.sigma !== expectedSigma) throw new Error(`bench arm ${arm.name} aggregate score fields are inconsistent`);
@@ -220,7 +223,7 @@ export function validatePersistedBench(bench) {
     if (!Array.isArray(row.arms) || row.arms.length !== bench.strategies.length) throw new Error(`bench per_case ${row.case_id} arms must match strategies`);
     const names = new Set();
     for (const arm of row.arms) {
-      validateBenchArm(arm, { expectedTrials: caseMeta.trials, allowDelta: false });
+      validateBenchArm(arm, { expectedTrials: caseMeta.trials, allowDelta: false, passThreshold: caseMeta.pass_threshold });
       if (!armNames.has(arm.name) || names.has(arm.name)) throw new Error(`bench per_case ${row.case_id} arm names must be valid and unique`);
       names.add(arm.name);
     }
@@ -228,8 +231,11 @@ export function validatePersistedBench(bench) {
   for (const top of bench.strategies) {
     const rows = bench.per_case.map(row => row.arms.find(arm => arm.name === top.name));
     if (rows.some(row => !row)) throw new Error(`bench per_case rows are missing arm ${top.name}`);
+    const trialScores = rows.flatMap(row => row.per_trial_overall);
     if (rows.reduce((sum, row) => sum + row.trials, 0) !== top.trials
-      || rows.reduce((sum, row) => sum + row.pass_at_k, 0) !== top.pass_at_k) throw new Error(`bench arm ${top.name} totals do not match per_case rows`);
+      || rows.reduce((sum, row) => sum + row.pass_at_k, 0) !== top.pass_at_k
+      || rows.reduce((sum, row) => sum + row.assertion_hard_fails, 0) !== top.assertion_hard_fails
+      || JSON.stringify(trialScores) !== JSON.stringify(top.per_trial_overall)) throw new Error(`bench arm ${top.name} aggregates do not match per_case trial results`);
   }
   if (typeof bench.broken_task_warning !== 'boolean' || typeof bench.partial !== 'boolean') throw new Error('bench result state flags must be booleans');
   if (!Array.isArray(bench.missing_jobs) || bench.missing_jobs.length > MAX_TOTAL_JOBS
@@ -445,6 +451,10 @@ export function validateRecord(raw, { passThreshold, stored = false } = {}) {
         if (!Number.isInteger(item.exit_code)) throw new Error('assertion_results[].exit_code must be an integer');
         row.exit_code = item.exit_code;
       }
+      if (item.error_code != null) {
+        if (typeof item.error_code !== 'string' || !CONFIDENCE_RE.test(item.error_code)) throw new Error('assertion_results[].error_code must be a safe identifier');
+        row.error_code = item.error_code;
+      }
       if (item.duration_ms != null) {
         if (!Number.isInteger(item.duration_ms) || item.duration_ms < 0) throw new Error('assertion_results[].duration_ms must be a non-negative integer');
         row.duration_ms = item.duration_ms;
@@ -455,7 +465,7 @@ export function validateRecord(raw, { passThreshold, stored = false } = {}) {
       }
       if (row.source === 'executable') {
         if (!row.name || !row.kind || row.result === 'UNCERTAIN' || row.assertion != null || row.confidence != null) throw new Error('executable assertion result has fields that do not match its source');
-      } else if (!row.assertion || row.name != null || row.kind != null || row.exit_code != null || row.duration_ms != null || row.command_sha256 != null) {
+      } else if (!row.assertion || row.name != null || row.kind != null || row.exit_code != null || row.error_code != null || row.duration_ms != null || row.command_sha256 != null) {
         throw new Error('judge assertion result has fields that do not match its source');
       }
       return row;
@@ -483,13 +493,19 @@ export function recordJob({ runId, jobId, raw, runExecutableAssertions = false, 
     const caseDoc = readCase(job.case_id);
     const executable = (caseDoc?.assertions || []).filter(item => item.kind !== 'judge').map(item => ({ kind: item.kind, name: item.name, spec: item.spec, command: item.spec }));
     if (executable.length) {
+      if (executable.length + (record.assertion_results || []).length > MAX_ASSERTION_RESULTS) throw new Error(`merged assertion_results exceeds ${MAX_ASSERTION_RESULTS} rows`);
       const report = runAssertions(executable, { cwd });
-      const rows = report.results.map(r => ({ name: r.name, kind: r.kind, result: r.result, source: 'executable', ...(r.exit_code != null ? { exit_code: r.exit_code } : {}), ...(r.duration_ms != null ? { duration_ms: r.duration_ms } : {}), ...(r.command_sha256 ? { command_sha256: r.command_sha256 } : {}) }));
+      const rows = report.results.map(r => ({ name: r.name, kind: r.kind, result: r.result, source: 'executable', ...(r.exit_code != null ? { exit_code: r.exit_code } : {}), ...(r.error_code ? { error_code: r.error_code } : {}), ...(r.duration_ms != null ? { duration_ms: r.duration_ms } : {}), ...(r.command_sha256 ? { command_sha256: r.command_sha256 } : {}) }));
+      if (rows.length + (record.assertion_results || []).length > MAX_ASSERTION_RESULTS) throw new Error(`merged assertion_results exceeds ${MAX_ASSERTION_RESULTS} rows`);
       record.assertion_results = [...rows, ...(record.assertion_results || [])];
       if (!report.passed) { record.passed = false; record.assertion_hard_fail = true; }
     }
   }
   const payload = { v: RUN_SCHEMA_V, type: 'bench-record', run_id: runId, job_id: jobId, case_id: job.case_id, arm: job.arm, trial: job.trial, recorded_at: now, ...record };
+  const revalidated = validateRecord(payload, { passThreshold: caseMeta.pass_threshold, stored: true });
+  if (payload.passed !== revalidated.passed || payload.assertion_hard_fail !== revalidated.assertion_hard_fail
+    || caseFingerprint(payload.assertion_results || []) !== caseFingerprint(revalidated.assertion_results || [])) throw new Error('merged assertion results are not normalized');
+  if (Buffer.byteLength(serializeJson(payload)) > MAX_RECORD_BYTES) throw new Error(`merged score file exceeds ${MAX_RECORD_BYTES} bytes`);
   const recordsPath = join(runDir(runId), 'records');
   if (lstatSync(recordsPath).isSymbolicLink() || !lstatSync(recordsPath).isDirectory()) throw new Error('records path must be a regular directory');
   const path = join(recordsPath, `${jobId}.json`);
@@ -548,7 +564,7 @@ export function readRecords(runId) {
       for (const key of ['per_criterion', 'judges', 'output_sha256', 'cost_usd_est', 'duration_ms', 'sigma']) {
         if (JSON.stringify(payload[key]) !== JSON.stringify(normalized[key])) throw new Error(`record ${key} is not normalized`);
       }
-      if (caseFingerprint(payload.assertion_results) !== caseFingerprint(normalized.assertion_results)) throw new Error('record assertion_results is not normalized');
+      if (caseFingerprint(payload.assertion_results || []) !== caseFingerprint(normalized.assertion_results || [])) throw new Error('record assertion_results is not normalized');
       if (records.has(payload.job_id)) throw new Error('duplicate record for job id');
       records.set(payload.job_id, payload);
     } catch (error) {

@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { tokenize, parseSpec, containedPath, runCmd, runFile, runGrep, runJson, runAssertions, MAX_GREP_FILE_BYTES, MAX_GREP_PATTERN_CHARS } from '../x-eval/lib/x-eval/assert.mjs';
+import { tokenize, parseSpec, containedPath, runCmd, runFile, runGrep, runJson, runAssertions, MAX_GREP_FILE_BYTES, MAX_GREP_PATTERN_CHARS, MAX_EXECUTABLE_ASSERTIONS, MAX_TIMEOUT_MS } from '../x-eval/lib/x-eval/assert.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI = join(__dirname, '..', 'x-eval', 'lib', 'x-eval-cli.mjs');
@@ -177,6 +177,24 @@ describe('x-eval assert: runners', () => {
       expect(report.results.map(r => r.result)).toEqual(['PASS', 'PASS', 'HARD_FAIL']);
     } finally { rmSync(tmp, { recursive: true, force: true }); }
   });
+
+  test('runAssertions limits executable count and applies the remaining suite timeout', () => {
+    const tmp = makeProject();
+    try {
+      const tooMany = Array.from({ length: MAX_EXECUTABLE_ASSERTIONS + 1 }, (_, index) => ({ kind: 'file', name: `f${index}`, spec: 'exists=src/a.mjs' }));
+      expect(() => runAssertions(tooMany, { cwd: tmp })).toThrow(/exceeds 64 executable assertions/);
+      const started = Date.now();
+      const report = runAssertions([
+        { kind: 'cmd', name: 'first', command: 'node -e "setTimeout(()=>process.exit(0),80)"' },
+        { kind: 'cmd', name: 'second', command: 'node -e "setTimeout(()=>process.exit(0),5000)"' },
+        { kind: 'file', name: 'remaining', spec: 'exists=src/a.mjs' },
+      ], { cwd: tmp, timeoutMs: 1_000, suiteTimeoutMs: 180 });
+      expect(Date.now() - started).toBeLessThan(600);
+      expect(report.passed).toBe(false);
+      expect(report.results.find(row => row.name === 'second')).toMatchObject({ result: 'HARD_FAIL', error_code: 'ETIMEDOUT' });
+      expect(report.results.find(row => row.name === 'remaining')).toMatchObject({ result: 'HARD_FAIL', error_code: 'ETIMEDOUT' });
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
 });
 
 describe('x-eval assert: CLI', () => {
@@ -209,6 +227,10 @@ describe('x-eval assert: CLI', () => {
       expect(cli(['assert', '--cmd', 'no-name-here'], tmp).exitCode).toBe(2);
       expect(cli(['assert', '--cmd', 'ok=true', '--cwd', '../..'], tmp).exitCode).toBe(2);
       expect(cli(['assert', '--cmd', 'ok=true', '--timeout-ms', '0'], tmp).exitCode).toBe(2);
+      expect(cli(['assert', '--cmd', 'ok=true', '--timeout-ms', String(MAX_TIMEOUT_MS + 1)], tmp).exitCode).toBe(2);
+      const invalidEnv = cli(['assert', '--cmd', 'ok=true', '--env', 'lowercase'], tmp);
+      expect(invalidEnv.exitCode).toBe(2);
+      expect(invalidEnv.stderr).toContain('--env must be an uppercase environment name');
       expect(cli(['assert', '--cmd', 'ok=true', '--unknown', 'x'], tmp).exitCode).toBe(2);
       expect(cli(['assert', '--cmd', 'ok=true', 'unused'], tmp).exitCode).toBe(2);
       expect(cli(['nope'], tmp).exitCode).toBe(2);

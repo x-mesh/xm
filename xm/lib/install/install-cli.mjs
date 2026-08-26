@@ -611,6 +611,7 @@ export function run(argv) {
       }
       const subArgv = ['--target', target, scope === 'global' ? '--global' : '--local', '--force', '--yes',
                        '--skills-dir', args.skillsDir, '--lib-dir', args.libDir];
+      if (args.allowUnverified) subArgv.push('--allow-unverified');
       const sub = run(subArgv);
       const subWarnings = sub.stderr.split('\n').filter((line) => line.includes('marker block content changed'));
       if (sub.exitCode !== 0) {
@@ -911,7 +912,11 @@ export function run(argv) {
         return { exitCode: 2, stdout: '', stderr: `failed to read ${checksumPath}: ${err.message}\n` };
       }
     } else {
-      warnings += `# note: skills.checksums.json not found (R-SEC-02 advisory). Run xm/scripts/skills-checksum.mjs to enable.\n`;
+      return {
+        exitCode: 2,
+        stdout: '',
+        stderr: `R-SEC-02: checksum registry not found: ${checksumPath}\nRun xm/scripts/skills-checksum.mjs or pass --allow-unverified for an audited opt-out.\n`,
+      };
     }
   }
 

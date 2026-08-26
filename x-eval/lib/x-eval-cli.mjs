@@ -36,7 +36,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, statSync, readFileSync, mkdirSync, writeFileSync, realpathSync, lstatSync, linkSync, unlinkSync } from 'node:fs';
 import { resolve, sep, join } from 'node:path';
 import { projectRoot, evalDir } from './x-eval/root.mjs';
-import { runAssertions, parseSpec, DEFAULT_TIMEOUT_MS } from './x-eval/assert.mjs';
+import { runAssertions, parseSpec, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS } from './x-eval/assert.mjs';
 import { buildCase, writeCase, readCase, listCases, selectCases, MAX_PROMPT_BYTES } from './x-eval/cases.mjs';
 import {
   parseStrategies, buildManifest, writeManifest, readManifest, recordJob, finishRun, runStatus, latestBenchPath, formatBenchReport,
@@ -85,7 +85,7 @@ function usage() {
     "           --file 'name=exists=<path>'    or absent=<path>",
     "           --grep 'name=[!]<regex>:<path>' ! = must NOT match",
     "           --json-eq 'name=<a.b>=<value>:<file.json>'",
-    '           --cwd <dir>  --timeout-ms <N>  --env KEY (pass an extra env var through)  --json',
+    `           --cwd <dir>  --timeout-ms <1-${MAX_TIMEOUT_MS}>  --env UPPERCASE_KEY (pass an extra env var through)  --json`,
     '  case     add --prompt <text> | --prompt-file <f> [--rubric R] [--tag T]... [--risk high]',
     "               [--assert-cmd 'name=cmd']... [--assert-file/--assert-grep/--assert-json ...]",
     '               [--assert "<judge statement>"]... [--min-overall N] [--source-ref R] [--json]',
@@ -103,7 +103,7 @@ function usage() {
 }
 
 function isUsageError(error) {
-  return error instanceof UsageError || /must look like|must match|has an empty spec|must be|needs at least|is required|unknown case id|no runnable|invalid case id|invalid run id|unknown job|unknown bench run|must not contain|already exists|already finished|strategy "|case id collision|custom rubric|case |run manifest|runs path|run path|records path|benchmarks path|existing bench result|bench result|bench arm|bench per_case|bench recommendation|partial bench|invalid record|record |score file|overall|per_criterion|judge identifier|judges|assertion_results|output_sha256|cost_usd|duration_ms|sigma|passed|changed after bench plan|deleted after bench plan|exceeds \d+ total jobs|x-eval cases path|replay case|case JSON/.test(error?.message || '');
+  return error instanceof UsageError || /must look like|must match|has an empty spec|must be|needs at least|is required|unknown case id|no runnable|invalid case id|invalid run id|unknown job|unknown bench run|must not contain|already exists|already finished|strategy "|case id collision|custom rubric|case |run manifest|runs path|run path|records path|benchmarks path|existing bench result|bench result|bench arm|bench per_case|bench recommendation|partial bench|invalid record|record |score file|overall|per_criterion|judge identifier|judges|assertion_results|output_sha256|cost_usd|duration_ms|sigma|passed|changed after bench plan|deleted after bench plan|exceeds \d+ total jobs|x-eval cases path|x-eval storage path|XM_ROOT|replay case|case JSON|assertion suite/.test(error?.message || '');
 }
 
 // ── assert ───────────────────────────────────────────────────────────
@@ -151,8 +151,10 @@ function cmdAssert(args) {
   if (!items.length) throw new UsageError('assert needs at least one --cmd / --file / --grep / --json-eq');
   const cwd = resolveCwd(opts);
   const timeoutMs = opts['timeout-ms'] != null ? Number(opts['timeout-ms']) : DEFAULT_TIMEOUT_MS;
-  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new UsageError('--timeout-ms must be a positive integer');
-  const envKeys = (opts.env || []).filter(key => /^[A-Z_][A-Z0-9_]*$/.test(key));
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) throw new UsageError(`--timeout-ms must be an integer between 1 and ${MAX_TIMEOUT_MS}`);
+  const envKeys = opts.env || [];
+  const invalidEnv = envKeys.find(key => !/^[A-Z_][A-Z0-9_]*$/.test(key));
+  if (invalidEnv != null) throw new UsageError(`--env must be an uppercase environment name (got "${invalidEnv}")`);
   const report = { ...runAssertions(items, { cwd, timeoutMs, envKeys }), cwd };
   if (opts.json) console.log(JSON.stringify(report, null, 2));
   else console.log(formatAssertTable(report));

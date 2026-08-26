@@ -60,6 +60,8 @@ describe('cases', () => {
     const judges = Array.from({ length: 128 }, (_, index) => ({ kind: 'judge', text: `${index}: ${'x'.repeat(1_990)}` }));
     expect(() => buildCase({ prompt: 'oversized assertions', assertions: judges })).toThrow(/exceeds 262144 bytes/);
     expect(() => buildCase({ prompt: 'too many assertions', assertions: [...judges.slice(0, 128), { kind: 'file', name: 'src', spec: 'exists=src' }] })).toThrow(/at most 128/);
+    const executable = Array.from({ length: 65 }, (_, index) => ({ kind: 'file', name: `f${index}`, spec: 'exists=src' }));
+    expect(() => buildCase({ prompt: 'too many executable assertions', assertions: executable })).toThrow(/64 executable assertions/);
     let axes = {};
     for (let i = 0; i < 40; i++) axes = { child: axes };
     const replay = {
@@ -110,6 +112,8 @@ describe('bench records', () => {
     const hard = validateRecord({ overall: 9, assertion_results: [{ name: 'tests', kind: 'cmd', result: 'HARD_FAIL', source: 'executable' }] }, { passThreshold: 7 });
     expect(hard.passed).toBe(false);
     expect(hard.assertion_hard_fail).toBe(true);
+    const timedOut = validateRecord({ overall: 9, assertion_results: [{ name: 'tests', kind: 'cmd', result: 'HARD_FAIL', source: 'executable', error_code: 'ETIMEDOUT' }] }, { passThreshold: 7 });
+    expect(timedOut.assertion_results[0].error_code).toBe('ETIMEDOUT');
     expect(() => validateRecord({ overall: 8, output: 'leak' }, { passThreshold: 7 })).toThrow(/output text/);
     expect(() => validateRecord({ overall: 11 }, { passThreshold: 7 })).toThrow(/overall/);
     expect(() => validateRecord({ overall: '8' }, { passThreshold: 7 })).toThrow(/overall/);
@@ -122,6 +126,7 @@ describe('bench records', () => {
     expect(() => validateRecord({ overall: 8, judges: ['good', 'bad judge'] }, { passThreshold: 7 })).toThrow(/identifier/);
     expect(() => validateRecord({ overall: 8, note: 'not in schema' }, { passThreshold: 7 })).toThrow(/unsupported field/);
     expect(() => validateRecord({ overall: 8, assertion_results: [{ assertion: 'safe', result: 'PASS', source: 'judge', output: 'leak' }] }, { passThreshold: 7 })).toThrow(/unsupported field/);
+    expect(() => validateRecord({ overall: 8, assertion_results: [{ assertion: 'safe', result: 'PASS', source: 'judge', error_code: 'ETIMEDOUT' }] }, { passThreshold: 7 })).toThrow(/fields that do not match/);
   });
 });
 
@@ -264,6 +269,23 @@ describe('regression gate', () => {
       { ...structuredClone(stored), strategies: stored.strategies.map((arm, index) => index ? arm : { ...arm, avg_score: Infinity }) },
       { ...structuredClone(stored), strategies: stored.strategies.map((arm, index) => index ? arm : { ...arm, pass_at_k: 0 }) },
     ]) expect(() => validatePersistedBench(mutated)).toThrow();
+
+    const forgedPass = structuredClone(stored);
+    const perCaseRefine = forgedPass.per_case[0].arms.find(arm => arm.name === 'refine');
+    perCaseRefine.per_trial_overall = [6, 6, 6];
+    perCaseRefine.avg_score = 6;
+    perCaseRefine.sigma = 0;
+    perCaseRefine.score_per_dollar = 60;
+    expect(() => validatePersistedBench(forgedPass)).toThrow(/pass_at_k does not match trial scores/);
+
+    const forgedTop = structuredClone(stored);
+    const topRefine = forgedTop.strategies.find(arm => arm.name === 'refine');
+    topRefine.per_trial_overall.reverse();
+    expect(() => validatePersistedBench(forgedTop)).toThrow(/aggregates do not match per_case/);
+
+    const forgedHardFails = structuredClone(stored);
+    forgedHardFails.strategies.find(arm => arm.name === 'refine').assertion_hard_fails = 1;
+    expect(() => validatePersistedBench(forgedHardFails)).toThrow(/aggregates do not match per_case/);
   });
 
   test('blocks comparisons with different case sets, rubrics, thresholds, or trials', () => {
