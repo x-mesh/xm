@@ -272,13 +272,8 @@ shopt -u nullglob
 echo ""
 echo "=== Syncing x-eval lib files ==="
 sync_file "x-eval/lib/x-eval-cli.mjs" "xm/lib/x-eval-cli.mjs"
-ensure_dir "xm/lib/x-eval"
 # Wholesale mirror (L8): new sibling modules under x-eval/lib/x-eval/ ship automatically.
-shopt -s nullglob
-for f in x-eval/lib/x-eval/*.mjs; do
-  sync_file "$f" "xm/lib/x-eval/$(basename "$f")"
-done
-shopt -u nullglob
+mirror_file_tree "x-eval/lib/x-eval" "xm/lib/x-eval"
 
 echo ""
 echo "=== Syncing x-dashboard lib + public ==="

@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
  * @param {{ relativePath: string, body: string }[]} references
  * @returns {string}
  */
-export function checksumReferences(references) {
+export function checksumFiles(references) {
   const hash = createHash('sha256');
   const sorted = references
     .map((ref) => ({
@@ -29,3 +29,6 @@ export function checksumReferences(references) {
   }
   return hash.digest('hex');
 }
+
+// Compatibility name retained for existing registry schema v2 callers.
+export const checksumReferences = checksumFiles;

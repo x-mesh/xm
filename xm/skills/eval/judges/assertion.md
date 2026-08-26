@@ -10,16 +10,18 @@ Content to evaluate:
 {content}
 ---
 
-Evaluate each assertion below as PASS or FAIL based solely on what is verifiable
-in the content above. Do NOT speculate about intent — if the assertion is not
-clearly satisfied by evidence in the content, mark FAIL.
+Evaluate each assertion below as PASS, FAIL, or UNCERTAIN based solely on what is
+verifiable in the content above. Do NOT speculate about intent. Use FAIL when the
+content contradicts the assertion, and UNCERTAIN when the content lacks enough
+evidence to decide.
 
 Assertions:
 {assertion_list}
 
 Output format (strict — one line per assertion):
 Assertion: <text> | Result: PASS | Reason: <one-line evidence>
-Assertion: <text> | Result: FAIL | Reason: <one-line explanation of what is missing>
+Assertion: <text> | Result: FAIL | Reason: <one-line contradictory evidence>
+Assertion: <text> | Result: UNCERTAIN | Reason: <one-line explanation of missing evidence>
 ```
 
 ## Result Interpretation (aggregated across judges)
@@ -28,7 +30,7 @@ Assertion: <text> | Result: FAIL | Reason: <one-line explanation of what is miss
 |-----------------|--------|--------------------|
 | All judges PASS | ✓ PASS | No impact |
 | Majority FAIL (≥ ⌈N/2⌉) | ⛔ HARD FAIL | Forces `passed = false` regardless of rubric score |
-| Split (< majority fail) | ⚠ UNCERTAIN | Warning in output; does not force `passed = false` |
+| No majority and any UNCERTAIN | ⚠ UNCERTAIN | Warning in output; does not force `passed = false` |
 
 ## Example Output (3 judges on 2 assertions)
 

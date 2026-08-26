@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test';
+import { afterAll, describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -7,12 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import {
   parseTriageLedger, buildLedgerRow, ledgerRowKey, filterLedgerRows, aggregateLensPrecision,
-  lensesBelowPrecision, formatPrecisionReport, parseDuration, findingLens,
+  lensesBelowPrecision, formatPrecisionReport, parseDuration, findingLens, findingLenses,
 } from '../x-build/lib/x-build/review-precision.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, '..', 'x-build', 'lib', 'x-build-cli.mjs');
 const RUN_DEFAULT_CWD = mkdtempSync(join(tmpdir(), 'xb-rp-nocwd-'));
+afterAll(() => rmSync(RUN_DEFAULT_CWD, { recursive: true, force: true }));
 
 function run(args, opts = {}) {
   const cwd = opts.cwd ?? RUN_DEFAULT_CWD;
@@ -109,6 +110,7 @@ describe('review-precision: parsing', () => {
     expect(findingLens({ lenses: ['security', 'perf'] })).toBe('security');
     expect(findingLens({ sources: ['docs'] })).toBe('docs');
     expect(findingLens({})).toBe('unknown');
+    expect(findingLenses({ lens: 'logic', lenses: ['security', 'logic'], sources: ['perf'] })).toEqual(['logic', 'security', 'perf']);
   });
 
   test('parseDuration handles d/h/m and rejects garbage', () => {
@@ -155,6 +157,19 @@ describe('review-precision: aggregation', () => {
     expect(filterLedgerRows(rows).length).toBe(1);
     expect(aggregateLensPrecision(rows).totals.decided).toBe(1);
     expect(ledgerRowKey(row())).toBe('triage_decision|c1|rf_0000000000000001|fix_now');
+  });
+
+  test('latest decision wins and every contributing lens receives attribution', () => {
+    const multiLens = finding({ lenses: ['security', 'performance'] });
+    const rows = [
+      row({ finding: multiLens, decision: 'fix_now' }),
+      row({ ts: '2026-08-21T00:00:00.000Z', finding: multiLens, decision: 'false_positive' }),
+    ];
+    const report = aggregateLensPrecision(rows);
+    expect(report.totals).toMatchObject({ decided: 1, fix_now: 0, false_positive: 1, precision: 0 });
+    expect(report.lenses.map(bucket => bucket.lens).sort()).toEqual(['logic', 'performance', 'security']);
+    for (const bucket of report.lenses) expect(bucket).toMatchObject({ decided: 1, false_positive: 1, precision: 0 });
+    expect(aggregateLensPrecision(rows, { lens: 'security' }).lenses.map(bucket => bucket.lens)).toEqual(['security']);
   });
 
   test('since / last / lens windows', () => {
@@ -263,6 +278,51 @@ describe('review-precision: ledger written by verify-review-fix', () => {
       expect(r.stdout).toContain('false_positive requires evidence');
       expect(ledgerRows(tmp)).toEqual([]);
       expect(existsSync(join(tmp, '.xm', 'review', 'triage-ledger.jsonl'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('decision changes append and aggregate with latest-wins, including a switch back', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-rp-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, { findings: [
+        { severity: 'medium', lens: 'logic', file: 'src/auth.ts', line: 42, summary: 'Review decision changes' },
+      ] });
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].decision = 'fix_now'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+
+      initAndEditTriage(tmp, triage => {
+        triage.target_findings[0].decision = 'false_positive';
+        triage.target_findings[0].evidence = 'Confirmed as a false alarm';
+      });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].decision = 'fix_now'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      expect(ledgerRows(tmp).map(entry => entry.decision)).toEqual(['fix_now', 'false_positive', 'fix_now']);
+      expect(aggregateLensPrecision(ledgerRows(tmp)).totals).toMatchObject({ decided: 1, fix_now: 1, false_positive: 0, precision: 1 });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a row appended after a torn tail remains parseable', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-rp-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, { findings: [
+        { severity: 'high', lens: 'logic', file: 'src/auth.ts', line: 42, summary: 'Auth bypass on missing token' },
+      ] });
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      const ledgerPath = join(tmp, '.xm', 'review', 'triage-ledger.jsonl');
+      writeFileSync(ledgerPath, '{"torn":');
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      const parsed = parseTriageLedger(readFileSync(ledgerPath, 'utf8'));
+      expect(parsed.skipped).toBe(1);
+      expect(parsed.rows).toHaveLength(1);
+      expect(parsed.rows[0]).toMatchObject({ type: 'triage_decision', decision: 'fix_now' });
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

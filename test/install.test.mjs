@@ -1,9 +1,9 @@
-import { describe, test, expect } from 'bun:test';
+import { afterAll, describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import {
   mkdtempSync, mkdirSync, copyFileSync, readdirSync, readFileSync, writeFileSync,
-  existsSync, statSync, unlinkSync, chmodSync, symlinkSync, cpSync, realpathSync,
+  existsSync, statSync, unlinkSync, chmodSync, symlinkSync, cpSync, realpathSync, rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -12,12 +12,24 @@ import * as merge from '../xm/lib/install/merge.mjs';
 import { LOCK_TTL_MS } from '../xm/lib/install/types.mjs';
 import { buildManifest, writeManifest } from '../xm/lib/install/manifest.mjs';
 import { codexMarketplaceName, renderCodexPluginManifest, renderCodexSkill } from '../xm/lib/install/transform/codex.mjs';
+import { checksumFiles } from '../xm/lib/install/util/reference-checksum.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = join(__dirname, '..');
 const CLI = join(REPO, 'xm', 'lib', 'install', 'install-cli.mjs');
 const SKILLS = join(REPO, 'xm', 'skills');
 const LIB = join(REPO, 'xm', 'lib');
+const TEMP_ROOTS = [];
+
+function makeTmp(prefix) {
+  const path = mkdtempSync(join(tmpdir(), prefix));
+  TEMP_ROOTS.push(path);
+  return path;
+}
+
+afterAll(() => {
+  for (const path of TEMP_ROOTS) rmSync(path, { recursive: true, force: true });
+});
 
 function run(args, opts = {}) {
   const result = spawnSync('node', [CLI, ...args], {
@@ -35,7 +47,7 @@ function run(args, opts = {}) {
 }
 
 function seedTmp() {
-  const tmp = mkdtempSync(join(tmpdir(), 'xm-install-'));
+  const tmp = makeTmp('xm-install-');
   mkdirSync(join(tmp, '.claude'), { recursive: true });
   copyFileSync(join(REPO, '.claude', 'settings.json'), join(tmp, '.claude', 'settings.json'));
   cpSync(join(REPO, '.claude', 'hooks'), join(tmp, '.claude', 'hooks'), { recursive: true });
@@ -196,7 +208,7 @@ describe('install-cli — install + idempotency (SC1, SC5)', () => {
   });
   test('codex cleans up sidecars for a deleted source reference', () => {
     const tmp = seedTmp();
-    const sourceRoot = mkdtempSync(join(tmpdir(), 'xm-codex-sidecars-'));
+    const sourceRoot = makeTmp('xm-codex-sidecars-');
     const skillsCopy = join(sourceRoot, 'skills');
     cpSync(SKILLS, skillsCopy, { recursive: true });
     copyFileSync(join(REPO, 'package.json'), join(sourceRoot, 'package.json'));
@@ -454,7 +466,7 @@ describe('install-cli — interactive selection', () => {
 describe('install-cli — supply-chain guard (R-SEC-02)', () => {
   test('mismatched checksum aborts install', () => {
     const tmp = seedTmp();
-    const fakeSkillsRoot = mkdtempSync(join(tmpdir(), 'xm-fake-skills-'));
+    const fakeSkillsRoot = makeTmp('xm-fake-skills-');
     const fakeSkills = join(fakeSkillsRoot, 'skills');
     mkdirSync(join(fakeSkills, 'handoff'), { recursive: true });
     copyFileSync(join(SKILLS, 'handoff', 'SKILL.md'), join(fakeSkills, 'handoff', 'SKILL.md'));
@@ -468,7 +480,7 @@ describe('install-cli — supply-chain guard (R-SEC-02)', () => {
   });
   test('--allow-unverified bypasses checksum guard', () => {
     const tmp = seedTmp();
-    const fakeSkillsRoot = mkdtempSync(join(tmpdir(), 'xm-fake-skills-'));
+    const fakeSkillsRoot = makeTmp('xm-fake-skills-');
     const fakeSkills = join(fakeSkillsRoot, 'skills');
     mkdirSync(join(fakeSkills, 'handoff'), { recursive: true });
     copyFileSync(join(SKILLS, 'handoff', 'SKILL.md'), join(fakeSkills, 'handoff', 'SKILL.md'));
@@ -481,7 +493,7 @@ describe('install-cli — supply-chain guard (R-SEC-02)', () => {
   });
   test('reference-only checksum drift aborts install', () => {
     const tmp = seedTmp();
-    const fakeSkillsRoot = mkdtempSync(join(tmpdir(), 'xm-fake-reference-drift-'));
+    const fakeSkillsRoot = makeTmp('xm-fake-reference-drift-');
     const fakeSkills = join(fakeSkillsRoot, 'skills');
     const fakeSkillDir = join(fakeSkills, 'handoff');
     mkdirSync(join(fakeSkillDir, 'references', 'nested'), { recursive: true });
@@ -504,6 +516,36 @@ describe('install-cli — supply-chain guard (R-SEC-02)', () => {
     expect(r.status).not.toBe(0);
     expect(r.stderr).toMatch(/R-SEC-02/);
     expect(r.stderr).toMatch(/refs:/);
+  });
+  test.each(['missing', 'tampered'])('%s asset aborts install under registry schema v3', (state) => {
+    const tmp = seedTmp();
+    const fakeSkillsRoot = makeTmp(`xm-fake-asset-${state}-`);
+    const fakeSkills = join(fakeSkillsRoot, 'skills');
+    const fakeSkillDir = join(fakeSkills, 'handoff');
+    mkdirSync(join(fakeSkillDir, 'lenses'), { recursive: true });
+    copyFileSync(join(SKILLS, 'handoff', 'SKILL.md'), join(fakeSkillDir, 'SKILL.md'));
+    if (state === 'tampered') writeFileSync(join(fakeSkillDir, 'lenses', 'security.md'), 'tampered asset\n');
+    const skillBytes = readFileSync(join(fakeSkillDir, 'SKILL.md'));
+    const trustedAsset = { relativePath: 'lenses/security.md', body: 'trusted asset\n' };
+    writeFileSync(join(fakeSkillsRoot, 'skills.checksums.json'), JSON.stringify({
+      version: 3,
+      skills: [{
+        plugin: 'handoff',
+        sha256: createHash('sha256').update(skillBytes).digest('hex'),
+        bytes: skillBytes.length,
+        referencesSha256: checksumFiles([]),
+        referenceFiles: 0,
+        referenceBytes: 0,
+        assetsSha256: checksumFiles([trustedAsset]),
+        assetFiles: 1,
+        assetBytes: Buffer.byteLength(trustedAsset.body),
+      }],
+    }));
+
+    const r = run(['--target', 'codex', '--skills-dir', fakeSkills, '--lib-dir', LIB, '--list'], { cwd: tmp });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/R-SEC-02/);
+    expect(r.stderr).toMatch(/assets:/);
   });
 });
 
@@ -583,7 +625,7 @@ describe('install-cli — file permissions (R-SEC-08, SC15, t24)', () => {
 // H8 (tests review): merge.mjs lock + symlink + bak unit coverage.
 describe('merge.mjs — lock and symlink unit (H8)', () => {
   test('acquireLock contention throws then release succeeds', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'merge-lock-'));
+    const dir = makeTmp('merge-lock-');
     const f = join(dir, 'x.txt');
     writeFileSync(f, 'a');
     const release = merge.acquireLock(f);
@@ -593,7 +635,7 @@ describe('merge.mjs — lock and symlink unit (H8)', () => {
   });
 
   test('acquireLock takes over stale lock past TTL', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'merge-stale-'));
+    const dir = makeTmp('merge-stale-');
     const f = join(dir, 'y.txt');
     writeFileSync(f, 'b');
     writeFileSync(f + '.lock', JSON.stringify({ pid: 99999, timestamp: 0, hostname: 'old' }));
@@ -602,7 +644,7 @@ describe('merge.mjs — lock and symlink unit (H8)', () => {
   });
 
   test('rotateBackup refuses symlink (R-SEC-05)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'merge-symlink-'));
+    const dir = makeTmp('merge-symlink-');
     const real = join(dir, 'real.txt');
     const link = join(dir, 'link.txt');
     writeFileSync(real, 'real');
@@ -659,7 +701,7 @@ describe('install-cli — layout auto-detection', () => {
     // realpathSync collapses macOS /var → /private/var so install-cli's
     // invokedDirectly guard (which compares argv[1] against import.meta.url)
     // matches; otherwise the script imports cleanly and exits silently.
-    const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'xm-cache-layout-')));
+    const tmp = realpathSync(makeTmp('xm-cache-layout-'));
     cpSync(join(LIB, 'install'), join(tmp, 'lib', 'install'), { recursive: true });
     cpSync(SKILLS, join(tmp, 'skills'), { recursive: true });
     copyFileSync(join(REPO, 'xm', 'skills.checksums.json'), join(tmp, 'skills.checksums.json'));

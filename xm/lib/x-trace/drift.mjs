@@ -102,6 +102,7 @@ function timeOf(value, fallback = NaN) {
 export function collectTraceRows(traceDir) {
   const steps = [];
   const sessions = [];
+  const seenEvents = new Set();
   let files = 0;
   let skipped = 0;
   if (!existsSync(traceDir)) return { steps, sessions, files, skipped };
@@ -111,27 +112,38 @@ export function collectTraceRows(traceDir) {
     try { if (lstatSync(path).isSymbolicLink()) { skipped += 1; continue; } } catch { continue; }
     files += 1;
     const { skill: fileSkill, fileTime } = parseTraceFileName(name);
+    const traceMatch = name.replace(/\.jsonl$/, '').match(/^(.*?-\d{8}-\d{6}-[0-9a-f]+)(?:\..*)?$/i);
+    const fileSessionId = traceMatch?.[1] || name;
     const parsed = readJsonl(path);
     skipped += parsed.skipped;
     let skill = fileSkill;
     for (const entry of parsed.rows) {
       if (entry.type === 'session_start' && typeof entry.skill === 'string' && entry.skill) skill = entry.skill;
     }
-    for (const entry of parsed.rows) {
+    for (const [entryIndex, entry] of parsed.rows.entries()) {
       const ts = timeOf(entry.ts, fileTime);
       if (!Number.isFinite(ts)) continue;
+      const sessionId = typeof entry.session_id === 'string' && entry.session_id
+        ? entry.session_id
+        : fileSessionId;
+      const localEventId = typeof entry.event_id === 'string' && entry.event_id
+        ? entry.event_id
+        : (typeof entry.id === 'string' && entry.id ? entry.id : `${entry.type}:${entryIndex}`);
+      const eventKey = `${sessionId}\u0000${entry.type}\u0000${localEventId}`;
+      if (seenEvents.has(eventKey)) continue;
+      seenEvents.add(eventKey);
       if (entry.type === 'agent_step') {
         const tokens = entry.tokens_est && typeof entry.tokens_est === 'object'
           ? (Number(entry.tokens_est.input) || 0) + (Number(entry.tokens_est.output) || 0)
           : null;
         steps.push({
-          ts, skill, role: entry.role || 'unknown', model: entry.model || 'unknown',
+          ts, session_id: sessionId, skill, role: entry.role || 'unknown', model: entry.model || 'unknown',
           duration_ms: Number.isFinite(Number(entry.duration_ms)) ? Number(entry.duration_ms) : null,
           tokens_total: tokens != null && tokens > 0 ? tokens : null,
           status: entry.status || 'unknown',
         });
       } else if (entry.type === 'session_end') {
-        sessions.push({ ts, skill, status: entry.status || 'unknown' });
+        sessions.push({ ts, session_id: sessionId, skill, status: entry.status || 'unknown' });
       }
     }
   }
@@ -157,19 +169,32 @@ export function collectEvalRows(resultsDir) {
 
 export function collectCostRows(paths) {
   const rows = [];
+  const seenEventIds = new Set();
   let skipped = 0;
+  let duplicates = 0;
   for (const path of paths) {
     const parsed = readJsonl(path);
     skipped += parsed.skipped;
     for (const entry of parsed.rows) {
       if (entry.type !== 'task_complete') continue;
+      if (typeof entry.event_id === 'string' && entry.event_id) {
+        if (seenEventIds.has(entry.event_id)) { duplicates += 1; continue; }
+        seenEventIds.add(entry.event_id);
+      }
       const cost = Number(entry.cost_usd);
       const ts = timeOf(entry.timestamp || entry.ts);
       if (!Number.isFinite(cost) || !Number.isFinite(ts)) continue;
-      rows.push({ ts, model: entry.model || 'unknown', role: entry.role || 'unknown', strategy: entry.strategy || 'unknown', cost_usd: cost });
+      rows.push({
+        ts,
+        model: entry.model || 'unknown',
+        role: entry.role || 'unknown',
+        strategy: entry.strategy || 'unknown',
+        cost_source: entry.cost_source || 'legacy',
+        cost_usd: cost,
+      });
     }
   }
-  return { rows, skipped };
+  return { rows, skipped, duplicates };
 }
 
 export function collectPrecisionRows(ledgerPath) {
@@ -192,7 +217,10 @@ function crosses(axis, baselineValue, windowValue) {
   const delta = windowValue - baselineValue;
   const deltaPct = baselineValue !== 0 ? delta / Math.abs(baselineValue) : null;
   let flagged = false;
-  if (t.kind === 'ratio') flagged = deltaPct != null && (t.direction === 'up' ? deltaPct >= t.value : deltaPct <= -t.value);
+  if (t.kind === 'ratio') {
+    if (baselineValue === 0) flagged = t.direction === 'up' ? windowValue > 0 : windowValue < 0;
+    else flagged = t.direction === 'up' ? deltaPct >= t.value : deltaPct <= -t.value;
+  }
   else if (t.kind === 'pp' || t.kind === 'abs') flagged = t.direction === 'up' ? delta >= t.value : delta <= -t.value;
   return { flagged, delta: round(delta, 4), delta_pct: deltaPct != null ? round(deltaPct, 4) : null };
 }
@@ -225,7 +253,22 @@ export function compareWindows(rows, { axis, now, windowMs, baselineMs, keyOf, s
 
 function errorRate(rows) {
   if (!rows.length) return null;
-  return rows.filter(r => r.status !== 'success').length / rows.length;
+  return rows.filter(r => ['failed', 'error'].includes(String(r.status).toLowerCase())).length / rows.length;
+}
+
+/** Collapse correlated agent_step rows into one independent sample per session/key. */
+function sessionMetricRows(steps, field) {
+  const groups = new Map();
+  for (const step of steps) {
+    if (step[field] == null) continue;
+    const metricKey = `${step.skill}/${step.role}/${step.model}`;
+    const key = `${step.session_id}\u0000${metricKey}`;
+    const current = groups.get(key) || { ...step, [field]: 0 };
+    current.ts = Math.max(current.ts, step.ts);
+    current[field] += step[field];
+    groups.set(key, current);
+  }
+  return [...groups.values()];
 }
 
 function precisionOf(rows) {
@@ -275,16 +318,19 @@ export function driftReport({ xmDir = resolveXmDir(), window = DEFAULT_WINDOW, b
     else if (trace.skipped > 0) coverage.push(`traces: ${trace.skipped} malformed line(s)/symlink(s) skipped`);
   }
   if (need('latency')) {
-    const rows = trace.steps.filter(r => r.duration_ms != null);
+    const rows = sessionMetricRows(trace.steps, 'duration_ms');
     report.axes.latency = { unit: 'ms (p50)', rows: compareWindows(rows, { ...common, axis: 'latency', keyOf: r => `${r.skill}/${r.role}/${r.model}`, statOf: rs => percentile50(rs.map(r => r.duration_ms)) }) };
   }
   if (need('tokens')) {
-    const rows = trace.steps.filter(r => r.tokens_total != null);
+    const rows = sessionMetricRows(trace.steps, 'tokens_total');
     if (trace.steps.length && !rows.length) coverage.push('tokens: agent_step rows carry no tokens_est — axis has no data (estimates are opt-in)');
     report.axes.tokens = { unit: 'tokens_est total (p50, estimate)', rows: compareWindows(rows, { ...common, axis: 'tokens', keyOf: r => `${r.skill}/${r.role}/${r.model}`, statOf: rs => percentile50(rs.map(r => r.tokens_total)) }) };
   }
   if (need('errors')) {
-    report.axes.errors = { unit: 'session_end non-success rate', rows: compareWindows(trace.sessions, { ...common, axis: 'errors', keyOf: r => r.skill, statOf: errorRate }) };
+    const known = trace.sessions.filter(r => ['success', 'completed', 'failed', 'error'].includes(String(r.status).toLowerCase()));
+    const unknownCount = trace.sessions.length - known.length;
+    if (unknownCount) coverage.push(`errors: ${unknownCount} session_end row(s) with unknown status excluded (known: success, completed, failed, error)`);
+    report.axes.errors = { unit: 'session_end failed/error rate', rows: compareWindows(known, { ...common, axis: 'errors', keyOf: r => r.skill, statOf: errorRate }) };
   }
   if (need('quality')) {
     const evalRows = collectEvalRows(join(xmDir, 'eval', 'results'));
@@ -294,12 +340,20 @@ export function driftReport({ xmDir = resolveXmDir(), window = DEFAULT_WINDOW, b
   if (need('precision')) {
     const ledger = collectPrecisionRows(join(xmDir, 'review', 'triage-ledger.jsonl'));
     if (!ledger.rows.length) coverage.push('precision: no .xm/review/triage-ledger.jsonl decisions — x-build verify-review-fix writes them when a triage passes');
-    report.axes.precision = { unit: 'fix_now / (fix_now + false_positive)', rows: compareWindows(ledger.rows, { ...common, axis: 'precision', keyOf: r => r.lens, statOf: precisionOf }) };
+    const comparable = ledger.rows.filter(r => r.decision === 'fix_now' || r.decision === 'false_positive');
+    report.axes.precision = { unit: 'fix_now / (fix_now + false_positive)', rows: compareWindows(comparable, { ...common, axis: 'precision', keyOf: r => r.lens, statOf: precisionOf }) };
   }
   if (need('cost')) {
-    const cost = collectCostRows([join(xmDir, 'metrics', 'sessions.jsonl'), join(xmDir, 'build', 'metrics', 'sessions.jsonl')]);
+    const costPaths = [
+      join(xmDir, 'metrics', 'sessions.jsonl'),
+      join(xmDir, 'metrics', 'sessions.jsonl.1'),
+      join(xmDir, 'build', 'metrics', 'sessions.jsonl'),
+      join(xmDir, 'build', 'metrics', 'sessions.jsonl.1'),
+    ];
+    const cost = collectCostRows(costPaths);
     if (!cost.rows.length) coverage.push('cost: no task_complete rows in .xm/metrics/sessions.jsonl — axis has no data (all cost figures are estimates when present)');
-    report.axes.cost = { unit: 'cost_usd (p50, estimate)', rows: compareWindows(cost.rows, { ...common, axis: 'cost', keyOf: r => `${r.model}/${r.role}`, statOf: rs => percentile50(rs.map(r => r.cost_usd)) }) };
+    if (cost.duplicates) coverage.push(`cost: ${cost.duplicates} duplicate event_id row(s) excluded across active/rotated logs`);
+    report.axes.cost = { unit: 'cost_usd (p50, estimate)', rows: compareWindows(cost.rows, { ...common, axis: 'cost', keyOf: r => `${r.model}/${r.role}/${r.cost_source}`, statOf: rs => percentile50(rs.map(r => r.cost_usd)) }) };
   }
 
   for (const [axis, data] of Object.entries(report.axes)) {

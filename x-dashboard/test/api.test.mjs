@@ -620,7 +620,7 @@ describe('GET /api/review/precision', () => {
     ledgerBackup = existsSync(LEDGER_PATH) ? readFileSync(LEDGER_PATH) : null;
     const rows = [
       ledgerRow(),
-      ledgerRow({ finding_id: 'rf_0000000000000002', id: 'F2', lens: 'security', severity: 'medium', decision: 'false_positive' }),
+      ledgerRow({ finding_id: 'rf_0000000000000002', id: 'F2', lens: 'security', severity: '<img src=x onerror=alert(1)>', decision: 'false_positive' }),
       ledgerRow({ finding_id: 'rf_0000000000000003', id: 'F3', lens: 'logic', reviewed_commit: 'c2', ts: '2026-08-25T00:00:00.000Z', decision: 'fix_now' }),
       { ...ledgerRow(), type: 'triage_outcome', decision: undefined, outcome: 'resolved' },
     ];
@@ -644,6 +644,8 @@ describe('GET /api/review/precision', () => {
     expect(logic).toMatchObject({ decided: 2, fix_now: 2, false_positive: 0, precision: 1, resolved: 1 });
     const security = body.lenses.find(b => b.lens === 'security');
     expect(security).toMatchObject({ decided: 1, false_positive: 1, precision: 0 });
+    expect(body.severities.find(b => b.severity === 'unknown')).toMatchObject({ decided: 1, false_positive: 1 });
+    expect(body.severities.some(b => b.severity.includes('<img'))).toBe(false);
     expect(body.totals).toMatchObject({ decided: 3, precision: 0.667 });
   });
 
@@ -657,6 +659,12 @@ describe('GET /api/review/precision', () => {
 
   it('rejects a malformed since window', async () => {
     const { res, body } = await getJSON('/api/review/precision?since=soon');
+    expect(res.status).toBe(400);
+    expect(body.status).toBe('bad_request');
+  });
+
+  it('rejects a partially numeric last window', async () => {
+    const { res, body } = await getJSON('/api/review/precision?last=1oops');
     expect(res.status).toBe(400);
     expect(body.status).toBe('bad_request');
   });

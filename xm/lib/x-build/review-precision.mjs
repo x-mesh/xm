@@ -23,24 +23,44 @@ export const TRIAGE_DECISIONS = ['fix_now', 'backlog', 'accept_risk', 'false_pos
 export const REVERIFY_OUTCOMES = ['resolved', 'persistent', 'regression'];
 const ROW_TYPES = new Set(['triage_decision', 'triage_outcome']);
 
-/** Lens attribution for a finding; x-review sometimes emits `lenses[]`. */
+function normalizeLabel(value) {
+  return typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null;
+}
+
+/** All contributing lenses for a finding; x-review may emit any combination. */
+export function findingLenses(finding) {
+  const values = [finding?.lens, ...(Array.isArray(finding?.lenses) ? finding.lenses : []), ...(Array.isArray(finding?.sources) ? finding.sources : [])];
+  const lenses = [...new Set(values.map(normalizeLabel).filter(Boolean))];
+  return lenses.length > 0 ? lenses : ['unknown'];
+}
+
+/** Primary lens retained for schema-v1 callers. */
 export function findingLens(finding) {
-  const lens = finding?.lens
-    || (Array.isArray(finding?.lenses) ? finding.lenses[0] : null)
-    || (Array.isArray(finding?.sources) ? finding.sources[0] : null);
-  return typeof lens === 'string' && lens.trim() ? lens.trim().toLowerCase() : 'unknown';
+  return findingLenses(finding)[0];
+}
+
+/** Normalize untrusted ledger severity values before they reach API consumers. */
+export function normalizeLedgerSeverity(value) {
+  const severity = normalizeLabel(value);
+  return ['critical', 'high', 'medium', 'low'].includes(severity) ? severity : 'unknown';
+}
+
+function rowLenses(row) {
+  return findingLenses({ lens: row?.lens, lenses: row?.lenses });
 }
 
 /** Build one ledger row. `decision` xor `outcome` decides the row type. */
 export function buildLedgerRow({ ts, reviewed_commit, finding, decision, outcome, triage_digest }) {
+  const lenses = findingLenses(finding);
   const base = {
     schema_v: TRIAGE_LEDGER_SCHEMA_V,
     ts,
     reviewed_commit: reviewed_commit || null,
     finding_id: finding.finding_id,
     id: finding.id,
-    lens: findingLens(finding),
-    severity: String(finding.severity || '').toLowerCase() || 'unknown',
+    lens: lenses[0],
+    ...(lenses.length > 1 ? { lenses } : {}),
+    severity: normalizeLedgerSeverity(finding.severity),
     file: finding.file || null,
     triage_digest: triage_digest || null,
   };
@@ -101,25 +121,40 @@ function timeOf(row) {
  */
 export function filterLedgerRows(rows, { since = null, last = null, lens = null, now = Date.now() } = {}) {
   const seen = new Set();
-  let kept = [];
+  const decisionIndexes = new Map();
+  const kept = [];
   for (const row of rows) {
+    if (row.type === 'triage_decision') {
+      const identity = `${row.type}|${row.reviewed_commit || ''}|${row.finding_id || ''}`;
+      const previous = decisionIndexes.get(identity);
+      if (previous != null) kept[previous] = row;
+      else {
+        decisionIndexes.set(identity, kept.length);
+        kept.push(row);
+      }
+      continue;
+    }
     const key = ledgerRowKey(row);
     if (seen.has(key)) continue;
     seen.add(key);
     kept.push(row);
   }
-  if (lens) kept = kept.filter(row => row.lens === String(lens).toLowerCase());
+  let filtered = kept;
+  if (lens) {
+    const wantedLens = normalizeLabel(lens);
+    filtered = filtered.filter(row => rowLenses(row).includes(wantedLens));
+  }
   if (since != null) {
     const windowMs = typeof since === 'number' ? since : parseDuration(since);
     if (windowMs != null) {
       const cutoff = now - windowMs;
-      kept = kept.filter(row => { const t = timeOf(row); return t != null && t >= cutoff; });
+      filtered = filtered.filter(row => { const t = timeOf(row); return t != null && t >= cutoff; });
     }
   }
   if (last != null && Number(last) > 0) {
     const order = [];
     const firstSeen = new Map();
-    for (const row of kept) {
+    for (const row of filtered) {
       const commit = row.reviewed_commit || '';
       const t = timeOf(row) ?? 0;
       if (!firstSeen.has(commit) || t > firstSeen.get(commit)) firstSeen.set(commit, t);
@@ -127,9 +162,9 @@ export function filterLedgerRows(rows, { since = null, last = null, lens = null,
     }
     const recent = [...firstSeen.entries()].sort((a, b) => b[1] - a[1]).slice(0, Number(last)).map(([commit]) => commit);
     const allowed = new Set(recent);
-    kept = kept.filter(row => allowed.has(row.reviewed_commit || ''));
+    filtered = filtered.filter(row => allowed.has(row.reviewed_commit || ''));
   }
-  return kept;
+  return filtered;
 }
 
 function emptyBucket(name, keyName) {
@@ -183,8 +218,9 @@ export function aggregateLensPrecision(rows, options = {}) {
       if (from == null || t < from) from = t;
       if (to == null || t > to) to = t;
     }
-    apply(bucketFor(lenses, row.lens || 'unknown', 'lens'), row);
-    apply(bucketFor(severities, row.severity || 'unknown', 'severity'), row);
+    const attributedLenses = options.lens ? [normalizeLabel(options.lens) || 'unknown'] : rowLenses(row);
+    for (const lens of attributedLenses) apply(bucketFor(lenses, lens, 'lens'), row);
+    apply(bucketFor(severities, normalizeLedgerSeverity(row.severity), 'severity'), row);
     apply(totals, row);
   }
 

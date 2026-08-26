@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { tokenize, parseSpec, containedPath, runCmd, runFile, runGrep, runJson, runAssertions } from '../x-eval/lib/x-eval/assert.mjs';
@@ -127,6 +127,11 @@ describe('x-eval assert: runners', () => {
       expect(() => containedPath(tmp, '../outside.txt')).toThrow(/escapes/);
       expect(containedPath(tmp, 'src/a.mjs')).toBe(join(tmp, 'src', 'a.mjs'));
       expect(runFile({ name: 'f', spec: 'exists=../../etc/passwd', cwd: tmp })).toMatchObject({ result: 'HARD_FAIL', error_code: 'EINVAL' });
+      const outside = mkdtempSync(join(tmpdir(), 'xe-outside-'));
+      writeFileSync(join(outside, 'secret.txt'), 'secret');
+      symlinkSync(outside, join(tmp, 'linked-outside'));
+      expect(runFile({ name: 'f', spec: 'exists=linked-outside/secret.txt', cwd: tmp })).toMatchObject({ result: 'HARD_FAIL', error_code: 'EINVAL' });
+      rmSync(outside, { recursive: true, force: true });
     } finally { rmSync(tmp, { recursive: true, force: true }); }
   });
 
@@ -176,6 +181,8 @@ describe('x-eval assert: CLI', () => {
       expect(cli(['assert', '--cmd', 'no-name-here'], tmp).exitCode).toBe(2);
       expect(cli(['assert', '--cmd', 'ok=true', '--cwd', '../..'], tmp).exitCode).toBe(2);
       expect(cli(['assert', '--cmd', 'ok=true', '--timeout-ms', '0'], tmp).exitCode).toBe(2);
+      expect(cli(['assert', '--cmd', 'ok=true', '--unknown', 'x'], tmp).exitCode).toBe(2);
+      expect(cli(['assert', '--cmd', 'ok=true', 'unused'], tmp).exitCode).toBe(2);
       expect(cli(['nope'], tmp).exitCode).toBe(2);
       expect(cli([], tmp).exitCode).toBe(2);
       expect(cli(['help'], tmp).exitCode).toBe(0);
@@ -189,5 +196,19 @@ describe('x-eval assert: CLI', () => {
       expect(r.exitCode).toBe(0);
       expect(JSON.parse(r.stdout).cwd).toBe(join(tmp, 'src'));
     } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test('--cwd rejects a symlinked directory outside the project', () => {
+    const tmp = makeProject();
+    const outside = mkdtempSync(join(tmpdir(), 'xe-cwd-outside-'));
+    try {
+      symlinkSync(outside, join(tmp, 'outside-link'));
+      const r = cli(['assert', '--file', 'x=absent=missing', '--cwd', 'outside-link'], tmp);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain('must stay inside');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });

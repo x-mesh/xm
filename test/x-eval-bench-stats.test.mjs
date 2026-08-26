@@ -70,12 +70,14 @@ describe('bench records', () => {
     const ok = validateRecord({ overall: 8.25, per_criterion: { accuracy: 9 }, judges: 3, cost_usd_est: 0.12, duration_ms: 1500 }, { passThreshold: 7 });
     expect(ok).toMatchObject({ overall: 8.25, passed: true, cost_source: 'estimated', judges: 3 });
     expect(validateRecord({ overall: 6.9 }, { passThreshold: 7 }).passed).toBe(false);
+    expect(validateRecord({ overall: 6.9, passed: true }, { passThreshold: 7 }).passed).toBe(false);
     expect(validateRecord({ overall: 9, passed: false }, { passThreshold: 7 }).passed).toBe(false);
     const hard = validateRecord({ overall: 9, assertion_results: [{ name: 'tests', result: 'HARD_FAIL', source: 'executable' }] }, { passThreshold: 7 });
     expect(hard.passed).toBe(false);
     expect(hard.assertion_hard_fail).toBe(true);
     expect(() => validateRecord({ overall: 8, output: 'leak' }, { passThreshold: 7 })).toThrow(/output text/);
     expect(() => validateRecord({ overall: 11 }, { passThreshold: 7 })).toThrow(/overall/);
+    expect(() => validateRecord({ overall: '8' }, { passThreshold: 7 })).toThrow(/overall/);
     expect(() => validateRecord({ overall: 8, output_sha256: 'zz' }, { passThreshold: 7 })).toThrow(/sha256/);
     expect(() => validateRecord({ overall: 8, cost_usd_est: -1 }, { passThreshold: 7 })).toThrow(/cost/);
   });
@@ -113,6 +115,13 @@ describe('bench aggregation (subcommands/bench.md rules)', () => {
   test('a strategy that clearly beats direct is recommended over it', () => {
     const records = recordsFor(manifest, { direct: [7.0, 7.2, 7.1], refine: [8.6, 8.8, 8.7], debate: [6, 6, 6], tournament: [6, 6, 6] });
     const result = aggregateRun(manifest, records);
+    expect(result.recommendation.final).toBe('refine');
+  });
+
+  test('an unreliable direct control is never recommended', () => {
+    const records = recordsFor(manifest, { direct: [8.5, 6.5, 8.5], refine: [8.1, 8.1, 8.1], debate: [6, 6, 6], tournament: [6, 6, 6] });
+    const result = aggregateRun(manifest, records);
+    expect(result.strategies.find(s => s.name === 'direct').pass_hat_k).toBe(0);
     expect(result.recommendation.final).toBe('refine');
   });
 
@@ -175,5 +184,14 @@ describe('regression gate', () => {
     expect(report.blockers.map(b => b.code)).toContain('arm_missing');
     expect(report.blockers.map(b => b.code)).toContain('insufficient_records');
     expect(report.arms.find(a => a.arm === 'debate').status).toBe('new');
+  });
+
+  test('blocks comparisons with different case sets, rubrics, thresholds, or trials', () => {
+    const complete = aggregateRun(manifest, recordsFor(manifest, { direct: [7, 7, 7], refine: [8.5, 8.4, 8.6] }));
+    const mutateCase = patch => ({ ...complete, cases: complete.cases.map((item, index) => index === 0 ? { ...item, ...patch } : item) });
+    expect(compareBench({ ...complete, cases: [] }, baseline).blockers.map(b => b.code)).toContain('case_set_mismatch');
+    expect(compareBench(mutateCase({ rubric: 'security-audit' }), baseline).blockers.map(b => b.code)).toContain('rubric_mismatch');
+    expect(compareBench(mutateCase({ pass_threshold: 8 }), baseline).blockers.map(b => b.code)).toContain('pass_threshold_mismatch');
+    expect(compareBench(mutateCase({ trials: 5 }), baseline).blockers.map(b => b.code)).toContain('trial_count_mismatch');
   });
 });

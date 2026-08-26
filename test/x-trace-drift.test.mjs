@@ -77,6 +77,14 @@ describe('drift: pure helpers', () => {
     expect(out[0].flagged).toBe(true);
     expect(out[0].delta).toBe(-0.6);
   });
+
+  test('ratio axes flag a worsening from a zero baseline', () => {
+    const rows = [];
+    for (let i = 0; i < 5; i++) rows.push({ ts: NOW_MS - (10 + i) * DAY, k: 'zero', v: 0 });
+    for (let i = 0; i < 5; i++) rows.push({ ts: NOW_MS - (1 + i) * DAY, k: 'zero', v: 1 });
+    const out = compareWindows(rows, { axis: 'cost', now: NOW_MS, windowMs: 7 * DAY, baselineMs: 28 * DAY, minSamples: 5, keyOf: r => r.k, statOf: rs => rs.reduce((s, r) => s + r.v, 0) / rs.length });
+    expect(out[0]).toMatchObject({ baseline: { value: 0 }, window: { value: 1 }, flagged: true, delta: 1, delta_pct: null });
+  });
 });
 
 describe('drift: report over a seeded .xm', () => {
@@ -85,6 +93,8 @@ describe('drift: report over a seeded .xm', () => {
     // baseline: 6 sessions × review/se/sonnet at 1000ms (days 10..15), window: 6 sessions at 1600ms (days 1..6, one on a synced host)
     for (let i = 0; i < 6; i++) writeTrace(dir, { daysAgo: 10 + i, durationMs: 1000, tokens: 100, hex: `b${i}00` });
     for (let i = 0; i < 6; i++) writeTrace(dir, { daysAgo: 1 + i * 0.8, durationMs: 1600, tokens: 110, hex: `c${i}00`, suffix: i === 0 ? '.jinwoo-MeshStudio.local-5135' : '' });
+    // Synced copy of the first window session must not become a second sample.
+    writeTrace(dir, { daysAgo: 1, durationMs: 1600, tokens: 110, hex: 'c000' });
     // thin key: 2 op sessions only
     writeTrace(dir, { skill: 'op', role: 'leader', daysAgo: 12, durationMs: 500, hex: 'd100' });
     writeTrace(dir, { skill: 'op', role: 'leader', daysAgo: 2, durationMs: 5000, hex: 'd200' });
@@ -116,6 +126,47 @@ describe('drift: report over a seeded .xm', () => {
     expect(report.coverage.some(n => n.startsWith('cost:'))).toBe(true);
     expect(report.flags.map(f => `${f.axis}:${f.key}`).sort()).toEqual(['errors:build', 'latency:review/se/sonnet', 'precision:logic', 'quality:general/refine']);
     expect(typeof report.xm_version === 'string' || report.xm_version === null).toBe(true);
+  });
+
+  test('uses independent sessions for step metrics and excludes unknown error statuses', () => {
+    const dir = makeXm();
+    for (let i = 0; i < 5; i++) writeTrace(dir, { daysAgo: 10 + i, durationMs: 100, tokens: 10, steps: 3, status: i === 0 ? 'completed' : 'success', hex: `a${i}11` });
+    for (let i = 0; i < 5; i++) writeTrace(dir, { daysAgo: 1 + i, durationMs: 200, tokens: 20, steps: 3, status: i === 0 ? 'unknown' : (i < 3 ? 'failed' : 'error'), hex: `b${i}11` });
+
+    const report = driftReport({ xmDir: join(dir, '.xm'), now: NOW_MS, minSamples: 4 });
+    expect(report.axes.latency.rows[0]).toMatchObject({ baseline: { n: 5, value: 300 }, window: { n: 5, value: 600 }, flagged: true });
+    expect(report.axes.tokens.rows[0]).toMatchObject({ baseline: { n: 5, value: 60 }, window: { n: 5, value: 120 }, flagged: true });
+    expect(report.axes.errors.rows[0]).toMatchObject({ baseline: { n: 5, value: 0 }, window: { n: 4, value: 1 }, flagged: true });
+    expect(report.coverage.some(note => note.includes('unknown status excluded'))).toBe(true);
+  });
+
+  test('precision sample counts use only fix_now and false_positive decisions', () => {
+    const dir = makeXm();
+    mkdirSync(join(dir, '.xm', 'review'), { recursive: true });
+    const rows = [];
+    for (let i = 0; i < 5; i++) rows.push({ schema_v: 1, type: 'triage_decision', ts: iso(10 + i), lens: 'logic', decision: 'backlog' });
+    rows.push({ schema_v: 1, type: 'triage_decision', ts: iso(10), lens: 'logic', decision: 'fix_now' });
+    for (let i = 0; i < 5; i++) rows.push({ schema_v: 1, type: 'triage_decision', ts: iso(1 + i), lens: 'logic', decision: 'false_positive' });
+    writeFileSync(join(dir, '.xm', 'review', 'triage-ledger.jsonl'), rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+
+    const report = driftReport({ xmDir: join(dir, '.xm'), now: NOW_MS, axes: ['precision'] });
+    expect(report.axes.precision.rows[0]).toMatchObject({ baseline: { n: 1, value: 1 }, window: { n: 5, value: 0 }, enough_samples: false, flagged: false });
+  });
+
+  test('reads active and rotated cost logs, deduplicates event_id, and keeps cost sources separate', () => {
+    const dir = makeXm();
+    const metrics = join(dir, '.xm', 'metrics');
+    mkdirSync(metrics, { recursive: true });
+    const event = (eventId, daysAgo, cost, source) => ({ type: 'task_complete', event_id: eventId, timestamp: iso(daysAgo), model: 'sonnet', role: 'executor', cost_source: source, cost_usd: cost });
+    const rotated = [event('b1', 10, 1, 'actual'), event('b2', 11, 1, 'actual'), event('dup', 12, 1, 'actual')];
+    const active = [event('w1', 1, 2, 'actual'), event('w2', 2, 2, 'actual'), event('dup', 12, 99, 'actual'), event('e1', 1, 50, 'estimated'), event('e2', 2, 50, 'estimated')];
+    writeFileSync(join(metrics, 'sessions.jsonl.1'), rotated.map(row => JSON.stringify(row)).join('\n') + '\n');
+    writeFileSync(join(metrics, 'sessions.jsonl'), active.map(row => JSON.stringify(row)).join('\n') + '\n');
+
+    const report = driftReport({ xmDir: join(dir, '.xm'), now: NOW_MS, axes: ['cost'], minSamples: 2 });
+    expect(report.axes.cost.rows.find(row => row.key === 'sonnet/executor/actual')).toMatchObject({ baseline: { n: 3, value: 1 }, window: { n: 2, value: 2 }, flagged: true });
+    expect(report.axes.cost.rows.find(row => row.key === 'sonnet/executor/estimated')).toMatchObject({ baseline: { n: 0 }, window: { n: 2, value: 50 }, enough_samples: false, flagged: false });
+    expect(report.coverage.some(note => note.includes('duplicate event_id'))).toBe(true);
   });
 
   test('CLI: --json schema, snapshot append, --axis filter, --fail-on-flag exit 2, bad --window exit 1', () => {
@@ -150,6 +201,10 @@ describe('drift: report over a seeded .xm', () => {
     expect(runCli(dir, ['drift', '--window', 'soon', '--no-snapshot']).code).toBe(1);
     expect(runCli(dir, ['drift', '--axis', 'vibes', '--no-snapshot']).code).toBe(1);
     expect(runCli(dir, ['drift', '--min-samples', '0', '--no-snapshot']).code).toBe(1);
+    const missingValue = runCli(dir, ['drift', '--window', '--json']);
+    expect(missingValue.code).toBe(1);
+    expect(missingValue.stderr).toContain('--window requires a value');
+    expect(runCli(dir, ['record', 'review', '--status']).code).toBe(1);
   });
 
   test('CLI on an empty .xm reports coverage gaps instead of zeros', () => {

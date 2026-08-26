@@ -50,20 +50,35 @@ const COVERAGE_NOTE =
 // ── helpers ──────────────────────────────────────────────────────────
 
 /** Split raw args into { opts, pos }. Boolean flags never consume a following positional argument. */
+const BOOLEAN_OPTIONS = new Set([
+  'json', 'rebuild', 'promote-to-eval', 'fail-on-flag', 'no-snapshot',
+]);
+
 function parseArgs(args) {
   const opts = {};
   const pos = [];
+  const errors = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === '--json') { opts.json = true; continue; }
-    if (a === '--rebuild') { opts.rebuild = true; continue; }
-    if (a === '--promote-to-eval') { opts.promoteToEval = true; continue; }
-    if (a === '--fail-on-flag') { opts.failOnFlag = true; continue; }
-    if (a === '--no-snapshot') { opts.noSnapshot = true; continue; }
-    if (a.startsWith('--')) { opts[a.slice(2)] = args[++i]; continue; }
+    if (a.startsWith('--')) {
+      const name = a.slice(2);
+      if (BOOLEAN_OPTIONS.has(name)) {
+        const key = name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+        opts[key] = true;
+        continue;
+      }
+      const value = args[i + 1];
+      if (value == null || value.startsWith('--')) {
+        errors.push(`${a} requires a value`);
+        continue;
+      }
+      opts[name] = value;
+      i += 1;
+      continue;
+    }
     pos.push(a);
   }
-  return { opts, pos };
+  return { opts, pos, errors };
 }
 
 /** Shorten a 7–40 hex sha to 7 chars; pass through non-sha refs (e.g. a subject line). */
@@ -477,7 +492,12 @@ Known tools: ${[...KNOWN_TOOLS].join(', ')}`);
 
 function main() {
   const [cmd, ...rest] = process.argv.slice(2);
-  const { opts, pos } = parseArgs(rest);
+  const { opts, pos, errors } = parseArgs(rest);
+  if (errors.length) {
+    console.error(`Usage error: ${errors.join('; ')}`);
+    process.exitCode = 1;
+    return;
+  }
   switch (cmd) {
     case 'record': cmdRecord(pos, opts); break;
     case 'last':   cmdLast(pos, opts); break;

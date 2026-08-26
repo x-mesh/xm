@@ -83,4 +83,19 @@ describe('sync-bundle.sh --check', () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  test('detects a stale bundle-only x-eval module', () => {
+    const tmp = copyTrackedRepo();
+    try {
+      const staleFile = join(tmp, 'xm', 'lib', 'x-eval', 'obsolete.mjs');
+      writeFileSync(staleFile, 'export const obsolete = true;\n');
+
+      const r = runSync(tmp);
+      expect(r.status).not.toBe(0);
+      expect(`${r.stdout}\n${r.stderr}`).toContain('OBSOLETE xm/lib/x-eval/obsolete.mjs');
+      expect(readFileSync(staleFile, 'utf8')).toBe('export const obsolete = true;\n');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });

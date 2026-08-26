@@ -17,8 +17,8 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { dirname, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 
 export const ASSERTION_KINDS = ['cmd', 'file', 'grep', 'json'];
@@ -90,6 +90,17 @@ export function containedPath(cwd, target) {
   const full = resolve(base, String(target));
   if (full !== base && !full.startsWith(base + sep)) {
     throw new Error(`path "${target}" escapes the assertion cwd`);
+  }
+  let existing = full;
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) break;
+    existing = parent;
+  }
+  const actualBase = realpathSync(base);
+  const actual = realpathSync(existing);
+  if (actual !== actualBase && !actual.startsWith(actualBase + sep)) {
+    throw new Error(`path "${target}" escapes the assertion cwd through a symlink`);
   }
   return full;
 }

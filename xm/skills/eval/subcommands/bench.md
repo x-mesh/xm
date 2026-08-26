@@ -46,7 +46,7 @@ xm eval bench finish --run <id> [--baseline latest] [--allow-partial] --json
 
 One AskUserQuestion before `plan` (confirm case set, arms, trials, rough cost = jobs × judge panel); none between jobs.
 
-**`direct` control (on by default):** one Agent call on the session model — the single-agent baseline every strategy has to beat. The table gains `Δ direct`, and the recommendation only names a strategy when it passes every trial **and** beats direct by ≥ 0.5; otherwise it recommends `direct` and says orchestration is not earning its cost on this case set. `--no-direct` drops the control (say so in the output).
+**`direct` control (on by default):** one Agent call on the session model — the single-agent baseline every strategy has to beat. The table gains `Δ direct`, and the recommendation only names a strategy when it passes every trial **and** beats a reliable direct control by ≥ 0.5; otherwise it recommends reliable `direct` and says orchestration is not earning its cost on this case set. An unreliable direct arm (`pass^k = 0`) is never recommended. `--no-direct` drops the control (say so in the output).
 
 **Strategy name → x-op mapping:**
 
@@ -85,6 +85,9 @@ Recommendation: refine — passes reliably AND cheapest reliable option
 - `pass@k` = count of trials with `overall >= pass_threshold`. Capability upper bound ("can it ever succeed?").
 - `pass^k` = `✓` if ALL trials pass, else `·`. Reliability lower bound ("does it succeed every time?").
 - `k` = trial count (`--trials N`). `pass_threshold` comes from the rubric (default 7.0; see `references/rubrics.md`).
+- A regression gate compares only compatible runs: the case ids, per-case rubric,
+  resolved pass threshold, and trial count must match. Any mismatch blocks instead
+  of comparing unlike experiments.
 
 **Why both:** avg score hides the "8.2 avg but 0/3 pass^k" failure mode — a strategy that occasionally scores 10 but often scores 5. `pass^k` separates capability from reliability. Empirically, ~25% of high-avg-high-variance strategies fall into this trap.
 

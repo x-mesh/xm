@@ -2145,14 +2145,17 @@ async function handleReviewPrecision(xmRoot, req) {
   const url = new URL(req.url);
   const since = url.searchParams.get('since') || null;
   const lastRaw = url.searchParams.get('last');
-  const last = lastRaw ? Number.parseInt(lastRaw, 10) : null;
+  const last = lastRaw && /^\d+$/.test(lastRaw) ? Number(lastRaw) : null;
   const lens = url.searchParams.get('lens') || null;
   if (since && mod.parseDuration(since) == null) return jsonResponseWithETag({ status: 'bad_request', error: 'since must look like 30d, 12h, or 90m' }, req, 400);
   if (lastRaw && !(Number.isInteger(last) && last > 0)) return jsonResponseWithETag({ status: 'bad_request', error: 'last must be a positive integer' }, req, 400);
   let text;
   try { text = readFileSync(ledgerPath, 'utf8'); } catch { return jsonResponseWithETag({ status: 'read_error' }, req, 500); }
   const { rows, skipped } = mod.parseTriageLedger(text);
-  const report = mod.aggregateLensPrecision(rows, { since, last, lens });
+  const normalizeSeverity = typeof mod.normalizeLedgerSeverity === 'function'
+    ? mod.normalizeLedgerSeverity
+    : value => ['critical', 'high', 'medium', 'low'].includes(String(value || '').toLowerCase()) ? String(value).toLowerCase() : 'unknown';
+  const report = mod.aggregateLensPrecision(rows.map(row => ({ ...row, severity: normalizeSeverity(row.severity) })), { since, last, lens });
   return jsonResponseWithETag({ status: 'ok', skipped_lines: skipped, ...report }, req);
 }
 

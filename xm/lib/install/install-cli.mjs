@@ -18,7 +18,7 @@
 import { parseTargets, safeJoin, scanSecrets } from './security.mjs';
 import { TARGET_TOOLS, PRD_VERSION, targetDirFor } from './types.mjs';
 import { scanAll, listMissingCliRefs } from './scan.mjs';
-import { checksumReferences } from './util/reference-checksum.mjs';
+import { checksumFiles } from './util/reference-checksum.mjs';
 import { planAll, planTarget, bundleDir } from './plan-paths.mjs';
 import { writeOverwrite, writeMergeMarker, removeMarkerBlock } from './merge.mjs';
 import { renderCursorWithDiagnostics } from './transform/cursor.mjs';
@@ -836,14 +836,19 @@ export function run(argv) {
         for (const s of skills) {
           const want = expected.get(s.pluginName);
           if (!want) continue; // not in registry → unknown skill, ignore
-          const actualReferences = checksumReferences(s.references);
-          if (want.sha256 !== s.checksum || (want.referencesSha256 && want.referencesSha256 !== actualReferences)) {
+          const actualReferences = checksumFiles(s.references);
+          const actualAssets = checksumFiles(s.assets || []);
+          const assetsMismatch = Number(registry.version) >= 3 && want.assetsSha256 !== actualAssets;
+          if (want.sha256 !== s.checksum || (want.referencesSha256 && want.referencesSha256 !== actualReferences) || assetsMismatch) {
             mismatches.push({
               plugin: s.pluginName,
               expected: want.sha256,
               actual: s.checksum,
               expectedReferences: want.referencesSha256,
               actualReferences,
+              expectedAssets: want.assetsSha256,
+              actualAssets,
+              assetsMismatch,
             });
           }
         }
@@ -854,8 +859,11 @@ export function run(argv) {
             if (m.expectedReferences && m.expectedReferences !== m.actualReferences) {
               msg += `  ${''.padEnd(14)} refs:     ${m.expectedReferences.slice(0, 16)}...  actual: ${m.actualReferences.slice(0, 16)}...\n`;
             }
+            if (m.assetsMismatch) {
+              msg += `  ${''.padEnd(14)} assets:   ${String(m.expectedAssets || '<missing>').slice(0, 16)}...  actual: ${m.actualAssets.slice(0, 16)}...\n`;
+            }
           }
-          msg += `\nMost likely cause: the registry was not regenerated after a release that touched SKILL.md or references.\n`;
+          msg += `\nMost likely cause: the registry was not regenerated after a release that touched SKILL.md, references, or assets.\n`;
           msg += `If you ran /x-release on a version of release.mjs that pre-dates auto-regeneration, fix with:\n`;
           msg += `  node xm/scripts/skills-checksum.mjs\n`;
           msg += `  git add xm/skills.checksums.json && git commit -m "chore: update skills checksums"\n\n`;

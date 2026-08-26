@@ -3,10 +3,10 @@
 /**
  * skills-checksum.mjs — generate xm/skills.checksums.json (R-SEC-02 authority).
  *
- * The output file lists SHA-256 of every `xm/skills/<plugin>/SKILL.md`. The
- * `xm install` CLI compares each SKILL.md it scans against this file to
- * detect supply-chain tampering. CI re-runs this generator and treats a diff
- * as a release-time signal that the file should be updated.
+ * The output file lists SHA-256 digests for every `SKILL.md`, reference, and
+ * sidecar asset under `xm/skills/<plugin>/`. The installer checks this authority
+ * before rendering files. CI re-runs this generator and treats drift as a
+ * release-time signal that the registry should be updated.
  *
  *   node xm/scripts/skills-checksum.mjs            # write file
  *   node xm/scripts/skills-checksum.mjs --check    # exit non-zero on mismatch
@@ -16,7 +16,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scanAll } from '../lib/install/scan.mjs';
-import { checksumReferences } from '../lib/install/util/reference-checksum.mjs';
+import { checksumFiles } from '../lib/install/util/reference-checksum.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..', '..');
@@ -25,7 +25,7 @@ const LIB_DIR = resolve(REPO, 'xm', 'lib');
 const CHECKSUM_PATH = resolve(REPO, 'xm', 'skills.checksums.json');
 
 /**
- * @returns {{ generatedAt: number, version: 2, skills: { plugin: string, sha256: string, bytes: number, referencesSha256: string, referenceFiles: number, referenceBytes: number }[] }}
+ * @returns {{ generatedAt: number, version: 3, skills: { plugin: string, sha256: string, bytes: number, referencesSha256: string, referenceFiles: number, referenceBytes: number, assetsSha256: string, assetFiles: number, assetBytes: number }[] }}
  */
 function build() {
   if (!existsSync(SKILLS_DIR)) {
@@ -35,13 +35,16 @@ function build() {
     plugin: skill.pluginName,
     sha256: skill.checksum,
     bytes: skill.size.bytes,
-    referencesSha256: checksumReferences(skill.references),
+    referencesSha256: checksumFiles(skill.references),
     referenceFiles: skill.references.length,
     referenceBytes: skill.references.reduce((sum, ref) => sum + ref.bytes, 0),
+    assetsSha256: checksumFiles(skill.assets || []),
+    assetFiles: (skill.assets || []).length,
+    assetBytes: (skill.assets || []).reduce((sum, asset) => sum + asset.bytes, 0),
   }));
   return {
     generatedAt: Date.now(),
-    version: 2,
+    version: 3,
     skills,
   };
 }
@@ -66,7 +69,7 @@ if (checkMode) {
     if (!storedMap.has(plugin)) added.push(plugin);
     else {
       const registered = storedMap.get(plugin);
-      if (registered.sha256 !== skill.sha256 || registered.referencesSha256 !== skill.referencesSha256) {
+      if (registered.sha256 !== skill.sha256 || registered.referencesSha256 !== skill.referencesSha256 || registered.assetsSha256 !== skill.assetsSha256) {
         drifted.push({ plugin, stored: registered, actual: skill });
       }
     }
@@ -74,15 +77,17 @@ if (checkMode) {
   for (const plugin of storedMap.keys()) {
     if (!freshMap.has(plugin)) removed.push(plugin);
   }
-  if (drifted.length || added.length || removed.length) {
+  if (stored.version !== fresh.version || drifted.length || added.length || removed.length) {
     process.stderr.write(`skills.checksums.json out of date — re-run: node xm/scripts/skills-checksum.mjs\n\n`);
     if (drifted.length) {
-      process.stderr.write(`  ${drifted.length} drifted (SKILL.md or references changed since last regen):\n`);
+      process.stderr.write(`  ${drifted.length} drifted (SKILL.md, references, or assets changed since last regen):\n`);
       for (const d of drifted) {
         process.stderr.write(`    ${d.plugin.padEnd(14)} SKILL registry: ${d.stored.sha256.slice(0, 16)}...  actual: ${d.actual.sha256.slice(0, 16)}...\n`);
         process.stderr.write(`    ${''.padEnd(14)} refs  registry: ${(d.stored.referencesSha256 || '<missing>').slice(0, 16)}...  actual: ${d.actual.referencesSha256.slice(0, 16)}...\n`);
+        process.stderr.write(`    ${''.padEnd(14)} assets registry: ${(d.stored.assetsSha256 || '<missing>').slice(0, 16)}...  actual: ${d.actual.assetsSha256.slice(0, 16)}...\n`);
       }
     }
+    if (stored.version !== fresh.version) process.stderr.write(`  registry schema: ${stored.version ?? '<missing>'} → ${fresh.version}\n`);
     if (added.length) process.stderr.write(`  ${added.length} new skill(s) not in registry: ${added.join(', ')}\n`);
     if (removed.length) process.stderr.write(`  ${removed.length} stale registry entries: ${removed.join(', ')}\n`);
     process.exit(1);

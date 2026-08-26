@@ -32,7 +32,7 @@
  * cross-plugin import breaks in the versioned marketplace-cache layout).
  */
 
-import { existsSync, statSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, statSync, readFileSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
 import { resolve, sep, join } from 'node:path';
 import { projectRoot, evalDir } from './x-eval/root.mjs';
 import { runAssertions, parseSpec, DEFAULT_TIMEOUT_MS } from './x-eval/assert.mjs';
@@ -66,6 +66,13 @@ function parseArgs(args) {
   return { opts, pos };
 }
 
+function validateArgs({ opts, pos }, { options = [], positional = 0 } = {}) {
+  const allowed = new Set(options);
+  const unknown = Object.keys(opts).filter(key => !allowed.has(key));
+  if (unknown.length) throw new UsageError(`unknown option --${unknown[0]}`);
+  if (pos.length > positional) throw new UsageError(`unexpected positional argument "${pos[positional]}"`);
+}
+
 function usage() {
   return [
     'Usage: xm eval <command> [options]',
@@ -94,7 +101,7 @@ function usage() {
 }
 
 function isUsageError(error) {
-  return error instanceof UsageError || /must look like|must match|has an empty spec|must be|needs at least|is required|unknown case id|no runnable|invalid case id|invalid run id|unknown job|unknown bench run|must not contain|already exists|strategy "/.test(error?.message || '');
+  return error instanceof UsageError || /must look like|must match|has an empty spec|must be|needs at least|is required|unknown case id|no runnable|invalid case id|invalid run id|unknown job|unknown bench run|must not contain|already exists|strategy "|case id collision|custom rubric|changed after bench plan|deleted after bench plan/.test(error?.message || '');
 }
 
 // ── assert ───────────────────────────────────────────────────────────
@@ -116,10 +123,13 @@ function formatAssertTable(report) {
 
 function resolveCwd(opts) {
   const root = projectRoot();
-  const cwd = resolve(root, opts.cwd || '.');
-  if (cwd !== root && !cwd.startsWith(root + sep)) throw new UsageError(`--cwd must stay inside the project root (${root})`);
-  if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new UsageError(`--cwd is not a directory: ${cwd}`);
-  return cwd;
+  const requested = resolve(root, opts.cwd || '.');
+  if (requested !== root && !requested.startsWith(root + sep)) throw new UsageError(`--cwd must stay inside the project root (${root})`);
+  if (!existsSync(requested) || !statSync(requested).isDirectory()) throw new UsageError(`--cwd is not a directory: ${requested}`);
+  const actualRoot = realpathSync(root);
+  const cwd = realpathSync(requested);
+  if (cwd !== actualRoot && !cwd.startsWith(actualRoot + sep)) throw new UsageError(`--cwd must stay inside the project root (${root})`);
+  return requested;
 }
 
 function collectAssertionItems(opts, { cmd = 'cmd', file = 'file', grep = 'grep', json = 'json-eq' } = {}) {
@@ -132,7 +142,9 @@ function collectAssertionItems(opts, { cmd = 'cmd', file = 'file', grep = 'grep'
 }
 
 function cmdAssert(args) {
-  const { opts } = parseArgs(args);
+  const parsed = parseArgs(args);
+  validateArgs(parsed, { options: ['cmd', 'file', 'grep', 'json-eq', 'cwd', 'timeout-ms', 'env', 'json'] });
+  const { opts } = parsed;
   const items = collectAssertionItems(opts);
   if (!items.length) throw new UsageError('assert needs at least one --cmd / --file / --grep / --json-eq');
   const cwd = resolveCwd(opts);
@@ -152,6 +164,7 @@ function cmdCase(args) {
   const { opts, pos } = parseArgs(rest);
   switch (verb) {
     case 'add': {
+      validateArgs({ opts, pos }, { options: ['prompt', 'prompt-file', 'rubric', 'tag', 'risk', 'assert-cmd', 'assert-file', 'assert-grep', 'assert-json', 'assert', 'min-overall', 'source-ref', 'json'] });
       let prompt = opts.prompt;
       if (opts['prompt-file']) {
         const path = resolve(process.cwd(), opts['prompt-file']);
@@ -172,6 +185,7 @@ function cmdCase(args) {
       return 0;
     }
     case 'list': {
+      validateArgs({ opts, pos }, { options: ['tag', 'json'] });
       const { cases, invalid } = listCases({ tag: opts.tag || null });
       if (opts.json) { console.log(JSON.stringify({ cases, invalid }, null, 2)); return 0; }
       if (!cases.length) {
@@ -185,6 +199,7 @@ function cmdCase(args) {
       return 0;
     }
     case 'show': {
+      validateArgs({ opts, pos }, { options: ['json'], positional: 1 });
       const id = pos[0];
       if (!id) throw new UsageError('case show needs a case id');
       const payload = readCase(id);
@@ -216,10 +231,13 @@ function resolveBaseline(value, { excludeRunId = null } = {}) {
   return path;
 }
 
-function runGate({ currentPath, baselinePath, maxAvgDrop, json }) {
+function runGate({ currentPath, baselinePath, maxAvgDrop }) {
   const current = readBenchFile(currentPath);
   const baseline = readBenchFile(baselinePath);
   if (current.bench.type !== 'bench' || baseline.bench.type !== 'bench') throw new UsageError('gate needs two bench result files (type: "bench")');
+  if ((current.bench.run_id && current.bench.run_id === baseline.bench.run_id) || current.sha256 === baseline.sha256) {
+    throw new UsageError('current and baseline must be different bench results');
+  }
   const report = compareBench(current.bench, baseline.bench, { maxAvgDrop });
   const now = new Date();
   const payload = {
@@ -232,9 +250,7 @@ function runGate({ currentPath, baselinePath, maxAvgDrop, json }) {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${now.toISOString().replace(/[:.]/g, '-')}-gate.json`);
   writeFileSync(path, JSON.stringify({ ...payload, artifact_path: path }, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
-  if (json) console.log(JSON.stringify({ ...payload, artifact_path: path }, null, 2));
-  else { console.log(formatGateReport(report, { currentPath, baselinePath })); console.log(`Saved: ${path}`); }
-  return report.passed;
+  return { passed: report.passed, payload: { ...payload, artifact_path: path } };
 }
 
 function parseMaxAvgDrop(opts) {
@@ -246,9 +262,11 @@ function parseMaxAvgDrop(opts) {
 
 function cmdBench(args) {
   const [verb, ...rest] = args;
-  const { opts } = parseArgs(rest);
+  const parsed = parseArgs(rest);
+  const { opts } = parsed;
   switch (verb) {
     case 'plan': {
+      validateArgs(parsed, { options: ['set', 'strategies', 'no-direct', 'trials', 'json'] });
       const strategies = parseStrategies(opts.strategies);
       const trials = opts.trials != null ? Number(opts.trials) : null;
       const selection = selectCases(opts.set);
@@ -266,6 +284,7 @@ function cmdBench(args) {
       return 0;
     }
     case 'record': {
+      validateArgs(parsed, { options: ['run', 'job', 'score-file', 'run-assertions', 'cwd', 'json'] });
       if (!opts.run || !opts.job || !opts['score-file']) throw new UsageError('bench record needs --run, --job, and --score-file');
       const path = resolve(process.cwd(), opts['score-file']);
       if (!existsSync(path)) throw new UsageError(`--score-file not found: ${path}`);
@@ -278,6 +297,7 @@ function cmdBench(args) {
       return 0;
     }
     case 'status': {
+      validateArgs(parsed, { options: ['run', 'json'] });
       if (!opts.run) throw new UsageError('bench status needs --run');
       const status = runStatus(opts.run);
       if (opts.json) console.log(JSON.stringify(status, null, 2));
@@ -289,6 +309,7 @@ function cmdBench(args) {
       return 0;
     }
     case 'finish': {
+      validateArgs(parsed, { options: ['run', 'baseline', 'allow-partial', 'max-avg-drop', 'json'] });
       if (!opts.run) throw new UsageError('bench finish needs --run');
       const maxAvgDrop = parseMaxAvgDrop(opts);
       const baselinePath = resolveBaseline(opts.baseline, { excludeRunId: opts.run });
@@ -297,12 +318,16 @@ function cmdBench(args) {
         if (error.result) throw new UsageError(error.message);
         throw error;
       }
-      if (opts.json) console.log(JSON.stringify({ path: finished.path, ...finished.result }, null, 2));
-      else { console.log(formatBenchReport(finished.result)); console.log(`Saved: ${finished.path}`); }
+      let gate = null;
       if (baselinePath) {
-        const passed = runGate({ currentPath: finished.path, baselinePath, maxAvgDrop, json: !!opts.json });
-        if (!passed) throw new GateFailed('regression gate failed');
+        gate = runGate({ currentPath: finished.path, baselinePath, maxAvgDrop });
       }
+      if (opts.json) console.log(JSON.stringify({ path: finished.path, ...finished.result, ...(gate ? { gate: gate.payload } : {}) }, null, 2));
+      else {
+        console.log(formatBenchReport(finished.result)); console.log(`Saved: ${finished.path}`);
+        if (gate) { console.log(formatGateReport(gate.payload, { currentPath: finished.path, baselinePath })); console.log(`Saved: ${gate.payload.artifact_path}`); }
+      }
+      if (gate && !gate.passed) throw new GateFailed('regression gate failed');
       return 0;
     }
     default:
@@ -311,7 +336,10 @@ function cmdBench(args) {
 }
 
 function cmdGate(args) {
-  const { opts } = parseArgs(args);
+  const parsed = parseArgs(args);
+  validateArgs(parsed, { options: ['run', 'current', 'baseline', 'max-avg-drop', 'json'] });
+  const { opts } = parsed;
+  if (opts.current && opts.run) throw new UsageError('gate accepts only one of --run or --current');
   let currentPath;
   if (opts.current) {
     currentPath = resolve(process.cwd(), opts.current);
@@ -322,9 +350,12 @@ function cmdGate(args) {
     currentPath = manifest.result_path;
   } else throw new UsageError('gate needs --run <id> or --current <bench.json>');
   if (!opts.baseline) throw new UsageError('gate needs --baseline latest|<run-id>|<file>');
-  const baselinePath = resolveBaseline(opts.baseline, { excludeRunId: opts.run || null });
-  const passed = runGate({ currentPath, baselinePath, maxAvgDrop: parseMaxAvgDrop(opts), json: !!opts.json });
-  if (!passed) throw new GateFailed('regression gate failed');
+  const currentRunId = readBenchFile(currentPath).bench.run_id || opts.run || null;
+  const baselinePath = resolveBaseline(opts.baseline, { excludeRunId: currentRunId });
+  const gate = runGate({ currentPath, baselinePath, maxAvgDrop: parseMaxAvgDrop(opts) });
+  if (opts.json) console.log(JSON.stringify(gate.payload, null, 2));
+  else { console.log(formatGateReport(gate.payload, { currentPath, baselinePath })); console.log(`Saved: ${gate.payload.artifact_path}`); }
+  if (!gate.passed) throw new GateFailed('regression gate failed');
   return 0;
 }
 

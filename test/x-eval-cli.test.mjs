@@ -64,12 +64,15 @@ describe('xm eval case', () => {
       expect(a.created).toBe(true);
       expect(a.id).toMatch(/^case-[0-9a-f]{24}$/);
       expect(b.risk).toBe('high');
-      const again = json(cli(dir, ['case', 'add', '--prompt', 'Rename foo to bar in src/a.mjs', '--rubric', 'general', '--tag', 'smoke', '--json']));
+      const again = json(cli(dir, ['case', 'add', '--prompt', 'Rename foo to bar in src/a.mjs', '--rubric', 'general', '--tag', 'smoke',
+        '--assert-file', 'src=exists=src/a.mjs', '--assert', 'keeps the export', '--json']));
       expect(again.created).toBe(false);
       expect(again.id).toBe(a.id);
       const list = json(cli(dir, ['case', 'list', '--json']));
       expect(list.cases.map(c => c.id).sort()).toEqual([a.id, b.id].sort());
       expect(list.cases.find(c => c.id === b.id)).toMatchObject({ risk: 'high', rubric: 'code-quality', assertions: 1 });
+      expect(json(cli(dir, ['case', 'list', '--tag', 'smoke', '--json'])).cases.length).toBe(2);
+      expect(json(cli(dir, ['case', 'list', '--tag', 'missing', '--json'])).cases.length).toBe(0);
       const shown = json(cli(dir, ['case', 'show', a.id]));
       expect(shown.assertions).toEqual([{ kind: 'file', name: 'src', spec: 'exists=src/a.mjs' }, { kind: 'judge', text: 'keeps the export' }]);
       const text = cli(dir, ['case', 'list']);
@@ -101,7 +104,34 @@ describe('xm eval case', () => {
       expect(cli(dir, ['case', 'add', '--prompt', 'x', '--risk', 'extreme']).code).toBe(2);
       expect(cli(dir, ['case', 'show', 'nope']).code).toBe(2);
       expect(cli(dir, ['case', 'frob']).code).toBe(2);
+      expect(cli(dir, ['case', 'list', '--wat', 'x']).code).toBe(2);
+      expect(cli(dir, ['case', 'list', 'unused']).code).toBe(2);
       expect(cli(dir, ['bench', 'plan', '--set', 'smoke', '--strategies', 'refine']).code).toBe(2); // no cases yet
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('case id collisions with different payloads are rejected', () => {
+    const dir = makeProject();
+    try {
+      const first = json(cli(dir, ['case', 'add', '--prompt', 'same identity', '--rubric', 'general', '--tag', 'x', '--json']));
+      const conflict = cli(dir, ['case', 'add', '--prompt', 'same identity', '--rubric', 'general', '--tag', 'x', '--risk', 'high']);
+      expect(conflict.code).toBe(2);
+      expect(conflict.stderr).toContain('payload differs');
+      expect(first.created).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('bench resolves built-in and custom rubric pass thresholds', () => {
+    const dir = makeProject();
+    try {
+      mkdirSync(join(dir, '.xm', 'eval', 'rubrics'), { recursive: true });
+      writeFileSync(join(dir, '.xm', 'eval', 'rubrics', 'strict-code.json'), JSON.stringify({ name: 'strict-code', pass_threshold: 7.5 }));
+      const secure = json(cli(dir, ['case', 'add', '--prompt', 'audit auth', '--rubric', 'security-audit', '--tag', 'thresholds', '--json']));
+      const custom = json(cli(dir, ['case', 'add', '--prompt', 'review strict code', '--rubric', 'strict-code', '--tag', 'thresholds', '--json']));
+      const plan = json(cli(dir, ['bench', 'plan', '--set', 'thresholds', '--strategies', 'refine', '--trials', '1', '--json']));
+      const manifest = JSON.parse(readFileSync(plan.manifest, 'utf8'));
+      expect(manifest.cases.find(c => c.id === secure.id).pass_threshold).toBe(8);
+      expect(manifest.cases.find(c => c.id === custom.id).pass_threshold).toBe(7.5);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -179,6 +209,35 @@ describe('xm eval bench plan → record → finish', () => {
       expect(manifest.result_path).toBe(join(dir, '.xm', 'eval', 'benchmarks', benchFiles[0]));
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  test('record and finish fail closed when a planned case changes or disappears', () => {
+    const dir = makeProject();
+    try {
+      const { a } = addCases(dir);
+      const changed = planRun(dir, ['--trials', '1']);
+      const casePath = join(dir, '.xm', 'eval', 'cases', `${a.id}.json`);
+      const payload = JSON.parse(readFileSync(casePath, 'utf8'));
+      writeFileSync(casePath, JSON.stringify({ ...payload, risk: 'high' }));
+      const score = join(dir, 'drift-score.json');
+      writeFileSync(score, JSON.stringify({ overall: 8 }));
+      const job = changed.job_ids.find(id => id.startsWith(a.id.slice(5, 13)));
+      const drift = cli(dir, ['bench', 'record', '--run', changed.run_id, '--job', job, '--score-file', score]);
+      expect(drift.code).toBe(2);
+      expect(drift.stderr).toContain('changed after bench plan');
+
+      rmSync(dir, { recursive: true, force: true });
+      const fresh = makeProject();
+      try {
+        const { a: freshA } = addCases(fresh);
+        const planned = planRun(fresh, ['--trials', '1']);
+        recordAll(fresh, planned, () => 8);
+        rmSync(join(fresh, '.xm', 'eval', 'cases', `${freshA.id}.json`));
+        const missing = cli(fresh, ['bench', 'finish', '--run', planned.run_id]);
+        expect(missing.code).toBe(2);
+        expect(missing.stderr).toContain('deleted after bench plan');
+      } finally { rmSync(fresh, { recursive: true, force: true }); }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });
 
 describe('xm eval gate', () => {
@@ -191,12 +250,15 @@ describe('xm eval gate', () => {
       expect(cli(dir, ['bench', 'finish', '--run', baseline.run_id]).code).toBe(0);
       // no earlier result → latest resolution from the baseline run itself is refused
       expect(cli(dir, ['gate', '--run', baseline.run_id, '--baseline', 'latest']).code).toBe(2);
+      const baselineManifest = JSON.parse(readFileSync(baseline.manifest, 'utf8'));
+      expect(cli(dir, ['gate', '--current', baselineManifest.result_path, '--baseline', 'latest']).code).toBe(2);
 
       const parity = planRun(dir, ['--trials', '2']);
       recordAll(dir, parity, (arm) => ({ direct: 7.6, refine: 8.7, debate: 8.1 })[arm]);
-      const ok = cli(dir, ['bench', 'finish', '--run', parity.run_id, '--baseline', 'latest']);
+      const ok = cli(dir, ['bench', 'finish', '--run', parity.run_id, '--baseline', 'latest', '--json']);
       expect(ok.code, ok.stderr).toBe(0);
-      expect(ok.stdout).toContain('Regression gate: PASS');
+      const combined = JSON.parse(ok.stdout);
+      expect(combined.gate.passed).toBe(true);
       const gates = readdirSync(join(dir, '.xm', 'eval', 'gates'));
       expect(gates.length).toBe(1);
       const gateDoc = JSON.parse(readFileSync(join(dir, '.xm', 'eval', 'gates', gates[0]), 'utf8'));

@@ -767,15 +767,29 @@ function triageLedgerPath() {
 function appendTriageLedger(rows) {
   if (!rows.length) return 0;
   const path = triageLedgerPath();
-  const existing = existsSync(path) ? parseTriageLedger(readFileSync(path, 'utf8')).rows : [];
-  const seen = new Set(existing.map(ledgerRowKey));
+  const existingText = existsSync(path) ? readFileSync(path, 'utf8') : '';
+  const existing = parseTriageLedger(existingText).rows;
+  const seen = new Set(existing.filter(row => row.type === 'triage_outcome').map(ledgerRowKey));
+  const latestDecisions = new Map();
+  for (const row of existing) {
+    if (row.type === 'triage_decision') latestDecisions.set(`${row.reviewed_commit || ''}|${row.finding_id || ''}`, row.decision);
+  }
   const fresh = rows.filter(row => {
+    if (row.type === 'triage_decision') {
+      const identity = `${row.reviewed_commit || ''}|${row.finding_id || ''}`;
+      if (latestDecisions.get(identity) === row.decision) return false;
+      latestDecisions.set(identity, row.decision);
+      return true;
+    }
     const key = ledgerRowKey(row);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
-  if (fresh.length > 0) appendFileSync(path, fresh.map(row => JSON.stringify(row)).join('\n') + '\n');
+  if (fresh.length > 0) {
+    const separator = existingText && !existingText.endsWith('\n') ? '\n' : '';
+    appendFileSync(path, separator + fresh.map(row => JSON.stringify(row)).join('\n') + '\n');
+  }
   return fresh.length;
 }
 

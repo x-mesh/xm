@@ -26,12 +26,31 @@ export const RISK_LEVELS = ['normal', 'high'];
 export const DEFAULT_TRIALS = { normal: 3, high: 5 };
 /** references/rubrics.md: every rubric's pass bar defaults to 7.0; a case can pin its own via expected.min_overall. */
 export const DEFAULT_PASS_THRESHOLD = 7.0;
+export const BUILTIN_PASS_THRESHOLDS = {
+  'code-quality': 7.0,
+  'review-quality': 7.0,
+  'plan-quality': 7.0,
+  general: 7.0,
+  'api-design': 7.0,
+  'frontend-design': 7.0,
+  'data-pipeline': 7.0,
+  'security-audit': 8.0,
+  'architecture-review': 7.0,
+};
 const ID_RE = /^(case|replay)-[0-9a-f]{24}$/;
 const RUBRIC_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const TAG_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,63}$/;
 const MAX_PROMPT_CHARS = 20_000;
 
 const sha256 = (value) => createHash('sha256').update(String(value)).digest('hex');
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
 
 export function casesDir() {
   return evalDir('cases');
@@ -43,7 +62,24 @@ export function caseId({ prompt, rubric, tags }) {
 
 export function passThresholdFor({ rubric, expected }) {
   if (expected && Number.isFinite(Number(expected.min_overall))) return Number(expected.min_overall);
+  if (Object.hasOwn(BUILTIN_PASS_THRESHOLDS, rubric)) return BUILTIN_PASS_THRESHOLDS[rubric];
+  const customPath = join(evalDir('rubrics'), `${rubric}.json`);
+  if (existsSync(customPath)) {
+    if (lstatSync(customPath).isSymbolicLink()) throw new Error(`custom rubric "${rubric}" must not be a symlink`);
+    let custom;
+    try { custom = JSON.parse(readFileSync(customPath, 'utf8')); } catch (error) { throw new Error(`custom rubric "${rubric}" is invalid JSON: ${error.message}`); }
+    if (custom.pass_threshold != null) {
+      if (typeof custom.pass_threshold !== 'number' || !Number.isFinite(custom.pass_threshold) || custom.pass_threshold < 0 || custom.pass_threshold > 10) {
+        throw new Error(`custom rubric "${rubric}" pass_threshold must be a number between 0 and 10`);
+      }
+      return custom.pass_threshold;
+    }
+  }
   return DEFAULT_PASS_THRESHOLD;
+}
+
+export function caseFingerprint(payload) {
+  return sha256(canonicalJson(payload));
 }
 
 function normalizeAssertion(item) {
@@ -64,7 +100,7 @@ export function buildCase({ prompt, rubric = 'general', tags = [], risk = 'norma
   if (!text) throw new Error('case prompt must not be empty');
   if (text.length > MAX_PROMPT_CHARS) throw new Error(`case prompt exceeds ${MAX_PROMPT_CHARS} characters`);
   if (!RUBRIC_RE.test(String(rubric))) throw new Error(`rubric must be a safe rubric identifier (got "${rubric}")`);
-  const tagList = [...new Set((tags || []).map(t => String(t).trim()).filter(Boolean))];
+  const tagList = [...new Set((tags || []).map(t => String(t).trim()).filter(Boolean))].sort();
   for (const tag of tagList) if (!TAG_RE.test(tag)) throw new Error(`tag "${tag}" must match ${TAG_RE}`);
   if (!RISK_LEVELS.includes(risk)) throw new Error(`risk must be one of ${RISK_LEVELS.join('|')}`);
   const expected = {};
@@ -104,7 +140,10 @@ export function writeCase(payload) {
     } catch (err) {
       if (err?.code !== 'EEXIST') throw err;
       if (lstatSync(target).isSymbolicLink() || !lstatSync(target).isFile()) throw new Error('x-eval case path is not a regular file');
-      try { JSON.parse(readFileSync(target, 'utf8')); } catch { throw new Error('existing x-eval case is corrupt'); }
+      let existing;
+      try { existing = JSON.parse(readFileSync(target, 'utf8')); } catch { throw new Error('existing x-eval case is corrupt'); }
+      const comparable = value => caseFingerprint({ ...value, created_at: null });
+      if (comparable(existing) !== comparable(payload)) throw new Error(`case id collision for ${payload.id}: existing payload differs`);
       return { id: payload.id, path: target, created: false };
     }
   } finally {
@@ -135,7 +174,8 @@ export function listCases({ tag = null } = {}) {
     if (!payload || payload.v !== CASE_SCHEMA_V) { invalid.push({ file: name, reason: 'unsupported schema' }); continue; }
     const type = payload.type === 'replay' ? 'replay' : 'task';
     const tags = Array.isArray(payload.tags) ? payload.tags : [];
-    if (tag && !tags.includes(tag)) continue;
+    const requestedTags = Array.isArray(tag) ? tag : (tag ? [tag] : []);
+    if (requestedTags.some(requested => !tags.includes(requested))) continue;
     cases.push({
       id: payload.id,
       type,

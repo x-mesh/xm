@@ -28,6 +28,22 @@ export function compareBench(current, baseline, { maxAvgDrop = DEFAULT_MAX_AVG_D
   if (!baselineArms.size) blockers.push({ code: 'no_baseline_arms', detail: 'baseline bench has no strategies' });
   if (current?.partial) blockers.push({ code: 'insufficient_records', detail: `current run is partial (${(current.missing_jobs || []).length} job(s) missing)` });
   if (current?.broken_task_warning) blockers.push({ code: 'broken_task', detail: 'current run tripped the broken-task warning' });
+  const currentCases = new Map((current?.cases || []).map(item => [item.id, item]));
+  const baselineCases = new Map((baseline?.cases || []).map(item => [item.id, item]));
+  const currentIds = [...currentCases.keys()].sort();
+  const baselineIds = [...baselineCases.keys()].sort();
+  if (!currentIds.length && !baselineIds.length) {
+    blockers.push({ code: 'case_metadata_missing', detail: 'both bench results must record at least one case for a compatible comparison' });
+  } else if (JSON.stringify(currentIds) !== JSON.stringify(baselineIds)) {
+    blockers.push({ code: 'case_set_mismatch', detail: `case sets differ (baseline ${baselineIds.join(',') || 'none'}; current ${currentIds.join(',') || 'none'})` });
+  } else {
+    const rubricDrift = baselineIds.filter(id => currentCases.get(id)?.rubric !== baselineCases.get(id)?.rubric);
+    const thresholdDrift = baselineIds.filter(id => currentCases.get(id)?.pass_threshold !== baselineCases.get(id)?.pass_threshold);
+    const trialDrift = baselineIds.filter(id => currentCases.get(id)?.trials !== baselineCases.get(id)?.trials);
+    if (rubricDrift.length) blockers.push({ code: 'rubric_mismatch', detail: `rubric differs for case(s): ${rubricDrift.join(', ')}` });
+    if (thresholdDrift.length) blockers.push({ code: 'pass_threshold_mismatch', detail: `pass threshold differs for case(s): ${thresholdDrift.join(', ')}` });
+    if (trialDrift.length) blockers.push({ code: 'trial_count_mismatch', detail: `trial count differs for case(s): ${trialDrift.join(', ')}` });
+  }
 
   for (const [name, base] of baselineArms) {
     const cur = currentArms.get(name);

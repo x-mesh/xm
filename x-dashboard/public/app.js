@@ -436,7 +436,7 @@ function severityBadge(severity) {
   };
   const entry = map[String(severity || '').toLowerCase()];
   if (entry) return `<span class="badge ${entry.cls}">${entry.label}</span>`;
-  return `<span class="badge badge-gray">${severity || '—'}</span>`;
+  return `<span class="badge badge-gray">${escapeHtmlHumble(severity || '—')}</span>`;
 }
 
 function laterFilesCell(files) {

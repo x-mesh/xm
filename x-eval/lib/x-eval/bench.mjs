@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, linkSync, unlinkSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { evalDir, projectRoot } from './root.mjs';
-import { DEFAULT_TRIALS, passThresholdFor, readCase } from './cases.mjs';
+import { DEFAULT_TRIALS, caseFingerprint, passThresholdFor, readCase } from './cases.mjs';
 import { runAssertions } from './assert.mjs';
 import { mean, sigma, round } from './stats.mjs';
 
@@ -66,7 +66,7 @@ export function buildManifest({ cases, strategies, includeDirect = true, trials 
   const jobs = [];
   for (const item of cases) {
     const n = trials ?? DEFAULT_TRIALS[item.risk || 'normal'] ?? DEFAULT_TRIALS.normal;
-    manifestCases.push({ id: item.id, rubric: item.rubric || 'general', risk: item.risk || 'normal', tags: item.tags || [], trials: n, pass_threshold: passThresholdFor(item), assertions: (item.assertions || []).length });
+    manifestCases.push({ id: item.id, rubric: item.rubric || 'general', risk: item.risk || 'normal', tags: item.tags || [], trials: n, pass_threshold: passThresholdFor(item), assertions: (item.assertions || []).length, case_sha256: caseFingerprint(item) });
     for (const arm of arms) for (let t = 1; t <= n; t++) jobs.push({ job_id: jobIdFor(item.id, arm, t), case_id: item.id, arm, trial: t });
   }
   return {
@@ -119,8 +119,8 @@ export function validateRecord(raw, { passThreshold }) {
   const keys = Object.keys(raw);
   const forbidden = keys.filter(key => FORBIDDEN_RECORD_KEYS.includes(key.toLowerCase()));
   if (forbidden.length) throw new Error(`score file must not contain output text (found: ${forbidden.join(', ')})`);
-  const overall = Number(raw.overall);
-  if (!(overall >= 0 && overall <= 10)) throw new Error('overall must be a number between 0 and 10');
+  const overall = raw.overall;
+  if (typeof overall !== 'number' || !Number.isFinite(overall) || overall < 0 || overall > 10) throw new Error('overall must be a number between 0 and 10');
   const record = { overall: round(overall, 3), pass_threshold: passThreshold, cost_source: 'estimated' };
   if (raw.per_criterion != null) {
     if (typeof raw.per_criterion !== 'object' || Array.isArray(raw.per_criterion)) throw new Error('per_criterion must be an object');
@@ -169,8 +169,8 @@ export function validateRecord(raw, { passThreshold }) {
     });
   }
   const hardFail = (record.assertion_results || []).some(item => item.result === 'HARD_FAIL');
-  const declared = typeof raw.passed === 'boolean' ? raw.passed : overall >= passThreshold;
-  record.passed = declared && !hardFail;
+  const declared = typeof raw.passed === 'boolean' ? raw.passed : true;
+  record.passed = overall >= passThreshold && declared && !hardFail;
   record.assertion_hard_fail = hardFail;
   return record;
 }
@@ -181,6 +181,7 @@ export function recordJob({ runId, jobId, raw, runExecutableAssertions = false, 
   const job = manifest.jobs.find(item => item.job_id === jobId);
   if (!job) throw new Error(`unknown job "${jobId}" in run ${runId}`);
   const caseMeta = manifest.cases.find(item => item.id === job.case_id);
+  validatePlannedCase(caseMeta);
   const record = validateRecord(raw, { passThreshold: caseMeta.pass_threshold });
   if (runExecutableAssertions) {
     const caseDoc = readCase(job.case_id);
@@ -196,6 +197,18 @@ export function recordJob({ runId, jobId, raw, runExecutableAssertions = false, 
   const path = join(runDir(runId), 'records', `${jobId}.json`);
   writeCreateOnly(path, payload, 'job record');
   return { path, record: payload };
+}
+
+function validatePlannedCase(caseMeta) {
+  const current = readCase(caseMeta.id);
+  if (!current) throw new Error(`planned case ${caseMeta.id} was deleted after bench plan`);
+  if (!caseMeta.case_sha256 || caseFingerprint(current) !== caseMeta.case_sha256) {
+    throw new Error(`planned case ${caseMeta.id} changed after bench plan`);
+  }
+}
+
+function validatePlannedCases(manifest) {
+  for (const caseMeta of manifest.cases) validatePlannedCase(caseMeta);
 }
 
 export function readRecords(runId) {
@@ -289,7 +302,7 @@ export function aggregateRun(manifest, records, { now = new Date().toISOString()
     const ordered = [...reliable].sort((a, b) => (a.sigma ?? Infinity) - (b.sigma ?? Infinity) || (b.score_per_dollar ?? -1) - (a.score_per_dollar ?? -1));
     final = ordered[0];
     reason = `passes every trial; lowest σ among reliable arms${final.score_per_dollar != null ? ', best Score/$ on tie' : ''}`;
-    if (control && control.avg_score != null && final.name !== CONTROL_ARM) {
+    if (control?.pass_hat_k === 1 && control.avg_score != null && final.name !== CONTROL_ARM) {
       const delta = round(final.avg_score - control.avg_score, 2);
       if (delta < MIN_DELTA_VS_DIRECT) {
         reason = `${final.name} does not beat the single-agent control by ≥ ${MIN_DELTA_VS_DIRECT} (Δ ${delta}); orchestration is not earning its cost here`;
@@ -333,6 +346,7 @@ export function aggregateRun(manifest, records, { now = new Date().toISOString()
 /** Aggregate, persist to `.xm/eval/benchmarks/`, and mark the manifest finished. */
 export function finishRun({ runId, allowPartial = false, now = new Date() }) {
   const manifest = readManifest(runId);
+  validatePlannedCases(manifest);
   const { records, invalid } = readRecords(runId);
   const result = aggregateRun(manifest, records, { now: now.toISOString() });
   if (invalid.length) result.invalid_records = invalid;
