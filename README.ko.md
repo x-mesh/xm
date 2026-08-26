@@ -501,7 +501,7 @@ xm build plan --mode quick "..."                 # xm plan의 deprecated alias
 | **거버넌스** | `hooks install/uninstall/status` (네이티브 blocking hooks; `XM_BUILD_HOOKS_OFF=1`로 우회) |
 | **실행** | `run`, `run --worktrees [--dry-run] [--max-parallel N]`, `run --json`, `run-status` |
 | **워크트리** | `worktrees plan/status/resume/cleanup`, `gate-panel --project --task --phase --patch`, `review-integration [--base --target]` |
-| **검증** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts`, `verify-review-fix [--init]` |
+| **검증** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts`, `verify-review-fix [--init]`, `review-precision [--since 30d\|--last N] [--min-precision 0.7]` (통과한 게이트마다 쌓이는 triage 원장으로 렌즈별 `fix_now / (fix_now + false_positive)` 집계; dashboard Reviews 페이지에도 표시) |
 | **분석** | `forecast`, `forecast update`, `roi [--by model\|role\|strategy]`, `effectiveness [--since Nd] [--profile a,b] [--compare a,b]`, `metrics`, `decisions`, `summarize` |
 | **내보내기** | `export --format md/csv/jira/confluence`, `import` |
 | **릴리스** | `release detect`, `release squash`, `release bump`, `release commit`, `release test`, `release trace`, `release diff-report` |
@@ -741,6 +741,18 @@ FRAME ──→ PROBE ──→ STRESS ──→ VERDICT
 /xm:eval calibrate --rubric code-quality            # 인간 vs 심사위원 편향 점검
 ```
 
+**실행형 절반 (`xm eval`).** 명령으로 판정할 수 있는 조건은 심사위원에게 묻지 않고 실제로 실행해 단언합니다. 케이스 셋은 일회성 벤치마크를 단일 에이전트 대조군이 있는 회귀 스위트로 바꿉니다.
+
+```bash
+xm eval assert --cmd 'tests=bun test test/auth.test.mjs' --grep 'no-eval=!eval\(:src/auth.ts'
+                                                  # 셸 없이 실행, HARD_FAIL이면 exit 1; score --assert-cmd가 사용
+xm eval case add --prompt-file task.md --rubric general --tag op --risk high
+                                                  # 실제 실패를 .xm/eval/cases로 승격 (멱등)
+xm eval bench plan --set op --strategies "refine,debate"   # jobs = 케이스 × arm × trial; `direct` 대조군 기본 포함
+xm eval bench record --run <id> --job <job> --score-file metrics.json --run-assertions
+xm eval bench finish --run <id> --baseline latest # pass@k / pass^k / σ / Δ vs direct 집계 후 회귀 게이트 (exit 3)
+```
+
 <details>
 <summary>커맨드 & 루브릭</summary>
 
@@ -914,6 +926,8 @@ xm status                                  # 각 도구가 마지막으로 활�
 xm trace record review --ref HEAD --status done   # 활동 포인터 기록
 xm trace since <ref>                       # <ref> 이후 활동한 도구 + trace 세션
 xm trace doctor --rebuild                  # git 정보가 담긴 trace로 last.json 재구성
+xm trace drift --window 7d --baseline 28d  # 키별 p50 지연/토큰, 오류율, 심사 품질, 리뷰 정밀도, 추정 비용을
+                                           # 최근 창과 그 직전 구간으로 비교; CI에서는 --fail-on-flag
 ```
 
 커버리지는 best-effort입니다. `xm` 디스패처를 거치거나 명시적 `xm trace record`로 들어온 활동만 기록됩니다. `node …-cli.mjs` 파일을 직접 호출해 실행한 도구나, CLI를 전혀 건드리지 않는 LLM 전용 스킬은 원장에 항목을 남기지 않습니다.
