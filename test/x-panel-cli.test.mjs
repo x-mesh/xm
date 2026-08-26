@@ -3549,7 +3549,10 @@ describe('promptSpawnOpts — claude prompt runs are cwd-isolated', () => {
 // hard cap honored even below the idle window, no fallback on kills/timeouts,
 // and at most 2 spawns per slot.
 describe('slot retry/timeout discipline', () => {
-  const SLOT_ENV_KEYS = ['X_PANEL_CMD_HANGY', 'X_PANEL_HANG_HANGY', 'X_PANEL_CMD_CODEX', 'X_PANEL_SIGDIE_CODEX', 'X_PANEL_SIGDIE_STATELESS_CODEX', 'X_PANEL_FAIL_SESSION_CODEX', 'X_PANEL_DELAY_SESSION_CODEX', 'X_PANEL_HANG_CODEX', 'X_PANEL_SPAWN_LOG'];
+  // X_PANEL_COMMANDS_THEN_HANG_CODEX belongs here too: the stub checks it AFTER the
+  // session-failure branch, so a leaked value hangs the stateless fallback spawn of a later
+  // test — which then fails on the runner's timeout rather than on its own assertion.
+  const SLOT_ENV_KEYS = ['X_PANEL_CMD_HANGY', 'X_PANEL_HANG_HANGY', 'X_PANEL_CMD_CODEX', 'X_PANEL_SIGDIE_CODEX', 'X_PANEL_SIGDIE_STATELESS_CODEX', 'X_PANEL_FAIL_SESSION_CODEX', 'X_PANEL_DELAY_SESSION_CODEX', 'X_PANEL_HANG_CODEX', 'X_PANEL_COMMANDS_THEN_HANG_CODEX', 'X_PANEL_SPAWN_LOG'];
   const prev = {};
   beforeAll(() => { for (const k of SLOT_ENV_KEYS) prev[k] = process.env[k]; });
   afterEach(() => {
