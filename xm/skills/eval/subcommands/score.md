@@ -85,6 +85,43 @@ When one or more `--assert "<statement>"` flags are provided:
   --assert "iterative, not recursive"
 ```
 
+### Executable Assertions (`--assert-cmd` / `--assert-file` / `--assert-grep` / `--assert-json`)
+
+Choose the evaluation method by what settles the question, not by habit:
+
+| Question | Method |
+|---|---|
+| A command can answer it (tests pass, build succeeds, file exists, pattern absent) | **executable assertion** — `xm eval assert` |
+| Qualitative, needs reading and judgment | rubric judge panel |
+| A statement no command can settle ("handles head=None gracefully") | `--assert` (judge-evaluated, see `judges/assertion.md`) |
+| Gating decisions | executable assertions + a rubric whose `calibrate` result is current |
+
+Executable assertions run **before** the judge panel, through the dispatcher (never a shell string):
+
+> **⚠ Call `xm eval assert` directly. Claude Code's Bash tool starts a fresh shell on every invocation — shell functions defined in one call do NOT persist to the next. Never define a helper across calls; always use the dispatcher.**
+>
+> **Fallback** (only when `xm` is not in PATH — rare; `${CLAUDE_PLUGIN_ROOT}` is NOT exported to Bash subprocesses, so don't rely on it bare):
+> ```bash
+> XMEV_CLI=$(ls -d ~/.claude/plugins/cache/xm/{eval,xm}/*/lib/x-eval-cli.mjs 2>/dev/null | sort -V | tail -1)
+> node "$XMEV_CLI" assert [args]
+> ```
+>
+> **Forbidden:** `XMEV="node ..."; $XMEV assert` — zsh treats the quoted string as a single command and fails.
+
+```bash
+xm eval assert --cmd 'tests=bun test test/auth.test.mjs' \
+  --file 'migration=exists=db/migrations/0042_auth.sql' \
+  --grep 'no-eval=!eval\(:src/auth.ts' \
+  --json-eq 'strict=compilerOptions.strict=true:tsconfig.json' --json
+# → {"results":[{"name","kind","result":"PASS"|"HARD_FAIL","exit_code","duration_ms","command_sha256",...}],"passed":bool,"source":"executable"}
+```
+
+Rules:
+1. Assertions run without a shell: quote arguments, no `| ; & $ > <`. A pipeline belongs in a script; assert the script.
+2. Any executable `HARD_FAIL` forces `passed = false`, exactly like a judge-majority FAIL. Exit code 1 from `xm eval assert` is that signal; exit 2 is a usage error (fix the flag, do not treat as FAIL).
+3. Copy every result row into `assertion_results[]` with `source: "executable"` (schema in `references/storage-layout.md`). Never paste command output into the result file — the runner does not return it, and the judge must not see it either.
+4. Print the assertion table above the rubric table, executable rows first.
+
 ### Grounded Mode (`--grounded`)
 
 When `--grounded` is specified, judges switch from text-only reasoning to **tool-assisted verification**.

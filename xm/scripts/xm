@@ -376,6 +376,16 @@ case "$CMD" in
     node "$LIB_PATH/x-trace-cli.mjs" "$@"
     ;;
 
+  eval)
+    LIB_PATH="$(plugin_lib eval)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-eval-cli.mjs" ]; then
+      echo "xm eval: x-eval-cli.mjs not found under $LIB" >&2
+      echo "  Update xm: xm update" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-eval-cli.mjs" "$@"
+    ;;
+
   # Shortcuts for the two most-used read-only trace views. `xm last` == `xm trace
   # last`; `xm status` == `xm trace status`. No top-level `last`/`status` case
   # exists elsewhere (dashboard's `status` is a nested sub-case), so no conflict.

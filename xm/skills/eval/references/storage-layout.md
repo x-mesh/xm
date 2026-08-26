@@ -61,7 +61,7 @@ File system layout for x-eval outputs, result schemas, and rubric definitions st
 - `source_strategy` — x-op strategy name when `source_plugin: "x-op"`.
 - `source_result_path` — path to the originating `.xm/op/*.json` file. Consumers use this to link eval results back to the strategy run.
 - `na_criteria` — list of criteria skipped by all judges due to insufficient context. Empty array when all criteria were scored. Consumers must not treat absence as implicit 0.
-- `assertion_results` — present only when `--assert` flags were used. Each entry: `assertion` (text), `result` (`PASS` / `UNCERTAIN` / `HARD_FAIL`), `confidence` (judge agreement, e.g. `"2/3"`). A `HARD_FAIL` entry forces `passed = false`.
+- `assertion_results` — present only when `--assert*` flags were used. Judge entries: `assertion` (text), `result` (`PASS` / `UNCERTAIN` / `HARD_FAIL`), `confidence` (judge agreement, e.g. `"2/3"`), `source: "judge"`. Executable entries (from `xm eval assert`): `name`, `kind` (`cmd` / `file` / `grep` / `json`), `result` (`PASS` / `HARD_FAIL`), `exit_code`, `duration_ms`, `command_sha256`, `source: "executable"` — never command output. A `HARD_FAIL` entry of either source forces `passed = false`.
 - `judge_rationales` — preserved for `report --sample-transcript` (article H: "누군가 트랜스크립트를 읽기 전에는 점수를 액면 그대로 믿지 말라"). Optional — skip when `eval.persist_transcripts: false`.
 
 **Cross-vendor additions (present only when the panel ran `--cross-vendor`):**

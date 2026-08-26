@@ -82,7 +82,9 @@ x-eval — Agent Output Quality Evaluation
 
 Commands:
   score <content> --rubric <name|criteria>     Score content against rubric
-       [--assert "<statement>"]                  Add binary outcome assertions (repeatable)
+       [--assert "<statement>"]                  Add binary outcome assertions (repeatable, LLM-judged)
+       [--assert-cmd 'name=<cmd>'] [--assert-file 'name=exists|absent=<path>']
+       [--assert-grep 'name=[!]<regex>:<path>']  Executable assertions — run by `xm eval assert`, never a judge
   compare <output-a> <output-b> [--judges N]   Compare two outputs with judge panel
   bench <task> --strategies "s1,s2"            Benchmark with pass@k/pass^k
        [--models "m1,m2"] [--trials N]          reliability metrics
@@ -266,6 +268,7 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | "what changed?", "change analysis", "diff" | `diff` |
 | "compare with previous version", "how much did it improve?" | `diff --quality` |
 | "check if output satisfies X", "must handle empty input" | `score ... --assert "<requirement>"` |
+| "tests must pass", "file must exist", "no eval()", 실행으로 확인 가능한 조건 | `score ... --assert-cmd 'tests=bun test'` (see "Executable Assertions" in `subcommands/score.md`) |
 | "regression check vs release", "did quality drop?" | `diff --baseline <tag>` |
 | "are judges accurate?", "calibrate judges", "human vs judge" | `calibrate --rubric <name>` |
 | "what's in eval?", "help" | `list` |

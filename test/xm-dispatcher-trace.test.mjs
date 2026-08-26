@@ -93,6 +93,21 @@ describe('xm dispatcher — trace routing', () => {
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toContain('No tool activity recorded yet');
   });
+
+  test('`xm eval help` routes to x-eval-cli', () => {
+    const r = xm(['eval', 'help']);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain('Usage: xm eval');
+  });
+
+  test('`xm eval assert` runs shell-free assertions and preserves exit 1 on a failure', () => {
+    const ok = xm(['eval', 'assert', '--cmd', 'truthy=node -e process.exit(0)', '--json']);
+    expect(ok.exitCode).toBe(0);
+    expect(JSON.parse(ok.stdout).passed).toBe(true);
+    const bad = xm(['eval', 'assert', '--cmd', 'falsy=node -e process.exit(3)']);
+    expect(bad.exitCode).toBe(1);
+    expect(bad.stdout).toContain('HARD_FAIL');
+  });
 });
 
 describe('xm dispatcher — terminal instrumentation', () => {

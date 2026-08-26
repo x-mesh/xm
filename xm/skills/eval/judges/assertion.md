@@ -46,8 +46,9 @@ Assertion: <text> | Result: FAIL | Reason: <one-line explanation of what is miss
 ## Applies to
 Invoked by `score` when one or more `--assert` flags are present. Run after the rubric panel via a dedicated Agent call (`run_in_background: true`). Does not replace rubric scoring — both run independently and results are combined.
 
-## x-probe Integration (future)
-When x-probe is available, assertion judges can use Read/Bash/Grep tools to verify
-code-level assertions (e.g., "no use of eval()", "all branches have tests"). Until then,
-assertions are evaluated by text reasoning only. Mark tool-unverifiable assertions
-as UNCERTAIN rather than inventing a verdict.
+## When NOT to use this judge
+A statement a command can settle — tests pass, a file exists, a pattern is absent, a JSON
+field has a value — is an **executable assertion** (`xm eval assert`, see the
+"Executable Assertions" section of `subcommands/score.md`), not a judge question. Reserve
+judge assertions for statements no command can decide. If an assertion is unverifiable
+from the content alone, mark it UNCERTAIN rather than inventing a verdict.
