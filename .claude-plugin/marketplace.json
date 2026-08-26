@@ -10,7 +10,7 @@
     {
       "name": "build",
       "description": "Repository-grounded planning with lean native execution; legacy phase, worktree, and gate workflows remain explicit opt-ins",
-      "version": "3.5.0",
+      "version": "3.6.0",
       "author": {
         "name": "x-mesh"
       },
@@ -46,7 +46,7 @@
     {
       "name": "op",
       "description": "Strategy orchestration — 17 strategies with self-scoring, x-eval verification, and compose presets",
-      "version": "2.4.4",
+      "version": "2.5.0",
       "author": {
         "name": "x-mesh"
       },
@@ -100,7 +100,7 @@
     {
       "name": "trace",
       "description": "Agent execution tracing — timeline, token/cost tracking, replay, and diff for multi-agent observability",
-      "version": "2.2.0",
+      "version": "2.3.0",
       "author": {
         "name": "x-mesh"
       },
@@ -153,7 +153,7 @@
     {
       "name": "eval",
       "description": "Agent output quality evaluation — multi-rubric scoring, diff analysis, reusable judge prompt, strategy benchmarking, and A/B prompt experiments",
-      "version": "2.2.1",
+      "version": "2.3.0",
       "author": {
         "name": "x-mesh"
       },
@@ -224,7 +224,7 @@
     {
       "name": "dashboard",
       "description": "Web dashboard for .xm project state — visualize builds, probes, solvers, reviews, evals, humble lessons, traces, memory",
-      "version": "2.16.3",
+      "version": "2.16.4",
       "author": {
         "name": "x-mesh"
       },
@@ -295,7 +295,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.21.4",
+      "version": "2.21.6",
       "author": {
         "name": "x-mesh"
       },

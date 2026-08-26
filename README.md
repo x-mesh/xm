@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.21.4-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.21.6-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -562,10 +562,11 @@ Config lives under `.xm/config.json`'s `worktree` key (`base`, `branch_prefix`, 
 - **Output Quality Contract**: Evidence-based, falsifiable, dimension-tagged arguments with per-category Dimension Anchors
 
 <details>
-<summary>All 17 strategies</summary>
+<summary>All 18 strategies</summary>
 
 | Strategy | Pattern | Best for |
 |----------|---------|----------|
+| **direct** | One agent, one call, no orchestration | A bounded task with one acceptable answer; the baseline others must beat |
 | **refine** | Diverge → converge → verify | Iterating on a design |
 | **tournament** | Compete → seed → bracket → winner | Picking the best solution |
 | **chain** | A → B → C with conditional branching | Multi-step analysis |
@@ -1238,7 +1239,7 @@ Full data: [`benchmarks/`](./benchmarks/SUMMARY.md)
 xm/                              Marketplace repo
 ├── x-plan/                         Single planning engine + PlanEnvelope
 ├── x-build/                        Lean native execution + legacy lifecycle compatibility
-├── x-op/                           Strategy orchestration (17 strategies)
+├── x-op/                           Strategy orchestration (18 strategies)
 ├── x-eval/                         Quality evaluation + diff
 ├── x-humble/                       Structured retrospective
 ├── x-solver/                       Problem solving (4 strategies)

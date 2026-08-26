@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.21.4-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.21.6-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -406,7 +406,7 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 | 플러그인 | 용도 | 주요 커맨드 |
 |--------|---------|-------------|
 | [x-build](#x-build) | 저장소 기반 계획 → native 실행 | `/xm:build "목표"` |
-| [x-op](#x-op) | 17가지 멀티 에이전트 전략 | `/xm:op debate "A vs B"` |
+| [x-op](#x-op) | 18가지 멀티 에이전트 전략 | `/xm:op debate "A vs B"` |
 | [x-review](#x-review) | 판단 기반 코드 리뷰 | `/xm:review diff` |
 | [x-solver](#x-solver) | 구조화된 문제 해결 | `/xm:solver init "버그"` |
 | [x-probe](#x-probe) | 근거 기반 전제 검증 | `/xm:probe "아이디어"` |
@@ -536,7 +536,7 @@ xm build plan --mode quick "..."                 # xm plan의 deprecated alias
 
 ### x-op
 
-17가지 멀티 에이전트 전략. 결과물은 스스로 점수를 매기고, 필요하면 x-eval에 품질 검증을 위임합니다.
+18가지 멀티 에이전트 전략. 결과물은 스스로 점수를 매기고, 필요하면 x-eval에 품질 검증을 위임합니다.
 
 ```bash
 /xm:op refine "결제 API 설계" --rounds 4 --verify
@@ -563,10 +563,11 @@ xm build plan --mode quick "..."                 # xm plan의 deprecated alias
 - **출력 품질 계약**: 근거 기반, 검증 가능한 주장 + 항목별 태그와 기준 앵커
 
 <details>
-<summary>전체 17가지 전략</summary>
+<summary>전체 18가지 전략</summary>
 
 | 전략 | 패턴 | 적합한 상황 |
 |----------|---------|----------|
+| **direct** | 에이전트 하나, 호출 한 번, 오케스트레이션 없음 | 답이 하나로 정해지는 좁은 작업. 다른 전략이 넘어서야 할 기준선 |
 | **refine** | 발산 → 수렴 → 검증 | 설계 반복 개선 |
 | **tournament** | 경쟁 → 시드 → 토너먼트 → 우승 | 최적 해법 선택 |
 | **chain** | A → B → C 조건부 분기 | 다단계 분석 |
@@ -1238,7 +1239,7 @@ A/B vs 기본 Claude Code: xm이 기본 F1 (0.857)에 매칭하면서 precision�
 xm/                              마켓플레이스 레포
 ├── x-plan/                         단일 planning engine + PlanEnvelope
 ├── x-build/                        Lean native 실행 + legacy lifecycle 호환
-├── x-op/                           전략 오케스트레이션 (17가지 전략)
+├── x-op/                           전략 오케스트레이션 (18가지 전략)
 ├── x-eval/                         품질 평가 + diff
 ├── x-humble/                       구조화된 회고
 ├── x-solver/                       문제 해결 (4가지 전략)
