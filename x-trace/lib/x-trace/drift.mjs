@@ -26,7 +26,7 @@
 
 import {
   closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync,
-  openSync, readFileSync, readSync, readdirSync, realpathSync, writeSync,
+  opendirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, writeSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { resolveXmDir } from './trace-writer.mjs';
@@ -36,6 +36,8 @@ export const DEFAULT_BASELINE = '28d';
 export const DEFAULT_MIN_SAMPLES = 5;
 export const AXES = ['latency', 'tokens', 'errors', 'quality', 'precision', 'cost'];
 export const MAX_EVAL_SCORE_BYTES = 1024 * 1024;
+export const MAX_EVAL_SCORE_FILES = 1_000;
+export const MAX_EVAL_SCORE_ROWS = 1_000;
 export const MAX_DRIFT_SNAPSHOT_BYTES = 64 * 1024;
 export const MAX_JSONL_FILE_BYTES = 16 * 1024 * 1024;
 export const MAX_JSONL_LINE_BYTES = 256 * 1024;
@@ -200,37 +202,59 @@ export function collectTraceRows(traceDir, { minTs = -Infinity, maxTs = Infinity
   return { steps, sessions, files, skipped };
 }
 
-export function collectEvalRows(resultsDir) {
+export function collectEvalRows(resultsDir, {
+  minTs = -Infinity,
+  maxTs = Infinity,
+  maxFiles = MAX_EVAL_SCORE_FILES,
+  maxRows = MAX_EVAL_SCORE_ROWS,
+} = {}) {
   const rows = [];
   let skipped = 0;
-  if (!existsSync(resultsDir)) return { rows, skipped };
+  let outsideWindow = 0;
+  let filesScanned = 0;
+  let fileLimitReached = false;
+  let rowLimitReached = false;
+  const result = () => ({ rows, skipped, outside_window: outsideWindow, files_scanned: filesScanned, file_limit_reached: fileLimitReached, row_limit_reached: rowLimitReached });
+  if (!Number.isInteger(maxFiles) || maxFiles <= 0 || !Number.isInteger(maxRows) || maxRows <= 0) throw new Error('eval score file and row limits must be positive integers');
+  if (!existsSync(resultsDir)) return result();
   let actualResultsDir;
   try {
     const dir = lstatSync(resultsDir);
-    if (dir.isSymbolicLink() || !dir.isDirectory()) return { rows, skipped: 1 };
+    if (dir.isSymbolicLink() || !dir.isDirectory()) { skipped += 1; return result(); }
     actualResultsDir = realpathSync(resultsDir);
-  } catch { return { rows, skipped: 1 }; }
-  for (const name of readdirSync(actualResultsDir)) {
-    if (!name.endsWith('-score.json') && !/-score\..*\.json$/.test(name)) continue;
-    try {
-      const path = join(actualResultsDir, name);
-      const raw = readBoundedRegularFile(path, MAX_EVAL_SCORE_BYTES);
-      if (raw == null) { skipped += 1; continue; }
-      const doc = JSON.parse(raw);
-      if (!doc || typeof doc !== 'object' || Array.isArray(doc)
-        || doc.type !== 'score'
-        // Existing score files are unversioned; schema_v:1 is the only versioned form.
-        || (Object.hasOwn(doc, 'schema_v') && doc.schema_v !== 1)) { skipped += 1; continue; }
-      const overall = doc.overall;
-      const ts = timeOf(doc.timestamp);
-      const rubric = normalizeScoreIdentifier(doc.rubric, 'unknown');
-      const strategy = normalizeScoreIdentifier(doc.source_strategy ?? doc.strategy, 'unknown');
-      if (typeof overall !== 'number' || !Number.isFinite(overall) || overall < 0 || overall > 10
-        || !Number.isFinite(ts) || rubric == null || strategy == null) { skipped += 1; continue; }
-      rows.push({ ts, rubric, strategy, overall, passed: doc.passed === true });
-    } catch { skipped += 1; }
+  } catch { skipped += 1; return result(); }
+  let directory;
+  try { directory = opendirSync(actualResultsDir); } catch { skipped += 1; return result(); }
+  try {
+    for (let entry = directory.readSync(); entry != null; entry = directory.readSync()) {
+      if (rows.length >= maxRows) { rowLimitReached = true; break; }
+      if (filesScanned >= maxFiles) { fileLimitReached = true; break; }
+      filesScanned += 1;
+      const name = entry.name;
+      if (!name.endsWith('-score.json') && !/-score\..*\.json$/.test(name)) continue;
+      try {
+        const path = join(actualResultsDir, name);
+        const raw = readBoundedRegularFile(path, MAX_EVAL_SCORE_BYTES);
+        if (raw == null) { skipped += 1; continue; }
+        const doc = JSON.parse(raw);
+        if (!doc || typeof doc !== 'object' || Array.isArray(doc)
+          || doc.type !== 'score'
+          // Existing score files are unversioned; schema_v:1 is the only versioned form.
+          || (Object.hasOwn(doc, 'schema_v') && doc.schema_v !== 1)) { skipped += 1; continue; }
+        const overall = doc.overall;
+        const ts = timeOf(doc.timestamp);
+        const rubric = normalizeScoreIdentifier(doc.rubric, 'unknown');
+        const strategy = normalizeScoreIdentifier(doc.source_strategy ?? doc.strategy, 'unknown');
+        if (typeof overall !== 'number' || !Number.isFinite(overall) || overall < 0 || overall > 10
+          || !Number.isFinite(ts) || rubric == null || strategy == null) { skipped += 1; continue; }
+        if (ts < minTs || ts > maxTs) { outsideWindow += 1; continue; }
+        rows.push({ ts, rubric, strategy, overall, passed: doc.passed === true });
+      } catch { skipped += 1; }
+    }
+  } finally {
+    directory.closeSync();
   }
-  return { rows, skipped };
+  return result();
 }
 
 function readBoundedRegularFile(path, maxBytes) {
@@ -458,9 +482,12 @@ export function driftReport({ xmDir = resolveXmDir(), window = DEFAULT_WINDOW, b
     report.axes.errors = { unit: 'session_end failed/error rate', rows: compareWindows(known, { ...common, axis: 'errors', keyOf: r => r.skill, statOf: errorRate }) };
   }
   if (need('quality')) {
-    const evalRows = collectEvalRows(join(xmDir, 'eval', 'results'));
+    const evalRows = collectEvalRows(join(xmDir, 'eval', 'results'), sourceWindow);
     if (!evalRows.rows.length) coverage.push('quality: no .xm/eval/results/*-score.json — run /xm:eval score (or x-op --verify) to populate');
     if (evalRows.skipped > 0) coverage.push(`quality: ${evalRows.skipped} invalid, oversized, or symlinked score file(s) skipped`);
+    if (evalRows.outside_window > 0) coverage.push(`quality: ${evalRows.outside_window} valid score row(s) outside the selected periods excluded`);
+    if (evalRows.file_limit_reached) coverage.push(`quality: eval result file limit ${MAX_EVAL_SCORE_FILES} reached; remaining files were not scanned`);
+    if (evalRows.row_limit_reached) coverage.push(`quality: score row limit ${MAX_EVAL_SCORE_ROWS} reached; remaining files were not scanned`);
     report.axes.quality = { unit: 'judge overall (mean, 1-10)', rows: compareWindows(evalRows.rows, { ...common, axis: 'quality', keyOf: r => `${r.rubric}/${r.strategy}`, statOf: rs => mean(rs.map(r => r.overall)) }) };
   }
   if (need('precision')) {

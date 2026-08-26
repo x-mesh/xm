@@ -2,7 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { buildManifest, aggregateRun, validateRecord, validateManifest, parseStrategies, jobIdFor, CONTROL_ARM, MIN_DELTA_VS_DIRECT, MAX_TRIALS, formatBenchReport, validatePersistedBench } from '../x-eval/lib/x-eval/bench.mjs';
 import { compareBench } from '../x-eval/lib/x-eval/gate.mjs';
 import { mean, sigma, median, round } from '../x-eval/lib/x-eval/stats.mjs';
-import { buildCase, caseId, passThresholdFor, DEFAULT_TRIALS, validateCase } from '../x-eval/lib/x-eval/cases.mjs';
+import { buildCase, caseId, passThresholdFor, DEFAULT_TRIALS, MAX_CUSTOM_RUBRIC_BYTES, validateCase } from '../x-eval/lib/x-eval/cases.mjs';
 
 const caseA = buildCase({ prompt: 'Find the bug in this code', rubric: 'general', tags: ['op'], createdAt: '2026-08-26T00:00:00.000Z' });
 const caseHigh = buildCase({ prompt: 'Harden the parser', rubric: 'code-quality', tags: ['op', 'risk'], risk: 'high', minOverall: 8, createdAt: '2026-08-26T00:00:00.000Z' });
@@ -33,6 +33,7 @@ describe('stats', () => {
 
 describe('cases', () => {
   test('id is a hash of prompt + rubric + sorted tags; pass threshold honours min_overall', () => {
+    expect(MAX_CUSTOM_RUBRIC_BYTES).toBe(64 * 1024);
     expect(caseA.id).toMatch(/^case-[0-9a-f]{24}$/);
     expect(caseId({ prompt: 'Find the bug in this code', rubric: 'general', tags: ['op'] })).toBe(caseA.id);
     expect(caseId({ prompt: 'Find the bug in this code', rubric: 'general', tags: ['x', 'op'] })).not.toBe(caseA.id);
@@ -137,7 +138,7 @@ describe('bench aggregation (subcommands/bench.md rules)', () => {
     const records = recordsFor(manifest, { direct: [7.0, 7.1, 7.2], refine: [8.2, 8.0, 8.4], debate: [8.2, 7.9, 5.4], tournament: [8.5, 8.7, 8.3] }, { cost: { direct: 0.05, refine: 0.12, debate: 0.08, tournament: 0.15 } });
     const result = aggregateRun(manifest, records);
     const byName = Object.fromEntries(result.strategies.map(s => [s.name, s]));
-    expect(byName.refine).toMatchObject({ trials: 3, pass_at_k: 3, pass_hat_k: 1, pass_at_k_rate: 1 });
+    expect(byName.refine).toMatchObject({ trials: 3, pass_at_k: 3, pass_hat_k: 1, pass_at_k_rate: 1, per_trial_passed: [true, true, true] });
     expect(byName.debate).toMatchObject({ pass_at_k: 2, pass_hat_k: 0, pass_at_k_rate: 0.667 });
     expect(byName.debate.avg_score).toBe(7.17);
     expect(byName.tournament.delta_vs_direct).toBe(1.4);
@@ -276,7 +277,7 @@ describe('regression gate', () => {
     perCaseRefine.avg_score = 6;
     perCaseRefine.sigma = 0;
     perCaseRefine.score_per_dollar = 60;
-    expect(() => validatePersistedBench(forgedPass)).toThrow(/pass_at_k does not match trial scores/);
+    expect(() => validatePersistedBench(forgedPass)).toThrow(/passing trial below its case threshold/);
 
     const forgedTop = structuredClone(stored);
     const topRefine = forgedTop.strategies.find(arm => arm.name === 'refine');

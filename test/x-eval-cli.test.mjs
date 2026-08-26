@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readdirSync, readFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readdirSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -24,6 +24,18 @@ function cli(dir, args, env = {}) {
     timeout: 30000,
   });
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', code: r.status ?? 1 };
+}
+
+function cliWithoutXmRoot(dir, args) {
+  const env = { ...process.env };
+  delete env.XM_ROOT;
+  const r = spawnSync('node', [CLI, ...args], { cwd: dir, env, encoding: 'utf8', timeout: 30000 });
+  return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', code: r.status ?? 1 };
+}
+
+function git(cwd, args) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
 }
 
 function cliAsync(dir, args) {
@@ -218,6 +230,63 @@ describe('xm eval case', () => {
       expect(manifest.cases.find(c => c.id === custom.id).pass_threshold).toBe(7.5);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  test('custom rubric files reject symlinks, FIFOs, directories, and oversized input', () => {
+    const dir = makeProject();
+    try {
+      const rubrics = join(dir, '.xm', 'eval', 'rubrics');
+      const customPath = join(rubrics, 'strict-code.json');
+      mkdirSync(rubrics, { recursive: true });
+      json(cli(dir, ['case', 'add', '--prompt', 'review strict code', '--rubric', 'strict-code', '--tag', 'unsafe-rubric', '--json']));
+      const plan = () => cli(dir, ['bench', 'plan', '--set', 'unsafe-rubric', '--strategies', 'refine', '--trials', '1']);
+
+      const target = join(dir, 'rubric-target.json');
+      writeFileSync(target, JSON.stringify({ pass_threshold: 7.5 }));
+      symlinkSync(target, customPath);
+      expect(plan().stderr).toContain('regular non-symlink');
+
+      rmSync(customPath, { force: true });
+      expect(spawnSync('mkfifo', [customPath]).status).toBe(0);
+      expect(plan().stderr).toContain('regular non-symlink');
+
+      rmSync(customPath, { force: true });
+      mkdirSync(customPath);
+      expect(plan().stderr).toContain('regular non-symlink');
+
+      rmSync(customPath, { recursive: true, force: true });
+      writeFileSync(customPath, 'x'.repeat(64 * 1024 + 1));
+      expect(plan().stderr).toContain('exceeds 65536 bytes');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('linked worktree shares main .xm storage but runs assertions in current worktree', () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'xe-linked-worktree-'));
+    const main = join(sandbox, 'main');
+    const linked = join(sandbox, 'linked');
+    try {
+      mkdirSync(main);
+      git(main, ['init']);
+      git(main, ['config', 'user.email', 'test@example.com']);
+      git(main, ['config', 'user.name', 'Test User']);
+      writeFileSync(join(main, 'tracked.txt'), 'main\n');
+      git(main, ['add', 'tracked.txt']);
+      git(main, ['commit', '-m', 'init']);
+      git(main, ['worktree', 'add', '-b', 'eval-linked-test', linked]);
+      mkdirSync(join(main, '.xm'));
+      writeFileSync(join(linked, 'worktree-only.txt'), 'linked bytes\n');
+
+      const asserted = cliWithoutXmRoot(linked, ['assert', '--file', 'worktree=exists=worktree-only.txt', '--json']);
+      expect(asserted.code, asserted.stderr).toBe(0);
+      expect(JSON.parse(asserted.stdout).cwd).toBe(realpathSync(linked));
+
+      const added = cliWithoutXmRoot(linked, ['case', 'add', '--prompt', 'shared storage', '--tag', 'worktree', '--json']);
+      expect(added.code, added.stderr).toBe(0);
+      const payload = JSON.parse(added.stdout);
+      expect(payload.path.startsWith(join(realpathSync(main), '.xm', 'eval', 'cases'))).toBe(true);
+      expect(existsSync(payload.path)).toBe(true);
+      expect(existsSync(join(linked, '.xm'))).toBe(false);
+    } finally { rmSync(sandbox, { recursive: true, force: true }); }
+  });
 });
 
 describe('xm eval bench plan → record → finish', () => {
@@ -306,6 +375,24 @@ describe('xm eval bench plan → record → finish', () => {
       const manifest = JSON.parse(readFileSync(plan.manifest, 'utf8'));
       expect(manifest.status).toBe('finished');
       expect(manifest.result_path).toBe(join(dir, '.xm', 'eval', 'benchmarks', benchFiles[0]));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('high overall with an executable HARD_FAIL preserves final trial failure and finishes normally', () => {
+    const dir = makeProject();
+    try {
+      json(cli(dir, ['case', 'add', '--prompt', 'Executable failure wins over score', '--tag', 'hard-fail',
+        '--assert-cmd', 'fails=node -e process.exit(1)', '--json']));
+      const plan = json(cli(dir, ['bench', 'plan', '--set', 'hard-fail', '--strategies', 'refine', '--trials', '1', '--json']));
+      recordAll(dir, plan, () => 9);
+      const finished = json(cli(dir, ['bench', 'finish', '--run', plan.run_id, '--json']));
+      for (const arm of finished.strategies) {
+        expect(arm).toMatchObject({ avg_score: 9, pass_at_k: 0, pass_hat_k: 0, per_trial_overall: [9], per_trial_passed: [false], assertion_hard_fails: 1 });
+      }
+      for (const row of finished.per_case) {
+        for (const arm of row.arms) expect(arm.per_trial_passed).toEqual([false]);
+      }
+      expect(finished.recommendation.final).toBeNull();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

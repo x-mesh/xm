@@ -15,7 +15,11 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, linkSync, unlinkSync, lstatSync, statSync, realpathSync } from 'node:fs';
+import {
+  closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readSync,
+  readdirSync, readFileSync, writeFileSync, linkSync, unlinkSync, lstatSync,
+  statSync, realpathSync,
+} from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { evalDir } from './root.mjs';
 import { ASSERTION_KINDS, parseSpec, MAX_EXECUTABLE_ASSERTIONS } from './assert.mjs';
@@ -43,6 +47,7 @@ const TAG_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,63}$/;
 export const MAX_PROMPT_CHARS = 20_000;
 export const MAX_PROMPT_BYTES = 64 * 1024;
 export const MAX_CASE_BYTES = 256 * 1024;
+export const MAX_CUSTOM_RUBRIC_BYTES = 64 * 1024;
 const MAX_TAGS = 64;
 export const MAX_ASSERTIONS = 128;
 const MAX_ASSERTION_CHARS = 20_000;
@@ -107,14 +112,45 @@ export function caseId({ prompt, rubric, tags }) {
   return `case-${sha256(`${prompt}\0${rubric}\0${[...tags].sort().join(',')}`).slice(0, 24)}`;
 }
 
+function readCustomRubric(path, rubric) {
+  if (!Number.isInteger(constants.O_NOFOLLOW) || !Number.isInteger(constants.O_NONBLOCK)) {
+    throw new Error(`custom rubric "${rubric}" requires O_NOFOLLOW and O_NONBLOCK support`);
+  }
+  let fd;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const file = fstatSync(fd);
+    if (!file.isFile()) throw new Error(`custom rubric "${rubric}" must be a regular non-symlink file`);
+    if (file.size > MAX_CUSTOM_RUBRIC_BYTES) throw new Error(`custom rubric "${rubric}" exceeds ${MAX_CUSTOM_RUBRIC_BYTES} bytes`);
+    const buffer = Buffer.allocUnsafe(Math.min(file.size, MAX_CUSTOM_RUBRIC_BYTES) + 1);
+    let bytes = 0;
+    while (bytes < buffer.byteLength) {
+      const read = readSync(fd, buffer, bytes, buffer.byteLength - bytes, bytes);
+      if (read === 0) break;
+      bytes += read;
+    }
+    if (bytes > file.size || bytes > MAX_CUSTOM_RUBRIC_BYTES) throw new Error(`custom rubric "${rubric}" changed or exceeded ${MAX_CUSTOM_RUBRIC_BYTES} bytes while reading`);
+    return buffer.subarray(0, bytes).toString('utf8');
+  } catch (error) {
+    if (error?.code === 'ELOOP') throw new Error(`custom rubric "${rubric}" must be a regular non-symlink file`);
+    throw error;
+  } finally {
+    if (fd != null) closeSync(fd);
+  }
+}
+
 export function passThresholdFor({ rubric, expected }) {
   if (expected && Number.isFinite(Number(expected.min_overall))) return Number(expected.min_overall);
   if (Object.hasOwn(BUILTIN_PASS_THRESHOLDS, rubric)) return BUILTIN_PASS_THRESHOLDS[rubric];
   const customPath = join(evalDir('rubrics'), `${rubric}.json`);
-  if (existsSync(customPath)) {
-    if (lstatSync(customPath).isSymbolicLink()) throw new Error(`custom rubric "${rubric}" must not be a symlink`);
+  let customExists = true;
+  try { lstatSync(customPath); } catch (error) {
+    if (error?.code === 'ENOENT') customExists = false;
+    else throw error;
+  }
+  if (customExists) {
     let custom;
-    try { custom = JSON.parse(readFileSync(customPath, 'utf8')); } catch (error) { throw new Error(`custom rubric "${rubric}" is invalid JSON: ${error.message}`); }
+    try { custom = JSON.parse(readCustomRubric(customPath, rubric)); } catch (error) { throw new Error(`custom rubric "${rubric}" is invalid or unsafe: ${error.message}`); }
     if (custom.pass_threshold != null) {
       if (typeof custom.pass_threshold !== 'number' || !Number.isFinite(custom.pass_threshold) || custom.pass_threshold < 0 || custom.pass_threshold > 10) {
         throw new Error(`custom rubric "${rubric}" pass_threshold must be a number between 0 and 10`);

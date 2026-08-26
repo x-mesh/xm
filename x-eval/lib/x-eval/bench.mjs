@@ -53,7 +53,7 @@ const STORED_RECORD_KEYS = new Set(['v', 'type', 'run_id', 'job_id', 'case_id', 
 const MANIFEST_CASE_KEYS = new Set(['id', 'rubric', 'risk', 'tags', 'trials', 'pass_threshold', 'assertions', 'case_sha256', 'case_meta_sha256']);
 const BENCH_KEYS = new Set(['type', 'schema_v', 'run_id', 'timestamp', 'task', 'cases', 'rubric', 'pass_threshold', 'control', 'strategies', 'per_case', 'broken_task_warning', 'recommendation', 'advisories', 'partial', 'missing_jobs', 'records', 'artifact_path']);
 const BENCH_CASE_KEYS = new Set(['id', 'rubric', 'risk', 'trials', 'pass_threshold']);
-const BENCH_ARM_KEYS = new Set(['name', 'trials', 'expected_trials', 'avg_score', 'sigma', 'pass_at_k', 'pass_hat_k', 'pass_at_k_rate', 'per_trial_overall', 'est_cost_usd', 'cost_source', 'avg_time_sec', 'score_per_dollar', 'assertion_hard_fails', 'delta_vs_direct']);
+const BENCH_ARM_KEYS = new Set(['name', 'trials', 'expected_trials', 'avg_score', 'sigma', 'pass_at_k', 'pass_hat_k', 'pass_at_k_rate', 'per_trial_overall', 'per_trial_passed', 'est_cost_usd', 'cost_source', 'avg_time_sec', 'score_per_dollar', 'assertion_hard_fails', 'delta_vs_direct']);
 const BENCH_PER_CASE_KEYS = new Set(['case_id', 'pass_threshold', 'arms']);
 const BENCH_RECOMMENDATION_KEYS = new Set(['best_quality', 'best_value', 'final', 'best_effort', 'reason']);
 
@@ -153,8 +153,10 @@ function validateBenchArm(arm, { expectedName = null, expectedTrials = null, all
   if (arm.pass_at_k_rate !== expectedRate) throw new Error(`bench arm ${arm.name} pass_at_k_rate is inconsistent with pass/trial counts`);
   if (!Array.isArray(arm.per_trial_overall) || arm.per_trial_overall.length !== arm.trials) throw new Error(`bench arm ${arm.name} per_trial_overall must match trials`);
   for (const score of arm.per_trial_overall) finiteInRange(score, 0, 10, `bench arm ${arm.name} trial score`);
-  if (passThreshold != null && arm.pass_at_k !== arm.per_trial_overall.filter(score => score >= passThreshold).length) {
-    throw new Error(`bench arm ${arm.name} pass_at_k does not match trial scores and case threshold`);
+  if (!Array.isArray(arm.per_trial_passed) || arm.per_trial_passed.length !== arm.trials || arm.per_trial_passed.some(value => typeof value !== 'boolean')) throw new Error(`bench arm ${arm.name} per_trial_passed must be a boolean list matching trials`);
+  if (arm.pass_at_k !== arm.per_trial_passed.filter(Boolean).length) throw new Error(`bench arm ${arm.name} pass_at_k does not match per-trial passed states`);
+  if (passThreshold != null && arm.per_trial_passed.some((passed, index) => passed && arm.per_trial_overall[index] < passThreshold)) {
+    throw new Error(`bench arm ${arm.name} contains a passing trial below its case threshold`);
   }
   const expectedAvg = arm.trials ? round(mean(arm.per_trial_overall), 2) : null;
   const expectedSigma = arm.trials ? round(sigma(arm.per_trial_overall), 2) : null;
@@ -232,10 +234,12 @@ export function validatePersistedBench(bench) {
     const rows = bench.per_case.map(row => row.arms.find(arm => arm.name === top.name));
     if (rows.some(row => !row)) throw new Error(`bench per_case rows are missing arm ${top.name}`);
     const trialScores = rows.flatMap(row => row.per_trial_overall);
+    const trialPassed = rows.flatMap(row => row.per_trial_passed);
     if (rows.reduce((sum, row) => sum + row.trials, 0) !== top.trials
       || rows.reduce((sum, row) => sum + row.pass_at_k, 0) !== top.pass_at_k
       || rows.reduce((sum, row) => sum + row.assertion_hard_fails, 0) !== top.assertion_hard_fails
-      || JSON.stringify(trialScores) !== JSON.stringify(top.per_trial_overall)) throw new Error(`bench arm ${top.name} aggregates do not match per_case trial results`);
+      || JSON.stringify(trialScores) !== JSON.stringify(top.per_trial_overall)
+      || JSON.stringify(trialPassed) !== JSON.stringify(top.per_trial_passed)) throw new Error(`bench arm ${top.name} aggregates do not match per_case trial results`);
   }
   if (typeof bench.broken_task_warning !== 'boolean' || typeof bench.partial !== 'boolean') throw new Error('bench result state flags must be booleans');
   if (!Array.isArray(bench.missing_jobs) || bench.missing_jobs.length > MAX_TOTAL_JOBS
@@ -594,6 +598,7 @@ function armStats(name, rows, expected) {
     pass_hat_k: trials === expected ? (trials > 0 && passAtK === trials ? 1 : 0) : null,
     pass_at_k_rate: trials ? round(passAtK / trials, 3) : null,
     per_trial_overall: overalls,
+    per_trial_passed: rows.map(row => row.passed),
     est_cost_usd: estCost,
     cost_source: 'estimated',
     avg_time_sec: durations.length ? round(mean(durations) / 1000, 1) : null,

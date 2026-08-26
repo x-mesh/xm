@@ -12,6 +12,9 @@ import {
   parseTriageLedger, buildLedgerRow, ledgerRowKey, filterLedgerRows, aggregateLensPrecision,
   lensesBelowPrecision, formatPrecisionReport, parseDuration, findingLens, findingLenses,
 } from '../x-build/lib/x-build/review-precision.mjs';
+import {
+  MAX_TRIAGE_LEDGER_BYTES, MAX_TRIAGE_LEDGER_LINE_BYTES, MAX_TRIAGE_LEDGER_ROWS,
+} from '../x-build/lib/x-build/verify.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, '..', 'x-build', 'lib', 'x-build-cli.mjs');
@@ -382,6 +385,41 @@ describe('review-precision: ledger written by verify-review-fix', () => {
       expect(parsed.rows[0]).toMatchObject({ type: 'triage_decision', decision: 'fix_now' });
     } finally {
       rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('ledger append and precision reads reject oversized, overlong, and too-many-row inputs', () => {
+    const appendTmp = mkdtempSync(join(tmpdir(), 'xb-rp-bounded-append-'));
+    const readTmp = mkdtempSync(join(tmpdir(), 'xb-rp-bounded-read-'));
+    try {
+      setupProject(appendTmp);
+      writeReviewResult(appendTmp, { findings: [
+        { severity: 'medium', lens: 'logic', file: 'src/auth.ts', line: 42, summary: 'Bounded ledger' },
+      ] });
+      initAndEditTriage(appendTmp, triage => { triage.target_findings[0].decision = 'fix_now'; });
+      const appendLedger = join(appendTmp, '.xm', 'review', 'triage-ledger.jsonl');
+      writeFileSync(appendLedger, 'x'.repeat(MAX_TRIAGE_LEDGER_BYTES + 1));
+      const appendRejected = run(['verify-review-fix'], { cwd: appendTmp });
+      expect(appendRejected.exitCode).not.toBe(0);
+      expect(appendRejected.stderr).toContain(`triage ledger exceeds ${MAX_TRIAGE_LEDGER_BYTES} bytes`);
+      expect(statSync(appendLedger).size).toBe(MAX_TRIAGE_LEDGER_BYTES + 1);
+
+      setupProject(readTmp);
+      const reviewDir = join(readTmp, '.xm', 'review');
+      mkdirSync(reviewDir, { recursive: true });
+      const ledger = join(reviewDir, 'triage-ledger.jsonl');
+      writeFileSync(ledger, `${'x'.repeat(MAX_TRIAGE_LEDGER_LINE_BYTES + 1)}\n`);
+      let rejected = run(['review-precision'], { cwd: readTmp });
+      expect(rejected.exitCode).toBe(1);
+      expect(rejected.stderr).toContain(`line exceeds ${MAX_TRIAGE_LEDGER_LINE_BYTES} bytes`);
+
+      writeFileSync(ledger, '{}\n'.repeat(MAX_TRIAGE_LEDGER_ROWS + 1));
+      rejected = run(['review-precision'], { cwd: readTmp });
+      expect(rejected.exitCode).toBe(1);
+      expect(rejected.stderr).toContain(`exceeds ${MAX_TRIAGE_LEDGER_ROWS} rows`);
+    } finally {
+      rmSync(appendTmp, { recursive: true, force: true });
+      rmSync(readTmp, { recursive: true, force: true });
     }
   });
 

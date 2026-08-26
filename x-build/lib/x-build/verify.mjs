@@ -19,6 +19,7 @@ import {
 import { createHash } from 'node:crypto';
 import {
   readFileSync, lstatSync, openSync, closeSync, fchmodSync, fstatSync, writeSync,
+  readSync,
   constants as FS_CONSTANTS,
 } from 'node:fs';
 import { dirname, isAbsolute, relative, sep } from 'node:path';
@@ -766,6 +767,10 @@ function triageLedgerPath() {
   return join(reviewDir(), TRIAGE_LEDGER_FILE);
 }
 
+export const MAX_TRIAGE_LEDGER_BYTES = 4 * 1024 * 1024;
+export const MAX_TRIAGE_LEDGER_LINE_BYTES = 64 * 1024;
+export const MAX_TRIAGE_LEDGER_ROWS = 20_000;
+
 function pathInside(root, candidate) {
   const rel = relative(root, candidate);
   return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
@@ -799,13 +804,47 @@ function safeTriageLedgerPath() {
   return path;
 }
 
+function validateTriageLedgerText(text, label = 'triage ledger') {
+  if (Buffer.byteLength(text) > MAX_TRIAGE_LEDGER_BYTES) throw new Error(`${label} exceeds ${MAX_TRIAGE_LEDGER_BYTES} bytes`);
+  let rows = 0;
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    rows += 1;
+    if (rows > MAX_TRIAGE_LEDGER_ROWS) throw new Error(`${label} exceeds ${MAX_TRIAGE_LEDGER_ROWS} rows`);
+    if (Buffer.byteLength(line) > MAX_TRIAGE_LEDGER_LINE_BYTES) throw new Error(`${label} line exceeds ${MAX_TRIAGE_LEDGER_LINE_BYTES} bytes`);
+  }
+  return text;
+}
+
+function readBoundedTriageLedger(path) {
+  const flags = FS_CONSTANTS.O_RDONLY | (FS_CONSTANTS.O_NOFOLLOW || 0);
+  const fd = openSync(path, flags);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error(`triage ledger is not a regular file: ${path}`);
+    if (stat.size > MAX_TRIAGE_LEDGER_BYTES) throw new Error(`triage ledger exceeds ${MAX_TRIAGE_LEDGER_BYTES} bytes`);
+    const bytes = Buffer.alloc(stat.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    return validateTriageLedgerText(bytes.subarray(0, offset).toString('utf8'));
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function appendPrivateFile(path, text) {
   const flags = FS_CONSTANTS.O_WRONLY | FS_CONSTANTS.O_APPEND | FS_CONSTANTS.O_CREAT | (FS_CONSTANTS.O_NOFOLLOW || 0);
   const fd = openSync(path, flags, 0o600);
   try {
-    if (!fstatSync(fd).isFile()) throw new Error(`triage ledger is not a regular file: ${path}`);
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error(`triage ledger is not a regular file: ${path}`);
     fchmodSync(fd, 0o600);
     const bytes = Buffer.from(text, 'utf8');
+    if (stat.size + bytes.length > MAX_TRIAGE_LEDGER_BYTES) throw new Error(`triage ledger exceeds ${MAX_TRIAGE_LEDGER_BYTES} bytes`);
     let offset = 0;
     while (offset < bytes.length) offset += writeSync(fd, bytes, offset, bytes.length - offset);
   } finally {
@@ -818,7 +857,7 @@ function appendPrivateFile(path, text) {
 function appendTriageLedger(rows) {
   if (!rows.length) return 0;
   const path = safeTriageLedgerPath();
-  const existingText = existsSync(path) ? readFileSync(path, 'utf8') : '';
+  const existingText = existsSync(path) ? readBoundedTriageLedger(path) : '';
   const existing = parseTriageLedger(existingText).rows;
   const outcomeAppendKey = row => `${ledgerRowKey(row)}|${row.outcome || ''}`;
   const seen = new Set(existing.filter(row => row.type === 'triage_outcome').map(outcomeAppendKey));
@@ -840,7 +879,9 @@ function appendTriageLedger(rows) {
   });
   if (fresh.length > 0) {
     const separator = existingText && !existingText.endsWith('\n') ? '\n' : '';
-    appendPrivateFile(path, separator + fresh.map(row => JSON.stringify(row)).join('\n') + '\n');
+    const appendedText = separator + fresh.map(row => JSON.stringify(row)).join('\n') + '\n';
+    validateTriageLedgerText(existingText + appendedText);
+    appendPrivateFile(path, appendedText);
   }
   return fresh.length;
 }
@@ -1449,7 +1490,16 @@ export function cmdReviewPrecision(args) {
     return;
   }
 
-  if (!existsSync(path)) {
+  let ledgerExists = true;
+  try { lstatSync(path); } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') ledgerExists = false;
+    else {
+      console.error(`Unsafe triage ledger: ${/** @type {Error} */ (error).message}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  if (!ledgerExists) {
     if (json) {
       console.log(JSON.stringify({ status: 'no_ledger', path }, null, 2));
     } else {
@@ -1467,7 +1517,15 @@ export function cmdReviewPrecision(args) {
     return;
   }
 
-  const { rows, skipped } = parseTriageLedger(readFileSync(path, 'utf8'));
+  let parsed;
+  try {
+    parsed = parseTriageLedger(readBoundedTriageLedger(path));
+  } catch (error) {
+    console.error(`Unsafe triage ledger: ${/** @type {Error} */ (error).message}`);
+    process.exitCode = 1;
+    return;
+  }
+  const { rows, skipped } = parsed;
   const report = aggregateLensPrecision(rows, { since: opts.since || null, last, lens: opts.lens || null });
   const below = minPrecision != null ? lensesBelowPrecision(report, minPrecision) : [];
 

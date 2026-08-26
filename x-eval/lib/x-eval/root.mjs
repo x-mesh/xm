@@ -108,7 +108,14 @@ export function evalDir(...segments) {
   return assertContainedPath(root, join(root, 'eval', ...segments), 'x-eval storage path');
 }
 
-/** The project root that owns `.xm/` — the directory assertions and gates run in. */
+/** Current checkout/worktree root — executable assertions run against these bytes. */
 export function projectRoot() {
-  return resolve(resolveXmDir(), '..');
+  const workspace = workspaceBoundary();
+  if (process.env.XM_ROOT) {
+    const explicitProject = resolve(process.cwd(), process.env.XM_ROOT, '..');
+    try {
+      if (realpathSync(explicitProject) === workspace) return explicitProject;
+    } catch {}
+  }
+  return workspace;
 }

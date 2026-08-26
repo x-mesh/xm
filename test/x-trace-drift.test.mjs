@@ -128,9 +128,46 @@ describe('drift: pure helpers', () => {
     expect(collectEvalRows(results)).toEqual({
       rows: [{ ts: NOW_MS, rubric: 'code-quality', strategy: 'refine', overall: 8.2, passed: false }],
       skipped: 10,
+      outside_window: 0,
+      files_scanned: 11,
+      file_limit_reached: false,
+      row_limit_reached: false,
     });
     const report = driftReport({ xmDir: join(dir, '.xm'), now: NOW_MS, axes: ['quality'] });
     expect(report.coverage).toContain('quality: 10 invalid, oversized, or symlinked score file(s) skipped');
+  });
+
+  test('quality collector bounds large score sets and does not retain rows outside the source window', () => {
+    const dir = makeXm();
+    const results = join(dir, '.xm', 'eval', 'results');
+    mkdirSync(results, { recursive: true });
+    const score = (name, timestamp) => writeFileSync(join(results, name), JSON.stringify({
+      schema_v: 1, type: 'score', timestamp, rubric: 'general', source_strategy: 'refine', overall: 8,
+    }));
+    score('old-a-score.json', iso(90));
+    score('old-b-score.json', iso(80));
+    for (let i = 0; i < 20; i++) score(`current-${String(i).padStart(2, '0')}-score.json`, iso(1));
+
+    const windowed = collectEvalRows(results, { minTs: NOW_MS - 35 * DAY, maxTs: NOW_MS, maxFiles: 50, maxRows: 50 });
+    expect(windowed.rows).toHaveLength(20);
+    expect(windowed.outside_window).toBe(2);
+    expect(windowed.files_scanned).toBe(22);
+    expect(windowed.file_limit_reached).toBe(false);
+    expect(windowed.row_limit_reached).toBe(false);
+
+    const fileBounded = collectEvalRows(results, { maxFiles: 5, maxRows: 50 });
+    expect(fileBounded.files_scanned).toBe(5);
+    expect(fileBounded.rows.length).toBeLessThanOrEqual(5);
+    expect(fileBounded.file_limit_reached).toBe(true);
+
+    const rowBounded = collectEvalRows(results, { maxFiles: 50, maxRows: 3 });
+    expect(rowBounded.rows).toHaveLength(3);
+    expect(rowBounded.files_scanned).toBe(3);
+    expect(rowBounded.row_limit_reached).toBe(true);
+
+    const report = driftReport({ xmDir: join(dir, '.xm'), now: NOW_MS, axes: ['quality'] });
+    expect(report.coverage).toContain('quality: 2 valid score row(s) outside the selected periods excluded');
+    expect(report.axes.quality.rows[0]).toMatchObject({ key: 'general/refine', window: { n: 20 } });
   });
 
   test('JSONL reader rejects unsafe files and enforces file, line, and row bounds', () => {
