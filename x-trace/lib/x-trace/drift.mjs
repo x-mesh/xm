@@ -24,14 +24,20 @@
  * Zero-dependency: node builtins + trace-writer.mjs (same plugin directory).
  */
 
-import { existsSync, readdirSync, readFileSync, appendFileSync, mkdirSync, lstatSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync,
+  openSync, readFileSync, readSync, readdirSync, realpathSync, writeSync,
+} from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import { resolveXmDir } from './trace-writer.mjs';
 
 export const DEFAULT_WINDOW = '7d';
 export const DEFAULT_BASELINE = '28d';
 export const DEFAULT_MIN_SAMPLES = 5;
 export const AXES = ['latency', 'tokens', 'errors', 'quality', 'precision', 'cost'];
+export const MAX_EVAL_SCORE_BYTES = 1024 * 1024;
+export const MAX_DRIFT_SNAPSHOT_BYTES = 64 * 1024;
+const SCORE_IDENTIFIER_RE = /^[a-z0-9][a-z0-9._:|-]{0,63}$/;
 /** Candidate thresholds (see header). ratio = relative change, pp = percentage points, abs = absolute. */
 export const THRESHOLDS = {
   latency: { kind: 'ratio', direction: 'up', value: 0.25 },
@@ -154,17 +160,60 @@ export function collectEvalRows(resultsDir) {
   const rows = [];
   let skipped = 0;
   if (!existsSync(resultsDir)) return { rows, skipped };
-  for (const name of readdirSync(resultsDir)) {
+  let actualResultsDir;
+  try {
+    const dir = lstatSync(resultsDir);
+    if (dir.isSymbolicLink() || !dir.isDirectory()) return { rows, skipped: 1 };
+    actualResultsDir = realpathSync(resultsDir);
+  } catch { return { rows, skipped: 1 }; }
+  for (const name of readdirSync(actualResultsDir)) {
     if (!name.endsWith('-score.json') && !/-score\..*\.json$/.test(name)) continue;
     try {
-      const doc = JSON.parse(readFileSync(join(resultsDir, name), 'utf8'));
-      const overall = Number(doc.overall);
+      const path = join(actualResultsDir, name);
+      const raw = readBoundedRegularFile(path, MAX_EVAL_SCORE_BYTES);
+      if (raw == null) { skipped += 1; continue; }
+      const doc = JSON.parse(raw);
+      if (!doc || typeof doc !== 'object' || Array.isArray(doc)
+        || doc.type !== 'score'
+        // Existing score files are unversioned; schema_v:1 is the only versioned form.
+        || (Object.hasOwn(doc, 'schema_v') && doc.schema_v !== 1)) { skipped += 1; continue; }
+      const overall = doc.overall;
       const ts = timeOf(doc.timestamp);
-      if (!Number.isFinite(overall) || !Number.isFinite(ts)) { skipped += 1; continue; }
-      rows.push({ ts, rubric: doc.rubric || 'unknown', strategy: doc.source_strategy || doc.strategy || 'unknown', overall, passed: doc.passed === true });
+      const rubric = normalizeScoreIdentifier(doc.rubric, 'unknown');
+      const strategy = normalizeScoreIdentifier(doc.source_strategy ?? doc.strategy, 'unknown');
+      if (typeof overall !== 'number' || !Number.isFinite(overall) || overall < 0 || overall > 10
+        || !Number.isFinite(ts) || rubric == null || strategy == null) { skipped += 1; continue; }
+      rows.push({ ts, rubric, strategy, overall, passed: doc.passed === true });
     } catch { skipped += 1; }
   }
   return { rows, skipped };
+}
+
+function readBoundedRegularFile(path, maxBytes) {
+  if (!Number.isInteger(constants.O_NOFOLLOW)) return null;
+  let fd;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const file = fstatSync(fd);
+    if (!file.isFile() || file.size > maxBytes) return null;
+    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    let bytes = 0;
+    while (bytes < buffer.byteLength) {
+      const read = readSync(fd, buffer, bytes, buffer.byteLength - bytes, bytes);
+      if (read === 0) break;
+      bytes += read;
+    }
+    return bytes <= maxBytes ? buffer.subarray(0, bytes).toString('utf8') : null;
+  } finally {
+    if (fd != null) closeSync(fd);
+  }
+}
+
+function normalizeScoreIdentifier(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  return SCORE_IDENTIFIER_RE.test(normalized) ? normalized : null;
 }
 
 export function collectCostRows(paths) {
@@ -297,6 +346,9 @@ export function driftReport({ xmDir = resolveXmDir(), window = DEFAULT_WINDOW, b
   if (windowMs == null) throw new Error(`--window must look like 7d, 12h, or 90m (got "${window}")`);
   if (baselineMs == null) throw new Error(`--baseline must look like 28d, 12h, or 90m (got "${baseline}")`);
   if (!Number.isInteger(minSamples) || minSamples <= 0) throw new Error('--min-samples must be a positive integer');
+  if (!Array.isArray(axes)) throw new Error('axes must be an array');
+  axes = [...new Set(axes.map(axis => typeof axis === 'string' ? axis.trim().toLowerCase() : '').filter(Boolean))];
+  if (axes.length === 0) throw new Error(`at least one axis is required (valid: ${AXES.join(', ')})`);
   const unknownAxes = axes.filter(axis => !AXES.includes(axis));
   if (unknownAxes.length) throw new Error(`unknown axis: ${unknownAxes.join(', ')} (valid: ${AXES.join(', ')})`);
 
@@ -341,6 +393,7 @@ export function driftReport({ xmDir = resolveXmDir(), window = DEFAULT_WINDOW, b
   if (need('quality')) {
     const evalRows = collectEvalRows(join(xmDir, 'eval', 'results'));
     if (!evalRows.rows.length) coverage.push('quality: no .xm/eval/results/*-score.json — run /xm:eval score (or x-op --verify) to populate');
+    if (evalRows.skipped > 0) coverage.push(`quality: ${evalRows.skipped} invalid, oversized, or symlinked score file(s) skipped`);
     report.axes.quality = { unit: 'judge overall (mean, 1-10)', rows: compareWindows(evalRows.rows, { ...common, axis: 'quality', keyOf: r => `${r.rubric}/${r.strategy}`, statOf: rs => mean(rs.map(r => r.overall)) }) };
   }
   if (need('precision')) {
@@ -386,11 +439,43 @@ export function snapshotRow(report) {
 }
 
 export function appendSnapshot(report, xmDir = resolveXmDir()) {
-  const dir = join(xmDir, 'metrics');
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, 'drift.jsonl');
-  appendFileSync(path, JSON.stringify(snapshotRow(report)) + '\n', 'utf8');
-  return path;
+  const root = resolve(xmDir);
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const rootStat = lstatSync(root);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new Error('.xm root must be a regular directory');
+  const actualRoot = realpathSync(root);
+
+  const dir = join(root, 'metrics');
+  try { mkdirSync(dir, { mode: 0o700 }); } catch (error) { if (error?.code !== 'EEXIST') throw error; }
+  const dirStat = lstatSync(dir);
+  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) throw new Error('.xm/metrics must be a regular directory, not a symlink');
+  const actualDir = realpathSync(dir);
+  if (!isWithin(actualRoot, actualDir)) throw new Error('.xm/metrics escapes the .xm root');
+
+  const path = join(actualDir, 'drift.jsonl');
+  if (existsSync(path)) {
+    const fileStat = lstatSync(path);
+    if (fileStat.isSymbolicLink() || !fileStat.isFile()) throw new Error('.xm/metrics/drift.jsonl must be a regular file, not a symlink');
+  }
+  if (!Number.isInteger(constants.O_NOFOLLOW)) throw new Error('safe snapshot append requires O_NOFOLLOW support');
+  const line = Buffer.from(`${JSON.stringify(snapshotRow(report))}\n`, 'utf8');
+  if (line.byteLength > MAX_DRIFT_SNAPSHOT_BYTES) throw new Error(`drift snapshot exceeds ${MAX_DRIFT_SNAPSHOT_BYTES} bytes`);
+
+  let fd;
+  try {
+    fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+    if (!fstatSync(fd).isFile()) throw new Error('.xm/metrics/drift.jsonl must be a regular file');
+    fchmodSync(fd, 0o600);
+    const written = writeSync(fd, line);
+    if (written !== line.byteLength) throw new Error(`short drift snapshot append (${written}/${line.byteLength} bytes)`);
+  } finally {
+    if (fd != null) closeSync(fd);
+  }
+  return join(dir, 'drift.jsonl');
+}
+
+function isWithin(root, candidate) {
+  return candidate === root || candidate.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
 }
 
 function fmt(value, axis) {

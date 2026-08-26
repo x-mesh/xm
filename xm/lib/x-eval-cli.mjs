@@ -32,11 +32,12 @@
  * cross-plugin import breaks in the versioned marketplace-cache layout).
  */
 
-import { existsSync, statSync, readFileSync, mkdirSync, writeFileSync, realpathSync, lstatSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, statSync, readFileSync, mkdirSync, writeFileSync, realpathSync, lstatSync, linkSync, unlinkSync } from 'node:fs';
 import { resolve, sep, join } from 'node:path';
 import { projectRoot, evalDir } from './x-eval/root.mjs';
 import { runAssertions, parseSpec, DEFAULT_TIMEOUT_MS } from './x-eval/assert.mjs';
-import { buildCase, writeCase, readCase, listCases, selectCases } from './x-eval/cases.mjs';
+import { buildCase, writeCase, readCase, listCases, selectCases, MAX_PROMPT_BYTES } from './x-eval/cases.mjs';
 import {
   parseStrategies, buildManifest, writeManifest, readManifest, recordJob, finishRun, runStatus, latestBenchPath, formatBenchReport,
   MAX_RECORD_BYTES,
@@ -102,7 +103,7 @@ function usage() {
 }
 
 function isUsageError(error) {
-  return error instanceof UsageError || /must look like|must match|has an empty spec|must be|needs at least|is required|unknown case id|no runnable|invalid case id|invalid run id|unknown job|unknown bench run|must not contain|already exists|already finished|strategy "|case id collision|custom rubric|case |run manifest|runs path|run path|records path|benchmarks path|existing bench result|invalid record|record |score file|overall|per_criterion|judge identifier|judges|assertion_results|output_sha256|cost_usd|duration_ms|sigma|passed|changed after bench plan|deleted after bench plan|exceeds \d+ total jobs/.test(error?.message || '');
+  return error instanceof UsageError || /must look like|must match|has an empty spec|must be|needs at least|is required|unknown case id|no runnable|invalid case id|invalid run id|unknown job|unknown bench run|must not contain|already exists|already finished|strategy "|case id collision|custom rubric|case |run manifest|runs path|run path|records path|benchmarks path|existing bench result|bench result|bench arm|bench per_case|bench recommendation|partial bench|invalid record|record |score file|overall|per_criterion|judge identifier|judges|assertion_results|output_sha256|cost_usd|duration_ms|sigma|passed|changed after bench plan|deleted after bench plan|exceeds \d+ total jobs|x-eval cases path|replay case|case JSON/.test(error?.message || '');
 }
 
 // ── assert ───────────────────────────────────────────────────────────
@@ -170,6 +171,9 @@ function cmdCase(args) {
       if (opts['prompt-file']) {
         const path = resolve(process.cwd(), opts['prompt-file']);
         if (!existsSync(path)) throw new UsageError(`--prompt-file not found: ${path}`);
+        const info = lstatSync(path);
+        if (info.isSymbolicLink() || !info.isFile()) throw new UsageError(`--prompt-file must be a regular non-symlink file: ${path}`);
+        if (info.size > MAX_PROMPT_BYTES) throw new UsageError(`--prompt-file exceeds ${MAX_PROMPT_BYTES} bytes: ${path}`);
         prompt = readFileSync(path, 'utf8');
       }
       if (!prompt) throw new UsageError('case add needs --prompt <text> or --prompt-file <file>');
@@ -249,8 +253,18 @@ function runGate({ currentPath, baselinePath, maxAvgDrop }) {
   };
   const dir = evalDir('gates');
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, `${now.toISOString().replace(/[:.]/g, '-')}-gate.json`);
-  writeFileSync(path, JSON.stringify({ ...payload, artifact_path: path }, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  if (lstatSync(dir).isSymbolicLink() || !lstatSync(dir).isDirectory()) throw new UsageError('gates path must be a regular directory');
+  const nonce = randomUUID().replace(/-/g, '').slice(0, 12);
+  const stamp = now.toISOString().replace(/[-:.]/g, '');
+  const path = join(dir, `${stamp}-${current.bench.run_id}-${baseline.bench.run_id}-${current.sha256.slice(0, 12)}-${baseline.sha256.slice(0, 12)}-${nonce}-gate.json`);
+  const artifact = { ...payload, artifact_path: path };
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(artifact, null, 2) + '\n', { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    linkSync(tmp, path);
+  } finally {
+    try { unlinkSync(tmp); } catch {}
+  }
   return { passed: report.passed, payload: { ...payload, artifact_path: path } };
 }
 

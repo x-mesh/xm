@@ -15,8 +15,8 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, linkSync, unlinkSync, lstatSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, linkSync, unlinkSync, lstatSync, statSync, realpathSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import { evalDir } from './root.mjs';
 import { ASSERTION_KINDS, parseSpec } from './assert.mjs';
 
@@ -40,21 +40,63 @@ export const BUILTIN_PASS_THRESHOLDS = {
 const ID_RE = /^(case|replay)-[0-9a-f]{24}$/;
 const RUBRIC_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const TAG_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,63}$/;
-const MAX_PROMPT_CHARS = 20_000;
-const MAX_CASE_BYTES = 256 * 1024;
+export const MAX_PROMPT_CHARS = 20_000;
+export const MAX_PROMPT_BYTES = 64 * 1024;
+export const MAX_CASE_BYTES = 256 * 1024;
 const MAX_TAGS = 64;
-const MAX_ASSERTIONS = 128;
+export const MAX_ASSERTIONS = 128;
 const MAX_ASSERTION_CHARS = 20_000;
 const MAX_JUDGE_ASSERTION_CHARS = 2_000;
+const MAX_CANONICAL_DEPTH = 32;
+const MAX_CANONICAL_NODES = 10_000;
+const TASK_KEYS = new Set(['v', 'type', 'id', 'prompt', 'rubric', 'tags', 'risk', 'assertions', 'expected', 'created_at', 'source']);
+const REPLAY_KEYS = new Set(['v', 'type', 'id', 'replay_of', 'rubric', 'artifact', 'axes', 'status', 'created_at']);
+const SOURCE_PLUGIN_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 const sha256 = (value) => createHash('sha256').update(String(value)).digest('hex');
 
-function canonicalJson(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+function canonicalJson(value, depth = 0, state = { nodes: 0 }) {
+  state.nodes += 1;
+  if (depth > MAX_CANONICAL_DEPTH) throw new Error(`case JSON exceeds maximum depth ${MAX_CANONICAL_DEPTH}`);
+  if (state.nodes > MAX_CANONICAL_NODES) throw new Error(`case JSON exceeds maximum node count ${MAX_CANONICAL_NODES}`);
+  if (Array.isArray(value)) return `[${value.map(item => canonicalJson(item, depth + 1, state)).join(',')}]`;
   if (value && typeof value === 'object') {
-    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key], depth + 1, state)}`).join(',')}}`;
   }
-  return JSON.stringify(value);
+  if (value === null || typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))) return JSON.stringify(value);
+  throw new Error('case JSON must contain only finite JSON values');
+}
+
+function isoTimestamp(value, label) {
+  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) {
+    throw new Error(`${label} must be a normalized ISO timestamp`);
+  }
+}
+
+function exactKeys(value, allowed, label) {
+  const extra = Object.keys(value).filter(key => !allowed.has(key));
+  if (extra.length) throw new Error(`${label} contains an unsupported field: ${extra[0]}`);
+}
+
+function assertCasesDirectory({ create = false } = {}) {
+  const evalRoot = evalDir();
+  const dir = casesDir();
+  if (create) mkdirSync(dir, { recursive: true });
+  let info;
+  try { info = lstatSync(dir); } catch (error) {
+    if (error?.code === 'ENOENT') return dir;
+    throw error;
+  }
+  if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('x-eval cases path must be a regular directory');
+  const lexicalRoot = resolve(evalRoot);
+  const lexicalDir = resolve(dir);
+  const actualRoot = realpathSync(evalRoot);
+  const actualDir = realpathSync(dir);
+  if ((lexicalDir !== lexicalRoot && !lexicalDir.startsWith(lexicalRoot + sep))
+    || (actualDir !== actualRoot && !actualDir.startsWith(actualRoot + sep))) {
+    throw new Error('x-eval cases path must stay inside the eval root');
+  }
+  return dir;
 }
 
 export function casesDir() {
@@ -103,6 +145,7 @@ function normalizeAssertion(item) {
 }
 
 function validateTaskCase(payload, expectedId) {
+  exactKeys(payload, TASK_KEYS, 'task case');
   if (payload.v !== CASE_SCHEMA_V) throw new Error('unsupported case schema');
   if (payload.type !== 'task') throw new Error(`case ${expectedId} must have type "task"`);
   if (payload.id !== expectedId || !ID_RE.test(String(payload.id))) throw new Error(`case id does not match file name: ${expectedId}`);
@@ -126,15 +169,37 @@ function validateTaskCase(payload, expectedId) {
     const min = payload.expected.min_overall;
     if (typeof min !== 'number' || !Number.isFinite(min) || min < 0 || min > 10) throw new Error('case expected.min_overall must be a number between 0 and 10');
   }
+  if (!payload.source || typeof payload.source !== 'object' || Array.isArray(payload.source)) throw new Error('case source must be an object');
+  exactKeys(payload.source, new Set(['plugin', 'ref']), 'case source');
+  if (typeof payload.source.plugin !== 'string' || !SOURCE_PLUGIN_RE.test(payload.source.plugin)) throw new Error('case source.plugin must be a safe identifier');
+  if (payload.source.ref !== null && (typeof payload.source.ref !== 'string' || payload.source.ref.length > 1_024 || payload.source.ref.includes('\0'))) {
+    throw new Error('case source.ref must be null or a string of at most 1024 characters');
+  }
+  isoTimestamp(payload.created_at, 'case created_at');
   if (caseId(payload) !== payload.id) throw new Error(`case identity does not match prompt, rubric, and tags: ${payload.id}`);
+  canonicalJson(payload);
   return payload;
 }
 
 function validateReplayCase(payload, expectedId) {
+  exactKeys(payload, REPLAY_KEYS, 'replay case');
   if (payload.v !== CASE_SCHEMA_V) throw new Error('unsupported case schema');
   if (payload.type !== 'replay') throw new Error(`case ${expectedId} has an unsupported type`);
   if (payload.id !== expectedId || !ID_RE.test(String(payload.id))) throw new Error(`case id does not match file name: ${expectedId}`);
   if (typeof payload.rubric !== 'string' || !RUBRIC_RE.test(payload.rubric)) throw new Error('replay case rubric must be a safe rubric identifier');
+  if (!payload.replay_of || typeof payload.replay_of !== 'object' || Array.isArray(payload.replay_of)
+    || Object.keys(payload.replay_of).sort().join(',') !== 'span_id,trace_id'
+    || !['trace_id', 'span_id'].every(key => typeof payload.replay_of[key] === 'string' && payload.replay_of[key].length > 0 && payload.replay_of[key].length <= 256)) {
+    throw new Error('replay case replay_of must contain bounded trace_id and span_id strings');
+  }
+  if (!payload.artifact || typeof payload.artifact !== 'object' || Array.isArray(payload.artifact)
+    || Object.keys(payload.artifact).join(',') !== 'manifest_sha256' || !/^[0-9a-f]{64}$/.test(String(payload.artifact.manifest_sha256))) {
+    throw new Error('replay case artifact must contain manifest_sha256');
+  }
+  if (!payload.axes || typeof payload.axes !== 'object' || Array.isArray(payload.axes)) throw new Error('replay case axes must be an object');
+  if (!['ready', 'awaiting_result'].includes(payload.status)) throw new Error('replay case status must be ready or awaiting_result');
+  isoTimestamp(payload.created_at, 'replay case created_at');
+  canonicalJson(payload);
   return payload;
 }
 
@@ -176,25 +241,29 @@ export function buildCase({ prompt, rubric = 'general', tags = [], risk = 'norma
     created_at: createdAt,
     source: source && typeof source === 'object' ? { plugin: String(source.plugin || 'manual'), ref: source.ref ?? null } : { plugin: 'manual', ref: null },
   };
-  return validateCase(payload, payload.id);
+  validateCase(payload, payload.id);
+  if (Buffer.byteLength(JSON.stringify(payload, null, 2) + '\n') > MAX_CASE_BYTES) throw new Error(`x-eval case exceeds ${MAX_CASE_BYTES} bytes`);
+  return payload;
 }
 
 /** Create-only write (link(2)): identical concurrent adds are idempotent, never torn. */
 export function writeCase(payload) {
   validateCase(payload, payload?.id);
-  const dir = casesDir();
-  mkdirSync(dir, { recursive: true });
+  const serialized = JSON.stringify(payload, null, 2) + '\n';
+  if (Buffer.byteLength(serialized) > MAX_CASE_BYTES) throw new Error(`x-eval case exceeds ${MAX_CASE_BYTES} bytes`);
+  const dir = assertCasesDirectory({ create: true });
   const target = join(dir, `${payload.id}.json`);
   if (existsSync(target) && lstatSync(target).isSymbolicLink()) throw new Error('x-eval case path must not be a symlink');
   const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+    writeFileSync(tmp, serialized, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     try {
       linkSync(tmp, target);
       return { id: payload.id, path: target, created: true };
     } catch (err) {
       if (err?.code !== 'EEXIST') throw err;
       if (lstatSync(target).isSymbolicLink() || !lstatSync(target).isFile()) throw new Error('x-eval case path is not a regular file');
+      if (statSync(target).size > MAX_CASE_BYTES) throw new Error(`existing x-eval case exceeds ${MAX_CASE_BYTES} bytes`);
       let existing;
       try { existing = JSON.parse(readFileSync(target, 'utf8')); } catch { throw new Error('existing x-eval case is corrupt'); }
       validateCase(existing, payload.id);
@@ -209,7 +278,7 @@ export function writeCase(payload) {
 
 export function readCase(id) {
   if (!ID_RE.test(String(id))) throw new Error(`invalid case id "${id}"`);
-  const path = join(casesDir(), `${id}.json`);
+  const path = join(assertCasesDirectory(), `${id}.json`);
   if (!existsSync(path)) return null;
   if (lstatSync(path).isSymbolicLink()) throw new Error('x-eval case path must not be a symlink');
   if (!statSync(path).isFile()) throw new Error('x-eval case path is not a regular file');
@@ -222,6 +291,7 @@ export function readCase(id) {
 /** Every case on disk, malformed files reported instead of thrown away silently. */
 export function listCases({ tag = null } = {}) {
   const dir = casesDir();
+  assertCasesDirectory();
   if (!existsSync(dir)) return { cases: [], invalid: [] };
   const cases = [];
   const invalid = [];

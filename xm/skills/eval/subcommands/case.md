@@ -33,6 +33,8 @@ xm eval case add --prompt "<task text>" | --prompt-file <file> \
   [--assert "<judge statement>"]... [--min-overall N] [--source-ref <path|id>] [--json]
 ```
 
+`--prompt-file` must be a regular non-symlink file and is read only after its 64 KiB limit is checked. Case files are bounded to 256 KiB, stay under `.xm/eval/cases/`, and reject unsupported top-level/source fields, non-normalized timestamps, or excessively deep JSON.
+
 - The id is `case-<sha256(prompt + rubric + sorted tags)[:24]>`, so adding the same case twice is a no-op (`created: false`).
 - `--risk high` raises the default trial count from 3 to 5 in `bench plan` — testing effort scales with the cost of being wrong.
 - `--min-overall` pins the pass bar for this case (default 7.0). Executable assertions run at `bench record --run-assertions`; judge assertions are handed to the assertion judge with the rest of the panel.

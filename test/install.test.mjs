@@ -488,8 +488,46 @@ describe('install-cli — supply-chain guard (R-SEC-02)', () => {
       version: 1,
       skills: [{ plugin: 'handoff', sha256: '0'.repeat(64), bytes: 0 }],
     }));
-    const r = run(['--target', 'cursor', '--skills-dir', fakeSkills, '--lib-dir', LIB, '--list', '--allow-unverified'], { cwd: tmp });
+    const r = run(['--target', 'cursor', '--skills-dir', fakeSkills, '--lib-dir', LIB, '--allow-unverified'], { cwd: tmp });
     expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/bypassed source verification/);
+    const manifest = JSON.parse(readFileSync(join(tmp, '.cursor', 'xm', 'manifest.json'), 'utf8'));
+    expect(manifest.files.length).toBeGreaterThan(0);
+    expect(manifest.files.every(entry => entry.unverified === true)).toBe(true);
+  });
+  test.each([
+    ['unknown scanned skill', 'unregistered scanned skill'],
+    ['stale registry row', 'stale registry skill'],
+    ['duplicate registry row', 'duplicate registry plugin'],
+  ])('fails closed on %s', (_label, expectedMessage) => {
+    const tmp = seedTmp();
+    const fakeSkillsRoot = makeTmp('xm-fake-registry-set-');
+    const fakeSkills = join(fakeSkillsRoot, 'skills');
+    mkdirSync(join(fakeSkills, 'handoff'), { recursive: true });
+    copyFileSync(join(SKILLS, 'handoff', 'SKILL.md'), join(fakeSkills, 'handoff', 'SKILL.md'));
+    const skillBytes = readFileSync(join(fakeSkills, 'handoff', 'SKILL.md'));
+    const handoff = {
+      plugin: 'handoff',
+      sha256: createHash('sha256').update(skillBytes).digest('hex'),
+      bytes: skillBytes.length,
+      referencesSha256: checksumFiles([]),
+      referenceFiles: 0,
+      referenceBytes: 0,
+      assetsSha256: checksumFiles([]),
+      assetFiles: 0,
+      assetBytes: 0,
+    };
+    const rows = expectedMessage.startsWith('unregistered')
+      ? []
+      : expectedMessage.startsWith('stale')
+        ? [handoff, { ...handoff, plugin: 'ghost' }]
+        : [handoff, { ...handoff }];
+    writeFileSync(join(fakeSkillsRoot, 'skills.checksums.json'), JSON.stringify({ version: 3, skills: rows }));
+
+    const r = run(['--target', 'cursor', '--skills-dir', fakeSkills, '--lib-dir', LIB, '--list'], { cwd: tmp });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('R-SEC-02');
+    expect(r.stderr).toContain(expectedMessage);
   });
   test('reference-only checksum drift aborts install', () => {
     const tmp = seedTmp();
@@ -539,6 +577,32 @@ describe('install-cli — supply-chain guard (R-SEC-02)', () => {
         assetsSha256: checksumFiles([trustedAsset]),
         assetFiles: 1,
         assetBytes: Buffer.byteLength(trustedAsset.body),
+      }],
+    }));
+
+    const r = run(['--target', 'codex', '--skills-dir', fakeSkills, '--lib-dir', LIB, '--list'], { cwd: tmp });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/R-SEC-02/);
+    expect(r.stderr).toMatch(/assets:/);
+  });
+  test('asset-bearing skill requires an asset digest even under an older registry schema', () => {
+    const tmp = seedTmp();
+    const fakeSkillsRoot = makeTmp('xm-fake-legacy-asset-');
+    const fakeSkills = join(fakeSkillsRoot, 'skills');
+    const fakeSkillDir = join(fakeSkills, 'handoff');
+    mkdirSync(join(fakeSkillDir, 'lenses'), { recursive: true });
+    copyFileSync(join(SKILLS, 'handoff', 'SKILL.md'), join(fakeSkillDir, 'SKILL.md'));
+    writeFileSync(join(fakeSkillDir, 'lenses', 'security.md'), 'executable sidecar\n');
+    const skillBytes = readFileSync(join(fakeSkillDir, 'SKILL.md'));
+    writeFileSync(join(fakeSkillsRoot, 'skills.checksums.json'), JSON.stringify({
+      version: 2,
+      skills: [{
+        plugin: 'handoff',
+        sha256: createHash('sha256').update(skillBytes).digest('hex'),
+        bytes: skillBytes.length,
+        referencesSha256: checksumFiles([]),
+        referenceFiles: 0,
+        referenceBytes: 0,
       }],
     }));
 

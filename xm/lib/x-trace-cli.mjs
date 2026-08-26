@@ -53,6 +53,10 @@ const COVERAGE_NOTE =
 const BOOLEAN_OPTIONS = new Set([
   'json', 'rebuild', 'promote-to-eval', 'fail-on-flag', 'no-snapshot',
 ]);
+const DRIFT_OPTIONS = new Set([
+  'window', 'baseline', 'min-samples', 'axis', 'now', 'failOnFlag', 'noSnapshot', 'json',
+]);
+const DRIFT_VALUE_OPTIONS = ['window', 'baseline', 'min-samples', 'axis', 'now'];
 
 function parseArgs(args) {
   const opts = {};
@@ -431,9 +435,40 @@ function doctorRebuild() {
  * it appends to .xm/metrics/drift.jsonl (skip with --no-snapshot).
  * Exit 2 with --fail-on-flag when any axis crossed its threshold.
  */
-function cmdDrift(opts) {
+function cmdDrift(opts, pos = []) {
+  const unknownOptions = Object.keys(opts).filter(name => !DRIFT_OPTIONS.has(name));
+  if (unknownOptions.length > 0) {
+    console.error(`xm trace drift: unknown option --${unknownOptions[0]}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (pos.length > 0) {
+    console.error(`xm trace drift: unexpected positional argument "${pos[0]}"`);
+    process.exitCode = 1;
+    return;
+  }
+  for (const name of DRIFT_VALUE_OPTIONS) {
+    if (Object.hasOwn(opts, name) && (typeof opts[name] !== 'string' || !opts[name].trim())) {
+      console.error(`xm trace drift: --${name} requires a value`);
+      process.exitCode = 1;
+      return;
+    }
+  }
   const minSamples = opts['min-samples'] != null ? Number(opts['min-samples']) : DEFAULT_MIN_SAMPLES;
-  const axes = opts.axis ? String(opts.axis).split(',').map(s => s.trim()).filter(Boolean) : AXES;
+  const axes = Object.hasOwn(opts, 'axis')
+    ? [...new Set(String(opts.axis).split(',').map(axis => axis.trim().toLowerCase()).filter(Boolean))]
+    : AXES;
+  if (axes.length === 0) {
+    console.error(`xm trace drift: --axis must select at least one axis (valid: ${AXES.join(', ')})`);
+    process.exitCode = 1;
+    return;
+  }
+  const unknownAxes = axes.filter(axis => !AXES.includes(axis));
+  if (unknownAxes.length > 0) {
+    console.error(`xm trace drift: unknown axis: ${unknownAxes.join(', ')} (valid: ${AXES.join(', ')})`);
+    process.exitCode = 1;
+    return;
+  }
   const now = opts.now ? Date.parse(opts.now) : Date.now();
   if (!Number.isFinite(now)) {
     console.error(`--now must be an ISO timestamp (got "${opts.now}")`);
@@ -449,15 +484,20 @@ function cmdDrift(opts) {
     return;
   }
   let snapshot = null;
+  let snapshotFailed = false;
   if (!opts.noSnapshot) {
-    try { snapshot = appendSnapshot(report); } catch (err) { process.stderr.write(`[x-trace] drift snapshot not written: ${err.message}\n`); }
+    try { snapshot = appendSnapshot(report); } catch (err) {
+      snapshotFailed = true;
+      process.exitCode = 1;
+      process.stderr.write(`[x-trace] drift snapshot not written: ${err.message}\n`);
+    }
   }
   if (opts.json) console.log(JSON.stringify({ ...report, snapshot_path: snapshot }, null, 2));
   else {
     console.log(formatDriftReport(report));
     if (snapshot) console.log(`Snapshot appended: ${snapshot}`);
   }
-  if (opts.failOnFlag && report.flags.length > 0) process.exitCode = 2;
+  if (!snapshotFailed && opts.failOnFlag && report.flags.length > 0) process.exitCode = 2;
 }
 
 // ── router ───────────────────────────────────────────────────────────
@@ -505,7 +545,7 @@ function main() {
     case 'since':  cmdSince(pos); break;
     case 'doctor': cmdDoctor(opts); break;
     case 'replay': cmdReplay(pos, opts); break;
-    case 'drift':  cmdDrift(opts); break;
+    case 'drift':  cmdDrift(opts, pos); break;
     case 'help':
     case '--help':
     case '-h':

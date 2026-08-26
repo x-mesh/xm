@@ -48,7 +48,7 @@ One AskUserQuestion before `plan` (confirm case set, arms, trials, rough cost = 
 
 **`direct` control (on by default):** one Agent call on the session model — the single-agent baseline every strategy has to beat. The table gains `Δ direct`, and the recommendation only names a strategy when it passes every trial **and** beats a reliable direct control by ≥ 0.5; otherwise it recommends reliable `direct` and says orchestration is not earning its cost on this case set. An unreliable direct arm (`pass^k = 0`) is never recommended. `--no-direct` drops the control (say so in the output).
 
-`--trials` is limited to 100 and a plan is limited to 10,000 total jobs. A score file is limited to 64 KiB; `per_criterion` and judge identifiers are bounded safe identifiers. `finish --allow-partial` persists observed `pass@k` only: incomplete arms have `pass^k = null`, and the run has no quality/value/final/best-effort recommendation until every planned job is recorded.
+`--trials` is limited to 100 and a plan is limited to 10,000 total jobs. A score file is limited to 64 KiB; `per_criterion` and judge identifiers are bounded safe identifiers. `finish --allow-partial` persists observed `pass@k` only: incomplete arms have `pass^k = null`, display `—`, and the run has no quality/value/final/best-effort recommendation until every planned job is recorded.
 
 **Strategy name → x-op mapping:**
 

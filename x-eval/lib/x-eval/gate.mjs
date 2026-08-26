@@ -9,10 +9,12 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, lstatSync } from 'node:fs';
+import { validatePersistedBench } from './bench.mjs';
 import { round } from './stats.mjs';
 
 export const DEFAULT_MAX_AVG_DROP = 0.5;
+export const MAX_BENCH_FILE_BYTES = 4 * 1024 * 1024;
 
 function armMap(bench) {
   return new Map((bench?.strategies || []).map(arm => [arm.name, arm]));
@@ -27,7 +29,9 @@ export function compareBench(current, baseline, { maxAvgDrop = DEFAULT_MAX_AVG_D
   if (!currentArms.size) blockers.push({ code: 'no_current_arms', detail: 'current bench has no strategies' });
   if (!baselineArms.size) blockers.push({ code: 'no_baseline_arms', detail: 'baseline bench has no strategies' });
   if (current?.partial) blockers.push({ code: 'insufficient_records', detail: `current run is partial (${(current.missing_jobs || []).length} job(s) missing)` });
+  if (baseline?.partial) blockers.push({ code: 'baseline_insufficient_records', detail: `baseline run is partial (${(baseline.missing_jobs || []).length} job(s) missing)` });
   if (current?.broken_task_warning) blockers.push({ code: 'broken_task', detail: 'current run tripped the broken-task warning' });
+  if (baseline?.broken_task_warning) blockers.push({ code: 'baseline_broken_task', detail: 'baseline run tripped the broken-task warning' });
   const currentCases = new Map((current?.cases || []).map(item => [item.id, item]));
   const baselineCases = new Map((baseline?.cases || []).map(item => [item.id, item]));
   const currentIds = [...currentCases.keys()].sort();
@@ -77,15 +81,20 @@ function summarize(arm) {
     sigma: arm.sigma ?? null,
     trials: arm.trials ?? 0,
     pass_at_k: arm.pass_at_k ?? 0,
-    pass_hat_k: arm.pass_hat_k ?? 0,
+    pass_hat_k: arm.pass_hat_k ?? null,
     pass_at_k_rate: arm.pass_at_k_rate ?? null,
   };
 }
 
 /** Read a bench file with its sha256 for provenance. */
 export function readBenchFile(path) {
+  const info = lstatSync(path);
+  if (info.isSymbolicLink() || !info.isFile()) throw new Error(`bench result must be a regular non-symlink file: ${path}`);
+  if (info.size > MAX_BENCH_FILE_BYTES) throw new Error(`bench result exceeds ${MAX_BENCH_FILE_BYTES} bytes: ${path}`);
   const bytes = readFileSync(path);
-  return { bench: JSON.parse(bytes.toString('utf8')), sha256: createHash('sha256').update(bytes).digest('hex') };
+  let bench;
+  try { bench = JSON.parse(bytes.toString('utf8')); } catch (error) { throw new Error(`bench result is invalid JSON: ${error.message}`); }
+  return { bench: validatePersistedBench(bench), sha256: createHash('sha256').update(bytes).digest('hex') };
 }
 
 export function formatGateReport(report, { currentPath, baselinePath } = {}) {
@@ -97,7 +106,8 @@ export function formatGateReport(report, { currentPath, baselinePath } = {}) {
   lines.push('|---|---|---|---|---|---|');
   for (const row of report.arms) {
     const b = row.baseline; const c = row.current;
-    lines.push(`| ${row.arm} | ${b ? b.avg_score : '—'} | ${c ? c.avg_score : '—'} | ${row.delta_avg ?? '—'} | ${b ? (b.pass_hat_k ? '✓' : '·') : '—'}→${c ? (c.pass_hat_k ? '✓' : '·') : '—'} | ${row.status} |`);
+    const passHat = arm => !arm || arm.pass_hat_k == null ? '—' : (arm.pass_hat_k ? '✓' : '·');
+    lines.push(`| ${row.arm} | ${b ? b.avg_score : '—'} | ${c ? c.avg_score : '—'} | ${row.delta_avg ?? '—'} | ${passHat(b)}→${passHat(c)} | ${row.status} |`);
   }
   if (report.blockers.length) {
     lines.push('');

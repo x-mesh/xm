@@ -1,7 +1,10 @@
 import { afterAll, describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync,
+  symlinkSync, renameSync, statSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -111,6 +114,21 @@ describe('review-precision: parsing', () => {
     expect(findingLens({ sources: ['docs'] })).toBe('docs');
     expect(findingLens({})).toBe('unknown');
     expect(findingLenses({ lens: 'logic', lenses: ['security', 'logic'], sources: ['perf'] })).toEqual(['logic', 'security', 'perf']);
+    expect(findingLens({ lens: '\x1b[31mLogic\x1b[0m' })).toBe('logic');
+    expect(findingLens({ lens: 'lo\ngic' })).toBe('logic');
+    expect(findingLens({ lens: 'not a lens' })).toBe('unknown');
+    expect(findingLens({ lens: 'x'.repeat(65) })).toBe('unknown');
+  });
+
+  test('formatter strips terminal controls from externally supplied report fields', () => {
+    const report = aggregateLensPrecision([row()]);
+    report.window.since = '\x1b[2J30d\nforged';
+    report.window.lens = '\x1b]0;owned\x07logic';
+    report.lenses[0].lens = '\x1b[31mlo\ngic\x1b[0m';
+    const text = formatPrecisionReport(report);
+    expect(text).not.toContain('\x1b');
+    expect(text).not.toContain('\nforged\n');
+    expect(text).toContain('logic');
   });
 
   test('parseDuration handles d/h/m and rejects garbage', () => {
@@ -367,6 +385,52 @@ describe('review-precision: ledger written by verify-review-fix', () => {
     }
   });
 
+  test('ledger append rejects symlinked files and parents and creates private files', () => {
+    const privateTmp = mkdtempSync(join(tmpdir(), 'xb-rp-private-'));
+    const fileLinkTmp = mkdtempSync(join(tmpdir(), 'xb-rp-file-link-'));
+    const parentLinkTmp = mkdtempSync(join(tmpdir(), 'xb-rp-parent-link-'));
+    const externalParent = mkdtempSync(join(tmpdir(), 'xb-rp-external-review-'));
+    try {
+      setupProject(privateTmp);
+      writeReviewResult(privateTmp, { findings: [
+        { severity: 'medium', lens: 'logic', file: 'src/auth.ts', line: 42, summary: 'Private ledger' },
+      ] });
+      initAndEditTriage(privateTmp, triage => { triage.target_findings[0].decision = 'fix_now'; });
+      expect(run(['verify-review-fix'], { cwd: privateTmp }).exitCode).toBe(0);
+      expect(statSync(join(privateTmp, '.xm', 'review', 'triage-ledger.jsonl')).mode & 0o777).toBe(0o600);
+
+      setupProject(fileLinkTmp);
+      writeReviewResult(fileLinkTmp, { findings: [
+        { severity: 'medium', lens: 'logic', file: 'src/auth.ts', line: 42, summary: 'File link' },
+      ] });
+      initAndEditTriage(fileLinkTmp, triage => { triage.target_findings[0].decision = 'fix_now'; });
+      const externalFile = join(fileLinkTmp, 'external-ledger');
+      writeFileSync(externalFile, 'do not modify\n');
+      symlinkSync(externalFile, join(fileLinkTmp, '.xm', 'review', 'triage-ledger.jsonl'));
+      const fileLinked = run(['verify-review-fix'], { cwd: fileLinkTmp });
+      expect(fileLinked.exitCode).not.toBe(0);
+      expect(fileLinked.stderr).toContain('triage ledger file is unsafe');
+      expect(readFileSync(externalFile, 'utf8')).toBe('do not modify\n');
+
+      setupProject(parentLinkTmp);
+      writeReviewResult(parentLinkTmp, { findings: [
+        { severity: 'medium', lens: 'logic', file: 'src/auth.ts', line: 42, summary: 'Parent link' },
+      ] });
+      initAndEditTriage(parentLinkTmp, triage => { triage.target_findings[0].decision = 'fix_now'; });
+      renameSync(join(parentLinkTmp, '.xm', 'review'), join(externalParent, 'review'));
+      symlinkSync(join(externalParent, 'review'), join(parentLinkTmp, '.xm', 'review'));
+      const parentLinked = run(['verify-review-fix'], { cwd: parentLinkTmp });
+      expect(parentLinked.exitCode).not.toBe(0);
+      expect(parentLinked.stderr).toContain('triage ledger parent is unsafe');
+      expect(existsSync(join(externalParent, 'review', 'triage-ledger.jsonl'))).toBe(false);
+    } finally {
+      rmSync(privateTmp, { recursive: true, force: true });
+      rmSync(fileLinkTmp, { recursive: true, force: true });
+      rmSync(parentLinkTmp, { recursive: true, force: true });
+      rmSync(externalParent, { recursive: true, force: true });
+    }
+  });
+
   test('persistent outcome is recorded even though the gate stays blocked', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-rp-'));
     try {
@@ -386,6 +450,67 @@ describe('review-precision: ledger written by verify-review-fix', () => {
       expect(json.lenses[0]).toMatchObject({ lens: 'logic', fix_now: 1, persistent: 1 });
     } finally {
       rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a trusted outcome is recorded while another authorized finding remains persistent', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-rp-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, { findings: [
+        { severity: 'high', lens: 'logic', file: 'src/auth.ts', line: 42, summary: 'Auth bypass' },
+        { severity: 'high', lens: 'security', file: 'src/policy.ts', line: 10, summary: 'Policy bypass' },
+      ] });
+      initAndEditTriage(tmp, triage => {
+        triage.target_findings[0].evidence = 'Reproduced';
+        triage.target_findings[1].evidence = 'Reproduced';
+      });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'auth attempt\n');
+      writeFileSync(join(tmp, 'src', 'policy.ts'), 'policy attempt\n');
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'persistent', '--evidence', 'auth still fails'], { cwd: tmp }).exitCode).not.toBe(0);
+      const second = run(['verify-review-fix', '--reverify', 'F2', '--outcome', 'resolved', '--evidence', 'policy test passes'], { cwd: tmp });
+      expect(second.exitCode).not.toBe(0);
+      expect(second.stdout).toContain('F1: reverification outcome is persistent');
+      // F1 was not recorded on the previous call because F2 had not yet been
+      // reverified. F2 is trusted here even though F1's persistent outcome keeps
+      // the overall gate red.
+      expect(ledgerRows(tmp).filter(entry => entry.type === 'triage_outcome').map(entry => entry.outcome)).toEqual(['resolved']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('untrusted reverify outcomes are not appended before authorization or with off-scope changes', () => {
+    const unauthorizedTmp = mkdtempSync(join(tmpdir(), 'xb-rp-unauthorized-'));
+    const offScopeTmp = mkdtempSync(join(tmpdir(), 'xb-rp-offscope-'));
+    try {
+      setupProject(unauthorizedTmp);
+      writeReviewResult(unauthorizedTmp, { findings: [
+        { severity: 'high', lens: 'logic', file: 'src/auth.ts', line: 42, summary: 'Unauthorized fix' },
+      ] });
+      initAndEditTriage(unauthorizedTmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      writeFileSync(join(unauthorizedTmp, 'src', 'auth.ts'), 'changed before authorization\n');
+      const unauthorized = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'persistent', '--evidence', 'still fails'], { cwd: unauthorizedTmp });
+      expect(unauthorized.exitCode).not.toBe(0);
+      expect(ledgerRows(unauthorizedTmp).filter(entry => entry.type === 'triage_outcome')).toEqual([]);
+
+      setupProject(offScopeTmp);
+      writeReviewResult(offScopeTmp, {
+        findings: [{ severity: 'high', lens: 'logic', file: 'src/auth.ts', line: 42, summary: 'Scoped fix' }],
+        reviewed_files_all: ['src/auth.ts', 'src/policy.ts'],
+      });
+      initAndEditTriage(offScopeTmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: offScopeTmp }).exitCode).toBe(0);
+      writeFileSync(join(offScopeTmp, 'src', 'auth.ts'), 'attempted fix\n');
+      writeFileSync(join(offScopeTmp, 'src', 'policy.ts'), 'off-scope change\n');
+      const offScope = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'persistent', '--evidence', 'still fails'], { cwd: offScopeTmp });
+      expect(offScope.exitCode).not.toBe(0);
+      expect(offScope.stdout).toContain('outside fix_scope.allowed_files');
+      expect(ledgerRows(offScopeTmp).filter(entry => entry.type === 'triage_outcome')).toEqual([]);
+    } finally {
+      rmSync(unauthorizedTmp, { recursive: true, force: true });
+      rmSync(offScopeTmp, { recursive: true, force: true });
     }
   });
 

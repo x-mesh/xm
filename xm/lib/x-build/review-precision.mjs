@@ -22,9 +22,26 @@ export const TRIAGE_LEDGER_FILE = 'triage-ledger.jsonl';
 export const TRIAGE_DECISIONS = ['fix_now', 'backlog', 'accept_risk', 'false_positive'];
 export const REVERIFY_OUTCOMES = ['resolved', 'persistent', 'regression'];
 const ROW_TYPES = new Set(['triage_decision', 'triage_outcome']);
+const MAX_IDENTIFIER_LENGTH = 64;
+// CSI/OSC plus C0/C1 and Unicode format controls. Ledger labels are untrusted
+// and eventually reach terminal formatters, so escape sequences must never be
+// preserved as part of a lens identifier.
+const ANSI_ESCAPE_RE = /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)?)/g;
+const FORMAT_CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g;
+
+function stripFormatterControls(value) {
+  return String(value ?? '').replace(ANSI_ESCAPE_RE, '').replace(FORMAT_CONTROL_RE, '');
+}
 
 function normalizeLabel(value) {
-  return typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null;
+  if (typeof value !== 'string') return null;
+  const normalized = stripFormatterControls(value).trim().toLowerCase();
+  if (!normalized || normalized.length > MAX_IDENTIFIER_LENGTH) return null;
+  return /^[a-z0-9][a-z0-9._-]*$/.test(normalized) ? normalized : null;
+}
+
+export function normalizeLensIdentifier(value) {
+  return normalizeLabel(value);
 }
 
 /** All contributing lenses for a finding; x-review may emit any combination. */
@@ -258,7 +275,7 @@ export function lensesBelowPrecision(report, min) {
 }
 
 function pad(value, width, right = false) {
-  const text = String(value ?? '');
+  const text = stripFormatterControls(value);
   return right ? text.padStart(width) : text.padEnd(width);
 }
 
@@ -271,9 +288,9 @@ export function formatPrecisionReport(report) {
   const lines = [];
   const { window } = report;
   const scope = [
-    window.since ? `since ${window.since}` : null,
+    window.since ? `since ${stripFormatterControls(window.since)}` : null,
     window.last ? `last ${window.last} review(s)` : null,
-    window.lens ? `lens ${window.lens}` : null,
+    window.lens ? `lens ${stripFormatterControls(window.lens)}` : null,
   ].filter(Boolean).join(', ') || 'all rows';
   lines.push(`Window: ${scope} · reviews: ${window.reviews} · rows: ${window.rows}${window.from ? ` · ${window.from.slice(0, 10)} → ${window.to.slice(0, 10)}` : ''}`);
   const header = `${pad('lens', 16)}${pad('decided', 8, true)}${pad('fix_now', 8, true)}${pad('backlog', 8, true)}${pad('accept', 8, true)}${pad('false+', 8, true)}${pad('precision', 10, true)}${pad('resolved', 9, true)}${pad('persist', 8, true)}${pad('regress', 8, true)}`;

@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,6 +24,16 @@ function cli(dir, args) {
     timeout: 30000,
   });
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', code: r.status ?? 1 };
+}
+
+function cliAsync(dir, args) {
+  return new Promise(resolveResult => {
+    const child = spawn('node', [CLI, ...args], { cwd: dir, env: { ...process.env, XM_ROOT: join(dir, '.xm') }, encoding: 'utf8' });
+    let stdout = ''; let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('close', code => resolveResult({ stdout, stderr, code }));
+  });
 }
 
 function json(result) {
@@ -85,7 +95,10 @@ describe('xm eval case', () => {
     try {
       const { a } = addCases(dir);
       const casesDir = join(dir, '.xm', 'eval', 'cases');
-      writeFileSync(join(casesDir, 'replay-000000000000000000000000.json'), JSON.stringify({ v: 1, type: 'replay', id: 'replay-000000000000000000000000', rubric: 'general', status: 'awaiting_result' }));
+      writeFileSync(join(casesDir, 'replay-000000000000000000000000.json'), JSON.stringify({
+        v: 1, type: 'replay', id: 'replay-000000000000000000000000', replay_of: { trace_id: 'trace', span_id: 'span' }, rubric: 'general',
+        artifact: { manifest_sha256: 'a'.repeat(64) }, axes: {}, status: 'awaiting_result', created_at: '2026-08-26T00:00:00.000Z',
+      }));
       const list = json(cli(dir, ['case', 'list', '--json']));
       expect(list.cases.find(c => c.type === 'replay')).toMatchObject({ status: 'awaiting_result' });
       const plan = json(cli(dir, ['bench', 'plan', '--set', 'all', '--strategies', 'refine', '--json']));
@@ -110,6 +123,29 @@ describe('xm eval case', () => {
       addCases(dir);
       expect(cli(dir, ['bench', 'plan', '--set', 'smoke', '--strategies', 'refine', '--trials', '101']).code).toBe(2);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('prompt files and the cases directory reject symlinks, non-files, and oversized input', () => {
+    const dir = makeProject();
+    try {
+      const prompt = join(dir, 'prompt.txt');
+      writeFileSync(prompt, 'safe prompt');
+      symlinkSync(prompt, join(dir, 'prompt-link.txt'));
+      expect(cli(dir, ['case', 'add', '--prompt-file', 'prompt-link.txt']).stderr).toContain('regular non-symlink');
+      mkdirSync(join(dir, 'prompt-dir'));
+      expect(cli(dir, ['case', 'add', '--prompt-file', 'prompt-dir']).stderr).toContain('regular non-symlink');
+      writeFileSync(join(dir, 'prompt-large.txt'), 'x'.repeat(64 * 1024 + 1));
+      expect(cli(dir, ['case', 'add', '--prompt-file', 'prompt-large.txt']).stderr).toContain('exceeds 65536 bytes');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+
+    const linked = makeProject();
+    try {
+      mkdirSync(join(linked, '.xm', 'eval'), { recursive: true });
+      symlinkSync(join(linked, 'src'), join(linked, '.xm', 'eval', 'cases'));
+      const rejected = cli(linked, ['case', 'add', '--prompt', 'x']);
+      expect(rejected.code).toBe(2);
+      expect(rejected.stderr).toContain('cases path must be a regular directory');
+    } finally { rmSync(linked, { recursive: true, force: true }); }
   });
 
   test('case id collisions with different payloads are rejected', () => {
@@ -366,6 +402,75 @@ describe('xm eval gate', () => {
         expect(invalid.code).toBe(2);
         expect(invalid.stderr).toContain('finite non-negative number');
       }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('gate rejects corrupt and unsafe bench files before comparison', () => {
+    const dir = makeProject();
+    try {
+      addCases(dir);
+      const baseline = planRun(dir, ['--trials', '1']);
+      recordAll(dir, baseline, () => 8);
+      const baselineResult = json(cli(dir, ['bench', 'finish', '--run', baseline.run_id, '--json']));
+      const current = planRun(dir, ['--trials', '1']);
+      recordAll(dir, current, () => 8.2);
+      const currentResult = json(cli(dir, ['bench', 'finish', '--run', current.run_id, '--json']));
+
+      const corrupt = join(dir, 'corrupt-bench.json');
+      const document = JSON.parse(readFileSync(baselineResult.path, 'utf8'));
+      writeFileSync(corrupt, JSON.stringify({ ...document, schema_v: 2 }));
+      expect(cli(dir, ['gate', '--current', currentResult.path, '--baseline', corrupt]).stderr).toContain('unsupported bench result schema');
+
+      const linked = join(dir, 'linked-bench.json');
+      symlinkSync(baselineResult.path, linked);
+      expect(cli(dir, ['gate', '--current', currentResult.path, '--baseline', linked]).stderr).toContain('regular non-symlink');
+      mkdirSync(join(dir, 'bench-dir'));
+      expect(cli(dir, ['gate', '--current', currentResult.path, '--baseline', './bench-dir']).stderr).toContain('regular non-symlink');
+      const oversized = join(dir, 'oversized-bench.json');
+      writeFileSync(oversized, ' '.repeat(4 * 1024 * 1024 + 1));
+      expect(cli(dir, ['gate', '--current', currentResult.path, '--baseline', oversized]).stderr).toContain('exceeds 4194304 bytes');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('latest uses finish timestamps with a deterministic tie and concurrent gates create distinct artifacts', async () => {
+    const dir = makeProject();
+    try {
+      addCases(dir);
+      const first = planRun(dir, ['--trials', '1']);
+      recordAll(dir, first, () => 8);
+      const firstResult = json(cli(dir, ['bench', 'finish', '--run', first.run_id, '--json']));
+      const second = planRun(dir, ['--trials', '1']);
+      recordAll(dir, second, () => 8.1);
+      const secondResult = json(cli(dir, ['bench', 'finish', '--run', second.run_id, '--json']));
+      const current = planRun(dir, ['--trials', '1']);
+      recordAll(dir, current, () => 8.2);
+      const currentResult = json(cli(dir, ['bench', 'finish', '--run', current.run_id, '--json']));
+
+      const rewriteTimestamp = (path, timestamp) => {
+        const document = JSON.parse(readFileSync(path, 'utf8'));
+        writeFileSync(path, JSON.stringify({ ...document, timestamp }, null, 2) + '\n');
+      };
+      rewriteTimestamp(firstResult.path, '2026-08-27T00:00:00.000Z');
+      rewriteTimestamp(secondResult.path, '2026-08-26T00:00:00.000Z');
+      let latest = json(cli(dir, ['gate', '--current', currentResult.path, '--baseline', 'latest', '--json']));
+      expect(latest.baseline.run_id).toBe(first.run_id);
+
+      rewriteTimestamp(secondResult.path, '2026-08-27T00:00:00.000Z');
+      const tied = [firstResult.path, secondResult.path].sort()[0];
+      latest = json(cli(dir, ['gate', '--current', currentResult.path, '--baseline', 'latest', '--json']));
+      expect(latest.baseline.path).toBe(tied);
+
+      const before = new Set(readdirSync(join(dir, '.xm', 'eval', 'gates')));
+      const [left, right] = await Promise.all([
+        cliAsync(dir, ['gate', '--current', currentResult.path, '--baseline', firstResult.path, '--json']),
+        cliAsync(dir, ['gate', '--current', currentResult.path, '--baseline', firstResult.path, '--json']),
+      ]);
+      expect(left.code, left.stderr).toBe(0);
+      expect(right.code, right.stderr).toBe(0);
+      const created = readdirSync(join(dir, '.xm', 'eval', 'gates')).filter(name => !before.has(name));
+      expect(created.length).toBe(2);
+      expect(new Set(created).size).toBe(2);
+      for (const name of created) expect(name).toMatch(new RegExp(`${current.run_id}-${first.run_id}-[0-9a-f]{12}-[0-9a-f]{12}-[0-9a-f]{12}-gate\\.json$`));
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

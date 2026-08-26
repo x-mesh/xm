@@ -51,6 +51,11 @@ const ASSERTION_RESULT_KEYS = new Set(['result', 'source', 'name', 'assertion', 
 const RAW_RECORD_KEYS = new Set(['overall', 'per_criterion', 'judges', 'output_sha256', 'cost_usd_est', 'duration_ms', 'sigma', 'assertion_results', 'passed']);
 const STORED_RECORD_KEYS = new Set(['v', 'type', 'run_id', 'job_id', 'case_id', 'arm', 'trial', 'recorded_at', 'pass_threshold', 'cost_source', 'assertion_hard_fail', ...RAW_RECORD_KEYS]);
 const MANIFEST_CASE_KEYS = new Set(['id', 'rubric', 'risk', 'tags', 'trials', 'pass_threshold', 'assertions', 'case_sha256', 'case_meta_sha256']);
+const BENCH_KEYS = new Set(['type', 'schema_v', 'run_id', 'timestamp', 'task', 'cases', 'rubric', 'pass_threshold', 'control', 'strategies', 'per_case', 'broken_task_warning', 'recommendation', 'advisories', 'partial', 'missing_jobs', 'records', 'artifact_path']);
+const BENCH_CASE_KEYS = new Set(['id', 'rubric', 'risk', 'trials', 'pass_threshold']);
+const BENCH_ARM_KEYS = new Set(['name', 'trials', 'expected_trials', 'avg_score', 'sigma', 'pass_at_k', 'pass_hat_k', 'pass_at_k_rate', 'per_trial_overall', 'est_cost_usd', 'cost_source', 'avg_time_sec', 'score_per_dollar', 'assertion_hard_fails', 'delta_vs_direct']);
+const BENCH_PER_CASE_KEYS = new Set(['case_id', 'pass_threshold', 'arms']);
+const BENCH_RECOMMENDATION_KEYS = new Set(['best_quality', 'best_value', 'final', 'best_effort', 'reason']);
 
 export function runsDir() { return evalDir('runs'); }
 export function benchmarksDir() { return evalDir('benchmarks'); }
@@ -120,6 +125,136 @@ function writeCreateOnly(path, payload, what) {
 
 function serializeJson(payload) {
   return JSON.stringify(payload, null, 2) + '\n';
+}
+
+function exactObjectKeys(value, allowed, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be a JSON object`);
+  const unsupported = Object.keys(value).filter(key => !allowed.has(key));
+  if (unsupported.length) throw new Error(`${label} contains an unsupported field: ${unsupported[0]}`);
+}
+
+function finiteInRange(value, min, max, label, { nullable = false } = {}) {
+  if (nullable && value === null) return;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) throw new Error(`${label} must be a finite number between ${min} and ${max}`);
+}
+
+function validateBenchArm(arm, { expectedName = null, expectedTrials = null, allowDelta = true } = {}) {
+  exactObjectKeys(arm, BENCH_ARM_KEYS, 'bench arm');
+  if (typeof arm.name !== 'string' || !ARM_RE.test(arm.name) || (expectedName != null && arm.name !== expectedName)) throw new Error('bench arm has an invalid name');
+  if (!Number.isInteger(arm.trials) || arm.trials < 0 || arm.trials > MAX_TOTAL_JOBS) throw new Error(`bench arm ${arm.name} has an invalid trial count`);
+  if (!Number.isInteger(arm.expected_trials) || arm.expected_trials <= 0 || arm.expected_trials > MAX_TOTAL_JOBS
+    || (expectedTrials != null && arm.expected_trials !== expectedTrials) || arm.trials > arm.expected_trials) throw new Error(`bench arm ${arm.name} has an invalid expected trial count`);
+  finiteInRange(arm.avg_score, 0, 10, `bench arm ${arm.name} avg_score`, { nullable: true });
+  finiteInRange(arm.sigma, 0, 10, `bench arm ${arm.name} sigma`, { nullable: true });
+  if (!Number.isInteger(arm.pass_at_k) || arm.pass_at_k < 0 || arm.pass_at_k > arm.trials) throw new Error(`bench arm ${arm.name} pass_at_k is inconsistent with trials`);
+  const expectedPassHat = arm.trials === arm.expected_trials ? (arm.trials > 0 && arm.pass_at_k === arm.trials ? 1 : 0) : null;
+  if (arm.pass_hat_k !== expectedPassHat) throw new Error(`bench arm ${arm.name} pass_hat_k is inconsistent with pass/trial counts`);
+  const expectedRate = arm.trials ? round(arm.pass_at_k / arm.trials, 3) : null;
+  if (arm.pass_at_k_rate !== expectedRate) throw new Error(`bench arm ${arm.name} pass_at_k_rate is inconsistent with pass/trial counts`);
+  if (!Array.isArray(arm.per_trial_overall) || arm.per_trial_overall.length !== arm.trials) throw new Error(`bench arm ${arm.name} per_trial_overall must match trials`);
+  for (const score of arm.per_trial_overall) finiteInRange(score, 0, 10, `bench arm ${arm.name} trial score`);
+  const expectedAvg = arm.trials ? round(mean(arm.per_trial_overall), 2) : null;
+  const expectedSigma = arm.trials ? round(sigma(arm.per_trial_overall), 2) : null;
+  if (arm.avg_score !== expectedAvg || arm.sigma !== expectedSigma) throw new Error(`bench arm ${arm.name} aggregate score fields are inconsistent`);
+  finiteInRange(arm.est_cost_usd, 0, Number.MAX_VALUE, `bench arm ${arm.name} est_cost_usd`, { nullable: true });
+  if (arm.cost_source !== 'estimated') throw new Error(`bench arm ${arm.name} cost_source must be estimated`);
+  finiteInRange(arm.avg_time_sec, 0, Number.MAX_VALUE, `bench arm ${arm.name} avg_time_sec`, { nullable: true });
+  finiteInRange(arm.score_per_dollar, 0, Number.MAX_VALUE, `bench arm ${arm.name} score_per_dollar`, { nullable: true });
+  const expectedValue = arm.est_cost_usd != null && arm.est_cost_usd > 0 && arm.avg_score != null ? round(arm.avg_score / arm.est_cost_usd, 1) : null;
+  if (arm.score_per_dollar !== expectedValue) throw new Error(`bench arm ${arm.name} score_per_dollar is inconsistent`);
+  if (!Number.isInteger(arm.assertion_hard_fails) || arm.assertion_hard_fails < 0 || arm.assertion_hard_fails > arm.trials) throw new Error(`bench arm ${arm.name} assertion_hard_fails is inconsistent with trials`);
+  if (!allowDelta && Object.hasOwn(arm, 'delta_vs_direct')) throw new Error(`per-case bench arm ${arm.name} must not contain delta_vs_direct`);
+  if (Object.hasOwn(arm, 'delta_vs_direct')) finiteInRange(arm.delta_vs_direct, -10, 10, `bench arm ${arm.name} delta_vs_direct`, { nullable: true });
+  return arm;
+}
+
+/** Strict validation for a persisted `*-bench.json` document. */
+export function validatePersistedBench(bench) {
+  exactObjectKeys(bench, BENCH_KEYS, 'bench result');
+  if (bench.type !== 'bench' || bench.schema_v !== RUN_SCHEMA_V) throw new Error('unsupported bench result schema');
+  if (!RUN_ID_RE.test(String(bench.run_id))) throw new Error('bench result has an invalid run id');
+  if (typeof bench.timestamp !== 'string' || !Number.isFinite(Date.parse(bench.timestamp)) || new Date(bench.timestamp).toISOString() !== bench.timestamp) throw new Error('bench result has an invalid finish timestamp');
+  if (typeof bench.task !== 'string' || !bench.task.length || bench.task.length > 1_024) throw new Error('bench result task must be a bounded string');
+  if (!Array.isArray(bench.cases) || !bench.cases.length || bench.cases.length > MAX_CASES) throw new Error(`bench result cases must contain 1-${MAX_CASES} items`);
+  const caseIds = new Set();
+  let expectedPerArm = 0;
+  for (const item of bench.cases) {
+    exactObjectKeys(item, BENCH_CASE_KEYS, 'bench case');
+    if (!CASE_ID_RE.test(String(item.id)) || caseIds.has(item.id)) throw new Error('bench result case ids must be valid and unique');
+    caseIds.add(item.id);
+    if (typeof item.rubric !== 'string' || !RUBRIC_RE.test(item.rubric)) throw new Error(`bench case ${item.id} has an invalid rubric`);
+    if (!['normal', 'high'].includes(item.risk)) throw new Error(`bench case ${item.id} has an invalid risk`);
+    if (!Number.isInteger(item.trials) || item.trials <= 0 || item.trials > MAX_TRIALS) throw new Error(`bench case ${item.id} has an invalid trial count`);
+    finiteInRange(item.pass_threshold, 0, 10, `bench case ${item.id} pass_threshold`);
+    expectedPerArm += item.trials;
+  }
+  if (bench.task !== `${bench.cases.length} case(s) from .xm/eval/cases`) throw new Error('bench result task does not match its case count');
+  const expectedRubric = [...new Set(bench.cases.map(item => item.rubric))].join(',');
+  if (bench.rubric !== expectedRubric) throw new Error('bench result rubric does not match its cases');
+  finiteInRange(bench.pass_threshold, 0, 10, 'bench result pass_threshold', { nullable: true });
+  const thresholds = [...new Set(bench.cases.map(item => item.pass_threshold))];
+  if (bench.pass_threshold !== (thresholds.length === 1 ? thresholds[0] : null)) throw new Error('bench result pass_threshold does not match its cases');
+  if (!Array.isArray(bench.strategies) || !bench.strategies.length || bench.strategies.length > MAX_ARMS) throw new Error(`bench result strategies must contain 1-${MAX_ARMS} arms`);
+  const armNames = new Set();
+  for (const arm of bench.strategies) {
+    validateBenchArm(arm, { expectedTrials: expectedPerArm });
+    if (armNames.has(arm.name)) throw new Error('bench result arm names must be unique');
+    armNames.add(arm.name);
+  }
+  if (bench.control !== null && (bench.control !== CONTROL_ARM || !armNames.has(bench.control))) throw new Error('bench result control must be direct or null');
+  const control = bench.control ? bench.strategies.find(arm => arm.name === bench.control) : null;
+  for (const arm of bench.strategies) {
+    const expectedDelta = control?.avg_score != null ? (arm.avg_score != null ? (arm.name === CONTROL_ARM ? 0 : round(arm.avg_score - control.avg_score, 2)) : null) : undefined;
+    if (expectedDelta === undefined) {
+      if (Object.hasOwn(arm, 'delta_vs_direct')) throw new Error(`bench arm ${arm.name} has delta_vs_direct without a measured control`);
+    } else if (arm.delta_vs_direct !== expectedDelta) throw new Error(`bench arm ${arm.name} delta_vs_direct is inconsistent`);
+  }
+  if (!Array.isArray(bench.per_case) || bench.per_case.length !== bench.cases.length) throw new Error('bench result per_case must match cases');
+  const perCaseIds = new Set();
+  for (const row of bench.per_case) {
+    exactObjectKeys(row, BENCH_PER_CASE_KEYS, 'bench per_case row');
+    const caseMeta = bench.cases.find(item => item.id === row.case_id);
+    if (!caseMeta || perCaseIds.has(row.case_id)) throw new Error('bench result per_case ids must be valid and unique');
+    perCaseIds.add(row.case_id);
+    if (row.pass_threshold !== caseMeta.pass_threshold) throw new Error(`bench per_case ${row.case_id} pass threshold is inconsistent`);
+    if (!Array.isArray(row.arms) || row.arms.length !== bench.strategies.length) throw new Error(`bench per_case ${row.case_id} arms must match strategies`);
+    const names = new Set();
+    for (const arm of row.arms) {
+      validateBenchArm(arm, { expectedTrials: caseMeta.trials, allowDelta: false });
+      if (!armNames.has(arm.name) || names.has(arm.name)) throw new Error(`bench per_case ${row.case_id} arm names must be valid and unique`);
+      names.add(arm.name);
+    }
+  }
+  for (const top of bench.strategies) {
+    const rows = bench.per_case.map(row => row.arms.find(arm => arm.name === top.name));
+    if (rows.some(row => !row)) throw new Error(`bench per_case rows are missing arm ${top.name}`);
+    if (rows.reduce((sum, row) => sum + row.trials, 0) !== top.trials
+      || rows.reduce((sum, row) => sum + row.pass_at_k, 0) !== top.pass_at_k) throw new Error(`bench arm ${top.name} totals do not match per_case rows`);
+  }
+  if (typeof bench.broken_task_warning !== 'boolean' || typeof bench.partial !== 'boolean') throw new Error('bench result state flags must be booleans');
+  if (!Array.isArray(bench.missing_jobs) || bench.missing_jobs.length > MAX_TOTAL_JOBS
+    || new Set(bench.missing_jobs).size !== bench.missing_jobs.length
+    || bench.missing_jobs.some(job => typeof job !== 'string' || job.length > 256)) throw new Error('bench result missing_jobs must be a bounded unique string list');
+  if (!Number.isInteger(bench.records) || bench.records < 0 || bench.records > MAX_TOTAL_JOBS) throw new Error('bench result records must be a bounded integer');
+  const observed = bench.strategies.reduce((sum, arm) => sum + arm.trials, 0);
+  const expected = expectedPerArm * bench.strategies.length;
+  if (bench.records !== observed || bench.missing_jobs.length !== expected - observed || bench.partial !== (observed !== expected)) throw new Error('bench result record, missing-job, and partial counts are inconsistent');
+  const expectedJobIds = new Set();
+  for (const item of bench.cases) for (const arm of bench.strategies) for (let trial = 1; trial <= item.trials; trial++) expectedJobIds.add(jobIdFor(item.id, arm.name, trial));
+  if (bench.missing_jobs.some(job => !expectedJobIds.has(job))) throw new Error('bench result missing_jobs contains an unplanned job');
+  const measured = bench.strategies.filter(arm => arm.trials > 0);
+  const expectedBroken = !bench.partial && measured.length > 0
+    && measured.every(arm => arm.pass_at_k_rate === 0 && arm.avg_score != null && arm.avg_score < BROKEN_TASK_AVG && arm.trials >= 2);
+  if (bench.broken_task_warning !== expectedBroken) throw new Error('bench result broken_task_warning is inconsistent');
+  exactObjectKeys(bench.recommendation, BENCH_RECOMMENDATION_KEYS, 'bench recommendation');
+  for (const key of ['best_quality', 'best_value', 'final', 'best_effort']) {
+    if (bench.recommendation[key] !== null && (typeof bench.recommendation[key] !== 'string' || !armNames.has(bench.recommendation[key]))) throw new Error(`bench recommendation ${key} must name an existing arm or null`);
+  }
+  if (typeof bench.recommendation.reason !== 'string' || !bench.recommendation.reason.length || bench.recommendation.reason.length > 4_096) throw new Error('bench recommendation reason must be a bounded string');
+  if (bench.partial && ['best_quality', 'best_value', 'final', 'best_effort'].some(key => bench.recommendation[key] !== null)) throw new Error('partial bench result must withhold recommendations');
+  if (!Array.isArray(bench.advisories) || bench.advisories.length > 128 || bench.advisories.some(item => typeof item !== 'string' || item.length > 2_048)) throw new Error('bench advisories must be bounded strings');
+  if (typeof bench.artifact_path !== 'string' || !bench.artifact_path.length || bench.artifact_path.length > 4_096) throw new Error('bench result artifact_path must be a bounded string');
+  return bench;
 }
 
 export function writeManifest(manifest) {
@@ -557,8 +692,9 @@ export function finishRun({ runId, allowPartial = false, now = new Date() }) {
 
   const result = aggregateRun(manifest, records, { now: now.toISOString() });
   assertCompleteEnough(result, runId, allowPartial);
+  const persisted = validatePersistedBench({ ...result, artifact_path: path });
   try {
-    writeCreateOnly(path, { ...result, artifact_path: path }, 'bench result');
+    writeCreateOnly(path, persisted, 'bench result');
     updateManifest(manifest, { status: 'finished', finished_at: result.timestamp, result_path: path });
   } catch (error) {
     if (error?.code === 'EEXIST') return finalizeOrphanedResult({ manifest, records, path, allowPartial });
@@ -581,7 +717,7 @@ function finalizeOrphanedResult({ manifest, records, path, allowPartial }) {
   const bytes = readFileSync(path, 'utf8');
   let stored;
   try { stored = JSON.parse(bytes); } catch (error) { throw new Error(`existing bench result is invalid JSON: ${error.message}`); }
-  if (typeof stored?.timestamp !== 'string' || !Number.isFinite(Date.parse(stored.timestamp))) throw new Error('existing bench result has invalid finish provenance');
+  validatePersistedBench(stored);
   const result = aggregateRun(manifest, records, { now: stored.timestamp });
   assertCompleteEnough(result, manifest.run_id, allowPartial);
   const expected = serializeJson({ ...result, artifact_path: path });
@@ -602,14 +738,20 @@ export function runStatus(runId) {
 export function latestBenchPath({ excludeRunId = null } = {}) {
   const dir = benchmarksDir();
   if (!existsSync(dir)) return null;
-  const files = readdirSync(dir).filter(name => name.endsWith('-bench.json')).sort().reverse();
+  if (lstatSync(dir).isSymbolicLink() || !lstatSync(dir).isDirectory()) throw new Error('benchmarks path must be a regular directory');
+  const candidates = [];
+  const files = readdirSync(dir).filter(name => name.endsWith('-bench.json')).sort();
   for (const name of files) {
     try {
-      const doc = JSON.parse(readFileSync(join(dir, name), 'utf8'));
-      if (doc.type === 'bench' && doc.run_id && doc.run_id !== excludeRunId) return join(dir, name);
+      const path = join(dir, name);
+      const info = lstatSync(path);
+      if (info.isSymbolicLink() || !info.isFile() || info.size > MAX_BENCH_RESULT_BYTES) continue;
+      const doc = validatePersistedBench(JSON.parse(readFileSync(path, 'utf8')));
+      if (name === `${doc.run_id}-bench.json` && doc.run_id !== excludeRunId) candidates.push({ path, timestamp: Date.parse(doc.timestamp), name });
     } catch {}
   }
-  return null;
+  candidates.sort((a, b) => b.timestamp - a.timestamp || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return candidates[0]?.path ?? null;
 }
 
 function cell(value, width, right = true) {
@@ -629,7 +771,8 @@ export function formatBenchReport(result) {
   const width = Math.max(8, ...result.strategies.map(s => s.name.length));
   lines.push(`| ${cell('Strategy', width, false)} | ${cell('Avg', 5)} | ${cell('σ', 5)} | ${cell('pass@k', 7)} | ${cell('pass^k', 6)} | ${cell('Cost', 8)} | ${cell('Score/$', 8)} |${result.control ? ` ${cell('Δ direct', 8)} |` : ''}`);
   for (const s of result.strategies) {
-    lines.push(`| ${cell(s.name, width, false)} | ${cell(s.avg_score, 5)} | ${cell(s.sigma, 5)} | ${cell(`${s.pass_at_k}/${s.trials}`, 7)} | ${cell(s.pass_hat_k ? '✓' : '·', 6)} | ${cell(s.est_cost_usd != null ? `$${s.est_cost_usd}` : null, 8)} | ${cell(s.score_per_dollar, 8)} |${result.control ? ` ${cell(s.delta_vs_direct, 8)} |` : ''}`);
+    const passHat = s.pass_hat_k == null ? '—' : (s.pass_hat_k ? '✓' : '·');
+    lines.push(`| ${cell(s.name, width, false)} | ${cell(s.avg_score, 5)} | ${cell(s.sigma, 5)} | ${cell(`${s.pass_at_k}/${s.trials}`, 7)} | ${cell(passHat, 6)} | ${cell(s.est_cost_usd != null ? `$${s.est_cost_usd}` : null, 8)} | ${cell(s.score_per_dollar, 8)} |${result.control ? ` ${cell(s.delta_vs_direct, 8)} |` : ''}`);
   }
   lines.push('');
   const r = result.recommendation;

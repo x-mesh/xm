@@ -1,11 +1,11 @@
 // x-trace drift — isolated contract tests (temp .xm per test, CLI as a subprocess).
 import { describe, test, expect, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, statSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { collectPrecisionRows, compareWindows, parseTraceFileName, driftReport, THRESHOLDS } from '../x-trace/lib/x-trace/drift.mjs';
+import { collectEvalRows, collectPrecisionRows, compareWindows, parseTraceFileName, driftReport, MAX_EVAL_SCORE_BYTES, THRESHOLDS } from '../x-trace/lib/x-trace/drift.mjs';
 
 const CLI = fileURLToPath(new URL('../x-trace/lib/x-trace-cli.mjs', import.meta.url));
 const NOW = '2026-08-26T00:00:00.000Z';
@@ -26,6 +26,20 @@ function runCli(dir, args) {
     cwd: dir, encoding: 'utf8', env: { ...process.env, XM_ROOT: join(dir, '.xm') }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
+}
+
+function runCliAsync(dir, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, ...args], {
+      cwd: dir, env: { ...process.env, XM_ROOT: join(dir, '.xm') }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', code => resolve({ code, stdout, stderr }));
+  });
 }
 
 const iso = (daysAgo, hour = 12) => new Date(NOW_MS - daysAgo * DAY + hour * 3600000).toISOString();
@@ -84,6 +98,35 @@ describe('drift: pure helpers', () => {
     for (let i = 0; i < 5; i++) rows.push({ ts: NOW_MS - (1 + i) * DAY, k: 'zero', v: 1 });
     const out = compareWindows(rows, { axis: 'cost', now: NOW_MS, windowMs: 7 * DAY, baselineMs: 28 * DAY, minSamples: 5, keyOf: r => r.k, statOf: rs => rs.reduce((s, r) => s + r.v, 0) / rs.length });
     expect(out[0]).toMatchObject({ baseline: { value: 0 }, window: { value: 1 }, flagged: true, delta: 1, delta_pct: null });
+  });
+
+  test('quality collector accepts only bounded regular score records with supported schema and types', () => {
+    const dir = makeXm();
+    const results = join(dir, '.xm', 'eval', 'results');
+    mkdirSync(results, { recursive: true });
+    const score = (name, patch = {}) => writeFileSync(join(results, name), JSON.stringify({
+      schema_v: 1, type: 'score', timestamp: NOW, rubric: ' Code-Quality ', source_strategy: ' Refine ', overall: 8.2, ...patch,
+    }));
+    score('valid-score.json');
+    score('wrong-type-score.json', { type: 'compare' });
+    score('wrong-schema-score.json', { schema_v: 2 });
+    score('null-schema-score.json', { schema_v: null });
+    score('string-overall-score.json', { overall: '8.2' });
+    score('range-overall-score.json', { overall: 11 });
+    score('bad-rubric-score.json', { rubric: 'x'.repeat(65) });
+    score('bad-strategy-score.json', { source_strategy: '../escape' });
+    writeFileSync(join(results, 'oversize-score.json'), 'x'.repeat(MAX_EVAL_SCORE_BYTES + 1));
+    mkdirSync(join(results, 'directory-score.json'));
+    const outside = join(dir, 'outside-score.json');
+    writeFileSync(outside, JSON.stringify({ type: 'score', timestamp: NOW, overall: 10 }));
+    symlinkSync(outside, join(results, 'symlink-score.json'));
+
+    expect(collectEvalRows(results)).toEqual({
+      rows: [{ ts: NOW_MS, rubric: 'code-quality', strategy: 'refine', overall: 8.2, passed: false }],
+      skipped: 10,
+    });
+    const report = driftReport({ xmDir: join(dir, '.xm'), now: NOW_MS, axes: ['quality'] });
+    expect(report.coverage).toContain('quality: 10 invalid, oversized, or symlinked score file(s) skipped');
   });
 });
 
@@ -208,6 +251,7 @@ describe('drift: report over a seeded .xm', () => {
     expect(row).toMatchObject({ type: 'drift_snapshot', window: '7d', baseline: '28d' });
     expect(row.flags[0]).toMatchObject({ axis: 'latency', key: 'review/se/sonnet', baseline: 1000, window: 2000 });
     expect(JSON.stringify(row)).not.toContain('prompt');
+    expect(statSync(report.snapshot_path).mode & 0o777).toBe(0o600);
 
     const quiet = runCli(dir, ['drift', '--axis', 'quality,cost', '--no-snapshot', '--now', NOW]);
     expect(quiet.code).toBe(0);
@@ -221,11 +265,63 @@ describe('drift: report over a seeded .xm', () => {
 
     expect(runCli(dir, ['drift', '--window', 'soon', '--no-snapshot']).code).toBe(1);
     expect(runCli(dir, ['drift', '--axis', 'vibes', '--no-snapshot']).code).toBe(1);
+    expect(runCli(dir, ['drift', '--axis', ', ,', '--no-snapshot']).code).toBe(1);
+    expect(runCli(dir, ['drift', '--axis', '', '--no-snapshot']).code).toBe(1);
+    const normalized = runCli(dir, ['drift', '--axis', ' Quality, COST,quality ', '--no-snapshot', '--now', NOW]);
+    expect(normalized.code).toBe(0);
+    expect(normalized.stdout).toContain('## quality');
+    expect(normalized.stdout).toContain('## cost');
     expect(runCli(dir, ['drift', '--min-samples', '0', '--no-snapshot']).code).toBe(1);
+    const typo = runCli(dir, ['drift', '--fail-on-flags', 'yes', '--no-snapshot']);
+    expect(typo.code).toBe(1);
+    expect(typo.stderr).toContain('unknown option --fail-on-flags');
+    expect(runCli(dir, ['drift', 'unexpected', '--no-snapshot']).code).toBe(1);
     const missingValue = runCli(dir, ['drift', '--window', '--json']);
     expect(missingValue.code).toBe(1);
     expect(missingValue.stderr).toContain('--window requires a value');
+    expect(runCli(dir, ['drift', '--now', '--json']).code).toBe(1);
     expect(runCli(dir, ['record', 'review', '--status']).code).toBe(1);
+  });
+
+  test('snapshot rejects symlinked roots, metrics directories, and files without writing outside .xm', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'xm-drift-outside-'));
+    tmpdirs.push(outside);
+
+    const metricsLink = makeXm();
+    symlinkSync(outside, join(metricsLink, '.xm', 'metrics'), 'dir');
+    const dirResult = runCli(metricsLink, ['drift', '--json', '--now', NOW]);
+    expect(dirResult.code).toBe(1);
+    expect(dirResult.stderr).toContain('metrics');
+    expect(existsSync(join(outside, 'drift.jsonl'))).toBe(false);
+
+    const fileLink = makeXm();
+    const metrics = join(fileLink, '.xm', 'metrics');
+    mkdirSync(metrics);
+    const outsideFile = join(outside, 'outside-drift.jsonl');
+    writeFileSync(outsideFile, 'sentinel\n');
+    symlinkSync(outsideFile, join(metrics, 'drift.jsonl'));
+    const fileResult = runCli(fileLink, ['drift', '--json', '--now', NOW]);
+    expect(fileResult.code).toBe(1);
+    expect(fileResult.stderr).toContain('drift.jsonl');
+    expect(readFileSync(outsideFile, 'utf8')).toBe('sentinel\n');
+
+    const linkedRootHost = mkdtempSync(join(tmpdir(), 'xm-drift-root-link-'));
+    tmpdirs.push(linkedRootHost);
+    symlinkSync(outside, join(linkedRootHost, '.xm'), 'dir');
+    const rootResult = runCli(linkedRootHost, ['drift', '--json', '--now', NOW]);
+    expect(rootResult.code).toBe(1);
+    expect(rootResult.stderr).toContain('.xm root');
+  });
+
+  test('snapshot uses one no-follow append per row under concurrent writers', async () => {
+    const dir = makeXm();
+    const results = await Promise.all(Array.from({ length: 12 }, () => runCliAsync(dir, ['drift', '--json', '--now', NOW])));
+    expect(results.every(result => result.code === 0)).toBe(true);
+    const snapshotPath = join(dir, '.xm', 'metrics', 'drift.jsonl');
+    const lines = readFileSync(snapshotPath, 'utf8').trim().split('\n');
+    expect(lines).toHaveLength(12);
+    expect(lines.every(line => JSON.parse(line).type === 'drift_snapshot')).toBe(true);
+    expect(statSync(snapshotPath).mode & 0o777).toBe(0o600);
   });
 
   test('CLI on an empty .xm reports coverage gaps instead of zeros', () => {

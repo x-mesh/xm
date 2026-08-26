@@ -14,9 +14,11 @@ For every arm in the baseline:
 | `avg_drop_over_threshold` | `current.avg − baseline.avg ≤ −max_avg_drop` (default 0.5 — the same bar as `diff --baseline`) |
 | `arm_missing` | the arm was not run at all |
 | `insufficient_records` | current run is partial (unrecorded jobs) |
+| `baseline_insufficient_records` | baseline run is partial and cannot establish a complete reference |
+| `baseline_broken_task` | baseline tripped the broken-task warning and cannot establish a valid reference |
 | `broken_task` | current run tripped the broken-task warning |
 
-Arms only in the current run are reported as `new`, never as a pass. The gate never re-runs anything; it compares two saved files and records both sha256s.
+Arms only in the current run are reported as `new`, never as a pass. The gate never re-runs anything; it validates both saved files before comparison and records both sha256s. Bench inputs must be bounded regular non-symlink files with the current schema and internally consistent case, arm, trial, pass, and aggregate fields.
 
 ## Flow
 
@@ -30,7 +32,7 @@ Exit 0 = pass, **3 = regression** (blockers listed), 2 = usage. Print the table 
 
 ## Storage
 
-`.xm/eval/gates/{timestamp}-gate.json`: `{ type: "gate", current: {run_id, path, sha256}, baseline: {…}, passed, max_avg_drop, blockers[], arms[] }`.
+`.xm/eval/gates/{timestamp}-{current-run}-{baseline-run}-{hashes}-{nonce}-gate.json`: `{ type: "gate", current: {run_id, path, sha256}, baseline: {…}, passed, max_avg_drop, blockers[], arms[] }`. Gate artifacts are create-only and each invocation gets a nonce, so concurrent gates cannot overwrite one another. `--baseline latest` orders valid results by their recorded finish timestamp, then by file name for a deterministic tie.
 
 ## Applies to
 Invoked via `/xm:eval gate …` or `bench finish --baseline`. Typical use: CI step after editing any `SKILL.md` under `x-op/` or `x-eval/`.

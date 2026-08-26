@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { buildManifest, aggregateRun, validateRecord, validateManifest, parseStrategies, jobIdFor, CONTROL_ARM, MIN_DELTA_VS_DIRECT, MAX_TRIALS } from '../x-eval/lib/x-eval/bench.mjs';
+import { buildManifest, aggregateRun, validateRecord, validateManifest, parseStrategies, jobIdFor, CONTROL_ARM, MIN_DELTA_VS_DIRECT, MAX_TRIALS, formatBenchReport, validatePersistedBench } from '../x-eval/lib/x-eval/bench.mjs';
 import { compareBench } from '../x-eval/lib/x-eval/gate.mjs';
 import { mean, sigma, median, round } from '../x-eval/lib/x-eval/stats.mjs';
 import { buildCase, caseId, passThresholdFor, DEFAULT_TRIALS, validateCase } from '../x-eval/lib/x-eval/cases.mjs';
@@ -51,6 +51,22 @@ describe('cases', () => {
       { assertions: 'none' }, { expected: [] }, { expected: { min_overall: '8' } },
     ];
     for (const patch of bad) expect(() => validateCase({ ...caseA, ...patch }, caseA.id)).toThrow();
+    expect(() => validateCase({ ...caseA, extra: true }, caseA.id)).toThrow(/unsupported field/);
+    expect(() => validateCase({ ...caseA, source: { plugin: 'manual', ref: null, nested: {} } }, caseA.id)).toThrow(/source.*unsupported/);
+    expect(() => validateCase({ ...caseA, created_at: 'yesterday' }, caseA.id)).toThrow(/timestamp/);
+  });
+
+  test('case construction bounds merged executable and judge assertions by count and serialized bytes', () => {
+    const judges = Array.from({ length: 128 }, (_, index) => ({ kind: 'judge', text: `${index}: ${'x'.repeat(1_990)}` }));
+    expect(() => buildCase({ prompt: 'oversized assertions', assertions: judges })).toThrow(/exceeds 262144 bytes/);
+    expect(() => buildCase({ prompt: 'too many assertions', assertions: [...judges.slice(0, 128), { kind: 'file', name: 'src', spec: 'exists=src' }] })).toThrow(/at most 128/);
+    let axes = {};
+    for (let i = 0; i < 40; i++) axes = { child: axes };
+    const replay = {
+      v: 1, type: 'replay', id: 'replay-000000000000000000000000', replay_of: { trace_id: 't', span_id: 's' }, rubric: 'general',
+      artifact: { manifest_sha256: 'a'.repeat(64) }, axes, status: 'awaiting_result', created_at: '2026-08-26T00:00:00.000Z',
+    };
+    expect(() => validateCase(replay, replay.id)).toThrow(/maximum depth/);
   });
 });
 
@@ -189,6 +205,7 @@ describe('bench aggregation (subcommands/bench.md rules)', () => {
     expect(result.strategies.find(s => s.name === 'refine').pass_hat_k).toBeNull();
     expect(result.recommendation).toMatchObject({ best_quality: null, best_value: null, final: null, best_effort: null });
     expect(result.recommendation.reason).toContain('withheld');
+    expect(formatBenchReport(result)).toContain('|      — |');
   });
 
   test('low-confidence advisory when the pick has σ ≥ 1.0 at ≤ 3 trials', () => {
@@ -225,6 +242,28 @@ describe('regression gate', () => {
     expect(report.blockers.map(b => b.code)).toContain('arm_missing');
     expect(report.blockers.map(b => b.code)).toContain('insufficient_records');
     expect(report.arms.find(a => a.arm === 'debate').status).toBe('new');
+  });
+
+  test('blocks partial and broken baselines', () => {
+    const current = aggregateRun(manifest, recordsFor(manifest, { direct: [7, 7, 7], refine: [8.5, 8.4, 8.6] }));
+    const partial = aggregateRun(manifest, recordsFor(manifest, { direct: [7], refine: [8.5] }));
+    expect(compareBench(current, partial).blockers.map(item => item.code)).toContain('baseline_insufficient_records');
+    const broken = aggregateRun(manifest, recordsFor(manifest, { direct: [3, 3, 3], refine: [3, 3, 3] }));
+    expect(compareBench(current, broken).blockers.map(item => item.code)).toContain('baseline_broken_task');
+  });
+
+  test('persisted bench validation rejects schema, identity, duplicate, finite-range, and pass-count corruption', () => {
+    const result = aggregateRun(manifest, recordsFor(manifest, { direct: [7, 7, 7], refine: [8.5, 8.4, 8.6] }), { now: '2026-08-26T00:00:00.000Z' });
+    const stored = { ...result, artifact_path: '/tmp/bench.json' };
+    expect(validatePersistedBench(stored)).toBe(stored);
+    for (const mutated of [
+      { ...structuredClone(stored), schema_v: 2 },
+      { ...structuredClone(stored), run_id: '../bad' },
+      { ...structuredClone(stored), cases: [stored.cases[0], stored.cases[0]] },
+      { ...structuredClone(stored), strategies: [stored.strategies[0], stored.strategies[0]] },
+      { ...structuredClone(stored), strategies: stored.strategies.map((arm, index) => index ? arm : { ...arm, avg_score: Infinity }) },
+      { ...structuredClone(stored), strategies: stored.strategies.map((arm, index) => index ? arm : { ...arm, pass_at_k: 0 }) },
+    ]) expect(() => validatePersistedBench(mutated)).toThrow();
   });
 
   test('blocks comparisons with different case sets, rubrics, thresholds, or trials', () => {

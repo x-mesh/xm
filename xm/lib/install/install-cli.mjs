@@ -823,41 +823,76 @@ export function run(argv) {
     return { exitCode: 2, stdout: '', stderr: `scan failed: ${err.message}\n` };
   }
 
-  // R-SEC-02 / SC13: verify SKILL.md SHA-256 against skills.checksums.json.
-  // The check is bypassed only when --allow-unverified is set (R-SEC-15).
+  // R-SEC-02 / SC13: verify every scanned skill against the checksum registry.
+  // The registry and source tree must describe the same plugin set: otherwise a
+  // newly added skill can bypass verification or a stale/duplicate registry row
+  // can hide which bytes were authorized. The check is bypassed only when
+  // --allow-unverified is set (R-SEC-15).
   let warnings = '';
-  if (!args.allowUnverified) {
-    const checksumPath = resolve(args.skillsDir, '..', 'skills.checksums.json');
+  const checksumPath = resolve(args.skillsDir, '..', 'skills.checksums.json');
+  if (args.allowUnverified) {
+    warnings += '# warning: --allow-unverified bypassed source verification; installed manifest entries will be marked unverified=true (R-SEC-15).\n';
+  } else {
     if (existsSync(checksumPath)) {
       try {
         const registry = JSON.parse(readFileSync(checksumPath, 'utf8'));
-        const expected = new Map((registry.skills || []).map((s) => [s.plugin, s]));
+        if (!Array.isArray(registry.skills)) throw new Error('registry.skills must be an array');
+
+        // --only limits what is rendered, not what the source registry attests.
+        // Validate the complete source tree so unrelated stale or unknown rows
+        // cannot remain hidden behind a partial install.
+        const scanned = args.only.length > 0
+          ? scanAll({ skillsDir: args.skillsDir, libDir: args.libDir, only: undefined })
+          : skills;
+        const expected = new Map();
+        const duplicatePlugins = new Set();
+        for (const entry of registry.skills) {
+          const plugin = typeof entry?.plugin === 'string' ? entry.plugin.trim() : '';
+          if (!plugin) throw new Error('every registry skill must have a non-empty plugin');
+          if (expected.has(plugin)) duplicatePlugins.add(plugin);
+          else expected.set(plugin, entry);
+        }
+
+        const scannedPlugins = new Set(scanned.map(skill => skill.pluginName));
+        const unknownPlugins = [...scannedPlugins].filter(plugin => !expected.has(plugin)).sort();
+        const stalePlugins = [...expected.keys()].filter(plugin => !scannedPlugins.has(plugin)).sort();
         const mismatches = [];
-        for (const s of skills) {
+        for (const s of scanned) {
           const want = expected.get(s.pluginName);
-          if (!want) continue; // not in registry → unknown skill, ignore
+          if (!want) continue;
           const actualReferences = checksumFiles(s.references);
           const actualAssets = checksumFiles(s.assets || []);
-          const assetsMismatch = Number(registry.version) >= 3 && want.assetsSha256 !== actualAssets;
-          if (want.sha256 !== s.checksum || (want.referencesSha256 && want.referencesSha256 !== actualReferences) || assetsMismatch) {
+          const referencesMismatch = s.references.length > 0
+            ? typeof want.referencesSha256 !== 'string' || want.referencesSha256 !== actualReferences
+            : Number(registry.version) >= 2 && want.referencesSha256 !== actualReferences;
+          // Registries predating schema v3 remain usable only for skills with no
+          // assets. Shipping any sidecar without an assets digest is unverified.
+          const assetsMismatch = (s.assets || []).length > 0
+            ? typeof want.assetsSha256 !== 'string' || want.assetsSha256 !== actualAssets
+            : Number(registry.version) >= 3 && want.assetsSha256 !== actualAssets;
+          if (want.sha256 !== s.checksum || referencesMismatch || assetsMismatch) {
             mismatches.push({
               plugin: s.pluginName,
               expected: want.sha256,
               actual: s.checksum,
               expectedReferences: want.referencesSha256,
               actualReferences,
+              referencesMismatch,
               expectedAssets: want.assetsSha256,
               actualAssets,
               assetsMismatch,
             });
           }
         }
-        if (mismatches.length > 0) {
-          let msg = `R-SEC-02: ${mismatches.length} skill source(s) differ from xm/skills.checksums.json.\n\n`;
+        if (duplicatePlugins.size > 0 || unknownPlugins.length > 0 || stalePlugins.length > 0 || mismatches.length > 0) {
+          let msg = 'R-SEC-02: xm/skills.checksums.json does not exactly attest the scanned skill source tree.\n\n';
+          if (duplicatePlugins.size > 0) msg += `  duplicate registry plugin(s): ${[...duplicatePlugins].sort().join(', ')}\n`;
+          if (unknownPlugins.length > 0) msg += `  unregistered scanned skill(s): ${unknownPlugins.join(', ')}\n`;
+          if (stalePlugins.length > 0) msg += `  stale registry skill(s): ${stalePlugins.join(', ')}\n`;
           for (const m of mismatches) {
-            msg += `  ${m.plugin.padEnd(14)} registry: ${m.expected.slice(0, 16)}...  actual: ${m.actual.slice(0, 16)}...\n`;
-            if (m.expectedReferences && m.expectedReferences !== m.actualReferences) {
-              msg += `  ${''.padEnd(14)} refs:     ${m.expectedReferences.slice(0, 16)}...  actual: ${m.actualReferences.slice(0, 16)}...\n`;
+            msg += `  ${m.plugin.padEnd(14)} registry: ${String(m.expected || '<missing>').slice(0, 16)}...  actual: ${m.actual.slice(0, 16)}...\n`;
+            if (m.referencesMismatch) {
+              msg += `  ${''.padEnd(14)} refs:     ${String(m.expectedReferences || '<missing>').slice(0, 16)}...  actual: ${m.actualReferences.slice(0, 16)}...\n`;
             }
             if (m.assetsMismatch) {
               msg += `  ${''.padEnd(14)} assets:   ${String(m.expectedAssets || '<missing>').slice(0, 16)}...  actual: ${m.actualAssets.slice(0, 16)}...\n`;

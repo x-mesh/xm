@@ -8,16 +8,20 @@ import {
   tasksPath, prdPath, contextDir, phaseDir,
   resolveProject, renderBar,
   runQualityChecks,
-  existsSync, unlinkSync, realpathSync, appendFileSync, join, resolve, ROOT, repoRoot, parseOptions, spawnSync,
+  existsSync, unlinkSync, realpathSync, join, resolve, ROOT, repoRoot, parseOptions, spawnSync,
 } from './core.mjs';
 import { parsePrdBaseline, computeDrift } from './drift.mjs';
 import { recordEffectiveness } from './effectiveness.mjs';
 import {
   TRIAGE_LEDGER_FILE, buildLedgerRow, ledgerRowKey, parseTriageLedger, parseDuration,
-  aggregateLensPrecision, formatPrecisionReport, lensesBelowPrecision,
+  aggregateLensPrecision, formatPrecisionReport, lensesBelowPrecision, normalizeLensIdentifier,
 } from './review-precision.mjs';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import {
+  readFileSync, lstatSync, openSync, closeSync, fchmodSync, fstatSync, writeSync,
+  constants as FS_CONSTANTS,
+} from 'node:fs';
+import { dirname, isAbsolute, relative, sep } from 'node:path';
 
 // ── cmdQuality ──────────────────────────────────────────────────────
 
@@ -762,11 +766,58 @@ function triageLedgerPath() {
   return join(reviewDir(), TRIAGE_LEDGER_FILE);
 }
 
+function pathInside(root, candidate) {
+  const rel = relative(root, candidate);
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+function safeTriageLedgerPath() {
+  const root = resolve(workspaceRoot());
+  const path = resolve(triageLedgerPath());
+  const parent = dirname(path);
+  if (!pathInside(root, path)) throw new Error(`triage ledger escapes workspace root: ${path}`);
+
+  const parentRelative = relative(root, parent);
+  let cursor = root;
+  for (const segment of parentRelative.split(/[\\/]+/).filter(Boolean)) {
+    cursor = join(cursor, segment);
+    if (!existsSync(cursor)) throw new Error(`triage ledger parent is missing: ${cursor}`);
+    const stat = lstatSync(cursor);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error(`triage ledger parent is unsafe: ${cursor}`);
+    }
+  }
+
+  const realRoot = realpathSync(root);
+  const realParent = realpathSync(parent);
+  if (!pathInside(realRoot, realParent)) throw new Error(`triage ledger parent escapes workspace root: ${parent}`);
+  if (existsSync(path)) {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`triage ledger file is unsafe: ${path}`);
+    if (!pathInside(realRoot, realpathSync(path))) throw new Error(`triage ledger file escapes workspace root: ${path}`);
+  }
+  return path;
+}
+
+function appendPrivateFile(path, text) {
+  const flags = FS_CONSTANTS.O_WRONLY | FS_CONSTANTS.O_APPEND | FS_CONSTANTS.O_CREAT | (FS_CONSTANTS.O_NOFOLLOW || 0);
+  const fd = openSync(path, flags, 0o600);
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error(`triage ledger is not a regular file: ${path}`);
+    fchmodSync(fd, 0o600);
+    const bytes = Buffer.from(text, 'utf8');
+    let offset = 0;
+    while (offset < bytes.length) offset += writeSync(fd, bytes, offset, bytes.length - offset);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 // Append-only and de-duplicated by ledgerRowKey, so re-running the gate on the
 // same triage never double-counts a decision. Returns the number of rows written.
 function appendTriageLedger(rows) {
   if (!rows.length) return 0;
-  const path = triageLedgerPath();
+  const path = safeTriageLedgerPath();
   const existingText = existsSync(path) ? readFileSync(path, 'utf8') : '';
   const existing = parseTriageLedger(existingText).rows;
   const outcomeAppendKey = row => `${ledgerRowKey(row)}|${row.outcome || ''}`;
@@ -789,7 +840,7 @@ function appendTriageLedger(rows) {
   });
   if (fresh.length > 0) {
     const separator = existingText && !existingText.endsWith('\n') ? '\n' : '';
-    appendFileSync(path, separator + fresh.map(row => JSON.stringify(row)).join('\n') + '\n');
+    appendPrivateFile(path, separator + fresh.map(row => JSON.stringify(row)).join('\n') + '\n');
   }
   return fresh.length;
 }
@@ -1296,8 +1347,9 @@ export function cmdVerifyReviewFix(args) {
   writeJSON(join(reviewDir(), 'review-fix-gate.json'), report);
 
   // Triage ledger (error analysis): decisions are appended only from a passing
-  // gate; a `--reverify` outcome accepted above is appended regardless, because
-  // "persistent" / "regression" are exactly the observations worth keeping.
+  // gate. Reverification outcomes may keep the gate red when this or another
+  // finding is persistent/regressed, but only after snapshot, provenance,
+  // authorization, and allowed-file checks have all passed.
   const ledgerRows = [];
   if (failures.length === 0 && triageMapForLedger && (stage === 'ready_for_fix' || stage === 'reverified')) {
     for (const finding of required) {
@@ -1307,7 +1359,12 @@ export function cmdVerifyReviewFix(args) {
       }
     }
   }
-  if (reverifiedRow) {
+  const outcomeGateFailure = failure => /^F\d+: reverification outcome is (?:persistent|regression); expected resolved$/.test(failure);
+  const reverifiedSnapshot = reverifiedRow ? lifecycleFileSnapshot(reverifiedRow.file, freshness) : null;
+  const trustedReverifyOutcome = !!reverifiedRow && fixAuthorized &&
+    snapshotMatches(reverifiedRow.file_snapshot, reverifiedSnapshot) &&
+    failures.every(outcomeGateFailure);
+  if (trustedReverifyOutcome) {
     const finding = required.find(item => item.finding_id === reverifiedRow.finding_id) || reverifiedRow;
     ledgerRows.push(buildLedgerRow({
       ts: report.timestamp,
@@ -1367,7 +1424,7 @@ export function cmdReviewPrecision(args) {
 
   const { opts } = parseOptions(args);
   const json = opts.json === true;
-  const path = triageLedgerPath();
+  let path = triageLedgerPath();
 
   if (opts.since && parseDuration(opts.since) == null) {
     console.error(`--since must look like 30d, 12h, or 90m (got "${opts.since}")`);
@@ -1386,8 +1443,8 @@ export function cmdReviewPrecision(args) {
     process.exitCode = 1;
     return;
   }
-  if (opts.lens != null && !String(opts.lens).trim()) {
-    console.error('--lens requires a non-empty value');
+  if (opts.lens != null && !normalizeLensIdentifier(opts.lens)) {
+    console.error('--lens must be a 1-64 character identifier using letters, numbers, dot, underscore, or hyphen');
     process.exitCode = 1;
     return;
   }
@@ -1399,6 +1456,14 @@ export function cmdReviewPrecision(args) {
       console.log(`${C.yellow}No triage ledger yet:${C.reset} ${path}`);
       console.log('  Rows are appended when `x-build verify-review-fix` passes a triage or records a --reverify outcome.');
     }
+    return;
+  }
+
+  try {
+    path = safeTriageLedgerPath();
+  } catch (error) {
+    console.error(`Unsafe triage ledger: ${/** @type {Error} */ (error).message}`);
+    process.exitCode = 1;
     return;
   }
 
