@@ -8,10 +8,14 @@ import {
   tasksPath, prdPath, contextDir, phaseDir,
   resolveProject, renderBar,
   runQualityChecks,
-  existsSync, unlinkSync, realpathSync, join, resolve, ROOT, repoRoot, parseOptions, spawnSync,
+  existsSync, unlinkSync, realpathSync, appendFileSync, join, resolve, ROOT, repoRoot, parseOptions, spawnSync,
 } from './core.mjs';
 import { parsePrdBaseline, computeDrift } from './drift.mjs';
 import { recordEffectiveness } from './effectiveness.mjs';
+import {
+  TRIAGE_LEDGER_FILE, buildLedgerRow, ledgerRowKey, parseTriageLedger, parseDuration,
+  aggregateLensPrecision, formatPrecisionReport, lensesBelowPrecision,
+} from './review-precision.mjs';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
@@ -754,6 +758,27 @@ function lifecyclePath() {
   return join(reviewDir(), 'finding-lifecycle.json');
 }
 
+function triageLedgerPath() {
+  return join(reviewDir(), TRIAGE_LEDGER_FILE);
+}
+
+// Append-only and de-duplicated by ledgerRowKey, so re-running the gate on the
+// same triage never double-counts a decision. Returns the number of rows written.
+function appendTriageLedger(rows) {
+  if (!rows.length) return 0;
+  const path = triageLedgerPath();
+  const existing = existsSync(path) ? parseTriageLedger(readFileSync(path, 'utf8')).rows : [];
+  const seen = new Set(existing.map(ledgerRowKey));
+  const fresh = rows.filter(row => {
+    const key = ledgerRowKey(row);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (fresh.length > 0) appendFileSync(path, fresh.map(row => JSON.stringify(row)).join('\n') + '\n');
+  return fresh.length;
+}
+
 function buildLifecycle(review, triage, freshness) {
   const triageMap = toTriageMap(triage);
   const findings = (Array.isArray(review.findings) ? review.findings : []).map((finding, index) => {
@@ -1047,6 +1072,12 @@ export function cmdVerifyReviewFix(args) {
   let fixAuthorized = false;
   let triageDigest = null;
   let lifecycleSummary = { open: 0, fix_authorized: 0, fixed: 0, reverified: 0 };
+  // Ledger inputs: the validated triage map (decisions are recorded only when the
+  // gate passes) and the lifecycle row a `--reverify` accepted in this run (its
+  // outcome is an observation in its own right, recorded even when other
+  // findings still block the gate).
+  let triageMapForLedger = null;
+  let reverifiedRow = null;
 
   if (!existsSync(triagePath)) {
     failures.push(`Missing triage file: ${triagePath}`);
@@ -1055,6 +1086,7 @@ export function cmdVerifyReviewFix(args) {
     const triage = readJSON(triagePath);
     const context = reviewContextProvenance(review);
     const triageMap = toTriageMap(triage);
+    triageMapForLedger = triageMap;
     const allowedFiles = getAllowedFiles(triage);
     const verification = getVerificationItems(triage);
     const baselineFiles = new Set(Array.isArray(triage.baseline_changed_files) ? triage.baseline_changed_files : []);
@@ -1093,6 +1125,7 @@ export function cmdVerifyReviewFix(args) {
         row.file_snapshot = lifecycleFileSnapshot(row.file, freshness);
         row.reverified_at = new Date().toISOString();
         row.updated_at = row.reverified_at;
+        reverifiedRow = row;
       }
     }
 
@@ -1176,6 +1209,7 @@ export function cmdVerifyReviewFix(args) {
       file !== '.xm/review/triage.json' &&
       file !== '.xm/review/review-fix-gate.json' &&
       file !== '.xm/review/finding-lifecycle.json' &&
+      file !== '.xm/review/triage-ledger.jsonl' &&
       !file.startsWith('.xm/review/history/') &&
       !allowedFiles.includes(file)
     );
@@ -1246,9 +1280,28 @@ export function cmdVerifyReviewFix(args) {
   };
   writeJSON(join(reviewDir(), 'review-fix-gate.json'), report);
 
+  // Triage ledger (error analysis): decisions are appended only from a passing
+  // gate; a `--reverify` outcome accepted above is appended regardless, because
+  // "persistent" / "regression" are exactly the observations worth keeping.
+  const ledgerRows = [];
+  if (failures.length === 0 && triageMapForLedger && (stage === 'ready_for_fix' || stage === 'reverified')) {
+    for (const finding of required) {
+      const decision = String(triageMapForLedger.get(finding.id)?.decision || '').trim().toLowerCase();
+      if (VALID_TRIAGE_DECISIONS.has(decision)) {
+        ledgerRows.push(buildLedgerRow({ ts: report.timestamp, reviewed_commit: report.reviewed_commit, finding, decision, triage_digest: triageDigest }));
+      }
+    }
+  }
+  if (reverifiedRow) {
+    const finding = required.find(item => item.finding_id === reverifiedRow.finding_id) || reverifiedRow;
+    ledgerRows.push(buildLedgerRow({ ts: report.timestamp, reviewed_commit: report.reviewed_commit, finding, outcome: reverifiedRow.outcome, triage_digest: triageDigest }));
+  }
+  const ledgerAppended = appendTriageLedger(ledgerRows);
+
   if (failures.length > 0) {
     console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
     for (const failure of failures) console.log(`  - ${failure}`);
+    if (ledgerAppended > 0) console.log(`  ${C.dim}Triage ledger: +${ledgerAppended} outcome row(s)${C.reset}`);
     process.exitCode = 1;
     return;
   }
@@ -1256,5 +1309,60 @@ export function cmdVerifyReviewFix(args) {
   console.log(`${C.green}Review Fix Gate passed.${C.reset}`);
   console.log(`  Triage-required findings: ${required.length}`);
   if (stage === 'reverified') console.log(`  Reverified: ${lifecycleSummary.reverified} finding(s) resolved against current file bytes.`);
+  if (ledgerAppended > 0) console.log(`  Triage ledger: +${ledgerAppended} row(s) → ${triageLedgerPath()}`);
   for (const warning of warnings) console.log(`  ${C.yellow}Warning:${C.reset} ${warning}`);
+}
+
+// ── cmdReviewPrecision ──────────────────────────────────────────────
+// Per-lens precision from the triage ledger. precision = fix_now / (fix_now +
+// false_positive); a lens with neither is reported as unmeasured, never as 0.
+
+export function cmdReviewPrecision(args) {
+  const { opts } = parseOptions(args);
+  const json = opts.json === true;
+  const path = triageLedgerPath();
+
+  if (opts.since && parseDuration(opts.since) == null) {
+    console.error(`--since must look like 30d, 12h, or 90m (got "${opts.since}")`);
+    process.exitCode = 1;
+    return;
+  }
+  const last = opts.last != null ? Number(opts.last) : null;
+  if (opts.last != null && (!Number.isInteger(last) || last <= 0)) {
+    console.error(`--last must be a positive integer (got "${opts.last}")`);
+    process.exitCode = 1;
+    return;
+  }
+  const minPrecision = opts['min-precision'] != null ? Number(opts['min-precision']) : null;
+  if (opts['min-precision'] != null && !(minPrecision >= 0 && minPrecision <= 1)) {
+    console.error(`--min-precision must be between 0 and 1 (got "${opts['min-precision']}")`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!existsSync(path)) {
+    if (json) {
+      console.log(JSON.stringify({ status: 'no_ledger', path }, null, 2));
+    } else {
+      console.log(`${C.yellow}No triage ledger yet:${C.reset} ${path}`);
+      console.log('  Rows are appended when `x-build verify-review-fix` passes a triage or records a --reverify outcome.');
+    }
+    return;
+  }
+
+  const { rows, skipped } = parseTriageLedger(readFileSync(path, 'utf8'));
+  const report = aggregateLensPrecision(rows, { since: opts.since || null, last, lens: opts.lens || null });
+  const below = minPrecision != null ? lensesBelowPrecision(report, minPrecision) : [];
+
+  if (json) {
+    console.log(JSON.stringify({ status: 'ok', path, skipped_lines: skipped, ...report, min_precision: minPrecision, below_min: below.map(bucket => bucket.lens) }, null, 2));
+  } else {
+    console.log(`${C.bold}📐 Review lens precision${C.reset}  ${C.dim}${path}${C.reset}`);
+    console.log(formatPrecisionReport(report));
+    if (skipped > 0) console.log(`${C.yellow}Warning:${C.reset} ${skipped} malformed ledger line(s) skipped.`);
+    if (below.length > 0) {
+      console.log(`${C.red}Below --min-precision ${minPrecision}:${C.reset} ${below.map(bucket => `${bucket.lens} (${Math.round(bucket.precision * 100)}%)`).join(', ')}`);
+    }
+  }
+  if (below.length > 0) process.exitCode = 2;
 }

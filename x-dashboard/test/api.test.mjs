@@ -602,6 +602,78 @@ describe('GET /api/later', () => {
   });
 });
 
+describe('GET /api/review/precision', () => {
+  const REVIEW_DIR = join(XM_ROOT, 'review');
+  const LEDGER_PATH = join(REVIEW_DIR, 'triage-ledger.jsonl');
+  let ledgerBackup = null;
+  let createdReviewDir = false;
+
+  const ledgerRow = (over = {}) => ({
+    schema_v: 1, type: 'triage_decision', ts: '2026-08-20T00:00:00.000Z', reviewed_commit: 'c1',
+    finding_id: 'rf_0000000000000001', id: 'F1', lens: 'logic', severity: 'high', file: 'src/a.mjs',
+    decision: 'fix_now', triage_digest: null, ...over,
+  });
+
+  beforeAll(() => {
+    createdReviewDir = !existsSync(REVIEW_DIR);
+    ensureDir(REVIEW_DIR);
+    ledgerBackup = existsSync(LEDGER_PATH) ? readFileSync(LEDGER_PATH) : null;
+    const rows = [
+      ledgerRow(),
+      ledgerRow({ finding_id: 'rf_0000000000000002', id: 'F2', lens: 'security', severity: 'medium', decision: 'false_positive' }),
+      ledgerRow({ finding_id: 'rf_0000000000000003', id: 'F3', lens: 'logic', reviewed_commit: 'c2', ts: '2026-08-25T00:00:00.000Z', decision: 'fix_now' }),
+      { ...ledgerRow(), type: 'triage_outcome', decision: undefined, outcome: 'resolved' },
+    ];
+    // trailing torn line: an append-only ledger can end mid-write
+    writeFileSync(LEDGER_PATH, rows.map(r => JSON.stringify(r)).join('\n') + '\n{"torn":');
+  });
+
+  afterAll(() => {
+    if (ledgerBackup === null) rmSync(LEDGER_PATH, { force: true });
+    else writeFileSync(LEDGER_PATH, ledgerBackup);
+    if (createdReviewDir) rmSync(REVIEW_DIR, { recursive: true, force: true });
+  });
+
+  it('aggregates per-lens precision and skips the torn line', async () => {
+    const { res, body } = await getJSON('/api/review/precision');
+    expect(res.status).toBe(200);
+    expect(body.status).toBe('ok');
+    expect(body.skipped_lines).toBe(1);
+    expect(body.window.reviews).toBe(2);
+    const logic = body.lenses.find(b => b.lens === 'logic');
+    expect(logic).toMatchObject({ decided: 2, fix_now: 2, false_positive: 0, precision: 1, resolved: 1 });
+    const security = body.lenses.find(b => b.lens === 'security');
+    expect(security).toMatchObject({ decided: 1, false_positive: 1, precision: 0 });
+    expect(body.totals).toMatchObject({ decided: 3, precision: 0.667 });
+  });
+
+  it('applies since / last / lens query windows', async () => {
+    const last = await getJSON('/api/review/precision?last=1');
+    expect(last.body.window.reviews).toBe(1);
+    expect(last.body.totals.decided).toBe(1);
+    const lens = await getJSON('/api/review/precision?lens=security');
+    expect(lens.body.lenses.map(b => b.lens)).toEqual(['security']);
+  });
+
+  it('rejects a malformed since window', async () => {
+    const { res, body } = await getJSON('/api/review/precision?since=soon');
+    expect(res.status).toBe(400);
+    expect(body.status).toBe('bad_request');
+  });
+
+  it('reports no_ledger when the ledger file is absent', async () => {
+    const parked = `${LEDGER_PATH}.parked`;
+    renameSync(LEDGER_PATH, parked);
+    try {
+      const { res, body } = await getJSON('/api/review/precision');
+      expect(res.status).toBe(200);
+      expect(body.status).toBe('no_ledger');
+    } finally {
+      renameSync(parked, LEDGER_PATH);
+    }
+  });
+});
+
 describe('GET /api/probe/latest', () => {
   it('returns 200 with a verdict field', async () => {
     const { res, body } = await getJSON('/api/probe/latest');

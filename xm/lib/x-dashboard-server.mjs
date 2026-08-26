@@ -2116,6 +2116,46 @@ function handleReviewLast(xmRoot, req) {
   return jsonResponseWithETag(result, req);
 }
 
+// ── review precision (triage ledger → per-lens precision) ────────────
+// The aggregator is x-build's pure module; resolve it the same way as
+// cost-engine (xm bundle sibling first, then the source tree). null when it is
+// missing — the endpoint answers 503 and the UI hides the card.
+let _reviewPrecision;
+async function getReviewPrecision() {
+  if (_reviewPrecision !== undefined) return _reviewPrecision;
+  const here = import.meta.dirname;
+  const candidates = [
+    join(here, 'x-build', 'review-precision.mjs'),                                // xm bundle: xm/lib/x-build/
+    join(here, '..', '..', 'x-build', 'lib', 'x-build', 'review-precision.mjs'), // source tree
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      try { _reviewPrecision = await import(p); return _reviewPrecision; } catch { /* try next */ }
+    }
+  }
+  _reviewPrecision = null;
+  return _reviewPrecision;
+}
+
+async function handleReviewPrecision(xmRoot, req) {
+  const ledgerPath = safeJoin(xmRoot, 'review', 'triage-ledger.jsonl');
+  if (!ledgerPath || !existsSync(ledgerPath)) return jsonResponseWithETag({ status: 'no_ledger' }, req);
+  const mod = await getReviewPrecision();
+  if (!mod) return jsonResponseWithETag({ status: 'unavailable', error: 'review-precision module not found' }, req, 503);
+  const url = new URL(req.url);
+  const since = url.searchParams.get('since') || null;
+  const lastRaw = url.searchParams.get('last');
+  const last = lastRaw ? Number.parseInt(lastRaw, 10) : null;
+  const lens = url.searchParams.get('lens') || null;
+  if (since && mod.parseDuration(since) == null) return jsonResponseWithETag({ status: 'bad_request', error: 'since must look like 30d, 12h, or 90m' }, req, 400);
+  if (lastRaw && !(Number.isInteger(last) && last > 0)) return jsonResponseWithETag({ status: 'bad_request', error: 'last must be a positive integer' }, req, 400);
+  let text;
+  try { text = readFileSync(ledgerPath, 'utf8'); } catch { return jsonResponseWithETag({ status: 'read_error' }, req, 500); }
+  const { rows, skipped } = mod.parseTriageLedger(text);
+  const report = mod.aggregateLensPrecision(rows, { since, last, lens });
+  return jsonResponseWithETag({ status: 'ok', skipped_lines: skipped, ...report }, req);
+}
+
 function handleReviewHistory(xmRoot, req) {
   const historyDir = safeJoin(xmRoot, 'review', 'history');
   if (!historyDir || !existsSync(historyDir)) return jsonResponseWithETag({ data: [] }, req);
@@ -3985,6 +4025,11 @@ server = Bun.serve({
           return handleReviewGate(xmRoot, req);
         }
 
+        // GET /api/ws/:wsId/review/precision[?since=30d&last=N&lens=L]
+        if (subPath === '/review/precision') {
+          return handleReviewPrecision(xmRoot, req);
+        }
+
         // GET /api/ws/:wsId/review/history/:file  (must come before /review/history)
         const wsReviewFileMatch = subPath.match(/^\/review\/history\/([^/]+)$/);
         if (wsReviewFileMatch) {
@@ -4264,6 +4309,11 @@ server = Bun.serve({
       // GET /api/review/gate
       if (path === '/api/review/gate') {
         return handleReviewGate(XM_ROOT, req);
+      }
+
+      // GET /api/review/precision[?since=30d&last=N&lens=L]
+      if (path === '/api/review/precision') {
+        return handleReviewPrecision(XM_ROOT, req);
       }
 
       // GET /api/review/history/:file  (must come before /api/review/history)
