@@ -113,12 +113,18 @@ export function caseId({ prompt, rubric, tags }) {
 }
 
 function readCustomRubric(path, rubric) {
-  if (!Number.isInteger(constants.O_NOFOLLOW) || !Number.isInteger(constants.O_NONBLOCK)) {
-    throw new Error(`custom rubric "${rubric}" requires O_NOFOLLOW and O_NONBLOCK support`);
+  // Windows defines neither flag. Fall back to an explicit lstat there instead of
+  // refusing to read any custom rubric: it rejects the same symlinks and FIFOs,
+  // it just cannot close the window between the check and the open.
+  const noFollow = Number.isInteger(constants.O_NOFOLLOW) ? constants.O_NOFOLLOW : 0;
+  const nonBlock = Number.isInteger(constants.O_NONBLOCK) ? constants.O_NONBLOCK : 0;
+  if (!noFollow || !nonBlock) {
+    const entry = lstatSync(path);
+    if (!entry.isFile()) throw new Error(`custom rubric "${rubric}" must be a regular non-symlink file`);
   }
   let fd;
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    fd = openSync(path, constants.O_RDONLY | noFollow | nonBlock);
     const file = fstatSync(fd);
     if (!file.isFile()) throw new Error(`custom rubric "${rubric}" must be a regular non-symlink file`);
     if (file.size > MAX_CUSTOM_RUBRIC_BYTES) throw new Error(`custom rubric "${rubric}" exceeds ${MAX_CUSTOM_RUBRIC_BYTES} bytes`);

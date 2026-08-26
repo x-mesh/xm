@@ -144,6 +144,7 @@ Bench results produced by `xm eval bench finish` are create-only files named `<r
       "pass_hat_k": 0,
       "pass_at_k_rate": 0.67,
       "per_trial_overall": [8.2, 7.9, 5.4],
+      "per_trial_passed": [true, true, false],
       "est_cost_usd": 0.08,
       "avg_time_sec": 30
     }
@@ -153,10 +154,11 @@ Bench results produced by `xm eval bench finish` are create-only files named `<r
 }
 ```
 
-- `pass_at_k` — count of trials with `overall >= pass_threshold`. Capability signal.
+- `pass_at_k` — count of trials whose `passed` is true: `overall >= pass_threshold` AND no executable assertion HARD_FAIL. A trial can therefore score well above the threshold and still not count. Capability signal.
 - `pass_hat_k` — 1 if all trials pass, else 0. Reliability signal.
 - `pass_at_k_rate` — `pass_at_k / trials`. Normalized.
 - `per_trial_overall` — per-trial weighted overall. Enables post-hoc re-scoring without re-running agents.
+- `per_trial_passed` — per-trial final `passed` state, in the same order as `per_trial_overall`. Required: `pass_at_k` is validated against it, so a persisted arm without it is rejected.
 - `broken_task_warning` — true when ALL strategies have `pass_at_k_rate == 0` AND their `avg_score < 4.5` AND `trials >= 2`. Empirically validated false-alarm rate = 0% on merely-weak strategies.
 
 ### Result Schema (calibrate)

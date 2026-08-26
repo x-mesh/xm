@@ -19,7 +19,7 @@ import {
 import { createHash } from 'node:crypto';
 import {
   readFileSync, lstatSync, openSync, closeSync, fchmodSync, fstatSync, writeSync,
-  readSync,
+  readSync, mkdirSync, rmdirSync, statSync,
   constants as FS_CONSTANTS,
 } from 'node:fs';
 import { dirname, isAbsolute, relative, sep } from 'node:path';
@@ -816,9 +816,29 @@ function validateTriageLedgerText(text, label = 'triage ledger') {
   return text;
 }
 
-function readBoundedTriageLedger(path) {
-  const flags = FS_CONSTANTS.O_RDONLY | (FS_CONSTANTS.O_NOFOLLOW || 0);
-  const fd = openSync(path, flags);
+// O_NOFOLLOW and O_NONBLOCK do not exist on every platform Node runs on (Windows
+// defines neither). Degrade to 0 there rather than failing the gate outright:
+// safeTriageLedgerPath()'s lstat and the fstat isFile() check below still reject
+// symlinks and FIFOs — without the flags they just cannot close the swap window
+// between the two.
+function ledgerOpenFlags() {
+  const noFollow = Number.isInteger(FS_CONSTANTS.O_NOFOLLOW) ? FS_CONSTANTS.O_NOFOLLOW : 0;
+  const nonBlock = Number.isInteger(FS_CONSTANTS.O_NONBLOCK) ? FS_CONSTANTS.O_NONBLOCK : 0;
+  return noFollow | nonBlock;
+}
+
+/**
+ * Read the triage ledger with the byte, line, and row caps enforced.
+ *
+ * @param {string} path Must already have been validated by `safeTriageLedgerPath()`
+ *   — this function only guards the final path component (via O_NOFOLLOW where the
+ *   platform has it), never workspace containment or a symlinked parent directory.
+ * @returns {string} The ledger text, validated against MAX_TRIAGE_LEDGER_BYTES,
+ *   MAX_TRIAGE_LEDGER_LINE_BYTES, and MAX_TRIAGE_LEDGER_ROWS.
+ * @throws when the path is not a regular file, or when any of those caps is exceeded.
+ */
+export function readBoundedTriageLedger(path) {
+  const fd = openSync(path, FS_CONSTANTS.O_RDONLY | ledgerOpenFlags());
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile()) throw new Error(`triage ledger is not a regular file: ${path}`);
@@ -836,8 +856,51 @@ function readBoundedTriageLedger(path) {
   }
 }
 
+const LEDGER_LOCK_RETRIES = 50;
+const LEDGER_LOCK_RETRY_MS = 20;
+const LEDGER_STALE_LOCK_MS = 10_000;
+const LEDGER_LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
+
+// mkdir is atomic on local and network filesystems, so a directory lock avoids
+// the O_EXCL weaknesses ordinary lock files have on NFS. Same shape as the
+// cost core's appendCostEvent lock.
+function withTriageLedgerLock(path, fn) {
+  const lockPath = `${path}.lock`;
+  let release = null;
+  for (let attempt = 0; attempt < LEDGER_LOCK_RETRIES; attempt++) {
+    try {
+      mkdirSync(lockPath);
+      release = () => { try { rmdirSync(lockPath); } catch { /* already released */ } };
+      break;
+    } catch (error) {
+      if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') throw error;
+      try {
+        const held = statSync(lockPath);
+        if (Date.now() - held.mtimeMs > LEDGER_STALE_LOCK_MS) {
+          if (held.isDirectory()) rmdirSync(lockPath);
+          else unlinkSync(lockPath);
+          continue;
+        }
+      } catch (staleError) {
+        if (/** @type {NodeJS.ErrnoException} */ (staleError).code === 'ENOENT') continue;
+        throw staleError;
+      }
+      Atomics.wait(LEDGER_LOCK_SLEEP, 0, 0, LEDGER_LOCK_RETRY_MS);
+    }
+  }
+  if (!release) throw new Error(`triage ledger lock is held: ${lockPath}`);
+  try {
+    return fn();
+  } finally {
+    release();
+  }
+}
+
 function appendPrivateFile(path, text) {
-  const flags = FS_CONSTANTS.O_WRONLY | FS_CONSTANTS.O_APPEND | FS_CONSTANTS.O_CREAT | (FS_CONSTANTS.O_NOFOLLOW || 0);
+  // O_NONBLOCK turns a FIFO swapped in under the path into an immediate ENXIO
+  // instead of a write that blocks until a reader appears.
+  const flags = FS_CONSTANTS.O_WRONLY | FS_CONSTANTS.O_APPEND | FS_CONSTANTS.O_CREAT
+    | ledgerOpenFlags();
   const fd = openSync(path, flags, 0o600);
   try {
     const stat = fstatSync(fd);
@@ -857,6 +920,13 @@ function appendPrivateFile(path, text) {
 function appendTriageLedger(rows) {
   if (!rows.length) return 0;
   const path = safeTriageLedgerPath();
+  // The byte cap only holds if read -> check -> append is serialized: O_APPEND
+  // makes each write atomic but lets two appenders both observe a size under the
+  // cap and together push the ledger past it.
+  return withTriageLedgerLock(path, () => appendTriageLedgerLocked(path, rows));
+}
+
+function appendTriageLedgerLocked(path, rows) {
   const existingText = existsSync(path) ? readBoundedTriageLedger(path) : '';
   const existing = parseTriageLedger(existingText).rows;
   const outcomeAppendKey = row => `${ledgerRowKey(row)}|${row.outcome || ''}`;

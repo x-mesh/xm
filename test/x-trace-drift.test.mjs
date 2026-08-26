@@ -170,6 +170,25 @@ describe('drift: pure helpers', () => {
     expect(report.axes.quality.rows[0]).toMatchObject({ key: 'general/refine', window: { n: 20 } });
   });
 
+  test('the score-file cap keeps the newest files instead of an arbitrary directory slice', () => {
+    const dir = makeXm();
+    const results = join(dir, '.xm', 'eval', 'results');
+    mkdirSync(results, { recursive: true });
+    const score = (name, timestamp) => writeFileSync(join(results, name), JSON.stringify({
+      schema_v: 1, type: 'score', timestamp, rubric: 'general', source_strategy: 'refine', overall: 8,
+    }));
+    // Archived names sort ahead of the recent ones, so an as-listed scan spends the
+    // whole budget on rows the caller is not asking about.
+    for (let i = 0; i < 10; i++) score(`20250101-${String(i).padStart(2, '0')}0000-score.json`, iso(400));
+    for (let i = 0; i < 3; i++) score(`20260801-${String(i).padStart(2, '0')}0000-score.json`, iso(1));
+
+    const bounded = collectEvalRows(results, { maxFiles: 3, maxRows: 50 });
+    expect(bounded.files_scanned).toBe(3);
+    expect(bounded.file_limit_reached).toBe(true);
+    expect(bounded.rows).toHaveLength(3);
+    expect(bounded.rows.every(row => row.ts > NOW_MS - 30 * DAY)).toBe(true);
+  });
+
   test('JSONL reader rejects unsafe files and enforces file, line, and row bounds', () => {
     const dir = makeXm();
     const base = join(dir, '.xm');

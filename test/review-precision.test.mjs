@@ -18,6 +18,7 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, '..', 'x-build', 'lib', 'x-build-cli.mjs');
+const VERIFY_MODULE = join(__dirname, '..', 'x-build', 'lib', 'x-build', 'verify.mjs');
 const RUN_DEFAULT_CWD = mkdtempSync(join(tmpdir(), 'xb-rp-nocwd-'));
 afterAll(() => rmSync(RUN_DEFAULT_CWD, { recursive: true, force: true }));
 
@@ -420,6 +421,52 @@ describe('review-precision: ledger written by verify-review-fix', () => {
     } finally {
       rmSync(appendTmp, { recursive: true, force: true });
       rmSync(readTmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a FIFO under the ledger path fails the read instead of parking the process', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-rp-fifo-'));
+    try {
+      const ledger = join(tmp, 'triage-ledger.jsonl');
+      if (spawnSync('mkfifo', [ledger]).status !== 0) return; // no mkfifo here: nothing to assert
+
+      // Run in a child with a hard timeout: without O_NONBLOCK the open parks
+      // until a writer appears, which would otherwise hang this suite.
+      const probe = spawnSync('node', ['-e', `
+        const { pathToFileURL } = require('node:url');
+        import(pathToFileURL(${JSON.stringify(VERIFY_MODULE)}).href).then(m => {
+          try { m.readBoundedTriageLedger(${JSON.stringify(ledger)}); process.exit(0); }
+          catch (error) { console.error(error.message); process.exit(3); }
+        });
+      `], { encoding: 'utf8', timeout: 5000 });
+
+      expect(probe.signal).toBeNull();
+      expect(probe.status).toBe(3);
+      expect(probe.stderr).toContain('triage ledger is not a regular file');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a held ledger lock fails the append instead of racing the size check', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-rp-lock-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, { findings: [
+        { severity: 'medium', lens: 'logic', file: 'src/auth.ts', line: 42, summary: 'Locked ledger' },
+      ] });
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].decision = 'fix_now'; });
+
+      // Stand in for a concurrent appender holding the mutex. The size check and
+      // the O_APPEND write must sit inside it, so this run cannot slip past.
+      mkdirSync(join(tmp, '.xm', 'review', 'triage-ledger.jsonl.lock'), { recursive: true });
+
+      const blocked = run(['verify-review-fix'], { cwd: tmp });
+      expect(blocked.exitCode).not.toBe(0);
+      expect(blocked.stderr).toContain('triage ledger lock is held');
+      expect(ledgerRows(tmp)).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
     }
   });
 

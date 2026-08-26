@@ -26,7 +26,7 @@
 
 import {
   closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync,
-  opendirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, writeSync,
+  openSync, readFileSync, readSync, readdirSync, realpathSync, writeSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { resolveXmDir } from './trace-writer.mjs';
@@ -223,36 +223,39 @@ export function collectEvalRows(resultsDir, {
     if (dir.isSymbolicLink() || !dir.isDirectory()) { skipped += 1; return result(); }
     actualResultsDir = realpathSync(resultsDir);
   } catch { skipped += 1; return result(); }
-  let directory;
-  try { directory = opendirSync(actualResultsDir); } catch { skipped += 1; return result(); }
+  let names;
   try {
-    for (let entry = directory.readSync(); entry != null; entry = directory.readSync()) {
-      if (rows.length >= maxRows) { rowLimitReached = true; break; }
-      if (filesScanned >= maxFiles) { fileLimitReached = true; break; }
-      filesScanned += 1;
-      const name = entry.name;
-      if (!name.endsWith('-score.json') && !/-score\..*\.json$/.test(name)) continue;
-      try {
-        const path = join(actualResultsDir, name);
-        const raw = readBoundedRegularFile(path, MAX_EVAL_SCORE_BYTES);
-        if (raw == null) { skipped += 1; continue; }
-        const doc = JSON.parse(raw);
-        if (!doc || typeof doc !== 'object' || Array.isArray(doc)
-          || doc.type !== 'score'
-          // Existing score files are unversioned; schema_v:1 is the only versioned form.
-          || (Object.hasOwn(doc, 'schema_v') && doc.schema_v !== 1)) { skipped += 1; continue; }
-        const overall = doc.overall;
-        const ts = timeOf(doc.timestamp);
-        const rubric = normalizeScoreIdentifier(doc.rubric, 'unknown');
-        const strategy = normalizeScoreIdentifier(doc.source_strategy ?? doc.strategy, 'unknown');
-        if (typeof overall !== 'number' || !Number.isFinite(overall) || overall < 0 || overall > 10
-          || !Number.isFinite(ts) || rubric == null || strategy == null) { skipped += 1; continue; }
-        if (ts < minTs || ts > maxTs) { outsideWindow += 1; continue; }
-        rows.push({ ts, rubric, strategy, overall, passed: doc.passed === true });
-      } catch { skipped += 1; }
-    }
-  } finally {
-    directory.closeSync();
+    // Select and order before spending the budget. Directory order is arbitrary, so
+    // scanning as-listed let archived files consume the cap and leave the quality axis
+    // reading a random subset. Score names lead with their date (`{timestamp}-score.json`),
+    // so a reverse lexical sort puts the newest first and the cap drops the oldest.
+    names = readdirSync(actualResultsDir)
+      .filter(name => name.endsWith('-score.json') || /-score\..*\.json$/.test(name))
+      .sort()
+      .reverse();
+  } catch { skipped += 1; return result(); }
+  for (const name of names) {
+    if (rows.length >= maxRows) { rowLimitReached = true; break; }
+    if (filesScanned >= maxFiles) { fileLimitReached = true; break; }
+    filesScanned += 1;
+    try {
+      const path = join(actualResultsDir, name);
+      const raw = readBoundedRegularFile(path, MAX_EVAL_SCORE_BYTES);
+      if (raw == null) { skipped += 1; continue; }
+      const doc = JSON.parse(raw);
+      if (!doc || typeof doc !== 'object' || Array.isArray(doc)
+        || doc.type !== 'score'
+        // Existing score files are unversioned; schema_v:1 is the only versioned form.
+        || (Object.hasOwn(doc, 'schema_v') && doc.schema_v !== 1)) { skipped += 1; continue; }
+      const overall = doc.overall;
+      const ts = timeOf(doc.timestamp);
+      const rubric = normalizeScoreIdentifier(doc.rubric, 'unknown');
+      const strategy = normalizeScoreIdentifier(doc.source_strategy ?? doc.strategy, 'unknown');
+      if (typeof overall !== 'number' || !Number.isFinite(overall) || overall < 0 || overall > 10
+        || !Number.isFinite(ts) || rubric == null || strategy == null) { skipped += 1; continue; }
+      if (ts < minTs || ts > maxTs) { outsideWindow += 1; continue; }
+      rows.push({ ts, rubric, strategy, overall, passed: doc.passed === true });
+    } catch { skipped += 1; }
   }
   return result();
 }

@@ -153,6 +153,8 @@ function validateBenchArm(arm, { expectedName = null, expectedTrials = null, all
   if (arm.pass_at_k_rate !== expectedRate) throw new Error(`bench arm ${arm.name} pass_at_k_rate is inconsistent with pass/trial counts`);
   if (!Array.isArray(arm.per_trial_overall) || arm.per_trial_overall.length !== arm.trials) throw new Error(`bench arm ${arm.name} per_trial_overall must match trials`);
   for (const score of arm.per_trial_overall) finiteInRange(score, 0, 10, `bench arm ${arm.name} trial score`);
+  // Required field: a persisted arm without per_trial_passed cannot have its
+  // pass_at_k re-derived, so it is rejected rather than trusted.
   if (!Array.isArray(arm.per_trial_passed) || arm.per_trial_passed.length !== arm.trials || arm.per_trial_passed.some(value => typeof value !== 'boolean')) throw new Error(`bench arm ${arm.name} per_trial_passed must be a boolean list matching trials`);
   if (arm.pass_at_k !== arm.per_trial_passed.filter(Boolean).length) throw new Error(`bench arm ${arm.name} pass_at_k does not match per-trial passed states`);
   if (passThreshold != null && arm.per_trial_passed.some((passed, index) => passed && arm.per_trial_overall[index] < passThreshold)) {
@@ -598,6 +600,10 @@ function armStats(name, rows, expected) {
     pass_hat_k: trials === expected ? (trials > 0 && passAtK === trials ? 1 : 0) : null,
     pass_at_k_rate: trials ? round(passAtK / trials, 3) : null,
     per_trial_overall: overalls,
+    // A trial's `passed` is the score threshold AND the executable assertions, so a
+    // trial can score well above pass_threshold and still not count toward pass@k.
+    // Persisted because validateBenchArm recomputes pass_at_k from it; see
+    // x-eval/skills/eval/references/storage-layout.md (Result Schema (bench)).
     per_trial_passed: rows.map(row => row.passed),
     est_cost_usd: estCost,
     cost_source: 'estimated',
