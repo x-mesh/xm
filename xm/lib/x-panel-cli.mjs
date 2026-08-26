@@ -144,7 +144,7 @@ function parseFlags(raw) {
     '--lens-tag': 'lensTag', '--prompt-file': 'promptFile', '--prompt': 'prompt',
     '--check': 'check', '--source': 'source', '--title': 'title', '--policy': 'policy',
     '--phase': 'phase',
-    '--rounds': 'rounds',
+    '--rounds': 'rounds', '--refute-findings': 'refuteFindings',
   };
   for (let i = 0; i < raw.length; i++) {
     const a = raw[i];
@@ -164,6 +164,7 @@ function parseFlags(raw) {
     else if (a === '--policy') flags.policy = raw[++i];
     else if (a === '--phase') flags.phase = raw[++i];
     else if (a === '--rounds') flags.rounds = raw[++i];
+    else if (a === '--refute-findings') flags.refuteFindings = (raw[i + 1] !== undefined && !raw[i + 1].startsWith('--')) ? raw[++i] : undefined;
     else if (a === '--roi') flags.roi = true;
     else if (a === '--grounded') flags.grounded = true;
     else if (a === '--no-grounded') flags.grounded = false;
@@ -367,6 +368,9 @@ function reviewPrompt(target, overrideBody = null, context = null) {
 // Per-finding evidence cap in the refute prompt. Evidence is model-authored and can be
 // huge; truncation is EXPLICIT (marker, never silent) so a refuter knows it judged a cut.
 const REFUTE_EVIDENCE_MAX = 500;
+// Owner recorded for findings supplied via --refute-findings. It occupies a slot in the
+// verdict's `models` so synthesize walks those findings, but it never casts a verdict.
+const SUPPLIED_OWNER = 'supplied';
 
 // One findings list shared by BOTH refute prompt builders — refuters must see each
 // finding's evidence (normalizeFindings preserves it; dropping it here made round 2
@@ -674,10 +678,17 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
 }
 
 function renderVerdict(v, dir) {
-  const total = v.models.length;
+  // With --refute-findings every finding has the same single author, so cross-model consensus
+  // and unanimity are not measurable — the panel judged a list, it did not independently
+  // produce one. Counting the sentinel as a source would make `consensus === total`
+  // unreachable and print "0 unanimous" on every run, so it is excluded here and the
+  // diversity framing is replaced below.
+  const suppliedOwner = v.supplied_owner || null;
+  const reviewers = suppliedOwner ? v.models.filter((m) => m !== suppliedOwner) : v.models;
+  const total = reviewers.length;
   const lines = [];
   const unrev = v.counts.unreviewed ? `, ${C.red}${v.counts.unreviewed} unreviewed${C.reset}` : '';
-  lines.push(`${C.bold}Panel verdict${C.reset} — ${C.green}${v.counts.unique} issue(s)${C.reset} (from ${v.counts.confirmed} confirmed findings), ${C.yellow}${v.counts.contested} contested${C.reset}${unrev}  ${C.dim}(models: ${v.models.join(', ')})${C.reset}`);
+  lines.push(`${C.bold}Panel verdict${C.reset} — ${C.green}${v.counts.unique} issue(s)${C.reset} (from ${v.counts.confirmed} confirmed findings), ${C.yellow}${v.counts.contested} contested${C.reset}${unrev}  ${C.dim}(models: ${reviewers.join(', ')})${C.reset}`);
   // A model whose round 1 died or came back unparseable is NOT part of this verdict —
   // saying so up top prevents the "N/N models agreed" over-read (mem-mesh ed2ff3e3).
   for (const m of v.models) {
@@ -698,13 +709,16 @@ function renderVerdict(v, dir) {
     }
   }
   lines.push('');
-  lines.push(`${C.bold}ISSUES${C.reset} ${C.dim}(merged across models, by consensus)${C.reset}`);
+  lines.push(`${C.bold}ISSUES${C.reset} ${C.dim}(${suppliedOwner ? 'supplied by the caller, confirmed in refutation' : 'merged across models, by consensus'})${C.reset}`);
   if (!v.consensus.length) lines.push('  (none)');
   for (const c of v.consensus) {
     const color = c.consensus === total ? C.green : C.yellow;
-    const tag = `${color}${c.consensus}/${total}${C.reset}`;
+    // A per-source tag and an attribution list carry no information when every finding
+    // came from the one supplied list.
+    const tag = suppliedOwner ? '' : `${color}${c.consensus}/${total}${C.reset} `;
+    const from = suppliedOwner ? '' : `  ${C.dim}— ${c.models.join(', ')}${C.reset}`;
     const claim = (c.claims[0] && c.claims[0].claim) || '';
-    lines.push(`  ${sev(c.severity)} ${tag} ${c.file ?? ''}${c.line ? ':' + c.line : ''}  ${claim}  ${C.dim}— ${c.models.join(', ')}${C.reset}`);
+    lines.push(`  ${sev(c.severity)} ${tag}${c.file ?? ''}${c.line ? ':' + c.line : ''}  ${claim}${from}`);
   }
   if (v.contested.length) {
     lines.push('');
@@ -730,10 +744,15 @@ function renderVerdict(v, dir) {
     }
   }
   lines.push('');
-  const unanimous = v.consensus.filter(c => c.consensus === total).length;
-  const single = v.consensus.filter(c => c.consensus === 1).length;
-  const div = v.models.map(m => `${m}:${v.by_model[m].raised}`).join(' · ');
-  lines.push(`${C.dim}Raised per model: ${div}  ·  ${unanimous} unanimous, ${single} single-model (diversity)${C.reset}`);
+  if (suppliedOwner) {
+    const raised = (v.by_model[suppliedOwner] || {}).raised ?? 0;
+    lines.push(`${C.dim}Judged ${raised} supplied finding(s) with ${total} model(s): ${v.counts.confirmed} confirmed, ${v.counts.contested} contested, ${v.counts.unreviewed} unreviewed${C.reset}`);
+  } else {
+    const unanimous = v.consensus.filter(c => c.consensus === total).length;
+    const single = v.consensus.filter(c => c.consensus === 1).length;
+    const div = reviewers.map(m => `${m}:${v.by_model[m].raised}`).join(' · ');
+    lines.push(`${C.dim}Raised per model: ${div}  ·  ${unanimous} unanimous, ${single} single-model (diversity)${C.reset}`);
+  }
   // Grounding summary (빅뱃3): only when the run actually verified something against the
   // real code. Names who read files and how many verdicts they backed with observations.
   if (v.counts && v.counts.grounded_verdicts > 0) {
@@ -774,6 +793,42 @@ async function cmdReview(pos, flags) {
     process.exitCode = 2;
     return;
   }
+  // --refute-findings: judge a caller-supplied finding list instead of producing one.
+  // A consumer (x-review) that already ran round 1 across its own lenses would otherwise
+  // pay for it a second time here, once per lens. Round 1 is skipped, the supplied list is
+  // seeded under SUPPLIED_OWNER, and every model refutes it in round 2 — so the verify pass
+  // costs one round for the whole list instead of one round per lens.
+  let suppliedFindings = null;
+  // Membership, not truthiness: parseFlags stores `undefined` when no path follows the flag
+  // (and '' for `--refute-findings=`), which a truthy check cannot tell apart from the flag
+  // never being passed. Falling through there would silently run the full two-round review
+  // this mode exists to avoid, and report success.
+  if ('refuteFindings' in flags) {
+    if (!flags.refuteFindings) {
+      console.error(`${C.red}\u2717 --refute-findings needs a path${C.reset} \u2014 e.g. --refute-findings .xm/review/findings.json`);
+      process.exitCode = 2;
+      return;
+    }
+    let parsed;
+    try { parsed = JSON.parse(readFileSync(flags.refuteFindings, 'utf8')); } catch (error) {
+      console.error(`${C.red}\u2717 --refute-findings: cannot read ${flags.refuteFindings} \u2014 ${error.message}${C.reset}`);
+      process.exitCode = 2;
+      return;
+    }
+    // Accept both a bare findings array and the {findings:[...]} envelope that r1.json uses,
+    // so a caller can pass a round-1 artifact through unchanged.
+    suppliedFindings = normalizeFindings(Array.isArray(parsed) ? { findings: parsed } : parsed, flags.lensTag || null);
+    if (!suppliedFindings.length) {
+      console.error(`${C.red}\u2717 --refute-findings: ${flags.refuteFindings} has no usable findings${C.reset} \u2014 expected {\"findings\":[{severity,file,line,claim,evidence}]} or a bare array; each entry needs a non-empty claim.`);
+      process.exitCode = 2;
+      return;
+    }
+    // The whole mode IS the refutation round; --rounds is not the caller's choice here.
+    if (rounds !== 2) {
+      if (flags.rounds != null) console.error(`${C.yellow}\u26a0 --refute-findings runs the refutation round \u2014 ignoring --rounds ${rounds}${C.reset}`);
+      rounds = 2;
+    }
+  }
   applyKiroAgentConfig(cfg);
   const specs = resolveModels(flags, cfg);
   const explicitSingleModel = flags.models != null && specs.length === 1;
@@ -782,7 +837,7 @@ async function cmdReview(pos, flags) {
     process.exitCode = 1;
     return;
   }
-  if (explicitSingleModel && rounds === 2) {
+  if (explicitSingleModel && rounds === 2 && !suppliedFindings) {
     console.error(`${C.yellow}⚠ single-model recovery has no peer to refute — using --rounds 1${C.reset}`);
     rounds = 1;
   }
@@ -874,6 +929,11 @@ async function cmdReview(pos, flags) {
     console.error(`${C.yellow}⚠ single-model recovery run — no cross-model consensus will be produced${C.reset}`);
   }
   const labels = usable.map((e) => e.label);
+  if (suppliedFindings && labels.includes(SUPPLIED_OWNER)) {
+    console.error(`${C.red}\u2717 a model is labelled "${SUPPLIED_OWNER}", which --refute-findings reserves${C.reset} \u2014 rename the slot in panel config.`);
+    process.exitCode = 2;
+    return;
+  }
   // Injected per-lens prompt (cross-vendor review mode): overrides round-1 intro only.
   const reviewOverride = loadPromptOverride(flags);
   if (reviewOverride === undefined) return; // unreadable --review-prompt-file (error already logged)
@@ -1124,13 +1184,13 @@ async function cmdReview(pos, flags) {
   // Opt out: --no-session-reuse / panel.session_reuse:false.
   const sessionReuse = !stream && (flags.sessionReuse != null ? flags.sessionReuse : cfg.session_reuse !== false);
   for (const e of usable) {
-    if (sessionReuse && supportsResume(e.name)) {
+    if (!suppliedFindings && sessionReuse && supportsResume(e.name)) {
       e._session1 = { mode: 'create', id: e.name === 'claude' ? randomUUID() : null };
     }
   }
 
   // Round 1 — independent review (all models in parallel)
-  startPhase('round1 (review)');
+  startPhase(suppliedFindings ? 'round1 (supplied)' : 'round1 (review)');
   const round1 = {};
   // Models whose round 1 produced no usable findings: 'failed' (error/unparseable) or
   // 'suspect_empty' (ok with 0 findings but substantial prose in raw — likely a review
@@ -1145,7 +1205,13 @@ async function cmdReview(pos, flags) {
   const r1PromptInline = reviewPrompt(target.promptText, reviewOverride, reviewContext);
   // agy handoff (A): agy reads the full diff from a file instead of the inline (B-shrunk) copy.
   const r1PromptAgy = agyHandoff ? reviewPrompt(agyHandoff.ref, reviewOverride, reviewContext) : null;
-  await runRound('round 1 (review)', usable, (e) => {
+  if (suppliedFindings) {
+    // Persist it as an ordinary round-1 artifact so `status`, the dashboard, and any
+    // verdict reader stay unaware that this round was never dispatched.
+    round1[SUPPLIED_OWNER] = suppliedFindings;
+    writeJSON(join(dir, `${SUPPLIED_OWNER}.r1.json`), { model: SUPPLIED_OWNER, ok: true, error: null, r1_status: 'ok', findings: suppliedFindings, usage: null, raw: null });
+    writeEvent({ type: 'round_file_written', phase: status.phase, model: SUPPLIED_OWNER, round: 1, ok: true, r1_status: 'ok', count: suppliedFindings.length, error: null });
+  } else await runRound('round 1 (review)', usable, (e) => {
     if (agyHandoff && e.name === 'agy') return { prompt: r1PromptAgy, providerArgs: { addDir: agyHandoff.addDir } };
     const prompt = supportsPromptStdin(e.name) ? r1PromptFull : r1PromptInline;
     // fallbackPrompt = the same prompt: a failed --session-id spawn retries
@@ -1191,7 +1257,8 @@ async function cmdReview(pos, flags) {
     // Round 2 — adversarial: each model refutes the others' findings (in parallel)
     startPhase('round2 (refute)');
     await runRound('round 2 (refute)', usable, (e) => {
-    const others = usable.filter(x => x.label !== e.label);
+    // Nobody authored the supplied list, so no model is excluded from judging it.
+    const others = suppliedFindings ? [{ label: SUPPLIED_OWNER }] : usable.filter(x => x.label !== e.label);
     // Tag each opponent finding with a global ref `owner#idx` so 3+ models don't collide.
     const otherFindings = others.flatMap(o => (round1[o.label] || []).map(f => ({ ...f, gref: `${o.label}#${f.idx}` })));
     const otherLabel = others.map(o => o.label).join('+');
@@ -1250,9 +1317,16 @@ async function cmdReview(pos, flags) {
   // Only models actually sent the grounded prompt may contribute grounding provenance (t8):
   // labels that are grounded-capable in a grounded run. synth trusts `verified` only from these.
   const groundedSet = new Set(grounded ? labels.filter((l) => groundCapable(String(l).split(':')[0])) : []);
+  // SUPPLIED_OWNER must appear in `models` for synthesize to walk its findings. It needs no
+  // abstained entry: synthesize excludes an owner from its own opponent list, and no real model
+  // authored findings this round, so it can never be counted among a finding's reviewers.
+  // Readers that receive only the record cannot infer which entry is the sentinel, so the
+  // verdict names it below.
+  const synthModels = suppliedFindings ? [...labels, SUPPLIED_OWNER] : labels;
   const verdict = rounds === 1
-    ? synthesizeRound1(labels, round1, r1Status)
-    : synthesize(labels, round1, round2, abstained, r1Status, groundedSet);
+    ? synthesizeRound1(synthModels, round1, r1Status)
+    : synthesize(synthModels, round1, round2, abstained, r1Status, groundedSet);
+  if (suppliedFindings) verdict.supplied_owner = SUPPLIED_OWNER;
   // Surface round-2 fidelity per model in the live status too, so `status <run>` /
   // --watch (and their --json snapshots) show a broken refuter without opening verdict.json.
   for (const m of status.models) {
@@ -1305,7 +1379,10 @@ async function cmdReview(pos, flags) {
   writeJSON(join(dir, 'verdict.json'), record);
   // Append per-model rows to the cross-run disagreement ledger (빅뱃2). Best-effort:
   // the ledger is analytics, so a write failure warns but never fails the review (L6).
-  try { appendPanelHistory(PANEL_DIR, record); }
+  // SUPPLIED_OWNER stays in verdict.json (status/dashboard readers attribute findings by it)
+  // but must never reach the per-vendor accuracy ledger: it casts no verdicts, so a row for it
+  // would report a survival rate for a vendor that never reviewed anything.
+  try { appendPanelHistory(PANEL_DIR, suppliedFindings ? { ...record, models: labels } : record); }
   catch (e) { process.stderr.write(`${C.yellow}⚠ panel history append failed: ${e.message}${C.reset}\n`); }
   status.phase = 'done';
   writeEvent({ type: 'run_done', phase: status.phase, counts: verdict.counts });
@@ -1875,6 +1952,13 @@ Commands:
     --judge rule                Synthesis (PoC: rule only)
     --rounds 1|2                1=independent consensus/diversity (default),
                                 2=add adversarial refutation (config: panel.rounds).
+    --refute-findings FILE      Judge a finding list you already have instead of producing one.
+                                Skips round 1 entirely and runs only the refutation round, so a
+                                caller that reviewed across several lenses pays for one verify
+                                pass over the whole list rather than one per lens. FILE is
+                                {"findings":[{severity,file,line,claim,evidence}]} or a bare
+                                array; findings are attributed to the owner "supplied", which
+                                every model judges and none of them authored. Implies --rounds 2.
     --timeout SECONDS           Per-model idle timeout (default 600; config: panel.timeout_s).
                                 Resets on stdout activity (a working model keeps going); a model
                                 silent this long is killed as stalled. Auto-raised for large

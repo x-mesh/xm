@@ -82,6 +82,15 @@ Readiness/auth is checked once per provider name; each distinct slot is still ex
   so findings always come back JSON-shaped regardless of what the lens prompt asks for.
 - round-2 (refute) is unchanged. Injected (review-mode) runs write to `.xm/review/<run>/`,
   separate from native `.xm/panel/` history.
+- `--refute-findings <file>` inverts the flow: the caller supplies the findings and the panel
+  only judges them. Round 1 is not dispatched, so a consumer that already reviewed across N
+  lenses pays one verify pass for the whole list instead of a refutation round per lens
+  (`--rounds 2` on 7 lenses × 3 slots = 42 calls; one selected verify pass = 3). The file is
+  `{"findings":[{severity,file,line,claim,evidence}]}` or a bare array — a round-1 artifact
+  passes through unchanged. Findings are owned by `supplied`, which appears in the verdict's
+  `models` as their author but is never counted among the reviewers who voted. Implies
+  `--rounds 2`; `--grounded` still applies, so capable vendors verify each claim against the
+  real file.
 - These flags are programmatic plumbing — interactive `/xm:panel` users don't need them.
 - Codex review slots enforce `panel.command_budget` (default `24`) using structured
   `command_execution` completion events. The watch board shows `commands used/budget`,
