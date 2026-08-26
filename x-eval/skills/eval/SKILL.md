@@ -71,6 +71,8 @@ First word of `$ARGUMENTS`:
 - `rubric` → [Subcommand: rubric]
 - `report` → [Subcommand: report]
 - `calibrate` → [Subcommand: calibrate]
+- `case` → [Subcommand: case]
+- `gate` → [Subcommand: gate]
 - `list` or empty input → [Subcommand: list]
 
 ---
@@ -88,6 +90,10 @@ Commands:
   compare <output-a> <output-b> [--judges N]   Compare two outputs with judge panel
   bench <task> --strategies "s1,s2"            Benchmark with pass@k/pass^k
        [--models "m1,m2"] [--trials N]          reliability metrics
+  bench --set <all|tag|ids> --strategies ...   Same, on the saved case set via `xm eval bench plan|record|finish`;
+       [--no-direct] [--baseline latest]        includes the single-agent `direct` control arm (Δ direct)
+  case add|list|show                           Persistent case set (.xm/eval/cases) — see subcommands/case.md
+  gate --run <id> --baseline <ref>             Regression gate between two bench results (exit 3 = blocked)
   consistency [plugin] [--trials N]             Measure plugin output consistency (default: all changed)
   diff [--from <commit>] [--to <commit>]      Measure skill/plugin changes + quality delta
        [--baseline <tag>]                       Regression check vs pinned tag (implies --quality)
@@ -172,6 +178,18 @@ See `subcommands/report.md` — aggregates `.xm/eval/results/` and `.xm/eval/ben
 ## Subcommand: calibrate
 
 See `subcommands/calibrate.md` — human-vs-judge scoring loop; per-criterion bias_delta table; systematic bias threshold ≥ 1.0; gates automated judge use when |Δ| ≥ 1.5 on high-weight criteria.
+
+---
+
+## Subcommand: case
+
+See `subcommands/case.md` — `.xm/eval/cases/` case set (`xm eval case add|list|show`); cases are promoted from real failures (FAIL scores, false-positive findings, rejected outputs); `--risk high` doubles down on trials.
+
+---
+
+## Subcommand: gate
+
+See `subcommands/gate.md` — `xm eval gate --run <id> --baseline latest|<run-id>|<file>`; blocks on lost pass^k or an average drop ≥ 0.5; exit 3 = regression; also runs from `bench finish --baseline`.
 
 ---
 
@@ -270,6 +288,8 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 | "check if output satisfies X", "must handle empty input" | `score ... --assert "<requirement>"` |
 | "tests must pass", "file must exist", "no eval()", 실행으로 확인 가능한 조건 | `score ... --assert-cmd 'tests=bun test'` (see "Executable Assertions" in `subcommands/score.md`) |
 | "regression check vs release", "did quality drop?" | `diff --baseline <tag>` |
+| "save this as a test case", "이 실패를 케이스로", "add to the eval suite" | `case add --prompt-file <task> --rubric <r> --tag <t>` |
+| "re-run the suite", "is refine still better than a single agent?", "기준선 대비 회귀?" | `bench --set <tag> --strategies "..."` then `gate --baseline latest` |
 | "are judges accurate?", "calibrate judges", "human vs judge" | `calibrate --rubric <name>` |
 | "what's in eval?", "help" | `list` |
 
