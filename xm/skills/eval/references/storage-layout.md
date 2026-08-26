@@ -23,7 +23,7 @@ File system layout for x-eval outputs, result schemas, and rubric definitions st
     └── {timestamp}-gate.json
 ```
 
-Bench results produced by `xm eval bench finish` add to the bench schema below: `run_id`, `cases[]` (`{id, rubric, risk, trials, pass_threshold}`), `control` (`"direct"` or `null`), `strategies[].delta_vs_direct`, `strategies[].expected_trials`, `strategies[].score_per_dollar`, `strategies[].cost_source: "estimated"`, `per_case[]` (the same per-arm metrics per case), `advisories[]`, `partial`, `missing_jobs[]`, and `recommendation.reason` / `recommendation.best_effort`.
+Bench results produced by `xm eval bench finish` are create-only files named `<run-id>-bench.json`. They add to the bench schema below: `run_id`, `cases[]` (`{id, rubric, risk, trials, pass_threshold}`), `control` (`"direct"` or `null`), `strategies[].delta_vs_direct`, `strategies[].expected_trials`, `strategies[].score_per_dollar`, `strategies[].cost_source: "estimated"`, `per_case[]` (the same per-arm metrics per case), `advisories[]`, `partial`, `missing_jobs[]`, and `recommendation.reason` / `recommendation.best_effort`. Partial results retain observed `pass@k`, set incomplete-arm `pass^k` to `null`, and withhold every recommendation field.
 
 ### Result Schema (score)
 

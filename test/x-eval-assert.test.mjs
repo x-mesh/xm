@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { tokenize, parseSpec, containedPath, runCmd, runFile, runGrep, runJson, runAssertions } from '../x-eval/lib/x-eval/assert.mjs';
+import { tokenize, parseSpec, containedPath, runCmd, runFile, runGrep, runJson, runAssertions, MAX_GREP_FILE_BYTES, MAX_GREP_PATTERN_CHARS } from '../x-eval/lib/x-eval/assert.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI = join(__dirname, '..', 'x-eval', 'lib', 'x-eval-cli.mjs');
@@ -118,6 +118,34 @@ describe('x-eval assert: runners', () => {
       expect(runJson({ name: 'j', spec: 'nested.count=2:meta.json', cwd: tmp }).result).toBe('PASS');
       expect(runJson({ name: 'j', spec: 'nested.ok=false:meta.json', cwd: tmp })).toMatchObject({ result: 'HARD_FAIL', actual: 'true' });
       expect(runJson({ name: 'j', spec: 'nested.nope=1:meta.json', cwd: tmp })).toMatchObject({ result: 'HARD_FAIL', actual: null });
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test('grep bounds regex length, input bytes, and matcher time', () => {
+    const tmp = makeProject();
+    try {
+      writeFileSync(join(tmp, 'large.txt'), 'x'.repeat(MAX_GREP_FILE_BYTES + 1));
+      expect(runGrep({ name: 'large', spec: 'x:large.txt', cwd: tmp })).toMatchObject({ result: 'HARD_FAIL', error_code: 'E2BIG' });
+      expect(runGrep({ name: 'pattern', spec: `${'x'.repeat(MAX_GREP_PATTERN_CHARS + 1)}:src/a.mjs`, cwd: tmp })).toMatchObject({ result: 'HARD_FAIL', error_code: 'E2BIG' });
+      expect(runGrep({ name: 'option', spec: '--version:src/a.mjs', cwd: tmp })).toMatchObject({ result: 'HARD_FAIL', matched: false });
+      expect(runGrep({ name: 'inspect', spec: '--inspect=127\\.0\\.0\\.1:0:src/a.mjs', cwd: tmp })).toMatchObject({ result: 'HARD_FAIL', matched: false });
+      writeFileSync(join(tmp, 'redos.txt'), `${'a'.repeat(100_000)}!`);
+      expect(runGrep({ name: 'redos', spec: '(a+)+$:redos.txt', cwd: tmp, timeoutMs: 50 })).toMatchObject({ result: 'HARD_FAIL', error_code: 'ETIMEDOUT' });
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test('json requires a regular file and bounds input before parsing', () => {
+    const tmp = makeProject();
+    try {
+      mkdirSync(join(tmp, 'directory.json'));
+      expect(runJson({ name: 'directory', spec: 'x=1:directory.json', cwd: tmp })).toMatchObject({ result: 'HARD_FAIL', error_code: 'ENOENT' });
+      const empty = JSON.stringify({ value: 1, pad: '' });
+      const boundary = JSON.stringify({ value: 1, pad: 'x'.repeat(MAX_GREP_FILE_BYTES - Buffer.byteLength(empty)) });
+      expect(Buffer.byteLength(boundary)).toBe(MAX_GREP_FILE_BYTES);
+      writeFileSync(join(tmp, 'boundary.json'), boundary);
+      expect(runJson({ name: 'boundary', spec: 'value=1:boundary.json', cwd: tmp })).toMatchObject({ result: 'PASS', actual: '1' });
+      writeFileSync(join(tmp, 'large.json'), boundary + ' ');
+      expect(runJson({ name: 'large', spec: 'value=x:large.json', cwd: tmp })).toMatchObject({ result: 'HARD_FAIL', error_code: 'E2BIG' });
     } finally { rmSync(tmp, { recursive: true, force: true }); }
   });
 

@@ -769,7 +769,8 @@ function appendTriageLedger(rows) {
   const path = triageLedgerPath();
   const existingText = existsSync(path) ? readFileSync(path, 'utf8') : '';
   const existing = parseTriageLedger(existingText).rows;
-  const seen = new Set(existing.filter(row => row.type === 'triage_outcome').map(ledgerRowKey));
+  const outcomeAppendKey = row => `${ledgerRowKey(row)}|${row.outcome || ''}`;
+  const seen = new Set(existing.filter(row => row.type === 'triage_outcome').map(outcomeAppendKey));
   const latestDecisions = new Map();
   for (const row of existing) {
     if (row.type === 'triage_decision') latestDecisions.set(`${row.reviewed_commit || ''}|${row.finding_id || ''}`, row.decision);
@@ -781,7 +782,7 @@ function appendTriageLedger(rows) {
       latestDecisions.set(identity, row.decision);
       return true;
     }
-    const key = ledgerRowKey(row);
+    const key = outcomeAppendKey(row);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -1308,7 +1309,14 @@ export function cmdVerifyReviewFix(args) {
   }
   if (reverifiedRow) {
     const finding = required.find(item => item.finding_id === reverifiedRow.finding_id) || reverifiedRow;
-    ledgerRows.push(buildLedgerRow({ ts: report.timestamp, reviewed_commit: report.reviewed_commit, finding, outcome: reverifiedRow.outcome, triage_digest: triageDigest }));
+    ledgerRows.push(buildLedgerRow({
+      ts: report.timestamp,
+      reviewed_commit: report.reviewed_commit,
+      finding,
+      outcome: reverifiedRow.outcome,
+      triage_digest: triageDigest,
+      file_snapshot: reverifiedRow.file_snapshot,
+    }));
   }
   const ledgerAppended = appendTriageLedger(ledgerRows);
 
@@ -1332,6 +1340,31 @@ export function cmdVerifyReviewFix(args) {
 // false_positive); a lens with neither is reported as unmeasured, never as 0.
 
 export function cmdReviewPrecision(args) {
+  const valueOptions = new Set(['since', 'last', 'lens', 'min-precision']);
+  const flagOptions = new Set(['json']);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg.startsWith('--')) {
+      console.error(`Unexpected positional argument: "${arg}"`);
+      process.exitCode = 1;
+      return;
+    }
+    const option = arg.slice(2);
+    if (!valueOptions.has(option) && !flagOptions.has(option)) {
+      console.error(`Unknown option: --${option}`);
+      process.exitCode = 1;
+      return;
+    }
+    if (valueOptions.has(option)) {
+      if (i + 1 >= args.length || args[i + 1].startsWith('--')) {
+        console.error(`--${option} requires a value`);
+        process.exitCode = 1;
+        return;
+      }
+      i += 1;
+    }
+  }
+
   const { opts } = parseOptions(args);
   const json = opts.json === true;
   const path = triageLedgerPath();
@@ -1350,6 +1383,11 @@ export function cmdReviewPrecision(args) {
   const minPrecision = opts['min-precision'] != null ? Number(opts['min-precision']) : null;
   if (opts['min-precision'] != null && !(minPrecision >= 0 && minPrecision <= 1)) {
     console.error(`--min-precision must be between 0 and 1 (got "${opts['min-precision']}")`);
+    process.exitCode = 1;
+    return;
+  }
+  if (opts.lens != null && !String(opts.lens).trim()) {
+    console.error('--lens requires a non-empty value');
     process.exitCode = 1;
     return;
   }

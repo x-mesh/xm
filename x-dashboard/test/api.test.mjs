@@ -11,19 +11,19 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import { spawn } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, mkdtempSync, statSync, renameSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, mkdtempSync, statSync, renameSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { SCHEMA } from '../../x-build/lib/config-schema.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// The server uses resolve(process.cwd(), '.xm') as XM_ROOT.
-// We spawn it from the xm project root so fixtures land in xm/.xm/
 const PROJECT_ROOT = resolve(__dirname, '..', '..');
 const SERVER_PATH = join(__dirname, '..', 'lib', 'x-dashboard-server.mjs');
 const TEST_PORT = 19898;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const XM_ROOT = join(PROJECT_ROOT, '.xm');
+const TEST_SANDBOX = realpathSync(mkdtempSync(join(tmpdir(), 'xdb-api-')));
+const TEST_HOME = join(TEST_SANDBOX, 'home');
+const XM_ROOT = join(TEST_SANDBOX, '.xm');
 
 // ── Test fixture setup ───────────────────────────────────────────────
 
@@ -328,8 +328,14 @@ beforeAll(async () => {
   serverProc = spawn('bun', [SERVER_PATH, '--port', String(TEST_PORT)], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    cwd: PROJECT_ROOT,
-    env: { ...process.env, NO_BROWSER: '1' },
+    cwd: TEST_SANDBOX,
+    env: {
+      ...process.env,
+      HOME: TEST_HOME,
+      XM_ROOT,
+      XM_DASHBOARD_RUN_DIR: join(TEST_SANDBOX, 'run'),
+      NO_BROWSER: '1',
+    },
   });
 
   serverProc.stderr?.on('data', () => {});
@@ -351,6 +357,7 @@ afterAll(async () => {
   try { await fetch(`${BASE}/shutdown`).catch(() => {}); } catch {}
   try { serverProc?.kill('SIGTERM'); } catch {}
   teardownFixtures();
+  rmSync(TEST_SANDBOX, { recursive: true, force: true });
 });
 
 // ── Helper ───────────────────────────────────────────────────────────
@@ -370,14 +377,17 @@ describe('GET /health', () => {
     expect(typeof body.uptime).toBe('number');
     expect(body.port).toBe(TEST_PORT);
     expect(typeof body.pid).toBe('number');
+    const isolated = await getJSON('/api/health');
+    expect(isolated.body.xmRoot).toBe(XM_ROOT);
   });
 });
 
 describe('GET /api/config', () => {
-  it('returns 200 with a mode field', async () => {
+  it('returns an isolated empty project config', async () => {
     const { res, body } = await getJSON('/api/config');
     expect(res.status).toBe(200);
-    expect(typeof body.mode).toBe('string');
+    expect(body).toMatchObject({ _tier: 'project', _empty: true });
+    expect(body._path.startsWith(XM_ROOT)).toBe(true);
   });
 });
 
@@ -1132,6 +1142,7 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
   const SERVER_SRC = readFileSync(SERVER_PATH, 'utf8');
   const SCHEMA_SRC = readFileSync(join(XM_LIB, 'config-schema.mjs'), 'utf8');
   const WORKTREE_SRC = readFileSync(join(XM_LIB, 'x-build', 'worktree-shared.mjs'), 'utf8');
+  const REVIEW_PRECISION_SRC = readFileSync(join(PROJECT_ROOT, 'x-dashboard', 'lib', 'x-build', 'review-precision.mjs'), 'utf8');
 
   async function bootSimulated(dir, port) {
     const proc = spawn('bun', [join(dir, 'server.mjs'), '--port', String(port)], {
@@ -1140,7 +1151,13 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
       cwd: dir,
       // Isolated RUN_DIR so this second instance's PID file never collides
       // with the real one the main test server (beforeAll, above) is using.
-      env: { ...process.env, NO_BROWSER: '1', XM_DASHBOARD_RUN_DIR: join(dir, 'run') },
+      env: {
+        ...process.env,
+        HOME: join(dir, 'home'),
+        XM_ROOT: join(dir, '.xm'),
+        NO_BROWSER: '1',
+        XM_DASHBOARD_RUN_DIR: join(dir, 'run'),
+      },
     });
     proc.stderr?.on('data', () => {});
     proc.stdout?.on('data', () => {});
@@ -1171,6 +1188,42 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
       const body = await res.json();
       expect(res.status).toBe(200);
       expect(body.entries.length).toBe(SCHEMA.length);
+    } finally {
+      try { proc?.kill('SIGTERM'); } catch {}
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('serves review precision from the standalone dashboard package layout', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'xdb-standalone-smoke-'));
+    let proc;
+    const port = 19893;
+    try {
+      writeFileSync(join(dir, 'server.mjs'), SERVER_SRC);
+      mkdirSync(join(dir, 'x-build'), { recursive: true });
+      writeFileSync(join(dir, 'x-build', 'review-precision.mjs'), REVIEW_PRECISION_SRC);
+      const reviewDir = join(dir, '.xm', 'review');
+      mkdirSync(reviewDir, { recursive: true });
+      writeFileSync(join(reviewDir, 'triage-ledger.jsonl'), JSON.stringify({
+        schema_v: 1,
+        type: 'triage_decision',
+        ts: '2026-08-26T00:00:00.000Z',
+        reviewed_commit: 'standalone',
+        finding_id: 'rf_standalone0001',
+        id: 'F1',
+        lens: 'logic',
+        severity: 'medium',
+        file: 'src/a.mjs',
+        decision: 'fix_now',
+        triage_digest: null,
+      }) + '\n');
+
+      proc = await bootSimulated(dir, port);
+      const res = await fetch(`http://127.0.0.1:${port}/api/review/precision`);
+      const body = await res.json();
+      expect(res.status).toBe(200);
+      expect(body.status).toBe('ok');
+      expect(body.totals).toMatchObject({ decided: 1, fix_now: 1, precision: 1 });
     } finally {
       try { proc?.kill('SIGTERM'); } catch {}
       rmSync(dir, { recursive: true, force: true });

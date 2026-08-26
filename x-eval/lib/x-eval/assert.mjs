@@ -23,6 +23,9 @@ import { createHash } from 'node:crypto';
 
 export const ASSERTION_KINDS = ['cmd', 'file', 'grep', 'json'];
 export const DEFAULT_TIMEOUT_MS = 120_000;
+export const DEFAULT_GREP_TIMEOUT_MS = 2_000;
+export const MAX_GREP_FILE_BYTES = 1024 * 1024;
+export const MAX_GREP_PATTERN_CHARS = 4_096;
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 // Characters that only mean something to a shell. Parentheses are deliberately
 // allowed: `node -e process.exit(0)` is literal argv without a shell.
@@ -154,18 +157,33 @@ export function runFile({ name, spec, cwd }) {
 }
 
 /** `[!]<regex>:<path>` — `!` means the pattern must NOT match. */
-export function runGrep({ name, spec, cwd }) {
+export function runGrep({ name, spec, cwd, timeoutMs = DEFAULT_GREP_TIMEOUT_MS }) {
   const row = { name, kind: 'grep', spec };
   const negate = spec.startsWith('!');
   const body = negate ? spec.slice(1) : spec;
   const colon = body.lastIndexOf(':');
   if (colon <= 0 || colon === body.length - 1) return finish(row, 'HARD_FAIL', { error_code: 'EINVAL', error: 'grep assertion spec must be [!]<regex>:<path>' });
-  let regex;
-  try { regex = new RegExp(body.slice(0, colon), 'm'); } catch (error) { return finish(row, 'HARD_FAIL', { error_code: 'EINVAL', error: `invalid regex: ${error.message}` }); }
+  const pattern = body.slice(0, colon);
+  if (pattern.length > MAX_GREP_PATTERN_CHARS) return finish(row, 'HARD_FAIL', { error_code: 'E2BIG', error: `grep regex exceeds ${MAX_GREP_PATTERN_CHARS} characters` });
+  try { new RegExp(pattern, 'm'); } catch (error) { return finish(row, 'HARD_FAIL', { error_code: 'EINVAL', error: `invalid regex: ${error.message}` }); }
   let full;
   try { full = containedPath(cwd, body.slice(colon + 1)); } catch (error) { return finish(row, 'HARD_FAIL', { error_code: 'EINVAL', error: error.message }); }
   if (!existsSync(full) || !statSync(full).isFile()) return finish(row, 'HARD_FAIL', { error_code: 'ENOENT', error: `file not found: ${body.slice(colon + 1)}` });
-  const matched = regex.test(readFileSync(full, 'utf8'));
+  const size = statSync(full).size;
+  if (size > MAX_GREP_FILE_BYTES) return finish(row, 'HARD_FAIL', { error_code: 'E2BIG', error: `grep file exceeds ${MAX_GREP_FILE_BYTES} bytes` });
+  const probe = [
+    "const { readFileSync } = require('node:fs');",
+    "try { process.exit(new RegExp(process.argv[1], 'm').test(readFileSync(process.argv[2], 'utf8')) ? 0 : 1); }",
+    "catch { process.exit(2); }",
+  ].join('');
+  const proc = spawnSync(process.execPath, ['-e', probe, '--', pattern, full], {
+    cwd, shell: false, timeout: Math.min(timeoutMs, DEFAULT_GREP_TIMEOUT_MS),
+    env: baseEnv(), stdio: ['ignore', 'ignore', 'ignore'],
+  });
+  if (proc.error?.code === 'ETIMEDOUT') return finish(row, 'HARD_FAIL', { error_code: 'ETIMEDOUT', error: `grep regex timed out after ${Math.min(timeoutMs, DEFAULT_GREP_TIMEOUT_MS)}ms` });
+  if (proc.error) return finish(row, 'HARD_FAIL', { error_code: proc.error.code || 'ESPAWN', error: proc.error.message });
+  if (proc.status === 2 || proc.signal) return finish(row, 'HARD_FAIL', { error_code: 'EREGEX', error: proc.signal ? `grep matcher terminated by ${proc.signal}` : 'grep matcher failed' });
+  const matched = proc.status === 0;
   return finish(row, (negate ? !matched : matched) ? 'PASS' : 'HARD_FAIL', { matched, negated: negate });
 }
 
@@ -176,6 +194,9 @@ export function runJson({ name, spec, cwd }) {
   if (!match) return finish(row, 'HARD_FAIL', { error_code: 'EINVAL', error: 'json assertion spec must be <dotted.path>=<expected>:<file>' });
   let full;
   try { full = containedPath(cwd, match[3]); } catch (error) { return finish(row, 'HARD_FAIL', { error_code: 'EINVAL', error: error.message }); }
+  if (!existsSync(full) || !statSync(full).isFile()) return finish(row, 'HARD_FAIL', { error_code: 'ENOENT', error: `file not found: ${match[3]}` });
+  const size = statSync(full).size;
+  if (size > MAX_GREP_FILE_BYTES) return finish(row, 'HARD_FAIL', { error_code: 'E2BIG', error: `JSON file exceeds ${MAX_GREP_FILE_BYTES} bytes` });
   let doc;
   try { doc = JSON.parse(readFileSync(full, 'utf8')); } catch (error) { return finish(row, 'HARD_FAIL', { error_code: 'EPARSE', error: `cannot read JSON: ${error.message}` }); }
   let value = doc;
@@ -197,7 +218,7 @@ export function runAssertions(items, { cwd = process.cwd(), timeoutMs = DEFAULT_
     switch (item.kind) {
       case 'cmd': results.push(runCmd({ name: item.name, command: item.command ?? item.spec, cwd, timeoutMs, envKeys })); break;
       case 'file': results.push(runFile({ name: item.name, spec: item.spec, cwd })); break;
-      case 'grep': results.push(runGrep({ name: item.name, spec: item.spec, cwd })); break;
+      case 'grep': results.push(runGrep({ name: item.name, spec: item.spec, cwd, timeoutMs })); break;
       case 'json': results.push(runJson({ name: item.name, spec: item.spec, cwd })); break;
       default: results.push({ name: item.name || '?', kind: String(item.kind), result: 'HARD_FAIL', error_code: 'EINVAL', error: `unknown assertion kind "${item.kind}"` });
     }

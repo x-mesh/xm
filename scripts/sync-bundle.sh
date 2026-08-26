@@ -277,6 +277,9 @@ mirror_file_tree "x-eval/lib/x-eval" "xm/lib/x-eval"
 
 echo ""
 echo "=== Syncing x-dashboard lib + public ==="
+# x-dashboard ships independently from x-build, so vendor the pure precision
+# module into its plugin layout. The x-build source remains authoritative.
+sync_file "x-build/lib/x-build/review-precision.mjs" "x-dashboard/lib/x-build/review-precision.mjs"
 sync_file "x-dashboard/lib/x-dashboard-server.mjs" "xm/lib/x-dashboard-server.mjs"
 ensure_dir "xm/public"
 # Mirror public/ wholesale including subdirectories (e.g. vendor/) so bundled assets

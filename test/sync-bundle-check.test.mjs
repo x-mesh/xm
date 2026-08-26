@@ -23,7 +23,7 @@ function runSync(cwd) {
 
 function copyTrackedRepo() {
   const tmp = mkdtempSync(join(tmpdir(), 'xm-sync-check-'));
-  const files = spawnSync('git', ['ls-files'], { cwd: REPO, encoding: 'utf8' })
+  const files = spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], { cwd: REPO, encoding: 'utf8' })
     .stdout
     .trim()
     .split('\n')
@@ -54,6 +54,23 @@ describe('sync-bundle.sh --check', () => {
       expect(r.status).not.toBe(0);
       expect(`${r.stdout}\n${r.stderr}`).toContain('DIVERGED');
       expect(readFileSync(bundleFile, 'utf8')).toBe(drifted);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('detects drift in the standalone dashboard precision module', () => {
+    const tmp = copyTrackedRepo();
+    try {
+      const packagedFile = join(tmp, 'x-dashboard', 'lib', 'x-build', 'review-precision.mjs');
+      const before = readFileSync(packagedFile, 'utf8');
+      const drifted = `${before}\n// intentional standalone package drift\n`;
+      writeFileSync(packagedFile, drifted);
+
+      const r = runSync(tmp);
+      expect(r.status).not.toBe(0);
+      expect(`${r.stdout}\n${r.stderr}`).toContain('DIVERGED x-dashboard/lib/x-build/review-precision.mjs');
+      expect(readFileSync(packagedFile, 'utf8')).toBe(drifted);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

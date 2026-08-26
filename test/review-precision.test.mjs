@@ -159,6 +159,28 @@ describe('review-precision: aggregation', () => {
     expect(ledgerRowKey(row())).toBe('triage_decision|c1|rf_0000000000000001|fix_now');
   });
 
+  test('outcome identity follows the lifecycle file snapshot', () => {
+    const firstSnapshot = { file: 'src/a.mjs', exists: true, sha256: 'a'.repeat(64) };
+    const secondSnapshot = { file: 'src/a.mjs', exists: true, sha256: 'b'.repeat(64) };
+    const first = row({ decision: undefined, outcome: 'persistent', file_snapshot: firstSnapshot });
+    const repeated = row({ ts: '2026-08-21T00:00:00.000Z', decision: undefined, outcome: 'persistent', file_snapshot: firstSnapshot });
+    const reclassified = row({ ts: '2026-08-22T00:00:00.000Z', decision: undefined, outcome: 'resolved', file_snapshot: firstSnapshot });
+    const changedBytes = row({ ts: '2026-08-22T00:00:00.000Z', decision: undefined, outcome: 'persistent', file_snapshot: secondSnapshot });
+
+    expect(ledgerRowKey(first)).toBe(ledgerRowKey(repeated));
+    expect(ledgerRowKey(reclassified)).toBe(ledgerRowKey(first));
+    expect(ledgerRowKey(changedBytes)).not.toBe(ledgerRowKey(first));
+    expect(aggregateLensPrecision([first, repeated, reclassified, changedBytes]).totals).toMatchObject({ resolved: 1, persistent: 1 });
+  });
+
+  test('legacy outcomes without snapshots preserve their outcome-based identity', () => {
+    const persistent = row({ decision: undefined, outcome: 'persistent' });
+    const resolved = row({ ts: '2026-08-21T00:00:00.000Z', decision: undefined, outcome: 'resolved' });
+
+    expect(ledgerRowKey(persistent)).not.toBe(ledgerRowKey(resolved));
+    expect(aggregateLensPrecision([persistent, resolved]).totals).toMatchObject({ persistent: 1, resolved: 1 });
+  });
+
   test('latest decision wins and every contributing lens receives attribution', () => {
     const multiLens = finding({ lenses: ['security', 'performance'] });
     const rows = [
@@ -187,6 +209,20 @@ describe('review-precision: aggregation', () => {
     const onlyLogic = aggregateLensPrecision(rows, { lens: 'logic', now });
     expect(onlyLogic.lenses.map(b => b.lens)).toEqual(['logic']);
     expect(onlyLogic.totals).toMatchObject({ fix_now: 1, false_positive: 1, precision: 0.5 });
+  });
+
+  test('last window remains fast for a large ledger', () => {
+    const rows = Array.from({ length: 30_000 }, (_, index) => row({
+      ts: new Date(Date.parse('2026-08-26T00:00:00.000Z') - index * 1000).toISOString(),
+      reviewed_commit: `commit-${index}`,
+      finding: finding({ finding_id: `rf_${index.toString(16).padStart(16, '0')}` }),
+    }));
+    const started = performance.now();
+    const filtered = filterLedgerRows(rows, { last: 20 });
+    const elapsedMs = performance.now() - started;
+
+    expect(filtered).toHaveLength(20);
+    expect(elapsedMs).toBeLessThan(1500);
   });
 
   test('lensesBelowPrecision flags measured lenses under the threshold only', () => {
@@ -240,7 +276,10 @@ describe('review-precision: ledger written by verify-review-fix', () => {
       expect(reverify.exitCode).toBe(0);
       const afterReverify = ledgerRows(tmp);
       expect(afterReverify.length).toBe(3);
-      expect(afterReverify[2]).toMatchObject({ type: 'triage_outcome', outcome: 'resolved', lens: 'logic', id: 'F1' });
+      expect(afterReverify[2]).toMatchObject({
+        type: 'triage_outcome', outcome: 'resolved', lens: 'logic', id: 'F1',
+        file_snapshot: { file: 'src/auth.ts', exists: true },
+      });
 
       const report = run(['review-precision', '--json'], { cwd: tmp });
       expect(report.exitCode).toBe(0);
@@ -350,6 +389,38 @@ describe('review-precision: ledger written by verify-review-fix', () => {
     }
   });
 
+  test('the latest outcome wins per file snapshot while exact re-runs stay idempotent', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-rp-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, { findings: [
+        { severity: 'high', lens: 'logic', file: 'src/auth.ts', line: 42, summary: 'Auth bypass on missing token' },
+      ] });
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'attempt one\n');
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'persistent', '--evidence', 'still fails'], { cwd: tmp }).exitCode).toBe(1);
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'persistent', '--evidence', 'still fails'], { cwd: tmp }).exitCode).toBe(1);
+      expect(ledgerRows(tmp).filter(entry => entry.type === 'triage_outcome')).toHaveLength(1);
+
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'reclassified after checking the same bytes'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'reclassified after checking the same bytes'], { cwd: tmp }).exitCode).toBe(0);
+      const reclassified = ledgerRows(tmp).filter(entry => entry.type === 'triage_outcome');
+      expect(reclassified.map(entry => entry.outcome)).toEqual(['persistent', 'resolved']);
+      expect(aggregateLensPrecision(reclassified).totals).toMatchObject({ persistent: 0, resolved: 1 });
+
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'attempt two\n');
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'persistent', '--evidence', 'still fails'], { cwd: tmp }).exitCode).toBe(1);
+      const outcomes = ledgerRows(tmp).filter(entry => entry.type === 'triage_outcome');
+      expect(outcomes).toHaveLength(3);
+      expect(new Set(outcomes.map(entry => entry.file_snapshot.sha256)).size).toBe(2);
+      expect(aggregateLensPrecision(outcomes).totals).toMatchObject({ persistent: 1, resolved: 1 });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('review-precision without a ledger explains how rows are produced', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-rp-'));
     try {
@@ -371,6 +442,16 @@ describe('review-precision: ledger written by verify-review-fix', () => {
       expect(run(['review-precision', '--since', 'soon'], { cwd: tmp }).exitCode).toBe(1);
       expect(run(['review-precision', '--last', '0'], { cwd: tmp }).exitCode).toBe(1);
       expect(run(['review-precision', '--min-precision', '7'], { cwd: tmp }).exitCode).toBe(1);
+      for (const args of [
+        ['review-precision', '--unknown'],
+        ['review-precision', '30d'],
+        ['review-precision', '--since'],
+        ['review-precision', '--last'],
+        ['review-precision', '--lens'],
+        ['review-precision', '--min-precision'],
+      ]) {
+        expect(run(args, { cwd: tmp }).exitCode).toBe(1);
+      }
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

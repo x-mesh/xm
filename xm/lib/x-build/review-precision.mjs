@@ -50,7 +50,7 @@ function rowLenses(row) {
 }
 
 /** Build one ledger row. `decision` xor `outcome` decides the row type. */
-export function buildLedgerRow({ ts, reviewed_commit, finding, decision, outcome, triage_digest }) {
+export function buildLedgerRow({ ts, reviewed_commit, finding, decision, outcome, triage_digest, file_snapshot }) {
   const lenses = findingLenses(finding);
   const base = {
     schema_v: TRIAGE_LEDGER_SCHEMA_V,
@@ -63,6 +63,7 @@ export function buildLedgerRow({ ts, reviewed_commit, finding, decision, outcome
     severity: normalizeLedgerSeverity(finding.severity),
     file: finding.file || null,
     triage_digest: triage_digest || null,
+    ...(outcome && file_snapshot ? { file_snapshot } : {}),
   };
   if (outcome) return { ...base, type: 'triage_outcome', outcome };
   return { ...base, type: 'triage_decision', decision };
@@ -71,6 +72,12 @@ export function buildLedgerRow({ ts, reviewed_commit, finding, decision, outcome
 /** Identity used to keep re-runs of the gate from double-counting. */
 export function ledgerRowKey(row) {
   const value = row.type === 'triage_outcome' ? row.outcome : row.decision;
+  if (row.type === 'triage_outcome' && row.file_snapshot) {
+    const snapshot = `${row.file_snapshot.file || ''}|${row.file_snapshot.exists ?? ''}|${row.file_snapshot.sha256 || ''}`;
+    return `${row.type}|${row.reviewed_commit || ''}|${row.finding_id || ''}|${snapshot}`;
+  }
+  // Schema-v1 outcomes written before file snapshots existed retain their old
+  // identity because there is no reliable attempt boundary to reclassify.
   return `${row.type}|${row.reviewed_commit || ''}|${row.finding_id || ''}|${value || ''}`;
 }
 
@@ -120,8 +127,8 @@ function timeOf(row) {
  * Rows are de-duplicated by ledgerRowKey first so repeated gate runs count once.
  */
 export function filterLedgerRows(rows, { since = null, last = null, lens = null, now = Date.now() } = {}) {
-  const seen = new Set();
   const decisionIndexes = new Map();
+  const outcomeIndexes = new Map();
   const kept = [];
   for (const row of rows) {
     if (row.type === 'triage_decision') {
@@ -134,10 +141,13 @@ export function filterLedgerRows(rows, { since = null, last = null, lens = null,
       }
       continue;
     }
-    const key = ledgerRowKey(row);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    kept.push(row);
+    const identity = ledgerRowKey(row);
+    const previous = outcomeIndexes.get(identity);
+    if (previous != null) kept[previous] = row;
+    else {
+      outcomeIndexes.set(identity, kept.length);
+      kept.push(row);
+    }
   }
   let filtered = kept;
   if (lens) {
@@ -152,13 +162,11 @@ export function filterLedgerRows(rows, { since = null, last = null, lens = null,
     }
   }
   if (last != null && Number(last) > 0) {
-    const order = [];
     const firstSeen = new Map();
     for (const row of filtered) {
       const commit = row.reviewed_commit || '';
       const t = timeOf(row) ?? 0;
       if (!firstSeen.has(commit) || t > firstSeen.get(commit)) firstSeen.set(commit, t);
-      if (!order.includes(commit)) order.push(commit);
     }
     const recent = [...firstSeen.entries()].sort((a, b) => b[1] - a[1]).slice(0, Number(last)).map(([commit]) => commit);
     const allowed = new Set(recent);

@@ -204,7 +204,13 @@ export function collectPrecisionRows(ledgerPath) {
     if (entry.schema_v !== 1 || entry.type !== 'triage_decision') continue;
     const ts = timeOf(entry.ts);
     if (!Number.isFinite(ts)) continue;
-    rows.push({ ts, lens: entry.lens || 'unknown', decision: entry.decision });
+    const values = [entry.lens, ...(Array.isArray(entry.lenses) ? entry.lenses : [])];
+    const lenses = [...new Set(values
+      .filter(value => typeof value === 'string' && value.trim())
+      .map(value => value.trim().toLowerCase()))];
+    for (const lens of lenses.length > 0 ? lenses : ['unknown']) {
+      rows.push({ ts, lens, decision: entry.decision });
+    }
   }
   return { rows, skipped: parsed.skipped };
 }

@@ -1,8 +1,8 @@
 import { describe, test, expect } from 'bun:test';
-import { buildManifest, aggregateRun, validateRecord, parseStrategies, jobIdFor, CONTROL_ARM, MIN_DELTA_VS_DIRECT } from '../x-eval/lib/x-eval/bench.mjs';
+import { buildManifest, aggregateRun, validateRecord, validateManifest, parseStrategies, jobIdFor, CONTROL_ARM, MIN_DELTA_VS_DIRECT, MAX_TRIALS } from '../x-eval/lib/x-eval/bench.mjs';
 import { compareBench } from '../x-eval/lib/x-eval/gate.mjs';
 import { mean, sigma, median, round } from '../x-eval/lib/x-eval/stats.mjs';
-import { buildCase, caseId, passThresholdFor, DEFAULT_TRIALS } from '../x-eval/lib/x-eval/cases.mjs';
+import { buildCase, caseId, passThresholdFor, DEFAULT_TRIALS, validateCase } from '../x-eval/lib/x-eval/cases.mjs';
 
 const caseA = buildCase({ prompt: 'Find the bug in this code', rubric: 'general', tags: ['op'], createdAt: '2026-08-26T00:00:00.000Z' });
 const caseHigh = buildCase({ prompt: 'Harden the parser', rubric: 'code-quality', tags: ['op', 'risk'], risk: 'high', minOverall: 8, createdAt: '2026-08-26T00:00:00.000Z' });
@@ -43,6 +43,15 @@ describe('cases', () => {
     expect(() => buildCase({ prompt: 'x', risk: 'extreme' })).toThrow(/risk/);
     expect(() => buildCase({ prompt: 'x', assertions: [{ kind: 'cmd', name: 'bad name', spec: 'ls' }] })).toThrow(/must match/);
   });
+
+  test('stored task cases revalidate every identity and execution field', () => {
+    const bad = [
+      { v: 2 }, { type: 'other' }, { id: 'case-000000000000000000000000' },
+      { prompt: 42 }, { rubric: '../bad' }, { risk: 'extreme' }, { tags: 'op' },
+      { assertions: 'none' }, { expected: [] }, { expected: { min_overall: '8' } },
+    ];
+    for (const patch of bad) expect(() => validateCase({ ...caseA, ...patch }, caseA.id)).toThrow();
+  });
 });
 
 describe('bench manifest', () => {
@@ -55,11 +64,21 @@ describe('bench manifest', () => {
     expect(jobsA.length).toBe(3 * DEFAULT_TRIALS.normal);
     expect(jobsHigh.length).toBe(3 * DEFAULT_TRIALS.high);
     expect(manifest.jobs[0].job_id).toBe(jobIdFor(caseA.id, 'direct', 1));
+    expect(jobIdFor('case-aaaaaaaa0000000000000000', 'refine', 1)).not.toBe(jobIdFor('case-aaaaaaaa1111111111111111', 'refine', 1));
     const noDirect = buildManifest({ cases: [caseA], strategies: ['refine'], includeDirect: false, trials: 2 });
     expect(noDirect.arms).toEqual(['refine']);
     expect(noDirect.control).toBeNull();
     expect(noDirect.jobs.length).toBe(2);
     expect(() => buildManifest({ cases: [caseA], strategies: [] })).toThrow(/at least one strategy/);
+    expect(() => buildManifest({ cases: [caseA], strategies: ['refine'], trials: MAX_TRIALS + 1 })).toThrow(/between 1 and/);
+    const manyStrategies = Array.from({ length: 100 }, (_, index) => `s${index}`);
+    expect(() => buildManifest({ cases: [caseA, caseHigh], strategies: manyStrategies, trials: 100 })).toThrow(/10000 total jobs/);
+    const duplicateJob = structuredClone(manifest);
+    duplicateJob.jobs[1] = { ...duplicateJob.jobs[0] };
+    expect(() => validateManifest(duplicateJob, duplicateJob.run_id)).toThrow(/unique|invalid job/);
+    const thresholdTamper = structuredClone(manifest);
+    thresholdTamper.cases[0].pass_threshold = 0;
+    expect(() => validateManifest(thresholdTamper, thresholdTamper.run_id)).toThrow(/metadata changed/);
     expect(() => parseStrategies('Refine;rm')).toThrow(/strategy/);
     expect(parseStrategies('brainstorm|tournament|refine, debate')).toEqual(['brainstorm|tournament|refine', 'debate']);
   });
@@ -72,7 +91,7 @@ describe('bench records', () => {
     expect(validateRecord({ overall: 6.9 }, { passThreshold: 7 }).passed).toBe(false);
     expect(validateRecord({ overall: 6.9, passed: true }, { passThreshold: 7 }).passed).toBe(false);
     expect(validateRecord({ overall: 9, passed: false }, { passThreshold: 7 }).passed).toBe(false);
-    const hard = validateRecord({ overall: 9, assertion_results: [{ name: 'tests', result: 'HARD_FAIL', source: 'executable' }] }, { passThreshold: 7 });
+    const hard = validateRecord({ overall: 9, assertion_results: [{ name: 'tests', kind: 'cmd', result: 'HARD_FAIL', source: 'executable' }] }, { passThreshold: 7 });
     expect(hard.passed).toBe(false);
     expect(hard.assertion_hard_fail).toBe(true);
     expect(() => validateRecord({ overall: 8, output: 'leak' }, { passThreshold: 7 })).toThrow(/output text/);
@@ -80,6 +99,13 @@ describe('bench records', () => {
     expect(() => validateRecord({ overall: '8' }, { passThreshold: 7 })).toThrow(/overall/);
     expect(() => validateRecord({ overall: 8, output_sha256: 'zz' }, { passThreshold: 7 })).toThrow(/sha256/);
     expect(() => validateRecord({ overall: 8, cost_usd_est: -1 }, { passThreshold: 7 })).toThrow(/cost/);
+    expect(() => validateRecord({ overall: 8, passed: 'yes' }, { passThreshold: 7 })).toThrow(/boolean/);
+    expect(() => validateRecord({ overall: 8, per_criterion: { 'bad name': 8 } }, { passThreshold: 7 })).toThrow(/identifier/);
+    expect(() => validateRecord({ overall: 8, per_criterion: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`c${i}`, 8])) }, { passThreshold: 7 })).toThrow(/at most 64/);
+    expect(() => validateRecord({ overall: 8, judges: Array.from({ length: 17 }, (_, i) => `j${i}`) }, { passThreshold: 7 })).toThrow(/1-16/);
+    expect(() => validateRecord({ overall: 8, judges: ['good', 'bad judge'] }, { passThreshold: 7 })).toThrow(/identifier/);
+    expect(() => validateRecord({ overall: 8, note: 'not in schema' }, { passThreshold: 7 })).toThrow(/unsupported field/);
+    expect(() => validateRecord({ overall: 8, assertion_results: [{ assertion: 'safe', result: 'PASS', source: 'judge', output: 'leak' }] }, { passThreshold: 7 })).toThrow(/unsupported field/);
   });
 });
 
@@ -110,6 +136,18 @@ describe('bench aggregation (subcommands/bench.md rules)', () => {
     expect(result.recommendation.final).toBe('direct');
     expect(result.recommendation.reason).toContain(`≥ ${MIN_DELTA_VS_DIRECT}`);
     expect(result.strategies.find(s => s.name === 'refine').delta_vs_direct).toBe(0.3);
+  });
+
+  test('a below-delta reliable candidate is skipped before considering later reliable strategies', () => {
+    const records = recordsFor(manifest, {
+      direct: [8.0, 7.6, 8.4],
+      refine: [8.4, 8.2, 8.3],
+      debate: [9.0, 9.1, 8.9],
+      tournament: [6, 6, 6],
+    });
+    const result = aggregateRun(manifest, records);
+    expect(result.strategies.find(s => s.name === 'refine').delta_vs_direct).toBe(0.3);
+    expect(result.recommendation.final).toBe('debate');
   });
 
   test('a strategy that clearly beats direct is recommended over it', () => {
@@ -148,6 +186,9 @@ describe('bench aggregation (subcommands/bench.md rules)', () => {
     expect(result.partial).toBe(true);
     expect(result.missing_jobs.length).toBe(12 - 5);
     expect(result.strategies.find(s => s.name === 'refine').trials).toBe(2);
+    expect(result.strategies.find(s => s.name === 'refine').pass_hat_k).toBeNull();
+    expect(result.recommendation).toMatchObject({ best_quality: null, best_value: null, final: null, best_effort: null });
+    expect(result.recommendation.reason).toContain('withheld');
   });
 
   test('low-confidence advisory when the pick has σ ≥ 1.0 at ≤ 3 trials', () => {

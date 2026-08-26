@@ -107,6 +107,8 @@ describe('xm eval case', () => {
       expect(cli(dir, ['case', 'list', '--wat', 'x']).code).toBe(2);
       expect(cli(dir, ['case', 'list', 'unused']).code).toBe(2);
       expect(cli(dir, ['bench', 'plan', '--set', 'smoke', '--strategies', 'refine']).code).toBe(2); // no cases yet
+      addCases(dir);
+      expect(cli(dir, ['bench', 'plan', '--set', 'smoke', '--strategies', 'refine', '--trials', '101']).code).toBe(2);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -149,8 +151,12 @@ describe('xm eval bench plan → record → finish', () => {
       expect(existsSync(plan.manifest)).toBe(true);
 
       // first direct trial of case A (file assertion only → a single executable row)
-      const job = plan.job_ids.find(id => id.startsWith(`${a.id.slice(5, 13)}.direct.`));
+      const job = plan.job_ids.find(id => id.startsWith(`${a.id}.direct.`));
       const scoreFile = join(dir, 'score.json');
+      writeFileSync(scoreFile, JSON.stringify({ overall: 8.2, pad: 'x'.repeat(70_000) }));
+      const oversized = cli(dir, ['bench', 'record', '--run', plan.run_id, '--job', job, '--score-file', scoreFile]);
+      expect(oversized.code).toBe(2);
+      expect(oversized.stderr).toContain('exceeds 65536 bytes');
       writeFileSync(scoreFile, JSON.stringify({ overall: 8.2, output: 'raw model text' }));
       const leak = cli(dir, ['bench', 'record', '--run', plan.run_id, '--job', job, '--score-file', scoreFile]);
       expect(leak.code).toBe(2);
@@ -180,6 +186,8 @@ describe('xm eval bench plan → record → finish', () => {
       expect(forced.missing_jobs.length).toBe(plan.jobs - 1);
       expect(forced.strategies.find(s => s.name === 'direct').trials).toBe(1);
       expect(existsSync(forced.path)).toBe(true);
+      expect(forced.path).toContain(`${plan.run_id}-bench.json`);
+      expect(cli(dir, ['bench', 'finish', '--run', plan.run_id, '--allow-partial']).code).toBe(2);
       expect(b.id).toBeTruthy();
       expect(a.id).toBeTruthy();
     } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -220,7 +228,7 @@ describe('xm eval bench plan → record → finish', () => {
       writeFileSync(casePath, JSON.stringify({ ...payload, risk: 'high' }));
       const score = join(dir, 'drift-score.json');
       writeFileSync(score, JSON.stringify({ overall: 8 }));
-      const job = changed.job_ids.find(id => id.startsWith(a.id.slice(5, 13)));
+      const job = changed.job_ids.find(id => id.startsWith(a.id));
       const drift = cli(dir, ['bench', 'record', '--run', changed.run_id, '--job', job, '--score-file', score]);
       expect(drift.code).toBe(2);
       expect(drift.stderr).toContain('changed after bench plan');
@@ -236,6 +244,78 @@ describe('xm eval bench plan → record → finish', () => {
         expect(missing.code).toBe(2);
         expect(missing.stderr).toContain('deleted after bench plan');
       } finally { rmSync(fresh, { recursive: true, force: true }); }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('finish rejects record filename, identity, and derived-score tampering', () => {
+    const dir = makeProject();
+    try {
+      addCases(dir);
+      const plan = planRun(dir, ['--trials', '1']);
+      const score = join(dir, 'score.json');
+      writeFileSync(score, JSON.stringify({ overall: 8, judges: 3 }));
+      const first = json(cli(dir, ['bench', 'record', '--run', plan.run_id, '--job', plan.job_ids[0], '--score-file', score, '--json']));
+      const payload = JSON.parse(readFileSync(first.path, 'utf8'));
+      const recordsDir = join(dir, '.xm', 'eval', 'runs', plan.run_id, 'records');
+
+      const rogue = join(recordsDir, 'rogue.json');
+      writeFileSync(rogue, JSON.stringify(payload));
+      let rejected = cli(dir, ['bench', 'finish', '--run', plan.run_id, '--allow-partial']);
+      expect(rejected.code).toBe(2);
+      expect(rejected.stderr).toContain('invalid record');
+      rmSync(rogue);
+
+      writeFileSync(first.path, JSON.stringify({ ...payload, case_id: plan.case_ids[1] }));
+      rejected = cli(dir, ['bench', 'finish', '--run', plan.run_id, '--allow-partial']);
+      expect(rejected.code).toBe(2);
+      expect(rejected.stderr).toContain('invalid record');
+
+      writeFileSync(first.path, JSON.stringify({ ...payload, assertion_results: [{ assertion: 'safe', result: 'PASS', source: 'judge', output: 'leak' }] }));
+      rejected = cli(dir, ['bench', 'finish', '--run', plan.run_id, '--allow-partial']);
+      expect(rejected.code).toBe(2);
+      expect(rejected.stderr).toContain('invalid record');
+
+      writeFileSync(first.path, JSON.stringify({ ...payload, overall: 1, passed: true }));
+      rejected = cli(dir, ['bench', 'finish', '--run', plan.run_id, '--allow-partial']);
+      expect(rejected.code).toBe(2);
+      expect(rejected.stderr).toContain('invalid record');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('finish recovers an identical orphaned result and rejects different bytes', () => {
+    const dir = makeProject();
+    try {
+      addCases(dir);
+      const recovered = planRun(dir, ['--trials', '1']);
+      recordAll(dir, recovered, () => 8);
+      const first = json(cli(dir, ['bench', 'finish', '--run', recovered.run_id, '--json']));
+      const originalBytes = readFileSync(first.path, 'utf8');
+      const manifestPath = recovered.manifest;
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      delete manifest.finished_at;
+      delete manifest.result_path;
+      manifest.status = 'open';
+      writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+
+      const retried = json(cli(dir, ['bench', 'finish', '--run', recovered.run_id, '--json']));
+      expect(readFileSync(first.path, 'utf8')).toBe(originalBytes);
+      const finalized = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      expect(finalized).toMatchObject({ status: 'finished', finished_at: retried.timestamp, result_path: first.path });
+
+      const rejected = planRun(dir, ['--trials', '1']);
+      recordAll(dir, rejected, () => 8);
+      const second = json(cli(dir, ['bench', 'finish', '--run', rejected.run_id, '--json']));
+      const secondManifest = JSON.parse(readFileSync(rejected.manifest, 'utf8'));
+      delete secondManifest.finished_at;
+      delete secondManifest.result_path;
+      secondManifest.status = 'open';
+      writeFileSync(rejected.manifest, JSON.stringify(secondManifest, null, 2) + '\n');
+      writeFileSync(second.path, readFileSync(second.path, 'utf8') + ' ');
+
+      const mismatch = cli(dir, ['bench', 'finish', '--run', rejected.run_id]);
+      expect(mismatch.code).toBe(2);
+      expect(mismatch.stderr).toContain('bytes do not match');
+      expect(JSON.parse(readFileSync(rejected.manifest, 'utf8')).status).toBe('open');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -279,6 +359,13 @@ describe('xm eval gate', () => {
       const loose = cli(dir, ['gate', '--run', regressed.run_id, '--baseline', baseline.run_id, '--max-avg-drop', '5', '--json']);
       expect(loose.code).toBe(3);
       expect(JSON.parse(loose.stdout).blockers.map(b => b.code)).toEqual(['pass_hat_k_lost']);
+
+      expect(cli(dir, ['gate', '--run', regressed.run_id, '--baseline', baseline.run_id, '--max-avg-drop', '0']).code).toBe(3);
+      for (const value of ['-0.1', 'Infinity', '1e309']) {
+        const invalid = cli(dir, ['gate', '--run', regressed.run_id, '--baseline', baseline.run_id, '--max-avg-drop', value]);
+        expect(invalid.code).toBe(2);
+        expect(invalid.stderr).toContain('finite non-negative number');
+      }
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

@@ -13,11 +13,11 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, linkSync, unlinkSync, lstatSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, linkSync, unlinkSync, lstatSync, statSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { evalDir, projectRoot } from './root.mjs';
-import { DEFAULT_TRIALS, caseFingerprint, passThresholdFor, readCase } from './cases.mjs';
-import { runAssertions } from './assert.mjs';
+import { DEFAULT_TRIALS, caseFingerprint, passThresholdFor, readCase, validateCase } from './cases.mjs';
+import { ASSERTION_KINDS, runAssertions } from './assert.mjs';
 import { mean, sigma, round } from './stats.mjs';
 
 export const RUN_SCHEMA_V = 1;
@@ -27,11 +27,30 @@ export const BROKEN_TASK_AVG = 4.5;
 /** A strategy is recommended over the single-agent control only when it beats it by this much. */
 export const MIN_DELTA_VS_DIRECT = 0.5;
 export const BEST_VALUE_MIN_PASS_RATE = 0.67;
+export const MAX_TRIALS = 100;
+export const MAX_TOTAL_JOBS = 10_000;
+export const MAX_RECORD_BYTES = 64 * 1024;
 /** Keys a record may never carry: metrics, not model output, live in `.xm/eval/runs/`. */
 export const FORBIDDEN_RECORD_KEYS = ['output', 'content', 'prompt', 'transcript', 'raw', 'response', 'text', 'rationale', 'judge_rationales'];
 const ARM_RE = /^[a-z][a-z0-9-]{0,31}(\|[a-z][a-z0-9-]{0,31})*$/;
 const RUN_ID_RE = /^bench-\d{8}T\d{6}Z-[0-9a-f]{4}$/;
 const SHA_RE = /^[0-9a-f]{64}$/;
+const CASE_ID_RE = /^case-[0-9a-f]{24}$/;
+const IDENTIFIER_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+const CONFIDENCE_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/;
+const RUBRIC_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const TAG_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,63}$/;
+const MAX_CASES = 1_000;
+const MAX_ARMS = 128;
+const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
+const MAX_BENCH_RESULT_BYTES = MAX_MANIFEST_BYTES;
+const MAX_CRITERIA = 64;
+const MAX_JUDGES = 16;
+const MAX_ASSERTION_RESULTS = 128;
+const ASSERTION_RESULT_KEYS = new Set(['result', 'source', 'name', 'assertion', 'kind', 'confidence', 'exit_code', 'duration_ms', 'command_sha256']);
+const RAW_RECORD_KEYS = new Set(['overall', 'per_criterion', 'judges', 'output_sha256', 'cost_usd_est', 'duration_ms', 'sigma', 'assertion_results', 'passed']);
+const STORED_RECORD_KEYS = new Set(['v', 'type', 'run_id', 'job_id', 'case_id', 'arm', 'trial', 'recorded_at', 'pass_threshold', 'cost_source', 'assertion_hard_fail', ...RAW_RECORD_KEYS]);
+const MANIFEST_CASE_KEYS = new Set(['id', 'rubric', 'risk', 'tags', 'trials', 'pass_threshold', 'assertions', 'case_sha256', 'case_meta_sha256']);
 
 export function runsDir() { return evalDir('runs'); }
 export function benchmarksDir() { return evalDir('benchmarks'); }
@@ -47,7 +66,7 @@ export function newRunId(now = new Date()) {
 }
 
 export function jobIdFor(caseId, arm, trial) {
-  return `${String(caseId).slice(5, 13)}.${arm}.t${trial}`;
+  return `${caseId}.${arm}.t${trial}`;
 }
 
 /** Validate and de-duplicate arm names; `direct` is the control, never a strategy. */
@@ -60,28 +79,38 @@ export function parseStrategies(value) {
 export function buildManifest({ cases, strategies, includeDirect = true, trials = null, runId = newRunId(), createdAt = new Date().toISOString() }) {
   if (!cases?.length) throw new Error('bench plan needs at least one case');
   if (!strategies?.length) throw new Error('bench plan needs at least one strategy (--strategies "refine,debate")');
-  if (trials != null && (!Number.isInteger(trials) || trials <= 0)) throw new Error('--trials must be a positive integer');
+  if (trials != null && (!Number.isInteger(trials) || trials <= 0 || trials > MAX_TRIALS)) throw new Error(`--trials must be an integer between 1 and ${MAX_TRIALS}`);
   const arms = includeDirect ? [CONTROL_ARM, ...strategies] : [...strategies];
+  if (new Set(arms).size !== arms.length) throw new Error('bench plan arms must be unique');
   const manifestCases = [];
   const jobs = [];
   for (const item of cases) {
+    validateCase(item, item?.id);
     const n = trials ?? DEFAULT_TRIALS[item.risk || 'normal'] ?? DEFAULT_TRIALS.normal;
-    manifestCases.push({ id: item.id, rubric: item.rubric || 'general', risk: item.risk || 'normal', tags: item.tags || [], trials: n, pass_threshold: passThresholdFor(item), assertions: (item.assertions || []).length, case_sha256: caseFingerprint(item) });
+    if (!Number.isInteger(n) || n <= 0 || n > MAX_TRIALS) throw new Error(`case ${item.id} trials must be between 1 and ${MAX_TRIALS}`);
+    const caseMeta = { id: item.id, rubric: item.rubric || 'general', risk: item.risk || 'normal', tags: item.tags || [], trials: n, pass_threshold: passThresholdFor(item), assertions: (item.assertions || []).length, case_sha256: caseFingerprint(item) };
+    manifestCases.push({ ...caseMeta, case_meta_sha256: caseFingerprint(caseMeta) });
     for (const arm of arms) for (let t = 1; t <= n; t++) jobs.push({ job_id: jobIdFor(item.id, arm, t), case_id: item.id, arm, trial: t });
+    if (jobs.length > MAX_TOTAL_JOBS) throw new Error(`bench plan exceeds ${MAX_TOTAL_JOBS} total jobs`);
   }
-  return {
+  const manifest = {
     v: RUN_SCHEMA_V, type: 'bench-run', run_id: runId, status: 'open', created_at: createdAt,
     control: includeDirect ? CONTROL_ARM : null, arms, trials_default: trials ?? DEFAULT_TRIALS,
     cases: manifestCases, jobs,
   };
+  return validateManifest(manifest, runId);
 }
 
 function writeCreateOnly(path, payload, what) {
   const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+    writeFileSync(tmp, serializeJson(payload), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     try { linkSync(tmp, path); } catch (err) {
-      if (err?.code === 'EEXIST') throw new Error(`${what} already exists: ${path}`);
+      if (err?.code === 'EEXIST') {
+        const conflict = new Error(`${what} already exists: ${path}`);
+        conflict.code = 'EEXIST';
+        throw conflict;
+      }
       throw err;
     }
   } finally {
@@ -89,86 +118,216 @@ function writeCreateOnly(path, payload, what) {
   }
 }
 
+function serializeJson(payload) {
+  return JSON.stringify(payload, null, 2) + '\n';
+}
+
 export function writeManifest(manifest) {
+  validateManifest(manifest, manifest?.run_id);
+  const base = runsDir();
+  mkdirSync(base, { recursive: true });
+  if (lstatSync(base).isSymbolicLink() || !lstatSync(base).isDirectory()) throw new Error('runs path must be a regular directory');
   const dir = runDir(manifest.run_id);
-  mkdirSync(join(dir, 'records'), { recursive: true });
+  try { mkdirSync(dir); } catch (error) { if (error?.code !== 'EEXIST') throw error; }
+  if (lstatSync(dir).isSymbolicLink() || !lstatSync(dir).isDirectory()) throw new Error('run path must be a regular directory');
+  try { mkdirSync(join(dir, 'records')); } catch (error) { if (error?.code !== 'EEXIST') throw error; }
+  if (lstatSync(join(dir, 'records')).isSymbolicLink() || !lstatSync(join(dir, 'records')).isDirectory()) throw new Error('records path must be a regular directory');
   const path = join(dir, 'manifest.json');
   writeCreateOnly(path, manifest, 'run manifest');
   return path;
 }
 
 export function readManifest(runId) {
-  const path = join(runDir(runId), 'manifest.json');
+  const dir = runDir(runId);
+  if (existsSync(dir) && (lstatSync(dir).isSymbolicLink() || !lstatSync(dir).isDirectory())) throw new Error('run path must be a regular directory');
+  const path = join(dir, 'manifest.json');
   if (!existsSync(path)) throw new Error(`unknown bench run "${runId}" (no manifest at ${path})`);
   if (lstatSync(path).isSymbolicLink()) throw new Error('run manifest must not be a symlink');
-  const manifest = JSON.parse(readFileSync(path, 'utf8'));
-  if (manifest.v !== RUN_SCHEMA_V || manifest.type !== 'bench-run') throw new Error('unsupported run manifest');
-  return manifest;
+  if (!statSync(path).isFile()) throw new Error('run manifest must be a regular file');
+  if (statSync(path).size > MAX_MANIFEST_BYTES) throw new Error(`run manifest exceeds ${MAX_MANIFEST_BYTES} bytes`);
+  let manifest;
+  try { manifest = JSON.parse(readFileSync(path, 'utf8')); } catch (error) { throw new Error(`run manifest is invalid JSON: ${error.message}`); }
+  return validateManifest(manifest, runId);
 }
 
 function updateManifest(manifest, patch) {
   const path = join(runDir(manifest.run_id), 'manifest.json');
-  const next = { ...manifest, ...patch };
-  writeFileSync(path, JSON.stringify(next, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  if (lstatSync(path).isSymbolicLink()) throw new Error('run manifest must not be a symlink');
+  const next = validateManifest({ ...manifest, ...patch }, manifest.run_id);
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    renameSync(tmp, path);
+  } finally {
+    try { unlinkSync(tmp); } catch {}
+  }
   return next;
 }
 
-/** Normalize one job record; throws on anything that is not metrics. */
-export function validateRecord(raw, { passThreshold }) {
+export function validateManifest(manifest, expectedRunId = manifest?.run_id) {
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) throw new Error('run manifest must be a JSON object');
+  if (manifest.v !== RUN_SCHEMA_V || manifest.type !== 'bench-run') throw new Error('unsupported run manifest');
+  if (!RUN_ID_RE.test(String(manifest.run_id)) || manifest.run_id !== expectedRunId) throw new Error('run manifest id does not match its directory');
+  if (!['open', 'finished'].includes(manifest.status)) throw new Error('run manifest status must be open or finished');
+  if (typeof manifest.created_at !== 'string' || !Number.isFinite(Date.parse(manifest.created_at))) throw new Error('run manifest created_at must be an ISO timestamp');
+  if (manifest.status === 'finished') {
+    const expectedPath = join(benchmarksDir(), `${manifest.run_id}-bench.json`);
+    if (typeof manifest.finished_at !== 'string' || !Number.isFinite(Date.parse(manifest.finished_at)) || manifest.result_path !== expectedPath) throw new Error('finished run manifest has invalid result metadata');
+  } else if (manifest.finished_at != null || manifest.result_path != null) throw new Error('open run manifest must not contain result metadata');
+  if (!Array.isArray(manifest.arms) || !manifest.arms.length || manifest.arms.length > MAX_ARMS) throw new Error(`run manifest arms must contain 1-${MAX_ARMS} items`);
+  if (new Set(manifest.arms).size !== manifest.arms.length) throw new Error('run manifest arms must be unique');
+  for (const arm of manifest.arms) if (typeof arm !== 'string' || !ARM_RE.test(arm)) throw new Error(`invalid arm in run manifest: ${arm}`);
+  if (manifest.control !== null && manifest.control !== CONTROL_ARM) throw new Error('run manifest control must be direct or null');
+  if ((manifest.control === CONTROL_ARM) !== manifest.arms.includes(CONTROL_ARM)) throw new Error('run manifest direct arm and control do not agree');
+  if (Number.isInteger(manifest.trials_default)) {
+    if (manifest.trials_default <= 0 || manifest.trials_default > MAX_TRIALS) throw new Error(`run manifest trials_default must be between 1 and ${MAX_TRIALS}`);
+  } else {
+    const defaults = manifest.trials_default;
+    if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults)
+      || Object.keys(defaults).sort().join(',') !== 'high,normal'
+      || Object.values(defaults).some(value => !Number.isInteger(value) || value <= 0 || value > MAX_TRIALS)) {
+      throw new Error(`run manifest trials_default must contain bounded normal/high counts`);
+    }
+  }
+  if (!Array.isArray(manifest.cases) || !manifest.cases.length || manifest.cases.length > MAX_CASES) throw new Error(`run manifest cases must contain 1-${MAX_CASES} items`);
+  if (new Set(manifest.cases.map(item => item?.id)).size !== manifest.cases.length) throw new Error('run manifest case ids must be unique');
+  let expectedJobs = 0;
+  for (const item of manifest.cases) {
+    if (!item || typeof item !== 'object' || !CASE_ID_RE.test(String(item.id))) throw new Error('run manifest contains an invalid case id');
+    if (Object.keys(item).some(key => !MANIFEST_CASE_KEYS.has(key))) throw new Error(`run manifest case ${item.id} contains an unsupported field`);
+    if (typeof item.rubric !== 'string' || !RUBRIC_RE.test(item.rubric)) throw new Error(`run manifest case ${item.id} has an invalid rubric`);
+    if (!['normal', 'high'].includes(item.risk)) throw new Error(`run manifest case ${item.id} has an invalid risk`);
+    if (!Array.isArray(item.tags) || item.tags.length > 64 || new Set(item.tags).size !== item.tags.length || item.tags.some(tag => typeof tag !== 'string' || !TAG_RE.test(tag))) throw new Error(`run manifest case ${item.id} has invalid tags`);
+    if (!Number.isInteger(item.trials) || item.trials <= 0 || item.trials > MAX_TRIALS) throw new Error(`run manifest case ${item.id} trials must be between 1 and ${MAX_TRIALS}`);
+    if (typeof item.pass_threshold !== 'number' || !Number.isFinite(item.pass_threshold) || item.pass_threshold < 0 || item.pass_threshold > 10) throw new Error(`run manifest case ${item.id} has an invalid pass threshold`);
+    if (!Number.isInteger(item.assertions) || item.assertions < 0 || item.assertions > MAX_ASSERTION_RESULTS) throw new Error(`run manifest case ${item.id} has an invalid assertion count`);
+    if (!SHA_RE.test(String(item.case_sha256))) throw new Error(`run manifest case ${item.id} has an invalid fingerprint`);
+    if (!SHA_RE.test(String(item.case_meta_sha256))) throw new Error(`run manifest case ${item.id} has an invalid metadata fingerprint`);
+    const { case_meta_sha256: metadataFingerprint, ...boundMetadata } = item;
+    if (caseFingerprint(boundMetadata) !== metadataFingerprint) throw new Error(`run manifest case ${item.id} metadata changed after bench plan`);
+    expectedJobs += item.trials * manifest.arms.length;
+  }
+  if (expectedJobs > MAX_TOTAL_JOBS) throw new Error(`run manifest exceeds ${MAX_TOTAL_JOBS} total jobs`);
+  if (!Array.isArray(manifest.jobs) || manifest.jobs.length !== expectedJobs) throw new Error(`run manifest must contain exactly ${expectedJobs} jobs`);
+  const expected = new Map();
+  for (const item of manifest.cases) for (const arm of manifest.arms) for (let trial = 1; trial <= item.trials; trial++) {
+    const id = jobIdFor(item.id, arm, trial);
+    expected.set(id, { case_id: item.id, arm, trial });
+  }
+  const seen = new Set();
+  for (const job of manifest.jobs) {
+    if (!job || typeof job !== 'object' || typeof job.job_id !== 'string' || seen.has(job.job_id)) throw new Error('run manifest job ids must be unique');
+    seen.add(job.job_id);
+    const planned = expected.get(job.job_id);
+    if (!planned || job.case_id !== planned.case_id || job.arm !== planned.arm || job.trial !== planned.trial) throw new Error(`run manifest contains an invalid job: ${job.job_id}`);
+  }
+  return manifest;
+}
+
+/** Normalize one job record; throws on anything that is not bounded metrics. */
+export function validateRecord(raw, { passThreshold, stored = false } = {}) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('score file must be a JSON object');
+  let serialized;
+  try { serialized = JSON.stringify(raw); } catch (error) { throw new Error(`score file must be serializable JSON: ${error.message}`); }
+  if (Buffer.byteLength(serialized) > MAX_RECORD_BYTES) throw new Error(`score file exceeds ${MAX_RECORD_BYTES} bytes`);
   const keys = Object.keys(raw);
   const forbidden = keys.filter(key => FORBIDDEN_RECORD_KEYS.includes(key.toLowerCase()));
   if (forbidden.length) throw new Error(`score file must not contain output text (found: ${forbidden.join(', ')})`);
+  const allowed = stored ? STORED_RECORD_KEYS : RAW_RECORD_KEYS;
+  const unknown = keys.filter(key => !allowed.has(key));
+  if (unknown.length) throw new Error(`score file contains unsupported field: ${unknown[0]}`);
+  if (typeof passThreshold !== 'number' || !Number.isFinite(passThreshold) || passThreshold < 0 || passThreshold > 10) throw new Error('pass threshold must be a number between 0 and 10');
   const overall = raw.overall;
   if (typeof overall !== 'number' || !Number.isFinite(overall) || overall < 0 || overall > 10) throw new Error('overall must be a number between 0 and 10');
   const record = { overall: round(overall, 3), pass_threshold: passThreshold, cost_source: 'estimated' };
   if (raw.per_criterion != null) {
     if (typeof raw.per_criterion !== 'object' || Array.isArray(raw.per_criterion)) throw new Error('per_criterion must be an object');
+    const criteria = Object.entries(raw.per_criterion);
+    if (criteria.length > MAX_CRITERIA) throw new Error(`per_criterion must contain at most ${MAX_CRITERIA} entries`);
     record.per_criterion = {};
-    for (const [name, value] of Object.entries(raw.per_criterion)) {
-      const n = Number(value);
-      if (!(n >= 0 && n <= 10)) throw new Error(`per_criterion.${name} must be between 0 and 10`);
-      record.per_criterion[name] = round(n, 3);
+    for (const [name, value] of criteria) {
+      if (!IDENTIFIER_RE.test(name)) throw new Error(`per_criterion identifier "${name}" is invalid`);
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 10) throw new Error(`per_criterion.${name} must be a number between 0 and 10`);
+      record.per_criterion[name] = round(value, 3);
     }
   }
   if (raw.judges != null) {
-    if (Array.isArray(raw.judges)) record.judges = raw.judges.map(String);
-    else if (Number.isInteger(Number(raw.judges)) && Number(raw.judges) > 0) record.judges = Number(raw.judges);
-    else throw new Error('judges must be a positive integer or a vendor list');
+    if (Array.isArray(raw.judges)) {
+      if (!raw.judges.length || raw.judges.length > MAX_JUDGES) throw new Error(`judges must contain 1-${MAX_JUDGES} identifiers`);
+      if (new Set(raw.judges).size !== raw.judges.length) throw new Error('judges must not contain duplicates');
+      for (const judge of raw.judges) if (typeof judge !== 'string' || !IDENTIFIER_RE.test(judge)) throw new Error(`judge identifier "${judge}" is invalid`);
+      record.judges = [...raw.judges];
+    } else if (Number.isInteger(raw.judges) && raw.judges > 0 && raw.judges <= MAX_JUDGES) record.judges = raw.judges;
+    else throw new Error(`judges must be an integer from 1-${MAX_JUDGES} or a bounded identifier list`);
   }
   if (raw.output_sha256 != null) {
-    if (!SHA_RE.test(String(raw.output_sha256))) throw new Error('output_sha256 must be 64 hex characters');
-    record.output_sha256 = String(raw.output_sha256);
+    if (typeof raw.output_sha256 !== 'string' || !SHA_RE.test(raw.output_sha256)) throw new Error('output_sha256 must be 64 hex characters');
+    record.output_sha256 = raw.output_sha256;
   }
   if (raw.cost_usd_est != null) {
-    const cost = Number(raw.cost_usd_est);
-    if (!(cost >= 0)) throw new Error('cost_usd_est must be a non-negative number');
+    const cost = raw.cost_usd_est;
+    if (typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0) throw new Error('cost_usd_est must be a finite non-negative number');
     record.cost_usd_est = round(cost, 6);
   }
   if (raw.duration_ms != null) {
-    const ms = Number(raw.duration_ms);
+    const ms = raw.duration_ms;
     if (!(Number.isInteger(ms) && ms >= 0)) throw new Error('duration_ms must be a non-negative integer');
     record.duration_ms = ms;
   }
   if (raw.sigma != null) {
-    const s = Number(raw.sigma);
-    if (!(s >= 0)) throw new Error('sigma must be a non-negative number');
+    const s = raw.sigma;
+    if (typeof s !== 'number' || !Number.isFinite(s) || s < 0) throw new Error('sigma must be a finite non-negative number');
     record.sigma = round(s, 3);
   }
   if (raw.assertion_results != null) {
     if (!Array.isArray(raw.assertion_results)) throw new Error('assertion_results must be an array');
+    if (raw.assertion_results.length > MAX_ASSERTION_RESULTS) throw new Error(`assertion_results must contain at most ${MAX_ASSERTION_RESULTS} rows`);
     record.assertion_results = raw.assertion_results.map(item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('assertion_results[] must be an object');
+      const unknown = Object.keys(item).filter(key => !ASSERTION_RESULT_KEYS.has(key));
+      if (unknown.length) throw new Error(`assertion_results[] contains unsupported field: ${unknown[0]}`);
       const result = String(item?.result || '').toUpperCase();
       if (!['PASS', 'HARD_FAIL', 'UNCERTAIN'].includes(result)) throw new Error('assertion_results[].result must be PASS, HARD_FAIL, or UNCERTAIN');
+      if (item.source !== 'executable' && item.source !== 'judge') throw new Error('assertion_results[].source must be executable or judge');
       const row = { result, source: item.source === 'executable' ? 'executable' : 'judge' };
-      if (item.name != null) row.name = String(item.name).slice(0, 64);
-      if (item.assertion != null) row.assertion = String(item.assertion).slice(0, 200);
-      if (item.kind != null) row.kind = String(item.kind);
-      if (item.confidence != null) row.confidence = String(item.confidence);
+      if (item.name != null) {
+        if (typeof item.name !== 'string' || !IDENTIFIER_RE.test(item.name)) throw new Error(`assertion result name "${item.name}" is invalid`);
+        row.name = item.name;
+      }
+      if (item.assertion != null) {
+        if (typeof item.assertion !== 'string' || item.assertion.length > 200) throw new Error('assertion_results[].assertion must be at most 200 characters');
+        row.assertion = item.assertion;
+      }
+      if (item.kind != null) {
+        if (typeof item.kind !== 'string' || !ASSERTION_KINDS.includes(item.kind)) throw new Error('assertion_results[].kind must be cmd, file, grep, or json');
+        row.kind = item.kind;
+      }
+      if (item.confidence != null) {
+        if (typeof item.confidence !== 'string' || !CONFIDENCE_RE.test(item.confidence)) throw new Error('assertion_results[].confidence must be a safe identifier');
+        row.confidence = item.confidence;
+      }
+      if (item.exit_code != null) {
+        if (!Number.isInteger(item.exit_code)) throw new Error('assertion_results[].exit_code must be an integer');
+        row.exit_code = item.exit_code;
+      }
+      if (item.duration_ms != null) {
+        if (!Number.isInteger(item.duration_ms) || item.duration_ms < 0) throw new Error('assertion_results[].duration_ms must be a non-negative integer');
+        row.duration_ms = item.duration_ms;
+      }
+      if (item.command_sha256 != null) {
+        if (typeof item.command_sha256 !== 'string' || !SHA_RE.test(item.command_sha256)) throw new Error('assertion_results[].command_sha256 must be 64 hex characters');
+        row.command_sha256 = item.command_sha256;
+      }
+      if (row.source === 'executable') {
+        if (!row.name || !row.kind || row.result === 'UNCERTAIN' || row.assertion != null || row.confidence != null) throw new Error('executable assertion result has fields that do not match its source');
+      } else if (!row.assertion || row.name != null || row.kind != null || row.exit_code != null || row.duration_ms != null || row.command_sha256 != null) {
+        throw new Error('judge assertion result has fields that do not match its source');
+      }
       return row;
     });
   }
   const hardFail = (record.assertion_results || []).some(item => item.result === 'HARD_FAIL');
+  if (Object.hasOwn(raw, 'passed') && typeof raw.passed !== 'boolean') throw new Error('passed must be a boolean');
   const declared = typeof raw.passed === 'boolean' ? raw.passed : true;
   record.passed = overall >= passThreshold && declared && !hardFail;
   record.assertion_hard_fail = hardFail;
@@ -178,6 +337,8 @@ export function validateRecord(raw, { passThreshold }) {
 /** Score one job. Optionally runs the case's executable assertions first. */
 export function recordJob({ runId, jobId, raw, runExecutableAssertions = false, cwd = projectRoot(), now = new Date().toISOString() }) {
   const manifest = readManifest(runId);
+  if (manifest.status !== 'open') throw new Error(`bench run ${runId} is already finished`);
+  if (typeof now !== 'string' || !Number.isFinite(Date.parse(now))) throw new Error('recorded_at must be an ISO timestamp');
   const job = manifest.jobs.find(item => item.job_id === jobId);
   if (!job) throw new Error(`unknown job "${jobId}" in run ${runId}`);
   const caseMeta = manifest.cases.find(item => item.id === job.case_id);
@@ -194,7 +355,9 @@ export function recordJob({ runId, jobId, raw, runExecutableAssertions = false, 
     }
   }
   const payload = { v: RUN_SCHEMA_V, type: 'bench-record', run_id: runId, job_id: jobId, case_id: job.case_id, arm: job.arm, trial: job.trial, recorded_at: now, ...record };
-  const path = join(runDir(runId), 'records', `${jobId}.json`);
+  const recordsPath = join(runDir(runId), 'records');
+  if (lstatSync(recordsPath).isSymbolicLink() || !lstatSync(recordsPath).isDirectory()) throw new Error('records path must be a regular directory');
+  const path = join(recordsPath, `${jobId}.json`);
   writeCreateOnly(path, payload, 'job record');
   return { path, record: payload };
 }
@@ -202,8 +365,20 @@ export function recordJob({ runId, jobId, raw, runExecutableAssertions = false, 
 function validatePlannedCase(caseMeta) {
   const current = readCase(caseMeta.id);
   if (!current) throw new Error(`planned case ${caseMeta.id} was deleted after bench plan`);
-  if (!caseMeta.case_sha256 || caseFingerprint(current) !== caseMeta.case_sha256) {
+  const currentFingerprint = caseFingerprint(current);
+  if (!caseMeta.case_sha256 || currentFingerprint !== caseMeta.case_sha256) {
     throw new Error(`planned case ${caseMeta.id} changed after bench plan`);
+  }
+  const derived = {
+    rubric: current.rubric,
+    risk: current.risk,
+    tags: current.tags,
+    pass_threshold: passThresholdFor(current),
+    assertions: current.assertions.length,
+    case_sha256: currentFingerprint,
+  };
+  for (const [key, value] of Object.entries(derived)) {
+    if (JSON.stringify(caseMeta[key]) !== JSON.stringify(value)) throw new Error(`planned case ${caseMeta.id} metadata changed after bench plan (${key})`);
   }
 }
 
@@ -212,17 +387,34 @@ function validatePlannedCases(manifest) {
 }
 
 export function readRecords(runId) {
+  const manifest = readManifest(runId);
   const dir = join(runDir(runId), 'records');
   const records = new Map();
   const invalid = [];
   if (!existsSync(dir)) return { records, invalid };
+  if (lstatSync(dir).isSymbolicLink() || !lstatSync(dir).isDirectory()) throw new Error('records path must be a regular directory');
   for (const name of readdirSync(dir).sort()) {
     if (!name.endsWith('.json')) continue;
     const path = join(dir, name);
     try {
-      if (lstatSync(path).isSymbolicLink()) throw new Error('symlink');
+      if (lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile()) throw new Error('record must be a regular file');
+      if (statSync(path).size > MAX_RECORD_BYTES) throw new Error(`record exceeds ${MAX_RECORD_BYTES} bytes`);
       const payload = JSON.parse(readFileSync(path, 'utf8'));
-      if (payload.type !== 'bench-record' || typeof payload.overall !== 'number') throw new Error('not a bench record');
+      if (payload.v !== RUN_SCHEMA_V || payload.type !== 'bench-record') throw new Error('not a supported bench record');
+      const job = manifest.jobs.find(item => item.job_id === payload.job_id);
+      if (!job) throw new Error('record job is not present in the manifest');
+      if (name !== `${job.job_id}.json`) throw new Error('record file name does not match job id');
+      const caseMeta = manifest.cases.find(item => item.id === job.case_id);
+      if (payload.run_id !== runId || payload.case_id !== job.case_id || payload.arm !== job.arm || payload.trial !== job.trial) throw new Error('record identity does not match its manifest job');
+      if (typeof payload.recorded_at !== 'string' || !Number.isFinite(Date.parse(payload.recorded_at))) throw new Error('recorded_at must be an ISO timestamp');
+      if (payload.pass_threshold !== caseMeta.pass_threshold || payload.cost_source !== 'estimated') throw new Error('record threshold or cost source does not match the manifest');
+      const normalized = validateRecord(payload, { passThreshold: caseMeta.pass_threshold, stored: true });
+      if (payload.overall !== normalized.overall || payload.passed !== normalized.passed || payload.assertion_hard_fail !== normalized.assertion_hard_fail) throw new Error('record derived score fields are inconsistent');
+      for (const key of ['per_criterion', 'judges', 'output_sha256', 'cost_usd_est', 'duration_ms', 'sigma']) {
+        if (JSON.stringify(payload[key]) !== JSON.stringify(normalized[key])) throw new Error(`record ${key} is not normalized`);
+      }
+      if (caseFingerprint(payload.assertion_results) !== caseFingerprint(normalized.assertion_results)) throw new Error('record assertion_results is not normalized');
+      if (records.has(payload.job_id)) throw new Error('duplicate record for job id');
       records.set(payload.job_id, payload);
     } catch (error) {
       invalid.push({ file: name, reason: error.message });
@@ -246,7 +438,9 @@ function armStats(name, rows, expected) {
     avg_score: avg,
     sigma: trials ? round(sigma(overalls), 2) : null,
     pass_at_k: passAtK,
-    pass_hat_k: trials > 0 && passAtK === trials ? 1 : 0,
+    // pass^k is defined over the planned k. A partial arm only has an
+    // observed pass rate and must not be presented as all-pass/all-fail.
+    pass_hat_k: trials === expected ? (trials > 0 && passAtK === trials ? 1 : 0) : null,
     pass_at_k_rate: trials ? round(passAtK / trials, 3) : null,
     per_trial_overall: overalls,
     est_cost_usd: estCost,
@@ -273,6 +467,7 @@ export function aggregateRun(manifest, records, { now = new Date().toISOString()
     rowsByCaseArm.get(key).push(record);
   }
   const strategies = manifest.arms.map(arm => armStats(arm, rowsByArm.get(arm), expectedByArm.get(arm) || 0));
+  const partial = missingJobs.length > 0;
   const control = manifest.control ? strategies.find(s => s.name === manifest.control) : null;
   if (control && control.avg_score != null) {
     for (const arm of strategies) arm.delta_vs_direct = arm.name === CONTROL_ARM ? 0 : (arm.avg_score != null ? round(arm.avg_score - control.avg_score, 2) : null);
@@ -284,30 +479,33 @@ export function aggregateRun(manifest, records, { now = new Date().toISOString()
   }));
 
   const measured = strategies.filter(s => s.trials > 0);
-  const brokenTask = measured.length > 0
+  const brokenTask = !partial && measured.length > 0
     && measured.every(s => s.pass_at_k_rate === 0 && s.avg_score != null && s.avg_score < BROKEN_TASK_AVG && s.trials >= 2);
 
   const reliable = measured.filter(s => s.pass_hat_k === 1);
   const byAvg = [...measured].sort((a, b) => (b.avg_score ?? -1) - (a.avg_score ?? -1));
   const advisories = [];
-  let bestQuality = reliable.length ? [...reliable].sort((a, b) => b.avg_score - a.avg_score)[0] : byAvg[0] || null;
+  let bestQuality = partial ? null : (reliable.length ? [...reliable].sort((a, b) => b.avg_score - a.avg_score)[0] : byAvg[0] || null);
   if (bestQuality && bestQuality.pass_hat_k !== 1) advisories.push(`flaky-best: ${bestQuality.name} has the highest average but did not pass every trial`);
   const valueCandidates = measured.filter(s => s.pass_at_k_rate != null && s.pass_at_k_rate >= BEST_VALUE_MIN_PASS_RATE && s.score_per_dollar != null);
-  const bestValue = valueCandidates.length ? [...valueCandidates].sort((a, b) => b.score_per_dollar - a.score_per_dollar)[0] : null;
+  const bestValue = !partial && valueCandidates.length ? [...valueCandidates].sort((a, b) => b.score_per_dollar - a.score_per_dollar)[0] : null;
 
   let final = null;
   let reason;
-  const bestEffort = [...measured].sort((a, b) => (b.pass_at_k_rate ?? -1) - (a.pass_at_k_rate ?? -1) || (b.avg_score ?? -1) - (a.avg_score ?? -1))[0] || null;
-  if (reliable.length) {
-    const ordered = [...reliable].sort((a, b) => (a.sigma ?? Infinity) - (b.sigma ?? Infinity) || (b.score_per_dollar ?? -1) - (a.score_per_dollar ?? -1));
+  const bestEffort = partial ? null : ([...measured].sort((a, b) => (b.pass_at_k_rate ?? -1) - (a.pass_at_k_rate ?? -1) || (b.avg_score ?? -1) - (a.avg_score ?? -1))[0] || null);
+  if (partial) {
+    reason = 'partial run — pass^k and recommendations are withheld until every planned job is recorded';
+  } else if (reliable.length) {
+    let candidates = [...reliable];
+    if (control?.pass_hat_k === 1 && control.avg_score != null) {
+      candidates = candidates.filter(arm => arm.name === CONTROL_ARM || round(arm.avg_score - control.avg_score, 2) >= MIN_DELTA_VS_DIRECT);
+    }
+    const ordered = candidates.sort((a, b) => (a.sigma ?? Infinity) - (b.sigma ?? Infinity) || (b.score_per_dollar ?? -1) - (a.score_per_dollar ?? -1));
     final = ordered[0];
     reason = `passes every trial; lowest σ among reliable arms${final.score_per_dollar != null ? ', best Score/$ on tie' : ''}`;
-    if (control?.pass_hat_k === 1 && control.avg_score != null && final.name !== CONTROL_ARM) {
-      const delta = round(final.avg_score - control.avg_score, 2);
-      if (delta < MIN_DELTA_VS_DIRECT) {
-        reason = `${final.name} does not beat the single-agent control by ≥ ${MIN_DELTA_VS_DIRECT} (Δ ${delta}); orchestration is not earning its cost here`;
-        final = control;
-      }
+    const demoted = reliable.filter(arm => arm.name !== CONTROL_ARM && control?.avg_score != null && round(arm.avg_score - control.avg_score, 2) < MIN_DELTA_VS_DIRECT);
+    if (final?.name === CONTROL_ARM && demoted.length) {
+      reason = `${demoted.map(arm => arm.name).join(', ')} did not beat the single-agent control by ≥ ${MIN_DELTA_VS_DIRECT}; no qualifying reliable strategy outranked direct`;
     }
     if (final.trials <= 3 && final.sigma != null && final.sigma >= 1.0) {
       advisories.push(`low-confidence: ${final.name} recommended from ${final.trials} trial(s) with σ ${final.sigma} — a flaky arm can pass all of them by luck; increase --trials to 5+`);
@@ -337,7 +535,7 @@ export function aggregateRun(manifest, records, { now = new Date().toISOString()
       reason,
     },
     advisories,
-    partial: missingJobs.length > 0,
+    partial,
     missing_jobs: missingJobs,
     records: records.size,
   };
@@ -346,20 +544,49 @@ export function aggregateRun(manifest, records, { now = new Date().toISOString()
 /** Aggregate, persist to `.xm/eval/benchmarks/`, and mark the manifest finished. */
 export function finishRun({ runId, allowPartial = false, now = new Date() }) {
   const manifest = readManifest(runId);
+  if (manifest.status !== 'open') throw new Error(`bench run ${runId} is already finished`);
   validatePlannedCases(manifest);
   const { records, invalid } = readRecords(runId);
-  const result = aggregateRun(manifest, records, { now: now.toISOString() });
-  if (invalid.length) result.invalid_records = invalid;
-  if (result.partial && !allowPartial) {
-    const error = new Error(`run ${runId} has ${result.missing_jobs.length} unrecorded job(s); record them or pass --allow-partial`);
-    error.result = result;
-    throw error;
-  }
+  if (invalid.length) throw new Error(`run ${runId} has ${invalid.length} invalid record(s): ${invalid.map(item => item.file).join(', ')}`);
   const dir = benchmarksDir();
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, `${now.toISOString().replace(/[:.]/g, '-')}-bench.json`);
-  writeFileSync(path, JSON.stringify({ ...result, artifact_path: path }, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
-  updateManifest(manifest, { status: 'finished', finished_at: now.toISOString(), result_path: path });
+  if (lstatSync(dir).isSymbolicLink() || !lstatSync(dir).isDirectory()) throw new Error('benchmarks path must be a regular directory');
+  const path = join(dir, `${runId}-bench.json`);
+
+  if (existsSync(path)) return finalizeOrphanedResult({ manifest, records, path, allowPartial });
+
+  const result = aggregateRun(manifest, records, { now: now.toISOString() });
+  assertCompleteEnough(result, runId, allowPartial);
+  try {
+    writeCreateOnly(path, { ...result, artifact_path: path }, 'bench result');
+    updateManifest(manifest, { status: 'finished', finished_at: result.timestamp, result_path: path });
+  } catch (error) {
+    if (error?.code === 'EEXIST') return finalizeOrphanedResult({ manifest, records, path, allowPartial });
+    try { unlinkSync(path); } catch {}
+    throw error;
+  }
+  return { path, result };
+}
+
+function assertCompleteEnough(result, runId, allowPartial) {
+  if (!result.partial || allowPartial) return;
+  const error = new Error(`run ${runId} has ${result.missing_jobs.length} unrecorded job(s); record them or pass --allow-partial`);
+  error.result = result;
+  throw error;
+}
+
+function finalizeOrphanedResult({ manifest, records, path, allowPartial }) {
+  if (lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile()) throw new Error(`existing bench result must be a regular file: ${path}`);
+  if (statSync(path).size > MAX_BENCH_RESULT_BYTES) throw new Error(`existing bench result exceeds ${MAX_BENCH_RESULT_BYTES} bytes: ${path}`);
+  const bytes = readFileSync(path, 'utf8');
+  let stored;
+  try { stored = JSON.parse(bytes); } catch (error) { throw new Error(`existing bench result is invalid JSON: ${error.message}`); }
+  if (typeof stored?.timestamp !== 'string' || !Number.isFinite(Date.parse(stored.timestamp))) throw new Error('existing bench result has invalid finish provenance');
+  const result = aggregateRun(manifest, records, { now: stored.timestamp });
+  assertCompleteEnough(result, manifest.run_id, allowPartial);
+  const expected = serializeJson({ ...result, artifact_path: path });
+  if (bytes !== expected) throw new Error(`existing bench result bytes do not match run ${manifest.run_id}; refusing to finalize manifest`);
+  updateManifest(manifest, { status: 'finished', finished_at: stored.timestamp, result_path: path });
   return { path, result };
 }
 

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { compareWindows, parseTraceFileName, driftReport, THRESHOLDS } from '../x-trace/lib/x-trace/drift.mjs';
+import { collectPrecisionRows, compareWindows, parseTraceFileName, driftReport, THRESHOLDS } from '../x-trace/lib/x-trace/drift.mjs';
 
 const CLI = fileURLToPath(new URL('../x-trace/lib/x-trace-cli.mjs', import.meta.url));
 const NOW = '2026-08-26T00:00:00.000Z';
@@ -151,6 +151,27 @@ describe('drift: report over a seeded .xm', () => {
 
     const report = driftReport({ xmDir: join(dir, '.xm'), now: NOW_MS, axes: ['precision'] });
     expect(report.axes.precision.rows[0]).toMatchObject({ baseline: { n: 1, value: 1 }, window: { n: 5, value: 0 }, enough_samples: false, flagged: false });
+  });
+
+  test('precision collector attributes one normalized sample to every contributing lens', () => {
+    const dir = makeXm();
+    const reviewDir = join(dir, '.xm', 'review');
+    mkdirSync(reviewDir, { recursive: true });
+    const ledgerPath = join(reviewDir, 'triage-ledger.jsonl');
+    const rows = [
+      { schema_v: 1, type: 'triage_decision', ts: iso(10), lens: ' Logic ', lenses: ['security', 'LOGIC', 'Performance'], decision: 'fix_now' },
+      { schema_v: 1, type: 'triage_decision', ts: iso(1), lenses: [' Security '], decision: 'false_positive' },
+      { schema_v: 1, type: 'triage_decision', ts: iso(1), decision: 'backlog' },
+    ];
+    writeFileSync(ledgerPath, rows.map(entry => JSON.stringify(entry)).join('\n') + '\n');
+
+    expect(collectPrecisionRows(ledgerPath).rows).toEqual([
+      { ts: Date.parse(iso(10)), lens: 'logic', decision: 'fix_now' },
+      { ts: Date.parse(iso(10)), lens: 'security', decision: 'fix_now' },
+      { ts: Date.parse(iso(10)), lens: 'performance', decision: 'fix_now' },
+      { ts: Date.parse(iso(1)), lens: 'security', decision: 'false_positive' },
+      { ts: Date.parse(iso(1)), lens: 'unknown', decision: 'backlog' },
+    ]);
   });
 
   test('reads active and rotated cost logs, deduplicates event_id, and keeps cost sources separate', () => {

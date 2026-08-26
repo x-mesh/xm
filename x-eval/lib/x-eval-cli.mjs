@@ -32,13 +32,14 @@
  * cross-plugin import breaks in the versioned marketplace-cache layout).
  */
 
-import { existsSync, statSync, readFileSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
+import { existsSync, statSync, readFileSync, mkdirSync, writeFileSync, realpathSync, lstatSync } from 'node:fs';
 import { resolve, sep, join } from 'node:path';
 import { projectRoot, evalDir } from './x-eval/root.mjs';
 import { runAssertions, parseSpec, DEFAULT_TIMEOUT_MS } from './x-eval/assert.mjs';
 import { buildCase, writeCase, readCase, listCases, selectCases } from './x-eval/cases.mjs';
 import {
   parseStrategies, buildManifest, writeManifest, readManifest, recordJob, finishRun, runStatus, latestBenchPath, formatBenchReport,
+  MAX_RECORD_BYTES,
 } from './x-eval/bench.mjs';
 import { compareBench, readBenchFile, formatGateReport, DEFAULT_MAX_AVG_DROP } from './x-eval/gate.mjs';
 
@@ -101,7 +102,7 @@ function usage() {
 }
 
 function isUsageError(error) {
-  return error instanceof UsageError || /must look like|must match|has an empty spec|must be|needs at least|is required|unknown case id|no runnable|invalid case id|invalid run id|unknown job|unknown bench run|must not contain|already exists|strategy "|case id collision|custom rubric|changed after bench plan|deleted after bench plan/.test(error?.message || '');
+  return error instanceof UsageError || /must look like|must match|has an empty spec|must be|needs at least|is required|unknown case id|no runnable|invalid case id|invalid run id|unknown job|unknown bench run|must not contain|already exists|already finished|strategy "|case id collision|custom rubric|case |run manifest|runs path|run path|records path|benchmarks path|existing bench result|invalid record|record |score file|overall|per_criterion|judge identifier|judges|assertion_results|output_sha256|cost_usd|duration_ms|sigma|passed|changed after bench plan|deleted after bench plan|exceeds \d+ total jobs/.test(error?.message || '');
 }
 
 // ── assert ───────────────────────────────────────────────────────────
@@ -256,7 +257,7 @@ function runGate({ currentPath, baselinePath, maxAvgDrop }) {
 function parseMaxAvgDrop(opts) {
   if (opts['max-avg-drop'] == null) return DEFAULT_MAX_AVG_DROP;
   const n = Number(opts['max-avg-drop']);
-  if (!(n >= 0)) throw new UsageError('--max-avg-drop must be a non-negative number');
+  if (!Number.isFinite(n) || n < 0) throw new UsageError('--max-avg-drop must be a finite non-negative number');
   return n;
 }
 
@@ -288,6 +289,8 @@ function cmdBench(args) {
       if (!opts.run || !opts.job || !opts['score-file']) throw new UsageError('bench record needs --run, --job, and --score-file');
       const path = resolve(process.cwd(), opts['score-file']);
       if (!existsSync(path)) throw new UsageError(`--score-file not found: ${path}`);
+      if (lstatSync(path).isSymbolicLink() || !statSync(path).isFile()) throw new UsageError(`--score-file must be a regular file: ${path}`);
+      if (statSync(path).size > MAX_RECORD_BYTES) throw new UsageError(`--score-file exceeds ${MAX_RECORD_BYTES} bytes`);
       let raw;
       try { raw = JSON.parse(readFileSync(path, 'utf8')); } catch (error) { throw new UsageError(`--score-file is not valid JSON: ${error.message}`); }
       const cwd = opts.cwd ? resolveCwd(opts) : projectRoot();

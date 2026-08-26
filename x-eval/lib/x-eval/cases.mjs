@@ -15,7 +15,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, linkSync, unlinkSync, lstatSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, linkSync, unlinkSync, lstatSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { evalDir } from './root.mjs';
 import { ASSERTION_KINDS, parseSpec } from './assert.mjs';
@@ -41,6 +41,11 @@ const ID_RE = /^(case|replay)-[0-9a-f]{24}$/;
 const RUBRIC_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const TAG_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,63}$/;
 const MAX_PROMPT_CHARS = 20_000;
+const MAX_CASE_BYTES = 256 * 1024;
+const MAX_TAGS = 64;
+const MAX_ASSERTIONS = 128;
+const MAX_ASSERTION_CHARS = 20_000;
+const MAX_JUDGE_ASSERTION_CHARS = 2_000;
 
 const sha256 = (value) => createHash('sha256').update(String(value)).digest('hex');
 
@@ -83,15 +88,59 @@ export function caseFingerprint(payload) {
 }
 
 function normalizeAssertion(item) {
-  if (!item || typeof item !== 'object') throw new Error('assertion must be an object');
+  if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('assertion must be an object');
   if (item.kind === 'judge') {
-    const text = String(item.text || '').trim();
+    if (typeof item.text !== 'string') throw new Error('judge assertion text must be a string');
+    const text = item.text.trim();
     if (!text) throw new Error('judge assertion needs text');
+    if (text.length > MAX_JUDGE_ASSERTION_CHARS) throw new Error(`judge assertion exceeds ${MAX_JUDGE_ASSERTION_CHARS} characters`);
     return { kind: 'judge', text };
   }
   if (!ASSERTION_KINDS.includes(item.kind)) throw new Error(`unknown assertion kind "${item.kind}"`);
   const { name, spec } = parseSpec(`${item.name}=${item.spec ?? item.command ?? ''}`, item.kind);
+  if (spec.length > MAX_ASSERTION_CHARS) throw new Error(`assertion spec exceeds ${MAX_ASSERTION_CHARS} characters`);
   return { kind: item.kind, name, spec };
+}
+
+function validateTaskCase(payload, expectedId) {
+  if (payload.v !== CASE_SCHEMA_V) throw new Error('unsupported case schema');
+  if (payload.type !== 'task') throw new Error(`case ${expectedId} must have type "task"`);
+  if (payload.id !== expectedId || !ID_RE.test(String(payload.id))) throw new Error(`case id does not match file name: ${expectedId}`);
+  if (typeof payload.prompt !== 'string' || !payload.prompt.trim()) throw new Error('case prompt must not be empty');
+  if (payload.prompt !== payload.prompt.trim()) throw new Error('case prompt must be normalized');
+  if (payload.prompt.length > MAX_PROMPT_CHARS) throw new Error(`case prompt exceeds ${MAX_PROMPT_CHARS} characters`);
+  if (typeof payload.rubric !== 'string' || !RUBRIC_RE.test(payload.rubric)) throw new Error('case rubric must be a safe rubric identifier');
+  if (!Array.isArray(payload.tags) || payload.tags.length > MAX_TAGS) throw new Error(`case tags must be an array of at most ${MAX_TAGS} items`);
+  if (new Set(payload.tags).size !== payload.tags.length) throw new Error('case tags must not contain duplicates');
+  for (const tag of payload.tags) if (typeof tag !== 'string' || !TAG_RE.test(tag)) throw new Error(`case tag "${tag}" is invalid`);
+  if (!RISK_LEVELS.includes(payload.risk)) throw new Error(`case risk must be one of ${RISK_LEVELS.join('|')}`);
+  if (!Array.isArray(payload.assertions) || payload.assertions.length > MAX_ASSERTIONS) throw new Error(`case assertions must be an array of at most ${MAX_ASSERTIONS} items`);
+  for (const item of payload.assertions) {
+    const normalized = normalizeAssertion(item);
+    if (canonicalJson(normalized) !== canonicalJson(item)) throw new Error('case assertion is not in canonical schema');
+  }
+  if (!payload.expected || typeof payload.expected !== 'object' || Array.isArray(payload.expected)) throw new Error('case expected must be an object');
+  const expectedKeys = Object.keys(payload.expected);
+  if (expectedKeys.some(key => key !== 'min_overall')) throw new Error('case expected contains an unsupported field');
+  if (Object.hasOwn(payload.expected, 'min_overall')) {
+    const min = payload.expected.min_overall;
+    if (typeof min !== 'number' || !Number.isFinite(min) || min < 0 || min > 10) throw new Error('case expected.min_overall must be a number between 0 and 10');
+  }
+  if (caseId(payload) !== payload.id) throw new Error(`case identity does not match prompt, rubric, and tags: ${payload.id}`);
+  return payload;
+}
+
+function validateReplayCase(payload, expectedId) {
+  if (payload.v !== CASE_SCHEMA_V) throw new Error('unsupported case schema');
+  if (payload.type !== 'replay') throw new Error(`case ${expectedId} has an unsupported type`);
+  if (payload.id !== expectedId || !ID_RE.test(String(payload.id))) throw new Error(`case id does not match file name: ${expectedId}`);
+  if (typeof payload.rubric !== 'string' || !RUBRIC_RE.test(payload.rubric)) throw new Error('replay case rubric must be a safe rubric identifier');
+  return payload;
+}
+
+export function validateCase(payload, expectedId = payload?.id) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('case must be a JSON object');
+  return payload.type === 'replay' ? validateReplayCase(payload, expectedId) : validateTaskCase(payload, expectedId);
 }
 
 /** Build and validate a task case payload. Throws on anything malformed. */
@@ -100,7 +149,9 @@ export function buildCase({ prompt, rubric = 'general', tags = [], risk = 'norma
   if (!text) throw new Error('case prompt must not be empty');
   if (text.length > MAX_PROMPT_CHARS) throw new Error(`case prompt exceeds ${MAX_PROMPT_CHARS} characters`);
   if (!RUBRIC_RE.test(String(rubric))) throw new Error(`rubric must be a safe rubric identifier (got "${rubric}")`);
-  const tagList = [...new Set((tags || []).map(t => String(t).trim()).filter(Boolean))].sort();
+  if (!Array.isArray(tags)) throw new Error('tags must be an array');
+  const tagList = [...new Set(tags.map(t => String(t).trim()).filter(Boolean))].sort();
+  if (tagList.length > MAX_TAGS) throw new Error(`case tags exceed ${MAX_TAGS} items`);
   for (const tag of tagList) if (!TAG_RE.test(tag)) throw new Error(`tag "${tag}" must match ${TAG_RE}`);
   if (!RISK_LEVELS.includes(risk)) throw new Error(`risk must be one of ${RISK_LEVELS.join('|')}`);
   const expected = {};
@@ -117,16 +168,20 @@ export function buildCase({ prompt, rubric = 'general', tags = [], risk = 'norma
     rubric,
     tags: tagList,
     risk,
-    assertions: assertions.map(normalizeAssertion),
+    assertions: (() => {
+      if (!Array.isArray(assertions) || assertions.length > MAX_ASSERTIONS) throw new Error(`case assertions must be an array of at most ${MAX_ASSERTIONS} items`);
+      return assertions.map(normalizeAssertion);
+    })(),
     expected,
     created_at: createdAt,
     source: source && typeof source === 'object' ? { plugin: String(source.plugin || 'manual'), ref: source.ref ?? null } : { plugin: 'manual', ref: null },
   };
-  return payload;
+  return validateCase(payload, payload.id);
 }
 
 /** Create-only write (link(2)): identical concurrent adds are idempotent, never torn. */
 export function writeCase(payload) {
+  validateCase(payload, payload?.id);
   const dir = casesDir();
   mkdirSync(dir, { recursive: true });
   const target = join(dir, `${payload.id}.json`);
@@ -142,6 +197,7 @@ export function writeCase(payload) {
       if (lstatSync(target).isSymbolicLink() || !lstatSync(target).isFile()) throw new Error('x-eval case path is not a regular file');
       let existing;
       try { existing = JSON.parse(readFileSync(target, 'utf8')); } catch { throw new Error('existing x-eval case is corrupt'); }
+      validateCase(existing, payload.id);
       const comparable = value => caseFingerprint({ ...value, created_at: null });
       if (comparable(existing) !== comparable(payload)) throw new Error(`case id collision for ${payload.id}: existing payload differs`);
       return { id: payload.id, path: target, created: false };
@@ -156,7 +212,11 @@ export function readCase(id) {
   const path = join(casesDir(), `${id}.json`);
   if (!existsSync(path)) return null;
   if (lstatSync(path).isSymbolicLink()) throw new Error('x-eval case path must not be a symlink');
-  return JSON.parse(readFileSync(path, 'utf8'));
+  if (!statSync(path).isFile()) throw new Error('x-eval case path is not a regular file');
+  if (statSync(path).size > MAX_CASE_BYTES) throw new Error(`x-eval case exceeds ${MAX_CASE_BYTES} bytes`);
+  let payload;
+  try { payload = JSON.parse(readFileSync(path, 'utf8')); } catch (error) { throw new Error(`x-eval case is invalid JSON: ${error.message}`); }
+  return validateCase(payload, id);
 }
 
 /** Every case on disk, malformed files reported instead of thrown away silently. */
@@ -171,8 +231,7 @@ export function listCases({ tag = null } = {}) {
     if (!ID_RE.test(id)) { invalid.push({ file: name, reason: 'unexpected file name' }); continue; }
     let payload;
     try { payload = readCase(id); } catch (error) { invalid.push({ file: name, reason: error.message }); continue; }
-    if (!payload || payload.v !== CASE_SCHEMA_V) { invalid.push({ file: name, reason: 'unsupported schema' }); continue; }
-    const type = payload.type === 'replay' ? 'replay' : 'task';
+    const type = payload.type;
     const tags = Array.isArray(payload.tags) ? payload.tags : [];
     const requestedTags = Array.isArray(tag) ? tag : (tag ? [tag] : []);
     if (requestedTags.some(requested => !tags.includes(requested))) continue;
