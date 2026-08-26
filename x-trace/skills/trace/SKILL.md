@@ -72,7 +72,7 @@ User provided: $ARGUMENTS
 
 Determine the subcommand from the first word of `$ARGUMENTS`:
 
-- `record`, `last`, `status`, `since`, `doctor` → [Activity Ledger (CLI)] — run `xm trace <subcommand>` and relay its output
+- `record`, `last`, `status`, `since`, `doctor`, `drift` → [Activity Ledger (CLI)] — run `xm trace <subcommand>` and relay its output
 - `start` → [Subcommand: start]
 - `stop` → [Subcommand: stop]
 - `show` → [Subcommand: show]
@@ -161,6 +161,7 @@ See `subcommands/clean.md` — finds old trace files and deletes with confirmati
 | `xm status [--json]` | Commits on HEAD since each tool last acted. Shortcut: `xm status`. |
 | `xm trace since <ref>` | Tools + trace sessions recorded after `<ref>`'s commit time. |
 | `xm trace doctor [--rebuild]` | Validate `last.json`; `--rebuild` reconstructs it from traces that recorded a git head. |
+| `xm trace drift [--window 7d] [--baseline 28d] [--min-samples 5] [--axis …] [--fail-on-flag] [--json]` | Drift check: the recent window vs the period before it, per (skill/role/model) p50 latency & tokens, per-skill error rate, per (rubric/strategy) judged quality, per-lens review precision, per (model/role) estimated cost. A flag needs ≥ min-samples on both sides; thresholds are candidates until simulator-calibrated (say so when relaying). Appends a numeric snapshot to `.xm/metrics/drift.jsonl`; `--fail-on-flag` exits 2 for CI. Model *version* is never recorded (the Agent tool returns a label only) — the snapshot carries the xm plugin version instead. |
 
 A record auto-chains `base` to the tool's previous head. If that base is unreachable (rebase / force-push), the record is flagged `chain_broken` and shown with `⚠ chain broken` — a signal to re-establish the tool's baseline.
 

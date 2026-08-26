@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { gitSnapshot, resolveTraceDir } from './x-trace/trace-writer.mjs';
 import { lastRead, lastWrite } from './x-trace/last-store.mjs';
 import { createReplay, promoteReplayToEval } from './x-trace/replay.mjs';
+import { driftReport, appendSnapshot, formatDriftReport, AXES, DEFAULT_WINDOW, DEFAULT_BASELINE, DEFAULT_MIN_SAMPLES } from './x-trace/drift.mjs';
 
 /** Tools the dispatcher is expected to record. Anything else warns then records (FM4). */
 const KNOWN_TOOLS = new Set(['review', 'build', 'panel', 'op', 'eval', 'ship', 'dispatcher']);
@@ -57,6 +58,8 @@ function parseArgs(args) {
     if (a === '--json') { opts.json = true; continue; }
     if (a === '--rebuild') { opts.rebuild = true; continue; }
     if (a === '--promote-to-eval') { opts.promoteToEval = true; continue; }
+    if (a === '--fail-on-flag') { opts.failOnFlag = true; continue; }
+    if (a === '--no-snapshot') { opts.noSnapshot = true; continue; }
     if (a.startsWith('--')) { opts[a.slice(2)] = args[++i]; continue; }
     pos.push(a);
   }
@@ -407,6 +410,41 @@ function doctorRebuild() {
   console.log(COVERAGE_NOTE);
 }
 
+/**
+ * drift — window-vs-baseline comparison over traces, eval results, the review
+ * triage ledger, and cost events. Read-only apart from the numeric snapshot row
+ * it appends to .xm/metrics/drift.jsonl (skip with --no-snapshot).
+ * Exit 2 with --fail-on-flag when any axis crossed its threshold.
+ */
+function cmdDrift(opts) {
+  const minSamples = opts['min-samples'] != null ? Number(opts['min-samples']) : DEFAULT_MIN_SAMPLES;
+  const axes = opts.axis ? String(opts.axis).split(',').map(s => s.trim()).filter(Boolean) : AXES;
+  const now = opts.now ? Date.parse(opts.now) : Date.now();
+  if (!Number.isFinite(now)) {
+    console.error(`--now must be an ISO timestamp (got "${opts.now}")`);
+    process.exitCode = 1;
+    return;
+  }
+  let report;
+  try {
+    report = driftReport({ window: opts.window || DEFAULT_WINDOW, baseline: opts.baseline || DEFAULT_BASELINE, minSamples, axes, now });
+  } catch (err) {
+    console.error(`xm trace drift: ${err.message}`);
+    process.exitCode = 1;
+    return;
+  }
+  let snapshot = null;
+  if (!opts.noSnapshot) {
+    try { snapshot = appendSnapshot(report); } catch (err) { process.stderr.write(`[x-trace] drift snapshot not written: ${err.message}\n`); }
+  }
+  if (opts.json) console.log(JSON.stringify({ ...report, snapshot_path: snapshot }, null, 2));
+  else {
+    console.log(formatDriftReport(report));
+    if (snapshot) console.log(`Snapshot appended: ${snapshot}`);
+  }
+  if (opts.failOnFlag && report.flags.length > 0) process.exitCode = 2;
+}
+
 // ── router ───────────────────────────────────────────────────────────
 
 function printHelp() {
@@ -425,6 +463,13 @@ Commands:
                                 diff, and safe filesystem snapshot (max 3 forks/trace).
                                 --result FILE accepts output hash/metrics only;
                                 --promote-to-eval creates an idempotent eval case.
+  drift [--window 7d] [--baseline 28d] [--min-samples 5]
+        [--axis latency,tokens,errors,quality,precision,cost]
+        [--fail-on-flag] [--no-snapshot] [--json]
+                                Compare the recent window against the period before
+                                it per (skill/role/model), (rubric/strategy), lens.
+                                Flags need min-samples on both sides. Appends a
+                                numeric snapshot to .xm/metrics/drift.jsonl.
   help                          Show this help.
 
 Known tools: ${[...KNOWN_TOOLS].join(', ')}`);
@@ -440,6 +485,7 @@ function main() {
     case 'since':  cmdSince(pos); break;
     case 'doctor': cmdDoctor(opts); break;
     case 'replay': cmdReplay(pos, opts); break;
+    case 'drift':  cmdDrift(opts); break;
     case 'help':
     case '--help':
     case '-h':
@@ -461,4 +507,4 @@ const isMain = (() => {
 })();
 if (isMain) main();
 
-export { cmdRecord, cmdLast, cmdStatus, cmdSince, cmdDoctor, cmdReplay, commitsSince, relativeTime, shortRef, sessionFileTime };
+export { cmdRecord, cmdLast, cmdStatus, cmdSince, cmdDoctor, cmdReplay, cmdDrift, commitsSince, relativeTime, shortRef, sessionFileTime };

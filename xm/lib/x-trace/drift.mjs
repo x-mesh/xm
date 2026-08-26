@@ -1,0 +1,365 @@
+/**
+ * x-trace/drift — time-window drift over what xm already records.
+ *
+ * "Did latency, error rate, judged quality, review precision, or cost move
+ * after the last model / SKILL.md change?" Compares a recent window (default
+ * 7d) against the non-overlapping period right before it (default 28d) per
+ * (skill, role, model) / (rubric, strategy) / lens key, and flags deltas that
+ * cross a threshold — only when BOTH sides have at least `min_samples` rows,
+ * so a single slow run cannot raise a flag.
+ *
+ * Sources (all optional; missing ones are reported as coverage gaps, never as 0):
+ *   .xm/traces/*.jsonl            agent_step duration_ms / tokens_est, session_end status
+ *   .xm/eval/results/*-score.json overall per (rubric, source_strategy)
+ *   .xm/review/triage-ledger.jsonl per-lens precision (x-build review-precision)
+ *   .xm/metrics/sessions.jsonl    task_complete cost_usd (always an estimate)
+ *
+ * Model *version* is not recorded anywhere (the Agent tool returns a label
+ * only), so the snapshot carries the x-trace plugin version as its version axis.
+ *
+ * Thresholds below are candidates: they follow the repo's L9 rule (pick gate
+ * values from a simulator, not judgment) only once enough snapshots exist to
+ * simulate against — until then the report says so.
+ *
+ * Zero-dependency: node builtins + trace-writer.mjs (same plugin directory).
+ */
+
+import { existsSync, readdirSync, readFileSync, appendFileSync, mkdirSync, lstatSync } from 'node:fs';
+import { join } from 'node:path';
+import { resolveXmDir } from './trace-writer.mjs';
+
+export const DEFAULT_WINDOW = '7d';
+export const DEFAULT_BASELINE = '28d';
+export const DEFAULT_MIN_SAMPLES = 5;
+export const AXES = ['latency', 'tokens', 'errors', 'quality', 'precision', 'cost'];
+/** Candidate thresholds (see header). ratio = relative change, pp = percentage points, abs = absolute. */
+export const THRESHOLDS = {
+  latency: { kind: 'ratio', direction: 'up', value: 0.25 },
+  tokens: { kind: 'ratio', direction: 'up', value: 0.25 },
+  cost: { kind: 'ratio', direction: 'up', value: 0.25 },
+  errors: { kind: 'pp', direction: 'up', value: 0.10 },
+  quality: { kind: 'abs', direction: 'down', value: 0.5 },
+  precision: { kind: 'abs', direction: 'down', value: 0.15 },
+};
+export const THRESHOLD_STATUS = 'candidate — not yet simulator-calibrated (L9); treat flags as prompts to look, not verdicts';
+
+export function parseDuration(value) {
+  const match = /^(\d+)\s*([dhm])$/.exec(String(value || '').trim());
+  if (!match) return null;
+  const n = Number(match[1]);
+  const unit = { d: 86400000, h: 3600000, m: 60000 }[match[2]];
+  return n > 0 ? n * unit : null;
+}
+
+export function percentile50(values) {
+  const v = (values || []).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const mid = Math.floor(v.length / 2);
+  return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+}
+
+function mean(values) {
+  const v = (values || []).map(Number).filter(Number.isFinite);
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+}
+
+function round(value, digits = 2) {
+  if (value == null || !Number.isFinite(Number(value))) return null;
+  const factor = 10 ** digits;
+  return Math.round(Number(value) * factor) / factor;
+}
+
+/** Tolerant JSONL reader — torn or malformed lines are skipped and counted. */
+export function readJsonl(path) {
+  const rows = [];
+  let skipped = 0;
+  if (!existsSync(path)) return { rows, skipped };
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try { rows.push(JSON.parse(trimmed)); } catch { skipped += 1; }
+  }
+  return { rows, skipped };
+}
+
+/** `{skill}-YYYYMMDD-HHMMSS-{hex}[.host-suffix].jsonl` → { skill, fileTime } */
+export function parseTraceFileName(name) {
+  const base = name.replace(/\.jsonl$/, '');
+  const match = base.match(/^(.*?)-(\d{8})-(\d{6})-[0-9a-f]+(?:\..*)?$/i);
+  if (!match) return { skill: 'unknown', fileTime: NaN };
+  const [, skill, d, t] = match;
+  const iso = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}T${t.slice(0, 2)}:${t.slice(2, 4)}:${t.slice(4, 6)}Z`;
+  return { skill: skill || 'unknown', fileTime: Date.parse(iso) };
+}
+
+function timeOf(value, fallback = NaN) {
+  const t = Date.parse(value || '');
+  return Number.isFinite(t) ? t : fallback;
+}
+
+// ── collectors ───────────────────────────────────────────────────────
+
+export function collectTraceRows(traceDir) {
+  const steps = [];
+  const sessions = [];
+  let files = 0;
+  let skipped = 0;
+  if (!existsSync(traceDir)) return { steps, sessions, files, skipped };
+  for (const name of readdirSync(traceDir)) {
+    if (!name.endsWith('.jsonl')) continue;
+    const path = join(traceDir, name);
+    try { if (lstatSync(path).isSymbolicLink()) { skipped += 1; continue; } } catch { continue; }
+    files += 1;
+    const { skill: fileSkill, fileTime } = parseTraceFileName(name);
+    const parsed = readJsonl(path);
+    skipped += parsed.skipped;
+    let skill = fileSkill;
+    for (const entry of parsed.rows) {
+      if (entry.type === 'session_start' && typeof entry.skill === 'string' && entry.skill) skill = entry.skill;
+    }
+    for (const entry of parsed.rows) {
+      const ts = timeOf(entry.ts, fileTime);
+      if (!Number.isFinite(ts)) continue;
+      if (entry.type === 'agent_step') {
+        const tokens = entry.tokens_est && typeof entry.tokens_est === 'object'
+          ? (Number(entry.tokens_est.input) || 0) + (Number(entry.tokens_est.output) || 0)
+          : null;
+        steps.push({
+          ts, skill, role: entry.role || 'unknown', model: entry.model || 'unknown',
+          duration_ms: Number.isFinite(Number(entry.duration_ms)) ? Number(entry.duration_ms) : null,
+          tokens_total: tokens != null && tokens > 0 ? tokens : null,
+          status: entry.status || 'unknown',
+        });
+      } else if (entry.type === 'session_end') {
+        sessions.push({ ts, skill, status: entry.status || 'unknown' });
+      }
+    }
+  }
+  return { steps, sessions, files, skipped };
+}
+
+export function collectEvalRows(resultsDir) {
+  const rows = [];
+  let skipped = 0;
+  if (!existsSync(resultsDir)) return { rows, skipped };
+  for (const name of readdirSync(resultsDir)) {
+    if (!name.endsWith('-score.json') && !/-score\..*\.json$/.test(name)) continue;
+    try {
+      const doc = JSON.parse(readFileSync(join(resultsDir, name), 'utf8'));
+      const overall = Number(doc.overall);
+      const ts = timeOf(doc.timestamp);
+      if (!Number.isFinite(overall) || !Number.isFinite(ts)) { skipped += 1; continue; }
+      rows.push({ ts, rubric: doc.rubric || 'unknown', strategy: doc.source_strategy || doc.strategy || 'unknown', overall, passed: doc.passed === true });
+    } catch { skipped += 1; }
+  }
+  return { rows, skipped };
+}
+
+export function collectCostRows(paths) {
+  const rows = [];
+  let skipped = 0;
+  for (const path of paths) {
+    const parsed = readJsonl(path);
+    skipped += parsed.skipped;
+    for (const entry of parsed.rows) {
+      if (entry.type !== 'task_complete') continue;
+      const cost = Number(entry.cost_usd);
+      const ts = timeOf(entry.timestamp || entry.ts);
+      if (!Number.isFinite(cost) || !Number.isFinite(ts)) continue;
+      rows.push({ ts, model: entry.model || 'unknown', role: entry.role || 'unknown', strategy: entry.strategy || 'unknown', cost_usd: cost });
+    }
+  }
+  return { rows, skipped };
+}
+
+export function collectPrecisionRows(ledgerPath) {
+  const parsed = readJsonl(ledgerPath);
+  const rows = [];
+  for (const entry of parsed.rows) {
+    if (entry.schema_v !== 1 || entry.type !== 'triage_decision') continue;
+    const ts = timeOf(entry.ts);
+    if (!Number.isFinite(ts)) continue;
+    rows.push({ ts, lens: entry.lens || 'unknown', decision: entry.decision });
+  }
+  return { rows, skipped: parsed.skipped };
+}
+
+// ── comparison ───────────────────────────────────────────────────────
+
+function crosses(axis, baselineValue, windowValue) {
+  const t = THRESHOLDS[axis];
+  if (baselineValue == null || windowValue == null) return { flagged: false, delta: null, delta_pct: null };
+  const delta = windowValue - baselineValue;
+  const deltaPct = baselineValue !== 0 ? delta / Math.abs(baselineValue) : null;
+  let flagged = false;
+  if (t.kind === 'ratio') flagged = deltaPct != null && (t.direction === 'up' ? deltaPct >= t.value : deltaPct <= -t.value);
+  else if (t.kind === 'pp' || t.kind === 'abs') flagged = t.direction === 'up' ? delta >= t.value : delta <= -t.value;
+  return { flagged, delta: round(delta, 4), delta_pct: deltaPct != null ? round(deltaPct, 4) : null };
+}
+
+/**
+ * Group rows by `keyOf`, split each group into baseline / window by timestamp,
+ * and compute `statOf(rows)` on each side. `groupOf` returns the value used for
+ * the flag; rows outside both periods are ignored.
+ */
+export function compareWindows(rows, { axis, now, windowMs, baselineMs, keyOf, statOf, minSamples }) {
+  const windowStart = now - windowMs;
+  const baselineStart = windowStart - baselineMs;
+  const groups = new Map();
+  for (const row of rows) {
+    if (row.ts > now || row.ts < baselineStart) continue;
+    const key = keyOf(row);
+    if (!groups.has(key)) groups.set(key, { baseline: [], window: [] });
+    (row.ts >= windowStart ? groups.get(key).window : groups.get(key).baseline).push(row);
+  }
+  const out = [];
+  for (const [key, sides] of groups) {
+    const baseline = { n: sides.baseline.length, value: round(statOf(sides.baseline), 4) };
+    const window = { n: sides.window.length, value: round(statOf(sides.window), 4) };
+    const enough = baseline.n >= minSamples && window.n >= minSamples;
+    const { flagged, delta, delta_pct } = enough ? crosses(axis, baseline.value, window.value) : { flagged: false, delta: null, delta_pct: null };
+    out.push({ key, baseline, window, delta, delta_pct, flagged, enough_samples: enough });
+  }
+  return out.sort((a, b) => Number(b.flagged) - Number(a.flagged) || (b.window.n + b.baseline.n) - (a.window.n + a.baseline.n) || a.key.localeCompare(b.key));
+}
+
+function errorRate(rows) {
+  if (!rows.length) return null;
+  return rows.filter(r => r.status !== 'success').length / rows.length;
+}
+
+function precisionOf(rows) {
+  const fixNow = rows.filter(r => r.decision === 'fix_now').length;
+  const falsePositive = rows.filter(r => r.decision === 'false_positive').length;
+  return fixNow + falsePositive > 0 ? fixNow / (fixNow + falsePositive) : null;
+}
+
+export function readPluginVersion() {
+  try {
+    const doc = JSON.parse(readFileSync(new URL('../../.claude-plugin/plugin.json', import.meta.url), 'utf8'));
+    return typeof doc.version === 'string' ? doc.version : null;
+  } catch { return null; }
+}
+
+/** Build the full report. `now` is an epoch ms (tests pass a fixed one). */
+export function driftReport({ xmDir = resolveXmDir(), window = DEFAULT_WINDOW, baseline = DEFAULT_BASELINE, minSamples = DEFAULT_MIN_SAMPLES, axes = AXES, now = Date.now() } = {}) {
+  const windowMs = parseDuration(window);
+  const baselineMs = parseDuration(baseline);
+  if (windowMs == null) throw new Error(`--window must look like 7d, 12h, or 90m (got "${window}")`);
+  if (baselineMs == null) throw new Error(`--baseline must look like 28d, 12h, or 90m (got "${baseline}")`);
+  if (!Number.isInteger(minSamples) || minSamples <= 0) throw new Error('--min-samples must be a positive integer');
+  const unknownAxes = axes.filter(axis => !AXES.includes(axis));
+  if (unknownAxes.length) throw new Error(`unknown axis: ${unknownAxes.join(', ')} (valid: ${AXES.join(', ')})`);
+
+  const coverage = [];
+  const report = {
+    schema_v: 1,
+    generated_at: new Date(now).toISOString(),
+    window: { spec: window, ms: windowMs, from: new Date(now - windowMs).toISOString(), to: new Date(now).toISOString() },
+    baseline: { spec: baseline, ms: baselineMs, from: new Date(now - windowMs - baselineMs).toISOString(), to: new Date(now - windowMs).toISOString() },
+    min_samples: minSamples,
+    thresholds: THRESHOLDS,
+    threshold_status: THRESHOLD_STATUS,
+    xm_version: readPluginVersion(),
+    axes: {},
+    flags: [],
+    coverage,
+  };
+  const common = { now, windowMs, baselineMs, minSamples };
+  const need = axis => axes.includes(axis);
+
+  let trace = null;
+  if (need('latency') || need('tokens') || need('errors')) {
+    trace = collectTraceRows(join(xmDir, 'traces'));
+    if (trace.files === 0) coverage.push('traces: no .xm/traces/*.jsonl files — latency, tokens, and errors axes have no data');
+    else if (trace.skipped > 0) coverage.push(`traces: ${trace.skipped} malformed line(s)/symlink(s) skipped`);
+  }
+  if (need('latency')) {
+    const rows = trace.steps.filter(r => r.duration_ms != null);
+    report.axes.latency = { unit: 'ms (p50)', rows: compareWindows(rows, { ...common, axis: 'latency', keyOf: r => `${r.skill}/${r.role}/${r.model}`, statOf: rs => percentile50(rs.map(r => r.duration_ms)) }) };
+  }
+  if (need('tokens')) {
+    const rows = trace.steps.filter(r => r.tokens_total != null);
+    if (trace.steps.length && !rows.length) coverage.push('tokens: agent_step rows carry no tokens_est — axis has no data (estimates are opt-in)');
+    report.axes.tokens = { unit: 'tokens_est total (p50, estimate)', rows: compareWindows(rows, { ...common, axis: 'tokens', keyOf: r => `${r.skill}/${r.role}/${r.model}`, statOf: rs => percentile50(rs.map(r => r.tokens_total)) }) };
+  }
+  if (need('errors')) {
+    report.axes.errors = { unit: 'session_end non-success rate', rows: compareWindows(trace.sessions, { ...common, axis: 'errors', keyOf: r => r.skill, statOf: errorRate }) };
+  }
+  if (need('quality')) {
+    const evalRows = collectEvalRows(join(xmDir, 'eval', 'results'));
+    if (!evalRows.rows.length) coverage.push('quality: no .xm/eval/results/*-score.json — run /xm:eval score (or x-op --verify) to populate');
+    report.axes.quality = { unit: 'judge overall (mean, 1-10)', rows: compareWindows(evalRows.rows, { ...common, axis: 'quality', keyOf: r => `${r.rubric}/${r.strategy}`, statOf: rs => mean(rs.map(r => r.overall)) }) };
+  }
+  if (need('precision')) {
+    const ledger = collectPrecisionRows(join(xmDir, 'review', 'triage-ledger.jsonl'));
+    if (!ledger.rows.length) coverage.push('precision: no .xm/review/triage-ledger.jsonl decisions — x-build verify-review-fix writes them when a triage passes');
+    report.axes.precision = { unit: 'fix_now / (fix_now + false_positive)', rows: compareWindows(ledger.rows, { ...common, axis: 'precision', keyOf: r => r.lens, statOf: precisionOf }) };
+  }
+  if (need('cost')) {
+    const cost = collectCostRows([join(xmDir, 'metrics', 'sessions.jsonl'), join(xmDir, 'build', 'metrics', 'sessions.jsonl')]);
+    if (!cost.rows.length) coverage.push('cost: no task_complete rows in .xm/metrics/sessions.jsonl — axis has no data (all cost figures are estimates when present)');
+    report.axes.cost = { unit: 'cost_usd (p50, estimate)', rows: compareWindows(cost.rows, { ...common, axis: 'cost', keyOf: r => `${r.model}/${r.role}`, statOf: rs => percentile50(rs.map(r => r.cost_usd)) }) };
+  }
+
+  for (const [axis, data] of Object.entries(report.axes)) {
+    for (const row of data.rows) {
+      if (row.flagged) report.flags.push({ axis, key: row.key, baseline: row.baseline.value, window: row.window.value, delta: row.delta, delta_pct: row.delta_pct, threshold: THRESHOLDS[axis] });
+    }
+  }
+  return report;
+}
+
+/** Numeric-only snapshot row for `.xm/metrics/drift.jsonl` (dashboard charting later). */
+export function snapshotRow(report) {
+  return {
+    schema_v: 1,
+    type: 'drift_snapshot',
+    ts: report.generated_at,
+    window: report.window.spec,
+    baseline: report.baseline.spec,
+    min_samples: report.min_samples,
+    xm_version: report.xm_version,
+    counts: Object.fromEntries(Object.entries(report.axes).map(([axis, data]) => [axis, { groups: data.rows.length, measured: data.rows.filter(r => r.enough_samples).length, flagged: data.rows.filter(r => r.flagged).length }])),
+    flags: report.flags.map(f => ({ axis: f.axis, key: f.key, baseline: f.baseline, window: f.window, delta: f.delta })),
+  };
+}
+
+export function appendSnapshot(report, xmDir = resolveXmDir()) {
+  const dir = join(xmDir, 'metrics');
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, 'drift.jsonl');
+  appendFileSync(path, JSON.stringify(snapshotRow(report)) + '\n', 'utf8');
+  return path;
+}
+
+function fmt(value, axis) {
+  if (value == null) return '—';
+  if (axis === 'errors' || axis === 'precision') return `${Math.round(value * 100)}%`;
+  if (axis === 'cost') return `$${value}`;
+  return String(value);
+}
+
+export function formatDriftReport(report) {
+  const lines = [];
+  lines.push(`📈 [trace] Drift: window ${report.window.spec} (${report.window.from.slice(0, 10)} → ${report.window.to.slice(0, 10)}) vs baseline ${report.baseline.spec} before it · min samples ${report.min_samples}${report.xm_version ? ` · xm ${report.xm_version}` : ''}`);
+  lines.push(`Thresholds: ${THRESHOLD_STATUS}`);
+  for (const [axis, data] of Object.entries(report.axes)) {
+    lines.push('');
+    lines.push(`## ${axis} — ${data.unit}`);
+    if (!data.rows.length) { lines.push('  (no rows in either period)'); continue; }
+    lines.push('| key | baseline (n) | window (n) | Δ | flag |');
+    lines.push('|---|---|---|---|---|');
+    for (const row of data.rows.slice(0, 40)) {
+      const delta = row.delta == null ? '—' : (THRESHOLDS[axis].kind === 'ratio' && row.delta_pct != null ? `${row.delta_pct >= 0 ? '+' : ''}${Math.round(row.delta_pct * 100)}%` : `${row.delta >= 0 ? '+' : ''}${fmt(row.delta, axis)}`);
+      const flag = row.flagged ? '⚠ drift' : row.enough_samples ? 'ok' : `n<${report.min_samples}`;
+      lines.push(`| ${row.key} | ${fmt(row.baseline.value, axis)} (${row.baseline.n}) | ${fmt(row.window.value, axis)} (${row.window.n}) | ${delta} | ${flag} |`);
+    }
+    if (data.rows.length > 40) lines.push(`  … ${data.rows.length - 40} more key(s) (use --json)`);
+  }
+  lines.push('');
+  lines.push(report.flags.length ? `⚠ ${report.flags.length} flag(s): ${report.flags.map(f => `${f.axis}:${f.key}`).join(', ')}` : '✓ no drift flags');
+  for (const note of report.coverage) lines.push(`Note: ${note}`);
+  lines.push('Note: activity that was never traced or recorded is invisible here — coverage is best-effort.');
+  return lines.join('\n');
+}
