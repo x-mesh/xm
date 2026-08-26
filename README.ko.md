@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.21.2-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.21.4-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -416,7 +416,7 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 | [x-trace](#x-trace) | 실행 추적 & 비용 | `/xm:trace timeline` |
 | [x-memory](#x-memory) | 세션 간 메모리 | `/xm:memory inject` |
 | [x-dashboard](#x-dashboard) | .xm 상태 웹 대시보드 | `/xm:dashboard start` |
-| [x-humanize](#x-humanize) | AI 글쓰기 패턴 제거 (v0.3.2, 안정화 전) | `/xm:humanize audit text` |
+| [x-humanize](#x-humanize) | AI 글쓰기 패턴 제거 (v0.5.0, 안정화 전) | `/xm:humanize audit text` |
 | [x-recall](#x-recall) | 세션 간 산출물 인덱스 | `xm recall list` |
 | [x-panel](#x-panel) | 크로스 모델 적대 리뷰 | `xm panel` |
 | [x-wt](#x-wt) | 세션 worktree — 격리 후 부모로 land | `/xm:wt` |
@@ -1037,6 +1037,7 @@ AI 글쓰기 패턴을 감지해 자연스러운 한국어/영어 문체로 재�
 /xm:humanize light <텍스트>         # 최소 편집, 원본 구조 유지
 /xm:humanize <텍스트>               # 기본: medium 강도 재작성
 /xm:humanize strong <텍스트>        # 문장 전면 재구성, 사실은 보존
+/xm:humanize ui <문자열>            # 한국어 UI 문자열 — JSON 배열 입출력
 /xm:humanize voice <파일> <텍스트>  # 샘플 파일 문체에 맞춰 재작성
 /xm:humanize --lang ko <텍스트>     # 한국어 출력 강제
 ```

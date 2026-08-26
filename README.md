@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.21.2-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.21.4-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -415,7 +415,7 @@ This is a *capability*, available today; proving it produces measurably better o
 | [x-trace](#x-trace) | Execution tracing & cost | `/xm:trace timeline` |
 | [x-memory](#x-memory) | Cross-session memory | `/xm:memory inject` |
 | [x-dashboard](#x-dashboard) | Web dashboard for .xm state | `/xm:dashboard start` |
-| [x-humanize](#x-humanize) | Remove AI writing patterns (v0.3.2, pre-stable) | `/xm:humanize audit text` |
+| [x-humanize](#x-humanize) | Remove AI writing patterns (v0.5.0, pre-stable) | `/xm:humanize audit text` |
 | [x-recall](#x-recall) | Cross-session artifact index | `xm recall list` |
 | [x-panel](#x-panel) | Cross-model adversarial review | `xm panel` |
 | [x-wt](#x-wt) | Session worktree — isolate & land back | `/xm:wt` |
@@ -1037,6 +1037,7 @@ Detect AI-writing patterns and rewrite generated text into natural human prose. 
 /xm:humanize light <text>          # Minimal edits, preserve original structure
 /xm:humanize <text>                # Default: medium intensity rewrite
 /xm:humanize strong <text>         # Rebuild prose aggressively, preserve facts
+/xm:humanize ui <strings>          # Korean UI strings — JSON array in and out
 /xm:humanize voice <file> <text>   # Match voice of sample file
 /xm:humanize --lang ko <text>      # Force Korean output
 ```
