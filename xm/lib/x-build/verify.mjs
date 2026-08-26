@@ -12,8 +12,17 @@ import {
 } from './core.mjs';
 import { parsePrdBaseline, computeDrift } from './drift.mjs';
 import { recordEffectiveness } from './effectiveness.mjs';
+import {
+  TRIAGE_LEDGER_FILE, buildLedgerRow, ledgerRowKey, parseTriageLedger, parseDuration,
+  aggregateLensPrecision, formatPrecisionReport, lensesBelowPrecision, normalizeLensIdentifier,
+} from './review-precision.mjs';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import {
+  readFileSync, lstatSync, openSync, closeSync, fchmodSync, fstatSync, writeSync,
+  readSync, mkdirSync, rmdirSync, statSync,
+  constants as FS_CONSTANTS,
+} from 'node:fs';
+import { dirname, isAbsolute, relative, sep } from 'node:path';
 
 // ── cmdQuality ──────────────────────────────────────────────────────
 
@@ -754,6 +763,199 @@ function lifecyclePath() {
   return join(reviewDir(), 'finding-lifecycle.json');
 }
 
+function triageLedgerPath() {
+  return join(reviewDir(), TRIAGE_LEDGER_FILE);
+}
+
+export const MAX_TRIAGE_LEDGER_BYTES = 4 * 1024 * 1024;
+export const MAX_TRIAGE_LEDGER_LINE_BYTES = 64 * 1024;
+export const MAX_TRIAGE_LEDGER_ROWS = 20_000;
+
+function pathInside(root, candidate) {
+  const rel = relative(root, candidate);
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+function safeTriageLedgerPath() {
+  const root = resolve(workspaceRoot());
+  const path = resolve(triageLedgerPath());
+  const parent = dirname(path);
+  if (!pathInside(root, path)) throw new Error(`triage ledger escapes workspace root: ${path}`);
+
+  const parentRelative = relative(root, parent);
+  let cursor = root;
+  for (const segment of parentRelative.split(/[\\/]+/).filter(Boolean)) {
+    cursor = join(cursor, segment);
+    if (!existsSync(cursor)) throw new Error(`triage ledger parent is missing: ${cursor}`);
+    const stat = lstatSync(cursor);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error(`triage ledger parent is unsafe: ${cursor}`);
+    }
+  }
+
+  const realRoot = realpathSync(root);
+  const realParent = realpathSync(parent);
+  if (!pathInside(realRoot, realParent)) throw new Error(`triage ledger parent escapes workspace root: ${parent}`);
+  if (existsSync(path)) {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`triage ledger file is unsafe: ${path}`);
+    if (!pathInside(realRoot, realpathSync(path))) throw new Error(`triage ledger file escapes workspace root: ${path}`);
+  }
+  return path;
+}
+
+function validateTriageLedgerText(text, label = 'triage ledger') {
+  if (Buffer.byteLength(text) > MAX_TRIAGE_LEDGER_BYTES) throw new Error(`${label} exceeds ${MAX_TRIAGE_LEDGER_BYTES} bytes`);
+  let rows = 0;
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    rows += 1;
+    if (rows > MAX_TRIAGE_LEDGER_ROWS) throw new Error(`${label} exceeds ${MAX_TRIAGE_LEDGER_ROWS} rows`);
+    if (Buffer.byteLength(line) > MAX_TRIAGE_LEDGER_LINE_BYTES) throw new Error(`${label} line exceeds ${MAX_TRIAGE_LEDGER_LINE_BYTES} bytes`);
+  }
+  return text;
+}
+
+// O_NOFOLLOW and O_NONBLOCK do not exist on every platform Node runs on (Windows
+// defines neither). Degrade to 0 there rather than failing the gate outright:
+// safeTriageLedgerPath()'s lstat and the fstat isFile() check below still reject
+// symlinks and FIFOs — without the flags they just cannot close the swap window
+// between the two.
+function ledgerOpenFlags() {
+  const noFollow = Number.isInteger(FS_CONSTANTS.O_NOFOLLOW) ? FS_CONSTANTS.O_NOFOLLOW : 0;
+  const nonBlock = Number.isInteger(FS_CONSTANTS.O_NONBLOCK) ? FS_CONSTANTS.O_NONBLOCK : 0;
+  return noFollow | nonBlock;
+}
+
+/**
+ * Read the triage ledger with the byte, line, and row caps enforced.
+ *
+ * @param {string} path Must already have been validated by `safeTriageLedgerPath()`
+ *   — this function only guards the final path component (via O_NOFOLLOW where the
+ *   platform has it), never workspace containment or a symlinked parent directory.
+ * @returns {string} The ledger text, validated against MAX_TRIAGE_LEDGER_BYTES,
+ *   MAX_TRIAGE_LEDGER_LINE_BYTES, and MAX_TRIAGE_LEDGER_ROWS.
+ * @throws when the path is not a regular file, or when any of those caps is exceeded.
+ */
+export function readBoundedTriageLedger(path) {
+  const fd = openSync(path, FS_CONSTANTS.O_RDONLY | ledgerOpenFlags());
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error(`triage ledger is not a regular file: ${path}`);
+    if (stat.size > MAX_TRIAGE_LEDGER_BYTES) throw new Error(`triage ledger exceeds ${MAX_TRIAGE_LEDGER_BYTES} bytes`);
+    const bytes = Buffer.alloc(stat.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    return validateTriageLedgerText(bytes.subarray(0, offset).toString('utf8'));
+  } finally {
+    closeSync(fd);
+  }
+}
+
+const LEDGER_LOCK_RETRIES = 50;
+const LEDGER_LOCK_RETRY_MS = 20;
+const LEDGER_STALE_LOCK_MS = 10_000;
+const LEDGER_LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
+
+// mkdir is atomic on local and network filesystems, so a directory lock avoids
+// the O_EXCL weaknesses ordinary lock files have on NFS. Same shape as the
+// cost core's appendCostEvent lock.
+function withTriageLedgerLock(path, fn) {
+  const lockPath = `${path}.lock`;
+  let release = null;
+  for (let attempt = 0; attempt < LEDGER_LOCK_RETRIES; attempt++) {
+    try {
+      mkdirSync(lockPath);
+      release = () => { try { rmdirSync(lockPath); } catch { /* already released */ } };
+      break;
+    } catch (error) {
+      if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') throw error;
+      try {
+        const held = statSync(lockPath);
+        if (Date.now() - held.mtimeMs > LEDGER_STALE_LOCK_MS) {
+          if (held.isDirectory()) rmdirSync(lockPath);
+          else unlinkSync(lockPath);
+          continue;
+        }
+      } catch (staleError) {
+        if (/** @type {NodeJS.ErrnoException} */ (staleError).code === 'ENOENT') continue;
+        throw staleError;
+      }
+      Atomics.wait(LEDGER_LOCK_SLEEP, 0, 0, LEDGER_LOCK_RETRY_MS);
+    }
+  }
+  if (!release) throw new Error(`triage ledger lock is held: ${lockPath}`);
+  try {
+    return fn();
+  } finally {
+    release();
+  }
+}
+
+function appendPrivateFile(path, text) {
+  // O_NONBLOCK turns a FIFO swapped in under the path into an immediate ENXIO
+  // instead of a write that blocks until a reader appears.
+  const flags = FS_CONSTANTS.O_WRONLY | FS_CONSTANTS.O_APPEND | FS_CONSTANTS.O_CREAT
+    | ledgerOpenFlags();
+  const fd = openSync(path, flags, 0o600);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error(`triage ledger is not a regular file: ${path}`);
+    fchmodSync(fd, 0o600);
+    const bytes = Buffer.from(text, 'utf8');
+    if (stat.size + bytes.length > MAX_TRIAGE_LEDGER_BYTES) throw new Error(`triage ledger exceeds ${MAX_TRIAGE_LEDGER_BYTES} bytes`);
+    let offset = 0;
+    while (offset < bytes.length) offset += writeSync(fd, bytes, offset, bytes.length - offset);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Append-only and de-duplicated by ledgerRowKey, so re-running the gate on the
+// same triage never double-counts a decision. Returns the number of rows written.
+function appendTriageLedger(rows) {
+  if (!rows.length) return 0;
+  const path = safeTriageLedgerPath();
+  // The byte cap only holds if read -> check -> append is serialized: O_APPEND
+  // makes each write atomic but lets two appenders both observe a size under the
+  // cap and together push the ledger past it.
+  return withTriageLedgerLock(path, () => appendTriageLedgerLocked(path, rows));
+}
+
+function appendTriageLedgerLocked(path, rows) {
+  const existingText = existsSync(path) ? readBoundedTriageLedger(path) : '';
+  const existing = parseTriageLedger(existingText).rows;
+  const outcomeAppendKey = row => `${ledgerRowKey(row)}|${row.outcome || ''}`;
+  const seen = new Set(existing.filter(row => row.type === 'triage_outcome').map(outcomeAppendKey));
+  const latestDecisions = new Map();
+  for (const row of existing) {
+    if (row.type === 'triage_decision') latestDecisions.set(`${row.reviewed_commit || ''}|${row.finding_id || ''}`, row.decision);
+  }
+  const fresh = rows.filter(row => {
+    if (row.type === 'triage_decision') {
+      const identity = `${row.reviewed_commit || ''}|${row.finding_id || ''}`;
+      if (latestDecisions.get(identity) === row.decision) return false;
+      latestDecisions.set(identity, row.decision);
+      return true;
+    }
+    const key = outcomeAppendKey(row);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (fresh.length > 0) {
+    const separator = existingText && !existingText.endsWith('\n') ? '\n' : '';
+    const appendedText = separator + fresh.map(row => JSON.stringify(row)).join('\n') + '\n';
+    validateTriageLedgerText(existingText + appendedText);
+    appendPrivateFile(path, appendedText);
+  }
+  return fresh.length;
+}
+
 function buildLifecycle(review, triage, freshness) {
   const triageMap = toTriageMap(triage);
   const findings = (Array.isArray(review.findings) ? review.findings : []).map((finding, index) => {
@@ -1047,6 +1249,12 @@ export function cmdVerifyReviewFix(args) {
   let fixAuthorized = false;
   let triageDigest = null;
   let lifecycleSummary = { open: 0, fix_authorized: 0, fixed: 0, reverified: 0 };
+  // Ledger inputs: the validated triage map (decisions are recorded only when the
+  // gate passes) and the lifecycle row a `--reverify` accepted in this run (its
+  // outcome is an observation in its own right, recorded even when other
+  // findings still block the gate).
+  let triageMapForLedger = null;
+  let reverifiedRow = null;
 
   if (!existsSync(triagePath)) {
     failures.push(`Missing triage file: ${triagePath}`);
@@ -1055,6 +1263,7 @@ export function cmdVerifyReviewFix(args) {
     const triage = readJSON(triagePath);
     const context = reviewContextProvenance(review);
     const triageMap = toTriageMap(triage);
+    triageMapForLedger = triageMap;
     const allowedFiles = getAllowedFiles(triage);
     const verification = getVerificationItems(triage);
     const baselineFiles = new Set(Array.isArray(triage.baseline_changed_files) ? triage.baseline_changed_files : []);
@@ -1093,6 +1302,7 @@ export function cmdVerifyReviewFix(args) {
         row.file_snapshot = lifecycleFileSnapshot(row.file, freshness);
         row.reverified_at = new Date().toISOString();
         row.updated_at = row.reverified_at;
+        reverifiedRow = row;
       }
     }
 
@@ -1176,6 +1386,7 @@ export function cmdVerifyReviewFix(args) {
       file !== '.xm/review/triage.json' &&
       file !== '.xm/review/review-fix-gate.json' &&
       file !== '.xm/review/finding-lifecycle.json' &&
+      file !== '.xm/review/triage-ledger.jsonl' &&
       !file.startsWith('.xm/review/history/') &&
       !allowedFiles.includes(file)
     );
@@ -1246,9 +1457,41 @@ export function cmdVerifyReviewFix(args) {
   };
   writeJSON(join(reviewDir(), 'review-fix-gate.json'), report);
 
+  // Triage ledger (error analysis): decisions are appended only from a passing
+  // gate. Reverification outcomes may keep the gate red when this or another
+  // finding is persistent/regressed, but only after snapshot, provenance,
+  // authorization, and allowed-file checks have all passed.
+  const ledgerRows = [];
+  if (failures.length === 0 && triageMapForLedger && (stage === 'ready_for_fix' || stage === 'reverified')) {
+    for (const finding of required) {
+      const decision = String(triageMapForLedger.get(finding.id)?.decision || '').trim().toLowerCase();
+      if (VALID_TRIAGE_DECISIONS.has(decision)) {
+        ledgerRows.push(buildLedgerRow({ ts: report.timestamp, reviewed_commit: report.reviewed_commit, finding, decision, triage_digest: triageDigest }));
+      }
+    }
+  }
+  const outcomeGateFailure = failure => /^F\d+: reverification outcome is (?:persistent|regression); expected resolved$/.test(failure);
+  const reverifiedSnapshot = reverifiedRow ? lifecycleFileSnapshot(reverifiedRow.file, freshness) : null;
+  const trustedReverifyOutcome = !!reverifiedRow && fixAuthorized &&
+    snapshotMatches(reverifiedRow.file_snapshot, reverifiedSnapshot) &&
+    failures.every(outcomeGateFailure);
+  if (trustedReverifyOutcome) {
+    const finding = required.find(item => item.finding_id === reverifiedRow.finding_id) || reverifiedRow;
+    ledgerRows.push(buildLedgerRow({
+      ts: report.timestamp,
+      reviewed_commit: report.reviewed_commit,
+      finding,
+      outcome: reverifiedRow.outcome,
+      triage_digest: triageDigest,
+      file_snapshot: reverifiedRow.file_snapshot,
+    }));
+  }
+  const ledgerAppended = appendTriageLedger(ledgerRows);
+
   if (failures.length > 0) {
     console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
     for (const failure of failures) console.log(`  - ${failure}`);
+    if (ledgerAppended > 0) console.log(`  ${C.dim}Triage ledger: +${ledgerAppended} outcome row(s)${C.reset}`);
     process.exitCode = 1;
     return;
   }
@@ -1256,5 +1499,115 @@ export function cmdVerifyReviewFix(args) {
   console.log(`${C.green}Review Fix Gate passed.${C.reset}`);
   console.log(`  Triage-required findings: ${required.length}`);
   if (stage === 'reverified') console.log(`  Reverified: ${lifecycleSummary.reverified} finding(s) resolved against current file bytes.`);
+  if (ledgerAppended > 0) console.log(`  Triage ledger: +${ledgerAppended} row(s) → ${triageLedgerPath()}`);
   for (const warning of warnings) console.log(`  ${C.yellow}Warning:${C.reset} ${warning}`);
+}
+
+// ── cmdReviewPrecision ──────────────────────────────────────────────
+// Per-lens precision from the triage ledger. precision = fix_now / (fix_now +
+// false_positive); a lens with neither is reported as unmeasured, never as 0.
+
+export function cmdReviewPrecision(args) {
+  const valueOptions = new Set(['since', 'last', 'lens', 'min-precision']);
+  const flagOptions = new Set(['json']);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg.startsWith('--')) {
+      console.error(`Unexpected positional argument: "${arg}"`);
+      process.exitCode = 1;
+      return;
+    }
+    const option = arg.slice(2);
+    if (!valueOptions.has(option) && !flagOptions.has(option)) {
+      console.error(`Unknown option: --${option}`);
+      process.exitCode = 1;
+      return;
+    }
+    if (valueOptions.has(option)) {
+      if (i + 1 >= args.length || args[i + 1].startsWith('--')) {
+        console.error(`--${option} requires a value`);
+        process.exitCode = 1;
+        return;
+      }
+      i += 1;
+    }
+  }
+
+  const { opts } = parseOptions(args);
+  const json = opts.json === true;
+  let path = triageLedgerPath();
+
+  if (opts.since && parseDuration(opts.since) == null) {
+    console.error(`--since must look like 30d, 12h, or 90m (got "${opts.since}")`);
+    process.exitCode = 1;
+    return;
+  }
+  const last = opts.last != null ? Number(opts.last) : null;
+  if (opts.last != null && (!Number.isInteger(last) || last <= 0)) {
+    console.error(`--last must be a positive integer (got "${opts.last}")`);
+    process.exitCode = 1;
+    return;
+  }
+  const minPrecision = opts['min-precision'] != null ? Number(opts['min-precision']) : null;
+  if (opts['min-precision'] != null && !(minPrecision >= 0 && minPrecision <= 1)) {
+    console.error(`--min-precision must be between 0 and 1 (got "${opts['min-precision']}")`);
+    process.exitCode = 1;
+    return;
+  }
+  if (opts.lens != null && !normalizeLensIdentifier(opts.lens)) {
+    console.error('--lens must be a 1-64 character identifier using letters, numbers, dot, underscore, or hyphen');
+    process.exitCode = 1;
+    return;
+  }
+
+  let ledgerExists = true;
+  try { lstatSync(path); } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') ledgerExists = false;
+    else {
+      console.error(`Unsafe triage ledger: ${/** @type {Error} */ (error).message}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  if (!ledgerExists) {
+    if (json) {
+      console.log(JSON.stringify({ status: 'no_ledger', path }, null, 2));
+    } else {
+      console.log(`${C.yellow}No triage ledger yet:${C.reset} ${path}`);
+      console.log('  Rows are appended when `x-build verify-review-fix` passes a triage or records a --reverify outcome.');
+    }
+    return;
+  }
+
+  try {
+    path = safeTriageLedgerPath();
+  } catch (error) {
+    console.error(`Unsafe triage ledger: ${/** @type {Error} */ (error).message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = parseTriageLedger(readBoundedTriageLedger(path));
+  } catch (error) {
+    console.error(`Unsafe triage ledger: ${/** @type {Error} */ (error).message}`);
+    process.exitCode = 1;
+    return;
+  }
+  const { rows, skipped } = parsed;
+  const report = aggregateLensPrecision(rows, { since: opts.since || null, last, lens: opts.lens || null });
+  const below = minPrecision != null ? lensesBelowPrecision(report, minPrecision) : [];
+
+  if (json) {
+    console.log(JSON.stringify({ status: 'ok', path, skipped_lines: skipped, ...report, min_precision: minPrecision, below_min: below.map(bucket => bucket.lens) }, null, 2));
+  } else {
+    console.log(`${C.bold}📐 Review lens precision${C.reset}  ${C.dim}${path}${C.reset}`);
+    console.log(formatPrecisionReport(report));
+    if (skipped > 0) console.log(`${C.yellow}Warning:${C.reset} ${skipped} malformed ledger line(s) skipped.`);
+    if (below.length > 0) {
+      console.log(`${C.red}Below --min-precision ${minPrecision}:${C.reset} ${below.map(bucket => `${bucket.lens} (${Math.round(bucket.precision * 100)}%)`).join(', ')}`);
+    }
+  }
+  if (below.length > 0) process.exitCode = 2;
 }

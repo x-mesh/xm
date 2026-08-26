@@ -23,7 +23,7 @@ function runSync(cwd) {
 
 function copyTrackedRepo() {
   const tmp = mkdtempSync(join(tmpdir(), 'xm-sync-check-'));
-  const files = spawnSync('git', ['ls-files'], { cwd: REPO, encoding: 'utf8' })
+  const files = spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], { cwd: REPO, encoding: 'utf8' })
     .stdout
     .trim()
     .split('\n')
@@ -59,6 +59,23 @@ describe('sync-bundle.sh --check', () => {
     }
   });
 
+  test('detects drift in the standalone dashboard precision module', () => {
+    const tmp = copyTrackedRepo();
+    try {
+      const packagedFile = join(tmp, 'x-dashboard', 'lib', 'x-build', 'review-precision.mjs');
+      const before = readFileSync(packagedFile, 'utf8');
+      const drifted = `${before}\n// intentional standalone package drift\n`;
+      writeFileSync(packagedFile, drifted);
+
+      const r = runSync(tmp);
+      expect(r.status).not.toBe(0);
+      expect(`${r.stdout}\n${r.stderr}`).toContain('DIVERGED x-dashboard/lib/x-build/review-precision.mjs');
+      expect(readFileSync(packagedFile, 'utf8')).toBe(drifted);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('detects a missing nested x-build reference', () => {
     const tmp = copyTrackedRepo();
     try {
@@ -79,6 +96,21 @@ describe('sync-bundle.sh --check', () => {
       expect(`${r.stdout}\n${r.stderr}`).toContain('MISSING');
       expect(`${r.stdout}\n${r.stderr}`).toContain('nested-reference.md');
       expect(readFileSync(sourceFile, 'utf8')).toBe('# Nested reference\n');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('detects a stale bundle-only x-eval module', () => {
+    const tmp = copyTrackedRepo();
+    try {
+      const staleFile = join(tmp, 'xm', 'lib', 'x-eval', 'obsolete.mjs');
+      writeFileSync(staleFile, 'export const obsolete = true;\n');
+
+      const r = runSync(tmp);
+      expect(r.status).not.toBe(0);
+      expect(`${r.stdout}\n${r.stderr}`).toContain('OBSOLETE xm/lib/x-eval/obsolete.mjs');
+      expect(readFileSync(staleFile, 'utf8')).toBe('export const obsolete = true;\n');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

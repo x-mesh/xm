@@ -206,6 +206,17 @@ _xm_trace_record() {
   case "$XM_TRACE_SUB2" in
     list|get|show) exit "$code" ;;
   esac
+  # x-eval has noun/verb read routes whose verb is not globally read-only.
+  # Keep mutating assert/case add/bench plan|record|finish and gate observable.
+  if [ "$XM_TRACE_CMD" = "eval" ]; then
+    case "$XM_TRACE_SUB" in
+      help|--help|-h|"") exit "$code" ;;
+      case)
+        case "$XM_TRACE_SUB2" in list|show) exit "$code" ;; esac ;;
+      bench)
+        case "$XM_TRACE_SUB2" in status) exit "$code" ;; esac ;;
+    esac
+  fi
   local libp
   libp="$(plugin_lib trace 2>/dev/null)"
   if [ -n "$libp" ] && [ -f "$libp/x-trace-cli.mjs" ]; then
@@ -374,6 +385,16 @@ case "$CMD" in
       exit 1
     fi
     node "$LIB_PATH/x-trace-cli.mjs" "$@"
+    ;;
+
+  eval)
+    LIB_PATH="$(plugin_lib eval)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-eval-cli.mjs" ]; then
+      echo "xm eval: x-eval-cli.mjs not found under $LIB" >&2
+      echo "  Update xm: xm update" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-eval-cli.mjs" "$@"
     ;;
 
   # Shortcuts for the two most-used read-only trace views. `xm last` == `xm trace
@@ -697,7 +718,7 @@ case "$CMD" in
 
     echo ""
     echo "## Resolved lib paths"
-    for p in xm dashboard build memory trace sync solver plan; do
+    for p in xm dashboard build memory trace eval sync solver plan; do
       resolved="$(plugin_lib "$p")"
       if [ -n "$resolved" ]; then
         echo "  ✅ $(printf '%-12s' "$p") $resolved"
@@ -1082,7 +1103,7 @@ case "$CMD" in
 
   which)
     echo "lib: $LIB"
-    for p in xm dashboard build memory trace sync solver; do
+    for p in xm dashboard build memory trace eval sync solver; do
       resolved="$(plugin_lib "$p")"
       printf "  %-12s %s\n" "$p" "${resolved:-(missing)}"
     done
@@ -1109,6 +1130,7 @@ Commands:
   cost predict <task-description>     Estimate cost from measured task history
   config <subcmd>                     Shared toolkit config (--local|--global)
   trace <subcmd>                      Execution traces
+  eval <subcmd>                       Deterministic assertions, cases, benchmarks, and regression gates
   last [tool]                         Shortcut for 'trace last' — last activity per tool
   status [--json]                     Shortcut for 'trace status' — commits since each tool acted
   sync <subcmd>                       Multi-machine .xm sync

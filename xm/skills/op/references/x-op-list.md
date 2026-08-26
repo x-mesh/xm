@@ -6,6 +6,7 @@ Output this catalog verbatim for `x-op list` (and as the safe fallback for unrec
 x-op — Strategy Orchestration
 
 Strategies:
+  direct <topic>          One agent, one call — the single-agent baseline (no orchestration)
   refine <topic>          Diverge → converge → verify rounds
   tournament <topic>      Compete → anonymous vote → winner
   chain <topic>           A→B→C sequential pipeline (conditional branching)

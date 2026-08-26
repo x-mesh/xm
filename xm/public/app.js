@@ -436,7 +436,7 @@ function severityBadge(severity) {
   };
   const entry = map[String(severity || '').toLowerCase()];
   if (entry) return `<span class="badge ${entry.cls}">${entry.label}</span>`;
-  return `<span class="badge badge-gray">${severity || '—'}</span>`;
+  return `<span class="badge badge-gray">${escapeHtmlHumble(severity || '—')}</span>`;
 }
 
 function laterFilesCell(files) {
@@ -5123,11 +5123,80 @@ async function renderReviewsList() {
   const app = document.getElementById('app');
   app.innerHTML = `<div class="view-header"><h1>Reviews</h1><p>.xm/review/</p></div>${renderLoading()}`;
 
-  const [last, history, gate] = await Promise.all([
+  const [last, history, gate, precision] = await Promise.all([
     fetchJSON(apiUrl('/review/last')),
     fetchJSON(apiUrl('/review/history')),
     fetchJSON(apiUrl('/review/gate')),
+    fetchJSON(apiUrl('/review/precision')),
   ]);
+
+  // Lens precision (triage ledger). precision = fix_now / (fix_now + false_positive);
+  // null means the lens has not been measured yet, which is not the same as 0%.
+  const precisionBadge = (value) => {
+    if (value == null) return '<span class="text-muted">—</span>';
+    const pct = Math.round(value * 100);
+    const cls = value >= 0.8 ? 'badge-green' : value >= 0.6 ? 'badge-amber' : 'badge-red';
+    return `<span class="badge ${cls}">${pct}%</span>`;
+  };
+  const precisionBlock = (() => {
+    if (!precision || precision.error) return '';
+    if (precision.status === 'no_ledger') {
+      return `
+        <div class="card" style="margin-bottom:1rem">
+          <h2 style="margin-top:0">Lens precision</h2>
+          <p class="text-muted" style="margin:0;font-size:0.85rem">No triage ledger yet — rows are appended when <code>x-build verify-review-fix</code> passes a triage or records a <code>--reverify</code> outcome.</p>
+        </div>`;
+    }
+    if (precision.status !== 'ok') return '';
+    const lensRows = (precision.lenses || []).map(b => `
+      <tr>
+        <td><code>${escapeHtmlHumble(b.lens)}</code></td>
+        <td>${b.decided}</td>
+        <td>${b.fix_now}</td>
+        <td>${b.backlog}</td>
+        <td>${b.accept_risk}</td>
+        <td>${b.false_positive}</td>
+        <td>${precisionBadge(b.precision)}</td>
+        <td class="text-muted" style="font-size:0.8rem">${b.resolved} / ${b.persistent} / ${b.regression}</td>
+      </tr>`).join('');
+    const severityRows = (precision.severities || []).map(b => `
+      <tr>
+        <td>${severityBadge(b.severity)}</td>
+        <td>${b.decided}</td>
+        <td>${b.fix_now}</td>
+        <td>${b.false_positive}</td>
+        <td>${precisionBadge(b.precision)}</td>
+      </tr>`).join('');
+    const w = precision.window || {};
+    const totals = precision.totals || {};
+    return `
+      <div class="card" style="margin-bottom:1rem">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:.5rem">
+          <h2 style="margin:0">Lens precision</h2>
+          ${precisionBadge(totals.precision)}
+          <span class="text-muted" style="font-size:12px">${w.reviews ?? 0} review(s) · ${w.rows ?? 0} ledger row(s)${w.from ? ` · ${escapeHtmlHumble(String(w.from).slice(0, 10))} → ${escapeHtmlHumble(String(w.to).slice(0, 10))}` : ''}</span>
+          <span style="margin-left:auto">${commandButton('x-build review-precision')}</span>
+        </div>
+        <div class="text-muted" style="font-size:12px;margin-bottom:.5rem">precision = fix_now / (fix_now + false_positive) · outcomes = resolved / persistent / regression · — = not measured yet</div>
+        ${lensRows ? `
+          <div class="table-wrapper">
+            <table class="table">
+              <thead><tr><th>Lens</th><th>Decided</th><th>fix_now</th><th>backlog</th><th>accept_risk</th><th>false_positive</th><th>Precision</th><th>Outcomes</th></tr></thead>
+              <tbody>${lensRows}</tbody>
+            </table>
+          </div>` : '<p class="text-muted" style="margin:0">Ledger has no decision rows yet.</p>'}
+        ${severityRows ? `
+          <details style="margin-top:.5rem">
+            <summary style="cursor:pointer;font-size:0.85rem;color:var(--text-muted)">By severity</summary>
+            <div class="table-wrapper" style="margin-top:.5rem">
+              <table class="table">
+                <thead><tr><th>Severity</th><th>Decided</th><th>fix_now</th><th>false_positive</th><th>Precision</th></tr></thead>
+                <tbody>${severityRows}</tbody>
+              </table>
+            </div>
+          </details>` : ''}
+      </div>`;
+  })();
 
   const lastBlock = (last && !last.error && (last.json || last.md))
     ? (() => {
@@ -5230,6 +5299,7 @@ async function renderReviewsList() {
   app.innerHTML = `
     <div class="view-header"><h1>Reviews</h1><p>.xm/review/</p></div>
     ${gateBlock}
+    ${precisionBlock}
     ${lastBlock}
     ${historyRows ? historyBlock : ''}
     ${emptyBlock}

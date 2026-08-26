@@ -24,6 +24,32 @@ From `$ARGUMENTS`:
 4. **Aggregation**: Compute per-strategy average score, cost, and elapsed time
 5. **Recommendation**: Recommend optimal strategy by efficiency metrics like score/$, score/time
 
+### Execution via ledger (`--set <cases>` — the persistent case set)
+
+When the task is a saved case set (`subcommands/case.md`) instead of an ad-hoc string, the numbers come from `xm eval` and the session only executes jobs. `finish` is the only authority on the table below; never recompute pass@k / σ / recommendation by hand.
+
+> **⚠ Call `xm eval bench …` directly via the dispatcher (fallback block in `subcommands/case.md`). Never define a shell helper across Bash calls.**
+
+```bash
+xm eval bench plan --set <all|tag|id,id> --strategies "refine,debate" [--no-direct] [--trials N] --json
+#  → run_id, manifest, job_ids[]  (jobs = cases × arms × trials; risk:high cases default to 5 trials)
+# for each job: run the arm on the case prompt (direct = ONE Agent call, task verbatim, no scaffolding, no Self-Score),
+#   score it with the SAME judge panel / rubric / judge count as every other arm, then hand back metrics only:
+xm eval bench record --run <id> --job <job-id> --score-file <metrics.json> --run-assertions
+#   metrics.json = {"overall":8.1,"per_criterion":{…},"passed":true,"judges":3,"output_sha256":"…",
+#                   "cost_usd_est":0.12,"duration_ms":41000,"assertion_results":[…]}
+#   any output / content / prompt / transcript key is rejected and nothing is written
+xm eval bench status --run <id>              # recorded / pending jobs
+xm eval bench finish --run <id> [--baseline latest] [--allow-partial] --json
+#  → .xm/eval/benchmarks/<run-id>-bench.json (create-only; schema below) — print its table; with --baseline the regression gate runs too (exit 3 = blocked)
+```
+
+One AskUserQuestion before `plan` (confirm case set, arms, trials, rough cost = jobs × judge panel); none between jobs.
+
+**`direct` control (on by default):** one Agent call on the session model — the single-agent baseline every strategy has to beat. The table gains `Δ direct`, and the recommendation only names a strategy when it passes every trial **and** beats a reliable direct control by ≥ 0.5; otherwise it recommends reliable `direct` and says orchestration is not earning its cost on this case set. An unreliable direct arm (`pass^k = 0`) is never recommended. `--no-direct` drops the control (say so in the output).
+
+`--trials` is limited to 100 and a plan is limited to 10,000 total jobs. A score file is limited to 64 KiB; `per_criterion` and judge identifiers are bounded safe identifiers. `finish --allow-partial` persists observed `pass@k` only: incomplete arms have `pass^k = null`, display `—`, and the run has no quality/value/final/best-effort recommendation until every planned job is recorded.
+
 **Strategy name → x-op mapping:**
 
 | bench strategy | x-op subcommand |
@@ -61,6 +87,9 @@ Recommendation: refine — passes reliably AND cheapest reliable option
 - `pass@k` = count of trials with `overall >= pass_threshold`. Capability upper bound ("can it ever succeed?").
 - `pass^k` = `✓` if ALL trials pass, else `·`. Reliability lower bound ("does it succeed every time?").
 - `k` = trial count (`--trials N`). `pass_threshold` comes from the rubric (default 7.0; see `references/rubrics.md`).
+- A regression gate compares only compatible runs: the case ids, per-case rubric,
+  resolved pass threshold, and trial count must match. Any mismatch blocks instead
+  of comparing unlike experiments.
 
 **Why both:** avg score hides the "8.2 avg but 0/3 pass^k" failure mode — a strategy that occasionally scores 10 but often scores 5. `pass^k` separates capability from reliability. Empirically, ~25% of high-avg-high-variance strategies fall into this trap.
 

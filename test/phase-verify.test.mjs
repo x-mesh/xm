@@ -1367,6 +1367,30 @@ describe('verify-review-fix', () => {
     }
   });
 
+  test('stale authorization cannot append a reverify outcome to the ledger', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+
+      const triagePath = join(tmp, '.xm', 'review', 'triage.json');
+      const triage = readJSON(triagePath);
+      triage.target_findings[0].fix_notes = 'changed after authorization';
+      writeFileSync(triagePath, JSON.stringify(triage, null, 2));
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'fix with stale authorization\n');
+
+      const r = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'persistent', '--evidence', 'still fails'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      const ledger = readFileSync(join(tmp, '.xm', 'review', 'triage-ledger.jsonl'), 'utf8')
+        .trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      expect(ledger.filter(row => row.type === 'triage_outcome')).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('reverification is invalidated when the fixed file bytes change again', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {

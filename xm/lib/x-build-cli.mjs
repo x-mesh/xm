@@ -14,7 +14,7 @@ import { cmdTasks, cmdTaskCheck, cmdSteps, cmdRun, cmdRunStatus, cmdReviewGroup,
 import { cmdLater } from './x-build/later.mjs';
 import { cmdHooks } from './x-build/hooks.mjs';
 import { cmdPlan, cmdPlanCheck, cmdPrdGate, cmdPrdCheck, cmdConsensus, cmdDiscuss, cmdResearch, cmdForecast, cmdCostPredict, cmdRoi, cmdNext, cmdHandoff, cmdSummarize, cmdSaveArtifact, cmdContextUsage, cmdResearchCheck } from './x-build/plan.mjs';
-import { cmdQuality, cmdVerifyCoverage, cmdVerifyTraceability, cmdVerifyContracts, cmdVerifyReviewFix, cmdVerifyDrift } from './x-build/verify.mjs';
+import { cmdQuality, cmdVerifyCoverage, cmdVerifyTraceability, cmdVerifyContracts, cmdVerifyReviewFix, cmdVerifyDrift, cmdReviewPrecision } from './x-build/verify.mjs';
 import { cmdExport, cmdImport } from './x-build/export.mjs';
 import { cmdAlias, cmdDemo, cmdWatch, cmdMetrics, cmdMode, cmdContext, cmdPhaseContext, cmdDecisions, cmdTemplates, printHelp } from './x-build/misc.mjs';
 import { cmdRelease } from './x-build/release.mjs';
@@ -130,6 +130,7 @@ switch (cmd) {
   case 'verify-traceability': cmdVerifyTraceability(args); break;
   case 'verify-contracts': cmdVerifyContracts(args); break;
   case 'verify-review-fix': cmdVerifyReviewFix(args); break;
+  case 'review-precision': cmdReviewPrecision(args); break;
   case 'verify-drift': cmdVerifyDrift(args); break;
   case 'context-usage':  cmdContextUsage(args); break;
   case 'save':           cmdSaveArtifact(args); break;

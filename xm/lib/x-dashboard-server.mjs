@@ -13,8 +13,12 @@
  */
 
 import { createHash } from 'node:crypto';
-import { writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, readFileSync, statSync, renameSync, openSync, readSync, closeSync } from 'node:fs';
-import { join, resolve, dirname, basename } from 'node:path';
+import {
+  writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, readFileSync,
+  statSync, renameSync, openSync, readSync, closeSync, lstatSync, fstatSync,
+  constants as FS_CONSTANTS,
+} from 'node:fs';
+import { join, resolve, dirname, basename, relative, isAbsolute, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { createConnection } from 'node:net';
@@ -23,6 +27,7 @@ import { createConnection } from 'node:net';
 
 const DEFAULT_PORT = 19841;
 const SESSION_IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
+const MAX_REVIEW_LEDGER_BYTES = 4 * 1024 * 1024;
 const VERSION = process.env.XM_SYNC_VERSION ?? '0.1.0';
 
 const args = process.argv.slice(2);
@@ -79,6 +84,67 @@ function safeJoin(base, ...segments) {
     return null;
   }
   return resolvedTarget;
+}
+
+function assertSafeReadPath(boundary, path) {
+  const root = resolve(boundary);
+  const target = resolve(path);
+  const rel = relative(root, target);
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw Object.assign(new Error('review precision ledger must stay inside the XM root'), { code: 'UNSAFE_LEDGER' });
+  }
+  let cursor = root;
+  const rootInfo = lstatSync(root);
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+    throw Object.assign(new Error('review precision XM root must be a regular non-symlink directory'), { code: 'UNSAFE_LEDGER' });
+  }
+  const parentRel = relative(root, dirname(target));
+  for (const part of parentRel ? parentRel.split(sep) : []) {
+    cursor = join(cursor, part);
+    const info = lstatSync(cursor);
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw Object.assign(new Error('review precision ledger parents must be regular non-symlink directories'), { code: 'UNSAFE_LEDGER' });
+    }
+  }
+}
+
+function readBoundedRegularFile(path, maxBytes, boundary) {
+  assertSafeReadPath(boundary, path);
+  const info = lstatSync(path);
+  if (info.isSymbolicLink() || !info.isFile()) {
+    throw Object.assign(new Error('review precision ledger must be a regular non-symlink file'), { code: 'UNSAFE_LEDGER' });
+  }
+  if (info.size > maxBytes) {
+    throw Object.assign(new Error(`review precision ledger exceeds ${maxBytes} bytes`), { code: 'LEDGER_TOO_LARGE' });
+  }
+  if (!Number.isInteger(FS_CONSTANTS.O_NOFOLLOW) || !Number.isInteger(FS_CONSTANTS.O_NONBLOCK)) {
+    throw Object.assign(new Error('safe review precision ledger read requires O_NOFOLLOW and O_NONBLOCK support'), { code: 'UNSAFE_LEDGER' });
+  }
+
+  let fd;
+  try {
+    fd = openSync(path, FS_CONSTANTS.O_RDONLY | FS_CONSTANTS.O_NOFOLLOW | FS_CONSTANTS.O_NONBLOCK);
+    const opened = fstatSync(fd);
+    if (!opened.isFile()) {
+      throw Object.assign(new Error('review precision ledger must be a regular file'), { code: 'UNSAFE_LEDGER' });
+    }
+    if (opened.size > maxBytes) {
+      throw Object.assign(new Error(`review precision ledger exceeds ${maxBytes} bytes`), { code: 'LEDGER_TOO_LARGE' });
+    }
+    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    let bytes = 0;
+    while (bytes < buffer.byteLength) {
+      const read = readSync(fd, buffer, bytes, buffer.byteLength - bytes, bytes);
+      if (read === 0) break;
+      bytes += read;
+    }
+    if (bytes > maxBytes) {
+      throw Object.assign(new Error(`review precision ledger exceeds ${maxBytes} bytes`), { code: 'LEDGER_TOO_LARGE' });
+    }
+    return buffer.subarray(0, bytes).toString('utf8');
+  } finally {
+    if (fd != null) closeSync(fd);
+  }
 }
 
 // ── Segment Validation ──────────────────────────────────────────────
@@ -2116,6 +2182,56 @@ function handleReviewLast(xmRoot, req) {
   return jsonResponseWithETag(result, req);
 }
 
+// ── review precision (triage ledger → per-lens precision) ────────────
+// The aggregator is x-build's pure module; resolve it the same way as
+// cost-engine (xm bundle sibling first, then the source tree). null when it is
+// missing — the endpoint answers 503 and the UI hides the card.
+let _reviewPrecision;
+async function getReviewPrecision() {
+  if (_reviewPrecision !== undefined) return _reviewPrecision;
+  const here = import.meta.dirname;
+  const candidates = [
+    join(here, 'x-build', 'review-precision.mjs'),                                // xm bundle: xm/lib/x-build/
+    join(here, '..', '..', 'x-build', 'lib', 'x-build', 'review-precision.mjs'), // source tree
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      try { _reviewPrecision = await import(p); return _reviewPrecision; } catch { /* try next */ }
+    }
+  }
+  _reviewPrecision = null;
+  return _reviewPrecision;
+}
+
+async function handleReviewPrecision(xmRoot, req) {
+  const ledgerPath = safeJoin(xmRoot, 'review', 'triage-ledger.jsonl');
+  if (!ledgerPath || !existsSync(ledgerPath)) return jsonResponseWithETag({ status: 'no_ledger' }, req);
+  const mod = await getReviewPrecision();
+  if (!mod) return jsonResponseWithETag({ status: 'unavailable', error: 'review-precision module not found' }, req, 503);
+  const url = new URL(req.url);
+  const since = url.searchParams.get('since') || null;
+  const lastRaw = url.searchParams.get('last');
+  const last = lastRaw && /^\d+$/.test(lastRaw) ? Number(lastRaw) : null;
+  const lens = url.searchParams.get('lens') || null;
+  if (since && mod.parseDuration(since) == null) return jsonResponseWithETag({ status: 'bad_request', error: 'since must look like 30d, 12h, or 90m' }, req, 400);
+  if (lastRaw && !(Number.isInteger(last) && last > 0)) return jsonResponseWithETag({ status: 'bad_request', error: 'last must be a positive integer' }, req, 400);
+  let text;
+  try {
+    text = readBoundedRegularFile(ledgerPath, MAX_REVIEW_LEDGER_BYTES, xmRoot);
+  } catch (error) {
+    if (error?.code === 'LEDGER_TOO_LARGE') return jsonResponseWithETag({ status: 'ledger_too_large', error: error.message }, req, 413);
+    if (error?.code === 'UNSAFE_LEDGER' || error?.code === 'ELOOP') return jsonResponseWithETag({ status: 'unsafe_ledger', error: error.message }, req, 400);
+    if (error?.code === 'ENOENT') return jsonResponseWithETag({ status: 'no_ledger' }, req);
+    return jsonResponseWithETag({ status: 'read_error' }, req, 500);
+  }
+  const { rows, skipped } = mod.parseTriageLedger(text);
+  const normalizeSeverity = typeof mod.normalizeLedgerSeverity === 'function'
+    ? mod.normalizeLedgerSeverity
+    : value => ['critical', 'high', 'medium', 'low'].includes(String(value || '').toLowerCase()) ? String(value).toLowerCase() : 'unknown';
+  const report = mod.aggregateLensPrecision(rows.map(row => ({ ...row, severity: normalizeSeverity(row.severity) })), { since, last, lens });
+  return jsonResponseWithETag({ status: 'ok', skipped_lines: skipped, ...report }, req);
+}
+
 function handleReviewHistory(xmRoot, req) {
   const historyDir = safeJoin(xmRoot, 'review', 'history');
   if (!historyDir || !existsSync(historyDir)) return jsonResponseWithETag({ data: [] }, req);
@@ -3985,6 +4101,11 @@ server = Bun.serve({
           return handleReviewGate(xmRoot, req);
         }
 
+        // GET /api/ws/:wsId/review/precision[?since=30d&last=N&lens=L]
+        if (subPath === '/review/precision') {
+          return handleReviewPrecision(xmRoot, req);
+        }
+
         // GET /api/ws/:wsId/review/history/:file  (must come before /review/history)
         const wsReviewFileMatch = subPath.match(/^\/review\/history\/([^/]+)$/);
         if (wsReviewFileMatch) {
@@ -4264,6 +4385,11 @@ server = Bun.serve({
       // GET /api/review/gate
       if (path === '/api/review/gate') {
         return handleReviewGate(XM_ROOT, req);
+      }
+
+      // GET /api/review/precision[?since=30d&last=N&lens=L]
+      if (path === '/api/review/precision') {
+        return handleReviewPrecision(XM_ROOT, req);
       }
 
       // GET /api/review/history/:file  (must come before /api/review/history)

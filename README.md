@@ -500,7 +500,7 @@ The commands below remain available only when explicitly invoked. The default x-
 | **Steps** | `steps compute/status/next` |
 | **Execute** | `run`, `run --worktrees [--dry-run] [--max-parallel N]`, `run --json`, `run-status` |
 | **Worktrees** | `worktrees plan/status/resume/cleanup`, `gate-panel --project --task --phase --patch`, `review-integration [--base --target]` |
-| **Verify** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts`, `verify-review-fix [--init]` |
+| **Verify** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts`, `verify-review-fix [--init]`, `review-precision [--since 30d\|--last N] [--min-precision 0.7]` (per-lens `fix_now / (fix_now + false_positive)` from the triage ledger every passing gate appends to; also on the dashboard Reviews page) |
 | **Analysis** | `forecast`, `forecast update`, `roi [--by model\|role\|strategy]`, `effectiveness [--since Nd] [--profile a,b] [--compare a,b]`, `metrics`, `decisions`, `summarize` |
 | **Export** | `export --format md/csv/jira/confluence`, `import` |
 | **Release** | `release detect`, `release squash`, `release bump`, `release commit`, `release test`, `release trace`, `release diff-report` |
@@ -741,6 +741,18 @@ Score outputs against rubrics, benchmark strategies head-to-head, and measure ho
 /xm:eval calibrate --rubric code-quality            # Human-vs-judge bias check
 ```
 
+**Executable half (`xm eval`).** Anything a command can settle is asserted by running it, not by asking a judge; the case set turns one-off benchmarks into a regression suite with a single-agent control.
+
+```bash
+xm eval assert --cmd 'tests=bun test test/auth.test.mjs' --grep 'no-eval=!eval\(:src/auth.ts'
+                                                  # Shell-free, exit 1 on HARD_FAIL; feeds score --assert-cmd
+xm eval case add --prompt-file task.md --rubric general --tag op --risk high
+                                                  # Promote a real failure into .xm/eval/cases (idempotent)
+xm eval bench plan --set op --strategies "refine,debate"   # jobs = cases × arms × trials; `direct` control on by default
+xm eval bench record --run <id> --job <job> --score-file metrics.json --run-assertions
+xm eval bench finish --run <id> --baseline latest # pass@k / pass^k / σ / Δ vs direct, then the regression gate (exit 3)
+```
+
 <details>
 <summary>Commands & rubrics</summary>
 
@@ -914,6 +926,8 @@ xm status                                  # Commits on HEAD since each tool las
 xm trace record review --ref HEAD --status done   # Record an activity pointer
 xm trace since <ref>                       # Tools + trace sessions active since <ref>
 xm trace doctor --rebuild                  # Rebuild last.json from git-bearing traces
+xm trace drift --window 7d --baseline 28d  # p50 latency/tokens, error rate, judged quality, review precision, est. cost
+                                           # per key, recent window vs the period before; --fail-on-flag for CI
 ```
 
 Coverage is best-effort: only activity that flows through the `xm` dispatcher or an explicit `xm trace record` is logged. A tool run by calling its `node …-cli.mjs` file directly, or an LLM-only skill that never touches the CLI, leaves no ledger entry.

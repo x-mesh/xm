@@ -296,6 +296,20 @@ describe('x-op SKILL.md structure', () => {
   const content = readSkill('x-op');
   const opRoot = join(ROOT, 'x-op', 'skills', 'op');
 
+  test('direct is a routable single-agent baseline strategy, confirmed like any other', () => {
+    const directBody = readFileSync(join(opRoot, 'strategies', 'direct.md'), 'utf8');
+    expect(directBody).toContain('Phase 1: EXECUTE');
+    expect(directBody).toContain('STRATEGY_MULTIPLIERS.direct = 1.0');
+    expect(content).toContain('- `direct` → [Strategy: direct]');
+    expect(content).toContain('strategies/direct.md');
+    // auto-route row + decision-tree leaf, and never a bypass of the confirmation protocol
+    expect(content).toMatch(/\| direct \| medium \|/);
+    expect(content).toContain('→ direct (one agent');
+    expect(content).toContain('`direct` is a recommendation leaf, never a bypass');
+    const autoRoute = readFileSync(join(opRoot, 'references', 'x-op-auto-route.md'), 'utf8');
+    expect(autoRoute).toContain('**direct**');
+  });
+
   test('brainstorm has --analogical and --lateral modes', () => {
     // brainstorm strategy body lives in strategies/brainstorm.md (extracted from SKILL.md)
     const brainstormBody = readFileSync(
@@ -355,8 +369,9 @@ describe('x-op SKILL.md structure', () => {
       .sort();
 
     expect(routingStrategies).toEqual(strategyFiles);
-    expect(routingStrategies).toHaveLength(17);
-    expect(content).not.toContain('18 strategies');
+    // 17 orchestrated strategies + `direct`, the single-agent baseline they are measured against
+    expect(routingStrategies).toHaveLength(18);
+    expect(routingStrategies).toContain('direct');
     expect(content).not.toContain('classify narrows');
   });
 
@@ -673,9 +688,10 @@ describe('x-eval outcome assertion structure', () => {
     expect(assertionJudge).toContain('HARD FAIL');
   });
 
-  test('judges/assertion.md documents x-probe future integration', () => {
-    expect(assertionJudge).toContain('x-probe');
-    expect(assertionJudge).toContain('future');
+  test('judges/assertion.md routes command-settleable statements to executable assertions', () => {
+    expect(assertionJudge).toContain('When NOT to use this judge');
+    expect(assertionJudge).toContain('xm eval assert');
+    expect(assertionJudge).toContain('UNCERTAIN');
   });
 
   test('storage-layout.md includes assertion_results field', () => {

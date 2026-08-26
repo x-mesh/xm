@@ -270,7 +270,16 @@ done
 shopt -u nullglob
 
 echo ""
+echo "=== Syncing x-eval lib files ==="
+sync_file "x-eval/lib/x-eval-cli.mjs" "xm/lib/x-eval-cli.mjs"
+# Wholesale mirror (L8): new sibling modules under x-eval/lib/x-eval/ ship automatically.
+mirror_file_tree "x-eval/lib/x-eval" "xm/lib/x-eval"
+
+echo ""
 echo "=== Syncing x-dashboard lib + public ==="
+# x-dashboard ships independently from x-build, so vendor the pure precision
+# module into its plugin layout. The x-build source remains authoritative.
+sync_file "x-build/lib/x-build/review-precision.mjs" "x-dashboard/lib/x-build/review-precision.mjs"
 sync_file "x-dashboard/lib/x-dashboard-server.mjs" "xm/lib/x-dashboard-server.mjs"
 ensure_dir "xm/public"
 # Mirror public/ wholesale including subdirectories (e.g. vendor/) so bundled assets
@@ -537,6 +546,20 @@ fi
 shopt -s nullglob
 for f in x-trace/lib/x-trace/*.mjs; do
   dst="xm/lib/x-trace/$(basename "$f")"
+  if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
+    echo "  DIVERGED: $dst"
+    DIVERGED=$((DIVERGED + 1))
+  fi
+done
+shopt -u nullglob
+
+if ! diff -q "x-eval/lib/x-eval-cli.mjs" "xm/lib/x-eval-cli.mjs" > /dev/null 2>&1; then
+  echo "  DIVERGED: xm/lib/x-eval-cli.mjs"
+  DIVERGED=$((DIVERGED + 1))
+fi
+shopt -s nullglob
+for f in x-eval/lib/x-eval/*.mjs; do
+  dst="xm/lib/x-eval/$(basename "$f")"
   if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
     echo "  DIVERGED: $dst"
     DIVERGED=$((DIVERGED + 1))

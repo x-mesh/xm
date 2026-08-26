@@ -12,10 +12,18 @@ File system layout for x-eval outputs, result schemas, and rubric definitions st
 │   ├── {timestamp}-score.json
 │   └── {timestamp}-compare.json
 ├── benchmarks/            # Benchmark results
-│   └── {timestamp}-bench.json
-└── diffs/                 # Diff analysis results
-    └── {timestamp}-diff.json
+│   └── <run-id>-bench.json
+├── diffs/                 # Diff analysis results
+│   └── {timestamp}-diff.json
+├── cases/                 # Persistent case set (subcommands/case.md); replay-* written by x-trace
+│   └── {case-id}.json
+├── runs/                  # Bench ledger: one dir per `xm eval bench plan`
+│   └── {run-id}/manifest.json + records/{job-id}.json   (metrics only — never output text)
+└── gates/                 # Regression gate verdicts (subcommands/gate.md)
+    └── {timestamp}-{current-run}-{baseline-run}-{hashes}-{nonce}-gate.json
 ```
+
+Bench results produced by `xm eval bench finish` are create-only files named `<run-id>-bench.json`. They add to the bench schema below: `run_id`, `cases[]` (`{id, rubric, risk, trials, pass_threshold}`), `control` (`"direct"` or `null`), `strategies[].delta_vs_direct`, `strategies[].expected_trials`, `strategies[].score_per_dollar`, `strategies[].cost_source: "estimated"`, `per_case[]` (the same per-arm metrics per case), `advisories[]`, `partial`, `missing_jobs[]`, and `recommendation.reason` / `recommendation.best_effort`. Partial results retain observed `pass@k`, set incomplete-arm `pass^k` to `null`, and withhold every recommendation field.
 
 ### Result Schema (score)
 
@@ -61,7 +69,7 @@ File system layout for x-eval outputs, result schemas, and rubric definitions st
 - `source_strategy` — x-op strategy name when `source_plugin: "x-op"`.
 - `source_result_path` — path to the originating `.xm/op/*.json` file. Consumers use this to link eval results back to the strategy run.
 - `na_criteria` — list of criteria skipped by all judges due to insufficient context. Empty array when all criteria were scored. Consumers must not treat absence as implicit 0.
-- `assertion_results` — present only when `--assert` flags were used. Each entry: `assertion` (text), `result` (`PASS` / `UNCERTAIN` / `HARD_FAIL`), `confidence` (judge agreement, e.g. `"2/3"`). A `HARD_FAIL` entry forces `passed = false`.
+- `assertion_results` — present only when `--assert*` flags were used. Judge entries: `assertion` (text), `result` (`PASS` / `UNCERTAIN` / `HARD_FAIL`), `confidence` (judge agreement, e.g. `"2/3"`), `source: "judge"`. Executable entries (from `xm eval assert`): `name`, `kind` (`cmd` / `file` / `grep` / `json`), `result` (`PASS` / `HARD_FAIL`), optional `exit_code` / `error_code` (including `ETIMEDOUT`), `duration_ms`, `command_sha256`, `source: "executable"` — never command output. A `HARD_FAIL` entry of either source forces `passed = false`.
 - `judge_rationales` — preserved for `report --sample-transcript` (article H: "누군가 트랜스크립트를 읽기 전에는 점수를 액면 그대로 믿지 말라"). Optional — skip when `eval.persist_transcripts: false`.
 
 **Cross-vendor additions (present only when the panel ran `--cross-vendor`):**
@@ -136,6 +144,7 @@ File system layout for x-eval outputs, result schemas, and rubric definitions st
       "pass_hat_k": 0,
       "pass_at_k_rate": 0.67,
       "per_trial_overall": [8.2, 7.9, 5.4],
+      "per_trial_passed": [true, true, false],
       "est_cost_usd": 0.08,
       "avg_time_sec": 30
     }
@@ -145,10 +154,11 @@ File system layout for x-eval outputs, result schemas, and rubric definitions st
 }
 ```
 
-- `pass_at_k` — count of trials with `overall >= pass_threshold`. Capability signal.
+- `pass_at_k` — count of trials whose `passed` is true: `overall >= pass_threshold` AND no executable assertion HARD_FAIL. A trial can therefore score well above the threshold and still not count. Capability signal.
 - `pass_hat_k` — 1 if all trials pass, else 0. Reliability signal.
 - `pass_at_k_rate` — `pass_at_k / trials`. Normalized.
 - `per_trial_overall` — per-trial weighted overall. Enables post-hoc re-scoring without re-running agents.
+- `per_trial_passed` — per-trial final `passed` state, in the same order as `per_trial_overall`. Required: `pass_at_k` is validated against it, so a persisted arm without it is rejected.
 - `broken_task_warning` — true when ALL strategies have `pass_at_k_rate == 0` AND their `avg_score < 4.5` AND `trials >= 2`. Empirically validated false-alarm rate = 0% on merely-weak strategies.
 
 ### Result Schema (calibrate)
