@@ -73,6 +73,15 @@ function clearMetrics() {
 
 // ── 1. Override priority chain (getModelForRole) ──────────────────────────────
 
+describe('STRATEGY_MULTIPLIERS — direct is the single-agent baseline', () => {
+  test('direct costs 1.0× and every orchestrated strategy costs at least that', () => {
+    expect(ce.STRATEGY_MULTIPLIERS.direct).toBe(1.0);
+    for (const [name, multiplier] of Object.entries(ce.STRATEGY_MULTIPLIERS)) {
+      expect(multiplier, name).toBeGreaterThanOrEqual(1.0);
+    }
+  });
+});
+
 describe('ROI — Score/$ with L9 calibration guards (빅뱃1)', () => {
   const scored = (model, cost, q, n) => Array.from({ length: n }, () => ({ type: 'task_complete', model, role: 'executor', cost_source: 'actual', cost_usd: cost, quality_score: q, quality_scored: true }));
   const est = (model, n) => Array.from({ length: n }, () => ({ type: 'task_complete', model, role: 'executor', cost_source: 'estimated', cost_usd: 0, quality_score: 1, quality_scored: false }));

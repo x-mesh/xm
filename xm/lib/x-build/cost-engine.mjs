@@ -312,6 +312,7 @@ export const SIZE_TOKEN_ESTIMATES = {
 // Values reflect average token overhead relative to a single-agent baseline.
 
 export const STRATEGY_MULTIPLIERS = {
+  direct: 1.0,       // single agent call, no orchestration — the baseline itself
   decompose: 1.2,    // splits into smaller parallel tasks
   distribute: 1.2,   // parallel independent subtasks
   tournament: 1.3,   // elimination reduces total work
