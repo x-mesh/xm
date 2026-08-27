@@ -12,12 +12,6 @@ bumps shipped in each marketplace release.
 
 ## [2.21.8] - 2026-08-27
 
-### Fixed
-
-- **handoff:** make session persistence race-safe
-
-## [2.21.8] - 2026-08-27
-
 ### x-build 3.6.0 → 3.6.1
 
 - Make `xm build handoff` race-safe: serialize concurrent writers, atomically replace the canonical `SESSION-STATE.json`, preserve existing file modes, roll back observed partial commits, and keep `HANDOFF.md` as a stable pointer to the canonical JSON.
