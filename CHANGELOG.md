@@ -10,6 +10,21 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.21.8] - 2026-08-27
+
+### x-build 3.6.0 → 3.6.1
+
+- Make `xm build handoff` race-safe: serialize concurrent writers, atomically replace the canonical `SESSION-STATE.json`, preserve existing file modes, roll back observed partial commits, and keep `HANDOFF.md` as a stable pointer to the canonical JSON.
+- Correlate mem-mesh completion and skip operations with a per-handoff token so stale or concurrent callers cannot overwrite a newer pending mirror.
+
+### x-recall 0.1.5 → 0.1.6
+
+- Materialize rich tool-neutral handoff prose as `.xm/build/HANDOFF.summary.md`, leaving canonical `HANDOFF.md` as the stable JSON pointer.
+
+### xm 2.21.7 → 2.21.8
+
+- Bundle the handoff persistence, mirror correlation, and recall changes. x-sync now regenerates the canonical `HANDOFF.md` pointer whether a pulled remote state wins or the newer local state is retained.
+
 ## [2.21.2] - 2026-08-26
 
 ### Fixed
