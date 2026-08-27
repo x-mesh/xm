@@ -1081,10 +1081,10 @@ CLI가 `.xm/`를 직접 읽으므로 도구 중립적입니다 — 같은 repo�
 xm recall list --type review --since 7d   # 최신순 조회
 xm recall show review --last              # 최근 코드 리뷰 읽기
 xm recall search "sql injection"          # 전문 + 메타데이터 검색
-xm recall handoff-md                      # 도구중립 .xm/build/HANDOFF.md 생성
+xm recall handoff-md                      # 상세 도구중립 .xm/build/HANDOFF.summary.md 생성
 ```
 
-산출물 타입: `review op plan eval probe humble solver research prd handoff`. 호스트 변종 사본은 하나의 정본으로 중복 제거됩니다. handoff 시 `.xm/build/HANDOFF.md`(스킬 없이 어느 도구든 읽는 평문 마크다운 요약)도 함께 생성됩니다.
+산출물 타입: `review op plan eval probe humble solver research prd handoff`. 호스트 변종 사본은 하나의 정본으로 중복 제거됩니다. handoff는 `.xm/build/SESSION-STATE.json`을 atomic canonical state로 저장하고, `.xm/build/HANDOFF.md`는 이를 가리키는 안정적인 tool-neutral pointer로 생성합니다. 상세 평문 Markdown 요약이 필요하면 handoff skill 없이 `xm recall handoff-md`를 실행해 `.xm/build/HANDOFF.summary.md`를 생성합니다.
 
 ---
 

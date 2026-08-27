@@ -1,5 +1,5 @@
 /**
- * x-recall/handoff-md — render SESSION-STATE.json as a tool-neutral HANDOFF.md.
+ * x-recall/handoff-md — render SESSION-STATE.json as tool-neutral HANDOFF.summary.md.
  *
  * The handoff/handon skills are Claude-Code-only. Codex and Cursor cannot run
  * them, but they CAN read a plain markdown file. This module turns the same
@@ -106,7 +106,7 @@ export function sessionStateToMarkdown(state) {
 
 /**
  * Read .xm/build/SESSION-STATE.json under `root` (an .xm dir) and (re)write
- * .xm/build/HANDOFF.md. Returns { ok, path, reason }.
+ * .xm/build/HANDOFF.summary.md. Returns { ok, path, reason }.
  */
 export function writeHandoffMd(root) {
   const ssPath = join(root, 'build', 'SESSION-STATE.json');
@@ -120,7 +120,7 @@ export function writeHandoffMd(root) {
     return { ok: false, reason: 'parse_error: ' + err.message, path: ssPath };
   }
   const md = sessionStateToMarkdown(state);
-  const out = join(root, 'build', 'HANDOFF.md');
+  const out = join(root, 'build', 'HANDOFF.summary.md');
   const tmp = out + '.tmp';
   writeFileSync(tmp, md, 'utf8');
   try {

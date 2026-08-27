@@ -241,10 +241,10 @@ describe('search', () => {
 });
 
 describe('handoff-md', () => {
-  test('generates tool-neutral HANDOFF.md from SESSION-STATE.json', () => {
+  test('generates tool-neutral HANDOFF.summary.md from SESSION-STATE.json', () => {
     const r = run(['handoff-md']);
     expect(r.status).toBe(0);
-    const md = readFileSync(join(XM, 'build', 'HANDOFF.md'), 'utf8');
+    const md = readFileSync(join(XM, 'build', 'HANDOFF.summary.md'), 'utf8');
     expect(md).toContain('**Generation:** 4');
     expect(md).toContain('# Session Handoff');
     expect(md).toContain('build recall');          // narrative.intent

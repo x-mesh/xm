@@ -1081,10 +1081,10 @@ Because the CLI reads `.xm/` directly, it is tool-neutral — a later **Codex** 
 xm recall list --type review --since 7d   # browse, newest first
 xm recall show review --last              # read the latest code review
 xm recall search "sql injection"          # full-text + metadata search
-xm recall handoff-md                      # (re)write tool-neutral .xm/build/HANDOFF.md
+xm recall handoff-md                      # (re)write rich tool-neutral .xm/build/HANDOFF.summary.md
 ```
 
-Artifact types: `review op plan eval probe humble solver research prd handoff`. Host-variant copies are deduplicated to one canonical entry. A handoff also emits `.xm/build/HANDOFF.md` — a plain-markdown session summary any tool can read without the skill.
+Artifact types: `review op plan eval probe humble solver research prd handoff`. Host-variant copies are deduplicated to one canonical entry. A handoff keeps `.xm/build/SESSION-STATE.json` as the atomic canonical state and emits `.xm/build/HANDOFF.md` as a stable tool-neutral pointer to it. Run `xm recall handoff-md` to materialize `.xm/build/HANDOFF.summary.md` without the handoff skill.
 
 ---
 

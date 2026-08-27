@@ -52,7 +52,7 @@ describe('x-sync cross-machine handoff reconciliation', () => {
     expect(result.status).toBe('updated');
     expect(result.machine_id).toBe('linux-a');
     expect(JSON.parse(readFileSync(join(xmDir, HANDOFF_STATE_PATH), 'utf8')).context.current_focus).toBe('portable');
-    expect(readFileSync(join(xmDir, HANDOFF_MARKDOWN_PATH), 'utf8')).toBe('# portable handoff');
+    expect(readFileSync(join(xmDir, HANDOFF_MARKDOWN_PATH), 'utf8')).toContain('canonical, atomic session state');
   });
 
   test('selects the newest saved_at across heterogeneous machines', () => {
@@ -77,6 +77,7 @@ describe('x-sync cross-machine handoff reconciliation', () => {
 
     expect(result.status).toBe('kept-local');
     expect(JSON.parse(readFileSync(localPath, 'utf8')).context.current_focus).toBe('local-newer');
+    expect(readFileSync(join(xmDir, HANDOFF_MARKDOWN_PATH), 'utf8')).toContain('canonical, atomic session state');
   });
 
   test('uses handoff generation before wall-clock time after machines have synchronized', () => {
@@ -135,7 +136,7 @@ describe('x-sync cross-machine handoff reconciliation', () => {
     expect(selected.invalid).toHaveLength(1);
   });
 
-  test('removes a stale local HANDOFF.md when the selected remote has no companion', () => {
+  test('replaces stale local HANDOFF.md with a canonical JSON pointer', () => {
     const buildDir = join(xmDir, 'build');
     mkdirSync(buildDir, { recursive: true });
     writeFileSync(join(buildDir, 'SESSION-STATE.json'), state(
@@ -150,8 +151,8 @@ describe('x-sync cross-machine handoff reconciliation', () => {
     ]);
 
     expect(result.status).toBe('updated');
-    expect(result.markdown).toBe(false);
-    expect(existsSync(join(buildDir, 'HANDOFF.md'))).toBe(false);
+    expect(result.markdown).toBe(true);
+    expect(readFileSync(join(buildDir, 'HANDOFF.md'), 'utf8')).toContain('SESSION-STATE.json');
     expect(JSON.parse(readFileSync(join(buildDir, 'SESSION-STATE.json'), 'utf8')).context.current_focus)
       .toBe('new-remote');
   });

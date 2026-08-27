@@ -95,10 +95,12 @@ works the same from any tool:
 - `xm recall show review --last` — read the most recent code review
 - `xm recall show <id>` — read a specific artifact (ids come from `list`)
 - `xm recall search "<query>"` — full-text + metadata search across artifacts
-- `xm recall handoff-md` — (re)generate `.xm/build/HANDOFF.md`
+- `xm recall handoff-md` — (re)generate `.xm/build/HANDOFF.summary.md`
 
-Also read `.xm/build/HANDOFF.md` when present: it is the previous session's intent,
-decisions, and open questions in plain markdown.
+`.xm/build/HANDOFF.md` is a stable tool-neutral pointer to the canonical
+`.xm/build/SESSION-STATE.json`; read the JSON for the saved intent, decisions, and
+open questions. Run `xm recall handoff-md` when a materialized plain-Markdown
+summary is preferred.
 
 If `xm` is not on PATH, the CLI is at
 `~/.claude/plugins/cache/xm/{x-recall,recall,xm}/*/lib/x-recall-cli.mjs` — call it with `node`.

@@ -19,6 +19,7 @@ import { dirname, join } from 'node:path';
 export const HANDOFF_STATE_PATH = 'build/SESSION-STATE.json';
 export const HANDOFF_MARKDOWN_PATH = 'build/HANDOFF.md';
 export const MEMMESH_MIRROR_PATH = 'build/memmesh-mirror.json';
+const HANDOFF_POINTER = '# Session Handoff\n\n> The canonical, atomic session state is `.xm/build/SESSION-STATE.json`.\n> Read that JSON file directly. This Markdown file is intentionally a stable pointer,\n> not a second snapshot, so an interrupted save cannot expose mixed generations.\n';
 
 const LEGACY_STATE_RE = /^build\/SESSION-STATE\.[^/]+\.json$/;
 const LEGACY_MARKDOWN_RE = /^build\/HANDOFF\.[^/]+\.md$/;
@@ -117,6 +118,7 @@ export function reconcileHandoff(xmDir, files) {
     || (!useGeneration && local.savedAt >= candidate.savedAt)
   );
   if (localIsNewer) {
+    writeAtomic(join(xmDir, HANDOFF_MARKDOWN_PATH), HANDOFF_POINTER);
     return {
       status: 'kept-local',
       saved_at: local.state.saved_at,
@@ -127,29 +129,16 @@ export function reconcileHandoff(xmDir, files) {
 
   writeAtomic(localPath, candidate.file.content);
 
-  // HANDOFF.md is a derived, tool-neutral companion. Keep it on the same
-  // machine/version as the selected JSON when that push supplied one.
-  const markdown = files
-    .filter((file) => file.path === HANDOFF_MARKDOWN_PATH
-      && !file.deleted
-      && file.machine_id === candidate.file.machine_id)
-    .sort((a, b) => (b.pushed_at ?? 0) - (a.pushed_at ?? 0))[0];
+  // Never trust a remote Markdown snapshot as a second source of truth. The
+  // canonical JSON was selected above; regenerate the stable pointer locally.
   const markdownPath = join(xmDir, HANDOFF_MARKDOWN_PATH);
-  if (markdown) {
-    writeAtomic(markdownPath, markdown.content);
-  } else {
-    // A stale companion is worse than no companion: handon reads the JSON,
-    // while tool-neutral sessions may read HANDOFF.md directly. Never leave
-    // those two canonical views pointing at different sessions after a
-    // partial/legacy push that supplied only SESSION-STATE.json.
-    try { unlinkSync(markdownPath); } catch {}
-  }
+  writeAtomic(markdownPath, HANDOFF_POINTER);
 
   return {
     status: 'updated',
     saved_at: candidate.state.saved_at,
     machine_id: candidate.file.machine_id,
-    markdown: Boolean(markdown),
+    markdown: true,
     replaced_invalid_local: hadLocal && !local,
     invalid: invalid.length,
   };
