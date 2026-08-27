@@ -2,8 +2,8 @@
 // @ts-check
 
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const PROFILE_ORDER = ['correctness', 'risk', 'migrations', 'type-design', 'docs'];
@@ -89,6 +89,62 @@ function patchSections(body) {
     const section = lines.slice(start, starts[index + 1] ?? lines.length).join('\n');
     return { body: section, files: changedFilesFromPatch(section) };
   });
+}
+
+function normalizedRoot(value) {
+  const root = String(value).replace(/^\.\//, '').replace(/\\/g, '/').replace(/^\/+/, '');
+  return root && !root.endsWith('/') ? `${root}/` : root;
+}
+
+function pathInRoot(file, root) {
+  const normalized = String(file).replace(/^\.\//, '').replace(/\\/g, '/');
+  return normalizedRoot(root) === '' || normalized.startsWith(normalizedRoot(root));
+}
+
+function reviewSignature(section) {
+  const lines = String(section.body).split('\n');
+  const firstHunk = lines.findIndex((line) => line.startsWith('@@'));
+  if (firstHunk < 0) return null;
+  const content = lines.slice(firstHunk).filter((line) => !line.startsWith('@@'));
+  while (content.at(-1)?.trim() === '') content.pop();
+  return content.join('\n');
+}
+
+/**
+ * Remove configured generated-root sections only when the same textual change
+ * exists outside every configured root. The source twin remains reviewable.
+ */
+export function filterGeneratedCopies(body, generatedCopyRoots = []) {
+  const target = String(body);
+  const roots = unique(generatedCopyRoots.map(normalizedRoot).filter(Boolean));
+  if (roots.length === 0 || !target.split('\n').some((line) => line.startsWith('diff --git '))) {
+    return { body: target, excluded: [] };
+  }
+  const sections = patchSections(target);
+  const signatures = new Map();
+  for (const section of sections) {
+    const signature = reviewSignature(section);
+    if (!signature) continue;
+    const entries = signatures.get(signature) || [];
+    entries.push(section);
+    signatures.set(signature, entries);
+  }
+  const excluded = [];
+  const kept = sections.filter((section) => {
+    const file = section.files[0];
+    if (!file || !roots.some((root) => pathInRoot(file, root))) return true;
+    const signature = reviewSignature(section);
+    const twin = (signatures.get(signature) || []).find((candidate) => {
+      const candidateFile = candidate.files[0];
+      return candidateFile
+        && basename(candidateFile) === basename(file)
+        && !roots.some((root) => pathInRoot(candidateFile, root));
+    });
+    if (!twin) return true;
+    excluded.push({ file, source_file: twin.files[0] });
+    return false;
+  });
+  return { body: kept.map((section) => section.body).join('\n'), excluded };
 }
 
 function splitOversizedSection(section, tokenBudget) {
@@ -191,7 +247,8 @@ export function chunkFrozenTarget(body, tokenBudget = DEFAULT_CHUNK_TOKEN_BUDGET
 }
 
 export function planReview(patch, options = {}) {
-  const body = String(patch);
+  const filtered = filterGeneratedCopies(patch, options.generatedCopyRoots);
+  const body = filtered.body;
   const explicitFiles = Array.isArray(options.targetFiles)
     ? options.targetFiles.map((file) => String(file).replace(/^\.\//, '').replace(/\\/g, '/')).filter(Boolean)
     : [];
@@ -277,12 +334,17 @@ export function planReview(patch, options = {}) {
     ...(!chunked && chunks.length === 1 ? { report_id: `${profile.profile}-1` } : {}),
     report_ids: chunks.map((chunk) => chunked ? `${profile.profile}-${chunk.id}` : `${profile.profile}-1`),
   }));
-  const expectedReports = profileDefinitions.flatMap(({ profile }) => chunks.map((chunk) => ({
+  const reportsPerChunk = Math.max(1, profileDefinitions.length);
+  const maxConcurrentReports = Number.isInteger(options.maxConcurrentReports)
+    ? Math.max(reportsPerChunk, options.maxConcurrentReports)
+    : maxProfiles;
+  const chunksPerWave = Math.max(1, Math.floor(maxConcurrentReports / reportsPerChunk));
+  const expectedReports = profileDefinitions.flatMap(({ profile }) => chunks.map((chunk, chunkIndex) => ({
     report_id: chunked ? `${profile}-${chunk.id}` : `${profile}-1`,
     lens: profile,
     ...(chunked ? {
       chunk_id: chunk.id,
-      wave: chunks.indexOf(chunk) + 1,
+      wave: Math.floor(chunkIndex / chunksPerWave) + 1,
       target_hash: chunk.target_hash,
       target_file: chunk.target_file,
       ...(chunk.files.length > 0 ? { target_files: chunk.files } : {}),
@@ -291,6 +353,7 @@ export function planReview(patch, options = {}) {
   return {
     schema_version: 1,
     mode: 'adaptive-fast',
+    ...(filtered.excluded.length > 0 ? { excluded_generated_copies: filtered.excluded } : {}),
     files,
     changed_lines: changedLines,
     estimated_target_tokens: estimatedTokens,
@@ -301,7 +364,9 @@ export function planReview(patch, options = {}) {
     chunks,
     profiles,
     expected_reports: expectedReports,
-    estimated_llm_waves: Math.max(1, chunks.length),
+    max_concurrent_reports: maxConcurrentReports,
+    chunks_per_wave: chunksPerWave,
+    estimated_llm_waves: Math.max(1, Math.ceil(chunks.length / chunksPerWave)),
     max_profiles: maxProfiles,
     requires_chunking: chunked,
     reviewable: !chunkingFailed,
@@ -310,13 +375,13 @@ export function planReview(patch, options = {}) {
 }
 
 function usage() {
-  return 'Usage: node plan-review.mjs --target <content-file> [--target-file <path> ...] [--max-profiles <2-5>] [--chunk-token-budget <tokens>] [--chunk-file-budget <files>] [--chunks-dir <dir>]';
+  return 'Usage: node plan-review.mjs --target <content-file> [--target-file <path> ...] [--max-profiles <2-5>] [--chunk-token-budget <tokens>] [--chunk-file-budget <files>] [--config <path>] [--filtered-target <path>] [--chunks-dir <dir>]';
 }
 
 export function main(argv = process.argv.slice(2)) {
   const args = { targetFiles: [] };
   for (let i = 0; i < argv.length; i += 1) {
-    if (!['--target', '--target-file', '--max-profiles', '--chunk-token-budget', '--chunk-file-budget', '--chunks-dir'].includes(argv[i]) || !argv[i + 1]) {
+    if (!['--target', '--target-file', '--max-profiles', '--chunk-token-budget', '--chunk-file-budget', '--config', '--filtered-target', '--chunks-dir'].includes(argv[i]) || !argv[i + 1]) {
       process.stderr.write(`${usage()}\n`);
       return 2;
     }
@@ -340,11 +405,23 @@ export function main(argv = process.argv.slice(2)) {
   }
   try {
     const patch = readFileSync(resolve(args.target), 'utf8');
-    const plan = planReview(patch, { maxProfiles, targetFiles: args.targetFiles, chunkTokenBudget, chunkFileBudget });
+    const configPath = resolve(args.config || '.xm-review.json');
+    const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : {};
+    if (config.generated_copy_roots !== undefined
+      && (!Array.isArray(config.generated_copy_roots) || !config.generated_copy_roots.every((root) => typeof root === 'string' && root.trim()))) {
+      throw new Error('generated_copy_roots must be an array of non-empty strings');
+    }
+    const generatedCopyRoots = config.generated_copy_roots || [];
+    const filtered = filterGeneratedCopies(patch, generatedCopyRoots);
+    const plan = planReview(patch, {
+      maxProfiles, targetFiles: args.targetFiles, chunkTokenBudget, chunkFileBudget,
+      maxConcurrentReports: maxProfiles, generatedCopyRoots,
+    });
+    if (args['filtered-target']) writeFileSync(resolve(args['filtered-target']), filtered.body);
     if (args['chunks-dir'] && plan.reviewable) {
       const chunksDir = resolve(args['chunks-dir']);
       mkdirSync(chunksDir, { recursive: true });
-      for (const chunk of chunkFrozenTarget(patch, chunkTokenBudget, { targetFiles: args.targetFiles, fileBudget: chunkFileBudget })) {
+      for (const chunk of chunkFrozenTarget(filtered.body, chunkTokenBudget, { targetFiles: args.targetFiles, fileBudget: chunkFileBudget })) {
         writeFileSync(resolve(chunksDir, `${chunk.id}.patch`), chunk.body);
       }
     }

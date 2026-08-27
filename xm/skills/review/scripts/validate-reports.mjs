@@ -206,6 +206,7 @@ function validateManifest(manifest) {
     });
     if (profiles.length > 0 && chunks.length > 0 && Array.isArray(manifest.expected_reports)) {
       const expectedPairs = new Map();
+      const waveByChunk = new Map();
       for (const entry of manifest.expected_reports) {
         if (!entry || typeof entry !== 'object') continue;
         const key = `${entry.lens}\0${entry.chunk_id}`;
@@ -222,8 +223,15 @@ function validateManifest(manifest) {
             issues.push(issue('manifest_profile_chunk_missing', `expected report is missing for ${profile} × ${chunk.id}`));
             continue;
           }
+          if (Number.isInteger(entry.wave) && entry.wave > 0) {
+            const assigned = waveByChunk.get(chunk.id);
+            if (assigned !== undefined && assigned !== entry.wave) {
+              issues.push(issue('manifest_chunk_wave_split', `profiles for ${chunk.id} must share one wave`));
+            }
+            waveByChunk.set(chunk.id, entry.wave);
+          }
           if (entry.target_hash !== chunk.target_hash || entry.target_file !== chunk.target_file
-            || entry.wave !== index + 1
+            || !Number.isInteger(entry.wave) || entry.wave < 1
             || JSON.stringify(entry.target_files) !== JSON.stringify(chunk.files)) {
             issues.push(issue('manifest_profile_chunk_mismatch', `expected report metadata does not match ${profile} × ${chunk.id}`));
           }
@@ -237,7 +245,7 @@ function validateManifest(manifest) {
   return issues;
 }
 
-function validateFinding(finding, index, lens, file, reportId, targetFiles, targetSections) {
+function validateFinding(finding, index, lens, file, reportId, targetFiles, targetSections, diffTarget) {
   const issues = [];
   const prefix = `findings[${index}]`;
   if (!finding || typeof finding !== 'object' || Array.isArray(finding)) {
@@ -257,16 +265,18 @@ function validateFinding(finding, index, lens, file, reportId, targetFiles, targ
     issues.push(issue('finding_outside_target', `${prefix}.file is not present in the frozen target`, lens, file, reportId));
   }
   if (targetSections && typeof finding.code === 'string' && typeof finding.file === 'string') {
-    const snippet = normalizeSnippet(finding.code);
+    const snippets = diffTarget
+      ? [normalizeSnippet(finding.code), normalizeSnippet(finding.code, true)]
+      : [normalizeSnippet(finding.code)];
     const fileTarget = targetSections.get(normalizedPath(finding.file)) || '';
-    if (!snippet || !fileTarget.includes(snippet)) {
+    if (!snippets.some((snippet) => snippet && fileTarget.includes(snippet))) {
       issues.push(issue('finding_code_mismatch', `${prefix}.code does not occur in its frozen target file`, lens, file, reportId));
     }
   }
   return issues;
 }
 
-function validateReport(report, manifest, file, targetSections = null) {
+function validateReport(report, manifest, file, targetSections = null, diffTarget = false) {
   const issues = [];
   const lens = typeof report?.lens === 'string' ? report.lens : null;
   const reportId = typeof report?.report_id === 'string' ? report.report_id : null;
@@ -325,7 +335,7 @@ function validateReport(report, manifest, file, targetSections = null) {
   if (!Array.isArray(report.findings)) {
     issues.push(issue('findings_invalid', 'findings must be an array', lens, file, reportId));
   } else {
-    report.findings.forEach((finding, index) => issues.push(...validateFinding(finding, index, lens, file, reportId, targetFiles, targetSections)));
+    report.findings.forEach((finding, index) => issues.push(...validateFinding(finding, index, lens, file, reportId, targetFiles, targetSections, diffTarget)));
     if (report.findings.length === 0) {
       if (typeof report.no_findings_reason !== 'string' || report.no_findings_reason.trim().length < 12) {
         issues.push(issue('zero_findings_unsubstantiated',
@@ -406,7 +416,9 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
     const reportTargetSections = typeof reportTargetBody === 'string'
       ? normalizedTargetSections(reportTargetBody, reportTargetFiles)
       : targetSections;
-    const reportIssues = validateReport(parsed, manifest, raw.file, reportTargetSections);
+    const reportIsDiff = typeof reportTargetBody === 'string'
+      && reportTargetBody.split('\n').some((line) => line.startsWith('diff --git '));
+    const reportIssues = validateReport(parsed, manifest, raw.file, reportTargetSections, reportIsDiff);
     issues.push(...reportIssues);
     reports.push({ file: raw.file, report: parsed, valid: reportIssues.length === 0 });
   }

@@ -76,8 +76,16 @@ node "$REVIEW_SKILL_DIR/scripts/plan-review.mjs" \
   --max-profiles "$ADAPTIVE_MAX_PROFILES" \
   --chunk-token-budget "${X_REVIEW_CHUNK_TOKENS:-24000}" \
   --chunk-file-budget "${X_REVIEW_CHUNK_FILES:-100}" \
+  --config "${X_REVIEW_CONFIG:-.xm-review.json}" \
+  --filtered-target "$RUN_DIR/target.filtered" \
   --chunks-dir "$RUN_DIR/chunks" > "$RUN_DIR/plan.json"
 ```
+
+If `target.filtered` differs from the collected target, make it the frozen `$TARGET_FILE` before
+creating `run.json`, snapshots, hashes, chunks, or dispatches. A repository may list
+`generated_copy_roots` in tracked `.xm-review.json`; the planner excludes a section only when an
+identical changed section exists outside every configured root, and records each excluded
+`file`/`source_file` pair in `excluded_generated_copies`. A generated-only change remains in scope.
 
 If the planner returns `mode: no-changes`, print "변경 사항이 없습니다" and exit without
 creating a run manifest or dispatching any reviewer. Binary and rename-only Git diffs still have
@@ -100,8 +108,10 @@ tokenizer-independent approximation; benchmark and adjust the default 24K budget
 changed-line thresholds. More than 100 files also triggers chunking because file dispersion raises
 coverage risk even when the token estimate is small. Copy `files` to `run.json.target_files` and copy `profiles`, `chunks`, and
 `expected_reports` to its manifest. Write the emitted chunk files under `$RUN_DIR/chunks`. When `chunked: true`, process chunks as
-bounded waves, dispatching all selected profiles in parallel for the current chunk using the
+bounded waves, dispatching all report instances with the same manifest `wave` in parallel using the
 manifest's `report_id`, `wave`, `target_hash`, and `target_files`.
+The planner packs `floor(agent_max_count / selected_profiles)` complete chunks into a wave, never
+splits one chunk's profiles across waves, and never exceeds `agent_max_count` concurrent reports.
 Only `reviewable: false` stops with `Review incomplete`; `requires_chunking` means execute chunks.
 
 | Profile | Combined concerns |

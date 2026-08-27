@@ -1,0 +1,12 @@
+{
+  "generated_copy_roots": [
+    "xm/lib",
+    "xm/skills",
+    "xm/public",
+    "xm/commands",
+    "xm/docs",
+    "xm/references",
+    "xm/templates",
+    "x-dashboard/lib/x-build"
+  ]
+}

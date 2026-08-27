@@ -22,7 +22,7 @@ trailing prose.
       "file": "src/example.ts",
       "line": 42,
       "description": "specific defect and reachable consequence",
-      "code": "the relevant 3-5 diff lines",
+      "code": "the relevant 3-5 source lines; diff markers are optional for diff targets",
       "why": "the lens severity criterion that applies",
       "fix": "one-line actionable correction"
     }
@@ -49,6 +49,9 @@ Rules:
   in the claimed file. This is source coverage, separate from
   N/N report coverage.
 - A real finding must populate every finding field. `line` is a positive integer.
+- For diff targets, `code` may include the leading `+`, `-`, or space marker from the frozen
+  patch; validation removes one marker from both the target and finding before grounding. For raw
+  `file` targets, leading `+` and `-` are source bytes and remain significant.
 - With zero findings, return `findings: []` and a specific `no_findings_reason`. An empty response
   or bare "No findings" is not a completed review.
 - If the target was unavailable or could not be reviewed, use `status: "failed"`; the validator

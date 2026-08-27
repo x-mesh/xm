@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { validateReviewReports } from '../x-review/skills/review/scripts/validate-reports.mjs';
-import { chunkFrozenTarget, estimateTargetTokens, planReview } from '../x-review/skills/review/scripts/plan-review.mjs';
+import { chunkFrozenTarget, estimateTargetTokens, filterGeneratedCopies, planReview } from '../x-review/skills/review/scripts/plan-review.mjs';
 import { canonicalReviewContext, hashReviewContext, normalizeReviewContext } from '../x-review/skills/review/scripts/context-contract.mjs';
 import { buildRetryTarget, splitFrozenSections } from '../x-review/skills/review/scripts/retry-target.mjs';
 
@@ -151,6 +151,42 @@ describe('x-review adaptive-fast planner', () => {
       { report_id: 'correctness-1', lens: 'correctness' },
       { report_id: 'risk-1', lens: 'risk' },
     ]);
+  });
+
+  test('excludes a configured generated copy only when an identical source section is present', () => {
+    const patch = [
+      'diff --git a/x-eval/lib/a.mjs b/x-eval/lib/a.mjs',
+      '--- a/x-eval/lib/a.mjs',
+      '+++ b/x-eval/lib/a.mjs',
+      '@@ -1 +1 @@',
+      '-export const value = 1;',
+      '+export const value = 2;',
+      'diff --git a/xm/lib/x-eval/a.mjs b/xm/lib/x-eval/a.mjs',
+      '--- a/xm/lib/x-eval/a.mjs',
+      '+++ b/xm/lib/x-eval/a.mjs',
+      '@@ -1 +1 @@',
+      '-export const value = 1;',
+      '+export const value = 2;',
+    ].join('\n');
+    const filtered = filterGeneratedCopies(patch, ['xm/lib']);
+    expect(filtered.excluded).toEqual([{ file: 'xm/lib/x-eval/a.mjs', source_file: 'x-eval/lib/a.mjs' }]);
+    expect(filtered.body).toContain('x-eval/lib/a.mjs');
+    expect(filtered.body).not.toContain('xm/lib/x-eval/a.mjs');
+    expect(planReview(patch, { generatedCopyRoots: ['xm/lib'] }).files).toEqual(['x-eval/lib/a.mjs']);
+  });
+
+  test('keeps a generated-root change when no identical source section is present', () => {
+    const patch = [
+      'diff --git a/xm/lib/native.mjs b/xm/lib/native.mjs',
+      '--- a/xm/lib/native.mjs',
+      '+++ b/xm/lib/native.mjs',
+      '@@ -1 +1 @@',
+      '-export const value = 1;',
+      '+export const value = 2;',
+    ].join('\n');
+    const filtered = filterGeneratedCopies(patch, ['xm/lib']);
+    expect(filtered.excluded).toEqual([]);
+    expect(planReview(patch, { generatedCopyRoots: ['xm/lib'] }).files).toEqual(['xm/lib/native.mjs']);
   });
 
   test('reads literal and C-escaped UTF-8 paths from quoted Git headers', () => {
@@ -298,6 +334,37 @@ describe('x-review lens report coverage contract', () => {
     const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
     expect(result.ok).toBe(true);
     expect(result.target_coverage).toEqual({ expected: 1, checked: 1, complete: true, missing_files: [] });
+  });
+
+  test('accepts diff-prefixed finding code while preserving raw-file prefixes', () => {
+    const targetBody = 'diff --git a/src/auth.ts b/src/auth.ts\n+++ b/src/auth.ts\n+const tenant = req.params.id;\n+return db.find(tenant);';
+    const targetHash = `sha256:${createHash('sha256').update(targetBody).digest('hex')}`;
+    const manifest = { ...MANIFEST, target_hash: targetHash, target_files: ['src/auth.ts'] };
+    const finding = {
+      severity: 'High', file: 'src/auth.ts', line: 2, description: 'Reachable lookup',
+      code: '+const tenant = req.params.id;\n+return db.find(tenant);',
+      why: 'Cross-tenant access is reachable.', fix: 'Bind the authenticated tenant.',
+    };
+    const result = validateReviewReports(manifest, raws(
+      zeroReport('security-1', 'security', { target_hash: targetHash, checked_files: ['src/auth.ts'], findings: [finding], no_findings_reason: undefined }),
+      zeroReport('logic-1', 'logic', { target_hash: targetHash, checked_files: ['src/auth.ts'] }),
+    ), { targetBody });
+    expect(result.ok).toBe(true);
+  });
+
+  test('preserves a source-leading diff character when grounding a diff finding', () => {
+    const targetBody = 'diff --git a/src/value.ts b/src/value.ts\n+++ b/src/value.ts\n++value';
+    const targetHash = `sha256:${createHash('sha256').update(targetBody).digest('hex')}`;
+    const manifest = { ...MANIFEST, target_hash: targetHash, target_files: ['src/value.ts'] };
+    const finding = {
+      severity: 'Low', file: 'src/value.ts', line: 1, description: 'Literal prefix', code: '+value',
+      why: 'The source value starts with plus.', fix: 'Keep the literal value.',
+    };
+    const result = validateReviewReports(manifest, raws(
+      zeroReport('security-1', 'security', { target_hash: targetHash, checked_files: ['src/value.ts'], findings: [finding], no_findings_reason: undefined }),
+      zeroReport('logic-1', 'logic', { target_hash: targetHash, checked_files: ['src/value.ts'] }),
+    ), { targetBody });
+    expect(result.ok).toBe(true);
   });
 
   test('fails closed when target files are declared without the frozen target body', () => {
@@ -496,13 +563,35 @@ describe('x-review lens report coverage contract', () => {
     expect(plan.chunked).toBe(true);
     expect(plan.reviewable).toBe(true);
     expect(plan.chunks).toHaveLength(2);
-    expect(plan.estimated_llm_waves).toBe(2);
+    expect(plan.estimated_llm_waves).toBe(1);
     expect(plan.chunks.every((chunk) => chunk.estimated_target_tokens <= 1_000)).toBe(true);
     expect(plan.expected_reports).toHaveLength(plan.profiles.length * plan.chunks.length);
     expect(plan.expected_reports.map((entry) => entry.report_id)).toEqual([
       'correctness-chunk-001', 'correctness-chunk-002', 'risk-chunk-001', 'risk-chunk-002',
     ]);
-    expect(plan.expected_reports.map((entry) => entry.wave)).toEqual([1, 2, 1, 2]);
+    expect(plan.expected_reports.map((entry) => entry.wave)).toEqual([1, 1, 1, 1]);
+  });
+
+  test('packs complete chunks into bounded waves without exceeding report concurrency', () => {
+    const section = (name, value) => [
+      `diff --git a/src/${name}.ts b/src/${name}.ts`,
+      `--- a/src/${name}.ts`,
+      `+++ b/src/${name}.ts`,
+      '@@ -1 +1 @@',
+      `+${'x'.repeat(value)}`,
+    ].join('\n');
+    const target = [section('a', 1800), section('b', 1800), section('c', 1800)].join('\n');
+    const plan = planReview(target, { chunkTokenBudget: 1_000, maxProfiles: 4, maxConcurrentReports: 4 });
+    expect(plan.profiles).toHaveLength(2);
+    expect(plan.chunks).toHaveLength(3);
+    expect(plan.chunks_per_wave).toBe(2);
+    expect(plan.estimated_llm_waves).toBe(2);
+    const reportsByWave = Object.groupBy(plan.expected_reports, (entry) => entry.wave);
+    expect(Object.values(reportsByWave).map((reports) => reports.length)).toEqual([4, 2]);
+    for (const chunk of plan.chunks) {
+      const waves = new Set(plan.expected_reports.filter((entry) => entry.chunk_id === chunk.id).map((entry) => entry.wave));
+      expect(waves.size).toBe(1);
+    }
   });
 
   test('splits an oversized single-file hunk and fails closed for an unsplittable line', () => {
@@ -700,7 +789,7 @@ describe('x-review lens report coverage contract', () => {
       ], { encoding: 'utf8' });
       expect(planned.status).toBe(0);
       const plan = JSON.parse(planned.stdout);
-      expect(plan).toMatchObject({ chunked: true, reviewable: true, estimated_llm_waves: 2 });
+      expect(plan).toMatchObject({ chunked: true, reviewable: true, estimated_llm_waves: 1 });
       expect(plan.expected_reports).toHaveLength(plan.profiles.length * plan.chunks.length);
 
       const manifest = {

@@ -150,7 +150,7 @@ fi
 |----------|------|
 | Empty target with no Git file change | Output "변경 사항이 없습니다", exit |
 | Estimated target ≤ 24K tokens | Run `adaptive-fast` immediately (one parallel wave) |
-| Estimated target > 24K tokens | Split by complete file sections, then hunk/line ranges; dispatch every profile across every chunk in bounded chunk waves |
+| Estimated target > 24K tokens | Split by complete file sections, then hunk/line ranges; dispatch every profile across every chunk in planner-assigned bounded waves |
 | Target spans > 100 files | Split into file-bounded chunks even when the token estimate fits one prompt |
 | A unit cannot fit the budget | Stop with `Review incomplete` and identify the unsplittable unit |
 
@@ -370,8 +370,9 @@ participants after panel mode is explicitly/configurationally enabled.
 
 ## Latency Policy
 
-- A normal unchunked review has exactly **one parallel LLM wave**. A chunked review has one bounded
-  wave per chunk, with all selected profiles running in parallel inside that wave. Schema, target grounding, source coverage,
+- A normal unchunked review has exactly **one parallel LLM wave**. A chunked review packs as many
+  complete chunks as fit under `agent_max_count` into each planner-assigned wave, with all selected
+  profiles for those chunks running in parallel. Schema, target grounding, source coverage,
   dedupe, verdict, and persistence are deterministic gates and spend no additional model call.
 - Add planner-selected specialists to wave 1; never wait for core reviewers and then start a serial
   specialist round.
