@@ -241,6 +241,7 @@ export const SCHEMA = [
     type: 'number',
     nullable: true,
     scope: 'local',
+    // Independent from panel.command_budget; keep aligned with default-config.json.
     default: 24,
     description: 'dispatch pre-block에 재사용할 task prediction의 최대 나이(시간). 만료/누락 시 새로 계산',
   },
@@ -672,7 +673,7 @@ export const SCHEMA = [
     scope: 'global',
     owner: 'x-panel',
     min: 1,
-    default: 24,
+    default: 12,
     description: 'Codex review slot당 완료 command_execution 상한 — final contract 전에 도달하면 command_budget으로 종료',
   },
 ];

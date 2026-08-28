@@ -1162,8 +1162,31 @@ export function cmdVerifyReviewFix(args) {
     const previousGatePath = join(reviewDir(), 'review-fix-gate.json');
     if (existsSync(previousGatePath)) unlinkSync(previousGatePath);
     const triage = buildTriageTemplate(review);
+    const lifecycle = buildLifecycle(review, triage, freshness);
     writeJSON(triagePath, triage);
-    writeJSON(lifecyclePath(), buildLifecycle(review, triage, freshness));
+    writeJSON(lifecyclePath(), lifecycle);
+    // A fresh unbound LGTM can supersede a previous review-fix lifecycle only
+    // after --init binds triage and lifecycle receipts to this review snapshot.
+    // Bound reviews still require their host-context evidence through the normal
+    // verification path below.
+    const verdict = normalizeVerdict(review?.verdict);
+    if ((verdict === 'lgtm' || verdict === 'pass') && required.length === 0 && !context) {
+      writeJSON(previousGatePath, {
+        timestamp: new Date().toISOString(),
+        reviewed_commit: review.reviewed_commit || null,
+        verdict: review.verdict || null,
+        triage_required: 0,
+        stage: 'lgtm_ready',
+        authorized: false,
+        review_snapshot_digest: freshness.digest,
+        triage_digest: `sha256:${sha256(JSON.stringify(triage))}`,
+        lifecycle_digest: `sha256:${sha256(JSON.stringify(lifecycle))}`,
+        passed: true,
+        failures: [],
+        warnings: [],
+        lifecycle: { open: 0, fix_authorized: 0, fixed: 0, reverified: 0 },
+      });
+    }
     console.log(`${C.green}Created review-fix triage template:${C.reset} ${triagePath}`);
     console.log('  Edit decisions, allowed_files, and verification before applying review fixes.');
     return;

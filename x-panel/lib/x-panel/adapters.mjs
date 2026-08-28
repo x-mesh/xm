@@ -413,13 +413,22 @@ function spawnResolved(resolved, options = {}) {
   const hasInput = transport && typeof transport.stdin === 'string';
   const child = spawn(cmd, args, {
     ...options,
+    ...(process.platform !== 'win32' && options.detached == null ? { detached: true } : {}),
     stdio: [hasInput ? 'pipe' : 'ignore', 'pipe', 'pipe'],
   });
+  ACTIVE_PROVIDER_CHILDREN.add(child);
+  child.once('close', () => ACTIVE_PROVIDER_CHILDREN.delete(child));
   if (hasInput) {
     child.stdin.on('error', () => {});
     child.stdin.end(transport.stdin);
   }
   return child;
+}
+
+const ACTIVE_PROVIDER_CHILDREN = new Set();
+
+export function terminateProviderChildren(signal = 'SIGTERM') {
+  for (const child of ACTIVE_PROVIDER_CHILDREN) killProbeTree(child, signal);
 }
 
 // Preflight probes are spawned as their own POSIX process group. Provider CLIs may
@@ -443,8 +452,8 @@ function killProbeTree(child, signal) {
 // read-only reads the repo). Flag alternatives were tested and rejected:
 // --bare drops OAuth auth entirely; --setting-sources user still leaves
 // user-scope hook injection active.
-export function promptSpawnOpts(name) {
-  return name === 'claude' ? { cwd: tmpdir() } : {};
+export function promptSpawnOpts(name, { isolate = false } = {}) {
+  return isolate || name === 'claude' ? { cwd: tmpdir() } : {};
 }
 
 // Grounded-refutation capability (roadmap 빅뱃3): can this vendor OPEN the cited
@@ -485,7 +494,7 @@ export function stripAnsi(s) { return String(s == null ? '' : s).replace(ANSI_RE
 // carry one of the contract arrays (findings/verdicts) — an unrelated JSON object in
 // the output is a parse failure, not a success. Without expectKeys the legacy
 // first-object behavior is kept for generic callers.
-function extractAnswerJSON(raw, expectKeys) {
+function extractAnswerJSON(raw, expectKeys, strictContract = false) {
   const text = stripAnsi(raw); // kiro et al. colorize their JSON — strip before any parse
   if (!expectKeys) return extractJSON(text);
   const json = extractContractJSON(text, expectKeys);
@@ -495,7 +504,7 @@ function extractAnswerJSON(raw, expectKeys) {
   // "### [severity] file:line — title" + Why/Fix lens shape), so salvage that rather than
   // discard a real review as "no findings JSON". verdicts/responses are always JSON — never
   // reconstructed from prose. Strict: only fires after JSON extraction already failed.
-  if (expectKeys.includes('findings')) return parseMarkdownFindings(text);
+  if (!strictContract && expectKeys.includes('findings')) return parseMarkdownFindings(text);
   return null;
 }
 function jsonMissingError(expectKeys) {
@@ -703,7 +712,7 @@ export function resolveSessionCommand(name, prompt, model, session, providerArgs
   return resolveCommand(name, prompt, model, providerArgs);
 }
 
-export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, deadlineMs = null, maxSpawns = 2, model = null, onEvent = null, stream = false, partial = true, session = null, fallbackPrompt = null, expectKeys = null, providerArgs = null, commandBudget = null } = {}) {
+export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, deadlineMs = null, maxSpawns = 2, model = null, onEvent = null, stream = false, partial = true, session = null, fallbackPrompt = null, expectKeys = null, providerArgs = null, commandBudget = null, isolate = false, strictContract = false } = {}) {
   const budgetMs = (Number.isFinite(maxTimeout) && maxTimeout > 0) ? maxTimeout : Math.max(timeout * 2, timeout + 120_000);
   const effectiveDeadlineMs = deadlineMs ?? (Date.now() + budgetMs);
   if (stream && supportsStream(name)) {
@@ -716,7 +725,7 @@ export async function invokeProviderAsync(name, prompt, { timeout = 180_000, max
     return invokeProviderStream(name, prompt, {
       timeout: Math.min(timeout, remaining),
       maxTimeout: Math.min(maxTimeout ?? remaining, remaining),
-      model, onEvent, partial, expectKeys, commandBudget,
+      model, onEvent, partial, expectKeys, commandBudget, isolate, strictContract,
     });
   }
   const use = session && supportsResume(name) ? session : null;
@@ -728,7 +737,7 @@ export async function invokeProviderAsync(name, prompt, { timeout = 180_000, max
     return invokeProviderRaw(name, body, {
       timeout: Math.min(timeout, remaining),
       maxTimeout: Math.min(maxTimeout ?? remaining, remaining),
-      model, onEvent, session: activeSession, expectKeys, providerArgs, commandBudget,
+      model, onEvent, session: activeSession, expectKeys, providerArgs, commandBudget, isolate, strictContract,
     });
   };
   let res = await invokeWithinBudget(prompt, use);
@@ -767,7 +776,7 @@ export async function invokeProviderAsync(name, prompt, { timeout = 180_000, max
   return res;
 }
 
-function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, session = null, expectKeys = null, providerArgs = null, commandBudget = null } = {}) {
+function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, session = null, expectKeys = null, providerArgs = null, commandBudget = null, isolate = false, strictContract = false } = {}) {
   return new Promise((resolve) => {
     const emit = (event) => {
       if (!onEvent) return;
@@ -791,7 +800,7 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
     try {
       // stdin must be closed (ignore) or non-interactive CLIs like codex/agy hang
       // waiting for input — spawnSync closes it automatically, spawn does not.
-      child = spawnResolved(resolved, { env: process.env, ...promptSpawnOpts(name) });
+      child = spawnResolved(resolved, { env: process.env, ...promptSpawnOpts(name, { isolate }) });
     } catch (e) {
       return resolve({ ok: false, error: String(e.message || e), raw: '', json: null, spawns: 1 });
     }
@@ -806,14 +815,14 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
     child.stderr.setEncoding('utf8');
     const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
       emit({ type: 'timeout', provider: name, model, error, reason });
-      child.kill('SIGKILL');
+      killProbeTree(child, 'SIGKILL');
       // A wall-clock cap can fire after the provider emitted its final contract but
       // before its CLI process exited. Preserve that completed answer as partial.
       // Idle kills remain failures: silence is not evidence of completion.
       if (reason === 'cap') {
         const env = parseStructuredOutput(name, stdout, model);
         const answer = env.text;
-        const json = extractAnswerJSON(answer, expectKeys);
+        const json = extractAnswerJSON(answer, expectKeys, strictContract);
         if (json) {
           const usage = env.usage || parseStderrUsage(name, stderr);
           return finish({ ok: true, partial: true, error, raw: answer, json, usage, timedOut: true, timeoutReason: reason, spawns: 1 });
@@ -835,7 +844,7 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
           const error = `command budget exhausted (${progress.commands_used}/${effectiveCommandBudget}) before final contract`;
           emit({ type: 'command_budget', provider: name, model, error, ...progress, command_budget: effectiveCommandBudget });
           guard.clear();
-          child.kill('SIGKILL');
+          killProbeTree(child, 'SIGKILL');
           finish({ ok: false, error, raw: stdout, json: null, termination: 'command_budget', spawns: 1, progress });
         }
       }
@@ -872,7 +881,7 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
         emit({ type: 'error', provider: name, model, error: env.error });
         return finish({ ok: false, error: env.error, raw: answer, json: null, usage, spawns: 1 });
       }
-      const json = extractAnswerJSON(answer, expectKeys);
+      const json = extractAnswerJSON(answer, expectKeys, strictContract);
       if (!json) {
         emit({ type: 'json_missing', provider: name, model });
         // Exit 0 but no parseable answer: the CLI almost always explained WHY on stderr
@@ -1157,7 +1166,7 @@ export function parseStreamLine(name, obj, model) {
   return { events, finalText, usage };
 }
 
-function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, partial = true, expectKeys = null, commandBudget = null } = {}) {
+function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, partial = true, expectKeys = null, commandBudget = null, isolate = false, strictContract = false } = {}) {
   return new Promise((resolve) => {
     const emit = (event) => { if (!onEvent) return; try { onEvent({ at: new Date().toISOString(), ...event }); } catch { /* observer only */ } };
     let settled = false;
@@ -1165,7 +1174,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
     const resolved = resolveStreamCommand(name, prompt, model, partial);
     if (!resolved) return resolve({ ok: false, error: `no stream profile: ${name}`, raw: '', json: null, spawns: 0 });
     let child;
-    try { child = spawnResolved(resolved, { env: process.env, ...promptSpawnOpts(name) }); }
+    try { child = spawnResolved(resolved, { env: process.env, ...promptSpawnOpts(name, { isolate }) }); }
     catch (e) { return resolve({ ok: false, error: String(e.message || e), raw: '', json: null, spawns: 1 }); }
     emit({ type: 'spawn', provider: name, model, pid: child.pid, command: resolved[0], mode: partial ? 'stream-partial' : 'stream' });
 
@@ -1197,7 +1206,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
           const error = `command budget exhausted (${progress.commands_used}/${effectiveCommandBudget}) before final contract`;
           emit({ type: 'command_budget', provider: name, model, error, ...progress, command_budget: effectiveCommandBudget });
           guard.clear();
-          child.kill('SIGKILL');
+          killProbeTree(child, 'SIGKILL');
           finish({ ok: false, error, raw: rawCap, json: null, usage, termination: 'command_budget', spawns: 1, progress });
           return;
         }
@@ -1215,12 +1224,12 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
     child.stderr.setEncoding('utf8');
     const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
       emit({ type: 'timeout', provider: name, model, error, reason });
-      child.kill('SIGKILL');
+      killProbeTree(child, 'SIGKILL');
       if (reason === 'cap') {
         // The final JSONL event may lack a trailing newline when the cap lands.
         if (buf.trim()) { handleLine(buf); buf = ''; }
         const text = finalText != null ? finalText : textBuf;
-        const json = extractAnswerJSON(text, expectKeys)
+        const json = extractAnswerJSON(text, expectKeys, strictContract)
           || extractContractJSON(rawCap, expectKeys || ['findings', 'verdicts']);
         if (json) {
           return finish({ ok: true, partial: true, error, raw: rawCap, json, usage, timedOut: true, timeoutReason: reason, spawns: 1 });
@@ -1250,7 +1259,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
       if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: rawCap, json: null, usage, signal: signal || null, spawns: 1 });
       // Findings come from the final answer text (NOT the raw JSONL envelope).
       const text = finalText != null ? finalText : textBuf;
-      let json = extractAnswerJSON(text, expectKeys);
+      let json = extractAnswerJSON(text, expectKeys, strictContract);
       // rawCap fallback is ALWAYS shape-guarded (even without expectKeys): a JSONL
       // envelope line (e.g. {"type":"system"}) must NOT be mistaken for a successful
       // review, so only an object actually carrying findings/verdicts is accepted.
@@ -1294,7 +1303,7 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
     // to retry a hung provider by checking the FLAG, never by substring-matching the error text.
     const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
       emit({ type: 'timeout', provider: name, model, error, reason });
-      child.kill('SIGKILL');
+      killProbeTree(child, 'SIGKILL');
       done({ ok: false, output: stdout, error, timedOut: true });
     });
     child.stdout.on('data', (d) => { guard.touch(); stdout += d; if (stdout.length > 16 * 1024 * 1024) stdout = stdout.slice(-16 * 1024 * 1024); emit({ type: 'stdout', provider: name, model, bytes: Buffer.byteLength(d), text: d }); });
@@ -1332,12 +1341,12 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
 // (the CLI picks its own default and never tells the caller otherwise). Unlike the
 // review stream path this accepts free text (no findings-JSON requirement), and it
 // falls back to raw-text liveness (model unknown) for providers with no stream profile.
-export function probeProvider(name, { timeout = 45_000, model = null } = {}) {
+export function probeProvider(name, { timeout = 45_000, model = null, prompt = 'Reply with exactly: OK', expectKeys = null, commandBudget = null } = {}) {
   return new Promise((resolve) => {
-    const resolved = resolveStreamCommand(name, 'Reply with exactly: OK', model, false);
+    const resolved = resolveStreamCommand(name, prompt, model, false);
     if (!resolved) {
-      return invokeProviderText(name, 'Reply with exactly: OK', { timeout, model })
-        .then((r) => resolve({ ok: r.ok, model: null, text: (r.output || '').trim(), error: r.error || null, timedOut: !!r.timedOut }))
+      return invokeProviderAsync(name, prompt, { timeout, maxTimeout: timeout, maxSpawns: 1, model, expectKeys, commandBudget, isolate: true, strictContract: true })
+        .then((r) => resolve({ ok: r.ok, model: null, text: (r.raw || '').trim(), json: r.json || null, error: r.error || null, timedOut: !!r.timedOut }))
         .catch((err) => resolve({ ok: false, model: null, text: '', error: String(err?.message || err) }));
     }
     if (name === 'codex' && !overridePath(name)) {
@@ -1348,7 +1357,7 @@ export function probeProvider(name, { timeout = 45_000, model = null } = {}) {
     try {
       child = spawnResolved(resolved, {
         env: process.env,
-        ...promptSpawnOpts(name),
+        ...promptSpawnOpts(name, { isolate: true }),
         ...(process.platform !== 'win32' ? { detached: true } : {}),
       });
     }
@@ -1369,13 +1378,24 @@ export function probeProvider(name, { timeout = 45_000, model = null } = {}) {
     };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    const guard = makeTimeoutGuard(timeout, null, (error) => { killProbeTree(child, 'SIGKILL'); done({ ok: false, model: actualModel, text: text.trim(), error, timedOut: true }); });
+    const progressObserver = createProviderProgressObserver(name, expectKeys);
+    const effectiveCommandBudget = name === 'codex' && Number.isFinite(Number(commandBudget)) && Number(commandBudget) > 0 ? Number(commandBudget) : null;
+    // Preflight is a bounded contract test: its configured timeout is both the
+    // idle limit and the absolute wall-clock cap.
+    const guard = makeTimeoutGuard(timeout, timeout, (error) => { killProbeTree(child, 'SIGKILL'); done({ ok: false, model: actualModel, text: text.trim(), error, timedOut: true }); });
     const handleLine = (line) => {
       if (settled) return;
       const s = line.trim();
       if (!s) return;
       let o; try { o = JSON.parse(s); } catch { return; }
       sawJson = true;
+      const progress = progressObserver.push(`${line}\n`);
+      if (effectiveCommandBudget != null && progress?.commands_used >= effectiveCommandBudget && progress.contract_state !== 'complete') {
+        guard.clear();
+        killProbeTree(child, 'SIGKILL');
+        done({ ok: false, model: actualModel || model || null, text: text.trim(), json: null, error: `command budget exhausted (${progress.commands_used}/${effectiveCommandBudget}) before final contract`, termination: 'command_budget' });
+        return;
+      }
       if (!actualModel) {
         if (typeof o.model === 'string' && o.model) actualModel = o.model;
         else if (o.message && typeof o.message.model === 'string' && o.message.model) actualModel = o.message.model;
@@ -1383,9 +1403,12 @@ export function probeProvider(name, { timeout = 45_000, model = null } = {}) {
       const r = parseStreamLine(name, o, model);
       for (const ev of r.events) if (ev.kind === 'text' && ev.delta) text += ev.delta;
       if (r.finalText != null) text = r.finalText;
-      if (/^ok[.!]?$/i.test(text.trim())) {
+      // Do not apply the ordinary review path's Markdown recovery here. Preflight
+      // succeeds only when the provider emits the literal JSON contract.
+      const contract = expectKeys ? extractAnswerJSON(text, expectKeys, true) : null;
+      if ((expectKeys && contract) || (!expectKeys && /^ok[.!]?$/i.test(text.trim()))) {
         guard.clear();
-        done({ ok: true, model: actualModel || model || null, text: text.trim(), error: null });
+        done({ ok: true, model: actualModel || model || null, text: text.trim(), json: contract, error: null });
         stopAfterSuccess();
       }
     };
@@ -1403,7 +1426,9 @@ export function probeProvider(name, { timeout = 45_000, model = null } = {}) {
       const t = (sawJson ? text : (text || stdout)).trim();
       if (code !== 0) return done({ ok: false, model: actualModel, text: t, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}` });
       if (!t) return done({ ok: false, model: actualModel, text: '', error: `exit 0 but empty output${stderr.trim() ? `: ${stderr.trim().slice(0, 200)}` : ''}` });
-      done({ ok: true, model: actualModel, text: t, error: null });
+      const contract = expectKeys ? extractAnswerJSON(t, expectKeys, true) : null;
+      if (expectKeys && !contract) return done({ ok: false, model: actualModel, text: t, json: null, error: jsonMissingError(expectKeys) });
+      done({ ok: true, model: actualModel, text: t, json: contract, error: null });
     });
   });
 }

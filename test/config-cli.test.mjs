@@ -1035,6 +1035,14 @@ describe('xm config panel.* schema validation (F-panel)', () => {
     });
   });
 
+  test('panel.command_budget 기본값은 bounded review용 12', () => {
+    expect(SCHEMA.find((entry) => entry.key === 'panel.command_budget')?.default).toBe(12);
+  });
+
+  test('budget.prediction_max_age_hours 기본값은 default config와 같은 24', () => {
+    expect(SCHEMA.find((entry) => entry.key === 'budget.prediction_max_age_hours')?.default).toBe(24);
+  });
+
   test('panel.model_overrides 객체는 타입 경고 없이 저장', () => {
     withRoot((root) => {
       const w = run(['set', 'panel.model_overrides', '{"codex":"gpt-5.5"}'], root);

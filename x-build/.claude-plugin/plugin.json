@@ -1,6 +1,6 @@
 {
   "name": "build",
-  "version": "3.6.1",
+  "version": "3.6.2",
   "description": "Repository-grounded planning with lean native execution; legacy lifecycle commands are explicit opt-ins",
   "author": {
     "name": "x-mesh"

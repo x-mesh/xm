@@ -19,7 +19,7 @@ if (process.env.X_PANEL_PREFLIGHT_GRANDCHILD_PID_FILE) {
 }
 process.stdout.write(JSON.stringify({
   type: 'result',
-  result: 'OK',
+  result: '{"findings":[]}',
   model: 'stub-preflight-model',
 }) + '\n');
 setTimeout(() => process.exit(0), 5000);

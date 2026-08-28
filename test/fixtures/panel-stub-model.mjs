@@ -56,6 +56,9 @@ if (process.env.X_PANEL_DUMP_CROSS) {
   try { writeFileSync(`${process.env.X_PANEL_DUMP_CROSS}.${envModelName(model)}`, prompt); } catch { /* best-effort */ }
 }
 const envModel = String(model || '').toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+if (process.env.X_PANEL_CWD_LOG) {
+  try { writeFileSync(`${process.env.X_PANEL_CWD_LOG}.${envModel}`, process.cwd()); } catch { /* best-effort */ }
+}
 
 // Test hook: append one line per SPAWN, so retry/fallback-discipline tests can count exactly
 // how many processes a slot started (toss-20260818-0d0f3e9a: retry-once must mean ≤2 spawns).
@@ -195,6 +198,12 @@ if (Number.isFinite(delayMs) && delayMs > 0) {
 
 if (process.env[`X_PANEL_NO_JSON_${envModel}`]) {
   process.stdout.write('plain text without a JSON payload');
+  process.exit(0);
+}
+
+if (process.env[`X_PANEL_MARKDOWN_FINDINGS_${envModel}`]) {
+  const markdown = '### [high] preflight.js:1 — Markdown-only finding\n\n**Why:** JSON contract was omitted.\n\n**Fix:** Return the required JSON object.';
+  emitRaw(model, markdown);
   process.exit(0);
 }
 

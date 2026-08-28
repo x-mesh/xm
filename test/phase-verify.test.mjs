@@ -995,6 +995,26 @@ describe('verify-review-fix', () => {
     }
   });
 
+  test('a freshly initialized LGTM review closes the preceding lifecycle', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'fixed after review\n');
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
+
+      expect(run(['verify-review-fix', '--init'], { cwd: tmp }).exitCode).toBe(0);
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('Review Fix Gate passed');
+      expect(readJSON(join(tmp, '.xm', 'review', 'review-fix-gate.json')).stage).toBe('lgtm_ready');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('LGTM fails closed when a lifecycle-aware review loses its lifecycle file', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {

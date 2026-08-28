@@ -38,12 +38,24 @@ Before Phase 1, inspect the tools and execution context actually available in th
   the ordinary severity/verdict output. State `single-pass-headless` in execution metadata.
 - Never emulate fan-out by launching nested review skills/commands or by waiting for workers that
   this invocation did not successfully create.
+- Fan-out initiation gets exactly one spawn batch. A tool argument parse/schema error, unknown or
+  unavailable collaboration tool, or a batch that returns no worker ids is structural evidence that
+  fan-out is unavailable in this invocation. Do not retry spawn: record the error, set
+  `single-pass-headless`, and continue in the current process. If only part of the batch created
+  workers, interrupt those known workers before falling back; if they cannot be stopped, return
+  `Review incomplete` instead of running duplicate reviews. Never call a collaboration wait
+  primitive unless at least one successfully created worker is still live.
 - After a successful fan-out, wait only while at least one known worker is live. If a wait returns
   no worker update three consecutive times, interrupt remaining workers and return
   `Review incomplete` with the completed reports; never wait indefinitely.
 
 This guard overrides the normal Phase 2/3 fan-out instructions below. A slower single-pass review
 is preferable to a headless process that makes no progress.
+
+When verification uses a CLI test-name filter, follow that runner's documented argument shape.
+Use one shared filter or separate commands for multiple named tests; do not append multiple
+positional filters unless the runner documents them. An argument/usage error permits one corrected
+command, not repetition of the invalid shape.
 
 ## Mode Detection
 
@@ -328,6 +340,14 @@ The Phase 3 panel backend replaces the current-runtime fan-out with:
    - **Pass the Phase-1 target explicitly** — write the diff/target that Phase 1 (TARGET) resolved
      to a temp file and pass it as the panel target, so the review scope matches (do NOT rely on
      `xm panel`'s default `git diff HEAD`, which may differ from a PR / file / ref target).
+   - **Bound every panel target to at most 3 frozen diff files.** Run `plan-review.mjs` with
+     `--chunk-file-budget 3` and dispatch its emitted chunks; never pass the unsplit Phase-1
+     target when it spans more than 3 files. The lens prompt must tell the reviewer that the
+     supplied frozen diff is the complete scope and forbid repository search or opening files
+     outside it. x-panel rejects a broader injected review target before spawning providers.
+   - Keep `panel.command_budget` at its bounded default of 12 unless a measured fixture needs a
+     lower value. The injected prompt stops exploration and begins final JSON synthesis after 6
+     commands; do not raise the budget to compensate for repository exploration.
    - For each selected lens, write the composed lens prompt (universal principles + `lenses/{lens}.md`)
      to a temp file, then:
    ```bash

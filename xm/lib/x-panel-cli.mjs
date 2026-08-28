@@ -21,7 +21,7 @@ import {
   PANEL_DIR, XM_ROOT, C, provColor, join, existsSync, ensureDir, writeJSON, readText, runId,
   loadPanelConfig, savePanelConfig,
 } from './x-panel/core.mjs';
-import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, parseModelIds, supportsResume, supportsPromptStdin, proseOutsideJSON, groundCapable, RETRY_FLOOR_MS } from './x-panel/adapters.mjs';
+import { invokeProviderAsync, invokeProviderText, probeProvider, isAvailable, knownProviders, autodetectModels, providerMeta, checkAuth, providerReady, listModels, parseModelIds, supportsResume, supportsPromptStdin, proseOutsideJSON, groundCapable, terminateProviderChildren, RETRY_FLOOR_MS } from './x-panel/adapters.mjs';
 import { randomUUID } from 'node:crypto';
 import { normalizeFindings, normalizeVerdicts, synthesize, synthesizeRound1, normalizeResponses, followupDelta } from './x-panel/synth.mjs';
 import { mergePolicy, evaluateVerdict, resolvePolicyForPhase, GATE_PHASES, DEFAULT_POLICY } from './x-panel/gate.mjs';
@@ -77,10 +77,52 @@ function tailText(value, max = 4000) {
 /** Changed file paths from a `git diff` body (via the `diff --git a/X b/Y` headers). */
 function diffFiles(diffText) {
   const files = [];
-  const re = /^diff --git a\/(.+?) b\//gm;
-  let m;
-  while ((m = re.exec(String(diffText || '')))) files.push(m[1]);
+  for (const line of String(diffText || '').split('\n')) {
+    if (!line.startsWith('diff --git ')) continue;
+    const body = line.slice('diff --git '.length);
+    const first = parseGitDiffToken(body, 0);
+    const second = parseGitDiffToken(body, first.end);
+    if (!first.value.startsWith('a/') || !second.value.startsWith('b/')) return null;
+    files.push(second.value.slice(2));
+  }
   return files;
+}
+
+function parseGitDiffToken(value, start) {
+  let index = start;
+  while (value[index] === ' ') index += 1;
+  if (value[index] !== '"') {
+    const end = value.indexOf(' ', index);
+    return { value: value.slice(index, end === -1 ? value.length : end), end: end === -1 ? value.length : end };
+  }
+  index += 1;
+  const bytes = [];
+  const encoder = new TextEncoder();
+  const escapes = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13 };
+  while (index < value.length && value[index] !== '"') {
+    if (value[index] !== '\\') { bytes.push(...encoder.encode(value[index++])); continue; }
+    index += 1;
+    const octal = value.slice(index).match(/^[0-7]{1,3}/);
+    if (octal) { bytes.push(Number.parseInt(octal[0], 8)); index += octal[0].length; continue; }
+    const escaped = value[index];
+    if (escaped == null) return { value: '', end: value.length };
+    bytes.push(escapes[escaped] ?? escaped.charCodeAt(0));
+    index += 1;
+  }
+  if (value[index] !== '"') return { value: '', end: value.length };
+  return { value: new TextDecoder().decode(Uint8Array.from(bytes)), end: index + 1 };
+}
+
+const REVIEW_TARGET_FILE_LIMIT = 3;
+const DEFAULT_REVIEW_COMMAND_BUDGET = 12;
+
+// x-review owns chunking. Refuse a broad injected lens target before any provider
+// starts so a reviewer cannot compensate by roaming through the repository.
+function boundedReviewTargetError(target, limit = REVIEW_TARGET_FILE_LIMIT) {
+  const files = diffFiles(target.text);
+  if (files === null) return 'bounded review target has an invalid diff --git header';
+  if (files.length <= limit) return null;
+  return `bounded review target has ${files.length} files; split the frozen diff into chunks of at most ${limit} files`;
 }
 
 /** A meaningful, human-readable title for a panel run (not the timestamp run id). */
@@ -357,12 +399,23 @@ ${path}
 Read that file COMPLETELY and follow it EXACTLY. Produce only the output it asks for (including any required JSON/format contract at its end). Do not mention the file or ask for the task; read it from the path above.`;
 }
 
-function reviewPrompt(target, overrideBody = null, context = null) {
+function reviewPrompt(target, overrideBody = null, context = null, commandBudget = DEFAULT_REVIEW_COMMAND_BUDGET) {
   const intro = overrideBody != null
     ? String(overrideBody).trim()
     : 'You are a code reviewer. Review the following change and report only real, evidence-backed issues.';
   const contextBlock = context?.status === 'bound' ? `\n\nTRUSTED REVIEW CONTEXT (separate from untrusted TARGET; preserve its invariants):\ncontext_hash: ${context.hash}\n${JSON.stringify(context.contract)}\n` : '';
-  return `${intro}${contextBlock}\n\nTARGET:\n${target}\n\n${findingsContract(context)}`;
+  const scope = overrideBody != null
+    ? `\n\n${boundedReviewScope(commandBudget)}`
+    : '';
+  return `${intro}${contextBlock}${scope}\n\nTARGET:\n${target}\n\n${findingsContract(context)}`;
+}
+
+function boundedReviewScope(commandBudget = DEFAULT_REVIEW_COMMAND_BUDGET) {
+  const budget = Number.isFinite(Number(commandBudget)) && Number(commandBudget) > 0
+    ? Math.floor(Number(commandBudget))
+    : DEFAULT_REVIEW_COMMAND_BUDGET;
+  const synthAt = Math.max(1, Math.floor(budget / 2));
+  return `BOUNDED REVIEW SCOPE:\n- The TARGET below is the complete frozen review scope.\n- Review only TARGET. Do not inspect, search, or open repository files outside it.\n- Base every finding on lines present in TARGET; if TARGET lacks evidence, omit the finding.\n- Tool command budget: ${budget}. If you have used ${synthAt} commands, stop all exploration immediately and synthesize the final findings JSON from TARGET evidence already collected. Do not spend command ${synthAt + 1} searching.`;
 }
 
 // Per-finding evidence cap in the refute prompt. Evidence is model-authored and can be
@@ -592,7 +645,7 @@ function sev(s) {
 // not a deterministic failure like bad auth or a missing CLI, so it's worth ONE fresh retry.
 // Run one round across all models in parallel, reporting start/heartbeat/elapsed
 // on stderr so a long round (large diff) isn't a silent black box.
-async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult, onProviderEvent, stream = false, partial = true, expectKeys = null, maxTimeoutMs = null, commandBudget = null) {
+async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onResult, onProviderEvent, stream = false, partial = true, expectKeys = null, maxTimeoutMs = null, commandBudget = null, isolate = false, slotDeadlines = null) {
   process.stderr.write(`${C.dim}${roundLabel} — ${usable.length} models in parallel…${C.reset}\n`);
   const pending = new Set(usable.map((e) => e.label));
   const t0 = Date.now();
@@ -638,13 +691,22 @@ async function runRound(roundLabel, usable, makePrompt, timeoutMs, onUpdate, onR
         expectKeys,
         providerArgs,
         commandBudget: e.name === 'codex' ? commandBudget : null,
+        isolate,
         onEvent: (ev) => onProviderEvent && onProviderEvent(e, ev),
       });
     };
     const results = await Promise.all(usable.map(async (e) => {
       const s = Date.now();
-      const deadlineMs = s + slotBudgetMs;
-      let res = await invoke(e, { deadlineMs });
+      const deadlineMs = slotDeadlines?.get(e.label) ?? (s + slotBudgetMs);
+      const initialRemainingMs = deadlineMs - Date.now();
+      if (initialRemainingMs <= 0) {
+        const res = { ok: false, error: 'slot wall-clock budget exhausted', raw: '', json: null, timedOut: true, timeoutReason: 'cap', spawns: 0 };
+        pending.delete(e.label);
+        if (onResult) onResult(e, res);
+        if (onUpdate) onUpdate({ event: 'model_done', label: e.label, ok: false, error: res.error, elapsed_s: 0 });
+        return [e.label, res];
+      }
+      let res = await invoke(e, { timeout: Math.min(timeoutMs, initialRemainingMs), maxTimeout: initialRemainingMs, deadlineMs });
       // Retry a signal-killed model ONCE (a fresh spawn nearly always survives) instead of
       // dropping it from the panel. One retry only — a second signal death is accepted as a
       // genuine failure, and deterministic failures (numeric exit) are never retried.
@@ -939,6 +1001,17 @@ async function cmdReview(pos, flags) {
   if (reviewOverride === undefined) return; // unreadable --review-prompt-file (error already logged)
   const lensTag = flags.lensTag || null;
   const reviewMode = reviewOverride != null; // → write under .xm/review/ (separate namespace)
+  const commandBudget = Number.isFinite(Number(cfg.command_budget)) && Number(cfg.command_budget) > 0
+    ? Math.floor(Number(cfg.command_budget))
+    : DEFAULT_REVIEW_COMMAND_BUDGET;
+  if (reviewMode) {
+    const scopeError = boundedReviewTargetError(target);
+    if (scopeError) {
+      console.error(`${C.red}✗ ${scopeError}${C.reset}`);
+      process.exitCode = 2;
+      return;
+    }
+  }
   // Token-level partial streaming: default on within --stream, but auto-disable on very
   // large targets (the extra delta events slow generation and can trip the timeout —
   // observed: a 1600-line diff timed out claude under partial). --partial forces it on;
@@ -960,12 +1033,12 @@ async function cmdReview(pos, flags) {
   const timeoutMs = timeoutS * 1000;
   const configuredMaxTimeoutS = Number(cfg.timeout_max_s);
   const configuredTimeoutMaxS = Number.isFinite(configuredMaxTimeoutS) && configuredMaxTimeoutS > 0 ? configuredMaxTimeoutS : 1200;
-  // Explicit --timeout pins the requested idle window and keeps its derived cap.
-  // Config timeout_max_s bounds only automatically raised runs.
-  const timeoutMaxS = flags.timeout != null
-    ? Math.max(timeoutS * 2, timeoutS + 120)
-    : configuredTimeoutMaxS;
+  // Idle and wall-clock limits are independent, but a configured/derived cap must
+  // never silently exceed the effective idle window for a bounded review.
+  const timeoutMaxS = Math.min(timeoutS, configuredTimeoutMaxS);
   const maxTimeoutMs = timeoutMaxS * 1000;
+  const reviewDeadlineStart = Date.now();
+  const reviewSlotDeadlines = new Map(usable.map((e) => [e.label, reviewDeadlineStart + maxTimeoutMs]));
   const run = runId(stamp());
   // Cross-vendor REVIEW runs go to a separate .xm/review/ namespace so they never
   // collide with native panel history under .xm/panel/.
@@ -1016,7 +1089,7 @@ async function cmdReview(pos, flags) {
       error: null,
       commands_used: 0,
       command_budget: e.name === 'codex'
-        ? (Number.isFinite(Number(cfg.command_budget)) && Number(cfg.command_budget) > 0 ? Number(cfg.command_budget) : 24)
+        ? commandBudget
         : null,
       contract_state: 'incomplete',
       attempt: 1,
@@ -1039,6 +1112,27 @@ async function cmdReview(pos, flags) {
     run, runKind: 'review', title: targetTitle(target), logPath: eventPath,
     enabled: flags.tmEvents != null ? flags.tmEvents : cfg.tm_events !== false,
   });
+  let interrupted = false;
+  let interruptKillTimer = null;
+  const interruptRun = () => {
+    if (interrupted) return;
+    interrupted = true;
+    terminateProviderChildren('SIGTERM');
+    interruptKillTimer = setTimeout(() => terminateProviderChildren('SIGKILL'), 500);
+    status.phase = 'interrupted';
+    status.models.forEach((m) => {
+      if (m.state === 'running' || m.state === 'pending') {
+        m.state = 'failed';
+        m.error = 'interrupted';
+        m.last_event = 'interrupted';
+      }
+    });
+    flushStatus({ force: true });
+    tmEvents.close();
+    process.exitCode = 130;
+  };
+  process.once('SIGINT', interruptRun);
+  process.once('SIGTERM', interruptRun);
   let lastStatusFlushMs = 0;
   const flushStatus = ({ force = false } = {}) => {
     const now = Date.now();
@@ -1047,6 +1141,23 @@ async function cmdReview(pos, flags) {
     status.updated_at = new Date().toISOString();
     try { writeJSON(join(dir, 'status.json'), status); } catch { /* best-effort */ }
     tmEvents.publishStatus(status);
+  };
+  const finishInterrupted = () => {
+    if (interruptKillTimer) clearTimeout(interruptKillTimer);
+    terminateProviderChildren('SIGKILL');
+    cleanupHandoffFile(agyHandoff);
+    status.phase = 'interrupted';
+    status.models.forEach((m) => {
+      m.state = 'failed';
+      m.error = 'interrupted';
+      m.last_event = 'interrupted';
+    });
+    writeEvent({ type: 'run_interrupted', phase: status.phase });
+    flushStatus({ force: true });
+    tmEvents.close();
+    process.removeListener('SIGINT', interruptRun);
+    process.removeListener('SIGTERM', interruptRun);
+    process.exitCode = 130;
   };
   const onModelDone = (ev) => {
     if (ev.event === 'model_done') {
@@ -1201,10 +1312,10 @@ async function cmdReview(pos, flags) {
   // its JSON, a one-line "Here is the JSON:" preamble ~tens, a full prose review
   // thousands (observed 3.9KB). 200 sits in the wide gap between those modes.
   const SUSPECT_PROSE_MIN = 200;
-  const r1PromptFull = reviewPrompt(target.text, reviewOverride, reviewContext);
-  const r1PromptInline = reviewPrompt(target.promptText, reviewOverride, reviewContext);
+  const r1PromptFull = reviewPrompt(target.text, reviewOverride, reviewContext, commandBudget);
+  const r1PromptInline = reviewPrompt(target.promptText, reviewOverride, reviewContext, commandBudget);
   // agy handoff (A): agy reads the full diff from a file instead of the inline (B-shrunk) copy.
-  const r1PromptAgy = agyHandoff ? reviewPrompt(agyHandoff.ref, reviewOverride, reviewContext) : null;
+  const r1PromptAgy = agyHandoff ? reviewPrompt(agyHandoff.ref, reviewOverride, reviewContext, commandBudget) : null;
   if (suppliedFindings) {
     // Persist it as an ordinary round-1 artifact so `status`, the dashboard, and any
     // verdict reader stay unaware that this round was never dispatched.
@@ -1240,7 +1351,8 @@ async function cmdReview(pos, flags) {
     const r1 = r1Status[e.label] ? r1Status[e.label].status : 'ok';
     writeJSON(join(dir, `${safeLabel(e.label)}.r1.json`), { model: e.label, ok: res.ok, error: res.error, r1_status: r1, findings, usage: res.usage || null, raw: res.raw });
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 1, ok: res.ok, r1_status: r1, count: findings.length, error: res.error || null });
-  }, onProviderEvent, stream, partial, ['findings'], maxTimeoutMs, Number(cfg.command_budget) > 0 ? Number(cfg.command_budget) : 24);
+    }, onProviderEvent, stream, partial, ['findings'], maxTimeoutMs, commandBudget, reviewMode, reviewSlotDeadlines);
+  if (interrupted) { finishInterrupted(); return; }
 
   const round2 = {};
   const abstained = new Set();
@@ -1264,7 +1376,7 @@ async function cmdReview(pos, flags) {
     const otherLabel = others.map(o => o.label).join('+');
     // Only ground vendors that can actually read the repo (codex today); the rest
     // judge from the finding text as before. e.name is the vendor (label may be name:model).
-    const g = grounded && groundCapable(e.name);
+    const g = grounded && !reviewMode && groundCapable(e.name);
     // agy handoff (A): agy has no session, so round 2 re-sends the target — point it at the
     // file again (not the inline diff) so a large diff doesn't truncate the refute prompt too.
     if (agyHandoff && e.name === 'agy') {
@@ -1301,7 +1413,7 @@ async function cmdReview(pos, flags) {
     round2[e.label] = verdicts;
     writeJSON(join(dir, `${safeLabel(e.label)}.r2.json`), { model: e.label, ok: res.ok, error: res.error, resume, verdicts, usage: res.usage || null, raw: res.raw });
     writeEvent({ type: 'round_file_written', phase: status.phase, model: e.label, round: 2, ok: res.ok, resume, count: verdicts.length, error: res.error || null });
-    }, onProviderEvent, stream, partial, ['verdicts'], maxTimeoutMs, Number(cfg.command_budget) > 0 ? Number(cfg.command_budget) : 24);
+    }, onProviderEvent, stream, partial, ['verdicts'], maxTimeoutMs, commandBudget, reviewMode, reviewSlotDeadlines);
     if (usable.every((e) => abstained.has(e.label))) {
       coverageFailed = true;
       coverageFailurePhase = 'round2';
@@ -1309,6 +1421,7 @@ async function cmdReview(pos, flags) {
       writeEvent({ type: 'coverage_failed', phase: status.phase, failed: usable.length, total: usable.length });
     }
   }
+  if (interrupted) { finishInterrupted(); return; }
 
   // Both rounds have read the diff — drop the agy handoff input file so no unredacted full
   // diff persists on disk / replicates via x-sync (results live in separate files).
@@ -1316,7 +1429,7 @@ async function cmdReview(pos, flags) {
 
   // Only models actually sent the grounded prompt may contribute grounding provenance (t8):
   // labels that are grounded-capable in a grounded run. synth trusts `verified` only from these.
-  const groundedSet = new Set(grounded ? labels.filter((l) => groundCapable(String(l).split(':')[0])) : []);
+  const groundedSet = new Set(grounded && !reviewMode ? labels.filter((l) => groundCapable(String(l).split(':')[0])) : []);
   // SUPPLIED_OWNER must appear in `models` for synthesize to walk its findings. It needs no
   // abstained entry: synthesize excludes an owner from its own opponent list, and no real model
   // authored findings this round, so it can never be counted among a finding's reviewers.
@@ -1388,6 +1501,8 @@ async function cmdReview(pos, flags) {
   writeEvent({ type: 'run_done', phase: status.phase, counts: verdict.counts });
   flushStatus({ force: true });
   tmEvents.close();
+  process.removeListener('SIGINT', interruptRun);
+  process.removeListener('SIGTERM', interruptRun);
 
   if (flags.json) console.log(JSON.stringify(record, null, 2));
   // Pass the full record (superset of verdict: adds grounded/grounded_models) so the
@@ -1512,6 +1627,24 @@ async function cmdCross(pos, flags) {
     try { writeJSON(join(dir, 'status.json'), status); } catch { /* best-effort */ }
     tmEvents.publishStatus(status);
   };
+  let crossInterrupted = false;
+  let crossInterruptKillTimer = null;
+  const interruptCross = () => {
+    if (crossInterrupted) return;
+    crossInterrupted = true;
+    terminateProviderChildren('SIGTERM');
+    crossInterruptKillTimer = setTimeout(() => terminateProviderChildren('SIGKILL'), 500);
+    status.phase = 'interrupted';
+    status.models.forEach((m) => {
+      if (m.state === 'running') { m.state = 'failed'; m.error = 'interrupted'; m.last_event = 'interrupted'; }
+    });
+    writeEvent({ type: 'run_interrupted', phase: status.phase });
+    flushStatus({ force: true });
+    tmEvents.close();
+    process.exitCode = 130;
+  };
+  process.once('SIGINT', interruptCross);
+  process.once('SIGTERM', interruptCross);
   const t0 = Date.now();
   const hb = setInterval(() => {
     const el = Math.round((Date.now() - t0) / 1000);
@@ -1575,7 +1708,7 @@ async function cmdCross(pos, flags) {
       // (set by invokeProviderText's idle/cap guard), so we gate on the FLAG — never a substring of
       // the error text, which used to over-match exit-0-empty/exit-N messages that merely mention
       // "timeout" (e.g. `exit 0 but empty output: ...timed out...`). Retries are surfaced (L6).
-      if (!res.ok && !res.timedOut && !res.nonRetryable) {
+      if (!crossInterrupted && !res.ok && !res.timedOut && !res.nonRetryable) {
         console.error(`${C.yellow}⚠ ${e.label} failed (${res.error}) — retrying once${C.reset}`);
         writeEvent({ type: 'lifecycle', phase: status.phase, model: e.label, provider: e.name, note: `failed (${res.error}) — retrying once`, error: res.error });
         m.retried = true;
@@ -1587,10 +1720,10 @@ async function cmdCross(pos, flags) {
         else res = { ...res, error: `${res.error} (retried once, still failed: ${retry.error})` };
       }
       m.state = res.ok ? 'done' : 'failed';
-      m.error = res.ok ? null : (res.error || m.error);
+      m.error = crossInterrupted ? 'interrupted' : (res.ok ? null : (res.error || m.error));
       m.elapsed_s = Math.round((Date.now() - t0) / 1000);
       m.updated_at = nowISO();
-      m.last_event = res.ok ? 'done' : 'failed';
+      m.last_event = crossInterrupted ? 'interrupted' : (res.ok ? 'done' : 'failed');
       writeEvent({ type: 'model_done', model: e.label, ok: res.ok, elapsed_s: m.elapsed_s, error: res.ok ? null : (res.error || null) });
       flushStatus({ force: true });
       const rec = { model: e.label, provider: e.name, ok: res.ok, output: res.output || '', error: res.error || null };
@@ -1603,10 +1736,19 @@ async function cmdCross(pos, flags) {
     // persists on disk / replicates via x-sync. In finally so a mid-run throw still cleans up.
     cleanupHandoffFile(agyCrossHandoff);
   }
+  if (crossInterrupted) {
+    if (crossInterruptKillTimer) clearTimeout(crossInterruptKillTimer);
+    terminateProviderChildren('SIGKILL');
+    process.removeListener('SIGINT', interruptCross);
+    process.removeListener('SIGTERM', interruptCross);
+    return;
+  }
   status.phase = 'done';
   writeEvent({ type: 'run_done', phase: status.phase, ok: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length });
   flushStatus({ force: true });
   tmEvents.close();
+  process.removeListener('SIGINT', interruptCross);
+  process.removeListener('SIGTERM', interruptCross);
   const record = { run, created_at: new Date().toISOString(), source, title, models: usable.map((e) => e.label), skipped_providers: skippedProviders, prompt_chars: prompt.length, results };
   writeJSON(join(dir, 'result.json'), record);
   if (flags.json) console.log(JSON.stringify(record, null, 2));
@@ -1837,22 +1979,29 @@ async function cmdPreflight(pos, flags) {
       return { ...base, model: e.model, ok: false, status: 'not_installed', ms: 0, detail: 'CLI not on PATH' };
     }
     const hit = cacheEntries[e.label];
-    if (hit && hit.ok && Date.now() - hit.at_ms < ttlS * 1000) {
+    if (hit && hit.ok && hit.contract === 'findings-v1' && Date.now() - hit.at_ms < ttlS * 1000) {
       const age = Math.round((Date.now() - hit.at_ms) / 1000);
       return { ...base, model: hit.model || e.model, ok: true, status: 'ok', ms: 0, cached: true, detail: `cached ${age}s ago (--fresh to re-probe)` };
     }
     const t0 = Date.now();
     let res;
     try {
-      res = await probeProvider(e.name, { model: e.model, timeout: timeoutMs });
+      // Exercise the same bounded-scope instruction and final contract as an injected
+      // x-review lens without making preflight depend on a repository checkout.
+      const prompt = reviewPrompt(
+        'diff --git a/preflight.js b/preflight.js\n--- a/preflight.js\n+++ b/preflight.js\n@@ -1 +1 @@\n-const value = 1;\n+const value = 2;',
+        'You are a code reviewer. Review this small change.',
+        null,
+        DEFAULT_REVIEW_COMMAND_BUDGET,
+      );
+      res = await probeProvider(e.name, { model: e.model, timeout: timeoutMs, prompt, expectKeys: ['findings'], commandBudget: DEFAULT_REVIEW_COMMAND_BUDGET });
     } catch (err) {
       return { ...base, model: e.model, ok: false, status: 'error', ms: Date.now() - t0, detail: String(err?.message || err).slice(0, 90) };
     }
     const ms = Date.now() - t0;
     const model = res.model || e.model || null;
-    const out = (res.text || '').replace(/\s+/g, ' ').trim();
-    const ok = !!(res.ok && out.length > 0);
-    if (ok) return { ...base, model, ok, status: 'ok', ms, detail: out.slice(0, 40) };
+    const ok = !!(res.ok && res.json && Array.isArray(res.json.findings));
+    if (ok) return { ...base, model, ok, status: 'ok', ms, detail: 'findings JSON contract OK' };
     const blob = `${res.error || ''} ${res.text || ''}`;
     const status = res.timedOut || /timeout|timed out/i.test(blob) ? 'timeout'
       : /auth|login|unauthor|forbidden|sign.?in|\b401\b|\b403\b/i.test(blob) ? 'auth'
@@ -1873,7 +2022,7 @@ async function cmdPreflight(pos, flags) {
 
   const isTTY = !!process.stdout.isTTY && !flags.json;
   const results = new Array(entries.length);
-  if (!flags.json) console.log(`${C.bold}x-panel preflight${C.reset} — live model check (one tiny real call per model)\n`);
+  if (!flags.json) console.log(`${C.bold}x-panel preflight${C.reset} — bounded diff + findings JSON contract check\n`);
 
   // truncateVisible (module scope) keeps each provider on exactly one physical terminal row;
   // the cursor-up overwrite scheme below desyncs into duplicate lines if a row ever wraps.
@@ -1908,7 +2057,7 @@ async function cmdPreflight(pos, flags) {
   if (ttlS > 0) {
     const now = Date.now();
     const entries = Object.fromEntries(Object.entries(cacheEntries).filter(([, v]) => v && v.at_ms && now - v.at_ms < 7 * 86400_000));
-    for (const r of results) if (r && r.ok && !r.cached) entries[r.label] = { ok: true, model: r.model || null, at_ms: now };
+    for (const r of results) if (r && r.ok && !r.cached) entries[r.label] = { ok: true, model: r.model || null, contract: 'findings-v1', at_ms: now };
     try { ensureDir(PANEL_DIR); writeJSON(cachePath, { schema: 1, entries }); } catch { /* best-effort */ }
   }
 
@@ -1962,8 +2111,9 @@ Commands:
     --timeout SECONDS           Per-model idle timeout (default 600; config: panel.timeout_s).
                                 Resets on stdout activity (a working model keeps going); a model
                                 silent this long is killed as stalled. Auto-raised for large
-                                targets. The absolute wall-clock cap is
-                                panel.timeout_max_s (default 1200), including retries.
+                                targets. The separate absolute wall-clock cap uses the same
+                                effective timeout and includes retries; panel.timeout_max_s
+                                (default 1200) can lower that cap.
     --stream | --no-stream      Structured streaming: live token/cost per model (claude/cursor/codex).
                                 Opt-in (default off; config: panel.stream). kiro/agy stay raw.
     --tm-events | --no-tm-events  Live xk_run telemetry to a term-mesh daemon when one is detected
@@ -2114,6 +2264,9 @@ function readJSONSafe(p) { try { return JSON.parse(readFileSync(p, 'utf8')); } c
 
 const STATUS_STALE_MS = 30_000;       // review + cross flush status.json ~every 2s → 30s = dead
 const CROSS_STALE_MS = 15 * 60_000;   // LEGACY cross runs only (pre-heartbeat, no status.json): mtime guess
+// User interruption is terminal immediately; status/watch must not wait for
+// staleness or a verdict/result artifact before returning done=true.
+const TERMINAL_REVIEW_PHASES = new Set(['done', 'interrupted']);
 
 // Human-readable age of an ISO timestamp ("12s" / "35m" / "6h" / "2d"), or null if unparseable.
 function statusAge(iso) {
@@ -2141,7 +2294,8 @@ function statusRunRow(entry) {
   if (entry.kind === 'cross') {
     const res = readJSONSafe(join(entry.dir, 'result.json'));
     const st = readJSONSafe(join(entry.dir, 'status.json'));
-    const done = !!res || !!(st && st.phase === 'done');
+    // An interrupted cross run is complete even though it intentionally has no result.json.
+    const done = !!res || !!(st && TERMINAL_REVIEW_PHASES.has(st.phase));
     let models;
     if (res && res.results) models = res.results.map((v) => ({ label: v.model, state: v.ok === false ? 'failed' : 'done', error: v.error || null }));
     else if (res) models = (res.models || []).map((l) => ({ label: l, state: 'done' }));
@@ -2170,11 +2324,13 @@ function statusRunRow(entry) {
     }
     return { kind: 'cross', run: entry.run, source: (res && res.source) || (st && st.source) || 'cross',
       title: (res && res.title) || (st && st.title) || null,
-      phase: done ? 'done' : live ? 'running' : 'stalled', live, stale: !done && !live, age,
+      // Preserve the terminal reason in machine-readable status output instead
+      // of collapsing every terminal state to the generic "done" phase.
+      phase: st?.phase === 'interrupted' ? 'interrupted' : done ? 'done' : live ? 'running' : 'stalled', live, stale: !done && !live, age,
       phaseRaw: st ? st.phase : null, models };
   }
   const st = readJSONSafe(join(entry.dir, 'status.json'));
-  const done = (st && st.phase === 'done') || existsSync(join(entry.dir, 'verdict.json'));
+  const done = (st && TERMINAL_REVIEW_PHASES.has(st.phase)) || existsSync(join(entry.dir, 'verdict.json'));
   const t = st && Date.parse(st.updated_at || '');
   const live = !done && Number.isFinite(t) && (Date.now() - t) < STATUS_STALE_MS;
   const stale = !done && !live && !!st;
@@ -2731,14 +2887,15 @@ function watchRunSnapshot(runArg, linesN = 0) {
   if (resolved && resolved.kind === 'review') {
     const reviewDir = resolved.dir;
     const st = readJSONSafe(join(reviewDir, 'status.json'));
-    const done = (st && st.phase === 'done') || existsSync(join(reviewDir, 'verdict.json'));
+    const done = (st && TERMINAL_REVIEW_PHASES.has(st.phase)) || existsSync(join(reviewDir, 'verdict.json'));
     const t = st && Date.parse(st.updated_at || '');
     // no status.json yet ≠ stalled — the run may not have flushed its first status; keep waiting.
     const stale = !done && !!st && !(Number.isFinite(t) && (Date.now() - t) < STATUS_STALE_MS);
     const models = ((st && st.models) || []).map((m) => watchModelJSON(m, linesN, st));
+    const terminalPhase = st && TERMINAL_REVIEW_PHASES.has(st.phase) ? st.phase : null;
     return {
       at, run: runArg, kind: 'review', found: true,
-      phase: done ? 'done' : stale ? 'stalled' : (st ? st.phase : 'starting'), done, stale,
+      phase: done ? (terminalPhase || 'done') : stale ? 'stalled' : (st ? st.phase : 'starting'), done, stale,
       progress: { done: models.filter((m) => m.state === 'done' || m.state === 'failed').length, total: models.length },
       totals: (st && st.totals) || null,
       models,
@@ -2750,7 +2907,7 @@ function watchRunSnapshot(runArg, linesN = 0) {
     const models = (row.models || []).map((m) => watchModelJSON(m, linesN)); // tails exist while the heartbeat status.json is live
     return {
       at, run: runArg, kind: 'cross', found: true,
-      phase: row.phase, done: row.phase === 'done', stale: !!row.stale,
+      phase: row.phaseRaw === 'interrupted' ? 'interrupted' : row.phase, done: TERMINAL_REVIEW_PHASES.has(row.phase), stale: !!row.stale,
       progress: { done: models.filter((m) => m.state === 'done' || m.state === 'failed').length, total: models.length },
       totals: null,
       models,
@@ -3269,7 +3426,10 @@ function renderStatusOnce(pos, flags) {
     if (flags.json) {
       if (res) { console.log(JSON.stringify(res, null, 2)); return; }
       const results = readdirSync(dir).filter((f) => f.endsWith('.json') && f !== 'result.json' && f !== 'status.json').map((f) => readJSONSafe(join(dir, f))).filter(Boolean);
-      console.log(JSON.stringify({ run: runArg, phase: stc ? stc.phase : 'running', status: stc, results }, null, 2));
+      const terminal = !!(stc && TERMINAL_REVIEW_PHASES.has(stc.phase));
+      const updated = stc && Date.parse(stc.updated_at || '');
+      const stale = !terminal && !!stc && !(Number.isFinite(updated) && (Date.now() - updated) < STATUS_STALE_MS);
+      console.log(JSON.stringify({ run: runArg, phase: stc ? stc.phase : 'running', done: terminal, stale, status: stc, results }, null, 2));
       return;
     }
     console.log(`${C.bold}${runArg}${C.reset}  ${C.cyan}cross/${(res && res.source) || (stc && stc.source) || 'cross'}${C.reset}  ${C.dim}[${res ? 'done' : 'running'}]${C.reset}  ${(res && res.title) || (stc && stc.title) || ''}`);
@@ -3293,11 +3453,11 @@ function renderStatusOnce(pos, flags) {
   }
 
   const st = readJSONSafe(join(dir, 'status.json'));
-  if (flags.json) { console.log(JSON.stringify({ status: st, done: existsSync(join(dir, 'verdict.json')) }, null, 2)); return; }
+  if (flags.json) { console.log(JSON.stringify({ status: st, done: !!(st && TERMINAL_REVIEW_PHASES.has(st.phase)) || existsSync(join(dir, 'verdict.json')) }, null, 2)); return; }
   if (!st) { console.log(`${runArg}: no status.json`); return; }
   // Same staleness rule as the list: a non-done run not touched within the window is a dead process,
   // so the per-model "running" states below are frozen-at-death, not live.
-  const detailDone = st.phase === 'done' || existsSync(join(dir, 'verdict.json'));
+  const detailDone = TERMINAL_REVIEW_PHASES.has(st.phase) || existsSync(join(dir, 'verdict.json'));
   const t = Date.parse(st.updated_at || '');
   const stale = !detailDone && !(Number.isFinite(t) && (Date.now() - t) < STATUS_STALE_MS);
   // Round progress (n/N done) so a live detail header answers "how far along" at a glance.

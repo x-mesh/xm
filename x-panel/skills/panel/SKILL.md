@@ -92,10 +92,12 @@ Readiness/auth is checked once per provider name; each distinct slot is still ex
   `--rounds 2`; `--grounded` still applies, so capable vendors verify each claim against the
   real file.
 - These flags are programmatic plumbing — interactive `/xm:panel` users don't need them.
-- Codex review slots enforce `panel.command_budget` (default `24`) using structured
+- Codex review slots enforce `panel.command_budget` (default `12`) using structured
   `command_execution` completion events. The watch board shows `commands used/budget`,
   `contract complete|incomplete`, `attempt`, and remaining wall-clock cap separately from raw
-  output freshness. Reaching the budget without a valid contract fails as `command_budget`.
+  output freshness. Injected bounded-review prompts require final JSON synthesis after half the
+  budget (`6` commands by default); reaching the full budget without a valid contract fails as
+  `command_budget`.
 - x-review provider recovery is limited to one strict-subset retry. If the failed artifact does
   not name an exact frozen target file, recovery stops as `Review incomplete` instead of sending
   the full target again.

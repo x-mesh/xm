@@ -367,6 +367,19 @@ describe('codex Plugin Skill — runtime overlays (t8)', () => {
     expect(overlay).toContain('task.model_by_vendor.codex');
   });
 
+  test('review overlay supplies complete spawn arguments and a structural-failure circuit breaker', () => {
+    const reviewPrompt = loadPrompt('review');
+    expect(reviewPrompt).toContain('## Codex Review Fan-Out Contract');
+    expect(reviewPrompt).toContain("call Codex's native spawn_agent collaboration tool directly");
+    expect(reviewPrompt).toContain('\"task_name\": \"review_correctness\"');
+    expect(reviewPrompt).toContain('\"fork_turns\": \"all\"');
+    expect(reviewPrompt).toContain('\"message\":');
+    expect(reviewPrompt).toContain('one parallel batch');
+    expect(reviewPrompt).toContain('do not retry spawn_agent');
+    expect(reviewPrompt).toContain("immediately use the source skill's single-pass-headless path");
+    expect(reviewPrompt).toContain('Never call wait_agent with zero known live workers');
+  });
+
   test('overlay treats x-build JSON routing fields as authoritative across plan/research/consensus/execute', () => {
     const overlay = overlayOf(buildPrompt);
     expect(overlay).toContain('prd_writer.model_by_vendor.codex');

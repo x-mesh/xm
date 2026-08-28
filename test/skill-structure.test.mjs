@@ -22,8 +22,28 @@ describe('x-review headless execution boundary', () => {
   test('degrades delegated headless runs instead of waiting forever', () => {
     expect(skill).toContain('Execution Boundary — Headless / Delegated Runtimes');
     expect(skill).toContain('single-pass-headless');
+    expect(skill).toContain('exactly one spawn batch');
+    expect(skill).toContain('returns no worker ids');
+    expect(skill).toContain('Do not retry spawn');
+    expect(skill).toContain('at least one successfully created worker is still live');
     expect(skill).toContain('no worker update three consecutive times');
     expect(skill).toContain('never wait indefinitely');
+  });
+
+  test('corrects invalid test-runner argument shapes at most once', () => {
+    expect(skill).toContain('Use one shared filter or separate commands');
+    expect(skill).toContain('An argument/usage error permits one corrected');
+    expect(skill).toContain('command, not repetition of the invalid shape');
+  });
+});
+
+describe('x-review bounded panel execution', () => {
+  const skill = readSkill('x-review');
+
+  test('chunks frozen panel targets to at most three files', () => {
+    expect(skill).toContain('--chunk-file-budget 3');
+    expect(skill).toContain('at most 3 frozen diff files');
+    expect(skill).toContain('forbid repository search or opening files');
   });
 });
 

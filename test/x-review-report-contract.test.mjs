@@ -590,6 +590,16 @@ describe('x-review lens report coverage contract', () => {
     expect(plan.expected_reports).toHaveLength(plan.profiles.length * 2);
   });
 
+  test('honors a three-file budget for bounded panel dispatch', () => {
+    const target = Array.from({ length: 7 }, (_, index) => [
+      `diff --git a/src/${index}.js b/src/${index}.js`, `+++ b/src/${index}.js`, '+export default true;',
+    ].join('\n')).join('\n');
+    const plan = planReview(target, { chunkFileBudget: 3 });
+    expect(plan.chunk_file_budget).toBe(3);
+    expect(plan.chunks.map((chunk) => chunk.files.length)).toEqual([3, 3, 1]);
+    expect(plan.chunks.every((chunk) => chunk.files.length <= 3)).toBe(true);
+  });
+
   test('chunks a large target by file within the token budget and expands profile coverage', () => {
     const section = (file, value) => [
       `diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, '@@ -1 +1 @@', '-old', `+${value.repeat(2200)}`,

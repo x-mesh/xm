@@ -1503,7 +1503,58 @@ If there are no real issues, return {"findings":[]}.`;
     expect(sent).toContain('You are a SECURITY lens'); // override body injected
     expect(sent).not.toContain('You are a code reviewer.'); // default intro replaced
     expect(sent).toContain('Return ONLY a JSON object'); // contract footer FORCED despite "markdown list"
+    expect(sent).toContain('The TARGET below is the complete frozen review scope.');
+    expect(sent).toContain('Do not inspect, search, or open repository files outside it.');
+    expect(sent).toContain('Tool command budget: 12.');
+    expect(sent).toContain('If you have used 6 commands, stop all exploration immediately');
+    expect(sent).toContain('Do not spend command 7 searching.');
   });
+
+  test('injected review isolates every provider from the repository cwd', () => {
+    const cwdLog = join(DIR, 'review-cwd');
+    const r = review(['some diff', '--review-prompt', 'Find bugs.', '--rounds', '1'], { X_PANEL_CWD_LOG: cwdLog });
+    expect(r.status).toBe(0);
+    expect(readFileSync(`${cwdLog}.CLAUDE`, 'utf8')).not.toBe(DIR);
+    expect(readFileSync(`${cwdLog}.CODEX`, 'utf8')).not.toBe(DIR);
+  });
+
+  test('injected review stays frozen even when --grounded is requested', () => {
+    const r2 = join(DIR, 'review-grounded-r2');
+    const r = review(['some diff', '--review-prompt', 'Find bugs.', '--grounded'], { X_PANEL_DUMP_R2: r2 });
+    expect(r.status).toBe(0);
+    expect(readFileSync(`${r2}.CODEX`, 'utf8')).not.toContain('OPEN the cited file');
+    const reviewDir = join(DIR, '.xm', 'review');
+    const run = readdirSync(reviewDir).filter((name) => name.startsWith('panel-')).sort().at(-1);
+    const verdict = JSON.parse(readFileSync(join(reviewDir, run, 'verdict.json'), 'utf8'));
+    expect(verdict.grounded_models).toEqual([]);
+  });
+
+  test('injected review rejects a frozen target wider than 3 files before spawning providers', () => {
+    const target = Array.from({ length: 4 }, (_, i) =>
+      `diff --git a/src/f${i}.js b/src/f${i}.js\n--- a/src/f${i}.js\n+++ b/src/f${i}.js\n@@ -0,0 +1 @@\n+const value${i} = true;\n`
+    ).join('');
+    const dump = join(DIR, 'too-wide-r1');
+    const targetFile = join(DIR, 'too-wide.patch');
+    writeFileSync(targetFile, target);
+    const r = panelRaw(['review', targetFile, '--models', 'claude,codex', '--review-prompt', 'Find bugs.', '--json'], { X_PANEL_DUMP_R1: dump });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('split the frozen diff into chunks of at most 3 files');
+    expect(existsSync(dump)).toBe(false);
+  });
+
+  test('injected review counts Git-quoted paths toward the 3-file limit', () => {
+    const target = Array.from({ length: 4 }, (_, i) =>
+      `diff --git \"a/src/file ${i}.js\" \"b/src/file ${i}.js\"\n--- \"a/src/file ${i}.js\"\n+++ \"b/src/file ${i}.js\"\n@@ -0,0 +1 @@\n+const value${i} = true;\n`
+    ).join('');
+    const dump = join(DIR, 'too-wide-quoted-r1');
+    const targetFile = join(DIR, 'too-wide-quoted.patch');
+    writeFileSync(targetFile, target);
+    const r = panelRaw(['review', targetFile, '--models', 'claude,codex', '--review-prompt', 'Find bugs.', '--json'], { X_PANEL_DUMP_R1: dump });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('split the frozen diff into chunks of at most 3 files');
+    expect(existsSync(dump)).toBe(false);
+  });
+
 
   test('--lens-tag flows to verdict findings and consensus lenses', () => {
     const r = review(['some diff', '--review-prompt', 'Find bugs.', '--lens-tag', 'logic']);
@@ -1744,6 +1795,42 @@ If there are no real issues, return {"findings":[]}.`;
     expect(cursor.ok).toBe(false);
     expect(r.stderr).not.toContain('retrying once'); // ← timeout did NOT trigger a retry
   });
+
+  test('cross: SIGINT terminates provider children and persists interrupted status', async () => {
+    const crossDir = join(DIR, '.xm', 'cross');
+    const before = new Set(existsSync(crossDir) ? readdirSync(crossDir) : []);
+    const child = spawn('node', [CLI, 'cross', '--models', 'codex', '--prompt', 'hang until interrupted', '--json'], {
+      cwd: DIR,
+      env: STUB_ENV({ X_PANEL_HANG_CODEX: '1' }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    try {
+      const runDir = await waitFor(() => {
+        if (!existsSync(crossDir)) return null;
+        const run = readdirSync(crossDir).filter((name) => name.startsWith('panel-') && !before.has(name)).sort().at(-1);
+        if (!run) return null;
+        const dir = join(crossDir, run);
+        const statusPath = join(dir, 'status.json');
+        if (!existsSync(statusPath)) return null;
+        const status = JSON.parse(readFileSync(statusPath, 'utf8'));
+        return status.models.some((model) => model.pid) ? dir : null;
+      }, 3000);
+      expect(runDir).toBeTruthy();
+
+      child.kill('SIGINT');
+      const code = await new Promise((resolve) => child.on('close', resolve));
+      expect(code).toBe(130);
+      const status = JSON.parse(readFileSync(join(runDir, 'status.json'), 'utf8'));
+      expect(status.phase).toBe('interrupted');
+      expect(status.models.every((model) => model.state === 'failed' && model.error === 'interrupted')).toBe(true);
+      const snapshot = panelRaw(['status', status.run, '--json']);
+      expect(JSON.parse(snapshot.stdout)).toMatchObject({ phase: 'interrupted', done: true, stale: false });
+      expect(existsSync(join(runDir, 'result.json'))).toBe(false);
+    } finally {
+      if (child.exitCode == null) child.kill('SIGKILL');
+    }
+  }, 10000);
 
   test('cross records --source + --title provenance in result.json', () => {
     const r = panelRaw(['cross', '--models', 'claude,codex', '--prompt', 'Argue the PRO side.',
@@ -2141,6 +2228,21 @@ describe('providerReady (auth gate — fixes agy false-negative)', () => {
 });
 
 describe('panel status (staleness + project scope + --all)', () => {
+  test('an interrupted review is terminal immediately instead of remaining live/running', () => {
+    const root = join(DIR, '.xm', 'panel', 'panel-interrupted');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'status.json'), JSON.stringify({
+      run: 'panel-interrupted', phase: 'interrupted', updated_at: new Date().toISOString(),
+      models: [{ label: 'codex', state: 'failed', error: 'interrupted' }],
+    }));
+    const r = panelRaw(['status', 'panel-interrupted', '--watch', '--json']);
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout.trim());
+    expect(out).toMatchObject({ phase: 'interrupted', done: true, stale: false });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+
   // Own temp .xm so seeded fixtures don't pollute the shared DIR (latestVerdict() reads the
   // alphabetically-last run there and would choke on a verdict-less fixture).
   let SDIR;
@@ -2737,6 +2839,7 @@ describe('panel status (staleness + project scope + --all)', () => {
     expect(st.models[0].stdout_bytes).toBeGreaterThan(0); // provider output was observed live
   });
 
+
   test('a live cross heartbeat appears on the watch board with per-model progress + tails', () => {
     const d = join(SDIR, '.xm', 'cross', 'panel-crosslive-fixture');
     mkdirSync(d, { recursive: true });
@@ -2980,7 +3083,7 @@ describe('review (stubbed models)', () => {
     expect(latestVerdict().partial).toBe(true);
   });
 
-  test('timeout auto-raises for large targets; --timeout pins it', () => {
+  test('timeout auto-raises for large targets; --timeout pins idle and equal wall-clock cap', () => {
     const r0 = review(['small t', '--stream']);
     expect(r0.status).toBe(0);
     expect(latestVerdict().timeout_s).toBe(600); // base, small target
@@ -2993,6 +3096,7 @@ describe('review (stubbed models)', () => {
     const r2 = review([big, '--stream', '--timeout', '120']);
     expect(r2.status).toBe(0);
     expect(latestVerdict().timeout_s).toBe(120); // explicit --timeout pins, no auto-raise
+    expect(latestVerdict().timeout_max_s).toBe(120);
   });
 
   test('timeout auto-raise is capped by panel.timeout_max_s', () => {
@@ -3024,6 +3128,39 @@ describe('review (stubbed models)', () => {
     expect(codex.contract_state).toBe('incomplete');
     expect(codex.error).toContain('command budget exhausted');
   });
+
+  test('Codex review defaults to 12 commands when panel.command_budget is unset', () => {
+    writeProjectConfig({});
+    const r = panelRaw(['review', 'default budget target', '--models', 'codex', '--rounds', '1', '--json'], {
+      X_PANEL_COMMANDS_THEN_HANG_CODEX: '13',
+    });
+    expect(r.status).toBe(1);
+    const st = JSON.parse(readFileSync(join(latestRunDir(), 'status.json'), 'utf8'));
+    const codex = st.models.find((m) => m.label === 'codex');
+    expect(codex.commands_used).toBe(12);
+    expect(codex.command_budget).toBe(12);
+    expect(codex.error).toContain('command budget exhausted (12/12)');
+  });
+
+  test('two review rounds share one wall-clock deadline per model', () => {
+    writeProjectConfig({ timeout_s: 10, timeout_max_s: 1 });
+    try {
+      const started = Date.now();
+      const r = panelRaw(['review', 'shared deadline target', '--models', 'codex', '--rounds', '2', '--json'], {
+        X_PANEL_DELAY_R1_CODEX_MS: '800',
+        X_PANEL_DELAY_R2_CODEX_MS: '800',
+        X_PANEL_HEARTBEAT_CODEX_MS: '100',
+      });
+      const elapsed = Date.now() - started;
+      expect(r.status).toBe(0);
+      expect(elapsed).toBeLessThan(1600);
+      const verdict = latestVerdict();
+      expect(verdict.timeout_max_s).toBe(1);
+      expect(verdict.by_model.codex.r2).not.toBe('ok');
+    } finally {
+      writeProjectConfig({});
+    }
+  }, 10000);
 
   test('a completed contract survives the wall-clock cap as partial', () => {
     writeProjectConfig({ timeout_s: 10, timeout_max_s: 1 });
@@ -3137,6 +3274,41 @@ describe('review (stubbed models)', () => {
 
       const code = await new Promise((resolve) => child.on('close', resolve));
       expect({ code, stdout, stderr }).toMatchObject({ code: 0 });
+    } finally {
+      if (child.exitCode == null) child.kill('SIGKILL');
+    }
+  }, 10000);
+
+  test('SIGINT terminates provider children and persists an interrupted terminal status', async () => {
+    const panelDir = join(DIR, '.xm', 'panel');
+    const before = new Set(existsSync(panelDir) ? readdirSync(panelDir) : []);
+    const child = spawn('node', [CLI, 'review', '--models', 'codex', '--rounds', '1',
+      'interrupt target long enough to start a bounded review'], {
+      cwd: DIR,
+      env: STUB_ENV({ X_PANEL_HANG_CODEX: '1' }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    try {
+      const runDir = await waitFor(() => {
+        if (!existsSync(panelDir)) return null;
+        const run = readdirSync(panelDir).filter((name) => name.startsWith('panel-') && !before.has(name)).sort().at(-1);
+        if (!run) return null;
+        const dir = join(panelDir, run);
+        const statusPath = join(dir, 'status.json');
+        if (!existsSync(statusPath)) return null;
+        const status = JSON.parse(readFileSync(statusPath, 'utf8'));
+        return status.models.some((model) => model.pid) ? dir : null;
+      }, 3000);
+      expect(runDir).toBeTruthy();
+
+      child.kill('SIGINT');
+      const code = await new Promise((resolve) => child.on('close', resolve));
+      expect(code).toBe(130);
+      const status = JSON.parse(readFileSync(join(runDir, 'status.json'), 'utf8'));
+      expect(status.phase).toBe('interrupted');
+      expect(status.models.every((model) => model.state === 'failed' && model.error === 'interrupted')).toBe(true);
+      expect(existsSync(join(runDir, 'verdict.json'))).toBe(false);
     } finally {
       if (child.exitCode == null) child.kill('SIGKILL');
     }
@@ -3434,8 +3606,8 @@ describe('parseModelIds (live model catalog)', () => {
   });
 });
 
-describe('preflight (live model check, stubbed)', () => {
-  test('returns on the first parsed OK sentinel without waiting for provider exit', () => {
+describe('preflight (bounded contract check, stubbed)', () => {
+  test('returns on the first parsed findings contract without waiting for provider exit', () => {
     const started = Date.now();
     const r = panelRaw(['preflight', '--models', 'claude', '--json'], {
       X_PANEL_CMD_CLAUDE: SLOW_PREFLIGHT_STUB,
@@ -3443,10 +3615,54 @@ describe('preflight (live model check, stubbed)', () => {
     const elapsed = Date.now() - started;
     expect(r.status).toBe(0);
     expect(JSON.parse(r.stdout).results[0]).toMatchObject({
-      ok: true, model: 'stub-preflight-model', detail: 'OK',
+      ok: true, model: 'stub-preflight-model', detail: 'findings JSON contract OK',
     });
     expect(elapsed).toBeLessThan(2500);
   });
+
+  test('probes the bounded frozen-diff instructions, not liveness alone', () => {
+    const dump = join(DIR, 'preflight-prompt.txt');
+    const r = panelRaw(['preflight', '--models', 'claude', '--fresh', '--json'], {
+      X_PANEL_DUMP_R1: dump,
+    });
+    expect(r.status).toBe(0);
+    const prompt = readFileSync(dump, 'utf8');
+    expect(prompt).toContain('diff --git a/preflight.js b/preflight.js');
+    expect(prompt).toContain('The TARGET below is the complete frozen review scope.');
+    expect(prompt).toContain('Do not inspect, search, or open repository files outside it.');
+    expect(prompt).toContain('Return ONLY a JSON object');
+  });
+
+  test('rejects a live model that does not complete the findings JSON contract', () => {
+    const r = panelRaw(['preflight', '--models', 'claude', '--fresh', '--json'], {
+      X_PANEL_NO_JSON_CLAUDE: '1',
+    });
+    const out = JSON.parse(r.stdout);
+    expect(r.status).toBe(1);
+    expect(out.results[0].ok).toBe(false);
+    expect(out.results[0].detail).toContain('no findings JSON');
+  });
+
+  test('rejects Markdown findings because preflight requires literal JSON', () => {
+    const r = panelRaw(['preflight', '--models', 'claude', '--fresh', '--json'], {
+      X_PANEL_MARKDOWN_FINDINGS_CLAUDE: '1',
+    });
+    const out = JSON.parse(r.stdout);
+    expect(r.status).toBe(1);
+    expect(out.results[0].ok).toBe(false);
+    expect(out.results[0].detail).toContain('no findings JSON');
+  });
+
+  test('Codex preflight enforces the 12-command budget', () => {
+    const r = panelRaw(['preflight', '--models', 'codex', '--fresh', '--json'], {
+      X_PANEL_COMMANDS_THEN_HANG_CODEX: '13',
+    });
+    const out = JSON.parse(r.stdout);
+    expect(r.status).toBe(1);
+    expect(out.results[0].ok).toBe(false);
+    expect(out.results[0].detail).toContain('command budget exhausted (12/12)');
+  });
+
 
   test('SIGKILLs a preflight child that ignores SIGTERM', () => {
     const pidFile = join(DIR, 'preflight-ignore-sigterm.pid');
@@ -3455,7 +3671,7 @@ describe('preflight (live model check, stubbed)', () => {
       X_PANEL_PREFLIGHT_PID_FILE: pidFile,
     });
     expect(r.status).toBe(0);
-    expect(JSON.parse(r.stdout).results[0]).toMatchObject({ ok: true, detail: 'OK' });
+    expect(JSON.parse(r.stdout).results[0]).toMatchObject({ ok: true, detail: 'findings JSON contract OK' });
     const pid = Number(readFileSync(pidFile, 'utf8'));
     const alive = spawnSync('sh', ['-c', `kill -0 ${pid} 2>/dev/null`]).status === 0;
     expect(alive).toBe(false);
@@ -3468,7 +3684,7 @@ describe('preflight (live model check, stubbed)', () => {
       X_PANEL_PREFLIGHT_GRANDCHILD_PID_FILE: pidFile,
     });
     expect(r.status).toBe(0);
-    expect(JSON.parse(r.stdout).results[0]).toMatchObject({ ok: true, detail: 'OK' });
+    expect(JSON.parse(r.stdout).results[0]).toMatchObject({ ok: true, detail: 'findings JSON contract OK' });
     const pid = Number(readFileSync(pidFile, 'utf8'));
     // An orphaned grandchild may briefly remain as a zombie until PID 1 reaps it.
     // That is already terminated; only a live/runnable state indicates a leak.
@@ -3539,6 +3755,12 @@ describe('promptSpawnOpts — claude prompt runs are cwd-isolated', () => {
   test('other vendors keep the caller cwd (no override)', () => {
     for (const name of ['codex', 'agy', 'cursor', 'kiro']) {
       expect(promptSpawnOpts(name)).toEqual({});
+    }
+  });
+
+  test('bounded review isolation gives every provider a neutral cwd', () => {
+    for (const name of ['claude', 'codex', 'agy', 'cursor', 'kiro']) {
+      expect(promptSpawnOpts(name, { isolate: true }).cwd).toBe(tmpdir());
     }
   });
 });

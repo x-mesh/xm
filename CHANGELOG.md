@@ -10,6 +10,25 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.21.10] - 2026-08-28
+
+### x-build 3.6.1 → 3.6.2
+
+- Let a freshly initialized LGTM review close a preceding review-fix lifecycle only after triage and lifecycle receipts are bound to the new review snapshot. Bound reviews retain their host-context evidence requirement (`x-build/lib/x-build/verify.mjs`).
+
+### x-panel 0.22.0 → 0.22.1
+
+- Restrict injected reviews to frozen chunks of at most three diff files, including quoted Git paths; forbid repository exploration and begin JSON findings synthesis at half of the 12-command budget.
+- Apply matching idle and wall-clock caps across both review rounds, enforce the same limits and strict JSON contract in preflight, and clean up provider process groups into a terminal `interrupted` state.
+
+### x-review 2.6.1 → 2.6.2
+
+- Require cross-vendor panel reviews to chunk targets to the bounded three-file contract and document the command-budget synthesis rule.
+
+### xm 2.21.9 → 2.21.10
+
+- Bundle the bounded panel review, native-provider cross-vendor configuration, Review-Fix Gate lifecycle receipt, synchronized skills, and regression coverage.
+
 ## [2.21.9] - 2026-08-28
 
 ### Fixed
@@ -211,7 +230,7 @@ bumps shipped in each marketplace release.
 
 ### x-panel 0.20.6 → 0.21.0
 
-- Bound Codex review exploration with a configurable completed-command budget (default 24). Raw and streaming providers now stop with typed `command_budget` before a reviewer can spend the full wall-clock cap without producing a valid contract (`x-panel/lib/x-panel/adapters.mjs`).
+- Bound Codex review exploration with a configurable completed-command budget (default 12). Raw and streaming providers stop with typed `command_budget` before a reviewer can spend the full wall-clock cap without producing a valid contract; bounded prompts begin final JSON synthesis after 6 commands (`x-panel/lib/x-panel/adapters.mjs`, `x-panel/lib/x-panel-cli.mjs`).
 - Distinguish semantic progress from byte activity. `panel watch` now reports command usage, valid-contract state, attempt number, provider freshness, idle deadline, and hard-cap remaining (`x-panel/lib/x-panel-cli.mjs`).
 
 ### x-review 2.3.5 → 2.4.0

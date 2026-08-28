@@ -63,8 +63,24 @@ Deterministic gates and human approval gates are workflow controls, not LLM-rout
 
 For phase continuation, exec-level flags and \`-m\`/\`-c\` must precede \`resume\`: \`codex exec [flags] -m <model> resume --last\`.`;
 
+const CODEX_REVIEW_OVERLAY = `## Codex Review Fan-Out Contract
+
+For the current-runtime review backend, call Codex's native spawn_agent collaboration tool directly; never call it from inside functions.exec. Every call must carry a non-empty argument object. A minimal lens spawn is:
+
+    {
+      "task_name": "review_correctness",
+      "fork_turns": "all",
+      "message": "You are the correctness leaf reviewer. Apply the supplied lens contract to the frozen target and return only the required report."
+    }
+
+Build every planned lens call completely, then submit them in one parallel batch. The batch is the only fan-out initiation attempt for that review run. A spawn succeeds only when it returns a worker id. If any call returns an argument parse/schema error, or the batch creates zero workers, do not retry spawn_agent; record the diagnostic and immediately use the source skill's single-pass-headless path. If only some calls create workers, interrupt those workers before falling back; if interruption fails, return Review incomplete. Never call wait_agent with zero known live workers. Transport failures after a worker id exists remain governed by artifact-first recovery.`;
+
 function isCodexBuildSkill(skill) {
   return skill.skillName === 'build';
+}
+
+function isCodexReviewSkill(skill) {
+  return skill.skillName === 'review';
 }
 
 /**
@@ -102,6 +118,7 @@ export function renderCodexSkill(skill, ctx, name = skill.skillName) {
   let body = expandPaths(skill.body, { target: 'codex', scope: ctx.scope });
   body = body.trimEnd() + '\n\n' + renderCodexSkillOverlay(skill);
   if (isCodexBuildSkill(skill)) body += '\n\n' + CODEX_BUILD_OVERLAY;
+  if (isCodexReviewSkill(skill)) body += '\n\n' + CODEX_REVIEW_OVERLAY;
   return head + body.trimEnd() + '\n';
 }
 
