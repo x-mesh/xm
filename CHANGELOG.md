@@ -10,6 +10,17 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.21.9] - 2026-08-28
+
+### x-review 2.6.0 → 2.6.1
+
+- Report unsupported planner options, missing values, and invalid numeric bounds with actionable diagnostics instead of a generic usage line. Common mistakes now point to `--max-profiles`, `--filtered-target`, and `--chunks-dir` (`x-review/skills/review/scripts/plan-review.mjs`).
+- Add CLI contract coverage for `--run-dir`, `--agent-max-count`, `--json`, missing `--target`, missing option values, and invalid profile counts (`test/x-review-report-contract.test.mjs`).
+
+### xm 2.21.8 → 2.21.9
+
+- Bundle the updated x-review planner and synchronized skill checksum registry for installed users.
+
 ## [2.21.8] - 2026-08-27
 
 ### x-build 3.6.0 → 3.6.1
