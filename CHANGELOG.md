@@ -12,6 +12,12 @@ bumps shipped in each marketplace release.
 
 ## [2.21.9] - 2026-08-28
 
+### Fixed
+
+- **review:** improve planner CLI diagnostics
+
+## [2.21.9] - 2026-08-28
+
 ### x-review 2.6.0 → 2.6.1
 
 - Report unsupported planner options, missing values, and invalid numeric bounds with actionable diagnostics instead of a generic usage line. Common mistakes now point to `--max-profiles`, `--filtered-target`, and `--chunks-dir` (`x-review/skills/review/scripts/plan-review.mjs`).
