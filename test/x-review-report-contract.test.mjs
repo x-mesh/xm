@@ -102,6 +102,42 @@ describe('x-review context contract', () => {
 });
 
 describe('x-review adaptive-fast planner', () => {
+  test('planner CLI reports actionable argument errors', () => {
+    const cases = [
+      {
+        args: ['--target', 'target.patch', '--run-dir', 'run'],
+        error: 'unknown option: --run-dir; use --filtered-target and --chunks-dir to select output paths',
+      },
+      {
+        args: ['--target', 'target.patch', '--agent-max-count', '3'],
+        error: 'unknown option: --agent-max-count; did you mean --max-profiles?',
+      },
+      {
+        args: ['--target', 'target.patch', '--json'],
+        error: 'unknown option: --json; the command already writes JSON to stdout',
+      },
+      {
+        args: ['--target-file', 'target.patch'],
+        error: 'missing required option: --target; use --target for the frozen content file (--target-file only labels source paths)',
+      },
+      {
+        args: ['--target'],
+        error: 'option requires a value: --target',
+      },
+      {
+        args: ['--target', 'target.patch', '--max-profiles', '1'],
+        error: '--max-profiles must be an integer between 2 and 5',
+      },
+    ];
+
+    for (const entry of cases) {
+      const run = spawnSync('node', [PLAN_CLI, ...entry.args], { encoding: 'utf8' });
+      expect(run.status).toBe(2);
+      expect(run.stderr).toContain(`plan-review: ${entry.error}`);
+      expect(run.stderr).toContain('Usage: node plan-review.mjs');
+    }
+  });
+
   test('returns a no-changes plan without dispatching reviewers for an empty target', () => {
     expect(planReview('')).toEqual(expect.objectContaining({
       mode: 'no-changes',

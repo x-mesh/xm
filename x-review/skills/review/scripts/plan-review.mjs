@@ -378,17 +378,38 @@ function usage() {
   return 'Usage: node plan-review.mjs --target <content-file> [--target-file <path> ...] [--max-profiles <2-5>] [--chunk-token-budget <tokens>] [--chunk-file-budget <files>] [--config <path>] [--filtered-target <path>] [--chunks-dir <dir>]';
 }
 
+const CLI_OPTIONS = new Set([
+  '--target', '--target-file', '--max-profiles', '--chunk-token-budget',
+  '--chunk-file-budget', '--config', '--filtered-target', '--chunks-dir',
+]);
+
+function cliError(message) {
+  process.stderr.write(`plan-review: ${message}\n${usage()}\n`);
+  return 2;
+}
+
+function unsupportedOptionMessage(option) {
+  if (option === '--agent-max-count') return 'unknown option: --agent-max-count; did you mean --max-profiles?';
+  if (option === '--run-dir') return 'unknown option: --run-dir; use --filtered-target and --chunks-dir to select output paths';
+  if (option === '--json') return 'unknown option: --json; the command already writes JSON to stdout';
+  return `unknown option: ${option}`;
+}
+
 export function main(argv = process.argv.slice(2)) {
   const args = { targetFiles: [] };
   for (let i = 0; i < argv.length; i += 1) {
-    if (!['--target', '--target-file', '--max-profiles', '--chunk-token-budget', '--chunk-file-budget', '--config', '--filtered-target', '--chunks-dir'].includes(argv[i]) || !argv[i + 1]) {
-      process.stderr.write(`${usage()}\n`);
-      return 2;
-    }
+    if (!CLI_OPTIONS.has(argv[i])) return cliError(unsupportedOptionMessage(argv[i]));
+    if (!argv[i + 1] || argv[i + 1].startsWith('--')) return cliError(`option requires a value: ${argv[i]}`);
     const key = argv[i].slice(2);
     const value = argv[++i];
     if (key === 'target-file') args.targetFiles.push(value);
     else args[key] = value;
+  }
+  if (!args.target) {
+    const targetHint = args.targetFiles.length > 0
+      ? '; use --target for the frozen content file (--target-file only labels source paths)'
+      : '';
+    return cliError(`missing required option: --target${targetHint}`);
   }
   const maxProfiles = args['max-profiles'] === undefined ? 4 : Number(args['max-profiles']);
   const chunkTokenBudget = args['chunk-token-budget'] === undefined
@@ -397,11 +418,14 @@ export function main(argv = process.argv.slice(2)) {
   const chunkFileBudget = args['chunk-file-budget'] === undefined
     ? DEFAULT_CHUNK_FILE_BUDGET
     : Number(args['chunk-file-budget']);
-  if (!args.target || !Number.isInteger(maxProfiles) || maxProfiles < 2 || maxProfiles > 5
-    || !Number.isInteger(chunkTokenBudget) || chunkTokenBudget < 1_000
-    || !Number.isInteger(chunkFileBudget) || chunkFileBudget < 1) {
-    process.stderr.write(`${usage()}\n`);
-    return 2;
+  if (!Number.isInteger(maxProfiles) || maxProfiles < 2 || maxProfiles > 5) {
+    return cliError('--max-profiles must be an integer between 2 and 5');
+  }
+  if (!Number.isInteger(chunkTokenBudget) || chunkTokenBudget < 1_000) {
+    return cliError('--chunk-token-budget must be an integer of at least 1000');
+  }
+  if (!Number.isInteger(chunkFileBudget) || chunkFileBudget < 1) {
+    return cliError('--chunk-file-budget must be a positive integer');
   }
   try {
     const patch = readFileSync(resolve(args.target), 'utf8');
