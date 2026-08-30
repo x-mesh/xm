@@ -7,6 +7,21 @@
 
 set -euo pipefail
 
+# --- Global flags (must precede the subcommand) ---
+# `--market` (or XM_MARKET=1) pins this run to the Claude marketplace cache.
+# Without it there is no way to REACH that cache on a dev machine: resolve_lib's
+# source-repo check wins inside the repo and the Codex global bundle wins
+# outside it, so the cache is shadowed everywhere.
+FORCE_MARKET="${XM_MARKET:-0}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --market) FORCE_MARKET=1; shift ;;
+    *) break ;;
+  esac
+done
+# Nested xm calls (and node CLIs that shell out to xm) must inherit the pin.
+if [ "$FORCE_MARKET" = "1" ]; then export XM_MARKET=1; fi
+
 CMD="${1:-help}"
 [ $# -gt 0 ] && shift
 
@@ -31,6 +46,19 @@ self_register() {
 # --- Resolve lib root ---
 # Priority: $XM_LIB env (or legacy $X_KIT_LIB) > local repo (cwd has x-build/lib + xm/lib) > plugin cache
 resolve_lib() {
+  # --market / XM_MARKET=1 short-circuits the whole ladder: every dev-local root
+  # (XM_LIB override, source-repo cwd, Codex bundle) is skipped so the command
+  # binds to the marketplace cache and nothing else.
+  if [ "$FORCE_MARKET" = "1" ]; then
+    local forced="$HOME/.claude/plugins/cache/xm"
+    if [ ! -d "$forced" ]; then
+      forced="$HOME/.claude/plugins/cache/x-kit"   # legacy pre-rename cache
+    fi
+    if [ -d "$forced" ]; then
+      echo "$forced"
+    fi
+    return
+  fi
   local override="${XM_LIB:-${X_KIT_LIB:-}}"
   if [ -n "$override" ] && [ -d "$override" ]; then
     echo "$override"; return
@@ -59,7 +87,12 @@ resolve_lib() {
 
 LIB="$(resolve_lib)"
 if [ -z "$LIB" ]; then
-  echo "xm: no lib found. Re-run the xm installer, install Claude plugins, or set XM_LIB." >&2
+  if [ "$FORCE_MARKET" = "1" ]; then
+    echo "xm --market: no marketplace cache under ~/.claude/plugins/cache/xm." >&2
+    echo "  Install the xm plugin in Claude Code, or drop --market to run the local source." >&2
+  else
+    echo "xm: no lib found. Re-run the xm installer, install Claude plugins, or set XM_LIB." >&2
+  fi
   exit 1
 fi
 
@@ -1082,15 +1115,17 @@ case "$CMD" in
     #    that means commands keep running LOCAL SOURCE after a successful
     #    update ("update did nothing" confusion) — say so, loudly.
     OVERRIDE_LIB="${XM_LIB:-${X_KIT_LIB:-}}"
-    if [ -n "$OVERRIDE_LIB" ] && [ -d "$OVERRIDE_LIB" ]; then
+    if [ "$FORCE_MARKET" = "1" ]; then
+      :   # already pinned to the market install — nothing to warn about
+    elif [ -n "$OVERRIDE_LIB" ] && [ -d "$OVERRIDE_LIB" ]; then
       echo ""
       echo "⚠ XM_LIB override active: $OVERRIDE_LIB"
       echo "   xm commands keep running from that LOCAL SOURCE, not the market install ($REMOTE_VERSION)."
-      echo "   → unset XM_LIB (and X_KIT_LIB) to switch to the market install."
+      echo "   → unset XM_LIB (and X_KIT_LIB), or run 'xm --market <cmd>', to use the market install."
     elif [ -d "x-build/lib" ] && [ -d "xm/lib" ]; then
       echo ""
       echo "⚠ current directory is an xm source repo — xm commands run from ./ (local source), not the market install ($REMOTE_VERSION)."
-      echo "   → run xm outside this directory for the market install; keep cwd/XM_LIB for release-less local development."
+      echo "   → 'xm --market <cmd>' (or XM_MARKET=1) reaches the market install from anywhere; keep cwd/XM_LIB for release-less local development."
     fi
 
     echo ""
@@ -1102,7 +1137,11 @@ case "$CMD" in
     ;;
 
   which)
-    echo "lib: $LIB"
+    if [ "$FORCE_MARKET" = "1" ]; then
+      echo "lib: $LIB (--market: pinned to marketplace cache)"
+    else
+      echo "lib: $LIB"
+    fi
     for p in xm dashboard build memory trace eval sync solver; do
       resolved="$(plugin_lib "$p")"
       printf "  %-12s %s\n" "$p" "${resolved:-(missing)}"
@@ -1113,7 +1152,11 @@ case "$CMD" in
     cat <<'EOF'
 xm — x-mesh toolkit CLI
 
-Usage: xm <command> [args...]
+Usage: xm [--market] <command> [args...]
+
+Global flags:
+  --market                            Pin this run to the Claude marketplace cache
+                                      (ignores XM_LIB, source-repo cwd, Codex bundle)
 
 Commands:
   init <name>                         Start a project (.xm/projects/<name>) + register it
@@ -1154,6 +1197,7 @@ Commands:
 Env:
   XM_LIB       Override lib root (default: plugin cache or cwd)
   X_KIT_LIB    Legacy alias for XM_LIB (deprecated)
+  XM_MARKET    Set to 1 for the same effect as --market (inherited by nested calls)
   XM_REPO_URL  Override remote fetch base (default: raw.githubusercontent.com/x-mesh/xm/main)
 
 Run 'xm <command> --help' for subcommand details.

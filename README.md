@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.21.10-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.22.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -165,11 +165,14 @@ xm handon --log        # print the tier-2 detailed archive on demand
 xm build handoff --mirror-status   # inspect the mem-mesh mirror payload/status
 xm build handoff --mirror-skip     # dismiss a pending mirror (no mem-mesh setup)
 xm which               # show resolved lib paths
+xm --market <cmd>      # force the marketplace cache (ignores local source)
 xm version
 xm help
 ```
 
-The CLI dispatches to plugin libs in `~/.claude/plugins/cache/xm/`, the Codex-only bundle in `~/.codex/xm/`, or `$XM_LIB`. A Claude Code plugin installation is therefore not required on a Codex-only host. The `sync` subcommand reuses the bundled `x-sync` lib, so you do **not** need to run `x-sync/install.sh client` separately.
+The CLI dispatches to plugin libs in `~/.claude/plugins/cache/xm/`, the Codex-only bundle in `~/.codex/xm/`, or `$XM_LIB`. A Claude Code plugin installation is therefore not required on a Codex-only host.
+
+Resolution order is `$XM_LIB` → source-repo cwd → `~/.codex/xm/` → marketplace cache. On a machine that has a local checkout or a Codex bundle, the marketplace cache is shadowed everywhere, so `xm --market <cmd>` (or `XM_MARKET=1`) skips every dev-local root and pins the run to `~/.claude/plugins/cache/xm/`. Use it to reproduce what a plain user sees; `xm which` and `xm version` report which lib actually answered. The `sync` subcommand reuses the bundled `x-sync` lib, so you do **not** need to run `x-sync/install.sh client` separately.
 
 #### Project Registry (`xm project`)
 
