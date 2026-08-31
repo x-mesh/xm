@@ -17,6 +17,7 @@ import {
 import { prdBlockingFindings } from './plan.mjs';
 import { approvePlan, readPlanState, validatePlanApproval } from './plan-state.mjs';
 import { reviewGroupStatus, resolveReviewAction } from './build-policy.mjs';
+import { buildIdentity, recordEffectiveness, recordPhaseEffect } from './effectiveness.mjs';
 
 // ── cmdPhase ────────────────────────────────────────────────────────
 
@@ -49,12 +50,24 @@ export function cmdPhase(args) {
 function recordGateOutcome(project, phaseId, gateType, passed, passedBy) {
   const p = phaseStatusPath(project, phaseId);
   const status = readJSON(p) || {};
-  status.gate = { gate_type: gateType, passed, passed_by: passedBy, ts: new Date().toISOString() };
+  const now = new Date().toISOString();
+  if (!passed && requiresSignoff(gateType) && !status.gate_wait_started_at) status.gate_wait_started_at = now;
+  if (passed && status.gate_wait_started_at) {
+    const waited = Math.max(0, new Date(now) - new Date(status.gate_wait_started_at));
+    status.gate_wait_duration_ms = (status.gate_wait_duration_ms || 0) + waited;
+    status.gate_wait_started_at = null;
+  }
+  status.gate = { gate_type: gateType, passed, passed_by: passedBy, ts: now };
   writeJSON(p, status);
+  recordEffectiveness(project, 'gate_outcome', {
+    phase: PHASES.find(phase => phase.id === phaseId)?.name || phaseId,
+    gate_type: gateType, passed, passed_by: passedBy, blocking: !passed,
+  });
 }
 
 export function phaseNext(args) {
-  const project = resolveProject(args[0], { autoInit: true });
+  const { positional } = parseOptions(args);
+  const project = resolveProject(positional[0], { autoInit: true });
   const manifest = readJSON(manifestPath(project));
   const config = loadConfig();
   const currentIdx = PHASES.findIndex(p => p.id === manifest.current_phase);
@@ -70,7 +83,8 @@ export function phaseNext(args) {
   const gateType = gates[gateKey] || 'auto';
 
   if (currentPhase.name === 'plan' && !existsSync(prdPath(project))) {
-    console.error('⚠ PRD not generated yet. Run: /xm:build plan to generate PRD first.');
+    console.error('⚠ PRD not generated yet. Run: /xm:build legacy-plan to generate PRD first.');
+    process.exitCode = 2; // refused to advance — must not exit 0 (CI / gate consumers)
     return;
   }
 
@@ -102,6 +116,7 @@ export function phaseNext(args) {
       console.log(`   1. x-build discuss`);
       console.log(`   2. x-build research`);
       console.log(`   Then: x-build gate pass`);
+      process.exitCode = 2;
       return;
     }
     const validateResult = readJSON(join(phaseDir(project, '01-research'), 'discuss-validate.json'));
@@ -122,17 +137,20 @@ export function phaseNext(args) {
   if (currentPhase.name === 'plan') {
     const tasks = readJSON(tasksPath(project));
     if (!tasks?.tasks?.length) {
-      console.log(`⚠️  No tasks defined. Run: x-build plan "goal"`);
+      console.log(`⚠️  No tasks defined. Run: x-build legacy-plan "goal"`);
+      process.exitCode = 2;
       return;
     }
     const planCheck = readJSON(join(phaseDir(project, '02-plan'), 'plan-check.json'));
     if (!planCheck) {
       console.log(`⚠️  Plan not validated. Run: x-build plan-check`);
       if (requiresSignoff(gateType)) console.log(`   Then: x-build gate pass`);
+      process.exitCode = 2;
       return;
     }
     if (!planCheck.passed) {
       console.log(`⚠️  Plan check has errors. Fix them first.`);
+      process.exitCode = 2;
       return;
     }
     const approval = validatePlanApproval(project);
@@ -279,11 +297,19 @@ export function phaseNext(args) {
   emitHook('phase:post-enter', { project, phase: nextPhase.name, from: currentPhase.name });
 
   if (currentStatus.started_at) {
+    const durationMs = new Date(now) - new Date(currentStatus.started_at);
+    const openWaitMs = currentStatus.gate_wait_started_at
+      ? Math.max(0, new Date(now) - new Date(currentStatus.gate_wait_started_at)) : 0;
+    const humanWaitMs = (currentStatus.gate_wait_duration_ms || 0) + openWaitMs;
     appendCostEvent({
       type: 'phase_complete', project, phase: currentPhase.name,
-      duration_ms: new Date(now) - new Date(currentStatus.started_at),
+      ...buildIdentity(project),
+      duration_ms: durationMs, wall_clock_duration_ms: durationMs,
+      human_wait_duration_ms: humanWaitMs,
+      active_duration_ms: Math.max(0, durationMs - humanWaitMs),
       timestamp: now,
     });
+    recordPhaseEffect(project, currentPhase.id, currentPhase.name, durationMs, nextPhase.id);
   }
 
   console.log(`✅ ${currentPhase.label} → ${nextPhase.label}`);
@@ -354,7 +380,8 @@ function phaseSet(args) {
   const executeIdx = PHASES.findIndex(p => p.name === 'execute');
 
   if (targetIdx >= executeIdx && !existsSync(prdPath(project))) {
-    console.error('⚠ PRD not generated yet. Run: /xm:build plan to generate PRD first.');
+    console.error('⚠ PRD not generated yet. Run: /xm:build legacy-plan to generate PRD first.');
+    process.exitCode = 2; // refused to advance — must not exit 0 (CI / gate consumers)
     return;
   }
 
@@ -380,6 +407,7 @@ function phaseSet(args) {
       console.error(`⚠ PRD has ${blocking.length} unresolved blocking item(s) (PRD template Gate rule):`);
       for (const b of blocking) console.error(`   - ${b}`);
       console.error('   Resolve them, or override: x-build phase set execute --force');
+      process.exitCode = 2;
       return;
     }
   }

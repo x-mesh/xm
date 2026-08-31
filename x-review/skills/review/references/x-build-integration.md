@@ -15,9 +15,9 @@ x-build verify-review-fix --init
 # edit .xm/review/triage.json
 x-build verify-review-fix
 
-# Then apply only fix_now changes, run quality, and re-review
+# Then apply only fix_now changes, run quality, and re-review the fix delta once
 x-build quality
-/xm:review diff
+/xm:review diff <last-result.reviewed_commit>
 ```
 
 ## x-build Verdict-to-Gate Mapping
@@ -28,19 +28,32 @@ x-build quality
 | Request Changes | Run Review-Fix Gate, apply only triaged `fix_now` changes, then re-review |
 | Block | `x-build gate fail "Critical issues found"` — blocks phase next |
 
+## Bounded Convergence
+
+The initial run reviews the complete target. The Review-Fix Gate then permits one bounded fix pass
+and one automatic re-review of the delta since `.xm/review/last-result.json.reviewed_commit`; the
+original reviewed-file coverage and lifecycle byte receipts remain authoritative. Do not run a
+native x-panel review after x-review, and do not restart the full PR review after every fix.
+
+If that final re-review introduces a new Critical/High, stop and report it instead of opening
+another automatic edit/review round. Newly discovered Medium/Low findings go to `x-build later`
+unless they invalidate the current fix. Only an explicit user request may widen the scope or add
+another/full review round.
+
 ## Review-Fix Gate
 
 `x-build verify-review-fix` prevents the common LLM loop where review feedback turns into an unbounded second implementation pass.
 
 Required sequence:
 
-1. `x-build verify-review-fix --init` creates `.xm/review/triage.json` from `.xm/review/last-result.json` and records the current changed-file baseline.
+1. `x-build verify-review-fix --init` first verifies the complete `reviewed_files_all` SHA-256 snapshot, then creates `.xm/review/triage.json` and records the current changed-file baseline. Any target-byte change requires a new x-review.
 2. Triage every Medium+ finding:
    - `fix_now` for issues fixed in this loop
    - `backlog` for Medium/Low deferral only
    - `accept_risk` or `false_positive` only with evidence
 3. Keep `fix_scope.allowed_files` narrow. Add test files only when they verify a `fix_now` finding.
-4. Run `x-build verify-review-fix` before and after applying fixes.
+4. Run `x-build verify-review-fix` before applying fixes to authorize the exact triage. Only the authorized `fix_scope.allowed_files` may then differ from the reviewed snapshot. Editing triage invalidates the authorization and requires a fresh pre-fix gate.
+5. After a `fix_now` edit, reverify each finding with `x-build verify-review-fix --reverify <F#|finding_id> --outcome resolved|persistent|regression --evidence <text>`. The byte-bound lifecycle is `open → fix_authorized → fixed → reverified`; later file changes invalidate the receipt, and non-`resolved` outcomes block completion.
 5. Any new changed file outside `fix_scope.allowed_files` after the baseline fails the gate.
 6. Capture unrelated, non-blocking findings with `x-build later add` instead of editing them in the review-fix loop.
 
@@ -64,9 +77,7 @@ After review completion, findings can be auto-scored via x-eval:
 
 Recurring Critical/High findings are auto-saved to x-memory:
 ```
-x-memory save --type failure --title "SQL injection in auth module"
-  --why "x-review detected SQLi in 3 consecutive reviews"
-  --tags "security,auth,recurring"
+x-memory save "SQL injection in auth module" --type failure --why "x-review detected SQLi in 3 consecutive reviews" --tags "security,auth,recurring"
 ```
 
 Condition: Auto-suggested when Critical/High is found 2+ times at the same file/pattern.

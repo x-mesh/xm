@@ -38,6 +38,7 @@ function xm(args) {
 }
 
 const projectDir = (name) => join(sandbox, '.xm', 'build', 'projects', name);
+const projectSlug = (name) => name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
 const hookFile = () => join(home, '.claude', 'hooks', 'xm-trace-session.mjs');
 const registryFile = () => join(home, '.xm', 'projects.json');
 
@@ -85,13 +86,13 @@ describe('xm init — project route', () => {
   test('`xm init .` names the project after the current directory', () => {
     const r = xm(['init', '.']);
     expect(r.exitCode).toBe(0);
-    expect(existsSync(join(projectDir(basename(sandbox)), 'manifest.json'))).toBe(true);
+    expect(existsSync(join(projectDir(projectSlug(basename(sandbox))), 'manifest.json'))).toBe(true);
   });
 
   test('`xm init --here` behaves like `xm init .`', () => {
     const r = xm(['init', '--here']);
     expect(r.exitCode).toBe(0);
-    expect(existsSync(join(projectDir(basename(sandbox)), 'manifest.json'))).toBe(true);
+    expect(existsSync(join(projectDir(projectSlug(basename(sandbox))), 'manifest.json'))).toBe(true);
   });
 
   test('a duplicate name fails loudly instead of silently reusing', () => {
@@ -151,6 +152,62 @@ describe('xm setup — canonical global install', () => {
     expect(r.exitCode).toBe(0);
     expect(existsSync(hookFile())).toBe(false);
     expect(existsSync(join(home, '.claude', 'commands', 'xm.md'))).toBe(true);
+    expect(existsSync(join(home, '.claude', 'commands', 'xm-plan.md'))).toBe(true);
     expect(existsSync(join(home, '.local', 'bin', 'xm'))).toBe(true);
+  });
+
+  test('setup status and uninstall include the /xm-plan alias', () => {
+    xm(['setup']);
+    const status = xm(['setup', 'status']);
+    expect(status.exitCode).toBe(0);
+    expect(status.stdout).toContain('xm-plan alias');
+    expect(status.stdout).toContain(join(home, '.claude', 'commands', 'xm-plan.md'));
+    xm(['setup', 'uninstall']);
+    expect(existsSync(join(home, '.claude', 'commands', 'xm-plan.md'))).toBe(false);
+  });
+
+  test('setup preserves and uninstall restores a user-owned xm-plan command', () => {
+    const commands = join(home, '.claude', 'commands');
+    mkdirSync(commands, { recursive: true });
+    const alias = join(commands, 'xm-plan.md');
+    writeFileSync(alias, 'my custom plan command\n');
+    xm(['setup', '--no-hooks']);
+    expect(readFileSync(alias, 'utf8')).toContain('xm-managed:xm-plan');
+    expect(readFileSync(`${alias}.pre-xm`, 'utf8')).toBe('my custom plan command\n');
+    xm(['setup', 'uninstall']);
+    expect(readFileSync(alias, 'utf8')).toBe('my custom plan command\n');
+    expect(existsSync(`${alias}.pre-xm`)).toBe(false);
+  });
+
+  test('setup rotates a stale backup and restores the latest user-owned command', () => {
+    const commands = join(home, '.claude', 'commands');
+    mkdirSync(commands, { recursive: true });
+    const alias = join(commands, 'xm-plan.md');
+    writeFileSync(alias, 'latest custom command\n');
+    writeFileSync(`${alias}.pre-xm`, 'older custom command\n');
+    xm(['setup', '--no-hooks']);
+    expect(readFileSync(`${alias}.pre-xm`, 'utf8')).toBe('latest custom command\n');
+    expect(readFileSync(`${alias}.pre-xm.1`, 'utf8')).toBe('older custom command\n');
+    xm(['setup', 'uninstall']);
+    expect(readFileSync(alias, 'utf8')).toBe('latest custom command\n');
+  });
+
+  test('uninstall does not resurrect a stale backup when the managed alias is absent', () => {
+    const commands = join(home, '.claude', 'commands');
+    mkdirSync(commands, { recursive: true });
+    const alias = join(commands, 'xm-plan.md');
+    writeFileSync(`${alias}.pre-xm`, 'stale custom command\n');
+    xm(['setup', 'uninstall']);
+    expect(existsSync(alias)).toBe(false);
+    expect(readFileSync(`${alias}.pre-xm`, 'utf8')).toBe('stale custom command\n');
+  });
+
+  test('status rejects a user-owned xm-plan command as an installed alias', () => {
+    xm(['setup']);
+    const alias = join(home, '.claude', 'commands', 'xm-plan.md');
+    writeFileSync(alias, 'my custom plan command\n');
+    const status = xm(['setup', 'status']);
+    expect(status.exitCode).not.toBe(0);
+    expect(status.stdout).toContain('xm-plan alias    : (missing)');
   });
 });

@@ -14,13 +14,18 @@ import { cmdTasks, cmdTaskCheck, cmdSteps, cmdRun, cmdRunStatus, cmdReviewGroup,
 import { cmdLater } from './x-build/later.mjs';
 import { cmdHooks } from './x-build/hooks.mjs';
 import { cmdPlan, cmdPlanCheck, cmdPrdGate, cmdPrdCheck, cmdConsensus, cmdDiscuss, cmdResearch, cmdForecast, cmdCostPredict, cmdRoi, cmdNext, cmdHandoff, cmdSummarize, cmdSaveArtifact, cmdContextUsage, cmdResearchCheck } from './x-build/plan.mjs';
-import { cmdQuality, cmdVerifyCoverage, cmdVerifyTraceability, cmdVerifyContracts, cmdVerifyReviewFix, cmdVerifyDrift } from './x-build/verify.mjs';
+import { cmdQuality, cmdVerifyCoverage, cmdVerifyTraceability, cmdVerifyContracts, cmdVerifyReviewFix, cmdVerifyDrift, cmdReviewPrecision } from './x-build/verify.mjs';
 import { cmdExport, cmdImport } from './x-build/export.mjs';
 import { cmdAlias, cmdDemo, cmdWatch, cmdMetrics, cmdMode, cmdContext, cmdPhaseContext, cmdDecisions, cmdTemplates, printHelp } from './x-build/misc.mjs';
 import { cmdRelease } from './x-build/release.mjs';
 import { cmdGatePanel } from './x-build/gate-panel.mjs';
 import { cmdWorktrees, cmdReviewIntegration } from './x-build/worktrees.mjs';
 import { cmdCostCache } from './x-build/cost-cache.mjs';
+import { cmdEffectiveness } from './x-build/effectiveness.mjs';
+import { cmdImportPlan } from './x-build/plan-import.mjs';
+import { cmdXPlan } from './x-build/plan-bridge.mjs';
+import { cmdAdaptiveRoute } from './x-build/adaptive-routing.mjs';
+import { cmdAdaptiveProof } from './x-build/adaptive-proof.mjs';
 
 // Skip top-level execution when imported by xm-server
 if (process.env.XKIT_SERVER !== '1') {
@@ -55,17 +60,11 @@ if (_projectFlag) setExplicitProject(_projectFlag);
 
 const [cmd, ...args] = _cleanedArgv;
 
-// Backward-compat: a few commands (status, list) still accept `<project>` as
-// a positional. When --project was the only arg, pass it through positionally
-// so those commands keep working.
-if (_projectFlag && args.length === 0) {
-  args.unshift(_projectFlag);
-} else if (_projectFlag) {
-  const first = args[0];
-  if (first && first.startsWith('-')) {
-    args.unshift(_projectFlag);
-  }
-}
+// Do not re-inject --project as a positional argument. setExplicitProject above
+// is the single routing channel for the flag. Re-injection made trailing flags
+// such as `phase next --project demo --json` turn `--json` into the project
+// name (and auto-created a ghost project named `-json`). Commands that support
+// a legacy positional project still receive an actual positional unchanged.
 
 switch (cmd) {
   case 'init':
@@ -104,7 +103,12 @@ switch (cmd) {
   case 'mode':           cmdMode(args); break;
   case 'export':         cmdExport(args); break;
   case 'import':         cmdImport(args); break;
-  case 'plan':           await cmdPlan(args); break;
+  case 'import-plan':    await cmdImportPlan(args); break;
+  case 'plan':
+    console.error('⚠ `xm build plan` is deprecated; use `xm plan`. Delegating to x-plan.');
+    process.exitCode = await cmdXPlan(args);
+    break;
+  case 'legacy-plan':    await cmdPlan(args); break;
   case 'build':          await cmdPlan(['--execute', ...args]); break;
   case 'discuss':        cmdDiscuss(args); break;
   case 'research':       cmdResearch(args); break;
@@ -126,6 +130,7 @@ switch (cmd) {
   case 'verify-traceability': cmdVerifyTraceability(args); break;
   case 'verify-contracts': cmdVerifyContracts(args); break;
   case 'verify-review-fix': cmdVerifyReviewFix(args); break;
+  case 'review-precision': cmdReviewPrecision(args); break;
   case 'verify-drift': cmdVerifyDrift(args); break;
   case 'context-usage':  cmdContextUsage(args); break;
   case 'save':           cmdSaveArtifact(args); break;
@@ -135,6 +140,11 @@ switch (cmd) {
   case 'watch':         cmdWatch(args); break;
   case 'dashboard':     cmdDashboard(); break;
   case 'metrics':       cmdMetrics(args); break;
+  case 'effectiveness': cmdEffectiveness(args); break;
+  case 'route':
+    if (args[0] === 'prove') cmdAdaptiveProof(args.slice(1));
+    else cmdAdaptiveRoute(args);
+    break;
   case 'phase-context': cmdPhaseContext(args); break;
   case 'alias':         cmdAlias(args); break;
   case 'demo':          cmdDemo(args); break;

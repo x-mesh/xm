@@ -21,8 +21,15 @@ coverage/
 
 # Local skill installs (personal, not part of this repo)
 .claude/skills/impeccable/
-.opencode/skills/impeccable/
-.agents/skills/impeccable/
+
+# Multi-tool install OUTPUT, not source. `xm/lib/install/transform/*.mjs` generates
+# these from x-*/skills/*/SKILL.md at install time (frontmatter, skill naming, and
+# path rewrites differ per target). They were committed as a by-product of running
+# the installer against this repo and drifted from source — .opencode/ sat 3 months
+# stale. The generator is the single source of truth; test/install*.test.mjs covers it.
+.opencode/
+.agents/
+plugins/xm/
 
 # Local impeccable state (per-machine critique output, hook cache)
 .impeccable/

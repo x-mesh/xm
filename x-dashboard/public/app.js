@@ -436,7 +436,7 @@ function severityBadge(severity) {
   };
   const entry = map[String(severity || '').toLowerCase()];
   if (entry) return `<span class="badge ${entry.cls}">${entry.label}</span>`;
-  return `<span class="badge badge-gray">${severity || '—'}</span>`;
+  return `<span class="badge badge-gray">${escapeHtmlHumble(severity || '—')}</span>`;
 }
 
 function laterFilesCell(files) {
@@ -1657,11 +1657,14 @@ function renderProjectDetail(slug) {
     // Review-Fix Gate Snapshot — surface note near gate card if present
     const rfGate = projectResult.review_fix_gate_snapshot;
     if (rfGate && typeof rfGate === 'object') {
-      const rfStatus = rfGate.status || rfGate.gate_status || '';
-      const rfCls = rfStatus === 'passed' || rfStatus === 'ready' ? 'badge-green'
-        : rfStatus === 'blocked' ? 'badge-red'
+      const rfStatus = rfGate.stage || rfGate.status || rfGate.gate_status || '';
+      const rfCls = rfStatus === 'passed' || rfStatus === 'ready' || rfStatus === 'ready_for_fix' || rfStatus === 'reverified' ? 'badge-green'
+        : rfStatus === 'blocked' || rfStatus === 'awaiting_reverification' ? 'badge-red'
         : 'badge-amber';
-      const rfCount = rfGate.required_count ?? rfGate.open_count ?? null;
+      const rfCount = rfGate.triage_required ?? rfGate.required_count ?? rfGate.open_count ?? null;
+      const rfFailure = Array.isArray(rfGate.failures) && rfGate.failures.length > 0
+        ? rfGate.failures[0]
+        : '';
       html += `
         <div class="card" style="margin-top:0.5rem;padding:10px 16px;border-left:3px solid var(--border)">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -1669,6 +1672,7 @@ function renderProjectDetail(slug) {
             ${rfStatus ? `<span class="badge ${rfCls}">${escapeHtmlHumble(rfStatus)}</span>` : ''}
             ${rfCount != null ? `<span class="text-muted" style="font-size:0.8rem">${rfCount} finding${rfCount !== 1 ? 's' : ''} required</span>` : ''}
           </div>
+          ${rfFailure ? `<div class="text-muted" style="font-size:0.78rem;margin-top:6px">${escapeHtmlHumble(rfFailure)}</div>` : ''}
         </div>
       `;
     }
@@ -5119,11 +5123,80 @@ async function renderReviewsList() {
   const app = document.getElementById('app');
   app.innerHTML = `<div class="view-header"><h1>Reviews</h1><p>.xm/review/</p></div>${renderLoading()}`;
 
-  const [last, history, gate] = await Promise.all([
+  const [last, history, gate, precision] = await Promise.all([
     fetchJSON(apiUrl('/review/last')),
     fetchJSON(apiUrl('/review/history')),
     fetchJSON(apiUrl('/review/gate')),
+    fetchJSON(apiUrl('/review/precision')),
   ]);
+
+  // Lens precision (triage ledger). precision = fix_now / (fix_now + false_positive);
+  // null means the lens has not been measured yet, which is not the same as 0%.
+  const precisionBadge = (value) => {
+    if (value == null) return '<span class="text-muted">—</span>';
+    const pct = Math.round(value * 100);
+    const cls = value >= 0.8 ? 'badge-green' : value >= 0.6 ? 'badge-amber' : 'badge-red';
+    return `<span class="badge ${cls}">${pct}%</span>`;
+  };
+  const precisionBlock = (() => {
+    if (!precision || precision.error) return '';
+    if (precision.status === 'no_ledger') {
+      return `
+        <div class="card" style="margin-bottom:1rem">
+          <h2 style="margin-top:0">Lens precision</h2>
+          <p class="text-muted" style="margin:0;font-size:0.85rem">No triage ledger yet — rows are appended when <code>x-build verify-review-fix</code> passes a triage or records a <code>--reverify</code> outcome.</p>
+        </div>`;
+    }
+    if (precision.status !== 'ok') return '';
+    const lensRows = (precision.lenses || []).map(b => `
+      <tr>
+        <td><code>${escapeHtmlHumble(b.lens)}</code></td>
+        <td>${b.decided}</td>
+        <td>${b.fix_now}</td>
+        <td>${b.backlog}</td>
+        <td>${b.accept_risk}</td>
+        <td>${b.false_positive}</td>
+        <td>${precisionBadge(b.precision)}</td>
+        <td class="text-muted" style="font-size:0.8rem">${b.resolved} / ${b.persistent} / ${b.regression}</td>
+      </tr>`).join('');
+    const severityRows = (precision.severities || []).map(b => `
+      <tr>
+        <td>${severityBadge(b.severity)}</td>
+        <td>${b.decided}</td>
+        <td>${b.fix_now}</td>
+        <td>${b.false_positive}</td>
+        <td>${precisionBadge(b.precision)}</td>
+      </tr>`).join('');
+    const w = precision.window || {};
+    const totals = precision.totals || {};
+    return `
+      <div class="card" style="margin-bottom:1rem">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:.5rem">
+          <h2 style="margin:0">Lens precision</h2>
+          ${precisionBadge(totals.precision)}
+          <span class="text-muted" style="font-size:12px">${w.reviews ?? 0} review(s) · ${w.rows ?? 0} ledger row(s)${w.from ? ` · ${escapeHtmlHumble(String(w.from).slice(0, 10))} → ${escapeHtmlHumble(String(w.to).slice(0, 10))}` : ''}</span>
+          <span style="margin-left:auto">${commandButton('x-build review-precision')}</span>
+        </div>
+        <div class="text-muted" style="font-size:12px;margin-bottom:.5rem">precision = fix_now / (fix_now + false_positive) · outcomes = resolved / persistent / regression · — = not measured yet</div>
+        ${lensRows ? `
+          <div class="table-wrapper">
+            <table class="table">
+              <thead><tr><th>Lens</th><th>Decided</th><th>fix_now</th><th>backlog</th><th>accept_risk</th><th>false_positive</th><th>Precision</th><th>Outcomes</th></tr></thead>
+              <tbody>${lensRows}</tbody>
+            </table>
+          </div>` : '<p class="text-muted" style="margin:0">Ledger has no decision rows yet.</p>'}
+        ${severityRows ? `
+          <details style="margin-top:.5rem">
+            <summary style="cursor:pointer;font-size:0.85rem;color:var(--text-muted)">By severity</summary>
+            <div class="table-wrapper" style="margin-top:.5rem">
+              <table class="table">
+                <thead><tr><th>Severity</th><th>Decided</th><th>fix_now</th><th>false_positive</th><th>Precision</th></tr></thead>
+                <tbody>${severityRows}</tbody>
+              </table>
+            </div>
+          </details>` : ''}
+      </div>`;
+  })();
 
   const lastBlock = (last && !last.error && (last.json || last.md))
     ? (() => {
@@ -5162,6 +5235,7 @@ async function renderReviewsList() {
             <td>${f.file ? `<code>${escapeHtmlHumble(f.file)}${f.line ? ':' + escapeHtmlHumble(f.line) : ''}</code>` : '<span class="text-muted">—</span>'}</td>
             <td>${escapeHtmlHumble(f.summary || '')}</td>
             <td>${f.decision ? `<span class="badge badge-blue">${escapeHtmlHumble(f.decision)}</span>` : '<span class="badge badge-amber">undecided</span>'}</td>
+            <td><span class="badge ${f.lifecycle_state === 'reverified' && f.outcome === 'resolved' ? 'badge-green' : f.lifecycle_state === 'fixed' ? 'badge-amber' : 'badge-blue'}">${escapeHtmlHumble(f.lifecycle_state || 'open')}</span>${f.outcome ? ` <span class="text-muted">${escapeHtmlHumble(f.outcome)}</span>` : ''}</td>
           </tr>
         `).join('');
         const failures = (gate.failures || []).map(f => `<li>${escapeHtmlHumble(f)}</li>`).join('');
@@ -5182,7 +5256,7 @@ async function renderReviewsList() {
             ${requiredRows ? `
               <div class="table-wrapper">
                 <table class="table">
-                  <thead><tr><th>ID</th><th>Severity</th><th>File</th><th>Finding</th><th>Decision</th></tr></thead>
+                  <thead><tr><th>ID</th><th>Severity</th><th>File</th><th>Finding</th><th>Decision</th><th>Lifecycle</th></tr></thead>
                   <tbody>${requiredRows}</tbody>
                 </table>
               </div>
@@ -5225,6 +5299,7 @@ async function renderReviewsList() {
   app.innerHTML = `
     <div class="view-header"><h1>Reviews</h1><p>.xm/review/</p></div>
     ${gateBlock}
+    ${precisionBlock}
     ${lastBlock}
     ${historyRows ? historyBlock : ''}
     ${emptyBlock}
@@ -5534,6 +5609,25 @@ async function renderActivity() {
   await refreshActivity();
 }
 
+const ACTIVITY_SORTS = new Set(['active', 'latest', 'name']);
+const ACTIVITY_FILTERS = new Set(['all', 'live', 'problems']);
+let _activitySort = (() => { try { const v = localStorage.getItem('xm-activity-sort'); return ACTIVITY_SORTS.has(v) ? v : 'active'; } catch { return 'active'; } })();
+let _activityFilter = (() => { try { const v = localStorage.getItem('xm-activity-filter'); return ACTIVITY_FILTERS.has(v) ? v : 'all'; } catch { return 'all'; } })();
+
+function activitySetSort(value) {
+  if (!ACTIVITY_SORTS.has(value)) return;
+  _activitySort = value;
+  try { localStorage.setItem('xm-activity-sort', value); } catch { /* private mode */ }
+  refreshActivity();
+}
+
+function activitySetFilter(value) {
+  if (!ACTIVITY_FILTERS.has(value)) return;
+  _activityFilter = value;
+  try { localStorage.setItem('xm-activity-filter', value); } catch { /* private mode */ }
+  refreshActivity();
+}
+
 // Switch to a run's workspace (so the scoped detail fetch resolves) then open its panel detail.
 function activityOpen(wsId, run) {
   if (multiRootMode && wsId) { currentWsId = wsId; try { localStorage.setItem('xm-workspace', wsId); } catch { /* private mode */ } }
@@ -5548,9 +5642,31 @@ async function refreshActivity() {
   if (res.error) { app.innerHTML = `<div class="view-header"><h1>Activity</h1></div>${renderError(res.message || res.error)}`; return; }
   const esc = (v) => escapeHtmlHumble(String(v ?? ''));
   const icon = (s) => s === 'done' ? '✓' : s === 'failed' ? '✗' : s === 'running' ? '⏳' : '·';
-  const wss = res.workspaces || [];
-  const totalLive = wss.reduce((n, w) => n + (w.live_count || 0), 0);
-  if (!wss.length) {
+  const rawWorkspaces = res.workspaces || [];
+  const runLive = (r) => r.kind === 'cross' ? r.phase === 'running' : panelIsLive(r.status);
+  const runProblem = (r) => r.phase === 'failed' || r.phase === 'stalled'
+    || (!!r.status && r.status.phase !== 'done' && !panelIsLive(r.status))
+    || (Array.isArray(r.status?.models) && r.status.models.some((m) => m.state === 'failed'));
+  const runRank = (r) => runLive(r) ? 0 : runProblem(r) ? 1 : 2;
+  const runTime = (r) => Date.parse(r.activity_at || r.status?.updated_at || r.verdict?.created_at || r.created_at || '') || 0;
+  const filterRun = (r) => _activityFilter === 'live' ? runLive(r) : _activityFilter === 'problems' ? runProblem(r) : true;
+  const wss = rawWorkspaces.map((w) => {
+    const runs = (w.runs || []).filter(filterRun);
+    return { ...w, runs, visible_live_count: runs.filter(runLive).length };
+  }).filter((w) => w.runs.length);
+  const wsTime = (w) => Math.max(Date.parse(w.last_activity_at || '') || 0, ...(w.runs || []).map(runTime));
+  wss.sort((a, b) => {
+    if (_activitySort === 'name') return String(a.name).localeCompare(String(b.name));
+    if (_activitySort === 'latest') return wsTime(b) - wsTime(a) || String(a.name).localeCompare(String(b.name));
+    return Number((b.visible_live_count || 0) > 0) - Number((a.visible_live_count || 0) > 0)
+      || wsTime(b) - wsTime(a) || (b.visible_live_count || 0) - (a.visible_live_count || 0)
+      || String(a.name).localeCompare(String(b.name));
+  });
+  for (const w of wss) {
+    w.runs.sort((a, b) => runRank(a) - runRank(b) || runTime(b) - runTime(a) || String(b.run).localeCompare(String(a.run)));
+  }
+  const totalLive = rawWorkspaces.reduce((n, w) => n + (w.live_count || 0), 0);
+  if (!rawWorkspaces.length) {
     app.innerHTML = `<div class="view-header"><h1>Activity</h1><p>running panels across all projects</p></div>
       <div class="card" style="text-align:center;padding:3rem">
         <div style="font-size:2rem;margin-bottom:1rem;opacity:0.3">◇</div>
@@ -5559,9 +5675,8 @@ async function refreshActivity() {
       </div>`;
     return;
   }
-  const liveRun = (r) => r.kind === 'cross' ? r.phase === 'running' : panelIsLive(r.status);
   const runRow = (wsId, r) => {
-    const live = liveRun(r);
+    const live = runLive(r);
     const phase = r.kind === 'cross' ? r.phase : (r.status ? r.status.phase : (r.verdict ? 'done' : 'unknown'));
     const badgeCls = live ? 'badge-yellow' : phase === 'failed' ? 'badge-red' : 'badge-green';
     const models = r.kind === 'cross'
@@ -5571,23 +5686,32 @@ async function refreshActivity() {
       : (r.status ? r.status.models : (r.verdict ? (r.verdict.models || []).map((m) => ({ label: m, state: 'done' })) : []))
           .map((m) => `${icon(m.state)} ${esc(m.label)}`).join('  ');
     const title = r.title || r.target_title || r.run;
+    const updated = r.activity_at ? `<span title="${esc(r.activity_at)}">updated ${esc(timeAgo(r.activity_at))}</span>` : '';
     return `<div class="card" style="margin-bottom:.5rem;cursor:pointer;padding:.6rem .8rem" onclick="activityOpen('${esc(wsId)}','${esc(r.run)}')">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
         <span style="display:flex;align-items:center;gap:7px;min-width:0">${panelSourceBadge(r.source)}<strong style="font-size:.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(title)}</strong></span>
         <span class="badge ${badgeCls}">${esc(phase)}</span>
       </div>
-      <div style="font-size:.8rem;margin-top:4px;color:var(--text-muted)">${models || '—'}</div>
+      <div style="font-size:.8rem;margin-top:4px;color:var(--text-muted);display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><span>${models || '—'}</span>${updated}</div>
     </div>`;
   };
   const groups = wss.map((w) => {
-    const liveBadge = w.live_count ? ` <span class="badge badge-yellow">● ${w.live_count} live</span>` : '';
+    const liveBadge = w.visible_live_count ? ` <span class="badge badge-yellow">● ${w.visible_live_count} live</span>` : '';
+    const updated = w.last_activity_at ? ` · updated ${timeAgo(w.last_activity_at)}` : '';
     const rows = (w.runs || []).map((r) => runRow(w.id, r)).join('');
     return `<section style="margin-bottom:1.5rem">
       <h2 style="font-size:.95rem;margin:0 0 .5rem;display:flex;align-items:center;gap:8px">${esc(w.name)}${liveBadge}
-        <span class="text-muted" style="font-size:.72rem;font-weight:400">${w.total} run${w.total === 1 ? '' : 's'}</span></h2>
+        <span class="text-muted" style="font-size:.72rem;font-weight:400">${w.runs.length}${w.runs.length !== w.total ? `/${w.total}` : ''} run${w.total === 1 ? '' : 's'}${updated}</span></h2>
       ${rows}</section>`;
   }).join('');
-  app.innerHTML = `<div class="view-header"><h1>Activity</h1><p>running panels across all projects${totalLive ? ` · <span style="color:var(--warning,#d80)">● ${totalLive} live</span>` : ''}</p></div>${groups}`;
+  const sortOptions = [['active', 'Active first'], ['latest', 'Latest'], ['name', 'Project name']]
+    .map(([value, label]) => `<option value="${value}" ${_activitySort === value ? 'selected' : ''}>${label}</option>`).join('');
+  const filters = [['all', 'All'], ['live', 'Live only'], ['problems', 'Problems']]
+    .map(([value, label]) => `<button type="button" class="activity-filter-btn ${_activityFilter === value ? 'active' : ''}" onclick="activitySetFilter('${value}')" aria-pressed="${_activityFilter === value}">${label}</button>`).join('');
+  const emptyFiltered = !wss.length ? `<div class="card activity-empty"><p>No runs match this filter.</p></div>` : groups;
+  app.innerHTML = `<div class="view-header"><h1>Activity</h1><p>running panels across all projects${totalLive ? ` · <span style="color:var(--warning,#d80)">● ${totalLive} live</span>` : ''}</p></div>
+    <div class="activity-toolbar"><div class="activity-filters" role="group" aria-label="Filter activity">${filters}</div>
+      <label class="activity-sort-label">Sort <select class="activity-sort" onchange="activitySetSort(this.value)" aria-label="Sort activity">${sortOptions}</select></label></div>${emptyFiltered}`;
   if (totalLive) setTimeout(refreshActivity, 2500); // poll while anything is live
 }
 
@@ -6522,7 +6646,7 @@ async function renderPrdList() {
   if (items.length === 0) {
     app.innerHTML = `
       <div class="view-header"><h1>PRDs</h1><p>.xm/prd + build projects</p></div>
-      ${renderEmpty('No PRDs found', 'xm build plan', ['.xm/prd', '.xm/build/projects/*/phases'])}
+      ${renderEmpty('No PRDs found', 'xm build legacy-plan', ['.xm/prd', '.xm/build/projects/*/phases'])}
     `;
     return;
   }
@@ -6974,7 +7098,8 @@ const ROUTES = [
     debounce = setTimeout(() => {
       debounce = null;
       const path = getPath();
-      if (path === '/panel') refreshPanel();
+      if (path === '/activity') refreshActivity();
+      else if (path === '/panel') refreshPanel();
       else if (path.startsWith('/panel/')) renderPanelDetail(path.slice('/panel/'.length));
     }, 200);
   });

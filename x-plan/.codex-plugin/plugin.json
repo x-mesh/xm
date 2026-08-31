@@ -1,0 +1,35 @@
+{
+  "name": "x-plan",
+  "version": "0.3.0",
+  "description": "Quick, Standard, and Ultra implementation planning with validated artifacts",
+  "author": {
+    "name": "x-mesh",
+    "url": "https://github.com/x-mesh"
+  },
+  "homepage": "https://github.com/x-mesh/xm",
+  "repository": "https://github.com/x-mesh/xm",
+  "license": "MIT",
+  "keywords": [
+    "planning",
+    "json",
+    "multi-model",
+    "requirements"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "x-plan",
+    "shortDescription": "Create readable plans with saved artifacts",
+    "longDescription": "Choose Quick scaffold, Standard interview and critique, or Ultra multi-model synthesis, then persist a validated PlanEnvelope artifact.",
+    "developerName": "x-mesh",
+    "category": "Productivity",
+    "capabilities": [
+      "Planning",
+      "Validation"
+    ],
+    "websiteURL": "https://github.com/x-mesh/xm",
+    "defaultPrompt": [
+      "Plan these requirements and ask whether to use Quick, Standard, or Ultra mode.",
+      "Create an ultra multi-model plan for this feature."
+    ]
+  }
+}

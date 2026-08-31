@@ -6,7 +6,7 @@
  * or in a linked worktree; only the backend/cwd differs.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -32,8 +32,40 @@ export const DEFAULT_BUILD_POLICY = {
   task_checks: ['test', 'lint'],
   group_checks: ['test', 'lint'],
   allow_live_provider_checks: false,
-  check_timeout_ms: 120000,
+  check_timeout_ms: 600000,
 };
+
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) {
+    // EPERM proves the process exists but belongs to a different authority.
+    // Treat it as live; reclaiming that lock would permit concurrent checks.
+    return error?.code === 'EPERM';
+  }
+}
+
+function acquireGroupQualityLock(lock) {
+  try {
+    mkdirSync(lock);
+  } catch {
+    let owner = null;
+    try { owner = JSON.parse(readFileSync(join(lock, 'owner.json'), 'utf8')); } catch {}
+    if (!owner) {
+      // Legacy versions created an empty directory with no owner metadata. Do
+      // not race a process still between mkdir and owner write; after a short
+      // grace period an ownerless lock is necessarily orphaned and recoverable.
+      let ageMs = 0;
+      try { ageMs = Date.now() - statSync(lock).mtimeMs; } catch { return false; }
+      if (ageMs < 5000) return false;
+    } else if (processAlive(owner.pid)) return false;
+    // A crashed/interrupted group-check cannot release its directory. Reclaim
+    // only when its recorded owner is definitely dead; live owners still block.
+    try { rmSync(lock, { recursive: true, force: true }); } catch { return false; }
+    try { mkdirSync(lock); } catch { return false; }
+  }
+  writeFileSync(join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }));
+  return true;
+}
 
 export const LIVE_PROVIDER_ENV_VARS = [
   'ANTHROPIC_API_KEY',
@@ -111,6 +143,12 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
   const runtime = resolveCheckRuntime(policy);
   const descriptor = taskCheckContractHash(cwd, fingerprintPolicy);
   const existing = saved.group_quality;
+  const reuseMissReason = !existing ? 'missing'
+    : existing.error || existing.malformed ? 'malformed'
+      : existing.passed !== true ? 'not_passing'
+      : existing.cwd !== canonicalCwd ? 'cwd_changed'
+        : existing.command_hash !== descriptor ? 'command_changed'
+          : existing.fingerprint !== fingerprint ? 'content_changed' : null;
   if (existing && existing.passed === true && existing.fingerprint === fingerprint && existing.command_hash === descriptor && existing.cwd === canonicalCwd) {
     return { ok: true, reused: true, evidence: existing };
   }
@@ -135,7 +173,7 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
       fingerprint,
       command_hash: descriptor,
       checked_at: new Date().toISOString(),
-      reused_task_checks: true,
+      reused_task_checks: true, reused: true, reuse_miss_reason: null, duration_ms: 0,
       task_ids: [...saved.task_ids],
       network_policy: {
         allow_live_provider_checks: runtime.allow_live_provider_checks,
@@ -149,7 +187,7 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
     return { ok: true, reused: true, reused_task_checks: true, evidence };
   }
   const lock = join(phaseDir(project, '03-execute'), `.group-${groupId}.quality.lock`);
-  try { mkdirSync(lock); } catch { return { ok: false, error: 'group_quality_in_progress', exitCode: 2 }; }
+  if (!acquireGroupQualityLock(lock)) return { ok: false, error: 'group_quality_in_progress', exitCode: 2 };
   try {
     const before = taskCheckFingerprint(cwd, fingerprintPolicy);
     const beforeContent = contentFingerprint(cwd);
@@ -158,11 +196,12 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
       // that optional script may skip it. Any other configured/missing command
       // is an explicit contract and fails closed.
       if (!command) return { name, command: null, passed: ['test', 'lint'].includes(name), skipped: true, ...( ['test', 'lint'].includes(name) ? {} : { error: 'configured_check_not_found' }) };
+      const startedAt = Date.now();
       const out = spawnSync(command, [], {
         cwd, shell: true, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024,
         env: runtime.env, timeout: runtime.timeout_ms,
       });
-      return { name, command, passed: !out.error && out.status === 0, skipped: false, exit_code: out.status, output: `${out.stdout || ''}${out.stderr || ''}`.trim().slice(-4000), ...(out.error ? { error: out.error.message } : {}) };
+      return { name, command, passed: !out.error && out.status === 0, skipped: false, exit_code: out.status, duration_ms: Date.now() - startedAt, output: `${out.stdout || ''}${out.stderr || ''}`.trim().slice(-4000), ...(out.error ? { error: out.error.message } : {}) };
     });
     const after = taskCheckFingerprint(cwd, fingerprintPolicy);
     const afterContent = contentFingerprint(cwd);
@@ -173,7 +212,8 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
     const evidence = {
       passed: stable && results.every((r) => r.passed),
       cwd: canonicalCwd, fingerprint: after, command_hash: descriptor,
-      checked_at: new Date().toISOString(), results,
+      checked_at: new Date().toISOString(), results, reused: false, reuse_miss_reason: reuseMissReason,
+      duration_ms: results.reduce((sum, result) => sum + (result.duration_ms || 0), 0),
       ...(stable && serialResult ? {
         serial_quality: {
           check: 'serial-quality',
@@ -187,6 +227,7 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
           exit_code: 0,
           checked_at: new Date().toISOString(),
           reused_from: `group:${groupId}`,
+          duration_ms: serialResult.duration_ms || 0, reuse_miss_reason: reuseMissReason,
           output: serialResult.output,
         },
       } : {}),
@@ -200,7 +241,7 @@ export function runGroupChecks(project, groupId, { cwd = repoRoot() } = {}) {
     state.groups[groupId] = { ...saved, group_quality: evidence };
     writeJSON(statePath(project), state);
     return { ok: evidence.passed, reused: false, evidence, exitCode: evidence.passed ? 0 : 2 };
-  } finally { try { rmdirSync(lock); } catch {} }
+  } finally { try { rmSync(lock, { recursive: true, force: true }); } catch {} }
 }
 
 export function taskReviewGroup(task) {

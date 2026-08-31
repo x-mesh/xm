@@ -225,3 +225,17 @@ describe('cost dashboard static asset contract', () => {
     expect(css).toContain('--chart-heatmap-rgb: 154, 62, 0');
   });
 });
+
+describe('activity dashboard static asset contract', () => {
+  const appSource = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  test('ships sorting, filters, persistence, and SSE refresh', () => {
+    expect(appSource).toContain("['active', 'Active first']");
+    expect(appSource).toContain("['latest', 'Latest']");
+    expect(appSource).toContain("['name', 'Project name']");
+    expect(appSource).toContain("['live', 'Live only']");
+    expect(appSource).toContain("['problems', 'Problems']");
+    expect(appSource).toContain("localStorage.setItem('xm-activity-sort'");
+    expect(appSource).toContain("if (path === '/activity') refreshActivity()");
+  });
+});

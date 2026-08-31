@@ -229,7 +229,7 @@ describe('plan routing protocol', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       setupProject(tmp);
-      const r = run(['plan', 'Build a hello world app', '--quick'], { cwd: tmp });
+      const r = run(['legacy-plan', 'Build a hello world app', '--quick'], { cwd: tmp });
       expect(r.exitCode).toBe(0);
       const output = JSON.parse(r.stdout);
       expect(output.action).toBe('auto-plan');
@@ -242,11 +242,41 @@ describe('plan routing protocol', () => {
     }
   });
 
+  test('plan without a profile always resolves a concrete adaptive profile', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-plan-profile-'));
+    try {
+      setupProject(tmp);
+      const r = run(['legacy-plan', 'Add a targeted local helper with tests and no public contract changes'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const output = JSON.parse(r.stdout);
+      expect(['light', 'standard', 'deep']).toContain(output.profile);
+      expect(output.research_scope).not.toBe('adaptive-legacy');
+      expect(output.profile_recommendation.profile).toBe(output.profile);
+      expect(JSON.parse(readFileSync(join(tmp, '.xm', 'build', 'projects', output.project, 'manifest.json'), 'utf8')).build_profile).toBe(output.profile);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('an unresolved-intent fallback profile is marked provisional for later reclassification', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-plan-provisional-'));
+    try {
+      setupProject(tmp);
+      const output = JSON.parse(run(['legacy-plan', 'Improve'], { cwd: tmp }).stdout);
+      expect(output.profile).toBe('standard');
+      expect(output.profile_recommendation.provisional).toBe(true);
+      const manifest = JSON.parse(readFileSync(join(tmp, '.xm', 'build', 'projects', output.project, 'manifest.json'), 'utf8'));
+      expect(manifest.build_profile_provisional).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('plan preserves flag-like text in the goal except --quick', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       setupProject(tmp);
-      const r = run(['plan', 'Build CLI --help docs', '--quick'], { cwd: tmp });
+      const r = run(['legacy-plan', 'Build CLI --help docs', '--quick'], { cwd: tmp });
       expect(r.exitCode).toBe(0);
       const output = JSON.parse(r.stdout);
       expect(output.goal).toBe('Build CLI --help docs');
@@ -266,7 +296,7 @@ describe('plan routing protocol', () => {
       expect(r.exitCode).toBe(0);
       const output = JSON.parse(r.stdout);
       expect(output.artifacts.prd).toBe(true);
-      expect(output.action).toBe('plan');
+      expect(output.action).toBe('legacy-plan');
       expect(output.goal).toBe('Build API');
       expect(output.args).toEqual(['Build API']);
     } finally {
@@ -285,7 +315,7 @@ describe('plan routing protocol', () => {
       expect(r.exitCode).toBe(0);
       const output = JSON.parse(r.stdout);
       expect(output.artifacts.prd).toBe(false);
-      expect(output.action).toBe('plan');
+      expect(output.action).toBe('legacy-plan');
       expect(output.ready).toBe(false);
       expect(output.reason).toContain('PRD');
     } finally {
@@ -518,7 +548,7 @@ describe('deterministic model emission (research / plan / next)', () => {
     try {
       setupProject(tmp);
       writeSharedConfig(tmp, { model_profile: 'economy' });
-      const r = run(['plan', 'Build API'], { cwd: tmp });
+      const r = run(['legacy-plan', 'Build API'], { cwd: tmp });
       const output = JSON.parse(r.stdout);
       expect(output.prd_writer).toMatchObject({ role: 'planner', model: 'sonnet' }); // economy.planner (+vendor additive 필드 허용)
     } finally {
@@ -535,7 +565,7 @@ describe('deterministic model emission (research / plan / next)', () => {
       writeSharedConfig(tmp, { model_profile: 'default' });
       const r = run(['next', '--json'], { cwd: tmp });
       const output = JSON.parse(r.stdout);
-      expect(output.action).toBe('plan');
+      expect(output.action).toBe('legacy-plan');
       expect(output.prd_writer).toMatchObject({ role: 'planner', model: 'inherit' }); // default.planner rides the session model (+vendor additive 필드 허용)
     } finally {
       rmSync(tmp, { recursive: true, force: true });
@@ -895,7 +925,7 @@ describe('project_kind-aware planning', () => {
       delete manifest.project_kind;
       writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
 
-      const planOut = JSON.parse(run(['plan', 'Build something'], { cwd: tmp }).stdout);
+      const planOut = JSON.parse(run(['legacy-plan', 'Build something'], { cwd: tmp }).stdout);
       expect(planOut.project_kind).toBe('brownfield');
 
       const nextOut = JSON.parse(run(['next', '--json'], { cwd: tmp }).stdout);
@@ -1087,6 +1117,56 @@ describe('prd-check structural warnings (Section 9 / Section 10 / At a Glance)',
       writePRD(tmp, name, body);
       const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp }).stdout);
       expect(out.warnings.some((w) => /Section 10/.test(w))).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── delta-tier PRD (Quick Mode): save must not stamp, prd-check must not block ──
+describe('delta-tier PRD save + prd-check', () => {
+  const DELTA_PRD = [
+    '<!-- prd-tier: delta -->',
+    '# PRD: Quick X',
+    '',
+    '## Goal',
+    'Ship X.',
+    '',
+    '## Success Criteria',
+    '- [ ] X works',
+    '',
+    '## 12. Acceptance Criteria',
+    '- [ ] X returns 200 [R1]',
+    '',
+  ].join('\n');
+
+  test('save plan does not stamp a version marker on a delta PRD, and prd-check does not block it', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['save', 'plan', '--content', DELTA_PRD], { cwd: tmp });
+      const prdFile = join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'PRD.md');
+      const saved = readFileSync(prdFile, 'utf8');
+      expect(saved).not.toContain('prd-template-version');
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp }).stdout);
+      expect(out.tier).toBe('delta');
+      expect(out.blocked).toBe(false);
+      // missing Section 8 stays a warning on the delta tier
+      expect(out.warnings.some((w) => /Section 8/.test(w))).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a hand-stamped delta PRD still does not block on the Section 8 gate', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      writePRD(tmp, name, `<!-- prd-template-version: 2 -->\n${DELTA_PRD}`);
+      const out = JSON.parse(run(['prd-check', '--json'], { cwd: tmp }).stdout);
+      expect(out.tier).toBe('delta');
+      expect(out.blocked).toBe(false);
+      expect(out.warnings.some((w) => /Section 8/.test(w))).toBe(true);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

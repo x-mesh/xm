@@ -9,7 +9,7 @@ Several commands output JSON for the skill layer to parse and act on. The skill 
 | `next --json` | varies | `phase`, `action`, `args`, `reason`, `artifacts`, `goal?`, `ready?`, `project_kind`, `suggest_probe`, `round0_pending?` (research phase, greenfield only), `research_signal?` (when action is `research`/`discuss`) |
 | `discuss` | `"discuss"` | `mode`, `project`, `current_phase`, `round`, `max_rounds`, `project_kind` + mode-specific fields (interview: `save_path`, `round0_pending?`) |
 | `research` | `"research"` | `goal`, `project`, `perspectives[]`, `project_kind`, `suggest_probe`, `agents_spec[]` (each with `perspective`, `role`, `model`, `web?`) |
-| `plan` / `build` | `"auto-plan"` | `goal`, `requested_action`, `stop_after`, `plan_state`, `executable`, `intent_check`, `research_signal` |
+| `plan` / `build` | `"auto-plan"` | `goal`, `requested_action`, `stop_after`, `plan_state`, `executable`, `intent_check`, `profile?`, `research_scope`, `required_artifacts`, `research_signal` |
 | `run --json` | (no action field) | `project`, `step`, `total_steps`, `tasks[]`, `parallel` |
 
 ## `next --json` — Smart Router (primary entry point)
@@ -38,13 +38,23 @@ Output schema:
 - `round0_pending`: present only when `project_kind === "greenfield"` AND `phase === "research"`. `true` until `discuss-round0.json` has been saved — the skill must run Round 0 before Round 1 in that case. Absent for brownfield projects.
 - `research_signal`: attached only when `action` is `"research"` or `"discuss"` — the deterministic full/slim/quick-eligible gauge (see SKILL.md Interaction Protocol rule 3). Absent/failed reads as `full`.
 
-After parsing, execute the recommended action:
+After parsing, execute the recommended action. `cmdNext` emits exactly these 16 values — an
+unlisted `action` means the CLI is newer than this document; stop and report rather than guessing:
+
+- `action: "select-project"` → several projects are active and none was named. Pass `--project <name>`, or init a new one. NEVER silently bind a new goal to an unrelated active project.
+- `action: "auto-plan"` → emitted by `plan`/`build` (not the phase router). Run the `intent_check` first, then Research at the `research_signal` scale.
 - `action: "discuss"` → run `$XMB discuss` with args, then follow the discuss protocol below
 - `action: "research"` → run `$XMB research`, then follow the research protocol below
-- `action: "plan"` → if `goal` is set, run `$XMB plan "goal"`; otherwise ask user for goal
+- `action: "legacy-plan"` → if `goal` is set, run `$XMB legacy-plan "goal"`; otherwise ask user for goal. Do NOT substitute `$XMB plan`: that alias bridges to x-plan and does not write the PRD this action is asking for.
 - `action: "plan-check"` → run `$XMB plan-check`
+- `action: "prd-gate"` → run `$XMB prd-gate`, print the rubric result, then continue
+- `action: "consensus"` → run `$XMB consensus`, print each role's verdict in full before advancing
+- `action: "approve-plan"` → the plan is well-formed but unapproved. Print the Decision Plan, task/DAG summary, material risks/checks, and artifact path, then ask for the single Plan → Execute direction approval citing a concrete detail. `approval_reason` says what is missing. Autopilot must NOT self-approve this.
+- `action: "plan-complete"` → an approved `plan_only` bundle is finished and execution is intentionally paused. Report the bundle and STOP; resume only when the user asks (`resume_command`, normally `x-build run`).
 - `action: "phase"` + `args: ["next"]` → run `$XMB phase next` (phase gate transition)
+- `action: "steps"` + `args: ["compute"]` → run `$XMB steps compute` to build the DAG before running
 - `action: "run"` → run `$XMB run --json`, then orchestrate agents
+- `action: "group-check"` → every task in the group is done; run `$XMB group-check <group>` for the deterministic boundary evidence Execute cannot exit without
 - `action: "quality"` → run `$XMB quality`
 - `action: "close"` → run `$XMB close --summary "..."`
 
@@ -80,21 +90,35 @@ After parsing, execute the recommended action:
 
 ## Mapping to Agent Tool
 
-The model ALWAYS comes from the CLI JSON `model` field (`task.model`, `agents[n].model`, `agents_spec[n].model`, `prd_writer.model`); if that field is `"inherit"`, omit the Agent-tool `model` parameter (see above). This table maps only `agent_type` → `subagent_type`:
+The model ALWAYS comes from the CLI JSON `model` field (`task.model`, `agents[n].model`, `agents_spec[n].model`, `prd_writer.model`); if that field is `"inherit"`, omit the Agent-tool `model` parameter (see above).
 
-| CLI `agent_type` | Agent `subagent_type` | Fallback (x-agent preset) |
-|-----------------|----------------------|---------------------------|
-| `executor` | `oh-my-claudecode:executor` | `se` |
-| `deep-executor` | `oh-my-claudecode:deep-executor` | `architect` |
-| `planner` | `oh-my-claudecode:planner` | `planner` |
-| `verifier` | `oh-my-claudecode:verifier` | `verifier` |
-| `critic` | `oh-my-claudecode:critic` | `critic` |
-| `test-engineer` | `oh-my-claudecode:test-engineer` | `test-engineer` |
-| `build-fixer` | `oh-my-claudecode:build-fixer` | `build-fixer` |
+`agent_type` is a ROLE, not a `subagent_type`. Spawn every task on the built-in
+`general-purpose` agent and inject the role via the prompt, using the x-agent preset of the
+same name (`x-agent/skills/agent/references/role-presets.md`) for its `<role>`,
+`<success_criteria>`, and `<constraints>` blocks:
+
+| CLI `agent_type` | Agent `subagent_type` | Role preset to inject |
+|-----------------|----------------------|-----------------------|
+| `executor` | `general-purpose` | `se` |
+| `deep-executor` | `general-purpose` | `architect` |
+| `planner` | `general-purpose` | `planner` |
+| `verifier` | `general-purpose` | `verifier` |
+| `critic` | `general-purpose` | `critic` |
+| `test-engineer` | `general-purpose` | `test-engineer` |
+| `build-fixer` | `general-purpose` | `build-fixer` |
+
+This table previously routed to `oh-my-claudecode:*` subagent types. That made x-build
+silently depend on a third-party plugin: if OMC was absent the `subagent_type` did not
+resolve and the spawn failed, in a repo whose own skills declare no such dependency.
+Role presets carry the same behavioral contract in the prompt and ship in this repo.
+
+Do NOT invent a `subagent_type` that is not in the host's agent list. When a genuinely
+specialized agent is available and preferable, name it explicitly rather than guessing at a
+plugin-qualified string.
 
 ## Worktree Mode JSON
 
-The worktree pipeline is the optional Execute-phase backend. See the SKILL.md "Worktree Execution Mode" section for the decision rules; this section documents the JSON surfaces.
+The worktree pipeline is the optional Execute-phase backend. SKILL.md "Worktree Execution Mode" keeps the hard rules; this section documents the JSON surfaces plus the extracted decision & finish protocol detail.
 
 ### `worktree_signal` (on every `run --json`)
 
@@ -194,6 +218,19 @@ The default `build.review_scope=group` deliberately omits the per-task `--gate` 
 
 `worktree_status` ∈ `READY | WORKTREE_CREATED | RUNNING | VERIFYING | REVIEWING | MERGING | DONE | BLOCKED | NEEDS_FIX` (artifact axis, separate from canonical `task_status`).
 
+### `run-status --json` — `later`
+
+```json
+{
+  "later": { "open": 1, "touched": ["l1:src/parse.mjs"], "ids": ["l1"] }
+}
+```
+
+ADVISORY, never a gate: `later` never changes `next_action` and never affects an exit code.
+`touched[]` names a `<later-id>:<file>` pair where a file the queue deferred changed anyway.
+When it is non-empty, tell the user and resolve it — `later promote <id>` to bring the work
+into scope, or revert the edit. Do not silently continue past a `touched` entry.
+
 ### `run --reconcile --json` — `protected[]`
 
 Stale RUNNING tasks kept out of reconcile because their worktree artifact says a human/orchestrator must act:
@@ -212,6 +249,27 @@ NEEDS_FIX / BLOCKED / MERGING or a live worktree are never reconciled to PENDING
 ### `gate-panel` / `review-integration`
 
 `gate-panel --project <p> --task <id> --phase before|after|release --patch <path> --json` returns `{ decision: "pass"|"fail"|"error", exit_code, blocking_findings[], ... }` and exits 0/1/2. `review-integration` builds the `main...develop` patch and runs gate-panel under the reserved `__integration__` id / `release` phase.
+
+### Execution-mode decision & finish protocol
+
+Detail behind SKILL.md § Worktree Execution Mode (extracted 2026-08-18).
+
+**Review boundaries.** With default `build.review_scope=group`, per-task `gk finish` is ungated. `build.review_mode=manual` makes the LLM group review optional, while the final deterministic `group-check` remains mandatory; `auto` makes both the LLM review and deterministic check shared hard boundaries. Set `build.review_scope=task` only for an explicit high-risk compatibility policy.
+
+**3-layer mode decision** (no separate wizard or dashboard) — worktree fan-out is the Execute-phase run backend, decided on top of existing conventions, not a new pipeline:
+1. **config** — `worktree.*` in `.xm/build/config.json` or `.xm/config.json` (persistent project policy). Priority: CLI flag > `.xm/build/config.json` > `.xm/config.json` > defaults; `gate_policy` merges per-key.
+2. **CLI flag** — `run --worktrees` / `run --no-worktrees` overrides config for one run. When a flag is present, skip the layer-3 question.
+3. **phase gate (computed, not asked)** — the `worktree_signal` above. `recommend: true` → use worktree fan-out when config/CLI selected it; emit the recommendation for observability, but do not add a confirmation turn. `recommend: false` → run sequentially and print one line of reason (≤1 parallel-safe task, or no `expected_files`).
+
+**Parallel-safety derivation.** Per-task `expected_files[]`: non-overlapping expected files → parallel-safe; missing or overlapping → sequential (when in doubt, sequential). Set via `tasks add|update --expected-files "a,b"`.
+
+**Drive modes.** Two drive modes share the same command surface: interactive orchestrator (`/xm:build` fans subagents into worktree cwds) and headless CLI (a human works each worktree, finishes with the same `worktrees resume` / `gate-panel`).
+
+**Run-plan artifacts.** Real fan-out (`run --worktrees`, non-dry-run) acquires the first parallel batch, writes `run.json` + a `TASK-CONTEXT.md` snapshot per worktree, and emits `tasks[]` with `branch` / `worktree` / `env` / `acquired` / `worktree_status`. When no task is parallel-safe, the plan falls back to acquiring the first sequential task alone (`sequential_fallback: true`, `parallel: false`). Worktree `tasks[]` entries carry NO `on_complete`/`on_fail` — only a `completion_note`; under group review the per-task finish is intentionally ungated and the group panel is the review boundary.
+
+**Finish queue.** `worktrees resume [task-id...]` drives every resumable task through the serialized `gk finish` queue (one at a time under the target merge lock). Resumable = all worktree statuses EXCEPT `BLOCKED`/`DONE`/`READY`, so happy-path `WORKTREE_CREATED`/`RUNNING`/`VERIFYING`/`REVIEWING` and `NEEDS_FIX`/`MERGING` all enter the queue; `BLOCKED` is skipped with guidance. After-gate `paused` sets `worktree_status: BLOCKED` and saves `recover[]` — the accept (merge kept) vs rewind (`recover[]`) call belongs to the user.
+
+**Dry-run / degraded.** `--dry-run` emits the plan only (no gk). In explicit per-task review mode, missing gk `--gate` falls back to `mode: "manual-handoff"`; default group review does not require that unused capability.
 
 ## Applies to
 

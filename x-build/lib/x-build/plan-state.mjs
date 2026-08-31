@@ -56,13 +56,17 @@ export function setRequestedAction(project, requestedAction) {
   return state;
 }
 
-export function savePlanIntent(project, { goal, requestedAction, intentCheck, forcedInterview = false, draft = false }) {
+export function savePlanIntent(project, { goal, requestedAction, intentCheck, forcedInterview = false, draft = false, profile = null, buildId = null, traceId = null }) {
   const previous = readPlanState(project) || {};
   const next = {
     ...previous,
     version: 1,
     state: 'draft',
     goal,
+    profile: profile || previous.profile || null,
+    profile_provisional: previous.profile_provisional === true,
+    build_id: buildId || previous.build_id || null,
+    trace_id: traceId || previous.trace_id || null,
     requested_action: requestedAction,
     intent_check: intentCheck,
     forced_interview: forcedInterview,
@@ -76,6 +80,9 @@ export function savePlanIntent(project, { goal, requestedAction, intentCheck, fo
   if (manifest) {
     manifest.requested_action = requestedAction;
     manifest.goal = goal;
+    manifest.build_profile = next.profile;
+    manifest.build_id = next.build_id;
+    manifest.trace_id = next.trace_id;
     manifest.updated_at = next.updated_at;
     writeJSON(manifestPath(project), manifest);
   }

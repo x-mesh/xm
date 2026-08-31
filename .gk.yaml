@@ -1,0 +1,17 @@
+base_branch: main
+
+preflight:
+  steps:
+    - name: release-commit-lint
+      command: git-kit lint-commit "$(git log --grep='^release:' --format=%H -1)..HEAD"
+      continue_on_failure: false
+    - name: branch-check
+      command: branch-check
+      continue_on_failure: false
+    - name: no-conflict
+      command: no-conflict
+      continue_on_failure: false
+
+ship:
+  version_files:
+    - package.json

@@ -130,6 +130,18 @@ describe('shared cost core', () => {
     expect(result).toEqual({ spent: 0.1, projectSpentMap: { api: 0.1 } });
   });
 
+  test('computeSpend excludes timestamp-less rows from a windowed spend but keeps them lifetime', () => {
+    const now = Date.now();
+    const events = [
+      { cost_usd: 0.1, timestamp: now - 1_000 },
+      { cost_usd: 0.3 },                                  // no timestamp
+      { cost_usd: 0.5, timestamp: 'not-a-date' },         // unparseable timestamp
+    ];
+    // Documented contract: timestamp-less rows are excluded when `since` is set.
+    expect(computeSpend(events, { since: now - 10_000 }).spent).toBeCloseTo(0.1, 9);
+    expect(computeSpend(events).spent).toBeCloseTo(0.9, 9); // lifetime keeps all
+  });
+
   test('getCacheKey uses canonical object keys and preserves array semantics', () => {
     const first = getCacheKey({ model: 'sonnet', options: { temperature: 0, system: 'a' } });
     const same = getCacheKey({ options: { system: 'a', temperature: 0 }, model: 'sonnet' });
@@ -533,5 +545,37 @@ describe('shared cost core', () => {
     expect(checkHardCap({ spent: 0.8, cap: 1 })).toMatchObject({ ok: true, level: 'normal' });
     expect(checkHardCap({ spent: 0.8, additionalCost: 0.01, cap: 1 })).toMatchObject({ ok: true, level: 'warning' });
     expect(checkHardCap({ spent: 0.9, additionalCost: 0.11, cap: 1 })).toMatchObject({ ok: false, level: 'exceeded' });
+  });
+
+  // 0.07 + 0.02 === 0.09000000000000001 while 0.09 === 0.08999999999999999, so a
+  // bare `projected > budget` rejected a spend landing exactly ON the cap. Across
+  // every exact-at-cap combination for caps of 1..400 cents, 11.85% were wrongly
+  // rejected; one cent OVER the cap was never wrongly approved, so the bug only
+  // ever blocked legitimate spending.
+  test('checkHardCap approves a spend that lands exactly on the cap despite float error', () => {
+    expect(checkHardCap({ cap: 0.09, spent: 0.07, additionalCost: 0.02 })).toMatchObject({ ok: true });
+    expect(checkHardCap({ cap: 0.06, spent: 0.01, additionalCost: 0.05 })).toMatchObject({ ok: true });
+    expect(checkHardCap({ cap: 0.11, spent: 0.04, additionalCost: 0.07 })).toMatchObject({ ok: true });
+
+    // Exhaustive: no exact-at-cap combination may be rejected, and no
+    // one-cent-over combination may be approved.
+    let wrongReject = 0;
+    let wrongApprove = 0;
+    for (let cap = 1; cap <= 200; cap++) {
+      for (let spent = 0; spent <= cap; spent++) {
+        if (!checkHardCap({ cap: cap / 100, spent: spent / 100, additionalCost: (cap - spent) / 100 }).ok) wrongReject++;
+        if (checkHardCap({ cap: cap / 100, spent: spent / 100, additionalCost: (cap - spent + 1) / 100 }).ok) wrongApprove++;
+      }
+    }
+    expect(wrongReject).toBe(0);
+    expect(wrongApprove).toBe(0);
+  });
+
+  test('checkHardCap tolerance does not mask a real overspend', () => {
+    // Slack is 1e-9 USD — below any real currency amount, so anything a caller
+    // could actually spend over the cap still fails closed.
+    expect(checkHardCap({ cap: 10, spent: 10, additionalCost: 1e-8 })).toMatchObject({ ok: false, level: 'exceeded' });
+    expect(checkHardCap({ cap: 10, spent: 10, additionalCost: 0.01 })).toMatchObject({ ok: false, level: 'exceeded' });
+    expect(checkHardCap({ cap: 10, spent: 10, additionalCost: 1 })).toMatchObject({ ok: false, level: 'exceeded' });
   });
 });

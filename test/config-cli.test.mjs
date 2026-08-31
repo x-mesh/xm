@@ -246,8 +246,22 @@ describe('xm config get/show consistency (t2)', () => {
       // --global reads only the global tier (developer), distinct from the merged
       // no-flag result (normal) — proving the flag still selects a single tier.
       expect(runIn(['get', 'mode', '--global'], { home, cwd: proj }).stdout.trim()).toBe('developer');
-      // --local preserves the historical (pre-fix) resolveScope read.
+      // --local reads only the local tier file, which holds 'normal' here.
       expect(runIn(['get', 'mode', '--local'], { home, cwd: proj }).stdout.trim()).toBe('normal');
+    });
+  });
+
+  test('get --local reads the local tier raw — a global-only key is not returned (l23)', () => {
+    withHomeAndProject(({ home, proj }) => {
+      writeXmConfig(home, { mode: 'developer' }); // set ONLY in the global tier
+      writeXmConfig(proj, {});
+
+      // Plain get resolves the merged value from global...
+      expect(runIn(['get', 'mode'], { home, cwd: proj }).stdout.trim()).toBe('developer');
+      // ...but --local must read the local file raw: no merge, no defaults.
+      const local = runIn(['get', 'mode', '--local'], { home, cwd: proj });
+      expect(local.exitCode).toBe(0);
+      expect(stripAnsi(local.stdout).trim()).toBe('(not set)');
     });
   });
 
@@ -1011,6 +1025,24 @@ describe('xm config panel.* schema validation (F-panel)', () => {
     });
   });
 
+  test('panel.command_budget 유효값은 정수로 저장', () => {
+    withRoot((root) => {
+      const w = run(['set', 'panel.command_budget', '12'], root);
+      expect(w.exitCode).toBe(0);
+      expect(stripAnsi(w.stdout)).not.toContain('⚠');
+      const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+      expect(written.panel.command_budget).toBe(12);
+    });
+  });
+
+  test('panel.command_budget 기본값은 bounded review용 12', () => {
+    expect(SCHEMA.find((entry) => entry.key === 'panel.command_budget')?.default).toBe(12);
+  });
+
+  test('budget.prediction_max_age_hours 기본값은 default config와 같은 24', () => {
+    expect(SCHEMA.find((entry) => entry.key === 'budget.prediction_max_age_hours')?.default).toBe(24);
+  });
+
   test('panel.model_overrides 객체는 타입 경고 없이 저장', () => {
     withRoot((root) => {
       const w = run(['set', 'panel.model_overrides', '{"codex":"gpt-5.5"}'], root);
@@ -1246,6 +1278,27 @@ describe('config-schema eval.auto registration', () => {
       expect(stripAnsi(w.stdout)).not.toContain('미등록');
       const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
       expect(written.eval.auto).toBe(true);
+    });
+  });
+});
+
+describe('config-schema review.models registration', () => {
+  test('review.models is an optional machine-local model-slot array', () => {
+    const entry = SCHEMA.find((e) => e.key === 'review.models');
+    expect(entry).toBeTruthy();
+    expect(entry.type).toBe('array');
+    expect(entry.scope).toBe('either');
+    expect(entry.default).toEqual([]);
+  });
+
+  test('xm config set review.models accepts a JSON slot array without warning', () => {
+    withRoot((root) => {
+      const value = '["codex:gpt-5.6-sol:xhigh","codex:claude-sonnet-5"]';
+      const w = run(['set', 'review.models', value], root);
+      expect(w.exitCode).toBe(0);
+      expect(stripAnsi(w.stdout)).not.toContain('⚠');
+      const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+      expect(written.review.models).toEqual(JSON.parse(value));
     });
   });
 });

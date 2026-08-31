@@ -171,6 +171,14 @@ export const SCHEMA = [
     description: 'x-review 렌즈 크로스벤더 여부 (미설정=cross_vendor.default)',
   },
   {
+    key: 'review.models',
+    group: 'cross_vendor',
+    type: 'array',
+    scope: 'either',
+    default: [],
+    description: 'x-review panel 백엔드 전용 provider:model[:effort] 슬롯 — 2개 이상일 때 명시된 모델을 그대로 사용; 미설정 시 ready provider 자동 감지',
+  },
+  {
     key: 'cross_vendor.solver',
     group: 'cross_vendor',
     type: 'boolean',
@@ -233,6 +241,7 @@ export const SCHEMA = [
     type: 'number',
     nullable: true,
     scope: 'local',
+    // Independent from panel.command_budget; keep aligned with default-config.json.
     default: 24,
     description: 'dispatch pre-block에 재사용할 task prediction의 최대 나이(시간). 만료/누락 시 새로 계산',
   },
@@ -305,6 +314,27 @@ export const SCHEMA = [
     scope: 'either',
     default: 300000,
     description: 'serial quality command timeout(ms)',
+  },
+  {
+    key: 'build.serial_quality_env',
+    group: 'misc',
+    type: 'object',
+    scope: 'either',
+    default: {},
+    description: 'serial quality command에 주입할 환경변수 { KEY: value } — command_hash에 포함되어 값 변경 시 캐시된 evidence가 무효화됨',
+  },
+  {
+    // Arbitrary shell commands keyed by gate name, executed by `gate pass` for a
+    // non-standard gate type and appended to every `quality` run. Registered so
+    // the wizard/dashboard can DISCLOSE it; it is deliberately not wizard-editable
+    // (a text field that runs shell on the next gate is the wrong affordance —
+    // edit .xm/config.json directly).
+    key: 'gate_scripts',
+    group: 'gates',
+    type: 'object',
+    scope: 'either',
+    default: {},
+    description: '커스텀 게이트/품질 스크립트 { gateName: shell command } — gate pass·quality에서 셸로 실행되므로 위저드 편집 불가, config.json 직접 수정',
   },
 
   // ── phase gates ──
@@ -440,7 +470,7 @@ export const SCHEMA = [
     group: 'misc',
     type: 'integer',
     scope: 'either',
-    default: 120000,
+    default: 600000,
     description: '개별 task/group check command 제한 시간(ms, 1000-600000)',
   },
 
@@ -635,6 +665,16 @@ export const SCHEMA = [
     owner: 'x-panel',
     default: 1,
     description: 'native panel review round 수 — 1(기본 consensus/diversity) / 2(adversarial refutation)',
+  },
+  {
+    key: 'panel.command_budget',
+    group: 'panel',
+    type: 'integer',
+    scope: 'global',
+    owner: 'x-panel',
+    min: 1,
+    default: 12,
+    description: 'Codex review slot당 완료 command_execution 상한 — final contract 전에 도달하면 command_budget으로 종료',
   },
 ];
 

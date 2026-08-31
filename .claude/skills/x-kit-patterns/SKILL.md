@@ -19,7 +19,7 @@ Conventional Commits 준수율 **98%** (195/199). 표준 type 외에 이 repo �
 | `release:` | 101 | 버전 범프 릴리스. 형식: `release: x-build@2.6.3, xm@2.3.14` (멀티 플러그인 동시 범프) |
 | `fix:` | 25 | 버그 수정 |
 | `feat:` | 18 | 신규 기능 |
-| `tm(...)` | 17 | x-build 하네스 자동 생성 커밋 (예: `tm(execute/t1): ... [COMPLETED]`). **사람이 직접 쓰지 말 것** — 하네스가 만든다 |
+| `tm(...)` | 17 | **폐기됨 (2026-08-11).** x-build가 자동 생성했던 커밋 (`tm(execute/t1): ... [COMPLETED]`). 89개 중 82개가 사용자의 staged 작업을 엉뚱한 이름으로 삼켰기 때문에 `gitAutoCommit`을 제거했다. 이력에만 남아 있으며 새로 생기지 않는다 — 직접 쓰지 말 것 |
 | `docs:` | 12 | 문서 (README/SKILL.md) |
 | `chore:` | 6 | 잡무 |
 | `proto:` | 5 | `prototypes/` 실험 코드 |

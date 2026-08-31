@@ -216,7 +216,7 @@ See `phases/plan.md` — full Plan phase walkthrough: PRD generation and improve
 0. **Entry gate**: `$XMB phase set execute` runs a deterministic `prd-check`. It BLOCKS entry to Execute if the PRD has unresolved low-confidence assumptions (`[A*, low]`) or unanswered `Status: blocking` open questions (the PRD template's own Gate rule). Resolve them via AskUserQuestion, or override with `$XMB phase set execute --force`. Inspect anytime: `$XMB prd-check --json`.
 1. `$XMB run --json` — emits the execution plan AND marks the step's ready tasks RUNNING (so a later completion is actually recorded). It always emits valid JSON: when no tasks are ready it returns `{tasks: [], status: "all_done" | "in_progress" | "waiting", running: [...]}` — never human text.
 2. Parse JSON → spawn Agent per task, using the plan's own fields (profile-aware — do NOT hardcode the model):
-   - `subagent_type`: `task.agent_type === "deep-executor"` → `"oh-my-claudecode:deep-executor"`, else `"oh-my-claudecode:executor"`
+   - `subagent_type`: `"general-purpose"`, with the role injected into the prompt from the x-agent preset named by `task.agent_type` (`deep-executor` → `architect`, else `se`). See `cli-skill-protocol.md` "Mapping to Agent Tool" — never route to a third-party plugin's subagent type.
    - `model`: use `task.model` from the plan (resolved from `model_profile`: economy/default/max)
    - `prompt`: use `task.prompt` value + **inject `done_criteria`** as acceptance contract:
      ```
@@ -328,7 +328,19 @@ Recommendation only — not auto-applied. User must specify via `--strategy`.
    # edit .xm/review/triage.json
    $XMB verify-review-fix
    ```
-   Review-fix edits MUST be limited to `fix_now` findings and `fix_scope.allowed_files`. After applying fixes, run `$XMB quality`, `$XMB verify-review-fix`, and `/xm:review diff` again before closing.
+   `--init` fails if any Phase-1 reviewed file bytes changed after x-review. The first plain
+   `verify-review-fix` validates the exact triage and authorizes edits; do not edit before it
+   passes. Review-fix edits MUST be limited to `fix_now` findings and
+   `fix_scope.allowed_files`. Editing triage invalidates the authorization. After applying fixes,
+   a bound review context also requires each Medium+ finding to cite real context IDs with host evidence,
+   and requires evidence for every invariant and acceptance check. LGTM does not bypass this context gate.
+   record byte-bound reverification for every `fix_now` finding:
+   ```bash
+   $XMB verify-review-fix --reverify F1 --outcome resolved --evidence "targeted regression test passes"
+   ```
+   Findings move through `open → fix_authorized → fixed → reverified`; editing the file again
+   invalidates its receipt, while `persistent` and `regression` outcomes remain blocking. Then run
+   `$XMB quality`, `$XMB verify-review-fix`, and `/xm:review diff` again before closing.
 5. When quality, coverage, and contracts pass, advance automatically with `$XMB phase next`.
    Show the results, but do not call AskUserQuestion for this routine transition. Stop only when
    the checks reveal a new user-owned decision (scope, irreversible/high-risk contract,

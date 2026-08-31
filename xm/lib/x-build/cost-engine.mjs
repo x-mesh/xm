@@ -98,13 +98,14 @@ export const JUDGMENT_ROLES = [
 
 // ── MODEL_COSTS ───────────────────────────────────────────────────────
 
-// Prices per 1M tokens (USD). Last updated: 2026-07 (fable added — Fable 5,
-// the tier above opus; used for plan-phase roles under the verified
-// plan=fable + implement=sonnet split).
+// Prices per 1M tokens (USD). Last updated: 2026-08 (opus corrected to the
+// current Anthropic Opus-tier rate $5/$25; fable — Fable 5, the tier above
+// opus — used for plan-phase roles under the verified plan=fable +
+// implement=sonnet split).
 export const MODEL_COSTS = {
   'haiku':  { input: 1.00, output: 5.00 },
   'sonnet': { input: 3.00, output: 15.00 },
-  'opus':   { input: 15.00, output: 75.00 },
+  'opus':   { input: 5.00, output: 25.00 },
   'fable':  { input: 10.00, output: 50.00 },
 };
 
@@ -161,7 +162,7 @@ export const MODEL_COSTS_BY_VENDOR = {
   claude: {
     haiku:  { input: 1.00,  output: 5.00 },
     sonnet: { input: 3.00,  output: 15.00 },
-    opus:   { input: 15.00, output: 75.00 },
+    opus:   { input: 5.00,  output: 25.00 },
     fable:  { input: 10.00, output: 50.00 },
   },
   codex: {
@@ -311,6 +312,7 @@ export const SIZE_TOKEN_ESTIMATES = {
 // Values reflect average token overhead relative to a single-agent baseline.
 
 export const STRATEGY_MULTIPLIERS = {
+  direct: 1.0,       // single agent call, no orchestration — the baseline itself
   decompose: 1.2,    // splits into smaller parallel tasks
   distribute: 1.2,   // parallel independent subtasks
   tournament: 1.3,   // elimination reduces total work
@@ -508,6 +510,7 @@ export function computeTokenActuals() {
   if (!existsSync(metricsFile)) return null;
 
   const groups = { small: [], medium: [], large: [] };
+  const modelGroups = {}; // 'size:model' buckets — concrete models only
   try {
     const lines = readFileSync(metricsFile, 'utf8').trim().split('\n');
     for (const line of lines) {
@@ -523,26 +526,41 @@ export function computeTokenActuals() {
             && m.model !== INHERIT_MODEL
             && typeof m.cost_usd === 'number' && m.size && groups[m.size]) {
           groups[m.size].push(m.cost_usd);
+          // Rows without a concrete model stay size-only: a mixed-model
+          // average must never masquerade as one model's measured rate.
+          if (typeof m.model === 'string' && m.model) {
+            (modelGroups[`${m.size}:${m.model}`] ??= []).push(m.cost_usd);
+          }
         }
       } catch { /* skip malformed */ }
     }
   } catch { return null; }
 
-  const sample_counts = {};
-  const estimates = {};
-  for (const size of Object.keys(groups)) {
-    const samples = groups[size];
-    sample_counts[size] = samples.length;
-    if (samples.length > 0) {
-      const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
-      estimates[size] = { avg_cost_usd: avg };
+  // Two namespaces on purpose: size buckets keep the historical invariant that
+  // sample_counts sums to the number of distinct measured tasks, while the
+  // 'size:model' buckets the estimator prices from live separately — one row
+  // feeds both, and mixing them in one map double-counted every modeled row.
+  const aggregate = (entries) => {
+    const counts = {};
+    const avgs = {};
+    for (const [key, samples] of entries) {
+      counts[key] = samples.length;
+      if (samples.length > 0) {
+        const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
+        avgs[key] = { avg_cost_usd: avg };
+      }
     }
-  }
+    return { counts, avgs };
+  };
+  const size = aggregate(Object.entries(groups));
+  const model = aggregate(Object.entries(modelGroups));
 
   const result = {
     updated_at: new Date().toISOString(),
-    sample_counts,
-    estimates,
+    sample_counts: size.counts,
+    estimates: size.avgs,
+    model_sample_counts: model.counts,
+    model_estimates: model.avgs,
   };
 
   try {
@@ -586,11 +604,14 @@ export function estimateTaskCost(task, model = 'sonnet') {
   const adjustedInput = Math.round(base.input * totalMultiplier);
   const adjustedOutput = Math.round(base.output * totalMultiplier);
 
-  // Use actuals-based cost if enough samples exist
+  // Use actuals-based cost if enough samples exist for this size AND model —
+  // a mixed-model average must not price a specific model's task ('inherit'
+  // never has a bucket, so it always takes the heuristic path below).
   const actuals = loadTokenActuals();
-  const sampleCount = actuals?.sample_counts?.[size] ?? 0;
-  if (actuals && sampleCount >= 10 && actuals.estimates?.[size]?.avg_cost_usd != null) {
-    const baseCostUsd = actuals.estimates[size].avg_cost_usd * totalMultiplier;
+  const bucket = `${size}:${model}`;
+  const sampleCount = actuals?.model_sample_counts?.[bucket] ?? 0;
+  if (actuals && sampleCount >= 10 && actuals.model_estimates?.[bucket]?.avg_cost_usd != null) {
+    const baseCostUsd = actuals.model_estimates[bucket].avg_cost_usd * totalMultiplier;
     return {
       input_tokens: adjustedInput * base.turns,
       output_tokens: adjustedOutput * base.turns,
@@ -770,9 +791,10 @@ export function cmdForecastUpdate() {
   const parts = Object.keys(counts).map(size => `${size}: ${counts[size]}`).join(', ');
   console.log(`Token actuals updated (${parts || 'no measured samples yet'}).`);
   // The forecaster only trusts an averaged actual once ≥10 samples exist for a
-  // size (below that it stays on estimates); say which sizes are still estimate-only.
-  const thin = Object.keys(counts).filter(size => counts[size] > 0 && counts[size] < 10);
-  if (thin.length) console.log(`  ${thin.map(s => `${s} (${counts[s]}/10)`).join(', ')} — still estimate-only until 10 samples.`);
+  // size:model bucket (below that it stays on estimates); say which are still thin.
+  const modelCounts = actuals.model_sample_counts || {};
+  const thin = Object.keys(modelCounts).filter(k => modelCounts[k] > 0 && modelCounts[k] < 10);
+  if (thin.length) console.log(`  ${thin.map(k => `${k} (${modelCounts[k]}/10)`).join(', ')} — still estimate-only until 10 samples.`);
 }
 
 // ── ROI: Score/$ from measured actuals (빅뱃1) ─────────────────────────
@@ -932,7 +954,14 @@ function scanMetrics(config) {
   const mp = metricsPath();
   try {
     if (cutoff != null) {
-      const result = computeSpend(readCostEvents({ filePath: mp }), { since: cutoff });
+      // The writer rotates the log to '<mp>.1' at METRICS_MAX_BYTES; in-window
+      // rows can live there, so both files feed the windowed spend (mirrors
+      // effectiveness.mjs readMetricRows: rotated file first, live file after).
+      const events = [
+        ...readCostEvents({ filePath: mp + '.1' }),
+        ...readCostEvents({ filePath: mp }),
+      ];
+      const result = computeSpend(events, { since: cutoff });
       return { spent: result.spent, projectSpentMap: trackedProjectTotals ? result.projectSpentMap : {} };
     }
 
@@ -940,19 +969,37 @@ function scanMetrics(config) {
     // while the shared core owns validity and aggregation of those new rows.
     const fileSize = existsSync(mp) ? statSync(mp).size : 0;
     const cache = readSpendCache();
-    const reusableCache = cache && fileSize >= cache.last_line_offset;
-    const startOffset = reusableCache ? cache.last_line_offset : 0;
-    const cachedTotal = reusableCache ? cache.total_usd : 0;
-    const cachedProjectTotals = reusableCache ? (cache.project_totals ?? {}) : {};
+    // A live file shorter than the cached offset means one of two things:
+    //  - rotation: the old file now sits at '<mp>.1' and its rows past the cached
+    //    offset were never counted — fold that tail in, keep the cached total,
+    //    then rescan the fresh live file from 0;
+    //  - manual truncation/reset (no '.1'): the cached total describes rows that
+    //    no longer exist anywhere — drop the cache and rescan from 0, matching
+    //    the self-healing behavior the pre-rotation code had.
+    const shrunk = cache != null && fileSize < cache.last_line_offset;
+    const rotated = shrunk && existsSync(mp + '.1');
+    const reset = shrunk && !rotated;
+    const startOffset = cache != null && !shrunk ? cache.last_line_offset : 0;
+    const cachedTotal = cache != null && !reset ? cache.total_usd : 0;
+    const projectSpentMap = cache != null && !reset ? { ...(cache.project_totals ?? {}) } : {};
+    let rotatedSpent = 0;
+    if (rotated) {
+      const tail = computeSpend(parseCostEventLines(readLinesFromOffset(mp + '.1', cache.last_line_offset).text));
+      rotatedSpent = tail.spent;
+      if (trackedProjectTotals) {
+        for (const [project, cost] of Object.entries(tail.projectSpentMap)) {
+          projectSpentMap[project] = (projectSpentMap[project] ?? 0) + cost;
+        }
+      }
+    }
     const { text, endOffset } = readLinesFromOffset(mp, startOffset);
     const incremental = computeSpend(parseCostEventLines(text));
-    const projectSpentMap = { ...cachedProjectTotals };
     if (trackedProjectTotals) {
       for (const [project, cost] of Object.entries(incremental.projectSpentMap)) {
         projectSpentMap[project] = (projectSpentMap[project] ?? 0) + cost;
       }
     }
-    const spent = cachedTotal + incremental.spent;
+    const spent = cachedTotal + rotatedSpent + incremental.spent;
     writeSpendCache(spent, endOffset, projectSpentMap);
     return { spent, projectSpentMap };
   } catch (e) {

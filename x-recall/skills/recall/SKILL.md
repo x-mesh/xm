@@ -54,7 +54,7 @@ front door to the same engine.
    | `xm recall list [--type T] [--project P] [--since 7d] [--limit N] [--json]` | Browse artifacts, newest first |
    | `xm recall show <id\|type> [--last] [--json]` | Print one artifact's content |
    | `xm recall search "<query>" [--type T] [--json]` | Full-text + metadata search |
-   | `xm recall handoff-md` | (Re)write tool-neutral `.xm/build/HANDOFF.md` |
+   | `xm recall handoff-md` | (Re)write rich tool-neutral `.xm/build/HANDOFF.summary.md` |
    | `xm recall types` | List artifact types |
 
    Types: `review op plan eval probe humble solver research prd handoff`.

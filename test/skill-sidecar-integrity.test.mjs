@@ -110,6 +110,8 @@ describe('skill sidecar integrity — install output', () => {
         .toEqual(readdirSync(join(SKILLS, 'review', 'lenses')).sort());
       expect(readdirSync(join(installed, 'references')).sort())
         .toEqual(readdirSync(join(SKILLS, 'review', 'references')).sort());
+      expect(readdirSync(join(installed, 'scripts')).sort())
+        .toEqual(readdirSync(join(SKILLS, 'review', 'scripts')).sort());
 
       // And the property that keeps it fixed as skills grow new sidecars:
       // EVERY source file under EVERY skill reaches the install output.

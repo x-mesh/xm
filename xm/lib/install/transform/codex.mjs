@@ -63,8 +63,28 @@ Deterministic gates and human approval gates are workflow controls, not LLM-rout
 
 For phase continuation, exec-level flags and \`-m\`/\`-c\` must precede \`resume\`: \`codex exec [flags] -m <model> resume --last\`.`;
 
+const CODEX_REVIEW_OVERLAY = `## Codex Review Fan-Out Contract
+
+For the current-runtime review backend, call Codex's native spawn_agent collaboration tool directly; never call it from inside functions.exec. Every call must carry a non-empty argument object.
+
+Spawn every lens with \`"fork_turns": "none"\` — never \`"all"\` and never omitted (omitted means full fork). A full-history fork hands the leaf the orchestrator's own conversation; the leaf then adopts the orchestrator role, re-reads the review skill, spawns its own reviewers, and the run recurses with zero completed turns until it is killed (observed 2026-08-31, term-mesh PR #429). A \`"none"\` fork starts with zero context, so the \`message\` must be self-contained: the lens contract inline (never a pointer to this skill file), the frozen target (repo, base and head SHAs, and the exact command or path that yields the diff), the read-only rule, the required report format, and this leaf guard verbatim: "You are a leaf reviewer, not an orchestrator. Never call spawn_agent, never invoke any review skill or \`xm review\` CLI, never merge or edit files. Analyze only the target you were handed and return only the required report." A minimal lens spawn is:
+
+    {
+      "task_name": "review_correctness",
+      "fork_turns": "none",
+      "message": "<inline lens contract + frozen target + read-only rule + leaf guard + report format>"
+    }
+
+Build every planned lens call completely, then submit them in one parallel batch. The batch is the only fan-out initiation attempt for that review run. A spawn succeeds only when it returns a worker id. If any call returns an argument parse/schema error, or the batch creates zero workers, do not retry spawn_agent; record the diagnostic and immediately use the source skill's single-pass-headless path. If only some calls create workers, interrupt those workers before falling back; if interruption fails, return Review incomplete. Never call wait_agent with zero known live workers. Transport failures after a worker id exists remain governed by artifact-first recovery.
+
+Wait discipline: a leaf reviewing a full PR needs minutes, not seconds. Use wait_agent timeouts of at least 300000 ms per round and do not interrupt any worker before the batch has had 10 minutes. Send at most one reminder message per worker; after the deadline, interrupt the worker once, report that lens as not covered, and never re-spawn it within the same run.`;
+
 function isCodexBuildSkill(skill) {
   return skill.skillName === 'build';
+}
+
+function isCodexReviewSkill(skill) {
+  return skill.skillName === 'review';
 }
 
 /**
@@ -95,12 +115,14 @@ export function renderCodexSkill(skill, ctx, name = skill.skillName) {
     '---',
     `name: ${name}`,
     `description: ${JSON.stringify(description)}`,
+    ...(skill.allowedTools?.length ? ['allowed-tools:', ...skill.allowedTools.map((tool) => '  - ' + tool)] : []),
     '---',
     '',
   ].join('\n');
   let body = expandPaths(skill.body, { target: 'codex', scope: ctx.scope });
   body = body.trimEnd() + '\n\n' + renderCodexSkillOverlay(skill);
   if (isCodexBuildSkill(skill)) body += '\n\n' + CODEX_BUILD_OVERLAY;
+  if (isCodexReviewSkill(skill)) body += '\n\n' + CODEX_REVIEW_OVERLAY;
   return head + body.trimEnd() + '\n';
 }
 

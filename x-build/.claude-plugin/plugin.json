@@ -1,7 +1,7 @@
 {
   "name": "build",
-  "version": "2.28.0",
-  "description": "Phase-based project harness with requirements gathering, parallel research, plan validation, DAG execution, cost forecasting, and decision memory",
+  "version": "3.6.3",
+  "description": "Repository-grounded planning with lean native execution; legacy lifecycle commands are explicit opt-ins",
   "author": {
     "name": "x-mesh"
   },

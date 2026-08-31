@@ -77,6 +77,62 @@ describe('release detect/bump — xm dispatcher handling (l9/l10)', () => {
       expect(mkt.plugins.find((p) => p.name === 'xm').version).toBe('1.2.4');    // xm meta-bumped once
     } finally { rmSync(d, { recursive: true, force: true }); }
   });
+
+  // The marketplace bump path printed no tag (bumpStandalone computes one but is skipped for
+  // xm-marketplace) and `release commit` only tags when handed --tag, so three releases
+  // (2.22.0, 2.23.0, 2.23.1) shipped untagged with no error anywhere.
+  test('bump --plugins xm prints the meta-version tag command', () => {
+    const d = makeReleaseFixture();
+    try {
+      const r = spawnSync('node', [CLI, 'release', 'bump', '--patch', '--plugins', 'xm'], { cwd: d, encoding: 'utf8', timeout: 60000 });
+      expect(r.stdout).toContain('--tag v1.2.4'); // meta version after the bump, not the old 1.2.3
+      expect(r.stdout).toContain('release commit');
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test('bump --plugins x-panel tags the xm meta version, not the plugin version', () => {
+    const d = makeReleaseFixture();
+    try {
+      const r = spawnSync('node', [CLI, 'release', 'bump', '--patch', '--plugins', 'x-panel'], { cwd: d, encoding: 'utf8', timeout: 60000 });
+      expect(r.stdout).toContain('--tag v1.2.4'); // xm meta, not panel's 0.1.1
+      expect(r.stdout).not.toContain('--tag v0.1.1');
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test('bump warns instead of suggesting a duplicate tag', () => {
+    const d = makeReleaseFixture();
+    try {
+      spawnSync('bash', ['-c', 'git tag -a v1.2.4 -m "pre-existing"'], { cwd: d });
+      const r = spawnSync('node', [CLI, 'release', 'bump', '--patch', '--plugins', 'xm'], { cwd: d, encoding: 'utf8', timeout: 60000 });
+      expect(r.stdout).toContain('already exists');
+      expect(r.stdout).not.toContain('--tag v1.2.4'); // never hand over a command that would fail
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test('x-release skill and command both require --tag at the commit step', () => {
+    for (const rel of ['.claude/skills/x-release.md', '.claude/commands/x-release.md']) {
+      const body = readFileSync(join(REPO, rel), 'utf8');
+      expect(body).toContain('--tag v<META_VERSION> --push');
+      expect(body).not.toContain('release commit --msg "release: ..." --push'); // the untagged form
+    }
+  });
+
+  test('bump keeps Claude and Codex plugin manifest versions aligned', () => {
+    const d = makeReleaseFixture();
+    try {
+      for (const dir of ['x-plan/.claude-plugin', 'x-plan/.codex-plugin']) mkdirSync(join(d, dir), { recursive: true });
+      writeFileSync(join(d, 'x-plan', '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'plan', version: '0.1.0' }));
+      writeFileSync(join(d, 'x-plan', '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'x-plan', version: '0.0.7' }));
+      const marketplacePath = join(d, '.claude-plugin', 'marketplace.json');
+      const marketplace = JSON.parse(readFileSync(marketplacePath, 'utf8'));
+      marketplace.plugins.push({ name: 'plan', version: '0.1.0' });
+      writeFileSync(marketplacePath, JSON.stringify(marketplace, null, 2));
+
+      spawnSync('node', [CLI, 'release', 'bump', '--minor', '--plugins', 'x-plan'], { cwd: d, encoding: 'utf8', timeout: 60000 });
+      expect(JSON.parse(readFileSync(join(d, 'x-plan', '.claude-plugin', 'plugin.json'), 'utf8')).version).toBe('0.2.0');
+      expect(JSON.parse(readFileSync(join(d, 'x-plan', '.codex-plugin', 'plugin.json'), 'utf8')).version).toBe('0.2.0');
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
 });
 
 // A tag-versioned project (Cargo + a `on: push: tags` workflow) — the shape x-ship used to
@@ -127,6 +183,32 @@ describe('release commit — tag-versioned projects', () => {
       const at = spawnSync('bash', ['-c', 'git rev-list -n1 v0.5.0'], { cwd: d, encoding: 'utf8' }).stdout.trim();
       const head = spawnSync('bash', ['-c', 'git rev-parse HEAD'], { cwd: d, encoding: 'utf8' }).stdout.trim();
       expect(at).not.toBe(head); // the old tag still points at the old commit
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test('bump refuses a prerelease version instead of writing NaN (l28)', () => {
+    const d = makeRustFixture();
+    try {
+      writeFileSync(join(d, 'Cargo.toml'), '[package]\nname = "gk"\nversion = "0.6.0-rc.1"\n');
+      const r = spawnSync('node', [CLI, 'release', 'bump', '--minor', '--standalone'], { cwd: d, encoding: 'utf8', timeout: 60000 });
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain('Cannot bump version "0.6.0-rc.1"');
+      // pre-fix: '0.6.0-rc.1'.split('.').map(Number) produced NaN parts that were WRITTEN to disk
+      expect(readFileSync(join(d, 'Cargo.toml'), 'utf8')).toContain('version = "0.6.0-rc.1"');
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test('commit --push exits non-zero when the push fails (l29)', () => {
+    const d = makeRustFixture();
+    try {
+      spawnSync('bash', ['-c', 'git remote add origin /nonexistent/xkit-push-target.git'], { cwd: d });
+      writeFileSync(join(d, 'main.rs'), 'fn main(){ /* fix */ }\n');
+      const r = spawnSync('node', [CLI, 'release', 'commit', '--msg', 'release: gk@0.6.0', '--push'], { cwd: d, encoding: 'utf8', timeout: 30000 });
+      expect(r.status).toBe(1); // pre-fix: the catch printed a remedy but the process still exited 0
+      expect(r.stderr).toContain('Push failed');
+      // only the push failed — the commit itself still landed locally
+      const head = spawnSync('bash', ['-c', 'git log -1 --format=%s'], { cwd: d, encoding: 'utf8' }).stdout.trim();
+      expect(head).toBe('release: gk@0.6.0');
     } finally { rmSync(d, { recursive: true, force: true }); }
   });
 

@@ -1,7 +1,7 @@
 ---
-description: Phase-based project harness — manage project lifecycle, DAG execution, cost forecasting, and agent orchestration
+description: Repository-grounded planning with native execution; legacy lifecycle commands are explicit opt-ins
 ---
 
 User provided: $ARGUMENTS
 
-Invoke the `build` skill to handle this request. Follow the instructions in `skills/build/SKILL.md` (bundled with this plugin) and apply them to the user's arguments above.
+Invoke the `build` skill to handle this request. Follow `skills/build/SKILL.md`. Route `plan` to x-plan, and use `legacy-plan` only when the user explicitly requests the former PRD/task/phase planner.

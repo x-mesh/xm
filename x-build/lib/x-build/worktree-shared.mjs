@@ -151,6 +151,36 @@ export function isParallelSafe(tasks) {
   return { safe, sequential, reason: reasons.join('; ') };
 }
 
+/** Greedy conflict-graph coloring for ready tasks with known expected_files. */
+export function compileParallelBatches(tasks, maxParallel = 4) {
+  const limit = Math.max(1, Number(maxParallel) || 1);
+  const known = []; const sequential = []; const reasons = [];
+  for (const task of tasks || []) {
+    if (normalizeExpectedFiles(task.expected_files).length === 0) {
+      sequential.push(task.id); reasons.push(task.id + ': no expected_files (unknown -> sequential)');
+    } else known.push(task);
+  }
+  const indexed = known.map((task, index) => ({ task, index }));
+  const degree = new Map(indexed.map(({ task }) => [task.id, known.filter((other) => other.id !== task.id && expectedFilesOverlap(task, other).length).length]));
+  indexed.sort((a, b) => degree.get(b.task.id) - degree.get(a.task.id) || a.index - b.index);
+  const batches = [];
+  for (const { task } of indexed) {
+    let placed = false;
+    for (const batch of batches) {
+      if (batch.length >= limit) continue;
+      if (batch.every((other) => expectedFilesOverlap(task, other).length === 0)) { batch.push(task); placed = true; break; }
+    }
+    if (!placed) batches.push([task]);
+  }
+  const parallel_batches = batches.map((batch) => batch.map((task) => task.id));
+  const conflict_edges = [];
+  for (let i = 0; i < known.length; i++) for (let j = i + 1; j < known.length; j++) {
+    const overlap = expectedFilesOverlap(known[i], known[j]);
+    if (overlap.length) conflict_edges.push({ tasks: [known[i].id, known[j].id], files: overlap });
+  }
+  return { parallel_batches, sequential, conflict_edges, known_tasks: known.map((task) => task.id), scheduled_parallel_tasks: parallel_batches.flat(), reason: reasons.join('; ') };
+}
+
 // ── build root (call-time) ───────────────────────────────────────────
 // core.ROOT is captured at import time, so a test/orchestrator that sets
 // X_BUILD_ROOT after some other module already imported core would silently

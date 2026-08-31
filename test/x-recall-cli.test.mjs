@@ -85,6 +85,15 @@ beforeAll(() => {
   });
   writeText(join(XM, 'build', 'projects', 'cost-engine-v2', 'context', 'PRD.md'),
     '# PRD: cost-engine-v2\n\nGoal: reduce cost.\n');
+  writeJSON(join(XM, 'plan', '20260412T100000Z-export.json'), {
+    schema_version: 1, status: 'complete', executable: true, goal: 'Ship export flow',
+    provenance: { created_at: '2026-04-12T10:00:00.000Z', mode: 'ultra' },
+  });
+  writeJSON(join(XM, 'plan', '20260413T100000Z-standard', 'manifest.json'), {
+    schema_version: 1, goal: 'Plan import flow', mode: 'standard', phase: 'clarify', executable: false,
+    created_at: '2026-04-13T10:00:00.000Z', updated_at: '2026-04-13T10:10:00.000Z',
+  });
+  writeText(join(XM, 'plan', '20260413T100000Z-standard', 'plan.md'), '# Plan: import flow\n');
 
   // SESSION-STATE for handoff-md
   writeJSON(join(XM, 'build', 'SESSION-STATE.json'), {
@@ -140,6 +149,13 @@ describe('list', () => {
     expect(parsed.every(a => a.type === 'eval')).toBe(true);
   });
 
+  test('indexes standalone .xm/plan artifacts', () => {
+    const r = run(['list', '--type', 'plan', '--json']);
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.some(a => a.title === 'Ship export flow' && a.format === 'json')).toBe(true);
+    expect(parsed.some(a => a.title === 'Plan import flow' && a.meta.mode === 'standard')).toBe(true);
+  });
+
   test('indexes x-panel verdicts as panel type', () => {
     const r = run(['list', '--type', 'panel', '--json']);
     const arts = JSON.parse(r.stdout);
@@ -185,6 +201,11 @@ describe('show', () => {
     const r = run(['show', 'plan:cost-engine-v2']);
     expect(r.stdout).toContain('# PRD: cost-engine-v2');
   });
+  test('show standard plan session renders plan.md', () => {
+    const r = run(['show', 'plan:20260413T100000Z-standard']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('# Plan: import flow');
+  });
 
   test('show by exact op id renders raw json with --json', () => {
     const r = run(['show', 'op:council-2026-04-06-redis-vs-postgres', '--json']);
@@ -220,10 +241,10 @@ describe('search', () => {
 });
 
 describe('handoff-md', () => {
-  test('generates tool-neutral HANDOFF.md from SESSION-STATE.json', () => {
+  test('generates tool-neutral HANDOFF.summary.md from SESSION-STATE.json', () => {
     const r = run(['handoff-md']);
     expect(r.status).toBe(0);
-    const md = readFileSync(join(XM, 'build', 'HANDOFF.md'), 'utf8');
+    const md = readFileSync(join(XM, 'build', 'HANDOFF.summary.md'), 'utf8');
     expect(md).toContain('**Generation:** 4');
     expect(md).toContain('# Session Handoff');
     expect(md).toContain('build recall');          // narrative.intent

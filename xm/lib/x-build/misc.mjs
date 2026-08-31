@@ -4,7 +4,7 @@
 
 import {
   PHASES, TASK_STATES, C, ROOT, PLUGIN_ROOT,
-  readJSON, writeJSON, readMD, writeMD,
+  readJSON, writeJSON, modifyJSON, readMD, writeMD, nextTaskId,
   manifestPath, phaseStatusPath, tasksPath, stepsPath, contextDir, phaseDir,
   projectDir, decisionsPath, metricsPath, templatesDir, adaptEvent,
   resolveProject, addDecision, loadPhaseContext,
@@ -12,7 +12,7 @@ import {
   CONTEXT_MANIFESTS,
   existsSync, join, readdirSync, mkdirSync, readFileSync, appendFileSync,
   homedir, tmpdir, resolve, basename, dirname, fileURLToPath,
-  isNormalMode, getMode,
+  isNormalMode, getMode, autopilotActive,
   exitFail,
 } from './core.mjs';
 import { stepsStatus } from './tasks.mjs';
@@ -208,7 +208,16 @@ export function cmdMode(args) {
 
   if (!sub || sub === 'show') {
     const mode = getMode();
-    console.log(`\n현재 모드: ${C.bold}${mode === 'normal' ? '🟢 일반인 모드' : '🔧 개발자 모드'}${C.reset}`);
+    if (args.includes('--json')) {
+      console.log(JSON.stringify({ ui_mode: mode, autopilot: autopilotActive() }));
+      return;
+    }
+    // No leading newline: the skill layer's documented probe is
+    // `mode show 2>/dev/null | head -1`, so line 1 must carry the mode. A
+    // blank first line made every cached mode detection read as empty and
+    // silently fall back to developer mode.
+    console.log(`ui_mode=${mode}`);
+    console.log(`현재 모드: ${C.bold}${mode === 'normal' ? '🟢 일반인 모드' : '🔧 개발자 모드'}${C.reset}`);
     if (mode === 'normal') {
       console.log(`  모든 안내가 쉬운 말로 표시됩니다.`);
     } else {
@@ -245,7 +254,8 @@ export function cmdMode(args) {
 // ── cmdContext ───────────────────────────────────────────────────────
 
 export function cmdContext(args) {
-  const project = resolveProject(args[0] || null, { autoInit: true });
+  const { positional } = parseOptions(args);
+  const project = resolveProject(positional[0] || null, { autoInit: true });
   const manifest = readJSON(manifestPath(project));
   const currentPhase = PHASES.find(p => p.id === manifest.current_phase);
   const taskData = readJSON(tasksPath(project));
@@ -299,7 +309,8 @@ export function cmdContext(args) {
 // ── cmdPhaseContext ──────────────────────────────────────────────────
 
 export function cmdPhaseContext(args) {
-  const project = resolveProject(args[0] || null, { autoInit: true });
+  const { positional } = parseOptions(args);
+  const project = resolveProject(positional[0] || null, { autoInit: true });
   const manifest = readJSON(manifestPath(project));
   const currentPhase = PHASES.find(p => p.id === manifest.current_phase);
   const phaseName = currentPhase?.name || 'research';
@@ -438,15 +449,21 @@ export function cmdTemplates(args) {
       const size = sizeMatch?.[1] || 'medium';
       const name = titleMatch?.[1] || templateName;
 
-      const data = readJSON(tasksPath(project)) || { tasks: [] };
-      const id = `t${data.tasks.length + 1}`;
-      data.tasks.push({
-        id, name, depends_on: [], size,
-        status: 'pending',
-        created_at: new Date().toISOString(),
-        template: templateName,
+      // Locked + max-based id: length+1 on a lockless snapshot minted duplicate
+      // ids after `tasks remove` (same bug family as cmdDispatch/cmdImport).
+      let id;
+      modifyJSON(tasksPath(project), (data) => {
+        data = data || { tasks: [] };
+        data.tasks = data.tasks || [];
+        id = nextTaskId(data.tasks);
+        data.tasks.push({
+          id, name, depends_on: [], size,
+          status: 'pending',
+          created_at: new Date().toISOString(),
+          template: templateName,
+        });
+        return data;
       });
-      writeJSON(tasksPath(project), data);
       console.log(`  ➕ Task "${id}: ${name}" added (${size})`);
     }
 
@@ -611,23 +628,34 @@ ${C.bold}Project:${C.reset}
   list                           List all projects
   status [project]               Show project status (with progress bar)
   next                           Suggest the next action
+  project-kind [--json]          Classify greenfield vs existing project
+  mode [show|developer|normal] [--json]
+                                 Output style (show prints ui_mode= on line 1)
   handoff [--restore]            Save/restore session state for continuity
   handoff --mirror-status        Show the pending/mirrored mem-mesh payload
   handoff --mirror-done <id>     Record a successful mem-mesh add
   handoff --mirror-skip          Dismiss a pending mirror (file-only setups)
+  handon                         Restore the last handoff into this session
 
 ${C.bold}Research Phase:${C.reset}
   discuss [--mode interview|assumptions|critique|validate|adapt] [--round N]
                                  Phase-aware deliberation (interview/critique/validate/adapt)
   research [goal]                Parallel agent investigation (stack/features/arch/pitfalls)
+  research-check [--json]        Deterministic full/slim/quick-eligible research gauge
 
 ${C.bold}Plan Phase:${C.reset}
-  plan ["goal"] [--interview|--draft|--quick]
-                                 Plan-only; inspect intent and stop after the Plan Bundle
-  build "goal"                   Plan first, then continue after content-bound approval
-  plan-check [--strict]          Validate plan across 15 dimensions (--strict: coverage errors block gate)
+  plan <x-plan args> [--replace|--no-import]
+                                 Deprecated alias for xm plan; an executable plan is
+                                 imported into the current project, a draft is not
+  legacy-plan ["goal"] [--interview|--draft|--quick|--profile light|standard|deep]
+                                 Legacy PRD/task/phase planner (explicit compatibility path)
+  build "goal" [--profile light|standard|deep]
+                                 Plan first, then continue after content-bound approval
+  plan-check [--strict]          Validate decision quality separately from execution readiness
+  prd-check [--json]             Deterministic PRD gate (blocks Execute on unresolved items)
   prd-gate [--threshold N]       Judge panel PRD quality evaluation (default threshold: 7)
-  consensus [--round N]          4-agent consensus review (architect/critic/planner/security)
+  consensus [--round N] [--cross-vendor]
+                                 4-agent consensus review (architect/critic/planner/security)
   phase <next|set|status>        Manage phases
   gate <pass|fail> [message]     Resolve current phase gate
 
@@ -636,31 +664,75 @@ ${C.bold}Execute Phase:${C.reset}
     tasks add "name" [--strategy refine] [--team eng] [--done-criteria "..."]  Add task
     tasks update <id> --score 7.8 [--done-criteria "..."]         Update task
     tasks done-criteria                                           Auto-derive from PRD
+  dispatch "<instruction>"       One tracked task, no PRD/phase ceremony
   later <add|list|promote|dismiss|verify-scope>
                                  Capture off-scope work and verify it stayed deferred
   steps <compute|status|next>    DAG-based step management
   run                            Execute next step via normal/worktree backend
   run-status [--json]            Show task + review-group state and next action
   task-check <id> [--json]       Run task-local test/lint checks and save evidence
-  review-group [name] [--rounds 1|2] [--json]
-                                  Run an optional group review (default: 1 round)
+  review-group [name] [--depth checks-only|solo|panel] [--rounds 1|2] [--json]
+                                  Group-boundary review at the configured depth (default: solo)
+  group-check <name>             Run the group's full deterministic checks
+  templates <list|use <name>>    Task templates
   checkpoint <type> [message]    Record a checkpoint
+  circuit-breaker <status|reset> Inspect / clear the failure circuit breaker
+
+${C.bold}Worktree Backend (optional Execute fan-out):${C.reset}
+  run --worktrees [--dry-run] [--max-parallel N] [--base X]
+                                 Route Execute through isolated gk worktrees
+  worktrees <plan|status|resume|cleanup> [--json]
+                                 Plan / observe / finish worktree runs
+  gate-panel --task <id> --patch <path> --json
+                                 Panel verdict → merge-gate exit code
+  review-integration [--base main] [--target develop]
+                                 Release-time batch review via gate-panel
 
 ${C.bold}Verify & Close:${C.reset}
   quality                        Run quality checks (test/lint/build)
-  verify-coverage                Check requirement coverage across tasks
+  verify-coverage [--strict]     Check requirement coverage (--strict: uncovered exits 1)
   verify-traceability            R# ↔ Task ↔ AC ↔ Done Criteria matrix
-  verify-contracts               Check task done_criteria fulfillment
-  verify-review-fix [--init]     Gate review-fix changes against x-review triage
+  verify-contracts               List acceptance contracts for completed tasks (advisory)
+  verify-review-fix [--init] [--reverify F# --outcome resolved|persistent|regression --evidence text]
+                                 Gate scoped fixes and byte-bound finding reverification
+  verify-drift [--threshold N]   PRD baseline goal-coverage drift gate
   context [project]              Generate context brief
   close [--summary "..."]        Close project with summary
 
 ${C.bold}Analysis & Utilities:${C.reset}
   context-usage                  Show project artifact token usage
+  forecast [update]              Per-task cost estimation ($) with confidence
+  forecast accuracy [--all] [--json]
+                                 MAPE of past predictions vs measured actuals
+  cost predict "<desc>"          Estimate one task's cost before dispatch
+  cost cache gc [--dry-run]      Prune the cost prediction cache
+  roi [--by model|role|strategy] [--json]
+                                 Quality-per-dollar from measured actuals only
+  metrics                        Show phase/task analytics
+  effectiveness [--since 30d] [--profile light,standard,deep] [--compare light,deep] [--json]
+                                 Compare workflow value using local semantic metrics
+  route decide --kind bugfix|feature|refactor|docs|test|config|dependency|schema|security|architecture --scope bounded --independent --files a,b --risk low --failure-modes N --gates test,boundary --json
+                                 Select direct/planned from quality observability and measured outcomes
+  route start --decision-id ID --expected-files a,b --gate-cmd gate=command
+  route verify --decision-id ID; route finish --decision-id ID
+                                 Bind native execution to baseline, files, CLI-run gates, and byte receipt
+  route status [--decision-id ID]; route abandon --decision-id ID
+                                 Recover or safely abandon interrupted leases
+  route prove --fixture A,B --benchmark FILE --blind FILE
+                                 Check 10 paired trials, quality, 20% cost, and 15% p50 latency
+  route record --class C --route direct|planned --outcome accepted|escalated|failed --quality pass|fail --gates-run G
+                                 Compatibility/recovery path for manually verified outcomes
+  route report [--class C] --json
+                                 Report quality, escalation, savings, and metric coverage
+  decisions <add|list|inject>    Record and recall project decisions
   save <type>                    Save artifact (context|requirements|roadmap|project|plan|research-notes)
+  export --format md|csv|jira|confluence
+                                 Export tasks to an external tracker
+  import <file> --from csv|jira  Import tasks from an external tracker
+  hooks <install|status|uninstall>
+                                 Blocking scope-guard / stop-gate hooks in .claude/
   watch [--interval N]           Auto-refresh status every N seconds
   dashboard                      Multi-project overview
-  metrics                        Show phase/task analytics
   phase-context                  Show phase-aware context loading
   alias install                  Install 'xmb' shell alias
   help                           Show this help
@@ -672,13 +744,17 @@ ${C.bold}Examples:${C.reset}
   xm build init my-api
   xm build discuss --mode interview
   xm build research "Build a REST API with auth"
-  xm build plan "Build a REST API with auth and CRUD"
+  xm build plan --mode quick "Build a REST API with auth and CRUD"
+  xm build legacy-plan "Build a REST API with auth and CRUD"
   xm build plan-check
   xm build next
   xm build tasks add "Create DB schema" --size small
   xm build steps compute
   xm build run
+  xm build task-check t1
+  xm build group-check build
   xm build verify-coverage
+  xm build forecast
   xm build handoff
   xm build context-usage
 `);

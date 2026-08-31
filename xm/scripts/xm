@@ -7,6 +7,21 @@
 
 set -euo pipefail
 
+# --- Global flags (must precede the subcommand) ---
+# `--market` (or XM_MARKET=1) pins this run to the Claude marketplace cache.
+# Without it there is no way to REACH that cache on a dev machine: resolve_lib's
+# source-repo check wins inside the repo and the Codex global bundle wins
+# outside it, so the cache is shadowed everywhere.
+FORCE_MARKET="${XM_MARKET:-0}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --market) FORCE_MARKET=1; shift ;;
+    *) break ;;
+  esac
+done
+# Nested xm calls (and node CLIs that shell out to xm) must inherit the pin.
+if [ "$FORCE_MARKET" = "1" ]; then export XM_MARKET=1; fi
+
 CMD="${1:-help}"
 [ $# -gt 0 ] && shift
 
@@ -31,12 +46,31 @@ self_register() {
 # --- Resolve lib root ---
 # Priority: $XM_LIB env (or legacy $X_KIT_LIB) > local repo (cwd has x-build/lib + xm/lib) > plugin cache
 resolve_lib() {
+  # --market / XM_MARKET=1 short-circuits the whole ladder: every dev-local root
+  # (XM_LIB override, source-repo cwd, Codex bundle) is skipped so the command
+  # binds to the marketplace cache and nothing else.
+  if [ "$FORCE_MARKET" = "1" ]; then
+    local forced="$HOME/.claude/plugins/cache/xm"
+    if [ ! -d "$forced" ]; then
+      forced="$HOME/.claude/plugins/cache/x-kit"   # legacy pre-rename cache
+    fi
+    if [ -d "$forced" ]; then
+      echo "$forced"
+    fi
+    return
+  fi
   local override="${XM_LIB:-${X_KIT_LIB:-}}"
   if [ -n "$override" ] && [ -d "$override" ]; then
     echo "$override"; return
   fi
   if [ -d "x-build/lib" ] && [ -d "xm/lib" ]; then
     echo "$PWD"; return
+  fi
+  # Codex global bundle is an explicit machine-level install and may be newer
+  # than a separately cached Claude marketplace plugin. Prefer it whenever it
+  # exists so a global Codex install immediately updates the terminal CLI too.
+  if [ -d "$HOME/.codex/xm/lib" ]; then
+    echo "$HOME/.codex/xm"; return
   fi
   # Marketplace cache (post-rename): ~/.claude/plugins/cache/xm
   local cache="$HOME/.claude/plugins/cache/xm"
@@ -48,17 +82,17 @@ resolve_lib() {
   if [ -d "$legacy" ]; then
     echo "$legacy"; return
   fi
-  # Codex-only global install. The multi-tool installer mirrors its runtime
-  # bundle here, so xm must not require a Claude marketplace cache to start.
-  if [ -d "$HOME/.codex/xm/lib" ]; then
-    echo "$HOME/.codex/xm"; return
-  fi
   echo ""
 }
 
 LIB="$(resolve_lib)"
 if [ -z "$LIB" ]; then
-  echo "xm: no lib found. Re-run the xm installer, install Claude plugins, or set XM_LIB." >&2
+  if [ "$FORCE_MARKET" = "1" ]; then
+    echo "xm --market: no marketplace cache under ~/.claude/plugins/cache/xm." >&2
+    echo "  Install the xm plugin in Claude Code, or drop --market to run the local source." >&2
+  else
+    echo "xm: no lib found. Re-run the xm installer, install Claude plugins, or set XM_LIB." >&2
+  fi
   exit 1
 fi
 
@@ -134,7 +168,16 @@ _xm_init_project() {
     echo "  Update xm: xm update" >&2
     exit 1
   fi
-  node "$libPath/x-build-cli.mjs" init "$name" "$@"
+  # The umbrella CLI accepts XM_ROOT as the repository-local state root. x-build
+  # uses X_BUILD_ROOT instead, so bridge the two explicitly; otherwise `xm init`
+  # invoked through a wrapper/test with XM_ROOT set writes into whichever repo
+  # resolveXmRoot() happens to discover from the dispatcher source tree.
+  local buildRoot="${X_BUILD_ROOT:-${XM_ROOT:+$XM_ROOT/build}}"
+  if [ -n "$buildRoot" ]; then
+    X_BUILD_ROOT="$buildRoot" node "$libPath/x-build-cli.mjs" init "$name" "$@"
+  else
+    node "$libPath/x-build-cli.mjs" init "$name" "$@"
+  fi
   # self_register skips CMD=init (it also serves the global-setup route), so the
   # project route registers explicitly. Creation and registration are one user
   # contract: make a failed registry write visible instead of silently leaving
@@ -196,6 +239,17 @@ _xm_trace_record() {
   case "$XM_TRACE_SUB2" in
     list|get|show) exit "$code" ;;
   esac
+  # x-eval has noun/verb read routes whose verb is not globally read-only.
+  # Keep mutating assert/case add/bench plan|record|finish and gate observable.
+  if [ "$XM_TRACE_CMD" = "eval" ]; then
+    case "$XM_TRACE_SUB" in
+      help|--help|-h|"") exit "$code" ;;
+      case)
+        case "$XM_TRACE_SUB2" in list|show) exit "$code" ;; esac ;;
+      bench)
+        case "$XM_TRACE_SUB2" in status) exit "$code" ;; esac ;;
+    esac
+  fi
   local libp
   libp="$(plugin_lib trace 2>/dev/null)"
   if [ -n "$libp" ] && [ -f "$libp/x-trace-cli.mjs" ]; then
@@ -300,6 +354,24 @@ case "$CMD" in
     node "$LIB_PATH/x-panel-cli.mjs" "$@"
     ;;
 
+  review)
+    LIB_PATH="$(plugin_lib review)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-review-cli.mjs" ]; then
+      echo "xm review: x-review-cli.mjs not found under $LIB" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-review-cli.mjs" "$@"
+    ;;
+
+  plan)
+    LIB_PATH="$(plugin_lib plan)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-plan-cli.mjs" ]; then
+      echo "xm plan: x-plan-cli.mjs not found under $LIB" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-plan-cli.mjs" "$@"
+    ;;
+
   toss)
     LIB_PATH="$(plugin_lib xm lib)"
     if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-inbox-cli.mjs" ]; then
@@ -355,6 +427,16 @@ case "$CMD" in
       exit 1
     fi
     node "$LIB_PATH/x-trace-cli.mjs" "$@"
+    ;;
+
+  eval)
+    LIB_PATH="$(plugin_lib eval)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-eval-cli.mjs" ]; then
+      echo "xm eval: x-eval-cli.mjs not found under $LIB" >&2
+      echo "  Update xm: xm update" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-eval-cli.mjs" "$@"
     ;;
 
   # Shortcuts for the two most-used read-only trace views. `xm last` == `xm trace
@@ -678,7 +760,7 @@ case "$CMD" in
 
     echo ""
     echo "## Resolved lib paths"
-    for p in xm dashboard build memory trace sync solver; do
+    for p in xm dashboard build memory trace eval sync solver plan; do
       resolved="$(plugin_lib "$p")"
       if [ -n "$resolved" ]; then
         echo "  ✅ $(printf '%-12s' "$p") $resolved"
@@ -1042,15 +1124,17 @@ case "$CMD" in
     #    that means commands keep running LOCAL SOURCE after a successful
     #    update ("update did nothing" confusion) — say so, loudly.
     OVERRIDE_LIB="${XM_LIB:-${X_KIT_LIB:-}}"
-    if [ -n "$OVERRIDE_LIB" ] && [ -d "$OVERRIDE_LIB" ]; then
+    if [ "$FORCE_MARKET" = "1" ]; then
+      :   # already pinned to the market install — nothing to warn about
+    elif [ -n "$OVERRIDE_LIB" ] && [ -d "$OVERRIDE_LIB" ]; then
       echo ""
       echo "⚠ XM_LIB override active: $OVERRIDE_LIB"
       echo "   xm commands keep running from that LOCAL SOURCE, not the market install ($REMOTE_VERSION)."
-      echo "   → unset XM_LIB (and X_KIT_LIB) to switch to the market install."
+      echo "   → unset XM_LIB (and X_KIT_LIB), or run 'xm --market <cmd>', to use the market install."
     elif [ -d "x-build/lib" ] && [ -d "xm/lib" ]; then
       echo ""
       echo "⚠ current directory is an xm source repo — xm commands run from ./ (local source), not the market install ($REMOTE_VERSION)."
-      echo "   → run xm outside this directory for the market install; keep cwd/XM_LIB for release-less local development."
+      echo "   → 'xm --market <cmd>' (or XM_MARKET=1) reaches the market install from anywhere; keep cwd/XM_LIB for release-less local development."
     fi
 
     echo ""
@@ -1062,8 +1146,12 @@ case "$CMD" in
     ;;
 
   which)
-    echo "lib: $LIB"
-    for p in xm dashboard build memory trace sync solver; do
+    if [ "$FORCE_MARKET" = "1" ]; then
+      echo "lib: $LIB (--market: pinned to marketplace cache)"
+    else
+      echo "lib: $LIB"
+    fi
+    for p in xm dashboard build memory trace eval sync solver; do
       resolved="$(plugin_lib "$p")"
       printf "  %-12s %s\n" "$p" "${resolved:-(missing)}"
     done
@@ -1073,7 +1161,11 @@ case "$CMD" in
     cat <<'EOF'
 xm — x-mesh toolkit CLI
 
-Usage: xm <command> [args...]
+Usage: xm [--market] <command> [args...]
+
+Global flags:
+  --market                            Pin this run to the Claude marketplace cache
+                                      (ignores XM_LIB, source-repo cwd, Codex bundle)
 
 Commands:
   init <name>                         Start a project (.xm/projects/<name>) + register it
@@ -1085,10 +1177,14 @@ Commands:
   handoff [reason]                    Save session state
   handon                              Restore session state
   memory <subcmd>                     Cross-session decision memory
+  plan <requirements|--file path>    Quick scaffold or persist a Standard/Ultra plan session
+  review run [target]                Durable review lifecycle (freeze, chunk, dispatch, synthesize)
+  review resume <run-id>             Resume failed review without repeating completed children
   build <subcmd>                      Phase-based project harness
   cost predict <task-description>     Estimate cost from measured task history
   config <subcmd>                     Shared toolkit config (--local|--global)
   trace <subcmd>                      Execution traces
+  eval <subcmd>                       Deterministic assertions, cases, benchmarks, and regression gates
   last [tool]                         Shortcut for 'trace last' — last activity per tool
   status [--json]                     Shortcut for 'trace status' — commits since each tool acted
   sync <subcmd>                       Multi-machine .xm sync
@@ -1112,6 +1208,7 @@ Commands:
 Env:
   XM_LIB       Override lib root (default: plugin cache or cwd)
   X_KIT_LIB    Legacy alias for XM_LIB (deprecated)
+  XM_MARKET    Set to 1 for the same effect as --market (inherited by nested calls)
   XM_REPO_URL  Override remote fetch base (default: raw.githubusercontent.com/x-mesh/xm/main)
 
 Run 'xm <command> --help' for subcommand details.

@@ -8,7 +8,7 @@ import {
   manifestPath, tasksPath, stepsPath, phaseDir, contextDir, decisionsPath,
   resolveProject, parseOptions,
   existsSync, join, readFileSync, writeFileSync,
-  parseCSVLine, normSize,
+  parseCSVLine, normSize, nextTaskId,
   exitFail,
 } from './core.mjs';
 
@@ -171,7 +171,7 @@ export function cmdImport(args) {
 
       const size = sizeIdx >= 0 ? normSize(parts[sizeIdx]?.trim()) : 'medium';
       const deps = depsIdx >= 0 ? (parts[depsIdx]?.trim().split(';').filter(Boolean)) : [];
-      const id = `t${data.tasks.length + 1}`;
+      const id = nextTaskId(data.tasks);
 
       data.tasks.push({
         id, name, depends_on: deps, size,
@@ -197,7 +197,7 @@ export function cmdImport(args) {
 
       const priority = issue.priority || issue.fields?.priority?.name || 'Medium';
       const size = normSize(priority);
-      const id = `t${data.tasks.length + 1}`;
+      const id = nextTaskId(data.tasks);
 
       data.tasks.push({
         id, name, depends_on: [], size,

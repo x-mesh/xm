@@ -10,7 +10,7 @@
 
 import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, statSync, readdirSync, utimesSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -30,6 +30,21 @@ function cli(...args) {
 function mirror() {
   const p = join(repo, '.xm', 'build', 'memmesh-mirror.json');
   return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : null;
+}
+
+function mirrorDone(memoryId) {
+  return cli('handoff', '--mirror-done', memoryId, '--mirror-token', mirror().handoff_token);
+}
+
+function mirrorSkip() {
+  return cli('handoff', '--mirror-skip', '--mirror-token', mirror().handoff_token);
+}
+
+function stateAndMarkdownIdentity() {
+  const buildDir = join(repo, '.xm', 'build');
+  const state = JSON.parse(readFileSync(join(buildDir, 'SESSION-STATE.json'), 'utf8'));
+  const markdown = readFileSync(join(buildDir, 'HANDOFF.md'), 'utf8');
+  return { state, markdown };
 }
 
 const FULL_NARRATIVE = JSON.stringify({
@@ -88,6 +103,122 @@ test('renders a mem-mesh payload matching the add schema', () => {
 
   // Anchors are client-collected — the server has no git access.
   expect(m.payload.anchors.commit_hash).toMatch(/^[0-9a-fA-F]{7,64}$/);
+});
+
+test('a required HANDOFF.md write failure is non-zero and preserves the previous state', () => {
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
+  const buildDir = join(repo, '.xm', 'build');
+  const statePath = join(buildDir, 'SESSION-STATE.json');
+  const handoffPath = join(buildDir, 'HANDOFF.md');
+  const previousState = readFileSync(statePath, 'utf8');
+  const previousMirror = readFileSync(join(buildDir, 'memmesh-mirror.json'), 'utf8');
+
+  rmSync(handoffPath);
+  mkdirSync(handoffPath);
+  const result = spawnSync('node', [CLI, 'handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'second'],
+    { cwd: repo, encoding: 'utf8' });
+
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain('Session state NOT SAVED');
+  expect(result.stdout).not.toContain('Session state saved');
+  expect(readFileSync(statePath, 'utf8')).toBe(previousState);
+  expect(readFileSync(join(buildDir, 'memmesh-mirror.json'), 'utf8')).toBe(previousMirror);
+});
+
+test('a failure after the first commit rolls the canonical state back and cleans staging files', () => {
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
+  const buildDir = join(repo, '.xm', 'build');
+  const statePath = join(buildDir, 'SESSION-STATE.json');
+  const handoffPath = join(buildDir, 'HANDOFF.md');
+  const previousState = readFileSync(statePath, 'utf8');
+  const previousHandoff = readFileSync(handoffPath, 'utf8');
+
+  const result = spawnSync('node', [CLI, 'handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'second'], {
+    cwd: repo, encoding: 'utf8', env: { ...process.env, X_KIT_TEST_MODE: '1', X_KIT_HANDOFF_FAULT: 'throw-after-1' },
+  });
+
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain('Session state NOT SAVED');
+  expect(readFileSync(statePath, 'utf8')).toBe(previousState);
+  expect(readFileSync(handoffPath, 'utf8')).toBe(previousHandoff);
+  expect(readdirSync(buildDir).filter(name => name.includes('.tmp') || name === '.handoff-transaction.json')).toEqual([]);
+});
+
+test('an abruptly interrupted save leaves one canonical state and a stable pointer', () => {
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
+  const buildDir = join(repo, '.xm', 'build');
+  const previous = JSON.parse(readFileSync(join(buildDir, 'SESSION-STATE.json'), 'utf8'));
+  const interrupted = spawnSync('node', [CLI, 'handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'interrupted'], {
+    cwd: repo, encoding: 'utf8', env: { ...process.env, X_KIT_TEST_MODE: '1', X_KIT_HANDOFF_FAULT: 'exit-after-1' },
+  });
+
+  expect(interrupted.status).toBe(86);
+  const restored = JSON.parse(cli('handon', '--json'));
+  expect(restored.why_stopped).toBe(previous.why_stopped);
+  expect(restored.handoff_generation).toBe(previous.handoff_generation);
+  expect(readFileSync(join(buildDir, 'HANDOFF.md'), 'utf8')).toContain('Read that JSON file directly');
+  expect(existsSync(join(buildDir, '.handoff.lock'))).toBe(false);
+});
+
+test('concurrent handoffs serialize and leave matching local artifacts', () => {
+  for (let i = 0; i < 8; i += 1) {
+    const a = spawnSync('node', [CLI, 'handoff', '--full', `A-${i}`], { cwd: repo, encoding: 'utf8' });
+    expect(a.status).toBe(0);
+    const pair = spawnSync('sh', ['-c',
+      `node "$1" handoff --full "B-$2" & p1=$!; node "$1" handoff --full "C-$2" & p2=$!; wait $p1; s1=$?; wait $p2; s2=$?; test $s1 -eq 0 -a $s2 -eq 0`,
+      'handoff-race', CLI, String(i)], { cwd: repo, encoding: 'utf8' });
+    expect(pair.status).toBe(0);
+    const identity = stateAndMarkdownIdentity();
+    expect(identity.state.why_stopped === `B-${i}` || identity.state.why_stopped === `C-${i}`).toBe(true);
+    expect(identity.markdown).toContain('`.xm/build/SESSION-STATE.json`');
+    expect(identity.markdown).not.toContain('Stopped because');
+  }
+});
+
+test('concurrent writers safely recover one stale malformed lock inode', () => {
+  cli('handoff', '--full', 'baseline');
+  const lockPath = join(repo, '.xm', 'build', '.handoff.lock');
+  writeFileSync(lockPath, '{malformed', 'utf8');
+  const stale = new Date(Date.now() - 60_000);
+  utimesSync(lockPath, stale, stale);
+
+  const pair = spawnSync('sh', ['-c',
+    `node "$1" handoff --full stale-A & p1=$!; node "$1" handoff --full stale-B & p2=$!; wait $p1; s1=$?; wait $p2; s2=$?; test $s1 -eq 0 -a $s2 -eq 0`,
+    'stale-lock-race', CLI], { cwd: repo, encoding: 'utf8' });
+
+  expect(pair.status).toBe(0);
+  expect(existsSync(lockPath)).toBe(false);
+  expect(readdirSync(join(repo, '.xm', 'build')).filter(name => name.includes('claim-'))).toEqual([]);
+  const identity = stateAndMarkdownIdentity();
+  expect(identity.state.why_stopped === 'stale-A' || identity.state.why_stopped === 'stale-B').toBe(true);
+  expect(identity.markdown).toContain('`.xm/build/SESSION-STATE.json`');
+});
+
+test('atomic replacement preserves existing artifact permissions', () => {
+  cli('handoff', '--full', 'first');
+  const buildDir = join(repo, '.xm', 'build');
+  const paths = ['SESSION-STATE.json', 'HANDOFF.md', 'memmesh-mirror.json'].map(name => join(buildDir, name));
+  for (const path of paths) if (existsSync(path)) chmodSync(path, 0o644);
+
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'second');
+
+  for (const path of paths) expect(statSync(path).mode & 0o777).toBe(0o644);
+});
+
+test('an optional mirror write failure does not invalidate the local handoff', () => {
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
+  const buildDir = join(repo, '.xm', 'build');
+  rmSync(join(buildDir, 'memmesh-mirror.json'));
+  mkdirSync(join(buildDir, 'memmesh-mirror.json'));
+
+  const result = spawnSync('node', [CLI, 'handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'local-still-valid'],
+    { cwd: repo, encoding: 'utf8' });
+
+  expect(result.status).toBe(0);
+  expect(result.stderr).toContain('Could not write mem-mesh mirror payload');
+  expect(result.stdout).toContain('Session state saved');
+  expect(result.stdout).toContain('mem-mesh mirror: NOT WRITTEN');
+  expect(JSON.parse(readFileSync(join(buildDir, 'SESSION-STATE.json'), 'utf8')).why_stopped).toBe('local-still-valid');
 });
 
 test('increments handoff_generation so cross-machine restores survive clock skew', () => {
@@ -151,12 +282,32 @@ test('skips the mirror when there is no narrative to mirror', () => {
 
 test('--mirror-done records the memory id', () => {
   cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'reason');
-  cli('handoff', '--mirror-done', 'mem_abc123');
+  mirrorDone('mem_abc123');
 
   const m = mirror();
   expect(m.status).toBe('mirrored');
   expect(m.memory_id).toBe('mem_abc123');
   expect(m.mirrored_at).toBeTruthy();
+});
+
+test('an obsolete mirror token cannot overwrite a newer pending handoff', () => {
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
+  const oldToken = mirror().handoff_token;
+  cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'second');
+  const newer = mirror();
+
+  const done = spawnSync('node', [CLI, 'handoff', '--mirror-done', 'mem_old', '--mirror-token', oldToken],
+    { cwd: repo, encoding: 'utf8' });
+  expect(done.status).not.toBe(0);
+  expect(done.stderr).toContain('new handoff was preserved');
+  expect(mirror().handoff_token).toBe(newer.handoff_token);
+  expect(mirror().status).toBe('pending');
+
+  const skip = spawnSync('node', [CLI, 'handoff', '--mirror-skip', '--mirror-token', oldToken],
+    { cwd: repo, encoding: 'utf8' });
+  expect(skip.status).not.toBe(0);
+  expect(mirror().handoff_token).toBe(newer.handoff_token);
+  expect(mirror().status).toBe('pending');
 });
 
 // The `none` contract: no mirror file at all must be distinguishable from a
@@ -211,7 +362,7 @@ test('--mirror-done fails loudly when there is no payload to record', () => {
 
 test('--mirror-done accepts the --flag=value form', () => {
   cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'reason');
-  cli('handoff', '--mirror-done=mem_equals_form');
+  cli('handoff', '--mirror-done=mem_equals_form', `--mirror-token=${mirror().handoff_token}`);
 
   expect(mirror().status).toBe('mirrored');
   expect(mirror().memory_id).toBe('mem_equals_form');
@@ -262,7 +413,7 @@ test('--mirror-status reports the lifecycle', () => {
   cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'reason');
   expect(JSON.parse(cli('handoff', '--mirror-status')).status).toBe('pending');
 
-  cli('handoff', '--mirror-done', 'mem_xyz');
+  mirrorDone('mem_xyz');
   const done = JSON.parse(cli('handoff', '--mirror-status'));
   expect(done.status).toBe('mirrored');
   expect(done.memory_id).toBe('mem_xyz');
@@ -275,7 +426,7 @@ test('handon surfaces a pending mirror so a skipped dual-write stays visible', (
   expect(pending.memmesh_mirror.status).toBe('pending');
   expect(cli('handon')).toContain('mem-mesh mirror is pending');
 
-  cli('handoff', '--mirror-done', 'mem_done');
+  mirrorDone('mem_done');
   const mirrored = JSON.parse(cli('handon', '--json'));
   expect(mirrored.memmesh_mirror.status).toBe('mirrored');
   expect(mirrored.memmesh_mirror.memory_id).toBe('mem_done');
@@ -283,7 +434,7 @@ test('handon surfaces a pending mirror so a skipped dual-write stays visible', (
 
 test('a MIRRORED record from an older handoff reports stale, not pending', () => {
   cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
-  cli('handoff', '--mirror-done', 'mem_first');
+  mirrorDone('mem_first');
 
   // Narrative-less handoff writes new state but no new mirror.
   cli('handoff', '--full', 'second');
@@ -362,7 +513,7 @@ test('an empty narrative is reported as empty, not "too thin"', () => {
 // the opposite of what the user chose.
 test('a dismissed mirror stays skipped across later handoffs', () => {
   cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
-  cli('handoff', '--mirror-skip');
+  mirrorSkip();
   cli('handoff', '--full', 'second');   // narrative-less: mirror file untouched
 
   const status = JSON.parse(cli('handoff', '--mirror-status'));
@@ -372,9 +523,9 @@ test('a dismissed mirror stays skipped across later handoffs', () => {
 
 test('--mirror-skip refuses to downgrade an already-mirrored record', () => {
   cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'reason');
-  cli('handoff', '--mirror-done', 'mem_real');
+  mirrorDone('mem_real');
 
-  expect(() => cli('handoff', '--mirror-skip')).toThrow();
+  expect(() => mirrorSkip()).toThrow();
   expect(mirror().status).toBe('mirrored');
   expect(mirror().memory_id).toBe('mem_real');
 });
@@ -383,7 +534,7 @@ test('--mirror-skip refuses to downgrade an already-mirrored record', () => {
 // session's record `mirrored` while handon called the same record `stale`.
 test('--mirror-status ages a record the same way handon does', () => {
   cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'first');
-  cli('handoff', '--mirror-done', 'mem_old');
+  mirrorDone('mem_old');
   cli('handoff', '--full', 'second');   // bumps saved_at, leaves the mirror behind
 
   expect(JSON.parse(cli('handoff', '--mirror-status')).status).toBe('stale');
@@ -430,7 +581,7 @@ test('a corrupt mirror file is never overwritten by --mirror-done or --mirror-sk
 
 test('--mirror-skip dismisses a pending mirror without claiming it was saved', () => {
   cli('handoff', '--full', '--narrative-json', FULL_NARRATIVE, 'reason');
-  cli('handoff', '--mirror-skip');
+  mirrorSkip();
 
   const m = mirror();
   expect(m.status).toBe('skipped');

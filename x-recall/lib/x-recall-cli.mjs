@@ -139,7 +139,7 @@ Commands:
   search "<query>"              Full-text + metadata search across artifacts
     [--type T] [--json]
 
-  handoff-md                    (Re)generate tool-neutral .xm/build/HANDOFF.md
+  handoff-md                    (Re)generate tool-neutral .xm/build/HANDOFF.summary.md
                                 from SESSION-STATE.json (readable by any tool)
 
   types                         List known artifact types

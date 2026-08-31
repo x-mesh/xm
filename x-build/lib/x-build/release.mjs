@@ -31,7 +31,7 @@ const PLUGIN_DIRS = [
   'x-build', 'x-agent', 'x-op', 'x-solver', 'x-review',
   'x-trace', 'x-memory', 'x-eval', 'x-probe', 'x-humble',
   'x-dashboard', 'x-humanize', 'xm', 'x-sync', 'x-ship', 'x-recall', 'x-panel',
-  'x-wt',
+  'x-wt', 'x-plan',
 ];
 
 // Maps source directory name → marketplace plugin name (xm namespace, no x- prefix)
@@ -40,7 +40,7 @@ const PLUGIN_NAME_MAP = {
   'x-review': 'review', 'x-trace': 'trace', 'x-memory': 'memory', 'x-eval': 'eval',
   'x-probe': 'probe', 'x-humble': 'humble', 'x-dashboard': 'dashboard',
   'x-humanize': 'humanize', 'xm': 'xm', 'x-sync': 'sync', 'x-ship': 'ship',
-  'x-recall': 'recall', 'x-panel': 'panel', 'x-wt': 'wt',
+  'x-recall': 'recall', 'x-panel': 'panel', 'x-wt': 'wt', 'x-plan': 'plan',
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -90,9 +90,16 @@ function writeJSON(path, data) {
 }
 
 function bumpVersion(version, type) {
-  const parts = version.split('.').map(Number);
+  // Strict plain semver only: '1.2.3-rc.1'.split('.').map(Number) yields NaN parts
+  // that would be written back to version files as "1.2.NaN". Refuse instead.
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(version));
+  if (!m) {
+    console.error(`❌ Cannot bump version "${version}" — expected plain MAJOR.MINOR.PATCH (prerelease/build suffixes are not supported).`);
+    exitFail(1);
+  }
+  const parts = [Number(m[1]), Number(m[2]), Number(m[3])];
   if (type === 'major') { parts[0]++; parts[1] = 0; parts[2] = 0; }
-  else if (type === 'minor') { parts[0]; parts[1]++; parts[2] = 0; }
+  else if (type === 'minor') { parts[1]++; parts[2] = 0; }
   else { parts[2]++; }
   return parts.join('.');
 }
@@ -209,14 +216,17 @@ export function cmdReleaseDetect(args) {
     }
   }
 
-  // Current versions from marketplace.json
-  const marketplacePath = join(cwd, '.claude-plugin', 'marketplace.json');
-  const marketplace = readJSON(marketplacePath);
-  // versions keyed by source dir name for easy lookup (x-build → version from marketplace entry "build")
+  // Current versions from marketplace.json — only exists on xm-marketplace projects
+  // (projectType is derived from that file's presence); standalone projects use
+  // the version-file detection below instead.
   const versions = {};
-  for (const p of marketplace.plugins) {
-    const srcDir = Object.keys(PLUGIN_NAME_MAP).find(k => PLUGIN_NAME_MAP[k] === p.name) || p.name;
-    versions[srcDir] = p.version;
+  if (projectType === 'xm-marketplace') {
+    const marketplace = readJSON(join(cwd, '.claude-plugin', 'marketplace.json'));
+    // versions keyed by source dir name for easy lookup (x-build → version from marketplace entry "build")
+    for (const p of marketplace.plugins) {
+      const srcDir = Object.keys(PLUGIN_NAME_MAP).find(k => PLUGIN_NAME_MAP[k] === p.name) || p.name;
+      versions[srcDir] = p.version;
+    }
   }
 
   // Classify commits
@@ -364,14 +374,20 @@ export function cmdReleaseBump(args) {
   const bumped = [];
 
   for (const pluginName of pluginList) {
-    // 1. Plugin's own plugin.json
-    const pluginJsonPath = join(cwd, pluginName, '.claude-plugin', 'plugin.json');
-    if (existsSync(pluginJsonPath)) {
-      const pj = readJSON(pluginJsonPath);
-      const oldV = pj.version;
-      pj.version = bumpVersion(oldV, bumpType);
-      writeJSON(pluginJsonPath, pj);
-      bumped.push({ name: pluginName, from: oldV, to: pj.version });
+    // 1. Plugin manifests. Claude and Codex manifests describe the same release,
+    // so derive one version and write it to every manifest that exists.
+    const pluginJsonPaths = ['.claude-plugin', '.codex-plugin']
+      .map((dir) => join(cwd, pluginName, dir, 'plugin.json'))
+      .filter(existsSync);
+    if (pluginJsonPaths.length) {
+      const oldV = readJSON(pluginJsonPaths[0]).version;
+      const newV = bumpVersion(oldV, bumpType);
+      for (const pluginJsonPath of pluginJsonPaths) {
+        const pj = readJSON(pluginJsonPath);
+        pj.version = newV;
+        writeJSON(pluginJsonPath, pj);
+      }
+      bumped.push({ name: pluginName, from: oldV, to: newV });
     }
 
     // 2. marketplace.json entry (plugin dir name → marketplace name via PLUGIN_NAME_MAP)
@@ -386,13 +402,15 @@ export function cmdReleaseBump(args) {
   //    in the loop above. Bumping it in both places double-bumps and skips a version
   //    (2.4.54 → 2.4.55 in the loop → 2.4.56 here), because xm IS the meta (l10).
   const xkitEntry = marketplace.plugins.find(p => p.name === 'xm');
-  const xkitPluginJsonPath = join(cwd, 'xm', '.claude-plugin', 'plugin.json');
+  const xkitPluginJsonPaths = ['.claude-plugin', '.codex-plugin']
+    .map((dir) => join(cwd, 'xm', dir, 'plugin.json'))
+    .filter(existsSync);
   let xkitNew = xkitEntry?.version || '0.0.0';
   if (!pluginList.includes('xm')) {
     const xkitOld = xkitNew;
     xkitNew = bumpVersion(xkitOld, 'patch');
     if (xkitEntry) xkitEntry.version = xkitNew;
-    if (existsSync(xkitPluginJsonPath)) {
+    for (const xkitPluginJsonPath of xkitPluginJsonPaths) {
       const xkitPj = readJSON(xkitPluginJsonPath);
       xkitPj.version = xkitNew;
       writeJSON(xkitPluginJsonPath, xkitPj);
@@ -463,6 +481,18 @@ export function cmdReleaseBump(args) {
   console.log('\n✅ Version bump complete:\n');
   for (const b of bumped) {
     console.log(`  ${b.name.padEnd(14)} ${b.from} → ${b.to}${b.meta ? ' (meta)' : ''}`);
+  }
+
+  // Tag hint. bumpStandalone computes one, but it is skipped for xm-marketplace, so this
+  // path printed no tag and `release commit` only tags when handed --tag. Nothing errors
+  // when the tag is missing — the tag list just silently stops, which is how 2.22.0,
+  // 2.23.0 and 2.23.1 all shipped untagged. The repo's meta version is the xm version,
+  // which is what every historical `vX.Y.Z` tag names.
+  const metaTag = `v${xkitNew}`;
+  if (git(`tag --list ${JSON.stringify(metaTag)}`)) {
+    console.log(`\n  ⚠ Tag ${metaTag} already exists — commit without --tag, or bump again.`);
+  } else {
+    console.log(`\n  Tag with the release commit:\n    release commit --msg "release: ..." --tag ${metaTag} --push`);
   }
 }
 
@@ -553,6 +583,7 @@ export function cmdReleaseCommit(args) {
       console.log(`✅ Pushed to origin/${branch}${tag ? ` · tag ${tag}` : ''}`);
     } catch {
       console.error(`⚠ Push failed. Run manually: git push --follow-tags origin ${branch}`);
+      process.exitCode = 1; // the release is NOT on the remote — callers must not read this as success
     }
   } else if (tag) {
     console.log(`\n⚠ Tag ${tag} is LOCAL only — push it or CI will not fire: git push --follow-tags origin ${branch}`);

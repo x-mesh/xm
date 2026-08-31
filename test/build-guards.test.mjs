@@ -42,29 +42,15 @@ beforeAll(() => {
     const out = {};
     out.repoRoot = core.repoRoot();
 
-    // F2a: commit_sha === HEAD with a DIRTY tree → rollback proceeds AND reverts
-    // the working tree. Asserting the file content reverts proves the reset
-    // actually executed (a clean tree would make reset --hard a no-op that
-    // passes even if the guard were removed).
+    // F2: x-build must not commit to or rewind the user's repo. The auto-commit
+    // and rollback helpers were removed 2026-08-11 (see core.mjs Git
+    // Integration); assert the exports are GONE so a re-introduction fails here.
+    out.noAutoCommit = typeof core.gitAutoCommit === 'undefined';
+    out.noRollback = typeof core.gitRollbackTask === 'undefined';
+    // A user's staged work and HEAD must both survive a completed task.
     writeFileSync(join(repo, 'a.txt'), 'DIRTY\\n');
-    const head1 = git('rev-parse HEAD');
-    out.head1 = head1;
-    out.rollbackHead = core.gitRollbackTask({ id: 't1', commit_sha: head1 });
-    out.headAfterHeadRollback = git('rev-parse HEAD');
-    out.aRevertedToCommitted = read('a.txt') === 'a\\n';
-
-    // F2b: commit_sha is an ancestor (a later commit exists) → refused, c2 kept.
-    const oldHead = git('rev-parse HEAD');
-    writeFileSync(join(repo, 'b.txt'), 'b\\n');
-    git('add -A && git commit -q -m c2');
-    out.expectedNewHead = git('rev-parse HEAD');
-    out.rollbackAncestor = core.gitRollbackTask({ id: 't2', commit_sha: oldHead });
-    out.headAfterAncestorRollback = git('rev-parse HEAD');
-
-    // F2c: detached HEAD pointing at c1 → rollback to c1 (== HEAD) proceeds,
-    // confirming the guard does not spuriously refuse in detached state.
-    git('checkout -q ' + oldHead);
-    out.rollbackDetached = core.gitRollbackTask({ id: 't3', commit_sha: oldHead });
+    git('add a.txt');
+    out.headBefore = git('rev-parse HEAD');
 
     // F3: library mode → exitFail throws CliError carrying the message instead
     // of exiting; restored to false so it can never kill a later caller.
@@ -98,20 +84,16 @@ describe('F1 — repoRoot is the repo root, not .xm/', () => {
   });
 });
 
-describe('F2 — gitRollbackTask refuses to discard later commits', () => {
-  test('rolls back when commit_sha IS current HEAD and actually reverts the tree', () => {
-    expect(report.rollbackHead).toBe(true);
-    expect(report.headAfterHeadRollback).toBe(report.head1); // HEAD unchanged
-    expect(report.aRevertedToCommitted).toBe(true);          // dirty change discarded
+describe('F2 — x-build never commits to or rewinds the user repo', () => {
+  // History showed the opposite: of 89 tm() commits, 82 contained ONLY the
+  // user's own staged work under a task name that did not describe it. Both
+  // helpers are gone; these assertions fail if either comes back.
+  test('gitAutoCommit is not exported', () => {
+    expect(report.noAutoCommit).toBe(true);
   });
 
-  test('refuses when commit_sha is an ancestor — later commit survives', () => {
-    expect(report.rollbackAncestor).toBe(false);
-    expect(report.headAfterAncestorRollback).toBe(report.expectedNewHead);
-  });
-
-  test('proceeds in detached-HEAD state when commit_sha equals HEAD', () => {
-    expect(report.rollbackDetached).toBe(true);
+  test('gitRollbackTask is not exported', () => {
+    expect(report.noRollback).toBe(true);
   });
 });
 

@@ -11,13 +11,12 @@ import {
   resolveProject, findCurrentProject, logDecision, addDecision, appendCostEvent, emitHook,
   parseOptions, renderBar, fmtDuration,
   estimateTaskCost, costFromTokens, resolveVendorModel, computeTokenActuals, downgradeBudgetModel,
-  gitAutoCommit, gitRollbackTask,
   updateCircuitBreaker, updateBudgetCircuitBreaker, isCircuitOpen, beginHalfOpenProbe, scheduleRetry,
   getCircuitState, resetCircuitBreaker,
   existsSync, join, resolve, mkdirSync,
   spawnSync,
   createRL, ask, pickMenu, E, exitFail,
-  readdirSync, repoRoot,
+  readdirSync, repoRoot, nextTaskId,
 } from './core.mjs';
 // Worktree orchestration lives in worktrees.mjs; the expected_files utils and
 // config resolver live in the shared leaf. tasks.mjs imports both ONE-DIRECTION
@@ -28,7 +27,7 @@ import {
   listExistingBranches,
 } from './worktrees.mjs';
 import {
-  isParallelSafe, normalizeExpectedFiles, expectedFilesOverlap, loadWorktreeConfig, applyLifecycleWorktreePolicy,
+  isParallelSafe, compileParallelBatches, normalizeExpectedFiles, expectedFilesOverlap, loadWorktreeConfig, applyLifecycleWorktreePolicy,
 } from './worktree-shared.mjs';
 import {
   loadBuildPolicy, resolveTaskChecks, taskReviewGroup, reviewGroupStatus,
@@ -38,10 +37,12 @@ import {
 } from './build-policy.mjs';
 import { readPlanState, setRequestedAction, validatePlanApproval } from './plan-state.mjs';
 import { appendPredictionActual, ensureTaskPrediction, DEFAULT_PREDICTION_MAX_AGE_MS } from './prediction-calibration.mjs';
+import { laterSignal } from './later.mjs';
+import { buildIdentity, normalizeRevisionReason, recordEffectiveness } from './effectiveness.mjs';
 
 // Re-export the expected_files utils so existing importers (tests) that pull them
 // from tasks.mjs keep working after the move to the shared leaf.
-export { isParallelSafe, normalizeExpectedFiles, expectedFilesOverlap };
+export { isParallelSafe, compileParallelBatches, normalizeExpectedFiles, expectedFilesOverlap };
 
 // ── cmdTasks ────────────────────────────────────────────────────────
 
@@ -410,6 +411,8 @@ export function taskDoneCriteria(project) {
 
 export function taskAdd(project, args) {
   const { opts, positional } = parseOptions(args);
+  let revisionReason = 'unknown';
+  try { revisionReason = normalizeRevisionReason(opts.reason); } catch (error) { console.error(`❌ ${error.message}`); exitFail(1); return; }
   const name = positional.join(' ');
 
   if (!name) {
@@ -418,11 +421,7 @@ export function taskAdd(project, args) {
   }
 
   const data = readJSON(tasksPath(project)) || { tasks: [] };
-  const maxNum = data.tasks.reduce((max, t) => {
-    const n = parseInt(t.id?.replace('t', ''), 10);
-    return Number.isFinite(n) && n > max ? n : max;
-  }, 0);
-  const id = `t${maxNum + 1}`;
+  const id = nextTaskId(data.tasks);
   const deps = opts.deps ? opts.deps.split(',').map(d => d.trim()) : [];
   const size = opts.size || 'medium';
 
@@ -503,6 +502,10 @@ export function taskAdd(project, args) {
 
   data.tasks.push(task);
   writeJSON(tasksPath(project), data);
+  const phase = readJSON(manifestPath(project))?.current_phase;
+  recordEffectiveness(project, phase === '03-execute' ? 'execution_replan' : 'plan_revision', {
+    reason: revisionReason, operation: 'task_add', task_id: id, delta: { tasks: 1 },
+  });
   console.log(`✅ Task added: ${id} — ${name}${deps.length ? ` (deps: ${deps.join(', ')})` : ''}`);
   if (description) console.log(`   ${C.dim}${description}${C.reset}`);
   if (!description) console.log(`   ${C.dim}↳ no description — add intent with: x-build tasks update ${id} --desc "what + why"${C.reset}`);
@@ -624,7 +627,7 @@ export function taskUpdate(project, args) {
   const id = positional[0];
   const rawStatus = opts.status;
   if (!id || (!rawStatus && opts.score === undefined && opts['done-criteria'] === undefined && opts.deps === undefined && opts.desc === undefined && opts['expected-files'] === undefined && opts['interface-contract'] === undefined && opts['review-group'] === undefined)) {
-    console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed> [--no-commit]');
+    console.error('Usage: x-build tasks update <task-id> --status <pending|ready|running|completed|failed>');
     console.error('       x-build tasks update <task-id> --status completed --tokens-in <n> --tokens-out <n>  (record actual cost)');
     console.error('       x-build tasks update <task-id> --status completed --resolved-model <haiku|sonnet|opus>  (record the model an inherit task actually ran on)');
     console.error('       x-build tasks update <task-id> --score <number>');
@@ -637,17 +640,95 @@ export function taskUpdate(project, args) {
     exitFail(1);
   }
 
+  // Pure type/enum validation happens BEFORE the modifyJSON lock: exitFail is
+  // process.exit in CLI mode, which skips modifyJSON's finally-unlink and left
+  // tasks.json.lock behind, blocking parallel writers for up to 10s.
+  let newStatus;
+  if (rawStatus) {
+    newStatus = STATUS_ALIASES[rawStatus] || rawStatus;
+    if (!Object.values(TASK_STATES).includes(newStatus)) {
+      console.error(`❌ Invalid status: "${rawStatus}". Valid: ${Object.values(TASK_STATES).join(', ')}`);
+      exitFail(1);
+    }
+  }
+
+  // --reason serves two flags: plan-field updates require an enum revision
+  // reason (recordEffectiveness), while `--status failed` records it verbatim
+  // as failure_reason. Only validate the enum when a plan field is touched —
+  // a failure like --reason "tests timed out" must not abort the update.
+  const touchesPlanFields = ['desc', 'done-criteria', 'deps', 'expected-files', 'interface-contract', 'review-group']
+    .some(flag => opts[flag] !== undefined);
+  let revisionReason = 'unknown';
+  if (touchesPlanFields) {
+    try { revisionReason = normalizeRevisionReason(opts.reason); } catch (error) { console.error(`❌ ${error.message}`); exitFail(1); return; }
+  }
+
+  if (opts.score !== undefined && Number.isNaN(parseFloat(opts.score))) {
+    console.error('❌ --score requires a numeric value. Usage: --score <number>');
+    exitFail(1);
+  }
+
+  if (opts.desc !== undefined && typeof opts.desc !== 'string') {
+    console.error('❌ --desc requires a value. Usage: --desc "what + why"');
+    exitFail(1);
+  }
+
+  if (opts['done-criteria'] !== undefined && typeof opts['done-criteria'] !== 'string') {
+    console.error('❌ --done-criteria requires a value. Usage: --done-criteria "criteria text"');
+    exitFail(1);
+  }
+
+  if (opts['review-group'] !== undefined && (typeof opts['review-group'] !== 'string' || !opts['review-group'].trim())) {
+    console.error('❌ --review-group requires a non-empty value.');
+    exitFail(1);
+  }
+
+  let newDeps;
+  if (opts.deps !== undefined) {
+    // parseOptions collapses `--deps` (no value) and `--deps ""` to `true`
+    // because of the falsy-next-arg shortcut. Treat both as "clear".
+    if (opts.deps === true || opts.deps === '') {
+      newDeps = [];
+    } else if (typeof opts.deps === 'string') {
+      newDeps = opts.deps.split(',').map(d => d.trim()).filter(Boolean);
+    } else {
+      console.error('❌ --deps requires a value. Usage: --deps t1,t2  (or omit value to clear)');
+      exitFail(1);
+    }
+    if (newDeps.includes(id)) {
+      console.error(`❌ Self-dependency rejected: task "${id}" cannot depend on itself.`);
+      exitFail(1);
+    }
+  }
+
   // Use modifyJSON for atomic read-modify-write (parallel agent safe)
   let taskFound = false;
-  let oldStatus, newStatus, updatedFields = [];
+  let oldStatus, updatedFields = [];
   let taskRef = null;
   let completionEvidenceError = null;
   let alreadyCompleted = false;
+  // Data-dependent failures are latched and reported AFTER modifyJSON returns
+  // (same pattern as completionEvidenceError): exitFail inside the mutator
+  // would skip the finally-unlink and leak tasks.json.lock.
+  let dataError = null;
 
   modifyJSON(tasksPath(project), (data) => {
-    if (!data) { console.error('❌ No tasks data found.'); exitFail(1); }
+    if (!data) { dataError = '❌ No tasks data found.'; return data; }
     const task = data.tasks.find(t => t.id === id);
-    if (!task) { console.error(`❌ ${E('task-not-found', { id })}`); exitFail(1); }
+    if (!task) { dataError = `❌ ${E('task-not-found', { id })}`; return data; }
+
+    // Unknown-dep check needs fresh data, and must run before ANY mutation so
+    // a rejected update writes nothing back.
+    if (newDeps) {
+      const validIds = new Set(data.tasks.map(t => t.id));
+      for (const dep of newDeps) {
+        if (!validIds.has(dep)) {
+          dataError = `❌ Unknown dependency: "${dep}" does not exist.`;
+          return data;
+        }
+      }
+    }
+
     taskFound = true;
     taskRef = task;
 
@@ -655,11 +736,6 @@ export function taskUpdate(project, args) {
     // callback allowed a second executor to replace it or complete the task
     // between validation and write (TOCTOU).
     if (rawStatus) {
-      newStatus = STATUS_ALIASES[rawStatus] || rawStatus;
-      if (!Object.values(TASK_STATES).includes(newStatus)) {
-        console.error(`❌ Invalid status: "${rawStatus}". Valid: ${Object.values(TASK_STATES).join(', ')}`);
-        exitFail(1);
-      }
       if (newStatus === TASK_STATES.COMPLETED && task.status === TASK_STATES.COMPLETED) {
         alreadyCompleted = true;
         return data;
@@ -681,19 +757,11 @@ export function taskUpdate(project, args) {
     }
 
     if (opts.desc !== undefined) {
-      if (typeof opts.desc !== 'string') {
-        console.error('❌ --desc requires a value. Usage: --desc "what + why"');
-        exitFail(1);
-      }
       task.description = opts.desc.trim() || null;
       updatedFields.push('description updated');
     }
 
     if (opts['done-criteria'] !== undefined) {
-      if (typeof opts['done-criteria'] !== 'string') {
-        console.error('❌ --done-criteria requires a value. Usage: --done-criteria "criteria text"');
-        exitFail(1);
-      }
       task.done_criteria = opts['done-criteria'].split(';').map(c => c.trim()).filter(Boolean);
       updatedFields.push('done_criteria updated');
     }
@@ -713,37 +781,11 @@ export function taskUpdate(project, args) {
     }
 
     if (opts['review-group'] !== undefined) {
-      if (typeof opts['review-group'] !== 'string' || !opts['review-group'].trim()) {
-        console.error('❌ --review-group requires a non-empty value.');
-        exitFail(1);
-      }
       task.review_group = opts['review-group'].trim();
       updatedFields.push(`review_group: ${task.review_group}`);
     }
 
     if (opts.deps !== undefined) {
-      // parseOptions collapses `--deps` (no value) and `--deps ""` to `true`
-      // because of the falsy-next-arg shortcut. Treat both as "clear".
-      let newDeps;
-      if (opts.deps === true || opts.deps === '') {
-        newDeps = [];
-      } else if (typeof opts.deps === 'string') {
-        newDeps = opts.deps.split(',').map(d => d.trim()).filter(Boolean);
-      } else {
-        console.error('❌ --deps requires a value. Usage: --deps t1,t2  (or omit value to clear)');
-        exitFail(1);
-      }
-      const validIds = new Set(data.tasks.map(t => t.id));
-      for (const dep of newDeps) {
-        if (dep === id) {
-          console.error(`❌ Self-dependency rejected: task "${id}" cannot depend on itself.`);
-          exitFail(1);
-        }
-        if (!validIds.has(dep)) {
-          console.error(`❌ Unknown dependency: "${dep}" does not exist.`);
-          exitFail(1);
-        }
-      }
       task.depends_on = newDeps;
       updatedFields.push(`depends_on: [${newDeps.join(', ')}]`);
     }
@@ -764,6 +806,12 @@ export function taskUpdate(project, args) {
     return data;
   });
 
+  if (dataError) {
+    console.error(dataError);
+    exitFail(1);
+    return;
+  }
+
   if (completionEvidenceError) {
     const labels = {
       missing: 'has no current passing task-check evidence (missing task-check evidence)',
@@ -776,6 +824,14 @@ export function taskUpdate(project, args) {
     else console.error(`   Run in the task working directory: x-build task-check ${id}`);
     process.exitCode = 2;
     return;
+  }
+
+  const planFieldsChanged = updatedFields.some(field => /description|done_criteria|expected_files|interface_contract|review_group|depends_on/.test(field));
+  if (planFieldsChanged) {
+    const phase = readJSON(manifestPath(project))?.current_phase;
+    recordEffectiveness(project, phase === '03-execute' ? 'execution_replan' : 'plan_revision', {
+      reason: revisionReason, operation: 'task_update', task_id: id, fields: updatedFields,
+    });
   }
 
   if (alreadyCompleted) {
@@ -832,22 +888,10 @@ export function taskUpdate(project, args) {
   emitHook('task:post-update', { project, taskId: id, from: oldStatus, to: newStatus });
 
   if (newStatus === TASK_STATES.COMPLETED) {
-    const manifest = readJSON(manifestPath(project));
-    const phase = PHASES.find(p => p.id === manifest?.current_phase);
-    const sha = opts['no-commit'] !== undefined
-      ? null
-      : gitAutoCommit(project, taskRef, phase?.name || 'unknown');
-    if (sha) {
-      modifyJSON(tasksPath(project), (d) => {
-        const t = d.tasks.find(x => x.id === id);
-        if (t) t.commit_sha = sha;
-        return d;
-      });
-      console.log(`  ${C.dim}📎 commit: ${sha.slice(0, 8)}${C.reset}`);
-    }
     if (taskRef.started_at) {
       appendCostEvent({
         type: 'task_complete', project, taskId: id, taskName: taskRef.name,
+        ...buildIdentity(project),
         role: taskRef.role || 'executor',
         model: _metricModel,
         size: taskRef.size || 'medium',
@@ -888,10 +932,9 @@ export function taskUpdate(project, args) {
   if (newStatus === TASK_STATES.FAILED) {
     updateCircuitBreaker(project, true);
 
-    if (opts.rollback !== 'false' && taskRef.commit_sha) {
-      const rolled = gitRollbackTask(taskRef);
-      if (rolled) console.log(`  ${C.dim}🔄 rolled back to ${taskRef.commit_sha.slice(0, 8)}${C.reset}`);
-    }
+    // No auto-rollback: x-build no longer commits, so there is no task commit to
+    // reset to. A failed task's changes stay in the working tree for inspection
+    // rather than being discarded by an unattended `git reset --hard`.
 
     let _retryCount = taskRef.retry_count || 0;
     if (opts.retry !== 'false') {
@@ -914,6 +957,7 @@ export function taskUpdate(project, args) {
     if (taskRef.started_at) {
       appendCostEvent({
         type: 'task_failed', project, taskId: id, taskName: taskRef.name,
+        ...buildIdentity(project),
         role: taskRef.role || 'executor',
         model: _metricModel,
         size: taskRef.size || 'medium',
@@ -942,11 +986,19 @@ export function taskUpdate(project, args) {
       const durations = allTasks
         .filter(t => t.started_at && t.completed_at)
         .map(t => new Date(t.completed_at) - new Date(t.started_at));
+      const starts = allTasks.filter(t => t.started_at).map(t => new Date(t.started_at).getTime()).filter(Number.isFinite);
+      const ends = allTasks.map(t => t.completed_at || t.failed_at).filter(Boolean).map(t => new Date(t).getTime()).filter(Number.isFinite);
+      const wallDuration = starts.length && ends.length ? Math.max(0, Math.max(...ends) - Math.min(...starts)) : 0;
       const scores = allTasks.filter(t => t.score != null).map(t => t.score);
       appendCostEvent({
         type: 'run_complete', project, task_count: allTasks.length,
+        ...buildIdentity(project),
         completed: completedCount, failed: failedCount,
-        total_duration_ms: durations.reduce((a, b) => a + b, 0),
+        total_duration_ms: wallDuration,
+        task_duration_sum_ms: durations.reduce((a, b) => a + b, 0),
+        wall_clock_duration_ms: wallDuration,
+        active_duration_ms: null, human_wait_duration_ms: null,
+        duration_breakdown_available: false,
         avg_quality_score: scores.length ? +(scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2) : null,
         timestamp: new Date().toISOString(),
       });
@@ -970,14 +1022,17 @@ export function taskReopen(project, args) {
   const REOPENABLE = new Set([TASK_STATES.COMPLETED, TASK_STATES.FAILED, TASK_STATES.CANCELLED]);
   const reopened = [];
   const skipped = [];
+  // Latched and reported AFTER modifyJSON returns: exitFail inside the mutator
+  // is process.exit in CLI mode, skipping the finally-unlink → leaked lock.
+  let dataError = null;
 
   modifyJSON(tasksPath(project), (data) => {
-    if (!data?.tasks?.length) { console.error('❌ No tasks data found.'); exitFail(1); }
+    if (!data?.tasks?.length) { dataError = '❌ No tasks data found.'; return data; }
     const root = data.tasks.find(t => t.id === id);
-    if (!root) { console.error(`❌ ${E('task-not-found', { id })}`); exitFail(1); }
+    if (!root) { dataError = `❌ ${E('task-not-found', { id })}`; return data; }
     if (!REOPENABLE.has(root.status)) {
-      console.error(`❌ Cannot reopen "${id}" — current status "${root.status}". Only completed/failed/cancelled can be reopened.`);
-      exitFail(1);
+      dataError = `❌ Cannot reopen "${id}" — current status "${root.status}". Only completed/failed/cancelled can be reopened.`;
+      return data;
     }
 
     // Collect targets: root + transitive dependents if --cascade
@@ -1021,6 +1076,12 @@ export function taskReopen(project, args) {
     return data;
   });
 
+  if (dataError) {
+    console.error(dataError);
+    exitFail(1);
+    return;
+  }
+
   if (reopened.length === 0) {
     console.log(`⚠ Nothing reopened.`);
     return;
@@ -1030,6 +1091,10 @@ export function taskReopen(project, args) {
     emitHook('task:post-update', { project, taskId: r.id, from: r.from, to: TASK_STATES.PENDING });
     console.log(`✅ Reopened ${r.id} (${r.from} → pending): ${r.name}`);
   }
+  recordEffectiveness(project, 'task_reopened', {
+    reason: reason.trim(), root_task_id: id, cascade: opts.cascade !== undefined,
+    tasks: reopened.map(task => ({ id: task.id, from_status: task.from })), count: reopened.length,
+  });
   if (skipped.length) {
     for (const s of skipped) {
       console.log(`  ${C.dim}↳ ${s.id} skipped (status: ${s.status})${C.reset}`);
@@ -1062,7 +1127,9 @@ export function computeSteps(tasks) {
   }
 
   for (const t of tasks) {
-    for (const dep of t.depends_on) {
+    // Hand-edited tasks.json may drop the field — treat missing as no deps
+    // instead of surfacing a raw TypeError through plan-check.
+    for (const dep of t.depends_on || []) {
       if (!adj.has(dep)) continue;
       adj.get(dep).push(t.id);
       indegree.set(t.id, indegree.get(t.id) + 1);
@@ -1104,13 +1171,14 @@ export function computeSteps(tasks) {
 }
 
 export function cmdSteps(args) {
-  const sub = args[0];
+  const { positional } = parseOptions(args);
+  const sub = positional[0];
   if (!sub || !['compute', 'status', 'next'].includes(sub)) {
     console.error('Usage: x-build steps <compute|status|next> [project]');
     exitFail(1);
   }
 
-  const project = resolveProject(args[1] || null, { autoInit: true });
+  const project = resolveProject(positional[1] || null, { autoInit: true });
 
   if (sub === 'compute') return stepsCompute(project);
   if (sub === 'status') return stepsStatus(project);
@@ -1198,11 +1266,19 @@ export function stepsNext(project) {
     });
 
     if (pendingTasks.length > 0) {
-      for (const id of pendingTasks) {
-        const t = taskData.tasks.find(t => t.id === id);
-        if (t) t.status = TASK_STATES.READY;
-      }
-      writeJSON(tasksPath(project), taskData);
+      // Flip only the intended rows on FRESH data under the tasks.json lock —
+      // writing the snapshot wholesale reverted updates parallel agents
+      // committed between our read and write (same rule as markTasksRunning).
+      const flip = new Set(pendingTasks);
+      modifyJSON(tasksPath(project), (fresh) => {
+        if (!fresh?.tasks) return fresh;
+        for (const row of fresh.tasks) {
+          if (!flip.has(row.id)) continue;
+          if (![TASK_STATES.PENDING, TASK_STATES.READY].includes(row.status)) continue;
+          row.status = TASK_STATES.READY;
+        }
+        return fresh;
+      });
 
       console.log(`🔹 Step ${step.id} ready — ${pendingTasks.length} tasks:`);
       for (const id of pendingTasks) {
@@ -1319,7 +1395,13 @@ function buildAgentPrompt(project, task, briefContent, decisionsContent, { manif
     '## Instructions',
     `Complete the task "${task.name}" as described above.`,
     'Follow existing code patterns and conventions.',
-    'Write clean, tested code.',
+    'Make the smallest change that satisfies the actual user goal. Do not add unsolicited abstractions, compatibility layers, configuration, telemetry, or state tracking.',
+    'Treat the requested method as a hypothesis: verify it fits the repository and goal; if it does not, report concrete evidence and the simplest adequate alternative before changing code.',
+    'Add a fallback only for a concrete evidenced failure condition, and only when activation is observable, behavioral differences are explicit, and both paths can be tested. Otherwise fail clearly; never hide failure behind broad catches, empty results, or arbitrary defaults.',
+    'Do not claim quality, safety, or performance improvements that were not measured.',
+    'Sequential execution is the default. Use parallel execution only when files, shared state, dependencies, and validation environments are verified independent and the expected time saving exceeds orchestration cost.',
+    'Identify what this change can break and run only the smallest existing validation that directly observes that risk. Do not run test, lint, build, and review as a fixed checklist; explain any relevant check you intentionally omit.',
+    "Write clean code and use the repository's existing validation commands when they are relevant to the changed behavior.",
     '',
   );
 
@@ -1499,10 +1581,14 @@ function collectWorktreeTasks(project) {
 // is consumed by the skill, which spawns agents immediately after this command.
 // The human-readable `run` path is a preview and must never create RUNNING tasks;
 // it has no executor to own them. Idempotent — tasks already RUNNING are skipped
-// so a re-emitted plan does not restart the duration clock. readyTasks are live
-// references into taskData, so the single writeJSON persists their mutations.
-function markTasksRunning(taskData, readyTasks, sharedCfg, project, step) {
-  let marked = 0;
+// so a re-emitted plan does not restart the duration clock. readyTasks stay live
+// references into the caller's snapshot (buildPlanEntry reads the stamps from
+// them), but persistence copies the stamps onto FRESH rows by id under the
+// tasks.json lock: the snapshot may be seconds old (worktree acquisition sits
+// between read and write), and writing it wholesale silently reverted
+// completions/task_check claims parallel agents committed in the meantime.
+function markTasksRunning(readyTasks, sharedCfg, project, step) {
+  const stamped = [];
   for (const task of readyTasks) {
     if (task.status === TASK_STATES.RUNNING) continue;
     const role = task.role || (task.size === 'large' ? 'deep-executor' : 'executor');
@@ -1517,13 +1603,31 @@ function markTasksRunning(taskData, readyTasks, sharedCfg, project, step) {
     task.status = TASK_STATES.RUNNING;
     task.started_at = new Date().toISOString();
     delete task.task_check;
-    marked++;
+    stamped.push(task);
   }
-  if (marked > 0) {
-    writeJSON(tasksPath(project), taskData);
+  if (stamped.length > 0) {
+    const byId = new Map(stamped.map((t) => [t.id, t]));
+    modifyJSON(tasksPath(project), (fresh) => {
+      if (!fresh?.tasks) return fresh;
+      for (const row of fresh.tasks) {
+        const src = byId.get(row.id);
+        if (!src) continue;
+        // A row a parallel writer already claimed or finished is left alone —
+        // re-stamping it would restart its clock or revert a terminal state.
+        if ([TASK_STATES.RUNNING, TASK_STATES.COMPLETED, TASK_STATES.CANCELLED, TASK_STATES.FAILED].includes(row.status)) continue;
+        row.status = src.status;
+        row.started_at = src.started_at;
+        row._assigned_model = src._assigned_model;
+        row._routing_decision_id = src._routing_decision_id;
+        row._estimated_cost = src._estimated_cost;
+        if (src._budget_fallback_model) row._budget_fallback_model = src._budget_fallback_model;
+        delete row.task_check;
+      }
+      return fresh;
+    });
     emitHook('task:pre-update', { project, step, tasks: readyTasks.map((t) => t.id) });
   }
-  return marked;
+  return stamped.length;
 }
 
 function predictionMaxAgeMs(config) {
@@ -1745,7 +1849,7 @@ function runWorktreeMode(ctx) {
   // Mark only the successfully-acquired tasks RUNNING (routing/cost/started_at)
   // so a later `tasks update completed` records a metric with the right model.
   const acquired = acquireResults.filter((a) => a.res.ok).map((a) => a.task);
-  if (acquired.length) markTasksRunning(taskData, acquired, sharedCfg, project, currentStep.id);
+  if (acquired.length) markTasksRunning(acquired, sharedCfg, project, currentStep.id);
 
   const entries = acquireResults.map(({ task, res }) => {
     const entry = buildPlanEntry(project, task, planEntryCtx, { worktree: true });
@@ -1934,7 +2038,20 @@ export async function cmdRun(args) {
       }
     }
   }
-  writeJSON(tasksPath(project), taskData);
+  // Persist the PENDING→READY flips onto FRESH rows by id under the tasks.json
+  // lock. taskData is a lockless snapshot; writing it back wholesale silently
+  // reverted completions/task_check claims parallel agents committed since the
+  // read (taskUpdate/task-check mutate this file under the modifyJSON lock).
+  if (readyTasks.length) {
+    const readyIds = new Set(readyTasks.map((t) => t.id));
+    modifyJSON(tasksPath(project), (fresh) => {
+      if (!fresh?.tasks) return fresh;
+      for (const row of fresh.tasks) {
+        if (readyIds.has(row.id) && row.status === TASK_STATES.PENDING) row.status = TASK_STATES.READY;
+      }
+      return fresh;
+    });
+  }
   const reviewGroupsToStart = groupSummary.review_scope === 'group'
     ? [...new Set(readyTasks.map(taskReviewGroup))]
     : [];
@@ -2087,7 +2204,7 @@ export async function cmdRun(args) {
     // Mark RUNNING on the spawn path too (skip when over budget — plan is []),
     // so a later `tasks update completed` records a metric with the right model
     // and the budget rolling window sees real spend.
-    if (!budgetExceeded) markTasksRunning(taskData, readyTasks, sharedCfg, project, currentStep.id);
+    if (!budgetExceeded) markTasksRunning(readyTasks, sharedCfg, project, currentStep.id);
     const plan = readyTasks.map(task => buildPlanEntry(project, task, planEntryCtx));
 
     const output = {
@@ -2247,6 +2364,10 @@ export function cmdRunStatus(args) {
       review_available: groupSummary.review_available || false,
       review_command: groupSummary.review_command || null,
       circuit_breaker: { state: cb.state, reason: cb.reason, cooldown_until: cb.cooldown_until || null },
+      // Advisory, never blocking: `later.touched[]` names a deferred file that
+      // changed anyway. Report it; the decision to promote or revert is the
+      // user's, and `later verify-scope` remains the explicit check.
+      later: laterSignal(project),
       next_action,
       ...envelopeContext(),
     }, null, 2));
@@ -2289,6 +2410,18 @@ export function cmdRunStatus(args) {
   if (cb.state !== 'closed') {
     console.log(`\n  ${C.red}⚡ Circuit breaker: ${cb.state.toUpperCase()} (${cb.reason})${C.reset}`);
     if (cb.cooldown_until) console.log(`  ${C.dim}Cooldown until: ${cb.cooldown_until}${C.reset}`);
+  }
+
+  // Advisory line only — a deferred item never blocks the run. `touched` means a
+  // file the queue said to leave alone changed anyway, which is worth seeing
+  // before the group boundary rather than after.
+  const later = laterSignal(project);
+  if (later.open > 0) {
+    console.log(`\n  ${C.dim}📌 Later: ${later.open} open (${later.ids.join(', ')})${C.reset}`);
+    if (later.touched.length) {
+      console.log(`  ${C.yellow}⚠ Deferred files changed anyway: ${later.touched.join(', ')}${C.reset}`);
+      console.log(`  ${C.dim}Promote it (later promote <id>) or revert the edit — details: later verify-scope${C.reset}`);
+    }
   }
 
   console.log('');
@@ -2446,7 +2579,7 @@ export function cmdDispatch(args) {
   modifyJSON(tasksPath(project), (data) => {
     data = data || { tasks: [] };
     data.tasks = data.tasks || [];
-    const id = `t${data.tasks.length + 1}`;
+    const id = nextTaskId(data.tasks);
     task = {
       id,
       name: instruction.length > 60 ? `${instruction.slice(0, 57)}...` : instruction,
@@ -2496,13 +2629,22 @@ export function cmdDispatch(args) {
   const taskData = readJSON(tasksPath(project));
   const taskRef = taskData.tasks.find((t) => t.id === task.id);
   if (task._budget_fallback_model) taskRef._budget_fallback_model = task._budget_fallback_model;
-  markTasksRunning(taskData, [taskRef], sharedCfg, project, 'dispatch');
+  markTasksRunning([taskRef], sharedCfg, project, 'dispatch');
   if (opts.model || task._budget_fallback_model) {
     // markTasksRunning routes by role; an explicit --model pin overrides it.
     // A fallback is already persisted there as the actual assigned model.
     if (opts.model) taskRef._assigned_model = String(opts.model);
     taskRef._estimated_cost = est.cost_usd;
-    writeJSON(tasksPath(project), taskData);
+    // Sequential (never nested) with markTasksRunning's locked write, and scoped
+    // to this row — a full-snapshot write here reverted parallel commits.
+    modifyJSON(tasksPath(project), (data) => {
+      const row = data?.tasks?.find((t) => t.id === taskRef.id);
+      if (row) {
+        row._assigned_model = taskRef._assigned_model;
+        row._estimated_cost = taskRef._estimated_cost;
+      }
+      return data;
+    });
   }
 
   const briefContent = `# ${manifest?.display_name || project} — dispatch\n\n단발 지침 실행 (PRD/phase 게이트 미적용 경로).`;
@@ -2514,7 +2656,7 @@ export function cmdDispatch(args) {
   const dispatchCount = taskData.tasks.filter((t) => t.dispatch).length;
   const notice = [
     `⚡ dispatch: task ${taskRef.id} @ ${project} — PRD/phase 게이트 미적용 경로입니다 (단발 실행; 게이트-프리 헬퍼 조립).`,
-    ...(dispatchCount >= 2 ? [`⚠ 이 프로젝트에 dispatch 태스크가 ${dispatchCount}개 쌓였습니다 — 반복되는 작업이면 PRD로 승격하세요: x-build plan "<goal>"`] : []),
+    ...(dispatchCount >= 2 ? [`⚠ 이 프로젝트에 dispatch 태스크가 ${dispatchCount}개 쌓였습니다 — 반복되는 작업이면 PRD로 승격하세요: x-build legacy-plan "<goal>"`] : []),
   ];
 
   if (opts.json !== undefined) {

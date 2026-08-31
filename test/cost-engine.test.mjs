@@ -11,7 +11,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
 import {
   mkdtempSync, rmSync, writeFileSync, mkdirSync,
-  existsSync, readFileSync, utimesSync,
+  existsSync, readFileSync, renameSync, utimesSync,
 } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
@@ -65,12 +65,22 @@ function appendLines(...objects) {
 
 function clearMetrics() {
   try { rmSync(metricsFile()); }             catch { /* ok */ }
+  try { rmSync(metricsFile() + '.1'); }      catch { /* ok */ }
   try { rmSync(metricsFile() + '.lock', { recursive: true, force: true }); } catch { /* ok */ }
   try { rmSync(ce.spendCachePath()); }       catch { /* ok */ }
   try { rmSync(tokenActualsPath()); }        catch { /* ok */ }
 }
 
 // ── 1. Override priority chain (getModelForRole) ──────────────────────────────
+
+describe('STRATEGY_MULTIPLIERS — direct is the single-agent baseline', () => {
+  test('direct costs 1.0× and every orchestrated strategy costs at least that', () => {
+    expect(ce.STRATEGY_MULTIPLIERS.direct).toBe(1.0);
+    for (const [name, multiplier] of Object.entries(ce.STRATEGY_MULTIPLIERS)) {
+      expect(multiplier, name).toBeGreaterThanOrEqual(1.0);
+    }
+  });
+});
 
 describe('ROI — Score/$ with L9 calibration guards (빅뱃1)', () => {
   const scored = (model, cost, q, n) => Array.from({ length: n }, () => ({ type: 'task_complete', model, role: 'executor', cost_source: 'actual', cost_usd: cost, quality_score: q, quality_scored: true }));
@@ -407,6 +417,56 @@ describe('checkBudget — rolling window', () => {
     expect(result.spent).toBeCloseTo(0.40, 5);
   });
 
+  test('rotated sessions.jsonl.1 rows inside the window still count toward spend', () => {
+    const recent = new Date().toISOString();
+    // Rotation renames the live log to '.1'; in-window rows split across both
+    // files must all feed the windowed spend.
+    mkdirSync(metricsDir(), { recursive: true });
+    writeFileSync(
+      metricsFile() + '.1',
+      JSON.stringify({ type: 'task_complete', cost_usd: 0.30, timestamp: recent }) + '\n',
+      'utf8',
+    );
+    appendLines({ type: 'task_complete', cost_usd: 0.05, timestamp: recent });
+    writeConfig({ budget: { max_usd: 1.00, window_hours: 1 } });
+
+    const result = ce.checkBudget(0, null);
+    expect(result.ok).toBe(true);
+    expect(result.spent).toBeCloseTo(0.35, 5);
+  });
+
+  test('lifetime scan folds rotated rows past the cached offset (window_hours: 0)', () => {
+    writeConfig({ budget: { max_usd: 1.00, window_hours: 0 } });
+    const ts = new Date().toISOString();
+    // The padding makes the pre-rotation file strictly larger than the
+    // post-rotation live file, so the shrunken size is a visible rotation signal.
+    appendLines({ type: 'task_complete', cost_usd: 0.10, note: 'x'.repeat(128), timestamp: ts });
+    expect(ce.checkBudget(0).spent).toBeCloseTo(0.10, 5); // primes the spend cache
+
+    appendLines({ type: 'task_complete', cost_usd: 0.20, timestamp: ts }); // past the cached offset
+    renameSync(metricsFile(), metricsFile() + '.1');                       // rotation
+    appendLines({ type: 'task_complete', cost_usd: 0.30, timestamp: ts }); // fresh live file
+
+    const result = ce.checkBudget(0);
+    expect(result.spent).toBeCloseTo(0.60, 5);
+  });
+
+  test('lifetime scan drops the cache on manual truncation (shrunk file, no .1 sibling)', () => {
+    writeConfig({ budget: { max_usd: 1.00, window_hours: 0 } });
+    const ts = new Date().toISOString();
+    appendLines({ type: 'task_complete', cost_usd: 0.10, note: 'x'.repeat(128), timestamp: ts });
+    expect(ce.checkBudget(0).spent).toBeCloseTo(0.10, 5); // primes the spend cache
+
+    // A user resets the log by hand: the file shrinks but nothing rotated to '.1'.
+    // The cached total describes rows that no longer exist anywhere — it must be
+    // discarded and the fresh live file rescanned from 0 (pre-cache self-healing).
+    rmSync(metricsFile());
+    appendLines({ type: 'task_complete', cost_usd: 0.30, timestamp: ts });
+
+    const result = ce.checkBudget(0);
+    expect(result.spent).toBeCloseTo(0.30, 5);
+  });
+
   test('window_hours: 0 disables the window and scans the full metrics lifetime', () => {
     const old = new Date(Date.now() - 48 * 3_600_000).toISOString();
     appendLines(
@@ -596,12 +656,10 @@ describe('estimateTaskCost — forecast actuals', () => {
 
     writeFileSync(tokenActualsPath(), JSON.stringify({
       updated_at: new Date().toISOString(),
-      sample_counts: { small: 5, medium: 5, large: 5 },
-      estimates: {
-        small:  { avg_cost_usd: 999.99 },
-        medium: { avg_cost_usd: 999.99 },
-        large:  { avg_cost_usd: 999.99 },
-      },
+      sample_counts: { small: 5 },
+      estimates: { small: { avg_cost_usd: 999.99 } },
+      model_sample_counts: { 'small:haiku': 5 },
+      model_estimates: { 'small:haiku': { avg_cost_usd: 999.99 } },
     }), 'utf8');
 
     const result = ce.estimateTaskCost({ name: 'setup', size: 'small' }, 'haiku');
@@ -618,17 +676,37 @@ describe('estimateTaskCost — forecast actuals', () => {
     const avgCost = 0.042;
     writeFileSync(tokenActualsPath(), JSON.stringify({
       updated_at: new Date().toISOString(),
-      sample_counts: { small: 10, medium: 10, large: 10 },
-      estimates: {
-        small:  { avg_cost_usd: avgCost },
-        medium: { avg_cost_usd: avgCost },
-        large:  { avg_cost_usd: avgCost },
-      },
+      sample_counts: { small: 10 },
+      estimates: { small: { avg_cost_usd: avgCost } },
+      model_sample_counts: { 'small:sonnet': 10 },
+      model_estimates: { 'small:sonnet': { avg_cost_usd: avgCost } },
     }), 'utf8');
 
     const result = ce.estimateTaskCost({ name: 'setup', size: 'small' }, 'sonnet');
     expect(result.confidence).toBe('high');
     expect(result.cost_usd).toBeCloseTo(avgCost, 5);
+  });
+
+  test('actuals for another model never price this model (size:model bucket)', () => {
+    mkdirSync(metricsDir(), { recursive: true });
+    writeFileSync(metricsFile(), '', 'utf8');
+    const pastSec = (Date.now() - 5_000) / 1000;
+    try { utimesSync(metricsFile(), pastSec, pastSec); } catch { /* ok */ }
+
+    // Rich sonnet history only — a haiku estimate must not borrow its average.
+    writeFileSync(tokenActualsPath(), JSON.stringify({
+      updated_at: new Date().toISOString(),
+      sample_counts: { small: 10 },
+      estimates: { small: { avg_cost_usd: 999.99 } },
+      model_sample_counts: { 'small:sonnet': 10 },
+      model_estimates: { 'small:sonnet': { avg_cost_usd: 999.99 } },
+    }), 'utf8');
+
+    const result = ce.estimateTaskCost({ name: 'setup', size: 'small' }, 'haiku');
+    expect(result.cost_usd).toBeLessThan(1.0); // token heuristic, not the sonnet average
+    const sonnet = ce.estimateTaskCost({ name: 'setup', size: 'small' }, 'sonnet');
+    expect(sonnet.confidence).toBe('high');
+    expect(sonnet.cost_usd).toBeCloseTo(999.99, 2);
   });
 
   test('stale token-actuals (metrics newer) — loadTokenActuals returns null', () => {
@@ -756,6 +834,25 @@ describe('computeTokenActuals — averages from metrics', () => {
     const result = ce.computeTokenActuals();
     expect(result.sample_counts.medium).toBe(1);
   });
+
+  test('rows with a concrete model also feed a size:model bucket; model-less rows stay size-only', () => {
+    const ts = new Date().toISOString();
+    appendLines(
+      { type: 'task_complete', cost_usd: 0.10, size: 'small', model: 'sonnet', timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.30, size: 'small', model: 'haiku',  timestamp: ts },
+      { type: 'task_complete', cost_usd: 0.50, size: 'small',                  timestamp: ts }, // legacy: no model
+    );
+    const result = ce.computeTokenActuals();
+    expect(result.sample_counts.small).toBe(3); // size aggregate keeps all three
+    expect(result.model_sample_counts['small:sonnet']).toBe(1);
+    expect(result.model_sample_counts['small:haiku']).toBe(1);
+    expect(result.model_estimates['small:sonnet'].avg_cost_usd).toBeCloseTo(0.10, 5);
+    expect(result.model_estimates['small:haiku'].avg_cost_usd).toBeCloseTo(0.30, 5);
+    // Size and model buckets live in separate namespaces, so sample_counts keeps
+    // the "sums to distinct measured tasks" invariant and no key carries a ':'.
+    expect(Object.keys(result.sample_counts).filter(k => k.includes(':'))).toHaveLength(0);
+    expect(Object.keys(result.model_sample_counts)).toHaveLength(2);
+  });
 });
 
 // ── Cost prediction (t6) ────────────────────────────────────────────────────
@@ -856,8 +953,8 @@ describe('costFromTokens — measured cost', () => {
   test('sonnet pricing: 1M in @$3 + 0.5M out @$15 = $10.50', () => {
     expect(ce.costFromTokens('sonnet', 1_000_000, 500_000)).toBeCloseTo(10.5, 6);
   });
-  test('opus pricing: 100k in @$15 + 50k out @$75 = $5.25', () => {
-    expect(ce.costFromTokens('opus', 100_000, 50_000)).toBeCloseTo(5.25, 6);
+  test('opus pricing: 100k in @$5 + 50k out @$25 = $1.75', () => {
+    expect(ce.costFromTokens('opus', 100_000, 50_000)).toBeCloseTo(1.75, 6);
   });
   test('unknown model falls back to sonnet; negative tokens clamp to 0', () => {
     expect(ce.costFromTokens('zzz', 1_000_000, 0)).toBeCloseTo(3, 6);
@@ -1185,7 +1282,7 @@ describe('FakeLLM — deterministic cost fixture injection (t17)', () => {
     for (const prompt of Object.keys(prompts)) {
       const response = await llm.complete(prompt);
       appendLines({
-        type: 'task_complete', size: 'small', cost_source: 'actual',
+        type: 'task_complete', size: 'small', model: 'sonnet', cost_source: 'actual',
         cost_usd: response.cost_usd, input_tokens: response.input_tokens,
         output_tokens: response.output_tokens, timestamp: new Date().toISOString(),
       });
@@ -1194,6 +1291,7 @@ describe('FakeLLM — deterministic cost fixture injection (t17)', () => {
     const forecast = ce.estimateTaskCost({ name: 'fixture prediction', size: 'small' }, 'sonnet');
 
     expect(actuals.sample_counts.small).toBe(10);
+    expect(actuals.model_sample_counts['small:sonnet']).toBe(10);
     expect(actuals.estimates.small.avg_cost_usd).toBeCloseTo(0.025, 6);
     expect(forecast.confidence).toBe('high');
     expect(forecast.cost_usd).toBeCloseTo(0.025, 6);

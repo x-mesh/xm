@@ -1,10 +1,12 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { runQualityPipeline } from '../x-build/lib/x-build/quality-pipeline.mjs';
+import { hashReviewContext } from '../x-review/skills/review/scripts/context-contract.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, '..', 'x-build', 'lib', 'x-build-cli.mjs');
@@ -83,6 +85,20 @@ function writePRD(tmp, name) {
 // ── Phase transitions ─────────────────────────────────────────────
 
 describe('phase transitions', () => {
+  test('phase next ignores trailing --json instead of auto-creating a -json project', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      initGit(tmp);
+      autoGates(tmp);
+      const r = run(['phase', 'next', '--project', name, '--json'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(readJSON(projectPath(tmp, name, 'manifest.json')).current_phase).toBe('02-plan');
+      expect(existsSync(projectPath(tmp, '-json'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
   test('phase next advances research to plan when research-exit gate is auto', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
@@ -210,6 +226,7 @@ describe('phase exit gates are enforced', () => {
       const status = readJSON(projectPath(tmp, name, 'phases', '01-research', 'status.json'));
       expect(status.gate.gate_type).toBe('human-verify');
       expect(status.gate.passed).toBe(false);
+      expect(typeof status.gate_wait_started_at).toBe('string');
       // status --json surfaces resolved type + ledger
       const sj = JSON.parse(run(['status', '--json'], { cwd: tmp }).stdout);
       const research = sj.phases.find(p => p.id === '01-research');
@@ -226,12 +243,20 @@ describe('phase exit gates are enforced', () => {
       const name = setupProject(tmp);
       manualVerification(tmp);
       writeFileSync(projectPath(tmp, name, 'context', 'CONTEXT.md'), '# Context\nGoal: test');
+      expect(run(['phase', 'next'], { cwd: tmp }).exitCode).toBe(2);
       run(['gate', 'pass', 'Research verified'], { cwd: tmp });
       run(['phase', 'next'], { cwd: tmp });
       expect(readJSON(projectPath(tmp, name, 'manifest.json')).current_phase).toBe('02-plan');
       const status = readJSON(projectPath(tmp, name, 'phases', '01-research', 'status.json'));
       expect(status.gate.passed).toBe(true);
       expect(status.gate.passed_by).toBe('human');
+      expect(status.gate_wait_started_at).toBeNull();
+      expect(status.gate_wait_duration_ms).toBeGreaterThanOrEqual(0);
+      const phaseMetric = readFileSync(join(tmp, '.xm', 'build', 'metrics', 'sessions.jsonl'), 'utf8')
+        .trim().split('\n').map((line) => JSON.parse(line)).reverse()
+        .find((event) => event.type === 'phase_complete' && event.phase === 'research');
+      expect(phaseMetric.human_wait_duration_ms).toBeGreaterThanOrEqual(0);
+      expect(phaseMetric.active_duration_ms + phaseMetric.human_wait_duration_ms).toBe(phaseMetric.wall_clock_duration_ms);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -685,27 +710,56 @@ describe('verify-contracts', () => {
 function writeReviewResult(tmp, review = {}) {
   const dir = join(tmp, '.xm', 'review');
   mkdirSync(dir, { recursive: true });
+  const defaultFindings = [
+    {
+      severity: 'high',
+      lens: 'logic',
+      file: 'src/auth.ts',
+      line: 42,
+      summary: 'Auth bypass on missing token',
+    },
+    {
+      severity: 'low',
+      lens: 'docs',
+      file: 'src/auth.ts',
+      line: 7,
+      summary: 'Missing comment',
+    },
+  ];
+  const findings = review.findings || defaultFindings;
+  const reviewedFiles = review.reviewed_files_all || [...new Set(findings.map(f => f.file).filter(Boolean))].sort();
+  for (const file of reviewedFiles) {
+    const path = join(tmp, file);
+    if (!existsSync(path)) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, `reviewed fixture: ${file}\n`);
+    }
+  }
+  const snapshots = review.reviewed_file_snapshots || reviewedFiles.map(file => ({
+    file,
+    exists: existsSync(join(tmp, file)),
+    sha256: existsSync(join(tmp, file))
+      ? createHash('sha256').update(readFileSync(join(tmp, file))).digest('hex')
+      : null,
+  }));
   writeFileSync(join(dir, 'last-result.json'), JSON.stringify({
     reviewed_commit: 'abc1234',
     verdict: 'request_changes',
-    findings: [
-      {
-        severity: 'high',
-        lens: 'logic',
-        file: 'src/auth.ts',
-        line: 42,
-        summary: 'Auth bypass on missing token',
-      },
-      {
-        severity: 'low',
-        lens: 'docs',
-        file: 'src/auth.ts',
-        line: 7,
-        summary: 'Missing comment',
-      },
-    ],
     ...review,
+    findings,
+    reviewed_files_all: reviewedFiles,
+    reviewed_file_snapshots: snapshots,
   }, null, 2));
+}
+
+function initAndEditTriage(tmp, edit) {
+  const init = run(['verify-review-fix', '--init'], { cwd: tmp });
+  expect(init.exitCode).toBe(0);
+  const path = join(tmp, '.xm', 'review', 'triage.json');
+  const triage = readJSON(path);
+  edit(triage);
+  writeFileSync(path, JSON.stringify(triage, null, 2));
+  return triage;
 }
 
 describe('verify-review-fix', () => {
@@ -721,9 +775,132 @@ describe('verify-review-fix', () => {
 
       const triage = readJSON(join(tmp, '.xm', 'review', 'triage.json'));
       expect(triage.target_findings[0].id).toBe('F1');
+      expect(triage.target_findings[0].finding_id).toMatch(/^rf_[0-9a-f]{16}$/);
       expect(triage.target_findings[0].decision).toBe('fix_now');
       expect(Array.isArray(triage.baseline_changed_files)).toBe(true);
       expect(triage.fix_scope.allowed_files).toContain('src/auth.ts');
+      const lifecycle = readJSON(join(tmp, '.xm', 'review', 'finding-lifecycle.json'));
+      expect(lifecycle.findings[0].state).toBe('open');
+      expect(lifecycle.findings[0].finding_id).toBe(triage.target_findings[0].finding_id);
+      expect(lifecycle.reviewed_files_all).toEqual(['src/auth.ts']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('bound review context requires host finding and acceptance evidence', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      const contextContract = {
+        schema_version: 1,
+        goal: 'Preserve compatibility',
+        invariants: [{ id: 'INV1', text: 'Preserve callers' }],
+        constraints: [],
+        non_goals: [],
+        acceptance_checks: [{ id: 'AC1', description: 'Compatibility passes' }],
+      };
+      writeReviewResult(tmp, {
+        context_status: 'bound',
+        context_hash: hashReviewContext(contextContract),
+        context_contract: contextContract,
+      });
+      const triage = initAndEditTriage(tmp, value => {
+        value.target_findings[0].evidence = 'Reproduced';
+        value.verification = ['bun test'];
+      });
+      expect(triage.context_hash).toBe(hashReviewContext(contextContract));
+      let result = run(['verify-review-fix'], { cwd: tmp });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout).toContain('context_assessment');
+      initAndEditTriage(tmp, value => {
+        value.target_findings[0].evidence = 'Reproduced';
+        value.target_findings[0].context_assessment = { alignment: 'aligned', context_refs: ['FAKE'], evidence: 'Default caller path retained.' };
+        value.context_assessment.invariants[0].evidence = 'Existing caller test passes.';
+        value.context_assessment.acceptance_checks[0].evidence = 'bun test compatibility passes.';
+        value.verification = ['bun test'];
+      });
+      result = run(['verify-review-fix'], { cwd: tmp });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout).toContain('unknown ids: FAKE');
+      initAndEditTriage(tmp, value => {
+        value.target_findings[0].evidence = 'Reproduced';
+        value.target_findings[0].context_assessment = { alignment: 'aligned', context_refs: ['INV1'], evidence: 'Default caller path retained.' };
+        value.context_assessment.invariants[0].evidence = 'Existing caller test passes.';
+        value.context_assessment.acceptance_checks[0].evidence = 'bun test compatibility passes.';
+        value.verification = ['bun test'];
+      });
+      result = run(['verify-review-fix'], { cwd: tmp });
+      expect(result.exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('bound review context without its canonical contract fails closed', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, { context_status: 'bound', context_hash: `sha256:${'e'.repeat(64)}` });
+      const result = run(['verify-review-fix', '--init'], { cwd: tmp });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout).toContain('invalid canonical contract');
+      expect(existsSync(join(tmp, '.xm', 'review', 'triage.json'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('bound review context whose contract no longer matches its hash fails closed', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      const contextContract = {
+        schema_version: 1, goal: 'Preserve compatibility',
+        invariants: [{ id: 'INV1', text: 'Preserve callers' }], constraints: [], non_goals: [],
+        acceptance_checks: [{ id: 'AC1', description: 'Compatibility passes' }],
+      };
+      writeReviewResult(tmp, { context_status: 'bound', context_hash: `sha256:${'f'.repeat(64)}`, context_contract: contextContract });
+      const result = run(['verify-review-fix', '--init'], { cwd: tmp });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout).toContain('does not match context_hash');
+      expect(existsSync(join(tmp, '.xm', 'review', 'triage.json'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('bound LGTM still requires host invariant and acceptance evidence', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      const contextContract = {
+        schema_version: 1,
+        goal: 'Preserve compatibility',
+        invariants: [{ id: 'INV1', text: 'Preserve callers' }],
+        constraints: [],
+        non_goals: [],
+        acceptance_checks: [{ id: 'AC1', description: 'Compatibility passes' }],
+      };
+      writeReviewResult(tmp, {
+        verdict: 'LGTM',
+        findings: [],
+        reviewed_files_all: ['src/auth.ts'],
+        context_status: 'bound',
+        context_hash: hashReviewContext(contextContract),
+        context_contract: contextContract,
+      });
+      let result = run(['verify-review-fix'], { cwd: tmp });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout).toContain('Bound LGTM requires host context evidence');
+      expect(run(['verify-review-fix', '--init'], { cwd: tmp }).exitCode).toBe(0);
+      result = run(['verify-review-fix'], { cwd: tmp });
+      expect(result.exitCode).not.toBe(0);
+      initAndEditTriage(tmp, value => {
+        value.context_assessment.invariants[0].evidence = 'Existing caller test passes.';
+        value.context_assessment.acceptance_checks[0].evidence = 'Compatibility suite passes.';
+      });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -749,15 +926,10 @@ describe('verify-review-fix', () => {
     try {
       setupProject(tmp);
       writeReviewResult(tmp);
-      mkdirSync(join(tmp, '.xm', 'review'), { recursive: true });
-      writeFileSync(join(tmp, '.xm', 'review', 'triage.json'), JSON.stringify({
-        reviewed_commit: 'abc1234',
-        target_findings: [
-          { id: 'F1', decision: 'fix_now', evidence: 'Reproduced by auth test' },
-        ],
-        fix_scope: { allowed_files: ['src/auth.ts'] },
-        verification: ['bun test auth'],
-      }, null, 2));
+      initAndEditTriage(tmp, triage => {
+        triage.target_findings[0].evidence = 'Reproduced by auth test';
+        triage.verification = ['bun test auth'];
+      });
 
       const r = run(['verify-review-fix'], { cwd: tmp });
       expect(r.exitCode).toBe(0);
@@ -772,14 +944,10 @@ describe('verify-review-fix', () => {
     try {
       setupProject(tmp);
       writeReviewResult(tmp);
-      writeFileSync(join(tmp, '.xm', 'review', 'triage.json'), JSON.stringify({
-        reviewed_commit: 'abc1234',
-        target_findings: [
-          { id: 'F1', decision: 'backlog', evidence: 'later' },
-        ],
-        fix_scope: { allowed_files: ['src/auth.ts'] },
-        verification: ['bun test auth'],
-      }, null, 2));
+      initAndEditTriage(tmp, triage => {
+        triage.target_findings[0].decision = 'backlog';
+        triage.target_findings[0].evidence = 'later';
+      });
 
       const r = run(['verify-review-fix'], { cwd: tmp });
       expect(r.exitCode).not.toBe(0);
@@ -809,20 +977,239 @@ describe('verify-review-fix', () => {
     }
   });
 
+  test('LGTM does not bypass an unresolved lifecycle from the preceding review-fix', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'fixed but not reverified\n');
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('LGTM cannot close unresolved or stale finding lifecycle entries');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a freshly initialized LGTM review closes the preceding lifecycle', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'fixed after review\n');
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
+
+      expect(run(['verify-review-fix', '--init'], { cwd: tmp }).exitCode).toBe(0);
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('Review Fix Gate passed');
+      expect(readJSON(join(tmp, '.xm', 'review', 'review-fix-gate.json')).stage).toBe('lgtm_ready');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('LGTM fails closed when a lifecycle-aware review loses its lifecycle file', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      rmSync(join(tmp, '.xm', 'review', 'finding-lifecycle.json'));
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('with missing triage, lifecycle, or gate artifacts');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('LGTM fails closed when lifecycle decisions are edited to hide fix_now rows', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      const lifecyclePath = join(tmp, '.xm', 'review', 'finding-lifecycle.json');
+      const lifecycle = readJSON(lifecyclePath);
+      lifecycle.findings[0].decision = 'backlog';
+      writeFileSync(lifecyclePath, JSON.stringify(lifecycle, null, 2));
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('does not correlate with the authorized finding lifecycle receipt');
+      expect(r.stdout).toContain('unresolved or stale finding lifecycle entries');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('LGTM fails closed when triage is missing but lifecycle state remains', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      rmSync(join(tmp, '.xm', 'review', 'triage.json'));
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('with missing triage, lifecycle, or gate artifacts');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('LGTM fails closed when lifecycle markers or authorized triage decisions are stripped', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      const triagePath = join(tmp, '.xm', 'review', 'triage.json');
+      const triage = readJSON(triagePath);
+      delete triage.target_findings[0].finding_id;
+      triage.target_findings[0].decision = 'backlog';
+      writeFileSync(triagePath, JSON.stringify(triage, null, 2));
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('does not correlate with the authorized finding lifecycle receipt');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('--init rejects duplicate content-derived finding ids', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, { findings: [
+        { severity: 'high', lens: 'logic', file: 'src/auth.ts', line: 10, summary: 'same defect' },
+        { severity: 'high', lens: 'logic', file: 'src/auth.ts', line: 20, summary: 'same defect' },
+      ] });
+      const r = run(['verify-review-fix', '--init'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('Duplicate stable finding_id');
+      expect(existsSync(join(tmp, '.xm', 'review', 'triage.json'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('LGTM rejects a resolved receipt after the fixed bytes change again', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'first fix\n');
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'test passed'], { cwd: tmp }).exitCode).toBe(0);
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'changed after receipt\n');
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('unresolved or stale finding lifecycle entries');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('LGTM for a narrower target cannot close the original review-fix', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, { reviewed_files_all: ['src/auth.ts', 'src/policy.ts'] });
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'authorized fix\n');
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'test passed'], { cwd: tmp }).exitCode).toBe(0);
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('does not correlate with the authorized finding lifecycle receipt');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('LGTM at a descendant commit closes a resolved lifecycle with full fresh coverage', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      initGit(tmp);
+      mkdirSync(join(tmp, 'src'), { recursive: true });
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'vulnerable\n');
+      spawnSync('git', ['add', 'src/auth.ts'], { cwd: tmp });
+      spawnSync('git', ['commit', '-qm', 'review base'], { cwd: tmp });
+      const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: tmp, encoding: 'utf8' }).stdout.trim();
+      writeReviewResult(tmp, { reviewed_commit: base });
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'fixed\n');
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'test passed'], { cwd: tmp }).exitCode).toBe(0);
+      spawnSync('git', ['add', 'src/auth.ts'], { cwd: tmp });
+      spawnSync('git', ['commit', '-qm', 'fix auth'], { cwd: tmp });
+      const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: tmp, encoding: 'utf8' }).stdout.trim();
+      writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_commit: head, reviewed_files_all: ['src/auth.ts'] });
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('Review Fix Gate passed');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('plain gate rejects a lifecycle receipt edited after authorization', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      const lifecyclePath = join(tmp, '.xm', 'review', 'finding-lifecycle.json');
+      const lifecycle = readJSON(lifecyclePath);
+      lifecycle.findings[0].state = 'reverified';
+      lifecycle.findings[0].outcome = 'resolved';
+      lifecycle.findings[0].evidence = 'forged';
+      writeFileSync(lifecyclePath, JSON.stringify(lifecycle, null, 2));
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('finding-lifecycle.json changed since the last review-fix gate');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('fails when triage reviewed_commit does not match last-result reviewed_commit', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       setupProject(tmp);
       writeReviewResult(tmp);
-      mkdirSync(join(tmp, '.xm', 'review'), { recursive: true });
-      writeFileSync(join(tmp, '.xm', 'review', 'triage.json'), JSON.stringify({
-        reviewed_commit: 'stale000',
-        target_findings: [
-          { id: 'F1', decision: 'fix_now', evidence: 'fixed' },
-        ],
-        fix_scope: { allowed_files: ['src/auth.ts'] },
-        verification: ['bun test auth'],
-      }, null, 2));
+      initAndEditTriage(tmp, triage => {
+        triage.reviewed_commit = 'stale000';
+        triage.target_findings[0].evidence = 'fixed';
+      });
 
       const r = run(['verify-review-fix'], { cwd: tmp });
       expect(r.exitCode).not.toBe(0);
@@ -850,6 +1237,277 @@ describe('verify-review-fix', () => {
       const verify = run(['verify-review-fix'], { cwd: tmp });
       expect(verify.exitCode).not.toBe(0);
       expect(verify.stdout).toContain('requires an explicit triage decision');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('--init fails closed when a reviewed file changed after x-review', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'changed after review\n');
+
+      const r = run(['verify-review-fix', '--init'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('Reviewed files changed since x-review');
+      expect(r.stdout).toContain('src/auth.ts');
+      expect(existsSync(join(tmp, '.xm', 'review', 'triage.json'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('--init fails closed on incomplete or unsafe review snapshots', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, { reviewed_file_snapshots: [] });
+      const missing = run(['verify-review-fix', '--init'], { cwd: tmp });
+      expect(missing.exitCode).not.toBe(0);
+      expect(missing.stdout).toContain('has no reviewed_file_snapshots entry');
+
+      writeReviewResult(tmp, {
+        reviewed_files_all: ['../outside.ts'],
+        reviewed_file_snapshots: [{ file: '../outside.ts', exists: false, sha256: null }],
+      });
+      const unsafe = run(['verify-review-fix', '--init'], { cwd: tmp });
+      expect(unsafe.exitCode).not.toBe(0);
+      expect(unsafe.stdout).toContain('unsafe or unreadable');
+
+      const external = join(tmpdir(), `xm-review-external-${Date.now()}.ts`);
+      writeFileSync(external, 'outside repository\n');
+      const link = join(tmp, 'src', 'linked.ts');
+      mkdirSync(dirname(link), { recursive: true });
+      symlinkSync(external, link);
+      writeReviewResult(tmp, {
+        reviewed_files_all: ['src/linked.ts'],
+        reviewed_file_snapshots: [{
+          file: 'src/linked.ts',
+          exists: true,
+          sha256: createHash('sha256').update(readFileSync(external)).digest('hex'),
+        }],
+      });
+      const symlink = run(['verify-review-fix', '--init'], { cwd: tmp });
+      expect(symlink.exitCode).not.toBe(0);
+      expect(symlink.stdout).toContain('unsafe or unreadable');
+      rmSync(external, { force: true });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('requires pre-fix authorization, then permits only allowed reviewed-file changes', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, {
+        reviewed_files_all: ['src/auth.ts', 'src/policy.ts'],
+      });
+      initAndEditTriage(tmp, triage => {
+        triage.target_findings[0].evidence = 'Reproduced';
+      });
+
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'edit before authorization\n');
+      const tooEarly = run(['verify-review-fix'], { cwd: tmp });
+      expect(tooEarly.exitCode).not.toBe(0);
+      expect(tooEarly.stdout).toContain('before the review-fix gate authorized edits');
+
+      // Restore the reviewed bytes, obtain authorization, then apply the scoped fix.
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'reviewed fixture: src/auth.ts\n');
+      const authorize = run(['verify-review-fix'], { cwd: tmp });
+      expect(authorize.exitCode).toBe(0);
+      expect(readJSON(join(tmp, '.xm', 'review', 'finding-lifecycle.json')).findings[0].state).toBe('fix_authorized');
+      const premature = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'not actually changed'], { cwd: tmp });
+      expect(premature.exitCode).not.toBe(0);
+      expect(premature.stdout).toContain('finding bytes must change before reverification');
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'authorized fix\n');
+      const afterFix = run(['verify-review-fix'], { cwd: tmp });
+      expect(afterFix.exitCode).not.toBe(0);
+      expect(afterFix.stdout).toContain('fix requires explicit reverification');
+
+      const unknown = run(['verify-review-fix', '--reverify', 'F9', '--outcome', 'resolved', '--evidence', 'test'], { cwd: tmp });
+      expect(unknown.exitCode).not.toBe(0);
+      expect(unknown.stdout).toContain('Unknown finding for --reverify');
+      const invalid = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'bogus', '--evidence', 'test'], { cwd: tmp });
+      expect(invalid.exitCode).not.toBe(0);
+      expect(invalid.stdout).toContain('--outcome must be resolved, persistent, or regression');
+      const missingEvidence = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved'], { cwd: tmp });
+      expect(missingEvidence.exitCode).not.toBe(0);
+      expect(missingEvidence.stdout).toContain('--evidence is required for reverification');
+
+      const persistent = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'persistent', '--evidence', 'bug still reproduces'], { cwd: tmp });
+      expect(persistent.exitCode).not.toBe(0);
+      expect(persistent.stdout).toContain('reverification outcome is persistent; expected resolved');
+      expect(readJSON(join(tmp, '.xm', 'review', 'review-fix-gate.json')).stage).toBe('awaiting_reverification');
+
+      const regression = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'regression', '--evidence', 'new failure observed'], { cwd: tmp });
+      expect(regression.exitCode).not.toBe(0);
+      expect(regression.stdout).toContain('reverification outcome is regression; expected resolved');
+
+      const reverified = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'auth regression test passes'], { cwd: tmp });
+      expect(reverified.exitCode).toBe(0);
+      const lifecycle = readJSON(join(tmp, '.xm', 'review', 'finding-lifecycle.json'));
+      expect(lifecycle.findings[0]).toMatchObject({ state: 'reverified', outcome: 'resolved', evidence: 'auth regression test passes' });
+      expect(readJSON(join(tmp, '.xm', 'review', 'review-fix-gate.json')).stage).toBe('reverified');
+
+      writeFileSync(join(tmp, 'src', 'policy.ts'), 'off-scope edit\n');
+      const outside = run(['verify-review-fix'], { cwd: tmp });
+      expect(outside.exitCode).not.toBe(0);
+      expect(outside.stdout).toContain('Reviewed files changed outside fix_scope.allowed_files');
+      expect(outside.stdout).toContain('src/policy.ts');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('editing triage invalidates a prior review-fix authorization', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => {
+        triage.target_findings[0].evidence = 'Reproduced';
+        triage.fix_scope.allowed_files = ['src/auth.ts'];
+      });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+
+      const triagePath = join(tmp, '.xm', 'review', 'triage.json');
+      const triage = readJSON(triagePath);
+      triage.target_findings[0].fix_notes = 'changed after authorization';
+      writeFileSync(triagePath, JSON.stringify(triage, null, 2));
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'fix with stale authorization\n');
+
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('before the review-fix gate authorized edits');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('stale authorization cannot append a reverify outcome to the ledger', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+
+      const triagePath = join(tmp, '.xm', 'review', 'triage.json');
+      const triage = readJSON(triagePath);
+      triage.target_findings[0].fix_notes = 'changed after authorization';
+      writeFileSync(triagePath, JSON.stringify(triage, null, 2));
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'fix with stale authorization\n');
+
+      const r = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'persistent', '--evidence', 'still fails'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      const ledger = readFileSync(join(tmp, '.xm', 'review', 'triage-ledger.jsonl'), 'utf8')
+        .trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      expect(ledger.filter(row => row.type === 'triage_outcome')).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('reverification is invalidated when the fixed file bytes change again', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'first fix\n');
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'test passed'], { cwd: tmp }).exitCode).toBe(0);
+
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'second unverified edit\n');
+      const stale = run(['verify-review-fix'], { cwd: tmp });
+      expect(stale.exitCode).not.toBe(0);
+      expect(stale.stdout).toContain('fix requires explicit reverification');
+      expect(readJSON(join(tmp, '.xm', 'review', 'finding-lifecycle.json')).findings[0].state).toBe('fixed');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a locationless finding binds reverification to the complete reviewed snapshot', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, {
+        findings: [{ severity: 'high', lens: 'architecture', file: null, line: null, summary: 'cross-file invariant breaks' }],
+        reviewed_files_all: ['src/auth.ts'],
+      });
+      initAndEditTriage(tmp, triage => {
+        triage.target_findings[0].evidence = 'Reproduced';
+        triage.fix_scope.allowed_files = ['src/auth.ts'];
+      });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'cross-file fix\n');
+      const verified = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'architecture invariant check passes'], { cwd: tmp });
+      expect(verified.exitCode).toBe(0);
+      expect(readJSON(join(tmp, '.xm', 'review', 'finding-lifecycle.json')).findings[0].file_snapshot.sha256).toHaveLength(64);
+
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'changed after architecture check\n');
+      const stale = run(['verify-review-fix'], { cwd: tmp });
+      expect(stale.exitCode).not.toBe(0);
+      expect(stale.stdout).toContain('fix requires explicit reverification');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed when reviewed_commit is missing on either side (stale-triage guard)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      // Triage side missing: a hand-edited triage that lost its commit anchor.
+      initAndEditTriage(tmp, triage => {
+        triage.target_findings[0].evidence = 'Reproduced';
+        delete triage.reviewed_commit;
+      });
+      const triageSide = run(['verify-review-fix'], { cwd: tmp });
+      expect(triageSide.exitCode).not.toBe(0);
+      expect(triageSide.stdout).toContain('cannot verify triage freshness');
+
+      // Review side missing: last-result.json rewritten without reviewed_commit
+      // (JSON.stringify drops the undefined key entirely). File bytes untouched,
+      // so snapshot checks stay satisfied and the freshness gate is what fires.
+      const tmp2 = mkdtempSync(join(tmpdir(), 'xb-test-'));
+      try {
+        setupProject(tmp2);
+        writeReviewResult(tmp2);
+        initAndEditTriage(tmp2, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+        writeReviewResult(tmp2, { reviewed_commit: undefined });
+        const reviewSide = run(['verify-review-fix'], { cwd: tmp2 });
+        expect(reviewSide.exitCode).not.toBe(0);
+        expect(reviewSide.stdout).toContain('cannot verify triage freshness');
+      } finally {
+        rmSync(tmp2, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('fails when a triage decision no longer matches the finding at its index', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+      // Same id/index, but recorded against a different finding — the decision
+      // must be re-bound to what the review actually reported, not trusted by index.
+      initAndEditTriage(tmp, triage => {
+        triage.target_findings[0].evidence = 'Reproduced';
+        triage.target_findings[0].file = 'src/other.ts';
+        triage.target_findings[0].summary = 'Different finding entirely';
+      });
+      const r = run(['verify-review-fix'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain('does not match current finding');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -1098,6 +1756,10 @@ describe('quality', () => {
       expect(runQualityPipeline({ cwd: tmp, config, evidence: first })[0].reused).toBe(false);
       expect(runQualityPipeline({ cwd: tmp, config: { serial_quality_command: `${command} ` }, evidence: first })[0].reused).toBe(false);
       expect(runQualityPipeline({ cwd: tmp, config: { ...config, serial_quality_env: { QUALITY_MODE: 'changed' } }, evidence: first })[0].reused).toBe(false);
+      const changedCommand = runQualityPipeline({ cwd: tmp, config: { serial_quality_command: `${command} ` }, evidence: first })[0];
+      expect(changedCommand.reuse_miss_reason).toBe('command_changed');
+      expect(changedCommand.duration_ms).toBeGreaterThanOrEqual(0);
+      expect(runQualityPipeline({ cwd: tmp, config })[0].reuse_miss_reason).toBe('missing');
       const other = mkdtempSync(join(tmpdir(), 'xb-quality-other-cwd-'));
       try {
         mkdirSync(join(other, '.xm'), { recursive: true });

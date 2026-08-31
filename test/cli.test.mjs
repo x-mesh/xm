@@ -65,7 +65,7 @@ describe('x-build CLI', () => {
     try {
       const r = run(['init', 'tp'], { cwd: tmp });
       expect(r.exitCode).toBe(0);
-      const r2 = run(['plan'], { cwd: tmp });
+      const r2 = run(['legacy-plan'], { cwd: tmp });
       expect(r2.stdout + r2.stderr).toBeTruthy();
     } finally {
       rmSync(tmp, { recursive: true, force: true });
@@ -76,7 +76,7 @@ describe('x-build CLI', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
       run(['init', 'tp'], { cwd: tmp });
-      const r = run(['plan', 'Build a hello world app'], { cwd: tmp });
+      const r = run(['legacy-plan', 'Build a hello world app'], { cwd: tmp });
       expect(r.stdout).toContain('"action": "auto-plan"');
       expect(r.stdout).toContain('Build a hello world app');
     } finally {

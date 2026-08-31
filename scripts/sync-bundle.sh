@@ -119,8 +119,29 @@ mirror_md_tree() {
   done < <(find "$dst" -type f -name '*.md' -print0)
 }
 
+# Mirror every file under a source tree, preserving paths and deleting stale
+# bundle-only files. Used for executable skill sidecars that Markdown-only
+# helpers intentionally skip.
+mirror_file_tree() {
+  local src="$1" dst="$2" f rel
+  [ -d "$src" ] || return 0
+
+  while IFS= read -r -d '' f; do
+    rel="${f#"$src"/}"
+    sync_file "$f" "$dst/$rel"
+  done < <(find "$src" -type f -print0)
+
+  [ -d "$dst" ] || return 0
+  while IFS= read -r -d '' f; do
+    rel="${f#"$dst"/}"
+    if [ ! -f "$src/$rel" ]; then
+      remove_obsolete_file "$f"
+    fi
+  done < <(find "$dst" -type f -print0)
+}
+
 echo "=== Syncing SKILL.md files ==="
-for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel remote wt; do
+for plugin in build op solver eval review trace memory humble probe agent dashboard humanize sync recall panel remote wt plan; do
   src="x-$plugin/skills/$plugin/SKILL.md"
   dst="xm/skills/$plugin/SKILL.md"
   sync_file "$src" "$dst"
@@ -183,12 +204,28 @@ done
 shopt -u nullglob
 
 echo ""
+echo "=== Syncing x-plan lib files ==="
+sync_file "x-plan/lib/x-plan-cli.mjs" "xm/lib/x-plan-cli.mjs"
+mirror_file_tree "x-plan/lib/x-plan" "xm/lib/x-plan"
+
+echo ""
 echo "=== Syncing x-panel lib files ==="
 sync_file "x-panel/lib/x-panel-cli.mjs" "xm/lib/x-panel-cli.mjs"
 ensure_dir "xm/lib/x-panel"
 shopt -s nullglob
 for f in x-panel/lib/x-panel/*.mjs; do
   sync_file "$f" "xm/lib/x-panel/$(basename "$f")"
+done
+shopt -u nullglob
+
+echo ""
+echo "=== Syncing x-review lib files ==="
+sync_file "x-review/lib/x-review-cli.mjs" "xm/lib/x-review-cli.mjs"
+ensure_dir "xm/lib/x-review"
+shopt -s nullglob
+for f in x-review/lib/*.mjs; do
+  [ "$(basename "$f")" = "x-review-cli.mjs" ] && continue
+  sync_file "$f" "xm/lib/$(basename "$f")"
 done
 shopt -u nullglob
 # t8 (--backend tm) rejected & removed — docs/x-panel-term-mesh-phase2.md §6.
@@ -244,7 +281,16 @@ done
 shopt -u nullglob
 
 echo ""
+echo "=== Syncing x-eval lib files ==="
+sync_file "x-eval/lib/x-eval-cli.mjs" "xm/lib/x-eval-cli.mjs"
+# Wholesale mirror (L8): new sibling modules under x-eval/lib/x-eval/ ship automatically.
+mirror_file_tree "x-eval/lib/x-eval" "xm/lib/x-eval"
+
+echo ""
 echo "=== Syncing x-dashboard lib + public ==="
+# x-dashboard ships independently from x-build, so vendor the pure precision
+# module into its plugin layout. The x-build source remains authoritative.
+sync_file "x-build/lib/x-build/review-precision.mjs" "x-dashboard/lib/x-build/review-precision.mjs"
 sync_file "x-dashboard/lib/x-dashboard-server.mjs" "xm/lib/x-dashboard-server.mjs"
 ensure_dir "xm/public"
 # Mirror public/ wholesale including subdirectories (e.g. vendor/) so bundled assets
@@ -316,6 +362,10 @@ mirror_md_dir "x-review/skills/review/lenses" "xm/skills/review/lenses"
 echo ""
 echo "=== Syncing review references ==="
 mirror_md_dir "x-review/skills/review/references" "xm/skills/review/references"
+
+echo ""
+echo "=== Syncing review executable sidecars ==="
+mirror_file_tree "x-review/skills/review/scripts" "xm/skills/review/scripts"
 
 echo ""
 echo "=== Syncing eval judges ==="
@@ -507,6 +557,20 @@ fi
 shopt -s nullglob
 for f in x-trace/lib/x-trace/*.mjs; do
   dst="xm/lib/x-trace/$(basename "$f")"
+  if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
+    echo "  DIVERGED: $dst"
+    DIVERGED=$((DIVERGED + 1))
+  fi
+done
+shopt -u nullglob
+
+if ! diff -q "x-eval/lib/x-eval-cli.mjs" "xm/lib/x-eval-cli.mjs" > /dev/null 2>&1; then
+  echo "  DIVERGED: xm/lib/x-eval-cli.mjs"
+  DIVERGED=$((DIVERGED + 1))
+fi
+shopt -s nullglob
+for f in x-eval/lib/x-eval/*.mjs; do
+  dst="xm/lib/x-eval/$(basename "$f")"
   if ! diff -q "$f" "$dst" > /dev/null 2>&1; then
     echo "  DIVERGED: $dst"
     DIVERGED=$((DIVERGED + 1))

@@ -9,6 +9,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from '
 import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 
 export { readFileSync, writeFileSync, existsSync, join, dirname };
 
@@ -82,9 +83,9 @@ export function readText(path) {
   try { return readFileSync(path, 'utf8'); } catch { return null; }
 }
 
-/** runId built from a caller-supplied timestamp string (e.g. 20260626-011319). */
+/** Timestamp plus process-independent entropy, safe for parallel lens runs. */
 export function runId(stamp) {
-  return `panel-${stamp}`;
+  return `panel-${stamp}-${randomUUID()}`;
 }
 
 // ── config (3-tier: flag > project .xm/config.json > global ~/.xm/config.json) ──

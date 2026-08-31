@@ -79,8 +79,31 @@ function scanOp(root) {
 }
 
 function scanPlan(root) {
-  const base = join(root, 'build', 'projects');
   const out = [];
+  for (const d of listDirs(join(root, 'plan'))) {
+    const j = readJSON(join(d.path, 'manifest.json'));
+    if (!j) continue;
+    out.push({
+      type: 'plan', id: 'plan:' + d.name,
+      title: j.goal || d.name,
+      status: j.phase || j.status || '',
+      created_at: j.updated_at || j.created_at || isoFromMtime(d.mtimeMs),
+      project: null, path: d.path, format: 'project',
+      meta: { executable: j.executable === true, mode: j.mode || null, phase: j.phase || null, dir: d.path },
+    });
+  }
+  for (const f of dedupeByHost(listFiles(join(root, 'plan'), ['.json']))) {
+    const j = readJSON(f.path) || {};
+    out.push({
+      type: 'plan', id: 'plan:' + stripExt(stripHostSuffix(f.name)),
+      title: j.goal || stripExt(f.name),
+      status: j.status || '',
+      created_at: j.provenance?.created_at || isoFromMtime(f.mtimeMs),
+      project: null, path: f.path, format: 'json',
+      meta: { executable: j.executable === true, mode: j.provenance?.mode || null },
+    });
+  }
+  const base = join(root, 'build', 'projects');
   for (const d of listDirs(base)) {
     const mf = dedupeByHost(listFiles(d.path, ['.json']).filter(f => f.name.startsWith('manifest')))[0];
     const j = mf ? readJSON(mf.path) : null;
@@ -348,7 +371,7 @@ export function readableContent(art) {
     const dir = art.meta && art.meta.dir;
     if (dir) {
       // x-build writes the PRD under phases/02-plan/ (newer) or context/ (older).
-      for (const cand of ['phases/02-plan/PRD.md', 'context/PRD.md', 'STATE.md', 'context/CONTEXT.md', 'board.jsonl']) {
+      for (const cand of ['plan.md', 'phases/02-plan/PRD.md', 'context/PRD.md', 'STATE.md', 'context/CONTEXT.md', 'board.jsonl']) {
         const c = join(dir, cand);
         if (existsSync(c)) { path = c; break; }
       }

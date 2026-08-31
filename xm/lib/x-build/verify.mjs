@@ -8,9 +8,21 @@ import {
   tasksPath, prdPath, contextDir, phaseDir,
   resolveProject, renderBar,
   runQualityChecks,
-  existsSync, join, resolve, ROOT, repoRoot, parseOptions, spawnSync,
+  existsSync, unlinkSync, realpathSync, join, resolve, ROOT, repoRoot, parseOptions, spawnSync,
 } from './core.mjs';
 import { parsePrdBaseline, computeDrift } from './drift.mjs';
+import { recordEffectiveness } from './effectiveness.mjs';
+import {
+  TRIAGE_LEDGER_FILE, buildLedgerRow, ledgerRowKey, parseTriageLedger, parseDuration,
+  aggregateLensPrecision, formatPrecisionReport, lensesBelowPrecision, normalizeLensIdentifier,
+} from './review-precision.mjs';
+import { createHash } from 'node:crypto';
+import {
+  readFileSync, lstatSync, openSync, closeSync, fchmodSync, fstatSync, writeSync,
+  readSync, mkdirSync, rmdirSync, statSync,
+  constants as FS_CONSTANTS,
+} from 'node:fs';
+import { dirname, isAbsolute, relative, sep } from 'node:path';
 
 // ── cmdQuality ──────────────────────────────────────────────────────
 
@@ -21,6 +33,11 @@ export function cmdQuality(args) {
 
   if (results.length === 0) {
     console.log(`  ${C.dim}No test/lint/build tools detected.${C.reset}`);
+    const path = join(phaseDir(project, '04-verify'), 'effectiveness.json');
+    const previous = readJSON(path);
+    const outcome = { timestamp: new Date().toISOString(), attempts: (previous?.attempts || 0) + 1, passed: true, checks: 0, failures: 0, skipped: 'no_tools' };
+    writeJSON(path, outcome);
+    recordEffectiveness(project, 'verify_outcome', { ...outcome, first_pass: outcome.attempts === 1 });
     return;
   }
 
@@ -30,6 +47,13 @@ export function cmdQuality(args) {
 
   const passCount = results.filter(r => r.passed).length;
   console.log(`\n${renderBar(passCount, results.length)} quality checks`);
+  const previous = readJSON(join(phaseDir(project, '04-verify'), 'effectiveness.json'));
+  const outcome = {
+    timestamp: new Date().toISOString(), attempts: (previous?.attempts || 0) + 1,
+    passed: passCount === results.length, checks: results.length, failures: results.length - passCount,
+  };
+  writeJSON(join(phaseDir(project, '04-verify'), 'effectiveness.json'), outcome);
+  recordEffectiveness(project, 'verify_outcome', { ...outcome, first_pass: outcome.attempts === 1 && outcome.passed });
 }
 
 // ── structured requirements (shared by coverage + traceability) ─────
@@ -81,16 +105,44 @@ function describeReqSources(sources) {
   return `PRD §Requirements Traceability: ${sources.prd} · REQUIREMENTS.md: ${sources.requirements_md}`;
 }
 
+/**
+ * Tasks explicitly tagged with this requirement id. This is the strict link
+ * traceability reports on: an `R#` in `requirements[]` or in the task name.
+ */
+function tasksTaggedWith(req, tasks) {
+  return tasks.filter(t =>
+    (Array.isArray(t.requirements) && t.requirements.some(id => String(id).toLowerCase() === req.id.toLowerCase()))
+    || String(t.name || '').includes(req.id));
+}
+
+/**
+ * Coverage is intentionally looser than traceability: it also accepts a task
+ * whose name echoes the requirement's opening text, since many plans name tasks
+ * after the requirement rather than tagging the id. So a name-echo requirement
+ * reads `covered` here while traceability still reports `Tasks: NONE` — that gap
+ * is the signal to add the explicit `R#` link, not a bug.
+ *
+ * What this helper DOES guarantee is that one command never contradicts itself:
+ * the verdict printed to the user and the persisted `details[].covered` come
+ * from this single predicate.
+ */
+function requirementCovered(req, tasks) {
+  if (tasksTaggedWith(req, tasks).length > 0) return true;
+  const prefix = req.desc.toLowerCase().slice(0, 30);
+  return prefix.length > 0 && tasks.some(t => String(t.name || '').toLowerCase().includes(prefix));
+}
+
 // ── cmdVerifyCoverage ───────────────────────────────────────────────
 
 export function cmdVerifyCoverage(args) {
+  const { opts } = parseOptions(args);
   const project = resolveProject(null);
   const taskData = readJSON(tasksPath(project));
   const tasks = taskData?.tasks || [];
   const { reqs, sources, files } = parseStructuredRequirements(project);
 
   if (!files.requirements_md && !files.prd) {
-    console.log('No REQUIREMENTS.md or PRD found. Run: x-build research (or: x-build plan)');
+    console.log('No REQUIREMENTS.md or PRD found. Run: x-build research (or: x-build legacy-plan)');
     return;
   }
 
@@ -104,13 +156,10 @@ export function cmdVerifyCoverage(args) {
 
   let covered = 0;
   let uncovered = 0;
+  const details = [];
 
   for (const req of reqs) {
-    const found = tasks.some(t =>
-      Array.isArray(t.requirements) && t.requirements.some(id => String(id).toLowerCase() === req.id.toLowerCase()) ||
-      t.name.includes(req.id) ||
-      t.name.toLowerCase().includes(req.desc.toLowerCase().slice(0, 30))
-    );
+    const found = requirementCovered(req, tasks);
 
     if (found) {
       console.log(`  [covered] [${req.id}] ${req.desc.slice(0, 60)}`);
@@ -119,6 +168,10 @@ export function cmdVerifyCoverage(args) {
       console.log(`  [missing] [${req.id}] ${req.desc.slice(0, 60)} ${C.red}— no matching task${C.reset}`);
       uncovered++;
     }
+    // Persist the SAME verdict that was printed. This used to recompute with a
+    // name-only predicate, so a run could print "All requirements covered" while
+    // writing covered:false for most rows.
+    details.push({ ...req, covered: found });
   }
 
   console.log(`\n  Coverage: ${covered}/${reqs.length} (${Math.round(covered/reqs.length*100)}%)`);
@@ -134,8 +187,18 @@ export function cmdVerifyCoverage(args) {
     covered,
     uncovered,
     sources,
-    details: reqs.map(r => ({ ...r, covered: tasks.some(t => t.name.includes(r.id)) })),
+    strict: opts.strict === true,
+    details,
   });
+
+  // Coverage is advisory by default (a requirement can legitimately be covered by
+  // a task whose name shares no keywords). `--strict` is the opt-in that makes an
+  // uncovered requirement visible to CI in the exit code, matching the
+  // plan-check --strict convention.
+  if (uncovered > 0 && opts.strict) {
+    console.log(`  ${C.red}--strict: ${uncovered} uncovered requirement${uncovered === 1 ? '' : 's'} fails the check.${C.reset}`);
+    process.exitCode = 1;
+  }
 
   console.log('');
 }
@@ -150,7 +213,7 @@ export function cmdVerifyTraceability(args) {
   const { reqs, sources, files } = parseStructuredRequirements(project);
 
   if (!files.requirements_md && !files.prd) {
-    console.log('No REQUIREMENTS.md or PRD found. Run: x-build research (or: x-build plan)');
+    console.log('No REQUIREMENTS.md or PRD found. Run: x-build research (or: x-build legacy-plan)');
     return;
   }
 
@@ -189,9 +252,7 @@ export function cmdVerifyTraceability(args) {
   const matrix = [];
 
   for (const req of reqs) {
-    const matchedTasks = tasks.filter(t =>
-      (Array.isArray(t.requirements) && t.requirements.some(id => String(id).toLowerCase() === req.id.toLowerCase())) ||
-      t.name.includes(req.id));
+    const matchedTasks = tasksTaggedWith(req, tasks);
     const matchedAC = acItems.filter(ac => ac.toLowerCase().includes(req.id.toLowerCase()));
     const hasDoneCriteria = matchedTasks.some(t => t.done_criteria?.length > 0);
 
@@ -291,6 +352,7 @@ export function cmdVerifyContracts(args) {
 const TRIAGE_REQUIRED_SEVERITY = new Set(['critical', 'high', 'medium']);
 const BLOCKING_SEVERITY = new Set(['critical', 'high']);
 const VALID_TRIAGE_DECISIONS = new Set(['fix_now', 'backlog', 'accept_risk', 'false_positive']);
+const VALID_REVERIFY_OUTCOMES = new Set(['resolved', 'persistent', 'regression']);
 
 function normalizeSeverity(value) {
   return String(value || '').toLowerCase();
@@ -304,8 +366,32 @@ function findingId(index) {
   return `F${index + 1}`;
 }
 
+function stableFindingId(finding) {
+  const identity = {
+    file: finding.file || null,
+    lens: finding.lens || null,
+    summary: findingSummary(finding).trim().replace(/\s+/g, ' '),
+  };
+  return `rf_${sha256(JSON.stringify(identity)).slice(0, 16)}`;
+}
+
+function stableFindingIdFailures(findings) {
+  const seen = new Map();
+  const failures = [];
+  for (const finding of findings) {
+    const id = finding.finding_id || stableFindingId(finding);
+    const previous = seen.get(id);
+    if (previous) {
+      failures.push(`Duplicate stable finding_id ${id}: ${previous.id} and ${finding.id}; x-review must disambiguate their content before triage`);
+    } else {
+      seen.set(id, finding);
+    }
+  }
+  return failures;
+}
+
 function findingSummary(finding) {
-  return finding.summary || finding.description || finding.title || '';
+  return finding.summary || finding.claim || finding.description || finding.title || '';
 }
 
 function reviewDir() {
@@ -326,6 +412,18 @@ function runGit(args) {
   return result.stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 }
 
+function reviewedCommitCovers(originalCommit, reviewedCommit) {
+  if (!originalCommit || !reviewedCommit) return false;
+  if (originalCommit === reviewedCommit) return true;
+  if (!/^[0-9a-f]{7,40}$/i.test(originalCommit) || !/^[0-9a-f]{7,40}$/i.test(reviewedCommit)) return false;
+  const result = spawnSync('git', ['merge-base', '--is-ancestor', originalCommit, reviewedCommit], {
+    cwd: workspaceRoot(),
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+  return result.status === 0;
+}
+
 function collectChangedFilesSinceReview(reviewedCommit) {
   const changed = new Set();
   const add = files => {
@@ -344,13 +442,167 @@ function collectChangedFilesSinceReview(reviewedCommit) {
   return [...changed].sort();
 }
 
+function sha256(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+const REVIEW_CONTEXT_KEYS = new Set(['schema_version', 'goal', 'invariants', 'constraints', 'non_goals', 'acceptance_checks', 'provenance']);
+const REVIEW_CONTEXT_PROVENANCE_KEYS = new Set(['source', 'created_by', 'created_at']);
+const REVIEW_CONTEXT_ID_RE = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
+
+function plainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+}
+
+function canonicalObject(value) {
+  if (Array.isArray(value)) return value.map(canonicalObject);
+  if (!plainObject(value)) return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalObject(value[key])]));
+}
+
+function validateReviewContextContract(value) {
+  if (!plainObject(value) || value.schema_version !== 1) return null;
+  if (Object.keys(value).some(key => !REVIEW_CONTEXT_KEYS.has(key))) return null;
+  const text = (candidate, max = 4000) => typeof candidate === 'string' && candidate.trim() && candidate.trim().length <= max
+    ? candidate.trim()
+    : null;
+  const ids = new Set();
+  const items = (candidate, { required = false, acceptance = false } = {}) => {
+    if (!Array.isArray(candidate) || (required && candidate.length === 0) || candidate.length > 100) return null;
+    const normalized = [];
+    for (const item of candidate) {
+      const allowed = acceptance ? ['id', 'description', 'command'] : ['id', 'text'];
+      if (!plainObject(item) || Object.keys(item).some(key => !allowed.includes(key))) return null;
+      const id = text(item.id, 64);
+      const body = text(acceptance ? item.description : item.text);
+      if (!id || !REVIEW_CONTEXT_ID_RE.test(id) || ids.has(id) || !body) return null;
+      ids.add(id);
+      const normalizedItem = acceptance ? { id, description: body } : { id, text: body };
+      if (acceptance && item.command !== undefined) {
+        const command = text(item.command, 2000);
+        if (!command) return null;
+        normalizedItem.command = command;
+      }
+      normalized.push(normalizedItem);
+    }
+    return normalized;
+  };
+  const goal = text(value.goal);
+  const invariants = items(value.invariants, { required: true });
+  const constraints = items(value.constraints);
+  const nonGoals = items(value.non_goals);
+  const acceptanceChecks = items(value.acceptance_checks, { required: true, acceptance: true });
+  if (!goal || !invariants || !constraints || !nonGoals || !acceptanceChecks) return null;
+  const normalized = { schema_version: 1, goal, invariants, constraints, non_goals: nonGoals, acceptance_checks: acceptanceChecks };
+  if (value.provenance !== undefined) {
+    if (!plainObject(value.provenance) || Object.keys(value.provenance).some(key => !REVIEW_CONTEXT_PROVENANCE_KEYS.has(key))) return null;
+    normalized.provenance = {};
+    for (const key of REVIEW_CONTEXT_PROVENANCE_KEYS) {
+      if (value.provenance[key] === undefined) continue;
+      const entry = text(value.provenance[key], 500);
+      if (!entry) return null;
+      normalized.provenance[key] = entry;
+    }
+  }
+  const canonical = JSON.stringify(canonicalObject(normalized));
+  return Buffer.byteLength(canonical) <= 64 * 1024 ? canonical : null;
+}
+
+function safeWorkspacePath(file) {
+  const root = resolve(workspaceRoot());
+  const abs = resolve(root, String(file || ''));
+  if (abs === root || (!abs.startsWith(`${root}/`) && !abs.startsWith(`${root}\\`))) return null;
+  return abs;
+}
+
+function currentFileSnapshot(file) {
+  const abs = safeWorkspacePath(file);
+  if (!abs) return { file, invalid: true, exists: false, sha256: null };
+  if (!existsSync(abs)) return { file, exists: false, sha256: null };
+  try {
+    const root = realpathSync(workspaceRoot());
+    const real = realpathSync(abs);
+    if (real === root || (!real.startsWith(`${root}/`) && !real.startsWith(`${root}\\`))) {
+      return { file, invalid: true, exists: true, sha256: null };
+    }
+    return { file, exists: true, sha256: sha256(readFileSync(real)) };
+  } catch {
+    return { file, invalid: true, exists: true, sha256: null };
+  }
+}
+
+function assessReviewFreshness(review) {
+  const files = Array.isArray(review?.reviewed_files_all)
+    ? [...new Set(review.reviewed_files_all.filter(file => typeof file === 'string' && file.trim()).map(file => file.trim()))].sort()
+    : [];
+  const snapshots = Array.isArray(review?.reviewed_file_snapshots) ? review.reviewed_file_snapshots : [];
+  const expectedByFile = new Map();
+  const failures = [];
+
+  if (files.length === 0) failures.push('last-result.json is missing reviewed_files_all; re-run x-review');
+  for (const snapshot of snapshots) {
+    const file = typeof snapshot?.file === 'string' ? snapshot.file.trim() : '';
+    if (!file || expectedByFile.has(file)) {
+      failures.push(`last-result.json has an invalid or duplicate reviewed_file_snapshots entry: ${file || '<missing file>'}`);
+      continue;
+    }
+    expectedByFile.set(file, snapshot);
+  }
+
+  const changed = [];
+  const canonical = [];
+  const currentSnapshots = new Map();
+  for (const file of files) {
+    const expected = expectedByFile.get(file);
+    if (!expected) {
+      failures.push(`last-result.json has no reviewed_file_snapshots entry for ${file}; re-run x-review`);
+      continue;
+    }
+    const expectedExists = expected.exists === true;
+    const expectedSha = expectedExists && typeof expected.sha256 === 'string' ? expected.sha256.toLowerCase() : null;
+    if (expected.exists !== true && expected.exists !== false) {
+      failures.push(`reviewed_file_snapshots entry has invalid exists value: ${file}`);
+      continue;
+    }
+    if (expectedExists && !/^[0-9a-f]{64}$/.test(expectedSha || '')) {
+      failures.push(`reviewed_file_snapshots entry has invalid sha256: ${file}`);
+      continue;
+    }
+    if (!expectedExists && expected.sha256 != null) {
+      failures.push(`reviewed_file_snapshots entry for absent file must use sha256=null: ${file}`);
+      continue;
+    }
+    const current = currentFileSnapshot(file);
+    currentSnapshots.set(file, current);
+    if (current.invalid) {
+      failures.push(`reviewed file path is unsafe or unreadable: ${file}`);
+      continue;
+    }
+    canonical.push({ file, exists: expectedExists, sha256: expectedSha });
+    if (current.exists !== expectedExists || current.sha256 !== expectedSha) changed.push(file);
+  }
+
+  for (const file of expectedByFile.keys()) {
+    if (!files.includes(file)) failures.push(`reviewed_file_snapshots contains a file outside reviewed_files_all: ${file}`);
+  }
+
+  return {
+    files,
+    changed: [...new Set(changed)].sort(),
+    failures,
+    digest: failures.length === 0 ? `sha256:${sha256(JSON.stringify(canonical))}` : null,
+    currentSnapshots,
+  };
+}
+
 function toTriageMap(triage) {
   const items = triage?.target_findings || triage?.findings || [];
   const map = new Map();
   if (Array.isArray(items)) {
     for (const item of items) {
-      const id = item.id || item.finding_id;
-      if (id) map.set(id, item);
+      if (item.id) map.set(item.id, item);
+      if (item.finding_id) map.set(item.finding_id, item);
     }
   }
   return map;
@@ -366,12 +618,98 @@ function getVerificationItems(triage) {
   return Array.isArray(items) ? items : [];
 }
 
+function reviewContextProvenance(review) {
+  if (review?.context_status !== 'bound') return null;
+  const hash = typeof review.context_hash === 'string' ? review.context_hash : null;
+  const contract = review.context_contract || review.context || null;
+  const canonicalContract = validateReviewContextContract(contract);
+  const ids = (items) => Array.isArray(items)
+    ? items.map(item => typeof item?.id === 'string' ? item.id : null).filter(Boolean)
+    : [];
+  return {
+    hash,
+    contract_valid: canonicalContract !== null,
+    contract_hash: canonicalContract ? `sha256:${sha256(canonicalContract)}` : null,
+    invariant_ids: ids(contract?.invariants),
+    constraint_ids: ids(contract?.constraints),
+    non_goal_ids: ids(contract?.non_goals),
+    acceptance_check_ids: ids(contract?.acceptance_checks),
+  };
+}
+
+function nonEmptyEvidence(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function contextAssessmentFailures(triage, required, context) {
+  if (!context) return [];
+  const failures = [];
+  if (!context.hash) {
+    failures.push('bound review context is missing context_hash; re-run x-review');
+    return failures;
+  }
+  if (!context.contract_valid) {
+    failures.push('bound review context is missing or has an invalid canonical contract; re-run x-review');
+    return failures;
+  }
+  if (context.contract_hash !== context.hash) {
+    failures.push('bound review context does not match context_hash; re-run x-review');
+    return failures;
+  }
+  if (triage?.context_hash !== context.hash) {
+    failures.push('triage.json context_hash does not match last-result.json; re-run verify-review-fix --init');
+  }
+  const expectedInvariants = new Set(context.invariant_ids);
+  const expectedAcceptance = new Set(context.acceptance_check_ids);
+  const knownContextRefs = new Set([
+    ...expectedInvariants,
+    ...context.constraint_ids,
+    ...context.non_goal_ids,
+    ...expectedAcceptance,
+  ]);
+  const seenInvariants = new Set();
+  const seenAcceptance = new Set();
+  for (const finding of required) {
+    const item = toTriageMap(triage).get(finding.finding_id) || toTriageMap(triage).get(finding.id);
+    const assessment = item?.context_assessment;
+    if (!assessment || !['aligned', 'conflicts', 'not_applicable'].includes(assessment.alignment)) {
+      failures.push(`${finding.id}: context_assessment.alignment must be aligned, conflicts, or not_applicable`);
+      continue;
+    }
+    if (!Array.isArray(assessment.context_refs) || assessment.context_refs.length === 0 || !assessment.context_refs.every(ref => typeof ref === 'string' && ref.trim())) {
+      failures.push(`${finding.id}: context_assessment.context_refs must cite at least one context item`);
+    } else {
+      const unknownRefs = assessment.context_refs.filter(ref => !knownContextRefs.has(ref));
+      if (unknownRefs.length > 0) failures.push(`${finding.id}: context_assessment.context_refs contains unknown ids: ${unknownRefs.join(', ')}`);
+    }
+    if (!nonEmptyEvidence(assessment.evidence)) {
+      failures.push(`${finding.id}: context_assessment.evidence is required`);
+    }
+  }
+  const assessments = triage?.context_assessment || {};
+  for (const item of assessments.invariants || []) {
+    if (typeof item?.id === 'string' && nonEmptyEvidence(item.evidence)) seenInvariants.add(item.id);
+  }
+  for (const item of assessments.acceptance_checks || []) {
+    if (typeof item?.id === 'string' && nonEmptyEvidence(item.evidence)) seenAcceptance.add(item.id);
+  }
+  for (const id of expectedInvariants) {
+    if (!seenInvariants.has(id)) failures.push(`context invariant ${id} requires host evidence`);
+  }
+  for (const id of expectedAcceptance) {
+    if (!seenAcceptance.has(id)) failures.push(`context acceptance check ${id} requires host evidence`);
+  }
+  return failures;
+}
+
 function buildTriageTemplate(review) {
   const findings = Array.isArray(review.findings) ? review.findings : [];
+  const context = reviewContextProvenance(review);
   const targetFindings = findings.map((finding, index) => {
     const severity = normalizeSeverity(finding.severity);
     return {
       id: findingId(index),
+      finding_id: stableFindingId(finding),
       severity,
       file: finding.file || null,
       line: finding.line ?? null,
@@ -381,6 +719,7 @@ function buildTriageTemplate(review) {
         : (TRIAGE_REQUIRED_SEVERITY.has(severity) ? '' : 'backlog'),
       evidence: '',
       fix_notes: '',
+      ...(context ? { context_assessment: { alignment: '', context_refs: [], evidence: '' } } : {}),
     };
   });
 
@@ -388,11 +727,22 @@ function buildTriageTemplate(review) {
     .filter(f => TRIAGE_REQUIRED_SEVERITY.has(f.severity) && f.file)
     .map(f => f.file))].sort();
 
+  const freshness = assessReviewFreshness(review);
   return {
+    schema: 1,
+    initialized_at: new Date().toISOString(),
     reviewed_commit: review.reviewed_commit || null,
+    review_snapshot_digest: freshness.digest,
     verdict: review.verdict || null,
     baseline_changed_files: collectChangedFilesSinceReview(review.reviewed_commit),
     target_findings: targetFindings,
+    ...(context ? {
+      context_hash: context.hash,
+      context_assessment: {
+        invariants: context.invariant_ids.map(id => ({ id, evidence: '' })),
+        acceptance_checks: context.acceptance_check_ids.map(id => ({ id, evidence: '' })),
+      },
+    } : {}),
     fix_scope: {
       allowed_files: allowedFiles,
       forbidden: [
@@ -409,6 +759,294 @@ function buildTriageTemplate(review) {
   };
 }
 
+function lifecyclePath() {
+  return join(reviewDir(), 'finding-lifecycle.json');
+}
+
+function triageLedgerPath() {
+  return join(reviewDir(), TRIAGE_LEDGER_FILE);
+}
+
+export const MAX_TRIAGE_LEDGER_BYTES = 4 * 1024 * 1024;
+export const MAX_TRIAGE_LEDGER_LINE_BYTES = 64 * 1024;
+export const MAX_TRIAGE_LEDGER_ROWS = 20_000;
+
+function pathInside(root, candidate) {
+  const rel = relative(root, candidate);
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+function safeTriageLedgerPath() {
+  const root = resolve(workspaceRoot());
+  const path = resolve(triageLedgerPath());
+  const parent = dirname(path);
+  if (!pathInside(root, path)) throw new Error(`triage ledger escapes workspace root: ${path}`);
+
+  const parentRelative = relative(root, parent);
+  let cursor = root;
+  for (const segment of parentRelative.split(/[\\/]+/).filter(Boolean)) {
+    cursor = join(cursor, segment);
+    if (!existsSync(cursor)) throw new Error(`triage ledger parent is missing: ${cursor}`);
+    const stat = lstatSync(cursor);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error(`triage ledger parent is unsafe: ${cursor}`);
+    }
+  }
+
+  const realRoot = realpathSync(root);
+  const realParent = realpathSync(parent);
+  if (!pathInside(realRoot, realParent)) throw new Error(`triage ledger parent escapes workspace root: ${parent}`);
+  if (existsSync(path)) {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`triage ledger file is unsafe: ${path}`);
+    if (!pathInside(realRoot, realpathSync(path))) throw new Error(`triage ledger file escapes workspace root: ${path}`);
+  }
+  return path;
+}
+
+function validateTriageLedgerText(text, label = 'triage ledger') {
+  if (Buffer.byteLength(text) > MAX_TRIAGE_LEDGER_BYTES) throw new Error(`${label} exceeds ${MAX_TRIAGE_LEDGER_BYTES} bytes`);
+  let rows = 0;
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    rows += 1;
+    if (rows > MAX_TRIAGE_LEDGER_ROWS) throw new Error(`${label} exceeds ${MAX_TRIAGE_LEDGER_ROWS} rows`);
+    if (Buffer.byteLength(line) > MAX_TRIAGE_LEDGER_LINE_BYTES) throw new Error(`${label} line exceeds ${MAX_TRIAGE_LEDGER_LINE_BYTES} bytes`);
+  }
+  return text;
+}
+
+// O_NOFOLLOW and O_NONBLOCK do not exist on every platform Node runs on (Windows
+// defines neither). Degrade to 0 there rather than failing the gate outright:
+// safeTriageLedgerPath()'s lstat and the fstat isFile() check below still reject
+// symlinks and FIFOs — without the flags they just cannot close the swap window
+// between the two.
+function ledgerOpenFlags() {
+  const noFollow = Number.isInteger(FS_CONSTANTS.O_NOFOLLOW) ? FS_CONSTANTS.O_NOFOLLOW : 0;
+  const nonBlock = Number.isInteger(FS_CONSTANTS.O_NONBLOCK) ? FS_CONSTANTS.O_NONBLOCK : 0;
+  return noFollow | nonBlock;
+}
+
+/**
+ * Read the triage ledger with the byte, line, and row caps enforced.
+ *
+ * @param {string} path Must already have been validated by `safeTriageLedgerPath()`
+ *   — this function only guards the final path component (via O_NOFOLLOW where the
+ *   platform has it), never workspace containment or a symlinked parent directory.
+ * @returns {string} The ledger text, validated against MAX_TRIAGE_LEDGER_BYTES,
+ *   MAX_TRIAGE_LEDGER_LINE_BYTES, and MAX_TRIAGE_LEDGER_ROWS.
+ * @throws when the path is not a regular file, or when any of those caps is exceeded.
+ */
+export function readBoundedTriageLedger(path) {
+  const fd = openSync(path, FS_CONSTANTS.O_RDONLY | ledgerOpenFlags());
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error(`triage ledger is not a regular file: ${path}`);
+    if (stat.size > MAX_TRIAGE_LEDGER_BYTES) throw new Error(`triage ledger exceeds ${MAX_TRIAGE_LEDGER_BYTES} bytes`);
+    const bytes = Buffer.alloc(stat.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    return validateTriageLedgerText(bytes.subarray(0, offset).toString('utf8'));
+  } finally {
+    closeSync(fd);
+  }
+}
+
+const LEDGER_LOCK_RETRIES = 50;
+const LEDGER_LOCK_RETRY_MS = 20;
+const LEDGER_STALE_LOCK_MS = 10_000;
+const LEDGER_LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
+
+// mkdir is atomic on local and network filesystems, so a directory lock avoids
+// the O_EXCL weaknesses ordinary lock files have on NFS. Same shape as the
+// cost core's appendCostEvent lock.
+function withTriageLedgerLock(path, fn) {
+  const lockPath = `${path}.lock`;
+  let release = null;
+  for (let attempt = 0; attempt < LEDGER_LOCK_RETRIES; attempt++) {
+    try {
+      mkdirSync(lockPath);
+      release = () => { try { rmdirSync(lockPath); } catch { /* already released */ } };
+      break;
+    } catch (error) {
+      if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') throw error;
+      try {
+        const held = statSync(lockPath);
+        if (Date.now() - held.mtimeMs > LEDGER_STALE_LOCK_MS) {
+          if (held.isDirectory()) rmdirSync(lockPath);
+          else unlinkSync(lockPath);
+          continue;
+        }
+      } catch (staleError) {
+        if (/** @type {NodeJS.ErrnoException} */ (staleError).code === 'ENOENT') continue;
+        throw staleError;
+      }
+      Atomics.wait(LEDGER_LOCK_SLEEP, 0, 0, LEDGER_LOCK_RETRY_MS);
+    }
+  }
+  if (!release) throw new Error(`triage ledger lock is held: ${lockPath}`);
+  try {
+    return fn();
+  } finally {
+    release();
+  }
+}
+
+function appendPrivateFile(path, text) {
+  // O_NONBLOCK turns a FIFO swapped in under the path into an immediate ENXIO
+  // instead of a write that blocks until a reader appears.
+  const flags = FS_CONSTANTS.O_WRONLY | FS_CONSTANTS.O_APPEND | FS_CONSTANTS.O_CREAT
+    | ledgerOpenFlags();
+  const fd = openSync(path, flags, 0o600);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error(`triage ledger is not a regular file: ${path}`);
+    fchmodSync(fd, 0o600);
+    const bytes = Buffer.from(text, 'utf8');
+    if (stat.size + bytes.length > MAX_TRIAGE_LEDGER_BYTES) throw new Error(`triage ledger exceeds ${MAX_TRIAGE_LEDGER_BYTES} bytes`);
+    let offset = 0;
+    while (offset < bytes.length) offset += writeSync(fd, bytes, offset, bytes.length - offset);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Append-only and de-duplicated by ledgerRowKey, so re-running the gate on the
+// same triage never double-counts a decision. Returns the number of rows written.
+function appendTriageLedger(rows) {
+  if (!rows.length) return 0;
+  const path = safeTriageLedgerPath();
+  // The byte cap only holds if read -> check -> append is serialized: O_APPEND
+  // makes each write atomic but lets two appenders both observe a size under the
+  // cap and together push the ledger past it.
+  return withTriageLedgerLock(path, () => appendTriageLedgerLocked(path, rows));
+}
+
+function appendTriageLedgerLocked(path, rows) {
+  const existingText = existsSync(path) ? readBoundedTriageLedger(path) : '';
+  const existing = parseTriageLedger(existingText).rows;
+  const outcomeAppendKey = row => `${ledgerRowKey(row)}|${row.outcome || ''}`;
+  const seen = new Set(existing.filter(row => row.type === 'triage_outcome').map(outcomeAppendKey));
+  const latestDecisions = new Map();
+  for (const row of existing) {
+    if (row.type === 'triage_decision') latestDecisions.set(`${row.reviewed_commit || ''}|${row.finding_id || ''}`, row.decision);
+  }
+  const fresh = rows.filter(row => {
+    if (row.type === 'triage_decision') {
+      const identity = `${row.reviewed_commit || ''}|${row.finding_id || ''}`;
+      if (latestDecisions.get(identity) === row.decision) return false;
+      latestDecisions.set(identity, row.decision);
+      return true;
+    }
+    const key = outcomeAppendKey(row);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (fresh.length > 0) {
+    const separator = existingText && !existingText.endsWith('\n') ? '\n' : '';
+    const appendedText = separator + fresh.map(row => JSON.stringify(row)).join('\n') + '\n';
+    validateTriageLedgerText(existingText + appendedText);
+    appendPrivateFile(path, appendedText);
+  }
+  return fresh.length;
+}
+
+function buildLifecycle(review, triage, freshness) {
+  const triageMap = toTriageMap(triage);
+  const findings = (Array.isArray(review.findings) ? review.findings : []).map((finding, index) => {
+    const id = findingId(index);
+    const findingIdStable = stableFindingId(finding);
+    const item = triageMap.get(findingIdStable) || triageMap.get(id);
+    return {
+      id,
+      finding_id: findingIdStable,
+      severity: normalizeSeverity(finding.severity),
+      file: finding.file || null,
+      line: finding.line ?? null,
+      summary: findingSummary(finding),
+      decision: String(item?.decision || '').trim().toLowerCase(),
+      state: 'open',
+      outcome: null,
+      evidence: null,
+      file_snapshot: null,
+      updated_at: new Date().toISOString(),
+    };
+  });
+  return {
+    schema: 1,
+    reviewed_commit: review.reviewed_commit || null,
+    reviewed_files_all: [...freshness.files],
+    review_snapshot_digest: freshness.digest,
+    triage_digest: `sha256:${sha256(JSON.stringify(triage))}`,
+    updated_at: new Date().toISOString(),
+    findings,
+  };
+}
+
+function lifecycleMatches(lifecycle, review, freshness, triageDigest) {
+  return lifecycle?.schema === 1 &&
+    lifecycle.reviewed_commit === (review.reviewed_commit || null) &&
+    lifecycle.review_snapshot_digest === freshness.digest &&
+    lifecycle.triage_digest === triageDigest &&
+    Array.isArray(lifecycle.findings);
+}
+
+function snapshotMatches(a, b) {
+  return !!a && !!b && a.invalid !== true && b.invalid !== true &&
+    a.file === b.file && a.exists === b.exists && a.sha256 === b.sha256;
+}
+
+function lifecycleFileSnapshot(file, freshness) {
+  if (file) return freshness.currentSnapshots?.get(file) || currentFileSnapshot(file);
+  const current = freshness.files.map(path => freshness.currentSnapshots?.get(path) || currentFileSnapshot(path));
+  if (current.some(snapshot => snapshot.invalid)) return { file: null, invalid: true, exists: null, sha256: null };
+  return {
+    file: null,
+    exists: null,
+    sha256: sha256(JSON.stringify(current.map(snapshot => ({ file: snapshot.file, exists: snapshot.exists, sha256: snapshot.sha256 })))),
+  };
+}
+
+function syncLifecycle(lifecycle, required, triageMap, freshness, fixAuthorized) {
+  const changed = new Set(freshness.changed);
+  const now = new Date().toISOString();
+  for (const finding of required) {
+    const findingIdStable = stableFindingId(finding);
+    const item = triageMap.get(findingIdStable) || triageMap.get(finding.id);
+    let row = lifecycle.findings.find(entry => entry.finding_id === findingIdStable || entry.id === finding.id);
+    if (!row) {
+      row = {
+        id: finding.id, finding_id: findingIdStable, severity: finding.severity,
+        file: finding.file || null, line: finding.line ?? null, summary: findingSummary(finding),
+        state: 'open', outcome: null, evidence: null, file_snapshot: null,
+      };
+      lifecycle.findings.push(row);
+    }
+    row.id = finding.id;
+    row.finding_id = findingIdStable;
+    row.decision = String(item?.decision || '').trim().toLowerCase();
+    if (row.decision !== 'fix_now') continue;
+    const current = lifecycleFileSnapshot(row.file, freshness);
+    if (row.state === 'reverified' && snapshotMatches(row.file_snapshot, current)) continue;
+    row.outcome = null;
+    row.evidence = null;
+    row.file_snapshot = null;
+    if (row.file ? changed.has(row.file) : freshness.changed.length > 0) {
+      row.state = 'fixed';
+    } else {
+      row.state = fixAuthorized ? 'fix_authorized' : 'open';
+    }
+    row.updated_at = now;
+  }
+  lifecycle.updated_at = now;
+  return lifecycle;
+}
+
 // ── cmdVerifyDrift ──────────────────────────────────────────────────
 
 export function cmdVerifyDrift(args) {
@@ -419,7 +1057,7 @@ export function cmdVerifyDrift(args) {
   const tasks = taskData?.tasks || [];
 
   if (!prd) {
-    console.log(`${C.yellow}No PRD.md found. Run: x-build plan${C.reset}`);
+    console.log(`${C.yellow}No PRD.md found. Run: x-build legacy-plan${C.reset}`);
     return;
   }
 
@@ -495,11 +1133,60 @@ export function cmdVerifyReviewFix(args) {
   const review = readJSON(resultPath);
   const findings = Array.isArray(review?.findings) ? review.findings : [];
   const required = findings
-    .map((finding, index) => ({ ...finding, id: findingId(index), severity: normalizeSeverity(finding.severity) }))
+    .map((finding, index) => ({ ...finding, id: findingId(index), finding_id: stableFindingId(finding), severity: normalizeSeverity(finding.severity) }))
     .filter(f => TRIAGE_REQUIRED_SEVERITY.has(f.severity));
+  const freshness = assessReviewFreshness(review);
+  const findingIdFailures = stableFindingIdFailures(required);
 
   if (opts.init) {
-    writeJSON(triagePath, buildTriageTemplate(review));
+    const initFailures = [...freshness.failures, ...findingIdFailures];
+    const context = reviewContextProvenance(review);
+    if (review?.context_status === 'bound' && !context?.hash) {
+      initFailures.push('bound review context is missing context_hash; re-run x-review');
+    }
+    if (context && !context.contract_valid) {
+      initFailures.push('bound review context is missing or has an invalid canonical contract; re-run x-review');
+    }
+    if (context?.contract_valid && context.contract_hash !== context.hash) {
+      initFailures.push('bound review context does not match context_hash; re-run x-review');
+    }
+    if (freshness.changed.length > 0) {
+      initFailures.push(`Reviewed files changed since x-review: ${freshness.changed.join(', ')}. Re-run x-review before triage.`);
+    }
+    if (initFailures.length > 0) {
+      console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
+      for (const failure of initFailures) console.log(`  - ${failure}`);
+      process.exitCode = 1;
+      return;
+    }
+    const previousGatePath = join(reviewDir(), 'review-fix-gate.json');
+    if (existsSync(previousGatePath)) unlinkSync(previousGatePath);
+    const triage = buildTriageTemplate(review);
+    const lifecycle = buildLifecycle(review, triage, freshness);
+    writeJSON(triagePath, triage);
+    writeJSON(lifecyclePath(), lifecycle);
+    // A fresh unbound LGTM can supersede a previous review-fix lifecycle only
+    // after --init binds triage and lifecycle receipts to this review snapshot.
+    // Bound reviews still require their host-context evidence through the normal
+    // verification path below.
+    const verdict = normalizeVerdict(review?.verdict);
+    if ((verdict === 'lgtm' || verdict === 'pass') && required.length === 0 && !context) {
+      writeJSON(previousGatePath, {
+        timestamp: new Date().toISOString(),
+        reviewed_commit: review.reviewed_commit || null,
+        verdict: review.verdict || null,
+        triage_required: 0,
+        stage: 'lgtm_ready',
+        authorized: false,
+        review_snapshot_digest: freshness.digest,
+        triage_digest: `sha256:${sha256(JSON.stringify(triage))}`,
+        lifecycle_digest: `sha256:${sha256(JSON.stringify(lifecycle))}`,
+        passed: true,
+        failures: [],
+        warnings: [],
+        lifecycle: { open: 0, fix_authorized: 0, fixed: 0, reverified: 0 },
+      });
+    }
     console.log(`${C.green}Created review-fix triage template:${C.reset} ${triagePath}`);
     console.log('  Edit decisions, allowed_files, and verification before applying review fixes.');
     return;
@@ -507,25 +1194,160 @@ export function cmdVerifyReviewFix(args) {
 
   const verdict = normalizeVerdict(review?.verdict);
   if ((verdict === 'lgtm' || verdict === 'pass') && required.length === 0) {
+    const context = reviewContextProvenance(review);
+    const existingTriage = readJSON(triagePath);
+    const existingLifecycle = readJSON(lifecyclePath());
+    const existingGate = readJSON(join(reviewDir(), 'review-fix-gate.json'));
+    const currentTriageDigest = existingTriage ? `sha256:${sha256(JSON.stringify(existingTriage))}` : null;
+    const triageFixNow = (Array.isArray(existingTriage?.target_findings) ? existingTriage.target_findings : [])
+      .filter(item => String(item.decision || '').trim().toLowerCase() === 'fix_now');
+    const lifecycleAware = existingTriage?.schema === 1
+      || (!!existingTriage?.initialized_at && !!existingTriage?.review_snapshot_digest)
+      || existingLifecycle?.schema === 1
+      || !!existingGate?.lifecycle_digest;
+    if (context) {
+      if (!existingTriage) {
+        console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
+        console.log('  - Bound LGTM requires host context evidence; run x-build verify-review-fix --init');
+        process.exitCode = 1;
+        return;
+      }
+      const contextFailures = [...freshness.failures, ...contextAssessmentFailures(existingTriage, [], context)];
+      if (freshness.changed.length > 0) contextFailures.push(`Reviewed files changed since x-review: ${freshness.changed.join(', ')}`);
+      if (existingTriage.reviewed_commit !== (review.reviewed_commit || null)) contextFailures.push('triage.json reviewed_commit does not match last-result.json reviewed_commit');
+      if (existingTriage.review_snapshot_digest !== freshness.digest) contextFailures.push('triage.json review_snapshot_digest does not match last-result.json');
+      if (existingLifecycle?.reviewed_commit !== existingTriage.reviewed_commit) contextFailures.push('finding lifecycle does not match triage reviewed_commit');
+      if (contextFailures.length > 0) {
+        console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
+        for (const failure of contextFailures) console.log(`  - ${failure}`);
+        process.exitCode = 1;
+        return;
+      }
+      if (!existingGate && existingLifecycle?.schema === 1) {
+        console.log(`${C.green}Review Fix Gate passed.${C.reset}`);
+        console.log('  Bound LGTM context evidence is complete and the review snapshot is fresh.');
+        return;
+      }
+    }
+    if (lifecycleAware && (!existingTriage || !existingLifecycle || !existingGate)) {
+      console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
+      console.log('  - LGTM cannot close a lifecycle-aware review-fix with missing triage, lifecycle, or gate artifacts');
+      process.exitCode = 1;
+      return;
+    }
+    const fixNow = triageFixNow;
+    if (lifecycleAware) {
+      const rows = Array.isArray(existingLifecycle.findings) ? existingLifecycle.findings : [];
+      const incomplete = fixNow.filter((finding) => {
+        const row = rows.find(item => finding.finding_id && item.finding_id === finding.finding_id);
+        const current = row ? lifecycleFileSnapshot(row.file, freshness) : null;
+        return row?.state !== 'reverified' || row?.outcome !== 'resolved' || !snapshotMatches(row.file_snapshot, current);
+      });
+      const correlated = reviewedCommitCovers(existingTriage.reviewed_commit, review.reviewed_commit || null)
+        && existingLifecycle.reviewed_commit === existingTriage.reviewed_commit
+        && existingGate.reviewed_commit === existingTriage.reviewed_commit
+        && existingLifecycle.triage_digest === currentTriageDigest
+        && existingGate.triage_digest === currentTriageDigest
+        && existingGate?.lifecycle_digest === `sha256:${sha256(JSON.stringify(existingLifecycle))}`
+        && freshness.failures.length === 0
+        && freshness.changed.length === 0
+        && Array.isArray(existingLifecycle.reviewed_files_all)
+        && existingLifecycle.reviewed_files_all.every(file => freshness.files.includes(file));
+      if (!correlated || incomplete.length > 0) {
+        console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
+        if (!correlated) console.log('  - LGTM does not correlate with the authorized finding lifecycle receipt');
+        if (incomplete.length > 0) console.log(`  - LGTM cannot close unresolved or stale finding lifecycle entries: ${incomplete.map(item => item.id || item.finding_id).join(', ')}`);
+        process.exitCode = 1;
+        return;
+      }
+    }
     console.log(`${C.green}Review Fix Gate passed.${C.reset}`);
     console.log('  Last x-review verdict is LGTM and no triage-required findings remain.');
     return;
   }
 
-  const failures = [];
+  const failures = [...findingIdFailures];
   const warnings = [];
+  let lifecycle = null;
+  let fixAuthorized = false;
+  let triageDigest = null;
+  let lifecycleSummary = { open: 0, fix_authorized: 0, fixed: 0, reverified: 0 };
+  // Ledger inputs: the validated triage map (decisions are recorded only when the
+  // gate passes) and the lifecycle row a `--reverify` accepted in this run (its
+  // outcome is an observation in its own right, recorded even when other
+  // findings still block the gate).
+  let triageMapForLedger = null;
+  let reverifiedRow = null;
 
   if (!existsSync(triagePath)) {
     failures.push(`Missing triage file: ${triagePath}`);
     failures.push('Run: x-build verify-review-fix --init');
   } else {
     const triage = readJSON(triagePath);
+    const context = reviewContextProvenance(review);
     const triageMap = toTriageMap(triage);
+    triageMapForLedger = triageMap;
     const allowedFiles = getAllowedFiles(triage);
     const verification = getVerificationItems(triage);
     const baselineFiles = new Set(Array.isArray(triage.baseline_changed_files) ? triage.baseline_changed_files : []);
+    const previousGate = readJSON(join(reviewDir(), 'review-fix-gate.json'));
+    triageDigest = `sha256:${sha256(JSON.stringify(triage))}`;
+    fixAuthorized = (previousGate?.authorized === true || (previousGate?.passed === true && previousGate?.stage === 'ready_for_fix')) &&
+      previousGate?.reviewed_commit === (review.reviewed_commit || null) &&
+      previousGate?.review_snapshot_digest === freshness.digest &&
+      previousGate?.triage_digest === triageDigest;
 
-    if (review.reviewed_commit && triage.reviewed_commit && review.reviewed_commit !== triage.reviewed_commit) {
+    lifecycle = readJSON(lifecyclePath());
+    if (!lifecycleMatches(lifecycle, review, freshness, triageDigest)) {
+      lifecycle = buildLifecycle(review, triage, freshness);
+    }
+    const lifecycleDigestBeforeSync = `sha256:${sha256(JSON.stringify(lifecycle))}`;
+    if (previousGate?.lifecycle_digest && previousGate.lifecycle_digest !== lifecycleDigestBeforeSync) {
+      failures.push('finding-lifecycle.json changed since the last review-fix gate; re-run verify-review-fix --init');
+      fixAuthorized = false;
+    }
+    lifecycle = syncLifecycle(lifecycle, required, triageMap, freshness, fixAuthorized);
+
+    if (opts.reverify) {
+      const requested = String(opts.reverify);
+      const outcome = String(opts.outcome || '').trim().toLowerCase();
+      const evidence = String(opts.evidence || '').trim();
+      const row = lifecycle.findings.find(entry => entry.id === requested || entry.finding_id === requested);
+      if (!row) failures.push(`Unknown finding for --reverify: ${requested}`);
+      else if (row.decision !== 'fix_now') failures.push(`${requested}: only fix_now findings can be reverified`);
+      else if (!['fixed', 'reverified'].includes(row.state)) failures.push(`${requested}: finding bytes must change before reverification (current: ${row.state})`);
+      else if (!VALID_REVERIFY_OUTCOMES.has(outcome)) failures.push(`${requested}: --outcome must be resolved, persistent, or regression`);
+      else if (!evidence) failures.push(`${requested}: --evidence is required for reverification`);
+      else {
+        row.state = 'reverified';
+        row.outcome = outcome;
+        row.evidence = evidence;
+        row.file_snapshot = lifecycleFileSnapshot(row.file, freshness);
+        row.reverified_at = new Date().toISOString();
+        row.updated_at = row.reverified_at;
+        reverifiedRow = row;
+      }
+    }
+
+    failures.push(...freshness.failures);
+    failures.push(...contextAssessmentFailures(triage, required, context));
+    if (triage.review_snapshot_digest !== freshness.digest) {
+      failures.push('triage.json review_snapshot_digest does not match last-result.json; re-run verify-review-fix --init');
+    }
+    const unauthorizedChanges = fixAuthorized
+      ? freshness.changed.filter(file => !allowedFiles.includes(file))
+      : freshness.changed;
+    if (unauthorizedChanges.length > 0) {
+      failures.push(fixAuthorized
+        ? `Reviewed files changed outside fix_scope.allowed_files: ${unauthorizedChanges.join(', ')}`
+        : `Reviewed files changed before the review-fix gate authorized edits: ${unauthorizedChanges.join(', ')}. Re-run x-review.`);
+    }
+
+    // Freshness is unverifiable without both commits — fail closed instead of
+    // silently accepting an index-only match against a possibly different review.
+    if (!review.reviewed_commit || !triage.reviewed_commit) {
+      failures.push('cannot verify triage freshness — reviewed_commit missing; re-run: x-build verify-review-fix --init');
+    } else if (review.reviewed_commit !== triage.reviewed_commit) {
       failures.push('triage.json reviewed_commit does not match last-result.json reviewed_commit');
     }
 
@@ -533,6 +1355,19 @@ export function cmdVerifyReviewFix(args) {
       const decision = triageMap.get(finding.id);
       if (!decision) {
         failures.push(`${finding.id}: missing triage decision for ${finding.severity} finding`);
+        continue;
+      }
+
+      // Findings are matched by index (F1, F2, ...). When the triage recorded a
+      // file/summary and it no longer matches the finding at that index, the triage
+      // was built against a different review — its decisions cannot be trusted.
+      if (decision.file && finding.file && decision.file !== finding.file) {
+        failures.push(`${finding.id}: triage file "${decision.file}" does not match current finding "${finding.file}" — re-run --init`);
+        continue;
+      }
+      const currentSummary = findingSummary(finding);
+      if (decision.summary && currentSummary && decision.summary !== currentSummary) {
+        failures.push(`${finding.id}: triage summary does not match current finding "${currentSummary}" — re-run --init`);
         continue;
       }
 
@@ -560,7 +1395,7 @@ export function cmdVerifyReviewFix(args) {
       }
     }
 
-    if (allowedFiles.length === 0 && required.some(f => triageMap.get(f.id)?.decision === 'fix_now')) {
+    if (allowedFiles.length === 0 && required.some(f => f.file && triageMap.get(f.id)?.decision === 'fix_now')) {
       failures.push('fix_scope.allowed_files must include every file that review fixes may touch');
     }
 
@@ -573,6 +1408,8 @@ export function cmdVerifyReviewFix(args) {
       !baselineFiles.has(file) &&
       file !== '.xm/review/triage.json' &&
       file !== '.xm/review/review-fix-gate.json' &&
+      file !== '.xm/review/finding-lifecycle.json' &&
+      file !== '.xm/review/triage-ledger.jsonl' &&
       !file.startsWith('.xm/review/history/') &&
       !allowedFiles.includes(file)
     );
@@ -592,6 +1429,38 @@ export function cmdVerifyReviewFix(args) {
     if (baselineOutsideScope.length > 0) {
       warnings.push(`Baseline already includes files outside fix_scope.allowed_files; file-level drift is only enforced for new files: ${baselineOutsideScope.join(', ')}`);
     }
+
+    writeJSON(lifecyclePath(), lifecycle);
+    const fixNowRows = lifecycle.findings.filter(row => row.decision === 'fix_now');
+    lifecycleSummary = Object.fromEntries(['open', 'fix_authorized', 'fixed', 'reverified'].map(state => [state, lifecycle.findings.filter(row => row.state === state).length]));
+    if (fixAuthorized && freshness.changed.length > 0) {
+      for (const row of fixNowRows) {
+        if (row.state !== 'reverified') failures.push(`${row.id}: fix requires explicit reverification`);
+        else if (row.outcome !== 'resolved') failures.push(`${row.id}: reverification outcome is ${row.outcome}; expected resolved`);
+      }
+    }
+  }
+
+  const hasFixedBytes = freshness.changed.length > 0;
+  const resolvedCandidates = lifecycle?.findings?.filter(row => row.decision === 'fix_now') || [];
+  const allResolved = resolvedCandidates.length > 0 && resolvedCandidates.every(row => row.state === 'reverified' && row.outcome === 'resolved');
+  const authorized = fixAuthorized || (!hasFixedBytes && failures.length === 0);
+  const awaitingOnly = failures.length > 0 && failures.every(failure =>
+    /fix requires explicit reverification|reverification outcome is/.test(failure)
+  );
+  const stage = failures.length > 0
+    ? (fixAuthorized && hasFixedBytes && awaitingOnly ? 'awaiting_reverification' : 'blocked')
+    : (fixAuthorized && allResolved ? 'reverified' : 'ready_for_fix');
+  if (lifecycle && authorized && !hasFixedBytes && failures.length === 0) {
+    for (const row of lifecycle.findings) {
+      if (row.decision === 'fix_now' && row.state === 'open') {
+        row.state = 'fix_authorized';
+        row.updated_at = new Date().toISOString();
+      }
+    }
+    lifecycle.updated_at = new Date().toISOString();
+    lifecycleSummary = Object.fromEntries(['open', 'fix_authorized', 'fixed', 'reverified'].map(state => [state, lifecycle.findings.filter(row => row.state === state).length]));
+    writeJSON(lifecyclePath(), lifecycle);
   }
 
   const report = {
@@ -599,20 +1468,169 @@ export function cmdVerifyReviewFix(args) {
     reviewed_commit: review.reviewed_commit || null,
     verdict: review.verdict || null,
     triage_required: required.length,
+    stage,
+    authorized,
+    review_snapshot_digest: freshness.digest,
+    triage_digest: triageDigest,
+    lifecycle_digest: lifecycle ? `sha256:${sha256(JSON.stringify(lifecycle))}` : null,
     passed: failures.length === 0,
     failures,
     warnings,
+    lifecycle: lifecycleSummary,
   };
   writeJSON(join(reviewDir(), 'review-fix-gate.json'), report);
+
+  // Triage ledger (error analysis): decisions are appended only from a passing
+  // gate. Reverification outcomes may keep the gate red when this or another
+  // finding is persistent/regressed, but only after snapshot, provenance,
+  // authorization, and allowed-file checks have all passed.
+  const ledgerRows = [];
+  if (failures.length === 0 && triageMapForLedger && (stage === 'ready_for_fix' || stage === 'reverified')) {
+    for (const finding of required) {
+      const decision = String(triageMapForLedger.get(finding.id)?.decision || '').trim().toLowerCase();
+      if (VALID_TRIAGE_DECISIONS.has(decision)) {
+        ledgerRows.push(buildLedgerRow({ ts: report.timestamp, reviewed_commit: report.reviewed_commit, finding, decision, triage_digest: triageDigest }));
+      }
+    }
+  }
+  const outcomeGateFailure = failure => /^F\d+: reverification outcome is (?:persistent|regression); expected resolved$/.test(failure);
+  const reverifiedSnapshot = reverifiedRow ? lifecycleFileSnapshot(reverifiedRow.file, freshness) : null;
+  const trustedReverifyOutcome = !!reverifiedRow && fixAuthorized &&
+    snapshotMatches(reverifiedRow.file_snapshot, reverifiedSnapshot) &&
+    failures.every(outcomeGateFailure);
+  if (trustedReverifyOutcome) {
+    const finding = required.find(item => item.finding_id === reverifiedRow.finding_id) || reverifiedRow;
+    ledgerRows.push(buildLedgerRow({
+      ts: report.timestamp,
+      reviewed_commit: report.reviewed_commit,
+      finding,
+      outcome: reverifiedRow.outcome,
+      triage_digest: triageDigest,
+      file_snapshot: reverifiedRow.file_snapshot,
+    }));
+  }
+  const ledgerAppended = appendTriageLedger(ledgerRows);
 
   if (failures.length > 0) {
     console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
     for (const failure of failures) console.log(`  - ${failure}`);
+    if (ledgerAppended > 0) console.log(`  ${C.dim}Triage ledger: +${ledgerAppended} outcome row(s)${C.reset}`);
     process.exitCode = 1;
     return;
   }
 
   console.log(`${C.green}Review Fix Gate passed.${C.reset}`);
   console.log(`  Triage-required findings: ${required.length}`);
+  if (stage === 'reverified') console.log(`  Reverified: ${lifecycleSummary.reverified} finding(s) resolved against current file bytes.`);
+  if (ledgerAppended > 0) console.log(`  Triage ledger: +${ledgerAppended} row(s) → ${triageLedgerPath()}`);
   for (const warning of warnings) console.log(`  ${C.yellow}Warning:${C.reset} ${warning}`);
+}
+
+// ── cmdReviewPrecision ──────────────────────────────────────────────
+// Per-lens precision from the triage ledger. precision = fix_now / (fix_now +
+// false_positive); a lens with neither is reported as unmeasured, never as 0.
+
+export function cmdReviewPrecision(args) {
+  const valueOptions = new Set(['since', 'last', 'lens', 'min-precision']);
+  const flagOptions = new Set(['json']);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg.startsWith('--')) {
+      console.error(`Unexpected positional argument: "${arg}"`);
+      process.exitCode = 1;
+      return;
+    }
+    const option = arg.slice(2);
+    if (!valueOptions.has(option) && !flagOptions.has(option)) {
+      console.error(`Unknown option: --${option}`);
+      process.exitCode = 1;
+      return;
+    }
+    if (valueOptions.has(option)) {
+      if (i + 1 >= args.length || args[i + 1].startsWith('--')) {
+        console.error(`--${option} requires a value`);
+        process.exitCode = 1;
+        return;
+      }
+      i += 1;
+    }
+  }
+
+  const { opts } = parseOptions(args);
+  const json = opts.json === true;
+  let path = triageLedgerPath();
+
+  if (opts.since && parseDuration(opts.since) == null) {
+    console.error(`--since must look like 30d, 12h, or 90m (got "${opts.since}")`);
+    process.exitCode = 1;
+    return;
+  }
+  const last = opts.last != null ? Number(opts.last) : null;
+  if (opts.last != null && (!Number.isInteger(last) || last <= 0)) {
+    console.error(`--last must be a positive integer (got "${opts.last}")`);
+    process.exitCode = 1;
+    return;
+  }
+  const minPrecision = opts['min-precision'] != null ? Number(opts['min-precision']) : null;
+  if (opts['min-precision'] != null && !(minPrecision >= 0 && minPrecision <= 1)) {
+    console.error(`--min-precision must be between 0 and 1 (got "${opts['min-precision']}")`);
+    process.exitCode = 1;
+    return;
+  }
+  if (opts.lens != null && !normalizeLensIdentifier(opts.lens)) {
+    console.error('--lens must be a 1-64 character identifier using letters, numbers, dot, underscore, or hyphen');
+    process.exitCode = 1;
+    return;
+  }
+
+  let ledgerExists = true;
+  try { lstatSync(path); } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') ledgerExists = false;
+    else {
+      console.error(`Unsafe triage ledger: ${/** @type {Error} */ (error).message}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  if (!ledgerExists) {
+    if (json) {
+      console.log(JSON.stringify({ status: 'no_ledger', path }, null, 2));
+    } else {
+      console.log(`${C.yellow}No triage ledger yet:${C.reset} ${path}`);
+      console.log('  Rows are appended when `x-build verify-review-fix` passes a triage or records a --reverify outcome.');
+    }
+    return;
+  }
+
+  try {
+    path = safeTriageLedgerPath();
+  } catch (error) {
+    console.error(`Unsafe triage ledger: ${/** @type {Error} */ (error).message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = parseTriageLedger(readBoundedTriageLedger(path));
+  } catch (error) {
+    console.error(`Unsafe triage ledger: ${/** @type {Error} */ (error).message}`);
+    process.exitCode = 1;
+    return;
+  }
+  const { rows, skipped } = parsed;
+  const report = aggregateLensPrecision(rows, { since: opts.since || null, last, lens: opts.lens || null });
+  const below = minPrecision != null ? lensesBelowPrecision(report, minPrecision) : [];
+
+  if (json) {
+    console.log(JSON.stringify({ status: 'ok', path, skipped_lines: skipped, ...report, min_precision: minPrecision, below_min: below.map(bucket => bucket.lens) }, null, 2));
+  } else {
+    console.log(`${C.bold}📐 Review lens precision${C.reset}  ${C.dim}${path}${C.reset}`);
+    console.log(formatPrecisionReport(report));
+    if (skipped > 0) console.log(`${C.yellow}Warning:${C.reset} ${skipped} malformed ledger line(s) skipped.`);
+    if (below.length > 0) {
+      console.log(`${C.red}Below --min-precision ${minPrecision}:${C.reset} ${below.map(bucket => `${bucket.lens} (${Math.round(bucket.precision * 100)}%)`).join(', ')}`);
+    }
+  }
+  if (below.length > 0) process.exitCode = 2;
 }

@@ -26,12 +26,15 @@ import {
 import { runGatePanel } from './gate-panel.mjs';
 import { taskCheckContractHash, taskCheckFingerprint } from './build-policy.mjs';
 import { appendCostEvent, generateCorrelationId } from './cost-engine.mjs';
+// effectiveness.mjs only reaches core.mjs and effectiveness-aggregate.mjs, so it
+// stays downstream of this module — no cycle with the ones documented below.
+import { buildIdentity } from './effectiveness.mjs';
 // Shared leaf module — see worktree-shared.mjs header for the DAG rationale.
 // isParallelSafe/normalizeExpectedFiles used to come from tasks.mjs (the cycle);
 // buildRoot/config used to be defined here (the gate-panel cycle). Both now live
 // in the leaf so imports flow one direction only.
 import {
-  isParallelSafe, normalizeExpectedFiles,
+  isParallelSafe, compileParallelBatches, normalizeExpectedFiles,
   buildRoot, WORKTREE_CONFIG_DEFAULTS, loadWorktreeConfig, applyLifecycleWorktreePolicy,
   validateIdSegment, resolveMainRepoRoot,
 } from './worktree-shared.mjs';
@@ -523,7 +526,10 @@ export function planWorktrees({
   // accepts before|after|both (plan §3B).
   const gateDeferred = gatePhase === 'release';
 
-  const { safe, sequential, reason } = isParallelSafe(tasks);
+  const legacy = isParallelSafe(tasks);
+  const compiled = compileParallelBatches(tasks, maxParallel);
+  const safe = compiled.scheduled_parallel_tasks;
+  const { sequential, reason } = compiled;
   const taken = new Set(existingBranches);
 
   const entries = [];
@@ -551,16 +557,14 @@ export function planWorktrees({
     });
   }
 
-  const parallel_batches = [];
-  for (let i = 0; i < safe.length; i += maxParallel) {
-    parallel_batches.push(safe.slice(i, i + maxParallel));
-  }
+  const parallel_batches = compiled.parallel_batches;
 
   return {
     project, base, branch_prefix: prefix, max_parallel: maxParallel,
     gate: config.gate ?? 'panel', gate_phase: gatePhase, gate_deferred: gateDeferred,
     degraded, mode: degraded ? 'manual-handoff' : 'dry-run',
-    parallel_batches, sequential, reason,
+    parallel_batches, sequential, reason, conflict_edges: compiled.conflict_edges,
+    scheduler: { strategy: 'conflict-aware-greedy', legacy_parallel_safe: legacy.safe, recovered_conflict_tasks: safe.filter((id) => !legacy.safe.includes(id)) },
     tasks: entries,
   };
 }
@@ -873,11 +877,10 @@ function plannedTaskCheckPassed(project, taskId, cwd) {
 // status flip would deepen it. Single canonical writer of tasks.json stays
 // modifyJSON. Returns true if a task row was updated.
 //
-// Bookkeeping parity with `tasks update --status completed --no-commit`
-// (tasks.mjs): stamp completed_at and emit the task_complete metric so
-// gate-driven completions show up in cost/quality observability exactly like
-// agent-driven ones. gitAutoCommit is intentionally skipped — the merge is
-// gk's, not x-build's.
+// Bookkeeping parity with `tasks update --status completed` (tasks.mjs): stamp
+// completed_at and emit the task_complete metric so gate-driven completions show
+// up in cost/quality observability exactly like agent-driven ones. Neither path
+// commits — committing is the user's decision (see core.mjs Git Integration).
 function markTaskCompleted(project, taskId) {
   const path = taskDataPath(project);
   if (!existsSync(path)) return false;
@@ -894,6 +897,7 @@ function markTaskCompleted(project, taskId) {
   if (taskRef?.started_at) {
     appendCostEvent({
       type: 'task_complete', project, taskId, taskName: taskRef.name,
+      ...buildIdentity(project),
       role: taskRef.role || 'executor',
       model: taskRef._assigned_model || 'sonnet',
       size: taskRef.size || 'medium',

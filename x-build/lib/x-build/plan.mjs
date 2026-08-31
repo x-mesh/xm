@@ -16,11 +16,16 @@ import {
   readdirSync,
   exitFail,
 } from './core.mjs';
-import { appendPredictionLog } from './prediction-calibration.mjs';
+import { appendPredictionLog, readPredictionAccuracy } from './prediction-calibration.mjs';
 import { taskList, vendorModelFields } from './tasks.mjs';
 import { stepsStatus, computeSteps } from './tasks.mjs';
 import { savePlanIntent, markPlanReady, validatePlanApproval, readPlanState } from './plan-state.mjs';
 import { reviewGroupStatus, resolveReviewAction, taskReviewGroup } from './build-policy.mjs';
+import {
+  normalizeBuildProfile, normalizeRevisionReason, ensureBuildIdentity, artifactSnapshot,
+  recordEffectiveness, recordPlanRevision,
+} from './effectiveness.mjs';
+import { recommendBuildProfile } from './profile-selection.mjs';
 
 // ── PRD template version + diagram gate (R4/R5/R12) ──────────────────
 // PRD_TEMPLATE_VERSION marks the template revision where Section 8
@@ -220,8 +225,10 @@ function parsePlanArgs(args) {
   let interview = false;
   let draft = false;
   let execute = false;
+  let profile = null;
 
-  for (const arg of args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
     if (arg === '--quick') {
       quick = true;
     } else if (arg === '--interview') {
@@ -230,12 +237,26 @@ function parsePlanArgs(args) {
       draft = true;
     } else if (arg === '--execute') {
       execute = true;
+    } else if (arg === '--json') {
+      // Plan output is already JSON. Accept the common transport flag without
+      // leaking it into the user goal.
+    } else if (arg === '--profile') {
+      if (i + 1 >= args.length) throw new Error('--profile requires light|standard|deep');
+      profile = normalizeBuildProfile(args[++i]);
+    } else if (arg.startsWith('--profile=')) {
+      profile = normalizeBuildProfile(arg.slice('--profile='.length));
+    } else if (arg.startsWith('--')) {
+      throw new Error(`unknown plan option: ${arg}`);
     } else {
       positional.push(arg);
     }
   }
 
-  return { quick, interview, draft, execute, positional };
+  if (quick && profile && profile !== 'light') {
+    throw new Error('--quick is an alias for --profile light and cannot be combined with another profile');
+  }
+  if (quick) profile = 'light';
+  return { quick, profile, interview, draft, execute, positional };
 }
 
 /**
@@ -284,7 +305,13 @@ export function gaugeIntent(goal, { forceInterview = false } = {}) {
 }
 
 export async function cmdPlan(args) {
-  const { quick, interview, draft, execute, positional } = parsePlanArgs(args);
+  let parsed;
+  try { parsed = parsePlanArgs(args); } catch (error) {
+    console.error(`❌ ${error.message}`);
+    exitFail(1);
+    return;
+  }
+  const { quick, profile, interview, draft, execute, positional } = parsed;
   const goal = positional.join(' ');
   const project = resolveProject(null);
 
@@ -292,7 +319,7 @@ export async function cmdPlan(args) {
     const taskData = readJSON(tasksPath(project));
     const stepData = readJSON(stepsPath(project));
     if (!taskData?.tasks?.length) {
-      console.log('No plan yet. Use: /xm:build plan "목표를 설명하세요"');
+      console.log('No plan yet. Use: /xm:build legacy-plan "목표를 설명하세요"');
       return;
     }
     taskList(project);
@@ -316,15 +343,29 @@ export async function cmdPlan(args) {
   }
   const requestedAction = execute ? 'build' : 'plan_only';
   const intentCheck = gaugeIntent(goal, { forceInterview: interview });
+  const savedState = readPlanState(project);
+  const savedProfile = savedState?.profile_provisional || manifest?.build_profile_provisional
+    ? null : (savedState?.profile || manifest?.build_profile || null);
+  let researchSignal = null;
+  if (!profile && !savedProfile) {
+    try { researchSignal = await gaugeResearch(goal); } catch { researchSignal = null; }
+  }
+  const profileRecommendation = recommendBuildProfile({
+    explicitProfile: profile, savedProfile,
+    projectKind: manifest?.project_kind || 'brownfield', researchSignal,
+    intentReady: intentCheck.readiness === 'ready', goal,
+  });
+  const identity = ensureBuildIdentity(project, profileRecommendation.profile, profileRecommendation);
+  const effectiveProfile = identity.profile;
   const planState = savePlanIntent(project, {
-    goal, requestedAction, intentCheck, forcedInterview: interview, draft,
+    goal, requestedAction, intentCheck, forcedInterview: interview, draft, profile: effectiveProfile,
+    buildId: identity.build_id, traceId: identity.trace_id,
   });
   // Deterministic research gauge (R2): the skill layer reads this to scale
   // Research (full/slim) or — ONLY at quick-eligible — suggest --quick via
   // AskUserQuestion. Gauge failure degrades to null (skill treats null as
   // full), never blocks planning.
-  let researchSignal = null;
-  if (!quick) {
+  if (!researchSignal && effectiveProfile !== 'light') {
     try { researchSignal = await gaugeResearch(goal); } catch { researchSignal = null; }
   }
   const output = {
@@ -340,9 +381,17 @@ export async function cmdPlan(args) {
       ? (draft ? 'produce_non_executable_draft' : 'ask_blocking_questions_once')
       : 'research_then_generate_plan',
     research_may_reopen_intent: true,
+    profile: effectiveProfile,
+    profile_source: profileRecommendation.source,
+    profile_recommendation: profileRecommendation,
+    profile_explicit: profile != null,
     quick,
-    flow: quick ? 'quick' : 'full',
-    skip_research: quick,
+    flow: quick ? 'quick' : (effectiveProfile || 'full'),
+    skip_research: effectiveProfile === 'light',
+    research_scope: effectiveProfile === 'light' ? 'none' : effectiveProfile === 'standard' ? 'slim' : 'full',
+    required_artifacts: effectiveProfile === 'light' ? ['PRD:delta', 'tasks', 'checks']
+      : effectiveProfile === 'standard' ? ['CONTEXT', 'REQUIREMENTS', 'PRD:small|medium', 'tasks', 'checks']
+        : effectiveProfile === 'deep' ? ['CONTEXT', 'REQUIREMENTS', 'ROADMAP', 'PRD:full', 'tasks', 'checks'] : [],
     research_signal: researchSignal,
     project_kind: manifest?.project_kind || 'brownfield',
     current_phase: PHASES.find(p => p.id === manifest?.current_phase)?.name,
@@ -412,7 +461,9 @@ export function prdBlockingFindings(prdText) {
   if (!sectionHasDiagram(section8)) {
     const versionMatch = prdText.match(VERSION_MARKER_RE);
     const version = versionMatch ? parseInt(versionMatch[1], 10) : 0;
-    const isNewTemplate = versionMatch != null && version >= PRD_TEMPLATE_VERSION;
+    // Delta-tier PRDs never hard-block on the diagram gate — the tier is
+    // authoritative even when a marker was stamped by hand (see prdTier).
+    const isNewTemplate = versionMatch != null && version >= PRD_TEMPLATE_VERSION && prdTier(prdText) !== 'delta';
     const msg = section8
       ? 'Section 8 (Architecture) has no diagram — add "■ Diagram:" + a fenced block, a box-drawing diagram, or a mermaid diagram'
       : 'Section 8 (Architecture) is missing';
@@ -451,7 +502,7 @@ export function cmdPrdCheck(args) {
 
   if (!prd) {
     if (json) console.log(JSON.stringify({ project, exists: false, blocked: true, blocking: ['PRD not found'], warnings: [] }, null, 2));
-    else console.error('❌ No PRD found. Run: /xm:build plan');
+    else console.error('❌ No PRD found. Run: /xm:build legacy-plan');
     exitFail(1);
     return;
   }
@@ -479,6 +530,18 @@ export function cmdPlanCheck(args) {
 
   const checks = [];
   const tasks = taskData?.tasks || [];
+  const prdText = readMD(prdPath(project));
+
+  // Decision quality is intentionally separate from execution readiness. A
+  // perfectly annotated task graph can still be aimed at the wrong approach.
+  if (!/##\s*(?:\d+\.?\s*)?Decision Plan\b/i.test(prdText || '')) {
+    checks.push({ dim: 'goal-fit', level: 'warn', msg: 'PRD has no Decision Plan section explaining why this approach fits the goal' });
+  } else {
+    const decision = (prdText.match(/##\s*(?:\d+\.?\s*)?Decision Plan\b[\s\S]*?(?=\n##\s|$)/i) || [''])[0];
+    if (!/(chosen|selected|approach|선택|접근)/i.test(decision)) checks.push({ dim: 'approach-rationale', level: 'warn', msg: 'Decision Plan does not identify the selected approach' });
+    if (!/(alternative|option|single path|only viable|대안|단일 경로)/i.test(decision)) checks.push({ dim: 'approach-rationale', level: 'warn', msg: 'Decision Plan neither compares alternatives nor explains why there is one obvious path' });
+    if (!/(risk-first|highest risk|risk order|위험.*먼저|리스크.*먼저)/i.test(decision)) checks.push({ dim: 'risk-first-ordering', level: 'warn', msg: 'Decision Plan does not state a risk-first execution order' });
+  }
 
   // 1. Atomicity — a "large" task exceeds the one-session unit, so each one is a
   // split candidate regardless of dependencies. Smaller tasks give the executor
@@ -515,10 +578,12 @@ export function cmdPlanCheck(args) {
   if (requirements) {
     const reqIds = [...requirements.matchAll(/^-\s*\[R(\d+)\]/gm)].map(m => `R${m[1]}`);
     if (reqIds.length > 0) {
-      // G2: Search task names AND done_criteria for R# references
+      // G2: Search task names AND done_criteria for R# references.
+      // Token-boundary match — a bare substring test lets "R10" satisfy "R1".
       const taskText = tasks.map(t => [t.name, ...(t.done_criteria || [])].join(' ')).join(' ');
+      const referencedIds = new Set(taskText.match(/\bR\d+\b/g) || []);
       for (const rid of reqIds) {
-        if (!taskText.includes(rid)) {
+        if (!referencedIds.has(rid)) {
           checks.push({ dim: 'coverage', level: strict ? 'error' : 'warn', msg: `Requirement ${rid} not referenced in any task name or done_criteria` });
         }
       }
@@ -565,7 +630,7 @@ export function cmdPlanCheck(args) {
     const techMatches = context.match(techRe) || [];
     for (const m of techMatches) declaredTechs.add(m.toLowerCase());
   }
-  const prd = readMD(prdPath(project));
+  const prd = prdText;
   if (prd) {
     const constraintSection = prd.match(/## 3\. Constraints[\s\S]*?(?=## \d|$)/);
     if (constraintSection) {
@@ -625,15 +690,18 @@ export function cmdPlanCheck(args) {
     const totalSteps = steps.length;
     if (totalSteps > 1) {
       for (const t of tasks) {
-        if (t.size === 'large' && !t.depends_on?.length) {
-          const stepIdx = steps.findIndex(s => s.includes(t.id));
+        if (t.size === 'large') {
+          const stepIdx = steps.findIndex(s => s.tasks.includes(t.id));
           if (stepIdx > totalSteps / 2) {
-            checks.push({ dim: 'risk-ordering', level: 'warn', task: t.id, msg: `Large root task "${t.name}" is in DAG step ${stepIdx + 1}/${totalSteps} — consider front-loading high-risk work` });
+            checks.push({ dim: 'risk-ordering', level: 'warn', task: t.id, msg: `Large task "${t.name}" is in DAG step ${stepIdx + 1}/${totalSteps} — consider front-loading high-risk work` });
           }
         }
       }
     }
-  } catch (e) { /* cycle already caught in deps check */ }
+  } catch (e) {
+    // Cycles are already reported by the deps check; anything else must surface.
+    if (!/circular dependency/i.test(e.message)) throw e;
+  }
 
   // 12. Expected files — the worktree pipeline batches parallel-safe tasks by
   // comparing per-task expected_files. A task with no/empty list is excluded from
@@ -738,8 +806,12 @@ export function cmdPlanCheck(args) {
 
   console.log(`\n${C.bold}Plan Check — ${tasks.length} tasks${C.reset}\n`);
 
-  const dims = ['atomicity', 'dependencies', 'coverage', 'granularity', 'completeness', 'context', 'naming', 'tech-leakage', 'scope-clarity', 'risk-ordering', 'expected-files', 'failure-mode-coverage', 'delegation-contract', 'review-groups', 'overall'];
+  const decisionDims = ['goal-fit', 'approach-rationale', 'risk-first-ordering'];
+  const executionDims = ['atomicity', 'dependencies', 'coverage', 'granularity', 'completeness', 'context', 'naming', 'tech-leakage', 'scope-clarity', 'risk-ordering', 'expected-files', 'failure-mode-coverage', 'delegation-contract', 'review-groups', 'overall'];
+  const dims = [...decisionDims, ...executionDims];
+  console.log(`  ${C.bold}Decision Quality${C.reset}`);
   for (const dim of dims) {
+    if (dim === executionDims[0]) console.log(`  ${C.bold}Execution Readiness${C.reset}`);
     const dimChecks = checks.filter(c => c.dim === dim);
     if (dimChecks.length === 0) {
       console.log(`  [pass] ${dim}`);
@@ -768,6 +840,10 @@ export function cmdPlanCheck(args) {
     tasks_count: tasks.length,
     checks,
     passed: errors.length === 0,
+    groups: {
+      decision_quality: decisionDims.flatMap(dim => checks.filter(check => check.dim === dim)),
+      execution_readiness: executionDims.flatMap(dim => checks.filter(check => check.dim === dim)),
+    },
   });
   markPlanReady(project, errors.length === 0);
 
@@ -1088,6 +1164,10 @@ export function cmdForecast(args) {
   // `forecast update` re-aggregates measured token actuals from the metrics log
   // so subsequent forecasts price from ground truth instead of static estimates.
   if (args[0] === 'update') return cmdForecastUpdate();
+  // `forecast accuracy` reads the prediction ledger back. Without it the ledger
+  // is write-only outside the dashboard and a terminal user has no way to judge
+  // whether the estimates above are worth anything.
+  if (args[0] === 'accuracy' || args.includes('--accuracy')) return cmdForecastAccuracy(args);
 
   const project = resolveProject(null);
   const taskData = readJSON(tasksPath(project));
@@ -1128,15 +1208,18 @@ export function cmdForecast(args) {
   console.log(`  ${C.dim}Confidence: ≈ = low (complex/strategy), ~ = medium, (blank) = high${C.reset}`);
 
   // Say whether these numbers are calibrated from measured actuals or still pure
-  // estimates — the forecaster only trusts an actual average at ≥10 samples/size.
+  // estimates. The estimator prices from size:model buckets (model_sample_counts),
+  // so only those count as "calibrated" — a plain size bucket at ≥10 would claim
+  // calibration the estimator never actually uses.
   const actuals = loadTokenActuals();
-  const counts = actuals?.sample_counts || {};
-  const calibrated = Object.keys(counts).filter(s => counts[s] >= 10);
+  const modelCounts = actuals?.model_sample_counts || {};
+  const calibrated = Object.keys(modelCounts).filter(k => modelCounts[k] >= 10);
   if (calibrated.length) {
-    console.log(`  ${C.dim}Calibrated from actuals: ${calibrated.map(s => `${s} (${counts[s]})`).join(', ')}${C.reset}`);
+    console.log(`  ${C.dim}Calibrated from actuals: ${calibrated.map(k => `${k} (${modelCounts[k]})`).join(', ')}${C.reset}`);
   } else {
+    const counts = actuals?.sample_counts || {};
     const measured = Object.values(counts).reduce((a, b) => a + b, 0);
-    console.log(`  ${C.dim}Estimate-only (${measured} measured sample${measured === 1 ? '' : 's'}; ≥10/size calibrates). Record actuals: tasks update <id> --tokens-in N --tokens-out M${C.reset}`);
+    console.log(`  ${C.dim}Estimate-only (${measured} measured sample${measured === 1 ? '' : 's'}; ≥10 per size:model calibrates). Record actuals: tasks update <id> --tokens-in N --tokens-out M${C.reset}`);
   }
 
   const budget = config.budget?.max_usd;
@@ -1149,7 +1232,60 @@ export function cmdForecast(args) {
   console.log('');
 }
 
-// ── cmdCostPredict ──────────────────────────────────────────────────
+// ── cmdForecastAccuracy ─────────────────────────────────────────────
+
+/**
+ * Report how far past predictions landed from measured actuals (MAPE).
+ *
+ * Deliberately says "not enough data" rather than printing a number from one or
+ * two pairs: a MAPE over a single sample invites the reader to trust it. The
+ * ledger only ever pairs `--tokens-in/--tokens-out`-backed completions, so a
+ * project that never records actuals correctly reports zero samples instead of
+ * a flattering 0% error.
+ */
+export function cmdForecastAccuracy(args) {
+  const { opts } = parseOptions(args);
+  const scoped = opts.all === true ? null : resolveProject(null);
+  const { pairs, mape, samples, excluded_zero_actual } = readPredictionAccuracy({ project: scoped });
+
+  if (opts.json) {
+    console.log(JSON.stringify({
+      project: scoped, samples, mape, excluded_zero_actual,
+      pairs: pairs.slice(-50),
+    }, null, 2));
+    return;
+  }
+
+  console.log(`\n${C.bold}📏 Prediction Accuracy${C.reset} ${C.dim}(${scoped || 'all projects'})${C.reset}\n`);
+
+  if (samples === 0) {
+    console.log(`  ${C.dim}No calibrated pairs yet — a pair needs a prediction AND a measured actual.${C.reset}`);
+    console.log(`  ${C.dim}Record actuals: tasks update <id> --tokens-in N --tokens-out M${C.reset}`);
+    if (excluded_zero_actual > 0) {
+      console.log(`  ${C.dim}(${excluded_zero_actual} pair${excluded_zero_actual === 1 ? '' : 's'} had actual $0 — excluded, MAPE undefined)${C.reset}`);
+    }
+    console.log('');
+    return;
+  }
+
+  for (const pair of pairs.filter(p => p.actual > 0).slice(-10)) {
+    const err = Math.abs(pair.predicted - pair.actual) / pair.actual * 100;
+    const dir = pair.predicted > pair.actual ? 'over' : pair.predicted < pair.actual ? 'under' : 'exact';
+    const color = err <= 25 ? C.green : err <= 50 ? C.yellow : C.red;
+    console.log(`  ${(pair.task_id || '—').padEnd(6)} ${String(pair.model || '?').padEnd(8)} pred $${pair.predicted.toFixed(3)} → actual $${pair.actual.toFixed(3)}  ${color}${err.toFixed(0)}% ${dir}${C.reset}`);
+  }
+
+  console.log(`  ${'─'.repeat(60)}`);
+  const grade = mape <= 25 ? `${C.green}reliable${C.reset}` : mape <= 50 ? `${C.yellow}rough${C.reset}` : `${C.red}unreliable${C.reset}`;
+  console.log(`  MAPE: ${C.bold}${mape}%${C.reset} over ${samples} pair${samples === 1 ? '' : 's'} — ${grade}`);
+  if (samples < 5) {
+    console.log(`  ${C.yellow}Only ${samples} sample${samples === 1 ? '' : 's'}: treat this as a hint, not a measurement.${C.reset}`);
+  }
+  if (excluded_zero_actual > 0) {
+    console.log(`  ${C.dim}${excluded_zero_actual} pair${excluded_zero_actual === 1 ? '' : 's'} with actual $0 excluded (MAPE denominator undefined)${C.reset}`);
+  }
+  console.log('');
+}
 
 export function cmdCostPredict(args) {
   const { opts, positional } = parseOptions(args);
@@ -1239,7 +1375,7 @@ function resolveNext(project) {
           const goalMatch = ctx.match(/^## Goal\s*\n+(.+)/m);
           if (goalMatch) goal = goalMatch[1].trim();
         }
-        return { ...base, action: 'plan', args: goal ? [goal] : [], reason: R('PRD.md is missing. Generate and save a PRD before executing.', 'PRD가 없습니다. 실행 전에 PRD를 생성하고 저장하세요.'), goal, task_count: tasks.length, ready: false, prd_writer: prdWriterSpec() };
+        return { ...base, action: 'legacy-plan', args: goal ? [goal] : [], reason: R('PRD.md is missing. Generate and save a PRD before executing.', 'PRD가 없습니다. 실행 전에 PRD를 생성하고 저장하세요.'), goal, task_count: tasks.length, ready: false, prd_writer: prdWriterSpec() };
       }
       if (tasks.length === 0) {
         let goal = null;
@@ -1253,7 +1389,7 @@ function resolveNext(project) {
           const goalMatch = ctx.match(/^## Goal\s*\n+(.+)/m);
           if (goalMatch) goal = goalMatch[1].trim();
         }
-        return { ...base, action: 'plan', args: goal ? [goal] : [], reason: goal ? R(`Auto-extracted goal: "${goal}"`, `목표를 자동으로 찾았습니다: "${goal}"`) : R('No tasks yet. Run plan with a goal.', '할 일이 없습니다. 목표를 정해서 계획을 세우세요.'), goal, prd_writer: prdWriterSpec() };
+        return { ...base, action: 'legacy-plan', args: goal ? [goal] : [], reason: goal ? R(`Auto-extracted goal: "${goal}"`, `목표를 자동으로 찾았습니다: "${goal}"`) : R('No tasks yet. Run plan with a goal.', '할 일이 없습니다. 목표를 정해서 계획을 세우세요.'), goal, prd_writer: prdWriterSpec() };
       }
       if (!planCheckExists) {
         return { ...base, action: 'plan-check', args: [], reason: R(`${tasks.length} tasks defined but not validated. Run plan-check.`, `할 일 ${tasks.length}개가 있지만 검증되지 않았습니다. 계획을 점검하세요.`), task_count: tasks.length };
@@ -1374,7 +1510,7 @@ export async function cmdNext(args) {
 
   const color = result.ready ? C.green : C.yellow;
   const cmd = result.action === 'phase' ? `x-build ${result.action} ${result.args.join(' ')}` :
-              result.action === 'plan' && result.goal ? `x-build plan "${result.goal}"` :
+              result.action === 'legacy-plan' && result.goal ? `x-build legacy-plan "${result.goal}"` :
               `x-build ${result.action}${result.args.length ? ' ' + result.args.join(' ') : ''}`;
   console.log(`  ${color}-> Run: ${cmd}${C.reset}`);
   console.log(`    ${result.reason}`);
@@ -1578,14 +1714,27 @@ export function cmdSaveArtifact(args) {
     return;
   }
 
+  let revisionReason = 'unknown';
+  try { revisionReason = normalizeRevisionReason(opts.reason); } catch (error) {
+    console.error(`❌ ${error.message}`); exitFail(1); return;
+  }
+  const before = type === 'plan' ? readMD(dest) : null;
+
   // R12: stamp new PRDs with the template version so prdBlockingFindings can
   // tell "written under the diagram-mandatory template" apart from
   // pre-existing PRDs. Never re-stamp a PRD that already carries a marker.
-  if (type === 'plan' && !VERSION_MARKER_RE.test(content)) {
+  // Delta-tier PRDs (Quick Mode) deliberately stay unstamped so the diagram
+  // gate keeps warning instead of blocking (see prdTier).
+  if (type === 'plan' && prdTier(content) !== 'delta' && !VERSION_MARKER_RE.test(content)) {
     content = `<!-- prd-template-version: ${PRD_TEMPLATE_VERSION} -->\n${content}`;
   }
 
   writeMD(dest, content);
+
+  if (type === 'plan') recordPlanRevision(project, before, content, revisionReason);
+  if (['context', 'requirements', 'roadmap'].includes(type)) {
+    recordEffectiveness(project, 'artifact_saved', { artifact: type, reason: revisionReason, artifact_hash: artifactSnapshot(project).artifact_hash });
+  }
   console.log(`Saved ${type} artifact: ${dest}`);
 }
 

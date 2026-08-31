@@ -165,13 +165,24 @@ describe('resolveItem — explicit terminal transition', () => {
 });
 
 describe('drop — status -> dismissed', () => {
-  test('updates status on disk', () => {
+  test('updates status on disk and stamps the terminal time', () => {
     writeLedger(dir, makeItem(), { cwd: root });
-    const result = drop(dir, 'toss-20260719-a1b2c3', { cwd: root });
+    const now = '2026-07-21T07:00:00.000Z';
+    const result = drop(dir, 'toss-20260719-a1b2c3', { cwd: root, now });
     expect(result.status).toBe('dismissed');
+    expect(result.resolved_at).toBe(now);
 
     const [onDisk] = readLedger(dir);
     expect(onDisk.status).toBe('dismissed');
+    expect(onDisk.resolved_at).toBe(now);
+  });
+
+  test('is idempotent and does not restart the retention clock', () => {
+    writeLedger(dir, makeItem(), { cwd: root });
+    const first = drop(dir, 'toss-20260719-a1b2c3', { cwd: root, now: '2026-07-21T07:00:00.000Z' });
+    const second = drop(dir, 'toss-20260719-a1b2c3', { cwd: root, now: '2026-07-22T07:00:00.000Z' });
+    expect(second.resolved_at).toBe(first.resolved_at);
+    expect(readLedger(dir)[0].resolved_at).toBe(first.resolved_at);
   });
 
   test('unknown id throws InboxItemNotFoundError and writes nothing', () => {

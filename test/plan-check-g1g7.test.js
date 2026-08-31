@@ -149,6 +149,23 @@ describe('G2 — Coverage expansion (coverage dim)', () => {
     }
   });
 
+  it('does not let R10 satisfy R1 (digit-boundary match, no substring collision)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-g2-'));
+    try {
+      const name = setupProject(tmp);
+      writeRequirements(tmp, name, '- [R1] User authentication\n- [R10] Reporting dashboard\n');
+      // Only R10 is referenced — "R10" must not count as a reference to R1
+      addTasks(tmp, [
+        { name: 'Build reporting dashboard [R10]', size: 'small' },
+      ]);
+      const r = run(['plan-check'], { cwd: tmp });
+      expect(r.stdout).toContain('Requirement R1 not referenced');
+      expect(r.stdout).not.toContain('Requirement R10 not referenced');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('reports coverage gap when R# is not in name OR done_criteria', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-g2-'));
     try {
@@ -171,29 +188,25 @@ describe('G2 — Coverage expansion (coverage dim)', () => {
 // ─── G3: Risk-ordering DAG-based ─────────────────────────────────────────────
 
 describe('G3 — Risk-ordering DAG-based (risk-ordering dim)', () => {
-  it('warns when large root task is in the second half of DAG steps', () => {
+  it('warns when a large task lands in the back half of the DAG', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-g3-'));
     try {
       setupProject(tmp);
-      // t1 (small) → t2 (small) → t3 (large, root) placed at end of array
-      // Since t3 has no deps, it runs in step 1 alongside others;
-      // but we need it to be after the midpoint. Use deps to push it later.
+      // t1 (small) → t2 (small) → t3 (large): 3 DAG steps, large task in step 3
       addTasks(tmp, [
         { name: 'Setup configuration [R1]', size: 'small' },
-        { name: 'Build API layer [R2]', size: 'small' },
-        { name: 'Design architecture [R3]', size: 'large' },
+        { name: 'Build API layer [R2]', size: 'small', deps: 't1' },
+        { name: 'Design architecture [R3]', size: 'large', deps: 't2' },
       ]);
-      // Make t3 depend on t1 and t2 so it ends up in a later DAG step
-      // but it still has no deps listed (it's a root large task by design in G3)
-      // The test checks that the warning appears when large+no-deps task is late in DAG
       const r = run(['plan-check'], { cwd: tmp });
-      expect(r.stdout).toContain('risk-ordering');
+      expect(r.stdout).toContain('front-loading');
+      expect(r.stdout).toContain('DAG step 3/3');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  it('does NOT warn when large root task is in the first half of DAG', () => {
+  it('does NOT warn when large task is in the first half of DAG', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-g3-'));
     try {
       setupProject(tmp);
@@ -205,6 +218,30 @@ describe('G3 — Risk-ordering DAG-based (risk-ordering dim)', () => {
       ]);
       const r = run(['plan-check'], { cwd: tmp });
       expect(r.stdout).not.toContain('front-loading');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('does not crash when a hand-edited task lacks depends_on (l45)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-g3-'));
+    try {
+      const name = setupProject(tmp);
+      addTasks(tmp, [
+        { name: 'Add config loader [R1]', size: 'small' },
+        { name: 'Add API layer [R2]', size: 'small', deps: 't1' },
+      ]);
+      // Simulate a hand-edited tasks.json that dropped the field: computeSteps
+      // used to throw a raw TypeError that the narrowed G3 catch rethrows.
+      const file = tasksFilePath(tmp, name);
+      const data = JSON.parse(readFileSync(file, 'utf8'));
+      delete data.tasks[0].depends_on;
+      writeFileSync(file, JSON.stringify(data, null, 2));
+
+      const r = run(['plan-check'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(r.stderr).not.toContain('TypeError');
+      expect(r.stderr).not.toContain('is not iterable');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

@@ -16,6 +16,314 @@ bumps shipped in each marketplace release.
 - The plugin loop stays sequential by design. `claude plugin install/update` rewrites the whole `installed_plugins.json` read-modify-write without holding a lock in this configuration, so running the calls concurrently loses registry entries: 12 parallel updates against a stale checkout left 2 plugins recorded at their old version while every process exited 0 and logged "updated from X to Y". The comment above the loop records this.
 - `install.sh` now honours `CLAUDE_CONFIG_DIR` when locating the plugin registry, marketplace clone, and plugin cache, so it can be exercised against a throwaway config instead of the user's real `~/.claude`.
 
+## [2.21.10] - 2026-08-28
+
+### x-build 3.6.1 → 3.6.2
+
+- Let a freshly initialized LGTM review close a preceding review-fix lifecycle only after triage and lifecycle receipts are bound to the new review snapshot. Bound reviews retain their host-context evidence requirement (`x-build/lib/x-build/verify.mjs`).
+
+### x-panel 0.22.0 → 0.22.1
+
+- Restrict injected reviews to frozen chunks of at most three diff files, including quoted Git paths; forbid repository exploration and begin JSON findings synthesis at half of the 12-command budget.
+- Apply matching idle and wall-clock caps across both review rounds, enforce the same limits and strict JSON contract in preflight, and clean up provider process groups into a terminal `interrupted` state.
+
+### x-review 2.6.1 → 2.6.2
+
+- Require cross-vendor panel reviews to chunk targets to the bounded three-file contract and document the command-budget synthesis rule.
+
+### xm 2.21.9 → 2.21.10
+
+- Bundle the bounded panel review, native-provider cross-vendor configuration, Review-Fix Gate lifecycle receipt, synchronized skills, and regression coverage.
+
+## [2.21.9] - 2026-08-28
+
+### Fixed
+
+- **review:** improve planner CLI diagnostics
+
+## [2.21.9] - 2026-08-28
+
+### x-review 2.6.0 → 2.6.1
+
+- Report unsupported planner options, missing values, and invalid numeric bounds with actionable diagnostics instead of a generic usage line. Common mistakes now point to `--max-profiles`, `--filtered-target`, and `--chunks-dir` (`x-review/skills/review/scripts/plan-review.mjs`).
+- Add CLI contract coverage for `--run-dir`, `--agent-max-count`, `--json`, missing `--target`, missing option values, and invalid profile counts (`test/x-review-report-contract.test.mjs`).
+
+### xm 2.21.8 → 2.21.9
+
+- Bundle the updated x-review planner and synchronized skill checksum registry for installed users.
+
+## [2.21.8] - 2026-08-27
+
+### x-build 3.6.0 → 3.6.1
+
+- Make `xm build handoff` race-safe: serialize concurrent writers, atomically replace the canonical `SESSION-STATE.json`, preserve existing file modes, roll back observed partial commits, and keep `HANDOFF.md` as a stable pointer to the canonical JSON.
+- Correlate mem-mesh completion and skip operations with a per-handoff token so stale or concurrent callers cannot overwrite a newer pending mirror.
+
+### x-recall 0.1.5 → 0.1.6
+
+- Materialize rich tool-neutral handoff prose as `.xm/build/HANDOFF.summary.md`, leaving canonical `HANDOFF.md` as the stable JSON pointer.
+
+### xm 2.21.7 → 2.21.8
+
+- Bundle the handoff persistence, mirror correlation, and recall changes. x-sync now regenerates the canonical `HANDOFF.md` pointer whether a pulled remote state wins or the newer local state is retained.
+
+## [2.21.2] - 2026-08-26
+
+### Fixed
+
+- **release:** add the missing `2.21.1` history entry so the published version and changelog remain auditable after correcting the duplicate `2.21.0` heading.
+
+## [2.21.1] - 2026-08-26
+
+### Fixed
+
+- **release:** remove the duplicate `2.21.0` summary inserted while shipping and retain the detailed per-plugin release notes as the canonical entry.
+
+## [2.21.0] - 2026-08-26
+
+### x-build 3.4.2 → 3.5.0
+
+- Add evidence-gated adaptive execution. `xm build route decide/start/verify/finish/status/abandon/report` routes only bounded, independently verifiable work directly; receipts bind the baseline commit, expected files, deterministic gates, byte hashes, elapsed time, and actual cost events (`x-build/lib/x-build/adaptive-routing.mjs`).
+- Add `xm build route prove`, which fails closed unless benchmark and blind-review artifacts provide at least 10 exact pairs per fixture, complete verification, no adaptive quality losses, at least 20% p50 cost savings, and at least 15% p50 latency savings (`x-build/lib/x-build/adaptive-proof.mjs`, `scripts/benchmark-execution-harness.mjs`, `scripts/blind-quality-rate.mjs`).
+- Preserve direct failures as planned-only evidence, require clean fallback execution, protect unrelated dirty work and symlink boundaries, and exclude manually reported outcomes from routing decisions.
+
+### x-plan 0.2.1 → 0.3.0
+
+- Add structured `failure_modes` to PlanEnvelope normalization, validation, rendering, and schema. Executable plans enumerate pathological inputs with mitigation and verification while legacy envelopes remain valid (`x-plan/lib/x-plan/`).
+- Carry failure modes through x-build import into PRD section 7.5 and task stress criteria so execution receives the robustness prescription instead of leaving it in planner prose (`x-build/lib/x-build/plan-import.mjs`).
+
+### x-review 2.4.0 → 2.5.0
+
+- Replace the fixed review line limit with token-budgeted frozen-target chunks split by file, hunk, then line range. Every selected profile × chunk report is required before synthesis (`x-review/skills/review/scripts/plan-review.mjs`).
+- Bind reports to the complete frozen target and each chunk hash, reject unsafe paths and incomplete file coverage, and fail closed when the top-level manifest hash does not match the target bytes (`x-review/skills/review/scripts/validate-reports.mjs`).
+
+### xm 2.20.4 → 2.21.0
+
+- Bundle adaptive execution receipts and proof, PlanEnvelope failure modes, token-budgeted review chunking, synchronized skill contracts, and regression coverage for installed Claude and Codex users.
+
+## [2.20.4] - 2026-08-25
+
+### Fixed
+
+- **x-build:** identify the bridge's own plan artifact instead of scanning `.xm/plan` by mtime. The 2.20.3 fix made every pre-existing artifact a candidate, so a concurrent writer touching an unrelated envelope during delegation could get its plan compiled into the project (and overwrite PRD/tasks/steps under `--replace`). `xm build plan` now resolves `--session <id>` directly and otherwise falls back to the new-entry rule, which also removes the dependence on filesystem mtime resolution.
+- **x-build:** stop claiming a missing artifact on x-plan modes that never persist one. `--recommend`, `--validate` without `--persist`, and `--no-save` return 0 without saving, and the diagnostic blamed `--output`/`--no-save` for runs that passed neither.
+- **x-build:** point the already-imported blocker at `--replace`. It reused the generic advisory, which suggested `xm build import-plan <path>` — a command that refuses the same case with exit 2.
+- **x-build:** drop the duplicated import summary on `--json` runs; `cmdImportPlan --quiet` already reports the result on stderr.
+
+## [2.20.3] - 2026-08-25
+
+### Fixed
+
+- **x-build:** import a resumed x-plan session. Artifact discovery compared directory names only, so the Standard/Ultra path — which finalizes with `--session <id>` and rewrites `envelope.json` in place — never looked like a new artifact and the executable plan was skipped silently. Discovery now compares each entry's envelope mtime against a pre-delegation snapshot.
+- **x-build:** keep `xm build plan --json` stdout a single parseable document. The import report was appended after x-plan's JSON payload; `cmdImportPlan` gained a `--quiet` mode that the bridge uses for `--json` runs, and the summary goes to stderr.
+- **x-build:** exit 0 when a plan is saved but not imported because the project already has plan artifacts. That case fell through to `cmdImportPlan` and exited 2 while every other skip reason exited 0, so callers read a successful plan as a failure. Re-run with `--replace` to overwrite.
+- **x-build:** report when no new plan artifact is found instead of exiting silently. `--output` and `--no-save` write outside `.xm/plan`, which previously produced no output at all.
+- **x-build:** emit `action: "legacy-plan"` from `next`. `resolveNext` still returned `action: "plan"`, and `cli-skill-protocol.md` routed that action to `$XMB plan "goal"` — the alias that no longer writes a PRD, leaving the Plan gate blocked.
+
+### Changed
+
+- Document the auto-import preconditions in both READMEs: an x-build project in the Research or Plan phase, and `--replace` to overwrite existing plan artifacts.
+
+## [2.20.2] - 2026-08-25
+
+### Added
+
+- **x-build:** `xm build plan --replace` overwrites existing plan artifacts when importing; `--no-import` saves the plan to `.xm/plan` without touching the project.
+
+### Changed
+
+- **x-build:** make x-plan the single planning engine. `xm build plan` delegates to x-plan, and an executable PlanEnvelope is compiled into the current project through `import-plan` (PRD, tasks, steps, Plan phase). A draft plan is saved to `.xm/plan` and reported as not imported, with the concrete reason. `xm build legacy-plan` preserves the former PRD/task/phase planner as an explicit compatibility path.
+- **x-build, x-dashboard:** retarget the PRD-missing and next-step hints in `phase`, `next`, `status`, `verify`, and the dashboard PRD empty state to `xm build legacy-plan`. They previously named a command that no longer produces a PRD, so following them left the Plan gate blocked.
+- Rewrite the English and Korean public documentation around the lean default workflow: repository evidence → x-plan → sequential native execution → risk-based validation. Phase, worktree, task-check, and meta-gate features are documented as legacy opt-ins rather than defaults.
+
+### Removed
+
+- **x-build (breaking):** `xm build plan --global` is refused with exit 2. x-plan resolves its own repository root, so the plan artifact and the x-build project would land in different trees. Use `xm plan` in the target repository, or `xm build legacy-plan --global`.
+
+## [2.20.0] - 2026-08-25
+
+### Added
+
+- **xm:** add conflict-aware scheduling and scope-aware plan parsing
+
+### Changed
+
+- **build:** default to lean native execution
+
+## [2.20.0] - 2026-08-25
+
+### x-build 3.2.5 → 3.3.0
+
+- Replace the default phase-heavy execution harness with a lean repository-evidence → single-plan → native-execution workflow after live A/B runs showed no pass-rate gain and higher wall-clock cost for the harness. Legacy phase, worktree, task-check, review-group, and quality-gate commands remain explicit compatibility opt-ins (`x-build/skills/build/SKILL.md`).
+- Add execution principles that prefer the smallest sufficient change, require observable and tested reasons for fallbacks, challenge whether the requested method serves the user's actual goal, default to sequential work, and select validation by concrete change risk instead of running test/lint/build/review as a ritual (`x-build/lib/x-build/tasks.mjs`).
+- Add deterministic native PlanEnvelope import and conflict-aware batch compilation for operators who explicitly retain the legacy execution surface, including safe expected-file metadata, dependency compilation, and untrusted validation-command handling (`x-build/lib/x-build/plan-import.mjs`, `x-build/lib/x-build/worktree-shared.mjs`).
+- Add a reproducible live execution benchmark covering independent and shared-file fixtures so future harness claims can be tested against native execution rather than inferred from structural replay (`scripts/benchmark-execution-harness.mjs`).
+
+### x-plan 0.1.2 → 0.2.0
+
+- Ground plans in the user's underlying goal, reject unjustified fallbacks and unnecessary machinery, use sequential execution by default, and select only validation that directly observes a named risk (`x-plan/skills/plan/SKILL.md`).
+- Parse structured requirements, validation commands, and repository paths into safer executable PlanEnvelopes while preserving unresolved questions and disagreements (`x-plan/lib/x-plan/core.mjs`).
+
+### xm 2.19.2 → 2.20.0
+
+- Bundle the lean build and planning contracts, native plan importer, conflict-aware scheduling compatibility surface, synchronized skill metadata, and regression coverage.
+
+## [2.19.2] - 2026-08-24
+
+### x-build 3.2.4 → 3.2.5
+
+- Select a concrete `light`, `standard`, or `deep` build profile from explicit input, saved project state, and deterministic repository risk signals, removing the legacy null-profile path while preserving fail-safe deep routing for greenfield and high-risk work.
+- Record profile provenance, phase gate wait time, run wall-clock duration, quality command duration, and exact evidence reuse failures so build latency can be attributed without weakening snapshot checks.
+- Align the build skill's Research and Quick Mode instructions with the adaptive profile contract so automatic `light` routing no longer conflicts with confirmation-only legacy rules.
+
+### x-plan 0.1.1 → 0.1.2
+
+- Add side-effect-free `xm plan --recommend --json` mode selection with bounded local-change detection, broad-scope protection, and explicit-only Ultra routing.
+- Reuse persisted session modes without another prompt, preserve explicit mode/model precedence, reject unsafe session paths, and reject incompatible `--recommend --validate|--persist` combinations.
+
+### xm 2.19.1 → 2.19.2
+
+- Bundle the adaptive build/plan routing, latency telemetry, synchronized skill contracts, updated checksums, and regression coverage for broad-scope, session-resume, and machine-CLI behavior.
+
+## [2.19.1] - 2026-08-21
+
+### Added
+
+- **plan:** add interactive planning modes
+
+## [2.19.1] - 2026-08-21
+
+### x-plan 0.1.0 → 0.1.1
+
+- Replace JSON-only output with readable Markdown plans while retaining validated PlanEnvelope artifacts, so people can review plans without sacrificing machine-readable state (x-plan/lib/x-plan-cli.mjs, x-plan/lib/x-plan/artifact.mjs, x-plan/lib/x-plan/render.mjs).
+- Add explicit Quick, Standard, and Ultra workflows. Quick preserves the deterministic scaffold; Standard adds repository evidence, a bounded interview, critique, executable-plan gates, and resumable session artifacts; Ultra requires that Standard context before multi-model synthesis (x-plan/skills/plan/SKILL.md, x-plan/lib/x-plan/ultra.mjs).
+- Preserve interactive AskUserQuestion capability in generated Codex skills and refresh Claude/Codex plugin metadata for the new planning contract (xm/lib/install/transform/codex.mjs, x-plan/.claude-plugin/plugin.json, x-plan/.codex-plugin/plugin.json).
+
+### x-recall 0.1.4 → 0.1.5
+
+- Index both legacy flat Quick plans and resumable Standard/Ultra session directories, rendering plan.md when available so cross-session recall follows the new artifact layout (x-recall/lib/x-recall/scan.mjs).
+
+### xm 2.19.0 → 2.19.1
+
+- Bundle the three-mode x-plan workflow, session persistence, recall support, updated aliases, Codex interaction metadata, and regression coverage (xm/skills/plan/SKILL.md, xm/lib/x-plan/, xm/lib/x-recall/scan.mjs, xm/commands/xm-plan.md).
+
+## [2.19.0] - 2026-08-21
+
+### x-build 3.2.3 → 3.2.4
+
+- Keep Claude and Codex plugin manifests on one version during release bumps, preventing `x-plan` packaging drift (`x-build/lib/x-build/release.mjs`).
+
+### x-panel 0.21.0 → 0.21.1
+
+- Stop stateless fallback after a Codex reviewer reaches `command_budget`, so the configured cap cannot be bypassed by retrying the same review (`x-panel/lib/x-panel/adapters.mjs`).
+
+### x-plan 0.1.0
+
+- Add the standalone JSON-only `PlanEnvelope v1` planner with literal, file, stdin, validation, deterministic normalization, task dependency checks, and stable compact/pretty output (`x-plan/lib/x-plan/`).
+- Add opt-in `--mode ultra` synthesis across multiple panel model slots, including bounded concurrency, process-tree timeout cleanup, provenance, disagreement preservation, ID remapping, and executable-plan safety invariants (`x-plan/lib/x-plan/ultra.mjs`, `x-plan/lib/x-plan/synthesize.mjs`).
+- Publish native Claude and Codex plugin manifests and expose `$xm-plan`, `/xm-plan`, `/xm:plan`, and `xm plan` entry points (`x-plan/.claude-plugin/plugin.json`, `x-plan/.codex-plugin/plugin.json`, `xm/commands/xm-plan.md`).
+
+### xm 2.18.0 → 2.19.0
+
+- Bundle `x-plan`, route `xm plan`, and install the managed `/xm-plan` alias while preserving and restoring an existing user-owned command (`xm/scripts/xm`, `xm/scripts/setup-global.mjs`).
+- Rebundle the release and panel fixes with deterministic regression coverage for schema validation, synthesis, aliases, Windows cleanup, and dual-manifest versioning.
+
+## [2.18.0] - 2026-08-21
+
+### x-build 3.2.2 → 3.2.3
+
+- Register `panel.command_budget` in the shared config schema so operators can tune the Codex review command cap without an unregistered-key warning (`x-build/lib/config-schema.mjs`, `x-build/lib/shared-config.mjs`).
+
+### x-panel 0.20.6 → 0.21.0
+
+- Bound Codex review exploration with a configurable completed-command budget (default 12). Raw and streaming providers stop with typed `command_budget` before a reviewer can spend the full wall-clock cap without producing a valid contract; bounded prompts begin final JSON synthesis after 6 commands (`x-panel/lib/x-panel/adapters.mjs`, `x-panel/lib/x-panel-cli.mjs`).
+- Distinguish semantic progress from byte activity. `panel watch` now reports command usage, valid-contract state, attempt number, provider freshness, idle deadline, and hard-cap remaining (`x-panel/lib/x-panel-cli.mjs`).
+
+### x-review 2.3.5 → 2.4.0
+
+- Limit failed provider recovery to one strict-subset retry. The retry helper copies complete frozen diff sections only for exact target paths named in failure evidence; unsafe, full-target, and repeated retries fail closed as `Review incomplete` (`x-review/skills/review/scripts/retry-target.mjs`).
+
+### xm 2.17.0 → 2.18.0
+
+- Rebundle bounded review execution, progress telemetry, retry policy, config registration, and deterministic regression coverage for installed `xm panel` and `xm review` users.
+
+## [2.17.0] - 2026-08-21
+
+### x-build 3.2.1 → 3.2.2
+
+- Bind host review-fix decisions to the same canonical review context used by reviewers. The gate now requires finding-level context references, invariant and acceptance evidence, and a matching recomputed digest before authorizing or closing fixes, so stale or altered intent cannot silently pass (`x-build/lib/x-build/verify.mjs`).
+- Recover stale group-check locks and carry explicit long-check timeout settings through task execution, preventing crashed checks from wedging later verification runs (`x-build/lib/x-build/tasks.mjs`, `x-build/lib/x-build/phase.mjs`).
+
+### x-review 2.3.4 → 2.3.5
+
+- Add a bounded, allowlisted review context contract for goals, invariants, constraints, non-goals, and acceptance checks. Every reviewer report must echo the canonical hash, while source coverage and review-fix artifacts preserve the same provenance (`x-review/skills/review/scripts/context-contract.mjs`, `x-review/skills/review/scripts/validate-reports.mjs`).
+- Reject duplicate context IDs across all sections so host evidence cannot ambiguously refer to both an invariant and an acceptance check.
+
+### x-panel 0.20.5 → 0.20.6
+
+- Carry the trusted review context separately from untrusted target text through native and cross-model review prompts, and persist the verified digest in panel verdict and status artifacts (`x-panel/lib/x-panel/context-contract.mjs`, `x-panel/lib/x-panel-cli.mjs`).
+
+### xm 2.16.8 → 2.17.0
+
+- Rebundle the context-bound review pipeline and host verification gate so installed `xm review`, `xm panel`, and `xm build verify-review-fix` share one tamper-evident intent contract (`xm/skills/review/`, `xm/lib/x-panel/`, `xm/lib/x-build/`).
+
+## [2.16.7] - 2026-08-20
+
+### x-panel 0.20.3 → 0.20.4
+
+- `xm panel status --watch` now prints the full `provider:model` slot label instead of the bare provider name, so concurrent slots fronted by one provider (for example `codex:gpt-5.6-sol` and `codex:glm-5`) stay distinguishable in the model list (`x-panel/lib/x-panel-cli.mjs`).
+
+### xm 2.16.6 → 2.16.7
+
+- Rebundle the x-panel watch label fix so installed `xm panel status --watch` separates multiple model slots served by the same provider (`xm/lib/x-panel-cli.mjs`).
+
+## [2.16.6] - 2026-08-20
+
+### x-panel 0.20.2 → 0.20.3
+
+- Preserve completed review contracts when a model reaches the wall-clock cap instead of discarding valid findings as an empty failure. Explicit single-model recovery runs can now retry only the failed slot, while `panel.timeout_max_s` bounds automatic runs and an explicit `--timeout` retains its derived absolute cap (`x-panel/lib/x-panel/adapters.mjs`, `x-panel/lib/x-panel-cli.mjs`).
+- Make long reviews observable without confusing a live orchestrator heartbeat with provider progress. `xm panel status --watch` now separates provider silence, idle time remaining, orchestrator heartbeat freshness, and absolute cap remaining (`x-panel/lib/x-panel-cli.mjs`).
+
+### xm 2.16.5 → 2.16.6
+
+- Rebundle the x-panel recovery and progress signals so installed `xm panel` commands can recover one failed model and distinguish a quiet remote provider from a stalled local run (`xm/lib/x-panel-cli.mjs`, `xm/lib/x-panel/adapters.mjs`).
+
+## [2.16.5] - 2026-08-19
+
+### x-review 2.3.3 → 2.3.4
+
+- Delegate transport failures such as `Broken pipe` no longer override complete review artifacts. x-review now validates `reports/*.json` first, enters synthesis when `validation.json.ok` proves N/N coverage, and limits request-id recovery or fresh re-dispatch to report ids that remain missing or invalid.
+
+### xm 2.16.4 → 2.16.5
+
+- Rebundled the x-review artifact-first recovery contract and refreshed installation checksums so installed review skills preserve completed reports after a transport failure.
+
+## [2.16.4] - 2026-08-19
+
+### x-dashboard 2.16.1 → 2.16.2
+
+- Activity now defaults to live-first, freshest-heartbeat ordering with `Active first`, `Latest`, and `Project name` sort modes plus `All`, `Live only`, and `Problems` filters. Choices persist locally, heartbeat age is visible, and SSE events refresh the view immediately.
+- Reduced the cross-workspace polling payload by omitting provider stdout/stderr tails from the aggregate API; detailed run pages retain full output. In the measured 14-workspace fixture this reduced the response from 568 KB to 104 KB while keeping 12–16 ms response time.
+
+### x-review 2.3.2 → 2.3.3
+
+- Headless and delegated review invocations now degrade to a bounded single-pass `correctness` + `risk` review instead of attempting unavailable fan-out and waiting indefinitely. Normal fan-out stops after three consecutive empty waits and reports incomplete coverage.
+
+### xm 2.16.3 → 2.16.4
+
+- Rebundled the Dashboard and review fixes. x-sync pull now canonicalizes humble lessons to `humble/lessons/L{N}.json`, deduplicates compounded machine suffixes without inflating confirmation counts, and migrates already polluted stores during the next pull.
+
+## [2.16.3] - 2026-08-19
+
+### x-panel 0.20.1 → 0.20.2
+
+- Fixed `xm panel watch` being interpreted as a literal review target. It is now a read-only alias for `xm panel status --watch`, so monitoring never fans out model calls or triggers provider permission prompts.
+- Hardened parallel review execution: unique run ids prevent lens artifacts from overwriting each other, session fallback and signal retry share one wall-clock/spawn budget, real child signals replace stderr substring guesses, and same-provider model slots report multi-model rather than cross-vendor provenance.
+
+### xm 2.16.2 → 2.16.3
+
+- Rebundled the x-panel fixes and updated the panel skill, English/Korean usage docs, and installation checksums so installed dispatchers expose the safe `watch` alias.
+
 ### xm 2.5.2 → 2.6.0
 
 - Added native Codex Plugin packaging in `xm/lib/install/`: installs bundled Skills and a semantic marketplace entry while keeping searchable `$xm-<skill>` aliases, so users can discover `$xm-op` and invoke the namespaced `$xm:op` form after plugin registration.

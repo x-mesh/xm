@@ -8,6 +8,13 @@ const REPO = join(import.meta.dirname, '..');
 const SCRIPT = join(REPO, 'xm', 'scripts', 'install.sh');
 const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
 
+// `xm/scripts/xm` resolves its lib from XM_LIB before every other candidate, so a
+// developer shell exporting it (pointing at this checkout) overrides the fixture
+// HOME these tests build: `xm which` reports the repo instead of the fixture's
+// Codex bundle, and the resolve-order spec fails for everyone with the variable
+// set while passing in CI. Same leak already fixed for xm-update (81b9aa0).
+const { XM_LIB: _ignoredXmLib, ...BASE_ENV } = process.env;
+
 function executable(path, body) {
   writeFileSync(path, `#!/bin/sh\n${body}\n`);
   chmodSync(path, 0o755);
@@ -68,7 +75,7 @@ function fixture({ installedVersion, withClaude = false } = {}) {
   // version instead of the one under test — green only while the source and
   // remote versions coincide, and red on every release bump.
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     HOME: home,
     XM_BIN_DIR: join(home, '.local', 'bin'),
     XM_TEST_CALLS: calls,
@@ -91,6 +98,19 @@ describe('xm install.sh', () => {
     const cli = spawnSync(join(home, '.local', 'bin', 'xm'), ['version'], { cwd: home, env, encoding: 'utf8' });
     expect(cli.status).toBe(0);
     expect(cli.stdout).toContain(`xm ${VERSION}`);
+  }, 30_000);
+
+  test('installed dispatcher prefers the explicit Codex bundle over a stale Claude cache', () => {
+    const { home, env } = fixture();
+    const result = spawnSync('bash', [SCRIPT, '--yes'], { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+    expect(result.status).toBe(0);
+
+    mkdirSync(join(home, '.claude', 'plugins', 'cache', 'xm', 'xm', '0.0.1', 'lib'), { recursive: true });
+    const which = spawnSync(join(home, '.local', 'bin', 'xm'), ['which'], { cwd: home, env, encoding: 'utf8' });
+
+    expect(which.status).toBe(0);
+    expect(which.stdout).toContain(`lib: ${join(home, '.codex', 'xm')}`);
+    expect(which.stdout).not.toContain(join(home, '.claude', 'plugins', 'cache', 'xm'));
   }, 30_000);
 
   test('--no declines an available update before changing files', () => {

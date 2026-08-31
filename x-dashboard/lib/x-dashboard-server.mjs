@@ -13,8 +13,12 @@
  */
 
 import { createHash } from 'node:crypto';
-import { writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, readFileSync, statSync, renameSync, openSync, readSync, closeSync } from 'node:fs';
-import { join, resolve, dirname, basename } from 'node:path';
+import {
+  writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, readFileSync,
+  statSync, renameSync, openSync, readSync, closeSync, lstatSync, fstatSync,
+  constants as FS_CONSTANTS,
+} from 'node:fs';
+import { join, resolve, dirname, basename, relative, isAbsolute, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { createConnection } from 'node:net';
@@ -23,6 +27,7 @@ import { createConnection } from 'node:net';
 
 const DEFAULT_PORT = 19841;
 const SESSION_IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
+const MAX_REVIEW_LEDGER_BYTES = 4 * 1024 * 1024;
 const VERSION = process.env.XM_SYNC_VERSION ?? '0.1.0';
 
 const args = process.argv.slice(2);
@@ -79,6 +84,67 @@ function safeJoin(base, ...segments) {
     return null;
   }
   return resolvedTarget;
+}
+
+function assertSafeReadPath(boundary, path) {
+  const root = resolve(boundary);
+  const target = resolve(path);
+  const rel = relative(root, target);
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw Object.assign(new Error('review precision ledger must stay inside the XM root'), { code: 'UNSAFE_LEDGER' });
+  }
+  let cursor = root;
+  const rootInfo = lstatSync(root);
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+    throw Object.assign(new Error('review precision XM root must be a regular non-symlink directory'), { code: 'UNSAFE_LEDGER' });
+  }
+  const parentRel = relative(root, dirname(target));
+  for (const part of parentRel ? parentRel.split(sep) : []) {
+    cursor = join(cursor, part);
+    const info = lstatSync(cursor);
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw Object.assign(new Error('review precision ledger parents must be regular non-symlink directories'), { code: 'UNSAFE_LEDGER' });
+    }
+  }
+}
+
+function readBoundedRegularFile(path, maxBytes, boundary) {
+  assertSafeReadPath(boundary, path);
+  const info = lstatSync(path);
+  if (info.isSymbolicLink() || !info.isFile()) {
+    throw Object.assign(new Error('review precision ledger must be a regular non-symlink file'), { code: 'UNSAFE_LEDGER' });
+  }
+  if (info.size > maxBytes) {
+    throw Object.assign(new Error(`review precision ledger exceeds ${maxBytes} bytes`), { code: 'LEDGER_TOO_LARGE' });
+  }
+  if (!Number.isInteger(FS_CONSTANTS.O_NOFOLLOW) || !Number.isInteger(FS_CONSTANTS.O_NONBLOCK)) {
+    throw Object.assign(new Error('safe review precision ledger read requires O_NOFOLLOW and O_NONBLOCK support'), { code: 'UNSAFE_LEDGER' });
+  }
+
+  let fd;
+  try {
+    fd = openSync(path, FS_CONSTANTS.O_RDONLY | FS_CONSTANTS.O_NOFOLLOW | FS_CONSTANTS.O_NONBLOCK);
+    const opened = fstatSync(fd);
+    if (!opened.isFile()) {
+      throw Object.assign(new Error('review precision ledger must be a regular file'), { code: 'UNSAFE_LEDGER' });
+    }
+    if (opened.size > maxBytes) {
+      throw Object.assign(new Error(`review precision ledger exceeds ${maxBytes} bytes`), { code: 'LEDGER_TOO_LARGE' });
+    }
+    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    let bytes = 0;
+    while (bytes < buffer.byteLength) {
+      const read = readSync(fd, buffer, bytes, buffer.byteLength - bytes, bytes);
+      if (read === 0) break;
+      bytes += read;
+    }
+    if (bytes > maxBytes) {
+      throw Object.assign(new Error(`review precision ledger exceeds ${maxBytes} bytes`), { code: 'LEDGER_TOO_LARGE' });
+    }
+    return buffer.subarray(0, bytes).toString('utf8');
+  } finally {
+    if (fd != null) closeSync(fd);
+  }
 }
 
 // ── Segment Validation ──────────────────────────────────────────────
@@ -520,6 +586,49 @@ function isPanelRunLive(run) {
   return Number.isFinite(t) && (Date.now() - t) < PANEL_STALE_MS;
 }
 
+function panelRunActivityAt(run) {
+  return run?.status?.updated_at || run?.verdict?.created_at || run?.created_at || null;
+}
+
+function isPanelRunProblem(run) {
+  if (run?.phase === 'failed' || run?.phase === 'stalled') return true;
+  const st = run?.status;
+  if (st && st.phase !== 'done' && !isPanelRunLive(run)) return true;
+  return Array.isArray(st?.models) && st.models.some((m) => m?.state === 'failed');
+}
+
+function panelActivityRank(run) {
+  if (isPanelRunLive(run)) return 0;
+  if (isPanelRunProblem(run)) return 1;
+  return 2;
+}
+
+// Activity needs state, timing, and cost, not multi-kilobyte provider tails.
+// Detail endpoints keep the complete status for drill-down.
+function summarizePanelStatus(status) {
+  if (!status) return null;
+  return {
+    run: status.run || null,
+    started_at: status.started_at || null,
+    updated_at: status.updated_at || null,
+    phase: status.phase || null,
+    target_kind: status.target_kind || null,
+    target_title: status.target_title || null,
+    lens_tag: status.lens_tag || null,
+    source: status.source || null,
+    title: status.title || null,
+    prompt_chars: status.prompt_chars || null,
+    totals: status.totals || null,
+    models: Array.isArray(status.models) ? status.models.map((m) => ({
+      label: m?.label || null, provider: m?.provider || null, model: m?.model || null,
+      state: m?.state || null, round: m?.round || null, elapsed_s: m?.elapsed_s ?? null,
+      last_event: m?.last_event || null, error: m?.error || null, phase_label: m?.phase_label || null,
+      tokens: m?.tokens || null, cost_usd: m?.cost_usd ?? null, credits: m?.credits ?? null,
+      unmatched_refs: m?.unmatched_refs || 0, invalid_stances: m?.invalid_stances || 0,
+    })) : [],
+  };
+}
+
 function handlePanelList(xmRoot, req) {
   return jsonResponseWithETag({ runs: collectPanelRuns(xmRoot) }, req);
 }
@@ -537,10 +646,22 @@ function handlePanelsAll(req) {
     if (!runs.length) continue;
     const live = runs.filter(isPanelRunLive);
     const recent = runs.filter((r) => !isPanelRunLive(r)).slice(0, 8);
-    out.push({ id: ws.id, name: ws.name, path: ws.path || null, live_count: live.length, total: runs.length, runs: [...live, ...recent] });
+    const visible = [...live, ...recent]
+      .map((run) => ({ ...run, status: summarizePanelStatus(run.status), activity_at: panelRunActivityAt(run) }))
+      .sort((a, b) => panelActivityRank(a) - panelActivityRank(b)
+        || (Date.parse(b.activity_at || '') || 0) - (Date.parse(a.activity_at || '') || 0)
+        || String(b.run).localeCompare(String(a.run)));
+    const lastActivityAt = visible.reduce((latest, run) => {
+      const at = Date.parse(run.activity_at || '');
+      return Number.isFinite(at) && at > latest.ms ? { ms: at, iso: run.activity_at } : latest;
+    }, { ms: 0, iso: null }).iso;
+    out.push({ id: ws.id, name: ws.name, path: ws.path || null, live_count: live.length, total: runs.length, last_activity_at: lastActivityAt, runs: visible });
   }
-  // projects with live runs float to the top, then alphabetical — the eye lands on activity first.
-  out.sort((a, b) => (b.live_count - a.live_count) || String(a.name).localeCompare(String(b.name)));
+  // Active work first, then the freshest heartbeat. Alphabetical is only a stable tie-breaker.
+  out.sort((a, b) => (Number(b.live_count > 0) - Number(a.live_count > 0))
+    || (Date.parse(b.last_activity_at || '') || 0) - (Date.parse(a.last_activity_at || '') || 0)
+    || (b.live_count - a.live_count)
+    || String(a.name).localeCompare(String(b.name)));
   return jsonResponseWithETag({ workspaces: out, generated_at: new Date().toISOString() }, req);
 }
 
@@ -1408,8 +1529,12 @@ function reviewFixGateData(xmRoot) {
   const reviewDir = safeJoin(xmRoot, 'review');
   const resultPath = reviewDir ? safeJoin(reviewDir, 'last-result.json') : null;
   const triagePath = reviewDir ? safeJoin(reviewDir, 'triage.json') : null;
+  const gatePath = reviewDir ? safeJoin(reviewDir, 'review-fix-gate.json') : null;
+  const lifecyclePath = reviewDir ? safeJoin(reviewDir, 'finding-lifecycle.json') : null;
   const review = resultPath && existsSync(resultPath) ? readJSONFile(resultPath) : null;
   const triage = triagePath && existsSync(triagePath) ? readJSONFile(triagePath) : null;
+  const gate = gatePath && existsSync(gatePath) ? readJSONFile(gatePath) : null;
+  const lifecycle = lifecyclePath && existsSync(lifecyclePath) ? readJSONFile(lifecyclePath) : null;
   const findings = Array.isArray(review?.findings) ? review.findings : [];
   const requiredSeverities = new Set(['critical', 'high', 'medium']);
   const blockingSeverities = new Set(['critical', 'high']);
@@ -1418,6 +1543,12 @@ function reviewFixGateData(xmRoot) {
     .filter(finding => requiredSeverities.has(finding.severity));
   const triageItems = Array.isArray(triage?.target_findings) ? triage.target_findings : Array.isArray(triage?.findings) ? triage.findings : [];
   const triageMap = new Map(triageItems.map(item => [item.id || item.finding_id, item]));
+  const lifecycleItems = Array.isArray(lifecycle?.findings) ? lifecycle.findings : [];
+  const lifecycleMap = new Map();
+  for (const item of lifecycleItems) {
+    if (item.id) lifecycleMap.set(item.id, item);
+    if (item.finding_id) lifecycleMap.set(item.finding_id, item);
+  }
   const decisions = { fix_now: 0, backlog: 0, accept_risk: 0, false_positive: 0, undecided: 0 };
   const failures = [];
 
@@ -1461,11 +1592,36 @@ function reviewFixGateData(xmRoot) {
 
   const allowedFiles = Array.isArray(triage?.fix_scope?.allowed_files) ? triage.fix_scope.allowed_files : [];
   const verification = Array.isArray(triage?.verification) ? triage.verification : Array.isArray(triage?.fix_scope?.verification) ? triage.fix_scope.verification : [];
-  const status = failures.length > 0
+  let status = failures.length > 0
     ? 'blocked'
     : required.length === 0 && ['lgtm', 'pass'].includes(verdict)
       ? 'passed'
       : 'ready';
+
+  // The CLI owns freshness/scope authorization. Do not let this lightweight
+  // dashboard preview contradict a fail-closed `verify-review-fix` receipt. A
+  // receipt is reusable only for the exact review + triage bytes it validated;
+  // hand-editing triage after authorization must immediately show blocked.
+  if (gate && triage && gate.reviewed_commit === (review.reviewed_commit || null)) {
+    const triageDigest = `sha256:${createHash('sha256').update(JSON.stringify(triage)).digest('hex')}`;
+    if (gate.review_snapshot_digest !== triage.review_snapshot_digest) {
+      status = 'blocked';
+      failures.push('review snapshot changed since the last review-fix gate; run x-build verify-review-fix again');
+    } else if (gate.triage_digest !== triageDigest) {
+      status = 'blocked';
+      failures.push('triage changed since the last review-fix gate; run x-build verify-review-fix again');
+    } else if (lifecycle && gate.lifecycle_digest && gate.lifecycle_digest !== `sha256:${createHash('sha256').update(JSON.stringify(lifecycle)).digest('hex')}`) {
+      status = 'blocked';
+      failures.push('finding lifecycle changed since the last review-fix gate; run x-build verify-review-fix again');
+    } else if (gate.passed === false || ['blocked', 'awaiting_reverification'].includes(gate.stage)) {
+      status = 'blocked';
+      for (const failure of Array.isArray(gate.failures) ? gate.failures : []) {
+        if (!failures.includes(failure)) failures.push(failure);
+      }
+    } else if (gate.passed === true && ['ready_for_fix', 'reverified'].includes(gate.stage)) {
+      status = 'ready';
+    }
+  }
 
   return {
     status,
@@ -1487,9 +1643,19 @@ function reviewFixGateData(xmRoot) {
       line: finding.line ?? null,
       summary: finding.summary || finding.description || finding.title || '',
       decision: triageMap.get(finding.id)?.decision || '',
+      finding_id: triageMap.get(finding.id)?.finding_id || lifecycleMap.get(finding.id)?.finding_id || null,
+      lifecycle_state: lifecycleMap.get(triageMap.get(finding.id)?.finding_id || finding.id)?.state || 'open',
+      outcome: lifecycleMap.get(triageMap.get(finding.id)?.finding_id || finding.id)?.outcome || null,
+      reverify_evidence: lifecycleMap.get(triageMap.get(finding.id)?.finding_id || finding.id)?.evidence || null,
     })),
     decisions,
     failures,
+    gate: gate ? {
+      passed: gate.passed === true,
+      stage: gate.stage || null,
+      timestamp: gate.timestamp || null,
+      lifecycle: gate.lifecycle || null,
+    } : null,
     commands: triage ? ['x-build verify-review-fix', 'x-build quality', 'x-review diff'] : ['x-build verify-review-fix --init'],
   };
 }
@@ -2016,6 +2182,56 @@ function handleReviewLast(xmRoot, req) {
   return jsonResponseWithETag(result, req);
 }
 
+// ── review precision (triage ledger → per-lens precision) ────────────
+// The aggregator is x-build's pure module; resolve it the same way as
+// cost-engine (xm bundle sibling first, then the source tree). null when it is
+// missing — the endpoint answers 503 and the UI hides the card.
+let _reviewPrecision;
+async function getReviewPrecision() {
+  if (_reviewPrecision !== undefined) return _reviewPrecision;
+  const here = import.meta.dirname;
+  const candidates = [
+    join(here, 'x-build', 'review-precision.mjs'),                                // xm bundle: xm/lib/x-build/
+    join(here, '..', '..', 'x-build', 'lib', 'x-build', 'review-precision.mjs'), // source tree
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      try { _reviewPrecision = await import(p); return _reviewPrecision; } catch { /* try next */ }
+    }
+  }
+  _reviewPrecision = null;
+  return _reviewPrecision;
+}
+
+async function handleReviewPrecision(xmRoot, req) {
+  const ledgerPath = safeJoin(xmRoot, 'review', 'triage-ledger.jsonl');
+  if (!ledgerPath || !existsSync(ledgerPath)) return jsonResponseWithETag({ status: 'no_ledger' }, req);
+  const mod = await getReviewPrecision();
+  if (!mod) return jsonResponseWithETag({ status: 'unavailable', error: 'review-precision module not found' }, req, 503);
+  const url = new URL(req.url);
+  const since = url.searchParams.get('since') || null;
+  const lastRaw = url.searchParams.get('last');
+  const last = lastRaw && /^\d+$/.test(lastRaw) ? Number(lastRaw) : null;
+  const lens = url.searchParams.get('lens') || null;
+  if (since && mod.parseDuration(since) == null) return jsonResponseWithETag({ status: 'bad_request', error: 'since must look like 30d, 12h, or 90m' }, req, 400);
+  if (lastRaw && !(Number.isInteger(last) && last > 0)) return jsonResponseWithETag({ status: 'bad_request', error: 'last must be a positive integer' }, req, 400);
+  let text;
+  try {
+    text = readBoundedRegularFile(ledgerPath, MAX_REVIEW_LEDGER_BYTES, xmRoot);
+  } catch (error) {
+    if (error?.code === 'LEDGER_TOO_LARGE') return jsonResponseWithETag({ status: 'ledger_too_large', error: error.message }, req, 413);
+    if (error?.code === 'UNSAFE_LEDGER' || error?.code === 'ELOOP') return jsonResponseWithETag({ status: 'unsafe_ledger', error: error.message }, req, 400);
+    if (error?.code === 'ENOENT') return jsonResponseWithETag({ status: 'no_ledger' }, req);
+    return jsonResponseWithETag({ status: 'read_error' }, req, 500);
+  }
+  const { rows, skipped } = mod.parseTriageLedger(text);
+  const normalizeSeverity = typeof mod.normalizeLedgerSeverity === 'function'
+    ? mod.normalizeLedgerSeverity
+    : value => ['critical', 'high', 'medium', 'low'].includes(String(value || '').toLowerCase()) ? String(value).toLowerCase() : 'unknown';
+  const report = mod.aggregateLensPrecision(rows.map(row => ({ ...row, severity: normalizeSeverity(row.severity) })), { since, last, lens });
+  return jsonResponseWithETag({ status: 'ok', skipped_lines: skipped, ...report }, req);
+}
+
 function handleReviewHistory(xmRoot, req) {
   const historyDir = safeJoin(xmRoot, 'review', 'history');
   if (!historyDir || !existsSync(historyDir)) return jsonResponseWithETag({ data: [] }, req);
@@ -2409,7 +2625,7 @@ function handleSearch(xmRoot, url, req) {
 const FALLBACK_MODEL_COSTS = {
   haiku:  { input: 1.00,  output: 5.00 },
   sonnet: { input: 3.00,  output: 15.00 },
-  opus:   { input: 15.00, output: 75.00 },
+  opus:   { input: 5.00,  output: 25.00 },
   fable:  { input: 10.00, output: 50.00 },
 };
 
@@ -3885,6 +4101,11 @@ server = Bun.serve({
           return handleReviewGate(xmRoot, req);
         }
 
+        // GET /api/ws/:wsId/review/precision[?since=30d&last=N&lens=L]
+        if (subPath === '/review/precision') {
+          return handleReviewPrecision(xmRoot, req);
+        }
+
         // GET /api/ws/:wsId/review/history/:file  (must come before /review/history)
         const wsReviewFileMatch = subPath.match(/^\/review\/history\/([^/]+)$/);
         if (wsReviewFileMatch) {
@@ -4166,6 +4387,11 @@ server = Bun.serve({
         return handleReviewGate(XM_ROOT, req);
       }
 
+      // GET /api/review/precision[?since=30d&last=N&lens=L]
+      if (path === '/api/review/precision') {
+        return handleReviewPrecision(XM_ROOT, req);
+      }
+
       // GET /api/review/history/:file  (must come before /api/review/history)
       const reviewFileMatch = path.match(/^\/api\/review\/history\/([^/]+)$/);
       if (reviewFileMatch) {
@@ -4345,7 +4571,7 @@ function handleHandoffs(xmRoot, req) {
 
 function handlePrdList(xmRoot, req) {
   const items = [];
-  // Standalone PRDs: .xm/prd/*.md (from `xm build plan` run without a project)
+  // Legacy standalone PRDs: .xm/prd/*.md (the x-plan engine writes .xm/plan instead)
   const prdDir = safeJoin(xmRoot, 'prd');
   if (prdDir && existsSync(prdDir)) {
     try {

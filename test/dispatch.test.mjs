@@ -48,6 +48,12 @@ describe('dispatch — lightweight tracked execution', () => {
       expect(out.notice.join(' ')).toContain('PRD/phase 게이트 미적용');
       expect(out.task.task_id).toBe('t1');
       expect(out.task.prompt).toContain('## Definition of Done');
+      expect(out.task.prompt).toContain('Make the smallest change that satisfies the actual user goal');
+      expect(out.task.prompt).toContain('Add a fallback only for a concrete evidenced failure condition');
+      expect(out.task.prompt).toContain('Treat the requested method as a hypothesis');
+      expect(out.task.prompt).toContain('never hide failure behind broad catches, empty results, or arbitrary defaults');
+      expect(out.task.prompt).toContain('Sequential execution is the default');
+      expect(out.task.prompt).toContain('Do not run test, lint, build, and review as a fixed checklist');
       expect(out.task.on_complete).toContain('tasks update t1');
 
       expect(run(['task-check', 't1'], tmp).exitCode).toBe(0);
@@ -84,6 +90,31 @@ describe('dispatch — lightweight tracked execution', () => {
       expect(out2.notice.join(' ')).toContain('PRD로 승격');
       const projects = readdirSync(join(tmp, '.xm', 'build', 'projects'));
       expect(projects.filter((p) => p.startsWith('dispatch')).length).toBe(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('dispatch after tasks remove mints a unique id and leaves the surviving task alone', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-dispatch-'));
+    try {
+      gitInit(tmp);
+      dispatchJSON(tmp); // t1
+      dispatchJSON(tmp); // t2
+      dispatchJSON(tmp); // t3
+      // Complete t3 so an id collision would visibly flip it back to RUNNING.
+      expect(run(['task-check', 't3'], tmp).exitCode).toBe(0);
+      run(['tasks', 'update', 't3', '--status', 'completed', '--no-commit'], tmp);
+      run(['tasks', 'remove', 't2'], tmp);
+      // Length-based ids would mint a second "t3" here ([t1, t3].length + 1).
+      const out = dispatchJSON(tmp);
+      expect(out.task.task_id).toBe('t4');
+      const tasks = JSON.parse(readFileSync(join(tmp, '.xm', 'build', 'projects', 'dispatch', 'phases', '02-plan', 'tasks.json'), 'utf8')).tasks;
+      const ids = tasks.map((t) => t.id);
+      expect(new Set(ids).size).toBe(ids.length);
+      const t3 = tasks.find((t) => t.id === 't3');
+      expect(t3.status).toBe('completed');
+      expect(t3.task_check).toBeTruthy();
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

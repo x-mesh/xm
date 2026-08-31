@@ -167,6 +167,27 @@ describe('export', () => {
     }
   });
 
+  test('import after tasks remove continues from the max id (no duplicate ids)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-imp-'));
+    try {
+      setupProject(tmp);
+      for (const name of ['One', 'Two', 'Three']) run(['tasks', 'add', name], { cwd: tmp });
+      run(['tasks', 'remove', 't2'], { cwd: tmp });
+      // Length-based ids would mint a second "t3" here ([t1, t3].length + 1).
+      const csvFile = join(tmp, 'more.csv');
+      writeFileSync(csvFile, 'Name,Size,Dependencies\nFour,small,\nFive,small,\n');
+      expect(run(['import', csvFile, '--from', 'csv'], { cwd: tmp }).exitCode).toBe(0);
+      const jiraFile = join(tmp, 'jira.json');
+      writeFileSync(jiraFile, JSON.stringify({ issues: [{ key: 'P-1', summary: 'Six', priority: 'Low' }] }));
+      expect(run(['import', jiraFile, '--from', 'jira'], { cwd: tmp }).exitCode).toBe(0);
+      const tasksFile = join(tmp, '.xm', 'build', 'projects', 'test-proj', 'phases', '02-plan', 'tasks.json');
+      const tasks = JSON.parse(readFileSync(tasksFile, 'utf8')).tasks;
+      expect(tasks.map((t) => t.id)).toEqual(['t1', 't3', 't4', 't5', 't6']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('import missing file shows error', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-imp-'));
     try {
@@ -650,7 +671,11 @@ describe('phase lifecycle', () => {
   test('phase set to execute directly', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-ps-'));
     try {
-      setupProject(tmp);
+      const name = setupProject(tmp);
+      // Execute entry requires a PRD; without one, phase set refuses with exit 2.
+      const prdDir = join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan');
+      mkdirSync(prdDir, { recursive: true });
+      writeFileSync(join(prdDir, 'PRD.md'), '# PRD\n\n## 1. Goal\nTest project\n');
       const r = run(['phase', 'set', 'execute'], { cwd: tmp });
       expect(r.exitCode).toBe(0);
       const status = run(['status'], { cwd: tmp });

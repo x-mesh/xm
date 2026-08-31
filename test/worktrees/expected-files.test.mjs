@@ -20,7 +20,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, '..', '..', 'x-build', 'lib', 'x-build-cli.mjs');
 
 const {
-  normalizeExpectedFiles, expectedFilesOverlap, isParallelSafe,
+  normalizeExpectedFiles, expectedFilesOverlap, isParallelSafe, compileParallelBatches,
 } = await import('../../x-build/lib/x-build/tasks.mjs');
 
 // ── CLI helpers ────────────────────────────────────────────────────────────
@@ -114,6 +114,20 @@ describe('isParallelSafe', () => {
     expect(safe).toEqual(['t3']);
     expect(sequential.sort()).toEqual(['t1', 't2']);
     expect(reason).toContain('no expected_files');
+  });
+});
+
+describe('compileParallelBatches', () => {
+  it('recovers overlapping known tasks into separate conflict-free batches', () => {
+    const result = compileParallelBatches([
+      { id: 't1', expected_files: ['shared', 'a'] },
+      { id: 't2', expected_files: ['shared'] },
+      { id: 't3', expected_files: ['c'] },
+      { id: 't4' },
+    ], 2);
+    expect(result.parallel_batches).toEqual([['t1', 't3'], ['t2']]);
+    expect(result.sequential).toEqual(['t4']);
+    expect(result.scheduled_parallel_tasks.sort()).toEqual(['t1', 't2', 't3']);
   });
 });
 

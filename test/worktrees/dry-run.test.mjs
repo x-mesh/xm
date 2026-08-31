@@ -27,7 +27,7 @@ const FAKE_GK = join(__dirname, 'fake-gk.mjs');
 describe('planWorktrees — batch selection', () => {
   const cfg = { ...WORKTREE_CONFIG_DEFAULTS, base: 'develop', branch_prefix: 'feat/', max_parallel: 2 };
 
-  test('non-overlapping tasks with files → parallel batches; overlapping/unknown → sequential', () => {
+  test('overlapping known tasks split into conflict-free batches; unknown stays sequential', () => {
     const tasks = [
       { id: 't1', name: 'Alpha', expected_files: ['a.mjs'] },
       { id: 't2', name: 'Beta', expected_files: ['b.mjs'] },
@@ -35,10 +35,11 @@ describe('planWorktrees — batch selection', () => {
       { id: 't4', name: 'Delta' },                              // no expected_files → sequential
     ];
     const plan = planWorktrees({ project: 'p', tasks, config: cfg });
-    // t2 is the only safe one (t1∩t3 overlap; t4 unknown)
-    expect(plan.parallel_batches).toEqual([['t2']]);
-    expect(plan.sequential.sort()).toEqual(['t1', 't3', 't4']);
-    expect(plan.reason).toContain('a.mjs');
+    expect(plan.parallel_batches).toEqual([['t1', 't2'], ['t3']]);
+    expect(plan.sequential).toEqual(['t4']);
+    expect(plan.conflict_edges).toEqual([{ tasks: ['t1', 't3'], files: ['a.mjs'] }]);
+    expect(plan.scheduler.recovered_conflict_tasks.sort()).toEqual(['t1', 't3']);
+    expect(plan.reason).toContain('no expected_files');
   });
 
   test('safe tasks are chunked by max_parallel', () => {
@@ -49,6 +50,19 @@ describe('planWorktrees — batch selection', () => {
     ];
     const plan = planWorktrees({ project: 'p', tasks, config: { ...cfg, max_parallel: 2 } });
     expect(plan.parallel_batches).toEqual([['t1', 't2'], ['t3']]);
+  });
+
+  test('greedy coloring is deterministic and respects max_parallel', () => {
+    const tasks = [
+      { id: 't1', name: 'A', expected_files: ['shared'] },
+      { id: 't2', name: 'B', expected_files: ['shared'] },
+      { id: 't3', name: 'C', expected_files: ['c'] },
+      { id: 't4', name: 'D', expected_files: ['d'] },
+    ];
+    const first = planWorktrees({ project: 'p', tasks, config: { ...cfg, max_parallel: 3 } });
+    const second = planWorktrees({ project: 'p', tasks, config: { ...cfg, max_parallel: 3 } });
+    expect(first.parallel_batches).toEqual(second.parallel_batches);
+    expect(first.parallel_batches).toEqual([['t1', 't3', 't4'], ['t2']]);
   });
 });
 

@@ -17,24 +17,38 @@ Last updated: 2026-04-17 (post-xm split)
 
 ### Current lines (source files)
 
-Phase 3 decomposition sweep complete (2026-04-17). **All 14 SKILL.md files under the 500-line cap.**
+Recounted from disk 2026-08-11. **All 25 SKILL.md files under the 500-line cap.**
+
+Regenerate with the Regression guard command below rather than editing rows by hand — a
+hand-maintained count went 181 lines stale (x-build was recorded as 411 while it was 592).
 
 | Lines | Plugin | Status |
 |-------|--------|--------|
-| 500 | `x-op/skills/op/SKILL.md` | ✅ OK |
-| 491 | `x-agent/skills/agent/SKILL.md` | ✅ OK |
-| 411 | `x-build/skills/build/SKILL.md` | ✅ OK |
-| 350 | `x-memory/skills/memory/SKILL.md` | ✅ OK |
-| 345 | `x-humble/skills/humble/SKILL.md` | ✅ OK |
-| 336 | `x-solver/skills/solver/SKILL.md` | ✅ OK |
-| 331 | `xm/skills/ship/SKILL.md` | ✅ OK |
-| 319 | `x-trace/skills/trace/SKILL.md` | ✅ OK |
-| 304 | `xm/skills/sync/SKILL.md` | ✅ OK |
-| 277 | `x-review/skills/review/SKILL.md` | ✅ OK |
-| 251 | `x-probe/skills/probe/SKILL.md` | ✅ OK |
-| 238 | `x-eval/skills/eval/SKILL.md` | ✅ OK |
-| 203 | `xm/skills/kit/SKILL.md` | ✅ OK (was 551 per 2026-04-08 audit; grew to 915 before split; briefly 159 after initial split; now 203 with thin stubs + commands/ + references/ + Sub-file Loading + Status Symbols sections) |
-| 116 | `x-dashboard/skills/dashboard/SKILL.md` | ✅ OK |
+| 498 | `x-agent/skills/agent/SKILL.md` | ✅ OK |
+| 496 | `x-build/skills/build/SKILL.md` | ✅ OK |
+| 491 | `x-op/skills/op/SKILL.md` | ✅ OK |
+| 402 | `xm/skills/ship/SKILL.md` | ✅ OK |
+| 388 | `x-memory/skills/memory/SKILL.md` | ✅ OK |
+| 379 | `x-trace/skills/trace/SKILL.md` | ✅ OK |
+| 378 | `x-humanize/skills/humanize/SKILL.md` | ✅ OK |
+| 375 | `x-review/skills/review/SKILL.md` | ✅ OK |
+| 375 | `x-humble/skills/humble/SKILL.md` | ✅ OK |
+| 358 | `x-solver/skills/solver/SKILL.md` | ✅ OK |
+| 305 | `x-eval/skills/eval/SKILL.md` | ✅ OK |
+| 292 | `x-probe/skills/probe/SKILL.md` | ✅ OK |
+| 278 | `xm/skills/handoff/SKILL.md` | ✅ OK |
+| 260 | `x-sync/skills/sync/SKILL.md` | ✅ OK |
+| 240 | `xm/skills/handon/SKILL.md` | ✅ OK |
+| 230 | `xm/skills/kit/SKILL.md` | ✅ OK |
+| 194 | `x-panel/skills/panel/SKILL.md` | ✅ OK |
+| 190 | `xm/skills/inbox/SKILL.md` | ✅ OK |
+| 152 | `xm/skills/toss/SKILL.md` | ✅ OK |
+| 138 | `x-wt/skills/wt/SKILL.md` | ✅ OK |
+| 136 | `x-dashboard/skills/dashboard/SKILL.md` | ✅ OK |
+| 122 | `xm/skills/later/SKILL.md` | ✅ OK |
+| 96 | `x-recall/skills/recall/SKILL.md` | ✅ OK |
+| 59 | `xm/skills/local-fix/SKILL.md` | ✅ OK |
+| 57 | `x-remote/skills/remote/SKILL.md` | ✅ OK |
 
 ---
 
@@ -70,8 +84,11 @@ Largest sub-files (non-SKILL.md) by line count. These don't fall under the 500-l
 | Lines | File | Notes |
 |-------|------|-------|
 | 494 | `x-agent/skills/agent/references/role-presets.md` | Per-primitive role presets |
-| 332 | `x-build/skills/build/references/workflow-guide.md` | Was 654; Step 3 Plan extracted to phases/plan.md |
+| 429 | `x-build/skills/build/references/workflow-guide.md` | Was 654; Step 3 Plan extracted to phases/plan.md |
 | 326 | `x-build/skills/build/references/phases/plan.md` | Full Plan-phase walkthrough (extracted 2026-04-17) |
+| 276 | `x-build/skills/build/references/cli-skill-protocol.md` | All 16 `next --json` actions + run-status envelopes; worktree decision/finish detail extracted from SKILL.md 2026-08-18 |
+| 104 | `x-build/skills/build/references/commands.md` | Full CLI surface (extracted from SKILL.md 2026-08-11) |
+| 59 | `x-build/skills/build/references/environment-detection.md` | Toolchain/base-branch detection (extracted 2026-08-11) |
 | 488 | `x-solver/skills/solver/commands/solve.md` | 4 strategy branches; already borderline |
 | 429 | `x-agent/skills/agent/TEAM.md` | Team mode dispatcher |
 | 396 | `x-review/skills/review/references/review-workflow.md` | Phase 1-4 full pipeline |
@@ -102,5 +119,9 @@ Re-run this audit whenever:
 
 Command:
 ```bash
-wc -l x-*/skills/*/SKILL.md xm/skills/*/SKILL.md | sort -rn
+# Sources only. Plain `xm/skills/*/SKILL.md` double-counts the bundle copies of
+# every x-* plugin, which inflates the file count and hides which row is source.
+for f in x-*/skills/*/SKILL.md; do echo "$(wc -l < "$f") $f"; done | sort -rn
+for f in xm/skills/*/SKILL.md; do n=$(basename "$(dirname "$f")"); \
+  [ -d "x-$n/skills/$n" ] || echo "$(wc -l < "$f") $f"; done | sort -rn
 ```

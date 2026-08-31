@@ -121,6 +121,7 @@ Some strategies contain internal loops or sub-strategy calls. Apply the phase bo
 
 Determine strategy from the first word of `$ARGUMENTS`:
 - `list` → [Subcommand: list]
+- `direct` → [Strategy: direct]
 - `refine` → [Strategy: refine]
 - `tournament` → [Strategy: tournament]
 - `chain` → [Strategy: chain]
@@ -168,8 +169,9 @@ When input matches no strategy keyword, detect intent from the signal table belo
 | 병렬로 나눠, 동시에 처리 / parallel split, independent subtasks | distribute | high |
 | 모듈 구조 잡고 구현 / scaffold, build with module spec | scaffold | medium |
 | file/dir path (`src/`, `*.ts`) | review (red-team if security) | medium |
+| 그냥, 간단히, 한 줄로 / just, quickly, one-liner — ≤ ~15 words, one target, no other signal | direct | medium |
 
-Priority when multiple match: (1) security → red-team; (2) explicit vs/비교 → debate; (3) code/file target → review unless a security signal is present; (4) why/원인 → hypothesis; (5) still multiple → pick the highest-confidence row, tie → ask. Compound boost: 2+ signals raise confidence (e.g. "보안 리뷰" = security+review → red-team).
+Priority when multiple match: (1) security → red-team; (2) explicit vs/비교 → debate; (3) code/file target → review unless a security signal is present; (4) why/원인 → hypothesis; (5) still multiple → pick the highest-confidence row, tie → ask. Compound boost: 2+ signals raise confidence (e.g. "보안 리뷰" = security+review → red-team). `direct` is a recommendation leaf, never a bypass: it goes through the same AskUserQuestion confirmation as every other strategy (`1) direct (Recommended) 2) refine 3) …`).
 
 See `references/x-op-auto-route.md` for execution flow and worked examples.
 
@@ -284,6 +286,10 @@ Entry: empty `$ARGUMENTS`. See `references/x-op-interactive-pick.md` — render 
 
 > **Strategy block execution rule:** the `## Strategy:` blocks below are routing SUMMARIES. Before executing any strategy, use the Read tool to open `strategies/<name>.md` and follow it verbatim — the exact agent prompts, word limits, phase gates, and persist schema live there, not in the summary. (Repo probe: passive "see X.md" pointers go unread 0/5, so this Read step is mandatory, not optional.)
 
+## Strategy: direct
+
+See `strategies/direct.md` — one agent, one call, no orchestration. The single-agent baseline every other strategy must beat (`/xm:eval bench` includes it as the control arm); persists `.xm/op/direct-*.json` with the canonical keys so `--verify` / dashboard work unchanged.
+
 ## Strategy: refine
 
 See `strategies/refine.md` — round-based Diverge → Converge → Verify refinement. Round 1 DIVERGE fan-out produces N independent proposals (run_in_background parallel); Round 2 CONVERGE leader synthesizes and runs a vote fan-out to adopt the best; Round 3+ VERIFY fan-out checks the adopted proposal — all OK triggers early termination, issues raised loop back until max_rounds.
@@ -364,6 +370,8 @@ When the user does not know which strategy to use, recommend one using the decis
 
 ```
 What kind of task is this?
+│
+├─ Single well-specified task, one acceptable answer → direct (one agent — measure before adding orchestration)
 │
 ├─ Code writing/implementation → What scale?
 │   ├─ Single module → scaffold

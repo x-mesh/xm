@@ -1,14 +1,13 @@
 ---
 name: panel
 description: Cross-vendor entry point + adversarial panel engine. `/xm:panel <verb>` routes multi-model work to the matching consumer in --cross-vendor mode (review→x-review, plan(brainstorm)/debate/council→x-op, solve→x-solver, eval→x-eval, consensus→x-build, fan-out→x-agent); `/xm:panel <target>` runs the panel engine itself (N model CLIs refute each other → consensus verdict); bare `/xm:panel` is an interactive picker; cross/detect/doctor/preflight/types/models are engine utilities (preflight = live model check before a run). Use for "panel review", "다른 모델들로 같이 리뷰", "여러 LLM으로 적대 리뷰", "다중모델로 토론/문제해결/평가", "panel 돌리기 전에 모델/프로바이더 상태 점검", or /xm:panel.
-model: sonnet
 ---
 
 # x-panel — Cross-Model Adversarial Review Panel
 
 ## Overview
 
-`x-panel` is the **cross-vendor entry point**. It has two jobs:
+`x-panel` is the **multi-model entry point**. It has two jobs:
 
 1. **Router** — `/xm:panel <verb>` (review/debate/council/solve/eval/consensus/fan-out) delegates to
    the matching consumer (x-review/x-op/x-solver/x-eval/x-build/x-agent) in `--cross-vendor` mode.
@@ -22,11 +21,20 @@ model: sonnet
 Different models have different blind spots — in dogfooding, codex missed a perf issue claude/agy
 caught, and cursor missed a SQL injection. That diversity is the whole point of both jobs.
 
+For reviews, these jobs are alternatives, not consecutive stages. `/xm:panel review` routes once to
+x-review, which owns target selection, lenses, severity, lifecycle, verdict, and convergence; panel
+only replaces x-review Phase 3 as its execution backend. Never run the native panel afterward as a
+second review. A bare `xm panel <target>` is an ad-hoc consensus tool and does not create an
+x-review lifecycle/verdict artifact.
+
 ## When to Use
 
 - "여러 모델로 같이 리뷰", "다중모델로 토론/문제해결/평가" → route to the matching consumer (§1)
-- "panel review", cross-model second opinion, "적대적으로 교차검증" → engine (§3) or `review` route
-- `/xm:panel` (picker), `/xm:panel <file>` (engine), `/xm:panel review|debate|solve|eval …` (route)
+- "panel review" or a formal PR/code review with lifecycle artifacts → the `review` route
+- An ad-hoc cross-model second opinion on supplied text/file, with no x-review lifecycle → native engine (§3)
+- `/xm:panel` (picker), `/xm:panel <file>` (native engine), `/xm:panel review|debate|solve|eval …` (route)
+- `/xm:panel review ...` delegates to `xm review run ... --cross-vendor`; use
+  `/xm:panel review --engine native ...` only when the ad-hoc panel engine is explicitly required.
 
 ## Do NOT Use When
 
@@ -45,7 +53,7 @@ caught, and cursor missed a SQL injection. That diversity is the whole point of 
 >
 > **Forbidden:** `XP="node ..."; $XP review` — zsh treats the quoted string as one command and fails.
 
-## Programmatic API (for other plugins — cross-vendor review)
+## Programmatic API (for other plugins — multi-model review)
 
 The panel engine is reusable by other skills via the dispatcher (no imports — cache-safe).
 A consumer (e.g. x-review's opt-in cross-vendor mode) probes availability, then drives a
@@ -67,16 +75,40 @@ xm panel <target> \
   --models claude,codex,cursor --json
 ```
 
+`--models` identifies model slots, not necessarily distinct vendors. Slots such as
+`codex:gpt-5.6-sol:xhigh,codex:claude-sonnet-5` are valid when a local Codex provider exposes both.
+They count as two independent model sources while remaining one provider/runtime for provenance.
+Readiness/auth is checked once per provider name; each distinct slot is still executed and labeled.
+
 - The override replaces only the round-1 reviewer intro; a fixed output contract is appended
   so findings always come back JSON-shaped regardless of what the lens prompt asks for.
 - round-2 (refute) is unchanged. Injected (review-mode) runs write to `.xm/review/<run>/`,
   separate from native `.xm/panel/` history.
+- `--refute-findings <file>` inverts the flow: the caller supplies the findings and the panel
+  only judges them. Round 1 is not dispatched, so a consumer that already reviewed across N
+  lenses pays one verify pass for the whole list instead of a refutation round per lens
+  (`--rounds 2` on 7 lenses × 3 slots = 42 calls; one selected verify pass = 3). The file is
+  `{"findings":[{severity,file,line,claim,evidence}]}` or a bare array — a round-1 artifact
+  passes through unchanged. Findings are owned by `supplied`, which appears in the verdict's
+  `models` as their author but is never counted among the reviewers who voted. Implies
+  `--rounds 2`; `--grounded` still applies, so capable vendors verify each claim against the
+  real file.
 - These flags are programmatic plumbing — interactive `/xm:panel` users don't need them.
+- Codex review slots enforce `panel.command_budget` (default `12`) using structured
+  `command_execution` completion events. The watch board shows `commands used/budget`,
+  `contract complete|incomplete`, `attempt`, and remaining wall-clock cap separately from raw
+  output freshness. Injected bounded-review prompts require final JSON synthesis after half the
+  budget (`6` commands by default); reaching the full budget without a valid contract fails as
+  `command_budget`.
+- x-review provider recovery is limited to one strict-subset retry. If the failed artifact does
+  not name an exact frozen target file, recovery stops as `Review incomplete` instead of sending
+  the full target again.
 - **Where providers/config live:** the provider set (which CLIs exist, how they're spawned) is
   code-defined in adapters `BUILTIN` — the ONE definition shared by panel review AND every
   cross-vendor consumer (x-review/op/agent/eval/solver/build) via `xm panel cross`. `panel.*`
-  config tunes panel-review behavior (models/judge/stream) only; the sole key the cross path
-  also reads is `timeout_s`. There is no separate per-consumer provider config to maintain.
+  config tunes native panel-review behavior (models/judge/stream). The cross path shares
+  `timeout_s`; x-review may additionally own `review.models`, a machine-local list of exact model
+  slots for its Phase 3 backend. This does not enable panel mode by itself.
 
 ## Core Process — route first
 
@@ -103,15 +135,18 @@ does NOT produce a formal PRD. **Loose handoff:** if the user then wants a real 
 to `x-build plan` (Research→PRD lifecycle) or `/xm:panel consensus` to critique an existing PRD — do
 NOT auto-run x-build. For structure/breakdown instead of ideation, use `xm:op scaffold`/`decompose` (single-vendor — neither is cross-vendor-wired).
 
-Each consumer probes `xm panel detect --auth` / `doctor` itself and falls back to single-vendor
-loudly when <2 vendors are ready — don't duplicate that here. The consumer's vendor fan-out — **and
+Each consumer probes its configured slots with `xm panel preflight --models …`, or uses
+`xm panel detect --auth` / `doctor` when it has no slot list, and falls back to single-model
+loudly when fewer than two model slots are ready — don't duplicate that here. The consumer's model fan-out — **and
 its single-vendor fallback** — MUST run through `xm panel cross`, which writes `.xm/cross/<run>/status.json`:
 that file is the only record `xm panel status --all` / `--watch` / dashboard can see. A consumer that
 fans out cross-vendor work with the Agent tool instead leaves the run completely unobservable to panel status.
 
 ### 2. Engine utility → run the CLI directly (no delegation)
-`cross | detect | doctor | preflight | types | models | setup` → `xm panel <cmd> [args]` straight through
+`cross | detect | doctor | preflight | types | models | setup | watch | status` → `xm panel <cmd> [args]` straight through
 (see Programmatic API above for cross/detect/doctor/models).
+`xm panel watch [run]` is the read-only alias for `xm panel status [run] --watch`; it never runs
+the native review engine.
 
 **Readiness has two levels — `doctor` ≠ `preflight`:**
 - `xm panel doctor` — STATIC: each provider installed AND authenticated? No model call (cheap, instant). Catches logged-out CLIs.
@@ -128,6 +163,9 @@ adversarial refutation round is explicitly worth the extra cost:
    `cursor:kimi-k2.5`, `kiro:deepseek-3.2` work; `xm panel models <vendor>` lists the live catalog,
    `--check <model>` validates an ID before use (doctor checks auth only, not model IDs).
 2. Run `xm panel [target] --models <list>` (or `--preset <name>`).
+   For a host-authored review contract, add `--context-file <context.json>`. The panel validates
+   and hashes it separately from the untrusted target; every provider must echo that exact hash or
+   the run fails coverage. `status.json` and `verdict.json` retain the provenance.
 3. Relay: **consensus (N/M) first**, then contested, then per-model diversity. Don't re-dump raw
    findings — consensus already merged duplicates. Name any model that failed (2/4 ≠ 4/4).
 

@@ -83,6 +83,13 @@ describe('toSlug', () => {
     expect(core.toSlug('Hello World!!!')).toBe('hello-world-');
     expect(core.toSlug('a--b')).toBe('a-b');
   });
+
+  test('unicode letters survive — korean names do not collapse or collide (l24)', () => {
+    expect(core.toSlug('한글 프로젝트')).toBe('한글-프로젝트');
+    expect(core.toSlug('결제 시스템')).not.toBe(core.toSlug('알림 시스템'));
+    // Only-punctuation input still collapses to '-' (cmdInit rejects it).
+    expect(core.toSlug('!!!')).toBe('-');
+  });
 });
 
 describe('parseCSVLine', () => {
@@ -1042,10 +1049,14 @@ describe('checkBudget — spend-cache (R3b)', () => {
     savedMetrics = existsSync(CE_METRICS) ? readFileSync(CE_METRICS, 'utf8') : null;
     savedCache   = existsSync(CE_CACHE)   ? readFileSync(CE_CACHE, 'utf8')   : null;
     try { rmSync(CE_CACHE); } catch { /* ok */ }
+    try { rmSync(CE_METRICS + '.1'); } catch { /* ok */ }
     mkdirSync(join(CE_METRICS, '..'), { recursive: true });
   });
 
-  afterEach(() => ceTeardown(savedMetrics, savedCache));
+  afterEach(() => {
+    try { rmSync(CE_METRICS + '.1'); } catch { /* ok */ }
+    ceTeardown(savedMetrics, savedCache);
+  });
 
   // The spend-cache path only runs with the rolling window disabled
   // (window_hours: 0) — an unset window now defaults to 24h (docs contract).
@@ -1069,17 +1080,19 @@ describe('checkBudget — spend-cache (R3b)', () => {
     expect(r2.spent).toBeCloseTo(3.0, 5);
   });
 
-  test('cache invalidated when file size < last_line_offset (rotation)', () => {
+  test('rotation (file size < last_line_offset) folds the rotated tail instead of dropping spend', () => {
     // Write many entries so last_line_offset is large
     const manyLines = Array.from({ length: 20 }, (_, i) => JSON.stringify({ cost_usd: 0.1, seq: i })).join('\n') + '\n';
     writeFileSync(CE_METRICS, manyLines, 'utf8');
     ceSetup(0);
-    costEngine.checkBudget(0);
+    costEngine.checkBudget(0); // primes the cache: spent 2.0, offset = full file
 
-    // Simulate rotation: replace with a single small entry (fileSize < last_line_offset)
+    // Real rotation: the old log — plus one row appended past the cached
+    // offset — moves to '.1'; the fresh live file holds a single new entry.
+    writeFileSync(CE_METRICS + '.1', manyLines + JSON.stringify({ cost_usd: 0.5 }) + '\n', 'utf8');
     writeFileSync(CE_METRICS, JSON.stringify({ cost_usd: 1.0 }) + '\n', 'utf8');
     const r = costEngine.checkBudget(0);
-    expect(r.spent).toBeCloseTo(1.0, 5);
+    expect(r.spent).toBeCloseTo(2.0 + 0.5 + 1.0, 5); // cached + rotated tail + live
   });
 });
 
@@ -1632,55 +1645,6 @@ describe('interactive helpers', () => {
     const result = await resultPromise;
     expect(result).toEqual({ label: 'Only' });
     rl.close();
-  });
-});
-
-// ── gitAutoCommit / gitRollbackTask (isolated git repo) ──────────
-
-describe('git integration', () => {
-  let gitDir;
-  let origDir;
-
-  beforeEach(() => {
-    gitDir = mkdtempSync(join(tmpdir(), 'xb-git-'));
-    // Init a real git repo
-    const { execSync: ex } = require('node:child_process');
-    ex('git init', { cwd: gitDir, stdio: 'pipe' });
-    ex('git config user.email "test@test.com"', { cwd: gitDir, stdio: 'pipe' });
-    ex('git config user.name "Test"', { cwd: gitDir, stdio: 'pipe' });
-    // Create initial commit
-    writeFileSync(join(gitDir, 'README.md'), '# test\n');
-    ex('git add -A && git commit -m "init"', { cwd: gitDir, stdio: 'pipe', shell: true });
-
-    // Set up .xm/build structure inside gitDir
-    const buildDir = join(gitDir, '.xm', 'build');
-    mkdirSync(join(buildDir, 'projects', 'git-proj', 'phases', '02-plan'), { recursive: true });
-    core.writeJSON(join(buildDir, 'projects', 'git-proj', 'manifest.json'), {
-      display_name: 'git-proj',
-      current_phase: '03-execute',
-      updated_at: new Date().toISOString(),
-    });
-  });
-
-  afterEach(() => {
-    rmSync(gitDir, { recursive: true, force: true });
-  });
-
-  test('gitAutoCommit returns null when no changes', () => {
-    // No staged changes — should return null
-    const result = core.gitAutoCommit('git-proj', { id: 't1', name: 'test', status: 'completed' }, 'execute');
-    // Returns null because isGitRepo checks cwd relative to ROOT (not gitDir)
-    // This is expected — the function is designed for the actual project
-    expect(result === null || typeof result === 'string').toBe(true);
-  });
-
-  test('gitRollbackTask returns false without commit_sha', () => {
-    expect(core.gitRollbackTask({ id: 't1' })).toBe(false);
-  });
-
-  test('gitRollbackTask returns false with invalid sha', () => {
-    const result = core.gitRollbackTask({ id: 't1', commit_sha: 'deadbeef' });
-    expect(result === true || result === false).toBe(true);
   });
 });
 

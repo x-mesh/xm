@@ -22,8 +22,12 @@ import { homedir, tmpdir } from 'node:os';
 // this close handler came from OUTSIDE (OS/OOM or the CLI self-aborting), not from us.
 const exitLabel = (code, signal) => (signal ? `exit ${code} (${signal})` : `exit ${code}`);
 
-// Each builds [bin, args]. `model` (optional) maps to that CLI's --model flag;
-// when null the CLI uses its own default model.
+// Do not spend a provider spawn when the shared slot deadline leaves too little time for a
+// useful response. Shared by session fallback and the CLI's signal-retry path.
+export const RETRY_FLOOR_MS = Number(process.env.X_PANEL_RETRY_FLOOR_MS) || 15_000;
+
+// Each builds [bin, args, optional transport]. `model` maps to that CLI's
+// --model flag; stdin-capable providers keep the prompt out of argv.
 export function normalizeKiroModel(model) {
   const value = String(model || '').trim();
   if (!value) return null;
@@ -97,18 +101,18 @@ function codexModelArgs(spec) {
  * (E2E에서 발견: 생략 시 prompt가 SESSION_ID 위치 인자로 오파싱되어 실패).
  *
  * @param {{ execFlags?: string[], sessionId?: string|null, model?: string|null, prompt?: string }} opts
- * @returns {[string, string[]]} [bin, args]
+ * @returns {[string, string[], ({stdin:string}|null)]} [bin, args, transport]
  */
-export function buildCodexResumeArgs({ execFlags = [], sessionId = null, model = null, prompt = '' } = {}) {
+export function buildCodexResumeArgs({ execFlags = [], sessionId = null, model = null, prompt = '', promptViaStdin = false } = {}) {
   const args = [
     'exec',
     ...(Array.isArray(execFlags) ? execFlags : []),
     ...codexModelArgs(model),
     'resume',
     ...(sessionId ? [String(sessionId)] : ['--last']),
-    ...(prompt ? [String(prompt)] : []),
+    ...(prompt ? [promptViaStdin ? '-' : String(prompt)] : []),
   ];
-  return ['codex', args];
+  return ['codex', args, prompt && promptViaStdin ? { stdin: String(prompt) } : null];
 }
 
 // THE single source of provider command definitions — shared by panel review
@@ -120,13 +124,13 @@ const BUILTIN = {
   // --output-format json wraps the answer in a result envelope that also carries usage
   // + total_cost_usd (unwrapEnvelope lifts both). Without it claude reports zero tokens,
   // which is why every cost figure in the kit read "estimated".
-  claude: (prompt, model) => ['claude', ['-p', '--output-format', 'json', ...(model ? ['--model', model] : []), prompt]],
+  claude: (prompt, model) => ['claude', ['-p', '--output-format', 'json', ...(model ? ['--model', model] : [])], { stdin: prompt }],
   // --sandbox read-only matches the streaming codex path: review/cross prompts never edit the repo.
   // A "model[:effort]" spec maps to --model <id> + -c model_reasoning_effort=<effort> (codexModelArgs).
   // --json emits the JSONL event stream (thread.started / item.completed / turn.completed)
   // that carries the session id AND real token counts. It also REMOVES the stderr session
   // banner (measured), so parseJsonlOutput's thread.started is now the only capture path.
-  codex: (prompt, model) => ['codex', ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', ...codexModelArgs(model), prompt]],
+  codex: (prompt, model) => ['codex', ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', ...codexModelArgs(model), '-'], { stdin: prompt }],
   // agy's -p/--print CONSUMES the next token as the prompt value, so --model must
   // precede -p (unlike claude/codex whose -p is a boolean with a positional prompt).
   // Wrong order (`-p --model X <prompt>`) makes -p eat "--model", dropping the real
@@ -396,6 +400,47 @@ export function resolveCommand(name, prompt, model, providerArgs = null) {
   return fn ? fn(prompt, model || null, providerArgs || {}) : null;
 }
 
+// Stdin transport avoids the per-string argv ceiling (about 128 KiB on Linux).
+// Keep this explicit because other providers still need bounded argv or file handoff.
+export function supportsPromptStdin(name) {
+  // Command overrides have an intentionally generic argv contract
+  // (`node <script> <name> <prompt>`), so do not claim stdin safety for them.
+  return !overridePath(name) && (name === 'claude' || name === 'codex');
+}
+
+function spawnResolved(resolved, options = {}) {
+  const [cmd, args, transport] = resolved;
+  const hasInput = transport && typeof transport.stdin === 'string';
+  const child = spawn(cmd, args, {
+    ...options,
+    ...(process.platform !== 'win32' && options.detached == null ? { detached: true } : {}),
+    stdio: [hasInput ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+  });
+  ACTIVE_PROVIDER_CHILDREN.add(child);
+  child.once('close', () => ACTIVE_PROVIDER_CHILDREN.delete(child));
+  if (hasInput) {
+    child.stdin.on('error', () => {});
+    child.stdin.end(transport.stdin);
+  }
+  return child;
+}
+
+const ACTIVE_PROVIDER_CHILDREN = new Set();
+
+export function terminateProviderChildren(signal = 'SIGTERM') {
+  for (const child of ACTIVE_PROVIDER_CHILDREN) killProbeTree(child, signal);
+}
+
+// Preflight probes are spawned as their own POSIX process group. Provider CLIs may
+// launch helpers which outlive the CLI process or keep its stdout/stderr pipes open;
+// killing only the direct child can therefore leave an orphan or keep preflight hung.
+function killProbeTree(child, signal) {
+  if (process.platform !== 'win32' && child?.pid) {
+    try { process.kill(-child.pid, signal); return; } catch { /* group already gone */ }
+  }
+  try { child?.kill(signal); } catch { /* already gone */ }
+}
+
 // Ambient-context isolation for PROMPT runs (not auth/list probes). In a repo
 // cwd the claude CLI auto-assembles project CLAUDE.md + hook-injected context
 // around the -p prompt; with long prompts the model then echoes that
@@ -407,8 +452,8 @@ export function resolveCommand(name, prompt, model, providerArgs = null) {
 // read-only reads the repo). Flag alternatives were tested and rejected:
 // --bare drops OAuth auth entirely; --setting-sources user still leaves
 // user-scope hook injection active.
-export function promptSpawnOpts(name) {
-  return name === 'claude' ? { cwd: tmpdir() } : {};
+export function promptSpawnOpts(name, { isolate = false } = {}) {
+  return isolate || name === 'claude' ? { cwd: tmpdir() } : {};
 }
 
 // Grounded-refutation capability (roadmap 빅뱃3): can this vendor OPEN the cited
@@ -449,7 +494,7 @@ export function stripAnsi(s) { return String(s == null ? '' : s).replace(ANSI_RE
 // carry one of the contract arrays (findings/verdicts) — an unrelated JSON object in
 // the output is a parse failure, not a success. Without expectKeys the legacy
 // first-object behavior is kept for generic callers.
-function extractAnswerJSON(raw, expectKeys) {
+function extractAnswerJSON(raw, expectKeys, strictContract = false) {
   const text = stripAnsi(raw); // kiro et al. colorize their JSON — strip before any parse
   if (!expectKeys) return extractJSON(text);
   const json = extractContractJSON(text, expectKeys);
@@ -459,11 +504,53 @@ function extractAnswerJSON(raw, expectKeys) {
   // "### [severity] file:line — title" + Why/Fix lens shape), so salvage that rather than
   // discard a real review as "no findings JSON". verdicts/responses are always JSON — never
   // reconstructed from prose. Strict: only fires after JSON extraction already failed.
-  if (expectKeys.includes('findings')) return parseMarkdownFindings(text);
+  if (!strictContract && expectKeys.includes('findings')) return parseMarkdownFindings(text);
   return null;
 }
 function jsonMissingError(expectKeys) {
   return expectKeys ? `no ${expectKeys.join('/')} JSON in output` : 'no JSON object in output';
+}
+
+// Observe semantic progress in Codex JSONL without treating arbitrary stdout bytes
+// as useful review progress. The observer is deliberately Codex-only: other
+// providers keep their existing timeout/progress behavior until they expose an
+// equivalent structured tool event contract.
+export function createProviderProgressObserver(name, expectKeys) {
+  let buffer = '';
+  let commandsUsed = 0;
+  let contractState = 'incomplete';
+  let answerText = '';
+  const inspect = (obj) => {
+    if (name !== 'codex' || !obj || typeof obj !== 'object') return null;
+    if (obj.type === 'item.completed' && obj.item?.type === 'command_execution') commandsUsed += 1;
+    if (obj.type === 'item.completed' && obj.item?.type === 'agent_message' && typeof obj.item.text === 'string') {
+      answerText += `${answerText ? '\n' : ''}${obj.item.text}`;
+      if (expectKeys && extractContractJSON(stripAnsi(answerText), expectKeys)) contractState = 'complete';
+    }
+    return { commands_used: commandsUsed, contract_state: contractState };
+  };
+  return {
+    push(chunk) {
+      if (name !== 'codex') return null;
+      buffer += String(chunk || '');
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
+      let progress = null;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try { progress = inspect(JSON.parse(line)) || progress; } catch { /* incomplete/non-JSON output is not progress */ }
+      }
+      return progress;
+    },
+    finish() {
+      if (buffer.trim()) {
+        try { inspect(JSON.parse(buffer)); } catch { /* truncated JSON stays incomplete */ }
+      }
+      buffer = '';
+      return { commands_used: commandsUsed, contract_state: contractState };
+    },
+    snapshot() { return { commands_used: commandsUsed, contract_state: contractState }; },
+  };
 }
 
 // Recover findings from a structured markdown review when a vendor ignored the JSON contract.
@@ -529,8 +616,12 @@ export function withStderrReason(baseError, stdout, stderr) {
 export function invokeProvider(name, prompt, { timeout = 180_000, model = null, expectKeys = null } = {}) {
   const resolved = resolveCommand(name, prompt, model);
   if (!resolved) return { ok: false, error: `unknown provider: ${name}`, raw: '', json: null };
-  const [cmd, args] = resolved;
-  const res = spawnSync(cmd, args, { encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024, env: process.env, ...promptSpawnOpts(name) });
+  const [cmd, args, transport] = resolved;
+  const res = spawnSync(cmd, args, {
+    encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024, env: process.env,
+    ...(transport && typeof transport.stdin === 'string' ? { input: transport.stdin } : {}),
+    ...promptSpawnOpts(name),
+  });
   if (res.error) {
     return { ok: false, error: String(res.error.message || res.error), raw: '', json: null };
   }
@@ -557,13 +648,17 @@ export function invokeProvider(name, prompt, { timeout = 180_000, model = null, 
 // from a real exit-code/parse failure. Returns { touch, clear }: call touch() on every byte of
 // output, clear() when the process settles.
 function makeTimeoutGuard(timeout, maxTimeout, onKill) {
-  const cap = maxTimeout && maxTimeout > timeout ? maxTimeout : Math.max(timeout * 2, timeout + 120_000);
+  // An explicit maxTimeout is authoritative even when it is SMALLER than the idle window —
+  // a caller passing the remainder of a slot budget (runRound retry) must be able to shrink
+  // the cap, or a retried slot inherits a fresh full-size cap and the slot deadline is fiction.
+  const cap = (Number.isFinite(maxTimeout) && maxTimeout > 0) ? maxTimeout : Math.max(timeout * 2, timeout + 120_000);
+  const idleMs = Math.min(timeout, cap);
   let idleTimer = null, hardTimer = null, done = false;
   const clear = () => { done = true; if (idleTimer) clearTimeout(idleTimer); if (hardTimer) clearTimeout(hardTimer); idleTimer = hardTimer = null; };
   const touch = () => {
     if (done) return;
     if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => { clear(); onKill(`stalled: no output for ${Math.round(timeout / 1000)}s`, 'idle'); }, timeout);
+    idleTimer = setTimeout(() => { clear(); onKill(`stalled: no output for ${Math.round(idleMs / 1000)}s`, 'idle'); }, idleMs);
   };
   hardTimer = setTimeout(() => { clear(); onKill(`timeout ${Math.round(cap / 1000)}s wall-clock cap (was still producing output)`, 'cap'); }, cap);
   touch(); // arm immediately — silence from spawn to first byte also counts toward the idle window
@@ -607,41 +702,81 @@ export function resolveSessionCommand(name, prompt, model, session, providerArgs
   if (name === 'claude' && session.id) {
     // Keep --output-format json on the session path too, or round 2 loses usage and
     // (worse) returns an un-unwrapped envelope to the verdict parser.
-    return ['claude', ['-p', '--output-format', 'json', ...(model ? ['--model', model] : []), session.mode === 'resume' ? '--resume' : '--session-id', session.id, prompt]];
+    return ['claude', ['-p', '--output-format', 'json', ...(model ? ['--model', model] : []), session.mode === 'resume' ? '--resume' : '--session-id', session.id], { stdin: prompt }];
   }
   if (name === 'codex' && session.mode === 'resume') {
     if (!session.id) return null;
     // --json on the resume leg too: round 2 must stay parseable (JSONL) and keep reporting usage.
-    return buildCodexResumeArgs({ execFlags: ['--json', '--sandbox', 'read-only', '--skip-git-repo-check'], sessionId: session.id, model, prompt });
+    return buildCodexResumeArgs({ execFlags: ['--json', '--sandbox', 'read-only', '--skip-git-repo-check'], sessionId: session.id, model, prompt, promptViaStdin: true });
   }
   return resolveCommand(name, prompt, model, providerArgs);
 }
 
-export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, stream = false, partial = true, session = null, fallbackPrompt = null, expectKeys = null, providerArgs = null } = {}) {
+export async function invokeProviderAsync(name, prompt, { timeout = 180_000, maxTimeout = null, deadlineMs = null, maxSpawns = 2, model = null, onEvent = null, stream = false, partial = true, session = null, fallbackPrompt = null, expectKeys = null, providerArgs = null, commandBudget = null, isolate = false, strictContract = false } = {}) {
+  const budgetMs = (Number.isFinite(maxTimeout) && maxTimeout > 0) ? maxTimeout : Math.max(timeout * 2, timeout + 120_000);
+  const effectiveDeadlineMs = deadlineMs ?? (Date.now() + budgetMs);
   if (stream && supportsStream(name)) {
     // Session reuse is a raw-path feature: the structured-stream argv is kept
     // exactly as dogfooded. Callers already disable sessions under --stream.
-    return invokeProviderStream(name, prompt, { timeout, maxTimeout, model, onEvent, partial, expectKeys });
+    const remaining = effectiveDeadlineMs - Date.now();
+    if (remaining <= 0) {
+      return { ok: false, error: 'slot wall-clock budget exhausted', raw: '', json: null, timedOut: true, timeoutReason: 'cap', spawns: 0 };
+    }
+    return invokeProviderStream(name, prompt, {
+      timeout: Math.min(timeout, remaining),
+      maxTimeout: Math.min(maxTimeout ?? remaining, remaining),
+      model, onEvent, partial, expectKeys, commandBudget, isolate, strictContract,
+    });
   }
   const use = session && supportsResume(name) ? session : null;
-  let res = await invokeProviderRaw(name, prompt, { timeout, maxTimeout, model, onEvent, session: use, expectKeys, providerArgs });
+  const invokeWithinBudget = (body, activeSession) => {
+    const remaining = effectiveDeadlineMs - Date.now();
+    if (remaining <= 0) {
+      return Promise.resolve({ ok: false, error: 'slot wall-clock budget exhausted', raw: '', json: null, timedOut: true, timeoutReason: 'cap', spawns: 0 });
+    }
+    return invokeProviderRaw(name, body, {
+      timeout: Math.min(timeout, remaining),
+      maxTimeout: Math.min(maxTimeout ?? remaining, remaining),
+      model, onEvent, session: activeSession, expectKeys, providerArgs, commandBudget, isolate, strictContract,
+    });
+  };
+  let res = await invokeWithinBudget(prompt, use);
   if (use) {
+    const remainingMs = effectiveDeadlineMs - Date.now();
     if (res.ok) {
       if (use.mode === 'resume') res.resume = 'ok';
-    } else if (fallbackPrompt != null) {
+    } else if (fallbackPrompt != null && !res.timedOut && !res.signal && res.termination !== 'command_budget' && (res.spawns || 0) < maxSpawns && remainingMs >= RETRY_FLOOR_MS) {
       // LOUD stateless fallback (contract R4): same semantics, just costlier —
       // surfaced via a lifecycle event and the `resume: 'fallback'` marker.
+      // Only for SESSION-shaped failures: a guard timeout or a signal death says nothing
+      // about the session, and falling back on those stacked an extra spawn on top of the
+      // slot-level signal retry — up to 4 processes for one "retry once" slot
+      // (toss-20260818-0d0f3e9a). Those failures return to the caller untouched.
       if (onEvent) {
         try { onEvent({ at: new Date().toISOString(), type: 'lifecycle', provider: name, model, note: `session ${use.mode} failed (${res.error}) — retrying stateless` }); } catch { /* observer only */ }
       }
-      res = await invokeProviderRaw(name, fallbackPrompt, { timeout, maxTimeout, model, onEvent, session: null, expectKeys, providerArgs });
+      const firstSpawns = res.spawns || 0;
+      res = await invokeWithinBudget(fallbackPrompt, null);
+      res.spawns = firstSpawns + (res.spawns || 0);
       res.resume = 'fallback';
+    } else if (fallbackPrompt != null) {
+      const reason = res.termination === 'command_budget'
+        ? 'command budget exhausted, NOT retrying stateless'
+        : res.timedOut || res.signal
+        ? 'killed/timed out, NOT retrying stateless (slot retry policy owns this)'
+        : (res.spawns || 0) >= maxSpawns
+          ? 'slot spawn budget exhausted, NOT retrying stateless'
+          : `slot wall-clock budget too low (${Math.max(0, Math.round(remainingMs / 1000))}s left), NOT retrying stateless`;
+      if (onEvent) {
+        try { onEvent({ at: new Date().toISOString(), type: 'lifecycle', provider: name, model, note: `session ${use.mode} failed (${res.error}) — ${reason}` }); } catch { /* observer only */ }
+      }
+      res.resume = 'failed';
     }
   }
   return res;
 }
 
-function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, session = null, expectKeys = null, providerArgs = null } = {}) {
+function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, session = null, expectKeys = null, providerArgs = null, commandBudget = null, isolate = false, strictContract = false } = {}) {
   return new Promise((resolve) => {
     const emit = (event) => {
       if (!onEvent) return;
@@ -658,32 +793,61 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       return resolve({
         ok: false,
         error: session ? `resume requested for ${name} without a session id` : `unknown provider: ${name}`,
-        raw: '', json: null,
+        raw: '', json: null, spawns: 0,
       });
     }
-    const [cmd, args] = resolved;
     let child;
     try {
       // stdin must be closed (ignore) or non-interactive CLIs like codex/agy hang
       // waiting for input — spawnSync closes it automatically, spawn does not.
-      child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, ...promptSpawnOpts(name) });
+      child = spawnResolved(resolved, { env: process.env, ...promptSpawnOpts(name, { isolate }) });
     } catch (e) {
-      return resolve({ ok: false, error: String(e.message || e), raw: '', json: null });
+      return resolve({ ok: false, error: String(e.message || e), raw: '', json: null, spawns: 1 });
     }
-    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: cmd });
+    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: resolved[0] });
     let stdout = '';
     let stderr = '';
+    const progressObserver = createProviderProgressObserver(name, expectKeys);
+    const effectiveCommandBudget = name === 'codex' && Number.isFinite(Number(commandBudget)) && Number(commandBudget) > 0
+      ? Number(commandBudget) : null;
+    let budgetKilled = false;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
       emit({ type: 'timeout', provider: name, model, error, reason });
-      child.kill('SIGKILL');
-      finish({ ok: false, error, raw: stdout, json: null });
+      killProbeTree(child, 'SIGKILL');
+      // A wall-clock cap can fire after the provider emitted its final contract but
+      // before its CLI process exited. Preserve that completed answer as partial.
+      // Idle kills remain failures: silence is not evidence of completion.
+      if (reason === 'cap') {
+        const env = parseStructuredOutput(name, stdout, model);
+        const answer = env.text;
+        const json = extractAnswerJSON(answer, expectKeys, strictContract);
+        if (json) {
+          const usage = env.usage || parseStderrUsage(name, stderr);
+          return finish({ ok: true, partial: true, error, raw: answer, json, usage, timedOut: true, timeoutReason: reason, spawns: 1 });
+        }
+      }
+      // timedOut marks a guard kill (idle/cap), distinct from a real exit — callers gate
+      // retry/fallback decisions on the FLAG, never on a substring of the error text.
+      finish({ ok: false, error, raw: stdout, json: null, timedOut: true, timeoutReason: reason, spawns: 1 });
     });
     child.stdout.on('data', (d) => {
       stdout += d;
       guard.touch(); // output = alive → extend the idle window
       emit({ type: 'stdout', provider: name, model, bytes: Buffer.byteLength(d), text: d });
+      const progress = progressObserver.push(d);
+      if (progress) {
+        emit({ type: 'semantic_progress', provider: name, model, command_budget: effectiveCommandBudget, ...progress });
+        if (!budgetKilled && effectiveCommandBudget != null && progress.commands_used >= effectiveCommandBudget && progress.contract_state !== 'complete') {
+          budgetKilled = true;
+          const error = `command budget exhausted (${progress.commands_used}/${effectiveCommandBudget}) before final contract`;
+          emit({ type: 'command_budget', provider: name, model, error, ...progress, command_budget: effectiveCommandBudget });
+          guard.clear();
+          killProbeTree(child, 'SIGKILL');
+          finish({ ok: false, error, raw: stdout, json: null, termination: 'command_budget', spawns: 1, progress });
+        }
+      }
     });
     child.stderr.on('data', (d) => {
       stderr += d;
@@ -694,11 +858,13 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       guard.clear();
       const error = String(e.message || e);
       emit({ type: 'error', provider: name, model, error });
-      finish({ ok: false, error, raw: '', json: null });
+      finish({ ok: false, error, raw: '', json: null, spawns: 1 });
     });
     child.on('close', (code, signal) => {
       guard.clear();
       if (settled) return;
+      const progress = progressObserver.finish();
+      emit({ type: 'semantic_progress', provider: name, model, command_budget: effectiveCommandBudget, ...progress });
       emit({ type: 'exit', provider: name, model, code });
       // Structured-output vendors (claude --output-format json) wrap the answer in an
       // envelope carrying usage + total_cost_usd. Unwrap FIRST: findings extraction must
@@ -710,19 +876,19 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
       // Structured usage wins; kiro still reports a cost line on stderr in raw mode.
       const usage = env.usage || parseStderrUsage(name, stderr);
       if (usage) emit({ type: 'usage_final', provider: name, model, usage });
-      if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: answer, json: null, usage });
+      if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: answer, json: null, usage, signal: signal || null, spawns: 1 });
       if (env.error) {
         emit({ type: 'error', provider: name, model, error: env.error });
-        return finish({ ok: false, error: env.error, raw: answer, json: null, usage });
+        return finish({ ok: false, error: env.error, raw: answer, json: null, usage, spawns: 1 });
       }
-      const json = extractAnswerJSON(answer, expectKeys);
+      const json = extractAnswerJSON(answer, expectKeys, strictContract);
       if (!json) {
         emit({ type: 'json_missing', provider: name, model });
         // Exit 0 but no parseable answer: the CLI almost always explained WHY on stderr
         // (e.g. kiro's Bedrock "ValidationException: input_schema does not support oneOf")
         // or via an empty stdout. Surfacing that turns a vague "no findings JSON" into the
         // real cause, instead of forcing a dig through raw files (L6).
-        return finish({ ok: false, error: withStderrReason(jsonMissingError(expectKeys), answer, stderr), raw: answer, json: null, usage });
+        return finish({ ok: false, error: withStderrReason(jsonMissingError(expectKeys), answer, stderr), raw: answer, json: null, usage, spawns: 1 });
       }
       emit({ type: 'json_parsed', provider: name, model });
       // Session establishment (t5): claude's id is caller-supplied (authoritative);
@@ -747,7 +913,7 @@ function invokeProviderRaw(name, prompt, { timeout = 180_000, maxTimeout = null,
           }
         }
       }
-      finish({ ok: true, error: null, raw: answer, json, usage, ...(session_id ? { session_id } : {}), ...(captureFailed ? { session_capture_failed: true } : {}) });
+      finish({ ok: true, error: null, raw: answer, json, usage, spawns: 1, ...(session_id ? { session_id } : {}), ...(captureFailed ? { session_capture_failed: true } : {}) });
     });
   });
 }
@@ -766,12 +932,12 @@ const STREAM_BUILTIN = {
   // cursor → incremental assistant events). With partial off, the stream is still structured
   // (usage + final text) but the body arrives in one block — faster on very large inputs.
   // codex has no partial mode, so it stays final-block regardless.
-  claude: (prompt, model, partial) => ['claude', ['-p', '--output-format', 'stream-json', ...(partial ? ['--include-partial-messages'] : []), '--verbose', ...(model ? ['--model', model] : []), prompt]],
+  claude: (prompt, model, partial) => ['claude', ['-p', '--output-format', 'stream-json', ...(partial ? ['--include-partial-messages'] : []), '--verbose', ...(model ? ['--model', model] : [])], { stdin: prompt }],
   cursor: (prompt, model, partial) => ['cursor-agent', ['-p', '-f', '--output-format', 'stream-json', ...(partial ? ['--stream-partial-output'] : []), ...(model ? ['--model', model] : []), prompt]], // -f bypasses workspace-trust
   codex: (prompt, model) => {
     // --sandbox read-only prevents the agent from editing the repo; --json streams JSONL events.
     // "model[:effort]" → --model <id> + -c model_reasoning_effort=<effort> (codexModelArgs).
-    return ['codex', ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', ...codexModelArgs(model), prompt]];
+    return ['codex', ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', ...codexModelArgs(model), '-'], { stdin: prompt }];
   },
 };
 
@@ -802,8 +968,8 @@ function resolveStreamCommand(name, prompt, model, partial) {
 // cache-crash lesson). claude reports its own total_cost_usd (authoritative, used
 // directly); this table only estimates cursor/codex. PLACEHOLDER values — calibrate.
 const PRICE_PER_MTOK = {
-  'claude-opus-4-8': { input: 15, output: 75, cached: 1.5 },
-  'claude-opus-4.8': { input: 15, output: 75, cached: 1.5 },
+  'claude-opus-4-8': { input: 5, output: 25, cached: 0.5 },
+  'claude-opus-4.8': { input: 5, output: 25, cached: 0.5 },
   'claude-sonnet-4-6': { input: 3, output: 15, cached: 0.3 },
   default: { input: 5, output: 15, cached: 0.5 },
 };
@@ -891,7 +1057,12 @@ export function parseJsonlOutput(name, stdout, model) {
       sessionId = obj.thread_id;
     }
     const r = parseStreamLine(name, obj, model);
-    if (typeof r.finalText === 'string' && r.finalText) text = r.finalText;
+    // Codex can emit more than one completed agent_message in a turn. Some models
+    // return the contract JSON first and a prose completion summary second. Keep
+    // every answer message so contract-aware extraction can select the real result.
+    if (typeof r.finalText === 'string' && r.finalText) {
+      text += (text ? '\n' : '') + r.finalText;
+    }
     if (r.usage) usage = r.usage;
   }
   return { text, usage, sessionId };
@@ -995,43 +1166,76 @@ export function parseStreamLine(name, obj, model) {
   return { events, finalText, usage };
 }
 
-function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, partial = true, expectKeys = null } = {}) {
+function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = null, model = null, onEvent = null, partial = true, expectKeys = null, commandBudget = null, isolate = false, strictContract = false } = {}) {
   return new Promise((resolve) => {
     const emit = (event) => { if (!onEvent) return; try { onEvent({ at: new Date().toISOString(), ...event }); } catch { /* observer only */ } };
     let settled = false;
     const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
     const resolved = resolveStreamCommand(name, prompt, model, partial);
-    if (!resolved) return resolve({ ok: false, error: `no stream profile: ${name}`, raw: '', json: null });
-    const [cmd, args] = resolved;
+    if (!resolved) return resolve({ ok: false, error: `no stream profile: ${name}`, raw: '', json: null, spawns: 0 });
     let child;
-    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, ...promptSpawnOpts(name) }); }
-    catch (e) { return resolve({ ok: false, error: String(e.message || e), raw: '', json: null }); }
-    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: cmd, mode: partial ? 'stream-partial' : 'stream' });
+    try { child = spawnResolved(resolved, { env: process.env, ...promptSpawnOpts(name, { isolate }) }); }
+    catch (e) { return resolve({ ok: false, error: String(e.message || e), raw: '', json: null, spawns: 1 }); }
+    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: resolved[0], mode: partial ? 'stream-partial' : 'stream' });
 
     // Bounds — the async path has no maxBuffer, so cap every accumulator.
     const RAW_CAP = 2_000_000, TEXT_CAP = 1_000_000, LINE_CAP = 4_000_000, ERR_CAP = 200_000;
     let rawCap = '', buf = '', textBuf = '', stderr = '';
     let finalText = null, usage = null;
+    const progressObserver = createProviderProgressObserver(name, expectKeys);
+    const effectiveCommandBudget = name === 'codex' && Number.isFinite(Number(commandBudget)) && Number(commandBudget) > 0
+      ? Number(commandBudget) : null;
+    let budgetKilled = false;
+
+    const appendFinalText = (value) => {
+      if (typeof value !== 'string' || !value || (finalText || '').length >= TEXT_CAP) return;
+      const prefix = finalText ? '\n' : '';
+      const remaining = TEXT_CAP - (finalText || '').length;
+      finalText = (finalText || '') + (prefix + value).slice(0, remaining);
+    };
 
     const handleLine = (line) => {
       if (!line.trim()) return;
       let obj;
       try { obj = JSON.parse(line); } catch { return; } // skip non-JSON notices
+      const progress = progressObserver.push(`${line}\n`);
+      if (progress) {
+        emit({ type: 'semantic_progress', provider: name, model, command_budget: effectiveCommandBudget, ...progress });
+        if (!budgetKilled && effectiveCommandBudget != null && progress.commands_used >= effectiveCommandBudget && progress.contract_state !== 'complete') {
+          budgetKilled = true;
+          const error = `command budget exhausted (${progress.commands_used}/${effectiveCommandBudget}) before final contract`;
+          emit({ type: 'command_budget', provider: name, model, error, ...progress, command_budget: effectiveCommandBudget });
+          guard.clear();
+          killProbeTree(child, 'SIGKILL');
+          finish({ ok: false, error, raw: rawCap, json: null, usage, termination: 'command_budget', spawns: 1, progress });
+          return;
+        }
+      }
       const r = parseStreamLine(name, obj, model);
       for (const ev of r.events) {
         if (ev.kind === 'text' && ev.delta && textBuf.length < TEXT_CAP) textBuf += ev.delta;
         emit({ type: ev.kind, provider: name, model, ...ev });
       }
-      if (r.finalText != null) finalText = r.finalText;
+      appendFinalText(r.finalText);
       if (r.usage) usage = r.usage;
     };
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    const guard = makeTimeoutGuard(timeout, maxTimeout, (error) => {
-      emit({ type: 'timeout', provider: name, model, error });
-      child.kill('SIGKILL');
-      finish({ ok: false, error, raw: rawCap, json: null, usage });
+    const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
+      emit({ type: 'timeout', provider: name, model, error, reason });
+      killProbeTree(child, 'SIGKILL');
+      if (reason === 'cap') {
+        // The final JSONL event may lack a trailing newline when the cap lands.
+        if (buf.trim()) { handleLine(buf); buf = ''; }
+        const text = finalText != null ? finalText : textBuf;
+        const json = extractAnswerJSON(text, expectKeys, strictContract)
+          || extractContractJSON(rawCap, expectKeys || ['findings', 'verdicts']);
+        if (json) {
+          return finish({ ok: true, partial: true, error, raw: rawCap, json, usage, timedOut: true, timeoutReason: reason, spawns: 1 });
+        }
+      }
+      finish({ ok: false, error, raw: rawCap, json: null, usage, timedOut: true, timeoutReason: reason, spawns: 1 });
     });
     child.stdout.on('data', (d) => {
       guard.touch(); // streaming tokens = alive → reset the idle window (working models keep going)
@@ -1042,7 +1246,7 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
       while ((nl = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, nl); buf = buf.slice(nl + 1); handleLine(line); }
     });
     child.stderr.on('data', (d) => { guard.touch(); stderr += d; if (stderr.length > ERR_CAP) stderr = stderr.slice(-ERR_CAP); emit({ type: 'stderr', provider: name, model, bytes: Buffer.byteLength(d), text: d }); });
-    child.on('error', (e) => { guard.clear(); emit({ type: 'error', provider: name, model, error: String(e.message || e) }); finish({ ok: false, error: String(e.message || e), raw: '', json: null }); });
+    child.on('error', (e) => { guard.clear(); emit({ type: 'error', provider: name, model, error: String(e.message || e) }); finish({ ok: false, error: String(e.message || e), raw: '', json: null, spawns: 1 }); });
     child.on('close', (code, signal) => {
       guard.clear();
       if (settled) return;
@@ -1052,19 +1256,19 @@ function invokeProviderStream(name, prompt, { timeout = 180_000, maxTimeout = nu
       // A non-zero exit is a failure REGARDLESS of any JSON in partial output —
       // otherwise a crashed provider whose stream happened to contain a JSON object
       // would be reported as a successful review (matches the raw path's contract).
-      if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: rawCap, json: null, usage });
+      if (code !== 0) return finish({ ok: false, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}`, raw: rawCap, json: null, usage, signal: signal || null, spawns: 1 });
       // Findings come from the final answer text (NOT the raw JSONL envelope).
       const text = finalText != null ? finalText : textBuf;
-      let json = extractAnswerJSON(text, expectKeys);
+      let json = extractAnswerJSON(text, expectKeys, strictContract);
       // rawCap fallback is ALWAYS shape-guarded (even without expectKeys): a JSONL
       // envelope line (e.g. {"type":"system"}) must NOT be mistaken for a successful
       // review, so only an object actually carrying findings/verdicts is accepted.
       if (!json) {
         json = extractContractJSON(rawCap, expectKeys || ['findings', 'verdicts']);
       }
-      if (!json) { emit({ type: 'json_missing', provider: name, model }); return finish({ ok: false, error: withStderrReason(jsonMissingError(expectKeys), rawCap, stderr), raw: rawCap, json: null, usage }); }
+      if (!json) { emit({ type: 'json_missing', provider: name, model }); return finish({ ok: false, error: withStderrReason(jsonMissingError(expectKeys), rawCap, stderr), raw: rawCap, json: null, usage, spawns: 1 }); }
       emit({ type: 'json_parsed', provider: name, model });
-      finish({ ok: true, error: null, raw: rawCap, json, usage });
+      finish({ ok: true, error: null, raw: rawCap, json, usage, spawns: 1 });
     });
   });
 }
@@ -1085,11 +1289,10 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
     };
     const resolved = resolveCommand(name, prompt, model, providerArgs);
     if (!resolved) return resolve({ ok: false, output: '', error: `unknown provider: ${name}` });
-    const [cmd, args] = resolved;
     let child;
-    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, ...promptSpawnOpts(name) }); }
+    try { child = spawnResolved(resolved, { env: process.env, ...promptSpawnOpts(name) }); }
     catch (e) { return resolve({ ok: false, output: '', error: String(e.message || e) }); }
-    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: cmd });
+    emit({ type: 'spawn', provider: name, model, pid: child.pid, command: resolved[0] });
     let stdout = '', stderr = '';
     let settled = false;
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
@@ -1100,7 +1303,7 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
     // to retry a hung provider by checking the FLAG, never by substring-matching the error text.
     const guard = makeTimeoutGuard(timeout, maxTimeout, (error, reason) => {
       emit({ type: 'timeout', provider: name, model, error, reason });
-      child.kill('SIGKILL');
+      killProbeTree(child, 'SIGKILL');
       done({ ok: false, output: stdout, error, timedOut: true });
     });
     child.stdout.on('data', (d) => { guard.touch(); stdout += d; if (stdout.length > 16 * 1024 * 1024) stdout = stdout.slice(-16 * 1024 * 1024); emit({ type: 'stdout', provider: name, model, bytes: Buffer.byteLength(d), text: d }); });
@@ -1138,28 +1341,61 @@ export function invokeProviderText(name, prompt, { timeout = 180_000, maxTimeout
 // (the CLI picks its own default and never tells the caller otherwise). Unlike the
 // review stream path this accepts free text (no findings-JSON requirement), and it
 // falls back to raw-text liveness (model unknown) for providers with no stream profile.
-export function probeProvider(name, { timeout = 45_000, model = null } = {}) {
+export function probeProvider(name, { timeout = 45_000, model = null, prompt = 'Reply with exactly: OK', expectKeys = null, commandBudget = null } = {}) {
   return new Promise((resolve) => {
-    const resolved = resolveStreamCommand(name, 'Reply with exactly: OK', model, false);
+    const resolved = resolveStreamCommand(name, prompt, model, false);
     if (!resolved) {
-      return invokeProviderText(name, 'Reply with exactly: OK', { timeout, model })
-        .then((r) => resolve({ ok: r.ok, model: null, text: (r.output || '').trim(), error: r.error || null, timedOut: !!r.timedOut }))
+      return invokeProviderAsync(name, prompt, { timeout, maxTimeout: timeout, maxSpawns: 1, model, expectKeys, commandBudget, isolate: true, strictContract: true })
+        .then((r) => resolve({ ok: r.ok, model: null, text: (r.raw || '').trim(), json: r.json || null, error: r.error || null, timedOut: !!r.timedOut }))
         .catch((err) => resolve({ ok: false, model: null, text: '', error: String(err?.message || err) }));
     }
-    const [cmd, args] = resolved;
+    if (name === 'codex' && !overridePath(name)) {
+      const args = resolved[1];
+      args.splice(1, 0, '--ephemeral', '--disable', 'hooks', '-C', tmpdir());
+    }
     let child;
-    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, ...promptSpawnOpts(name) }); }
+    try {
+      child = spawnResolved(resolved, {
+        env: process.env,
+        ...promptSpawnOpts(name, { isolate: true }),
+        ...(process.platform !== 'win32' ? { detached: true } : {}),
+      });
+    }
     catch (e) { return resolve({ ok: false, model: null, text: '', error: String(e.message || e) }); }
     let stdout = '', stderr = '', buf = '', text = '', actualModel = null, sawJson = false, settled = false;
+    let terminationTimer = null;
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const stopAfterSuccess = () => {
+      killProbeTree(child, 'SIGTERM');
+      // A provider may trap SIGTERM. Keep this timer referenced so preflight waits
+      // at most the grace period, then force-close the entire provider process group.
+      // Do not cancel this merely because the direct child closes: a detached helper
+      // may still be alive after redirecting the inherited stdio handles.
+      terminationTimer = setTimeout(() => {
+        killProbeTree(child, 'SIGKILL');
+        terminationTimer = null;
+      }, 500);
+    };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    const guard = makeTimeoutGuard(timeout, null, (error) => { child.kill('SIGKILL'); done({ ok: false, model: actualModel, text: text.trim(), error, timedOut: true }); });
+    const progressObserver = createProviderProgressObserver(name, expectKeys);
+    const effectiveCommandBudget = name === 'codex' && Number.isFinite(Number(commandBudget)) && Number(commandBudget) > 0 ? Number(commandBudget) : null;
+    // Preflight is a bounded contract test: its configured timeout is both the
+    // idle limit and the absolute wall-clock cap.
+    const guard = makeTimeoutGuard(timeout, timeout, (error) => { killProbeTree(child, 'SIGKILL'); done({ ok: false, model: actualModel, text: text.trim(), error, timedOut: true }); });
     const handleLine = (line) => {
+      if (settled) return;
       const s = line.trim();
       if (!s) return;
       let o; try { o = JSON.parse(s); } catch { return; }
       sawJson = true;
+      const progress = progressObserver.push(`${line}\n`);
+      if (effectiveCommandBudget != null && progress?.commands_used >= effectiveCommandBudget && progress.contract_state !== 'complete') {
+        guard.clear();
+        killProbeTree(child, 'SIGKILL');
+        done({ ok: false, model: actualModel || model || null, text: text.trim(), json: null, error: `command budget exhausted (${progress.commands_used}/${effectiveCommandBudget}) before final contract`, termination: 'command_budget' });
+        return;
+      }
       if (!actualModel) {
         if (typeof o.model === 'string' && o.model) actualModel = o.model;
         else if (o.message && typeof o.message.model === 'string' && o.message.model) actualModel = o.message.model;
@@ -1167,12 +1403,21 @@ export function probeProvider(name, { timeout = 45_000, model = null } = {}) {
       const r = parseStreamLine(name, o, model);
       for (const ev of r.events) if (ev.kind === 'text' && ev.delta) text += ev.delta;
       if (r.finalText != null) text = r.finalText;
+      // Do not apply the ordinary review path's Markdown recovery here. Preflight
+      // succeeds only when the provider emits the literal JSON contract.
+      const contract = expectKeys ? extractAnswerJSON(text, expectKeys, true) : null;
+      if ((expectKeys && contract) || (!expectKeys && /^ok[.!]?$/i.test(text.trim()))) {
+        guard.clear();
+        done({ ok: true, model: actualModel || model || null, text: text.trim(), json: contract, error: null });
+        stopAfterSuccess();
+      }
     };
     child.stdout.on('data', (d) => { guard.touch(); stdout += d; buf += d; let nl; while ((nl = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); } });
     child.stderr.on('data', (d) => { guard.touch(); stderr += d; if (stderr.length > 200_000) stderr = stderr.slice(-200_000); });
-    child.on('error', (e) => { guard.clear(); done({ ok: false, model: actualModel, text: '', error: String(e.message || e) }); });
+    child.on('error', (e) => { guard.clear(); if (terminationTimer && !settled) clearTimeout(terminationTimer); done({ ok: false, model: actualModel, text: '', error: String(e.message || e) }); });
     child.on('close', (code, signal) => {
       guard.clear();
+      if (terminationTimer && !settled) clearTimeout(terminationTimer);
       if (buf.trim()) handleLine(buf);
       // Liveness = a real answer. If the CLI spoke stream-json (sawJson), require the
       // PARSED answer text — a bare JSONL envelope with no answer is NOT alive. Only
@@ -1181,7 +1426,9 @@ export function probeProvider(name, { timeout = 45_000, model = null } = {}) {
       const t = (sawJson ? text : (text || stdout)).trim();
       if (code !== 0) return done({ ok: false, model: actualModel, text: t, error: `${exitLabel(code, signal)}: ${stderr.trim().slice(0, 300)}` });
       if (!t) return done({ ok: false, model: actualModel, text: '', error: `exit 0 but empty output${stderr.trim() ? `: ${stderr.trim().slice(0, 200)}` : ''}` });
-      done({ ok: true, model: actualModel, text: t, error: null });
+      const contract = expectKeys ? extractAnswerJSON(t, expectKeys, true) : null;
+      if (expectKeys && !contract) return done({ ok: false, model: actualModel, text: t, json: null, error: jsonMissingError(expectKeys) });
+      done({ ok: true, model: actualModel, text: t, json: contract, error: null });
     });
   });
 }

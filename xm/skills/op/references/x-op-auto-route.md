@@ -27,6 +27,7 @@ When the user provides text that doesn't match any strategy keyword, auto-detect
 | "병렬로 나눠", "동시에 처리", "독립 작업 분배" | Parallel split | **distribute** | high |
 | "모듈 구조 잡고 구현", "scaffold", "구조 잡고 만들어" | Structured build | **scaffold** | medium |
 | File/dir path detected (e.g., `src/`, `*.ts`) | Code target → review or red-team | **review** | medium |
+| "그냥", "간단히", "한 줄로", "just", "quickly" — short (≤ ~15 words), one target, no other signal | Single well-specified task | **direct** | medium |
 
 ## Priority rules
 
@@ -38,6 +39,11 @@ When the user provides text that doesn't match any strategy keyword, auto-detect
 3. Code/file target → **review** (unless security signal present)
 4. Question/why → **hypothesis**
 5. Still multiple matches → pick the highest-confidence row; tie → ask.
+6. `direct` never wins a tie against another signal — it is the recommendation only when nothing else fires. It is a leaf, not a bypass: confirm it with AskUserQuestion like any other strategy.
+
+**Worked example (direct):** "그냥 이 함수 이름만 camelCase로 바꿔줘" — one target, one acceptable
+answer, no compare/why/security signal → recommend `direct` (`1) direct (Recommended) 2) refine 3) Other`).
+If the user picks refine anyway, run refine; the recommendation is advice, the user decides.
 
 No signal matches → show top 3 with AskUserQuestion (see Execution flow below); do not silently fall back to refine.
 

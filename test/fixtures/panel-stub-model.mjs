@@ -56,6 +56,40 @@ if (process.env.X_PANEL_DUMP_CROSS) {
   try { writeFileSync(`${process.env.X_PANEL_DUMP_CROSS}.${envModelName(model)}`, prompt); } catch { /* best-effort */ }
 }
 const envModel = String(model || '').toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+if (process.env.X_PANEL_CWD_LOG) {
+  try { writeFileSync(`${process.env.X_PANEL_CWD_LOG}.${envModel}`, process.cwd()); } catch { /* best-effort */ }
+}
+
+// Test hook: append one line per SPAWN, so retry/fallback-discipline tests can count exactly
+// how many processes a slot started (toss-20260818-0d0f3e9a: retry-once must mean ≤2 spawns).
+if (process.env.X_PANEL_SPAWN_LOG) {
+  try {
+    const { appendFileSync } = await import('node:fs');
+    appendFileSync(process.env.X_PANEL_SPAWN_LOG, JSON.stringify({ model, mode: sessionMode }) + '\n');
+  } catch { /* best-effort */ }
+}
+// A bare never-resolving promise does NOT hold the event loop open — Node would exit
+// (code 13, unsettled top-level await) immediately. A far-future timer keeps us alive.
+const holdForever = () => new Promise((resolve) => setTimeout(resolve, 2_147_000_000));
+// Test hook: die by signal before producing any output (signal-death retry policy tests).
+if (process.env[`X_PANEL_SIGDIE_${envModel}`]) {
+  process.kill(process.pid, 'SIGTERM');
+  await holdForever(); // hold until the signal lands
+}
+if (sessionMode && process.env[`X_PANEL_FAIL_SESSION_${envModel}`]) {
+  const delayMs = Number(process.env[`X_PANEL_DELAY_SESSION_${envModel}`]) || 0;
+  if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  process.stderr.write('session worker reported (SIGSEGV)\n');
+  process.exit(1);
+}
+if (!sessionMode && process.env[`X_PANEL_SIGDIE_STATELESS_${envModel}`]) {
+  process.kill(process.pid, 'SIGTERM');
+  await holdForever();
+}
+// Test hook: hang silently forever (timeout-guard tests; the guard SIGKILLs us).
+if (process.env[`X_PANEL_HANG_${envModel}`]) {
+  await holdForever();
+}
 
 // Emit the final answer in each vendor's RAW (non-stream) structured-output shape, so
 // the raw path's parseStructuredOutput sees the exact envelope/JSONL a real CLI prints:
@@ -79,7 +113,14 @@ function emitRaw(name, jsonStr) {
     if (process.env.X_PANEL_STUB_STDOUT_SESSION_ID) {
       process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: `session id: ${process.env.X_PANEL_STUB_STDOUT_SESSION_ID}` } }) + '\n');
     }
+    const commandCount = Number(process.env[`X_PANEL_COMMANDS_${envModel}`] || 0);
+    for (let i = 0; Number.isFinite(commandCount) && i < commandCount; i++) {
+      process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', id: `command-${i + 1}`, status: 'completed', exit_code: 0 } }) + '\n');
+    }
     process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: jsonStr } }) + '\n');
+    if (process.env[`X_PANEL_MULTI_MESSAGE_${envModel}`]) {
+      process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Review complete; the contract was returned above.' } }) + '\n');
+    }
     process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 200, cached_input_tokens: 50, output_tokens: 30, reasoning_output_tokens: 15 } }) + '\n');
   } else if (name === 'claude') {
     process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: jsonStr, session_id: sessionId || null, total_cost_usd: 0.012, usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 10 } }));
@@ -101,6 +142,9 @@ function emitStream(name, jsonStr) {
     // codex has no partial mode: final block only
     w({ type: 'turn.started' });
     w({ type: 'item.completed', item: { type: 'agent_message', text: jsonStr } });
+    if (process.env[`X_PANEL_MULTI_MESSAGE_${envModel}`]) {
+      w({ type: 'item.completed', item: { type: 'agent_message', text: 'Review complete; the contract was returned above.' } });
+    }
     w({ type: 'turn.completed', usage: { input_tokens: 200, output_tokens: 30, cached_input_tokens: 50, reasoning_output_tokens: 15 } });
   } else if (name === 'cursor') {
     w({ type: 'thinking', message: { content: [{ type: 'text', text: 'thinking…' }] } });
@@ -113,6 +157,24 @@ function emitStream(name, jsonStr) {
     for (const ch of chunks) w({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: ch } } });
     w({ type: 'result', result: jsonStr, usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 10 }, total_cost_usd: 0.012 });
   }
+}
+
+// Emit a complete round-1 contract, then stay alive until the wall-clock guard kills
+// the process. This models a CLI that finished its answer but kept flushing events.
+if (!isRefute && process.env[`X_PANEL_COMPLETE_THEN_HANG_${envModel}`]) {
+  const payload = JSON.stringify({ findings: [{ severity: 'high', file: 'partial.js', line: 7, claim: 'completed before cap', evidence: 'captured' }] });
+  if (stream) emitStream(model, payload); else emitRaw(model, payload);
+  await holdForever();
+}
+// Emit completed Codex command events without an answer, then remain alive. The
+// command-budget guard must terminate this before the wall-clock timeout.
+if (!isRefute && model === 'codex' && process.env.X_PANEL_COMMANDS_THEN_HANG_CODEX) {
+  const count = Number(process.env.X_PANEL_COMMANDS_THEN_HANG_CODEX);
+  for (let i = 0; Number.isFinite(count) && i < count; i++) {
+    process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', id: `command-${i + 1}`, status: 'completed', exit_code: 0 } }) + '\n');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  await holdForever();
 }
 const delayMs = Number(process.env[`X_PANEL_DELAY_${isRefute ? 'R2' : 'R1'}_${envModel}_MS`] || process.env[`X_PANEL_DELAY_${envModel}_MS`] || 0);
 
@@ -136,6 +198,12 @@ if (Number.isFinite(delayMs) && delayMs > 0) {
 
 if (process.env[`X_PANEL_NO_JSON_${envModel}`]) {
   process.stdout.write('plain text without a JSON payload');
+  process.exit(0);
+}
+
+if (process.env[`X_PANEL_MARKDOWN_FINDINGS_${envModel}`]) {
+  const markdown = '### [high] preflight.js:1 — Markdown-only finding\n\n**Why:** JSON contract was omitted.\n\n**Fix:** Return the required JSON object.';
+  emitRaw(model, markdown);
   process.exit(0);
 }
 
@@ -168,7 +236,7 @@ if (process.env[`X_PANEL_EMPTY_ONCE_${envModel}`]) {
 
 // Emit valid JSON but exit non-zero — a crashed provider whose output still
 // contains JSON must be treated as FAILURE, not a successful review.
-if (process.env[`X_PANEL_EXIT1_${envModel}`]) {
+if (process.env[`X_PANEL_EXIT1_${envModel}`] || (isRefute && process.env[`X_PANEL_EXIT1_R2_${envModel}`])) {
   const payload = JSON.stringify({ findings: [] });
   if (stream) emitStream(model, payload);
   else emitRaw(model, payload);
@@ -253,16 +321,32 @@ if (isFollowup) {
   // Test hook: override the findings' evidence text (exercises evidence travel/truncation
   // in the round-2 refute prompts).
   const ev = process.env[`X_PANEL_EVIDENCE_${envModel}`] || 'ev';
-  const findings = model === 'claude'
+  const many = Number(process.env[`X_PANEL_MANY_FINDINGS_${envModel}`] || 0);
+  const findings = Number.isFinite(many) && many > 0
+    ? Array.from({ length: many }, (_, i) => ({
+        severity: 'high', file: `src/f${i}.js`, line: i + 1,
+        claim: `finding ${i} ${'c'.repeat(180)}`, evidence: 'e'.repeat(500),
+      }))
+    : model === 'claude'
     ? [
-        { severity: 'high', file: 'a.js', line: 1, claim: 'shared issue', evidence: ev },
+        { severity: 'high', file: 'a.js', line: 1, claim: 'shared issue', evidence: ev, code: 'shared()', fix: 'guard shared()' },
         { severity: 'low', file: 'b.js', line: 2, claim: 'claude-only issue', evidence: ev },
       ]
     : [
-        { severity: 'high', file: 'a.js', line: 1, claim: 'shared issue (codex view)', evidence: ev },
+        { severity: 'high', file: 'a.js', line: 1, claim: 'shared issue (codex view)', evidence: ev, code: 'shared()', fix: 'guard shared()' },
         { severity: 'medium', file: 'c.js', line: 3, claim: 'codex-only issue', evidence: ev },
       ];
-  const payload = JSON.stringify({ findings });
+  const promptContextHash = prompt.match(/context_hash:\s*(sha256:[0-9a-f]{64})/)?.[1];
+  const contextHash = process.env[`X_PANEL_CONTEXT_HASH_${envModel}`] || promptContextHash;
+  const checkedFiles = [...prompt.matchAll(new RegExp('^diff --git a/(\\S+) b/(\\S+)$', 'gm'))]
+    .map((match) => match[2].replace(/^"|"$/g, ''));
+  const payload = JSON.stringify({
+    checked: ['reviewed changed behavior and failure paths'],
+    checked_files: checkedFiles,
+    findings,
+    ...(findings.length === 0 ? { no_findings_reason: 'No defect remained after checking every frozen target file.' } : {}),
+    ...(contextHash ? { context_hash: contextHash } : {}),
+  });
   if (stream) emitStream(model, payload);
   else emitRaw(model, payload);
 }

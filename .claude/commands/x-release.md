@@ -119,10 +119,18 @@ For each "fix X by doing Y" bullet you are about to write into the commit messag
 
 If any claim is unbacked by visible code, either (a) drop the claim from the commit message, or (b) restore the fix and re-verify. Never ship a release whose commit message describes code that isn't in the diff.
 
-### Step 6: Commit & Push
+### Step 6: Commit, Tag & Push
+
+Step 3 prints the tag to use (`Tag with the release commit: ... --tag vX.Y.Z --push`). Pass it. `--tag` is not optional polish: without it the release commit is pushed untagged, nothing errors, and the tag list simply stops — that is how `2.22.0`, `2.23.0` and `2.23.1` all shipped with no tag. The tag is always `v<xm meta version>`, the same version as `package.json` and the `xm` entry in `marketplace.json`.
 
 ```bash
-$XMB release commit --msg "release: ..." --push
+$XMB release commit --msg "release: ..." --tag v<META_VERSION> --push
+```
+
+`--push` uses `git push --follow-tags`, so the tag reaches the remote with the branch. If Step 3 reported the tag already exists, commit without `--tag` and report why. Verify before moving on:
+
+```bash
+git ls-remote --tags origin "refs/tags/v<META_VERSION>"   # non-empty = tag is on the remote
 ```
 
 ### Step 7: Deploy to Main

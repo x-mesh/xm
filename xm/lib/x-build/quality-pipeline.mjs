@@ -60,12 +60,13 @@ export function evidenceKey({ content_fingerprint, command_hash, cwd }) {
 
 /** Only an exact, successful, non-skipped evidence record can be reused. */
 export function validateEvidence(evidence, expected = {}) {
-  if (!evidence || evidence.passed !== true || evidence.skipped === true || evidence.failed === true) return { valid: false, reason: 'not_passing' };
+  if (!evidence) return { valid: false, reason: 'missing' };
   if (evidence.malformed || evidence.error) return { valid: false, reason: 'malformed' };
+  if (evidence.passed !== true || evidence.skipped === true || evidence.failed === true) return { valid: false, reason: 'not_passing' };
   const cwd = resolve(expected.cwd || process.cwd());
-  if (evidence.cwd !== cwd || evidence.command_hash !== expected.command_hash || evidence.content_fingerprint !== expected.content_fingerprint) {
-    return { valid: false, reason: 'fingerprint_mismatch' };
-  }
+  if (evidence.cwd !== cwd) return { valid: false, reason: 'cwd_changed' };
+  if (evidence.command_hash !== expected.command_hash) return { valid: false, reason: 'command_changed' };
+  if (evidence.content_fingerprint !== expected.content_fingerprint) return { valid: false, reason: 'content_changed' };
   return { valid: true, reason: null };
 }
 
@@ -108,11 +109,14 @@ export function runQualityPipeline({ cwd = process.cwd(), config = {}, evidence 
   const fingerprint = contentFingerprint(root);
   if (!fingerprint) return [{ check: 'quality-fingerprint', passed: false, failed: true, exit_code: 2, output: 'unable to fingerprint workspace' }];
   const expected = { cwd: root, command_hash: descriptor.command_hash, content_fingerprint: fingerprint };
-  if (validateEvidence(evidence, expected).valid) return [{ ...evidence, check: evidence.check || 'quality', reused: true }];
+  const reuse = validateEvidence(evidence, expected);
+  if (reuse.valid) return [{ ...evidence, check: evidence.check || 'quality', reused: true, reuse_miss_reason: null, duration_ms: 0 }];
+  const startedAt = Date.now();
   const out = spawnSync(command, [], { shell: true, cwd: root, env: { ...process.env, ...descriptor.env }, encoding: 'utf8', timeout: Number(config.quality_timeout_ms || 300000) });
   const timedOut = out.error?.code === 'ETIMEDOUT' || out.signal === 'SIGTERM';
   const passed = !timedOut && out.status === 0;
   return [{ check: 'serial-quality', command, cwd: root, command_hash: descriptor.command_hash, content_fingerprint: fingerprint,
     passed, failed: !passed, exit_code: passed ? 0 : 2, timeout: timedOut, reused: false,
+    reuse_miss_reason: reuse.reason, duration_ms: Date.now() - startedAt,
     output: `${out.stdout || ''}${out.stderr || ''}`.slice(-2000) }];
 }

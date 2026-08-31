@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { resolveTaskChecks, taskCheckFingerprint } from '../x-build/lib/x-build/build-policy.mjs';
@@ -59,7 +59,7 @@ function setup(cwd) {
 function prepareRunnableTask(cwd) {
   const project = setup(cwd);
   run(cwd, ['phase', 'set', 'plan']);
-  run(cwd, ['plan', 'Add a settings export command']);
+  run(cwd, ['legacy-plan', 'Add a settings export command']);
   run(cwd, ['tasks', 'add', 'Implement export', '--done-criteria', 'works']);
   const planDir = join(project, 'phases', '02-plan');
   writeFileSync(join(planDir, 'PRD.md'), '# PRD\n\n## 1. Goal\nExport settings\n');
@@ -75,11 +75,39 @@ function projectTasksPath(project) {
 }
 
 describe('plan entry and conditional interview', () => {
+  test('plan and build accept --json as transport metadata without appending it to the goal', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-'));
+    try {
+      setup(tmp);
+      const goal = 'Add a settings export command';
+      const plan = JSON.parse(run(tmp, ['legacy-plan', '--project', 'demo', goal, '--json']).stdout);
+      expect(plan.goal).toBe(goal);
+      const build = JSON.parse(run(tmp, ['build', '--project', 'demo', goal, '--json']).stdout);
+      expect(build.goal).toBe(goal);
+      expect(build.goal).not.toContain('--json');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('steps compute ignores trailing --json instead of treating it as a project', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-'));
+    try {
+      const project = setup(tmp);
+      run(tmp, ['tasks', 'add', 'Implement export', '--done-criteria', 'works']);
+      const result = run(tmp, ['steps', 'compute', '--project', 'demo', '--json']);
+      expect(result.code).toBe(0);
+      expect(readFileSync(join(project, 'phases', '02-plan', 'steps.json'), 'utf8')).toContain('t1');
+      expect(existsSync(join(tmp, '.xm', 'build', 'projects', '-json'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
   test('plan is plan-only, build continues after approval, interview asks at most three questions', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-'));
     try {
       setup(tmp);
-      const plan = JSON.parse(run(tmp, ['plan', 'Add a settings export command']).stdout);
+      const plan = JSON.parse(run(tmp, ['legacy-plan', 'Add a settings export command']).stdout);
       expect(plan.requested_action).toBe('plan_only');
       expect(plan.stop_after).toBe('plan_bundle');
       expect(plan.intent_check.readiness).toBe('ready');
@@ -88,7 +116,7 @@ describe('plan entry and conditional interview', () => {
       expect(build.requested_action).toBe('build');
       expect(build.stop_after).toBe('execute_complete');
 
-      const interview = JSON.parse(run(tmp, ['plan', '--project', 'demo', '--interview', 'Improve it']).stdout);
+      const interview = JSON.parse(run(tmp, ['legacy-plan', '--project', 'demo', '--interview', 'Improve it']).stdout);
       expect(interview.intent_check.readiness).toBe('clarify');
       expect(interview.intent_check.questions.length).toBeLessThanOrEqual(3);
       expect(interview.executable).toBe(false);
@@ -101,8 +129,8 @@ describe('plan entry and conditional interview', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-'));
     try {
       setup(tmp);
-      run(tmp, ['plan', 'Add a settings export command']);
-      const second = run(tmp, ['plan', 'Replace authentication system']);
+      run(tmp, ['legacy-plan', 'Add a settings export command']);
+      const second = run(tmp, ['legacy-plan', 'Replace authentication system']);
       const out = JSON.parse(second.stdout);
       expect(second.code).toBe(2);
       expect(out.action).toBe('select-project');
@@ -164,6 +192,40 @@ describe('content-bound approval and shared review groups', () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  // cmdRun's status writes must go through the tasks.json lock. Before this
+  // guard it wrote its full-file snapshot lockless, so a completion/task_check
+  // a parallel agent committed under the lock between run's read and write was
+  // silently reverted. A held (non-stale) lock therefore has to fail the run
+  // loudly and leave task statuses untouched.
+  test('run refuses to flip task statuses while another writer holds the tasks.json lock', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-lock-'));
+    try {
+      const project = setup(tmp);
+      run(tmp, ['phase', 'set', 'plan']);
+      run(tmp, ['legacy-plan', 'Add a settings export command']);
+      run(tmp, ['tasks', 'add', 'Implement export', '--done-criteria', 'works']);
+      writeFileSync(join(project, 'phases', '02-plan', 'PRD.md'), '# PRD\n\n## 1. Goal\nExport settings\n');
+      run(tmp, ['steps', 'compute']);
+      run(tmp, ['plan-check']);
+      run(tmp, ['gate', 'pass', 'approved']);
+
+      const tasksPath = projectTasksPath(project);
+      writeFileSync(tasksPath + '.lock', String(process.pid)); // live writer: fresh mtime, not stale-reclaimable
+      try {
+        const r = run(tmp, ['run', '--json']);
+        expect(r.code).not.toBe(0);
+        expect(r.stderr).toContain('lock contention');
+        const t1 = JSON.parse(readFileSync(tasksPath)).tasks[0];
+        expect(t1.status).toBe('pending');
+        expect(t1.started_at).toBeUndefined();
+      } finally {
+        rmSync(tasksPath + '.lock', { force: true });
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 30000);
 
   test('completion reports missing, running, and stale task-check evidence separately', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-lifecycle-evidence-'));
@@ -287,7 +349,7 @@ describe('content-bound approval and shared review groups', () => {
     try {
       const project = setup(tmp);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Add a settings export command']);
+      run(tmp, ['legacy-plan', 'Add a settings export command']);
       for (const name of ['Create export model', 'Implement export command', 'Document export flow']) {
         run(tmp, ['tasks', 'add', name, '--done-criteria', `${name} works`]);
       }
@@ -311,7 +373,7 @@ describe('content-bound approval and shared review groups', () => {
     try {
       const project = setup(tmp);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Add a settings export command']);
+      run(tmp, ['legacy-plan', 'Add a settings export command']);
       run(tmp, ['tasks', 'add', 'Implement export', '--done-criteria', 'works']);
       const planDir = join(project, 'phases', '02-plan');
       writeFileSync(join(planDir, 'PRD.md'), '# PRD\n\n## 1. Goal\nExport settings\n');
@@ -368,7 +430,7 @@ describe('content-bound approval and shared review groups', () => {
       git(tmp, ['add', 'package.json']);
       git(tmp, ['commit', '-qm', 'add package']);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['legacy-plan', 'Implement feature']);
       run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
       run(tmp, ['steps', 'compute']);
       const planDir = join(project, 'phases', '02-plan');
@@ -417,7 +479,7 @@ describe('content-bound approval and shared review groups', () => {
       git(tmp, ['add', 'package.json']);
       git(tmp, ['commit', '-qm', 'add package']);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['legacy-plan', 'Implement feature']);
       run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
       run(tmp, ['steps', 'compute']);
       const planDir = join(project, 'phases', '02-plan');
@@ -441,8 +503,13 @@ describe('content-bound approval and shared review groups', () => {
       const preCheckPhase = run(tmp, ['phase', 'next']);
       expect(preCheckPhase.code).toBe(2);
       expect(preCheckPhase.stdout).toContain('x-build group-check build');
+      const staleLock = join(project, 'phases', '03-execute', '.group-build.quality.lock');
+      mkdirSync(staleLock, { recursive: true });
+      const old = new Date(Date.now() - 10_000);
+      utimesSync(staleLock, old, old);
       const checked = run(tmp, ['group-check', 'build', '--json']);
       expect(JSON.parse(checked.stdout).ok).toBe(true);
+      expect(existsSync(staleLock)).toBe(false);
       const afterCheck = JSON.parse(run(tmp, ['run-status', '--json']).stdout);
       expect(afterCheck.next_action).toBe('phase next');
       const routed = JSON.parse(run(tmp, ['next', '--json']).stdout);
@@ -463,7 +530,7 @@ describe('content-bound approval and shared review groups', () => {
       git(tmp, ['add', 'package.json']);
       git(tmp, ['commit', '-qm', 'add package']);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['legacy-plan', 'Implement feature']);
       run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
       run(tmp, ['steps', 'compute']);
       const planDir = join(project, 'phases', '02-plan');
@@ -534,7 +601,7 @@ describe('content-bound approval and shared review groups', () => {
       git(tmp, ['add', 'package.json']);
       git(tmp, ['commit', '-qm', 'add package']);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['legacy-plan', 'Implement feature']);
       run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
       run(tmp, ['steps', 'compute']);
       const planDir = join(project, 'phases', '02-plan');
@@ -584,7 +651,7 @@ describe('content-bound approval and shared review groups', () => {
       git(tmp, ['add', 'package.json']);
       git(tmp, ['commit', '-qm', 'add package']);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['legacy-plan', 'Implement feature']);
       run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
       run(tmp, ['steps', 'compute']);
       const planDir = join(project, 'phases', '02-plan');
@@ -649,7 +716,7 @@ describe('content-bound approval and shared review groups', () => {
       const project = join(tmp, '.xm', 'build', 'projects', 'demo');
       run(tmp, ['init', 'demo']);
       run(tmp, ['phase', 'set', 'plan']);
-      run(tmp, ['plan', 'Implement feature']);
+      run(tmp, ['legacy-plan', 'Implement feature']);
       run(tmp, ['tasks', 'add', 'Implement feature', '--done-criteria', 'works']);
       run(tmp, ['steps', 'compute']);
       const planDir = join(project, 'phases', '02-plan');

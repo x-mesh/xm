@@ -116,5 +116,5 @@ test('push on one machine becomes canonical handon state on another machine', as
   const restoredState = JSON.parse(restored.stdout);
   expect(restoredState.handoff_generation).toBe(2);
   expect(restoredState.context.current_focus).toBe('restored-from-linux');
-  expect(readFileSync(join(targetBuild, 'HANDOFF.md'), 'utf8')).toBe('# Linux handoff');
+  expect(readFileSync(join(targetBuild, 'HANDOFF.md'), 'utf8')).toContain('canonical, atomic session state');
 });

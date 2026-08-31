@@ -10,7 +10,7 @@ import {
   tasksPath, projectDir,
   resolveProject, parseOptions,
   existsSync, join, resolve, repoRoot, readFileSync,
-  exitFail,
+  exitFail, nextTaskId,
 } from './core.mjs';
 
 const VALID_STATUS = new Set(['open', 'promoted', 'dismissed']);
@@ -81,12 +81,27 @@ function compareSnapshot(snapshot) {
   };
 }
 
-function nextTaskId(tasks) {
-  const max = tasks.reduce((n, task) => {
-    const parsed = parseInt(String(task.id || '').replace(/^t/, ''), 10);
-    return Number.isFinite(parsed) && parsed > n ? parsed : n;
-  }, 0);
-  return `t${max + 1}`;
+/**
+ * Non-blocking summary of the later queue for status envelopes.
+ *
+ * Deliberately NOT a gate: `verify-scope` stays the explicit command a user or
+ * CI runs. This exists because the queue was previously invisible — an item
+ * deferred in one turn left no trace in `run-status`/`next`, so the next turn
+ * had no reason to remember it existed. Reporting `touched[]` surfaces a
+ * deferred file that changed anyway without blocking the run on it.
+ *
+ * @returns {{ open: number, touched: string[], ids: string[] }}
+ */
+export function laterSignal(project) {
+  const openItems = (readLater(project).items || []).filter(item => item.status === 'open');
+  const touched = [];
+  for (const item of openItems) {
+    if (!Array.isArray(item.file_snapshots)) continue;
+    for (const result of item.file_snapshots.map(compareSnapshot)) {
+      if (result.changed) touched.push(`${item.id}:${result.file}`);
+    }
+  }
+  return { open: openItems.length, touched, ids: openItems.map(item => item.id) };
 }
 
 // ── cmdLater ────────────────────────────────────────────────────────

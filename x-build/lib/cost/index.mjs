@@ -146,7 +146,10 @@ export function computeSpend(events, { since = null } = {}) {
     if (!event || typeof event !== 'object') continue;
     const cost = event.cost_usd;
     if (typeof cost !== 'number' || !Number.isFinite(cost)) continue;
-    if (cutoff != null && (!Number.isFinite(cutoff) || timestampMs(event.timestamp) < cutoff)) continue;
+    if (cutoff != null) {
+      const ts = timestampMs(event.timestamp);
+      if (!Number.isFinite(cutoff) || !Number.isFinite(ts) || ts < cutoff) continue;
+    }
     spent += cost;
     if (typeof event.project === 'string' && event.project !== '') {
       spentByProject[event.project] = (spentByProject[event.project] ?? 0) + cost;
@@ -835,10 +838,34 @@ export function gcCache({ cacheDir = '.xm/cache', model, now = Date.now(), ttlMs
 }
 
 /**
+ * Accounting tolerance for USD comparisons, in dollars.
+ *
+ * Callers hand us floats derived from cent- or micro-denominated amounts, and
+ * binary floating point cannot represent most of them exactly: 0.07 + 0.02
+ * yields 0.09000000000000001 while the literal 0.09 is 0.08999999999999999, a
+ * gap of ~1.4e-17. A bare `projected > budget` therefore rejected spends that
+ * land EXACTLY on the cap — measured across every exact-at-cap combination for
+ * caps of 1..400 cents, 11.85% were wrongly rejected (e.g. cap=9¢ spent=7¢
+ * additional=2¢). The reverse never happened: one cent OVER the cap was
+ * approved 0 times in the same sweep, so this only ever blocked legitimate
+ * spending, never allowed an overspend.
+ *
+ * 1e-9 (a ten-millionth of a cent) is far below any real currency amount yet
+ * ~8 orders of magnitude above the double-rounding error at these
+ * magnitudes. It matches EPSILON_USD in test/cost-pipeline.prop.test.mjs,
+ * whose invariants assume exactly this tolerance.
+ */
+export const EPSILON_USD = 1e-9;
+
+/**
  * Evaluate a proposed spend without mutating state. A cap is exceeded only
  * above 100%. `warnAtUsd`, when supplied, is an exclusive dollar threshold;
  * otherwise the legacy ratio-based `warnAt` boundary preserves existing 80%
  * budget behavior.
+ *
+ * Both thresholds compare with EPSILON_USD slack so a spend that is exactly at
+ * the cap (or exactly at the warning threshold) is not pushed over it by
+ * float representation error.
  */
 export function checkHardCap({ spent = 0, cap, additionalCost = 0, warnAt = 0.8, warnAtUsd } = {}) {
   const budget = Number(cap);
@@ -851,7 +878,7 @@ export function checkHardCap({ spent = 0, cap, additionalCost = 0, warnAt = 0.8,
   const warningThreshold = Number.isFinite(explicitWarn) && explicitWarn > 0 && explicitWarn < budget
     ? explicitWarn
     : budget * Number(warnAt);
-  if (projected > budget) return { ok: false, spent: Number.isFinite(current) ? current : 0, projected, budget, pct, level: 'exceeded' };
-  if (projected > warningThreshold) return { ok: true, spent: Number.isFinite(current) ? current : 0, projected, budget, pct, warn_at_usd: warningThreshold, level: 'warning' };
+  if (projected > budget + EPSILON_USD) return { ok: false, spent: Number.isFinite(current) ? current : 0, projected, budget, pct, level: 'exceeded' };
+  if (projected > warningThreshold + EPSILON_USD) return { ok: true, spent: Number.isFinite(current) ? current : 0, projected, budget, pct, warn_at_usd: warningThreshold, level: 'warning' };
   return { ok: true, spent: Number.isFinite(current) ? current : 0, projected, budget, pct, warn_at_usd: warningThreshold, level: 'normal' };
 }

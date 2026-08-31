@@ -10,7 +10,7 @@ import {
   resolveProject, findCurrentProject, findActiveProjects, logDecision,
   loadConfig, loadSharedConfig, resolveGates, requiresSignoff, autopilotActive, getMode, isNormalMode, L, renderBar, fmtDuration,
   setCmdInit,
-  existsSync, readdirSync, mkdirSync, join, readFileSync, writeFileSync,
+  existsSync, readdirSync, mkdirSync, join, readFileSync, writeFileSync, renameSync, unlinkSync, statSync,
   createRL, ask, pickMenu,
   parseOptions,
   decisionsPath, metricsPath,
@@ -18,7 +18,9 @@ import {
   exitFail,
   repoRoot, gaugeProjectKind,
 } from './core.mjs';
+import { linkSync } from 'node:fs';
 import { resolveMemMeshProjectId } from '../mem-mesh-identity.mjs';
+import { newBuildId, recordEffectiveness } from './effectiveness.mjs';
 
 // ── cmdInit ─────────────────────────────────────────────────────────
 
@@ -65,6 +67,12 @@ export function cmdInit(args) {
   }
 
   const slug = toSlug(name);
+  // A name with no letters/digits collapses to '' or '-' — every such project
+  // would share one directory, so reject instead of silently colliding.
+  if (!slug || slug === '-') {
+    console.error(`❌ Project name "${name}" produces an empty slug. Use at least one letter or digit.`);
+    exitFail(1);
+  }
 
   if (existsSync(manifestPath(slug))) {
     console.error(`❌ Project "${slug}" already exists.`);
@@ -85,6 +93,12 @@ export function cmdInit(args) {
     created_at: now,
     updated_at: now,
     project_kind: projectKind,
+    // Minted here, not at `plan`: Research completes before `plan` runs, so an
+    // identity created later leaves every research-phase effectiveness event
+    // unattributable and silently dropped from aggregation. Manifest only —
+    // writing plan-state.json this early would take the project out of
+    // validatePlanApproval's legacy mode and demand approval it never had.
+    build_id: newBuildId(),
   };
 
   writeJSON(manifestPath(slug), manifest);
@@ -383,6 +397,17 @@ export function cmdStatus(args) {
   }
   console.log('');
 
+  if (manifest.build_profile) {
+    const compact = [
+      { label: 'Shape', done: ['02-plan', '03-execute', '04-verify', '05-close'].includes(manifest.current_phase), active: manifest.current_phase === '01-research' },
+      { label: 'Plan', done: ['03-execute', '04-verify', '05-close'].includes(manifest.current_phase), active: manifest.current_phase === '02-plan' },
+      { label: 'Build', done: manifest.current_phase === '05-close' && readJSON(phaseStatusPath(name, '05-close'))?.status === 'completed', active: ['03-execute', '04-verify', '05-close'].includes(manifest.current_phase) },
+    ];
+    console.log(`  Profile: ${C.cyan}${manifest.build_profile}${C.reset}`);
+    console.log(`  ${compact.map(stage => `${stage.done ? '✅' : stage.active ? '🔵' : '⬜'} ${stage.label}`).join(' → ')}`);
+    console.log(`  ${C.dim}Internal phases remain below for diagnostics and resume compatibility.${C.reset}\n`);
+  }
+
   const gates = resolveGates();
   for (const phase of PHASES) {
     const status = readJSON(phaseStatusPath(name, phase.id));
@@ -444,7 +469,7 @@ export function cmdStatus(args) {
   const phase = PHASES.find(p => p.id === manifest.current_phase);
   const suggestions = {
     research: ['x-build discuss --mode interview', 'x-build research'],
-    plan: ['x-build plan "goal"', 'x-build plan-check', 'x-build phase next'],
+    plan: ['x-build legacy-plan "goal"', 'x-build plan-check', 'x-build phase next'],
     execute: ['x-build run', 'x-build run-status'],
     verify: ['x-build quality', 'x-build verify-coverage', 'x-build verify-traceability'],
     close: ['x-build close --summary "..."'],
@@ -518,6 +543,20 @@ export function cmdClose(args) {
   writeJSON(manifestPath(project), manifest);
 
   logDecision(project, `Project closed.${summaryContent ? ` Summary: ${summaryContent}` : ''}`);
+  const phaseDurations = PHASES.map(phase => readJSON(phaseStatusPath(project, phase.id)))
+    .filter(status => status?.started_at && status?.completed_at)
+    .map(status => new Date(status.completed_at) - new Date(status.started_at));
+  // `total === done` alone reads 0 === 0 as success, and close is gateless, so
+  // a project that picked a profile at `plan` and then closed without ever
+  // adding a task counted as a completed build and pushed completion_rate up.
+  // (A project that skips `plan` has no profile and is excluded from the rate
+  // either way — the inflation needs the profile.) A build that produced
+  // nothing did not complete; task_count stays on the payload so a consumer can
+  // still tell vacuous from failed.
+  recordEffectiveness(project, 'build_complete', {
+    success: total > 0 && total === done, task_count: total, completed: done,
+    duration_ms: phaseDurations.reduce((sum, value) => sum + value, 0),
+  });
   console.log(`✅ Project "${project}" closed.`);
   console.log(`📄 Summary: ${join(phaseDir(project, '05-close'), 'summary.md')}`);
 }
@@ -711,6 +750,210 @@ export async function interactiveDashboard() {
 // ── cmdHandoffFull ───────────────────────────────────────────────────
 
 const MAX_MEMORY_REFS = 5;
+const HANDOFF_LOCK_TIMEOUT_MS = 10_000;
+let atomicWriteSequence = 0;
+const handoffSleepBuffer = new Int32Array(new SharedArrayBuffer(4));
+
+function atomicTempPath(path) {
+  atomicWriteSequence += 1;
+  return `${path}.${process.pid}.${atomicWriteSequence}.tmp`;
+}
+
+function fileMode(path, fallback = 0o666) {
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile()) throw new Error(`handoff target is not a file: ${path}`);
+    return stat.mode & 0o777;
+  } catch (error) {
+    if (error.code === 'ENOENT') return fallback;
+    throw error;
+  }
+}
+
+function atomicWriteFile(path, content, mode = fileMode(path)) {
+  const temporary = atomicTempPath(path);
+  try {
+    writeFileSync(temporary, content, { encoding: 'utf8', mode });
+    renameSync(temporary, path);
+    if (readFileSync(path, 'utf8') !== content) throw new Error(`verification failed after replacing ${path}`);
+  } catch (error) {
+    try { unlinkSync(temporary); } catch {}
+    throw error;
+  }
+}
+
+function sleepHandoffWriter(ms) {
+  Atomics.wait(handoffSleepBuffer, 0, 0, ms);
+}
+
+function processIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error.code === 'EPERM'; }
+}
+
+function removeStaleHandoffLock(path, expectedToken) {
+  const claim = `${path}.claim-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    linkSync(path, claim);
+    const claimed = JSON.parse(readFileSync(claim, 'utf8'));
+    if (claimed.token !== expectedToken || processIsAlive(Number(claimed.pid))) return false;
+    const originalStat = statSync(path);
+    const claimStat = statSync(claim);
+    if (originalStat.dev !== claimStat.dev || originalStat.ino !== claimStat.ino
+      || claimStat.nlink !== 2) return false;
+    unlinkSync(path);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { unlinkSync(claim); } catch {}
+  }
+}
+
+function removeMalformedStaleHandoffLock(path) {
+  const claim = `${path}.malformed-claim-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    linkSync(path, claim);
+    const originalStat = statSync(path);
+    const claimStat = statSync(claim);
+    if (originalStat.dev !== claimStat.dev || originalStat.ino !== claimStat.ino || claimStat.nlink !== 2
+      || Date.now() - claimStat.mtimeMs <= HANDOFF_LOCK_TIMEOUT_MS) return false;
+    unlinkSync(path);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { unlinkSync(claim); } catch {}
+  }
+}
+
+function acquireHandoffLock(buildDir) {
+  const path = join(buildDir, '.handoff.lock');
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const started = Date.now();
+  while (true) {
+    const candidate = atomicTempPath(path);
+    try {
+      writeFileSync(candidate, JSON.stringify({ pid: process.pid, token, created_at: new Date().toISOString() }) + '\n', { encoding: 'utf8', mode: 0o600 });
+      linkSync(candidate, path);
+      unlinkSync(candidate);
+      return () => {
+        try {
+          const current = JSON.parse(readFileSync(path, 'utf8'));
+          if (current.token === token) unlinkSync(path);
+        } catch {}
+      };
+    } catch (error) {
+      try { unlinkSync(candidate); } catch {}
+      if (error.code !== 'EEXIST') throw error;
+      let holder = null;
+      try {
+        holder = JSON.parse(readFileSync(path, 'utf8'));
+      } catch {
+        if (removeMalformedStaleHandoffLock(path)) continue;
+        if (Date.now() - started >= HANDOFF_LOCK_TIMEOUT_MS) {
+          throw new Error(`timed out waiting for malformed handoff writer lock: ${path}`);
+        }
+        sleepHandoffWriter(10);
+        continue;
+      }
+      if (!processIsAlive(Number(holder.pid)) && removeStaleHandoffLock(path, holder.token)) continue;
+      if (Date.now() - started >= HANDOFF_LOCK_TIMEOUT_MS) {
+        throw new Error(`timed out waiting for handoff writer lock: ${path}`);
+      }
+      sleepHandoffWriter(10);
+    }
+  }
+}
+
+function withHandoffLock(buildDir, fn) {
+  mkdirSync(buildDir, { recursive: true });
+  const release = acquireHandoffLock(buildDir);
+  try { return fn(); }
+  finally { release(); }
+}
+
+// Stage every required local artifact before replacing either one. HANDOFF.md
+// is a stable pointer to canonical SESSION-STATE.json and commits first, so an
+// abrupt stop before/after the JSON rename still leaves one authoritative state.
+// Observable commit failures roll already-replaced files back byte-for-byte.
+function atomicWriteSet(entries) {
+  const staged = [];
+  const committed = [];
+  try {
+    for (const entry of entries) {
+      let previous = null;
+      if (existsSync(entry.path)) previous = readFileSync(entry.path, 'utf8');
+      const temporary = atomicTempPath(entry.path);
+      const mode = fileMode(entry.path);
+      writeFileSync(temporary, entry.content, { encoding: 'utf8', mode });
+      staged.push({ ...entry, temporary, previous, mode });
+    }
+    for (const entry of staged) {
+      renameSync(entry.temporary, entry.path);
+      committed.push(entry);
+      const testFault = process.env.X_KIT_TEST_MODE === '1' ? process.env.X_KIT_HANDOFF_FAULT : null;
+      if (testFault === `exit-after-${committed.length}`) process.exit(86);
+      if (testFault === `throw-after-${committed.length}`) {
+        throw new Error(`injected handoff failure after commit ${committed.length}`);
+      }
+      if (readFileSync(entry.path, 'utf8') !== entry.content) {
+        throw new Error(`verification failed after replacing ${entry.path}`);
+      }
+    }
+  } catch (error) {
+    const rollbackErrors = [];
+    for (const entry of committed.reverse()) {
+      try {
+        if (entry.previous === null) unlinkSync(entry.path);
+        else atomicWriteFile(entry.path, entry.previous, entry.mode);
+      } catch (rollbackError) {
+        rollbackErrors.push(`${entry.path}: ${rollbackError.message}`);
+      }
+    }
+    for (const entry of staged) {
+      try { unlinkSync(entry.temporary); } catch {}
+    }
+    if (rollbackErrors.length) {
+      error.message += `; rollback also failed (${rollbackErrors.join('; ')})`;
+    }
+    throw error;
+  }
+}
+
+const HANDOFF_POINTER_MARKDOWN = [
+  '# Session Handoff',
+  '',
+  '> The canonical, atomic session state is `.xm/build/SESSION-STATE.json`.',
+  '> Read that JSON file directly. This Markdown file is intentionally a stable pointer,',
+  '> not a second snapshot, so an interrupted save cannot expose mixed generations.',
+  '',
+].join('\n');
+
+function persistLocalHandoff(state) {
+  const buildDir = join(repoRoot(), '.xm', 'build');
+  return withHandoffLock(buildDir, () => {
+    const statePath = join(buildDir, 'SESSION-STATE.json');
+    let generation = 1;
+    try {
+      const previous = JSON.parse(readFileSync(statePath, 'utf8'));
+      if (Number.isInteger(previous.handoff_generation) && previous.handoff_generation > 0) {
+        generation = previous.handoff_generation + 1;
+      }
+    } catch {}
+    state.saved_at = new Date().toISOString();
+    state.handoff_generation = generation;
+
+    const handoffPath = join(buildDir, 'HANDOFF.md');
+    const entries = [
+      { path: handoffPath, content: HANDOFF_POINTER_MARKDOWN, mode: fileMode(handoffPath) },
+      { path: statePath, content: JSON.stringify(state, null, 2) + '\n', mode: fileMode(statePath) },
+    ];
+    atomicWriteSet(entries);
+    return { buildDir, statePath };
+  });
+}
 
 function normalizeMemoryRefs(value) {
   if (!Array.isArray(value)) return [];
@@ -907,22 +1150,10 @@ export function cmdHandoffFull(args) {
 
   const reason = args.find((a, i) => i !== narrativeValueIdx && !a.startsWith('--')) || opts.reason || opts.summary || null;
 
-  // Lamport-style generation survives clock skew across machines: a handoff
-  // created after pulling generation N becomes N+1. Legacy states start at 1.
-  const buildDir = join(repoRoot(), '.xm', 'build');
-  const statePath = join(buildDir, 'SESSION-STATE.json');
-  let handoffGeneration = 1;
-  try {
-    const previous = JSON.parse(readFileSync(statePath, 'utf8'));
-    if (Number.isInteger(previous.handoff_generation) && previous.handoff_generation > 0) {
-      handoffGeneration = previous.handoff_generation + 1;
-    }
-  } catch {}
-
   const state = {
     v: 1,
-    saved_at: new Date().toISOString(),
-    handoff_generation: handoffGeneration,
+    saved_at: null,
+    handoff_generation: null,
 
     where: {
       branch,
@@ -963,17 +1194,15 @@ export function cmdHandoffFull(args) {
     why_stopped: reason || 'Session handoff',
   };
 
-  // Save
-  mkdirSync(buildDir, { recursive: true });
-  writeFileSync(statePath, JSON.stringify(state, null, 2) + '\n', 'utf8');
-
-  // Also emit a tool-neutral HANDOFF.md so sessions that cannot run the
-  // handoff/handon skills (Codex, Cursor) read the same context in plain
-  // markdown. Best-effort: never fail the handoff over the markdown mirror.
-  // Keep the format in sync with x-recall/lib/x-recall/handoff-md.mjs.
+  let buildDir, statePath;
   try {
-    writeFileSync(join(buildDir, 'HANDOFF.md'), _sessionStateToHandoffMd(state), 'utf8');
-  } catch { /* best-effort mirror */ }
+    ({ buildDir, statePath } = persistLocalHandoff(state));
+  } catch (error) {
+    console.error(`❌ Session state NOT SAVED: ${error.message}`);
+    console.error(`   Previous handoff was preserved where rollback was possible.`);
+    exitFail(1);
+    return;
+  }
 
   // Render the mem-mesh payload deterministically so the skill only has to hand
   // it to `mcp__mem-mesh__add` — no hand-built JSON, no schema guessing.
@@ -997,8 +1226,15 @@ export function cmdHandoffFull(args) {
   let mirrorWritten = false;
   if (mirror) {
     try {
-      writeFileSync(mirrorPath(), JSON.stringify(mirror, null, 2) + '\n', 'utf8');
-      mirrorWritten = true;
+      withHandoffLock(buildDir, () => {
+        const current = JSON.parse(readFileSync(statePath, 'utf8'));
+        if (current.saved_at === state.saved_at) {
+          atomicWriteFile(mirrorPath(), JSON.stringify(mirror, null, 2) + '\n');
+          mirrorWritten = true;
+        } else {
+          console.error(`⚠️  Skipping obsolete mem-mesh mirror; a newer handoff was saved concurrently.`);
+        }
+      });
     } catch (e) {
       console.error(`⚠️  Could not write mem-mesh mirror payload: ${e.message}`);
     }
@@ -1034,8 +1270,8 @@ export function cmdHandoffFull(args) {
     console.log('');
     console.log(`🧠 mem-mesh mirror PENDING → ${mirrorPath()}`);
     console.log(`   Pass that file's .payload verbatim to mcp__mem-mesh__add, then run:`);
-    console.log(`   xm build handoff --mirror-done <memory_id>`);
-    console.log(`   (no mem-mesh tools available → xm build handoff --mirror-skip; the file handoff above is complete on its own)`);
+    console.log(`   xm build handoff --mirror-done <memory_id> --mirror-token ${mirror.handoff_token}`);
+    console.log(`   (no mem-mesh tools available → xm build handoff --mirror-skip --mirror-token ${mirror.handoff_token}; the file handoff above is complete on its own)`);
   } else if (mirror) {
     // Payload rendered but the file write failed — the warning went to stderr above.
     console.log(`   mem-mesh mirror: NOT WRITTEN (payload rendered, file write failed — see warning above)`);
@@ -1171,6 +1407,7 @@ export function buildMemMeshMirror(state) {
   return {
     v: 1,
     status: 'pending',
+    handoff_token: `${state.handoff_generation}-${process.pid}-${Math.random().toString(16).slice(2)}`,
     created_at: state.saved_at,
     memory_id: null,
     mirrored_at: null,
@@ -1212,13 +1449,21 @@ export function readMirrorState() {
 // `handoff --mirror-status` / `--mirror-done <memory_id>` / `--mirror-skip`
 export function cmdHandoffMirror(args) {
   const p = mirrorPath();
+  const buildDir = join(repoRoot(), '.xm', 'build');
   const doneIdx = args.findIndex(a => a === '--mirror-done' || a.startsWith('--mirror-done='));
+  const tokenIdx = args.findIndex(a => a === '--mirror-token' || a.startsWith('--mirror-token='));
+  const mirrorToken = tokenIdx === -1 ? null : (args[tokenIdx].startsWith('--mirror-token=')
+    ? args[tokenIdx].slice('--mirror-token='.length) : args[tokenIdx + 1]);
 
   // File-only users never call --mirror-done, so a pending mirror would warn on
   // every restore forever. Let them dismiss it without pretending it was saved.
   if (args.includes('--mirror-skip')) {
     const state = readMirrorState();
     if (!state) { console.log('No mirror payload to skip.'); return; }
+    if (!mirrorToken || mirrorToken.startsWith('--')) {
+      console.error('Usage: xm build handoff --mirror-skip --mirror-token <handoff_token>');
+      exitFail(1);
+    }
     if (state.status === 'unreadable') {
       console.error(`Refusing to overwrite an unreadable mirror file: ${p}`);
       console.error(`Inspect or delete it manually, then re-run the handoff.`);
@@ -1230,9 +1475,15 @@ export function cmdHandoffMirror(args) {
       console.error(`Already mirrored (${state.memory_id}) — nothing to dismiss.`);
       exitFail(1);
     }
-    state.status = 'skipped';
-    state.skipped_at = new Date().toISOString();
-    writeFileSync(p, JSON.stringify(state, null, 2) + '\n', 'utf8');
+    withHandoffLock(buildDir, () => {
+      const current = readMirrorState();
+      if (!current || current.status !== 'pending' || current.handoff_token !== mirrorToken) {
+        throw new Error('mirror changed since it was read; refusing to skip a different handoff');
+      }
+      current.status = 'skipped';
+      current.skipped_at = new Date().toISOString();
+      atomicWriteFile(p, JSON.stringify(current, null, 2) + '\n');
+    });
     console.log('🧠 mem-mesh mirror dismissed (file-only). The file handoff is unaffected.');
     return;
   }
@@ -1257,17 +1508,27 @@ export function cmdHandoffMirror(args) {
       console.error(`The memory id ${memoryId} was NOT recorded. Inspect or delete the file, then re-run the handoff.`);
       exitFail(1);
     }
-    state.status = 'mirrored';
-    state.memory_id = memoryId;
-    state.mirrored_at = new Date().toISOString();
+    if (!mirrorToken || mirrorToken.startsWith('--')) {
+      console.error('Usage: xm build handoff --mirror-done <memory_id> --mirror-token <handoff_token>');
+      exitFail(1);
+    }
     try {
-      writeFileSync(p, JSON.stringify(state, null, 2) + '\n', 'utf8');
+      withHandoffLock(buildDir, () => {
+        const current = readMirrorState();
+        if (!current || current.status !== 'pending' || current.handoff_token !== mirrorToken) {
+          throw new Error('mirror changed since it was read; the new handoff was preserved');
+        }
+        current.status = 'mirrored';
+        current.memory_id = memoryId;
+        current.mirrored_at = new Date().toISOString();
+        atomicWriteFile(p, JSON.stringify(current, null, 2) + '\n');
+      });
     } catch (e) {
       // The add already succeeded — the memory exists in mem-mesh. Losing this
       // write only loses the bookkeeping, so surface the id the caller must not
       // drop rather than dying with a bare stack trace.
       console.error(`⚠️  mem-mesh add succeeded (${memoryId}) but the mirror status could not be written: ${e.message}`);
-      console.error(`   The memory EXISTS. Record it manually or re-run: xm build handoff --mirror-done ${memoryId}`);
+      console.error(`   The memory EXISTS. Record it manually or re-run: xm build handoff --mirror-done ${memoryId} --mirror-token ${mirrorToken}`);
       exitFail(1);
     }
     console.log(`🧠 mem-mesh mirror recorded: ${memoryId}`);
@@ -1294,6 +1555,7 @@ export function cmdHandoffMirror(args) {
     status: aged.status,
     from_earlier_handoff: aged.from_earlier_handoff,
     memory_id: state.memory_id,
+    handoff_token: state.handoff_token,
     created_at: state.created_at,
     mirrored_at: state.mirrored_at,
     skipped_at: state.skipped_at,
@@ -1394,7 +1656,15 @@ function _mirrorStatusFor(state) {
 
 export function cmdHandon(args) {
   const isJson = args.includes('--json');
-  const statePath = join(repoRoot(), '.xm', 'build', 'SESSION-STATE.json');
+  const buildDir = join(repoRoot(), '.xm', 'build');
+  const statePath = join(buildDir, 'SESSION-STATE.json');
+  try {
+    if (existsSync(buildDir)) withHandoffLock(buildDir, () => {});
+  } catch (error) {
+    if (isJson) console.log(JSON.stringify({ error: 'handoff_lock_failed', message: error.message }));
+    else console.log(`Error checking handoff writer state: ${error.message}`);
+    return;
+  }
 
   if (!existsSync(statePath)) {
     if (isJson) { console.log(JSON.stringify({ error: 'no_session_state' })); return; }

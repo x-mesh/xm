@@ -31,7 +31,7 @@ The gate decides **whether mem-mesh exists for this run** — nothing else. It i
 
 **A failed `add` does NOT send you back to file-only.** Once the gate resolves to dual-write, you stay in dual-write for the whole run: the tool existed, you called it, it failed — that is a reportable outcome (`🧠 mem-mesh: FAILED …`), not an absence. Downgrading a failure to file-only would re-hide exactly what step 6 exists to surface, and the mirror would stay `pending` with nobody told.
 
-`.xm/build/SESSION-STATE.json` + `HANDOFF.md` remain the portable source of truth (Codex/Cursor read them). mem-mesh is a mirror — never fail the handoff over it; report and move on.
+`.xm/build/SESSION-STATE.json` is the atomic portable source of truth. `HANDOFF.md` is a stable tool-neutral pointer to that JSON; `xm recall handoff-md` materializes `HANDOFF.summary.md` on demand. mem-mesh is a mirror — never fail the handoff over it; report and move on.
 
 ## When to Use
 - End of a work session
@@ -94,7 +94,7 @@ xm build handoff --full \
   "$ARGUMENTS"
 ```
 
-`session_log` is optional — omit the key entirely for a trivial session. When present, the CLI persists it into SESSION-STATE.json and renders it into HANDOFF.md, but `handon --json` strips it to a count so it never bloats a restore.
+`session_log` is optional — omit the key entirely for a trivial session. When present, the CLI persists it into SESSION-STATE.json; `handon --json` strips it to a count so it never bloats a restore. A rich HANDOFF.summary.md can be materialized from the canonical JSON with `xm recall handoff-md`.
 
 `$ARGUMENTS` is used as the `why_stopped` reason. If empty, auto-generates from the last commit message.
 
@@ -116,7 +116,7 @@ When Step 2 printed `🧠 mem-mesh mirror PENDING → <path>`:
 3. Record the returned memory id so the mirror stops showing as pending:
 
 ```bash
-xm build handoff --mirror-done <memory_id>
+xm build handoff --mirror-done <memory_id> --mirror-token <handoff_token>
 ```
 
 One `add` call per handoff (do NOT create a pin per open question — pin sprawl).
@@ -147,7 +147,8 @@ Three files, all written by the CLI:
 | File | Role |
 |------|------|
 | `.xm/build/SESSION-STATE.json` | Primary state (shape below) |
-| `.xm/build/HANDOFF.md` | Tool-neutral mirror (Codex/Cursor read this) |
+| `.xm/build/HANDOFF.md` | Stable tool-neutral pointer to the canonical JSON |
+| `.xm/build/HANDOFF.summary.md` | Optional rich Markdown materialized with `xm recall handoff-md` |
 | `.xm/build/memmesh-mirror.json` | Pre-rendered `mcp__mem-mesh__add` payload + mirror status (`pending` → `mirrored`). Absent when there is no narrative to mirror. |
 
 `.xm/build/SESSION-STATE.json`:
@@ -193,7 +194,7 @@ the same ordering rule for both x-sync and mem-mesh candidates.
 /xm:handoff                           # leader composes narrative, auto-generated reason
 /xm:handoff "dashboard 개선 완료"      # leader composes narrative + explicit reason
 xm build handoff --mirror-status      # inspect the pending/mirrored payload
-xm build handoff --mirror-done <id>   # record a successful mem-mesh add
+xm build handoff --mirror-done <id> --mirror-token <handoff_token>   # record this exact handoff's successful mem-mesh add
 ```
 
 ## Execution Checklist
@@ -204,7 +205,7 @@ The handoff is **not done at step 3**. A run that stops there has completed exac
 2. **Compose `narrative` JSON** with the four fields. Empty arrays/strings are valid when genuinely nothing applies.
 3. **Dispatch via Bash** with `--narrative-json '...'` (leader runs it — do not delegate to an Agent).
 4. **Resolve the mem-mesh gate** by attempting, not by inspecting your toolset (see gate above).
-5. **Mirror** (dual-write mode): read the pending payload file, pass `.payload` verbatim to `mcp__mem-mesh__add`, then `xm build handoff --mirror-done <memory_id>`.
+5. **Mirror** (dual-write mode): read the pending payload file, pass `.payload` verbatim to `mcp__mem-mesh__add`, then pass that same file's `.handoff_token` to `xm build handoff --mirror-done <memory_id> --mirror-token <handoff_token>`.
 6. **Confirm.** The 🧠 line is governed by the mode you resolved in step 4 — the two modes never overlap:
 
    - **file-only mode** — you never entered dual-write. mem-mesh does not exist for this run: no 🧠 line, no mention of mem-mesh anywhere in the output. This is not "omitting a required line"; there is no line to report.

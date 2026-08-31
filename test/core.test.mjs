@@ -201,6 +201,83 @@ describe('task CRUD', () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  test('failed update/reopen leaves no tasks.json.lock behind (l21)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['tasks', 'add', 'Task A'], { cwd: tmp });
+      const lockPath = join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'tasks.json.lock');
+
+      const bogus = run(['tasks', 'update', 't1', '--status', 'bogus'], { cwd: tmp });
+      expect(bogus.exitCode).not.toBe(0);
+      expect(existsSync(lockPath)).toBe(false);
+
+      const missing = run(['tasks', 'update', 't99', '--status', 'running'], { cwd: tmp });
+      expect(missing.exitCode).not.toBe(0);
+      expect(missing.stderr).toContain('not found');
+      expect(existsSync(lockPath)).toBe(false);
+
+      const reopenMissing = run(['tasks', 'reopen', 't99', '--reason', 'x'], { cwd: tmp });
+      expect(reopenMissing.exitCode).not.toBe(0);
+      expect(existsSync(lockPath)).toBe(false);
+
+      // A leaked lock blocked the next writer for up to 10s — this must be instant.
+      const next = run(['tasks', 'update', 't1', '--status', 'running'], { cwd: tmp });
+      expect(next.exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejected update writes no partial mutation (l21)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['tasks', 'add', 'Task A'], { cwd: tmp });
+      // Unknown dep must reject the WHOLE update — the --desc change too.
+      const r = run(['tasks', 'update', 't1', '--desc', 'changed', '--deps', 't99', '--reason', 'user'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      const tasks = readJSON(join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'tasks.json'));
+      expect(tasks.tasks[0].description).not.toBe('changed');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('--status failed accepts a free-text --reason as failure_reason (l22)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['tasks', 'add', 'Task A'], { cwd: tmp });
+      run(['tasks', 'update', 't1', '--status', 'running'], { cwd: tmp });
+
+      const r = run(['tasks', 'update', 't1', '--status', 'failed', '--reason', 'tests timed out', '--retry', 'false'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+
+      const tasks = readJSON(join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'tasks.json'));
+      expect(tasks.tasks[0].status).toBe('failed');
+
+      const metrics = readFileSync(join(tmp, '.xm', 'build', 'metrics', 'sessions.jsonl'), 'utf8');
+      const failedEvent = metrics.trim().split('\n').map(l => JSON.parse(l)).find(e => e.type === 'task_failed');
+      expect(failedEvent.failure_reason).toBe('tests timed out');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('plan-field update still requires an enum revision reason (l22 guard)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      run(['tasks', 'add', 'Task A'], { cwd: tmp });
+      const r = run(['tasks', 'update', 't1', '--desc', 'x', '--reason', 'free text'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain('invalid revision reason');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── Steps (DAG) ───────────────────────────────────────────────────
@@ -234,6 +311,34 @@ describe('DAG steps', () => {
       const r = run(['tasks', 'add', 'Task A', '--deps', 't99'], { cwd: tmp });
       expect(r.exitCode).not.toBe(0);
       expect(r.stderr).toContain('Unknown dependency');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('steps next writes under the tasks.json lock, row-scoped (l43)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['tasks', 'add', 'Task A'], { cwd: tmp });
+      run(['tasks', 'add', 'Task B'], { cwd: tmp });
+      run(['steps', 'compute'], { cwd: tmp });
+      const tasksFile = join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'tasks.json');
+      const lockPath = tasksFile + '.lock';
+
+      // A live lock must block the write (the old snapshot write bypassed it
+      // and could revert updates parallel agents committed in the window).
+      writeFileSync(lockPath, String(process.pid));
+      const blocked = run(['steps', 'next'], { cwd: tmp });
+      expect(blocked.exitCode).not.toBe(0);
+      expect(blocked.stderr).toContain('lock contention');
+      expect(readJSON(tasksFile).tasks.every(t => t.status === 'pending')).toBe(true);
+      rmSync(lockPath);
+
+      const r = run(['steps', 'next'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      expect(readJSON(tasksFile).tasks.map(t => t.status)).toEqual(['ready', 'ready']);
+      expect(existsSync(lockPath)).toBe(false);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -368,6 +473,23 @@ describe('edge cases', () => {
     }
   });
 
+  test('unicode project names slug distinctly; all-punctuation names rejected (l24)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      // Korean names used to collapse to '-', making every such project collide.
+      expect(run(['init', '결제 시스템'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['init', '알림 시스템'], { cwd: tmp }).exitCode).toBe(0);
+      expect(existsSync(join(tmp, '.xm', 'build', 'projects', '결제-시스템'))).toBe(true);
+      expect(existsSync(join(tmp, '.xm', 'build', 'projects', '알림-시스템'))).toBe(true);
+
+      const r = run(['init', '!!!'], { cwd: tmp });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain('empty slug');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('status shows next action suggestion', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
@@ -470,6 +592,28 @@ describe('misc commands', () => {
       setupProject(tmp);
       const r = run(['close', '--summary', 'Completed MVP'], { cwd: tmp });
       expect(r.exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('templates use mints a unique id after tasks remove (l42)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      const name = setupProject(tmp);
+      run(['tasks', 'add', 'Task A'], { cwd: tmp });
+      run(['tasks', 'add', 'Task B'], { cwd: tmp });
+      run(['tasks', 'add', 'Task C'], { cwd: tmp });
+      run(['tasks', 'remove', 't2'], { cwd: tmp });
+
+      // length+1 minted 't3' here, colliding with the surviving t3.
+      const r = run(['templates', 'use', 'add-docker'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+
+      const tasks = readJSON(join(tmp, '.xm', 'build', 'projects', name, 'phases', '02-plan', 'tasks.json'));
+      const ids = tasks.tasks.map(t => t.id);
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(ids).toContain('t4');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

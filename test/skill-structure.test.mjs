@@ -16,6 +16,37 @@ function readEvalFile(path) {
   return readFileSync(join(ROOT, 'x-eval', 'skills', 'eval', path), 'utf8');
 }
 
+describe('x-review headless execution boundary', () => {
+  const skill = readSkill('x-review');
+
+  test('degrades delegated headless runs instead of waiting forever', () => {
+    expect(skill).toContain('Execution Boundary — Headless / Delegated Runtimes');
+    expect(skill).toContain('single-pass-headless');
+    expect(skill).toContain('exactly one spawn batch');
+    expect(skill).toContain('returns no worker ids');
+    expect(skill).toContain('Do not retry spawn');
+    expect(skill).toContain('at least one successfully created worker is still live');
+    expect(skill).toContain('no worker update three consecutive times');
+    expect(skill).toContain('never wait indefinitely');
+  });
+
+  test('corrects invalid test-runner argument shapes at most once', () => {
+    expect(skill).toContain('Use one shared filter or separate commands');
+    expect(skill).toContain('An argument/usage error permits one corrected');
+    expect(skill).toContain('command, not repetition of the invalid shape');
+  });
+});
+
+describe('x-review bounded panel execution', () => {
+  const skill = readSkill('x-review');
+
+  test('chunks frozen panel targets to at most three files', () => {
+    expect(skill).toContain('--chunk-file-budget 3');
+    expect(skill).toContain('at most 3 frozen diff files');
+    expect(skill).toContain('forbid repository search or opening files');
+  });
+});
+
 // --- x-solver SKILL.md structure ---
 
 describe('x-solver SKILL.md structure', () => {
@@ -102,6 +133,9 @@ describe('x-solver SKILL.md structure', () => {
 
 describe('x-review SKILL.md structure', () => {
   const content = readSkill('x-review');
+  const workflow = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'review-workflow.md'), 'utf8');
+  const dataDirectory = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'data-directory.md'), 'utf8');
+  const integration = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'x-build-integration.md'), 'utf8');
 
   test('Smart Router detects PR, branch, and main', () => {
     expect(content).toContain('Smart Router');
@@ -128,10 +162,12 @@ describe('x-review SKILL.md structure', () => {
     expect(content).toContain('HEAD~');
   });
 
-  test('Smart Router has large diff guard', () => {
-    expect(content).toContain('500');
-    expect(content).toContain('2000');
-    expect(content).toContain('force-full');
+  test('Smart Router uses token-budgeted chunk coverage', () => {
+    expect(content).toContain('24K tokens');
+    expect(content).toContain('token planner can chunk');
+    expect(content).toContain('Review incomplete');
+    expect(content).toContain('N profiles × M chunks');
+    expect(content).not.toContain('force-full');
   });
 
   test('contains full mode with lens-first split', () => {
@@ -141,25 +177,46 @@ describe('x-review SKILL.md structure', () => {
   });
 
   test('contains CoVe self-verify step', () => {
-    expect(content).toContain('Self-Verify');
-    expect(content).toContain('Chain-of-Verification');
-    expect(content).toContain('CoVe-removed');
-    expect(content).toContain('CoVe-downgraded');
+    expect(workflow).toContain('Self-Verify');
+    expect(workflow).toContain('verification question');
+    expect(workflow).toContain('CoVe-removed');
+    expect(workflow).toContain('CoVe-downgraded');
+  });
+
+  test('consensus changes confidence, never severity', () => {
+    expect(workflow).toContain('Never raise severity because sources agree');
+    expect(workflow).toContain('A Low reported independently by');
+    expect(workflow).not.toContain('Promote severity one level');
+    expect(workflow).toContain('strongly-corroborated');
+    expect(dataDirectory).toContain('\"confidence\": \"corroborated\"');
+    expect(dataDirectory).toContain('\"source_count\": 2');
   });
 
   test('CoVe uses agent snippets, not file re-reads', () => {
-    expect(content).toContain('do not re-read the file');
-    expect(content).toContain('snippet');
+    expect(workflow).toContain('frozen target and canonical report');
+    expect(workflow).toContain('deterministic grounding');
   });
 
   test('contains presets (quick/standard/security)', () => {
+    expect(content).toContain('--preset adaptive-fast');
     expect(content).toContain('--preset quick');
     expect(content).toContain('--preset standard');
     expect(content).toContain('--preset security');
   });
 
+  test('adaptive-fast is one wave with conditional expensive gates', () => {
+    expect(content).toContain('one parallel LLM wave');
+    expect(content).toContain('scripts/plan-review.mjs');
+    expect(content).toContain('Recall/panel/another reviewer');
+    expect(workflow).toContain('correctness');
+    expect(workflow).toContain('risk');
+    expect(workflow).toContain('target_coverage');
+    expect(workflow).toContain('Disabled; finish after the grounded first wave');
+    expect(dataDirectory).toContain('duration_ms');
+  });
+
   test('verdict includes reason', () => {
-    expect(content).toContain('verdict rationale');
+    expect(workflow).toContain('Include verdict rationale');
   });
 
   test('review results saved as MD', () => {
@@ -168,10 +225,50 @@ describe('x-review SKILL.md structure', () => {
     expect(content).toContain('reviewed_commit');
   });
 
+  test('review artifacts bind review-fix to Phase-1 target bytes', () => {
+    expect(content).toContain('reviewed_files_all');
+    expect(content).toContain('reviewed_file_snapshots');
+    expect(workflow).toContain('Capture these now, not');
+    expect(workflow).toContain('refuses stale findings');
+    expect(dataDirectory).toContain('raw bytes with SHA-256');
+    expect(dataDirectory).toContain('not eligible for review-fix');
+  });
+
+  test('review-fix documents byte-bound finding lifecycle', () => {
+    expect(workflow).toContain('open → fix_authorized → fixed → reverified');
+    expect(workflow).toContain('--outcome resolved');
+    expect(dataDirectory).toContain('finding-lifecycle.json');
+    expect(dataDirectory).toContain('stable content-derived `finding_id`');
+  });
+
   test('contains review-fix triage contract', () => {
     expect(content).toContain('REVIEW-FIX CONTRACT');
     expect(content).toContain('triage checklist');
     expect(content).toContain('fix_now');
+  });
+
+  test('fails closed on missing, stale, or empty lens reports before synthesis', () => {
+    expect(content).toContain('lens-report-contract.md');
+    expect(content).toContain('scripts/validate-reports.mjs');
+    expect(workflow).toContain('N/N report coverage');
+    expect(workflow).toContain('missing report, empty body');
+    expect(content).toContain('Partial coverage forbids LGTM');
+  });
+
+  test('recovers delegate transport failures from validated artifacts first', () => {
+    expect(content).toContain('Artifact-first recovery');
+    expect(workflow).toContain('Delegate transport recovery (artifact first)');
+    expect(workflow).toContain('Broken pipe');
+    expect(workflow).toContain('validation.json.ok');
+    expect(workflow).toContain('request_id');
+    expect(workflow).toContain('Never invent a provider-specific retry flag');
+
+    const validatePos = workflow.indexOf('Run `validate-reports.mjs` against the full expected manifest');
+    const recoveryPos = workflow.indexOf('execute that command once');
+    const redispatchPos = workflow.indexOf('Fresh-agent re-dispatch is the last step');
+    expect(validatePos).toBeGreaterThan(0);
+    expect(recoveryPos).toBeGreaterThan(validatePos);
+    expect(redispatchPos).toBeGreaterThan(recoveryPos);
   });
 
   test('all 7 lenses documented', () => {
@@ -188,6 +285,29 @@ describe('x-review SKILL.md structure', () => {
     expect(content).toContain('allowed-tools');
     expect(content).toContain('AskUserQuestion');
   });
+
+  test('inherits the effective reviewer model instead of pinning sonnet', () => {
+    expect(workflow).not.toContain('model: "sonnet"');
+    expect(workflow).toContain('omit the Agent `model` parameter');
+    expect(workflow).toContain('may never silently substitute Sonnet');
+  });
+
+  test('uses panel only as the optional Phase 3 backend', () => {
+    expect(content).toContain('x-panel is only the Phase');
+    expect(content).toContain('must not run a native panel after x-review');
+    expect(content).toContain('review.models');
+    expect(content).toContain('two slots may share a provider');
+    expect(content).toContain('--models "$REVIEW_MODELS"');
+    expect(content).toContain('model sources agreed');
+  });
+
+  test('bounds review-fix convergence to one delta re-review', () => {
+    expect(content).toContain('One automatic re-review is the default maximum');
+    expect(integration).toContain('reviewed_commit');
+    expect(integration).toContain('stop and report it');
+    expect(integration).toContain('Do not run a');
+    expect(integration).toContain('native x-panel review after x-review');
+  });
 });
 
 // --- x-op SKILL.md structure ---
@@ -195,6 +315,20 @@ describe('x-review SKILL.md structure', () => {
 describe('x-op SKILL.md structure', () => {
   const content = readSkill('x-op');
   const opRoot = join(ROOT, 'x-op', 'skills', 'op');
+
+  test('direct is a routable single-agent baseline strategy, confirmed like any other', () => {
+    const directBody = readFileSync(join(opRoot, 'strategies', 'direct.md'), 'utf8');
+    expect(directBody).toContain('Phase 1: EXECUTE');
+    expect(directBody).toContain('STRATEGY_MULTIPLIERS.direct = 1.0');
+    expect(content).toContain('- `direct` → [Strategy: direct]');
+    expect(content).toContain('strategies/direct.md');
+    // auto-route row + decision-tree leaf, and never a bypass of the confirmation protocol
+    expect(content).toMatch(/\| direct \| medium \|/);
+    expect(content).toContain('→ direct (one agent');
+    expect(content).toContain('`direct` is a recommendation leaf, never a bypass');
+    const autoRoute = readFileSync(join(opRoot, 'references', 'x-op-auto-route.md'), 'utf8');
+    expect(autoRoute).toContain('**direct**');
+  });
 
   test('brainstorm has --analogical and --lateral modes', () => {
     // brainstorm strategy body lives in strategies/brainstorm.md (extracted from SKILL.md)
@@ -255,8 +389,9 @@ describe('x-op SKILL.md structure', () => {
       .sort();
 
     expect(routingStrategies).toEqual(strategyFiles);
-    expect(routingStrategies).toHaveLength(17);
-    expect(content).not.toContain('18 strategies');
+    // 17 orchestrated strategies + `direct`, the single-agent baseline they are measured against
+    expect(routingStrategies).toHaveLength(18);
+    expect(routingStrategies).toContain('direct');
     expect(content).not.toContain('classify narrows');
   });
 
@@ -322,15 +457,15 @@ describe('x-build SKILL.md structure', () => {
     }
   });
 
-  test('uses canonical PRD path in plan phase directory', () => {
-    expect(content).toContain('phases/02-plan/PRD.md');
+  test('default path does not create a duplicate build PRD', () => {
+    expect(content).toContain('같은 내용을 `.xm/build`에 복제하지 않습니다');
     expect(content).not.toContain('context/PRD.md');
   });
 
-  test('model routing example matches haiku display commands', () => {
-    const modelRouting = content.split('## Model Routing')[1]?.split('## Mode Detection')[0] || '';
-    expect(modelRouting).toContain('**haiku**');
-    expect(modelRouting).toContain('model: "haiku"');
+  test('native execution discloses actual models without pinning a tier', () => {
+    const modelRouting = content.split('## Model Disclosure')[1]?.split('### Korean output style')[0] || '';
+    expect(modelRouting).toContain('실제 model');
+    expect(modelRouting).toContain('provider default');
     expect(modelRouting).not.toContain('model: "sonnet"');
   });
 
@@ -339,8 +474,15 @@ describe('x-build SKILL.md structure', () => {
       join(buildRoot, 'commands', 'other-commands.md'),
       'utf8'
     );
+    // The command catalog moved out of SKILL.md into references/commands.md
+    // (2026-08-11, 500-line cap). The guarded fact is the dimension COUNT, not
+    // which file states it — assert on the file that now owns the catalog.
+    const commandsRef = readFileSync(
+      join(buildRoot, 'references', 'commands.md'),
+      'utf8'
+    );
 
-    expect(content).toContain('15 quality dimensions');
+    expect(commandsRef).toContain('15 quality dimensions');
     expect(otherCommands).toContain('15-Dimension Validation');
     expect(otherCommands).not.toContain('8-Dimension Validation');
   });
@@ -566,9 +708,10 @@ describe('x-eval outcome assertion structure', () => {
     expect(assertionJudge).toContain('HARD FAIL');
   });
 
-  test('judges/assertion.md documents x-probe future integration', () => {
-    expect(assertionJudge).toContain('x-probe');
-    expect(assertionJudge).toContain('future');
+  test('judges/assertion.md routes command-settleable statements to executable assertions', () => {
+    expect(assertionJudge).toContain('When NOT to use this judge');
+    expect(assertionJudge).toContain('xm eval assert');
+    expect(assertionJudge).toContain('UNCERTAIN');
   });
 
   test('storage-layout.md includes assertion_results field', () => {

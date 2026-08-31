@@ -191,9 +191,10 @@ describe('run --worktrees CLI', () => {
     }
   });
 
-  test('(F4/F5) no parallel-safe task → sequential fallback acquires one', () => {
-    // Both tasks touch the same file → no parallel batch; the pipeline must still
-    // make progress by acquiring the first sequential task alone.
+  test('(F4/F5) conflicting known tasks → separate batches acquire one safely', () => {
+    // Both tasks touch the same file. Conflict-aware coloring keeps both in the
+    // schedule but places them in separate batches, so the first run acquires
+    // only t1 without degrading known work to the unknown-file fallback.
     seedTasks([
       { id: 't1', name: 'Alpha', status: 'pending', size: 'small', depends_on: [], expected_files: ['shared.mjs'] },
       { id: 't2', name: 'Beta', status: 'pending', size: 'small', depends_on: [], expected_files: ['shared.mjs'] },
@@ -201,10 +202,10 @@ describe('run --worktrees CLI', () => {
     const map = JSON.stringify({ 'feat/t1-alpha': wt1 });
     const out = JSON.parse(run(['--worktrees', '--max-parallel', '4'], { FAKE_GK_ACQUIRE_MAP: map }).stdout);
     expect(out.mode).toBe('worktree');
-    expect(out.sequential_fallback).toBe(true);
+    expect(out.sequential_fallback).toBe(false);
     expect(out.parallel).toBe(false);
-    expect(out.parallel_batches ?? out.batches).toEqual([]);
-    expect(out.sequential).toEqual(['t1', 't2']);
+    expect(out.parallel_batches ?? out.batches).toEqual([['t1'], ['t2']]);
+    expect(out.sequential).toEqual([]);
     expect(out.tasks).toHaveLength(1);
     expect(out.tasks[0].task_id).toBe('t1');
     expect(out.tasks[0].acquired).toBe(true);

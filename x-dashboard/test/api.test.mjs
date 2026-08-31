@@ -11,19 +11,19 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import { spawn } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, mkdtempSync, statSync, renameSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, mkdtempSync, statSync, renameSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { SCHEMA } from '../../x-build/lib/config-schema.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// The server uses resolve(process.cwd(), '.xm') as XM_ROOT.
-// We spawn it from the xm project root so fixtures land in xm/.xm/
 const PROJECT_ROOT = resolve(__dirname, '..', '..');
 const SERVER_PATH = join(__dirname, '..', 'lib', 'x-dashboard-server.mjs');
 const TEST_PORT = 19898;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const XM_ROOT = join(PROJECT_ROOT, '.xm');
+const TEST_SANDBOX = realpathSync(mkdtempSync(join(tmpdir(), 'xdb-api-')));
+const TEST_HOME = join(TEST_SANDBOX, 'home');
+const XM_ROOT = join(TEST_SANDBOX, '.xm');
 
 // ── Test fixture setup ───────────────────────────────────────────────
 
@@ -328,8 +328,14 @@ beforeAll(async () => {
   serverProc = spawn('bun', [SERVER_PATH, '--port', String(TEST_PORT)], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    cwd: PROJECT_ROOT,
-    env: { ...process.env, NO_BROWSER: '1' },
+    cwd: TEST_SANDBOX,
+    env: {
+      ...process.env,
+      HOME: TEST_HOME,
+      XM_ROOT,
+      XM_DASHBOARD_RUN_DIR: join(TEST_SANDBOX, 'run'),
+      NO_BROWSER: '1',
+    },
   });
 
   serverProc.stderr?.on('data', () => {});
@@ -351,6 +357,7 @@ afterAll(async () => {
   try { await fetch(`${BASE}/shutdown`).catch(() => {}); } catch {}
   try { serverProc?.kill('SIGTERM'); } catch {}
   teardownFixtures();
+  rmSync(TEST_SANDBOX, { recursive: true, force: true });
 });
 
 // ── Helper ───────────────────────────────────────────────────────────
@@ -370,14 +377,17 @@ describe('GET /health', () => {
     expect(typeof body.uptime).toBe('number');
     expect(body.port).toBe(TEST_PORT);
     expect(typeof body.pid).toBe('number');
+    const isolated = await getJSON('/api/health');
+    expect(isolated.body.xmRoot).toBe(XM_ROOT);
   });
 });
 
 describe('GET /api/config', () => {
-  it('returns 200 with a mode field', async () => {
+  it('returns an isolated empty project config', async () => {
     const { res, body } = await getJSON('/api/config');
     expect(res.status).toBe(200);
-    expect(typeof body.mode).toBe('string');
+    expect(body).toMatchObject({ _tier: 'project', _empty: true });
+    expect(body._path.startsWith(XM_ROOT)).toBe(true);
   });
 });
 
@@ -602,6 +612,86 @@ describe('GET /api/later', () => {
   });
 });
 
+describe('GET /api/review/precision', () => {
+  const REVIEW_DIR = join(XM_ROOT, 'review');
+  const LEDGER_PATH = join(REVIEW_DIR, 'triage-ledger.jsonl');
+  let ledgerBackup = null;
+  let createdReviewDir = false;
+
+  const ledgerRow = (over = {}) => ({
+    schema_v: 1, type: 'triage_decision', ts: '2026-08-20T00:00:00.000Z', reviewed_commit: 'c1',
+    finding_id: 'rf_0000000000000001', id: 'F1', lens: 'logic', severity: 'high', file: 'src/a.mjs',
+    decision: 'fix_now', triage_digest: null, ...over,
+  });
+
+  beforeAll(() => {
+    createdReviewDir = !existsSync(REVIEW_DIR);
+    ensureDir(REVIEW_DIR);
+    ledgerBackup = existsSync(LEDGER_PATH) ? readFileSync(LEDGER_PATH) : null;
+    const rows = [
+      ledgerRow(),
+      ledgerRow({ finding_id: 'rf_0000000000000002', id: 'F2', lens: 'security', severity: '<img src=x onerror=alert(1)>', decision: 'false_positive' }),
+      ledgerRow({ finding_id: 'rf_0000000000000003', id: 'F3', lens: 'logic', reviewed_commit: 'c2', ts: '2026-08-25T00:00:00.000Z', decision: 'fix_now' }),
+      { ...ledgerRow(), type: 'triage_outcome', decision: undefined, outcome: 'resolved' },
+    ];
+    // trailing torn line: an append-only ledger can end mid-write
+    writeFileSync(LEDGER_PATH, rows.map(r => JSON.stringify(r)).join('\n') + '\n{"torn":');
+  });
+
+  afterAll(() => {
+    if (ledgerBackup === null) rmSync(LEDGER_PATH, { force: true });
+    else writeFileSync(LEDGER_PATH, ledgerBackup);
+    if (createdReviewDir) rmSync(REVIEW_DIR, { recursive: true, force: true });
+  });
+
+  it('aggregates per-lens precision and skips the torn line', async () => {
+    const { res, body } = await getJSON('/api/review/precision');
+    expect(res.status).toBe(200);
+    expect(body.status).toBe('ok');
+    expect(body.skipped_lines).toBe(1);
+    expect(body.window.reviews).toBe(2);
+    const logic = body.lenses.find(b => b.lens === 'logic');
+    expect(logic).toMatchObject({ decided: 2, fix_now: 2, false_positive: 0, precision: 1, resolved: 1 });
+    const security = body.lenses.find(b => b.lens === 'security');
+    expect(security).toMatchObject({ decided: 1, false_positive: 1, precision: 0 });
+    expect(body.severities.find(b => b.severity === 'unknown')).toMatchObject({ decided: 1, false_positive: 1 });
+    expect(body.severities.some(b => b.severity.includes('<img'))).toBe(false);
+    expect(body.totals).toMatchObject({ decided: 3, precision: 0.667 });
+  });
+
+  it('applies since / last / lens query windows', async () => {
+    const last = await getJSON('/api/review/precision?last=1');
+    expect(last.body.window.reviews).toBe(1);
+    expect(last.body.totals.decided).toBe(1);
+    const lens = await getJSON('/api/review/precision?lens=security');
+    expect(lens.body.lenses.map(b => b.lens)).toEqual(['security']);
+  });
+
+  it('rejects a malformed since window', async () => {
+    const { res, body } = await getJSON('/api/review/precision?since=soon');
+    expect(res.status).toBe(400);
+    expect(body.status).toBe('bad_request');
+  });
+
+  it('rejects a partially numeric last window', async () => {
+    const { res, body } = await getJSON('/api/review/precision?last=1oops');
+    expect(res.status).toBe(400);
+    expect(body.status).toBe('bad_request');
+  });
+
+  it('reports no_ledger when the ledger file is absent', async () => {
+    const parked = `${LEDGER_PATH}.parked`;
+    renameSync(LEDGER_PATH, parked);
+    try {
+      const { res, body } = await getJSON('/api/review/precision');
+      expect(res.status).toBe(200);
+      expect(body.status).toBe('no_ledger');
+    } finally {
+      renameSync(parked, LEDGER_PATH);
+    }
+  });
+});
+
 describe('GET /api/probe/latest', () => {
   it('returns 200 with a verdict field', async () => {
     const { res, body } = await getJSON('/api/probe/latest');
@@ -767,6 +857,15 @@ describe('GET /api/panels/all (cross-workspace aggregate)', () => {
     const ws = body.workspaces[0];
     expect(ws.id).toBeTruthy();
     expect(Array.isArray(ws.runs)).toBe(true);
+    expect(typeof ws.last_activity_at).toBe('string');
+    expect(ws.runs.every((r) => r.activity_at == null || typeof r.activity_at === 'string')).toBe(true);
+    expect(ws.runs.every((r) => (r.status?.models || []).every((m) => !Object.hasOwn(m, 'stdout_tail') && !Object.hasOwn(m, 'stderr_tail')))).toBe(true);
+    const ranks = ws.runs.map((r) => {
+      const live = r.kind === 'cross' ? r.phase === 'running' : r.status?.phase !== 'done' && Date.now() - Date.parse(r.status?.updated_at || '') < 30_000;
+      const problem = r.phase === 'failed' || r.phase === 'stalled' || r.status?.models?.some((m) => m.state === 'failed');
+      return live ? 0 : problem ? 1 : 2;
+    });
+    expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
     // the cross fixture + review fixtures all live in this project → surfaced in the aggregate
     const allRuns = body.workspaces.flatMap((w) => w.runs);
     expect(allRuns.find((r) => r.run === TEST_CROSS_RUN)).toBeTruthy();
@@ -1043,6 +1142,7 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
   const SERVER_SRC = readFileSync(SERVER_PATH, 'utf8');
   const SCHEMA_SRC = readFileSync(join(XM_LIB, 'config-schema.mjs'), 'utf8');
   const WORKTREE_SRC = readFileSync(join(XM_LIB, 'x-build', 'worktree-shared.mjs'), 'utf8');
+  const REVIEW_PRECISION_SRC = readFileSync(join(PROJECT_ROOT, 'x-dashboard', 'lib', 'x-build', 'review-precision.mjs'), 'utf8');
 
   async function bootSimulated(dir, port) {
     const proc = spawn('bun', [join(dir, 'server.mjs'), '--port', String(port)], {
@@ -1051,7 +1151,13 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
       cwd: dir,
       // Isolated RUN_DIR so this second instance's PID file never collides
       // with the real one the main test server (beforeAll, above) is using.
-      env: { ...process.env, NO_BROWSER: '1', XM_DASHBOARD_RUN_DIR: join(dir, 'run') },
+      env: {
+        ...process.env,
+        HOME: join(dir, 'home'),
+        XM_ROOT: join(dir, '.xm'),
+        NO_BROWSER: '1',
+        XM_DASHBOARD_RUN_DIR: join(dir, 'run'),
+      },
     });
     proc.stderr?.on('data', () => {});
     proc.stdout?.on('data', () => {});
@@ -1082,6 +1188,42 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
       const body = await res.json();
       expect(res.status).toBe(200);
       expect(body.entries.length).toBe(SCHEMA.length);
+    } finally {
+      try { proc?.kill('SIGTERM'); } catch {}
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('serves review precision from the standalone dashboard package layout', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'xdb-standalone-smoke-'));
+    let proc;
+    const port = 19893;
+    try {
+      writeFileSync(join(dir, 'server.mjs'), SERVER_SRC);
+      mkdirSync(join(dir, 'x-build'), { recursive: true });
+      writeFileSync(join(dir, 'x-build', 'review-precision.mjs'), REVIEW_PRECISION_SRC);
+      const reviewDir = join(dir, '.xm', 'review');
+      mkdirSync(reviewDir, { recursive: true });
+      writeFileSync(join(reviewDir, 'triage-ledger.jsonl'), JSON.stringify({
+        schema_v: 1,
+        type: 'triage_decision',
+        ts: '2026-08-26T00:00:00.000Z',
+        reviewed_commit: 'standalone',
+        finding_id: 'rf_standalone0001',
+        id: 'F1',
+        lens: 'logic',
+        severity: 'medium',
+        file: 'src/a.mjs',
+        decision: 'fix_now',
+        triage_digest: null,
+      }) + '\n');
+
+      proc = await bootSimulated(dir, port);
+      const res = await fetch(`http://127.0.0.1:${port}/api/review/precision`);
+      const body = await res.json();
+      expect(res.status).toBe(200);
+      expect(body.status).toBe('ok');
+      expect(body.totals).toMatchObject({ decided: 1, fix_now: 1, precision: 1 });
     } finally {
       try { proc?.kill('SIGTERM'); } catch {}
       rmSync(dir, { recursive: true, force: true });

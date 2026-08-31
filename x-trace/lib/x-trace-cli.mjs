@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { gitSnapshot, resolveTraceDir } from './x-trace/trace-writer.mjs';
 import { lastRead, lastWrite } from './x-trace/last-store.mjs';
 import { createReplay, promoteReplayToEval } from './x-trace/replay.mjs';
+import { driftReport, appendSnapshot, formatDriftReport, AXES, DEFAULT_WINDOW, DEFAULT_BASELINE, DEFAULT_MIN_SAMPLES } from './x-trace/drift.mjs';
 
 /** Tools the dispatcher is expected to record. Anything else warns then records (FM4). */
 const KNOWN_TOOLS = new Set(['review', 'build', 'panel', 'op', 'eval', 'ship', 'dispatcher']);
@@ -49,18 +50,39 @@ const COVERAGE_NOTE =
 // ── helpers ──────────────────────────────────────────────────────────
 
 /** Split raw args into { opts, pos }. Boolean flags never consume a following positional argument. */
+const BOOLEAN_OPTIONS = new Set([
+  'json', 'rebuild', 'promote-to-eval', 'fail-on-flag', 'no-snapshot',
+]);
+const DRIFT_OPTIONS = new Set([
+  'window', 'baseline', 'min-samples', 'axis', 'now', 'failOnFlag', 'noSnapshot', 'json',
+]);
+const DRIFT_VALUE_OPTIONS = ['window', 'baseline', 'min-samples', 'axis', 'now'];
+
 function parseArgs(args) {
   const opts = {};
   const pos = [];
+  const errors = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === '--json') { opts.json = true; continue; }
-    if (a === '--rebuild') { opts.rebuild = true; continue; }
-    if (a === '--promote-to-eval') { opts.promoteToEval = true; continue; }
-    if (a.startsWith('--')) { opts[a.slice(2)] = args[++i]; continue; }
+    if (a.startsWith('--')) {
+      const name = a.slice(2);
+      if (BOOLEAN_OPTIONS.has(name)) {
+        const key = name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+        opts[key] = true;
+        continue;
+      }
+      const value = args[i + 1];
+      if (value == null || value.startsWith('--')) {
+        errors.push(`${a} requires a value`);
+        continue;
+      }
+      opts[name] = value;
+      i += 1;
+      continue;
+    }
     pos.push(a);
   }
-  return { opts, pos };
+  return { opts, pos, errors };
 }
 
 /** Shorten a 7–40 hex sha to 7 chars; pass through non-sha refs (e.g. a subject line). */
@@ -407,6 +429,77 @@ function doctorRebuild() {
   console.log(COVERAGE_NOTE);
 }
 
+/**
+ * drift — window-vs-baseline comparison over traces, eval results, the review
+ * triage ledger, and cost events. Read-only apart from the numeric snapshot row
+ * it appends to .xm/metrics/drift.jsonl (skip with --no-snapshot).
+ * Exit 2 with --fail-on-flag when any axis crossed its threshold.
+ */
+function cmdDrift(opts, pos = []) {
+  const unknownOptions = Object.keys(opts).filter(name => !DRIFT_OPTIONS.has(name));
+  if (unknownOptions.length > 0) {
+    console.error(`xm trace drift: unknown option --${unknownOptions[0]}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (pos.length > 0) {
+    console.error(`xm trace drift: unexpected positional argument "${pos[0]}"`);
+    process.exitCode = 1;
+    return;
+  }
+  for (const name of DRIFT_VALUE_OPTIONS) {
+    if (Object.hasOwn(opts, name) && (typeof opts[name] !== 'string' || !opts[name].trim())) {
+      console.error(`xm trace drift: --${name} requires a value`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  const minSamples = opts['min-samples'] != null ? Number(opts['min-samples']) : DEFAULT_MIN_SAMPLES;
+  const axes = Object.hasOwn(opts, 'axis')
+    ? [...new Set(String(opts.axis).split(',').map(axis => axis.trim().toLowerCase()).filter(Boolean))]
+    : AXES;
+  if (axes.length === 0) {
+    console.error(`xm trace drift: --axis must select at least one axis (valid: ${AXES.join(', ')})`);
+    process.exitCode = 1;
+    return;
+  }
+  const unknownAxes = axes.filter(axis => !AXES.includes(axis));
+  if (unknownAxes.length > 0) {
+    console.error(`xm trace drift: unknown axis: ${unknownAxes.join(', ')} (valid: ${AXES.join(', ')})`);
+    process.exitCode = 1;
+    return;
+  }
+  const now = opts.now ? Date.parse(opts.now) : Date.now();
+  if (!Number.isFinite(now)) {
+    console.error(`--now must be an ISO timestamp (got "${opts.now}")`);
+    process.exitCode = 1;
+    return;
+  }
+  let report;
+  try {
+    report = driftReport({ window: opts.window || DEFAULT_WINDOW, baseline: opts.baseline || DEFAULT_BASELINE, minSamples, axes, now });
+  } catch (err) {
+    console.error(`xm trace drift: ${err.message}`);
+    process.exitCode = 1;
+    return;
+  }
+  let snapshot = null;
+  let snapshotFailed = false;
+  if (!opts.noSnapshot) {
+    try { snapshot = appendSnapshot(report); } catch (err) {
+      snapshotFailed = true;
+      process.exitCode = 1;
+      process.stderr.write(`[x-trace] drift snapshot not written: ${err.message}\n`);
+    }
+  }
+  if (opts.json) console.log(JSON.stringify({ ...report, snapshot_path: snapshot }, null, 2));
+  else {
+    console.log(formatDriftReport(report));
+    if (snapshot) console.log(`Snapshot appended: ${snapshot}`);
+  }
+  if (!snapshotFailed && opts.failOnFlag && report.flags.length > 0) process.exitCode = 2;
+}
+
 // ── router ───────────────────────────────────────────────────────────
 
 function printHelp() {
@@ -425,6 +518,13 @@ Commands:
                                 diff, and safe filesystem snapshot (max 3 forks/trace).
                                 --result FILE accepts output hash/metrics only;
                                 --promote-to-eval creates an idempotent eval case.
+  drift [--window 7d] [--baseline 28d] [--min-samples 5]
+        [--axis latency,tokens,errors,quality,precision,cost]
+        [--fail-on-flag] [--no-snapshot] [--json]
+                                Compare the recent window against the period before
+                                it per (skill/role/model), (rubric/strategy), lens.
+                                Flags need min-samples on both sides. Appends a
+                                numeric snapshot to .xm/metrics/drift.jsonl.
   help                          Show this help.
 
 Known tools: ${[...KNOWN_TOOLS].join(', ')}`);
@@ -432,7 +532,12 @@ Known tools: ${[...KNOWN_TOOLS].join(', ')}`);
 
 function main() {
   const [cmd, ...rest] = process.argv.slice(2);
-  const { opts, pos } = parseArgs(rest);
+  const { opts, pos, errors } = parseArgs(rest);
+  if (errors.length) {
+    console.error(`Usage error: ${errors.join('; ')}`);
+    process.exitCode = 1;
+    return;
+  }
   switch (cmd) {
     case 'record': cmdRecord(pos, opts); break;
     case 'last':   cmdLast(pos, opts); break;
@@ -440,6 +545,7 @@ function main() {
     case 'since':  cmdSince(pos); break;
     case 'doctor': cmdDoctor(opts); break;
     case 'replay': cmdReplay(pos, opts); break;
+    case 'drift':  cmdDrift(opts, pos); break;
     case 'help':
     case '--help':
     case '-h':
@@ -461,4 +567,4 @@ const isMain = (() => {
 })();
 if (isMain) main();
 
-export { cmdRecord, cmdLast, cmdStatus, cmdSince, cmdDoctor, cmdReplay, commitsSince, relativeTime, shortRef, sessionFileTime };
+export { cmdRecord, cmdLast, cmdStatus, cmdSince, cmdDoctor, cmdReplay, cmdDrift, commitsSince, relativeTime, shortRef, sessionFileTime };

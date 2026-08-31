@@ -10,7 +10,8 @@
 ## 0. 컨텍스트: xm은 무엇인가 (요약)
 
 xm = Claude Code용 **구조화된 멀티에이전트 오케스트레이션 플러그인 마켓플레이스**.
-주요 플러그인: x-op(17전략), x-agent(fan-out/swarm), x-build(PRD→DAG), x-solver,
+주요 플러그인: x-plan(저장소 기반 단일 planner), x-build(lean native 실행),
+x-op(17전략), x-agent(fan-out/swarm), x-solver,
 x-review, x-eval, x-probe, x-humble, x-panel, x-memory/x-recall, x-trace, x-ship,
 x-sync, x-dashboard, x-handoff/handon, x-humanize.
 
@@ -21,9 +22,11 @@ x-sync, x-dashboard, x-handoff/handon, x-humanize.
 
 | 자산 | 등급 | 실제 상태 (증거) |
 |---|---|---|
-| cost-engine 추정·예산 캡 | 🟢 **보유** | 추정 산식·budget guard·이벤트 스키마 실재. 단 **x-build 경로 한정** |
+| x-plan 단일 planner | 🟢 **보유** | `xm plan`과 deprecated `xm build plan`이 같은 x-plan entry point와 `.xm/plan` artifact를 사용. 기존 PRD/task/phase planner는 `legacy-plan`으로 격리 |
+| x-build lean 실행 | 🟢 **보유** | 저장소 근거 → x-plan → native 실행 → 위험 기반 선택 검증이 기본. 순차 실행 기본, worktree·phase·meta-gate는 explicit legacy opt-in |
+| cost-engine 추정·예산 캡 | 🟡 **legacy 한정** | 추정 산식·budget guard·이벤트 스키마는 실재하지만 기본 lean 경로가 아니라 명시적 x-build lifecycle에서만 사용 |
 | 추정치 순환 차단 | 🟡 **부분 보유** | `cost_source:'estimated'` 제외(`cost-engine.mjs:301`)되나 **legacy 미태깅 행은 여전히 오염** → 완결 전까지 🟢 아님 |
-| 이벤트/관측 스키마 | 🟡 **보유(x-build 한정)** | task_complete에 model/role/cost_usd/correlation_id 기록. 단 **x-build 경로에서만 emit** — x-op/x-agent는 미커버 |
+| 이벤트/관측 스키마 | 🟡 **legacy x-build 한정** | task_complete에 model/role/cost_usd/correlation_id 기록. 기본 native 실행과 x-op/x-agent는 미커버 |
 | x-trace 실행 추적 | 🟡 **메타데이터만** | id/role/model/duration/tokens_est만 저장. **prompt/입력/seed 미저장 → 재현 불가** |
 | `quality_score` | 🟡 **측정 아님** | 성공 시 기본 1, x-eval 미호출 → **품질 게이팅 근거로 못 씀** |
 | x-eval 골든셋 | 🟡 **프로토타입** | `prototypes/eval-v2/golden/`에 **전략당 3개·총 6개**만(라벨링 세션은 n=5로 통계 무의미). 프로덕션 골든셋·실행 CLI 없음 |
