@@ -78,6 +78,45 @@ describe('release detect/bump — xm dispatcher handling (l9/l10)', () => {
     } finally { rmSync(d, { recursive: true, force: true }); }
   });
 
+  // The marketplace bump path printed no tag (bumpStandalone computes one but is skipped for
+  // xm-marketplace) and `release commit` only tags when handed --tag, so three releases
+  // (2.22.0, 2.23.0, 2.23.1) shipped untagged with no error anywhere.
+  test('bump --plugins xm prints the meta-version tag command', () => {
+    const d = makeReleaseFixture();
+    try {
+      const r = spawnSync('node', [CLI, 'release', 'bump', '--patch', '--plugins', 'xm'], { cwd: d, encoding: 'utf8', timeout: 60000 });
+      expect(r.stdout).toContain('--tag v1.2.4'); // meta version after the bump, not the old 1.2.3
+      expect(r.stdout).toContain('release commit');
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test('bump --plugins x-panel tags the xm meta version, not the plugin version', () => {
+    const d = makeReleaseFixture();
+    try {
+      const r = spawnSync('node', [CLI, 'release', 'bump', '--patch', '--plugins', 'x-panel'], { cwd: d, encoding: 'utf8', timeout: 60000 });
+      expect(r.stdout).toContain('--tag v1.2.4'); // xm meta, not panel's 0.1.1
+      expect(r.stdout).not.toContain('--tag v0.1.1');
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test('bump warns instead of suggesting a duplicate tag', () => {
+    const d = makeReleaseFixture();
+    try {
+      spawnSync('bash', ['-c', 'git tag -a v1.2.4 -m "pre-existing"'], { cwd: d });
+      const r = spawnSync('node', [CLI, 'release', 'bump', '--patch', '--plugins', 'xm'], { cwd: d, encoding: 'utf8', timeout: 60000 });
+      expect(r.stdout).toContain('already exists');
+      expect(r.stdout).not.toContain('--tag v1.2.4'); // never hand over a command that would fail
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test('x-release skill and command both require --tag at the commit step', () => {
+    for (const rel of ['.claude/skills/x-release.md', '.claude/commands/x-release.md']) {
+      const body = readFileSync(join(REPO, rel), 'utf8');
+      expect(body).toContain('--tag v<META_VERSION> --push');
+      expect(body).not.toContain('release commit --msg "release: ..." --push'); // the untagged form
+    }
+  });
+
   test('bump keeps Claude and Codex plugin manifest versions aligned', () => {
     const d = makeReleaseFixture();
     try {

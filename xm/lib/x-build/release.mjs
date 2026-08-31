@@ -482,6 +482,18 @@ export function cmdReleaseBump(args) {
   for (const b of bumped) {
     console.log(`  ${b.name.padEnd(14)} ${b.from} → ${b.to}${b.meta ? ' (meta)' : ''}`);
   }
+
+  // Tag hint. bumpStandalone computes one, but it is skipped for xm-marketplace, so this
+  // path printed no tag and `release commit` only tags when handed --tag. Nothing errors
+  // when the tag is missing — the tag list just silently stops, which is how 2.22.0,
+  // 2.23.0 and 2.23.1 all shipped untagged. The repo's meta version is the xm version,
+  // which is what every historical `vX.Y.Z` tag names.
+  const metaTag = `v${xkitNew}`;
+  if (git(`tag --list ${JSON.stringify(metaTag)}`)) {
+    console.log(`\n  ⚠ Tag ${metaTag} already exists — commit without --tag, or bump again.`);
+  } else {
+    console.log(`\n  Tag with the release commit:\n    release commit --msg "release: ..." --tag ${metaTag} --push`);
+  }
 }
 
 // ── cmdReleaseCommit ──────────────────────────────────────────────────
