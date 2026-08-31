@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -13,7 +13,13 @@ const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).ver
 // HOME these tests build: `xm which` reports the repo instead of the fixture's
 // Codex bundle, and the resolve-order spec fails for everyone with the variable
 // set while passing in CI. Same leak already fixed for xm-update (81b9aa0).
-const { XM_LIB: _ignoredXmLib, ...BASE_ENV } = process.env;
+// CLAUDE_CONFIG_DIR is the same class of leak, newly reachable: install.sh now
+// prefers it over $HOME/.claude for the registry, marketplace clone and plugin
+// cache, so a developer shell exporting it points these fixtures at the real
+// config. Strip it here and pin it to the fixture below, which also makes the
+// new CLAUDE_CONFIG_DIR support the thing under test rather than a silent
+// redirect around it.
+const { XM_LIB: _ignoredXmLib, CLAUDE_CONFIG_DIR: _ignoredClaudeConfigDir, ...BASE_ENV } = process.env;
 
 function executable(path, body) {
   writeFileSync(path, `#!/bin/sh\n${body}\n`);
@@ -29,6 +35,26 @@ function pathWithoutClaude() {
     .join(':');
 }
 
+// Write a marketplace clone and a registry so install.sh can build its
+// version-comparison plan: `market` and `registry` are {name: version} maps.
+function seedPluginState(home, { market, registry }) {
+  const marketDir = join(home, '.claude', 'plugins', 'marketplaces', 'xm', '.claude-plugin');
+  mkdirSync(marketDir, { recursive: true });
+  writeFileSync(join(marketDir, 'marketplace.json'), JSON.stringify({
+    name: 'xm',
+    plugins: Object.entries(market).map(([name, version]) => ({ name, source: `./x-${name}`, version })),
+  }));
+  const plugins = {};
+  for (const [name, version] of Object.entries(registry)) {
+    const installPath = join(home, '.claude', 'plugins', 'cache', 'xm', name, version);
+    mkdirSync(installPath, { recursive: true });
+    plugins[`${name}@xm`] = [{ scope: 'user', installPath, version }];
+  }
+  const regDir = join(home, '.claude', 'plugins');
+  mkdirSync(regDir, { recursive: true });
+  writeFileSync(join(regDir, 'installed_plugins.json'), JSON.stringify({ version: 2, plugins }));
+}
+
 function fixture({ installedVersion, withClaude = false } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'xm-install-script-'));
   const bin = join(home, 'bin');
@@ -38,8 +64,13 @@ function fixture({ installedVersion, withClaude = false } = {}) {
   if (withClaude) executable(join(bin, 'claude'), 'echo "claude $*" >> "$XM_TEST_CALLS"');
   if (installedVersion) {
     mkdirSync(join(home, '.claude', 'plugins'), { recursive: true });
+    // installPath must exist: install.sh skips a plugin only when the registry
+    // version matches the marketplace version AND its files are still on disk.
+    const xmPath = join(home, '.claude', 'plugins', 'cache', 'xm', 'xm', installedVersion);
+    mkdirSync(xmPath, { recursive: true });
     writeFileSync(join(home, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({
-      plugins: { 'xm@xm': [{ version: installedVersion }] },
+      version: 2,
+      plugins: { 'xm@xm': [{ scope: 'user', installPath: xmPath, version: installedVersion }] },
     }));
   }
   // The inherited PATH keeps node/curl reachable but must not leak a real
@@ -52,6 +83,9 @@ function fixture({ installedVersion, withClaude = false } = {}) {
   const env = {
     ...BASE_ENV,
     HOME: home,
+    // Pinned, not merely stripped: install.sh reads the registry, clone and
+    // cache through this, so the fixture must be what it resolves to.
+    CLAUDE_CONFIG_DIR: join(home, '.claude'),
     XM_BIN_DIR: join(home, '.local', 'bin'),
     XM_TEST_CALLS: calls,
     PATH: `${bin}:${dirname(process.execPath)}:${pathWithoutClaude()}`,
@@ -110,5 +144,103 @@ describe('xm install.sh', () => {
     expect(existsSync(join(home, '.codex', 'xm', 'manifest.json'))).toBe(true);
     const plugin = JSON.parse(readFileSync(join(home, 'plugins', 'xm', '.codex-plugin', 'plugin.json'), 'utf8'));
     expect(plugin.version).toBe(VERSION);
+  }, 30_000);
+
+  test('skips plugins already at the marketplace version and updates only the rest', () => {
+    const { home, calls, env } = fixture({ installedVersion: '0.1.0', withClaude: true });
+    seedPluginState(home, {
+      market: { xm: VERSION, build: '3.0.0', panel: '0.9.0', probe: '2.2.1' },
+      registry: { xm: '0.1.0', build: '2.0.0', panel: '0.9.0', probe: '2.2.1' },
+    });
+
+    const result = spawnSync('bash', [SCRIPT, '--yes'], { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+    if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+
+    const log = readFileSync(calls, 'utf8');
+    // Stale ones get the expensive call...
+    expect(log).toContain('claude plugin update build@xm -s user');
+    expect(log).toContain('claude plugin update xm@xm -s user');
+    // ...current ones do not.
+    expect(log).not.toContain('panel@xm -s user');
+    expect(log).not.toContain('probe@xm -s user');
+    expect(result.stdout).toContain('2 plugin(s) already at the marketplace version');
+  }, 30_000);
+
+  test('reinstalls a plugin whose cached files are gone even when versions match', () => {
+    const { home, calls, env } = fixture({ installedVersion: '0.1.0', withClaude: true });
+    seedPluginState(home, {
+      market: { xm: VERSION, panel: '0.9.0' },
+      registry: { xm: '0.1.0', panel: '0.9.0' },
+    });
+    rmSync(join(home, '.claude', 'plugins', 'cache', 'xm', 'panel', '0.9.0'), { recursive: true });
+
+    const result = spawnSync('bash', [SCRIPT, '--yes'], { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+    if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+
+    expect(readFileSync(calls, 'utf8')).toContain('claude plugin install panel@xm -s user');
+  }, 30_000);
+
+  test('falls back to touching every plugin when the registry is unreadable', () => {
+    const { home, calls, env } = fixture({ installedVersion: '0.1.0', withClaude: true });
+    seedPluginState(home, {
+      market: { xm: VERSION, build: '3.0.0', panel: '0.9.0' },
+      registry: { xm: '0.1.0', build: '3.0.0', panel: '0.9.0' },
+    });
+    writeFileSync(join(home, '.claude', 'plugins', 'installed_plugins.json'), '{ not json');
+
+    const result = spawnSync('bash', [SCRIPT, '--yes'], { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+    if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+
+    const log = readFileSync(calls, 'utf8');
+    // A broken registry must never be read as "everything is current".
+    for (const name of ['xm', 'build', 'panel']) {
+      expect(log).toContain(`${name}@xm -s user`);
+    }
+    expect(result.stdout).not.toContain('already at the marketplace version');
+  }, 30_000);
+
+  // install.sh resolves the registry, clone and cache through CLAUDE_CONFIG_DIR.
+  // Without a test that reads state from somewhere other than $HOME/.claude, the
+  // variable could stop being honoured and every other test would stay green.
+  test('resolves plugin state through CLAUDE_CONFIG_DIR, not $HOME/.claude', () => {
+    const { home, calls, env } = fixture({ installedVersion: '0.1.0', withClaude: true });
+    const altHome = mkdtempSync(join(tmpdir(), 'xm-install-altcfg-'));
+    seedPluginState(altHome, {
+      market: { xm: VERSION, panel: '0.9.0' },
+      registry: { xm: '0.1.0', panel: '0.9.0' },
+    });
+
+    const result = spawnSync('bash', [SCRIPT, '--yes'], {
+      cwd: home,
+      env: { ...env, CLAUDE_CONFIG_DIR: join(altHome, '.claude') },
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+
+    // panel is current only in the ALTERNATE config; $HOME/.claude knows nothing
+    // about it, so a skip here proves the alternate dir was the one consulted.
+    expect(readFileSync(calls, 'utf8')).not.toContain('panel@xm -s user');
+    expect(result.stdout).toContain('already at the marketplace version');
+    rmSync(altHome, { recursive: true, force: true });
+  }, 30_000);
+
+  // The clone is refreshed only on an update run, so planning from it alone
+  // drops a plugin it has not picked up yet — silently, with the run still
+  // reporting success. The plan must cover the fetched marketplace too.
+  test('installs a plugin missing from the marketplace clone', () => {
+    const { home, calls, env } = fixture({ installedVersion: '0.1.0', withClaude: true });
+    seedPluginState(home, {
+      market: { xm: VERSION, panel: '0.9.0' }, // clone has not seen `build` yet
+      registry: { xm: '0.1.0', panel: '0.9.0' },
+    });
+    // The fetched marketplace is the repo's own, which does carry `build`.
+    expect(JSON.parse(readFileSync(join(REPO, '.claude-plugin', 'marketplace.json'), 'utf8'))
+      .plugins.map((p) => p.name)).toContain('build');
+
+    const result = spawnSync('bash', [SCRIPT, '--yes'], { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+    if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+
+    expect(readFileSync(calls, 'utf8')).toContain('claude plugin install build@xm -s user');
   }, 30_000);
 });
