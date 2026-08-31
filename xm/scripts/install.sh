@@ -218,6 +218,12 @@ if command -v claude >/dev/null 2>&1; then
   # consecutive ones, which silently shifts an empty "from" field.
   # A plugin is skipped only when the registry version matches the marketplace
   # version AND its installPath still exists, so a pruned cache re-installs.
+  # The plan covers the UNION of the fetched marketplace and the local clone:
+  # the clone supplies the versions claude will actually install, but planning
+  # from the clone alone drops any plugin it has not picked up yet (the clone is
+  # only refreshed on an update run), which would silently never install it.
+  # stderr is deliberately not silenced, and the status is neutralized so that
+  # `set -e` cannot abort before the empty-plan fallback below gets to run.
   PLUGIN_PLAN="$(printf '%s' "$MARKETPLACE_JSON" | node -e '
     const fs=require("fs");
     const readJson=(p)=>{ try { return JSON.parse(fs.readFileSync(p,"utf8")); } catch { return null; } };
@@ -226,26 +232,31 @@ if command -v claude >/dev/null 2>&1; then
     const allowUpdate=process.argv[3]==="1";
     let stdin="";
     process.stdin.on("data",(c)=>stdin+=c).on("end",()=>{
-      const market=(planSource&&readJson(planSource))||(()=>{ try { return JSON.parse(stdin); } catch { return null; } })();
-      const plugins=market&&Array.isArray(market.plugins)?market.plugins:[];
+      const listOf=(m)=>(m&&Array.isArray(m.plugins))?m.plugins:[];
+      const clone=planSource?readJson(planSource):null;
+      const fetched=(()=>{ try { return JSON.parse(stdin); } catch { return null; } })();
+      const want=new Map();
+      for (const p of listOf(fetched)) if (p&&p.name) want.set(p.name,p.version||"");
+      for (const p of listOf(clone)) if (p&&p.name) want.set(p.name,p.version||"");
       const reg=readJson(regPath)||{};
       const entries=reg.plugins||{};
       const out=[];
-      for (const p of plugins) {
-        if (!p||!p.name) continue;
-        const raw=entries[p.name+"@xm"];
-        const entry=Array.isArray(raw)?raw[0]:raw;
-        if (!entry) { out.push(["install",p.name,"",p.version||""]); continue; }
+      for (const [name,wantV] of want) {
+        const raw=entries[name+"@xm"];
+        const list=Array.isArray(raw)?raw:(raw?[raw]:[]);
+        // install.sh only ever acts with `-s user`, so judge the user-scope
+        // record; a project/local entry must not mask a stale user install.
+        const entry=list.find((e)=>e&&e.scope==="user")||(list.length===1?list[0]:null);
+        if (!entry) { out.push(["install",name,"",wantV]); continue; }
         const have=entry.version||"";
-        const want=p.version||"";
         const onDisk=entry.installPath?fs.existsSync(entry.installPath):false;
-        if (have&&want&&have===want&&onDisk) { out.push(["current",p.name,have,want]); continue; }
-        if (!onDisk) { out.push(["install",p.name,have,want]); continue; }
-        out.push([allowUpdate?"update":"held",p.name,have,want]);
+        if (have&&wantV&&have===wantV&&onDisk) { out.push(["current",name,have,wantV]); continue; }
+        if (!onDisk) { out.push(["install",name,have,wantV]); continue; }
+        out.push([allowUpdate?"update":"held",name,have,wantV]);
       }
       process.stdout.write(out.map((r)=>r.join("|")).join("\n"));
     });
-  ' "$PLAN_SOURCE" "$INSTALLED_REG" "$DO_UPDATE" 2>/dev/null)"
+  ' "$PLAN_SOURCE" "$INSTALLED_REG" "$DO_UPDATE")" || PLUGIN_PLAN=""
 
   if [ -z "$PLUGIN_PLAN" ]; then
     warn "Could not compare plugin versions; falling back to updating every plugin."
@@ -264,18 +275,26 @@ if command -v claude >/dev/null 2>&1; then
         CURRENT=$((CURRENT + 1))
         ;;
       held)
-        # A newer version exists but this run is not an update run.
-        HELD=$((HELD + 1))
-        info "  → $plugin ($from installed, $to available — run 'xm update' to upgrade)"
+        # Either version can be empty when a manifest carries no version, and
+        # then no gap is known — claiming one available would be a false report.
+        if [ -n "$from" ] && [ -n "$to" ]; then
+          HELD=$((HELD + 1))
+          info "  → $plugin ($from installed, $to available — run 'xm update' to upgrade)"
+        else
+          info "  → $plugin (already installed; version unknown)"
+        fi
         ;;
       update)
         CHANGED=$((CHANGED + 1))
-        # $to is empty when the marketplace entry carries no version; still
-        # update (never silently skip), just don't print a dangling arrow.
-        if [ -n "$to" ]; then
+        # Either version is empty when a manifest carries no version, or on the
+        # fallback path where no comparison happened; still update (never
+        # silently skip), just don't print a dangling arrow or a blank version.
+        if [ -n "$to" ] && [ -n "$from" ]; then
           info "  → $plugin ($from → $to)"
-        else
+        elif [ -n "$from" ]; then
           info "  → $plugin (update from $from)"
+        else
+          info "  → $plugin (update)"
         fi
         claude plugin update "$plugin@xm" -s user >/dev/null 2>&1 || warn "    update failed: $plugin@xm"
         ;;

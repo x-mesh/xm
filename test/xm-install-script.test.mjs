@@ -13,7 +13,13 @@ const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).ver
 // HOME these tests build: `xm which` reports the repo instead of the fixture's
 // Codex bundle, and the resolve-order spec fails for everyone with the variable
 // set while passing in CI. Same leak already fixed for xm-update (81b9aa0).
-const { XM_LIB: _ignoredXmLib, ...BASE_ENV } = process.env;
+// CLAUDE_CONFIG_DIR is the same class of leak, newly reachable: install.sh now
+// prefers it over $HOME/.claude for the registry, marketplace clone and plugin
+// cache, so a developer shell exporting it points these fixtures at the real
+// config. Strip it here and pin it to the fixture below, which also makes the
+// new CLAUDE_CONFIG_DIR support the thing under test rather than a silent
+// redirect around it.
+const { XM_LIB: _ignoredXmLib, CLAUDE_CONFIG_DIR: _ignoredClaudeConfigDir, ...BASE_ENV } = process.env;
 
 function executable(path, body) {
   writeFileSync(path, `#!/bin/sh\n${body}\n`);
@@ -77,6 +83,9 @@ function fixture({ installedVersion, withClaude = false } = {}) {
   const env = {
     ...BASE_ENV,
     HOME: home,
+    // Pinned, not merely stripped: install.sh reads the registry, clone and
+    // cache through this, so the fixture must be what it resolves to.
+    CLAUDE_CONFIG_DIR: join(home, '.claude'),
     XM_BIN_DIR: join(home, '.local', 'bin'),
     XM_TEST_CALLS: calls,
     PATH: `${bin}:${dirname(process.execPath)}:${pathWithoutClaude()}`,
@@ -188,5 +197,50 @@ describe('xm install.sh', () => {
       expect(log).toContain(`${name}@xm -s user`);
     }
     expect(result.stdout).not.toContain('already at the marketplace version');
+  }, 30_000);
+
+  // install.sh resolves the registry, clone and cache through CLAUDE_CONFIG_DIR.
+  // Without a test that reads state from somewhere other than $HOME/.claude, the
+  // variable could stop being honoured and every other test would stay green.
+  test('resolves plugin state through CLAUDE_CONFIG_DIR, not $HOME/.claude', () => {
+    const { home, calls, env } = fixture({ installedVersion: '0.1.0', withClaude: true });
+    const altHome = mkdtempSync(join(tmpdir(), 'xm-install-altcfg-'));
+    seedPluginState(altHome, {
+      market: { xm: VERSION, panel: '0.9.0' },
+      registry: { xm: '0.1.0', panel: '0.9.0' },
+    });
+
+    const result = spawnSync('bash', [SCRIPT, '--yes'], {
+      cwd: home,
+      env: { ...env, CLAUDE_CONFIG_DIR: join(altHome, '.claude') },
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+
+    // panel is current only in the ALTERNATE config; $HOME/.claude knows nothing
+    // about it, so a skip here proves the alternate dir was the one consulted.
+    expect(readFileSync(calls, 'utf8')).not.toContain('panel@xm -s user');
+    expect(result.stdout).toContain('already at the marketplace version');
+    rmSync(altHome, { recursive: true, force: true });
+  }, 30_000);
+
+  // The clone is refreshed only on an update run, so planning from it alone
+  // drops a plugin it has not picked up yet — silently, with the run still
+  // reporting success. The plan must cover the fetched marketplace too.
+  test('installs a plugin missing from the marketplace clone', () => {
+    const { home, calls, env } = fixture({ installedVersion: '0.1.0', withClaude: true });
+    seedPluginState(home, {
+      market: { xm: VERSION, panel: '0.9.0' }, // clone has not seen `build` yet
+      registry: { xm: '0.1.0', panel: '0.9.0' },
+    });
+    // The fetched marketplace is the repo's own, which does carry `build`.
+    expect(JSON.parse(readFileSync(join(REPO, '.claude-plugin', 'marketplace.json'), 'utf8'))
+      .plugins.map((p) => p.name)).toContain('build');
+
+    const result = spawnSync('bash', [SCRIPT, '--yes'], { cwd: home, env, encoding: 'utf8', timeout: 60_000 });
+    if (result.status !== 0) throw new Error(`stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+
+    expect(readFileSync(calls, 'utf8')).toContain('claude plugin install build@xm -s user');
   }, 30_000);
 });
