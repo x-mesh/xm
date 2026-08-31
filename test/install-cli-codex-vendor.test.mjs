@@ -372,8 +372,11 @@ describe('codex Plugin Skill — runtime overlays (t8)', () => {
     expect(reviewPrompt).toContain('## Codex Review Fan-Out Contract');
     expect(reviewPrompt).toContain("call Codex's native spawn_agent collaboration tool directly");
     expect(reviewPrompt).toContain('\"task_name\": \"review_correctness\"');
-    expect(reviewPrompt).toContain('\"fork_turns\": \"all\"');
+    expect(reviewPrompt).toContain('\"fork_turns\": \"none\"');
+    expect(reviewPrompt).not.toContain('\"fork_turns\": \"all\"');
+    expect(reviewPrompt).toContain('You are a leaf reviewer, not an orchestrator.');
     expect(reviewPrompt).toContain('\"message\":');
+    expect(reviewPrompt).toContain('Wait discipline');
     expect(reviewPrompt).toContain('one parallel batch');
     expect(reviewPrompt).toContain('do not retry spawn_agent');
     expect(reviewPrompt).toContain("immediately use the source skill's single-pass-headless path");
