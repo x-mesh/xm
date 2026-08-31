@@ -10,7 +10,9 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
-### xm — installer
+## [2.23.3] - 2026-08-31
+
+### xm 2.23.2 → 2.23.3
 
 - `install.sh` now compares each plugin's registry version against the refreshed marketplace version and calls `claude plugin update/install` only for the ones that actually differ. Measured on an isolated config where 17 of 18 plugins were already current, this cut the plugin phase from ~12.5s to ~2.5s (18 CLI calls → 1) with an identical end state. A plugin whose `installPath` is missing is reinstalled even when versions match, and an unreadable registry degrades to touching every plugin rather than silently reporting "current".
 - The plugin loop stays sequential by design. `claude plugin install/update` rewrites the whole `installed_plugins.json` read-modify-write without holding a lock in this configuration, so running the calls concurrently loses registry entries: 12 parallel updates against a stale checkout left 2 plugins recorded at their old version while every process exited 0 and logged "updated from X to Y". The comment above the loop records this.
