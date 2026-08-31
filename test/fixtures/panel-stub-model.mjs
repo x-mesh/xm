@@ -329,16 +329,24 @@ if (isFollowup) {
       }))
     : model === 'claude'
     ? [
-        { severity: 'high', file: 'a.js', line: 1, claim: 'shared issue', evidence: ev },
+        { severity: 'high', file: 'a.js', line: 1, claim: 'shared issue', evidence: ev, code: 'shared()', fix: 'guard shared()' },
         { severity: 'low', file: 'b.js', line: 2, claim: 'claude-only issue', evidence: ev },
       ]
     : [
-        { severity: 'high', file: 'a.js', line: 1, claim: 'shared issue (codex view)', evidence: ev },
+        { severity: 'high', file: 'a.js', line: 1, claim: 'shared issue (codex view)', evidence: ev, code: 'shared()', fix: 'guard shared()' },
         { severity: 'medium', file: 'c.js', line: 3, claim: 'codex-only issue', evidence: ev },
       ];
   const promptContextHash = prompt.match(/context_hash:\s*(sha256:[0-9a-f]{64})/)?.[1];
   const contextHash = process.env[`X_PANEL_CONTEXT_HASH_${envModel}`] || promptContextHash;
-  const payload = JSON.stringify({ findings, ...(contextHash ? { context_hash: contextHash } : {}) });
+  const checkedFiles = [...prompt.matchAll(new RegExp('^diff --git a/(\\S+) b/(\\S+)$', 'gm'))]
+    .map((match) => match[2].replace(/^"|"$/g, ''));
+  const payload = JSON.stringify({
+    checked: ['reviewed changed behavior and failure paths'],
+    checked_files: checkedFiles,
+    findings,
+    ...(findings.length === 0 ? { no_findings_reason: 'No defect remained after checking every frozen target file.' } : {}),
+    ...(contextHash ? { context_hash: contextHash } : {}),
+  });
   if (stream) emitStream(model, payload);
   else emitRaw(model, payload);
 }

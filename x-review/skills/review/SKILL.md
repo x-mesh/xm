@@ -304,6 +304,14 @@ lenses, report validation, severity, lifecycle, verdict, and convergence. x-pane
 3 execution backend. `/xm:panel review` routes here; it must not run a native panel after x-review,
 and native `xm panel <target>` does not replace x-review artifacts.
 
+The tool-neutral executable route is `xm review run [target] --cross-vendor`. It owns one durable
+`.xm/review/runs/<id>/` parent artifact containing the frozen target, chunk plan, selected lens
+prompts, child manifest/results, coverage, synthesis, and event/trace logs. Resume a failed run with
+`xm review resume <id>`; completed children with the expected target hash are not dispatched again.
+An explicit `xm panel review ...` delegates to this route with `--cross-vendor`. Use
+`xm panel review --engine native ...` only for an explicit ad-hoc native run; the historical
+`xm panel <file>` shorthand also stays native.
+
 > **⚠ Call `xm panel …` directly via the dispatcher (Bash) — do NOT import anything.** Same
 > dispatcher-first rule as elsewhere; a fresh shell each Bash call means no helper functions.
 

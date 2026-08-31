@@ -14,6 +14,46 @@
 
 const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
+const CLAIM_TOKEN_ALIASES = new Map([
+  ['cred', 'credential'],
+  ['credentials', 'credential'],
+  ['password', 'credential'],
+  ['passwords', 'credential'],
+  ['secret', 'credential'],
+  ['secrets', 'credential'],
+  ['비밀번호', 'credential'],
+  ['leak', 'exposure'],
+  ['leaked', 'exposure'],
+  ['leakage', 'exposure'],
+  ['exposed', 'exposure'],
+  ['disclosure', 'exposure'],
+  ['print', 'exposure'],
+  ['printed', 'exposure'],
+  ['printing', 'exposure'],
+  ['유출', 'exposure'],
+  ['노출', 'exposure'],
+  ['ordered', 'ordering'],
+  ['order', 'ordering'],
+  ['sequence', 'ordering'],
+  ['sequencing', 'ordering'],
+  ['순서', 'ordering'],
+]);
+const CLAIM_STOP_WORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'can', 'en', 'for', 'from',
+  'in', 'is', 'it', 'of', 'on', 'or', 'same', 'that', 'the', 'this', 'to', 'when', 'with',
+]);
+const OBSERVABLE_FAILURES = new Map([
+  ['exposure', new Set(['exposure', 'privacy'])],
+  ['credential', new Set(['credential'])],
+  ['ordering', new Set(['ordering'])],
+  ['crash', new Set(['crash', 'panic', 'segfault'])],
+  ['data-loss', new Set(['corrupt', 'corruption', 'dataloss'])],
+  ['race', new Set(['race', 'deadlock'])],
+  ['request-forgery', new Set(['ssrf'])],
+  ['sql-injection', new Set(['sqli'])],
+  ['script-injection', new Set(['xss'])],
+]);
+
 export function normalizeFindings(raw, lens = null) {
   const arr = raw && Array.isArray(raw.findings) ? raw.findings : [];
   return arr
@@ -24,6 +64,8 @@ export function normalizeFindings(raw, lens = null) {
       line: f.line ?? null,
       claim: String(f.claim || f.summary || '').trim(),
       evidence: String(f.evidence || '').trim(),
+      code: String(f.code || '').trim(),
+      fix: String(f.fix || '').trim(),
       // Operator-supplied lens tag is authoritative — a model's own `lens` field must NOT
       // override it (would let model output spoof lens attribution). Falls back to model's
       // lens only when no tag was supplied.
@@ -295,11 +337,53 @@ export function followupDelta(contested, responsesByModel = {}) {
   };
 }
 
+function normalizedClaimShape(claim) {
+  const normalized = String(claim || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/server[- ]side request forgery/g, 'ssrf')
+    .replace(/sql injection/g, 'sqli')
+    .replace(/cross[- ]site scripting/g, 'xss')
+    .replace(/data loss/g, 'dataloss');
+  const tokens = [...new Set((normalized.match(/[\p{L}\p{N}_]+/gu) || [])
+    .map((token) => CLAIM_TOKEN_ALIASES.get(token) || token)
+    .filter((token) => !CLAIM_STOP_WORDS.has(token)))];
+  const failures = [...OBSERVABLE_FAILURES]
+    .filter(([, indicators]) => tokens.some((token) => indicators.has(token)))
+    .map(([name]) => name);
+  const failureIndicators = new Set([...OBSERVABLE_FAILURES.values()].flatMap((values) => [...values]));
+  const rootCause = tokens.filter((token) => !failureIndicators.has(token));
+  return {
+    rootCause: rootCause.length ? rootCause : tokens,
+    observableFailure: failures.length ? failures : tokens,
+    categorizedFailure: failures.length > 0,
+  };
+}
+
+function setSimilarity(left, right) {
+  if (!left.length || !right.length) return 0;
+  const rightSet = new Set(right);
+  const common = new Set(left.filter((token) => rightSet.has(token))).size;
+  return common / Math.max(new Set(left).size, rightSet.size);
+}
+
+function equivalentIssue(left, right) {
+  const a = normalizedClaimShape(left.claim);
+  const b = normalizedClaimShape(right.claim);
+  if (a.categorizedFailure !== b.categorizedFailure) return false;
+  const failureThreshold = a.categorizedFailure ? 1 : 0.75;
+  return setSimilarity(a.observableFailure, b.observableFailure) >= failureThreshold
+    && setSimilarity(a.rootCause, b.rootCause) >= 0.8;
+}
+
 export function mergeConsensus(findings, { lineTolerance = 2 } = {}) {
   const clusters = [];
   for (const f of findings) {
     const cl = (f.file != null && f.line != null)
-      ? clusters.find(c => c.file === f.file && c.line != null && Math.abs(c.line - f.line) <= lineTolerance)
+      ? clusters.find(c => c.file === f.file
+        && c.line != null
+        && Math.abs(c.line - f.line) <= lineTolerance
+        && c.members.every((member) => equivalentIssue(member, f)))
       : null;
     if (cl) {
       cl.members.push(f);
@@ -320,7 +404,7 @@ export function mergeConsensus(findings, { lineTolerance = 2 } = {}) {
       consensus: models.length,
       models,
       lenses, // review lenses that surfaced this cluster (empty in non-review mode)
-      claims: c.members.map(m => ({ model: m.owner, severity: m.severity, claim: m.claim })),
+      claims: c.members.map(m => ({ model: m.owner, severity: m.severity, claim: m.claim, evidence: m.evidence, code: m.code, fix: m.fix })),
     };
   }).sort((a, b) => (b.consensus - a.consensus) || ((SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9)));
 }

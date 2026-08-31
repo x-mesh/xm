@@ -53,8 +53,14 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 
 1. **먼저 mem-mesh에서 수신 항목을 materialize합니다.** `search`에는 현재 `tags`
    필터가 없으므로 `query="inbox"` 같은 넓은 검색으로 수신함을 판단하면 안 됩니다.
-   먼저 `mcp__mem-mesh__pin_list(project_id=<현재 프로젝트의 mem-mesh id>,
-   tags=["inbox"], limit=10)`을 호출합니다. `limit`은 반드시 10 이하로 둡니다.
+   `pin_list`에서 `status`를 생략하면 모든 상태를 반환한다고 가정하지 마십시오.
+   현재 서버는 기본 상태를 선택할 수 있어 새 `in_progress` delivery pin이 빠질 수 있습니다.
+   다음 세 호출을 각각 실행하고, 반환된 `pins`를 `id`로 중복 제거해 하나의 배열로
+   합칩니다. `limit`은 각 호출에서 반드시 10 이하로 둡니다.
+
+   - `mcp__mem-mesh__pin_list(project_id=<id>, tags=["inbox"], status="open", limit=10)`
+   - `mcp__mem-mesh__pin_list(project_id=<id>, tags=["inbox"], status="in_progress", limit=10)`
+   - `mcp__mem-mesh__pin_list(project_id=<id>, tags=["inbox"], status="completed", limit=10)`
 
    그 결과를 파일로 저장한 뒤 **`xm inbox reconcile`에 먹여 무엇을 해야 하는지 판정합니다.**
    눈으로 대조하지 마십시오 — 이 명령이 pin 쪽과 원장 쪽 양방향 drift를 모두 계산합니다.
@@ -69,8 +75,10 @@ plus `xm inbox record --scope inbox` — see step 5 below.
      발신 측에 재전달을 요청합니다.
    - `none` — 할 일 없음.
 
-   `pin_list`가 `limit`에 걸려 잘렸다면 `--partial`을 붙입니다. 그러면 "목록에 없음"을
-   pin이 죽었다는 증거로 쓰지 않아 잘못된 재알림을 막습니다.
+   세 호출 중 하나라도 `count == limit`이면 목록이 잘렸을 수 있으므로 `--partial`을
+   붙입니다. 그러면 "목록에 없음"을 pin이 죽었다는 증거로 쓰지 않아 잘못된 재알림을
+   막습니다. 세 결과를 합치지 않았거나 상태 하나라도 조회하지 못했을 때도
+   `--partial`을 붙입니다.
 
    새 toss pin의 `content`는 `<toss id> — <title>` 형식입니다. `materialize` 대상의 toss id로
    `mcp__mem-mesh__search(query=<toss id>, project_id=<현재 프로젝트의 mem-mesh id>,
@@ -150,6 +158,7 @@ plus `xm inbox record --scope inbox` — see step 5 below.
 | "I'll remember item #2 from the last list and take() it later." | Lists are re-sorted (unresolved-first) and re-swept (archive) on every call — position 2 can point at a different item next time. Always address by `id`. |
 | "Inbox is empty, something's broken." | An empty inbox is a normal, valid state — say so; don't assume the CLI or mem-mesh is malfunctioning. |
 | "`search(query=\"inbox\")`가 비었으니 새 수신함도 비었다." | `search`는 `tags` 필터가 없고 넓은 질의는 랭킹에서 밀린다. 먼저 `pin_list(tags=[\"inbox\"], limit=10)`으로 알림을 찾고 toss id로 정확히 검색한다. |
+| "`pin_list(tags=[\"inbox\"])` 한 번이면 모든 상태가 나온다." | `status` 생략 시 서버 기본 상태만 반환될 수 있다. `open`, `in_progress`, `completed`를 각각 조회해 합쳐야 신규 delivery pin을 놓치지 않는다. |
 | "I compared the pin list against `list`'s output by eye — same count, so nothing is missing." | Counting agrees even when a pin points at an id the ledger never had. `reconcile` diffs both directions by id; eyeballing missed exactly this for five days (`toss-20260721-666aa5a0`, taken 07-21, local file gone by 07-26, pin still `in_progress`). Run the command. |
 | "list didn't print anything about pins, so they must all still be fine." | `list` never checks pin state (t11 — no network in the CLI). Silence from `list` says nothing about pin health; you have to actually call `pin_get` yourself to know. |
 | "The memory body is short enough — I'll just paste it into `--content '...'`." | Bodies embed a repro command and its captured output, both of which routinely contain quotes, backslashes and newlines. Re-quoting them by hand corrupts the repro with no error — nothing validates the repro against its source. Write the body to a file and use `--content-file`. |

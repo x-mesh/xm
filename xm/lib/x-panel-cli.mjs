@@ -181,7 +181,7 @@ function parseFlags(raw) {
   // --key=value long-option form: unlike the space-separated form below, the value may legitimately
   // start with '--' (e.g. --prompt='-- note: ...'). Maps each value-flag to its stored key.
   const valueFlags = {
-    '--models': 'models', '-m': 'models', '--judge': 'judge', '--preset': 'preset',
+    '--models': 'models', '-m': 'models', '--judge': 'judge', '--preset': 'preset', '--engine': 'engine',
     '--review-prompt-file': 'reviewPromptFile', '--review-prompt': 'reviewPrompt', '--context-file': 'contextFile',
     '--lens-tag': 'lensTag', '--prompt-file': 'promptFile', '--prompt': 'prompt',
     '--check': 'check', '--source': 'source', '--title': 'title', '--policy': 'policy',
@@ -202,6 +202,7 @@ function parseFlags(raw) {
     else if (a === '--judge') flags.judge = raw[++i];
     else if (a === '--timeout') flags.timeout = parseInt(raw[++i], 10) || undefined;
     else if (a === '--preset') flags.preset = raw[++i];
+    else if (a === '--engine') flags.engine = raw[++i];
     else if (a === '--check') flags.check = raw[++i];
     else if (a === '--policy') flags.policy = raw[++i];
     else if (a === '--phase') flags.phase = raw[++i];
@@ -338,8 +339,8 @@ function parseRoutedModelOverridesEnv() {
 function findingsContract(context) {
   const contextField = context?.status === 'bound' ? `,"context_hash":"${context.hash}"` : '';
   return `Return ONLY a JSON object, with no prose before or after:
-{"findings":[{"severity":"critical|high|medium|low","file":"path or null","line":number_or_null,"claim":"one-line issue","evidence":"why it is real, with a concrete reference"}]${contextField}}
-If there are no real issues, return {"findings":[]${contextField}}.`;
+{"checked":["concrete behavior inspected"],"checked_files":["every frozen target file inspected"],"findings":[{"severity":"critical|high|medium|low","file":"path or null","line":number_or_null,"claim":"one-line issue","evidence":"why it is real, with a concrete reference","code":"exact changed snippet","fix":"specific fix direction"}]${contextField}}
+If there are no real issues, return {"checked":["concrete behavior inspected"],"checked_files":["every frozen target file inspected"],"findings":[],"no_findings_reason":"specific reason no defect remains"${contextField}}.`;
 }
 
 // overrideBody (a custom per-lens instruction) replaces the default reviewer intro;
@@ -1303,6 +1304,7 @@ async function cmdReview(pos, flags) {
   // Round 1 — independent review (all models in parallel)
   startPhase(suppliedFindings ? 'round1 (supplied)' : 'round1 (review)');
   const round1 = {};
+  const round1Evidence = {};
   // Models whose round 1 produced no usable findings: 'failed' (error/unparseable) or
   // 'suspect_empty' (ok with 0 findings but substantial prose in raw — likely a review
   // the parser couldn't lift). Threaded into synthesize so the verdict distinguishes
@@ -1343,6 +1345,11 @@ async function cmdReview(pos, flags) {
     }
     const findings = res.ok ? normalizeFindings(res.json, lensTag) : [];
     round1[e.label] = findings;
+    round1Evidence[e.label] = {
+      checked: Array.isArray(res.json?.checked) ? res.json.checked.filter((value) => typeof value === 'string' && value.trim()) : [],
+      checked_files: Array.isArray(res.json?.checked_files) ? res.json.checked_files.filter((value) => typeof value === 'string' && value.trim()) : [],
+      no_findings_reason: typeof res.json?.no_findings_reason === 'string' ? res.json.no_findings_reason.trim() : null,
+    };
     const contextMismatch = reviewContext.status === 'bound' && res.json?.context_hash !== reviewContext.hash;
     if (contextMismatch) r1Status[e.label] = { status: 'failed', error: 'context_hash missing or mismatched' };
     else if (res.partial) r1Status[e.label] = { status: 'partial', error: res.error || 'wall-clock cap reached after contract completion' };
@@ -1472,6 +1479,7 @@ async function cmdReview(pos, flags) {
     coverage_failed: coverageFailed,
     coverage_failure_phase: coverageFailurePhase,
     skipped_providers: skippedProviders,
+    review_evidence: Object.fromEntries(labels.map((label) => [label, round1Evidence[label] || { checked: [], checked_files: [], no_findings_reason: null }])),
     usage: {
       totals: status.totals,
       by_model: Object.fromEntries(status.models.map((m) => [m.label, { tokens: m.cum_tokens, cost_usd: m.cum_cost_usd, credits: m.cum_credits, resume: m.resume || 'stateless' }])),
@@ -2090,7 +2098,9 @@ Calls multiple model CLIs headlessly, has each review the same target, and
 synthesizes a consensus/diversity verdict. Tool-neutral. Refutation is opt-in.
 
 Commands:
-  (review) [target]             Run the panel — "review" is optional:
+  review [target]               Run the durable x-review lifecycle with --cross-vendor
+    --engine native             Run the ad-hoc panel engine directly
+  (native shorthand) [target]  Run the native panel when "review" is omitted:
                                   x-panel              review git diff with your default models
                                   x-panel ./file       review a file
                                   x-panel --full       review with all installed models
@@ -3486,6 +3496,7 @@ const argv = process.argv.slice(2);
 const SUB = new Set(['review', 'cross', 'gate', 'stats', 'followup', 'watch', 'status', 'setup', 'types', 'models', 'detect', 'doctor', 'preflight', 'help', '--help', '-h']);
 let cmd = argv[0];
 let rest;
+const explicitReviewRoute = cmd === 'review';
 if (!cmd) { cmd = 'review'; rest = []; }            // `x-panel` → review git diff
 else if (SUB.has(cmd)) { rest = argv.slice(1); }
 else { cmd = 'review'; rest = argv; }                // `x-panel ./file` / `x-panel --full` → review
@@ -3498,6 +3509,50 @@ if (unknown.length && !['help', '--help', '-h'].includes(cmd)) {
   console.error(`x-panel: unknown flag${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}`);
   console.error(`A review target is a file path or text; flags start with --. Run 'x-panel --help' for usage.`);
   process.exit(1);
+}
+
+if (flags.engine && !['native', 'lifecycle'].includes(flags.engine)) {
+  console.error(`x-panel: --engine must be native or lifecycle`);
+  process.exit(2);
+}
+
+function reviewLifecycleCommand() {
+  if (!process.env.XM_PANEL_REVIEW_COMMAND) return ['xm', 'review'];
+  try {
+    const command = JSON.parse(process.env.XM_PANEL_REVIEW_COMMAND);
+    if (!Array.isArray(command) || command.length === 0 || !command.every((part) => typeof part === 'string' && part)) throw new Error();
+    return command;
+  } catch {
+    console.error('x-panel: XM_PANEL_REVIEW_COMMAND must be a non-empty JSON string array');
+    process.exit(2);
+  }
+}
+
+function delegateReviewLifecycle(rawArgs) {
+  const command = reviewLifecycleCommand();
+  const forwarded = [];
+  for (let index = 0; index < rawArgs.length; index += 1) {
+    const arg = rawArgs[index];
+    if (arg === '--engine') { index += 1; continue; }
+    if (arg.startsWith('--engine=')) continue;
+    forwarded.push(arg);
+  }
+  const result = spawnSync(command[0], [...command.slice(1), 'run', ...forwarded, '--cross-vendor'], {
+    cwd: process.cwd(), env: process.env, encoding: 'utf8', stdio: ['inherit', 'pipe', 'pipe'],
+  });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.error) {
+    console.error(`x-panel: review lifecycle failed to start: ${result.error.message}`);
+    process.exit(1);
+  }
+  process.exit(result.status ?? 1);
+}
+
+// Explicit `panel review` is the formal x-review lifecycle. The native engine remains
+// available through `--engine native` and the historical shorthand `xm panel <file>`.
+if (explicitReviewRoute && flags.engine !== 'native' && process.env.XM_REVIEW_NATIVE_CHILD !== '1') {
+  delegateReviewLifecycle(rest);
 }
 
 switch (cmd) {

@@ -193,6 +193,115 @@ function splitRawTarget(body, tokenBudget, files) {
   return units.every((unit) => estimateTargetTokens(unit.body) <= tokenBudget) ? units : [];
 }
 
+function fileStem(file) {
+  return basename(String(file)).replace(/\.[^.]+$/, '');
+}
+
+function relatedTestStem(file) {
+  return fileStem(file)
+    .replace(/^(?:test|spec)[_.-]/i, '')
+    .replace(/[_.-]?(?:tests?|specs?)$/i, '')
+    .toLowerCase();
+}
+
+function isTestFile(file) {
+  return /(^|\/)(?:tests?|__tests__)(\/|$)/i.test(file)
+    || /(?:^|[_.-])(?:tests?|specs?)(?:[_.-]|$)/i.test(fileStem(file))
+    || /(?:Tests?|Specs?)$/i.test(fileStem(file));
+}
+
+function declaredIdentifiers(body) {
+  const identifiers = new Set();
+  const declaration = /\b(?:class|struct|enum|protocol|interface|type|func|function|def|fn)\s+([A-Za-z_$][\w$]*)/g;
+  for (const line of String(body).split('\n')) {
+    if (/^(?:diff --git|index |--- |\+\+\+ |@@)/.test(line)) continue;
+    for (const match of line.matchAll(declaration)) {
+      if (match[1].length >= 3) identifiers.add(match[1]);
+    }
+  }
+  return identifiers;
+}
+
+function unitRelationship(left, right) {
+  const leftFile = left.files[0];
+  const rightFile = right.files[0];
+  if (!leftFile || !rightFile || leftFile === rightFile) return false;
+
+  const leftTest = isTestFile(leftFile);
+  const rightTest = isTestFile(rightFile);
+  const test = leftTest && !rightTest ? left : rightTest && !leftTest ? right : null;
+  const companion = test === left ? right : test === right ? left : null;
+  if (!test || !companion) return false;
+
+  const testFile = test.files[0];
+  const companionFile = companion.files[0];
+  if (/\.xcodeproj\/project\.pbxproj$/i.test(companionFile)) {
+    return companion.body.includes(basename(testFile));
+  }
+
+  if (relatedTestStem(testFile) === fileStem(companionFile).toLowerCase()) return true;
+  const testText = String(test.body);
+  if (testText.includes(fileStem(companionFile))) return true;
+  return [...declaredIdentifiers(companion.body)].some((identifier) => testText.includes(identifier));
+}
+
+function relationshipGroups(units, tokenBudget, fileBudget) {
+  const fits = (entries) => {
+    const body = entries.map((entry) => entry.body).join('\n');
+    const files = unique(entries.flatMap((entry) => entry.files));
+    return estimateTargetTokens(body) <= tokenBudget && files.length <= fileBudget;
+  };
+  const parent = units.map((_, index) => index);
+  const root = (index) => {
+    while (parent[index] !== index) { parent[index] = parent[parent[index]]; index = parent[index]; }
+    return index;
+  };
+  const union = (left, right) => {
+    const a = root(left), b = root(right);
+    if (a !== b) parent[Math.max(a, b)] = Math.min(a, b);
+  };
+  const edges = [];
+  for (let left = 0; left < units.length; left += 1) {
+    for (let right = left + 1; right < units.length; right += 1) {
+      if (!unitRelationship(units[left], units[right])) continue;
+      union(left, right);
+      edges.push([left, right]);
+    }
+  }
+  const components = new Map();
+  units.forEach((unit, index) => {
+    const key = root(index);
+    if (!components.has(key)) components.set(key, []);
+    components.get(key).push({ unit, index });
+  });
+  const groups = [];
+  for (const members of [...components.values()].sort((a, b) => a[0].index - b[0].index)) {
+    const entries = members.map(({ unit }) => unit);
+    if (fits(entries)) { groups.push(entries); continue; }
+    const memberIndexes = new Set(members.map(({ index }) => index));
+    const relations = edges
+      .filter(([left, right]) => memberIndexes.has(left) && memberIndexes.has(right))
+      .map(([left, right]) => `- ${units[left].files[0]} <-> ${units[right].files[0]}`);
+    const context = [
+      'X-REVIEW COMPANION CONTEXT (relationship metadata; not a second review copy):',
+      ...relations,
+      'The linked files are changed elsewhere in the same frozen target. Do not report a counterpart as absent merely because its full diff is assigned to another chunk.',
+    ].join('\n');
+    let current = [];
+    for (const { unit } of members) {
+      const candidate = [...current, unit];
+      const withContext = [{ body: context, files: [], split: 'companion-context' }, ...candidate];
+      if (current.length === 0 && !fits(withContext)) return [];
+      if (current.length > 0 && !fits(withContext)) {
+        groups.push([{ body: context, files: [], split: 'companion-context' }, ...current]);
+        current = [unit];
+      } else current = candidate;
+    }
+    if (current.length) groups.push([{ body: context, files: [], split: 'companion-context' }, ...current]);
+  }
+  return groups;
+}
+
 export function chunkFrozenTarget(body, tokenBudget = DEFAULT_CHUNK_TOKEN_BUDGET, options = {}) {
   if (!Number.isInteger(tokenBudget) || tokenBudget < 1_000) {
     throw new Error('chunk token budget must be an integer of at least 1000');
@@ -223,14 +332,16 @@ export function chunkFrozenTarget(body, tokenBudget = DEFAULT_CHUNK_TOKEN_BUDGET
 
   const chunks = [];
   let current = [];
-  for (const unit of units) {
-    const candidate = [...current, unit];
+  const relatedGroups = relationshipGroups(units, tokenBudget, fileBudget);
+  if (units.length > 0 && relatedGroups.length === 0) return [];
+  for (const group of relatedGroups) {
+    const candidate = unique([...current, ...group]);
     const candidateBody = candidate.map((entry) => entry.body).join('\n');
     const candidateFiles = unique(candidate.flatMap((entry) => entry.files));
     if (current.length > 0
       && (estimateTargetTokens(candidateBody) > tokenBudget || candidateFiles.length > fileBudget)) {
       chunks.push(current);
-      current = [unit];
+      current = group;
     } else {
       current = candidate;
     }

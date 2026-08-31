@@ -217,6 +217,17 @@ for f in x-panel/lib/x-panel/*.mjs; do
   sync_file "$f" "xm/lib/x-panel/$(basename "$f")"
 done
 shopt -u nullglob
+
+echo ""
+echo "=== Syncing x-review lib files ==="
+sync_file "x-review/lib/x-review-cli.mjs" "xm/lib/x-review-cli.mjs"
+ensure_dir "xm/lib/x-review"
+shopt -s nullglob
+for f in x-review/lib/*.mjs; do
+  [ "$(basename "$f")" = "x-review-cli.mjs" ] && continue
+  sync_file "$f" "xm/lib/$(basename "$f")"
+done
+shopt -u nullglob
 # t8 (--backend tm) rejected & removed — docs/x-panel-term-mesh-phase2.md §6.
 remove_obsolete_file "xm/lib/x-panel/tm-backend.mjs"
 

@@ -600,6 +600,89 @@ describe('x-review lens report coverage contract', () => {
     expect(plan.chunks.every((chunk) => chunk.files.length <= 3)).toBe(true);
   });
 
+  test('keeps directly related source, test, and Xcode manifest evidence in bounded chunk context', () => {
+    const section = (file, lines) => [
+      `diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, '@@ -1 +1 @@', ...lines,
+    ].join('\n');
+    const target = [
+      section('GhosttyTabs.xcodeproj/project.pbxproj', [
+        '+path = InputInjectionLogTests.swift;',
+        '+path = PeerPaneSessionTests.swift;',
+        '+path = TerminalControllerTests.swift;',
+      ]),
+      section('Sources/GhosttyPaneSurfaceProvider.swift', ['+struct GhosttyPaneSurfaceProvider {}']),
+      section('Sources/TeamOrchestrator.swift', ['+func classifyProjectNameConflict() {}']),
+      section('Sources/TerminalController.swift', ['+final class TerminalController {}']),
+      section('termMeshTests/InputInjectionLogTests.swift', ['+final class InputInjectionLogTests {}']),
+      section('termMeshTests/PeerPaneSessionTests.swift', ['+classifyProjectNameConflict()']),
+      section('termMeshTests/TerminalControllerTests.swift', ['+TerminalController()']),
+    ].join('\n');
+
+    const first = planReview(target, { chunkFileBudget: 3 });
+    const second = planReview(target, { chunkFileBudget: 3 });
+    const bodies = chunkFrozenTarget(target, 24_000, { fileBudget: 3 });
+    const relationVisible = (left, right) => bodies.some((chunk) => (
+      (chunk.files.includes(left) && chunk.files.includes(right))
+      || chunk.body.includes(`${left} <-> ${right}`)
+      || chunk.body.includes(`${right} <-> ${left}`)
+    ));
+
+    expect(relationVisible('termMeshTests/InputInjectionLogTests.swift', 'GhosttyTabs.xcodeproj/project.pbxproj')).toBe(true);
+    expect(relationVisible('termMeshTests/PeerPaneSessionTests.swift', 'Sources/TeamOrchestrator.swift')).toBe(true);
+    expect(relationVisible('termMeshTests/TerminalControllerTests.swift', 'Sources/TerminalController.swift')).toBe(true);
+    expect(first.chunks.flatMap((chunk) => chunk.files)).toHaveLength(new Set(first.chunks.flatMap((chunk) => chunk.files)).size);
+    expect(first.chunks.every((chunk) => chunk.files.length <= 3)).toBe(true);
+    expect(first.chunks.every((chunk) => chunk.estimated_target_tokens <= first.chunk_token_budget)).toBe(true);
+    expect(second.chunks).toEqual(first.chunks);
+  });
+
+  test('keeps co-located dotted test names with their source file', () => {
+    const section = (file) => [
+      `diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, '@@ -1 +1 @@', '+export default true;',
+    ].join('\n');
+    const plan = planReview([
+      section('src/Widget.ts'), section('src/unrelated.ts'), section('src/Widget.test.ts'), section('src/other.ts'),
+    ].join('\n'), { chunkFileBudget: 2 });
+    const testChunk = plan.chunks.find((chunk) => chunk.files.includes('src/Widget.test.ts'));
+
+    expect(testChunk.files).toContain('src/Widget.ts');
+    expect(plan.chunks.every((chunk) => chunk.files.length <= 2)).toBe(true);
+  });
+
+  test('preserves short callable relationships without duplicating source sections', () => {
+    const section = (file, line) => [
+      `diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, '@@ -1 +1 @@', line,
+    ].join('\n');
+    const plan = planReview([
+      section('Sources/Runner.swift', '+func run() {}'),
+      section('Tests/WorkflowTests.swift', '+run()'),
+      section('Tests/RetryTests.swift', '+run()'),
+    ].join('\n'), { chunkFileBudget: 2 });
+    const bodies = chunkFrozenTarget([
+      section('Sources/Runner.swift', '+func run() {}'),
+      section('Tests/WorkflowTests.swift', '+run()'),
+      section('Tests/RetryTests.swift', '+run()'),
+    ].join('\n'), 24_000, { fileBudget: 2 });
+
+    expect(plan.chunks.every((chunk) => chunk.files.length <= 2)).toBe(true);
+    expect(plan.chunks.flatMap((chunk) => chunk.files).filter((file) => file === 'Sources/Runner.swift')).toHaveLength(1);
+    expect(bodies.filter((chunk) => chunk.body.includes('diff --git a/Sources/Runner.swift'))).toHaveLength(1);
+    expect(bodies.every((chunk) => chunk.body.includes('X-REVIEW COMPANION CONTEXT'))).toBe(true);
+    expect(bodies.every((chunk) => chunk.body.includes('Sources/Runner.swift <-> Tests/WorkflowTests.swift'))).toBe(true);
+  });
+
+  test('fails closed when companion context plus one unit exceeds the token budget', () => {
+    const section = (file, line) => [
+      `diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, '@@ -1 +1 @@', line,
+    ].join('\n');
+    const target = [
+      section('Sources/Runner.swift', `+func run() { ${'x'.repeat(2750)} }`),
+      ...Array.from({ length: 35 }, (_, index) => section(`Tests/Workflow${index}Tests.swift`, '+run()')),
+    ].join('\n');
+    expect(chunkFrozenTarget(target, 1_000, { fileBudget: 2 })).toEqual([]);
+    expect(planReview(target, { chunkTokenBudget: 1_000, chunkFileBudget: 2 }).reviewable).toBe(false);
+  });
+
   test('chunks a large target by file within the token budget and expands profile coverage', () => {
     const section = (file, value) => [
       `diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, '@@ -1 +1 @@', '-old', `+${value.repeat(2200)}`,

@@ -354,6 +354,15 @@ case "$CMD" in
     node "$LIB_PATH/x-panel-cli.mjs" "$@"
     ;;
 
+  review)
+    LIB_PATH="$(plugin_lib review)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-review-cli.mjs" ]; then
+      echo "xm review: x-review-cli.mjs not found under $LIB" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-review-cli.mjs" "$@"
+    ;;
+
   plan)
     LIB_PATH="$(plugin_lib plan)"
     if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-plan-cli.mjs" ]; then
@@ -1169,6 +1178,8 @@ Commands:
   handon                              Restore session state
   memory <subcmd>                     Cross-session decision memory
   plan <requirements|--file path>    Quick scaffold or persist a Standard/Ultra plan session
+  review run [target]                Durable review lifecycle (freeze, chunk, dispatch, synthesize)
+  review resume <run-id>             Resume failed review without repeating completed children
   build <subcmd>                      Phase-based project harness
   cost predict <task-description>     Estimate cost from measured task history
   config <subcmd>                     Shared toolkit config (--local|--global)

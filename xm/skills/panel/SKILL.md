@@ -32,7 +32,9 @@ x-review lifecycle/verdict artifact.
 - "여러 모델로 같이 리뷰", "다중모델로 토론/문제해결/평가" → route to the matching consumer (§1)
 - "panel review" or a formal PR/code review with lifecycle artifacts → the `review` route
 - An ad-hoc cross-model second opinion on supplied text/file, with no x-review lifecycle → native engine (§3)
-- `/xm:panel` (picker), `/xm:panel <file>` (engine), `/xm:panel review|debate|solve|eval …` (route)
+- `/xm:panel` (picker), `/xm:panel <file>` (native engine), `/xm:panel review|debate|solve|eval …` (route)
+- `/xm:panel review ...` delegates to `xm review run ... --cross-vendor`; use
+  `/xm:panel review --engine native ...` only when the ad-hoc panel engine is explicitly required.
 
 ## Do NOT Use When
 

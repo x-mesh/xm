@@ -31,6 +31,7 @@ const STUB_ENV = (extra) => ({
   X_PANEL_GLOBAL_ROOT: join(DIR, '.xm-global'), // hermetic: don't read the real ~/.xm
   X_PANEL_CMD_CLAUDE: STUB,
   X_PANEL_CMD_CODEX: STUB,
+  XM_REVIEW_NATIVE_CHILD: '1',
   NO_COLOR: '1',
   ...extra,
 });
@@ -534,6 +535,7 @@ describe('normalizeFindings', () => {
     expect(out[1].claim).toBe('fallback claim');
     expect(out[1].severity).toBe('low'); // bogus → low
     expect(out[0].idx).toBe(0);
+    expect(normalizeFindings({ findings: [{ claim: 'x', code: 'exact()', fix: 'guard it' }] })[0]).toMatchObject({ code: 'exact()', fix: 'guard it' });
   });
 });
 
@@ -779,6 +781,46 @@ describe('mergeConsensus', () => {
     ]);
     expect(m.length).toBe(2);
     expect(m.every(c => c.consensus === 1)).toBe(true);
+  });
+
+  test('same location does not create consensus for unrelated root causes and failures', () => {
+    const m = mergeConsensus([
+      {
+        owner: 'codex',
+        severity: 'medium',
+        file: 'Sources/InputInjectionLog.swift',
+        line: 159,
+        claim: '비정상 바이트가 하나라도 포함되면 해당 chunk의 전체 내용이 hex로 기록되어 붙여넣기 내용이나 agent prompt가 노출됩니다.',
+      },
+      {
+        owner: 'claude',
+        severity: 'low',
+        file: 'Sources/InputInjectionLog.swift',
+        line: 159,
+        claim: 'Log timestamps have one-second resolution, which cannot order the chunked injections this log exists to sequence',
+      },
+    ]);
+
+    expect(m).toHaveLength(2);
+    expect(m.every((cluster) => cluster.consensus === 1)).toBe(true);
+  });
+
+  test('same crash symptom with different root causes stays separate', () => {
+    const m = mergeConsensus([
+      { owner: 'a', severity: 'high', file: 'handler.js', line: 10, claim: 'request handler crash due timeout' },
+      { owner: 'b', severity: 'high', file: 'handler.js', line: 10, claim: 'request handler crash due null' },
+    ]);
+    expect(m).toHaveLength(2);
+    expect(m.every((cluster) => cluster.consensus === 1)).toBe(true);
+  });
+
+  test('normalized credential exposure wording still forms legitimate consensus', () => {
+    const m = mergeConsensus([
+      { owner: 'a', severity: 'high', file: 'logger.js', line: 5, claim: 'credential exposure in logs' },
+      { owner: 'b', severity: 'high', file: 'logger.js', line: 5, claim: 'secret is printed to logs' },
+    ]);
+    expect(m).toHaveLength(1);
+    expect(m[0].consensus).toBe(2);
   });
 });
 
@@ -1483,8 +1525,8 @@ TARGET:
 delta tail target
 
 Return ONLY a JSON object, with no prose before or after:
-{"findings":[{"severity":"critical|high|medium|low","file":"path or null","line":number_or_null,"claim":"one-line issue","evidence":"why it is real, with a concrete reference"}]}
-If there are no real issues, return {"findings":[]}.`;
+{"checked":["concrete behavior inspected"],"checked_files":["every frozen target file inspected"],"findings":[{"severity":"critical|high|medium|low","file":"path or null","line":number_or_null,"claim":"one-line issue","evidence":"why it is real, with a concrete reference","code":"exact changed snippet","fix":"specific fix direction"}]}
+If there are no real issues, return {"checked":["concrete behavior inspected"],"checked_files":["every frozen target file inspected"],"findings":[],"no_findings_reason":"specific reason no defect remains"}.`;
 
   test('default round-1 prompt is byte-identical after FINDINGS_CONTRACT extraction', () => {
     const dump = join(DIR, 'r1-default.txt');
@@ -1609,7 +1651,7 @@ If there are no real issues, return {"findings":[]}.`;
     writeFileSync(join(gitdir, 'alpha.js'), 'const a=1;\n');
     g('add', '-A'); g('commit', '-qm', 'init');
     writeFileSync(join(gitdir, 'alpha.js'), 'const a=2;\n'); // modify → real diff header
-    const env = { ...process.env, X_PANEL_ROOT: join(gitdir, '.xm'), X_PANEL_GLOBAL_ROOT: join(gitdir, '.xm-g'), X_PANEL_CMD_CLAUDE: STUB, X_PANEL_CMD_CODEX: STUB, NO_COLOR: '1' };
+    const env = { ...process.env, XM_REVIEW_NATIVE_CHILD: '1', X_PANEL_ROOT: join(gitdir, '.xm'), X_PANEL_GLOBAL_ROOT: join(gitdir, '.xm-g'), X_PANEL_CMD_CLAUDE: STUB, X_PANEL_CMD_CODEX: STUB, NO_COLOR: '1' };
     const r = spawnSync('node', [CLI, 'review', '--models', 'claude,codex'], { cwd: gitdir, env, encoding: 'utf8', timeout: 20000 });
     expect(r.status).toBe(0);
     const pdir = join(gitdir, '.xm', 'panel');
@@ -3321,6 +3363,9 @@ describe('review (stubbed models)', () => {
     expect(rec.models).toEqual(['claude', 'codex']);
     expect(rec.judge).toBe('rule');
     expect(rec.target_title).toBe('some code change');
+    expect(rec.review_evidence.claude.checked).toEqual(['reviewed changed behavior and failure paths']);
+    expect(rec.review_evidence.codex.checked).toEqual(['reviewed changed behavior and failure paths']);
+    expect(rec.review_evidence.claude).toHaveProperty('checked_files');
   });
 
   test('an explicit single model is a supported recovery run', () => {

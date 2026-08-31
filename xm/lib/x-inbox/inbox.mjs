@@ -400,7 +400,10 @@ export const INVENTORY_ACTIONS = Object.freeze({
  *
  * @param {string} dir
  * @param {Array<{ id: string, content?: string, status?: string }>} pins
- *   `mcp__mem-mesh__pin_list(tags:["inbox"])`'s `pins` array.
+ *   The de-duplicated union of explicit `open`, `in_progress`, and
+ *   `completed` `mcp__mem-mesh__pin_list(tags:["inbox"], status=...)`
+ *   results. A status-less call is not a complete inventory: the server may
+ *   apply a default status and omit live delivery pins.
  * @param {{ complete?: boolean }} [opts]
  *   `complete` (default true) asserts `pins` is the whole inbox-tagged
  *   listing, not a truncated page. When false, absent-from-listing is not
