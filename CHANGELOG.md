@@ -10,6 +10,12 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+### xm — installer
+
+- `install.sh` now compares each plugin's registry version against the refreshed marketplace version and calls `claude plugin update/install` only for the ones that actually differ. Measured on an isolated config where 17 of 18 plugins were already current, this cut the plugin phase from ~12.5s to ~2.5s (18 CLI calls → 1) with an identical end state. A plugin whose `installPath` is missing is reinstalled even when versions match, and an unreadable registry degrades to touching every plugin rather than silently reporting "current".
+- The plugin loop stays sequential by design. `claude plugin install/update` rewrites the whole `installed_plugins.json` read-modify-write without holding a lock in this configuration, so running the calls concurrently loses registry entries: 12 parallel updates against a stale checkout left 2 plugins recorded at their old version while every process exited 0 and logged "updated from X to Y". The comment above the loop records this.
+- `install.sh` now honours `CLAUDE_CONFIG_DIR` when locating the plugin registry, marketplace clone, and plugin cache, so it can be exercised against a throwaway config instead of the user's real `~/.claude`.
+
 ### xm 2.5.2 → 2.6.0
 
 - Added native Codex Plugin packaging in `xm/lib/install/`: installs bundled Skills and a semantic marketplace entry while keeping searchable `$xm-<skill>` aliases, so users can discover `$xm-op` and invoke the namespaced `$xm:op` form after plugin registration.

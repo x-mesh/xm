@@ -30,6 +30,8 @@ if [ "$ASSUME_YES" = "1" ] && [ "$ASSUME_NO" = "1" ]; then
 fi
 
 BIN_DIR="${XM_BIN_DIR:-$HOME/.local/bin}"
+CLAUDE_HOME="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+CLAUDE_PLUGINS_DIR="$CLAUDE_HOME/plugins"
 REPO_RAW_URL="${XM_REPO_URL:-https://raw.githubusercontent.com/x-mesh/xm/main}"
 REPO_ARCHIVE_URL="${XM_REPO_ARCHIVE_URL:-https://codeload.github.com/x-mesh/xm/tar.gz/refs/heads/main}"
 SCRIPT_PATH="${BASH_SOURCE[0]:-}"
@@ -64,15 +66,15 @@ read_json_version() {
 
 installed_version() {
   local version=""
-  if [ -f "$HOME/.claude/plugins/installed_plugins.json" ]; then
+  if [ -f "$CLAUDE_PLUGINS_DIR/installed_plugins.json" ]; then
     version="$(node -e '
       try {
-        const d=JSON.parse(require("fs").readFileSync(process.env.HOME+"/.claude/plugins/installed_plugins.json","utf8"));
+        const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
         const raw=(d.plugins||{})["xm@xm"];
         const entry=Array.isArray(raw)?raw[0]:raw;
         process.stdout.write(entry?.version||"");
       } catch {}
-    ' 2>/dev/null)"
+    ' "$CLAUDE_PLUGINS_DIR/installed_plugins.json" 2>/dev/null)"
   fi
   if [ -z "$version" ]; then
     version="$(read_json_version "$HOME/plugins/xm/.codex-plugin/plugin.json")"
@@ -113,7 +115,7 @@ ensure_bundle() {
   fi
 
   local cache_cli=""
-  cache_cli="$(find "$HOME/.claude/plugins/cache/xm/xm" -mindepth 4 -maxdepth 4 -path '*/lib/install/install-cli.mjs' -print 2>/dev/null | sort -V | tail -1 || true)"
+  cache_cli="$(find "$CLAUDE_PLUGINS_DIR/cache/xm/xm" -mindepth 4 -maxdepth 4 -path '*/lib/install/install-cli.mjs' -print 2>/dev/null | sort -V | tail -1 || true)"
   if [ -n "$cache_cli" ]; then
     cd "$(dirname "$cache_cli")/../.." && pwd
     return 0
@@ -203,21 +205,100 @@ if command -v claude >/dev/null 2>&1; then
     info "Installing missing xm plugins via claude CLI..."
   fi
 
-  INSTALLED_REG="$HOME/.claude/plugins/installed_plugins.json"
-  for plugin in $PLUGINS; do
-    if [ -f "$INSTALLED_REG" ] && grep -q "\"$plugin@xm\"" "$INSTALLED_REG" 2>/dev/null; then
-      if [ "$DO_UPDATE" = "1" ]; then
-        info "  → $plugin (update)"
+  INSTALLED_REG="$CLAUDE_PLUGINS_DIR/installed_plugins.json"
+  # Prefer the marketplace clone refreshed above: its versions are what claude will install.
+  CACHED_MARKETPLACE="$CLAUDE_PLUGINS_DIR/marketplaces/xm/.claude-plugin/marketplace.json"
+  PLAN_SOURCE="$CACHED_MARKETPLACE"
+  if [ ! -f "$PLAN_SOURCE" ]; then
+    PLAN_SOURCE=""
+  fi
+
+  # Emit one "action|plugin|from|to" line per plugin. A pipe delimiter is used
+  # instead of a tab because bash treats tabs as IFS whitespace and collapses
+  # consecutive ones, which silently shifts an empty "from" field.
+  # A plugin is skipped only when the registry version matches the marketplace
+  # version AND its installPath still exists, so a pruned cache re-installs.
+  PLUGIN_PLAN="$(printf '%s' "$MARKETPLACE_JSON" | node -e '
+    const fs=require("fs");
+    const readJson=(p)=>{ try { return JSON.parse(fs.readFileSync(p,"utf8")); } catch { return null; } };
+    const planSource=process.argv[1]||"";
+    const regPath=process.argv[2]||"";
+    const allowUpdate=process.argv[3]==="1";
+    let stdin="";
+    process.stdin.on("data",(c)=>stdin+=c).on("end",()=>{
+      const market=(planSource&&readJson(planSource))||(()=>{ try { return JSON.parse(stdin); } catch { return null; } })();
+      const plugins=market&&Array.isArray(market.plugins)?market.plugins:[];
+      const reg=readJson(regPath)||{};
+      const entries=reg.plugins||{};
+      const out=[];
+      for (const p of plugins) {
+        if (!p||!p.name) continue;
+        const raw=entries[p.name+"@xm"];
+        const entry=Array.isArray(raw)?raw[0]:raw;
+        if (!entry) { out.push(["install",p.name,"",p.version||""]); continue; }
+        const have=entry.version||"";
+        const want=p.version||"";
+        const onDisk=entry.installPath?fs.existsSync(entry.installPath):false;
+        if (have&&want&&have===want&&onDisk) { out.push(["current",p.name,have,want]); continue; }
+        if (!onDisk) { out.push(["install",p.name,have,want]); continue; }
+        out.push([allowUpdate?"update":"held",p.name,have,want]);
+      }
+      process.stdout.write(out.map((r)=>r.join("|")).join("\n"));
+    });
+  ' "$PLAN_SOURCE" "$INSTALLED_REG" "$DO_UPDATE" 2>/dev/null)"
+
+  if [ -z "$PLUGIN_PLAN" ]; then
+    warn "Could not compare plugin versions; falling back to updating every plugin."
+    PLUGIN_PLAN="$(for plugin in $PLUGINS; do printf '%s|%s||\n' "$([ "$DO_UPDATE" = "1" ] && echo update || echo install)" "$plugin"; done)"
+  fi
+
+  CURRENT=0
+  HELD=0
+  CHANGED=0
+  # Sequential on purpose: `claude plugin install/update` rewrites the whole
+  # installed_plugins.json without a lock, so concurrent calls lose entries.
+  while IFS='|' read -r action plugin from to; do
+    [ -n "$plugin" ] || continue
+    case "$action" in
+      current)
+        CURRENT=$((CURRENT + 1))
+        ;;
+      held)
+        # A newer version exists but this run is not an update run.
+        HELD=$((HELD + 1))
+        info "  → $plugin ($from installed, $to available — run 'xm update' to upgrade)"
+        ;;
+      update)
+        CHANGED=$((CHANGED + 1))
+        # $to is empty when the marketplace entry carries no version; still
+        # update (never silently skip), just don't print a dangling arrow.
+        if [ -n "$to" ]; then
+          info "  → $plugin ($from → $to)"
+        else
+          info "  → $plugin (update from $from)"
+        fi
         claude plugin update "$plugin@xm" -s user >/dev/null 2>&1 || warn "    update failed: $plugin@xm"
-      else
-        info "  → $plugin (already installed)"
-      fi
-    else
-      info "  → $plugin (install)"
-      claude plugin install "$plugin@xm" -s user >/dev/null 2>&1 || warn "    install failed: $plugin@xm"
-    fi
-  done
-  ok "Claude plugins are ready. Run /reload-plugins in Claude Code to activate them."
+        ;;
+      *)
+        CHANGED=$((CHANGED + 1))
+        info "  → $plugin (install${to:+ $to})"
+        claude plugin install "$plugin@xm" -s user >/dev/null 2>&1 || warn "    install failed: $plugin@xm"
+        ;;
+    esac
+  done <<PLAN
+$PLUGIN_PLAN
+PLAN
+
+  if [ "$CURRENT" -gt 0 ]; then
+    info "  $CURRENT plugin(s) already at the marketplace version; skipped."
+  fi
+  if [ "$CHANGED" = "0" ] && [ "$HELD" = "0" ]; then
+    ok "Claude plugins are already current. No restart needed."
+  elif [ "$CHANGED" = "0" ]; then
+    ok "Claude plugins unchanged; $HELD plugin(s) have a newer version available."
+  else
+    ok "Claude plugins are ready. Run /reload-plugins in Claude Code to activate them."
+  fi
 else
   warn "claude CLI not on PATH — skipping Claude plugin install."
 fi
