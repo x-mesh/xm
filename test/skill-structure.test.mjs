@@ -58,10 +58,13 @@ describe('x-solver SKILL.md structure', () => {
     expect(content).toContain('check higher-level pattern');
   });
 
-  test('iterate phase flow includes diagnose', () => {
-    expect(content).toContain('DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE');
+  test('iterate phase flow leads with reproduce and ends in a regression proof', () => {
+    expect(content).toContain('REPRODUCE → DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE');
+    expect(content).toContain('[repro+marker]');
     expect(content).toContain('[state+baseline]');
-    expect(content).toContain('[fix+exec proof]');
+    // "exec proof" only showed the command passing after the fix. The regression
+    // proof also requires the recorded failure it is being compared against.
+    expect(content).toContain('[fix+regression proof]');
   });
 
   test('contains Fishbone analysis in diagnose', () => {
@@ -77,7 +80,7 @@ describe('x-solver SKILL.md structure', () => {
 
   test('iterate diagnose cannot be skipped', () => {
     expect(content).toContain('cannot be skipped');
-    expect(content).toContain('must always start from diagnose');
+    expect(content).toContain('must always start from reproduce');
   });
 
   test('iterate has leader execution rules', () => {
@@ -718,5 +721,61 @@ describe('x-eval outcome assertion structure', () => {
     expect(storage).toContain('assertion_results');
     expect(storage).toContain('HARD_FAIL');
     expect(storage).toContain('confidence');
+  });
+});
+
+// x-solver iterate and x-op hypothesis both run falsifiable hypotheses through a
+// fan-out, so the only thing keeping bug work from bouncing between them is a rule
+// stated identically in both places. Nothing else in the repo notices if one drifts.
+describe('x-solver / x-op boundary', () => {
+  const BOUNDARY = 'Use `x-solver iterate` when the run must end in an applied, execution-proven fix';
+
+  test('both skills carry the same boundary sentence', () => {
+    expect(readSkill('x-solver')).toContain(BOUNDARY);
+    expect(readSkill('x-op')).toContain(BOUNDARY);
+    expect(
+      readFileSync(join(ROOT, 'x-op', 'skills', 'op', 'strategies', 'hypothesis.md'), 'utf8'),
+    ).toContain(BOUNDARY);
+  });
+
+  test('x-solver names debugging on its skill-selection surface', () => {
+    // The frontmatter description is what decides whether this skill is invoked at
+    // all; <Use_When> is only read once it already has been.
+    const description = readSkill('x-solver').split('\n').find((line) => line.startsWith('description:'));
+    expect(description).toMatch(/bug|debug|diagnos/i);
+  });
+
+  test('x-op routes a repair request to x-solver instead of hypothesis', () => {
+    const op = readSkill('x-op');
+    expect(op).toContain('→ x-solver iterate');
+    // hypothesis keeps explanation-only requests.
+    expect(op).toContain('why, root cause — explanation only, no fix expected');
+  });
+});
+
+// iterate lives in its own file because solve.md outgrew the 500-line budget; these
+// pin both halves so a future merge or split does not silently drop the gates.
+describe('x-solver iterate command file', () => {
+  const solverRoot = join(ROOT, 'x-solver', 'skills', 'solver');
+  const iterate = readFileSync(join(solverRoot, 'commands', 'iterate.md'), 'utf8');
+  const solve = readFileSync(join(solverRoot, 'commands', 'solve.md'), 'utf8');
+
+  test('iterate.md carries the reproduce, refuter and regression gates', () => {
+    expect(iterate).toContain('Phase: reproduce');
+    expect(iterate).toContain('FAILURE MARKER');
+    expect(iterate).toContain('INDEPENDENT REFUTER');
+    expect(iterate).toContain('Regression proof');
+  });
+
+  test('iterate.md documents three terminating exits when iterations run out', () => {
+    expect(iterate).toContain('--unconfirmed narrow');
+    expect(iterate).toContain('--extend-iterations');
+    expect(iterate).toContain('--abandon');
+  });
+
+  test('solve.md points at iterate.md and stays under the line budget', () => {
+    expect(solve).toContain('commands/iterate.md');
+    expect(solve.split('\n').length).toBeLessThan(500);
+    expect(iterate.split('\n').length).toBeLessThan(500);
   });
 });

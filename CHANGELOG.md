@@ -10,6 +10,27 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.23.4] - 2026-09-01
+
+### x-solver 2.2.7 → 2.3.0
+
+- `verify` now reports three verdicts (`passed` / `failed` / `unverified`) with exit codes 0/1/2. It previously counted an unscored hard constraint as a pass, because `null !== false`, and treated an empty hard-constraint list as a vacuous pass — both reported PASSED having checked nothing.
+- `verify --manual` requires `--evidence`, rejects evidence that restates the claim, keeps the constraint check it overlays, and cannot overturn a constraint that was measured and failed.
+- `close` is gated on a passed verification. `close --force --reason "..."` records `closed`, not `solved`; `close --abandon` records `abandoned`. Both states were declared and never assigned before.
+- New `reproduce` phase leads the iterate strategy, with `repro set` / `repro verify` / `repro show`. The CLI checks the failure marker exists in the captured output, that it is gone afterwards, and that the working tree changed between the two — a "fix" that edits nothing is refused. `repro verify` takes no `--command`, so the recorded command cannot be swapped for an easier one. Intermittent failures get a clean-run count computed from the observed rate rather than chosen.
+- `refine → resolve` requires a confirmed hypothesis that survived an independent refuter; `single-signal` is not enough. Mitigating without a known cause stays available through `--unconfirmed narrow --justification`.
+- Exhausted iterations no longer resolve on the most likely unconfirmed hypothesis. Three terminating exits: narrow, extend (capped at two), abandon.
+- The skill description now names bug diagnosis, so bug requests reach the skill-selection surface at all. Added the `Red Flags` section, a `<Boundary>` rule shared verbatim with x-op, and a post-resolve x-review hand-off. `commands/iterate.md` split out of `solve.md`, which was over the 500-line budget.
+
+### x-op 2.5.0 → 2.6.0
+
+- Auto-route splits the debug row: explanation requests (`왜` / `why` / `root cause`) stay with `hypothesis`, repair requests (`버그` / `고쳐줘` / `debug` / `failing test`) hand off to x-solver iterate. `hypothesis` names a cause and stops at a recommended verification method; it never applies or proves a fix.
+- The problem-solving decision tree now forks on whether a fix is expected.
+
+### xm 2.23.3 → 2.23.4
+
+- `x-sync push` no longer transmits `.xm/**/repro/` — those files hold raw captured command output, which can carry tokens or customer data.
+
 ## [2.23.3] - 2026-08-31
 
 ### xm 2.23.2 → 2.23.3

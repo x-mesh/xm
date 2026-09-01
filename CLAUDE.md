@@ -42,6 +42,7 @@ Required sequence:
 2. Triage every Medium+ finding as `fix_now`, `backlog`, `accept_risk`, or `false_positive`.
 3. Never move Critical/High findings to `backlog`; fix them now or provide concrete evidence for `accept_risk` / `false_positive`.
 4. Limit review-fix edits to `fix_now` findings and files listed in `fix_scope.allowed_files`.
+4b. If a `fix_now` finding resists two fix attempts, or the failure reproduces outside `fix_scope.allowed_files`, stop patching and diagnose it: `/xm:solver "review finding {id}: {title}"` (iterate). x-solver returns a **confirmed cause with evidence, not authorized edits** — bring it back into triage and re-run `verify-review-fix`. Do not widen `fix_scope` on a guess. This is an exception path, not a step: most findings already carry evidence and a fix direction, and routing every one through a diagnosis fan-out would recreate the rewrite loop this gate exists to prevent.
 5. Run `x-build verify-review-fix`, then quality checks, then re-run x-review before claiming completion.
 
 This gate exists to prevent review feedback from becoming an unbounded rewrite loop.

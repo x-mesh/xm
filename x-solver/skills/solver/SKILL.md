@@ -1,28 +1,46 @@
 ---
 name: solver
-description: Structured problem solving — decompose, iterate, constrain, or auto-pipeline with strategy recommendation
+description: Structured problem solving and bug diagnosis — iterate (diagnose → hypothesize → falsify → fix → prove), decompose, constrain, or auto-pipeline
 allowed-tools:
   - AskUserQuestion
 ---
 
 <Purpose>
-x-solver solves complex problems structurally. It auto-detects problem types and recommends optimal strategies, with manual selection also available.
-4 strategies: decompose, iterate, constrain, pipeline (auto).
-Stateful — persists problem state to `.xm/solver/` for cross-session continuity.
+x-solver takes a problem from symptom to proven fix. Debugging is its primary job: on a bug, error,
+crash, regression, or perf problem it captures a baseline, generates falsifiable hypotheses, refutes
+them with parallel agents, applies the fix, and proves it by execution — never by "it should work".
+Non-bug problems route to decompose (break a problem down) or constrain (choose between options scored
+against explicit constraints); pipeline auto-routes.
+4 strategies: iterate (debug/diagnose), decompose, constrain, pipeline (auto).
+Stateful — persists the problem, its hypotheses, and its verification evidence to `.xm/solver/`, so a
+diagnosis survives turn and session boundaries.
 </Purpose>
 
 <Use_When>
-- User wants to solve a complex problem structurally
-- User says "solve this", "analyze this", "find the bug", "which approach is better"
-- User describes a bug, error, design question, or multi-faceted problem
-- User says "solve", "debug", "decompose", "how should I do this"
+- A bug, error, crash, regression, flaky test, memory leak, deadlock, or perf problem needs to be
+  diagnosed AND fixed — this is x-solver's primary job
+- User says "find the bug", "debug this", "why does this keep failing", "fix it",
+  "이거 왜 안 돼", "버그 잡아줘", "메모리 누수 잡아줘"
+- A first fix attempt already failed, or the diagnosis will need more than one round
+- User wants a complex problem solved structurally: "solve this", "decompose", "차근차근 분해해서 풀어"
+- User must choose between approaches against explicit constraints: "which approach is better"
+- Another xm skill (x-probe, x-review, x-humble) hands a problem back for diagnosis
 </Use_When>
 
 <Do_Not_Use_When>
+- Naming a probable cause in one pass, with no fix expected — use x-op hypothesis
+- Open-ended exploration with no failing symptom to anchor on — use x-op investigate
+- Judging a diff for defects that have not been observed yet — use x-review
 - Simple one-off questions that don't need structured solving
 - Project lifecycle management (use x-build instead)
 - Strategy orchestration without problem tracking (use x-op instead)
 </Do_Not_Use_When>
+
+<Boundary>
+Use `x-solver iterate` when the run must end in an applied, execution-proven fix — or may need more
+than one round of state carried across turns; use `x-op hypothesis` when a single pass that names and
+refutes causes is the whole deliverable.
+</Boundary>
 
 ## Arguments
 
@@ -52,7 +70,7 @@ See `references/ask-user-question-rule.md` — the `question` field is invisible
 
 Check mode ONCE at session start, then cache it for the whole session — never re-probe
 per command (a per-command probe nearly doubles CLI invocations for zero information).
-Re-check only after an explicit `mode set`:
+Re-check only after an explicit `mode <developer|normal>`:
 ```bash
 xm solver mode show
 ```
@@ -100,6 +118,7 @@ Parse the first word of `$ARGUMENTS` to determine the command:
 - `strategy` → Run `$XMS strategy <set|show>`
 - `solve` → [Command: solve]
 - `solve-status` → Run `$XMS solve-status`
+- `repro` → Run `$XMS repro <set|verify|show>`
 - `hypotheses` → Run `$XMS hypotheses <list|add|update>`
 - `tree` → Run `$XMS tree <show|add|update>`
 - `candidates` → Run `$XMS candidates <list|add|select|score>`
@@ -120,6 +139,8 @@ See `references/trace-recording.md` — session_start/session_end are automatic 
 
 | User says | Action |
 |-----------|--------|
+| "이거 왜 안 돼", "버그 잡아줘", "debug this", "find the bug" | init → classify (iterate) |
+| "고쳐봤는데 또 안 돼", "the first fix didn't work" | init → classify (iterate, 2+ rounds) |
 | "Help me fix this bug" | init → classify (likely iterate) |
 | "Which approach is better" | init → classify (likely constrain) |
 | "Analyze this problem" | init → classify (pipeline) |
@@ -195,11 +216,9 @@ Key behaviors:
 
 ## Problem-Solving Principles
 
-These principles are injected into all solve-phase agent prompts.
+These principles are injected verbatim into all solve-phase agent prompts.
 
 ```
-## Problem-Solving Principles
-
 1. **Simplest sufficient solution** — The best solution is the simplest one that satisfies all hard constraints. Complexity must justify itself with evidence.
 2. **Reversibility over optimality** — When two solutions score similarly, prefer the one that's easier to undo or change. Irreversible decisions need stronger evidence.
 3. **Separate the problem from the solution** — Understand what's actually wrong before proposing fixes. A misdiagnosed problem leads to a correct solution for the wrong question.
@@ -211,9 +230,9 @@ These principles are injected into all solve-phase agent prompts.
 
 ## Command: solve
 
-See `commands/solve.md` — strategy-specific agent orchestration. Phase flow:
+See `commands/solve.md` (decompose / constrain / pipeline) and `commands/iterate.md` (iterate — the debug path). Phase flow:
 - decompose: decompose → explore → evaluate → synthesize
-- iterate: DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE [state+baseline] [falsifiable] [one var] [switch/revert] [fix+exec proof] [why late?]
+- iterate: REPRODUCE → DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE [repro+marker] [state+baseline] [falsifiable] [one var] [switch/revert] [fix+regression proof] [why late?]
 - constrain: elicit → generate → evaluate → select (Contrastive Matrix with Winner column)
 - pipeline: classify → route → meta-verify
 
@@ -229,7 +248,14 @@ single-vendor. Full flow: `references/cross-vendor.md`.
 ### iterate — Leader execution rules (MUST)
 The leader must never directly read code or verify hypotheses in any phase. Always delegate to an agent.
 
-**diagnose phase:** MUST — This phase cannot be skipped. The first solve of the iterate strategy must always start from diagnose.
+**reproduce phase:** MUST — This phase cannot be skipped. The first solve of the iterate strategy must always start from reproduce. A fix you cannot see fail is a fix you cannot prove.
+- Capture one command a stranger could run, its real output, its exit code, and a **failure marker**: a literal substring that appears in that output only when the bug happens. The CLI checks the marker is really there, so pick it from the text you pasted.
+- Search for the last known-good state with `git bisect start <bad> <good>` + `git bisect run <repro command>`, or by hand over `git log --oneline -20 -- <path>` when bisect cannot run.
+- Cannot reproduce it? Say so rather than guessing: `$XMS repro set --status unavailable --justification "..."`. resolve is then limited to reversible, evidence-gathering changes.
+- Intermittent? Record the observed rate (`--runs 3/10`). The CLI computes how many clean runs a fix needs to beat chance.
+- Checklist: delegate agent called / command + output + exit code captured / marker chosen from that output / baseline searched / `$XMS repro set` accepted / AskUserQuestion called / solve-advance called
+
+**diagnose phase:** MUST — Runs after reproduce.
 - State Diagnosis + Baseline: Current State / Baseline / Delta
 - Optional Fishbone (Ishikawa) Root Cause Analysis when Delta = "unknown" or multiple layers
 - Checklist: delegate agent called / Current State + Baseline + Delta collected / (if Delta = unknown) Fishbone analysis complete / AskUserQuestion called / solve-advance called
@@ -271,9 +297,30 @@ After scoring, the leader produces a Contrastive Matrix showing each candidate s
      - If a constraint cannot be verified by execution (e.g., "maintainable code"), state explicitly that it requires human judgment
      ```
 4. Show results to the user with execution evidence
-5. **AskUserQuestion (REQUIRED):** On pass: AskUserQuestion("검증 통과: {constraints_passed}개 제약 조건 모두 충족됐습니다. 문제를 종료(close)할까요?")
-6. On pass (confirmed): `$XMS phase next` → run close. Suggest committing (save known-good state).
-7. On fail: show which constraints are unmet with the failing output; AskUserQuestion("검증 실패: {failed_constraints}. solve 단계로 돌아갈까요?")
+5. Branch on `status`, never on `passed` alone — there are three verdicts, not two:
+
+| `status` | exit | Meaning | Next |
+|---|---|---|---|
+| `passed` | 0 | Every hard constraint was checked and held | AskUserQuestion("검증 통과: {constraints_passed}개 제약 조건 모두 충족됐습니다. 문제를 종료(close)할까요?") → `$XMS phase next` → close. Suggest committing the known-good state. |
+| `failed` | 1 | A hard constraint was checked and did not hold | Show the failing output; AskUserQuestion("검증 실패: {failed_constraints}. solve 단계로 돌아갈까요?") |
+| `unverified` | 2 | **Nothing was checked.** No candidate, no score, or no hard constraint at all | Do NOT report success. Read `reason` and follow the two exits the CLI prints: supply the missing evidence, or attest with `--manual`. |
+
+> **A non-zero exit here is the gate reporting a verdict, not the tool failing. Do not retry the command, and do not treat exit 2 as an error to work around.**
+
+6. `unverified` is the verdict that used to be reported as PASSED. `reason` says which case it is:
+   `no_selected_candidate` / `unscored_hard_constraints` / `no_hard_constraints`.
+7. When a constraint genuinely cannot be checked by execution (the "maintainable code" case above),
+   attest it — evidence is required and must be the command you ran plus its output, not a restatement
+   of the claim:
+   ```bash
+   $XMS verify --manual "<what holds>" --evidence "<command + actual output>"
+   ```
+   A constraint that was measured and failed cannot be attested over. Fix it or re-score it.
+8. `close` is gated on a passed verification. To close an unproven problem, say why —
+   it is recorded as `closed`, not `solved`:
+   ```bash
+   $XMS close --force --reason "<why this is being closed unproven>"
+   ```
 
 ## Command: next
 
@@ -356,3 +403,20 @@ Management:
 | "I'll skip strategy selection and just start" | Starting without strategy is the strategy of "hope". It doesn't scale beyond trivial problems. |
 | "The first viable solution is good enough" | First viable ≠ best viable. The `constrain` strategy exists precisely to generate and score alternatives. |
 | "The problem is too novel for a strategy" | Strategies are meta-patterns, not answers. If none fit, you haven't framed the problem yet. |
+| "verify came back non-zero, let me run it again" | Non-zero is the verdict, not a crash. Exit 2 means nothing was checked — re-running checks nothing again. Supply the missing score or evidence first. |
+| "The constraints are all unscored but the fix obviously works" | Then score one. "Obviously works" is the exact claim the gate exists to stop, and it is the claim that shipped the vacuous PASSED this gate was built to remove. |
+
+## Red Flags
+
+Stop when you notice any of these. Each one means the run is producing a conclusion it has not earned.
+
+| Red flag | What it actually means | Do this instead |
+|---|---|---|
+| A hypothesis is marked `confirmed` from one log line, one metric, or one code read | Principle 6 is being skipped. A single source cannot corroborate itself | Find a second source of a different kind, or record it as inconclusive |
+| `resolve` is starting with no `confirmed` hypothesis | The fix is a guess wearing the workflow's clothes | Return to `hypothesize`, or say plainly that you are mitigating without a known cause |
+| The leader read the code or ran the check itself | The delegation rule exists so the leader stays a router, not a second opinion with no evidence trail | Delegate. Every phase, every time |
+| `verify` reports `unverified` and the run continues toward close | The gate said nothing was checked, and it is being read as permission | Score the constraint, or attest with `--manual` and real evidence |
+| The verification command changed between the failing run and the passing run | A different command proves a different thing | Re-run the original command. If it cannot run, the fix is not demonstrated |
+| A phase was skipped "because the answer is obvious" | The obvious answer is the one most in need of a falsification attempt | Run the phase. If it is obvious, it costs a minute |
+| Candidates were generated but never scored against the constraints | The constraints became decoration | Score them, or delete the ones you are not going to use |
+| The same hypothesis reappears across iterations in new words | The loop is stalling, and convergence detection will say so | Switch layer or revert to baseline — repeating is not iterating |

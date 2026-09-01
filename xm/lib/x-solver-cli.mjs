@@ -12,6 +12,7 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { detectStop } from './convergence.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -76,12 +77,22 @@ const STRATEGY_LABELS = {
   pipeline:  { name: 'Pipeline',  icon: '🔀', desc: 'Auto-detect problem type and route to best strategy' },
 };
 
+// `reproduce` leads iterate, and it has to be first rather than a step inside diagnose.
+// solve-advance only permits index+1, so a phase inserted anywhere else would strand
+// every problem already sitting on a later phase. Being first also buys the one
+// guarantee prompts cannot give: `repro set` is only accepted while the run is in
+// `reproduce`, so the failing evidence is provably older than the fix.
 const SOLVE_PHASES = {
   decompose: ['decompose', 'explore', 'evaluate', 'synthesize'],
-  iterate:   ['diagnose', 'hypothesize', 'test', 'refine', 'resolve'],
+  iterate:   ['reproduce', 'diagnose', 'hypothesize', 'test', 'refine', 'resolve'],
   constrain: ['elicit', 'generate', 'evaluate', 'select'],
   pipeline:  ['classify', 'route', 'meta-verify'],
 };
+
+const REPRO_STATUSES = ['reproduced', 'intermittent', 'unavailable'];
+const MAX_ITERATION_EXTENSIONS = 2;
+const REPRO_TAIL_LINES = 100;
+const REPRO_TAIL_BYTES = 8192;
 
 const PROBLEM_STATES = {
   ACTIVE: 'active',
@@ -691,11 +702,11 @@ function cmdClassify(args) {
 
   // x-op strategy recommendations based on signals
   const xmOpRecommendations = [];
-  if (signals.has_error && signals.complexity !== 'trivial') xmOpRecommendations.push({ strategy: 'hypothesis', reason: '가설→반증으로 원인 진단' });
+  if (signals.has_error && signals.complexity !== 'trivial') xmOpRecommendations.push({ strategy: 'hypothesis', reason: '원인만 지목하고 끝낼 때 (수정·실행증명 없음). 고쳐야 하면 iterate' });
   if (signals.has_design_question && !signals.has_tradeoff) xmOpRecommendations.push({ strategy: 'socratic', reason: '질문 기반 요구사항 명확화' });
   if (signals.has_design_question && signals.has_multiple_dims) xmOpRecommendations.push({ strategy: 'persona', reason: '다관점 이해관계자 분석' });
   if (signals.has_security) xmOpRecommendations.push({ strategy: 'red-team', reason: '보안 공격/방어 시뮬레이션' });
-  if (signals.has_performance) xmOpRecommendations.push({ strategy: 'hypothesis', reason: '성능 병목 가설 검증' });
+  if (signals.has_performance) xmOpRecommendations.push({ strategy: 'hypothesis', reason: '병목 원인만 지목할 때. 고쳐서 증명해야 하면 iterate' });
   if (signals.has_infra && signals.has_tradeoff) xmOpRecommendations.push({ strategy: 'debate', reason: '인프라 선택지 찬반 토론' });
 
   const classification = {
@@ -798,12 +809,12 @@ function cmdStrategy(args) {
       started_at: new Date().toISOString(),
     });
 
-    // For iterate, init iterations
+    // For iterate, init the repro record
     if (strategy === STRATEGIES.ITERATE) {
-      mkdirSync(join(solvePath(problem), 'iterations'), { recursive: true });
+      mkdirSync(join(solvePath(problem), 'repro'), { recursive: true });
       writeJSON(join(solvePath(problem), 'strategy-state.json'), {
         strategy,
-        current_phase: 'diagnose',
+        current_phase: SOLVE_PHASES[strategy][0],
         phases_completed: [],
         current_iteration: 0,
         max_iterations: loadConfig().solving?.max_iterations || 3,
@@ -968,14 +979,99 @@ function cmdSolveAdvance(args) {
     console.error(`❌ Invalid phase transition: ${stratState.current_phase} → ${opts.phase}. Expected: ${phases[currentIdx + 1] || '(complete)'}`);
     process.exit(1);
   }
+
+  // A fix is only a fix if something outside the hypothesis's own verifier agreed.
+  // `single-signal` is explicitly not enough for a root-cause claim.
+  if (m.strategy === STRATEGIES.ITERATE && stratState.current_phase === 'refine' && opts.phase === 'resolve') {
+    const unconfirmed = typeof opts.unconfirmed === 'string' ? opts.unconfirmed : null;
+    const survived = (stratState.hypotheses || []).filter(
+      (h) => h.status === 'confirmed' && h.refutation === 'survived',
+    );
+    if (!survived.length && unconfirmed !== 'narrow') {
+      const confirmed = (stratState.hypotheses || []).filter((h) => h.status === 'confirmed');
+      console.error(confirmed.length
+        ? '❌ Confirmed hypotheses have not survived an independent refuter.'
+        : '❌ No confirmed hypothesis. resolve would be applying a guess.');
+      console.error('   Run one refuter per confirmed hypothesis, then record the verdict:');
+      console.error('   x-solver hypotheses update <id> --refutation survived|falsified|single-signal --refuted-by refuter-1');
+      console.error('   Mitigating without a known cause is a valid answer — say so explicitly:');
+      console.error('   x-solver solve-advance --phase resolve --unconfirmed narrow --justification "..."');
+      process.exit(1);
+    }
+    if (unconfirmed === 'narrow') {
+      const justification = typeof opts.justification === 'string' ? opts.justification.trim() : '';
+      if (!justification) {
+        console.error('❌ --unconfirmed narrow requires --justification.');
+        process.exit(1);
+      }
+      stratState.resolve_mode = 'narrow';
+      stratState.resolve_justification = justification;
+      console.error('⚠️  resolve is limited to reversible, evidence-gathering changes (logging, assertions, a failing test).');
+      console.error('   The close summary will state that the cause is still unknown.');
+    } else {
+      stratState.resolve_mode = 'root_cause';
+    }
+  }
+
+  // Leaving `reproduce` without a repro record would make every later phase reason
+  // about a failure nobody has seen.
+  if (m.strategy === STRATEGIES.ITERATE && stratState.current_phase === 'reproduce' && !stratState.repro?.status) {
+    console.error('❌ No reproduction recorded. A fix you cannot see fail is a fix you cannot prove.');
+    console.error('   x-solver repro set --command "<cmd>" --output-file <captured> --exit-code <n> \\');
+    console.error('     --failure-marker "<literal substring from that output>" --status reproduced');
+    console.error('   Cannot reproduce it? Say so instead of guessing:');
+    console.error('   x-solver repro set --status unavailable --justification "<what you tried>"');
+    process.exit(1);
+  }
+  // Problems started before the reproduce phase existed have no record and never
+  // will. Warn, never block — stranding them would be worse than the missing evidence.
+  if (m.strategy === STRATEGIES.ITERATE
+      && stratState.current_phase === 'diagnose'
+      && !stratState.repro?.status
+      && !(stratState.phases_completed || []).includes('reproduce')) {
+    console.error('⚠️  No repro record (this problem predates the reproduce gate).');
+    console.error('   Consider: x-solver repro set --command "..." ... before claiming a fix.');
+  }
+
   if (isIterateRetry) {
     const currentIteration = Number.isInteger(stratState.current_iteration)
       ? stratState.current_iteration
       : 0;
     const maxIterations = stratState.max_iterations || loadConfig().solving?.max_iterations || 3;
     if (currentIteration + 1 > maxIterations) {
-      console.error(`❌ Max iterations reached (${maxIterations}). Advance to resolve instead.`);
-      process.exit(1);
+      const extend = opts['extend-iterations'] !== undefined ? Number(opts['extend-iterations']) : null;
+      const extensions = Number.isInteger(stratState.iteration_extensions) ? stratState.iteration_extensions : 0;
+      const justification = typeof opts.justification === 'string' ? opts.justification.trim() : '';
+      if (extend !== null) {
+        // Capped so "extend" cannot become an unbounded loop wearing a flag.
+        if (extensions >= MAX_ITERATION_EXTENSIONS) {
+          console.error(`❌ Already extended ${extensions} times (cap ${MAX_ITERATION_EXTENSIONS}). Narrow the scope or abandon:`);
+          console.error('   x-solver solve-advance --phase resolve --unconfirmed narrow --justification "..."');
+          console.error('   x-solver close --abandon --summary "..."');
+          process.exit(1);
+        }
+        if (!Number.isInteger(extend) || extend < 1) {
+          console.error('❌ --extend-iterations needs a positive integer.');
+          process.exit(1);
+        }
+        if (!justification) {
+          console.error('❌ --extend-iterations requires --justification: what will the next round do differently?');
+          process.exit(1);
+        }
+        stratState.max_iterations = maxIterations + extend;
+        stratState.iteration_extensions = extensions + 1;
+        console.error(`⚠️  Iterations extended to ${stratState.max_iterations} (extension ${stratState.iteration_extensions}/${MAX_ITERATION_EXTENSIONS}): ${justification}`);
+      } else {
+        console.error(`❌ Max iterations reached (${maxIterations}). Resolving on an unconfirmed hypothesis is a guess, not a fix.`);
+        console.error('   Pick an exit:');
+        console.error('   1) narrow   — reversible instrumentation only, cause still unknown:');
+        console.error('      x-solver solve-advance --phase resolve --unconfirmed narrow --justification "..."');
+        console.error(`   2) extend   — one more round, and say what changes (max ${MAX_ITERATION_EXTENSIONS} extensions):`);
+        console.error('      x-solver solve-advance --phase hypothesize --extend-iterations 2 --justification "..."');
+        console.error('   3) abandon  — keep the diagnosis, stop honestly:');
+        console.error('      x-solver close --abandon --summary "..."');
+        process.exit(1);
+      }
     }
 
     // Accumulate iteration outputs for convergence detection.
@@ -1074,6 +1170,306 @@ function cmdSolveStatus(args) {
   console.log();
 }
 
+// ── Reproduction (iterate) ───────────────────────────────────────────
+
+/** Keep the tail — a failure marker is near the end far more often than the start. */
+function tailBound(text) {
+  const lines = String(text).split('\n');
+  let out = lines.slice(-REPRO_TAIL_LINES).join('\n');
+  let truncated = lines.length > REPRO_TAIL_LINES;
+  if (Buffer.byteLength(out, 'utf8') > REPRO_TAIL_BYTES) {
+    out = Buffer.from(out, 'utf8').subarray(-REPRO_TAIL_BYTES).toString('utf8');
+    truncated = true;
+  }
+  return { text: out, truncated };
+}
+
+/**
+ * How many consecutive clean runs make a fix distinguishable from luck, at the
+ * observed failure rate. Computed, not judged: k = ceil(ln(0.05) / ln(1 - p)), so
+ * the chance of that many clean runs happening anyway is at most 5%.
+ * 3/10 -> 9, 1/10 -> 29. Capped, because a rate low enough to need hundreds of runs
+ * is not something a solve session can prove by repetition.
+ */
+function requiredCleanRuns(failed, total) {
+  const p = failed / total;
+  if (!(p > 0 && p < 1)) return 1;
+  return Math.min(50, Math.ceil(Math.log(0.05) / Math.log(1 - p)));
+}
+
+/** `N/M`, both integers, 0 < N < M. Anything else is not an observed rate. */
+function parseRuns(value) {
+  const match = /^(\d+)\/(\d+)$/.exec(String(value ?? '').trim());
+  if (!match) return null;
+  const failed = Number(match[1]);
+  const total = Number(match[2]);
+  if (!(total > 0) || !(failed >= 0) || failed > total) return null;
+  return { failed, total };
+}
+
+/**
+ * Fingerprint of the working tree. Compared across `repro set` and `repro verify` it
+ * answers one question the output alone cannot: did anything actually change? An
+ * identical digest means the "fix" edited nothing.
+ * Returns null where git cannot answer; the caller then records that it could not check.
+ */
+function worktreeDigest() {
+  try {
+    const head = execSync('git rev-parse HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim();
+    const dirty = execSync('git status --porcelain', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 });
+    return createHash('sha256').update(`${head}\n${dirty}`).digest('hex').slice(0, 16);
+  } catch {
+    return null;
+  }
+}
+
+function readCapturedOutput(opts) {
+  if (typeof opts['output-file'] === 'string') {
+    if (!existsSync(opts['output-file'])) return { error: `Output file not found: ${opts['output-file']}` };
+    return { text: readFileSync(opts['output-file'], 'utf8') };
+  }
+  if (typeof opts.output === 'string') return { text: opts.output };
+  return { error: 'Provide the captured output: --output "<text>" or --output-file <path>' };
+}
+
+function cmdRepro(args) {
+  const sub = args[0];
+  const problem = requireProblem(args.slice(1));
+  const { opts } = parseOptions(args.slice(1));
+  const statePath = join(solvePath(problem), 'strategy-state.json');
+  const stratState = readJSON(statePath);
+
+  if (!stratState || stratState.strategy !== STRATEGIES.ITERATE) {
+    console.error('❌ repro is part of the iterate strategy. Run: x-solver strategy set iterate');
+    process.exitCode = 1;
+    return;
+  }
+
+  const reproDir = join(solvePath(problem), 'repro');
+
+  if (sub === 'show') {
+    console.log(JSON.stringify({ action: 'repro', sub: 'show', problem, repro: stratState.repro ?? null }));
+    return;
+  }
+
+  if (sub === 'set') {
+    if (stratState.current_phase !== 'reproduce') {
+      console.error(`❌ repro set belongs to the reproduce phase (currently: ${stratState.current_phase}).`);
+      console.error('   Recording the failure after the fix would prove nothing about the order of events.');
+      process.exitCode = 1;
+      return;
+    }
+    const status = typeof opts.status === 'string' ? opts.status : 'reproduced';
+    if (!REPRO_STATUSES.includes(status)) {
+      console.error(`❌ Unknown --status "${status}". One of: ${REPRO_STATUSES.join(', ')}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    if (status === 'unavailable') {
+      const justification = typeof opts.justification === 'string' ? opts.justification.trim() : '';
+      if (!justification) {
+        console.error('❌ --status unavailable requires --justification: what did you try, and which case is it?');
+        console.error('   (environment-only / symptom already gone / needs production scale / no failing instance)');
+        process.exitCode = 1;
+        return;
+      }
+      stratState.repro = {
+        status,
+        justification,
+        command: null,
+        failure_marker: null,
+        before: null,
+        baseline_commit: typeof opts['baseline-commit'] === 'string' ? opts['baseline-commit'] : null,
+        worktree_digest: worktreeDigest(),
+        recorded_at: new Date().toISOString(),
+      };
+      writeJSON(statePath, stratState);
+      console.log(`⚠️  Reproduction unavailable — recorded. resolve will be limited to reversible, evidence-gathering changes.`);
+      console.log(JSON.stringify({ action: 'repro', sub: 'set', problem, repro: stratState.repro }));
+      return;
+    }
+
+    const command = typeof opts.command === 'string' ? opts.command.trim() : '';
+    if (!command) {
+      console.error('❌ --command is required: one command a stranger could run to see this fail.');
+      process.exitCode = 1;
+      return;
+    }
+    const captured = readCapturedOutput(opts);
+    if (captured.error) {
+      console.error(`❌ ${captured.error}`);
+      process.exitCode = 1;
+      return;
+    }
+    const marker = typeof opts['failure-marker'] === 'string' ? opts['failure-marker'].trim() : '';
+    if (!marker) {
+      console.error('❌ --failure-marker is required: a literal substring that appears only when the bug happens.');
+      process.exitCode = 1;
+      return;
+    }
+    // The one check that makes the whole gate load-bearing: the marker has to be in
+    // the text that was actually captured. Without it the marker is a wish.
+    if (!captured.text.includes(marker)) {
+      console.error(`❌ The failure marker is not in the captured output: ${JSON.stringify(marker)}`);
+      console.error('   Pick the marker FROM the output you pasted, not from memory.');
+      process.exitCode = 1;
+      return;
+    }
+    const exitCode = opts['exit-code'] !== undefined ? Number(opts['exit-code']) : null;
+    if (exitCode === 0 && !captured.text.includes(marker)) {
+      console.error('❌ Exit code 0 and no failure marker — nothing here shows a failure.');
+      process.exitCode = 1;
+      return;
+    }
+
+    let runs = null;
+    if (status === 'intermittent') {
+      runs = parseRuns(opts.runs);
+      if (!runs || runs.failed === 0 || runs.failed === runs.total) {
+        console.error('❌ --status intermittent requires --runs N/M with 0 < N < M (e.g. --runs 3/10).');
+        console.error('   A rate is what separates an intermittent failure from a failed reproduction attempt.');
+        process.exitCode = 1;
+        return;
+      }
+    }
+
+    const bounded = tailBound(captured.text);
+    mkdirSync(reproDir, { recursive: true });
+    writeFileSync(join(reproDir, 'before.out.txt'), bounded.text, 'utf8');
+
+    stratState.repro = {
+      status,
+      command,
+      failure_marker: marker,
+      justification: null,
+      runs: runs ? `${runs.failed}/${runs.total}` : null,
+      required_clean_runs: runs ? requiredCleanRuns(runs.failed, runs.total) : null,
+      before: {
+        exit_code: exitCode,
+        output_path: 'repro/before.out.txt',
+        truncated: bounded.truncated,
+      },
+      baseline_commit: typeof opts['baseline-commit'] === 'string' ? opts['baseline-commit'] : null,
+      worktree_digest: worktreeDigest(),
+      after: null,
+      regression_proof: 'absent',
+      recorded_at: new Date().toISOString(),
+    };
+    writeJSON(statePath, stratState);
+    writeJSON(join(reproDir, 'before.json'), stratState.repro);
+
+    console.log(`✅ Reproduction recorded (${status}).`);
+    console.log(`   Command: ${command}`);
+    console.log(`   Marker:  ${marker}`);
+    if (runs) console.log(`   Rate: ${runs.failed}/${runs.total} — a fix needs ${stratState.repro.required_clean_runs} clean runs to beat chance.`);
+    console.log(JSON.stringify({ action: 'repro', sub: 'set', problem, repro: stratState.repro }));
+    return;
+  }
+
+  if (sub === 'verify') {
+    const repro = stratState.repro;
+    if (!repro || repro.status === 'unavailable') {
+      console.error('❌ Nothing to verify against: no reproduction was recorded.');
+      process.exitCode = 1;
+      return;
+    }
+    if (stratState.current_phase !== 'resolve') {
+      console.error(`❌ repro verify belongs to the resolve phase (currently: ${stratState.current_phase}).`);
+      process.exitCode = 1;
+      return;
+    }
+    // Deliberately no --command flag. Re-running the recorded command is the whole
+    // point; letting the caller supply a new one would let a narrowed command pass.
+    const captured = readCapturedOutput(opts);
+    if (captured.error) {
+      console.error(`❌ ${captured.error}`);
+      console.error(`   Re-run the recorded command and capture it: ${repro.command}`);
+      process.exitCode = 1;
+      return;
+    }
+    if (captured.text.includes(repro.failure_marker)) {
+      console.error(`❌ The failure marker is still present: ${JSON.stringify(repro.failure_marker)}`);
+      console.error('   The bug still reproduces. This is not a fix yet.');
+      process.exitCode = 1;
+      return;
+    }
+    const afterExit = opts['exit-code'] !== undefined ? Number(opts['exit-code']) : null;
+    if (afterExit !== 0) {
+      console.error(`❌ The command still exits ${afterExit}. Pass --exit-code 0 only when it actually succeeds.`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const nowDigest = worktreeDigest();
+    const unchanged = nowDigest !== null && repro.worktree_digest !== null && nowDigest === repro.worktree_digest;
+    const allowNoDiff = opts['allow-no-diff'] === true || typeof opts['allow-no-diff'] === 'string';
+    if (unchanged && !allowNoDiff) {
+      console.error('❌ The working tree is byte-identical to when the failure was recorded.');
+      console.error('   Nothing was changed, so nothing was fixed — the command simply behaved differently.');
+      console.error('   If that is genuinely the finding: --allow-no-diff --justification "<why>"');
+      process.exitCode = 1;
+      return;
+    }
+    if (unchanged && allowNoDiff && !(typeof opts.justification === 'string' && opts.justification.trim())) {
+      console.error('❌ --allow-no-diff requires --justification.');
+      process.exitCode = 1;
+      return;
+    }
+
+    let cleanRuns = null;
+    let proof = 'proven';
+    if (repro.status === 'intermittent') {
+      cleanRuns = parseRuns(opts.runs);
+      const needed = repro.required_clean_runs ?? 1;
+      if (!cleanRuns || cleanRuns.failed !== 0) {
+        console.error(`❌ An intermittent failure needs clean runs: --runs 0/${needed}`);
+        console.error(`   One passing run at rate ${repro.runs} happens by chance more often than not.`);
+        process.exitCode = 1;
+        return;
+      }
+      if (cleanRuns.total < needed) {
+        console.error(`⚠️  ${cleanRuns.total} clean runs is below the ${needed} needed at rate ${repro.runs}.`);
+        proof = 'degraded';
+      }
+    }
+
+    const regressionTest = typeof opts['regression-test'] === 'string' ? opts['regression-test'] : null;
+    if (regressionTest && !existsSync(regressionTest)) {
+      console.error(`❌ --regression-test path does not exist: ${regressionTest}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const bounded = tailBound(captured.text);
+    mkdirSync(reproDir, { recursive: true });
+    writeFileSync(join(reproDir, 'after.out.txt'), bounded.text, 'utf8');
+
+    repro.after = {
+      exit_code: afterExit,
+      output_path: 'repro/after.out.txt',
+      truncated: bounded.truncated,
+      clean_runs: cleanRuns ? `${cleanRuns.failed}/${cleanRuns.total}` : null,
+      regression_test: regressionTest,
+      worktree_digest: nowDigest,
+      worktree_unchanged: unchanged,
+      justification: unchanged ? String(opts.justification).trim() : null,
+      verified_at: new Date().toISOString(),
+    };
+    repro.regression_proof = proof;
+    writeJSON(statePath, stratState);
+    writeJSON(join(reproDir, 'after.json'), repro.after);
+
+    console.log(`✅ Regression proof: ${proof}. The marker is gone and the command exits 0.`);
+    if (!regressionTest) console.log('   No --regression-test given: nothing pins this fix against coming back.');
+    console.log(JSON.stringify({ action: 'repro', sub: 'verify', problem, repro }));
+    return;
+  }
+
+  console.error('Usage: x-solver repro <set|verify|show>');
+  process.exitCode = 1;
+}
+
 // ── Hypotheses (iterate) ─────────────────────────────────────────────
 
 function cmdHypotheses(args) {
@@ -1124,7 +1520,7 @@ function cmdHypotheses(args) {
     const { positional, opts } = parseOptions(args.slice(1));
     const id = positional[0];
     if (!id) {
-      console.error('Usage: x-solver hypotheses update <id> --status <pending|confirmed|refuted|inconclusive>');
+      console.error('Usage: x-solver hypotheses update <id> --status <pending|confirmed|refuted|inconclusive> [--refutation <survived|falsified|single-signal>]');
       process.exit(1);
     }
     const h = stratState.hypotheses?.find(h => h.id === id);
@@ -1136,6 +1532,17 @@ function cmdHypotheses(args) {
     if (opts.evidence_for) h.evidence_for.push(opts.evidence_for);
     if (opts.evidence_against) h.evidence_against.push(opts.evidence_against);
     if (opts.test_result) h.test_result = opts.test_result;
+    // A hypothesis verified by the agent that owns it has corroborated nothing.
+    // `single-signal` is the honest middle: plausible, but only one source says so.
+    if (opts.refutation) {
+      const REFUTATIONS = ['survived', 'falsified', 'single-signal'];
+      if (!REFUTATIONS.includes(opts.refutation)) {
+        console.error(`❌ Unknown --refutation "${opts.refutation}". One of: ${REFUTATIONS.join(', ')}`);
+        process.exit(1);
+      }
+      h.refutation = opts.refutation;
+      if (opts['refuted-by']) h.refuted_by = opts['refuted-by'];
+    }
     writeJSON(join(solvePath(problem), 'strategy-state.json'), stratState);
     console.log(`✅ Hypothesis ${id} updated.`);
   } else {
@@ -1340,6 +1747,101 @@ function cmdPhase(args) {
 
 // ── Verify ───────────────────────────────────────────────────────────
 
+// Exit codes are the gate. A blocked verification must not exit 0, or every
+// caller downstream reads silence as success (same contract as x-build's phase gates).
+const VERIFY_EXIT = { passed: 0, failed: 1, unverified: 2 };
+
+// What to do next, keyed by why the run could not be called verified.
+const UNVERIFIED_NEXT = {
+  no_selected_candidate: [
+    'No candidate is selected, so there is nothing to check the constraints against.',
+    '  x-solver candidates add "<solution>" --source executor && x-solver candidates select <id>',
+  ],
+  unscored_hard_constraints: [
+    'Hard constraints carry no score, so nothing was actually checked.',
+    '  x-solver candidates score <id> --constraint <cid> --score <n>',
+    '  or, for a constraint execution cannot check:',
+    '  x-solver verify --manual "<what holds>" --evidence "<command you ran + its output>"',
+  ],
+  no_hard_constraints: [
+    'No hard constraint says what "solved" means here, so passing would assert nothing.',
+    '  x-solver constraints add "<must hold>" --type hard',
+    '  or, if the proof is an execution rather than a constraint:',
+    '  x-solver verify --manual "<what holds>" --evidence "<command you ran + its output>"',
+  ],
+};
+
+/**
+ * Judge the selected candidate against the recorded constraints.
+ *
+ * Three-valued on purpose. The two-valued form counted an unscored hard constraint
+ * as a pass (`null !== false`) and an empty hard-constraint list as a vacuous pass,
+ * so a problem could report PASSED having checked nothing — the opposite of this
+ * skill's own rule that "solved" is confirmed by execution only. Same reasoning as
+ * the traceability gate in x-build/lib/x-build/verify.mjs.
+ */
+function evaluateConstraints(constraints, selected) {
+  const checks = [];
+  for (const c of constraints) {
+    const score = selected?.scores?.[c.id];
+    const scored = score !== undefined;
+    const check = {
+      constraint_id: c.id,
+      type: c.type,
+      description: c.description,
+      blocking: c.type === 'hard',
+    };
+    if (c.type === 'hard') {
+      check.passed = scored ? score > 0 : null;
+      check.status = scored ? (score > 0 ? 'passed' : 'failed') : 'unverified';
+      check.note = scored ? `Score: ${score}` : 'Not scored — needs agent verification';
+    } else {
+      check.score = scored ? score : null;
+      check.status = scored ? 'scored' : 'unscored';
+      check.note = scored ? `Score: ${score}/10` : 'Not scored';
+    }
+    checks.push(check);
+  }
+
+  const hard = checks.filter((c) => c.blocking);
+  const summary = {
+    hard_total: hard.length,
+    hard_passed: hard.filter((c) => c.status === 'passed').length,
+    hard_failed: hard.filter((c) => c.status === 'failed').length,
+    hard_unverified: hard.filter((c) => c.status === 'unverified').length,
+    soft_total: checks.length - hard.length,
+    soft_scored: checks.filter((c) => !c.blocking && c.status === 'scored').length,
+  };
+
+  let status;
+  let reason = null;
+  if (!selected) { status = 'unverified'; reason = 'no_selected_candidate'; }
+  else if (summary.hard_failed > 0) { status = 'failed'; reason = 'hard_constraint_failed'; }
+  else if (summary.hard_unverified > 0) { status = 'unverified'; reason = 'unscored_hard_constraints'; }
+  else if (summary.hard_total === 0) { status = 'unverified'; reason = 'no_hard_constraints'; }
+  else { status = 'passed'; }
+
+  return { checks, summary, status, reason };
+}
+
+/**
+ * Older verification.json files predate `status`. Derive one so a problem that was
+ * already verified does not become impossible to close.
+ */
+function normalizeVerification(raw) {
+  if (!raw) return null;
+  if (raw.status) return raw;
+  // In the legacy manual shape `reason` held the human's justification text, while
+  // it now names a machine-readable cause. Keep the text, but not in that slot.
+  const legacyClaim = raw.method === 'manual' && typeof raw.reason === 'string' ? raw.reason : null;
+  return {
+    ...raw,
+    status: raw.passed ? 'passed' : 'failed',
+    reason: null,
+    ...(legacyClaim ? { manual: { claim: legacyClaim, evidence: null, at: raw.verified_at ?? null } } : {}),
+  };
+}
+
 function cmdVerify(args) {
   const problem = requireProblem(args);
   const { opts } = parseOptions(args);
@@ -1351,57 +1853,66 @@ function cmdVerify(args) {
     writeJSON(manifestPath(problem), m);
   }
 
-  if (opts.manual) {
-    // Manual verification
-    writeJSON(join(verifyPath(problem), 'verification.json'), {
-      method: 'manual',
-      passed: true,
-      reason: opts.manual,
-      verified_at: new Date().toISOString(),
-    });
-    console.log(`✅ Manually verified: ${opts.manual}`);
-    return;
-  }
-
-  // Auto verification: check constraints against selected candidate
+  // The auto judgement runs even for --manual, so a human attestation overlays a real
+  // constraint check instead of erasing it. The old manual path wrote four fields and
+  // dropped constraint_check entirely, leaving no record of what was skipped.
   const constraintData = readJSON(join(intakePath(problem), 'constraints.json')) || { constraints: [] };
   const candidateData = readJSON(join(solvePath(problem), 'candidates.json')) || { candidates: [] };
   const selected = candidateData.candidates.find(c => c.selected);
   const description = readMD(join(intakePath(problem), 'description.md'));
+  const judged = evaluateConstraints(constraintData.constraints, selected);
 
   const verification = {
-    method: 'auto',
+    method: opts.manual ? 'manual' : 'auto',
+    status: judged.status,
+    reason: judged.reason,
+    passed: judged.status === 'passed',
+    summary: judged.summary,
     selected_candidate: selected?.id || null,
-    constraint_check: [],
+    constraint_check: judged.checks,
+    attested_by: null,
+    manual: null,
     problem_context: description,
     candidate_description: selected?.description || null,
     constraints: constraintData.constraints,
     verified_at: new Date().toISOString(),
   };
 
-  // Check hard constraints
-  for (const c of constraintData.constraints) {
-    const score = selected?.scores?.[c.id];
-    const check = {
-      constraint_id: c.id,
-      type: c.type,
-      description: c.description,
-    };
-
-    if (c.type === 'hard') {
-      check.passed = score !== undefined ? score > 0 : null;
-      check.note = score !== undefined ? `Score: ${score}` : 'Not scored — needs agent verification';
-    } else {
-      check.score = score || null;
-      check.note = score !== undefined ? `Score: ${score}/10` : 'Not scored';
+  if (opts.manual) {
+    const claim = typeof opts.manual === 'string' ? opts.manual.trim() : '';
+    const evidence = typeof opts.evidence === 'string' ? opts.evidence.trim() : '';
+    if (!claim) {
+      console.error('❌ --manual needs the claim it attests.');
+      console.error('   Usage: x-solver verify --manual "<what holds>" --evidence "<command + output>"');
+      process.exitCode = 1;
+      return;
     }
-
-    verification.constraint_check.push(check);
+    if (!evidence) {
+      console.error('❌ --manual requires --evidence: the command you ran and what it printed.');
+      console.error('   An attestation with no evidence is the same unearned green light the auto gate refuses.');
+      process.exitCode = 1;
+      return;
+    }
+    if (evidence === claim) {
+      console.error('❌ --evidence repeats --manual verbatim. Restating the claim is not verification.');
+      process.exitCode = 1;
+      return;
+    }
+    // --manual exists for constraints execution cannot check (SKILL.md: "maintainable
+    // code"), not to overturn a constraint execution already checked and failed.
+    const failed = judged.checks.filter((c) => c.status === 'failed');
+    if (failed.length) {
+      console.error(`❌ Cannot attest over a measured failure: ${failed.map((c) => c.constraint_id).join(', ')}`);
+      console.error('   Fix the constraint or re-score it. --manual does not overturn a measurement.');
+      process.exitCode = 1;
+      return;
+    }
+    verification.status = 'passed';
+    verification.reason = null;
+    verification.passed = true;
+    verification.attested_by = 'human';
+    verification.manual = { claim, evidence, at: verification.verified_at };
   }
-
-  verification.passed = verification.constraint_check
-    .filter(c => c.type === 'hard')
-    .every(c => c.passed !== false);
 
   writeJSON(join(verifyPath(problem), 'verification.json'), verification);
 
@@ -1409,12 +1920,24 @@ function cmdVerify(args) {
   if (selected) console.log(`  Selected: ${C.cyan}${selected.id}${C.reset}: ${selected.description}\n`);
 
   for (const check of verification.constraint_check) {
-    const icon = check.passed === true ? '✅' : check.passed === false ? '❌' : '⚠️';
+    const icon = check.status === 'passed' ? '✅'
+      : check.status === 'failed' ? '❌'
+      : check.status === 'scored' ? '📊' : '⚠️';
     console.log(`  ${icon} ${check.constraint_id} [${check.type}]: ${check.description}`);
     console.log(`     ${check.note}`);
   }
 
-  console.log(`\n  Overall: ${verification.passed ? `${C.green}PASSED${C.reset}` : `${C.red}NEEDS REVIEW${C.reset}`}\n`);
+  const label = {
+    passed: `${C.green}PASSED${C.reset}`,
+    failed: `${C.red}FAILED${C.reset}`,
+    unverified: `${C.yellow}UNVERIFIED${C.reset}`,
+  }[verification.status];
+  console.log(`\n  Overall: ${label}${verification.attested_by === 'human' ? ' (attested by human)' : ''}\n`);
+
+  for (const line of UNVERIFIED_NEXT[verification.reason] ?? []) {
+    console.log(`  ${line}`);
+  }
+  if (verification.status === 'unverified') console.log('');
 
   // JSON output for SKILL.md
   console.log(JSON.stringify({
@@ -1422,6 +1945,9 @@ function cmdVerify(args) {
     problem,
     ...verification,
   }));
+
+  // Set, never process.exit(): exiting here would truncate the JSON above.
+  process.exitCode = VERIFY_EXIT[verification.status];
 }
 
 // ── Close ────────────────────────────────────────────────────────────
@@ -1431,22 +1957,73 @@ function cmdClose(args) {
   const { opts } = parseOptions(args);
   const m = readJSON(manifestPath(problem));
 
+  const candidateData = readJSON(join(solvePath(problem), 'candidates.json')) || { candidates: [] };
+  const selected = candidateData.candidates.find(c => c.selected);
+  const verification = normalizeVerification(readJSON(join(verifyPath(problem), 'verification.json')));
+
+  // close used to stamp SOLVED unconditionally — with no verification at all, or with a
+  // failing one. That made every downstream reader of `state` untrustworthy.
+  const abandoned = opts.abandon === true || typeof opts.abandon === 'string';
+  if (abandoned) {
+    m.current_phase = '05-close';
+    m.state = PROBLEM_STATES.ABANDONED;
+    m.closed_at = new Date().toISOString();
+    m.updated_at = m.closed_at;
+    writeJSON(manifestPath(problem), m);
+    writeJSON(join(closePath(problem), 'summary.json'), {
+      problem: m.display_name,
+      strategy: m.strategy,
+      solution: 'Abandoned — no proven fix',
+      verification_passed: false,
+      verification_status: verification?.status ?? 'none',
+      abandoned: true,
+      duration_ms: new Date(m.closed_at).getTime() - new Date(m.created_at).getTime(),
+      closed_at: m.closed_at,
+      custom_summary: opts.summary || null,
+    });
+    console.log(`\n${C.yellow}⚠ Problem abandoned${C.reset}: ${C.bold}${m.display_name}${C.reset}`);
+    console.log(`   The diagnosis is kept. Nothing is recorded as solved.\n`);
+    return;
+  }
+
+  const forced = opts.force === true || typeof opts.force === 'string';
+  if (verification?.status !== 'passed' && !forced) {
+    const why = !verification
+      ? 'This problem has no verification record.'
+      : `Verification is ${verification.status}${verification.reason ? ` (${verification.reason})` : ''}.`;
+    console.error(`❌ Cannot close: ${why}`);
+    console.error('   Run: x-solver verify');
+    console.error('   To close anyway, say why — it will be recorded as closed, not solved:');
+    console.error('   x-solver close --force --reason "<why this is being closed unproven>"');
+    process.exitCode = 2;
+    return;
+  }
+
+  const forceReason = typeof opts.reason === 'string' ? opts.reason.trim() : '';
+  if (forced && !forceReason) {
+    console.error('❌ --force requires --reason "<why this is being closed unproven>".');
+    process.exitCode = 1;
+    return;
+  }
+
+  const unproven = forced && verification?.status !== 'passed';
   m.current_phase = '05-close';
-  m.state = PROBLEM_STATES.SOLVED;
+  // CLOSED, not SOLVED: "the work stopped here" is a different claim from "this was
+  // proven solved", and the dashboard already renders only `solved` as green.
+  m.state = unproven ? PROBLEM_STATES.CLOSED : PROBLEM_STATES.SOLVED;
   m.closed_at = new Date().toISOString();
   m.updated_at = new Date().toISOString();
   writeJSON(manifestPath(problem), m);
-
-  // Save summary
-  const candidateData = readJSON(join(solvePath(problem), 'candidates.json')) || { candidates: [] };
-  const selected = candidateData.candidates.find(c => c.selected);
-  const verification = readJSON(join(verifyPath(problem), 'verification.json'));
 
   const summary = {
     problem: m.display_name,
     strategy: m.strategy,
     solution: selected?.description || opts.summary || 'No solution recorded',
-    verification_passed: verification?.passed || false,
+    verification_passed: verification?.status === 'passed',
+    verification_status: verification?.status ?? 'none',
+    verification_method: verification?.method ?? null,
+    forced: unproven,
+    force_reason: unproven ? forceReason : null,
     duration_ms: new Date(m.closed_at).getTime() - new Date(m.created_at).getTime(),
     closed_at: m.closed_at,
     custom_summary: opts.summary || null,
@@ -1454,9 +2031,13 @@ function cmdClose(args) {
 
   writeJSON(join(closePath(problem), 'summary.json'), summary);
 
-  console.log(`\n✅ Problem closed: ${C.bold}${m.display_name}${C.reset}`);
+  const headline = unproven
+    ? `${C.yellow}⚠ Problem closed UNPROVEN${C.reset}: ${C.bold}${m.display_name}${C.reset}`
+    : `${C.green}✅ Problem closed${C.reset}: ${C.bold}${m.display_name}${C.reset}`;
+  console.log(`\n${headline}`);
   console.log(`   Strategy: ${m.strategy}`);
   console.log(`   Solution: ${summary.solution}`);
+  if (unproven) console.log(`   ${C.yellow}Verification: ${summary.verification_status} — ${forceReason}${C.reset}`);
   console.log(`   Duration: ${fmtDuration(summary.duration_ms)}\n`);
 }
 
@@ -1565,13 +2146,18 @@ function cmdNext(args) {
       break;
     }
     case '04-verify': {
-      const verification = readJSON(join(verifyPath(problem), 'verification.json'));
+      const verification = normalizeVerification(readJSON(join(verifyPath(problem), 'verification.json')));
       if (!verification) {
         recommendation = 'verify';
         message = 'Run verification: x-solver verify';
-      } else if (verification.passed) {
+      } else if (verification.status === 'passed') {
         recommendation = 'close';
         message = 'Verification passed. Close: x-solver close';
+      } else if (verification.status === 'unverified') {
+        // Neither passed nor failed: nothing was checked, so pointing at solve would be
+        // as wrong as pointing at close.
+        recommendation = 'verify';
+        message = `Nothing was verified (${verification.reason}). Supply evidence, then re-run: x-solver verify`;
       } else {
         recommendation = 'solve';
         message = 'Verification failed. Return to solve: x-solver phase set solve';
@@ -1579,8 +2165,15 @@ function cmdNext(args) {
       break;
     }
     case '05-close': {
-      recommendation = 'close';
-      message = 'Ready to close: x-solver close';
+      // next must not tell the caller to close when close will refuse.
+      const verification = normalizeVerification(readJSON(join(verifyPath(problem), 'verification.json')));
+      if (verification?.status === 'passed') {
+        recommendation = 'close';
+        message = 'Ready to close: x-solver close';
+      } else {
+        recommendation = 'verify';
+        message = `Close is gated on verification (currently ${verification?.status ?? 'none'}). Run: x-solver verify`;
+      }
       break;
     }
   }
@@ -1685,7 +2278,8 @@ ${C.bold}PROBLEM MANAGEMENT${C.reset}
   init <description>        Create new problem
   list                      List all problems
   status                    Show current problem status
-  close [--summary "..."]   Close problem
+  close [--summary "..."]   Close problem (requires a passed verification)
+  close --abandon           Stop without a fix; keeps the diagnosis, records nothing as solved
   history                   Show solved problems
   next                      Suggest the next action
   handoff [--restore]       Save/restore session
@@ -1712,7 +2306,14 @@ ${C.bold}SOLVE${C.reset}
   candidates list|add|select|score  Manage solution candidates
 
 ${C.bold}VERIFY & CLOSE${C.reset}
-  verify [--manual "reason"]  Verify solution
+  verify                    Check the selected candidate against hard constraints
+                            exit 0 passed / 1 failed / 2 unverified (nothing checked)
+  verify --manual "<claim>" --evidence "<command + output>"
+                            Attest a constraint execution cannot check. Evidence is
+                            required, and a measured failure cannot be attested over.
+  close --force --reason "..."
+                            Close without a passed verification. Records state=closed,
+                            not solved.
   phase next|set <name>     Manage phases
 
 ${C.bold}SETTINGS${C.reset}
@@ -1737,6 +2338,7 @@ switch (cmd) {
   case 'solve':          cmdSolve(args); break;
   case 'solve-advance':  cmdSolveAdvance(args); break;
   case 'solve-status':   cmdSolveStatus(args); break;
+  case 'repro':          cmdRepro(args); break;
   case 'hypotheses':     cmdHypotheses(args); break;
   case 'tree':           cmdTree(args); break;
   case 'candidates':     cmdCandidates(args); break;

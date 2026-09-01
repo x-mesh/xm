@@ -96,11 +96,11 @@ classify suggests relevant x-op strategies alongside its result:
 
 | Signal combination | x-op strategy | Reasoning |
 |-------------------|---------------|-----------|
-| Error + complex | `hypothesis` | Diagnose root cause via hypothesis → refutation |
+| Error + complex | `hypothesis` | Names the cause and stops. Offer it only when no fix is expected — otherwise iterate owns this |
 | Design question (no tradeoff) | `socratic` | Clarify requirements via question-based exploration |
 | Design + multi-dimensional | `persona` | Multi-perspective stakeholder analysis |
 | Security | `red-team` | Security attack/defense simulation |
-| Performance | `hypothesis` | Validate performance bottleneck hypotheses |
+| Performance | `hypothesis` | Names the bottleneck and stops. If it must be fixed and proven, iterate owns this |
 | Infra + tradeoff | `debate` | Pros/cons debate on infrastructure choices |
 
 ## Applies to

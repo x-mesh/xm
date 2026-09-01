@@ -28,9 +28,11 @@ function resolveXmDir() {
 // Recursively scan .xm/ for syncable files
 // Include: traces, plans, build projects, and canonical handoff files.
 // Exclude: per-machine config/mirror state, legacy namespaced handoffs, run/, *.tmp.
+// `repro/` holds raw captured command output from x-solver — arbitrary stdout that can
+// carry tokens, hostnames, or customer data. It stays on the machine that produced it.
 function scanXmFiles(xmDir) {
   const files = [];
-  const SKIP = new Set(['run', '.sync-queue', 'node_modules']);
+  const SKIP = new Set(['run', '.sync-queue', 'node_modules', 'repro']);
   const EXCLUDE_FILES = new Set(['config.json']); // per-machine local settings
 
   function walk(dir, prefix) {

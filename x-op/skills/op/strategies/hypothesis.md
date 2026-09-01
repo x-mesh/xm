@@ -1,6 +1,10 @@
 # Strategy: hypothesis
 
-Generate hypotheses → attempt falsification → adopt only survivors. Specialized for bug diagnosis/scientific reasoning.
+Generate hypotheses → attempt falsification → adopt only survivors. This strategy names the most
+probable cause and stops at a recommended verification method — it does not apply or prove a fix.
+**Use `x-solver iterate` when the run must end in an applied, execution-proven fix — or may need
+more than one round of state carried across turns; use `x-op hypothesis` when a single pass that
+names and refutes causes is the whole deliverable.**
 
 ## Phase 1: GENERATE
 > 🔬 [hypothesis] Phase 1: Generate

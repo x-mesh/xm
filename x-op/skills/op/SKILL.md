@@ -154,7 +154,8 @@ When input matches no strategy keyword, detect intent from the signal table belo
 | 보안, 취약점 / security, vulnerability, XSS, injection | red-team | high |
 | vs, 비교 / compare, which is better | debate | high |
 | 아이디어, 브레인스토밍 / idea, brainstorm | brainstorm | high |
-| 왜, 원인 / why, root cause, debug | hypothesis | high |
+| 왜, 원인 / why, root cause — explanation only, no fix expected | hypothesis | high |
+| 버그, 디버그, 고쳐줘, 안 돼 / debug, fix this bug, failing test | → x-solver iterate | high |
 | 조사, 분석 / investigate, analyze | investigate | high |
 | 개선, 다듬 / improve, refine | refine | high |
 | 합의, 의견 모아 / consensus, stakeholders | council | high |
@@ -171,7 +172,7 @@ When input matches no strategy keyword, detect intent from the signal table belo
 | file/dir path (`src/`, `*.ts`) | review (red-team if security) | medium |
 | 그냥, 간단히, 한 줄로 / just, quickly, one-liner — ≤ ~15 words, one target, no other signal | direct | medium |
 
-Priority when multiple match: (1) security → red-team; (2) explicit vs/비교 → debate; (3) code/file target → review unless a security signal is present; (4) why/원인 → hypothesis; (5) still multiple → pick the highest-confidence row, tie → ask. Compound boost: 2+ signals raise confidence (e.g. "보안 리뷰" = security+review → red-team). `direct` is a recommendation leaf, never a bypass: it goes through the same AskUserQuestion confirmation as every other strategy (`1) direct (Recommended) 2) refine 3) …`).
+Priority when multiple match: (1) security → red-team; (2) explicit vs/비교 → debate; (3) code/file target → review unless a security signal is present; (4) why/원인 with no fix expected → hypothesis, an observed failure the user wants fixed → hand off to x-solver iterate; (5) still multiple → pick the highest-confidence row, tie → ask. Compound boost: 2+ signals raise confidence (e.g. "보안 리뷰" = security+review → red-team). `direct` is a recommendation leaf, never a bypass: it goes through the same AskUserQuestion confirmation as every other strategy (`1) direct (Recommended) 2) refine 3) …`). **Use `x-solver iterate` when the run must end in an applied, execution-proven fix — or may need more than one round of state carried across turns; use `x-op hypothesis` when a single pass that names and refutes causes is the whole deliverable.** `hypothesis` stops at a recommended verification method and never applies or proves a fix; offer the hand-off through the same confirmation as any strategy.
 
 See `references/x-op-auto-route.md` for execution flow and worked examples.
 
@@ -389,9 +390,9 @@ What kind of task is this?
 │   ├─ Multiple stakeholders → council
 │   └─ Per-perspective analysis needed → persona
 │
-├─ Problem solving/debugging → Do you know the cause?
-│   ├─ Unknown → hypothesis
-│   ├─ Exploration needed → investigate
+├─ Problem solving/debugging → Is a fix expected?
+│   ├─ Yes — must end fixed and proven → hand off to x-solver iterate
+│   ├─ No, name the cause only → hypothesis (or investigate when there is no symptom yet)
 │   └─ Want to verify assumptions → socratic
 │
 ├─ Ideation/planning → What stage?

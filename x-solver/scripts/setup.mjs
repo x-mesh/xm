@@ -41,4 +41,4 @@ if (existsSync(defaultConfig)) {
 
 console.log('✅ .xm/solver/ initialized.');
 console.log(`   Config: ${join(TARGET, 'config.json')}`);
-console.log('   Run: /x-solver init "problem description"');
+console.log('   Run: xm solver init "problem description"   (or /xm:solver)');

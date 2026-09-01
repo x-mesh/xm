@@ -12,7 +12,8 @@ When the user provides text that doesn't match any strategy keyword, auto-detect
 | "보안", "security", "취약점", "vulnerability", "XSS", "injection" | Security audit | **red-team** | high |
 | "vs", "비교", "compare", "어떤 게 나아", "which is better" | Comparison/decision | **debate** | high |
 | "아이디어", "idea", "브레인스토밍", "brainstorm", "방법 없을까" | Idea generation | **brainstorm** | high |
-| "왜", "why", "원인", "root cause", "디버그", "debug" | Root cause analysis | **hypothesis** | high |
+| "왜", "why", "원인", "root cause" — explanation only, no fix expected | Root cause analysis | **hypothesis** | high |
+| "버그", "디버그", "고쳐줘", "안 돼", "debug", "fix this bug", "failing test" | Diagnose **and fix** | **→ x-solver iterate** | high |
 | "조사", "investigate", "분석", "analyze", "알아봐" | Deep investigation | **investigate** | high |
 | "개선", "improve", "다듬", "refine", "더 좋게" | Iterative improvement | **refine** | high |
 | "설계", "design", "아키텍처", "architecture" (whole-system) | Design decision | **council** | medium |
@@ -28,6 +29,22 @@ When the user provides text that doesn't match any strategy keyword, auto-detect
 | "모듈 구조 잡고 구현", "scaffold", "구조 잡고 만들어" | Structured build | **scaffold** | medium |
 | File/dir path detected (e.g., `src/`, `*.ts`) | Code target → review or red-team | **review** | medium |
 | "그냥", "간단히", "한 줄로", "just", "quickly" — short (≤ ~15 words), one target, no other signal | Single well-specified task | **direct** | medium |
+
+## Hand-off to x-solver
+
+**Use `x-solver iterate` when the run must end in an applied, execution-proven fix — or may need more
+than one round of state carried across turns; use `x-op hypothesis` when a single pass that names and
+refutes causes is the whole deliverable.**
+
+`hypothesis` ends at a recommended verification method — it never applies a fix or proves one.
+`x-solver iterate` records a reproduction before touching anything, refutes its own confirmed
+hypothesis with an independent agent, applies the fix, and re-runs the recorded command to show the
+failure marker is gone. It also persists that state, so a diagnosis survives across turns.
+
+Worked example — "로그인이 가끔 실패해, 고쳐줘":
+- Repair is expected and the failure is intermittent → hand off. Offer it as the default option:
+  `1) x-solver iterate (권장 — 재현·진단·수정·증명) 2) hypothesis (원인만) 3) Other`
+- "로그인이 왜 가끔 실패하지?" with no repair expected stays with `hypothesis`.
 
 ## Priority rules
 
