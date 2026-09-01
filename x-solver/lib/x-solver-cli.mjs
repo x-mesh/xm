@@ -91,6 +91,7 @@ const SOLVE_PHASES = {
 
 const REPRO_STATUSES = ['reproduced', 'intermittent', 'unavailable'];
 const MAX_ITERATION_EXTENSIONS = 2;
+const MAX_ITERATIONS_PER_EXTENSION = 3;
 const REPRO_TAIL_LINES = 100;
 const REPRO_TAIL_BYTES = 8192;
 
@@ -786,10 +787,30 @@ function cmdStrategy(args) {
   const m = readJSON(manifestPath(problem));
 
   if (sub === 'set') {
-    const { positional } = parseOptions(args.slice(1));
+    const { positional, opts } = parseOptions(args.slice(1));
     const strategy = positional[0];
     if (!strategy || !Object.values(STRATEGIES).includes(strategy)) {
       console.error(`Usage: x-solver strategy set <${Object.values(STRATEGIES).join('|')}>`);
+      process.exit(1);
+    }
+
+    // Re-running `strategy set` used to overwrite strategy-state.json wholesale, which
+    // reset current_iteration and dropped iteration_extensions, the repro record and
+    // every hypothesis. That made the extension cap, the repro gate and the refutation
+    // gate all bypassable by one command. Progress is refused unless it is discarded
+    // on purpose.
+    const existingState = readJSON(join(solvePath(problem), 'strategy-state.json'));
+    const started = existingState && (
+      existingState.current_phase !== SOLVE_PHASES[existingState.strategy]?.[0]
+      || (existingState.phases_completed || []).length > 0
+      || (existingState.hypotheses || []).length > 0
+      || existingState.repro
+    );
+    if (started && !(opts.reset === true || typeof opts.reset === 'string')) {
+      console.error(`❌ ${existingState.strategy} is already underway (phase: ${existingState.current_phase}).`);
+      console.error('   Overwriting would discard the repro record, the hypotheses, and the iteration budget.');
+      console.error(`   Continue:  x-solver solve-advance --phase <next>`);
+      console.error(`   Start over: x-solver strategy set ${strategy} --reset   (discards the above)`);
       process.exit(1);
     }
 
@@ -1033,6 +1054,7 @@ function cmdSolveAdvance(args) {
     console.error('   Consider: x-solver repro set --command "..." ... before claiming a fix.');
   }
 
+  let grantedThisCall = null;
   if (isIterateRetry) {
     const currentIteration = Number.isInteger(stratState.current_iteration)
       ? stratState.current_iteration
@@ -1050,14 +1072,15 @@ function cmdSolveAdvance(args) {
           console.error('   x-solver close --abandon --summary "..."');
           process.exit(1);
         }
-        if (!Number.isInteger(extend) || extend < 1) {
-          console.error('❌ --extend-iterations needs a positive integer.');
+        if (!Number.isInteger(extend) || extend < 1 || extend > MAX_ITERATIONS_PER_EXTENSION) {
+          console.error(`❌ --extend-iterations takes 1..${MAX_ITERATIONS_PER_EXTENSION}. Counting extension events alone would let one call grant an unbounded budget.`);
           process.exit(1);
         }
         if (!justification) {
           console.error('❌ --extend-iterations requires --justification: what will the next round do differently?');
           process.exit(1);
         }
+        grantedThisCall = { max_iterations: stratState.max_iterations, iteration_extensions: stratState.iteration_extensions };
         stratState.max_iterations = maxIterations + extend;
         stratState.iteration_extensions = extensions + 1;
         console.error(`⚠️  Iterations extended to ${stratState.max_iterations} (extension ${stratState.iteration_extensions}/${MAX_ITERATION_EXTENSIONS}): ${justification}`);
@@ -1099,11 +1122,18 @@ function cmdSolveAdvance(args) {
       }
     );
     if (stopResult.stop) {
+      if (grantedThisCall) Object.assign(stratState, grantedThisCall);
       stratState.stop_reason = stopResult.reason;
       stratState.stop_detail = stopResult.detail;
       stratState.updated_at = new Date().toISOString();
       writeJSON(join(solvePath(problem), 'strategy-state.json'), stratState);
-      console.error(`⚠️  Early stop (${stopResult.reason}): ${stopResult.detail} Advance to resolve instead.`);
+      console.error(`⚠️  Early stop (${stopResult.reason}): ${stopResult.detail}`);
+      console.error('   Repeating the same round in new words does not become productive with more budget.');
+      console.error('   Pick an exit:');
+      console.error('   1) narrow  — reversible instrumentation only, cause still unknown:');
+      console.error('      x-solver solve-advance --phase resolve --unconfirmed narrow --justification "..."');
+      console.error('   2) abandon — keep the diagnosis, stop honestly:');
+      console.error('      x-solver close --abandon --summary "..."');
       process.exit(1);
     }
 
@@ -1172,13 +1202,26 @@ function cmdSolveStatus(args) {
 
 // ── Reproduction (iterate) ───────────────────────────────────────────
 
-/** Keep the tail — a failure marker is near the end far more often than the start. */
-function tailBound(text) {
-  const lines = String(text).split('\n');
+/**
+ * Keep the tail — a failure marker is near the end far more often than the start.
+ * `marker`, when given, must survive: the stored text is the only durable evidence,
+ * and trimming the marker out of it after validating against the full text would
+ * leave a record that proves nothing.
+ */
+function tailBound(text, marker = null) {
+  const full = String(text);
+  const lines = full.split('\n');
   let out = lines.slice(-REPRO_TAIL_LINES).join('\n');
   let truncated = lines.length > REPRO_TAIL_LINES;
   if (Buffer.byteLength(out, 'utf8') > REPRO_TAIL_BYTES) {
     out = Buffer.from(out, 'utf8').subarray(-REPRO_TAIL_BYTES).toString('utf8');
+    truncated = true;
+  }
+  if (marker && full.includes(marker) && !out.includes(marker)) {
+    const at = full.indexOf(marker);
+    const start = Math.max(0, at - Math.floor(REPRO_TAIL_BYTES / 2));
+    out = `${truncated ? '[... truncated — window centred on the failure marker ...]\n' : ''}`
+      + Buffer.from(full.slice(start), 'utf8').subarray(0, REPRO_TAIL_BYTES).toString('utf8');
     truncated = true;
   }
   return { text: out, truncated };
@@ -1216,8 +1259,17 @@ function parseRuns(value) {
 function worktreeDigest() {
   try {
     const head = execSync('git rev-parse HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim();
-    const dirty = execSync('git status --porcelain', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 });
-    return createHash('sha256').update(`${head}\n${dirty}`).digest('hex').slice(0, 16);
+    // `git status --porcelain` alone is path + status letters, so editing a file that
+    // was ALREADY modified when the repro was recorded leaves the digest unchanged —
+    // and that is the most common iterate case (an uncommitted edit broke it, and the
+    // fix touches that same file). Hash tracked content instead, and mix in the
+    // untracked list separately so a new evidence file cannot masquerade as a fix.
+    const content = execSync('git diff HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000, maxBuffer: 64 * 1024 * 1024 });
+    const untracked = execSync('git ls-files --others --exclude-standard', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 });
+    return {
+      tracked: createHash('sha256').update(`${head}\n${content}`).digest('hex').slice(0, 16),
+      untracked: createHash('sha256').update(untracked).digest('hex').slice(0, 16),
+    };
   } catch {
     return null;
   }
@@ -1284,8 +1336,11 @@ function cmdRepro(args) {
         worktree_digest: worktreeDigest(),
         recorded_at: new Date().toISOString(),
       };
+      // The message promised a limit; record it so the limit is real state, not prose.
+      stratState.resolve_mode = 'narrow';
+      stratState.resolve_justification = justification;
       writeJSON(statePath, stratState);
-      console.log(`⚠️  Reproduction unavailable — recorded. resolve will be limited to reversible, evidence-gathering changes.`);
+      console.log(`⚠️  Reproduction unavailable — recorded. resolve is limited to reversible, evidence-gathering changes.`);
       console.log(JSON.stringify({ action: 'repro', sub: 'set', problem, repro: stratState.repro }));
       return;
     }
@@ -1316,11 +1371,14 @@ function cmdRepro(args) {
       process.exitCode = 1;
       return;
     }
-    const exitCode = opts['exit-code'] !== undefined ? Number(opts['exit-code']) : null;
-    if (exitCode === 0 && !captured.text.includes(marker)) {
-      console.error('❌ Exit code 0 and no failure marker — nothing here shows a failure.');
-      process.exitCode = 1;
-      return;
+    let exitCode = null;
+    if (opts['exit-code'] !== undefined) {
+      exitCode = Number(opts['exit-code']);
+      if (!Number.isInteger(exitCode) || exitCode < 0) {
+        console.error(`❌ --exit-code must be a non-negative integer, got ${JSON.stringify(opts['exit-code'])}.`);
+        process.exitCode = 1;
+        return;
+      }
     }
 
     let runs = null;
@@ -1334,7 +1392,7 @@ function cmdRepro(args) {
       }
     }
 
-    const bounded = tailBound(captured.text);
+    const bounded = tailBound(captured.text, marker);
     mkdirSync(reproDir, { recursive: true });
     writeFileSync(join(reproDir, 'before.out.txt'), bounded.text, 'utf8');
 
@@ -1388,6 +1446,14 @@ function cmdRepro(args) {
       process.exitCode = 1;
       return;
     }
+    // An empty capture also "does not contain the marker". Absence of output is not
+    // evidence of a fix — it is evidence that nothing was captured.
+    if (!captured.text.trim()) {
+      console.error('❌ The after-run capture is empty. An empty output does not show the failure is gone.');
+      console.error(`   Re-run and capture it: ${repro.command}`);
+      process.exitCode = 1;
+      return;
+    }
     if (captured.text.includes(repro.failure_marker)) {
       console.error(`❌ The failure marker is still present: ${JSON.stringify(repro.failure_marker)}`);
       console.error('   The bug still reproduces. This is not a fix yet.');
@@ -1402,10 +1468,15 @@ function cmdRepro(args) {
     }
 
     const nowDigest = worktreeDigest();
-    const unchanged = nowDigest !== null && repro.worktree_digest !== null && nowDigest === repro.worktree_digest;
+    const beforeDigest = repro.worktree_digest;
+    // Only the tracked half decides. An untracked file — such as the captured output
+    // this very workflow tells the agent to write — must not count as "something changed".
+    const comparable = nowDigest !== null && beforeDigest !== null
+      && typeof nowDigest.tracked === 'string' && typeof beforeDigest.tracked === 'string';
+    const unchanged = comparable && nowDigest.tracked === beforeDigest.tracked;
     const allowNoDiff = opts['allow-no-diff'] === true || typeof opts['allow-no-diff'] === 'string';
     if (unchanged && !allowNoDiff) {
-      console.error('❌ The working tree is byte-identical to when the failure was recorded.');
+      console.error('❌ Tracked files are identical to when the failure was recorded.');
       console.error('   Nothing was changed, so nothing was fixed — the command simply behaved differently.');
       console.error('   If that is genuinely the finding: --allow-no-diff --justification "<why>"');
       process.exitCode = 1;
@@ -1415,6 +1486,12 @@ function cmdRepro(args) {
       console.error('❌ --allow-no-diff requires --justification.');
       process.exitCode = 1;
       return;
+    }
+    // Not comparable is not the same as verified. Say so rather than recording a
+    // check that never ran as though it had passed.
+    if (!comparable) {
+      console.error('⚠️  Could not compare the working tree (git unavailable or digest missing).');
+      console.error('   The "something actually changed" check did not run; the record says so.');
     }
 
     let cleanRuns = null;
@@ -1452,7 +1529,8 @@ function cmdRepro(args) {
       clean_runs: cleanRuns ? `${cleanRuns.failed}/${cleanRuns.total}` : null,
       regression_test: regressionTest,
       worktree_digest: nowDigest,
-      worktree_unchanged: unchanged,
+      worktree_unchanged: comparable ? unchanged : null,
+      worktree_comparable: comparable,
       justification: unchanged ? String(opts.justification).trim() : null,
       verified_at: new Date().toISOString(),
     };
@@ -1763,6 +1841,14 @@ const UNVERIFIED_NEXT = {
     '  or, for a constraint execution cannot check:',
     '  x-solver verify --manual "<what holds>" --evidence "<command you ran + its output>"',
   ],
+  regression_proof_absent: [
+    'The recorded failure was never re-run after the fix, so nothing shows it stopped happening.',
+    '  x-solver repro verify --output-file <after> --exit-code 0 [--regression-test <path>]',
+  ],
+  insufficient_clean_runs: [
+    'An intermittent failure needs enough clean runs to beat chance; the run reported fewer.',
+    '  x-solver repro show   # tells you how many are needed',
+  ],
   no_hard_constraints: [
     'No hard constraint says what "solved" means here, so passing would assert nothing.',
     '  x-solver constraints add "<must hold>" --type hard',
@@ -1834,10 +1920,21 @@ function normalizeVerification(raw) {
   // In the legacy manual shape `reason` held the human's justification text, while
   // it now names a machine-readable cause. Keep the text, but not in that slot.
   const legacyClaim = raw.method === 'manual' && typeof raw.reason === 'string' ? raw.reason : null;
+  // Do NOT trust the legacy `passed`: it was produced by the two-valued rule this
+  // release removed, so it says "passed" for exactly the states now called unverified.
+  // The constraint check is still on disk, so recompute from it.
+  const hard = (raw.constraint_check ?? []).filter((c) => c.type === 'hard');
+  let status;
+  let reason = null;
+  if (hard.some((c) => c.passed === false)) { status = 'failed'; reason = 'hard_constraint_failed'; }
+  else if (hard.some((c) => c.passed !== true)) { status = 'unverified'; reason = 'unscored_hard_constraints'; }
+  else if (hard.length === 0) { status = 'unverified'; reason = 'no_hard_constraints'; }
+  else { status = 'passed'; }
   return {
     ...raw,
-    status: raw.passed ? 'passed' : 'failed',
-    reason: null,
+    status,
+    reason,
+    passed: status === 'passed',
     ...(legacyClaim ? { manual: { claim: legacyClaim, evidence: null, at: raw.verified_at ?? null } } : {}),
   };
 }
@@ -1861,6 +1958,9 @@ function cmdVerify(args) {
   const selected = candidateData.candidates.find(c => c.selected);
   const description = readMD(join(intakePath(problem), 'description.md'));
   const judged = evaluateConstraints(constraintData.constraints, selected);
+  const stratState = readJSON(join(solvePath(problem), 'strategy-state.json'));
+  const repro = m.strategy === STRATEGIES.ITERATE ? (stratState?.repro ?? null) : null;
+  const resolveMode = m.strategy === STRATEGIES.ITERATE ? (stratState?.resolve_mode ?? null) : null;
 
   const verification = {
     method: opts.manual ? 'manual' : 'auto',
@@ -1870,6 +1970,9 @@ function cmdVerify(args) {
     summary: judged.summary,
     selected_candidate: selected?.id || null,
     constraint_check: judged.checks,
+    repro_status: repro?.status ?? null,
+    regression_proof: repro ? (repro.regression_proof ?? 'absent') : null,
+    resolve_mode: resolveMode,
     attested_by: null,
     manual: null,
     problem_context: description,
@@ -1877,6 +1980,23 @@ function cmdVerify(args) {
     constraints: constraintData.constraints,
     verified_at: new Date().toISOString(),
   };
+
+  // A reproduced failure that was never re-run after the fix has not been shown to be
+  // gone. Constraint scores say the solution meets its requirements; only the
+  // regression proof says the original failure stopped happening.
+  if (repro?.status === 'reproduced' && verification.regression_proof !== 'proven') {
+    verification.status = 'unverified';
+    verification.reason = 'regression_proof_absent';
+    verification.passed = false;
+  }
+  // An intermittent fix with fewer clean runs than the computed k is not proof either.
+  if (repro?.status === 'intermittent' && verification.regression_proof !== 'proven') {
+    verification.status = 'unverified';
+    verification.reason = verification.regression_proof === 'degraded'
+      ? 'insufficient_clean_runs'
+      : 'regression_proof_absent';
+    verification.passed = false;
+  }
 
   if (opts.manual) {
     const claim = typeof opts.manual === 'string' ? opts.manual.trim() : '';
@@ -1895,6 +2015,20 @@ function cmdVerify(args) {
     }
     if (evidence === claim) {
       console.error('❌ --evidence repeats --manual verbatim. Restating the claim is not verification.');
+      process.exitCode = 1;
+      return;
+    }
+    // There is nothing for an attestation to be about when no solution is recorded.
+    if (judged.reason === 'no_selected_candidate') {
+      console.error('❌ Nothing to attest: no candidate is selected, so the claim names no solution.');
+      console.error('   x-solver candidates add "<solution>" --source executor && x-solver candidates select <id>');
+      process.exitCode = 1;
+      return;
+    }
+    // A regression proof is an execution result, so --manual is not the way around it.
+    if (verification.reason === 'regression_proof_absent' || verification.reason === 'insufficient_clean_runs') {
+      console.error('❌ The recorded failure has not been re-run since the fix. That is checkable by execution.');
+      console.error('   x-solver repro verify --output-file <after> --exit-code 0');
       process.exitCode = 1;
       return;
     }
@@ -1965,6 +2099,19 @@ function cmdClose(args) {
   // failing one. That made every downstream reader of `state` untrustworthy.
   const abandoned = opts.abandon === true || typeof opts.abandon === 'string';
   if (abandoned) {
+    // Abandoning is terminal, so it must not quietly rewrite a problem that already
+    // reached one — least of all one that closed as solved.
+    if (m.state && m.state !== PROBLEM_STATES.ACTIVE) {
+      console.error(`❌ This problem is already ${m.state}. Abandoning would overwrite that record.`);
+      process.exitCode = 1;
+      return;
+    }
+    if (!(typeof opts.summary === 'string' && opts.summary.trim())) {
+      console.error('❌ --abandon requires --summary "<what was learned before stopping>".');
+      console.error('   Keeping the diagnosis is the entire point of abandoning rather than deleting.');
+      process.exitCode = 1;
+      return;
+    }
     m.current_phase = '05-close';
     m.state = PROBLEM_STATES.ABANDONED;
     m.closed_at = new Date().toISOString();
@@ -1987,6 +2134,24 @@ function cmdClose(args) {
   }
 
   const forced = opts.force === true || typeof opts.force === 'string';
+
+  // A verification is a statement about the candidate and constraints it saw. If either
+  // moved since, the stored verdict is about something else.
+  const constraintsNow = (readJSON(join(intakePath(problem), 'constraints.json')) || { constraints: [] }).constraints;
+  const staleCandidate = verification && verification.selected_candidate !== undefined
+    && (selected?.id ?? null) !== (verification.selected_candidate ?? null);
+  const staleConstraints = verification && Array.isArray(verification.constraints)
+    && verification.constraints.map((c) => c.id).sort().join(',') !== constraintsNow.map((c) => c.id).sort().join(',');
+  const stale = Boolean(staleCandidate || staleConstraints);
+  if (verification?.status === 'passed' && stale && !forced) {
+    console.error('❌ The verification on file is stale — it checked a different state.');
+    if (staleCandidate) console.error(`   Verified candidate: ${verification.selected_candidate ?? 'none'}, selected now: ${selected?.id ?? 'none'}`);
+    if (staleConstraints) console.error('   The constraint set changed since the verification ran.');
+    console.error('   Re-run: x-solver verify');
+    process.exitCode = 2;
+    return;
+  }
+
   if (verification?.status !== 'passed' && !forced) {
     const why = !verification
       ? 'This problem has no verification record.'
@@ -2022,6 +2187,9 @@ function cmdClose(args) {
     verification_passed: verification?.status === 'passed',
     verification_status: verification?.status ?? 'none',
     verification_method: verification?.method ?? null,
+    repro_status: verification?.repro_status ?? null,
+    regression_proof: verification?.regression_proof ?? null,
+    resolve_mode: verification?.resolve_mode ?? null,
     forced: unproven,
     force_reason: unproven ? forceReason : null,
     duration_ms: new Date(m.closed_at).getTime() - new Date(m.created_at).getTime(),
@@ -2038,6 +2206,13 @@ function cmdClose(args) {
   console.log(`   Strategy: ${m.strategy}`);
   console.log(`   Solution: ${summary.solution}`);
   if (unproven) console.log(`   ${C.yellow}Verification: ${summary.verification_status} — ${forceReason}${C.reset}`);
+  // Say it out loud: "closed" and "the cause was found" are different claims.
+  if (summary.resolve_mode === 'narrow') {
+    console.log(`   ${C.yellow}Root cause was never confirmed — this run mitigated the symptom only.${C.reset}`);
+  }
+  if (summary.repro_status && summary.regression_proof !== 'proven') {
+    console.log(`   ${C.yellow}Regression proof: ${summary.regression_proof} — the recorded failure was not shown to be gone.${C.reset}`);
+  }
   console.log(`   Duration: ${fmtDuration(summary.duration_ms)}\n`);
 }
 
@@ -2279,7 +2454,9 @@ ${C.bold}PROBLEM MANAGEMENT${C.reset}
   list                      List all problems
   status                    Show current problem status
   close [--summary "..."]   Close problem (requires a passed verification)
-  close --abandon           Stop without a fix; keeps the diagnosis, records nothing as solved
+  close --abandon --summary "..."
+                            Stop without a fix; keeps the diagnosis, records nothing as solved
+  strategy set <s> --reset  Discard an in-progress run (repro, hypotheses, iteration budget)
   history                   Show solved problems
   next                      Suggest the next action
   handoff [--restore]       Save/restore session

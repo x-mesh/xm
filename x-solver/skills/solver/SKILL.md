@@ -269,7 +269,7 @@ The leader must never directly read code or verify hypotheses in any phase. Alwa
 **refine phase:** Check confirmed/inconclusive; if all refuted apply Switch or Revert before retrying.
 - Checklist: Hypothesis status verified / AskUserQuestion called / solve-advance called
 
-**resolve phase:** fix + exec proof — Fix it and prove it by execution. Both must be completed in this phase.
+**resolve phase:** fix + regression proof — Fix it, then re-run the exact command recorded in `reproduce` and show the failure marker is gone: `$XMS repro verify --output-file <after> --exit-code 0 [--regression-test <path>]`. `verify` refuses to pass a reproduced problem without it. If `resolve_mode` is `narrow`, no root cause was confirmed — reversible instrumentation only.
 - Checklist: delegate agent called (including fix + exec proof) / Execution evidence confirmed / candidates add + select called / verify called / close called
 
 ### constrain — Contrastive Matrix

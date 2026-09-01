@@ -354,6 +354,10 @@ speculative fix; the close summary will state the cause is still unknown.
 ```bash
 $XMS repro verify --output-file <after> --exit-code 0 [--runs 0/9] [--regression-test <path>]
 ```
+
+`verify` reads this record: a `reproduced` problem whose regression proof is missing comes back
+`unverified` (`reason: regression_proof_absent`) and cannot be closed. `--manual` is not a way around
+it — a re-run is checkable by execution, which is exactly what `--manual` is not for.
 >
 > **Exception — diagnosis only.** If this problem came from the Review-Fix Gate (root `CLAUDE.md` step
 > 4b), stop at the confirmed cause and hand it back to triage. Do not edit: `x-build hooks install`

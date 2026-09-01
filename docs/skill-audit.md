@@ -33,7 +33,7 @@ hand-maintained count went 181 lines stale (x-build was recorded as 411 while it
 | 378 | `x-humanize/skills/humanize/SKILL.md` | ✅ OK |
 | 375 | `x-review/skills/review/SKILL.md` | ✅ OK |
 | 375 | `x-humble/skills/humble/SKILL.md` | ✅ OK |
-| 394 | `x-solver/skills/solver/SKILL.md` | ✅ OK (Red Flags added 2026-09-01) |
+| 422 | `x-solver/skills/solver/SKILL.md` | ✅ OK (Red Flags added 2026-09-01) |
 | 305 | `x-eval/skills/eval/SKILL.md` | ✅ OK |
 | 292 | `x-probe/skills/probe/SKILL.md` | ✅ OK |
 | 278 | `xm/skills/handoff/SKILL.md` | ✅ OK |
@@ -89,7 +89,8 @@ Largest sub-files (non-SKILL.md) by line count. These don't fall under the 500-l
 | 276 | `x-build/skills/build/references/cli-skill-protocol.md` | All 16 `next --json` actions + run-status envelopes; worktree decision/finish detail extracted from SKILL.md 2026-08-18 |
 | 104 | `x-build/skills/build/references/commands.md` | Full CLI surface (extracted from SKILL.md 2026-08-11) |
 | 59 | `x-build/skills/build/references/environment-detection.md` | Toolchain/base-branch detection (extracted 2026-08-11) |
-| 507 | `x-solver/skills/solver/commands/solve.md` | 4 strategy branches; **over 500** — split the iterate branch out |
+| 263 | `x-solver/skills/solver/commands/solve.md` | decompose / constrain / pipeline; iterate split out 2026-09-01 |
+| 404 | `x-solver/skills/solver/commands/iterate.md` | reproduce → resolve, with the repro, refutation and regression gates |
 | 429 | `x-agent/skills/agent/TEAM.md` | Team mode dispatcher |
 | 396 | `x-review/skills/review/references/review-workflow.md` | Phase 1-4 full pipeline |
 | 365 | `x-probe/skills/probe/sessions/probe.md` | Premise + evidence + verdict |
@@ -108,7 +109,7 @@ All 14 plugin skills are under budget. No urgent splits required.
 These references don't hit the 500-line policy (it applies to SKILL.md only) but could be split if they grow further:
 
 - `x-build/references/workflow-guide.md` (332 lines, was 654) — Step 3 Plan extracted 2026-04-17. If Step 2 Research or Step 4 Execute grows, consider further per-phase splits
-- `x-solver/commands/solve.md` (507 lines) — past the 500 line budget. Extract the iterate branch to `iterate.md` first; the other three strategies still fit
+- `x-solver/commands/solve.md` — resolved 2026-09-01 by extracting `iterate.md` (263 / 404 lines). Split the next strategy branch out if one grows past ~450
 
 ### Regression guard
 

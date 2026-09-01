@@ -64,7 +64,7 @@
     {
       "name": "solver",
       "description": "Structured problem solving and bug diagnosis — iterate (diagnose → hypothesize → falsify → fix → prove), decompose, constrain, or auto-pipeline",
-      "version": "2.3.0",
+      "version": "2.3.1",
       "author": {
         "name": "x-mesh"
       },
@@ -295,7 +295,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.23.4",
+      "version": "2.23.5",
       "author": {
         "name": "x-mesh"
       },

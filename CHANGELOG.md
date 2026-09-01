@@ -10,6 +10,26 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.23.5] - 2026-09-01
+
+### x-solver 2.3.0 → 2.3.1
+
+Self-review of the 2.3.0 release found 36 confirmed issues; 34 are fixed here, two are recorded as open decisions.
+
+- `strategy set <s>` refuses to overwrite a run that has already started. It used to rewrite `strategy-state.json` wholesale, resetting the iteration count and dropping the extension budget, the repro record and every hypothesis — which made the extension cap, the repro gate and the refutation gate all bypassable with one command. `--reset` discards them on purpose.
+- The worktree fingerprint hashes tracked content (`git diff HEAD`) rather than `git status --porcelain`. Path-and-status-letters left the digest unchanged when the fix edited a file that was already modified when the repro was recorded — the most common iterate case — so a real fix was rejected as "nothing changed". Untracked files are hashed separately, so the captured-output file the workflow itself creates no longer counts as a change. When git cannot answer, the run says the check did not run instead of recording it as passed.
+- `verify` reads the repro record. A `reproduced` problem with no regression proof comes back `unverified` (`regression_proof_absent`), and an intermittent one with too few clean runs comes back `insufficient_clean_runs`. Previously `regression_proof` was written and read nowhere, so a run could record a reproduction, never re-run it, and close as solved. `--manual` cannot stand in for the re-run, which is checkable by execution.
+- `close` refuses a verification that checked a different candidate or a different constraint set, and its summary records `repro_status`, `regression_proof` and `resolve_mode`, warning aloud when the root cause was never confirmed.
+- Legacy verification records are re-judged from their stored `constraint_check` instead of their `passed` flag — that flag was produced by the two-valued rule 2.3.0 removed, so it said "passed" for exactly the states now called unverified. `close --force --reason` remains the migration path.
+- `verify --manual` is refused when no candidate is selected, since the claim would name no solution.
+- `repro verify` refuses an empty after-capture (absence of output is not absence of the failure) and validates `--exit-code` as a non-negative integer.
+- `repro set` keeps the failure marker inside the stored evidence: the tail window re-centres on the marker rather than trimming it away after validating against the full text.
+- `repro set --status unavailable` now actually sets `resolve_mode = 'narrow'`, which it had only claimed in prose.
+- `--extend-iterations` takes 1..3, so one call cannot grant an unbounded budget while staying inside the two-extension cap, and a convergence early stop rolls back a budget it just granted instead of consuming an extension for a refused command. The early-stop message points at the exits that exist rather than at `resolve`, which the refutation gate refuses.
+- `close --abandon` requires a summary and will not overwrite a problem that already reached a terminal state.
+- Regression tests for the gate chain, run against a real git repository: the already-dirty-file case, the untracked-file-only case, the empty capture, the nonzero after exit code, the `repro set` phase gate, the strategy-set wipe, the stale verification, and the extension size limit.
+- Docs corrected: `integrations.md` no longer instructs a backward `solve-advance --phase refine` the CLI refuses from `resolve`; the SKILL.md resolve bullet names `repro verify` instead of "exec proof"; the skill-audit rows record the post-split line counts.
+
 ## [2.23.4] - 2026-09-01
 
 ### x-solver 2.2.7 → 2.3.0

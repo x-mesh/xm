@@ -35,7 +35,7 @@ review fan-out.
 | Verdict | Action |
 |---|---|
 | LGTM | `$XMS close --summary "..."`, then the x-humble link below |
-| Request Changes / Block | Do **not** close. `$XMS context add --content "<findings>" --type review`, then `$XMS solve-advance --phase refine`. Findings are new evidence, not a blind patch |
+| Request Changes / Block | Do **not** close. `$XMS context add --content "<findings>" --type review`, then fix inside the current `resolve` phase and re-run `$XMS repro verify` + `$XMS verify`. (`solve-advance --phase refine` is a backward transition the CLI refuses from `resolve`; only `refine → hypothesize` is allowed.) Findings are new evidence, not a blind patch |
 
 **Ownership.** When x-solver started the fix, the solver problem owns closure — do not open a separate
 review-fix triage for the same diff. When the Review-Fix Gate sent the problem here for diagnosis
