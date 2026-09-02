@@ -105,49 +105,16 @@ When called without arguments, **automatically determines the review scope**. Ru
 
 **Step 1: Context detection (order = routing priority)**
 
-```bash
-# Priority 1: Trace ledger — last recorded review, durable across sessions/clears.
-# Authoritative "already reviewed up to here"; use its ref unless the chain is broken.
-LAST_REVIEW=$(xm last review --json 2>/dev/null | jq -r 'if (.chain_broken // false) then empty else (.ref // empty) end' 2>/dev/null || echo "")
-
-# Priority 2: PR detection
-BRANCH=$(git branch --show-current 2>/dev/null)
-PR_NUM=$(gh pr view --json number -q .number 2>/dev/null || echo "")
-BASE=$(git merge-base main HEAD 2>/dev/null || git merge-base master HEAD 2>/dev/null || echo "")
-
-# Priority 3: Last reviewed commit (last-result.json) — legacy fallback when ledger unrecorded
-if [ -z "$LAST_REVIEW" ]; then
-  LAST_REVIEW=$(jq -r '.reviewed_commit // empty' .xm/review/last-result.json 2>/dev/null || echo "")
-fi
-
-# Priority 4: Last release commit
-if [ -z "$LAST_REVIEW" ]; then
-  LAST_REVIEW=$(git log --grep="^release:" --format=%H -1 2>/dev/null || echo "")
-fi
-
-# Priority 5: Last tag
-if [ -z "$LAST_REVIEW" ]; then
-  TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-  [ -n "$TAG" ] && LAST_REVIEW=$(git rev-parse --verify "$TAG^{commit}" 2>/dev/null || echo "")
-fi
-
-# Priority 6: Fallback
-if [ -z "$LAST_REVIEW" ]; then
-  LAST_REVIEW="HEAD~10"
-fi
-
-# Validate reference point — only hex SHA or HEAD~N allowed
-if ! echo "$LAST_REVIEW" | grep -qE '^[0-9a-f]{7,40}$|^HEAD~[0-9]+$'; then
-  LAST_REVIEW="HEAD~10"
-fi
-```
+Run the context-detection block from `references/review-workflow.md`
+(**Smart Router — Step 1**) verbatim. It sets `LAST_REVIEW`, `BRANCH`,
+`PR_NUM` and `BASE`; `BASE` is empty when no base ref resolves.
 
 **Step 2: Routing (top to bottom, first match wins)**
 
 | Priority | Condition | Review scope | Rationale |
 |---------|------|----------|------|
 | 1 | PR exists | `gh pr diff {PR_NUM}` | PR = natural unit of review |
-| 2 | Feature branch (no PR) | `diff {BASE}..HEAD` | Entire branch = unit of work |
+| 2 | Feature branch (no PR), `BASE` non-empty | `diff {BASE}..HEAD` | Entire branch = unit of work |
 | 3 | Main + reference point exists | `diff {LAST_REVIEW}..HEAD` | Since last review/release/tag |
 | 4 | Fallback | `diff HEAD~10` | Reasonable default |
 | — | Unrecognized input | [Subcommand: list] | Safe fallback for typos/unsupported commands |

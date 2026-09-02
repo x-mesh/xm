@@ -140,17 +140,20 @@ describe('x-review SKILL.md structure', () => {
   const dataDirectory = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'data-directory.md'), 'utf8');
   const integration = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'x-build-integration.md'), 'utf8');
 
+  // Step 1's context-detection block lives in references/review-workflow.md so
+  // SKILL.md stays inside the 500-line budget; SKILL.md keeps the link stub.
   test('Smart Router detects PR, branch, and main', () => {
     expect(content).toContain('Smart Router');
-    expect(content).toContain('PR_NUM');
-    expect(content).toContain('LAST_REVIEW');
-    expect(content).toContain('git merge-base');
+    expect(content).toContain('references/review-workflow.md');
+    expect(workflow).toContain('PR_NUM');
+    expect(workflow).toContain('LAST_REVIEW');
+    expect(workflow).toContain('git merge-base');
   });
 
   test('Smart Router has priority order (PR first)', () => {
     // PR detection should come before LAST_REVIEW resolution
-    const prPos = content.indexOf('gh pr view');
-    const lastReviewPos = content.indexOf('LAST_REVIEW');
+    const prPos = workflow.indexOf('gh pr view');
+    const lastReviewPos = workflow.indexOf('LAST_REVIEW');
     // Both exist
     expect(prPos).toBeGreaterThan(0);
     expect(lastReviewPos).toBeGreaterThan(0);
@@ -161,8 +164,21 @@ describe('x-review SKILL.md structure', () => {
   });
 
   test('Smart Router has git ref validation', () => {
-    expect(content).toContain('grep -qE');
-    expect(content).toContain('HEAD~');
+    expect(workflow).toContain('grep -qE');
+    expect(workflow).toContain('HEAD~');
+  });
+
+  test('Smart Router reads the trace ledger under .review, not top level', () => {
+    expect(workflow).toContain('.review.ref');
+    expect(workflow).not.toContain("jq -r 'if (.chain_broken");
+  });
+
+  test('Smart Router resolves a base ref without assuming a local main', () => {
+    expect(workflow).toContain('refs/remotes/origin/HEAD');
+    expect(workflow).toContain('origin/main main origin/master master');
+    expect(workflow).not.toContain('BASE=$(git merge-base main HEAD');
+    // Routing priority 2 must require a resolved BASE
+    expect(content).toContain('`BASE` non-empty');
   });
 
   test('Smart Router uses token-budgeted chunk coverage', () => {

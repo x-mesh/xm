@@ -631,3 +631,64 @@ and `logic`), so the lens rows can sum above **Total**, which counts unique find
 ## Applies to
 
 Orchestrator runs through this workflow on every x-review invocation.
+
+## Smart Router — Step 1: context detection
+
+Executed verbatim by SKILL.md's Smart Router before routing. Sets `LAST_REVIEW`,
+`BRANCH`, `PR_NUM`, `BASE`.
+
+Two traps this block exists to avoid:
+
+- `xm last review --json` nests its record under `.review` and emits `{"review": null}`
+  when nothing is recorded. Reading top-level `.ref` silently yields empty, which kills
+  priority 1 outright and drops routing to the stale-prone fallback chain.
+- A checkout often has no local `main` — only `origin/main` — and a PR may target a
+  different base (e.g. `develop`). If `BASE` ends up empty it must not reach
+  `git diff "$BASE..HEAD"`: that expands to `git diff ..HEAD`, which prints nothing and
+  exits 0, so a branch with real commits is reported as "변경 사항이 없습니다". Routing
+  priority 2 therefore requires a non-empty `BASE`.
+
+```bash
+# Priority 1: Trace ledger — the record nests under `.review`, and is
+# `{"review": null}` when unrecorded; top-level `.ref` is always empty.
+LAST_REVIEW=$(xm last review --json 2>/dev/null | jq -r 'if (.review.chain_broken // false) then empty else (.review.ref // empty) end' 2>/dev/null || echo "")
+
+# Priority 2: PR detection
+BRANCH=$(git branch --show-current 2>/dev/null)
+PR_NUM=$(gh pr view --json number -q .number 2>/dev/null || echo "")
+
+# Base ref — never assume a local `main` exists (see the trap notes above).
+PR_BASE=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || echo "")
+OH=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo "")
+BASE=""
+for CAND in "${PR_BASE:+origin/$PR_BASE}" "$OH" origin/main main origin/master master origin/develop develop; do
+  [ -n "$CAND" ] && git rev-parse --verify --quiet "${CAND}^{commit}" >/dev/null 2>&1 || continue
+  BASE=$(git merge-base "$CAND" HEAD 2>/dev/null || echo ""); [ -n "$BASE" ] && break
+done
+
+# Priority 3: Last reviewed commit (last-result.json) — legacy fallback when ledger unrecorded
+if [ -z "$LAST_REVIEW" ]; then
+  LAST_REVIEW=$(jq -r '.reviewed_commit // empty' .xm/review/last-result.json 2>/dev/null || echo "")
+fi
+
+# Priority 4: Last release commit
+if [ -z "$LAST_REVIEW" ]; then
+  LAST_REVIEW=$(git log --grep="^release:" --format=%H -1 2>/dev/null || echo "")
+fi
+
+# Priority 5: Last tag
+if [ -z "$LAST_REVIEW" ]; then
+  TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+  [ -n "$TAG" ] && LAST_REVIEW=$(git rev-parse --verify "$TAG^{commit}" 2>/dev/null || echo "")
+fi
+
+# Priority 6: Fallback
+if [ -z "$LAST_REVIEW" ]; then
+  LAST_REVIEW="HEAD~10"
+fi
+
+# Validate reference point — only hex SHA or HEAD~N allowed
+if ! echo "$LAST_REVIEW" | grep -qE '^[0-9a-f]{7,40}$|^HEAD~[0-9]+$'; then
+  LAST_REVIEW="HEAD~10"
+fi
+```
