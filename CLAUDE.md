@@ -126,9 +126,32 @@ SKILL.md is a prompt for LLMs — write instructions in English for precision.
 
 ### Required Sections
 
-Every SKILL.md must include, in order: `Overview` → `When to Use` → `<Core Process>` → `Common Rationalizations` → `Red Flags` → `Verification`.
+Open with a purpose block and a trigger block, then the skill's own process
+sections, then the discipline sections. Two forms are in use; both are accepted,
+and a skill should not mix them:
 
-The **Common Rationalizations** table (excuses agents use to skip steps + factual rebuttals) is the single most impactful discipline mechanism — minimum 5 domain-specific rows. Without it, the skill has no defense against being partially applied.
+| Form | Purpose | Trigger | Used by |
+|------|---------|---------|---------|
+| **Tag** (dominant) | `<Purpose>` | `<Use_When>`, optionally `<Do_Not_Use_When>` | 11 of 18 skills |
+| **Heading** | `## Overview` | `## When to Use` | 3 of 18 skills |
+
+Pick the tag form for a new skill unless you are editing a skill that already
+uses headings — matching the file you are in beats matching the majority.
+
+One section is required regardless of form:
+
+- **Common Rationalizations** — excuses agents use to skip steps, paired with
+  factual rebuttals. Minimum 5 domain-specific rows. This is the single most
+  impactful discipline mechanism; without it a skill has no defense against
+  being partially applied. Present in 15 of 18 skills, and the closest thing
+  this repo has to a universal SKILL.md convention.
+
+`Red Flags` (5 of 18) and `Verification` (4 of 18) are recommended, not
+required. Add `Verification` when the skill's result can be checked by a
+command or a state check — especially when the skill mutates anything.
+
+The counts above are current as of 2026-09-02; re-measure before treating any
+of them as a rule rather than a description.
 
 ### CLI Invocation Pattern (required when SKILL.md exposes a shell CLI)
 

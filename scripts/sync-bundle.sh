@@ -357,7 +357,10 @@ mirror_md_dir "x-build/skills/build/commands" "xm/skills/build/commands"
 
 echo ""
 echo "=== Syncing review lenses ==="
-mirror_md_dir "x-review/skills/review/lenses" "xm/skills/review/lenses"
+# mirror_md_tree, not mirror_md_dir: the lenses directory has a single source, so
+# the bundle copy must drop a lens the plugin renamed or deleted. mirror_md_dir
+# stays additive because xm/commands/ is fed by every plugin in turn.
+mirror_md_tree "x-review/skills/review/lenses" "xm/skills/review/lenses"
 
 echo ""
 echo "=== Syncing review references ==="

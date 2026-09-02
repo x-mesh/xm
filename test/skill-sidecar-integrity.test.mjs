@@ -83,14 +83,33 @@ describe('skill sidecar integrity — source tree', () => {
   });
 
   test('x-review ships the lenses and shared references its SKILL.md requires', () => {
-    // The exact set the failing Codex session tried to open.
+    // The exact set the failing Codex session tried to open. These are the CLI
+    // identifiers, and promptFor() resolves lenses/<id>.md — so a file whose name
+    // does not match the documented id throws `unknown review lens` at run time.
     const reviewDir = join(SKILLS, 'review');
-    for (const lens of ['security', 'logic', 'performance', 'tests']) {
+    for (const lens of ['security', 'logic', 'perf', 'tests']) {
       expect(existsSync(join(reviewDir, 'lenses', `${lens}.md`))).toBe(true);
     }
     for (const ref of ['ask-user-question-rule', 'finding-severity', 'trace-recording']) {
       expect(existsSync(join(reviewDir, 'references', `${ref}.md`))).toBe(true);
     }
+  });
+
+  test('every lens id documented in x-review SKILL.md resolves to a lens file', () => {
+    const reviewDir = join(SKILLS, 'review');
+    const skill = readFileSync(join(reviewDir, 'SKILL.md'), 'utf8');
+    // The `list` help block groups ids under "... profiles:" / "... lenses:"
+    // headings, one `  <id>   <description>` line each.
+    const ids = new Set();
+    for (const section of skill.split(/^(?=\S.*(?:profiles|lenses).*:\s*$)/m)) {
+      if (!/^\S.*(?:profiles|lenses).*:\s*$/m.test(section.split('\n')[0] ?? '')) continue;
+      for (const m of section.split(/\n\s*\n/)[0].matchAll(/^ {2}([a-z][a-z-]*) {2,}\S/gm)) {
+        ids.add(m[1]);
+      }
+    }
+    expect(ids.size).toBeGreaterThanOrEqual(10);
+    const missing = [...ids].filter((id) => !existsSync(join(reviewDir, 'lenses', `${id}.md`)));
+    expect(missing).toEqual([]);
   });
 });
 

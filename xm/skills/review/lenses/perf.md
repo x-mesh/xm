@@ -1,4 +1,4 @@
-# Lens: performance
+# Lens: perf
 
 Agent prompt for x-review Phase 3 REVIEW. Invoked by the orchestrator via Agent tool with the diff and this prompt. The leader prepends `{universal_principles}` (from SKILL.md) to the prompt before dispatch.
 

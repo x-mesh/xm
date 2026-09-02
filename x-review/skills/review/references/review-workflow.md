@@ -346,7 +346,7 @@ Each lens provides a specialized agent prompt. The orchestrator selects lenses p
 
 - `lenses/security.md` — OWASP + trust-boundary validation
 - `lenses/logic.md` — boundary values + conditional intent
-- `lenses/performance.md` — measurable bottlenecks, I/O > CPU
+- `lenses/perf.md` — measurable bottlenecks, I/O > CPU
 - `lenses/tests.md` — behavior over implementation, risky paths first
 - `lenses/architecture.md` — blast radius, YAGNI abstractions
 - `lenses/docs.md` — why not what, API contracts, stale doc detection
