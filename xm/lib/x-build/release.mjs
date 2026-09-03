@@ -162,6 +162,48 @@ function detectTestCommand(cwd) {
   return null;
 }
 
+/**
+ * Run the project's real test command and summarise it. Never throws and never
+ * exits: this is a report, not a gate (see the note at the call site).
+ */
+function reportFullSuite(cwd) {
+  const cmd = detectTestCommand(cwd);
+  if (!cmd) {
+    console.log('\nℹ No project test command detected — full suite not run.');
+    return;
+  }
+  console.log(`\n🧪 Full suite (report only, not a gate): ${cmd}`);
+  const started = Date.now();
+  let out = '';
+  let failed = false;
+  try {
+    out = execSync(cmd, { cwd, encoding: 'utf8', timeout: 900000, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) {
+    failed = true;
+    out = `${e.stdout || ''}${e.stderr || ''}`;
+  }
+  const secs = Math.round((Date.now() - started) / 1000);
+  const pass = (out.match(/^\s*(\d+) pass/m) || [])[1];
+  const fail = (out.match(/^\s*(\d+) fail/m) || [])[1];
+
+  if (pass || fail) {
+    const n = Number(fail || 0);
+    const line = `   ${pass || '?'} pass / ${fail || '0'} fail  (${secs}s)`;
+    if (n > 0) {
+      console.log(`⚠ Full suite is RED — the release is not blocked by it, but the tree is not clean.`);
+      console.log(line);
+      for (const m of out.matchAll(/^\(fail\)\s+(.+?)(?:\s+\[[\d.]+ms\])?$/gm)) {
+        console.log(`     ✗ ${m[1]}`);
+      }
+      console.log('   Compare against the previous release before shipping: a NEW failure here is a regression.');
+    } else {
+      console.log(`✅ Full suite green — ${line.trim()}`);
+    }
+  } else {
+    console.log(`   ${failed ? 'command failed' : 'completed'} in ${secs}s; no pass/fail summary parsed.`);
+  }
+}
+
 function runReleaseStateCheck(cwd) {
   const script = join(cwd, 'scripts', 'verify-release-state.mjs');
   if (!existsSync(script)) return;
@@ -468,14 +510,23 @@ export function cmdReleaseBump(args) {
   // 7. Verify release consistency before running tests.
   runReleaseStateCheck(cwd);
 
-  // 8. Run tests
-  console.log('\n🧪 Running tests...');
+  // 8. Run tests.
+  //
+  // The GATE is the fast core suite: it must pass or the release stops. The full
+  // suite then runs for VISIBILITY only, and never blocks — a repository that
+  // carries known failures would otherwise be unable to cut any release at all,
+  // which is why this step was pinned to one file in the first place. Pinning it
+  // silently, though, let a release look green while the suite was red. Reporting
+  // the full result keeps the gate usable and the state honest.
+  console.log('\n🧪 Running gate tests (core)...');
   try {
     execSync('bun test test/core-unit.test.mjs', { stdio: 'inherit', timeout: 120000 });
   } catch {
-    console.error('❌ Tests failed. Fix before releasing.');
+    console.error('❌ Gate tests failed. Fix before releasing.');
     exitFail(1);
   }
+
+  reportFullSuite(cwd);
 
   // Output summary
   console.log('\n✅ Version bump complete:\n');
