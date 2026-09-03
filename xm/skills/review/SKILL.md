@@ -142,7 +142,10 @@ After Phase 4 completes, write the `reviewed_commit` field to `last-result.json`
   ...existing fields
 }
 ```
-This value becomes priority 1 reference point for the next Smart Router run.
+This value is the **priority-3** fallback reference point, used only when the trace
+ledger has no record. Priority 1 is the ledger itself (see Verdict Recording); the
+correcting note used to sit beside this line and moved with the block, so state it
+here rather than leaving the two halves of the file disagreeing.
 
 **Natural language mapping:**
 | User says | Route to |

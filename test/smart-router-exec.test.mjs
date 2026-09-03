@@ -25,13 +25,19 @@ const WORKFLOW = join(ROOT, 'x-review', 'skills', 'review', 'references', 'revie
 const FENCE = '`'.repeat(3);
 
 /** Extract the one bash fence under the Smart Router heading. */
-function extractBlock() {
+/** The Smart Router section alone — up to the next H2, not to end of file. */
+function smartRouterSection() {
   const doc = readFileSync(WORKFLOW, 'utf8');
-  const section = doc.split('## Smart Router — Step 1')[1];
-  if (!section) throw new Error('Smart Router — Step 1 section is missing');
-  const fences = section.split(FENCE).length - 1;
-  if (fences !== 2) throw new Error(`expected exactly one fenced block, found ${fences} fence markers`);
-  const match = section.match(new RegExp(`${FENCE}bash\\n([\\s\\S]*?)${FENCE}`));
+  const after = doc.split('## Smart Router — Step 1')[1];
+  if (after === undefined) throw new Error('Smart Router — Step 1 section is missing');
+  // Stop at the next top-level heading so a later section with its own fenced
+  // example cannot make this section look malformed.
+  return after.split('\n## ')[0];
+}
+
+/** Extract the one bash fence under the Smart Router heading. */
+function extractBlock() {
+  const match = smartRouterSection().match(new RegExp(`${FENCE}bash\\n([\\s\\S]*?)${FENCE}`));
   if (!match) throw new Error('no ```bash block under the Smart Router heading');
   return match[1];
 }
@@ -129,6 +135,13 @@ function withTmp(fn) {
 }
 
 describe('Smart Router — Step 1 executes correctly', () => {
+  test('the Smart Router section holds exactly one fenced block', () => {
+    // Its own case, not a throw inside beforeAll: a malformed section should
+    // fail one test with a clear message, not take down every guard in the file.
+    const fences = smartRouterSection().split(FENCE).length - 1;
+    expect(fences).toBe(2);
+  });
+
   test('the fenced block is valid shell', () => {
     // The guard that string assertions cannot provide.
     const r = spawnSync('bash', ['-n'], { input: BLOCK, encoding: 'utf8' });
@@ -155,6 +168,38 @@ describe('Smart Router — Step 1 executes correctly', () => {
       const { BASE } = runBlock(clone);
       // First-match-wins would pick origin/main and drag in all five d*.txt.
       expect(scopeFrom(clone, BASE)).toBe('only-change.txt');
+    });
+  });
+
+  test('a default branch outside the static list is found via origin/HEAD', () => {
+    withTmp((tmp) => {
+      // The static candidates only name main/master/develop. A repo whose default
+      // branch is something else — here release/1.x — is reachable only through
+      // origin/HEAD, so deleting that candidate silently drops such repos back to
+      // priority 3 with no base at all.
+      const up = initRepo(join(tmp, 'up'), 'release/1.x');
+      commit(up, 'released.txt');
+
+      const clone = join(tmp, 'clone');
+      git(tmp, 'clone', '-q', up, clone);
+      git(clone, 'checkout', '-q', '-b', 'feature/custom');
+      commit(clone, 'work.txt');
+
+      // Preconditions: origin/HEAD names the branch, and no static candidate exists.
+      expect(git(clone, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'))
+        .toBe('origin/release/1.x');
+      for (const ref of ['refs/remotes/origin/main', 'refs/heads/main',
+        'refs/remotes/origin/master', 'refs/heads/master',
+        'refs/remotes/origin/develop', 'refs/heads/develop']) {
+        const r = spawnSync('git', ['rev-parse', '--verify', '--quiet', ref], {
+          cwd: clone, encoding: 'utf8', env: { ...process.env, ...HERMETIC_GIT },
+        });
+        expect(r.status).not.toBe(0);
+      }
+
+      const { BASE } = runBlock(clone);
+      expect(BASE).not.toBe('');
+      expect(scopeFrom(clone, BASE)).toBe('work.txt');
     });
   });
 
