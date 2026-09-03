@@ -77,10 +77,11 @@ describe('sync-bundle.sh --check', () => {
   });
 
   test('detects a stale bundle-only review lens', () => {
-    // Deleting an orphan is the ONLY behavioral difference between
-    // mirror_md_tree and mirror_md_dir, and the lenses directory was switched to
-    // mirror_md_tree precisely so a renamed lens (performance.md -> perf.md)
-    // stops shipping. Without this case, reverting that line survives the suite.
+    // Orphan deletion is the difference that matters for this flat directory —
+    // mirror_md_tree also recurses, which mirror_md_dir's flat glob does not. The
+    // lenses directory was switched to it precisely so a renamed lens
+    // (performance.md -> perf.md) stops shipping; without this case, reverting
+    // that line survives the whole suite.
     const tmp = copyTrackedRepo();
     try {
       const orphan = join(tmp, 'xm', 'skills', 'review', 'lenses', 'performance.md');

@@ -724,6 +724,14 @@ if ! echo "$LAST_REVIEW" | grep -qE '^[0-9a-f]{7,40}$|^HEAD~[0-9]+$'; then
   LAST_REVIEW="HEAD~10"
 fi
 if ! git rev-parse --verify --quiet "${LAST_REVIEW}^{commit}" >/dev/null 2>&1; then
-  LAST_REVIEW=$(git rev-list --max-parents=0 HEAD 2>/dev/null | tail -1)
+  # Step back to the bounded window, not to the start of history: one stale
+  # ledger ref would otherwise become a whole-history review (measured on this
+  # repo: 1026 files against 81), past SKILL.md's 100-file chunking gate.
+  # `--first-parent` makes this the same commit `HEAD~10` names.
+  LAST_REVIEW=$(git rev-list --max-count=1 --skip=10 --first-parent HEAD 2>/dev/null)
+  # Repo shorter than that window: diff against the empty tree, so the root
+  # commit's own content is included and a single-commit repo does not end up
+  # diffing HEAD against itself (a silent empty review).
+  [ -z "$LAST_REVIEW" ] && LAST_REVIEW=$(git hash-object -t tree /dev/null)
 fi
 ```

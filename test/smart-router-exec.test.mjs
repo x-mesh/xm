@@ -41,8 +41,13 @@ beforeAll(() => {
   BLOCK = extractBlock();
 });
 
+// A signing or hooks setting in the developer's global git config would fail
+// these fixtures for reasons unrelated to the block under test, and a suite
+// that goes red for unrelated reasons gets skipped — reopening the regression.
+const HERMETIC_GIT = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+
 function git(cwd, ...args) {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...HERMETIC_GIT } });
   if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
   return r.stdout.trim();
 }
@@ -66,7 +71,7 @@ function commit(dir, name) {
  * Run the block in `cwd` and return its resulting variables.
  * `gh` is always stubbed: `ghOutput` null means "no PR" (exit 1).
  */
-function runBlock(cwd, ghOutput = null) {
+function runBlock(cwd, ghOutput = null, ledgerRef = null) {
   const stub = mkdtempSync(join(tmpdir(), 'xm-router-bin-'));
   const gh = join(stub, 'gh');
   writeFileSync(
@@ -76,16 +81,21 @@ function runBlock(cwd, ghOutput = null) {
       : `#!/bin/sh\ncat <<'GH_EOF'\n${ghOutput}\nGH_EOF\n`,
   );
   chmodSync(gh, 0o755);
-  // `xm` must not resolve either — the ledger path is not under test here.
+  // `xm` yields nothing unless a case pins a recorded ledger ref.
   const xm = join(stub, 'xm');
-  writeFileSync(xm, '#!/bin/sh\nexit 1\n');
+  writeFileSync(
+    xm,
+    ledgerRef === null
+      ? '#!/bin/sh\nexit 1\n'
+      : `#!/bin/sh\ncat <<'XM_EOF'\n{"review":{"ref":"${ledgerRef}"}}\nXM_EOF\n`,
+  );
   chmodSync(xm, 0o755);
 
   const script = `${BLOCK}\nprintf 'BASE=%s\\nLAST_REVIEW=%s\\nPR_NUM=%s\\nPR_BASE=%s\\n' "$BASE" "$LAST_REVIEW" "$PR_NUM" "$PR_BASE"\n`;
   const r = spawnSync('bash', ['-c', script], {
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, PATH: `${stub}:${process.env.PATH}` },
+    env: { ...process.env, ...HERMETIC_GIT, PATH: `${stub}:${process.env.PATH}` },
   });
   rmSync(stub, { recursive: true, force: true });
   if (r.status !== 0) throw new Error(`block exited ${r.status}: ${r.stderr}`);
@@ -100,7 +110,11 @@ function runBlock(cwd, ghOutput = null) {
 /** Files `git diff BASE..HEAD` would review. */
 function scopeFrom(dir, base) {
   if (!base) return null;
-  const r = spawnSync('git', ['diff', '--name-only', `${base}..HEAD`], { cwd: dir, encoding: 'utf8' });
+  const r = spawnSync('git', ['diff', '--name-only', `${base}..HEAD`], {
+    cwd: dir,
+    encoding: 'utf8',
+    env: { ...process.env, ...HERMETIC_GIT },
+  });
   if (r.status !== 0) return 'GIT_DIFF_FAILED';
   return r.stdout.trim().split('\n').filter(Boolean).sort().join(' ');
 }
@@ -200,23 +214,28 @@ describe('Smart Router — Step 1 executes correctly', () => {
     });
   });
 
-  test('a PR base outranks origin/HEAD when it is nearer', () => {
+  test('a PR base outside the static candidate list still wins', () => {
     withTmp((tmp) => {
+      // The PR base must NOT be one of main/master/develop: with `develop` the
+      // static entry decides the outcome, and this case passes even with the
+      // PR-derived candidate deleted from the loop entirely.
       const up = initRepo(join(tmp, 'up'));
       commit(up, 'released.txt');
-      git(up, 'checkout', '-qb', 'develop');
-      commit(up, 'unreleased.txt');
+      git(up, 'checkout', '-qb', 'release/1.x');
+      commit(up, 'rel.txt');
       git(up, 'checkout', '-q', 'main');
 
       const clone = join(tmp, 'clone');
       git(tmp, 'clone', '-q', up, clone);
-      git(clone, 'fetch', '-q', 'origin', 'develop');
-      git(clone, 'checkout', '-q', '-b', 'feature/pr', 'origin/develop');
+      git(clone, 'fetch', '-q', 'origin', 'release/1.x');
+      git(clone, 'checkout', '-q', '-b', 'feature/pr', 'origin/release/1.x');
       commit(clone, 'pr-change.txt');
 
-      const { PR_NUM, PR_BASE, BASE } = runBlock(clone, '17\ndevelop');
+      const { PR_NUM, PR_BASE, BASE } = runBlock(clone, '17\nrelease/1.x');
       expect(PR_NUM).toBe('17');
-      expect(PR_BASE).toBe('develop');
+      expect(PR_BASE).toBe('release/1.x');
+      // Without the PR candidate the nearest static one is origin/main, which
+      // pulls rel.txt in as if it were part of this branch's change.
       expect(scopeFrom(clone, BASE)).toBe('pr-change.txt');
     });
   });
@@ -241,7 +260,7 @@ describe('Smart Router — Step 1 executes correctly', () => {
       const r = spawnSync('bash', ['-c', script], {
         cwd: repo,
         encoding: 'utf8',
-        env: { ...process.env, PATH: `${stub}:${process.env.PATH}` },
+        env: { ...process.env, ...HERMETIC_GIT, PATH: `${stub}:${process.env.PATH}` },
       });
       rmSync(stub, { recursive: true, force: true });
       expect(r.stdout).toContain('PR_NUM=42');
@@ -273,15 +292,43 @@ describe('Smart Router — Step 1 executes correctly', () => {
     });
   });
 
-  test('falls back to a reachable ref when HEAD~10 does not exist', () => {
+  test('a repo shorter than the window keeps the root commit in scope', () => {
     withTmp((tmp) => {
       const repo = initRepo(join(tmp, 'shallow'));
       for (const n of ['c1.txt', 'c2.txt', 'c3.txt']) commit(repo, n);
 
       const { LAST_REVIEW } = runBlock(repo);
       expect(LAST_REVIEW).not.toBe('HEAD~10');
-      // Priority 3 must be able to actually run.
-      expect(scopeFrom(repo, LAST_REVIEW)).not.toBe('GIT_DIFF_FAILED');
+      // Falling back to the root COMMIT instead of the empty tree silently drops
+      // the root's own file from the review.
+      expect(scopeFrom(repo, LAST_REVIEW)).toBe('c1.txt c2.txt c3.txt');
+    });
+  });
+
+  test('a single-commit repo does not diff HEAD against itself', () => {
+    withTmp((tmp) => {
+      const repo = initRepo(join(tmp, 'solo-commit'));
+      commit(repo, 'only.txt');
+
+      const { LAST_REVIEW } = runBlock(repo);
+      expect(LAST_REVIEW).not.toBe(git(repo, 'rev-parse', 'HEAD'));
+      expect(scopeFrom(repo, LAST_REVIEW)).toBe('only.txt');
+    });
+  });
+
+  test('an unreachable ledger ref falls back to the window, not to all history', () => {
+    withTmp((tmp) => {
+      // The hex format gate passes an orphaned SHA, so only the reachability
+      // check stands between it and the diff. Falling to the start of history
+      // here would review all twenty commits instead of the last ten.
+      const repo = initRepo(join(tmp, 'orphan'));
+      for (let i = 1; i <= 20; i += 1) commit(repo, `f${i}.txt`);
+
+      const { LAST_REVIEW } = runBlock(repo, null, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+      expect(LAST_REVIEW).toBe(git(repo, 'rev-parse', 'HEAD~10'));
+      const scope = scopeFrom(repo, LAST_REVIEW);
+      expect(scope).not.toBe('GIT_DIFF_FAILED');
+      expect(scope.split(' ')).toHaveLength(10);
     });
   });
 });
