@@ -747,7 +747,9 @@ export function cmdPlanCheck(args) {
   // "sparse", "mainstream", "deadlock" no longer trip the parser/cache/stream/lock
   // stems. An occasional false positive is waivable via `none — <rationale>`.
   const RISK_DOMAIN_RE = /\b(pars|match|regex|cach|concurren|lock|queue|auth|crypto|input|stream|proto)/i;
-  const STRESS_RE = /스트레스|stress|pathological|adversarial|병적|timeout|hang|무한/i;
+  // 병적 and 병리(적) are both ordinary Korean renderings of "pathological";
+  // matching only one made the check depend on which synonym the author chose.
+  const STRESS_RE = /스트레스|stress|pathological|adversarial|병적|병리|timeout|hang|무한/i;
   const WAIVER_RE = /\bnone\s*[—–-]\s*\S/i; // "none — <why this task has no failure modes>"
   const LOW_TIER = new Set(['haiku', 'sonnet']);
   const fmCfg = loadSharedConfig();

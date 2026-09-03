@@ -1313,7 +1313,7 @@ A bare `xm config` opens a menu-driven wizard with seven categories:
 
 | # | Category | Covers |
 |---|----------|--------|
-| 1 | Model | `model_profile` · per-role `model_overrides` · per-phase models (plan / implement / review) |
+| 1 | Model | `model_profile` · per-role `model_overrides` · per-phase models (plan / implement / review) · `lang` (`ko`/`en`, unset = locale auto-detect) |
 | 2 | Budget | `budget.max_usd` · `budget.window_hours` · per-project `budget.projects` |
 | 3 | Execution | `agent_max_count` (1–10) |
 | 4 | Gates | five phase-exit gates (`research/plan/execute/verify/close-exit`) — `auto` / `human-verify` / `quality` / `decision` · `autopilot` (default `true`) passes `human-verify` but never `quality` or `decision`; set `autopilot: false` (or `XMB_AUTOPILOT=0` for one shot) to require every confirmation (`plan-exit` defaults to `decision`: only a human can tell that a well-formed plan aims at the wrong goal) |

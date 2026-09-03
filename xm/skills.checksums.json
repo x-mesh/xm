@@ -108,9 +108,9 @@
       "referencesSha256": "d279e1ba064200c58409611085d3bbb386ed79ac6b9e1f6807b924799ee1b139",
       "referenceFiles": 2,
       "referenceBytes": 3224,
-      "assetsSha256": "fae2ec0ec7538702a8bbf21b08cb6b8bf5f1d14ede918b9940bccd4cc5adb1e7",
+      "assetsSha256": "be51b114efa345ede058cf592d559777787b4fa7b88e93723859dc0345c319ca",
       "assetFiles": 6,
-      "assetBytes": 38626
+      "assetBytes": 38719
     },
     {
       "plugin": "later",

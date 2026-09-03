@@ -1313,7 +1313,7 @@ xm은 37개 전문가 에이전트를 함께 가지고 다닙니다. 코어 역�
 
 | # | 카테고리 | 다루는 설정 |
 |---|----------|------------|
-| 1 | 모델 | `model_profile` · 역할별 `model_overrides` · 페이즈별 모델 (plan / implement / review) |
+| 1 | 모델 | `model_profile` · 역할별 `model_overrides` · 페이즈별 모델 (plan / implement / review) · `lang` (`ko`/`en`, 미설정 시 locale 자동 감지) |
 | 2 | 예산 | `budget.max_usd` · `budget.window_hours` · 프로젝트별 `budget.projects` |
 | 3 | 실행 | `agent_max_count` (1–10) |
 | 4 | 게이트 | 페이즈 종료 게이트 5개 (`research/plan/execute/verify/close-exit`) — `auto` / `human-verify` / `quality` / `decision` · `autopilot`(기본값 `true`)은 `human-verify`만 통과시키고 `quality`·`decision`은 건드리지 않음. 모든 확인 게이트를 되살리려면 `autopilot: false`(한 번만 끌 때는 `XMB_AUTOPILOT=0`) (`plan-exit` 기본값이 `decision` — 잘 짜인 계획이 엉뚱한 목표를 향하는 건 사람만 잡을 수 있음) |

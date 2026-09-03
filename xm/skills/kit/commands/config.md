@@ -30,7 +30,7 @@ Each key carries a default write scope from `config-schema.mjs`. `--local` / `--
 
 | Scope (schema) | Default target | Keys |
 |----------------|----------------|------|
-| global | `~/.xm/config.json` | `mode`, `model_profile`, `model_overrides`, `agent_max_count`, `gates.*`, `scan_roots`, `drift.drift_threshold`, `pipelines` |
+| global | `~/.xm/config.json` | `mode`, `lang`, `model_profile`, `model_overrides`, `agent_max_count`, `gates.*`, `scan_roots`, `drift.drift_threshold`, `pipelines` |
 | local | `.xm/config.json` | `budget.max_usd`, `budget.window_hours`, `budget.projects` |
 | build-local | `.xm/build/config.json` (3-tier) | `worktree.*` — see Worktree below |
 
@@ -53,6 +53,7 @@ Model / execution:
 | Key | Values | Default | Scope |
 |-----|--------|---------|-------|
 | `mode` | `developer`, `normal` | `developer` | global |
+| `lang` | `ko`, `en` | unset → locale auto-detect (falls back to `en`) | global |
 | `model_profile` | `economy`, `default`, `max` | `default` | global |
 | `model_overrides` | `{ "role": "model" }` | `{}` | global |
 | `agent_max_count` | integer 1–10 | `4` | global |

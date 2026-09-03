@@ -37,8 +37,10 @@ if (!existsSync(sharedConfig)) {
         "execute-exit": "auto",
         "verify-exit": "quality",
         "close-exit": "auto"
-      },
-      execution: { parallel: true, max_concurrent: 3 }
+      }
+      // No execution.* here: config-schema.mjs lists it among the dead keys and
+      // default-config.json no longer carries it. Writing it back in the fallback
+      // path recreated a setting nothing reads and users could mistake for real.
     }, null, 2) + '\n');
   }
 }
