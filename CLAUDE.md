@@ -127,16 +127,24 @@ SKILL.md is a prompt for LLMs — write instructions in English for precision.
 ### Required Sections
 
 Open with a purpose block and a trigger block, then the skill's own process
-sections, then the discipline sections. Two forms are in use; both are accepted,
-and a skill should not mix them:
+sections, then the discipline sections. Two forms are accepted for new work, and
+a skill should not mix them; two more appear in the tree as legacy:
 
 | Form | Purpose | Trigger | Used by |
 |------|---------|---------|---------|
 | **Tag** (dominant) | `<Purpose>` | `<Use_When>`, optionally `<Do_Not_Use_When>` | 11 of 18 skills |
 | **Heading** | `## Overview` | `## When to Use` | 3 of 18 skills |
+| **Heading, tag names** | `## Purpose` | `## Use When` / `## Do Not Use When` | 1 (x-build) |
+| **None** | — | — | 3 (x-op, x-plan, x-remote) |
 
 Pick the tag form for a new skill unless you are editing a skill that already
 uses headings — matching the file you are in beats matching the majority.
+
+The last two rows are legacy, not a third and fourth sanctioned form. x-build's
+heading-with-tag-names variant is fine to leave alone; the three skills with no
+purpose block at all open straight into content after their H1, so an agent has
+to read the whole file to learn when the skill applies. Add a purpose and
+trigger block to those three when you next edit them, in the tag form.
 
 One section is required regardless of form:
 
@@ -150,8 +158,9 @@ One section is required regardless of form:
 required. Add `Verification` when the skill's result can be checked by a
 command or a state check — especially when the skill mutates anything.
 
-The counts above are current as of 2026-09-02; re-measure before treating any
-of them as a rule rather than a description.
+The counts above were re-measured 2026-09-03 (18 source SKILL.md files, the
+`xm/skills/` bundle copies excluded); re-measure before treating any of them as a
+rule rather than a description.
 
 ### CLI Invocation Pattern (required when SKILL.md exposes a shell CLI)
 

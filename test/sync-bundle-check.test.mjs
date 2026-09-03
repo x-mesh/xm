@@ -76,6 +76,26 @@ describe('sync-bundle.sh --check', () => {
     }
   });
 
+  test('detects a stale bundle-only review lens', () => {
+    // Deleting an orphan is the ONLY behavioral difference between
+    // mirror_md_tree and mirror_md_dir, and the lenses directory was switched to
+    // mirror_md_tree precisely so a renamed lens (performance.md -> perf.md)
+    // stops shipping. Without this case, reverting that line survives the suite.
+    const tmp = copyTrackedRepo();
+    try {
+      const orphan = join(tmp, 'xm', 'skills', 'review', 'lenses', 'performance.md');
+      writeFileSync(orphan, '# Lens: performance\n\nstale bundle-only copy\n');
+
+      const r = runSync(tmp);
+      expect(r.status).not.toBe(0);
+      const out = `${r.stdout}\n${r.stderr}`;
+      expect(out).toContain('OBSOLETE');
+      expect(out).toContain('xm/skills/review/lenses/performance.md');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('detects a missing nested x-build reference', () => {
     const tmp = copyTrackedRepo();
     try {

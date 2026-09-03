@@ -137,6 +137,11 @@ describe('x-solver SKILL.md structure', () => {
 describe('x-review SKILL.md structure', () => {
   const content = readSkill('x-review');
   const workflow = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'review-workflow.md'), 'utf8');
+  // Smart Router assertions bind to the Smart Router section, never to the whole
+  // 700-line file: `gh pr view` and `HEAD~` also appear in the `pr`/`diff` mode
+  // docs near the top, so a file-wide match stays green even after the block
+  // itself loses the string.
+  const block = workflow.slice(workflow.indexOf('## Smart Router — Step 1'));
   const dataDirectory = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'data-directory.md'), 'utf8');
   const integration = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'references', 'x-build-integration.md'), 'utf8');
 
@@ -145,15 +150,15 @@ describe('x-review SKILL.md structure', () => {
   test('Smart Router detects PR, branch, and main', () => {
     expect(content).toContain('Smart Router');
     expect(content).toContain('references/review-workflow.md');
-    expect(workflow).toContain('PR_NUM');
-    expect(workflow).toContain('LAST_REVIEW');
-    expect(workflow).toContain('git merge-base');
+    expect(block).toContain('PR_NUM');
+    expect(block).toContain('LAST_REVIEW');
+    expect(block).toContain('git merge-base');
   });
 
   test('Smart Router has priority order (PR first)', () => {
     // PR detection should come before LAST_REVIEW resolution
-    const prPos = workflow.indexOf('gh pr view');
-    const lastReviewPos = workflow.indexOf('LAST_REVIEW');
+    const prPos = block.indexOf('gh pr view');
+    const lastReviewPos = block.indexOf('LAST_REVIEW');
     // Both exist
     expect(prPos).toBeGreaterThan(0);
     expect(lastReviewPos).toBeGreaterThan(0);
@@ -164,21 +169,39 @@ describe('x-review SKILL.md structure', () => {
   });
 
   test('Smart Router has git ref validation', () => {
-    expect(workflow).toContain('grep -qE');
-    expect(workflow).toContain('HEAD~');
+    expect(block).toContain('grep -qE');
+    expect(block).toContain('HEAD~');
   });
 
   test('Smart Router reads the trace ledger under .review, not top level', () => {
-    expect(workflow).toContain('.review.ref');
-    expect(workflow).not.toContain("jq -r 'if (.chain_broken");
+    expect(block).toContain('.review.ref');
+    expect(block).not.toContain("jq -r 'if (.chain_broken");
   });
 
   test('Smart Router resolves a base ref without assuming a local main', () => {
-    expect(workflow).toContain('refs/remotes/origin/HEAD');
-    expect(workflow).toContain('origin/main main origin/master master');
-    expect(workflow).not.toContain('BASE=$(git merge-base main HEAD');
+    expect(block).toContain('refs/remotes/origin/HEAD');
+    // Assert each candidate independently. The loop scores candidates by distance
+    // from HEAD, so their order in the list carries no behavior, and pinning the
+    // concatenated literal blocked qualifying them against tag shadowing. Which
+    // candidate actually wins is covered by test/smart-router-exec.test.mjs.
+    for (const ref of [
+      'refs/remotes/origin/main',
+      'refs/heads/main',
+      'refs/remotes/origin/master',
+      'refs/heads/master',
+    ]) {
+      expect(block).toContain(ref);
+    }
+    expect(block).not.toContain('BASE=$(git merge-base main HEAD');
     // Routing priority 2 must require a resolved BASE
     expect(content).toContain('`BASE` non-empty');
+  });
+
+  test('Smart Router reads PR number and base in one gh call', () => {
+    // Round-trip count is structural, so it stays here; that the fields actually
+    // parse without an external jq is asserted by executing the block in
+    // test/smart-router-exec.test.mjs.
+    expect((block.match(/gh pr view/g) || []).length).toBe(1);
   });
 
   test('Smart Router uses token-budgeted chunk coverage', () => {

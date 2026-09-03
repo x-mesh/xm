@@ -637,7 +637,7 @@ Orchestrator runs through this workflow on every x-review invocation.
 Executed verbatim by SKILL.md's Smart Router before routing. Sets `LAST_REVIEW`,
 `BRANCH`, `PR_NUM`, `BASE`.
 
-Two traps this block exists to avoid:
+Four traps this block exists to avoid:
 
 - `xm last review --json` nests its record under `.review` and emits `{"review": null}`
   when nothing is recorded. Reading top-level `.ref` silently yields empty, which kills
@@ -647,23 +647,51 @@ Two traps this block exists to avoid:
   `git diff "$BASE..HEAD"`: that expands to `git diff ..HEAD`, which prints nothing and
   exits 0, so a branch with real commits is reported as "변경 사항이 없습니다". Routing
   priority 2 therefore requires a non-empty `BASE`.
+- Candidates are fully qualified (`refs/heads/…`, `refs/remotes/…`). git resolves a bare
+  refname through `refs/tags` before `refs/heads`, and this block sends the resulting
+  ambiguity warning to `/dev/null`, so a tag sharing a branch name would win silently —
+  and nearest-wins scoring prefers it, because a tag ahead of the branch point sits closer
+  to HEAD. Measured: branch `develop` at c1 with a tag `develop` at c2 shrank the scope
+  from `b.txt c.txt` to `c.txt`.
+- Taking the first candidate that resolves is not enough either. Routing priority 2 is
+  the *no PR* path, so `PR_BASE` is empty exactly when `BASE` is used, and a branch cut
+  from `develop` scores its merge-base against `origin/main`. The diff then carries every
+  unreleased `develop` commit — already-reviewed work re-reviewed as new. Measured on a
+  `develop` five commits ahead of `main`: 6 files in scope where 1 changed. Candidates
+  are therefore scored by distance from HEAD and the nearest one wins.
 
 ```bash
 # Priority 1: Trace ledger — the record nests under `.review`, and is
 # `{"review": null}` when unrecorded; top-level `.ref` is always empty.
 LAST_REVIEW=$(xm last review --json 2>/dev/null | jq -r 'if (.review.chain_broken // false) then empty else (.review.ref // empty) end' 2>/dev/null || echo "")
 
-# Priority 2: PR detection
+# Priority 2: PR detection — one `gh` round trip for both fields. `-q` runs
+# gh's own embedded query engine, so this needs no external jq: a jq-less host
+# would otherwise get an empty PR_NUM and silently review the wrong scope. (The
+# ledger read above does use jq, but its absence only costs a fallback.)
 BRANCH=$(git branch --show-current 2>/dev/null)
-PR_NUM=$(gh pr view --json number -q .number 2>/dev/null || echo "")
+PR_FIELDS=$(gh pr view --json number,baseRefName -q '.number, .baseRefName' 2>/dev/null || echo "")
+PR_NUM=$(printf '%s\n' "$PR_FIELDS" | sed -n '1p')
+PR_BASE=$(printf '%s\n' "$PR_FIELDS" | sed -n '2p')
 
-# Base ref — never assume a local `main` exists (see the trap notes above).
-PR_BASE=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || echo "")
+# Base ref — never assume a local `main` exists, and never stop at the first
+# candidate that resolves (see the trap notes above). Score every candidate by
+# its distance from HEAD and keep the nearest, so a branch cut from `develop`
+# is diffed against `develop` even when `origin/HEAD` says `main`.
 OH=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo "")
-BASE=""
-for CAND in "${PR_BASE:+origin/$PR_BASE}" "$OH" origin/main main origin/master master origin/develop develop; do
-  [ -n "$CAND" ] && git rev-parse --verify --quiet "${CAND}^{commit}" >/dev/null 2>&1 || continue
-  BASE=$(git merge-base "$CAND" HEAD 2>/dev/null || echo ""); [ -n "$BASE" ] && break
+HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+BASE=""; BEST=-1
+for CAND in "${PR_BASE:+refs/remotes/origin/$PR_BASE}" "${OH:+refs/remotes/$OH}" \
+            refs/remotes/origin/main refs/heads/main \
+            refs/remotes/origin/master refs/heads/master \
+            refs/remotes/origin/develop refs/heads/develop; do
+  [ -n "$CAND" ] || continue
+  git rev-parse --verify --quiet "${CAND}^{commit}" >/dev/null 2>&1 || continue
+  M=$(git merge-base "$CAND" HEAD 2>/dev/null) || continue
+  # A candidate that already contains HEAD would diff to nothing — skip it.
+  [ -n "$M" ] && [ "$M" != "$HEAD_SHA" ] || continue
+  N=$(git rev-list --count "$M..HEAD" 2>/dev/null) || continue
+  if [ "$BEST" -lt 0 ] || [ "$N" -lt "$BEST" ]; then BEST="$N"; BASE="$M"; fi
 done
 
 # Priority 3: Last reviewed commit (last-result.json) — legacy fallback when ledger unrecorded
@@ -687,8 +715,15 @@ if [ -z "$LAST_REVIEW" ]; then
   LAST_REVIEW="HEAD~10"
 fi
 
-# Validate reference point — only hex SHA or HEAD~N allowed
+# Validate reference point — format first, then reachability. `chain_broken` is
+# decided when the ledger record is written and never recomputed on read, so a
+# ref orphaned by a later rebase or squash still arrives here looking clean, and
+# `git diff "$LAST_REVIEW..HEAD"` then aborts with `bad object` (exit 128).
+# `HEAD~10` needs the same check: a repo with fewer than 10 commits has none.
 if ! echo "$LAST_REVIEW" | grep -qE '^[0-9a-f]{7,40}$|^HEAD~[0-9]+$'; then
   LAST_REVIEW="HEAD~10"
+fi
+if ! git rev-parse --verify --quiet "${LAST_REVIEW}^{commit}" >/dev/null 2>&1; then
+  LAST_REVIEW=$(git rev-list --max-parents=0 HEAD 2>/dev/null | tail -1)
 fi
 ```

@@ -96,8 +96,12 @@ describe('skill sidecar integrity — source tree', () => {
   });
 
   test('every lens id documented in x-review SKILL.md resolves to a lens file', () => {
-    const reviewDir = join(SKILLS, 'review');
-    const skill = readFileSync(join(reviewDir, 'SKILL.md'), 'utf8');
+    // review-lifecycle.mjs resolves a lens under the plugin's own tree
+    // (SKILL_ROOT = <plugin>/skills/review), so the source is what has to
+    // satisfy this. Check the bundle copy alongside it, not instead of it —
+    // asserting only against the bundle passes a source-only rename.
+    const roots = [join(REPO, 'x-review', 'skills', 'review'), join(SKILLS, 'review')];
+    const skill = readFileSync(join(roots[0], 'SKILL.md'), 'utf8');
     // The `list` help block groups ids under "... profiles:" / "... lenses:"
     // headings, one `  <id>   <description>` line each.
     const ids = new Set();
@@ -107,9 +111,14 @@ describe('skill sidecar integrity — source tree', () => {
         ids.add(m[1]);
       }
     }
-    expect(ids.size).toBeGreaterThanOrEqual(10);
-    const missing = [...ids].filter((id) => !existsSync(join(reviewDir, 'lenses', `${id}.md`)));
-    expect(missing).toEqual([]);
+    // Pin the count to the lens files themselves: a parser that quietly drops
+    // ids can no longer pass, and a new lens has to be documented to ship.
+    const lensFiles = readdirSync(join(roots[0], 'lenses')).filter((n) => n.endsWith('.md'));
+    expect(ids.size).toBe(lensFiles.length);
+    for (const root of roots) {
+      const missing = [...ids].filter((id) => !existsSync(join(root, 'lenses', `${id}.md`)));
+      expect(missing).toEqual([]);
+    }
   });
 });
 

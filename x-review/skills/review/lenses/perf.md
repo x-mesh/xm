@@ -50,4 +50,4 @@ Max 10 findings. If no issues found, output: [Info] No performance issues detect
 
 ## Applies to
 
-Invoked by x-review Phase 3 REVIEW (fan-out). One of 11 lenses available via `--lenses "performance"` or default preset.
+Invoked by x-review Phase 3 REVIEW (fan-out). One of 11 lenses available via `--lenses "perf"` or default preset.
