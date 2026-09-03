@@ -29,6 +29,24 @@ function hasFlag(args, name) {
   return args.includes(name);
 }
 
+// Flags that consume the following token as their value. Without this list a
+// scan for "the first arg not starting with -" returns the VALUE of a flag:
+// `project add --id myproj` would take "myproj" as the path.
+const VALUE_FLAGS = new Set(['--id', '--name']);
+
+/** First real positional arg, skipping flags and the values they consume. */
+function firstPositional(args) {
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (a.startsWith('-')) {
+      if (VALUE_FLAGS.has(a)) i += 1; // --id VALUE  (--id=VALUE consumes nothing extra)
+      continue;
+    }
+    return a;
+  }
+  return null;
+}
+
 function fmtDate(iso) {
   if (!iso) return '—';
   return iso.slice(0, 10);
@@ -60,7 +78,7 @@ function listCmd(args) {
 }
 
 function addCmd(args) {
-  const path = expandHome(args[0] || process.cwd());
+  const path = expandHome(firstPositional(args) || process.cwd());
   const id = getFlag(args, '--id');
   const name = getFlag(args, '--name');
   const result = registerProject(path, {
@@ -144,7 +162,9 @@ function registerCmd(args) {
   // The cwd is the first POSITIONAL arg: every real caller passes `--quiet`,
   // and taking args[0] blindly made the flag itself the path, so detectXmOwner
   // never matched and self-registration silently no-op'd on every invocation.
-  const cwd = args.find((a) => !a.startsWith('-')) || process.cwd();
+  // Scanning for the first non-dash arg was not enough either — that returns the
+  // VALUE of a value-taking flag; firstPositional skips those too.
+  const cwd = firstPositional(args) || process.cwd();
   const quiet = hasFlag(args, '--quiet');
   const result = registerProject(cwd);
   if (!quiet && result.action === 'added') {
