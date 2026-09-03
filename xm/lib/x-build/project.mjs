@@ -152,7 +152,7 @@ export function cmdList() {
   for (const p of projects) {
     const m = readJSON(manifestPath(p));
     const phase = PHASES.find(ph => ph.id === m.current_phase);
-    console.log(`  ${p}  →  ${phase?.label || m.current_phase}  (${m.created_at.slice(0, 10)})`);
+    console.log(`  ${p}  →  ${phase?.label || m.current_phase}  (${m.created_at?.slice(0, 10) || '?'})`);
   }
 }
 
@@ -373,10 +373,10 @@ export function cmdStatus(args) {
 
   if (normal) {
     console.log(`\n${C.bold}${C.cyan}📋 프로젝트: ${manifest.display_name || name}${C.reset}`);
-    console.log(`   시작일: ${manifest.created_at.slice(0, 10)}  전체 진행률: ${renderBar(completedPhases, PHASES.length, 15)}`);
+    console.log(`   시작일: ${manifest.created_at?.slice(0, 10) || '?'}  전체 진행률: ${renderBar(completedPhases, PHASES.length, 15)}`);
   } else {
     console.log(`\n${C.bold}${C.cyan}📋 ${manifest.display_name || name}${C.reset}`);
-    console.log(`   Created: ${manifest.created_at.slice(0, 10)}  ${renderBar(completedPhases, PHASES.length, 15)}`);
+    console.log(`   Created: ${manifest.created_at?.slice(0, 10) || '?'}  ${renderBar(completedPhases, PHASES.length, 15)}`);
   }
   if (autopilotActive()) {
     // Name the decision gates that still block. Without this line an autopilot user
@@ -523,7 +523,7 @@ export function cmdClose(args) {
   const summary = [
     `# Project Summary: ${manifest.display_name || project}`,
     '',
-    `**Created:** ${manifest.created_at.slice(0, 10)}`,
+    `**Created:** ${manifest.created_at?.slice(0, 10) || '?'}`,
     `**Closed:** ${now.slice(0, 10)}`,
     `**Tasks:** ${done}/${total} completed`,
     '',

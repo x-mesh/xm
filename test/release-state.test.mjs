@@ -255,11 +255,18 @@ describe('release state checks', () => {
     const source = readFileSync(join(REPO, 'x-build/lib/x-build/release.mjs'), 'utf8');
     const checksumIndex = source.indexOf('skills-checksum.mjs');
     const gateIndex = source.indexOf('runReleaseStateCheck(cwd);');
-    const testIndex = source.indexOf("console.log('\\n🧪 Running gate tests (core)...');");
+    // Match the first test-running banner by shape, not by its exact wording:
+    // this assertion is about ORDER (checksum → state gate → tests), and pinning
+    // the sentence blocked renaming it when the full-suite reporter was added.
+    const testIndex = source.search(/console\.log\('\\n🧪 Running/);
+    const reportIndex = source.indexOf('reportFullSuite(cwd);');
 
     expect(source).toContain('verify-release-state.mjs');
     expect(gateIndex).toBeGreaterThan(checksumIndex);
     expect(testIndex).toBeGreaterThan(gateIndex);
+    // The full-suite report is a report, so it must come after the gate that can
+    // still stop the release.
+    expect(reportIndex).toBeGreaterThan(testIndex);
   });
 
   test('xm doctor exposes release-state status and remains valid bash', () => {
