@@ -180,10 +180,13 @@ describe('x-review SKILL.md structure', () => {
 
   test('Smart Router resolves a base ref without assuming a local main', () => {
     expect(block).toContain('refs/remotes/origin/HEAD');
-    // Assert each candidate independently. The loop scores candidates by distance
-    // from HEAD, so their order in the list carries no behavior, and pinning the
-    // concatenated literal blocked qualifying them against tag shadowing. Which
-    // candidate actually wins is covered by test/smart-router-exec.test.mjs.
+    // Assert each candidate independently. The loop keeps the strictly nearer
+    // candidate, so order only breaks ties — and ties do happen: with a merge in
+    // the branch history two candidates can share a distance while resolving to
+    // different commits, and then the earlier entry decides the scope. That is
+    // why the PR base is deliberately first. Pinning the concatenated literal
+    // blocked qualifying these against tag shadowing; which candidate actually
+    // wins is covered by test/smart-router-exec.test.mjs.
     for (const ref of [
       'refs/remotes/origin/main',
       'refs/heads/main',

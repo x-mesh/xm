@@ -174,6 +174,32 @@ describe('Smart Router — Step 1 executes correctly', () => {
     });
   });
 
+  test('an up-to-date trunk gets no base, rather than a sibling trunk', () => {
+    withTmp((tmp) => {
+      // main is current with origin/main and develop lags behind it. Every main
+      // candidate is skipped by the contains-HEAD guard, so without the trunk
+      // guard origin/develop wins and BASE becomes develop's fork point —
+      // handing back main commits that were merged and reviewed long ago.
+      const up = initRepo(join(tmp, 'up'));
+      commit(up, 'shared.txt');
+      git(up, 'checkout', '-qb', 'develop');
+      commit(up, 'develop-work.txt');
+      git(up, 'checkout', '-q', 'main');
+      for (const n of ['m1.txt', 'm2.txt', 'm3.txt']) commit(up, n);
+
+      const clone = join(tmp, 'clone');
+      git(tmp, 'clone', '-q', up, clone);
+      git(clone, 'fetch', '-q', 'origin', 'develop');
+
+      // Precondition: we are on a trunk that is level with its remote.
+      expect(git(clone, 'branch', '--show-current')).toBe('main');
+      expect(git(clone, 'rev-parse', 'HEAD')).toBe(git(clone, 'rev-parse', 'origin/main'));
+
+      const { BASE } = runBlock(clone);
+      expect(BASE).toBe('');
+    });
+  });
+
   test('leaves BASE empty when no candidate resolves, so priority 2 is skipped', () => {
     withTmp((tmp) => {
       const repo = initRepo(join(tmp, 'solo'), 'trunk');

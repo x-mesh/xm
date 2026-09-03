@@ -76,6 +76,44 @@ describe('sync-bundle.sh --check', () => {
     }
   });
 
+  test('additive mirroring is used only where sources fan in', () => {
+    // mirror_md_fanin does not delete, which is correct only when several
+    // sources share one destination and no single source is authoritative.
+    // xm/commands is the sole such case (every plugin contributes, and the
+    // xm-native commands there have no plugin source at all). Anywhere else it
+    // ships files the plugin renamed or deleted, and because sync-bundle
+    // regenerates the checksum from disk, --check then passes anyway.
+    const script = readFileSync(join(REPO, 'scripts', 'sync-bundle.sh'), 'utf8');
+    const calls = script
+      .split('\n')
+      .filter((l) => /^\s*mirror_md_fanin\s+"/.test(l))
+      .map((l) => l.trim());
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('"xm/commands"');
+    // and the old always-additive name is gone, so it cannot be reintroduced
+    expect(script).not.toContain('mirror_md_dir');
+  });
+
+  test('detects a stale bundle-only file in a single-source directory', () => {
+    // The lens case below covers a directory that was already authoritative.
+    // This one covers a directory converted from additive mirroring: without
+    // delete semantics the orphan survives a full sync AND is absorbed into the
+    // regenerated checksum, so --check reports success on a bundle that ships it.
+    const tmp = copyTrackedRepo();
+    try {
+      const orphan = join(tmp, 'xm', 'skills', 'op', 'references', 'orphaned-reference.md');
+      writeFileSync(orphan, '# Orphan\n\nNo source file corresponds to this.\n');
+
+      const r = runSync(tmp);
+      expect(r.status).not.toBe(0);
+      const out = `${r.stdout}\n${r.stderr}`;
+      expect(out).toContain('OBSOLETE');
+      expect(out).toContain('xm/skills/op/references/orphaned-reference.md');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('detects a stale bundle-only review lens', () => {
     // Orphan deletion is the difference that matters for this flat directory —
     // mirror_md_tree also recurses, which mirror_md_dir's flat glob does not. The

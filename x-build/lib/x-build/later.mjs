@@ -3,6 +3,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { lstatSync, readdirSync } from 'node:fs';
 import { relative } from 'node:path';
 import {
   TASK_STATES, C,
@@ -58,21 +59,42 @@ function normalizeWorkspaceFile(file) {
   return rel;
 }
 
-function hashFile(path) {
-  return createHash('sha256').update(readFileSync(path)).digest('hex');
+// A --files entry is often a directory — the natural scope for a sweep. Hashing
+// one with readFileSync throws EISDIR and takes the whole command down before the
+// item is recorded, so directories get a deterministic digest of their contents
+// instead: every descendant's relative path and bytes, in sorted order.
+// Symlinks are recorded by target rather than followed, so a cycle cannot hang it.
+function hashPath(path) {
+  const st = lstatSync(path);
+  if (st.isSymbolicLink()) return createHash('sha256').update('symlink').digest('hex');
+  if (!st.isDirectory()) return createHash('sha256').update(readFileSync(path)).digest('hex');
+
+  const h = createHash('sha256');
+  const walk = (dir, prefix) => {
+    for (const name of readdirSync(dir).sort()) {
+      if (name === '.git' || name === 'node_modules') continue;
+      const child = join(dir, name);
+      const cst = lstatSync(child);
+      if (cst.isSymbolicLink()) h.update(`${prefix}${name}\u0000symlink\u0000`);
+      else if (cst.isDirectory()) walk(child, `${prefix}${name}/`);
+      else h.update(`${prefix}${name}\u0000`).update(readFileSync(child)).update('\u0000');
+    }
+  };
+  walk(path, '');
+  return h.digest('hex');
 }
 
 function fileSnapshot(file) {
   const rel = normalizeWorkspaceFile(file);
   const abs = resolve(workspaceRoot(), rel);
   if (!existsSync(abs)) return { file: rel, exists: false, sha256: null };
-  return { file: rel, exists: true, sha256: hashFile(abs) };
+  return { file: rel, exists: true, sha256: hashPath(abs) };
 }
 
 function compareSnapshot(snapshot) {
   const abs = resolve(workspaceRoot(), snapshot.file);
   const exists = existsSync(abs);
-  const sha256 = exists ? hashFile(abs) : null;
+  const sha256 = exists ? hashPath(abs) : null;
   return {
     file: snapshot.file,
     changed: exists !== snapshot.exists || sha256 !== snapshot.sha256,

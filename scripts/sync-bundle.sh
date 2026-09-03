@@ -86,7 +86,18 @@ remove_obsolete_file() {
 
 # Mirror every *.md inside a source directory to a destination directory.
 # Creates the destination if missing; no-op on empty source.
-mirror_md_dir() {
+# Copy Markdown into a destination WITHOUT removing anything already there.
+# Additive is correct in exactly one situation: several sources fan into one
+# destination, so no single source can be treated as authoritative. The only
+# such case is xm/commands/, which every plugin contributes to and which also
+# holds xm-native commands (handoff, handon, init, kit, ship, sync, xm) that
+# have no x-<plugin> source at all — a removal pass there would delete them.
+#
+# Everywhere else the source IS authoritative, and additive copying silently
+# ships files the plugin renamed or deleted: sync-bundle regenerates
+# skills.checksums.json from whatever is on disk, so the stale copy is absorbed
+# into the checksum and --check then passes. Use mirror_md_tree for those.
+mirror_md_fanin() {
   local src="$1" dst="$2"
   [ -d "$src" ] || return 0
   ensure_dir "$dst"
@@ -155,7 +166,7 @@ echo "=== Syncing plugin commands into bundle ==="
 # command — e.g. panel.md, recall.md — ships into the bundle automatically (L8).
 shopt -s nullglob
 for cmddir in x-*/commands; do
-  mirror_md_dir "$cmddir" "xm/commands"
+  mirror_md_fanin "$cmddir" "xm/commands"
 done
 shopt -u nullglob
 
@@ -303,23 +314,23 @@ done < <(find x-dashboard/public -type f)
 
 echo ""
 echo "=== Syncing references ==="
-mirror_md_dir "references" "xm/references"
+mirror_md_tree "references" "xm/references"
 
 echo ""
 echo "=== Syncing op strategies ==="
-mirror_md_dir "x-op/skills/op/strategies" "xm/skills/op/strategies"
+mirror_md_tree "x-op/skills/op/strategies" "xm/skills/op/strategies"
 
 echo ""
 echo "=== Syncing op references ==="
-mirror_md_dir "x-op/skills/op/references" "xm/skills/op/references"
+mirror_md_tree "x-op/skills/op/references" "xm/skills/op/references"
 
 echo ""
 echo "=== Syncing agent autonomous ==="
-mirror_md_dir "x-agent/skills/agent/autonomous" "xm/skills/agent/autonomous"
+mirror_md_tree "x-agent/skills/agent/autonomous" "xm/skills/agent/autonomous"
 
 echo ""
 echo "=== Syncing agent references ==="
-mirror_md_dir "x-agent/skills/agent/references" "xm/skills/agent/references"
+mirror_md_tree "x-agent/skills/agent/references" "xm/skills/agent/references"
 
 echo ""
 echo "=== Syncing agent flow (skill doc + engine) ==="
@@ -353,18 +364,15 @@ mirror_md_tree "x-build/skills/build/references" "xm/skills/build/references"
 
 echo ""
 echo "=== Syncing build commands ==="
-mirror_md_dir "x-build/skills/build/commands" "xm/skills/build/commands"
+mirror_md_tree "x-build/skills/build/commands" "xm/skills/build/commands"
 
 echo ""
 echo "=== Syncing review lenses ==="
-# mirror_md_tree, not mirror_md_dir: the lenses directory has a single source, so
-# the bundle copy must drop a lens the plugin renamed or deleted. mirror_md_dir
-# stays additive because xm/commands/ is fed by every plugin in turn.
 mirror_md_tree "x-review/skills/review/lenses" "xm/skills/review/lenses"
 
 echo ""
 echo "=== Syncing review references ==="
-mirror_md_dir "x-review/skills/review/references" "xm/skills/review/references"
+mirror_md_tree "x-review/skills/review/references" "xm/skills/review/references"
 
 echo ""
 echo "=== Syncing review executable sidecars ==="
@@ -372,43 +380,43 @@ mirror_file_tree "x-review/skills/review/scripts" "xm/skills/review/scripts"
 
 echo ""
 echo "=== Syncing eval judges ==="
-mirror_md_dir "x-eval/skills/eval/judges" "xm/skills/eval/judges"
+mirror_md_tree "x-eval/skills/eval/judges" "xm/skills/eval/judges"
 
 echo ""
 echo "=== Syncing eval subcommands ==="
-mirror_md_dir "x-eval/skills/eval/subcommands" "xm/skills/eval/subcommands"
+mirror_md_tree "x-eval/skills/eval/subcommands" "xm/skills/eval/subcommands"
 
 echo ""
 echo "=== Syncing eval references ==="
-mirror_md_dir "x-eval/skills/eval/references" "xm/skills/eval/references"
+mirror_md_tree "x-eval/skills/eval/references" "xm/skills/eval/references"
 
 echo ""
 echo "=== Syncing solver commands ==="
-mirror_md_dir "x-solver/skills/solver/commands" "xm/skills/solver/commands"
+mirror_md_tree "x-solver/skills/solver/commands" "xm/skills/solver/commands"
 
 echo ""
 echo "=== Syncing solver references ==="
-mirror_md_dir "x-solver/skills/solver/references" "xm/skills/solver/references"
+mirror_md_tree "x-solver/skills/solver/references" "xm/skills/solver/references"
 
 echo ""
 echo "=== Syncing probe sessions ==="
-mirror_md_dir "x-probe/skills/probe/sessions" "xm/skills/probe/sessions"
+mirror_md_tree "x-probe/skills/probe/sessions" "xm/skills/probe/sessions"
 
 echo ""
 echo "=== Syncing trace subcommands ==="
-mirror_md_dir "x-trace/skills/trace/subcommands" "xm/skills/trace/subcommands"
+mirror_md_tree "x-trace/skills/trace/subcommands" "xm/skills/trace/subcommands"
 
 echo ""
 echo "=== Syncing humble sessions ==="
-mirror_md_dir "x-humble/skills/humble/sessions" "xm/skills/humble/sessions"
+mirror_md_tree "x-humble/skills/humble/sessions" "xm/skills/humble/sessions"
 
 echo ""
 echo "=== Syncing memory references ==="
-mirror_md_dir "x-memory/skills/memory/references" "xm/skills/memory/references"
+mirror_md_tree "x-memory/skills/memory/references" "xm/skills/memory/references"
 
 echo ""
 echo "=== Syncing humanize references ==="
-mirror_md_dir "x-humanize/skills/humanize/references" "xm/skills/humanize/references"
+mirror_md_tree "x-humanize/skills/humanize/references" "xm/skills/humanize/references"
 
 echo ""
 echo "=== Verifying all synced ==="

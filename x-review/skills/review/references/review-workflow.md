@@ -637,7 +637,7 @@ Orchestrator runs through this workflow on every x-review invocation.
 Executed verbatim by SKILL.md's Smart Router before routing. Sets `LAST_REVIEW`,
 `BRANCH`, `PR_NUM`, `BASE`.
 
-Four traps this block exists to avoid:
+Five traps this block exists to avoid:
 
 - `xm last review --json` nests its record under `.review` and emits `{"review": null}`
   when nothing is recorded. Reading top-level `.ref` silently yields empty, which kills
@@ -653,6 +653,11 @@ Four traps this block exists to avoid:
   and nearest-wins scoring prefers it, because a tag ahead of the branch point sits closer
   to HEAD. Measured: branch `develop` at c1 with a tag `develop` at c2 shrank the scope
   from `b.txt c.txt` to `c.txt`.
+- A trunk branch has no base branch. On an up-to-date `main` every `main` candidate is
+  skipped by the contains-HEAD guard, so a sibling trunk such as `develop` wins and its
+  fork point becomes `BASE` — already-merged commits offered as this branch's changes.
+  Measured: three merged commits presented as scope. `BASE` is therefore cleared on a
+  trunk, which routes to priority 3.
 - Taking the first candidate that resolves is not enough either. Routing priority 2 is
   the *no PR* path, so `PR_BASE` is empty exactly when `BASE` is used, and a branch cut
   from `develop` scores its merge-base against `origin/main`. The diff then carries every
@@ -693,6 +698,15 @@ for CAND in "${PR_BASE:+refs/remotes/origin/$PR_BASE}" "${OH:+refs/remotes/$OH}"
   N=$(git rev-list --count "$M..HEAD" 2>/dev/null) || continue
   if [ "$BEST" -lt 0 ] || [ "$N" -lt "$BEST" ]; then BEST="$N"; BASE="$M"; fi
 done
+
+# A trunk branch has no base branch, so it must not get one. On an up-to-date
+# trunk every candidate for that trunk is skipped by the contains-HEAD guard,
+# which lets a SIBLING trunk win and hands back its fork point — presenting
+# already-merged commits as this branch's changes. Clearing BASE routes to
+# priority 3 (LAST_REVIEW), which is what a trunk should use.
+case "$BRANCH" in
+  main|master|develop) BASE="" ;;
+esac
 
 # Priority 3: Last reviewed commit (last-result.json) — legacy fallback when ledger unrecorded
 if [ -z "$LAST_REVIEW" ]; then
