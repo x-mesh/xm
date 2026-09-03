@@ -126,9 +126,41 @@ SKILL.md is a prompt for LLMs — write instructions in English for precision.
 
 ### Required Sections
 
-Every SKILL.md must include, in order: `Overview` → `When to Use` → `<Core Process>` → `Common Rationalizations` → `Red Flags` → `Verification`.
+Open with a purpose block and a trigger block, then the skill's own process
+sections, then the discipline sections. Two forms are accepted for new work, and
+a skill should not mix them; two more appear in the tree as legacy:
 
-The **Common Rationalizations** table (excuses agents use to skip steps + factual rebuttals) is the single most impactful discipline mechanism — minimum 5 domain-specific rows. Without it, the skill has no defense against being partially applied.
+| Form | Purpose | Trigger | Used by |
+|------|---------|---------|---------|
+| **Tag** (dominant) | `<Purpose>` | `<Use_When>`, optionally `<Do_Not_Use_When>` | 11 of 18 skills |
+| **Heading** | `## Overview` | `## When to Use` | 3 of 18 skills |
+| **Heading, tag names** | `## Purpose` | `## Use When` / `## Do Not Use When` | 1 (x-build) |
+| **None** | — | — | 3 (x-op, x-plan, x-remote) |
+
+Pick the tag form for a new skill unless you are editing a skill that already
+uses headings — matching the file you are in beats matching the majority.
+
+The last two rows are legacy, not a third and fourth sanctioned form. x-build's
+heading-with-tag-names variant is fine to leave alone; the three skills with no
+purpose block at all open straight into content after their H1, so an agent has
+to read the whole file to learn when the skill applies. Add a purpose and
+trigger block to those three when you next edit them, in the tag form.
+
+One section is required regardless of form:
+
+- **Common Rationalizations** — excuses agents use to skip steps, paired with
+  factual rebuttals. Minimum 5 domain-specific rows. This is the single most
+  impactful discipline mechanism; without it a skill has no defense against
+  being partially applied. Present in 15 of 18 skills, and the closest thing
+  this repo has to a universal SKILL.md convention.
+
+`Red Flags` (5 of 18) and `Verification` (4 of 18) are recommended, not
+required. Add `Verification` when the skill's result can be checked by a
+command or a state check — especially when the skill mutates anything.
+
+The counts above were re-measured 2026-09-03 (18 source SKILL.md files, the
+`xm/skills/` bundle copies excluded); re-measure before treating any of them as a
+rule rather than a description.
 
 ### CLI Invocation Pattern (required when SKILL.md exposes a shell CLI)
 

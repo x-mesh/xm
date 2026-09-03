@@ -1,4 +1,4 @@
-# Lens: performance
+# Lens: perf
 
 Agent prompt for x-review Phase 3 REVIEW. Invoked by the orchestrator via Agent tool with the diff and this prompt. The leader prepends `{universal_principles}` (from SKILL.md) to the prompt before dispatch.
 
@@ -50,4 +50,4 @@ Max 10 findings. If no issues found, output: [Info] No performance issues detect
 
 ## Applies to
 
-Invoked by x-review Phase 3 REVIEW (fan-out). One of 11 lenses available via `--lenses "performance"` or default preset.
+Invoked by x-review Phase 3 REVIEW (fan-out). One of 11 lenses available via `--lenses "perf"` or default preset.

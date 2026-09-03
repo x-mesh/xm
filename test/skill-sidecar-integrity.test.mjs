@@ -83,13 +83,41 @@ describe('skill sidecar integrity — source tree', () => {
   });
 
   test('x-review ships the lenses and shared references its SKILL.md requires', () => {
-    // The exact set the failing Codex session tried to open.
+    // The exact set the failing Codex session tried to open. These are the CLI
+    // identifiers, and promptFor() resolves lenses/<id>.md — so a file whose name
+    // does not match the documented id throws `unknown review lens` at run time.
     const reviewDir = join(SKILLS, 'review');
-    for (const lens of ['security', 'logic', 'performance', 'tests']) {
+    for (const lens of ['security', 'logic', 'perf', 'tests']) {
       expect(existsSync(join(reviewDir, 'lenses', `${lens}.md`))).toBe(true);
     }
     for (const ref of ['ask-user-question-rule', 'finding-severity', 'trace-recording']) {
       expect(existsSync(join(reviewDir, 'references', `${ref}.md`))).toBe(true);
+    }
+  });
+
+  test('every lens id documented in x-review SKILL.md resolves to a lens file', () => {
+    // review-lifecycle.mjs resolves a lens under the plugin's own tree
+    // (SKILL_ROOT = <plugin>/skills/review), so the source is what has to
+    // satisfy this. Check the bundle copy alongside it, not instead of it —
+    // asserting only against the bundle passes a source-only rename.
+    const roots = [join(REPO, 'x-review', 'skills', 'review'), join(SKILLS, 'review')];
+    const skill = readFileSync(join(roots[0], 'SKILL.md'), 'utf8');
+    // The `list` help block groups ids under "... profiles:" / "... lenses:"
+    // headings, one `  <id>   <description>` line each.
+    const ids = new Set();
+    for (const section of skill.split(/^(?=\S.*(?:profiles|lenses).*:\s*$)/m)) {
+      if (!/^\S.*(?:profiles|lenses).*:\s*$/m.test(section.split('\n')[0] ?? '')) continue;
+      for (const m of section.split(/\n\s*\n/)[0].matchAll(/^ {2}([a-z][a-z-]*) {2,}\S/gm)) {
+        ids.add(m[1]);
+      }
+    }
+    // Pin the count to the lens files themselves: a parser that quietly drops
+    // ids can no longer pass, and a new lens has to be documented to ship.
+    const lensFiles = readdirSync(join(roots[0], 'lenses')).filter((n) => n.endsWith('.md'));
+    expect(ids.size).toBe(lensFiles.length);
+    for (const root of roots) {
+      const missing = [...ids].filter((id) => !existsSync(join(root, 'lenses', `${id}.md`)));
+      expect(missing).toEqual([]);
     }
   });
 });
