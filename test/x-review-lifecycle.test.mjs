@@ -86,6 +86,41 @@ describe('xm review executable lifecycle', () => {
     expect(existsSync(join(runDir, 'work'))).toBe(false);
   });
 
+  test('resume re-dispatches a child that completed but failed validation', () => {
+    const dir = workspace();
+    const log = join(dir, 'panel.jsonl');
+    const first = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'risk', '--run-id', 'invalid-child', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_LOG: log, XM_FAKE_PANEL_MODE: 'foreign-target' }), encoding: 'utf8' });
+    expect(first.status).toBe(1);
+    const runDir = join(dir, '.xm', 'review', 'runs', 'invalid-child');
+    const childPath = join(runDir, 'children', 'risk-chunk-001.json');
+    const rejected = JSON.parse(readFileSync(childPath, 'utf8'));
+    expect(rejected.status).toBe('completed');
+    expect(rejected.valid).toBe(false);
+    expect(rejected.invalid_codes).toContain('finding_outside_target');
+    expect(JSON.parse(readFileSync(join(runDir, 'status.json'), 'utf8')).invalid).toEqual(['risk-chunk-001']);
+
+    const resumed = spawnSync('node', [CLI, 'resume', 'invalid-child', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_LOG: log }), encoding: 'utf8' });
+    expect(resumed.status).toBe(0);
+    expect(readFileSync(log, 'utf8').trim().split('\n')).toHaveLength(2);
+    expect(readFileSync(join(runDir, 'events.jsonl'), 'utf8')).toContain('child_redispatched');
+    const repaired = JSON.parse(readFileSync(childPath, 'utf8'));
+    expect(repaired.valid).toBe(true);
+    expect(repaired.attempt).toBe(2);
+    expect(repaired.invalid_codes).toBeUndefined();
+  });
+
+  test('drops an ungrounded finding from synthesis instead of failing the run', () => {
+    const dir = workspace();
+    const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'risk', '--run-id', 'ungrounded', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'ungrounded-finding' }), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.findings).toHaveLength(0);
+    const validation = JSON.parse(readFileSync(join(dir, '.xm', 'review', 'runs', 'ungrounded', 'validation.json'), 'utf8'));
+    expect(validation.ok).toBe(true);
+    expect(validation.finding_grounding).toMatchObject({ findings: 1, grounded: 0, ungrounded: 1 });
+    expect(validation.issues.map((entry) => entry.code)).toEqual(['finding_code_mismatch']);
+  });
+
   test('fails closed on unknown flags and invalid targets', () => {
     const dir = workspace();
     const unknown = spawnSync('node', [CLI, 'run', 'target.patch', '--typo'], { cwd: dir, env: env(dir), encoding: 'utf8' });

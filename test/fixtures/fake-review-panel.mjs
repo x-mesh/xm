@@ -30,7 +30,7 @@ const mode = process.env.XM_FAKE_PANEL_MODE;
 const severity = process.env.XM_FAKE_PANEL_SEVERITY;
 const finding = { ...riskFinding, ...(severity ? { severity } : {}), ...(mode === 'foreign-target' ? { file: 'src/foreign.js' } : {}) };
 if (mode === 'mixed-severity') finding.severity = lens === 'correctness' ? 'medium' : 'high';
-finding.code = 'export const b = 2;';
+finding.code = mode === 'ungrounded-finding' ? 'execSync(payload);' : 'export const b = 2;';
 finding.fix = 'Guard the exported value.';
 if (mode === 'unchallenged') finding.opponents = [];
 if (mode === 'contested') finding.opponents = [{ model: 'fixture-challenger', stance: 'refute', reason: 'disputed' }];

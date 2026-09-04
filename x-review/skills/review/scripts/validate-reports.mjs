@@ -10,6 +10,11 @@ const SEVERITIES = new Set(['Critical', 'High', 'Medium', 'Low']);
 const TASK_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{5,127}$/;
 const REPORT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/;
 const TARGET_HASH_RE = /^sha256:[0-9a-f]{64}$/;
+// Grounding outcomes are per-finding, not per-report: an ungrounded snippet drops that one
+// finding, it does not invalidate a report whose other findings are grounded.
+const GROUNDING_CODES = new Set(['finding_code_mismatch', 'finding_code_wrong_file']);
+const ELISION_RE = /^(?:\/\/|#|--|\/\*|\*)?\s*(?:\.\.\.|\u2026|\u22ef)\s*(?:\*\/)?$/;
+const COMMENT_ONLY_RE = /^(?:\/\/|\/\*|\*|#|--|<!--)/;
 
 function issue(code, message, lens = null, file = null, reportId = null) {
   return {
@@ -82,6 +87,35 @@ function normalizeSnippet(value, stripDiffPrefix = false) {
     .map((line) => (stripDiffPrefix ? line.replace(/^[ +\-]/, '') : line).trim().replace(/\s+/g, ' '))
     .filter(Boolean)
     .join('\n');
+}
+
+function substantiveLines(snippet) {
+  return snippet.split('\n').filter((line) => !ELISION_RE.test(line) && !COMMENT_ONLY_RE.test(line));
+}
+
+// Deliberately looser than an exact substring: a faithful citation may be re-wrapped,
+// re-indented, or elided with `...`. Contiguity is dropped, but every substantive quoted
+// line must still occur in the frozen target, so fabricated code cannot pass.
+function grounds(haystack, snippet) {
+  if (!haystack || !snippet) return false;
+  const haystackLines = haystack.split('\n');
+  if (haystackLines.join(' ').includes(snippet.split('\n').join(' '))) return true;
+  const lines = substantiveLines(snippet);
+  if (lines.length === 0) return false;
+  let cursor = 0;
+  for (const line of lines) {
+    const at = haystackLines.indexOf(line, cursor);
+    if (at === -1) return false;
+    cursor = at + 1;
+  }
+  return true;
+}
+
+function groundFinding(targetSections, snippets, ownFile) {
+  if (snippets.some((snippet) => grounds(targetSections.get(ownFile) || '', snippet))) return { state: 'grounded' };
+  const elsewhere = [...targetSections.keys()].sort()
+    .find((section) => section !== ownFile && snippets.some((snippet) => grounds(targetSections.get(section), snippet)));
+  return elsewhere ? { state: 'wrong_file', file: elsewhere } : { state: 'ungrounded' };
 }
 
 function normalizedTargetSections(targetBody, targetFiles) {
@@ -265,12 +299,21 @@ function validateFinding(finding, index, lens, file, reportId, targetFiles, targ
     issues.push(issue('finding_outside_target', `${prefix}.file is not present in the frozen target`, lens, file, reportId));
   }
   if (targetSections && typeof finding.code === 'string' && typeof finding.file === 'string') {
-    const snippets = diffTarget
+    const snippets = (diffTarget
       ? [normalizeSnippet(finding.code), normalizeSnippet(finding.code, true)]
-      : [normalizeSnippet(finding.code)];
-    const fileTarget = targetSections.get(normalizedPath(finding.file)) || '';
-    if (!snippets.some((snippet) => snippet && fileTarget.includes(snippet))) {
-      issues.push(issue('finding_code_mismatch', `${prefix}.code does not occur in its frozen target file`, lens, file, reportId));
+      : [normalizeSnippet(finding.code)]).filter(Boolean);
+    const grounding = groundFinding(targetSections, snippets, normalizedPath(finding.file));
+    if (grounding.state === 'wrong_file') {
+      issues.push({
+        ...issue('finding_code_wrong_file', `${prefix}.code occurs in ${grounding.file}, not in the section for ${finding.file}`, lens, file, reportId),
+        finding_index: index,
+        grounded_file: grounding.file,
+      });
+    } else if (grounding.state === 'ungrounded') {
+      issues.push({
+        ...issue('finding_code_mismatch', `${prefix}.code does not occur anywhere in the frozen target`, lens, file, reportId),
+        finding_index: index,
+      });
     }
   }
   return issues;
@@ -419,8 +462,9 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
     const reportIsDiff = typeof reportTargetBody === 'string'
       && reportTargetBody.split('\n').some((line) => line.startsWith('diff --git '));
     const reportIssues = validateReport(parsed, manifest, raw.file, reportTargetSections, reportIsDiff);
+    const grounding = reportIssues.filter((entry) => GROUNDING_CODES.has(entry.code));
     issues.push(...reportIssues);
-    reports.push({ file: raw.file, report: parsed, valid: reportIssues.length === 0 });
+    reports.push({ file: raw.file, report: parsed, valid: reportIssues.length === grounding.length, grounding });
   }
 
   const byReportId = new Map();
@@ -460,7 +504,23 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
     targetCoverage = { expected: expectedFiles.size, checked: expectedFiles.size - missingFiles.length, complete: missingFiles.length === 0, missing_files: missingFiles };
     if (missingFiles.length > 0) issues.push(issue('target_coverage_incomplete', `frozen target files were not checked: ${missingFiles.join(', ')}`));
   }
-  const ok = issues.length === 0 && validReports.length === expected.length;
+  const findingGrounding = { findings: 0, grounded: 0, wrong_file: 0, ungrounded: 0, reports: [] };
+  for (const item of reports) {
+    const total = Array.isArray(item.report?.findings) ? item.report.findings.length : 0;
+    const ungrounded = item.grounding.filter((entry) => entry.code === 'finding_code_mismatch').map((entry) => entry.finding_index);
+    const wrongFile = item.grounding.filter((entry) => entry.code === 'finding_code_wrong_file').map((entry) => entry.finding_index);
+    findingGrounding.findings += total;
+    findingGrounding.grounded += total - ungrounded.length;
+    findingGrounding.wrong_file += wrongFile.length;
+    findingGrounding.ungrounded += ungrounded.length;
+    const reportId = typeof item.report?.report_id === 'string' ? item.report.report_id : null;
+    if (reportId && (ungrounded.length > 0 || wrongFile.length > 0)) {
+      findingGrounding.reports.push({ report_id: reportId, file: item.file, findings: total, ungrounded_findings: ungrounded, wrong_file_findings: wrongFile });
+    }
+  }
+
+  // Grounding issues are reported, not blocking: they are resolved by dropping the finding.
+  const ok = issues.every((entry) => GROUNDING_CODES.has(entry.code)) && validReports.length === expected.length;
   return {
     schema_version: 1,
     task_id: manifest.task_id,
@@ -470,6 +530,7 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
     ok,
     coverage: { expected: expected.length, valid: validReports.length },
     ...(targetCoverage ? { target_coverage: targetCoverage } : {}),
+    finding_grounding: findingGrounding,
     valid_reports: validReports,
     missing_reports: missingReports,
     issues,

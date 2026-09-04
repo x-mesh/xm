@@ -52,6 +52,16 @@ Rules:
 - For diff targets, `code` may include the leading `+`, `-`, or space marker from the frozen
   patch; validation removes one marker from both the target and finding before grounding. For raw
   `file` targets, leading `+` and `-` are source bytes and remain significant.
+- Grounding does not require a contiguous byte-for-byte quotation. A citation grounds when its
+  tokens occur in the frozen target ignoring line breaks, or when every substantive quoted line
+  occurs there in order — so re-indentation, re-wrapping, and eliding the middle with `...` are
+  all safe. Every code line you quote must be real; only blank, comment-only, and elision lines
+  are excused.
+- Grounding is scored per finding, not per report. A snippet found in another section of the
+  frozen target is reported as `finding_code_wrong_file` and the finding is kept with its actual
+  location named; a snippet found nowhere is reported as `finding_code_mismatch` and that one
+  finding is dropped before synthesis. Neither invalidates the surrounding report, and
+  `validation.json` carries the `finding_grounding` counts so a fabricating model stays visible.
 - With zero findings, return `findings: []` and a specific `no_findings_reason`. An empty response
   or bare "No findings" is not a completed review.
 - If the target was unavailable or could not be reviewed, use `status: "failed"`; the validator

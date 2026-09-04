@@ -257,6 +257,33 @@ function markdown(result) {
   return `# x-review: ${result.target.ref} — ${result.verdict}\n- Date: ${result.timestamp}\n- Lenses: ${result.lenses.join(', ')}\n- Agents: ${result.agents}\n- Findings: ${result.findings.length} (Critical: ${result.counts.critical}, High: ${result.counts.high}, Medium: ${result.counts.medium}, Low: ${result.counts.low})\n\n---\n${rows}\n`;
 }
 
+// A finding whose code does not occur anywhere in the frozen target is dropped rather than
+// carried into synthesis. validation.json still reports it, so a fabricating model stays visible.
+function groundedReports(rawReports, validation) {
+  const dropped = new Map((validation.finding_grounding?.reports || [])
+    .map((entry) => [entry.report_id, new Set(entry.ungrounded_findings)]));
+  return rawReports.map((entry) => JSON.parse(entry.body)).map((report) => {
+    const drop = dropped.get(report.report_id);
+    if (!drop || drop.size === 0 || !Array.isArray(report.findings)) return report;
+    return { ...report, findings: report.findings.filter((_, index) => !drop.has(index)) };
+  });
+}
+
+// Persist the validator verdict on each child so resume can tell "the model replied" from
+// "the reply is usable". Without it a rejected report is skipped and re-rejected forever.
+function recordChildValidity(runDir, manifest, validation) {
+  const valid = new Set(validation.valid_reports);
+  for (const expected of manifest.expected_reports) {
+    const childPath = join(runDir, 'children', `${expected.report_id}.json`);
+    const child = readJson(childPath);
+    if (child?.status !== 'completed') continue;
+    const record = { ...child, valid: valid.has(expected.report_id) };
+    if (record.valid) delete record.invalid_codes;
+    else record.invalid_codes = [...new Set(validation.issues.filter((entry) => entry.report_id === expected.report_id).map((entry) => entry.code))];
+    json(childPath, record);
+  }
+}
+
 function persistResult(runDir, manifest, validation, synthesis) {
   const reviewDir = dirname(dirname(runDir));
   const timestamp = iso();
@@ -334,13 +361,19 @@ async function execute(manifest, runDir, options) {
   let failure = null;
   const runExpected = async (expected) => {
     const childPath = join(runDir, 'children', `${expected.report_id}.json`);
-    if (readJson(childPath)?.status === 'completed') { verifyChild(runDir, manifest, expected); event(runDir, 'child_skipped', { child_id: expected.report_id }, options.trace); return null; }
+    const prior = readJson(childPath);
+    // `completed` alone means the model replied, not that the reply is usable. A child the
+    // validator rejected carries `valid: false` and is dispatched again; a child from before
+    // this field existed has no verdict and keeps the old skip behaviour.
+    if (prior?.status === 'completed' && prior.valid !== false) { verifyChild(runDir, manifest, expected); event(runDir, 'child_skipped', { child_id: expected.report_id }, options.trace); return null; }
+    const attempt = prior ? (Number.isInteger(prior.attempt) ? prior.attempt : 1) + 1 : 1;
+    if (prior?.status === 'completed') event(runDir, 'child_redispatched', { child_id: expected.report_id, attempt, invalid_codes: prior.invalid_codes || [] }, options.trace);
     verifyBytes(runDir, manifest);
     const binding = manifest.bindings[expected.report_id];
     const args = [...command.slice(1), 'review', '--engine', 'native', join(runDir, binding.target_file), '--review-prompt-file', join(runDir, binding.prompt_file), '--lens-tag', expected.lens, '--json'];
     if (options.models) args.push('--models', options.models);
     if (options.rounds) args.push('--rounds', String(options.rounds));
-    event(runDir, 'child_started', { child_id: expected.report_id, lens: expected.lens, chunk_id: binding.chunk_id }, options.trace);
+    event(runDir, 'child_started', { child_id: expected.report_id, lens: expected.lens, chunk_id: binding.chunk_id, attempt }, options.trace);
     const spawned = await spawnChild(command, args, options);
     let childFailure = spawned.status !== 0 ? `${expected.report_id}: panel exited ${spawned.status ?? 'unknown'}: ${(spawned.stderr || '').trim()}` : null;
     try {
@@ -348,11 +381,11 @@ async function execute(manifest, runDir, options) {
       const report = panelReport(spawned.stdout, expected, readFileSync(join(runDir, binding.target_file), 'utf8'), manifest);
       const reportPath = join(runDir, 'reports', `${expected.report_id}.json`);
       json(reportPath, report);
-      json(childPath, { ...expected, task_id: manifest.task_id, status: 'completed', completed_at: iso(), report_file: `reports/${expected.report_id}.json`, report_hash: hash(readFileSync(reportPath)) });
+      json(childPath, { ...expected, task_id: manifest.task_id, status: 'completed', attempt, completed_at: iso(), report_file: `reports/${expected.report_id}.json`, report_hash: hash(readFileSync(reportPath)) });
       event(runDir, 'child_completed', { child_id: expected.report_id }, options.trace);
     } catch (error) {
       childFailure = error.message;
-      json(childPath, { ...expected, task_id: manifest.task_id, status: 'failed', error: childFailure, stdout: spawned.stdout || '', stderr: spawned.stderr || '' });
+      json(childPath, { ...expected, task_id: manifest.task_id, status: 'failed', attempt, error: childFailure, stdout: spawned.stdout || '', stderr: spawned.stderr || '' });
       event(runDir, 'child_failed', { child_id: expected.report_id, error: childFailure }, options.trace);
     }
     return childFailure;
@@ -374,12 +407,14 @@ async function execute(manifest, runDir, options) {
   const chunkBodies = Object.fromEntries(manifest.chunks.map((chunk) => [chunk.target_file, readFileSync(join(runDir, chunk.target_file), 'utf8')]));
   const validation = validateReviewReports(manifest, rawReports, { targetBody: readFileSync(join(runDir, 'target.patch'), 'utf8'), chunkBodies });
   json(join(runDir, 'validation.json'), validation);
+  recordChildValidity(runDir, manifest, validation);
   if (!validation.ok) {
-    const status = { state: 'failed', updated_at: iso(), completed: completed.length, expected: manifest.expected_reports.length, missing: validation.missing_reports, error: `report validation failed: ${validation.issues.map((entry) => entry.code).join(', ')}` };
+    const invalid = manifest.expected_reports.filter((entry) => !validation.valid_reports.includes(entry.report_id)).map((entry) => entry.report_id);
+    const status = { state: 'failed', updated_at: iso(), completed: completed.length, expected: manifest.expected_reports.length, missing: validation.missing_reports, invalid, error: `report validation failed: ${validation.issues.map((entry) => entry.code).join(', ')}` };
     json(join(runDir, 'status.json'), status); event(runDir, 'run_failed', status, options.trace);
     throw new Error(`${status.error}; resume with: xm review resume ${manifest.id}`);
   }
-  const result = persistResult(runDir, manifest, validation, synthesize(rawReports.map((entry) => JSON.parse(entry.body))));
+  const result = persistResult(runDir, manifest, validation, synthesize(groundedReports(rawReports, validation)));
   result.trace = recordVerdict(runDir, manifest, result, options);
   json(join(runDir, 'result.json'), result);
   json(join(dirname(dirname(runDir)), 'last-result.json'), result);
