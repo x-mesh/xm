@@ -545,7 +545,8 @@ describe('xm eval gate', () => {
         expect(invalid.stderr).toContain('finite non-negative number');
       }
     } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
+    // Three 12-job runs plus the gate calls spawn the CLI ~40 times; the 5s default is short.
+  }, 30000);
 
   test('gate rejects corrupt and unsafe bench files before comparison', () => {
     const dir = makeProject();
@@ -614,5 +615,6 @@ describe('xm eval gate', () => {
       expect(new Set(created).size).toBe(2);
       for (const name of created) expect(name).toMatch(new RegExp(`${current.run_id}-${first.run_id}-[0-9a-f]{12}-[0-9a-f]{12}-[0-9a-f]{12}-gate\\.json$`));
     } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
+    // Same spawn cost as the gate test above: the 5s default expires under a full-suite run.
+  }, 30000);
 });

@@ -24,8 +24,9 @@ function review(name, args = [], env = {}) {
   const sub = join(DIR, name);
   const log = join(DIR, `${name}.session.jsonl`);
   // Session reuse is a round-2 compatibility contract. Native panel now defaults
-  // to one round, so this suite opts into the refutation round explicitly.
-  const r = spawnSync('node', [CLI, 'review', 'some diff', '--models', 'claude,codex', '--rounds', '2', ...args], {
+  // to one round, so this suite opts into the refutation round explicitly, and
+  // `panel review` routes to the x-review lifecycle unless the engine is pinned.
+  const r = spawnSync('node', [CLI, 'review', 'some diff', '--models', 'claude,codex', '--rounds', '2', '--engine', 'native', ...args], {
     cwd: DIR,
     encoding: 'utf8',
     timeout: 30000,

@@ -27,7 +27,9 @@ afterAll(() => rmSync(DIR, { recursive: true, force: true }));
 function run(name, args = [], { models = 'claude,codex' } = {}) {
   const sub = join(DIR, name);
   const log = join(DIR, `${name}.session.jsonl`);
-  const r = spawnSync('node', [CLI, 'review', TARGET, '--models', models, ...args], {
+  // `panel review` routes to the x-review lifecycle, which requires a target path;
+  // --refute-findings is a native-engine contract, so pin the engine.
+  const r = spawnSync('node', [CLI, 'review', TARGET, '--models', models, '--engine', 'native', ...args], {
     cwd: DIR,
     encoding: 'utf8',
     timeout: 30000,

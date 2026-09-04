@@ -239,7 +239,7 @@ describe('createTmEventsPublisher', () => {
     const { path, lines } = fakeDaemon();
     const dir = mkdtempSync(join(tmpdir(), 'tm-events-e2e-'));
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-    const r = spawnSync('node', [CLI, 'review', 'some diff', '--models', 'claude,codex'], {
+    const r = spawnSync('node', [CLI, 'review', 'some diff', '--models', 'claude,codex', '--engine', 'native'], {
       cwd: dir,
       encoding: 'utf8',
       timeout: 30000,
@@ -270,7 +270,7 @@ describe('createTmEventsPublisher', () => {
   test('e2e: a dead socket never breaks the run and warns once (R2)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'tm-events-e2e-dead-'));
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-    const r = spawnSync('node', [CLI, 'review', 'some diff', '--models', 'claude,codex'], {
+    const r = spawnSync('node', [CLI, 'review', 'some diff', '--models', 'claude,codex', '--engine', 'native'], {
       cwd: dir,
       encoding: 'utf8',
       timeout: 30000,
@@ -295,7 +295,7 @@ describe('createTmEventsPublisher', () => {
     const { path, lines } = fakeDaemon();
     const dir = mkdtempSync(join(tmpdir(), 'tm-events-e2e-off-'));
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-    const r = spawnSync('node', [CLI, 'review', 'some diff', '--models', 'claude,codex', '--no-tm-events'], {
+    const r = spawnSync('node', [CLI, 'review', 'some diff', '--models', 'claude,codex', '--engine', 'native', '--no-tm-events'], {
       cwd: dir,
       encoding: 'utf8',
       timeout: 30000,

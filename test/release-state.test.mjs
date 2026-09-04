@@ -255,7 +255,7 @@ describe('release state checks', () => {
     const source = readFileSync(join(REPO, 'x-build/lib/x-build/release.mjs'), 'utf8');
     const checksumIndex = source.indexOf('skills-checksum.mjs');
     const gateIndex = source.indexOf('runReleaseStateCheck(cwd);');
-    const testIndex = source.indexOf("console.log('\\n🧪 Running tests...');");
+    const testIndex = source.indexOf("console.log('\\n🧪 Running gate tests (core)...');");
 
     expect(source).toContain('verify-release-state.mjs');
     expect(gateIndex).toBeGreaterThan(checksumIndex);
