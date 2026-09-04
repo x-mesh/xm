@@ -448,14 +448,7 @@ describe('x-review lens report coverage contract', () => {
     expect(result.ok).toBe(true);
   });
 
-  test('rejects a snippet that exists only in a different frozen target file', () => {
-    const manifest = { ...MANIFEST, target_files: ['src/auth.ts', 'src/other.ts'] };
-    const security = zeroReport('security-1', 'security', {
-      checked_files: ['src/auth.ts'],
-      findings: [{ severity: 'High', file: 'src/auth.ts', line: 1, description: 'Claim on auth', code: 'dangerous(value)', why: 'Reachable impact', fix: 'Remove it' }],
-      no_findings_reason: undefined,
-    });
-    const logic = zeroReport('logic-1', 'logic', { checked_files: ['src/auth.ts', 'src/other.ts'] });
+  test('separates a misattributed snippet from a fabricated one without failing the report', () => {
     const targetBody = [
       'diff --git a/src/auth.ts b/src/auth.ts',
       '+++ b/src/auth.ts',
@@ -464,9 +457,104 @@ describe('x-review lens report coverage contract', () => {
       '+++ b/src/other.ts',
       '+dangerous(value)',
     ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/auth.ts', 'src/other.ts'],
+    };
+    const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/auth.ts', 'src/other.ts'],
+      findings: [{ severity: 'High', file: 'src/auth.ts', line: 1, description: 'Claim on auth', code: 'dangerous(value)', why: 'Reachable impact', fix: 'Remove it' }],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/auth.ts', 'src/other.ts'] });
     const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
-    expect(result.ok).toBe(false);
-    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'finding_code_mismatch', report_id: 'security-1' }));
+    expect(result.ok).toBe(true);
+    expect(result.valid_reports).toContain('security-1');
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: 'finding_code_wrong_file', report_id: 'security-1', finding_index: 0, grounded_file: 'src/other.ts',
+    }));
+    expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 1, wrong_file: 1, ungrounded: 0 });
+  });
+
+  test('keeps the grounded findings of a report that also carries a fabricated one', () => {
+    const targetBody = [
+      'diff --git a/src/auth.ts b/src/auth.ts',
+      '+++ b/src/auth.ts',
+      '+const tenant = req.params.id;',
+      '+return db.find(tenant);',
+    ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/auth.ts'],
+    };
+    const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/auth.ts'],
+      findings: [
+        { severity: 'High', file: 'src/auth.ts', line: 1, description: 'Real claim', code: 'const tenant = req.params.id;', why: 'Reachable', fix: 'Bind the tenant' },
+        { severity: 'Low', file: 'src/auth.ts', line: 2, description: 'Invented claim', code: 'eval(userInput)', why: 'Impact', fix: 'Remove it' },
+      ],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/auth.ts'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+    expect(result.ok).toBe(true);
+    expect(result.finding_grounding).toMatchObject({ findings: 2, grounded: 1, ungrounded: 1 });
+    expect(result.finding_grounding.reports).toEqual([
+      expect.objectContaining({ report_id: 'security-1', findings: 2, ungrounded_findings: [1], wrong_file_findings: [] }),
+    ]);
+  });
+
+  test('grounds citations that are elided or re-wrapped but faithful', () => {
+    const targetBody = [
+      'diff --git a/src/auth.ts b/src/auth.ts',
+      '+++ b/src/auth.ts',
+      '+const tenant = req.params.id;',
+      '+const scope = resolveScope(tenant);',
+      '+audit(scope);',
+      '+return db.find(tenant);',
+    ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/auth.ts'],
+    };
+    const base = { severity: 'High', file: 'src/auth.ts', line: 1, why: 'Cross-tenant access is reachable.', fix: 'Bind the lookup to the authenticated tenant.' };
+    const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/auth.ts'],
+      findings: [
+        { ...base, description: 'Elided quotation', code: 'const tenant = req.params.id;\n// ...\nreturn db.find(tenant);' },
+        { ...base, line: 2, description: 'Re-wrapped quotation', code: 'const scope =\n  resolveScope(tenant);' },
+      ],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/auth.ts'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+    expect(result.ok).toBe(true);
+    expect(result.finding_grounding).toMatchObject({ findings: 2, grounded: 2, ungrounded: 0 });
+  });
+
+  test('does not let an elision marker ground a snippet whose code lines are invented', () => {
+    const targetBody = 'diff --git a/src/auth.ts b/src/auth.ts\n+++ b/src/auth.ts\n+const tenant = req.params.id;';
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/auth.ts'],
+    };
+    const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/auth.ts'],
+      findings: [{ severity: 'High', file: 'src/auth.ts', line: 1, description: 'Invented with elision', code: '// ...\nexecSync(payload);\n// ...', why: 'Impact', fix: 'Remove it' }],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/auth.ts'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+    expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 0, ungrounded: 1 });
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'finding_code_mismatch', finding_index: 0 }));
   });
 
   test('grounds quoted Git target sections using the decoded filename', () => {

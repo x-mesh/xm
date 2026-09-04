@@ -277,7 +277,10 @@ worker failed or that its report is absent.
    delegate error provides a `request_id` and an exact recovery command, execute that command once,
    persist any recovered report, and rerun validation. Never invent a provider-specific retry flag.
 5. Fresh-agent re-dispatch is the last step and applies only to report ids that remain missing or
-   invalid after request-id recovery.
+   invalid after request-id recovery. "Invalid" includes a child that returned: `xm review resume`
+   records each validated child as `valid: true|false` in `children/<report_id>.json` and
+   re-dispatches the false ones, so a run rejected by the validator is repaired in place rather
+   than discarded. Grounding issues alone never mark a child invalid.
 6. **Bounded provider recovery:** timeout, wall-clock-cap, and command-budget failures get at most
    one retry. Run `scripts/retry-target.mjs --target <frozen> --evidence <provider-artifact>
    --attempt <count> --out <retry.patch>`. The helper selects exact target paths mentioned in the
