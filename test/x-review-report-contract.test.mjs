@@ -1382,14 +1382,21 @@ describe('x-review lens report coverage contract', () => {
     }));
   });
 
-  test('the planner and the lifecycle agree on the default file budget', () => {
+  test('the planner, the lifecycle and x-panel agree on the file budget', () => {
     const planner = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'scripts', 'plan-review.mjs'), 'utf8');
     const lifecycle = readFileSync(join(ROOT, 'x-review', 'lib', 'review-lifecycle.mjs'), 'utf8');
+    const panel = readFileSync(join(ROOT, 'x-panel', 'lib', 'x-panel-cli.mjs'), 'utf8');
     const plannerBudget = planner.match(/const DEFAULT_CHUNK_FILE_BUDGET = (\d+);/)?.[1];
     const lifecycleBudget = lifecycle.match(/const DEFAULT_FILE_BUDGET = (\d+);/)?.[1];
+    const panelLimit = panel.match(/const REVIEW_TARGET_FILE_LIMIT = (\d+);/)?.[1];
     expect(plannerBudget).toBeDefined();
     expect(lifecycleBudget).toBeDefined();
-    // A drift here silently splits one target two different ways depending on the entry point.
+    expect(panelLimit).toBeDefined();
+    // Planner vs lifecycle: a drift splits one target two ways depending on the entry point.
     expect(plannerBudget).toBe(lifecycleBudget);
+    // Panel vs planner: a panel limit below the planner's budget refuses the planner's own
+    // chunks before any provider runs, which is how v2.23.11 shipped a review that could not
+    // complete. The panel guard may be equal, never smaller.
+    expect(Number(panelLimit)).toBeGreaterThanOrEqual(Number(plannerBudget));
   });
 });

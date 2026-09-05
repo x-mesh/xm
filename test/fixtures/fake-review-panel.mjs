@@ -13,6 +13,15 @@ const targetPath = args.find((arg) => arg.endsWith('.patch'));
 const targetFiles = targetPath && existsSync(targetPath)
   ? [...readFileSync(targetPath, 'utf8').matchAll(new RegExp('^diff --git a/(\\S+) b/(\\S+)$', 'gm'))].map((match) => match[2])
   : ['src/a.js'];
+// Mirror the real x-panel scope guard, reading its limit from source so this fixture never
+// becomes a fourth copy of the number. Without this the suite accepted chunks that the real
+// panel refuses, which is how a review file budget above the panel limit shipped green.
+const panelSource = readFileSync(new URL('../../x-panel/lib/x-panel-cli.mjs', import.meta.url), 'utf8');
+const panelFileLimit = Number(panelSource.match(/const REVIEW_TARGET_FILE_LIMIT = (\d+);/)?.[1] ?? 0);
+if (panelFileLimit > 0 && targetFiles.length > panelFileLimit) {
+  process.stderr.write(`bounded review target has ${targetFiles.length} files; split the frozen diff into chunks of at most ${panelFileLimit} files\n`);
+  process.exit(2);
+}
 if (process.env.XM_FAKE_PANEL_LOG) appendFileSync(process.env.XM_FAKE_PANEL_LOG, `${JSON.stringify({ args, lens })}\n`);
 if (process.env.XM_FAKE_PANEL_FAIL_LENS === lens) {
   const marker = process.env.XM_FAKE_PANEL_FAIL_MARKER;

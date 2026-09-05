@@ -113,7 +113,11 @@ function parseGitDiffToken(value, start) {
   return { value: new TextDecoder().decode(Uint8Array.from(bytes)), end: index + 1 };
 }
 
-const REVIEW_TARGET_FILE_LIMIT = 3;
+// Must equal DEFAULT_FILE_BUDGET in x-review/lib/review-lifecycle.mjs. x-review decides the
+// chunk size and this is only the guard against a target that never came from that planner,
+// so a value below the planner's budget rejects the planner's own chunks: at 3 against a
+// budget of 8, five of six chunks on a 70-file target were refused before any provider ran.
+const REVIEW_TARGET_FILE_LIMIT = 8;
 const DEFAULT_REVIEW_COMMAND_BUDGET = 12;
 
 // x-review owns chunking. Refuse a broad injected lens target before any provider

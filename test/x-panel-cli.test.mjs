@@ -1572,7 +1572,7 @@ If there are no real issues, return {"checked":["concrete behavior inspected"],"
   });
 
   test('injected review rejects a frozen target wider than 3 files before spawning providers', () => {
-    const target = Array.from({ length: 4 }, (_, i) =>
+    const target = Array.from({ length: 9 }, (_, i) =>
       `diff --git a/src/f${i}.js b/src/f${i}.js\n--- a/src/f${i}.js\n+++ b/src/f${i}.js\n@@ -0,0 +1 @@\n+const value${i} = true;\n`
     ).join('');
     const dump = join(DIR, 'too-wide-r1');
@@ -1580,12 +1580,12 @@ If there are no real issues, return {"checked":["concrete behavior inspected"],"
     writeFileSync(targetFile, target);
     const r = panelRaw(['review', targetFile, '--models', 'claude,codex', '--review-prompt', 'Find bugs.', '--json'], { X_PANEL_DUMP_R1: dump });
     expect(r.status).toBe(2);
-    expect(r.stderr).toContain('split the frozen diff into chunks of at most 3 files');
+    expect(r.stderr).toContain('split the frozen diff into chunks of at most 8 files');
     expect(existsSync(dump)).toBe(false);
   });
 
-  test('injected review counts Git-quoted paths toward the 3-file limit', () => {
-    const target = Array.from({ length: 4 }, (_, i) =>
+  test('injected review counts Git-quoted paths toward the file limit', () => {
+    const target = Array.from({ length: 9 }, (_, i) =>
       `diff --git \"a/src/file ${i}.js\" \"b/src/file ${i}.js\"\n--- \"a/src/file ${i}.js\"\n+++ \"b/src/file ${i}.js\"\n@@ -0,0 +1 @@\n+const value${i} = true;\n`
     ).join('');
     const dump = join(DIR, 'too-wide-quoted-r1');
@@ -1593,7 +1593,7 @@ If there are no real issues, return {"checked":["concrete behavior inspected"],"
     writeFileSync(targetFile, target);
     const r = panelRaw(['review', targetFile, '--models', 'claude,codex', '--review-prompt', 'Find bugs.', '--json'], { X_PANEL_DUMP_R1: dump });
     expect(r.status).toBe(2);
-    expect(r.stderr).toContain('split the frozen diff into chunks of at most 3 files');
+    expect(r.stderr).toContain('split the frozen diff into chunks of at most 8 files');
     expect(existsSync(dump)).toBe(false);
   });
 
