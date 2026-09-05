@@ -68,7 +68,12 @@ const checkedFiles = mode === 'missing-coverage' ? [] : targetFiles;
 process.stdout.write(`${JSON.stringify({
   run: `fake-${lens}`, models: ['fixture-risk', 'fixture-challenger'],
   counts: { confirmed: zero ? 0 : confirmedFindings.length, contested: 0, unreviewed: 0, unique: zero ? 0 : confirmedFindings.length },
-  by_model: { 'fixture-risk': { r1: 'ok', raised: zero ? 0 : 1 }, 'fixture-challenger': { r1: 'ok', raised: 0 } },
+  by_model: {
+    'fixture-risk': { r1: mode === 'all-slots-unusable' ? 'failed' : 'ok', raised: zero ? 0 : 1 },
+    // suspect-slot: one slot is warn-only unusable while the other reviewed fine, so the report
+    // must still be produced. all-slots-unusable: nothing usable is left and it must fail.
+    'fixture-challenger': { r1: ['suspect-slot', 'all-slots-unusable'].includes(mode) ? 'suspect_empty' : 'ok', raised: 0 },
+  },
   review_evidence: {
     'fixture-risk': { checked: [`${lens} paths inspected`], checked_files: checkedFiles, no_findings_reason: zero && mode !== 'evidence-free-zero' ? 'No defect remained after checking the frozen target.' : null },
     'fixture-challenger': { checked: [`${lens} paths inspected independently`], checked_files: checkedFiles, no_findings_reason: mode !== 'evidence-free-zero' ? 'No additional defect remained after independent review.' : null },

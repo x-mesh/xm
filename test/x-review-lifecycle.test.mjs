@@ -139,6 +139,25 @@ describe('xm review executable lifecycle', () => {
     expect(existsSync(join(dir, '.xm', 'review', 'last-result.json'))).toBe(true);
   });
 
+  test('keeps the report when one panel slot is unusable and the others reviewed', () => {
+    const dir = workspace();
+    const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'risk', '--run-id', 'suspect-slot', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'suspect-slot' }), encoding: 'utf8' });
+    // x-panel treats failed/suspect_empty as warn-only. Failing the whole report on one of them
+    // discarded the other models' reviews — twice in real runs, once costing a chunk with 3 findings.
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.findings).toHaveLength(1);
+    const report = JSON.parse(readFileSync(join(dir, '.xm', 'review', 'runs', 'suspect-slot', 'reports', 'risk-chunk-001.json'), 'utf8'));
+    expect(report.excluded_models).toEqual(['fixture-challenger']);
+  });
+
+  test('still fails when no panel slot produced anything usable', () => {
+    const dir = workspace();
+    const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'risk', '--run-id', 'no-usable-slot', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'all-slots-unusable' }), encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain('no successful reviewer evidence');
+  });
+
   test('drops only the finding whose line is unusable and keeps its well-formed sibling', () => {
     const dir = workspace();
     const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'risk', '--run-id', 'malformed-line', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'malformed-line' }), encoding: 'utf8' });

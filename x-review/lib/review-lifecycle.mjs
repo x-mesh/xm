@@ -144,8 +144,13 @@ function panelReport(stdout, expected, chunkBody, manifest) {
   let verdict;
   try { verdict = JSON.parse(stdout); } catch { throw new Error(`${expected.report_id}: panel output is not valid JSON`); }
   if (!verdict || verdict.coverage_failed === true) throw new Error(`${expected.report_id}: panel result failed coverage`);
-  const failed = Object.entries(verdict.by_model || {}).filter(([, value]) => ['failed', 'suspect_empty'].includes(value?.r1)).map(([model]) => model);
-  if (failed.length) throw new Error(`${expected.report_id}: panel coverage missing for ${failed.join(', ')}`);
+  // x-panel marks these slots warn-only, never a gate: `failed` produced nothing usable and
+  // `suspect_empty` answered with prose the parser could not lift. Both are already excluded
+  // from the verdict below, and the panel's other models still reviewed the target. Failing the
+  // whole report on one of them threw those reviews away — a single suspect kiro slot discarded
+  // a chunk carrying 3 findings, twice in a row. The run only fails when NOTHING usable is left,
+  // which the successfulModels check below enforces.
+  const unusableModels = Object.entries(verdict.by_model || {}).filter(([, value]) => ['failed', 'suspect_empty'].includes(value?.r1)).map(([model]) => model);
   const buckets = ['confirmed', 'unreviewed', 'contested'];
   if (!buckets.every((bucket) => Array.isArray(verdict[bucket]))) throw new Error(`${expected.report_id}: panel output has no canonical finding buckets`);
   const successfulModels = Object.entries(verdict.by_model || {}).filter(([, value]) => !['failed', 'suspect_empty'].includes(value?.r1)).map(([model]) => model);
@@ -171,6 +176,8 @@ function panelReport(stdout, expected, chunkBody, manifest) {
     target_hash: expected.target_hash, status: 'complete',
     checked, checked_files: expected.target_files,
     findings,
+    // Name the slots that did not enter the verdict, so the reviewer count cannot be over-read.
+    ...(unusableModels.length > 0 ? { excluded_models: unusableModels } : {}),
     ...(findings.length === 0 ? { no_findings_reason: cleanReasons.join(' | ') } : {}),
   };
 }
