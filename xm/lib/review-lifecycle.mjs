@@ -269,8 +269,11 @@ function markdown(result) {
 // carried into synthesis. validation.json still reports it, so a fabricating model stays visible.
 function groundedReports(rawReports, validation) {
   const valid = new Set(validation.valid_reports || []);
+  // Both kinds of per-finding defect are dropped the same way: a citation that does not occur in
+  // the target, and a finding whose line is unusable. Keeping the report and losing the finding
+  // is what stops one bad entry from discarding its well-formed siblings.
   const dropped = new Map((validation.finding_grounding?.reports || [])
-    .map((entry) => [entry.report_id, new Set(entry.ungrounded_findings)]));
+    .map((entry) => [entry.report_id, new Set([...(entry.ungrounded_findings || []), ...(entry.malformed_findings || [])])]));
   // A report the validator rejected contributes nothing. On the complete path every report is
   // valid so this is a no-op; on the partial path it is the whole point — dropping only
   // ungrounded findings left the rejected report's other findings as the salvaged output.

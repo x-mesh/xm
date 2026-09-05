@@ -13,6 +13,12 @@ const TARGET_HASH_RE = /^sha256:[0-9a-f]{64}$/;
 // Grounding outcomes are per-finding, not per-report: an ungrounded snippet drops that one
 // finding, it does not invalidate a report whose other findings are grounded.
 const GROUNDING_CODES = new Set(['finding_code_mismatch', 'finding_code_wrong_file']);
+// Codes whose damage is confined to ONE finding, so the report keeps the rest. A missing line
+// used to invalidate the whole report: across 7 real reports that discarded 33 findings to
+// reject 20 malformed ones, losing 13 well-formed findings with them. The finding is dropped
+// like an ungrounded one instead; a report left with none lands where a zero-finding report
+// already lands.
+const DROPPABLE_FINDING_CODES = new Set([...GROUNDING_CODES, 'finding_line']);
 const ELISION_RE = /^(?:\/\/|#|--|\/\*|\*)?\s*(?:\.\.\.|\u2026|\u22ef)\s*(?:\*\/)?$/;
 const COMMENT_ONLY_RE = /^(?:\/\/|\/\*|\*|#|--|<!--)/;
 const INLINE_ELISION_RE = /\.\.\.|\u2026|\u22ef/;
@@ -146,11 +152,65 @@ function lineOccurs(haystackLines, line) {
   // The fragment walk stays inside one target line on purpose. Scanning the joined section
   // instead let a fabricated citation ground: the fragments only had to appear in order
   // somewhere in the whole file, so an invented call name plus a real identifier assembled a
-  // claim about code that does not exist (`logger.debug(...apiKey...)`). A bounded window does
-  // not separate those either, because the stitched lines sit within a line or two of each
-  // other. An abbreviation whose elided middle spanned line breaks therefore does not ground —
-  // a dropped finding is a far smaller cost than a fabricated one reaching the review-fix gate.
-  return haystackLines.some(occursInOrder);
+  // claim about code that does not exist (`logger.debug(...apiKey...)`).
+  if (haystackLines.some(occursInOrder)) return true;
+  return spansOneStatement(haystackLines, fragments, openStart, openEnd);
+}
+
+// How many target lines one cited line may stand for. A real multi-line call or argument list
+// is a handful of lines; a span this small cannot reach across unrelated regions of a section.
+const MULTILINE_ELISION_SPAN = 12;
+
+// A citation may also compress a multi-line statement into one line: `tracing::warn!(...);`
+// stands for the four target lines of that call. Ground it only when both un-elided ends anchor
+// a short run of CONSECUTIVE target lines — the opening fragment must start a line and the
+// closing fragment must end a later one within MULTILINE_ELISION_SPAN. This does not reopen the
+// joined-section hole: a fabricated call fails because its opening fragment starts no target
+// line at all (`logger.debug(` against a target that only has `tracing::warn!(`), and a citation
+// open at either end is refused before it gets here, so a bare identifier can never anchor a run.
+function spansOneStatement(haystackLines, fragments, openStart, openEnd) {
+  if (openStart || openEnd || fragments.length < 2) return false;
+  const first = fragments[0];
+  const last = fragments[fragments.length - 1];
+  const middles = fragments.slice(1, -1);
+  for (let start = 0; start < haystackLines.length; start += 1) {
+    if (!haystackLines[start].startsWith(first)) continue;
+    // The opening line has to be unfinished, or the run is not one statement but two glued
+    // together — `const output = await runScript(scriptPath, host, 30);` closes its own call, so
+    // a citation ending in a later line's tail is stitching, exactly what the whole-section
+    // scan used to allow. Only a line left open by an unclosed bracket continues.
+    let depth = bracketDepth(haystackLines[start]);
+    if (depth <= 0) continue;
+    const limit = Math.min(haystackLines.length - 1, start + MULTILINE_ELISION_SPAN);
+    for (let end = start + 1; end <= limit; end += 1) {
+      depth += bracketDepth(haystackLines[end]);
+      // Past its own closing bracket the statement is over; anything beyond belongs to the next.
+      if (depth < 0) break;
+      if (depth === 0 && haystackLines[end].endsWith(last)) {
+        let at = start;
+        const covered = middles.every((mid) => {
+          const found = haystackLines.slice(at, end + 1).findIndex((line) => line.includes(mid));
+          if (found === -1) return false;
+          at += found;
+          return true;
+        });
+        if (covered) return true;
+      }
+      if (depth === 0) break;
+    }
+  }
+  return false;
+}
+
+// Net bracket balance of one line. Quotes are not parsed, so a bracket inside a string literal
+// skews it; that only ever makes the balance fail to reach zero, which refuses the citation.
+function bracketDepth(line) {
+  let depth = 0;
+  for (const ch of line) {
+    if (ch === '(' || ch === '[') depth += 1;
+    else if (ch === ')' || ch === ']') depth -= 1;
+  }
+  return depth;
 }
 
 // Deliberately looser than an exact substring: a faithful citation may be re-wrapped,
@@ -350,7 +410,7 @@ function validateFinding(finding, index, lens, file, reportId, targetFiles, targ
     }
   }
   const lineOk = Number.isInteger(finding.line) && finding.line > 0;
-  if (!lineOk) issues.push(issue('finding_line', `${prefix}.line must be a positive integer`, lens, file, reportId));
+  if (!lineOk) issues.push({ ...issue('finding_line', `${prefix}.line must be a positive integer`, lens, file, reportId), finding_index: index });
   if (targetFiles && typeof finding.file === 'string' && !targetFiles.has(normalizedPath(finding.file))) {
     issues.push(issue('finding_outside_target', `${prefix}.file is not present in the frozen target`, lens, file, reportId));
   }
@@ -518,8 +578,10 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
     const reportIsDiff = typeof reportTargetBody === 'string'
       && reportTargetBody.split('\n').some((line) => line.startsWith('diff --git '));
     const reportIssues = validateReport(parsed, manifest, raw.file, reportTargetSections, reportIsDiff);
-    const grounding = reportIssues.filter((entry) => GROUNDING_CODES.has(entry.code));
+    const grounding = reportIssues.filter((entry) => DROPPABLE_FINDING_CODES.has(entry.code));
     issues.push(...reportIssues);
+    // A report that loses every finding this way lands where a zero-finding report already
+    // lands, which is a valid outcome — so there is no separate "nothing survived" rejection.
     reports.push({ file: raw.file, report: parsed, valid: reportIssues.length === grounding.length, grounding });
   }
 
@@ -565,13 +627,18 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
     const total = Array.isArray(item.report?.findings) ? item.report.findings.length : 0;
     const ungrounded = item.grounding.filter((entry) => entry.code === 'finding_code_mismatch').map((entry) => entry.finding_index);
     const wrongFile = item.grounding.filter((entry) => entry.code === 'finding_code_wrong_file').map((entry) => entry.finding_index);
+    const malformed = item.grounding.filter((entry) => entry.code === 'finding_line' && Number.isInteger(entry.finding_index)).map((entry) => entry.finding_index);
     findingGrounding.findings += total;
     findingGrounding.grounded += total - ungrounded.length;
     findingGrounding.wrong_file += wrongFile.length;
     findingGrounding.ungrounded += ungrounded.length;
     const reportId = typeof item.report?.report_id === 'string' ? item.report.report_id : null;
-    if (reportId && (ungrounded.length > 0 || wrongFile.length > 0)) {
-      findingGrounding.reports.push({ report_id: reportId, file: item.file, findings: total, ungrounded_findings: ungrounded, wrong_file_findings: wrongFile });
+    if (reportId && (ungrounded.length > 0 || wrongFile.length > 0 || malformed.length > 0)) {
+      findingGrounding.reports.push({
+        report_id: reportId, file: item.file, findings: total,
+        ungrounded_findings: ungrounded, wrong_file_findings: wrongFile,
+        ...(malformed.length > 0 ? { malformed_findings: malformed } : {}),
+      });
     }
   }
 

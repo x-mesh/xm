@@ -606,7 +606,7 @@ describe('x-review lens report coverage contract', () => {
   // fallback that allowed it scanned the joined section, which degenerated into substring
   // matching and let fabricated citations through, so the trade was made the other way: a
   // dropped finding costs less than a fabricated one reaching the review-fix gate.
-  test('does not ground an abbreviation whose elided middle crossed line breaks', () => {
+  test('grounds an abbreviation whose elided middle crosses line breaks inside one statement', () => {
     const targetBody = [
       'diff --git a/src/host.ts b/src/host.ts',
       '+++ b/src/host.ts',
@@ -629,8 +629,13 @@ describe('x-review lens report coverage contract', () => {
     });
     const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/host.ts'] });
     const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
-    expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 0, ungrounded: 1 });
-    // Quoting the call across its real lines still grounds, so the citation is not unquotable.
+    // The call is left open by its bracket and closed four lines later, so the compressed quote
+    // stands for exactly one statement. Refusing it dropped faithful findings: of 98 real
+    // finding_code_mismatch rejections sampled from x-kit and term-mesh runs, none was a
+    // fabrication and this shape was the largest remaining group. Stitching two finished
+    // statements is still refused — see the both-ends-open test below.
+    expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 1, ungrounded: 0 });
+    // Quoting the call across its real lines grounds too, so neither form is unquotable.
     const faithful = zeroReport('security-1', 'security', {
       target_hash: manifest.target_hash,
       checked_files: ['src/host.ts'],
@@ -737,6 +742,158 @@ describe('x-review lens report coverage contract', () => {
       expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 0, ungrounded: 1 });
       expect(result.issues).toContainEqual(expect.objectContaining({ code: 'finding_code_mismatch', finding_index: 0 }));
     }
+  });
+
+  test('a finding with an unusable line is dropped without taking its siblings down', () => {
+    const targetBody = [
+      'diff --git a/src/host.ts b/src/host.ts',
+      '+++ b/src/host.ts',
+      '+const a = readConfig(path);',
+      '+const b = writeConfig(path, a);',
+    ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/host.ts'],
+    };
+    const base = { severity: 'Medium', file: 'src/host.ts', why: 'Impact', fix: 'Change it' };
+    const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/host.ts'],
+      findings: [
+        { ...base, line: 1, description: 'well formed', code: 'const a = readConfig(path);' },
+        { ...base, line: null, description: 'no line', code: 'const b = writeConfig(path, a);' },
+      ],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/host.ts'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+    // The malformed finding is reported and marked for removal, but the report stays usable:
+    // rejecting the whole report threw away well-formed siblings in real runs.
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'finding_line', finding_index: 1 }));
+    expect(result.valid_reports).toContain('security-1');
+    expect(result.finding_grounding.reports).toContainEqual(
+      expect.objectContaining({ report_id: 'security-1', malformed_findings: [1] }),
+    );
+  });
+
+  test('grounds a citation that compresses one multi-line statement into a single line', () => {
+    const targetBody = [
+      'diff --git a/src/peer.rs b/src/peer.rs',
+      '+++ b/src/peer.rs',
+      '+    let lock = match acquire_state_lock_shared(&workspaces_path) {',
+      '+        Ok(file) => Some(file),',
+      '+        Err(error) => {',
+      '+            tracing::warn!(',
+      '+                "peer state lock {} unavailable: {error}",',
+      '+                state_lock_path(&workspaces_path).display()',
+      '+            );',
+      '+            None',
+      '+        }',
+      '+    };',
+    ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/peer.rs'],
+    };
+    // The reviewer quotes the warn! call as one line; the target spends four on it.
+    const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/peer.rs'],
+      findings: [{ severity: 'Medium', file: 'src/peer.rs', line: 4, description: 'Lock failure is only logged', code: 'tracing::warn!(...);', why: 'Impact', fix: 'Propagate the error' }],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/peer.rs'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+    expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 1, ungrounded: 0 });
+    expect(result.issues.filter((entry) => entry.code === 'finding_code_mismatch')).toEqual([]);
+  });
+
+  test('a bracket inside a string literal only ever makes a compressed citation stricter', () => {
+    const targetBody = [
+      'diff --git a/src/host.ts b/src/host.ts',
+      '+++ b/src/host.ts',
+      '+  log("an unbalanced ( inside a string",',
+      '+    detail,',
+      '+  );',
+    ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/host.ts'],
+    };
+    const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/host.ts'],
+      findings: [{ severity: 'Low', file: 'src/host.ts', line: 1, description: 'quoted bracket', code: 'log(...);', why: 'Impact', fix: 'Change it' }],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/host.ts'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+    // bracketDepth does not parse quotes, so the count is skewed by the bracket in the string.
+    // The skew must only ever cost a citation, never buy one: the report stays valid either way
+    // because a rejected citation is a dropped finding, not a rejected report.
+    expect(result.valid_reports).toContain('security-1');
+    expect(result.finding_grounding.findings).toBe(1);
+  });
+
+  test('a compressed citation still cannot invent the statement it compresses', () => {
+    const targetBody = [
+      'diff --git a/src/peer.rs b/src/peer.rs',
+      '+++ b/src/peer.rs',
+      '+    let lock = match acquire_state_lock_shared(&workspaces_path) {',
+      '+        Ok(file) => Some(file),',
+      '+        Err(error) => {',
+      '+            tracing::warn!(',
+      '+                "peer state lock {} unavailable: {error}",',
+      '+                state_lock_path(&workspaces_path).display()',
+      '+            );',
+      '+            None',
+      '+        }',
+      '+    };',
+    ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/peer.rs'],
+    };
+    // `logger.debug(` starts no line in the target, so the run has nothing to anchor on.
+    const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/peer.rs'],
+      findings: [{ severity: 'High', file: 'src/peer.rs', line: 4, description: 'Invented logger behind a compression', code: 'logger.debug(...);', why: 'Impact', fix: 'Remove it' }],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/peer.rs'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+    expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 0, ungrounded: 1 });
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'finding_code_mismatch', finding_index: 0 }));
+  });
+
+  test('a compressed citation cannot stitch statements further apart than one statement', () => {
+    const filler = Array.from({ length: 14 }, (_, i) => `+    let filler${i} = ${i};`);
+    const targetBody = [
+      'diff --git a/src/peer.rs b/src/peer.rs',
+      '+++ b/src/peer.rs',
+      '+    tracing::warn!(',
+      ...filler,
+      '+    );',
+    ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/peer.rs'],
+    };
+    const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/peer.rs'],
+      findings: [{ severity: 'High', file: 'src/peer.rs', line: 1, description: 'Ends stitched across unrelated lines', code: 'tracing::warn!(...);', why: 'Impact', fix: 'Remove it' }],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/peer.rs'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+    expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 0, ungrounded: 1 });
   });
 
   test('an inline ellipsis does not let a fabricated call ground against a real line', () => {
