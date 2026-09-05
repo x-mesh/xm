@@ -640,8 +640,11 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
     const malformed = item.grounding.filter((entry) => entry.code === 'finding_line' && Number.isInteger(entry.finding_index)).map((entry) => entry.finding_index);
     findingGrounding.findings += total;
     // Findings removed before synthesis are not part of what grounded: counting them here
-    // reported more surviving findings than the run actually carries forward.
-    findingGrounding.grounded += total - ungrounded.length - malformed.length;
+    // reported more surviving findings than the run actually carries forward. One finding can
+    // trip more than one check (a wrong-file citation whose line is also unusable), so count
+    // the distinct indexes rather than summing the lists.
+    const removedIndexes = new Set([...ungrounded, ...malformed, ...wrongFile].filter(Number.isInteger));
+    findingGrounding.grounded += total - removedIndexes.size;
     findingGrounding.wrong_file += wrongFile.length;
     findingGrounding.ungrounded += ungrounded.length;
     const reportId = typeof item.report?.report_id === 'string' ? item.report.report_id : null;
@@ -654,10 +657,13 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
     }
   }
 
-  // Grounding issues are reported, not blocking: they are resolved by dropping the finding.
-  const ok = issues.every((entry) => GROUNDING_CODES.has(entry.code)) && validReports.length === expected.length;
+  // Per-finding defects are reported, not blocking: they are resolved by dropping that finding.
+  // This has to use the same set the report-validity check uses. Testing GROUNDING_CODES here
+  // while reports were judged by DROPPABLE_FINDING_CODES left an unusable line keeping every
+  // report valid and still failing the run, so the salvage it was meant to enable never landed.
+  const ok = issues.every((entry) => DROPPABLE_FINDING_CODES.has(entry.code)) && validReports.length === expected.length;
   const runBlocking = [...new Set(issues
-    .filter((entry) => !GROUNDING_CODES.has(entry.code) && !REPORT_SCOPED_CODES.has(entry.code))
+    .filter((entry) => !DROPPABLE_FINDING_CODES.has(entry.code) && !REPORT_SCOPED_CODES.has(entry.code))
     .map((entry) => entry.code))];
   return {
     schema_version: 1,

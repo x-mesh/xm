@@ -139,6 +139,43 @@ describe('xm review executable lifecycle', () => {
     expect(existsSync(join(dir, '.xm', 'review', 'last-result.json'))).toBe(true);
   });
 
+  test('drops only the finding whose line is unusable and keeps its well-formed sibling', () => {
+    const dir = workspace();
+    const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'risk', '--run-id', 'malformed-line', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'malformed-line' }), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    // Two findings went in; the one without a line must be the only casualty. Invalidating the
+    // whole report for it discarded 13 well-formed findings across 7 real reports.
+    const output = JSON.parse(result.stdout);
+    expect(output.findings).toHaveLength(1);
+    expect(output.findings[0].line).toBe(2);
+    const validation = JSON.parse(readFileSync(join(dir, '.xm', 'review', 'runs', 'malformed-line', 'validation.json'), 'utf8'));
+    expect(validation.ok).toBe(true);
+    expect(validation.valid_reports).toContain('risk-chunk-001');
+    expect(validation.issues.map((entry) => entry.code)).toEqual(['finding_line']);
+    expect(validation.finding_grounding).toMatchObject({ findings: 2, grounded: 1 });
+    expect(validation.finding_grounding.reports).toContainEqual(
+      expect.objectContaining({ report_id: 'risk-chunk-001', malformed_findings: [1] }),
+    );
+  });
+
+  test('drops a finding whose citation belongs to a file other than the one it names', () => {
+    const dir = workspace();
+    writeFileSync(join(dir, 'src', 'b.js'), 'export const b = 1;\n');
+    writeFileSync(join(dir, 'two.patch'), ['a', 'b'].flatMap((name) => [
+      `diff --git a/src/${name}.js b/src/${name}.js`, `--- a/src/${name}.js`, `+++ b/src/${name}.js`, '@@ -1 +1 @@', `-export const ${name} = 0;`, `+export const ${name} = 1;`,
+    ]).join('\n'));
+    const result = spawnSync('node', [CLI, 'run', 'two.patch', '--lenses', 'risk', '--run-id', 'wrong-file', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'wrong-file' }), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    // The citation is real, so the report stays valid — but it names src/a.js while quoting
+    // src/b.js, so the finding must not reach synthesis and steer the review-fix scope.
+    const output = JSON.parse(result.stdout);
+    expect(output.findings).toHaveLength(0);
+    const validation = JSON.parse(readFileSync(join(dir, '.xm', 'review', 'runs', 'wrong-file', 'validation.json'), 'utf8'));
+    expect(validation.ok).toBe(true);
+    expect(validation.issues.map((entry) => entry.code)).toEqual(['finding_code_wrong_file']);
+    expect(validation.finding_grounding).toMatchObject({ findings: 1, grounded: 0, wrong_file: 1 });
+  });
+
   test('drops an ungrounded finding from synthesis instead of failing the run', () => {
     const dir = workspace();
     const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'risk', '--run-id', 'ungrounded', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'ungrounded-finding' }), encoding: 'utf8' });

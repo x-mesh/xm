@@ -475,7 +475,13 @@ describe('x-review lens report coverage contract', () => {
     expect(result.issues).toContainEqual(expect.objectContaining({
       code: 'finding_code_wrong_file', report_id: 'security-1', finding_index: 0, grounded_file: 'src/other.ts',
     }));
-    expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 1, wrong_file: 1, ungrounded: 0 });
+    // The report survives, but the misattributed finding does not count as grounded: it is
+    // dropped before synthesis like an ungrounded one, because a finding that names a file its
+    // own evidence contradicts would otherwise steer the review-fix scope to the wrong file.
+    expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 0, wrong_file: 1, ungrounded: 0 });
+    expect(result.finding_grounding.reports).toContainEqual(
+      expect.objectContaining({ report_id: 'security-1', wrong_file_findings: [0] }),
+    );
   });
 
   test('keeps the grounded findings of a report that also carries a fabricated one', () => {

@@ -41,21 +41,36 @@ const finding = { ...riskFinding, ...(severity ? { severity } : {}), ...(mode ==
 if (mode === 'mixed-severity') finding.severity = lens === 'correctness' ? 'medium' : 'high';
 finding.code = mode === 'ungrounded-finding' ? 'execSync(payload);' : 'export const b = 2;';
 finding.fix = 'Guard the exported value.';
+// wrong-file: quote a line that really exists, but under a DIFFERENT file's name. The validator
+// must see the citation land in another section and drop the finding before synthesis.
+if (mode === 'wrong-file' && targetFiles.length > 1) {
+  const body = targetPath && existsSync(targetPath) ? readFileSync(targetPath, 'utf8') : '';
+  const section = body.split(`diff --git a/${targetFiles[1]} `)[1] || '';
+  const quoted = section.split('\n').find((line) => line.startsWith('+') && !line.startsWith('+++'));
+  if (quoted) {
+    finding.file = targetFiles[0];
+    finding.code = quoted.slice(1);
+  }
+}
 if (mode === 'unchallenged') finding.opponents = [];
 if (mode === 'contested') finding.opponents = [{ model: 'fixture-challenger', stance: 'refute', reason: 'disputed' }];
 if (mode === 'mixed-disposition' && lens === 'correctness') finding.opponents = [];
+// malformed-line: one well-formed finding plus a sibling with no usable line. The report is
+// otherwise fine, so this exercises the lifecycle path that must drop ONLY the sibling.
+const malformedSibling = { ...finding, claim: 'sibling finding with no line', line: null };
+const confirmedFindings = mode === 'malformed-line' ? [finding, malformedSibling] : [finding];
 const zero = mode === 'clean' || (lens !== 'risk' && !['duplicate', 'mixed-severity'].includes(mode)) || mode === 'evidence-free-zero';
 const checkedFiles = mode === 'missing-coverage' ? [] : targetFiles;
 process.stdout.write(`${JSON.stringify({
   run: `fake-${lens}`, models: ['fixture-risk', 'fixture-challenger'],
-  counts: { confirmed: zero ? 0 : 1, contested: 0, unreviewed: 0, unique: zero ? 0 : 1 },
+  counts: { confirmed: zero ? 0 : confirmedFindings.length, contested: 0, unreviewed: 0, unique: zero ? 0 : confirmedFindings.length },
   by_model: { 'fixture-risk': { r1: 'ok', raised: zero ? 0 : 1 }, 'fixture-challenger': { r1: 'ok', raised: 0 } },
   review_evidence: {
     'fixture-risk': { checked: [`${lens} paths inspected`], checked_files: checkedFiles, no_findings_reason: zero && mode !== 'evidence-free-zero' ? 'No defect remained after checking the frozen target.' : null },
     'fixture-challenger': { checked: [`${lens} paths inspected independently`], checked_files: checkedFiles, no_findings_reason: mode !== 'evidence-free-zero' ? 'No additional defect remained after independent review.' : null },
   },
   consensus: zero ? [] : [{ file: finding.file, line: finding.line, severity: finding.severity, consensus: 1 }],
-  confirmed: zero || mode === 'contested' || (mode === 'mixed-disposition' && lens === 'correctness') ? [] : [finding], contested: mode === 'contested' ? [finding] : [], unreviewed: mode === 'mixed-disposition' && lens === 'correctness' ? [finding] : [],
+  confirmed: zero || mode === 'contested' || (mode === 'mixed-disposition' && lens === 'correctness') ? [] : confirmedFindings, contested: mode === 'contested' ? [finding] : [], unreviewed: mode === 'mixed-disposition' && lens === 'correctness' ? [finding] : [],
   ...(zero && mode !== 'evidence-free-zero' ? { no_findings_reason: `No ${lens} issues remain after checking every line in ${targetPath || 'the frozen target'}.` } : {}),
   coverage_failed: false,
 })}\n`);
