@@ -18,7 +18,7 @@ function parse(argv) {
   if (!['run', 'resume'].includes(command)) throw new Error(`unknown command: ${command || '(missing)'}`);
   const options = { command, crossVendor: false, json: false, trace: true };
   const pos = [];
-  const valueFlags = new Set(['--models', '--lenses', '--rounds', '--run-id', '--chunk-file-budget', '--chunk-token-budget', '--max-profiles']);
+  const valueFlags = new Set(['--models', '--lenses', '--rounds', '--run-id', '--chunk-file-budget', '--chunk-token-budget', '--max-profiles', '--max-concurrent-reports']);
   for (let i = 1; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--cross-vendor') options.crossVendor = true;
@@ -38,7 +38,7 @@ function parse(argv) {
     options.id = pos[0];
   }
   if (options.rounds !== undefined && !['1', '2'].includes(options.rounds)) throw new Error('--rounds must be 1 or 2');
-  for (const key of ['chunkFileBudget', 'chunkTokenBudget', 'maxProfiles']) {
+  for (const key of ['chunkFileBudget', 'chunkTokenBudget', 'maxProfiles', 'maxConcurrentReports']) {
     if (options[key] !== undefined && (!/^\d+$/.test(options[key]) || Number(options[key]) < 1)) throw new Error(`--${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)} must be a positive integer`);
   }
   return options;
@@ -54,6 +54,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       runId: options.runId, chunkFileBudget: options.chunkFileBudget ? Number(options.chunkFileBudget) : undefined,
       chunkTokenBudget: options.chunkTokenBudget ? Number(options.chunkTokenBudget) : undefined,
       maxProfiles: options.maxProfiles ? Number(options.maxProfiles) : undefined,
+      maxConcurrentReports: options.maxConcurrentReports ? Number(options.maxConcurrentReports) : undefined,
       trace: options.trace,
     };
     const response = options.command === 'run' ? await startReview({ ...common, target: options.target }) : await resumeReview(options.id, common);

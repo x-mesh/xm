@@ -9,9 +9,17 @@ import { validateReviewReports } from '../skills/review/scripts/validate-reports
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = resolve(HERE, '..', 'skills', 'review');
-const DEFAULT_FILE_BUDGET = 3;
+// Measured on a 10-file / 21k-token target: a budget of 3 filled only 22% of the token
+// budget, split it into 4 chunks (8 reports), and separated one implementation from its
+// test file. A budget of 8 keeps every implementation with its tests, fills 43%, and
+// halves the report count. The token budget stays the real size guard.
+const DEFAULT_FILE_BUDGET = 8;
 const DEFAULT_TOKEN_BUDGET = 24_000;
 const DEFAULT_PROFILES = 4;
+// Concurrency is independent of lens selection: max_profiles picks WHICH lenses run,
+// this caps HOW MANY reports run at once. Tying them serialized chunked reviews into
+// floor(max_profiles / lenses) chunks per wave.
+const DEFAULT_CONCURRENT_REPORTS = 8;
 const RANK = { Critical: 0, High: 1, Medium: 2, Low: 3 };
 
 function hash(value, prefixed = true) {
@@ -260,9 +268,13 @@ function markdown(result) {
 // A finding whose code does not occur anywhere in the frozen target is dropped rather than
 // carried into synthesis. validation.json still reports it, so a fabricating model stays visible.
 function groundedReports(rawReports, validation) {
+  const valid = new Set(validation.valid_reports || []);
   const dropped = new Map((validation.finding_grounding?.reports || [])
     .map((entry) => [entry.report_id, new Set(entry.ungrounded_findings)]));
-  return rawReports.map((entry) => JSON.parse(entry.body)).map((report) => {
+  // A report the validator rejected contributes nothing. On the complete path every report is
+  // valid so this is a no-op; on the partial path it is the whole point — dropping only
+  // ungrounded findings left the rejected report's other findings as the salvaged output.
+  return rawReports.map((entry) => JSON.parse(entry.body)).filter((report) => valid.has(report.report_id)).map((report) => {
     const drop = dropped.get(report.report_id);
     if (!drop || drop.size === 0 || !Array.isArray(report.findings)) return report;
     return { ...report, findings: report.findings.filter((_, index) => !drop.has(index)) };
@@ -284,7 +296,7 @@ function recordChildValidity(runDir, manifest, validation) {
   }
 }
 
-function persistResult(runDir, manifest, validation, synthesis) {
+function persistResult(runDir, manifest, validation, synthesis, persistOptions = {}) {
   const reviewDir = dirname(dirname(runDir));
   const timestamp = iso();
   const summary = Object.fromEntries(manifest.profiles.map(({ profile }) => {
@@ -301,6 +313,13 @@ function persistResult(runDir, manifest, validation, synthesis) {
     reviewed_commit: manifest.reviewed_commit, reviewed_files_all: manifest.reviewed_files_all, reviewed_file_snapshots: manifest.reviewed_file_snapshots,
     ...synthesis, summary,
   };
+  if (persistOptions.partial) {
+    // A partial run must not become the project's last review result: the review-fix gate
+    // reads last-result.json as truth, so an incomplete review would satisfy it. Keep the
+    // salvaged synthesis inside the run directory only.
+    json(join(runDir, 'partial-result.json'), result);
+    return result;
+  }
   json(join(runDir, 'result.json'), result);
   json(join(reviewDir, 'last-result.json'), result);
   const md = markdown(result);
@@ -391,10 +410,18 @@ async function execute(manifest, runDir, options) {
     return childFailure;
   };
   const waves = [...new Set(manifest.expected_reports.map((entry) => entry.wave || 1))].sort((a, b) => a - b);
+  const waveFailures = [];
   for (const wave of waves) {
-    const failures = (await Promise.all(manifest.expected_reports.filter((entry) => (entry.wave || 1) === wave).map(runExpected))).filter(Boolean);
-    if (failures.length) { failure = failures.join(' | '); break; }
+    const waveReports = manifest.expected_reports.filter((entry) => (entry.wave || 1) === wave);
+    const failures = (await Promise.all(waveReports.map(runExpected))).filter(Boolean);
+    waveFailures.push(...failures);
+    // One bad child used to abandon every later wave, so a single failure cost a full
+    // re-dispatch of reports that were never attempted. Keep going and let resume repair
+    // just the failures. A wave where nothing survived is the exception: that reads as a
+    // broken panel rather than a bad report, so stop instead of burning the rest.
+    if (failures.length === waveReports.length) break;
   }
+  if (waveFailures.length) failure = waveFailures.join(' | ');
   const completed = manifest.expected_reports.filter((expected) => readJson(join(runDir, 'children', `${expected.report_id}.json`))?.status === 'completed');
   const missing = manifest.expected_reports.filter((expected) => !completed.some((entry) => entry.report_id === expected.report_id)).map((entry) => entry.report_id);
   if (failure || missing.length) {
@@ -410,9 +437,22 @@ async function execute(manifest, runDir, options) {
   recordChildValidity(runDir, manifest, validation);
   if (!validation.ok) {
     const invalid = manifest.expected_reports.filter((entry) => !validation.valid_reports.includes(entry.report_id)).map((entry) => entry.report_id);
-    const status = { state: 'failed', updated_at: iso(), completed: completed.length, expected: manifest.expected_reports.length, missing: validation.missing_reports, invalid, error: `report validation failed: ${validation.issues.map((entry) => entry.code).join(', ')}` };
-    json(join(runDir, 'status.json'), status); event(runDir, 'run_failed', status, options.trace);
-    throw new Error(`${status.error}; resume with: xm review resume ${manifest.id}`);
+    const error = `report validation failed: ${validation.issues.map((entry) => entry.code).join(', ')}`;
+    // A report-scoped defect costs one child, not the whole run. Salvage the reports that
+    // did validate so resume repairs just that child instead of re-reviewing everything —
+    // one invalid report used to discard every valid one. The run still fails, because the
+    // review is incomplete; it only stops throwing away the evidence it already has.
+    const blocking = Array.isArray(validation.run_blocking) ? validation.run_blocking : ['unclassified_validation_failure'];
+    const partial = blocking.length === 0 && validation.valid_reports.length > 0;
+    if (partial) persistResult(runDir, manifest, validation, synthesize(groundedReports(rawReports, validation)), { partial: true });
+    const status = {
+      state: partial ? 'partial' : 'failed', updated_at: iso(), completed: completed.length,
+      expected: manifest.expected_reports.length, missing: validation.missing_reports, invalid, error,
+      ...(partial ? { valid_reports: validation.valid_reports, partial_result: 'partial-result.json' } : { run_blocking: blocking }),
+    };
+    json(join(runDir, 'status.json'), status);
+    event(runDir, partial ? 'run_partial' : 'run_failed', status, options.trace);
+    throw new Error(`${error}; resume with: xm review resume ${manifest.id}`);
   }
   const result = persistResult(runDir, manifest, validation, synthesize(groundedReports(rawReports, validation)));
   result.trace = recordVerdict(runDir, manifest, result, options);
@@ -438,7 +478,7 @@ export async function startReview(options = {}) {
   event(runDir, 'target_frozen', { target_kind: frozen.kind, target_ref: frozen.ref, target_hash: hash(frozen.body) }, trace);
   const config = readJson(join(cwd, '.xm-review.json')) || {};
   const filtered = filterGeneratedCopies(frozen.body, config.generated_copy_roots || []);
-  const plan = planReview(frozen.body, { maxProfiles: options.maxProfiles || DEFAULT_PROFILES, targetFiles: frozen.kind === 'file' ? [frozen.ref] : [], chunkTokenBudget: options.chunkTokenBudget || DEFAULT_TOKEN_BUDGET, chunkFileBudget: options.chunkFileBudget || DEFAULT_FILE_BUDGET, maxConcurrentReports: options.maxProfiles || DEFAULT_PROFILES, generatedCopyRoots: config.generated_copy_roots || [] });
+  const plan = planReview(frozen.body, { maxProfiles: options.maxProfiles || DEFAULT_PROFILES, targetFiles: frozen.kind === 'file' ? [frozen.ref] : [], chunkTokenBudget: options.chunkTokenBudget || DEFAULT_TOKEN_BUDGET, chunkFileBudget: options.chunkFileBudget || DEFAULT_FILE_BUDGET, maxConcurrentReports: options.maxConcurrentReports || DEFAULT_CONCURRENT_REPORTS, generatedCopyRoots: config.generated_copy_roots || [] });
   if (!plan.reviewable) throw new Error(plan.incomplete_reason || 'review target cannot be chunked safely');
   const plannedChunks = chunkFrozenTarget(filtered.body, options.chunkTokenBudget || DEFAULT_TOKEN_BUDGET, { targetFiles: frozen.kind === 'file' ? [frozen.ref] : [], fileBudget: options.chunkFileBudget || DEFAULT_FILE_BUDGET });
   const actualChunks = plannedChunks.length ? plannedChunks : [{ id: 'chunk-001', body: filtered.body, files: plan.files, target_hash: hash(filtered.body) }];
@@ -448,7 +488,10 @@ export async function startReview(options = {}) {
   const prompts = lenses.map((lens) => { const body = promptFor(lens); const file = `prompts/${lens}.md`; writeFileSync(join(runDir, file), body); return { lens, file, prompt_hash: hash(body) }; });
   const expectedReports = [];
   const bindings = {};
-  const maxConcurrentReports = Math.max(lenses.length, plan.max_concurrent_reports || lenses.length);
+  // The plan floors its own value at the number of profiles IT picked, which is not the lens
+  // set actually being run (--lenses overrides it). Prefer the caller's value so a requested
+  // concurrency is not silently raised back up by the planner's profile count.
+  const maxConcurrentReports = Math.max(lenses.length, options.maxConcurrentReports || plan.max_concurrent_reports || lenses.length);
   const chunksPerWave = Math.max(1, Math.floor(maxConcurrentReports / lenses.length));
   for (const lens of lenses) for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
     const chunk = chunks[chunkIndex];

@@ -494,7 +494,25 @@ export function startAdaptiveRun(input) {
 export function verifyAdaptiveRun(input) {
   const lease = readLocalJSON(leasePath(input.decision_id));
   if (!lease) throw new Error('execution lease not found');
-  if (lease.status !== 'started') throw new Error(`execution lease is not verifiable: ${lease.status}`);
+  // A failed planned verification is re-verifiable: the planned route has no fallback, so
+  // correcting the run and verifying again is its only way forward. A direct lease keeps
+  // exactly two exits — `route start --fallback`, recorded as `escalated`, and `route abandon`,
+  // recorded as `failed`. finishAdaptiveRun labels anything that is not a `planned-fallback`
+  // as `accepted`, and escalation telemetry counts only `escalated`, so letting a direct lease
+  // re-verify would erase the escalation the routing evidence gate depends on.
+  const reverifiable = lease.status === 'started'
+    || (lease.status === 'verification_failed' && lease.execution_phase !== 'direct');
+  if (!reverifiable) {
+    throw new Error(`execution lease is not verifiable: ${lease.status}`);
+  }
+  // The declaration is fixed at start. Amending it on re-verification was tried twice and
+  // produced a passing receipt for a no-op run both times: an added path has no recorded
+  // baseline, so it compares as changed forever, and seeding that baseline from the stored
+  // blob diverges from the worktree bytes wherever a git checkout filter applies. Correcting
+  // an incomplete declaration therefore needs a new lease, not a mutable one.
+  if (Array.isArray(input.expected_files) && input.expected_files.length > 0) {
+    throw new Error('expected files are fixed at route start; abandon the lease and start again with the full declaration');
+  }
   const gates = [];
   for (const gate of lease.required_gates) {
     const command = lease.gate_commands[gate];
@@ -535,7 +553,10 @@ export function verifyAdaptiveRun(input) {
   }
   writeLocalJSON(leasePath(lease.decision_id), {
     ...lease, status: passed ? 'verified' : 'verification_failed',
-    gate_commands: !passed && lease.execution_phase === 'direct' ? lease.gate_commands : undefined,
+    // Retained on any failure, not just a direct one. Dropping them on a planned failure
+    // left the lease unrecoverable: fallback is direct-only and re-verification needs the
+    // commands to re-run the gates, so nothing could move the lease forward.
+    gate_commands: passed ? undefined : lease.gate_commands,
   });
   return receipt;
 }
@@ -578,7 +599,23 @@ export function adaptiveRunStatus(decisionId = null, nowMs = Date.now()) {
     const changed = existsSync(lease.cwd) ? gitStatus(lease.cwd) : null;
     let nextAction = 'none';
     if (lease.status === 'started') nextAction = changed?.length ? 'verify' : 'abandon_or_resume';
-    else if (lease.status === 'verification_failed') nextAction = changed?.length ? 'restore_clean_then_fallback' : 'start_fallback';
+    else if (lease.status === 'verification_failed') {
+      // Only a direct execution can restart as a planned fallback (startAdaptiveRun rejects
+      // --fallback for every other route). Recommending it for a planned run pointed the
+      // user at a command that refuses to run, after telling them to discard clean work.
+      if (lease.execution_phase === 'direct') {
+        nextAction = changed?.length ? 'restore_clean_then_fallback' : 'start_fallback';
+      } else {
+        const receipt = readLocalJSON(receiptPath(lease.decision_id));
+        // Every action named here has to be one the CLI accepts for this lease — recommending
+        // a command that refuses to run is the defect this branch was added to fix. The
+        // declaration is fixed at start, so an undeclared change is resolved by restoring it,
+        // not by amending the lease.
+        if (receipt?.head_changed) nextAction = 'restore_head_then_abandon';
+        else if (receipt?.unexpected_files?.length) nextAction = 'restore_undeclared_then_verify';
+        else nextAction = 'fix_then_verify';
+      }
+    }
     else if (lease.status === 'verified') nextAction = 'finish';
     return {
       decision_id: lease.decision_id, task_class: lease.task_class, selected_route: lease.selected_route,
@@ -687,7 +724,10 @@ export function cmdAdaptiveRoute(args) {
       return result;
     }
     if (verb === 'verify') {
-      const result = verifyAdaptiveRun({ decision_id: take(args, 'decision-id'), timeout_ms: take(args, 'timeout-ms') });
+      const result = verifyAdaptiveRun({
+        decision_id: take(args, 'decision-id'), timeout_ms: take(args, 'timeout-ms'),
+        expected_files: list(take(args, 'expected-files')),
+      });
       console.log(JSON.stringify(result, null, 2));
       if (!result.passed) process.exitCode = 2;
       return result;

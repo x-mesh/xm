@@ -947,3 +947,112 @@ describe('install-cli — Kiro hook schema validation (kiro-xm-compatibility)', 
     }
   });
 });
+
+// A partial install must never prune what it did not render: `--only xm` (no plugin is
+// named "xm") rendered nothing and deleted all 26 installed skills.
+describe('install-cli — partial (--only) install', () => {
+  const globalArgs = ['--target', 'codex', '--global', '--yes', '--skills-dir', SKILLS, '--lib-dir', LIB];
+
+  function fakeHomeTmp() {
+    const tmp = seedTmp();
+    const fakeHome = join(tmp, 'fakehome');
+    mkdirSync(fakeHome, { recursive: true });
+    return { tmp, env: { ...process.env, HOME: fakeHome }, fakeHome };
+  }
+
+  test('keeps files and manifest entries for plugins it did not render', () => {
+    const { tmp, env, fakeHome } = fakeHomeTmp();
+    const seeded = spawnSync('node', [CLI, ...globalArgs, '--only', 'agent,build'], { cwd: tmp, encoding: 'utf8', timeout: 60_000, env });
+    expect(seeded.status).toBe(0);
+    const manifestFile = join(fakeHome, '.codex', 'xm', 'manifest.json');
+    const before = JSON.parse(readFileSync(manifestFile, 'utf8'));
+    const unselected = join(fakeHome, '.agents', 'skills', 'xm-build', 'SKILL.md');
+    expect(existsSync(unselected)).toBe(true);
+
+    const narrowed = spawnSync('node', [CLI, ...globalArgs, '--only', 'agent'], { cwd: tmp, encoding: 'utf8', timeout: 60_000, env });
+    expect(narrowed.status).toBe(0);
+    expect(existsSync(unselected)).toBe(true);
+    const after = JSON.parse(readFileSync(manifestFile, 'utf8'));
+    expect(after.files.length).toBe(before.files.length);
+    expect(after.files.some((entry) => entry.relativePath.endsWith('xm-build/SKILL.md'))).toBe(true);
+  });
+
+  test('refuses --only for a target whose index lists the whole skill set', () => {
+    const { tmp, env, fakeHome } = fakeHomeTmp();
+    const agArgs = ['--target', 'antigravity', '--global', '--yes', '--skills-dir', SKILLS, '--lib-dir', LIB];
+
+    // Writing the index from a narrowed selection de-registered every unselected plugin, and
+    // skipping it either left the selected plugin unregistered or attested whatever bytes were
+    // on disk. A full install re-renders the block from source, so that stays the only route.
+    const refused = spawnSync('node', [CLI, ...agArgs, '--only', 'agent'], { cwd: tmp, encoding: 'utf8', timeout: 60_000, env });
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('--only is not supported for antigravity');
+    expect(refused.stderr).toContain('rendered from the full skill set');
+    expect(existsSync(join(fakeHome, '.gemini', 'AGENTS.md'))).toBe(false);
+
+    // The refusal happens before any target is written, so a multi-target selection leaves
+    // nothing half-applied — refusing inside the loop used to install codex first.
+    const multi = spawnSync('node', [CLI, '--target', 'codex,antigravity', '--global', '--yes', '--skills-dir', SKILLS, '--lib-dir', LIB, '--only', 'build'], { cwd: tmp, encoding: 'utf8', timeout: 60_000, env });
+    expect(multi.status).toBe(2);
+    expect(existsSync(join(fakeHome, '.codex', 'xm', 'manifest.json'))).toBe(false);
+    expect(existsSync(join(fakeHome, '.agents', 'skills'))).toBe(false);
+
+    // The full install is unaffected.
+    const full = spawnSync('node', [CLI, ...agArgs], { cwd: tmp, encoding: 'utf8', timeout: 60_000, env });
+    expect(full.status).toBe(0);
+    const rows = readFileSync(join(fakeHome, '.gemini', 'AGENTS.md'), 'utf8')
+      .split('\n').filter((line) => /^- `xm-/.test(line)).length;
+    expect(rows).toBeGreaterThan(2);
+  });
+
+  test('refuses a partial install when the existing manifest fails its selfChecksum', () => {
+    const { tmp, env, fakeHome } = fakeHomeTmp();
+    const codexArgs = ['--target', 'codex', '--global', '--yes', '--skills-dir', SKILLS, '--lib-dir', LIB];
+    expect(spawnSync('node', [CLI, ...codexArgs], { cwd: tmp, encoding: 'utf8', timeout: 60_000, env }).status).toBe(0);
+    const manifestFile = join(fakeHome, '.codex', 'xm', 'manifest.json');
+    const before = JSON.parse(readFileSync(manifestFile, 'utf8')).files.length;
+
+    // A partial install carries the rows it did not re-render from this manifest. With the
+    // manifest untrusted there is nothing to carry, and proceeding wrote a manifest describing
+    // only the narrowed subset while every unselected file stayed installed — after which
+    // --verify attested that narrowed surface as healthy.
+    const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
+    manifest.nonce = '0'.repeat(32);
+    writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+
+    const refused = spawnSync('node', [CLI, ...codexArgs, '--only', 'build'], { cwd: tmp, encoding: 'utf8', timeout: 60_000, env });
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('failed its selfChecksum');
+    expect(JSON.parse(readFileSync(manifestFile, 'utf8')).files.length).toBe(before);
+
+    // A full install is still the documented repair and restores a trusted manifest.
+    const repaired = spawnSync('node', [CLI, ...codexArgs], { cwd: tmp, encoding: 'utf8', timeout: 60_000, env });
+    expect(repaired.status).toBe(0);
+    const verified = spawnSync('node', [CLI, '--verify', '--global', '--target', 'codex'], { cwd: tmp, encoding: 'utf8', timeout: 60_000, env });
+    expect(verified.status).toBe(0);
+    expect(verified.stdout).toContain('selfChecksum: ok');
+  });
+
+  test('rejects an unknown --only plugin instead of rendering an empty selection', () => {
+    const { tmp, env, fakeHome } = fakeHomeTmp();
+    const seeded = spawnSync('node', [CLI, ...globalArgs, '--only', 'build'], { cwd: tmp, encoding: 'utf8', timeout: 60_000, env });
+    expect(seeded.status).toBe(0);
+    const skill = join(fakeHome, '.agents', 'skills', 'xm-build', 'SKILL.md');
+    expect(existsSync(skill)).toBe(true);
+
+    const typo = spawnSync('node', [CLI, ...globalArgs, '--only', 'xm'], { cwd: tmp, encoding: 'utf8', timeout: 60_000, env });
+    expect(typo.status).toBe(2);
+    expect(typo.stderr).toContain('unknown plugin(s): xm');
+    expect(existsSync(skill)).toBe(true);
+  });
+
+  test('--verify without a scope flag finds a global manifest from any cwd', () => {
+    const { tmp, env } = fakeHomeTmp();
+    const installed = spawnSync('node', [CLI, ...globalArgs, '--only', 'build'], { cwd: tmp, encoding: 'utf8', timeout: 60_000, env });
+    expect(installed.status).toBe(0);
+    const elsewhere = makeTmp('xm-verify-cwd-');
+    const verified = spawnSync('node', [CLI, '--verify', '--target', 'codex'], { cwd: elsewhere, encoding: 'utf8', timeout: 60_000, env });
+    expect(verified.status).toBe(0);
+    expect(verified.stdout).toMatch(/# codex \(global/);
+  });
+});

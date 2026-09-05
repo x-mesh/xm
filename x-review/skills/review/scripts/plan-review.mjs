@@ -8,7 +8,10 @@ import { pathToFileURL } from 'node:url';
 
 const PROFILE_ORDER = ['correctness', 'risk', 'migrations', 'type-design', 'docs'];
 const DEFAULT_CHUNK_TOKEN_BUDGET = 24_000;
-const DEFAULT_CHUNK_FILE_BUDGET = 100;
+// Must match DEFAULT_FILE_BUDGET in review-lifecycle.mjs. When these drifted (100 here, 3
+// there) the same target split differently depending on whether it arrived through the CLI
+// or through this script, so two runs of one diff were not comparable.
+const DEFAULT_CHUNK_FILE_BUDGET = 8;
 const TOKEN_ESTIMATE_BYTES_PER_TOKEN = 3;
 
 function unique(values) {
@@ -486,12 +489,13 @@ export function planReview(patch, options = {}) {
 }
 
 function usage() {
-  return 'Usage: node plan-review.mjs --target <content-file> [--target-file <path> ...] [--max-profiles <2-5>] [--chunk-token-budget <tokens>] [--chunk-file-budget <files>] [--config <path>] [--filtered-target <path>] [--chunks-dir <dir>]';
+  return 'Usage: node plan-review.mjs --target <content-file> [--target-file <path> ...] [--max-profiles <2-5>] [--chunk-token-budget <tokens>] [--chunk-file-budget <files>] [--max-concurrent-reports <n>] [--config <path>] [--filtered-target <path>] [--chunks-dir <dir>]';
 }
 
 const CLI_OPTIONS = new Set([
   '--target', '--target-file', '--max-profiles', '--chunk-token-budget',
   '--chunk-file-budget', '--config', '--filtered-target', '--chunks-dir',
+  '--max-concurrent-reports',
 ]);
 
 function cliError(message) {
@@ -538,6 +542,12 @@ export function main(argv = process.argv.slice(2)) {
   if (!Number.isInteger(chunkFileBudget) || chunkFileBudget < 1) {
     return cliError('--chunk-file-budget must be a positive integer');
   }
+  const maxConcurrentReports = args['max-concurrent-reports'] === undefined
+    ? maxProfiles
+    : Number(args['max-concurrent-reports']);
+  if (!Number.isInteger(maxConcurrentReports) || maxConcurrentReports < 1) {
+    return cliError('--max-concurrent-reports must be a positive integer');
+  }
   try {
     const patch = readFileSync(resolve(args.target), 'utf8');
     const configPath = resolve(args.config || '.xm-review.json');
@@ -550,7 +560,7 @@ export function main(argv = process.argv.slice(2)) {
     const filtered = filterGeneratedCopies(patch, generatedCopyRoots);
     const plan = planReview(patch, {
       maxProfiles, targetFiles: args.targetFiles, chunkTokenBudget, chunkFileBudget,
-      maxConcurrentReports: maxProfiles, generatedCopyRoots,
+      maxConcurrentReports, generatedCopyRoots,
     });
     if (args['filtered-target']) writeFileSync(resolve(args['filtered-target']), filtered.body);
     if (args['chunks-dir'] && plan.reviewable) {

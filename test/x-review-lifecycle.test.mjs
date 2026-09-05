@@ -109,6 +109,36 @@ describe('xm review executable lifecycle', () => {
     expect(repaired.invalid_codes).toBeUndefined();
   });
 
+  test('salvages validated reports when one child fails report-scoped validation', () => {
+    const dir = workspace();
+    const log = join(dir, 'panel.jsonl');
+    const first = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'correctness,risk', '--run-id', 'partial-salvage', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_LOG: log, XM_FAKE_PANEL_MODE: 'foreign-target' }), encoding: 'utf8' });
+    expect(first.status).toBe(1);
+    const runDir = join(dir, '.xm', 'review', 'runs', 'partial-salvage');
+    const status = JSON.parse(readFileSync(join(runDir, 'status.json'), 'utf8'));
+    expect(status.state).toBe('partial');
+    expect(status.invalid).toEqual(['risk-chunk-001']);
+    expect(status.valid_reports).toEqual(['correctness-chunk-001']);
+    expect(readFileSync(join(runDir, 'events.jsonl'), 'utf8')).toContain('run_partial');
+    // The salvage stays inside the run: an incomplete review must not become the project's
+    // last result, which is what the review-fix gate reads as truth.
+    expect(existsSync(join(runDir, 'partial-result.json'))).toBe(true);
+    expect(existsSync(join(dir, '.xm', 'review', 'last-result.json'))).toBe(false);
+    expect(existsSync(join(runDir, 'result.json'))).toBe(false);
+    // The salvage carries the reports that validated, never the rejected one. risk-chunk-001
+    // was refused for finding_outside_target; its src/foreign.js finding must not survive.
+    const salvaged = JSON.parse(readFileSync(join(runDir, 'partial-result.json'), 'utf8'));
+    expect(salvaged.findings.map((finding) => finding.file)).not.toContain('src/foreign.js');
+    expect(salvaged.findings).toEqual([]);
+
+    const resumed = spawnSync('node', [CLI, 'resume', 'partial-salvage', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_LOG: log }), encoding: 'utf8' });
+    expect(resumed.status).toBe(0);
+    // Only the invalid child was re-dispatched: 2 initial + 1 repair.
+    expect(readFileSync(log, 'utf8').trim().split('\n')).toHaveLength(3);
+    expect(JSON.parse(readFileSync(join(runDir, 'status.json'), 'utf8')).state).toBe('completed');
+    expect(existsSync(join(dir, '.xm', 'review', 'last-result.json'))).toBe(true);
+  });
+
   test('drops an ungrounded finding from synthesis instead of failing the run', () => {
     const dir = workspace();
     const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'risk', '--run-id', 'ungrounded', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'ungrounded-finding' }), encoding: 'utf8' });
@@ -230,13 +260,82 @@ describe('xm review executable lifecycle', () => {
       `diff --git a/src/${name}.js b/src/${name}.js`, `--- a/src/${name}.js`, `+++ b/src/${name}.js`, '@@ -1 +1 @@', `-export const ${name} = 0;`, `+export const ${name} = 1;`,
     ]).join('\n'));
     const started = Date.now();
-    const result = spawnSync('node', [CLI, 'run', 'multi.patch', '--lenses', 'correctness,risk', '--chunk-file-budget', '1', '--run-id', 'two-waves', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_DELAY_MS: '150', XM_FAKE_PANEL_MODE: 'clean' }), encoding: 'utf8' });
+    const result = spawnSync('node', [CLI, 'run', 'multi.patch', '--lenses', 'correctness,risk', '--chunk-file-budget', '1', '--max-concurrent-reports', '4', '--run-id', 'two-waves', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_DELAY_MS: '150', XM_FAKE_PANEL_MODE: 'clean' }), encoding: 'utf8' });
     expect(result.status).toBe(0);
     expect(Date.now() - started).toBeLessThan(850);
     const output = JSON.parse(result.stdout);
     expect(output.execution.waves).toBe(2);
     const manifest = JSON.parse(readFileSync(join(dir, '.xm', 'review', 'runs', 'two-waves', 'run.json'), 'utf8'));
     expect(manifest.expected_reports.map((report) => report.wave).sort()).toEqual([1, 1, 1, 1, 2, 2]);
+  });
+
+  test('default concurrency is independent of lens count and collapses the same target into one wave', () => {
+    const dir = workspace();
+    for (const name of ['b', 'c']) writeFileSync(join(dir, 'src', `${name}.js`), `export const ${name} = 1;\n`);
+    writeFileSync(join(dir, 'multi.patch'), ['a', 'b', 'c'].flatMap((name) => [
+      `diff --git a/src/${name}.js b/src/${name}.js`, `--- a/src/${name}.js`, `+++ b/src/${name}.js`, '@@ -1 +1 @@', `-export const ${name} = 0;`, `+export const ${name} = 1;`,
+    ]).join('\n'));
+    const result = spawnSync('node', [CLI, 'run', 'multi.patch', '--lenses', 'correctness,risk', '--chunk-file-budget', '1', '--run-id', 'default-wave', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_DELAY_MS: '150', XM_FAKE_PANEL_MODE: 'clean' }), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.execution.waves).toBe(1);
+    const manifest = JSON.parse(readFileSync(join(dir, '.xm', 'review', 'runs', 'default-wave', 'run.json'), 'utf8'));
+    expect(manifest.expected_reports.every((report) => report.wave === 1)).toBe(true);
+    expect(manifest.options.max_concurrent_reports).toBe(8);
+  });
+
+  test('a partly failed wave still dispatches the waves behind it', () => {
+    const dir = workspace();
+    for (const name of ['b', 'c']) writeFileSync(join(dir, 'src', `${name}.js`), `export const ${name} = 1;\n`);
+    writeFileSync(join(dir, 'multi.patch'), ['a', 'b', 'c'].flatMap((name) => [
+      `diff --git a/src/${name}.js b/src/${name}.js`, `--- a/src/${name}.js`, `+++ b/src/${name}.js`, '@@ -1 +1 @@', `-export const ${name} = 0;`, `+export const ${name} = 1;`,
+    ]).join('\n'));
+    const result = spawnSync('node', [CLI, 'run', 'multi.patch', '--lenses', 'correctness,risk', '--chunk-file-budget', '1', '--max-concurrent-reports', '4', '--run-id', 'partial-wave', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_FAIL_LENS: 'correctness', XM_FAKE_PANEL_MODE: 'clean' }), encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    const children = join(dir, '.xm', 'review', 'runs', 'partial-wave', 'children');
+    // chunk-003 sits in wave 2, behind the wave that failed; it used to never be dispatched.
+    const wave2 = JSON.parse(readFileSync(join(children, 'risk-chunk-003.json'), 'utf8'));
+    expect(wave2.status).toBe('completed');
+    const risks = ['risk-chunk-001', 'risk-chunk-002', 'risk-chunk-003']
+      .map((id) => JSON.parse(readFileSync(join(children, `${id}.json`), 'utf8')).status);
+    expect(risks).toEqual(['completed', 'completed', 'completed']);
+  });
+
+  test('stops when a whole wave fails instead of burning the remaining waves', () => {
+    const dir = workspace();
+    for (const name of ['b', 'c']) writeFileSync(join(dir, 'src', `${name}.js`), `export const ${name} = 1;\n`);
+    writeFileSync(join(dir, 'multi.patch'), ['a', 'b', 'c'].flatMap((name) => [
+      `diff --git a/src/${name}.js b/src/${name}.js`, `--- a/src/${name}.js`, `+++ b/src/${name}.js`, '@@ -1 +1 @@', `-export const ${name} = 0;`, `+export const ${name} = 1;`,
+    ]).join('\n'));
+    const result = spawnSync('node', [CLI, 'run', 'multi.patch', '--lenses', 'correctness', '--chunk-file-budget', '1', '--max-concurrent-reports', '2', '--run-id', 'dead-wave', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_FAIL_LENS: 'correctness' }), encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    const children = join(dir, '.xm', 'review', 'runs', 'dead-wave', 'children');
+    expect(existsSync(join(children, 'correctness-chunk-001.json'))).toBe(true);
+    expect(existsSync(join(children, 'correctness-chunk-002.json'))).toBe(true);
+    // wave 2 is never reached once wave 1 loses every child.
+    expect(existsSync(join(children, 'correctness-chunk-003.json'))).toBe(false);
+  });
+
+  test('keeps a target inside the token budget in one chunk up to the default file budget', () => {
+    const dir = workspace();
+    const names = ['b', 'c', 'd', 'e', 'f', 'g'];
+    for (const name of names) writeFileSync(join(dir, 'src', `${name}.js`), `export const ${name} = 1;\n`);
+    writeFileSync(join(dir, 'wide.patch'), ['a', ...names].flatMap((name) => [
+      `diff --git a/src/${name}.js b/src/${name}.js`, `--- a/src/${name}.js`, `+++ b/src/${name}.js`, '@@ -1 +1 @@', `-export const ${name} = 0;`, `+export const ${name} = 1;`,
+    ]).join('\n'));
+    const result = spawnSync('node', [CLI, 'run', 'wide.patch', '--lenses', 'correctness', '--run-id', 'one-chunk', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'clean' }), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const manifest = JSON.parse(readFileSync(join(dir, '.xm', 'review', 'runs', 'one-chunk', 'run.json'), 'utf8'));
+    // 7 files, far inside the 24k token budget: the file budget must not force a split.
+    expect(manifest.chunks.length).toBe(1);
+    expect(manifest.expected_reports.length).toBe(1);
+  });
+
+  test('rejects a non-positive --max-concurrent-reports', () => {
+    const dir = workspace();
+    const result = spawnSync('node', [CLI, 'run', 'target.patch', '--max-concurrent-reports', '0', '--json'], { cwd: dir, env: env(dir), encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain('--max-concurrent-reports');
   });
 
   test('persists compatible result metadata from Phase 1 snapshots', () => {
@@ -296,6 +395,9 @@ describe('xm review executable lifecycle', () => {
       expect(resumed.status).toBe(1);
       expect(resumed.stderr).toContain(message);
       expect(readFileSync(log, 'utf8').trim().split('\n')).toHaveLength(before);
+      // Tampering is run-scoped: no salvaged synthesis, and no last result either.
+      expect(existsSync(join(runDir, 'partial-result.json'))).toBe(false);
+      expect(existsSync(join(dir, '.xm', 'review', 'last-result.json'))).toBe(false);
     }
   });
 });

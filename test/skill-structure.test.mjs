@@ -41,8 +41,8 @@ describe('x-review bounded panel execution', () => {
   const skill = readSkill('x-review');
 
   test('chunks frozen panel targets to at most three files', () => {
-    expect(skill).toContain('--chunk-file-budget 3');
-    expect(skill).toContain('at most 3 frozen diff files');
+    expect(skill).toContain('--chunk-file-budget 8');
+    expect(skill).toContain('at most 8 frozen diff files');
     expect(skill).toContain('forbid repository search or opening files');
   });
 });

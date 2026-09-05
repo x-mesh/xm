@@ -75,7 +75,7 @@ node "$REVIEW_SKILL_DIR/scripts/plan-review.mjs" \
   <repeat `--target-file <path>` for file/full targets> \
   --max-profiles "$ADAPTIVE_MAX_PROFILES" \
   --chunk-token-budget "${X_REVIEW_CHUNK_TOKENS:-24000}" \
-  --chunk-file-budget "${X_REVIEW_CHUNK_FILES:-100}" \
+  --chunk-file-budget "${X_REVIEW_CHUNK_FILES:-8}" \
   --config "${X_REVIEW_CONFIG:-.xm-review.json}" \
   --filtered-target "$RUN_DIR/target.filtered" \
   --chunks-dir "$RUN_DIR/chunks" > "$RUN_DIR/plan.json"

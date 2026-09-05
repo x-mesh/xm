@@ -538,6 +538,258 @@ describe('x-review lens report coverage contract', () => {
     expect(result.finding_grounding).toMatchObject({ findings: 2, grounded: 2, ungrounded: 0 });
   });
 
+  test('grounds a faithful citation whose lines are quoted out of target order', () => {
+    const targetBody = [
+      'diff --git a/src/restart.ts b/src/restart.ts',
+      '+++ b/src/restart.ts',
+      '+rebuildSucceeded = failures.isEmpty;',
+      '+if (rebuildSucceeded) {',
+      '+  reattachReservedAnchors(reserved);',
+      '+} else {',
+      '+  restoreAnchorsAfterFailedRestart(reserved);',
+      '+}',
+    ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/restart.ts'],
+    };
+    const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/restart.ts'],
+      findings: [{
+        severity: 'High',
+        file: 'src/restart.ts',
+        line: 1,
+        description: 'Failure branch quoted before the flag it depends on',
+        code: '} else {\n  restoreAnchorsAfterFailedRestart(reserved);\n}\nrebuildSucceeded = failures.isEmpty;',
+        why: 'The failure path runs with anchors already reattached.',
+        fix: 'Set the flag before branching.',
+      }],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/restart.ts'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+    expect(result.ok).toBe(true);
+    expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 1, ungrounded: 0 });
+  });
+
+  test('grounds a quoted line that elides its own middle with an inline ellipsis', () => {
+    const targetBody = [
+      'diff --git a/src/host.ts b/src/host.ts',
+      '+++ b/src/host.ts',
+      '+const output = await PeerHostReadinessChecker.runScript(scriptPath, host, 30);',
+      '+rpcPrint(&sock, "peer.takeover", json!({ "project_id": projectId, "revision": revision }));',
+    ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/host.ts'],
+    };
+    const base = { severity: 'Medium', file: 'src/host.ts', line: 1, why: 'The readiness result is trusted unchecked.', fix: 'Check the exit status.' };
+    const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/host.ts'],
+      findings: [
+        { ...base, description: 'Call arguments elided', code: 'const output = await PeerHostReadinessChecker.runScript(...);' },
+        { ...base, line: 2, description: 'Payload elided', code: 'rpcPrint(&sock, "peer.takeover", json!({ ... }));' },
+      ],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/host.ts'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+    expect(result.ok).toBe(true);
+    expect(result.finding_grounding).toMatchObject({ findings: 2, grounded: 2, ungrounded: 0 });
+  });
+
+  // An abbreviation whose elided middle spanned line breaks deliberately does NOT ground. The
+  // fallback that allowed it scanned the joined section, which degenerated into substring
+  // matching and let fabricated citations through, so the trade was made the other way: a
+  // dropped finding costs less than a fabricated one reaching the review-fix gate.
+  test('does not ground an abbreviation whose elided middle crossed line breaks', () => {
+    const targetBody = [
+      'diff --git a/src/host.ts b/src/host.ts',
+      '+++ b/src/host.ts',
+      '+const output = await PeerHostReadinessChecker.runScript(',
+      '+  scriptPath,',
+      '+  host,',
+      '+  30,',
+      '+);',
+    ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/host.ts'],
+    };
+    const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/host.ts'],
+      findings: [{ severity: 'Medium', file: 'src/host.ts', line: 1, description: 'Readiness result trusted unchecked', code: 'const output = await PeerHostReadinessChecker.runScript(...);', why: 'Impact', fix: 'Check the exit status' }],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/host.ts'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+    expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 0, ungrounded: 1 });
+    // Quoting the call across its real lines still grounds, so the citation is not unquotable.
+    const faithful = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/host.ts'],
+      findings: [{ severity: 'Medium', file: 'src/host.ts', line: 1, description: 'Readiness result trusted unchecked', code: 'const output = await PeerHostReadinessChecker.runScript(\n  scriptPath,\n  host,\n  30,\n);', why: 'Impact', fix: 'Check the exit status' }],
+      no_findings_reason: undefined,
+    });
+    expect(validateReviewReports(manifest, raws(faithful, logic), { targetBody }).finding_grounding)
+      .toMatchObject({ findings: 1, grounded: 1, ungrounded: 0 });
+  });
+
+  test('grounds a cited block whose closing token falls outside every hunk', () => {
+    const targetBody = [
+      'diff --git a/scripts/run.sh b/scripts/run.sh',
+      '+++ b/scripts/run.sh',
+      '@@ -10,3 +10,4 @@',
+      '+for f in $list; do',
+      '+  check "$f"',
+      '+  echo ok',
+      // The loop's `done` is below this boundary and belongs to no hunk in the frozen target.
+      '@@ -205,6 +265,7 @@',
+      '+unrelated_tail',
+    ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['scripts/run.sh'],
+    };
+    const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['scripts/run.sh'],
+      findings: [{ severity: 'Medium', file: 'scripts/run.sh', line: 10, description: 'Unquoted expansion in the loop', code: 'for f in $list; do\n  check "$f"\n  echo ok\ndone', why: 'Impact', fix: 'Quote the expansion' }],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['scripts/run.sh'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+    expect(result.ok).toBe(true);
+    expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 1, ungrounded: 0 });
+  });
+
+  test('an elision must sit in the middle of a real line, not open at both ends', () => {
+    const targetBody = [
+      'diff --git a/src/host.ts b/src/host.ts',
+      '+++ b/src/host.ts',
+      '+const output = await PeerHostReadinessChecker.runScript(scriptPath, host, 30);',
+      '+rpcPrint(&sock, "peer.takeover", json!({ "project_id": projectId, "revision": revision }));',
+    ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/host.ts'],
+    };
+    const base = { severity: 'High', file: 'src/host.ts', line: 1, why: 'Impact', fix: 'Change it' };
+    const check = (code, expected) => {
+      const security = zeroReport('security-1', 'security', {
+        target_hash: manifest.target_hash,
+        checked_files: ['src/host.ts'],
+        findings: [{ ...base, description: 'cited', code }],
+        no_findings_reason: undefined,
+      });
+      const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/host.ts'] });
+      const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+      expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: expected, ungrounded: 1 - expected });
+    };
+
+    // Both ends open degenerates to substring matching: an invented statement borrows a real
+    // identifier, and stitching two separate statements passes for one.
+    check('... projectId ...', 0);
+    check('const output = await ... "revision": revision }));', 0);
+    check('const output = await ... json!({ "project_id": projectId ...', 0);
+    // An elided middle inside one real line still grounds, at either edge.
+    check('const output = await PeerHostReadinessChecker.runScript(...);', 1);
+    check('rpcPrint(&sock, "peer.takeover", json!({ ... }));', 1);
+  });
+
+  test('rejects a citation that identifies nothing, and a real closing token cannot rescue it', () => {
+    const targetBody = [
+      'diff --git a/scripts/run.sh b/scripts/run.sh',
+      '+++ b/scripts/run.sh',
+      '@@ -10,3 +10,4 @@',
+      '+for f in $list; do',
+      '+  check "$f"',
+      '+  echo ok',
+    ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['scripts/run.sh'],
+    };
+    const base = { severity: 'High', file: 'scripts/run.sh', line: 10, why: 'Impact', fix: 'Remove it' };
+    for (const [description, code] of [
+      ['punctuation only', '...;'],
+      ['punctuation across lines', '(...)...;'],
+      ['closing token alone', 'done'],
+      ['fabricated body with a real closing token', 'rm -rf /\ndone'],
+    ]) {
+      const security = zeroReport('security-1', 'security', {
+        target_hash: manifest.target_hash,
+        checked_files: ['scripts/run.sh'],
+        findings: [{ ...base, description, code }],
+        no_findings_reason: undefined,
+      });
+      const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['scripts/run.sh'] });
+      const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+      expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 0, ungrounded: 1 });
+      expect(result.issues).toContainEqual(expect.objectContaining({ code: 'finding_code_mismatch', finding_index: 0 }));
+    }
+  });
+
+  test('an inline ellipsis does not let a fabricated call ground against a real line', () => {
+    const targetBody = 'diff --git a/src/host.ts b/src/host.ts\n+++ b/src/host.ts\n+const output = await PeerHostReadinessChecker.runScript(scriptPath, host, 30);';
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/host.ts'],
+    };
+    const security = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/host.ts'],
+      findings: [{ severity: 'High', file: 'src/host.ts', line: 1, description: 'Invented sink behind an ellipsis', code: 'const output = await execSync(...);', why: 'Impact', fix: 'Remove it' }],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/host.ts'] });
+    const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+    expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 0, ungrounded: 1 });
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'finding_code_mismatch', finding_index: 0 }));
+  });
+
+  test('classifies a report-scoped defect as non-blocking and target tampering as blocking', () => {
+    const targetBody = 'diff --git a/src/auth.ts b/src/auth.ts\n+++ b/src/auth.ts\n+const tenant = req.params.id;';
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/auth.ts'],
+    };
+    const offTarget = zeroReport('security-1', 'security', {
+      target_hash: manifest.target_hash,
+      checked_files: ['src/auth.ts'],
+      findings: [{ severity: 'High', file: 'src/elsewhere.ts', line: 1, description: 'Outside the frozen target', code: 'const tenant = req.params.id;', why: 'Impact', fix: 'Bind the tenant' }],
+      no_findings_reason: undefined,
+    });
+    const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/auth.ts'] });
+
+    const reportScoped = validateReviewReports(manifest, raws(offTarget, logic), { targetBody });
+    expect(reportScoped.ok).toBe(false);
+    expect(reportScoped.issues.map((entry) => entry.code)).toContain('finding_outside_target');
+    expect(reportScoped.valid_reports).toEqual(['logic-1']);
+    expect(reportScoped.run_blocking).toEqual([]);
+
+    const tampered = validateReviewReports(manifest, raws(offTarget, logic), { targetBody: `${targetBody}\n+tampered` });
+    expect(tampered.run_blocking).toContain('frozen_target_hash_mismatch');
+  });
+
+  test('treats an unlisted validation code as run-scoped so new checks fail closed', () => {
+    const result = validateReviewReports({ schema_version: 1 }, []);
+    expect(result.ok).toBe(false);
+    expect(result.run_blocking.length).toBeGreaterThan(0);
+    expect(result.run_blocking).toContain('manifest_reports');
+  });
+
   test('does not let an elision marker ground a snippet whose code lines are invented', () => {
     const targetBody = 'diff --git a/src/auth.ts b/src/auth.ts\n+++ b/src/auth.ts\n+const tenant = req.params.id;';
     const manifest = {
@@ -670,12 +922,16 @@ describe('x-review lens report coverage contract', () => {
     const target = Array.from({ length: 101 }, (_, index) => [
       `diff --git a/src/${index}.js b/src/${index}.js`, `+++ b/src/${index}.js`, '+export default true;',
     ].join('\n')).join('\n');
-    const plan = planReview(target);
+    // Pin the budget: the assertion is about dispersion-driven chunking, not the default.
+    const plan = planReview(target, { chunkFileBudget: 100 });
     expect(plan.files).toHaveLength(101);
     expect(plan.requires_chunking).toBe(true);
     expect(plan.reviewable).toBe(true);
     expect(plan.chunks.map((chunk) => chunk.files.length)).toEqual([100, 1]);
     expect(plan.expected_reports).toHaveLength(plan.profiles.length * 2);
+    const withDefaults = planReview(target);
+    expect(withDefaults.reviewable).toBe(true);
+    expect(withDefaults.chunks.every((chunk) => chunk.files.length <= withDefaults.chunk_file_budget)).toBe(true);
   });
 
   test('honors a three-file budget for bounded panel dispatch', () => {
@@ -1124,5 +1380,16 @@ describe('x-review lens report coverage contract', () => {
       code: 'lens_mismatch',
       report_id: 'security-1',
     }));
+  });
+
+  test('the planner and the lifecycle agree on the default file budget', () => {
+    const planner = readFileSync(join(ROOT, 'x-review', 'skills', 'review', 'scripts', 'plan-review.mjs'), 'utf8');
+    const lifecycle = readFileSync(join(ROOT, 'x-review', 'lib', 'review-lifecycle.mjs'), 'utf8');
+    const plannerBudget = planner.match(/const DEFAULT_CHUNK_FILE_BUDGET = (\d+);/)?.[1];
+    const lifecycleBudget = lifecycle.match(/const DEFAULT_FILE_BUDGET = (\d+);/)?.[1];
+    expect(plannerBudget).toBeDefined();
+    expect(lifecycleBudget).toBeDefined();
+    // A drift here silently splits one target two different ways depending on the entry point.
+    expect(plannerBudget).toBe(lifecycleBudget);
   });
 });

@@ -15,6 +15,24 @@ const TARGET_HASH_RE = /^sha256:[0-9a-f]{64}$/;
 const GROUNDING_CODES = new Set(['finding_code_mismatch', 'finding_code_wrong_file']);
 const ELISION_RE = /^(?:\/\/|#|--|\/\*|\*)?\s*(?:\.\.\.|\u2026|\u22ef)\s*(?:\*\/)?$/;
 const COMMENT_ONLY_RE = /^(?:\/\/|\/\*|\*|#|--|<!--)/;
+const INLINE_ELISION_RE = /\.\.\.|\u2026|\u22ef/;
+// A cited block can end exactly at a hunk boundary, so its closing token belongs to no hunk in
+// the frozen target and the whole faithful citation is rejected. A line that is only a block
+// terminator carries no identifying content — like a blank, comment-only or elision line — so
+// excusing it cannot let fabricated code pass: every other quoted line must still be real.
+const CLOSING_ONLY_RE = /^(?:[)\]}>,;]+|done|fi|esac|end|endif|endwhile|endfor)$/i;
+// A report-scoped defect invalidates one dispatched report and nothing else, so a run
+// carrying only these can keep the reports that did validate and let resume repair that
+// one child. Anything absent from this set — frozen-target or chunk tampering, manifest
+// defects, staleness, whole-run coverage — stays run-scoped and keeps failing closed, so
+// a future code added elsewhere is treated as blocking by default.
+const REPORT_SCOPED_CODES = new Set([
+  'malformed_report', 'report_schema', 'report_invalid', 'report_failed', 'report_incomplete',
+  'empty_report', 'lens_mismatch', 'duplicate_report', 'missing_report', 'findings_invalid',
+  'finding_invalid', 'finding_field', 'finding_line', 'finding_severity', 'finding_outside_target',
+  'checked_missing', 'checked_files_missing', 'checked_file_outside_target',
+  'zero_findings_unsubstantiated', 'report_target_coverage_incomplete',
+]);
 
 function issue(code, message, lens = null, file = null, reportId = null) {
   return {
@@ -90,25 +108,63 @@ function normalizeSnippet(value, stripDiffPrefix = false) {
 }
 
 function substantiveLines(snippet) {
-  return snippet.split('\n').filter((line) => !ELISION_RE.test(line) && !COMMENT_ONLY_RE.test(line));
+  return snippet.split('\n').filter((line) => !ELISION_RE.test(line)
+    && !COMMENT_ONLY_RE.test(line) && !CLOSING_ONLY_RE.test(line));
+}
+
+// A quoted line may elide its own middle (`runScript(...)`), so match the surviving
+// fragments in order within one target line rather than demanding equality.
+function lineOccurs(haystackLines, line) {
+  if (haystackLines.includes(line)) return true;
+  if (!INLINE_ELISION_RE.test(line)) return false;
+  const trimmed = line.trim();
+  const openStart = /^(?:\.\.\.|\u2026|\u22ef)/.test(trimmed);
+  const openEnd = /(?:\.\.\.|\u2026|\u22ef)$/.test(trimmed);
+  // A quoted line stands for one whole target line, so an elision belongs in its middle. With
+  // both ends open the fragments only have to appear somewhere inside some target line, which is
+  // bare substring matching: `... projectId ...` grounded against any line mentioning projectId,
+  // letting an invented statement borrow a real identifier.
+  if (openStart && openEnd) return false;
+  const fragments = trimmed.split(/(?:\.\.\.|\u2026|\u22ef)+/).map((part) => part.trim()).filter(Boolean);
+  if (fragments.length === 0) return false;
+  // At least one surviving fragment has to name something; punctuation alone (`...;`) matches
+  // almost any target.
+  if (!fragments.some((fragment) => /[A-Za-z_$][A-Za-z0-9_$]{2,}/.test(fragment))) return false;
+  const occursInOrder = (candidate) => {
+    // The un-elided end must sit at the candidate's own edge, so the citation covers a real line
+    // rather than a fragment lifted out of its middle.
+    if (!openStart && !candidate.startsWith(fragments[0])) return false;
+    if (!openEnd && !candidate.endsWith(fragments[fragments.length - 1])) return false;
+    let at = 0;
+    for (const fragment of fragments) {
+      const found = candidate.indexOf(fragment, at);
+      if (found === -1) return false;
+      at = found + fragment.length;
+    }
+    return true;
+  };
+  // The fragment walk stays inside one target line on purpose. Scanning the joined section
+  // instead let a fabricated citation ground: the fragments only had to appear in order
+  // somewhere in the whole file, so an invented call name plus a real identifier assembled a
+  // claim about code that does not exist (`logger.debug(...apiKey...)`). A bounded window does
+  // not separate those either, because the stitched lines sit within a line or two of each
+  // other. An abbreviation whose elided middle spanned line breaks therefore does not ground —
+  // a dropped finding is a far smaller cost than a fabricated one reaching the review-fix gate.
+  return haystackLines.some(occursInOrder);
 }
 
 // Deliberately looser than an exact substring: a faithful citation may be re-wrapped,
-// re-indented, or elided with `...`. Contiguity is dropped, but every substantive quoted
-// line must still occur in the frozen target, so fabricated code cannot pass.
+// re-indented, reordered, or elided with `...`. Contiguity and order are both dropped —
+// a reviewer routinely quotes the lines that carry the defect out of file order — but
+// every substantive quoted line must still occur in the frozen target, so fabricated
+// code cannot pass.
 function grounds(haystack, snippet) {
   if (!haystack || !snippet) return false;
   const haystackLines = haystack.split('\n');
   if (haystackLines.join(' ').includes(snippet.split('\n').join(' '))) return true;
   const lines = substantiveLines(snippet);
   if (lines.length === 0) return false;
-  let cursor = 0;
-  for (const line of lines) {
-    const at = haystackLines.indexOf(line, cursor);
-    if (at === -1) return false;
-    cursor = at + 1;
-  }
-  return true;
+  return lines.every((line) => lineOccurs(haystackLines, line));
 }
 
 function groundFinding(targetSections, snippets, ownFile) {
@@ -399,7 +455,7 @@ function validateReport(report, manifest, file, targetSections = null, diffTarge
 export function validateReviewReports(manifest, rawReports, options = {}) {
   const manifestIssues = validateManifest(manifest);
   if (manifestIssues.length > 0) {
-    return { schema_version: 1, ok: false, coverage: { expected: 0, valid: 0 }, valid_reports: [], missing_reports: [], issues: manifestIssues };
+    return { schema_version: 1, ok: false, run_blocking: [...new Set(manifestIssues.map((entry) => entry.code))], coverage: { expected: 0, valid: 0 }, valid_reports: [], missing_reports: [], issues: manifestIssues };
   }
 
   const expected = manifest.expected_reports;
@@ -521,6 +577,9 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
 
   // Grounding issues are reported, not blocking: they are resolved by dropping the finding.
   const ok = issues.every((entry) => GROUNDING_CODES.has(entry.code)) && validReports.length === expected.length;
+  const runBlocking = [...new Set(issues
+    .filter((entry) => !GROUNDING_CODES.has(entry.code) && !REPORT_SCOPED_CODES.has(entry.code))
+    .map((entry) => entry.code))];
   return {
     schema_version: 1,
     task_id: manifest.task_id,
@@ -528,6 +587,7 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
     context_status: manifest.context_status ?? 'absent',
     ...((manifest.context_status ?? 'absent') === 'bound' ? { context_hash: manifest.context_hash } : {}),
     ok,
+    run_blocking: runBlocking,
     coverage: { expected: expected.length, valid: validReports.length },
     ...(targetCoverage ? { target_coverage: targetCoverage } : {}),
     finding_grounding: findingGrounding,

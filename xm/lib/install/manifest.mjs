@@ -100,6 +100,7 @@ export function buildManifest({
   bundleChecksums,
   hookOwnership,
   unverified = false,
+  carryFiles = [],
   now = Date.now(),
 }) {
   const files = entries.map((e) => {
@@ -118,6 +119,18 @@ export function buildManifest({
     if (e.pluginName) entry.pluginName = e.pluginName;
     return entry;
   });
+  // Entries a partial (--only) install did not re-render. Their bytes are already installed
+  // and hashed, so they are carried over verbatim rather than recomputed from content.
+  // A carried row is dropped when the same path was re-rendered, so a partial install never
+  // records both the fresh bytes and a stale row for one file.
+  const carried = [];
+  const seen = new Set(files.map((entry) => entry.relativePath));
+  for (const entry of carryFiles) {
+    if (!entry?.relativePath || seen.has(entry.relativePath)) continue;
+    seen.add(entry.relativePath);
+    carried.push(entry);
+  }
+  const allFiles = [...files, ...carried];
   const nonce = randomBytes(16).toString('hex');
   const body = {
     kind: MANIFEST_KIND,
@@ -127,7 +140,7 @@ export function buildManifest({
     scope,
     installRoot: resolvePath(installRoot),
     installedAt: now,
-    files,
+    files: allFiles,
     ...(bundleChecksums ? { bundleChecksums } : {}),
     ...(hookOwnership ? { hookOwnership } : {}),
     nonce,

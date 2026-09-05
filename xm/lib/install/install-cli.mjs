@@ -152,6 +152,7 @@ export function parseArgs(argv) {
     propagate: false,
     help: false,
     scope: 'local',
+    scopeExplicit: false,
     targets: null,
     skillsDir: DEFAULT_PATHS.skillsDir,
     libDir: DEFAULT_PATHS.libDir,
@@ -171,8 +172,8 @@ export function parseArgs(argv) {
       case '--yes': case '-y': out.yes = true; break;
       case '--allow-unverified': out.allowUnverified = true; break;
       case '--interactive': out.interactive = true; break;
-      case '--global': out.scope = 'global'; break;
-      case '--local': out.scope = 'local'; break;
+      case '--global': out.scope = 'global'; out.scopeExplicit = true; break;
+      case '--local': out.scope = 'local'; out.scopeExplicit = true; break;
       case '-h': case '--help': out.help = true; break;
       case '--target': out.targets = parseTargets(argv[++i] ?? ''); break;
       case '--skills-dir': out.skillsDir = resolve(argv[++i] ?? ''); break;
@@ -654,15 +655,22 @@ export function run(argv) {
   // --verify: re-hash files and compare against manifest (R-SEC-13/15, SC8/SC17/SC19).
   if (args.verify) {
     const cwd = process.cwd();
-    const installRoot = args.scope === 'global' ? homedir() : cwd;
     const targetsToCheck = args.targets ?? [...TARGET_TOOLS];
+    // Without an explicit --local/--global, probe both roots. A global install is invisible
+    // from every cwd but the install root, so the documented `xm install --verify` reported
+    // "no manifests found" for an install that --list-installed located without trouble.
+    const scopesToCheck = args.scopeExplicit ? [args.scope] : ['local', 'global'];
+    const probes = scopesToCheck.flatMap((scope) => targetsToCheck.map((target) => ({
+      scope, target, installRoot: scope === 'global' ? homedir() : cwd,
+    })));
     const out = [];
     let ok = true;
     let anyChecked = false;
-    for (const target of targetsToCheck) {
-      const mp = manifestPath(target, installRoot, args.scope);
+    for (const { scope, target, installRoot } of probes) {
+      const mp = manifestPath(target, installRoot, scope);
       if (!existsSync(mp)) {
-        out.push(`# ${target} (${args.scope}): no manifest at ${mp} — skipping`);
+        // With an implicit scope one of the two roots is expected to miss, so stay quiet.
+        if (args.scopeExplicit) out.push(`# ${target} (${scope}): no manifest at ${mp} — skipping`);
         continue;
       }
       anyChecked = true;
@@ -822,6 +830,28 @@ export function run(argv) {
     skills = scanAll({ skillsDir: args.skillsDir, libDir: args.libDir, only: args.only });
   } catch (err) {
     return { exitCode: 2, stdout: '', stderr: `scan failed: ${err.message}\n` };
+  }
+
+  // An unknown --only name matches no plugin, so the install renders nothing and reports
+  // success. Combined with stale pruning that silently removed every installed skill
+  // (`--only xm`, where no plugin is named "xm"). Fail on the typo rather than acting on an
+  // empty selection.
+  if (args.only.length > 0) {
+    const selected = new Set(skills.map((skill) => skill.pluginName));
+    const unknown = args.only.filter((name) => !selected.has(name));
+    if (unknown.length > 0) {
+      let available = [];
+      try {
+        available = [...new Set(scanAll({ skillsDir: args.skillsDir, libDir: args.libDir, only: undefined })
+          .map((skill) => skill.pluginName))].sort();
+      } catch { /* the message degrades to the unknown names alone */ }
+      return {
+        exitCode: 2,
+        stdout: '',
+        stderr: `--only: unknown plugin(s): ${unknown.join(', ')}\n`
+          + (available.length > 0 ? `available: ${available.join(', ')}\n` : ''),
+      };
+    }
   }
 
   // R-SEC-02 / SC13: verify every scanned skill against the checksum registry.
@@ -989,6 +1019,26 @@ export function run(argv) {
     };
   }
 
+  // A merge-marker index lists the whole skill set, so a partial install cannot update it
+  // without de-registering the plugins it did not render, and cannot skip it without either
+  // leaving the selected plugin unregistered or attesting whatever bytes are on disk. Refuse
+  // before the target loop: refusing inside it left earlier targets already installed under a
+  // non-zero exit, with the install report discarded so nothing said what had changed.
+  if (args.only.length > 0) {
+    const refusedTargets = Object.entries(planMap)
+      .filter(([, entries]) => entries.some((entry) => entry.writeMode === 'merge-marker'))
+      .map(([target]) => target);
+    if (refusedTargets.length > 0) {
+      return {
+        exitCode: 2,
+        stdout: '',
+        stderr: `--only is not supported for ${refusedTargets.join(', ')}: the index is rendered from the `
+          + 'full skill set, so a partial install cannot update it without de-registering the plugins it '
+          + 'did not render. Run a full install for those targets.\n',
+      };
+    }
+  }
+
   // Real install — renderers are wired per target.
   const cwd = process.cwd();
   const lines = [];
@@ -1053,7 +1103,6 @@ export function run(argv) {
     } catch (err) {
       return { exitCode: 2, stdout: '', stderr: `${target}: bundle failed: ${/** @type {Error} */ (err).message}\n` };
     }
-    const allOutputs = [...skillOuts.outputs, ...sharedOuts.outputs, ...bundleOuts];
     const existingManifestPath = manifestPath(target, installRoot, args.scope);
     let previousManifest = null;
     if (existsSync(existingManifestPath)) {
@@ -1063,7 +1112,23 @@ export function run(argv) {
       } catch {
         previousManifest = null;
       }
+      // A partial install carries the rows it did not re-render from this manifest. When the
+      // manifest cannot be trusted there is nothing to carry, and proceeding wrote a manifest
+      // describing only the narrowed subset while the unselected files stayed installed — after
+      // which --verify attested that narrowed surface as healthy and uninstall would orphan the
+      // rest. Refuse instead of silently narrowing under a success message.
+      if (!previousManifest && args.only.length > 0) {
+        return {
+          exitCode: 2,
+          stdout: '',
+          stderr: `${target}: ${existingManifestPath} is unreadable or failed its selfChecksum, so a partial `
+            + 'install cannot carry the entries it does not re-render. Run a full install for this target.\n',
+        };
+      }
     }
+    // A merge-marker index is rewritten wholesale from the rendered skill set, which is why
+    // `--only` is refused before the loop for any target that renders one.
+    const allOutputs = [...skillOuts.outputs, ...sharedOuts.outputs, ...bundleOuts];
     /** @type {{ hooks: Record<string, unknown[]> }|undefined} */
     let hookOwnership;
     /** @type {{ relativePath: string, content: string|Buffer, mode: number, shared?: 'codex-hooks', management?: 'codex-marketplace-entry', pluginName?: string }[]} */
@@ -1075,7 +1140,12 @@ export function run(argv) {
     // Remove files owned by the previous renderer that are no longer in the
     // output set. This migrates deprecated .codex/prompts files and the old
     // AGENTS.md marker block without touching user-modified standalone files.
-    if (previousManifest) {
+    //
+    // A partial install is excluded: --only narrows what is rendered, so every unselected
+    // plugin's files look stale and were deleted outright — one `--only xm` wiped all 26
+    // installed skills. Pruning needs the full output set to be meaningful, so only a full
+    // install sweeps; a partial one merges instead (see carryFiles below).
+    if (previousManifest && args.only.length === 0) {
         const nextPaths = new Set(allOutputs.map((output) => output.relativePath));
         for (const entry of previousManifest.files) {
           if (nextPaths.has(entry.relativePath)) continue;
@@ -1190,11 +1260,11 @@ export function run(argv) {
       const existingPath = manifestPath(target, installRoot, args.scope);
       let canSkip = false;
       if (existsSync(existingPath)) {
-        // E (errors review): scope catch to readManifest only — programming
-        // errors inside the .every() callback below must surface, not be
-        // swallowed silently as "rebuild needed".
-        let prev = null;
-        try { prev = readManifest(existingPath); } catch { prev = null; }
+        // Only a manifest that verifies is a valid basis for skipping the rewrite. Reading it
+        // back without checking its selfChecksum meant a corrupted manifest whose file SHAs
+        // still matched was skipped over, so a full install could not repair the corruption —
+        // and a partial install now refuses and points the user at exactly that full install.
+        const prev = previousManifest;
         if (
           prev &&
           prev.target === target &&
@@ -1221,6 +1291,11 @@ export function run(argv) {
           entries: manifestEntries,
           hookOwnership,
           unverified: args.allowUnverified,
+          // A partial install must not drop the entries it did not re-render: verify and
+          // uninstall would go blind to bytes this installer still owns on disk. Only the
+          // recorded, self-checksum-verified rows are carried — a disk-derived row would let a
+          // partial install attest whatever bytes happen to be there.
+          carryFiles: args.only.length > 0 && previousManifest ? previousManifest.files : [],
         });
         writeManifest(manifest);
       }

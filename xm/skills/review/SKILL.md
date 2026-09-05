@@ -318,9 +318,9 @@ The Phase 3 panel backend replaces the current-runtime fan-out with:
    - **Pass the Phase-1 target explicitly** — write the diff/target that Phase 1 (TARGET) resolved
      to a temp file and pass it as the panel target, so the review scope matches (do NOT rely on
      `xm panel`'s default `git diff HEAD`, which may differ from a PR / file / ref target).
-   - **Bound every panel target to at most 3 frozen diff files.** Run `plan-review.mjs` with
-     `--chunk-file-budget 3` and dispatch its emitted chunks; never pass the unsplit Phase-1
-     target when it spans more than 3 files. The lens prompt must tell the reviewer that the
+   - **Bound every panel target to at most 8 frozen diff files.** Run `plan-review.mjs` with
+     `--chunk-file-budget 8` and dispatch its emitted chunks; never pass the unsplit Phase-1
+     target when it spans more than 8 files. The lens prompt must tell the reviewer that the
      supplied frozen diff is the complete scope and forbid repository search or opening files
      outside it. x-panel rejects a broader injected review target before spawning providers.
    - Keep `panel.command_budget` at its bounded default of 12 unless a measured fixture needs a

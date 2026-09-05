@@ -323,6 +323,132 @@ describe('adaptive runtime routing', () => {
     } finally { rmSync(second, { recursive: true, force: true }); }
   });
 
+  // A planned run had no way out of verification_failed: fallback is direct-only, verify
+  // refused a non-started lease, and the failure erased the gate commands.
+  test('a planned lease can be re-verified after fixing what failed', async () => {
+    const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const cwd = fixtureRepo();
+    try {
+      const classification = module.classifyAdaptiveTask({
+        kind: 'feature', files: ['src/api.mjs'], independent: true, risk: 'low', public_contract: true,
+      });
+      const decision = module.decideAdaptiveRoute({ classification, failure_modes: 1, gates: ['schema'] });
+      expect(decision.route).toBe('planned');
+      module.recordAdaptiveDecision(decision);
+      // The gate passes only once the marker exists, so the first verify fails on the gate.
+      module.startAdaptiveRun({
+        decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'],
+        gate_commands: decision.gates.map((gate) => `${gate}=test -f src/ok.marker`), now_ms: 1000,
+      });
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 2;\n');
+      const failed = module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1100 });
+      expect(failed.passed).toBe(false);
+      expect(failed.gates.every((gate) => gate.passed)).toBe(false);
+      expect(module.adaptiveRunStatus(decision.decision_id).runs[0].next_action).toBe('fix_then_verify');
+
+      // gate_commands survive the failure, so the same lease can run its gates again.
+      writeFileSync(join(cwd, 'src', 'ok.marker'), 'ok\n');
+      const repaired = module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1200 });
+      expect(repaired.unexpected_files).toContain('src/ok.marker');
+      expect(module.adaptiveRunStatus(decision.decision_id).runs[0].next_action).toBe('restore_undeclared_then_verify');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('a planned-fallback lease can be re-verified after its own verify fails', async () => {
+    const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const cwd = fixtureRepo();
+    try {
+      const decision = module.decideAdaptiveRoute(eligible);
+      module.recordAdaptiveDecision(decision);
+      // Fail the direct attempt, then escalate to the planned fallback with a gate that only
+      // passes once the marker exists, so the fallback's own first verify also fails.
+      module.startAdaptiveRun({
+        decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'],
+        gate_commands: ['test=test -f src/ok.marker', 'boundary=test -s src/value.mjs'], now_ms: 1000,
+      });
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 2;\n');
+      expect(module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1100 }).passed).toBe(false);
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 1;\n');
+      const fallback = module.startAdaptiveRun({ decision_id: decision.decision_id, cwd, fallback: true, now_ms: 1200 });
+      expect(fallback.execution_phase).toBe('planned-fallback');
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 3;\n');
+      const failedFallback = module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1300 });
+      expect(failedFallback.passed).toBe(false);
+      // The predicate admits every non-direct phase, so the fallback is re-verifiable and the
+      // status branch reads the receipt rather than offering the direct-only fallback again.
+      expect(module.adaptiveRunStatus(decision.decision_id).runs[0].next_action).toBe('fix_then_verify');
+      writeFileSync(join(cwd, 'src', 'ok.marker'), 'ok\n');
+      expect(() => module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1400 })).not.toThrow();
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('a planned lease whose HEAD moved is advised an action abandon accepts', async () => {
+    const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const cwd = fixtureRepo();
+    try {
+      const classification = module.classifyAdaptiveTask({
+        kind: 'feature', files: ['src/api.mjs'], independent: true, risk: 'low', public_contract: true,
+      });
+      const decision = module.decideAdaptiveRoute({ classification, failure_modes: 1, gates: ['schema'] });
+      module.recordAdaptiveDecision(decision);
+      module.startAdaptiveRun({
+        decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'],
+        gate_commands: decision.gates.map((gate) => `${gate}=node --check src/value.mjs`), now_ms: 1000,
+      });
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 2;\n');
+      for (const args of [['add', 'src/value.mjs'], ['commit', '-qm', 'mid-run']]) git(cwd, args);
+      const receipt = module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1100 });
+      expect(receipt.head_changed).toBe(true);
+      expect(receipt.passed).toBe(false);
+      // `abandon` alone always throws in this state, so the advice has to name the restore first.
+      expect(module.adaptiveRunStatus(decision.decision_id).runs[0].next_action).toBe('restore_head_then_abandon');
+      expect(() => module.abandonAdaptiveRun({ decision_id: decision.decision_id }))
+        .toThrow('cannot abandon after HEAD changed');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('a direct lease cannot be re-verified, so its escalation stays recorded', async () => {
+    const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const cwd = fixtureRepo();
+    try {
+      const decision = module.decideAdaptiveRoute(eligible);
+      module.recordAdaptiveDecision(decision);
+      module.startAdaptiveRun({
+        decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'],
+        gate_commands: ['test=test -f src/ok.marker', 'boundary=test -s src/value.mjs'], now_ms: 1000,
+      });
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 2;\n');
+      expect(module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1100 }).passed).toBe(false);
+      // finishAdaptiveRun labels anything that is not a planned-fallback `accepted`, and
+      // escalation telemetry counts only `escalated`, so a second verify here would erase the
+      // escalation the routing evidence gate depends on. Fallback and abandon stay the exits.
+      writeFileSync(join(cwd, 'src', 'ok.marker'), 'ok\n');
+      expect(() => module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1200 }))
+        .toThrow('execution lease is not verifiable: verification_failed');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('expected files are fixed at route start and cannot be amended on verify', async () => {
+    const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const cwd = fixtureRepo();
+    try {
+      const classification = module.classifyAdaptiveTask({
+        kind: 'feature', files: ['src/api.mjs'], independent: true, risk: 'low', public_contract: true,
+      });
+      const decision = module.decideAdaptiveRoute({ classification, failure_modes: 1, gates: ['schema'] });
+      module.recordAdaptiveDecision(decision);
+      module.startAdaptiveRun({
+        decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'],
+        gate_commands: decision.gates.map((gate) => `${gate}=node --check src/value.mjs`),
+      });
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 2;\n');
+      writeFileSync(join(cwd, 'src', 'locale.mjs'), 'export const locale = "ko";\n');
+      expect(() => module.verifyAdaptiveRun({
+        decision_id: decision.decision_id, expected_files: ['src/value.mjs', 'src/locale.mjs'],
+      })).toThrow('expected files are fixed at route start');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   test('restarts a failed direct run only from a clean planned fallback and records escalation', async () => {
     const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
     const cwd = fixtureRepo();
