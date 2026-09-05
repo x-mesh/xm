@@ -187,12 +187,22 @@ function spansOneStatement(haystackLines, fragments, openStart, openEnd) {
       // Past its own closing bracket the statement is over; anything beyond belongs to the next.
       if (depth < 0) break;
       if (depth === 0 && haystackLines[end].endsWith(last)) {
-        let at = start;
+        // Fragments must advance in the order they were quoted, by line AND within a line.
+        // Scanning each middle from the run's start instead let `build(...beta...alpha...)`
+        // ground against `build(alpha, beta)`, reversing the citation's own order.
+        let line = start;
+        let column = -1;
         const covered = middles.every((mid) => {
-          const found = haystackLines.slice(at, end + 1).findIndex((line) => line.includes(mid));
-          if (found === -1) return false;
-          at += found;
-          return true;
+          for (let probe = line; probe <= end; probe += 1) {
+            const from = probe === line ? column + 1 : 0;
+            const found = haystackLines[probe].indexOf(mid, from);
+            if (found !== -1) {
+              line = probe;
+              column = found + mid.length - 1;
+              return true;
+            }
+          }
+          return false;
         });
         if (covered) return true;
       }
@@ -629,7 +639,9 @@ export function validateReviewReports(manifest, rawReports, options = {}) {
     const wrongFile = item.grounding.filter((entry) => entry.code === 'finding_code_wrong_file').map((entry) => entry.finding_index);
     const malformed = item.grounding.filter((entry) => entry.code === 'finding_line' && Number.isInteger(entry.finding_index)).map((entry) => entry.finding_index);
     findingGrounding.findings += total;
-    findingGrounding.grounded += total - ungrounded.length;
+    // Findings removed before synthesis are not part of what grounded: counting them here
+    // reported more surviving findings than the run actually carries forward.
+    findingGrounding.grounded += total - ungrounded.length - malformed.length;
     findingGrounding.wrong_file += wrongFile.length;
     findingGrounding.ungrounded += ungrounded.length;
     const reportId = typeof item.report?.report_id === 'string' ? item.report.report_id : null;

@@ -775,6 +775,8 @@ describe('x-review lens report coverage contract', () => {
     expect(result.finding_grounding.reports).toContainEqual(
       expect.objectContaining({ report_id: 'security-1', malformed_findings: [1] }),
     );
+    // The dropped finding must not be counted as grounded: `grounded` is what reaches synthesis.
+    expect(result.finding_grounding).toMatchObject({ findings: 2, grounded: 1 });
   });
 
   test('grounds a citation that compresses one multi-line statement into a single line', () => {
@@ -831,11 +833,12 @@ describe('x-review lens report coverage contract', () => {
     });
     const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/host.ts'] });
     const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
-    // bracketDepth does not parse quotes, so the count is skewed by the bracket in the string.
-    // The skew must only ever cost a citation, never buy one: the report stays valid either way
-    // because a rejected citation is a dropped finding, not a rejected report.
+    // bracketDepth does not parse quotes, so the bracket inside the string skews the balance and
+    // the run never closes at zero. The skew must only ever COST a citation, never buy one, so
+    // the finding lands ungrounded rather than grounded. The report itself stays valid, because
+    // a rejected citation drops one finding instead of the report.
+    expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 0, ungrounded: 1 });
     expect(result.valid_reports).toContain('security-1');
-    expect(result.finding_grounding.findings).toBe(1);
   });
 
   test('a compressed citation still cannot invent the statement it compresses', () => {
@@ -869,6 +872,37 @@ describe('x-review lens report coverage contract', () => {
     const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
     expect(result.finding_grounding).toMatchObject({ findings: 1, grounded: 0, ungrounded: 1 });
     expect(result.issues).toContainEqual(expect.objectContaining({ code: 'finding_code_mismatch', finding_index: 0 }));
+  });
+
+  test('a compressed citation must keep its fragments in the order the target has them', () => {
+    const targetBody = [
+      'diff --git a/src/host.ts b/src/host.ts',
+      '+++ b/src/host.ts',
+      '+  build(',
+      '+    alpha, beta',
+      '+  );',
+    ].join('\n');
+    const manifest = {
+      ...MANIFEST,
+      target_hash: `sha256:${createHash('sha256').update(targetBody).digest('hex')}`,
+      target_files: ['src/host.ts'],
+    };
+    const base = { severity: 'Medium', file: 'src/host.ts', line: 1, why: 'Impact', fix: 'Change it' };
+    const check = (code, grounded) => {
+      const security = zeroReport('security-1', 'security', {
+        target_hash: manifest.target_hash,
+        checked_files: ['src/host.ts'],
+        findings: [{ ...base, description: 'cited', code }],
+        no_findings_reason: undefined,
+      });
+      const logic = zeroReport('logic-1', 'logic', { target_hash: manifest.target_hash, checked_files: ['src/host.ts'] });
+      const result = validateReviewReports(manifest, raws(security, logic), { targetBody });
+      expect(result.finding_grounding).toMatchObject({ findings: 1, grounded, ungrounded: 1 - grounded });
+    };
+    check('build(...alpha...beta...);', 1);
+    // The target says alpha then beta. Scanning each fragment from the run's start accepted the
+    // reversal, which lets a citation assert an order the code does not have.
+    check('build(...beta...alpha...);', 0);
   });
 
   test('a compressed citation cannot stitch statements further apart than one statement', () => {
