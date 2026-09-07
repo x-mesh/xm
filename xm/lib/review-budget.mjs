@@ -53,6 +53,12 @@ export async function withReviewLock(options, action) {
 // so a deleted file used to reset every counter in silence. Terminal receipts carry
 // the task each run was charged to; if any survive, the missing state is a loss to
 // repair, not a fresh worktree.
+//
+// Every lifecycle command loads the budget, close and associate included, so this
+// refusal has no in-tool recovery: restoring the file is the only way out. That is
+// deliberate — a recovery command here would be the reset it exists to prevent.
+// It does not stop someone removing .xm/review outright, which takes the receipts
+// with it; the check makes a partial deletion loud, not the state tamper-proof.
 export function orphanedReceipts(root) {
   const runs = join(root, 'runs');
   if (!existsSync(runs)) return [];
@@ -64,7 +70,7 @@ export function loadBudget(root) {
   const path = join(root, 'budget.json');
   if (!existsSync(path)) {
     const orphans = orphanedReceipts(root);
-    if (orphans.length) throw new Error(`review budget state is missing while ${orphans.length} terminal receipt(s) still claim a task budget; restore ${path} or close the runs before reviewing again`);
+    if (orphans.length) throw new Error(`review budget state is missing while ${orphans.length} terminal receipt(s) still claim a task budget; restore ${path} — close and associate are refused in this state too, by design`);
     return { schema: 1, tasks: {}, aliases: {}, active: null };
   }
   const state = readState(path);

@@ -434,5 +434,7 @@ test('a deleted budget file is a loss to repair, not a fresh worktree', () => {
   const reset = cli(dir, ['prepare', 'target.patch', '--run-id', 'after-delete']);
   expect(reset.status).not.toBe(0);
   expect(reset.stderr).toContain('review budget state is missing');
+  // No lifecycle command recovers this state; close loads the budget too.
+  expect(cli(dir, ['close', 'first-run', '--reason', 'give up']).status).not.toBe(0);
   expect(existsSync(join(dir, '.xm/review/runs/after-delete'))).toBe(false);
 });
