@@ -57,8 +57,19 @@ export async function withReviewLock(options, action) {
 // Every lifecycle command loads the budget, close and associate included, so this
 // refusal has no in-tool recovery: restoring the file is the only way out. That is
 // deliberate — a recovery command here would be the reset it exists to prevent.
-// It does not stop someone removing .xm/review outright, which takes the receipts
-// with it; the check makes a partial deletion loud, not the state tamper-proof.
+//
+// Scope, precisely: this catches a deleted budget.json when a completed run's
+// receipt survives. It is not a general integrity check, and three resets still
+// pass it, all because budget.json is trusted as its own source of truth:
+//   - a file rewritten to {"schema":1,"tasks":{},"aliases":{},"active":null}
+//     never reaches this branch and mints fresh budgets from the schema check;
+//   - a hand-emptied approvals[] restores the exception allowance, since only
+//     Array.isArray() is verified below;
+//   - a reset that leaves an in-flight run behind is invisible, because a run
+//     with no terminal.json, or a corrupt one, is dropped by the catch above.
+// Closing these means reconstructing usage from the receipts rather than reading
+// it from budget.json. Until then, treat this as a guard against an accidental
+// delete, not against a determined one.
 export function orphanedReceipts(root) {
   const runs = join(root, 'runs');
   if (!existsSync(runs)) return [];
