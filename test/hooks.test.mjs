@@ -355,6 +355,18 @@ describe('scope-guard hook', () => {
 });
 
 describe('stop-gate hook', () => {
+  test('stays silent and exits 0 when triage.json is absent', () => {
+    const r = runHook(STOP_HOOK, {});
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+  });
+  test('warns and exits 0 when triage.json is unreadable', () => {
+    writeFileSync(join(DIR, '.xm', 'review', 'triage.json'), '{');
+    const r = runHook(STOP_HOOK, {});
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('warning: .xm/review/triage.json');
+    expect(r.stderr).toContain('Stopping remains allowed');
+  });
   test('reports unresolved Critical fix_now and allows stopping', () => {
     writeTriage(ACTIVE_TRIAGE); writeResult({ verdict: 'Request Changes' });
     const r = runHook(STOP_HOOK, {});

@@ -32,6 +32,13 @@ async function main() {
 
   const projectRoot = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
   const state = reviewFixState(projectRoot);
+  if (state.triageUnreadable) {
+    process.stderr.write(
+      `xm-build-stop-gate — warning: .xm/review/triage.json exists but could not be read or parsed; ` +
+      `review-fix status is unknown. Stopping remains allowed.\n`
+    );
+    process.exit(0);
+  }
   if (!state.unresolvedBlocking.length) process.exit(0);
 
   const lines = state.unresolvedBlocking

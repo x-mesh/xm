@@ -21,9 +21,12 @@ export function hooksOff() {
   return !['', '0', 'false', 'no', 'off'].includes(v);
 }
 
-function readJSON(p) {
-  try { return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : null; }
-  catch { return null; } // malformed state → treat as absent (fail-open upstream)
+const JSON_UNREADABLE = Symbol('json-unreadable');
+
+function readJSON(p, unreadable = null) {
+  if (!existsSync(p)) return null;
+  try { return JSON.parse(readFileSync(p, 'utf8')); }
+  catch { return unreadable; } // callers fail open unless they explicitly surface the state error
 }
 
 const BLOCKING_SEV = new Set(['critical', 'high']);
@@ -31,18 +34,24 @@ const sha256 = value => createHash('sha256').update(value).digest('hex');
 
 /**
  * Read the review-fix state from <projectDir>/.xm/review/.
- * @returns {{ active: boolean, allowedFiles: string[], unresolvedBlocking: Array<{id,severity,file,summary}> }}
+ * @returns {{ active: boolean, allowedFiles: string[], unresolvedBlocking: Array<{id,severity,file,summary}>, triageUnreadable: boolean }}
  *   active            — a triage.json exists with ≥1 fix_now finding (review-fix in progress).
  *   allowedFiles      — triage.fix_scope.allowed_files (the edit scope).
  *   unresolvedBlocking— fix_now findings of severity critical/high WHILE the latest
  *                       x-review verdict is not lgtm/pass. Fixing + a fresh LGTM
  *                       re-review empties this (mirrors verify-review-fix's own pass
  *                       condition), so the block auto-clears without new state.
+ *   triageUnreadable  — triage.json exists but could not be read or parsed.
  */
 export function reviewFixState(projectDir) {
   const reviewDir = join(projectDir, '.xm', 'review');
-  const triage = readJSON(join(reviewDir, 'triage.json'));
-  if (!triage) return { active: false, allowedFiles: [], unresolvedBlocking: [] };
+  const triage = readJSON(join(reviewDir, 'triage.json'), JSON_UNREADABLE);
+  if (triage === JSON_UNREADABLE) {
+    return { active: false, allowedFiles: [], unresolvedBlocking: [], triageUnreadable: true };
+  }
+  if (!triage) {
+    return { active: false, allowedFiles: [], unresolvedBlocking: [], triageUnreadable: false };
+  }
 
   const findings = Array.isArray(triage.target_findings) ? triage.target_findings
     : Array.isArray(triage.findings) ? triage.findings : [];
@@ -97,7 +106,7 @@ export function reviewFixState(projectDir) {
   // FOREVER after the fix landed — nothing rewrites triage.json's decisions, so the
   // repo stayed locked to the old allowed_files until the file was deleted by hand (F2).
   // A fresh LGTM re-review is the same "done" signal unresolvedBlocking already uses.
-  return { active: fixNow.length > 0 && !lgtm, allowedFiles, unresolvedBlocking };
+  return { active: fixNow.length > 0 && !lgtm, allowedFiles, unresolvedBlocking, triageUnreadable: false };
 }
 
 // The guard's OWN decision source. Hard-allowing all of .xm/ let a constrained agent
