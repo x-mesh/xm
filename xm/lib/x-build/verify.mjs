@@ -1390,17 +1390,24 @@ export async function verifyReviewFixContent(args) {
       } else {
         // persistent and regression concede the finding is not fixed, so they need
         // no passing command; only "resolved" has to survive execution.
+        const before = lifecycleFileSnapshot(row.file, freshness);
         const run = outcome === 'resolved' ? runVerificationCommand(String(opts.command).trim()) : null;
+        // freshness and its snapshot cache predate the command, so a check that
+        // edits the very file it certifies would be recorded against the bytes it
+        // replaced. Read past the cache and refuse a self-modifying check.
+        const after = run ? lifecycleFileSnapshot(row.file, { ...freshness, currentSnapshots: null }) : before;
         if (run && run.timed_out) {
           failures.push(`${requested}: verification command timed out after ${VERIFICATION_TIMEOUT_MS / 1000}s: ${run.command}`);
         } else if (run && run.exit_code !== 0) {
           failures.push(`${requested}: verification command exited ${run.exit_code}; the finding is not resolved: ${run.command}`);
+        } else if (run && !snapshotMatches(before, after)) {
+          failures.push(`${requested}: verification command changed the reviewed bytes it was checking: ${run.command}`);
         } else {
           row.state = 'reverified';
           row.outcome = outcome;
           row.evidence = evidence;
           row.verification_run = run;
-          row.file_snapshot = lifecycleFileSnapshot(row.file, freshness);
+          row.file_snapshot = after;
           row.reverified_at = new Date().toISOString();
           row.updated_at = row.reverified_at;
           reverifiedRow = row;

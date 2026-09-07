@@ -1416,6 +1416,15 @@ describe('verify-review-fix', () => {
       expect(row).toMatchObject({ state: 'reverified', outcome: 'resolved' });
       expect(row.verification_run).toMatchObject({ command: 'true', exit_code: 0, timed_out: false });
       expect(passing.stdout).toContain('F1: exit 0 — true');
+
+      // A check that rewrites the file it certifies would otherwise be recorded
+      // against the bytes it replaced, passing this one call before the next
+      // run notices the mismatch.
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'second authorized fix\n');
+      const selfEditing = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'rewrites as it checks', '--command', 'printf "rewritten by the check\\n" > src/auth.ts'], { cwd: tmp });
+      expect(selfEditing.exitCode).not.toBe(0);
+      expect(selfEditing.stdout).toContain('changed the reviewed bytes it was checking');
+      expect(readJSON(join(tmp, '.xm', 'review', 'finding-lifecycle.json')).findings[0].outcome).toBeNull();
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
