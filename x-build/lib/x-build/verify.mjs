@@ -728,6 +728,9 @@ function buildTriageTemplate(review) {
         ? 'fix_now'
         : (TRIAGE_REQUIRED_SEVERITY.has(severity) ? '' : 'backlog'),
       evidence: '',
+      // Only Critical/High need a named approver to be waived; the field is emitted
+      // for them so the triage author sees the requirement before hitting the gate.
+      ...(BLOCKING_SEVERITY.has(severity) && !settled ? { approved_by: '' } : {}),
       fix_notes: '',
       ...(context ? { context_assessment: { alignment: '', context_refs: [], evidence: '' } } : {}),
     };
@@ -1481,6 +1484,15 @@ export async function verifyReviewFixContent(args) {
 
       if ((value === 'accept_risk' || value === 'false_positive') && !String(decision.evidence || '').trim()) {
         failures.push(`${finding.id}: ${value} requires evidence`);
+      }
+
+      // Waiving a Critical or High is the one triage decision that ends the finding
+      // without anyone fixing or reverifying it, and evidence alone is the author
+      // vouching for themselves. Name who accepted it — the same shape as the budget
+      // exception's --approved-by, and for the same reason.
+      if ((value === 'accept_risk' || value === 'false_positive')
+        && BLOCKING_SEVERITY.has(finding.severity) && !String(decision.approved_by || '').trim()) {
+        failures.push(`${finding.id}: ${value} on a ${finding.severity} finding requires approved_by naming who accepted it`);
       }
 
       if (value === 'fix_now' && finding.file && !allowedFiles.includes(finding.file)) {

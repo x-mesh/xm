@@ -1438,6 +1438,52 @@ describe('verify-review-fix', () => {
     }
   });
 
+  test('waiving a High finding needs a named approver, not just evidence', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp);
+
+      // The template offers the field on blocking severities so the requirement is
+      // visible before the gate refuses.
+      const template = initAndEditTriage(tmp, () => {});
+      expect(template.target_findings[0]).toMatchObject({ severity: 'high', approved_by: '' });
+      expect(template.target_findings[1].approved_by).toBeUndefined();
+
+      initAndEditTriage(tmp, triage => {
+        triage.target_findings[0].decision = 'accept_risk';
+        triage.target_findings[0].evidence = 'Only reachable behind an internal flag.';
+      });
+      const unapproved = run(['verify-review-fix'], { cwd: tmp });
+      expect(unapproved.exitCode).not.toBe(0);
+      expect(unapproved.stdout).toContain('requires approved_by naming who accepted it');
+
+      initAndEditTriage(tmp, triage => {
+        triage.target_findings[0].decision = 'accept_risk';
+        triage.target_findings[0].evidence = 'Only reachable behind an internal flag.';
+        triage.target_findings[0].approved_by = 'jinwoo';
+      });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a Medium waiver still needs only evidence', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, { findings: [{ severity: 'medium', lens: 'logic', file: 'src/auth.ts', line: 3, summary: 'Redundant guard' }] });
+      initAndEditTriage(tmp, triage => {
+        triage.target_findings[0].decision = 'false_positive';
+        triage.target_findings[0].evidence = 'The guard is unreachable; the caller already checks.';
+      });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('editing triage invalidates a prior review-fix authorization', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
     try {
