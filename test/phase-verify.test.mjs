@@ -1148,7 +1148,7 @@ describe('verify-review-fix', () => {
       initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
       expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
       writeFileSync(join(tmp, 'src', 'auth.ts'), 'first fix\n');
-      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'test passed'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'test passed', '--command', 'true'], { cwd: tmp }).exitCode).toBe(0);
       writeFileSync(join(tmp, 'src', 'auth.ts'), 'changed after receipt\n');
       writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
 
@@ -1168,7 +1168,7 @@ describe('verify-review-fix', () => {
       initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
       expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
       writeFileSync(join(tmp, 'src', 'auth.ts'), 'authorized fix\n');
-      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'test passed'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'test passed', '--command', 'true'], { cwd: tmp }).exitCode).toBe(0);
       writeReviewResult(tmp, { verdict: 'lgtm', findings: [], reviewed_files_all: ['src/auth.ts'] });
 
       const r = run(['verify-review-fix'], { cwd: tmp });
@@ -1193,7 +1193,7 @@ describe('verify-review-fix', () => {
       initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
       expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
       writeFileSync(join(tmp, 'src', 'auth.ts'), 'fixed\n');
-      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'test passed'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'test passed', '--command', 'true'], { cwd: tmp }).exitCode).toBe(0);
       spawnSync('git', ['add', 'src/auth.ts'], { cwd: tmp });
       spawnSync('git', ['commit', '-qm', 'fix auth'], { cwd: tmp });
       const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: tmp, encoding: 'utf8' }).stdout.trim();
@@ -1347,7 +1347,7 @@ describe('verify-review-fix', () => {
       const authorize = run(['verify-review-fix'], { cwd: tmp });
       expect(authorize.exitCode).toBe(0);
       expect(readJSON(join(tmp, '.xm', 'review', 'finding-lifecycle.json')).findings[0].state).toBe('fix_authorized');
-      const premature = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'not actually changed'], { cwd: tmp });
+      const premature = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'not actually changed', '--command', 'true'], { cwd: tmp });
       expect(premature.exitCode).not.toBe(0);
       expect(premature.stdout).toContain('finding bytes must change before reverification');
       writeFileSync(join(tmp, 'src', 'auth.ts'), 'authorized fix\n');
@@ -1355,7 +1355,7 @@ describe('verify-review-fix', () => {
       expect(afterFix.exitCode).not.toBe(0);
       expect(afterFix.stdout).toContain('fix requires explicit reverification');
 
-      const unknown = run(['verify-review-fix', '--reverify', 'F9', '--outcome', 'resolved', '--evidence', 'test'], { cwd: tmp });
+      const unknown = run(['verify-review-fix', '--reverify', 'F9', '--outcome', 'resolved', '--evidence', 'test', '--command', 'true'], { cwd: tmp });
       expect(unknown.exitCode).not.toBe(0);
       expect(unknown.stdout).toContain('Unknown finding for --reverify');
       const invalid = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'bogus', '--evidence', 'test'], { cwd: tmp });
@@ -1374,7 +1374,7 @@ describe('verify-review-fix', () => {
       expect(regression.exitCode).not.toBe(0);
       expect(regression.stdout).toContain('reverification outcome is regression; expected resolved');
 
-      const reverified = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'auth regression test passes'], { cwd: tmp });
+      const reverified = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'auth regression test passes', '--command', 'true'], { cwd: tmp });
       expect(reverified.exitCode).toBe(0);
       const lifecycle = readJSON(join(tmp, '.xm', 'review', 'finding-lifecycle.json'));
       expect(lifecycle.findings[0]).toMatchObject({ state: 'reverified', outcome: 'resolved', evidence: 'auth regression test passes' });
@@ -1385,6 +1385,37 @@ describe('verify-review-fix', () => {
       expect(outside.exitCode).not.toBe(0);
       expect(outside.stdout).toContain('Reviewed files changed outside fix_scope.allowed_files');
       expect(outside.stdout).toContain('src/policy.ts');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a resolved outcome needs a verification command that actually passes', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      writeReviewResult(tmp, { reviewed_files_all: ['src/auth.ts', 'src/policy.ts'] });
+      initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'authorized fix\n');
+
+      const noCommand = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'looks fixed'], { cwd: tmp });
+      expect(noCommand.exitCode).not.toBe(0);
+      expect(noCommand.stdout).toContain('--command "<check>" is required');
+
+      const failing = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'looks fixed', '--command', 'exit 3'], { cwd: tmp });
+      expect(failing.exitCode).not.toBe(0);
+      expect(failing.stdout).toContain('verification command exited 3');
+      const stillFixed = readJSON(join(tmp, '.xm', 'review', 'finding-lifecycle.json')).findings[0];
+      expect(stillFixed.state).toBe('fixed');
+      expect(stillFixed.outcome).toBeNull();
+
+      const passing = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'auth regression test passes', '--command', 'true'], { cwd: tmp });
+      expect(passing.exitCode).toBe(0);
+      const row = readJSON(join(tmp, '.xm', 'review', 'finding-lifecycle.json')).findings[0];
+      expect(row).toMatchObject({ state: 'reverified', outcome: 'resolved' });
+      expect(row.verification_run).toMatchObject({ command: 'true', exit_code: 0, timed_out: false });
+      expect(passing.stdout).toContain('F1: exit 0 — true');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -1447,7 +1478,7 @@ describe('verify-review-fix', () => {
       initAndEditTriage(tmp, triage => { triage.target_findings[0].evidence = 'Reproduced'; });
       expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
       writeFileSync(join(tmp, 'src', 'auth.ts'), 'first fix\n');
-      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'test passed'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'test passed', '--command', 'true'], { cwd: tmp }).exitCode).toBe(0);
 
       writeFileSync(join(tmp, 'src', 'auth.ts'), 'second unverified edit\n');
       const stale = run(['verify-review-fix'], { cwd: tmp });
@@ -1474,7 +1505,7 @@ describe('verify-review-fix', () => {
       expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
 
       writeFileSync(join(tmp, 'src', 'auth.ts'), 'cross-file fix\n');
-      const verified = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'architecture invariant check passes'], { cwd: tmp });
+      const verified = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'architecture invariant check passes', '--command', 'true'], { cwd: tmp });
       expect(verified.exitCode).toBe(0);
       expect(readJSON(join(tmp, '.xm', 'review', 'finding-lifecycle.json')).findings[0].file_snapshot.sha256).toHaveLength(64);
 

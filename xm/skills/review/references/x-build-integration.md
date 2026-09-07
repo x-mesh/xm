@@ -51,7 +51,7 @@ Required sequence:
    - `accept_risk` or `false_positive` only with evidence
 3. Keep `fix_scope.allowed_files` narrow. Add test files only when they verify a `fix_now` finding.
 4. Run `x-build verify-review-fix` before applying fixes to authorize the exact triage. Only the authorized `fix_scope.allowed_files` may then differ from the reviewed snapshot. Editing triage invalidates the authorization and requires a fresh pre-fix gate.
-5. After a `fix_now` edit, reverify each finding with `x-build verify-review-fix --reverify <F#|finding_id> --outcome resolved|persistent|regression --evidence <text>`. The byte-bound lifecycle is `open → fix_authorized → fixed → reverified`; later file changes invalidate the receipt, and non-`resolved` outcomes block completion.
+5. After a `fix_now` edit, reverify each finding with `x-build verify-review-fix --reverify <F#|finding_id> --outcome resolved|persistent|regression --evidence <text>`. `--outcome resolved` also requires `--command "<check>"`: the gate runs that command and stores its exit code, and a non-zero exit refuses the resolved outcome. Name a check that actually fails when the finding is present — the test you added, or the linter that flags it. `persistent` and `regression` need no command. The byte-bound lifecycle is `open → fix_authorized → fixed → reverified`; later file changes invalidate the receipt, and non-`resolved` outcomes block completion.
 5. Any new changed file outside `fix_scope.allowed_files` after the baseline fails the gate.
 6. Capture unrelated, non-blocking findings with `x-build later add` instead of editing them in the review-fix loop.
 

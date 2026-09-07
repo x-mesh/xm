@@ -1022,6 +1022,23 @@ function lifecycleFileSnapshot(file, freshness) {
   };
 }
 
+// "resolved" used to mean the agent said so next to a byte change, which is the
+// one claim the gate exists to doubt. Run the command the agent nominates and
+// keep its exit code; a fix nobody executed no longer closes a finding.
+const VERIFICATION_TIMEOUT_MS = 300000;
+function runVerificationCommand(command) {
+  const result = spawnSync(command, {
+    cwd: workspaceRoot(), encoding: 'utf8', shell: true, timeout: VERIFICATION_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024,
+  });
+  const output = `${result.stdout || ''}${result.stderr || ''}`;
+  if (result.error?.code === 'ETIMEDOUT') return { command, exit_code: null, timed_out: true, ran_at: new Date().toISOString(), output_digest: `sha256:${sha256(output)}`, output_tail: output.slice(-2000) };
+  return {
+    command, exit_code: result.status, timed_out: false, ran_at: new Date().toISOString(),
+    output_digest: `sha256:${sha256(output)}`, output_tail: output.slice(-2000),
+  };
+}
+const verificationPassed = row => row.verification_run?.exit_code === 0 && row.verification_run.timed_out !== true;
+
 function syncLifecycle(lifecycle, required, triageMap, freshness, fixAuthorized) {
   const changed = new Set(freshness.changed);
   const now = new Date().toISOString();
@@ -1033,7 +1050,7 @@ function syncLifecycle(lifecycle, required, triageMap, freshness, fixAuthorized)
       row = {
         id: finding.id, finding_id: findingIdStable, severity: finding.severity,
         file: finding.file || null, line: finding.line ?? null, summary: findingSummary(finding),
-        state: 'open', outcome: null, evidence: null, file_snapshot: null,
+        state: 'open', outcome: null, evidence: null, file_snapshot: null, verification_run: null,
       };
       lifecycle.findings.push(row);
     }
@@ -1046,6 +1063,7 @@ function syncLifecycle(lifecycle, required, triageMap, freshness, fixAuthorized)
     row.outcome = null;
     row.evidence = null;
     row.file_snapshot = null;
+    row.verification_run = null;
     if (row.file ? changed.has(row.file) : freshness.changed.length > 0) {
       row.state = 'fixed';
     } else {
@@ -1367,14 +1385,26 @@ export async function verifyReviewFixContent(args) {
       else if (!['fixed', 'reverified'].includes(row.state)) failures.push(`${requested}: finding bytes must change before reverification (current: ${row.state})`);
       else if (!VALID_REVERIFY_OUTCOMES.has(outcome)) failures.push(`${requested}: --outcome must be resolved, persistent, or regression`);
       else if (!evidence) failures.push(`${requested}: --evidence is required for reverification`);
-      else {
-        row.state = 'reverified';
-        row.outcome = outcome;
-        row.evidence = evidence;
-        row.file_snapshot = lifecycleFileSnapshot(row.file, freshness);
-        row.reverified_at = new Date().toISOString();
-        row.updated_at = row.reverified_at;
-        reverifiedRow = row;
+      else if (outcome === 'resolved' && !String(opts.command || '').trim()) {
+        failures.push(`${requested}: --command "<check>" is required to record a resolved outcome; the gate runs it and keeps the exit code`);
+      } else {
+        // persistent and regression concede the finding is not fixed, so they need
+        // no passing command; only "resolved" has to survive execution.
+        const run = outcome === 'resolved' ? runVerificationCommand(String(opts.command).trim()) : null;
+        if (run && run.timed_out) {
+          failures.push(`${requested}: verification command timed out after ${VERIFICATION_TIMEOUT_MS / 1000}s: ${run.command}`);
+        } else if (run && run.exit_code !== 0) {
+          failures.push(`${requested}: verification command exited ${run.exit_code}; the finding is not resolved: ${run.command}`);
+        } else {
+          row.state = 'reverified';
+          row.outcome = outcome;
+          row.evidence = evidence;
+          row.verification_run = run;
+          row.file_snapshot = lifecycleFileSnapshot(row.file, freshness);
+          row.reverified_at = new Date().toISOString();
+          row.updated_at = row.reverified_at;
+          reverifiedRow = row;
+        }
       }
     }
 
@@ -1486,13 +1516,14 @@ export async function verifyReviewFixContent(args) {
       for (const row of fixNowRows) {
         if (row.state !== 'reverified') failures.push(`${row.id}: fix requires explicit reverification`);
         else if (row.outcome !== 'resolved') failures.push(`${row.id}: reverification outcome is ${row.outcome}; expected resolved`);
+        else if (!verificationPassed(row)) failures.push(`${row.id}: resolved without a passing verification command; re-run --reverify with --command`);
       }
     }
   }
 
   const hasFixedBytes = freshness.changed.length > 0;
   const resolvedCandidates = lifecycle?.findings?.filter(row => row.decision === 'fix_now') || [];
-  const allResolved = resolvedCandidates.length > 0 && resolvedCandidates.every(row => row.state === 'reverified' && row.outcome === 'resolved');
+  const allResolved = resolvedCandidates.length > 0 && resolvedCandidates.every(row => row.state === 'reverified' && row.outcome === 'resolved' && verificationPassed(row));
   const authorized = fixAuthorized || (!hasFixedBytes && failures.length === 0);
   const awaitingOnly = failures.length > 0 && failures.every(failure =>
     /fix requires explicit reverification|reverification outcome is/.test(failure)
@@ -1579,7 +1610,14 @@ export async function verifyReviewFixContent(args) {
 
   console.log(`${C.green}Review Fix Gate passed.${C.reset}`);
   console.log(`  Triage-required findings: ${required.length}`);
-  if (stage === 'reverified') console.log(`  Reverified: ${lifecycleSummary.reverified} finding(s) resolved against current file bytes.`);
+  if (stage === 'reverified') {
+    console.log(`  Reverified: ${lifecycleSummary.reverified} finding(s) resolved against current file bytes.`);
+    // Print the commands, not just the count: a passing `true` is a legitimate
+    // answer for a finding nothing can execute, and the reader deserves to see it.
+    for (const row of lifecycle.findings.filter(item => item.decision === 'fix_now' && item.verification_run)) {
+      console.log(`    ${row.id}: exit ${row.verification_run.exit_code} — ${row.verification_run.command}`);
+    }
+  }
   if (ledgerAppended > 0) console.log(`  Triage ledger: +${ledgerAppended} row(s) → ${triageLedgerPath()}`);
   for (const warning of warnings) console.log(`  ${C.yellow}Warning:${C.reset} ${warning}`);
 }

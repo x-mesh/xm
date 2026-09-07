@@ -294,7 +294,7 @@ describe('review-precision: ledger written by verify-review-fix', () => {
 
       // reverification outcome is appended as its own row
       writeFileSync(join(tmp, 'src', 'auth.ts'), 'fixed\n');
-      const reverify = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'auth test passes'], { cwd: tmp });
+      const reverify = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'auth test passes', '--command', 'true'], { cwd: tmp });
       expect(reverify.exitCode).toBe(0);
       const afterReverify = ledgerRows(tmp);
       expect(afterReverify.length).toBe(3);
@@ -554,7 +554,7 @@ describe('review-precision: ledger written by verify-review-fix', () => {
       writeFileSync(join(tmp, 'src', 'auth.ts'), 'auth attempt\n');
       writeFileSync(join(tmp, 'src', 'policy.ts'), 'policy attempt\n');
       expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'persistent', '--evidence', 'auth still fails'], { cwd: tmp }).exitCode).not.toBe(0);
-      const second = run(['verify-review-fix', '--reverify', 'F2', '--outcome', 'resolved', '--evidence', 'policy test passes'], { cwd: tmp });
+      const second = run(['verify-review-fix', '--reverify', 'F2', '--outcome', 'resolved', '--evidence', 'policy test passes', '--command', 'true'], { cwd: tmp });
       expect(second.exitCode).not.toBe(0);
       expect(second.stdout).toContain('F1: reverification outcome is persistent');
       // F1 was not recorded on the previous call because F2 had not yet been
@@ -614,8 +614,8 @@ describe('review-precision: ledger written by verify-review-fix', () => {
       expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'persistent', '--evidence', 'still fails'], { cwd: tmp }).exitCode).toBe(1);
       expect(ledgerRows(tmp).filter(entry => entry.type === 'triage_outcome')).toHaveLength(1);
 
-      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'reclassified after checking the same bytes'], { cwd: tmp }).exitCode).toBe(0);
-      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'reclassified after checking the same bytes'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'reclassified after checking the same bytes', '--command', 'true'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'reclassified after checking the same bytes', '--command', 'true'], { cwd: tmp }).exitCode).toBe(0);
       const reclassified = ledgerRows(tmp).filter(entry => entry.type === 'triage_outcome');
       expect(reclassified.map(entry => entry.outcome)).toEqual(['persistent', 'resolved']);
       expect(aggregateLensPrecision(reclassified).totals).toMatchObject({ persistent: 0, resolved: 1 });

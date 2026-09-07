@@ -337,7 +337,7 @@ test('Review-Fix CLI consumes approval once and a verified delta closes its gate
   expect(Object.values(budget(dir).tasks)[0].used.fix).toBe(1);
   expect(build([]).status).toBe(0); expect(Object.values(budget(dir).tasks)[0].used.fix).toBe(1);
   change(dir, 3);
-  const verified = build(['--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'Checked the corrected export value and all callers.']);
+  const verified = build(['--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'Checked the corrected export value and all callers.', '--command', 'true']);
   expect(verified.stdout).toContain('passed'); expect(verified.status).toBe(0);
   const delta = start(dir, 'gate-delta'); expect(delta.verdict).toBe('LGTM');
   const closed = build([]); expect(closed.stdout).toContain('passed'); expect(closed.status).toBe(0);
