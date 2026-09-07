@@ -1425,6 +1425,14 @@ describe('verify-review-fix', () => {
       expect(selfEditing.exitCode).not.toBe(0);
       expect(selfEditing.stdout).toContain('changed the reviewed bytes it was checking');
       expect(readJSON(join(tmp, '.xm', 'review', 'finding-lifecycle.json')).findings[0].outcome).toBeNull();
+
+      // An unreadable path fails snapshotMatches() the same way a rewrite does;
+      // it must not be reported as the command having changed the bytes.
+      writeFileSync(join(tmp, 'src', 'auth.ts'), 'third authorized fix\n');
+      const unreadable = run(['verify-review-fix', '--reverify', 'F1', '--outcome', 'resolved', '--evidence', 'link swap', '--command', 'rm src/auth.ts && ln -s /etc/hosts src/auth.ts'], { cwd: tmp });
+      expect(unreadable.exitCode).not.toBe(0);
+      expect(unreadable.stdout).toContain('cannot read the reviewed bytes');
+      expect(unreadable.stdout).not.toContain('changed the reviewed bytes it was checking');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

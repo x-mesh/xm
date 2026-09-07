@@ -1390,16 +1390,23 @@ export async function verifyReviewFixContent(args) {
       } else {
         // persistent and regression concede the finding is not fixed, so they need
         // no passing command; only "resolved" has to survive execution.
-        const before = lifecycleFileSnapshot(row.file, freshness);
+        //
+        // Both reads bypass freshness.currentSnapshots: that cache predates the
+        // command, so comparing against it would blame the command for a change
+        // made before it ran. Reading both sides fresh narrows the window to the
+        // command's own execution, which is the only interval this check is about.
+        const fresh = () => lifecycleFileSnapshot(row.file, { ...freshness, currentSnapshots: null });
+        const before = outcome === 'resolved' ? fresh() : lifecycleFileSnapshot(row.file, freshness);
         const run = outcome === 'resolved' ? runVerificationCommand(String(opts.command).trim()) : null;
-        // freshness and its snapshot cache predate the command, so a check that
-        // edits the very file it certifies would be recorded against the bytes it
-        // replaced. Read past the cache and refuse a self-modifying check.
-        const after = run ? lifecycleFileSnapshot(row.file, { ...freshness, currentSnapshots: null }) : before;
+        const after = run ? fresh() : before;
         if (run && run.timed_out) {
           failures.push(`${requested}: verification command timed out after ${VERIFICATION_TIMEOUT_MS / 1000}s: ${run.command}`);
         } else if (run && run.exit_code !== 0) {
           failures.push(`${requested}: verification command exited ${run.exit_code}; the finding is not resolved: ${run.command}`);
+        } else if (run && (before.invalid || after.invalid)) {
+          // snapshotMatches() rejects an invalid snapshot, so without this branch an
+          // unreadable path reads as "the command rewrote it" and never resolves.
+          failures.push(`${requested}: cannot read the reviewed bytes${row.file ? ` at ${row.file}` : ''} — an unreadable path or a link out of the workspace, not a verification failure`);
         } else if (run && !snapshotMatches(before, after)) {
           failures.push(`${requested}: verification command changed the reviewed bytes it was checking: ${run.command}`);
         } else {
