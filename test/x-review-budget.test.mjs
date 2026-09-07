@@ -415,3 +415,24 @@ test('default Low findings pass the merge gate while zero-findings and stale byt
     if (!strict) { change(dir, 3); expect(gate().status).not.toBe(0); }
   }
 });
+
+test('a second budget exception is refused instead of reopening the loop', () => {
+  const dir = workspace(); ok(cli(dir, ['prepare', 'target.patch', '--run-id', 'active']));
+  ok(cli(dir, ['close', 'active', '--reason', 'user cancellation']));
+  ok(cli(dir, ['prepare', 'target.patch', '--run-id', 'first-exception', '--exception', 'full', '--approved-by', 'user', '--reason', 'one approved retry']));
+  ok(cli(dir, ['close', 'first-exception', '--reason', 'user cancellation']));
+  const second = cli(dir, ['prepare', 'target.patch', '--run-id', 'second-exception', '--exception', 'full', '--approved-by', 'user', '--reason', 'another retry']);
+  expect(second.status).not.toBe(0);
+  expect(second.stderr).toContain('already spent its 1 budget exception');
+  const task = Object.values(budget(dir).tasks)[0];
+  expect(task.used.full).toBe(2); expect(task.approvals).toHaveLength(1);
+});
+
+test('a deleted budget file is a loss to repair, not a fresh worktree', () => {
+  const dir = workspace(); start(dir, 'first-run'); change(dir);
+  rmSync(join(dir, '.xm/review/budget.json'));
+  const reset = cli(dir, ['prepare', 'target.patch', '--run-id', 'after-delete']);
+  expect(reset.status).not.toBe(0);
+  expect(reset.stderr).toContain('review budget state is missing');
+  expect(existsSync(join(dir, '.xm/review/runs/after-delete'))).toBe(false);
+});

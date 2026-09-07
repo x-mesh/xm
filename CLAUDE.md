@@ -43,7 +43,12 @@ Required sequence:
 3. Never move Critical/High findings to `backlog`; fix them now or provide concrete evidence for `accept_risk` / `false_positive`.
 4. Limit review-fix edits to `fix_now` findings and files listed in `fix_scope.allowed_files`.
 4b. If a `fix_now` finding resists two fix attempts, or the failure reproduces outside `fix_scope.allowed_files`, stop patching and diagnose it: `/xm:solver "review finding {id}: {title}"` (iterate). x-solver returns a **confirmed cause with evidence, not authorized edits** — bring it back into triage and re-run `verify-review-fix`. Do not widen `fix_scope` on a guess. This is an exception path, not a step: most findings already carry evidence and a fix direction, and routing every one through a diagnosis fan-out would recreate the rewrite loop this gate exists to prevent.
-5. Run `x-build verify-review-fix`, then quality checks, then re-run x-review before claiming completion.
+5. Run `x-build verify-review-fix`, then quality checks, then re-run x-review once. That re-run is the `delta` unit — it is a single review, not a loop until LGTM.
+
+Termination — the budget is one `full`, one `fix`, and one `delta` per task:
+6. If the delta review still reports findings, **report them and stop.** A delta finding of any severity ends the cycle; it does not authorize another fix pass.
+7. When the budget is spent the CLI refuses further work with `<kind> budget exhausted` or `delta review completed; stop and report before additional fixes`. These are the gate working, not a tool failure — never route around them by deleting `.xm/review/budget.json`, by passing a fresh `--task-id`, or by branching.
+8. Continuing past the budget needs a human decision: ask the user, then run one `--exception full|delta|fix --approved-by USER --reason TEXT`. A task allows one such exception; past that, stop and hand the work back.
 
 This gate exists to prevent review feedback from becoming an unbounded rewrite loop.
 

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, existsSync, realpathSync, lstatSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, existsSync, realpathSync, lstatSync, readdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -49,9 +49,24 @@ export async function withReviewLock(options, action) {
   atomicJson(join(lock, 'owner.json'), { pid: process.pid, cwd: location.cwd, started_at: new Date().toISOString() });
   try { return await action(location); } finally { rmSync(lock, { recursive: true }); }
 }
+// budget.json is the only record of what a task has spent, and .xm is gitignored,
+// so a deleted file used to reset every counter in silence. Terminal receipts carry
+// the task each run was charged to; if any survive, the missing state is a loss to
+// repair, not a fresh worktree.
+export function orphanedReceipts(root) {
+  const runs = join(root, 'runs');
+  if (!existsSync(runs)) return [];
+  return readdirSync(runs, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => {
+    try { return readState(join(runs, entry.name, 'terminal.json')).task_budget_id || null; } catch { return null; }
+  }).filter(Boolean);
+}
 export function loadBudget(root) {
   const path = join(root, 'budget.json');
-  if (!existsSync(path)) return { schema: 1, tasks: {}, aliases: {}, active: null };
+  if (!existsSync(path)) {
+    const orphans = orphanedReceipts(root);
+    if (orphans.length) throw new Error(`review budget state is missing while ${orphans.length} terminal receipt(s) still claim a task budget; restore ${path} or close the runs before reviewing again`);
+    return { schema: 1, tasks: {}, aliases: {}, active: null };
+  }
   const state = readState(path);
   if (state.schema !== 1 || !state.tasks || !state.aliases || (state.active !== null && typeof state.active !== 'string')) throw new Error('invalid review budget state');
   for (const task of Object.values(state.tasks)) {
@@ -79,10 +94,14 @@ export function taskBudget(root, cwd, options, state) {
   state.tasks[key] ||= { id: randomUUID(), limits: { full: 1, fix: 1, delta: 1 }, used: { full: 0, fix: 0, delta: 0 }, approvals: [], fix_approvals: [] };
   return state.tasks[key];
 }
+// One exception per task, not one per kind: an unbounded --exception is the same
+// unbounded loop the budget exists to stop, only with a rubber stamp attached.
+export const EXCEPTION_LIMIT = 1;
 export function consume(task, kind, options = {}) {
   const exceptional = options.exception === kind;
   if (task.used[kind] >= task.limits[kind] || exceptional) {
     if (!exceptional || !options.approvedBy?.trim() || !options.reason?.trim()) throw new Error(`${kind} budget exhausted; a one-time --exception ${kind} --approved-by USER --reason TEXT is required`);
+    if (task.approvals.length >= EXCEPTION_LIMIT) throw new Error(`this task already spent its ${EXCEPTION_LIMIT} budget exception; stop and hand the review back to a human owner`);
     task.approvals.push({ id: randomUUID(), kind, approved_by: options.approvedBy, reason: options.reason, at: new Date().toISOString() });
   }
   task.used[kind] += 1;
