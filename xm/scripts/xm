@@ -132,6 +132,31 @@ plugin_lib() {
   fi
 }
 
+# Newest marketplace-cache root that carries SKILL *sources* (skills/ beside
+# lib/). Used only as a fallback: skills/ sits next to lib/ in the source repo
+# (repo/xm/) and in the cache (xm/<version>/), but NOT in the Codex global
+# bundle — ~/.codex/xm/ mirrors lib/, hooks/ and agents/ only, because its
+# SKILLs are rendered output rather than source. Prints nothing and returns 1
+# when no such root exists.
+market_source_root() {
+  local base root best
+  for base in "$HOME/.claude/plugins/cache/xm/xm" "$HOME/.claude/plugins/cache/x-kit/xm"; do
+    [ -d "$base" ] || continue
+    best=""
+    # Version-sorted, not mtime-sorted: a re-touched old cache dir must not
+    # outrank the newest release. Last match wins, so `best` ends up highest.
+    while IFS= read -r root; do
+      [ -n "$root" ] || continue
+      root="${root%/}"
+      if [ -d "$root/skills" ] && [ -f "$root/lib/install/install-cli.mjs" ]; then
+        best="$root"
+      fi
+    done < <(ls -d "$base"/*/ 2>/dev/null | sort -V)
+    if [ -n "$best" ]; then echo "$best"; return 0; fi
+  done
+  return 1
+}
+
 # --- init/setup helpers ---
 # `init` carries two meanings in this CLI: the machine-level hook install (once
 # per machine) and starting a project (once per project). `setup` is the
@@ -1228,9 +1253,34 @@ EOF
     # Explicitly pass --skills-dir/--lib-dir so install-cli doesn't have to
     # guess the layout. User-supplied "$@" appears after ours; install-cli's
     # last-wins parser lets users override either one.
+    #
+    # skills/ is a sibling of lib/ in the source repo and the marketplace cache,
+    # so the sibling probe settles both. It misses only under the Codex global
+    # bundle, which resolve_lib prefers whenever it exists — there we reach past
+    # it to the cache and take that root's lib/ too, so skills and lib can never
+    # come from two different versions.
     PLUGIN_ROOT="$(dirname "$LIB_PATH")"
     SKILLS_DIR="$PLUGIN_ROOT/skills"
-    [ -d "$SKILLS_DIR" ] || SKILLS_DIR="$PLUGIN_ROOT/xm/skills"   # source-repo layout
+    if [ ! -d "$SKILLS_DIR" ]; then
+      # --help and --list-installed never scan SKILLs; they must keep working on
+      # a host that has no source tree at all.
+      NEEDS_SKILLS=1
+      for arg in "$@"; do
+        case "$arg" in
+          --help|-h|--list-installed) NEEDS_SKILLS=0; break ;;
+        esac
+      done
+      FALLBACK_ROOT="$(market_source_root || true)"
+      if [ -n "$FALLBACK_ROOT" ]; then
+        SKILLS_DIR="$FALLBACK_ROOT/skills"
+        LIB_PATH="$FALLBACK_ROOT/lib"
+      elif [ "$NEEDS_SKILLS" = "1" ]; then
+        echo "xm install: no SKILL sources found (looked beside $LIB_PATH and in ~/.claude/plugins/cache/xm)." >&2
+        echo "  A Codex bundle alone cannot drive an install: ~/.codex/xm/ ships rendered SKILLs, not their source." >&2
+        echo "  Install the xm plugin in Claude Code, or run: xm update" >&2
+        exit 1
+      fi
+    fi
     node "$LIB_PATH/install/install-cli.mjs" \
       --skills-dir "$SKILLS_DIR" \
       --lib-dir "$LIB_PATH" \

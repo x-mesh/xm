@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.24.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.24.1-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -172,7 +172,7 @@ xm help
 
 CLI는 `~/.claude/plugins/cache/xm/`, Codex 전용 번들인 `~/.codex/xm/`, 또는 `$XM_LIB`의 플러그인 lib을 호출합니다. 따라서 Codex-only 호스트에서는 Claude Code 플러그인을 먼저 설치할 필요가 없습니다.
 
-해석 순서는 `$XM_LIB` → 소스 레포 cwd → `~/.codex/xm/` → 마켓플레이스 캐시입니다. 로컬 체크아웃이나 Codex 번들이 있는 머신에서는 마켓플레이스 캐시가 항상 가려지므로, `xm --market <cmd>` (또는 `XM_MARKET=1`)로 개발용 경로를 모두 건너뛰고 `~/.claude/plugins/cache/xm/`에 고정할 수 있습니다. 일반 사용자가 보는 상태를 재현할 때 사용하세요. 실제로 어느 lib이 응답했는지는 `xm which`와 `xm version`이 알려줍니다. `sync` 서브커맨드는 번들된 `x-sync` lib을 재사용하므로 `x-sync/install.sh client`를 별도로 실행할 **필요 없습니다**.
+해석 순서는 `$XM_LIB` → 소스 레포 cwd → `~/.codex/xm/` → 마켓플레이스 캐시입니다. 로컬 체크아웃이나 Codex 번들이 있는 머신에서는 마켓플레이스 캐시가 항상 가려지므로, `xm --market <cmd>` (또는 `XM_MARKET=1`)로 개발용 경로를 모두 건너뛰고 `~/.claude/plugins/cache/xm/`에 고정할 수 있습니다. 일반 사용자가 보는 상태를 재현할 때 사용하세요. 실제로 어느 lib이 응답했는지는 `xm which`와 `xm version`이 알려줍니다. `xm install`만은 이 순서의 예외입니다. SKILL *소스*를 렌더링하는 명령인데 Codex 번들에는 소스가 없으므로(`lib/`, `hooks/`, `agents/`만 미러링), 해석된 뿌리의 `lib/` 옆에 `skills/`가 없으면 둘 다 갖춘 가장 최신 마켓플레이스 캐시 뿌리로 폴백합니다. 이때 `lib/`도 같은 뿌리에서 가져오므로 skills와 lib이 서로 다른 버전으로 섞이지 않습니다. `sync` 서브커맨드는 번들된 `x-sync` lib을 재사용하므로 `x-sync/install.sh client`를 별도로 실행할 **필요 없습니다**.
 
 #### 프로젝트 레지스트리 (`xm project`)
 
