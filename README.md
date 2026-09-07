@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.24.1-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.24.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -658,7 +658,8 @@ Large reviews no longer stop at an arbitrary line count. The planner budgets the
 | **--thorough** | Dedicated recall agent with fresh context, 10 observations max, aggressive auto-promotion |
 | **Severity disambiguation** | Architecture lens: "this diff introduced it" → Medium vs "follows existing convention" → Low |
 | **Verdict** | LGTM (0 Critical, 0 High, Medium ≤ 3) / Request Changes (High 1-2 or Medium > 3) / Block (1+ Critical or High > 2) |
-| **Per-task budget** | Each worktree task holds `full=1, fix=1, delta=1`. More work needs `--exception KIND --approved-by USER --reason TEXT`. |
+| **Per-task budget** | Each worktree task holds `full=1, fix=1, delta=1`. More work needs `--exception KIND --approved-by USER --reason TEXT`, and a task allows **one** exception in total — past that, stop and hand the review back. |
+| **Verified resolution** | `--reverify ID --outcome resolved` also requires `--command "<check>"`. The gate runs it, stores the exit code, and refuses `resolved` on a non-zero exit, a timeout, or a check that rewrites the bytes it is checking. `persistent` and `regression` need no command. |
 | **Terminal receipts** | Every run ends with a validated receipt. A run without one blocks new reviews until you resume or close it. |
 
 **Review principles:** Context determines severity · No evidence = no finding · No fix direction = no finding · When in doubt, downgrade
