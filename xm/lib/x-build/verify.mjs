@@ -1492,7 +1492,7 @@ export async function verifyReviewFixContent(args) {
       // exception's --approved-by, and for the same reason.
       if ((value === 'accept_risk' || value === 'false_positive')
         && BLOCKING_SEVERITY.has(finding.severity) && !String(decision.approved_by || '').trim()) {
-        failures.push(`${finding.id}: ${value} on a ${finding.severity} finding requires approved_by naming who accepted it`);
+        failures.push(`${finding.id}: ${value} on a ${finding.severity} finding requires approved_by — add "approved_by": "<who accepted the risk>" to this row in triage.json`);
       }
 
       if (value === 'fix_now' && finding.file && !allowedFiles.includes(finding.file)) {

@@ -334,6 +334,13 @@ describe('scope-guard hook', () => {
   test('allows an in-scope edit (exit 0)', () => {
     expect(runHook(SCOPE_HOOK, { tool_name: 'Edit', tool_input: { file_path: 'src/auth.ts' } }).status).toBe(0);
   });
+  test('an unreadable triage leaves the guard open, as it always has', () => {
+    // The stop gate now warns about this state. The guard must keep failing open:
+    // it runs on every tool call, and blocking edits on a corrupt state file would
+    // lock the repo with no way to fix the file.
+    writeFileSync(join(DIR, '.xm', 'review', 'triage.json'), '{');
+    expect(runHook(SCOPE_HOOK, { tool_name: 'Edit', tool_input: { file_path: 'src/other.ts' } }).status).toBe(0);
+  });
   test('allows a .xm harness-state edit (protected — never self-lock)', () => {
     // NOTE: the guard's own inputs (.xm/review/triage.json, last-result.json) are
     // deliberately NOT in this set — see the F4 regression above.

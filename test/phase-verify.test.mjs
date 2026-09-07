@@ -1456,7 +1456,8 @@ describe('verify-review-fix', () => {
       });
       const unapproved = run(['verify-review-fix'], { cwd: tmp });
       expect(unapproved.exitCode).not.toBe(0);
-      expect(unapproved.stdout).toContain('requires approved_by naming who accepted it');
+      expect(unapproved.stdout).toContain('requires approved_by');
+      expect(unapproved.stdout).toContain('to this row in triage.json');
 
       initAndEditTriage(tmp, triage => {
         triage.target_findings[0].decision = 'accept_risk';
