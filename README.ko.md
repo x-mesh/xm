@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.23.16-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.24.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -659,8 +659,17 @@ xm build plan --mode quick "..."                 # xm plan의 deprecated alias
 | **--thorough** | 별도 recall 에이전트가 fresh context로 스캔, 최대 10개 observation, 적극적 자동 승격 |
 | **심각도 판별** | Architecture 렌즈: "이 diff가 도입" → Medium vs "기존 컨벤션 따름" → Low |
 | **판정** | LGTM (Critical 0, High 0, Medium ≤ 3) / Request Changes (High 1-2 또는 Medium > 3) / Block (Critical 1+ 또는 High > 2) |
+| **태스크별 예산** | 워킹트리 태스크마다 `full=1, fix=1, delta=1`. 더 필요하면 `--exception KIND --approved-by USER --reason TEXT`로 승인합니다 |
+| **종료 영수증** | 모든 실행은 검증된 영수증으로 끝납니다. 영수증이 없는 실행은 resume 또는 close 전까지 새 리뷰를 막습니다 |
 
 **리뷰 원칙:** 맥락이 심각도를 결정 · 근거 없으면 발견 아님 · 수정 방향 없으면 발견 아님 · 확신 없으면 낮추기
+
+**2.10.x에서 올릴 때:** 이전 버전에서 만들어진 실행은 예산 기록이 없습니다. 먼저 연결한 뒤 닫으세요. 연결은 예산을 쓰지 않습니다.
+
+```bash
+xm review associate <run-id> --task-id <id> --reason "pre-budget run"
+xm review close <run-id> --reason "old run is no longer needed"
+```
 
 ---
 

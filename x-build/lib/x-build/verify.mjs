@@ -16,6 +16,7 @@ import {
   TRIAGE_LEDGER_FILE, buildLedgerRow, ledgerRowKey, parseTriageLedger, parseDuration,
   aggregateLensPrecision, formatPrecisionReport, lensesBelowPrecision, normalizeLensIdentifier,
 } from './review-precision.mjs';
+import { authorizeReviewFix, terminalReceipt, loadBudget, recordReviewFix } from '../review-budget.mjs';
 import { createHash } from 'node:crypto';
 import {
   readFileSync, lstatSync, openSync, closeSync, fchmodSync, fstatSync, writeSync,
@@ -352,6 +353,8 @@ export function cmdVerifyContracts(args) {
 const TRIAGE_REQUIRED_SEVERITY = new Set(['critical', 'high', 'medium']);
 const BLOCKING_SEVERITY = new Set(['critical', 'high']);
 const VALID_TRIAGE_DECISIONS = new Set(['fix_now', 'backlog', 'accept_risk', 'false_positive']);
+// Dispositions the review lifecycle already closed; they never re-enter triage.
+const SETTLED_DISPOSITIONS = new Set(['resolved', 'false_positive']);
 const VALID_REVERIFY_OUTCOMES = new Set(['resolved', 'persistent', 'regression']);
 
 function normalizeSeverity(value) {
@@ -707,6 +710,10 @@ function buildTriageTemplate(review) {
   const context = reviewContextProvenance(review);
   const targetFindings = findings.map((finding, index) => {
     const severity = normalizeSeverity(finding.severity);
+    // A finding the lifecycle already settled is not triaged again. Assigning it
+    // fix_now would demand a reverification it can no longer produce, and the
+    // gate would block forever on work that is done.
+    const settled = SETTLED_DISPOSITIONS.has(finding.disposition);
     return {
       id: findingId(index),
       finding_id: stableFindingId(finding),
@@ -714,7 +721,10 @@ function buildTriageTemplate(review) {
       file: finding.file || null,
       line: finding.line ?? null,
       summary: findingSummary(finding),
-      decision: BLOCKING_SEVERITY.has(severity)
+      ...(settled ? { disposition: finding.disposition } : {}),
+      decision: settled
+        ? ''
+        : BLOCKING_SEVERITY.has(severity)
         ? 'fix_now'
         : (TRIAGE_REQUIRED_SEVERITY.has(severity) ? '' : 'backlog'),
       evidence: '',
@@ -724,7 +734,7 @@ function buildTriageTemplate(review) {
   });
 
   const allowedFiles = [...new Set(targetFindings
-    .filter(f => TRIAGE_REQUIRED_SEVERITY.has(f.severity) && f.file)
+    .filter(f => TRIAGE_REQUIRED_SEVERITY.has(f.severity) && f.file && !SETTLED_DISPOSITIONS.has(f.disposition))
     .map(f => f.file))].sort();
 
   const freshness = assessReviewFreshness(review);
@@ -978,7 +988,7 @@ function buildLifecycle(review, triage, freshness) {
     };
   });
   return {
-    schema: 1,
+    schema: 1, ...(review.task_budget_id ? { task_budget_id: review.task_budget_id, run_id: review.run_id } : {}),
     reviewed_commit: review.reviewed_commit || null,
     reviewed_files_all: [...freshness.files],
     review_snapshot_digest: freshness.digest,
@@ -1118,7 +1128,27 @@ function clamp01Score(v) {
   return Math.min(1, Math.max(0, n));
 }
 
-export function cmdVerifyReviewFix(args) {
+export async function cmdVerifyReviewFix(args) {
+  const path = join(reviewDir(), 'last-result.json');
+  if (existsSync(path) && !readJSON(path)?.task_budget_id) {
+    console.log('Review Fix Gate failed: legacy review requires explicit lifecycle association and validation or closure.');
+    process.exitCode = 1;
+    return;
+  }
+  if (existsSync(path)) {
+    const review = readJSON(path);
+    try {
+      terminalReceipt(reviewDir(), review.run_id);
+      const stored = readJSON(join(reviewDir(), 'runs', review.run_id, 'result.json'));
+      const task = Object.values(loadBudget(reviewDir()).tasks).find(item => item.id === review.task_budget_id);
+      if (!task || task.baseline !== review.run_id || JSON.stringify(review) !== JSON.stringify(stored)) throw new Error('review result does not match the validated task baseline');
+    } catch (error) { console.log(`Review Fix Gate failed: ${error.message}`); process.exitCode = 1; return; }
+  }
+  return verifyReviewFixContent(args);
+}
+
+// Admission is enforced by cmdVerifyReviewFix. Keep content checks independently testable.
+export async function verifyReviewFixContent(args) {
   const { opts } = parseOptions(args);
   const resultPath = join(reviewDir(), 'last-result.json');
   const triagePath = join(reviewDir(), opts.triage || 'triage.json');
@@ -1131,10 +1161,25 @@ export function cmdVerifyReviewFix(args) {
   }
 
   const review = readJSON(resultPath);
+  if (existsSync(join(reviewDir(), 'budget.json'))) {
+    const budget = loadBudget(reviewDir());
+    if (budget.active || !review?.task_budget_id) {
+      console.log('Review Fix Gate failed: recover or close the active review, or associate the legacy result.');
+      process.exitCode = 1; return;
+    }
+  }
+  if (review?.automatic_stop && !(opts.exception === 'fix' && opts['approved-by']?.trim() && opts.reason?.trim())) {
+    console.log('Delta review found new findings. Report them and stop before additional automatic fixes or merge.');
+    process.exitCode = 1; return;
+  }
+  if (review?.task_budget_id) {
+    try { if (terminalReceipt(reviewDir(), review.run_id).outcome !== 'success') throw new Error('Review incomplete'); }
+    catch (error) { console.log(error.message); process.exitCode = 1; return; }
+  }
   const findings = Array.isArray(review?.findings) ? review.findings : [];
   const required = findings
     .map((finding, index) => ({ ...finding, id: findingId(index), finding_id: stableFindingId(finding), severity: normalizeSeverity(finding.severity) }))
-    .filter(f => TRIAGE_REQUIRED_SEVERITY.has(f.severity));
+    .filter(f => TRIAGE_REQUIRED_SEVERITY.has(f.severity) && !SETTLED_DISPOSITIONS.has(f.disposition));
   const freshness = assessReviewFreshness(review);
   const findingIdFailures = stableFindingIdFailures(required);
 
@@ -1203,8 +1248,12 @@ export function cmdVerifyReviewFix(args) {
       .filter(item => String(item.decision || '').trim().toLowerCase() === 'fix_now');
     const lifecycleAware = existingTriage?.schema === 1
       || (!!existingTriage?.initialized_at && !!existingTriage?.review_snapshot_digest)
-      || existingLifecycle?.schema === 1
+      || (existingLifecycle?.schema === 1 && !(review.task_budget_id && existingLifecycle.run_id === review.run_id && !existingLifecycle.triage_digest))
       || !!existingGate?.lifecycle_digest;
+    if (!lifecycleAware && (freshness.failures.length > 0 || freshness.changed.length > 0)) {
+      console.log('Review Fix Gate failed: reviewed bytes are stale or invalid.');
+      process.exitCode = 1; return;
+    }
     if (context) {
       if (!existingTriage) {
         console.log(`${C.red}Review Fix Gate failed.${C.reset}`);
@@ -1463,13 +1512,18 @@ export function cmdVerifyReviewFix(args) {
     writeJSON(lifecyclePath(), lifecycle);
   }
 
+  let budgetDenied = false;
+  if (failures.length === 0 && stage === 'ready_for_fix' && review.task_budget_id) {
+    try { await authorizeReviewFix(review, `${review.run_id}:${triageDigest}`, { cwd: repoRoot(), exception: opts.exception, approvedBy: opts['approved-by'], reason: opts.reason }); }
+    catch (error) { budgetDenied = true; failures.push(error.message); }
+  }
   const report = {
     timestamp: new Date().toISOString(),
     reviewed_commit: review.reviewed_commit || null,
     verdict: review.verdict || null,
     triage_required: required.length,
     stage,
-    authorized,
+    authorized: authorized && !budgetDenied,
     review_snapshot_digest: freshness.digest,
     triage_digest: triageDigest,
     lifecycle_digest: lifecycle ? `sha256:${sha256(JSON.stringify(lifecycle))}` : null,
@@ -1479,6 +1533,10 @@ export function cmdVerifyReviewFix(args) {
     lifecycle: lifecycleSummary,
   };
   writeJSON(join(reviewDir(), 'review-fix-gate.json'), report);
+  if (review.task_budget_id && !budgetDenied) {
+    try { await recordReviewFix(review, lifecycle, report, { cwd: repoRoot() }); }
+    catch (error) { console.log(error.message); process.exitCode = 1; return; }
+  }
 
   // Triage ledger (error analysis): decisions are appended only from a passing
   // gate. Reverification outcomes may keep the gate red when this or another

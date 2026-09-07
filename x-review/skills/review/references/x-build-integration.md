@@ -30,15 +30,13 @@ x-build quality
 
 ## Bounded Convergence
 
-The initial run reviews the complete target. The Review-Fix Gate then permits one bounded fix pass
-and one automatic re-review of the delta since `.xm/review/last-result.json.reviewed_commit`; the
-original reviewed-file coverage and lifecycle byte receipts remain authoritative. Do not run a
-native x-panel review after x-review, and do not restart the full PR review after every fix.
+The initial run reviews the complete target. The Review-Fix Gate permits one bounded fix pass.
+One automatic delta review uses that task's saved baseline. Commit reviews use `reviewed_commit` SHAs, and worktree reviews use saved bytes.
+Original coverage and byte-bound disposition evidence remain authoritative. Do not run a
+native x-panel review after x-review or restart the full PR review after every fix.
 
-If that final re-review introduces a new Critical/High, stop and report it instead of opening
-another automatic edit/review round. Newly discovered Medium/Low findings go to `x-build later`
-unless they invalidate the current fix. Only an explicit user request may widen the scope or add
-another/full review round.
+If the delta introduces any new finding, stop and report it at every severity.
+Do not start another automatic edit, review, or merge. Additional work requires a recorded user approval and reason.
 
 ## Review-Fix Gate
 
@@ -85,3 +83,11 @@ Condition: Auto-suggested when Critical/High is found 2+ times at the same file/
 ## Applies to
 
 Invoked from x-build Verify phase; results feed x-eval scoring, x-memory auto-save, and the Review-Fix Gate.
+
+## Bounded review fixes
+
+The lifecycle reserves `full=1, fix=1, delta=1` for each worktree task.
+The first approved fix scope consumes the fix budget. Revalidation of the same approval does not consume another unit.
+A new delta finding requires a report and stop at every severity. No additional automatic fix, review, or merge follows.
+The Stop hook permits termination. The Review-Fix Gate retains merge restrictions for unresolved blockers.
+Use an approved one-time exception with a reason for additional work. Never reset task usage.

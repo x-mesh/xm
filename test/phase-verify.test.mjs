@@ -21,7 +21,7 @@ function run(args, opts = {}) {
   // developer's real ~/.xm/config.json merges in — and a maintainer who has turned on
   // `autopilot: true` there silently downgrades every human-verify gate to auto, so
   // the gate-blocking assertions below fail on their machine and pass in CI.
-  const result = spawnSync('node', [CLI_PATH, ...args], {
+  const result = spawnSync('node', [args[0] === 'verify-review-fix' ? join(__dirname, 'fixtures', 'review-fix-content-cli.mjs') : CLI_PATH, ...args], {
     cwd,
     // X_BUILD_ROOT outranks XM_ROOT in core.mjs, and sibling test files set it at
     // module scope — clear it so an inherited value can't redirect this child.
@@ -783,6 +783,34 @@ describe('verify-review-fix', () => {
       expect(lifecycle.findings[0].state).toBe('open');
       expect(lifecycle.findings[0].finding_id).toBe(triage.target_findings[0].finding_id);
       expect(lifecycle.reviewed_files_all).toEqual(['src/auth.ts']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a finding the lifecycle already resolved never re-enters triage as fix_now', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));
+    try {
+      setupProject(tmp);
+      // A delta review carries the previous round's resolved High forward. Assigning
+      // it fix_now again would demand a reverification it can no longer produce.
+      writeReviewResult(tmp, {
+        findings: [
+          { severity: 'high', lens: 'logic', file: 'src/auth.ts', line: 42, summary: 'Auth bypass on missing token', disposition: 'resolved' },
+          { severity: 'high', lens: 'logic', file: 'src/session.ts', line: 9, summary: 'Session fixation', },
+        ],
+      });
+
+      const r = run(['verify-review-fix', '--init'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+
+      const triage = readJSON(join(tmp, '.xm', 'review', 'triage.json'));
+      expect(triage.target_findings[0].decision).toBe('');
+      expect(triage.target_findings[0].disposition).toBe('resolved');
+      expect(triage.target_findings[1].decision).toBe('fix_now');
+      expect(triage.fix_scope.allowed_files).toEqual(['src/session.ts']);
+      const lifecycle = readJSON(join(tmp, '.xm', 'review', 'finding-lifecycle.json'));
+      expect(lifecycle.findings.filter(row => row.decision === 'fix_now').map(row => row.file)).toEqual(['src/session.ts']);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

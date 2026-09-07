@@ -2,10 +2,10 @@
 
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
-import { startReview, resumeReview } from './review-lifecycle.mjs';
+import { startReview, resumeReview, prepareReview, submitReview, finalizeReview, statusReview, closeReview, associateReview } from './review-lifecycle.mjs';
 
 function usage() {
-  return 'Usage: xm review run [target-file] [--cross-vendor] [--models a,b] [--lenses a,b] [--rounds 1|2] [--run-id id] [--no-trace] [--json]\n       xm review resume <run-id> [--no-trace] [--json]';
+  return 'Native: xm review prepare [target-file] [--task-id ID | --pr NUMBER --repo OWNER/NAME] [--zero-findings] --json\n        xm review submit ID --report-id ID --attempt-id ID --report FILE --json\n        xm review finalize|status ID --json\n        xm review close|associate ID --reason TEXT [--task-id ID]\nBudget exception: --exception full|delta|fix --approved-by USER --reason TEXT\nUsage: xm review run [target-file] [--cross-vendor] [--models a,b] [--lenses a,b] [--rounds 1|2] [--run-id id] [--no-trace] [--json]\n       xm review resume <run-id> [--no-trace] [--json]';
 }
 
 function fail(message) {
@@ -15,13 +15,14 @@ function fail(message) {
 
 function parse(argv) {
   const command = argv[0];
-  if (!['run', 'resume'].includes(command)) throw new Error(`unknown command: ${command || '(missing)'}`);
+  if (!['run', 'resume', 'prepare', 'submit', 'finalize', 'status', 'close', 'associate'].includes(command)) throw new Error(`unknown command: ${command || '(missing)'}`);
   const options = { command, crossVendor: false, json: false, trace: true };
   const pos = [];
-  const valueFlags = new Set(['--models', '--lenses', '--rounds', '--run-id', '--chunk-file-budget', '--chunk-token-budget', '--max-profiles', '--max-concurrent-reports']);
+  const valueFlags = new Set(['--legacy-result', '--context-file', '--task-id', '--repo', '--pr', '--exception', '--approved-by', '--reason', '--base-ref', '--report-id', '--attempt-id', '--report', '--models', '--lenses', '--rounds', '--run-id', '--chunk-file-budget', '--chunk-token-budget', '--max-profiles', '--max-concurrent-reports']);
   for (let i = 1; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--cross-vendor') options.crossVendor = true;
+    else if (arg === '--zero-findings') options.zeroFindings = true;
     else if (arg === '--json') options.json = true;
     else if (arg === '--no-trace') options.trace = false;
     else if (valueFlags.has(arg)) {
@@ -30,7 +31,7 @@ function parse(argv) {
     } else if (arg.startsWith('-')) throw new Error(`unknown flag: ${arg}`);
     else pos.push(arg);
   }
-  if (command === 'run') {
+  if (command === 'run' || command === 'prepare') {
     if (pos.length > 1) throw new Error('run accepts at most one target file');
     options.target = pos[0];
   } else {
@@ -49,7 +50,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   try { options = parse(argv); } catch (error) { return fail(error.message); }
   try {
     const common = {
-      env, models: options.models, rounds: options.rounds ? Number(options.rounds) : undefined,
+      ...options, onPrepared: options.json ? undefined : budget => process.stderr.write(`review budget: full=1 fix=1 delta=1; used=${JSON.stringify(budget.used)}; mode=${budget.mode}\n`), env, models: options.models, rounds: options.rounds ? Number(options.rounds) : undefined,
       lenses: options.lenses ? options.lenses.split(',').map((value) => value.trim()).filter(Boolean) : undefined,
       runId: options.runId, chunkFileBudget: options.chunkFileBudget ? Number(options.chunkFileBudget) : undefined,
       chunkTokenBudget: options.chunkTokenBudget ? Number(options.chunkTokenBudget) : undefined,
@@ -57,9 +58,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       maxConcurrentReports: options.maxConcurrentReports ? Number(options.maxConcurrentReports) : undefined,
       trace: options.trace,
     };
-    const response = options.command === 'run' ? await startReview({ ...common, target: options.target }) : await resumeReview(options.id, common);
-    const output = { ok: true, run_id: response.manifest.id, run_dir: response.runDir, ...response.result };
-    process.stdout.write(options.json ? `${JSON.stringify(output, null, 2)}\n` : `${response.result.verdict}: ${response.result.findings.length} finding(s)\nrun: ${response.runDir}\n`);
+    const commands = { resume: resumeReview, submit: submitReview, finalize: finalizeReview, status: statusReview, close: closeReview, associate: associateReview };
+    const response = ['run', 'prepare'].includes(options.command) ? await (options.command === 'run' ? startReview : prepareReview)({ ...common, target: options.target }) : await commands[options.command](options.id, common);
+    const output = { ok: true, run_id: response.manifest.id, run_dir: response.runDir, ...response.result, ...(response.budget ? { budget: response.budget } : {}), ...(response.workers ? { workers: response.workers } : {}), ...(response.worker ? { worker: response.worker, retry: response.retry } : {}), ...(response.status ? { status: response.status } : {}) };
+    process.stdout.write(options.json ? `${JSON.stringify(output, null, 2)}\n` : `${response.result ? `${response.result.verdict}: ${response.result.findings.length} finding(s)` : options.command}\nrun: ${response.runDir}\nbudget: ${JSON.stringify(response.budget || {})}\n`);
     return 0;
   } catch (error) {
     process.stderr.write(`xm review: ${error.message}\n`);

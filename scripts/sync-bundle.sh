@@ -230,6 +230,7 @@ done
 shopt -u nullglob
 
 echo ""
+sync_file "x-review/lib/review-budget.mjs" "x-build/lib/review-budget.mjs"
 echo "=== Syncing x-review lib files ==="
 sync_file "x-review/lib/x-review-cli.mjs" "xm/lib/x-review-cli.mjs"
 ensure_dir "xm/lib/x-review"

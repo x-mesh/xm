@@ -67,52 +67,21 @@ Assign review perspectives using `--lenses` option or automatically.
 
 ### Default: adaptive-fast one-wave plan
 
-After writing the exact Phase-1 target to `$TARGET_FILE`, run:
+Use `xm review prepare` for native workers or `xm review run` for panel workers.
+Pass the collected target file, task identity, lens overrides, and context file to the lifecycle.
+Use `--base-ref REF` for commit-only reviews. Omit it when the target includes uncommitted files.
+The lifecycle owns the target, planner output, chunks, manifest, attempts, validation, and final artifacts.
+Display the saved budget before worker dispatch: `full=1, fix=1, delta=1`.
+These values are limits. Do not perform unnecessary fixes or delta reviews.
 
 ```bash
-node "$REVIEW_SKILL_DIR/scripts/plan-review.mjs" \
-  --target "$TARGET_FILE" \
-  <repeat `--target-file <path>` for file/full targets> \
-  --max-profiles "$ADAPTIVE_MAX_PROFILES" \
-  --chunk-token-budget "${X_REVIEW_CHUNK_TOKENS:-24000}" \
-  --chunk-file-budget "${X_REVIEW_CHUNK_FILES:-8}" \
-  --config "${X_REVIEW_CONFIG:-.xm-review.json}" \
-  --filtered-target "$RUN_DIR/target.filtered" \
-  --chunks-dir "$RUN_DIR/chunks" > "$RUN_DIR/plan.json"
+xm review prepare "$TARGET_FILE" --task-id "$TASK_ID" --json
+# For a PR, use --pr NUMBER --repo OWNER/NAME.
+# Include --zero-findings only when the user requests it before the first worker starts.
 ```
 
-If `target.filtered` differs from the collected target, make it the frozen `$TARGET_FILE` before
-creating `run.json`, snapshots, hashes, chunks, or dispatches. A repository may list
-`generated_copy_roots` in tracked `.xm-review.json`; the planner excludes a section only when an
-identical changed section exists outside every configured root, and records each excluded
-`file`/`source_file` pair in `excluded_generated_copies`. A generated-only change remains in scope.
-
-If the planner returns `mode: no-changes`, print "변경 사항이 없습니다" and exit without
-creating a run manifest or dispatching any reviewer. Binary and rename-only Git diffs still have
-reviewable file changes even when `changed_lines` is zero, so the planner must dispatch them.
-
-For a single `file` target, append `--target-file <path>` and the raw file body may be the frozen
-target. For multi-file and `full` targets, encode each file as a synthetic `diff --git a/<path>
-b/<path>` section with every content line prefixed by `+`; this preserves file-specific grounding.
-Diff/PR targets already provide those sections. Never leave `plan.files` empty for a non-empty
-review target, and never concatenate multiple raw files without section markers: either form
-cannot satisfy deterministic source coverage.
-
-Resolve `ADAPTIVE_MAX_PROFILES` from `--agents`, otherwise `agent_max_count`, clamped to 2-5. The
-planner always keeps `correctness` and `risk`, then adds `migrations`, `type-design`, or `docs` in
-that priority order for matching frozen-diff signals. Migration routing is path-based
-(`migration`/`schema`/`prisma`/`alembic`/`db` or `*.sql`) so DDL examples in tests and docs do not
-spend a reviewer. Dispatch all selected profiles in the same Agent message, so the common path
-remains one LLM wave. The token estimate uses UTF-8 bytes divided by 3 as a conservative,
-tokenizer-independent approximation; benchmark and adjust the default 24K budget rather than using
-changed-line thresholds. More than 100 files also triggers chunking because file dispersion raises
-coverage risk even when the token estimate is small. Copy `files` to `run.json.target_files` and copy `profiles`, `chunks`, and
-`expected_reports` to its manifest. Write the emitted chunk files under `$RUN_DIR/chunks`. When `chunked: true`, process chunks as
-bounded waves, dispatching all report instances with the same manifest `wave` in parallel using the
-manifest's `report_id`, `wave`, `target_hash`, and `target_files`.
-The planner packs `floor(agent_max_count / selected_profiles)` complete chunks into a wave, never
-splits one chunk's profiles across waves, and never exceeds `agent_max_count` concurrent reports.
-Only `reviewable: false` stops with `Review incomplete`; `requires_chunking` means execute chunks.
+Read the returned run manifest and worker attempts. Dispatch each expected report in its assigned wave.
+Never create run directories or write lifecycle artifacts manually.
 
 | Profile | Combined concerns |
 |---------|-------------------|
@@ -188,34 +157,19 @@ Fan-out — send the diff + dedicated perspective prompt to each agent simultane
 
 ### Run identity and result files (mandatory)
 
-Before dispatch, save the exact Phase 1 target bytes and bind every lens to one run identity:
+Call `prepare` before native dispatch. Use the returned logical report ID and attempt ID for each worker.
+Read `run.json` for the frozen target, prompt, hashes, wave, and source coverage.
+The lifecycle captures Phase-1 target bytes before dispatch and refuses stale findings at the Review-Fix Gate.
+Append the lens report contract to each worker prompt with these exact values.
+Pass `--context-file FILE` when the host supplies context. Invalid context stops preparation.
+Include the canonical context and its hash in each native prompt. Reports must echo the hash.
+Save worker output to a temporary transport file outside the run directory, then submit it:
 
 ```bash
-TASK_ID="review-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
-if command -v sha256sum >/dev/null 2>&1; then
-  TARGET_DIGEST=$(sha256sum "$TARGET_FILE" | awk '{print $1}')
-else
-  TARGET_DIGEST=$(shasum -a 256 "$TARGET_FILE" | awk '{print $1}')
-fi
-TARGET_HASH="sha256:$TARGET_DIGEST"
-RUN_DIR=".xm/review/runs/$TASK_ID"
-mkdir -p "$RUN_DIR/reports"
-# Write run.json with schema_version: 1, TASK_ID, TARGET_HASH, target_files, and expected_reports.
-# Each expected_reports entry is { "report_id": "security-1", "lens": "security" }.
+xm review submit "$RUN_ID" --report-id "$REPORT_ID" --attempt-id "$ATTEMPT_ID" --report "$REPORT_FILE" --json
 ```
-At the same Phase-1 boundary, resolve the complete target file list and snapshot each current
-file's raw-byte SHA-256 as `reviewed_files_all[]` + `reviewed_file_snapshots[]` for the final
-`last-result.json`. Deleted/absent paths use `exists: false, sha256: null`. Capture these now, not
-after review, so concurrent workspace edits make the later review-fix freshness gate fail closed.
 
-`run.json` is the dispatch manifest described by `references/lens-report-contract.md`. Append
-that contract to every lens prompt with the literal `task_id`, `target_hash`, `report_id`, and
-lens filled in. Assign one unique `report_id` per agent execution (`security-1`, `security-2`,
-etc.), including redundant agents for the same lens. Save each response unchanged to
-`$RUN_DIR/reports/{report_id}.json`; do not repair prose
-or manufacture a zero-finding JSON object on the agent's behalf.
-
-When the host supplies review context, validate and canonicalize it with `scripts/context-contract.mjs`, save it as `$RUN_DIR/context.json`, and set `context_status: "bound"` plus `context_hash` in `run.json`. Add the canonical contract in a `TRUSTED REVIEW CONTEXT` block before the untrusted `TARGET`; every bound lens report must echo the same hash. The `--cross-vendor` path passes the same context file to `xm panel review --context-file`, whose `status.json` and `verdict.json` must carry that hash. Otherwise set `context_status: "absent"` and disclose legacy compatibility mode. Supplied-invalid context fails closed. Persist the same status/hash and canonical contract in `last-result.json`; a changed hash requires a new review.
+The lifecycle validates and stores the report. Never repair a worker response or invent a clean result.
 
 **Invoke N Agent tools in a SINGLE message — one tool call per report instance, all in the same
 message.** That is what makes them run concurrently. **ALWAYS set `run_in_background: false`
@@ -262,59 +216,32 @@ dispatch a lens prompt that starts with the lens body alone. Same rule for the `
 agent and any other Agent tool spawn in this workflow. If a run does explode, the tell is agent
 descriptions repeating the same lens at increasing depth — stop the run, do not let it drain.
 
-### Delegate transport recovery (artifact first)
+### Delegate transport recovery
 
-Treat delegate transport state and report coverage as separate signals. A non-zero delegate call,
-`Broken pipe`, or `outcome unknown` says the response channel failed; it does not prove that the
-worker failed or that its report is absent.
-
-1. Persist every structured report already returned or present in `$RUN_DIR/reports`.
-2. Run `validate-reports.mjs` against the full expected manifest **before** declaring a timeout,
-   retrying a worker, or returning `Review incomplete`.
-3. If `validation.json.ok` is `true`, enter Phase 4. Record the transport error only as a
-   diagnostic; it cannot downgrade complete N/N coverage.
-4. If validation fails, restrict recovery to `missing_reports` and invalid report ids. When the
-   delegate error provides a `request_id` and an exact recovery command, execute that command once,
-   persist any recovered report, and rerun validation. Never invent a provider-specific retry flag.
-5. Fresh-agent re-dispatch is the last step and applies only to report ids that remain missing or
-   invalid after request-id recovery. "Invalid" includes a child that returned: `xm review resume`
-   records each validated child as `valid: true|false` in `children/<report_id>.json` and
-   re-dispatches the false ones, so a run rejected by the validator is repaired in place rather
-   than discarded. Grounding issues alone never mark a child invalid.
-6. **Bounded provider recovery:** timeout, wall-clock-cap, and command-budget failures get at most
-   one retry. Run `scripts/retry-target.mjs --target <frozen> --evidence <provider-artifact>
-   --attempt <count> --out <retry.patch>`. The helper selects exact target paths mentioned in the
-   evidence and copies their complete frozen diff sections. If it cannot derive a strict subset,
-   stop with `Review incomplete`; a stateless full-target retry is forbidden.
-
-The validator receipt is authoritative for review completeness. Delegate process exit status is
-transport evidence, not a substitute for report validation.
-
-**Before Phase 4, validate N reports for N dispatched report instances with the shipped validator.** Set
-`REVIEW_SKILL_DIR` to the absolute directory containing the `SKILL.md` you loaded for this run
-(not the reviewed project's working directory), then invoke its sidecar:
+Submit an empty response when the worker transport returns no usable body.
+The lifecycle first checks stored report bytes. A valid stored report needs no new worker.
+If the response contains `retry: true`, dispatch only that report with the new attempt ID.
+Use a fresh worker. Keep the logical report ID. Never reset attempt records on resume.
+A second unusable result ends the run as `Review incomplete`.
+Evidence-backed `findings: []` is a valid result and needs no retry.
 
 ```bash
-node "$REVIEW_SKILL_DIR/scripts/validate-reports.mjs" \
-  --manifest "$RUN_DIR/run.json" \
-  --reports-dir "$RUN_DIR/reports" \
-  --target "$TARGET_FILE" \
-  --chunks-dir "$RUN_DIR/chunks" \
-  --out "$RUN_DIR/validation.json"
+xm review finalize "$RUN_ID" --json
+xm review status "$RUN_ID" --json
+xm review close "$RUN_ID" --reason "User cancelled the review"
 ```
 
-Exit 0 and `validation.json.ok: true` are the Phase 4 entry gate. It requires N/N report coverage
-(including every `profile × chunk` entry) and complete `target_coverage`. A missing report, empty body,
-generic greeting, previous-task response, mismatched target, incomplete status, duplicate report,
-or unsubstantiated zero-finding response fails closed. Re-dispatch only failed lenses as **fresh
-agent tasks** using the same `task_id`, `target_hash`, and `report_id`, overwrite their report
-files, and rerun
-the validator. Do not use a continuation/follow-up on the stale agent. If complete coverage still
-cannot be obtained, stop with `Review incomplete` and list the invalid lenses. Never synthesize,
-emit LGTM, write `last-result.*`, append history, or record a review verdict from partial coverage.
+`finalize` requires N/N report coverage. A missing report, empty body, or stale hash prevents success.
+`target_coverage` records the checked source files and exposes any missing files.
+`finalize` performs deterministic coverage, context, hash, and report checks without another model call.
+A missing terminal receipt blocks new runs. Recover the existing run or explicitly close it.
+Success, incomplete, and cancelled receipts remain distinct. Closing a run never restores its budget.
+Close only on explicit user instruction: a run closed before a successful receipt leaves the task
+with no baseline, so every later review needs `--exception full`.
 
-A valid no-finding lens still contains `checked[]`, `findings: []`, and a specific
-`no_findings_reason`; it is evidence, not an empty report.
+A run created before the budget lifecycle has no `task_budget_id`, and `resume`, `close` and
+`status` all refuse it. Link it first with `xm review associate <id> --task-id <id> --reason TEXT`,
+which does not spend the task budget, then close it. `prepare` names the command that applies.
 
 ### Universal Review Principles
 
@@ -362,6 +289,9 @@ Each lens provides a specialized agent prompt. The orchestrator selects lenses p
 ---
 
 ## Phase 4: SYNTHESIZE
+
+Call `xm review finalize` for native runs. The lifecycle implements synthesis and persists the result.
+The following sections explain verdict semantics. Do not write result files or perform extra model calls.
 
 Once all agents complete, the leader generates a consolidated report.
 
@@ -711,10 +641,7 @@ case "$BRANCH" in
   main|master|develop) BASE="" ;;
 esac
 
-# Priority 3: Last reviewed commit (last-result.json) — legacy fallback when ledger unrecorded
-if [ -z "$LAST_REVIEW" ]; then
-  LAST_REVIEW=$(jq -r '.reviewed_commit // empty' .xm/review/last-result.json 2>/dev/null || echo "")
-fi
+# Task baselines belong to the lifecycle. Do not read another task's last-result.json.
 
 # Priority 4: Last release commit
 if [ -z "$LAST_REVIEW" ]; then
@@ -752,3 +679,26 @@ if ! git rev-parse --verify --quiet "${LAST_REVIEW}^{commit}" >/dev/null 2>&1; t
   [ -z "$LAST_REVIEW" ] && LAST_REVIEW=$(git hash-object -t tree /dev/null)
 fi
 ```
+
+## Worktree review budget
+
+The worktree stores task budgets under `.xm/review/budget.json` and protects changes with a local lock.
+PR identity uses `--repo OWNER/NAME --pr NUMBER`. Otherwise use `--task-id ID`, or the current branch.
+Detached HEAD requires `--task-id`. Other worktrees have independent budgets, even for the same PR.
+Use `associate RUN --pr NUMBER --repo OWNER/NAME --reason TEXT` to connect an active task to its PR.
+For legacy runs, specify the task identity and reason with `associate` before validation or closure.
+Association preserves usage and active work. It does not create a successful receipt.
+
+Only the first run uses full scope. Later runs use the last successful baseline for that task.
+Commit reviews compare saved SHAs. Worktree reviews compare saved file bytes. Corrupt or absent baselines stop execution.
+Delta results preserve earlier coverage, unresolved findings, and disposition evidence. Absence from a delta never resolves a finding.
+Report every new delta finding, regardless of severity, then stop. Do not start another automatic fix, review, or merge.
+Low findings do not block the default verdict. `--zero-findings` also blocks valid unresolved Low findings.
+
+The Review-Fix Gate consumes `fix=1` when it first approves a scope. Revalidation of that approval costs nothing.
+Triage regeneration cannot reset the budget. Additional full, fix, or delta work needs a recorded one-time exception.
+Use `--exception KIND --approved-by USER --reason TEXT` only after the user approves that specific action.
+An exception neither restores counters nor bypasses an unfinished run.
+
+For a legacy result without a run manifest, use `associate RUN --legacy-result .xm/review/last-result.json --task-id ID --reason TEXT`.
+The lifecycle retains the original result as evidence. Close the associated run if frozen validation artifacts are absent.

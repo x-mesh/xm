@@ -24,31 +24,10 @@ Review state is stored in `.xm/review/`.
 
 ## Review Result MD Save (MANDATORY)
 
-After every fully-covered review completes, save the Phase 4 final output as an MD file under `.xm/review/`. **This step cannot be skipped.** `runs/{task-id}/validation.json` must have `ok: true` first. An incomplete run keeps only its run/report/validation diagnostics and must not replace `last-result.*` or append history.
-
-1. `last-result.md` — latest review result (overwrite)
-2. `history/{YYYY-MM-DD}-{ref-slug}.md` — preserve history
-
-**ref-slug generation:**
-- `diff HEAD~1` → `head-1`
-- `pr 142` → `pr-142`
-- `diff main..HEAD` → `main-head`
-- `full` → `full`
-- `file src/auth.ts` → `file-src-auth-ts`
-
-**MD file content:** Save Phase 4 final output (verdict, findings, summary table, observations) as-is.
-Prepend metadata at the top of the file:
-```markdown
-# x-review: {target} — {verdict}
-- Date: {YYYY-MM-DD HH:MM}
-- Branch: {branch}
-- Lenses: {lenses}
-- Agents: {N}
-- Findings: {count} (Critical: {n}, High: {n}, Medium: {n}, Low: {n})
-
----
-{Phase 4 output}
-```
+The lifecycle is the only writer of run directories, manifests, attempts, validation, results, and history.
+Use `prepare`, `submit`, and `finalize` for native workers. Use `run` and `resume` for panel workers.
+Never manually overwrite these files. A successful terminal receipt binds the manifest, validation, target hash, and result.
+Incomplete and cancelled receipts retain consumed budget and never replace the successful task baseline.
 
 ## last-result.json Schema
 
@@ -125,3 +104,5 @@ the positional `F#` compatibility ID. A `fix_now` finding moves through
 ## Applies to
 
 Phase 4 finalization writes `.xm/review/last-result.{md,json}` + appends to history only after the lens report coverage validator passes.
+
+`budget.json` stores worktree-local task usage. `runs/<id>/terminal.json` stores the terminal validation receipt.

@@ -24,7 +24,7 @@ afterAll(() => rmSync(RUN_DEFAULT_CWD, { recursive: true, force: true }));
 
 function run(args, opts = {}) {
   const cwd = opts.cwd ?? RUN_DEFAULT_CWD;
-  const result = spawnSync('node', [CLI_PATH, ...args], {
+  const result = spawnSync('node', [args[0] === 'verify-review-fix' ? join(__dirname, 'fixtures', 'review-fix-content-cli.mjs') : CLI_PATH, ...args], {
     cwd,
     env: { ...process.env, XKIT_SERVER: undefined, X_BUILD_ROOT: undefined, XM_ROOT: join(cwd, '.xm'), ...opts.env },
     encoding: 'utf8',

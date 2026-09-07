@@ -316,7 +316,9 @@ describe('review-fix regressions', () => {
     writeTriage(ACTIVE_TRIAGE); writeResult({ verdict: 'Request Changes' });
     // "0" is a truthy STRING — the old `!!env` turned the guards off here
     expect(runHook(SCOPE_HOOK, { tool_name: 'Edit', tool_input: { file_path: 'src/other.ts' } }, { XM_BUILD_HOOKS_OFF: '0' }).status).toBe(2);
-    expect(runHook(STOP_HOOK, {}, { XM_BUILD_HOOKS_OFF: 'false' }).status).toBe(2);
+    const stop = runHook(STOP_HOOK, {}, { XM_BUILD_HOOKS_OFF: 'false' });
+    expect(stop.status).toBe(0);
+    expect(stop.stderr).toContain('unresolved Critical/High');
     // …and a real opt-out still works
     expect(runHook(SCOPE_HOOK, { tool_name: 'Edit', tool_input: { file_path: 'src/other.ts' } }, { XM_BUILD_HOOKS_OFF: '1' }).status).toBe(0);
   });
@@ -353,11 +355,13 @@ describe('scope-guard hook', () => {
 });
 
 describe('stop-gate hook', () => {
-  test('blocks with an unresolved Critical fix_now (exit 2)', () => {
+  test('reports unresolved Critical fix_now and allows stopping', () => {
     writeTriage(ACTIVE_TRIAGE); writeResult({ verdict: 'Request Changes' });
     const r = runHook(STOP_HOOK, {});
-    expect(r.status).toBe(2);
+    expect(r.status).toBe(0);
     expect(r.stderr).toContain('unresolved Critical/High');
+    expect(r.stderr).not.toContain('until LGTM');
+    expect(r.stderr).toContain('Merge remains blocked');
   });
   test('allows once the verdict is LGTM', () => {
     writeTriage(ACTIVE_TRIAGE); writeResult(LGTM);

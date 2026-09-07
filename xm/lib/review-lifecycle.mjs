@@ -1,10 +1,12 @@
+import { atomicJson, reviewRoot, withReviewLock, loadBudget, taskBudget, consume, terminalReceipt, finishRun, readState, digest, gitValue } from './review-budget.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { planReview, filterGeneratedCopies, chunkFrozenTarget, changedFilesFromPatch } from '../skills/review/scripts/plan-review.mjs';
+import { normalizeReviewContext, hashReviewContext } from '../skills/review/scripts/context-contract.mjs';
 import { validateReviewReports } from '../skills/review/scripts/validate-reports.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -27,7 +29,7 @@ function hash(value, prefixed = true) {
   return prefixed ? `sha256:${digest}` : digest;
 }
 function iso() { return new Date().toISOString(); }
-function json(path, value) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`); }
+const json = atomicJson;
 function readJson(path) { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; } }
 function normalizedPath(value) { return String(value || '').replace(/^\.\//, '').replace(/\\/g, '/'); }
 
@@ -53,11 +55,11 @@ function git(cwd, args) {
 
 function freezeTarget(target, cwd) {
   if (!target) {
-    let body = git(cwd, ['--no-pager', 'diff', '--binary', 'HEAD']);
+    let body = git(cwd, ['--no-pager', 'diff', '--binary', 'HEAD', '--', '.', ':!.xm']);
     if (body === null) throw new Error('unable to freeze git diff');
     const untracked = spawnSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], { cwd, encoding: 'utf8' });
     if (untracked.status !== 0) throw new Error('unable to enumerate untracked review files');
-    for (const file of (untracked.stdout || '').split('\0').filter(Boolean).sort()) {
+    for (const file of (untracked.stdout || '').split('\0').filter(file => file && file !== '.xm' && !file.startsWith('.xm/')).sort()) {
       const extra = spawnSync('git', ['--no-pager', 'diff', '--no-index', '--binary', '--', '/dev/null', file], { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
       if (![0, 1].includes(extra.status) || !(extra.stdout || '').trim()) throw new Error('unable to freeze untracked file: ' + file);
       body += '\n' + extra.stdout.trim();
@@ -167,6 +169,7 @@ function panelReport(stdout, expected, chunkBody, manifest) {
       throw new Error(`${expected.report_id}: ${model} supplied no clean-review reason`);
     }
   }
+  if (manifest.context_status === 'bound' && verdict.context_hash !== manifest.context_hash) throw new Error('panel context hash mismatch');
   const lines = lineMap(chunkBody);
   const findings = buckets.flatMap((bucket) => verdict[bucket].map((finding) => contractFinding(finding, bucket, expected, lines)));
   const checked = [...new Set(successfulModels.flatMap((model) => evidence[model].checked))];
@@ -174,6 +177,7 @@ function panelReport(stdout, expected, chunkBody, manifest) {
   return {
     schema_version: 1, task_id: manifest.task_id, report_id: expected.report_id, lens: expected.lens,
     target_hash: expected.target_hash, status: 'complete',
+    ...(manifest.context_status === 'bound' ? { context_hash: manifest.context_hash } : {}),
     checked, checked_files: expected.target_files,
     findings,
     // Name the slots that did not enter the verdict, so the reviewer count cannot be over-read.
@@ -214,13 +218,13 @@ function synthesize(reports) {
     existing.confidence = existing.consensus ? 'corroborated' : existing.confidence;
     if ((RANK[candidate.severity] ?? 9) < (RANK[existing.severity] ?? 9)) existing.severity = candidate.severity;
     const dispositions = new Set([existing.disposition, candidate.disposition]);
-    existing.disposition = dispositions.has('unreviewed') || dispositions.has('contested') ? 'unreviewed' : 'confirmed';
+    existing.disposition = dispositions.has('resolved') ? candidate.disposition : dispositions.has('unreviewed') || dispositions.has('contested') ? 'unreviewed' : 'confirmed';
     existing.source_dispositions = [...new Set([...(existing.source_dispositions || [existing.source_disposition]), candidate.source_disposition].filter(Boolean))].sort();
     existing.confidence = existing.disposition === 'unreviewed' ? 'unresolved' : existing.confidence;
   }
   findings.sort((a, b) => (RANK[a.severity] ?? 9) - (RANK[b.severity] ?? 9) || a.file.localeCompare(b.file) || a.line - b.line || a.description.localeCompare(b.description));
   findings.forEach((finding, index) => { finding.id = `F${index + 1}`; finding.finding_id = stableFindingId(finding); });
-  const active = findings.filter((finding) => finding.disposition !== 'contested');
+  const active = findings.filter((finding) => !['contested', 'resolved', 'false_positive'].includes(finding.disposition));
   const count = (level) => active.filter((finding) => finding.severity === level).length;
   const unresolved = active.filter((finding) => finding.disposition === 'unreviewed');
   let verdict = count('Critical') > 0 || count('High') > 2 ? 'Block' : count('High') > 0 || count('Medium') > 3 ? 'Request Changes' : 'LGTM';
@@ -256,6 +260,7 @@ function verifyChild(runDir, manifest, expected) {
 }
 
 function verifyBytes(runDir, manifest) {
+  if (manifest.context_status === 'bound' && hashReviewContext(readState(join(runDir, 'context.json'))) !== manifest.context_hash) throw new Error('context bytes do not match run manifest');
   const target = join(runDir, manifest.target.file);
   if (!existsSync(target) || hash(readFileSync(target)) !== manifest.target.hash || manifest.target.hash !== manifest.target_hash) throw new Error('frozen target bytes do not match run manifest');
   for (const chunk of manifest.chunks) if (!existsSync(join(runDir, chunk.target_file)) || hash(readFileSync(join(runDir, chunk.target_file))) !== chunk.target_hash) throw new Error(`${chunk.id}: frozen chunk bytes do not match run manifest`);
@@ -314,18 +319,39 @@ function recordChildValidity(runDir, manifest, validation) {
 
 function persistResult(runDir, manifest, validation, synthesis, persistOptions = {}) {
   const reviewDir = dirname(dirname(runDir));
+  let previous = null;
+  if (manifest.baseline) {
+    terminalReceipt(reviewDir, manifest.baseline);
+    previous = readState(join(reviewDir, 'runs', manifest.baseline, 'result.json'));
+    previous.findings = previous.findings.map(f => {
+      const row = manifest.finding_dispositions?.findings?.find(item => item.finding_id === f.finding_id);
+      const snap = row?.file_snapshot;
+      const validEvidence = row?.state === 'reverified' && row?.outcome === 'resolved' && row?.evidence && snap && manifest.fix_gate?.passed === true
+        && manifest.fix_gate.lifecycle_digest === digest(JSON.stringify(manifest.finding_dispositions))
+        && manifest.fix_gate.reviewed_commit === previous.reviewed_commit;
+      if (!validEvidence) return f;
+      const bytes = snapshotBytes(manifest.cwd, manifest.snapshot?.files?.[f.file] ?? null);
+      const current = { exists: bytes !== null, sha256: bytes === null ? null : hash(bytes, false) };
+      return snap.sha256 === current.sha256 && snap.exists === current.exists ? { ...f, disposition: 'resolved', resolution: row } : f;
+    });
+    const added = synthesis.findings.filter(f => !previous.findings.some(old => equivalentFinding(old, f)));
+    synthesis = { ...synthesize([{ findings: [...previous.findings, ...synthesis.findings] }]), new_findings: added, automatic_stop: added.length > 0 };
+  }
+  if (manifest.zero_findings && synthesis.findings.some(f => !['contested', 'resolved', 'false_positive'].includes(f.disposition))) synthesis.verdict = synthesis.verdict === 'Block' ? 'Block' : 'Request Changes';
   const timestamp = iso();
   const summary = Object.fromEntries(manifest.profiles.map(({ profile }) => {
-    const items = synthesis.findings.filter((f) => f.lenses.includes(profile) && f.disposition !== 'contested');
+    const items = synthesis.findings.filter((f) => (f.lenses || [f.lens]).includes(profile) && f.disposition !== 'contested');
     return [profile, { total: items.length, critical: items.filter((f) => f.severity === 'Critical').length, high: items.filter((f) => f.severity === 'High').length, medium: items.filter((f) => f.severity === 'Medium').length, low: items.filter((f) => f.severity === 'Low').length }];
   }));
   const result = {
+    task_budget_id: manifest.task_budget_id, review_mode: manifest.review_mode, zero_findings: manifest.zero_findings,
+    inherited_coverage: previous ? { run_id: previous.run_id, coverage: previous.coverage, target_coverage: previous.target_coverage, inherited: previous.inherited_coverage } : null,
     schema: 'xm.review.result.v2', timestamp, completed_at: timestamp, run_id: manifest.id, task_id: manifest.task_id,
     target: { type: manifest.target.kind === 'file' ? 'file' : 'diff', ref: manifest.target.ref }, target_hash: manifest.target_hash,
-    context_status: 'absent', lenses: manifest.profiles.map((entry) => entry.profile), agents: validation.coverage.valid,
+    context_status: manifest.context_status, ...(manifest.context_status === 'bound' ? { context_hash: manifest.context_hash, context_contract: manifest.context_contract } : {}), lenses: manifest.profiles.map((entry) => entry.profile), agents: validation.coverage.valid,
     coverage: { expected: validation.coverage.expected, completed: validation.coverage.valid, valid: validation.coverage.valid, ok: validation.ok, complete: validation.ok },
     target_coverage: validation.target_coverage,
-    execution: { mode: 'lifecycle', waves: new Set(manifest.expected_reports.map((entry) => entry.wave || 1)).size, backend: 'panel', models: manifest.options.models, duration_ms: Date.now() - Date.parse(manifest.started_at), retries: 0, escalation_reasons: [] },
+    execution: { mode: 'lifecycle', waves: new Set(manifest.expected_reports.map((entry) => entry.wave || 1)).size, backend: manifest.options.cross_vendor ? 'panel' : 'native', models: manifest.options.models, duration_ms: Date.now() - Date.parse(manifest.started_at), retries: 0, escalation_reasons: [] },
     reviewed_commit: manifest.reviewed_commit, reviewed_files_all: manifest.reviewed_files_all, reviewed_file_snapshots: manifest.reviewed_file_snapshots,
     ...synthesis, summary,
   };
@@ -343,10 +369,17 @@ function persistResult(runDir, manifest, validation, synthesis, persistOptions =
   const slug = String(manifest.target.ref).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || manifest.id;
   mkdirSync(join(reviewDir, 'history'), { recursive: true });
   writeFileSync(join(reviewDir, 'history', `${timestamp.slice(0, 10)}-${slug}-${manifest.id}.md`), md);
+  if (manifest.baseline && manifest.finding_dispositions && manifest.fix_gate) {
+    json(join(reviewDir, 'finding-lifecycle.json'), manifest.finding_dispositions);
+    json(join(reviewDir, 'review-fix-gate.json'), manifest.fix_gate);
+    if (manifest.fix_triage) json(join(reviewDir, 'triage.json'), manifest.fix_triage);
+  } else {
   json(join(reviewDir, 'finding-lifecycle.json'), {
-    schema: 1, reviewed_commit: manifest.reviewed_commit, reviewed_files_all: manifest.reviewed_files_all, updated_at: timestamp,
-    findings: result.findings.map((f) => ({ id: f.id, finding_id: f.finding_id, severity: f.severity.toLowerCase(), file: f.file, line: f.line, summary: f.description, state: 'open', outcome: null, evidence: null, file_snapshot: null, updated_at: timestamp })),
+    schema: 1, task_budget_id: manifest.task_budget_id, run_id: manifest.id, reviewed_commit: manifest.reviewed_commit, reviewed_files_all: manifest.reviewed_files_all, updated_at: timestamp,
+    // The prior row only carries forward fields this reset does not name; a new run always reopens the finding.
+    findings: result.findings.map((f) => ({ ...(manifest.finding_dispositions?.findings?.find(row => row.finding_id === f.finding_id) || {}), id: f.id, finding_id: f.finding_id, severity: f.severity.toLowerCase(), file: f.file, line: f.line, summary: f.description, state: 'open', outcome: null, evidence: null, file_snapshot: null, updated_at: timestamp })),
   });
+  }
   return result;
 }
 
@@ -391,6 +424,7 @@ function spawnChild(command, args, options) {
 }
 
 async function execute(manifest, runDir, options) {
+  if (!manifest.target || !manifest.expected_reports || !manifest.options) throw new Error('legacy run lacks frozen lifecycle artifacts; close it explicitly');
   verifyBytes(runDir, manifest);
   const command = commandParts(options.env);
   let failure = null;
@@ -401,14 +435,27 @@ async function execute(manifest, runDir, options) {
     // validator rejected carries `valid: false` and is dispatched again; a child from before
     // this field existed has no verdict and keeps the old skip behaviour.
     if (prior?.status === 'completed' && prior.valid !== false) { verifyChild(runDir, manifest, expected); event(runDir, 'child_skipped', { child_id: expected.report_id }, options.trace); return null; }
+    const savedReportPath = join(runDir, 'reports', `${expected.report_id}.json`);
+    if (existsSync(savedReportPath) && prior?.valid !== false) {
+      const validation = validateReviewReports(manifest, [{ file: `${expected.report_id}.json`, body: readFileSync(savedReportPath, 'utf8') }], { targetBody: readFileSync(join(runDir, 'target.patch'), 'utf8'), chunkBodies: Object.fromEntries(manifest.chunks.map(chunk => [chunk.target_file, readFileSync(join(runDir, chunk.target_file), 'utf8')])) });
+      if (validation.valid_reports.includes(expected.report_id)) {
+        json(childPath, { ...prior, ...expected, task_id: manifest.task_id, status: 'completed', valid: true, report_hash: hash(readFileSync(savedReportPath)) });
+        event(runDir, 'child_recovered', { report_id: expected.report_id, attempt_id: prior?.attempt_id });
+        return null;
+      }
+    }
     const attempt = prior ? (Number.isInteger(prior.attempt) ? prior.attempt : 1) + 1 : 1;
+    if (attempt > 2) return `${expected.report_id}: Review incomplete; retry budget exhausted`;
+    const attemptId = randomUUID();
+    json(childPath, { ...expected, task_id: manifest.task_id, status: 'running', attempt, attempt_id: attemptId });
     if (prior?.status === 'completed') event(runDir, 'child_redispatched', { child_id: expected.report_id, attempt, invalid_codes: prior.invalid_codes || [] }, options.trace);
     verifyBytes(runDir, manifest);
     const binding = manifest.bindings[expected.report_id];
     const args = [...command.slice(1), 'review', '--engine', 'native', join(runDir, binding.target_file), '--review-prompt-file', join(runDir, binding.prompt_file), '--lens-tag', expected.lens, '--json'];
+    if (manifest.context_status === 'bound') args.push('--context-file', join(runDir, 'context.json'));
     if (options.models) args.push('--models', options.models);
     if (options.rounds) args.push('--rounds', String(options.rounds));
-    event(runDir, 'child_started', { child_id: expected.report_id, lens: expected.lens, chunk_id: binding.chunk_id, attempt }, options.trace);
+    event(runDir, 'child_started', { child_id: expected.report_id, lens: expected.lens, chunk_id: binding.chunk_id, attempt, attempt_id: attemptId }, options.trace);
     const spawned = await spawnChild(command, args, options);
     let childFailure = spawned.status !== 0 ? `${expected.report_id}: panel exited ${spawned.status ?? 'unknown'}: ${(spawned.stderr || '').trim()}` : null;
     try {
@@ -416,16 +463,17 @@ async function execute(manifest, runDir, options) {
       const report = panelReport(spawned.stdout, expected, readFileSync(join(runDir, binding.target_file), 'utf8'), manifest);
       const reportPath = join(runDir, 'reports', `${expected.report_id}.json`);
       json(reportPath, report);
-      json(childPath, { ...expected, task_id: manifest.task_id, status: 'completed', attempt, completed_at: iso(), report_file: `reports/${expected.report_id}.json`, report_hash: hash(readFileSync(reportPath)) });
+      json(childPath, { ...expected, task_id: manifest.task_id, status: 'completed', attempt, attempt_id: attemptId, completed_at: iso(), report_file: `reports/${expected.report_id}.json`, report_hash: hash(readFileSync(reportPath)) });
       event(runDir, 'child_completed', { child_id: expected.report_id }, options.trace);
     } catch (error) {
       childFailure = error.message;
-      json(childPath, { ...expected, task_id: manifest.task_id, status: 'failed', attempt, error: childFailure, stdout: spawned.stdout || '', stderr: spawned.stderr || '' });
+      json(childPath, { ...expected, task_id: manifest.task_id, status: 'failed', attempt, attempt_id: attemptId, error: childFailure, stdout: spawned.stdout || '', stderr: spawned.stderr || '' });
       event(runDir, 'child_failed', { child_id: expected.report_id, error: childFailure }, options.trace);
     }
+    if (childFailure && attempt < 2 && /no successful reviewer evidence|not valid JSON/.test(childFailure)) return runExpected(expected);
     return childFailure;
   };
-  const waves = [...new Set(manifest.expected_reports.map((entry) => entry.wave || 1))].sort((a, b) => a - b);
+  const waves = options.finalizeOnly ? [] : [...new Set(manifest.expected_reports.map((entry) => entry.wave || 1))].sort((a, b) => a - b);
   const waveFailures = [];
   for (const wave of waves) {
     const waveReports = manifest.expected_reports.filter((entry) => (entry.wave || 1) === wave);
@@ -480,14 +528,23 @@ async function execute(manifest, runDir, options) {
   return result;
 }
 
-export async function startReview(options = {}) {
+async function prepareUnlocked(options = {}) {
   const cwd = resolve(options.cwd || process.cwd());
   const xmRoot = resolve(options.xmRoot || process.env.XM_REVIEW_ROOT || join(cwd, '.xm'));
-  const frozen = freezeTarget(options.target, cwd);
+  const frozen = options.frozen || freezeTarget(options.target, cwd);
   const id = options.runId || `review-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 17)}-${randomUUID()}`;
   if (!/^[a-zA-Z0-9._-]+$/.test(id)) throw new Error('invalid review run id');
   const runDir = join(xmRoot, 'review', 'runs', id);
   if (existsSync(runDir)) throw new Error(`review run already exists: ${id}`);
+  // Planning and prompt selection can still fail after the directory exists. A
+  // manifest-less directory owns no budget and blocks every later prepare, so
+  // remove it here rather than leaving the worktree wedged.
+  try { return await prepareRunDir({ ...options, cwd, xmRoot, frozen, id, runDir }); }
+  catch (error) { rmSync(runDir, { recursive: true, force: true }); throw error; }
+}
+
+async function prepareRunDir(options) {
+  const { cwd, frozen, id, runDir } = options;
   for (const name of ['chunks', 'prompts', 'children', 'reports', 'work']) mkdirSync(join(runDir, name), { recursive: true });
   const trace = options.trace !== false && options.env?.XM_REVIEW_TRACE !== '0';
   writeFileSync(join(runDir, 'target.patch'), frozen.body);
@@ -520,30 +577,325 @@ export async function startReview(options = {}) {
   const files = [...new Set(plan.files.map(normalizedPath))].sort();
   const commit = git(cwd, ['rev-parse', 'HEAD']);
   if (!commit || !/^[0-9a-f]{40}$/i.test(commit)) throw new Error('unable to bind review to a full HEAD commit');
+  const context = options.contextFile ? normalizeReviewContext(readState(resolve(cwd, options.contextFile))) : null;
+  if (context) json(join(runDir, 'context.json'), context);
   const manifest = {
+    task_budget_id: options.taskBudget.id, review_mode: options.reviewMode, baseline: options.baseline || null, zero_findings: options.zeroFindings === true, snapshot: options.snapshot,
     schema: 'xm.review.run.v2', schema_version: 1, id, task_id: id, created_at: iso(), started_at: iso(), cwd,
     target_hash: hash(frozen.body), target_files: files, context_status: 'absent', target: { kind: frozen.kind, ref: frozen.ref, hash: hash(frozen.body), file: 'target.patch' },
-    reviewed_commit: commit, reviewed_files_all: files, reviewed_file_snapshots: snapshots(cwd, files),
+    ...(context ? { context_status: 'bound', context_hash: hashReviewContext(context), context_contract: context } : {}),
+    reviewed_commit: commit, reviewed_files_all: files, reviewed_file_snapshots: options.snapshot?.kind === 'commits' ? files.map(file => {
+      const blob = spawnSync('git', ['show', `${commit}:${file}`], { cwd, maxBuffer: 64 * 1024 * 1024 });
+      return blob.status === 0 ? { file, exists: true, sha256: hash(blob.stdout, false) } : { file, exists: false, sha256: null };
+    }) : snapshots(cwd, files),
     profiles: lenses.map((profile) => ({ profile })), chunks, prompts, expected_reports: expectedReports, bindings,
     plan: { profiles: lenses, chunks: chunks.map(({ id: chunkId, files: chunkFiles, target_hash }) => ({ id: chunkId, files: chunkFiles, target_hash })) },
-    options: { cross_vendor: true, models: options.models ? options.models.split(',').filter(Boolean) : [], rounds: options.rounds || 1, trace, max_concurrent_reports: maxConcurrentReports },
+    options: { cross_vendor: !options.native, models: options.models ? options.models.split(',').filter(Boolean) : [], rounds: options.rounds || 1, trace, max_concurrent_reports: maxConcurrentReports },
   };
   json(join(runDir, 'run.json'), manifest); json(join(runDir, 'plan.json'), plan);
   json(join(runDir, 'status.json'), { state: 'running', updated_at: iso(), completed: 0, expected: expectedReports.length });
   event(runDir, 'run_started', { run_id: id, children: expectedReports.length }, trace);
   verifyBytes(runDir, manifest);
-  return { runDir, manifest, result: await execute(manifest, runDir, { cwd, env: options.env || process.env, models: options.models, rounds: options.rounds || 1, trace }) };
+  return { runDir, manifest };
 }
 
-export async function resumeReview(id, options = {}) {
+
+// A snapshot entry is either `git-blob:<sha>` (bytes recoverable from the object
+// database) or inline base64 for a file the commit does not hold. Inlining every
+// tracked file instead put a whole worktree copy in run.json — 17 MB per run here.
+const BLOB_REF = 'git-blob:';
+function snapshotBytes(cwd, value) {
+  if (value === null || value === undefined) return null;
+  if (!value.startsWith(BLOB_REF)) return Buffer.from(value, 'base64');
+  const blob = spawnSync('git', ['cat-file', 'blob', value.slice(BLOB_REF.length)], { cwd, maxBuffer: 64 * 1024 * 1024 });
+  if (blob.status !== 0) throw new Error(`missing snapshot blob: ${value}`);
+  return blob.stdout;
+}
+
+function workspaceSnapshot(cwd) {
+  const listing = spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd, encoding: 'utf8' });
+  if (listing.status !== 0) throw new Error('unable to snapshot worktree');
+  const commit = gitValue(cwd, ['rev-parse', 'HEAD']);
+  const tree = spawnSync('git', ['ls-tree', '-r', '-z', commit], { cwd, encoding: 'utf8' });
+  if (tree.status !== 0) throw new Error('unable to snapshot worktree');
+  const blobs = new Map();
+  for (const row of tree.stdout.split('\0').filter(Boolean)) {
+    const [meta, file] = row.split('\t');
+    const [, type, sha] = meta.split(/\s+/);
+    if (type === 'blob' && file) blobs.set(file, sha);
+  }
+  const dirty = new Set(spawnSync('git', ['diff', '--name-only', '-z', 'HEAD'], { cwd, encoding: 'utf8' }).stdout.split('\0').filter(Boolean));
+  const files = {};
+  for (const file of [...new Set(listing.stdout.split('\0').filter(Boolean))].sort()) {
+    if (file === '.xm' || file.startsWith('.xm/')) continue;
+    if (!existsSync(join(cwd, file))) { files[file] = null; continue; }
+    files[file] = !dirty.has(file) && blobs.has(file) ? `${BLOB_REF}${blobs.get(file)}` : readFileSync(join(cwd, file)).toString('base64');
+  }
+  return { commit, files };
+}
+
+function snapshotDelta(cwd, root, before, after) {
+  if (!before?.files || !before.commit) throw new Error('missing worktree baseline bytes; full fallback is forbidden');
+  const temp = join(root, `delta-${randomUUID()}`);
+  mkdirSync(temp, { recursive: true });
+  let patch = '';
+  try {
+    for (const file of [...new Set([...Object.keys(before.files), ...Object.keys(after.files)])].sort()) {
+      const old = before.files[file] ?? null, current = after.files[file] ?? null;
+      if (old === current) continue;
+      for (const [side, bytes] of [['a', old], ['b', current]]) {
+        if (bytes === null) continue;
+        const path = join(temp, side, file);
+        if (!resolve(path).startsWith(`${temp}/`)) throw new Error('unsafe snapshot path');
+        mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, snapshotBytes(cwd, bytes));
+      }
+      const left = old === null ? '/dev/null' : `a/${file}`;
+      const right = current === null ? '/dev/null' : `b/${file}`;
+      const diff = spawnSync('git', ['diff', '--no-index', '--binary', '--', left, right], { cwd: temp, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+      if (![0, 1].includes(diff.status)) throw new Error(`unable to compare baseline bytes: ${file}`);
+      patch += diff.stdout.replaceAll(`a/a/${file}`, `a/${file}`).replaceAll(`b/b/${file}`, `b/${file}`).replaceAll(`a/b/${file}`, `a/${file}`).replaceAll(`b/a/${file}`, `b/${file}`);
+    }
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+  if (!patch.trim()) throw new Error('review target is unchanged; no additional review is allowed');
+  return { body: patch, kind: 'git-diff', ref: `${before.commit}..worktree` };
+}
+
+function ownedRun(root, cwd, id) {
   if (!/^[a-zA-Z0-9._-]+$/.test(id || '')) throw new Error('invalid review run id');
-  const cwd = resolve(options.cwd || process.cwd());
-  const xmRoot = resolve(options.xmRoot || process.env.XM_REVIEW_ROOT || join(cwd, '.xm'));
-  const runDir = join(xmRoot, 'review', 'runs', id);
-  const manifest = readJson(join(runDir, 'run.json'));
-  if (!manifest || manifest.schema !== 'xm.review.run.v2' || manifest.schema_version !== 1) throw new Error(`invalid review run manifest: ${runDir}`);
-  verifyBytes(runDir, manifest);
-  const trace = options.trace ?? manifest.options.trace;
-  event(runDir, 'run_resumed', { run_id: id }, trace);
-  return { runDir, manifest, result: await execute(manifest, runDir, { cwd: manifest.cwd || cwd, env: options.env || process.env, models: options.models || manifest.options.models.join(','), rounds: options.rounds || manifest.options.rounds, trace }) };
+  const runDir = join(root, 'runs', id);
+  const manifest = readState(join(runDir, 'run.json'));
+  if (manifest.cwd !== cwd || !manifest.task_budget_id) throw new Error('legacy or foreign run requires explicit association');
+  return { runDir, manifest };
+}
+
+async function prepareInLock(options, { root, cwd }) {
+  const state = loadBudget(root);
+  if (state.active) throw new Error(`unfinished review ${state.active}; resume or close it before a new run`);
+  const runs = join(root, 'runs');
+  if (existsSync(runs)) for (const entry of readdirSync(runs, { withFileTypes: true })) {
+    // Only directories are runs; a stray .DS_Store or editor swap file is not one.
+    if (!entry.isDirectory()) continue;
+    const id = entry.name;
+    // A directory without a manifest is an aborted preparation: it owns no budget
+    // and no lifecycle command can act on it, so name the removal instead.
+    if (!existsSync(join(runs, id, 'run.json'))) throw new Error(`run ${id} has no manifest; preparation aborted before it was recorded. Remove ${join(runs, id)} to continue`);
+    if (!existsSync(join(runs, id, 'terminal.json'))) {
+      // resume/close reach a run only through ownedRun, which refuses one that
+      // predates the budget, so name the single command that works on each kind.
+      throw new Error(readState(join(runs, id, 'run.json')).task_budget_id
+        ? `run ${id} has no terminal validation receipt; resume or close it`
+        : `run ${id} has no terminal validation receipt; associate it first: xm review associate ${id} --task-id <id> --reason <text>`);
+    }
+    terminalReceipt(root, id);
+  }
+  if (existsSync(join(root, 'last-result.json')) && !readState(join(root, 'last-result.json')).task_budget_id && !state.associations?.some(item => (item.run_id === readState(join(root, 'last-result.json')).run_id || item.legacy_source_hash === digest(readFileSync(join(root, 'last-result.json')))))) throw new Error('legacy last-result.json requires explicit association with a run');
+  const task = taskBudget(root, cwd, options, state);
+  task.zero_findings = task.zero_findings === true || options.zeroFindings === true;
+  const mode = options.exception === 'full' ? 'full' : task.used.full === 0 ? 'full' : 'delta';
+  const snapshot = workspaceSnapshot(cwd);
+  let frozen;
+  if (mode === 'delta') {
+    if (!task.baseline) throw new Error('no validated task baseline; explicit full exception required');
+    if (terminalReceipt(root, task.baseline).outcome !== 'success') throw new Error('baseline is not successful');
+    const before = readState(join(root, 'runs', task.baseline, 'run.json'));
+    if (before.context_status === 'bound') {
+      if (options.contextFile && hashReviewContext(readState(resolve(cwd, options.contextFile))) !== before.context_hash) throw new Error('changed review context requires an explicit full exception');
+      options.contextFile ||= join(root, 'runs', task.baseline, 'context.json');
+    }
+    if (before.task_budget_id !== task.id || before.snapshot_hash !== digest(JSON.stringify(before.snapshot))) throw new Error('corrupt task baseline');
+    if (before.snapshot.kind === 'commits') {
+      const body = gitValue(cwd, ['diff', '--binary', before.reviewed_commit, snapshot.commit]);
+      if (!body) throw new Error('review target is unchanged');
+      frozen = { body, kind: 'git-diff', ref: `${before.reviewed_commit}..${snapshot.commit}` };
+      snapshot.kind = 'commits';
+    } else frozen = snapshotDelta(cwd, root, before.snapshot, snapshot);
+  } else if (options.baseRef) {
+    frozen = { body: gitValue(cwd, ['diff', '--binary', options.baseRef, snapshot.commit]), kind: 'git-diff', ref: `${options.baseRef}..${snapshot.commit}` };
+    snapshot.kind = 'commits';
+  }
+  consume(task, mode, options);
+  const response = await prepareUnlocked({ ...options, cwd, xmRoot: dirname(root), frozen, snapshot, taskBudget: task, zeroFindings: task.zero_findings, reviewMode: mode, baseline: mode === 'delta' ? task.baseline : null });
+  if (mode === 'delta') {
+    const before = readState(join(root, 'runs', task.baseline, 'run.json'));
+    const allFiles = [...new Set([...before.reviewed_files_all, ...response.manifest.reviewed_files_all])].sort();
+    response.manifest.reviewed_files_all = allFiles;
+    response.manifest.reviewed_file_snapshots = snapshots(cwd, allFiles);
+  }
+  if (snapshot.kind === 'commits') {
+    snapshot.files = Object.fromEntries(response.manifest.reviewed_files_all.map(file => {
+      const blob = spawnSync('git', ['show', `${snapshot.commit}:${file}`], { cwd, maxBuffer: 64 * 1024 * 1024 });
+      return [file, blob.status === 0 ? blob.stdout.toString('base64') : null];
+    }));
+  }
+  response.manifest.reviewed_file_snapshots = response.manifest.reviewed_files_all.map(file => {
+    const bytes = snapshotBytes(cwd, snapshot.files[file] ?? null);
+    return { file, exists: bytes !== null, sha256: bytes === null ? null : hash(bytes, false) };
+  });
+  const dispositions = readJson(join(root, 'finding-lifecycle.json'));
+  response.manifest.finding_dispositions = task.fix_evidence && task.fix_evidence.run_id === task.baseline ? task.fix_evidence.lifecycle : dispositions?.task_budget_id === task.id ? dispositions : null;
+  response.manifest.fix_gate = task.fix_evidence && task.fix_evidence.run_id === task.baseline ? task.fix_evidence.gate : dispositions?.task_budget_id === task.id ? readJson(join(root, 'review-fix-gate.json')) : null;
+  response.manifest.fix_triage = task.fix_evidence?.triage || null;
+  response.manifest.snapshot_hash = digest(JSON.stringify(snapshot));
+  json(join(response.runDir, 'run.json'), response.manifest);
+  state.active = response.manifest.id;
+  json(join(root, 'budget.json'), state);
+  response.budget = { limits: task.limits, used: task.used, mode };
+  event(response.runDir, 'budget_reserved', response.budget, options.trace);
+  options.onPrepared?.(response.budget);
+  return response;
+}
+
+async function executeOwned(response, root, options) {
+  const { manifest, runDir } = response;
+  if (existsSync(join(runDir, 'terminal.json'))) {
+    const receipt = terminalReceipt(root, manifest.id);
+    if (loadBudget(root).active === manifest.id) finishRun(root, manifest, receipt.outcome, receipt.reason);
+    if (receipt.outcome !== 'success') throw new Error(`Review ${receipt.outcome}; closed runs cannot resume`);
+    return { ...response, result: readState(join(runDir, 'result.json')) };
+  }
+  if (loadBudget(root).active !== manifest.id) throw new Error('run does not own active worktree lock');
+  if (!manifest.options || !manifest.expected_reports) throw new Error('legacy run lacks frozen lifecycle artifacts; close it explicitly');
+  try {
+    const result = await execute(manifest, runDir, { cwd: manifest.cwd, env: options.env || process.env, models: options.models || manifest.options.models.join(','), rounds: options.rounds || manifest.options.rounds, trace: options.trace ?? manifest.options.trace, finalizeOnly: options.finalizeOnly });
+    finishRun(root, manifest, 'success');
+    return { ...response, result };
+  } catch (error) {
+    const exhausted = manifest.expected_reports.some(expected => {
+      const child = readJson(join(runDir, 'children', `${expected.report_id}.json`));
+      return child?.attempt >= 2 && (child.status !== 'completed' || child.valid === false);
+    });
+    if (exhausted) {
+      finishRun(root, manifest, 'incomplete', error.message);
+      throw new Error(`Review incomplete: ${error.message}`);
+    }
+    throw error;
+  }
+}
+
+export async function prepareReview(options = {}) {
+  return withReviewLock(options, async location => {
+    const response = await prepareInLock({ ...options, native: true }, location);
+    for (const expected of response.manifest.expected_reports) {
+      json(join(response.runDir, 'children', `${expected.report_id}.json`), { ...expected, task_id: response.manifest.task_id, status: 'running', attempt: 1, attempt_id: randomUUID() });
+    }
+    return { ...response, workers: response.manifest.expected_reports.map(expected => readState(join(response.runDir, 'children', `${expected.report_id}.json`))) };
+  });
+}
+export async function startReview(options = {}) {
+  return withReviewLock(options, async location => executeOwned(await prepareInLock(options, location), location.root, options));
+}
+export async function resumeReview(id, options = {}) {
+  return withReviewLock(options, async ({ root, cwd }) => {
+    const response = ownedRun(root, cwd, id);
+    if (!response.manifest.options) throw new Error('legacy run lacks frozen lifecycle artifacts; close it explicitly');
+    return executeOwned(response, root, { ...options, finalizeOnly: !response.manifest.options.cross_vendor });
+  });
+}
+export async function submitReview(id, options = {}) {
+  return withReviewLock(options, async ({ root, cwd }) => {
+    const response = ownedRun(root, cwd, id), { runDir, manifest } = response;
+    if (loadBudget(root).active !== id || existsSync(join(runDir, 'terminal.json'))) throw new Error('run is not active');
+    verifyBytes(runDir, manifest);
+    const expected = manifest.expected_reports.find(entry => entry.report_id === options.reportId);
+    if (!expected) throw new Error('unknown report id');
+    const childPath = join(runDir, 'children', `${expected.report_id}.json`);
+    const child = readState(childPath);
+    if (child.attempt_id !== options.attemptId) throw new Error('stale worker attempt id');
+    const reportPath = join(runDir, 'reports', `${expected.report_id}.json`);
+    if (child.status === 'completed' && child.valid !== false) { verifyChild(runDir, manifest, expected); return { ...response, worker: child }; }
+    let body = options.report ? readFileSync(resolve(cwd, options.report), 'utf8') : '';
+    // Empty worker replies can still have a persisted report from interrupted submission.
+    if (!body.trim() && existsSync(reportPath)) body = readFileSync(reportPath, 'utf8');
+    const validation = validateReviewReports(manifest, [{ file: `${expected.report_id}.json`, body }], { targetBody: readFileSync(join(runDir, 'target.patch'), 'utf8'), chunkBodies: Object.fromEntries(manifest.chunks.map(chunk => [chunk.target_file, readFileSync(join(runDir, chunk.target_file), 'utf8')])) });
+    if (!validation.valid_reports.includes(expected.report_id)) {
+      if (child.attempt >= 2) {
+        json(join(runDir, 'validation.json'), validation);
+        finishRun(root, manifest, 'incomplete', `${expected.report_id}: second unusable worker result`);
+        throw new Error('Review incomplete: second unusable worker result');
+      }
+      const retry = { ...child, attempt: child.attempt + 1, attempt_id: randomUUID(), status: 'running' };
+      json(childPath, retry); event(runDir, 'child_retry', { report_id: expected.report_id, previous_attempt_id: child.attempt_id, attempt_id: retry.attempt_id });
+      return { ...response, worker: retry, retry: true };
+    }
+    json(reportPath, JSON.parse(body));
+    const completed = { ...child, status: 'completed', valid: true, report_hash: hash(readFileSync(reportPath)) };
+    json(childPath, completed);
+    return { ...response, worker: completed, retry: false };
+  });
+}
+export async function finalizeReview(id, options = {}) {
+  return withReviewLock(options, ({ root, cwd }) => executeOwned(ownedRun(root, cwd, id), root, { ...options, finalizeOnly: true }));
+}
+export async function statusReview(id, options = {}) {
+  const { root, cwd } = reviewRoot(options);
+  const response = ownedRun(root, cwd, id);
+  const terminal = existsSync(join(response.runDir, 'terminal.json')) ? terminalReceipt(root, id) : null;
+  return { ...response, budget: loadBudget(root), status: { ...readState(join(root, 'runs', id, 'status.json')), terminal } };
+}
+export async function closeReview(id, options = {}) {
+  if (!options.reason?.trim()) throw new Error('close requires --reason');
+  return withReviewLock(options, ({ root, cwd }) => {
+    const response = ownedRun(root, cwd, id);
+    if (existsSync(join(response.runDir, 'terminal.json'))) {
+      const receipt = terminalReceipt(root, id);
+      if (loadBudget(root).active === id) finishRun(root, response.manifest, receipt.outcome, receipt.reason);
+      return response;
+    }
+    finishRun(root, response.manifest, 'cancelled', options.reason);
+    json(join(response.runDir, 'status.json'), { state: 'cancelled', reason: options.reason });
+    return response;
+  });
+}
+
+export async function associateReview(id, options = {}) {
+  if (!options.taskId && !options.pr) throw new Error('association requires explicit --task-id or --pr and --repo');
+  if (!options.reason?.trim()) throw new Error('association requires --reason');
+  return withReviewLock(options, ({ root, cwd }) => {
+    if (!/^[a-zA-Z0-9._-]+$/.test(id || '')) throw new Error('invalid review run id');
+    const runDir = join(root, 'runs', id);
+    const state = loadBudget(root);
+    if (state.active && state.active !== id) throw new Error(`unfinished review ${state.active} must be closed first`);
+    let manifest;
+    if (!existsSync(join(runDir, 'run.json')) && options.legacyResult) {
+      const source = resolve(cwd, options.legacyResult);
+      if (realpathSync(source) !== realpathSync(join(root, 'last-result.json'))) throw new Error('--legacy-result must identify this worktree review/last-result.json');
+      const old = readState(source);
+      if (old.task_budget_id || existsSync(runDir)) throw new Error('legacy import requires an unused run id and an unassociated result');
+      mkdirSync(runDir, { recursive: true });
+      json(join(runDir, 'legacy-result.json'), old);
+      manifest = { id, task_id: id, cwd, target_hash: old.target_hash || digest(readFileSync(source)), legacy_source_hash: digest(readFileSync(source)) };
+    } else manifest = readState(join(runDir, 'run.json'));
+    if (existsSync(join(runDir, 'terminal.json'))) throw new Error('associate the active run or use prepare to link a completed task');
+    let task;
+    if (manifest.task_budget_id) {
+      const entry = Object.entries(state.tasks).find(([, value]) => value.id === manifest.task_budget_id);
+      if (!entry) throw new Error('run budget is missing');
+      if (options.pr) {
+        const local = options.taskId ? `task:${options.taskId}` : `branch:${gitValue(cwd, ['branch', '--show-current'])}`;
+        state.aliases[local] = entry[0];
+      }
+      task = taskBudget(root, cwd, options, state);
+      if (task.id !== manifest.task_budget_id) throw new Error('association would switch the active task');
+    } else {
+      if (manifest.cwd && gitValue(manifest.cwd, ['rev-parse', '--show-toplevel']) !== cwd) throw new Error('cannot associate a foreign worktree run');
+      task = taskBudget(root, cwd, options, state);
+      // An imported result is a review that already happened, so it spends the full
+      // unit. Adopting a run that never produced one is recovery: charging it would
+      // leave the task with no baseline and no full unit, so the first real review
+      // would need --exception full just to clear an old directory.
+      if (manifest.legacy_source_hash) task.used.full += 1;
+      manifest.id = id;
+      manifest.task_id ||= id;
+      manifest.task_budget_id = task.id;
+      manifest.review_mode = 'full';
+      manifest.cwd = cwd;
+      manifest.legacy = true;
+      json(join(runDir, 'run.json'), manifest);
+    }
+    state.active = id;
+    state.associations ||= [];
+    state.associations.push({ run_id: id, task_budget_id: task.id, legacy_source_hash: manifest.legacy_source_hash, reason: options.reason, at: iso() });
+    json(join(root, 'budget.json'), state);
+    return { runDir, manifest, budget: { limits: task.limits, used: task.used } };
+  });
 }

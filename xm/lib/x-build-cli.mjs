@@ -129,7 +129,7 @@ switch (cmd) {
   case 'verify-coverage': cmdVerifyCoverage(args); break;
   case 'verify-traceability': cmdVerifyTraceability(args); break;
   case 'verify-contracts': cmdVerifyContracts(args); break;
-  case 'verify-review-fix': cmdVerifyReviewFix(args); break;
+  case 'verify-review-fix': await cmdVerifyReviewFix(args); break;
   case 'review-precision': cmdReviewPrecision(args); break;
   case 'verify-drift': cmdVerifyDrift(args); break;
   case 'context-usage':  cmdContextUsage(args); break;

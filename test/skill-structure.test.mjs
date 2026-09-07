@@ -40,7 +40,7 @@ describe('x-review headless execution boundary', () => {
 describe('x-review bounded panel execution', () => {
   const skill = readSkill('x-review');
 
-  test('chunks frozen panel targets to at most three files', () => {
+  test('chunks frozen panel targets to at most eight files', () => {
     expect(skill).toContain('--chunk-file-budget 8');
     expect(skill).toContain('at most 8 frozen diff files');
     expect(skill).toContain('forbid repository search or opening files');
@@ -273,7 +273,7 @@ describe('x-review SKILL.md structure', () => {
   test('review artifacts bind review-fix to Phase-1 target bytes', () => {
     expect(content).toContain('reviewed_files_all');
     expect(content).toContain('reviewed_file_snapshots');
-    expect(workflow).toContain('Capture these now, not');
+    expect(workflow).toContain('captures Phase-1 target bytes before dispatch');
     expect(workflow).toContain('refuses stale findings');
     expect(dataDirectory).toContain('raw bytes with SHA-256');
     expect(dataDirectory).toContain('not eligible for review-fix');
@@ -302,18 +302,14 @@ describe('x-review SKILL.md structure', () => {
 
   test('recovers delegate transport failures from validated artifacts first', () => {
     expect(content).toContain('Artifact-first recovery');
-    expect(workflow).toContain('Delegate transport recovery (artifact first)');
-    expect(workflow).toContain('Broken pipe');
-    expect(workflow).toContain('validation.json.ok');
-    expect(workflow).toContain('request_id');
-    expect(workflow).toContain('Never invent a provider-specific retry flag');
+    expect(workflow).toContain('xm review submit');
+    expect(workflow).toContain('first checks stored report bytes');
+    expect(workflow).toContain('retry: true');
+    expect(workflow).toContain('new attempt ID');
+    expect(workflow).toContain('second unusable result');
+    expect(workflow).toContain('Never reset attempt records on resume');
+    expect(workflow).not.toContain('mkdir -p "$RUN_DIR/reports"');
 
-    const validatePos = workflow.indexOf('Run `validate-reports.mjs` against the full expected manifest');
-    const recoveryPos = workflow.indexOf('execute that command once');
-    const redispatchPos = workflow.indexOf('Fresh-agent re-dispatch is the last step');
-    expect(validatePos).toBeGreaterThan(0);
-    expect(recoveryPos).toBeGreaterThan(validatePos);
-    expect(redispatchPos).toBeGreaterThan(recoveryPos);
   });
 
   test('all 7 lenses documented', () => {
