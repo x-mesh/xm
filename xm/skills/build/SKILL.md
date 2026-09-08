@@ -33,7 +33,7 @@ bare goal이나 `build me` 요청에는 다음 순서만 사용합니다.
 3. 다음 조건을 모두 만족하면 direct route를 선택합니다: 변경 범위가 bounded이고, 예상 파일이 독립적이며, task-specific failure mode를 test·property test·boundary test·stress budget 같은 결정적 검증으로 관측할 수 있습니다.
 4. 공유 파일·넓은 설계 변경처럼 품질을 충분히 관측할 수 없거나 dependency가 불확실하면 planned route를 선택합니다. 각 task에는 목적, 예상 수정 파일, 실제 dependency, done criteria와 검증 명령만 포함합니다.
 5. 방향 승인이 필요한 규모라면 계획을 보여주고 한 번만 승인받습니다. 저장소에서 확인할 수 있는 사실을 묻지 않습니다.
-6. direct route는 task-specific failure mode와 done criteria를 prompt에 넣어 host native agent로 실행합니다. planned route는 x-plan Standard 결과를 host native agent로 실행합니다. 순차 실행이 기본이며, 독립성과 시간 이득이 확인될 때만 병렬화합니다.
+6. direct route는 task-specific failure mode와 done criteria를 prompt에 넣어 host native agent로 실행합니다. planned route는 configured planner agent 안에서 x-plan Standard를 실행한 뒤 그 결과를 configured executor agent로 실행합니다. 순차 실행이 기본이며, 독립성과 시간 이득이 확인될 때만 병렬화합니다.
 7. 변경 때문에 실패할 수 있는 가장 가까운 기존 검증만 선택합니다. test, lint, build, review를 고정 checklist로 모두 실행하지 않습니다.
 8. direct 결과가 결정적 quality gate에 실패하면 변경된 상태를 planning context로 재사용하지 않고 clean state에서 planned route로 한 번만 escalation합니다. escalation 사실과 두 경로의 비용·시간 차이를 관측 가능하게 남깁니다.
 9. 확인된 결과, 실행하지 못한 검증과 남은 제한만 보고합니다.
@@ -49,6 +49,8 @@ xm build route decide --kind bugfix|feature|refactor|docs|test|config|dependency
 - `direct`: `route start`로 baseline·예상 파일·gate 명령을 고정한 뒤 task-specific failure mode를 prompt에 넣어 실행합니다. `route verify`가 gate를 직접 실행하고 byte-bound receipt를 생성합니다. 실패하면 결과를 채택하지 않고 clean state에서 `route start --fallback`으로 planned route를 한 번만 실행합니다.
 - `planned`: direct를 먼저 시도하지 않고 x-plan Standard → native execution으로 진행합니다.
 - route 결정에서 요구한 gate를 실행할 수 없게 되면 direct 결과를 채택하지 않습니다.
+
+route JSON의 `model_routes.plan`과 `model_routes.execute`는 현재 config에서 고정한 model contract입니다. Claude는 각 단계에서 `model_by_vendor.claude`를 사용합니다. Codex는 각 단계에서 `model_by_vendor.codex`의 model과 effort를 사용합니다. 값이 `inherit`이면 host의 model 인자를 생략합니다. 다른 tier나 현재 세션 model로 대체하지 않습니다.
 
 실행은 다음 receipt 흐름을 사용합니다. `route verify`가 gate 명령을 직접 실행하며 command output은 receipt에 저장하지 않습니다. `route finish`는 receipt 이후 expected file이나 HEAD가 바뀌면 결과 기록을 거부합니다. 비용은 같은 decision에 결합된 actual cost event를 자동 합산하고, 없으면 추측하지 않고 `null`로 남깁니다.
 
@@ -115,14 +117,18 @@ fallback은 다음 조건을 모두 만족할 때만 추가합니다.
 ## Planning Contract
 
 - 기본 planning은 x-plan Standard의 inspect → clarify → draft → critique → finalize 방식을 따릅니다.
+- planned route에서는 `model_routes.plan`으로 planner agent를 먼저 시작하고, 그 planner agent 안에서 x-plan Standard 전체를 수행합니다. 현재 root session에서 plan을 대신 작성하지 않습니다.
 - Quick은 사용자가 명시적으로 요청할 때만 사용합니다.
 - 질문은 user-owned blocker로 제한하며 최대 3개를 한 번에 묻습니다.
 - 계획은 확인된 경로, API와 검증 명령만 사용합니다. 추측으로 executable 상태를 만들지 않습니다.
 - plan artifact가 필요하면 x-plan의 `.xm/plan` 저장만 사용합니다. 같은 내용을 `.xm/build`에 복제하지 않습니다.
+- planner agent가 저장한 plan artifact와 envelope를 다시 읽고 `executable=true`인지 확인합니다. plan artifact가 없거나 `executable=false`이면 실패를 보고하고 중단합니다.
+- plan 생성이 실패하면 execute로 진행하지 않습니다. 임시 prompt나 root session의 초안으로 plan을 대체하지 않습니다.
 
 ## Native Execution Contract
 
 - agent batch 전에 실제 사용할 model과 task 수를 한 줄로 알립니다.
+- direct route와 planned route의 Execute는 `model_routes.execute`를 사용합니다. Claude는 `model_routes.execute.model_by_vendor.claude`를 사용합니다.
 - task prompt에 Execution Principles와 task-specific done criteria를 포함합니다.
 - 순차 실행이 기본입니다. 병렬 실행은 예상 수정 파일, 공유 상태, dependency와 검증 환경이 모두 독립적이고 측정 가능한 시간 이득이 예상될 때만 허용합니다.
 - 병렬화를 위해 task를 억지로 분해하거나 worktree를 만들지 않습니다.
@@ -158,6 +164,8 @@ Legacy experimental opt-in only입니다. 사용자가 worktree 실행을 명시
 ## Model Disclosure
 
 native agent batch 전에 실제 model을 알립니다. 여러 model이면 task별로 구분합니다. model을 확인할 수 없으면 추측하지 말고 provider default라고 표시합니다.
+
+planned route에서는 plan과 execute model을 모두 알립니다. Claude plan은 `model_routes.plan.model_by_vendor.claude`, Codex plan은 `model_routes.plan.model_by_vendor.codex`를 사용합니다. Codex Execute는 `model_routes.execute.model_by_vendor.codex`를 사용합니다.
 
 ### Korean output style (avoid AI-slop)
 

@@ -24,6 +24,7 @@ front door to the same engine.
 - "지난 op 결과 / show the previous council/debate result" → `list --type op` then `show <id>`
 - "전에 만든 plan / pull up the last PRD" → `list --type plan` / `show plan:<name>`
 - "이 repo에서 X 관련 산출물 찾아줘" → `search "X"`
+- "headroom에서 최근 plan 찾아줘" → `list --repo headroom --type plan`
 - "최근 리뷰를 Codex가 다시 보게 / hand this to another tool" → `show review --last` (paste output, or tell them to run the same command)
 - "이전 세션이 뭘 했는지 / regenerate a tool-neutral handoff" → `handoff-md`
 
@@ -51,9 +52,9 @@ front door to the same engine.
 
    | Command | Use |
    |---------|-----|
-   | `xm recall list [--type T] [--project P] [--since 7d] [--limit N] [--json]` | Browse artifacts, newest first |
-   | `xm recall show <id\|type> [--last] [--json]` | Print one artifact's content |
-   | `xm recall search "<query>" [--type T] [--json]` | Full-text + metadata search |
+   | `xm recall list [--repo R] [--type T] [--project P] [--since 7d] [--limit N] [--json]` | Browse artifacts, newest first |
+   | `xm recall show <id\|type> [--repo R] [--last] [--json]` | Print one artifact's content |
+   | `xm recall search "<query>" [--repo R] [--type T] [--json]` | Full-text + metadata search |
    | `xm recall handoff-md` | (Re)write rich tool-neutral `.xm/build/HANDOFF.summary.md` |
    | `xm recall types` | List artifact types |
 
@@ -62,6 +63,8 @@ front door to the same engine.
 2. **Run it, then present, don't dump.** For `list`/`search`, summarize the top
    hits and offer to `show` a specific one. For `show`, the output IS the
    artifact — relay the verdict/summary, not a re-derivation.
+
+   If the user names another local repository, pass it once with `--repo`. Do not run recall in the current repository first and then search the filesystem.
 
 3. **For "hand to another tool" requests**, give the exact command the other
    session should run (`xm recall show <id>`) AND the resolved content, so the

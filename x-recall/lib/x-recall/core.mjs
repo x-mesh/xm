@@ -8,6 +8,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve, extname, basename } from 'node:path';
 import { execSync } from 'node:child_process';
+import { homedir } from 'node:os';
 
 export { readFileSync, existsSync, readdirSync, statSync };
 export { join, resolve, extname, basename };
@@ -41,6 +42,27 @@ function resolveXmDir() {
 export const XM_ROOT = process.env.X_RECALL_ROOT
   ? resolve(process.env.X_RECALL_ROOT)
   : resolveXmDir();
+
+function projectsFile() {
+  return process.env.X_RECALL_PROJECTS_FILE
+    ? resolve(process.env.X_RECALL_PROJECTS_FILE)
+    : join(homedir(), '.xm', 'projects.json');
+}
+
+export function resolveRegisteredRepository(selector) {
+  if (!selector) return { root: null, entry: null, error: null };
+  const registry = readJSON(projectsFile());
+  const projects = Array.isArray(registry?.projects) ? registry.projects : [];
+  const query = String(selector).trim();
+  const matches = projects.filter((entry) => !entry.archived && (
+    entry.id === query || entry.name === query || entry.path === query || basename(entry.path || '') === query
+  ));
+  if (matches.length === 0) return { root: null, entry: null, error: `Registered repository not found: ${query}` };
+  if (matches.length > 1) return { root: null, entry: null, error: `Registered repository is ambiguous: ${query}` };
+  const root = join(resolve(matches[0].path), '.xm');
+  if (!existsSync(root)) return { root: null, entry: matches[0], error: `Registered repository has no .xm directory: ${query}` };
+  return { root, entry: matches[0], error: null };
+}
 
 // ── ANSI colors (TTY-aware, NO_COLOR honored) ────────────────────────
 

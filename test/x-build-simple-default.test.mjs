@@ -24,12 +24,24 @@ describe('x-build simple default workflow', () => {
     expect(buildSkill).toContain('xm build route status');
     expect(buildSkill).toContain('route abandon --decision-id <id>');
     expect(buildSkill).toContain('xm build route prove');
+    expect(buildSkill).toContain('model_routes.plan.model_by_vendor.claude');
+    expect(buildSkill).toContain('model_routes.execute.model_by_vendor.claude');
+    expect(buildSkill).toContain('executable=true');
+    expect(buildSkill).toContain('plan artifact가 없거나');
     expect(buildSkill).toContain('escalation 비율이 40%');
     expect(buildSkill).toContain('비용 20%');
     expect(buildSkill).toContain('p50 시간 15%');
     expect(buildSkill).toContain('Legacy experimental opt-in only');
     expect(buildSkill).toContain('`plan ...`: x-plan과 동일한 engine');
     expect(buildSkill).toContain('`legacy-plan ...`');
+  });
+
+  test('pins planned execution to configured planner and executor routes', () => {
+    expect(buildSkill).toContain('planner agent 안에서 x-plan Standard');
+    expect(buildSkill).toContain('현재 root session에서 plan을 대신 작성하지 않습니다');
+    expect(buildSkill).toContain('plan 생성이 실패하면 execute로 진행하지 않습니다');
+    expect(buildSkill).toContain('model_routes.plan.model_by_vendor.codex');
+    expect(buildSkill).toContain('model_routes.execute.model_by_vendor.codex');
   });
 
   test('requires evidence for fallbacks and challenges the requested method', () => {

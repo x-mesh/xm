@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.24.3-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.24.4-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -432,7 +432,13 @@ This is a *capability*, available today; proving it produces measurably better o
 
 x-build is the lean execution workflow around x-plan. It inspects repository evidence, uses x-plan as the single planning engine, executes sequentially by default through native agents, and selects only validation that directly observes a changed risk.
 
-The default is now adaptive rather than plan-always. Bounded, independent, low-risk work can take the direct route only when its failure modes have deterministic gates; shared, high-risk, or weakly observable work goes straight to x-plan. `route start → verify → finish` binds the decision to the baseline commit, expected files, CLI-run gates, byte hashes, elapsed time, and measured cost events. Failed direct verification can restart once from a clean planned fallback, while stale or incomplete receipts fail closed.
+The default is adaptive rather than plan-always. Bounded, independent, low-risk work can use the direct route when deterministic gates cover its failure modes.
+
+Shared, high-risk, or weakly observable work uses the planned route. This route uses the configured planner model for x-plan Standard.
+
+The planned route uses the configured executor model after the plan succeeds. It stops if the plan artifact is missing or is not executable.
+
+`route start → verify → finish` binds the decision to the baseline commit, expected files, gates, byte hashes, elapsed time, and cost events. A failed direct verification can restart once from a clean planned fallback. Stale or incomplete receipts fail closed.
 
 ```bash
 xm build route decide --kind bugfix --scope bounded --independent \
@@ -1094,6 +1100,7 @@ Because the CLI reads `.xm/` directly, it is tool-neutral — a later **Codex** 
 
 ```bash
 xm recall list --type review --since 7d   # browse, newest first
+xm recall list --repo headroom --type plan # read a registered repository
 xm recall show review --last              # read the latest code review
 xm recall search "sql injection"          # full-text + metadata search
 xm recall handoff-md                      # (re)write rich tool-neutral .xm/build/HANDOFF.summary.md

@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.24.3-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.24.4-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
@@ -433,7 +433,13 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 
 x-build는 x-plan을 감싸는 lean 실행 workflow입니다. 저장소 근거를 조사하고 x-plan 하나로 계획한 뒤, 순차 native 실행을 기본으로 하며 변경 위험을 직접 확인하는 검증만 선택합니다.
 
-기본 경로는 항상 계획을 만드는 방식이 아니라 adaptive 방식입니다. 범위가 작고 파일이 독립적이며 위험도가 낮은 작업도 failure mode를 결정적으로 검증할 gate가 있을 때만 direct route를 사용합니다. 공유 상태·고위험·관측하기 어려운 작업은 처음부터 x-plan으로 보냅니다. `route start → verify → finish`는 결정과 baseline commit, 예상 파일, CLI가 실행한 gate, byte hash, 실제 시간·비용 event를 묶습니다. Direct 검증 실패는 clean planned fallback으로 한 번만 재개하며, receipt가 없거나 오래된 상태는 fail-closed로 처리합니다.
+기본 경로는 항상 계획을 만드는 방식이 아니라 adaptive 방식입니다. 범위가 작고 파일이 독립적이며 위험도가 낮은 작업도 failure mode를 결정적으로 검증할 gate가 있을 때만 direct route를 사용합니다.
+
+공유 상태, 고위험 작업 또는 관측하기 어려운 작업은 planned route를 사용합니다. 이 route는 설정된 planner model로 x-plan Standard를 실행합니다.
+
+계획이 성공하면 설정된 executor model을 사용합니다. Plan artifact가 없거나 실행할 수 없으면 Execute 전에 중단합니다.
+
+`route start → verify → finish`는 결정과 baseline commit, 예상 파일, CLI가 실행한 gate, byte hash, 실제 시간과 비용 event를 묶습니다. Direct 검증 실패는 clean planned fallback으로 한 번만 재개합니다. Receipt가 없거나 오래된 상태는 fail-closed로 처리합니다.
 
 ```bash
 xm build route decide --kind bugfix --scope bounded --independent \
@@ -1094,6 +1100,7 @@ CLI가 `.xm/`를 직접 읽으므로 도구 중립적입니다 — 같은 repo�
 
 ```bash
 xm recall list --type review --since 7d   # 최신순 조회
+xm recall list --repo headroom --type plan # 등록된 다른 저장소 조회
 xm recall show review --last              # 최근 코드 리뷰 읽기
 xm recall search "sql injection"          # 전문 + 메타데이터 검색
 xm recall handoff-md                      # 상세 도구중립 .xm/build/HANDOFF.summary.md 생성

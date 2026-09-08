@@ -385,11 +385,20 @@ describe('codex Plugin Skill — runtime overlays (t8)', () => {
 
   test('overlay treats x-build JSON routing fields as authoritative across plan/research/consensus/execute', () => {
     const overlay = overlayOf(buildPrompt);
+    expect(overlay).toContain('model_routes.plan.model_by_vendor.codex');
+    expect(overlay).toContain('model_routes.execute.model_by_vendor.codex');
     expect(overlay).toContain('prd_writer.model_by_vendor.codex');
     expect(overlay).toContain('agents_spec[*].model_by_vendor.codex');
     expect(overlay).toContain('agents[*].model_by_vendor.codex');
     expect(overlay).toContain('task.model_by_vendor.codex');
     expect(overlay).toMatch(/authoritative/i);
+  });
+
+  test('overlay stops before execution when the configured planner fails', () => {
+    const overlay = overlayOf(buildPrompt);
+    expect(overlay).toContain('executable=true');
+    expect(overlay).toMatch(/stop before Execute/i);
+    expect(overlay).toMatch(/must not continue/i);
   });
 
   test('overlay restricts static named-agent configs to exact matches and otherwise falls back to exact codex exec specs', () => {

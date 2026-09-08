@@ -14,7 +14,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
-import { XM_ROOT, C } from './x-recall/core.mjs';
+import { XM_ROOT, C, resolveRegisteredRepository } from './x-recall/core.mjs';
 import { scanAll, resolveSelector, search, knownTypes } from './x-recall/scan.mjs';
 import { renderList, renderShow, renderSearch } from './x-recall/render.mjs';
 import { writeHandoffMd } from './x-recall/handoff-md.mjs';
@@ -53,6 +53,7 @@ function parseFlags(raw) {
     else if (a === '--last') flags.last = true;
     else if (a === '--type' || a === '-t') flags.type = raw[++i];
     else if (a === '--project' || a === '-p') flags.project = raw[++i];
+    else if (a === '--repo' || a === '-R') flags.repo = raw[++i];
     else if (a === '--since') flags.since = raw[++i];
     else if (a === '--limit' || a === '-n') flags.limit = parseInt(raw[++i], 10) || undefined;
     else pos.push(a);
@@ -63,9 +64,23 @@ function parseFlags(raw) {
 // ── Commands ─────────────────────────────────────────────────────────
 
 function run(cmd, pos, flags) {
+  let root = XM_ROOT;
+  let artifactProject = flags.project;
+  const repositorySelector = flags.repo || flags.project;
+  if (repositorySelector) {
+    const repository = resolveRegisteredRepository(repositorySelector);
+    if (repository.root) {
+      root = repository.root;
+      artifactProject = undefined;
+    } else if (flags.repo) {
+      console.error(repository.error);
+      process.exitCode = 1;
+      return;
+    }
+  }
   switch (cmd) {
     case 'list': {
-      const arts = scanAll(XM_ROOT, { type: flags.type, project: flags.project, since: flags.since });
+      const arts = scanAll(root, { type: flags.type, project: artifactProject, since: flags.since });
       console.log(renderList(arts, { json: flags.json, limit: flags.limit }));
       break;
     }
@@ -76,7 +91,7 @@ function run(cmd, pos, flags) {
         process.exitCode = 1;
         return;
       }
-      const art = resolveSelector(XM_ROOT, sel);
+      const art = resolveSelector(root, sel);
       if (!art) {
         console.error(`Not found: ${sel}\nRun: xm recall list`);
         process.exitCode = 1;
@@ -92,12 +107,12 @@ function run(cmd, pos, flags) {
         process.exitCode = 1;
         return;
       }
-      const arts = search(XM_ROOT, q, { type: flags.type, project: flags.project, since: flags.since });
+      const arts = search(root, q, { type: flags.type, project: artifactProject, since: flags.since });
       console.log(renderSearch(arts, q, { json: flags.json }));
       break;
     }
     case 'handoff-md': {
-      const res = writeHandoffMd(XM_ROOT);
+      const res = writeHandoffMd(root);
       if (!res.ok) {
         console.error(`handoff-md: ${res.reason} (${res.path})`);
         process.exitCode = 1;
@@ -129,7 +144,8 @@ Reads .xm/ directly, so Codex and Cursor can call it via plain bash.
 
 Commands:
   list                          List all artifacts, newest first
-    [--type T] [--project P]    Filter by type or build/solver project
+    [--repo R]                  Read one registered repository
+    [--type T] [--project P]    Filter by type or select a registered repository
     [--since 7d|2026-05-01]     Only artifacts on/after this date
     [--limit N] [--json]
 
@@ -137,7 +153,7 @@ Commands:
     [--json]                    e.g. show review --last  ·  show op:council-2026-04-06-...
 
   search "<query>"              Full-text + metadata search across artifacts
-    [--type T] [--json]
+    [--repo R] [--type T] [--json]
 
   handoff-md                    (Re)generate tool-neutral .xm/build/HANDOFF.summary.md
                                 from SESSION-STATE.json (readable by any tool)

@@ -53,6 +53,39 @@ function event(route, outcome, quality, cost, duration) {
 }
 
 describe('adaptive runtime routing', () => {
+  test('resolves planner and executor routes for Claude and Codex from shared config', async () => {
+    const { resolveAdaptiveModelRoutes } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const routes = resolveAdaptiveModelRoutes({
+      model_overrides: { planner: 'opus', executor: 'sonnet' },
+      vendor_models: { codex: { opus: 'gpt-5.6-sol:xhigh', sonnet: 'gpt-5.6-terra:high' } },
+    });
+
+    expect(routes.warnings).toEqual([]);
+    expect(routes.plan).toEqual({
+      role: 'planner',
+      model: 'opus',
+      model_by_vendor: { claude: 'opus', codex: 'gpt-5.6-sol:xhigh' },
+    });
+    expect(routes.execute).toEqual({
+      role: 'executor',
+      model: 'sonnet',
+      model_by_vendor: { claude: 'sonnet', codex: 'gpt-5.6-terra:high' },
+    });
+  });
+
+  test('keeps model routes in the route decision and rejects malformed Codex effort', async () => {
+    const { decideAdaptiveRoute, resolveAdaptiveModelRoutes } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const routes = resolveAdaptiveModelRoutes({
+      model_overrides: { planner: 'opus', executor: 'sonnet' },
+      vendor_models: { codex: { opus: 'gpt-5.6-sol:turbo', sonnet: 'gpt-5.6-terra:high' } },
+    });
+    const decision = decideAdaptiveRoute({ ...eligible, model_routes: routes });
+
+    expect(routes.plan.model_by_vendor.codex).toBeUndefined();
+    expect(routes.warnings[0]).toContain('unknown effort');
+    expect(decision.model_routes).toEqual(routes);
+  });
+
   test('derives a stable class and high-risk signals from task facts', async () => {
     const { classifyAdaptiveTask, decideAdaptiveRoute } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
     const classification = classifyAdaptiveTask({

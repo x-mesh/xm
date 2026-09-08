@@ -70,6 +70,7 @@ function runGate({ mode, task = 't1', phase = 'before', json = true, project = P
   delete env.X_BUILD_ROOT;
   delete env.X_PANEL_ROOT;
   delete env.XM_ROOT;
+  env.HOME = join(main, '.test-home');
   env.X_BUILD_PANEL_ARGV = JSON.stringify(['node', fakePanel]);
   env.FAKE_PANEL_MODE = mode;
   if (counter) env.FAKE_PANEL_COUNTER = counter;
@@ -94,6 +95,9 @@ beforeAll(() => {
   // Minimal project scaffold so config/task reads resolve (not strictly required —
   // readJSON tolerates missing — but exercises the real path).
   mkdirSync(join(main, '.xm', 'build', 'projects', PROJECT, 'phases', '02-plan'), { recursive: true });
+  writeFileSync(join(main, '.xm', 'config.json'), JSON.stringify({
+    vendor_models: { codex: { opus: 'gpt-5.6-sol' } },
+  }));
 
   // Linked worktree — gate runs from HERE, artifacts must land in main .xm/.
   wt = join(main, '..', `gp-wt-${Date.now()}`);

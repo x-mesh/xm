@@ -9,7 +9,11 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFi
 import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { ROOT } from './root.mjs';
-import { COST_EVENT_MAX_BYTES, METRICS_MAX_BYTES, metricsPath } from './cost-engine.mjs';
+import {
+  COST_EVENT_MAX_BYTES, INHERIT_MODEL, METRICS_MAX_BYTES, getModelForRole,
+  metricsPath, parseModelSpec, resolveVendorModel,
+} from './cost-engine.mjs';
+import { loadSharedConfig } from './config-loader.mjs';
 import { appendCostEvent, readCostEvents } from '../cost/index.mjs';
 
 export const ADAPTIVE_MIN_SAMPLES = 10;
@@ -314,6 +318,29 @@ function unresolvedVerificationFailures(events, taskClass) {
     && event.task_class === taskClass && !outcomes.has(event.decision_id));
 }
 
+function resolveRoleRoute(role, size, config, warnings) {
+  const model = getModelForRole(role, size, config);
+  const modelByVendor = { claude: model };
+  const codexTier = model === INHERIT_MODEL ? 'opus' : model;
+  const resolved = resolveVendorModel(codexTier, 'codex', config);
+  if (resolved.warning) warnings.push(`codex ${role}: ${resolved.warning}`);
+  if (resolved.spec != null) {
+    const parsed = parseModelSpec(resolved.spec);
+    if (parsed.warning || !parsed.model) warnings.push(`codex ${role}: ${parsed.warning || 'model is missing'}`);
+    else if (!resolved.warning) modelByVendor.codex = resolved.spec;
+  }
+  return { role, model, model_by_vendor: modelByVendor };
+}
+
+export function resolveAdaptiveModelRoutes(config = loadSharedConfig()) {
+  const warnings = [];
+  return {
+    plan: resolveRoleRoute('planner', 'large', config, warnings),
+    execute: resolveRoleRoute('executor', 'medium', config, warnings),
+    warnings,
+  };
+}
+
 export function recordAdaptiveDecision(decision) {
   if (!decision?.decision_id || !TASK_CLASS_PATTERN.test(String(decision.task_class || '')) || !ROUTES.has(decision.route)) {
     throw new Error('invalid adaptive route decision');
@@ -376,6 +403,7 @@ export function decideAdaptiveRoute(input, events = []) {
     blockers,
     telemetry: stats,
     unresolved_verification_failures: unresolvedFailures.map((event) => event.decision_id),
+    model_routes: input.model_routes || null,
     thresholds: {
       min_samples: ADAPTIVE_MIN_SAMPLES,
       max_escalation_rate: ADAPTIVE_MAX_ESCALATION_RATE,
@@ -694,6 +722,7 @@ export function cmdAdaptiveRoute(args) {
         classification,
         failure_modes: Number(take(args, 'failure-modes', 0)),
         gates: list(take(args, 'gates')),
+        model_routes: resolveAdaptiveModelRoutes(),
       }, readAdaptiveRoutingEvents());
       recordAdaptiveDecision(decision);
       console.log(JSON.stringify(decision, null, 2));

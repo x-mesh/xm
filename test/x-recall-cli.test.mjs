@@ -14,11 +14,18 @@ import { tmpdir } from 'node:os';
 const CLI_PATH = join(import.meta.dirname, '..', 'x-recall', 'lib', 'x-recall-cli.mjs');
 let TEST_DIR;
 let XM;
+let REGISTRY;
+let OTHER_XM;
 
 function run(args, opts = {}) {
   return spawnSync('node', [CLI_PATH, ...args], {
     cwd: opts.cwd || TEST_DIR,
-    env: { ...process.env, X_RECALL_ROOT: opts.root || XM, NO_COLOR: '1' },
+    env: {
+      ...process.env,
+      X_RECALL_ROOT: opts.root || XM,
+      X_RECALL_PROJECTS_FILE: opts.registry || REGISTRY,
+      NO_COLOR: '1',
+    },
     encoding: 'utf8',
     timeout: 10000,
   });
@@ -37,6 +44,22 @@ function writeText(path, text) {
 beforeAll(() => {
   TEST_DIR = mkdtempSync(join(tmpdir(), 'xrecall-cli-'));
   XM = join(TEST_DIR, '.xm');
+  const otherRepo = join(TEST_DIR, 'headroom');
+  OTHER_XM = join(otherRepo, '.xm');
+  REGISTRY = join(TEST_DIR, 'projects.json');
+  writeJSON(REGISTRY, {
+    version: 1,
+    projects: [{ id: 'headroom', name: 'Headroom', path: otherRepo, archived: false }],
+  });
+  writeJSON(join(OTHER_XM, 'plan', '20260909T010000Z-headroom', 'manifest.json'), {
+    schema_version: 1,
+    goal: 'Headroom shape editor',
+    mode: 'standard',
+    phase: 'finalize',
+    executable: true,
+    created_at: '2026-09-09T01:00:00.000Z',
+  });
+  writeText(join(OTHER_XM, 'plan', '20260909T010000Z-headroom', 'plan.md'), '# Plan: Headroom shape editor\n');
 
   // op
   writeJSON(join(XM, 'op', 'council-2026-04-06-redis-vs-postgres.json'), {
@@ -154,6 +177,27 @@ describe('list', () => {
     const parsed = JSON.parse(r.stdout);
     expect(parsed.some(a => a.title === 'Ship export flow' && a.format === 'json')).toBe(true);
     expect(parsed.some(a => a.title === 'Plan import flow' && a.meta.mode === 'standard')).toBe(true);
+  });
+
+  test('--repo selects a registered repository in one call', () => {
+    const r = run(['list', '--repo', 'headroom', '--type', 'plan', '--json']);
+    expect(r.status).toBe(0);
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].title).toBe('Headroom shape editor');
+    expect(parsed[0].path).toContain(join('headroom', '.xm', 'plan'));
+  });
+
+  test('--project selects a registered repository before artifact filtering', () => {
+    const r = run(['list', '--project', 'headroom', '--type', 'plan', '--json']);
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout)[0].title).toBe('Headroom shape editor');
+  });
+
+  test('unknown --repo fails visibly instead of scanning the current repository', () => {
+    const r = run(['list', '--repo', 'missing', '--json']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('Registered repository not found: missing');
   });
 
   test('indexes x-panel verdicts as panel type', () => {
