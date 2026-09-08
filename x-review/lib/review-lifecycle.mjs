@@ -689,6 +689,10 @@ async function prepareInLock(options, { root, cwd }) {
     terminalReceipt(root, id);
   }
   if (existsSync(join(root, 'last-result.json')) && !readState(join(root, 'last-result.json')).task_budget_id && !state.associations?.some(item => (item.run_id === readState(join(root, 'last-result.json')).run_id || item.legacy_source_hash === digest(readFileSync(join(root, 'last-result.json')))))) throw new Error('legacy last-result.json requires explicit association with a run');
+  // taskBudget() mints a task for any key it has not seen, and --task-id is a free
+  // string. Remember which tasks already existed so a brand-new one can be checked
+  // against them once the target is frozen and its hash is known.
+  const existingTaskIds = new Set(Object.values(state.tasks).map(entry => entry.id));
   const task = taskBudget(root, cwd, options, state);
   task.zero_findings = task.zero_findings === true || options.zeroFindings === true;
   const mode = options.exception === 'full' ? 'full' : task.used.full === 0 ? 'full' : 'delta';
@@ -736,6 +740,24 @@ async function prepareInLock(options, { root, cwd }) {
   response.manifest.fix_gate = task.fix_evidence && task.fix_evidence.run_id === task.baseline ? task.fix_evidence.gate : dispositions?.task_budget_id === task.id ? readJson(join(root, 'review-fix-gate.json')) : null;
   response.manifest.fix_triage = task.fix_evidence?.triage || null;
   response.manifest.snapshot_hash = digest(JSON.stringify(snapshot));
+  // A fresh --task-id is the one budget escape an agent can reach by drift rather
+  // than by editing state: told the budget is spent, passing a new id looks like a
+  // legitimate move. The target hash is only known now, after freezing, which is
+  // still before the budget reaches disk — so refusing here spends nothing.
+  if (mode === 'full') {
+    // Only an owner with nothing left to spend is worth refusing over. A task that
+    // still holds its delta can review this target honestly, so a second key buys
+    // nothing the agent was denied — and parallel tasks on one target are a shape
+    // the baseline isolation already supports.
+    const spent = entry => entry.used.full >= entry.limits.full && entry.used.delta >= entry.limits.delta;
+    const owner = Object.entries(state.tasks).find(([, entry]) =>
+      entry.id !== task.id && entry.full_target_hash === response.manifest.target_hash && spent(entry));
+    if (owner && !existingTaskIds.has(task.id) && options.exception !== 'full') {
+      rmSync(response.runDir, { recursive: true, force: true });
+      throw new Error(`task "${owner[0]}" already spent its full and delta review on these exact bytes; a new --task-id does not reset that. Report and stop, or approve another pass with --exception full --approved-by USER --reason TEXT`);
+    }
+    task.full_target_hash = response.manifest.target_hash;
+  }
   json(join(response.runDir, 'run.json'), response.manifest);
   state.active = response.manifest.id;
   json(join(root, 'budget.json'), state);

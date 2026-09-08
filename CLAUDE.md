@@ -47,7 +47,7 @@ Required sequence:
 
 Termination — the budget is one `full`, one `fix`, and one `delta` per task:
 6. If the delta review still reports findings, **report them and stop.** A delta finding of any severity ends the cycle; it does not authorize another fix pass.
-7. When the budget is spent the CLI refuses further work with `<kind> budget exhausted` or `delta review completed; stop and report before additional fixes`. These are the gate working, not a tool failure — never route around them by deleting `.xm/review/budget.json`, by passing a fresh `--task-id`, or by branching.
+7. When the budget is spent the CLI refuses further work with `<kind> budget exhausted` or `delta review completed; stop and report before additional fixes`. These are the gate working, not a tool failure — never route around them by deleting `.xm/review/budget.json`, by passing a fresh `--task-id`, or by branching. A fresh `--task-id` on an exhausted target is refused outright; the rest are on your honour.
 8. Continuing past the budget needs a human decision: ask the user, then run one `--exception full|delta|fix --approved-by USER --reason TEXT`. A task allows one such exception; past that, stop and hand the work back.
 
 This gate exists to prevent review feedback from becoming an unbounded rewrite loop.

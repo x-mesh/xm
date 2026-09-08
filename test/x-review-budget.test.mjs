@@ -438,3 +438,30 @@ test('a deleted budget file is a loss to repair, not a fresh worktree', () => {
   expect(cli(dir, ['close', 'first-run', '--reason', 'give up']).status).not.toBe(0);
   expect(existsSync(join(dir, '.xm/review/runs/after-delete'))).toBe(false);
 });
+
+test('a fresh --task-id cannot restart an exhausted target', () => {
+  const dir = workspace();
+  start(dir, 'first-run');                       // full
+  change(dir, 3); start(dir, 'second-run');      // delta — the task is now spent
+  const task = Object.values(budget(dir).tasks)[0];
+  expect(task.used).toEqual({ full: 1, fix: 0, delta: 1 });
+
+  // The drift path: told the budget is gone, pass a new id on the same bytes.
+  const reused = cli(dir, ['prepare', 'target.patch', '--run-id', 'renamed', '--task-id', 'something-else']);
+  expect(reused.status).not.toBe(0);
+  expect(reused.stderr).toContain('already spent its full and delta review on these exact bytes');
+  expect(existsSync(join(dir, '.xm/review/runs/renamed'))).toBe(false);
+  expect(Object.keys(budget(dir).tasks)).toHaveLength(1);
+
+  // The escape is the same human-approved exception the rest of the budget uses.
+  ok(cli(dir, ['prepare', 'target.patch', '--run-id', 'approved', '--task-id', 'something-else',
+    '--exception', 'full', '--approved-by', 'user', '--reason', 'same diff, different branch']));
+  expect(Object.keys(budget(dir).tasks)).toHaveLength(2);
+});
+
+test('a task that still holds its delta does not block a parallel task', () => {
+  const dir = workspace();
+  start(dir, 'task-a', {}, ['--task-id', 'a']);  // full only — delta still available
+  ok(cli(dir, ['prepare', 'target.patch', '--run-id', 'task-b', '--task-id', 'b']));
+  expect(Object.keys(budget(dir).tasks)).toHaveLength(2);
+});
