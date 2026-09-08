@@ -745,16 +745,24 @@ async function prepareInLock(options, { root, cwd }) {
   // legitimate move. The target hash is only known now, after freezing, which is
   // still before the budget reaches disk — so refusing here spends nothing.
   if (mode === 'full') {
-    // Only an owner with nothing left to spend is worth refusing over. A task that
-    // still holds its delta can review this target honestly, so a second key buys
-    // nothing the agent was denied — and parallel tasks on one target are a shape
-    // the baseline isolation already supports.
-    const spent = entry => entry.used.full >= entry.limits.full && entry.used.delta >= entry.limits.delta;
+    // Requiring the owner to have burned its delta too made the guard useless
+    // against the exact pattern it exists for: every fresh id spends only a full,
+    // so no owner ever reaches that state and the next id is admitted forever.
+    // A spent full is the trigger.
+    //
+    // Tasks created before this guard carry no full_target_hash; recover it from
+    // the baseline run's frozen manifest so old state is covered rather than exempt.
+    const ownerTargetHash = entry => {
+      if (entry.full_target_hash) return entry.full_target_hash;
+      if (!entry.baseline) return null;
+      try { return readState(join(root, 'runs', entry.baseline, 'run.json')).target_hash || null; } catch { return null; }
+    };
     const owner = Object.entries(state.tasks).find(([, entry]) =>
-      entry.id !== task.id && entry.full_target_hash === response.manifest.target_hash && spent(entry));
+      entry.id !== task.id && entry.used.full >= entry.limits.full
+      && ownerTargetHash(entry) === response.manifest.target_hash);
     if (owner && !existingTaskIds.has(task.id) && options.exception !== 'full') {
       rmSync(response.runDir, { recursive: true, force: true });
-      throw new Error(`task "${owner[0]}" already spent its full and delta review on these exact bytes; a new --task-id does not reset that. Report and stop, or approve another pass with --exception full --approved-by USER --reason TEXT`);
+      throw new Error(`task "${owner[0]}" already spent its full review on these exact bytes; a new --task-id does not reset that. Continue that task with a delta, or approve another full with --exception full --approved-by USER --reason TEXT`);
     }
     task.full_target_hash = response.manifest.target_hash;
   }

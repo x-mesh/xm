@@ -57,7 +57,12 @@ describe('worktree review budgets', () => {
 
   test('uses each task baseline instead of global last-result', () => {
     const dir = workspace(); start(dir, 'task-a-full', {}, ['--task-id', 'a']);
-    change(dir, 3); start(dir, 'task-b-full', {}, ['--task-id', 'b']); change(dir, 4);
+    change(dir, 3);
+    // Task b reviews a different target: two tasks on the SAME bytes is now refused,
+    // and the baseline isolation this test is about does not depend on sharing one.
+    writeFileSync(join(dir, 'other.patch'), 'diff --git a/src/b.js b/src/b.js\n--- a/src/b.js\n+++ b/src/b.js\n@@ -1 +1,2 @@\n export const c = 1;\n+export const d = 2;\n');
+    ok(cli(dir, ['run', 'other.patch', '--lenses', 'correctness', '--run-id', 'task-b-full', '--task-id', 'b']));
+    change(dir, 4);
     start(dir, 'task-a-delta', {}, ['--task-id', 'a']);
     const manifest = read(runFile(dir, 'task-a-delta', 'run.json'));
     expect(manifest.baseline).toBe('task-a-full');
@@ -449,7 +454,7 @@ test('a fresh --task-id cannot restart an exhausted target', () => {
   // The drift path: told the budget is gone, pass a new id on the same bytes.
   const reused = cli(dir, ['prepare', 'target.patch', '--run-id', 'renamed', '--task-id', 'something-else']);
   expect(reused.status).not.toBe(0);
-  expect(reused.stderr).toContain('already spent its full and delta review on these exact bytes');
+  expect(reused.stderr).toContain('already spent its full review on these exact bytes');
   expect(existsSync(join(dir, '.xm/review/runs/renamed'))).toBe(false);
   expect(Object.keys(budget(dir).tasks)).toHaveLength(1);
 
@@ -459,9 +464,26 @@ test('a fresh --task-id cannot restart an exhausted target', () => {
   expect(Object.keys(budget(dir).tasks)).toHaveLength(2);
 });
 
-test('a task that still holds its delta does not block a parallel task', () => {
+test('a spent full blocks a new id even with the delta unused', () => {
   const dir = workspace();
   start(dir, 'task-a', {}, ['--task-id', 'a']);  // full only — delta still available
-  ok(cli(dir, ['prepare', 'target.patch', '--run-id', 'task-b', '--task-id', 'b']));
-  expect(Object.keys(budget(dir).tasks)).toHaveLength(2);
+  // Every fresh id spends just a full, so requiring the delta to be gone too would
+  // never trigger: no owner would ever reach that state.
+  const second = cli(dir, ['prepare', 'target.patch', '--run-id', 'task-b', '--task-id', 'b']);
+  expect(second.status).not.toBe(0);
+  expect(second.stderr).toContain('already spent its full review on these exact bytes');
+  expect(Object.keys(budget(dir).tasks)).toHaveLength(1);
+});
+
+test('a task predating full_target_hash is covered via its baseline run', () => {
+  const dir = workspace();
+  start(dir, 'legacy-full', {}, ['--task-id', 'legacy']);
+  // Strip the field the way state written before this guard looks.
+  const state = budget(dir);
+  for (const entry of Object.values(state.tasks)) delete entry.full_target_hash;
+  writeFileSync(join(dir, '.xm/review/budget.json'), JSON.stringify(state, null, 2));
+
+  const bypass = cli(dir, ['prepare', 'target.patch', '--run-id', 'bypass', '--task-id', 'fresh']);
+  expect(bypass.status).not.toBe(0);
+  expect(bypass.stderr).toContain('already spent its full review on these exact bytes');
 });
