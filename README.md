@@ -17,7 +17,7 @@
   <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.25.1-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
-  <a href="#plugins"><img src="https://img.shields.io/badge/plugins-14-orange" alt="Plugins" /></a>
+  <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
 </p>
 
 <p align="center">
@@ -37,7 +37,7 @@
 - [Quick Start](#quick-start)
 - [Why xm?](#why-xm)
 - [Cross-Vendor Verification](#cross-vendor-verification)
-- [Plugins](#plugins) — [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-humanize](#x-humanize) · [x-recall](#x-recall) · [x-panel](#x-panel) · [x-wt](#x-wt)
+- [Plugins](#plugins) — [x-plan](#x-plan) · [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [mutation testing](#mutation-testing--xmmutate) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-humanize](#x-humanize) · [x-recall](#x-recall) · [x-panel](#x-panel) · [x-wt](#x-wt) · [x-remote](#x-remote)
 - [Quality & Learning Pipeline](#quality--learning-pipeline)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
@@ -185,7 +185,7 @@ The dashboard reads from a machine-local registry at `~/.xm/projects.json`. Once
 
 ### Multi-Tool Install (Cursor / Codex / Kiro / Antigravity / OpenCode)
 
-xm is published as a Claude Code marketplace plugin, but its 16 SKILLs can also be rendered into rule/steering formats consumed by other AI coding tools. A single source compiler (`xm/lib/install/install-cli.mjs`) emits per-tool artifacts.
+xm is published as a Claude Code marketplace plugin, but its 27 SKILLs can also be rendered into rule/steering formats consumed by other AI coding tools. A single source compiler (`xm/lib/install/install-cli.mjs`) emits per-tool artifacts.
 
 ```bash
 # Interactive picker (scope + targets)
@@ -407,8 +407,9 @@ This is a *capability*, available today; proving it produces measurably better o
 
 | Plugin | Purpose | Key command |
 |--------|---------|-------------|
+| [x-plan](#x-plan) | The planning engine — plan + PlanEnvelope, no lifecycle | `/xm:plan "goal"` |
 | [x-build](#x-build) | Repository-grounded plan → native execution | `/xm:build "goal"` |
-| [x-op](#x-op) | 17 multi-agent strategies | `/xm:op debate "A vs B"` |
+| [x-op](#x-op) | 18 multi-agent strategies | `/xm:op debate "A vs B"` |
 | [x-review](#x-review) | Judgment-based code review | `/xm:review diff` |
 | [x-solver](#x-solver) | Structured problem solving | `/xm:solver init "bug"` |
 | [x-probe](#x-probe) | Evidence-grade premise validation | `/xm:probe "idea"` |
@@ -422,22 +423,36 @@ This is a *capability*, available today; proving it produces measurably better o
 | [x-recall](#x-recall) | Cross-session artifact index | `xm recall list` |
 | [x-panel](#x-panel) | Cross-model adversarial review | `xm panel` |
 | [x-wt](#x-wt) | Session worktree — isolate & land back | `/xm:wt` |
+| [x-remote](#x-remote) | Drive a remote host session from Discord | `xm remote start` |
 | xm | Bundle + config + pipeline | `/xm pipeline release` |
 
 **Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `x-sync` multi-machine sync server · `/xm:toss` + `/xm:inbox` cross-project bug handoff — see [x-ship](#x-ship), [x-sync](#x-sync) and [toss / inbox](#cross-project-handoff--toss--inbox) below.
-`/xm:mutate` mutation testing is also bundled in `xm` because it executes the bundled `xm build mutate` engine. Codex exposes the same skill as `$xm:mutate` and the flat compatibility alias `$xm-mutate`. It checks existing tests and does not generate tests.
+`/xm:mutate` is bundled the same way — it drives the `xm build mutate` engine that ships with core. Codex exposes it as `$xm:mutate`, with `$xm-mutate` kept as a flat alias. See [Mutation testing](#mutation-testing--xmmutate).
+
+---
+
+### x-plan
+
+The planning engine. Everything in xm that plans — x-build included — goes through it.
+
+x-plan reads the repository before it writes anything: what the code already does, which contracts exist, what the tests currently cover. It treats your request as a hypothesis rather than an order, so it will tell you when the repo already provides what you asked for, or when a smaller path reaches the same goal. Out the other end comes a readable Markdown plan plus a machine-checked `PlanEnvelope` under `.xm/plan/`.
+
+```bash
+/xm:plan "add refresh-token rotation"
+xm plan --recommend --json "<requirements>"   # which mode fits: Quick / Standard / Ultra
+```
+
+Quick writes the deterministic scaffold and stops. Standard adds repository inspection, a focused interview, and a critique pass. Ultra layers multi-model architect/implementer/critic synthesis on top of Standard.
+
+Verified repository facts, inferences, and decisions that are yours to make stay separated in the output. A plan is never marked executable on a guessed path, API, or validation command.
 
 ---
 
 ### x-build
 
-x-build is the lean execution workflow around x-plan. It inspects repository evidence, uses x-plan as the single planning engine, executes sequentially by default through native agents, and selects only validation that directly observes a changed risk.
+x-build is the lean execution workflow around x-plan. It inspects repository evidence, hands planning to x-plan alone, runs native agents sequentially by default, and picks only the validation that directly observes a changed risk.
 
-The default is adaptive rather than plan-always. Bounded, independent, low-risk work can use the direct route when deterministic gates cover its failure modes.
-
-Shared, high-risk, or weakly observable work uses the planned route. This route uses the configured planner model for x-plan Standard.
-
-The planned route uses the configured executor model after the plan succeeds. It stops if the plan artifact is missing or is not executable.
+The default is adaptive, not plan-always. Bounded, independent, low-risk work takes the direct route — but only when deterministic gates already cover its failure modes. Shared, high-risk, or weakly observable work takes the planned route instead: x-plan Standard on the configured planner model, then the configured executor model once the plan succeeds. A missing or non-executable plan artifact stops it before Execute.
 
 `route start → verify → finish` binds the decision to the baseline commit, expected files, gates, byte hashes, elapsed time, and cost events. A failed direct verification can restart once from a clean planned fallback. Stale or incomplete receipts fail closed.
 
@@ -545,7 +560,7 @@ Config lives under `.xm/config.json`'s `worktree` key (`base`, `branch_prefix`, 
 
 ### x-op
 
-17 multi-agent strategies. Each one self-scores its output and can delegate verification to x-eval.
+18 multi-agent strategies — 17 orchestration patterns plus `direct`, the single-agent baseline the rest have to beat. Each one self-scores its output and can delegate verification to x-eval.
 
 ```bash
 /xm:op refine "Payment API design" --rounds 4 --verify
@@ -562,6 +577,7 @@ Config lives under `.xm/config.json`'s `worktree` key (`base`, `branch_prefix`, 
 | **Pipeline** | chain, distribute, scaffold, compose, decompose |
 | **Analysis** | review, red-team, persona, hypothesis, investigate |
 | **Meta** | monitor |
+| **Baseline** | direct |
 
 **Quality features:**
 - **Confidence Gate**: Pre-execution 4-question checklist — blocks underspecified tasks before wasting agent tokens
@@ -679,6 +695,40 @@ Large reviews no longer stop at an arbitrary line count. The planner budgets the
 xm review associate <run-id> --task-id <id> --reason "pre-budget run"
 xm review close <run-id> --reason "old run is no longer needed"
 ```
+
+---
+
+### Mutation testing — `/xm:mutate`
+
+A green suite tells you the tests ran. It does not tell you they would have noticed if the code were wrong. `/xm:mutate` settles that: it flips small pieces of the code a task just changed and re-runs your existing test command. A mutant that gets **killed** was caught by a test. One that **survives** slipped past the whole suite, and that line is the gap worth a look.
+
+It reads existing tests. It does not write them.
+
+```bash
+/xm:mutate                                  # pick from runnable tasks (the list is read-only)
+xm build mutate --list --json               # same candidates, straight from the CLI
+xm build mutate --project my-app --task t3 --max-mutants 20
+```
+
+Five operators, applied only to lines the task actually changed:
+
+| Operator | Mutation |
+|----------|----------|
+| boolean | `true` ↔ `false` |
+| comparison | `===` ↔ `!==` |
+| relational | `<` ↔ `<=`, `>` ↔ `>=` |
+| logical | `&&` ↔ `\|\|` |
+| numeric | `n` → `n + 1` |
+
+Candidates are drawn round-robin across the five, so one noisy operator cannot eat the whole budget. Comments, strings, template literals, and regex bodies are masked out before matching; a `true` sitting inside a log message is never mutated.
+
+**What a task needs to qualify:** a linked worktree artifact, JS/TS targets (`.js .jsx .cjs .mjs .ts .tsx .cts .mts`), and a test command — either the task's own `test_command`, or one inferred from `package.json` plus whichever lockfile is present (bun / pnpm / yarn / npm). Mutation runs inside that task's worktree and refuses the primary checkout, so a mutant can never be left behind in the tree you are editing.
+
+**Bounds:** 12 mutants by default (`--max-mutants`, 1–100), 90 s per mutant (`--timeout-ms`), and 10 minutes of wall clock for the run. Anything past the budget is reported as `skipped` rather than quietly dropped. The baseline runs first: if the suite is already red, the run stops there and says so instead of reporting fake survivors. Source bytes and file mode are restored exactly after every mutant.
+
+Reports land in `.xm/review/mutate/<project>/<task>.json`, and every surviving mutant is appended to the attention queue.
+
+> v1 is observational. A survivor is a candidate for inspection, not proof of a missing test, and it does not block a merge.
 
 ---
 
@@ -841,7 +891,7 @@ CHECK-IN ──→ RECALL ──→ IDENTIFY ──→ ANALYZE ──→ ALTERNA
 
 Web dashboard for `.xm/` project state. Browse builds, probes, solvers, **reviews, evals, humble lessons**, traces, memory, and costs in one view. No build chain to set up.
 
-> **Schema-driven Config editor** — the Config tab renders every key in the `config-schema` registry (42 entries) as a typed form: enum dropdowns, tri-state toggles for nullable booleans, a severity grid for `worktree.gate_policy`, defaults highlighted with one-click reset. Three tiers (global / project / **build-local**), the same deep-merge write semantics as the CLI wizard (`setNestedKey` shared), optimistic `If-Match` conflict detection, and hard-violation blocking (422) — add a key to the registry and it appears in the form with zero UI changes.
+> **Schema-driven Config editor** — the Config tab renders every key in the `config-schema` registry (65 entries) as a typed form: enum dropdowns, tri-state toggles for nullable booleans, a severity grid for `worktree.gate_policy`, defaults highlighted with one-click reset. Three tiers (global / project / **build-local**), the same deep-merge write semantics as the CLI wizard (`setNestedKey` shared), optimistic `If-Match` conflict detection, and hard-violation blocking (422) — add a key to the registry and it appears in the form with zero UI changes.
 
 <p align="center">
   <img src="docs/images/dashboard.png" alt="x-dashboard" width="800" />
@@ -1138,7 +1188,7 @@ xm panel review <target> --grounded # round-2 refuters that can read the repo (c
 xm panel followup <run>             # debate round: resume each author's session, HOLD/CONCEDE/REVISE the findings an opponent refuted
 ```
 
-Per-model selection via `--models name:model[:effort]`. The optional `:effort` sets reasoning depth per model — codex `minimal|low|medium|high|xhigh` (→ `model_reasoning_effort`) and kiro `low|medium|high|xhigh|max` (→ `--effort`); the sets differ by vendor, and an unknown level warns and is dropped rather than blocking the run. Bare `xm panel models` is a two-step provider→model picker (`--json` for structured rows; live-catalog vendors agy/cursor/kiro vs fixed-ID claude/codex); named `presets`, parallel calls, and results land under `.xm/panel/` (queryable with `xm recall`). Different models have different blind spots — that's the point.
+Per-model selection via `--models name:model[:effort]`. The optional `:effort` sets reasoning depth per model — codex `minimal|low|medium|high|xhigh` (→ `model_reasoning_effort`) and kiro `low|medium|high|xhigh|max` (→ `--effort`); the sets differ by vendor, and an unknown level warns and is dropped rather than blocking the run. Bare `xm panel models` is a two-step provider→model picker (`--json` for structured rows; live-catalog vendors agy/cursor/kiro vs fixed-ID claude/codex); named `presets`, parallel calls, and results land under `.xm/panel/` (queryable with `xm recall`). Each vendor is blind in a different place, which is the whole reason more than one gets asked.
 
 Every run **captures real per-model token usage and cost** — claude via `--output-format json`, codex via its `exec --json` event stream — so panel numbers price from measured actuals, not estimates. Each finished run appends a per-model row to a **disagreement ledger** (`.xm/panel/history.jsonl`); `xm panel stats [--roi]` aggregates it into per-vendor survival rate (confirmed/raised) and cost per confirmed catch — a per-repo data moat a stateless API council can't accumulate. `--stream` adds token-by-token live text for claude/cursor (`--partial`, on by default; auto-disabled on very large targets). When a model returns a structured markdown review instead of the JSON contract (agy/Gemini does this intermittently), the panel salvages the findings from the `### [severity] file:line — title` + Why/Fix shape rather than discarding a real review as "no JSON"; when a model exits 0 with no usable answer at all, it surfaces the CLI's own stderr reason instead. Timeouts auto-scale with target size (`--timeout` to pin). kiro is spawned under an auto-provisioned no-MCP agent (`~/.kiro/agents/xm-panel-review.json`), because kiro otherwise loads the global `mcp.json` and a single MCP tool whose schema uses `oneOf`/`allOf`/`anyOf` at the top level makes Bedrock reject the whole request — set `panel.kiro_agent` to point at your own agent instead.
 
@@ -1159,6 +1209,22 @@ Session worktree. Runs the **whole current session** in an isolated git worktree
 ```
 
 The harness `EnterWorktree`/`ExitWorktree` tools move the session cwd; `git-kit promote` does the merge-back (commit + merge into parent, no network). `start` records the parent as `branch.<name>.gk-parent` so `land` merges into the branch you actually came from. Nothing is pushed — you push the parent yourself when ready. State follows the worktree (each checkout keeps its own `.xm/`); config stays shared with the main repo.
+
+---
+
+### x-remote
+
+Watch and steer a long-running session on a remote Linux box from Discord, without term-mesh in the middle. x-remote starts a managed Claude or Codex session on the host, streams what it is doing into a Discord channel, and relays your steer / interrupt / decision input back.
+
+```bash
+xm remote setup            # interactive wizard
+xm remote doctor           # validate configuration and runtime
+xm remote start            # gateway + host together
+```
+
+Requirements, questions, phase gates, and review decisions arrive verbatim, so you answer the real prompt rather than a summary of it. Passwords, tokens, and other secrets are never shown or accepted over Discord — they surface as `local input required` and stay on the host. x-remote only controls sessions it started itself; an existing tmux or shell process is never adopted.
+
+> The PoC runs agent commands at fixed full access (`--dangerously-skip-permissions` for Claude, `approvalPolicy=never` + `sandbox=danger-full-access` for Codex). Individual shell commands are not put up for Discord approval. Run it only on a host where that is acceptable.
 
 ---
 
@@ -1273,7 +1339,7 @@ xm/                              Marketplace repo
 ├── x-memory/                       Cross-session memory
 ├── x-sync/                         Multi-machine .xm/ sync server
 ├── xm/                          Bundle (all skills) + shared config + server
-└── .claude-plugin/marketplace.json  12 plugins + xm core registered
+└── .claude-plugin/marketplace.json  17 plugins + xm core registered
 ```
 
 <details>
@@ -1317,7 +1383,7 @@ Catalog located at `xm/agent-catalog/catalog.json`. Each agent has a full rules 
 
 ## Configuration
 
-`xm config` manages the settings every tool (x-build, x-solver, x-op) reads. Run it with no arguments for an interactive wizard, or use the `show` / `get` / `set` / `phase` / `reset` subcommands directly. Keys, types, and default scopes live in one registry (`config-schema.mjs`, 30 keys).
+`xm config` manages the settings every tool (x-build, x-solver, x-op) reads. Run it with no arguments for an interactive wizard, or use the `show` / `get` / `set` / `phase` / `reset` subcommands directly. Keys, types, and default scopes live in one registry (`config-schema.mjs`, 65 keys).
 
 ```bash
 /xm config                                     # interactive wizard (7 categories)
