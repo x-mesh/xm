@@ -1,7 +1,10 @@
 /** PURE deterministic ranking for the attention queue. */
 const TYPE_WEIGHT = { revived: 100, escape: 90, surviving_mutant: 80, contested: 60 };
-const CLASS_WEIGHT = { dismissed_as_fp: 35, accepted_risk: 20, backlogged: 15, reviewed_missed: 10, not_reviewed: 0 };
+const CLASS_WEIGHT = { dismissed_as_fp: 35, shipped_defect: 25, accepted_risk: 20, backlogged: 15, reviewed_missed: 10, not_reviewed: 0 };
 const SEVERITY_WEIGHT = { critical: 40, high: 30, medium: 20, low: 10 };
+// A defect that shipped AND left no test behind is the most actionable history
+// signal: the suite is provably blind there and nobody closed the gap.
+const UNTESTED_FIX_WEIGHT = 15;
 
 export function attentionScore(row, now = Date.now()) {
   const type = TYPE_WEIGHT[row?.type] || 0;
@@ -9,7 +12,8 @@ export function attentionScore(row, now = Date.now()) {
   const severity = SEVERITY_WEIGHT[String(row?.severity || '').toLowerCase()] || 0;
   const timestamp = Date.parse(row?.ts || '');
   const recency = Number.isFinite(timestamp) ? Math.max(0, 20 - Math.floor(Math.max(0, now - timestamp) / 86400000)) : 0;
-  return type + escapeClass + severity + recency;
+  const untestedFix = row?.fix_shipped_test === false ? UNTESTED_FIX_WEIGHT : 0;
+  return type + escapeClass + severity + recency + untestedFix;
 }
 
 export function applyBudget(items, budget = 5) {

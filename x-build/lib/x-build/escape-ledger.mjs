@@ -4,7 +4,12 @@ export const ESCAPE_LEDGER_FILE = 'escape-ledger.jsonl';
 export const MAX_ESCAPE_LINE_BYTES = 64 * 1024;
 
 const TYPES = new Set(['escape', 'contested', 'surviving_mutant', 'revived', 'ack']);
-const ESCAPE_CLASSES = new Set(['not_reviewed', 'reviewed_missed', 'dismissed_as_fp', 'accepted_risk', 'backlogged']);
+// `shipped_defect` is the git-history class: a defect reached main and was
+// later fixed. Gate provenance is unknown, so it must NOT fall into
+// `not_reviewed` — that value means "the gate never saw this diff" and is used
+// to size scope holes. Keeping it separate stops history rows from inflating
+// a panel-specific count.
+const ESCAPE_CLASSES = new Set(['not_reviewed', 'reviewed_missed', 'dismissed_as_fp', 'accepted_risk', 'backlogged', 'shipped_defect']);
 const SEVERITIES = new Set(['critical', 'high', 'medium', 'low']);
 const ID = /^[a-z0-9][a-z0-9._:/-]{0,127}$/i;
 const LABEL = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
@@ -99,7 +104,13 @@ export function buildEscapeRow(input = {}) {
   const artifact = normalizeAttentionPath(input.artifact);
   const relatedFindingId = findingIdentity(finding);
   const stableArtifact = artifact?.replace(/\.attempt-\d+(?=\.json$)/, '') || '';
-  const seed = [type, relatedFindingId || '', taskId || '', input.phase || '', stableArtifact, finding.file || '', input.operator || '', input.line || ''].join('|');
+  // Git rows carry no finding id, task, phase, or artifact, so the commit is
+  // the only thing separating two defects in the same file. Appended only when
+  // present so ids already written by panel collectors stay stable.
+  const commitSeed = normalizeAttentionLabel(input.commit);
+  const seed = [type, relatedFindingId || '', taskId || '', input.phase || '', stableArtifact, finding.file || '', input.operator || '', input.line || '']
+    .concat(commitSeed ? [commitSeed] : [])
+    .join('|');
   return sanitizeEscapeRow({
     schema_v: ESCAPE_LEDGER_SCHEMA_V, type, id: `ae-${hash(seed)}`, ts: input.ts || new Date(0).toISOString(),
     task_id: taskId, reviewed_commit: input.reviewed_commit,
@@ -108,6 +119,8 @@ export function buildEscapeRow(input = {}) {
     related_finding_id: relatedFindingId, severity: finding.severity || input.severity, lens: finding.lens || input.lens,
     source: input.source || finding.source || (type === 'surviving_mutant' ? 'mutate' : 'panel'), attribution: input.attribution, escaped_from_task_ids: input.escaped_from_task_ids,
     operator: input.operator, line: input.line,
+    commit: input.commit, commit_type: input.commit_type, confidence: input.confidence,
+    introduced_commit: input.introduced_commit, area: input.area, fix_shipped_test: input.fix_shipped_test,
   });
 }
 
@@ -118,7 +131,7 @@ export function sanitizeEscapeRow(input) {
   const parsedTs = Date.parse(input.ts || '');
   if (!Number.isFinite(parsedTs)) return null;
   const row = { schema_v: ESCAPE_LEDGER_SCHEMA_V, type, id, ts: new Date(parsedTs).toISOString() };
-  for (const key of ['task_id', 'phase', 'panel_run', 'source', 'attribution', 'reviewed_commit', 'related_finding_id', 'operator']) {
+  for (const key of ['task_id', 'phase', 'panel_run', 'source', 'attribution', 'reviewed_commit', 'related_finding_id', 'operator', 'commit', 'commit_type', 'confidence', 'introduced_commit']) {
     const value = normalizeAttentionLabel(input[key]);
     if (value) row[key] = value;
   }
@@ -134,6 +147,11 @@ export function sanitizeEscapeRow(input) {
   if (file) row.file = file;
   const artifact = normalizeAttentionPath(input.artifact);
   if (artifact) row.artifact = artifact;
+  const area = normalizeAttentionPath(input.area);
+  if (area) row.area = area;
+  // Tri-state on purpose: absent means "not a git row", false means "a defect
+  // shipped and nobody added a test". Collapsing the two would hide the signal.
+  if (typeof input.fix_shipped_test === 'boolean') row.fix_shipped_test = input.fix_shipped_test;
   if (type === 'escape') row.escape_class = normalizeEscapeClass(input.escape_class) || 'not_reviewed';
   if (Number.isInteger(input.line) && input.line > 0) row.line = input.line;
   if (type === 'ack') {

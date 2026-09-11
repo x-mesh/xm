@@ -1,6 +1,8 @@
 import { existsSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, writeSync, fstatSync, chmodSync, unlinkSync, renameSync, rmSync, readdirSync, constants as FS } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { ESCAPE_LEDGER_FILE, parseEscapeLedger, sanitizeEscapeRow, escapeRowKey, buildEscapeRow } from './escape-ledger.mjs';
+import { GIT_LOG_ARGS, gitEscapeConfig, gitWindowArg, parseGitLog, summarizeGitHistory } from './escape-git.mjs';
 const MAX_BYTES=50*1024*1024, MAX_WAIT=2000, STALE=10000;
 function processLive(pid){const value=Number(pid);if(!Number.isInteger(value)||value<=0)return false;try{process.kill(value,0);return true;}catch(error){return error?.code!=='ESRCH';}}
 function recoveryLock(path,staleMs){
@@ -95,3 +97,94 @@ function normalizeTask(value){return typeof value==='string'&&value!=='__integra
 function taskFromPath(path){const m=path.match(/[\/]worktrees[\/]([^\/]+)/);return m&&m[1]!=='__integration__'?m[1]:null;}
 function projectFromPath(path){return path.match(/[\/]projects[\/]([^\/]+)[\/]worktrees[\/]/)?.[1]||null;}
 function readTriage(root){const path=join(root,'.xm','review','triage-ledger.jsonl');if(!existsSync(path))return {rows:[],errors:[]};try{const rows=[],errors=[];readFileSync(path,'utf8').split('\n').forEach((line,index)=>{if(!line.trim())return;try{rows.push(JSON.parse(line));}catch{errors.push(`${relative(root,path)}:${index+1}`);}});return {rows,errors};}catch{return {rows:[],errors:[relative(root,path)]};}}
+
+// ── git-history escapes (F5) ────────────────────────────────────────
+// Impure half of escape-git.mjs: runs git, reads optional repo config, and
+// turns the pure summary into ledger rows. Read-only with respect to the
+// repository — it never writes outside .xm/review.
+
+const MAX_GIT_BUFFER = 32 * 1024 * 1024;
+
+function git(root, args) {
+  return spawnSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: MAX_GIT_BUFFER, windowsHide: true });
+}
+
+/** Reuse the review config's generated-copy roots so mirrored bundles are not
+ *  counted as independent defect sites (x-kit ships three copies of x-build). */
+function generatedCopyRoots(root) {
+  const path = join(resolve(root), '.xm-review.json');
+  if (!existsSync(path)) return [];
+  try {
+    const data = JSON.parse(readFileSync(path, 'utf8'));
+    return Array.isArray(data?.generated_copy_roots)
+      ? data.generated_copy_roots.filter(value => typeof value === 'string' && value.trim())
+      : [];
+  } catch { return []; }
+}
+
+function attentionGitConfig(root) {
+  const path = join(resolve(root), '.xm', 'attention-git.json');
+  if (!existsSync(path)) return null;
+  try { const data = JSON.parse(readFileSync(path, 'utf8')); return data && typeof data === 'object' ? data : null; }
+  catch { return null; }
+}
+
+/**
+ * Collect escapes from git history.
+ *
+ * `available:false` means git could not answer (no repository, git missing,
+ * shallow clone with no matching commits) — that is reported, never thrown, so
+ * a repo without history still returns a usable attention queue.
+ */
+export function collectGitEscapes(root, { since = '90d', maxCommits = 500, config = null } = {}) {
+  const resolved = resolve(root);
+  const empty = { rows: [], parse_errors: 0, errors: [], summary: null, available: false, window_commits: 0, repo_has_history: false };
+  const window = gitWindowArg(since);
+  if (!window) return { ...empty, errors: ['invalid git window: ' + since] };
+  if (!Number.isInteger(maxCommits) || maxCommits < 1 || maxCommits > 5000) return { ...empty, errors: ['invalid git commit limit'] };
+
+  const fileConfig = config || attentionGitConfig(resolved);
+  const merged = gitEscapeConfig(fileConfig);
+  const cfg = {
+    ...merged,
+    exclude_roots: [...new Set([...(merged.exclude_roots || []), ...generatedCopyRoots(resolved)])],
+  };
+
+  // Probe HEAD first so an empty window can be told apart from an empty repo.
+  // Without this, a window that matches nothing looks identical to "no defects",
+  // and a reassuring zero is the worst possible wrong answer here.
+  const head = git(resolved, ['rev-parse', '--verify', '--quiet', 'HEAD']);
+  const hasHistory = !head.error && head.status === 0 && Boolean(String(head.stdout || '').trim());
+
+  const result = git(resolved, [...GIT_LOG_ARGS, '--since=' + window, '-n', String(maxCommits)]);
+  if (result.error || result.status !== 0) {
+    const detail = String(result.stderr || result.error?.message || 'git log failed').trim().slice(0, 200);
+    return { ...empty, repo_has_history: hasHistory, errors: [detail] };
+  }
+
+  const parsed = parseGitLog(result.stdout);
+  const summary = summarizeGitHistory(parsed.commits, cfg);
+  const rows = summary.defects.map(defect => buildEscapeRow({
+    ts: defect.ts,
+    file: defect.file,
+    area: defect.area,
+    source: 'git',
+    attribution: 'history',
+    escape_class: 'shipped_defect',
+    commit: defect.sha,
+    commit_type: defect.commit_type,
+    confidence: defect.confidence,
+    fix_shipped_test: defect.fix_shipped_test,
+    // A revert is the strongest history signal: something the gate passed had
+    // to be taken back wholesale.
+    severity: defect.commit_type === 'revert' ? 'high' : 'medium',
+  })).filter(Boolean);
+
+  const errors = hasHistory && parsed.commits.length === 0
+    ? ['git window matched no commits (' + window + ') although HEAD exists; widen --since']
+    : [];
+  return {
+    rows, parse_errors: parsed.malformed, errors, summary,
+    available: true, window_commits: parsed.commits.length, repo_has_history: hasHistory,
+  };
+}
