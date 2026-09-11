@@ -1,7 +1,7 @@
 import { lstatSync, realpathSync, readFileSync, existsSync, mkdirSync, readdirSync, renameSync, openSync, closeSync, fstatSync, readSync, writeSync, unlinkSync, ftruncateSync, fchmodSync, fsyncSync, constants as FS } from 'node:fs';
 import { join, resolve, relative, sep, dirname, isAbsolute } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { acquireAttentionLock, appendAttentionRows } from './attention-collect.mjs';
 import { buildEscapeRow } from './escape-ledger.mjs';
 import { resolveMainRepoRoot, validateIdSegment } from './worktree-shared.mjs';
@@ -71,22 +71,14 @@ export function simpleMutations(source, { changedLines = null, maxMutants = 12 }
 }
 function git(workspace, args) { return spawnSync('git', args, { cwd: workspace, encoding: 'utf8' }); }
 function isDirty(workspace, target) { const result=git(workspace,['status','--porcelain=v1','--untracked-files=all','--',target]); return result.status!==0 || Boolean(result.stdout.trim()); }
-function parseChangedLines(diff) {
-  const lines = new Set();
-  for (const line of String(diff || '').split('\n')) {
-    const match = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
-    if (!match) continue;
-    const start=Number(match[1]), count=match[2]==null?1:Number(match[2]);
-    for(let offset=0;offset<count;offset+=1) lines.add(start+offset);
-  }
-  return [...lines].sort((a,b)=>a-b);
-}
+function patchPath(value){let path=String(value||'').trim();if(path.startsWith('\"'))try{path=JSON.parse(path);}catch{return null;}path=path.split('\t')[0].replace(/\\/g,'/');return path==='/dev/null'?null:path.replace(/^[ab]\//,'').replace(/^\.\//,'');}
+function parseChangedLines(diff,target=null){const rows=String(diff||'').split('\n'),lines=new Set(),normalized=String(target||'').replace(/\\/g,'/').replace(/^\.\//,'');let file=null,newLine=null,sawFile=false;for(const row of rows){if(row.startsWith('+++ ')){file=patchPath(row.slice(4));sawFile=true;newLine=null;continue;}const hunk=/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row);if(hunk){newLine=Number(hunk[1]);continue;}if(newLine==null||row.startsWith('\\'))continue;const selected=!sawFile||file===normalized;if(row.startsWith('+')){if(selected)lines.add(newLine);newLine+=1;}else if(!row.startsWith('-'))newLine+=1;}return [...lines].sort((a,b)=>a-b);}
 function changedLinesFor(workspace, target, data) {
   if (Array.isArray(data.changed_lines)) return [...new Set(data.changed_lines.filter(Number.isInteger))].sort((a,b)=>a-b);
-  if (typeof data.diff === 'string') return parseChangedLines(data.diff);
+  if (typeof data.diff === 'string') return parseChangedLines(data.diff,target);
   if (typeof data.base === 'string' && data.base) {
     const result=git(workspace,['diff','--unified=0',`${data.base}...HEAD`,'--',target]);
-    if(result.status===0) return parseChangedLines(result.stdout);
+    if(result.status===0) return parseChangedLines(result.stdout,target);
   }
   return [];
 }
@@ -136,7 +128,8 @@ function writeAll(fd,buffer){let offset=0;while(offset<buffer.length){let writte
 function sameFileIdentity(path,identity){try{const stat=lstatSync(path,{bigint:true});return !stat.isSymbolicLink()&&stat.dev===identity.dev&&stat.ino===identity.ino;}catch{return false;}}
 function syncDirectory(path){const fd=openSync(path,FS.O_RDONLY);try{fsyncSync(fd);}catch(error){if(!['EINVAL','ENOTSUP','EOPNOTSUPP'].includes(error?.code))throw error;}finally{closeSync(fd);}}
 function persistReport(state,project,task,report){const review=join(state,'.xm','review','mutate'),projectDir=join(review,project),reportPath=join(projectDir,task+'.json');for(const dir of [join(state,'.xm'),join(state,'.xm','review'),review,projectDir])ensureReportDirectory(dir);if(existsSync(reportPath)){const stat=lstatSync(reportPath);if(!stat.isFile()||stat.isSymbolicLink())fail('mutate report path is unsafe');}const payload=Buffer.from(JSON.stringify(report)+'\n'),noFollow=Number.isInteger(FS.O_NOFOLLOW)?FS.O_NOFOLLOW:0,flags=FS.O_WRONLY|FS.O_CREAT|FS.O_EXCL|noFollow;let fd=null,tmp=null,identity=null,published=false;try{for(let attempt=0;attempt<16;attempt+=1){tmp=join(projectDir,'.'+task+'.'+randomBytes(16).toString('hex')+'.tmp');try{fd=openSync(tmp,flags,0o600);break;}catch(error){if(error?.code!=='EEXIST')throw error;}}if(fd==null)fail('mutate could not allocate a unique report temporary file');const stat=fstatSync(fd,{bigint:true});identity={dev:stat.dev,ino:stat.ino};if(!stat.isFile())fail('mutate report temporary path is unsafe');writeAll(fd,payload);fsyncSync(fd);closeSync(fd);fd=null;renameSync(tmp,reportPath);syncDirectory(projectDir);published=true;return reportPath;}finally{if(fd!=null)try{closeSync(fd);}catch{}if(!published&&tmp&&identity&&sameFileIdentity(tmp,identity))try{unlinkSync(tmp);}catch{}}}
-function acquireMutationLock(state,project,task){const projectDir=join(state,'.xm','review','mutate',project);for(const dir of [join(state,'.xm'),join(state,'.xm','review'),join(state,'.xm','review','mutate'),projectDir])ensureReportDirectory(dir);try{return acquireAttentionLock(join(projectDir,'.'+task+'.mutation'),{waitMs:100,staleMs:10000});}catch{fail('mutation already running for project/task');}}
+function acquireMutationLock(state,workspace,project,task){const dir=join(state,'.xm','review','mutate'),key=createHash('sha256').update(realpathSync(workspace)).digest('hex').slice(0,24);for(const path of [join(state,'.xm'),join(state,'.xm','review'),dir])ensureReportDirectory(path);let releaseFile;try{releaseFile=acquireAttentionLock(join(dir,'.workspace-'+key),{waitMs:100,staleMs:10000});}catch{fail('mutation already running for task worktree');}const repo=repositoryRoot(state),locked=git(repo,['worktree','lock','--reason',`xm mutate ${project}/${task}`,workspace]);if(locked.status!==0){releaseFile();fail('mutate could not lock the registered task worktree');}return ()=>{try{git(repo,['worktree','unlock',workspace]);}finally{releaseFile();}};}
+function mutationPlan(workspace,data,{maxMutants=12}={}){const test=detectedTestCommand(workspace,data),targets=taskTargets(data);if(!test)return {reason:'no test command',test:null,targets,candidates:[]};if(!targets.length)return {reason:'no supported expected_files',test,targets,candidates:[]};const candidates=[];let existing=0;try{for(const target of targets){if(!existsSync(resolve(workspace,target)))continue;existing+=1;const {path}=checkedTarget(workspace,target);if(isDirty(workspace,target))return {reason:'target file has pre-existing changes',test,targets,candidates:[]};const bound=openBoundTarget(workspace,path);try{const changedLines=changedLinesFor(workspace,target,data),mutations=simpleMutations(bound.bytes.toString('utf8'),{changedLines,maxMutants:maxMutants-candidates.length});for(const mutation of mutations)candidates.push({target,path,originalBytes:bound.bytes,originalMode:bound.mode,originalIdentity:bound.identity,mutation});}finally{closeSync(bound.fd);}if(candidates.length>=maxMutants)break;}}catch(error){return {reason:error.message,test,targets,candidates:[]};}if(!existing)return {reason:'target files are absent in this worktree',test,targets,candidates:[]};if(!candidates.length)return {reason:'no supported mutation on changed lines',test,targets,candidates:[]};return {reason:null,test,targets,candidates};}
 export function listMutationTasks(stateRoot,workspaceRoot=stateRoot){
   const state=resolve(stateRoot),workspace=resolve(workspaceRoot),projects=join(state,'.xm','build','projects'),rows=[];
   if(!existsSync(projects))return rows;
@@ -146,7 +139,7 @@ export function listMutationTasks(stateRoot,workspaceRoot=stateRoot){
     if(existsSync(tasksPath))try{tasks=JSON.parse(readFileSync(tasksPath,'utf8')).tasks||[];}catch{}
     const ids=new Set(tasks.map(task=>task.id).filter(Boolean)),worktrees=join(projects,project,'worktrees');
     if(existsSync(worktrees))for(const dirent of readdirSync(worktrees,{withFileTypes:true}))if(dirent.isDirectory()&&dirent.name!=='__integration__')ids.add(dirent.name);
-    for(const id of [...ids].sort()){const artifact=loadTaskArtifact(state,id,project),task=tasks.find(candidate=>candidate.id===id)||artifact?.data?.task||{},data=artifact?.data||{task},targets=taskTargets(data);let taskWorkspace=workspace,reason=null;if(artifact)try{taskWorkspace=mutationWorkspace(artifact,state,id);}catch(error){reason=error.message;}const test=artifact&&!reason?detectedTestCommand(taskWorkspace,data):null,existingTargets=targets.filter(file=>existsSync(resolve(taskWorkspace,file)));if(!artifact)reason='missing worktree artifact';else if(!reason&&!targets.length)reason='no supported expected_files';else if(!reason&&!existingTargets.length)reason='target files are absent in this worktree';else if(!reason&&!test)reason='no test command';rows.push({project,id,name:task.name||id,status:task.status||null,files:targets,runnable:reason===null,reason});}
+    for(const id of [...ids].sort()){const artifact=loadTaskArtifact(state,id,project),task=tasks.find(candidate=>candidate.id===id)||artifact?.data?.task||{},data=artifact?.data||{task},targets=taskTargets(data);let reason=null;if(!artifact)reason='missing worktree artifact';else try{const taskWorkspace=mutationWorkspace(artifact,state,id),plan=mutationPlan(taskWorkspace,data,{maxMutants:1});reason=plan.reason;}catch(error){reason=error.message;}rows.push({project,id,name:task.name||id,status:task.status||null,files:targets,runnable:reason===null,reason});}
   }
   return rows.sort((a,b)=>Number(b.runnable)-Number(a.runnable)||String(a.project).localeCompare(String(b.project))||String(a.id).localeCompare(String(b.id)));
 }
@@ -154,22 +147,21 @@ export function listMutationTasks(stateRoot,workspaceRoot=stateRoot){
 export async function runTaskMutate(root, task, { maxMutants = 12, timeoutMs = 90_000, maxDurationMs = 600_000, signal = null, workspaceRoot = root, stateRoot = root, project = null } = {}) {
   const taskError=validateIdSegment(task,'--task');if(taskError)fail(taskError);
   if(project!=null){const projectError=validateIdSegment(project,'--project');if(projectError)fail(projectError);}
-  const artifact = loadTaskArtifact(stateRoot, task, project);
-  if (!artifact) fail('mutate task artifact not found');
-  const projectId=artifact.project,state=resolve(stateRoot),workspace=mutationWorkspace(artifact,state,task),release=acquireMutationLock(state,projectId,task);
+  const initial=loadTaskArtifact(stateRoot,task,project);
+  if(!initial)fail('mutate task artifact not found');
+  const projectId=initial.project,state=resolve(stateRoot),workspace=mutationWorkspace(initial,state,task),release=acquireMutationLock(state,workspace,projectId,task);
+  const refresh=()=>{const current=loadTaskArtifact(state,task,projectId);if(!current)fail('mutate task artifact disappeared while locked');const currentWorkspace=mutationWorkspace(current,state,task);if(currentWorkspace!==workspace)fail('mutate task worktree changed while locked');return current;};
   try{
-    const test=detectedTestCommand(workspace,artifact.data),targets=taskTargets(artifact.data);
-    if(!test||!targets.length)fail('mutate task requires a test command and supported expected_files');
-    const candidates=[];
-    for(const target of targets){if(!existsSync(resolve(workspace,target)))continue;const {path}=checkedTarget(workspace,target);if(isDirty(workspace,target))fail('mutate refuses pre-existing dirty target');const bound=openBoundTarget(workspace,path),originalBytes=bound.bytes,original=originalBytes.toString('utf8'),originalMode=bound.mode,originalIdentity=bound.identity;closeSync(bound.fd);const changedLines=changedLinesFor(workspace,target,artifact.data);for(const mutation of simpleMutations(original,{changedLines,maxMutants:maxMutants-candidates.length}))candidates.push({target,path,originalBytes,originalMode,originalIdentity,mutation});if(candidates.length>=maxMutants)break;}
-    if(!candidates.length)fail('mutate found no supported mutation on changed lines');
-    const baselineStarted=Date.now(),representative=candidates[0];
+    const artifact=refresh(),plan=mutationPlan(workspace,artifact.data,{maxMutants});
+    if(plan.reason)fail(plan.reason);
+    const {test,candidates}=plan,baselineStarted=Date.now(),representative=candidates[0];
+    refresh();
     const baseline=await runBoundMutate({target:representative.path,command:test.command,cwd:workspace,timeoutMs,signal,expectedIdentity:representative.originalIdentity,expectedBytes:representative.originalBytes,expectedMode:representative.originalMode});
-    if(baseline.outcome!=='survived'){const report={schema_v:1,project:projectId,task_id:task,representative:null,mutants:[],counts:{survived:0,timeout:0},duration_ms:Date.now()-baselineStarted,baseline_exit_code:baseline.exit_code,baseline_outcome:baseline.outcome,test_command:test.command,test_command_source:test.source,ts:new Date().toISOString()};persistReport(state,projectId,task,report);const error=new Error('mutate baseline is not green; fix the test command first');error.exitCode=2;error.report=report;throw error;}
+    if(baseline.outcome!=='survived'){const report={schema_v:1,project:projectId,task_id:task,representative:null,mutants:[],counts:{survived:0,timeout:0},duration_ms:Date.now()-baselineStarted,baseline_exit_code:baseline.exit_code,baseline_outcome:baseline.outcome,test_command:test.command,test_command_source:test.source,ts:new Date().toISOString()};refresh();persistReport(state,projectId,task,report);const error=new Error('mutate baseline is not green; fix the test command first');error.exitCode=2;error.report=report;throw error;}
     const outcomes=[],started=Date.now();
-    for(const candidate of candidates){const {target,path,originalBytes,originalMode,originalIdentity,mutation}=candidate;if(signal?.aborted||Date.now()-started>=maxDurationMs){outcomes.push({file:target,operator:mutation.operator,line:mutation.line,outcome:'skipped',exit_code:null});continue;}const outcome=await runBoundMutate({target:path,command:test.command,cwd:workspace,timeoutMs,signal,replacementBytes:Buffer.from(mutation.source),expectedIdentity:originalIdentity,expectedBytes:originalBytes,expectedMode:originalMode});outcomes.push({file:target,operator:mutation.operator,line:mutation.line,...outcome});}
+    for(const candidate of candidates){if(signal?.aborted||Date.now()-started>=maxDurationMs){outcomes.push({file:candidate.target,operator:candidate.mutation.operator,line:candidate.mutation.line,outcome:'skipped',exit_code:null});continue;}refresh();const outcome=await runBoundMutate({target:candidate.path,command:test.command,cwd:workspace,timeoutMs,signal,replacementBytes:Buffer.from(candidate.mutation.source),expectedIdentity:candidate.originalIdentity,expectedBytes:candidate.originalBytes,expectedMode:candidate.originalMode});outcomes.push({file:candidate.target,operator:candidate.mutation.operator,line:candidate.mutation.line,...outcome});}
     const result=outcomes.find(row=>row.outcome==='survived')||outcomes[0],report={schema_v:1,project:projectId,task_id:task,representative:result,mutants:outcomes,counts:{survived:outcomes.filter(row=>row.outcome==='survived').length,timeout:outcomes.filter(row=>row.outcome==='timeout').length},duration_ms:Date.now()-started,baseline_exit_code:baseline.exit_code,test_command:test.command,test_command_source:test.source,ts:new Date().toISOString()};
-    persistReport(state,projectId,task,report);
+    refresh();persistReport(state,projectId,task,report);
     const artifactPath=reportArtifact(projectId,task),surviving=outcomes.filter(row=>row.outcome==='survived').map(row=>buildEscapeRow({mutant:true,ts:report.ts,task_id:task,file:row.file,artifact:artifactPath,source:'mutate',operator:row.operator,line:row.line}));
     if(surviving.length)appendAttentionRows(state,surviving);
     return report;
