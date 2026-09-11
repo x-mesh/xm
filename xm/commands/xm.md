@@ -22,6 +22,7 @@ Parse the first whitespace-separated word of the arguments above as the subcomma
 | `memory` | memory | Cross-session decision memory |
 | `humble` | humble | Structured retrospective |
 | `probe` | probe | Premise validation |
+| `mutate` | mutate | Check whether existing tests detect source mutations |
 | `dashboard` | dashboard | Web dashboard for .xm state |
 | `panel` | panel | Cross-model adversarial review panel (claude/codex/cursor…) |
 | `plan` | plan | Quick scaffold, Standard interview, or Ultra multi-model plan |
@@ -49,7 +50,7 @@ Parse the first whitespace-separated word of the arguments above as the subcomma
 1. **If arguments are empty** → print the subcommand table above and stop. Do not invoke any skill.
 2. **If first word matches a subcommand in the table** → invoke the corresponding skill (from `skills/<subcommand>/SKILL.md`) and pass the remaining arguments as its input.
 3. **kit aliases** — treat `/xm <kit-cmd> [args...]` as equivalent to `/xm kit <kit-cmd> [args...]` for any of: `config`, `update`, `version`, `doctor`, `cost`, `pipeline`, `validate`, `agents`. Invoke the `kit` skill with the full original input (including the alias word itself) as its `$ARGUMENTS`.
-4. **If first word is unknown** → respond with `Unknown subcommand: <first-word>. Available: op, solver, build, eval, agent, review, trace, memory, humble, probe, dashboard, panel, plan, recall, wt, remote, humanize, kit, ship, sync, handoff, handon, config, update, version, doctor, cost, pipeline, validate, agents, init` and stop.
+4. **If first word is unknown** → respond with `Unknown subcommand: <first-word>. Available: op, solver, build, eval, agent, review, trace, memory, humble, probe, mutate, dashboard, panel, plan, recall, wt, remote, humanize, kit, ship, sync, handoff, handon, config, update, version, doctor, cost, pipeline, validate, agents, init` and stop.
 5. **For `init`** there is no skill — it is a plain command; follow instructions in `commands/init.md`.
 
 ### Examples
@@ -58,6 +59,7 @@ Parse the first whitespace-separated word of the arguments above as the subcomma
 - `/xm solver 문제가 다 해결되었는지 확인해보자` → invoke solver skill with that argument
 - `/xm op refine "draft response" "make it crisper"` → invoke op skill
 - `/xm build plan "new feature goal"` → invoke build skill
+- `/xm mutate` → list runnable tasks, ask the user to choose one, then check existing tests without generating tests
 - `/xm config show` → shortcut for `/xm kit config show`
 - `/xm config set agent_max_count 8` → shortcut for `/xm kit config set agent_max_count 8`
 - `/xm update` → shortcut for `/xm kit update` (batch update all xm plugins)

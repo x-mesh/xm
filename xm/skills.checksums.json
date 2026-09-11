@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1788908811877,
+  "generatedAt": 1789095574850,
   "version": 3,
   "skills": [
     {
@@ -17,9 +17,9 @@
       "plugin": "build",
       "sha256": "5427b4f6af2f31b178146fc73b9997e056af9590c8d05c9f09f4a90516428c0c",
       "bytes": 16962,
-      "referencesSha256": "1f9d78d0ecd4d365b53ea53332693d23f110f741bd9c57e98bd27cb828093996",
+      "referencesSha256": "bb94a7c7dfe983525eb6d113598045a2bd04f57f754781468542ef823747d641",
       "referenceFiles": 11,
-      "referenceBytes": 106618,
+      "referenceBytes": 107270,
       "assetsSha256": "8f7264689050361533647ce8d7afd45f7f62e14534726b19f630df7d82fb6bc6",
       "assetFiles": 3,
       "assetBytes": 22098
@@ -103,8 +103,8 @@
     },
     {
       "plugin": "kit",
-      "sha256": "b2bb98abff6c90a65eea62b294e33ce77655bb7456e4523c0a6aaeb714fa28b6",
-      "bytes": 15083,
+      "sha256": "b08014ea91461d1d9e5107a02d89fe7884bdf3b548ee046732643d9c4df5a972",
+      "bytes": 15193,
       "referencesSha256": "d279e1ba064200c58409611085d3bbb386ed79ac6b9e1f6807b924799ee1b139",
       "referenceFiles": 2,
       "referenceBytes": 3224,
@@ -144,6 +144,17 @@
       "assetsSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "assetFiles": 0,
       "assetBytes": 0
+    },
+    {
+      "plugin": "mutate",
+      "sha256": "b805388ae36b2865b656e7d949992fe3b556782b2335586767fda4ef6a035de0",
+      "bytes": 2429,
+      "referencesSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "referenceFiles": 0,
+      "referenceBytes": 0,
+      "assetsSha256": "48023a9006be4278ef9f15042dcffd7f0a8a04c6930804426559b79be1b0041a",
+      "assetFiles": 1,
+      "assetBytes": 259
     },
     {
       "plugin": "op",

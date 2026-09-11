@@ -239,3 +239,15 @@ describe('activity dashboard static asset contract', () => {
     expect(appSource).toContain("if (path === '/activity') refreshActivity()");
   });
 });
+
+describe('attention queue static asset contract', () => {
+  const appSource = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  test('loads and renders escaped attention fields on the Reviews page', () => {
+    expect(appSource).toContain("fetchJSON(apiUrl('/review/attention'))");
+    expect(appSource).toContain('Attention queue');
+    expect(appSource).toContain("escapeHtmlHumble(row.file || '—')");
+    expect(appSource).toContain("escapeHtmlHumble(row.artifact || '—')");
+    expect(appSource).toContain('attention item(s) remain unacknowledged');
+  });
+});

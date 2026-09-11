@@ -55,6 +55,10 @@ Full CLI surface. SKILL.md links here instead of inlining it — the catalog is 
 - `task-check <task-id> [--json]` — run configured `build.task_checks` in the current task cwd and persist completion evidence; required for newly planned normal and worktree tasks
 - `review-group [name] [--depth checks-only|solo|panel] [--rounds 1|2] [--json]` — group-boundary review at the configured depth (default `solo`). Solo flow: the CLI returns `{pending:"solo", solo:{patch, model}}` → spawn ONE reviewer agent on that patch with that model → `review-group <name> --verdict pass|fail [--notes "..."]` records it (fail-closed if the git target moved). `--depth panel` runs the cross-vendor panel — only when the user asks
 - `templates list` / `templates use <name>` — Use task templates
+- `attention [--json] [--budget N] [--since 30d] [--backfill] [--dry-run]` — collect and rank gate escapes, contested findings, surviving mutants, and revived dismissals without changing gate decisions (`--budget 0` = all)
+- `attention --ack <item-id> [--note <text>]` — acknowledge an attention item so it is excluded from subsequent queues
+- `mutate [--list] [--json]` — list mutation-testing task candidates without changing files; no arguments prints a friendly candidate list
+- `mutate --project <name> --task <id> [--max-mutants N] [--timeout-ms M] [--json]` — run bounded changed-line mutation checks and restore exact source bytes/mode
 
 **Worktree backend** (optional Execute-phase fan-out — see [Worktree Execution Mode](#worktree-execution-mode)):
 - `run --worktrees [--dry-run] [--max-parallel N] [--base X] [--branch-prefix P] [--no-worktrees] [--json]` — route Execute through the worktree backend

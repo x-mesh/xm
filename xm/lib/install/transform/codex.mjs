@@ -198,6 +198,7 @@ export function renderCodexPluginManifest(version) {
         '$xm:op debate two implementation options',
         '$xm:review review the current branch',
         '$xm:probe test whether this feature is worth building',
+        '$xm:mutate check task t1 for surviving mutants',
       ],
     },
   }, null, 2) + '\n';

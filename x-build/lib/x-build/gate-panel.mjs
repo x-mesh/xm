@@ -21,7 +21,7 @@
 
 import {
   spawnSync, resolve, join, dirname, basename, readdirSync,
-  readJSON, existsSync, mkdirSync, writeFileSync, renameSync,
+  readJSON, existsSync, mkdirSync, readFileSync, writeFileSync, renameSync,
   parseOptions, getExplicitProject, exitFail, C,
 } from './core.mjs';
 import { loadSharedConfig } from './config-loader.mjs';
@@ -393,6 +393,38 @@ function writeArtifact(path, data) {
   }
 }
 
+function decodeGitPath(value) {
+  let text=String(value||'').trim();
+  if(text==='/dev/null')return null;
+  if(text.startsWith('"')&&text.endsWith('"')){
+    const body=text.slice(1,-1),bytes=[];
+    for(let index=0;index<body.length;index+=1){
+      if(body[index]==='\\'&&/^[0-7]{3}/.test(body.slice(index+1,index+4))){bytes.push(parseInt(body.slice(index+1,index+4),8));index+=3;continue;}
+      if(body[index]==='\\'&&index+1<body.length){const char=body[++index],decoded=({t:'\t',n:'\n',r:'\r','"':'"','\\':'\\'})[char]??char;bytes.push(...Buffer.from(decoded));continue;}
+      bytes.push(...Buffer.from(body[index]));
+    }
+    text=Buffer.from(bytes).toString('utf8');
+  }
+  return text.replace(/^[ab]\//,'');
+}
+function diffHeaderPaths(line) {
+  const rest=line.slice('diff --git '.length),tokens=[];
+  if(!rest.startsWith('"')){const boundary=rest.lastIndexOf(' b/');if(boundary>0)return [decodeGitPath(rest.slice(0,boundary)),decodeGitPath(rest.slice(boundary+1))].filter(Boolean);}
+  let index=0;
+  while(index<rest.length&&tokens.length<2){while(rest[index]===' ')index+=1;if(rest[index]==='"'){let token='"';index+=1;for(;index<rest.length;index+=1){token+=rest[index];if(rest[index]==='\\'&&index+1<rest.length){token+=rest[++index];continue;}if(rest[index]==='"'){index+=1;break;}}tokens.push(token);}else{const end=rest.indexOf(' ',index);tokens.push(rest.slice(index,end<0?rest.length:end));index=end<0?rest.length:end+1;}}
+  return tokens.map(decodeGitPath).filter(Boolean);
+}
+export function reviewedFilesFromPatch(patch) {
+  try {
+    const text = readFileSync(patch, 'utf8'), files = new Set();
+    for (const line of text.split('\n')) {
+      if(line.startsWith('diff --git ')){for(const value of diffHeaderPaths(line))files.add(value);continue;}
+      const marker=/^(?:\+\+\+|---) (.+)$/.exec(line);if(marker){const value=decodeGitPath(marker[1]);if(value)files.add(value);}
+    }
+    return [...files].sort();
+  } catch { return []; }
+}
+
 // ── Core runner (testable) ───────────────────────────────────────────
 
 /**
@@ -441,6 +473,7 @@ export function runGatePanel({ project, taskId, phase, patch, cwd = process.cwd(
     round,
     panel_rounds: rounds,
     demotions,
+    reviewed_files_all: reviewedFilesFromPatch(patch),
   };
 
   // Pre-gate (§3F): cheap convergence check — a fail here blocks WITHOUT

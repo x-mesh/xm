@@ -403,7 +403,7 @@ This is a *capability*, available today; proving it produces measurably better o
 
 ## Plugins
 
-12 plugins, each installable individually or bundled via `xm`.
+18 plugins, each installable individually or bundled via `xm`.
 
 | Plugin | Purpose | Key command |
 |--------|---------|-------------|
@@ -425,6 +425,7 @@ This is a *capability*, available today; proving it produces measurably better o
 | xm | Bundle + config + pipeline | `/xm pipeline release` |
 
 **Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `x-sync` multi-machine sync server · `/xm:toss` + `/xm:inbox` cross-project bug handoff — see [x-ship](#x-ship), [x-sync](#x-sync) and [toss / inbox](#cross-project-handoff--toss--inbox) below.
+`/xm:mutate` mutation testing is also bundled in `xm` because it executes the bundled `xm build mutate` engine. Codex exposes the same skill as `$xm:mutate` and the flat compatibility alias `$xm-mutate`. It checks existing tests and does not generate tests.
 
 ---
 

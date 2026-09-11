@@ -114,6 +114,7 @@ Review & quality:
   /xm:panel     크로스모델 적대 패널 (claude/codex…)  쓸 때: 여러 LLM으로 교차검증/적대 리뷰
   /xm:plan      구현 계획 작성·검증                    쓸 때: lifecycle 없이 계획을 만들고 `.xm/plan/`에 저장
   /xm:probe     전제 검증 — 나쁜 아이디어 조기 사살   쓸 때: 만들기 전에 가정이 맞는지
+  /xm:mutate    mutation testing — 기존 test 탐지력 확인 쓸 때: test 사각지대 후보를 찾기
 
 Knowledge & memory:
   /xm:recall    과거 산출물 인덱스 (review/op/plan…)  쓸 때: 지난 세션의 리뷰/op/plan을 찾기

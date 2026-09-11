@@ -170,6 +170,11 @@ for cmddir in x-*/commands; do
 done
 shopt -u nullglob
 
+# Dashboard cannot import x-build core. Vendor only the explicitly PURE
+# attention modules so every shipped surface ranks identical ledger rows.
+sync_file "x-build/lib/x-build/escape-ledger.mjs" "x-dashboard/lib/x-build/escape-ledger.mjs"
+sync_file "x-build/lib/x-build/attention-rank.mjs" "x-dashboard/lib/x-build/attention-rank.mjs"
+
 echo ""
 echo "=== Syncing shared docs ==="
 sync_file "docs/korean-output-style.md" "xm/docs/korean-output-style.md"
@@ -480,6 +485,16 @@ for pair in \
   fi
 done
 
+for pair in \
+  "x-build/lib/x-build/escape-ledger.mjs:x-dashboard/lib/x-build/escape-ledger.mjs" \
+  "x-build/lib/x-build/attention-rank.mjs:x-dashboard/lib/x-build/attention-rank.mjs"; do
+  src="${pair%%:*}"; dst="${pair##*:}"
+  if ! diff -q "$src" "$dst" > /dev/null 2>&1; then
+    echo "  DIVERGED: $dst"
+    DIVERGED=$((DIVERGED + 1))
+  fi
+done
+
 shopt -s nullglob
 for f in x-solver/lib/*.mjs; do
   dst="xm/lib/$(basename "$f")"
@@ -594,6 +609,7 @@ if ! diff -q "x-dashboard/lib/x-dashboard-server.mjs" "xm/lib/x-dashboard-server
   echo "  DIVERGED: xm/lib/x-dashboard-server.mjs"
   DIVERGED=$((DIVERGED + 1))
 fi
+
 
 if ! diff -q "x-agent/skills/agent/flow.md" "xm/skills/agent/flow.md" > /dev/null 2>&1; then
   echo "  DIVERGED: xm/skills/agent/flow.md"

@@ -12,6 +12,8 @@ const SANDBOX = realpathSync(mkdtempSync(join(tmpdir(), 'xdb-ledger-api-')));
 const XM_ROOT = join(SANDBOX, '.xm');
 const REVIEW_DIR = join(XM_ROOT, 'review');
 const LEDGER = join(REVIEW_DIR, 'triage-ledger.jsonl');
+const ATTENTION_LEDGER = join(REVIEW_DIR, 'escape-ledger.jsonl');
+const ATTENTION_FRAGMENT = join(REVIEW_DIR, 'escape-ledger.2026Q3.jsonl');
 const PORT = 23000 + (process.pid % 10000);
 const BASE = `http://127.0.0.1:${PORT}`;
 let server;
@@ -21,6 +23,11 @@ const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms)
 
 async function requestPrecision() {
   const response = await fetch(`${BASE}/api/review/precision`);
+  return { response, body: await response.json() };
+}
+
+async function requestAttention() {
+  const response = await fetch(BASE + '/api/review/attention');
   return { response, body: await response.json() };
 }
 
@@ -133,5 +140,40 @@ describe('dashboard review precision ledger safety', () => {
     const { response, body } = await requestPrecision();
     expect(response.status).toBe(413);
     expect(body.status).toBe('ledger_too_large');
+  });
+});
+
+describe('dashboard attention queue API', () => {
+  test('ranks a safe ledger and excludes acknowledgements', async () => {
+    rmSync(ATTENTION_LEDGER, { force: true });
+    rmSync(ATTENTION_FRAGMENT, { force: true });
+    writeFileSync(ATTENTION_LEDGER, [
+      JSON.stringify({ schema_v: 1, type: 'contested', id: 'shown', ts: '2026-08-26T00:00:00.000Z', severity: 'medium' }),
+      JSON.stringify({ schema_v: 1, type: 'escape', id: 'hidden', ts: '2026-08-26T00:00:00.000Z', severity: 'high' }),
+      JSON.stringify({ schema_v: 1, type: 'ack', id: 'hidden', ts: '2026-08-26T00:00:01.000Z' }),
+    ].join('\n') + '\n');
+    const { response, body } = await requestAttention();
+    expect(response.status).toBe(200);
+    expect(body.state).toBe('ok');
+    expect(body.data.map((row) => row.id)).toEqual(['shown']);
+    expect(body.queue_health).toMatchObject({ warning: true, unacked_count: 1 });
+  });
+
+  test('merges rollover fragments', async () => {
+    rmSync(ATTENTION_LEDGER, { force: true });
+    writeFileSync(ATTENTION_LEDGER, JSON.stringify({ schema_v: 1, type: 'contested', id: 'base', ts: '2026-08-26T00:00:00.000Z' }) + '\n');
+    writeFileSync(ATTENTION_FRAGMENT, JSON.stringify({ schema_v: 1, type: 'revived', id: 'fragment', ts: '2026-08-27T00:00:00.000Z' }) + '\n');
+    const { response, body } = await requestAttention();
+    expect(response.status).toBe(200);
+    expect(new Set(body.data.map(row => row.id))).toEqual(new Set(['base', 'fragment']));
+    rmSync(ATTENTION_FRAGMENT, { force: true });
+  });
+
+  test('rejects malformed and out-of-range budgets', async () => {
+    for (const budget of ['nope', '-1', '101']) {
+      const response = await fetch(BASE + '/api/review/attention?budget=' + budget);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: 'invalid_budget' });
+    }
   });
 });

@@ -1143,6 +1143,14 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
   const SCHEMA_SRC = readFileSync(join(XM_LIB, 'config-schema.mjs'), 'utf8');
   const WORKTREE_SRC = readFileSync(join(XM_LIB, 'x-build', 'worktree-shared.mjs'), 'utf8');
   const REVIEW_PRECISION_SRC = readFileSync(join(PROJECT_ROOT, 'x-dashboard', 'lib', 'x-build', 'review-precision.mjs'), 'utf8');
+  const ESCAPE_LEDGER_SRC = readFileSync(join(PROJECT_ROOT, 'x-dashboard', 'lib', 'x-build', 'escape-ledger.mjs'), 'utf8');
+  const ATTENTION_RANK_SRC = readFileSync(join(PROJECT_ROOT, 'x-dashboard', 'lib', 'x-build', 'attention-rank.mjs'), 'utf8');
+
+  function writeStaticDependencies(dir) {
+    mkdirSync(join(dir, 'x-build'), { recursive: true });
+    writeFileSync(join(dir, 'x-build', 'escape-ledger.mjs'), ESCAPE_LEDGER_SRC);
+    writeFileSync(join(dir, 'x-build', 'attention-rank.mjs'), ATTENTION_RANK_SRC);
+  }
 
   async function bootSimulated(dir, port) {
     const proc = spawn('bun', [join(dir, 'server.mjs'), '--port', String(port)], {
@@ -1179,8 +1187,8 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
     const port = 19895;
     try {
       writeFileSync(join(dir, 'server.mjs'), SERVER_SRC);
+      writeStaticDependencies(dir);
       writeFileSync(join(dir, 'config-schema.mjs'), SCHEMA_SRC);
-      mkdirSync(join(dir, 'x-build'), { recursive: true });
       writeFileSync(join(dir, 'x-build', 'worktree-shared.mjs'), WORKTREE_SRC);
 
       proc = await bootSimulated(dir, port);
@@ -1200,7 +1208,7 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
     const port = 19893;
     try {
       writeFileSync(join(dir, 'server.mjs'), SERVER_SRC);
-      mkdirSync(join(dir, 'x-build'), { recursive: true });
+      writeStaticDependencies(dir);
       writeFileSync(join(dir, 'x-build', 'review-precision.mjs'), REVIEW_PRECISION_SRC);
       const reviewDir = join(dir, '.xm', 'review');
       mkdirSync(reviewDir, { recursive: true });
@@ -1236,6 +1244,7 @@ describe('GET /api/config/schema — bundle-layout smoke (P3)', () => {
     const port = 19894;
     try {
       writeFileSync(join(dir, 'server.mjs'), SERVER_SRC);
+      writeStaticDependencies(dir);
       // Deliberately no config-schema.mjs, no x-build/worktree-shared.mjs.
 
       proc = await bootSimulated(dir, port);

@@ -1,0 +1,2 @@
+import { test, expect } from 'bun:test'; import { parseEscapeLedger, aggregateEscapeRows } from '../x-build/lib/x-build/escape-ledger.mjs';
+test('100k unique ledger rows parse and aggregate within the budget',()=>{const lines=Array.from({length:100000},(_,i)=>JSON.stringify({schema_v:1,type:'escape',id:`row-${i}`,ts:'2026-01-01T00:00:00Z'})).join('\n');const at=performance.now();const parsed=parseEscapeLedger(lines);expect(parsed.rows).toHaveLength(100000);expect(aggregateEscapeRows(parsed.rows).rows).toHaveLength(100000);expect(performance.now()-at).toBeLessThan(5000);});

@@ -5123,12 +5123,20 @@ async function renderReviewsList() {
   const app = document.getElementById('app');
   app.innerHTML = `<div class="view-header"><h1>Reviews</h1><p>.xm/review/</p></div>${renderLoading()}`;
 
-  const [last, history, gate, precision] = await Promise.all([
+  const [last, history, gate, precision, attention] = await Promise.all([
     fetchJSON(apiUrl('/review/last')),
     fetchJSON(apiUrl('/review/history')),
     fetchJSON(apiUrl('/review/gate')),
     fetchJSON(apiUrl('/review/precision')),
+    fetchJSON(apiUrl('/review/attention')),
   ]);
+  const attentionBlock = (() => {
+    if (!attention || attention.error || attention.state === 'no_data') return `<div class="card" style="margin-bottom:1rem"><h2 style="margin-top:0">Attention queue</h2><p class="text-muted">No attention data yet.</p></div>`;
+    const rows = (attention.data || []).map(row => `<tr><td>${escapeHtmlHumble(row.type || '')}</td><td>${severityBadge(row.severity || 'unknown')}</td><td><code>${escapeHtmlHumble(row.file || '—')}</code></td><td><code>${escapeHtmlHumble(row.artifact || '—')}</code></td><td>${Number(row.score || 0)}</td></tr>`).join('');
+    const health = attention.queue_health || {};
+    const warning = health.warning ? `<div class="alert alert-warning" role="status">${Number(health.unacked_count || 0)} attention item(s) remain unacknowledged; oldest is ${Number(health.oldest_age_days || 0)} days old.</div>` : '';
+    return `<div class="card" style="margin-bottom:1rem"><h2 style="margin-top:0">Attention queue</h2>${warning}${rows ? `<div class="table-wrapper"><table class="table"><thead><tr><th>Source</th><th>Severity</th><th>File</th><th>Artifact</th><th>Score</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="text-muted">No active attention signals.</p>'}</div>`;
+  })();
 
   // Lens precision (triage ledger). precision = fix_now / (fix_now + false_positive);
   // null means the lens has not been measured yet, which is not the same as 0%.
@@ -5299,6 +5307,7 @@ async function renderReviewsList() {
   app.innerHTML = `
     <div class="view-header"><h1>Reviews</h1><p>.xm/review/</p></div>
     ${gateBlock}
+    ${attentionBlock}
     ${precisionBlock}
     ${lastBlock}
     ${historyRows ? historyBlock : ''}

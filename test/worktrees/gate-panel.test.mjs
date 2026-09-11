@@ -14,10 +14,13 @@ import { fileURLToPath } from 'node:url';
 import {
   mergePolicy, evaluateVerdict, resolveMainRoots,
   resolvePolicyForPhase, nextRound, applyRoundCap, preGateArgv,
+  reviewedFilesFromPatch,
 } from '../../x-build/lib/x-build/gate-panel.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI = join(__dirname, '..', '..', 'x-build', 'lib', 'x-build-cli.mjs');
+
+test('reviewedFilesFromPatch decodes quoted paths and ignores dev null',()=>{const dir=mkdtempSync(join(tmpdir(),'gate-patch-')),patch=join(dir,'change.patch');try{const octal=String.raw`\303\251`;writeFileSync(patch,['diff --git "a/src/a b.js" "b/src/a b.js"','--- "a/src/a b.js"','+++ "b/src/a b.js"',`diff --git "a/src/${octal}.js" "b/src/${octal}.js"`,`--- "a/src/${octal}.js"`,`+++ "b/src/${octal}.js"`,'diff --git a/new.js b/new.js','--- /dev/null','+++ b/new.js'].join('\n'));expect(reviewedFilesFromPatch(patch)).toEqual(['new.js','src/a b.js','src/é.js']);}finally{rmSync(dir,{recursive:true,force:true});}});
 
 // ── Fake panel: emits a verdict JSON (or a transient failure) per env mode ──
 const FAKE_PANEL = `
@@ -260,6 +263,7 @@ describe('gate-panel CLI (integration, fake panel)', () => {
     expect(r.status).toBe(0);
     expect(r.parsed.decision).toBe('pass');
     expect(r.parsed.panel_run).toBe('fk-clean');
+    expect(r.parsed.reviewed_files_all).toEqual(['f.txt']);
     expect(existsSync(artifact('ta', 'before'))).toBe(true);
   });
 

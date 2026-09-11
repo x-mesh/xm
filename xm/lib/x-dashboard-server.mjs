@@ -22,12 +22,15 @@ import { join, resolve, dirname, basename, relative, isAbsolute, sep } from 'nod
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { createConnection } from 'node:net';
+import { parseEscapeLedger, aggregateEscapeRows } from './x-build/escape-ledger.mjs';
+import { attentionQueueHealth, rankAttention } from './x-build/attention-rank.mjs';
 
 // ── Config ──────────────────────────────────────────────────────────
 
 const DEFAULT_PORT = 19841;
 const SESSION_IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 const MAX_REVIEW_LEDGER_BYTES = 4 * 1024 * 1024;
+const MAX_ATTENTION_LEDGER_BYTES = 50 * 1024 * 1024;
 const VERSION = process.env.XM_SYNC_VERSION ?? '0.1.0';
 
 const args = process.argv.slice(2);
@@ -145,6 +148,34 @@ function readBoundedRegularFile(path, maxBytes, boundary) {
   } finally {
     if (fd != null) closeSync(fd);
   }
+}
+
+function handleReviewAttention(xmRoot, req) {
+  const reviewDir = safeJoin(xmRoot, 'review');
+  if (!reviewDir || !existsSync(reviewDir)) return jsonResponseWithETag({ data: [], state: 'no_data', parse_errors: 0 }, req);
+  try {
+    const ledgers = readdirSync(reviewDir, { withFileTypes: true })
+      .filter(entry => entry.isFile() && /^escape-ledger(?:\.\d{4}Q[1-4])?\.jsonl$/.test(entry.name))
+      .map(entry => safeJoin(reviewDir, entry.name))
+      .filter(Boolean)
+      .sort();
+    if (!ledgers.length) return jsonResponseWithETag({ data: [], state: 'no_data', parse_errors: 0 }, req);
+    const rows = [];
+    let skipped = 0;
+    for (const ledger of ledgers) {
+      const parsed = parseEscapeLedger(readBoundedRegularFile(ledger, MAX_ATTENTION_LEDGER_BYTES, xmRoot));
+      rows.push(...parsed.rows);
+      skipped += parsed.parse_errors;
+    }
+    const aggregate = aggregateEscapeRows(rows);
+    const budgetParam = new URL(req.url).searchParams.get('budget');
+    const rawBudget = budgetParam == null ? 5 : Number(budgetParam);
+    if (!Number.isInteger(rawBudget) || rawBudget < 0 || rawBudget > 100) {
+      return jsonResponseWithETag({ error: 'invalid_budget' }, req, 400);
+    }
+    const budget = rawBudget;
+    return jsonResponseWithETag({ data: rankAttention(aggregate.rows, { budget, acked: aggregate.acked }), queue_health: attentionQueueHealth(aggregate.rows, { acked: aggregate.acked }), state: 'ok', parse_errors: skipped }, req);
+  } catch (error) { return jsonResponseWithETag({ error: error.code || 'attention_read_error' }, req, 400); }
 }
 
 // ── Segment Validation ──────────────────────────────────────────────
@@ -4105,6 +4136,9 @@ server = Bun.serve({
         if (subPath === '/review/precision') {
           return handleReviewPrecision(xmRoot, req);
         }
+        if (subPath === '/review/attention') {
+          return handleReviewAttention(xmRoot, req);
+        }
 
         // GET /api/ws/:wsId/review/history/:file  (must come before /review/history)
         const wsReviewFileMatch = subPath.match(/^\/review\/history\/([^/]+)$/);
@@ -4390,6 +4424,9 @@ server = Bun.serve({
       // GET /api/review/precision[?since=30d&last=N&lens=L]
       if (path === '/api/review/precision') {
         return handleReviewPrecision(XM_ROOT, req);
+      }
+      if (path === '/api/review/attention') {
+        return handleReviewAttention(XM_ROOT, req);
       }
 
       // GET /api/review/history/:file  (must come before /api/review/history)
