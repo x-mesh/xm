@@ -116,6 +116,26 @@ describe('x-solver SKILL.md structure', () => {
     expect(content).not.toContain('xm/xm/1.26.4');
   });
 
+  test('agent waits use 5-minute polling under one 20-minute phase deadline', () => {
+    const normalized = content.replace(/\s+/g, ' ');
+    expect(content).toContain('5 minutes as the polling interval, not the agent execution timeout');
+    expect(content).toContain('20-minute phase-wide deadline from the earliest agent spawn');
+    expect(content).toContain('checkpoints never reset it');
+    expect(normalized).toContain('do not interrupt, restart, or spawn a duplicate');
+    expect(content).toContain('explicit user-approved extension');
+  });
+
+  test('scope contract keeps diagnosis broad and implementation bounded', () => {
+    expect(content).toContain('Scope Contract');
+    expect(content).toContain('one reproduction command and one failure marker');
+    expect(content).toContain('one root invariant');
+    expect(content).toContain('explicit non-goals/backlog');
+    expect(content).toContain('ask for explicit scope expansion');
+    expect(content).toContain('Critical/High regression introduced by the current changes');
+    expect(content).toContain('Medium/Low, or structural improvement → backlog/new solver run');
+    expect(content).toContain('same logical operation');
+  });
+
   test('classify direct path is documented as non-strategy', () => {
     const classifyBody = readFileSync(join(solverRoot, 'commands', 'classify.md'), 'utf8');
 

@@ -75,7 +75,7 @@ Display the saved budget before worker dispatch: `full=1, fix=1, delta=1`.
 These values are limits. Do not perform unnecessary fixes or delta reviews.
 
 ```bash
-xm review prepare "$TARGET_FILE" --task-id "$TASK_ID" --json
+xm review prepare "$TARGET_FILE" --operation-id "$OPERATION_ID" --task-id "$TASK_ID" --json
 # For a PR, use --pr NUMBER --repo OWNER/NAME.
 # Include --zero-findings only when the user requests it before the first worker starts.
 ```
@@ -682,9 +682,9 @@ fi
 
 ## Worktree review budget
 
-The worktree stores task budgets under `.xm/review/budget.json` and protects changes with a local lock.
-PR identity uses `--repo OWNER/NAME --pr NUMBER`. Otherwise use `--task-id ID`, or the current branch.
-Detached HEAD requires `--task-id`. Other worktrees have independent budgets, even for the same PR.
+The worktree stores schema-v2 operation budgets under `.xm/review/budget.json` and protects changes with a local lock.
+Reuse `--operation-id ID` across the full → fix → delta sequence. PR, branch, and `--task-id` values are aliases to that stable operation; a new alias never resets counters. Detached HEAD requires `--operation-id` or `--task-id`. Other worktrees have independent budgets, even for the same PR.
+An independent operation is explicit and audited: `--operation-id ID --new-operation --approved-by USER --reason TEXT`. Unknown operation IDs and ambiguous aliases fail closed.
 Use `associate RUN --pr NUMBER --repo OWNER/NAME --reason TEXT` to connect an active task to its PR.
 For legacy runs, specify the task identity and reason with `associate` before validation or closure.
 Association preserves usage and active work. It does not create a successful receipt.
@@ -699,6 +699,15 @@ The Review-Fix Gate consumes `fix=1` when it first approves a scope. Revalidatio
 Triage regeneration cannot reset the budget. Additional full, fix, or delta work needs a recorded one-time exception.
 Use `--exception KIND --approved-by USER --reason TEXT` only after the user approves that specific action.
 An exception neither restores counters nor bypasses an unfinished run.
+
+## Terminal stop contract
+
+Read the integrity-verified `terminal.action` returned by `run`, `finalize`, `submit`, `status`, or `close`.
+Every outcome has `decision: "stop"`, `auto_review_allowed: false`, and `auto_fix_allowed: false`. Do not
+schedule another reviewer, create another task/operation alias, or start a fix from verdict text. LGTM may
+carry advisory findings: `continuation: "none"` means done, `human_triage` means present findings for a
+human choice, and `human_decision` means the incomplete/cancelled run needs a human decision. Legacy
+receipts derive a conservative STOP and never authorize automation.
 
 For a legacy result without a run manifest, use `associate RUN --legacy-result .xm/review/last-result.json --task-id ID --reason TEXT`.
 The lifecycle retains the original result as evidence. Close the associated run if frozen validation artifacts are absent.

@@ -311,6 +311,12 @@ The Phase 3 panel backend replaces the current-runtime fan-out with:
 - Additional full, fix, or delta work requires `--exception KIND --approved-by USER --reason TEXT` after explicit user approval.
 - Never reset task budgets or bypass an unfinished run. Use `status`, `resume`, or `close` to recover it.
 - Retry an unusable logical report once with a fresh worker and attempt ID. A second failure means `Review incomplete`.
+- Reuse one stable `--operation-id` for the logical full → fix → delta sequence. `--task-id` is only
+  an alias onto that operation; changing it never creates another budget. Start independent work only
+  with `--operation-id ID --new-operation --approved-by USER --reason TEXT`.
+- Every terminal receipt carries an integrity-verified `action`. Branch on that action, not verdict prose.
+  `decision: stop` always forbids automatic review and fix follow-ups, including LGTM with advisory
+  findings and incomplete partial results. Continue only according to `continuation` after human input.
 - Native and headless paths also use `prepare`, `submit`, and `finalize`. The runtime still owns worker creation.
 - Never append another native panel review. Confidence can reflect how many model sources agreed.
 

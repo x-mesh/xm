@@ -139,6 +139,31 @@ describe('xm review executable lifecycle', () => {
     expect(existsSync(join(dir, '.xm', 'review', 'last-result.json'))).toBe(true);
   });
 
+  test('uses one canonical generated-copy-filtered target and integrity-bound provenance', () => {
+    const dir = workspace();
+    mkdirSync(join(dir, 'x-review/lib'), { recursive: true }); mkdirSync(join(dir, 'xm/lib/x-review'), { recursive: true });
+    writeFileSync(join(dir, '.xm-review.json'), JSON.stringify({ generated_copy_roots: ['xm/lib'] }));
+    writeFileSync(join(dir, 'generated.patch'), [
+      'diff --git a/x-review/lib/a.mjs b/x-review/lib/a.mjs', '--- a/x-review/lib/a.mjs', '+++ b/x-review/lib/a.mjs', '@@ -1 +1 @@', '-export const v = 1;', '+export const v = 2;',
+      'diff --git a/xm/lib/x-review/a.mjs b/xm/lib/x-review/a.mjs', '--- a/xm/lib/x-review/a.mjs', '+++ b/xm/lib/x-review/a.mjs', '@@ -1 +1 @@', '-export const v = 1;', '+export const v = 2;',
+    ].join('\n'));
+    const result = spawnSync('node', [CLI, 'run', 'generated.patch', '--lenses', 'correctness', '--run-id', 'canonical', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'clean' }), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const runDir = join(dir, '.xm/review/runs/canonical'); const manifest = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8'));
+    const target = readFileSync(join(runDir, 'target.patch'), 'utf8');
+    expect(target).toContain('x-review/lib/a.mjs'); expect(target).not.toContain('xm/lib/x-review/a.mjs');
+    expect(manifest.target_files).toEqual(['x-review/lib/a.mjs']);
+    expect(manifest.chunks.flatMap(chunk => chunk.files)).toEqual(['x-review/lib/a.mjs']);
+    expect(manifest.target.excluded_generated_copies).toEqual([{ file: 'xm/lib/x-review/a.mjs', source_file: 'x-review/lib/a.mjs' }]);
+    expect(manifest.target.source_hash).not.toBe(manifest.target_hash);
+
+    const terminal = join(runDir, 'terminal.json'); rmSync(terminal);
+    const budgetPath = join(dir, '.xm/review/budget.json'); const state = JSON.parse(readFileSync(budgetPath, 'utf8')); state.active = 'canonical'; writeFileSync(budgetPath, JSON.stringify(state));
+    manifest.target.excluded_generated_copies = []; writeFileSync(join(runDir, 'run.json'), JSON.stringify(manifest));
+    const tampered = spawnSync('node', [CLI, 'finalize', 'canonical', '--json'], { cwd: dir, env: env(dir), encoding: 'utf8' });
+    expect(tampered.status).not.toBe(0); expect(tampered.stderr).toContain('provenance');
+  });
+
   test('keeps the report when one panel slot is unusable and the others reviewed', () => {
     const dir = workspace();
     const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'risk', '--run-id', 'suspect-slot', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'suspect-slot' }), encoding: 'utf8' });
@@ -346,7 +371,7 @@ describe('xm review executable lifecycle', () => {
     writeFileSync(join(dir, 'multi.patch'), ['a', 'b', 'c'].flatMap((name) => [
       `diff --git a/src/${name}.js b/src/${name}.js`, `--- a/src/${name}.js`, `+++ b/src/${name}.js`, '@@ -1 +1 @@', `-export const ${name} = 0;`, `+export const ${name} = 1;`,
     ]).join('\n'));
-    const result = spawnSync('node', [CLI, 'run', 'multi.patch', '--lenses', 'correctness,risk', '--chunk-file-budget', '1', '--max-concurrent-reports', '4', '--run-id', 'partial-wave', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_FAIL_LENS: 'correctness', XM_FAKE_PANEL_MODE: 'clean' }), encoding: 'utf8' });
+    const result = spawnSync('node', [CLI, 'run', 'multi.patch', '--lenses', 'correctness,risk', '--chunk-file-budget', '1', '--max-concurrent-reports', '4', '--run-id', 'partial-wave', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_MODE: 'correctness-unusable' }), encoding: 'utf8' });
     expect(result.status).not.toBe(0);
     const children = join(dir, '.xm', 'review', 'runs', 'partial-wave', 'children');
     // chunk-003 sits in wave 2, behind the wave that failed; it used to never be dispatched.
@@ -355,6 +380,11 @@ describe('xm review executable lifecycle', () => {
     const risks = ['risk-chunk-001', 'risk-chunk-002', 'risk-chunk-003']
       .map((id) => JSON.parse(readFileSync(join(children, `${id}.json`), 'utf8')).status);
     expect(risks).toEqual(['completed', 'completed', 'completed']);
+    const runDir = join(dir, '.xm/review/runs/partial-wave');
+    expect(existsSync(join(runDir, 'partial-result.json'))).toBe(true);
+    const terminal = JSON.parse(readFileSync(join(runDir, 'terminal.json'), 'utf8'));
+    expect(terminal.action).toMatchObject({ decision: 'stop', reason_code: 'review_incomplete', auto_review_allowed: false, auto_fix_allowed: false, continuation: 'human_decision', coverage_complete: false });
+    expect(terminal.partial_result_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
   test('stops when a whole wave fails instead of burning the remaining waves', () => {

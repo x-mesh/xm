@@ -10,6 +10,14 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.25.1] - 2026-09-11
+
+### Fixed
+
+- **review:** bind full-review budgets to stable operation identities and stop terminal automation from reopening exhausted runs.
+- **review:** preserve validated sibling findings and canonical generated-target provenance across retries and finalization.
+- **solver:** keep waiting for running agents within a phase wall deadline and require an explicit scope contract before expanding implementation work.
+
 ## [2.25.0] - 2026-09-11
 
 ### Added

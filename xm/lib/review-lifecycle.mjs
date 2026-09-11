@@ -263,6 +263,8 @@ function verifyBytes(runDir, manifest) {
   if (manifest.context_status === 'bound' && hashReviewContext(readState(join(runDir, 'context.json'))) !== manifest.context_hash) throw new Error('context bytes do not match run manifest');
   const target = join(runDir, manifest.target.file);
   if (!existsSync(target) || hash(readFileSync(target)) !== manifest.target.hash || manifest.target.hash !== manifest.target_hash) throw new Error('frozen target bytes do not match run manifest');
+  if (manifest.target.source_hash && (!Array.isArray(manifest.target.excluded_generated_copies)
+    || manifest.target.provenance_hash !== hash(JSON.stringify({ source_hash: manifest.target.source_hash, excluded_generated_copies: manifest.target.excluded_generated_copies })))) throw new Error('generated-copy provenance does not match run manifest');
   for (const chunk of manifest.chunks) if (!existsSync(join(runDir, chunk.target_file)) || hash(readFileSync(join(runDir, chunk.target_file))) !== chunk.target_hash) throw new Error(`${chunk.id}: frozen chunk bytes do not match run manifest`);
   for (const prompt of manifest.prompts) if (!existsSync(join(runDir, prompt.file)) || hash(readFileSync(join(runDir, prompt.file))) !== prompt.prompt_hash) throw new Error(`${prompt.lens}: prompt bytes do not match run manifest`);
   for (const expected of manifest.expected_reports) {
@@ -344,7 +346,7 @@ function persistResult(runDir, manifest, validation, synthesis, persistOptions =
     return [profile, { total: items.length, critical: items.filter((f) => f.severity === 'Critical').length, high: items.filter((f) => f.severity === 'High').length, medium: items.filter((f) => f.severity === 'Medium').length, low: items.filter((f) => f.severity === 'Low').length }];
   }));
   const result = {
-    task_budget_id: manifest.task_budget_id, review_mode: manifest.review_mode, zero_findings: manifest.zero_findings,
+    task_budget_id: manifest.task_budget_id, operation_id: manifest.operation_id, review_mode: manifest.review_mode, zero_findings: manifest.zero_findings,
     inherited_coverage: previous ? { run_id: previous.run_id, coverage: previous.coverage, target_coverage: previous.target_coverage, inherited: previous.inherited_coverage } : null,
     schema: 'xm.review.result.v2', timestamp, completed_at: timestamp, run_id: manifest.id, task_id: manifest.task_id,
     target: { type: manifest.target.kind === 'file' ? 'file' : 'diff', ref: manifest.target.ref }, target_hash: manifest.target_hash,
@@ -381,6 +383,31 @@ function persistResult(runDir, manifest, validation, synthesis, persistOptions =
   });
   }
   return result;
+}
+
+function terminalizeIncomplete(root, runDir, manifest, reason, trace = true) {
+  // Rebuild the partial only from persisted reports whose manifest binding still
+  // validates. Never borrow last-result.json: that belongs to another run.
+  verifyBytes(runDir, manifest);
+  const rawReports = readdirSync(join(runDir, 'reports')).filter((name) => name.endsWith('.json')).sort()
+    .map((name) => ({ file: name, body: readFileSync(join(runDir, 'reports', name), 'utf8') }));
+  const chunkBodies = Object.fromEntries(manifest.chunks.map((chunk) => [chunk.target_file, readFileSync(join(runDir, chunk.target_file), 'utf8')]));
+  const validation = validateReviewReports(manifest, rawReports, { targetBody: readFileSync(join(runDir, 'target.patch'), 'utf8'), chunkBodies });
+  json(join(runDir, 'validation.json'), validation);
+  recordChildValidity(runDir, manifest, validation);
+  let partialResult = null;
+  if (validation.valid_reports.length > 0) {
+    partialResult = persistResult(runDir, manifest, validation, synthesize(groundedReports(rawReports, validation)), { partial: true });
+  }
+  const status = {
+    state: 'incomplete', updated_at: iso(), completed: validation.valid_reports.length, expected: manifest.expected_reports.length,
+    missing: validation.missing_reports, valid_reports: validation.valid_reports, reason,
+    ...(partialResult ? { partial_result: 'partial-result.json' } : {}),
+  };
+  json(join(runDir, 'status.json'), status);
+  event(runDir, partialResult ? 'run_partial' : 'run_incomplete', status, trace);
+  finishRun(root, manifest, 'incomplete', reason);
+  return terminalReceipt(root, manifest.id);
 }
 
 function recordVerdict(runDir, manifest, result, options) {
@@ -547,11 +574,12 @@ async function prepareRunDir(options) {
   const { cwd, frozen, id, runDir } = options;
   for (const name of ['chunks', 'prompts', 'children', 'reports', 'work']) mkdirSync(join(runDir, name), { recursive: true });
   const trace = options.trace !== false && options.env?.XM_REVIEW_TRACE !== '0';
-  writeFileSync(join(runDir, 'target.patch'), frozen.body);
-  event(runDir, 'target_frozen', { target_kind: frozen.kind, target_ref: frozen.ref, target_hash: hash(frozen.body) }, trace);
   const config = readJson(join(cwd, '.xm-review.json')) || {};
   const filtered = filterGeneratedCopies(frozen.body, config.generated_copy_roots || []);
-  const plan = planReview(frozen.body, { maxProfiles: options.maxProfiles || DEFAULT_PROFILES, targetFiles: frozen.kind === 'file' ? [frozen.ref] : [], chunkTokenBudget: options.chunkTokenBudget || DEFAULT_TOKEN_BUDGET, chunkFileBudget: options.chunkFileBudget || DEFAULT_FILE_BUDGET, maxConcurrentReports: options.maxConcurrentReports || DEFAULT_CONCURRENT_REPORTS, generatedCopyRoots: config.generated_copy_roots || [] });
+  const sourceHash = hash(frozen.body);
+  writeFileSync(join(runDir, 'target.patch'), filtered.body);
+  event(runDir, 'target_frozen', { target_kind: frozen.kind, target_ref: frozen.ref, target_hash: hash(filtered.body), source_hash: sourceHash, excluded_generated_copies: filtered.excluded }, trace);
+  const plan = planReview(filtered.body, { maxProfiles: options.maxProfiles || DEFAULT_PROFILES, targetFiles: frozen.kind === 'file' ? [frozen.ref] : [], chunkTokenBudget: options.chunkTokenBudget || DEFAULT_TOKEN_BUDGET, chunkFileBudget: options.chunkFileBudget || DEFAULT_FILE_BUDGET, maxConcurrentReports: options.maxConcurrentReports || DEFAULT_CONCURRENT_REPORTS });
   if (!plan.reviewable) throw new Error(plan.incomplete_reason || 'review target cannot be chunked safely');
   const plannedChunks = chunkFrozenTarget(filtered.body, options.chunkTokenBudget || DEFAULT_TOKEN_BUDGET, { targetFiles: frozen.kind === 'file' ? [frozen.ref] : [], fileBudget: options.chunkFileBudget || DEFAULT_FILE_BUDGET });
   const actualChunks = plannedChunks.length ? plannedChunks : [{ id: 'chunk-001', body: filtered.body, files: plan.files, target_hash: hash(filtered.body) }];
@@ -580,9 +608,9 @@ async function prepareRunDir(options) {
   const context = options.contextFile ? normalizeReviewContext(readState(resolve(cwd, options.contextFile))) : null;
   if (context) json(join(runDir, 'context.json'), context);
   const manifest = {
-    task_budget_id: options.taskBudget.id, review_mode: options.reviewMode, baseline: options.baseline || null, zero_findings: options.zeroFindings === true, snapshot: options.snapshot,
+    task_budget_id: options.taskBudget.id, operation_id: options.taskBudget.operation_id, review_mode: options.reviewMode, baseline: options.baseline || null, zero_findings: options.zeroFindings === true, snapshot: options.snapshot,
     schema: 'xm.review.run.v2', schema_version: 1, id, task_id: id, created_at: iso(), started_at: iso(), cwd,
-    target_hash: hash(frozen.body), target_files: files, context_status: 'absent', target: { kind: frozen.kind, ref: frozen.ref, hash: hash(frozen.body), file: 'target.patch' },
+    target_hash: hash(filtered.body), target_files: files, context_status: 'absent', target: { kind: frozen.kind, ref: frozen.ref, hash: hash(filtered.body), source_hash: sourceHash, excluded_generated_copies: filtered.excluded, provenance_hash: hash(JSON.stringify({ source_hash: sourceHash, excluded_generated_copies: filtered.excluded })), file: 'target.patch' },
     ...(context ? { context_status: 'bound', context_hash: hashReviewContext(context), context_contract: context } : {}),
     reviewed_commit: commit, reviewed_files_all: files, reviewed_file_snapshots: options.snapshot?.kind === 'commits' ? files.map(file => {
       const blob = spawnSync('git', ['show', `${commit}:${file}`], { cwd, maxBuffer: 64 * 1024 * 1024 });
@@ -760,7 +788,7 @@ async function prepareInLock(options, { root, cwd }) {
     const owner = Object.entries(state.tasks).find(([, entry]) =>
       entry.id !== task.id && entry.used.full >= entry.limits.full
       && ownerTargetHash(entry) === response.manifest.target_hash);
-    if (owner && !existingTaskIds.has(task.id) && options.exception !== 'full') {
+    if (owner && !existingTaskIds.has(task.id) && !options.newOperation && options.exception !== 'full') {
       rmSync(response.runDir, { recursive: true, force: true });
       throw new Error(`task "${owner[0]}" already spent its full review on these exact bytes; a new --task-id does not reset that. Continue that task with a delta, or approve another full with --exception full --approved-by USER --reason TEXT`);
     }
@@ -781,22 +809,24 @@ async function executeOwned(response, root, options) {
     const receipt = terminalReceipt(root, manifest.id);
     if (loadBudget(root).active === manifest.id) finishRun(root, manifest, receipt.outcome, receipt.reason);
     if (receipt.outcome !== 'success') throw new Error(`Review ${receipt.outcome}; closed runs cannot resume`);
-    return { ...response, result: readState(join(runDir, 'result.json')) };
+    return { ...response, result: readState(join(runDir, 'result.json')), terminal: receipt };
   }
   if (loadBudget(root).active !== manifest.id) throw new Error('run does not own active worktree lock');
   if (!manifest.options || !manifest.expected_reports) throw new Error('legacy run lacks frozen lifecycle artifacts; close it explicitly');
   try {
     const result = await execute(manifest, runDir, { cwd: manifest.cwd, env: options.env || process.env, models: options.models || manifest.options.models.join(','), rounds: options.rounds || manifest.options.rounds, trace: options.trace ?? manifest.options.trace, finalizeOnly: options.finalizeOnly });
     finishRun(root, manifest, 'success');
-    return { ...response, result };
+    return { ...response, result, terminal: terminalReceipt(root, manifest.id) };
   } catch (error) {
     const exhausted = manifest.expected_reports.some(expected => {
       const child = readJson(join(runDir, 'children', `${expected.report_id}.json`));
       return child?.attempt >= 2 && (child.status !== 'completed' || child.valid === false);
     });
     if (exhausted) {
-      finishRun(root, manifest, 'incomplete', error.message);
-      throw new Error(`Review incomplete: ${error.message}`);
+      const terminal = terminalizeIncomplete(root, runDir, manifest, error.message, options.trace);
+      const incomplete = new Error(`Review incomplete: ${error.message}`);
+      incomplete.terminal = terminal;
+      throw incomplete;
     }
     throw error;
   }
@@ -839,9 +869,11 @@ export async function submitReview(id, options = {}) {
     const validation = validateReviewReports(manifest, [{ file: `${expected.report_id}.json`, body }], { targetBody: readFileSync(join(runDir, 'target.patch'), 'utf8'), chunkBodies: Object.fromEntries(manifest.chunks.map(chunk => [chunk.target_file, readFileSync(join(runDir, chunk.target_file), 'utf8')])) });
     if (!validation.valid_reports.includes(expected.report_id)) {
       if (child.attempt >= 2) {
-        json(join(runDir, 'validation.json'), validation);
-        finishRun(root, manifest, 'incomplete', `${expected.report_id}: second unusable worker result`);
-        throw new Error('Review incomplete: second unusable worker result');
+        json(childPath, { ...child, status: 'failed', valid: false, invalid_codes: validation.issues.map(issue => issue.code) });
+        const terminal = terminalizeIncomplete(root, runDir, manifest, `${expected.report_id}: second unusable worker result`, options.trace);
+        const incomplete = new Error('Review incomplete: second unusable worker result');
+        incomplete.terminal = terminal;
+        throw incomplete;
       }
       const retry = { ...child, attempt: child.attempt + 1, attempt_id: randomUUID(), status: 'running' };
       json(childPath, retry); event(runDir, 'child_retry', { report_id: expected.report_id, previous_attempt_id: child.attempt_id, attempt_id: retry.attempt_id });
@@ -860,7 +892,7 @@ export async function statusReview(id, options = {}) {
   const { root, cwd } = reviewRoot(options);
   const response = ownedRun(root, cwd, id);
   const terminal = existsSync(join(response.runDir, 'terminal.json')) ? terminalReceipt(root, id) : null;
-  return { ...response, budget: loadBudget(root), status: { ...readState(join(root, 'runs', id, 'status.json')), terminal } };
+  return { ...response, budget: loadBudget(root), terminal, status: { ...readState(join(root, 'runs', id, 'status.json')), terminal } };
 }
 export async function closeReview(id, options = {}) {
   if (!options.reason?.trim()) throw new Error('close requires --reason');
@@ -869,11 +901,11 @@ export async function closeReview(id, options = {}) {
     if (existsSync(join(response.runDir, 'terminal.json'))) {
       const receipt = terminalReceipt(root, id);
       if (loadBudget(root).active === id) finishRun(root, response.manifest, receipt.outcome, receipt.reason);
-      return response;
+      return { ...response, terminal: receipt };
     }
     finishRun(root, response.manifest, 'cancelled', options.reason);
     json(join(response.runDir, 'status.json'), { state: 'cancelled', reason: options.reason });
-    return response;
+    return { ...response, terminal: terminalReceipt(root, id) };
   });
 }
 

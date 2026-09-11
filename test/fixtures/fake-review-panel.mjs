@@ -35,7 +35,8 @@ const riskFinding = {
   owner: 'fixture-risk', severity: 'medium', file: 'src/a.js', line: 2,
   claim: 'risk finding', evidence: 'export const b = 2;', opponents: [{ model: 'fixture-challenger', stance: 'concede', reason: 'confirmed' }], reviewers: 1,
 };
-const mode = process.env.XM_FAKE_PANEL_MODE;
+let mode = process.env.XM_FAKE_PANEL_MODE;
+if (mode === 'correctness-unusable') mode = lens === 'correctness' ? 'all-slots-unusable' : 'clean';
 const severity = process.env.XM_FAKE_PANEL_SEVERITY;
 const finding = { ...riskFinding, ...(severity ? { severity } : {}), ...(mode === 'foreign-target' ? { file: 'src/foreign.js' } : {}) };
 if (mode === 'mixed-severity') finding.severity = lens === 'correctness' ? 'medium' : 'high';

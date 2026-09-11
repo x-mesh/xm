@@ -166,6 +166,51 @@ The CLI resolves it as local `.xm/solver/config.json` `solving.parallel_agents` 
 Use that value as `AGENT_COUNT` for all fan-out/broadcast operations in the current solve phase.
 Do NOT hardcode agent counts. Always use the resolved value.
 
+### Agent Wait Deadline (MANDATORY)
+
+- Treat **5 minutes as the polling interval, not the agent execution timeout**. A poll timeout while
+  the agent is still `running` means the same agent keeps working; do not interrupt, restart, or
+  spawn a duplicate.
+- Set one **20-minute phase-wide deadline from the earliest agent spawn**. Polls, status checks, and
+  checkpoints never reset it. Parallel agents share this deadline rather than receiving 20 minutes
+  serially.
+- Poll at most once per 5-minute boundary. At 10 minutes, if no checkpoint exists, request one
+  concise checkpoint exactly once: completed work, current blocker, changed files, and remaining
+  validation. Keep waiting when the checkpoint shows progress.
+- At 20 minutes, stop open-ended work: request the current bounded conclusion, then interrupt only
+  agents that cannot return it or show no useful progress. Continuing past 20 minutes requires an
+  explicit user-approved extension with a new fixed deadline.
+- Predictably long validation such as a full test suite is not hidden inside an agent deadline. Run
+  it separately in the leader process or declare its own deadline before starting it.
+
+### Scope Contract and Expansion Gate (MANDATORY)
+
+Before the first solve-phase agent spawn, state and persist a **Scope Contract** containing:
+
+1. one observed symptom;
+2. one reproduction command and one failure marker;
+3. the root invariant this pass will repair;
+4. explicit non-goals/backlog;
+5. expected authority files and focused tests.
+
+Diagnose broadly, but implement one vertical slice that removes the recorded failure marker. The
+default implementation budget is one root invariant, roughly 3-5 authority files, and 1-2 focused
+test files. These are expansion triggers, not arbitrary quotas: a new public API or schema migration,
+a second independent root cause, more than twice the expected files, or a refactor not required to
+remove the marker. On a trigger, stop and ask for explicit scope expansion. Approval requires
+execution evidence explaining why the current slice cannot remove the marker; relatedness alone is
+not evidence.
+
+Classify every newly discovered finding before acting:
+
+- direct cause of the recorded marker → current slice;
+- Critical/High regression introduced by the current changes → current slice;
+- pre-existing, adjacent, Medium/Low, or structural improvement → backlog/new solver run.
+
+Do not turn verifier findings into automatic scope growth. After the exact repro, new regression,
+and focused suite pass, stop the slice. Broader suites run once only when shared code changed; full
+review uses the same logical operation and never restarts as a fresh full review to chase backlog.
+
 ### fan-out (parallel agents)
 Call `AGENT_COUNT` Agent tools **simultaneously** in a single message:
 ```

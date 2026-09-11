@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 
 import { createHash } from 'node:crypto';
-import { authorizeReviewFix } from '../x-review/lib/review-budget.mjs';
+import { automationAfterTerminal, authorizeReviewFix, loadBudget, terminalReceipt } from '../x-review/lib/review-budget.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'x-review', 'lib', 'x-review-cli.mjs');
 const PANEL = join(import.meta.dirname, 'fixtures', 'fake-review-panel.mjs');
@@ -30,7 +30,12 @@ function environment(dir, extra = {}) { return { ...process.env, XM_REVIEW_ROOT:
 function cli(dir, args, extra = {}) { return spawnSync('node', [CLI, ...args, '--no-trace', '--json'], { cwd: dir, env: environment(dir, extra), encoding: 'utf8' }); }
 function ok(result) { expect(result.stderr).toBe(''); expect(result.status).toBe(0); return JSON.parse(result.stdout); }
 function start(dir, id, extra = {}, args = []) { return ok(cli(dir, ['run', 'target.patch', '--lenses', 'correctness', '--run-id', id, ...args], extra)); }
-const budget = dir => read(join(dir, '.xm/review/budget.json'));
+const budget = dir => {
+  const state = read(join(dir, '.xm/review/budget.json'));
+  state.tasks = state.operations;
+  for (const [alias, key] of Object.entries(state.aliases)) Object.defineProperty(state.tasks, alias, { enumerable: false, get: () => state.operations[key] });
+  return state;
+};
 const runFile = (dir, id, file) => join(dir, '.xm/review/runs', id, file);
 function change(dir, value = 3) { writeFileSync(join(dir, 'src/a.js'), `export const a = ${value};\nexport const b = 2;\n`); }
 function concurrent(dir, args, extra = {}) {
@@ -44,6 +49,103 @@ function concurrent(dir, args, extra = {}) {
 afterEach(() => { while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true }); });
 
 describe('worktree review budgets', () => {
+  test('persists schema-v2 stable operation identity and treats task ids as aliases', () => {
+    const dir = workspace();
+    start(dir, 'op-full', {}, ['--operation-id', 'release-gate', '--task-id', 'pass-1']);
+    change(dir, 3);
+    const delta = start(dir, 'op-delta', {}, ['--task-id', 'pass-2']);
+    expect(delta.review_mode).toBe('delta');
+    const state = read(join(dir, '.xm/review/budget.json'));
+    expect(state).toMatchObject({ schema: 2, current_operation: 'operation:release-gate', active: null, operation_transitions: [] });
+    expect(state.tasks).toBeUndefined();
+    expect(Object.keys(state.operations)).toEqual(['operation:release-gate']);
+    expect(state.aliases['task:pass-1']).toBe('operation:release-gate');
+    expect(state.aliases['task:pass-2']).toBe('operation:release-gate');
+    expect(state.operations['operation:release-gate'].used).toEqual({ full: 1, fix: 0, delta: 1 });
+    change(dir, 4);
+    expect(cli(dir, ['prepare', '--run-id', 'op-third', '--task-id', 'pass-3']).stderr).toContain('delta budget exhausted');
+  });
+
+  test('requires an audited transition before an independent operation', () => {
+    const dir = workspace(); ok(cli(dir, ['prepare', 'target.patch', '--lenses', 'correctness', '--run-id', 'first', '--operation-id', 'first']));
+    ok(cli(dir, ['close', 'first', '--reason', 'complete the identity setup']));
+    expect(cli(dir, ['prepare', 'target.patch', '--run-id', 'unknown', '--operation-id', 'second']).stderr).toContain('unknown operation id');
+    expect(cli(dir, ['prepare', 'target.patch', '--run-id', 'unsafe', '--operation-id', '../unsafe', '--new-operation', '--approved-by', 'owner', '--reason', 'bad id']).stderr).toContain('safe identifier');
+    expect(cli(dir, ['prepare', 'target.patch', '--run-id', 'ungated', '--operation-id', 'second', '--new-operation']).stderr).toContain('--approved-by');
+    ok(cli(dir, ['prepare', 'target.patch', '--run-id', 'second', '--operation-id', 'second', '--task-id', 'second-task', '--new-operation', '--approved-by', 'owner', '--reason', 'independent release']));
+    const state = read(join(dir, '.xm/review/budget.json'));
+    expect(Object.keys(state.operations)).toEqual(['operation:first', 'operation:second']);
+    expect(state.operation_transitions).toEqual([expect.objectContaining({ from: 'operation:first', to: 'operation:second', approved_by: 'owner', reason: 'independent release' })]);
+    ok(cli(dir, ['close', 'second', '--reason', 'done']));
+    expect(cli(dir, ['prepare', 'target.patch', '--run-id', 'ambiguous', '--task-id', 'never-seen']).stderr).toContain('ambiguous');
+  });
+
+  test('new-operation rejects an alias bound to another operation without changing state', () => {
+    const dir = workspace(); start(dir, 'alias-owner', {}, ['--operation-id', 'first', '--task-id', 'shared']);
+    const path = join(dir, '.xm/review/budget.json'); const before = readFileSync(path, 'utf8');
+    const rejected = cli(dir, ['prepare', 'target.patch', '--run-id', 'alias-transfer', '--operation-id', 'second', '--task-id', 'shared', '--new-operation', '--approved-by', 'owner', '--reason', 'attempt transfer']);
+    expect(rejected.status).not.toBe(0); expect(rejected.stderr).toContain('cannot transfer aliases');
+    expect(readFileSync(path, 'utf8')).toBe(before);
+    expect(existsSync(runFile(dir, 'alias-transfer', 'run.json'))).toBe(false);
+  });
+
+  test('migrates schema-v1 empty, single, multiple, and active budgets conservatively', () => {
+    for (const shape of ['empty', 'single', 'multiple', 'active']) {
+      const dir = workspace(); mkdirSync(join(dir, '.xm/review/runs'), { recursive: true });
+      const base = { schema: 1, tasks: {}, aliases: {}, active: null };
+      const row = id => ({ id, limits: { full: 1, fix: 1, delta: 1 }, used: { full: 1, fix: 1, delta: 0 }, baseline: `base-${id}`, approvals: [{ kind: 'full' }], fix_approvals: ['scope'] });
+      if (shape !== 'empty') { base.tasks['task:a'] = row('a-id'); base.aliases['task:a'] = 'task:a'; }
+      if (shape === 'multiple') { base.tasks['task:b'] = row('b-id'); base.aliases['task:b'] = 'task:b'; }
+      if (shape === 'active') {
+        base.active = 'active-run'; mkdirSync(runFile(dir, 'active-run', ''), { recursive: true });
+        writeFileSync(runFile(dir, 'active-run', 'run.json'), JSON.stringify({ task_budget_id: 'a-id' }));
+      }
+      writeFileSync(join(dir, '.xm/review/budget.json'), JSON.stringify(base));
+      const migrated = loadBudget(join(dir, '.xm/review'));
+      expect(migrated.schema).toBe(2); expect(migrated.tasks).toBe(migrated.operations);
+      expect(migrated.operations['operation:a-id']?.used).toEqual(base.tasks['task:a']?.used);
+      expect(migrated.operations['operation:a-id']?.baseline).toBe(base.tasks['task:a']?.baseline);
+      expect(migrated.current_operation).toBe(shape === 'empty' || shape === 'multiple' ? null : 'operation:a-id');
+    }
+  });
+
+  test('schema-v1 migration validates before persist and preserves associations', () => {
+    const dir = workspace(); mkdirSync(join(dir, '.xm/review'), { recursive: true });
+    const path = join(dir, '.xm/review/budget.json');
+    const legacy = { schema: 1, tasks: { 'task:a': { id: 'a-id', limits: { full: 1, fix: 1, delta: 1 }, used: { full: null, fix: 0, delta: 0 }, approvals: [], fix_approvals: [] } }, aliases: { 'task:a': 'task:a' }, active: null, associations: [{ run_id: 'legacy', reason: 'preserve me' }] };
+    const before = JSON.stringify(legacy); writeFileSync(path, before);
+    expect(() => loadBudget(join(dir, '.xm/review'))).toThrow('counters');
+    expect(readFileSync(path, 'utf8')).toBe(before);
+
+    legacy.tasks['task:a'].used.full = 1; writeFileSync(path, JSON.stringify(legacy));
+    const migrated = loadBudget(join(dir, '.xm/review'));
+    expect(migrated.associations).toEqual(legacy.associations);
+    expect(read(path).associations).toEqual(legacy.associations);
+  });
+
+  test('schema-v1 active migration maps exactly and supports close and resume', () => {
+    for (const command of ['close', 'resume']) {
+      const dir = workspace(); start(dir, `migration-${command}`);
+      const path = join(dir, '.xm/review/budget.json'); const current = read(path);
+      current.schema = 1; current.tasks = current.operations; delete current.operations;
+      current.aliases = Object.fromEntries(Object.entries(current.aliases).map(([alias, key]) => [alias, key]));
+      // v1 aliases addressed task map keys, so give the migrated operation its old key.
+      const operation = Object.values(current.tasks)[0]; current.tasks = { 'branch:master': operation };
+      current.aliases = Object.fromEntries(Object.keys(current.aliases).map(alias => [alias, 'branch:master']));
+      current.active = `migration-${command}`; delete current.current_operation; delete current.operation_transitions;
+      writeFileSync(path, JSON.stringify(current));
+      if (command === 'close') ok(cli(dir, ['close', `migration-${command}`, '--reason', 'migration recovery']));
+      else ok(cli(dir, ['resume', `migration-${command}`]));
+      expect(read(path)).toMatchObject({ schema: 2, active: null, current_operation: `operation:${operation.operation_id}` });
+    }
+
+    const dir = workspace(); mkdirSync(join(dir, '.xm/review/runs/orphan'), { recursive: true });
+    writeFileSync(runFile(dir, 'orphan', 'run.json'), JSON.stringify({ task_budget_id: 'not-present' }));
+    const path = join(dir, '.xm/review/budget.json'); const invalid = { schema: 1, tasks: {}, aliases: {}, active: 'orphan' };
+    const before = JSON.stringify(invalid); writeFileSync(path, before);
+    expect(() => loadBudget(join(dir, '.xm/review'))).toThrow('exactly one operation');
+    expect(readFileSync(path, 'utf8')).toBe(before);
+  });
   test('persists full usage across processes, HEAD changes and PR association', () => {
     const dir = workspace(); start(dir, 'first-run'); change(dir); git(dir, 'add', 'src/a.js'); git(dir, 'commit', '-m', 'change');
     const second = start(dir, 'second', {}, ['--repo', 'owner/repo', '--pr', '12']);
@@ -61,9 +163,9 @@ describe('worktree review budgets', () => {
     // Task b reviews a different target: two tasks on the SAME bytes is now refused,
     // and the baseline isolation this test is about does not depend on sharing one.
     writeFileSync(join(dir, 'other.patch'), 'diff --git a/src/b.js b/src/b.js\n--- a/src/b.js\n+++ b/src/b.js\n@@ -1 +1,2 @@\n export const c = 1;\n+export const d = 2;\n');
-    ok(cli(dir, ['run', 'other.patch', '--lenses', 'correctness', '--run-id', 'task-b-full', '--task-id', 'b']));
+    ok(cli(dir, ['run', 'other.patch', '--lenses', 'correctness', '--run-id', 'task-b-full', '--operation-id', 'b', '--task-id', 'b', '--new-operation', '--approved-by', 'owner', '--reason', 'independent task']));
     change(dir, 4);
-    start(dir, 'task-a-delta', {}, ['--task-id', 'a']);
+    start(dir, 'task-a-delta', {}, ['--operation-id', 'a', '--task-id', 'a']);
     const manifest = read(runFile(dir, 'task-a-delta', 'run.json'));
     expect(manifest.baseline).toBe('task-a-full');
     const patch = readFileSync(runFile(dir, 'task-a-delta', 'target.patch'), 'utf8');
@@ -136,6 +238,89 @@ describe('worktree review budgets', () => {
     expect(read(runFile(dir, 'native', 'terminal.json')).outcome).toBe('incomplete');
     expect(cli(dir, ['resume', 'native']).status).not.toBe(0);
     expect(read(runFile(dir, 'native', `children/${worker.report_id}.json`)).attempt).toBe(2);
+  });
+
+  test('native second unusable result preserves a valid sibling in a run-local partial', () => {
+    const dir = workspace();
+    const prepared = ok(cli(dir, ['prepare', 'target.patch', '--lenses', 'correctness,risk', '--run-id', 'native-partial']));
+    const valid = prepared.workers.find(worker => worker.lens === 'risk');
+    const invalid = prepared.workers.find(worker => worker.lens === 'correctness');
+    const report = { schema_version: 1, task_id: 'native-partial', report_id: valid.report_id, lens: valid.lens, target_hash: valid.target_hash, status: 'complete', checked: ['Checked the changed export.'], checked_files: ['src/a.js'], findings: [{ severity: 'Medium', file: 'src/a.js', line: 2, description: 'Preserved sibling finding.', code: 'export const b = 2;', why: 'The export remains reachable without a guard.', fix: 'Guard it.' }] };
+    const file = join(dir, 'valid.json'); writeFileSync(file, JSON.stringify(report));
+    ok(cli(dir, ['submit', 'native-partial', '--report-id', valid.report_id, '--attempt-id', valid.attempt_id, '--report', file]));
+    const retry = ok(cli(dir, ['submit', 'native-partial', '--report-id', invalid.report_id, '--attempt-id', invalid.attempt_id]));
+    const failed = cli(dir, ['submit', 'native-partial', '--report-id', invalid.report_id, '--attempt-id', retry.worker.attempt_id]);
+    expect(failed.status).toBe(1);
+    const output = JSON.parse(failed.stdout);
+    expect(output.action).toMatchObject({ decision: 'stop', reason_code: 'review_incomplete', auto_review_allowed: false, auto_fix_allowed: false, continuation: 'human_decision', coverage_complete: false });
+    const partial = read(runFile(dir, 'native-partial', 'partial-result.json'));
+    expect(partial.findings.map(finding => finding.description)).toEqual(['Preserved sibling finding.']);
+    expect(existsSync(runFile(dir, 'native-partial', 'result.json'))).toBe(false);
+    expect(existsSync(join(dir, '.xm/review/last-result.json'))).toBe(false);
+    expect(read(runFile(dir, 'native-partial', 'terminal.json')).partial_result_hash).toBe(`sha256:${createHash('sha256').update(readFileSync(runFile(dir, 'native-partial', 'partial-result.json'))).digest('hex')}`);
+  });
+
+  test('terminal actions always stop automation and are integrity-bound', () => {
+    const cases = [
+      ['clean', { XM_FAKE_PANEL_MODE: 'clean' }, 'review_complete_lgtm', 'none', 'LGTM'],
+      ['advisory', { XM_FAKE_PANEL_SEVERITY: 'medium' }, 'review_complete_lgtm', 'human_triage', 'LGTM'],
+      ['changes', { XM_FAKE_PANEL_SEVERITY: 'high' }, 'review_complete_findings', 'human_triage', null],
+      ['blocked', { XM_FAKE_PANEL_SEVERITY: 'critical' }, 'review_complete_findings', 'human_triage', null],
+    ];
+    for (const [id, extra, reasonCode, continuation, verdict] of cases) {
+      const dir = workspace(); ok(cli(dir, ['run', 'target.patch', '--lenses', id === 'clean' ? 'correctness' : 'risk', '--run-id', `${id}-run`], extra));
+      const action = read(runFile(dir, `${id}-run`, 'terminal.json')).action;
+      expect(action).toMatchObject({ schema: 'xm.review.terminal-action.v1', decision: 'stop', reason_code: reasonCode, auto_review_allowed: false, auto_fix_allowed: false, continuation, operation_id: expect.any(String), run_id: `${id}-run`, verdict, coverage_complete: true });
+      let calls = 0;
+      expect(automationAfterTerminal(action, { review: () => { calls += 1; }, fix: () => { calls += 1; } })).toMatchObject({ review_calls: 0, fix_calls: 0, callbacks_invoked: 0 });
+      expect(calls).toBe(0);
+    }
+    const dir = workspace(); start(dir, 'tamper');
+    const terminalPath = runFile(dir, 'tamper', 'terminal.json');
+    const terminal = read(terminalPath); terminal.action.auto_review_allowed = true; writeFileSync(terminalPath, JSON.stringify(terminal));
+    expect(() => terminalReceipt(join(dir, '.xm/review'), 'tamper')).toThrow('terminal action');
+  });
+
+  test('partial-result tampering is rejected and legacy receipts derive conservative STOP', () => {
+    const dir = workspace();
+    const prepared = ok(cli(dir, ['prepare', 'target.patch', '--lenses', 'correctness,risk', '--run-id', 'partial-integrity']));
+    const valid = prepared.workers.find(worker => worker.lens === 'risk');
+    const invalid = prepared.workers.find(worker => worker.lens === 'correctness');
+    const report = { schema_version: 1, task_id: 'partial-integrity', report_id: valid.report_id, lens: valid.lens, target_hash: valid.target_hash, status: 'complete', checked: ['Checked the changed export.'], checked_files: ['src/a.js'], findings: [], no_findings_reason: 'No risk defect remained after checking the complete frozen target.' };
+    const file = join(dir, 'partial-valid.json'); writeFileSync(file, JSON.stringify(report));
+    ok(cli(dir, ['submit', 'partial-integrity', '--report-id', valid.report_id, '--attempt-id', valid.attempt_id, '--report', file]));
+    const retry = ok(cli(dir, ['submit', 'partial-integrity', '--report-id', invalid.report_id, '--attempt-id', invalid.attempt_id]));
+    expect(cli(dir, ['submit', 'partial-integrity', '--report-id', invalid.report_id, '--attempt-id', retry.worker.attempt_id]).status).toBe(1);
+    writeFileSync(runFile(dir, 'partial-integrity', 'partial-result.json'), '{}');
+    expect(() => terminalReceipt(join(dir, '.xm/review'), 'partial-integrity')).toThrow('partial-result');
+
+    const legacyDir = workspace(); start(legacyDir, 'legacy-terminal');
+    const terminalPath = runFile(legacyDir, 'legacy-terminal', 'terminal.json'); const legacy = read(terminalPath);
+    delete legacy.schema; delete legacy.action; delete legacy.action_hash; delete legacy.partial_result_hash;
+    const manifestPath = runFile(legacyDir, 'legacy-terminal', 'run.json'); const manifest = read(manifestPath); delete manifest.operation_id; writeFileSync(manifestPath, JSON.stringify(manifest));
+    legacy.manifest_hash = `sha256:${createHash('sha256').update(readFileSync(manifestPath)).digest('hex')}`;
+    writeFileSync(terminalPath, JSON.stringify(legacy));
+    const derived = terminalReceipt(join(legacyDir, '.xm/review'), 'legacy-terminal');
+    expect(derived.integrity).toBe('legacy-derived');
+    expect(derived.action).toMatchObject({ decision: 'stop', reason_code: 'review_complete_findings', auto_review_allowed: false, auto_fix_allowed: false, continuation: 'human_decision', verdict: null, coverage_complete: false });
+  });
+
+  test('new-run terminal receipts cannot be downgraded on success or incomplete partial results', () => {
+    const success = workspace(); start(success, 'success-downgrade');
+    const successPath = runFile(success, 'success-downgrade', 'terminal.json'); const successReceipt = read(successPath);
+    delete successReceipt.schema; delete successReceipt.action; delete successReceipt.action_hash; delete successReceipt.partial_result_hash; writeFileSync(successPath, JSON.stringify(successReceipt));
+    expect(() => terminalReceipt(join(success, '.xm/review'), 'success-downgrade')).toThrow('downgraded');
+
+    const partial = workspace(); const prepared = ok(cli(partial, ['prepare', 'target.patch', '--lenses', 'correctness,risk', '--run-id', 'partial-downgrade']));
+    const valid = prepared.workers.find(worker => worker.lens === 'risk'), invalid = prepared.workers.find(worker => worker.lens === 'correctness');
+    const report = { schema_version: 1, task_id: 'partial-downgrade', report_id: valid.report_id, lens: valid.lens, target_hash: valid.target_hash, status: 'complete', checked: ['Checked target.'], checked_files: ['src/a.js'], findings: [], no_findings_reason: 'No defect remained after reviewing the entire frozen target.' };
+    const reportPath = join(partial, 'partial-report.json'); writeFileSync(reportPath, JSON.stringify(report));
+    ok(cli(partial, ['submit', 'partial-downgrade', '--report-id', valid.report_id, '--attempt-id', valid.attempt_id, '--report', reportPath]));
+    const retry = ok(cli(partial, ['submit', 'partial-downgrade', '--report-id', invalid.report_id, '--attempt-id', invalid.attempt_id]));
+    expect(cli(partial, ['submit', 'partial-downgrade', '--report-id', invalid.report_id, '--attempt-id', retry.worker.attempt_id]).status).toBe(1);
+    const partialTerminalPath = runFile(partial, 'partial-downgrade', 'terminal.json'); const partialReceipt = read(partialTerminalPath);
+    delete partialReceipt.schema; delete partialReceipt.action; delete partialReceipt.action_hash; delete partialReceipt.partial_result_hash; writeFileSync(partialTerminalPath, JSON.stringify(partialReceipt));
+    expect(() => terminalReceipt(join(partial, '.xm/review'), 'partial-downgrade')).toThrow('downgraded');
   });
 
   test('delta retains absent prior findings and stops on new Low findings', () => {
@@ -454,14 +639,16 @@ test('a fresh --task-id cannot restart an exhausted target', () => {
   // The drift path: told the budget is gone, pass a new id on the same bytes.
   const reused = cli(dir, ['prepare', 'target.patch', '--run-id', 'renamed', '--task-id', 'something-else']);
   expect(reused.status).not.toBe(0);
-  expect(reused.stderr).toContain('already spent its full review on these exact bytes');
+  expect(reused.stderr).toContain('review target is unchanged');
   expect(existsSync(join(dir, '.xm/review/runs/renamed'))).toBe(false);
   expect(Object.keys(budget(dir).tasks)).toHaveLength(1);
 
-  // The escape is the same human-approved exception the rest of the budget uses.
+  // A budget exception stays inside the same operation; it cannot mint a second
+  // identity. Independent work uses the audited --new-operation transition.
   ok(cli(dir, ['prepare', 'target.patch', '--run-id', 'approved', '--task-id', 'something-else',
     '--exception', 'full', '--approved-by', 'user', '--reason', 'same diff, different branch']));
-  expect(Object.keys(budget(dir).tasks)).toHaveLength(2);
+  expect(Object.keys(budget(dir).tasks)).toHaveLength(1);
+  expect(budget(dir).aliases['task:something-else']).toBe(budget(dir).current_operation);
 });
 
 test('a spent full blocks a new id even with the delta unused', () => {
@@ -471,7 +658,7 @@ test('a spent full blocks a new id even with the delta unused', () => {
   // never trigger: no owner would ever reach that state.
   const second = cli(dir, ['prepare', 'target.patch', '--run-id', 'task-b', '--task-id', 'b']);
   expect(second.status).not.toBe(0);
-  expect(second.stderr).toContain('already spent its full review on these exact bytes');
+  expect(second.stderr).toContain('review target is unchanged');
   expect(Object.keys(budget(dir).tasks)).toHaveLength(1);
 });
 
@@ -485,5 +672,5 @@ test('a task predating full_target_hash is covered via its baseline run', () => 
 
   const bypass = cli(dir, ['prepare', 'target.patch', '--run-id', 'bypass', '--task-id', 'fresh']);
   expect(bypass.status).not.toBe(0);
-  expect(bypass.stderr).toContain('already spent its full review on these exact bytes');
+  expect(bypass.stderr).toContain('review target is unchanged');
 });
