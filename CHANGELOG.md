@@ -10,6 +10,26 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.25.0] - 2026-09-11
+
+### Added
+
+- **build:** add attention queue and mutation testing
+
+### Fixed
+
+- **build:** mask keyword regex mutations
+- **build:** avoid baseline mutation rewrites
+- **build:** validate mutation snapshots
+- **build:** reject mutation target alias races
+- **build:** preserve mutation file metadata
+- **build:** preserve concurrent mutation edits
+- **build:** lock mutation workspaces
+- **build:** isolate mutation execution
+- **build:** secure mutation report tempfiles
+- **build:** bind mutation runs to task worktrees
+- **build:** harden mutation and attention release paths
+
 ## [2.23.5] - 2026-09-01
 
 ### x-solver 2.3.0 → 2.3.1
