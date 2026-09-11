@@ -10,7 +10,7 @@ function fail(message) { const e = new Error(message); e.exitCode = 2; throw e; 
 function checkedTarget(workspace, target) {
   const path = resolve(workspace, target), rel = relative(workspace, path);
   if (rel.startsWith('..' + sep) || rel === '..') fail('mutate target escapes workspace');
-  const stat = lstatSync(path);
+  const stat = lstatSync(path, { bigint: true });
   if (!stat.isFile() || stat.isSymbolicLink()) fail('mutate target must be a regular non-symlink file');
   const realRel = relative(realpathSync(workspace), realpathSync(path));
   if (realRel.startsWith('..' + sep) || realRel === '..') fail('mutate target resolves outside workspace');
@@ -53,6 +53,7 @@ async function runBoundMutate({target,targets=null,command,timeoutMs=30_000,cwd=
 export async function runMutate(options){return runBoundMutate(options);}
 function executableMask(source){
   const input=String(source),out=[...input],stack=[{mode:'code',depth:0}];
+  const regexPrefixKeywords=new Set(['return','throw','case','yield','await','typeof','void','delete','new','instanceof','in','of','else','do']);
   let escaped=false,regexClass=false,canStartRegex=true;
   for(let index=0;index<input.length;index+=1){
     const top=stack.at(-1),char=input[index],next=input[index+1];
@@ -67,6 +68,7 @@ function executableMask(source){
     if(char==='\''||char==='"'){out[index]=' ';stack.push({mode:'quote',quote:char});escaped=false;continue;}
     if(char==='`'){out[index]=' ';stack.push({mode:'template'});escaped=false;continue;}
     if(char==='/'&&canStartRegex){out[index]=' ';stack.push({mode:'regex'});escaped=false;regexClass=false;continue;}
+    if(/[A-Za-z_$]/.test(char)){const identifier=/^[A-Za-z_$][\w$]*/.exec(input.slice(index))[0];canStartRegex=regexPrefixKeywords.has(identifier);index+=identifier.length-1;continue;}
     if(!/\s/.test(char))canStartRegex=/[({[=,:;!?&|+*%<>-]/.test(char);
   }
   return out.join('');
