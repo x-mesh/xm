@@ -28,6 +28,7 @@ import { cmdAdaptiveRoute } from './x-build/adaptive-routing.mjs';
 import { cmdAdaptiveProof } from './x-build/adaptive-proof.mjs';
 import { cmdAttention } from './x-build/attention.mjs';
 import { cmdMutate } from './x-build/mutate.mjs';
+import { cmdVerifyTests } from './x-build/escape-verify.mjs';
 
 // Skip top-level execution when imported by xm-server
 if (process.env.XKIT_SERVER !== '1') {
@@ -145,6 +146,7 @@ switch (cmd) {
   case 'effectiveness': cmdEffectiveness(args); break;
   case 'attention': cmdAttention(args); break;
   case 'mutate': await cmdMutate(args); break;
+  case 'verify-tests': cmdVerifyTests(args); break;
   case 'route':
     if (args[0] === 'prove') cmdAdaptiveProof(args.slice(1));
     else cmdAdaptiveRoute(args);
