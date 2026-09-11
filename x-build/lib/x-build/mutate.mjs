@@ -112,9 +112,11 @@ function taskTargets(data){
   const candidates=explicit?[explicit]:(data.task?.expected_files||[]);
   return [...new Set(candidates.filter(file=>typeof file==='string'&&/\.(?:[cm]?[jt]sx?)$/i.test(file)))];
 }
-function mutationWorkspace(artifact,fallback){const candidate=artifact?.data?.worktree;if(typeof candidate!=='string'||!candidate.trim())return resolve(fallback);const path=resolve(candidate);if(!existsSync(path))fail('mutate task worktree is missing');const stat=lstatSync(path);if(!stat.isDirectory()||stat.isSymbolicLink())fail('mutate task worktree must be a regular directory');return realpathSync(path);}
+function repositoryRoot(path){const result=spawnSync('git',['rev-parse','--git-common-dir'],{cwd:path,encoding:'utf8'});if(result.status!==0)fail('mutate task worktree is not a git repository');return realpathSync(resolve(path,result.stdout.trim(),'..'));}
+function mutationWorkspace(artifact,stateRoot){const candidate=artifact?.data?.worktree;if(typeof candidate!=='string'||!candidate.trim())fail('mutate task artifact is missing its worktree path');const path=resolve(candidate);if(!existsSync(path))fail('mutate task worktree is missing');const stat=lstatSync(path);if(!stat.isDirectory()||stat.isSymbolicLink())fail('mutate task worktree must be a regular directory');const workspace=realpathSync(path),stateRepo=repositoryRoot(resolve(stateRoot)),worktreeRepo=repositoryRoot(workspace);if(stateRepo!==worktreeRepo)fail('mutate task worktree belongs to a different repository');return workspace;}
 function canonicalStateRoot(cwd){if(process.env.X_BUILD_ROOT)return resolve(process.env.X_BUILD_ROOT,'..','..');if(process.env.XM_ROOT)return resolve(process.env.XM_ROOT,'..');return resolveMainRepoRoot(cwd)||resolve(cwd);}
-function persistReport(state,project,task,report){const review=join(state,'.xm','review');mkdirSync(review,{recursive:true,mode:0o700});const reportPath=join(review,'mutate-'+project+'-'+task+'.json'),tmp=reportPath+'.tmp-'+process.pid;writeFileSync(tmp,JSON.stringify(report)+'\n',{mode:0o600});renameSync(tmp,reportPath);chmodSync(reportPath,0o600);return reportPath;}
+function reportArtifact(project,task){return '.xm/review/mutate/'+project+'/'+task+'.json';}
+function persistReport(state,project,task,report){const review=join(state,'.xm','review','mutate'),projectDir=join(review,project),reportPath=join(projectDir,task+'.json');for(const dir of [join(state,'.xm'),join(state,'.xm','review'),review,projectDir]){if(existsSync(dir)){const stat=lstatSync(dir);if(!stat.isDirectory()||stat.isSymbolicLink())fail('mutate report directory is unsafe');}else mkdirSync(dir,{mode:0o700});}if(existsSync(reportPath)){const stat=lstatSync(reportPath);if(!stat.isFile()||stat.isSymbolicLink())fail('mutate report path is unsafe');}const tmp=reportPath+'.tmp-'+process.pid;writeFileSync(tmp,JSON.stringify(report)+'\n',{mode:0o600});renameSync(tmp,reportPath);chmodSync(reportPath,0o600);return reportPath;}
 export function listMutationTasks(stateRoot,workspaceRoot=stateRoot){
   const state=resolve(stateRoot),workspace=resolve(workspaceRoot),projects=join(state,'.xm','build','projects'),rows=[];
   if(!existsSync(projects))return rows;
@@ -124,7 +126,7 @@ export function listMutationTasks(stateRoot,workspaceRoot=stateRoot){
     if(existsSync(tasksPath))try{tasks=JSON.parse(readFileSync(tasksPath,'utf8')).tasks||[];}catch{}
     const ids=new Set(tasks.map(task=>task.id).filter(Boolean)),worktrees=join(projects,project,'worktrees');
     if(existsSync(worktrees))for(const dirent of readdirSync(worktrees,{withFileTypes:true}))if(dirent.isDirectory()&&dirent.name!=='__integration__')ids.add(dirent.name);
-    for(const id of [...ids].sort()){const artifact=loadTaskArtifact(state,id,project),task=tasks.find(candidate=>candidate.id===id)||artifact?.data?.task||{},data=artifact?.data||{task},targets=taskTargets(data);let taskWorkspace=workspace,reason=null;if(artifact)try{taskWorkspace=mutationWorkspace(artifact,workspace);}catch(error){reason=error.message;}const test=artifact&&!reason?detectedTestCommand(taskWorkspace,data):null,existingTargets=targets.filter(file=>existsSync(resolve(taskWorkspace,file)));if(!artifact)reason='missing worktree artifact';else if(!reason&&!targets.length)reason='no supported expected_files';else if(!reason&&!existingTargets.length)reason='target files are absent in this worktree';else if(!reason&&!test)reason='no test command';rows.push({project,id,name:task.name||id,status:task.status||null,files:targets,runnable:reason===null,reason});}
+    for(const id of [...ids].sort()){const artifact=loadTaskArtifact(state,id,project),task=tasks.find(candidate=>candidate.id===id)||artifact?.data?.task||{},data=artifact?.data||{task},targets=taskTargets(data);let taskWorkspace=workspace,reason=null;if(artifact)try{taskWorkspace=mutationWorkspace(artifact,state);}catch(error){reason=error.message;}const test=artifact&&!reason?detectedTestCommand(taskWorkspace,data):null,existingTargets=targets.filter(file=>existsSync(resolve(taskWorkspace,file)));if(!artifact)reason='missing worktree artifact';else if(!reason&&!targets.length)reason='no supported expected_files';else if(!reason&&!existingTargets.length)reason='target files are absent in this worktree';else if(!reason&&!test)reason='no test command';rows.push({project,id,name:task.name||id,status:task.status||null,files:targets,runnable:reason===null,reason});}
   }
   return rows.sort((a,b)=>Number(b.runnable)-Number(a.runnable)||String(a.project).localeCompare(String(b.project))||String(a.id).localeCompare(String(b.id)));
 }
@@ -134,7 +136,7 @@ export async function runTaskMutate(root, task, { maxMutants = 12, timeoutMs = 9
   if(project!=null){const projectError=validateIdSegment(project,'--project');if(projectError)fail(projectError);}
   const artifact = loadTaskArtifact(stateRoot, task, project);
   if (!artifact) fail('mutate task artifact not found');
-  const projectId=artifact.project,workspace=mutationWorkspace(artifact,workspaceRoot),state=resolve(stateRoot);
+  const projectId=artifact.project,state=resolve(stateRoot),workspace=mutationWorkspace(artifact,state);
   const test=detectedTestCommand(workspace,artifact.data),targets=taskTargets(artifact.data);
   if(!test||!targets.length) fail('mutate task requires a test command and supported expected_files');
   const candidates=[];
@@ -149,7 +151,7 @@ export async function runTaskMutate(root, task, { maxMutants = 12, timeoutMs = 9
   const result = outcomes.find(row => row.outcome === 'survived') || outcomes[0];
   const report = { schema_v:1,project:projectId,task_id:task,representative:result,mutants:outcomes,counts:{survived:outcomes.filter(row=>row.outcome==='survived').length,timeout:outcomes.filter(row=>row.outcome==='timeout').length},duration_ms:Date.now()-started,baseline_exit_code:baseline.exit_code,test_command:test.command,test_command_source:test.source,ts:new Date().toISOString() };
   persistReport(state,projectId,task,report);
-  const artifactPath='.xm/review/mutate-'+projectId+'-'+task+'.json',surviving=outcomes.filter(row=>row.outcome==='survived').map(row=>buildEscapeRow({mutant:true,ts:report.ts,task_id:task,file:row.file,artifact:artifactPath,source:'mutate',operator:row.operator,line:row.line}));
+  const artifactPath=reportArtifact(projectId,task),surviving=outcomes.filter(row=>row.outcome==='survived').map(row=>buildEscapeRow({mutant:true,ts:report.ts,task_id:task,file:row.file,artifact:artifactPath,source:'mutate',operator:row.operator,line:row.line}));
   if(surviving.length)appendAttentionRows(state,surviving);
   return report;
 }
