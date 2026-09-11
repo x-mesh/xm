@@ -31,6 +31,8 @@ const DEFAULT_PORT = 19841;
 const SESSION_IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 const MAX_REVIEW_LEDGER_BYTES = 4 * 1024 * 1024;
 const MAX_ATTENTION_LEDGER_BYTES = 50 * 1024 * 1024;
+const MAX_ATTENTION_TOTAL_BYTES = 64 * 1024 * 1024;
+const MAX_ATTENTION_TOTAL_ROWS = 100000;
 const VERSION = process.env.XM_SYNC_VERSION ?? '0.1.0';
 
 const args = process.argv.slice(2);
@@ -162,8 +164,13 @@ function handleReviewAttention(xmRoot, req) {
     if (!ledgers.length) return jsonResponseWithETag({ data: [], state: 'no_data', parse_errors: 0 }, req);
     const rows = [];
     let skipped = 0;
+    let totalBytes = 0;
     for (const ledger of ledgers) {
-      const parsed = parseEscapeLedger(readBoundedRegularFile(ledger, MAX_ATTENTION_LEDGER_BYTES, xmRoot));
+      const text = readBoundedRegularFile(ledger, MAX_ATTENTION_LEDGER_BYTES, xmRoot);
+      totalBytes += Buffer.byteLength(text);
+      if (totalBytes > MAX_ATTENTION_TOTAL_BYTES) return jsonResponseWithETag({ error: 'attention_ledger_total_too_large' }, req, 413);
+      const parsed = parseEscapeLedger(text);
+      if (rows.length + parsed.rows.length > MAX_ATTENTION_TOTAL_ROWS) return jsonResponseWithETag({ error: 'attention_ledger_too_many_rows' }, req, 413);
       rows.push(...parsed.rows);
       skipped += parsed.parse_errors;
     }

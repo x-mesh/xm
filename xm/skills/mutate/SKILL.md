@@ -12,15 +12,17 @@ This is a thin interface over `xm build mutate`; the x-build engine remains the 
 
 ## Workflow
 
-1. Read `$ARGUMENTS` as `<task-id> [--project NAME] [--max-mutants N] [--timeout-ms M] [--json]`. Accept an optional leading `--task`.
+1. Read `$ARGUMENTS` as `<task-id> [--project NAME] [--max-mutants N] [--timeout-ms M] [--json]`. Accept an optional leading `--task`. Never interpolate the raw `$ARGUMENTS` string into a shell command.
 2. If the task id is missing, run `xm build mutate --list --json`. This command is read-only and never runs mutations.
 3. From `tasks`, prefer `runnable: true` candidates and show up to three structured choices. Each choice must include `project/id`, task name, status, and target files. Use AskUserQuestion once and stop until the user chooses. Do not guess or auto-select, even when there is only one candidate.
 4. If no runnable candidate exists, show the returned reasons. Explain that mutation testing needs an x-build task with a worktree artifact, supported target files, and a test command; do not run mutation testing.
 5. After selection, pass both `--project <project>` and `--task <id>` so duplicate task IDs cannot select the wrong project.
+   - If a task id was supplied without a project, still run the read-only list. Filter runnable rows by exact id. Use the sole exact project match, ask the user to choose when multiple projects match, and stop with the returned reason when none match.
+   - Validate project/task with the engine identifier rule (letters, digits, `.`, `_`, `-`; no `..`). Validate `--max-mutants` as integer 1..100 and `--timeout-ms` as a positive integer.
 6. State that this checks existing tests and does not create tests.
-7. Run exactly one mutation command after selection: `xm build mutate --project <project> --task <task-id>` plus only the supplied supported options. Do not translate the request into arbitrary shell or test commands.
+7. Run exactly one mutation command after selection: `xm build mutate --project <project> --task <task-id>` plus only the supplied supported options. Use the exact project/id from the list result, pass each dynamic value as a separately shell-quoted argument, and never interpolate raw user text into the command. Do not translate the request into arbitrary shell or test commands.
 8. Report the counts and explain: `killed` means a test detected the mutation; `survived` means a test gap candidate; `timeout` means the configured test exceeded its limit; `skipped` means the wall budget or interruption prevented execution.
-9. Surface `baseline` failure as an invalid test setup, not a successful mutation result. Point to `.xm/review/mutate-<task-id>.json` when a report was written.
+9. Surface `baseline` failure as an invalid test setup, not a successful mutation result. Point to `.xm/review/mutate-<project>-<task-id>.json` when a report was written.
 
 ## Safety
 

@@ -16,7 +16,7 @@ xm의 게이트는 지금 통과/차단을 판정하지만, **그 판정이 맞�
 ```
   [기존 아티팩트 — 읽기 전용]              [신규 수집]
   ┌────────────────────────┐          ┌──────────────────┐
-  │ panel-before.json      │          │ probe-<task>.json│
+  │ panel-before.json      │          │ mutate-<project>-<task>.json│
   │ panel-after.json       │          │ (F3 변이 프로브)  │
   │ panel-release.json     │          └────────┬─────────┘
   │ panel-*.attempt-N.json │                   │
@@ -107,7 +107,7 @@ xm의 게이트는 지금 통과/차단을 판정하지만, **그 판정이 맞�
 - **[SC1]** `xm build attention --json`이 4개 소스에서 수집된 항목을 랭킹해 기본 5건 이하로 반환한다. 실행 시간 5초 이내, 외부 네트워크/LLM 호출 0회.
 - **[SC2]** 릴리스 패널의 confirmed finding 중 동일 태스크의 before/after 게이트를 통과한 파일에 해당하는 항목이 **100%** `escape-ledger.jsonl`에 `escape_class` 태그와 함께 기록된다.
 - **[SC3]** severity가 `critical`이 아니어서 차단되지 않은 `contested` finding이 큐에 노출된다. 현재는 100% 소실되며, 픽스처 테스트로 노출률 100%를 확인한다.
-- **[SC4]** `xm build probe --task <id>`가 생존 변이를 `file:line:operator`로 보고하고, 실행 종료 후 워킹트리가 실행 전과 바이트 단위로 동일하다(`git status --porcelain` 출력 불변).
+- **[SC4]** `xm build mutate --project <name> --task <id>`가 생존 변이를 `file:line:operator`로 보고하고, 실행 종료 후 워킹트리가 실행 전과 바이트 단위로 동일하다(`git status --porcelain` 출력 불변).
 - **[SC5]** `false_positive`로 기각된 finding이 이후 `regression` outcome 또는 escape로 재등장한 경우를 픽스처에서 100% 탐지하고, 무관한 finding 간 오조인 0건.
 - **[SC6]** 전체 파이프라인의 API 비용 증분이 0원이다(프로브의 테스트 실행 CPU 시간 제외).
 - **[SC7]** 집계 모듈 2종이 `review-precision.mjs`와 동일하게 PURE하다: 소스에 `import`·`fs`·`process` 참조 0건을 테스트로 강제한다.
@@ -238,7 +238,7 @@ xm의 게이트는 지금 통과/차단을 판정하지만, **그 판정이 맞�
 
 ■ Key Notes:
   1. **PURE 경계가 협상 불가인 이유**: x-dashboard는 별도 플러그인 디렉터리에 있어 x-build core를 import 할 수 없다. 집계 로직이 fs를 만지는 순간 대시보드와 CLI가 로직을 복제하게 되고, 그 복제가 어긋나면 같은 데이터에 두 숫자가 생긴다.
-  2. **L1은 L0에 쓰지 않는다.** 기존 아티팩트는 읽기 전용이고, 신규 쓰기는 `escape-ledger.jsonl`과 `probe-<task>.json` 두 곳뿐이다. 이것이 C4(머지 판정 불변)를 구조적으로 보장한다.
+  2. **L1은 L0에 쓰지 않는다.** 기존 아티팩트는 읽기 전용이고, 신규 쓰기는 `escape-ledger.jsonl`과 `mutate-<project>-<task>.json` 두 곳뿐이다. 이것이 C4(머지 판정 불변)를 구조적으로 보장한다.
   3. **Key decision**: 패널 자체를 수정해 escape를 기록하는 방식을 기각했다. `gate-panel.mjs`는 `x-panel/gate.mjs`와 LOCKSTEP이라 양쪽 동시 수정이 필요하고, 게이트 경로에 신규 쓰기를 추가하면 머지 판정 경로의 실패 모드가 늘어난다. 수집을 게이트 밖의 별도 커맨드로 빼면 게이트가 깨질 수 없다.
 
 ---
@@ -269,7 +269,7 @@ User          xm build attention        L2 집계          L0 아티팩트
 
 ### Failure Path — 프로브 타임아웃
 
-1. 사용자가 `xm build probe --task t3` 실행
+1. 사용자가 `xm build mutate`로 후보를 확인한 뒤 `xm build mutate --project <name> --task <id>` 실행
 2. 변이 12개 중 4번째에서 테스트가 90초 타임아웃
 3. 시스템이 프로세스 그룹을 kill하고, 해당 변이를 `outcome: "timeout"`으로 기록, 소스를 복원한 뒤 다음 변이로 진행
 4. 출력: `⚠ mutant 4/12 timed out (90s) — source restored, continuing`
@@ -293,7 +293,7 @@ xm build attention --backfill
 xm build attention --budget 5
 
 # 4. 변이 프로브 1회 (non-blocking, 원복 보장)
-xm build probe --task <task-id>
+xm build mutate --project <project> --task <task-id>
 git status --porcelain   # 출력 비어 있어야 함
 
 # 5. 큐 재확인 — 생존 변이가 항목으로 올라옴
@@ -311,8 +311,8 @@ xm build attention --budget 5
 | Entity | Key Fields | Relationships |
 |--------|-----------|---------------|
 | `EscapeRow` | schema_v, ts, type, task_id, reviewed_commit, escape_class, severity, lens, file, related_finding_id, attribution | belongs_to: 게이트 아티팩트 (reviewed_commit), may_link: TriageLedgerRow (related_finding_id) |
-| `ProbeReport` | schema_v, task_id, ts, mutants[], survived_count, timeout_count, duration_ms | belongs_to: task |
-| `Mutant` | file, line, operator, outcome(`killed`\|`survived`\|`timeout`\|`skipped`) | part_of: ProbeReport |
+| `MutationReport` | schema_v, project, task_id, ts, mutants[], counts, duration_ms | belongs_to: project/task |
+| `Mutant` | file, line, operator, outcome(`killed`\|`survived`\|`timeout`\|`skipped`) | part_of: MutationReport |
 | `AttentionItem` | id, source(`escape`\|`contested`\|`mutant`\|`revived`), score, severity, file, artifact_path, ack_state | derived_from: 위 3종 + TriageLedgerRow |
 
 ### Critical API Contracts
@@ -344,7 +344,7 @@ xm build attention [--json] [--budget N] [--since 30d] [--backfill] [--dry-run]
 xm build attention --ack <item-id> [--note <text>]
   exit 0: 기록됨   exit 1: 알 수 없는 item-id
 
-xm build probe --task <id> [--max-mutants N] [--timeout-ms M] [--json]
+xm build mutate --project <name> --task <id> [--max-mutants N] [--timeout-ms M] [--json]
   exit 0: 실행 완료 (생존 변이가 있어도 0 — non-blocking)
   exit 2: 원복 실패 (치명적, 복구 명령 출력)
 ```
@@ -449,13 +449,13 @@ panel-release.json (confirmed finding, file=src/engine.js)
 - [ ] `bun test test/escape-ledger.test.mjs` 통과 — 파싱, 멱등 키, 5종 분류, 손상 jsonl 복원 (SC2, R1, R2)
 - [ ] `bun test test/attention-rank.test.mjs` 통과 — 랭킹 순서, 예산 절단, `dismissed_as_fp` 최우선 (SC1, R7)
 - [ ] `bun test test/purity-contract.test.mjs` 통과 — `escape-ledger.mjs` / `attention-rank.mjs` 소스에 `import`·`fs`·`process` 0건 (SC7, R8)
-- [ ] `bun test test/probe-restore.test.mjs` 통과 — 정상·타임아웃·SIGINT 3경로 모두에서 `git status --porcelain` 불변 (SC4, R5)
-- [ ] `bun test test/probe-runaway.test.mjs` 통과 — 타임아웃 후 자식 프로세스 0개 (R4 failure mode)
+- [ ] `bun test test/mutate-restore.test.mjs` 통과 — 정상·타임아웃·SIGINT 3경로 모두에서 `git status --porcelain` 불변 (SC4, R5)
+- [ ] `bun test test/mutate-runaway.test.mjs` 통과 — 타임아웃 후 자식 프로세스 0개 (R4 failure mode)
 - [ ] `bun test test/revive-detect.test.mjs` 통과 — 픽스처에서 되살아난 기각 100% 탐지, 오조인 0건 (SC5, R6)
 - [ ] `bun test test/contested-surfacing.test.mjs` 통과 — critical 미만 contested가 큐에 100% 노출 (SC3, R3)
 - [ ] `xm build attention --backfill --dry-run`이 xm 자체 레포에서 에러 없이 실행되고 소급 집계 건수를 출력한다 (SC1)
 - [ ] `xm build attention --json | jq '.items | length'` ≤ 5 (기본 예산) (SC1, R7)
-- [ ] `xm build probe --task <id>` 실행 후 `git status --porcelain` 출력이 비어 있다 (SC4, R5)
+- [ ] `xm build mutate --project <name> --task <id>` 실행 후 `git status --porcelain` 출력이 비어 있다 (SC4, R5)
 - [ ] 원장 파일 1개를 `grep -c 'claim'` 했을 때 0건 (SC6, R10)
 - [ ] `time xm build attention` < 5s, 10만 행 픽스처 기준 (SC1, NFR performance)
 - [ ] 기존 `test/x-review-lifecycle.test.mjs`, `test/review-precision.test.mjs`, `test/worktrees/*.test.mjs` 전부 그대로 통과 (C3, C4)

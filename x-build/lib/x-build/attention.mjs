@@ -33,6 +33,10 @@ export function cmdAttention(args) {
   try {
     let written = 0;
     const collected = backfill ? collectAttention(root) : { rows: [], parse_errors: 0 };
+    if (backfill && collected.parse_errors > 0) {
+      const detail = collected.errors?.slice(0, 5).join(', ') || 'unknown artifact';
+      throw new Error(`backfill refused partial input (${collected.parse_errors} parse error(s)): ${detail}`);
+    }
     if (backfill && !dry) written = appendAttentionRows(root, collected.rows);
     const before = readAttentionLedger(root);
     const visibleInput = dry ? [...before.rows, ...collected.rows] : before.rows;

@@ -176,4 +176,16 @@ describe('dashboard attention queue API', () => {
       expect(await response.json()).toMatchObject({ error: 'invalid_budget' });
     }
   });
+
+  test('rejects aggregate rollover rows beyond the global bound', async () => {
+    rmSync(ATTENTION_LEDGER, { force: true });
+    rmSync(ATTENTION_FRAGMENT, { force: true });
+    const row = JSON.stringify({ schema_v: 1, type: 'contested', id: 'same', ts: '2026-08-26T00:00:00.000Z' });
+    writeFileSync(ATTENTION_LEDGER, Array(60000).fill(row).join('\n') + '\n');
+    writeFileSync(ATTENTION_FRAGMENT, Array(60000).fill(row).join('\n') + '\n');
+    const { response, body } = await requestAttention();
+    expect(response.status).toBe(413);
+    expect(body).toMatchObject({ error: 'attention_ledger_too_many_rows' });
+    rmSync(ATTENTION_FRAGMENT, { force: true });
+  });
 });
