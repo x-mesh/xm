@@ -165,7 +165,15 @@ export function listMutationTasks(stateRoot,workspaceRoot=stateRoot){
     if(existsSync(tasksPath))try{tasks=JSON.parse(readFileSync(tasksPath,'utf8')).tasks||[];}catch{}
     const ids=new Set(tasks.map(task=>task.id).filter(Boolean)),worktrees=join(projects,project,'worktrees');
     if(existsSync(worktrees))for(const dirent of readdirSync(worktrees,{withFileTypes:true}))if(dirent.isDirectory()&&dirent.name!=='__integration__')ids.add(dirent.name);
-    for(const id of [...ids].sort()){const artifact=loadTaskArtifact(state,id,project),task=tasks.find(candidate=>candidate.id===id)||artifact?.data?.task||{},data=artifact?.data||{task},targets=taskTargets(data);let reason=null;if(!artifact)reason='missing worktree artifact';else try{const taskWorkspace=mutationWorkspace(artifact,state,id),plan=mutationPlan(taskWorkspace,data,{maxMutants:1});reason=plan.reason;}catch(error){reason=error.message;}rows.push({project,id,name:task.name||id,status:task.status||null,files:targets,runnable:reason===null,reason});}
+    for(const id of [...ids].sort()){const artifact=loadTaskArtifact(state,id,project),task=tasks.find(candidate=>candidate.id===id)||artifact?.data?.task||{},data=artifact?.data||{task},targets=taskTargets(data);let reason=null;
+    // Targets first: a task with no supported file can never be mutated, whatever
+    // its worktree does, while a missing artifact is recoverable by re-running it.
+    // Reporting the artifact first collapsed both onto one cause, so the summary
+    // named a blocker that was not the one to fix.
+    if(!targets.length)reason='no supported expected_files';
+    else if(!artifact)reason='missing worktree artifact';
+    else try{const taskWorkspace=mutationWorkspace(artifact,state,id),plan=mutationPlan(taskWorkspace,data,{maxMutants:1});reason=plan.reason;}catch(error){reason=error.message;}
+rows.push({project,id,name:task.name||id,status:task.status||null,files:targets,runnable:reason===null,reason});}
   }
   return rows.sort((a,b)=>Number(b.runnable)-Number(a.runnable)||String(a.project).localeCompare(String(b.project))||String(a.id).localeCompare(String(b.id)));
 }
