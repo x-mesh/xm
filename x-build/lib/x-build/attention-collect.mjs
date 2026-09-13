@@ -156,6 +156,14 @@ export function collectGitEscapes(root, { since = '90d', maxCommits = 500, confi
   const head = git(resolved, ['rev-parse', '--verify', '--quiet', 'HEAD']);
   const hasHistory = !head.error && head.status === 0 && Boolean(String(head.stdout || '').trim());
 
+  // A shallow clone answers git log with a truncated history and no error, so
+  // every defect older than the cut is silently missing. Refuse it like any other
+  // partial input instead of reporting a subset that looks complete.
+  const shallow = git(resolved, ['rev-parse', '--is-shallow-repository']);
+  if (!shallow.error && shallow.status === 0 && String(shallow.stdout || '').trim() === 'true') {
+    return { ...empty, repo_has_history: hasHistory, errors: ['shallow clone: git history is truncated; run git fetch --unshallow before mining it'] };
+  }
+
   const result = git(resolved, [...GIT_LOG_ARGS, '--since=' + window, '-n', String(maxCommits)]);
   if (result.error || result.status !== 0) {
     const detail = String(result.stderr || result.error?.message || 'git log failed').trim().slice(0, 200);

@@ -45,6 +45,10 @@ export function cmdAttention(args) {
     // disk; history is not, so it needs an explicit horizon (default 90d).
     const history = git ? collectGitEscapes(root, { since: since || '90d', maxCommits }) : null;
     if (history && !history.available && history.errors.length) throw new Error('git history unavailable: ' + history.errors[0]);
+    // available:true can still carry a collector error — a window that matched no
+    // commits although HEAD exists. Dropping it let --backfill --git exit 0 having
+    // done nothing, the silent zero the collector was written to prevent.
+    if (history?.available && history.errors.length) for (const warning of history.errors) console.error('attention: warning: ' + warning);
     const pending = history ? [...collected.rows, ...history.rows] : collected.rows;
     if (backfill && !dry) written = appendAttentionRows(root, pending);
     const before = readAttentionLedger(root);
@@ -66,7 +70,7 @@ export function cmdAttention(args) {
     }
     const exists = ledger.exists || pending.length > 0;
     const out = { items: rows, data: rows, count: rows.length, written, parse_errors: (ledger.parse_errors ?? ledger.skipped ?? 0) + (collected.parse_errors || 0) + (history?.parse_errors || 0), source_counts, by_source, queue_health, state: exists ? 'ok' : 'no_data' };
-    if (history?.summary) out.git = { counts: history.summary.counts, defect_commits: history.summary.defect_commits, test_pairing_rate: history.summary.test_pairing_rate, repeat_offenders: history.summary.repeat_offenders.slice(0, 10), areas: history.summary.areas.slice(0, 10) };
+    if (history?.summary) out.git = { counts: history.summary.counts, defect_commits: history.summary.defect_commits, test_pairing_rate: history.summary.test_pairing_rate, repeat_offenders: history.summary.repeat_offenders.slice(0, 10), areas: history.summary.areas.slice(0, 10), errors: history.errors };
     if (json) console.log(JSON.stringify(out));
     else if (!exists) console.log('No attention data yet.');
     else if (!rows.length) console.log('No active attention signals.');

@@ -22,7 +22,7 @@
  * respect to the repository). The primary checkout is never touched.
  */
 
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, constants as FS, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -79,12 +79,16 @@ export function parseRunnerCounts(text) {
 export function classifyReplay({ control, treatment }) {
   if (!control || control.outcome !== 'pass') return 'inconclusive';
   if (!treatment) return 'inconclusive';
-  if (treatment.outcome === 'timeout') return 'inconclusive';
-  if (treatment.outcome !== 'fail') return 'decorative';
+  // Only a completed pass or fail says anything about the test. A runner that
+  // never reached a verdict (spawn error, timeout) is no evidence either way.
+  if (treatment.outcome === 'pass') return 'decorative';
+  if (treatment.outcome !== 'fail') return 'inconclusive';
   const counts = treatment.counts;
-  // Only load errors and not one failed assertion: the test names new API, it
-  // does not reproduce the defect.
-  if (counts && counts.fail === 0 && counts.error > 0) return 'catches_by_binding';
+  // bun counts a file that fails to load as both a fail and an error, so a pure
+  // load failure reads "0 pass / 1 fail / 1 error". When every fail is matched by
+  // an error, no assertion ran and failed: the test names new API, it does not
+  // reproduce the defect.
+  if (counts && counts.error > 0 && counts.fail <= counts.error) return 'catches_by_binding';
   return 'catches';
 }
 
@@ -285,13 +289,16 @@ export function escapeVerifyPath(root) {
   return join(resolve(root), '.xm', 'review', ESCAPE_VERIFY_FILE);
 }
 
-function writeReport(root, report) {
+export function writeReport(root, report) {
   const path = escapeVerifyPath(root);
   const dir = join(resolve(root), '.xm', 'review');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = lstatSync(dir);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('escape-verify report directory is unsafe');
-  writeFileSync(path, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
+  // O_NOFOLLOW makes a symlink planted at the report path fail the open instead
+  // of truncating whatever it points at.
+  const fd = openSync(path, FS.O_WRONLY | FS.O_CREAT | FS.O_TRUNC | (FS.O_NOFOLLOW || 0), 0o600);
+  try { writeSync(fd, JSON.stringify(report, null, 2) + '\n'); } finally { closeSync(fd); }
   return path;
 }
 

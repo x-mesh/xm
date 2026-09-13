@@ -1,10 +1,12 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseGitLog, summarizeGitHistory, DEFAULT_GIT_ESCAPE_CONFIG } from '../x-build/lib/x-build/escape-git.mjs';
 import {
   classifyReplay, selectPairedCommits, detectSubsetTestRunner, verifyTestPairing, parseRunnerCounts,
+  writeReport, escapeVerifyPath,
 } from '../x-build/lib/x-build/escape-verify.mjs';
 
 const RS = '\u0000';
@@ -27,10 +29,10 @@ test('failing on the parent is what proves the test detects its own bug', () => 
 });
 
 test('a test that only fails to load on the parent is not counted as detection', () => {
-  // Observed on 1cc062fb: the replayed test imports a symbol the fix introduced,
-  // so the parent run dies with SyntaxError before any assertion runs. That is
-  // not evidence the test reproduces the bug.
-  const bindingOnly = { outcome: 'fail', counts: { pass: 118, fail: 0, error: 1 } };
+  // A replayed test that imports a symbol the fix introduced dies with a load
+  // error on the parent before any assertion runs. bun reports that file as both
+  // a fail and an error, so this is the shape real output takes.
+  const bindingOnly = { outcome: 'fail', counts: { pass: 0, fail: 1, error: 1 } };
   expect(classifyReplay({ control: { outcome: 'pass' }, treatment: bindingOnly })).toBe('catches_by_binding');
 
   // One real assertion failure outweighs a co-occurring load error.
@@ -116,4 +118,33 @@ test('invalid windows and limits are refused before any git work', () => {
   expect(verifyTestPairing(root, { since: '30' }).errors[0]).toContain('invalid git window');
   expect(verifyTestPairing(root, { since: '90d', limit: 0 }).errors[0]).toContain('invalid sample limit');
   expect(verifyTestPairing(root, { since: '90d', limit: 999 }).errors[0]).toContain('invalid sample limit');
+});
+
+test('a treatment runner that never reached a verdict is inconclusive, not decorative', () => {
+  for (const outcome of ['error', 'timeout']) {
+    expect(classifyReplay({ control: { outcome: 'pass' }, treatment: { outcome } })).toBe('inconclusive');
+  }
+});
+
+test('real bun output for a test that cannot load is classified as binding-only', () => {
+  // Synthetic counts hid this: bun never prints "fail 0" for a load failure, it
+  // counts the file as a fail AND an error.
+  const root = mkdtempSync(join(tmpdir(), 'escape-verify-bun-'));
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 't', private: true }));
+  const source = ["import 'escape-verify-missing-package';", "import { test } from 'bun:test';", "test('x', () => {});"].join(String.fromCharCode(10));
+  writeFileSync(join(root, 'load.test.mjs'), source);
+  const run = spawnSync('bun', ['test', './load.test.mjs'], { cwd: root, encoding: 'utf8' });
+  const counts = parseRunnerCounts(String(run.stdout || '') + String(run.stderr || ''));
+  expect(counts).toMatchObject({ fail: 1, error: 1 });
+  expect(classifyReplay({ control: { outcome: 'pass' }, treatment: { outcome: 'fail', counts } })).toBe('catches_by_binding');
+});
+
+test('the report refuses a symlink planted at its path', () => {
+  const root = mkdtempSync(join(tmpdir(), 'escape-verify-symlink-'));
+  mkdirSync(join(root, '.xm', 'review'), { recursive: true });
+  const victim = join(root, 'victim.txt');
+  writeFileSync(victim, 'keep');
+  symlinkSync(victim, escapeVerifyPath(root));
+  expect(() => writeReport(root, { schema_v: 1 })).toThrow();
+  expect(readFileSync(victim, 'utf8')).toBe('keep');
 });

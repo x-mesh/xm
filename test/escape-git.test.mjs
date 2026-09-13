@@ -1,8 +1,8 @@
 import { test, expect } from 'bun:test';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   DEFAULT_GIT_ESCAPE_CONFIG, classifyCommitType, gitWindowArg, isIgnoredPath,
   isTestPath, normalizeGitPath, parseGitLog, pathArea, summarizeGitHistory,
@@ -114,6 +114,16 @@ function commit(root, subject, files) {
   }
   execSync(`git add -A && git commit -qm ${JSON.stringify(subject)}`, { cwd: root, shell: '/bin/bash' });
 }
+// Backdated commit: a window that must match nothing cannot use a commit made
+// "now", which lands inside every window.
+function commitAt(root, subject, files, date) {
+  for (const [path, body] of Object.entries(files)) {
+    const full = join(root, path);
+    mkdirSync(join(full, '..'), { recursive: true });
+    writeFileSync(full, body);
+  }
+  execSync(`git add -A && git commit -qm ${JSON.stringify(subject)}`, { cwd: root, shell: '/bin/bash', env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+}
 
 test('collector turns history into ledger rows with git provenance', () => {
   const root = repo();
@@ -134,14 +144,38 @@ test('collector turns history into ledger rows with git provenance', () => {
 
 test('an empty window on a repo with history is reported, not treated as clean', () => {
   const root = repo();
-  commit(root, 'fix(core): repair', { 'src/a.js': 'v2' });
-  const result = collectGitEscapes(root, { since: '1m' });
+  commitAt(root, 'fix(core): repair', { 'src/a.js': 'v2' }, '2020-01-01T00:00:00Z');
+  const result = collectGitEscapes(root, { since: '1d' });
   expect(result.repo_has_history).toBe(true);
   // A window that matches nothing must never look identical to "no defects".
-  if (result.window_commits === 0) expect(result.errors[0]).toContain('matched no commits');
+  expect(result.available).toBe(true);
+  expect(result.window_commits).toBe(0);
+  expect(result.errors[0]).toContain('matched no commits');
   const bad = collectGitEscapes(root, { since: '30' });
   expect(bad.available).toBe(false);
   expect(bad.errors[0]).toContain('invalid git window');
+});
+
+test('attention --backfill --git reports an empty window instead of exiting silently', () => {
+  const root = repo();
+  commitAt(root, 'fix(core): repair', { 'src/a.js': 'v2' }, '2020-01-01T00:00:00Z');
+  const cli = resolve(import.meta.dir, '../x-build/lib/x-build-cli.mjs');
+  const result = spawnSync('bun', [cli, 'attention', '--backfill', '--git', '--since', '1d', '--json'], { cwd: root, encoding: 'utf8' });
+  expect(result.status).toBe(0);
+  expect(result.stderr).toContain('matched no commits');
+  expect(JSON.parse(result.stdout).git.errors[0]).toContain('matched no commits');
+});
+
+test('a shallow clone is refused rather than mined as if it were complete', () => {
+  const root = repo();
+  commit(root, 'fix(core): first', { 'src/a.js': 'v1' });
+  commit(root, 'fix(core): second', { 'src/a.js': 'v2' });
+  const clone = join(mkdtempSync(join(tmpdir(), 'escape-git-shallow-')), 'r');
+  execSync(`git clone -q --depth 1 ${JSON.stringify('file://' + root)} ${JSON.stringify(clone)}`, { shell: '/bin/bash' });
+  const result = collectGitEscapes(clone, { since: '30d' });
+  expect(result.available).toBe(false);
+  expect(result.rows).toEqual([]);
+  expect(result.errors[0]).toContain('shallow');
 });
 
 test('a directory without git degrades instead of throwing', () => {
