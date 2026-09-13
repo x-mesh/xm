@@ -10,8 +10,6 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
-## [2.25.2] - 2026-09-13
-
 ### Added
 
 - **build:** mine git history for shipped defects — `attention --backfill --git` records `fix`/`revert` commits as escape rows and reports `test_pairing_rate`
