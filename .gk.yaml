@@ -15,3 +15,9 @@ preflight:
 ship:
   version_files:
     - package.json
+
+# gk's manifest detection proposes `npm install` here; this repo is bun (bun.lock).
+worktree:
+  init:
+    run:
+      - bun install
