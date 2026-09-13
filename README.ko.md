@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.25.1-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.25.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -526,7 +526,7 @@ xm build plan --mode quick "..."                 # xm plan의 deprecated alias
 | **거버넌스** | `hooks install/uninstall/status` (네이티브 blocking hooks; `XM_BUILD_HOOKS_OFF=1`로 우회) |
 | **실행** | `run`, `run --worktrees [--dry-run] [--max-parallel N]`, `run --json`, `run-status` |
 | **워크트리** | `worktrees plan/status/resume/cleanup`, `gate-panel --project --task --phase --patch`, `review-integration [--base --target]` |
-| **검증** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts`, `verify-review-fix [--init]`, `review-precision [--since 30d\|--last N] [--min-precision 0.7]` (통과한 게이트마다 쌓이는 triage 원장으로 렌즈별 `fix_now / (fix_now + false_positive)` 집계; dashboard Reviews 페이지에도 표시) |
+| **검증** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts`, `verify-review-fix [--init]`, `verify-tests [--since 90d] [--limit N]` (버그 수정 커밋의 테스트를 부모 커밋에서 다시 돌려 그 버그를 실제로 잡는지 확인), `review-precision [--since 30d\|--last N] [--min-precision 0.7]` (통과한 게이트마다 쌓이는 triage 원장으로 렌즈별 `fix_now / (fix_now + false_positive)` 집계; dashboard Reviews 페이지에도 표시) |
 | **분석** | `forecast`, `forecast update`, `roi [--by model\|role\|strategy]`, `effectiveness [--since Nd] [--profile a,b] [--compare a,b]`, `metrics`, `decisions`, `summarize` |
 | **내보내기** | `export --format md/csv/jira/confluence`, `import` |
 | **릴리스** | `release detect`, `release squash`, `release bump`, `release commit`, `release test`, `release trace`, `release diff-report` |

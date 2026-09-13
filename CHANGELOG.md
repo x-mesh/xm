@@ -10,6 +10,24 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.25.2] - 2026-09-13
+
+### Added
+
+- **build:** mine git history for shipped defects — `attention --backfill --git` records `fix`/`revert` commits as escape rows and reports `test_pairing_rate`
+- **build:** add `verify-tests`, which replays each paired fix commit's tests against its parent to check whether they catch the bug they shipped with
+
+### Changed
+
+- **build:** `attention --git` refuses a shallow clone instead of mining truncated history; run `git fetch --unshallow` first (CI checkouts are often shallow)
+- **dashboard:** rank `shipped_defect` history rows and weight fixes that shipped without a test
+
+### Fixed
+
+- **build:** `attention --backfill --git` reports a window that matched no commits instead of exiting silently
+- **build:** `mutate --list` reports a task with no supported target file before a missing worktree artifact
+- **build:** `verify-tests` classifies load-only failures and runner errors correctly and refuses to write its report through a symlink
+
 ## [2.25.1] - 2026-09-11
 
 ### Fixed
