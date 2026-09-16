@@ -8,11 +8,11 @@ const ROOT=join(import.meta.dirname,'..');
 const readJson=path=>JSON.parse(readFileSync(join(ROOT,path),'utf8'));
 
 describe('xm mutate dispatch and packaging',()=>{
-  test('mutate is xm-native so the wrapper and engine ship together',()=>{const market=readJson('.claude-plugin/marketplace.json').plugins.find(entry=>entry.name==='mutate');expect(market).toBeUndefined();expect(readFileSync(join(ROOT,'xm/lib/x-build/mutate.mjs'),'utf8')).toContain('export async function cmdMutate');});
+  test('mutate is xm-native so the wrapper and engine ship together',()=>{const market=readJson('.claude-plugin/marketplace.json').plugins.find(entry=>entry.name==='mutate');expect(market).toBeUndefined();expect(readFileSync(join(ROOT,'xm/lib/x-build/mutate.mjs'),'utf8')).toContain('export async function cmdMutate');expect(readFileSync(join(ROOT,'xm/lib/x-build/mutate-adapters.mjs'),'utf8')).toContain('export const ADAPTERS');expect(readFileSync(join(ROOT,'xm/scripts/xm'),'utf8')).toContain('node "$LIB_PATH/x-build-cli.mjs" mutate "$@"');});
 
   test('xm-native metadata keeps mutate explicit-only',()=>{const metadata=readFileSync(join(ROOT,'xm/skills/mutate/agents/openai.yaml'),'utf8');expect(metadata).toContain('allow_implicit_invocation: false');expect(metadata).toContain('$xm:mutate');});
 
-  test('wrapper is thin and explicitly does not generate tests',()=>{const skill=readFileSync(join(ROOT,'xm/skills/mutate/SKILL.md'),'utf8');expect(skill).toContain('xm build mutate --project <project> --task <task-id>');expect(skill).toContain('does not create tests');expect(skill).toContain('Never write mutation logic in this skill');});
+  test('wrapper is thin and explicitly does not generate tests',()=>{const skill=readFileSync(join(ROOT,'xm/skills/mutate/SKILL.md'),'utf8');expect(skill).toContain('xm mutate --diff <base>');expect(skill).toContain('xm build mutate --project <project> --task <task-id>');expect(skill).toContain('does not create tests');expect(skill).toContain('Never write mutation logic in this skill');});
 
   test('wrapper can request a missing task id without broad tools',()=>{const skill=readFileSync(join(ROOT,'xm/skills/mutate/SKILL.md'),'utf8');expect(skill).toContain('  - Bash');expect(skill).toContain('  - AskUserQuestion');});
 

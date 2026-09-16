@@ -1,0 +1,266 @@
+{
+ "outcomes": [
+  {
+   "scenario": "Baseline",
+   "summary": "Success",
+   "log_path": "log/baseline.log",
+   "diff_path": null,
+   "phase_results": [
+    {
+     "phase": "Build",
+     "duration": 0.520542625,
+     "process_status": "Success",
+     "argv": [
+      "cargo",
+      "test"
+     ]
+    },
+    {
+     "phase": "Test",
+     "duration": 0.389224791,
+     "process_status": "Success",
+     "argv": [
+      "cargo",
+      "test"
+     ]
+    }
+   ]
+  },
+  {
+   "scenario": {
+    "Mutant": {
+     "name": "src/lib.rs:8:5: replace build -> Config with Default::default()",
+     "package": "rust_fixture",
+     "file": "src/lib.rs",
+     "function": {
+      "function_name": "build",
+      "return_type": "-> Config",
+      "span": {
+       "start": {
+        "line": 7,
+        "column": 1
+       },
+       "end": {
+        "line": 9,
+        "column": 2
+       }
+      }
+     },
+     "span": {
+      "start": {
+       "line": 8,
+       "column": 5
+      },
+      "end": {
+       "line": 8,
+       "column": 41
+      }
+     },
+     "replacement": "Default::default()",
+     "genre": "FnValue"
+    }
+   },
+   "summary": "Unviable",
+   "log_path": "log/src__lib.rs_line_8_col_5.log",
+   "diff_path": "diff/src__lib.rs_line_8_col_5.diff",
+   "phase_results": [
+    {
+     "phase": "Build",
+     "duration": 0.114647708,
+     "process_status": {
+      "Failure": 101
+     },
+     "argv": [
+      "cargo",
+      "test"
+     ]
+    }
+   ]
+  },
+  {
+   "scenario": {
+    "Mutant": {
+     "name": "src/lib.rs:12:5: replace discount -> u64 with 0",
+     "package": "rust_fixture",
+     "file": "src/lib.rs",
+     "function": {
+      "function_name": "discount",
+      "return_type": "-> u64",
+      "span": {
+       "start": {
+        "line": 11,
+        "column": 1
+       },
+       "end": {
+        "line": 13,
+        "column": 2
+       }
+      }
+     },
+     "span": {
+      "start": {
+       "line": 12,
+       "column": 5
+      },
+      "end": {
+       "line": 12,
+       "column": 56
+      }
+     },
+     "replacement": "0",
+     "genre": "FnValue"
+    }
+   },
+   "summary": "CaughtMutant",
+   "log_path": "log/src__lib.rs_line_12_col_5.log",
+   "diff_path": "diff/src__lib.rs_line_12_col_5.diff",
+   "phase_results": [
+    {
+     "phase": "Build",
+     "duration": 0.11899875,
+     "process_status": "Success",
+     "argv": [
+      "cargo",
+      "test"
+     ]
+    },
+    {
+     "phase": "Test",
+     "duration": 0.290411709,
+     "process_status": {
+      "Failure": 101
+     },
+     "argv": [
+      "cargo",
+      "test"
+     ]
+    }
+   ]
+  },
+  {
+   "scenario": {
+    "Mutant": {
+     "name": "src/lib.rs:12:12: replace && with || in discount",
+     "package": "rust_fixture",
+     "file": "src/lib.rs",
+     "function": {
+      "function_name": "discount",
+      "return_type": "-> u64",
+      "span": {
+       "start": {
+        "line": 11,
+        "column": 1
+       },
+       "end": {
+        "line": 13,
+        "column": 2
+       }
+      }
+     },
+     "span": {
+      "start": {
+       "line": 12,
+       "column": 12
+      },
+      "end": {
+       "line": 12,
+       "column": 14
+      }
+     },
+     "replacement": "||",
+     "genre": "BinaryOperator"
+    }
+   },
+   "summary": "MissedMutant",
+   "log_path": "log/src__lib.rs_line_12_col_12.log",
+   "diff_path": "diff/src__lib.rs_line_12_col_12.diff",
+   "phase_results": [
+    {
+     "phase": "Build",
+     "duration": 0.11938425,
+     "process_status": "Success",
+     "argv": [
+      "cargo",
+      "test"
+     ]
+    },
+    {
+     "phase": "Test",
+     "duration": 0.330699334,
+     "process_status": "Success",
+     "argv": [
+      "cargo",
+      "test"
+     ]
+    }
+   ]
+  },
+  {
+   "scenario": {
+    "Mutant": {
+     "name": "src/lib.rs:26:21: replace *= with /= in pow2_at_least",
+     "package": "rust_fixture",
+     "file": "src/lib.rs",
+     "function": {
+      "function_name": "pow2_at_least",
+      "return_type": "-> u64",
+      "span": {
+       "start": {
+        "line": 24,
+        "column": 1
+       },
+       "end": {
+        "line": 28,
+        "column": 2
+       }
+      }
+     },
+     "span": {
+      "start": {
+       "line": 26,
+       "column": 21
+      },
+      "end": {
+       "line": 26,
+       "column": 23
+      }
+     },
+     "replacement": "/=",
+     "genre": "BinaryOperator"
+    }
+   },
+   "summary": "Timeout",
+   "log_path": "log/src__lib.rs_line_26_col_21_001.log",
+   "diff_path": "diff/src__lib.rs_line_26_col_21_001.diff",
+   "phase_results": [
+    {
+     "phase": "Build",
+     "duration": 0.119883125,
+     "process_status": "Success",
+     "argv": [
+      "cargo",
+      "test"
+     ]
+    },
+    {
+     "phase": "Test",
+     "duration": 5.018032334,
+     "process_status": "Timeout",
+     "argv": [
+      "cargo",
+      "test"
+     ]
+    }
+   ]
+  }
+ ],
+ "total_mutants": 4,
+ "missed": 1,
+ "caught": 1,
+ "timeout": 1,
+ "unviable": 1,
+ "success": 0,
+ "start_time": "2026-09-15T22:19:08.368946Z",
+ "end_time": "2026-09-15T22:19:12.823709Z",
+ "cargo_mutants_version": "27.1.0"
+}

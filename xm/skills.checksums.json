@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1789138432824,
+  "generatedAt": 1789512153035,
   "version": 3,
   "skills": [
     {
@@ -17,9 +17,9 @@
       "plugin": "build",
       "sha256": "5427b4f6af2f31b178146fc73b9997e056af9590c8d05c9f09f4a90516428c0c",
       "bytes": 16962,
-      "referencesSha256": "eda2089e26eeb61a850395d4393c4545755b59caf32f84a6b43dcd0eda137ea7",
+      "referencesSha256": "5891eb80366e98ca65d9916fdca35e5408ed96e0c9ba55b160e518f1116eae5b",
       "referenceFiles": 11,
-      "referenceBytes": 108382,
+      "referenceBytes": 108567,
       "assetsSha256": "8f7264689050361533647ce8d7afd45f7f62e14534726b19f630df7d82fb6bc6",
       "assetFiles": 3,
       "assetBytes": 22098
@@ -147,14 +147,14 @@
     },
     {
       "plugin": "mutate",
-      "sha256": "92671bb0588fb7e136443de5fbd75db98ab7be356c4a2eb42c369922ee784a25",
-      "bytes": 3110,
+      "sha256": "e32bb55a65e73659f5aa6b20fabd20dba6b085481c1995ba1c1c6f323aca1640",
+      "bytes": 5830,
       "referencesSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "referenceFiles": 0,
       "referenceBytes": 0,
-      "assetsSha256": "48023a9006be4278ef9f15042dcffd7f0a8a04c6930804426559b79be1b0041a",
+      "assetsSha256": "4e49b84d7b8597e5a4002e000087e0e79c95bf57e668f0fec783311611c9cd0e",
       "assetFiles": 1,
-      "assetBytes": 259
+      "assetBytes": 287
     },
     {
       "plugin": "op",

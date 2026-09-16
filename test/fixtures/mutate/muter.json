@@ -1,0 +1,51 @@
+{
+ "fileReports": [
+  {
+   "fileName": "Calc.swift",
+   "mutationScore": 66,
+   "appliedOperators": [
+    {
+     "mutationPoint": {
+      "position": {
+       "utf8Offset": 129,
+       "column": 16,
+       "line": 2
+      },
+      "mutationOperatorId": "RelationalOperatorReplacement",
+      "filePath": "/project_mutated/Sources/Calc/Calc.swift"
+     },
+     "testSuiteOutcome": "failed"
+    },
+    {
+     "mutationPoint": {
+      "position": {
+       "column": 12,
+       "line": 6,
+       "utf8Offset": 204
+      },
+      "mutationOperatorId": "ChangeLogicalConnector",
+      "filePath": "/project_mutated/Sources/Calc/Calc.swift"
+     },
+     "testSuiteOutcome": "passed"
+    },
+    {
+     "mutationPoint": {
+      "mutationOperatorId": "RelationalOperatorReplacement",
+      "filePath": "/project_mutated/Sources/Calc/Calc.swift",
+      "position": {
+       "utf8Offset": 213,
+       "line": 6,
+       "column": 21
+      }
+     },
+     "testSuiteOutcome": "failed"
+    }
+   ]
+  }
+ ],
+ "projectCodeCoverage": 87,
+ "numberOfKilledMutants": 2,
+ "timeElapsed": "00:00:04.240",
+ "totalAppliedMutationOperators": 3,
+ "globalMutationScore": 66
+}

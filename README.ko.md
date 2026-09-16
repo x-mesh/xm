@@ -428,7 +428,7 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 | xm | 번들 + 설정 + 파이프라인 | `/xm pipeline release` |
 
 **`xm` 코어에 번들됨 (별도 marketplace 플러그인 아님):** `/xm:ship` 릴리스 자동화 · `x-sync` 멀티 머신 동기화 서버 · `/xm:toss` + `/xm:inbox` 프로젝트 간 버그 핸드오프 — 아래 [x-ship](#x-ship), [x-sync](#x-sync), [toss / inbox](#프로젝트-간-핸드오프--toss--inbox) 참고.
-`/xm:mutate`도 같은 방식으로 번들됩니다 — 코어에 함께 들어 있는 `xm build mutate` 엔진을 실행하기 때문입니다. Codex에서는 `$xm:mutate`로 노출되고, 평면 별칭 `$xm-mutate`도 그대로 씁니다. [뮤테이션 테스팅](#뮤테이션-테스팅--xmmutate) 참고.
+`/xm:mutate`도 같은 방식으로 번들됩니다 — 코어에 함께 들어 있는 `xm mutate` 명령을 실행하기 때문입니다. Codex에서는 `$xm:mutate`로 노출되고, 평면 별칭 `$xm-mutate`도 그대로 씁니다. [뮤테이션 테스팅](#뮤테이션-테스팅--xmmutate) 참고.
 
 ---
 
@@ -701,33 +701,39 @@ xm review close <run-id> --reason "old run is no longer needed"
 
 ### 뮤테이션 테스팅 — `/xm:mutate`
 
-테스트가 전부 통과했다는 건 테스트가 돌았다는 뜻이지, 코드가 틀렸을 때 알아챘을 거라는 뜻은 아닙니다. `/xm:mutate`가 그 차이를 확인합니다. 방금 작업이 바꾼 코드 조각을 살짝 뒤집어 놓고, 지금 쓰는 테스트 명령을 그대로 다시 돌립니다. **killed**된 뮤턴트는 테스트가 잡아냈다는 뜻이고, **survived**한 뮤턴트는 스위트 전체가 못 봤다는 뜻입니다. 그 줄이 들여다볼 만한 빈틈입니다.
+테스트가 전부 통과했다는 건 테스트가 돌았다는 뜻이지, 코드가 틀렸을 때 알아챘을 거라는 뜻은 아닙니다. `/xm:mutate`가 그 차이를 확인합니다. 브랜치가 바꾼 줄을 조금씩 변형하고 기존 테스트를 다시 돌립니다. **killed**된 뮤턴트는 테스트가 잡아냈다는 뜻이고, **survived**한 뮤턴트는 어떤 테스트도 알아채지 못했다는 뜻입니다. 그 줄이 테스트를 보강할 후보입니다.
 
 기존 테스트를 검사할 뿐, 테스트를 만들어 주지는 않습니다.
 
 ```bash
-/xm:mutate                                  # 실행 가능한 작업 중에서 선택 (목록 조회는 읽기 전용)
-xm build mutate --list --json               # 같은 후보를 CLI에서 바로
-xm build mutate --project my-app --task t3 --max-mutants 20
+xm mutate --diff main                        # main과의 merge base 이후 바뀐 줄을 변형
+xm mutate --diff main --lang rust,go --json  # 언어를 제한하고 리포트를 JSON으로 출력
+/xm:mutate                                   # diff 모드와 x-build 작업 중에서 선택
+xm build mutate --list --json                # 바뀐 파일이 있는 x-build 작업 목록 (읽기 전용)
+xm build mutate --project my-app --task t3   # 같은 검사를 작업의 worktree에서 실행
 ```
 
-연산자는 5종이고, 그 작업이 실제로 바꾼 줄에만 적용됩니다:
+xm은 뮤턴트를 직접 만들지 않습니다. 언어마다 외부 도구가 코드를 파싱하고 프로젝트 복사본에서 뮤턴트를 실행합니다. 빌드되지 않는 뮤턴트는 `unviable`로 따로 보고합니다.
 
-| 연산자 | 변형 |
-|--------|------|
-| boolean | `true` ↔ `false` |
-| comparison | `===` ↔ `!==` |
-| relational | `<` ↔ `<=`, `>` ↔ `>=` |
-| logical | `&&` ↔ `\|\|` |
-| numeric | `n` → `n + 1` |
+| 언어 | 도구 | 범위 지정 | 설치 |
+|------|------|-----------|------|
+| Rust | [cargo-mutants](https://mutants.rs) | `--in-diff` | `cargo install --locked cargo-mutants` |
+| JavaScript / TypeScript | [StrykerJS](https://stryker-mutator.io) | `mutate`의 줄 범위 | `npm install --save-dev @stryker-mutator/core` |
+| Go | [gomutants](https://github.com/szhekpisov/gomutants) | `-changed-since` | `go install github.com/szhekpisov/gomutants@latest` |
+| Swift | [Muter](https://github.com/muter-mutation-testing/muter) | 파일 단위로 실행한 뒤 xm이 바뀐 줄만 남김 | `brew install muter-mutation-testing/formulae/muter` |
 
-후보는 5종을 라운드로빈으로 돌며 뽑습니다. 한 연산자가 예산을 통째로 먹지 못하게 하려는 것입니다. 주석·문자열·템플릿 리터럴·정규식 본문은 매칭 전에 마스킹하므로, 로그 메시지 안에 있는 `true`는 절대 건드리지 않습니다.
+**변경 범위:** merge base부터 작업 트리까지의 `git diff`를 씁니다. 커밋하지 않은 추적 파일의 수정은 포함하고, 추적하지 않는 새 파일은 포함하지 않습니다. 파일마다 해당 언어의 도구를 가장 가까운 `Cargo.toml`, `package.json`, `go.mod`, `muter.conf.yml` / `Package.swift` 디렉터리에서 실행합니다. 결과에서는 바뀐 줄에 걸친 뮤턴트만 남깁니다.
 
-**작업이 갖춰야 할 조건:** 연결된 worktree artifact, JS/TS 대상 파일(`.js .jsx .cjs .mjs .ts .tsx .cts .mts`), 그리고 테스트 명령 — 작업에 적힌 `test_command`를 쓰거나, `package.json`과 락파일(bun / pnpm / yarn / npm)에서 추론합니다. 뮤테이션은 그 작업의 worktree 안에서만 돌고 주 체크아웃은 거부합니다. 지금 편집 중인 트리에 뮤턴트가 남는 일이 구조적으로 없습니다.
+**도구가 없을 때:** 도구나 설정 파일이 없으면 그 언어는 `unavailable` 상태와 설치 명령으로 보고됩니다. 내장 엔진으로 대신 실행하지 않습니다. 명령은 종료 코드 1로 끝나지만, 다른 언어의 결과는 그대로 유효합니다.
 
-**한도:** 기본 뮤턴트 12개(`--max-mutants`, 1–100), 뮤턴트당 90초(`--timeout-ms`), 실행 전체는 벽시계 기준 10분입니다. 예산을 넘긴 건 조용히 빠지지 않고 `skipped`로 보고됩니다. 베이스라인을 먼저 돌리므로, 스위트가 이미 빨간 상태면 가짜 생존자를 보고하는 대신 거기서 멈추고 그 사실을 알려 줍니다. 뮤턴트마다 원본 바이트와 파일 모드를 정확히 복구합니다.
+**도구별 참고:**
+- StrykerJS는 `package.json`의 `test` 스크립트로 command runner를 씁니다. command runner는 뮤턴트마다 전체 테스트를 다시 돌리므로, 테스트가 크면 느립니다.
+- Muter에는 `muter.conf.yml`이 필요합니다. 먼저 프로젝트 루트에서 `muter init`을 실행하세요. Muter는 프로젝트 옆에 복사본(`<root>_mutated`)을 만들고, 프로젝트 안에 `muter_logs/`를 남깁니다.
+- Java, Kotlin, Python, C#, PHP용 어댑터는 없습니다.
 
-리포트는 `.xm/review/mutate/<project>/<task>.json`에 쌓이고, 살아남은 뮤턴트는 attention 큐에 추가됩니다.
+**한도:** `--timeout-ms`는 실행 전체의 시간 상한이고 기본값은 30분입니다. 뮤턴트별 timeout은 각 도구가 기준 실행 시간을 보고 정합니다. 스위트가 이미 실패하면 그 언어는 뮤테이션 결과 대신 `baseline_failed`나 `error`로 보고됩니다.
+
+diff 리포트는 `.xm/review/mutate-diff/<head>-<merge-base>.json`에, 작업 리포트는 `.xm/review/mutate/<project>/<task>.json`에 저장됩니다. 작업에서 살아남은 뮤턴트는 attention 큐에 추가됩니다. 작업을 실행하려면 연결된 worktree artifact에 `base`가 기록되어 있거나 `--base <ref>`를 넘겨야 합니다.
 
 > v1은 관찰용입니다. 생존한 뮤턴트는 들여다볼 후보이지 테스트가 없다는 증거가 아니며, 머지를 막지도 않습니다.
 

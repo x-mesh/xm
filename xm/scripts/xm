@@ -429,6 +429,11 @@ case "$CMD" in
     node "$LIB_PATH/x-build-cli.mjs" "$@"
     ;;
 
+  mutate)
+    LIB_PATH="$(plugin_lib build)"
+    node "$LIB_PATH/x-build-cli.mjs" mutate "$@"
+    ;;
+
   cost)
     LIB_PATH="$(plugin_lib build)"
     node "$LIB_PATH/x-build-cli.mjs" cost "$@"
@@ -1206,6 +1211,7 @@ Commands:
   review run [target]                Durable review lifecycle (freeze, chunk, dispatch, synthesize)
   review resume <run-id>             Resume failed review without repeating completed children
   build <subcmd>                      Phase-based project harness
+  mutate --diff <base>                Mutation testing on changed lines (cargo-mutants, StrykerJS, gomutants, Muter)
   cost predict <task-description>     Estimate cost from measured task history
   config <subcmd>                     Shared toolkit config (--local|--global)
   trace <subcmd>                      Execution traces

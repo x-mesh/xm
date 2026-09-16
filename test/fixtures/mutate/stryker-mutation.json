@@ -1,0 +1,224 @@
+{
+ "schemaVersion": "1.0",
+ "thresholds": {
+  "high": 80,
+  "low": 60,
+  "break": null
+ },
+ "projectRoot": "/project",
+ "files": {
+  "src/calc.ts": {
+   "language": "typescript",
+   "mutants": [
+    {
+     "id": "0",
+     "mutatorName": "BlockStatement",
+     "replacement": "{}",
+     "status": "Killed",
+     "testsCompleted": 1,
+     "killedBy": [
+      "0"
+     ],
+     "location": {
+      "end": {
+       "column": 2,
+       "line": 8
+      },
+      "start": {
+       "column": 63,
+       "line": 5
+      }
+     }
+    },
+    {
+     "id": "1",
+     "mutatorName": "ConditionalExpression",
+     "replacement": "true",
+     "status": "Survived",
+     "testsCompleted": 1,
+     "location": {
+      "end": {
+       "column": 25,
+       "line": 6
+      },
+      "start": {
+       "column": 7,
+       "line": 6
+      }
+     }
+    },
+    {
+     "id": "2",
+     "mutatorName": "ConditionalExpression",
+     "replacement": "false",
+     "status": "Killed",
+     "testsCompleted": 1,
+     "killedBy": [
+      "0"
+     ],
+     "location": {
+      "end": {
+       "column": 25,
+       "line": 6
+      },
+      "start": {
+       "column": 7,
+       "line": 6
+      }
+     }
+    },
+    {
+     "id": "3",
+     "mutatorName": "LogicalOperator",
+     "replacement": "vip || price > 100",
+     "status": "Survived",
+     "testsCompleted": 1,
+     "location": {
+      "end": {
+       "column": 25,
+       "line": 6
+      },
+      "start": {
+       "column": 7,
+       "line": 6
+      }
+     }
+    },
+    {
+     "id": "4",
+     "mutatorName": "ConditionalExpression",
+     "replacement": "true",
+     "status": "Survived",
+     "testsCompleted": 1,
+     "location": {
+      "end": {
+       "column": 25,
+       "line": 6
+      },
+      "start": {
+       "column": 14,
+       "line": 6
+      }
+     }
+    },
+    {
+     "id": "5",
+     "mutatorName": "EqualityOperator",
+     "replacement": "price >= 100",
+     "status": "Survived",
+     "testsCompleted": 1,
+     "location": {
+      "end": {
+       "column": 25,
+       "line": 6
+      },
+      "start": {
+       "column": 14,
+       "line": 6
+      }
+     }
+    },
+    {
+     "id": "6",
+     "mutatorName": "EqualityOperator",
+     "replacement": "price <= 100",
+     "status": "Killed",
+     "testsCompleted": 1,
+     "killedBy": [
+      "0"
+     ],
+     "location": {
+      "end": {
+       "column": 25,
+       "line": 6
+      },
+      "start": {
+       "column": 14,
+       "line": 6
+      }
+     }
+    },
+    {
+     "id": "7",
+     "mutatorName": "ArithmeticOperator",
+     "replacement": "price + 10",
+     "status": "Killed",
+     "testsCompleted": 1,
+     "killedBy": [
+      "0"
+     ],
+     "location": {
+      "end": {
+       "column": 44,
+       "line": 6
+      },
+      "start": {
+       "column": 34,
+       "line": 6
+      }
+     }
+    },
+    {
+     "id": "8",
+     "mutatorName": "BlockStatement",
+     "replacement": "{}",
+     "status": "Killed",
+     "testsCompleted": 1,
+     "killedBy": [
+      "0"
+     ],
+     "location": {
+      "end": {
+       "column": 2,
+       "line": 14
+      },
+      "start": {
+       "column": 61,
+       "line": 10
+      }
+     }
+    },
+    {
+     "id": "10",
+     "mutatorName": "ArithmeticOperator",
+     "replacement": "(counts.get(w) ?? 0) - 1",
+     "status": "Killed",
+     "testsCompleted": 1,
+     "killedBy": [
+      "0"
+     ],
+     "location": {
+      "end": {
+       "column": 64,
+       "line": 12
+      },
+      "start": {
+       "column": 40,
+       "line": 12
+      }
+     }
+    },
+    {
+     "id": "11",
+     "mutatorName": "LogicalOperator",
+     "replacement": "counts.get(w) && 0",
+     "status": "Killed",
+     "testsCompleted": 1,
+     "killedBy": [
+      "0"
+     ],
+     "location": {
+      "end": {
+       "column": 59,
+       "line": 12
+      },
+      "start": {
+       "column": 41,
+       "line": 12
+      }
+     }
+    }
+   ]
+  }
+ }
+}

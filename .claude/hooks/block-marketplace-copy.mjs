@@ -41,6 +41,7 @@ const X_BUILD_LIB_FILES = new Set([
   'hooks.mjs',
   'later.mjs',
   'misc.mjs',
+  'mutate-adapters.mjs',
   'phase.mjs',
   'plan.mjs',
   'project.mjs',

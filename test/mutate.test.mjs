@@ -1,56 +1,455 @@
 import { afterEach, expect, test } from 'bun:test';
-import { execSync, spawn, spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { execSync, spawnSync } from 'node:child_process';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { listMutationTasks, runTaskMutate, simpleMutations } from '../x-build/lib/x-build/mutate.mjs';
+import { dirname, join, matchesGlob, resolve } from 'node:path';
+import { listMutationTasks, parseDiffChanges, runDiffMutate, runTaskMutate } from '../x-build/lib/x-build/mutate.mjs';
+import { ADAPTERS, lineRanges, widenedRoot } from '../x-build/lib/x-build/mutate-adapters.mjs';
 
-const roots=[];
-let worktreeIndex=0;
-const makeRoot=(prefix='mutate-audit-')=>{const root=mkdtempSync(join(tmpdir(),prefix));roots.push(root);execSync('git init -q && git config user.email test@example.com && git config user.name Test',{cwd:root,shell:'/bin/bash'});return root;};
-const commit=(root,file,content)=>{writeFileSync(join(root,file),content);execSync(`git add ${JSON.stringify(file)} && git commit -qm fixture`,{cwd:root,shell:'/bin/bash'});};
-const artifact=(state,task,data,project='p')=>{let worktree=data.worktree,branch=data.branch;if(!worktree){worktree=state+`-wt-${++worktreeIndex}`;branch=`mutate-${worktreeIndex}`;roots.push(worktree);execSync(`git worktree add -qb ${JSON.stringify(branch)} ${JSON.stringify(worktree)}`,{cwd:state,shell:'/bin/bash'});}else if(!branch){branch=execSync('git branch --show-current',{cwd:worktree,encoding:'utf8'}).trim();}const dir=join(state,'.xm/build/projects',project,'worktrees',task);mkdirSync(dir,{recursive:true});writeFileSync(join(dir,'run.json'),JSON.stringify({task_id:task,branch,worktree,...data}));return worktree;};
-const tasks=(state,project,rows)=>{const dir=join(state,'.xm/build/projects',project,'phases/02-plan');mkdirSync(dir,{recursive:true});writeFileSync(join(dir,'tasks.json'),JSON.stringify({tasks:rows}));};
-afterEach(()=>{for(const root of roots.splice(0))try{rmSync(root,{recursive:true,force:true});}catch{}});
+const FIXTURES = resolve(import.meta.dir, 'fixtures/mutate');
+const CLI = resolve(import.meta.dir, '../x-build/lib/x-build-cli.mjs');
+const roots = [];
+let worktreeIndex = 0;
 
-test('non-green baseline exits 2 before mutants or ledger rows',async()=>{const root=makeRoot();commit(root,'a.js','const value = true;');artifact(root,'T1',{target:'a.js',test_command:'false',changed_lines:[1]});let error;try{await runTaskMutate(root,'T1');}catch(caught){error=caught;}expect(error?.exitCode).toBe(2);expect(error?.report).toMatchObject({project:'p',baseline_exit_code:1,mutants:[]});expect(existsSync(join(root,'.xm/review/escape-ledger.jsonl'))).toBe(false);expect(JSON.parse(readFileSync(join(root,'.xm/review/mutate/p/T1.json'),'utf8')).mutants).toEqual([]);});
+const sh = (cwd, command) => execSync(command, { cwd, shell: '/bin/bash', encoding: 'utf8' });
+const tempDir = prefix => { const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix))); roots.push(dir); return dir; };
+const makeRoot = (prefix = 'mutate-') => { const root = tempDir(prefix); sh(root, 'git init -q -b main && git config user.email test@example.com && git config user.name Test'); return root; };
+const write = (root, file, content) => { mkdirSync(dirname(join(root, file)), { recursive: true }); writeFileSync(join(root, file), content); };
+const commitAll = (root, message = 'fixture') => sh(root, `git add -A && git commit -qm ${JSON.stringify(message)}`);
+const adapter = language => ADAPTERS.find(candidate => candidate.language === language);
+const tasks = (state, project, rows) => write(state, `.xm/build/projects/${project}/phases/02-plan/tasks.json`, JSON.stringify({ tasks: rows }));
 
-test('detected package script runs through bun run test',async()=>{const root=makeRoot();commit(root,'a.js','const value = true;');const wt=artifact(root,'T1',{target:'a.js',changed_lines:[1]});writeFileSync(join(wt,'package.json'),JSON.stringify({scripts:{test:'touch script-ran'}}));writeFileSync(join(wt,'bun.lock'),'');const report=await runTaskMutate(root,'T1',{maxMutants:1});expect(report).toMatchObject({baseline_exit_code:0,test_command:'bun run test',test_command_source:'package:bun'});expect(existsSync(join(wt,'script-ran'))).toBe(true);});
+// A repository with one supported file under a fake manifest, committed on main.
+const fakeRepo = prefix => {
+  const root = makeRoot(prefix);
+  write(root, 'fake.toml', '');
+  write(root, 'a.fake', 'one\n');
+  commitAll(root, 'base');
+  return root;
+};
 
-test('symlink target is rejected before external bytes change',async()=>{const root=makeRoot(),outside=join(tmpdir(),`mutate-outside-${process.pid}-${Date.now()}.js`);writeFileSync(outside,'const external = true;');commit(root,'a.js','const internal = true;');const wt=artifact(root,'T1',{target:'a.js',test_command:'true',changed_lines:[1]});unlinkSync(join(wt,'a.js'));symlinkSync(outside,join(wt,'a.js'));try{await expect(runTaskMutate(root,'T1')).rejects.toThrow(/non-symlink/);expect(readFileSync(outside,'utf8')).toBe('const external = true;');}finally{rmSync(outside,{force:true});}});
+const artifact = (state, task, data = {}, project = 'p') => {
+  const branch = `mutate-${++worktreeIndex}`, path = `${state}-wt-${worktreeIndex}`;
+  roots.push(path);
+  sh(state, `git worktree add -qb ${JSON.stringify(branch)} ${JSON.stringify(path)}`);
+  const worktree = realpathSync(path);
+  write(state, `.xm/build/projects/${project}/worktrees/${task}/run.json`, JSON.stringify({ task_id: task, branch, worktree, ...data }));
+  return worktree;
+};
 
-test('linked worktree mutates branch bytes but stores report in main state root',async()=>{const main=makeRoot('mutate-main-');commit(main,'a.js','const main = true;');const wt=main+'-wt';roots.push(wt);execSync(`git worktree add -qb feature ${JSON.stringify(wt)}`,{cwd:main,shell:'/bin/bash'});writeFileSync(join(wt,'a.js'),'const branch = false;');execSync('git add a.js && git commit -qm branch',{cwd:wt,shell:'/bin/bash'});artifact(main,'T1',{target:'a.js',test_command:'true',changed_lines:[1],worktree:wt});const report=await runTaskMutate(main,'T1',{workspaceRoot:main,stateRoot:main,maxMutants:1});expect(report).toMatchObject({project:'p',counts:{survived:1}});expect(readFileSync(join(main,'a.js'),'utf8')).toBe('const main = true;');expect(readFileSync(join(wt,'a.js'),'utf8')).toBe('const branch = false;');expect(existsSync(join(main,'.xm/review/mutate/p/T1.json'))).toBe(true);expect(existsSync(join(wt,'.xm/review/mutate/p/T1.json'))).toBe(false);});
+const changeInWorktree = worktree => { write(worktree, 'a.fake', 'one\ntwo\n'); commitAll(worktree, 'task change'); };
 
-test('linked-worktree mutate CLI resolves main state and task worktree source',()=>{const main=makeRoot('mutate-cli-main-');commit(main,'a.js','const main = true;');const wt=main+'-wt';roots.push(wt);execSync(`git worktree add -qb cli-feature ${JSON.stringify(wt)}`,{cwd:main,shell:'/bin/bash'});writeFileSync(join(wt,'a.js'),'const branch = false;');execSync('git add a.js && git commit -qm branch',{cwd:wt,shell:'/bin/bash'});artifact(main,'T1',{target:'a.js',test_command:'true',changed_lines:[1],worktree:wt});const cli=resolve(import.meta.dir,'../x-build/lib/x-build-cli.mjs'),result=spawnSync('bun',[cli,'mutate','--project','p','--task','T1','--max-mutants','1','--json'],{cwd:main,encoding:'utf8'});expect(result.status).toBe(0);expect(JSON.parse(result.stdout)).toMatchObject({project:'p',counts:{survived:1}});expect(readFileSync(join(main,'a.js'),'utf8')).toBe('const main = true;');expect(readFileSync(join(wt,'a.js'),'utf8')).toBe('const branch = false;');expect(existsSync(join(main,'.xm/review/mutate/p/T1.json'))).toBe(true);expect(existsSync(join(wt,'.xm'))).toBe(false);});
+// A stand-in tool: it reports one mutant per changed line plus one on a line
+// that did not change, so the core's re-scoping is observable.
+function fakeAdapter({ unavailable = null, status = 'survived', argv = null, calls = [] } = {}) {
+  return {
+    language: 'fake',
+    tool: 'fake-tool',
+    install: 'install fake-tool',
+    manifests: ['fake.toml'],
+    claims: path => path.endsWith('.fake'),
+    detect: () => (unavailable ? { unavailable } : { version: '1.0.0' }),
+    plan(ctx) {
+      calls.push(ctx);
+      const rows = [...ctx.changed].flatMap(([file, lines]) => [...lines, 999].map(line => ({ file, line, end_line: line, column: 1, mutator: 'Fake', description: 'fake', status })));
+      const report = join(ctx.outDir, 'report.json');
+      return { argv: argv || [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(report)}, ${JSON.stringify(JSON.stringify(rows))})`] };
+    },
+    parse(ctx, run) {
+      if (run.exitCode !== 0) throw new Error(`fake-tool exited ${run.exitCode}`);
+      return { mutants: JSON.parse(readFileSync(join(ctx.outDir, 'report.json'), 'utf8')) };
+    },
+  };
+}
 
-test('small budgets rotate across mutation classes',()=>{const rows=simpleMutations('true === false; 3 < 4 && 5 > 2',{changedLines:[1],maxMutants:5});expect(rows.map(row=>row.operator)).toEqual(['boolean','comparison','relational','logical','numeric']);});
+const outDirWith = (fixture = null, target = null) => {
+  const dir = tempDir('mutate-out-');
+  if (fixture) {
+    mkdirSync(dirname(join(dir, target)), { recursive: true });
+    copyFileSync(join(FIXTURES, fixture), join(dir, target));
+  }
+  return dir;
+};
 
-test('build mutation surface has no stale probe command or module references',()=>{const repo=resolve(import.meta.dir,'..');for(const file of ['x-build/lib/x-build-cli.mjs','x-build/lib/x-build/mutate.mjs','x-build/skills/build/references/commands.md','xm/lib/x-build-cli.mjs','xm/lib/x-build/mutate.mjs','xm/skills/build/references/commands.md']){const source=readFileSync(resolve(repo,file),'utf8');expect(source).not.toMatch(/xm build probe|cmdProbe|runTaskProbe|x-build\/probe\.mjs|source:\s*['"]probe/);}});
+const cliEnv = () => {
+  const env = { ...process.env };
+  delete env.X_BUILD_ROOT;
+  delete env.XM_ROOT;
+  return env;
+};
 
-test('candidate listing includes friendly task metadata and runnable reasons without mutation',()=>{const root=makeRoot();commit(root,'a.js','const value = true;');tasks(root,'app',[{id:'T1',name:'Validate checkout',status:'ready',expected_files:['a.js']},{id:'T2',name:'Docs only',status:'pending',expected_files:['README.md']}]);artifact(root,'T1',{target:'a.js',test_command:'true',changed_lines:[1]},'app');const before=readFileSync(join(root,'a.js'),'utf8'),rows=listMutationTasks(root,root);expect(rows[0]).toMatchObject({project:'app',id:'T1',name:'Validate checkout',status:'ready',files:['a.js'],runnable:true,reason:null});expect(rows.find(row=>row.id==='T2')).toMatchObject({runnable:false,reason:'no supported expected_files'});expect(readFileSync(join(root,'a.js'),'utf8')).toBe(before);expect(existsSync(join(root,'.xm/review'))).toBe(false);});
+afterEach(() => {
+  for (const root of roots.splice(0)) try { rmSync(root, { recursive: true, force: true }); } catch {}
+});
 
-// T2 above is blocked twice over — a .md target AND no artifact. Reporting the
-// artifact hid the blocker that re-running the task cannot fix, and the reason
-// histogram is the only thing a caller reads when nothing is runnable.
-test('the reason names the blocker that re-running the task cannot fix',()=>{const root=makeRoot('mutate-reason-order-');commit(root,'a.js','const value = true;');tasks(root,'p',[{id:'BOTH',name:'Docs only, never run',status:'pending',expected_files:['README.md']},{id:'ARTIFACT',name:'Code, never run',status:'pending',expected_files:['a.js']}]);const rows=listMutationTasks(root,root);expect(rows.find(row=>row.id==='BOTH')).toMatchObject({runnable:false,reason:'no supported expected_files',files:[]});expect(rows.find(row=>row.id==='ARTIFACT')).toMatchObject({runnable:false,reason:'missing worktree artifact',files:['a.js']});});
+test('diff parsing maps added lines per file and skips deletions and header look-alikes', () => {
+  const diff = [
+    'diff --git a/src/a.rs b/src/a.rs', 'index 1..2 100644', '--- a/src/a.rs', '+++ b/src/a.rs',
+    '@@ -1,0 +2,2 @@', '+fn a() {}', '+++ not a header',
+    '@@ -9 +10,0 @@', '-gone',
+    'diff --git a/old.go b/new.go', 'rename from old.go', 'rename to new.go', '--- a/old.go', '+++ "b/new.go"', '@@ -3 +3 @@', '-x', '+y', '\\ No newline at end of file',
+    'diff --git a/deleted.ts b/deleted.ts', 'deleted file mode 100644', '--- a/deleted.ts', '+++ /dev/null', '@@ -1 +0,0 @@', '-z',
+  ].join('\n');
+  expect([...parseDiffChanges(diff)]).toEqual([['src/a.rs', [2, 3]], ['new.go', [3]]]);
+});
 
-test('no-argument CLI prints candidates and list JSON is machine-readable',()=>{const root=makeRoot();commit(root,'a.js','const value = true;');tasks(root,'app',[{id:'T1',name:'Validate checkout',status:'ready',expected_files:['a.js']}]);artifact(root,'T1',{target:'a.js',test_command:'true',changed_lines:[1]},'app');const cli=resolve(import.meta.dir,'../x-build/lib/x-build-cli.mjs'),human=spawnSync('bun',[cli,'mutate'],{cwd:root,encoding:'utf8'}),json=spawnSync('bun',[cli,'mutate','--list','--json'],{cwd:root,encoding:'utf8'});expect(human.status).toBe(0);expect(human.stdout).toContain('app/T1 — Validate checkout');expect(JSON.parse(json.stdout)).toMatchObject({runnable_count:1,tasks:[{project:'app',id:'T1',name:'Validate checkout',runnable:true}]});expect(existsSync(join(root,'.xm/review'))).toBe(false);});
+test('line ranges merge adjacent lines', () => {
+  expect(lineRanges([5, 3, 4, 9, 10, 12])).toEqual([[3, 5], [9, 10], [12, 12]]);
+});
 
-test('no runnable tasks produce a short reason summary instead of history spam',()=>{const root=makeRoot();commit(root,'a.js','const value = true;');tasks(root,'old',[{id:'T1',name:'Old task',status:'completed',expected_files:['a.js']},{id:'T2',name:'Another old task',status:'completed',expected_files:['a.js']}]);const cli=resolve(import.meta.dir,'../x-build/lib/x-build-cli.mjs'),result=spawnSync('bun',[cli,'mutate'],{cwd:root,encoding:'utf8'}),lines=result.stdout.trim().split('\n');expect(result.status).toBe(0);expect(lines.length).toBeLessThanOrEqual(5);expect(result.stdout).toContain('No tasks are ready for mutation testing.');expect(result.stdout).toContain('2 missing worktree artifact');expect(result.stdout).not.toContain('old/T1');});
+test('adapters claim source files and leave tests and manifests alone', () => {
+  const claimed = path => ADAPTERS.find(candidate => candidate.claims(path))?.language ?? null;
+  expect(['src/lib.rs', 'src/a.ts', 'src/a.tsx', 'lib/a.mjs', 'calc.go', 'Sources/Calc/Calc.swift'].map(claimed)).toEqual(['rust', 'javascript', 'javascript', 'javascript', 'go', 'swift']);
+  expect(['src/a.test.ts', 'src/__tests__/a.js', 'types/a.d.ts', 'calc_test.go', 'Tests/CalcTests/CalcTests.swift', 'Package.swift', 'README.md'].map(claimed)).toEqual([null, null, null, null, null, null, null]);
+});
 
-test('duplicate task ids require project disambiguation',async()=>{const root=makeRoot();commit(root,'a.js','const value = true;');for(const project of ['alpha','beta']){tasks(root,project,[{id:'T1',name:project,status:'ready',expected_files:['a.js']}]);artifact(root,'T1',{target:'a.js',test_command:'true',changed_lines:[1]},project);}await expect(runTaskMutate(root,'T1',{maxMutants:1})).rejects.toThrow(/ambiguous/);expect((await runTaskMutate(root,'T1',{project:'alpha',maxMutants:1})).counts.survived).toBe(1);});
-test('project and task traversal are rejected at the engine boundary',async()=>{const root=makeRoot();await expect(runTaskMutate(root,'../task')).rejects.toThrow(/must not contain/);await expect(runTaskMutate(root,'T1',{project:'../project'})).rejects.toThrow(/must not contain/);});
-test('missing, primary, or foreign task worktrees fail closed',async()=>{const root=makeRoot(),foreign=makeRoot('mutate-foreign-'),dir=join(root,'.xm/build/projects/p/worktrees/T1');commit(root,'a.js','const value = true;');commit(foreign,'a.js','const foreign = true;');mkdirSync(dir,{recursive:true});writeFileSync(join(dir,'run.json'),JSON.stringify({task_id:'T1',branch:'missing',worktree:'',target:'a.js',test_command:'true',changed_lines:[1]}));await expect(runTaskMutate(root,'T1')).rejects.toThrow(/missing its worktree/);writeFileSync(join(dir,'run.json'),JSON.stringify({task_id:'T1',branch:'master',worktree:root,target:'a.js',test_command:'true',changed_lines:[1]}));await expect(runTaskMutate(root,'T1')).rejects.toThrow(/primary checkout/);writeFileSync(join(dir,'run.json'),JSON.stringify({task_id:'T1',branch:'master',worktree:foreign,target:'a.js',test_command:'true',changed_lines:[1]}));await expect(runTaskMutate(root,'T1')).rejects.toThrow(/different repository/);});
-test('project and task path segments cannot collide',async()=>{const root=makeRoot();commit(root,'a.js','const value = true;');for(const [project,task] of [['a-b','c'],['a','b-c']]){tasks(root,project,[{id:task,name:project,status:'ready',expected_files:['a.js']}]);artifact(root,task,{target:'a.js',test_command:'true',changed_lines:[1]},project);await runTaskMutate(root,task,{project,maxMutants:1});}expect(existsSync(join(root,'.xm/review/mutate/a-b/c.json'))).toBe(true);expect(existsSync(join(root,'.xm/review/mutate/a/b-c.json'))).toBe(true);});
-test('pre-created predictable temp symlink is never followed',async()=>{const root=makeRoot(),outside=join(root,'outside.txt');commit(root,'a.js','const value = true;');writeFileSync(outside,'sentinel');artifact(root,'T1',{target:'a.js',test_command:'false',changed_lines:[1]});const dir=join(root,'.xm/review/mutate/p');mkdirSync(dir,{recursive:true});const legacy=join(dir,'T1.json.tmp-'+process.pid);symlinkSync(outside,legacy);await expect(runTaskMutate(root,'T1')).rejects.toThrow(/baseline is not green/);expect(readFileSync(outside,'utf8')).toBe('sentinel');expect(lstatSync(legacy).isSymbolicLink()).toBe(true);expect(JSON.parse(readFileSync(join(dir,'T1.json'),'utf8'))).toMatchObject({project:'p',task_id:'T1'});});
-test('report publication rejects a group-writable project directory',async()=>{if(process.platform==='win32')return;const root=makeRoot('mutate-report-mode-');commit(root,'a.js','const value = true;');artifact(root,'T1',{target:'a.js',test_command:'false',changed_lines:[1]},'p');const dir=join(root,'.xm/review/mutate/p');mkdirSync(dir,{recursive:true});execSync(`chmod 0777 ${JSON.stringify(dir)}`);await expect(runTaskMutate(root,'T1',{project:'p'})).rejects.toThrow(/report directory is unsafe/);expect(existsSync(join(dir,'T1.json'))).toBe(false);});
-test('a concurrent mutation run is rejected while the holder owns the task lock',async()=>{const root=makeRoot('mutate-lock-');commit(root,'a.js','const value = true;');const marker=join(root,'holder-ready'),release=join(root,'release-holder');artifact(root,'T1',{target:'a.js',test_command:`touch ${JSON.stringify(marker)}; while [ ! -e ${JSON.stringify(release)} ]; do sleep 0.02; done`,changed_lines:[1]});const cli=resolve(import.meta.dir,'../x-build/lib/x-build-cli.mjs'),holder=spawn('bun',[cli,'mutate','--project','p','--task','T1','--max-mutants','1','--json'],{cwd:root,stdio:['ignore','pipe','pipe']});let holderOut='',holderErr='';holder.stdout.setEncoding('utf8').on('data',chunk=>{holderOut+=chunk;});holder.stderr.setEncoding('utf8').on('data',chunk=>{holderErr+=chunk;});for(let attempt=0;attempt<100&&!existsSync(marker);attempt+=1)await new Promise(done=>setTimeout(done,20));expect(existsSync(marker)).toBe(true);const contender=spawnSync('bun',[cli,'mutate','--project','p','--task','T1','--max-mutants','1','--json'],{cwd:root,encoding:'utf8'});expect(contender.status).toBe(2);expect(contender.stderr).toContain('mutation already running');writeFileSync(release,'go');const holderExit=await new Promise(resolveExit=>holder.once('close',resolveExit));expect(holderExit).toBe(0);expect(holderErr).toBe('');expect(JSON.parse(holderOut)).toMatchObject({project:'p',task_id:'T1'});const third=spawnSync('bun',[cli,'mutate','--project','p','--task','T1','--max-mutants','1','--json'],{cwd:root,encoding:'utf8'});expect(third.status).toBe(0);});
-test('task-level target swap restores the bound inode without following the replacement symlink',async()=>{const root=makeRoot('mutate-swap-'),outside=join(root,'outside.txt'),displacedName='displaced.js';commit(root,'a.js','const value = true;');writeFileSync(outside,'sentinel');const wt=artifact(root,'T1',{target:'a.js',test_command:`if grep -q false a.js; then mv a.js ${displacedName}; ln -s ${JSON.stringify(outside)} a.js; fi`,changed_lines:[1]});await expect(runTaskMutate(root,'T1',{project:'p',maxMutants:1})).rejects.toThrow(/pathname changed/);expect(readFileSync(outside,'utf8')).toBe('sentinel');expect(readFileSync(join(wt,displacedName),'utf8')).toBe('const value = true;');expect(lstatSync(join(wt,'a.js')).isSymbolicLink()).toBe(true);});
-test('one linked worktree cannot be claimed by two task artifacts',async()=>{const root=makeRoot('mutate-claim-');commit(root,'a.js','const value = true;');const wt=artifact(root,'T2',{target:'a.js',test_command:'true',changed_lines:[1]},'p');const branch=execSync('git branch --show-current',{cwd:wt,encoding:'utf8'}).trim(),dir=join(root,'.xm/build/projects/p/worktrees/T1');mkdirSync(dir,{recursive:true});writeFileSync(join(dir,'run.json'),JSON.stringify({task_id:'T1',branch,worktree:wt,target:'a.js',test_command:'true',changed_lines:[1]}));await expect(runTaskMutate(root,'T1',{project:'p'})).rejects.toThrow(/claimed by another task/);});
-test('recorded branch must match the registered linked worktree',async()=>{const root=makeRoot('mutate-branch-');commit(root,'a.js','const value = true;');const wt=artifact(root,'T1',{target:'a.js',test_command:'true',changed_lines:[1]},'p'),run=join(root,'.xm/build/projects/p/worktrees/T1/run.json'),data=JSON.parse(readFileSync(run,'utf8'));writeFileSync(run,JSON.stringify({...data,branch:'wrong-branch'}));await expect(runTaskMutate(root,'T1',{project:'p'})).rejects.toThrow(/recorded branch/);expect(readFileSync(join(wt,'a.js'),'utf8')).toBe('const value = true;');});
-test('cmdMutate accepts project without dispatcher preprocessing',()=>{const root=makeRoot('mutate-direct-cli-');commit(root,'a.js','const value = true;');artifact(root,'T1',{target:'a.js',test_command:'true',changed_lines:[1]},'p');const runner=join(root,'direct.mjs'),moduleUrl=new URL('../x-build/lib/x-build/mutate.mjs',import.meta.url).href;writeFileSync(runner,`import { cmdMutate } from ${JSON.stringify(moduleUrl)}; await cmdMutate(['--project','p','--task','T1','--max-mutants','1','--json']);`);const result=spawnSync('bun',[runner],{cwd:root,encoding:'utf8'});expect(result.status).toBe(0);expect(JSON.parse(result.stdout)).toMatchObject({project:'p',task_id:'T1'});});
-test('baseline interruption exits 130',async()=>{const root=makeRoot('mutate-interrupt-');commit(root,'a.js','const value = true;');const marker=join(root,'baseline-ready');artifact(root,'T1',{target:'a.js',test_command:`touch ${JSON.stringify(marker)}; sleep 30`,changed_lines:[1]},'p');const cli=resolve(import.meta.dir,'../x-build/lib/x-build-cli.mjs'),child=spawn('bun',[cli,'mutate','--project','p','--task','T1','--max-mutants','1','--json'],{cwd:root,stdio:['ignore','pipe','pipe']});let stdout='',stderr='';child.stdout.setEncoding('utf8').on('data',chunk=>{stdout+=chunk;});child.stderr.setEncoding('utf8').on('data',chunk=>{stderr+=chunk;});for(let attempt=0;attempt<100&&!existsSync(marker);attempt+=1)await new Promise(done=>setTimeout(done,20));expect(existsSync(marker)).toBe(true);child.kill('SIGINT');const code=await new Promise(resolveCode=>child.once('close',resolveCode));expect(code).toBe(130);expect(stderr).toBe('');expect(JSON.parse(stdout)).toMatchObject({baseline_outcome:'skipped'});});
-test('contextual multi-file artifact diff mutates only added lines for its target',async()=>{const root=makeRoot('mutate-diff-');commit(root,'a.js','const untouched = true;\nconst changed = false;');const diff=['diff --git a/other.js b/other.js','--- a/other.js','+++ b/other.js','@@ -1 +1 @@','-const other = false;','+const other = true;','diff --git a/a.js b/a.js','--- a/a.js','+++ b/a.js','@@ -1,2 +1,2 @@',' const untouched = true;','-const changed = true;','+const changed = false;'].join('\n');artifact(root,'T1',{target:'a.js',test_command:'true',diff},'p');const report=await runTaskMutate(root,'T1',{project:'p'});expect(report.mutants.length).toBeGreaterThan(0);expect(report.mutants.every(row=>row.line===2)).toBe(true);});
-test('discovery rejects tasks with no mutation candidate',()=>{const root=makeRoot('mutate-no-candidate-');commit(root,'a.js','const value = true;');tasks(root,'p',[{id:'T1',name:'No changed operator',status:'ready',expected_files:['a.js']}]);artifact(root,'T1',{target:'a.js',test_command:'true',changed_lines:[99]},'p');expect(listMutationTasks(root,root)[0]).toMatchObject({runnable:false,reason:'no supported mutation on changed lines'});});
-test('task metadata changed during baseline is revalidated before mutation',async()=>{const root=makeRoot('mutate-refresh-');commit(root,'a.js','const value = true;');const wt=artifact(root,'T1',{target:'a.js',test_command:'true',changed_lines:[1]},'p'),run=join(root,'.xm/build/projects/p/worktrees/T1/run.json'),data=JSON.parse(readFileSync(run,'utf8')),script=join(root,'change-run.cjs');writeFileSync(script,`const fs=require('fs');const p=${JSON.stringify(run)};const d=JSON.parse(fs.readFileSync(p));d.branch='changed-during-baseline';fs.writeFileSync(p,JSON.stringify(d));`);writeFileSync(run,JSON.stringify({...data,test_command:`node ${JSON.stringify(script)}`}));await expect(runTaskMutate(root,'T1',{project:'p',maxMutants:1})).rejects.toThrow(/recorded branch/);expect(readFileSync(join(wt,'a.js'),'utf8')).toBe('const value = true;');});
-test('every target is protected and same-inode conflicts are preserved',async()=>{const root=makeRoot('mutate-multi-protect-');commit(root,'a.js','const a = true;');writeFileSync(join(root,'b.js'),'const b = true;');execSync('git add b.js && git commit -qm second',{cwd:root,shell:'/bin/bash'});const wt=artifact(root,'T1',{test_command:`if grep -q false a.js; then printf 'const b = false;' > b.js; fi`,changed_lines:[1]},'p');tasks(root,'p',[{id:'T1',name:'Protect all targets',status:'ready',expected_files:['a.js','b.js']}]);const run=join(root,'.xm/build/projects/p/worktrees/T1/run.json'),data=JSON.parse(readFileSync(run,'utf8'));writeFileSync(run,JSON.stringify({...data,task:{expected_files:['a.js','b.js']}}));await expect(runTaskMutate(root,'T1',{project:'p',maxMutants:1})).rejects.toThrow(/changed concurrently/);expect(readFileSync(join(wt,'a.js'),'utf8')).toBe('const a = true;');expect(readFileSync(join(wt,'b.js'),'utf8')).toBe('const b = false;');});
+test('cargo-mutants outcomes map caught, missed, timeout, and unviable', () => {
+  const outDir = outDirWith('cargo-mutants-outcomes.json', 'mutants.out/outcomes.json');
+  const { mutants } = adapter('rust').parse({ outDir }, { exitCode: 2 });
+  expect(mutants.map(row => [row.line, row.status])).toEqual([[8, 'unviable'], [12, 'killed'], [12, 'survived'], [26, 'timeout']]);
+  expect(mutants[2]).toMatchObject({ file: 'src/lib.rs', end_line: 12, mutator: 'BinaryOperator', description: 'replace && with || in discount' });
+});
+
+test('cargo-mutants exit codes separate a failing baseline, an empty diff, and a tool failure', () => {
+  const rust = adapter('rust'), empty = outDirWith();
+  expect(rust.parse({ outDir: empty }, { exitCode: 4 })).toEqual({ mutants: [], baseline_failed: true });
+  expect(rust.parse({ outDir: empty }, { exitCode: 0 })).toEqual({ mutants: [] });
+  expect(() => rust.parse({ outDir: empty }, { exitCode: 6 })).toThrow(/exited 6/);
+  expect(() => rust.parse({ outDir: empty }, { exitCode: 2 })).toThrow(/did not write its report/);
+});
+
+test('cargo-mutants receives the root-relative diff as a file', () => {
+  const plan = adapter('rust').plan({ diff: 'DIFF', outDir: '/out' });
+  expect(plan.argv).toEqual(['cargo', 'mutants', '--in-diff', '/out/change.diff', '--output', '/out']);
+  expect(plan.files).toEqual({ '/out/change.diff': 'DIFF' });
+});
+
+test('StrykerJS report keeps schema locations and statuses', () => {
+  const outDir = outDirWith('stryker-mutation.json', 'mutation.json');
+  const { mutants } = adapter('javascript').parse({ outDir }, { exitCode: 0 });
+  expect(mutants).toHaveLength(11);
+  expect(mutants.filter(row => row.status === 'survived')).toHaveLength(4);
+  expect(mutants.filter(row => row.status === 'killed')).toHaveLength(7);
+  expect(mutants.every(row => row.file === 'src/calc.ts' && row.line >= 4 && row.end_line <= 14)).toBe(true);
+});
+
+test('StrykerJS schema status names map to the shared scale, unknown names to error', () => {
+  const outDir = outDirWith(), location = { start: { line: 1, column: 1 }, end: { line: 1, column: 2 } };
+  const names = ['CompileError', 'NoCoverage', 'RuntimeError', 'Ignored', 'Pending', 'Timeout', 'Bogus'];
+  writeFileSync(join(outDir, 'mutation.json'), JSON.stringify({ files: { 'a.ts': { mutants: names.map((status, id) => ({ id: String(id), mutatorName: 'M', location, status })) } } }));
+  expect(adapter('javascript').parse({ outDir }, { exitCode: 0 }).mutants.map(row => row.status)).toEqual(['unviable', 'no_coverage', 'error', 'skipped', 'skipped', 'timeout', 'error']);
+  expect(() => adapter('javascript').parse({ outDir: outDirWith() }, { exitCode: 1 })).toThrow(/exited 1 without a report/);
+});
+
+test('StrykerJS plan passes changed line ranges and the package test command through a config outside the project', () => {
+  const top = tempDir('mutate-js-'), root = join(top, 'pkg'), outDir = outDirWith();
+  write(top, 'bun.lock', '');
+  write(root, 'package.json', JSON.stringify({ scripts: { test: 'bun test' } }));
+  const js = adapter('javascript'), ctx = { root, repoTop: top, changed: new Map([['src/a.ts', [3, 4, 5, 9]]]), outDir };
+  const plan = js.plan(ctx, { bin: '/bin/stryker' }), configPath = join(outDir, 'stryker.config.json');
+  expect(plan.argv).toEqual(['/bin/stryker', 'run', configPath]);
+  expect(JSON.parse(plan.files[configPath])).toMatchObject({ testRunner: 'command', commandRunner: { command: 'bun run test' }, mutate: ['src/a.ts:3-5', 'src/a.ts:9-9'], reporters: ['json'], jsonReporter: { fileName: join(outDir, 'mutation.json') } });
+  write(root, 'package.json', JSON.stringify({ scripts: {} }));
+  expect(js.plan(ctx, { bin: '/bin/stryker' })).toEqual({ unavailable: 'package.json has no test script for the Stryker command runner' });
+});
+
+test('gomutants report maps statuses and spans multi-line originals', () => {
+  const outDir = outDirWith('gomutants.json', 'gomutants.json');
+  const { mutants } = adapter('go').parse({ outDir }, { exitCode: 0 });
+  const counts = {};
+  for (const row of mutants) counts[row.status] = (counts[row.status] || 0) + 1;
+  expect(counts).toEqual({ survived: 8, killed: 11, no_coverage: 1, timeout: 4 });
+  expect(mutants.find(row => row.mutator === 'BRANCH_IF')).toMatchObject({ file: 'calc.go', line: 8, end_line: 10 });
+  expect(() => adapter('go').parse({ outDir }, { exitCode: 1 })).toThrow(/gomutants exited 1/);
+});
+
+test('gomutants plan scopes to the merge base and keeps its cache out of the module', () => {
+  expect(adapter('go').plan({ mergeBase: 'abc123', outDir: '/out' }).argv).toEqual(['gomutants', '-changed-since', 'abc123', '-o', '/out/gomutants.json', '-cache', 'off', '-q']);
+});
+
+test('Muter report maps paths from its mutated copy back to the project', () => {
+  const outDir = outDirWith('muter.json', 'muter.json');
+  const { mutants } = adapter('swift').parse({ root: '/project', outDir }, { exitCode: 0 });
+  expect(mutants.map(row => [row.file, row.line, row.status])).toEqual([['Sources/Calc/Calc.swift', 2, 'killed'], ['Sources/Calc/Calc.swift', 6, 'survived'], ['Sources/Calc/Calc.swift', 6, 'killed']]);
+  expect(() => adapter('swift').parse({ root: '/elsewhere', outDir }, { exitCode: 0 })).toThrow(/outside \/elsewhere_mutated\//);
+});
+
+test('Muter outcome names follow its TestSuiteOutcome enum', () => {
+  const outDir = outDirWith(), names = ['runtimeError', 'buildError', 'noCoverage', 'timeout', 'passed', 'failed'];
+  const appliedOperators = names.map(testSuiteOutcome => ({ testSuiteOutcome, mutationPoint: { filePath: '/p_mutated/A.swift', mutationOperatorId: 'Op', position: { line: 1, column: 1 } } }));
+  writeFileSync(join(outDir, 'muter.json'), JSON.stringify({ fileReports: [{ appliedOperators }] }));
+  expect(adapter('swift').parse({ root: '/p', outDir }, { exitCode: 0 }).mutants.map(row => row.status)).toEqual(['killed', 'unviable', 'no_coverage', 'timeout', 'survived', 'killed']);
+});
+
+test('Muter plan requires muter.conf.yml and repeats --files-to-mutate per file', () => {
+  const root = tempDir('mutate-swift-'), outDir = outDirWith(), swift = adapter('swift');
+  const ctx = { root, outDir, changed: new Map([['Sources/A.swift', [1]], ['Sources/B.swift', [2]]]) };
+  expect(swift.plan(ctx).unavailable).toMatch(/muter init/);
+  write(root, 'muter.conf.yml', 'executable: /usr/bin/swift\n');
+  expect(swift.plan(ctx).argv).toEqual(['muter', 'run', '--files-to-mutate', 'Sources/A.swift', '--files-to-mutate', 'Sources/B.swift', '--format', 'json', '--output', join(outDir, 'muter.json'), '--skip-update-check']);
+});
+
+test('StrykerJS plan escapes the glob metacharacters that need it and leaves `!` literal', () => {
+  const root = tempDir('mutate-js-glob-'), outDir = outDirWith();
+  write(root, 'package.json', JSON.stringify({ scripts: { test: 'bun test' } }));
+  const changed = new Map([['src/[id]/page.ts', [5, 6]], ['src/a!b.ts', [3]]]);
+  const plan = adapter('javascript').plan({ root, repoTop: root, changed, outDir }, { bin: '/bin/stryker' });
+  expect(JSON.parse(plan.files[join(outDir, 'stryker.config.json')]).mutate).toEqual(['src/[[]id[]]/page.ts:5-6', 'src/a!b.ts:3-3']);
+  // `[!]` opens a negated class that never closes, so escaping `!` loses the file.
+  expect(matchesGlob('src/[id]/page.ts', 'src/[[]id[]]/page.ts')).toBe(true);
+  expect(matchesGlob('src/a!b.ts', 'src/a!b.ts')).toBe(true);
+  expect(matchesGlob('src/a!b.ts', 'src/a[!]b.ts')).toBe(false);
+});
+
+test('a widened root is kept only when it contains the crate that changed', () => {
+  expect(widenedRoot('/repo', 'crates/a', '/repo')).toBe('.');
+  expect(widenedRoot('/repo', 'crates/a', '/repo/crates')).toBe('crates');
+  expect(widenedRoot('/repo', 'crates/a', '/repo/crates/a')).toBe('crates/a');
+  // Cargo allows `workspace = "../../ws"`, and a sibling root would turn every
+  // change-set key into a `../` pathspec that git drops without an error.
+  expect(widenedRoot('/repo', 'crates/a', '/repo/ws')).toBe('crates/a');
+  expect(widenedRoot('/repo', 'crates/a', '/elsewhere')).toBe('crates/a');
+});
+
+test('the widened root is resolved once per crate directory, not once per changed file', async () => {
+  const root = makeRoot();
+  write(root, 'fake.toml', '');
+  write(root, 'member/fake.toml', '');
+  for (const name of ['a', 'b', 'c']) write(root, `member/src/${name}.fake`, 'one\n');
+  commitAll(root, 'base');
+  for (const name of ['a', 'b', 'c']) write(root, `member/src/${name}.fake`, 'one\ntwo\n');
+  let rootCalls = 0;
+  const widening = { ...fakeAdapter(), root: () => { rootCalls += 1; return '.'; } };
+  const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [widening] });
+  expect(rootCalls).toBe(1);
+  expect(report.mutants.map(row => row.file).sort()).toEqual(['member/src/a.fake', 'member/src/b.fake', 'member/src/c.fake']);
+});
+
+test('a repository that renames diff prefixes still resolves its changed paths', async () => {
+  const root = fakeRepo();
+  sh(root, 'git config diff.mnemonicPrefix true');
+  write(root, 'a.fake', 'one\ntwo\n');
+  const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter()] });
+  expect(report.languages.map(row => [row.root, row.status])).toEqual([['.', 'ran']]);
+  expect(report.mutants.map(row => [row.file, row.line])).toEqual([['a.fake', 2]]);
+});
+
+test('an adapter may widen its root, and the change set follows it', async () => {
+  const root = makeRoot();
+  write(root, 'fake.toml', '');
+  write(root, 'member/fake.toml', '');
+  write(root, 'member/src/a.fake', 'one\n');
+  commitAll(root, 'base');
+  write(root, 'member/src/a.fake', 'one\ntwo\n');
+  const calls = [], widened = { ...fakeAdapter({ calls }), root: () => '.' };
+  const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [widened] });
+  expect(report.languages.map(row => [row.root, row.status])).toEqual([['.', 'ran']]);
+  expect(calls[0].changed).toEqual(new Map([['member/src/a.fake', [2]]]));
+  expect(report.mutants.map(row => row.file)).toEqual(['member/src/a.fake']);
+});
+
+test('diff mode groups files by manifest root, includes uncommitted edits, and keeps only changed-line mutants', async () => {
+  const root = makeRoot();
+  write(root, 'pkg/fake.toml', '');
+  write(root, 'pkg/src/a.fake', 'one\n');
+  write(root, 'top.fake', 'x\n');
+  commitAll(root, 'base');
+  sh(root, 'git checkout -qb feature');
+  write(root, 'pkg/src/a.fake', 'one\ntwo\n');
+  commitAll(root, 'committed change');
+  write(root, 'pkg/src/a.fake', 'one\ntwo\nthree\n');
+  write(root, 'top.fake', 'x\ny\n');
+  write(root, 'README.md', 'not supported\n');
+  const calls = [];
+  const report = await runDiffMutate({ cwd: join(root, 'pkg'), base: 'main', adapters: [fakeAdapter({ calls })] });
+  expect(report.merge_base).toBe(sh(root, 'git rev-parse main').trim());
+  expect(report.languages.map(row => [row.root, row.status])).toEqual([['pkg', 'ran'], [null, 'unavailable']]);
+  expect(report.languages[1].reason).toBe('no fake.toml found above top.fake');
+  expect(calls).toHaveLength(1);
+  expect(calls[0].changed).toEqual(new Map([['src/a.fake', [2, 3]]]));
+  expect(calls[0].diff).toContain('+++ b/src/a.fake');
+  expect(report.mutants.map(row => [row.file, row.line])).toEqual([['pkg/src/a.fake', 2], ['pkg/src/a.fake', 3]]);
+  expect(report.counts.survived).toBe(2);
+});
+
+test('a tool that is not installed is reported with its install command and never replaced', async () => {
+  const root = fakeRepo();
+  sh(root, 'git checkout -qb feature');
+  write(root, 'a.fake', 'one\ntwo\n');
+  const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter({ unavailable: 'fake-tool is not installed' })] });
+  expect(report.languages).toEqual([expect.objectContaining({ status: 'unavailable', reason: 'fake-tool is not installed', install: 'install fake-tool' })]);
+  expect(report.mutants).toEqual([]);
+});
+
+test('a tool failure keeps its output tail and marks only that language', async () => {
+  const root = fakeRepo();
+  write(root, 'a.fake', 'one\ntwo\n');
+  const argv = [process.execPath, '-e', 'console.error("boom from tool"); process.exit(3)'];
+  const [row] = (await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter({ argv })] })).languages;
+  expect(row).toMatchObject({ status: 'error', reason: 'fake-tool exited 3', exit_code: 3 });
+  expect(row.output_tail).toContain('boom from tool');
+});
+
+test('the run budget stops a stalled tool and kills its background children', async () => {
+  const root = fakeRepo(), pidFile = join(root, 'child.pid');
+  write(root, 'a.fake', 'one\ntwo\n');
+  const argv = ['bash', '-c', `sleep 30 & echo $! > ${JSON.stringify(pidFile)}; wait`];
+  const [row] = (await runDiffMutate({ cwd: root, base: 'main', timeoutMs: 500, adapters: [fakeAdapter({ argv })] })).languages;
+  expect(row.status).toBe('timeout');
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  let alive = true;
+  for (let attempt = 0; attempt < 50 && alive; attempt += 1) {
+    try { process.kill(pid, 0); await new Promise(done => setTimeout(done, 20)); } catch { alive = false; }
+  }
+  expect(alive).toBe(false);
+});
+
+test('a base that looks like an option or names no ref fails before any tool runs', async () => {
+  const root = fakeRepo();
+  await expect(runDiffMutate({ cwd: root, base: '--output=/tmp/x', adapters: [] })).rejects.toThrow(/names a git ref/);
+  await expect(runDiffMutate({ cwd: root, base: 'no-such-branch', adapters: [] })).rejects.toThrow(/merge base of no-such-branch/);
+});
+
+test('CLI diff mode writes the report and exits 1 when a language cannot run', () => {
+  const root = makeRoot();
+  write(root, 'README.md', 'base\n');
+  commitAll(root, 'base');
+  sh(root, 'git checkout -qb feature');
+  write(root, 'Sources/A.swift', 'let a = 1\n');
+  commitAll(root, 'swift change');
+  const result = spawnSync('bun', [CLI, 'mutate', '--diff', 'main', '--json'], { cwd: root, encoding: 'utf8', env: cliEnv() });
+  expect(result.status).toBe(1);
+  const report = JSON.parse(result.stdout);
+  expect(report.languages).toEqual([expect.objectContaining({ language: 'swift', status: 'unavailable', reason: 'no muter.conf.yml or Package.swift found above Sources/A.swift' })]);
+  const name = `${report.head.slice(0, 12)}-${report.merge_base.slice(0, 12)}`;
+  expect(JSON.parse(readFileSync(join(root, `.xm/review/mutate-diff/${name}.json`), 'utf8')).head).toBe(report.head);
+});
+
+test('CLI rejects removed and conflicting options before touching git', () => {
+  const root = tempDir('mutate-cli-'), run = args => spawnSync('bun', [CLI, 'mutate', ...args], { cwd: root, encoding: 'utf8', env: cliEnv() });
+  for (const [args, message] of [
+    [['--diff', 'main', '--max-mutants', '3'], /--max-mutants was removed/],
+    [['--diff', 'main', '--task', 'T1'], /exactly one of/],
+    [['--diff', 'main', '--base', 'x'], /--base applies to --task/],
+    [['--diff', 'main', '--lang', 'cobol'], /--lang accepts rust, javascript, go, swift/],
+    [['--diff', 'main', '--timeout-ms', '0'], /--timeout-ms must be a positive integer/],
+  ]) {
+    const result = run(args);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(message);
+  }
+});
+
+test('task mode runs in the linked worktree, reports under the project, and queues survivors', async () => {
+  const root = fakeRepo(), wt = artifact(root, 'T1', { base: 'main' });
+  changeInWorktree(wt);
+  const report = await runTaskMutate(root, 'T1', { project: 'p', adapters: [fakeAdapter()] });
+  expect(report).toMatchObject({ mode: 'task', project: 'p', task_id: 'T1', counts: { survived: 1 } });
+  expect(JSON.parse(readFileSync(join(root, '.xm/review/mutate/p/T1.json'), 'utf8')).mutants).toEqual([expect.objectContaining({ file: 'a.fake', line: 2, status: 'survived' })]);
+  const ledger = readFileSync(join(root, '.xm/review/escape-ledger.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(ledger).toEqual([expect.objectContaining({ type: 'surviving_mutant', task_id: 'T1', file: 'a.fake', line: 2, operator: 'Fake', source: 'mutate', artifact: '.xm/review/mutate/p/T1.json' })]);
+  expect(readFileSync(join(root, 'a.fake'), 'utf8')).toBe('one\n');
+});
+
+test('task mode without a recorded base asks for --base and honours it', async () => {
+  const root = fakeRepo(), wt = artifact(root, 'T1');
+  changeInWorktree(wt);
+  await expect(runTaskMutate(root, 'T1', { adapters: [fakeAdapter()] })).rejects.toThrow(/no base; pass --base <ref>/);
+  expect((await runTaskMutate(root, 'T1', { base: 'main', adapters: [fakeAdapter()] })).counts.survived).toBe(1);
+});
+
+test('listing reports runnable tasks with changed files and a reason for the rest', () => {
+  const root = fakeRepo();
+  changeInWorktree(artifact(root, 'T1', { base: 'main' }));
+  artifact(root, 'T3');
+  artifact(root, 'T4', { base: 'main' });
+  tasks(root, 'p', [{ id: 'T1', name: 'Ready', status: 'done' }, { id: 'T2', name: 'No artifact' }, { id: 'T3' }, { id: 'T4' }]);
+  const rows = listMutationTasks(root, { adapters: [fakeAdapter()] });
+  expect(rows.map(row => [row.id, row.runnable, row.reason])).toEqual([
+    ['T1', true, null],
+    ['T2', false, 'missing worktree artifact'],
+    ['T3', false, 'run.json has no base; pass --base <ref>'],
+    ['T4', false, 'no changed files in a supported language'],
+  ]);
+  expect(rows[0]).toMatchObject({ name: 'Ready', status: 'done', files: ['a.fake'] });
+});
+
+test('duplicate task ids require project disambiguation', async () => {
+  const root = fakeRepo();
+  for (const project of ['alpha', 'beta']) changeInWorktree(artifact(root, 'T1', { base: 'main' }, project));
+  await expect(runTaskMutate(root, 'T1', { adapters: [fakeAdapter()] })).rejects.toThrow(/ambiguous/);
+  expect((await runTaskMutate(root, 'T1', { project: 'alpha', adapters: [fakeAdapter()] })).project).toBe('alpha');
+});
+
+test('project and task traversal are rejected at the engine boundary', async () => {
+  const root = makeRoot();
+  await expect(runTaskMutate(root, '../task')).rejects.toThrow(/must not contain/);
+  await expect(runTaskMutate(root, 'T1', { project: '../project' })).rejects.toThrow(/must not contain/);
+});
+
+test('missing, primary, or foreign task worktrees fail closed', async () => {
+  const root = fakeRepo(), foreign = fakeRepo('mutate-foreign-'), run = join(root, '.xm/build/projects/p/worktrees/T1/run.json');
+  mkdirSync(dirname(run), { recursive: true });
+  writeFileSync(run, JSON.stringify({ task_id: 'T1', branch: 'missing', worktree: '', base: 'main' }));
+  await expect(runTaskMutate(root, 'T1')).rejects.toThrow(/missing its worktree/);
+  writeFileSync(run, JSON.stringify({ task_id: 'T1', branch: 'main', worktree: root, base: 'main' }));
+  await expect(runTaskMutate(root, 'T1')).rejects.toThrow(/primary checkout/);
+  writeFileSync(run, JSON.stringify({ task_id: 'T1', branch: 'main', worktree: foreign, base: 'main' }));
+  await expect(runTaskMutate(root, 'T1')).rejects.toThrow(/different repository/);
+});
+
+test('one linked worktree cannot be claimed by two task artifacts', async () => {
+  const root = fakeRepo(), wt = artifact(root, 'T2', { base: 'main' });
+  const branch = sh(wt, 'git branch --show-current').trim();
+  write(root, '.xm/build/projects/p/worktrees/T1/run.json', JSON.stringify({ task_id: 'T1', branch, worktree: wt, base: 'main' }));
+  await expect(runTaskMutate(root, 'T1', { project: 'p' })).rejects.toThrow(/claimed by another task/);
+});
+
+test('recorded branch must match the registered linked worktree', async () => {
+  const root = fakeRepo();
+  artifact(root, 'T1', { base: 'main' });
+  const run = join(root, '.xm/build/projects/p/worktrees/T1/run.json');
+  writeFileSync(run, JSON.stringify({ ...JSON.parse(readFileSync(run, 'utf8')), branch: 'wrong-branch' }));
+  await expect(runTaskMutate(root, 'T1', { project: 'p' })).rejects.toThrow(/recorded branch/);
+});
+
+test('project and task path segments cannot collide', async () => {
+  const root = fakeRepo();
+  for (const [project, task] of [['a-b', 'c'], ['a', 'b-c']]) {
+    changeInWorktree(artifact(root, task, { base: 'main' }, project));
+    await runTaskMutate(root, task, { project, adapters: [fakeAdapter()] });
+  }
+  expect(existsSync(join(root, '.xm/review/mutate/a-b/c.json'))).toBe(true);
+  expect(existsSync(join(root, '.xm/review/mutate/a/b-c.json'))).toBe(true);
+});
+
+test('a pre-created temp symlink in the report directory is never followed', async () => {
+  const root = fakeRepo(), outside = join(root, 'outside.txt');
+  writeFileSync(outside, 'sentinel');
+  changeInWorktree(artifact(root, 'T1', { base: 'main' }));
+  const dir = join(root, '.xm/review/mutate/p'), planted = join(dir, 'T1.json.tmp');
+  mkdirSync(dir, { recursive: true });
+  symlinkSync(outside, planted);
+  await runTaskMutate(root, 'T1', { adapters: [fakeAdapter()] });
+  expect(readFileSync(outside, 'utf8')).toBe('sentinel');
+  expect(lstatSync(planted).isSymbolicLink()).toBe(true);
+  expect(JSON.parse(readFileSync(join(dir, 'T1.json'), 'utf8'))).toMatchObject({ project: 'p', task_id: 'T1' });
+});
+
+test('report publication rejects a group-writable project directory', async () => {
+  if (process.platform === 'win32') return;
+  const root = fakeRepo('mutate-report-mode-');
+  changeInWorktree(artifact(root, 'T1', { base: 'main' }));
+  const dir = join(root, '.xm/review/mutate/p');
+  mkdirSync(dir, { recursive: true });
+  sh(root, `chmod 0777 ${JSON.stringify(dir)}`);
+  await expect(runTaskMutate(root, 'T1', { project: 'p', adapters: [fakeAdapter()] })).rejects.toThrow(/report directory is unsafe/);
+  expect(existsSync(join(dir, 'T1.json'))).toBe(false);
+});
+
+test('build mutation surface has no stale probe command or module references', () => {
+  const repo = resolve(import.meta.dir, '..');
+  for (const file of ['x-build/lib/x-build-cli.mjs', 'x-build/lib/x-build/mutate.mjs', 'x-build/skills/build/references/commands.md', 'xm/lib/x-build-cli.mjs', 'xm/lib/x-build/mutate.mjs', 'xm/skills/build/references/commands.md']) {
+    expect(readFileSync(resolve(repo, file), 'utf8')).not.toMatch(/xm build probe|cmdProbe|runTaskProbe|x-build\/probe\.mjs|source:\s*['"]probe/);
+  }
+});

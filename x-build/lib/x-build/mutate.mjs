@@ -1,212 +1,551 @@
-import { lstatSync, realpathSync, readFileSync, existsSync, mkdirSync, readdirSync, renameSync, openSync, closeSync, fstatSync, readSync, writeSync, unlinkSync, ftruncateSync, fchmodSync, fsyncSync, constants as FS } from 'node:fs';
-import { join, resolve, relative, sep, dirname, isAbsolute } from 'node:path';
+// Mutation testing on changed lines.
+//
+// The change set is always a git diff: `xm mutate --diff <base>` mutates the
+// lines changed since the merge base, and `xm build mutate --task <id>` runs the
+// same path inside a task's linked worktree and attributes survivors to the
+// task. Mutants are generated and run by external tools (see mutate-adapters.mjs).
+import { closeSync, constants as FS, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join, posix, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
-import { acquireAttentionLock, appendAttentionRows } from './attention-collect.mjs';
+import { randomBytes } from 'node:crypto';
+import { appendAttentionRows } from './attention-collect.mjs';
 import { buildEscapeRow } from './escape-ledger.mjs';
 import { resolveMainRepoRoot, validateIdSegment } from './worktree-shared.mjs';
 import { getExplicitProject } from './core.mjs';
-function fail(message) { const e = new Error(message); e.exitCode = 2; throw e; }
-function checkedTarget(workspace, target) {
-  const path = resolve(workspace, target), rel = relative(workspace, path);
-  if (rel.startsWith('..' + sep) || rel === '..') fail('mutate target escapes workspace');
-  const stat = lstatSync(path, { bigint: true });
-  if (!stat.isFile() || stat.isSymbolicLink()) fail('mutate target must be a regular non-symlink file');
-  const realRel = relative(realpathSync(workspace), realpathSync(path));
-  if (realRel.startsWith('..' + sep) || realRel === '..') fail('mutate target resolves outside workspace');
-  return { path, stat };
+import { ADAPTERS, MUTANT_STATUSES } from './mutate-adapters.mjs';
+
+// Whole-run ceiling. Each tool sizes its per-mutant timeout from the baseline;
+// this only stops a run that has stalled from holding the shell indefinitely.
+const DEFAULT_TIMEOUT_MS = 30 * 60_000;
+// Enough tool output to explain a failure without storing whole test logs.
+const OUTPUT_TAIL_CHARS = 4000;
+
+const USAGE = [
+  'Usage: xm mutate --diff <base> [--lang <names>] [--timeout-ms N] [--json]',
+  '       xm build mutate [--list] [--json]',
+  '       xm build mutate --project <name> --task <id> [--base <ref>] [--lang <names>] [--timeout-ms N] [--json]',
+].join('\n');
+
+function fail(message) {
+  const error = new Error(message);
+  error.exitCode = 2;
+  throw error;
 }
-function identity(stat){return {dev:BigInt(stat.dev),ino:BigInt(stat.ino)};}
-function sameIdentity(left,right){return left.dev===right.dev&&left.ino===right.ino;}
-function stableMetadata(stat){return {size:BigInt(stat.size),mtimeNs:stat.mtimeNs,ctimeNs:stat.ctimeNs,nlink:BigInt(stat.nlink),mode:BigInt(stat.mode)&0o7777n,...identity(stat)};}
-function sameMetadata(left,right){return sameIdentity(left,right)&&left.size===right.size&&left.mtimeNs===right.mtimeNs&&left.ctimeNs===right.ctimeNs&&left.nlink===right.nlink&&left.mode===right.mode;}
-function assertTargetIdentity(path,expected){const stat=lstatSync(path,{bigint:true});if(stat.isSymbolicLink()||!stat.isFile()||!sameIdentity(identity(stat),expected))fail('mutate target pathname changed during test; bound file was restored but the path requires inspection');}
-function readAll(fd){const stat=fstatSync(fd);const out=Buffer.alloc(stat.size);let offset=0;while(offset<out.length){let count;try{count=readSync(fd,out,offset,out.length-offset,offset);}catch(error){if(error?.code==='EINTR')continue;throw error;}if(count<=0)fail('mutate target read made no progress');offset+=count;}return out;}
-function replaceBytes(fd,bytes){ftruncateSync(fd,0);let offset=0;while(offset<bytes.length){let count;try{count=writeSync(fd,bytes,offset,bytes.length-offset,offset);}catch(error){if(error?.code==='EINTR')continue;throw error;}if(count<=0)fail('mutate target write made no progress');offset+=count;}}
-function installBytes(fd,bytes,rollbackBytes){let offset=0,truncated=false;try{ftruncateSync(fd,0);truncated=true;while(offset<bytes.length){let count;try{count=writeSync(fd,bytes,offset,bytes.length-offset,offset);}catch(error){if(error?.code==='EINTR')continue;throw error;}if(count<=0)fail('mutate target write made no progress');offset+=count;}}catch(error){if(truncated)try{const current=readAll(fd),ownedPartial=bytes.subarray(0,offset);if(current.equals(ownedPartial))replaceBytes(fd,rollbackBytes);}catch{}throw error;}}
-function openBoundTarget(workspace,target,{expectedIdentity=null,expectedBytes=null,expectedMode=null}={}){const base=resolve(workspace),{path,stat:before}=checkedTarget(base,target),noFollow=Number.isInteger(FS.O_NOFOLLOW)?FS.O_NOFOLLOW:0,fd=openSync(path,FS.O_RDWR|noFollow);try{const opened=fstatSync(fd,{bigint:true});if(!opened.isFile())fail('mutate target must be a regular file');if(opened.nlink!==1n)fail('mutate target must not have hard-link aliases');const openedIdentity=identity(opened);if(!sameIdentity(openedIdentity,identity(before)))fail('mutate target changed while opening');assertTargetIdentity(path,openedIdentity);const snapshotBefore=stableMetadata(opened),bytes=readAll(fd),snapshotAfter=stableMetadata(fstatSync(fd,{bigint:true})),mode=Number(opened.mode&0o7777n);if(!sameMetadata(snapshotBefore,snapshotAfter)||BigInt(bytes.length)!==snapshotAfter.size)fail('mutate target changed while taking its snapshot');if(expectedIdentity&&!sameIdentity(openedIdentity,expectedIdentity))fail('mutate target identity changed before execution');if(expectedBytes&&!bytes.equals(expectedBytes))fail('mutate target bytes changed before execution');if(expectedMode!=null&&mode!==expectedMode)fail('mutate target mode changed before execution');return {fd,path,identity:openedIdentity,bytes,mode};}catch(error){closeSync(fd);throw error;}}
-function closeBoundTargets(bounds){let error=null;for(const bound of bounds)try{closeSync(bound.fd);}catch(caught){error??=caught;}if(error)throw error;}
-function targetSet(specs,cwd){if(!Array.isArray(specs)||!specs.length)fail('mutate requires at least one protected target');const bounds=[],identities=new Set();try{for(const spec of specs){const bound=openBoundTarget(cwd,spec.path||spec.target,{expectedIdentity:spec.originalIdentity||spec.expectedIdentity,expectedBytes:spec.originalBytes||spec.expectedBytes,expectedMode:spec.originalMode??spec.expectedMode}),key=bound.identity.dev+':'+bound.identity.ino;if(identities.has(key)){closeSync(bound.fd);fail('mutate target set contains hard-link aliases');}identities.add(key);bounds.push(bound);}return bounds;}catch(error){try{closeBoundTargets(bounds);}catch{}throw error;}}
-async function runBoundMutate({target,targets=null,command,timeoutMs=30_000,cwd=process.cwd(),signal=null,replacementBytes=null,expectedIdentity=null,expectedBytes=null,expectedMode=null}) {
-  const specs=targets||[{path:target,originalIdentity:expectedIdentity,originalBytes:expectedBytes,originalMode:expectedMode}],bounds=targetSet(specs,cwd),activeIndex=specs.findIndex(spec=>resolve(cwd,spec.path||spec.target)===resolve(cwd,target));if(activeIndex<0){closeBoundTargets(bounds);fail('mutate active target is absent from the protected target set');}const active=bounds[activeIndex];let child,timedOut=false,installed=bounds.map(bound=>bound.bytes);
+
+function emptyCounts() {
+  return Object.fromEntries(MUTANT_STATUSES.map(status => [status, 0]));
+}
+
+function gitOutput(cwd, args, action) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  if (result.error || result.status !== 0) fail(`mutate could not ${action}: ${(result.stderr || result.error?.message || '').trim()}`);
+  return result.stdout;
+}
+
+function patchPath(value) {
+  let path = String(value || '').trim();
+  if (path.startsWith('"')) {
+    try { path = JSON.parse(path); } catch { return null; }
+  }
+  path = path.split('\t')[0].replace(/\\/g, '/');
+  return path === '/dev/null' ? null : path.replace(/^[ab]\//, '').replace(/^\.\//, '');
+}
+
+export function parseDiffChanges(diff) {
+  const changes = new Map();
+  let file = null, newLine = null, inHeader = false;
+  for (const row of String(diff || '').split('\n')) {
+    if (row.startsWith('diff --git ')) { file = null; newLine = null; inHeader = true; continue; }
+    // Only a header `+++` names the file; an added line can also start with `++`.
+    if (inHeader && row.startsWith('+++ ')) { file = patchPath(row.slice(4)); continue; }
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row);
+    if (hunk) { newLine = Number(hunk[1]); inHeader = false; continue; }
+    if (inHeader || file == null || newLine == null || row.startsWith('\\')) continue;
+    if (row.startsWith('+')) {
+      if (!changes.has(file)) changes.set(file, []);
+      changes.get(file).push(newLine);
+      newLine += 1;
+    } else if (!row.startsWith('-')) {
+      newLine += 1;
+    }
+  }
+  return changes;
+}
+
+function resolveChangeSet(cwd, base) {
+  if (typeof base !== 'string' || !base.trim() || base.startsWith('-')) fail('mutate requires a base that names a git ref');
+  const top = realpathSync(gitOutput(cwd, ['rev-parse', '--show-toplevel'], 'find the repository root').trim());
+  const mergeBase = gitOutput(top, ['merge-base', base, 'HEAD'], `find the merge base of ${base} and HEAD`).trim();
+  const head = gitOutput(top, ['rev-parse', 'HEAD'], 'resolve HEAD').trim();
+  // Diff against the working tree so uncommitted edits are mutated too. The
+  // tools read files on disk, and cargo-mutants rejects a diff that disagrees with them.
+  // The prefixes are pinned because patchPath strips only `a/` and `b/`; with
+  // diff.mnemonicPrefix set, git writes `w/` and every path would miss its root.
+  const diff = gitOutput(top, ['-c', 'core.quotePath=false', 'diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', '--unified=0', '--diff-filter=d', mergeBase], 'read the diff');
+  return { top, mergeBase, head, changed: parseDiffChanges(diff) };
+}
+
+function manifestRoot(top, file, manifests) {
+  let dir = posix.dirname(file);
+  for (;;) {
+    if (manifests.some(name => existsSync(join(top, dir, name)))) return dir;
+    if (dir === '.') return null;
+    dir = posix.dirname(dir);
+  }
+}
+
+function groupChanges({ top, changed }, adapters, languages) {
+  const groups = new Map(), widened = new Map();
+  for (const [file, lines] of [...changed].sort(([a], [b]) => a.localeCompare(b))) {
+    const adapter = adapters.find(candidate => candidate.claims(file));
+    if (!adapter || (languages && !languages.has(adapter.language))) continue;
+    // An adapter may widen the manifest root: cargo-mutants must run from the
+    // workspace root, not from the member crate that owns the changed file.
+    // Widening can spawn a process, so each crate directory is resolved once.
+    const nearest = manifestRoot(top, file, adapter.manifests);
+    const cacheKey = `${adapter.language}\0${nearest}`;
+    if (nearest != null && adapter.root && !widened.has(cacheKey)) widened.set(cacheKey, adapter.root(top, nearest));
+    const root = nearest != null && adapter.root ? widened.get(cacheKey) : nearest;
+    const key = `${adapter.language}\0${root ?? '\0unrooted'}`;
+    if (!groups.has(key)) groups.set(key, { adapter, root, files: [], changed: new Map() });
+    const group = groups.get(key);
+    group.files.push(file);
+    group.changed.set(root == null || root === '.' ? file : posix.relative(root, file), lines);
+  }
+  return [...groups.values()];
+}
+
+function runTool(argv, { cwd, timeoutMs, signal }) {
+  return new Promise(resolveRun => {
+    let child = null, output = '', timedOut = false, aborted = false, settled = false;
+    // Tools spawn build and test processes of their own; the whole group goes.
+    const killGroup = () => { if (child?.pid) try { process.kill(-child.pid, 'SIGKILL'); } catch {} };
+    const onAbort = () => { aborted = true; killGroup(); };
+    const timer = setTimeout(() => { timedOut = true; killGroup(); }, Math.max(1, timeoutMs));
+    const finish = fields => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener?.('abort', onAbort);
+      killGroup();
+      resolveRun({ exitCode: null, timedOut, aborted, output, ...fields });
+    };
+    try {
+      child = spawn(argv[0], argv.slice(1), { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (error) {
+      finish({ spawnError: error.message });
+      return;
+    }
+    const keep = chunk => { output = (output + chunk).slice(-OUTPUT_TAIL_CHARS); };
+    child.stdout.on('data', keep);
+    child.stderr.on('data', keep);
+    if (signal?.aborted) onAbort(); else signal?.addEventListener?.('abort', onAbort, { once: true });
+    child.once('error', error => finish({ spawnError: error.message }));
+    child.once('close', code => finish({ exitCode: code }));
+  });
+}
+
+async function runGroup(group, changeSet, { deadline, signal }) {
+  const { adapter } = group;
+  const result = { language: adapter.language, tool: adapter.tool, tool_version: null, root: group.root, files: group.files, status: 'ran', reason: null, exit_code: null, duration_ms: 0, counts: emptyCounts() };
+  const stopped = (status, reason, extra = {}) => ({ result: { ...result, ...extra, status, reason }, mutants: [] });
+  if (group.root == null) return stopped('unavailable', `no ${adapter.manifests.join(' or ')} found above ${group.files[0]}`);
+  const root = join(changeSet.top, group.root);
+  const detected = adapter.detect({ root, repoTop: changeSet.top });
+  if (detected.unavailable) return stopped('unavailable', detected.unavailable, { install: adapter.install });
+  result.tool_version = detected.version;
+  if (Date.now() >= deadline) return stopped('skipped', 'the --timeout-ms budget ran out before this language started');
+  const outDir = mkdtempSync(join(tmpdir(), 'xm-mutate-')), started = Date.now();
   try {
-    if(replacementBytes){const beforeInstall=fstatSync(active.fd,{bigint:true});if(beforeInstall.nlink!==1n||!sameIdentity(identity(beforeInstall),active.identity)||Number(beforeInstall.mode&0o7777n)!==active.mode||!readAll(active.fd).equals(active.bytes))fail('mutate target changed before mutation installation');installBytes(active.fd,replacementBytes,active.bytes);installed[activeIndex]=replacementBytes;fchmodSync(active.fd,active.mode);assertTargetIdentity(active.path,active.identity);}
-    const code=await new Promise((resolveCode,reject)=>{
-      child=spawn(command,{cwd,shell:true,detached:true,stdio:'ignore'});
-      let aborted=false;
-      const killGroup=()=>{try{process.kill(-child.pid,'SIGKILL');}catch{}};
-      const onAbort=()=>{aborted=true;killGroup();};
-      if(signal?.aborted)onAbort();else signal?.addEventListener?.('abort',onAbort,{once:true});
-      const timer=setTimeout(()=>{timedOut=true;killGroup();},timeoutMs);
-      child.once('error',error=>{clearTimeout(timer);signal?.removeEventListener?.('abort',onAbort);reject(error);});
-      child.once('close',exitCode=>{clearTimeout(timer);signal?.removeEventListener?.('abort',onAbort);resolveCode(aborted?'aborted':exitCode);});
-    });
-    return {outcome:code==='aborted'?'skipped':timedOut?'timeout':code===0?'survived':'killed',exit_code:typeof code==='number'?code:null};
+    const diff = gitOutput(root, ['-c', 'core.quotePath=false', 'diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', '--relative', '--diff-filter=d', changeSet.mergeBase, '--', ...group.changed.keys()], 'read the package diff');
+    const ctx = { root, repoTop: changeSet.top, mergeBase: changeSet.mergeBase, changed: group.changed, diff, outDir };
+    const plan = adapter.plan(ctx, detected);
+    if (plan.unavailable) return stopped('unavailable', plan.unavailable);
+    for (const [path, content] of Object.entries(plan.files || {})) writeFileSync(path, content);
+    const run = await runTool(plan.argv, { cwd: root, timeoutMs: deadline - Date.now(), signal });
+    const extra = { exit_code: run.exitCode, duration_ms: Date.now() - started, ...(adapter.note ? { note: adapter.note } : {}) };
+    const tail = run.output ? { output_tail: run.output } : {};
+    if (run.spawnError) return stopped('error', run.spawnError, { ...extra, ...tail });
+    if (run.aborted) return stopped('skipped', 'interrupted', extra);
+    if (run.timedOut) return stopped('timeout', 'stopped by the --timeout-ms budget', { ...extra, ...tail });
+    let parsed;
+    try {
+      parsed = adapter.parse(ctx, run);
+    } catch (error) {
+      return stopped('error', error.message, { ...extra, ...tail });
+    }
+    if (parsed.baseline_failed) return stopped('baseline_failed', 'tests fail before any mutation; fix the suite first', { ...extra, ...tail });
+    const ran = { ...result, ...extra }, mutants = [];
+    for (const row of parsed.mutants) {
+      // Every tool is re-scoped here: Muter mutates whole files, and no tool's
+      // own diff handling may widen the report past the requested change set.
+      if (!group.changed.get(row.file)?.some(line => line >= row.line && line <= row.end_line)) continue;
+      mutants.push({ language: adapter.language, tool: adapter.tool, ...row, file: group.root === '.' ? row.file : posix.join(group.root, row.file) });
+      ran.counts[row.status] += 1;
+    }
+    return { result: ran, mutants };
   } finally {
-    if(child?.pid)try{process.kill(-child.pid,'SIGKILL');}catch{}
-    let restoreError=null;
-    try{for(let index=0;index<bounds.length;index+=1){const bound=bounds[index],current=readAll(bound.fd),mode=Number(fstatSync(bound.fd,{bigint:true}).mode&0o7777n);if(!current.equals(installed[index])||mode!==bound.mode){restoreError??=Object.assign(new Error('mutate target changed concurrently during test; conflicting bytes were preserved'),{exitCode:2});continue;}try{assertTargetIdentity(bound.path,bound.identity);}catch(error){restoreError??=error;}if(index!==activeIndex||!replacementBytes)continue;replaceBytes(bound.fd,bound.bytes);fchmodSync(bound.fd,bound.mode);const after=readAll(bound.fd),restoredMode=Number(fstatSync(bound.fd,{bigint:true}).mode&0o7777n);if(!after.equals(bound.bytes)||restoredMode!==bound.mode)fail('mutate restore failed; recover target from snapshot');}}catch(error){restoreError??=error;}
-    try{closeBoundTargets(bounds);}catch(error){restoreError??=error;}
-    if(restoreError)throw restoreError;
+    rmSync(outDir, { recursive: true, force: true });
   }
 }
-export async function runMutate(options){return runBoundMutate(options);}
-function executableMask(source){
-  const input=String(source),out=[...input],stack=[{mode:'code',depth:0}];
-  const regexPrefixKeywords=new Set(['return','throw','case','yield','await','typeof','void','delete','new','instanceof','in','of','else','do']);
-  let escaped=false,regexClass=false,canStartRegex=true;
-  for(let index=0;index<input.length;index+=1){
-    const top=stack.at(-1),char=input[index],next=input[index+1];
-    if(top.mode==='line'){if(char==='\n'){stack.pop();canStartRegex=true;}else out[index]=' ';continue;}
-    if(top.mode==='block'){out[index]=' ';if(char==='*'&&next==='/'){out[index+1]=' ';index+=1;stack.pop();}continue;}
-    if(top.mode==='quote'){out[index]=' ';if(escaped){escaped=false;continue;}if(char==='\\'){escaped=true;continue;}if(char===top.quote)stack.pop();continue;}
-    if(top.mode==='template'){out[index]=' ';if(escaped){escaped=false;continue;}if(char==='\\'){escaped=true;continue;}if(char==='`'){stack.pop();continue;}if(char==='$'&&next==='{'){out[index]=out[index+1]=' ';index+=1;stack.push({mode:'code',depth:1,templateExpr:true});canStartRegex=true;}continue;}
-    if(top.mode==='regex'){out[index]=' ';if(escaped){escaped=false;continue;}if(char==='\\'){escaped=true;continue;}if(char==='['){regexClass=true;continue;}if(char===']'){regexClass=false;continue;}if(char==='/'&&!regexClass){stack.pop();while(/[a-z]/i.test(input[index+1]||''))out[++index]=' ';canStartRegex=false;}continue;}
-    if(top.templateExpr){if(char==='{')top.depth+=1;else if(char==='}'){top.depth-=1;if(top.depth===0){out[index]=' ';stack.pop();continue;}}}
-    if(char==='/'&&next==='/'){out[index]=out[index+1]=' ';index+=1;stack.push({mode:'line'});continue;}
-    if(char==='/'&&next==='*'){out[index]=out[index+1]=' ';index+=1;stack.push({mode:'block'});continue;}
-    if(char==='\''||char==='"'){out[index]=' ';stack.push({mode:'quote',quote:char});escaped=false;continue;}
-    if(char==='`'){out[index]=' ';stack.push({mode:'template'});escaped=false;continue;}
-    if(char==='/'&&canStartRegex){out[index]=' ';stack.push({mode:'regex'});escaped=false;regexClass=false;continue;}
-    if(/[A-Za-z_$]/.test(char)){const identifier=/^[A-Za-z_$][\w$]*/.exec(input.slice(index))[0];canStartRegex=regexPrefixKeywords.has(identifier);index+=identifier.length-1;continue;}
-    if(!/\s/.test(char))canStartRegex=/[({[=,:;!?&|+*%<>-]/.test(char);
+
+export async function runDiffMutate({ cwd = process.cwd(), base, languages = null, timeoutMs = DEFAULT_TIMEOUT_MS, signal = null, adapters = ADAPTERS } = {}) {
+  const changeSet = resolveChangeSet(cwd, base);
+  const started = Date.now(), deadline = started + timeoutMs, results = [], mutants = [];
+  for (const group of groupChanges(changeSet, adapters, languages)) {
+    const outcome = await runGroup(group, changeSet, { deadline, signal });
+    results.push(outcome.result);
+    mutants.push(...outcome.mutants);
   }
-  return out.join('');
-}
-export function simpleMutations(source, { changedLines = null, maxMutants = 12 } = {}) {
-  const text=String(source),lines=text.split('\n'),maskedLines=executableMask(text).split('\n');
-  const allowed = changedLines == null ? null : new Set(changedLines.filter(line => Number.isInteger(line) && line > 0));
-  const groups = { boolean: [], comparison: [], relational: [], logical: [], numeric: [] }, seen = new Set();
-  const add = (lineIndex, start, length, replacement, operator) => {
-    const next = [...lines];
-    next[lineIndex] = next[lineIndex].slice(0, start) + replacement + next[lineIndex].slice(start + length);
-    const mutated = next.join('\n');
-    if (!seen.has(mutated)) { seen.add(mutated); groups[operator].push({ operator, line: lineIndex + 1, source: mutated }); }
-  };
-  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-    if (allowed && !allowed.has(lineIndex + 1)) continue;
-    const line=lines[lineIndex],masked=maskedLines[lineIndex];
-    for (const match of masked.matchAll(/\b(true|false)\b/g)) add(lineIndex, match.index, match[0].length, match[1] === 'true' ? 'false' : 'true', 'boolean');
-    for (const match of masked.matchAll(/(!==|===)/g)) add(lineIndex, match.index, match[0].length, match[1] === '===' ? '!==' : '===', 'comparison');
-    for (const match of masked.matchAll(/(?<![<>=!])(?:<=|>=|<|>)(?![=>])/g)) add(lineIndex, match.index, match[0].length, ({ '<': '<=', '<=': '<', '>': '>=', '>=': '>' })[match[0]], 'relational');
-    for (const match of masked.matchAll(/&&|\|\|/g)) add(lineIndex, match.index, match[0].length, match[0] === '&&' ? '||' : '&&', 'logical');
-    for (const numeric of masked.matchAll(/\b\d+\b/g)) add(lineIndex, numeric.index, numeric[0].length, String(Number(numeric[0]) + 1), 'numeric');
-  }
-  const result=[]; while(result.length < maxMutants && Object.values(groups).some(group => group.length)) for(const group of Object.values(groups)) if(group.length && result.length < maxMutants) result.push(group.shift());
-  return result;
-}
-function git(workspace, args) { return spawnSync('git', args, { cwd: workspace, encoding: 'utf8' }); }
-function isDirty(workspace, target) { const result=git(workspace,['status','--porcelain=v1','--untracked-files=all','--',target]); return result.status!==0 || Boolean(result.stdout.trim()); }
-function patchPath(value){let path=String(value||'').trim();if(path.startsWith('\"'))try{path=JSON.parse(path);}catch{return null;}path=path.split('\t')[0].replace(/\\/g,'/');return path==='/dev/null'?null:path.replace(/^[ab]\//,'').replace(/^\.\//,'');}
-function parseChangedLines(diff,target=null){const rows=String(diff||'').split('\n'),lines=new Set(),normalized=String(target||'').replace(/\\/g,'/').replace(/^\.\//,'');let file=null,newLine=null,sawFile=false;for(const row of rows){if(row.startsWith('+++ ')){file=patchPath(row.slice(4));sawFile=true;newLine=null;continue;}const hunk=/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row);if(hunk){newLine=Number(hunk[1]);continue;}if(newLine==null||row.startsWith('\\'))continue;const selected=!sawFile||file===normalized;if(row.startsWith('+')){if(selected)lines.add(newLine);newLine+=1;}else if(!row.startsWith('-'))newLine+=1;}return [...lines].sort((a,b)=>a-b);}
-function changedLinesFor(workspace, target, data) {
-  if (Array.isArray(data.changed_lines)) return [...new Set(data.changed_lines.filter(Number.isInteger))].sort((a,b)=>a-b);
-  if (typeof data.diff === 'string') return parseChangedLines(data.diff,target);
-  if (typeof data.base === 'string' && data.base) {
-    const result=git(workspace,['diff','--unified=0',`${data.base}...HEAD`,'--',target]);
-    if(result.status===0) return parseChangedLines(result.stdout,target);
-  }
-  return [];
+  const counts = emptyCounts();
+  for (const row of mutants) counts[row.status] += 1;
+  return { schema_v: 2, mode: 'diff', base, merge_base: changeSet.mergeBase, head: changeSet.head, languages: results, mutants, counts, duration_ms: Date.now() - started, ts: new Date().toISOString() };
 }
 
 function loadTaskArtifact(root, task, projectName = null) {
   const projects = join(root, '.xm', 'build', 'projects');
   if (!existsSync(projects)) return null;
-  const matches=[];
+  const matches = [];
   for (const project of readdirSync(projects)) {
-    if(projectName&&project!==projectName)continue;
+    if (projectName && project !== projectName) continue;
     const dir = join(projects, project, 'worktrees', task);
     for (const file of ['run.json', 'task.json', 'mutate.json']) {
       const path = join(dir, file);
       if (!existsSync(path)) continue;
       try {
-        const data=JSON.parse(readFileSync(path,'utf8'));
-        const tasksPath=join(projects,project,'phases','02-plan','tasks.json');
-        if(existsSync(tasksPath)){try{const row=JSON.parse(readFileSync(tasksPath,'utf8')).tasks?.find(candidate=>candidate.id===task);if(row)data.task=row;}catch{}}
-        matches.push({dir,data,project,artifact_file:file});
+        const data = JSON.parse(readFileSync(path, 'utf8'));
+        const tasksPath = join(projects, project, 'phases', '02-plan', 'tasks.json');
+        if (existsSync(tasksPath)) {
+          try {
+            const row = JSON.parse(readFileSync(tasksPath, 'utf8')).tasks?.find(candidate => candidate.id === task);
+            if (row) data.task = row;
+          } catch {}
+        }
+        matches.push({ dir, data, project, artifact_file: file });
         break;
       } catch {}
     }
   }
-  if(matches.length>1)fail('mutate task id is ambiguous; pass --project <name>');
-  return matches[0]||null;
-}
-function detectedTestCommand(workspace,data){
-  const explicit=data.test_command||data.testCommand||data.task?.test_command;
-  if(typeof explicit==='string'&&explicit.trim())return { command: explicit, source: 'explicit' };
-  const packagePath=join(workspace,'package.json');
-  if(existsSync(packagePath)){try{const pkg=JSON.parse(readFileSync(packagePath,'utf8'));if(pkg.scripts?.test){if(existsSync(join(workspace,'bun.lock'))||existsSync(join(workspace,'bun.lockb')))return {command:'bun run test',source:'package:bun'};if(existsSync(join(workspace,'pnpm-lock.yaml')))return {command:'pnpm test',source:'package:pnpm'};if(existsSync(join(workspace,'yarn.lock')))return {command:'yarn test',source:'package:yarn'};return {command:'npm test',source:'package:npm'};}}catch{}}
-  return null;
-}
-function taskTargets(data){
-  const explicit=data.target||data.file;
-  const candidates=explicit?[explicit]:(data.task?.expected_files||[]);
-  return [...new Set(candidates.filter(file=>typeof file==='string'&&/\.(?:[cm]?[jt]sx?)$/i.test(file)))];
-}
-function repositoryRoot(path){const result=spawnSync('git',['rev-parse','--git-common-dir'],{cwd:path,encoding:'utf8'});if(result.status!==0)fail('mutate task worktree is not a git repository');return realpathSync(resolve(path,result.stdout.trim(),'..'));}
-function worktreeRecords(root){const result=spawnSync('git',['worktree','list','--porcelain','-z'],{cwd:root,encoding:'utf8'});if(result.status!==0)fail('mutate could not enumerate registered worktrees');return String(result.stdout||'').split('\0\0').filter(Boolean).map(block=>{const record={path:null,branch:null,detached:false,bare:false,prunable:false};for(const token of block.split('\0').filter(Boolean)){const space=token.indexOf(' '),key=space<0?token:token.slice(0,space),value=space<0?'':token.slice(space+1);if(key==='worktree')record.path=value;else if(key==='branch')record.branch=value;else if(key==='detached')record.detached=true;else if(key==='bare')record.bare=true;else if(key==='prunable')record.prunable=true;}return record;});}
-function workspaceClaims(stateRoot,workspace){const projects=join(stateRoot,'.xm','build','projects'),claims=[];if(!existsSync(projects))return claims;for(const projectEntry of readdirSync(projects,{withFileTypes:true})){if(!projectEntry.isDirectory()||projectEntry.isSymbolicLink())continue;const worktrees=join(projects,projectEntry.name,'worktrees');if(!existsSync(worktrees))continue;for(const taskEntry of readdirSync(worktrees,{withFileTypes:true})){if(!taskEntry.isDirectory()||taskEntry.isSymbolicLink())continue;const run=join(worktrees,taskEntry.name,'run.json');if(!existsSync(run))continue;try{const data=JSON.parse(readFileSync(run,'utf8')),candidate=typeof data.worktree==='string'&&data.worktree.trim()?(isAbsolute(data.worktree)?resolve(data.worktree):resolve(stateRoot,data.worktree)):null;if(candidate&&existsSync(candidate)&&realpathSync(candidate)===workspace)claims.push({project:projectEntry.name,task:taskEntry.name});}catch{}}}return claims;}
-function mutationWorkspace(artifact,stateRoot,task){const data=artifact?.data;if(artifact?.artifact_file!=='run.json')fail('mutate task requires an authoritative run.json artifact');if(data?.task_id!==task)fail('mutate task artifact identity does not match the selected task');if(typeof data?.branch!=='string'||!data.branch.trim())fail('mutate task artifact is missing its branch');if(typeof data?.worktree!=='string'||!data.worktree.trim())fail('mutate task artifact is missing its worktree path');const path=isAbsolute(data.worktree)?resolve(data.worktree):resolve(stateRoot,data.worktree);if(!existsSync(path))fail('mutate task worktree is missing');const stat=lstatSync(path);if(!stat.isDirectory()||stat.isSymbolicLink())fail('mutate task worktree must be a regular directory');const workspace=realpathSync(path),stateRepo=repositoryRoot(resolve(stateRoot)),worktreeRepo=repositoryRoot(workspace);if(stateRepo!==worktreeRepo)fail('mutate task worktree belongs to a different repository');if(workspace===stateRepo)fail('mutate refuses the primary checkout; task requires its linked worktree');const matches=worktreeRecords(stateRepo).filter(record=>{if(!record.path||!existsSync(record.path))return false;try{return realpathSync(record.path)===workspace;}catch{return false;}});if(matches.length!==1)fail('mutate task worktree is not uniquely registered');const record=matches[0],expectedBranch='refs/heads/'+data.branch;if(record.detached||record.bare||record.prunable||record.branch!==expectedBranch)fail('mutate task worktree registration does not match its recorded branch');const claims=workspaceClaims(stateRoot,workspace);if(claims.length!==1||claims[0].project!==artifact.project||claims[0].task!==task)fail('mutate task worktree is claimed by another task');return workspace;}
-function canonicalStateRoot(cwd){if(process.env.X_BUILD_ROOT)return resolve(process.env.X_BUILD_ROOT,'..','..');if(process.env.XM_ROOT)return resolve(process.env.XM_ROOT,'..');return resolveMainRepoRoot(cwd)||resolve(cwd);}
-function reportArtifact(project,task){return '.xm/review/mutate/'+project+'/'+task+'.json';}
-function ensureReportDirectory(dir){try{mkdirSync(dir,{mode:0o700});}catch(error){if(error?.code!=='EEXIST')throw error;}const stat=lstatSync(dir);if(!stat.isDirectory()||stat.isSymbolicLink()||(typeof process.getuid==='function'&&stat.uid!==process.getuid())||(stat.mode&0o022)!==0)fail('mutate report directory is unsafe');}
-function writeAll(fd,buffer){let offset=0;while(offset<buffer.length){let written;try{written=writeSync(fd,buffer,offset,buffer.length-offset,null);}catch(error){if(error?.code==='EINTR')continue;throw error;}if(written<=0){const error=new Error('mutate report write made no progress');error.code='EIO';throw error;}offset+=written;}}
-function sameFileIdentity(path,identity){try{const stat=lstatSync(path,{bigint:true});return !stat.isSymbolicLink()&&stat.dev===identity.dev&&stat.ino===identity.ino;}catch{return false;}}
-function syncDirectory(path){const fd=openSync(path,FS.O_RDONLY);try{fsyncSync(fd);}catch(error){if(!['EINVAL','ENOTSUP','EOPNOTSUPP'].includes(error?.code))throw error;}finally{closeSync(fd);}}
-function persistReport(state,project,task,report){const review=join(state,'.xm','review','mutate'),projectDir=join(review,project),reportPath=join(projectDir,task+'.json');for(const dir of [join(state,'.xm'),join(state,'.xm','review'),review,projectDir])ensureReportDirectory(dir);if(existsSync(reportPath)){const stat=lstatSync(reportPath);if(!stat.isFile()||stat.isSymbolicLink())fail('mutate report path is unsafe');}const payload=Buffer.from(JSON.stringify(report)+'\n'),noFollow=Number.isInteger(FS.O_NOFOLLOW)?FS.O_NOFOLLOW:0,flags=FS.O_WRONLY|FS.O_CREAT|FS.O_EXCL|noFollow;let fd=null,tmp=null,identity=null,published=false;try{for(let attempt=0;attempt<16;attempt+=1){tmp=join(projectDir,'.'+task+'.'+randomBytes(16).toString('hex')+'.tmp');try{fd=openSync(tmp,flags,0o600);break;}catch(error){if(error?.code!=='EEXIST')throw error;}}if(fd==null)fail('mutate could not allocate a unique report temporary file');const stat=fstatSync(fd,{bigint:true});identity={dev:stat.dev,ino:stat.ino};if(!stat.isFile())fail('mutate report temporary path is unsafe');writeAll(fd,payload);fsyncSync(fd);closeSync(fd);fd=null;ensureReportDirectory(projectDir);if(!sameFileIdentity(tmp,identity))fail('mutate report temporary path changed before publication');renameSync(tmp,reportPath);syncDirectory(projectDir);published=true;return reportPath;}finally{if(fd!=null)try{closeSync(fd);}catch{}if(!published&&tmp&&identity&&sameFileIdentity(tmp,identity))try{unlinkSync(tmp);}catch{}}}
-function acquireMutationLock(state,workspace){const dir=join(state,'.xm','review','mutate'),key=createHash('sha256').update(realpathSync(workspace)).digest('hex').slice(0,24);for(const path of [join(state,'.xm'),join(state,'.xm','review'),dir])ensureReportDirectory(path);try{return acquireAttentionLock(join(dir,'.workspace-'+key),{waitMs:100,staleMs:10000});}catch{fail('mutation already running for task worktree');}}
-function mutationPlan(workspace,data,{maxMutants=12}={}){const test=detectedTestCommand(workspace,data),targets=taskTargets(data);if(!test)return {reason:'no test command',test:null,targets,candidates:[],protectedTargets:[]};if(!targets.length)return {reason:'no supported expected_files',test,targets,candidates:[],protectedTargets:[]};const candidates=[],protectedTargets=[];let existing=0;try{for(const target of targets){if(!existsSync(resolve(workspace,target)))continue;existing+=1;const {path}=checkedTarget(workspace,target);if(isDirty(workspace,target))return {reason:'target file has pre-existing changes',test,targets,candidates:[],protectedTargets:[]};const bound=openBoundTarget(workspace,path);try{const protectedTarget={target,path,originalBytes:bound.bytes,originalMode:bound.mode,originalIdentity:bound.identity};protectedTargets.push(protectedTarget);const changedLines=changedLinesFor(workspace,target,data),mutations=simpleMutations(bound.bytes.toString('utf8'),{changedLines,maxMutants:Math.max(0,maxMutants-candidates.length)});for(const mutation of mutations)candidates.push({...protectedTarget,mutation});}finally{closeSync(bound.fd);}}}catch(error){return {reason:error.message,test,targets,candidates:[],protectedTargets:[]};}if(!existing)return {reason:'target files are absent in this worktree',test,targets,candidates:[],protectedTargets:[]};if(!candidates.length)return {reason:'no supported mutation on changed lines',test,targets,candidates:[],protectedTargets};return {reason:null,test,targets,candidates,protectedTargets};}
-export function listMutationTasks(stateRoot,workspaceRoot=stateRoot){
-  const state=resolve(stateRoot),workspace=resolve(workspaceRoot),projects=join(state,'.xm','build','projects'),rows=[];
-  if(!existsSync(projects))return rows;
-  for(const entry of readdirSync(projects,{withFileTypes:true})){
-    if(!entry.isDirectory()||entry.isSymbolicLink())continue;
-    const project=entry.name,tasksPath=join(projects,project,'phases','02-plan','tasks.json');let tasks=[];
-    if(existsSync(tasksPath))try{tasks=JSON.parse(readFileSync(tasksPath,'utf8')).tasks||[];}catch{}
-    const ids=new Set(tasks.map(task=>task.id).filter(Boolean)),worktrees=join(projects,project,'worktrees');
-    if(existsSync(worktrees))for(const dirent of readdirSync(worktrees,{withFileTypes:true}))if(dirent.isDirectory()&&dirent.name!=='__integration__')ids.add(dirent.name);
-    for(const id of [...ids].sort()){const artifact=loadTaskArtifact(state,id,project),task=tasks.find(candidate=>candidate.id===id)||artifact?.data?.task||{},data=artifact?.data||{task},targets=taskTargets(data);let reason=null;
-    // Targets first: a task with no supported file can never be mutated, whatever
-    // its worktree does, while a missing artifact is recoverable by re-running it.
-    // Reporting the artifact first collapsed both onto one cause, so the summary
-    // named a blocker that was not the one to fix.
-    if(!targets.length)reason='no supported expected_files';
-    else if(!artifact)reason='missing worktree artifact';
-    else try{const taskWorkspace=mutationWorkspace(artifact,state,id),plan=mutationPlan(taskWorkspace,data,{maxMutants:1});reason=plan.reason;}catch(error){reason=error.message;}
-rows.push({project,id,name:task.name||id,status:task.status||null,files:targets,runnable:reason===null,reason});}
-  }
-  return rows.sort((a,b)=>Number(b.runnable)-Number(a.runnable)||String(a.project).localeCompare(String(b.project))||String(a.id).localeCompare(String(b.id)));
+  if (matches.length > 1) fail('mutate task id is ambiguous; pass --project <name>');
+  return matches[0] || null;
 }
 
-export async function runTaskMutate(root, task, { maxMutants = 12, timeoutMs = 90_000, maxDurationMs = 600_000, signal = null, workspaceRoot = root, stateRoot = root, project = null } = {}) {
-  const taskError=validateIdSegment(task,'--task');if(taskError)fail(taskError);
-  if(project!=null){const projectError=validateIdSegment(project,'--project');if(projectError)fail(projectError);}
-  const initial=loadTaskArtifact(stateRoot,task,project);
-  if(!initial)fail('mutate task artifact not found');
-  const projectId=initial.project,state=resolve(stateRoot),workspace=mutationWorkspace(initial,state,task),release=acquireMutationLock(state,workspace);
-  const refresh=()=>{const current=loadTaskArtifact(state,task,projectId);if(!current)fail('mutate task artifact disappeared while locked');const currentWorkspace=mutationWorkspace(current,state,task);if(currentWorkspace!==workspace)fail('mutate task worktree changed while locked');return current;};
-  try{
-    const artifact=refresh(),plan=mutationPlan(workspace,artifact.data,{maxMutants});
-    if(plan.reason)fail(plan.reason);
-    const {test,candidates,protectedTargets}=plan,baselineStarted=Date.now(),representative=candidates[0];
-    refresh();
-    const baseline=await runBoundMutate({target:representative.path,targets:protectedTargets,command:test.command,cwd:workspace,timeoutMs,signal,expectedIdentity:representative.originalIdentity,expectedBytes:representative.originalBytes,expectedMode:representative.originalMode});
-    if(baseline.outcome!=='survived'){const report={schema_v:1,project:projectId,task_id:task,representative:null,mutants:[],counts:{survived:0,timeout:0},duration_ms:Date.now()-baselineStarted,baseline_exit_code:baseline.exit_code,baseline_outcome:baseline.outcome,test_command:test.command,test_command_source:test.source,ts:new Date().toISOString()};refresh();persistReport(state,projectId,task,report);const error=new Error('mutate baseline is not green; fix the test command first');error.exitCode=2;error.report=report;throw error;}
-    const outcomes=[],started=Date.now();
-    for(const candidate of candidates){if(signal?.aborted||Date.now()-started>=maxDurationMs){outcomes.push({file:candidate.target,operator:candidate.mutation.operator,line:candidate.mutation.line,outcome:'skipped',exit_code:null});continue;}refresh();const outcome=await runBoundMutate({target:candidate.path,targets:protectedTargets,command:test.command,cwd:workspace,timeoutMs,signal,replacementBytes:Buffer.from(candidate.mutation.source),expectedIdentity:candidate.originalIdentity,expectedBytes:candidate.originalBytes,expectedMode:candidate.originalMode});outcomes.push({file:candidate.target,operator:candidate.mutation.operator,line:candidate.mutation.line,...outcome});}
-    const result=outcomes.find(row=>row.outcome==='survived')||outcomes[0],report={schema_v:1,project:projectId,task_id:task,representative:result,mutants:outcomes,counts:{survived:outcomes.filter(row=>row.outcome==='survived').length,timeout:outcomes.filter(row=>row.outcome==='timeout').length},duration_ms:Date.now()-started,baseline_exit_code:baseline.exit_code,test_command:test.command,test_command_source:test.source,ts:new Date().toISOString()};
-    refresh();persistReport(state,projectId,task,report);
-    const artifactPath=reportArtifact(projectId,task),surviving=outcomes.filter(row=>row.outcome==='survived').map(row=>buildEscapeRow({mutant:true,ts:report.ts,task_id:task,file:row.file,artifact:artifactPath,source:'mutate',operator:row.operator,line:row.line}));
-    if(surviving.length)appendAttentionRows(state,surviving);
-    return report;
-  }finally{release();}
+function repositoryRoot(path) {
+  const result = spawnSync('git', ['rev-parse', '--git-common-dir'], { cwd: path, encoding: 'utf8' });
+  if (result.status !== 0) fail('mutate task worktree is not a git repository');
+  return realpathSync(resolve(path, result.stdout.trim(), '..'));
 }
+
+function worktreeRecords(root) {
+  const result = spawnSync('git', ['worktree', 'list', '--porcelain', '-z'], { cwd: root, encoding: 'utf8' });
+  if (result.status !== 0) fail('mutate could not enumerate registered worktrees');
+  return String(result.stdout || '').split('\0\0').filter(Boolean).map(block => {
+    const record = { path: null, branch: null, detached: false, bare: false, prunable: false };
+    for (const token of block.split('\0').filter(Boolean)) {
+      const space = token.indexOf(' '), key = space < 0 ? token : token.slice(0, space), value = space < 0 ? '' : token.slice(space + 1);
+      if (key === 'worktree') record.path = value;
+      else if (key === 'branch') record.branch = value;
+      else if (key === 'detached') record.detached = true;
+      else if (key === 'bare') record.bare = true;
+      else if (key === 'prunable') record.prunable = true;
+    }
+    return record;
+  });
+}
+
+function workspaceClaims(stateRoot, workspace) {
+  const projects = join(stateRoot, '.xm', 'build', 'projects'), claims = [];
+  if (!existsSync(projects)) return claims;
+  for (const projectEntry of readdirSync(projects, { withFileTypes: true })) {
+    if (!projectEntry.isDirectory() || projectEntry.isSymbolicLink()) continue;
+    const worktrees = join(projects, projectEntry.name, 'worktrees');
+    if (!existsSync(worktrees)) continue;
+    for (const taskEntry of readdirSync(worktrees, { withFileTypes: true })) {
+      if (!taskEntry.isDirectory() || taskEntry.isSymbolicLink()) continue;
+      const run = join(worktrees, taskEntry.name, 'run.json');
+      if (!existsSync(run)) continue;
+      try {
+        const data = JSON.parse(readFileSync(run, 'utf8'));
+        const candidate = typeof data.worktree === 'string' && data.worktree.trim() ? (isAbsolute(data.worktree) ? resolve(data.worktree) : resolve(stateRoot, data.worktree)) : null;
+        if (candidate && existsSync(candidate) && realpathSync(candidate) === workspace) claims.push({ project: projectEntry.name, task: taskEntry.name });
+      } catch {}
+    }
+  }
+  return claims;
+}
+
+function mutationWorkspace(artifact, stateRoot, task) {
+  const data = artifact?.data;
+  if (artifact?.artifact_file !== 'run.json') fail('mutate task requires an authoritative run.json artifact');
+  if (data?.task_id !== task) fail('mutate task artifact identity does not match the selected task');
+  if (typeof data?.branch !== 'string' || !data.branch.trim()) fail('mutate task artifact is missing its branch');
+  if (typeof data?.worktree !== 'string' || !data.worktree.trim()) fail('mutate task artifact is missing its worktree path');
+  const path = isAbsolute(data.worktree) ? resolve(data.worktree) : resolve(stateRoot, data.worktree);
+  if (!existsSync(path)) fail('mutate task worktree is missing');
+  const stat = lstatSync(path);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) fail('mutate task worktree must be a regular directory');
+  const workspace = realpathSync(path), stateRepo = repositoryRoot(resolve(stateRoot)), worktreeRepo = repositoryRoot(workspace);
+  if (stateRepo !== worktreeRepo) fail('mutate task worktree belongs to a different repository');
+  if (workspace === stateRepo) fail('mutate refuses the primary checkout; task requires its linked worktree');
+  const matches = worktreeRecords(stateRepo).filter(record => {
+    if (!record.path || !existsSync(record.path)) return false;
+    try { return realpathSync(record.path) === workspace; } catch { return false; }
+  });
+  if (matches.length !== 1) fail('mutate task worktree is not uniquely registered');
+  const record = matches[0], expectedBranch = `refs/heads/${data.branch}`;
+  if (record.detached || record.bare || record.prunable || record.branch !== expectedBranch) fail('mutate task worktree registration does not match its recorded branch');
+  const claims = workspaceClaims(stateRoot, workspace);
+  if (claims.length !== 1 || claims[0].project !== artifact.project || claims[0].task !== task) fail('mutate task worktree is claimed by another task');
+  return workspace;
+}
+
+function canonicalStateRoot(cwd) {
+  if (process.env.X_BUILD_ROOT) return resolve(process.env.X_BUILD_ROOT, '..', '..');
+  if (process.env.XM_ROOT) return resolve(process.env.XM_ROOT, '..');
+  return resolveMainRepoRoot(cwd) || resolve(cwd);
+}
+
+function reportArtifact(project, task) {
+  return `.xm/review/mutate/${project}/${task}.json`;
+}
+
+function diffReportArtifact(name) {
+  return `.xm/review/mutate-diff/${name}.json`;
+}
+
+function ensureReportDirectory(dir) {
+  try { mkdirSync(dir, { mode: 0o700 }); } catch (error) { if (error?.code !== 'EEXIST') throw error; }
+  const stat = lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || (typeof process.getuid === 'function' && stat.uid !== process.getuid()) || (stat.mode & 0o022) !== 0) fail('mutate report directory is unsafe');
+}
+
+function writeAll(fd, buffer) {
+  let offset = 0;
+  while (offset < buffer.length) {
+    let written;
+    try {
+      written = writeSync(fd, buffer, offset, buffer.length - offset, null);
+    } catch (error) {
+      if (error?.code === 'EINTR') continue;
+      throw error;
+    }
+    if (written <= 0) {
+      const error = new Error('mutate report write made no progress');
+      error.code = 'EIO';
+      throw error;
+    }
+    offset += written;
+  }
+}
+
+function sameFileIdentity(path, identity) {
+  try {
+    const stat = lstatSync(path, { bigint: true });
+    return !stat.isSymbolicLink() && stat.dev === identity.dev && stat.ino === identity.ino;
+  } catch {
+    return false;
+  }
+}
+
+function syncDirectory(path) {
+  const fd = openSync(path, FS.O_RDONLY);
+  try { fsyncSync(fd); } catch (error) { if (!['EINVAL', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) throw error; } finally { closeSync(fd); }
+}
+
+function persistReport(state, segments, name, report) {
+  const dirs = [join(state, '.xm'), join(state, '.xm', 'review')];
+  for (const segment of segments) dirs.push(join(dirs.at(-1), segment));
+  for (const dir of dirs) ensureReportDirectory(dir);
+  const directory = dirs.at(-1), reportPath = join(directory, `${name}.json`);
+  if (existsSync(reportPath)) {
+    const stat = lstatSync(reportPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) fail('mutate report path is unsafe');
+  }
+  const payload = Buffer.from(`${JSON.stringify(report)}\n`), noFollow = Number.isInteger(FS.O_NOFOLLOW) ? FS.O_NOFOLLOW : 0, flags = FS.O_WRONLY | FS.O_CREAT | FS.O_EXCL | noFollow;
+  let fd = null, tmp = null, identity = null, published = false;
+  try {
+    for (let attempt = 0; attempt < 16; attempt += 1) {
+      tmp = join(directory, `.${name}.${randomBytes(16).toString('hex')}.tmp`);
+      try { fd = openSync(tmp, flags, 0o600); break; } catch (error) { if (error?.code !== 'EEXIST') throw error; }
+    }
+    if (fd == null) fail('mutate could not allocate a unique report temporary file');
+    const stat = fstatSync(fd, { bigint: true });
+    identity = { dev: stat.dev, ino: stat.ino };
+    if (!stat.isFile()) fail('mutate report temporary path is unsafe');
+    writeAll(fd, payload);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    ensureReportDirectory(directory);
+    if (!sameFileIdentity(tmp, identity)) fail('mutate report temporary path changed before publication');
+    renameSync(tmp, reportPath);
+    syncDirectory(directory);
+    published = true;
+    return reportPath;
+  } finally {
+    if (fd != null) try { closeSync(fd); } catch {}
+    if (!published && tmp && identity && sameFileIdentity(tmp, identity)) try { unlinkSync(tmp); } catch {}
+  }
+}
+
+export function listMutationTasks(stateRoot, { adapters = ADAPTERS } = {}) {
+  const state = resolve(stateRoot), projects = join(state, '.xm', 'build', 'projects'), rows = [];
+  if (!existsSync(projects)) return rows;
+  for (const entry of readdirSync(projects, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const project = entry.name, tasksPath = join(projects, project, 'phases', '02-plan', 'tasks.json');
+    let tasks = [];
+    if (existsSync(tasksPath)) try { tasks = JSON.parse(readFileSync(tasksPath, 'utf8')).tasks || []; } catch {}
+    const ids = new Set(tasks.map(task => task.id).filter(Boolean)), worktrees = join(projects, project, 'worktrees');
+    if (existsSync(worktrees)) for (const dirent of readdirSync(worktrees, { withFileTypes: true })) if (dirent.isDirectory() && dirent.name !== '__integration__') ids.add(dirent.name);
+    for (const id of [...ids].sort()) {
+      const artifact = loadTaskArtifact(state, id, project), task = tasks.find(candidate => candidate.id === id) || artifact?.data?.task || {};
+      let reason = null, files = [];
+      if (!artifact) reason = 'missing worktree artifact';
+      else {
+        try {
+          const workspace = mutationWorkspace(artifact, state, id), base = artifact.data.base;
+          if (typeof base !== 'string' || !base.trim()) reason = 'run.json has no base; pass --base <ref>';
+          else {
+            files = [...resolveChangeSet(workspace, base).changed.keys()].filter(file => adapters.some(adapter => adapter.claims(file)));
+            if (!files.length) reason = 'no changed files in a supported language';
+          }
+        } catch (error) {
+          reason = error.message;
+        }
+      }
+      rows.push({ project, id, name: task.name || id, status: task.status || null, files, runnable: reason === null, reason });
+    }
+  }
+  return rows.sort((a, b) => Number(b.runnable) - Number(a.runnable) || String(a.project).localeCompare(String(b.project)) || String(a.id).localeCompare(String(b.id)));
+}
+
+export async function runTaskMutate(stateRoot, task, { project = null, base = null, languages = null, timeoutMs = DEFAULT_TIMEOUT_MS, signal = null, adapters = ADAPTERS } = {}) {
+  const taskError = validateIdSegment(task, '--task');
+  if (taskError) fail(taskError);
+  if (project != null) {
+    const projectError = validateIdSegment(project, '--project');
+    if (projectError) fail(projectError);
+  }
+  const state = resolve(stateRoot), artifact = loadTaskArtifact(state, task, project);
+  if (!artifact) fail('mutate task artifact not found');
+  const workspace = mutationWorkspace(artifact, state, task), ref = base ?? artifact.data.base;
+  if (typeof ref !== 'string' || !ref.trim()) fail('mutate task run.json has no base; pass --base <ref>');
+  const report = { ...(await runDiffMutate({ cwd: workspace, base: ref, languages, timeoutMs, signal, adapters })), mode: 'task', project: artifact.project, task_id: task };
+  persistReport(state, ['mutate', artifact.project], task, report);
+  const artifactPath = reportArtifact(artifact.project, task);
+  const surviving = report.mutants
+    .filter(row => row.status === 'survived')
+    .map(row => buildEscapeRow({ mutant: true, ts: report.ts, task_id: task, file: row.file, artifact: artifactPath, source: 'mutate', operator: row.mutator, line: row.line }));
+  if (surviving.length) appendAttentionRows(state, surviving);
+  return report;
+}
+
+function printReport(report, artifactPath) {
+  const label = report.mode === 'task' ? `${report.project}/${report.task_id}` : `diff ${report.base} (merge-base ${report.merge_base.slice(0, 12)})`;
+  if (!report.languages.length) {
+    console.log(`Mutate ${label}: no changed files in a supported language (${ADAPTERS.map(adapter => adapter.language).join(', ')}).`);
+    console.log(`Report: ${artifactPath}`);
+    return;
+  }
+  const counts = report.counts;
+  console.log(`Mutate ${label}: ${counts.survived} survived, ${counts.killed} killed, ${counts.timeout} timeout, ${counts.unviable} unviable, ${counts.no_coverage} no coverage (${report.mutants.length} mutants)`);
+  for (const row of report.languages) {
+    const where = row.root && row.root !== '.' ? ` in ${row.root}` : '';
+    if (row.status === 'ran') console.log(`  ${row.language}${where}: ${row.tool} ${row.tool_version} — ${row.counts.survived} survived, ${row.counts.killed} killed`);
+    else console.log(`  ${row.language}${where}: ${row.status} — ${row.reason}${row.install ? `. Install: ${row.install}` : ''}`);
+    if (row.note) console.log(`    note: ${row.note}`);
+  }
+  const survivors = report.mutants.filter(row => row.status === 'survived');
+  if (survivors.length) {
+    console.log('Survived (candidates for a missing test, not proof of one):');
+    for (const row of survivors) console.log(`  ${row.file}:${row.line}  ${row.description}`);
+  }
+  console.log(`Report: ${artifactPath}`);
+}
+
+function printTaskList(tasks) {
+  const runnable = tasks.filter(row => row.runnable);
+  if (runnable.length) {
+    console.log('Mutation testing candidates (existing tests are checked; no tests are generated):');
+    for (const row of runnable) console.log(`  ✓ ${row.project}/${row.id} — ${row.name}${row.status ? ` [${row.status}]` : ''} — ${row.files.join(', ')}`);
+    console.log('Choose one with /xm:mutate or run: xm build mutate --project <project> --task <id>');
+    return;
+  }
+  if (!tasks.length) console.log('No x-build tasks found.');
+  else {
+    const reasons = new Map();
+    for (const row of tasks) reasons.set(row.reason, (reasons.get(row.reason) || 0) + 1);
+    console.log('No tasks are ready for mutation testing.');
+    console.log(`Why: ${[...reasons].map(([reason, count]) => `${count} ${reason}`).join('; ')}`);
+  }
+  console.log('Without a task, run: xm mutate --diff <base>');
+}
+
 export async function cmdMutate(args) {
-  let task=null,project=getExplicitProject(),maxMutants=12,timeoutMs=90_000,json=false,list=args.length===0;
-  for(let i=0;i<args.length;i+=1){const arg=args[i];if(arg==='--list')list=true;else if(arg==='--task'&&args[i+1])task=args[++i];else if((arg==='--project'||arg==='-p')&&args[i+1])project=args[++i];else if(arg.startsWith('--project='))project=arg.slice('--project='.length);else if(arg==='--max-mutants'&&args[i+1])maxMutants=Number(args[++i]);else if(arg==='--timeout-ms'&&args[i+1])timeoutMs=Number(args[++i]);else if(arg==='--json')json=true;else{console.error('Usage: xm build mutate [--list] [--json] | --project <name> --task <id> [--max-mutants N] [--timeout-ms M] [--json]');process.exitCode=2;return;}}
-  const workspace=resolve(process.cwd()),state=canonicalStateRoot(workspace);
-  if(list){if(task){console.error('mutate --list cannot be combined with --task');process.exitCode=2;return;}const tasks=listMutationTasks(state,workspace),runnable=tasks.filter(row=>row.runnable),out={schema_v:1,tasks,runnable_count:runnable.length};if(json)console.log(JSON.stringify(out));else if(runnable.length){console.log('Mutation testing candidates (existing tests are checked; no tests are generated):');for(const row of runnable)console.log(`  ✓ ${row.project}/${row.id} — ${row.name}${row.status?' ['+row.status+']':''} — ${row.files.join(', ')}`);console.log('Choose one with /xm:mutate or run: xm build mutate --project <project> --task <id>');}else if(!tasks.length)console.log('No x-build tasks found. Create or import a plan before running mutation testing.');else{const reasons=new Map();for(const row of tasks)reasons.set(row.reason,(reasons.get(row.reason)||0)+1);console.log('No tasks are ready for mutation testing.');console.log('This command checks existing tests; it does not generate tests.');console.log('Why: '+[...reasons].map(([reason,count])=>`${count} ${reason}`).join('; '));console.log('Next: prepare an x-build task with a worktree artifact, supported source files, and a test command.');}return;}
-  if(!task||!/^[a-zA-Z0-9._-]+$/.test(task)||(project!=null&&!/^[a-zA-Z0-9._-]+$/.test(project))||!Number.isInteger(maxMutants)||maxMutants<1||maxMutants>100||!Number.isInteger(timeoutMs)||timeoutMs<1){console.error('mutate requires valid --project, --task, --max-mutants, and --timeout-ms values; run `xm build mutate --list` to choose a task');process.exitCode=2;return;}
-  const controller=new AbortController();let interrupted=null;const stop=signalName=>()=>{interrupted=signalName;controller.abort();};const onInt=stop('SIGINT'),onTerm=stop('SIGTERM');process.once('SIGINT',onInt);process.once('SIGTERM',onTerm);
-  try{const report=await runTaskMutate(state,task,{maxMutants,timeoutMs,signal:controller.signal,workspaceRoot:workspace,stateRoot:state,project});if(json)console.log(JSON.stringify(report));else console.log(`Mutate ${project?project+'/':''}${task}: ${report.counts.survived} survived, ${report.counts.timeout} timed out (${report.mutants.length} mutants)`);if(interrupted)process.exitCode=130;}catch(error){if(json&&error.report)console.log(JSON.stringify(error.report));else console.error(error.message);process.exitCode=interrupted?130:(error.exitCode||2);}finally{process.removeListener('SIGINT',onInt);process.removeListener('SIGTERM',onTerm);}
+  let task = null, project = getExplicitProject(), base = null, diff = null, languageArg = null, timeoutMs = DEFAULT_TIMEOUT_MS, json = false, list = args.length === 0;
+  const usage = message => {
+    console.error(message);
+    console.error(USAGE);
+    process.exitCode = 2;
+  };
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i], value = args[i + 1];
+    if (arg === '--list') list = true;
+    else if (arg === '--json') json = true;
+    else if (arg === '--diff' && value) { diff = value; i += 1; }
+    else if (arg === '--task' && value) { task = value; i += 1; }
+    else if ((arg === '--project' || arg === '-p') && value) { project = value; i += 1; }
+    else if (arg.startsWith('--project=')) project = arg.slice('--project='.length);
+    else if (arg === '--base' && value) { base = value; i += 1; }
+    else if (arg === '--lang' && value) { languageArg = value; i += 1; }
+    else if (arg === '--timeout-ms' && value) { timeoutMs = Number(value); i += 1; }
+    else if (arg === '--max-mutants') return usage('mutate: --max-mutants was removed; the external tool chooses the mutants for the changed lines');
+    else return usage(`mutate: unknown or incomplete argument '${arg}'`);
+  }
+  if ([list, diff != null, task != null].filter(Boolean).length !== 1) return usage('mutate: choose exactly one of --list, --diff <base>, or --task <id>');
+  if (base != null && task == null) return usage('mutate: --base applies to --task; use --diff <base> without a task');
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1) return usage('mutate: --timeout-ms must be a positive integer');
+  let languages = null;
+  if (languageArg != null) {
+    const known = ADAPTERS.map(adapter => adapter.language), names = languageArg.split(',').map(name => name.trim()).filter(Boolean);
+    if (!names.length || names.some(name => !known.includes(name))) return usage(`mutate: --lang accepts ${known.join(', ')}`);
+    languages = new Set(names);
+  }
+  const workspace = resolve(process.cwd()), state = canonicalStateRoot(workspace);
+  if (list) {
+    const tasks = listMutationTasks(state);
+    if (json) console.log(JSON.stringify({ schema_v: 2, tasks, runnable_count: tasks.filter(row => row.runnable).length }));
+    else printTaskList(tasks);
+    return;
+  }
+  const controller = new AbortController();
+  let interrupted = null;
+  const stop = signalName => () => { interrupted = signalName; controller.abort(); };
+  const onInt = stop('SIGINT'), onTerm = stop('SIGTERM');
+  process.once('SIGINT', onInt);
+  process.once('SIGTERM', onTerm);
+  try {
+    let report, artifactPath;
+    if (diff != null) {
+      report = await runDiffMutate({ cwd: workspace, base: diff, languages, timeoutMs, signal: controller.signal });
+      const name = `${report.head.slice(0, 12)}-${report.merge_base.slice(0, 12)}`;
+      persistReport(state, ['mutate-diff'], name, report);
+      artifactPath = diffReportArtifact(name);
+    } else {
+      report = await runTaskMutate(state, task, { project, base, languages, timeoutMs, signal: controller.signal });
+      artifactPath = reportArtifact(report.project, task);
+    }
+    if (json) console.log(JSON.stringify(report));
+    else printReport(report, artifactPath);
+    // Survivors are observational; only a language that could not run fails the command.
+    process.exitCode = interrupted ? 130 : report.languages.every(row => row.status === 'ran') ? 0 : 1;
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = interrupted ? 130 : (error.exitCode || 2);
+  } finally {
+    process.removeListener('SIGINT', onInt);
+    process.removeListener('SIGTERM', onTerm);
+  }
 }

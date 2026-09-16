@@ -427,7 +427,7 @@ This is a *capability*, available today; proving it produces measurably better o
 | xm | Bundle + config + pipeline | `/xm pipeline release` |
 
 **Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `x-sync` multi-machine sync server · `/xm:toss` + `/xm:inbox` cross-project bug handoff — see [x-ship](#x-ship), [x-sync](#x-sync) and [toss / inbox](#cross-project-handoff--toss--inbox) below.
-`/xm:mutate` is bundled the same way — it drives the `xm build mutate` engine that ships with core. Codex exposes it as `$xm:mutate`, with `$xm-mutate` kept as a flat alias. See [Mutation testing](#mutation-testing--xmmutate).
+`/xm:mutate` is bundled the same way — it drives the `xm mutate` command that ships with core. Codex exposes it as `$xm:mutate`, with `$xm-mutate` kept as a flat alias. See [Mutation testing](#mutation-testing--xmmutate).
 
 ---
 
@@ -700,33 +700,39 @@ xm review close <run-id> --reason "old run is no longer needed"
 
 ### Mutation testing — `/xm:mutate`
 
-A green suite tells you the tests ran. It does not tell you they would have noticed if the code were wrong. `/xm:mutate` settles that: it flips small pieces of the code a task just changed and re-runs your existing test command. A mutant that gets **killed** was caught by a test. One that **survives** slipped past the whole suite, and that line is the gap worth a look.
+A green suite shows that the tests ran. It does not show that the tests detect wrong code. `/xm:mutate` makes small changes to the lines that a branch changed and runs the existing tests again. A **killed** mutant is a change that a test detected. A **survived** mutant is a change that no test detected. That line is a candidate for a new test.
 
 It reads existing tests. It does not write them.
 
 ```bash
-/xm:mutate                                  # pick from runnable tasks (the list is read-only)
-xm build mutate --list --json               # same candidates, straight from the CLI
-xm build mutate --project my-app --task t3 --max-mutants 20
+xm mutate --diff main                        # mutate the lines changed since the merge base with main
+xm mutate --diff main --lang rust,go --json  # limit the languages and print the report as JSON
+/xm:mutate                                   # choose diff mode or an x-build task
+xm build mutate --list --json                # x-build tasks with changed files (read-only)
+xm build mutate --project my-app --task t3   # the same check in the worktree of a task
 ```
 
-Five operators, applied only to lines the task actually changed:
+xm does not generate mutants. For each language, an external tool parses the code, runs the mutants in a copy of the project, and reports a mutant that does not build as `unviable`:
 
-| Operator | Mutation |
-|----------|----------|
-| boolean | `true` ↔ `false` |
-| comparison | `===` ↔ `!==` |
-| relational | `<` ↔ `<=`, `>` ↔ `>=` |
-| logical | `&&` ↔ `\|\|` |
-| numeric | `n` → `n + 1` |
+| Language | Tool | Scope | Install |
+|----------|------|-------|---------|
+| Rust | [cargo-mutants](https://mutants.rs) | `--in-diff` | `cargo install --locked cargo-mutants` |
+| JavaScript / TypeScript | [StrykerJS](https://stryker-mutator.io) | line ranges in `mutate` | `npm install --save-dev @stryker-mutator/core` |
+| Go | [gomutants](https://github.com/szhekpisov/gomutants) | `-changed-since` | `go install github.com/szhekpisov/gomutants@latest` |
+| Swift | [Muter](https://github.com/muter-mutation-testing/muter) | whole files, then xm keeps changed lines | `brew install muter-mutation-testing/formulae/muter` |
 
-Candidates are drawn round-robin across the five, so one noisy operator cannot eat the whole budget. Comments, strings, template literals, and regex bodies are masked out before matching; a `true` sitting inside a log message is never mutated.
+**Change set.** xm takes `git diff` from the merge base to the working tree. The diff includes uncommitted edits to tracked files. It does not include untracked files. Each file goes to the tool for its language, in the nearest directory that has `Cargo.toml`, `package.json`, `go.mod`, or `muter.conf.yml` / `Package.swift`. xm keeps only the mutants that touch a changed line.
 
-**What a task needs to qualify:** a linked worktree artifact, JS/TS targets (`.js .jsx .cjs .mjs .ts .tsx .cts .mts`), and a test command — either the task's own `test_command`, or one inferred from `package.json` plus whichever lockfile is present (bun / pnpm / yarn / npm). Mutation runs inside that task's worktree and refuses the primary checkout, so a mutant can never be left behind in the tree you are editing.
+**Tools that are not installed.** If a tool or its configuration is not available, that language gets the status `unavailable` and an install command. xm does not substitute a built-in engine. The command exits 1, and the results for the other languages stay valid.
 
-**Bounds:** 12 mutants by default (`--max-mutants`, 1–100), 90 s per mutant (`--timeout-ms`), and 10 minutes of wall clock for the run. Anything past the budget is reported as `skipped` rather than quietly dropped. The baseline runs first: if the suite is already red, the run stops there and says so instead of reporting fake survivors. Source bytes and file mode are restored exactly after every mutant.
+**Tool notes.**
+- StrykerJS uses the command runner with the `test` script from `package.json`. The command runner runs the full suite for each mutant, so a large suite will be slow.
+- Muter needs `muter.conf.yml`. Run `muter init` in the project root first. Muter builds a copy next to the project (`<root>_mutated`) and writes `muter_logs/` in the project.
+- Java, Kotlin, Python, C#, and PHP have no adapter.
 
-Reports land in `.xm/review/mutate/<project>/<task>.json`, and every surviving mutant is appended to the attention queue.
+**Bounds.** `--timeout-ms` limits the whole run. The default is 30 minutes. Each tool sets the timeout for each mutant from its baseline run. If the suite already fails, that language gets `baseline_failed` or `error`, not a mutation result.
+
+Diff reports go to `.xm/review/mutate-diff/<head>-<merge-base>.json`. Task reports go to `.xm/review/mutate/<project>/<task>.json`, and each survived mutant of a task goes to the attention queue. A task needs a linked worktree artifact with a recorded `base`, or `--base <ref>`.
 
 > v1 is observational. A survivor is a candidate for inspection, not proof of a missing test, and it does not block a merge.
 
