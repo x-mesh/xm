@@ -18,6 +18,9 @@ import { ADAPTERS, MUTANT_STATUSES } from './mutate-adapters.mjs';
 // Whole-run ceiling. Each tool sizes its per-mutant timeout from the baseline;
 // this only stops a run that has stalled from holding the shell indefinitely.
 const DEFAULT_TIMEOUT_MS = 30 * 60_000;
+// Node clamps a setTimeout delay above 2^31-1 to 1ms, so a value meant as "no
+// limit" would kill every tool at once instead of never.
+const MAX_TIMEOUT_MS = 2_147_483_647;
 // Enough tool output to explain a failure without storing whole test logs.
 const OUTPUT_TAIL_CHARS = 4000;
 
@@ -150,6 +153,9 @@ async function runGroup(group, changeSet, { deadline, signal }) {
   const { adapter } = group;
   const result = { language: adapter.language, tool: adapter.tool, tool_version: null, root: group.root, files: group.files, status: 'ran', reason: null, exit_code: null, duration_ms: 0, counts: emptyCounts() };
   const stopped = (status, reason, extra = {}) => ({ result: { ...result, ...extra, status, reason }, mutants: [] });
+  // The caller keeps iterating groups after Ctrl+C; probing more tools spends
+  // seconds on work the user already cancelled.
+  if (signal?.aborted) return stopped('skipped', 'interrupted');
   if (group.root == null) return stopped('unavailable', `no ${adapter.manifests.join(' or ')} found above ${group.files[0]}`);
   const root = join(changeSet.top, group.root);
   const detected = adapter.detect({ root, repoTop: changeSet.top });
@@ -450,10 +456,14 @@ function printReport(report, artifactPath) {
     return;
   }
   const counts = report.counts;
-  console.log(`Mutate ${label}: ${counts.survived} survived, ${counts.killed} killed, ${counts.timeout} timeout, ${counts.unviable} unviable, ${counts.no_coverage} no coverage (${report.mutants.length} mutants)`);
+  // An unknown or renamed tool status maps to `error`; leaving that count out of
+  // the summary hides the version drift the mapping exists to expose.
+  const unresolved = [counts.error ? `${counts.error} error` : null, counts.skipped ? `${counts.skipped} skipped` : null].filter(Boolean);
+  console.log(`Mutate ${label}: ${counts.survived} survived, ${counts.killed} killed, ${counts.timeout} timeout, ${counts.unviable} unviable, ${counts.no_coverage} no coverage${unresolved.length ? `, ${unresolved.join(', ')}` : ''} (${report.mutants.length} mutants)`);
   for (const row of report.languages) {
     const where = row.root && row.root !== '.' ? ` in ${row.root}` : '';
-    if (row.status === 'ran') console.log(`  ${row.language}${where}: ${row.tool} ${row.tool_version} — ${row.counts.survived} survived, ${row.counts.killed} killed`);
+    const extra = [row.counts.error ? `${row.counts.error} error` : null, row.counts.skipped ? `${row.counts.skipped} skipped` : null].filter(Boolean);
+    if (row.status === 'ran') console.log(`  ${row.language}${where}: ${row.tool} ${row.tool_version} — ${row.counts.survived} survived, ${row.counts.killed} killed${extra.length ? `, ${extra.join(', ')}` : ''}`);
     else console.log(`  ${row.language}${where}: ${row.status} — ${row.reason}${row.install ? `. Install: ${row.install}` : ''}`);
     if (row.note) console.log(`    note: ${row.note}`);
   }
@@ -506,7 +516,7 @@ export async function cmdMutate(args) {
   }
   if ([list, diff != null, task != null].filter(Boolean).length !== 1) return usage('mutate: choose exactly one of --list, --diff <base>, or --task <id>');
   if (base != null && task == null) return usage('mutate: --base applies to --task; use --diff <base> without a task');
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1) return usage('mutate: --timeout-ms must be a positive integer');
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) return usage(`mutate: --timeout-ms must be an integer between 1 and ${MAX_TIMEOUT_MS}`);
   let languages = null;
   if (languageArg != null) {
     const known = ADAPTERS.map(adapter => adapter.language), names = languageArg.split(',').map(name => name.trim()).filter(Boolean);

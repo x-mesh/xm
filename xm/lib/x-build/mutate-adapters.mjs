@@ -87,7 +87,9 @@ function escapeGlob(path) {
 // into a `../` pathspec that `git diff --relative` drops without an error, which
 // reads as a clean run with zero mutants.
 export function widenedRoot(top, rootRel, workspaceDir) {
-  const workspace = relative(top, workspaceDir);
+  // Every other root here is a posix git path, but `relative` is platform native:
+  // a Windows separator would turn each change-set key into a `../` pathspec.
+  const workspace = relative(top, workspaceDir).split(/[\\/]/).join('/');
   if (isAbsolute(workspace) || workspace.startsWith('..')) return rootRel;
   const widened = workspace === '' ? '.' : workspace;
   return widened === '.' || widened === rootRel || rootRel.startsWith(`${widened}/`) ? widened : rootRel;

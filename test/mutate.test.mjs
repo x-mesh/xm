@@ -332,7 +332,9 @@ test('CLI rejects removed and conflicting options before touching git', () => {
     [['--diff', 'main', '--task', 'T1'], /exactly one of/],
     [['--diff', 'main', '--base', 'x'], /--base applies to --task/],
     [['--diff', 'main', '--lang', 'cobol'], /--lang accepts rust, javascript, go, swift/],
-    [['--diff', 'main', '--timeout-ms', '0'], /--timeout-ms must be a positive integer/],
+    [['--diff', 'main', '--timeout-ms', '0'], /--timeout-ms must be an integer between 1 and 2147483647/],
+    // Node clamps a delay above 2^31-1 to 1ms, so this would kill every tool at once.
+    [['--diff', 'main', '--timeout-ms', '99999999999'], /--timeout-ms must be an integer between 1 and 2147483647/],
   ]) {
     const result = run(args);
     expect(result.status).toBe(2);
