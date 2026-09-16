@@ -10,6 +10,8 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.27.0] - 2026-09-16
+
 ### Added
 
 - **build:** `xm mutate --diff` names any untracked file a supported tool would have claimed, in the output and under `untracked_files` in the report, because a diff cannot see a new file and it would otherwise drop out of a run that looks complete
