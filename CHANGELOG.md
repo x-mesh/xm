@@ -10,6 +10,18 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+### Added
+
+- **build:** `xm mutate --diff <base>` — mutation testing on the lines a branch changed, run by one external tool per language: cargo-mutants (Rust), StrykerJS (JS/TS), gomutants (Go), Muter (Swift). Outcomes normalize to `killed` / `survived` / `timeout` / `unviable` / `no_coverage`, and reports land in `.xm/review/mutate-diff/`
+- **build:** a language whose tool or configuration is missing reports `unavailable` — with an install command for a missing tool, and the file to create for a missing configuration — instead of falling back to a built-in engine. The command exits 1 and the other languages stay valid
+
+### Changed
+
+- **build:** `xm mutate` is the diff entry and `xm build mutate` is the task entry (`--list`, `--task`); neither accepts the other's flags
+- **build:** `xm build mutate --task` takes its target files from the task's diff instead of `expected_files`, and needs a recorded `base` or `--base <ref>`
+- **build:** `--timeout-ms` is the whole-run ceiling (default 30 minutes, bounded by the Node timer limit), and `--max-mutants` is removed because the external tool chooses the mutants for the changed lines
+- **build:** mutation testing no longer rewrites files in place, so the workspace lock and the byte-restore path are gone; each tool mutates its own copy or overlay
+
 ## [2.25.2] - 2026-09-14
 
 ### Added

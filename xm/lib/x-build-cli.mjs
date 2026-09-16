@@ -27,7 +27,7 @@ import { cmdXPlan } from './x-build/plan-bridge.mjs';
 import { cmdAdaptiveRoute } from './x-build/adaptive-routing.mjs';
 import { cmdAdaptiveProof } from './x-build/adaptive-proof.mjs';
 import { cmdAttention } from './x-build/attention.mjs';
-import { cmdMutate } from './x-build/mutate.mjs';
+import { cmdMutate, cmdMutateDiff } from './x-build/mutate.mjs';
 import { cmdVerifyTests } from './x-build/escape-verify.mjs';
 
 // Skip top-level execution when imported by xm-server
@@ -146,6 +146,8 @@ switch (cmd) {
   case 'effectiveness': cmdEffectiveness(args); break;
   case 'attention': cmdAttention(args); break;
   case 'mutate': await cmdMutate(args); break;
+  // `xm mutate` routes here; the dispatcher keeps the diff entry separate.
+  case 'mutate-diff': await cmdMutateDiff(args); break;
   case 'verify-tests': cmdVerifyTests(args); break;
   case 'route':
     if (args[0] === 'prove') cmdAdaptiveProof(args.slice(1));

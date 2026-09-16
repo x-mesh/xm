@@ -431,7 +431,7 @@ case "$CMD" in
 
   mutate)
     LIB_PATH="$(plugin_lib build)"
-    node "$LIB_PATH/x-build-cli.mjs" mutate "$@"
+    node "$LIB_PATH/x-build-cli.mjs" mutate-diff "$@"
     ;;
 
   cost)

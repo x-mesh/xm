@@ -8,7 +8,7 @@ const ROOT=join(import.meta.dirname,'..');
 const readJson=path=>JSON.parse(readFileSync(join(ROOT,path),'utf8'));
 
 describe('xm mutate dispatch and packaging',()=>{
-  test('mutate is xm-native so the wrapper and engine ship together',()=>{const market=readJson('.claude-plugin/marketplace.json').plugins.find(entry=>entry.name==='mutate');expect(market).toBeUndefined();expect(readFileSync(join(ROOT,'xm/lib/x-build/mutate.mjs'),'utf8')).toContain('export async function cmdMutate');expect(readFileSync(join(ROOT,'xm/lib/x-build/mutate-adapters.mjs'),'utf8')).toContain('export const ADAPTERS');expect(readFileSync(join(ROOT,'xm/scripts/xm'),'utf8')).toContain('node "$LIB_PATH/x-build-cli.mjs" mutate "$@"');});
+  test('mutate is xm-native so the wrapper and engine ship together',()=>{const market=readJson('.claude-plugin/marketplace.json').plugins.find(entry=>entry.name==='mutate');expect(market).toBeUndefined();expect(readFileSync(join(ROOT,'xm/lib/x-build/mutate.mjs'),'utf8')).toContain('export async function cmdMutate');expect(readFileSync(join(ROOT,'xm/lib/x-build/mutate-adapters.mjs'),'utf8')).toContain('export const ADAPTERS');expect(readFileSync(join(ROOT,'xm/scripts/xm'),'utf8')).toContain('node "$LIB_PATH/x-build-cli.mjs" mutate-diff "$@"');});
 
   test('xm-native metadata keeps mutate explicit-only',()=>{const metadata=readFileSync(join(ROOT,'xm/skills/mutate/agents/openai.yaml'),'utf8');expect(metadata).toContain('allow_implicit_invocation: false');expect(metadata).toContain('$xm:mutate');});
 

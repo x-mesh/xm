@@ -707,7 +707,7 @@ It reads existing tests. It does not write them.
 ```bash
 xm mutate --diff main                        # mutate the lines changed since the merge base with main
 xm mutate --diff main --lang rust,go --json  # limit the languages and print the report as JSON
-/xm:mutate                                   # choose diff mode or an x-build task
+/xm:mutate                                   # diff mode; it asks only for the base
 xm build mutate --list --json                # x-build tasks with changed files (read-only)
 xm build mutate --project my-app --task t3   # the same check in the worktree of a task
 ```
@@ -723,7 +723,7 @@ xm does not generate mutants. For each language, an external tool parses the cod
 
 **Change set.** xm takes `git diff` from the merge base to the working tree. The diff includes uncommitted edits to tracked files. It does not include untracked files. Each file goes to the tool for its language, in the nearest directory that has `Cargo.toml`, `package.json`, `go.mod`, or `muter.conf.yml` / `Package.swift`. xm keeps only the mutants that touch a changed line.
 
-**Tools that are not installed.** If a tool or its configuration is not available, that language gets the status `unavailable` and an install command. xm does not substitute a built-in engine. The command exits 1, and the results for the other languages stay valid.
+**Tools that are not installed.** A missing tool gets the status `unavailable` with an install command. A missing configuration or manifest also gets `unavailable`, and its reason names the file to create, such as `muter.conf.yml`. xm does not substitute a built-in engine. The command exits 1, and the results for the other languages stay valid.
 
 **Tool notes.**
 - StrykerJS uses the command runner with the `test` script from `package.json`. The command runner runs the full suite for each mutant, so a large suite will be slow.

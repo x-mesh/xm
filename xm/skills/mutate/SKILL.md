@@ -25,9 +25,10 @@ Check whether the tests already in a repository detect bounded changes to the li
 ## Workflow
 
 1. Read `$ARGUMENTS` as one of two forms. Never interpolate the raw `$ARGUMENTS` string into a shell command.
-   - Diff mode: `--diff <base> [--lang <names>] [--timeout-ms N] [--json]`
-   - Task mode: `<task-id> [--project NAME] [--base REF] [--lang <names>] [--timeout-ms N] [--json]`, with an optional leading `--task`
-2. With no arguments, ask once with AskUserQuestion: diff mode against a base, or an x-build task. For diff mode, offer only branches that `git branch --list main master develop` reports, and let the user name another ref. Do not guess the base.
+   - Diff mode (the default), run as `xm mutate`: `--diff <base> [--lang <names>] [--timeout-ms N] [--json]`
+   - Task mode, run as `xm build mutate`: `<task-id> [--project NAME] [--base REF] [--lang <names>] [--timeout-ms N] [--json]`, with an optional leading `--task`
+   - The entries do not share flags. `xm mutate` takes `--diff` and refuses `--task`, `--list`, `--base` and `--project`; `xm build mutate` takes `--list`/`--task`/`--base` and refuses `--diff`.
+2. With no arguments, use diff mode and ask only for the base with AskUserQuestion. Offer the branches that `git branch --list main master develop` reports, let the user name another ref, and include one extra choice for a user who wants an x-build task instead. Do not guess the base.
 3. Task mode without a task id: run `xm build mutate --list --json`. This command is read-only and never runs mutations.
    - From `tasks`, prefer `runnable: true` rows and show up to three structured choices. Each choice must include `project/id`, task name, status, and changed files. Use AskUserQuestion once and stop until the user chooses. Do not guess or auto-select, even when there is only one candidate.
    - If no row is runnable, show the returned reasons and offer diff mode instead.
@@ -65,3 +66,4 @@ Check whether the tests already in a repository detect bounded changes to the li
 | "These survivors show which tests are missing." | A survivor can be an equivalent mutant that no test could catch. Present survivors as candidates to inspect. |
 | "An unviable mutant was stopped, so it counts as caught." | It never ran against the tests. Report it separately from `killed`. |
 | "The run timed out, so I will retry with a larger --timeout-ms." | A retry spends minutes of CPU without approval. Report the timeout and name the flag. |
+| "The user named a task, so I will pass it to `xm mutate`." | `xm mutate` is the diff entry and refuses `--task`. A task runs through `xm build mutate --project <project> --task <task-id>`. |

@@ -317,7 +317,7 @@ test('CLI diff mode writes the report and exits 1 when a language cannot run', (
   sh(root, 'git checkout -qb feature');
   write(root, 'Sources/A.swift', 'let a = 1\n');
   commitAll(root, 'swift change');
-  const result = spawnSync('bun', [CLI, 'mutate', '--diff', 'main', '--json'], { cwd: root, encoding: 'utf8', env: cliEnv() });
+  const result = spawnSync('bun', [CLI, 'mutate-diff', '--diff', 'main', '--json'], { cwd: root, encoding: 'utf8', env: cliEnv() });
   expect(result.status).toBe(1);
   const report = JSON.parse(result.stdout);
   expect(report.languages).toEqual([expect.objectContaining({ language: 'swift', status: 'unavailable', reason: 'no muter.conf.yml or Package.swift found above Sources/A.swift' })]);
@@ -325,18 +325,28 @@ test('CLI diff mode writes the report and exits 1 when a language cannot run', (
   expect(JSON.parse(readFileSync(join(root, `.xm/review/mutate-diff/${name}.json`), 'utf8')).head).toBe(report.head);
 });
 
-test('CLI rejects removed and conflicting options before touching git', () => {
-  const root = tempDir('mutate-cli-'), run = args => spawnSync('bun', [CLI, 'mutate', ...args], { cwd: root, encoding: 'utf8', env: cliEnv() });
-  for (const [args, message] of [
-    [['--diff', 'main', '--max-mutants', '3'], /--max-mutants was removed/],
-    [['--diff', 'main', '--task', 'T1'], /exactly one of/],
-    [['--diff', 'main', '--base', 'x'], /--base applies to --task/],
-    [['--diff', 'main', '--lang', 'cobol'], /--lang accepts rust, javascript, go, swift/],
-    [['--diff', 'main', '--timeout-ms', '0'], /--timeout-ms must be an integer between 1 and 2147483647/],
+test('each entry rejects the other entry\'s flags and the removed ones', () => {
+  const root = tempDir('mutate-cli-');
+  const run = (command, args) => spawnSync('bun', [CLI, command, ...args], { cwd: root, encoding: 'utf8', env: cliEnv() });
+  for (const [command, args, message] of [
+    // `xm mutate` is diff-only.
+    ['mutate-diff', [], /--diff <base> is required/],
+    ['mutate-diff', ['--diff', 'main', '--task', 'T1'], /--task belongs to `xm build mutate`/],
+    ['mutate-diff', ['--diff', 'main', '--list'], /--list belongs to `xm build mutate`/],
+    ['mutate-diff', ['--diff', 'main', '--base', 'x'], /--base belongs to `xm build mutate`/],
+    ['mutate-diff', ['--diff', 'main', '--lang', 'cobol'], /--lang accepts rust, javascript, go, swift/],
+    ['mutate-diff', ['--diff', 'main', '--timeout-ms', '0'], /--timeout-ms must be an integer between 1 and 2147483647/],
     // Node clamps a delay above 2^31-1 to 1ms, so this would kill every tool at once.
-    [['--diff', 'main', '--timeout-ms', '99999999999'], /--timeout-ms must be an integer between 1 and 2147483647/],
+    ['mutate-diff', ['--diff', 'main', '--timeout-ms', '99999999999'], /--timeout-ms must be an integer between 1 and 2147483647/],
+    // `xm build mutate` is task-only.
+    ['mutate', ['--diff', 'main'], /--diff belongs to `xm mutate --diff <base>`/],
+    ['mutate', ['--max-mutants', '3'], /--max-mutants was removed/],
+    ['mutate', ['--list', '--task', 'T1'], /--list cannot be combined with --task/],
+    ['mutate', ['--base', 'main'], /--task <id> is required/],
+    // --base reaches its own guard only with --list, which names no task.
+    ['mutate', ['--list', '--base', 'main'], /--base applies to --task/],
   ]) {
-    const result = run(args);
+    const result = run(command, args);
     expect(result.status).toBe(2);
     expect(result.stderr).toMatch(message);
   }

@@ -24,9 +24,12 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 // Enough tool output to explain a failure without storing whole test logs.
 const OUTPUT_TAIL_CHARS = 4000;
 
-const USAGE = [
-  'Usage: xm mutate --diff <base> [--lang <names>] [--timeout-ms N] [--json]',
-  '       xm build mutate [--list] [--json]',
+// Two entries, one job each: `xm mutate` takes a diff, `xm build mutate` takes a
+// task. Neither accepts the other's flags, so a typo cannot silently run the
+// wrong scope.
+const DIFF_USAGE = 'Usage: xm mutate --diff <base> [--lang <names>] [--timeout-ms N] [--json]';
+const TASK_USAGE = [
+  'Usage: xm build mutate [--list] [--json]',
   '       xm build mutate --project <name> --task <id> [--base <ref>] [--lang <names>] [--timeout-ms N] [--json]',
 ].join('\n');
 
@@ -493,43 +496,37 @@ function printTaskList(tasks) {
   console.log('Without a task, run: xm mutate --diff <base>');
 }
 
-export async function cmdMutate(args) {
-  let task = null, project = getExplicitProject(), base = null, diff = null, languageArg = null, timeoutMs = DEFAULT_TIMEOUT_MS, json = false, list = args.length === 0;
-  const usage = message => {
-    console.error(message);
-    console.error(USAGE);
-    process.exitCode = 2;
-  };
+function parseMutateOptions(args) {
+  const options = { task: null, project: getExplicitProject(), base: null, diff: null, languageArg: null, languages: null, timeoutMs: DEFAULT_TIMEOUT_MS, json: false, list: false, seen: new Set() };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i], value = args[i + 1];
-    if (arg === '--list') list = true;
-    else if (arg === '--json') json = true;
-    else if (arg === '--diff' && value) { diff = value; i += 1; }
-    else if (arg === '--task' && value) { task = value; i += 1; }
-    else if ((arg === '--project' || arg === '-p') && value) { project = value; i += 1; }
-    else if (arg.startsWith('--project=')) project = arg.slice('--project='.length);
-    else if (arg === '--base' && value) { base = value; i += 1; }
-    else if (arg === '--lang' && value) { languageArg = value; i += 1; }
-    else if (arg === '--timeout-ms' && value) { timeoutMs = Number(value); i += 1; }
-    else if (arg === '--max-mutants') return usage('mutate: --max-mutants was removed; the external tool chooses the mutants for the changed lines');
-    else return usage(`mutate: unknown or incomplete argument '${arg}'`);
+    options.seen.add(arg.startsWith('--project=') ? '--project' : arg);
+    if (arg === '--list') options.list = true;
+    else if (arg === '--json') options.json = true;
+    else if (arg === '--diff' && value) { options.diff = value; i += 1; }
+    else if (arg === '--task' && value) { options.task = value; i += 1; }
+    else if ((arg === '--project' || arg === '-p') && value) { options.project = value; i += 1; }
+    else if (arg.startsWith('--project=')) options.project = arg.slice('--project='.length);
+    else if (arg === '--base' && value) { options.base = value; i += 1; }
+    else if (arg === '--lang' && value) { options.languageArg = value; i += 1; }
+    else if (arg === '--timeout-ms' && value) { options.timeoutMs = Number(value); i += 1; }
+    else if (arg === '--max-mutants') return { error: 'mutate: --max-mutants was removed; the external tool chooses the mutants for the changed lines' };
+    else return { error: `mutate: unknown or incomplete argument '${arg}'` };
   }
-  if ([list, diff != null, task != null].filter(Boolean).length !== 1) return usage('mutate: choose exactly one of --list, --diff <base>, or --task <id>');
-  if (base != null && task == null) return usage('mutate: --base applies to --task; use --diff <base> without a task');
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) return usage(`mutate: --timeout-ms must be an integer between 1 and ${MAX_TIMEOUT_MS}`);
-  let languages = null;
-  if (languageArg != null) {
-    const known = ADAPTERS.map(adapter => adapter.language), names = languageArg.split(',').map(name => name.trim()).filter(Boolean);
-    if (!names.length || names.some(name => !known.includes(name))) return usage(`mutate: --lang accepts ${known.join(', ')}`);
-    languages = new Set(names);
+  return { options };
+}
+
+function sharedOptionError(options) {
+  if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > MAX_TIMEOUT_MS) return `mutate: --timeout-ms must be an integer between 1 and ${MAX_TIMEOUT_MS}`;
+  if (options.languageArg != null) {
+    const known = ADAPTERS.map(adapter => adapter.language), names = options.languageArg.split(',').map(name => name.trim()).filter(Boolean);
+    if (!names.length || names.some(name => !known.includes(name))) return `mutate: --lang accepts ${known.join(', ')}`;
+    options.languages = new Set(names);
   }
-  const workspace = resolve(process.cwd()), state = canonicalStateRoot(workspace);
-  if (list) {
-    const tasks = listMutationTasks(state);
-    if (json) console.log(JSON.stringify({ schema_v: 2, tasks, runnable_count: tasks.filter(row => row.runnable).length }));
-    else printTaskList(tasks);
-    return;
-  }
+  return null;
+}
+
+async function runMutateCommand(run, json) {
   const controller = new AbortController();
   let interrupted = null;
   const stop = signalName => () => { interrupted = signalName; controller.abort(); };
@@ -537,16 +534,7 @@ export async function cmdMutate(args) {
   process.once('SIGINT', onInt);
   process.once('SIGTERM', onTerm);
   try {
-    let report, artifactPath;
-    if (diff != null) {
-      report = await runDiffMutate({ cwd: workspace, base: diff, languages, timeoutMs, signal: controller.signal });
-      const name = `${report.head.slice(0, 12)}-${report.merge_base.slice(0, 12)}`;
-      persistReport(state, ['mutate-diff'], name, report);
-      artifactPath = diffReportArtifact(name);
-    } else {
-      report = await runTaskMutate(state, task, { project, base, languages, timeoutMs, signal: controller.signal });
-      artifactPath = reportArtifact(report.project, task);
-    }
+    const { report, artifactPath } = await run(controller.signal);
     if (json) console.log(JSON.stringify(report));
     else printReport(report, artifactPath);
     // Survivors are observational; only a language that could not run fails the command.
@@ -558,4 +546,50 @@ export async function cmdMutate(args) {
     process.removeListener('SIGINT', onInt);
     process.removeListener('SIGTERM', onTerm);
   }
+}
+
+// `xm mutate`: the diff entry. Task selection lives on `xm build mutate`.
+export async function cmdMutateDiff(args) {
+  const usage = message => { console.error(message); console.error(DIFF_USAGE); process.exitCode = 2; };
+  const { error, options } = parseMutateOptions(args);
+  if (error) return usage(error);
+  for (const flag of ['--task', '--list', '--base', '--project', '-p']) {
+    if (options.seen.has(flag)) return usage(`mutate: ${flag} belongs to \`xm build mutate\``);
+  }
+  if (options.diff == null) return usage('mutate: --diff <base> is required; `xm build mutate --list` shows the x-build task candidates');
+  const optionError = sharedOptionError(options);
+  if (optionError) return usage(optionError);
+  const workspace = resolve(process.cwd()), state = canonicalStateRoot(workspace);
+  await runMutateCommand(async signal => {
+    const report = await runDiffMutate({ cwd: workspace, base: options.diff, languages: options.languages, timeoutMs: options.timeoutMs, signal });
+    const name = `${report.head.slice(0, 12)}-${report.merge_base.slice(0, 12)}`;
+    persistReport(state, ['mutate-diff'], name, report);
+    return { report, artifactPath: diffReportArtifact(name) };
+  }, options.json);
+}
+
+// `xm build mutate`: the task entry. It lists candidates and runs one task's
+// linked worktree through the same diff path.
+export async function cmdMutate(args) {
+  const usage = message => { console.error(message); console.error(TASK_USAGE); process.exitCode = 2; };
+  const { error, options } = parseMutateOptions(args);
+  if (error) return usage(error);
+  if (options.seen.has('--diff')) return usage('mutate: --diff belongs to `xm mutate --diff <base>`');
+  const list = options.list || args.length === 0;
+  if (list && options.task != null) return usage('mutate: --list cannot be combined with --task');
+  if (!list && options.task == null) return usage('mutate: --task <id> is required; --list shows the candidates');
+  if (options.base != null && options.task == null) return usage('mutate: --base applies to --task');
+  const optionError = sharedOptionError(options);
+  if (optionError) return usage(optionError);
+  const workspace = resolve(process.cwd()), state = canonicalStateRoot(workspace);
+  if (list) {
+    const tasks = listMutationTasks(state);
+    if (options.json) console.log(JSON.stringify({ schema_v: 2, tasks, runnable_count: tasks.filter(row => row.runnable).length }));
+    else printTaskList(tasks);
+    return;
+  }
+  await runMutateCommand(async signal => {
+    const report = await runTaskMutate(state, options.task, { project: options.project, base: options.base, languages: options.languages, timeoutMs: options.timeoutMs, signal });
+    return { report, artifactPath: reportArtifact(report.project, options.task) };
+  }, options.json);
 }

@@ -708,7 +708,7 @@ xm review close <run-id> --reason "old run is no longer needed"
 ```bash
 xm mutate --diff main                        # main과의 merge base 이후 바뀐 줄을 변형
 xm mutate --diff main --lang rust,go --json  # 언어를 제한하고 리포트를 JSON으로 출력
-/xm:mutate                                   # diff 모드와 x-build 작업 중에서 선택
+/xm:mutate                                   # diff 모드로 실행하며 기준만 물어봄
 xm build mutate --list --json                # 바뀐 파일이 있는 x-build 작업 목록 (읽기 전용)
 xm build mutate --project my-app --task t3   # 같은 검사를 작업의 worktree에서 실행
 ```
@@ -724,7 +724,7 @@ xm은 뮤턴트를 직접 만들지 않습니다. 언어마다 외부 도구가 
 
 **변경 범위:** merge base부터 작업 트리까지의 `git diff`를 씁니다. 커밋하지 않은 추적 파일의 수정은 포함하고, 추적하지 않는 새 파일은 포함하지 않습니다. 파일마다 해당 언어의 도구를 가장 가까운 `Cargo.toml`, `package.json`, `go.mod`, `muter.conf.yml` / `Package.swift` 디렉터리에서 실행합니다. 결과에서는 바뀐 줄에 걸친 뮤턴트만 남깁니다.
 
-**도구가 없을 때:** 도구나 설정 파일이 없으면 그 언어는 `unavailable` 상태와 설치 명령으로 보고됩니다. 내장 엔진으로 대신 실행하지 않습니다. 명령은 종료 코드 1로 끝나지만, 다른 언어의 결과는 그대로 유효합니다.
+**도구가 없을 때:** 도구가 설치돼 있지 않으면 그 언어는 `unavailable` 상태와 설치 명령으로 보고됩니다. 설정 파일이나 매니페스트가 없을 때도 `unavailable`이지만, 설치 명령 대신 만들어야 할 파일 이름이 이유에 담깁니다. 예를 들어 `muter.conf.yml`입니다. 내장 엔진으로 대신 실행하지 않습니다. 명령은 종료 코드 1로 끝나지만, 다른 언어의 결과는 그대로 유효합니다.
 
 **도구별 참고:**
 - StrykerJS는 `package.json`의 `test` 스크립트로 command runner를 씁니다. command runner는 뮤턴트마다 전체 테스트를 다시 돌리므로, 테스트가 크면 느립니다.
