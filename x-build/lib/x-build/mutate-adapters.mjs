@@ -215,6 +215,8 @@ const javascript = {
   },
 };
 
+// The statuses carry a space, measured against gomutants 0.6.1; `NOT VIABLE`
+// came from a string `+=` mutated to `-=`, which does not compile.
 const GOMUTANTS_STATUS = { KILLED: 'killed', LIVED: 'survived', 'NOT COVERED': 'no_coverage', 'TIMED OUT': 'timeout', 'NOT VIABLE': 'unviable' };
 
 const go = {
@@ -230,6 +232,8 @@ const go = {
     argv: ['gomutants', '-changed-since', mergeBase, '-o', join(outDir, 'gomutants.json'), '-cache', 'off', '-q'],
   }),
   parse({ outDir }, run) {
+    // A red baseline exits 1 and writes no report (measured), so it arrives as
+    // `error` with the tool's output rather than as a mutation result.
     if (run.exitCode !== 0) throw new Error(`gomutants exited ${run.exitCode}`);
     const report = readReport(join(outDir, 'gomutants.json'), 'gomutants');
     if (!Array.isArray(report?.files)) throw invalid('gomutants', 'files is not an array');
@@ -272,6 +276,8 @@ const swift = {
     return { argv: ['muter', 'run', ...files, '--format', 'json', '--output', join(outDir, 'muter.json'), '--skip-update-check'] };
   },
   parse({ root, outDir }, run) {
+    // A red baseline exits 255 and writes no report (measured); Muter stops
+    // before it mutates rather than reporting every mutant as killed.
     if (run.exitCode !== 0) throw new Error(`Muter exited ${run.exitCode}`);
     const report = readReport(join(outDir, 'muter.json'), 'Muter');
     if (!Array.isArray(report?.fileReports)) throw invalid('Muter', 'fileReports is not an array');

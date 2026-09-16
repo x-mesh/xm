@@ -731,7 +731,7 @@ xm은 뮤턴트를 직접 만들지 않습니다. 언어마다 외부 도구가 
 - Muter에는 `muter.conf.yml`이 필요합니다. 먼저 프로젝트 루트에서 `muter init`을 실행하세요. Muter는 프로젝트 옆에 복사본(`<root>_mutated`)을 만들고, 프로젝트 안에 `muter_logs/`를 남깁니다.
 - Java, Kotlin, Python, C#, PHP용 어댑터는 없습니다.
 
-**한도:** `--timeout-ms`는 실행 전체의 시간 상한이고 기본값은 30분입니다. 뮤턴트별 timeout은 각 도구가 기준 실행 시간을 보고 정합니다. 스위트가 이미 실패하면 그 언어는 뮤테이션 결과 대신 `baseline_failed`나 `error`로 보고됩니다.
+**한도:** `--timeout-ms`는 실행 전체의 시간 상한이고 기본값은 30분입니다. 뮤턴트별 timeout은 각 도구가 기준 실행 시간을 보고 정합니다. 스위트가 이미 실패하면 cargo-mutants는 `baseline_failed`로 보고하고, StrykerJS·gomutants·Muter는 변형을 시작하기 전에 멈춰 `error`와 도구 출력으로 보고됩니다. 어느 쪽도 뮤테이션 결과가 아닙니다.
 
 diff 리포트는 `.xm/review/mutate-diff/<head>-<merge-base>.json`에, 작업 리포트는 `.xm/review/mutate/<project>/<task>.json`에 저장됩니다. 작업에서 살아남은 뮤턴트는 attention 큐에 추가됩니다. 작업을 실행하려면 연결된 worktree artifact에 `base`가 기록되어 있거나 `--base <ref>`를 넘겨야 합니다.
 

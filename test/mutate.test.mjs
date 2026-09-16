@@ -181,6 +181,28 @@ test('Muter outcome names follow its TestSuiteOutcome enum', () => {
   expect(adapter('swift').parse({ root: '/p', outDir }, { exitCode: 0 }).mutants.map(row => row.status)).toEqual(['killed', 'unviable', 'no_coverage', 'timeout', 'survived', 'killed']);
 });
 
+test('a red baseline reaches the report as a tool failure, not a mutation result', () => {
+  // Measured: cargo-mutants exits 4, StrykerJS 1, gomutants 1, Muter 255, and only
+  // cargo-mutants names the baseline; the others write no report at all.
+  const empty = outDirWith();
+  expect(adapter('rust').parse({ outDir: empty }, { exitCode: 4 })).toEqual({ mutants: [], baseline_failed: true });
+  expect(() => adapter('javascript').parse({ outDir: empty }, { exitCode: 1 })).toThrow(/StrykerJS exited 1 without a report/);
+  expect(() => adapter('go').parse({ outDir: empty }, { exitCode: 1 })).toThrow(/gomutants exited 1/);
+  expect(() => adapter('swift').parse({ root: '/project', outDir: empty }, { exitCode: 255 })).toThrow(/Muter exited 255/);
+});
+
+test('gomutants statuses keep the spacing the tool emits, and an unmapped one stays visible', () => {
+  const outDir = outDirWith();
+  const mutations = [
+    { type: 'INVERT_ASSIGNMENTS', status: 'NOT VIABLE', line: 4, column: 2, original: '+=', replacement: '-=' },
+    { type: 'RETURN_ZERO', status: 'NOT COVERED', line: 5, column: 2, original: 'x', replacement: '0' },
+    { type: 'LOOP_CONDITION', status: 'TIMED OUT', line: 6, column: 2, original: 'i < n', replacement: 'true' },
+    { type: 'BRANCH_IF', status: 'EQUIVALENT', line: 7, column: 2, original: 'a', replacement: 'b' },
+  ];
+  writeFileSync(join(outDir, 'gomutants.json'), JSON.stringify({ files: [{ file_name: 'calc.go', mutations }] }));
+  expect(adapter('go').parse({ outDir }, { exitCode: 0 }).mutants.map(row => row.status)).toEqual(['unviable', 'no_coverage', 'timeout', 'error']);
+});
+
 test('Muter plan requires muter.conf.yml and repeats --files-to-mutate per file', () => {
   const root = tempDir('mutate-swift-'), outDir = outDirWith(), swift = adapter('swift');
   const ctx = { root, outDir, changed: new Map([['Sources/A.swift', [1]], ['Sources/B.swift', [2]]]) };

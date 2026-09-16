@@ -42,7 +42,7 @@ Check whether the tests already in a repository detect bounded changes to the li
 7. Report per language, then the survivors:
    - `killed`: a test detected the mutant. `survived`: a candidate test gap. `timeout`: the mutant made the tests hang. `unviable`: the mutant did not build, which says nothing about the tests. `no_coverage`: no test executed that code. `skipped` or `error`: the tool produced no verdict.
    - A language with status `unavailable` names the missing tool or configuration and an install command. Relay both.
-   - `baseline_failed`, or an `error` whose output tail shows failing tests, means the suite already fails. Report an invalid test setup, not a mutation result.
+   - A suite that already fails arrives as `baseline_failed` from cargo-mutants, and as `error` with the tool's output from StrykerJS, gomutants and Muter. Report an invalid test setup, not a mutation result.
    - Point to the `Report:` path the command printed.
 8. Exit code 1 means at least one language could not run. The results for the other languages are still valid.
 

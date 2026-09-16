@@ -730,7 +730,7 @@ xm does not generate mutants. For each language, an external tool parses the cod
 - Muter needs `muter.conf.yml`. Run `muter init` in the project root first. Muter builds a copy next to the project (`<root>_mutated`) and writes `muter_logs/` in the project.
 - Java, Kotlin, Python, C#, and PHP have no adapter.
 
-**Bounds.** `--timeout-ms` limits the whole run. The default is 30 minutes. Each tool sets the timeout for each mutant from its baseline run. If the suite already fails, that language gets `baseline_failed` or `error`, not a mutation result.
+**Bounds.** `--timeout-ms` limits the whole run. The default is 30 minutes. Each tool sets the timeout for each mutant from its baseline run. If the suite already fails, cargo-mutants reports `baseline_failed`, while StrykerJS, gomutants and Muter stop before they mutate and the language gets `error` with the tool's output. Neither is a mutation result.
 
 Diff reports go to `.xm/review/mutate-diff/<head>-<merge-base>.json`. Task reports go to `.xm/review/mutate/<project>/<task>.json`, and each survived mutant of a task goes to the attention queue. A task needs a linked worktree artifact with a recorded `base`, or `--base <ref>`.
 
