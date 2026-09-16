@@ -13,6 +13,11 @@ bumps shipped in each marketplace release.
 ### Added
 
 - **build:** `xm mutate --diff` names any untracked file a supported tool would have claimed, in the output and under `untracked_files` in the report, because a diff cannot see a new file and it would otherwise drop out of a run that looks complete
+- **build:** `xm mutate --diff` records surviving mutants in the attention queue against HEAD, but only when every changed file is committed; with uncommitted edits in the change set it records nothing and says so, because the row would otherwise name a commit that does not contain the mutated code
+
+### Fixed
+
+- **build:** a surviving mutant keeps its column in the attention-queue operator, so two mutants on one line no longer collapse into a single row (cargo-mutants reports both `&&` → `||` and `>` → `>=` as `BinaryOperator`)
 
 ## [2.26.0] - 2026-09-16
 

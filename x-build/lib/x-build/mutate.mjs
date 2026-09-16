@@ -93,7 +93,11 @@ function resolveChangeSet(cwd, base) {
   // out of the run without a word. The caller names the ones a tool would claim.
   const untracked = gitOutput(top, ['-c', 'core.quotePath=false', 'ls-files', '--others', '--exclude-standard'], 'list untracked files')
     .split('\n').map(line => line.trim()).filter(Boolean);
-  return { top, mergeBase, head, changed: parseDiffChanges(diff), untracked };
+  // Bytes that differ from HEAD are in no commit, so a ledger row keyed on HEAD
+  // would point at code the commit does not contain.
+  const uncommitted = gitOutput(top, ['-c', 'core.quotePath=false', 'diff', '--name-only', '--diff-filter=d', 'HEAD'], 'list uncommitted changes')
+    .split('\n').map(line => line.trim()).filter(Boolean);
+  return { top, mergeBase, head, changed: parseDiffChanges(diff), untracked, uncommitted };
 }
 
 function manifestRoot(top, file, manifests) {
@@ -217,7 +221,8 @@ export async function runDiffMutate({ cwd = process.cwd(), base, languages = nul
     const adapter = adapters.find(candidate => candidate.claims(file));
     return Boolean(adapter) && (!languages || languages.has(adapter.language));
   });
-  return { schema_v: 2, mode: 'diff', base, merge_base: changeSet.mergeBase, head: changeSet.head, languages: results, mutants, counts, untracked_files, duration_ms: Date.now() - started, ts: new Date().toISOString() };
+  const uncommitted_files = (changeSet.uncommitted || []).filter(file => changeSet.changed.has(file));
+  return { schema_v: 2, mode: 'diff', base, merge_base: changeSet.mergeBase, head: changeSet.head, languages: results, mutants, counts, untracked_files, uncommitted_files, duration_ms: Date.now() - started, ts: new Date().toISOString() };
 }
 
 function loadTaskArtifact(root, task, projectName = null) {
@@ -454,7 +459,7 @@ export async function runTaskMutate(stateRoot, task, { project = null, base = nu
   const artifactPath = reportArtifact(artifact.project, task);
   const surviving = report.mutants
     .filter(row => row.status === 'survived')
-    .map(row => buildEscapeRow({ mutant: true, ts: report.ts, task_id: task, file: row.file, artifact: artifactPath, source: 'mutate', operator: row.mutator, line: row.line }));
+    .map(row => buildEscapeRow({ mutant: true, ts: report.ts, task_id: task, file: row.file, artifact: artifactPath, source: 'mutate', operator: mutantOperator(row), line: row.line }));
   if (surviving.length) appendAttentionRows(state, surviving);
   return report;
 }
@@ -568,6 +573,35 @@ async function runMutateCommand(run, json) {
   }
 }
 
+// Two mutants often share a file, a line and a mutator name — cargo-mutants
+// reports both `&&` -> `||` and `>` -> `>=` as BinaryOperator — and the ledger
+// keys a row on file, operator and line, so without the column the second
+// survivor silently merges into the first and one gap hides another.
+// The separator is `-` because the ledger only keeps a label matching
+// [a-z0-9._-]; a colon is dropped and the operator would read as empty.
+function mutantOperator(row) {
+  return Number.isInteger(row.column) ? `${row.mutator}-${row.column}` : row.mutator;
+}
+
+// A diff-mode row is attributed to HEAD, so it is only written when every
+// mutated byte is in that commit. With uncommitted edits in the change set the
+// row would name a commit that does not contain the code it describes, so the
+// run says it recorded nothing instead. Re-running on the same HEAD is safe:
+// the row id carries the commit, and appendAttentionRows drops duplicate keys.
+export function recordDiffSurvivors(state, report, artifactPath, json = false) {
+  const survivors = report.mutants.filter(row => row.status === 'survived');
+  if (!survivors.length) return 0;
+  const uncommitted = report.uncommitted_files || [];
+  if (uncommitted.length) {
+    if (!json) console.log(`Not recorded in the attention queue — ${uncommitted.length} changed file${uncommitted.length > 1 ? 's are' : ' is'} not committed, so the survivors cannot be attributed to ${report.head.slice(0, 12)}.`);
+    return 0;
+  }
+  const rows = survivors.map(row => buildEscapeRow({ mutant: true, ts: report.ts, commit: report.head, file: row.file, artifact: artifactPath, source: 'mutate', operator: mutantOperator(row), line: row.line }));
+  const written = appendAttentionRows(state, rows);
+  if (!json && written) console.log(`Attention queue: ${written} survivor${written > 1 ? 's' : ''} recorded against ${report.head.slice(0, 12)}.`);
+  return written;
+}
+
 // `xm mutate`: the diff entry. Task selection lives on `xm build mutate`.
 export async function cmdMutateDiff(args) {
   const usage = message => { console.error(message); console.error(DIFF_USAGE); process.exitCode = 2; };
@@ -584,6 +618,7 @@ export async function cmdMutateDiff(args) {
     const report = await runDiffMutate({ cwd: workspace, base: options.diff, languages: options.languages, timeoutMs: options.timeoutMs, signal });
     const name = `${report.head.slice(0, 12)}-${report.merge_base.slice(0, 12)}`;
     persistReport(state, ['mutate-diff'], name, report);
+    recordDiffSurvivors(state, report, diffReportArtifact(name), options.json);
     return { report, artifactPath: diffReportArtifact(name) };
   }, options.json);
 }

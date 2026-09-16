@@ -3,7 +3,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, matchesGlob, resolve } from 'node:path';
-import { listMutationTasks, parseDiffChanges, runDiffMutate, runTaskMutate } from '../x-build/lib/x-build/mutate.mjs';
+import { listMutationTasks, parseDiffChanges, recordDiffSurvivors, runDiffMutate, runTaskMutate } from '../x-build/lib/x-build/mutate.mjs';
 import { ADAPTERS, lineRanges, widenedRoot } from '../x-build/lib/x-build/mutate-adapters.mjs';
 
 const FIXTURES = resolve(import.meta.dir, 'fixtures/mutate');
@@ -385,6 +385,38 @@ test('each entry rejects the other entry\'s flags and the removed ones', () => {
   }
 });
 
+test('diff survivors reach the attention queue once per commit, and never for uncommitted bytes', async () => {
+  const root = fakeRepo();
+  sh(root, 'git checkout -qb feature');
+  write(root, 'a.fake', 'one\ntwo\n');
+  commitAll(root, 'committed change');
+  const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter()] });
+  const artifact = '.xm/review/mutate-diff/x.json';
+  expect(report.uncommitted_files).toEqual([]);
+  expect(recordDiffSurvivors(root, report, artifact, true)).toBe(1);
+  // The row id carries the commit, so a second run on the same HEAD adds nothing.
+  expect(recordDiffSurvivors(root, report, artifact, true)).toBe(0);
+  const ledger = readFileSync(join(root, '.xm/review/escape-ledger.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(ledger).toEqual([expect.objectContaining({ type: 'surviving_mutant', commit: report.head, file: 'a.fake', line: 2, source: 'mutate' })]);
+  expect(ledger[0].task_id).toBeUndefined();
+
+  write(root, 'a.fake', 'one\ntwo\nthree\n');
+  const dirty = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter()] });
+  expect(dirty.uncommitted_files).toEqual(['a.fake']);
+  expect(recordDiffSurvivors(root, dirty, artifact, true)).toBe(0);
+  expect(readFileSync(join(root, '.xm/review/escape-ledger.jsonl'), 'utf8').trim().split('\n')).toHaveLength(1);
+});
+
+test('two survivors on one line stay separate rows in the attention queue', () => {
+  const root = makeRoot();
+  const mutant = (column, mutator = 'BinaryOperator') => ({ file: 'src/lib.rs', line: 4, end_line: 4, column, mutator, description: 'x', status: 'survived' });
+  const report = { head: 'a'.repeat(40), ts: new Date().toISOString(), uncommitted_files: [], mutants: [mutant(12), mutant(21)] };
+  // cargo-mutants reports both as BinaryOperator on line 4; only the column separates them.
+  expect(recordDiffSurvivors(root, report, '.xm/review/mutate-diff/x.json', true)).toBe(2);
+  const ledger = readFileSync(join(root, '.xm/review/escape-ledger.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(ledger.map(row => row.operator).sort()).toEqual(['BinaryOperator-12', 'BinaryOperator-21']);
+});
+
 test('task mode runs in the linked worktree, reports under the project, and queues survivors', async () => {
   const root = fakeRepo(), wt = artifact(root, 'T1', { base: 'main' });
   changeInWorktree(wt);
@@ -392,7 +424,8 @@ test('task mode runs in the linked worktree, reports under the project, and queu
   expect(report).toMatchObject({ mode: 'task', project: 'p', task_id: 'T1', counts: { survived: 1 } });
   expect(JSON.parse(readFileSync(join(root, '.xm/review/mutate/p/T1.json'), 'utf8')).mutants).toEqual([expect.objectContaining({ file: 'a.fake', line: 2, status: 'survived' })]);
   const ledger = readFileSync(join(root, '.xm/review/escape-ledger.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-  expect(ledger).toEqual([expect.objectContaining({ type: 'surviving_mutant', task_id: 'T1', file: 'a.fake', line: 2, operator: 'Fake', source: 'mutate', artifact: '.xm/review/mutate/p/T1.json' })]);
+  // The column qualifies the operator so two mutants on one line stay apart.
+  expect(ledger).toEqual([expect.objectContaining({ type: 'surviving_mutant', task_id: 'T1', file: 'a.fake', line: 2, operator: 'Fake-1', source: 'mutate', artifact: '.xm/review/mutate/p/T1.json' })]);
   expect(readFileSync(join(root, 'a.fake'), 'utf8')).toBe('one\n');
 });
 
