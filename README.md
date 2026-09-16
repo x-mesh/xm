@@ -721,7 +721,7 @@ xm does not generate mutants. For each language, an external tool parses the cod
 | Go | [gomutants](https://github.com/szhekpisov/gomutants) | `-changed-since` | `go install github.com/szhekpisov/gomutants@latest` |
 | Swift | [Muter](https://github.com/muter-mutation-testing/muter) | whole files, then xm keeps changed lines | `brew install muter-mutation-testing/formulae/muter` |
 
-**Change set.** xm takes `git diff` from the merge base to the working tree. The diff includes uncommitted edits to tracked files. It does not include untracked files. Each file goes to the tool for its language, in the nearest directory that has `Cargo.toml`, `package.json`, `go.mod`, or `muter.conf.yml` / `Package.swift`. xm keeps only the mutants that touch a changed line.
+**Change set.** xm takes `git diff` from the merge base to the working tree. The diff includes uncommitted edits to tracked files. It does not include untracked files, so xm names any untracked file a tool would have claimed and reports it under `untracked_files`. Each file goes to the tool for its language, in the nearest directory that has `Cargo.toml`, `package.json`, `go.mod`, or `muter.conf.yml` / `Package.swift`. xm keeps only the mutants that touch a changed line.
 
 **Tools that are not installed.** A missing tool gets the status `unavailable` with an install command. A missing configuration or manifest also gets `unavailable`, and its reason names the file to create, such as `muter.conf.yml`. xm does not substitute a built-in engine. The command exits 1, and the results for the other languages stay valid.
 

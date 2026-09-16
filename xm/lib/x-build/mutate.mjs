@@ -89,7 +89,11 @@ function resolveChangeSet(cwd, base) {
   // The prefixes are pinned because patchPath strips only `a/` and `b/`; with
   // diff.mnemonicPrefix set, git writes `w/` and every path would miss its root.
   const diff = gitOutput(top, ['-c', 'core.quotePath=false', 'diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', '--unified=0', '--diff-filter=d', mergeBase], 'read the diff');
-  return { top, mergeBase, head, changed: parseDiffChanges(diff) };
+  // A diff cannot see an untracked file, so a brand-new source file would drop
+  // out of the run without a word. The caller names the ones a tool would claim.
+  const untracked = gitOutput(top, ['-c', 'core.quotePath=false', 'ls-files', '--others', '--exclude-standard'], 'list untracked files')
+    .split('\n').map(line => line.trim()).filter(Boolean);
+  return { top, mergeBase, head, changed: parseDiffChanges(diff), untracked };
 }
 
 function manifestRoot(top, file, manifests) {
@@ -209,7 +213,11 @@ export async function runDiffMutate({ cwd = process.cwd(), base, languages = nul
   }
   const counts = emptyCounts();
   for (const row of mutants) counts[row.status] += 1;
-  return { schema_v: 2, mode: 'diff', base, merge_base: changeSet.mergeBase, head: changeSet.head, languages: results, mutants, counts, duration_ms: Date.now() - started, ts: new Date().toISOString() };
+  const untracked_files = (changeSet.untracked || []).filter(file => {
+    const adapter = adapters.find(candidate => candidate.claims(file));
+    return Boolean(adapter) && (!languages || languages.has(adapter.language));
+  });
+  return { schema_v: 2, mode: 'diff', base, merge_base: changeSet.mergeBase, head: changeSet.head, languages: results, mutants, counts, untracked_files, duration_ms: Date.now() - started, ts: new Date().toISOString() };
 }
 
 function loadTaskArtifact(root, task, projectName = null) {
@@ -451,10 +459,21 @@ export async function runTaskMutate(stateRoot, task, { project = null, base = nu
   return report;
 }
 
+// Untracked files are the one way a supported file can be absent from a run that
+// otherwise looks complete, so they are named on both paths.
+function printUntracked(report) {
+  const files = report.untracked_files || [];
+  if (!files.length) return;
+  console.log(`Not mutated — ${files.length} untracked file${files.length > 1 ? 's' : ''} (a diff cannot see them; \`git add\` them first):`);
+  for (const file of files.slice(0, 10)) console.log(`  ${file}`);
+  if (files.length > 10) console.log(`  … and ${files.length - 10} more`);
+}
+
 function printReport(report, artifactPath) {
   const label = report.mode === 'task' ? `${report.project}/${report.task_id}` : `diff ${report.base} (merge-base ${report.merge_base.slice(0, 12)})`;
   if (!report.languages.length) {
     console.log(`Mutate ${label}: no changed files in a supported language (${ADAPTERS.map(adapter => adapter.language).join(', ')}).`);
+    printUntracked(report);
     console.log(`Report: ${artifactPath}`);
     return;
   }
@@ -470,6 +489,7 @@ function printReport(report, artifactPath) {
     else console.log(`  ${row.language}${where}: ${row.status} — ${row.reason}${row.install ? `. Install: ${row.install}` : ''}`);
     if (row.note) console.log(`    note: ${row.note}`);
   }
+  printUntracked(report);
   const survivors = report.mutants.filter(row => row.status === 'survived');
   if (survivors.length) {
     console.log('Survived (candidates for a missing test, not proof of one):');

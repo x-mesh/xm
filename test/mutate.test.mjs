@@ -294,6 +294,17 @@ test('diff mode groups files by manifest root, includes uncommitted edits, and k
   expect(report.counts.survived).toBe(2);
 });
 
+test('an untracked file in a supported language is named instead of silently skipped', async () => {
+  const root = fakeRepo();
+  write(root, 'a.fake', 'one\ntwo\n');
+  write(root, 'new.fake', 'fresh\n');
+  write(root, 'notes.txt', 'unsupported kind\n');
+  const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter()] });
+  // The new file is not in the diff, so it is never mutated; the report says so.
+  expect(report.untracked_files).toEqual(['new.fake']);
+  expect(report.mutants.map(row => row.file)).toEqual(['a.fake']);
+});
+
 test('a tool that is not installed is reported with its install command and never replaced', async () => {
   const root = fakeRepo();
   sh(root, 'git checkout -qb feature');

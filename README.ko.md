@@ -722,7 +722,7 @@ xm은 뮤턴트를 직접 만들지 않습니다. 언어마다 외부 도구가 
 | Go | [gomutants](https://github.com/szhekpisov/gomutants) | `-changed-since` | `go install github.com/szhekpisov/gomutants@latest` |
 | Swift | [Muter](https://github.com/muter-mutation-testing/muter) | 파일 단위로 실행한 뒤 xm이 바뀐 줄만 남김 | `brew install muter-mutation-testing/formulae/muter` |
 
-**변경 범위:** merge base부터 작업 트리까지의 `git diff`를 씁니다. 커밋하지 않은 추적 파일의 수정은 포함하고, 추적하지 않는 새 파일은 포함하지 않습니다. 파일마다 해당 언어의 도구를 가장 가까운 `Cargo.toml`, `package.json`, `go.mod`, `muter.conf.yml` / `Package.swift` 디렉터리에서 실행합니다. 결과에서는 바뀐 줄에 걸친 뮤턴트만 남깁니다.
+**변경 범위:** merge base부터 작업 트리까지의 `git diff`를 씁니다. 커밋하지 않은 추적 파일의 수정은 포함하고, 추적하지 않는 새 파일은 포함하지 않습니다. 대신 도구가 다뤘을 추적 안 된 파일은 이름을 출력하고 보고서의 `untracked_files`에 남기므로, 새 파일이 조용히 빠지지 않습니다. 파일마다 해당 언어의 도구를 가장 가까운 `Cargo.toml`, `package.json`, `go.mod`, `muter.conf.yml` / `Package.swift` 디렉터리에서 실행합니다. 결과에서는 바뀐 줄에 걸친 뮤턴트만 남깁니다.
 
 **도구가 없을 때:** 도구가 설치돼 있지 않으면 그 언어는 `unavailable` 상태와 설치 명령으로 보고됩니다. 설정 파일이나 매니페스트가 없을 때도 `unavailable`이지만, 설치 명령 대신 만들어야 할 파일 이름이 이유에 담깁니다. 예를 들어 `muter.conf.yml`입니다. 내장 엔진으로 대신 실행하지 않습니다. 명령은 종료 코드 1로 끝나지만, 다른 언어의 결과는 그대로 유효합니다.
 

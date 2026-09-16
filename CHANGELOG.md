@@ -12,6 +12,12 @@ bumps shipped in each marketplace release.
 
 ### Added
 
+- **build:** `xm mutate --diff` names any untracked file a supported tool would have claimed, in the output and under `untracked_files` in the report, because a diff cannot see a new file and it would otherwise drop out of a run that looks complete
+
+## [2.26.0] - 2026-09-16
+
+### Added
+
 - **build:** `xm mutate --diff <base>` — mutation testing on the lines a branch changed, run by one external tool per language: cargo-mutants (Rust), StrykerJS (JS/TS), gomutants (Go), Muter (Swift). Outcomes normalize to `killed` / `survived` / `timeout` / `unviable` / `no_coverage`, and reports land in `.xm/review/mutate-diff/`
 - **build:** a language whose tool or configuration is missing reports `unavailable` — with an install command for a missing tool, and the file to create for a missing configuration — instead of falling back to a built-in engine. The command exits 1 and the other languages stay valid
 
