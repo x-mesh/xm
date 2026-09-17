@@ -273,6 +273,126 @@ export function resolveVendorModel(tier, vendor = 'claude', cfg = {}) {
   return { spec: null, source: null, warning: warnings.join('; ') };
 }
 
+// Reverse of resolveVendorModel: given a concrete vendor+model, find the
+// canonical tier it belongs to by scanning VENDOR_MODELS[vendor] layered with
+// cfg.vendor_models[vendor] (user overrides win per tier). Table values may
+// carry their own ':effort' (e.g. "gpt-5.6-sol:high"), so the comparison runs
+// on parseModelSpec(...).model only — never the raw string.
+function reverseTierLookup(vendor, model, cfg) {
+  const builtinTable = VENDOR_MODELS[vendor] || {};
+  const overridesRoot = cfg?.vendor_models;
+  const overrideTable = (overridesRoot && typeof overridesRoot === 'object' && !Array.isArray(overridesRoot))
+    ? (overridesRoot[vendor] || {})
+    : {};
+  const merged = { ...builtinTable, ...overrideTable };
+  for (const [tier, spec] of Object.entries(merged)) {
+    if (typeof spec !== 'string') continue;
+    if (parseModelSpec(spec).model === model) return tier;
+  }
+  return null;
+}
+
+// R2: a tier is only ever produced by a table hit or an explicit '@tier' —
+// never guessed. Vendor 'claude' gets one extra path: MODEL_COSTS key
+// identity, which is what lets a bare tier name like 'fable' (not in
+// VENDOR_MODELS.claude, which only lists haiku/sonnet/opus) resolve as itself.
+function inferTierForModel(vendor, model, cfg) {
+  const hit = reverseTierLookup(vendor, model, cfg);
+  if (hit) return hit;
+  if (vendor === 'claude' && Object.prototype.hasOwnProperty.call(MODEL_COSTS, model)) {
+    return model;
+  }
+  return null;
+}
+
+/**
+ * Parse a direct `[vendor:]model[:effort][@tier]` pin used as a
+ * model_overrides.<role> value, distinguishing it from a bare tier string
+ * ('sonnet', 'opus', 'inherit', ...) which is returned with `isPin: false`.
+ *
+ * Parse order:
+ *   1. A value with neither ':' nor '@' is a bare tier — isPin:false, nothing
+ *      else is inspected (R1).
+ *   2. Strip a trailing '@tier' at the LAST '@'. A second '@' in what remains,
+ *      or a bare trailing '@', is rejected outright rather than trimmed away —
+ *      silently dropping it would let a malformed pin dispatch half-parsed (FM
+ *      under R1).
+ *   3. Split a vendor prefix off at the FIRST colon of what remains (default
+ *      'claude' when there is none), then hand the remainder to the existing
+ *      parseModelSpec for the "model[:effort]" grammar — no second effort
+ *      parser is written. A parseModelSpec warning (bad effort, empty model)
+ *      makes the whole pin unusable.
+ *   4. Tier: an explicit '@tier' always wins over inference. Otherwise
+ *      inferTierForModel() — a miss there is a hard error (tier stays null),
+ *      never a guessed tier (R2).
+ *
+ * Any non-null `warning` means the pin is unusable end to end: the caller
+ * (resolveRoleModel) must fall back to the role's profile default rather than
+ * dispatch a half-parsed or uninferable-tier spec (R6).
+ *
+ * @param {unknown} value
+ * @param {object} [cfg] shared config, forwarded to inferTierForModel
+ * @returns {{ isPin: boolean, vendor: string|null, model: string|null, effort: string|null, tier: string|null, warning: string|null }}
+ */
+export function parseModelPin(value, cfg) {
+  const notAPin = { isPin: false, vendor: null, model: null, effort: null, tier: null, warning: null };
+  if (typeof value !== 'string') return notAPin;
+  const trimmed = value.trim();
+  if (!trimmed.includes(':') && !trimmed.includes('@')) return notAPin;
+
+  let rest = trimmed;
+  let explicitTier = null;
+  const atIdx = trimmed.lastIndexOf('@');
+  if (atIdx !== -1) {
+    rest = trimmed.slice(0, atIdx);
+    explicitTier = trimmed.slice(atIdx + 1);
+    if (rest.includes('@')) {
+      return {
+        isPin: true, vendor: null, model: null, effort: null, tier: null,
+        warning: `parseModelPin: more than one '@' in pin "${trimmed}"`,
+      };
+    }
+    if (explicitTier === '') {
+      return {
+        isPin: true, vendor: null, model: null, effort: null, tier: null,
+        warning: `parseModelPin: trailing '@' with no tier in "${trimmed}"`,
+      };
+    }
+  }
+
+  let vendor = 'claude';
+  let modelSpecPart = rest;
+  const colonIdx = rest.indexOf(':');
+  if (colonIdx !== -1) {
+    vendor = rest.slice(0, colonIdx);
+    modelSpecPart = rest.slice(colonIdx + 1);
+    if (vendor === '') {
+      return {
+        isPin: true, vendor: null, model: null, effort: null, tier: null,
+        warning: `parseModelPin: empty vendor in "${trimmed}"`,
+      };
+    }
+  }
+
+  const specParsed = parseModelSpec(modelSpecPart);
+  if (specParsed.warning) {
+    return {
+      isPin: true, vendor, model: specParsed.model, effort: null, tier: null,
+      warning: `parseModelPin: ${specParsed.warning}`,
+    };
+  }
+
+  const { model, effort } = specParsed;
+  const tier = explicitTier != null ? explicitTier : inferTierForModel(vendor, model, cfg);
+  if (tier == null) {
+    return {
+      isPin: true, vendor, model, effort, tier: null,
+      warning: `parseModelPin: could not infer a tier for "${vendor}:${model}" — specify "@tier" explicitly`,
+    };
+  }
+  return { isPin: true, vendor, model, effort, tier, warning: null };
+}
+
 /**
  * Measured cost (USD) for a vendor+tier, mirroring costFromTokens() but on the
  * vendor-nested price table. On a missing vendor or tier it falls back to
@@ -434,13 +554,27 @@ export const PHASE_ROLE_GROUPS = {
   review:    ['reviewer', 'verifier'],
 };
 
-// ── getModelForRole ───────────────────────────────────────────────────
+// ── resolveRoleModel / getModelForRole ──────────────────────────────────
 // Override priority chain:
 //   1. model_overrides[role]   — user explicit setting, ALWAYS wins
 //   2. MODEL_PROFILES[profile] — static profile default
 //   3. fallback: "sonnet"      — safe default
-
-export function getModelForRole(role, size, config) {
+//
+// resolveRoleModel is the one place this chain is evaluated. A pin
+// (model_overrides[role] parsing as isPin via parseModelPin) is a NEW layer
+// on top of it, not a replacement: it can only ever leave here as a tier
+// (R3) — getModelForRole is a thin projection onto .tier so the ~16 existing
+// tier-keyed consumers (MODEL_COSTS, downgradeBudgetModel, MODEL_PROFILES,
+// the agent_type/'opus' checks, the large+haiku warning, gate-panel's inherit
+// branch, …) see byte-identical behaviour for every non-pin input.
+//
+// A pin that fails to parse, or whose tier can't be inferred, is NEVER
+// dispatched half-parsed (R6): it degrades to the profile default exactly as
+// if model_overrides[role] were absent, and the warning is both written to
+// stderr and carried on the returned object — the same signal is fed to
+// validateSet and the dashboard, so it is never silently swallowed one layer
+// up from parseModelPin.
+export function resolveRoleModel(role, size, config) {
   if (!config) config = loadSharedConfig();
   role = resolveRole(role);
 
@@ -454,15 +588,34 @@ export function getModelForRole(role, size, config) {
 
   // 1. User explicit override — ALWAYS wins, with one exception: economy never
   //    resolves to 'inherit'. economy is a spend ceiling, and an inherited
-  //    session model can be arbitrarily expensive.
+  //    session model can be arbitrarily expensive. A pin is explicit and
+  //    priced, so that guard's rationale does not apply to it (R8) — it keeps
+  //    testing for the INHERIT_MODEL sentinel specifically, which a pin
+  //    string (always containing ':' or '@') can never equal.
   const overrides = config.model_overrides || {};
-  if (overrides[role]) {
-    if (overrides[role] === INHERIT_MODEL && profile === 'economy') {
+  const overrideValue = overrides[role];
+  let degradedWarning = null;
+
+  if (overrideValue) {
+    const pin = parseModelPin(overrideValue, config);
+    if (pin.isPin) {
+      if (!pin.warning) {
+        return {
+          tier: pin.tier, vendor: pin.vendor, model: pin.model, effort: pin.effort,
+          spec: pin.effort ? `${pin.model}:${pin.effort}` : pin.model,
+          source: 'pin', warning: null,
+        };
+      }
+      process.stderr.write(`⚠ model_overrides.${role}: ${pin.warning} — falling back to the profile default\n`);
+      degradedWarning = pin.warning;
+      // Fall through to the profile default below (2).
+    } else if (overrideValue === INHERIT_MODEL && profile === 'economy') {
       const fallback = baseMap[role] || baseMap.executor || 'sonnet';
       console.warn(`⚠ model_overrides.${role}="inherit" is ignored under the economy profile — using "${fallback}"`);
-      return fallback;
+      return { tier: fallback, vendor: null, model: null, effort: null, spec: null, source: 'profile', warning: null };
+    } else {
+      return { tier: overrideValue, vendor: null, model: null, effort: null, spec: null, source: 'override', warning: null };
     }
-    return overrides[role];
   }
 
   // 2. Static profile (with legacy name remap: balanced→default, performance→max)
@@ -474,8 +627,11 @@ export function getModelForRole(role, size, config) {
     console.warn(`  ⚠ ${role} uses haiku for large task — consider: /xm config set model_overrides '{"${role}": "sonnet"}'`);
   }
 
-  // 4. Fallback
-  return model || 'sonnet';
+  return { tier: model || 'sonnet', vendor: null, model: null, effort: null, spec: null, source: 'profile', warning: degradedWarning };
+}
+
+export function getModelForRole(role, size, config) {
+  return resolveRoleModel(role, size, config).tier;
 }
 
 // ── getModelForRoleWithCorrelation ────────────────────────────────────

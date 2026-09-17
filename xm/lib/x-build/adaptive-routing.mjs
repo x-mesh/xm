@@ -10,7 +10,7 @@ import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:pa
 import { spawnSync } from 'node:child_process';
 import { ROOT } from './root.mjs';
 import {
-  COST_EVENT_MAX_BYTES, INHERIT_MODEL, METRICS_MAX_BYTES, getModelForRole,
+  COST_EVENT_MAX_BYTES, INHERIT_MODEL, METRICS_MAX_BYTES, resolveRoleModel,
   metricsPath, parseModelSpec, resolveVendorModel,
 } from './cost-engine.mjs';
 import { loadSharedConfig } from './config-loader.mjs';
@@ -319,8 +319,16 @@ function unresolvedVerificationFailures(events, taskClass) {
 }
 
 function resolveRoleRoute(role, size, config, warnings) {
-  const model = getModelForRole(role, size, config);
+  const roleModel = resolveRoleModel(role, size, config);
+  const model = roleModel.tier;
   const modelByVendor = { claude: model };
+  // A direct codex: pin skips the tier-reversal lookup entirely — it already
+  // carries its exact spec (R5). claude still only ever gets the tier: a pin
+  // can leave resolveRoleModel as a vendor+spec, never as model_by_vendor.claude.
+  if (roleModel.source === 'pin' && roleModel.vendor === 'codex') {
+    modelByVendor.codex = roleModel.spec;
+    return { role, model, model_by_vendor: modelByVendor };
+  }
   const codexTier = model === INHERIT_MODEL ? 'opus' : model;
   const resolved = resolveVendorModel(codexTier, 'codex', config);
   if (resolved.warning) warnings.push(`codex ${role}: ${resolved.warning}`);

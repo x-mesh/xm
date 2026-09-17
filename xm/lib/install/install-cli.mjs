@@ -46,8 +46,27 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { writeCodexMarketplaceEntry, removeCodexMarketplaceEntry, canonicalJson } from './codex-marketplace.mjs';
 import { createInterface } from 'node:readline/promises';
+import { createRequire } from 'node:module';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+// config-loader.mjs is loaded LAZILY (not a top-level import), mirroring
+// codex-vendor.mjs's own costEngine() lazy-load: a top-level import made
+// EVERY install-cli invocation — including --list/--dry-run — require
+// lib/x-build/ as a sibling of lib/install/, which broke the plugin-cache
+// partial-copy layout (only lib/install/ + skills/ on disk) that --list must
+// keep working under. Real codex installs already require lib/x-build/
+// (renderCodexVendor's own costEngine() call needs it), so calling this only
+// from the codex branch adds no new requirement — it just stops demanding it
+// for paths that never touch codex.
+const require = createRequire(import.meta.url);
+let _loadSharedConfig = null;
+function loadSharedConfigLazy() {
+  if (!_loadSharedConfig) {
+    _loadSharedConfig = require('../x-build/config-loader.mjs').loadSharedConfig;
+  }
+  return _loadSharedConfig();
+}
 
 // HERE is .../lib/install. Default skills/lib paths differ by layout:
 //   - source repo:   HERE/../../.. = <repo>     → skills at xm/skills, lib at xm/lib
@@ -1094,7 +1113,7 @@ export function run(argv) {
         // Vendor layer (t7): xm-owned role/profile TOMLs + feature-gate note.
         // Merged into sharedOuts so its outputs flow through the manifest and its
         // notes print alongside the hooks notes.
-        const vendor = renderCodexVendor({ scope: args.scope });
+        const vendor = renderCodexVendor({ scope: args.scope, config: loadSharedConfigLazy() });
         sharedOuts = {
           outputs: [...shared.outputs, ...vendor.outputs],
           notes: [...shared.notes, ...vendor.notes],

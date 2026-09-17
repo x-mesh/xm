@@ -4,7 +4,7 @@
 
 import {
   PHASES, TASK_STATES, STATUS_ALIASES, C,
-  ROLE_MODEL_MAP_HR, INHERIT_MODEL, JUDGMENT_ROLES, MODEL_COSTS, getModelForRole, getModelForRoleWithCorrelation, generateCorrelationId, checkBudget, loadSharedConfig, XM_GLOBAL, ROOT,
+  ROLE_MODEL_MAP_HR, INHERIT_MODEL, JUDGMENT_ROLES, MODEL_COSTS, getModelForRole, resolveRoleModel, getModelForRoleWithCorrelation, generateCorrelationId, checkBudget, loadSharedConfig, XM_GLOBAL, ROOT,
   getMode, autopilotActive,
   readJSON, writeJSON, modifyJSON, readMD,
   manifestPath, tasksPath, stepsPath, prdPath, contextDir, phaseDir, decisionsPath, projectDir,
@@ -1691,8 +1691,26 @@ function preflightPredictions(project, tasks, sharedCfg) {
 // vendor_models, malformed override, unmapped tier) we print it to stderr and
 // omit the codex key so a misconfigured vendor_models degrades to claude-only
 // rather than a silently wrong spec — the run itself never crashes.
-export function vendorModelFields(model, cfg) {
+//
+// `role`/`size`, when passed, let this resolve a FRESH resolveRoleModel() to
+// check for a direct pin — needed because `model` itself may be `_assigned_model`,
+// a plain tier string persisted by markTasksRunning before this runs, which
+// carries no vendor/spec info of its own. The pin is only trusted when its tier
+// agrees with `model` (roleModel.tier === model): a budget downgrade
+// (task._budget_fallback_model) can make the final tier diverge from what a
+// fresh per-role resolution returns, and in that case codex must be derived
+// from the SAME final tier as claude, exactly as pre-pin — never a mismatched
+// vendor pair. Callers with no role (plan.mjs's three call sites) keep the
+// pre-pin, tier-only behaviour untouched.
+export function vendorModelFields(model, cfg, role, size) {
   const byVendor = { claude: model };
+  if (role) {
+    const roleModel = resolveRoleModel(role, size, cfg);
+    if (roleModel.source === 'pin' && roleModel.tier === model && roleModel.vendor && roleModel.vendor !== 'claude') {
+      byVendor[roleModel.vendor] = roleModel.spec;
+      return { model_vendor: 'claude', model_by_vendor: byVendor };
+    }
+  }
   // 'inherit' is a session-relative value only the claude host understands
   // (the orchestrator omits the Agent-tool model parameter). Cross-vendor
   // lookup needs a concrete tier: fall back to 'opus' — the tier these
@@ -1725,7 +1743,7 @@ function buildPlanEntry(project, task, { briefContent, decisionsContent, manifes
       || (model === INHERIT_MODEL && JUDGMENT_ROLES.includes(role))
       ? 'deep-executor' : 'executor',
     model,
-    ...vendorModelFields(model, sharedCfg),
+    ...vendorModelFields(model, sharedCfg, role, task.size),
     review_group: taskReviewGroup(task),
     task_checks: resolveTaskChecks(repoRoot()),
     task_check_command: `x-build task-check ${task.id}`,

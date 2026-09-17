@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.27.1-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.27.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -1466,6 +1466,17 @@ Profile changes now automatically rewrite SKILL.md frontmatter `model:` fields a
 Key roles shown; full mapping includes reviewer, security, designer, debugger, writer. See `MODEL_PROFILES` in source.
 
 Per-role overrides: `/xm config set model_overrides '{"architect": "opus"}'` on top of any profile.
+
+A role can also be pinned to an **exact vendor model** instead of a tier, using the same `provider:model[:effort]` grammar as `review.models` plus an optional `@tier`:
+
+```bash
+/xm config set model_overrides '{
+  "planner":  "codex:gpt-5.6-sol:high",
+  "executor": "codex:gpt-5.6-luna:xhigh"
+}'
+```
+
+The tier is **inferred** by reversing `VENDOR_MODELS` when the model is known (`codex:gpt-5.6-luna` → `haiku`) and **required** as `@tier` when it is not (`codex:gpt-6-new:high@sonnet`). A tier is never guessed: an uninferable or malformed pin warns on stderr and falls back to the profile default rather than dispatching half-parsed. Pins still carry a tier because cost estimation, the `opus → sonnet → haiku` budget downgrade ladder, and `model_profile` are all keyed by tier — `getModelForRole` keeps returning a tier for every input, and only the per-vendor dispatch fields (`model_by_vendor`) see the exact spec. Unlike `vendor_models`, which remaps a tier for *every* role sharing it, a pin is scoped to one role.
 
 Budget guards warn at 80% usage and block execution at 100%, tracked via session metrics. Rolling spend is computed from `.xm/metrics.jsonl` over a configurable window (`budget.window_hours`, default 24h); setting it to `0` disables the window and uses the lifetime spend cache (`.xm/spend-cache.json`). Per-project caps use `budget.projects`:
 

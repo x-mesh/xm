@@ -278,6 +278,108 @@ describe('getModelForRole — extended roles and aliases', () => {
   });
 });
 
+// ── 1c. resolveRoleModel — pin layer on top of the tier chain (t2) ────────────
+
+describe('resolveRoleModel / getModelForRole — pin support', () => {
+  afterEach(() => { clearConfig(); clearMetrics(); });
+
+  function captureStderr(fn) {
+    const chunks = [];
+    const orig = process.stderr.write;
+    process.stderr.write = (s) => { chunks.push(String(s)); return true; };
+    try { fn(); } finally { process.stderr.write = orig; }
+    return chunks.join('');
+  }
+
+  test('a valid pin resolves with source "pin" and a reconstructed spec', () => {
+    const r = ce.resolveRoleModel('executor', 'medium', {
+      model_overrides: { executor: 'codex:gpt-5.6-luna:xhigh' },
+    });
+    expect(r).toEqual({
+      tier: 'haiku', vendor: 'codex', model: 'gpt-5.6-luna', effort: 'xhigh',
+      spec: 'gpt-5.6-luna:xhigh', source: 'pin', warning: null,
+    });
+  });
+
+  test('getModelForRole still returns only the tier for a pin', () => {
+    expect(ce.getModelForRole('executor', 'medium', {
+      model_overrides: { executor: 'codex:gpt-5.6-luna:xhigh' },
+    })).toBe('haiku');
+  });
+
+  test('a bare-tier override keeps source "override" (back-compat)', () => {
+    const r = ce.resolveRoleModel('executor', 'medium', { model_overrides: { executor: 'opus' } });
+    expect(r).toEqual({ tier: 'opus', vendor: null, model: null, effort: null, spec: null, source: 'override', warning: null });
+  });
+
+  test('no override falls back to the profile default with source "profile"', () => {
+    const r = ce.resolveRoleModel('executor', 'medium', { model_profile: 'default' });
+    expect(r).toEqual({ tier: 'sonnet', vendor: null, model: null, effort: null, spec: null, source: 'profile', warning: null });
+  });
+
+  test('a malformed pin warns on stderr, degrades to the profile default, and getModelForRole still returns a tier', () => {
+    let r;
+    const stderr = captureStderr(() => {
+      r = ce.resolveRoleModel('executor', 'medium', {
+        model_overrides: { executor: 'codex:gpt-6-new:high' }, // unknown model, no @tier
+        model_profile: 'default',
+      });
+    });
+    expect(r.tier).toBe('sonnet'); // default.executor
+    expect(r.source).toBe('profile');
+    expect(r.warning).toContain('could not infer a tier');
+    expect(stderr).toContain('could not infer a tier');
+    expect(ce.getModelForRole('executor', 'medium', {
+      model_overrides: { executor: 'codex:gpt-6-new:high' },
+      model_profile: 'default',
+    })).toBe('sonnet');
+  });
+
+  test('nothing throws for a matrix of bare tiers, valid pins, and malformed pins — always a MODEL_COSTS key or INHERIT_MODEL', () => {
+    const VALID_TIERS = new Set([...Object.keys(ce.MODEL_COSTS), ce.INHERIT_MODEL]);
+    const values = [
+      'sonnet', 'opus', 'haiku', 'fable', 'inherit',
+      'codex:gpt-5.6-luna:xhigh', 'codex:gpt-5.6-terra', 'claude:fable',
+      'codex:gpt-6-new:high', 'codex:gpt-6-new:high@sonnet', 'a@b@c', ':bad', 'codex:gpt-5.6-luna:xhi',
+    ];
+    for (const value of values) {
+      let model;
+      expect(() => {
+        model = ce.getModelForRole('executor', 'medium', { model_overrides: { executor: value }, model_profile: 'default' });
+      }).not.toThrow();
+      expect(VALID_TIERS.has(model)).toBe(true);
+    }
+  });
+
+  test('economy: a pin resolves to the pin (not rejected like inherit)', () => {
+    const r = ce.resolveRoleModel('executor', 'medium', {
+      model_overrides: { executor: 'codex:gpt-5.6-luna:xhigh' },
+      model_profile: 'economy',
+    });
+    expect(r.source).toBe('pin');
+    expect(r.tier).toBe('haiku');
+    expect(r.warning).toBeNull();
+  });
+
+  test('economy: "inherit" still falls back with its warning (guard untouched)', () => {
+    const warnings = [];
+    const orig = console.warn;
+    console.warn = (...a) => warnings.push(a.join(' '));
+    let r;
+    try {
+      r = ce.resolveRoleModel('executor', 'medium', {
+        model_overrides: { executor: 'inherit' },
+        model_profile: 'economy',
+      });
+    } finally {
+      console.warn = orig;
+    }
+    expect(r.source).toBe('profile');
+    expect(r.tier).not.toBe('inherit');
+    expect(warnings.some(w => w.includes('economy'))).toBe(true);
+  });
+});
+
 // ── 2. Spinlock concurrency (appendMetric) ────────────────────────────────────
 
 describe('appendCostEvent — payload and write lock', () => {

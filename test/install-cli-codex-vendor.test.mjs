@@ -2,7 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import {
-  mkdtempSync, mkdirSync, copyFileSync, cpSync, existsSync, readFileSync, readdirSync, statSync,
+  mkdtempSync, mkdirSync, copyFileSync, cpSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,8 @@ import {
   renderRoleLayerToml,
   renderProfileToml,
   codexVendorRelativePaths,
+  roleLayerRelPath,
+  profileRelPath,
   CODEX_ROLE_PHASES,
   CODEX_PROFILE_POLICY,
 } from '../xm/lib/install/transform/codex-vendor.mjs';
@@ -234,6 +236,46 @@ describe('codex-vendor — renderCodexVendor', () => {
     expect(() => renderCodexVendor({ scope: 'local', feature: { supported: false, reason: 'x' } })).not.toThrow();
     expect(CODEX_ROLE_PHASES.map((r) => r.role)).toEqual(['planner', 'executor', 'reviewer']);
   });
+
+  // ── config threading (t5/R9) ────────────────────────────────────────────
+
+  test('config.vendor_models.codex.opus reaches the planner role layer (model + effort)', () => {
+    const config = { vendor_models: { codex: { opus: 'gpt-5.6-sol:high' } } };
+    const { outputs } = renderCodexVendor({ scope: 'local', feature: { supported: false, reason: 'x' }, config });
+    const plannerLayer = outputs.find((o) => o.relativePath === roleLayerRelPath('planner'));
+    expect(plannerLayer.content).toMatch(/^model = "gpt-5\.6-sol"$/m);
+    expect(plannerLayer.content).toMatch(/^model_reasoning_effort = "high"$/m);
+  });
+
+  test('the same config override also reaches the max profile TOML', () => {
+    const config = { vendor_models: { codex: { opus: 'gpt-5.6-sol:high' } } };
+    const { outputs } = renderCodexVendor({ scope: 'local', feature: { supported: false, reason: 'x' }, config });
+    const maxProfile = outputs.find((o) => o.relativePath === profileRelPath('max'));
+    expect(maxProfile.content).toMatch(/^model_reasoning_effort = "high"$/m);
+  });
+
+  test('two renders with the same config are byte-identical', () => {
+    const config = { vendor_models: { codex: { opus: 'gpt-5.6-sol:high' } } };
+    const a = renderCodexVendor({ scope: 'local', feature: { supported: true, reason: null }, config });
+    const b = renderCodexVendor({ scope: 'local', feature: { supported: true, reason: null }, config });
+    expect(a).toEqual(b);
+  });
+
+  test('a no-config render is byte-identical to the pre-t5 baseline (no drift)', () => {
+    const withUndefined = renderCodexVendor({ scope: 'local', feature: { supported: true, reason: null } });
+    const withExplicitUndefined = renderCodexVendor({ scope: 'local', feature: { supported: true, reason: null }, config: undefined });
+    expect(withUndefined).toEqual(withExplicitUndefined);
+    // Untouched by any config: the builtin table's plain (no-effort) opus spec.
+    const plannerLayer = withUndefined.outputs.find((o) => o.relativePath === roleLayerRelPath('planner'));
+    expect(plannerLayer.content).toMatch(/^model = "gpt-5\.6-sol"$/m);
+    expect(plannerLayer.content).not.toMatch(/model_reasoning_effort/);
+  });
+
+  test('resolveCodexSpec and renderProfileToml independently accept a trailing config', () => {
+    const config = { vendor_models: { codex: { opus: 'gpt-5.6-sol:high' } } };
+    expect(resolveCodexSpec('opus', config)).toEqual({ model: 'gpt-5.6-sol', effort: 'high', spec: 'gpt-5.6-sol:high' });
+    expect(renderProfileToml('max', config)).toMatch(/model_reasoning_effort = "high"/);
+  });
 });
 
 // ── End-to-end via the CLI subprocess (isolated temp HOME/cwd) ──
@@ -262,6 +304,35 @@ describe('install-cli — codex vendor layer (dry-run / install / verify / unins
     expect(planner).not.toMatch(/model_reasoning_effort/);
     expect(r.stdout).toContain('[agents.xm-planner]');
     expect(r.stdout).toContain('model_by_vendor.codex');
+  });
+
+  // The renderer is a pure function of its args, so passing a config object to it
+  // directly proves nothing about the installer. This drives the real CLI and reads
+  // the emitted file: X_BUILD_ROOT pins the config tier to the sandbox so the host
+  // ~/.xm/config.json can never decide the result.
+  test('install threads shared config into the vendor TOMLs', () => {
+    const tmp = seedTmp();
+    mkdirSync(join(tmp, '.xm'), { recursive: true });
+    writeFileSync(
+      join(tmp, '.xm', 'config.json'),
+      JSON.stringify({ vendor_models: { codex: { opus: 'gpt-5.6-sol:xhigh' } } }),
+    );
+    const r = runCli(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], {
+      cwd: tmp,
+      env: { XM_CODEX_FEATURES_STUB: ENABLED_STUB, X_BUILD_ROOT: join(tmp, '.xm', 'build') },
+    });
+    expect(r.status).toBe(0);
+
+    const planner = readFileSync(join(tmp, '.codex', 'xm', 'agents', 'xm-planner.config.toml'), 'utf8');
+    expect(planner).toMatch(/model = "gpt-5\.6-sol"/);
+    expect(planner).toMatch(/model_reasoning_effort = "xhigh"/);
+
+    const executor = readFileSync(join(tmp, '.codex', 'xm', 'agents', 'xm-executor.config.toml'), 'utf8');
+    expect(executor).toMatch(/model = "gpt-5\.6-terra"/);
+    expect(executor).not.toMatch(/model_reasoning_effort/);
+
+    const maxProfile = readFileSync(join(tmp, '.codex', 'xm-max.config.toml'), 'utf8');
+    expect(maxProfile).toMatch(/model_reasoning_effort = "xhigh"/);
   });
 
   test('install still writes TOMLs (gate-independent) when multi_agent disabled', () => {

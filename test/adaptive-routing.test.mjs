@@ -86,6 +86,32 @@ describe('adaptive runtime routing', () => {
     expect(decision.model_routes).toEqual(routes);
   });
 
+  test('a direct codex pin on executor dispatches its exact spec, planner is untouched (t3/R5)', async () => {
+    const { resolveAdaptiveModelRoutes } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const routes = resolveAdaptiveModelRoutes({
+      model_overrides: { executor: 'codex:gpt-5.6-luna:xhigh' },
+    });
+
+    expect(routes.warnings).toEqual([]);
+    expect(routes.execute).toEqual({
+      role: 'executor',
+      model: 'haiku',
+      model_by_vendor: { claude: 'haiku', codex: 'gpt-5.6-luna:xhigh' },
+    });
+    // planner has no override — same tier-reversal path as before the change.
+    expect(routes.plan.model_by_vendor).toEqual({ claude: 'inherit', codex: 'gpt-5.6-sol' });
+  });
+
+  test('an unpinned role emits exactly the same model_by_vendor map as before the change', async () => {
+    const { resolveAdaptiveModelRoutes } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const routes = resolveAdaptiveModelRoutes({ model_overrides: { executor: 'sonnet' } });
+    expect(routes.execute).toEqual({
+      role: 'executor',
+      model: 'sonnet',
+      model_by_vendor: { claude: 'sonnet', codex: 'gpt-5.6-terra' },
+    });
+  });
+
   test('derives a stable class and high-risk signals from task facts', async () => {
     const { classifyAdaptiveTask, decideAdaptiveRoute } = await import('../x-build/lib/x-build/adaptive-routing.mjs');
     const classification = classifyAdaptiveTask({

@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.27.1-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.27.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -1466,6 +1466,17 @@ xm은 37개 전문가 에이전트를 함께 가지고 다닙니다. 코어 역�
 주요 역할만 표시. 전체 매핑(reviewer, security, designer, debugger, writer 포함)은 소스의 `MODEL_PROFILES` 참조.
 
 역할별 오버라이드: `/xm config set model_overrides '{"architect": "opus"}'`로 프로필 위에 개별 설정 가능.
+
+역할을 tier가 아니라 **정확한 벤더 모델**로 고정할 수도 있습니다. `review.models`와 같은 `provider:model[:effort]` 문법에 선택적 `@tier`가 붙습니다:
+
+```bash
+/xm config set model_overrides '{
+  "planner":  "codex:gpt-5.6-sol:high",
+  "executor": "codex:gpt-5.6-luna:xhigh"
+}'
+```
+
+tier는 아는 모델이면 `VENDOR_MODELS` 역인덱스로 **추론**하고(`codex:gpt-5.6-luna` → `haiku`), 모르는 모델이면 `@tier`가 **필수**입니다(`codex:gpt-6-new:high@sonnet`). tier를 추측하는 경로는 없습니다 — 추론 불가하거나 형식이 깨진 핀은 stderr에 경고하고 프로필 기본값으로 되돌아가며, 반쯤 파싱된 상태로 디스패치되지 않습니다. 핀이 여전히 tier를 들고 다니는 이유는 비용 추정, `opus → sonnet → haiku` 예산 강등 사다리, `model_profile`이 모두 tier를 키로 쓰기 때문입니다. 그래서 `getModelForRole`은 모든 입력에 대해 tier만 반환하고, 정확한 스펙은 벤더별 디스패치 필드(`model_by_vendor`)만 봅니다. tier를 공유하는 *모든* 역할을 함께 바꾸는 `vendor_models`와 달리, 핀은 역할 하나에만 적용됩니다.
 
 예산 가드는 80% 사용 시 경고하고, 100%에서 실행을 차단하며 세션 메트릭으로 추적됩니다. 롤링 지출은 `.xm/metrics.jsonl`에서 설정 가능한 윈도우(`budget.window_hours`, 기본값 24h) 단위로 계산되며, `0`으로 설정하면 윈도우가 꺼지고 평생 지출 캐시(`.xm/spend-cache.json`)를 사용합니다. 프로젝트별 상한은 `budget.projects`로 설정합니다:
 

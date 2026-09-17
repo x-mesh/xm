@@ -118,11 +118,13 @@ export function codexVendorRelativePaths() {
  * Resolve a canonical tier into a concrete codex `{ model, effort }`. Fails loud
  * on any gap rather than emitting a config with a null model.
  * @param {string} tier
+ * @param {object} [config] shared config, forwarded to resolveVendorModel so a
+ *   `vendor_models.codex.<tier>` override reaches the generated TOMLs.
  * @returns {{ model: string, effort: string|null, spec: string }}
  */
-export function resolveCodexSpec(tier) {
+export function resolveCodexSpec(tier, config) {
   const { resolveVendorModel, parseModelSpec } = costEngine();
-  const { spec, warning } = resolveVendorModel(tier, 'codex');
+  const { spec, warning } = resolveVendorModel(tier, 'codex', config);
   if (!spec) {
     throw new Error(
       `codex-vendor: could not resolve a codex model for tier "${tier}" ` +
@@ -181,12 +183,14 @@ export function renderRoleLayerToml({ role, phase, tier, spec }) {
 /**
  * Render one profile TOML.
  * @param {'economy'|'default'|'max'} profile
+ * @param {object} [config] shared config, forwarded to resolveCodexSpec so a
+ *   `vendor_models.codex.<tier>` override reaches the profile TOML too.
  * @returns {string}
  */
-export function renderProfileToml(profile) {
+export function renderProfileToml(profile, config) {
   const policy = CODEX_PROFILE_POLICY[profile];
   if (!policy) throw new Error(`codex-vendor: unknown profile "${profile}"`);
-  const resolved = resolveCodexSpec(policy.tier);
+  const resolved = resolveCodexSpec(policy.tier, config);
   // Spec-pinned effort wins (e.g. opus → gpt-5.6-sol); otherwise the profile's
   // effort ladder fills in.
   const effort = resolved.effort ?? policy.effort;
@@ -317,10 +321,17 @@ export function detectCodexFeature(featureName = 'multi_agent', opts = {}) {
  * Every output is `kind: 'overwrite'` so it flows through the existing
  * manifest / --verify / --uninstall pipeline unchanged.
  *
- * @param {{ scope: 'global'|'local', feature?: ReturnType<typeof detectCodexFeature> }} args
+ * @param {{ scope: 'global'|'local', feature?: ReturnType<typeof detectCodexFeature>, config?: object }} args
+ *   `config`, when given, is the shared xm config — threaded into every
+ *   resolveCodexSpec/resolveVendorModel call below so `vendor_models.codex.*`
+ *   overrides reach the generated TOMLs. It arrives ONLY as this explicit
+ *   parameter (never read from disk in here): renderCodexVendor's output must
+ *   stay a pure function of its arguments for the manifest's byte-identical
+ *   re-render check (R9/A2), and path-only consumers (codexVendorRelativePaths)
+ *   must stay cost-engine-free regardless of what config exists on disk.
  * @returns {{ outputs: import('../types.mjs').RenderOutput[], notes: string[] }}
  */
-export function renderCodexVendor({ scope, feature } = /** @type {any} */ ({})) {
+export function renderCodexVendor({ scope, feature, config } = /** @type {any} */ ({})) {
   /** @type {import('../types.mjs').RenderOutput[]} */
   const outputs = [];
   /** @type {string[]} */
@@ -343,7 +354,7 @@ export function renderCodexVendor({ scope, feature } = /** @type {any} */ ({})) 
     if (!tier) {
       throw new Error(`codex-vendor: no ROLE_MODEL_MAP_HR tier for role "${role}"`);
     }
-    const spec = resolveCodexSpec(tier);
+    const spec = resolveCodexSpec(tier, config);
     const relativePath = roleLayerRelPath(role);
     outputs.push({
       relativePath,
@@ -358,7 +369,7 @@ export function renderCodexVendor({ scope, feature } = /** @type {any} */ ({})) 
   for (const profile of /** @type {('economy'|'default'|'max')[]} */ (Object.keys(CODEX_PROFILE_POLICY))) {
     outputs.push({
       relativePath: profileRelPath(profile),
-      content: renderProfileToml(profile),
+      content: renderProfileToml(profile, config),
       kind: 'overwrite',
       mode,
     });
