@@ -10,6 +10,8 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.27.1] - 2026-09-17
+
 ### Fixed
 
 - **xm:** the dispatcher picks the newer of the Codex global bundle and the Claude marketplace cache instead of always preferring the bundle. A bundle left untouched while the Claude plugin updated on its own shadowed the newer cache for every cwd outside the source repo, so the terminal CLI silently ran code several releases old. A tie keeps the bundle, and a bundle that cannot state its version no longer outranks a cache that can
