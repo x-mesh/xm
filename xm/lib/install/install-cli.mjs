@@ -317,23 +317,20 @@ function readPipedAnswers(input) {
 }
 
 /**
- * Mirror `xm/lib` into the target's bundle directory so generated skills and
- * hooks can execute the CLI paths produced by expandPaths().
+ * Mirror one source tree into the bundle at `base`.
  *
- * @param {string} libDir
- * @param {import('./types.mjs').TargetTool} target
- * @param {'global'|'local'} scope
+ * @param {string} sourceDir
+ * @param {string} base            Path relative to the install root.
+ * @param {0o600|0o644} mode
  * @returns {import('./types.mjs').RenderOutput[]}
  */
-function renderBundleOutputs(libDir, target, scope) {
+function mirrorTreeOutputs(sourceDir, base, mode) {
   /** @type {import('./types.mjs').RenderOutput[]} */
   const outputs = [];
-  const base = join(targetDirFor(target, scope), 'xm', 'lib');
-  const mode = scope === 'global' ? 0o600 : 0o644;
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const abs = join(dir, entry.name);
-      const rel = relative(libDir, abs);
+      const rel = relative(sourceDir, abs);
       if (entry.isDirectory()) {
         walk(abs);
       } else if (entry.isFile()) {
@@ -355,22 +352,45 @@ function renderBundleOutputs(libDir, target, scope) {
       }
     }
   };
-  walk(libDir);
+  walk(sourceDir);
   return outputs;
+}
+
+/**
+ * Mirror `xm/lib` and `xm/skills` into the target's bundle directory so
+ * generated skills and hooks can execute the CLI paths produced by
+ * expandPaths(). Both trees ship because lib modules resolve skill payloads
+ * relative to their own location; see the bundle entries in plan-paths.mjs.
+ *
+ * @param {string} libDir
+ * @param {string} skillsDir
+ * @param {import('./types.mjs').TargetTool} target
+ * @param {'global'|'local'} scope
+ * @returns {import('./types.mjs').RenderOutput[]}
+ */
+function renderBundleOutputs(libDir, skillsDir, target, scope) {
+  const xmDir = join(targetDirFor(target, scope), 'xm');
+  const mode = scope === 'global' ? 0o600 : 0o644;
+  return [
+    ...mirrorTreeOutputs(libDir, join(xmDir, 'lib'), mode),
+    ...mirrorTreeOutputs(skillsDir, join(xmDir, 'skills'), mode),
+  ];
 }
 
 /**
  * @param {ReturnType<typeof planTarget>} entries
  * @param {string} libDir
+ * @param {string} skillsDir
  * @returns {ReturnType<typeof planTarget>}
  */
-function expandBundlePlanEntries(entries, libDir) {
+function expandBundlePlanEntries(entries, libDir, skillsDir) {
   const expanded = [];
   for (const entry of entries) {
     if (entry.kind !== 'bundle') {
       expanded.push(entry);
       continue;
     }
+    const sourceDir = entry.bundleSource === 'skills' ? skillsDir : libDir;
     const walk = (dir) => {
       for (const child of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
         const abs = join(dir, child.name);
@@ -379,14 +399,14 @@ function expandBundlePlanEntries(entries, libDir) {
         } else if (child.isFile()) {
           expanded.push({
             ...entry,
-            absolutePath: join(entry.absolutePath, relative(libDir, abs)),
+            absolutePath: join(entry.absolutePath, relative(sourceDir, abs)),
           });
         } else if (lstatSync(abs).isSymbolicLink()) {
           throw new Error(`refusing to plan bundle symlink: ${abs}`);
         }
       }
     };
-    walk(libDir);
+    walk(sourceDir);
   }
   return expanded;
 }
@@ -394,11 +414,12 @@ function expandBundlePlanEntries(entries, libDir) {
 /**
  * @param {Record<string, ReturnType<typeof planTarget>>} planMap
  * @param {string} libDir
+ * @param {string} skillsDir
  * @returns {Record<string, ReturnType<typeof planTarget>>}
  */
-function expandBundlePlanMap(planMap, libDir) {
+function expandBundlePlanMap(planMap, libDir, skillsDir) {
   return Object.fromEntries(
-    Object.entries(planMap).map(([target, entries]) => [target, expandBundlePlanEntries(entries, libDir)])
+    Object.entries(planMap).map(([target, entries]) => [target, expandBundlePlanEntries(entries, libDir, skillsDir)])
   );
 }
 
@@ -998,7 +1019,7 @@ export function run(argv) {
   let planMap;
   try {
     planMap = planAll({ skills, targets, scope: args.scope, cwd: process.cwd() });
-    planMap = expandBundlePlanMap(planMap, args.libDir);
+    planMap = expandBundlePlanMap(planMap, args.libDir, args.skillsDir);
   } catch (err) {
     return { exitCode: 2, stdout: '', stderr: `plan failed: ${err.message}\n` };
   }
@@ -1099,7 +1120,7 @@ export function run(argv) {
 
     let bundleOuts;
     try {
-      bundleOuts = renderBundleOutputs(args.libDir, target, args.scope);
+      bundleOuts = renderBundleOutputs(args.libDir, args.skillsDir, target, args.scope);
     } catch (err) {
       return { exitCode: 2, stdout: '', stderr: `${target}: bundle failed: ${/** @type {Error} */ (err).message}\n` };
     }

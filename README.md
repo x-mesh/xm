@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.27.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.27.1-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -172,7 +172,7 @@ xm help
 
 The CLI dispatches to plugin libs in `~/.claude/plugins/cache/xm/`, the Codex-only bundle in `~/.codex/xm/`, or `$XM_LIB`. A Claude Code plugin installation is therefore not required on a Codex-only host.
 
-Resolution order is `$XM_LIB` → source-repo cwd → `~/.codex/xm/` → marketplace cache. On a machine that has a local checkout or a Codex bundle, the marketplace cache is shadowed everywhere, so `xm --market <cmd>` (or `XM_MARKET=1`) skips every dev-local root and pins the run to `~/.claude/plugins/cache/xm/`. Use it to reproduce what a plain user sees; `xm which` and `xm version` report which lib actually answered. `xm install` is the one exception to that order: it renders SKILL *sources*, which the Codex bundle does not carry (it mirrors `lib/`, `hooks/` and `agents/` only), so when the resolved root has no `skills/` beside its `lib/` the command falls back to the newest marketplace cache root that has both — and takes that root's `lib/` too, never a mixed pair. The `sync` subcommand reuses the bundled `x-sync` lib, so you do **not** need to run `x-sync/install.sh client` separately.
+Resolution order is `$XM_LIB` → source-repo cwd → whichever of `~/.codex/xm/` and the marketplace cache declares the newer version. A tie keeps the Codex bundle, and a bundle that cannot state its version never outranks a cache that can — so a global Codex install takes effect immediately, while a bundle left untouched no longer shadows a cache the Claude plugin has since updated. On a machine that has a local checkout, the marketplace cache is shadowed everywhere, so `xm --market <cmd>` (or `XM_MARKET=1`) skips every dev-local root and pins the run to `~/.claude/plugins/cache/xm/`. Use it to reproduce what a plain user sees; `xm which` and `xm version` report which lib actually answered. `xm install` is the one exception to that order: it renders SKILL *sources*, and while the Codex bundle mirrors `skills/` for its own runtime reads it carries none of the release metadata an install needs (`.claude-plugin/plugin.json`, `skills.checksums.json`), so when the resolved root cannot drive an install the command falls back to the newest marketplace cache root that can — and takes that root's `lib/` too, never a mixed pair. The `sync` subcommand reuses the bundled `x-sync` lib, so you do **not** need to run `x-sync/install.sh client` separately.
 
 #### Project Registry (`xm project`)
 

@@ -43,8 +43,28 @@ self_register() {
   return 0
 }
 
+# Declared version of a plugin.json-ish manifest, without SemVer build
+# metadata: Codex bundles carry a `+codex.<token>` cachebuster that says
+# nothing about how new the code is.
+manifest_version() {
+  local raw
+  [ -f "$1" ] || { echo ""; return; }
+  raw="$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$1" | head -1 \
+    | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')"
+  echo "${raw%%+*}"
+}
+
+# Succeeds when $1 is a strictly newer version than $2. Both must be readable:
+# an unknown version cannot win a comparison it cannot take part in.
+version_newer() {
+  [ -n "$1" ] && [ -n "$2" ] || return 1
+  [ "$1" != "$2" ] || return 1
+  [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]
+}
+
 # --- Resolve lib root ---
-# Priority: $XM_LIB env (or legacy $X_KIT_LIB) > local repo (cwd has x-build/lib + xm/lib) > plugin cache
+# Priority: $XM_LIB env (or legacy $X_KIT_LIB) > local repo (cwd has x-build/lib + xm/lib)
+#           > whichever of the Codex global bundle and the plugin cache is newer
 resolve_lib() {
   # --market / XM_MARKET=1 short-circuits the whole ladder: every dev-local root
   # (XM_LIB override, source-repo cwd, Codex bundle) is skipped so the command
@@ -66,22 +86,35 @@ resolve_lib() {
   if [ -d "x-build/lib" ] && [ -d "xm/lib" ]; then
     echo "$PWD"; return
   fi
-  # Codex global bundle is an explicit machine-level install and may be newer
-  # than a separately cached Claude marketplace plugin. Prefer it whenever it
-  # exists so a global Codex install immediately updates the terminal CLI too.
-  if [ -d "$HOME/.codex/xm/lib" ]; then
-    echo "$HOME/.codex/xm"; return
+  # Codex global bundle vs Claude marketplace cache. The bundle is an explicit
+  # machine-level install that has to take effect immediately, so it may well be
+  # the newer of the two; but a bundle left untouched while the Claude plugin
+  # updated on its own would otherwise shadow the newer cache for every cwd
+  # outside the source repo. Take whichever declares the newer version, and keep
+  # the bundle on a tie or when only it can answer.
+  local codex_root="" cache_root=""
+  [ -d "$HOME/.codex/xm/lib" ] && codex_root="$HOME/.codex/xm"
+  if [ -d "$HOME/.claude/plugins/cache/xm" ]; then
+    cache_root="$HOME/.claude/plugins/cache/xm"
+  elif [ -d "$HOME/.claude/plugins/cache/x-kit" ]; then
+    # Legacy cache path (pre-rename) — kept for in-flight upgrades
+    cache_root="$HOME/.claude/plugins/cache/x-kit"
   fi
-  # Marketplace cache (post-rename): ~/.claude/plugins/cache/xm
-  local cache="$HOME/.claude/plugins/cache/xm"
-  if [ -d "$cache" ]; then
-    echo "$cache"; return
+
+  if [ -n "$codex_root" ] && [ -n "$cache_root" ]; then
+    local codex_version cache_version cache_manifest
+    codex_version="$(manifest_version "$HOME/plugins/xm/.codex-plugin/plugin.json")"
+    cache_manifest="$(ls -d "$cache_root/xm"/*/.claude-plugin/plugin.json 2>/dev/null | sort -V | tail -1)"
+    cache_version="$(manifest_version "$cache_manifest")"
+    # A bundle that cannot state its version cannot claim to be current.
+    if version_newer "$cache_version" "$codex_version" \
+      || { [ -n "$cache_version" ] && [ -z "$codex_version" ]; }; then
+      echo "$cache_root"; return
+    fi
+    echo "$codex_root"; return
   fi
-  # Legacy cache path (pre-rename) — kept for in-flight upgrades
-  local legacy="$HOME/.claude/plugins/cache/x-kit"
-  if [ -d "$legacy" ]; then
-    echo "$legacy"; return
-  fi
+  [ -n "$codex_root" ] && { echo "$codex_root"; return; }
+  [ -n "$cache_root" ] && { echo "$cache_root"; return; }
   echo ""
 }
 
@@ -118,25 +151,36 @@ plugin_lib() {
   if [ -d "$LIB/$long/$sub" ]; then echo "$LIB/$long/$sub"; return 0; fi
   # 2. Local repo with short name (xm bundle source)
   if [ -d "$LIB/$plugin/$sub" ]; then echo "$LIB/$plugin/$sub"; return 0; fi
-  # 3. Cache: short name, versioned
+  # 3. Cache: short name, versioned. Ordered by version, never by mtime: a
+  # re-touched old version dir would otherwise outrank the newest release and
+  # the CLI would silently run code from a previous one.
   local path
-  path="$(ls -td "$LIB/$plugin"/*/"$sub" 2>/dev/null | head -1 || true)"
+  path="$(ls -d "$LIB/$plugin"/*/"$sub" 2>/dev/null | sort -V | tail -1 || true)"
   if [ -n "$path" ]; then echo "$path"; return 0; fi
   # 4. Bundled fallback: sub-plugins ship inside xm bundle
   if [ "$plugin" != "xm" ]; then
     # Local repo: xm/<sub>
     if [ -d "$LIB/xm/$sub" ]; then echo "$LIB/xm/$sub"; return 0; fi
     # Cache: xm/<version>/<sub>
-    path="$(ls -td "$LIB/xm"/*/"$sub" 2>/dev/null | head -1 || true)"
+    path="$(ls -d "$LIB/xm"/*/"$sub" 2>/dev/null | sort -V | tail -1 || true)"
     [ -n "$path" ] && echo "$path"
   fi
 }
 
-# Newest marketplace-cache root that carries SKILL *sources* (skills/ beside
-# lib/). Used only as a fallback: skills/ sits next to lib/ in the source repo
-# (repo/xm/) and in the cache (xm/<version>/), but NOT in the Codex global
-# bundle — ~/.codex/xm/ mirrors lib/, hooks/ and agents/ only, because its
-# SKILLs are rendered output rather than source. Prints nothing and returns 1
+# Whether a root can drive `xm install`. skills/ alone is not enough:
+# install-cli reads the plugin version from .claude-plugin/plugin.json (or
+# package.json) and the SKILL integrity registry from skills.checksums.json,
+# both beside skills/. The Codex global bundle mirrors lib/ and skills/ so lib
+# can resolve its own runtime payloads, and carries neither manifest.
+can_drive_install() {
+  [ -d "$1/skills" ] || return 1
+  [ -f "$1/skills.checksums.json" ] || return 1
+  [ -f "$1/.claude-plugin/plugin.json" ] || [ -f "$1/package.json" ]
+}
+
+# Newest marketplace-cache root that can drive an install. Used only as a
+# fallback: the source repo (repo/xm/) and the cache (xm/<version>/) are both
+# complete roots, the Codex global bundle is not. Prints nothing and returns 1
 # when no such root exists.
 market_source_root() {
   local base root best
@@ -148,7 +192,7 @@ market_source_root() {
     while IFS= read -r root; do
       [ -n "$root" ] || continue
       root="${root%/}"
-      if [ -d "$root/skills" ] && [ -f "$root/lib/install/install-cli.mjs" ]; then
+      if can_drive_install "$root" && [ -f "$root/lib/install/install-cli.mjs" ]; then
         best="$root"
       fi
     done < <(ls -d "$base"/*/ 2>/dev/null | sort -V)
@@ -168,7 +212,7 @@ _xm_global_setup() {
   if [ -f "$LIB/xm/scripts/setup-global.mjs" ]; then
     setup="$LIB/xm/scripts/setup-global.mjs"
   else
-    setup="$(ls -td "$LIB/xm"/*/scripts/setup-global.mjs 2>/dev/null | head -1)"
+    setup="$(ls -d "$LIB/xm"/*/scripts/setup-global.mjs 2>/dev/null | sort -V | tail -1)"
   fi
   if [ -z "$setup" ] || [ ! -f "$setup" ]; then
     echo "xm $CMD: setup-global.mjs not found under $LIB" >&2
@@ -629,7 +673,7 @@ case "$CMD" in
         LOCAL_VERSION="$(_read_version "$LIB/xm/.claude-plugin/plugin.json")"
         LOCAL_SRC="$LIB/xm/.claude-plugin/plugin.json"
       else
-        _cached_pj="$(ls -td "$LIB/xm"/*/.claude-plugin/plugin.json 2>/dev/null | head -1)"
+        _cached_pj="$(ls -d "$LIB/xm"/*/.claude-plugin/plugin.json 2>/dev/null | sort -V | tail -1)"
         if [ -n "$_cached_pj" ]; then
           LOCAL_VERSION="$(_read_version "$_cached_pj")"
           LOCAL_SRC="$_cached_pj"
@@ -855,7 +899,7 @@ case "$CMD" in
       elif [ -f "$LIB/xm/.claude-plugin/plugin.json" ]; then
         LOCAL_VERSION="$(_read_version "$LIB/xm/.claude-plugin/plugin.json")"
       else
-        _cached_pj="$(ls -td "$LIB/xm"/*/.claude-plugin/plugin.json 2>/dev/null | head -1)"
+        _cached_pj="$(ls -d "$LIB/xm"/*/.claude-plugin/plugin.json 2>/dev/null | sort -V | tail -1)"
         [ -n "$_cached_pj" ] && LOCAL_VERSION="$(_read_version "$_cached_pj")"
       fi
     fi
@@ -1016,7 +1060,7 @@ case "$CMD" in
     if [ "$SKIP_CLI" = "0" ]; then
       NEW_CACHE="$HOME/.claude/plugins/cache/xm/xm/$REMOTE_VERSION/scripts/xm"
       if [ ! -f "$NEW_CACHE" ]; then
-        NEW_CACHE="$(ls -td "$HOME/.claude/plugins/cache/xm/xm"/*/scripts/xm 2>/dev/null | head -1)"
+        NEW_CACHE="$(ls -d "$HOME/.claude/plugins/cache/xm/xm"/*/scripts/xm 2>/dev/null | sort -V | tail -1)"
       fi
       if [ -n "$NEW_CACHE" ] && [ -f "$NEW_CACHE" ]; then
         BIN_DIR="${XM_BIN_DIR:-$HOME/.local/bin}"
@@ -1041,7 +1085,7 @@ case "$CMD" in
     #    a frequent UX regression for new aliases or hook updates.
     NEW_SETUP="$HOME/.claude/plugins/cache/xm/xm/$REMOTE_VERSION/scripts/setup-global.mjs"
     if [ ! -f "$NEW_SETUP" ]; then
-      NEW_SETUP="$(ls -td "$HOME/.claude/plugins/cache/xm/xm"/*/scripts/setup-global.mjs 2>/dev/null | head -1 || true)"
+      NEW_SETUP="$(ls -d "$HOME/.claude/plugins/cache/xm/xm"/*/scripts/setup-global.mjs 2>/dev/null | sort -V | tail -1 || true)"
     fi
     if [ -n "$NEW_SETUP" ] && [ -f "$NEW_SETUP" ] && command -v node >/dev/null 2>&1; then
       echo "→ refreshing global hooks/dispatcher"
@@ -1052,7 +1096,7 @@ case "$CMD" in
     if [ "$NO_PROPAGATE" = "0" ]; then
       NEW_CLI="$HOME/.claude/plugins/cache/xm/xm/$REMOTE_VERSION/lib/install/install-cli.mjs"
       if [ ! -f "$NEW_CLI" ]; then
-        NEW_CLI="$(ls -td "$HOME/.claude/plugins/cache/xm/xm"/*/lib/install/install-cli.mjs 2>/dev/null | head -1 || true)"
+        NEW_CLI="$(ls -d "$HOME/.claude/plugins/cache/xm/xm"/*/lib/install/install-cli.mjs 2>/dev/null | sort -V | tail -1 || true)"
       fi
       if [ -n "$NEW_CLI" ] && [ -f "$NEW_CLI" ]; then
         # Snapshot lib + skills to tmpdir to avoid source-race when plugin cache
@@ -1260,14 +1304,15 @@ EOF
     # guess the layout. User-supplied "$@" appears after ours; install-cli's
     # last-wins parser lets users override either one.
     #
-    # skills/ is a sibling of lib/ in the source repo and the marketplace cache,
-    # so the sibling probe settles both. It misses only under the Codex global
-    # bundle, which resolve_lib prefers whenever it exists — there we reach past
-    # it to the cache and take that root's lib/ too, so skills and lib can never
-    # come from two different versions.
+    # The source repo and the marketplace cache are both complete roots, so the
+    # sibling probe settles them. It misses only under the Codex global bundle,
+    # which ships skills/ for lib's runtime reads but none of the release
+    # metadata an install needs — there we reach past it to the cache and take
+    # that root's lib/ too, so skills and lib can never come from two different
+    # versions.
     PLUGIN_ROOT="$(dirname "$LIB_PATH")"
     SKILLS_DIR="$PLUGIN_ROOT/skills"
-    if [ ! -d "$SKILLS_DIR" ]; then
+    if ! can_drive_install "$PLUGIN_ROOT"; then
       # --help and --list-installed never scan SKILLs; they must keep working on
       # a host that has no source tree at all.
       NEEDS_SKILLS=1
@@ -1282,7 +1327,7 @@ EOF
         LIB_PATH="$FALLBACK_ROOT/lib"
       elif [ "$NEEDS_SKILLS" = "1" ]; then
         echo "xm install: no SKILL sources found (looked beside $LIB_PATH and in ~/.claude/plugins/cache/xm)." >&2
-        echo "  A Codex bundle alone cannot drive an install: ~/.codex/xm/ ships rendered SKILLs, not their source." >&2
+        echo "  A Codex bundle alone cannot drive an install: ~/.codex/xm/ carries no plugin manifest or SKILL checksum registry." >&2
         echo "  Install the xm plugin in Claude Code, or run: xm update" >&2
         exit 1
       fi

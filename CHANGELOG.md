@@ -10,6 +10,13 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **xm:** the dispatcher picks the newer of the Codex global bundle and the Claude marketplace cache instead of always preferring the bundle. A bundle left untouched while the Claude plugin updated on its own shadowed the newer cache for every cwd outside the source repo, so the terminal CLI silently ran code several releases old. A tie keeps the bundle, and a bundle that cannot state its version no longer outranks a cache that can
+- **xm:** every cache lookup in the dispatcher picks the highest version directory instead of the most recently modified one. `ls -td | head -1` answers "most recently touched," which matches "newest release" only by luck: `xm update` rewrites files inside cache directories and a filesystem restore rewrites mtimes wholesale, and either can promote an older version. The two orderings happen to agree on the caches checked, so this closes a latent mismatch rather than an observed one
+- **xm:** `xm install` requires a root to carry the plugin manifest and the SKILL checksum registry beside `skills/`, not just `skills/` itself. The Codex bundle now mirrors `skills/` for its own runtime reads, and without this the dispatcher would have handed install-cli a root missing the release metadata it reads from there
+- **install:** the vendor bundle mirrors `xm/skills/` beside `xm/lib/`, so an installed target has the same two-tree layout as the Claude plugin cache. Mirroring only `lib/` left `review-lifecycle.mjs` importing `../skills/review/scripts/*.mjs` from a directory that was never created — every `xm review` invocation resolved through a vendor bundle died with `ERR_MODULE_NOT_FOUND`, and the lens prompts it reads by path were missing for the same reason
+
 ## [2.27.0] - 2026-09-16
 
 ### Added
