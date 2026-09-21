@@ -326,11 +326,13 @@ describe('xm review executable lifecycle', () => {
   });
 
   test('executes one planner wave concurrently and records the measured wave count', () => {
-    const dir = workspace();
-    const started = Date.now();
-    const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'correctness,risk', '--run-id', 'parallel-wave', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_DELAY_MS: '250' }), encoding: 'utf8' });
+  const dir = workspace();
+    const log = join(dir, 'panel.jsonl');
+    const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'correctness,risk', '--run-id', 'parallel-wave', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_DELAY_MS: '250', XM_FAKE_PANEL_LOG: log }), encoding: 'utf8' });
     expect(result.status).toBe(0);
-    expect(Date.now() - started).toBeLessThan(550);
+    const calls = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse);
+    expect(calls).toHaveLength(2);
+    expect(Math.max(...calls.map((call) => call.started_at))).toBeLessThan(Math.min(...calls.map((call) => call.ended_at)));
     expect(JSON.parse(result.stdout).execution.waves).toBe(1);
   });
 

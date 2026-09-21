@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { startReview, resumeReview, prepareReview, submitReview, finalizeReview, statusReview, closeReview, associateReview } from './review-lifecycle.mjs';
 
 function usage() {
-  return 'Native: xm review prepare [target-file] [--operation-id ID | --task-id ID | --pr NUMBER --repo OWNER/NAME] [--zero-findings] --json\n        xm review submit ID --report-id ID --attempt-id ID --report FILE --json\n        xm review finalize|status ID --json\n        xm review close|associate ID --reason TEXT [--operation-id ID | --task-id ID]\nNew operation: --operation-id ID --new-operation --approved-by USER --reason TEXT\nBudget exception: --exception full|delta|fix --approved-by USER --reason TEXT\nUsage: xm review run [target-file] [--cross-vendor] [--models a,b] [--lenses a,b] [--rounds 1|2] [--run-id id] [--no-trace] [--json]\n       xm review resume <run-id> [--no-trace] [--json]';
+  return 'Native: xm review prepare [target-file|git-ref] [--operation-id ID | --task-id ID | --pr NUMBER --repo OWNER/NAME] [--zero-findings] --json\n        xm review submit ID --report-id ID --attempt-id ID --report FILE --json\n        xm review finalize|status ID --json\n        xm review close|associate ID --reason TEXT [--operation-id ID | --task-id ID]\nNew operation: --operation-id ID --new-operation --approved-by USER --reason TEXT\nBudget exception: --exception full|delta|fix --approved-by USER --reason TEXT\nUsage: xm review run [target-file|git-ref] [--cross-vendor] [--models a,b] [--lenses a,b] [--rounds 1|2] [--run-id id] [--no-trace] [--json]\n       xm review resume <run-id> [--no-trace] [--json]';
 }
 
 function fail(message) {

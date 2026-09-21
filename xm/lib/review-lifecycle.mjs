@@ -68,11 +68,17 @@ function freezeTarget(target, cwd) {
     return { body, kind: 'git-diff', ref: 'HEAD' };
   }
   const path = resolve(cwd, target);
-  if (!existsSync(path)) throw new Error(`review target does not exist: ${target}`);
-  const body = readFileSync(path, 'utf8');
-  if (!body.trim()) throw new Error(`review target is empty: ${target}`);
-  const files = changedFilesFromPatch(body);
-  return { body, kind: files.length ? 'git-diff-file' : 'file', ref: target };
+  if (existsSync(path)) {
+    const body = readFileSync(path, 'utf8');
+    if (!body.trim()) throw new Error('review target is empty: ' + target);
+    const files = changedFilesFromPatch(body);
+    return { body, kind: files.length ? 'git-diff-file' : 'file', ref: target };
+  }
+  const revision = spawnSync('git', ['--no-pager', 'diff', '--binary', target, '--'], { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  if (revision.status !== 0) throw new Error('review target does not exist or is not a valid Git ref: ' + target);
+  const body = revision.stdout || '';
+  if (!body.trim()) throw new Error('review target is empty: ' + target);
+  return { body, kind: 'git-diff', ref: target, snapshotKind: 'commits' };
 }
 
 function promptFor(lens) {
@@ -744,6 +750,9 @@ async function prepareInLock(options, { root, cwd }) {
   } else if (options.baseRef) {
     frozen = { body: gitValue(cwd, ['diff', '--binary', options.baseRef, snapshot.commit]), kind: 'git-diff', ref: `${options.baseRef}..${snapshot.commit}` };
     snapshot.kind = 'commits';
+  } else if (options.target) {
+    frozen = freezeTarget(options.target, cwd);
+    if (frozen.snapshotKind) snapshot.kind = frozen.snapshotKind;
   }
   consume(task, mode, options);
   const response = await prepareUnlocked({ ...options, cwd, xmRoot: dirname(root), frozen, snapshot, taskBudget: task, zeroFindings: task.zero_findings, reviewMode: mode, baseline: mode === 'delta' ? task.baseline : null });

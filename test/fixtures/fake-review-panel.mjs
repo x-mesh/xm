@@ -8,6 +8,7 @@ const valueAfter = (flag) => {
   return index >= 0 ? args[index + 1] : null;
 };
 const lens = valueAfter('--lens-tag') || 'unknown';
+const startedAt = Date.now();
 if (process.env.XM_FAKE_PANEL_DELAY_MS) await new Promise((resolve) => setTimeout(resolve, Number(process.env.XM_FAKE_PANEL_DELAY_MS)));
 const targetPath = args.find((arg) => arg.endsWith('.patch'));
 const targetFiles = targetPath && existsSync(targetPath)
@@ -22,7 +23,7 @@ if (panelFileLimit > 0 && targetFiles.length > panelFileLimit) {
   process.stderr.write(`bounded review target has ${targetFiles.length} files; split the frozen diff into chunks of at most ${panelFileLimit} files\n`);
   process.exit(2);
 }
-if (process.env.XM_FAKE_PANEL_LOG) appendFileSync(process.env.XM_FAKE_PANEL_LOG, `${JSON.stringify({ args, lens })}\n`);
+if (process.env.XM_FAKE_PANEL_LOG) appendFileSync(process.env.XM_FAKE_PANEL_LOG, JSON.stringify({ args, lens, started_at: startedAt, ended_at: Date.now() }) + '\n');
 if (process.env.XM_FAKE_PANEL_FAIL_LENS === lens) {
   const marker = process.env.XM_FAKE_PANEL_FAIL_MARKER;
   if (!marker || !existsSync(marker)) {
