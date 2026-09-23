@@ -48,8 +48,9 @@ Modes combine: `commit changelog release --range v1.4.0..HEAD --version 1.5.0` r
 under separate headings from one evidence pass. `xm:ship` calls this skill this way.
 
 When the caller is `xm:ship` (arguments contain `--for ship`), return text only for every mode,
-ask no questions, and skip the publish step. Ship already holds the user's consent and owns
-every write.
+ask no questions, and skip the publish step. Only read-only `gh` is allowed for evidence:
+`gh pr list|view`, `gh issue list|view`, `gh release list|view`, `gh repo view`. Run no other
+`gh` command: ship already holds the user's consent and owns every write.
 
 ## Step 1: Gather Evidence
 
@@ -230,17 +231,32 @@ Skip this step for `release`, `changelog`, `commit`, and whenever `--for ship` i
 2. PR only: if the branch has no upstream or is ahead of it, include the push in the same
    question. On approval run `GK_AGENT=1 git-kit push`. Branch on `state`. If it is not `ok`,
    report the error and stop — do not fall back to raw `git push`.
-3. Write the body to a temp file and pass it with `--body-file`, never inline, so backticks
-   and `$` survive the shell:
+3. Pass the title and body through quoted heredocs, never inline, so backticks and `$` in
+   either survive the shell:
 
 ```bash
-BODY=$(mktemp) && cat > "$BODY" <<'EOF'
+TITLE=$(cat <<'EOF'
+<title>
+EOF
+) && BODY=$(mktemp) && cat > "$BODY" <<'EOF'
 <body>
 EOF
-gh pr create --base <base> --head <branch> --title "<title>" --body-file "$BODY"
+gh pr create --base <base> --head <branch> --title "$TITLE" --body-file "$BODY"
 ```
 
-   Revise with `gh pr edit <n> --title "<title>" --body-file "$BODY"` (or `gh issue edit`).
+   To revise, set both variables again in the same Bash call, because each call starts a fresh
+   shell:
+
+```bash
+TITLE=$(cat <<'EOF'
+<title>
+EOF
+) && BODY=$(mktemp) && cat > "$BODY" <<'EOF'
+<body>
+EOF
+gh pr edit <n> --title "$TITLE" --body-file "$BODY"   # or gh issue edit <n>
+```
+
    Edit the body when asked to edit. Never post a comment instead.
 4. Re-read what GitHub saved (`gh pr view <n> --json url,title,body` or `gh issue view`) and
    compare it with the approved text. Report the URL.
@@ -253,7 +269,8 @@ switch to the GitHub web UI or another tool.
 Chat reply for a draft: title and body as separate fenced blocks, then one line naming evidence
 you could not find (for example "no test ran in this session"). For `--for ship`: one heading per
 requested mode (`### commit`, `### changelog`, `### release`) with the text in a fenced block,
-nothing else.
+nothing else. The `### release` block starts with one line `Title: <release title>`, then a blank
+line, then the notes.
 
 ## Common Rationalizations
 
@@ -274,7 +291,7 @@ nothing else.
 - A "Tested with" line with no matching command in this session → invented verification
 - A body that opens with "This PR" or ends with a summary paragraph → report shape, rewrite
 - `gh pr create` without a prior confirmation in this run → skipped the publish gate
-- `gh` called during `--for ship` → ownership violation
+- Any `gh` command outside the read-only list during `--for ship` → ownership violation
 - A heading with one line under it → section added for looks
 
 ## Verification

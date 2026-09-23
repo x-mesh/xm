@@ -176,7 +176,7 @@ args: commit [changelog] [release] --for ship --range <last-tag-or-base>..HEAD -
 
 - `changelog` — only when `CHANGELOG.md` exists at the repo root.
 - `release` — only when Step 4.5 will create a GitHub release.
-- `--for ship` makes xm:write return text only: no questions, no `gh`, no file writes.
+- `--for ship` makes xm:write return text only: no questions, no file writes, and only read-only `gh` (`list` / `view`).
 
 Show the returned text in the plan preview and reuse it verbatim in Steps 3.5, 4, and 4.5.
 
@@ -333,16 +333,26 @@ Create one only when ALL hold:
 
 Otherwise skip, and state which condition failed in the Step 5 output.
 
+Use the literal tag name Step 4 passed to `--tag` (or to `git tag -a`). Do not rediscover it
+with `git tag --points-at HEAD`: a commit can carry several tags (monorepos tag each package),
+and an empty result would still pass a `&&` chain. The `### release` block from `xm:write`
+starts with `Title: <title>`; pass that line's value as the title and the rest as the notes.
+
 ```bash
-NOTES=$(mktemp) && cat > "$NOTES" <<'EOF'
-<release notes from xm:write>
+TAG='<tag created in Step 4>'
+git tag --points-at HEAD | grep -qxF "$TAG" || { echo "tag $TAG is not on HEAD" >&2; exit 1; }
+TITLE=$(cat <<'EOF'
+<value of the Title: line>
 EOF
-gh release create v<version> --verify-tag --title "<title from xm:write>" --notes-file "$NOTES"
+) && NOTES=$(mktemp) && cat > "$NOTES" <<'EOF'
+<release notes without the Title: line>
+EOF
+gh release create "$TAG" --verify-tag --title "$TITLE" --notes-file "$NOTES"
 ```
 
 `--verify-tag` aborts if the tag is not on the remote. If `gh release create` fails, the push
 already landed: do not roll anything back. Report the error, print the notes, and give the exact
-command to re-run.
+command to re-run with the literal tag name.
 
 ---
 
@@ -452,7 +462,8 @@ After ship:
 - Tag created AND pushed when the project is tag-versioned or CI triggers on tags:
   `git tag --points-at HEAD` is non-empty, and `git ls-remote --tags origin | grep <tag>` finds it.
   A local-only tag fires no workflow — that is a failed release, not a shipped one.
-- GitHub release created when Step 4.5 applied: `gh release view v<version> --json tagName,name`
-  returns the tag and the title from `xm:write`.
+- GitHub release created when Step 4.5 applied: `gh release view '<tag created in Step 4>' --json tagName,name`
+  returns that exact `tagName` and the title from `xm:write`. Never run it with an empty tag:
+  `gh` then shows the latest release instead.
 - `CHANGELOG.md` (when present) has the new version section and an empty `## [Unreleased]` in the release commit:
   `git show HEAD -- CHANGELOG.md`.
