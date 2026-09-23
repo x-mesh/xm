@@ -1,11 +1,12 @@
 ---
 name: ship
-description: Release automation — commit squash, version bump, changelog, push. Works with any project.
+description: Release automation — commit squash, version bump, changelog, push, GitHub release. Works with any project.
 ---
 
 <Purpose>
 Squash WIP commits into meaningful units, bump versions, and push releases.
 Works with xm marketplace plugins AND standalone projects.
+Release documents (commit message, changelog entry, release notes) are written by `xm:write`.
 Optimized for minimum turns: parallel discovery + single decision gate.
 </Purpose>
 
@@ -40,11 +41,11 @@ Commit squash + version bump + push. Works with any git project.
 | Mode: squash (single) | **haiku** | Mechanical reset+commit |
 | Step 1 (decision gate) | **session** (leader) | Squash strategy + bump type judgment — rides the model the user picked via /model |
 | Step 2 (grouped squash) | **session** (leader) | LLM groups files by scope |
-| Step 4 (commit message) | **session** (leader) | Quality writing matters for changelog |
+| Step 1 (documents via `xm:write`) | **session** (leader) | Quality writing matters for changelog and release notes |
 
 For haiku-eligible steps, delegate via: `Agent tool: { model: "haiku", prompt: "Run: <bash>" }`. <!-- managed-model: writer -->
 
-**Guardrail**: never haiku for grouped squash, bump-type decision, or commit message authoring — these affect the published release.
+**Guardrail**: never haiku for grouped squash, bump-type decision, or release document authoring — these affect the published release.
 
 ## Output Style
 
@@ -135,6 +136,8 @@ Always start here. Run all read-only probes in parallel. Reuse results downstrea
   echo "=== version-source ==="; ls package.json Cargo.toml pyproject.toml VERSION 2>/dev/null || echo "(git-tag only)"
   # Does CI fire on a TAG? If so, a pushed commit without a tag ships nothing.
   echo "=== ci-tag-trigger ==="; grep -rlE '^\s*tags:' .github/workflows/ 2>/dev/null || echo "(none)"
+  # Step 4.5 input: does this repo already publish GitHub releases? Errors stay visible.
+  echo "=== gh-releases ==="; gh release list --limit 1 2>&1 || echo "(gh failed — see above)"
   echo "=== detect ==="; xm build release detect 2>/dev/null || echo "(plain-git mode — xm build unavailable)"
   echo "=== diff-report ==="; xm build release diff-report 2>/dev/null || true
   echo "=== diff-stat ==="; git diff --stat HEAD~5..HEAD 2>/dev/null
@@ -152,9 +155,30 @@ If no changes → "✅ 릴리스할 변경사항이 없습니다." Exit.
 Markdown preview (always shown) must include:
 - Squash strategy (grouped vs single vs keep) with file→group mapping
 - Bump type (patch/minor/major) with rationale from detect
-- Drafted commit message
+- Drafted commit message, changelog entry, and release notes (from `xm:write`, below)
 - Push target (`origin/<branch>`)
+- GitHub release: will be created? (yes/no with the reason from the rule in Step 4.5)
 - README update needed? (yes/no with reason)
+
+### Release documents (xm:write)
+
+Do not write the commit message, changelog entry, or release notes yourself. After the bump type
+is decided, invoke the `xm:write` skill once with the Skill tool, requesting only the documents
+this release needs:
+
+```
+Skill: xm:write
+args: commit [changelog] [release] --for ship --range <last-tag-or-base>..HEAD --version <versions>
+```
+
+- `<versions>` — standalone: the new version (`1.5.0`). Marketplace: every bumped plugin as
+  `name@version`, comma-separated (`x-build@3.13.1,xm@2.27.4`).
+
+- `changelog` — only when `CHANGELOG.md` exists at the repo root.
+- `release` — only when Step 4.5 will create a GitHub release.
+- `--for ship` makes xm:write return text only: no questions, no `gh`, no file writes.
+
+Show the returned text in the plan preview and reuse it verbatim in Steps 3.5, 4, and 4.5.
 
 ### Blocker Conditions (only these halt for AskUserQuestion)
 
@@ -251,6 +275,25 @@ Bump type rules:
 
 ---
 
+## Step 3.5: Changelog
+
+Skip when there is no `CHANGELOG.md` at the repo root.
+
+Edit the file directly (the bump already touched the tree; this rides the same commit):
+
+1. Put the `xm:write` changelog entries under a new version section directly below
+   `## [Unreleased]`, merged with whatever already sat under `[Unreleased]`. Copy the heading
+   form from the latest existing version section, e.g. `## [<version>] - <YYYY-MM-DD>`.
+   The version is the project version (standalone) or the new `xm` core version (marketplace —
+   sections group the plugin bumps of one marketplace release). If a marketplace release does
+   not bump `xm`, keep the entries under `[Unreleased]` and say so in the Step 5 output.
+2. Leave `## [Unreleased]` in place and empty.
+
+Tracked-file staging in Step 4 (`git add -u`, or the plain-git file list) picks it up. In
+plain-git mode, add `CHANGELOG.md` to the staged files explicitly.
+
+---
+
 ## Step 4: Commit + Tag + Push (single call)
 
 Inline the README check here — no separate step. If plan said README update needed, stage README changes alongside the version bump.
@@ -276,25 +319,30 @@ git add <version-file> <files-from-plan> && git commit -m "release: ..." \
   && git push --follow-tags origin "$(git branch --show-current)"
 ```
 
-Commit format:
+Commit message: the `### commit` text `xm:write` returned in Step 1, verbatim. Its format and
+rules (what changed, never the session's reasoning trail) live in `xm:write`.
+
+---
+
+## Step 4.5: GitHub Release
+
+Create one only when ALL hold:
+- a tag was created and pushed in Step 4 (marketplace releases without a tag get none)
+- Step 0's `gh-releases` probe printed a release row — the repo already publishes GitHub
+  releases and `gh` is authenticated. An error there means skip, not fail.
+
+Otherwise skip, and state which condition failed in the Step 5 output.
+
+```bash
+NOTES=$(mktemp) && cat > "$NOTES" <<'EOF'
+<release notes from xm:write>
+EOF
+gh release create v<version> --verify-tag --title "<title from xm:write>" --notes-file "$NOTES"
 ```
-release: {name}@{version}
 
-- {plugin}: {change summary}
-```
-
-### Commit Message Rules (strict)
-
-| Allowed | Forbidden |
-|---------|-----------|
-| What changed (files, sections, commands added/removed/modified) | Why it changed (rationale, motivation) |
-| User-visible behavior change one-liners | Session context ("Karpathy judge caught X", "behavioral test showed Y") |
-| File path + concrete diff summary | Learning narrative ("self-demonstration", "this release proves Z") |
-| Version delta | Process notes ("shipped after consensus", "reverted v1") |
-
-**Anti-pattern**: including the agent's reasoning trail. Commit messages are for future readers of `git log` — not for the current session's record-keeping. Rationale belongs in PR descriptions, design docs, or x-humble retrospectives.
-
-**Test**: strip the bullet text. Could a developer see the code change and confirm the bullet describes it? If the bullet describes *why* or *how we decided*, it fails.
+`--verify-tag` aborts if the tag is not on the remote. If `gh release create` fails, the push
+already landed: do not roll anything back. Report the error, print the notes, and give the exact
+command to re-run.
 
 ---
 
@@ -315,6 +363,7 @@ Immediately print:
   Version: {old} → {new}
   Commit: {hash}
   Push: origin/{branch} ✅
+  Release: {url} | skipped ({failed condition}) | ❌ {error}
 ```
 
 ---
@@ -325,7 +374,7 @@ Run only the `=== detect ===` and `=== ahead ===` portions of Step 0. Display re
 
 ## Mode: dry-run
 
-Run full Step 0, build the markdown plan from Step 1, **do not** call AskUserQuestion, **do not** execute Steps 2-5.
+Run full Step 0, build the markdown plan from Step 1 (including the `xm:write` drafts), **do not** call AskUserQuestion, **do not** execute Steps 2-5.
 
 ## Mode: squash
 
@@ -383,6 +432,9 @@ bump". Never `git add -A`: it sweeps `.xm/` artifacts and unrelated WIP into the
 | "ship isn't done until I see trace results" | trace is for observability. Push success = ship done. Run trace in the background. |
 | "ask for go-ahead every time, to be safe" | Invoking /xm:ship is the consent. Confirm only when a blocker fires — asking every time wastes the user's time and forces the same answer ("proceed"). |
 | "the user might want to edit the commit message" | If they do, they will ask explicitly. Do not guess and prompt. |
+| "I can write the commit message myself, it's one line" | Ship's documents come from one `xm:write` call so the commit, changelog, and release notes agree. Writing one inline breaks that and skips its evidence rules. |
+| "create the GitHub release before pushing, it saves time" | The release points at a tag. Without the pushed tag `--verify-tag` fails, and without it `gh` creates the tag from the default branch's latest state — a release pointing at the wrong commit. |
+| "this repo has no releases yet, I'll start them" | Starting GitHub releases is the maintainer's call. Create one only when the repo already publishes them. |
 
 ## Red Flags
 
@@ -400,3 +452,7 @@ After ship:
 - Tag created AND pushed when the project is tag-versioned or CI triggers on tags:
   `git tag --points-at HEAD` is non-empty, and `git ls-remote --tags origin | grep <tag>` finds it.
   A local-only tag fires no workflow — that is a failed release, not a shipped one.
+- GitHub release created when Step 4.5 applied: `gh release view v<version> --json tagName,name`
+  returns the tag and the title from `xm:write`.
+- `CHANGELOG.md` (when present) has the new version section and an empty `## [Unreleased]` in the release commit:
+  `git show HEAD -- CHANGELOG.md`.

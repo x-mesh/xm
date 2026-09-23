@@ -123,6 +123,7 @@ Knowledge & memory:
 
 Writing & retro:
   /xm:humanize  AI 글투 제거 (EN+KO)                 쓸 때: AI스러운 텍스트를 자연스럽게
+  /xm:write     PR·issue·릴리스 문서 작성             쓸 때: diff 근거로 PR/issue 올리기
   /xm:humble    구조적 회고 — 실패 근본원인          쓸 때: 실패를 함께 돌아보고 배우기
 
 Ops:

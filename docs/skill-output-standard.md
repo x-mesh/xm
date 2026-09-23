@@ -54,6 +54,7 @@ In-scope = skills that regularly emit flowing Korean prose. Terse-status / struc
 | ✅ Has block | review, humble, build, probe, eval, solver, op |
 | ⬜ In-scope, needs block | ship, agent, humanize, memory, trace |
 | 🚫 Exempt (terse-status UI) | kit, sync, dashboard, handoff, handon |
+| 🚫 Exempt (document output) | write — its output is document text in the repository language, and the block would leak into the body |
 
 ## 7. Resolved decisions
 
