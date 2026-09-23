@@ -324,11 +324,12 @@ export function cmdStatus(args) {
 
   // Multi-active ambiguity warning — only when caller didn't disambiguate.
   // findActiveProjects returns all manifest-bearing projects sorted by manifest mtime descending.
+  // Closed projects are excluded so the list matches the handoff collector.
   // If more than one exists and the user didn't pass a name, surface the list so
   // they don't read "wrong project" output as truth. JSON mode emits the list as
   // a metadata field instead of corrupting the structured output.
   if (!explicitName) {
-    const all = findActiveProjects();
+    const all = findActiveProjects().filter(p => p.manifest.current_phase !== '05-close');
     if (all.length > 1) {
       const others = all.filter(p => p.name !== name).map(p => p.name);
       if (isJson) {
@@ -976,11 +977,15 @@ export function cmdHandoffFull(args) {
   const opts = parseOptions(args);
 
   // Git info
-  let branch = '', lastCommits = [], uncommittedFiles = [], ahead = 0, behind = 0, commitsToday = [];
+  let branch = '', lastCommits = [], uncommittedFiles = [], uncommittedPaths = [], ahead = 0, behind = 0, commitsToday = [];
   try {
     branch = execSync('git branch --show-current', { encoding: 'utf8' }).trim();
     lastCommits = execSync('git log --oneline -5', { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
-    uncommittedFiles = execSync('git status --short', { encoding: 'utf8' }).trim().split('\n').filter(Boolean).map(l => l.trim());
+    // Porcelain keeps the two status columns fixed-width, so the path always starts at
+    // column 3; trimming the whole output first would eat the leading space of " M".
+    const statusLines = execSync('git status --porcelain', { encoding: 'utf8' }).trimEnd().split('\n').filter(Boolean);
+    uncommittedFiles = statusLines.map(l => l.trim());
+    uncommittedPaths = statusLines.map(l => l.slice(3).split(' -> ').pop());
     const ab = execSync('git rev-list --left-right --count origin/' + branch + '...HEAD 2>/dev/null || echo "0 0"', { encoding: 'utf8' }).trim().split(/\s+/);
     behind = parseInt(ab[0]) || 0;
     ahead = parseInt(ab[1]) || 0;
@@ -1029,10 +1034,9 @@ export function cmdHandoffFull(args) {
         } else if (existsSync(dmPath)) {
           try { decs = readFileSync(dmPath, 'utf8').split('\n').filter(l => l.startsWith('- ')).slice(-3).map(l => ({ what: l.slice(2).trim(), why: '' })); } catch {}
         }
-        for (const d of decs) allDecisions.push({ ...d, project: entry.name });
-
         const isClosed = manifest.current_phase === '05-close';
         if (!isClosed) {
+          for (const d of decs) allDecisions.push({ ...d, project: entry.name });
           activeProjects.push({
             name: entry.name,
             phase: phase?.label || manifest.current_phase,
@@ -1166,7 +1170,7 @@ export function cmdHandoffFull(args) {
 
     what_remains: {
       active_projects: activeProjects,
-      uncommitted: uncommittedFiles.filter(l => l.startsWith('M') || l.startsWith('??') || l.startsWith(' M')).map(l => l.replace(/^[A-Z? ]+/, '').trim()).slice(0, 10),
+      uncommitted: uncommittedPaths.slice(0, 10),
       ideas: [],
     },
 

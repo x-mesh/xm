@@ -136,7 +136,7 @@ beforeAll(() => {
     v: 1, saved_at: '2026-04-11T03:44:25.191Z', handoff_generation: 4,
     where: { branch: 'develop', last_commits: ['aaa1234 first', 'bbb5678 second'], uncommitted_files: ['x.mjs'] },
     what_done: ['shipped X'],
-    what_remains: { active_projects: [{ name: 'p1', phase: 'Plan' }] },
+    what_remains: { active_projects: [{ name: 'p1', phase: 'Plan', pending: [] }, { name: 'p2', phase: 'Execute', pending: ['t1', 't2'] }] },
     decisions: [{ what: 'use recall', why: 'cross-session' }],
     narrative: { intent: 'build recall', open_questions: ['naming?'], rejected_alternatives: ['rules-only'], next_session_should_know: ['dedup matters'] },
     why_stopped: 'PRD done',
@@ -320,6 +320,8 @@ describe('handoff-md', () => {
     expect(md).toContain('naming?');               // open question
     expect(md).toContain('use recall');            // decision
     expect(md).toContain('do not re-litigate');    // rejected alternatives heading
+    expect(md).toContain('- p1 (Plan)\n');
+    expect(md).toContain('- p2 (Execute) — 2 pending');
   });
 });
 

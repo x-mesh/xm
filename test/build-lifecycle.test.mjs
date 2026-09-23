@@ -732,3 +732,87 @@ describe('content-bound approval and shared review groups', () => {
     }
   });
 });
+
+describe('status multi-active warning', () => {
+  function closeProject(cwd, name) {
+    const path = join(cwd, '.xm', 'build', 'projects', name, 'manifest.json');
+    const manifest = JSON.parse(readFileSync(path, 'utf8'));
+    manifest.current_phase = '05-close';
+    writeFileSync(path, JSON.stringify(manifest, null, 2));
+  }
+
+  function multiActiveWarning(stderr) {
+    return stderr.split('\n').filter(Boolean).map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).find((entry) => entry?.warning === 'multi_active') || null;
+  }
+
+  test('closed projects do not count as active', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-status-active-'));
+    try {
+      for (const name of ['open-a', 'closed-b', 'closed-c']) run(tmp, ['init', name]);
+      closeProject(tmp, 'closed-b');
+      closeProject(tmp, 'closed-c');
+
+      const status = run(tmp, ['status', '--json']);
+      expect(status.code).toBe(0);
+      expect(multiActiveWarning(status.stderr)).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('warning lists only non-closed projects', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-status-active-'));
+    try {
+      for (const name of ['open-a', 'closed-b', 'open-d']) run(tmp, ['init', name]);
+      closeProject(tmp, 'closed-b');
+
+      const status = run(tmp, ['status', '--json']);
+      expect(status.code).toBe(0);
+      const warning = multiActiveWarning(status.stderr);
+      expect(warning).not.toBeNull();
+      expect([...warning.active].sort()).toEqual(['open-a', 'open-d']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('handoff collector', () => {
+  test('skips closed-project decisions and keeps exact uncommitted paths', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-handoff-collect-'));
+    try {
+      git(tmp, ['init', '-q']);
+      git(tmp, ['config', 'user.email', 'xm-test@example.com']);
+      git(tmp, ['config', 'user.name', 'xm test']);
+      writeFileSync(join(tmp, '.gitignore'), '.xm/\n');
+      writeFileSync(join(tmp, 'Foo.mjs'), 'a\n');
+      writeFileSync(join(tmp, 'Gone.mjs'), 'a\n');
+      git(tmp, ['add', '.']);
+      git(tmp, ['commit', '-qm', 'baseline']);
+
+      for (const name of ['open-a', 'closed-b']) {
+        run(tmp, ['init', name]);
+        run(tmp, ['--project', name, 'decisions', 'add', `decision of ${name}`, '--rationale', 'why']);
+      }
+      const manifestFile = join(tmp, '.xm', 'build', 'projects', 'closed-b', 'manifest.json');
+      const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
+      manifest.current_phase = '05-close';
+      writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+
+      writeFileSync(join(tmp, 'Foo.mjs'), 'b\n');
+      rmSync(join(tmp, 'Gone.mjs'));
+      writeFileSync(join(tmp, 'CHANGELOG.md'), 'staged\n');
+      git(tmp, ['add', 'CHANGELOG.md']);
+      writeFileSync(join(tmp, 'README.md'), 'untracked\n');
+
+      expect(run(tmp, ['handoff', '--full']).code).toBe(0);
+      const state = JSON.parse(readFileSync(join(tmp, '.xm', 'build', 'SESSION-STATE.json'), 'utf8'));
+      expect(state.decisions.map((d) => d.project)).toEqual(['open-a']);
+      expect([...state.what_remains.uncommitted].sort()).toEqual(['CHANGELOG.md', 'Foo.mjs', 'Gone.mjs', 'README.md']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

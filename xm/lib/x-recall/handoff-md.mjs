@@ -51,7 +51,7 @@ export function sessionStateToMarkdown(state) {
 
   lines.push('## Remaining');
   const active = (rem.active_projects || []).map(p =>
-    typeof p === 'string' ? p : `${p.name || '?'}${p.phase ? ` (${p.phase})` : ''}${p.pending ? ` — ${p.pending} pending` : ''}`);
+    typeof p === 'string' ? p : `${p.name || '?'}${p.phase ? ` (${p.phase})` : ''}${p.pending?.length ? ` — ${p.pending.length} pending` : ''}`);
   lines.push('**Active projects:** ' + (active.length ? '\n' + list(active) : '_(none)_'));
   if (w.uncommitted_files && w.uncommitted_files.length) {
     lines.push('');
