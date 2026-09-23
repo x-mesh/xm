@@ -427,7 +427,7 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 | [x-remote](#x-remote) | 원격 호스트 세션을 Discord에서 조종 | `xm remote start` |
 | xm | 번들 + 설정 + 파이프라인 | `/xm pipeline release` |
 
-**`xm` 코어에 번들됨 (별도 marketplace 플러그인 아님):** `/xm:ship` 릴리스 자동화 · `x-sync` 멀티 머신 동기화 서버 · `/xm:toss` + `/xm:inbox` 프로젝트 간 버그 핸드오프 — 아래 [x-ship](#x-ship), [x-sync](#x-sync), [toss / inbox](#프로젝트-간-핸드오프--toss--inbox) 참고.
+**`xm` 코어에 번들됨 (별도 marketplace 플러그인 아님):** `/xm:ship` 릴리스 자동화 · `/xm:write` PR·issue·릴리스 문서 작성 · `x-sync` 멀티 머신 동기화 서버 · `/xm:toss` + `/xm:inbox` 프로젝트 간 버그 핸드오프 — 아래 [x-ship](#x-ship), [xm:write](#xmwrite), [x-sync](#x-sync), [toss / inbox](#프로젝트-간-핸드오프--toss--inbox) 참고.
 `/xm:mutate`도 같은 방식으로 번들됩니다 — 코어에 함께 들어 있는 `xm mutate` 명령을 실행하기 때문입니다. Codex에서는 `$xm:mutate`로 노출되고, 평면 별칭 `$xm-mutate`도 그대로 씁니다. [뮤테이션 테스팅](#뮤테이션-테스팅--xmmutate) 참고.
 
 ---
@@ -1118,6 +1118,24 @@ Claude Code 안에서도 사용 가능: `/xm:sync push`, `/xm:sync pull`, `/xm:s
 | **독립 프로젝트 지원** | package.json, Cargo.toml, pyproject.toml, go.mod 자동 감지. 버전 파일이 없으면 git 태그가 곧 버전 |
 | **릴리스 메트릭** | 버전, 범프 타입, 테스트/리뷰 결과를 `.xm/traces/`에 기록 |
 | **Diff 기반 분석** | 커밋별 diff 리포트로 지능적 스쿼시 그루핑 |
+| **릴리스 문서** | 커밋 메시지, `CHANGELOG.md` 항목, 릴리스 노트를 `/xm:write`가 같은 근거로 한 번에 작성 |
+| **GitHub 릴리스** | 태그를 푸시한 뒤 `gh release create --verify-tag`로 릴리스를 만듭니다. 이미 GitHub 릴리스를 쓰는 저장소에서만 동작 |
+
+---
+
+### xm:write
+
+`/xm:write`는 변경이 남기는 문서를 작성합니다. 모든 문장은 diff, 커밋, 또는 이번 세션에서 실제로 실행한 명령에 근거해야 합니다.
+
+```bash
+/xm:write pr            # 브랜치 diff로 PR을 작성하고 gh로 올림
+/xm:write pr 42         # PR #42 본문을 다시 작성
+/xm:write issue "..."   # bug·feature issue를 작성하고 gh로 올림
+/xm:write release       # 릴리스 노트 (텍스트만)
+/xm:write changelog     # CHANGELOG.md 항목 (텍스트만)
+```
+
+`pr`과 `issue`는 최종 제목과 본문을 보여 주고 한 번 확인받은 뒤 `gh`로 올리고, GitHub에 저장된 내용을 다시 읽어 확인합니다. `release`, `changelog`, `commit`은 텍스트만 돌려줍니다. 커밋, 태그, 릴리스는 `/xm:ship`이 맡기 때문입니다. 문서 언어는 채팅 언어가 아니라 저장소의 언어를 따르고, "Tested with"에는 이번 세션에서 실행한 명령만 적습니다.
 
 ---
 

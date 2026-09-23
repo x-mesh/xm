@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1789521196549,
+  "generatedAt": 1790148746324,
   "version": 3,
   "skills": [
     {
@@ -103,8 +103,8 @@
     },
     {
       "plugin": "kit",
-      "sha256": "b08014ea91461d1d9e5107a02d89fe7884bdf3b548ee046732643d9c4df5a972",
-      "bytes": 15193,
+      "sha256": "bada5421517e41b960842722fcaa480ed26049c7da85b35858fb1be4eb703d8b",
+      "bytes": 15299,
       "referencesSha256": "d279e1ba064200c58409611085d3bbb386ed79ac6b9e1f6807b924799ee1b139",
       "referenceFiles": 2,
       "referenceBytes": 3224,
@@ -235,8 +235,8 @@
     },
     {
       "plugin": "ship",
-      "sha256": "cbb1ab740f8351119b318010f81078fdc117d5bc38f222d300dfd381372c086c",
-      "bytes": 19919,
+      "sha256": "e9ef39e43f6fb290390f203f0f1320fe1c6bd75386f80e45c46bb55f9d7fbf2d",
+      "bytes": 23877,
       "referencesSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "referenceFiles": 0,
       "referenceBytes": 0,
@@ -287,6 +287,17 @@
       "assetsSha256": "80a80361dfa9667274eb6d87fbcaefa277230753bdfdaba980ef892d3b6325e3",
       "assetFiles": 9,
       "assetBytes": 10457
+    },
+    {
+      "plugin": "write",
+      "sha256": "77c222cffb745f7a90d260da4a7e0624e500b3d470b4cdf7748b97a650f5dec1",
+      "bytes": 13926,
+      "referencesSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "referenceFiles": 0,
+      "referenceBytes": 0,
+      "assetsSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "assetFiles": 0,
+      "assetBytes": 0
     },
     {
       "plugin": "wt",

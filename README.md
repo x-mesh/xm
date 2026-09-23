@@ -426,7 +426,7 @@ This is a *capability*, available today; proving it produces measurably better o
 | [x-remote](#x-remote) | Drive a remote host session from Discord | `xm remote start` |
 | xm | Bundle + config + pipeline | `/xm pipeline release` |
 
-**Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `x-sync` multi-machine sync server · `/xm:toss` + `/xm:inbox` cross-project bug handoff — see [x-ship](#x-ship), [x-sync](#x-sync) and [toss / inbox](#cross-project-handoff--toss--inbox) below.
+**Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `/xm:write` PR, issue, and release documents · `x-sync` multi-machine sync server · `/xm:toss` + `/xm:inbox` cross-project bug handoff — see [x-ship](#x-ship), [xm:write](#xmwrite), [x-sync](#x-sync) and [toss / inbox](#cross-project-handoff--toss--inbox) below.
 `/xm:mutate` is bundled the same way — it drives the `xm mutate` command that ships with core. Codex exposes it as `$xm:mutate`, with `$xm-mutate` kept as a flat alias. See [Mutation testing](#mutation-testing--xmmutate).
 
 ---
@@ -1118,6 +1118,24 @@ Release automation: squash WIP commits, bump the version, push. Works on xm mark
 | **Standalone support** | Auto-detects package.json, Cargo.toml, pyproject.toml, go.mod. No version file → the git tag *is* the version |
 | **Release metrics** | Records version, bump type, test/review results to `.xm/traces/` |
 | **Diff-based analysis** | Per-commit diff report for intelligent squash grouping |
+| **Release documents** | `/xm:write` writes the commit message, the `CHANGELOG.md` entry, and the release notes from one evidence pass |
+| **GitHub release** | After the tag push, ship runs `gh release create --verify-tag`. It does this only if the repository already has GitHub releases |
+
+---
+
+### xm:write
+
+`/xm:write` writes the documents that a change leaves behind. Each sentence must come from the diff, the commits, or a command that ran in the session.
+
+```bash
+/xm:write pr            # Write a PR from the branch diff, then open it with gh
+/xm:write pr 42         # Rewrite the body of PR #42
+/xm:write issue "..."   # Write a bug or feature issue, then file it with gh
+/xm:write release       # Release notes (text only)
+/xm:write changelog     # CHANGELOG.md entries (text only)
+```
+
+For `pr` and `issue`, the skill shows the final text and asks one time. Then it runs `gh` and reads the saved text back from GitHub. The `release`, `changelog`, and `commit` modes return text only, because `/xm:ship` owns the commit, the tag, and the release. The document language follows the repository, not the chat language. A "Tested with" line lists only commands that ran in the session.
 
 ---
 
