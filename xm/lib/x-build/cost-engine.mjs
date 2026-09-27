@@ -56,6 +56,8 @@ function tokenActualsPath() {
   return join(ROOT, 'metrics', 'token-actuals.json');
 }
 
+const TOKEN_ACTUALS_POLICY = 'explicit-actual-v1';
+
 export const METRICS_MAX_BYTES = 5 * 1024 * 1024; // 5MB rotation threshold
 export const COST_EVENT_MAX_BYTES = CORE_COST_EVENT_MAX_BYTES;
 
@@ -652,10 +654,12 @@ export function loadTokenActuals() {
   try {
     const metricsFile = metricsPath();
     if (!existsSync(tokenActualsPath())) return null;
+    const actuals = JSON.parse(readFileSync(tokenActualsPath(), 'utf8'));
+    if (actuals.sample_policy !== TOKEN_ACTUALS_POLICY) return computeTokenActuals();
     const actualsMtime = statSync(tokenActualsPath()).mtimeMs;
     const metricsMtime = statSync(metricsFile).mtimeMs;
     if (metricsMtime > actualsMtime) return null; // stale, needs recompute
-    return JSON.parse(readFileSync(tokenActualsPath(), 'utf8'));
+    return actuals;
   } catch { return null; }
 }
 
@@ -672,15 +676,11 @@ export function computeTokenActuals() {
     for (const line of lines) {
       try {
         const m = JSON.parse(line);
-        // Exclude estimated samples — only token-measured ('actual') or legacy
-        // untagged costs feed actuals. Newly-recorded estimates carry
-        // cost_source:'estimated' (or 'estimated_inherit') and must never
-        // recycle back as "actuals": that loop was circular (estimate → metric
-        // → average → reused as actual). model:'inherit' samples are excluded
-        // too — their cost was billed at the opus ceiling, not a real rate.
-        if (m.type === 'task_complete' && !String(m.cost_source || '').startsWith('estimated')
+        // Older untagged completions stored estimated cost; only an explicit
+        // actual tag proves this sample came from measured token usage.
+        if (m.type === 'task_complete' && m.cost_source === 'actual'
             && m.model !== INHERIT_MODEL
-            && typeof m.cost_usd === 'number' && m.size && groups[m.size]) {
+            && Number.isFinite(m.cost_usd) && m.cost_usd >= 0 && m.size && groups[m.size]) {
           groups[m.size].push(m.cost_usd);
           // Rows without a concrete model stay size-only: a mixed-model
           // average must never masquerade as one model's measured rate.
@@ -712,6 +712,7 @@ export function computeTokenActuals() {
   const model = aggregate(Object.entries(modelGroups));
 
   const result = {
+    sample_policy: TOKEN_ACTUALS_POLICY,
     updated_at: new Date().toISOString(),
     sample_counts: size.counts,
     estimates: size.avgs,
@@ -879,11 +880,7 @@ export function predictTaskCost(query, metrics = readTaskMetrics()) {
   };
   const actuals = metrics
     .filter(metric => metric?.type === 'task_complete'
-      // schema-v1 did not have cost_source; those legacy completions are the
-      // measured history that prediction must continue to learn from. New
-      // records must explicitly say actual. Estimated and inherit-price rows
-      // are never observations, even if they carry a numeric cost.
-      && (metric.cost_source === 'actual' || metric.cost_source == null)
+      && metric.cost_source === 'actual'
       && metric.model !== INHERIT_MODEL
       && Number.isFinite(metric.cost_usd)
       && metric.cost_usd >= 0)
