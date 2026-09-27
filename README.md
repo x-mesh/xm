@@ -26,8 +26,10 @@
 
 <p align="center">
   <code>/xm:build "Build a REST API with JWT auth"</code><br />
-  → repository evidence → x-plan → native execution → risk-based validation
+  → repository evidence → direct or x-plan route → native execution → risk-based validation
 </p>
+
+The default `x-build` route selects direct execution for bounded, deterministically verifiable work and uses `x-plan` for work that needs planning. Cross-vendor panels and the project lifecycle are opt-in. The [benchmark data](./benchmarks/SUMMARY.md) and [case studies](./docs/case-studies/README.md) are internal measurements; they do not establish outcomes for other teams.
 
 ---
 
@@ -249,8 +251,8 @@ xm install --list-installed # print installed manifest inventory as JSON
 
 That single line:
 1. Inspects relevant code, contracts, tests, and existing behavior
-2. Uses x-plan Standard to produce one grounded plan and PlanEnvelope
-3. Challenges whether the requested method is justified and shows the plan when approval is needed
+2. Checks whether the requested method is justified, then chooses direct execution or x-plan Standard
+3. Produces a grounded PlanEnvelope and asks for approval when the planned route needs it
 4. Executes sequentially by default with native agents, then runs only validation relevant to the changed risk
 
 Need a plan without execution? Use x-plan directly:
@@ -1214,7 +1216,7 @@ xm panel followup <run>             # debate round: resume each author's session
 
 Per-model selection via `--models name:model[:effort]`. The optional `:effort` sets reasoning depth per model — codex `minimal|low|medium|high|xhigh` (→ `model_reasoning_effort`) and kiro `low|medium|high|xhigh|max` (→ `--effort`); the sets differ by vendor, and an unknown level warns and is dropped rather than blocking the run. Bare `xm panel models` is a two-step provider→model picker (`--json` for structured rows; live-catalog vendors agy/cursor/kiro vs fixed-ID claude/codex); named `presets`, parallel calls, and results land under `.xm/panel/` (queryable with `xm recall`). Each vendor is blind in a different place, which is the whole reason more than one gets asked.
 
-Every run **captures real per-model token usage and cost** — claude via `--output-format json`, codex via its `exec --json` event stream — so panel numbers price from measured actuals, not estimates. Each finished run appends a per-model row to a **disagreement ledger** (`.xm/panel/history.jsonl`); `xm panel stats [--roi]` aggregates it into per-vendor survival rate (confirmed/raised) and cost per confirmed catch — a per-repo data moat a stateless API council can't accumulate. `--stream` adds token-by-token live text for claude/cursor (`--partial`, on by default; auto-disabled on very large targets). When a model returns a structured markdown review instead of the JSON contract (agy/Gemini does this intermittently), the panel salvages the findings from the `### [severity] file:line — title` + Why/Fix shape rather than discarding a real review as "no JSON"; when a model exits 0 with no usable answer at all, it surfaces the CLI's own stderr reason instead. Timeouts auto-scale with target size (`--timeout` to pin). kiro is spawned under an auto-provisioned no-MCP agent (`~/.kiro/agents/xm-panel-review.json`), because kiro otherwise loads the global `mcp.json` and a single MCP tool whose schema uses `oneOf`/`allOf`/`anyOf` at the top level makes Bedrock reject the whole request — set `panel.kiro_agent` to point at your own agent instead.
+The panel captures measured usage when a provider exposes it — claude via `--output-format json`, codex via its `exec --json` event stream, and kiro credits from stderr. Other provider runs can have no usage data; do not interpret missing values as zero cost. Each finished run appends a per-model row to a **disagreement ledger** (`.xm/panel/history.jsonl`); `xm panel stats [--roi]` aggregates it into per-vendor survival rate (confirmed/raised) and cost per confirmed catch — a per-repo data moat a stateless API council can't accumulate. `--stream` adds token-by-token live text for claude/cursor (`--partial`, on by default; auto-disabled on very large targets). When a model returns a structured markdown review instead of the JSON contract (agy/Gemini does this intermittently), the panel salvages the findings from the `### [severity] file:line — title` + Why/Fix shape rather than discarding a real review as "no JSON"; when a model exits 0 with no usable answer at all, it surfaces the CLI's own stderr reason instead. Timeouts auto-scale with target size (`--timeout` to pin). kiro is spawned under an auto-provisioned no-MCP agent (`~/.kiro/agents/xm-panel-review.json`), because kiro otherwise loads the global `mcp.json` and a single MCP tool whose schema uses `oneOf`/`allOf`/`anyOf` at the top level makes Bedrock reject the whole request — set `panel.kiro_agent` to point at your own agent instead.
 
 Two adversarial add-ons turn opinions into checked facts. **`--grounded`** makes round-2 refuters that can actually read the repo (codex today — `exec --sandbox read-only` from the repo cwd) OPEN each cited file and verify the finding against the real code, tagging the verdict with `{checked, observed}`; a text-only vendor is never asked to (a blind vendor told to "open the file" would just fake a `checked:true`). **`xm panel followup <run>`** runs a debate round: it resumes each author's own session and has them `HOLD` / `CONCEDE` / `REVISE` the findings an opponent refuted — a *held* finding (both models stand their ground) is the genuine disagreement a human must decide, a *conceded* one is resolved. It is additive (`followup-N.json`, verdict.json untouched) and needs the review to have run with `--session-reuse` (claude/codex).
 
@@ -1324,7 +1326,7 @@ x-solver / x-humble → diagnosis and reusable lessons
 
 ## Benchmarks
 
-Empirical consistency measurements across all plugins. Run with `/xm:eval consistency`.
+Historical internal consistency measurements for seven selected plugins. Run with `/xm:eval consistency`.
 
 | Plugin | Strategy | Consistency | Status |
 |--------|----------|:-----------:|--------|
@@ -1334,9 +1336,9 @@ Empirical consistency measurements across all plugins. Run with `/xm:eval consis
 | x-solver | decompose | **0.917** | PASS |
 | x-review | multi-lens review | **0.890** | PASS |
 | x-probe | premise-extraction | **0.826** | PASS |
-| x-build | legacy planning benchmark | **0.824** | PASS |
+| x-build | legacy planning benchmark | **0.950** | PASS |
 
-**Average: 0.899** | All 7 measured legacy/plugin strategies PASS | Verdict consistency: 100%
+**Average: 0.917** | All 7 measured legacy/plugin strategies PASS | Verdict consistency: 100%
 
 The x-build row predates the x-plan single-planner transition and does not measure the current lean native-execution workflow.
 
@@ -1594,6 +1596,8 @@ Before opening a change, run:
 ```bash
 bun run verify
 ```
+
+PR CI runs the focused [core contract suite](./.github/workflows/core-contracts.yml) and checks bundle and Skill checksum drift. `bun run verify` remains the full local suite.
 
 - [Changelog / Releases](https://github.com/x-mesh/xm/releases)
 - [Report a bug](https://github.com/x-mesh/xm/issues/new)

@@ -1,0 +1,30 @@
+name: Core contracts
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  core-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Verify planning, execution, review, evaluation, inbox, and installation
+        run: |
+          bun test \
+            test/adaptive-routing.test.mjs \
+            test/build-lifecycle.test.mjs \
+            test/x-plan-cli.test.mjs \
+            test/x-review-lifecycle.test.mjs \
+            test/x-eval-cli.test.mjs \
+            test/x-inbox-toss.test.mjs \
+            test/install.test.mjs \
+            test/xm-install-dispatch.test.mjs
+      - name: Verify bundled sources and skill checksums
+        run: |
+          bash scripts/sync-bundle.sh --check
+          node xm/scripts/skills-checksum.mjs --check
