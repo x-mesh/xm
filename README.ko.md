@@ -26,8 +26,10 @@
 
 <p align="center">
   <code>/xm:build "JWT 인증이 포함된 REST API 만들기"</code><br />
-  → 저장소 근거 → x-plan → native 실행 → 위험 기반 검증
+  → 저장소 근거 → direct 또는 x-plan 경로 → native 실행 → 위험 기반 검증
 </p>
+
+`x-build` 기본 경로는 범위가 명확하고 결정적으로 검증할 수 있는 작업에 direct 실행을 선택하고, 계획이 필요한 작업에 x-plan을 사용합니다. 크로스벤더 패널과 project lifecycle은 opt-in입니다. [벤치마크](./benchmarks/SUMMARY.md)와 [케이스 스터디](./docs/case-studies/README.md)는 내부 측정이며, 다른 팀에서의 성과를 입증하지는 않습니다.
 
 ---
 
@@ -249,8 +251,8 @@ xm install --list-installed # 설치된 manifest 목록을 JSON으로 출력
 
 이 한 줄로:
 1. 관련 코드, contract, 기존 동작과 테스트를 조사합니다
-2. x-plan Standard로 근거 있는 계획과 PlanEnvelope를 만듭니다
-3. 요청한 방법의 타당성을 검토하고 필요할 때 계획 승인을 받습니다
+2. 요청한 방법의 타당성을 검토한 뒤 direct 실행 또는 x-plan Standard를 선택합니다
+3. planned 경로라면 근거 있는 PlanEnvelope를 만들고 필요할 때 계획 승인을 받습니다
 4. 순차 native 실행을 기본으로 하며 변경 위험에 직접 관련된 검증만 수행합니다
 
 실행 없이 계획만 필요하면 x-plan을 직접 사용하세요:
@@ -1214,7 +1216,7 @@ xm panel status <run> --logs        # RAW 이벤트 로그(events.jsonl) 스트�
 
 `--models name:model[:effort]`로 모델별 선택. 선택적 `:effort`는 모델별 추론 강도 — codex `minimal|low|medium|high|xhigh`(→ `model_reasoning_effort`), kiro `low|medium|high|xhigh|max`(→ `--effort`); 벤더마다 레벨 집합이 다르고, 알 수 없는 레벨은 경고 후 무시(run은 막지 않음). 인자 없는 `xm panel models`는 provider→model 2단계 피커(`--json`으로 구조화; 라이브 카탈로그 벤더 agy/cursor/kiro vs 고정 ID claude/codex). named `presets`, 병렬 호출, 결과는 `.xm/panel/`에 저장(`xm recall`로 조회). 벤더마다 못 보는 지점이 다릅니다. 하나가 아니라 여럿에게 묻는 이유가 그것입니다.
 
-모든 run이 **모델별 실측 토큰·비용을 캡처**합니다 — claude는 `--output-format json`, codex는 `exec --json` 이벤트 스트림으로 — 그래서 패널 수치가 추정이 아닌 실측 기반입니다. 완료된 run마다 모델별 행을 **disagreement ledger**(`.xm/panel/history.jsonl`)에 append하고, `xm panel stats [--roi]`가 이를 벤더별 생존율(confirmed/raised)과 catch당 비용으로 집계 — stateless API council이 쌓을 수 없는 per-repo 데이터 해자입니다. `--stream`은 claude/cursor에 토큰 단위 라이브 텍스트를 더합니다(`--partial`, 기본 on, 초대형 타깃에선 자동 off). 모델이 JSON 계약 대신 구조화된 마크다운 리뷰를 내면(agy/Gemini가 간헐적으로 그럼) 패널이 `### [severity] file:line — title` + Why/Fix 형태에서 findings를 건져내 "no JSON"으로 버리지 않습니다. 아예 쓸 만한 답이 없으면 CLI stderr의 실제 이유를 노출합니다. timeout은 타깃 크기에 따라 자동 상향(`--timeout`으로 고정). kiro는 MCP 없는 자동 프로비저닝 agent(`~/.kiro/agents/xm-panel-review.json`)로 띄웁니다 — kiro가 전역 `mcp.json`을 로드하면 top-level `oneOf`/`allOf`/`anyOf` 스키마를 가진 MCP tool 하나 때문에 Bedrock이 요청 전체를 거부하기 때문입니다. 직접 만든 agent를 쓰려면 `panel.kiro_agent`로 지정하세요.
+패널은 provider가 사용량을 노출할 때 실측치를 캡처합니다. claude는 `--output-format json`, codex는 `exec --json` 이벤트 스트림, kiro는 stderr의 credits를 사용합니다. 다른 provider의 run에는 사용량이 없을 수 있으며, 빈 값을 비용 0으로 해석하면 안 됩니다. 완료된 run마다 모델별 행을 **disagreement ledger**(`.xm/panel/history.jsonl`)에 append하고, `xm panel stats [--roi]`가 이를 벤더별 생존율(confirmed/raised)과 catch당 비용으로 집계 — stateless API council이 쌓을 수 없는 per-repo 데이터 해자입니다. `--stream`은 claude/cursor에 토큰 단위 라이브 텍스트를 더합니다(`--partial`, 기본 on, 초대형 타깃에선 자동 off). 모델이 JSON 계약 대신 구조화된 마크다운 리뷰를 내면(agy/Gemini가 간헐적으로 그럼) 패널이 `### [severity] file:line — title` + Why/Fix 형태에서 findings를 건져내 "no JSON"으로 버리지 않습니다. 아예 쓸 만한 답이 없으면 CLI stderr의 실제 이유를 노출합니다. timeout은 타깃 크기에 따라 자동 상향(`--timeout`으로 고정). kiro는 MCP 없는 자동 프로비저닝 agent(`~/.kiro/agents/xm-panel-review.json`)로 띄웁니다 — kiro가 전역 `mcp.json`을 로드하면 top-level `oneOf`/`allOf`/`anyOf` 스키마를 가진 MCP tool 하나 때문에 Bedrock이 요청 전체를 거부하기 때문입니다. 직접 만든 agent를 쓰려면 `panel.kiro_agent`로 지정하세요.
 
 두 개의 adversarial 애드온이 의견을 검증된 사실로 바꿉니다. **`--grounded`**는 리포를 실제로 읽을 수 있는 라운드2 refuter(현재 codex — repo cwd에서 `exec --sandbox read-only`)가 인용된 파일을 직접 열어 실제 코드와 대조해 finding을 검증하고 verdict에 `{checked, observed}`를 태깅하게 합니다. 텍스트만 보는 벤더에는 절대 요청하지 않습니다(파일을 못 읽는 벤더에게 "열어보라"고 하면 `checked:true`를 지어낼 뿐입니다). **`xm panel followup <run>`**은 디베이트 라운드를 돌립니다 — 각 저자의 세션을 resume해 반박당한 finding을 `HOLD` / `CONCEDE` / `REVISE`하게 합니다. *held*(두 모델이 서로 굽히지 않음)는 사람이 판단해야 할 진짜 불일치, *conceded*는 해소된 것입니다. additive(`followup-N.json`, verdict.json은 건드리지 않음)이며 리뷰가 `--session-reuse`(claude/codex)로 돌아갔어야 합니다.
 
@@ -1324,7 +1326,7 @@ x-solver / x-humble → 진단과 재사용 레슨
 
 ## 벤치마크
 
-전체 플러그인에 대한 실증적 일관성 측정. `/xm:eval consistency`로 실행.
+선택한 플러그인 7개의 과거 내부 일관성 측정입니다. `/xm:eval consistency`로 실행합니다.
 
 | 플러그인 | 전략 | 일관성 | 상태 |
 |--------|----------|:-----------:|--------|
@@ -1334,9 +1336,9 @@ x-solver / x-humble → 진단과 재사용 레슨
 | x-solver | decompose | **0.917** | PASS |
 | x-review | multi-lens review | **0.890** | PASS |
 | x-probe | premise-extraction | **0.826** | PASS |
-| x-build | legacy planning benchmark | **0.824** | PASS |
+| x-build | legacy planning benchmark | **0.950** | PASS |
 
-**평균: 0.899** | 측정된 7개 legacy/plugin 전략 전부 PASS | 판정 일관성: 100%
+**평균: 0.917** | 측정된 7개 legacy/plugin 전략 전부 PASS | 판정 일관성: 100%
 
 x-build 행은 x-plan 단일 planner 전환 이전 측정이며 현재 lean native 실행 workflow의 효용을 측정한 값이 아닙니다.
 
@@ -1594,6 +1596,8 @@ xm은 요청을 처리할 수 있는 가장 저렴한 모델을 자동으로 고
 ```bash
 bun run verify
 ```
+
+PR CI는 [핵심 contract 테스트](./.github/workflows/core-contracts.yml)와 bundle·Skill checksum drift를 확인합니다. `bun run verify`는 로컬 전체 suite입니다.
 
 - [변경 이력 / 릴리스](https://github.com/x-mesh/xm/releases)
 - [버그 신고](https://github.com/x-mesh/xm/issues/new)

@@ -1,5 +1,13 @@
 # xm 차별화 전략 제안서 v2
 
+> **현재 상태 안내 (2026-09-27):** 이 문서는 v2 제안과 후속 패치의 의사결정 기록입니다. 아래 §1의 자산 등급과 §6의 90일 순서는 작성 시점의 스냅샷이며, 현재 기능 목록으로 읽으면 안 됩니다. 현재 동작은 [README](../../README.ko.md)와 각 CLI·SKILL을 기준으로 확인하세요.
+>
+> - `x-build` 기본 경로는 direct/planned를 선택하고, planned일 때 `x-plan`을 사용합니다 (`x-build/skills/build/SKILL.md`). 기존 project lifecycle은 명시적 경로입니다.
+> - `x-eval`에는 `case add`, `bench plan/record/finish`, baseline 비교 gate가 구현돼 있습니다 (`x-eval/lib/x-eval-cli.mjs`). 이 기능의 존재와 외부 사용자 과제에서의 성과 입증은 별개입니다.
+> - `x-panel`은 provider가 노출한 usage를 파싱합니다 (`x-panel/lib/x-panel/adapters.mjs`). 모든 provider/run에 실측 비용이 있다는 뜻은 아닙니다.
+> - `x-trace replay` CLI는 재실행 입력을 보존한 artifact를 만듭니다 (`x-trace/lib/x-trace/replay.mjs`). 이 CLI 자체가 agent를 재실행하지는 않습니다.
+> - 공개 [케이스 스터디](../case-studies/README.md)는 제작자 사용에서 나온 N=1 사례입니다. 다른 팀에서의 성과는 아직 검증되지 않았습니다.
+
 > v1을 5종 모델 적대 패널(claude/codex/agy/cursor/kiro, 확인 이슈 18개)로 검증한 뒤
 > 개정한 판본. v1 대비 변경점은 각 절 머리의 **[v2 변경]** 으로 표시한다. 핵심 원칙:
 > **검증되지 않은 보유 주장 금지, 구조적으로 막힌 작업을 로드맵에 올리지 않기,

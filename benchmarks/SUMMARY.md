@@ -2,6 +2,8 @@
 
 Date: 2026-03-31 | Model: claude-sonnet-4-6 | Metric system: v2 (dual-metric)
 
+This is the 2026-03-31 snapshot. Later per-plugin JSON files may contain newer runs; the README table uses the latest values recorded there. These are internal consistency measurements, not evidence of outcomes across external teams.
+
 ## Metric System
 
 Two distinct measurement systems by strategy type:
