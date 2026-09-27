@@ -343,6 +343,7 @@ function cmdReplay(pos, opts) {
       console.log(JSON.stringify({
         replay_of: manifest.replay_of,
         seed: manifest.seed,
+        execution: manifest.execution,
         manifest: manifestPath,
         snapshot: manifest.snapshot,
         diff: manifest.replay_diff,
@@ -352,6 +353,7 @@ function cmdReplay(pos, opts) {
       return;
     }
     console.log(`Replay artifact created: ${manifestPath}`);
+    console.log('  agent execution: not run');
     console.log(`  replay_of: ${manifest.replay_of}`);
     console.log(`  seed: ${manifest.seed}`);
     console.log(`  snapshot: ${manifest.snapshot.archive} (${manifest.snapshot.archive_bytes} bytes)`);

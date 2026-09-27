@@ -17,7 +17,7 @@ From `$ARGUMENTS`:
 - `--promote-to-eval` = write an idempotent x-eval replay case under
   `.xm/eval/cases/`.
 
-### Execution
+### Artifact preparation
 
 1. Validate that trace/span identifiers cannot escape `.xm/traces/`, then read
    the JSONL trace. A malformed trace fails closed.
@@ -28,7 +28,8 @@ From `$ARGUMENTS`:
    `snapshot_size_over_10mb` warning is recorded before/after archive creation.
 4. Atomically reserve one fork point. Each trace allows at most three forks,
    including concurrent CLI invocations.
-5. Emit a four-axis metadata diff: output hash/length, input/output tokens,
+5. Record `execution.agent_invoked: false` and whether `--result` supplied
+   provider metadata. Emit a four-axis metadata diff: output hash/length, input/output tokens,
    cost, and rubric quality. Missing replay measurements remain `null`; the
    command never invents a quality score.
 6. With `--promote-to-eval`, atomically create a deterministic x-eval case.
@@ -38,7 +39,8 @@ From `$ARGUMENTS`:
 ### Output
 
 ```
-[trace] Replay artifact created: .xm/traces/feature-auth-20260325/replays/fork-.../replay_manifest.json
+Replay artifact created: .xm/traces/feature-auth-20260325/replays/fork-.../replay_manifest.json
+  agent execution: not run
   replay_of: feature-auth-20260325
   seed: 4f9c...
   snapshot: feature-auth-20260325/fs/fork-....tar.gz (83422 bytes)

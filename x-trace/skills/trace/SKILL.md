@@ -15,7 +15,7 @@ No external dependencies.
 - User wants to trace or observe multi-agent execution
 - User says "trace", "execution log", "check cost", "token usage", "show timeline"
 - User wants to compare two runs ("diff", "compare before and after")
-- User wants to replay a previous execution ("replay", "reproduce")
+- User wants to prepare a replay artifact or compare supplied replay result metadata
 - Other xm skills want to record agent calls for observability
 </Use_When>
 
@@ -33,7 +33,7 @@ No external dependencies.
 |------------|-------|--------|
 | `show`, `list`, `cost`, `diff` | **haiku** (Agent tool) | Read-only log parsing and display |
 | `record`, `last`, `status`, `since`, `doctor` | **haiku** (Agent tool) | Deterministic CLI output — script decides, model relays |
-| `replay` | **sonnet** | Requires agent re-execution |
+| `replay` | **sonnet** | Audits replay inputs and supplied result provenance |
 
 For haiku-eligible commands, delegate via: `Agent tool: { model: "haiku", prompt: "Run: [command]" }` <!-- managed-model: writer -->
 
@@ -118,7 +118,7 @@ See `subcommands/cost.md` — per-agent cost table with token rates and totals.
 
 ## Subcommand: replay
 
-See `subcommands/replay.md` — re-executes agents from a given step with user confirmation.
+See `subcommands/replay.md` — prepares a replay manifest and snapshot. The CLI does not invoke an agent; report that limit when the user asks to reproduce an execution.
 
 ---
 
