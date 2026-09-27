@@ -989,12 +989,12 @@ Model auto-routing: `architect` → opus, `executor` → sonnet, `scanner` → h
 
 ### x-trace
 
-See what your agents actually did. Walk the timeline, check the cost, replay any past run.
+See what your agents actually did. Walk the timeline, check the cost, and prepare an auditable replay artifact. The replay command does not invoke an agent.
 
 ```bash
 /xm:trace timeline              # Agent execution timeline
 /xm:trace cost                  # Token/cost breakdown per agent
-/xm:trace replay <id>           # Replay a past execution
+/xm:trace replay <id> --span <span-id>  # Prepare a replay manifest and snapshot
 /xm:trace diff <id1> <id2>      # Compare two execution runs
 ```
 

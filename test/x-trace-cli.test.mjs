@@ -252,6 +252,7 @@ describe('replay artifact (t14)', () => {
     expect(out.code).toBe(0);
     const result = JSON.parse(out.stdout);
     expect(result.replay_of).toBe('replay-fixture');
+    expect(result.execution).toEqual({ agent_invoked: false, result_source: 'none' });
     expect(result.seed).toMatch(/^[a-f0-9]{64}$/);
     expect(result.warnings).toEqual([]);
     expect(result.diff.output.comparison).toBe('unavailable');
@@ -263,6 +264,7 @@ describe('replay artifact (t14)', () => {
 
     const manifest = JSON.parse(readFileSync(result.manifest, 'utf8'));
     expect(manifest.replay_of).toBe('replay-fixture');
+    expect(manifest.execution).toEqual(result.execution);
     expect(manifest.overrides.model).toBe('haiku');
     expect(manifest.source.span_id).toBe('span-a');
     expect(manifest.deterministic_context.span.id).toBe('span-a');
@@ -289,6 +291,7 @@ describe('replay artifact (t14)', () => {
     const first = runCli(dir, ['replay', 'diff-trace', '--span', 'span-a', '--result', 'replay-result.json', '--promote-to-eval', '--json']);
     expect(first.code).toBe(0);
     const parsed = JSON.parse(first.stdout);
+    expect(parsed.execution).toEqual({ agent_invoked: false, result_source: 'provided_metadata' });
     expect(parsed.diff.output.comparison).toBe('changed');
     expect(parsed.diff.tokens.total).toEqual({ original: 30, replay: 36, delta: 6 });
     expect(parsed.diff.cost.original).toBeCloseTo(0.03, 8);
@@ -407,7 +410,9 @@ describe('replay artifact (t14)', () => {
     expect(runCli(dir, ['replay', '../fork-trace', '--span', 'span-a']).code).toBe(1);
     expect(runCli(dir, ['replay', 'fork-trace', '--span', 'missing']).code).toBe(1);
     for (let index = 0; index < 3; index++) {
-      expect(runCli(dir, ['replay', 'fork-trace', '--span', 'span-a']).code).toBe(0);
+      const prepared = runCli(dir, ['replay', 'fork-trace', '--span', 'span-a']);
+      expect(prepared.code).toBe(0);
+      expect(prepared.stdout).toContain('agent execution: not run');
     }
     const capped = runCli(dir, ['replay', 'fork-trace', '--span', 'span-a']);
     expect(capped.code).toBe(1);

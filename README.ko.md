@@ -989,12 +989,12 @@ Claude Code Agent 도구 위에 얹은 프리미티브와 자율 행동입니다
 
 ### x-trace
 
-에이전트가 실제로 뭘 했는지 봅니다. 타임라인을 따라가고, 비용을 점검하고, 어떤 실행이든 그대로 다시 돌릴 수 있습니다.
+에이전트가 실제로 뭘 했는지 봅니다. 타임라인과 비용을 확인하고 재실행 준비 artifact를 만들 수 있습니다. `replay` 명령은 에이전트를 호출하지 않습니다.
 
 ```bash
 /xm:trace timeline              # 에이전트 실행 타임라인
 /xm:trace cost                  # 에이전트별 토큰/비용 분석
-/xm:trace replay <id>           # 과거 실행 리플레이
+/xm:trace replay <id> --span <span-id>  # 재실행 manifest와 snapshot 준비
 /xm:trace diff <id1> <id2>      # 두 실행 비교
 ```
 
