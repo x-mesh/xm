@@ -19,6 +19,7 @@ jobs:
             test/cost-engine.test.mjs \
             test/adaptive-routing.test.mjs \
             test/build-lifecycle.test.mjs \
+            test/worktrees/finish.test.mjs \
             test/x-plan-cli.test.mjs \
             test/x-review-lifecycle.test.mjs \
             test/x-eval-cli.test.mjs \

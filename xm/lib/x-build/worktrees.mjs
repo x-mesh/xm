@@ -909,6 +909,7 @@ function markTaskCompleted(project, taskId) {
       tokens_in: null,
       tokens_out: null,
       quality_score: taskRef.score != null ? taskRef.score : 1,
+      quality_scored: taskRef.score != null,
       success: true,
       retry_count: taskRef.retry_count || 0,
       failure_reason: null,
