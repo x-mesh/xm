@@ -1,6 +1,6 @@
 ---
 name: humanize
-description: Remove AI writing patterns — detect and rewrite AI-generated text into natural, human-sounding prose. English + Korean pattern detection. Based on Wikipedia's "Signs of AI writing" guide and Korean AI-slop conventions. Also fixes translationese in Korean UI strings (labels, descriptions, buttons) via `ui` mode.
+description: Remove AI writing patterns — detect and rewrite AI-generated text into natural, human-sounding prose. English + Korean pattern detection. Based on Wikipedia's "Signs of AI writing" guide and Korean AI-slop conventions. Also fixes translationese in Korean UI and CLI strings (labels, descriptions, buttons, menus, CLI help and status lines) via `ui` mode.
 model: sonnet
 allowed-tools:
   - Read
@@ -25,6 +25,7 @@ Credit: English pattern set adapted from `blader/humanizer` (MIT) — itself bas
 - User provides a writing sample for voice calibration and asks to match style
 - Reviewing or editing prose where naturalness matters more than information density
 - Korean UI strings read like literal English ("번역체", "UI 문구 다듬어줘", "어색한 한글 UI", "설정 화면 문구 정리") → `ui` mode
+- Korean CLI help or status text reads like translated English or ends every line in a verb ("CLI 한글화", "도움말 문구 다듬어줘", "상태 메시지 정리") → `ui` mode
 </Use_When>
 
 <Do_Not_Use_When>
@@ -68,7 +69,7 @@ the mode: global options may appear before or after it.
 | `rewrite` (default) | Detect + rewrite + final anti-AI audit pass |
 | `light` | Minimal edit — remove obvious AI tells while preserving most wording |
 | `strong` | Heavier edit — rebuild sentence flow while preserving every factual claim |
-| `ui` | Korean UI-string mode — fix translationese in labels, descriptions, options, buttons. Separate pipeline with a JSON contract. See `## UI String Mode`. |
+| `ui` | Korean UI-string mode — fix translationese in labels, descriptions, options, buttons, menus, and CLI help and status lines. Separate pipeline with a JSON contract. See `## UI String Mode`. |
 | `voice <file>` | Voice calibration — use `<file>` as style sample, then process the rest |
 | `--lang en` / `--lang ko` | Force language (auto-detected otherwise); accepted anywhere before the target |
 
@@ -198,7 +199,7 @@ For short inputs, single-token swaps inflate percentages. Use absolute threshold
 
 ## UI String Mode
 
-App and web UI strings are not prose. Run this pipeline **instead of** `## Core Process` — the prose guardrails do not merely fail to help here, they block correct edits.
+App, web, and CLI UI strings are not prose. Run this pipeline **instead of** `## Core Process` — the prose guardrails do not merely fail to help here, they block correct edits.
 
 **Load `references/ui-strings-ko.md` first.** It holds the S1/S2 forbidden patterns, the per-`type` form/length/period table, the glossary, and the JSON contract. Do not work from memory.
 
@@ -218,7 +219,7 @@ Meaning preservation is **not** suspended. It is the only guardrail left, so hol
 
 ### Steps
 
-1. **Normalize input** — build the JSON array defined in `references/ui-strings-ko.md`. If the input is a source file (`Localizable.strings`, `ko.json`, `messages.ts`), extract strings into that array. Never write to the file unless the user explicitly asks.
+1. **Normalize input** — build the JSON array defined in `references/ui-strings-ko.md`. If the input is a source file (`Localizable.strings`, `ko.json`, `messages.ts`, or CLI help and message definitions), extract strings into that array. Never write to the file unless the user explicitly asks.
 2. **Load the glossary** — read `.xm/ui-glossary.json` if present; it overrides the default glossary. If absent, apply the default glossary only, and set `flag: true` on project-specific implementation terms you cannot confidently replace.
 3. **Group by screen** — items sharing a `key` prefix minus the last segment form one group. Judge S1-2 (label/description overlap) and S1-4 (mixed endings) inside a group, never globally.
 4. **Apply rules** — S1 on every hit, S2 only when the pattern repeats within a group.
