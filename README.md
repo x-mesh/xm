@@ -1137,7 +1137,11 @@ Release automation: squash WIP commits, bump the version, push. Works on xm mark
 /xm:write changelog     # CHANGELOG.md entries (text only)
 ```
 
-For `pr` and `issue`, the skill shows the final text and asks one time. Then it runs `gh` and reads the saved text back from GitHub. The `release`, `changelog`, and `commit` modes return text only, because `/xm:ship` owns the commit, the tag, and the release. The document language follows the repository, not the chat language. A "Tested with" line lists only commands that ran in the session.
+For `pr` and `issue`, the skill shows the final text and asks one time. Then it runs `gh` and reads the saved text back from GitHub. The `release`, `changelog`, and `commit` modes return text only, because `/xm:ship` owns the commit, the tag, and the release.
+
+The skill uses the GitHub PR or issue template of the repository. If the repository has no template, it uses the default template of the organization or account. If neither exists, it uses the x-kit formats.
+
+The document language follows the repository, not the chat language. If you name a language, the skill uses that language. The verification section lists only commands that ran in the session and the CI checks of the PR.
 
 ---
 
