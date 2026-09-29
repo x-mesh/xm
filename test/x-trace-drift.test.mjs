@@ -318,7 +318,19 @@ describe('drift: report over a seeded .xm', () => {
     expect(report.axes.latency.rows[0]).toMatchObject({ baseline: { n: 5, value: 300 }, window: { n: 5, value: 600 }, flagged: true });
     expect(report.axes.tokens.rows[0]).toMatchObject({ baseline: { n: 5, value: 60 }, window: { n: 5, value: 120 }, flagged: true });
     expect(report.axes.errors.rows[0]).toMatchObject({ baseline: { n: 5, value: 0 }, window: { n: 4, value: 1 }, flagged: true });
-    expect(report.coverage.some(note => note.includes('unknown status excluded'))).toBe(true);
+    expect(report.coverage.some(note => note.includes('status unknown excluded') && note.includes('review 1'))).toBe(true);
+  });
+
+  test('errors axis folds legacy success spellings into success and lists unrecognised statuses verbatim', () => {
+    const dir = makeXm();
+    for (const [i, status] of ['complete', 'ok', 'completed', 'success', 'success'].entries()) writeTrace(dir, { daysAgo: 10 + i, durationMs: 100, status, hex: `d${i}11` });
+    for (const [i, status] of ['success', 'success', 'failed', 'weird', 'unknown'].entries()) writeTrace(dir, { daysAgo: 1 + i, durationMs: 100, status, hex: `e${i}11` });
+
+    const report = driftReport({ xmDir: join(dir, '.xm'), now: NOW_MS, minSamples: 3, axes: ['errors'] });
+    expect(report.axes.errors.rows[0]).toMatchObject({ baseline: { n: 5, value: 0 }, window: { n: 3 } });
+    expect(report.axes.errors.rows[0].window.value).toBeCloseTo(1 / 3, 3); // values are rounded to 4 digits
+    expect(report.coverage.some(note => note.includes("'weird' 1") && note.includes('unrecognised status'))).toBe(true);
+    expect(report.coverage.some(note => note.includes('status unknown excluded') && note.includes('review 1'))).toBe(true);
   });
 
   test('precision sample counts use only fix_now and false_positive decisions', () => {

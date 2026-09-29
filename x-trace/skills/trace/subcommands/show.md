@@ -1,53 +1,35 @@
 # Subcommand: show
 
-Renders the trace timeline in ASCII.
+Shows one trace session: header, row-type counts, git snapshot, and every recorded `agent_step`. CLI-backed: run the command and relay its output.
 
-## Subcommand: show
-
-### Parsing
+## Parsing
 
 From `$ARGUMENTS`:
-- After `show` = session name (partial matching allowed; defaults to latest session if omitted)
+- After `show` = session id. An exact id, the file name, or a unique prefix all work. If omitted, run `xm trace list --limit 1` first and use that id.
 
-### Session file lookup
+## Execution
 
 ```bash
-# Latest session
-ls -t .xm/traces/*.jsonl 2>/dev/null | head -1
-
-# Name matching
-ls .xm/traces/*.jsonl 2>/dev/null | grep "{name}"
+xm trace show <session-id> [--json]
 ```
 
-### Timeline rendering
-
-Read each entry from the JSONL file and output in the following format:
+## Output
 
 ```
-[trace] Session: feature-auth (2026-03-25)
+Session review-20260928-094051-9098
+  skill: review   status: unknown   started: 2026-09-28T09:40:51.000Z   duration: 4.1s
+  git: 989362f (develop)
+  file: /repo/.xm/traces/review-20260928-094051-9098.jsonl
+  rows: session_start 1, agent_step 2, session_end 1
 
-00:00 ┬ x-op:review started
-00:01 ├─┬ fan-out: 4 agents
-00:01 │ ├── agent-1: security (~2.5K in, ~800 out) ✅ 12s
-00:01 │ ├── agent-2: logic (~2.5K in, ~600 out) ✅ 10s
-00:01 │ ├── agent-3: performance (~2.5K in, ~700 out) ✅ 11s
-00:01 │ └── agent-4: tests (~2.5K in, ~500 out) ✅ 9s
-00:13 ├── synthesize ✅ 3s
-00:16 └── complete
-
-Total: 16s | ~13K tokens | ~$0.04 est.
+Agents (2):
+  Explore · haiku · 1.2s · success · Scan tests  [toolu_01]
+  general-purpose · inherit · 3.4s · success  [toolu_02]
 ```
 
-### Timeline rendering rules
-
-- Time display: elapsed time from session start (`MM:SS`)
-- Entries with `parent_id: null` → root node (`┬`)
-- Entries with `parent_id` → child node (`├──` or `└──`)
-- Last child → `└──`, others → `├──`
-- Fan-out group → `├─┬` + indentation
-- Status icons: `completed` → ✅, `failed` → ❌, `running` → 🔵, `skipped` → ⏭️
-- Token display: abbreviated with `K` for thousands (2500 → `~2.5K`)
-- Cost is summed and shown on the `Total` line
+- An ambiguous prefix lists the candidates and exits 1; an unknown id points to `xm trace list`.
+- `Agents: none recorded` means no Agent tool call happened inside the session (or the session predates hook-recorded spans, 2026-09-29).
+- Tokens and cost are not shown: the hook payload carries neither, so any figure would be an estimate.
 
 ## Applies to
-Invoked via `/xm:trace show [session]`.
+Invoked via `/xm:trace show [session]` or directly as `xm trace show <session-id>`.

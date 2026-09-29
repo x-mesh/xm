@@ -8,7 +8,7 @@
  */
 
 import { resolveProject, resetCircuitBreaker, getCircuitState, setExplicitProject, cmdProjectKind } from './x-build/core.mjs';
-import { cmdInit, cmdList, cmdStatus, cmdClose, cmdDashboard, interactiveInit, interactiveDashboard, cmdHandoffFull, cmdHandoffMirror, cmdHandon } from './x-build/project.mjs';
+import { cmdInit, cmdList, cmdArchive, cmdStatus, cmdClose, cmdDashboard, interactiveInit, interactiveDashboard, cmdHandoffFull, cmdHandoffMirror, cmdHandon } from './x-build/project.mjs';
 import { cmdPhase, cmdGate, cmdCheckpoint } from './x-build/phase.mjs';
 import { cmdTasks, cmdTaskCheck, cmdSteps, cmdRun, cmdRunStatus, cmdReviewGroup, cmdGroupCheck, interactiveTasksAdd, cmdDispatch } from './x-build/tasks.mjs';
 import { cmdLater } from './x-build/later.mjs';
@@ -73,7 +73,8 @@ switch (cmd) {
   case 'init':
     if (args.length === 0) { await interactiveInit(); } else { cmdInit(args); }
     break;
-  case 'list':       cmdList(); break;
+  case 'list':       cmdList(args); break;
+  case 'archive':    cmdArchive(args); break;
   case 'status':     cmdStatus(args); break;
   case 'phase':      cmdPhase(args); break;
   case 'gate':       cmdGate(args); break;

@@ -1,23 +1,101 @@
 #!/usr/bin/env node
 // .claude/hooks/trace-session.mjs
 //
-// Auto-record session_start (PreToolUse) and session_end (PostToolUse) for xm skills.
-// Semantic trace entries (agent_call, fan_out, etc.) remain LLM best-effort via SKILL.md.
+// Auto-record an xm skill session: session_start when the Skill tool is invoked
+// (PreToolUse), one agent_step per Agent tool call made before the assistant turn
+// ends, and session_end at the Stop hook. PostToolUse(Skill) is deliberately not
+// the close: it fires as soon as the skill's instructions are loaded, before the
+// skill's own Agent calls. Other semantic entries (fan_out, synthesize) remain
+// LLM best-effort via SKILL.md.
 //
-// Usage in settings.json:
-//   PreToolUse  → node trace-session.mjs pre
-//   PostToolUse → node trace-session.mjs post
+// Usage in settings.json (all three point at the same file):
+//   PreToolUse  matcher Skill|Agent → node trace-session.mjs pre
+//   PostToolUse matcher Skill|Agent → node trace-session.mjs post
+//   Stop        (no matcher)        → node trace-session.mjs stop
+//
+// This hook is a STANDALONE file — it is copied to ~/.claude/hooks/ by `xm init`
+// and must run without the xm plugin lib on disk. It therefore cannot import
+// x-trace/lib/x-trace/trace-writer.mjs; the worktree resolution and git-snapshot
+// logic below are intentional small duplicates of resolveXmDir()/gitSnapshot()
+// there. Keep them in sync so the hook trace and the CLI trace land under the
+// same .xm/ and carry the same git schema.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const TRACED_PREFIXES = ['xm:'];
+const DEBUG = process.env.XM_TRACE_DEBUG === '1';
 
 function isTracedSkill(skill) {
   return TRACED_PREFIXES.some((p) => skill.startsWith(p));
+}
+
+// Best-effort diagnostics. Silent by default (a hook must never chatter into the
+// session); surfaced to stderr only when XM_TRACE_DEBUG=1 so failures are
+// discoverable without changing the never-block contract.
+function debug(msg) {
+  if (!DEBUG) return;
+  try { process.stderr.write(`[xm-trace-hook] ${msg}\n`); } catch { /* nowhere to report */ }
+}
+
+// Mirror of trace-writer.mjs resolveXmDir() — resolve the .xm/ root, worktree-aware.
+// Rule: XM_ROOT env → local .xm/ under base → main checkout's .xm/ via git-common-dir.
+// `base` is the directory the skill was invoked in (CLAUDE_PROJECT_DIR || cwd).
+function resolveXmDir(base) {
+  // Explicit override wins (tests + isolated runs set this to an absolute .xm path).
+  if (process.env.XM_ROOT) return process.env.XM_ROOT;
+  // Prefer a local .xm/ in the invocation directory.
+  const localXm = path.resolve(base, '.xm');
+  if (fs.existsSync(localXm)) return localXm;
+  // Worktree fallback: resolve the main checkout's .xm/ via the shared git dir,
+  // so a worktree without its own .xm/ writes alongside the CLI's traces.
+  const commonDir = gitCommonDir(base);
+  if (commonDir) {
+    const mainXm = path.resolve(base, commonDir, '..', '.xm');
+    if (fs.existsSync(mainXm)) return mainXm;
+  }
+  return localXm;
+}
+
+// `git rev-parse --git-common-dir` from `dir` — the shared git dir for worktrees.
+// Never throws; returns null outside a repo or on any failure.
+function gitCommonDir(dir) {
+  try {
+    const r = spawnSync('git', ['rev-parse', '--git-common-dir'], {
+      cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (r.error || r.status !== 0) return null;
+    return r.stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// Mirror of trace-writer.mjs gitSnapshot() — snapshot git state of `dir` as
+// { head, branch, dirty }. Never throws (FM1): any failure yields null for the
+// affected field only, computed independently so a partial failure still records
+// what it can. branch is null on detached HEAD / failure; dirty is null when
+// status is unavailable, else a boolean.
+function gitSnapshot(dir) {
+  const run = (args) => {
+    try {
+      const r = spawnSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      if (r.error || r.status !== 0) return null;
+      return r.stdout.trim();
+    } catch {
+      return null;
+    }
+  };
+  const head = run(['rev-parse', 'HEAD']) || null;
+  let branch = run(['rev-parse', '--abbrev-ref', 'HEAD']);
+  if (!branch || branch === 'HEAD') branch = null;
+  const porcelain = run(['status', '--porcelain']);
+  const dirty = porcelain === null ? null : porcelain.length > 0;
+  return { head, branch, dirty };
 }
 
 // Event-based project auto-registration: invoking an xm: skill in a project IS the
@@ -46,7 +124,9 @@ async function ensureProjectRegistered(projectRoot) {
     if (!found) return;
     const mod = await import(pathToFileURL(found).href);
     if (typeof mod.ensureRegistered === 'function') mod.ensureRegistered(projectRoot);
-  } catch { /* best-effort */ }
+  } catch (err) {
+    debug(`project register failed: ${err.message}`);
+  }
 }
 
 function readStdin() {
@@ -61,6 +141,30 @@ function readStdin() {
 
 function pad2(n) { return String(n).padStart(2, '0'); }
 
+// `.active` names the open session. Current hooks store {session_id, tool_use_id,
+// opened_at, claude_session_id}; older installs stored the bare id, so both parse.
+function readActive(activeFile) {
+  if (!fs.existsSync(activeFile)) return null;
+  let raw;
+  try { raw = fs.readFileSync(activeFile, 'utf8').trim(); } catch { return null; }
+  if (!raw) return null;
+  if (!raw.startsWith('{')) return { session_id: raw, tool_use_id: null, opened_at: null, claude_session_id: null };
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.session_id !== 'string' || !parsed.session_id) return null;
+    return {
+      session_id: parsed.session_id,
+      tool_use_id: typeof parsed.tool_use_id === 'string' ? parsed.tool_use_id : null,
+      opened_at: typeof parsed.opened_at === 'string' ? parsed.opened_at : null,
+      claude_session_id: typeof parsed.claude_session_id === 'string' ? parsed.claude_session_id : null,
+    };
+  } catch { return null; }
+}
+
+function hasAgentStep(traceFile, id) {
+  try { return fs.readFileSync(traceFile, 'utf8').includes(`"id":${JSON.stringify(id)}`); } catch { return false; }
+}
+
 function makeSessionId(skillName) {
   const now = new Date();
   const date = `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}`;
@@ -69,85 +173,329 @@ function makeSessionId(skillName) {
   return `${skillName}-${date}-${time}-${hex}`;
 }
 
+const AGENT_TOOL_NAMES = new Set(['Agent']);
+const TOOL_USE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const STALE_MARKER_MS = 24 * 60 * 60 * 1000;
+// A session no Stop ever closed must not swallow the next turns' agents.
+const ACTIVE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+// A skill claim this old with no session behind it belongs to a hook that died mid-open.
+const CLAIM_GRACE_MS = 5000;
+
+// Create-exclusive claim. Two registrations of this hook (project settings and
+// global settings both wired, as in the x-kit repo) fire for the same tool call;
+// a check-then-write guard let both win, so every claim is a `wx` create.
+function claim(file, data) {
+  try { fs.writeFileSync(file, data, { flag: 'wx' }); return true; }
+  catch (err) { if (err.code === 'EEXIST') return false; throw err; }
+}
+
+// Take sole ownership of a file by renaming it to `target`; the loser gets false.
+function takeOver(file, target) {
+  try { fs.renameSync(file, target); return true; }
+  catch (err) { if (err.code === 'ENOENT') return false; throw err; }
+}
+
+function readJsonFile(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
+function appendRow(traceFile, entry) {
+  fs.appendFileSync(traceFile, JSON.stringify(entry) + '\n');
+}
+
+function countAgentSteps(traceFile) {
+  try { return fs.readFileSync(traceFile, 'utf8').split('\n').filter((l) => l.includes('"agent_step"')).length; }
+  catch { return 0; }
+}
+
+function toolUseIdOf(input) {
+  return typeof input.tool_use_id === 'string' && TOOL_USE_ID_RE.test(input.tool_use_id) ? input.tool_use_id : null;
+}
+
+function agentFields(toolInput) {
+  const fields = {
+    role: typeof toolInput.subagent_type === 'string' && toolInput.subagent_type ? toolInput.subagent_type : 'agent',
+    model: typeof toolInput.model === 'string' && toolInput.model ? toolInput.model : 'inherit',
+  };
+  if (typeof toolInput.description === 'string' && toolInput.description) fields.description = toolInput.description.slice(0, 120);
+  return fields;
+}
+
+// A background dispatch answers with an acknowledgement (agent id / "launched"),
+// not a result; the request flag alone is not reliable because it can be omitted.
+function looksLaunched(response) {
+  if (response == null) return false;
+  if (typeof response === 'object' && response.status === 'running') return true;
+  const text = typeof response === 'string' ? response : JSON.stringify(response).slice(0, 2000);
+  return /agentId|Async agent launched|running in the background/i.test(text);
+}
+
+// Outcome as far as the PostToolUse payload shows it. An error marker wins even
+// for a background dispatch; a dispatch acknowledgement is 'launched', not
+// 'success' (the agent has not run yet and duration_ms is launch latency); no
+// response at all stays 'unknown'. The post hook arriving never means success.
+function agentStatus(input, toolInput) {
+  const response = input.tool_response ?? input.tool_output;
+  if (typeof response === 'string' && /^\s*error\b/i.test(response)) return 'error';
+  if (response && typeof response === 'object' && (response.is_error === true || response.error)) return 'error';
+  if (toolInput.run_in_background === true || looksLaunched(response)) return 'launched';
+  if (response == null) return 'unknown';
+  return 'success';
+}
+
+function purgeOld(dir, suffixes) {
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return; }
+  const cutoff = Date.now() - STALE_MARKER_MS;
+  for (const name of names) {
+    if (!suffixes.some((s) => name.endsWith(s))) continue;
+    const file = path.join(dir, name);
+    try { if (fs.statSync(file).mtimeMs < cutoff) fs.unlinkSync(file); } catch { /* best-effort */ }
+  }
+}
+
+// The open session, or null. A session past ACTIVE_MAX_AGE_MS, or one opened in
+// a different Claude conversation, is closed as stale instead of inherited.
+function currentSession(tracesDir, base, input) {
+  const active = readActive(path.join(tracesDir, '.active'));
+  if (!active) return null;
+  const openedAt = Date.parse(active.opened_at);
+  const tooOld = Number.isFinite(openedAt) && Date.now() - openedAt > ACTIVE_MAX_AGE_MS;
+  const otherConversation = Boolean(active.claude_session_id && typeof input.session_id === 'string' && input.session_id && active.claude_session_id !== input.session_id);
+  if (tooOld || otherConversation) {
+    closeSession(tracesDir, base, 'stale');
+    return null;
+  }
+  return active;
+}
+
+// Agent tool spans. Only while an xm skill session is open: x-trace tracks xm
+// tool executions, not every subagent in every project, and writing outside a
+// session would create .xm/ in repositories that never opted in. The pre marker
+// names the session the call started in, so the post attaches to that session
+// even if another skill opened a new one in between. Every hand-over is a
+// rename or a `wx` create, and the artifact is kept (.done / .abandoned / .post)
+// so a second hook registration finds it and writes nothing.
+function agentSpan(tracesDir, phase, input, base) {
+  const toolInput = input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {};
+  const toolUseId = toolUseIdOf(input);
+  const pendingDir = path.join(tracesDir, '.agents');
+  const marker = toolUseId ? path.join(pendingDir, `${toolUseId}.json`) : null;
+  const active = currentSession(tracesDir, base, input);
+
+  if (phase === 'pre') {
+    if (!active) { debug('agent span skipped: no open xm session'); return; }
+    if (!marker) { debug('agent span: no tool_use_id on pre — duration will be null'); return; }
+    fs.mkdirSync(pendingDir, { recursive: true });
+    const data = JSON.stringify({ session_id: active.session_id, ts: new Date().toISOString(), ...agentFields(toolInput) });
+    if (!claim(marker, data)) debug(`agent span ${toolUseId} already opened by another hook registration`);
+    return;
+  }
+  if (phase !== 'post') return;
+
+  let started = null;
+  if (marker) {
+    const done = path.join(pendingDir, `${toolUseId}.done`);
+    if (takeOver(marker, done)) {
+      started = readJsonFile(done);
+    } else if (fs.existsSync(done) || fs.existsSync(path.join(pendingDir, `${toolUseId}.abandoned`))) {
+      debug(`agent span ${toolUseId} already recorded (done or abandoned)`);
+      return;
+    }
+  }
+  const sessionId = started?.session_id || active?.session_id;
+  if (!sessionId) { debug('agent span skipped: no session to attach to'); return; }
+  const traceFile = path.join(tracesDir, `${sessionId}.jsonl`);
+  if (!fs.existsSync(traceFile)) return;
+  if (!started && toolUseId) {
+    // No pre ever ran for this id: one registration wins the post claim.
+    fs.mkdirSync(pendingDir, { recursive: true });
+    if (!claim(path.join(pendingDir, `${toolUseId}.post`), new Date().toISOString())) {
+      debug(`agent span ${toolUseId} already recorded by another hook registration`);
+      return;
+    }
+  }
+
+  const startedAt = started ? Date.parse(started.ts) : NaN;
+  appendRow(traceFile, {
+    type: 'agent_step',
+    session_id: sessionId,
+    ts: new Date().toISOString(),
+    v: 1,
+    id: toolUseId || `agent-${crypto.randomBytes(3).toString('hex')}`,
+    parent_id: null,
+    ...agentFields(toolInput),
+    duration_ms: Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : null,
+    status: agentStatus(input, toolInput),
+    source: 'hook',
+  });
+}
+
+// Close the open session: one owner (rename-claim on .active), leftover agent
+// markers become 'abandoned' rows so an agent still running at turn end is
+// visible instead of silently dropped, then session_end with the agent count.
+// The closing claim survives until session_end is on disk; a failure puts
+// .active back so the next Stop retries.
+function closeSession(tracesDir, base, reason) {
+  const activeFile = path.join(tracesDir, '.active');
+  const owned = `${activeFile}.closing.${process.pid}`;
+  if (!takeOver(activeFile, owned)) return false;
+  try {
+    const active = readActive(owned);
+    const traceFile = active?.session_id ? path.join(tracesDir, `${active.session_id}.jsonl`) : null;
+    if (!traceFile || !fs.existsSync(traceFile)) { fs.unlinkSync(owned); return false; }
+
+    const pendingDir = path.join(tracesDir, '.agents');
+    let markers = [];
+    try { markers = fs.readdirSync(pendingDir).filter((n) => n.endsWith('.json')); } catch { markers = []; }
+    for (const name of markers) {
+      const id = name.replace(/\.json$/, '');
+      const abandonedFile = path.join(pendingDir, `${id}.abandoned`);
+      // Rename first: only the owner of the marker writes the row, so a post
+      // racing this close cannot record the same call twice.
+      if (!takeOver(path.join(pendingDir, name), abandonedFile)) continue;
+      const data = readJsonFile(abandonedFile);
+      if (data && data.session_id && data.session_id !== active.session_id) continue;
+      const startedAt = Date.parse(data?.ts);
+      appendRow(traceFile, {
+        type: 'agent_step', session_id: active.session_id, ts: new Date().toISOString(), v: 1, id, parent_id: null,
+        role: data?.role || 'agent', model: data?.model || 'inherit', ...(data?.description ? { description: data.description } : {}),
+        duration_ms: Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : null,
+        status: 'abandoned', source: 'hook',
+      });
+    }
+    purgeOld(pendingDir, ['.abandoned', '.done', '.post']);
+    purgeOld(path.join(tracesDir, '.claims'), ['.skill']);
+
+    let durationMs = 0;
+    try {
+      const start = JSON.parse(fs.readFileSync(traceFile, 'utf8').split('\n')[0]);
+      durationMs = Date.now() - new Date(start.ts).getTime();
+    } catch (err) { debug(`duration calc failed: ${err.message}`); }
+
+    const entry = {
+      type: 'session_end',
+      session_id: active.session_id,
+      ts: new Date().toISOString(),
+      v: 1,
+      // The hook cannot observe the skill's real outcome — a Block/error verdict
+      // is not surfaced to it — so it records 'unknown' rather than asserting
+      // success. (trace-writer.sessionEnd sets a real status because it runs at
+      // the true end of a known operation.)
+      status: 'unknown',
+      total_duration_ms: durationMs,
+      agent_count: countAgentSteps(traceFile),
+    };
+    if (reason !== 'stop') entry.close_reason = reason;
+    const git = gitSnapshot(base);
+    if (git.head) entry.git = git;
+    appendRow(traceFile, entry);
+    fs.unlinkSync(owned);
+    return true;
+  } catch (err) {
+    try { fs.renameSync(owned, activeFile); } catch { /* best-effort */ }
+    throw err;
+  }
+}
+
+async function openSession(tracesDir, base, input, skillName) {
+  fs.mkdirSync(tracesDir, { recursive: true });
+  const activeFile = path.join(tracesDir, '.active');
+  const toolUseId = toolUseIdOf(input);
+  let claimFile = null;
+  if (toolUseId) {
+    const claimsDir = path.join(tracesDir, '.claims');
+    fs.mkdirSync(claimsDir, { recursive: true });
+    claimFile = path.join(claimsDir, `${toolUseId}.skill`);
+    if (!claim(claimFile, new Date().toISOString())) {
+      // The other registration owns this call. Its .active is the evidence; a
+      // claim with no session behind it after the grace period belongs to a hook
+      // that died mid-open, so this one takes the claim over and opens the session.
+      if (readActive(activeFile)?.tool_use_id === toolUseId) { debug(`session for ${toolUseId} already opened by another hook registration`); return; }
+      let age = Infinity;
+      try { age = Date.now() - fs.statSync(claimFile).mtimeMs; } catch { /* claim vanished — take over below */ }
+      if (age < CLAIM_GRACE_MS) { debug(`session for ${toolUseId} is being opened by another hook registration`); return; }
+      try { fs.unlinkSync(claimFile); } catch { /* best-effort */ }
+      if (!claim(claimFile, new Date().toISOString())) return;
+    }
+  }
+  try {
+    // A session left open by a turn that never reached Stop is closed here so the
+    // new one does not inherit its agents; the row says why it closed.
+    if (readActive(activeFile)) closeSession(tracesDir, base, 'superseded');
+
+    const sessionId = makeSessionId(skillName);
+    await ensureProjectRegistered(base);
+    const entry = {
+      type: 'session_start',
+      session_id: sessionId,
+      ts: new Date().toISOString(),
+      v: 1,
+      skill: skillName,
+      args: input.tool_input?.args || '',
+    };
+    // Optional git snapshot — omit outside a git repo so the schema stays clean.
+    // Same event type, same v:1: dashboard session-boundary parsing is unaffected.
+    const git = gitSnapshot(base);
+    if (git.head) entry.git = git;
+    appendRow(path.join(tracesDir, `${sessionId}.jsonl`), entry);
+    fs.writeFileSync(activeFile, JSON.stringify({
+      session_id: sessionId,
+      tool_use_id: toolUseId,
+      opened_at: new Date().toISOString(),
+      claude_session_id: typeof input.session_id === 'string' && input.session_id ? input.session_id : null,
+    }));
+  } catch (err) {
+    if (claimFile) { try { fs.unlinkSync(claimFile); } catch { /* best-effort */ } }
+    throw err;
+  }
+}
+
 async function main() {
-  const phase = process.argv[2]; // 'pre' or 'post'
+  const phase = process.argv[2]; // 'pre' | 'post' | 'stop'
   if (!phase) process.exit(0);
 
   let input;
   try {
     const raw = await readStdin();
     input = raw ? JSON.parse(raw) : {};
-  } catch {
+  } catch (err) {
+    // Malformed stdin is not an error worth blocking on — stay silent (exit 0)
+    // unless debugging.
+    debug(`stdin parse failed: ${err.message}`);
     process.exit(0);
   }
 
-  const skill = input.tool_input?.skill;
-  if (typeof skill !== 'string' || !isTracedSkill(skill)) {
-    process.exit(0);
-  }
-
-  const projectRoot = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
-  const tracesDir = path.join(projectRoot, '.xm', 'traces');
-  const activeFile = path.join(tracesDir, '.active');
-  const skillName = skill.replace('xm:', '');
+  // Base = the directory the skill was invoked in; the .xm/ root is then resolved
+  // worktree-aware so we write where the CLI writes.
+  const base = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
+  const tracesDir = path.join(resolveXmDir(base), 'traces');
 
   try {
-    if (phase === 'pre') {
-      const sessionId = makeSessionId(skillName);
-      fs.mkdirSync(tracesDir, { recursive: true });
-      await ensureProjectRegistered(projectRoot);
-
-      const entry = JSON.stringify({
-        type: 'session_start',
-        session_id: sessionId,
-        ts: new Date().toISOString(),
-        v: 1,
-        skill: skillName,
-        args: input.tool_input?.args || '',
-      });
-
-      fs.appendFileSync(path.join(tracesDir, `${sessionId}.jsonl`), entry + '\n');
-      fs.writeFileSync(activeFile, sessionId);
-
-    } else if (phase === 'post') {
-      if (!fs.existsSync(activeFile)) process.exit(0);
-
-      const sessionId = fs.readFileSync(activeFile, 'utf8').trim();
-      if (!sessionId) process.exit(0);
-
-      const traceFile = path.join(tracesDir, `${sessionId}.jsonl`);
-      if (!fs.existsSync(traceFile)) process.exit(0);
-
-      // Read session_start to calculate duration
-      let durationMs = 0;
-      try {
-        const first = fs.readFileSync(traceFile, 'utf8').split('\n')[0];
-        const start = JSON.parse(first);
-        durationMs = Date.now() - new Date(start.ts).getTime();
-      } catch { /* best-effort */ }
-
-      // Count agent_step entries for agent_count
-      let agentCount = 0;
-      try {
-        const lines = fs.readFileSync(traceFile, 'utf8').split('\n').filter(Boolean);
-        agentCount = lines.filter((l) => l.includes('"agent_step"')).length;
-      } catch { /* best-effort */ }
-
-      const entry = JSON.stringify({
-        type: 'session_end',
-        session_id: sessionId,
-        ts: new Date().toISOString(),
-        v: 1,
-        status: 'success',
-        total_duration_ms: durationMs,
-        agent_count: agentCount,
-      });
-
-      try { fs.appendFileSync(traceFile, entry + '\n'); } catch { /* best-effort */ }
-      try { fs.unlinkSync(activeFile); } catch { /* best-effort */ }
+    if (phase === 'stop') {
+      // Turn end is the only signal that arrives after the skill's own Agent
+      // calls; it closes whatever session the turn opened.
+      closeSession(tracesDir, base, 'stop');
+      process.exit(0);
     }
-  } catch {
-    // Trace is best-effort — never block skill execution.
+
+    if (AGENT_TOOL_NAMES.has(input.tool_name)) {
+      agentSpan(tracesDir, phase, input, base);
+      process.exit(0);
+    }
+
+    const skill = input.tool_input?.skill;
+    if (typeof skill !== 'string' || !isTracedSkill(skill)) process.exit(0);
+
+    if (phase === 'pre') {
+      await openSession(tracesDir, base, input, skill.replace('xm:', ''));
+    }
+    // PostToolUse(Skill) fires as soon as the skill's instructions are loaded —
+    // tens of milliseconds in, before any Agent call the skill makes — so it
+    // must not close the session. Stop does.
+  } catch (err) {
+    // Trace is best-effort — never block tool execution.
+    debug(`fatal (swallowed): ${err.message}`);
   }
 
   process.exit(0);

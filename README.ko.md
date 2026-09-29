@@ -419,7 +419,7 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 | [x-eval](#x-eval) | 품질 평가 & 벤치마크 | `/xm:eval score file` |
 | [x-humble](#x-humble) | 구조화된 회고 | `/xm:humble reflect` |
 | [x-agent](#x-agent) | 에이전트 기본 도구 & 팀 | `/xm:agent fan-out "작업"` |
-| [x-trace](#x-trace) | 실행 추적 & 비용 | `/xm:trace timeline` |
+| [x-trace](#x-trace) | 실행 추적 & 비용 | `xm trace list` |
 | [x-memory](#x-memory) | 세션 간 메모리 | `/xm:memory inject` |
 | [x-dashboard](#x-dashboard) | .xm 상태 웹 대시보드 | `/xm:dashboard start` |
 | [x-humanize](#x-humanize) | AI 글쓰기 패턴 제거 (v0.5.0, 안정화 전) | `/xm:humanize audit text` |
@@ -992,7 +992,8 @@ Claude Code Agent 도구 위에 얹은 프리미티브와 자율 행동입니다
 에이전트가 실제로 뭘 했는지 봅니다. 타임라인과 비용을 확인하고 재실행 준비 artifact를 만들 수 있습니다. `replay` 명령은 에이전트를 호출하지 않습니다.
 
 ```bash
-/xm:trace timeline              # 에이전트 실행 타임라인
+xm trace list                   # 최근 트레이스 세션: 스킬, 상태, 에이전트 수, 소요 시간
+xm trace show <session-id>      # 세션 하나와 기록된 agent_step 전체
 /xm:trace cost                  # 에이전트별 토큰/비용 분석
 /xm:trace replay <id> --span <span-id>  # 재실행 manifest와 snapshot 준비
 /xm:trace diff <id1> <id2>      # 두 실행 비교

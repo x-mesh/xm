@@ -2731,11 +2731,15 @@ function parseJsonlFile(filePath) {
 function handleTraces(xmRoot, req) {
   const tracesDir = safeJoin(xmRoot, 'traces');
 
-  // Read active pointer
+  // Read active pointer. Current hooks store {session_id, tool_use_id}; older
+  // installs stored the bare session id — accept both.
   let active = null;
   const activeFile = tracesDir ? safeJoin(xmRoot, 'traces', '.active') : null;
   if (activeFile && existsSync(activeFile)) {
-    try { active = readFileSync(activeFile, 'utf8').trim(); } catch {}
+    try {
+      const raw = readFileSync(activeFile, 'utf8').trim();
+      active = raw.startsWith('{') ? (JSON.parse(raw).session_id || null) : (raw || null);
+    } catch {}
   }
 
   if (!tracesDir || !existsSync(tracesDir)) {

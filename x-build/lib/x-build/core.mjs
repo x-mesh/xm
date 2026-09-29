@@ -526,7 +526,9 @@ export function findActiveProjects() {
   if (projects.length === 0) return [];
   return projects
     .map(p => ({ name: p, manifest: readJSON(manifestPath(p)) }))
-    .filter(p => p.manifest)
+    // Archived projects stay on disk for `status <name>` but never win default
+    // selection or count toward the multi-active warning.
+    .filter(p => p.manifest && p.manifest.archived !== true)
     .sort((a, b) => {
       try {
         const diff = statSync(manifestPath(b.name)).mtimeMs - statSync(manifestPath(a.name)).mtimeMs;
@@ -550,6 +552,17 @@ export function setCmdInit(fn) { _cmdInit = fn; }
 let _explicitProject = null;
 export function setExplicitProject(name) { _explicitProject = name || null; }
 export function getExplicitProject() { return _explicitProject; }
+
+// Best-effort pointer for `xm trace last` so build activity shows up beside
+// review/dispatcher. Goes through the dispatcher (`xm trace record`) because
+// x-build and x-trace share no lib path in the source layout. A missing `xm`
+// binary or a failed record never changes the command's outcome; XM_BIN lets
+// tests substitute a recorder.
+export function recordBuildActivity(note, status = 'ok') {
+  try {
+    spawnSync(process.env.XM_BIN || 'xm', ['trace', 'record', 'build', '--note', note, '--status', status], { stdio: 'ignore', timeout: 3000 });
+  } catch { /* ledger is advisory */ }
+}
 
 export function resolveProject(explicit, { autoInit = false } = {}) {
   const name = explicit || _explicitProject || findCurrentProject();
@@ -820,15 +833,48 @@ function detectAndRunQualityChecks(project) {
   const results = [];
   const config = loadConfig();
 
-  // Custom gate scripts
-  const scripts = config.gate_scripts || {};
-  for (const [name, script] of Object.entries(scripts)) {
+  // build.quality_timeout_ms — the same key the serial pipeline honours (default
+  // 5 min). A silent kill here read as an ordinary test failure: x-kit's own
+  // suite takes ~11 min, so its gate stayed red with no visible reason. An
+  // invalid value is reported once and ignored instead of turning every check red.
+  const configuredTimeout = resolveEffectiveQualityConfig(cwd).quality_timeout_ms;
+  const parsedTimeout = Number(configuredTimeout);
+  const timeoutMs = Number.isInteger(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : 300000;
+  if (configuredTimeout != null && timeoutMs !== parsedTimeout) {
+    console.error(`⚠ build.quality_timeout_ms=${JSON.stringify(configuredTimeout)} ignored — expected a positive integer of milliseconds; using ${timeoutMs}`);
+  }
+  // Linters and gate scripts keep their fixed 120s cap but report a kill the same
+  // way; the message names the key only when the key actually controls the cap.
+  const runCheck = (name, cmd, limitMs = timeoutMs) => {
     try {
-      const out = spawnSync(script, [], { shell: true, cwd, stdio: 'pipe', timeout: 120000 });
-      results.push({ check: name, passed: out.status === 0, output: out.stderr?.toString().slice(-200) || '' });
+      const out = spawnSync(cmd, [], { shell: true, cwd, stdio: 'pipe', timeout: limitMs });
+      // Only the spawn timeout is a timeout; a command that dies from its own
+      // signal is reported as such, not folded into "timed out".
+      const timedOut = out.error?.code === 'ETIMEDOUT';
+      const stderrTail = out.stderr?.toString().slice(-200) || '';
+      const limitNote = limitMs === timeoutMs
+        ? 'build.quality_timeout_ms — raise the limit or'
+        : 'fixed cap for linters and gate scripts —';
+      results.push({
+        check: name,
+        passed: !timedOut && out.status === 0,
+        timeout: timedOut,
+        timeout_ms: limitMs,
+        output: timedOut
+          ? `timed out after ${Math.round(limitMs / 1000)}s (${limitNote} run \`${cmd}\` directly)`
+          : out.signal
+            ? `terminated by ${out.signal}${stderrTail ? `: ${stderrTail}` : ''}`
+            : stderrTail,
+      });
     } catch (e) {
       results.push({ check: name, passed: false, output: e.message });
     }
+  };
+
+  // Custom gate scripts
+  const scripts = config.gate_scripts || {};
+  for (const [name, script] of Object.entries(scripts)) {
+    runCheck(name, script, 120000);
   }
 
   // Auto-detect test runners
@@ -859,12 +905,7 @@ function detectAndRunQualityChecks(project) {
         name = `${packageManager}-test`;
       } catch { continue; }
     }
-    try {
-      const out = spawnSync(cmd, [], { shell: true, cwd, stdio: 'pipe', timeout: 300000 });
-      results.push({ check: name, passed: out.status === 0, output: out.stderr?.toString().slice(-200) || '' });
-    } catch (e) {
-      results.push({ check: name, passed: false, output: e.message });
-    }
+    runCheck(name, cmd);
   }
 
   // Auto-detect linters
@@ -874,14 +915,7 @@ function detectAndRunQualityChecks(project) {
   ];
 
   for (const l of linters) {
-    if (l.files.some(f => existsSync(join(cwd, f)))) {
-      try {
-        const out = spawnSync(l.cmd, [], { shell: true, cwd, stdio: 'pipe', timeout: 120000 });
-        results.push({ check: l.name, passed: out.status === 0, output: out.stderr?.toString().slice(-200) || '' });
-      } catch (e) {
-        results.push({ check: l.name, passed: false, output: e.message });
-      }
-    }
+    if (l.files.some(f => existsSync(join(cwd, f)))) runCheck(l.name, l.cmd, 120000);
   }
 
   // Auto-detect build
@@ -904,12 +938,7 @@ function detectAndRunQualityChecks(project) {
         name = `${packageManager}-build`;
       } catch { continue; }
     }
-    try {
-      const out = spawnSync(cmd, [], { shell: true, cwd, stdio: 'pipe', timeout: 300000 });
-      results.push({ check: name, passed: out.status === 0, output: out.stderr?.toString().slice(-200) || '' });
-    } catch (e) {
-      results.push({ check: name, passed: false, output: e.message });
-    }
+    runCheck(name, cmd);
   }
 
   // Save results

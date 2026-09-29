@@ -32,13 +32,13 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync, existsSync, realpathSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gitSnapshot, resolveTraceDir } from './x-trace/trace-writer.mjs';
 import { lastRead, lastWrite } from './x-trace/last-store.mjs';
 import { createReplay, promoteReplayToEval } from './x-trace/replay.mjs';
-import { driftReport, appendSnapshot, formatDriftReport, AXES, DEFAULT_WINDOW, DEFAULT_BASELINE, DEFAULT_MIN_SAMPLES } from './x-trace/drift.mjs';
+import { driftReport, appendSnapshot, formatDriftReport, readJsonl, AXES, DEFAULT_WINDOW, DEFAULT_BASELINE, DEFAULT_MIN_SAMPLES } from './x-trace/drift.mjs';
 
 /** Tools the dispatcher is expected to record. Anything else warns then records (FM4). */
 const KNOWN_TOOLS = new Set(['review', 'build', 'panel', 'op', 'eval', 'ship', 'dispatcher']);
@@ -504,10 +504,163 @@ function cmdDrift(opts, pos = []) {
 
 // ── router ───────────────────────────────────────────────────────────
 
+// ── traces: list / show ──────────────────────────────────────────────
+
+const LIST_DEFAULT_LIMIT = 20;
+
+/** `{skill}-YYYYMMDD-HHMMSS-{hex}.jsonl` → skill; anything else → the stem. */
+function skillFromFileName(name) {
+  return name.replace(/\.jsonl$/, '').replace(/-\d{8}-\d{6}(-[0-9a-f]+)?$/i, '');
+}
+
+function fmtDuration(ms) {
+  if (ms == null || !Number.isFinite(ms)) return '—';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
+}
+
+/**
+ * Session files with a sort key derived from the file name (or mtime), without
+ * parsing anything: `list` orders first and parses only the files it shows, so a
+ * directory with thousands of traces costs a readdir, not a full read.
+ */
+function sessionFiles(dir) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((f) => f.endsWith('.jsonl') && !f.startsWith('.'))
+    .map((file) => {
+      let sortKey = sessionFileTime(file);
+      if (Number.isNaN(sortKey)) { try { sortKey = statSync(join(dir, file)).mtimeMs; } catch { sortKey = 0; } }
+      return { file, stem: file.replace(/\.jsonl$/, ''), sortKey };
+    })
+    .sort((a, b) => b.sortKey - a.sortKey || a.file.localeCompare(b.file));
+}
+
+/**
+ * One session file → summary row. Uses drift's bounded reader so torn or
+ * oversized lines are counted in `malformed_lines` instead of aborting the list.
+ * Rows are returned separately so `list` can drop them right away.
+ */
+function summarizeSession(dir, file) {
+  const { rows, skipped } = readJsonl(join(dir, file), { boundary: dir });
+  const start = rows.find((r) => r?.type === 'session_start') || null;
+  const end = rows.find((r) => r?.type === 'session_end') || null;
+  let startedAt = Date.parse(start?.ts);
+  if (Number.isNaN(startedAt)) startedAt = sessionFileTime(file);
+  if (Number.isNaN(startedAt)) { try { startedAt = statSync(join(dir, file)).mtimeMs; } catch { startedAt = 0; } }
+  const summary = {
+    session_id: typeof start?.session_id === 'string' && start.session_id ? start.session_id : file.replace(/\.jsonl$/, ''),
+    file,
+    skill: typeof start?.skill === 'string' && start.skill ? start.skill : skillFromFileName(file),
+    started_at: startedAt > 0 ? new Date(startedAt).toISOString() : null,
+    status: end ? (typeof end.status === 'string' && end.status ? end.status : 'unknown') : 'open',
+    agent_count: rows.filter((r) => r?.type === 'agent_step').length,
+    duration_ms: end && Number.isFinite(Number(end.total_duration_ms)) ? Number(end.total_duration_ms) : null,
+    rows: rows.length,
+    malformed_lines: skipped,
+  };
+  return { summary, rows };
+}
+
+function cmdList(opts) {
+  const dir = resolveTraceDir();
+  const limit = opts.limit == null ? LIST_DEFAULT_LIMIT : Number(opts.limit);
+  if (!Number.isInteger(limit) || limit < 1) {
+    console.error('Usage error: --limit requires a positive integer');
+    process.exitCode = 1;
+    return;
+  }
+  const files = sessionFiles(dir);
+  const shown = files.slice(0, limit).map(({ file }) => summarizeSession(dir, file).summary);
+  const malformed = shown.reduce((n, s) => n + s.malformed_lines, 0);
+  if (opts.json) {
+    console.log(JSON.stringify({ trace_dir: dir, total: files.length, shown: shown.length, malformed_lines: malformed, sessions: shown }));
+    return;
+  }
+  if (!files.length) {
+    console.log(`No trace sessions under ${dir}. The trace-session hook writes one when an xm:* skill runs.`);
+    return;
+  }
+  const table = [['STARTED', 'SKILL', 'STATUS', 'AGENTS', 'DURATION', 'SESSION']];
+  for (const s of shown) {
+    table.push([s.started_at ? s.started_at.slice(0, 16).replace('T', ' ') : '—', s.skill, s.status, String(s.agent_count), fmtDuration(s.duration_ms), s.session_id]);
+  }
+  const widths = table[0].map((_, i) => Math.max(...table.map((r) => r[i].length)));
+  for (const row of table) console.log(row.map((cell, i) => i === row.length - 1 ? cell : cell.padEnd(widths[i])).join('  '));
+  console.log(`\n${shown.length} of ${files.length} session(s).  read one: xm trace show <session-id>`);
+  if (malformed) console.log(`Note: ${malformed} malformed, oversized, or unsafe JSONL line(s) skipped in the sessions shown`);
+}
+
+function cmdShow(pos, opts) {
+  const id = pos[0];
+  if (!id) {
+    console.error('Usage: xm trace show <session-id> [--json]');
+    process.exitCode = 1;
+    return;
+  }
+  const dir = resolveTraceDir();
+  // Resolve against file names first so only the one matching file is parsed.
+  // A session whose embedded session_id differs from its file stem (renamed or
+  // synced files) falls back to a bounded parse, newest first, stopping at two
+  // matches — enough to tell "found" from "ambiguous".
+  const files = sessionFiles(dir);
+  const exact = files.filter((f) => f.stem === id || f.file === id);
+  let matches = exact.length ? exact : files.filter((f) => f.stem.startsWith(id));
+  if (!matches.length) {
+    for (const f of files) {
+      const { rows } = readJsonl(join(dir, f.file), { boundary: dir });
+      const sid = rows.find((r) => r?.type === 'session_start')?.session_id;
+      if (typeof sid === 'string' && (sid === id || sid.startsWith(id))) matches.push({ ...f, stem: sid });
+      if (matches.length > 1) break;
+    }
+  }
+  if (matches.length !== 1) {
+    console.error(matches.length
+      ? `Ambiguous session "${id}": ${matches.slice(0, 5).map((f) => f.stem).join(', ')}${matches.length > 5 ? ', …' : ''}`
+      : `No trace session matches "${id}". Run: xm trace list`);
+    process.exitCode = 1;
+    return;
+  }
+  const { summary: s, rows } = summarizeSession(dir, matches[0].file);
+  const start = rows.find((r) => r?.type === 'session_start') || null;
+  const rowTypes = {};
+  for (const r of rows) { const t = typeof r?.type === 'string' ? r.type : 'unknown'; rowTypes[t] = (rowTypes[t] || 0) + 1; }
+  const agents = rows.filter((r) => r?.type === 'agent_step').map((r) => ({
+    id: r.id ?? null, role: r.role ?? null, model: r.model ?? null,
+    duration_ms: Number.isFinite(Number(r.duration_ms)) && r.duration_ms != null ? Number(r.duration_ms) : null,
+    status: typeof r.status === 'string' ? r.status : 'unknown',
+    source: r.source === 'hook' ? 'hook' : 'llm',
+    description: typeof r.description === 'string' ? r.description : null,
+    ts: r.ts ?? null,
+  }));
+  if (opts.json) {
+    console.log(JSON.stringify({ ...s, path: join(dir, s.file), git: start?.git ?? null, row_types: rowTypes, agents }));
+    return;
+  }
+  console.log(`Session ${s.session_id}`);
+  console.log(`  skill: ${s.skill}   status: ${s.status}   started: ${s.started_at || '—'}   duration: ${fmtDuration(s.duration_ms)}`);
+  if (start?.git?.head) console.log(`  git: ${shortRef(start.git.head)}${start.git.branch ? ` (${start.git.branch})` : ''}${start.git.dirty ? ' dirty' : ''}`);
+  console.log(`  file: ${join(dir, s.file)}`);
+  console.log(`  rows: ${Object.entries(rowTypes).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`);
+  if (agents.length) {
+    console.log(`\nAgents (${agents.length}):`);
+    for (const a of agents) console.log(`  ${a.role || '—'} · ${a.model || '—'} · ${fmtDuration(a.duration_ms)} · ${a.status}${a.description ? ` · ${a.description}` : ''}  [${a.id || '—'}]`);
+  } else {
+    console.log('\nAgents: none recorded (the trace-session hook writes agent_step rows for Agent tool calls made inside this session)');
+  }
+  if (s.malformed_lines) console.log(`\nNote: ${s.malformed_lines} malformed, oversized, or unsafe JSONL line(s) skipped`);
+}
+
 function printHelp() {
   console.log(`x-trace — cross-tool activity ledger (.xm/last.json + traces)
 
 Commands:
+  list [--limit N] [--json]     Recent trace sessions, newest first (skill, status,
+                                agent count, duration). Malformed lines are skipped
+                                and counted.
+  show <session-id> [--json]    One session: row types, git snapshot, and every
+                                agent_step (role, model, duration, status).
   record <tool> [--ref R] [--status S] [--note N] [--artifact A] [--session S]
                                 Record a tool's latest activity. Best-effort:
                                 omitted --ref defaults to the current git HEAD.
@@ -541,6 +694,8 @@ function main() {
     return;
   }
   switch (cmd) {
+    case 'list':   cmdList(opts); break;
+    case 'show':   cmdShow(pos, opts); break;
     case 'record': cmdRecord(pos, opts); break;
     case 'last':   cmdLast(pos, opts); break;
     case 'status': cmdStatus(pos, opts); break;
@@ -569,4 +724,4 @@ const isMain = (() => {
 })();
 if (isMain) main();
 
-export { cmdRecord, cmdLast, cmdStatus, cmdSince, cmdDoctor, cmdReplay, cmdDrift, commitsSince, relativeTime, shortRef, sessionFileTime };
+export { cmdList, cmdShow, cmdRecord, cmdLast, cmdStatus, cmdSince, cmdDoctor, cmdReplay, cmdDrift, commitsSince, relativeTime, shortRef, sessionFileTime };

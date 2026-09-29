@@ -297,13 +297,14 @@ _xm_trace_record() {
     help|--help|-h|""|version|--version|-v|which|doctor|init|setup|update|dashboard|dash|trace|last|status)
       exit "$code" ;;
   esac
-  # Excluded read-only sub-ops. The read verb is $1 for flat verbs (`config get`)
-  # but $2 for noun-verb commands (`build tasks list`, `build task show`), so both
-  # positions are checked. Trade-off: a write whose $2 *value* is literally
-  # list/get/show is wrongly skipped — negligible in this CLI's grammar (writes
-  # take keys/ids/text there), and a rare miss is fine for a best-effort ledger.
+  # Excluded read-only sub-ops. The read verb is $1 for flat verbs (`config get`,
+  # `build status`, `build next`, `build metrics`) but $2 for noun-verb commands
+  # (`build tasks list`, `build task show`), so both positions are checked.
+  # Trade-off: a write whose $2 *value* is literally list/get/show is wrongly
+  # skipped — negligible in this CLI's grammar (writes take keys/ids/text there),
+  # and a rare miss is fine for a best-effort ledger.
   case "$XM_TRACE_SUB" in
-    list|get|show) exit "$code" ;;
+    list|get|show|next|status|metrics|effectiveness|attention|run-status|help|--help|-h) exit "$code" ;;
   esac
   case "$XM_TRACE_SUB2" in
     list|get|show) exit "$code" ;;

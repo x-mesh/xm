@@ -78,22 +78,16 @@ See `references/ask-user-question-rule.md` — the `question` field is invisible
 
 ## Interaction Protocol
 
-**CRITICAL: x-op strategies with multiple phases MUST use AskUserQuestion at phase boundaries.**
+x-op strategies with multiple phases use AskUserQuestion at phase boundaries: after completing a phase, show its results, then call AskUserQuestion to confirm before starting the next one. It is the one mechanism that ends the turn and waits for the user; a question written as plain text ("진행할까요?") does not. When auto-detecting a strategy, confirm the recommendation the same way before executing.
 
-Rules:
-1. **AskUserQuestion is REQUIRED at every phase transition** — after completing a phase, call AskUserQuestion to confirm before proceeding to the next phase. This is the ONLY mechanism that forces a real turn boundary.
-2. **No text-only questions** — NEVER output "진행할까요?" as plain text. Use AskUserQuestion tool.
-3. **Show results before asking** — output the current phase results, then call AskUserQuestion for confirmation.
-4. **Auto-Route confirmation is mandatory** — when auto-detecting a strategy, MUST use AskUserQuestion to confirm the recommendation before executing.
-
-Anti-patterns (NEVER do these):
+Shape:
 - ❌ Complete Phase 1, output results, then immediately start Phase 2
 - ❌ Ask "다음 단계로 넘어갈까요?" as text output
 - ✅ Complete Phase 1, output results, call AskUserQuestion("Phase 1 완료. Phase 2를 진행할까요?")
 
-### Phase Checkpoint (required before any phase transition)
+### Phase Checkpoint (before any phase transition)
 
-Before calling AskUserQuestion for a phase boundary, the leader MUST output a `**PHASE_N_CHECKPOINT:**` block listing the exit conditions for the phase just completed. This forces self-verification and gives the user something concrete to approve.
+Before calling AskUserQuestion for a phase boundary, the leader outputs a `**PHASE_N_CHECKPOINT:**` block listing the exit conditions for the phase just completed. This forces self-verification and gives the user something concrete to approve.
 
 Template:
 ```
@@ -484,7 +478,7 @@ Rules:
 
 ## Trace Recording
 
-See `references/trace-recording.md` — session_start/session_end are automatic via `.claude/hooks/trace-session.mjs`; emit best-effort `agent_step` entries for long sub-operations.
+Tracing is automatic: the trace-session hook writes `session_start` when the skill is invoked, one `agent_step` per Agent tool call made before the assistant turn ends, and `session_end` at the turn's Stop hook. Do not hand-write those three row types; `fan_out`/`synthesize` stay LLM-written, metadata only, as x-trace describes.
 
 ## Common Rationalizations
 

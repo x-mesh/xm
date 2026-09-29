@@ -22,7 +22,7 @@
         ]
       },
       {
-        "matcher": "Skill",
+        "matcher": "Skill|Agent",
         "hooks": [
           {
             "type": "command",
@@ -33,11 +33,21 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Skill",
+        "matcher": "Skill|Agent",
         "hooks": [
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/trace-session.mjs\" post"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/trace-session.mjs\" stop"
           }
         ]
       }

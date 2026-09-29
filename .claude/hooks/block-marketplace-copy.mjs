@@ -167,6 +167,11 @@ function findSourcePath(rel, projectRoot) {
     return `x-build/templates/hooks/${hookTplMatch[1]}`;
   }
 
+  // xm/hooks/trace-session.mjs — the installable copy of the tested repo hook.
+  if (rel === 'xm/hooks/trace-session.mjs') {
+    return '.claude/hooks/trace-session.mjs';
+  }
+
   // xm/lib/<file>.mjs from x-solver (whole *.mjs set mirrored to lib root)
   const solverMatch = rel.match(/^xm\/lib\/([^/]+\.mjs)$/);
   if (solverMatch && X_SOLVER_LIB_FILES.has(solverMatch[1])) {

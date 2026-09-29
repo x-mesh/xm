@@ -8,7 +8,7 @@ analyzed_commits: 200
 
 # x-kit Patterns
 
-x-kit은 Claude Code 플러그인 모노레포다. 독립 플러그인(`x-build`, `x-op`, `x-solver`, `x-eval`, `x-review`, `x-memory`, `x-humble`, `x-probe`, `x-trace`, `x-agent`, `x-humanize`, `x-dashboard`)을 빌드하고, `xm`이 이를 하나로 묶는 통합 디스패처다. 루트 패키지는 `xm`(현재 2.3.14).
+x-kit은 Claude Code 플러그인 모노레포다. 독립 플러그인(루트의 `x-*/` 디렉터리, 현재 18개)을 빌드하고, `xm`이 이를 하나로 묶는 통합 디스패처다. 루트 패키지는 `xm`이며 버전은 `package.json`을 따른다.
 
 ## Commit Conventions
 

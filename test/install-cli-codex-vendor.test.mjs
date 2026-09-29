@@ -34,7 +34,10 @@ function runCli(args, opts = {}) {
     encoding: 'utf8',
     timeout: 30_000,
     // Merge (not replace) so the child keeps PATH etc.; opts.env layers stubs on top.
-    env: { ...process.env, ...(opts.env ?? {}) },
+    // HOME is pinned to a throwaway dir: shared-config falls back to ~/.xm/config.json
+    // when the cwd has no .xm, and a developer's `vendor_models.codex.opus = "…:xhigh"`
+    // there changed the rendered TOML and made this suite machine-dependent.
+    env: { ...process.env, HOME: mkdtempSync(join(tmpdir(), 'xm-codex-vendor-home-')), ...(opts.env ?? {}) },
   });
   return { stdout: result.stdout ?? '', stderr: result.stderr ?? '', status: result.status ?? -1 };
 }

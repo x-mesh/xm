@@ -13,6 +13,7 @@ import {
   spawnSync,
   runQualityChecks,
   ask, pickMenu, exitFail,
+  recordBuildActivity,
 } from './core.mjs';
 import { prdBlockingFindings } from './plan.mjs';
 import { approvePlan, readPlanState, validatePlanApproval } from './plan-state.mjs';
@@ -294,6 +295,7 @@ export function phaseNext(args) {
   }
 
   logDecision(project, `Phase transition: ${currentPhase.label} → ${nextPhase.label}`);
+  recordBuildActivity(`phase next ${project} → ${nextPhase.name}`);
   emitHook('phase:post-enter', { project, phase: nextPhase.name, from: currentPhase.name });
 
   if (currentStatus.started_at) {
