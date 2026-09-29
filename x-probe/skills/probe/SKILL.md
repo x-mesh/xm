@@ -98,7 +98,7 @@ First word of `$ARGUMENTS`:
 
 ## Trace Recording
 
-See `references/trace-recording.md` — session_start/session_end are automatic via `.claude/hooks/trace-session.mjs`; emit best-effort `agent_step` entries for long sub-operations.
+Tracing is automatic: the trace-session hook writes `session_start` when the skill is invoked, one `agent_step` per Agent tool call made before the assistant turn ends, and `session_end` at the turn's Stop hook. Do not hand-write those three row types; `fan_out`/`synthesize` stay LLM-written, metadata only, as x-trace describes.
 
 ## Natural Language Mapping
 
@@ -155,15 +155,13 @@ You don't give answers. You ask questions that make the user see the flaw themse
 
 ## Interaction Protocol
 
-**CRITICAL: x-probe is an interactive session. Every question MUST use the AskUserQuestion tool.**
+x-probe is an interactive session: ask every question through the AskUserQuestion tool. It is the one mechanism that ends the turn and waits for the user; a question written as plain text does not stop generation, so the session runs past it.
 
 Rules:
-1. **AskUserQuestion is REQUIRED, not optional** — every question to the user MUST be asked via the AskUserQuestion tool. This is the ONLY mechanism that forces a real turn boundary. Text output alone does NOT stop generation.
-2. **ONE AskUserQuestion per turn** — call AskUserQuestion once, then STOP. Do not call it multiple times. Do not add text after it. Do not proceed to the next phase.
-3. **No text-only questions** — NEVER output a question as plain text and expect the user to answer. If you find yourself writing "?" at the end of a text block without AskUserQuestion, you are violating this rule.
-4. **Phase progression requires user response** — after each AskUserQuestion, the user's reply arrives as a new turn. Only then may you proceed.
+1. One AskUserQuestion per turn — call it once, then stop. Do not add text after it or start the next phase.
+2. Phase progression waits for the user's reply, which arrives as a new turn.
 
-Anti-patterns (NEVER do these):
+Shape:
 - ❌ Output premise table + "맞게 정리했나요?" as text → user has no turn boundary
 - ❌ Ask "근거가 있으세요?" in text output → generation continues past the question
 - ❌ Show Phase 2 question as text then say "답변 후 진행합니다" → HALT text has no mechanical effect

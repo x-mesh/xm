@@ -16,6 +16,7 @@ import {
   exitFail,
 } from './core.mjs';
 import { stepsStatus } from './tasks.mjs';
+import { readMetricRows } from './effectiveness.mjs';
 
 // ── cmdAlias ────────────────────────────────────────────────────────
 
@@ -138,66 +139,104 @@ export function cmdWatch(args) {
 // ── cmdMetrics ──────────────────────────────────────────────────────
 
 export function cmdMetrics(args) {
+  const json = args.includes('--json');
   const mp = metricsPath();
-  if (!existsSync(mp)) {
-    console.log('No metrics recorded yet.');
-    return;
-  }
-
-  const lines = readFileSync(mp, 'utf8').trim().split('\n').filter(Boolean);
-  const entries = lines.map(l => { try { return adaptEvent(JSON.parse(l)); } catch { return null; } }).filter(Boolean);
-
+  // Rotated file first, then live — same set effectiveness reads, so a log that
+  // just rotated does not render as empty.
+  const { rows, malformed: unparsable, files } = readMetricRows();
+  // One row that cannot be adapted must not take the whole report down; it is
+  // counted with the unparsable lines instead.
+  let unadaptable = 0;
+  const entries = rows.map(row => {
+    try {
+      const event = adaptEvent(row);
+      if (!event || typeof event !== 'object') { unadaptable += 1; return null; }
+      return event;
+    } catch { unadaptable += 1; return null; }
+  }).filter(Boolean);
+  const malformed = unparsable + unadaptable;
   const phases = entries.filter(e => e.type === 'phase_complete');
   const tasks = entries.filter(e => e.type === 'task_complete');
 
+  const byPhase = {};
+  for (const p of phases) (byPhase[p.phase] ||= []).push(p.duration_ms);
+  const phaseRows = Object.entries(byPhase).map(([phase, durations]) => ({
+    phase, runs: durations.length, avg_ms: durations.reduce((a, b) => a + b, 0) / durations.length,
+  }));
+  const totalMs = tasks.reduce((a, t) => a + (t.duration_ms || 0), 0);
+  // Cost — read the cost fields already on each task_complete event. The
+  // actual-vs-estimated coverage line is the unique diagnostic: it tells you
+  // whether real token costs are flowing in (stays 0% until per-agent usage
+  // capture is available) instead of silently trusting estimates.
+  const withCost = tasks.filter(t => typeof t.cost_usd === 'number');
+  const byModel = {};
+  for (const t of withCost) byModel[t.model || 'unknown'] = (byModel[t.model || 'unknown'] || 0) + t.cost_usd;
+  const actualN = tasks.filter(t => t.cost_source === 'actual').length;
+  const summary = {
+    path: mp,
+    files,
+    malformed_rows: malformed,
+    phases: phaseRows,
+    tasks: {
+      count: tasks.length,
+      total_ms: totalMs,
+      avg_ms: tasks.length ? totalMs / tasks.length : null,
+      tasks_per_hour: totalMs > 0 ? Number((tasks.length / (totalMs / 3600000)).toFixed(1)) : null,
+      cost: withCost.length ? {
+        total_usd: Number(withCost.reduce((a, t) => a + t.cost_usd, 0).toFixed(5)),
+        by_model: byModel,
+        actual: actualN,
+        // Only cost-bearing rows are estimated; a row with no cost at all is
+        // missing, not an estimate.
+        estimated: withCost.length - actualN,
+        missing: tasks.length - withCost.length,
+      } : null,
+    },
+  };
+
+  if (json) {
+    console.log(JSON.stringify(summary, null, 2));
+    return;
+  }
+
+  if (phases.length === 0 && tasks.length === 0) {
+    console.log(files.length
+      ? `No phase or task metrics in ${files.map(f => f.replace(process.cwd() + '/', '')).join(', ')} yet (${rows.length} other event(s)${malformed ? `, ${malformed} malformed` : ''}). Rows land there when x-build run completes work.`
+      : `No metrics recorded yet. Rows land in ${mp.replace(process.cwd() + '/', '')} when x-build run completes work.`);
+    return;
+  }
+
   console.log(`\n${C.bold}📈 Metrics${C.reset}\n`);
 
-  if (phases.length > 0) {
+  if (phaseRows.length > 0) {
     console.log(`${C.bold}Phase Durations:${C.reset}`);
-    const byPhase = {};
-    for (const p of phases) {
-      if (!byPhase[p.phase]) byPhase[p.phase] = [];
-      byPhase[p.phase].push(p.duration_ms);
-    }
-    for (const [phase, durations] of Object.entries(byPhase)) {
-      const avg = durations.reduce((a, b) => a + b, 0) / durations.length;
-      console.log(`  ${phase.padEnd(12)} avg: ${fmtDuration(avg)}  (${durations.length} runs)`);
+    for (const { phase, runs, avg_ms } of phaseRows) {
+      console.log(`  ${phase.padEnd(12)} avg: ${fmtDuration(avg_ms)}  (${runs} runs)`);
     }
     console.log('');
   }
 
   if (tasks.length > 0) {
-    const totalMs = tasks.reduce((a, t) => a + t.duration_ms, 0);
-    const avgMs = totalMs / tasks.length;
     console.log(`${C.bold}Task Velocity:${C.reset}`);
-    console.log(`  ${tasks.length} tasks completed, avg: ${fmtDuration(avgMs)}/task`);
-    if (totalMs > 0) {
-      const tasksPerHour = (tasks.length / (totalMs / 3600000)).toFixed(1);
-      console.log(`  ${tasksPerHour} tasks/hour`);
-    }
+    console.log(`  ${tasks.length} tasks completed, avg: ${fmtDuration(summary.tasks.avg_ms)}/task`);
+    if (summary.tasks.tasks_per_hour != null) console.log(`  ${summary.tasks.tasks_per_hour} tasks/hour`);
     console.log('');
 
-    // Cost — read the cost fields already on each task_complete event. The
-    // actual-vs-estimated coverage line is the unique diagnostic: it tells you
-    // whether real token costs are flowing in (stays 0% until per-agent usage
-    // capture is available) instead of silently trusting estimates.
-    const withCost = tasks.filter(t => typeof t.cost_usd === 'number');
-    if (withCost.length > 0) {
-      const total = withCost.reduce((a, t) => a + t.cost_usd, 0);
-      const actualN = tasks.filter(t => t.cost_source === 'actual').length;
-      const pct = Math.round((actualN / tasks.length) * 100);
+    if (summary.tasks.cost) {
+      const { total_usd, actual, estimated, missing } = summary.tasks.cost;
+      const pct = Math.round((actual / withCost.length) * 100);
       console.log(`${C.bold}Cost:${C.reset}`);
-      console.log(`  Total: $${total.toFixed(3)}  (avg $${(total / withCost.length).toFixed(3)}/task)`);
-      const byModel = {};
-      for (const t of withCost) byModel[t.model || 'unknown'] = (byModel[t.model || 'unknown'] || 0) + t.cost_usd;
+      console.log(`  Total: $${total_usd.toFixed(3)}  (avg $${(total_usd / withCost.length).toFixed(3)}/task)`);
       for (const [m, c] of Object.entries(byModel).sort((a, b) => b[1] - a[1])) {
         console.log(`    ${m.padEnd(8)} $${c.toFixed(3)}`);
       }
-      console.log(`  Coverage: ${actualN}/${tasks.length} measured (actual), ${tasks.length - actualN} estimated  (${pct}% actual)`);
-      if (actualN === 0) console.log(`  ${C.dim}0% actual — costs are estimates; per-agent token capture is not exposed in-session${C.reset}`);
+      console.log(`  Coverage: ${actual}/${withCost.length} measured (actual), ${estimated} estimated  (${pct}% actual)${missing ? `, ${missing} task(s) without any cost` : ''}`);
+      if (actual === 0) console.log(`  ${C.dim}0% actual — costs are estimates; per-agent token capture is not exposed in-session${C.reset}`);
       console.log('');
     }
   }
+
+  if (malformed > 0) console.log(`  ${C.dim}Coverage: ${malformed} malformed row(s) skipped${C.reset}\n`);
 }
 
 // ── cmdMode ─────────────────────────────────────────────────────────
@@ -625,7 +664,8 @@ ${C.bold}x-build${C.reset} — Phase-Based Project Harness CLI
 
 ${C.bold}Project:${C.reset}
   init <name>                    Create a new project
-  list                           List all projects
+  list [--all]                   List active projects (--all includes archived)
+  archive <name> [--undo]        Hide a project from default selection and list; files stay on disk
   status [project]               Show project status (with progress bar)
   next                           Suggest the next action
   project-kind [--json]          Classify greenfield vs existing project

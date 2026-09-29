@@ -103,7 +103,7 @@ grep -rEn "(injection|jailbreak|sanitiz|filter|guard|moderat|content_filter|safe
 # [프로젝트명] 프롬프트 엔지니어링 설계서
 
 ## 1. LLM 시스템 현황 분석 (Current State)
-- **사용 모델:** Claude 3.5 Sonnet / GPT-4o / Llama 3 등
+- **사용 모델:** {모델 ID, 예: claude-sonnet-5-5 / claude-opus-5-5 / 타사 모델}
 - **프레임워크:** LangChain / LlamaIndex / Vercel AI SDK / 직접 구현
 - **RAG 구성:** 있음(벡터 DB: Pinecone) / 없음
 - **Agent 구성:** 단일 Agent / Multi-Agent / 없음
@@ -125,7 +125,7 @@ User Input → [Guard Rail] → [Prompt Builder] → [LLM API]
 
 ### [PROMPT-001] 프롬프트명 / 용도
 - **목적:** 무엇을 하는 프롬프트인지
-- **모델:** Claude 3.5 Sonnet / GPT-4o
+- **모델:** {모델 ID, 예: claude-sonnet-5-5}
 - **전략:** Zero-shot / Few-shot / CoT / ReAct
 - **입력 변수:** `{variable1}`, `{variable2}`
 - **출력 형식:** JSON / 자연어 / Structured
@@ -247,7 +247,7 @@ prompts:
 providers:
   - id: claude-sonnet
     config:
-      model: claude-sonnet-4-20250514
+      model: claude-sonnet-5-5
 
 tests:
   - vars: { query: "..." }

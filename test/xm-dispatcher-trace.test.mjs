@@ -133,6 +133,14 @@ describe('xm dispatcher — terminal instrumentation', () => {
     expect(dispatcherEntry()).toBeNull();
   });
 
+  test('read-only build verbs ($1: status / next / metrics / run-status) record nothing', () => {
+    for (const args of [['build', 'status'], ['build', 'next'], ['build', 'metrics'], ['build', 'run-status'], ['build', 'effectiveness']]) {
+      resetLedger();
+      xm(args);
+      expect(dispatcherEntry()).toBeNull();
+    }
+  });
+
   test('meta/read-only top-level commands record nothing', () => {
     for (const args of [['version'], ['which'], ['help'], ['last'], ['status'], ['trace', 'last']]) {
       resetLedger();

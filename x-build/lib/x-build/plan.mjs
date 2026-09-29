@@ -1344,7 +1344,14 @@ export function cmdCostPredict(args) {
  */
 function R(en, ko) { return isNormalMode() ? ko : en; }
 
-function resolveNext(project) {
+/** The `x-build …` command line for a resolveNext() result — shared by `next` and `status`. */
+export function formatNextCommand(result) {
+  if (result.action === 'phase') return `x-build ${result.action} ${result.args.join(' ')}`;
+  if (result.action === 'legacy-plan' && result.goal) return `x-build legacy-plan "${result.goal}"`;
+  return `x-build ${result.action}${result.args.length ? ' ' + result.args.join(' ') : ''}`;
+}
+
+export function resolveNext(project) {
   const manifest = readJSON(manifestPath(project));
   const phase = PHASES.find(p => p.id === manifest.current_phase);
   const taskData = readJSON(tasksPath(project));
@@ -1511,10 +1518,7 @@ export async function cmdNext(args) {
   console.log(`  Phase:   ${phase?.label || '?'}\n`);
 
   const color = result.ready ? C.green : C.yellow;
-  const cmd = result.action === 'phase' ? `x-build ${result.action} ${result.args.join(' ')}` :
-              result.action === 'legacy-plan' && result.goal ? `x-build legacy-plan "${result.goal}"` :
-              `x-build ${result.action}${result.args.length ? ' ' + result.args.join(' ') : ''}`;
-  console.log(`  ${color}-> Run: ${cmd}${C.reset}`);
+  console.log(`  ${color}-> Run: ${formatNextCommand(result)}${C.reset}`);
   console.log(`    ${result.reason}`);
   console.log('');
 }

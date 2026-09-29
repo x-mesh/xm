@@ -21,6 +21,9 @@ const HOOK_DEST = path.join(HOOKS_DIR, HOOK_FILENAME);
 const NODE_BIN = resolveNodeBin();
 const HOOK_CMD_PRE = `"${NODE_BIN}" "${HOOK_DEST}" pre`;
 const HOOK_CMD_POST = `"${NODE_BIN}" "${HOOK_DEST}" post`;
+// Stop closes the session the Skill call opened: PostToolUse(Skill) fires before
+// the skill's own Agent calls, so it cannot be the close.
+const HOOK_CMD_STOP = `"${NODE_BIN}" "${HOOK_DEST}" stop`;
 const XM_CMD_DEST = path.join(COMMANDS_DIR, 'xm.md');
 const XM_PLAN_CMD_DEST = path.join(COMMANDS_DIR, 'xm-plan.md');
 const XM_PLAN_CMD_BACKUP = path.join(COMMANDS_DIR, 'xm-plan.md.pre-xm');
@@ -150,30 +153,68 @@ function writeSettings(obj) {
   return backup;
 }
 
-function hasSkillHook(entries, command) {
+// One group per event with a combined matcher: Skill (session boundaries) and
+// Agent (one agent_step per subagent call inside an open session). A single
+// group keeps the command unique per event, which `xm install --target codex`
+// relies on when it translates settings into Codex hooks. Pre-Agent installs
+// registered the same command under a bare 'Skill' matcher; install removes every
+// entry for the command (any matcher) and re-adds exactly one, so a duplicated or
+// corrupted registration cannot survive as "already present".
+const HOOK_MATCHER = 'Skill|Agent';
+// [event, command, matcher] — Stop has no matcher.
+const HOOK_REGISTRATIONS = [
+  ['PreToolUse', HOOK_CMD_PRE, HOOK_MATCHER],
+  ['PostToolUse', HOOK_CMD_POST, HOOK_MATCHER],
+  ['Stop', HOOK_CMD_STOP, null],
+];
+
+const sameMatcher = (group, matcher) => (group?.matcher ?? null) === (matcher ?? null);
+
+/** Executable registrations of `command` across every group of an event. */
+function countHook(entries, command) {
+  if (!Array.isArray(entries)) return 0;
+  return entries.reduce((n, group) => n + (Array.isArray(group?.hooks)
+    ? group.hooks.filter((h) => h?.type === 'command' && h?.command === command).length
+    : 0), 0);
+}
+
+function hasHook(entries, command, matcher = 'Skill') {
   if (!Array.isArray(entries)) return false;
   return entries.some((group) =>
-    group?.matcher === 'Skill' &&
+    sameMatcher(group, matcher) &&
     Array.isArray(group?.hooks) &&
     group.hooks.some((h) => h?.command === command)
   );
 }
 
-function addSkillHook(entries, command) {
+function addHook(entries, command, matcher = 'Skill') {
   const list = Array.isArray(entries) ? entries : [];
-  if (hasSkillHook(list, command)) return list;
+  if (hasHook(list, command, matcher)) return list;
   list.push({
-    matcher: 'Skill',
+    ...(matcher ? { matcher } : {}),
     hooks: [{ type: 'command', command }],
   });
   return list;
 }
 
-function removeSkillHook(entries, command) {
+function removeHook(entries, command, matcher = 'Skill') {
   if (!Array.isArray(entries)) return entries;
   return entries
     .map((group) => {
-      if (group?.matcher !== 'Skill' || !Array.isArray(group?.hooks)) return group;
+      if (!sameMatcher(group, matcher) || !Array.isArray(group?.hooks)) return group;
+      const hooks = group.hooks.filter((h) => h?.command !== command);
+      if (hooks.length === 0) return null;
+      return { ...group, hooks };
+    })
+    .filter(Boolean);
+}
+
+/** Remove `command` from every group, whatever its matcher. */
+function removeHookCommand(entries, command) {
+  if (!Array.isArray(entries)) return entries;
+  return entries
+    .map((group) => {
+      if (!Array.isArray(group?.hooks)) return group;
       const hooks = group.hooks.filter((h) => h?.command !== command);
       if (hooks.length === 0) return null;
       return { ...group, hooks };
@@ -197,12 +238,12 @@ function install(opts) {
       const beforePre = JSON.stringify(s.hooks.PreToolUse || []);
       const beforePost = JSON.stringify(s.hooks.PostToolUse || []);
       // Drop renamed-hook entries (pre-rename: x-kit-trace-session.mjs)
-      s.hooks.PreToolUse = removeSkillHook(s.hooks.PreToolUse, LEGACY_HOOK_CMD_PRE);
-      s.hooks.PostToolUse = removeSkillHook(s.hooks.PostToolUse, LEGACY_HOOK_CMD_POST);
+      s.hooks.PreToolUse = removeHook(s.hooks.PreToolUse, LEGACY_HOOK_CMD_PRE);
+      s.hooks.PostToolUse = removeHook(s.hooks.PostToolUse, LEGACY_HOOK_CMD_POST);
       // Drop bare-`node` entries from earlier xm versions so we don't end up
       // with both formats wired after this install rewrites with absolute path.
-      s.hooks.PreToolUse = removeSkillHook(s.hooks.PreToolUse, PREVIOUS_HOOK_CMD_PRE);
-      s.hooks.PostToolUse = removeSkillHook(s.hooks.PostToolUse, PREVIOUS_HOOK_CMD_POST);
+      s.hooks.PreToolUse = removeHook(s.hooks.PreToolUse, PREVIOUS_HOOK_CMD_PRE);
+      s.hooks.PostToolUse = removeHook(s.hooks.PostToolUse, PREVIOUS_HOOK_CMD_POST);
       const changed = JSON.stringify(s.hooks.PreToolUse || []) !== beforePre
         || JSON.stringify(s.hooks.PostToolUse || []) !== beforePost;
       if (changed) {
@@ -221,11 +262,13 @@ function install(opts) {
 
     const settings = readSettings();
     settings.hooks = settings.hooks || {};
-    settings.hooks.PreToolUse = addSkillHook(settings.hooks.PreToolUse, HOOK_CMD_PRE);
-    settings.hooks.PostToolUse = addSkillHook(settings.hooks.PostToolUse, HOOK_CMD_POST);
+    for (const [event, command, matcher] of HOOK_REGISTRATIONS) {
+      settings.hooks[event] = removeHookCommand(settings.hooks[event], command);
+      settings.hooks[event] = addHook(settings.hooks[event], command, matcher);
+    }
     const backup = writeSettings(settings);
     log(`updated ${SETTINGS} (backup: ${path.basename(backup)})`);
-    log('hook installed. Skill traces → <project>/.xm/traces/');
+    log('hook installed. Skill sessions (closed at Stop) + Agent spans → <project>/.xm/traces/');
   } else {
     log('hooks skipped (--no-hooks). CLI dispatcher install is handled by install.sh.');
   }
@@ -340,12 +383,12 @@ function uninstall() {
   if (fs.existsSync(SETTINGS)) {
     const settings = readSettings();
     if (settings.hooks) {
-      const beforePre = JSON.stringify(settings.hooks.PreToolUse || []);
-      const beforePost = JSON.stringify(settings.hooks.PostToolUse || []);
-      settings.hooks.PreToolUse = removeSkillHook(settings.hooks.PreToolUse, HOOK_CMD_PRE);
-      settings.hooks.PostToolUse = removeSkillHook(settings.hooks.PostToolUse, HOOK_CMD_POST);
-      const changed = JSON.stringify(settings.hooks.PreToolUse || []) !== beforePre
-        || JSON.stringify(settings.hooks.PostToolUse || []) !== beforePost;
+      const snapshot = () => JSON.stringify(HOOK_REGISTRATIONS.map(([event]) => settings.hooks[event] || []));
+      const before = snapshot();
+      for (const [event, command] of HOOK_REGISTRATIONS) {
+        settings.hooks[event] = removeHookCommand(settings.hooks[event], command);
+      }
+      const changed = snapshot() !== before;
       if (changed) {
         const backup = writeSettings(settings);
         log(`cleaned ${SETTINGS} (backup: ${path.basename(backup)})`);
@@ -362,14 +405,28 @@ function status() {
   const xmPlanCmdExists = fs.existsSync(XM_PLAN_CMD_DEST)
     && fs.readFileSync(XM_PLAN_CMD_DEST, 'utf8').includes(XM_PLAN_MARKER);
   const settings = readSettings();
-  const pre = hasSkillHook(settings.hooks?.PreToolUse, HOOK_CMD_PRE);
-  const post = hasSkillHook(settings.hooks?.PostToolUse, HOOK_CMD_POST);
+  const legacySkillOnly = hasHook(settings.hooks?.PreToolUse, HOOK_CMD_PRE, 'Skill') || hasHook(settings.hooks?.PostToolUse, HOOK_CMD_POST, 'Skill');
   log(`hook file        : ${hookExists ? HOOK_DEST : '(missing)'}`);
   log(`xm dispatcher    : ${xmCmdExists ? XM_CMD_DEST : '(missing)'}`);
   log(`xm-plan alias    : ${xmPlanCmdExists ? XM_PLAN_CMD_DEST : '(missing)'}`);
-  log(`PreToolUse/Skill : ${pre ? 'registered' : '(missing)'}`);
-  log(`PostToolUse/Skill: ${post ? 'registered' : '(missing)'}`);
-  const ok = hookExists && xmCmdExists && xmPlanCmdExists && pre && post;
+  // Exactly one executable registration per event is "registered"; more than one
+  // runs the hook twice per call, none is missing.
+  let hooksOk = true;
+  for (const [event, command, matcher] of HOOK_REGISTRATIONS) {
+    const count = countHook(settings.hooks?.[event], command);
+    // The one executable registration must itself sit in the right matcher group;
+    // a stray typeless entry in the right group plus an executable one elsewhere
+    // is not "installed".
+    const matched = countHook((settings.hooks?.[event] || []).filter((group) => sameMatcher(group, matcher)), command) === 1;
+    const state = count === 1 && matched ? 'registered'
+      : count > 1 ? `duplicate (${count} registrations — re-run xm setup)`
+        : legacySkillOnly && event !== 'Stop' ? '(Skill-only — re-run xm setup to add Agent spans)'
+          : event === 'Stop' && legacySkillOnly ? '(missing — re-run xm setup; sessions never close without it)'
+            : '(missing)';
+    if (state !== 'registered') hooksOk = false;
+    log(`${event}${matcher ? `/${matcher}` : ''}`.padEnd(21) + `: ${state}`);
+  }
+  const ok = hookExists && xmCmdExists && xmPlanCmdExists && hooksOk;
   log(`overall          : ${ok ? 'OK' : 'NOT installed'}`);
   process.exit(ok ? 0 : 1);
 }

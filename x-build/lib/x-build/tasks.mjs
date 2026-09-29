@@ -1498,6 +1498,34 @@ function classifyStaleRunning(project, task) {
   return { reconcile: false, reason, worktree_status: ws };
 }
 
+// RUNNING tasks older than `staleMs` with nothing live behind them — the set that
+// `run --reconcile` would reclaim. Shared by run-status (json + text) and status
+// so a 900-hour RUNNING task is never rendered as merely "running".
+export function staleRunningTasks(project, tasks, staleMs = DEFAULT_STALE_RUNNING_MS, now = Date.now()) {
+  return (tasks || []).filter((t) => {
+    if (t.status !== TASK_STATES.RUNNING) return false;
+    const age = t.started_at ? now - new Date(t.started_at).getTime() : Infinity;
+    return age > staleMs && classifyStaleRunning(project, t).reconcile;
+  });
+}
+
+export { DEFAULT_STALE_RUNNING_MS };
+
+// `--stale-min` is validated once for both run-status views: an unparsable value
+// used to become NaN and silently switch stale detection off.
+function resolveStaleMs(opts) {
+  if (opts['stale-min'] == null) return DEFAULT_STALE_RUNNING_MS;
+  // 0 is valid: "treat every RUNNING task as stale now" (used by the wedge probe).
+  // Validate the raw text: Number('') and Number(true) are finite, so coercion
+  // alone would turn a blank flag into a 0-minute window.
+  const raw = opts['stale-min'];
+  if (typeof raw !== 'string' || !/^\d+(\.\d+)?$/.test(raw.trim())) {
+    console.error(`❌ --stale-min requires a non-negative number of minutes (got ${JSON.stringify(raw)})`);
+    exitFail(1);
+  }
+  return Number(raw.trim()) * 60000;
+}
+
 // Reclaim stale RUNNING tasks back to PENDING so an interrupted session can
 // resume. Explicit (run --reconcile) rather than automatic — RUNNING→PENDING is
 // a state mutation, so it should be a deliberate recovery action.
@@ -1923,7 +1951,7 @@ export async function cmdRun(args) {
   // Recovery: reclaim stale RUNNING tasks. Runs before the phase/circuit gates
   // so a wedged session can be unstuck regardless of breaker state.
   if (opts.reconcile) {
-    const staleMs = opts['stale-min'] != null ? Number(opts['stale-min']) * 60000 : DEFAULT_STALE_RUNNING_MS;
+    const staleMs = resolveStaleMs(opts);
     const dryRun = opts['dry-run'] !== undefined;
     const { reclaimed, protected: protectedTasks } = reconcileStaleRunning(project, { staleMs, dryRun });
     if (opts.json) {
@@ -2331,7 +2359,7 @@ export function cmdRunStatus(args) {
     // Same override `run --reconcile` accepts, so the orchestrator can ASK
     // about a shorter window instead of being told to wait out a fixed 30
     // minutes it cannot see the end of. Default is unchanged.
-    const staleMs = opts['stale-min'] != null ? Number(opts['stale-min']) * 60000 : DEFAULT_STALE_RUNNING_MS;
+    const staleMs = resolveStaleMs(opts);
     const stepsOut = [];
     const blocked = [];
     const staleRunning = [];
@@ -2394,6 +2422,9 @@ export function cmdRunStatus(args) {
 
   console.log(`\n${C.bold}🚀 Execution Status${C.reset}\n`);
 
+  const staleMs = resolveStaleMs(opts);
+  const stale = new Set(staleRunningTasks(project, taskData.tasks, staleMs).map((t) => t.id));
+
   let allDone = true;
   for (const step of stepData.steps) {
     const tasks = step.tasks.map(id => taskData.tasks.find(t => t.id === id)).filter(Boolean);
@@ -2416,8 +2447,13 @@ export function cmdRunStatus(args) {
         ? ` ${C.dim}${fmtDuration((t.completed_at ? new Date(t.completed_at) : new Date()) - new Date(t.started_at))}${C.reset}`
         : '';
       const retry = t.retry_count ? ` ${C.yellow}(retry ${t.retry_count})${C.reset}` : '';
-      console.log(`    ${tIcon} ${t.id}: ${t.name}${dur}${retry}`);
+      const staleTag = stale.has(t.id) ? ` ${C.yellow}⚠ stale${C.reset}` : '';
+      console.log(`    ${tIcon} ${t.id}: ${t.name}${dur}${retry}${staleTag}`);
     }
+  }
+
+  if (stale.size) {
+    console.log(`\n  ${C.yellow}⚠ ${stale.size} task(s) RUNNING for over ${Math.round(staleMs / 60000)}m with no live worktree — reclaim: x-build run --reconcile${C.reset}`);
   }
 
   if (allDone) {

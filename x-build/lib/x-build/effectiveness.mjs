@@ -39,10 +39,16 @@ function planStatePath(project) {
   return join(phaseDir(project, '02-plan'), 'plan-state.json');
 }
 
+// Current hooks store {session_id, tool_use_id} in .active; older installs stored
+// the bare session id — accept both.
 function activeTraceId() {
   const active = join(dirname(ROOT), 'traces', '.active');
   if (!existsSync(active)) return null;
-  try { return readFileSync(active, 'utf8').trim() || null; } catch { return null; }
+  try {
+    const raw = readFileSync(active, 'utf8').trim();
+    if (!raw) return null;
+    return raw.startsWith('{') ? (JSON.parse(raw).session_id || null) : raw;
+  } catch { return null; }
 }
 
 export function newBuildId() {
@@ -156,19 +162,23 @@ export function recordPlanRevision(project, before, after, reason = 'unknown') {
   });
 }
 
-function readMetricRows() {
+// Rotated file first, live file after — the writer moves the log to '<mp>.1' at
+// METRICS_MAX_BYTES, so reading only the live file makes a fresh log look empty.
+// `files` lists what was actually read so callers can say where rows came from.
+export function readMetricRows() {
   const file = metricsPath();
-  const files = [file + '.1', file];
   const rows = [];
+  const files = [];
   let malformed = 0;
-  for (const candidate of files) {
+  for (const candidate of [file + '.1', file]) {
     if (!existsSync(candidate)) continue;
+    files.push(candidate);
     for (const line of readFileSync(candidate, 'utf8').split('\n')) {
       if (!line.trim()) continue;
       try { rows.push(JSON.parse(line)); } catch { malformed++; }
     }
   }
-  return { rows, malformed };
+  return { rows, malformed, files };
 }
 
 function parseEffectivenessArgs(args) {

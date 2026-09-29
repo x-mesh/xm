@@ -17,10 +17,13 @@ import {
   execSync,
   exitFail,
   repoRoot, gaugeProjectKind,
+  recordBuildActivity,
 } from './core.mjs';
 import { linkSync } from 'node:fs';
 import { resolveMemMeshProjectId } from '../mem-mesh-identity.mjs';
 import { newBuildId, recordEffectiveness } from './effectiveness.mjs';
+import { formatNextCommand, resolveNext } from './plan.mjs';
+import { staleRunningTasks } from './tasks.mjs';
 
 // ── cmdInit ─────────────────────────────────────────────────────────
 
@@ -136,23 +139,76 @@ setCmdInit(cmdInit);
 
 // ── cmdList ─────────────────────────────────────────────────────────
 
-export function cmdList() {
+export function cmdList(args = []) {
+  const showAll = args.includes('--all');
   const dir = projectsDir();
-  if (!existsSync(dir)) {
-    console.log('No projects found.');
-    return;
-  }
-  const projects = readdirSync(dir).filter(d => existsSync(manifestPath(d)));
+  const projects = existsSync(dir)
+    ? readdirSync(dir).filter(d => existsSync(manifestPath(d))).map(p => ({ name: p, manifest: readJSON(manifestPath(p)) }))
+    : [];
   if (projects.length === 0) {
     console.log('No projects found.');
     return;
   }
+  const archived = projects.filter(p => p.manifest?.archived === true);
+  const shown = showAll ? projects : projects.filter(p => p.manifest?.archived !== true);
+  if (shown.length === 0) {
+    console.log(`No active projects. ${archived.length} archived — show them: x-build list --all`);
+    return;
+  }
 
   console.log('Projects:\n');
-  for (const p of projects) {
-    const m = readJSON(manifestPath(p));
+  for (const { name, manifest: m } of shown) {
+    // An unreadable manifest stays listed by name: hiding it would make the
+    // project vanish from every view while its directory still exists.
+    if (!m) { console.log(`  ${name}  →  ${C.yellow}⚠ unreadable manifest${C.reset}  (${manifestPath(name)})`); continue; }
     const phase = PHASES.find(ph => ph.id === m.current_phase);
-    console.log(`  ${p}  →  ${phase?.label || m.current_phase}  (${m.created_at?.slice(0, 10) || '?'})`);
+    const tag = m.archived === true ? `  [archived ${m.archived_at?.slice(0, 10) || ''}]`.replace(/ \]$/, ']') : '';
+    console.log(`  ${name}  →  ${phase?.label || m.current_phase}  (${m.created_at?.slice(0, 10) || '?'})${tag}`);
+  }
+  if (!showAll && archived.length > 0) {
+    console.log(`\n  ${archived.length} archived project(s) hidden — show them: x-build list --all`);
+  }
+}
+
+// ── cmdArchive ──────────────────────────────────────────────────────
+// Archiving only flags the manifest: the project directory stays on disk and
+// `status <name>` keeps working, but findActiveProjects() skips it so it can no
+// longer win default selection or trigger the multi-active warning.
+
+export function cmdArchive(args) {
+  const undo = args.includes('--undo');
+  const name = args.find(a => !a.startsWith('--'));
+  if (!name) {
+    console.error('Usage: x-build archive <name> [--undo]');
+    exitFail(1);
+  }
+  const manifest = readJSON(manifestPath(name));
+  if (!manifest) {
+    console.error(`❌ Project "${name}" not found. Run: x-build list --all`);
+    exitFail(1);
+  }
+  if (!undo && manifest.archived === true) {
+    console.log(`Project "${name}" is already archived (${manifest.archived_at?.slice(0, 10) || '?'}).`);
+    return;
+  }
+  if (undo && manifest.archived !== true) {
+    console.log(`Project "${name}" is not archived.`);
+    return;
+  }
+  if (undo) {
+    delete manifest.archived;
+    delete manifest.archived_at;
+  } else {
+    manifest.archived = true;
+    manifest.archived_at = new Date().toISOString();
+  }
+  manifest.updated_at = new Date().toISOString();
+  writeJSON(manifestPath(name), manifest);
+  if (undo) {
+    console.log(`Project "${name}" restored to the active list.`);
+  } else {
+    console.log(`Project "${name}" archived. It no longer wins default selection or appears in 'x-build list'; files stay under ${projectDir(name)}.`);
+    console.log(`  Undo: x-build archive ${name} --undo`);
   }
 }
 
@@ -447,6 +503,12 @@ export function cmdStatus(args) {
       const taskLabel = normal ? '할 일' : 'Tasks';
       const failLabel = normal ? `${failed}개 문제` : `${failed} failed`;
       console.log(`\n📊 ${taskLabel}: ${renderBar(done, total)}${failed ? ` ${C.red}(${failLabel})${C.reset}` : ''}`);
+      const stale = staleRunningTasks(name, tasks.tasks);
+      if (stale.length) {
+        console.log(normal
+          ? `  ${C.yellow}⚠ ${stale.length}개는 오래 멈춘 실행 중 (${stale.map(t => t.id).join(', ')}) — x-build run-status 로 확인하세요${C.reset}`
+          : `  ${C.yellow}⚠ ${stale.length} stale running (${stale.map(t => t.id).join(', ')}) — see x-build run-status${C.reset}`);
+      }
 
       const scoredTasks = tasks.tasks.filter(t => t.score != null);
       if (scoredTasks.length > 0) {
@@ -466,26 +528,14 @@ export function cmdStatus(args) {
     }
   }
 
-  // Next action suggestion based on current phase
-  const phase = PHASES.find(p => p.id === manifest.current_phase);
-  const suggestions = {
-    research: ['x-build discuss --mode interview', 'x-build research'],
-    plan: ['x-build legacy-plan "goal"', 'x-build plan-check', 'x-build phase next'],
-    execute: ['x-build run', 'x-build run-status'],
-    verify: ['x-build quality', 'x-build verify-coverage', 'x-build verify-traceability'],
-    close: ['x-build close --summary "..."'],
-  };
-  const normalHints = {
-    research: '요구사항을 정리하는 인터뷰를 시작합니다',
-    plan: '목표를 할 일 목록으로 나눕니다',
-    execute: '다음 할 일을 실행합니다',
-    verify: '결과물을 검사합니다',
-    close: '프로젝트를 마무리합니다',
-  };
-  const actions = suggestions[phase?.name] || [];
+  // Next action suggestion — the same decision `x-build next` makes, so the two
+  // commands cannot disagree (Execute with every task completed → `phase next`,
+  // not `run`). The reason doubles as the plain-language hint in normal mode.
+  const next = resolveNext(name);
+  const actions = [formatNextCommand(next)];
   if (actions.length > 0) {
     const label = normal ? '💡 다음 단계' : '💡 Next';
-    const hint = normal && normalHints[phase?.name] ? ` ${C.dim}— ${normalHints[phase.name]}${C.reset}` : '';
+    const hint = normal && next.reason ? ` ${C.dim}— ${next.reason}${C.reset}` : '';
     console.log(`  ${label}: ${C.cyan}${actions[0]}${C.reset}${hint}`);
   }
 
@@ -544,6 +594,7 @@ export function cmdClose(args) {
   writeJSON(manifestPath(project), manifest);
 
   logDecision(project, `Project closed.${summaryContent ? ` Summary: ${summaryContent}` : ''}`);
+  recordBuildActivity(`close ${project}`);
   const phaseDurations = PHASES.map(phase => readJSON(phaseStatusPath(project, phase.id)))
     .filter(status => status?.started_at && status?.completed_at)
     .map(status => new Date(status.completed_at) - new Date(status.started_at));

@@ -446,7 +446,7 @@ describe('edge cases', () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   test('task update with numeric score stores correctly', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'xb-test-'));

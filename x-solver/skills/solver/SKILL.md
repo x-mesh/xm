@@ -48,13 +48,12 @@ User provided: $ARGUMENTS
 
 ## Interaction Protocol
 
-**CRITICAL: x-solver phase transitions MUST use AskUserQuestion for user confirmation.**
+x-solver phase transitions go through AskUserQuestion: after each phase completes, call it before proceeding. It is the one mechanism that ends the turn and waits for the user; a question written as plain text does not create a turn boundary.
 
-Rules:
-1. **AskUserQuestion is REQUIRED** — after each phase completes, call AskUserQuestion before proceeding. Text-only questions do NOT create turn boundaries.
-2. **classify → strategy selection**: MUST use AskUserQuestion to confirm recommended strategy.
-3. **solve phase completion**: MUST use AskUserQuestion before proceeding to verify.
-4. **verify results**: MUST use AskUserQuestion to confirm before close.
+Confirmation points:
+1. classify → strategy selection: confirm the recommended strategy.
+2. solve phase completion: confirm before proceeding to verify.
+3. verify results: confirm before close.
 
 Anti-patterns:
 - ❌ Run classify, show result, immediately start solve
@@ -133,7 +132,7 @@ Parse the first word of `$ARGUMENTS` to determine the command:
 
 ## Trace Recording
 
-See `references/trace-recording.md` — session_start/session_end are automatic via `.claude/hooks/trace-session.mjs`; emit best-effort `agent_step` entries for long sub-operations.
+Tracing is automatic: the trace-session hook writes `session_start` when the skill is invoked, one `agent_step` per Agent tool call made before the assistant turn ends, and `session_end` at the turn's Stop hook. Do not hand-write those three row types; `fan_out`/`synthesize` stay LLM-written, metadata only, as x-trace describes.
 
 ## Natural Language Mapping
 

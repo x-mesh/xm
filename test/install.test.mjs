@@ -391,7 +391,9 @@ describe('install-cli — shared Codex hooks ownership', () => {
     run(['--target', 'codex', '--skills-dir', SKILLS, '--lib-dir', LIB], { cwd: tmp });
     const hooksPath = join(tmp, '.codex', 'hooks.json');
     const hooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
-    hooks.hooks.Stop = [{ hooks: [{ type: 'command', command: 'bash "$HOME/.codex/hooks/other-stop.sh"' }] }];
+    // xm now owns a Stop handler too (trace-session close), so an external change
+    // is an added group, not a replacement of the whole event.
+    hooks.hooks.Stop = [...(hooks.hooks.Stop || []), { hooks: [{ type: 'command', command: 'bash "$HOME/.codex/hooks/other-stop.sh"' }] }];
     writeFileSync(hooksPath, JSON.stringify(hooks, null, 2) + '\n');
     const externalChange = run(['--verify', '--target', 'codex'], { cwd: tmp });
     expect(externalChange.status).toBe(0);
@@ -938,13 +940,20 @@ describe('install-cli — Kiro hook schema validation (kiro-xm-compatibility)', 
 
     // Each trace-session hook should have best-effort in description and
     // explicitly explain why (Skill matcher has no Kiro equivalent).
+    let skillMatcherHooks = 0;
     for (const file of traceHooks) {
       const hook = JSON.parse(readFileSync(join(hooksDir, file), 'utf8'));
+      // The Stop registration closes the session and has no Claude matcher (and
+      // no tool filter), so it carries no Skill note; only the pre/post
+      // (Skill|Agent) hooks do.
+      if (/trace-session\.mjs["']?\s+stop\b/.test(hook.then.command)) continue;
+      skillMatcherHooks += 1;
+      expect(hook.when.toolTypes).toEqual(['*']);
       expect(hook.description).toContain('best-effort');
       expect(hook.description).toContain('Kiro has no Skill matcher');
       expect(hook.description).toContain('Original Claude hook targeted Skill matcher');
-      expect(hook.when.toolTypes).toEqual(['*']);
     }
+    expect(skillMatcherHooks).toBeGreaterThan(0);
   });
 });
 

@@ -127,45 +127,36 @@ SKILL.md is a prompt for LLMs — write instructions in English for precision.
 
 ### Length Budget
 
-**Hard limit: 500 lines per SKILL.md.** Longer files waste context on every invocation and get skimmed rather than read. If your skill exceeds 500 lines, split reference material into `docs/references/<plugin>-<topic>.md` and link from the main file. Current audit: `docs/skill-audit.md`.
+**Hard limit: 500 lines per SKILL.md.** Longer files waste context on every invocation and get skimmed rather than read. If your skill exceeds 500 lines, split reference material into a sibling sub-directory of the skill (`references/`, `commands/`, `strategies/`, `lenses/`, `judges/`, `subcommands/`, `sessions/`, `autonomous/`) and link from the main file; `scripts/sync-bundle.sh` mirrors those directories into the bundle. Current audit: `docs/skill-audit.md`.
 
 ### Required Sections
 
 Open with a purpose block and a trigger block, then the skill's own process
-sections, then the discipline sections. Two forms are accepted for new work, and
-a skill should not mix them; two more appear in the tree as legacy:
+sections, then the discipline sections. Two forms are accepted, and a skill
+should not mix them:
 
-| Form | Purpose | Trigger | Used by |
-|------|---------|---------|---------|
-| **Tag** (dominant) | `<Purpose>` | `<Use_When>`, optionally `<Do_Not_Use_When>` | 11 of 18 skills |
-| **Heading** | `## Overview` | `## When to Use` | 3 of 18 skills |
-| **Heading, tag names** | `## Purpose` | `## Use When` / `## Do Not Use When` | 1 (x-build) |
-| **None** | — | — | 3 (x-op, x-plan, x-remote) |
+| Form | Purpose | Trigger |
+|------|---------|---------|
+| **Tag** (default for new skills) | `<Purpose>` | `<Use_When>`, optionally `<Do_Not_Use_When>` |
+| **Heading** | `## Overview` | `## When to Use` |
 
 Pick the tag form for a new skill unless you are editing a skill that already
 uses headings — matching the file you are in beats matching the majority.
-
-The last two rows are legacy, not a third and fourth sanctioned form. x-build's
-heading-with-tag-names variant is fine to leave alone; the three skills with no
-purpose block at all open straight into content after their H1, so an agent has
-to read the whole file to learn when the skill applies. Add a purpose and
-trigger block to those three when you next edit them, in the tag form.
+x-build's `## Purpose` / `## Use When` heading variant is fine to leave alone.
+x-op, x-plan, and x-remote open straight into content after their H1, so an
+agent has to read the whole file to learn when the skill applies: add a purpose
+and trigger block to those three, in the tag form, when you next edit them.
 
 One section is required regardless of form:
 
 - **Common Rationalizations** — excuses agents use to skip steps, paired with
   factual rebuttals. Minimum 5 domain-specific rows. This is the single most
   impactful discipline mechanism; without it a skill has no defense against
-  being partially applied. Present in 15 of 18 skills, and the closest thing
-  this repo has to a universal SKILL.md convention.
+  being partially applied.
 
-`Red Flags` (5 of 18) and `Verification` (4 of 18) are recommended, not
-required. Add `Verification` when the skill's result can be checked by a
-command or a state check — especially when the skill mutates anything.
-
-The counts above were re-measured 2026-09-03 (18 source SKILL.md files, the
-`xm/skills/` bundle copies excluded); re-measure before treating any of them as a
-rule rather than a description.
+`Red Flags` and `Verification` are recommended, not required. Add
+`Verification` when the skill's result can be checked by a command or a state
+check — especially when the skill mutates anything.
 
 ### CLI Invocation Pattern (required when SKILL.md exposes a shell CLI)
 
@@ -192,24 +183,24 @@ If the skill references a plugin CLI, the SKILL.md **MUST** instruct the agent t
 
 **Why the variable-assignment anti-pattern still applies:** zsh expands `$VAR` as a single token. `XMS="node /path/cli.mjs"; $XMS foo` executes the file literally named `"node /path/cli.mjs"`, which does not exist. Use a path-only variable + `node "$VAR"` instead.
 
-**Exempt:** skills without a shell CLI (x-op, x-agent, x-review, x-eval, x-probe, x-humble, x-ship, x-trace, x-dashboard) — they orchestrate via the Agent tool only.
+**Exempt:** skills whose SKILL.md never invokes an `xm <plugin>` command — they orchestrate via the Agent tool only. Decide per skill from its content, not from a fixed list; a plugin can ship a CLI (x-trace, x-review, x-eval do) and its skill must then carry the block.
 
 ## Documentation
 
 - `README.md` (English) and `README.ko.md` (Korean) must stay in sync
 - When editing README.md, always update the corresponding section in README.ko.md
-- `/x-release` Step 3.6 enforces this automatically
+- `/x-release` Step 4 asks whether the README needs an update; only the version badges in both files are rewritten automatically by `release bump`
 
 ## Testing
 
 ```bash
 bun test                    # run all tests
-bun test test/core          # run specific test file
+bun test test/cost-core.test.mjs   # run one test file
 ```
 
 ## Model Routing
 
-Use the cheapest model that gets the job done. For commands that just execute a script and return output, haiku is sufficient and ~78% cheaper than sonnet.
+Use the cheapest model that gets the job done. For commands that just execute a script and return output, haiku is sufficient and the cheapest tier (current rates: `MODEL_COSTS` in `x-build/lib/x-build/cost-engine.mjs`).
 
 ### Routing Rules
 
@@ -256,7 +247,7 @@ model_overrides → profile → fallback
 | `budget.window_hours` | Rolling window for spend tracking (default: 24h) | `48` |
 | `budget.projects` | Per-project budget caps | `{"my-project": {"max_usd": 2.0}}` |
 
-Each `task_complete` event records `model`, `role`, `cost_usd`, `quality_score`, and a `correlation_id` (format: `ce-XXXXXXXX`) for observability. Adaptive learning was removed (Opus 4.7 era): it required multi-model samples per role to be meaningful, but single-profile routing rarely produces them — use `model_overrides` for deliberate per-role choices instead.
+Each `task_complete` event records `model`, `role`, `cost_usd`, `cost_source`, `quality_score`, and a `correlation_id` (format: `ce-XXXXXXXX`) for observability. `cost_usd` is an estimate (`cost_source: "estimate"`) and is 0 when no estimate was supplied: per-agent token usage is not exposed in-session, so no event has carried an actual cost yet, and `xm build metrics` reports that coverage as `0% actual`. Agent spans (`agent_step` rows in `.xm/traces/`) are written by the trace-session hook with role, model, and duration, but without tokens. Routing does not learn from these samples: single-profile routing rarely produces the multi-model samples per role that learning would need, so use `model_overrides` for deliberate per-role choices.
 
 ## Edit Policy
 
@@ -271,7 +262,7 @@ Each `task_complete` event records `model`, `role`, `cost_usd`, `quality_score`,
 | `x-solver/skills/solver/SKILL.md` | Source | **YES** |
 | `xm/skills/solver/SKILL.md` | Marketplace copy | **NO** |
 
-This applies to all plugins: x-build, x-op, x-probe, x-solver, x-eval, x-review, x-trace, x-memory, x-humble, x-ship, x-sync.
+This applies to every plugin that `scripts/sync-bundle.sh` mirrors into `xm/skills/` (the plugin loop under `=== Syncing SKILL.md files ===` is the source of truth; 18 `x-*/skills/*/SKILL.md` sources at present). Skills that exist only under `xm/skills/` (handoff, handon, inbox, kit, later, local-fix, mutate, ship, toss, write) are xm-native and are edited in place.
 
 **Enforcement:** `.claude/hooks/block-marketplace-copy.mjs` is wired as a PreToolUse hook in `.claude/settings.json` and will deny any Edit/Write/MultiEdit/NotebookEdit targeting a marketplace copy. If you see a block, follow the source path in the error message and re-run `scripts/sync-bundle.sh` when done. The hook mirrors the protected set from `scripts/sync-bundle.sh`, so keep them in lockstep when adding new synced files.
 

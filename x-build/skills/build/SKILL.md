@@ -141,7 +141,7 @@ fallback은 다음 조건을 모두 만족할 때만 추가합니다.
 
 기존 CLI는 호환성을 위해 남아 있지만 사용자가 명령이나 기능을 명시한 경우에만 실행합니다.
 
-- `xm build init|status|next|research|legacy-plan|phase|gate|tasks|steps|run|quality|close`
+- `xm build init|list|archive|status|next|research|legacy-plan|phase|gate|tasks|steps|run|quality|close`
 - `xm build run --worktrees`
 - `xm build task-check|review-group|group-check`
 - forecast, effectiveness, export와 기타 분석 명령

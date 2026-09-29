@@ -418,7 +418,7 @@ This is a *capability*, available today; proving it produces measurably better o
 | [x-eval](#x-eval) | Quality scoring & benchmarks | `/xm:eval score file` |
 | [x-humble](#x-humble) | Structured retrospective | `/xm:humble reflect` |
 | [x-agent](#x-agent) | Agent primitives & teams | `/xm:agent fan-out "task"` |
-| [x-trace](#x-trace) | Execution tracing & cost | `/xm:trace timeline` |
+| [x-trace](#x-trace) | Execution tracing & cost | `xm trace list` |
 | [x-memory](#x-memory) | Cross-session memory | `/xm:memory inject` |
 | [x-dashboard](#x-dashboard) | Web dashboard for .xm state | `/xm:dashboard start` |
 | [x-humanize](#x-humanize) | Remove AI writing patterns (v0.5.0, pre-stable) | `/xm:humanize audit text` |
@@ -992,7 +992,8 @@ Model auto-routing: `architect` → opus, `executor` → sonnet, `scanner` → h
 See what your agents actually did. Walk the timeline, check the cost, and prepare an auditable replay artifact. The replay command does not invoke an agent.
 
 ```bash
-/xm:trace timeline              # Agent execution timeline
+xm trace list                   # Recent trace sessions: skill, status, agents, duration
+xm trace show <session-id>      # One session with every recorded agent_step
 /xm:trace cost                  # Token/cost breakdown per agent
 /xm:trace replay <id> --span <span-id>  # Prepare a replay manifest and snapshot
 /xm:trace diff <id1> <id2>      # Compare two execution runs
