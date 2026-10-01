@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readJSON, toSlug, writeJSON } from './core.mjs';
 import { buildRoot, compileParallelBatches, normalizeExpectedFiles, validateIdSegment } from './worktree-shared.mjs';
 import { runGatePanel } from './gate-panel.mjs';
+import { artifactEntries, planArtifactsDir } from './plan-bridge.mjs';
 import { normalizePlanEnvelope } from '../x-plan/normalize.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -1675,8 +1676,84 @@ function cmdStatus(args) {
   if (!manifest) return null;
   const topicStatuses = {};
   for (const topic of manifest.topics) topicStatuses[topic.status] = (topicStatuses[topic.status] || 0) + 1;
-  const output = { action, status: manifest.status, batch: batchId, topic_count: manifest.topics.length, topic_statuses: topicStatuses, topics: manifest.topics, schedule: manifest.schedule };
+  const output = {
+    action, status: manifest.status, batch: batchId, topic_count: manifest.topics.length, topic_statuses: topicStatuses, topics: manifest.topics, schedule: manifest.schedule,
+    execution: manifest.execution || null, seal: manifest.seal || null, integration: manifest.integration || null, merge: manifest.merge || null,
+  };
   return emit(output, json, `${batchId}: ${manifest.status} (${manifest.topics.length} topics)`);
+}
+
+function storedBatches() {
+  const root = batchesRoot();
+  if (!existsSync(root)) return [];
+  const rows = [];
+  for (const name of readdirSync(root)) {
+    if (name.startsWith('.') || !existsSync(manifestPath(name))) continue;
+    const manifest = readJSON(manifestPath(name));
+    rows.push({ name, path: manifestPath(name), manifest: Array.isArray(manifest?.topics) ? manifest : null });
+  }
+  return rows;
+}
+
+function cmdList(args) {
+  const action = 'batch.list';
+  const json = jsonRequested(args);
+  const batches = storedBatches().map(({ name, path, manifest }) => {
+    if (!manifest) return { id: name, status: 'unreadable', active: false, manifest: path, error: 'manifest is unreadable' };
+    const topicStatuses = {};
+    for (const topic of manifest.topics) topicStatuses[topic.status] = (topicStatuses[topic.status] || 0) + 1;
+    return {
+      id: manifest.id || name, status: manifest.status, active: manifest.status !== 'merged',
+      topic_count: manifest.topics.length, topic_statuses: topicStatuses, updated_at: manifest.updated_at || null, manifest: path,
+    };
+  }).sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+  const lines = batches.map((row) => `${row.id}  ${row.status}${row.topic_count == null ? '' : `  ${row.topic_count} topic(s)`}${row.updated_at ? `  ${row.updated_at}` : ''}`);
+  return emit({ action, status: 'ok', batches }, json, lines.length ? lines.join('\n') : 'No batches.');
+}
+
+async function cmdCandidates(args) {
+  const action = 'batch.candidates';
+  const json = jsonRequested(args);
+  const core = await loadPlanCore();
+  if (!core?.parsePlanEnvelope) return fail(action, 'x-plan validator is unavailable', { json, code: 1 });
+
+  const registeredPaths = new Set();
+  const registeredDigests = new Set();
+  const warnings = [];
+  for (const { name, manifest } of storedBatches()) {
+    if (!manifest) { warnings.push(`${name}: manifest is unreadable; plans it registered may be listed`); continue; }
+    for (const topic of manifest.topics) {
+      if (topic.plan?.source) registeredPaths.add(resolve(topic.plan.source));
+      if (topic.plan?.sha256) registeredDigests.add(topic.plan.sha256);
+    }
+  }
+
+  const candidates = [];
+  const excluded = { missing_envelope: 0, invalid: 0, incomplete: 0, not_executable: 0, registered: 0 };
+  for (const [name, path] of artifactEntries()) {
+    if (!existsSync(path)) { excluded.missing_envelope += 1; continue; }
+    const raw = readFileSync(path, 'utf8');
+    const checked = core.parsePlanEnvelope(raw);
+    if (!checked.valid) { excluded.invalid += 1; continue; }
+    const plan = checked.value;
+    if (plan.status !== 'complete') { excluded.incomplete += 1; continue; }
+    if (plan.executable !== true) { excluded.not_executable += 1; continue; }
+    const source = resolve(path);
+    const planSha = sha256(raw);
+    if (registeredPaths.has(source) || registeredDigests.has(planSha)) { excluded.registered += 1; continue; }
+    candidates.push({
+      name, path: source, goal: plan.goal, created_at: plan.provenance?.created_at || null,
+      task_count: plan.tasks.length, ...collectTopicExpectedFiles(plan), sha256: planSha,
+    });
+  }
+  candidates.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')) || b.name.localeCompare(a.name));
+
+  const skipped = Object.entries(excluded).filter(([, count]) => count > 0).map(([reason, count]) => `${reason} ${count}`);
+  const lines = candidates.map((row, index) => `${index + 1}. ${row.goal}  (${row.task_count} task(s), ${row.created_at || 'date unknown'})\n   ${row.path}`);
+  if (!lines.length) lines.push(`No executable plans under ${planArtifactsDir()}.`);
+  if (skipped.length) lines.push(`Excluded: ${skipped.join(', ')}`);
+  for (const warning of warnings) lines.push(`⚠ ${warning}`);
+  return emit({ action, status: 'ok', plan_root: planArtifactsDir(), candidates, excluded, warnings }, json, lines.join('\n'));
 }
 
 export async function cmdBatch(args = []) {
@@ -1685,6 +1762,8 @@ export async function cmdBatch(args = []) {
   if (subcommand === 'add') return cmdAdd(rest);
   if (subcommand === 'plan') return cmdPlan(rest);
   if (subcommand === 'status') return cmdStatus(rest);
+  if (subcommand === 'list') return cmdList(rest);
+  if (subcommand === 'candidates') return cmdCandidates(rest);
   if (subcommand === 'run') return cmdRun(rest);
   if (subcommand === 'resume') return cmdResume(rest);
   if (subcommand === 'approve') return cmdApprove(rest);
@@ -1693,5 +1772,5 @@ export async function cmdBatch(args = []) {
   if (subcommand === 'seal') return cmdSeal(rest);
   if (subcommand === 'verify') return cmdVerify(rest);
   if (subcommand === 'merge') return cmdMerge(rest);
-  return fail('batch', 'Usage: xm batch <init|add|plan|run|resume|approve|collect|publish|seal|verify|merge|status> ...', { json: jsonRequested(args) });
+  return fail('batch', 'Usage: xm batch <init|add|plan|run|resume|approve|collect|publish|seal|verify|merge|status|list|candidates> ...', { json: jsonRequested(args) });
 }

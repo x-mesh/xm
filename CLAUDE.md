@@ -262,7 +262,7 @@ Each `task_complete` event records `model`, `role`, `cost_usd`, `cost_source`, `
 | `x-solver/skills/solver/SKILL.md` | Source | **YES** |
 | `xm/skills/solver/SKILL.md` | Marketplace copy | **NO** |
 
-This applies to every plugin that `scripts/sync-bundle.sh` mirrors into `xm/skills/` (the plugin loop under `=== Syncing SKILL.md files ===` is the source of truth; 18 `x-*/skills/*/SKILL.md` sources at present). Skills that exist only under `xm/skills/` (handoff, handon, inbox, kit, later, local-fix, mutate, ship, toss, write) are xm-native and are edited in place.
+This applies to every plugin that `scripts/sync-bundle.sh` mirrors into `xm/skills/` (the plugin loop under `=== Syncing SKILL.md files ===` is the source of truth; 18 `x-*/skills/*/SKILL.md` sources at present). Skills that exist only under `xm/skills/` (batch, handoff, handon, inbox, kit, later, local-fix, mutate, ship, toss, write) are xm-native and are edited in place.
 
 **Enforcement:** `.claude/hooks/block-marketplace-copy.mjs` is wired as a PreToolUse hook in `.claude/settings.json` and will deny any Edit/Write/MultiEdit/NotebookEdit targeting a marketplace copy. If you see a block, follow the source path in the error message and re-run `scripts/sync-bundle.sh` when done. The hook mirrors the protected set from `scripts/sync-bundle.sh`, so keep them in lockstep when adding new synced files.
 
