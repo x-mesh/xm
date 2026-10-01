@@ -209,7 +209,7 @@ describe('xm batch scheduler', () => {
       expect(planned.sequential_topics).toEqual(['unknown']);
       const status = run(cwd, ['batch', 'status', 'release', '--json']);
       expect(status.code).toBe(0);
-      expect(JSON.parse(status.stdout)).toMatchObject({ status: 'planned', topic_count: 3, topic_statuses: { pending: 3 } });
+      expect(JSON.parse(status.stdout)).toMatchObject({ status: 'planned', topic_count: 3, topic_statuses: { pending: 3 }, execution: null, seal: null, integration: null, merge: null });
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
@@ -240,6 +240,67 @@ describe('xm batch scheduler', () => {
       expect(status.code, status.stderr).toBe(0);
       expect(JSON.parse(status.stdout)).toMatchObject({ batch: 'dispatch', status: 'collecting' });
       expect(existsSync(join(cwd, '.xm', 'batches', 'dispatch', 'manifest.json'))).toBe(true);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('lists stored batches newest first and keeps unreadable manifests visible', () => {
+    const cwd = setup();
+    try {
+      for (const id of ['old', 'new']) run(cwd, ['batch', 'init', id, '--json']);
+      const batches = join(cwd, '.xm', 'batches');
+      const stamp = (id, updatedAt, status) => {
+        const value = manifest(cwd, id);
+        writeFileSync(join(batches, id, 'manifest.json'), JSON.stringify({ ...value, updated_at: updatedAt, status }));
+      };
+      stamp('old', '2026-01-01T00:00:00.000Z', 'merged');
+      stamp('new', '2026-02-01T00:00:00.000Z', 'collecting');
+      mkdirSync(join(batches, 'broken'));
+      writeFileSync(join(batches, 'broken', 'manifest.json'), '{');
+      mkdirSync(join(batches, 'lock-only'));
+
+      const listed = run(cwd, ['batch', 'list', '--json']);
+      expect(listed.code, listed.stderr).toBe(0);
+      const rows = JSON.parse(listed.stdout).batches;
+      expect(rows.map((row) => row.id)).toEqual(['new', 'old', 'broken']);
+      expect(rows[0]).toMatchObject({ status: 'collecting', active: true, topic_count: 0 });
+      expect(rows[1]).toMatchObject({ status: 'merged', active: false });
+      expect(rows[2]).toMatchObject({ status: 'unreadable', active: false, error: 'manifest is unreadable' });
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('candidates lists unregistered executable plans and counts every exclusion', () => {
+    const cwd = setup();
+    try {
+      const plans = join(cwd, '.xm', 'plan');
+      const write = (path, value) => { mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value)); };
+      const dated = (goal, files, createdAt, extra = {}) => ({ ...envelope(goal, files), provenance: { source: 'test', created_at: createdAt }, ...extra });
+      const alpha = join(plans, '20260101T000000Z-alpha.json');
+      const beta = join(plans, '20260102T000000Z-beta', 'envelope.json');
+      write(alpha, dated('alpha', ['src/a.mjs'], '2026-01-01T00:00:00.000Z'));
+      write(beta, dated('beta', ['src/b.mjs'], '2026-01-02T00:00:00.000Z'));
+      write(join(plans, '20260103T000000Z-draft.json'), dated('draft', ['src/d.mjs'], '2026-01-03T00:00:00.000Z', { status: 'incomplete', executable: false }));
+      write(join(plans, '20260104T000000Z-held.json'), dated('held', ['src/h.mjs'], '2026-01-04T00:00:00.000Z', { executable: false }));
+      write(join(plans, 'broken.json'), 'not json');
+      write(join(plans, '.partial.json'), 'ignored');
+      mkdirSync(join(plans, '20260105T000000Z-interview'));
+
+      const first = run(cwd, ['batch', 'candidates', '--json']);
+      expect(first.code, first.stderr).toBe(0);
+      const listed = JSON.parse(first.stdout);
+      expect(listed.candidates.map((row) => row.goal)).toEqual(['beta', 'alpha']);
+      expect(listed.candidates[0]).toMatchObject({ path: beta, task_count: 1, expected_files_complete: true, expected_files: ['src/b.mjs'] });
+      expect(listed.excluded).toEqual({ missing_envelope: 1, invalid: 1, incomplete: 1, not_executable: 1, registered: 0 });
+
+      run(cwd, ['batch', 'init', 'release', '--json']);
+      expect(run(cwd, ['batch', 'add', 'release', 'beta', '--plan', beta, '--json']).code).toBe(0);
+      const copy = join(cwd, 'alpha-copy.json');
+      writeFileSync(copy, readFileSync(alpha));
+      expect(run(cwd, ['batch', 'add', 'release', 'alpha', '--plan', copy, '--json']).code).toBe(0);
+
+      const after = JSON.parse(run(cwd, ['batch', 'candidates', '--json']).stdout);
+      expect(after.candidates).toEqual([]);
+      expect(after.excluded.registered).toBe(2);
+      expect(after.warnings).toEqual([]);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
@@ -317,6 +378,7 @@ describe('xm batch scheduler', () => {
       const approved = run(cwd, ['batch', 'approve', 'release', '--json']);
       expect(approved.code, approved.stderr).toBe(0);
       expect(JSON.parse(approved.stdout).topics.every((topic) => topic.status === 'prepared' && !topic.approval_required)).toBe(true);
+      expect(JSON.parse(run(cwd, ['batch', 'status', 'release', '--json']).stdout).execution).toMatchObject({ base_ref: 'develop', wave: 1 });
       const executable = run(authTree, ['run', '--project', 'batch-release-auth', '--json']);
       expect(executable.code, executable.stderr).toBe(0);
       expect(JSON.parse(executable.stdout).tasks).toHaveLength(1);

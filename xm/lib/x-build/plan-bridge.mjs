@@ -20,12 +20,12 @@ class XPlanUnavailable extends Error {}
 
 // ROOT is <repo>/.xm/build, so x-plan's artifact directory is its sibling.
 // Matches x-plan's own repositoryRoot() resolution for every non-global run.
-function planArtifactsDir() {
+export function planArtifactsDir() {
   return join(ROOT, '..', 'plan');
 }
 
 // quick mode writes <ts>-<slug>.json; standard/ultra write <session>/envelope.json.
-function artifactEntries() {
+export function artifactEntries() {
   const dir = planArtifactsDir();
   if (!existsSync(dir)) return new Map();
   const entries = new Map();

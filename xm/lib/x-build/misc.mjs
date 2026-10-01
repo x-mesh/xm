@@ -730,6 +730,8 @@ ${C.bold}Worktree Backend (optional Execute fan-out):${C.reset}
 
 ${C.bold}Batch Orchestration:${C.reset}
   batch <init|add|plan|status>    Register plans and calculate topic waves
+  batch list                     List stored batches, newest first
+  batch candidates               List executable plans not registered in any batch
   batch run <id> [--dry-run] [--base X] [--max-parallel N]
                                  Prepare isolated topic worktrees and projects
   batch approve <id> [topic...]  Approve checked topic plans and emit handoffs

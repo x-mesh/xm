@@ -104,6 +104,7 @@ x-mesh Toolkit (xm) — pick a tool by what you're doing ("쓸 때")
 
 Plan & build:
   /xm:build     PRD → tasks → DAG 실행·비용예측    쓸 때: 멀티스텝 기능을 계획·관리
+  /xm:batch     topic별 병렬 PR (plan→구현→merge)   쓸 때: 독립 기능 여러 개를 PR 여러 개로 한 번에
   /xm:op        17 전략 오케스트레이션              쓸 때: 한 문제를 여러 전략으로(refine/debate/tournament…)
   /xm:agent     fan-out · delegate · consensus      쓸 때: 에이전트 여러 개를 직접 오케스트레이션
   /xm:solver    decompose · iterate · constrain     쓸 때: 막힌 문제를 구조적으로 분해

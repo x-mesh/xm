@@ -39,7 +39,7 @@
 - [빠른 시작](#빠른-시작)
 - [왜 xm인가?](#왜-xm인가)
 - [크로스-벤더 검증](#크로스-벤더-검증)
-- [플러그인](#플러그인) — [x-plan](#x-plan) · [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [뮤테이션 테스팅](#뮤테이션-테스팅--xmmutate) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-dashboard](#x-dashboard) · [x-humanize](#x-humanize) · [x-recall](#x-recall) · [x-panel](#x-panel) · [x-wt](#x-wt) · [x-remote](#x-remote)
+- [플러그인](#플러그인) — [x-plan](#x-plan) · [x-build](#x-build) · [topic별 병렬 PR](#topic별-병렬-pr--xmbatch) · [x-op](#x-op) · [x-review](#x-review) · [뮤테이션 테스팅](#뮤테이션-테스팅--xmmutate) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-dashboard](#x-dashboard) · [x-humanize](#x-humanize) · [x-recall](#x-recall) · [x-panel](#x-panel) · [x-wt](#x-wt) · [x-remote](#x-remote)
 - [품질 & 학습 파이프라인](#품질--학습-파이프라인)
 - [아키텍처](#아키텍처)
 - [설정](#설정)
@@ -431,6 +431,7 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 
 **`xm` 코어에 번들됨 (별도 marketplace 플러그인 아님):** `/xm:ship` 릴리스 자동화 · `/xm:write` PR·issue·릴리스 문서 작성 · `x-sync` 멀티 머신 동기화 서버 · `/xm:toss` + `/xm:inbox` 프로젝트 간 버그 핸드오프 — 아래 [x-ship](#x-ship), [xm:write](#xmwrite), [x-sync](#x-sync), [toss / inbox](#프로젝트-간-핸드오프--toss--inbox) 참고.
 `/xm:mutate`도 같은 방식으로 번들됩니다 — 코어에 함께 들어 있는 `xm mutate` 명령을 실행하기 때문입니다. Codex에서는 `$xm:mutate`로 노출되고, 평면 별칭 `$xm-mutate`도 그대로 씁니다. [뮤테이션 테스팅](#뮤테이션-테스팅--xmmutate) 참고.
+`/xm:batch`도 같은 방식으로 번들됩니다. x-build의 `xm batch` 명령을 실행합니다. [topic별 병렬 PR](#topic별-병렬-pr--xmbatch) 참고.
 
 ---
 
@@ -559,6 +560,32 @@ xm build plan --mode quick "..."                 # xm plan의 deprecated alias
 설정은 `.xm/config.json`의 `worktree` 키(`base`, `branch_prefix`, `max_parallel`, `gate_policy`, `gate_max_rounds`, `pre_gate`)에 있습니다. 전체 스키마는 `x-build/skills/build/references/data-model.md`, 게이트 설계는 `docs/worktree-gate-optimization-plan.md`를 참고하세요.
 
 </details>
+
+---
+
+### topic별 병렬 PR — `/xm:batch`
+
+`/xm:batch`는 서로 독립된 기능 여러 개를 각각의 PR로 만듭니다. 기능을 topic으로 묶고, topic마다 plan을 하나씩 작성한 뒤, 각 topic을 별도 worktree에서 병렬로 구현합니다. 그다음 PR을 만들고, 합친 결과를 검증한 뒤, 정해진 순서대로 merge합니다.
+
+인자 없이 실행하면 새 batch를 시작하거나 진행 중인 batch를 이어 갑니다. 사용자에게는 네 번만 묻습니다.
+
+1. plan 에이전트를 띄우기 전: topic 구성과 base branch
+2. 구현 에이전트를 띄우기 전: plan 승인
+3. push 전: PR 생성
+4. merge 전: merge 순서
+
+```bash
+/xm:batch                         # 새 batch를 시작하거나 진행 중인 batch를 이어 감
+/xm:batch 로그인 API, 검색 화면      # 이 텍스트를 기능 목록으로 사용
+/xm:batch 20261001-auth-search    # 해당 batch를 이어서 진행
+xm batch list --json              # 저장된 batch 목록 (최신순)
+xm batch candidates --json        # 아직 어떤 batch에도 쓰이지 않은 실행 가능한 plan
+xm batch status <id> --json       # topic, wave, seal, 통합 검증, merge 상태
+```
+
+**topic 출처.** 기능을 나열하거나 `.xm/plan/`에 저장된 실행 가능한 plan을 고릅니다. 이미 batch에 등록된 plan은 다시 나오지 않습니다.
+
+**제한.** topic끼리 서로 의존하면 안 됩니다. 기능 B가 기능 A를 필요로 하면 두 기능을 한 topic에 넣거나 B를 다음 batch로 미룹니다. 각 topic 에이전트는 자기 task를 순서대로 실행합니다.
 
 ---
 

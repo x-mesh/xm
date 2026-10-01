@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1790668061060,
+  "generatedAt": 1790840778272,
   "version": 3,
   "skills": [
     {
@@ -12,6 +12,17 @@
       "assetsSha256": "0958fa0182fda8c083b0651d71c023fc767a3766fb332d3dadac28d1ef35eec3",
       "assetFiles": 7,
       "assetBytes": 67735
+    },
+    {
+      "plugin": "batch",
+      "sha256": "a3a6d12b49f94e56bff42954214c8488020217be86f39bff2505d95d436887cc",
+      "bytes": 21695,
+      "referencesSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "referenceFiles": 0,
+      "referenceBytes": 0,
+      "assetsSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "assetFiles": 0,
+      "assetBytes": 0
     },
     {
       "plugin": "build",
@@ -103,8 +114,8 @@
     },
     {
       "plugin": "kit",
-      "sha256": "bada5421517e41b960842722fcaa480ed26049c7da85b35858fb1be4eb703d8b",
-      "bytes": 15299,
+      "sha256": "8b6728851d09f4b70ad9e5ca9848b6d455b0d46577c42671286ffea29fc6dd8d",
+      "bytes": 15425,
       "referencesSha256": "d279e1ba064200c58409611085d3bbb386ed79ac6b9e1f6807b924799ee1b139",
       "referenceFiles": 2,
       "referenceBytes": 3224,

@@ -39,7 +39,7 @@ The default `x-build` route selects direct execution for bounded, deterministica
 - [Quick Start](#quick-start)
 - [Why xm?](#why-xm)
 - [Cross-Vendor Verification](#cross-vendor-verification)
-- [Plugins](#plugins) — [x-plan](#x-plan) · [x-build](#x-build) · [x-op](#x-op) · [x-review](#x-review) · [mutation testing](#mutation-testing--xmmutate) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-humanize](#x-humanize) · [x-recall](#x-recall) · [x-panel](#x-panel) · [x-wt](#x-wt) · [x-remote](#x-remote)
+- [Plugins](#plugins) — [x-plan](#x-plan) · [x-build](#x-build) · [parallel topic PRs](#parallel-topic-prs--xmbatch) · [x-op](#x-op) · [x-review](#x-review) · [mutation testing](#mutation-testing--xmmutate) · [x-solver](#x-solver) · [x-probe](#x-probe) · [x-eval](#x-eval) · [x-humble](#x-humble) · [x-dashboard](#x-dashboard) · [x-agent](#x-agent) · [x-trace](#x-trace) · [x-memory](#x-memory) · [x-humanize](#x-humanize) · [x-recall](#x-recall) · [x-panel](#x-panel) · [x-wt](#x-wt) · [x-remote](#x-remote)
 - [Quality & Learning Pipeline](#quality--learning-pipeline)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
@@ -430,6 +430,7 @@ This is a *capability*, available today; proving it produces measurably better o
 
 **Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `/xm:write` PR, issue, and release documents · `x-sync` multi-machine sync server · `/xm:toss` + `/xm:inbox` cross-project bug handoff — see [x-ship](#x-ship), [xm:write](#xmwrite), [x-sync](#x-sync) and [toss / inbox](#cross-project-handoff--toss--inbox) below.
 `/xm:mutate` is bundled the same way — it drives the `xm mutate` command that ships with core. Codex exposes it as `$xm:mutate`, with `$xm-mutate` kept as a flat alias. See [Mutation testing](#mutation-testing--xmmutate).
+`/xm:batch` is bundled the same way. It drives the `xm batch` command of x-build. See [Parallel topic PRs](#parallel-topic-prs--xmbatch).
 
 ---
 
@@ -558,6 +559,32 @@ For projects with ≥2 tasks that touch disjoint files (declared via `tasks add 
 Config lives under `.xm/config.json`'s `worktree` key (`base`, `branch_prefix`, `max_parallel`, `gate_policy`, `gate_max_rounds`, `pre_gate`); see `x-build/skills/build/references/data-model.md` for the full schema and `docs/worktree-gate-optimization-plan.md` for the gate design.
 
 </details>
+
+---
+
+### Parallel topic PRs — `/xm:batch`
+
+`/xm:batch` delivers several independent features as separate PRs. It groups the features into topics, writes one plan for each topic, and implements the topics in parallel worktrees. Then it opens the PRs, verifies the combined result, and merges the PRs in a fixed order.
+
+Run it without arguments to start a new batch or to resume an active batch. The skill asks the user at four points only:
+
+1. Before the plan agents start: the topic set and the base branch.
+2. Before the implementation agents start: the plan approval.
+3. Before the push: the PR creation.
+4. Before the merge: the merge order.
+
+```bash
+/xm:batch                         # start a new batch, or resume an active batch
+/xm:batch login API, search page  # use this text as the feature list
+/xm:batch 20261001-auth-search    # resume this batch
+xm batch list --json              # stored batches, newest first
+xm batch candidates --json        # executable plans that no batch uses yet
+xm batch status <id> --json       # topics, waves, seal, integration, and merge state
+```
+
+**Topic sources.** List the features, or select saved executable plans from `.xm/plan/`. A plan that a batch already uses does not appear again.
+
+**Limits.** Topics must not depend on each other. If feature B needs feature A, put both features in one topic, or move B to the next batch. Each topic agent runs its tasks in sequence.
 
 ---
 
