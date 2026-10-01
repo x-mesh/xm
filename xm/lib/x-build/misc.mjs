@@ -728,6 +728,20 @@ ${C.bold}Worktree Backend (optional Execute fan-out):${C.reset}
   review-integration [--base main] [--target develop]
                                  Release-time batch review via gate-panel
 
+${C.bold}Batch Orchestration:${C.reset}
+  batch <init|add|plan|status>    Register plans and calculate topic waves
+  batch run <id> [--dry-run] [--base X] [--max-parallel N]
+                                 Prepare isolated topic worktrees and projects
+  batch approve <id> [topic...]  Approve checked topic plans and emit handoffs
+  batch collect <id> [topic...]  Verify completed topics and save bound receipts
+  batch publish <id> [topic...] [--dry-run|--yes]
+                                 Push verified branches and create checked PRs
+  batch seal <id> [--base X]    Lock published PR and base commit identities
+  batch verify <id> [--dry-run] Merge sealed heads and run integration gates
+  batch merge <id> [--dry-run|--yes]
+                                 Merge exact PR heads and verify the final tree
+  batch resume <id>              Retry blocked topics and emit current handoffs
+
 ${C.bold}Verify & Close:${C.reset}
   quality                        Run quality checks (test/lint/build)
   verify-coverage [--strict]     Check requirement coverage (--strict: uncovered exits 1)

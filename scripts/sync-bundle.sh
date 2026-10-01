@@ -180,6 +180,12 @@ echo "=== Syncing shared docs ==="
 sync_file "docs/korean-output-style.md" "xm/docs/korean-output-style.md"
 
 echo ""
+echo "=== Syncing x-plan validator into standalone x-build ==="
+for f in schema.mjs normalize.mjs validate.mjs core.mjs; do
+  sync_file "x-plan/lib/x-plan/$f" "x-build/lib/x-plan/$f"
+done
+
+echo ""
 echo "=== Syncing x-build lib files ==="
 shopt -s nullglob
 for f in x-build/lib/x-build/*.mjs; do
