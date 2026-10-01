@@ -163,7 +163,7 @@ Show the waves from `schedule.waves` (e.g. `wave 1: auth-api, search-ui (paralle
 
 Loop: run `xm batch status <batch-id> --json`, decide the next action, run it, repeat. Stop at a gate, a failure menu, or a terminal state. The JSON carries `topics[]` (with `runtime` and `publication`), `schedule`, `execution` (`base_ref`, `wave`), `seal`, `integration`, and `merge`.
 
-**Until publish, decide by topic statuses** (`topics[].status`), checked in this order. The batch-level `status` is ambiguous here: a verified wave 1 next to a prepared wave 2 reads `partially_verified`.
+**While every topic status is `pending`, `preparing`, `blocked`, `awaiting_approval`, `prepared`, or `verified`, decide by topic statuses** (`topics[].status`), checked in this order. The batch-level `status` is ambiguous here: a verified wave 1 next to a prepared wave 2 reads `partially_verified`. As soon as any topic is `published` or `merged`, use the second table.
 
 | Topic statuses | Action |
 |---|---|
@@ -174,7 +174,7 @@ Loop: run `xm batch status <batch-id> --json`, decide the next action, run it, r
 | any `pending` or `preparing` | `xm batch run <batch-id> --json`; add `--base <base>` only when `execution` is null |
 | all `verified` | Gate 3 |
 
-**From publish on, decide by the batch `status`:**
+**Once any topic is `published` or `merged`, decide by the batch `status`:**
 
 | status | Action |
 |---|---|
@@ -209,7 +209,7 @@ Run EVERY Bash command in this exact form (the Bash tool starts a fresh shell ea
   cd '<cwd>' && X_BUILD_ROOT='<env.X_BUILD_ROOT>' X_PANEL_ROOT='<env.X_PANEL_ROOT>' XM_ROOT='<env.XM_ROOT>' <command>
 
 Loop:
-1. Run `xm build run --project <project> --json`. It returns the next tasks, each with prompt, expected_files, task_check_command, on_complete, and on_fail. When no task remains, go to step 4.
+1. Run `xm build run-status --project <project> --json`. If `all_done` is true, go to step 4. Otherwise run `xm build run --project <project> --json`; it returns the next tasks, each with prompt, expected_files, task_check_command, on_complete, and on_fail. If it returns no task while `all_done` is false, report the run-status JSON as a failure and stop.
 2. For each task, in order:
    a. Implement it. Edit only files inside the worktree, within the task's expected_files.
    b. Commit: git add -A -- . ':(exclude).xm' ':(exclude)TASK-CONTEXT.md' && git commit -m "<task id>: <task name>"
