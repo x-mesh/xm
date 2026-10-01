@@ -10,7 +10,7 @@ import {
   resolveProject, findCurrentProject, findActiveProjects, logDecision,
   loadConfig, loadSharedConfig, resolveGates, requiresSignoff, autopilotActive, getMode, isNormalMode, L, renderBar, fmtDuration,
   setCmdInit,
-  existsSync, readdirSync, mkdirSync, join, readFileSync, writeFileSync, renameSync, unlinkSync, statSync,
+  existsSync, readdirSync, mkdirSync, join, dirname, readFileSync, writeFileSync, renameSync, unlinkSync, statSync,
   createRL, ask, pickMenu,
   parseOptions,
   decisionsPath, metricsPath,
@@ -42,7 +42,7 @@ export function ensureCacheGitignore(root = repoRoot()) {
 
   let filePath;
   try {
-    const gitDir = execSync('git rev-parse --absolute-git-dir', {
+    const gitDir = execSync('git rev-parse --path-format=absolute --git-common-dir', {
       cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
     if (!gitDir) return false;
@@ -58,6 +58,7 @@ export function ensureCacheGitignore(root = repoRoot()) {
 
   const eol = current.includes('\r\n') ? '\r\n' : '\n';
   const separator = current && !current.endsWith('\n') && !current.endsWith('\r') ? eol : '';
+  mkdirSync(dirname(filePath), { recursive: true });
   writeFileSync(filePath, `${current}${separator}.xm/cache/${eol}`, 'utf8');
   return true;
 }

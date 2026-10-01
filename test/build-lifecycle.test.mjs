@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -55,6 +55,31 @@ function setup(cwd) {
   run(cwd, ['init', 'demo']);
   return join(cwd, '.xm', 'build', 'projects', 'demo');
 }
+
+describe('x-build init git exclude', () => {
+  test('uses the shared git exclude from a linked worktree', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xb-linked-init-'));
+    const linked = join(tmpdir(), `xb-linked-init-wt-${process.pid}-${Date.now()}`);
+    try {
+      git(tmp, ['init', '-q']);
+      git(tmp, ['config', 'user.email', 'xm-test@example.com']);
+      git(tmp, ['config', 'user.name', 'xm test']);
+      writeFileSync(join(tmp, '.baseline'), 'baseline\n');
+      git(tmp, ['add', '.baseline']);
+      git(tmp, ['commit', '-qm', 'baseline']);
+      git(tmp, ['worktree', 'add', '-b', 'linked-init', linked, 'HEAD']);
+
+      const initialized = run(linked, ['init', 'demo']);
+      expect(initialized.code, initialized.stderr + initialized.stdout).toBe(0);
+      const common = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: linked, encoding: 'utf8' }).stdout.trim();
+      expect(readFileSync(join(resolve(common), 'info', 'exclude'), 'utf8')).toContain('.xm/cache/');
+    } finally {
+      spawnSync('git', ['worktree', 'remove', '--force', linked], { cwd: tmp });
+      rmSync(linked, { recursive: true, force: true });
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
 
 function prepareRunnableTask(cwd) {
   const project = setup(cwd);
