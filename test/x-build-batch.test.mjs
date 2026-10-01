@@ -564,6 +564,80 @@ describe('xm batch scheduler', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  test('collect and publish reject committed files outside the topic plan scope', () => {
+    const cwd = setupRepo();
+    try {
+      run(cwd, ['batch', 'init', 'release', '--json']);
+      addPlan(cwd, 'release', 'auth', ['src/auth.mjs']);
+      run(cwd, ['batch', 'plan', 'release', '--json']);
+      const tree = join(cwd, 'wt-auth');
+      addWorktree(cwd, tree, 'xm/batch-release-auth');
+      const worktreeEnv = { X_BUILD_GK_ARGV: JSON.stringify(['node', FAKE_GK]), FAKE_GK_ACQUIRE_PATH: tree };
+      expect(run(cwd, ['batch', 'run', 'release', '--json'], CLI, worktreeEnv).code).toBe(0);
+      expect(run(cwd, ['batch', 'approve', 'release', '--json']).code).toBe(0);
+      mkdirSync(join(tree, 'src'), { recursive: true });
+      writeFileSync(join(tree, 'src', 'auth.mjs'), 'export const auth = true;\n');
+      writeFileSync(join(tree, 'package-lock.json'), '{}\n');
+      spawnSync('git', ['add', 'src/auth.mjs', 'package-lock.json'], { cwd: tree });
+      spawnSync('git', ['commit', '-m', 'add auth'], { cwd: tree, encoding: 'utf8' });
+      completeTopic(tree, 'batch-release-auth');
+
+      const collected = run(cwd, ['batch', 'collect', 'release', '--json']);
+      expect(collected.code).toBe(2);
+      const failure = JSON.parse(collected.stdout).topics[0];
+      expect(failure).toMatchObject({ id: 'auth', ok: false, error: { code: 'scope_drift', details: { files: ['package-lock.json'] } } });
+      expect(manifest(cwd).topics[0].status).toBe('prepared');
+
+      const state = manifest(cwd);
+      state.topics[0].status = 'verified';
+      writeFileSync(join(cwd, '.xm', 'batches', 'release', 'manifest.json'), JSON.stringify(state));
+      const fake = fakePublishers(cwd);
+      const preview = run(cwd, ['batch', 'publish', 'release', '--dry-run', '--json'], CLI, fake.env);
+      expect(preview.code).toBe(2);
+      expect(JSON.parse(preview.stdout).errors.join('\n')).toContain('outside the plan scope: package-lock.json');
+      expect(existsSync(fake.log)).toBe(false);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  }, 15000);
+
+  test('untracked files from the worktree bootstrap do not block publish, new ones still do', () => {
+    const prepare = (extraUntracked) => {
+      const cwd = setupRepo();
+      run(cwd, ['batch', 'init', 'release', '--json']);
+      addPlan(cwd, 'release', 'auth', ['src/auth.mjs']);
+      run(cwd, ['batch', 'plan', 'release', '--json']);
+      const tree = join(cwd, 'wt-auth');
+      addWorktree(cwd, tree, 'xm/batch-release-auth');
+      writeFileSync(join(tree, 'package-lock.json'), '{}\n');
+      const worktreeEnv = { X_BUILD_GK_ARGV: JSON.stringify(['node', FAKE_GK]), FAKE_GK_ACQUIRE_PATH: tree };
+      expect(run(cwd, ['batch', 'run', 'release', '--json'], CLI, worktreeEnv).code).toBe(0);
+      expect(manifest(cwd).topics[0].runtime.bootstrap_untracked).toEqual(['package-lock.json']);
+      expect(run(cwd, ['batch', 'approve', 'release', '--json']).code).toBe(0);
+      mkdirSync(join(tree, 'src'), { recursive: true });
+      writeFileSync(join(tree, 'src', 'auth.mjs'), 'export const auth = true;\n');
+      spawnSync('git', ['add', 'src/auth.mjs'], { cwd: tree });
+      spawnSync('git', ['commit', '-m', 'add auth'], { cwd: tree, encoding: 'utf8' });
+      if (extraUntracked) writeFileSync(join(tree, extraUntracked), 'scratch\n');
+      completeTopic(tree, 'batch-release-auth');
+      const collected = run(cwd, ['batch', 'collect', 'release', '--json']);
+      expect(collected.code, collected.stderr + collected.stdout).toBe(0);
+      return cwd;
+    };
+    const clean = prepare(null);
+    const dirty = prepare('notes.txt');
+    try {
+      const allowed = run(clean, ['batch', 'publish', 'release', '--dry-run', '--json'], CLI, fakePublishers(clean).env);
+      expect(allowed.code, allowed.stderr + allowed.stdout).toBe(0);
+      expect(JSON.parse(allowed.stdout).status).toBe('dry-run');
+
+      const blocked = run(dirty, ['batch', 'publish', 'release', '--dry-run', '--json'], CLI, fakePublishers(dirty).env);
+      expect(blocked.code).toBe(2);
+      expect(JSON.parse(blocked.stdout).errors.join('\n')).toContain('worktree has uncommitted changes');
+    } finally {
+      rmSync(clean, { recursive: true, force: true });
+      rmSync(dirty, { recursive: true, force: true });
+    }
+  }, 20000);
+
   test('publish previews without side effects, requires confirmation, and reuses a checked PR', () => {
     const cwd = setupRepo();
     try {

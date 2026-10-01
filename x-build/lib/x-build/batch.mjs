@@ -462,6 +462,14 @@ function prepareTopic(manifest, topic, plan, base) {
     if (!acquired.ok) { blockTopic(manifest, topic, 'acquire_failed', acquired.error, acquired.recover); return handoffFor(manifest.id, topic); }
     worktree = acquired.path;
     topic.runtime = { ...topic.runtime, worktree, stage: 'acquired' };
+    // git-kit's worktree init can install dependencies and leave files such as a
+    // fresh lockfile. Record them so publish does not count them as topic work.
+    const bootstrapUntracked = untrackedWork(worktree);
+    if (!bootstrapUntracked) {
+      blockTopic(manifest, topic, 'bootstrap_inspect_failed', { code: 'bootstrap_inspect_failed', message: 'cannot list untracked files after worktree acquire' });
+      return handoffFor(manifest.id, topic);
+    }
+    topic.runtime.bootstrap_untracked = bootstrapUntracked;
     writeJSON(manifestPath(manifest.id), manifest);
   }
 
@@ -678,6 +686,9 @@ function collectTopic(manifest, topic, wave) {
   const branch = gitValue(runtime.worktree, ['branch', '--show-current']);
   const ancestor = spawnSync('git', ['merge-base', '--is-ancestor', runtime.base_sha, 'HEAD'], { cwd: runtime.worktree });
   if (!head || branch !== runtime.branch || ancestor.status !== 0) return collectFailure(topic, 'git_binding_failed', 'worktree branch or base ancestry changed');
+  const outside = filesOutsideScope(topic);
+  if (!outside) return collectFailure(topic, 'scope_check_failed', 'cannot list files changed since the base');
+  if (outside.length) return collectFailure(topic, 'scope_drift', `committed files outside the plan scope: ${outside.join(', ')}`, { files: outside });
   let snapshot;
   try { snapshot = readFileSync(runtime.plan_snapshot, 'utf8'); } catch (error) { return collectFailure(topic, 'plan_snapshot_missing', error.message); }
   const importedPlan = join(runtime.build_root, 'projects', runtime.project, 'phases', '02-plan', 'imported-plan.json');
@@ -765,13 +776,29 @@ function publishCommand(name, fallback) {
   catch (error) { return { error: error.message }; }
 }
 
+function untrackedWork(cwd) {
+  const result = spawnSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], { cwd, encoding: 'utf8' });
+  if (result.status !== 0) return null;
+  return String(result.stdout || '').split('\0').filter(Boolean)
+    .filter((file) => !file.startsWith('.xm/') && file !== 'TASK-CONTEXT.md');
+}
+
+function filesOutsideScope(topic) {
+  if (!topic.expected_files_complete) return [];
+  const { worktree, base_sha: baseSha } = topic.runtime || {};
+  const changed = spawnSync('git', ['diff', '--name-only', '--no-renames', '-z', baseSha, 'HEAD'], { cwd: worktree, encoding: 'utf8' });
+  if (changed.status !== 0) return null;
+  const allowed = new Set(normalizeExpectedFiles(topic.expected_files));
+  return String(changed.stdout || '').split('\0').filter(Boolean).filter((file) => !allowed.has(file));
+}
+
 function cleanPublishWorktree(topic) {
   const cwd = topic.runtime.worktree;
   const tracked = spawnSync('git', ['status', '--porcelain=v1', '--untracked-files=no'], { cwd, encoding: 'utf8' });
-  const untracked = spawnSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], { cwd, encoding: 'utf8' });
-  if (tracked.status !== 0 || untracked.status !== 0) return { ok: false, reason: 'cannot inspect worktree status' };
-  const extra = String(untracked.stdout || '').split('\0').filter(Boolean)
-    .filter((file) => !file.startsWith('.xm/') && file !== 'TASK-CONTEXT.md');
+  const untracked = untrackedWork(cwd);
+  if (tracked.status !== 0 || !untracked) return { ok: false, reason: 'cannot inspect worktree status' };
+  const bootstrap = new Set(topic.runtime.bootstrap_untracked || []);
+  const extra = untracked.filter((file) => !bootstrap.has(file));
   if (String(tracked.stdout || '').trim() || extra.length) return { ok: false, reason: 'worktree has uncommitted changes' };
   return { ok: true };
 }
@@ -814,6 +841,9 @@ function publishPreflight(manifest, requested, options) {
     if (!topic) { errors.push(`${ids[index]}: unknown topic`); continue; }
     if (!['verified', 'published'].includes(topic.status)) { errors.push(`${topic.id}: topic is not verified`); continue; }
     if (topic.depends_on?.length) { errors.push(`${topic.id}: dependent topics require stacked PR support`); continue; }
+    const outside = filesOutsideScope(topic);
+    if (!outside) { errors.push(`${topic.id}: cannot list files changed since the base`); continue; }
+    if (outside.length) { errors.push(`${topic.id}: committed files outside the plan scope: ${outside.join(', ')}`); continue; }
     const receipt = readJSON(verificationPath(manifest.id, topic.id));
     const binding = receiptBinding(topic, receipt);
     if (!binding.valid) { errors.push(`${topic.id}: ${binding.reason}`); continue; }

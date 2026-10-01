@@ -89,7 +89,7 @@ For every gate and every menu in this skill:
    - Print `excluded` as one line, e.g. `제외된 plan: incomplete 2, registered 1`. Print each `warnings[]` line.
    - **No candidates:** collect the feature list (step 4).
    - **One or more candidates:** ask the source once. Options: `기능 목록 입력 (Recommended)` — description "기능을 나열하면 topic으로 묶고 topic마다 plan을 만듭니다"; `저장된 plan 선택` — description "실행 가능한 plan N개 중에서 고릅니다".
-4. Collect the feature list. Ask once: question `이번 batch로 만들 기능을 Other 칸에 한 줄에 하나씩 적어 주세요.`; options `직접 입력` (description "Other 칸에 기능 목록 작성"), `취소`. Text in Other is the list. If the user picks `직접 입력` without text, reply `기능 목록을 다음 메시지로 보내 주세요.` and stop; treat the next message as the list. `취소` stops.
+4. Collect the feature list. Ask once: question `이번 batch로 만들 기능을 Other 칸에 한 줄에 하나씩 적어 주세요.`; options `다음 메시지로 보내기` (description "이 질문을 닫고 다음 메시지에 기능 목록 작성"), `취소`. Text in Other is the list. If the user picks `다음 메시지로 보내기`, reply `기능 목록을 다음 메시지로 보내 주세요.` and stop; treat the next message as the list. `취소` stops.
 5. Pick saved plans (when chosen). Print every candidate as a table: number, goal, created_at, task_count, `expected_files_complete`, path. Ask once with `multiSelect: true`. Options are the four newest candidates (label: goal, shortened to 40 characters; description: number, date, task count). Other takes more numbers, e.g. `5, 7`. Each chosen plan is one topic; the topic id is a slug of its goal. Saved plans are already executable, so no planning agent runs. Ask Gate 1 with the topic table (topic, goal, `expected_files`, base) and options `승인하고 등록 (Recommended)` (description "plan 에이전트 없이 바로 등록"), `취소`. Then go to [Register](#register).
 
 A batch uses one source. Do not mix saved plans and new features in one batch.
@@ -211,19 +211,19 @@ Run EVERY Bash command in this exact form (the Bash tool starts a fresh shell ea
 Loop:
 1. Run `xm build run-status --project <project> --json`. If `all_done` is true, go to step 4. Otherwise run `xm build run --project <project> --json`; it returns the next tasks, each with prompt, expected_files, task_check_command, on_complete, and on_fail. If it returns no task while `all_done` is false, report the run-status JSON as a failure and stop.
 2. For each task, in order:
-   a. Implement it. Edit only files inside the worktree, within the task's expected_files.
-   b. Commit: git add -A -- . ':(exclude).xm' ':(exclude)TASK-CONTEXT.md' && git commit -m "<task id>: <task name>"
-   c. Run task_check_command. If it fails, fix, commit, and re-run (at most 2 fix attempts). If it still fails, run on_fail and go to step 4.
+   a. Implement it. Edit only files inside the worktree, within the task's expected_files. Files that were untracked before your first task (for example a lockfile that the worktree bootstrap created) are not your work: never commit them.
+   b. Commit only the task's files: git add -A -- <each path in expected_files> && git commit -m "<task id>: <task name>"
+   c. Run task_check_command. If it starts with `x-build `, run it as `xm build ` plus the rest; the `x-build` binary is usually not on PATH. If it fails, fix, commit, and re-run (at most 2 fix attempts). If it still fails, run on_fail and go to step 4.
    d. Run on_complete.
 3. Go to step 1.
-4. Run `xm build run-status --project <project> --json`, then `git status --porcelain`. Nothing may be uncommitted outside .xm/ and TASK-CONTEXT.md.
+4. Run `xm build run-status --project <project> --json`, then `git status --porcelain`. Nothing may be uncommitted outside .xm/, TASK-CONTEXT.md, and the files that were untracked before your first task.
 
 Never: push, create PRs, run any `xm batch` command, start agents, edit outside the worktree, or rewrite existing commits.
 Your final message must be only this JSON:
 {"topic":"<id>","status":"done|failed","commits":<n>,"failed_tasks":["<task id>"],"note":"<one line>"}
 ```
 
-Commit before `task_check_command`: `collect` re-runs every task check on the final HEAD and `publish` requires a clean worktree, so uncommitted work fails both.
+Commit before `task_check_command`: `collect` re-runs every task check on the final HEAD and `publish` requires a clean worktree, so uncommitted work fails both. Stage only the task's files: `collect` and `publish` reject any committed file outside the topic's `expected_files` with `scope_drift`. Untracked files that the worktree bootstrap left (`runtime.bootstrap_untracked`) do not count against a clean worktree.
 
 ## Failure Menu
 
@@ -231,6 +231,8 @@ Print, per failing topic: id, status, `runtime.stage`, `runtime.last_error.code`
 
 - `재시도 (Recommended)` — `xm batch resume <batch-id> --json` for `blocked` topics (it retries only blocked topics and returns current handoffs); otherwise re-run the command of the stage that failed (`collect`, `publish --yes`, `verify`, or `merge --yes`). A `--yes` retry counts as that gate's answer only when the user picked this option.
 - `중단 (상태 유지)` — stop; the state stays for `/xm:batch <batch-id>`.
+
+`scope_drift` lists committed files outside the plan. For a file listed in `runtime.bootstrap_untracked`, `재시도` runs `git rm --cached -- <file>` and `git commit -m "chore: drop worktree bootstrap file"` in the topic worktree (same `cd` and env prefix as the agent), then re-runs `collect`. Any other file is a scope decision: show it, offer only `중단 (상태 유지)`, and let the user re-plan the topic or remove the file.
 
 Run a `recover[]` command only after printing it and only when its `safety` is `safe`. A paused integration merge (`integration_paused`) needs conflict resolution in the integration worktree; report it and stop unless the user explicitly asks you to resolve it. Never delete `.xm/batches/<id>/` files to get past a failure.
 
@@ -250,6 +252,7 @@ Report in Korean, result first:
 | "Feature B needs A, but I'll register B with `--depends-on` anyway." | `publish` refuses dependent topics, so the batch stalls after implementation. Merge A and B into one topic or defer B. |
 | "The planning agent said `executable: true`, so the plan is ready." | Only `xm batch candidates --json` is authoritative. An agent can report success for a plan the validator rejects. |
 | "I'll fix a typo in a registered plan file." | The plan is sha-pinned. Any byte change blocks every batch command. Plans are final before `batch add`. |
+| "`git add -A` is simpler than listing the task's files." | It also stages files the worktree bootstrap created, such as a fresh lockfile, and every topic PR then carries them. `collect` rejects that as `scope_drift`. Stage the task's `expected_files` only. |
 | "Committing after task-check keeps commits tidy." | The check's fingerprint is bound to HEAD. Commit first, then check; `collect` re-checks the final HEAD anyway. |
 | "The user approved the batch, so publish and merge need no question." | Gates 3 and 4 change GitHub state. Earlier approval does not cover them. |
 | "A topic failed; I'll delete its receipt and re-run." | Receipts are the evidence chain. Use `resume` and the `recover[]` commands; deleting state hides the failure. |

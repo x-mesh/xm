@@ -37,7 +37,7 @@ hand-maintained count went 181 lines stale (x-build was recorded as 411 while it
 | 305 | `x-eval/skills/eval/SKILL.md` | ✅ OK |
 | 292 | `x-probe/skills/probe/SKILL.md` | ✅ OK |
 | 278 | `xm/skills/handoff/SKILL.md` | ✅ OK |
-| 269 | `xm/skills/batch/SKILL.md` | ✅ OK |
+| 272 | `xm/skills/batch/SKILL.md` | ✅ OK |
 | 260 | `x-sync/skills/sync/SKILL.md` | ✅ OK |
 | 240 | `xm/skills/handon/SKILL.md` | ✅ OK |
 | 230 | `xm/skills/kit/SKILL.md` | ✅ OK |
