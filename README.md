@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.30.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.31.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -584,7 +584,7 @@ xm batch status <id> --json       # topics, waves, seal, integration, and merge 
 
 **Topic sources.** List the features, or select saved executable plans from `.xm/plan/`. A plan that a batch already uses does not appear again.
 
-**Limits.** Topics must not depend on each other. If feature B needs feature A, put both features in one topic, or move B to the next batch. Each topic agent runs its tasks in sequence.
+**Limits.** Topics must not depend on each other. If feature B needs feature A, put both features in one topic, or move B to the next batch. Each topic agent runs its tasks in sequence. A topic PR can contain only the files that its plan names. `collect` and `publish` reject any other committed file.
 
 ---
 

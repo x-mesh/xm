@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.30.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.31.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -585,7 +585,7 @@ xm batch status <id> --json       # topic, wave, seal, 통합 검증, merge 상�
 
 **topic 출처.** 기능을 나열하거나 `.xm/plan/`에 저장된 실행 가능한 plan을 고릅니다. 이미 batch에 등록된 plan은 다시 나오지 않습니다.
 
-**제한.** topic끼리 서로 의존하면 안 됩니다. 기능 B가 기능 A를 필요로 하면 두 기능을 한 topic에 넣거나 B를 다음 batch로 미룹니다. 각 topic 에이전트는 자기 task를 순서대로 실행합니다.
+**제한.** topic끼리 서로 의존하면 안 됩니다. 기능 B가 기능 A를 필요로 하면 두 기능을 한 topic에 넣거나 B를 다음 batch로 미룹니다. 각 topic 에이전트는 자기 task를 순서대로 실행합니다. 각 topic PR에는 plan에 적힌 파일만 들어갈 수 있습니다. 그 밖의 파일이 커밋되면 `collect`와 `publish`가 막습니다.
 
 ---
 
