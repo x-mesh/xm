@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.29.1-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.30.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -527,6 +527,7 @@ The commands below remain available only when explicitly invoked. The default x-
 | **Steps** | `steps compute/status/next` |
 | **Execute** | `run`, `run --worktrees [--dry-run] [--max-parallel N]`, `run --json`, `run-status` |
 | **Worktrees** | `worktrees plan/status/resume/cleanup`, `gate-panel --project --task --phase --patch`, `review-integration [--base --target]` |
+| **Batch** | `batch init/add/plan/status`, `batch run <id> [--dry-run] [--base X] [--max-parallel N]`, `batch approve/collect/seal/verify/resume`, `batch publish/merge [--dry-run\|--yes]` (one worktree and one PR for each topic plan; also available as `xm batch`) |
 | **Verify** | `quality`, `verify-coverage`, `verify-traceability`, `verify-contracts`, `verify-review-fix [--init]`, `verify-tests [--since 90d] [--limit N]` (replays each paired fix commit's tests on its parent to check they catch the bug they shipped with), `review-precision [--since 30d\|--last N] [--min-precision 0.7]` (per-lens `fix_now / (fix_now + false_positive)` from the triage ledger every passing gate appends to; also on the dashboard Reviews page) |
 | **Analysis** | `forecast`, `forecast update`, `roi [--by model\|role\|strategy]`, `effectiveness [--since Nd] [--profile a,b] [--compare a,b]`, `metrics`, `decisions`, `summarize` |
 | **Export** | `export --format md/csv/jira/confluence`, `import` |

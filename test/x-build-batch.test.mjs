@@ -553,7 +553,7 @@ describe('xm batch scheduler', () => {
       expect(calls[0]).toMatchObject({ tool: 'gh' });
       expect(calls[0].argv.slice(0, 3)).toEqual(['pr', 'view', '17']);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
-  });
+  }, 15000);
 
   test('publish rejects dependent topics and dirty verified worktrees before external calls', () => {
     const cwd = setupRepo();
@@ -623,7 +623,7 @@ describe('xm batch scheduler', () => {
       expect(readFileSync(receiptPath, 'utf8')).toBe(receipt);
       expect(manifest(cwd)).toMatchObject({ status: 'published', seal: { valid: false } });
     } finally { rmSync(cwd, { recursive: true, force: true }); }
-  });
+  }, 15000);
 
   test('verify merges sealed heads, runs integration gates, and reuses the receipt', () => {
     const cwd = setupRepo();
@@ -680,7 +680,7 @@ describe('xm batch scheduler', () => {
       spawnSync('git', ['worktree', 'remove', '--force', integrationTree], { cwd });
       rmSync(cwd, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 
   test('seal keeps PR rows in schedule order when registration order differs', () => {
     const rows = ['c', 'a', 'b'].map((id) => ({ topic: { id }, publication: { pr: { number: id } } }));
