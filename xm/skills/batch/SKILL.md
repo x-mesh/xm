@@ -212,7 +212,7 @@ Loop:
 1. Run `xm build run-status --project <project> --json`. If `all_done` is true, go to step 4. Otherwise run `xm build run --project <project> --json`; it returns the next tasks, each with prompt, expected_files, task_check_command, on_complete, and on_fail. If it returns no task while `all_done` is false, report the run-status JSON as a failure and stop.
 2. For each task, in order:
    a. Implement it. Edit only files inside the worktree, within the task's expected_files. Files that were untracked before your first task (for example a lockfile that the worktree bootstrap created) are not your work: never commit them.
-   b. Commit only the task's files: git add -A -- <each path in expected_files> && git commit -m "<task id>: <task name>"
+   b. Commit only the task's files: git add -A -- <each path in expected_files> && git commit -m "<task id>: <task name>". If expected_files is empty, name each path you edited instead; never stage `.` or run `git add -A` without paths.
    c. Run task_check_command. If it starts with `x-build `, run it as `xm build ` plus the rest; the `x-build` binary is usually not on PATH. If it fails, fix, commit, and re-run (at most 2 fix attempts). If it still fails, run on_fail and go to step 4.
    d. Run on_complete.
 3. Go to step 1.
