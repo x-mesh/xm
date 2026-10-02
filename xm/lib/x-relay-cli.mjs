@@ -2,7 +2,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import net from 'node:net';
@@ -12,6 +12,7 @@ const CODEX = process.env.XM_RELAY_CODEX_BIN || 'codex';
 const CLAUDE = process.env.XM_RELAY_CLAUDE_BIN || 'claude';
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_MESSAGE_LENGTH = 16384;
+const ENVELOPE_TAG = /<\s*\/?\s*cross-session-message\b[^>]*>/gi;
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -117,7 +118,7 @@ function listClaudeSessions(projectName) {
 }
 
 function claudeEnvelope(message) {
-  const safeBody = message.replace(/<\/cross-session-message>/gi, '&lt;/cross-session-message&gt;');
+  const safeBody = message.replace(ENVELOPE_TAG, tag => tag.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
   return `<cross-session-message from-name="codex-via-xm">\n${safeBody}\n</cross-session-message>`;
 }
 
@@ -370,7 +371,8 @@ async function sendMessage(options) {
   const thread = await withDaemon(socketPath, async server => (await server.request('thread/read', { threadId, includeTurns: false })).thread);
   if (!thread?.id) throw new Error(`thread not found: ${threadId}`);
   if (project && !projectMatches(thread.cwd, project.path)) throw new Error(`thread ${threadId} is not in project ${project.id}`);
-  const queued = spawnSync(CODEX, ['queue', '--thread', threadId, '--message', message], { encoding: 'utf8', timeout: 15000 });
+  // The = form keeps clap from reading a message that starts with "-" (a bullet list) as a flag.
+  const queued = spawnSync(CODEX, ['queue', '--thread', threadId, `--message=${message}`], { encoding: 'utf8', timeout: 15000 });
   if (queued.error || queued.status !== 0) throw new Error((queued.stderr || queued.error?.message || 'Codex queue failed').trim());
   const id = /Queued message ([0-9a-f-]{36}) for thread /i.exec(queued.stdout)?.[1] || null;
   return { ok: true, provider: 'codex', state: 'queued', thread_id: threadId, submission_id: id, project: project?.id || null, note: 'Queued is not proof the target read or acted. A detached thread may not run until it is resumed.' };
