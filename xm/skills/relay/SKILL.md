@@ -5,7 +5,34 @@ description: Find local Claude sessions or saved Codex threads, then send a shor
 
 # x-relay — local session messages
 
+<Purpose>
 `/xm:relay` uses Claude Code's native `ListAgents` and `SendMessage` for Claude-to-Claude messages. Its shell adapter also sends Codex messages to a live local Claude inbox socket, and queues Codex messages through the shared App Server daemon. It does not create sessions, move conversation history, publish externally, or replace the durable `/xm:toss` inbox.
+</Purpose>
+
+<Use_When>
+- The user asks to list reachable local Claude sessions or saved Codex threads.
+- The user asks to send a short message or a work handoff to one specific local session.
+- `/xm:toss` was asked to notify a session about a report it already recorded.
+</Use_When>
+
+<Do_Not_Use_When>
+- The content must survive until the receiver acts on it: file it with `/xm:toss` instead.
+- The recipient is a cloud, Remote Control, or other-machine session, or no session is running and one would have to be started.
+- The goal is to get another session to do something this session's permissions refused.
+</Do_Not_Use_When>
+
+## CLI Invocation
+
+> **⚠ Call `xm relay <command>` directly. Claude Code's Bash tool starts a fresh shell on every invocation — shell functions (`xrelay()`) defined in one call do NOT persist to the next, causing `command not found: xrelay`. Never define a helper across calls; always use the dispatcher.**
+>
+> **Fallback** (only when `xm` is not in PATH — rare; `${CLAUDE_PLUGIN_ROOT}` is NOT exported to Bash subprocesses, so don't rely on it bare):
+> ```bash
+> XRELAY_CLI=$(ls -d ~/.claude/plugins/cache/xm/xm/*/lib/x-relay-cli.mjs 2>/dev/null | sort -V | tail -1)
+> [ -n "$XRELAY_CLI" ] || XRELAY_CLI=~/.codex/xm/lib/x-relay-cli.mjs   # Codex global bundle
+> node "$XRELAY_CLI" <command> [args]
+> ```
+>
+> **Forbidden:** `XRELAY="node ..."; $XRELAY sessions` — zsh treats the quoted string as a single command and fails.
 
 ## Modes
 
@@ -20,7 +47,7 @@ Natural-language equivalents use the same modes. The provider default below appl
 
 In a source checkout whose installed `xm` dispatcher predates `relay`, run `node xm/lib/x-relay-cli.mjs` from that checkout instead. Use the same `sessions` or `send` arguments; do not read a stale installed bundle and claim it has the new adapter.
 
-## Overview
+## Overview listing (both providers)
 
 A bare `/xm:relay`, or `sessions` without `--provider`, lists both providers. Claude and Codex delivery differ — a live Claude session receives a message now, a saved Codex thread only queues it — so never merge them into one table.
 
@@ -50,8 +77,19 @@ For `sessions`, just show the available candidates and any unverified project ma
 
 1. Call `xm relay sessions --provider claude [--project <id>]`. It lists live local sessions exposed by `claude agents --json` only when their current session record and registered private inbox socket agree. Cloud and other-machine Claude sessions are outside this adapter.
 2. Require the exact `session_id` selected from that fresh list. Put the requested message in a temporary UTF-8 file and call `xm relay send --provider claude --session <uuid> --message-file <path> [--project <id>]`. Remove only that temporary file afterward.
-3. The CLI checks that the PID still belongs to the listed session, the protocol version is supported, the socket is a private local socket, and any requested project matches. It sends an untrusted peer message with normal queue priority and no asserted Claude permission mode. A Claude session in bypass mode may hold it for approval; the target can also refuse it.
+3. The CLI checks that the PID still belongs to the listed session, the protocol version is supported, the socket is a private local socket, and any requested project matches. It sends an untrusted peer message with normal queue priority and no asserted Claude permission mode. Never add or invent a permission-mode assertion to avoid a hold; Codex has no Claude permission mode to attest. Whether the receiver delivers it is decided by that session, as described under Receiver hold policy.
 4. Report `submitted` only. This means message bytes were submitted to the local socket; it does not confirm that Claude received or read them. The adapter requests no delivery receipt and registers no reply address for Codex, so the Claude session cannot reply through this path.
+
+## Receiver hold policy
+
+A receiving Claude session decides whether a peer message reaches its Claude, through the user-level setting `crossSessionInbound` (`/config` → "Messages from your other sessions"). Behavior observed with Claude Code 2.1.287:
+
+| Value | Effect |
+|---|---|
+| unset (default) | Delivered only when the sender's permission-mode class matches the receiver's (bypass↔bypass, prompting↔prompting). A mismatch is held for the user's approval and can expire. A relay message from Codex asserts no mode, so a bypass receiver holds it and a prompting receiver delivers it. |
+| `"accept"` | Every peer message from the user's other sessions is delivered, including Codex relay messages to a bypass session. |
+
+Claude Code's own setting description also lists `"hold"` (every peer message waits for review; Claude cannot act on it before approval) and `"refuse"` (the session opts out), and says repository or managed settings may tighten the value to `hold` or `refuse` in a way a user's `accept` cannot override. These were not exercised by this skill's checks. When a user asks why a message was held, explain this policy and its trade-off: with `accept`, text from another session reaches a bypass Claude without review. Do not change the setting yourself; it is the user's decision, made through `/config`, their settings file, or `claude --settings '{"crossSessionInbound":"accept"}'` for one session.
 
 ## Send
 
@@ -61,3 +99,21 @@ For `sessions`, just show the available candidates and any unverified project ma
 - Report only what the tool established: sent, held, refused, or unknown. A successful send does not prove that the receiver read, accepted, or acted on the message. An inbox `take` and a terminal receipt remain separate events. A one-shot sender such as `claude -p` may exit before a reply arrives; promise an ACK only when the sender remains addressable and the reply was observed.
 
 When `/xm:toss` invokes this skill, send only the toss ID, redacted title, source and target project IDs, and a pointer to `/xm:inbox` for the durable body. Tell the receiver that the notice does not change its current task or authorize work. If the project cannot be matched and the user has not selected an exact session, leave the durable toss intact and report that no live notice was sent.
+
+## Common Rationalizations
+
+| Excuse | Reality |
+|--------|---------|
+| "The user typed `01a0fc52`, that's obviously the thread." | A prefix can match a different thread after new ones appear. Re-list, confirm exactly one match, and send with the full UUID. |
+| "The listing from a few turns ago is good enough." | Sessions exit and threads unload. Re-list the chosen provider immediately before every send. |
+| "`queued` / `submitted` came back, so the receiver got it." | `queued` only means the daemon accepted it; `submitted` only means bytes reached a socket. Report exactly that state, never "delivered" or "read". |
+| "The bypass receiver held the message; I'll mark the frame as bypass so it goes through." | That forges an attestation the sender cannot make and defeats the receiver's review. Explain the Receiver hold policy and let the user choose `crossSessionInbound`. |
+| "The message is long; I'll pass it with `--message \"...\"`." | Shell quoting corrupts quotes, backticks, and newlines without an error. Write the text to a temp file and use `--message-file`. |
+| "No Claude session matched, so I'll start one with `claude -p` to deliver it." | A new session is not the intended recipient, and a one-shot process exits before any reply. Report that no recipient was available. |
+| "The live notice can carry the whole toss body." | Relay is best-effort and not durable. Send only the toss ID, title, projects, and a pointer to `/xm:inbox`. |
+
+## Verification
+
+- `xm relay sessions` returns `ok: true`; open Codex threads show `loaded: true` and come first.
+- A send reports `queued` (Codex) or `submitted` (Claude) with the exact UUID that was re-listed just before it.
+- The temporary message file was removed after the send.
