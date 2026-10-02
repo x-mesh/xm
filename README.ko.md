@@ -1156,9 +1156,12 @@ Claude Code 안에서도 사용 가능: `/xm:sync push`, `/xm:sync pull`, `/xm:s
 
 ### xm:write
 
-`/xm:write`는 변경이 남기는 문서를 작성합니다. 모든 문장은 diff, 커밋, 또는 이번 세션에서 실제로 실행한 명령에 근거해야 합니다.
+`/xm:write`는 현재 코드를 근거로 저장소 README를 진단·작성·개선하고, 변경이 남기는 문서도 작성합니다. 사실 주장은 저장소나 세션의 근거와 맞아야 합니다.
 
 ```bash
+/xm:write readme audit   # README 구성, 첫 실행 경로, 사실 관계 진단
+/xm:write readme improve # README를 수정하고 검증 결과 보고
+/xm:write readme create  # 저장소 근거로 README 작성
 /xm:write pr            # 브랜치 diff로 PR을 작성하고 gh로 올림
 /xm:write pr 42         # PR #42 본문을 다시 작성
 /xm:write issue "..."   # bug·feature issue를 작성하고 gh로 올림

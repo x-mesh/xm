@@ -1156,9 +1156,12 @@ Release automation: squash WIP commits, bump the version, push. Works on xm mark
 
 ### xm:write
 
-`/xm:write` writes the documents that a change leaves behind. Each sentence must come from the diff, the commits, or a command that ran in the session.
+`/xm:write` audits, creates, and improves repository READMEs from current code and writes the documents that a change leaves behind. Factual claims must come from repository or session evidence.
 
 ```bash
+/xm:write readme audit   # Check README structure, first-run path, and factual claims
+/xm:write readme improve # Revise the README and report verification
+/xm:write readme create  # Create a README from repository evidence
 /xm:write pr            # Write a PR from the branch diff, then open it with gh
 /xm:write pr 42         # Rewrite the body of PR #42
 /xm:write issue "..."   # Write a bug or feature issue, then file it with gh

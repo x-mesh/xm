@@ -1,11 +1,11 @@
 ---
 name: write
-description: Write GitHub-facing and release documents from repository evidence — PR and issue bodies (published with gh after one confirmation), release notes, changelog entries, and commit messages (text only, for xm:ship). Concise maintainer prose, no invented claims.
+description: Write or improve repository README files from code evidence; audit their structure, first-run path, and factual accuracy. Also write PRs, issues, release notes, changelog entries, and commit messages.
 ---
 
 <Purpose>
-Write the documents a change leaves behind: pull requests, issues, GitHub release notes,
-changelog entries, and release commit messages. Every sentence must trace back to evidence in
+Write repository README files and the documents a change leaves behind: pull requests, issues,
+GitHub release notes, changelog entries, and release commit messages. Every factual claim must trace back to evidence in
 the repository or the session. The output should read like a maintainer wrote it after doing
 the work, not like a generated report.
 
@@ -19,11 +19,12 @@ the release transaction owned by `xm:ship`, so this skill returns text only for 
 - User asks for release notes or a changelog entry without cutting a release
 - `xm:ship` needs its commit message, changelog entry, or release notes
 - An existing PR or issue body reads like a generated report and needs rewriting
+- User asks to audit, create, or improve a repository README, including its structure and first-run guidance
 </Use_When>
 
 <Do_Not_Use_When>
 - Cutting a release (version bump, tag, push) — use `xm:ship`, which calls this skill for its documents
-- Writing README or `docs/` prose — use `xm:humanize` for prose cleanup
+- General `docs/` prose cleanup — use `xm:humanize` when only wording needs work
 - Filing a bug that belongs to another registered x-kit project — use `xm:toss`
 - Posting a PR review or inline comments — use `xm:review`
 </Do_Not_Use_When>
@@ -43,8 +44,15 @@ after: x-review
 | `release [<tag>]` | GitHub release title + notes | No — text only |
 | `changelog [<range>]` | Entries for the project's changelog | No — text only |
 | `commit [<range>]` | Commit message | No — text only |
+| `readme audit` | Evidence-backed diagnosis and prioritized changes | No — read only |
+| `readme create` / `readme improve` | New or revised repository README and verification report | No external publish — repository files only |
 
-Modes combine: `commit changelog release --range v1.4.0..HEAD --version 1.5.0` returns all three
+Read [references/readme.md](references/readme.md) for every `readme` mode. Infer `audit` for a request
+to assess a README, `create` when none exists, and `improve` for a request to fix one. README mode
+does not enter the `gh` publishing flow. If README and release-document modes appear in one request,
+handle each explicitly; never let a README request trigger publication.
+
+Non-README modes combine: `commit changelog release --range v1.4.0..HEAD --version 1.5.0` returns all three
 under separate headings from one evidence pass. `xm:ship` calls this skill this way.
 
 When the caller is `xm:ship` (arguments contain `--for ship`), return text only for every mode,
@@ -99,7 +107,7 @@ is useless without the answer, for example an issue with no observed behavior.
 
 ## Step 2: Write
 
-### Document language
+### Document language (non-README modes)
 
 If the user names the document language, use it. Otherwise match the repository, not the chat.
 Read the last few PRs (`gh pr list --state all --limit 3 --json title,body`), `CHANGELOG.md`, and
@@ -107,7 +115,7 @@ recent commit subjects. If they are English, write English even when the user sp
 Session output-style rules (Korean tone, mode-specific phrasing) apply to your chat replies,
 never to the document body.
 
-### Korean documents
+### Korean documents (non-README modes)
 
 When the document is Korean, use these endings unless the repository's past PRs, issues, or
 changelog use another register consistently:
@@ -136,7 +144,7 @@ The style rules below apply in their Korean forms too:
 | `개선`, `강화`, `고도화`, `최적화` with no measured result | The concrete change or number: `조회 시간 1.2초 → 0.3초` |
 | `~하시기 바랍니다`, `~해 주시기 바랍니다` | `~해 주세요`, or drop the sentence |
 
-### Style rules (all modes)
+### Style rules (PR, issue, release, changelog, and commit)
 
 - Keep code, commands, paths, identifiers, and error messages exactly as they appear.
 - Start with the concrete change or problem. Do not open with "This PR", "This issue", or a generic summary sentence.
@@ -350,7 +358,7 @@ gh pr edit <n> --title "$TITLE" --body-file "$BODY"   # or gh issue edit <n>
 If `gh` is missing or unauthenticated, say so, print the title and body, and stop. Do not
 switch to the GitHub web UI or another tool.
 
-## Output
+## Output (non-README modes)
 
 Chat reply for a draft: title and body as separate fenced blocks, then one line naming evidence
 you could not find (for example "no test ran in this session"). For `--for ship`: one heading per
