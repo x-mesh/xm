@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1790904711938,
+  "generatedAt": 1790940438330,
   "version": 3,
   "skills": [
     {
@@ -223,6 +223,17 @@
       "assetBytes": 0
     },
     {
+      "plugin": "relay",
+      "sha256": "8740a2843f23ad1ced025761bbf57386d1e16f3a5d3f062f86fef22d57c7a2f8",
+      "bytes": 11166,
+      "referencesSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "referenceFiles": 0,
+      "referenceBytes": 0,
+      "assetsSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "assetFiles": 0,
+      "assetBytes": 0
+    },
+    {
       "plugin": "remote",
       "sha256": "a9c23c9f1ad344e228fec505f1c1315776af4d4ab6c9930ad986fea0f45baf18",
       "bytes": 3166,
@@ -279,8 +290,8 @@
     },
     {
       "plugin": "toss",
-      "sha256": "f4daf9f3fa26e813d5aa622ef58921c7afb338f77c09808255600bf24de5268c",
-      "bytes": 10589,
+      "sha256": "f6b773fa03badb4e23808b28fcf04f7c3157466751515656e8bfb00e56e5ad30",
+      "bytes": 12767,
       "referencesSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "referenceFiles": 0,
       "referenceBytes": 0,

@@ -187,7 +187,7 @@ CLI는 `~/.claude/plugins/cache/xm/`, Codex 전용 번들인 `~/.codex/xm/`, 또
 
 ### 다중 도구 설치 (Cursor / Codex / Kiro / Antigravity / OpenCode)
 
-xm은 Claude Code 마켓플레이스 플러그인으로 배포되지만, 27개 SKILL을 다른 AI 코딩 도구가 인식하는 룰/스티어링 형식으로도 변환할 수 있습니다. 단일 소스 컴파일러(`xm/lib/install/install-cli.mjs`)가 도구별 산출물을 생성합니다.
+xm은 Claude Code 마켓플레이스 플러그인으로 배포되지만, 30개 SKILL을 다른 AI 코딩 도구가 인식하는 룰/스티어링 형식으로도 변환할 수 있습니다. 단일 소스 컴파일러(`xm/lib/install/install-cli.mjs`)가 도구별 산출물을 생성합니다.
 
 ```bash
 # 대화형 선택기 (범위 + 도구)
@@ -429,7 +429,7 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 | [x-remote](#x-remote) | 원격 호스트 세션을 Discord에서 조종 | `xm remote start` |
 | xm | 번들 + 설정 + 파이프라인 | `/xm pipeline release` |
 
-**`xm` 코어에 번들됨 (별도 marketplace 플러그인 아님):** `/xm:ship` 릴리스 자동화 · `/xm:write` PR·issue·릴리스 문서 작성 · `x-sync` 멀티 머신 동기화 서버 · `/xm:toss` + `/xm:inbox` 프로젝트 간 버그 핸드오프 — 아래 [x-ship](#x-ship), [xm:write](#xmwrite), [x-sync](#x-sync), [toss / inbox](#프로젝트-간-핸드오프--toss--inbox) 참고.
+**`xm` 코어에 번들됨 (별도 marketplace 플러그인 아님):** `/xm:ship` 릴리스 자동화 · `/xm:write` PR·issue·릴리스 문서 작성 · `x-sync` 멀티 머신 동기화 서버 · `/xm:toss` + `/xm:inbox` 프로젝트 간 버그 핸드오프 · `/xm:relay` 로컬 Claude·Codex 세션 메시지 — 아래 [x-ship](#x-ship), [xm:write](#xmwrite), [x-sync](#x-sync), [toss / inbox](#프로젝트-간-핸드오프--toss--inbox) 참고.
 `/xm:mutate`도 같은 방식으로 번들됩니다 — 코어에 함께 들어 있는 `xm mutate` 명령을 실행하기 때문입니다. Codex에서는 `$xm:mutate`로 노출되고, 평면 별칭 `$xm-mutate`도 그대로 씁니다. [뮤테이션 테스팅](#뮤테이션-테스팅--xmmutate) 참고.
 `/xm:batch`도 같은 방식으로 번들됩니다. x-build의 `xm batch` 명령을 실행합니다. [topic별 병렬 PR](#topic별-병렬-pr--xmbatch) 참고.
 
@@ -1300,6 +1300,8 @@ xm remote start            # gateway + host 동시 기동
 ```
 
 toss는 재현 명령과 **실제 출력**(시크릿 마스킹, 뒷부분만 보존), 그리고 구체적인 수정 방향을 함께 담습니다 — 재현 없는 "조심하세요" 수준의 리포트는 거부합니다. 보내는 쪽은 자기 `.xm/outbox/<id>.json`에 기록을 남기고 대상의 `.xm/`은 절대 건드리지 않습니다. 대상 mem-mesh 공간으로의 전달은 스킬 자신의 MCP 호출로 이루어지며, 반환된 id는 `xm inbox record`로 되돌려 기록합니다. 이 분리가 중요한 이유는 CLI에 MCP 세션이 없기 때문입니다 — 원장에 남지 않은 id는 대화가 끝나는 순간 사라집니다.
+
+`/xm:relay`(또는 `/xm:relay sessions`)는 이 머신에서 연락 가능한 Claude 세션과 최근 저장된 Codex thread를 섹션을 나눠 보여 줍니다. Claude 세션은 메시지를 바로 받지만 Codex thread는 queue에 넣어 둘 뿐이라 한 표에 섞지 않습니다. Codex daemon이 꺼져 있어도 Claude 섹션은 그대로 나옵니다. 공유 daemon이 지금 열어 둔 Codex thread는 loaded로 표시되어 맨 위에 나옵니다. 다만 Codex 화면이 붙어 있다는 보장은 아닙니다. `/xm:relay sessions --provider claude|codex`는 한 provider의 전체 목록을 보여 줍니다. macOS와 Linux에서 Codex→Claude 전달은 `xm relay sessions --provider claude`로 로컬 Claude 세션을 찾고 `xm relay send --provider claude --session <uuid> --message-file <path>`를 실행합니다. Claude Code의 내부 inbox 프로토콜을 사용하므로 버전에 따라 달라질 수 있습니다. Claude 쪽 설정에 따라 메시지가 보류되거나 거부될 수 있고, 소켓 write 성공만으로 전달이 확인되지는 않습니다. 이 경로는 답장을 받지 않는 단방향 전달이며 Windows named pipe는 지원하지 않습니다. Codex-to-Codex 메시지는 queue에 들어가므로 저장된 thread가 재개될 때 처리될 수 있습니다. `/xm:toss`에 세션 알림을 요청하면 제보를 먼저 저장한 뒤 relay로 ID를 보냅니다. 알림만으로 제보가 `take`나 `resolve`되지는 않습니다. `xm relay sessions|send`는 Codex용 셸 adapter이며 `xm toss --live`는 셸 옵션이 아닙니다.
 
 받는 쪽에서 항목은 `take` → `resolve`로 진행하고, 조치가 필요 없으면 `drop`합니다:
 

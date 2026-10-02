@@ -187,7 +187,7 @@ The dashboard reads from a machine-local registry at `~/.xm/projects.json`. Once
 
 ### Multi-Tool Install (Cursor / Codex / Kiro / Antigravity / OpenCode)
 
-xm is published as a Claude Code marketplace plugin, but its 27 SKILLs can also be rendered into rule/steering formats consumed by other AI coding tools. A single source compiler (`xm/lib/install/install-cli.mjs`) emits per-tool artifacts.
+xm is published as a Claude Code marketplace plugin, but its 30 SKILLs can also be rendered into rule/steering formats consumed by other AI coding tools. A single source compiler (`xm/lib/install/install-cli.mjs`) emits per-tool artifacts.
 
 ```bash
 # Interactive picker (scope + targets)
@@ -428,7 +428,7 @@ This is a *capability*, available today; proving it produces measurably better o
 | [x-remote](#x-remote) | Drive a remote host session from Discord | `xm remote start` |
 | xm | Bundle + config + pipeline | `/xm pipeline release` |
 
-**Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `/xm:write` PR, issue, and release documents · `x-sync` multi-machine sync server · `/xm:toss` + `/xm:inbox` cross-project bug handoff — see [x-ship](#x-ship), [xm:write](#xmwrite), [x-sync](#x-sync) and [toss / inbox](#cross-project-handoff--toss--inbox) below.
+**Bundled in `xm` core (not separate marketplace plugins):** `/xm:ship` release automation · `/xm:write` PR, issue, and release documents · `x-sync` multi-machine sync server · `/xm:toss` + `/xm:inbox` cross-project bug handoff · `/xm:relay` local Claude and Codex session messages — see [x-ship](#x-ship), [xm:write](#xmwrite), [x-sync](#x-sync) and [toss / inbox](#cross-project-handoff--toss--inbox) below.
 `/xm:mutate` is bundled the same way — it drives the `xm mutate` command that ships with core. Codex exposes it as `$xm:mutate`, with `$xm-mutate` kept as a flat alias. See [Mutation testing](#mutation-testing--xmmutate).
 `/xm:batch` is bundled the same way. It drives the `xm batch` command of x-build. See [Parallel topic PRs](#parallel-topic-prs--xmbatch).
 
@@ -1300,6 +1300,8 @@ A repro found while working in project A often implicates project B. `/xm:toss` 
 ```
 
 Toss captures the repro command **and its actual output** (secret-redacted, tail-bounded) plus a concrete fix direction — it refuses a "be careful"-level report with no repro. The sender writes a durable record into its own `.xm/outbox/<id>.json` and never touches the target's `.xm/`. Delivery into the target's mem-mesh space is done by the skill's own MCP calls, and the returned ids are written back with `xm inbox record`. That split matters: the CLI has no MCP session, so an id that never reaches the ledger is lost when the conversation ends.
+
+`/xm:relay` (or `/xm:relay sessions`) shows reachable local Claude sessions and the newest saved Codex threads in separate sections, since a Claude session receives a message now while a Codex thread only queues it. If the Codex daemon is down, the Claude section still appears. Codex threads the shared daemon currently holds open are listed first and marked as loaded; that still does not prove a Codex UI is attached. `/xm:relay sessions --provider claude|codex` lists one provider in full. Use `send` for a short update or `handoff` for a compact work summary. On macOS and Linux, Codex can send to a live local Claude session with `xm relay sessions --provider claude` and `xm relay send --provider claude --session <uuid> --message-file <path>`. This uses Claude Code's internal, version-gated inbox protocol. Claude's inbox may hold or refuse the message; a successful socket write does not confirm delivery, and this one-way adapter has no reply address. Windows named pipes are not supported. Codex-to-Codex messages are queued, so a saved thread may receive one only when it resumes. When asking `/xm:toss` to notify a session, it first saves the report and then sends its ID through relay. The notice does not mark the report as taken or resolved. `xm relay sessions|send` is the Codex shell adapter; `xm toss --live` is not a shell option.
 
 On the receiving side an item moves `take` → `resolve`, or `drop` if it needs no action:
 
