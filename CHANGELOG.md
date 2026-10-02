@@ -10,6 +10,8 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.32.1] - 2026-10-02
+
 ### Fixed
 
 - **xm:** README writing now checks for generic, repetitive prose and mismatched opening headings such as `Why` / `왜 필요한가`; `audit` reports them, while `create` and `improve` use headings that fit the actual content.
