@@ -1,6 +1,6 @@
 ---
 name: write
-description: Write or improve repository README files from code evidence; audit their structure, first-run path, and factual accuracy. Also write PRs, issues, release notes, changelog entries, and commit messages.
+description: Audit, create, or improve repository READMEs for structure, first-run guidance, factual accuracy, and natural prose. Also write PRs, issues, release notes, changelog entries, and commit messages.
 ---
 
 <Purpose>

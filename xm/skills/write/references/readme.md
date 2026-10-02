@@ -25,14 +25,25 @@ Judge these areas for the project's actual reader and type (CLI, library, servic
 1. The opening states what the project does, who it serves, and a concrete use case without unsupported promises.
 2. A reader can find prerequisites, installation, first use, and an observable way to tell whether it worked.
 3. The order supports that path; feature catalogs, internals, legacy paths, and advanced configuration do not obstruct it.
-4. Headings and links make deeper material findable. Repeated or overly detailed content can be shortened, moved, or linked.
+4. Headings name their content and make deeper material findable. Repeated or overly detailed content can be shortened, moved, or linked.
 5. Terms, examples, and constraints are consistent. Tables, diagrams, screenshots, and badges earn their space by helping a reader decide or act.
 6. Commands, options, APIs, configuration keys, platform claims, and results match current evidence.
+7. The prose sounds like this project's maintainer: concrete, direct, and varied enough to read naturally. It does not pad a real feature with generic praise or repeat the same claim in several forms.
 
 Do not require irrelevant sections. A library may need a minimal import example; an app may need a screenshot or workflow; a CLI may need a copyable command. Choose what makes the first result clear. Do not optimize for a numerical score or a fixed section count.
+
+## Prose pass
+
+Use the repository's existing voice and the reader's vocabulary. Look for inflated claims ("seamless", "powerful", "revolutionary"), abstract benefits without an example, ceremonial openings or conclusions, repeated three-part lists, repetitive sentence rhythm, and headings that merely announce a summary. In Korean, also check English translation patterns, repeated `~을 통해`/`~할 수 있다`, nominalized phrases, and uniform endings. Treat these as signals in context, not banned words; a technical term or a real three-item list may be exactly right.
+
+Check the first heading after the title and tagline against the content it introduces. A short problem statement or demo may read better directly under the tagline, without adding a table-of-contents stop. `Why` and literal translations such as `왜 필요한가` often pitch the project's necessity instead of naming that content. In `audit`, flag a redundant or mismatched heading with its location; in `improve`, remove it and keep the introduction together, or replace it with a content-naming heading that fits neighboring sections. Keep paired-language headings aligned. In `create`, do not insert a `Why` section by default. Retain one when a substantial, separate rationale truly helps navigation.
+
+Replace a vague claim with the concrete behavior or a supported example. Delete filler when it adds no information. Vary sentence length and paragraph shape only where the text reads mechanically; do not insert a forced personality, anecdotes, enthusiasm, or unverifiable user outcomes. Keep commands, flags, API names, paths, link destinations, versions, metrics, and quoted output byte-for-byte unless the evidence pass proves them wrong. Check that each rewrite preserves the original claim and limitation.
+
+For `audit`, scan the whole README and include material prose problems with locations and a short example of a better direction. For `create`, apply this pass to every prose paragraph. For `improve`, scan the whole README, revise conspicuous AI phrasing within the requested scope, and identify any passages left untouched because of a narrower scope. Do not finish with a style-only diagnosis while leaving conspicuous AI phrasing in the delivered sections. Read revised passages once more after the structural and factual edits to catch newly repeated claims or stock phrasing.
 
 ## Output and edit standard
 
 For `audit`, report each applicable area as `충족`, `미충족`, `해당 없음`, or `확인 불가`, with the README location and repository evidence or the reason evidence is missing. Record every material factual error found. Then give at most three **priority actions**, not at most three findings. For a structural change, show a concise current-to-proposed section map and explain what moves or leaves the README.
 
-For `create` and `improve`, make the document navigable before polishing individual sentences. Keep the first-use path short enough to follow, use examples supported by source, and state an observable result only when verified or clearly identified as expected. Preserve important limitations and links when shortening. Do not add sections solely for completeness. Report the changed files, the checks actually run and their outcomes, any examples left unrun and why, and remaining `확인 불가` claims.
+For `create` and `improve`, make the document navigable, then complete the prose pass before delivery. Keep the first-use path short enough to follow, use examples supported by source, and state an observable result only when verified or clearly identified as expected. Preserve important limitations and links when shortening. Do not add sections solely for completeness. Report the changed files, the checks actually run and their outcomes, any examples left unrun and why, and remaining `확인 불가` claims.
