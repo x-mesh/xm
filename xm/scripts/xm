@@ -460,6 +460,15 @@ case "$CMD" in
     node "$LIB_PATH/x-inbox-cli.mjs" "$@"
     ;;
 
+  relay)
+    LIB_PATH="$(plugin_lib xm lib)"
+    if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-relay-cli.mjs" ]; then
+      echo "xm relay: x-relay-cli.mjs not found under $LIB" >&2
+      exit 1
+    fi
+    node "$LIB_PATH/x-relay-cli.mjs" "$@"
+    ;;
+
   local-fix)
     LIB_PATH="$(plugin_lib xm lib)"
     if [ -z "$LIB_PATH" ] || [ ! -f "$LIB_PATH/x-local-fix-cli.mjs" ]; then
@@ -1275,6 +1284,7 @@ Commands:
                                         setup                 Configure server URL + API key
                                         server start|stop     Local sync server
   solver <subcmd>                     Structured problem solving
+  relay sessions|send                 List Claude/Codex sessions or send a message
   local-fix <project> ...             Prepare an audited target-project worktree fix
   score --parts ... --weights ...     Compute weighted score (shared utility)
   install [--target T] [--global]     Install xm SKILLs into Cursor/Codex/Kiro/Antigravity/OpenCode
