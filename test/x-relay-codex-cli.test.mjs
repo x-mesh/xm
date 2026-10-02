@@ -172,7 +172,20 @@ describe('Codex relay CLI', () => {
       expect(result.output.state).toBe('queued');
       expect(result.output.submission_id).toBe('33333333-3333-4333-8333-333333333333');
       const args = JSON.parse(readFileSync(f.capture, 'utf8'));
-      expect(args[args.indexOf('--message') + 1]).toBe(message);
+      expect(args).toContain(`--message=${message}`);
+    });
+  });
+
+  test('passes a hyphen-leading message as one --message= argument so it is not parsed as a flag', async () => {
+    await withFixture(async f => {
+      const message = '- decision: keep the daemon socket\n- next: tests';
+      const file = join(f.root, 'bullets.txt');
+      writeFileSync(file, message);
+      const result = await run(f, ['send', '--thread', THREAD_A, '--message-file', file]);
+      expect(result.status).toBe(0);
+      const args = JSON.parse(readFileSync(f.capture, 'utf8'));
+      expect(args.slice(-1)).toEqual([`--message=${message}`]);
+      expect(args).not.toContain('--message');
     });
   });
 
