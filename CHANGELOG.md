@@ -10,6 +10,12 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.32.0] - 2026-10-02
+
+### Added
+
+- **xm:** `/xm:write readme audit|create|improve` checks README structure, first-run guidance, and factual claims against repository evidence, then creates or revises repository README files when requested.
+
 ## [2.27.1] - 2026-09-17
 
 ### Fixed
