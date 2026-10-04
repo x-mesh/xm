@@ -1,17 +1,18 @@
 ---
 name: relay
-description: Find local Claude sessions or saved Codex threads, then send a short message or handoff. Codex delivery queues through its shared App Server daemon or a local Claude inbox socket; use after an explicit cross-session request or live xm:toss notice.
+description: Find local Claude sessions or saved Codex threads, send a short message or handoff, or switch native CLI views with terminal chat. Codex delivery queues through its shared App Server daemon or a local Claude inbox socket; use after an explicit cross-session request or live xm:toss notice.
 ---
 
 # x-relay — local session messages
 
 <Purpose>
-`/xm:relay` uses Claude Code's native `ListAgents` and `SendMessage` for Claude-to-Claude messages. Its shell adapter also sends Codex messages to a live local Claude inbox socket, and queues Codex messages through the shared App Server daemon. It does not create sessions, move conversation history, publish externally, or replace the durable `/xm:toss` inbox.
+`/xm:relay` uses Claude Code's native `ListAgents` and `SendMessage` for Claude-to-Claude messages. Its shell adapter also sends Codex messages to a live local Claude inbox socket, and queues Codex messages through the shared App Server daemon. Terminal chat switches between native CLI views through tmux. It does not create agent sessions, move conversation history, publish externally, or replace the durable `/xm:toss` inbox.
 </Purpose>
 
 <Use_When>
 - The user asks to list reachable local Claude sessions or saved Codex threads.
 - The user asks to send a short message or a work handoff to one specific local session.
+- The user asks to switch between existing Codex and background Claude CLI sessions in a terminal.
 - `/xm:toss` was asked to notify a session about a report it already recorded.
 </Use_When>
 
@@ -42,6 +43,33 @@ description: Find local Claude sessions or saved Codex threads, then send a shor
 | `/xm:relay sessions [project] --provider claude\|codex` | Show only that provider's full candidate list |
 | `/xm:relay send <session> <message> [--provider claude\|codex]` | Send or queue the user's short message for one selected session |
 | `/xm:relay handoff <session> [topic] [--provider claude\|codex]` | Send or queue a concise current-work summary |
+| `xm relay chat [--project <id>]` in a terminal | Select and switch between native Codex and background Claude CLI views |
+
+## Native CLI chat
+
+Run `xm relay chat` in an interactive terminal with tmux installed on macOS or
+Linux. A headless agent must show the command to the user instead of launching it.
+The optional `--project` selects one registered project. Chat uses its own tmux
+server and does not change the user's tmux configuration.
+
+Select a numbered row to open its native CLI. Press F6 to return to the session
+list, `r` to refresh, and `q` to detach the chat screen. Switching or detaching
+keeps the native CLI windows alive. Re-entering chat reuses those windows.
+
+Codex resumes the exact thread through the shared daemon. Claude background rows
+come from the supported `claude agents --json` inventory and use its native
+background ID with `claude attach`. They do not require the peer inbox socket.
+Interactive Claude rows cannot attach through this mode: tell the user to run
+`/background` there, then refresh. Never background a session on their behalf.
+
+Chat re-lists the selected provider candidates before opening a window and keeps
+the selected identity even if list order changes. It passes no prompt, permission
+override, or sandbox override. The native CLI handles input and approvals. This
+mode does not create agent sessions or unify provider output streams.
+
+If one provider cannot list sessions, show that error and retain the other list.
+Do not start a daemon automatically. A running window or resumed conversation is
+not proof that a queued relay message was read.
 
 Natural-language equivalents use the same modes. The provider default below applies to `send` and `handoff`; listing without `--provider` is the overview. Default to Claude in Claude Code and Codex in Codex. In Codex, use `--provider claude` to target a local Claude session; in Claude Code, use `--provider codex` to target a Codex thread. The shell CLI uses Claude Code's local inbox socket protocol for Codex-to-Claude delivery on macOS and Linux, so it supports live local sessions only. This adapter follows the observed `peerProtocol: 1` frame format, which is an internal interface that may change; if the session advertises another protocol, report it as unavailable. Windows named pipes are not supported. Never handcraft a socket frame, use `claude -p`, or start a new session as a substitute for a missing recipient.
 
