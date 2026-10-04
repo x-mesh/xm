@@ -8,7 +8,7 @@ import { closeSync, constants as FS, existsSync, fstatSync, fsyncSync, lstatSync
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, posix, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { appendAttentionRows } from './attention-collect.mjs';
 import { buildEscapeRow } from './escape-ledger.mjs';
 import { resolveMainRepoRoot, validateIdSegment } from './worktree-shared.mjs';
@@ -573,14 +573,14 @@ async function runMutateCommand(run, json) {
   }
 }
 
-// Two mutants often share a file, a line and a mutator name — cargo-mutants
-// reports both `&&` -> `||` and `>` -> `>=` as BinaryOperator — and the ledger
-// keys a row on file, operator and line, so without the column the second
-// survivor silently merges into the first and one gap hides another.
-// The separator is `-` because the ledger only keeps a label matching
-// [a-z0-9._-]; a colon is dropped and the operator would read as empty.
+// Different replacements can share the operator and source position.
 function mutantOperator(row) {
-  return Number.isInteger(row.column) ? `${row.mutator}-${row.column}` : row.mutator;
+  const fingerprint = createHash('sha256').update(JSON.stringify([
+    row.tool || '', row.mutator || '', row.description || '', row.column ?? null, row.end_line ?? row.line, row.end_column ?? null,
+  ])).digest('hex').slice(0, 16);
+  const mutator = String(row.mutator || 'unknown').replace(/[^a-z0-9._-]/gi, '-').slice(0, 80);
+  const position = Number.isInteger(row.column) ? `-${row.column}` : '';
+  return `${mutator}${position}-${fingerprint}`;
 }
 
 // A diff-mode row is attributed to HEAD, so it is only written when every
