@@ -52,6 +52,10 @@ to assess a README, `create` when none exists, and `improve` for a request to fi
 does not enter the `gh` publishing flow. If README and release-document modes appear in one request,
 handle each explicitly; never let a README request trigger publication.
 
+For every Korean document, including README modes, apply `## Korean sentence
+review` below after the evidence pass and before delivery. README mode uses its
+reference for structure and evidence, and this review for Korean prose.
+
 Non-README modes combine: `commit changelog release --range v1.4.0..HEAD --version 1.5.0` returns all three
 under separate headings from one evidence pass. `xm:ship` calls this skill this way.
 
@@ -59,6 +63,36 @@ When the caller is `xm:ship` (arguments contain `--for ship`), return text only 
 ask no questions, and skip the publish step. Only read-only `gh` is allowed for evidence:
 `gh pr list|view`, `gh issue list|view`, `gh release list|view`, `gh repo view`. Run no other
 `gh` command: ship already holds the user's consent and owns every write.
+
+## Korean sentence review
+
+Apply these rules to Korean prose in every mode. Keep the document's register and
+repository conventions; the non-README defaults in Step 2 still apply. A short
+label or heading can be a noun phrase. An explanation needs a complete sentence.
+
+- Establish who does what, to which object, and under which condition. Keep the
+  particles and predicates that express those relations. Omit a repeated subject
+  only when its referent remains clear.
+- Replace noun chains with verbs: `설정에 대한 검증을 수행했습니다` →
+  `설정 값을 검증했습니다`. Do not shorten an explanation into
+  `설정 변경 후 오류 발생 가능`. Write `설정을 바꾸면 오류가 발생할 수 있습니다`.
+- Preserve tense, negation, obligation, possibility, attribution, and uncertainty.
+  `원인은 아직 확인하지 못했습니다` does not mean `문제가 없습니다`.
+  State an observed failure separately from an unverified cause.
+- Use a connective only for a relation the evidence supports. Do not turn adjacent
+  facts into a cause, contrast, or ordered procedure just to make a paragraph flow.
+- Keep established technical terms, identifiers, commands, paths, quoted output,
+  and measurements. Prefer familiar words without slang or invented metaphors.
+  Explain unfamiliar terms only when the reader needs them, not every English term.
+- Replace a vague benefit with a supported behavior or measurement. If evidence
+  contains no number, do not add one. Do not invent a motive, actor, or outcome.
+- Use a list for parallel items or an actual procedure. If an item needs a condition
+  or explanation, write a sentence rather than removing particles to fit a noun
+  phrase. Do not split a connected explanation into one-line status labels.
+- Before delivery, read each paragraph as Korean prose. Check particle and
+  predicate agreement, references, register, and all conditions against the
+  evidence. Vary structure only where reading improves; keep tense and natural
+  repeated endings. Return the document, not an account of this review.
 
 ## Step 1: Gather Evidence
 
@@ -124,7 +158,8 @@ changelog use another register consistently:
 |------|--------|---------|
 | Title | Commit prefix + noun phrase | `fix(auth): 캐시 만료 시 토큰 재발급 누락 수정` |
 | Body sentences | 합니다체 (`~합니다`, `~했습니다`) | `캐시를 읽기 전에 만료 여부를 확인하도록 바꿨습니다.` |
-| Bullets, `완료 조건` items | Noun phrase | `- 만료 케이스 회귀 테스트 추가` |
+| Short, independent bullets | Noun phrase | `- 만료 케이스 회귀 테스트 추가` |
+| Bullets or `완료 조건` items with conditions | Complete sentence | `- 캐시가 만료되면 토큰을 다시 발급합니다.` |
 
 Never end a body sentence in 해라체 (`~한다`, `~는다`, `~했다`). It reads like a spec or a
 diary, not a message to a reviewer. Changelog and commit text follow their existing format first.
@@ -141,7 +176,7 @@ The style rules below apply in their Korean forms too:
 | Opening with `이 PR은`, `이번 변경은` | The change itself: `만료된 캐시를 읽을 때 토큰을 다시 발급하지 않았습니다.` |
 | `~을 통해`, `~에 대한`, `~에 있어` | The particle and verb that state the relation: `설정에 대한 검증을 추가` → `설정 값을 검증` |
 | `~를 진행했습니다`, `~를 수행했습니다` | The verb: `검토를 진행했습니다` → `검토했습니다` |
-| `개선`, `강화`, `고도화`, `최적화` with no measured result | The concrete change or number: `조회 시간 1.2초 → 0.3초` |
+| `개선`, `강화`, `고도화`, `최적화` with no measured result | The observed change, or a number only when measured: `조회 시간 1.2초 → 0.3초` |
 | `~하시기 바랍니다`, `~해 주시기 바랍니다` | `~해 주세요`, or drop the sentence |
 
 ### Style rules (PR, issue, release, changelog, and commit)
