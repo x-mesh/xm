@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import net from 'node:net';
 import { pathToFileURL } from 'node:url';
+import { runChat } from './x-relay-chat.mjs';
 
 const CODEX = process.env.XM_RELAY_CODEX_BIN || 'codex';
 const CLAUDE = process.env.XM_RELAY_CLAUDE_BIN || 'claude';
@@ -27,7 +28,8 @@ function parseArgs(argv) {
     if (options[flag]) throw new Error(`duplicate option: ${flag}`);
     options[flag] = value;
   }
-  if (!['sessions', 'send'].includes(command)) throw new Error('use sessions [--provider codex|claude] [--project ID] or send --provider <provider> --thread/--session UUID --message-file PATH');
+  if (!['sessions', 'send', 'chat'].includes(command)) throw new Error('use sessions [--provider codex|claude] [--project ID], chat [--project ID], or send --provider <provider> --thread/--session UUID --message-file PATH');
+  if (command === 'chat' && Object.keys(options).some(flag => flag !== '--project')) throw new Error('chat accepts only --project');
   const provider = options['--provider'] || 'codex';
   if (!['codex', 'claude'].includes(provider)) throw new Error('--provider must be codex or claude');
   if (command === 'sessions' && (options['--thread'] || options['--session'] || options['--message'] || options['--message-file'])) throw new Error('sessions accepts only --provider and --project');
@@ -405,7 +407,12 @@ async function sendMessage(options) {
 
 async function main(argv) {
   const { command, options } = parseArgs(argv);
-  if (command === 'help') return { ok: true, usage: 'xm relay sessions [--provider codex|claude] [--project ID] | xm relay send [--provider codex --thread UUID | --provider claude --session UUID] (--message TEXT | --message-file PATH) [--project ID]' };
+  if (command === 'help') return { ok: true, usage: 'xm relay sessions [--provider codex|claude] [--project ID] | xm relay chat [--project ID] | xm relay send [--provider codex --thread UUID | --provider claude --session UUID] (--message TEXT | --message-file PATH) [--project ID]' };
+  if (command === 'chat') {
+    await runChat(options, { cliPath: resolve(process.argv[1]), codexBin: CODEX, claudeBin: CLAUDE,
+      listSessions, claudeSessions, registryProject, createProjectMatcher, daemonVersion });
+    return null;
+  }
   const provider = options['--provider'] || 'codex';
   if (command === 'sessions') return provider === 'claude' ? listClaudeSessions(options['--project']) : listSessions(options['--project']);
   return provider === 'claude' ? sendClaudeMessage(options) : sendMessage(options);
@@ -413,7 +420,8 @@ async function main(argv) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
-    process.stdout.write(JSON.stringify(await main(process.argv.slice(2))) + '\n');
+    const result = await main(process.argv.slice(2));
+    if (result !== null) process.stdout.write(JSON.stringify(result) + '\n');
   } catch (error) {
     process.stderr.write(JSON.stringify({ ok: false, error: error.message }) + '\n');
     process.exitCode = 1;
