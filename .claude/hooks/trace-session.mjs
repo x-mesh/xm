@@ -179,7 +179,9 @@ const STALE_MARKER_MS = 24 * 60 * 60 * 1000;
 // A session no Stop ever closed must not swallow the next turns' agents.
 const ACTIVE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 // A skill claim this old with no session behind it belongs to a hook that died mid-open.
-const CLAIM_GRACE_MS = 5000;
+const CLAIM_STALE_MS = 5000;
+const CLAIM_POLL_MS = 25;
+const CLAIM_WAIT_MS = 250;
 
 // Create-exclusive claim. Two registrations of this hook (project settings and
 // global settings both wired, as in the x-kit repo) fire for the same tool call;
@@ -193,6 +195,94 @@ function claim(file, data) {
 function takeOver(file, target) {
   try { fs.renameSync(file, target); return true; }
   catch (err) { if (err.code === 'ENOENT') return false; throw err; }
+}
+
+function wait(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function skillClaimData() {
+  return JSON.stringify({ pid: process.pid, created_at: new Date().toISOString() });
+}
+
+function claimOwner(file) {
+  const data = readJsonFile(file);
+  return Number.isSafeInteger(data?.pid) && data.pid > 0 ? data.pid : null;
+}
+
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (err) { return err?.code === 'EPERM'; }
+}
+
+function replaceAbandonedClaim(claimFile, activeFile, toolUseId) {
+  const recoveryDir = `${claimFile}.recovering`;
+  const candidateDir = fs.mkdtempSync(`${recoveryDir}-`);
+  const ownerName = `${path.basename(candidateDir)}.json`;
+  let locked = false;
+  const abandoned = `${claimFile}.abandoned.${process.pid}.${crypto.randomBytes(3).toString('hex')}`;
+  try {
+    fs.writeFileSync(path.join(candidateDir, ownerName), skillClaimData());
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { fs.renameSync(candidateDir, recoveryDir); locked = true; break; }
+      catch (err) { if (err.code !== 'EEXIST' && err.code !== 'ENOTEMPTY') throw err; }
+      const names = fs.readdirSync(recoveryDir);
+      if (names.length !== 1) return false;
+      const ownerFile = path.join(recoveryDir, names[0]);
+      const owner = claimOwner(ownerFile);
+      if (!owner || processAlive(owner)) return false;
+      // Unique owner names and nonempty directories protect a successor's lock.
+      try { fs.unlinkSync(ownerFile); }
+      catch (err) { if (err.code !== 'ENOENT') throw err; }
+      try { fs.rmdirSync(recoveryDir); }
+      catch (err) { if (err.code !== 'ENOENT' && err.code !== 'ENOTEMPTY' && err.code !== 'EEXIST') throw err; }
+    }
+    if (!locked) return false;
+    if (readActive(activeFile)?.tool_use_id === toolUseId) return false;
+    const owner = claimOwner(claimFile);
+    let age = 0;
+    try { age = Date.now() - fs.statSync(claimFile).mtimeMs; }
+    catch (err) { if (err.code !== 'ENOENT') throw err; }
+    if ((!owner || processAlive(owner)) && age < CLAIM_STALE_MS) return false;
+    if (!takeOver(claimFile, abandoned)) return false;
+    return claim(claimFile, skillClaimData());
+  }
+  finally {
+    try { fs.unlinkSync(abandoned); } catch { /* best-effort */ }
+    if (locked) {
+      try { fs.unlinkSync(path.join(recoveryDir, ownerName)); } catch { /* best-effort */ }
+      try { fs.rmdirSync(recoveryDir); } catch { /* best-effort */ }
+    } else {
+      try { fs.rmSync(candidateDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+  }
+}
+
+function acquireSkillClaim(claimFile, activeFile, toolUseId) {
+  if (claim(claimFile, skillClaimData())) return true;
+  if (readActive(activeFile)?.tool_use_id === toolUseId) return false;
+  const owner = claimOwner(claimFile);
+  let age = 0;
+  try { age = Date.now() - fs.statSync(claimFile).mtimeMs; } catch { /* claim vanished */ }
+  if ((owner && !processAlive(owner)) || age >= CLAIM_STALE_MS) {
+    return replaceAbandonedClaim(claimFile, activeFile, toolUseId);
+  }
+  const deadline = Date.now() + CLAIM_WAIT_MS;
+  while (Date.now() < deadline) {
+    if (readActive(activeFile)?.tool_use_id === toolUseId) return false;
+    if (!fs.existsSync(claimFile) && claim(claimFile, skillClaimData())) return true;
+    const currentOwner = claimOwner(claimFile);
+    if (currentOwner && !processAlive(currentOwner)) return replaceAbandonedClaim(claimFile, activeFile, toolUseId);
+    wait(Math.min(CLAIM_POLL_MS, deadline - Date.now()));
+  }
+  if (readActive(activeFile)?.tool_use_id === toolUseId) return false;
+  let finalAge = 0;
+  try { finalAge = Date.now() - fs.statSync(claimFile).mtimeMs; } catch { /* claim vanished */ }
+  const finalOwner = claimOwner(claimFile);
+  if ((finalOwner && !processAlive(finalOwner)) || finalAge >= CLAIM_STALE_MS) {
+    return replaceAbandonedClaim(claimFile, activeFile, toolUseId);
+  }
+  return !fs.existsSync(claimFile) && claim(claimFile, skillClaimData());
 }
 
 function readJsonFile(file) {
@@ -402,21 +492,15 @@ async function openSession(tracesDir, base, input, skillName) {
   fs.mkdirSync(tracesDir, { recursive: true });
   const activeFile = path.join(tracesDir, '.active');
   const toolUseId = toolUseIdOf(input);
+  const git = gitSnapshot(base);
   let claimFile = null;
   if (toolUseId) {
     const claimsDir = path.join(tracesDir, '.claims');
     fs.mkdirSync(claimsDir, { recursive: true });
     claimFile = path.join(claimsDir, `${toolUseId}.skill`);
-    if (!claim(claimFile, new Date().toISOString())) {
-      // The other registration owns this call. Its .active is the evidence; a
-      // claim with no session behind it after the grace period belongs to a hook
-      // that died mid-open, so this one takes the claim over and opens the session.
-      if (readActive(activeFile)?.tool_use_id === toolUseId) { debug(`session for ${toolUseId} already opened by another hook registration`); return; }
-      let age = Infinity;
-      try { age = Date.now() - fs.statSync(claimFile).mtimeMs; } catch { /* claim vanished — take over below */ }
-      if (age < CLAIM_GRACE_MS) { debug(`session for ${toolUseId} is being opened by another hook registration`); return; }
-      try { fs.unlinkSync(claimFile); } catch { /* best-effort */ }
-      if (!claim(claimFile, new Date().toISOString())) return;
+    if (!acquireSkillClaim(claimFile, activeFile, toolUseId)) {
+      debug(`session for ${toolUseId} already opened by another hook registration`);
+      return;
     }
   }
   try {
@@ -425,7 +509,6 @@ async function openSession(tracesDir, base, input, skillName) {
     if (readActive(activeFile)) closeSession(tracesDir, base, 'superseded');
 
     const sessionId = makeSessionId(skillName);
-    await ensureProjectRegistered(base);
     const entry = {
       type: 'session_start',
       session_id: sessionId,
@@ -436,7 +519,6 @@ async function openSession(tracesDir, base, input, skillName) {
     };
     // Optional git snapshot — omit outside a git repo so the schema stays clean.
     // Same event type, same v:1: dashboard session-boundary parsing is unaffected.
-    const git = gitSnapshot(base);
     if (git.head) entry.git = git;
     appendRow(path.join(tracesDir, `${sessionId}.jsonl`), entry);
     fs.writeFileSync(activeFile, JSON.stringify({
@@ -445,6 +527,7 @@ async function openSession(tracesDir, base, input, skillName) {
       opened_at: new Date().toISOString(),
       claude_session_id: typeof input.session_id === 'string' && input.session_id ? input.session_id : null,
     }));
+    await ensureProjectRegistered(base);
   } catch (err) {
     if (claimFile) { try { fs.unlinkSync(claimFile); } catch { /* best-effort */ } }
     throw err;
