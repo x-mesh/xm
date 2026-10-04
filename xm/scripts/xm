@@ -1284,7 +1284,7 @@ Commands:
                                         setup                 Configure server URL + API key
                                         server start|stop     Local sync server
   solver <subcmd>                     Structured problem solving
-  relay sessions|send|chat            List sessions, send a message, or switch native CLIs
+  relay sessions|send|chat            List live sessions, send messages, or pick recipients
   local-fix <project> ...             Prepare an audited target-project worktree fix
   score --parts ... --weights ...     Compute weighted score (shared utility)
   install [--target T] [--global]     Install xm SKILLs into Cursor/Codex/Kiro/Antigravity/OpenCode

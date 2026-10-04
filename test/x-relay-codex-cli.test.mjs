@@ -93,18 +93,32 @@ function fixture() {
   git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-qm', 'init'], repo);
   git(['worktree', 'add', '-q', '-b', 'linked', worktree], repo);
   mkdirSync(join(home, '.xm'));
+  mkdirSync(join(home, '.codex', 'thread-writer-locks'), { recursive: true });
+  for (const id of [THREAD_A, THREAD_B, THREAD_C]) writeFileSync(join(home, '.codex', 'thread-writer-locks', `${id}.lock`), '');
+  const bins = join(root, 'bins');
+  mkdirSync(bins);
+  for (const [name, output] of Object.entries({
+    lsof: `p${process.pid}\nccodex\nf3\nn${join(realpathSync(home), '.codex', 'thread-writer-locks', `${THREAD_A}.lock`)}\nf4\nn${join(realpathSync(home), '.codex', 'thread-writer-locks', `${THREAD_C}.lock`)}\n`,
+    ps: `${process.pid} codex codex --profile test\n`,
+  })) {
+    const bin = join(bins, name);
+    writeFileSync(bin, '#!/usr/bin/env node\nprocess.stdout.write(' + JSON.stringify(output) + ');\n');
+    chmodSync(bin, 0o755);
+  }
   writeFileSync(join(home, '.xm', 'projects.json'), JSON.stringify({ version: 1, projects: [{ id: 'target', name: 'target', path: repo, archived: false }] }));
   const capture = join(root, 'queue.json');
   const socketPath = join(root, 'd.sock');
   const fake = join(root, 'codex');
   writeFileSync(fake, `#!/usr/bin/env node
-import { writeFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 if (args[0] === 'app-server' && args[1] === 'daemon') {
   if (process.env.FAKE_DAEMON_DOWN === '1') process.exit(1);
   process.stdout.write(JSON.stringify({ status: 'running', socketPath: process.env.FAKE_DAEMON_SOCKET }) + '\\n');
 } else if (args[0] === 'queue') {
   writeFileSync(process.env.FAKE_QUEUE_CAPTURE, JSON.stringify(args));
+  appendFileSync(process.env.FAKE_QUEUE_CAPTURE + '.history', JSON.stringify(args) + '\\n');
+  if (process.env.FAKE_MUTATE_FILE) writeFileSync(process.env.FAKE_MUTATE_FILE, 'changed');
   if (process.env.FAKE_QUEUE_FAIL === '1') { process.stderr.write('queue refused'); process.exit(1); }
   process.stdout.write('Queued message 33333333-3333-4333-8333-333333333333 for thread ' + args[args.indexOf('--thread') + 1] + '.\\n');
 } else process.exit(2);
@@ -132,7 +146,7 @@ function run(f, args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [CLI, ...args], {
       cwd: f.root,
-      env: { ...process.env, CODEX_THREAD_ID: '', HOME: f.home, XM_RELAY_CODEX_BIN: f.fake, FAKE_DAEMON_SOCKET: f.socketPath, FAKE_QUEUE_CAPTURE: f.capture, ...extraEnv },
+      env: { ...process.env, CODEX_THREAD_ID: '', HOME: f.home, CODEX_HOME: join(f.home, '.codex'), PATH: join(f.root, 'bins') + ':' + process.env.PATH, XM_RELAY_CODEX_BIN: f.fake, FAKE_DAEMON_SOCKET: f.socketPath, FAKE_QUEUE_CAPTURE: f.capture, ...extraEnv },
     });
     let stdout = '';
     let stderr = '';
@@ -141,7 +155,7 @@ function run(f, args, extraEnv = {}) {
     const timer = setTimeout(() => { child.kill(); reject(new Error(`relay CLI timed out: ${stderr}`)); }, 10000);
     child.on('close', status => {
       clearTimeout(timer);
-      const text = status === 0 ? stdout : stderr;
+      const text = stdout.trim() ? stdout : stderr;
       try { resolve({ status, output: JSON.parse(text) }); }
       catch (error) { reject(new Error(`relay CLI returned non-JSON output: ${text}`, { cause: error })); }
     });
@@ -149,6 +163,51 @@ function run(f, args, extraEnv = {}) {
 }
 
 describe('Codex relay CLI', () => {
+  test('multiple recipients share a request id, snapshot the message file once, and never open a native CLI', async () => {
+    await withFixture(async f => {
+      const file = join(f.root, 'message.txt');
+      writeFileSync(file, 'original literal message');
+      const result = await run(f, ['send', '--to', `codex:${THREAD_A}`, '--to', `codex:${THREAD_C}`, '--message-file', file], { FAKE_MUTATE_FILE: file });
+      expect(result.status).toBe(0);
+      expect(result.output.results.map(row => row.thread_id)).toEqual([THREAD_A, THREAD_C]);
+      expect(result.output.results.every(row => row.request_id === result.output.request_id && row.state === 'queued')).toBe(true);
+      const history = readFileSync(f.capture + '.history', 'utf8').trim().split('\n').map(JSON.parse);
+      expect(history).toHaveLength(2);
+      expect(history.every(args => args[0] === 'queue' && args.at(-1).endsWith('original literal message'))).toBe(true);
+      expect(history.every(args => JSON.parse(args.at(-1).split('\n')[1]).request_id === result.output.request_id)).toBe(true);
+    });
+  });
+
+  test('partial failures retain per-recipient status and do not retry a successful send', async () => {
+    await withFixture(async f => {
+      const result = await run(f, ['send', '--to', `codex:${THREAD_A}`, '--to', `codex:${THREAD_B}`, '--message', 'hello']);
+      expect(result.status).toBe(1);
+      expect(result.output.state).toBe('partial');
+      expect(result.output.results.map(row => row.state)).toEqual(['queued', 'error']);
+      expect(readFileSync(f.capture + '.history', 'utf8').trim().split('\n')).toHaveLength(1);
+    });
+  });
+
+  test('command requests carry literal action, correlation, and no native slash-command claim', async () => {
+    await withFixture(async f => {
+      const result = await run(f, ['send', '--thread', THREAD_A, '--kind', 'command', '--request-id', THREAD_D, '--in-reply-to', THREAD_C, '--message', '/xm:relay literal $HOME `whoami`']);
+      expect(result.status).toBe(0);
+      expect(result.output.request_id).toBe(THREAD_D);
+      expect(result.output.in_reply_to).toBe(THREAD_C);
+      const args = JSON.parse(readFileSync(f.capture, 'utf8'));
+      const message = args.find(arg => arg.startsWith('--message='));
+      expect(message).toContain('does not invoke a native TUI slash command');
+      expect(message).toContain('"kind":"command"');
+      expect(message).toEndWith('/xm:relay literal $HOME `whoami`');
+    });
+  });
+
+  test('rejects malformed or duplicate recipients before any submission', () => {
+    expect(() => parseArgs(['send', '--to', `codex:${THREAD_A}`, '--to', `codex:${THREAD_A}`, '--message', 'hello'])).toThrow('duplicate recipient');
+    expect(() => parseArgs(['send', '--to', 'codex:prefix', '--message', 'hello'])).toThrow('provider:UUID');
+    expect(() => parseArgs(['send', '--to', `codex:${THREAD_A}`, '--provider', 'codex', '--message', 'hello'])).toThrow('cannot be combined');
+  });
+
   test('includes the automatic Codex return address even when the list omits it', async () => {
     await withFixture(async f => {
       const result = await run(f, ['send', '--thread', THREAD_A, '--message', 'reply please'],
@@ -164,7 +223,7 @@ describe('Codex relay CLI', () => {
       expect(outgoing).toContain('construct xm relay send');
       expect(outgoing).toContain('even when the Codex inventory omits it');
       const listed = await run(f, ['sessions']);
-      expect(listed.output.sessions.map(row => row.thread_id)).not.toContain(THREAD_C);
+      expect(listed.output.sessions.map(row => row.thread_id)).toContain(THREAD_C);
       const reply = await run(f, ['send', '--provider', 'codex', '--thread', THREAD_C, '--message', 'response']);
       expect(reply.status).toBe(0);
     }, { pages: [{ data: [], nextCursor: null }] });
@@ -198,26 +257,35 @@ describe('Codex relay CLI', () => {
     expect(() => parseArgs(['sessions', '--from-provider', 'claude', '--from-session', THREAD_B])).toThrow('sessions accepts only');
   });
 
-  test('lists saved thread candidates from the daemon and matches a linked worktree to its registered repository', async () => {
+  test('lists running CLI threads from the daemon and matches a linked worktree to its registered repository', async () => {
     await withFixture(async f => {
       expect(canonicalRepoPath(f.worktree)).toBe(canonicalRepoPath(f.repo));
       const result = await run(f, ['sessions', '--project', 'target']);
       expect(result.status).toBe(0);
       expect(result.output.sessions.map(row => row.thread_id)).toEqual([THREAD_C, THREAD_A]);
-      expect(result.output.sessions.every(row => row.live_status === 'unverified')).toBe(true);
+      expect(result.output.sessions.every(row => row.live_status === 'running')).toBe(true);
       expect(result.output.partial).toBe(false);
     });
   });
 
-  test('marks daemon-loaded threads and lists them before newer unloaded ones', async () => {
+  test('omits stored threads without a live CLI even when metadata exists', async () => {
     await withFixture(async f => {
+      f.threads[1].status = { type: 'idle' };
       const result = await run(f, ['sessions']);
       expect(result.status).toBe(0);
       expect(result.output.sessions.map(row => [row.thread_id, row.app_server_status, row.loaded])).toEqual([
         [THREAD_C, 'idle', true],
-        [THREAD_B, 'notLoaded', false],
         [THREAD_A, 'notLoaded', false],
       ]);
+    });
+  });
+
+  test('excludes live subagents even when their parent process holds their thread file', async () => {
+    await withFixture(async f => {
+      f.threads[2].source = { subAgent: { thread_spawn: { parent_thread_id: THREAD_A } } };
+      const result = await run(f, ['sessions']);
+      expect(result.status).toBe(0);
+      expect(result.output.sessions.map(row => row.thread_id)).toEqual([THREAD_A]);
     });
   });
 
@@ -232,7 +300,8 @@ describe('Codex relay CLI', () => {
       expect(result.output.reply_to).toBeNull();
       expect(result.output.submission_id).toBe('33333333-3333-4333-8333-333333333333');
       const args = JSON.parse(readFileSync(f.capture, 'utf8'));
-      expect(args).toContain(`--message=${message}`);
+      expect(args.at(-1)).toStartWith('--message=');
+      expect(args.at(-1)).toEndWith(message);
     });
   });
 
@@ -244,7 +313,9 @@ describe('Codex relay CLI', () => {
       const result = await run(f, ['send', '--thread', THREAD_A, '--message-file', file]);
       expect(result.status).toBe(0);
       const args = JSON.parse(readFileSync(f.capture, 'utf8'));
-      expect(args.slice(-1)).toEqual([`--message=${message}`]);
+      expect(args).toHaveLength(4);
+      expect(args.at(-1)).toStartWith('--message=');
+      expect(args.at(-1)).toEndWith(message);
       expect(args).not.toContain('--message');
     });
   });
@@ -284,7 +355,7 @@ describe('Codex relay CLI', () => {
       const result = await run(f, ['send', '--thread', THREAD_A, `--message=${message}`]);
       expect(result.status).toBe(0);
       expect(result.output.state).toBe('queued');
-      expect(JSON.parse(readFileSync(f.capture, 'utf8')).slice(-1)).toEqual([`--message=${message}`]);
+      expect(JSON.parse(readFileSync(f.capture, 'utf8')).at(-1)).toEndWith(message);
     });
   });
 
@@ -313,7 +384,7 @@ describe('Codex relay CLI', () => {
     await withFixture(async f => {
       const result = await run(f, ['sessions']);
       expect(result.status).toBe(0);
-      expect(result.output.sessions.map(row => [row.thread_id, row.name, row.loaded])).toEqual([[THREAD_A, 'latest', true]]);
+      expect(result.output.sessions.map(row => [row.thread_id, row.name, row.loaded])).toEqual([[THREAD_A, 'latest', true], [THREAD_C, 'open in daemon', true]]);
       expect(result.output.partial).toBe(false);
     }, { pages: [{ data: [original], nextCursor: 'next' }, { data: [latest], nextCursor: null }] });
   });
@@ -335,11 +406,11 @@ appendFileSync(process.env.FAKE_GIT_CAPTURE, JSON.stringify(process.cwd()) + '\\
 process.stdout.write(process.cwd() === ${JSON.stringify(realpathSync(f.worktree))} ? ${JSON.stringify(join(realpathSync(f.repo), '.git'))} : '.git');
 `);
       chmodSync(fakeGit, 0o755);
-      const env = { PATH: `${bin}:${process.env.PATH}`, FAKE_GIT_CAPTURE: capture };
+      const env = { PATH: `${bin}:${join(f.root, 'bins')}:${process.env.PATH}`, FAKE_GIT_CAPTURE: capture };
       for (let request = 0; request < 2; request++) {
         const result = await run(f, ['sessions', '--project', 'target'], env);
         expect(result.status).toBe(0);
-        expect(result.output.sessions.map(row => row.thread_id)).toEqual([THREAD_C, THREAD_A, THREAD_D]);
+        expect(result.output.sessions.map(row => row.thread_id)).toEqual([THREAD_C, THREAD_A]);
       }
       const calls = readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line));
       for (const directory of [f.repo, f.worktree, f.threads[1].cwd]) expect(calls.filter(cwd => cwd === realpathSync(directory))).toHaveLength(2);

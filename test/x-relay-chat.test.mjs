@@ -1,263 +1,207 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, expect, test } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import net from 'node:net';
-import { ChatWorkspace, chatCandidates } from '../xm/lib/x-relay-chat.mjs';
+import { chatCandidates, runChat, createProjectNameResolver, startSessionSpinner } from '../xm/lib/x-relay-chat.mjs';
 import { parseArgs } from '../xm/lib/x-relay-cli.mjs';
 
-const CLI = fileURLToPath(new URL('../xm/lib/x-relay-cli.mjs', import.meta.url));
-const THREAD = '11111111-1111-4111-8111-111111111111';
+const ID = '11111111-1111-4111-8111-111111111111';
+const OTHER = '22222222-2222-4222-8222-222222222222';
 const roots = [];
-const workspaces = [];
-const daemons = [];
-const supported = ['darwin', 'linux'].includes(process.platform) && spawnSync('tmux', ['-V']).status === 0;
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+const inventory = id => ({ sessions: [{ session_id: id, name: id === ID ? 'Alpha' : 'Beta', cwd: '/repo' }] });
+function context(overrides = {}) {
+  return { listProvider: async provider => provider === 'claude' ? inventory(ID) : { sessions: [] }, registryProject: () => ({}), report: () => {}, ...overrides };
+}
+async function withTTY(fn) {
+  const descriptors = [process.stdin, process.stdout].map(stream => Object.getOwnPropertyDescriptor(stream, 'isTTY'));
+  for (const stream of [process.stdin, process.stdout]) Object.defineProperty(stream, 'isTTY', { value: true, configurable: true });
+  try { return await fn(); }
+  finally { [process.stdin, process.stdout].forEach((stream, index) => descriptors[index] ? Object.defineProperty(stream, 'isTTY', descriptors[index]) : delete stream.isTTY); }
+}
+function ui(choices, messages = []) {
+  const specs = [];
+  return { specs, startSpinner: () => () => {}, createRL: () => ({ close() {} }), menuSelect: async (_, spec) => { specs.push(spec); return choices.shift() || 'q'; }, ask: async () => messages.shift() || '/quit' };
+}
 
-afterEach(async () => {
-  for (const workspace of workspaces.splice(0)) spawnSync('tmux', ['-L', workspace.socketName, 'kill-server']);
-  for (const daemon of daemons.splice(0)) await new Promise(resolve => daemon.close(resolve));
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+test('initial lookup starts and clears the spinner before showing the picker', async () => withTTY(async () => {
+  const events = [];
+  const picker = ui(['q']);
+  picker.startSpinner = () => { events.push('start'); return () => events.push('stop'); };
+  picker.menuSelect = async () => { events.push('menu'); return 'q'; };
+  await runChat({ '--provider': 'claude' }, context({ listProvider: async () => { events.push('lookup'); return inventory(ID); } }), picker);
+  expect(events).toEqual(['start', 'lookup', 'stop', 'menu']);
+}));
+
+test('spinner clears its timer and terminal line and stays silent outside a TTY', async () => {
+  const writes = [];
+  const stop = startSessionSpinner({ isTTY: true, columns: 80, write: value => writes.push(value) });
+  await new Promise(resolve => setTimeout(resolve, 95));
+  stop();
+  const count = writes.length;
+  stop();
+  await new Promise(resolve => setTimeout(resolve, 95));
+  expect(writes.length).toBe(count);
+  expect(writes[0]).toContain('세션 조회 중');
+  expect(writes[1]).not.toBe(writes[0]);
+  expect(writes.at(-1)).toBe('\r\x1b[2K');
+  startSessionSpinner({ isTTY: false, write: () => { throw new Error('unexpected output'); } })();
 });
 
-function fixture({ realMenu = false } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'xmchat-'));
+test('failed initial inventory stops the spinner and closes terminal input', async () => withTTY(async () => {
+  const events = [];
+  const picker = ui(['q']);
+  picker.startSpinner = () => () => events.push('stop');
+  picker.createRL = () => ({ close: () => events.push('close') });
+  await expect(runChat({ '--provider': 'claude' }, context({ listProvider: async () => ({ sessions: null }) }), picker)).rejects.toThrow();
+  expect(events).toEqual(['stop', 'close']);
+}));
+
+test('directory is the primary label and a configured project name is included', async () => withTTY(async () => {
+  const picker = ui(['q']);
+  await runChat({}, context({ projectNameFor: () => 'X Mesh Toolkit', listProvider: async provider => provider === 'claude' ? { sessions: [{ ...inventory(ID).sessions[0], cwd: '/work/x-kit' }] } : { sessions: [] } }), picker);
+  expect(picker.specs[0].options[0].label).toBe('claude  x-kit (X Mesh Toolkit)');
+  expect(picker.specs[0].options[0].hint).toContain('Alpha');
+}));
+
+test('project lookup uses the canonical checkout, caches each cwd, and ignores archived or ambiguous entries', () => {
+  let calls = 0;
+  const lookup = createProjectNameResolver([{ path: '/repo', name: 'Configured' }, { path: '/repo', name: 'Old', archived: true }], () => { calls++; return '/repo'; });
+  expect(lookup('/worktree')).toBe('Configured');
+  expect(lookup('/worktree')).toBe('Configured');
+  expect(calls).toBe(1);
+  expect(createProjectNameResolver([{ path: '/repo', name: 'One' }, { path: '/repo', name: 'Two' }], () => '/repo')('/worktree')).toBeNull();
+} );
+
+test('chat selects recipients rather than accepting a native session to attach', () => {
+  expect(parseArgs([]).command).toBe('chat');
+  expect(parseArgs(['chat', '--project', 'target', '--provider', 'claude']).options['--provider']).toBe('claude');
+  expect(() => parseArgs(['chat', '--thread', ID])).toThrow('interactively');
+  const cli = fileURLToPath(new URL('../xm/lib/x-relay-cli.mjs', import.meta.url));
+  const result = spawnSync('node', [cli, 'chat'], { encoding: 'utf8' });
+  expect(result.status).toBe(1);
+  expect(JSON.parse(result.stderr).error).toContain('interactive terminal');
+});
+
+test('lists exact Claude session UUIDs, keeps unavailable AGY visible, and isolates provider failures', async () => {
+  const snapshot = await chatCandidates(context({ listProvider: async provider => {
+    if (provider === 'codex') throw new Error('daemon unavailable');
+    if (provider === 'agy') return { sessions: [{ session_id: OTHER, cwd: '/repo', live_status: 'running', capabilities: { send: false }, unavailable_reason: 'backend missing' }] };
+    return inventory(ID);
+  } }));
+  expect(snapshot.candidates.map(row => [row.provider, row.id, row.sendable])).toEqual([['claude', ID, true], ['agy', OTHER, false]]);
+  expect(snapshot.notes[0]).toContain('daemon unavailable');
+});
+
+test('omits saved sessions from recipient selection', async () => {
+  const result = await chatCandidates(context({ listProvider: async provider => ({ sessions: provider === 'claude' ? [] : [{ thread_id: ID, session_id: ID, live_status: 'unverified' }] }) }));
+  expect(result.candidates).toEqual([]);
+});
+
+test('a synchronous provider failure retains the other providers', async () => {
+  const snapshot = await chatCandidates(context({ listProvider: provider => {
+    if (provider === 'codex') return { sessions: [{ thread_id: ID, live_status: 'running' }] };
+    throw new Error('CLI unavailable');
+  } }));
+  expect(snapshot.candidates.map(row => row.provider)).toEqual(['codex']);
+  expect(snapshot.notes).toHaveLength(2);
+});
+
+test('sends literal command requests to the selected identity after inventory order changes', async () => withTTY(async () => {
+  let calls = 0;
+  const sent = [];
+  const picker = ui(['2', 'q'], ['/xm:relay literal $HOME `whoami`']);
+  await runChat({ '--provider': 'claude' }, context({
+    listProvider: async () => ({ sessions: (++calls === 1 ? [ID, OTHER] : [OTHER, ID]).map(id => inventory(id).sessions[0]) }),
+    send: async options => { sent.push(options); return { state: 'submitted' }; },
+  }), picker);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toMatchObject({ '--session': OTHER, '--kind': 'command', '--message': '/xm:relay literal $HOME `whoami`' });
+  expect(picker.specs[0].header[0]).toContain('↑↓');
+}));
+
+test('does not submit after the selected recipient exits', async () => withTTY(async () => {
+  let calls = 0;
+  let sent = 0;
+  await runChat({ '--provider': 'claude' }, context({ listProvider: async () => ++calls === 1 ? inventory(ID) : { sessions: [] }, send: async () => { sent++; } }), ui(['1', 'q'], ['hello']));
+  expect(sent).toBe(0);
+}));
+
+test('unavailable recipients never receive a prompt or send and refresh stays in the same terminal', async () => withTTY(async () => {
+  let sends = 0;
+  let prompts = 0;
+  const picker = ui(['1', 'r', 'q']);
+  picker.ask = async () => { prompts++; return 'hello'; };
+  await runChat({ '--provider': 'agy' }, context({ listProvider: async () => ({ sessions: [{ session_id: ID, live_status: 'running', capabilities: { send: false } }] }), send: async () => { sends++; } }), picker);
+  expect(sends).toBe(0);
+  expect(prompts).toBe(0);
+  expect(picker.specs).toHaveLength(3);
+}));
+
+test('message-file mode selects once, reports submission, and exits', async () => withTTY(async () => {
+  const sent = [];
+  await runChat({ '--provider': 'claude', '--message-file': '/message.txt' }, context({ send: async value => { sent.push(value); return { state: 'submitted' }; } }), ui(['1']));
+  expect(sent).toHaveLength(1);
+  expect(sent[0]['--message-file']).toBe('/message.txt');
+}));
+
+test('message-file submission errors propagate rather than exiting successfully', async () => withTTY(async () => {
+  await expect(runChat({ '--provider': 'claude', '--message-file': '/message.txt' },
+    context({ send: async () => { throw new Error('submission refused'); } }), ui(['1']))).rejects.toThrow('submission refused');
+}));
+
+test('chat implementation contains no process spawning or native session commands', () => {
+  const source = readFileSync(fileURLToPath(new URL('../xm/lib/x-relay-chat.mjs', import.meta.url)), 'utf8');
+  expect(source).not.toMatch(/spawnSync|child_process|tmux|attach-session|--conversation|claudeBin|codexBin/);
+});
+
+test.if(['darwin', 'linux'].includes(process.platform) && spawnSync('python3', ['--version']).status === 0)('arrow keys choose a recipient in a real terminal, then send text without opening a provider CLI', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'relay-picker-'));
   roots.push(root);
-  const home = join(root, 'home');
-  mkdirSync(home);
-  const menu = join(root, 'menu.mjs');
-  writeFileSync(menu, "console.log('fake menu'); process.stdin.resume();\n");
-  const captures = { codex: join(root, 'codex.json'), claude: join(root, 'claude.json') };
-  const bins = {};
-  for (const provider of ['codex', 'claude']) {
-    const bin = join(root, provider);
-    bins[provider] = bin;
-    writeFileSync(bin, `#!/usr/bin/env node
-import { readFileSync, writeFileSync } from 'node:fs';
-const args = process.argv.slice(2);
-if (args[0] === 'agents') { process.stdout.write(process.env.FAKE_CHAT_AGENTS_FILE ? readFileSync(process.env.FAKE_CHAT_AGENTS_FILE, 'utf8') : process.env.FAKE_CHAT_AGENTS || '[]'); process.exit(0); }
-if (args[0] === 'app-server') { process.stdout.write(JSON.stringify(process.env.FAKE_CHAT_DAEMON_SOCKET ? {status:'running',socketPath:process.env.FAKE_CHAT_DAEMON_SOCKET} : {status:'stopped'})); process.exit(0); }
-writeFileSync(${JSON.stringify(captures[provider])}, JSON.stringify({args,pid:process.pid,cwd:process.cwd(),tty:process.stdin.isTTY,menu:process.env.XM_RELAY_CHAT_MENU}));
-console.log('native ${provider} ready');
-process.stdin.on('data', data => process.stdout.write(data));
-`);
-    chmodSync(bin, 0o755);
-  }
-  const workspace = new ChatWorkspace({ cliPath: realMenu ? CLI : menu,
-    codexBin: bins.codex, claudeBin: bins.claude, cwd: root,
-    socketName: `xm-relay-test-${process.pid}-${roots.length}-${Date.now()}` });
-  workspace.env.HOME = home;
-  workspace.env.FAKE_CHAT_AGENTS = JSON.stringify([{ id: 'background-id', kind: 'background', cwd: root, state: 'working', name: 'fixture Claude' }]);
-  workspaces.push(workspace);
-  return { root, home, captures, workspace };
-}
-
-async function waitFor(check) {
-  const deadline = Date.now() + 4000;
-  while (Date.now() < deadline) {
-    const result = check();
-    if (result) return result;
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
-  throw new Error('chat fixture did not reach its expected state');
-}
-
-describe('relay chat arguments and inventory', () => {
-  test('accepts chat with only an optional project and rejects headless use before provider lookup', () => {
-    expect(parseArgs(['chat', '--project', 'target']).command).toBe('chat');
-    expect(() => parseArgs(['chat', '--provider', 'claude'])).toThrow('chat accepts only --project');
-    const result = spawnSync('node', [CLI, 'chat'], { encoding: 'utf8' });
-    expect(result.status).toBe(1);
-    expect(JSON.parse(result.stderr).error).toContain('interactive terminal');
-  });
-
-  test('lists native background Claude sessions without requiring a PID or inbox socket', async () => {
-    const snapshot = await chatCandidates({
-      listSessions: async () => ({ sessions: [{ thread_id: THREAD, cwd: '/repo', app_server_status: 'idle' }] }),
-      claudeSessions: () => [{ kind: 'background', id: 'native-id', cwd: '/repo', state: 'blocked' },
-        { kind: 'interactive', sessionId: 'another-session', cwd: '/repo' }],
-    });
-    expect(snapshot.candidates.map(row => [row.provider, row.id, row.attachable])).toEqual([
-      ['codex', THREAD, true], ['claude', 'native-id', true], ['claude', 'another-session', false],
-    ]);
-  });
-
-  test('retains the other provider when one fails and applies registered project filtering', async () => {
-    const snapshot = await chatCandidates({
-      listSessions: async () => { throw new Error('daemon unavailable'); },
-      claudeSessions: () => [{ kind: 'background', id: 'in-project', cwd: '/repo' },
-        { kind: 'background', id: 'outside', cwd: '/other' }],
-      registryProject: () => ({ path: '/repo' }),
-      createProjectMatcher: path => cwd => cwd === path,
-    }, 'target');
-    expect(snapshot.candidates.map(row => row.id)).toEqual(['in-project']);
-    expect(snapshot.notes[0]).toContain('daemon unavailable');
-  });
-});
-
-describe.if(supported)('relay chat native tmux workspace', () => {
-  test('q detaches only the client that pressed it and stays literal in a provider view', async () => {
-    const { root, captures, workspace } = fixture({ realMenu: true });
-    workspace.ensure();
-    const children = [];
-    try {
-      for (let index = 0; index < 2; index++) {
-        const child = spawn('tmux', ['-L', workspace.socketName, '-C', 'attach-session', '-t', workspace.sessionName], { env: workspace.env });
-        child.stdout.on('data', () => {});
-        child.stderr.on('data', () => {});
-        children.push(child);
-      }
-      const clients = await waitFor(() => {
-        const rows = workspace.command(['list-clients', '-t', workspace.sessionName, '-F', '#{client_name}']).split('\n').filter(Boolean);
-        return rows.length === 2 ? rows : false;
-      });
-      workspace.command(['send-keys', '-K', '-c', clients[0], 'q']);
-      await waitFor(() => workspace.command(['list-clients', '-t', workspace.sessionName, '-F', '#{client_name}']).split('\n').filter(Boolean).length === 1);
-      expect(workspace.command(['list-clients', '-t', workspace.sessionName, '-F', '#{client_name}'])).toBe(clients[1]);
-      workspace.open({ provider: 'claude', id: 'native-id', cwd: root, name: 'Claude', attachable: true });
-      await waitFor(() => existsSync(captures.claude));
-      workspace.command(['send-keys', '-K', '-c', clients[1], 'q']);
-      expect(workspace.command(['list-clients', '-t', workspace.sessionName, '-F', '#{client_name}'])).toBe(clients[1]);
-    } finally {
-      for (const child of children) child.kill();
-    }
-  });
-
-  test('keeps native provider processes alive across switches and reuses each identity window', async () => {
-    const { root, captures, workspace } = fixture();
-    workspace.ensure();
-    const codex = { provider: 'codex', id: THREAD, cwd: root, name: 'literal $HOME `whoami`', attachable: true };
-    const claude = { provider: 'claude', id: 'native-id', cwd: root, name: 'Claude', attachable: true };
-    const codexWindow = workspace.open(codex, join(root, 'daemon.sock'));
-    await waitFor(() => existsSync(captures.codex));
-    const before = JSON.parse(readFileSync(captures.codex, 'utf8'));
-    const claudeWindow = workspace.open(claude);
-    await waitFor(() => existsSync(captures.claude));
-    expect(workspace.open(codex, join(root, 'daemon.sock'))).toBe(codexWindow);
-    expect(JSON.parse(readFileSync(captures.codex, 'utf8')).pid).toBe(before.pid);
-    expect(before.args).toEqual(['resume', THREAD, '--remote', `unix://${join(root, 'daemon.sock')}`]);
-    expect(before.tty).toBe(true);
-    expect(before.menu).toBe('0');
-    expect(JSON.parse(readFileSync(captures.claude, 'utf8')).args).toEqual(['attach', 'native-id']);
-    expect(workspace.command(['list-windows', '-t', workspace.sessionName, '-F', '#{window_id}']).split('\n')).toHaveLength(3);
-    expect(workspace.command(['list-keys', '-T', 'root'])).toMatch(/F6\s+select-window -t :0/);
-    workspace.command(['select-window', '-t', `${workspace.sessionName}:0`]);
-    expect(workspace.command(['display-message', '-p', '-t', claudeWindow, '#{pane_dead}'])).toBe('0');
-    workspace.ensure();
-    expect(workspace.open(codex, join(root, 'daemon.sock'))).toBe(codexWindow);
-    expect(() => workspace.open({ ...claude, attachable: false })).toThrow('/background');
-    expect(() => workspace.open({ ...codex, cwd: null, attachable: false })).toThrow('Codex 세션');
-  });
-
-  test('runs the real menu in a tmux terminal and opens its freshly listed Claude background target', async () => {
-    const { captures, workspace } = fixture({ realMenu: true });
-    workspace.ensure();
-    const menuPane = `${workspace.sessionName}:0`;
-    await waitFor(() => workspace.command(['capture-pane', '-p', '-t', menuPane]).includes('fixture Claude'));
-    workspace.command(['send-keys', '-t', menuPane, '1', 'Enter']);
-    await waitFor(() => existsSync(captures.claude));
-    expect(JSON.parse(readFileSync(captures.claude, 'utf8')).args).toEqual(['attach', 'background-id']);
-    expect(workspace.command(['display-message', '-p', '-t', menuPane, '#{pane_dead}'])).toBe('0');
-  });
-
-  test('revalidates the selected identity when fresh inventory order changes', async () => {
-    const { root, captures, workspace } = fixture({ realMenu: true });
-    const file = join(root, 'agents.json');
-    const first = { id: 'alpha-id', kind: 'background', cwd: root, name: 'Alpha' };
-    const second = { ...first, id: 'beta-id', name: 'Beta' };
-    writeFileSync(file, JSON.stringify([first, second]));
-    workspace.env.FAKE_CHAT_AGENTS_FILE = file;
-    workspace.ensure();
-    const menuPane = `${workspace.sessionName}:0`;
-    await waitFor(() => workspace.command(['capture-pane', '-p', '-t', menuPane]).includes('Alpha'));
-    writeFileSync(file, JSON.stringify([second, first]));
-    workspace.command(['send-keys', '-t', menuPane, '1', 'Enter']);
-    await waitFor(() => existsSync(captures.claude));
-    expect(JSON.parse(readFileSync(captures.claude, 'utf8')).args).toEqual(['attach', 'alpha-id']);
-  });
-
-  test('does not open a replacement when the selected identity disappears', async () => {
-    const { root, captures, workspace } = fixture({ realMenu: true });
-    const file = join(root, 'agents.json');
-    writeFileSync(file, JSON.stringify([{ id: 'gone-id', kind: 'background', cwd: root, name: 'Gone' }]));
-    workspace.env.FAKE_CHAT_AGENTS_FILE = file;
-    workspace.ensure();
-    const menuPane = `${workspace.sessionName}:0`;
-    await waitFor(() => workspace.command(['capture-pane', '-p', '-t', menuPane]).includes('Gone'));
-    writeFileSync(file, '[]');
-    workspace.command(['send-keys', '-t', menuPane, '1', 'Enter']);
-    await waitFor(() => workspace.command(['capture-pane', '-p', '-t', menuPane]).includes('목록에서 사라졌습니다'));
-    expect(existsSync(captures.claude)).toBe(false);
-    expect(workspace.command(['list-windows', '-t', workspace.sessionName, '-F', '#{window_id}']).split('\n')).toHaveLength(1);
-  });
-
-  test('reopens an exited provider view in the same window only when selected again', async () => {
-    const { root, captures, workspace } = fixture();
-    workspace.ensure();
-    const candidate = { provider: 'claude', id: 'native-id', cwd: root, name: 'Claude', attachable: true };
-    const windowId = workspace.open(candidate);
-    await waitFor(() => existsSync(captures.claude));
-    const original = JSON.parse(readFileSync(captures.claude, 'utf8'));
-    process.kill(original.pid, 'SIGTERM');
-    await waitFor(() => workspace.command(['display-message', '-p', '-t', windowId, '#{pane_dead}']) === '1');
-    expect(workspace.open(candidate)).toBe(windowId);
-    await waitFor(() => JSON.parse(readFileSync(captures.claude, 'utf8')).pid !== original.pid);
-    expect(JSON.parse(readFileSync(captures.claude, 'utf8')).args).toEqual(['attach', 'native-id']);
-    expect(workspace.command(['list-windows', '-t', workspace.sessionName, '-F', '#{window_id}']).split('\n')).toHaveLength(2);
-  });
-
-  test('queries and revalidates the Codex UUID through the daemon before native resume', async () => {
-    const { root, captures, workspace } = fixture({ realMenu: true });
-    const socketPath = join(root, 'daemon.sock');
-    const methods = [];
-    const daemon = net.createServer(socket => {
-      let buffer = Buffer.alloc(0);
-      let upgraded = false;
-      socket.on('error', () => {});
-      socket.on('data', chunk => {
-        buffer = Buffer.concat([buffer, chunk]);
-        if (!upgraded) {
-          const end = buffer.indexOf('\r\n\r\n');
-          if (end < 0) return;
-          const key = /Sec-WebSocket-Key: (\S+)/i.exec(buffer.subarray(0, end).toString())[1];
-          const accept = createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
-          socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
-          buffer = buffer.subarray(end + 4);
-          upgraded = true;
-        }
-        while (buffer.length >= 6) {
-          let length = buffer[1] & 127;
-          let offset = 2;
-          if (length === 126) { length = buffer.readUInt16BE(2); offset = 4; }
-          if (buffer.length < offset + 4 + length) return;
-          const mask = buffer.subarray(offset, offset + 4);
-          const payload = Buffer.from(buffer.subarray(offset + 4, offset + 4 + length).map((byte, index) => byte ^ mask[index % 4]));
-          buffer = buffer.subarray(offset + 4 + length);
-          const request = JSON.parse(payload.toString());
-          if (request.id == null) continue;
-          methods.push(request.method);
-          const result = request.method === 'thread/list'
-            ? { data: [{ id: THREAD, cwd: root, name: 'fixture Codex', status: { type: 'idle' } }], nextCursor: null }
-            : {};
-          const bytes = Buffer.from(JSON.stringify({ id: request.id, result }));
-          const header = bytes.length < 126 ? Buffer.from([0x81, bytes.length])
-            : Buffer.from([0x81, 126, bytes.length >> 8, bytes.length & 255]);
-          socket.write(Buffer.concat([header, bytes]));
-        }
-      });
-    });
-    daemons.push(daemon);
-    await new Promise(resolve => daemon.listen(socketPath, resolve));
-    workspace.env.FAKE_CHAT_DAEMON_SOCKET = socketPath;
-    workspace.ensure();
-    const menuPane = `${workspace.sessionName}:0`;
-    await waitFor(() => workspace.command(['capture-pane', '-p', '-t', menuPane]).includes('fixture Codex'));
-    workspace.command(['send-keys', '-t', menuPane, '1', 'Enter']);
-    await waitFor(() => existsSync(captures.codex));
-    expect(JSON.parse(readFileSync(captures.codex, 'utf8')).args).toEqual(['resume', THREAD, '--remote', `unix://${socketPath}`]);
-    expect(methods.filter(method => method === 'thread/list')).toHaveLength(2);
-    expect(existsSync(captures.claude)).toBe(false);
-  });
+  const wrapper = join(root, 'picker.mjs');
+  const capture = join(root, 'sent.json');
+  const module = new URL('../xm/lib/x-relay-chat.mjs', import.meta.url).href;
+  writeFileSync(wrapper, `import { runChat } from ${JSON.stringify(module)};\nimport { writeFileSync } from 'node:fs';\nawait runChat({'--provider':'claude'}, {listProvider: async () => ({sessions:[{session_id:'${ID}',name:'Alpha',cwd:'/repo'},{session_id:'${OTHER}',name:'Beta',cwd:'/repo'}]}), report: x => console.log(typeof x==='string'?x:JSON.stringify(x)),send: async x=>{writeFileSync(${JSON.stringify(capture)},JSON.stringify(x));return {state:'submitted'};}});\n`);
+  const bridge = `import os,pty,sys,select,signal
+pid,fd=pty.fork()
+if pid==0: os.execv(sys.argv[1],sys.argv[1:])
+def stop(*args):
+ try: os.kill(pid,signal.SIGTERM)
+ except ProcessLookupError: pass
+signal.signal(signal.SIGTERM,stop)
+try:
+ while True:
+  ready,_,_=select.select([fd,0],[],[])
+  for source in ready:
+   data=os.read(source,65536)
+   if not data: raise EOFError()
+   os.write(1 if source==fd else fd,data)
+except (EOFError,OSError): pass
+finally:
+ stop()
+ _,status=os.waitpid(pid,0)
+ os.close(fd)
+ sys.exit(os.waitstatus_to_exitcode(status))
+`;
+  const child = spawn('python3', ['-c', bridge, process.execPath, wrapper], { env: { ...process.env, XM_CONFIG_WIZARD_STDIN: '', NO_COLOR: '1' } });
+  let output = '';
+  child.stdout.on('data', chunk => { output += chunk; });
+  child.stderr.on('data', chunk => { output += chunk; });
+  const wait = async check => { const deadline = Date.now() + 3000; while (!check()) { if (Date.now() > deadline) throw new Error(output); await new Promise(resolve => setTimeout(resolve, 20)); } };
+  try {
+    await wait(() => output.includes('Beta'));
+    child.stdin.write('\x1b[B');
+    await wait(() => output.split('\n').some(row => /[❯>]/.test(row) && row.includes('Beta')));
+    child.stdin.write('\r');
+    await wait(() => output.includes('보낼 메시지'));
+    child.stdin.write('literal relay message\r');
+    await wait(() => existsSync(capture));
+    expect(JSON.parse(readFileSync(capture, 'utf8'))).toMatchObject({ '--session': OTHER, '--message': 'literal relay message' });
+    await wait(() => output.lastIndexOf('메시지를 보낼 세션 선택') > output.indexOf('\"state\":\"submitted\"'));
+    const closed = new Promise(resolve => child.on('close', resolve));
+    child.stdin.write('q');
+    await closed;
+  } finally { child.kill(); }
 });

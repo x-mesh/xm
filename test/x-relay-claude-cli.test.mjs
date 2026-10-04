@@ -130,7 +130,8 @@ describe.if(supported)('Claude relay CLI', () => {
       const frame = sentFrame(f);
       expect(frame.session_id).toBe(SESSION);
       expect(frame.type).toBe('user');
-      expect(frame.message.content).toBe('<cross-session-message from-name="codex-via-xm">\nhello peer\n</cross-session-message>');
+      expect(frame.message.content).toEndWith('\nhello peer\n</cross-session-message>');
+      expect(frame.message.content).toContain(result.output.request_id);
     });
   });
 
@@ -191,7 +192,7 @@ describe.if(supported)('Claude relay CLI', () => {
       const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, `--message=${message}`]);
       expect(result.status).toBe(0);
       expect(result.output.state).toBe('submitted');
-      expect(sentFrame(f).message.content).toBe(`<cross-session-message from-name="codex-via-xm">\n${message}\n</cross-session-message>`);
+      expect(sentFrame(f).message.content).toEndWith(`\n${message}\n</cross-session-message>`);
     });
   });
 
