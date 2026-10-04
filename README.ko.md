@@ -429,7 +429,7 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 | [x-remote](#x-remote) | 원격 호스트 세션을 Discord에서 조종 | `xm remote start` |
 | xm | 번들 + 설정 + 파이프라인 | `/xm pipeline release` |
 
-**`xm` 코어에 번들됨 (별도 marketplace 플러그인 아님):** `/xm:ship` 릴리스 자동화 · `/xm:write` PR·issue·릴리스 문서 작성 · `x-sync` 멀티 머신 동기화 서버 · `/xm:toss` + `/xm:inbox` 프로젝트 간 버그 핸드오프 · `/xm:relay` 로컬 Claude·Codex 세션 메시지 — 아래 [x-ship](#x-ship), [xm:write](#xmwrite), [x-sync](#x-sync), [toss / inbox](#프로젝트-간-핸드오프--toss--inbox) 참고.
+**`xm` 코어에 번들됨 (별도 marketplace 플러그인 아님):** `/xm:ship` 릴리스 자동화 · `/xm:write` PR·issue·릴리스 문서 작성 · `x-sync` 멀티 머신 동기화 서버 · `/xm:toss` + `/xm:inbox` 프로젝트 간 버그 핸드오프 · `/xm:relay` 로컬 Claude·Codex 세션 메시지와 AGY 세션 메시지 — 아래 [x-ship](#x-ship), [xm:write](#xmwrite), [x-sync](#x-sync), [toss / inbox](#프로젝트-간-핸드오프--toss--inbox) 참고.
 `/xm:mutate`도 같은 방식으로 번들됩니다 — 코어에 함께 들어 있는 `xm mutate` 명령을 실행하기 때문입니다. Codex에서는 `$xm:mutate`로 노출되고, 평면 별칭 `$xm-mutate`도 그대로 씁니다. [뮤테이션 테스팅](#뮤테이션-테스팅--xmmutate) 참고.
 `/xm:batch`도 같은 방식으로 번들됩니다. x-build의 `xm batch` 명령을 실행합니다. [topic별 병렬 PR](#topic별-병렬-pr--xmbatch) 참고.
 
@@ -1252,7 +1252,7 @@ xm panel status <run> --logs        # RAW 이벤트 로그(events.jsonl) 스트�
 
 `--models name:model[:effort]`로 모델별 선택. 선택적 `:effort`는 모델별 추론 강도 — codex `minimal|low|medium|high|xhigh`(→ `model_reasoning_effort`), kiro `low|medium|high|xhigh|max`(→ `--effort`); 벤더마다 레벨 집합이 다르고, 알 수 없는 레벨은 경고 후 무시(run은 막지 않음). 인자 없는 `xm panel models`는 provider→model 2단계 피커(`--json`으로 구조화; 라이브 카탈로그 벤더 agy/cursor/kiro vs 고정 ID claude/codex). named `presets`, 병렬 호출, 결과는 `.xm/panel/`에 저장(`xm recall`로 조회). 벤더마다 못 보는 지점이 다릅니다. 하나가 아니라 여럿에게 묻는 이유가 그것입니다.
 
-패널은 provider가 사용량을 노출할 때 실측치를 캡처합니다. claude는 `--output-format json`, codex는 `exec --json` 이벤트 스트림, kiro는 stderr의 credits를 사용합니다. 다른 provider의 run에는 사용량이 없을 수 있으며, 빈 값을 비용 0으로 해석하면 안 됩니다. 완료된 run마다 모델별 행을 **disagreement ledger**(`.xm/panel/history.jsonl`)에 append하고, `xm panel stats [--roi]`가 이를 벤더별 생존율(confirmed/raised)과 catch당 비용으로 집계 — stateless API council이 쌓을 수 없는 per-repo 데이터 해자입니다. `--stream`은 claude/cursor에 토큰 단위 라이브 텍스트를 더합니다(`--partial`, 기본 on, 초대형 타깃에선 자동 off). 모델이 JSON 계약 대신 구조화된 마크다운 리뷰를 내면(agy/Gemini가 간헐적으로 그럼) 패널이 `### [severity] file:line — title` + Why/Fix 형태에서 findings를 건져내 "no JSON"으로 버리지 않습니다. 아예 쓸 만한 답이 없으면 CLI stderr의 실제 이유를 노출합니다. timeout은 타깃 크기에 따라 자동 상향(`--timeout`으로 고정). kiro는 MCP 없는 자동 프로비저닝 agent(`~/.kiro/agents/xm-panel-review.json`)로 띄웁니다 — kiro가 전역 `mcp.json`을 로드하면 top-level `oneOf`/`allOf`/`anyOf` 스키마를 가진 MCP tool 하나 때문에 Bedrock이 요청 전체를 거부하기 때문입니다. 직접 만든 agent를 쓰려면 `panel.kiro_agent`로 지정하세요.
+패널은 provider가 사용량을 노출할 때 실측치를 캡처합니다. Claude는 기본적으로 `--output-format stream-json`, codex는 `exec --json` 이벤트 스트림, kiro는 stderr의 credits를 사용합니다. 다른 provider의 run에는 사용량이 없을 수 있으며, 빈 값을 비용 0으로 해석하면 안 됩니다. 완료된 run마다 모델별 행을 **disagreement ledger**(`.xm/panel/history.jsonl`)에 append하고, `xm panel stats [--roi]`가 이를 벤더별 생존율(confirmed/raised)과 catch당 비용으로 집계 — stateless API council이 쌓을 수 없는 per-repo 데이터 해자입니다. Claude는 기본적으로 분석·도구 실행·응답 작성 이벤트를 watch에 표시합니다. 완료된 모델은 `완료 · 소요 시간`으로 표시하며, `--no-stream`으로 최종 결과 모드를 선택할 수 있습니다. `--stream`은 cursor에도 토큰 단위 라이브 텍스트를 더합니다(`--partial`, 기본 on, 초대형 타깃에선 자동 off). 모델이 JSON 계약 대신 구조화된 마크다운 리뷰를 내면(agy/Gemini가 간헐적으로 그럼) 패널이 `### [severity] file:line — title` + Why/Fix 형태에서 findings를 건져내 "no JSON"으로 버리지 않습니다. 아예 쓸 만한 답이 없으면 CLI stderr의 실제 이유를 노출합니다. timeout은 타깃 크기에 따라 자동 상향(`--timeout`으로 고정). kiro는 MCP 없는 자동 프로비저닝 agent(`~/.kiro/agents/xm-panel-review.json`)로 띄웁니다 — kiro가 전역 `mcp.json`을 로드하면 top-level `oneOf`/`allOf`/`anyOf` 스키마를 가진 MCP tool 하나 때문에 Bedrock이 요청 전체를 거부하기 때문입니다. 직접 만든 agent를 쓰려면 `panel.kiro_agent`로 지정하세요.
 
 두 개의 adversarial 애드온이 의견을 검증된 사실로 바꿉니다. **`--grounded`**는 리포를 실제로 읽을 수 있는 라운드2 refuter(현재 codex — repo cwd에서 `exec --sandbox read-only`)가 인용된 파일을 직접 열어 실제 코드와 대조해 finding을 검증하고 verdict에 `{checked, observed}`를 태깅하게 합니다. 텍스트만 보는 벤더에는 절대 요청하지 않습니다(파일을 못 읽는 벤더에게 "열어보라"고 하면 `checked:true`를 지어낼 뿐입니다). **`xm panel followup <run>`**은 디베이트 라운드를 돌립니다 — 각 저자의 세션을 resume해 반박당한 finding을 `HOLD` / `CONCEDE` / `REVISE`하게 합니다. *held*(두 모델이 서로 굽히지 않음)는 사람이 판단해야 할 진짜 불일치, *conceded*는 해소된 것입니다. additive(`followup-N.json`, verdict.json은 건드리지 않음)이며 리뷰가 `--session-reuse`(claude/codex)로 돌아갔어야 합니다.
 
@@ -1301,7 +1301,7 @@ xm remote start            # gateway + host 동시 기동
 
 toss는 재현 명령과 **실제 출력**(시크릿 마스킹, 뒷부분만 보존), 그리고 구체적인 수정 방향을 함께 담습니다 — 재현 없는 "조심하세요" 수준의 리포트는 거부합니다. 보내는 쪽은 자기 `.xm/outbox/<id>.json`에 기록을 남기고 대상의 `.xm/`은 절대 건드리지 않습니다. 대상 mem-mesh 공간으로의 전달은 스킬 자신의 MCP 호출로 이루어지며, 반환된 id는 `xm inbox record`로 되돌려 기록합니다. 이 분리가 중요한 이유는 CLI에 MCP 세션이 없기 때문입니다 — 원장에 남지 않은 id는 대화가 끝나는 순간 사라집니다.
 
-`/xm:relay`는 연락 가능한 로컬 Claude 세션과 저장된 Codex thread를 나눠 보여 줍니다. 공유 daemon이 열어 둔 Codex thread가 먼저 나오지만, Codex 화면이 붙어 있다는 뜻은 아닙니다. 한 provider의 전체 목록은 `/xm:relay sessions --provider claude|codex`로 확인합니다. 짧은 메시지는 `send`, 작업 요약은 `handoff`로 보냅니다.
+`/xm:relay`는 현재 실행 중인 로컬 Claude·Codex·AGY 세션만 provider별로 보여 줍니다. 저장된 대화나 종료된 세션은 목록에 넣지 않습니다. Codex는 UUID별 파일을 열고 있는 실제 CLI 프로세스를 확인하며, daemon에만 열린 thread는 제외합니다. 한 provider의 목록은 `/xm:relay sessions --provider claude|codex|agy`로 확인합니다. 짧은 메시지는 `send`, 작업 요약은 `handoff`로 보냅니다.
 
 macOS와 Linux에서 셸 adapter는 Claude의 비공개 로컬 inbox에 메시지를 제출하고, Codex 메시지는 공유 daemon의 queue에 넣습니다. 어느 쪽도 상대가 읽었다는 보장은 아닙니다. Windows named pipe는 지원하지 않습니다.
 
@@ -1311,13 +1311,17 @@ xm relay send --provider claude --session <recipient-uuid> --message-file <path>
 xm relay chat [--project <id>]
 ```
 
-`xm relay chat`은 tmux가 설치된 터미널에서 기존 Codex thread와 background Claude 세션의 native CLI를 전환합니다. 번호로 세션을 선택하고 F6으로 목록에 돌아옵니다. 목록에서 `r`은 화면을 갱신하며, `q`는 현재 chat 클라이언트만 종료합니다. Native CLI 창은 계속 유지됩니다. Interactive Claude 세션은 해당 화면에서 `/background`를 실행한 뒤 선택해야 합니다.
+`xm relay chat`은 현재 터미널에서 메시지를 보낼 대상을 선택합니다. ↑↓로 실행 중인 세션을 고르고 Enter로 확정한 다음 메시지·명령을 입력합니다. `r`은 목록 갱신, `q`는 종료, 입력 중 `/back`은 대상 변경, `/quit`은 종료입니다. tmux나 상대 CLI 화면을 열지 않습니다. `/xm:relay ...`는 수신 에이전트에 명령 수행 요청으로 전달하며 TUI slash command를 직접 실행하지 않습니다. `chat --message-file <path>`는 대상 선택 후 파일을 한 번 전송하고 종료합니다.
 
 발신 UUID를 확인할 수 있으면 메시지에 provider·전체 UUID·확인된 작업 경로·수신 주소·답장 명령 예시를 포함합니다. Codex는 `CODEX_THREAD_ID`를 자동으로 사용합니다. Claude 발신자는 현재 세션의 정확한 UUID를 지정합니다.
 
 ```sh
 xm relay send --provider codex --thread <recipient-uuid> --from-provider claude --from-session <current-uuid> --message-file <path>
 ```
+
+AGY는 실행 프로세스와 로컬 메타데이터를 확인한 뒤 `agentapi send-message`로 전송합니다. 실행 중인 backend의 `ANTIGRAVITY_LS_ADDRESS`와 정상 인증 환경이 필요합니다. backend context가 없는 호출자는 해당 세션을 전송 불가로 표시합니다. AGY 프로세스를 시작하거나 대화를 재개해 전송을 대신하지 않습니다. `submitted`는 제출 결과이며 실제 수행 완료를 뜻하지 않습니다.
+
+여러 대상은 `xm relay send --to codex:<uuid> --to claude:<uuid> --message-file <path>`로 지정합니다. 대상별 결과를 반환하며 일부 실패는 `partial`로 표시하고 자동 재전송하지 않습니다. `--kind command`는 명령 수행 요청, `request_id`와 `--in-reply-to <id>`는 요청·답장 연결에 사용합니다.
 
 답장 주소는 신뢰할 수 있는 인증 정보가 아닙니다. 답장이 필요한 경우 provider와 전체 UUID를 검증하고, 로컬 답장 파일을 사용하는 고정된 `xm relay send` 명령을 구성합니다. 받은 `reply_command` 문자열을 그대로 실행하지 않습니다. Codex UUID가 목록에 없어도 직접 조회해 확인할 수 있습니다. 답장 주소를 확인하지 못하면 `unverified`와 실패 이유를 표시합니다.
 
