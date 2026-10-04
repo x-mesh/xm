@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -14,6 +14,7 @@ const CLI = join(ROOT, 'xm', 'lib', 'x-relay-cli.mjs');
 const THREAD_A = '11111111-1111-4111-8111-111111111111';
 const THREAD_B = '22222222-2222-4222-8222-222222222222';
 const THREAD_C = '44444444-4444-4444-8444-444444444444';
+const THREAD_D = '77777777-7777-4777-8777-777777777777';
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 function git(args, cwd) {
@@ -44,8 +45,14 @@ function readClientFrames(state, onText) {
   }
 }
 
-function startFakeDaemon(socketPath, threads) {
+function startFakeDaemon(socketPath, threads, options = {}) {
   const server = net.createServer(socket => {
+    let page = 0;
+    if (options.closeBeforeUpgrade) {
+      socket.once('data', () => socket.end());
+      socket.on('error', () => {});
+      return;
+    }
     const state = { buffer: Buffer.alloc(0), upgraded: false };
     socket.on('data', chunk => {
       state.buffer = Buffer.concat([state.buffer, chunk]);
@@ -61,8 +68,9 @@ function startFakeDaemon(socketPath, threads) {
       readClientFrames(state, text => {
         const request = JSON.parse(text);
         if (request.id == null) return;
+        if (options.replyText !== undefined) { socket.write(serverFrame(options.replyText)); return; }
         let result = {};
-        if (request.method === 'thread/list') result = { data: threads, nextCursor: null };
+        if (request.method === 'thread/list') result = options.pages ? options.pages[page++] : { data: threads, nextCursor: null };
         if (request.method === 'thread/read') result = { thread: threads.find(t => t.id === request.params.threadId) || null };
         socket.write(serverFrame(JSON.stringify({ id: request.id, result })));
       });
@@ -110,9 +118,9 @@ if (args[0] === 'app-server' && args[1] === 'daemon') {
   return { root, home, repo, worktree, fake, capture, socketPath, threads };
 }
 
-async function withFixture(fn) {
+async function withFixture(fn, daemonOptions = {}) {
   const f = fixture();
-  const server = await startFakeDaemon(f.socketPath, f.threads);
+  const server = await startFakeDaemon(f.socketPath, f.threads, daemonOptions);
   try { await fn(f); }
   finally {
     await new Promise(resolve => server.close(resolve));
@@ -133,7 +141,9 @@ function run(f, args, extraEnv = {}) {
     const timer = setTimeout(() => { child.kill(); reject(new Error(`relay CLI timed out: ${stderr}`)); }, 10000);
     child.on('close', status => {
       clearTimeout(timer);
-      resolve({ status, output: JSON.parse(status === 0 ? stdout : stderr) });
+      const text = status === 0 ? stdout : stderr;
+      try { resolve({ status, output: JSON.parse(text) }); }
+      catch (error) { reject(new Error(`relay CLI returned non-JSON output: ${text}`, { cause: error })); }
     });
   });
 }
@@ -212,5 +222,77 @@ describe('Codex relay CLI', () => {
   test('rejects ambiguous or missing input without creating a queue submission', () => {
     expect(() => parseArgs(['send', '--thread', THREAD_A, '--message', 'a', '--message-file', 'b'])).toThrow();
     expect(() => parseArgs(['sessions', '--thread', THREAD_A])).toThrow();
+    expect(() => parseArgs(['send', '--thread', THREAD_A, '--message', '--project', 'target'])).toThrow();
+    expect(() => parseArgs(['send', '--thread', THREAD_A, '--message='])).toThrow();
+    expect(() => parseArgs(['send', '--thread', THREAD_A, '--message=hello', '--message', 'again'])).toThrow();
+    expect(() => parseArgs(['send', '--thread', THREAD_A, '--message=hello', '--message-file', 'file'])).toThrow();
+  });
+
+  test('queues a double-hyphen-leading inline message with literal quotes and equals signs', async () => {
+    await withFixture(async f => {
+      const message = '-- review "cache=true"\n$HOME `whoami`';
+      const result = await run(f, ['send', '--thread', THREAD_A, `--message=${message}`]);
+      expect(result.status).toBe(0);
+      expect(result.output.state).toBe('queued');
+      expect(JSON.parse(readFileSync(f.capture, 'utf8')).slice(-1)).toEqual([`--message=${message}`]);
+    });
+  });
+
+  test.each(['null', '[]', 'not JSON'])('reports a malformed daemon message (%s) as a JSON error', async replyText => {
+    await withFixture(async f => {
+      const result = await run(f, ['sessions']);
+      expect(result.status).toBe(1);
+      expect(result.output.ok).toBe(false);
+      expect(result.output.error).toContain('invalid JSON-RPC message');
+    }, { replyText });
+  });
+
+  test('rejects a connection closed before upgrade without waiting for the connection timeout', async () => {
+    await withFixture(async f => {
+      const started = Date.now();
+      const result = await run(f, ['sessions']);
+      expect(result.status).toBe(1);
+      expect(result.output.error).toContain('closed before WebSocket upgrade');
+      expect(Date.now() - started).toBeLessThan(2000);
+    }, { closeBeforeUpgrade: true });
+  }, 10000);
+
+  test('deduplicates overlapping pages and keeps the later observed session state', async () => {
+    const original = { id: THREAD_A, name: 'old', updatedAt: 1, status: { type: 'notLoaded' } };
+    const latest = { ...original, name: 'latest', updatedAt: 2, status: { type: 'idle' } };
+    await withFixture(async f => {
+      const result = await run(f, ['sessions']);
+      expect(result.status).toBe(0);
+      expect(result.output.sessions.map(row => [row.thread_id, row.name, row.loaded])).toEqual([[THREAD_A, 'latest', true]]);
+      expect(result.output.partial).toBe(false);
+    }, { pages: [{ data: [original], nextCursor: 'next' }, { data: [latest], nextCursor: null }] });
+  });
+
+  test('canonicalizes each directory once per project-scoped inventory, including across pages', async () => {
+    const pages = [];
+    await withFixture(async f => {
+      pages.push(
+        { data: f.threads.slice(0, 2), nextCursor: 'next' },
+        { data: [f.threads[2], { ...f.threads[0], id: THREAD_D }], nextCursor: null },
+      );
+      const bin = join(f.root, 'bin');
+      mkdirSync(bin);
+      const capture = join(f.root, 'git-calls.jsonl');
+      const fakeGit = join(bin, 'git');
+      writeFileSync(fakeGit, `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+appendFileSync(process.env.FAKE_GIT_CAPTURE, JSON.stringify(process.cwd()) + '\\n');
+process.stdout.write(process.cwd() === ${JSON.stringify(realpathSync(f.worktree))} ? ${JSON.stringify(join(realpathSync(f.repo), '.git'))} : '.git');
+`);
+      chmodSync(fakeGit, 0o755);
+      const env = { PATH: `${bin}:${process.env.PATH}`, FAKE_GIT_CAPTURE: capture };
+      for (let request = 0; request < 2; request++) {
+        const result = await run(f, ['sessions', '--project', 'target'], env);
+        expect(result.status).toBe(0);
+        expect(result.output.sessions.map(row => row.thread_id)).toEqual([THREAD_C, THREAD_A, THREAD_D]);
+      }
+      const calls = readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      for (const directory of [f.repo, f.worktree, f.threads[1].cwd]) expect(calls.filter(cwd => cwd === realpathSync(directory))).toHaveLength(2);
+    }, { pages });
   });
 });

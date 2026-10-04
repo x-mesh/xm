@@ -19,10 +19,11 @@ function parseArgs(argv) {
   if (['help', '--help', '-h'].includes(command)) return { command: 'help', options: {} };
   const options = {};
   for (let index = 0; index < rest.length; index += 1) {
-    const flag = rest[index];
+    const inlineMessage = rest[index].startsWith('--message=');
+    const flag = inlineMessage ? '--message' : rest[index];
     if (!['--project', '--provider', '--thread', '--session', '--message', '--message-file'].includes(flag)) throw new Error(`unknown option: ${flag}`);
-    const value = rest[++index];
-    if (!value || value.startsWith('--')) throw new Error(`${flag} requires a value`);
+    const value = inlineMessage ? rest[index].slice('--message='.length) : rest[++index];
+    if (!value || (!inlineMessage && value.startsWith('--'))) throw new Error(`${flag} requires a value`);
     if (options[flag]) throw new Error(`duplicate option: ${flag}`);
     options[flag] = value;
   }
@@ -58,8 +59,18 @@ function canonicalRepoPath(path) {
 }
 
 function projectMatches(cwd, projectPath) {
-  if (!cwd || !existsSync(cwd) || !existsSync(projectPath)) return false;
-  return canonicalRepoPath(cwd) === canonicalRepoPath(projectPath);
+  return createProjectMatcher(projectPath)(cwd);
+}
+
+function createProjectMatcher(projectPath) {
+  const paths = new Map();
+  return cwd => {
+    if (!cwd || !existsSync(cwd) || !existsSync(projectPath)) return false;
+    for (const directory of [projectPath, cwd]) {
+      if (!paths.has(directory)) paths.set(directory, canonicalRepoPath(directory));
+    }
+    return paths.get(cwd) === paths.get(projectPath);
+  };
 }
 
 function runClaudeJson(args) {
@@ -109,9 +120,10 @@ function processAlive(pid) {
 function listClaudeSessions(projectName) {
   requireClaudeSocketPlatform();
   const project = projectName ? registryProject(projectName) : null;
+  const matchesProject = project ? createProjectMatcher(project.path) : null;
   const sessions = claudeSessions().flatMap(session => {
     const record = claudeSessionRecord(session);
-    if (!record || (project && !projectMatches(record.cwd, project.path))) return [];
+    if (!record || (matchesProject && !matchesProject(record.cwd))) return [];
     return [{ session_id: record.sessionId, pid: record.pid, name: record.name || null, cwd: record.cwd || null, kind: record.kind || null, status: record.status || 'unknown', transport: 'local_inbox_socket' }];
   });
   return { ok: true, provider: 'claude', project: projectName || null, sessions, note: 'Only live local Claude sessions with a registered private inbox socket are listed; delivery can still be held or refused by the receiving session.' };
@@ -241,7 +253,12 @@ class DaemonClient {
         reject(error);
         this.failPending(error);
       });
-      this.socket.on('close', () => this.failPending(new Error('Codex daemon socket closed')));
+      this.socket.on('close', () => {
+        clearTimeout(timer);
+        const error = new Error(this.upgraded ? 'Codex daemon socket closed' : 'Codex daemon socket closed before WebSocket upgrade');
+        if (!this.upgraded) reject(error);
+        this.failPending(error);
+      });
     });
   }
 
@@ -276,7 +293,14 @@ class DaemonClient {
 
   dispatch(text) {
     let message;
-    try { message = JSON.parse(text); } catch { return; }
+    try {
+      message = JSON.parse(text);
+      if (!message || typeof message !== 'object' || Array.isArray(message)) throw new Error('invalid message');
+    } catch {
+      this.failPending(new Error('Codex daemon returned an invalid JSON-RPC message'));
+      this.close();
+      return;
+    }
     const pending = this.pending.get(message.id);
     if (!pending) return;
     clearTimeout(pending.timer);
@@ -298,6 +322,7 @@ class DaemonClient {
   }
 
   request(method, params = {}) {
+    if (!this.socket || this.socket.destroyed) return Promise.reject(new Error('Codex daemon socket is not connected'));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -338,26 +363,26 @@ function newestLoadedFirst(left, right) {
 async function listSessions(projectName) {
   const { socketPath } = daemonVersion();
   const project = projectName ? registryProject(projectName) : null;
-  const targetPath = project?.path;
+  const matchesProject = project ? createProjectMatcher(project.path) : null;
   return withDaemon(socketPath, async server => {
-    const sessions = [];
+    const sessions = new Map();
     const seen = new Set();
     let cursor = null;
     let partial = false;
     for (let page = 0; page < 5; page += 1) {
       const result = await server.request('thread/list', { limit: 100, ...(cursor ? { cursor } : {}) });
       for (const thread of result.data || []) {
-        if (targetPath && !projectMatches(thread.cwd, targetPath)) continue;
+        if (matchesProject && !matchesProject(thread.cwd)) continue;
         const status = thread.status?.type || 'unknown';
-        sessions.push({ thread_id: thread.id, name: thread.name || null, cwd: thread.cwd || null, updated_at: thread.updatedAt || null, app_server_status: status, loaded: status !== 'notLoaded' && status !== 'unknown', live_status: 'unverified' });
+        sessions.set(thread.id, { thread_id: thread.id, name: thread.name || null, cwd: thread.cwd || null, updated_at: thread.updatedAt || null, app_server_status: status, loaded: status !== 'notLoaded' && status !== 'unknown', live_status: 'unverified' });
       }
       cursor = result.nextCursor || null;
       if (!cursor) break;
       if (seen.has(cursor) || page === 4) { partial = true; break; }
       seen.add(cursor);
     }
-    sessions.sort(newestLoadedFirst);
-    return { ok: true, provider: 'codex', transport: 'shared_daemon_queue', project: projectName || null, sessions, partial, note: 'loaded means the shared daemon has the thread open; it does not prove a Codex UI is currently attached.' };
+    const listed = [...sessions.values()].sort(newestLoadedFirst);
+    return { ok: true, provider: 'codex', transport: 'shared_daemon_queue', project: projectName || null, sessions: listed, partial, note: 'loaded means the shared daemon has the thread open; it does not prove a Codex UI is currently attached.' };
   });
 }
 
