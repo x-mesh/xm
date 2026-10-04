@@ -125,9 +125,17 @@ if (argv[0] === 'worktree' && argv[1] === 'acquire') {
   emit({ schema: 1, state: 'ok', ok: true, result: { path: process.env.INTEGRATION_TREE, branch } });
 }
 if (argv[0] === 'merge') {
+  const before = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+  const preflight = argv[1] === before;
+  const mode = (process.env.INTEGRATION_FAILURE_PHASE === 'preflight') === preflight ? process.env.INTEGRATION_MERGE_OUTPUT : null;
+  if (mode === 'paused') emit({ schema: 1, state: 'paused', ok: false, result: { remedies: [{ command: 'git-kit continue', safety: 'safe' }] }, error: { code: 'conflict', message: 'conflict' } }, 3);
+  if (mode === 'nonzero') emit({ schema: 1, state: 'error', ok: false, error: { code: 'merge_failed', message: 'merge refused' } }, 2);
   const merged = spawnSync('git', ['merge', '--no-edit', '--no-ff', argv[1]], { encoding: 'utf8' });
   if (merged.status !== 0) emit({ schema: 1, state: 'paused', ok: false, result: { remedies: [{ command: 'git-kit merge --continue', safety: 'safe' }] }, error: { code: 'conflict', message: merged.stderr } }, 3);
-  emit({ schema: 1, state: 'ok', ok: true, result: { merged: argv[1] } });
+  if (mode === 'no-json') { process.stderr.write('merged successfully'); process.exit(0); }
+  if (mode === 'invalid-json') { process.stdout.write('{invalid'); process.exit(0); }
+  if (mode === 'invalid-envelope') emit({ message: 'success' });
+  emit({ schema: 1, state: 'ok', ok: true, result: { merged: argv[1] } }, mode === 'inconsistent' ? 1 : 0);
 }
 if (argv[0] === 'diff') {
   const base = argv.at(-2), head = argv.at(-1);
@@ -812,6 +820,84 @@ describe('xm batch scheduler', () => {
       expect(JSON.parse(repeated.stdout).reused).toBe(true);
       expect(readFileSync(receiptPath, 'utf8')).toBe(before);
       expect(readFileSync(driver.log, 'utf8')).toBe('');
+    } finally {
+      spawnSync('git', ['worktree', 'remove', '--force', integrationTree], { cwd });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  test.each([
+    ['no-json', 'merge'], ['invalid-json', 'merge'], ['invalid-envelope', 'merge'],
+    ['paused', 'merge'], ['nonzero', 'merge'], ['inconsistent', 'merge'], ['no-json', 'preflight'],
+  ])('verify stops on %s output during %s and records the exact Git outcome', (mode, phase) => {
+    const cwd = setupRepo();
+    const integrationTree = join(cwd, 'wt-integration');
+    try {
+      run(cwd, ['batch', 'init', 'release', '--json']);
+      addPlan(cwd, 'release', 'auth', ['src/auth.mjs']);
+      run(cwd, ['batch', 'plan', 'release', '--json']);
+      const tree = join(cwd, 'wt-auth');
+      addWorktree(cwd, tree, 'xm/batch-release-auth');
+      const worktreeEnv = { X_BUILD_GK_ARGV: JSON.stringify(['node', FAKE_GK]), FAKE_GK_ACQUIRE_PATH: tree };
+      run(cwd, ['batch', 'run', 'release', '--json'], CLI, worktreeEnv);
+      run(cwd, ['batch', 'approve', 'release', '--json']);
+      mkdirSync(join(tree, 'src'), { recursive: true });
+      writeFileSync(join(tree, 'src', 'auth.mjs'), 'export const auth = true;\n');
+      spawnSync('git', ['add', 'src/auth.mjs'], { cwd: tree });
+      spawnSync('git', ['commit', '-m', 'add auth'], { cwd: tree });
+      completeTopic(tree, 'batch-release-auth');
+      run(cwd, ['batch', 'collect', 'release', '--json']);
+      const baseOid = spawnSync('git', ['rev-parse', 'develop'], { cwd, encoding: 'utf8' }).stdout.trim();
+      spawnSync('git', ['update-ref', 'refs/remotes/origin/develop', baseOid], { cwd });
+      const publishers = fakePublishers(cwd);
+      publishers.env.PUBLISH_BASE_OID = baseOid;
+      const published = run(cwd, ['batch', 'publish', 'release', '--yes', '--json'], CLI, publishers.env);
+      expect(published.code, published.stderr + published.stdout).toBe(0);
+      const sealed = run(cwd, ['batch', 'seal', 'release', '--json'], CLI, publishers.env);
+      expect(sealed.code, sealed.stderr + sealed.stdout).toBe(0);
+
+      const driver = fakeIntegrationDriver(cwd, integrationTree);
+      const panel = "process.stdout.write(JSON.stringify({run:'clean',counts:{},consensus:[],confirmed:[],contested:[],unreviewed:[]}))";
+      const env = { ...driver.env, X_BUILD_PANEL_ARGV: JSON.stringify(['node', '-e', panel]) };
+      const preview = run(cwd, ['batch', 'verify', 'release', '--dry-run', '--json'], CLI, env);
+      expect(preview.code, preview.stderr + preview.stdout).toBe(0);
+      expect(JSON.parse(preview.stdout)).toMatchObject({ status: 'dry-run', prs: [{ topic: 'auth' }], checks: [{ command: 'node --test', topics: ['auth'] }] });
+      expect(existsSync(driver.log)).toBe(false);
+
+      const failed = run(cwd, ['batch', 'verify', 'release', '--json'], CLI, {
+        ...env, INTEGRATION_MERGE_OUTPUT: mode, INTEGRATION_FAILURE_PHASE: phase,
+      });
+      expect(failed.code).toBe(mode === 'paused' ? 3 : 2);
+      const output = JSON.parse(failed.stdout);
+      const protocol = ['no-json', 'invalid-json', 'invalid-envelope'].includes(mode);
+      expect(output.error.code).toBe(protocol ? 'integration_merge_protocol_incompatible' : mode === 'paused' ? 'conflict' : mode === 'nonzero' ? 'merge_failed' : 'integration_merge_failed');
+      const receiptPath = join(cwd, '.xm', 'batches', 'release', 'integration', 'receipt.json');
+      const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      expect(receipt.checks).toEqual([]);
+      expect(receipt.review).toBeNull();
+      expect(readFileSync(driver.log, 'utf8')).not.toContain('"diff"');
+      const advanced = phase === 'merge' && !['paused', 'nonzero'].includes(mode);
+      expect(receipt.integration.head_oid === baseOid).toBe(!advanced);
+      if (protocol) {
+        expect(output.error.exit_code).toBe(0);
+        expect(output.error.before_head_oid).toBe(baseOid);
+        expect(output.error.after_head_oid).toBe(receipt.integration.head_oid);
+        expect(output.error.head_changed).toBe(advanced);
+        expect(output.recover.length).toBeGreaterThan(0);
+        expect(output.error.next_action).toContain('git-kit');
+      }
+      if (phase === 'preflight') {
+        expect(receipt.merges).toEqual([]);
+        const calls = readFileSync(driver.log, 'utf8').trim().split('\n').map(JSON.parse);
+        expect(calls.filter(row => row[0] === 'merge').map(row => row[1])).toEqual([baseOid]);
+      }
+      if (mode !== 'paused') {
+        const head = receipt.integration.head_oid;
+        const retried = run(cwd, ['batch', 'verify', 'release', '--json'], CLI, env);
+        expect(retried.code, retried.stderr + retried.stdout).toBe(0);
+        expect(JSON.parse(retried.stdout).status).toBe('integration_verified');
+        if (advanced) expect(JSON.parse(retried.stdout).result.head_oid).toBe(head);
+      }
     } finally {
       spawnSync('git', ['worktree', 'remove', '--force', integrationTree], { cwd });
       rmSync(cwd, { recursive: true, force: true });

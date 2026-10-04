@@ -1175,12 +1175,35 @@ function validationChecks(manifest, seal) {
 function mergeExactHead(worktree, oid) {
   const command = publishCommand('X_BUILD_GK_ARGV', ['git-kit']);
   if (command.error) return { ok: false, error: { code: 'invalid_gk_argv', message: command.error }, recover: [] };
+  const beforeHead = gitValue(worktree, ['rev-parse', 'HEAD']);
   const result = runPublishCommand(command, ['merge', oid, '--no-ai', '--no-ff', '--json'], worktree, { GK_AGENT: '1' });
+  const afterHead = gitValue(worktree, ['rev-parse', 'HEAD']);
   const envelope = parseAgentEnvelope(result);
-  if (result.ok && envelope?.state === 'ok') return { ok: true, envelope };
+  const validEnvelope = envelope?.schema === 1 && ['ok', 'paused', 'blocked', 'error'].includes(envelope.state)
+    && envelope.ok === (envelope.state === 'ok');
+  if (!validEnvelope) {
+    const recover = [
+      { command: 'git-kit --version', safety: 'safe' },
+      { command: 'GK_AGENT=1 git-kit context --include=diff,precheck', cwd: worktree, safety: 'safe' },
+    ];
+    return {
+      ok: false, envelope: null, recover,
+      error: {
+        code: 'integration_merge_protocol_incompatible',
+        message: 'git-kit merge returned no valid agent envelope; the Git outcome is unverified',
+        exit_code: result.exit_code, before_head_oid: beforeHead, after_head_oid: afterHead,
+        head_changed: beforeHead !== afterHead, producer_argv: command,
+        stdout_tail: result.stdout.slice(-500), stderr_tail: result.stderr.slice(-500),
+        next_action: 'Repair or update git-kit to emit merge agent envelopes, inspect the recorded worktree, then rerun xm batch verify. Do not reset an advanced HEAD or treat process exit 0 as merge approval.',
+        remedies: recover,
+      },
+    };
+  }
+  if (result.ok && envelope.state === 'ok') return { ok: true, envelope };
   return {
-    ok: false, envelope, error: envelope?.error || { code: 'integration_merge_failed', message: result.stderr.trim() || 'git-kit merge failed' },
-    recover: envelope?.result?.remedies || envelope?.error?.remedies || [],
+    ok: false, envelope,
+    error: envelope.error || { code: 'integration_merge_failed', message: result.stderr.trim() || 'git-kit merge failed', exit_code: result.exit_code },
+    recover: envelope.result?.remedies || envelope.error?.remedies || [],
   };
 }
 
@@ -1297,6 +1320,18 @@ function cmdVerify(args) {
     }
     const resume = integrationResumePoint(worktree, state.seal, previous);
     if (!resume.ok) return fail(action, resume.reason, { json });
+
+    const preflight = mergeExactHead(worktree, resume.current);
+    if (!preflight.ok) {
+      const paused = preflight.envelope?.state === 'paused';
+      const receipt = saveIntegrationFailure(state.manifest, state.seal, state.branch, worktree,
+        previous?.seal?.binding_sha256 === state.seal.binding_sha256 ? previous.merges || [] : [],
+        [], paused ? 'paused' : 'failed', preflight.error, preflight.recover);
+      process.exitCode = paused ? 3 : 2;
+      return emit({ action, status: paused ? 'integration_paused' : 'integration_failed', batch: batchId,
+        receipt: integrationReceiptPath(batchId), error: preflight.error, recover: preflight.recover,
+        binding_sha256: receipt.binding_sha256 }, json, `${batchId}: integration merge contract check failed`);
+    }
 
     const merges = [];
     const alreadyMerged = previous?.seal?.binding_sha256 === state.seal.binding_sha256 ? new Set((previous.merges || []).filter((row) => row.ok).map((row) => row.topic)) : new Set();
