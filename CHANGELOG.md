@@ -10,6 +10,25 @@ bumps shipped in each marketplace release.
 
 ## [Unreleased]
 
+## [2.34.0] - 2026-10-04
+
+### Added
+
+- **xm:** `xm relay chat` switches between existing Codex threads and background Claude CLI sessions through tmux.
+- **xm:** relay messages include sender addresses and reply command examples. Exact Codex UUIDs use direct lookup.
+
+### Fixed
+
+- **xm:** relay validates daemon responses, deduplicates thread inventories, and preserves messages that start with hyphens.
+- **xm:** chat detaches only the client that presses `q`.
+- **xm:** reply instructions validate addresses and construct fixed commands instead of executing received command strings.
+- **xm:** trace hooks serialize abandoned session claim recovery.
+- **x-build:** optional Low review fixes require verification against the current file bytes.
+- **x-build:** batch verification detects incompatible merge responses before topic merges and records Git diagnostics and recovery instructions.
+- **x-humanize, xm:** Korean prose guidance preserves meaning, tense, and uncertainty.
+
+Plugin versions: xm 2.34.0, x-build 3.17.0, x-humanize 0.6.0.
+
 ## [2.32.1] - 2026-10-02
 
 ### Fixed

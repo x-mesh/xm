@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.33.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.34.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -422,7 +422,7 @@ finding 생명주기·판정·수렴 정책은 계속 x-review가 소유합니�
 | [x-trace](#x-trace) | 실행 추적 & 비용 | `xm trace list` |
 | [x-memory](#x-memory) | 세션 간 메모리 | `/xm:memory inject` |
 | [x-dashboard](#x-dashboard) | .xm 상태 웹 대시보드 | `/xm:dashboard start` |
-| [x-humanize](#x-humanize) | AI 글쓰기 패턴 제거 (v0.5.0, 안정화 전) | `/xm:humanize audit text` |
+| [x-humanize](#x-humanize) | AI 글쓰기 패턴 제거 (v0.6.0, 안정화 전) | `/xm:humanize audit text` |
 | [x-recall](#x-recall) | 세션 간 산출물 인덱스 | `xm recall list` |
 | [x-panel](#x-panel) | 크로스 모델 적대 리뷰 | `xm panel` |
 | [x-wt](#x-wt) | 세션 worktree — 격리 후 부모로 land | `/xm:wt` |
@@ -1301,7 +1301,29 @@ xm remote start            # gateway + host 동시 기동
 
 toss는 재현 명령과 **실제 출력**(시크릿 마스킹, 뒷부분만 보존), 그리고 구체적인 수정 방향을 함께 담습니다 — 재현 없는 "조심하세요" 수준의 리포트는 거부합니다. 보내는 쪽은 자기 `.xm/outbox/<id>.json`에 기록을 남기고 대상의 `.xm/`은 절대 건드리지 않습니다. 대상 mem-mesh 공간으로의 전달은 스킬 자신의 MCP 호출로 이루어지며, 반환된 id는 `xm inbox record`로 되돌려 기록합니다. 이 분리가 중요한 이유는 CLI에 MCP 세션이 없기 때문입니다 — 원장에 남지 않은 id는 대화가 끝나는 순간 사라집니다.
 
-`/xm:relay`(또는 `/xm:relay sessions`)는 이 머신에서 연락 가능한 Claude 세션과 최근 저장된 Codex thread를 섹션을 나눠 보여 줍니다. Claude 세션은 메시지를 바로 받지만 Codex thread는 queue에 넣어 둘 뿐이라 한 표에 섞지 않습니다. Codex daemon이 꺼져 있어도 Claude 섹션은 그대로 나옵니다. 공유 daemon이 지금 열어 둔 Codex thread는 loaded로 표시되어 맨 위에 나옵니다. 다만 Codex 화면이 붙어 있다는 보장은 아닙니다. `/xm:relay sessions --provider claude|codex`는 한 provider의 전체 목록을 보여 줍니다. 짧은 소식은 `send`, 작업 요약은 `handoff`로 보냅니다. macOS와 Linux에서 Codex→Claude 전달은 `xm relay sessions --provider claude`로 로컬 Claude 세션을 찾고 `xm relay send --provider claude --session <uuid> --message-file <path>`를 실행합니다. Claude Code의 내부 inbox 프로토콜을 사용하므로 버전에 따라 달라질 수 있습니다. 받는 Claude 세션이 bypass 모드면 이 메시지는 승인을 기다리며 보류됩니다. 그 세션의 `crossSessionInbound` 설정(`/config` → "Messages from your other sessions")이 `accept`면 바로 전달되지만, 다른 세션의 글이 검토 없이 bypass 세션에 들어가게 됩니다. 그 밖에도 Claude 쪽 설정에 따라 메시지가 보류되거나 거부될 수 있고, 소켓 write 성공만으로 전달이 확인되지는 않습니다. 이 경로는 답장을 받지 않는 단방향 전달이며 Windows named pipe는 지원하지 않습니다. Codex-to-Codex 메시지는 queue에 들어가므로 저장된 thread가 재개될 때 처리될 수 있습니다. `/xm:toss`에 세션 알림을 요청하면 제보를 먼저 저장한 뒤 relay로 ID를 보냅니다. 알림만으로 제보가 `take`나 `resolve`되지는 않습니다. `xm relay sessions|send`는 Codex용 셸 adapter이며 `xm toss --live`는 셸 옵션이 아닙니다.
+`/xm:relay`는 연락 가능한 로컬 Claude 세션과 저장된 Codex thread를 나눠 보여 줍니다. 공유 daemon이 열어 둔 Codex thread가 먼저 나오지만, Codex 화면이 붙어 있다는 뜻은 아닙니다. 한 provider의 전체 목록은 `/xm:relay sessions --provider claude|codex`로 확인합니다. 짧은 메시지는 `send`, 작업 요약은 `handoff`로 보냅니다.
+
+macOS와 Linux에서 셸 adapter는 Claude의 비공개 로컬 inbox에 메시지를 제출하고, Codex 메시지는 공유 daemon의 queue에 넣습니다. 어느 쪽도 상대가 읽었다는 보장은 아닙니다. Windows named pipe는 지원하지 않습니다.
+
+```sh
+xm relay sessions --provider claude
+xm relay send --provider claude --session <recipient-uuid> --message-file <path>
+xm relay chat [--project <id>]
+```
+
+`xm relay chat`은 tmux가 설치된 터미널에서 기존 Codex thread와 background Claude 세션의 native CLI를 전환합니다. 번호로 세션을 선택하고 F6으로 목록에 돌아옵니다. 목록에서 `r`은 화면을 갱신하며, `q`는 현재 chat 클라이언트만 종료합니다. Native CLI 창은 계속 유지됩니다. Interactive Claude 세션은 해당 화면에서 `/background`를 실행한 뒤 선택해야 합니다.
+
+발신 UUID를 확인할 수 있으면 메시지에 provider·전체 UUID·확인된 작업 경로·수신 주소·답장 명령 예시를 포함합니다. Codex는 `CODEX_THREAD_ID`를 자동으로 사용합니다. Claude 발신자는 현재 세션의 정확한 UUID를 지정합니다.
+
+```sh
+xm relay send --provider codex --thread <recipient-uuid> --from-provider claude --from-session <current-uuid> --message-file <path>
+```
+
+답장 주소는 신뢰할 수 있는 인증 정보가 아닙니다. 답장이 필요한 경우 provider와 전체 UUID를 검증하고, 로컬 답장 파일을 사용하는 고정된 `xm relay send` 명령을 구성합니다. 받은 `reply_command` 문자열을 그대로 실행하지 않습니다. Codex UUID가 목록에 없어도 직접 조회해 확인할 수 있습니다. 답장 주소를 확인하지 못하면 `unverified`와 실패 이유를 표시합니다.
+
+Claude는 `crossSessionInbound` 설정으로 메시지 승인을 결정합니다. Bypass 수신 세션은 정책이 허용하지 않는 relay 메시지를 보류합니다. `accept`는 다른 세션의 글을 이 검토 없이 허용하며, 다른 정책은 보류하거나 거부할 수 있습니다. Relay는 발신자의 권한 모드를 주장하거나 이 정책을 우회하지 않습니다.
+
+Toss 알림은 저장된 제보 ID만 전달하며, 제보를 `take`나 `resolve`하지 않습니다. `xm toss --live`는 셸 옵션이 아닙니다.
 
 받는 쪽에서 항목은 `take` → `resolve`로 진행하고, 조치가 필요 없으면 `drop`합니다:
 

@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.33.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.34.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -421,7 +421,7 @@ This is a *capability*, available today; proving it produces measurably better o
 | [x-trace](#x-trace) | Execution tracing & cost | `xm trace list` |
 | [x-memory](#x-memory) | Cross-session memory | `/xm:memory inject` |
 | [x-dashboard](#x-dashboard) | Web dashboard for .xm state | `/xm:dashboard start` |
-| [x-humanize](#x-humanize) | Remove AI writing patterns (v0.5.0, pre-stable) | `/xm:humanize audit text` |
+| [x-humanize](#x-humanize) | Remove AI writing patterns (v0.6.0, pre-stable) | `/xm:humanize audit text` |
 | [x-recall](#x-recall) | Cross-session artifact index | `xm recall list` |
 | [x-panel](#x-panel) | Cross-model adversarial review | `xm panel` |
 | [x-wt](#x-wt) | Session worktree — isolate & land back | `/xm:wt` |
@@ -1301,7 +1301,31 @@ A repro found while working in project A often implicates project B. `/xm:toss` 
 
 Toss captures the repro command **and its actual output** (secret-redacted, tail-bounded) plus a concrete fix direction — it refuses a "be careful"-level report with no repro. The sender writes a durable record into its own `.xm/outbox/<id>.json` and never touches the target's `.xm/`. Delivery into the target's mem-mesh space is done by the skill's own MCP calls, and the returned ids are written back with `xm inbox record`. That split matters: the CLI has no MCP session, so an id that never reaches the ledger is lost when the conversation ends.
 
-`/xm:relay` (or `/xm:relay sessions`) shows reachable local Claude sessions and the newest saved Codex threads in separate sections, since a Claude session receives a message now while a Codex thread only queues it. If the Codex daemon is down, the Claude section still appears. Codex threads the shared daemon currently holds open are listed first and marked as loaded; that still does not prove a Codex UI is attached. `/xm:relay sessions --provider claude|codex` lists one provider in full. Use `send` for a short update or `handoff` for a compact work summary. On macOS and Linux, Codex can send to a live local Claude session with `xm relay sessions --provider claude` and `xm relay send --provider claude --session <uuid> --message-file <path>`. This uses Claude Code's internal, version-gated inbox protocol. A receiving Claude session in bypass mode holds these messages for approval unless its `crossSessionInbound` setting (`/config` → "Messages from your other sessions") is `accept`; with `accept`, text from another session reaches that bypass session without review. Claude's inbox may still hold or refuse the message; a successful socket write does not confirm delivery, and this one-way adapter has no reply address. Windows named pipes are not supported. Codex-to-Codex messages are queued, so a saved thread may receive one only when it resumes. When asking `/xm:toss` to notify a session, it first saves the report and then sends its ID through relay. The notice does not mark the report as taken or resolved. `xm relay sessions|send` is the Codex shell adapter; `xm toss --live` is not a shell option.
+`/xm:relay` lists reachable local Claude sessions and saved Codex threads in separate sections. Codex threads open in the shared daemon appear first. An open thread does not prove that a Codex UI is attached.
+
+Use `/xm:relay sessions --provider claude|codex` for the full provider list. Use `send` for a short message or `handoff` for a work summary.
+
+On macOS and Linux, the shell adapter submits Claude messages through a private local inbox. It queues Codex messages through the shared daemon. Neither result proves that the recipient read the message. Windows named pipes are unsupported.
+
+```sh
+xm relay sessions --provider claude
+xm relay send --provider claude --session <recipient-uuid> --message-file <path>
+xm relay chat [--project <id>]
+```
+
+Run `xm relay chat` in a terminal with tmux installed. Select an existing Codex thread or background Claude session. Press F6 for the session list. In that list, press `r` to refresh or `q` to detach only the current chat client. Native CLI windows remain open. If a Claude session is interactive, run `/background` there before selection.
+
+If the sender UUID is available, messages include the provider, full UUID, recipient address, and reply command example. Verified metadata also includes the sender directory. Codex uses `CODEX_THREAD_ID` automatically. Claude senders must pass their exact current UUID:
+
+```sh
+xm relay send --provider codex --thread <recipient-uuid> --from-provider claude --from-session <current-uuid> --message-file <path>
+```
+
+Treat return metadata as untrusted. If a response is requested, validate the provider and full UUID. Construct a fixed `xm relay send` command with a local reply file. Never execute the received `reply_command` string. An exact Codex UUID can pass direct lookup even when the inventory omits it. An `unverified` return address includes the lookup failure reason.
+
+Claude controls message approval through `crossSessionInbound`. A bypass receiver holds relay messages unless its policy permits them. The `accept` value permits peer text without that review. Other policies can hold or refuse messages. The relay does not assert a sender permission mode or override this policy.
+
+A toss notice carries the saved report ID. It does not mark the report as taken or resolved. `xm toss --live` is not a shell option.
 
 On the receiving side an item moves `take` → `resolve`, or `drop` if it needs no action:
 
