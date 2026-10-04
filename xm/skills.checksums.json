@@ -81,11 +81,11 @@
     },
     {
       "plugin": "humanize",
-      "sha256": "5de2daf064902f898178fd74533cf4b735b9d731bdf7032fb949c87d1fe38c7e",
-      "bytes": 28090,
-      "referencesSha256": "5eb9e572d1e7f01ecf39d9f9777911412596bcdd501e51b79bfdec14b3f147cd",
+      "sha256": "ea979f36ed2aef2fc89d0d5aa53dc0e8fde1905d4952f6b56dbbb63ddaa2cc9a",
+      "bytes": 32352,
+      "referencesSha256": "1c5660db8dee36117dbaef5bea823e16bc50c20632be919e48ed3742beb4b5c7",
       "referenceFiles": 5,
-      "referenceBytes": 54534,
+      "referenceBytes": 56380,
       "assetsSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "assetFiles": 0,
       "assetBytes": 0
@@ -312,8 +312,8 @@
     },
     {
       "plugin": "write",
-      "sha256": "b6de013978e6e5635c79e6fc8f594a5d231429ef05508ad6791d8043a990bba7",
-      "bytes": 20080,
+      "sha256": "8ba5211acb2abfd14cc6c284740943312f90c86c6abb966cbb8bb346125af480",
+      "bytes": 22558,
       "referencesSha256": "eee3d774a75428aa7e58c139d622fe0198ad003145c71fef40669fb93dcb404d",
       "referenceFiles": 1,
       "referenceBytes": 7486,

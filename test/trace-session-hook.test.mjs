@@ -19,7 +19,7 @@ import { describe, test, expect, afterAll } from 'bun:test';
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { execSync, spawnSync } from 'node:child_process';
+import { execSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const HOOK_PATH = fileURLToPath(new URL('../.claude/hooks/trace-session.mjs', import.meta.url));
@@ -61,6 +61,50 @@ function runHook(phase, stdin, extraEnv = {}) {
     env,
     encoding: 'utf8',
   });
+}
+
+function runHookAsync(phase, stdin, extraEnv = {}, hookPath = HOOK_PATH) {
+  const isoHome = makeTmp();
+  const env = {
+    PATH: process.env.PATH,
+    HOME: isoHome,
+    ...extraEnv,
+  };
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [hookPath, phase], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+    child.stdin.end(typeof stdin === 'string' ? stdin : JSON.stringify(stdin));
+  });
+}
+
+async function waitForFile(file) {
+  const deadline = Date.now() + 3000;
+  while (!existsSync(file) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(existsSync(file)).toBe(true);
+}
+
+function startClaimOwner(claimFile, holdMs = 100) {
+  const script = [
+    "const fs = require('node:fs')",
+    "const [file, hold] = process.argv.slice(1)",
+    "fs.writeFileSync(file, JSON.stringify({ pid: process.pid, created_at: new Date().toISOString() }))",
+    "process.stdout.write('ready\\n')",
+    "setTimeout(() => process.exit(0), Number(hold))",
+  ].join(';');
+  const child = spawn(process.execPath, ['-e', script, claimFile, String(holdMs)], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const ready = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.stdout.once('data', resolve);
+  });
+  const exited = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  return { child, ready, exited };
 }
 
 /** Read + parse every JSONL entry from the single trace file in `tracesDir`. */
@@ -481,5 +525,136 @@ describe('trace-session hook — stale sessions, dead claims, and dispatch detec
     writeFileSync(join(claimsDir, 'toolu_busy.skill'), 'x'); // another registration is opening right now
     expect(runHook('pre', skill(repo, 'toolu_busy'), env).status).toBe(0);
     expect(readdirSync(tracesDir).filter((f) => f.endsWith('.jsonl'))).toHaveLength(1); // no second session
+  });
+
+  test('one duplicate hook takes over when the live claim owner exits before opening a session', async () => {
+    const { repo, env, tracesDir } = fresh();
+    const claimsDir = join(tracesDir, '.claims');
+    mkdirSync(claimsDir, { recursive: true });
+    const claimFile = join(claimsDir, 'toolu_failed.skill');
+    const owner = startClaimOwner(claimFile);
+    await owner.ready;
+
+    const pending = [
+      runHookAsync('pre', skill(repo, 'toolu_failed'), env),
+      runHookAsync('pre', skill(repo, 'toolu_failed'), env),
+    ];
+    await owner.exited;
+
+    expect((await Promise.all(pending)).map((result) => result.status)).toEqual([0, 0]);
+    expect(readdirSync(tracesDir).filter((f) => f.endsWith('.jsonl'))).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(tracesDir, '.active'), 'utf8')).tool_use_id).toBe('toolu_failed');
+  });
+
+  test('a live owner without session evidence delays a duplicate hook for less than one second', async () => {
+    const { repo, env, tracesDir } = fresh();
+    const claimsDir = join(tracesDir, '.claims');
+    mkdirSync(claimsDir, { recursive: true });
+    const owner = startClaimOwner(join(claimsDir, 'toolu_live.skill'), 1000);
+    await owner.ready;
+
+    const startedAt = Date.now();
+    expect(runHook('pre', skill(repo, 'toolu_live'), env).status).toBe(0);
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+    expect(readdirSync(tracesDir).filter((f) => f.endsWith('.jsonl'))).toHaveLength(0);
+    owner.child.kill();
+    await owner.exited;
+  });
+
+  test('an old claim is recovered even when its PID now belongs to a live process', () => {
+    const { repo, env, tracesDir } = fresh();
+    const claimsDir = join(tracesDir, '.claims');
+    mkdirSync(claimsDir, { recursive: true });
+    const claimFile = join(claimsDir, 'toolu_reused.skill');
+    writeFileSync(claimFile, JSON.stringify({ pid: process.pid, created_at: new Date(Date.now() - 10_000).toISOString() }));
+    const tenSecondsAgo = new Date(Date.now() - 10_000);
+    utimesSync(claimFile, tenSecondsAgo, tenSecondsAgo);
+
+    expect(runHook('pre', skill(repo, 'toolu_reused'), env).status).toBe(0);
+    expect(readdirSync(tracesDir).filter((f) => f.endsWith('.jsonl'))).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(tracesDir, '.active'), 'utf8')).tool_use_id).toBe('toolu_reused');
+  });
+
+  test('a delayed recovery cannot steal the replacement claim before its session is published', async () => {
+    const { repo, env, tracesDir } = fresh();
+    const claimsDir = join(tracesDir, '.claims');
+    mkdirSync(claimsDir, { recursive: true });
+    const claimFile = join(claimsDir, 'toolu_race.skill');
+    writeFileSync(claimFile, 'x');
+    const oldTime = new Date(Date.now() - 10_000);
+    utimesSync(claimFile, oldTime, oldTime);
+
+    const recoveryPoint = 'function replaceAbandonedClaim(claimFile, activeFile, toolUseId) {';
+    const publicationPoint = '  try {\n    // A session left open';
+    const source = readFileSync(HOOK_PATH, 'utf8');
+    expect(source).toContain(recoveryPoint);
+    expect(source).toContain(publicationPoint);
+    const controlledHook = join(repo, 'controlled-hook.mjs');
+    writeFileSync(controlledHook, source
+      .replace(recoveryPoint, `${recoveryPoint}\n  pauseAtTestGate('recovery');`)
+      .replace(publicationPoint, "  try {\n    pauseAtTestGate('publication');\n    // A session left open")
+      .replace('\nmain();', `
+function pauseAtTestGate(point) {
+  if (process.env.TEST_GATE !== point) return;
+  fs.writeFileSync(process.env.TEST_READY, 'ready');
+  const deadline = Date.now() + 5000;
+  while (!fs.existsSync(process.env.TEST_RELEASE)) {
+    if (Date.now() >= deadline) throw new Error('test gate timed out');
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+}
+main();`));
+    const recoveryReady = join(repo, 'recovery-ready');
+    const recoveryRelease = join(repo, 'recovery-release');
+    const publicationReady = join(repo, 'publication-ready');
+    const publicationRelease = join(repo, 'publication-release');
+    const delayed = runHookAsync('pre', skill(repo, 'toolu_race'), {
+      ...env, TEST_GATE: 'recovery', TEST_READY: recoveryReady, TEST_RELEASE: recoveryRelease,
+    }, controlledHook);
+    let replacement;
+    try {
+      await waitForFile(recoveryReady);
+      replacement = runHookAsync('pre', skill(repo, 'toolu_race'), {
+        ...env, TEST_GATE: 'publication', TEST_READY: publicationReady, TEST_RELEASE: publicationRelease,
+      }, controlledHook);
+      await waitForFile(publicationReady);
+      const replacementClaim = readFileSync(claimFile, 'utf8');
+      writeFileSync(recoveryRelease, 'release');
+      expect((await delayed).status).toBe(0);
+      expect(readFileSync(claimFile, 'utf8')).toBe(replacementClaim);
+      expect(existsSync(join(tracesDir, '.active'))).toBe(false);
+    } finally {
+      writeFileSync(recoveryRelease, 'release');
+      writeFileSync(publicationRelease, 'release');
+      await delayed;
+      if (replacement) await replacement;
+    }
+    expect(readdirSync(tracesDir).filter((f) => f.endsWith('.jsonl'))).toHaveLength(1);
+  });
+
+  test('recovery respects a live recovery lock and reclaims it after its owner exits', async () => {
+    const { repo, env, tracesDir } = fresh();
+    const claimsDir = join(tracesDir, '.claims');
+    mkdirSync(claimsDir, { recursive: true });
+    const claimFile = join(claimsDir, 'toolu_locked.skill');
+    writeFileSync(claimFile, 'x');
+    const oldTime = new Date(Date.now() - 10_000);
+    utimesSync(claimFile, oldTime, oldTime);
+    const recoveryDir = `${claimFile}.recovering`;
+    mkdirSync(recoveryDir);
+    const owner = startClaimOwner(join(recoveryDir, 'original-owner.json'), 5000);
+    try {
+      await owner.ready;
+      expect(runHook('pre', skill(repo, 'toolu_locked'), env).status).toBe(0);
+      expect(readFileSync(claimFile, 'utf8')).toBe('x');
+      expect(readdirSync(tracesDir).filter((f) => f.endsWith('.jsonl'))).toHaveLength(0);
+    } finally {
+      owner.child.kill();
+      await owner.exited;
+    }
+    expect(runHook('pre', skill(repo, 'toolu_locked'), env).status).toBe(0);
+    expect(readdirSync(tracesDir).filter((f) => f.endsWith('.jsonl'))).toHaveLength(1);
+    expect(existsSync(recoveryDir)).toBe(false);
+    expect(readdirSync(claimsDir)).toEqual(['toolu_locked.skill']);
   });
 });

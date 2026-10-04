@@ -55,8 +55,34 @@ Universal (both modes) — these read as machine-generated in any register:
 - No forced rule-of-three or "~뿐만 아니라 ~까지" balance that adds no fact.
 - No hedged non-conclusions ("결국 상황에 따라 다르다 / 균형이 필요하다"). End on a concrete fact, number, or next action.
 
-Developer mode: terse and direct — lead with the result; state findings/actions without a 권고형 결말 pile-up ("~해야 한다" sentence after sentence).
-Easy/normal mode: accessible Korean is the goal — polite guidance ("~해 보세요"), one line of context for non-experts. Keep commands, flags, paths, and proper nouns in English; on first use write a domain term as Korean(original), e.g. 결론(verdict). Still apply the universal rules; accessible ≠ padded or vague.
+Developer mode: direct and complete — lead with the result; state findings/actions without a 권고형 결말 pile-up ("~해야 한다" sentence after sentence). Brevity must not remove particles, predicates, conditions, or limitations that make the relation clear.
+Easy/normal mode: accessible Korean is the goal — polite guidance ("~해 보세요"), one line of context for non-experts. Keep commands, flags, paths, and proper nouns unchanged. Explain an unfamiliar term only when the reader needs it; do not attach English glosses to familiar Korean words. Still apply the universal rules; accessible ≠ padded or vague.
+
+### Korean sentence review (prose only)
+
+Apply this review during detection, rewriting, and the final audit. `ui` keeps its
+separate pipeline. A watched word or repeated ending is a signal to read the
+sentence, not an automatic instruction to replace it.
+
+- Read who does what, to which object, and under which condition. Repair particle
+  and predicate agreement before shortening. Omit a subject only when its referent
+  remains clear; do not invent an actor to make a passive sentence active.
+- Replace noun chains with verbs and particles that express the source relation:
+  `설정 변경 후 오류 발생 가능.` → `설정을 바꾸면 오류가 발생할 수 있습니다.`
+  Keep noun phrases for headings and labels. Explanations need complete sentences.
+- Preserve tense, negation, obligation, possibility, attribution, and uncertainty.
+  `아직 확인하지 못했습니다` must not become `문제가 없습니다`. Keep meaningful
+  `~할 수 있습니다` and `~로 보입니다` rather than making every claim definite.
+- Join sentences only when the source supports that relation. Do not insert
+  `따라서`, `때문에`, `먼저`, or `그다음` to invent causality or sequence.
+- Use familiar, precise vocabulary. Keep established technical terms and the
+  writer's register. Do not replace `도메인 모델이 성숙했다` with `모델이 익었다`.
+- Make a vague statement concrete only from the supplied evidence. Never add a
+  metric, threshold, example, result, or motive just to sound specific.
+- Vary sentence structure when it improves reading, not to meet a rhythm quota.
+  Do not change tense or mix sentence fragments into prose to vary endings.
+- Read the paragraph again as connected Korean. Check that each predicate fits its
+  subject and object, and that shortening did not hide a condition or referent.
 
 ## Routing
 
@@ -159,7 +185,9 @@ second warning. Output once, then let the user opt in to a stronger pass.
 
 Naturalness without preserved meaning is just a different lie. Set hard ceilings on edit volume and require justification when crossed.
 
-These ceilings apply to prose only. `ui` mode suspends this entire section — see `## UI String Mode` for why and for the guardrail that replaces it.
+These ceilings apply to prose only, except for the explicitly requested Korean
+sentence expansion below. `ui` mode suspends this entire section — see
+`## UI String Mode` for why and for the guardrail that replaces it.
 
 ### Thresholds
 
@@ -176,7 +204,7 @@ as approximate.
 | 30–50% | Warn and re-verify | Likely scope creep. Re-read the fact inventory before output. Confirm every claim is intact. |
 | > 50% | **Hard stop** — do not output. Diagnose. | Over-rewrite. Either you over-edited a near-natural input, or the user wanted full rewriting (different skill). |
 
-When change rate exceeds 50%:
+For ordinary rewriting, when change rate exceeds 50%:
 1. Do not return the over-edited text.
 2. Re-read the source. Was every change rule-driven (matched a numbered pattern), or did you "improve" wording subjectively?
 3. Either restart with `light` intensity, or tell the user the input may not need humanization.
@@ -190,6 +218,25 @@ For short inputs, single-token swaps inflate percentages. Use absolute threshold
 | < 200 chars | 5 token-level changes | 10 token-level changes |
 | 200–500 chars | 25% | 45% |
 | 500+ chars | 30% | 50% |
+
+For Korean inputs under 200 characters, count token-level changes as Levenshtein
+edits over whitespace-separated 어절, not model tokens. Keep punctuation attached
+to its 어절. Normalize whitespace and use the restored text as above.
+
+### Explicit Korean sentence expansion
+
+If the user explicitly asks to turn compressed Korean fragments into complete
+sentences, adding omitted particles and predicates can exceed the volume ceiling.
+This exception applies only to that requested expansion, not to ordinary
+humanization or a general request for stronger prose.
+
+Measure the edits, then check every added phrase against the fact inventory.
+Preserve the source's conditions, sequence, obligation, uncertainty, and protected
+spans. Permit an over-ceiling draft only when the extra edits express those
+existing relations as complete sentences. Remove any extra fact or discretionary
+style change instead of using this exception to keep it. In the findings or a
+short note after the text, state that the requested expansion exceeded the edit
+budget and that meaning was checked. Never insert that note into the edited body.
 
 ### What counts toward change rate
 
@@ -288,15 +335,21 @@ Skip this pass for strict technical reference output if the user requested neutr
 
 For Korean prose, the voice pass usually means:
 - Reduce stacked Sino-Korean abstractions when a plain verb is enough.
-- Vary endings naturally instead of forcing every sentence into `~다` or `~습니다`.
+- Apply `### Korean sentence review (prose only)`. Preserve tense and register;
+  vary sentence structure only where the paragraph reads mechanically.
 - Keep the source register. Do not switch 반말 to 존댓말 or vice versa.
-- Use sentence fragments sparingly; Korean fragments can sound natural in essays and posts, but sloppy in docs.
+- Keep explanations as complete sentences. Use fragments only where the source
+  genre calls for them, such as headings, labels, or an established essay voice.
 
 ### Step 5 — Final anti-AI audit pass (REQUIRED)
 
 Internally ask: **"What still makes this obviously AI-generated?"** List remaining tells in 1-2 lines, then revise once more to remove them. This catches lingering AI-isms in the first draft.
 
 Common tells caught at this stage: leftover em-dashes, residual rule-of-three lists, sycophantic openers like "Great question!", trailing chatbot disclaimers ("Let me know if…").
+
+For Korean prose, also run the sentence review above. A draft with fewer watched
+words still fails if its particles, predicates, or references no longer fit, or
+if it changes the source's tense, certainty, or causal relation.
 
 Restore the protected-span map and verify it losslessly: the count, order, and
 contents of protected spans must match the source exactly. A mismatch invalidates
@@ -305,7 +358,11 @@ the draft; repair it before continuing.
 Then compare the fully restored draft against the fact inventory from Step 2. If
 the rewrite dropped a fact, restore it. If it added a fact, remove it.
 
-Then measure the change rate against the source per `## Change Rate Guardrails`. If above the warn threshold, re-verify fact inventory once more. If above the hard-stop threshold, do not output — restart with lower intensity or tell the user.
+Then measure the change rate against the source per `## Change Rate Guardrails`.
+If above the warn threshold, re-verify the fact inventory. If the explicit Korean
+sentence-expansion exception applies, check and disclose it as that section
+requires. Otherwise, above the hard-stop threshold, do not output — restart with
+lower intensity or tell the user.
 
 ### Step 6 — Output
 
@@ -345,8 +402,8 @@ Skipping any of these excuses is a sign you are partially applying the skill. Re
 | "Voice calibration is for paid features." | Voice calibration is a 30-second analysis that drastically improves output. If a sample exists, use it. |
 | "I should add my own opinions even without the user's voice." | No. Inject voice patterns *consistent with the source genre*. A README does not need first-person reflection. A blog post might. |
 | "The findings table is overhead." | In developer mode, the table teaches the user what was wrong. Skipping it loses the learning value. |
-| "Change rate is just a heuristic — my rewrite reads better." | If you crossed 50%, you stopped humanizing and started rewriting. The skill is `humanize`, not `rewrite`. Stop and tell the user. |
-| "It's a short paragraph so the threshold doesn't apply." | Short inputs use absolute count thresholds (5 / 10 token-level changes). The rule still applies — see length-aware adjustment. |
+| "Change rate is just a heuristic — my rewrite reads better." | Ordinary rewriting keeps the ceilings. Only an explicit Korean fragment-to-sentence request can use the measured, meaning-checked expansion exception. |
+| "It's a short paragraph so the threshold doesn't apply." | Short inputs keep the absolute thresholds (5 / 10 token-level changes). Only explicitly requested Korean sentence expansion has a separate check. |
 | "Genre rules just hide AI tells — strip everything." | Genre rules drop *patterns the genre legitimately uses* (e.g., 격식체 in 공적 문서). Stripping them produces a tonally wrong output the user will reject. Apply the matrix. |
 | "UI strings are Korean too, so `patterns-ko.md` is enough." | Prose patterns assume paragraphs. KO-5/KO-31/KO-32 would flag the exact uniformity a settings screen needs. Load `references/ui-strings-ko.md` and use the S codes. |
 | "This UI edit crosses 50%, so it's a hard stop." | `ui` mode suspends change-rate guardrails deliberately. A label going from sentence to noun phrase *is* the fix. Meaning preservation is the check that survives — verify that instead. |
@@ -360,11 +417,16 @@ Stop and re-read the source if you notice:
 - You wrote "It's not just X, it's Y" — that is pattern EN-9, undo.
 - You produced exactly three list items where the source had a different count — pattern EN-10, undo.
 - You added an em-dash that was not in the source — pattern EN-14, undo.
-- Your output paragraph length variance is < 20% — voice is flat, return to Step 4.
-- The Korean output uses "~할 수 있다" or "~라 할 수 있다" as a sentence ending more than once — pattern KO-9, rewrite.
+- For English output, paragraph length variance is < 20% — voice is flat, return to Step 4.
+- Korean output sounds repetitive or disconnected — re-read the sentence relations;
+  do not change natural repeated endings or tense to meet a length quota.
+- Korean output repeats "~할 수 있다" or "~라 할 수 있다" without expressing a
+  real possibility or uncertainty — inspect KO-9. Preserve meaningful uncertainty.
 - You added a citation or statistic that is not in the source — STOP. Never fabricate.
 - Change rate is climbing past 30% and you are still adding edits — STOP. Re-read the fact inventory before continuing.
-- Change rate hit 50% — DO NOT output. Restart with `light` or tell the user the source may already be natural.
+- Change rate hit 50% in ordinary rewriting — DO NOT output. Restart with `light`
+  or tell the user the source may already be natural. For an explicit Korean
+  expansion request, apply its separate meaning check and disclosure instead.
 - (`ui`) You are about to wrap the JSON array in prose or a code fence — the output must be the bare array.
 - (`ui`) A `toggle_label` you wrote ends in a verb or `~기` — that is S1-1, undo.
 - (`ui`) You changed a placeholder, shortcut, number, or env var inside a string — STOP, restore it byte-for-byte.
@@ -377,10 +439,15 @@ Before returning output, internally confirm:
 - [ ] Meaning preserved. No invented facts, no dropped citations without flagging them.
 - [ ] Protected spans restored byte-for-byte in the same count and order.
 - [ ] Register matches source (formal/casual/technical, 반말/존댓말).
-- [ ] If voice calibration was used, the rewrite matches the sample's sentence-length distribution within ±20%.
+- [ ] If voice calibration was used, English output matches the sample's
+  sentence-length distribution within ±20%. Korean output preserves the sample's
+  register and natural rhythm without a numerical length quota.
 - [ ] Output language matches input language (do not translate).
 - [ ] Findings table provided in developer mode.
-- [ ] Change rate measured. Below the warn threshold for the input length, OR (30–50% range) fact inventory re-verified, OR aborted per Change Rate Guardrails.
+- [ ] Change rate measured. Below the warn threshold for the input length, OR at
+  or above that length's warn threshold but below its hard stop with the fact
+  inventory re-verified, OR explicit Korean sentence expansion checked and
+  disclosed, OR aborted per Change Rate Guardrails.
 - [ ] (`ui` mode) `references/ui-strings-ko.md` was loaded, its closing checklist run per item, and the output is a bare JSON array. Change-rate items above do not apply.
 
 ## Output Templates
