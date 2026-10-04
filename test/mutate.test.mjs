@@ -133,6 +133,13 @@ test('StrykerJS report keeps schema locations and statuses', () => {
   expect(mutants.every(row => row.file === 'src/calc.ts' && row.line >= 4 && row.end_line <= 14)).toBe(true);
 });
 
+test('StrykerJS preserves end columns for nested mutation identities', () => {
+  const outDir = tempDir('mutate-span-');
+  write(outDir, 'mutation.json', JSON.stringify({ files: { 'src/a.mjs': { mutants: [20, 40].map(column => ({ mutatorName: 'ConditionalExpression', replacement: 'false', status: 'Survived', location: { start: { line: 1, column: 9 }, end: { line: 1, column } } })) } } }));
+  const parsed = adapter('javascript').parse({ outDir }, { exitCode: 0 });
+  expect(parsed.mutants.map(row => row.end_column)).toEqual([20, 40]);
+});
+
 test('StrykerJS schema status names map to the shared scale, unknown names to error', () => {
   const outDir = outDirWith(), location = { start: { line: 1, column: 1 }, end: { line: 1, column: 2 } };
   const names = ['CompileError', 'NoCoverage', 'RuntimeError', 'Ignored', 'Pending', 'Timeout', 'Bogus'];
@@ -414,7 +421,26 @@ test('two survivors on one line stay separate rows in the attention queue', () =
   // cargo-mutants reports both as BinaryOperator on line 4; only the column separates them.
   expect(recordDiffSurvivors(root, report, '.xm/review/mutate-diff/x.json', true)).toBe(2);
   const ledger = readFileSync(join(root, '.xm/review/escape-ledger.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-  expect(ledger.map(row => row.operator).sort()).toEqual(['BinaryOperator-12', 'BinaryOperator-21']);
+  expect(ledger.map(row => row.operator).sort()).toEqual([expect.stringMatching(/^BinaryOperator-12-[0-9a-f]{16}$/), expect.stringMatching(/^BinaryOperator-21-[0-9a-f]{16}$/)]);
+});
+
+test('different replacements at the same position stay separate and reruns remain deduplicated', () => {
+  const root = makeRoot();
+  const mutant = description => ({ tool: 'StrykerJS', file: 'src/calc.mjs', line: 4, end_line: 4, column: 12, mutator: 'ArithmeticOperator', description, status: 'survived' });
+  const report = { head: 'a'.repeat(40), ts: new Date().toISOString(), uncommitted_files: [], mutants: [mutant('a + b -> a - b'), mutant('a + b -> a * b')] };
+  const artifact = '.xm/review/mutate-diff/x.json';
+  expect(recordDiffSurvivors(root, report, artifact, true)).toBe(2);
+  expect(recordDiffSurvivors(root, report, artifact, true)).toBe(0);
+  const ledger = readFileSync(join(root, '.xm/review/escape-ledger.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  expect(new Set(ledger.map(row => row.id)).size).toBe(2);
+  expect(new Set(ledger.map(row => row.operator)).size).toBe(2);
+});
+
+test('nested expressions with the same replacement and start keep their full span identity', () => {
+  const root = makeRoot();
+  const report = { head: 'a'.repeat(40), ts: new Date().toISOString(), uncommitted_files: [], mutants: [20, 40, 60].map(end_column => ({ tool: 'StrykerJS', file: 'src/a.mjs', line: 19, end_line: 19, column: 9, end_column, mutator: 'ConditionalExpression', description: 'ConditionalExpression: false', status: 'survived' })) };
+  expect(recordDiffSurvivors(root, report, '.xm/review/mutate-diff/x.json', true)).toBe(3);
+  expect(recordDiffSurvivors(root, report, '.xm/review/mutate-diff/x.json', true)).toBe(0);
 });
 
 test('task mode runs in the linked worktree, reports under the project, and queues survivors', async () => {
@@ -425,7 +451,7 @@ test('task mode runs in the linked worktree, reports under the project, and queu
   expect(JSON.parse(readFileSync(join(root, '.xm/review/mutate/p/T1.json'), 'utf8')).mutants).toEqual([expect.objectContaining({ file: 'a.fake', line: 2, status: 'survived' })]);
   const ledger = readFileSync(join(root, '.xm/review/escape-ledger.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
   // The column qualifies the operator so two mutants on one line stay apart.
-  expect(ledger).toEqual([expect.objectContaining({ type: 'surviving_mutant', task_id: 'T1', file: 'a.fake', line: 2, operator: 'Fake-1', source: 'mutate', artifact: '.xm/review/mutate/p/T1.json' })]);
+  expect(ledger).toEqual([expect.objectContaining({ type: 'surviving_mutant', task_id: 'T1', file: 'a.fake', line: 2, operator: expect.stringMatching(/^Fake-1-[0-9a-f]{16}$/), source: 'mutate', artifact: '.xm/review/mutate/p/T1.json' })]);
   expect(readFileSync(join(root, 'a.fake'), 'utf8')).toBe('one\n');
 });
 
