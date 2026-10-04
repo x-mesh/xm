@@ -1202,7 +1202,7 @@ export async function verifyReviewFixContent(args) {
   const required = findings
     .map((finding, index) => ({ ...finding, id: findingId(index), finding_id: stableFindingId(finding), severity: normalizeSeverity(finding.severity) }))
     .filter(f => !SETTLED_DISPOSITIONS.has(f.disposition) && (TRIAGE_REQUIRED_SEVERITY.has(f.severity)
-      || (f.severity === 'low' && String(selectedDecisions.get(f.finding_id)?.decision
+      || (!opts.init && f.severity === 'low' && String(selectedDecisions.get(f.finding_id)?.decision
         || selectedDecisions.get(f.id)?.decision || '').trim().toLowerCase() === 'fix_now')));
   const freshness = assessReviewFreshness(review);
   const findingIdFailures = stableFindingIdFailures(required);

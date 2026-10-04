@@ -1035,6 +1035,14 @@ describe('verify-review-fix', () => {
         triage.target_findings[0].evidence = 'User requested this correction';
         triage.fix_scope.allowed_files = ['src/x.ts'];
       });
+      expect(run(['verify-review-fix', '--init'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
+      const triagePath = join(tmp, '.xm', 'review', 'triage.json');
+      const triage = readJSON(triagePath);
+      triage.target_findings[0].decision = 'fix_now';
+      triage.target_findings[0].evidence = 'User requested this correction';
+      triage.fix_scope.allowed_files = ['src/x.ts'];
+      writeFileSync(triagePath, JSON.stringify(triage));
       expect(run(['verify-review-fix'], { cwd: tmp }).exitCode).toBe(0);
       expect(readJSON(join(tmp, '.xm', 'review', 'review-fix-gate.json')).stage).toBe('ready_for_fix');
       writeFileSync(join(tmp, 'src', 'x.ts'), 'corrected bytes\n');
