@@ -1198,9 +1198,12 @@ export async function verifyReviewFixContent(args) {
     catch (error) { console.log(error.message); process.exitCode = 1; return; }
   }
   const findings = Array.isArray(review?.findings) ? review.findings : [];
+  const selectedDecisions = toTriageMap(readJSON(triagePath));
   const required = findings
     .map((finding, index) => ({ ...finding, id: findingId(index), finding_id: stableFindingId(finding), severity: normalizeSeverity(finding.severity) }))
-    .filter(f => TRIAGE_REQUIRED_SEVERITY.has(f.severity) && !SETTLED_DISPOSITIONS.has(f.disposition));
+    .filter(f => !SETTLED_DISPOSITIONS.has(f.disposition) && (TRIAGE_REQUIRED_SEVERITY.has(f.severity)
+      || (f.severity === 'low' && String(selectedDecisions.get(f.finding_id)?.decision
+        || selectedDecisions.get(f.id)?.decision || '').trim().toLowerCase() === 'fix_now')));
   const freshness = assessReviewFreshness(review);
   const findingIdFailures = stableFindingIdFailures(required);
 
@@ -1372,7 +1375,8 @@ export async function verifyReviewFixContent(args) {
       lifecycle = buildLifecycle(review, triage, freshness);
     }
     const lifecycleDigestBeforeSync = `sha256:${sha256(JSON.stringify(lifecycle))}`;
-    if (previousGate?.lifecycle_digest && previousGate.lifecycle_digest !== lifecycleDigestBeforeSync) {
+    if (previousGate?.lifecycle_digest && previousGate.lifecycle_digest !== lifecycleDigestBeforeSync
+      && !(previousGate.stage === 'lgtm_ready' && previousGate.authorized === false)) {
       failures.push('finding-lifecycle.json changed since the last review-fix gate; re-run verify-review-fix --init');
       fixAuthorized = false;
     }
