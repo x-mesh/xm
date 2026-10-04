@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -63,11 +63,11 @@ async function withFixture(options, fn) {
   }
 }
 
-function run(f, args) {
+function run(f, args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [CLI, ...args], {
       cwd: f.root,
-      env: { ...process.env, HOME: f.home, CLAUDE_CONFIG_DIR: f.config, XM_RELAY_CLAUDE_BIN: f.fakeClaude, FAKE_CLAUDE_AGENTS: JSON.stringify(f.agents) },
+      env: { ...process.env, HOME: f.home, CLAUDE_CONFIG_DIR: f.config, XM_RELAY_CLAUDE_BIN: f.fakeClaude, FAKE_CLAUDE_AGENTS: JSON.stringify(f.agents), ...extraEnv },
     });
     let stdout = '';
     let stderr = '';
@@ -155,6 +155,39 @@ describe.if(supported)('Claude relay CLI', () => {
       expect(result.status).toBe(1);
       expect(result.output.error).toContain('is not in project');
       expect(f.received).toHaveLength(0);
+    });
+  });
+
+  test('submits a double-hyphen-leading inline message without changing its body', async () => {
+    await withFixture({}, async f => {
+      const message = '-- review "cache=true"\nnext step';
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, `--message=${message}`]);
+      expect(result.status).toBe(0);
+      expect(result.output.state).toBe('submitted');
+      expect(sentFrame(f).message.content).toBe(`<cross-session-message from-name="codex-via-xm">\n${message}\n</cross-session-message>`);
+    });
+  });
+
+  test('reuses the canonical project directory only within one inventory request', async () => {
+    await withFixture({}, async f => {
+      const bin = join(f.root, 'bin');
+      mkdirSync(bin);
+      const capture = join(f.root, 'git-calls.jsonl');
+      const fakeGit = join(bin, 'git');
+      writeFileSync(fakeGit, `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+appendFileSync(process.env.FAKE_GIT_CAPTURE, JSON.stringify(process.cwd()) + '\\n');
+process.exit(1);
+`);
+      chmodSync(fakeGit, 0o755);
+      for (let request = 0; request < 2; request++) {
+        const result = await run(f, ['sessions', '--provider', 'claude', '--project', 'target'], {
+          PATH: `${bin}:${process.env.PATH}`, FAKE_GIT_CAPTURE: capture,
+        });
+        expect(result.status).toBe(0);
+        expect(result.output.sessions.map(row => row.session_id)).toEqual([SESSION]);
+      }
+      expect(readFileSync(capture, 'utf8').trim().split('\n')).toHaveLength(2);
     });
   });
 });
