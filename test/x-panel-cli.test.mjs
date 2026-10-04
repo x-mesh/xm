@@ -1302,6 +1302,15 @@ describe('structured streaming (adapters)', () => {
     expect(supportsStream('agy')).toBe(false);
   });
 
+  test('Claude stream reports thinking and tool activity without exposing tool arguments', () => {
+    expect(parseStreamLine('claude', { type: 'stream_event', event: { type: 'message_start' } }).events[0].phase).toBe('분석 중');
+    const tool = parseStreamLine('claude', { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'SECRET_ARGUMENT' } }] } });
+    expect(tool.events).toEqual([{ kind: 'activity', phase: '도구 실행: Bash' }]);
+    expect(parseStreamLine('claude', { type: 'assistant', message: { content: [{ type: 'text', text: 'answer' }] } }, null, { partial: false }).events).toEqual([{ kind: 'text', delta: 'answer' }]);
+    expect(JSON.stringify(tool.events)).not.toContain('SECRET_ARGUMENT');
+    expect(parseStreamLine('claude', { type: 'user', message: { content: [{ type: 'tool_result', content: 'SECRET_RESULT' }] } }).events[0].phase).toContain('도구 결과 수신');
+  });
+
   test('parseStreamLine: claude result carries final text + USD + tokens', () => {
     const r = parseStreamLine('claude', { type: 'result', result: '{"findings":[]}', usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 10 }, total_cost_usd: 0.5 }, 'claude-opus-4-8');
     expect(r.finalText).toBe('{"findings":[]}');
@@ -2743,8 +2752,10 @@ describe('panel status (staleness + project scope + --all)', () => {
     seedProgressRun('panel-progress-fixture');
     const r = spawnSync('node', [CLI, 'status', '--watch', '--lines', '1', '--interval', '1'],
       { cwd: DIR, env: STUB_ENV(statusEnv()), encoding: 'utf8', timeout: 2500 });
-    expect(r.stdout).toContain('1/2 done');            // round progress in the run header
-    expect(r.stdout).toContain('responding');          // live phase of the running agent
+    expect(r.stdout).toContain('종료 1/2 · 진행 1');
+    expect(r.stdout).toContain('완료 · 소요 30s');
+    expect(r.stdout).toContain('진행 중 · 경과 45s');            // round progress in the run header
+    expect(r.stdout).toContain('응답 작성 중');          // live phase of the running agent
     expect(r.stdout).toContain('12.3k tok');           // live token usage
     expect(r.stdout).toContain('$0.12');               // live cost
     expect(r.stdout).toContain('commands 7/24');
@@ -3063,7 +3074,7 @@ describe('review (stubbed models)', () => {
       .split(/\r?\n/)
       .map((line) => JSON.parse(line));
     expect(events.some((ev) => ev.type === 'run_start')).toBe(true);
-    expect(events.some((ev) => ev.type === 'stdout' && ev.model === 'claude')).toBe(true);
+    expect(events.some((ev) => ev.type === 'spawn' && ev.model === 'claude' && ev.mode === 'stream-partial')).toBe(true);
     expect(events.some((ev) => ev.type === 'round_file_written' && ev.round === 1)).toBe(true);
 
     const st = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8'));
@@ -3071,6 +3082,32 @@ describe('review (stubbed models)', () => {
     expect(claude.last_event).toBeTruthy();
     expect(typeof claude.stdout_tail).toBe('string');
     expect(claude.stdout_bytes).toBeGreaterThan(0);
+  });
+
+  test('Claude streams by default while preserving a session across review rounds', () => {
+    const log = join(DIR, 'default-stream-sessions.jsonl');
+    const r = review(['default progress target', '--rounds', '2'], { X_PANEL_SESSION_LOG: log });
+    expect(r.status).toBe(0);
+    const st = JSON.parse(readFileSync(join(latestRunDir(), 'status.json'), 'utf8'));
+    expect(st.stream_providers).toEqual(['claude']);
+    expect(st.models.find(m => m.label === 'claude').output_mode).toBe('stream-partial');
+    const invocations = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse).filter(r => r.model === 'claude');
+    expect(invocations.map(r => r.mode)).toEqual(['create', 'resume']);
+    expect(invocations[0].id).toBe(invocations[1].id);
+  });
+
+  test('an unsuccessful Claude result is failed even when the CLI exits zero', () => {
+    const r = review(['error result', '--models', 'claude', '--no-session-reuse'], { X_PANEL_RESULT_ERROR_CLAUDE: '1' });
+    expect(r.status).toBe(1);
+    const st = JSON.parse(readFileSync(join(latestRunDir(), 'status.json'), 'utf8'));
+    expect(st.models[0].state).toBe('failed');
+  });
+
+  test('--no-stream preserves the explicit final-output mode', () => {
+    expect(review(['final output target', '--no-stream']).status).toBe(0);
+    const st = JSON.parse(readFileSync(join(latestRunDir(), 'status.json'), 'utf8'));
+    expect(st.stream_providers).toEqual([]);
+    expect(st.models.find(m => m.label === 'claude').output_mode).toBe('final');
   });
 
   test('--stream: findings still extracted from envelope AND usage/cost captured', () => {
