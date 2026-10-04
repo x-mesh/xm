@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -98,6 +98,33 @@ describe('relay chat arguments and inventory', () => {
 });
 
 describe.if(supported)('relay chat native tmux workspace', () => {
+  test('q detaches only the client that pressed it and stays literal in a provider view', async () => {
+    const { root, captures, workspace } = fixture({ realMenu: true });
+    workspace.ensure();
+    const children = [];
+    try {
+      for (let index = 0; index < 2; index++) {
+        const child = spawn('tmux', ['-L', workspace.socketName, '-C', 'attach-session', '-t', workspace.sessionName], { env: workspace.env });
+        child.stdout.on('data', () => {});
+        child.stderr.on('data', () => {});
+        children.push(child);
+      }
+      const clients = await waitFor(() => {
+        const rows = workspace.command(['list-clients', '-t', workspace.sessionName, '-F', '#{client_name}']).split('\n').filter(Boolean);
+        return rows.length === 2 ? rows : false;
+      });
+      workspace.command(['send-keys', '-K', '-c', clients[0], 'q']);
+      await waitFor(() => workspace.command(['list-clients', '-t', workspace.sessionName, '-F', '#{client_name}']).split('\n').filter(Boolean).length === 1);
+      expect(workspace.command(['list-clients', '-t', workspace.sessionName, '-F', '#{client_name}'])).toBe(clients[1]);
+      workspace.open({ provider: 'claude', id: 'native-id', cwd: root, name: 'Claude', attachable: true });
+      await waitFor(() => existsSync(captures.claude));
+      workspace.command(['send-keys', '-K', '-c', clients[1], 'q']);
+      expect(workspace.command(['list-clients', '-t', workspace.sessionName, '-F', '#{client_name}'])).toBe(clients[1]);
+    } finally {
+      for (const child of children) child.kill();
+    }
+  });
+
   test('keeps native provider processes alive across switches and reuses each identity window', async () => {
     const { root, captures, workspace } = fixture();
     workspace.ensure();

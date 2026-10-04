@@ -88,6 +88,7 @@ export class ChatWorkspace {
     this.command(['set-option', '-t', this.sessionName, 'base-index', MENU_WINDOW]);
     this.command(['set-option', '-g', '-w', 'remain-on-exit', 'on']);
     this.command(['bind-key', '-n', 'F6', 'select-window', '-t', ':0']);
+    this.command(['bind-key', '-n', 'q', 'if-shell', '-F', '#{==:#{window_index},0}', 'detach-client', 'send-keys q']);
     const menu = this.command(['list-windows', '-t', this.sessionName, '-F', '#{window_index}\t#{pane_dead}'])
       .split('\n').find(row => row.split('\t')[0] === MENU_WINDOW);
     if (!menu) throw new Error('relay chat menu window is missing');
@@ -124,9 +125,6 @@ export class ChatWorkspace {
     this.command(['attach-session', '-t', this.sessionName], 'inherit');
   }
 
-  detach() {
-    this.command(['detach-client', '-s', this.sessionName]);
-  }
 }
 
 async function menu(workspace, context) {
@@ -142,7 +140,6 @@ async function menu(workspace, context) {
       if (!snapshot.candidates.length) process.stdout.write('표시할 세션이 없습니다.\n');
       for (const note of snapshot.notes) process.stdout.write(`${displayText(note)}\n`);
       const choice = (await input.question('선택 번호 / r 갱신 / q 화면 닫기> ')).trim();
-      if (choice === 'q') { workspace.detach(); continue; }
       if (choice === 'r') { snapshot = await chatCandidates(context, workspace.projectName); continue; }
       if (!/^[1-9][0-9]*$/.test(choice)) { process.stdout.write('목록의 번호를 입력해 주세요.\n'); continue; }
       const selected = snapshot.candidates[Number(choice) - 1];
