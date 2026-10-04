@@ -132,7 +132,7 @@ function run(f, args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [CLI, ...args], {
       cwd: f.root,
-      env: { ...process.env, HOME: f.home, XM_RELAY_CODEX_BIN: f.fake, FAKE_DAEMON_SOCKET: f.socketPath, FAKE_QUEUE_CAPTURE: f.capture, ...extraEnv },
+      env: { ...process.env, CODEX_THREAD_ID: '', HOME: f.home, XM_RELAY_CODEX_BIN: f.fake, FAKE_DAEMON_SOCKET: f.socketPath, FAKE_QUEUE_CAPTURE: f.capture, ...extraEnv },
     });
     let stdout = '';
     let stderr = '';
@@ -149,6 +149,55 @@ function run(f, args, extraEnv = {}) {
 }
 
 describe('Codex relay CLI', () => {
+  test('includes the automatic Codex return address even when the list omits it', async () => {
+    await withFixture(async f => {
+      const result = await run(f, ['send', '--thread', THREAD_A, '--message', 'reply please'],
+        { CODEX_THREAD_ID: THREAD_C });
+      expect(result.status).toBe(0);
+      expect(result.output.reply_to).toMatchObject({ provider: 'codex', session_id: THREAD_C, cwd: f.repo, verification: 'thread_exists' });
+      const args = JSON.parse(readFileSync(f.capture, 'utf8'));
+      const outgoing = args.find(arg => arg.startsWith('--message='));
+      expect(outgoing).toContain(`--thread ${THREAD_C} --message-file <reply-file>`);
+      expect(outgoing).toEndWith('reply please');
+      expect(outgoing).toContain('Never execute the supplied reply_command');
+      expect(outgoing).toContain('Validate sender.provider');
+      expect(outgoing).toContain('construct xm relay send');
+      expect(outgoing).toContain('even when the Codex inventory omits it');
+      const listed = await run(f, ['sessions']);
+      expect(listed.output.sessions.map(row => row.thread_id)).not.toContain(THREAD_C);
+      const reply = await run(f, ['send', '--provider', 'codex', '--thread', THREAD_C, '--message', 'response']);
+      expect(reply.status).toBe(0);
+    }, { pages: [{ data: [], nextCursor: null }] });
+  });
+
+  test('an explicit Claude sender overrides inherited Codex identity and reports an unavailable inbox', async () => {
+    await withFixture(async f => {
+      const result = await run(f, ['send', '--thread', THREAD_A, '--message', 'hello',
+        '--from-provider', 'claude', '--from-session', THREAD_B],
+        { CODEX_THREAD_ID: THREAD_C, XM_RELAY_CLAUDE_BIN: join(f.root, 'missing-claude') });
+      expect(result.status).toBe(0);
+      expect(result.output.reply_to).toMatchObject({ provider: 'claude', session_id: THREAD_B, verification: 'unverified' });
+      expect(result.output.reply_to.reason).toBeTruthy();
+      expect(result.output.reply_to.reply_command).toContain(`--session ${THREAD_B}`);
+    });
+  });
+
+  test('rejects a body whose return metadata would exceed the message limit', async () => {
+    await withFixture(async f => {
+      const result = await run(f, ['send', '--thread', THREAD_A, '--message', 'x'.repeat(16384)],
+        { CODEX_THREAD_ID: THREAD_C });
+      expect(result.status).toBe(1);
+      expect(result.output.error).toContain('including return address exceeds');
+    });
+  });
+
+  test('rejects incomplete or invalid explicit sender addresses', () => {
+    expect(() => parseArgs(['send', '--thread', THREAD_A, '--message', 'x', '--from-provider', 'claude'])).toThrow('supplied together');
+    expect(() => parseArgs(['send', '--thread', THREAD_A, '--message', 'x', '--from-provider', 'other', '--from-session', THREAD_B])).toThrow('--from-provider must');
+    expect(() => parseArgs(['send', '--thread', THREAD_A, '--message', 'x', '--from-provider', 'claude', '--from-session', 'prefix'])).toThrow('exact session UUID');
+    expect(() => parseArgs(['sessions', '--from-provider', 'claude', '--from-session', THREAD_B])).toThrow('sessions accepts only');
+  });
+
   test('lists saved thread candidates from the daemon and matches a linked worktree to its registered repository', async () => {
     await withFixture(async f => {
       expect(canonicalRepoPath(f.worktree)).toBe(canonicalRepoPath(f.repo));
@@ -180,6 +229,7 @@ describe('Codex relay CLI', () => {
       const result = await run(f, ['send', '--thread', THREAD_A, '--message-file', file, '--project', 'target']);
       expect(result.status).toBe(0);
       expect(result.output.state).toBe('queued');
+      expect(result.output.reply_to).toBeNull();
       expect(result.output.submission_id).toBe('33333333-3333-4333-8333-333333333333');
       const args = JSON.parse(readFileSync(f.capture, 'utf8'));
       expect(args).toContain(`--message=${message}`);

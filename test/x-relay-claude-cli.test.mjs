@@ -67,7 +67,7 @@ function run(f, args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [CLI, ...args], {
       cwd: f.root,
-      env: { ...process.env, HOME: f.home, CLAUDE_CONFIG_DIR: f.config, XM_RELAY_CLAUDE_BIN: f.fakeClaude, FAKE_CLAUDE_AGENTS: JSON.stringify(f.agents), ...extraEnv },
+      env: { ...process.env, CODEX_THREAD_ID: '', HOME: f.home, CLAUDE_CONFIG_DIR: f.config, XM_RELAY_CLAUDE_BIN: f.fakeClaude, FAKE_CLAUDE_AGENTS: JSON.stringify(f.agents), ...extraEnv },
     });
     let stdout = '';
     let stderr = '';
@@ -87,6 +87,33 @@ function sentFrame(f) {
 }
 
 describe.if(supported)('Claude relay CLI', () => {
+  test('includes a live Claude return route, recipient identity, and literal body', async () => {
+    await withFixture({}, async f => {
+      const body = 'literal $HOME `whoami`\nreply please';
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION,
+        '--message', body, '--from-provider', 'claude', '--from-session', SESSION]);
+      expect(result.status).toBe(0);
+      expect(result.output.reply_to).toMatchObject({ provider: 'claude', session_id: SESSION, cwd: f.project, verification: 'live_inbox' });
+      const frame = sentFrame(f);
+      expect(frame.message.content).toContain(`--session ${SESSION} --message-file <reply-file>`);
+      expect(frame.message.content).toContain(JSON.stringify({ provider: 'claude', session_id: SESSION }));
+      expect(frame.message.content).toContain(body);
+      expect(frame.priority).toBe('next');
+      expect(frame).not.toHaveProperty('permissionMode');
+    });
+  });
+
+  test('Codex sender address survives unavailable daemon without claiming reply readiness', async () => {
+    await withFixture({}, async f => {
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', 'hello'],
+        { CODEX_THREAD_ID: OTHER_SESSION, XM_RELAY_CODEX_BIN: join(f.root, 'missing-codex') });
+      expect(result.status).toBe(0);
+      expect(result.output.reply_to.verification).toBe('unverified');
+      expect(result.output.reply_to.reason).toContain('daemon is unavailable');
+      expect(sentFrame(f).message.content).toContain(`--provider codex --thread ${OTHER_SESSION}`);
+    });
+  });
+
   test('lists a live session whose private inbox socket matches its session record', async () => {
     await withFixture({}, async f => {
       const result = await run(f, ['sessions', '--provider', 'claude', '--project', 'target']);

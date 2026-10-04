@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1791081825823,
+  "generatedAt": 1791085395146,
   "version": 3,
   "skills": [
     {
@@ -224,8 +224,8 @@
     },
     {
       "plugin": "relay",
-      "sha256": "396218dd6b7a9f8a2355e1eaa28c0ce561159237ea8647ae77283168477db7cc",
-      "bytes": 17773,
+      "sha256": "720f15dea11b451840234711d6d783d86051a5097526d47b1429f4b83ec9c72e",
+      "bytes": 20330,
       "referencesSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "referenceFiles": 0,
       "referenceBytes": 0,
