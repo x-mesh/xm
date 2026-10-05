@@ -174,8 +174,8 @@ const javascript = {
     if (!bin) return { unavailable: 'StrykerJS is not installed for this package (node_modules/.bin/stryker)' };
     return { ...probe('StrykerJS', [bin, '--version'], /(\d+\.\d+\.\d+)/, root), bin };
   },
-  plan({ root, repoTop, changed, outDir }, { bin }) {
-    const command = packageTestCommand(root, repoTop);
+  plan({ root, repoTop, changed, outDir, testCommand }, { bin }) {
+    const command = testCommand || packageTestCommand(root, repoTop);
     if (!command) return { unavailable: 'package.json has no test script for the Stryker command runner' };
     const mutate = [...changed].flatMap(([file, lines]) => lineRanges(lines).map(([start, end]) => `${escapeGlob(file)}:${start}-${end}`));
     const configPath = join(outDir, 'stryker.config.json');

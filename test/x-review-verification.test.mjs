@@ -173,7 +173,8 @@ process.exit(1);
       expect(cli(dir, ['author-gate', '--operation-id', 'review-task', '--context-file', 'context.json', '--scope-file', 'scope.json', '--reason', 'Protect I1']).status).toBe(0);
       const env = { ...process.env }; delete env.X_BUILD_ROOT; delete env.XM_ROOT;
       const measured = spawnSync('node', [MUTATE_CLI, 'mutate-diff', '--diff', 'HEAD', '--lang', 'javascript', '--json'], { cwd: dir, encoding: 'utf8', env });
-      expect(measured.status).toBe(0);
+      expect(measured.status).toBe(1);
+      expect(JSON.parse(measured.stdout).measurement.status).toBe('incomplete');
       const report = JSON.parse(measured.stdout);
       expect(report.counts).toMatchObject({ killed: 1, survived: 1, unviable: 1 });
       expect(report.mutants.map(item => item.status)).toEqual(['killed', 'survived', 'unviable']);
@@ -385,4 +386,36 @@ process.exit(1);
     expect(receipt.target_hash).toBe(manifest.target_hash);
     expect(receipt.inputs.find(item => item.file === 'src/a.js').sha256).not.toBe(read(join(runDir(dir), 'verification-receipt.json')).inputs.find(item => item.file === 'src/a.js').sha256);
   });
+});
+
+test('a trusted complete mutate report binds its input bytes to the frozen gate', () => {
+  const dir = workspace();
+  const hash = bytes => new Bun.CryptoHasher('sha256').update(bytes).digest('hex');
+  const inputs = ['src/a.js', 'gate.mjs'].map(file => ({ file, sha256: hash(readFileSync(join(dir, file))) }));
+  const report = { schema_v: 3, run_id: 'measurement-one', measurement: { status: 'complete' }, evidence: { stable: true, inputs, input_sha256: hash(JSON.stringify(inputs)) }, mutants: [{ status: 'survived' }] };
+  const bytes = JSON.stringify(report); writeFileSync(join(dir, 'measurement.json'), bytes);
+  const config = read(join(dir, 'gate.json')); config.files.push('measurement.json');
+  config.measurement = { file: 'measurement.json', sha256: hash(bytes) };
+  writeFileSync(join(dir, 'gate.json'), JSON.stringify(config));
+  const result = prepare(dir);
+  expect(result.status).toBe(0);
+  expect(read(join(runDir(dir), 'verification-receipt.json')).measurement).toMatchObject({ status: 'complete', survivors: 1 });
+});
+
+test('gate measurement rejects tampering, stale inputs, and incomplete measurements before baseline', () => {
+  for (const variant of ['tamper', 'stale', 'incomplete', 'omitted-input']) {
+    const dir = workspace(), hash = bytes => new Bun.CryptoHasher('sha256').update(bytes).digest('hex');
+    const inputs = ['src/a.js', 'gate.mjs'].map(file => ({ file, sha256: hash(readFileSync(join(dir, file))) }));
+    if (variant === 'omitted-input') inputs.push({ file: 'unbound.test.js', sha256: hash('missing') });
+    const report = { schema_v: 3, run_id: 'proof', measurement: { status: variant === 'incomplete' ? 'incomplete' : 'complete' }, evidence: { stable: true, inputs, input_sha256: hash(JSON.stringify(inputs)) }, mutants: [{ status: 'killed' }] };
+    const bytes = JSON.stringify(report); writeFileSync(join(dir, 'measurement.json'), bytes);
+    const config = read(join(dir, 'gate.json')); config.files.push('measurement.json'); config.measurement = { file: 'measurement.json', sha256: hash(bytes) };
+    writeFileSync(join(dir, 'gate.json'), JSON.stringify(config));
+    if (variant === 'tamper') writeFileSync(join(dir, 'measurement.json'), bytes + '\n');
+    if (variant === 'stale') writeFileSync(join(dir, 'src/a.js'), 'export const a = 2;');
+    expect(prepare(dir).status).toBe(1);
+    const receipt = read(join(runDir(dir), 'verification-receipt.json'));
+    expect(receipt.baseline).toBe(null); expect(receipt.error).toContain('measurement');
+    expect(existsSync(join(dir, 'panel.log'))).toBe(false);
+  }
 });

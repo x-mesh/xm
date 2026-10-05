@@ -380,7 +380,7 @@ test('each entry rejects the other entry\'s flags and the removed ones', () => {
     ['mutate-diff', ['--diff', 'main', '--timeout-ms', '99999999999'], /--timeout-ms must be an integer between 1 and 2147483647/],
     // `xm build mutate` is task-only.
     ['mutate', ['--diff', 'main'], /--diff belongs to `xm mutate --diff <base>`/],
-    ['mutate', ['--max-mutants', '3'], /--max-mutants was removed/],
+    ['mutate-diff', ['--diff', 'main', '--max-mutants', '0'], /--max-mutants must be a positive integer/],
     ['mutate', ['--list', '--task', 'T1'], /--list cannot be combined with --task/],
     ['mutate', ['--base', 'main'], /--task <id> is required/],
     // --base reaches its own guard only with --list, which names no task.
@@ -451,7 +451,7 @@ test('task mode runs in the linked worktree, reports under the project, and queu
   expect(JSON.parse(readFileSync(join(root, '.xm/review/mutate/p/T1.json'), 'utf8')).mutants).toEqual([expect.objectContaining({ file: 'a.fake', line: 2, status: 'survived' })]);
   const ledger = readFileSync(join(root, '.xm/review/escape-ledger.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
   // The column qualifies the operator so two mutants on one line stay apart.
-  expect(ledger).toEqual([expect.objectContaining({ type: 'surviving_mutant', task_id: 'T1', file: 'a.fake', line: 2, operator: expect.stringMatching(/^Fake-1-[0-9a-f]{16}$/), source: 'mutate', artifact: '.xm/review/mutate/p/T1.json' })]);
+  expect(ledger).toEqual([expect.objectContaining({ type: 'surviving_mutant', task_id: 'T1', file: 'a.fake', line: 2, operator: expect.stringMatching(/^Fake-1-[0-9a-f]{16}$/), source: 'mutate', artifact: `.xm/review/mutate/p/T1-${report.run_id}.json` })]);
   expect(readFileSync(join(root, 'a.fake'), 'utf8')).toBe('one\n');
 });
 
@@ -556,4 +556,105 @@ test('build mutation surface has no stale probe command or module references', (
   for (const file of ['x-build/lib/x-build-cli.mjs', 'x-build/lib/x-build/mutate.mjs', 'x-build/skills/build/references/commands.md', 'xm/lib/x-build-cli.mjs', 'xm/lib/x-build/mutate.mjs', 'xm/skills/build/references/commands.md']) {
     expect(readFileSync(resolve(repo, file), 'utf8')).not.toMatch(/xm build probe|cmdProbe|runTaskProbe|x-build\/probe\.mjs|source:\s*['"]probe/);
   }
+});
+
+test('measurement binds tests and config bytes and invalidates an in-flight edit', async () => {
+  const root = fakeRepo();
+  write(root, 'case.test.mjs', 'original'); commitAll(root);
+  write(root, 'a.fake', 'one\ntwo\n');
+  const first = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter()] });
+  expect(first.measurement.status).toBe('complete');
+  expect(first.evidence.inputs.find(row => row.file === 'case.test.mjs').sha256).toMatch(/^[a-f0-9]{64}$/);
+  const changing = fakeAdapter();
+  const parse = changing.parse;
+  changing.parse = (...args) => { write(root, 'case.test.mjs', 'changed'); return parse(...args); };
+  const second = await runDiffMutate({ cwd: root, base: 'main', adapters: [changing] });
+  expect(second.run_id).not.toBe(first.run_id);
+  expect(second.measurement.status).toBe('failed');
+  expect(second.evidence.stable).toBe(false);
+});
+
+test('measurement distinguishes missing coverage, deletion-only, and empty targets', async () => {
+  const root = fakeRepo();
+  expect((await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter()] })).measurement.status).toBe('no_targets');
+  write(root, 'a.fake', '');
+  const deleted = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter()] });
+  expect(deleted.measurement.status).toBe('incomplete');
+  expect(deleted.measurement.excluded).toContainEqual({ file: 'a.fake', reason: 'deletion_only' });
+  write(root, 'a.fake', 'one\ntwo\n');
+  const unresolved = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter({ status: 'error' })] });
+  expect(unresolved.measurement.status).toBe('incomplete');
+});
+
+test('zero mutants never claim a complete measurement and untracked sources stay visible', async () => {
+  const root = fakeRepo(); write(root, 'a.fake', 'one\ntwo\n'); write(root, 'fresh.fake', 'new');
+  const empty = fakeAdapter(); empty.parse = () => ({ mutants: [] });
+  const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [empty] });
+  expect(report.measurement.status).toBe('incomplete');
+  expect(report.measurement.excluded).toContainEqual({ file: 'fresh.fake', reason: 'untracked' });
+  expect(report.measurement.excluded).toContainEqual({ file: 'a.fake', reason: 'no_mutants' });
+});
+
+test('reuse refuses changed execution environment instead of masking a failed baseline', async () => {
+  const root = fakeRepo(); write(root, 'a.fake', 'one\ntwo\n');
+  const previous = process.env.XM_MUTATE_TEST_MODE;
+  try {
+    process.env.XM_MUTATE_TEST_MODE = 'pass';
+    const tool = fakeAdapter(); const parse = tool.parse;
+    tool.parse = (...args) => process.env.XM_MUTATE_TEST_MODE === 'fail' ? { baseline_failed: true } : parse(...args);
+    const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [tool] });
+    process.env.XM_MUTATE_TEST_MODE = 'fail';
+    expect((await runDiffMutate({ cwd: root, base: 'main', adapters: [tool] })).languages[0].status).toBe('baseline_failed');
+    await expect(runDiffMutate({ cwd: root, base: 'main', adapters: [tool], reuseReport: report })).rejects.toThrow(/reuse evidence/);
+  } finally { if (previous === undefined) delete process.env.XM_MUTATE_TEST_MODE; else process.env.XM_MUTATE_TEST_MODE = previous; }
+});
+
+test('reuse skips only an identical measured command and rejects changed tests and tool versions', async () => {
+  const root = fakeRepo(); write(root, 'case.test.mjs', 'v1'); commitAll(root); write(root, 'a.fake', 'one\ntwo\n');
+  const tool = fakeAdapter(); let executions = 0; const parse = tool.parse;
+  tool.parse = (...args) => { executions++; return parse(...args); };
+  const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [tool] });
+  const reused = await runDiffMutate({ cwd: root, base: 'main', adapters: [tool], reuseReport: report });
+  expect(executions).toBe(1); expect(reused.languages[0].reused_from).toBe(report.run_id);
+  tool.detect = () => ({ version: '2.0.0' });
+  await expect(runDiffMutate({ cwd: root, base: 'main', adapters: [tool], reuseReport: report })).rejects.toThrow(/tool version or execution plan/);
+  write(root, 'case.test.mjs', 'v2');
+  await expect(runDiffMutate({ cwd: root, base: 'main', adapters: [tool], reuseReport: report })).rejects.toThrow(/reuse evidence/);
+});
+
+test('a count limit unsupported by an adapter fails before the tool starts', async () => {
+  const root = fakeRepo(), calls = []; write(root, 'a.fake', 'one\ntwo\n');
+  const report = await runDiffMutate({ cwd: root, base: 'main', adapters: [fakeAdapter({ calls })], maxMutants: 2 });
+  expect(calls).toHaveLength(0); expect(report.measurement.status).toBe('failed');
+  expect(report.languages[0].reason).toContain('cannot enforce --max-mutants');
+});
+
+test('JavaScript test selection changes the recorded command plan', () => {
+  const root = makeRoot(), outDir = tempDir('selection-'); write(root, 'package.json', '{"scripts":{"test":"bun test"}}');
+  const ctx = { root, repoTop: root, changed: new Map([['src/a.js', [1]]]), outDir, testCommand: 'bun test test/sync.test.mjs' };
+  const plan = adapter('javascript').plan(ctx, { bin: 'stryker' });
+  expect(JSON.parse(Object.values(plan.files)[0]).commandRunner.command).toBe(ctx.testCommand);
+});
+
+test('CLI keeps each run report immutable while updating the legacy latest alias', () => {
+  const root = makeRoot(); write(root, 'README.md', 'base'); commitAll(root);
+  write(root, 'Sources/A.swift', 'let a = 1'); commitAll(root, 'change');
+  const args = [CLI, 'mutate-diff', '--diff', 'HEAD~1', '--json'];
+  const first = JSON.parse(spawnSync('node', args, { cwd: root, encoding: 'utf8', env: cliEnv() }).stdout);
+  const prefix = `${first.head.slice(0, 12)}-${first.merge_base.slice(0, 12)}`;
+  const path = join(root, `.xm/review/mutate-diff/${prefix}-${first.run_id}.json`), bytes = readFileSync(path, 'utf8');
+  const second = JSON.parse(spawnSync('node', args, { cwd: root, encoding: 'utf8', env: cliEnv() }).stdout);
+  expect(second.run_id).not.toBe(first.run_id); expect(readFileSync(path, 'utf8')).toBe(bytes);
+  expect(JSON.parse(readFileSync(join(root, `.xm/review/mutate-diff/${prefix}.json`), 'utf8')).run_id).toBe(second.run_id);
+});
+
+test('source symlinks are rejected before tool detection and newly added inputs invalidate a run', async () => {
+  const root = fakeRepo(), outside = tempDir('mutate-outside-'); write(outside, 'dummy.fake', 'outside');
+  rmSync(join(root, 'a.fake')); symlinkSync(join(outside, 'dummy.fake'), join(root, 'a.fake'));
+  let detected = false; const tool = fakeAdapter(); tool.detect = () => { detected = true; return { version: '1.0.0' }; };
+  await expect(runDiffMutate({ cwd: root, base: 'main', adapters: [tool] })).rejects.toThrow(/symlink/);
+  expect(detected).toBe(false);
+  rmSync(join(root, 'a.fake')); write(root, 'a.fake', 'one\ntwo\n');
+  const parse = tool.parse; tool.parse = (...args) => { write(root, 'new.test.mjs', 'new input'); return parse(...args); };
+  expect((await runDiffMutate({ cwd: root, base: 'main', adapters: [tool] })).evidence.stable).toBe(false);
 });

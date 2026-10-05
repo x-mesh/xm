@@ -86,6 +86,10 @@ and the full/fix/delta budget. This skill owns one bounded authoring pass.
 6. Generate or extend tests for the authorized rules. For a reported defect, prove
    that the regression test fails on the pre-fix behavior and passes on the intended
    behavior. Do not alter the implementation merely to make the new gate pass.
+   To bind measurement evidence, copy the archived report into an authorized gate
+   input and set the optional `measurement.file` and trusted `measurement.sha256`.
+   Include every measured input in the frozen file list. Incomplete or stale reports
+   cannot satisfy this contract. Generic survivors do not become required mutants.
 7. Create the adapter and configuration using the calling review's verification
    gate contract. That contract is `--gate-file` with explicit inputs, baseline and
    mutation commands, expected mutant IDs, invariant IDs, and violation tags.
@@ -101,7 +105,7 @@ and the full/fix/delta budget. This skill owns one bounded authoring pass.
    repeatedly to obtain a passing gate. Preserve existing gate checks when extending.
 9. Save an `authoring-result.json` under the reservation's `run_dir`. Record the
    operation ID, context hash, authored paths, rule-to-test-to-mutant mapping,
-   measurement report path/hash when available, regression evidence, remaining
+   immutable measurement report path/hash when available, regression evidence, remaining
    gaps, and commands actually run. Do not claim full correctness from a passing gate.
 10. Return the context and gate paths to review. The calling review freezes the
     resulting files and executes the required gate using the same operation ID.
