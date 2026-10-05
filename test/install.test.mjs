@@ -31,13 +31,18 @@ afterAll(() => {
   for (const path of TEMP_ROOTS) rmSync(path, { recursive: true, force: true });
 });
 
+// `--verify` without --scope also checks the global install under HOME, so the
+// developer's real ~/.codex or ~/.claude state must never decide a test result.
+const ISOLATED_HOME = makeTmp('xm-install-home-');
+
 function run(args, opts = {}) {
+  const env = opts.env ?? process.env;
   const result = spawnSync('node', [CLI, ...args], {
     cwd: opts.cwd ?? process.cwd(),
     encoding: 'utf8',
     timeout: 30_000,
     input: opts.input,
-    env: opts.env ?? process.env,
+    env: { ...env, HOME: env.HOME === process.env.HOME ? ISOLATED_HOME : env.HOME },
   });
   return {
     stdout: result.stdout ?? '',
