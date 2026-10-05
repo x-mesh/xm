@@ -46,6 +46,92 @@ function env(dir, extra = {}) {
 afterEach(() => { while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true }); });
 
 describe('xm review executable lifecycle', () => {
+  test('freezes immediate directory files and respects Git ignores', () => {
+    const dir = workspace();
+    mkdirSync(join(dir, 'src', 'nested'));
+    writeFileSync(join(dir, 'src', 'nested', 'child.js'), 'export const child = 3;\n');
+    writeFileSync(join(dir, '.gitignore'), 'src/ignored.js\n');
+    writeFileSync(join(dir, 'src', 'ignored.js'), 'export const ignored = 4;\n');
+    writeFileSync(join(dir, 'src', 'empty.js'), '');
+    const result = spawnSync('node', [CLI, 'prepare', 'src', '--run-id', 'directory', '--json'], { cwd: dir, env: env(dir), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const manifest = JSON.parse(readFileSync(join(dir, '.xm/review/runs/directory/run.json'), 'utf8'));
+    expect(manifest.target_files).toEqual(['src/a.js', 'src/empty.js']);
+    expect(readFileSync(join(dir, '.xm/review/runs/directory/target.patch'), 'utf8')).toContain('export const b = 2;');
+  });
+
+  test('snapshots a checked out gitlink without reading its directory as a file', () => {
+    const dir = workspace();
+    mkdirSync(join(dir, 'vendor'));
+    const sha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).stdout.trim();
+    const staged = spawnSync('git', ['update-index', '--add', '--cacheinfo', `160000,${sha},vendor`], { cwd: dir, encoding: 'utf8' });
+    expect(staged.status).toBe(0);
+    const result = spawnSync('node', [CLI, 'prepare', 'src/a.js', '--run-id', 'gitlink', '--json'], { cwd: dir, env: env(dir), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const manifest = JSON.parse(readFileSync(join(dir, '.xm/review/runs/gitlink/run.json'), 'utf8'));
+    expect(Buffer.from(manifest.snapshot.files.vendor, 'base64').toString()).toBe(`Subproject commit ${sha}\n`);
+  });
+
+  test('commit reviews bind gitlink snapshots to the committed pointer', () => {
+    const dir = workspace();
+    mkdirSync(join(dir, 'vendor'));
+    const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).stdout.trim();
+    for (const args of [['update-index', '--add', '--cacheinfo', `160000,${base},vendor`], ['commit', '-m', 'add gitlink']]) {
+      expect(spawnSync('git', args, { cwd: dir, encoding: 'utf8' }).status).toBe(0);
+    }
+    const result = spawnSync('node', [CLI, 'prepare', '--base-ref', base, '--run-id', 'committed-gitlink', '--json'], { cwd: dir, env: env(dir), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const manifest = JSON.parse(readFileSync(join(dir, '.xm/review/runs/committed-gitlink/run.json'), 'utf8'));
+    expect(manifest.target_files).toEqual(['vendor']);
+    expect(Buffer.from(manifest.snapshot.files.vendor, 'base64').toString()).toBe(`Subproject commit ${base}\n`);
+  });
+
+  test('workspace snapshots record tracked and untracked changes in initialized submodules', () => {
+    for (const file of ['src/a.js', 'untracked.js']) {
+      const dir = workspace();
+      expect(spawnSync('git', ['clone', dir, join(dir, 'vendor')], { cwd: dir, encoding: 'utf8' }).status).toBe(0);
+      const sha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).stdout.trim();
+      expect(spawnSync('git', ['update-index', '--add', '--cacheinfo', `160000,${sha},vendor`], { cwd: dir, encoding: 'utf8' }).status).toBe(0);
+      writeFileSync(join(dir, 'vendor', file), 'export const a = 9;\n');
+      const result = spawnSync('node', [CLI, 'prepare', 'src/a.js', '--run-id', 'dirty-gitlink', '--json'], { cwd: dir, env: env(dir), encoding: 'utf8' });
+      expect(result.status).toBe(0);
+      const manifest = JSON.parse(readFileSync(join(dir, '.xm/review/runs/dirty-gitlink/run.json'), 'utf8'));
+      expect(Buffer.from(manifest.snapshot.files.vendor, 'base64').toString()).toBe(`Subproject commit ${sha}-dirty\n`);
+    }
+  });
+
+  test('preparation failures return a stop action without dispatch or budget consumption', () => {
+    const dir = workspace();
+    const log = join(dir, 'panel.jsonl');
+    const result = spawnSync('node', [CLI, 'prepare', 'missing-target', '--json'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_LOG: log }), encoding: 'utf8' });
+    expect(result.status).toBe(1);
+    const output = JSON.parse(result.stdout);
+    expect(output).toMatchObject({ ok: false, action: { decision: 'stop', reason_code: 'review_command_failed', auto_review_allowed: false, auto_fix_allowed: false, continuation: 'human_decision', coverage_complete: false } });
+    expect(output.recovery).toContain('Do not dispatch');
+    expect(existsSync(log)).toBe(false);
+    expect(existsSync(join(dir, '.xm/review/budget.json'))).toBe(false);
+  });
+
+  test('plain output exposes terminal stop and required human triage', () => {
+    const dir = workspace();
+    const result = spawnSync('node', [CLI, 'run', 'target.patch', '--lenses', 'risk', '--no-trace'], { cwd: dir, env: env(dir, { XM_FAKE_PANEL_SEVERITY: 'high' }), encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('action: stop');
+    expect(result.stdout).toContain('continuation: human_triage');
+    expect(result.stdout).toContain('Automatic review and fix are forbidden');
+  });
+
+  test('invalid preparation arguments expose the same stop guidance', () => {
+    const dir = workspace();
+    for (const json of [false, true]) {
+      const result = spawnSync('node', [CLI, 'prepare', '--chunk-file-budget', '0', ...(json ? ['--json'] : [])], { cwd: dir, env: env(dir), encoding: 'utf8' });
+      expect(result.status).toBe(2);
+      if (json) expect(JSON.parse(result.stdout).action).toMatchObject({ decision: 'stop', continuation: 'human_decision', auto_review_allowed: false, auto_fix_allowed: false });
+      else expect(result.stderr).toContain('action: stop');
+      expect(existsSync(join(dir, '.xm'))).toBe(false);
+    }
+  });
+
   test('owns freeze, plan, chunk×lens dispatch, synthesis, trace, and success cleanup', () => {
     const dir = workspace();
     const log = join(dir, 'panel.jsonl');

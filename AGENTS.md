@@ -47,7 +47,11 @@ Required sequence:
 2. Triage every Medium+ finding as `fix_now`, `backlog`, `accept_risk`, or `false_positive`.
 3. Never move Critical/High findings to `backlog`; fix them now or provide concrete evidence for `accept_risk` / `false_positive`.
 4. Limit review-fix edits to `fix_now` findings and files listed in `fix_scope.allowed_files`.
-5. Run `x-build verify-review-fix`, then quality checks, then re-run x-review before claiming completion.
+5. Run `x-build verify-review-fix`, then quality checks, then re-run x-review once as the delta review.
+6. Limit each task to one full review, one approved fix pass, and one delta review. If the delta adds any finding, report it and stop at every severity.
+7. Read the terminal action before any follow-up. A stop action never authorizes automatic fixes or another review, even when the verdict is LGTM.
+8. If review preparation fails, report the error and stop. Do not dispatch reviewers directly or reset the budget to bypass the lifecycle.
+9. Continue beyond the budget only after explicit user approval for a one-time exception. Keep the same operation identity across the approved sequence.
 
 This gate prevents review feedback from becoming an unbounded rewrite loop.
 
