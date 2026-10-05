@@ -4,11 +4,11 @@
 // lines changed since the merge base, and `xm build mutate --task <id>` runs the
 // same path inside a task's linked worktree and attributes survivors to the
 // task. Mutants are generated and run by external tools (see mutate-adapters.mjs).
-import { closeSync, constants as FS, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, constants as FS, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, posix, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { appendAttentionRows } from './attention-collect.mjs';
 import { buildEscapeRow } from './escape-ledger.mjs';
 import { resolveMainRepoRoot, validateIdSegment } from './worktree-shared.mjs';
@@ -27,10 +27,10 @@ const OUTPUT_TAIL_CHARS = 4000;
 // Two entries, one job each: `xm mutate` takes a diff, `xm build mutate` takes a
 // task. Neither accepts the other's flags, so a typo cannot silently run the
 // wrong scope.
-const DIFF_USAGE = 'Usage: xm mutate --diff <base> [--lang <names>] [--timeout-ms N] [--json]';
+const DIFF_USAGE = 'Usage: xm mutate --diff <base> [--lang <names>] [--timeout-ms N] [--test-command CMD] [--max-mutants N] [--reuse-report FILE --reuse-sha256 HASH] [--json]';
 const TASK_USAGE = [
   'Usage: xm build mutate [--list] [--json]',
-  '       xm build mutate --project <name> --task <id> [--base <ref>] [--lang <names>] [--timeout-ms N] [--json]',
+  '       xm build mutate --project <name> --task <id> [--base <ref>] [--lang <names>] [--timeout-ms N] [--test-command CMD] [--max-mutants N] [--reuse-report FILE --reuse-sha256 HASH] [--json]',
 ].join('\n');
 
 function fail(message) {
@@ -97,7 +97,53 @@ function resolveChangeSet(cwd, base) {
   // would point at code the commit does not contain.
   const uncommitted = gitOutput(top, ['-c', 'core.quotePath=false', 'diff', '--name-only', '--diff-filter=d', 'HEAD'], 'list uncommitted changes')
     .split('\n').map(line => line.trim()).filter(Boolean);
-  return { top, mergeBase, head, changed: parseDiffChanges(diff), untracked, uncommitted };
+  const affected = gitOutput(top, ['diff', '--name-only', '-z', '--no-ext-diff', mergeBase], 'list affected files').split('\0').filter(Boolean);
+  return { top, mergeBase, head, changed: parseDiffChanges(diff), affected, untracked, uncommitted };
+}
+
+const evidenceHash = value => createHash('sha256').update(value).digest('hex');
+const privateInput = file => file.split('/').some(part => ['.git', '.xm', 'node_modules', 'credentials', 'secrets', 'muter_logs'].includes(part) || /^\.env(?:\.|$)/.test(part)) || /\.(?:pem|key|p12|pfx)$/.test(file);
+
+function captureInputs(changeSet) {
+  const tracked = gitOutput(changeSet.top, ['ls-files', '-z'], 'bind repository inputs').split('\0').filter(Boolean);
+  const untracked = gitOutput(changeSet.top, ['ls-files', '--others', '--exclude-standard', '-z'], 'bind untracked inputs').split('\0').filter(Boolean);
+  const inputs = [];
+  for (const file of [...new Set([...tracked, ...untracked])].sort()) {
+    if (privateInput(file)) continue;
+    const path = join(changeSet.top, file);
+    if (!existsSync(path)) { inputs.push({ file, sha256: null }); continue; }
+    let cursor = changeSet.top;
+    for (const part of file.split('/')) {
+      cursor = join(cursor, part);
+      if (lstatSync(cursor).isSymbolicLink()) fail(`mutate evidence cannot bind a symlink: ${file}`);
+    }
+    if (!lstatSync(path).isFile()) fail(`mutate evidence requires a regular file: ${file}`);
+    inputs.push({ file, sha256: evidenceHash(readFileSync(path)), mode: lstatSync(path).mode & 0o777 });
+  }
+  return inputs;
+}
+
+function measurementFor(changeSet, adapters, languages, results, mutants, stable, inputs) {
+  const excluded = [], targeted = [];
+  const absent = new Set(inputs.filter(input => input.sha256 === null).map(input => input.file));
+  for (const file of [...new Set([...changeSet.affected, ...changeSet.untracked])].sort()) {
+    const adapter = adapters.find(item => item.claims(file));
+    let reason = absent.has(file) ? 'absent_input' : !adapter ? 'unsupported' : languages && !languages.has(adapter.language) ? 'language_filter' : null;
+    if (!reason && privateInput(file)) reason = 'private_input';
+    if (!reason && changeSet.untracked.includes(file)) reason = 'untracked';
+    if (!reason && !changeSet.changed.has(file)) reason = 'deletion_only';
+    if (reason) { excluded.push({ file, reason }); continue; }
+    targeted.push(file);
+    const group = results.find(item => item.files.includes(file));
+    if (group?.status !== 'ran') excluded.push({ file, reason: group?.status || 'not_run' });
+    else if (!mutants.some(item => item.file === file)) excluded.push({ file, reason: 'no_mutants' });
+  }
+  for (const file of absent) if (!excluded.some(item => item.file === file)) excluded.push({ file, reason: 'absent_input' });
+  const gaps = excluded.some(item => !['unsupported', 'language_filter'].includes(item.reason));
+  const unresolved = mutants.some(item => !['killed', 'survived'].includes(item.status));
+  const failed = !stable || (results.length > 0 && results.every(item => item.status !== 'ran'));
+  const status = failed ? 'failed' : gaps || unresolved ? 'incomplete' : !targeted.length ? 'no_targets' : 'complete';
+  return { status, targeted, observed: [...new Set(mutants.map(item => item.file))].sort(), excluded };
 }
 
 function manifestRoot(top, file, manifests) {
@@ -112,6 +158,7 @@ function manifestRoot(top, file, manifests) {
 function groupChanges({ top, changed }, adapters, languages) {
   const groups = new Map(), widened = new Map();
   for (const [file, lines] of [...changed].sort(([a], [b]) => a.localeCompare(b))) {
+    if (privateInput(file)) continue;
     const adapter = adapters.find(candidate => candidate.claims(file));
     if (!adapter || (languages && !languages.has(adapter.language))) continue;
     // An adapter may widen the manifest root: cargo-mutants must run from the
@@ -130,7 +177,7 @@ function groupChanges({ top, changed }, adapters, languages) {
   return [...groups.values()];
 }
 
-function runTool(argv, { cwd, timeoutMs, signal }) {
+function runTool(argv, { cwd, timeoutMs, signal, env }) {
   return new Promise(resolveRun => {
     let child = null, output = '', timedOut = false, aborted = false, settled = false;
     // Tools spawn build and test processes of their own; the whole group goes.
@@ -146,7 +193,7 @@ function runTool(argv, { cwd, timeoutMs, signal }) {
       resolveRun({ exitCode: null, timedOut, aborted, output, ...fields });
     };
     try {
-      child = spawn(argv[0], argv.slice(1), { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (error) {
       finish({ spawnError: error.message });
       return;
@@ -160,7 +207,7 @@ function runTool(argv, { cwd, timeoutMs, signal }) {
   });
 }
 
-async function runGroup(group, changeSet, { deadline, signal }) {
+async function runGroup(group, changeSet, { deadline, signal, testCommand, maxMutants, reuse, env }) {
   const { adapter } = group;
   const result = { language: adapter.language, tool: adapter.tool, tool_version: null, root: group.root, files: group.files, status: 'ran', reason: null, exit_code: null, duration_ms: 0, counts: emptyCounts() };
   const stopped = (status, reason, extra = {}) => ({ result: { ...result, ...extra, status, reason }, mutants: [] });
@@ -169,6 +216,8 @@ async function runGroup(group, changeSet, { deadline, signal }) {
   if (signal?.aborted) return stopped('skipped', 'interrupted');
   if (group.root == null) return stopped('unavailable', `no ${adapter.manifests.join(' or ')} found above ${group.files[0]}`);
   const root = join(changeSet.top, group.root);
+  if (testCommand && adapter.language !== 'javascript') return stopped('unavailable', '--test-command is supported only by the JavaScript command runner');
+  if (maxMutants != null && !adapter.bounded) return stopped('unavailable', `${adapter.tool} adapter cannot enforce --max-mutants before execution`);
   const detected = adapter.detect({ root, repoTop: changeSet.top });
   if (detected.unavailable) return stopped('unavailable', detected.unavailable, { install: adapter.install });
   result.tool_version = detected.version;
@@ -176,11 +225,18 @@ async function runGroup(group, changeSet, { deadline, signal }) {
   const outDir = mkdtempSync(join(tmpdir(), 'xm-mutate-')), started = Date.now();
   try {
     const diff = gitOutput(root, ['-c', 'core.quotePath=false', 'diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', '--relative', '--diff-filter=d', changeSet.mergeBase, '--', ...group.changed.keys()], 'read the package diff');
-    const ctx = { root, repoTop: changeSet.top, mergeBase: changeSet.mergeBase, changed: group.changed, diff, outDir };
+    const ctx = { root, repoTop: changeSet.top, mergeBase: changeSet.mergeBase, changed: group.changed, diff, outDir, testCommand, maxMutants };
     const plan = adapter.plan(ctx, detected);
     if (plan.unavailable) return stopped('unavailable', plan.unavailable);
+    const normalized = JSON.stringify({ argv: plan.argv, files: plan.files || {} }).split(outDir).join('<output>');
+    result.execution = { argv: plan.argv, plan_sha256: evidenceHash(normalized), config_sha256: evidenceHash(JSON.stringify(plan.files || {}).split(outDir).join('<output>')) };
+    const cached = reuse?.languages?.find(item => item.language === result.language && item.root === result.root);
+    if (cached?.status === 'ran' && cached.tool_version === result.tool_version && cached.execution?.plan_sha256 === result.execution.plan_sha256) {
+      return { result: { ...result, counts: cached.counts, reused_from: reuse.run_id }, mutants: reuse.mutants.filter(item => item.language === result.language && result.files.includes(item.file)) };
+    }
+    if (reuse) fail('mutate reuse tool version or execution plan differs; run again without reuse');
     for (const [path, content] of Object.entries(plan.files || {})) writeFileSync(path, content);
-    const run = await runTool(plan.argv, { cwd: root, timeoutMs: deadline - Date.now(), signal });
+    const run = await runTool(plan.argv, { cwd: root, timeoutMs: deadline - Date.now(), signal, env });
     const extra = { exit_code: run.exitCode, duration_ms: Date.now() - started, ...(adapter.note ? { note: adapter.note } : {}) };
     const tail = run.output ? { output_tail: run.output } : {};
     if (run.spawnError) return stopped('error', run.spawnError, { ...extra, ...tail });
@@ -207,11 +263,20 @@ async function runGroup(group, changeSet, { deadline, signal }) {
   }
 }
 
-export async function runDiffMutate({ cwd = process.cwd(), base, languages = null, timeoutMs = DEFAULT_TIMEOUT_MS, signal = null, adapters = ADAPTERS } = {}) {
+export async function runDiffMutate({ cwd = process.cwd(), base, languages = null, timeoutMs = DEFAULT_TIMEOUT_MS, signal = null, adapters = ADAPTERS, testCommand = null, maxMutants = null, reuseReport = null } = {}) {
   const changeSet = resolveChangeSet(cwd, base);
+  const inputs = captureInputs(changeSet), inputHash = evidenceHash(JSON.stringify(inputs));
+  const selection = { changed: [...changeSet.changed], languages: languages ? [...languages].sort() : null, timeout_ms: timeoutMs, test_command: testCommand, max_mutants: maxMutants };
+  const selectionHash = evidenceHash(JSON.stringify(selection));
+  const env = { ...process.env };
+  const runtimeHash = evidenceHash(JSON.stringify({ node: process.version, platform: process.platform, arch: process.arch, env: Object.entries(env).sort(([a], [b]) => a.localeCompare(b)) }));
+  const reuse = reuseReport?.schema_v === 3 && reuseReport.measurement?.status === 'complete' && reuseReport.evidence?.stable === true
+    && reuseReport.evidence.input_sha256 === inputHash && reuseReport.evidence.selection_sha256 === selectionHash && reuseReport.evidence.runtime_sha256 === runtimeHash
+    && reuseReport.head === changeSet.head && reuseReport.merge_base === changeSet.mergeBase ? reuseReport : null;
+  if (reuseReport && !reuse) fail('mutate reuse evidence does not match the inputs, selection, runtime, or completed measurement');
   const started = Date.now(), deadline = started + timeoutMs, results = [], mutants = [];
   for (const group of groupChanges(changeSet, adapters, languages)) {
-    const outcome = await runGroup(group, changeSet, { deadline, signal });
+    const outcome = await runGroup(group, changeSet, { deadline, signal, testCommand, maxMutants, reuse, env });
     results.push(outcome.result);
     mutants.push(...outcome.mutants);
   }
@@ -222,7 +287,12 @@ export async function runDiffMutate({ cwd = process.cwd(), base, languages = nul
     return Boolean(adapter) && (!languages || languages.has(adapter.language));
   });
   const uncommitted_files = (changeSet.uncommitted || []).filter(file => changeSet.changed.has(file));
-  return { schema_v: 2, mode: 'diff', base, merge_base: changeSet.mergeBase, head: changeSet.head, languages: results, mutants, counts, untracked_files, uncommitted_files, duration_ms: Date.now() - started, ts: new Date().toISOString() };
+  let stable = false;
+  try { stable = evidenceHash(JSON.stringify(captureInputs(changeSet))) === inputHash; } catch { stable = false; }
+  const measurement = measurementFor(changeSet, adapters, languages, results, mutants, stable, inputs);
+  return { schema_v: 3, run_id: randomUUID(), mode: 'diff', base, merge_base: changeSet.mergeBase, head: changeSet.head,
+    evidence: { inputs, input_sha256: inputHash, selection, selection_sha256: selectionHash, runtime_sha256: runtimeHash, stable }, measurement,
+    languages: results, mutants, counts, untracked_files, uncommitted_files, duration_ms: Date.now() - started, ts: new Date().toISOString() };
 }
 
 function loadTaskArtifact(root, task, projectName = null) {
@@ -375,7 +445,7 @@ function syncDirectory(path) {
   try { fsyncSync(fd); } catch (error) { if (!['EINVAL', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) throw error; } finally { closeSync(fd); }
 }
 
-function persistReport(state, segments, name, report) {
+function persistReport(state, segments, name, report, immutable = false) {
   const dirs = [join(state, '.xm'), join(state, '.xm', 'review')];
   for (const segment of segments) dirs.push(join(dirs.at(-1), segment));
   for (const dir of dirs) ensureReportDirectory(dir);
@@ -401,7 +471,8 @@ function persistReport(state, segments, name, report) {
     fd = null;
     ensureReportDirectory(directory);
     if (!sameFileIdentity(tmp, identity)) fail('mutate report temporary path changed before publication');
-    renameSync(tmp, reportPath);
+    if (immutable) { linkSync(tmp, reportPath); unlinkSync(tmp); }
+    else renameSync(tmp, reportPath);
     syncDirectory(directory);
     published = true;
     return reportPath;
@@ -443,7 +514,7 @@ export function listMutationTasks(stateRoot, { adapters = ADAPTERS } = {}) {
   return rows.sort((a, b) => Number(b.runnable) - Number(a.runnable) || String(a.project).localeCompare(String(b.project)) || String(a.id).localeCompare(String(b.id)));
 }
 
-export async function runTaskMutate(stateRoot, task, { project = null, base = null, languages = null, timeoutMs = DEFAULT_TIMEOUT_MS, signal = null, adapters = ADAPTERS } = {}) {
+export async function runTaskMutate(stateRoot, task, { project = null, base = null, languages = null, timeoutMs = DEFAULT_TIMEOUT_MS, signal = null, adapters = ADAPTERS, testCommand = null, maxMutants = null, reuseReport = null } = {}) {
   const taskError = validateIdSegment(task, '--task');
   if (taskError) fail(taskError);
   if (project != null) {
@@ -454,11 +525,12 @@ export async function runTaskMutate(stateRoot, task, { project = null, base = nu
   if (!artifact) fail('mutate task artifact not found');
   const workspace = mutationWorkspace(artifact, state, task), ref = base ?? artifact.data.base;
   if (typeof ref !== 'string' || !ref.trim()) fail('mutate task run.json has no base; pass --base <ref>');
-  const report = { ...(await runDiffMutate({ cwd: workspace, base: ref, languages, timeoutMs, signal, adapters })), mode: 'task', project: artifact.project, task_id: task };
+  const report = { ...(await runDiffMutate({ cwd: workspace, base: ref, languages, timeoutMs, signal, adapters, testCommand, maxMutants, reuseReport })), mode: 'task', project: artifact.project, task_id: task };
+  persistReport(state, ['mutate', artifact.project], `${task}-${report.run_id}`, report, true);
   persistReport(state, ['mutate', artifact.project], task, report);
-  const artifactPath = reportArtifact(artifact.project, task);
+  const artifactPath = reportArtifact(artifact.project, `${task}-${report.run_id}`);
   const surviving = report.mutants
-    .filter(row => row.status === 'survived')
+    .filter(row => row.status === 'survived' && report.evidence.stable)
     .map(row => buildEscapeRow({ mutant: true, ts: report.ts, task_id: task, file: row.file, artifact: artifactPath, source: 'mutate', operator: mutantOperator(row), line: row.line }));
   if (surviving.length) appendAttentionRows(state, surviving);
   return report;
@@ -475,6 +547,8 @@ function printUntracked(report) {
 }
 
 function printReport(report, artifactPath) {
+  console.log(`Measurement: ${report.measurement.status} (${report.run_id})`);
+  for (const item of report.measurement.excluded) console.log(`  Not measured: ${item.file} (${item.reason})`);
   const label = report.mode === 'task' ? `${report.project}/${report.task_id}` : `diff ${report.base} (merge-base ${report.merge_base.slice(0, 12)})`;
   if (!report.languages.length) {
     console.log(`Mutate ${label}: no changed files in a supported language (${ADAPTERS.map(adapter => adapter.language).join(', ')}).`);
@@ -522,7 +596,7 @@ function printTaskList(tasks) {
 }
 
 function parseMutateOptions(args) {
-  const options = { task: null, project: getExplicitProject(), base: null, diff: null, languageArg: null, languages: null, timeoutMs: DEFAULT_TIMEOUT_MS, json: false, list: false, seen: new Set() };
+  const options = { task: null, project: getExplicitProject(), base: null, diff: null, languageArg: null, languages: null, timeoutMs: DEFAULT_TIMEOUT_MS, testCommand: null, maxMutants: null, reusePath: null, reuseHash: null, json: false, list: false, seen: new Set() };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i], value = args[i + 1];
     options.seen.add(arg.startsWith('--project=') ? '--project' : arg);
@@ -535,13 +609,19 @@ function parseMutateOptions(args) {
     else if (arg === '--base' && value) { options.base = value; i += 1; }
     else if (arg === '--lang' && value) { options.languageArg = value; i += 1; }
     else if (arg === '--timeout-ms' && value) { options.timeoutMs = Number(value); i += 1; }
-    else if (arg === '--max-mutants') return { error: 'mutate: --max-mutants was removed; the external tool chooses the mutants for the changed lines' };
+    else if (arg === '--max-mutants' && value) { options.maxMutants = Number(value); i += 1; }
+    else if (arg === '--test-command' && value) { options.testCommand = value; i += 1; }
+    else if (arg === '--reuse-report' && value) { options.reusePath = value; i += 1; }
+    else if (arg === '--reuse-sha256' && value) { options.reuseHash = value; i += 1; }
     else return { error: `mutate: unknown or incomplete argument '${arg}'` };
   }
   return { options };
 }
 
 function sharedOptionError(options) {
+  if (options.maxMutants != null && (!Number.isSafeInteger(options.maxMutants) || options.maxMutants < 1)) return 'mutate: --max-mutants must be a positive integer';
+  if (options.testCommand != null && (!options.testCommand.trim() || options.testCommand.includes('\0'))) return 'mutate: --test-command must be nonempty and contain no NUL';
+  if (Boolean(options.reusePath) !== Boolean(options.reuseHash) || (options.reuseHash && !/^[a-f0-9]{64}$/.test(options.reuseHash))) return 'mutate: --reuse-report requires --reuse-sha256 with its trusted SHA-256';
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > MAX_TIMEOUT_MS) return `mutate: --timeout-ms must be an integer between 1 and ${MAX_TIMEOUT_MS}`;
   if (options.languageArg != null) {
     const known = ADAPTERS.map(adapter => adapter.language), names = options.languageArg.split(',').map(name => name.trim()).filter(Boolean);
@@ -549,6 +629,18 @@ function sharedOptionError(options) {
     options.languages = new Set(names);
   }
   return null;
+}
+
+function reuseOptions(options) {
+  let reuseReport = null;
+  if (options.reusePath) {
+    if (privateInput(options.reusePath) && !options.reusePath.includes('/review/mutate')) fail('mutate cannot read a private input as reuse evidence');
+    if (!lstatSync(options.reusePath).isFile() || lstatSync(options.reusePath).isSymbolicLink()) fail('mutate reuse report must be a regular file');
+    const bytes = readFileSync(options.reusePath);
+    if (evidenceHash(bytes) !== options.reuseHash) fail('mutate reuse report hash mismatch');
+    reuseReport = JSON.parse(bytes);
+  }
+  return { testCommand: options.testCommand, maxMutants: options.maxMutants, reuseReport };
 }
 
 async function runMutateCommand(run, json) {
@@ -563,7 +655,7 @@ async function runMutateCommand(run, json) {
     if (json) console.log(JSON.stringify(report));
     else printReport(report, artifactPath);
     // Survivors are observational; only a language that could not run fails the command.
-    process.exitCode = interrupted ? 130 : report.languages.every(row => row.status === 'ran') ? 0 : 1;
+    process.exitCode = interrupted ? 130 : ['complete', 'no_targets'].includes(report.measurement.status) ? 0 : 1;
   } catch (error) {
     console.error(error.message);
     process.exitCode = interrupted ? 130 : (error.exitCode || 2);
@@ -589,6 +681,7 @@ function mutantOperator(row) {
 // run says it recorded nothing instead. Re-running on the same HEAD is safe:
 // the row id carries the commit, and appendAttentionRows drops duplicate keys.
 export function recordDiffSurvivors(state, report, artifactPath, json = false) {
+  if (report.evidence?.stable === false) return 0;
   const survivors = report.mutants.filter(row => row.status === 'survived');
   if (!survivors.length) return 0;
   const uncommitted = report.uncommitted_files || [];
@@ -615,9 +708,10 @@ export async function cmdMutateDiff(args) {
   if (optionError) return usage(optionError);
   const workspace = resolve(process.cwd()), state = canonicalStateRoot(workspace);
   await runMutateCommand(async signal => {
-    const report = await runDiffMutate({ cwd: workspace, base: options.diff, languages: options.languages, timeoutMs: options.timeoutMs, signal });
-    const name = `${report.head.slice(0, 12)}-${report.merge_base.slice(0, 12)}`;
-    persistReport(state, ['mutate-diff'], name, report);
+    const report = await runDiffMutate({ cwd: workspace, base: options.diff, languages: options.languages, timeoutMs: options.timeoutMs, signal, ...reuseOptions(options) });
+    const name = `${report.head.slice(0, 12)}-${report.merge_base.slice(0, 12)}-${report.run_id}`;
+    persistReport(state, ['mutate-diff'], name, report, true);
+    persistReport(state, ['mutate-diff'], `${report.head.slice(0, 12)}-${report.merge_base.slice(0, 12)}`, report);
     recordDiffSurvivors(state, report, diffReportArtifact(name), options.json);
     return { report, artifactPath: diffReportArtifact(name) };
   }, options.json);
@@ -644,7 +738,7 @@ export async function cmdMutate(args) {
     return;
   }
   await runMutateCommand(async signal => {
-    const report = await runTaskMutate(state, options.task, { project: options.project, base: options.base, languages: options.languages, timeoutMs: options.timeoutMs, signal });
-    return { report, artifactPath: reportArtifact(report.project, options.task) };
+    const report = await runTaskMutate(state, options.task, { project: options.project, base: options.base, languages: options.languages, timeoutMs: options.timeoutMs, signal, ...reuseOptions(options) });
+    return { report, artifactPath: reportArtifact(report.project, `${options.task}-${report.run_id}`) };
   }, options.json);
 }

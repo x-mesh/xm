@@ -8,15 +8,17 @@ import { createHash, randomBytes } from 'node:crypto';
 const ROOT = join(import.meta.dir, '..');
 let fixture, server, dashboard, database, url, key;
 const write = (path, value) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, value); };
+const invariant = (condition, id) => { if (!condition) throw new Error(`INVARIANT:${id}`); };
 const hash = text => createHash('sha256').update(text).digest('hex');
 const materialized = (project, path) => join(fixture, 'data', project, '.xm', path);
 function machine(name) { const cwd = join(fixture, name, 'project'); mkdirSync(join(cwd, '.xm'), { recursive: true }); return cwd; }
-async function cli(kind, cwd, id, project, { success = true, serverUrl = url } = {}) {
+async function cli(kind, cwd, id, project, { success = true, serverUrl = url, invariantId = null } = {}) {
   const home = join(fixture, 'homes', id); mkdirSync(home, { recursive: true });
   const proc = Bun.spawn(['node', join(ROOT, `x-sync/lib/x-sync/sync-${kind}.mjs`), '--project', project], {
     cwd, env: { ...process.env, HOME: home, XM_SYNC_SERVER_URL: serverUrl, XM_SYNC_API_KEY: key, XM_SYNC_MACHINE_ID: id }, stdout: 'pipe', stderr: 'pipe',
   });
   const [status, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  if (invariantId) invariant(status === (success ? 0 : 1), invariantId);
   expect(status).toBe(success ? 0 : 1);
   return { status, stdout, stderr };
 }
@@ -63,7 +65,7 @@ test('an empty final snapshot deletes the last remote file', async () => {
   await cli('push', a, 'A', 'empty'); await cli('pull', b, 'B', 'empty');
   rmSync(join(a, '.xm/traces/item.jsonl'));
   await cli('push', a, 'A', 'empty'); await cli('pull', b, 'B', 'empty');
-  expect((await rows('empty')).filter(row => !row.deleted)).toHaveLength(0);
+  invariant((await rows('empty')).filter(row => !row.deleted).length === 0, 'SYNC_EMPTY');
   expect(existsSync(join(b, '.xm/traces/item.jsonl'))).toBe(false);
 });
 
@@ -75,7 +77,7 @@ test('remote updates replace tracked copies and never echo through another machi
   await cli('push', a, 'A', 'updates'); await cli('pull', b, 'B', 'updates');
   expect(readFileSync(join(b, '.xm/traces/item.jsonl'), 'utf8')).toBe('v2');
   await cli('push', b, 'B', 'updates');
-  expect((await rows('updates')).filter(row => !row.deleted).map(row => row.machine_id)).toEqual(['A']);
+  invariant(JSON.stringify((await rows('updates')).filter(row => !row.deleted).map(row => row.machine_id)) === JSON.stringify(['A']), 'SYNC_ORIGIN');
 });
 
 test('an imported update preserves owner-only file permissions', async () => {
@@ -105,6 +107,7 @@ test('cursor identity isolates projects and server URLs', async () => {
   await push('newer', 'A', [['traces/new1.jsonl', 'new'], ['traces/new2.jsonl', 'new']]);
   const b = machine('B');
   await cli('pull', b, 'B', 'newer'); await cli('pull', b, 'B', 'older');
+  invariant(existsSync(join(b, '.xm/traces/old.jsonl')), 'SYNC_CURSOR');
   expect(readFileSync(join(b, '.xm/traces/old.jsonl'), 'utf8')).toBe('old');
   let requestedCursor = null;
   const other = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: req => {
@@ -119,7 +122,7 @@ test('a tombstone restores another active machine in the materialized view', asy
   await push('shared', 'A', [['build/state.json', 'A']]);
   await push('shared', 'B', [['build/state.json', 'B']]);
   await push('shared', 'A', []);
-  expect(readFileSync(materialized('shared', 'build/state.json'), 'utf8')).toBe('B');
+  invariant(existsSync(materialized('shared', 'build/state.json')) && readFileSync(materialized('shared', 'build/state.json'), 'utf8') === 'B', 'SYNC_ACTIVE');
   await push('shared', 'B', []); expect(existsSync(materialized('shared', 'build/state.json'))).toBe(false);
 });
 
@@ -130,14 +133,14 @@ test('materialization failure is nonzero and an identical retry repairs the miss
   expect(existsSync(join(a, '.xm/.sync-state.json'))).toBe(false);
   rmSync(blocker);
   await cli('push', a, 'A', 'repair');
-  expect(readFileSync(materialized('repair', 'blocked/item.json'), 'utf8')).toBe('data');
+  invariant(existsSync(materialized('repair', 'blocked/item.json')) && readFileSync(materialized('repair', 'blocked/item.json'), 'utf8') === 'data', 'SYNC_REPAIR');
 });
 
 test('pull rejects symlink escapes without advancing its cursor', async () => {
   const b = machine('B'), outside = join(fixture, 'outside'); mkdirSync(outside);
   symlinkSync(outside, join(b, '.xm/traces'), 'dir');
   await push('symlink', 'A', [['traces/escape.jsonl', 'bad']]);
-  await cli('pull', b, 'B', 'symlink', { success: false });
+  await cli('pull', b, 'B', 'symlink', { success: false, invariantId: 'SYNC_SYMLINK' });
   expect(existsSync(join(outside, 'escape.jsonl'))).toBe(false);
   expect(existsSync(join(b, '.xm/.sync-state.json'))).toBe(false);
 });
@@ -149,7 +152,7 @@ test('push excludes worktrees, nested repositories and temporary gate source cop
   write(join(a, '.xm/review/runs/example/verification-work/src/a.js'), 'source');
   write(join(a, '.xm/traces/good.jsonl'), 'state');
   await cli('push', a, 'A', 'scope');
-  expect((await rows('scope')).filter(row => !row.deleted).map(row => row.path)).toEqual(['traces/good.jsonl']);
+  invariant(JSON.stringify((await rows('scope')).filter(row => !row.deleted).map(row => row.path)) === JSON.stringify(['traces/good.jsonl']), 'SYNC_SCOPE');
 });
 
 test('legacy untracked local files survive a first pull and remote tombstone', async () => {

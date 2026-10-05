@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "files": [
+    "scripts/sync-review-gate.mjs",
+    "test/sync-lifecycle-integration.test.mjs",
+    "x-sync/review-gate.json",
+    "x-sync/lib/x-sync-server.mjs",
+    "x-sync/lib/x-sync/sync-config.mjs",
+    "x-sync/lib/x-sync/sync-push.mjs",
+    "x-sync/lib/x-sync/sync-pull.mjs",
+    "x-sync/lib/x-sync/sync-storage.mjs",
+    "x-sync/lib/x-sync/sync-handoff.mjs",
+    "x-sync/lib/x-sync/sync-lessons.mjs"
+  ],
+  "baseline": {
+    "argv": [
+      "node",
+      "scripts/sync-review-gate.mjs",
+      "baseline"
+    ],
+    "timeout_ms": 60000
+  },
+  "mutation": {
+    "argv": [
+      "node",
+      "scripts/sync-review-gate.mjs",
+      "mutation"
+    ],
+    "timeout_ms": 240000
+  },
+  "mutants": [
+    {
+      "id": "skip-empty",
+      "invariant_id": "SYNC_EMPTY",
+      "violation": "SYNC_EMPTY"
+    },
+    {
+      "id": "echo-imports",
+      "invariant_id": "SYNC_ORIGIN",
+      "violation": "SYNC_ORIGIN"
+    },
+    {
+      "id": "shared-cursor",
+      "invariant_id": "SYNC_CURSOR",
+      "violation": "SYNC_CURSOR"
+    },
+    {
+      "id": "ignore-active-copy",
+      "invariant_id": "SYNC_ACTIVE",
+      "violation": "SYNC_ACTIVE"
+    },
+    {
+      "id": "skip-identical-repair",
+      "invariant_id": "SYNC_REPAIR",
+      "violation": "SYNC_REPAIR"
+    },
+    {
+      "id": "include-worktrees",
+      "invariant_id": "SYNC_SCOPE",
+      "violation": "SYNC_SCOPE"
+    },
+    {
+      "id": "follow-symlinks",
+      "invariant_id": "SYNC_SYMLINK",
+      "violation": "SYNC_SYMLINK"
+    }
+  ]
+}

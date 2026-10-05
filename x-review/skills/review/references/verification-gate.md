@@ -111,3 +111,22 @@ Gate failure consumes the reserved review unit. Use the existing approval rules 
 A delta review inherits the gate and executes it against the new frozen inputs.
 A different gate requires an explicit full-review exception.
 Resume and finalization do not execute a completed gate again.
+
+## Optional mutation measurement
+
+Attach an archived mutate report with an explicit trusted hash:
+
+```json
+{"measurement":{"file":"evidence/mutate.json","sha256":"<64 lowercase hex digits>"}}
+```
+
+Include that report and every measured input in `files`. The gate checks the report
+hash, complete measurement status, stable inputs, and each input against frozen
+bytes before baseline execution. An incomplete, stale, or changed report stops the
+gate. Generic survivors remain advisory and cannot replace the declared rule
+mutations. A delta needs fresh matching evidence if a measured input changes.
+
+The repository example is `x-sync/review-gate.json` with
+`x-sync/review-context.json`. It checks seven named sync regressions with actual
+clients and an isolated SQLite server. Each mutation must fail its own invariant
+assertion. Syntax errors and unrelated failures do not count as detection.

@@ -762,9 +762,13 @@ xm does not generate mutants. For each language, an external tool parses the cod
 
 **Bounds.** `--timeout-ms` limits the whole run. The default is 30 minutes. Each tool sets the timeout for each mutant from its baseline run. If the suite already fails, cargo-mutants reports `baseline_failed`, while StrykerJS, gomutants and Muter stop before they mutate and the language gets `error` with the tool's output. Neither is a mutation result.
 
-Diff reports go to `.xm/review/mutate-diff/<head>-<merge-base>.json`. Task reports go to `.xm/review/mutate/<project>/<task>.json`, and each survived mutant of a task goes to the attention queue. A task needs a linked worktree artifact with a recorded `base`, or `--base <ref>`.
+Immutable diff reports use `.xm/review/mutate-diff/<head>-<merge-base>-<run-id>.json`. Immutable task reports use `.xm/review/mutate/<project>/<task>-<run-id>.json`. The previous paths remain latest aliases. Survivors from stable task runs enter the attention queue. A task needs a linked worktree artifact with a recorded `base`, or `--base <ref>`.
 
-> v1 is observational. A survivor is a candidate for inspection, not proof of a missing test, and it does not block a merge.
+Reports bind input hashes, execution plans, tool versions, and an environment digest. The measurement status distinguishes complete, incomplete, failed, and no-target runs. A complete measurement can contain survivors. Unresolved outcomes and omitted targets cause exit code 1. Deleted captured inputs also produce an incomplete measurement because the gate cannot verify absent files.
+
+Use `--test-command 'bun test test/sync.test.mjs'` for an explicit JavaScript test selection. Use `--reuse-report FILE --reuse-sha256 HASH` only for trusted evidence with identical inputs and execution conditions. A mismatch stops the command. Current adapters reject `--max-mutants N` before execution because they cannot enforce the count bound. The sync project gate instead declares exactly seven mutations.
+
+> The check is observational. A survivor is a candidate for inspection, not proof of a missing test, and it does not block a merge.
 
 ---
 

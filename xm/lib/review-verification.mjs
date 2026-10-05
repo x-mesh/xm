@@ -24,7 +24,7 @@ function command(value, name) {
 }
 
 export function verificationConfig(value, context) {
-  keys(value, ['schema_version', 'files', 'baseline', 'mutation', 'mutants'], 'configuration');
+  keys(value, ['schema_version', 'files', 'baseline', 'mutation', 'mutants', 'measurement'], 'configuration');
   if (value.schema_version !== 1 || !context?.invariants?.length) throw new Error('verification gate requires schema_version 1 and a bound review context');
   if (!Array.isArray(value.files) || !value.files.length || value.files.length > 10000
     || value.files.some(file => typeof file !== 'string' || !file || file.startsWith('/') || file.includes('\\') || file.includes('\0')
@@ -42,7 +42,29 @@ export function verificationConfig(value, context) {
     ids.add(item.id);
     return { id: item.id, invariant_id: item.invariant_id, violation: item.violation };
   });
-  return { schema_version: 1, files: [...value.files].sort(), baseline: command(value.baseline, 'baseline'), mutation: command(value.mutation, 'mutation'), mutants };
+  let measurement;
+  if (value.measurement !== undefined) {
+    keys(value.measurement, ['file', 'sha256'], 'measurement');
+    if (!value.files.includes(value.measurement.file) || !/^[a-f0-9]{64}$/.test(value.measurement.sha256 || '')) throw new Error('verification gate measurement requires a declared file and trusted SHA-256');
+    measurement = { file: value.measurement.file, sha256: value.measurement.sha256 };
+  }
+  return { schema_version: 1, files: [...value.files].sort(), baseline: command(value.baseline, 'baseline'), mutation: command(value.mutation, 'mutation'), mutants, ...(measurement ? { measurement } : {}) };
+}
+
+function validateMeasurement(config, work, inputs) {
+  if (!config.measurement) return null;
+  const bytes = readFileSync(join(work, config.measurement.file));
+  if (digest(bytes) !== `sha256:${config.measurement.sha256}`) throw new Error('verification gate measurement report hash mismatch');
+  const report = JSON.parse(bytes), evidence = report.evidence;
+  if (report.schema_v !== 3 || report.measurement?.status !== 'complete' || evidence?.stable !== true
+    || !Array.isArray(evidence.inputs) || !evidence.inputs.length || digest(JSON.stringify(evidence.inputs)) !== `sha256:${evidence.input_sha256}`
+    || !Array.isArray(report.mutants) || !report.mutants.length || report.mutants.some(item => !['killed', 'survived'].includes(item.status))) throw new Error('verification gate measurement is incomplete or invalid');
+  const seen = new Set();
+  for (const input of evidence.inputs) {
+    if (seen.has(input.file) || !/^[a-f0-9]{64}$/.test(input.sha256 || '') || !inputs.some(item => item.file === input.file && item.sha256 === `sha256:${input.sha256}`)) throw new Error(`verification gate measurement input differs from frozen files: ${input.file}`);
+    seen.add(input.file);
+  }
+  return { run_id: report.run_id, sha256: config.measurement.sha256, status: 'complete', survivors: report.mutants.filter(item => item.status === 'survived').length };
 }
 
 function inputBytes(manifest, file) {
@@ -115,6 +137,7 @@ export async function runVerificationGate(runDir, manifest) {
         if (!existsSync(path) || digest(readFileSync(path)) !== input.sha256) throw new Error(`verification gate did not restore input: ${input.file}`);
       }
     };
+    if (config.measurement) receipt.measurement = validateMeasurement(config, work, receipt.inputs);
     const baseline = await executeCommand(config.baseline, work, logs, 'baseline');
     keys(baseline, ['schema_version', 'status', 'tests_run'], 'baseline result');
     if (baseline.schema_version !== 1 || baseline.status !== 'passed' || !Number.isSafeInteger(baseline.tests_run) || baseline.tests_run < 1) throw new Error('verification gate baseline requires passed tests with tests_run > 0');

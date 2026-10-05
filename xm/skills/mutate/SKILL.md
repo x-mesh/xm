@@ -44,7 +44,20 @@ Check whether the tests already in a repository detect bounded changes to the li
    - A language with status `unavailable` names the missing tool or configuration and an install command. Relay both.
    - A suite that already fails arrives as `baseline_failed` from cargo-mutants, and as `error` with the tool's output from StrykerJS, gomutants and Muter. Report an invalid test setup, not a mutation result.
    - Point to the `Report:` path the command printed.
-8. Exit code 1 means at least one language could not run. The results for the other languages are still valid.
+8. Read `measurement.status` before interpreting counts. `complete` means the selected scope produced resolved outcomes, not that all mutants died. `incomplete` includes omitted files, deleted captured inputs (`absent_input`), zero-mutant targets, unviable, no-coverage, timeout, skipped, or error outcomes. Deleted documents and tests also prevent gate-compatible evidence, even if they are not mutation targets. `failed` includes tool failures or input drift. `no_targets` is not correctness evidence. Exit code 1 reports an incomplete or failed measurement; resolved survivors remain advisory.
+9. Preserve the immutable run report when passing evidence to a gate. Legacy head/base and task paths are latest aliases. A gate's optional `measurement` requires the archived report's exact SHA-256 and all measured inputs among its frozen files.
+
+## Cost and reuse
+
+Both entries accept these optional flags in addition to their target flags:
+
+- `--test-command CMD`: use the caller's explicit JavaScript test command. Other language adapters reject this option. Record the narrower test scope; do not infer complete project coverage.
+- `--max-mutants N`: request a pre-execution count bound. Current external adapters reject this request because they do not implement a bounded plan. Do not remove the bound and run unbounded automatically. Project semantic gates can use an explicit fixed mutant list.
+- `--reuse-report FILE --reuse-sha256 HASH`: reuse an explicitly trusted complete report only when input bytes, selection, environment, tool versions, and command plans match. A mismatch stops instead of automatically rerunning. Never take the hash from untrusted report text.
+
+Reports record environment digests, not environment values. Input manifests omit private paths and generated mutation logs. External services, ignored inputs, and dependency contents beyond the captured files are not proven by the receipt. Do not reuse evidence when tests depend on those changing inputs.
+
+Keep gate authoring within the existing review operation and its one-pass budget. This skill does not generate tests, promote equivalent-mutant guesses to facts, or repeat runs until survivors disappear.
 
 ## Safety
 

@@ -763,9 +763,14 @@ xm은 뮤턴트를 직접 만들지 않습니다. 언어마다 외부 도구가 
 
 **한도:** `--timeout-ms`는 실행 전체의 시간 상한이고 기본값은 30분입니다. 뮤턴트별 timeout은 각 도구가 기준 실행 시간을 보고 정합니다. 스위트가 이미 실패하면 cargo-mutants는 `baseline_failed`로 보고하고, StrykerJS·gomutants·Muter는 변형을 시작하기 전에 멈춰 `error`와 도구 출력으로 보고됩니다. 어느 쪽도 뮤테이션 결과가 아닙니다.
 
-diff 리포트는 `.xm/review/mutate-diff/<head>-<merge-base>.json`에, 작업 리포트는 `.xm/review/mutate/<project>/<task>.json`에 저장됩니다. 작업에서 살아남은 뮤턴트는 attention 큐에 추가됩니다. 작업을 실행하려면 연결된 worktree artifact에 `base`가 기록되어 있거나 `--base <ref>`를 넘겨야 합니다.
+실행별 보고서는 파일명 끝에 고유 run ID를 붙여 보존합니다. 기존 head/base·task 경로는 최신 결과를 가리키는 호환 경로입니다. 보고서에는 입력·실행 명령·도구 버전·환경의 해시와 측정 완료 여부를 기록합니다. 누락이나 미해결 결과가 있으면 종료 코드는 1이며, survivor 자체는 머지 차단 사유가 아닙니다. 캡처한 입력이 삭제된 경우에도 gate가 파일의 부재를 검증할 수 없으므로 측정 미완료로 보고합니다.
 
-> v1은 관찰용입니다. 생존한 뮤턴트는 들여다볼 후보이지 테스트가 없다는 증거가 아니며, 머지를 막지도 않습니다.
+JavaScript에서는 `--test-command 'bun test test/sync.test.mjs'`로 검사할 테스트를 명시할 수 있습니다. `--reuse-report FILE --reuse-sha256 HASH`는 입력과 실행 조건이 동일한 신뢰된 결과만 재사용하며, 불일치하면 중단합니다. 현재 외부 도구 어댑터는 변이 개수 제한을 보장하지 못하므로 `--max-mutants N` 요청을 실행 전에 거절합니다. sync 전용 gate는 변이 7개를 명시해 검사합니다.
+
+
+diff 보고서는 `.xm/review/mutate-diff/<head>-<merge-base>-<run-id>.json`에, 작업 보고서는 `.xm/review/mutate/<project>/<task>-<run-id>.json`에 보존됩니다. 입력이 유지된 작업에서 살아남은 변이는 attention 큐에 추가됩니다. 작업을 실행하려면 연결된 worktree artifact에 `base`가 기록되어 있거나 `--base <ref>`를 넘겨야 합니다.
+
+> 이 검사는 관찰용입니다. 생존한 뮤턴트는 들여다볼 후보이지 테스트가 없다는 증거가 아니며, 머지를 막지도 않습니다.
 
 ---
 

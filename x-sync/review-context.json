@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "goal": "Preserve sync ownership, progress and file boundaries",
+  "invariants": [
+    {
+      "id": "SYNC_EMPTY",
+      "text": "Deleting the last local file removes the remote copy"
+    },
+    {
+      "id": "SYNC_ORIGIN",
+      "text": "Imported copies do not become another machine's source"
+    },
+    {
+      "id": "SYNC_CURSOR",
+      "text": "Each server, project and receiver has its own cursor"
+    },
+    {
+      "id": "SYNC_ACTIVE",
+      "text": "A tombstone preserves another machine's active copy"
+    },
+    {
+      "id": "SYNC_REPAIR",
+      "text": "An identical retry repairs a failed materialization"
+    },
+    {
+      "id": "SYNC_SCOPE",
+      "text": "Worktree source files stay outside sync"
+    },
+    {
+      "id": "SYNC_SYMLINK",
+      "text": "Sync does not write through symlinks"
+    }
+  ],
+  "constraints": [
+    {
+      "id": "BOUND",
+      "text": "Run exactly seven declared mutations in disposable copies with per-run timeouts"
+    }
+  ],
+  "non_goals": [
+    {
+      "id": "EXCLUDE",
+      "text": "Do not change production sync data or claim coverage for undeclared defects"
+    }
+  ],
+  "acceptance_checks": [
+    {
+      "id": "SYNC_BASELINE",
+      "description": "All seven regression scenarios pass without mutations"
+    },
+    {
+      "id": "SYNC_MUTATIONS",
+      "description": "Each mutation fails its intended invariant assertion"
+    }
+  ]
+}
