@@ -23,7 +23,24 @@ Sync .xm/ project state (traces, plans, build data) across multiple machines via
 
 Syncs .xm/ project state across machines. Server stores data in SQLite; clients push/pull via HTTP.
 
-Pull is incremental by a monotonic server **cursor** (id), so same-millisecond pushes never get skipped. Push sends a **full snapshot**, so the server propagates local deletions as tombstones — clients then remove only the machine-namespaced copies they pulled earlier (never your local working files).
+Pull is incremental by a monotonic server **cursor** (id), so same-millisecond pushes never get skipped. Push sends a **full snapshot**, so the server propagates local deletions as tombstones. Clients remove only tracked, unchanged remote copies and preserve local working files.
+
+Pull cursors are scoped to server URL, project ID, and receiving machine ID.
+Downloaded ordinary files have local provenance records in `.sync-state.json`.
+Updates and deletions apply only to tracked, unchanged copies. A locally edited
+canonical file stays local. Edited remote namespace copies stay excluded from push,
+including after the remote source is deleted or replaced.
+
+Push excludes unchanged downloaded copies, repositories under `.xm`, review
+worktrees, and temporary gate execution directories. An empty full snapshot still
+reaches the server to propagate the last deletion. Symlink paths are rejected.
+Partial server writes fail the command and do not update the successful push time.
+An identical push can repair a missing or stale dashboard file from active DB data.
+
+Older clients did not record file provenance. Their cursor is not reused for a new
+scope, and ambiguous existing files are preserved rather than guessed to be remote.
+This update does not automatically clean up old duplicate files or server rows.
+Resolve those separately with explicit ownership evidence and approval.
 
 ## Model Routing
 
@@ -192,7 +209,9 @@ Output example:
 [x-sync pull] 8 files written, 1 namespaced, 2 removed (3 skipped — own machine)
 ```
 
-`removed` = machine-namespaced copies deleted because their source was tombstoned. Your own local files at non-namespaced paths are never touched.
+`removed` = unchanged, tracked remote copies deleted because their source was
+tombstoned. That can include a canonical path originally imported by pull.
+Untracked local files and locally edited copies are preserved.
 
 Handoff files use a separate rule from ordinary `.xm` files: pull selects one
 newest valid `SESSION-STATE.json`, writes it to the canonical path (never a

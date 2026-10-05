@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 import { Database } from "bun:sqlite";
 import { homedir } from "os";
-import { mkdirSync, writeFileSync, rmSync } from "fs";
-import { join, dirname, resolve, relative, isAbsolute } from "path";
+import { mkdirSync, existsSync, rmSync } from "fs";
+import { join, dirname } from "path";
+import { contentHash, fileHash, isSyncablePath, safePath, writeAtomic } from './x-sync/sync-storage.mjs';
 
 // --- Config ---
 const PORT = (() => {
@@ -58,6 +59,8 @@ const stmtTombstone = db.prepare(
 const stmtListActive = db.prepare(
   "SELECT path FROM sync_files WHERE project_id=? AND machine_id=? AND deleted=0"
 );
+const stmtListOwnedPaths = db.prepare("SELECT path FROM sync_files WHERE project_id=? AND machine_id=?");
+const stmtLatestActive = db.prepare("SELECT content FROM sync_files WHERE project_id=? AND path=? AND deleted=0 ORDER BY id DESC LIMIT 1");
 // Incremental pull by monotonic id cursor — immune to same-ms timestamp collisions.
 const stmtPullCursor = db.prepare(
   "SELECT id, path, content, hash, machine_id, pushed_at, deleted FROM sync_files WHERE project_id=? AND id>? ORDER BY id"
@@ -112,23 +115,37 @@ function timingSafeEq(a, b) {
 // A project_id must be a single, non-traversing path segment.
 function isValidProjectId(id) {
   return typeof id === "string" && id.length > 0 && id.length <= 255 &&
-    !id.includes("/") && !id.includes("\\") && id !== "." && id !== "..";
+    !id.includes("/") && !id.includes("\\") && !id.includes("\0") && id !== "." && id !== "..";
 }
 
 // Resolve `parts` under `base` and confirm the result stays inside `base`.
 // Returns the absolute path, or null on traversal/absolute escape.
 function safeResolve(base, ...parts) {
-  if (parts.some((p) => typeof p !== "string" || p.length === 0)) return null;
-  const target = resolve(base, ...parts);
-  const rel = relative(base, target);
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return null;
-  return target;
+  try {
+    let target = base;
+    for (const part of parts) target = safePath(target, part);
+    return target;
+  } catch { return null; }
+}
+
+function materializeCurrent(projectId, path) {
+  const rel = `${projectId}/.xm/${path}`;
+  const target = safePath(MATERIALIZE_DIR, rel);
+  const active = stmtLatestActive.get(projectId, path);
+  if (!active) {
+    if (existsSync(target)) { rmSync(target); return true; }
+    return false;
+  }
+  if (fileHash(target) === contentHash(active.content)) return false;
+  writeAtomic(MATERIALIZE_DIR, rel, active.content);
+  return true;
 }
 
 // --- Handlers ---
 async function handlePush(req) {
   if (!checkAuth(req)) return authError();
   const body = await req.json();
+  if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "Bad request" }, 400);
   const { machine_id, project_id, files, full_snapshot } = body;
   if (!machine_id || !project_id || !Array.isArray(files)) {
     return json({ error: "Bad request" }, 400);
@@ -137,28 +154,37 @@ async function handlePush(req) {
     return json({ error: "Invalid project_id or machine_id" }, 400);
   }
 
-  const baseDir = join(MATERIALIZE_DIR, project_id, ".xm");
   let accepted = 0;
   let skipped = 0;
   let rejected = 0;          // path traversal attempts
   let deleted = 0;           // tombstones written (full-snapshot pushes only)
+  let repaired = 0;
   const writeErrors = [];    // materialize failures, surfaced in the response
   const pushedPaths = new Set();
+  const touchedPaths = new Set();
   const now = Date.now();
 
-  for (const { path, content, hash } of files) {
+  const validated = [];
+  for (const file of files) {
+    const { path, content } = file || {};
     if (typeof path !== "string" || typeof content !== "string") {
       rejected++;
       continue;
     }
     // Validate path BEFORE touching the DB so a malicious path can't be stored.
-    const filePath = safeResolve(baseDir, path);
-    if (!filePath) {
+    const filePath = safeResolve(MATERIALIZE_DIR, project_id, '.xm', path);
+    if (!filePath || !isSyncablePath(path)) {
       rejected++;
       console.error(`[x-sync] REJECT traversal project=${project_id} path=${path}`);
       continue;
     }
+    validated.push({ path, content, hash: contentHash(content) });
+  }
+  if (rejected) return json({ error: "Snapshot contains rejected paths", accepted: 0, skipped: 0, rejected, deleted: 0, write_errors: [] }, 400);
+
+  for (const { path, content, hash } of validated) {
     pushedPaths.add(path);
+    touchedPaths.add(path);
 
     const existing = stmtGetHash.get(project_id, path, machine_id);
     if (existing && existing.hash === hash && existing.deleted === 0) {
@@ -168,14 +194,6 @@ async function handlePush(req) {
 
     stmtUpsert.run(project_id, machine_id, path, content, hash, now);
     accepted++;
-    // Materialize to disk for x-dashboard consumption
-    try {
-      mkdirSync(dirname(filePath), { recursive: true });
-      writeFileSync(filePath, content, "utf8");
-    } catch (err) {
-      writeErrors.push({ path, error: err.message });
-      console.error(`[x-sync] materialize failed project=${project_id} path=${path}: ${err.message}`);
-    }
   }
 
   // Deletion propagation: a full snapshot is the authoritative file set for this
@@ -185,23 +203,27 @@ async function handlePush(req) {
       if (pushedPaths.has(path)) continue;
       stmtTombstone.run(project_id, machine_id, path, now);
       deleted++;
-      const fp = safeResolve(baseDir, path);
-      if (fp) {
-        try { rmSync(fp, { force: true }); }
-        catch (err) { console.error(`[x-sync] tombstone unlink failed project=${project_id} path=${path}: ${err.message}`); }
-      }
+    }
+    for (const { path } of stmtListOwnedPaths.all(project_id, machine_id)) touchedPaths.add(path);
+  }
+
+  for (const path of touchedPaths) {
+    try { if (materializeCurrent(project_id, path)) repaired++; }
+    catch (err) {
+      writeErrors.push({ path, error: err.message });
+      console.error(`[x-sync] materialize failed project=${project_id} path=${path}: ${err.message}`);
     }
   }
 
   // Trigger dashboard rescan if files were materialized or removed
-  if (accepted > 0 || deleted > 0) {
+  if (accepted > 0 || deleted > 0 || repaired > 0) {
     fetch(`${DASHBOARD_URL}/api/rescan`, { method: 'POST' }).catch(() => {});
   }
 
   console.error(
     `[x-sync] POST /sync/push project=${project_id} files=${files.length} accepted=${accepted} skipped=${skipped} rejected=${rejected} deleted=${deleted} write_errors=${writeErrors.length}`
   );
-  return json({ accepted, skipped, rejected, deleted, write_errors: writeErrors });
+  return json({ accepted, skipped, rejected, deleted, repaired, write_errors: writeErrors }, writeErrors.length ? 503 : 200);
 }
 
 function handlePull(req) {

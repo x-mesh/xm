@@ -11,7 +11,7 @@ const BUILD = join(ROOT, 'x-build', 'lib', 'x-build-cli.mjs');
 async function run(script, args, cwd, env) {
   const proc = Bun.spawn(['node', script, ...args], {
     cwd,
-    env: { ...process.env, ...env },
+    env: { ...process.env, HOME: join(fixture, 'home'), ...env },
     stdout: 'pipe',
     stderr: 'pipe',
   });
