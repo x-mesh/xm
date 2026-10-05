@@ -28,3 +28,24 @@ test('does not promote an unrelated open file or hide verification failure as an
   expect(check('agy', '123 agy agy\n', 'p123\ncagy\nf4\nn/other/file.lock\n').size).toBe(0);
   expect(() => check('agy', '', '', 'permission denied')).toThrow('cannot verify');
 });
+
+test('prompt text and option values do not turn an interactive session into a service', () => {
+  for (const args of [
+    'codex review queue handling',
+    'codex investigate app-server startup',
+    'codex --profile queue',
+    'codex -pqueue review app-server startup',
+    'codex --profile=app-server',
+    'codex --config model=queue review app-server errors',
+    'codex --no-daemon -- review queue handling',
+    '/usr/local/bin/codex resume thread check queue state',
+  ]) expect(check('codex', `123 codex ${args}\n`).get(ID)).toEqual([123]);
+  for (const args of [
+    'codex queue --thread thread --message hello',
+    'codex --profile work app-server daemon',
+    'codex -c model=test queue --thread thread --message hello',
+    'codex --config=model=test app-server daemon',
+    'codex -pwork app-server daemon',
+    'codex -cmodel=test queue --thread thread --message hello',
+  ]) expect(check('codex', `123 codex ${args}\n`).size).toBe(0);
+});

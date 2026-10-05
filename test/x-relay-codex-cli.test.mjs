@@ -417,3 +417,51 @@ process.stdout.write(process.cwd() === ${JSON.stringify(realpathSync(f.worktree)
     }, { pages });
   });
 });
+
+test('a queue-related prompt remains listed and accepts a queued fixture message', async () => {
+  await withFixture(async f => {
+    const control = await run(f, ['sessions']);
+    const ps = join(f.root, 'bins', 'ps');
+    writeFileSync(ps, '#!/usr/bin/env node\nprocess.stdout.write(' + JSON.stringify(`${process.pid} codex codex review queue handling\n`) + ');\n');
+    chmodSync(ps, 0o755);
+    const listing = await run(f, ['sessions']);
+    const send = await run(f, ['send', '--thread', THREAD_A, '--message', 'fixture message']);
+    expect(control.output.sessions).toHaveLength(2);
+    expect(listing.output.sessions).toHaveLength(2);
+    expect(send.status).toBe(0);
+    expect(send.output).toMatchObject({ state: 'queued', thread_id: THREAD_A });
+  });
+});
+
+test('a slow synchronous provider cannot starve a healthy daemon connection', async () => {
+  await withFixture(async f => {
+    const control = await run(f, ['sessions']);
+    const fakeClaude = join(f.root, 'slow-claude');
+    writeFileSync(fakeClaude, '#!/usr/bin/env node\nsetTimeout(() => console.log([]), 6000);\n');
+    chmodSync(fakeClaude, 0o755);
+    const wrapper = join(f.root, 'overview.mjs');
+    writeFileSync(wrapper, `import { chatCandidates } from ${JSON.stringify(join(ROOT, 'xm/lib/x-relay-chat.mjs'))};
+import { listProvider } from ${JSON.stringify(CLI)};
+console.log(JSON.stringify(await chatCandidates({ listProvider: provider => provider === 'agy' ? { sessions: [] } : listProvider(provider) })));
+`);
+    const result = await new Promise((resolveResult, reject) => {
+      const child = spawn('node', [wrapper], { cwd: f.root, env: {
+        ...process.env, HOME: f.home, CODEX_HOME: join(f.home, '.codex'), CODEX_THREAD_ID: '',
+        PATH: join(f.root, 'bins') + ':' + process.env.PATH,
+        XM_RELAY_CODEX_BIN: f.fake, XM_RELAY_CLAUDE_BIN: fakeClaude,
+        FAKE_DAEMON_SOCKET: f.socketPath, FAKE_QUEUE_CAPTURE: f.capture,
+      } });
+      let stdout = '', stderr = '';
+      const timer = setTimeout(() => { child.kill(); reject(new Error(`overview timed out: ${stderr}`)); }, 12000);
+      child.stdout.on('data', data => { stdout += data; });
+      child.stderr.on('data', data => { stderr += data; });
+      child.on('error', error => { clearTimeout(timer); reject(error); });
+      child.on('close', status => { clearTimeout(timer); resolveResult({ status, stdout, stderr }); });
+    });
+    expect(result.status).toBe(0);
+    const overview = JSON.parse(result.stdout);
+    expect(control.output.sessions).toHaveLength(2);
+    expect(overview.candidates.map(row => row.id)).toEqual([THREAD_C, THREAD_A]);
+    expect(overview.notes).toEqual([]);
+  });
+}, 15000);
