@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.35.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.35.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -715,6 +715,7 @@ Large reviews no longer stop at an arbitrary line count. The planner budgets the
 | **Verified resolution** | `--reverify ID --outcome resolved` also requires `--command "<check>"`. The gate runs it, stores the exit code, and refuses `resolved` on a non-zero exit, a timeout, or a check that rewrites the bytes it is checking. `persistent` and `regression` need no command. |
 | **Named waivers** | `accept_risk` and `false_positive` on a Critical or High finding need `approved_by` as well as evidence. A waiver closes a finding with nobody fixing it, so it carries a name. Medium waivers need evidence only. |
 | **Task identity** | `--task-id` is a free string, but a task that already spent its full review on the same bytes refuses a new id. Continue that task with a delta, or approve another full with `--exception full`. |
+| **Invariant gate** | Check declared project invariants and mutations on frozen inputs before dispatch. A failed gate stops reviewer dispatch. Generic mutation survivors remain advisory. |
 | **Terminal receipts** | Every run ends with a validated receipt. A run without one blocks new reviews until you resume or close it. |
 
 **Review principles:** Context determines severity · No evidence = no finding · No fix direction = no finding · When in doubt, downgrade

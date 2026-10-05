@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.35.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.35.2-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -716,6 +716,7 @@ xm batch status <id> --json       # topic, wave, seal, 통합 검증, merge 상�
 | **검증된 해결** | `--reverify ID --outcome resolved`에는 `--command "<검사>"`도 필요합니다. 게이트가 그 명령을 실행해 종료 코드를 기록하고, 0이 아니거나 타임아웃이거나 검사 대상 바이트를 명령이 고쳐 쓰면 `resolved`를 거부합니다. `persistent`와 `regression`은 명령이 필요 없습니다 |
 | **기명 면제** | Critical·High finding의 `accept_risk`·`false_positive`에는 evidence와 함께 `approved_by`가 필요합니다. 아무도 고치지 않은 채 finding을 닫는 결정이므로 이름을 남깁니다. Medium은 evidence만 필요합니다 |
 | **태스크 정체성** | `--task-id`는 자유 문자열이지만, 같은 바이트에 이미 full 리뷰를 쓴 태스크가 있으면 새 id를 거부합니다. 그 태스크를 delta로 이어가거나 `--exception full`로 승인하세요 |
+| **규칙 검증 게이트** | 리뷰 전에 고정된 입력에서 명시한 규칙과 변이를 검사합니다. 실패하면 리뷰어를 호출하지 않습니다. 일반 mutation survivor는 참고 정보로만 다룹니다 |
 | **종료 영수증** | 모든 실행은 검증된 영수증으로 끝납니다. 영수증이 없는 실행은 resume 또는 close 전까지 새 리뷰를 막습니다 |
 
 **리뷰 원칙:** 맥락이 심각도를 결정 · 근거 없으면 발견 아님 · 수정 방향 없으면 발견 아님 · 확신 없으면 낮추기
