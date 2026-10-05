@@ -77,7 +77,7 @@ test('remote updates replace tracked copies and never echo through another machi
   await cli('push', a, 'A', 'updates'); await cli('pull', b, 'B', 'updates');
   expect(readFileSync(join(b, '.xm/traces/item.jsonl'), 'utf8')).toBe('v2');
   await cli('push', b, 'B', 'updates');
-  invariant((await rows('updates')).filter(row => !row.deleted).every(row => row.machine_id === 'A'), 'SYNC_ORIGIN');
+  invariant(JSON.stringify((await rows('updates')).filter(row => !row.deleted).map(row => row.machine_id)) === JSON.stringify(['A']), 'SYNC_ORIGIN');
 });
 
 test('an imported update preserves owner-only file permissions', async () => {

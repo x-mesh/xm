@@ -123,11 +123,12 @@ function captureInputs(changeSet) {
   return inputs;
 }
 
-function measurementFor(changeSet, adapters, languages, results, mutants, stable) {
+function measurementFor(changeSet, adapters, languages, results, mutants, stable, inputs) {
   const excluded = [], targeted = [];
+  const absent = new Set(inputs.filter(input => input.sha256 === null).map(input => input.file));
   for (const file of [...new Set([...changeSet.affected, ...changeSet.untracked])].sort()) {
     const adapter = adapters.find(item => item.claims(file));
-    let reason = !adapter ? 'unsupported' : languages && !languages.has(adapter.language) ? 'language_filter' : null;
+    let reason = absent.has(file) ? 'absent_input' : !adapter ? 'unsupported' : languages && !languages.has(adapter.language) ? 'language_filter' : null;
     if (!reason && privateInput(file)) reason = 'private_input';
     if (!reason && changeSet.untracked.includes(file)) reason = 'untracked';
     if (!reason && !changeSet.changed.has(file)) reason = 'deletion_only';
@@ -137,6 +138,7 @@ function measurementFor(changeSet, adapters, languages, results, mutants, stable
     if (group?.status !== 'ran') excluded.push({ file, reason: group?.status || 'not_run' });
     else if (!mutants.some(item => item.file === file)) excluded.push({ file, reason: 'no_mutants' });
   }
+  for (const file of absent) if (!excluded.some(item => item.file === file)) excluded.push({ file, reason: 'absent_input' });
   const gaps = excluded.some(item => !['unsupported', 'language_filter'].includes(item.reason));
   const unresolved = mutants.some(item => !['killed', 'survived'].includes(item.status));
   const failed = !stable || (results.length > 0 && results.every(item => item.status !== 'ran'));
@@ -287,7 +289,7 @@ export async function runDiffMutate({ cwd = process.cwd(), base, languages = nul
   const uncommitted_files = (changeSet.uncommitted || []).filter(file => changeSet.changed.has(file));
   let stable = false;
   try { stable = evidenceHash(JSON.stringify(captureInputs(changeSet))) === inputHash; } catch { stable = false; }
-  const measurement = measurementFor(changeSet, adapters, languages, results, mutants, stable);
+  const measurement = measurementFor(changeSet, adapters, languages, results, mutants, stable, inputs);
   return { schema_v: 3, run_id: randomUUID(), mode: 'diff', base, merge_base: changeSet.mergeBase, head: changeSet.head,
     evidence: { inputs, input_sha256: inputHash, selection, selection_sha256: selectionHash, runtime_sha256: runtimeHash, stable }, measurement,
     languages: results, mutants, counts, untracked_files, uncommitted_files, duration_ms: Date.now() - started, ts: new Date().toISOString() };

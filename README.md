@@ -764,7 +764,7 @@ xm does not generate mutants. For each language, an external tool parses the cod
 
 Immutable diff reports use `.xm/review/mutate-diff/<head>-<merge-base>-<run-id>.json`. Immutable task reports use `.xm/review/mutate/<project>/<task>-<run-id>.json`. The previous paths remain latest aliases. Survivors from stable task runs enter the attention queue. A task needs a linked worktree artifact with a recorded `base`, or `--base <ref>`.
 
-Reports bind input hashes, execution plans, tool versions, and an environment digest. The measurement status distinguishes complete, incomplete, failed, and no-target runs. A complete measurement can contain survivors. Unresolved outcomes and omitted targets cause exit code 1.
+Reports bind input hashes, execution plans, tool versions, and an environment digest. The measurement status distinguishes complete, incomplete, failed, and no-target runs. A complete measurement can contain survivors. Unresolved outcomes and omitted targets cause exit code 1. Deleted captured inputs also produce an incomplete measurement because the gate cannot verify absent files.
 
 Use `--test-command 'bun test test/sync.test.mjs'` for an explicit JavaScript test selection. Use `--reuse-report FILE --reuse-sha256 HASH` only for trusted evidence with identical inputs and execution conditions. A mismatch stops the command. Current adapters reject `--max-mutants N` before execution because they cannot enforce the count bound. The sync project gate instead declares exactly seven mutations.
 

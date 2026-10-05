@@ -44,7 +44,7 @@ Check whether the tests already in a repository detect bounded changes to the li
    - A language with status `unavailable` names the missing tool or configuration and an install command. Relay both.
    - A suite that already fails arrives as `baseline_failed` from cargo-mutants, and as `error` with the tool's output from StrykerJS, gomutants and Muter. Report an invalid test setup, not a mutation result.
    - Point to the `Report:` path the command printed.
-8. Read `measurement.status` before interpreting counts. `complete` means the selected scope produced resolved outcomes, not that all mutants died. `incomplete` includes omitted files, zero-mutant targets, unviable, no-coverage, timeout, skipped, or error outcomes. `failed` includes tool failures or input drift. `no_targets` is not correctness evidence. Exit code 1 reports an incomplete or failed measurement; resolved survivors remain advisory.
+8. Read `measurement.status` before interpreting counts. `complete` means the selected scope produced resolved outcomes, not that all mutants died. `incomplete` includes omitted files, deleted captured inputs (`absent_input`), zero-mutant targets, unviable, no-coverage, timeout, skipped, or error outcomes. Deleted documents and tests also prevent gate-compatible evidence, even if they are not mutation targets. `failed` includes tool failures or input drift. `no_targets` is not correctness evidence. Exit code 1 reports an incomplete or failed measurement; resolved survivors remain advisory.
 9. Preserve the immutable run report when passing evidence to a gate. Legacy head/base and task paths are latest aliases. A gate's optional `measurement` requires the archived report's exact SHA-256 and all measured inputs among its frozen files.
 
 ## Cost and reuse

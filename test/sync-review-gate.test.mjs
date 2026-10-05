@@ -29,3 +29,23 @@ test('sync gate kills seven named defects through actual clients and SQLite with
     for (const input of receipt.inputs) expect(digest(readFileSync(join(work, input.file)))).toBe(input.sha256);
   } finally { rmSync(work, { recursive: true, force: true }); }
 }, 60000);
+
+test('the sync ownership invariant rejects deletion of every remote row', () => {
+  const work = mkdtempSync(join(tmpdir(), 'sync-owner-regression-'));
+  try {
+    cpSync(join(root, 'x-sync'), join(work, 'x-sync'), { recursive: true });
+    mkdirSync(join(work, 'test'));
+    cpSync(join(root, 'test/sync-lifecycle-integration.test.mjs'), join(work, 'test/sync-lifecycle-integration.test.mjs'));
+    const args = ['test', 'test/sync-lifecycle-integration.test.mjs', '--test-name-pattern', '^remote updates replace tracked copies and never echo through another machine$'];
+    const baseline = spawnSync('bun', args, { cwd: work, encoding: 'utf8', timeout: 10000 });
+    expect(baseline.status).toBe(0);
+    const server = join(work, 'x-sync/lib/x-sync-server.mjs'), source = readFileSync(server, 'utf8');
+    const anchor = 'if (full_snapshot === true) {';
+    expect(source.split(anchor)).toHaveLength(2);
+    const faulty = "if (full_snapshot === true && machine_id === 'B' && files.length === 0) db.query('DELETE FROM sync_files WHERE project_id=?').run(project_id);\n";
+    writeFileSync(server, source.replace(anchor, faulty + anchor));
+    const mutated = spawnSync('bun', args, { cwd: work, encoding: 'utf8', timeout: 10000 });
+    expect(mutated.status).toBe(1);
+    expect(mutated.stderr).toContain('error: INVARIANT:SYNC_ORIGIN');
+  } finally { rmSync(work, { recursive: true, force: true }); }
+}, 25000);

@@ -658,3 +658,16 @@ test('source symlinks are rejected before tool detection and newly added inputs 
   const parse = tool.parse; tool.parse = (...args) => { write(root, 'new.test.mjs', 'new input'); return parse(...args); };
   expect((await runDiffMutate({ cwd: root, base: 'main', adapters: [tool] })).evidence.stable).toBe(false);
 });
+
+test('deleted captured documents and tests prevent a complete gate-compatible measurement', async () => {
+  for (const file of ['old.md', 'old.test.mjs']) {
+    const root = fakeRepo(); write(root, file, 'old input'); commitAll(root);
+    write(root, 'a.fake', 'one\ntwo\n'); rmSync(join(root, file));
+    const report = await runDiffMutate({ cwd: root, base: 'HEAD', adapters: [fakeAdapter()] });
+    expect(report.evidence.stable).toBe(true);
+    expect(report.evidence.inputs).toContainEqual({ file, sha256: null });
+    expect(report.counts.survived).toBe(1);
+    expect(report.measurement.status).toBe('incomplete');
+    expect(report.measurement.excluded).toContainEqual({ file, reason: 'absent_input' });
+  }
+});
