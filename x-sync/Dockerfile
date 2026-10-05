@@ -3,6 +3,7 @@ WORKDIR /app
 
 # x-sync server
 COPY x-sync/lib/x-sync-server.mjs ./sync/
+COPY x-sync/lib/x-sync/sync-storage.mjs ./sync/x-sync/
 
 # x-dashboard (static files + server)
 COPY x-dashboard/lib/x-dashboard-server.mjs ./dashboard/lib/

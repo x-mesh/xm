@@ -4,12 +4,12 @@
  * Usage: node sync-push.mjs [--project PROJECT_ID]
  */
 
-import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
-import { join, resolve, relative, basename, dirname } from 'node:path';
-import { createHash } from 'node:crypto';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { join, resolve, basename } from 'node:path';
 import { execSync } from 'node:child_process';
-import { readSyncConfig, getMachineId } from './sync-config.mjs';
+import { readSyncConfig } from './sync-config.mjs';
 import { isExcludedHandoffPath } from './sync-handoff.mjs';
+import { contentHash, importedFiles, isSyncablePath, readSyncState, safePath, saveSyncState, withSyncLock } from './sync-storage.mjs';
 
 // Resolve .xm/ directory (worktree-aware — same logic as shared-config.mjs)
 function resolveXmDir() {
@@ -30,28 +30,23 @@ function resolveXmDir() {
 // Exclude: per-machine config/mirror state, legacy namespaced handoffs, run/, *.tmp.
 // `repro/` holds raw captured command output from x-solver — arbitrary stdout that can
 // carry tokens, hostnames, or customer data. It stays on the machine that produced it.
-function scanXmFiles(xmDir) {
+function scanXmFiles(xmDir, state) {
   const files = [];
-  const SKIP = new Set(['run', '.sync-queue', 'node_modules', 'repro']);
-  const EXCLUDE_FILES = new Set(['config.json']); // per-machine local settings
+  const imports = importedFiles(state);
 
   function walk(dir, prefix) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (SKIP.has(entry.name)) continue;
-      if (entry.name.startsWith('.') && entry.name !== '.active') continue;
-      if (entry.name.endsWith('.tmp') || entry.name.endsWith('.bak')) continue;
-      if (EXCLUDE_FILES.has(entry.name)) continue;
-
       const fullPath = join(dir, entry.name);
       const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
-
-      if (isExcludedHandoffPath(relPath)) continue;
+      if (!isSyncablePath(relPath) || isExcludedHandoffPath(relPath)) continue;
 
       if (entry.isDirectory()) {
+        if (existsSync(join(fullPath, '.git'))) continue;
         walk(fullPath, relPath);
       } else if (entry.isFile()) {
-        const content = readFileSync(fullPath, 'utf8');
-        const hash = createHash('sha256').update(content).digest('hex');
+        const content = readFileSync(safePath(xmDir, relPath), 'utf8');
+        const hash = contentHash(content);
+        if (imports.some(copy => copy.target === relPath && (copy.pending || copy.target !== copy.path || copy.hash === hash))) continue;
         files.push({ path: relPath, content, hash });
       }
     }
@@ -65,46 +60,37 @@ function scanXmFiles(xmDir) {
 async function main() {
   const config = readSyncConfig();
   if (!config.server_url || !config.api_key) {
-    console.error('x-sync not configured. Run: x-sync setup  (or edit ~/.xm/sync.json)');
-    process.exit(1);
+    throw new Error('x-sync not configured. Run: x-sync setup');
   }
 
   const xmDir = resolveXmDir();
   if (!existsSync(xmDir)) {
-    console.error('No .xm/ directory found.');
-    process.exit(1);
+    throw new Error('No .xm/ directory found.');
   }
 
   const projectId = process.argv.includes('--project')
     ? process.argv[process.argv.indexOf('--project') + 1]
     : basename(resolve(xmDir, '..'));
 
-  const machineId = getMachineId();
-  const files = scanXmFiles(xmDir);
-
-  console.log(`[x-sync push] ${files.length} files from ${projectId} (${machineId})`);
-
-  if (files.length === 0) {
-    console.log('[x-sync push] Nothing to push.');
-    return;
-  }
-
-  try {
-    const res = await fetch(`${config.server_url}/sync/push`, {
+  await withSyncLock(xmDir, async () => {
+    const state = readSyncState(xmDir);
+    const files = scanXmFiles(xmDir, state);
+    console.log(`[x-sync push] ${files.length} local files from ${projectId} (${config.machine_id})`);
+    const res = await fetch(`${config.server_url.replace(/\/+$/, '')}/sync/push`, {
       method: 'POST',
+      signal: AbortSignal.timeout(30_000),
       headers: {
         'Content-Type': 'application/json',
         'X-Api-Key': config.api_key,
       },
       // full_snapshot: scanXmFiles always sends the complete .xm file set, so the
       // server can tombstone paths absent from this push (deletion propagation).
-      body: JSON.stringify({ machine_id: machineId, project_id: projectId, files, full_snapshot: true }),
+      body: JSON.stringify({ machine_id: config.machine_id, project_id: projectId, files, full_snapshot: true }),
     });
 
     if (!res.ok) {
       const err = await res.text();
-      console.error(`[x-sync push] Server error ${res.status}: ${err}`);
-      process.exit(1);
+      throw new Error(`Server error ${res.status}: ${err}`);
     }
 
     const result = await res.json();
@@ -112,25 +98,18 @@ async function main() {
     if (result.deleted) extra.push(`${result.deleted} deleted`);
     if (result.rejected) extra.push(`${result.rejected} rejected`);
     if (Array.isArray(result.write_errors) && result.write_errors.length) extra.push(`${result.write_errors.length} write-errors`);
+    if (result.repaired) extra.push(`${result.repaired} materialized`);
     console.log(`[x-sync push] accepted: ${result.accepted}, skipped: ${result.skipped}${extra.length ? ', ' + extra.join(', ') : ''}`);
+    if (result.rejected || result.write_errors?.length) throw new Error('Server did not finish the snapshot; retry after resolving the reported errors');
 
     // Save last_push state (merge with existing state instead of overwriting last_pull)
-    const statePath = join(xmDir, '.sync-state.json');
-    let state = {};
-    try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch {}
     state.last_push = Date.now();
     state.last_push_project = projectId;
     state.last_push_accepted = result.accepted;
     state.last_push_skipped = result.skipped;
     state.last_push_total = files.length;
-    mkdirSync(dirname(statePath), { recursive: true });
-    writeFileSync(statePath, JSON.stringify(state) + '\n', 'utf8');
-  } catch (err) {
-    // No retry queue needed: every push is a full snapshot, so the next successful
-    // push transmits the complete current state regardless of this failure.
-    console.error(`[x-sync push] Failed: ${err.message}`);
-    process.exit(1);
-  }
+    saveSyncState(xmDir, state);
+  });
 }
 
-main();
+main().catch(err => { console.error(`[x-sync push] Failed: ${err.message}`); process.exitCode = 1; });
