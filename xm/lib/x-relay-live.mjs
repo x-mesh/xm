@@ -3,6 +3,23 @@ import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CODEX_VALUE_OPTIONS = new Set(['-c', '--config', '--enable', '--disable', '--remote', '--remote-auth-token-env', '-i', '--image', '-m', '--model', '--local-provider', '-p', '--profile', '-s', '--sandbox', '-C', '--cd', '--add-dir', '-a', '--ask-for-approval']);
+const CODEX_SWITCH_OPTIONS = new Set(['--strict-config', '--oss', '--approve-for-me', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust', '--worktree', '--search', '--no-alt-screen', '--no-daemon', '-h', '--help', '-V', '--version']);
+
+function isCodexService(commandLine) {
+  const args = commandLine.trim().split(/\s+/).slice(1);
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index];
+    if (argument === '--') return false;
+    if (!argument.startsWith('-')) return argument === 'app-server' || argument === 'queue';
+    const shortOption = argument.slice(0, 2);
+    const option = CODEX_VALUE_OPTIONS.has(shortOption) ? shortOption : argument.split('=', 1)[0];
+    if (CODEX_VALUE_OPTIONS.has(option)) {
+      if (argument === option) index++;
+    } else if (!CODEX_SWITCH_OPTIONS.has(option)) return false;
+  }
+  return false;
+}
 
 export function liveSessionFiles(directory, provider, run = spawnSync) {
   if (!existsSync(directory)) return new Map();
@@ -38,7 +55,7 @@ export function liveSessionFiles(directory, provider, run = spawnSync) {
   for (const line of (processes.stdout || '').split('\n')) {
     const match = line.match(/^\s*(\d+)\s+(\S+)\s+(.*)$/);
     if (!match || basename(match[2]) !== provider) continue;
-    if (provider === 'codex' && /(?:^|\s)(?:app-server|queue)(?:\s|$)/.test(match[3])) continue;
+    if (provider === 'codex' && isCodexService(match[3])) continue;
     live.add(Number(match[1]));
   }
   return new Map([...owners].flatMap(([id, holders]) => {

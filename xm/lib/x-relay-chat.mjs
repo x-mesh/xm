@@ -43,7 +43,12 @@ export function createProjectNameResolver(projects = loadRegistry().projects, ca
 
 export async function chatCandidates(context, projectName, provider) {
   const providers = provider ? [provider] : ['codex', 'claude', 'agy'];
-  const results = await Promise.allSettled(providers.map(name => Promise.resolve().then(() => context.listProvider(name, projectName))));
+  const results = [];
+  // Provider inventories use synchronous subprocesses that can starve another provider's socket deadline.
+  for (const name of providers) {
+    try { results.push({ status: 'fulfilled', value: await context.listProvider(name, projectName) }); }
+    catch (reason) { results.push({ status: 'rejected', reason }); }
+  }
   const candidates = [];
   const notes = [];
   for (const [index, result] of results.entries()) {
