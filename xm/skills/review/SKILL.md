@@ -27,9 +27,35 @@ x-review takes a PR diff, file, or directory as input and runs multiple review a
 Parallel review orchestrator built on Claude Code native Agent tool.
 No external dependencies. Only requires `git` and `gh` CLI.
 
+## Project gate authoring before target freeze
+
+Before preparation, check whether a high-risk state machine, concurrency change,
+or repeated defect class lacks executable invariant coverage. Reuse a sufficient
+existing gate. If creation or extension is needed, propose the concrete gap and
+output files, then use the `gate` skill only within the user's authorized edit scope.
+Severity selects the need for coverage, not the test oracle.
+
+Pass one stable `--operation-id` through authoring and review. The gate skill
+reserves at most one authoring pass with `xm review author-gate`, derives rules and
+tests, and reuses the existing `mutate` measurement workflow. Freeze the authored
+tests, adapter, and configuration only after it returns. Supply the returned context
+and `--gate-file` to preparation under the same operation ID. Gate failure stops
+the review. Never invoke gate authoring from a leaf reviewer, after an active run
+freezes its target, or as an automatic follow-up to a terminal stop action.
+
+The bundled `gate` skill performs authoring, not review orchestration. If it is
+unavailable in a standalone installation, report the missing skill. Do not recreate
+its workflow or bypass the lifecycle. Ordinary reviews without gate authoring remain
+unchanged, and generic mutate survivors remain advisory candidates.
+
 ## Execution Boundary — Headless / Delegated Runtimes
 
 Before Phase 1, inspect the tools and execution context actually available in this invocation.
+
+- A lifecycle preparation error is a stop condition, not evidence that collaboration is unavailable.
+  Report its error and recovery guidance. Do not dispatch reviewers directly, switch to an unrecorded
+  review, change task identity, or reset budget state to bypass it. Resolve the preparation error
+  before dispatch. An existing run must recover through its lifecycle commands.
 
 - If native Agent/collaboration fan-out is unavailable, or the prompt says this is a headless,
   rescue, delegated, leaf, or single-agent run, **do not spawn agents and do not call any
@@ -217,6 +243,11 @@ Examples:
 See `references/review-workflow.md` — full pipeline:
 - **Phase 1: TARGET** — collect diff/PR/file content, auto-detect language, and snapshot the complete target file set as `reviewed_files_all` + raw-byte SHA-256 `reviewed_file_snapshots` before dispatch. `### full` mode uses Lens-first split: each agent scans all files with one lens (file-group split prohibited).
 - **Phase 1 context binding** — supplied review context is validated/canonicalized and bound by SHA-256. Legacy runs record `context_status: absent`; supplied-invalid context fails closed.
+- **Optional project verification** — an explicitly selected `--gate-file FILE` requires bound context.
+  Run its baseline and mutation adapter on isolated frozen files before any reviewer dispatch.
+  A failed gate records `Review incomplete` and stops. See `references/verification-gate.md` for the
+  configuration, adapter contract, input hashes, and delta inheritance rules. A passed gate is evidence,
+  not an LGTM verdict. Never generate mutations or fix surviving mutants automatically.
 - **Phase 2: ASSIGN** — call `xm review prepare`; the lifecycle runs `scripts/plan-review.mjs` against the frozen target. The default
   `adaptive-fast` plan dispatches two composite reviewers and signal-matched specialists in the
   same parallel wave for an unchunked target. Targets above the token budget produce deterministic file/hunk chunks and
@@ -317,6 +348,8 @@ The Phase 3 panel backend replaces the current-runtime fan-out with:
 - Every terminal receipt carries an integrity-verified `action`. Branch on that action, not verdict prose.
   `decision: stop` always forbids automatic review and fix follow-ups, including LGTM with advisory
   findings and incomplete partial results. Continue only according to `continuation` after human input.
+- Both JSON and plain CLI output expose stop guidance. Preparation failures expose a command-failure
+  action without a terminal receipt. Never treat that action as a completed review or validated baseline.
 - Native and headless paths also use `prepare`, `submit`, and `finalize`. The runtime still owns worker creation.
 - Never append another native panel review. Confidence can reflect how many model sources agreed.
 

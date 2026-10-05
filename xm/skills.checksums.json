@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1791119829154,
+  "generatedAt": 1791163366300,
   "version": 3,
   "skills": [
     {
@@ -58,6 +58,17 @@
       "assetBytes": 65446
     },
     {
+      "plugin": "gate",
+      "sha256": "ea98323b15a5da093cb7881a1fd8688fbc980561b68428255e4fd6d321230a47",
+      "bytes": 7054,
+      "referencesSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "referenceFiles": 0,
+      "referenceBytes": 0,
+      "assetsSha256": "a893fe32b49850908dee0d7e08dc4ff5ad5ce39788d7d5e9cc512222006da678",
+      "assetFiles": 1,
+      "assetBytes": 256
+    },
+    {
       "plugin": "handoff",
       "sha256": "e7f2c409d05fc3b6fe25adc5c4d1e4e8210cf5c370a0057697df86719e8bfcbc",
       "bytes": 19057,
@@ -114,8 +125,8 @@
     },
     {
       "plugin": "kit",
-      "sha256": "8b6728851d09f4b70ad9e5ca9848b6d455b0d46577c42671286ffea29fc6dd8d",
-      "bytes": 15425,
+      "sha256": "b35b7cd9f274fdade62d86cddf77ed9cc76a3c6079871af53dc5a3fc78249635",
+      "bytes": 15568,
       "referencesSha256": "d279e1ba064200c58409611085d3bbb386ed79ac6b9e1f6807b924799ee1b139",
       "referenceFiles": 2,
       "referenceBytes": 3224,
@@ -246,11 +257,11 @@
     },
     {
       "plugin": "review",
-      "sha256": "fb3640b0cf215736ade1a7d89f2544be541361a69ac090aa3097331984c6b692",
-      "bytes": 27029,
-      "referencesSha256": "5ef8841cd7de63b52443ffb15ecf36edc75551d4e80433daa95c5dc7b8c463a5",
-      "referenceFiles": 7,
-      "referenceBytes": 58850,
+      "sha256": "137524123a9db10dd7b952b2acf597bc48932d7c2a55c3ad5ec9b185da13ee67",
+      "bytes": 29438,
+      "referencesSha256": "7e917e6e3edeaba6819fa96bb61aee856497f4d0bc33004b63cc38b1bedfe3d1",
+      "referenceFiles": 8,
+      "referenceBytes": 63539,
       "assetsSha256": "be974bfdf6e7ee97487f9b1de08e76fe9f1c1c78c49faaec789fcfed26a9dc4a",
       "assetFiles": 17,
       "assetBytes": 115240

@@ -108,6 +108,10 @@ function validateBudget(state) {
     if (key !== `operation:${operation.operation_id}` || !operation.id || !operation.operation_id
       || !Array.isArray(operation.approvals) || !Array.isArray(operation.fix_approvals)
       || ['full', 'fix', 'delta'].some(kind => operation.limits?.[kind] !== 1 || !Number.isSafeInteger(operation.used?.[kind]) || operation.used[kind] < 0)) throw new Error('invalid review budget counters');
+    const authoring = operation.gate_authoring;
+    if (authoring !== undefined && (!authoring || authoring.schema !== 'xm.review.gate-authoring.v1' || authoring.operation_id !== operation.operation_id
+      || typeof authoring.id !== 'string' || !authoring.id.startsWith('gate-authoring-') || authoring.state !== 'reserved'
+      || !/^sha256:[0-9a-f]{64}$/.test(authoring.context_hash || '') || !Array.isArray(authoring.files) || !authoring.files.length)) throw new Error('invalid gate authoring reservation');
   }
   for (const target of Object.values(state.aliases)) if (!state.operations[target]) throw new Error('invalid review budget alias');
   if (state.current_operation && !state.operations[state.current_operation]) throw new Error('invalid current review operation');

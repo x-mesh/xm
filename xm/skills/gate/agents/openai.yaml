@@ -1,0 +1,4 @@
+interface:
+  display_name: "xm gate"
+  short_description: "Create bounded invariant and mutation review gates"
+  default_prompt: "Use $xm:gate to create or extend a project gate from explicit invariants, reusing xm mutate for test detection measurements."
