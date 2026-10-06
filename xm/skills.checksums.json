@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1791253258569,
+  "generatedAt": 1791254450875,
   "version": 3,
   "skills": [
     {
@@ -279,14 +279,14 @@
     },
     {
       "plugin": "solver",
-      "sha256": "9c7ad9235b618e754acc496a7a765b3107853e43146accf4289df3c6306f8f5b",
-      "bytes": 29820,
+      "sha256": "19d6fcfe2b0fecc304faf29d3d836773db9a5d89c4eaabc47849105e3ea0e45e",
+      "bytes": 29854,
       "referencesSha256": "acce5faaafc291757bc6786741dcf2024951f91ab4e870273c7c56680a83e1d6",
       "referenceFiles": 4,
       "referenceBytes": 13977,
-      "assetsSha256": "9a688a71bc8dcf8d8f760b1c5394c8dbea80a801c6283e824d9778d64b6645ec",
+      "assetsSha256": "6279efde7732bf1a96350abc33e0bfdc0e4660617287868d958489bf5ad4520a",
       "assetFiles": 3,
-      "assetBytes": 36320
+      "assetBytes": 36470
     },
     {
       "plugin": "sync",

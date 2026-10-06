@@ -55,10 +55,10 @@ x-op Alternative: [name if applicable, otherwise 'none']
 "
 ```
 
-Parse the agent result:
-- If `Strategy` is an x-solver strategy → `$XMS strategy set <chosen>`
-- If `Strategy` is `direct` → record the choice with `$XMS classify --select direct`, then answer directly; do not run `$XMS strategy set direct`
-- If `x-op Alternative` exists → Suggest the x-op strategy to the user as well
+Parse the agent result and carry it into step 4 as the recommendation. Do not act on it yet — the
+user has not chosen, and any state change here commits the run before they do:
+- `Strategy` (an x-solver strategy, or `direct`) becomes the recommended option in step 4
+- If `x-op Alternative` exists → offer the x-op strategy to the user as well
 
 4. **AskUserQuestion (REQUIRED)** for final strategy selection:
    - Recommended strategy (rule-based or LLM)
@@ -67,7 +67,7 @@ Parse the agent result:
    - Direct path when the recommendation is `direct`
    - Example: AskUserQuestion("전략 **{strategy}**를 추천합니다 (신뢰도 {confidence}%). 진행할까요? 다른 전략을 선택하려면 알려주세요.")
 5. After selection:
-   - If `direct`: when the rule-based result was not `direct` (LLM fallback or the user chose it), run `$XMS classify --select direct` first — `close` reads that record. Answer directly, then `$XMS close --summary "<answer>"` (state `answered`); leave it active only when a follow-up is expected
+   - If `direct`: when the rule-based result was not `direct` (LLM fallback or the user chose it), record it first with `$XMS classify --select direct --reason "<who chose direct, and why>"` — `close` reads that record and copies the reason into the summary. Answer directly, then `$XMS close --summary "<answer>"` (state `answered`); leave it active only when a follow-up is expected; do not run `$XMS strategy set direct`
    - Otherwise: `$XMS strategy set <chosen>`
 
 ### Enhanced Signal Detection
