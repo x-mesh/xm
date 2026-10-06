@@ -29,6 +29,8 @@ import {
 } from './types.mjs';
 import { isSymlink, lockPayload, isStaleLock } from './security.mjs';
 
+const DEFAULT_MARKERS = { begin: MARKER_BEGIN, end: MARKER_END };
+
 /**
  * @typedef {Object} MergeResult
  * @property {string} path
@@ -191,18 +193,32 @@ export function writeOverwrite(filePath, content, opts = {}) {
 }
 
 /**
+ * Render a marker block exactly as writeMergeMarker writes it.
+ *
+ * @param {string} blockContent
+ * @param {{ begin: string, end: string }} [markers]
+ * @returns {string}
+ */
+export function renderMarkerBlock(blockContent, markers = DEFAULT_MARKERS) {
+  return `${markers.begin}\n${blockContent.trimEnd()}\n${markers.end}\n`;
+}
+
+/**
  * Insert or replace the xm marker block in an existing or new file.
  *
  * @param {string} filePath
  * @param {string} blockContent  Body inside markers (markers themselves added by this fn).
- * @param {{ mode?: number, maxBlockBytes?: number }} [opts]
+ * @param {{ mode?: number, maxBlockBytes?: number, markers?: { begin: string, end: string }, backup?: boolean }} [opts]
+ *   `backup: false` skips .bak rotation for callers that keep their own backups:
+ *   rotation drops the oldest `.bak.N`, which may be a user-made file.
  * @returns {MergeResult}
  */
 export function writeMergeMarker(filePath, blockContent, opts = {}) {
   if (existsSync(filePath) && isSymlink(filePath)) {
     throw new Error(`refusing to overwrite symlink: ${filePath} (R-SEC-05)`);
   }
-  const block = `${MARKER_BEGIN}\n${blockContent.trimEnd()}\n${MARKER_END}\n`;
+  const markers = opts.markers ?? DEFAULT_MARKERS;
+  const block = renderMarkerBlock(blockContent, markers);
   if (opts.maxBlockBytes !== undefined && Buffer.byteLength(block, 'utf8') > opts.maxBlockBytes) {
     throw new Error(
       `merge-marker block exceeds ${opts.maxBlockBytes} bytes ` +
@@ -221,13 +237,13 @@ export function writeMergeMarker(filePath, blockContent, opts = {}) {
     const existedBefore = existsSync(filePath);
     if (existedBefore) {
       const before = readFileSync(filePath, 'utf8');
-      const begin = before.indexOf(MARKER_BEGIN);
-      const end = before.indexOf(MARKER_END);
+      const begin = before.indexOf(markers.begin);
+      const end = before.indexOf(markers.end);
       if (begin !== -1 && end !== -1 && begin < end) {
         hadBlock = true;
         pre = before.slice(0, begin);
-        const existingBlockContent = before.slice(begin + MARKER_BEGIN.length, end);
-        post = before.slice(end + MARKER_END.length);
+        const existingBlockContent = before.slice(begin + markers.begin.length, end);
+        post = before.slice(end + markers.end.length);
         // Drop the linefeed immediately after END if present, to avoid double blank lines.
         if (post.startsWith('\n')) post = post.slice(1);
         // Detect user edits inside the marker block (hand-edited content warning).
@@ -251,7 +267,7 @@ export function writeMergeMarker(filePath, blockContent, opts = {}) {
       nextContent = block;
     }
     let backup = false;
-    if (existedBefore) {
+    if (existedBefore && opts.backup !== false) {
       backup = rotateBackup(filePath);
     }
     atomicWrite(filePath, nextContent, opts);
@@ -277,34 +293,36 @@ export function writeMergeMarker(filePath, blockContent, opts = {}) {
  * If the file becomes empty after removal, it is deleted.
  *
  * @param {string} filePath
+ * @param {{ markers?: { begin: string, end: string }, backup?: boolean }} [opts]  Same meaning as writeMergeMarker.
  * @returns {MergeResult & { removed?: boolean }}
  */
-export function removeMarkerBlock(filePath) {
+export function removeMarkerBlock(filePath, opts = {}) {
   if (!existsSync(filePath)) return { path: filePath, action: 'unchanged', backupTaken: false };
   if (isSymlink(filePath)) {
     throw new Error(`refusing to mutate symlink: ${filePath} (R-SEC-05)`);
   }
+  const markers = opts.markers ?? DEFAULT_MARKERS;
   const before = readFileSync(filePath, 'utf8');
-  const begin = before.indexOf(MARKER_BEGIN);
-  const end = before.indexOf(MARKER_END);
+  const begin = before.indexOf(markers.begin);
+  const end = before.indexOf(markers.end);
   if (begin === -1 || end === -1) {
     return { path: filePath, action: 'unchanged', backupTaken: false };
   }
   if (begin >= end) {
     throw new Error(`marker mismatch in ${filePath}: BEGIN at ${begin}, END at ${end}.`);
   }
-  let next = before.slice(0, begin) + before.slice(end + MARKER_END.length);
+  let next = before.slice(0, begin) + before.slice(end + markers.end.length);
   if (next.startsWith('\n')) next = next.slice(1);
   next = next.trimStart();
   const release = acquireLock(filePath);
   try {
-    rotateBackup(filePath);
+    const backupTaken = opts.backup !== false && rotateBackup(filePath);
     if (next.trim().length === 0) {
       try { unlinkSync(filePath); } catch { /* already gone */ }
-      return { path: filePath, action: 'updated', backupTaken: true, removed: true };
+      return { path: filePath, action: 'updated', backupTaken, removed: true };
     }
     atomicWrite(filePath, next);
-    return { path: filePath, action: 'updated', backupTaken: true };
+    return { path: filePath, action: 'updated', backupTaken };
   } finally {
     release();
   }
