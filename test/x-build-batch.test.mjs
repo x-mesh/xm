@@ -101,12 +101,6 @@ if (argv[1] === 'view') {
   process.stdout.write(JSON.stringify(Object.fromEntries(fields.map((field) => [field, value[field]]))) + '\\n');
   process.exit(0);
 }
-if (argv[0] === 'api' && /^repos\\/\\{owner\\}\\/\\{repo\\}\\/pulls\\/\\d+$/.test(argv[1])) {
-  if (process.env.PUBLISH_API_ERROR) { process.stderr.write(process.env.PUBLISH_API_ERROR + '\\n'); process.exit(1); }
-  const value = JSON.parse(readFileSync(process.env.PUBLISH_STATE, 'utf8'));
-  process.stdout.write(JSON.stringify({ number: value.number, base: { ref: value.baseRefName, sha: value.baseRefOid }, head: { sha: value.headRefOid } }) + '\\n');
-  process.exit(0);
-}
 if (argv[0] === 'api') {
   const value = JSON.parse(readFileSync(process.env.PUBLISH_STATE, 'utf8'));
   const ref = value.state === 'MERGED' && value.mergeCommit?.oid ? value.mergeCommit.oid : value.baseRefOid;
@@ -117,6 +111,64 @@ if (argv[0] === 'api') {
 process.exit(2);
 `);
   return { log, state, env: { PUBLISH_LOG: log, PUBLISH_STATE: state, X_BUILD_GK_ARGV: JSON.stringify(['node', gk]), X_BUILD_GH_ARGV: JSON.stringify(['node', gh]) } };
+}
+// Models the GitHub behavior batch merge depends on: a PR keeps the base commit
+// it was opened on, even after the base branch moves.
+function fakeGitHub(cwd, baseTree) {
+  const log = join(cwd, 'github-calls.jsonl');
+  const state = join(cwd, 'github-prs.json');
+  const gk = join(cwd, 'fake-github-push.mjs');
+  const gh = join(cwd, 'fake-github.mjs');
+  writeFileSync(gk, `
+process.stdout.write(JSON.stringify({ schema: 1, state: 'ok', ok: true, result: { pushed: true }, error: null }) + '\\n');
+`);
+  writeFileSync(gh, `
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+const argv = process.argv.slice(2);
+appendFileSync(process.env.GITHUB_LOG, JSON.stringify(argv) + '\\n');
+const prs = existsSync(process.env.GITHUB_STATE) ? JSON.parse(readFileSync(process.env.GITHUB_STATE, 'utf8')) : [];
+const save = () => writeFileSync(process.env.GITHUB_STATE, JSON.stringify(prs));
+const git = (args, cwd = process.env.GITHUB_BASE_TREE) => spawnSync('git', args, { cwd, encoding: 'utf8' }).stdout.trim();
+const find = (target) => prs.find((pr) => String(pr.number) === target || pr.url === target || (pr.headRefName === target && pr.state === 'OPEN'));
+const print = (value) => { process.stdout.write(JSON.stringify(value) + '\\n'); process.exit(0); };
+if (argv[0] === 'pr' && argv[1] === 'create') {
+  const take = (name) => argv[argv.indexOf(name) + 1];
+  const number = 17 + prs.length;
+  prs.push({
+    number, url: 'https://example.test/pr/' + number, state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',
+    autoMergeRequest: null, mergeCommit: null, mergedAt: null, baseRefName: take('--base'), baseOid: git(['rev-parse', 'HEAD']),
+    headRefName: take('--head'), headRefOid: git(['rev-parse', take('--head')], process.cwd()), title: take('--title'), body: readFileSync(take('--body-file'), 'utf8'),
+  });
+  save();
+  process.stdout.write(prs.at(-1).url + '\\n');
+  process.exit(0);
+}
+if (argv[0] === 'pr' && argv[1] === 'view') {
+  const pr = find(argv[2]);
+  if (!pr) { process.stderr.write('no pull requests found for branch "' + argv[2] + '"\\n'); process.exit(1); }
+  print(Object.fromEntries(argv[argv.indexOf('--json') + 1].split(',').map((field) => [field, pr[field]])));
+}
+if (argv[0] === 'pr' && argv[1] === 'merge') {
+  const pr = find(argv[2]);
+  const head = argv[argv.indexOf('--match-head-commit') + 1];
+  if (!pr || pr.state !== 'OPEN' || head !== pr.headRefOid) process.exit(1);
+  if (spawnSync('git', ['merge', '--no-edit', '--no-ff', head], { cwd: process.env.GITHUB_BASE_TREE }).status !== 0) process.exit(1);
+  Object.assign(pr, { state: 'MERGED', mergedAt: new Date().toISOString(), mergeCommit: { oid: git(['rev-parse', 'HEAD']) } });
+  save();
+  process.exit(0);
+}
+const pull = argv[0] === 'api' && /^repos\\/\\{owner\\}\\/\\{repo\\}\\/pulls\\/(\\d+)$/.exec(argv[1]);
+if (pull) {
+  const pr = find(pull[1]);
+  print({ number: pr.number, base: { ref: pr.baseRefName, sha: pr.baseOid }, head: { sha: pr.headRefOid } });
+}
+if (argv[0] === 'api' && /^repos\\/\\{owner\\}\\/\\{repo\\}\\/commits\\//.test(argv[1])) {
+  print({ sha: git(['rev-parse', 'HEAD']), commit: { tree: { sha: git(['rev-parse', 'HEAD^{tree}']) } } });
+}
+process.exit(2);
+`);
+  return { log, state, env: { GITHUB_LOG: log, GITHUB_STATE: state, GITHUB_BASE_TREE: baseTree, X_BUILD_GK_ARGV: JSON.stringify(['node', gk]), X_BUILD_GH_ARGV: JSON.stringify(['node', gh]) } };
 }
 function fakeIntegrationDriver(cwd, integrationTree) {
   const log = join(cwd, 'integration-calls.jsonl');
@@ -694,15 +746,6 @@ describe('xm batch scheduler', () => {
       expect(readFileSync(fake.log, 'utf8').trim().split('\n').map(JSON.parse).some((call) => call.argv[1] === 'create')).toBe(false);
       writeFileSync(fake.log, '');
 
-      // A PR that already exists but whose REST read fails must not look like a missing PR.
-      writeFileSync(fake.state, JSON.stringify({ number: 17, url: 'https://example.test/pr/17', state: 'OPEN', baseRefName: 'develop', headRefName: 'xm/batch-release-auth' }));
-      const apiError = run(cwd, ['batch', 'publish', 'release', '--yes', '--json'], CLI, { ...fake.env, PUBLISH_API_ERROR: 'HTTP 502: Bad Gateway' });
-      expect(apiError.code).toBe(2);
-      expect(JSON.parse(apiError.stdout).topics[0]).toMatchObject({ ok: false, error: { code: 'pr_view_failed', message: 'HTTP 502: Bad Gateway' } });
-      expect(readFileSync(fake.log, 'utf8').trim().split('\n').map(JSON.parse).some((call) => call.argv[1] === 'create')).toBe(false);
-      rmSync(fake.state);
-      writeFileSync(fake.log, '');
-
       const published = run(cwd, ['batch', 'publish', 'release', '--yes', '--json'], CLI, fake.env);
       expect(published.code, published.stderr + published.stdout).toBe(0);
       expect(JSON.parse(published.stdout).topics[0]).toMatchObject({ ok: true, reused: false, pr_number: 17 });
@@ -711,17 +754,16 @@ describe('xm batch scheduler', () => {
       expect(manifest(cwd).topics[0].status).toBe('published');
       let calls = readFileSync(fake.log, 'utf8').trim().split('\n').map(JSON.parse);
       expect(calls[0]).toMatchObject({ tool: 'gk', agent: '1', argv: ['push', 'origin', 'xm/batch-release-auth', '--from', 'xm/batch-release-auth', '--yes', '--json'] });
-      expect(calls.map((call) => `${call.tool}:${call.argv.slice(0, 2).join(' ')}`)).toEqual(['gk:push origin', 'gh:pr view', 'gh:pr create', 'gh:pr view', 'gh:api repos/{owner}/{repo}/pulls/17']);
+      expect(calls.map((call) => `${call.tool}:${call.argv.slice(0, 2).join(' ')}`)).toEqual(['gk:push origin', 'gh:pr view', 'gh:pr create', 'gh:pr view']);
 
       writeFileSync(fake.log, '');
       const repeated = run(cwd, ['batch', 'publish', 'release', '--yes', '--json'], CLI, fake.env);
       expect(repeated.code, repeated.stderr + repeated.stdout).toBe(0);
       expect(JSON.parse(repeated.stdout).topics[0]).toMatchObject({ ok: true, reused: true, pr_number: 17 });
       calls = readFileSync(fake.log, 'utf8').trim().split('\n').map(JSON.parse);
-      expect(calls).toHaveLength(2);
+      expect(calls).toHaveLength(1);
       expect(calls[0]).toMatchObject({ tool: 'gh' });
       expect(calls[0].argv.slice(0, 3)).toEqual(['pr', 'view', '17']);
-      expect(calls[1].argv).toEqual(['api', 'repos/{owner}/{repo}/pulls/17']);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   }, 15000);
 
@@ -778,7 +820,7 @@ describe('xm batch scheduler', () => {
       let calls = readFileSync(fake.log, 'utf8').trim().split('\n').map(JSON.parse);
       expect(calls).toHaveLength(2);
       expect(calls[0].argv.slice(0, 3)).toEqual(['pr', 'view', '17']);
-      expect(calls[1].argv).toEqual(['api', 'repos/{owner}/{repo}/pulls/17']);
+      expect(calls[1].argv).toEqual(['api', 'repos/{owner}/{repo}/commits/develop']);
 
       writeFileSync(fake.log, '');
       const repeated = run(cwd, ['batch', 'seal', 'release', '--json'], CLI, fake.env);
@@ -980,9 +1022,9 @@ describe('xm batch scheduler', () => {
       expect(JSON.parse(waiting.stdout).status).toBe('awaiting_confirmation');
       expect(readFileSync(publishers.log, 'utf8')).toBe('');
 
-      const apiError = run(cwd, ['batch', 'merge', 'release', '--yes', '--json'], CLI, { ...mergeEnv, PUBLISH_API_ERROR: 'HTTP 502: Bad Gateway' });
-      expect(apiError.code).toBe(2);
-      expect(JSON.parse(apiError.stdout)).toMatchObject({ status: 'merge_blocked', error: { code: 'pr_view_failed', message: 'auth: cannot read GitHub PR: HTTP 502: Bad Gateway' } });
+      const viewError = run(cwd, ['batch', 'merge', 'release', '--yes', '--json'], CLI, { ...mergeEnv, PUBLISH_VIEW_ERROR: 'HTTP 502: Bad Gateway' });
+      expect(viewError.code).toBe(2);
+      expect(JSON.parse(viewError.stdout)).toMatchObject({ status: 'merge_blocked', error: { code: 'pr_view_failed', message: 'auth: cannot read GitHub PR: HTTP 502: Bad Gateway' } });
       expect(readFileSync(publishers.log, 'utf8').includes('"merge"')).toBe(false);
       writeFileSync(publishers.log, '');
 
@@ -1007,4 +1049,51 @@ describe('xm batch scheduler', () => {
       rmSync(cwd, { recursive: true, force: true });
     }
   }, 15000);
+  test('merges every sealed PR in order although GitHub keeps each PR on its opening base', () => {
+    const cwd = setupRepo();
+    const integrationTree = join(cwd, 'wt-integration');
+    const baseTree = join(cwd, 'wt-remote-base');
+    try {
+      run(cwd, ['batch', 'init', 'release', '--json']);
+      addPlan(cwd, 'release', 'auth', ['src/auth.mjs']);
+      addPlan(cwd, 'release', 'search', ['src/search.mjs']);
+      run(cwd, ['batch', 'plan', 'release', '--json']);
+      const trees = { auth: join(cwd, 'wt-auth'), search: join(cwd, 'wt-search') };
+      for (const [topic, tree] of Object.entries(trees)) addWorktree(cwd, tree, `xm/batch-release-${topic}`);
+      const acquireMap = Object.fromEntries(Object.entries(trees).map(([topic, tree]) => [`xm/batch-release-${topic}`, tree]));
+      run(cwd, ['batch', 'run', 'release', '--json'], CLI, { X_BUILD_GK_ARGV: JSON.stringify(['node', FAKE_GK]), FAKE_GK_ACQUIRE_MAP: JSON.stringify(acquireMap) });
+      run(cwd, ['batch', 'approve', 'release', '--json']);
+      for (const [topic, tree] of Object.entries(trees)) {
+        mkdirSync(join(tree, 'src'), { recursive: true });
+        writeFileSync(join(tree, 'src', `${topic}.mjs`), `export const ${topic} = true;\n`);
+        spawnSync('git', ['add', `src/${topic}.mjs`], { cwd: tree });
+        spawnSync('git', ['commit', '-m', `add ${topic}`], { cwd: tree });
+        completeTopic(tree, `batch-release-${topic}`);
+      }
+      expect(run(cwd, ['batch', 'collect', 'release', '--json']).code).toBe(0);
+      const baseOid = spawnSync('git', ['rev-parse', 'develop'], { cwd, encoding: 'utf8' }).stdout.trim();
+      spawnSync('git', ['update-ref', 'refs/remotes/origin/develop', baseOid], { cwd });
+      spawnSync('git', ['worktree', 'add', '-b', 'remote-develop', baseTree, baseOid], { cwd });
+      const github = fakeGitHub(cwd, baseTree);
+      const published = run(cwd, ['batch', 'publish', 'release', '--yes', '--json'], CLI, github.env);
+      expect(published.code, published.stderr + published.stdout).toBe(0);
+      const sealed = run(cwd, ['batch', 'seal', 'release', '--json'], CLI, github.env);
+      expect(sealed.code, sealed.stderr + sealed.stdout).toBe(0);
+      const driver = fakeIntegrationDriver(cwd, integrationTree);
+      const panel = "process.stdout.write(JSON.stringify({run:'clean',counts:{},consensus:[],confirmed:[],contested:[],unreviewed:[]}))";
+      const verified = run(cwd, ['batch', 'verify', 'release', '--json'], CLI, { ...driver.env, X_BUILD_PANEL_ARGV: JSON.stringify(['node', '-e', panel]) });
+      expect(verified.code, verified.stderr + verified.stdout).toBe(0);
+
+      const merged = run(cwd, ['batch', 'merge', 'release', '--yes', '--json'], CLI, github.env);
+      expect(merged.code, merged.stderr + merged.stdout).toBe(0);
+      const output = JSON.parse(merged.stdout);
+      expect(output).toMatchObject({ status: 'merged', rows: [{ topic: 'auth', number: 17, status: 'merged' }, { topic: 'search', number: 18, status: 'merged' }] });
+      expect(output.final.tree_oid).toBe(JSON.parse(verified.stdout).result.tree_oid);
+      // The second PR still reports the base it was opened on.
+      expect(JSON.parse(readFileSync(github.state, 'utf8')).map((pr) => pr.baseOid)).toEqual([baseOid, baseOid]);
+    } finally {
+      for (const tree of [integrationTree, baseTree]) spawnSync('git', ['worktree', 'remove', '--force', tree], { cwd });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 30000);
 });
