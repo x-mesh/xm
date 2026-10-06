@@ -914,6 +914,11 @@ function prViewFailed(topic, viewed) {
   return { id: topic.id, ok: false, error: { code: 'pr_view_failed', message: viewed.stderr.trim() || 'gh pr view failed' } };
 }
 
+function ghStderr(result) {
+  const stderr = result.stderr.trim();
+  return stderr ? `: ${stderr}` : '';
+}
+
 function savePublication(manifest, topic, expected, verification, value, remote) {
   const publishedAt = now();
   const receipt = {
@@ -1104,7 +1109,7 @@ function cmdSeal(args) {
     const viewed = [];
     for (const row of set.rows) {
       const result = ghView(gh, row.publication.pr.number, row.topic.runtime.worktree);
-      if (!result.ok || !result.value) return fail(action, `${row.topic.id}: cannot read GitHub PR${result.stderr.trim() ? `: ${result.stderr.trim()}` : ''}`, { json, code: 1 });
+      if (!result.ok || !result.value) return fail(action, `${row.topic.id}: cannot read GitHub PR${ghStderr(result)}`, { json, code: 1 });
       const checked = verifyPrView(result, row.expected, row.verification);
       if (!checked.valid || result.value.number !== row.publication.pr.number || result.value.url !== row.publication.pr.url) {
         const reason = `${row.topic.id}: ${checked.reason || 'GitHub PR identity changed'}`;
@@ -1595,7 +1600,8 @@ function cmdMerge(args) {
         return fail(action, 'pending merge row does not match the sealed PR order', { json });
       }
       const viewed = ghMergeView(gh, sealed.number, cwd);
-      if (!viewed.ok || !viewed.value || !currentMergePrValid(viewed.value, sealed, expectedBase)) return fail(action, `${sealed.topic}: pending PR state is unavailable or changed`, { json });
+      if (!viewed.ok || !viewed.value) return fail(action, `${sealed.topic}: cannot read GitHub PR${ghStderr(viewed)}`, { json, code: 1 });
+      if (!currentMergePrValid(viewed.value, sealed, expectedBase)) return fail(action, `${sealed.topic}: pending PR state changed`, { json });
       if (viewed.value.state !== 'MERGED' || !viewed.value.mergedAt || !viewed.value.mergeCommit?.oid) {
         return emit({ action, status: 'merge_pending', batch: batchId, reused: true, receipt: mergeReceiptPath(batchId), row: pending }, json, `${batchId}: merge still pending`);
       }
@@ -1614,7 +1620,9 @@ function cmdMerge(args) {
       const expectedTree = state.integration.merges[index].result_tree_oid;
       let viewed = ghMergeView(gh, sealed.number, cwd);
       if (!viewed.ok || !viewed.value || !currentMergePrValid(viewed.value, sealed, expectedBase)) {
-        const error = { code: 'pr_merge_precondition_failed', message: `${sealed.topic}: current PR does not match sealed state` };
+        const error = !viewed.ok || !viewed.value
+          ? { code: 'pr_view_failed', message: `${sealed.topic}: cannot read GitHub PR${ghStderr(viewed)}` }
+          : { code: 'pr_merge_precondition_failed', message: `${sealed.topic}: current PR does not match sealed state` };
         saveMergeReceipt(state.manifest, state.seal, state.integration, state.seal.base, rows, 'blocked', null, error);
         process.exitCode = 2;
         return emit({ action, status: 'merge_blocked', batch: batchId, error, rows }, json, `${batchId}: merge precondition failed`);
@@ -1631,7 +1639,7 @@ function cmdMerge(args) {
         const merged = runPublishCommand(gh, ['pr', 'merge', String(sealed.number), '--merge', '--match-head-commit', sealed.head_ref_oid], cwd);
         viewed = ghMergeView(gh, sealed.number, cwd);
         if (!viewed.ok || !viewed.value) {
-          const error = { code: 'pr_merge_status_unknown', message: `${sealed.topic}: merge result cannot be confirmed` };
+          const error = { code: 'pr_merge_status_unknown', message: `${sealed.topic}: merge result cannot be confirmed${ghStderr(viewed)}` };
           saveMergeReceipt(state.manifest, state.seal, state.integration, state.seal.base, rows, 'blocked', null, error);
           process.exitCode = 2;
           return emit({ action, status: 'merge_blocked', batch: batchId, error, rows }, json, `${batchId}: merge status unknown`);

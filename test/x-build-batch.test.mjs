@@ -102,6 +102,7 @@ if (argv[1] === 'view') {
   process.exit(0);
 }
 if (argv[0] === 'api' && /^repos\\/\\{owner\\}\\/\\{repo\\}\\/pulls\\/\\d+$/.test(argv[1])) {
+  if (process.env.PUBLISH_API_ERROR) { process.stderr.write(process.env.PUBLISH_API_ERROR + '\\n'); process.exit(1); }
   const value = JSON.parse(readFileSync(process.env.PUBLISH_STATE, 'utf8'));
   process.stdout.write(JSON.stringify({ number: value.number, base: { ref: value.baseRefName, sha: value.baseRefOid }, head: { sha: value.headRefOid } }) + '\\n');
   process.exit(0);
@@ -693,6 +694,15 @@ describe('xm batch scheduler', () => {
       expect(readFileSync(fake.log, 'utf8').trim().split('\n').map(JSON.parse).some((call) => call.argv[1] === 'create')).toBe(false);
       writeFileSync(fake.log, '');
 
+      // A PR that already exists but whose REST read fails must not look like a missing PR.
+      writeFileSync(fake.state, JSON.stringify({ number: 17, url: 'https://example.test/pr/17', state: 'OPEN', baseRefName: 'develop', headRefName: 'xm/batch-release-auth' }));
+      const apiError = run(cwd, ['batch', 'publish', 'release', '--yes', '--json'], CLI, { ...fake.env, PUBLISH_API_ERROR: 'HTTP 502: Bad Gateway' });
+      expect(apiError.code).toBe(2);
+      expect(JSON.parse(apiError.stdout).topics[0]).toMatchObject({ ok: false, error: { code: 'pr_view_failed', message: 'HTTP 502: Bad Gateway' } });
+      expect(readFileSync(fake.log, 'utf8').trim().split('\n').map(JSON.parse).some((call) => call.argv[1] === 'create')).toBe(false);
+      rmSync(fake.state);
+      writeFileSync(fake.log, '');
+
       const published = run(cwd, ['batch', 'publish', 'release', '--yes', '--json'], CLI, fake.env);
       expect(published.code, published.stderr + published.stdout).toBe(0);
       expect(JSON.parse(published.stdout).topics[0]).toMatchObject({ ok: true, reused: false, pr_number: 17 });
@@ -969,6 +979,12 @@ describe('xm batch scheduler', () => {
       expect(waiting.code).toBe(2);
       expect(JSON.parse(waiting.stdout).status).toBe('awaiting_confirmation');
       expect(readFileSync(publishers.log, 'utf8')).toBe('');
+
+      const apiError = run(cwd, ['batch', 'merge', 'release', '--yes', '--json'], CLI, { ...mergeEnv, PUBLISH_API_ERROR: 'HTTP 502: Bad Gateway' });
+      expect(apiError.code).toBe(2);
+      expect(JSON.parse(apiError.stdout)).toMatchObject({ status: 'merge_blocked', error: { code: 'pr_view_failed', message: 'auth: cannot read GitHub PR: HTTP 502: Bad Gateway' } });
+      expect(readFileSync(publishers.log, 'utf8').includes('"merge"')).toBe(false);
+      writeFileSync(publishers.log, '');
 
       const merged = run(cwd, ['batch', 'merge', 'release', '--yes', '--json'], CLI, mergeEnv);
       expect(merged.code, merged.stderr + merged.stdout).toBe(0);
