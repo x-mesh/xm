@@ -891,23 +891,11 @@ function verifyPrView(viewed, expected, receipt) {
   return { valid, value, reason: valid ? null : 'GitHub PR does not match the verified publication' };
 }
 
-// gh 2.46 rejects `pr view --json baseRefOid` as an unknown field, so the base OID comes from the REST pull.
-function withBaseRefOid(command, viewed, cwd) {
-  if (!viewed.ok || !Number.isInteger(viewed.value?.number)) return viewed;
-  const result = runPublishCommand(command, ['api', `repos/{owner}/{repo}/pulls/${viewed.value.number}`], cwd);
-  let pull = null;
-  try { pull = JSON.parse(result.stdout.trim()); } catch {}
-  if (!result.ok || typeof pull?.base?.sha !== 'string') {
-    return { ...result, ok: false, value: null, stderr: result.stderr.trim() || `GitHub API returned no base SHA for PR ${viewed.value.number}` };
-  }
-  return { ...viewed, value: { ...viewed.value, baseRefOid: pull.base.sha } };
-}
-
 function ghView(command, target, cwd) {
   const result = runPublishCommand(command, ['pr', 'view', target, '--json', 'number,url,state,baseRefName,headRefName,headRefOid,title,body'], cwd);
   let value = null;
   try { value = JSON.parse(result.stdout.trim()); } catch {}
-  return withBaseRefOid(command, { ...result, value }, cwd);
+  return { ...result, value };
 }
 
 function prViewFailed(topic, viewed) {
@@ -926,7 +914,7 @@ function savePublication(manifest, topic, expected, verification, value, remote)
     verification: { receipt: verificationPath(manifest.id, topic.id), binding_sha256: verification.binding_sha256, head_sha: verification.git.head_sha, base_ref: topic.runtime.base_ref, base_sha: topic.runtime.base_sha },
     git: { remote, branch: topic.runtime.branch, push_state: 'ok' },
     pr: {
-      number: value.number, url: value.url, state: value.state, base_ref_name: value.baseRefName, base_ref_oid: value.baseRefOid || null,
+      number: value.number, url: value.url, state: value.state, base_ref_name: value.baseRefName,
       head_ref_name: value.headRefName, head_ref_oid: value.headRefOid, title: value.title, body_sha256: sha256(value.body),
     },
   };
@@ -1118,13 +1106,11 @@ function cmdSeal(args) {
       }
       viewed.push({ row, value: result.value });
     }
-    const baseOids = new Set(viewed.map(({ value }) => value.baseRefOid));
-    if (baseOids.size !== 1 || !viewed[0]?.value.baseRefOid) {
-      const reason = 'published PRs do not share one current base OID';
-      invalidateSeal(manifest, reason);
-      return fail(action, reason, { json });
-    }
-    const baseOid = viewed[0].value.baseRefOid;
+    // A PR keeps the base commit it was opened on (GitHub does not move it with
+    // the branch), so the current base comes from the branch itself.
+    const remoteBase = ghBase(gh, set.base, viewed[0].row.topic.runtime.worktree);
+    if (!remoteBase.valid) return fail(action, `cannot read current GitHub base commit${ghStderr(remoteBase)}`, { json, code: 1 });
+    const baseOid = remoteBase.value.sha;
     const remoteRef = `refs/remotes/${set.remote}/${set.base}`;
     const localBase = gitValue(viewed[0].row.topic.runtime.worktree, ['rev-parse', '--verify', `${remoteRef}^{commit}`]);
     if (!localBase || localBase !== baseOid) return fail(action, `local ${remoteRef} is missing or stale; fetch ${set.remote} ${set.base}`, { json });
@@ -1143,7 +1129,7 @@ function cmdSeal(args) {
       prs: viewed.map(({ row, value }, index) => ({
         order: index + 1, topic: row.topic.id, plan_sha256: row.topic.plan.sha256,
         verification_binding_sha256: row.verification.binding_sha256, publication_binding_sha256: row.publication.binding_sha256,
-        number: value.number, url: value.url, base_ref_name: value.baseRefName, base_ref_oid: value.baseRefOid,
+        number: value.number, url: value.url, base_ref_name: value.baseRefName,
         head_ref_name: value.headRefName, head_ref_oid: value.headRefOid, title: value.title, body_sha256: sha256(value.body),
       })),
     };
@@ -1462,7 +1448,7 @@ function ghMergeView(command, number, cwd) {
   const result = runPublishCommand(command, ['pr', 'view', String(number), '--json', 'number,url,state,isDraft,baseRefName,headRefName,headRefOid,mergeable,mergeStateStatus,autoMergeRequest,mergeCommit,mergedAt'], cwd);
   let value = null;
   try { value = JSON.parse(result.stdout.trim()); } catch {}
-  return withBaseRefOid(command, { ...result, value }, cwd);
+  return { ...result, value };
 }
 
 function mergeReceiptValid(receipt, seal, integration) {
@@ -1498,10 +1484,12 @@ function saveMergeReceipt(manifest, seal, integration, baseStart, rows, status, 
   return receipt;
 }
 
-function currentMergePrValid(value, sealed, expectedBase) {
+// The base commit is checked through ghBase, not the PR: a PR keeps the base it
+// was opened on, so every PR after the first would look stale.
+function currentMergePrValid(value, sealed) {
   return value?.number === sealed.number && value?.url === sealed.url && value?.baseRefName === sealed.base_ref_name
     && value?.headRefName === sealed.head_ref_name && value?.headRefOid === sealed.head_ref_oid
-    && value?.isDraft === false && (value.state === 'MERGED' || value?.baseRefOid === expectedBase);
+    && value?.isDraft === false;
 }
 
 function mergeDryRunPlan(manifest, seal, integration) {
@@ -1601,7 +1589,7 @@ function cmdMerge(args) {
       }
       const viewed = ghMergeView(gh, sealed.number, cwd);
       if (!viewed.ok || !viewed.value) return fail(action, `${sealed.topic}: cannot read GitHub PR${ghStderr(viewed)}`, { json, code: 1 });
-      if (!currentMergePrValid(viewed.value, sealed, expectedBase)) return fail(action, `${sealed.topic}: pending PR state changed`, { json });
+      if (!currentMergePrValid(viewed.value, sealed)) return fail(action, `${sealed.topic}: pending PR state changed`, { json });
       if (viewed.value.state !== 'MERGED' || !viewed.value.mergedAt || !viewed.value.mergeCommit?.oid) {
         return emit({ action, status: 'merge_pending', batch: batchId, reused: true, receipt: mergeReceiptPath(batchId), row: pending }, json, `${batchId}: merge still pending`);
       }
@@ -1619,7 +1607,7 @@ function cmdMerge(args) {
       const sealed = state.seal.prs[index];
       const expectedTree = state.integration.merges[index].result_tree_oid;
       let viewed = ghMergeView(gh, sealed.number, cwd);
-      if (!viewed.ok || !viewed.value || !currentMergePrValid(viewed.value, sealed, expectedBase)) {
+      if (!viewed.ok || !viewed.value || !currentMergePrValid(viewed.value, sealed)) {
         const error = !viewed.ok || !viewed.value
           ? { code: 'pr_view_failed', message: `${sealed.topic}: cannot read GitHub PR${ghStderr(viewed)}` }
           : { code: 'pr_merge_precondition_failed', message: `${sealed.topic}: current PR does not match sealed state` };
