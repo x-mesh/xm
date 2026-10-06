@@ -17,7 +17,7 @@ User provided: $ARGUMENTS
 Routing — check the FIRST token:
 - Empty → global `install` (then tell the user `xm init <name>` starts a project)
 - `status`, `uninstall`, `install`, or `help` → global install route
-- `--no-hooks` (and every flag except `--here`) → global install route; `--no-hooks` installs the CLI dispatcher without copying hooks
+- `--no-hooks` (and every flag except `--here`) → global install route; `--no-hooks` installs the CLI dispatcher without copying hooks; `--claude-md` also writes the xm routing block into `~/.claude/CLAUDE.md`
 - `.` or `--here` → start a project named after the current directory
 - **anything else** → treat it as a project name → run the project route below
 
@@ -61,6 +61,7 @@ fi
 - `status` → `node "$SCRIPT" status`
 - `uninstall` → `node "$SCRIPT" uninstall`
 - `--no-hooks` → `node "$SCRIPT" install --no-hooks`
+- `--claude-md`, alone or with `--no-hooks` → `node "$SCRIPT" install` followed by the same flags
 
 Pass the resolved script path verbatim; do not re-resolve per subcommand.
 

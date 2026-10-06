@@ -90,8 +90,9 @@ powershell -c "irm bun.sh/install.ps1 | iex"
 ```
 /xm init              # trace-session 훅을 ~/.claude/에 설치
 /xm init status       # 설치 상태 확인
-/xm init uninstall    # 훅 파일 + settings.json 항목 제거
+/xm init uninstall    # 훅 파일 + settings.json 항목 + 라우팅 블록 제거
 /xm init --no-hooks   # 훅을 복사하지 않고 CLI 디스패처만 설치
+/xm init --claude-md  # ~/.claude/CLAUDE.md에 xm 라우팅 블록도 추가
 ```
 
 Idempotent: 재실행 안전. 기존 훅(mem-mesh 등)은 보존되고, 매 쓰기 시 `settings.json`의 타임스탬프 백업이 생성됩니다. 트레이스는 각 프로젝트의 `.xm/traces/`에 기록됩니다.
@@ -131,11 +132,14 @@ curl -fsSL https://raw.githubusercontent.com/x-mesh/xm/main/xm/scripts/install.s
 ```bash
 xm setup                # trace-session 훅을 ~/.claude/에 설치
 xm setup status         # 설치 상태 확인
-xm setup uninstall      # 훅 파일 + settings.json 항목 제거
+xm setup uninstall      # 훅 파일 + settings.json 항목 + 라우팅 블록 제거
 xm setup --no-hooks     # 훅을 복사하지 않고 CLI 디스패처만 설치
+xm setup --claude-md    # ~/.claude/CLAUDE.md에 xm 라우팅 블록도 추가
 ```
 
 `~/.claude/hooks/xm-trace-session.mjs`를 복사하고 `~/.claude/settings.json`의 `PreToolUse`/`PostToolUse`에 Skill matcher를 병합합니다. 기존 훅(mem-mesh 등)은 보존되며, 수정 시 타임스탬프 백업이 생성됩니다. Claude Code 밖에서 실행해야 할 때는 bash 경로를 쓰고, 그 외에는 `/xm init`을 권장합니다.
+
+`--claude-md`를 주면 `~/.claude/CLAUDE.md`에 마커로 둘러싼 라우팅 블록을 추가합니다. 이 블록은 PR을 올릴 때 **xm:write**를 쓰는 것처럼 Claude가 어떤 상황에서 어떤 xm 스킬을 호출할지 정합니다. 플래그 없이 설치하면 블록을 추가하지 않습니다. 한 번 추가한 뒤에는 `xm setup`과 `xm update`가 블록을 최신 내용으로 갱신합니다. 갱신할 때 블록 안의 내용은 교체되므로, 직접 쓰는 규칙은 블록 밖에 두세요. 블록만 없애려면 블록을 지우면 되고, 이후 설치에서도 다시 추가하지 않습니다. `CLAUDE.md`를 바꿀 때마다 타임스탬프 백업을 만듭니다.
 
 새 스크립트와 문서에서는 `setup`을 쓰세요: 다른 생태계에서 `init`은 "프로젝트 시작"으로 읽히며, 다음 메이저 버전에서 인자 없는 `xm init`도 프로젝트 경로로 넘어갈 예정입니다.
 
