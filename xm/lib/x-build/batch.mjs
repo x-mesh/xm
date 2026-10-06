@@ -891,11 +891,27 @@ function verifyPrView(viewed, expected, receipt) {
   return { valid, value, reason: valid ? null : 'GitHub PR does not match the verified publication' };
 }
 
+// gh 2.46 rejects `pr view --json baseRefOid` as an unknown field, so the base OID comes from the REST pull.
+function withBaseRefOid(command, viewed, cwd) {
+  if (!viewed.ok || !Number.isInteger(viewed.value?.number)) return viewed;
+  const result = runPublishCommand(command, ['api', `repos/{owner}/{repo}/pulls/${viewed.value.number}`], cwd);
+  let pull = null;
+  try { pull = JSON.parse(result.stdout.trim()); } catch {}
+  if (!result.ok || typeof pull?.base?.sha !== 'string') {
+    return { ...result, ok: false, value: null, stderr: result.stderr.trim() || `GitHub API returned no base SHA for PR ${viewed.value.number}` };
+  }
+  return { ...viewed, value: { ...viewed.value, baseRefOid: pull.base.sha } };
+}
+
 function ghView(command, target, cwd) {
-  const result = runPublishCommand(command, ['pr', 'view', target, '--json', 'number,url,state,baseRefName,baseRefOid,headRefName,headRefOid,title,body'], cwd);
+  const result = runPublishCommand(command, ['pr', 'view', target, '--json', 'number,url,state,baseRefName,headRefName,headRefOid,title,body'], cwd);
   let value = null;
   try { value = JSON.parse(result.stdout.trim()); } catch {}
-  return { ...result, value };
+  return withBaseRefOid(command, { ...result, value }, cwd);
+}
+
+function prViewFailed(topic, viewed) {
+  return { id: topic.id, ok: false, error: { code: 'pr_view_failed', message: viewed.stderr.trim() || 'gh pr view failed' } };
 }
 
 function savePublication(manifest, topic, expected, verification, value, remote) {
@@ -928,6 +944,7 @@ function publishTopic(manifest, topic, expected, commands) {
       return { id: topic.id, ok: false, error: { code: 'publication_receipt_stale', message: 'saved publication is not bound to current verification' } };
     }
     const viewed = ghView(commands.gh, prior.pr.number, topic.runtime.worktree);
+    if (!viewed.ok) return prViewFailed(topic, viewed);
     const checked = verifyPrView(viewed, expected, verification);
     if (!checked.valid) return { id: topic.id, ok: false, error: { code: 'pr_verification_failed', message: checked.reason } };
     if (topic.status !== 'published') savePublication(manifest, topic, expected, verification, checked.value, expected.remote);
@@ -943,11 +960,13 @@ function publishTopic(manifest, topic, expected, commands) {
 
   let viewed = ghView(commands.gh, expected.head, topic.runtime.worktree);
   if (!viewed.ok) {
+    if (!viewed.stderr.includes('no pull requests found for branch')) return prViewFailed(topic, viewed);
     const created = runPublishCommand(commands.gh, ['pr', 'create', '--base', expected.base, '--head', expected.head, '--title', expected.title, '--body-file', bodyPath], topic.runtime.worktree);
     if (!created.ok || !created.stdout.trim()) return { id: topic.id, ok: false, error: { code: 'pr_create_failed', message: created.stderr.trim() || 'gh pr create failed' } };
     topic.runtime = { ...topic.runtime, publish_attempt: { pr_url: created.stdout.trim(), created_at: now() } };
     writeJSON(manifestPath(manifest.id), manifest);
     viewed = ghView(commands.gh, created.stdout.trim(), topic.runtime.worktree);
+    if (!viewed.ok) return prViewFailed(topic, viewed);
   }
   const checked = verifyPrView(viewed, expected, verification);
   if (!checked.valid) return { id: topic.id, ok: false, error: { code: 'pr_verification_failed', message: checked.reason } };
@@ -1085,7 +1104,7 @@ function cmdSeal(args) {
     const viewed = [];
     for (const row of set.rows) {
       const result = ghView(gh, row.publication.pr.number, row.topic.runtime.worktree);
-      if (!result.ok || !result.value) return fail(action, `${row.topic.id}: cannot read GitHub PR`, { json, code: 1 });
+      if (!result.ok || !result.value) return fail(action, `${row.topic.id}: cannot read GitHub PR${result.stderr.trim() ? `: ${result.stderr.trim()}` : ''}`, { json, code: 1 });
       const checked = verifyPrView(result, row.expected, row.verification);
       if (!checked.valid || result.value.number !== row.publication.pr.number || result.value.url !== row.publication.pr.url) {
         const reason = `${row.topic.id}: ${checked.reason || 'GitHub PR identity changed'}`;
@@ -1435,10 +1454,10 @@ function ghBase(command, base, cwd) {
 }
 
 function ghMergeView(command, number, cwd) {
-  const result = runPublishCommand(command, ['pr', 'view', String(number), '--json', 'number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,mergeable,mergeStateStatus,autoMergeRequest,mergeCommit,mergedAt'], cwd);
+  const result = runPublishCommand(command, ['pr', 'view', String(number), '--json', 'number,url,state,isDraft,baseRefName,headRefName,headRefOid,mergeable,mergeStateStatus,autoMergeRequest,mergeCommit,mergedAt'], cwd);
   let value = null;
   try { value = JSON.parse(result.stdout.trim()); } catch {}
-  return { ...result, value };
+  return withBaseRefOid(command, { ...result, value }, cwd);
 }
 
 function mergeReceiptValid(receipt, seal, integration) {

@@ -93,8 +93,17 @@ if (argv[1] === 'create') {
   process.exit(0);
 }
 if (argv[1] === 'view') {
-  if (!existsSync(process.env.PUBLISH_STATE)) process.exit(1);
-  process.stdout.write(readFileSync(process.env.PUBLISH_STATE, 'utf8') + '\\n');
+  const fields = argv[argv.indexOf('--json') + 1].split(',');
+  if (fields.includes('baseRefOid')) { process.stderr.write('Unknown JSON field: "baseRefOid"\\n'); process.exit(1); }
+  if (process.env.PUBLISH_VIEW_ERROR) { process.stderr.write(process.env.PUBLISH_VIEW_ERROR + '\\n'); process.exit(1); }
+  if (!existsSync(process.env.PUBLISH_STATE)) { process.stderr.write('no pull requests found for branch "' + argv[2] + '"\\n'); process.exit(1); }
+  const value = JSON.parse(readFileSync(process.env.PUBLISH_STATE, 'utf8'));
+  process.stdout.write(JSON.stringify(Object.fromEntries(fields.map((field) => [field, value[field]]))) + '\\n');
+  process.exit(0);
+}
+if (argv[0] === 'api' && /^repos\\/\\{owner\\}\\/\\{repo\\}\\/pulls\\/\\d+$/.test(argv[1])) {
+  const value = JSON.parse(readFileSync(process.env.PUBLISH_STATE, 'utf8'));
+  process.stdout.write(JSON.stringify({ number: value.number, base: { ref: value.baseRefName, sha: value.baseRefOid }, head: { sha: value.headRefOid } }) + '\\n');
   process.exit(0);
 }
 if (argv[0] === 'api') {
@@ -678,6 +687,12 @@ describe('xm batch scheduler', () => {
       expect(JSON.parse(waiting.stdout).status).toBe('awaiting_confirmation');
       expect(existsSync(fake.log)).toBe(false);
 
+      const viewError = run(cwd, ['batch', 'publish', 'release', '--yes', '--json'], CLI, { ...fake.env, PUBLISH_VIEW_ERROR: 'HTTP 502: Bad Gateway' });
+      expect(viewError.code).toBe(2);
+      expect(JSON.parse(viewError.stdout).topics[0]).toMatchObject({ ok: false, error: { code: 'pr_view_failed', message: 'HTTP 502: Bad Gateway' } });
+      expect(readFileSync(fake.log, 'utf8').trim().split('\n').map(JSON.parse).some((call) => call.argv[1] === 'create')).toBe(false);
+      writeFileSync(fake.log, '');
+
       const published = run(cwd, ['batch', 'publish', 'release', '--yes', '--json'], CLI, fake.env);
       expect(published.code, published.stderr + published.stdout).toBe(0);
       expect(JSON.parse(published.stdout).topics[0]).toMatchObject({ ok: true, reused: false, pr_number: 17 });
@@ -686,16 +701,17 @@ describe('xm batch scheduler', () => {
       expect(manifest(cwd).topics[0].status).toBe('published');
       let calls = readFileSync(fake.log, 'utf8').trim().split('\n').map(JSON.parse);
       expect(calls[0]).toMatchObject({ tool: 'gk', agent: '1', argv: ['push', 'origin', 'xm/batch-release-auth', '--from', 'xm/batch-release-auth', '--yes', '--json'] });
-      expect(calls.map((call) => `${call.tool}:${call.argv.slice(0, 2).join(' ')}`)).toEqual(['gk:push origin', 'gh:pr view', 'gh:pr create', 'gh:pr view']);
+      expect(calls.map((call) => `${call.tool}:${call.argv.slice(0, 2).join(' ')}`)).toEqual(['gk:push origin', 'gh:pr view', 'gh:pr create', 'gh:pr view', 'gh:api repos/{owner}/{repo}/pulls/17']);
 
       writeFileSync(fake.log, '');
       const repeated = run(cwd, ['batch', 'publish', 'release', '--yes', '--json'], CLI, fake.env);
       expect(repeated.code, repeated.stderr + repeated.stdout).toBe(0);
       expect(JSON.parse(repeated.stdout).topics[0]).toMatchObject({ ok: true, reused: true, pr_number: 17 });
       calls = readFileSync(fake.log, 'utf8').trim().split('\n').map(JSON.parse);
-      expect(calls).toHaveLength(1);
+      expect(calls).toHaveLength(2);
       expect(calls[0]).toMatchObject({ tool: 'gh' });
       expect(calls[0].argv.slice(0, 3)).toEqual(['pr', 'view', '17']);
+      expect(calls[1].argv).toEqual(['api', 'repos/{owner}/{repo}/pulls/17']);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   }, 15000);
 
@@ -750,8 +766,9 @@ describe('xm batch scheduler', () => {
       const receipt = readFileSync(receiptPath, 'utf8');
       expect(manifest(cwd)).toMatchObject({ status: 'sealed', seal: { valid: true, binding_sha256: output.binding_sha256 } });
       let calls = readFileSync(fake.log, 'utf8').trim().split('\n').map(JSON.parse);
-      expect(calls).toHaveLength(1);
+      expect(calls).toHaveLength(2);
       expect(calls[0].argv.slice(0, 3)).toEqual(['pr', 'view', '17']);
+      expect(calls[1].argv).toEqual(['api', 'repos/{owner}/{repo}/pulls/17']);
 
       writeFileSync(fake.log, '');
       const repeated = run(cwd, ['batch', 'seal', 'release', '--json'], CLI, fake.env);
