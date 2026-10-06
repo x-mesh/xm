@@ -4,7 +4,7 @@ Tracing is automatic. The trace-session hook (`.claude/hooks/trace-session.mjs`,
 
 - `session_start` when an `xm:*` skill is invoked (PreToolUse on the Skill tool).
 - one `agent_step` per Agent tool call made between that point and the end of the assistant turn — `id` (tool_use_id), `role` (subagent_type), `model`, `duration_ms`, `status`, `source: "hook"`. `status` comes from the tool response: `success`, `error`, `launched` (a `run_in_background` agent, so `duration_ms` is launch time, not run time), or `unknown` when no response is visible.
-- `session_end` at the turn's Stop hook. An agent still running at that point is written as `status: "abandoned"` and counted in `agent_count`. A skill that spans several turns (AskUserQuestion) gets one session per turn that invoked it; later turns' Agent calls are not attributed.
+- `session_end` at the turn's Stop hook. An agent still running at that point is written as `status: "abandoned"` and counted in `agent_count`. A skill that spans several turns (AskUserQuestion) gets one session per turn that invoked it; later turns' Agent calls are not attributed. x-solver asks AskUserQuestion after every phase, so in practice only the first turn's agents (usually `reproduce`) are attributed — a known limit of the hook, not a solver failure.
 
 Tokens and cost are not in the hook payload. `xm trace drift` reports them only when a writer supplies `tokens_est`, and always as estimates.
 

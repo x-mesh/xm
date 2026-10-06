@@ -337,15 +337,16 @@ xm bakes those questions into every agent prompt. Agents end up reasoning about 
 **How a senior engineer debugs** — the thinking protocol embedded in x-solver:
 
 ```
-DIAGNOSE ──→ HYPOTHESIZE ──→ TEST ──→ REFINE ──→ RESOLVE ──→ REFLECT
+REPRODUCE ──→ DIAGNOSE ──→ HYPOTHESIZE ──→ TEST ──→ REFINE ──→ RESOLVE ──→ REFLECT
 ```
 
-1. **"What's happening right now?"** — Describe the observable state, not the problem.
-2. **"When did it last work?"** — Find the baseline. No baseline = find one first.
-3. **"Why?" — with evidence** — Corroborate from different sources. No evidence? Stop.
-4. **"Stuck? Change the lens."** — All hypotheses from the same layer? Look at a different one.
-5. **"Show me it works."** — Execution is the only proof.
-6. **"Why did we miss this?"** — Retrospect via x-humble.
+1. **"Can I make it fail on demand?"** — Record the command, its output, and a failure marker before you touch anything.
+2. **"What's happening right now?"** — Describe the observable state, not the problem.
+3. **"When did it last work?"** — Find the baseline. No baseline = find one first.
+4. **"Why?" — with evidence** — Corroborate from different sources. No evidence? Stop.
+5. **"Stuck? Change the lens."** — All hypotheses from the same layer? Look at a different one.
+6. **"Show me it works."** — Re-run the recorded failure. Execution is the only proof.
+7. **"Why did we miss this?"** — Retrospect via x-humble.
 
 </details>
 
@@ -775,7 +776,7 @@ Use `--test-command 'bun test test/sync.test.mjs'` for an explicit JavaScript te
 
 ### x-solver
 
-4 strategies for working through a problem. Auto-picks one based on what the problem actually looks like.
+3 strategies for working through a problem. Auto-picks one based on what the problem actually looks like.
 
 ```bash
 /xm:solver init "Memory leak in React component"
@@ -788,11 +789,10 @@ Use `--test-command 'bun test test/sync.test.mjs'` for an explicit JavaScript te
 | **decompose** | Break → solve leaves → merge | Complex multi-faceted problems |
 | **iterate** | Diagnose → hypothesis → test → refine | Bugs, debugging, root cause |
 | **constrain** | Elicit → candidates → score → select | Design decisions, tradeoffs |
-| **pipeline** | Auto-detect → route to best strategy | When unsure |
 
 ```
-DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE → x-humble
-[state+baseline] [falsifiable] [one var] [switch/revert] [exec verify] [why late?]
+REPRODUCE → DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE → x-humble
+[repro+marker] [state+baseline] [falsifiable] [one var] [switch/revert] [fix+regression proof] [why late?]
 ```
 
 ---
@@ -1428,7 +1428,7 @@ xm/                              Marketplace repo
 ├── x-op/                           Strategy orchestration (18 strategies)
 ├── x-eval/                         Quality evaluation + diff
 ├── x-humble/                       Structured retrospective
-├── x-solver/                       Problem solving (4 strategies)
+├── x-solver/                       Problem solving (3 strategies)
 ├── x-agent/                        Agent primitives & teams
 ├── x-probe/                        Premise validation (probe before build)
 ├── x-review/                       Code review orchestrator

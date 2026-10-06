@@ -2211,8 +2211,15 @@ async function renderProbeDetail(file) {
 }
 
 function solverStateBadge(state) {
-  if (state === 'solved') return `<span class="badge badge-success">solved</span>`;
-  return `<span class="badge badge-warning">${state || 'unknown'}</span>`;
+  // Mirrors x-solver PROBLEM_STATES: only `solved` claims a proven fix; `diagnosed`
+  // and `answered` are successful exits without one, not failures.
+  const cls = {
+    solved: 'badge-success',
+    diagnosed: 'badge-info',
+    answered: 'badge-neutral',
+    abandoned: 'badge-danger',
+  }[state] || 'badge-warning';
+  return `<span class="badge ${cls}">${state || 'unknown'}</span>`;
 }
 
 const SOLVER_PHASES = ['01-intake', '02-classify', '03-solve', '04-verify', '05-close'];

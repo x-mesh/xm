@@ -1,6 +1,6 @@
 ---
 name: solver
-description: Structured problem solving and bug diagnosis — iterate (diagnose → hypothesize → falsify → fix → prove), decompose, constrain, or auto-pipeline
+description: Structured problem solving and bug diagnosis — iterate (reproduce → diagnose → hypothesize → falsify → fix → prove), decompose, or constrain; classify routes between them
 allowed-tools:
   - AskUserQuestion
 ---
@@ -10,8 +10,9 @@ x-solver takes a problem from symptom to proven fix. Debugging is its primary jo
 crash, regression, or perf problem it captures a baseline, generates falsifiable hypotheses, refutes
 them with parallel agents, applies the fix, and proves it by execution — never by "it should work".
 Non-bug problems route to decompose (break a problem down) or constrain (choose between options scored
-against explicit constraints); pipeline auto-routes.
-4 strategies: iterate (debug/diagnose), decompose, constrain, pipeline (auto).
+against explicit constraints); `classify` picks the strategy, and `direct` means answer in chat and
+record it with `close --summary`.
+3 strategies: iterate (debug/diagnose), decompose, constrain.
 Stateful — persists the problem, its hypotheses, and its verification evidence to `.xm/solver/`, so a
 diagnosis survives turn and session boundaries.
 </Purpose>
@@ -119,11 +120,12 @@ Parse the first word of `$ARGUMENTS` to determine the command:
 - `solve-status` → Run `$XMS solve-status`
 - `repro` → Run `$XMS repro <set|verify|show>`
 - `hypotheses` → Run `$XMS hypotheses <list|add|update>`
+- `scope` → Run `$XMS scope <set|show|expand>`
 - `tree` → Run `$XMS tree <show|add|update>`
 - `candidates` → Run `$XMS candidates <list|add|select|score>`
 - `phase` → Run `$XMS phase <next|set>`
 - `verify` → [Command: verify]
-- `close` → Run `$XMS close`, then [Post-Close: x-humble Link]
+- `close` → Run `$XMS close` (`--summary` for a direct answer; `--diagnosis-only --summary` for a confirmed cause with no fix), then [Post-Close: x-humble Link]
 - `history` → Run `$XMS history`
 - `next` → [Command: next]
 - `handoff` → Run `$XMS handoff [--restore]`
@@ -142,7 +144,7 @@ Tracing is automatic: the trace-session hook writes `session_start` when the ski
 | "고쳐봤는데 또 안 돼", "the first fix didn't work" | init → classify (iterate, 2+ rounds) |
 | "Help me fix this bug" | init → classify (likely iterate) |
 | "Which approach is better" | init → classify (likely constrain) |
-| "Analyze this problem" | init → classify (pipeline) |
+| "Analyze this problem" | init → classify (low confidence → LLM fallback picks) |
 | "Break it down and solve" | init → strategy set decompose → solve |
 | "Add hypothesis" | hypotheses add |
 | "Show the tree" | tree show |
@@ -160,7 +162,7 @@ This skill uses only Claude Code's built-in Agent tool.
 ### Agent Count Resolution (MANDATORY)
 
 Before any fan-out or broadcast, parse `agent_count` from the latest `$XMS solve` JSON output.
-The CLI resolves it as local `.xm/solver/config.json` `solving.parallel_agents` first, then shared `.xm/config.json` `agent_max_count`, then default `4`.
+The CLI resolves it as local `.xm/solver/config.json` `solving.parallel_agents` first, then shared `.xm/config.json` `agent_max_count`, then default `4`. Setup no longer writes the local key, so `xm config set agent_max_count N` is the knob; set `solving.parallel_agents` only to override one project. Projects set up before this change still carry `solving.parallel_agents: 3` in `.xm/solver/config.json` (setup skips an existing directory) — delete that key for `agent_max_count` to apply.
 
 Use that value as `AGENT_COUNT` for all fan-out/broadcast operations in the current solve phase.
 Do NOT hardcode agent counts. Always use the resolved value.
@@ -184,7 +186,9 @@ Do NOT hardcode agent counts. Always use the resolved value.
 
 ### Scope Contract and Expansion Gate (MANDATORY)
 
-Before the first solve-phase agent spawn, state and persist a **Scope Contract** containing:
+Record a **Scope Contract** with `$XMS scope set` at the end of `diagnose` — the symptom and marker
+come from `reproduce`, the invariant from the Delta — before the hypothesize agent is spawned. `solve`
+returns it as `scope` in every later phase, and resolve warns when it is missing. It contains:
 
 1. one observed symptom;
 2. one reproduction command and one failure marker;
@@ -198,7 +202,7 @@ test files. These are expansion triggers, not arbitrary quotas: a new public API
 a second independent root cause, more than twice the expected files, or a refactor not required to
 remove the marker. On a trigger, stop and ask for explicit scope expansion. Approval requires
 execution evidence explaining why the current slice cannot remove the marker; relatedness alone is
-not evidence.
+not evidence. When approved, record it: `$XMS scope expand --justification "<execution evidence>" --files <added>`.
 
 Classify every newly discovered finding before acting:
 
@@ -278,7 +282,6 @@ See `commands/solve.md` (decompose / constrain / pipeline) and `commands/iterate
 - decompose: decompose → explore → evaluate → synthesize
 - iterate: REPRODUCE → DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE [repro+marker] [state+baseline] [falsifiable] [one var] [switch/revert] [fix+regression proof] [why late?]
 - constrain: elicit → generate → evaluate → select (Contrastive Matrix with Winner column)
-- pipeline: classify → route → meta-verify
 
 **Cross-vendor (opt-in):** `solve --cross-vendor` fans out the GENERATION steps (explore /
 generate / hypothesize) across different model vendors via `xm panel cross` instead of
@@ -286,8 +289,9 @@ same-model Claude agents — same-model fan-out has low diversity, different mod
 genuinely different candidates. Evaluation/scoring stays single-vendor (for cross-vendor scoring
 use `x-eval --cross-vendor`). Probe `xm panel detect --auth` (installed + authenticated); fall
 back loudly to single-vendor if <2 vendors are ready (`xm panel doctor` shows why). **Default without
-the flag:** `.xm/config.json` `cross_vendor.solver` ?? `cross_vendor.default`; `--no-cross-vendor` forces
-single-vendor. Full flow: `references/cross-vendor.md`.
+the flag:** the `solve` JSON carries the resolved value as `cross_vendor.effective` (flag >
+`cross_vendor.solver` > `cross_vendor.default` > false) — read it there, do not re-read the config.
+Full flow: `references/cross-vendor.md`.
 
 ### iterate — Leader execution rules (MUST)
 The leader must never directly read code or verify hypotheses in any phase. Always delegate to an agent.
@@ -304,16 +308,16 @@ The leader must never directly read code or verify hypotheses in any phase. Alwa
 - Optional Fishbone (Ishikawa) Root Cause Analysis when Delta = "unknown" or multiple layers
 - Checklist: delegate agent called / Current State + Baseline + Delta collected / (if Delta = unknown) Fishbone analysis complete / AskUserQuestion called / solve-advance called
 
-**hypothesize phase:** Generate 3-5 falsifiable hypotheses, ordered by likelihood.
+**hypothesize phase:** Generate 3-5 falsifiable hypotheses, ordered by likelihood. Each `hypotheses add` is stamped with the round; restating last round's hypotheses trips the convergence stop, so change what you test.
 - Checklist: delegate agent called / hypotheses add called / AskUserQuestion called / solve-advance called
 
 **test phase:** Fan-out one agent per hypothesis — direct verification forbidden.
-- Checklist: Agent fan-out complete / hypotheses update called / AskUserQuestion called / solve-advance called
+- Checklist: Agent fan-out complete / hypotheses update called with `--evidence-for` + `--source-kind` (a confirmed hypothesis with no evidence cannot leave this phase) / AskUserQuestion called / solve-advance called
 
-**refine phase:** Check confirmed/inconclusive; if all refuted apply Switch or Revert before retrying.
+**refine phase:** Check confirmed/inconclusive; if all refuted apply Switch or Revert before retrying. The refuter reads `evidence_for` from the state, not from your memory; a survived hypothesis without evidence cannot enter resolve. Diagnosis only (Review-Fix Gate 4b)? Stop here: `$XMS close --diagnosis-only --summary "<cause> — handed to triage"` records `diagnosed`.
 - Checklist: Hypothesis status verified / AskUserQuestion called / solve-advance called
 
-**resolve phase:** fix + regression proof — Fix it, then re-run the exact command recorded in `reproduce` and show the failure marker is gone: `$XMS repro verify --output-file <after> --exit-code 0 [--regression-test <path>]`. `verify` refuses to pass a reproduced problem without it. If `resolve_mode` is `narrow`, no root cause was confirmed — reversible instrumentation only.
+**resolve phase:** fix + regression proof — Fix it, then re-run the exact command recorded in `reproduce` and show the failure marker is gone: `$XMS repro verify --output-file <after> --exit-code 0 [--regression-test <path>]`. `verify` refuses to pass a reproduced problem without it, and with no hard constraint declared that proof alone passes it (`reason: regression_proof`); a declared hard constraint still needs a score. If `resolve_mode` is `narrow`, no root cause was confirmed — reversible instrumentation only.
 - Checklist: delegate agent called (including fix + exec proof) / Execution evidence confirmed / candidates add + select called / verify called / close called
 
 ### constrain — Contrastive Matrix
@@ -345,14 +349,16 @@ After scoring, the leader produces a Contrastive Matrix showing each candidate s
 
 | `status` | exit | Meaning | Next |
 |---|---|---|---|
-| `passed` | 0 | Every hard constraint was checked and held | AskUserQuestion("검증 통과: {constraints_passed}개 제약 조건 모두 충족됐습니다. 문제를 종료(close)할까요?") → `$XMS phase next` → close. Suggest committing the known-good state. |
+| `passed` | 0 | Every hard constraint was checked and held — or, for iterate with no hard constraint declared, `reason: regression_proof`: the recorded failure no longer reproduces | AskUserQuestion("검증 통과: {constraints_passed}개 제약 조건 모두 충족됐습니다. 문제를 종료(close)할까요?") → `$XMS phase next` → close. Suggest committing the known-good state. |
 | `failed` | 1 | A hard constraint was checked and did not hold | Show the failing output; AskUserQuestion("검증 실패: {failed_constraints}. solve 단계로 돌아갈까요?") |
 | `unverified` | 2 | **Nothing was checked.** No candidate, no score, or no hard constraint at all | Do NOT report success. Read `reason` and follow the two exits the CLI prints: supply the missing evidence, or attest with `--manual`. |
 
 > **A non-zero exit here is the gate reporting a verdict, not the tool failing. Do not retry the command, and do not treat exit 2 as an error to work around.**
 
 6. `unverified` is the verdict that used to be reported as PASSED. `reason` says which case it is:
-   `no_selected_candidate` / `unscored_hard_constraints` / `no_hard_constraints`.
+   `no_selected_candidate` / `unscored_hard_constraints` / `no_hard_constraints` /
+   `regression_proof_absent` / `insufficient_clean_runs`. For iterate, `no_hard_constraints` means
+   run `$XMS repro verify` — the proof is execution, not an attestation.
 7. When a constraint genuinely cannot be checked by execution (the "maintainable code" case above),
    attest it — evidence is required and must be the command you ran plus its output, not a restatement
    of the claim:
@@ -365,6 +371,9 @@ After scoring, the leader produces a Contrastive Matrix showing each candidate s
    ```bash
    $XMS close --force --reason "<why this is being closed unproven>"
    ```
+   Two exits are not failures and need neither `--force` nor a verification record:
+   - a `direct` classification answered in chat → `$XMS close --summary "<answer>"` → state `answered` (when the LLM fallback or the user chose direct, record it first: `$XMS classify --select direct`)
+   - cause confirmed and refuted, no fix applied (Review-Fix Gate 4b) → `$XMS close --diagnosis-only --summary "..."` → state `diagnosed`
 
 ## Command: next
 
@@ -374,7 +383,7 @@ After scoring, the leader produces a Contrastive Matrix showing each candidate s
    - `init` → Ask the user to describe the problem
    - `describe` → Request additional description
    - `classify` → Run classify
-   - `direct` → Answer directly, then close or pick a real strategy if complexity increases
+   - `direct` → Answer directly, then `$XMS close --summary "<answer>"` (records `answered`), or pick a real strategy if complexity increases
    - `strategy set` → Ask for strategy selection
    - `solve` → Run solve
    - `candidates select` → Ask for candidate selection
@@ -387,7 +396,7 @@ When `$ARGUMENTS` is a natural language problem description:
 1. `$XMS init "description"`
 2. `$XMS classify`
 3. Show the recommended strategy to the user and confirm
-4. If recommendation is `direct`, answer directly and skip `strategy set`
+4. If the chosen path is `direct`, answer directly, skip `strategy set`, and record it: `$XMS close --summary "<answer>"` (run `$XMS classify --select direct` first when the rule-based result was not `direct`)
 5. Otherwise `$XMS strategy set <chosen>` and run `$XMS solve`
 
 ---
@@ -420,17 +429,17 @@ x-solver — Structured Problem Solving
 
 Strategies:
   decompose    Tree-of-Thought: break → solve → merge
-  iterate      Hypothesis → Test → Refine loop
+  iterate      Reproduce → Hypothesis → Test → Refine → Prove
   constrain    Constraints → Candidates → Score → Select
-  pipeline     Auto-detect → Route to best strategy
 
 Workflow:
   init "desc"         Start a new problem
-  classify            Auto-recommend strategy
+  classify            Auto-recommend strategy (direct = answer, then close --summary)
   strategy set <s>    Choose strategy
   solve               Execute strategy
+  scope set|expand    Scope Contract (one slice, persisted with the run)
   verify              Check solution
-  close               Wrap up
+  close               Wrap up (--summary | --diagnosis-only --summary | --abandon --summary)
 
 Management:
   list / status / next / history / handoff
@@ -449,6 +458,8 @@ Management:
 | "The problem is too novel for a strategy" | Strategies are meta-patterns, not answers. If none fit, you haven't framed the problem yet. |
 | "verify came back non-zero, let me run it again" | Non-zero is the verdict, not a crash. Exit 2 means nothing was checked — re-running checks nothing again. Supply the missing score or evidence first. |
 | "The constraints are all unscored but the fix obviously works" | Then score one. "Obviously works" is the exact claim the gate exists to stop, and it is the claim that shipped the vacuous PASSED this gate was built to remove. |
+| "I'll mark it confirmed now and paste the evidence later" | Later is after the turn boundary, where the evidence is gone. The test→refine gate refuses a confirmed hypothesis with no `--evidence-for`, and the refuter reads only what was recorded. |
+| "No hard constraint, so I'll attest with --manual" | For iterate the proof is `repro verify`: marker gone, exit 0, tree changed. `verify` passes on it (`regression_proof`); `--manual` is for claims execution cannot check. |
 
 ## Red Flags
 

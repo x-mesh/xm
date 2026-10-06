@@ -10,7 +10,6 @@
     "max_iterations": 3,
     "max_candidates": 5,
     "max_depth": 2,
-    "parallel_agents": 3,
     "default_model": "sonnet",
     "converge_threshold": 0.86,
     "stagnation_n": 2

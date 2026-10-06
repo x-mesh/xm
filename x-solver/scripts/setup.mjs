@@ -35,7 +35,9 @@ if (existsSync(defaultConfig)) {
       "verify-exit": "human-verify",
       "close-exit": "auto"
     },
-    solving: { max_iterations: 3, max_candidates: 5, parallel_agents: 3 }
+    // No parallel_agents here: a local value overrides the shared agent_max_count,
+    // which is the knob the skill documents.
+    solving: { max_iterations: 3, max_candidates: 5 }
   }, null, 2) + '\n');
 }
 
