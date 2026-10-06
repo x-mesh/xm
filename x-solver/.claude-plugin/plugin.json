@@ -1,6 +1,6 @@
 {
   "name": "solver",
-  "version": "2.3.3",
+  "version": "2.4.0",
   "description": "Structured problem solving and bug diagnosis — iterate (reproduce → diagnose → hypothesize → falsify → fix → prove), decompose, or constrain; classify routes between them",
   "author": {
     "name": "x-mesh"
