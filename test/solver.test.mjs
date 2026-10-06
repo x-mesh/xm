@@ -1662,7 +1662,7 @@ describe('x-solver audit fixes', () => {
       expect(solveChoice.exitCode).toBe(1);
       expect(solveChoice.stderr).toContain("strategy set");
 
-      expect(run(["classify", "--select", "direct"], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(["classify", "--select", "direct", "--reason", "user chose to answer in chat"], { cwd: tmp }).exitCode).toBe(0);
       expect(parseLastJSON(run(["next"], { cwd: tmp }).stdout).recommendation).toBe("direct");
       expect(run(["close", "--summary", "answered in chat: use the dispatcher"], { cwd: tmp }).exitCode).toBe(0);
       expect(readManifest(tmp, problem).state).toBe("answered");
@@ -1703,6 +1703,66 @@ describe('x-solver audit fixes', () => {
 
       expect(run(["scope", "set", "--symptom", "login fails", "--invariant", "token refresh", "--files", "src/c.js", "--reset"], { cwd: tmp }).exitCode).toBe(0);
       expect(readState(tmp, problem).scope.files).toEqual(["src/c.js"]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // ── PR #49 delta review follow-ups ───────────────────────────────────────
+
+  test("follow-up: overriding a non-direct recommendation needs --reason, and close records it", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-followup-"));
+    try {
+      const problem = setupProblem(tmp, "the quarterly summary document needs a new section about onboarding and the team "
+        + "wants the tone consistent across every chapter so readers can follow along without extra effort");
+      const recommended = parseLastJSON(run(["classify"], { cwd: tmp }).stdout).recommended_strategy;
+      expect(recommended).not.toBe("direct");
+
+      const bare = run(["classify", "--select", "direct"], { cwd: tmp });
+      expect(bare.exitCode).toBe(1);
+      expect(bare.stderr).toContain("--reason");
+      expect(run(["classify", "--select", "direct", "--reason"], { cwd: tmp }).exitCode).toBe(1);
+
+      expect(run(["classify", "--select", "direct", "--reason", "LLM fallback: a wording question with no code path"], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(["close", "--summary", "answered in chat"], { cwd: tmp }).exitCode).toBe(0);
+      const summary = readSummary(tmp, problem);
+      expect(summary.recommended_strategy).toBe(recommended);
+      expect(summary.selected_strategy).toBe("direct");
+      expect(summary.selected_reason).toContain("LLM fallback");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("follow-up: confirming a rule-based direct needs no reason", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-followup-"));
+    try {
+      setupProblem(tmp, "hi");
+      expect(parseLastJSON(run(["classify"], { cwd: tmp }).stdout).recommended_strategy).toBe("direct");
+      expect(run(["classify", "--select", "direct"], { cwd: tmp }).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("follow-up: --refuted-by without a name is refused, so the refuter gate cannot pass on true", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-followup-"));
+    try {
+      const problem = setupProblem(tmp, "nameless refuter");
+      run(["strategy", "set", "iterate"], { cwd: tmp });
+      run(["hypotheses", "add", "stale cache"], { cwd: tmp });
+
+      for (const args of [
+        ["hypotheses", "update", "h1", "--refutation", "survived", "--refuted-by"],
+        ["hypotheses", "update", "h1", "--refutation", "survived", "--refuted-by", "--source-kind", "log"],
+      ]) {
+        const result = run(args, { cwd: tmp });
+        expect(result.exitCode).toBe(1);
+        expect(result.stderr).toContain("--refuted-by needs a value");
+      }
+      const h1 = readState(tmp, problem).hypotheses[0];
+      expect(h1.refuted_by).toBeUndefined();
+      expect(h1.refutation).toBeUndefined();
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

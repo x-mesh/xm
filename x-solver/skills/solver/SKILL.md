@@ -372,7 +372,7 @@ After scoring, the leader produces a Contrastive Matrix showing each candidate s
    $XMS close --force --reason "<why this is being closed unproven>"
    ```
    Two exits are not failures and need neither `--force` nor a verification record:
-   - a `direct` classification answered in chat → `$XMS close --summary "<answer>"` → state `answered` (when the LLM fallback or the user chose direct, record it first: `$XMS classify --select direct`)
+   - a `direct` classification answered in chat → `$XMS close --summary "<answer>"` → state `answered` (when the LLM fallback or the user chose direct, record it first: `$XMS classify --select direct --reason "<why>"`)
    - cause confirmed and refuted, no fix applied (Review-Fix Gate 4b) → `$XMS close --diagnosis-only --summary "..."` → state `diagnosed`
 
 ## Command: next
@@ -396,7 +396,7 @@ When `$ARGUMENTS` is a natural language problem description:
 1. `$XMS init "description"`
 2. `$XMS classify`
 3. Show the recommended strategy to the user and confirm
-4. If the chosen path is `direct`, answer directly, skip `strategy set`, and record it: `$XMS close --summary "<answer>"` (run `$XMS classify --select direct` first when the rule-based result was not `direct`)
+4. If the chosen path is `direct`, answer directly, skip `strategy set`, and record it: `$XMS close --summary "<answer>"` (run `$XMS classify --select direct --reason "<why>"` first when the rule-based result was not `direct`)
 5. Otherwise `$XMS strategy set <chosen>` and run `$XMS solve`
 
 ---

@@ -655,7 +655,17 @@ function cmdClassify(args) {
       console.error(`❌ ${m.strategy} is already set; a direct answer would contradict that run.`);
       process.exit(1);
     }
+    // Overriding the classifier turns a problem that had to be verified into one that
+    // closes as `answered`. That is allowed, but not silently: the reason travels to the
+    // close summary, the same way `close --force --reason` records an unproven close.
+    const reason = typeof classifyOpts.reason === 'string' ? classifyOpts.reason.trim() : '';
+    if (existing.recommended_strategy !== 'direct' && !reason) {
+      console.error(`❌ The classifier recommended ${existing.recommended_strategy}. Say why it is being answered directly:`);
+      console.error('   x-solver classify --select direct --reason "<LLM fallback chose direct / user chose direct: why>"');
+      process.exit(1);
+    }
     existing.selected_strategy = 'direct';
+    existing.selected_reason = reason || null;
     existing.selected_at = new Date().toISOString();
     writeJSON(join(classifyPath(problem), 'classification.json'), existing);
     if (m.current_phase === '01-intake') {
@@ -1766,7 +1776,8 @@ function cmdHypotheses(args) {
     // flag `true` — and pasted test output often starts that way (`--- FAIL: TestX`).
     // Recording nothing behind a success message would make the evidence gate refuse a
     // run whose evidence was supplied, so refuse here, before anything is written.
-    for (const flag of ['evidence-for', 'evidence-against', 'test-result']) {
+    // --refuted-by too: the diagnosis-only gate reads it, and `true` is not a name.
+    for (const flag of ['evidence-for', 'evidence-against', 'test-result', 'refuted-by']) {
       const value = opts[flag] ?? opts[flag.replace('-', '_')];
       if (value !== undefined && !(typeof value === 'string' && value.trim())) {
         console.error(`❌ --${flag} needs a value. A value that starts with "--" is read as the next flag;`);
@@ -2575,6 +2586,7 @@ function cmdClose(args) {
   // A `direct` classification was answered in chat. There is no candidate for the verify
   // gate to judge, and `--force` would record a successful answer as "closed UNPROVEN".
   if (isDirectProblem(problem, m) && !forced) {
+    const classificationForClose = readJSON(join(classifyPath(problem), 'classification.json'));
     if (m.state && m.state !== PROBLEM_STATES.ACTIVE) {
       console.error(`❌ This problem is already ${m.state}.`);
       process.exitCode = 1;
@@ -2599,6 +2611,9 @@ function cmdClose(args) {
       verification_passed: false,
       verification_status: 'not_applicable',
       answered: true,
+      recommended_strategy: classificationForClose?.recommended_strategy ?? null,
+      selected_strategy: classificationForClose?.selected_strategy ?? null,
+      selected_reason: classificationForClose?.selected_reason ?? null,
       duration_ms: new Date(m.closed_at).getTime() - new Date(m.created_at).getTime(),
       closed_at: m.closed_at,
       custom_summary: answer,
@@ -2630,7 +2645,7 @@ function cmdClose(args) {
       ? 'This problem has no verification record.'
       : `Verification is ${verification.status}${verification.reason ? ` (${verification.reason})` : ''}.`;
     console.error(`❌ Cannot close: ${why}`);
-    if (!m.strategy) console.error('   Answered it directly in chat? Record that first: x-solver classify --select direct');
+    if (!m.strategy) console.error('   Answered it directly in chat? Record that first: x-solver classify --select direct --reason "<why>"');
     console.error('   Run: x-solver verify');
     console.error('   To close anyway, say why — it will be recorded as closed, not solved:');
     console.error('   x-solver close --force --reason "<why this is being closed unproven>"');
@@ -2955,7 +2970,9 @@ ${C.bold}INTAKE${C.reset}
 
 ${C.bold}CLASSIFY${C.reset}
   classify                  Auto-classify + recommend strategy
-  classify --select direct  Record a direct answer chosen by the LLM fallback or the user
+  classify --select direct [--reason "..."]
+                            Record a direct answer chosen by the LLM fallback or the user
+                            (--reason is required when the classifier recommended a strategy)
   strategy set <name>       Set strategy (decompose|iterate|constrain)
   strategy show             Show current strategy
 
