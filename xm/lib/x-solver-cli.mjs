@@ -309,6 +309,15 @@ function solvePhasesFor(m) {
   return null;
 }
 
+// The rule-based recommendation is not the only way a problem becomes `direct`: the LLM
+// fallback and the user's AskUserQuestion answer can choose it too, and they are only
+// visible here once `classify --select direct` records them.
+function isDirectProblem(problem, m) {
+  if (m.strategy) return false;
+  const classification = readJSON(join(classifyPath(problem), 'classification.json'));
+  return (classification?.selected_strategy ?? classification?.recommended_strategy) === 'direct';
+}
+
 // --cross-vendor / --no-cross-vendor → shared cross_vendor.solver → cross_vendor.default → false.
 // The skill used to send the leader off to read the config itself; answering in the
 // solve JSON it already parses is one fewer round trip.
@@ -628,6 +637,36 @@ function cmdConstraints(args) {
 function cmdClassify(args) {
   const problem = requireProblem(args);
   const m = readJSON(manifestPath(problem));
+
+  const { opts: classifyOpts } = parseOptions(args);
+  if (classifyOpts.select !== undefined) {
+    const choice = typeof classifyOpts.select === 'string' ? classifyOpts.select : '';
+    if (choice !== 'direct') {
+      console.error('❌ --select records only the direct path. Choose a solve strategy with:');
+      console.error(`   x-solver strategy set <${Object.values(STRATEGIES).join('|')}>`);
+      process.exit(1);
+    }
+    const existing = readJSON(join(classifyPath(problem), 'classification.json'));
+    if (!existing) {
+      console.error('❌ Nothing to select from: run x-solver classify first.');
+      process.exit(1);
+    }
+    if (m.strategy) {
+      console.error(`❌ ${m.strategy} is already set; a direct answer would contradict that run.`);
+      process.exit(1);
+    }
+    existing.selected_strategy = 'direct';
+    existing.selected_at = new Date().toISOString();
+    writeJSON(join(classifyPath(problem), 'classification.json'), existing);
+    if (m.current_phase === '01-intake') {
+      m.current_phase = '02-classify';
+      m.updated_at = existing.selected_at;
+      writeJSON(manifestPath(problem), m);
+    }
+    console.log('✅ Direct path recorded. Answer in chat, then: x-solver close --summary "<answer>"');
+    console.log(JSON.stringify({ action: 'classify', sub: 'select', problem, selected_strategy: 'direct' }));
+    return;
+  }
   const description = readMD(join(intakePath(problem), 'description.md'));
   const contextData = readJSON(join(intakePath(problem), 'context.json')) || { items: [] };
   const constraintData = readJSON(join(intakePath(problem), 'constraints.json')) || { constraints: [] };
@@ -948,6 +987,7 @@ function cmdStrategy(args) {
       console.log('No strategy set. Run: x-solver classify');
       return;
     }
+    solvePhasesFor(m);
     const info = STRATEGY_LABELS[m.strategy];
     const stratState = readJSON(join(solvePath(problem), 'strategy-state.json'));
     console.log(`\n  Strategy: ${info.icon} ${C.bold}${info.name}${C.reset}`);
@@ -1722,6 +1762,18 @@ function cmdHypotheses(args) {
     }
     h.evidence_for = h.evidence_for || [];
     h.evidence_against = h.evidence_against || [];
+    // parseOptions reads a value that starts with "--" as the next flag, which leaves the
+    // flag `true` — and pasted test output often starts that way (`--- FAIL: TestX`).
+    // Recording nothing behind a success message would make the evidence gate refuse a
+    // run whose evidence was supplied, so refuse here, before anything is written.
+    for (const flag of ['evidence-for', 'evidence-against', 'test-result']) {
+      const value = opts[flag] ?? opts[flag.replace('-', '_')];
+      if (value !== undefined && !(typeof value === 'string' && value.trim())) {
+        console.error(`❌ --${flag} needs a value. A value that starts with "--" is read as the next flag;`);
+        console.error(`   prefix it instead: --${flag} "output: --- FAIL: TestX"`);
+        process.exit(1);
+      }
+    }
     // The resolve gate compares `status === 'confirmed'`, so a typo here used to make a
     // hypothesis silently fall out of every later check.
     if (opts.status !== undefined) {
@@ -1797,6 +1849,15 @@ function cmdScope(args) {
       console.error('❌ scope set needs --symptom "<one observed symptom>" and --invariant "<the root invariant this pass repairs>".');
       console.error('   Optional: --files a,b --tests t --non-goals x,y --repro-command "<cmd>" --failure-marker "<text>"');
       console.error('   (repro command and marker default to the recorded reproduction)');
+      process.exitCode = 1;
+      return;
+    }
+    // Re-running `set` would widen the contract with no justification on record, which
+    // is exactly what `expand` exists to prevent. Replacing it has to be said out loud.
+    if (stratState.scope && !(opts.reset === true || typeof opts.reset === 'string')) {
+      console.error('❌ A Scope Contract is already on file. Widen it with:');
+      console.error('   x-solver scope expand --justification "<execution evidence>" --files <added>');
+      console.error('   or replace it on purpose: x-solver scope set ... --reset');
       process.exitCode = 1;
       return;
     }
@@ -2024,11 +2085,10 @@ function guardForwardJump(m, problem, targetIdx, opts, retryCommand) {
   const solveIdx = PHASES.findIndex(p => p.id === '03-solve');
   if (!(currentIdx <= solveIdx && targetIdx > solveIdx)) return;
 
-  const classification = readJSON(join(classifyPath(problem), 'classification.json'));
   // A direct problem has no solve to skip.
-  if (!m.strategy && classification?.recommended_strategy === 'direct') return;
+  if (isDirectProblem(problem, m)) return;
 
-  const phases = SOLVE_PHASES[m.strategy] || null;
+  const phases = m.strategy ? solvePhasesFor(m) : null;
   const stratState = readJSON(join(solvePath(problem), 'strategy-state.json'));
   const last = phases ? phases[phases.length - 1] : null;
   if (phases && stratState?.current_phase === last) return;
@@ -2451,6 +2511,29 @@ function cmdClose(args) {
       process.exitCode = 1;
       return;
     }
+    // The same evidence the refine→resolve gate demands. Without it a hypothesis could be
+    // marked confirmed+survived in any phase and handed to triage as a cause with nothing
+    // behind it.
+    const unsupported = survived.filter((h) => !(h.evidence_for || []).length);
+    if (unsupported.length) {
+      console.error(`❌ Survived without recorded evidence: ${unsupported.map((h) => h.id).join(', ')}.`);
+      console.error(`   x-solver hypotheses update <id> --evidence-for "<pasted output>" --source-kind ${SOURCE_KINDS.join('|')}`);
+      process.exitCode = 1;
+      return;
+    }
+    const unrefuted = survived.filter((h) => !h.refuted_by);
+    if (unrefuted.length) {
+      console.error(`❌ No refuter is named for: ${unrefuted.map((h) => h.id).join(', ')}. "Survived" needs someone it survived.`);
+      console.error('   x-solver hypotheses update <id> --refutation survived --refuted-by <agent>');
+      process.exitCode = 1;
+      return;
+    }
+    if (!['refine', 'resolve'].includes(stratState?.current_phase)) {
+      console.error(`❌ A diagnosis comes out of refine (currently: ${stratState?.current_phase}). The test→refine evidence gate has not run.`);
+      console.error('   x-solver solve-advance --phase <next>   until refine, then close --diagnosis-only');
+      process.exitCode = 1;
+      return;
+    }
     if (stratState?.repro?.after) {
       console.error('❌ A fix was applied and the recorded failure re-run (repro verify). That is a fix, not a diagnosis.');
       console.error('   Finish the chain: x-solver verify && x-solver close --summary "..."');
@@ -2491,8 +2574,7 @@ function cmdClose(args) {
 
   // A `direct` classification was answered in chat. There is no candidate for the verify
   // gate to judge, and `--force` would record a successful answer as "closed UNPROVEN".
-  const classification = readJSON(join(classifyPath(problem), 'classification.json'));
-  if (!m.strategy && classification?.recommended_strategy === 'direct' && !forced) {
+  if (isDirectProblem(problem, m) && !forced) {
     if (m.state && m.state !== PROBLEM_STATES.ACTIVE) {
       console.error(`❌ This problem is already ${m.state}.`);
       process.exitCode = 1;
@@ -2548,6 +2630,7 @@ function cmdClose(args) {
       ? 'This problem has no verification record.'
       : `Verification is ${verification.status}${verification.reason ? ` (${verification.reason})` : ''}.`;
     console.error(`❌ Cannot close: ${why}`);
+    if (!m.strategy) console.error('   Answered it directly in chat? Record that first: x-solver classify --select direct');
     console.error('   Run: x-solver verify');
     console.error('   To close anyway, say why — it will be recorded as closed, not solved:');
     console.error('   x-solver close --force --reason "<why this is being closed unproven>"');
@@ -2681,7 +2764,7 @@ function cmdNext(args) {
       if (!classification) {
         recommendation = 'classify';
         message = 'Run classification: x-solver classify';
-      } else if (classification.recommended_strategy === 'direct') {
+      } else if (isDirectProblem(problem, m)) {
         recommendation = 'direct';
         message = 'Simple problem: answer directly, then record it: x-solver close --summary "<answer>". If it becomes complex, choose a solver strategy.';
       } else if (!m.strategy) {
@@ -2734,8 +2817,7 @@ function cmdNext(args) {
     }
     case '05-close': {
       // next must not tell the caller to close when close will refuse.
-      const classification = readJSON(join(classifyPath(problem), 'classification.json'));
-      if (!m.strategy && classification?.recommended_strategy === 'direct') {
+      if (isDirectProblem(problem, m)) {
         recommendation = 'close';
         message = 'Direct problem: record the answer: x-solver close --summary "<answer>"';
         break;
@@ -2873,6 +2955,7 @@ ${C.bold}INTAKE${C.reset}
 
 ${C.bold}CLASSIFY${C.reset}
   classify                  Auto-classify + recommend strategy
+  classify --select direct  Record a direct answer chosen by the LLM fallback or the user
   strategy set <name>       Set strategy (decompose|iterate|constrain)
   strategy show             Show current strategy
 

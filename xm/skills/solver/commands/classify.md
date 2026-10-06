@@ -57,7 +57,7 @@ x-op Alternative: [name if applicable, otherwise 'none']
 
 Parse the agent result:
 - If `Strategy` is an x-solver strategy → `$XMS strategy set <chosen>`
-- If `Strategy` is `direct` → answer directly; do not run `$XMS strategy set direct`
+- If `Strategy` is `direct` → record the choice with `$XMS classify --select direct`, then answer directly; do not run `$XMS strategy set direct`
 - If `x-op Alternative` exists → Suggest the x-op strategy to the user as well
 
 4. **AskUserQuestion (REQUIRED)** for final strategy selection:
@@ -67,7 +67,7 @@ Parse the agent result:
    - Direct path when the recommendation is `direct`
    - Example: AskUserQuestion("전략 **{strategy}**를 추천합니다 (신뢰도 {confidence}%). 진행할까요? 다른 전략을 선택하려면 알려주세요.")
 5. After selection:
-   - If `direct`: answer directly, then `$XMS close --summary "<answer>"` (state `answered`); leave it active only when a follow-up is expected
+   - If `direct`: when the rule-based result was not `direct` (LLM fallback or the user chose it), run `$XMS classify --select direct` first — `close` reads that record. Answer directly, then `$XMS close --summary "<answer>"` (state `answered`); leave it active only when a follow-up is expected
    - Otherwise: `$XMS strategy set <chosen>`
 
 ### Enhanced Signal Detection

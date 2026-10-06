@@ -1575,4 +1575,136 @@ describe('x-solver audit fixes', () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  // ── PR #49 review findings ───────────────────────────────────────────────
+
+  function legacyPipeline(tmp) {
+    const problem = setupProblem(tmp, "legacy pipeline problem");
+    const manifestPath = join(tmp, ".xm", "solver", "problems", problem, "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    writeFileSync(manifestPath, JSON.stringify({ ...manifest, strategy: "pipeline", current_phase: "03-solve" }));
+    writeStrategyState(tmp, problem, { strategy: "pipeline", current_phase: "route", phases_completed: ["classify"] });
+    return problem;
+  }
+
+  test("review F1/F2: strategy show on a legacy pipeline problem refuses with the reset path", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-review-"));
+    try {
+      legacyPipeline(tmp);
+      for (const args of [["strategy", "show"], ["strategy"]]) {
+        const result = run(args, { cwd: tmp });
+        expect(result.exitCode).toBe(1);
+        expect(result.stderr).not.toContain("TypeError");
+        expect(result.stderr).toContain("--reset");
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("review F9: phase next on a legacy pipeline problem names the reset path, not a missing strategy", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-review-"));
+    try {
+      legacyPipeline(tmp);
+      const result = run(["phase", "next"], { cwd: tmp });
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("--reset");
+      expect(result.stderr).not.toContain("no strategy has been set");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("review F3/F4: close --diagnosis-only needs recorded evidence, a named refuter, and the refine phase", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-review-"));
+    try {
+      const problem = setupProblem(tmp, "diagnosis shortcut");
+      run(["strategy", "set", "iterate"], { cwd: tmp });
+      run(["repro", "set", "--command", "bun test", "--output", "AssertionError x != y",
+        "--exit-code", "1", "--failure-marker", "AssertionError", "--status", "reproduced"], { cwd: tmp });
+      for (const p of ["diagnose", "hypothesize"]) run(["solve-advance", "--phase", p], { cwd: tmp });
+      run(["hypotheses", "add", "stale cache"], { cwd: tmp });
+      run(["hypotheses", "update", "h1", "--status", "confirmed", "--refutation", "survived"], { cwd: tmp });
+      const close = () => run(["close", "--diagnosis-only", "--summary", "cause handed to triage"], { cwd: tmp });
+
+      const noEvidence = close();
+      expect(noEvidence.exitCode).toBe(1);
+      expect(noEvidence.stderr).toContain("--evidence-for");
+
+      run(["hypotheses", "update", "h1", "--evidence-for", "cache.log: 0% hits", "--source-kind", "log"], { cwd: tmp });
+      const noRefuter = close();
+      expect(noRefuter.exitCode).toBe(1);
+      expect(noRefuter.stderr).toContain("--refuted-by");
+
+      run(["hypotheses", "update", "h1", "--refutation", "survived", "--refuted-by", "refuter-1"], { cwd: tmp });
+      const wrongPhase = close();
+      expect(wrongPhase.exitCode).toBe(1);
+      expect(wrongPhase.stderr).toContain("refine");
+      expect(readManifest(tmp, problem).state).toBe("active");
+
+      for (const p of ["test", "refine"]) expect(run(["solve-advance", "--phase", p], { cwd: tmp }).exitCode).toBe(0);
+      expect(close().exitCode).toBe(0);
+      expect(readManifest(tmp, problem).state).toBe("diagnosed");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("review F5: classify --select direct lets a low-confidence problem close as answered", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-review-"));
+    try {
+      const problem = setupProblem(tmp, "the quarterly summary document needs a new section about onboarding and the team "
+        + "wants the tone consistent across every chapter so readers can follow along without extra effort");
+      expect(parseLastJSON(run(["classify"], { cwd: tmp }).stdout).recommended_strategy).not.toBe("direct");
+      expect(run(["close", "--summary", "answered in chat"], { cwd: tmp }).exitCode).toBe(2);
+
+      const solveChoice = run(["classify", "--select", "iterate"], { cwd: tmp });
+      expect(solveChoice.exitCode).toBe(1);
+      expect(solveChoice.stderr).toContain("strategy set");
+
+      expect(run(["classify", "--select", "direct"], { cwd: tmp }).exitCode).toBe(0);
+      expect(parseLastJSON(run(["next"], { cwd: tmp }).stdout).recommendation).toBe("direct");
+      expect(run(["close", "--summary", "answered in chat: use the dispatcher"], { cwd: tmp }).exitCode).toBe(0);
+      expect(readManifest(tmp, problem).state).toBe("answered");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("review F7: an evidence flag whose value starts with -- is refused, not dropped", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-review-"));
+    try {
+      const problem = setupProblem(tmp, "dash evidence");
+      run(["strategy", "set", "iterate"], { cwd: tmp });
+      run(["hypotheses", "add", "a cause"], { cwd: tmp });
+
+      const result = run(["hypotheses", "update", "h1", "--status", "confirmed", "--evidence-for", "--- FAIL: TestX"], { cwd: tmp });
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("--evidence-for needs a value");
+      const h1 = readState(tmp, problem).hypotheses[0];
+      expect(h1.evidence_for).toEqual([]);
+      expect(h1.status).toBe("pending");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("review F8: scope set refuses to overwrite an existing contract without --reset", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "xs-review-"));
+    try {
+      const problem = setupProblem(tmp, "scope overwrite");
+      run(["strategy", "set", "iterate"], { cwd: tmp });
+      run(["scope", "set", "--symptom", "login fails", "--invariant", "session survives deploy", "--files", "src/a.js"], { cwd: tmp });
+
+      const again = run(["scope", "set", "--symptom", "login fails", "--invariant", "everything", "--files", "src/a.js,src/b.js"], { cwd: tmp });
+      expect(again.exitCode).toBe(1);
+      expect(again.stderr).toContain("scope expand");
+      expect(readState(tmp, problem).scope.files).toEqual(["src/a.js"]);
+
+      expect(run(["scope", "set", "--symptom", "login fails", "--invariant", "token refresh", "--files", "src/c.js", "--reset"], { cwd: tmp }).exitCode).toBe(0);
+      expect(readState(tmp, problem).scope.files).toEqual(["src/c.js"]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });

@@ -162,7 +162,7 @@ This skill uses only Claude Code's built-in Agent tool.
 ### Agent Count Resolution (MANDATORY)
 
 Before any fan-out or broadcast, parse `agent_count` from the latest `$XMS solve` JSON output.
-The CLI resolves it as local `.xm/solver/config.json` `solving.parallel_agents` first, then shared `.xm/config.json` `agent_max_count`, then default `4`. Setup no longer writes the local key, so `xm config set agent_max_count N` is the knob; set `solving.parallel_agents` only to override one project.
+The CLI resolves it as local `.xm/solver/config.json` `solving.parallel_agents` first, then shared `.xm/config.json` `agent_max_count`, then default `4`. Setup no longer writes the local key, so `xm config set agent_max_count N` is the knob; set `solving.parallel_agents` only to override one project. Projects set up before this change still carry `solving.parallel_agents: 3` in `.xm/solver/config.json` (setup skips an existing directory) — delete that key for `agent_max_count` to apply.
 
 Use that value as `AGENT_COUNT` for all fan-out/broadcast operations in the current solve phase.
 Do NOT hardcode agent counts. Always use the resolved value.
@@ -372,7 +372,7 @@ After scoring, the leader produces a Contrastive Matrix showing each candidate s
    $XMS close --force --reason "<why this is being closed unproven>"
    ```
    Two exits are not failures and need neither `--force` nor a verification record:
-   - a `direct` classification answered in chat → `$XMS close --summary "<answer>"` → state `answered`
+   - a `direct` classification answered in chat → `$XMS close --summary "<answer>"` → state `answered` (when the LLM fallback or the user chose direct, record it first: `$XMS classify --select direct`)
    - cause confirmed and refuted, no fix applied (Review-Fix Gate 4b) → `$XMS close --diagnosis-only --summary "..."` → state `diagnosed`
 
 ## Command: next
@@ -396,7 +396,7 @@ When `$ARGUMENTS` is a natural language problem description:
 1. `$XMS init "description"`
 2. `$XMS classify`
 3. Show the recommended strategy to the user and confirm
-4. If recommendation is `direct`, answer directly, skip `strategy set`, and record it: `$XMS close --summary "<answer>"`
+4. If the chosen path is `direct`, answer directly, skip `strategy set`, and record it: `$XMS close --summary "<answer>"` (run `$XMS classify --select direct` first when the rule-based result was not `direct`)
 5. Otherwise `$XMS strategy set <chosen>` and run `$XMS solve`
 
 ---
