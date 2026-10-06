@@ -39,8 +39,7 @@ Choose the most suitable strategy for this problem and explain why:
 1. decompose — Break complex problems into sub-problems
 2. iterate — Hypothesis → Test → Refine loop (bugs, performance)
 3. constrain — Constraint-based candidate evaluation (design decisions)
-4. pipeline — Auto-routing
-5. direct — Simple enough to answer without structured solving
+4. direct — Simple enough to answer without structured solving
 
 Additionally, suggest if any of these x-op strategies would be more suitable:
 - hypothesis: Hypothesis → Refutation → Adoption (diagnosis)
@@ -68,7 +67,7 @@ Parse the agent result:
    - Direct path when the recommendation is `direct`
    - Example: AskUserQuestion("전략 **{strategy}**를 추천합니다 (신뢰도 {confidence}%). 진행할까요? 다른 전략을 선택하려면 알려주세요.")
 5. After selection:
-   - If `direct`: answer directly and close or leave the problem active for follow-up
+   - If `direct`: answer directly, then `$XMS close --summary "<answer>"` (state `answered`); leave it active only when a follow-up is expected
    - Otherwise: `$XMS strategy set <chosen>`
 
 ### Enhanced Signal Detection

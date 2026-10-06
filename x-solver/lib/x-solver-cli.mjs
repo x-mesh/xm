@@ -67,14 +67,21 @@ const STRATEGIES = {
   DECOMPOSE: 'decompose',
   ITERATE: 'iterate',
   CONSTRAIN: 'constrain',
-  PIPELINE: 'pipeline',
+};
+
+// `pipeline` promised "auto-detect → route", but the CLI never had a way to move a
+// running problem onto the routed strategy: `strategy set` refuses once a run is
+// underway and `--reset` discards it. classify plus the strategy AskUserQuestion already
+// do that routing, so the strategy is gone. A manifest that still carries it is refused
+// with the reset path instead of crashing on a missing phase list.
+const REMOVED_STRATEGIES = {
+  pipeline: 'pipeline was removed: classify already routes to decompose|iterate|constrain.',
 };
 
 const STRATEGY_LABELS = {
   decompose: { name: 'Decompose', icon: '🌳', desc: 'Tree-of-Thought: break into sub-problems, solve each, merge' },
   iterate:   { name: 'Iterate',   icon: '🔄', desc: 'Hypothesis → Test → Refine loop for debugging' },
   constrain: { name: 'Constrain', icon: '🎯', desc: 'Constraint satisfaction: define constraints, score candidates' },
-  pipeline:  { name: 'Pipeline',  icon: '🔀', desc: 'Auto-detect problem type and route to best strategy' },
 };
 
 // `reproduce` leads iterate, and it has to be first rather than a step inside diagnose.
@@ -86,10 +93,13 @@ const SOLVE_PHASES = {
   decompose: ['decompose', 'explore', 'evaluate', 'synthesize'],
   iterate:   ['reproduce', 'diagnose', 'hypothesize', 'test', 'refine', 'resolve'],
   constrain: ['elicit', 'generate', 'evaluate', 'select'],
-  pipeline:  ['classify', 'route', 'meta-verify'],
 };
 
 const REPRO_STATUSES = ['reproduced', 'intermittent', 'unavailable'];
+const HYPOTHESIS_STATUSES = ['pending', 'confirmed', 'refuted', 'inconclusive'];
+// Where a piece of evidence came from. Two reads of the same kind corroborate nothing
+// (Principle 6), so the kind is recorded next to the evidence rather than left to memory.
+const SOURCE_KINDS = ['code', 'log', 'command', 'metric', 'test'];
 const MAX_ITERATION_EXTENSIONS = 2;
 const MAX_ITERATIONS_PER_EXTENSION = 3;
 const REPRO_TAIL_LINES = 100;
@@ -100,6 +110,12 @@ const PROBLEM_STATES = {
   SOLVED: 'solved',
   CLOSED: 'closed',
   ABANDONED: 'abandoned',
+  // A confirmed cause handed back without a fix (Review-Fix Gate 4b). Neither
+  // "solved" (nothing was fixed) nor "abandoned" (the diagnosis succeeded).
+  DIAGNOSED: 'diagnosed',
+  // A `direct` classification answered in chat. There is no candidate to verify, so
+  // neither the verify gate nor `--force` describes what happened.
+  ANSWERED: 'answered',
 };
 
 // ── ANSI Colors ──────────────────────────────────────────────────────
@@ -280,6 +296,46 @@ function requireProblem(args) {
   return problem;
 }
 
+// The strategy's phase list, or a refusal for a strategy this version no longer runs.
+// Indexing SOLVE_PHASES directly threw on a legacy manifest.
+function solvePhasesFor(m) {
+  const phases = SOLVE_PHASES[m.strategy];
+  if (phases) return phases;
+  if (m.strategy && REMOVED_STRATEGIES[m.strategy]) {
+    console.error(`❌ ${REMOVED_STRATEGIES[m.strategy]}`);
+    console.error(`   Pick a real strategy for this problem: x-solver strategy set <${Object.values(STRATEGIES).join('|')}> --reset`);
+    process.exit(1);
+  }
+  return null;
+}
+
+// --cross-vendor / --no-cross-vendor → shared cross_vendor.solver → cross_vendor.default → false.
+// The skill used to send the leader off to read the config itself; answering in the
+// solve JSON it already parses is one fewer round trip.
+function resolveCrossVendor(opts) {
+  if (opts['no-cross-vendor'] !== undefined) return { effective: false, source: 'flag' };
+  if (opts['cross-vendor'] !== undefined) return { effective: true, source: 'flag' };
+  const shared = loadSharedConfig().cross_vendor;
+  if (typeof shared?.solver === 'boolean') return { effective: shared.solver, source: 'config:cross_vendor.solver' };
+  if (typeof shared?.default === 'boolean') return { effective: shared.default, source: 'config:cross_vendor.default' };
+  return { effective: false, source: 'default' };
+}
+
+// What one round of hypothesize produced, as text convergence can compare. Used when
+// the caller passes no --output: the skill never did, so the detector only ever saw
+// empty strings and no run could stop early.
+function hypothesesDigest(stratState, iteration) {
+  return (stratState.hypotheses || [])
+    .filter((h) => (h.iteration ?? 0) === iteration)
+    .map((h) => [h.description, h.test_result].filter(Boolean).join(' — '))
+    .join('\n');
+}
+
+function splitList(value) {
+  if (typeof value !== 'string') return [];
+  return value.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
 function slugify(text) {
   return text
     .toLowerCase()
@@ -366,7 +422,7 @@ function cmdList() {
   console.log(`\n${C.bold}Problems${C.reset} (${problems.length})\n`);
 
   const stateIcons = {
-    active: '🔵', solved: '✅', closed: '⬜', abandoned: '⛔',
+    active: '🔵', solved: '✅', closed: '⬜', abandoned: '⛔', diagnosed: '🩺', answered: '💬',
   };
 
   for (const p of problems) {
@@ -696,9 +752,14 @@ function cmdClassify(args) {
       reasoning += ` — close runner-up: ${runnerUp} (delta ${Math.round(scoreDelta * 100)}%)`;
     }
   } else {
-    recommended = STRATEGIES.PIPELINE;
+    // Below the floor every strategy is a weak fit, and when all scores are 0 the "top"
+    // one is only sort order. Say so, and keep the confidence under the 0.7 line that
+    // sends the skill to its LLM fallback.
+    recommended = topStrategy;
     confidence = 0.6;
-    reasoning = 'No strong signals detected — pipeline will auto-route after deeper analysis';
+    reasoning = topScore === 0
+      ? `No strategy signal detected — ${topStrategy} is sort order, not a match; use the LLM fallback to choose`
+      : `Weak signal match for ${topStrategy} (score ${Math.round(topScore * 100)}% below floor) — low confidence, use the LLM fallback to confirm`;
   }
 
   // x-op strategy recommendations based on signals
@@ -765,10 +826,10 @@ function cmdClassify(args) {
 
   if (recommended === 'direct') {
     console.log(`  ${C.yellow}Direct path: answer directly, then close when done.${C.reset}`);
-    console.log(`  ${C.dim}If this is more complex than expected, choose: x-solver strategy set <decompose|iterate|constrain|pipeline>${C.reset}\n`);
+    console.log(`  ${C.dim}If this is more complex than expected, choose: x-solver strategy set <${Object.values(STRATEGIES).join('|')}>${C.reset}\n`);
   } else {
     console.log(`  ${C.yellow}Run: x-solver strategy set ${recommended}${C.reset}`);
-    console.log(`  ${C.dim}Or choose another: x-solver strategy set <decompose|iterate|constrain|pipeline>${C.reset}\n`);
+    console.log(`  ${C.dim}Or choose another: x-solver strategy set <${Object.values(STRATEGIES).join('|')}>${C.reset}\n`);
   }
 
   // JSON output
@@ -789,6 +850,11 @@ function cmdStrategy(args) {
   if (sub === 'set') {
     const { positional, opts } = parseOptions(args.slice(1));
     const strategy = positional[0];
+    if (strategy && REMOVED_STRATEGIES[strategy]) {
+      console.error(`❌ ${REMOVED_STRATEGIES[strategy]}`);
+      console.error(`   Run: x-solver classify   (then: x-solver strategy set <${Object.values(STRATEGIES).join('|')}>)`);
+      process.exit(1);
+    }
     if (!strategy || !Object.values(STRATEGIES).includes(strategy)) {
       console.error(`Usage: x-solver strategy set <${Object.values(STRATEGIES).join('|')}>`);
       process.exit(1);
@@ -887,7 +953,7 @@ function cmdStrategy(args) {
     console.log(`\n  Strategy: ${info.icon} ${C.bold}${info.name}${C.reset}`);
     console.log(`  ${info.desc}`);
     if (stratState?.current_phase) {
-      const phases = SOLVE_PHASES[m.strategy];
+      const phases = SOLVE_PHASES[m.strategy] || [];
       const idx = phases.indexOf(stratState.current_phase);
       console.log(`  Solve phase: ${stratState.current_phase} (${idx + 1}/${phases.length})`);
       console.log(`  Completed: ${stratState.phases_completed?.join(', ') || 'none'}`);
@@ -918,7 +984,7 @@ function cmdSolve(args) {
   }
 
   const stratState = readJSON(join(solvePath(problem), 'strategy-state.json'));
-  const phases = SOLVE_PHASES[m.strategy];
+  const phases = solvePhasesFor(m);
   const currentPhase = stratState.current_phase;
   const description = readMD(join(intakePath(problem), 'description.md'));
   const contextData = readJSON(join(intakePath(problem), 'context.json')) || { items: [] };
@@ -944,6 +1010,8 @@ function cmdSolve(args) {
     next_phase: phases[phases.indexOf(currentPhase) + 1] || null,
     step_only: !!opts.step,
     agent_count: getAgentCount(),
+    cross_vendor: resolveCrossVendor(opts),
+    scope: stratState.scope ?? null,
     problem_context: problemContext,
     constraints: constraintData.constraints,
     strategy_state: stratState,
@@ -965,7 +1033,7 @@ function cmdSolveAdvance(args) {
   const { opts } = parseOptions(args);
   const m = readJSON(manifestPath(problem));
   const stratState = readJSON(join(solvePath(problem), 'strategy-state.json'));
-  const phases = SOLVE_PHASES[m.strategy];
+  const phases = solvePhasesFor(m);
 
   if (!opts.phase) {
     console.error('Usage: x-solver solve-advance --phase <phase-name>');
@@ -973,7 +1041,7 @@ function cmdSolveAdvance(args) {
   }
 
   if (!m.strategy || !phases) {
-    console.error('❌ No valid strategy set. Run: x-solver strategy set <decompose|iterate|constrain|pipeline>');
+    console.error(`❌ No valid strategy set. Run: x-solver strategy set <${Object.values(STRATEGIES).join('|')}>`);
     process.exit(1);
   }
 
@@ -1019,6 +1087,22 @@ function cmdSolveAdvance(args) {
       console.error('   x-solver solve-advance --phase resolve --unconfirmed narrow --justification "..."');
       process.exit(1);
     }
+    // A survived hypothesis whose evidence was never written down leaves the fix with
+    // nothing to point at — and the refuter was handed `evidence_for` verbatim, so it
+    // argued with nothing.
+    if (unconfirmed !== 'narrow') {
+      const unsupported = survived.filter((h) => !(h.evidence_for || []).length);
+      if (unsupported.length) {
+        console.error(`❌ Survived without recorded evidence: ${unsupported.map((h) => h.id).join(', ')}.`);
+        console.error('   Record what the verifier actually saw before fixing on it:');
+        console.error(`   x-solver hypotheses update <id> --evidence-for "<pasted output>" --source-kind ${SOURCE_KINDS.join('|')}`);
+        process.exit(1);
+      }
+    }
+    if (!stratState.scope) {
+      console.error('⚠️  No Scope Contract on file. resolve edits code — record the slice first:');
+      console.error('   x-solver scope set --symptom "..." --invariant "..." --files a,b --tests t [--non-goals x,y]');
+    }
     if (unconfirmed === 'narrow') {
       const justification = typeof opts.justification === 'string' ? opts.justification.trim() : '';
       if (!justification) {
@@ -1052,6 +1136,20 @@ function cmdSolveAdvance(args) {
       && !(stratState.phases_completed || []).includes('reproduce')) {
     console.error('⚠️  No repro record (this problem predates the reproduce gate).');
     console.error('   Consider: x-solver repro set --command "..." ... before claiming a fix.');
+  }
+
+  // A hypothesis marked confirmed with no evidence on file is an opinion. The refuter
+  // receives `evidence_for` verbatim, so empty here means it has nothing to re-derive.
+  if (m.strategy === STRATEGIES.ITERATE && stratState.current_phase === 'test' && opts.phase === 'refine') {
+    const unsupported = (stratState.hypotheses || []).filter(
+      (h) => h.status === 'confirmed' && !(h.evidence_for || []).length,
+    );
+    if (unsupported.length) {
+      console.error(`❌ Confirmed without evidence: ${unsupported.map((h) => h.id).join(', ')}. "I think" is not evidence (Principle 4).`);
+      console.error(`   x-solver hypotheses update <id> --evidence-for "<pasted output>" --source-kind ${SOURCE_KINDS.join('|')}`);
+      console.error('   or downgrade it: x-solver hypotheses update <id> --status inconclusive');
+      process.exit(1);
+    }
   }
 
   let grantedThisCall = null;
@@ -1103,7 +1201,9 @@ function cmdSolveAdvance(args) {
     if (!Array.isArray(stratState.iteration_outputs)) {
       stratState.iteration_outputs = [];
     }
-    const iterOutput = opts.output ?? '';
+    const iterOutput = typeof opts.output === 'string'
+      ? opts.output
+      : hypothesesDigest(stratState, currentIteration);
     const iterScore = opts.score !== undefined ? Number(opts.score) : undefined;
     const iterEntry = iterScore !== undefined
       ? { output: iterOutput, score: iterScore }
@@ -1168,7 +1268,7 @@ function cmdSolveStatus(args) {
     return;
   }
 
-  const phases = SOLVE_PHASES[m.strategy];
+  const phases = solvePhasesFor(m);
   const info = STRATEGY_LABELS[m.strategy];
 
   console.log(`\n${C.bold}Solve Status: ${info.icon} ${info.name}${C.reset}\n`);
@@ -1414,6 +1514,12 @@ function cmdRepro(args) {
       regression_proof: 'absent',
       recorded_at: new Date().toISOString(),
     };
+    // A Scope Contract recorded before the reproduction has null repro fields; fill them
+    // now so the contract and the record cannot disagree about what "fails" means.
+    if (stratState.scope) {
+      if (stratState.scope.repro_command == null) stratState.scope.repro_command = command;
+      if (stratState.scope.failure_marker == null) stratState.scope.failure_marker = marker;
+    }
     writeJSON(statePath, stratState);
     writeJSON(join(reproDir, 'before.json'), stratState.repro);
 
@@ -1571,7 +1677,9 @@ function cmdHypotheses(args) {
     };
     console.log(`\n${C.bold}Hypotheses${C.reset} (${hypos.length})\n`);
     for (const h of hypos) {
-      console.log(`  ${statusIcons[h.status] || '❓'} ${C.bold}${h.id}${C.reset}: ${h.description}`);
+      const meta = [h.iteration !== undefined ? `round ${h.iteration}` : null, h.source_kind ? `source: ${h.source_kind}` : null]
+        .filter(Boolean).join(', ');
+      console.log(`  ${statusIcons[h.status] || '❓'} ${C.bold}${h.id}${C.reset}: ${h.description}${meta ? ` ${C.dim}(${meta})${C.reset}` : ''}`);
       if (h.evidence_for?.length) console.log(`    ${C.green}+${C.reset} ${h.evidence_for.join('; ')}`);
       if (h.evidence_against?.length) console.log(`    ${C.red}-${C.reset} ${h.evidence_against.join('; ')}`);
       console.log();
@@ -1588,8 +1696,12 @@ function cmdHypotheses(args) {
       id: `h${stratState.hypotheses.length + 1}`,
       description,
       status: 'pending',
+      // Which hypothesize round produced it. Convergence compares rounds, so a
+      // hypothesis has to know which one it belongs to.
+      iteration: Number.isInteger(stratState.current_iteration) ? stratState.current_iteration : 0,
       evidence_for: [],
       evidence_against: [],
+      source_kind: null,
       test_result: null,
     });
     writeJSON(join(solvePath(problem), 'strategy-state.json'), stratState);
@@ -1598,7 +1710,9 @@ function cmdHypotheses(args) {
     const { positional, opts } = parseOptions(args.slice(1));
     const id = positional[0];
     if (!id) {
-      console.error('Usage: x-solver hypotheses update <id> --status <pending|confirmed|refuted|inconclusive> [--refutation <survived|falsified|single-signal>]');
+      console.error(`Usage: x-solver hypotheses update <id> [--status <${HYPOTHESIS_STATUSES.join('|')}>]`);
+      console.error(`         [--evidence-for "<pasted output>"] [--evidence-against "..."] [--source-kind <${SOURCE_KINDS.join('|')}>]`);
+      console.error('         [--test-result "..."] [--refutation <survived|falsified|single-signal> --refuted-by <agent>]');
       process.exit(1);
     }
     const h = stratState.hypotheses?.find(h => h.id === id);
@@ -1606,10 +1720,32 @@ function cmdHypotheses(args) {
       console.error(`❌ Hypothesis "${id}" not found.`);
       process.exit(1);
     }
-    if (opts.status) h.status = opts.status;
-    if (opts.evidence_for) h.evidence_for.push(opts.evidence_for);
-    if (opts.evidence_against) h.evidence_against.push(opts.evidence_against);
-    if (opts.test_result) h.test_result = opts.test_result;
+    h.evidence_for = h.evidence_for || [];
+    h.evidence_against = h.evidence_against || [];
+    // The resolve gate compares `status === 'confirmed'`, so a typo here used to make a
+    // hypothesis silently fall out of every later check.
+    if (opts.status !== undefined) {
+      if (!HYPOTHESIS_STATUSES.includes(opts.status)) {
+        console.error(`❌ Unknown --status "${opts.status}". One of: ${HYPOTHESIS_STATUSES.join(', ')}`);
+        process.exit(1);
+      }
+      h.status = opts.status;
+    }
+    const sourceKind = opts['source-kind'] ?? opts.source_kind;
+    if (sourceKind !== undefined) {
+      if (!SOURCE_KINDS.includes(sourceKind)) {
+        console.error(`❌ Unknown --source-kind "${sourceKind}". One of: ${SOURCE_KINDS.join(', ')}`);
+        process.exit(1);
+      }
+      h.source_kind = sourceKind;
+    }
+    // kebab-case like every other flag in this CLI; the underscore spelling stays accepted.
+    const evidenceFor = opts['evidence-for'] ?? opts.evidence_for;
+    const evidenceAgainst = opts['evidence-against'] ?? opts.evidence_against;
+    if (typeof evidenceFor === 'string' && evidenceFor.trim()) h.evidence_for.push(evidenceFor.trim());
+    if (typeof evidenceAgainst === 'string' && evidenceAgainst.trim()) h.evidence_against.push(evidenceAgainst.trim());
+    const testResult = opts['test-result'] ?? opts.test_result;
+    if (typeof testResult === 'string') h.test_result = testResult;
     // A hypothesis verified by the agent that owns it has corroborated nothing.
     // `single-signal` is the honest middle: plausible, but only one source says so.
     if (opts.refutation) {
@@ -1627,6 +1763,95 @@ function cmdHypotheses(args) {
     console.error('Usage: x-solver hypotheses <list|add|update>');
     process.exit(1);
   }
+}
+
+// ── Scope Contract ───────────────────────────────────────────────────
+
+// SKILL.md made the Scope Contract mandatory and told the leader to "persist" it, but
+// nothing here could hold it, so it lived in the leader's context and died at the next
+// AskUserQuestion turn boundary. This is the home. No hard gate yet (same reasoning as
+// resolve_mode=narrow: the CLI cannot judge an edit's character), but `solve` carries
+// it to every phase and resolve warns when it is missing.
+function cmdScope(args) {
+  const sub = args[0] || 'show';
+  const problem = requireProblem(args.slice(1));
+  const { opts } = parseOptions(args.slice(1));
+  const statePath = join(solvePath(problem), 'strategy-state.json');
+  const stratState = readJSON(statePath);
+
+  if (!stratState?.strategy) {
+    console.error('❌ No strategy set — the contract belongs to a solve run. Run: x-solver strategy set <name>');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (sub === 'show') {
+    console.log(JSON.stringify({ action: 'scope', sub: 'show', problem, scope: stratState.scope ?? null }));
+    return;
+  }
+
+  if (sub === 'set') {
+    const symptom = typeof opts.symptom === 'string' ? opts.symptom.trim() : '';
+    const invariant = typeof opts.invariant === 'string' ? opts.invariant.trim() : '';
+    if (!symptom || !invariant) {
+      console.error('❌ scope set needs --symptom "<one observed symptom>" and --invariant "<the root invariant this pass repairs>".');
+      console.error('   Optional: --files a,b --tests t --non-goals x,y --repro-command "<cmd>" --failure-marker "<text>"');
+      console.error('   (repro command and marker default to the recorded reproduction)');
+      process.exitCode = 1;
+      return;
+    }
+    const repro = stratState.repro ?? null;
+    stratState.scope = {
+      symptom,
+      invariant,
+      repro_command: typeof opts['repro-command'] === 'string' ? opts['repro-command'] : (repro?.command ?? null),
+      failure_marker: typeof opts['failure-marker'] === 'string' ? opts['failure-marker'] : (repro?.failure_marker ?? null),
+      non_goals: splitList(opts['non-goals']),
+      files: splitList(opts.files),
+      tests: splitList(opts.tests),
+      expansions: stratState.scope?.expansions ?? [],
+      set_at: new Date().toISOString(),
+    };
+    writeJSON(statePath, stratState);
+    console.log(`✅ Scope Contract recorded (${stratState.scope.files.length} files, ${stratState.scope.tests.length} tests, ${stratState.scope.non_goals.length} non-goals).`);
+    console.log(JSON.stringify({ action: 'scope', sub: 'set', problem, scope: stratState.scope }));
+    return;
+  }
+
+  if (sub === 'expand') {
+    if (!stratState.scope) {
+      console.error('❌ No Scope Contract to expand. Run: x-solver scope set --symptom "..." --invariant "..."');
+      process.exitCode = 1;
+      return;
+    }
+    const justification = typeof opts.justification === 'string' ? opts.justification.trim() : '';
+    if (!justification) {
+      console.error('❌ --justification is required: execution evidence for why the current slice cannot remove the marker.');
+      console.error('   Relatedness alone is not evidence (SKILL.md, Scope Contract and Expansion Gate).');
+      process.exitCode = 1;
+      return;
+    }
+    const files = splitList(opts.files);
+    const tests = splitList(opts.tests);
+    const invariant = typeof opts.invariant === 'string' ? opts.invariant.trim() : null;
+    if (!files.length && !tests.length && !invariant) {
+      console.error('❌ Nothing to expand: pass --files, --tests, or --invariant.');
+      process.exitCode = 1;
+      return;
+    }
+    stratState.scope.expansions.push({ justification, files, tests, invariant, at: new Date().toISOString() });
+    for (const f of files) if (!stratState.scope.files.includes(f)) stratState.scope.files.push(f);
+    for (const t of tests) if (!stratState.scope.tests.includes(t)) stratState.scope.tests.push(t);
+    if (invariant) stratState.scope.invariant = invariant;
+    writeJSON(statePath, stratState);
+    const n = stratState.scope.expansions.length;
+    console.log(`⚠️  Scope expanded (${n} expansion${n === 1 ? '' : 's'} on file): ${justification}`);
+    console.log(JSON.stringify({ action: 'scope', sub: 'expand', problem, scope: stratState.scope }));
+    return;
+  }
+
+  console.error('Usage: x-solver scope <set|show|expand>');
+  process.exitCode = 1;
 }
 
 // ── Tree (decompose) ─────────────────────────────────────────────────
@@ -1789,11 +2014,54 @@ function cmdCandidates(args) {
 
 // ── Phase Management ─────────────────────────────────────────────────
 
+// `phase next`/`phase set` rewrite the manifest directly. Jumping past 03-solve while the
+// strategy's own phase list is unfinished skips every solve gate at once — the same class
+// of bypass as the `strategy set` wipe closed in 2.3.1, and the state one stuck decompose
+// problem was found in (manifest at verify, solve never past its first step). Going
+// backwards is never blocked: `next` itself recommends `phase set solve` on a failed verify.
+function guardForwardJump(m, problem, targetIdx, opts, retryCommand) {
+  const currentIdx = PHASES.findIndex(p => p.id === m.current_phase);
+  const solveIdx = PHASES.findIndex(p => p.id === '03-solve');
+  if (!(currentIdx <= solveIdx && targetIdx > solveIdx)) return;
+
+  const classification = readJSON(join(classifyPath(problem), 'classification.json'));
+  // A direct problem has no solve to skip.
+  if (!m.strategy && classification?.recommended_strategy === 'direct') return;
+
+  const phases = SOLVE_PHASES[m.strategy] || null;
+  const stratState = readJSON(join(solvePath(problem), 'strategy-state.json'));
+  const last = phases ? phases[phases.length - 1] : null;
+  if (phases && stratState?.current_phase === last) return;
+
+  const forced = opts.force === true || typeof opts.force === 'string';
+  const reason = typeof opts.reason === 'string' ? opts.reason.trim() : '';
+  if (forced && reason) {
+    m.phase_overrides = m.phase_overrides || [];
+    m.phase_overrides.push({
+      from: m.current_phase,
+      to: PHASES[targetIdx].id,
+      solve_phase: stratState?.current_phase ?? null,
+      reason,
+      at: new Date().toISOString(),
+    });
+    console.error(`⚠️  Skipping an unfinished solve (${stratState?.current_phase ?? 'not started'}) — recorded: ${reason}`);
+    return;
+  }
+  const where = phases
+    ? `solve is at "${stratState?.current_phase ?? phases[0]}" (last solve phase: ${last})`
+    : 'no strategy has been set';
+  console.error(`❌ Cannot move to ${PHASES[targetIdx].label}: ${where}.`);
+  console.error('   Finish the solve phases with x-solver solve-advance, or say why you are skipping them:');
+  console.error(`   x-solver phase ${retryCommand} --force --reason "<why>"`);
+  process.exit(1);
+}
+
 function cmdPhase(args) {
   const sub = args[0];
   const problem = requireProblem(args.slice(1));
   const m = readJSON(manifestPath(problem));
   const currentIdx = PHASES.findIndex(p => p.id === m.current_phase);
+  const { opts, positional } = parseOptions(args.slice(1));
 
   if (sub === 'next') {
     if (currentIdx >= PHASES.length - 1) {
@@ -1801,18 +2069,19 @@ function cmdPhase(args) {
       return;
     }
     const next = PHASES[currentIdx + 1];
+    guardForwardJump(m, problem, currentIdx + 1, opts, 'next');
     m.current_phase = next.id;
     m.updated_at = new Date().toISOString();
     writeJSON(manifestPath(problem), m);
     console.log(`✅ Advanced to phase: ${C.bold}${next.label}${C.reset}`);
   } else if (sub === 'set') {
-    const { positional } = parseOptions(args.slice(1));
     const target = positional[0];
     const phase = PHASES.find(p => p.name === target || p.id === target);
     if (!phase) {
       console.error(`❌ Unknown phase: "${target}". Valid: ${PHASES.map(p => p.name).join(', ')}`);
       process.exit(1);
     }
+    guardForwardJump(m, problem, PHASES.indexOf(phase), opts, `set ${phase.name}`);
     m.current_phase = phase.id;
     m.updated_at = new Date().toISOString();
     writeJSON(manifestPath(problem), m);
@@ -1851,8 +2120,10 @@ const UNVERIFIED_NEXT = {
   ],
   no_hard_constraints: [
     'No hard constraint says what "solved" means here, so passing would assert nothing.',
-    '  x-solver constraints add "<must hold>" --type hard',
-    '  or, if the proof is an execution rather than a constraint:',
+    '  iterate: the regression proof is that statement — re-run the recorded failure:',
+    '  x-solver repro verify --output-file <after> --exit-code 0 [--regression-test <path>]',
+    '  otherwise: x-solver constraints add "<must hold>" --type hard   (then score it)',
+    '  or, for a claim execution cannot check:',
     '  x-solver verify --manual "<what holds>" --evidence "<command you ran + its output>"',
   ],
 };
@@ -1997,6 +2268,19 @@ function cmdVerify(args) {
       : 'regression_proof_absent';
     verification.passed = false;
   }
+  // The opposite correction. An iterate run that recorded its failure, fixed it, and
+  // re-ran the recorded command clean holds the strongest execution evidence this tool
+  // can check. Demanding a hand-written hard constraint on top — and pointing at
+  // --manual, the path for claims execution cannot check — was the gate contradicting
+  // its own principle. Scoped to "no hard constraint was declared": a declared one still
+  // has to be scored, and the 2.3.0 rule that an empty list never passes by itself stands.
+  if (verification.status === 'unverified' && verification.reason === 'no_hard_constraints'
+      && (repro?.status === 'reproduced' || repro?.status === 'intermittent')
+      && verification.regression_proof === 'proven') {
+    verification.status = 'passed';
+    verification.reason = 'regression_proof';
+    verification.passed = true;
+  }
 
   if (opts.manual) {
     const claim = typeof opts.manual === 'string' ? opts.manual.trim() : '';
@@ -2066,7 +2350,12 @@ function cmdVerify(args) {
     failed: `${C.red}FAILED${C.reset}`,
     unverified: `${C.yellow}UNVERIFIED${C.reset}`,
   }[verification.status];
-  console.log(`\n  Overall: ${label}${verification.attested_by === 'human' ? ' (attested by human)' : ''}\n`);
+  const qualifier = verification.attested_by === 'human'
+    ? ' (attested by human)'
+    : verification.reason === 'regression_proof'
+      ? ' (regression proof — the recorded failure no longer reproduces)'
+      : '';
+  console.log(`\n  Overall: ${label}${qualifier}\n`);
 
   for (const line of UNVERIFIED_NEXT[verification.reason] ?? []) {
     console.log(`  ${line}`);
@@ -2133,7 +2422,109 @@ function cmdClose(args) {
     return;
   }
 
+  // Diagnosis only: the cause was confirmed, survived a refuter, and the run stops there
+  // on purpose (Review-Fix Gate 4b hands the cause back to triage). Recording that as
+  // "abandoned" called a successful diagnosis a failure; "solved" would claim a fix.
+  const diagnosisOnly = opts['diagnosis-only'] === true || typeof opts['diagnosis-only'] === 'string';
+  if (diagnosisOnly) {
+    if (m.state && m.state !== PROBLEM_STATES.ACTIVE) {
+      console.error(`❌ This problem is already ${m.state}. A diagnosis record would overwrite that.`);
+      process.exitCode = 1;
+      return;
+    }
+    const summaryText = typeof opts.summary === 'string' ? opts.summary.trim() : '';
+    if (!summaryText) {
+      console.error('❌ --diagnosis-only requires --summary "<the confirmed cause, and who it was handed to>".');
+      process.exitCode = 1;
+      return;
+    }
+    if (m.strategy !== STRATEGIES.ITERATE) {
+      console.error('❌ --diagnosis-only is an iterate exit: it records a hypothesis that survived refutation.');
+      process.exitCode = 1;
+      return;
+    }
+    const stratState = readJSON(join(solvePath(problem), 'strategy-state.json'));
+    const survived = (stratState?.hypotheses || []).filter((h) => h.status === 'confirmed' && h.refutation === 'survived');
+    if (!survived.length) {
+      console.error('❌ No hypothesis has survived an independent refuter, so there is no diagnosis to record.');
+      console.error('   Stop honestly instead: x-solver close --abandon --summary "<what was learned>"');
+      process.exitCode = 1;
+      return;
+    }
+    if (stratState?.repro?.after) {
+      console.error('❌ A fix was applied and the recorded failure re-run (repro verify). That is a fix, not a diagnosis.');
+      console.error('   Finish the chain: x-solver verify && x-solver close --summary "..."');
+      process.exitCode = 1;
+      return;
+    }
+    m.current_phase = '05-close';
+    m.state = PROBLEM_STATES.DIAGNOSED;
+    m.closed_at = new Date().toISOString();
+    m.updated_at = m.closed_at;
+    writeJSON(manifestPath(problem), m);
+    writeJSON(join(closePath(problem), 'summary.json'), {
+      problem: m.display_name,
+      strategy: m.strategy,
+      solution: 'Diagnosis only — cause confirmed, no fix applied',
+      diagnosis: survived.map((h) => ({
+        id: h.id,
+        description: h.description,
+        evidence_for: h.evidence_for || [],
+        source_kind: h.source_kind ?? null,
+        refuted_by: h.refuted_by ?? null,
+      })),
+      verification_passed: false,
+      verification_status: verification?.status ?? 'none',
+      repro_status: stratState?.repro?.status ?? null,
+      diagnosed: true,
+      duration_ms: new Date(m.closed_at).getTime() - new Date(m.created_at).getTime(),
+      closed_at: m.closed_at,
+      custom_summary: summaryText,
+    });
+    console.log(`\n${C.green}🩺 Diagnosis recorded${C.reset}: ${C.bold}${m.display_name}${C.reset}`);
+    for (const h of survived) console.log(`   ${h.id}: ${h.description}${h.refuted_by ? ` (survived ${h.refuted_by})` : ''}`);
+    console.log(`   No fix was applied; the problem is recorded as diagnosed, not solved.\n`);
+    return;
+  }
+
   const forced = opts.force === true || typeof opts.force === 'string';
+
+  // A `direct` classification was answered in chat. There is no candidate for the verify
+  // gate to judge, and `--force` would record a successful answer as "closed UNPROVEN".
+  const classification = readJSON(join(classifyPath(problem), 'classification.json'));
+  if (!m.strategy && classification?.recommended_strategy === 'direct' && !forced) {
+    if (m.state && m.state !== PROBLEM_STATES.ACTIVE) {
+      console.error(`❌ This problem is already ${m.state}.`);
+      process.exitCode = 1;
+      return;
+    }
+    const answer = typeof opts.summary === 'string' ? opts.summary.trim() : '';
+    if (!answer) {
+      console.error('❌ A direct problem closes with its answer: x-solver close --summary "<what you answered>"');
+      console.error(`   If it turned out to need a strategy: x-solver strategy set <${Object.values(STRATEGIES).join('|')}>`);
+      process.exitCode = 1;
+      return;
+    }
+    m.current_phase = '05-close';
+    m.state = PROBLEM_STATES.ANSWERED;
+    m.closed_at = new Date().toISOString();
+    m.updated_at = m.closed_at;
+    writeJSON(manifestPath(problem), m);
+    writeJSON(join(closePath(problem), 'summary.json'), {
+      problem: m.display_name,
+      strategy: null,
+      solution: answer,
+      verification_passed: false,
+      verification_status: 'not_applicable',
+      answered: true,
+      duration_ms: new Date(m.closed_at).getTime() - new Date(m.created_at).getTime(),
+      closed_at: m.closed_at,
+      custom_summary: answer,
+    });
+    console.log(`\n${C.green}💬 Problem answered${C.reset}: ${C.bold}${m.display_name}${C.reset}`);
+    console.log(`   ${answer}\n`);
+    return;
+  }
 
   // A verification is a statement about the candidate and constraints it saw. If either
   // moved since, the stored verdict is about something else.
@@ -2228,24 +2619,26 @@ function cmdHistory(args) {
   const problems = readdirSync(dir)
     .filter(d => existsSync(manifestPath(d)))
     .map(d => ({ name: d, ...readJSON(manifestPath(d)) }))
-    .filter(m => m.state === PROBLEM_STATES.SOLVED || m.state === PROBLEM_STATES.CLOSED)
+    .filter(m => [PROBLEM_STATES.SOLVED, PROBLEM_STATES.CLOSED, PROBLEM_STATES.DIAGNOSED, PROBLEM_STATES.ANSWERED].includes(m.state))
     .sort((a, b) => new Date(b.closed_at || 0) - new Date(a.closed_at || 0));
 
   if (problems.length === 0) {
-    console.log('No solved problems yet.');
+    console.log('No closed problems yet.');
     return;
   }
 
-  console.log(`\n${C.bold}Solved Problems${C.reset} (${problems.length})\n`);
+  console.log(`\n${C.bold}Closed Problems${C.reset} (${problems.length})\n`);
   for (const p of problems) {
     const summary = readJSON(join(closePath(p.name), 'summary.json'));
     const info = STRATEGY_LABELS[p.strategy];
-    console.log(`  ${info?.icon || '📋'} ${C.bold}${p.name}${C.reset}`);
+    console.log(`  ${info?.icon || '📋'} ${C.bold}${p.name}${C.reset} ${C.dim}[${p.state}]${C.reset}`);
     console.log(`    ${p.display_name}`);
-    console.log(`    Strategy: ${p.strategy}  |  ${p.closed_at?.slice(0, 10)}`);
-    if (summary?.solution) {
-      console.log(`    Solution: ${summary.solution.slice(0, 80)}${summary.solution.length > 80 ? '...' : ''}`);
-    }
+    console.log(`    Strategy: ${p.strategy ?? 'direct'}  |  ${p.closed_at?.slice(0, 10)}`);
+    // A diagnosis-only close carries the cause, not a fix — show that, not the label.
+    const line = summary?.diagnosed && summary.diagnosis?.length
+      ? `Cause: ${summary.diagnosis.map((d) => `${d.id} ${d.description}`).join('; ')}`
+      : summary?.solution ? `Solution: ${summary.solution}` : null;
+    if (line) console.log(`    ${line.slice(0, 80)}${line.length > 80 ? '...' : ''}`);
     console.log();
   }
 }
@@ -2290,7 +2683,7 @@ function cmdNext(args) {
         message = 'Run classification: x-solver classify';
       } else if (classification.recommended_strategy === 'direct') {
         recommendation = 'direct';
-        message = 'Simple problem: answer directly. If it becomes complex, choose a solver strategy.';
+        message = 'Simple problem: answer directly, then record it: x-solver close --summary "<answer>". If it becomes complex, choose a solver strategy.';
       } else if (!m.strategy) {
         recommendation = 'strategy set';
         message = `Set strategy (recommended: ${classification.recommended_strategy}): x-solver strategy set ${classification.recommended_strategy}`;
@@ -2341,6 +2734,12 @@ function cmdNext(args) {
     }
     case '05-close': {
       // next must not tell the caller to close when close will refuse.
+      const classification = readJSON(join(classifyPath(problem), 'classification.json'));
+      if (!m.strategy && classification?.recommended_strategy === 'direct') {
+        recommendation = 'close';
+        message = 'Direct problem: record the answer: x-solver close --summary "<answer>"';
+        break;
+      }
       const verification = normalizeVerification(readJSON(join(verifyPath(problem), 'verification.json')));
       if (verification?.status === 'passed') {
         recommendation = 'close';
@@ -2453,11 +2852,14 @@ ${C.bold}PROBLEM MANAGEMENT${C.reset}
   init <description>        Create new problem
   list                      List all problems
   status                    Show current problem status
-  close [--summary "..."]   Close problem (requires a passed verification)
+  close [--summary "..."]   Close problem (requires a passed verification;
+                            a direct-classified problem closes with its answer as state=answered)
+  close --diagnosis-only --summary "..."
+                            (iterate) Cause confirmed and refuted, no fix applied — state=diagnosed
   close --abandon --summary "..."
                             Stop without a fix; keeps the diagnosis, records nothing as solved
   strategy set <s> --reset  Discard an in-progress run (repro, hypotheses, iteration budget)
-  history                   Show solved problems
+  history                   Show closed problems (solved, diagnosed, answered, closed)
   next                      Suggest the next action
   handoff [--restore]       Save/restore session
 
@@ -2471,27 +2873,36 @@ ${C.bold}INTAKE${C.reset}
 
 ${C.bold}CLASSIFY${C.reset}
   classify                  Auto-classify + recommend strategy
-  strategy set <name>       Set strategy (decompose|iterate|constrain|pipeline)
+  strategy set <name>       Set strategy (decompose|iterate|constrain)
   strategy show             Show current strategy
 
 ${C.bold}SOLVE${C.reset}
-  solve [--step]            Execute strategy
+  solve [--step] [--cross-vendor|--no-cross-vendor]
+                            Execute strategy (JSON carries agent_count, cross_vendor, scope)
   solve-status              Show solving progress
   solve-advance --phase X   Advance solve phase
+  scope set --symptom "..." --invariant "..." [--files a,b --tests t --non-goals x,y]
+  scope show | scope expand --justification "..." [--files ...]
+                            Scope Contract: one slice, persisted with the run
   hypotheses list|add|update  (iterate) Manage hypotheses
+      update <id> --status <pending|confirmed|refuted|inconclusive>
+                  --evidence-for "<pasted output>" --source-kind <code|log|command|metric|test>
+                  --refutation <survived|falsified|single-signal> --refuted-by <agent>
   tree show|add|update      (decompose) Manage problem tree
   candidates list|add|select|score  Manage solution candidates
 
 ${C.bold}VERIFY & CLOSE${C.reset}
   verify                    Check the selected candidate against hard constraints
                             exit 0 passed / 1 failed / 2 unverified (nothing checked)
+                            (iterate) a proven regression re-run passes without a hard
+                            constraint — reason: regression_proof
   verify --manual "<claim>" --evidence "<command + output>"
                             Attest a constraint execution cannot check. Evidence is
                             required, and a measured failure cannot be attested over.
   close --force --reason "..."
                             Close without a passed verification. Records state=closed,
                             not solved.
-  phase next|set <name>     Manage phases
+  phase next|set <name>     Manage phases (leaving an unfinished solve needs --force --reason)
 
 ${C.bold}SETTINGS${C.reset}
   mode developer|normal     Set display mode
@@ -2517,6 +2928,7 @@ switch (cmd) {
   case 'solve-status':   cmdSolveStatus(args); break;
   case 'repro':          cmdRepro(args); break;
   case 'hypotheses':     cmdHypotheses(args); break;
+  case 'scope':          cmdScope(args); break;
   case 'tree':           cmdTree(args); break;
   case 'candidates':     cmdCandidates(args); break;
   case 'phase':          cmdPhase(args); break;

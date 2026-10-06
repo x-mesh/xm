@@ -39,7 +39,9 @@ review fan-out.
 
 **Ownership.** When x-solver started the fix, the solver problem owns closure — do not open a separate
 review-fix triage for the same diff. When the Review-Fix Gate sent the problem here for diagnosis
-(root `CLAUDE.md`), `.xm/review/triage.json` owns closure and x-solver returns a diagnosis only.
+(root `CLAUDE.md`), `.xm/review/triage.json` owns closure and x-solver returns a diagnosis only — end
+that run with `$XMS close --diagnosis-only --summary "<cause> — handed to triage"`, which records
+`diagnosed` (a successful diagnosis), not `abandoned` (a failed one).
 
 ## Post-Close: x-humble Link [why late?]
 
@@ -82,7 +84,6 @@ On "Yes", auto-extract tasks from the solve result:
 | decompose | Each leaf node → separate x-build task (preserve dependencies) |
 | iterate | Final hypothesis verification result → 1 x-build task |
 | constrain | Selected candidate → implementation x-build task + constraint verification task |
-| pipeline | Apply the above rules based on the final strategy result |
 
 Conversion commands use the `xm build` dispatcher:
 ```bash
