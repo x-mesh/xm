@@ -1780,8 +1780,13 @@ function cmdHypotheses(args) {
     for (const flag of ['evidence-for', 'evidence-against', 'test-result', 'refuted-by']) {
       const value = opts[flag] ?? opts[flag.replace('-', '_')];
       if (value !== undefined && !(typeof value === 'string' && value.trim())) {
-        console.error(`❌ --${flag} needs a value. A value that starts with "--" is read as the next flag;`);
-        console.error(`   prefix it instead: --${flag} "output: --- FAIL: TestX"`);
+        if (flag === 'refuted-by') {
+          console.error('❌ --refuted-by needs a value: the agent name of the independent refuter.');
+          console.error('   --refuted-by refuter-1');
+        } else {
+          console.error(`❌ --${flag} needs a value. A value that starts with "--" is read as the next flag;`);
+          console.error(`   prefix it instead: --${flag} "output: --- FAIL: TestX"`);
+        }
         process.exit(1);
       }
     }

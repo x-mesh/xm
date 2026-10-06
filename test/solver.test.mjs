@@ -1759,6 +1759,10 @@ describe('x-solver audit fixes', () => {
         const result = run(args, { cwd: tmp });
         expect(result.exitCode).toBe(1);
         expect(result.stderr).toContain("--refuted-by needs a value");
+        // The hint has to ask for a name. The evidence-flag hint ("output: --- FAIL ...")
+        // would put pasted output where the refuter belongs, and the gate reads only truthiness.
+        expect(result.stderr).toContain("agent name");
+        expect(result.stderr).not.toContain("output: --- FAIL");
       }
       const h1 = readState(tmp, problem).hypotheses[0];
       expect(h1.refuted_by).toBeUndefined();
