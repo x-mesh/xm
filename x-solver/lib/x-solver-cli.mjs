@@ -1439,6 +1439,49 @@ function worktreeDigest() {
   }
 }
 
+/**
+ * The code the failure was seen on: HEAD plus whatever was uncommitted at that
+ * moment. worktreeDigest can say that something changed, not what the code looked
+ * like, and on a dirty tree HEAD alone is not the "before". A later check that
+ * rebuilds the failing state, or diffs the fix against it, needs both.
+ * Untracked files are listed, not copied. `.xm/` is excluded because x-solver
+ * itself writes there.
+ * Returns null where git cannot answer; the caller reports that it could not record.
+ */
+const BASELINE_UNTRACKED_LIMIT = 200;
+
+function captureBaseline(reproDir) {
+  try {
+    const git = (cmd, timeout = 15000) => execSync(cmd, {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout, maxBuffer: 64 * 1024 * 1024,
+    });
+    const head = git('git rev-parse HEAD').trim();
+    const patch = git('git diff HEAD --binary', 30000);
+    const untracked = git('git ls-files --others --exclude-standard')
+      .split('\n')
+      .filter((file) => file && !file.split('/').includes('.xm'));
+    let patchPath = null;
+    if (patch) {
+      mkdirSync(reproDir, { recursive: true });
+      writeFileSync(join(reproDir, 'baseline.patch'), patch, 'utf8');
+      patchPath = 'repro/baseline.patch';
+    }
+    return {
+      head,
+      patch_path: patchPath,
+      patch_sha256: patch ? createHash('sha256').update(patch).digest('hex') : null,
+      untracked: untracked.slice(0, BASELINE_UNTRACKED_LIMIT),
+      untracked_truncated: untracked.length > BASELINE_UNTRACKED_LIMIT,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function warnNoBaseline(baseline) {
+  if (!baseline) console.error('⚠️  No baseline recorded: git could not report HEAD and the uncommitted changes here.');
+}
+
 function readCapturedOutput(opts) {
   if (typeof opts['output-file'] === 'string') {
     if (!existsSync(opts['output-file'])) return { error: `Output file not found: ${opts['output-file']}` };
@@ -1497,9 +1540,11 @@ function cmdRepro(args) {
         failure_marker: null,
         before: null,
         baseline_commit: typeof opts['baseline-commit'] === 'string' ? opts['baseline-commit'] : null,
+        baseline: captureBaseline(reproDir),
         worktree_digest: worktreeDigest(),
         recorded_at: new Date().toISOString(),
       };
+      warnNoBaseline(stratState.repro.baseline);
       // The message promised a limit; record it so the limit is real state, not prose.
       stratState.resolve_mode = 'narrow';
       stratState.resolve_justification = justification;
@@ -1573,11 +1618,13 @@ function cmdRepro(args) {
         truncated: bounded.truncated,
       },
       baseline_commit: typeof opts['baseline-commit'] === 'string' ? opts['baseline-commit'] : null,
+      baseline: captureBaseline(reproDir),
       worktree_digest: worktreeDigest(),
       after: null,
       regression_proof: 'absent',
       recorded_at: new Date().toISOString(),
     };
+    warnNoBaseline(stratState.repro.baseline);
     // A Scope Contract recorded before the reproduction has null repro fields; fill them
     // now so the contract and the record cannot disagree about what "fails" means.
     if (stratState.scope) {

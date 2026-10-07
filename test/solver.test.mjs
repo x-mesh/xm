@@ -1867,3 +1867,72 @@ describe('x-solver hypothesis plan', () => {
     }
   });
 });
+
+describe('x-solver repro baseline', () => {
+  function gitRepo() {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-baseline-'));
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd: tmp });
+    writeFileSync(join(tmp, 'app.js'), 'const x = 1;\n');
+    spawnSync('git', ['add', '-A'], { cwd: tmp });
+    spawnSync('git', ['commit', '-qm', 'init'], { cwd: tmp });
+    return tmp;
+  }
+
+  function reproSet(tmp) {
+    const problem = setupProblem(tmp, 'baseline');
+    run(['strategy', 'set', 'iterate'], { cwd: tmp });
+    const r = run(['repro', 'set', '--command', 'node app.js', '--output', 'AssertionError x != y',
+      '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
+    const solve = join(tmp, '.xm', 'solver', 'problems', problem, 'phases', '03-solve');
+    return { r, solve, baseline: JSON.parse(readFileSync(join(solve, 'strategy-state.json'), 'utf8')).repro.baseline };
+  }
+
+  const headOf = (tmp) => spawnSync('git', ['rev-parse', 'HEAD'], { cwd: tmp, encoding: 'utf8' }).stdout.trim();
+
+  test('a clean tree records HEAD and no patch, and ignores .xm', () => {
+    const tmp = gitRepo();
+    try {
+      const { r, baseline } = reproSet(tmp);
+      expect(r.exitCode).toBe(0);
+      expect(baseline.head).toBe(headOf(tmp));
+      expect(baseline.patch_path).toBeNull();
+      expect(baseline.untracked).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a dirty tree records the uncommitted patch and the untracked files', () => {
+    const tmp = gitRepo();
+    try {
+      writeFileSync(join(tmp, 'app.js'), 'const x = 2;\n');
+      writeFileSync(join(tmp, 'new.txt'), 'evidence\n');
+      const { solve, baseline } = reproSet(tmp);
+      expect(baseline.head).toBe(headOf(tmp));
+      expect(baseline.patch_path).toBe('repro/baseline.patch');
+      expect(baseline.untracked).toEqual(['new.txt']);
+
+      // The patch rebuilds the failing state from HEAD: revert app.js, then re-apply.
+      const patchFile = join(solve, baseline.patch_path);
+      spawnSync('git', ['checkout', '--', 'app.js'], { cwd: tmp });
+      expect(spawnSync('git', ['apply', patchFile], { cwd: tmp }).status).toBe(0);
+      expect(readFileSync(join(tmp, 'app.js'), 'utf8')).toBe('const x = 2;\n');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('outside git the repro is still recorded and the missing baseline is reported', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-baseline-nogit-'));
+    try {
+      const { r, baseline } = reproSet(tmp);
+      expect(r.exitCode).toBe(0);
+      expect(baseline).toBeNull();
+      expect(r.stderr).toContain('No baseline recorded');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
