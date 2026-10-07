@@ -14,6 +14,13 @@ grows). `solve.md` keeps decompose, constrain and pipeline, and points here.
 > [repro+marker] [state+baseline] [falsifiable] [one var] [switch/revert] [fix+regression proof] [why late?]
 > ```
 
+> **Edit guard.** Where `x-build hooks install` armed the PreToolUse scope guard, an active
+> iterate problem also limits Edit/Write. Before `resolve`, only files registered with
+> `$XMS instrument add <file>` (a repro test, temporary logging) may change. In `resolve`, the
+> Scope Contract's `--files` and `--tests` may change too; widen it with `scope expand`.
+> `repro verify` refuses while a registered file outside the contract differs from its
+> registered content. A problem idle for 24 hours stops guarding. Bash writes are not watched.
+
 #### Phase: reproduce
 
 > **MUST — the iterate strategy always starts here. A fix you cannot see fail is a fix you cannot prove.**
@@ -376,14 +383,35 @@ evidence-gathering changes — logging, assertions, a test that captures the sym
 speculative fix; the close summary will state the cause is still unknown.
 
 ```bash
-$XMS repro verify --output-file <after> --exit-code 0 [--runs 0/9] [--regression-test <path>]
+$XMS repro verify --output-file <after> --exit-code 0 [--runs 0/9] [--regression-test <path>] \
+  [--regression-cmd "<runs that test>" --regression-marker "<literal from its failing output>" \
+   [--regression-setup "<install deps>"] [--regression-timeout <seconds, default 300>]]
+# or, when no test can pin the fix (infra, environment, data):
+$XMS repro verify --output-file <after> --exit-code 0 --regression-waiver "<why, and what watches for it instead>"
 ```
+
+`x-solver verify` requires one of the two for a `reproduced` or `intermittent` problem: a test
+pinned with `--regression-cmd`, or a written waiver. Without either it stays `unverified`
+(`reason: regression_test_absent`), and `--manual` does not override it.
+
+`--regression-test` alone only checks that the file exists. With `--regression-cmd`, the CLI proves
+the test pins the bug: it rebuilds the code the failure was recorded on (the `repro set` baseline:
+HEAD plus the uncommitted patch) in a temporary worktree, copies only the test file into it, and
+requires the command to fail there with the marker. It then requires the same command to pass in the
+current tree. A test that passes on the baseline is refused. If it fails there for an unrelated reason
+(a dependency the fresh worktree lacks), pass `--regression-setup`; `node_modules` is linked already.
+
+`verify` also scans the lines added since the baseline for shapes that usually hide a symptom: an
+empty catch, a raised timeout or retry count, a new skip or mock, an `is not None` assert. It warns
+and records them in `repro.after.workaround_signals`; it does not refuse. Explain each intended one
+in the close summary, or review it with the x-review silent-failures lens.
 
 `verify` reads this record: a `reproduced` problem whose regression proof is missing comes back
 `unverified` (`reason: regression_proof_absent`) and cannot be closed. `--manual` is not a way around
 it — a re-run is checkable by execution, which is exactly what `--manual` is not for. The reverse
-also holds: with no hard constraint declared, the proof alone passes `verify`
-(`status: passed, reason: regression_proof`). A declared hard constraint still needs `candidates score`.
+also holds: with no hard constraint declared, the proof plus a pinned or waived regression test
+passes `verify` (`status: passed, reason: regression_proof`). A declared hard constraint still needs
+`candidates score`.
 >
 > **Exception — diagnosis only.** If this problem came from the Review-Fix Gate (root `CLAUDE.md` step
 > 4b), stop at the confirmed cause and hand it back to triage with
@@ -427,7 +455,7 @@ $XMS close --summary "..."
 > - [ ] Scope Contract on file (`$XMS scope show`) — edits stay inside `scope.files`, or `scope expand` first
 > - [ ] delegate agent called (including fix + exec proof)
 > - [ ] Execution evidence confirmed (paste command output)
-> - [ ] `$XMS repro verify --output-file <after> --exit-code 0 [--regression-test <path>]` accepted
+> - [ ] `$XMS repro verify --output-file <after> --exit-code 0 [--regression-test <path> --regression-cmd "..." --regression-marker "..."]` accepted
 > - [ ] `$XMS candidates add` + `select` called
 > - [ ] `$XMS verify` called
 > - [ ] `git diff --stat` checked — this phase edits code, and the check is mandatory

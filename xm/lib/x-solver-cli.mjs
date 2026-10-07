@@ -7,13 +7,14 @@
  * Usage: node x-solver-cli.mjs <command> [args] [options]
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, mkdtempSync, copyFileSync, symlinkSync, unlinkSync, rmSync } from 'node:fs';
+import { join, resolve, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
-import { execSync } from 'node:child_process';
+import { homedir, tmpdir } from 'node:os';
+import { execSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { detectStop } from './convergence.mjs';
+import { scanDiff, addedLineKeys, newFileDiff } from './workaround-signals.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1439,6 +1440,151 @@ function worktreeDigest() {
   }
 }
 
+/**
+ * The code the failure was seen on: HEAD plus whatever was uncommitted at that
+ * moment. worktreeDigest can say that something changed, not what the code looked
+ * like, and on a dirty tree HEAD alone is not the "before". A later check that
+ * rebuilds the failing state, or diffs the fix against it, needs both.
+ * Untracked files are listed, not copied. `.xm/` is excluded because x-solver
+ * itself writes there.
+ * Returns null where git cannot answer; the caller reports that it could not record.
+ */
+const BASELINE_UNTRACKED_LIMIT = 200;
+
+function captureBaseline(reproDir) {
+  try {
+    const git = (cmd, timeout = 15000) => execSync(cmd, {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout, maxBuffer: 64 * 1024 * 1024,
+    });
+    const head = git('git rev-parse HEAD').trim();
+    const patch = git('git diff HEAD --binary', 30000);
+    const untracked = git('git ls-files --others --exclude-standard')
+      .split('\n')
+      .filter((file) => file && !file.split('/').includes('.xm'));
+    let patchPath = null;
+    if (patch) {
+      mkdirSync(reproDir, { recursive: true });
+      writeFileSync(join(reproDir, 'baseline.patch'), patch, 'utf8');
+      patchPath = 'repro/baseline.patch';
+    }
+    return {
+      head,
+      patch_path: patchPath,
+      patch_sha256: patch ? createHash('sha256').update(patch).digest('hex') : null,
+      untracked: untracked.slice(0, BASELINE_UNTRACKED_LIMIT),
+      untracked_truncated: untracked.length > BASELINE_UNTRACKED_LIMIT,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function warnNoBaseline(baseline) {
+  if (!baseline) console.error('⚠️  No baseline recorded: git could not report HEAD and the uncommitted changes here.');
+}
+
+const REGRESSION_TIMEOUT_DEFAULT_S = 300;
+
+function runShell(command, cwd, timeoutMs) {
+  const r = spawnSync(command, {
+    cwd, shell: true, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
+  });
+  return {
+    exit: r.status,
+    timedOut: r.error?.code === 'ETIMEDOUT',
+    text: `${r.stdout ?? ''}${r.stderr ?? ''}`,
+  };
+}
+
+/**
+ * Run a regression test on the code the failure was recorded on. A test that never
+ * failed there pins nothing: an unrelated test passes before and after the fix alike.
+ * The baseline worktree gets HEAD, the recorded uncommitted patch, and the test file
+ * from the current tree, because the test is usually written after the failure.
+ * A fresh worktree has no installed dependencies, so `node_modules` is linked from
+ * the repository; anything else goes through `setup`.
+ * Returns { before } or { error }.
+ */
+function runOnBaseline({ baseline, solveDir, testPath, command, setup, timeoutMs }) {
+  const git = (args, cwd) => spawnSync('git', args, { cwd, encoding: 'utf8' });
+  const top = git(['rev-parse', '--show-toplevel'], process.cwd()).stdout?.trim();
+  if (!top) return { error: 'not inside a git repository' };
+  const prefix = git(['rev-parse', '--show-prefix'], process.cwd()).stdout?.trim() ?? '';
+  const relTest = relative(top, resolve(testPath));
+  if (!relTest || relTest.startsWith('..') || isAbsolute(relTest)) {
+    return { error: `--regression-test is outside the repository: ${testPath}` };
+  }
+
+  const wt = mkdtempSync(join(tmpdir(), 'xm-solver-baseline-'));
+  const add = git(['worktree', 'add', '--detach', wt, baseline.head], top);
+  if (add.status !== 0) {
+    rmSync(wt, { recursive: true, force: true });
+    return { error: `git worktree add ${baseline.head} failed: ${(add.stderr || '').trim()}` };
+  }
+  const linkedModules = join(wt, 'node_modules');
+  let linked = false;
+  try {
+    if (baseline.patch_path) {
+      const apply = git(['apply', '--binary', join(solveDir, baseline.patch_path)], wt);
+      if (apply.status !== 0) return { error: `the recorded baseline patch does not apply: ${(apply.stderr || '').trim()}` };
+    }
+    mkdirSync(dirname(join(wt, relTest)), { recursive: true });
+    copyFileSync(join(top, relTest), join(wt, relTest));
+    if (existsSync(join(top, 'node_modules')) && !existsSync(linkedModules)) {
+      symlinkSync(join(top, 'node_modules'), linkedModules, 'dir');
+      linked = true;
+    }
+    const runDir = join(wt, prefix);
+    if (setup) {
+      const s = runShell(setup, runDir, timeoutMs);
+      if (s.exit !== 0) return { error: `--regression-setup failed (exit ${s.exit}${s.timedOut ? ', timed out' : ''}):\n${tailBound(s.text).text}` };
+    }
+    return { before: runShell(command, runDir, timeoutMs) };
+  } finally {
+    // Remove the link first so nothing below can walk into the real node_modules.
+    if (linked) unlinkSync(linkedModules);
+    git(['worktree', 'remove', '--force', wt], top);
+    rmSync(wt, { recursive: true, force: true });
+    git(['worktree', 'prune'], top);
+  }
+}
+
+const WORKAROUND_SIGNAL_LIMIT = 50;
+const WORKAROUND_NEW_FILE_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Lines the fix added since the recorded baseline that look like a hidden symptom
+ * (see workaround-signals.mjs). Lines the baseline patch already added are not the
+ * fix's. Returns null where git cannot answer.
+ */
+function workaroundSignals(baseline, solveDir) {
+  if (!baseline?.head) return null;
+  try {
+    const git = (cmd, timeout = 30000) => execSync(cmd, {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout, maxBuffer: 64 * 1024 * 1024,
+    });
+    const top = git('git rev-parse --show-toplevel').trim();
+    let diff = git(`git diff --no-color --no-ext-diff -U0 ${baseline.head}`);
+    const before = new Set(baseline.untracked || []);
+    const added = git('git ls-files --others --exclude-standard --full-name')
+      .split('\n')
+      .filter((file) => file && !file.split('/').includes('.xm') && !before.has(file));
+    for (const file of added) {
+      const content = readFileSync(join(top, file));
+      if (content.length <= WORKAROUND_NEW_FILE_MAX_BYTES && !content.includes(0)) {
+        diff += `\n${newFileDiff(file, content.toString('utf8'))}`;
+      }
+    }
+    const ignore = baseline.patch_path
+      ? addedLineKeys(readFileSync(join(solveDir, baseline.patch_path), 'utf8'))
+      : new Set();
+    return scanDiff(diff, { include: (file) => !file.split('/').includes('.xm'), ignore })
+      .slice(0, WORKAROUND_SIGNAL_LIMIT);
+  } catch {
+    return null;
+  }
+}
+
 function readCapturedOutput(opts) {
   if (typeof opts['output-file'] === 'string') {
     if (!existsSync(opts['output-file'])) return { error: `Output file not found: ${opts['output-file']}` };
@@ -1497,9 +1643,11 @@ function cmdRepro(args) {
         failure_marker: null,
         before: null,
         baseline_commit: typeof opts['baseline-commit'] === 'string' ? opts['baseline-commit'] : null,
+        baseline: captureBaseline(reproDir),
         worktree_digest: worktreeDigest(),
         recorded_at: new Date().toISOString(),
       };
+      warnNoBaseline(stratState.repro.baseline);
       // The message promised a limit; record it so the limit is real state, not prose.
       stratState.resolve_mode = 'narrow';
       stratState.resolve_justification = justification;
@@ -1573,11 +1721,13 @@ function cmdRepro(args) {
         truncated: bounded.truncated,
       },
       baseline_commit: typeof opts['baseline-commit'] === 'string' ? opts['baseline-commit'] : null,
+      baseline: captureBaseline(reproDir),
       worktree_digest: worktreeDigest(),
       after: null,
       regression_proof: 'absent',
       recorded_at: new Date().toISOString(),
     };
+    warnNoBaseline(stratState.repro.baseline);
     // A Scope Contract recorded before the reproduction has null repro fields; fill them
     // now so the contract and the record cannot disagree about what "fails" means.
     if (stratState.scope) {
@@ -1681,12 +1831,113 @@ function cmdRepro(args) {
       }
     }
 
+    // Instrumentation registered before resolve was allowed only because it is temporary.
+    const lingering = lingeringInstruments(stratState);
+    if (lingering.length) {
+      console.error(`❌ Instrumentation is still in place: ${lingering.map((entry) => entry.path).join(', ')}`);
+      console.error('   Restore each file to its registered content (delete it if it was new), or, if the fix keeps it,');
+      console.error('   add it to the contract: x-solver scope expand --tests <file> --justification "..."');
+      process.exitCode = 1;
+      return;
+    }
+
     const regressionTest = typeof opts['regression-test'] === 'string' ? opts['regression-test'] : null;
     if (regressionTest && !existsSync(regressionTest)) {
       console.error(`❌ --regression-test path does not exist: ${regressionTest}`);
       process.exitCode = 1;
       return;
     }
+
+    // `verify` requires a pinned regression test. Some fixes cannot have one (infra,
+    // environment, data); the waiver says so on the record instead of passing silently.
+    let regressionWaiver = null;
+    if (opts['regression-waiver'] !== undefined) {
+      const reason = typeof opts['regression-waiver'] === 'string' ? opts['regression-waiver'].trim() : '';
+      if (!reason) {
+        console.error('❌ --regression-waiver needs the reason: why no test can pin this fix, and what watches for it instead.');
+        process.exitCode = 1;
+        return;
+      }
+      if (opts['regression-cmd'] !== undefined) {
+        console.error('❌ --regression-waiver and --regression-cmd contradict each other. Pin the test, or say why none can.');
+        process.exitCode = 1;
+        return;
+      }
+      regressionWaiver = { reason, at: new Date().toISOString() };
+    }
+
+    let regression = null;
+    if (opts['regression-cmd'] !== undefined) {
+      const command = typeof opts['regression-cmd'] === 'string' ? opts['regression-cmd'].trim() : '';
+      const marker = typeof opts['regression-marker'] === 'string' ? opts['regression-marker'].trim() : '';
+      const setup = typeof opts['regression-setup'] === 'string' ? opts['regression-setup'].trim() : null;
+      const timeoutS = opts['regression-timeout'] !== undefined ? Number(opts['regression-timeout']) : REGRESSION_TIMEOUT_DEFAULT_S;
+      if (!command || !marker || !regressionTest) {
+        console.error('❌ --regression-cmd needs --regression-marker "<literal from its failing output>" and --regression-test <path>.');
+        console.error('   The marker separates "the test caught the bug" from "the test failed for another reason".');
+        process.exitCode = 1;
+        return;
+      }
+      if (!Number.isInteger(timeoutS) || timeoutS < 1) {
+        console.error(`❌ --regression-timeout must be a positive integer of seconds, got ${JSON.stringify(opts['regression-timeout'])}.`);
+        process.exitCode = 1;
+        return;
+      }
+      if (!repro.baseline?.head) {
+        console.error('❌ No baseline was recorded with this reproduction, so the failing code cannot be rebuilt.');
+        console.error('   Pin the fix with --regression-test alone, or record the next reproduction inside git.');
+        process.exitCode = 1;
+        return;
+      }
+      const timeoutMs = timeoutS * 1000;
+      const onBaseline = runOnBaseline({
+        baseline: repro.baseline, solveDir: solvePath(problem), testPath: regressionTest, command, setup, timeoutMs,
+      });
+      if (onBaseline.error) {
+        console.error(`❌ Could not run the regression test on the baseline: ${onBaseline.error}`);
+        process.exitCode = 1;
+        return;
+      }
+      const { before } = onBaseline;
+      if (before.timedOut || before.exit === 0 || !before.text.includes(marker)) {
+        const why = before.timedOut ? `timed out after ${timeoutS}s`
+          : before.exit === 0 ? 'it passed'
+            : `it exited ${before.exit} without the marker`;
+        console.error(`❌ The regression test does not fail on the code the bug was recorded on (${why}).`);
+        console.error(`   A test that passes before the fix pins nothing. Baseline: ${repro.baseline.head.slice(0, 12)}${repro.baseline.patch_path ? ' + recorded patch' : ''}`);
+        if (!before.timedOut && before.exit !== 0) console.error('   If it failed for another reason (missing dependency, import error), use --regression-setup.');
+        process.exitCode = 1;
+        return;
+      }
+      const after = runShell(command, process.cwd(), timeoutMs);
+      if (after.timedOut || after.exit !== 0 || after.text.includes(marker)) {
+        const why = after.timedOut ? `timed out after ${timeoutS}s`
+          : after.text.includes(marker) ? 'the marker is still in its output'
+            : `it exits ${after.exit}`;
+        console.error(`❌ The regression test fails on the baseline but does not pass now (${why}).`);
+        process.exitCode = 1;
+        return;
+      }
+      mkdirSync(reproDir, { recursive: true });
+      const beforeOut = tailBound(before.text, marker);
+      writeFileSync(join(reproDir, 'regression-before.out.txt'), beforeOut.text, 'utf8');
+      writeFileSync(join(reproDir, 'regression-after.out.txt'), tailBound(after.text).text, 'utf8');
+      regression = {
+        command,
+        marker,
+        setup,
+        baseline_head: repro.baseline.head,
+        baseline_patch: repro.baseline.patch_path ?? null,
+        fails_before: true,
+        passes_after: true,
+        before_exit: before.exit,
+        after_exit: after.exit,
+        before_output_path: 'repro/regression-before.out.txt',
+        after_output_path: 'repro/regression-after.out.txt',
+      };
+    }
+
+    const signals = workaroundSignals(repro.baseline, solvePath(problem));
 
     const bounded = tailBound(captured.text);
     mkdirSync(reproDir, { recursive: true });
@@ -1698,6 +1949,9 @@ function cmdRepro(args) {
       truncated: bounded.truncated,
       clean_runs: cleanRuns ? `${cleanRuns.failed}/${cleanRuns.total}` : null,
       regression_test: regressionTest,
+      regression,
+      regression_waiver: regressionWaiver,
+      workaround_signals: signals,
       worktree_digest: nowDigest,
       worktree_unchanged: comparable ? unchanged : null,
       worktree_comparable: comparable,
@@ -1709,7 +1963,19 @@ function cmdRepro(args) {
     writeJSON(join(reproDir, 'after.json'), repro.after);
 
     console.log(`✅ Regression proof: ${proof}. The marker is gone and the command exits 0.`);
-    if (!regressionTest) console.log('   No --regression-test given: nothing pins this fix against coming back.');
+    if (regression) console.log('   Regression test pinned: it fails on the recorded baseline and passes now.');
+    else if (regressionWaiver) console.log(`   Regression test waived: ${regressionWaiver.reason}`);
+    else {
+      console.log('   No regression test pinned. `x-solver verify` will stay unverified until one is:');
+      console.log('   --regression-test <path> --regression-cmd "<cmd>" --regression-marker "<literal>"');
+      console.log('   or, when no test can pin it: --regression-waiver "<why, and what watches for it instead>"');
+    }
+    if (signals?.length) {
+      console.error(`⚠️  ${signals.length} added line(s) look like a hidden symptom rather than a fixed cause:`);
+      for (const s of signals.slice(0, 10)) console.error(`   [${s.kind}] ${s.file}:${s.line}  ${s.text.slice(0, 100)}`);
+      console.error('   Not a refusal. If a line is intended, state why in the close summary;');
+      console.error('   otherwise review it with the x-review silent-failures lens.');
+    }
     console.log(JSON.stringify({ action: 'repro', sub: 'verify', problem, repro }));
     return;
   }
@@ -1982,6 +2248,82 @@ function cmdScope(args) {
   process.exitCode = 1;
 }
 
+// ── Instrumentation (iterate) ────────────────────────────────────────
+
+// The x-build scope guard reads `instruments` to decide which files may change before
+// resolve, so paths are stored relative to the directory that holds `.xm/`, the same
+// root the guard resolves against. The recorded hash is what "reverted" means later.
+const solverProjectBase = () => dirname(dirname(ROOT));
+const toPosix = (p) => p.split('\\').join('/');
+const normalizeScopePath = (p) => toPosix(String(p)).replace(/^\.\//, '').replace(/\/+$/, '');
+
+function fileSha256(path) {
+  return existsSync(path) ? createHash('sha256').update(readFileSync(path)).digest('hex') : null;
+}
+
+/** Registered instrumentation that is neither reverted nor part of the Scope Contract. */
+function lingeringInstruments(stratState) {
+  const scoped = new Set([...(stratState.scope?.files || []), ...(stratState.scope?.tests || [])].map(normalizeScopePath));
+  return (stratState.instruments || []).filter(
+    (entry) => !scoped.has(entry.path) && fileSha256(join(solverProjectBase(), entry.path)) !== entry.sha256,
+  );
+}
+
+function cmdInstrument(args) {
+  const sub = args[0];
+  const problem = requireProblem(args.slice(1));
+  const { positional, opts } = parseOptions(args.slice(1));
+  const statePath = join(solvePath(problem), 'strategy-state.json');
+  const stratState = readJSON(statePath);
+  if (!stratState || stratState.strategy !== STRATEGIES.ITERATE) {
+    console.error('❌ instrument is part of the iterate strategy. Run: x-solver strategy set iterate');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (sub === 'list' || !sub) {
+    console.log(JSON.stringify({ action: 'instrument', sub: 'list', problem, instruments: stratState.instruments ?? [] }));
+    return;
+  }
+
+  if (sub === 'add') {
+    const files = [...positional, ...(typeof opts.files === 'string' ? splitList(opts.files) : [])];
+    if (!files.length) {
+      console.error('Usage: x-solver instrument add <file> [<file>...]');
+      console.error('   Registers a repro test or temporary instrumentation so it may change before resolve.');
+      process.exitCode = 1;
+      return;
+    }
+    const base = solverProjectBase();
+    const added = [];
+    stratState.instruments = stratState.instruments || [];
+    for (const file of files) {
+      const abs = resolve(file);
+      const rel = toPosix(relative(base, abs));
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+        console.error(`❌ ${file} is outside the project (${base}); the edit guard does not watch it.`);
+        process.exitCode = 1;
+        return;
+      }
+      if (stratState.instruments.some((entry) => entry.path === rel)) continue;
+      // Hash as it is now, before the edit: `repro verify` requires this content back.
+      const entry = { path: rel, sha256: fileSha256(abs), phase: stratState.current_phase, added_at: new Date().toISOString() };
+      stratState.instruments.push(entry);
+      added.push(entry);
+    }
+    writeJSON(statePath, stratState);
+    for (const entry of added) {
+      console.log(`✅ Registered ${entry.path} (${entry.sha256 ? 'existing file' : 'new file'}).`);
+    }
+    console.log('   Revert it before repro verify, or add it to the Scope Contract if the fix keeps it.');
+    console.log(JSON.stringify({ action: 'instrument', sub: 'add', problem, added }));
+    return;
+  }
+
+  console.error('Usage: x-solver instrument <add|list>');
+  process.exitCode = 1;
+}
+
 // ── Tree (decompose) ─────────────────────────────────────────────────
 
 function cmdTree(args) {
@@ -2241,6 +2583,13 @@ const UNVERIFIED_NEXT = {
     'The recorded failure was never re-run after the fix, so nothing shows it stopped happening.',
     '  x-solver repro verify --output-file <after> --exit-code 0 [--regression-test <path>]',
   ],
+  regression_test_absent: [
+    'The recorded failure is gone, but no test that failed on the recorded baseline pins it.',
+    '  x-solver repro verify --output-file <after> --exit-code 0 \\',
+    '    --regression-test <path> --regression-cmd "<cmd>" --regression-marker "<literal from its failure>"',
+    '  when no test can pin it (infra, environment, data):',
+    '  x-solver repro verify --output-file <after> --exit-code 0 --regression-waiver "<why, and what watches for it>"',
+  ],
   insufficient_clean_runs: [
     'An intermittent failure needs enough clean runs to beat chance; the run reported fewer.',
     '  x-solver repro show   # tells you how many are needed',
@@ -2370,6 +2719,9 @@ function cmdVerify(args) {
     constraint_check: judged.checks,
     repro_status: repro?.status ?? null,
     regression_proof: repro ? (repro.regression_proof ?? 'absent') : null,
+    regression_test: !repro || repro.status === 'unavailable' ? null
+      : repro.after?.regression?.fails_before === true ? 'pinned'
+        : repro.after?.regression_waiver ? 'waived' : 'absent',
     resolve_mode: resolveMode,
     attested_by: null,
     manual: null,
@@ -2408,6 +2760,16 @@ function cmdVerify(args) {
     verification.reason = 'regression_proof';
     verification.passed = true;
   }
+  // The re-run shows the failure stopped today; only a test that failed on the recorded
+  // baseline keeps it from coming back. Only a pass is downgraded: a run already failed or
+  // unverified for another reason keeps that reason, which is the one to fix first.
+  if ((repro?.status === 'reproduced' || repro?.status === 'intermittent')
+      && verification.regression_test === 'absent'
+      && verification.status === 'passed') {
+    verification.status = 'unverified';
+    verification.reason = 'regression_test_absent';
+    verification.passed = false;
+  }
 
   if (opts.manual) {
     const claim = typeof opts.manual === 'string' ? opts.manual.trim() : '';
@@ -2440,6 +2802,15 @@ function cmdVerify(args) {
     if (verification.reason === 'regression_proof_absent' || verification.reason === 'insufficient_clean_runs') {
       console.error('❌ The recorded failure has not been re-run since the fix. That is checkable by execution.');
       console.error('   x-solver repro verify --output-file <after> --exit-code 0');
+      process.exitCode = 1;
+      return;
+    }
+    // Whether a test fails on the baseline is an execution result too. A fix no test can
+    // pin says so through --regression-waiver, on the repro record, not through --manual.
+    if ((repro?.status === 'reproduced' || repro?.status === 'intermittent') && verification.regression_test === 'absent') {
+      console.error('❌ No regression test is pinned. That is checkable by execution.');
+      console.error('   x-solver repro verify ... --regression-test <path> --regression-cmd "<cmd>" --regression-marker "<literal>"');
+      console.error('   or: x-solver repro verify ... --regression-waiver "<why no test can pin it, and what watches for it>"');
       process.exitCode = 1;
       return;
     }
@@ -2480,7 +2851,9 @@ function cmdVerify(args) {
   const qualifier = verification.attested_by === 'human'
     ? ' (attested by human)'
     : verification.reason === 'regression_proof'
-      ? ' (regression proof — the recorded failure no longer reproduces)'
+      ? verification.regression_test === 'waived'
+        ? ' (regression proof — the recorded failure no longer reproduces; regression test waived)'
+        : ' (regression proof — the recorded failure no longer reproduces; regression test pinned)'
       : '';
   console.log(`\n  Overall: ${label}${qualifier}\n`);
 
@@ -3041,6 +3414,9 @@ ${C.bold}SOLVE${C.reset}
   scope show | scope expand --justification "..." [--files ...]
                             Scope Contract: one slice, persisted with the run
   hypotheses list|add|update  (iterate) Manage hypotheses
+  instrument add <file>... | instrument list
+                            (iterate) Register a repro test or temporary instrumentation;
+                            the x-build edit guard allows only these before resolve
       update <id> --status <pending|confirmed|refuted|inconclusive>
                   --evidence-for "<pasted output>" --source-kind <code|log|command|metric|test>
                   --refutation <survived|falsified|single-signal> --refuted-by <agent>
@@ -3085,6 +3461,7 @@ switch (cmd) {
   case 'repro':          cmdRepro(args); break;
   case 'hypotheses':     cmdHypotheses(args); break;
   case 'scope':          cmdScope(args); break;
+  case 'instrument':     cmdInstrument(args); break;
   case 'tree':           cmdTree(args); break;
   case 'candidates':     cmdCandidates(args); break;
   case 'phase':          cmdPhase(args); break;
