@@ -376,8 +376,17 @@ evidence-gathering changes — logging, assertions, a test that captures the sym
 speculative fix; the close summary will state the cause is still unknown.
 
 ```bash
-$XMS repro verify --output-file <after> --exit-code 0 [--runs 0/9] [--regression-test <path>]
+$XMS repro verify --output-file <after> --exit-code 0 [--runs 0/9] [--regression-test <path>] \
+  [--regression-cmd "<runs that test>" --regression-marker "<literal from its failing output>" \
+   [--regression-setup "<install deps>"] [--regression-timeout <seconds, default 300>]]
 ```
+
+`--regression-test` alone only checks that the file exists. With `--regression-cmd`, the CLI proves
+the test pins the bug: it rebuilds the code the failure was recorded on (the `repro set` baseline:
+HEAD plus the uncommitted patch) in a temporary worktree, copies only the test file into it, and
+requires the command to fail there with the marker. It then requires the same command to pass in the
+current tree. A test that passes on the baseline is refused. If it fails there for an unrelated reason
+(a dependency the fresh worktree lacks), pass `--regression-setup`; `node_modules` is linked already.
 
 `verify` reads this record: a `reproduced` problem whose regression proof is missing comes back
 `unverified` (`reason: regression_proof_absent`) and cannot be closed. `--manual` is not a way around
@@ -427,7 +436,7 @@ $XMS close --summary "..."
 > - [ ] Scope Contract on file (`$XMS scope show`) — edits stay inside `scope.files`, or `scope expand` first
 > - [ ] delegate agent called (including fix + exec proof)
 > - [ ] Execution evidence confirmed (paste command output)
-> - [ ] `$XMS repro verify --output-file <after> --exit-code 0 [--regression-test <path>]` accepted
+> - [ ] `$XMS repro verify --output-file <after> --exit-code 0 [--regression-test <path> --regression-cmd "..." --regression-marker "..."]` accepted
 > - [ ] `$XMS candidates add` + `select` called
 > - [ ] `$XMS verify` called
 > - [ ] `git diff --stat` checked — this phase edits code, and the check is mandatory

@@ -1936,3 +1936,143 @@ describe('x-solver repro baseline', () => {
     }
   });
 });
+
+describe('x-solver regression test on the baseline', () => {
+  const BUGGY = 'module.exports = (a, b) => a - b;\n';
+  const FIXED = 'module.exports = (a, b) => a + b;\n';
+  const CHECK = "const sum = require('./sum.js');\nif (sum(2, 3) !== 5) { console.error('REGRESSION: sum(2, 3) = ' + sum(2, 3)); process.exit(1); }\nconsole.log('ok');\n";
+
+  function gitRepo(committedSum) {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-regcmd-'));
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd: tmp });
+    writeFileSync(join(tmp, 'sum.js'), committedSum);
+    spawnSync('git', ['add', '-A'], { cwd: tmp });
+    spawnSync('git', ['commit', '-qm', 'init'], { cwd: tmp });
+    return tmp;
+  }
+
+  // reproduce (with whatever sum.js is on disk now) up to the resolve phase.
+  function atResolve(tmp) {
+    const problem = setupProblem(tmp, 'sum is wrong');
+    run(['strategy', 'set', 'iterate'], { cwd: tmp });
+    run(['repro', 'set', '--command', 'node check.js', '--output', 'REGRESSION: sum(2, 3) = -1',
+      '--exit-code', '1', '--failure-marker', 'REGRESSION', '--status', 'reproduced'], { cwd: tmp });
+    for (const p of ['diagnose', 'hypothesize']) run(['solve-advance', '--phase', p], { cwd: tmp });
+    run(['hypotheses', 'add', 'sum subtracts', '--check', 'node check.js'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'test'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--status', 'confirmed', '--evidence-for', 'sum.js uses a - b', '--source-kind', 'code'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'refine'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'resolve'], { cwd: tmp });
+    return problem;
+  }
+
+  function verify(tmp, extra) {
+    return run(['repro', 'verify', '--output', 'ok', '--exit-code', '0', ...extra], { cwd: tmp });
+  }
+
+  const REG = ['--regression-test', 'check.js', '--regression-cmd', 'node check.js', '--regression-marker', 'REGRESSION'];
+
+  function afterRecord(tmp, problem) {
+    return JSON.parse(readFileSync(
+      join(tmp, '.xm', 'solver', 'problems', problem, 'phases', '03-solve', 'strategy-state.json'), 'utf8',
+    )).repro.after;
+  }
+
+  const worktrees = (tmp) => spawnSync('git', ['worktree', 'list'], { cwd: tmp, encoding: 'utf8' }).stdout.trim().split('\n').length;
+
+  test('a test that fails on the baseline and passes now is pinned', () => {
+    const tmp = gitRepo(BUGGY);
+    try {
+      const problem = atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      writeFileSync(join(tmp, 'check.js'), CHECK);
+      const r = verify(tmp, REG);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('Regression test pinned');
+      const { regression } = afterRecord(tmp, problem);
+      expect(regression.fails_before).toBe(true);
+      expect(regression.passes_after).toBe(true);
+      expect(regression.before_exit).toBe(1);
+      expect(worktrees(tmp)).toBe(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a bug introduced by an uncommitted edit is rebuilt from the recorded patch', () => {
+    const tmp = gitRepo(FIXED);
+    try {
+      writeFileSync(join(tmp, 'sum.js'), BUGGY);
+      const problem = atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      writeFileSync(join(tmp, 'check.js'), CHECK);
+      const r = verify(tmp, REG);
+      expect(r.exitCode).toBe(0);
+      expect(afterRecord(tmp, problem).regression.baseline_patch).toBe('repro/baseline.patch');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a test that passes on the baseline is refused and nothing is recorded', () => {
+    const tmp = gitRepo(BUGGY);
+    try {
+      const problem = atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      writeFileSync(join(tmp, 'unrelated.js'), "console.log('fine');\n");
+      const r = verify(tmp, ['--regression-test', 'unrelated.js', '--regression-cmd', 'node unrelated.js', '--regression-marker', 'REGRESSION']);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain('does not fail on the code the bug was recorded on (it passed)');
+      expect(afterRecord(tmp, problem)).toBeNull();
+      expect(worktrees(tmp)).toBe(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a test that fails on the baseline for another reason is refused', () => {
+    const tmp = gitRepo(BUGGY);
+    try {
+      atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      writeFileSync(join(tmp, 'broken.js'), "require('./missing-helper.js');\n");
+      const r = verify(tmp, ['--regression-test', 'broken.js', '--regression-cmd', 'node broken.js', '--regression-marker', 'REGRESSION']);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain('without the marker');
+      expect(r.stderr).toContain('--regression-setup');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a test that still fails now is refused', () => {
+    const tmp = gitRepo(BUGGY);
+    try {
+      atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), `// touched, not fixed\n${BUGGY}`);
+      writeFileSync(join(tmp, 'check.js'), CHECK);
+      const r = verify(tmp, REG);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain('does not pass now (the marker is still in its output)');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('--regression-cmd without a marker is refused before anything runs', () => {
+    const tmp = gitRepo(BUGGY);
+    try {
+      atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      writeFileSync(join(tmp, 'check.js'), CHECK);
+      const r = verify(tmp, ['--regression-test', 'check.js', '--regression-cmd', 'node check.js']);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain('--regression-cmd needs --regression-marker');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

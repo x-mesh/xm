@@ -7,11 +7,11 @@
  * Usage: node x-solver-cli.mjs <command> [args] [options]
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, mkdtempSync, copyFileSync, symlinkSync, unlinkSync, rmSync } from 'node:fs';
+import { join, resolve, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
-import { execSync } from 'node:child_process';
+import { homedir, tmpdir } from 'node:os';
+import { execSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { detectStop } from './convergence.mjs';
 
@@ -1482,6 +1482,72 @@ function warnNoBaseline(baseline) {
   if (!baseline) console.error('⚠️  No baseline recorded: git could not report HEAD and the uncommitted changes here.');
 }
 
+const REGRESSION_TIMEOUT_DEFAULT_S = 300;
+
+function runShell(command, cwd, timeoutMs) {
+  const r = spawnSync(command, {
+    cwd, shell: true, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
+  });
+  return {
+    exit: r.status,
+    timedOut: r.error?.code === 'ETIMEDOUT',
+    text: `${r.stdout ?? ''}${r.stderr ?? ''}`,
+  };
+}
+
+/**
+ * Run a regression test on the code the failure was recorded on. A test that never
+ * failed there pins nothing: an unrelated test passes before and after the fix alike.
+ * The baseline worktree gets HEAD, the recorded uncommitted patch, and the test file
+ * from the current tree, because the test is usually written after the failure.
+ * A fresh worktree has no installed dependencies, so `node_modules` is linked from
+ * the repository; anything else goes through `setup`.
+ * Returns { before } or { error }.
+ */
+function runOnBaseline({ baseline, solveDir, testPath, command, setup, timeoutMs }) {
+  const git = (args, cwd) => spawnSync('git', args, { cwd, encoding: 'utf8' });
+  const top = git(['rev-parse', '--show-toplevel'], process.cwd()).stdout?.trim();
+  if (!top) return { error: 'not inside a git repository' };
+  const prefix = git(['rev-parse', '--show-prefix'], process.cwd()).stdout?.trim() ?? '';
+  const relTest = relative(top, resolve(testPath));
+  if (!relTest || relTest.startsWith('..') || isAbsolute(relTest)) {
+    return { error: `--regression-test is outside the repository: ${testPath}` };
+  }
+
+  const wt = mkdtempSync(join(tmpdir(), 'xm-solver-baseline-'));
+  const add = git(['worktree', 'add', '--detach', wt, baseline.head], top);
+  if (add.status !== 0) {
+    rmSync(wt, { recursive: true, force: true });
+    return { error: `git worktree add ${baseline.head} failed: ${(add.stderr || '').trim()}` };
+  }
+  const linkedModules = join(wt, 'node_modules');
+  let linked = false;
+  try {
+    if (baseline.patch_path) {
+      const apply = git(['apply', '--binary', join(solveDir, baseline.patch_path)], wt);
+      if (apply.status !== 0) return { error: `the recorded baseline patch does not apply: ${(apply.stderr || '').trim()}` };
+    }
+    mkdirSync(dirname(join(wt, relTest)), { recursive: true });
+    copyFileSync(join(top, relTest), join(wt, relTest));
+    if (existsSync(join(top, 'node_modules')) && !existsSync(linkedModules)) {
+      symlinkSync(join(top, 'node_modules'), linkedModules, 'dir');
+      linked = true;
+    }
+    const runDir = join(wt, prefix);
+    if (setup) {
+      const s = runShell(setup, runDir, timeoutMs);
+      if (s.exit !== 0) return { error: `--regression-setup failed (exit ${s.exit}${s.timedOut ? ', timed out' : ''}):\n${tailBound(s.text).text}` };
+    }
+    return { before: runShell(command, runDir, timeoutMs) };
+  } finally {
+    // Remove the link first so nothing below can walk into the real node_modules.
+    if (linked) unlinkSync(linkedModules);
+    git(['worktree', 'remove', '--force', wt], top);
+    rmSync(wt, { recursive: true, force: true });
+    git(['worktree', 'prune'], top);
+  }
+}
+
 function readCapturedOutput(opts) {
   if (typeof opts['output-file'] === 'string') {
     if (!existsSync(opts['output-file'])) return { error: `Output file not found: ${opts['output-file']}` };
@@ -1735,6 +1801,77 @@ function cmdRepro(args) {
       return;
     }
 
+    let regression = null;
+    if (opts['regression-cmd'] !== undefined) {
+      const command = typeof opts['regression-cmd'] === 'string' ? opts['regression-cmd'].trim() : '';
+      const marker = typeof opts['regression-marker'] === 'string' ? opts['regression-marker'].trim() : '';
+      const setup = typeof opts['regression-setup'] === 'string' ? opts['regression-setup'].trim() : null;
+      const timeoutS = opts['regression-timeout'] !== undefined ? Number(opts['regression-timeout']) : REGRESSION_TIMEOUT_DEFAULT_S;
+      if (!command || !marker || !regressionTest) {
+        console.error('❌ --regression-cmd needs --regression-marker "<literal from its failing output>" and --regression-test <path>.');
+        console.error('   The marker separates "the test caught the bug" from "the test failed for another reason".');
+        process.exitCode = 1;
+        return;
+      }
+      if (!Number.isInteger(timeoutS) || timeoutS < 1) {
+        console.error(`❌ --regression-timeout must be a positive integer of seconds, got ${JSON.stringify(opts['regression-timeout'])}.`);
+        process.exitCode = 1;
+        return;
+      }
+      if (!repro.baseline?.head) {
+        console.error('❌ No baseline was recorded with this reproduction, so the failing code cannot be rebuilt.');
+        console.error('   Pin the fix with --regression-test alone, or record the next reproduction inside git.');
+        process.exitCode = 1;
+        return;
+      }
+      const timeoutMs = timeoutS * 1000;
+      const onBaseline = runOnBaseline({
+        baseline: repro.baseline, solveDir: solvePath(problem), testPath: regressionTest, command, setup, timeoutMs,
+      });
+      if (onBaseline.error) {
+        console.error(`❌ Could not run the regression test on the baseline: ${onBaseline.error}`);
+        process.exitCode = 1;
+        return;
+      }
+      const { before } = onBaseline;
+      if (before.timedOut || before.exit === 0 || !before.text.includes(marker)) {
+        const why = before.timedOut ? `timed out after ${timeoutS}s`
+          : before.exit === 0 ? 'it passed'
+            : `it exited ${before.exit} without the marker`;
+        console.error(`❌ The regression test does not fail on the code the bug was recorded on (${why}).`);
+        console.error(`   A test that passes before the fix pins nothing. Baseline: ${repro.baseline.head.slice(0, 12)}${repro.baseline.patch_path ? ' + recorded patch' : ''}`);
+        if (!before.timedOut && before.exit !== 0) console.error('   If it failed for another reason (missing dependency, import error), use --regression-setup.');
+        process.exitCode = 1;
+        return;
+      }
+      const after = runShell(command, process.cwd(), timeoutMs);
+      if (after.timedOut || after.exit !== 0 || after.text.includes(marker)) {
+        const why = after.timedOut ? `timed out after ${timeoutS}s`
+          : after.text.includes(marker) ? 'the marker is still in its output'
+            : `it exits ${after.exit}`;
+        console.error(`❌ The regression test fails on the baseline but does not pass now (${why}).`);
+        process.exitCode = 1;
+        return;
+      }
+      mkdirSync(reproDir, { recursive: true });
+      const beforeOut = tailBound(before.text, marker);
+      writeFileSync(join(reproDir, 'regression-before.out.txt'), beforeOut.text, 'utf8');
+      writeFileSync(join(reproDir, 'regression-after.out.txt'), tailBound(after.text).text, 'utf8');
+      regression = {
+        command,
+        marker,
+        setup,
+        baseline_head: repro.baseline.head,
+        baseline_patch: repro.baseline.patch_path ?? null,
+        fails_before: true,
+        passes_after: true,
+        before_exit: before.exit,
+        after_exit: after.exit,
+        before_output_path: 'repro/regression-before.out.txt',
+        after_output_path: 'repro/regression-after.out.txt',
+      };
+    }
+
     const bounded = tailBound(captured.text);
     mkdirSync(reproDir, { recursive: true });
     writeFileSync(join(reproDir, 'after.out.txt'), bounded.text, 'utf8');
@@ -1745,6 +1882,7 @@ function cmdRepro(args) {
       truncated: bounded.truncated,
       clean_runs: cleanRuns ? `${cleanRuns.failed}/${cleanRuns.total}` : null,
       regression_test: regressionTest,
+      regression,
       worktree_digest: nowDigest,
       worktree_unchanged: comparable ? unchanged : null,
       worktree_comparable: comparable,
@@ -1757,6 +1895,8 @@ function cmdRepro(args) {
 
     console.log(`✅ Regression proof: ${proof}. The marker is gone and the command exits 0.`);
     if (!regressionTest) console.log('   No --regression-test given: nothing pins this fix against coming back.');
+    else if (regression) console.log('   Regression test pinned: it fails on the recorded baseline and passes now.');
+    else console.log('   --regression-test was not run on the baseline; add --regression-cmd to prove it fails without the fix.');
     console.log(JSON.stringify({ action: 'repro', sub: 'verify', problem, repro }));
     return;
   }
