@@ -1831,6 +1831,16 @@ function cmdRepro(args) {
       }
     }
 
+    // Instrumentation registered before resolve was allowed only because it is temporary.
+    const lingering = lingeringInstruments(stratState);
+    if (lingering.length) {
+      console.error(`❌ Instrumentation is still in place: ${lingering.map((entry) => entry.path).join(', ')}`);
+      console.error('   Restore each file to its registered content (delete it if it was new), or, if the fix keeps it,');
+      console.error('   add it to the contract: x-solver scope expand --tests <file> --justification "..."');
+      process.exitCode = 1;
+      return;
+    }
+
     const regressionTest = typeof opts['regression-test'] === 'string' ? opts['regression-test'] : null;
     if (regressionTest && !existsSync(regressionTest)) {
       console.error(`❌ --regression-test path does not exist: ${regressionTest}`);
@@ -2212,6 +2222,82 @@ function cmdScope(args) {
   }
 
   console.error('Usage: x-solver scope <set|show|expand>');
+  process.exitCode = 1;
+}
+
+// ── Instrumentation (iterate) ────────────────────────────────────────
+
+// The x-build scope guard reads `instruments` to decide which files may change before
+// resolve, so paths are stored relative to the directory that holds `.xm/`, the same
+// root the guard resolves against. The recorded hash is what "reverted" means later.
+const solverProjectBase = () => dirname(dirname(ROOT));
+const toPosix = (p) => p.split('\\').join('/');
+const normalizeScopePath = (p) => toPosix(String(p)).replace(/^\.\//, '').replace(/\/+$/, '');
+
+function fileSha256(path) {
+  return existsSync(path) ? createHash('sha256').update(readFileSync(path)).digest('hex') : null;
+}
+
+/** Registered instrumentation that is neither reverted nor part of the Scope Contract. */
+function lingeringInstruments(stratState) {
+  const scoped = new Set([...(stratState.scope?.files || []), ...(stratState.scope?.tests || [])].map(normalizeScopePath));
+  return (stratState.instruments || []).filter(
+    (entry) => !scoped.has(entry.path) && fileSha256(join(solverProjectBase(), entry.path)) !== entry.sha256,
+  );
+}
+
+function cmdInstrument(args) {
+  const sub = args[0];
+  const problem = requireProblem(args.slice(1));
+  const { positional, opts } = parseOptions(args.slice(1));
+  const statePath = join(solvePath(problem), 'strategy-state.json');
+  const stratState = readJSON(statePath);
+  if (!stratState || stratState.strategy !== STRATEGIES.ITERATE) {
+    console.error('❌ instrument is part of the iterate strategy. Run: x-solver strategy set iterate');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (sub === 'list' || !sub) {
+    console.log(JSON.stringify({ action: 'instrument', sub: 'list', problem, instruments: stratState.instruments ?? [] }));
+    return;
+  }
+
+  if (sub === 'add') {
+    const files = [...positional, ...(typeof opts.files === 'string' ? splitList(opts.files) : [])];
+    if (!files.length) {
+      console.error('Usage: x-solver instrument add <file> [<file>...]');
+      console.error('   Registers a repro test or temporary instrumentation so it may change before resolve.');
+      process.exitCode = 1;
+      return;
+    }
+    const base = solverProjectBase();
+    const added = [];
+    stratState.instruments = stratState.instruments || [];
+    for (const file of files) {
+      const abs = resolve(file);
+      const rel = toPosix(relative(base, abs));
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+        console.error(`❌ ${file} is outside the project (${base}); the edit guard does not watch it.`);
+        process.exitCode = 1;
+        return;
+      }
+      if (stratState.instruments.some((entry) => entry.path === rel)) continue;
+      // Hash as it is now, before the edit: `repro verify` requires this content back.
+      const entry = { path: rel, sha256: fileSha256(abs), phase: stratState.current_phase, added_at: new Date().toISOString() };
+      stratState.instruments.push(entry);
+      added.push(entry);
+    }
+    writeJSON(statePath, stratState);
+    for (const entry of added) {
+      console.log(`✅ Registered ${entry.path} (${entry.sha256 ? 'existing file' : 'new file'}).`);
+    }
+    console.log('   Revert it before repro verify, or add it to the Scope Contract if the fix keeps it.');
+    console.log(JSON.stringify({ action: 'instrument', sub: 'add', problem, added }));
+    return;
+  }
+
+  console.error('Usage: x-solver instrument <add|list>');
   process.exitCode = 1;
 }
 
@@ -3274,6 +3360,9 @@ ${C.bold}SOLVE${C.reset}
   scope show | scope expand --justification "..." [--files ...]
                             Scope Contract: one slice, persisted with the run
   hypotheses list|add|update  (iterate) Manage hypotheses
+  instrument add <file>... | instrument list
+                            (iterate) Register a repro test or temporary instrumentation;
+                            the x-build edit guard allows only these before resolve
       update <id> --status <pending|confirmed|refuted|inconclusive>
                   --evidence-for "<pasted output>" --source-kind <code|log|command|metric|test>
                   --refutation <survived|falsified|single-signal> --refuted-by <agent>
@@ -3318,6 +3407,7 @@ switch (cmd) {
   case 'repro':          cmdRepro(args); break;
   case 'hypotheses':     cmdHypotheses(args); break;
   case 'scope':          cmdScope(args); break;
+  case 'instrument':     cmdInstrument(args); break;
   case 'tree':           cmdTree(args); break;
   case 'candidates':     cmdCandidates(args); break;
   case 'phase':          cmdPhase(args); break;

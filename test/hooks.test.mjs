@@ -434,3 +434,66 @@ describe('hooks install/uninstall/status CLI', () => {
     expect(readFileSync(join(DIR, '.claude', 'settings.json'), 'utf8')).toBe('not json'); // untouched
   });
 });
+
+describe('scope-guard: x-solver edit guard', () => {
+  const NOW = () => new Date().toISOString();
+  function writeSolver(name, { state = 'active', updatedAt = NOW(), ...strat }) {
+    const dir = join(DIR, '.xm', 'solver', 'problems', name);
+    mkdirSync(join(dir, 'phases', '03-solve'), { recursive: true });
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ state, strategy: 'iterate', created_at: updatedAt, updated_at: updatedAt }));
+    writeFileSync(join(dir, 'phases', '03-solve', 'strategy-state.json'), JSON.stringify({ strategy: 'iterate', updated_at: updatedAt, ...strat }));
+  }
+  const edit = (file_path) => runHook(SCOPE_HOOK, { tool_name: 'Edit', tool_input: { file_path } });
+
+  test('before resolve, an unregistered file is blocked and the message names the fix', () => {
+    writeSolver('p', { current_phase: 'diagnose' });
+    const r = edit('src/cache.ts');
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('"p" is in the diagnose phase');
+    expect(r.stderr).toContain('x-solver instrument add src/cache.ts');
+  });
+
+  test('before resolve, a registered file is allowed', () => {
+    writeSolver('p', { current_phase: 'test', instruments: [{ path: 'src/cache.ts', sha256: null }] });
+    expect(edit('src/cache.ts').status).toBe(0);
+  });
+
+  test('in resolve, the Scope Contract files and tests are allowed and nothing else', () => {
+    writeSolver('p', { current_phase: 'resolve', scope: { files: ['src/cache.ts'], tests: ['test/cache.test.ts'] } });
+    expect(edit('src/cache.ts').status).toBe(0);
+    expect(edit('test/cache.test.ts').status).toBe(0);
+    const r = edit('src/other.ts');
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('x-solver scope expand --files src/other.ts');
+  });
+
+  test('in resolve without a Scope Contract the guard stays open', () => {
+    writeSolver('p', { current_phase: 'resolve' });
+    expect(edit('src/other.ts').status).toBe(0);
+  });
+
+  test('a problem idle for more than 24 hours, or no longer active, does not guard', () => {
+    writeSolver('old', { current_phase: 'diagnose', updatedAt: new Date(Date.now() - 25 * 3600 * 1000).toISOString() });
+    expect(edit('src/cache.ts').status).toBe(0);
+    writeSolver('done', { state: 'solved', current_phase: 'diagnose' });
+    expect(edit('src/cache.ts').status).toBe(0);
+  });
+
+  test('the most recently active problem decides', () => {
+    writeSolver('older', { current_phase: 'diagnose', updatedAt: new Date(Date.now() - 3600 * 1000).toISOString() });
+    writeSolver('newer', { current_phase: 'test', instruments: [{ path: 'src/cache.ts', sha256: null }] });
+    expect(edit('src/cache.ts').status).toBe(0);
+  });
+
+  test('the solver state files are not hard-allowed while a problem guards', () => {
+    writeSolver('p', { current_phase: 'diagnose' });
+    expect(edit('.xm/solver/problems/p/phases/03-solve/strategy-state.json').status).toBe(2);
+    expect(edit('.xm/solver/problems/p/manifest.json').status).toBe(2);
+    expect(edit('.xm/solver/problems/p/phases/03-solve/repro/notes.txt').status).toBe(0);
+  });
+
+  test('XM_BUILD_HOOKS_OFF=1 releases it', () => {
+    writeSolver('p', { current_phase: 'diagnose' });
+    expect(runHook(SCOPE_HOOK, { tool_name: 'Edit', tool_input: { file_path: 'src/cache.ts' } }, { XM_BUILD_HOOKS_OFF: '1' }).status).toBe(0);
+  });
+});

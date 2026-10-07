@@ -2154,3 +2154,87 @@ describe('x-solver workaround signals at repro verify', () => {
     }
   });
 });
+
+describe('x-solver instrument registry', () => {
+  const BUGGY = 'module.exports = (a, b) => a - b;\n';
+  const FIXED = 'module.exports = (a, b) => a + b;\n';
+
+  function gitRepo() {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-instr-'));
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd: tmp });
+    writeFileSync(join(tmp, 'sum.js'), BUGGY);
+    spawnSync('git', ['add', '-A'], { cwd: tmp });
+    spawnSync('git', ['commit', '-qm', 'init'], { cwd: tmp });
+    return tmp;
+  }
+
+  function atResolve(tmp, scopeArgs) {
+    const problem = setupProblem(tmp, 'sum is wrong');
+    run(['strategy', 'set', 'iterate'], { cwd: tmp });
+    run(['repro', 'set', '--command', 'node check.js', '--output', 'REGRESSION: sum(2, 3) = -1',
+      '--exit-code', '1', '--failure-marker', 'REGRESSION', '--status', 'reproduced'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'diagnose'], { cwd: tmp });
+    if (scopeArgs) run(['scope', 'set', '--symptom', 'wrong sum', '--invariant', 'sum adds', ...scopeArgs], { cwd: tmp });
+    // Registered before resolve, while the guard would allow nothing else.
+    run(['instrument', 'add', 'debug.js', 'repro.test.js'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'hypothesize'], { cwd: tmp });
+    run(['hypotheses', 'add', 'sum subtracts', '--check', 'node check.js'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'test'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--status', 'confirmed', '--evidence-for', 'sum.js uses a - b', '--source-kind', 'code'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'refine'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'resolve'], { cwd: tmp });
+    return problem;
+  }
+
+  const verify = (tmp) => run(['repro', 'verify', '--output', 'ok', '--exit-code', '0'], { cwd: tmp });
+
+  test('add records each path relative to the project and its content hash', () => {
+    const tmp = gitRepo();
+    try {
+      setupProblem(tmp, 'sum is wrong');
+      run(['strategy', 'set', 'iterate'], { cwd: tmp });
+      const r = run(['instrument', 'add', 'sum.js', 'debug.js'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const list = parseLastJSON(run(['instrument', 'list'], { cwd: tmp }).stdout).instruments;
+      expect(list.map((e) => e.path)).toEqual(['sum.js', 'debug.js']);
+      expect(list[0].sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(list[1].sha256).toBeNull();
+      const outside = run(['instrument', 'add', join(tmpdir(), 'elsewhere.js')], { cwd: tmp });
+      expect(outside.exitCode).not.toBe(0);
+      expect(outside.stderr).toContain('outside the project');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('verify refuses while instrumentation is in place and passes once it is removed', () => {
+    const tmp = gitRepo();
+    try {
+      atResolve(tmp);
+      writeFileSync(join(tmp, 'debug.js'), 'console.log("trace");\n');
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      const refused = verify(tmp);
+      expect(refused.exitCode).not.toBe(0);
+      expect(refused.stderr).toContain('Instrumentation is still in place: debug.js');
+      rmSync(join(tmp, 'debug.js'));
+      expect(verify(tmp).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a registered file the Scope Contract keeps is not instrumentation', () => {
+    const tmp = gitRepo();
+    try {
+      atResolve(tmp, ['--files', 'sum.js', '--tests', 'repro.test.js']);
+      writeFileSync(join(tmp, 'repro.test.js'), "require('./sum.js');\n");
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      expect(verify(tmp).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

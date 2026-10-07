@@ -14,6 +14,13 @@ grows). `solve.md` keeps decompose, constrain and pipeline, and points here.
 > [repro+marker] [state+baseline] [falsifiable] [one var] [switch/revert] [fix+regression proof] [why late?]
 > ```
 
+> **Edit guard.** Where `x-build hooks install` armed the PreToolUse scope guard, an active
+> iterate problem also limits Edit/Write. Before `resolve`, only files registered with
+> `$XMS instrument add <file>` (a repro test, temporary logging) may change. In `resolve`, the
+> Scope Contract's `--files` and `--tests` may change too; widen it with `scope expand`.
+> `repro verify` refuses while a registered file outside the contract differs from its
+> registered content. A problem idle for 24 hours stops guarding. Bash writes are not watched.
+
 #### Phase: reproduce
 
 > **MUST — the iterate strategy always starts here. A fix you cannot see fail is a fix you cannot prove.**

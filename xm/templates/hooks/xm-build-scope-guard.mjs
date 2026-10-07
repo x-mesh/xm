@@ -2,8 +2,10 @@
 // xm-build-scope-guard.mjs — PreToolUse hook (installed by `x-build hooks install`).
 //
 // During an ACTIVE x-build review-fix, block Edit/Write/MultiEdit/NotebookEdit to
-// files OUTSIDE triage.fix_scope.allowed_files. Fail-open otherwise. This makes the
-// review-fix scope discipline machine-enforced instead of a prompt convention.
+// files OUTSIDE triage.fix_scope.allowed_files. During an active x-solver iterate
+// problem, block edits outside its registered files before `resolve`, and outside
+// the Scope Contract in `resolve`. Fail-open otherwise. This makes both scope
+// disciplines machine-enforced instead of prompt conventions.
 //
 // THREAT MODEL (be honest about the boundary): this is a guardrail against DRIFT — an
 // agent that wanders out of scope while fixing something — not a sandbox against a
@@ -12,7 +14,7 @@
 // XM_BUILD_HOOKS_OFF=1 is a documented, deliberate bypass anyway. It raises the cost of
 // silently leaving scope; it does not make leaving scope impossible.
 
-import { hooksOff, reviewFixState, isProtectedPath, isAllowed, repoRelative } from './hook-state.mjs';
+import { hooksOff, reviewFixState, solverEditState, isProtectedPath, isAllowed, repoRelative } from './hook-state.mjs';
 
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
@@ -45,27 +47,50 @@ async function main() {
   const projectRoot = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
 
   const state = reviewFixState(projectRoot);
-  if (!state.active) process.exit(0); // no review-fix in progress → nothing to scope
+  const solver = solverEditState(projectRoot);
+  if (!state.active && !solver.active) process.exit(0); // nothing in progress → nothing to scope
 
   const rel = repoRelative(filePath, projectRoot);
   if (rel === null) process.exit(0);                          // outside repo → not ours
   if (isProtectedPath(rel)) process.exit(0);                  // .xm state / later-queue → never block
-  if (isAllowed(filePath, projectRoot, state.allowedFiles)) process.exit(0);
 
-  const allowedList = state.allowedFiles.length
-    ? state.allowedFiles.map(f => `  - ${f}`).join('\n')
-    : '  (none — the triage lists no allowed_files)';
-  // Do NOT advise editing triage.json here: it is one of the guard's own decision
-  // sources and is deliberately no longer auto-allowed (F4), so widening the scope from
-  // inside a guarded session must be a deliberate, visible bypass — not a quiet self-edit.
-  process.stderr.write(
-    `✋ Blocked by xm-build-scope-guard — a review-fix is in progress.\n\n` +
-    `${rel} is OUTSIDE the review-fix scope. Edits are limited to:\n` +
-    `${allowedList}\n\n` +
-    `Fix only the fix_now findings in their files. If this edit is genuinely required,\n` +
-    `re-run with XM_BUILD_HOOKS_OFF=1 (an explicit, visible bypass).\n`
-  );
-  process.exit(2);
+  if (state.active && !isAllowed(filePath, projectRoot, state.allowedFiles)) {
+    const allowedList = state.allowedFiles.length
+      ? state.allowedFiles.map(f => `  - ${f}`).join('\n')
+      : '  (none — the triage lists no allowed_files)';
+    // Do NOT advise editing triage.json here: it is one of the guard's own decision
+    // sources and is deliberately no longer auto-allowed (F4), so widening the scope from
+    // inside a guarded session must be a deliberate, visible bypass — not a quiet self-edit.
+    process.stderr.write(
+      `✋ Blocked by xm-build-scope-guard — a review-fix is in progress.\n\n` +
+      `${rel} is OUTSIDE the review-fix scope. Edits are limited to:\n` +
+      `${allowedList}\n\n` +
+      `Fix only the fix_now findings in their files. If this edit is genuinely required,\n` +
+      `re-run with XM_BUILD_HOOKS_OFF=1 (an explicit, visible bypass).\n`
+    );
+    process.exit(2);
+  }
+
+  if (solver.active && !isAllowed(filePath, projectRoot, solver.allowedFiles)) {
+    const allowedList = solver.allowedFiles.length
+      ? solver.allowedFiles.map(f => `  - ${f}`).join('\n')
+      : '  (none registered)';
+    const next = solver.phase === 'resolve'
+      ? `Edits are limited to the Scope Contract's files and tests:\n${allowedList}\n\n` +
+        `If the evidence shows this file is part of the fix, widen the contract first:\n` +
+        `  x-solver scope expand --files ${rel} --justification "<the execution evidence>"\n`
+      : `The cause is not confirmed yet, so only registered repro and instrumentation files may change:\n${allowedList}\n\n` +
+        `If this is a repro test or temporary instrumentation, register it first:\n` +
+        `  x-solver instrument add ${rel}\n` +
+        `A fix belongs in the resolve phase, after a hypothesis survives refutation.\n`;
+    process.stderr.write(
+      `✋ Blocked by xm-build-scope-guard — x-solver problem "${solver.problem}" is in the ${solver.phase} phase.\n\n` +
+      `${rel} is not in the allowed set. ${next}\n` +
+      `Explicit, visible bypass: XM_BUILD_HOOKS_OFF=1.\n`
+    );
+    process.exit(2);
+  }
+  process.exit(0);
 }
 
 main();
