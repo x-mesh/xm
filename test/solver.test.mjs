@@ -528,7 +528,7 @@ describe('x-solver reproduce gate', () => {
     // refine -> resolve now requires a hypothesis that survived an independent
     // refuter, with its evidence on file, so a test that wants the resolve phase has
     // to earn it.
-    step(tmp, ['hypotheses', 'add', 'the recorded cause']);
+    step(tmp, ['hypotheses', 'add', 'the recorded cause', '--check', 'rerun the repro']);
     step(tmp, ['hypotheses', 'update', 'h1', '--status', 'confirmed',
       '--evidence-for', 'bun test -> AssertionError x != y', '--source-kind', 'command']);
     step(tmp, ['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1']);
@@ -678,7 +678,7 @@ describe('x-solver refutation gate and iteration exits', () => {
     for (const p of ['diagnose', 'hypothesize', 'test', 'refine']) {
       run(['solve-advance', '--phase', p], { cwd: tmp });
     }
-    run(['hypotheses', 'add', 'cache is stale'], { cwd: tmp });
+    run(['hypotheses', 'add', 'cache is stale', '--check', 'rerun the repro'], { cwd: tmp });
     return problem;
   }
 
@@ -841,7 +841,7 @@ describe('x-solver gate chain', () => {
     run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
       '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
     for (const p of ['diagnose', 'hypothesize', 'test', 'refine']) run(['solve-advance', '--phase', p], { cwd: tmp });
-    run(['hypotheses', 'add', 'stale cache'], { cwd: tmp });
+    run(['hypotheses', 'add', 'stale cache', '--check', 'rerun the repro'], { cwd: tmp });
     run(['hypotheses', 'update', 'h1', '--status', 'confirmed',
       '--evidence-for', 'bun test -> AssertionError only with warm cache', '--source-kind', 'command'], { cwd: tmp });
     run(['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1'], { cwd: tmp });
@@ -1101,7 +1101,7 @@ describe('x-solver audit fixes', () => {
     run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
       '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
     for (const p of ['diagnose', 'hypothesize']) run(['solve-advance', '--phase', p], { cwd: tmp });
-    run(['hypotheses', 'add', 'stale cache after deploy'], { cwd: tmp });
+    run(['hypotheses', 'add', 'stale cache after deploy', '--check', 'rerun the repro'], { cwd: tmp });
     run(['solve-advance', '--phase', 'test'], { cwd: tmp });
     run(['hypotheses', 'update', 'h1', '--status', 'confirmed',
       '--evidence-for', 'cache.log shows 0% hit ratio after deploy', '--source-kind', 'log'], { cwd: tmp });
@@ -1201,7 +1201,7 @@ describe('x-solver audit fixes', () => {
       run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
         '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
       for (const p of ['diagnose', 'hypothesize']) run(['solve-advance', '--phase', p], { cwd: tmp });
-      run(['hypotheses', 'add', 'stale cache'], { cwd: tmp });
+      run(['hypotheses', 'add', 'stale cache', '--check', 'rerun the repro'], { cwd: tmp });
 
       const result = run(['close', '--diagnosis-only', '--summary', 'nothing confirmed'], { cwd: tmp });
       expect(result.exitCode).toBe(1);
@@ -1278,7 +1278,7 @@ describe('x-solver audit fixes', () => {
 
       const round = (text) => {
         run(['solve-advance', '--phase', 'hypothesize'], { cwd: tmp });
-        run(['hypotheses', 'add', text], { cwd: tmp });
+        run(['hypotheses', 'add', text, '--check', 'rerun the repro'], { cwd: tmp });
         run(['solve-advance', '--phase', 'test'], { cwd: tmp });
         run(['solve-advance', '--phase', 'refine'], { cwd: tmp });
       };
@@ -1287,7 +1287,7 @@ describe('x-solver audit fixes', () => {
       // retry 1: one round on file, nothing to compare against yet
       expect(run(['solve-advance', '--phase', 'hypothesize'], { cwd: tmp }).exitCode).toBe(0);
       expect(readState(tmp, problem).iteration_outputs[0].output).toContain('stale');
-      run(['hypotheses', 'add', 'the cache is stale after every deploy'], { cwd: tmp });
+      run(['hypotheses', 'add', 'the cache is stale after every deploy', '--check', 'rerun the repro'], { cwd: tmp });
       for (const p of ['test', 'refine']) run(['solve-advance', '--phase', p], { cwd: tmp });
 
       // retry 2: round 2 restated round 1 — the loop is stalling and the CLI says so
@@ -1309,10 +1309,10 @@ describe('x-solver audit fixes', () => {
         '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
       run(['solve-advance', '--phase', 'diagnose'], { cwd: tmp });
       run(['solve-advance', '--phase', 'hypothesize'], { cwd: tmp });
-      run(['hypotheses', 'add', 'the cache is stale after every deploy'], { cwd: tmp });
+      run(['hypotheses', 'add', 'the cache is stale after every deploy', '--check', 'rerun the repro'], { cwd: tmp });
       for (const p of ['test', 'refine']) run(['solve-advance', '--phase', p], { cwd: tmp });
       expect(run(['solve-advance', '--phase', 'hypothesize'], { cwd: tmp }).exitCode).toBe(0);
-      run(['hypotheses', 'add', 'nginx keepalive drops the second request'], { cwd: tmp });
+      run(['hypotheses', 'add', 'nginx keepalive drops the second request', '--check', 'rerun the repro'], { cwd: tmp });
       for (const p of ['test', 'refine']) run(['solve-advance', '--phase', p], { cwd: tmp });
 
       expect(run(['solve-advance', '--phase', 'hypothesize'], { cwd: tmp }).exitCode).toBe(0);
@@ -1330,7 +1330,7 @@ describe('x-solver audit fixes', () => {
     try {
       setupProblem(tmp, 'status guard');
       run(['strategy', 'set', 'iterate'], { cwd: tmp });
-      run(['hypotheses', 'add', 'something'], { cwd: tmp });
+      run(['hypotheses', 'add', 'something', '--check', 'rerun the repro'], { cwd: tmp });
 
       const bad = run(['hypotheses', 'update', 'h1', '--status', 'maybe'], { cwd: tmp });
       expect(bad.exitCode).toBe(1);
@@ -1352,7 +1352,7 @@ describe('x-solver audit fixes', () => {
       run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
         '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
       for (const p of ['diagnose', 'hypothesize']) run(['solve-advance', '--phase', p], { cwd: tmp });
-      run(['hypotheses', 'add', 'stale cache'], { cwd: tmp });
+      run(['hypotheses', 'add', 'stale cache', '--check', 'rerun the repro'], { cwd: tmp });
       run(['solve-advance', '--phase', 'test'], { cwd: tmp });
       run(['hypotheses', 'update', 'h1', '--status', 'confirmed'], { cwd: tmp });
 
@@ -1375,7 +1375,7 @@ describe('x-solver audit fixes', () => {
       run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
         '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
       for (const p of ['diagnose', 'hypothesize', 'test', 'refine']) run(['solve-advance', '--phase', p], { cwd: tmp });
-      run(['hypotheses', 'add', 'stale cache'], { cwd: tmp });
+      run(['hypotheses', 'add', 'stale cache', '--check', 'rerun the repro'], { cwd: tmp });
       run(['hypotheses', 'update', 'h1', '--status', 'confirmed'], { cwd: tmp });
       run(['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1'], { cwd: tmp });
 
@@ -1767,6 +1767,101 @@ describe('x-solver audit fixes', () => {
       const h1 = readState(tmp, problem).hypotheses[0];
       expect(h1.refuted_by).toBeUndefined();
       expect(h1.refutation).toBeUndefined();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('x-solver hypothesis plan', () => {
+  function atHypothesize(tmp) {
+    const problem = setupProblem(tmp, 'hypothesis plan');
+    run(['strategy', 'set', 'iterate'], { cwd: tmp });
+    run(['repro', 'set', '--command', 'bun test', '--output', 'AssertionError x != y',
+      '--exit-code', '1', '--failure-marker', 'AssertionError', '--status', 'reproduced'], { cwd: tmp });
+    for (const p of ['diagnose', 'hypothesize']) run(['solve-advance', '--phase', p], { cwd: tmp });
+    return problem;
+  }
+
+  function hypotheses(tmp, problem) {
+    return JSON.parse(readFileSync(
+      join(tmp, '.xm', 'solver', 'problems', problem, 'phases', '03-solve', 'strategy-state.json'), 'utf8',
+    )).hypotheses;
+  }
+
+  test('add stores the likelihood and the check', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-hplan-'));
+    try {
+      const problem = atHypothesize(tmp);
+      const r = run(['hypotheses', 'add', 'stale cache', '--likelihood', 'high', '--check', 'grep miss cache.log'], { cwd: tmp });
+      expect(r.exitCode).toBe(0);
+      const [h] = hypotheses(tmp, problem);
+      expect(h.likelihood).toBe('high');
+      expect(h.check).toBe('grep miss cache.log');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('add refuses an unknown likelihood and a check without a value', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-hplan-'));
+    try {
+      const problem = atHypothesize(tmp);
+      const bad = run(['hypotheses', 'add', 'stale cache', '--likelihood', 'certain', '--check', 'x'], { cwd: tmp });
+      expect(bad.exitCode).not.toBe(0);
+      expect(bad.stderr).toContain('Unknown --likelihood "certain"');
+      // A "--"-prefixed value parses as the next flag and leaves --check `true`.
+      const empty = run(['hypotheses', 'add', 'stale cache', '--check', '--likelihood', 'low'], { cwd: tmp });
+      expect(empty.exitCode).not.toBe(0);
+      expect(empty.stderr).toContain('--check needs a value');
+      expect(hypotheses(tmp, problem) ?? []).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('test phase is refused while a pending hypothesis has no check', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-hplan-'));
+    try {
+      atHypothesize(tmp);
+      run(['hypotheses', 'add', 'stale cache', '--check', 'rerun the repro'], { cwd: tmp });
+      run(['hypotheses', 'add', 'nginx keepalive drops the second request'], { cwd: tmp });
+      const refused = run(['solve-advance', '--phase', 'test'], { cwd: tmp });
+      expect(refused.exitCode).not.toBe(0);
+      expect(refused.stderr).toContain('No verification check on file: h2.');
+
+      expect(run(['hypotheses', 'update', 'h2', '--check', 'curl twice with keepalive'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['solve-advance', '--phase', 'test'], { cwd: tmp }).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a hypothesis that is no longer pending does not need a check', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-hplan-'));
+    try {
+      atHypothesize(tmp);
+      run(['hypotheses', 'add', 'stale cache', '--check', 'rerun the repro'], { cwd: tmp });
+      run(['hypotheses', 'add', 'already ruled out'], { cwd: tmp });
+      run(['hypotheses', 'update', 'h2', '--status', 'refuted'], { cwd: tmp });
+      expect(run(['solve-advance', '--phase', 'test'], { cwd: tmp }).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('list shows the most likely hypothesis first', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-hplan-'));
+    try {
+      atHypothesize(tmp);
+      run(['hypotheses', 'add', 'unlikely race', '--likelihood', 'low', '--check', 'a'], { cwd: tmp });
+      run(['hypotheses', 'add', 'no likelihood given', '--check', 'b'], { cwd: tmp });
+      run(['hypotheses', 'add', 'stale cache', '--likelihood', 'high', '--check', 'c'], { cwd: tmp });
+      const out = run(['hypotheses', 'list'], { cwd: tmp }).stdout;
+      const order = ['stale cache', 'unlikely race', 'no likelihood given'].map((s) => out.indexOf(s));
+      expect(order.every((i) => i >= 0)).toBe(true);
+      expect([...order].sort((a, b) => a - b)).toEqual(order);
+      expect(out).toContain('check: c');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

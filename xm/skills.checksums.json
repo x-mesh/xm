@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1791254450875,
+  "generatedAt": 1791348060489,
   "version": 3,
   "skills": [
     {
@@ -284,9 +284,9 @@
       "referencesSha256": "acce5faaafc291757bc6786741dcf2024951f91ab4e870273c7c56680a83e1d6",
       "referenceFiles": 4,
       "referenceBytes": 13977,
-      "assetsSha256": "6279efde7732bf1a96350abc33e0bfdc0e4660617287868d958489bf5ad4520a",
+      "assetsSha256": "fc0dfd3a83c41a4fa28382e8131ccd365780b49cfbfde504653fae856684af00",
       "assetFiles": 3,
-      "assetBytes": 36470
+      "assetBytes": 36757
     },
     {
       "plugin": "sync",

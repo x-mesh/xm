@@ -197,8 +197,9 @@ Order by likelihood descending. Output in JSON format.
 
 After completion, run without fail:
 ```bash
-$XMS hypotheses add "description"   # call once per hypothesis; each add is stamped with the current round
-# [REQUIRED] hypothesize complete — advance to next phase
+# call once per hypothesis; each add is stamped with the current round
+$XMS hypotheses add "description" --likelihood high|medium|low --check "<verification method>"
+# [REQUIRED] hypothesize complete — advance to next phase (refused while a pending hypothesis has no --check)
 $XMS solve-advance --phase test
 ```
 
@@ -208,7 +209,7 @@ extended — change the layer or the variable, not the wording.
 
 > Checklist:
 > - [ ] delegate agent called
-> - [ ] `$XMS hypotheses add` called (once per hypothesis)
+> - [ ] `$XMS hypotheses add` called (once per hypothesis, with `--likelihood` and `--check`)
 > - [ ] AskUserQuestion called
 > - [ ] `$XMS solve-advance --phase test` called
 
@@ -232,7 +233,10 @@ Each agent's prompt:
 Verify the following hypothesis:
 
 Hypothesis: {hypothesis.description}
+Planned check: {hypothesis.check}
 Problem: {problem_context}
+
+Run the planned check first. If you verify by another method, state why the planned check was not enough.
 
 Verification principles:
 - One variable at a time — each test should check one thing. If you change two variables, you can't attribute the result.
