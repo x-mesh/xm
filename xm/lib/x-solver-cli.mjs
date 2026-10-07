@@ -100,6 +100,7 @@ const HYPOTHESIS_STATUSES = ['pending', 'confirmed', 'refuted', 'inconclusive'];
 // Where a piece of evidence came from. Two reads of the same kind corroborate nothing
 // (Principle 6), so the kind is recorded next to the evidence rather than left to memory.
 const SOURCE_KINDS = ['code', 'log', 'command', 'metric', 'test'];
+const HYPOTHESIS_LIKELIHOODS = ['high', 'medium', 'low'];
 const MAX_ITERATION_EXTENSIONS = 2;
 const MAX_ITERATIONS_PER_EXTENSION = 3;
 const REPRO_TAIL_LINES = 100;
@@ -1202,6 +1203,19 @@ function cmdSolveAdvance(args) {
     }
   }
 
+  // The test phase fans out one verifier per pending hypothesis. Without a recorded
+  // check, each verifier invents its own, and nothing ties the verdict to the
+  // falsification the hypothesis promised.
+  if (m.strategy === STRATEGIES.ITERATE && stratState.current_phase === 'hypothesize' && opts.phase === 'test') {
+    const unchecked = (stratState.hypotheses || []).filter((h) => h.status === 'pending' && !h.check);
+    if (unchecked.length) {
+      console.error(`❌ No verification check on file: ${unchecked.map((h) => h.id).join(', ')}.`);
+      console.error('   Record how each one would be confirmed or refuted before testing it:');
+      console.error(`   x-solver hypotheses update <id> --check "<command or observation>" [--likelihood ${HYPOTHESIS_LIKELIHOODS.join('|')}]`);
+      process.exit(1);
+    }
+  }
+
   let grantedThisCall = null;
   if (isIterateRetry) {
     const currentIteration = Number.isInteger(stratState.current_iteration)
@@ -1706,6 +1720,33 @@ function cmdRepro(args) {
 
 // ── Hypotheses (iterate) ─────────────────────────────────────────────
 
+// The hypothesize prompt asks for a verification method and a likelihood, and both
+// used to die in the leader's context. `check` is what the test phase runs, so it
+// is validated like the evidence flags: a "--"-prefixed value parses as `true`.
+function readHypothesisPlan(opts) {
+  const plan = {};
+  if (opts.likelihood !== undefined) {
+    if (!HYPOTHESIS_LIKELIHOODS.includes(opts.likelihood)) {
+      console.error(`❌ Unknown --likelihood "${opts.likelihood}". One of: ${HYPOTHESIS_LIKELIHOODS.join(', ')}`);
+      process.exit(1);
+    }
+    plan.likelihood = opts.likelihood;
+  }
+  if (opts.check !== undefined) {
+    if (!(typeof opts.check === 'string' && opts.check.trim())) {
+      console.error('❌ --check needs a value: the command or observation that would confirm or refute it.');
+      process.exit(1);
+    }
+    plan.check = opts.check.trim();
+  }
+  return plan;
+}
+
+const likelihoodRank = (h) => {
+  const rank = HYPOTHESIS_LIKELIHOODS.indexOf(h.likelihood);
+  return rank === -1 ? HYPOTHESIS_LIKELIHOODS.length : rank;
+};
+
 function cmdHypotheses(args) {
   const sub = args[0];
   const problem = requireProblem(args.slice(1));
@@ -1726,10 +1767,15 @@ function cmdHypotheses(args) {
       pending: '⬜', confirmed: '✅', refuted: '❌', inconclusive: '🟡',
     };
     console.log(`\n${C.bold}Hypotheses${C.reset} (${hypos.length})\n`);
-    for (const h of hypos) {
-      const meta = [h.iteration !== undefined ? `round ${h.iteration}` : null, h.source_kind ? `source: ${h.source_kind}` : null]
-        .filter(Boolean).join(', ');
+    // Array.prototype.sort is stable, so equal likelihoods keep insertion order.
+    for (const h of [...hypos].sort((a, b) => likelihoodRank(a) - likelihoodRank(b))) {
+      const meta = [
+        h.likelihood ? `likelihood: ${h.likelihood}` : null,
+        h.iteration !== undefined ? `round ${h.iteration}` : null,
+        h.source_kind ? `source: ${h.source_kind}` : null,
+      ].filter(Boolean).join(', ');
       console.log(`  ${statusIcons[h.status] || '❓'} ${C.bold}${h.id}${C.reset}: ${h.description}${meta ? ` ${C.dim}(${meta})${C.reset}` : ''}`);
+      if (h.check) console.log(`    ${C.dim}check:${C.reset} ${h.check}`);
       if (h.evidence_for?.length) console.log(`    ${C.green}+${C.reset} ${h.evidence_for.join('; ')}`);
       if (h.evidence_against?.length) console.log(`    ${C.red}-${C.reset} ${h.evidence_against.join('; ')}`);
       console.log();
@@ -1738,14 +1784,17 @@ function cmdHypotheses(args) {
     const { positional, opts } = parseOptions(args.slice(1));
     const description = positional.join(' ') || opts.content;
     if (!description) {
-      console.error('Usage: x-solver hypotheses add "description"');
+      console.error(`Usage: x-solver hypotheses add "description" --likelihood <${HYPOTHESIS_LIKELIHOODS.join('|')}> --check "<command or observation>"`);
       process.exit(1);
     }
+    const plan = readHypothesisPlan(opts);
     if (!stratState.hypotheses) stratState.hypotheses = [];
     stratState.hypotheses.push({
       id: `h${stratState.hypotheses.length + 1}`,
       description,
       status: 'pending',
+      likelihood: plan.likelihood ?? null,
+      check: plan.check ?? null,
       // Which hypothesize round produced it. Convergence compares rounds, so a
       // hypothesis has to know which one it belongs to.
       iteration: Number.isInteger(stratState.current_iteration) ? stratState.current_iteration : 0,
@@ -1763,6 +1812,7 @@ function cmdHypotheses(args) {
       console.error(`Usage: x-solver hypotheses update <id> [--status <${HYPOTHESIS_STATUSES.join('|')}>]`);
       console.error(`         [--evidence-for "<pasted output>"] [--evidence-against "..."] [--source-kind <${SOURCE_KINDS.join('|')}>]`);
       console.error('         [--test-result "..."] [--refutation <survived|falsified|single-signal> --refuted-by <agent>]');
+      console.error(`         [--likelihood <${HYPOTHESIS_LIKELIHOODS.join('|')}>] [--check "<command or observation>"]`);
       process.exit(1);
     }
     const h = stratState.hypotheses?.find(h => h.id === id);
@@ -1799,6 +1849,7 @@ function cmdHypotheses(args) {
       }
       h.status = opts.status;
     }
+    Object.assign(h, readHypothesisPlan(opts));
     const sourceKind = opts['source-kind'] ?? opts.source_kind;
     if (sourceKind !== undefined) {
       if (!SOURCE_KINDS.includes(sourceKind)) {
