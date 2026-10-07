@@ -1848,6 +1848,24 @@ function cmdRepro(args) {
       return;
     }
 
+    // `verify` requires a pinned regression test. Some fixes cannot have one (infra,
+    // environment, data); the waiver says so on the record instead of passing silently.
+    let regressionWaiver = null;
+    if (opts['regression-waiver'] !== undefined) {
+      const reason = typeof opts['regression-waiver'] === 'string' ? opts['regression-waiver'].trim() : '';
+      if (!reason) {
+        console.error('❌ --regression-waiver needs the reason: why no test can pin this fix, and what watches for it instead.');
+        process.exitCode = 1;
+        return;
+      }
+      if (opts['regression-cmd'] !== undefined) {
+        console.error('❌ --regression-waiver and --regression-cmd contradict each other. Pin the test, or say why none can.');
+        process.exitCode = 1;
+        return;
+      }
+      regressionWaiver = { reason, at: new Date().toISOString() };
+    }
+
     let regression = null;
     if (opts['regression-cmd'] !== undefined) {
       const command = typeof opts['regression-cmd'] === 'string' ? opts['regression-cmd'].trim() : '';
@@ -1932,6 +1950,7 @@ function cmdRepro(args) {
       clean_runs: cleanRuns ? `${cleanRuns.failed}/${cleanRuns.total}` : null,
       regression_test: regressionTest,
       regression,
+      regression_waiver: regressionWaiver,
       workaround_signals: signals,
       worktree_digest: nowDigest,
       worktree_unchanged: comparable ? unchanged : null,
@@ -1944,9 +1963,13 @@ function cmdRepro(args) {
     writeJSON(join(reproDir, 'after.json'), repro.after);
 
     console.log(`✅ Regression proof: ${proof}. The marker is gone and the command exits 0.`);
-    if (!regressionTest) console.log('   No --regression-test given: nothing pins this fix against coming back.');
-    else if (regression) console.log('   Regression test pinned: it fails on the recorded baseline and passes now.');
-    else console.log('   --regression-test was not run on the baseline; add --regression-cmd to prove it fails without the fix.');
+    if (regression) console.log('   Regression test pinned: it fails on the recorded baseline and passes now.');
+    else if (regressionWaiver) console.log(`   Regression test waived: ${regressionWaiver.reason}`);
+    else {
+      console.log('   No regression test pinned. `x-solver verify` will stay unverified until one is:');
+      console.log('   --regression-test <path> --regression-cmd "<cmd>" --regression-marker "<literal>"');
+      console.log('   or, when no test can pin it: --regression-waiver "<why, and what watches for it instead>"');
+    }
     if (signals?.length) {
       console.error(`⚠️  ${signals.length} added line(s) look like a hidden symptom rather than a fixed cause:`);
       for (const s of signals.slice(0, 10)) console.error(`   [${s.kind}] ${s.file}:${s.line}  ${s.text.slice(0, 100)}`);
@@ -2560,6 +2583,13 @@ const UNVERIFIED_NEXT = {
     'The recorded failure was never re-run after the fix, so nothing shows it stopped happening.',
     '  x-solver repro verify --output-file <after> --exit-code 0 [--regression-test <path>]',
   ],
+  regression_test_absent: [
+    'The recorded failure is gone, but no test that failed on the recorded baseline pins it.',
+    '  x-solver repro verify --output-file <after> --exit-code 0 \\',
+    '    --regression-test <path> --regression-cmd "<cmd>" --regression-marker "<literal from its failure>"',
+    '  when no test can pin it (infra, environment, data):',
+    '  x-solver repro verify --output-file <after> --exit-code 0 --regression-waiver "<why, and what watches for it>"',
+  ],
   insufficient_clean_runs: [
     'An intermittent failure needs enough clean runs to beat chance; the run reported fewer.',
     '  x-solver repro show   # tells you how many are needed',
@@ -2689,6 +2719,9 @@ function cmdVerify(args) {
     constraint_check: judged.checks,
     repro_status: repro?.status ?? null,
     regression_proof: repro ? (repro.regression_proof ?? 'absent') : null,
+    regression_test: !repro || repro.status === 'unavailable' ? null
+      : repro.after?.regression?.fails_before === true ? 'pinned'
+        : repro.after?.regression_waiver ? 'waived' : 'absent',
     resolve_mode: resolveMode,
     attested_by: null,
     manual: null,
@@ -2727,6 +2760,16 @@ function cmdVerify(args) {
     verification.reason = 'regression_proof';
     verification.passed = true;
   }
+  // The re-run shows the failure stopped today; only a test that failed on the recorded
+  // baseline keeps it from coming back. Only a pass is downgraded: a run already failed or
+  // unverified for another reason keeps that reason, which is the one to fix first.
+  if ((repro?.status === 'reproduced' || repro?.status === 'intermittent')
+      && verification.regression_test === 'absent'
+      && verification.status === 'passed') {
+    verification.status = 'unverified';
+    verification.reason = 'regression_test_absent';
+    verification.passed = false;
+  }
 
   if (opts.manual) {
     const claim = typeof opts.manual === 'string' ? opts.manual.trim() : '';
@@ -2759,6 +2802,15 @@ function cmdVerify(args) {
     if (verification.reason === 'regression_proof_absent' || verification.reason === 'insufficient_clean_runs') {
       console.error('❌ The recorded failure has not been re-run since the fix. That is checkable by execution.');
       console.error('   x-solver repro verify --output-file <after> --exit-code 0');
+      process.exitCode = 1;
+      return;
+    }
+    // Whether a test fails on the baseline is an execution result too. A fix no test can
+    // pin says so through --regression-waiver, on the repro record, not through --manual.
+    if ((repro?.status === 'reproduced' || repro?.status === 'intermittent') && verification.regression_test === 'absent') {
+      console.error('❌ No regression test is pinned. That is checkable by execution.');
+      console.error('   x-solver repro verify ... --regression-test <path> --regression-cmd "<cmd>" --regression-marker "<literal>"');
+      console.error('   or: x-solver repro verify ... --regression-waiver "<why no test can pin it, and what watches for it>"');
       process.exitCode = 1;
       return;
     }
@@ -2799,7 +2851,9 @@ function cmdVerify(args) {
   const qualifier = verification.attested_by === 'human'
     ? ' (attested by human)'
     : verification.reason === 'regression_proof'
-      ? ' (regression proof — the recorded failure no longer reproduces)'
+      ? verification.regression_test === 'waived'
+        ? ' (regression proof — the recorded failure no longer reproduces; regression test waived)'
+        : ' (regression proof — the recorded failure no longer reproduces; regression test pinned)'
       : '';
   console.log(`\n  Overall: ${label}${qualifier}\n`);
 

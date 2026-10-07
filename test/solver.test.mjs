@@ -887,7 +887,7 @@ describe('x-solver gate chain', () => {
     try {
       const problem = reproducedAtResolve(tmp);
       writeFileSync(join(tmp, 'app.js'), 'const x = 2;\n'); // a real edit to a tracked file
-      expect(run(['repro', 'verify', '--output', '12 pass, 0 fail', '--exit-code', '0'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['repro', 'verify', '--output', '12 pass, 0 fail', '--exit-code', '0', '--regression-waiver', 'fixture: no test file exists here'], { cwd: tmp }).exitCode).toBe(0);
 
       const verified = run(['verify'], { cwd: tmp });
       expect(parseLastJSON(verified.stdout).status).toBe('passed');
@@ -1118,7 +1118,7 @@ describe('x-solver audit fixes', () => {
       const problem = survivedAtRefine(tmp);
       expect(run(['solve-advance', '--phase', 'resolve'], { cwd: tmp }).exitCode).toBe(0);
       writeFileSync(join(tmp, 'app.js'), 'const x = 2;\n');
-      expect(run(['repro', 'verify', '--output', '12 pass, 0 fail', '--exit-code', '0'], { cwd: tmp }).exitCode).toBe(0);
+      expect(run(['repro', 'verify', '--output', '12 pass, 0 fail', '--exit-code', '0', '--regression-waiver', 'fixture: no test file exists here'], { cwd: tmp }).exitCode).toBe(0);
       run(['candidates', 'add', 'the fix', '--source', 'executor'], { cwd: tmp });
       run(['candidates', 'select', 'cand-1'], { cwd: tmp });
 
@@ -2233,6 +2233,112 @@ describe('x-solver instrument registry', () => {
       writeFileSync(join(tmp, 'repro.test.js'), "require('./sum.js');\n");
       writeFileSync(join(tmp, 'sum.js'), FIXED);
       expect(verify(tmp).exitCode).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('x-solver verify requires a pinned regression test', () => {
+  const BUGGY = 'module.exports = (a, b) => a - b;\n';
+  const FIXED = 'module.exports = (a, b) => a + b;\n';
+  const CHECK = "const sum = require('./sum.js');\nif (sum(2, 3) !== 5) { console.error('REGRESSION: sum(2, 3) = ' + sum(2, 3)); process.exit(1); }\nconsole.log('ok');\n";
+
+  function fixedAtResolve() {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-regreq-'));
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd: tmp });
+    writeFileSync(join(tmp, 'sum.js'), BUGGY);
+    spawnSync('git', ['add', '-A'], { cwd: tmp });
+    spawnSync('git', ['commit', '-qm', 'init'], { cwd: tmp });
+    setupProblem(tmp, 'sum is wrong');
+    run(['strategy', 'set', 'iterate'], { cwd: tmp });
+    run(['repro', 'set', '--command', 'node check.js', '--output', 'REGRESSION: sum(2, 3) = -1',
+      '--exit-code', '1', '--failure-marker', 'REGRESSION', '--status', 'reproduced'], { cwd: tmp });
+    for (const p of ['diagnose', 'hypothesize']) run(['solve-advance', '--phase', p], { cwd: tmp });
+    run(['hypotheses', 'add', 'sum subtracts', '--check', 'node check.js'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'test'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--status', 'confirmed', '--evidence-for', 'sum.js uses a - b', '--source-kind', 'code'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'refine'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'resolve'], { cwd: tmp });
+    writeFileSync(join(tmp, 'sum.js'), FIXED);
+    writeFileSync(join(tmp, 'check.js'), CHECK);
+    return tmp;
+  }
+
+  function verifyAfter(tmp, extra) {
+    const r = run(['repro', 'verify', '--output', 'ok', '--exit-code', '0', ...extra], { cwd: tmp });
+    run(['candidates', 'add', 'add instead of subtract', '--source', 'executor'], { cwd: tmp });
+    run(['candidates', 'select', 'cand-1'], { cwd: tmp });
+    return { r, v: run(['verify'], { cwd: tmp }) };
+  }
+
+  test('a re-run without a pinned test leaves verify unverified', () => {
+    const tmp = fixedAtResolve();
+    try {
+      const { r, v } = verifyAfter(tmp, []);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('No regression test pinned');
+      const json = parseLastJSON(v.stdout);
+      expect(json.status).toBe('unverified');
+      expect(json.reason).toBe('regression_test_absent');
+      expect(json.regression_test).toBe('absent');
+      expect(v.stdout).toContain('--regression-waiver');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a test that fails on the baseline and passes now lets verify pass', () => {
+    const tmp = fixedAtResolve();
+    try {
+      const { v } = verifyAfter(tmp, ['--regression-test', 'check.js', '--regression-cmd', 'node check.js', '--regression-marker', 'REGRESSION']);
+      const json = parseLastJSON(v.stdout);
+      expect(json.status).toBe('passed');
+      expect(json.regression_test).toBe('pinned');
+      expect(v.stdout).toContain('regression test pinned');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a waiver with a reason lets verify pass and says so', () => {
+    const tmp = fixedAtResolve();
+    try {
+      const { v } = verifyAfter(tmp, ['--regression-waiver', 'the failure needs production traffic; an alert on sum errors watches it']);
+      const json = parseLastJSON(v.stdout);
+      expect(json.status).toBe('passed');
+      expect(json.regression_test).toBe('waived');
+      expect(v.stdout).toContain('regression test waived');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('--manual cannot stand in for the regression test', () => {
+    const tmp = fixedAtResolve();
+    try {
+      verifyAfter(tmp, []);
+      const m = run(['verify', '--manual', 'it is fixed', '--evidence', 'node check.js -> ok'], { cwd: tmp });
+      expect(m.exitCode).not.toBe(0);
+      expect(m.stderr).toContain('No regression test is pinned');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a waiver needs a reason and cannot be combined with --regression-cmd', () => {
+    const tmp = fixedAtResolve();
+    try {
+      const empty = run(['repro', 'verify', '--output', 'ok', '--exit-code', '0', '--regression-waiver'], { cwd: tmp });
+      expect(empty.exitCode).not.toBe(0);
+      expect(empty.stderr).toContain('--regression-waiver needs the reason');
+      const both = run(['repro', 'verify', '--output', 'ok', '--exit-code', '0', '--regression-waiver', 'x',
+        '--regression-test', 'check.js', '--regression-cmd', 'node check.js', '--regression-marker', 'REGRESSION'], { cwd: tmp });
+      expect(both.exitCode).not.toBe(0);
+      expect(both.stderr).toContain('contradict each other');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

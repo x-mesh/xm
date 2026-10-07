@@ -386,7 +386,13 @@ speculative fix; the close summary will state the cause is still unknown.
 $XMS repro verify --output-file <after> --exit-code 0 [--runs 0/9] [--regression-test <path>] \
   [--regression-cmd "<runs that test>" --regression-marker "<literal from its failing output>" \
    [--regression-setup "<install deps>"] [--regression-timeout <seconds, default 300>]]
+# or, when no test can pin the fix (infra, environment, data):
+$XMS repro verify --output-file <after> --exit-code 0 --regression-waiver "<why, and what watches for it instead>"
 ```
+
+`x-solver verify` requires one of the two for a `reproduced` or `intermittent` problem: a test
+pinned with `--regression-cmd`, or a written waiver. Without either it stays `unverified`
+(`reason: regression_test_absent`), and `--manual` does not override it.
 
 `--regression-test` alone only checks that the file exists. With `--regression-cmd`, the CLI proves
 the test pins the bug: it rebuilds the code the failure was recorded on (the `repro set` baseline:
@@ -403,8 +409,9 @@ in the close summary, or review it with the x-review silent-failures lens.
 `verify` reads this record: a `reproduced` problem whose regression proof is missing comes back
 `unverified` (`reason: regression_proof_absent`) and cannot be closed. `--manual` is not a way around
 it — a re-run is checkable by execution, which is exactly what `--manual` is not for. The reverse
-also holds: with no hard constraint declared, the proof alone passes `verify`
-(`status: passed, reason: regression_proof`). A declared hard constraint still needs `candidates score`.
+also holds: with no hard constraint declared, the proof plus a pinned or waived regression test
+passes `verify` (`status: passed, reason: regression_proof`). A declared hard constraint still needs
+`candidates score`.
 >
 > **Exception — diagnosis only.** If this problem came from the Review-Fix Gate (root `CLAUDE.md` step
 > 4b), stop at the confirmed cause and hand it back to triage with
