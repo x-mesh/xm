@@ -35,15 +35,24 @@ const CODEX_MD = path.join(HOME, '.codex', 'AGENTS.md');
 // Beside this script rather than searched in the cache: the cache resolvers sort
 // versions as strings, and the block must match the version doing the install.
 const TEMPLATES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'templates');
-// No version in the markers: matching is exact, so a bumped marker would miss
-// the old block and append a second one.
-const routingMarkers = (flag) => ({
-  begin: `<!-- xm:routing:begin — managed by \`xm setup ${flag}\`; edit outside this block -->`,
+// The begin marker carries the template revision (`v<N>`), bumped only when the
+// template text changes (test/setup-global-codex-md.test.mjs pins it). Matching
+// ignores the revision, so a block written by an older xm is still found and
+// replaced rather than followed by a second one. A block with no revision is
+// revision 0: the format before revisions existed.
+const routingMarkers = (flag, revision) => ({
+  begin: `<!-- xm:routing:begin v${revision} — managed by \`xm setup ${flag}\`; edit outside this block -->`,
+  beginMatch: /<!-- xm:routing:begin(?: v(\d+))?[^\n]*?-->/,
   end: '<!-- xm:routing:end -->',
 });
+const routingTarget = (label, flag, file, template, revision) => ({
+  label, flag, file, revision,
+  src: path.join(TEMPLATES_DIR, template),
+  markers: routingMarkers(flag, revision),
+});
 const ROUTING_TARGETS = [
-  { label: 'CLAUDE.md', flag: '--claude-md', file: CLAUDE_MD, src: path.join(TEMPLATES_DIR, 'claude-routing.md'), markers: routingMarkers('--claude-md') },
-  { label: 'AGENTS.md', flag: '--codex-md', file: CODEX_MD, src: path.join(TEMPLATES_DIR, 'codex-routing.md'), markers: routingMarkers('--codex-md') },
+  routingTarget('CLAUDE.md', '--claude-md', CLAUDE_MD, 'claude-routing.md', 1),
+  routingTarget('AGENTS.md', '--codex-md', CODEX_MD, 'codex-routing.md', 1),
 ];
 
 // Previous format (bare `node`) — cleaned up during install so users upgrading
@@ -167,11 +176,17 @@ function readRoutingFile(target) {
   return fs.existsSync(target.file) ? fs.readFileSync(target.file, 'utf8') : '';
 }
 
+/** Revision of the block in `text`: its number, 0 when unversioned, null when there is no block. */
+function installedRevision(text, markers) {
+  const match = markers.beginMatch.exec(text);
+  return match ? Number(match[1] ?? 0) : null;
+}
+
 function withoutRoutingBlock(text, markers) {
-  const begin = text.indexOf(markers.begin);
+  const match = markers.beginMatch.exec(text);
   const end = text.indexOf(markers.end);
-  if (begin === -1 || end === -1 || begin > end) return text;
-  return text.slice(0, begin) + text.slice(end + markers.end.length);
+  if (!match || end === -1 || match.index > end) return text;
+  return text.slice(0, match.index) + text.slice(end + markers.end.length);
 }
 
 /**
@@ -180,10 +195,16 @@ function withoutRoutingBlock(text, markers) {
  * it and never adds it.
  */
 function syncRouting(target, optIn) {
-  const { label, flag, file, src, markers } = target;
+  const { label, flag, file, src, markers, revision } = target;
   const current = readRoutingFile(target);
-  if (!optIn && !current.includes(markers.begin)) {
+  const installed = installedRevision(current, markers);
+  if (!optIn && installed === null) {
     log(`${label} routing: not enabled (opt in: xm ${VERB} ${flag})`);
+    return;
+  }
+  // An older xm must not overwrite a block that a newer xm wrote.
+  if (installed !== null && installed > revision) {
+    warn(`${label} routing: ${file} has block v${installed}, newer than v${revision} in this xm. Left unchanged; update xm.`);
     return;
   }
   if (!fs.existsSync(src)) {
@@ -210,13 +231,14 @@ function syncRouting(target, optIn) {
 }
 
 function routingStatus(target) {
-  const { flag, file, src, markers } = target;
+  const { flag, file, src, markers, revision } = target;
   const text = readRoutingFile(target);
-  if (!text.includes(markers.begin)) return `(not enabled — opt in: xm ${VERB} ${flag})`;
+  const installed = installedRevision(text, markers);
+  if (installed === null) return `(not enabled — opt in: xm ${VERB} ${flag})`;
+  if (installed > revision) return `newer than this xm (v${installed} > v${revision}; update xm)`;
   if (!fs.existsSync(src)) return `(template missing: ${src})`;
-  return text.includes(renderMarkerBlock(fs.readFileSync(src, 'utf8'), markers))
-    ? `current (${file})`
-    : `outdated (re-run xm ${VERB})`;
+  if (text.includes(renderMarkerBlock(fs.readFileSync(src, 'utf8'), markers))) return `current (v${revision}, ${file})`;
+  return `outdated (${installed === revision ? `v${revision}, content differs` : `v${installed} → v${revision}`}; re-run xm ${VERB})`;
 }
 
 function readSettings() {
@@ -479,7 +501,7 @@ function uninstall() {
     }
   }
   for (const target of ROUTING_TARGETS) {
-    if (!readRoutingFile(target).includes(target.markers.begin)) continue;
+    if (installedRevision(readRoutingFile(target), target.markers) === null) continue;
     const backup = backupCopy(target.file);
     try {
       removeMarkerBlock(target.file, { markers: target.markers, backup: false });
