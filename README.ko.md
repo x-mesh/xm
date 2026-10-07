@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.37.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.38.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -806,6 +806,12 @@ diff 보고서는 `.xm/review/mutate-diff/<head>-<merge-base>-<run-id>.json`에,
 재현 → 진단 → 가설 → 테스트 → 개선 → 해결 → x-humble
 [재현+마커] [상태+baseline] [검증 가능] [변수 하나] [전환/복원] [수정+회귀 증명] [왜 늦었나?]
 ```
+
+iterate 전략에서는 가설마다 확인 방법(`--check`)을 기록합니다. 확인 방법이 없는 가설이 남아 있으면 `test` 단계로 넘어가지 않습니다.
+
+재현된 문제나 간헐적인 문제를 `xm solver verify`로 닫으려면 회귀 테스트가 필요합니다. `xm solver repro verify --regression-cmd "<명령>" --regression-marker "<문자열>"`로 테스트를 고정하면, CLI가 `repro set` 때 기록한 기준 코드와 현재 코드에서 명령을 차례로 실행합니다. 테스트는 기준 코드에서 마커와 함께 실패하고 현재 코드에서 통과해야 합니다. 테스트로 고정할 수 없는 수정이면 `--regression-waiver "<이유>"`로 이유를 남깁니다.
+
+`x-build hooks install`로 scope guard를 설치했다면, 진행 중인 iterate 문제가 편집 범위를 제한합니다. `resolve` 전에는 `xm solver instrument add <파일>`로 등록한 파일만 고칠 수 있고, `resolve`에서는 Scope Contract의 파일과 테스트도 고칠 수 있습니다. 24시간 동안 진행이 없는 문제는 편집을 막지 않습니다. Bash로 쓰는 파일은 감시하지 않습니다.
 
 ---
 

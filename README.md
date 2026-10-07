@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.37.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.38.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -804,6 +804,12 @@ Use `--test-command 'bun test test/sync.test.mjs'` for an explicit JavaScript te
 REPRODUCE → DIAGNOSE → HYPOTHESIZE → TEST → REFINE → RESOLVE → x-humble
 [repro+marker] [state+baseline] [falsifiable] [one var] [switch/revert] [fix+regression proof] [why late?]
 ```
+
+In the iterate strategy, each hypothesis records its check (`--check`). The `test` phase starts only when every pending hypothesis has a check.
+
+`xm solver verify` requires a regression test for a reproduced or intermittent problem. Pin the test with `xm solver repro verify --regression-cmd "<command>" --regression-marker "<text>"`. The CLI runs the command on the baseline that `repro set` recorded, and then on the current tree. The test must fail with the marker on the baseline and pass on the current tree. If no test can pin the fix, record the reason with `--regression-waiver "<reason>"`.
+
+If `x-build hooks install` added the scope guard, an active iterate problem limits edits. Before `resolve`, only files that you register with `xm solver instrument add <file>` can change. In `resolve`, the files and tests of the Scope Contract can also change. A problem idle for 24 hours does not block edits. The guard does not watch Bash writes.
 
 ---
 
