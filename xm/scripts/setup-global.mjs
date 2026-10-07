@@ -31,15 +31,20 @@ const XM_PLAN_CMD_DEST = path.join(COMMANDS_DIR, 'xm-plan.md');
 const XM_PLAN_CMD_BACKUP = path.join(COMMANDS_DIR, 'xm-plan.md.pre-xm');
 const XM_PLAN_MARKER = '<!-- xm-managed:xm-plan -->';
 const CLAUDE_MD = path.join(CLAUDE_DIR, 'CLAUDE.md');
-// No version in the markers: matching is exact, so a bumped marker would miss
-// the old block and append a second one.
-const CLAUDE_MD_MARKERS = {
-  begin: '<!-- xm:routing:begin — managed by `xm setup --claude-md`; edit outside this block -->',
-  end: '<!-- xm:routing:end -->',
-};
+const CODEX_MD = path.join(HOME, '.codex', 'AGENTS.md');
 // Beside this script rather than searched in the cache: the cache resolvers sort
 // versions as strings, and the block must match the version doing the install.
-const CLAUDE_ROUTING_SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'claude-routing.md');
+const TEMPLATES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'templates');
+// No version in the markers: matching is exact, so a bumped marker would miss
+// the old block and append a second one.
+const routingMarkers = (flag) => ({
+  begin: `<!-- xm:routing:begin — managed by \`xm setup ${flag}\`; edit outside this block -->`,
+  end: '<!-- xm:routing:end -->',
+});
+const ROUTING_TARGETS = [
+  { label: 'CLAUDE.md', flag: '--claude-md', file: CLAUDE_MD, src: path.join(TEMPLATES_DIR, 'claude-routing.md'), markers: routingMarkers('--claude-md') },
+  { label: 'AGENTS.md', flag: '--codex-md', file: CODEX_MD, src: path.join(TEMPLATES_DIR, 'codex-routing.md'), markers: routingMarkers('--codex-md') },
+];
 
 // Previous format (bare `node`) — cleaned up during install so users upgrading
 // from earlier xm versions don't end up with duplicate Skill hook entries.
@@ -158,47 +163,60 @@ function backupCopy(file) {
   return backup;
 }
 
-function readClaudeMd() {
-  return fs.existsSync(CLAUDE_MD) ? fs.readFileSync(CLAUDE_MD, 'utf8') : '';
+function readRoutingFile(target) {
+  return fs.existsSync(target.file) ? fs.readFileSync(target.file, 'utf8') : '';
 }
 
-function withoutRoutingBlock(text) {
-  const begin = text.indexOf(CLAUDE_MD_MARKERS.begin);
-  const end = text.indexOf(CLAUDE_MD_MARKERS.end);
+function withoutRoutingBlock(text, markers) {
+  const begin = text.indexOf(markers.begin);
+  const end = text.indexOf(markers.end);
   if (begin === -1 || end === -1 || begin > end) return text;
-  return text.slice(0, begin) + text.slice(end + CLAUDE_MD_MARKERS.end.length);
+  return text.slice(0, begin) + text.slice(end + markers.end.length);
 }
 
 /**
- * `--claude-md` is the opt-in. Afterwards the block's presence is the consent,
- * so a bare install (what `xm update` runs) refreshes it and never adds it.
+ * The `--claude-md` / `--codex-md` flag is the opt-in. Afterwards the block's
+ * presence is the consent, so a bare install (what `xm update` runs) refreshes
+ * it and never adds it.
  */
-function syncClaudeRouting(optIn) {
-  const current = readClaudeMd();
-  if (!optIn && !current.includes(CLAUDE_MD_MARKERS.begin)) {
-    log(`CLAUDE.md routing: not enabled (opt in: xm ${VERB} --claude-md)`);
+function syncRouting(target, optIn) {
+  const { label, flag, file, src, markers } = target;
+  const current = readRoutingFile(target);
+  if (!optIn && !current.includes(markers.begin)) {
+    log(`${label} routing: not enabled (opt in: xm ${VERB} ${flag})`);
     return;
   }
-  if (!fs.existsSync(CLAUDE_ROUTING_SRC)) {
-    warn(`${CLAUDE_ROUTING_SRC} not found (skipped the routing block in ${CLAUDE_MD})`);
+  if (!fs.existsSync(src)) {
+    warn(`${src} not found (skipped the routing block in ${file})`);
     return;
   }
-  const body = fs.readFileSync(CLAUDE_ROUTING_SRC, 'utf8');
-  if (current.includes(renderMarkerBlock(body, CLAUDE_MD_MARKERS))) {
-    log(`CLAUDE.md routing: up to date (${CLAUDE_MD})`);
+  const body = fs.readFileSync(src, 'utf8');
+  if (current.includes(renderMarkerBlock(body, markers))) {
+    log(`${label} routing: up to date (${file})`);
   } else {
-    const backup = fs.existsSync(CLAUDE_MD) ? backupCopy(CLAUDE_MD) : null;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const backup = fs.existsSync(file) ? backupCopy(file) : null;
     try {
-      writeMergeMarker(CLAUDE_MD, body, { markers: CLAUDE_MD_MARKERS, backup: false });
+      writeMergeMarker(file, body, { markers, backup: false });
     } catch (e) {
-      die(`CLAUDE.md routing: ${e.message}`);
+      die(`${label} routing: ${e.message}`);
     }
-    log(`CLAUDE.md routing: wrote the managed block in ${CLAUDE_MD}`
+    log(`${label} routing: wrote the managed block in ${file}`
       + (backup ? ` (backup: ${path.basename(backup)}; edits inside the block are replaced)` : ''));
   }
-  if (/^## xm routing\b/m.test(withoutRoutingBlock(readClaudeMd()))) {
-    warn(`${CLAUDE_MD} also has a hand-written "## xm routing" section outside the managed block. Remove it to avoid duplicate rules.`);
+  if (/^## xm routing\b/m.test(withoutRoutingBlock(readRoutingFile(target), markers))) {
+    warn(`${file} also has a hand-written "## xm routing" section outside the managed block. Remove it to avoid duplicate rules.`);
   }
+}
+
+function routingStatus(target) {
+  const { flag, file, src, markers } = target;
+  const text = readRoutingFile(target);
+  if (!text.includes(markers.begin)) return `(not enabled — opt in: xm ${VERB} ${flag})`;
+  if (!fs.existsSync(src)) return `(template missing: ${src})`;
+  return text.includes(renderMarkerBlock(fs.readFileSync(src, 'utf8'), markers))
+    ? `current (${file})`
+    : `outdated (re-run xm ${VERB})`;
 }
 
 function readSettings() {
@@ -387,7 +405,7 @@ function install(opts) {
   }
 
   // Last: a failure here exits, and must not cost the steps above.
-  syncClaudeRouting(opts.claudeMd);
+  for (const target of ROUTING_TARGETS) syncRouting(target, opts.routingFlags.has(target.flag));
 
   log('done.');
 }
@@ -460,14 +478,15 @@ function uninstall() {
       }
     }
   }
-  if (readClaudeMd().includes(CLAUDE_MD_MARKERS.begin)) {
-    const backup = backupCopy(CLAUDE_MD);
+  for (const target of ROUTING_TARGETS) {
+    if (!readRoutingFile(target).includes(target.markers.begin)) continue;
+    const backup = backupCopy(target.file);
     try {
-      removeMarkerBlock(CLAUDE_MD, { markers: CLAUDE_MD_MARKERS, backup: false });
+      removeMarkerBlock(target.file, { markers: target.markers, backup: false });
     } catch (e) {
-      die(`CLAUDE.md routing: ${e.message}`);
+      die(`${target.label} routing: ${e.message}`);
     }
-    log(`removed the routing block from ${CLAUDE_MD} (backup: ${path.basename(backup)})`);
+    log(`removed the routing block from ${target.file} (backup: ${path.basename(backup)})`);
     removed = true;
   }
   log(removed ? 'uninstalled.' : 'nothing to remove.');
@@ -484,12 +503,7 @@ function status() {
   log(`xm dispatcher    : ${xmCmdExists ? XM_CMD_DEST : '(missing)'}`);
   log(`xm-plan alias    : ${xmPlanCmdExists ? XM_PLAN_CMD_DEST : '(missing)'}`);
   // Opt-in, so it is reported but never counted toward `overall`.
-  const claudeMd = readClaudeMd();
-  const routing = !claudeMd.includes(CLAUDE_MD_MARKERS.begin) ? `(not enabled — opt in: xm ${VERB} --claude-md)`
-    : !fs.existsSync(CLAUDE_ROUTING_SRC) ? `(template missing: ${CLAUDE_ROUTING_SRC})`
-      : claudeMd.includes(renderMarkerBlock(fs.readFileSync(CLAUDE_ROUTING_SRC, 'utf8'), CLAUDE_MD_MARKERS)) ? `current (${CLAUDE_MD})`
-        : `outdated (re-run xm ${VERB})`;
-  log(`CLAUDE.md routing: ${routing}`);
+  for (const target of ROUTING_TARGETS) log(`${target.label} routing: ${routingStatus(target)}`);
   // Exactly one executable registration per event is "registered"; more than one
   // runs the hook twice per call, none is missing.
   let hooksOk = true;
@@ -514,7 +528,7 @@ function status() {
 
 // `xm setup --claude-md` reaches here without a subcommand. Only known install
 // flags imply install: `xm init --dry-run` must still fail, not install.
-const INSTALL_FLAGS = new Set(['--no-hooks', '--claude-md']);
+const INSTALL_FLAGS = new Set(['--no-hooks', ...ROUTING_TARGETS.map((t) => t.flag)]);
 const args = process.argv.slice(2);
 const flagOnly = INSTALL_FLAGS.has(args[0]);
 const cmd = flagOnly ? 'install' : (args[0] || 'install');
@@ -522,7 +536,7 @@ const flags = new Set(flagOnly ? args : args.slice(1));
 
 switch (cmd) {
   case 'install':
-    install({ withHooks: !flags.has('--no-hooks'), claudeMd: flags.has('--claude-md') });
+    install({ withHooks: !flags.has('--no-hooks'), routingFlags: flags });
     break;
   case 'uninstall':
     uninstall();
@@ -539,6 +553,7 @@ switch (cmd) {
       + `  xm ${VERB} --no-hooks      # skip hook install (CLI only)\n`
       + `  xm ${VERB} --claude-md     # also add the xm routing block to ~/.claude/CLAUDE.md\n`
       + `                           #   (later installs and xm update refresh it while it exists)\n`
+      + `  xm ${VERB} --codex-md      # also add the xm routing block to ~/.codex/AGENTS.md\n`
       + `  xm ${VERB} status          # check install state\n`
       + `  xm ${VERB} uninstall       # remove hook + settings entries + routing block\n\n`
       + `To start a PROJECT (not a machine install):\n`

@@ -93,6 +93,7 @@ After installing, run once per machine to copy the trace-session hook into `~/.c
 /xm init uninstall    # remove hook + settings entries + routing block
 /xm init --no-hooks   # install CLI dispatchers without copying hooks
 /xm init --claude-md  # also add the xm routing block to ~/.claude/CLAUDE.md
+/xm init --codex-md   # also add the xm routing block to ~/.codex/AGENTS.md
 ```
 
 Idempotent: safe to re-run. Existing hooks (e.g. mem-mesh) are preserved, and each write creates a timestamped backup of `settings.json`. Traces land in each project's `.xm/traces/`.
@@ -135,11 +136,14 @@ xm setup status         # verify install state
 xm setup uninstall      # remove hook + settings entries + routing block
 xm setup --no-hooks     # install CLI dispatchers without copying hooks
 xm setup --claude-md    # also add the xm routing block to ~/.claude/CLAUDE.md
+xm setup --codex-md     # also add the xm routing block to ~/.codex/AGENTS.md
 ```
 
 Writes `~/.claude/hooks/xm-trace-session.mjs` and merges `PreToolUse`/`PostToolUse` Skill matchers into `~/.claude/settings.json` (existing hooks such as mem-mesh are preserved; a timestamped backup is created on every write). Use the bash route when you are outside Claude Code; otherwise `/xm init` is the preferred entry point.
 
 `--claude-md` adds a marked routing block to `~/.claude/CLAUDE.md`. The block tells Claude when to invoke xm skills, for example **xm:write** for a PR. A plain install does not add the block. After you opt in, `xm setup` and `xm update` refresh the block. Put your own rules outside the block, because each refresh replaces its contents. To remove only the block, delete it. The next install does not add it again. Each change to `CLAUDE.md` creates a timestamped backup.
+
+`--codex-md` adds the same kind of block to `~/.codex/AGENTS.md`. The rules in this block name skills as `$xm:<skill>`, the Codex form. The opt-in, refresh, and backup rules are the same as for `--claude-md`. The two flags can run together.
 
 Prefer `setup` in new scripts and docs: `init` reads as "start a project" everywhere else in the ecosystem, and a future major version will hand bare `xm init` over to the project route.
 
