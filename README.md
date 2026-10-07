@@ -145,6 +145,8 @@ Writes `~/.claude/hooks/xm-trace-session.mjs` and merges `PreToolUse`/`PostToolU
 
 `--codex-md` adds the same kind of block to `~/.codex/AGENTS.md`. The rules in this block name skills as `$xm:<skill>`, the Codex form. The opt-in, refresh, and backup rules are the same as for `--claude-md`. The two flags can run together.
 
+The begin marker of each block carries the template revision, for example `v1`. `xm setup status` shows the revision. If a block has a newer revision than your xm, `xm setup` leaves it unchanged and prints a warning. A block without a revision is replaced once with the current one.
+
 Prefer `setup` in new scripts and docs: `init` reads as "start a project" everywhere else in the ecosystem, and a future major version will hand bare `xm init` over to the project route.
 
 ```bash

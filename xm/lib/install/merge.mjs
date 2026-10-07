@@ -193,6 +193,23 @@ export function writeOverwrite(filePath, content, opts = {}) {
 }
 
 /**
+ * Find the BEGIN marker. `markers.beginMatch` (a non-global RegExp) lets the
+ * marker carry a revision that changes between releases while blocks written
+ * with an older revision are still found.
+ *
+ * @param {string} text
+ * @param {{ begin: string, beginMatch?: RegExp }} markers
+ * @returns {{ index: number, length: number }}
+ */
+function locateBegin(text, markers) {
+  if (markers.beginMatch) {
+    const match = markers.beginMatch.exec(text);
+    return match ? { index: match.index, length: match[0].length } : { index: -1, length: 0 };
+  }
+  return { index: text.indexOf(markers.begin), length: markers.begin.length };
+}
+
+/**
  * Render a marker block exactly as writeMergeMarker writes it.
  *
  * @param {string} blockContent
@@ -208,7 +225,7 @@ export function renderMarkerBlock(blockContent, markers = DEFAULT_MARKERS) {
  *
  * @param {string} filePath
  * @param {string} blockContent  Body inside markers (markers themselves added by this fn).
- * @param {{ mode?: number, maxBlockBytes?: number, markers?: { begin: string, end: string }, backup?: boolean }} [opts]
+ * @param {{ mode?: number, maxBlockBytes?: number, markers?: { begin: string, end: string, beginMatch?: RegExp }, backup?: boolean }} [opts]
  *   `backup: false` skips .bak rotation for callers that keep their own backups:
  *   rotation drops the oldest `.bak.N`, which may be a user-made file.
  * @returns {MergeResult}
@@ -237,12 +254,12 @@ export function writeMergeMarker(filePath, blockContent, opts = {}) {
     const existedBefore = existsSync(filePath);
     if (existedBefore) {
       const before = readFileSync(filePath, 'utf8');
-      const begin = before.indexOf(markers.begin);
+      const { index: begin, length: beginLength } = locateBegin(before, markers);
       const end = before.indexOf(markers.end);
       if (begin !== -1 && end !== -1 && begin < end) {
         hadBlock = true;
         pre = before.slice(0, begin);
-        const existingBlockContent = before.slice(begin + markers.begin.length, end);
+        const existingBlockContent = before.slice(begin + beginLength, end);
         post = before.slice(end + markers.end.length);
         // Drop the linefeed immediately after END if present, to avoid double blank lines.
         if (post.startsWith('\n')) post = post.slice(1);
@@ -293,7 +310,7 @@ export function writeMergeMarker(filePath, blockContent, opts = {}) {
  * If the file becomes empty after removal, it is deleted.
  *
  * @param {string} filePath
- * @param {{ markers?: { begin: string, end: string }, backup?: boolean }} [opts]  Same meaning as writeMergeMarker.
+ * @param {{ markers?: { begin: string, end: string, beginMatch?: RegExp }, backup?: boolean }} [opts]  Same meaning as writeMergeMarker.
  * @returns {MergeResult & { removed?: boolean }}
  */
 export function removeMarkerBlock(filePath, opts = {}) {
@@ -303,7 +320,7 @@ export function removeMarkerBlock(filePath, opts = {}) {
   }
   const markers = opts.markers ?? DEFAULT_MARKERS;
   const before = readFileSync(filePath, 'utf8');
-  const begin = before.indexOf(markers.begin);
+  const { index: begin } = locateBegin(before, markers);
   const end = before.indexOf(markers.end);
   if (begin === -1 || end === -1) {
     return { path: filePath, action: 'unchanged', backupTaken: false };
