@@ -14,6 +14,7 @@ import { homedir, tmpdir } from 'node:os';
 import { execSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { detectStop } from './convergence.mjs';
+import { scanDiff, addedLineKeys, newFileDiff } from './workaround-signals.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1548,6 +1549,42 @@ function runOnBaseline({ baseline, solveDir, testPath, command, setup, timeoutMs
   }
 }
 
+const WORKAROUND_SIGNAL_LIMIT = 50;
+const WORKAROUND_NEW_FILE_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Lines the fix added since the recorded baseline that look like a hidden symptom
+ * (see workaround-signals.mjs). Lines the baseline patch already added are not the
+ * fix's. Returns null where git cannot answer.
+ */
+function workaroundSignals(baseline, solveDir) {
+  if (!baseline?.head) return null;
+  try {
+    const git = (cmd, timeout = 30000) => execSync(cmd, {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout, maxBuffer: 64 * 1024 * 1024,
+    });
+    const top = git('git rev-parse --show-toplevel').trim();
+    let diff = git(`git diff --no-color --no-ext-diff -U0 ${baseline.head}`);
+    const before = new Set(baseline.untracked || []);
+    const added = git('git ls-files --others --exclude-standard --full-name')
+      .split('\n')
+      .filter((file) => file && !file.split('/').includes('.xm') && !before.has(file));
+    for (const file of added) {
+      const content = readFileSync(join(top, file));
+      if (content.length <= WORKAROUND_NEW_FILE_MAX_BYTES && !content.includes(0)) {
+        diff += `\n${newFileDiff(file, content.toString('utf8'))}`;
+      }
+    }
+    const ignore = baseline.patch_path
+      ? addedLineKeys(readFileSync(join(solveDir, baseline.patch_path), 'utf8'))
+      : new Set();
+    return scanDiff(diff, { include: (file) => !file.split('/').includes('.xm'), ignore })
+      .slice(0, WORKAROUND_SIGNAL_LIMIT);
+  } catch {
+    return null;
+  }
+}
+
 function readCapturedOutput(opts) {
   if (typeof opts['output-file'] === 'string') {
     if (!existsSync(opts['output-file'])) return { error: `Output file not found: ${opts['output-file']}` };
@@ -1872,6 +1909,8 @@ function cmdRepro(args) {
       };
     }
 
+    const signals = workaroundSignals(repro.baseline, solvePath(problem));
+
     const bounded = tailBound(captured.text);
     mkdirSync(reproDir, { recursive: true });
     writeFileSync(join(reproDir, 'after.out.txt'), bounded.text, 'utf8');
@@ -1883,6 +1922,7 @@ function cmdRepro(args) {
       clean_runs: cleanRuns ? `${cleanRuns.failed}/${cleanRuns.total}` : null,
       regression_test: regressionTest,
       regression,
+      workaround_signals: signals,
       worktree_digest: nowDigest,
       worktree_unchanged: comparable ? unchanged : null,
       worktree_comparable: comparable,
@@ -1897,6 +1937,12 @@ function cmdRepro(args) {
     if (!regressionTest) console.log('   No --regression-test given: nothing pins this fix against coming back.');
     else if (regression) console.log('   Regression test pinned: it fails on the recorded baseline and passes now.');
     else console.log('   --regression-test was not run on the baseline; add --regression-cmd to prove it fails without the fix.');
+    if (signals?.length) {
+      console.error(`⚠️  ${signals.length} added line(s) look like a hidden symptom rather than a fixed cause:`);
+      for (const s of signals.slice(0, 10)) console.error(`   [${s.kind}] ${s.file}:${s.line}  ${s.text.slice(0, 100)}`);
+      console.error('   Not a refusal. If a line is intended, state why in the close summary;');
+      console.error('   otherwise review it with the x-review silent-failures lens.');
+    }
     console.log(JSON.stringify({ action: 'repro', sub: 'verify', problem, repro }));
     return;
   }

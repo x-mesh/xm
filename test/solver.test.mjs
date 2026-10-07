@@ -2076,3 +2076,81 @@ describe('x-solver regression test on the baseline', () => {
     }
   });
 });
+
+describe('x-solver workaround signals at repro verify', () => {
+  const BUGGY = 'module.exports = (a, b) => a - b;\n';
+  const FIXED = 'module.exports = (a, b) => a + b;\n';
+
+  function gitRepo(committedSum) {
+    const tmp = mkdtempSync(join(tmpdir(), 'xs-wsig-'));
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd: tmp });
+    writeFileSync(join(tmp, 'sum.js'), committedSum);
+    spawnSync('git', ['add', '-A'], { cwd: tmp });
+    spawnSync('git', ['commit', '-qm', 'init'], { cwd: tmp });
+    return tmp;
+  }
+
+  function atResolve(tmp) {
+    const problem = setupProblem(tmp, 'sum is wrong');
+    run(['strategy', 'set', 'iterate'], { cwd: tmp });
+    run(['repro', 'set', '--command', 'node check.js', '--output', 'REGRESSION: sum(2, 3) = -1',
+      '--exit-code', '1', '--failure-marker', 'REGRESSION', '--status', 'reproduced'], { cwd: tmp });
+    for (const p of ['diagnose', 'hypothesize']) run(['solve-advance', '--phase', p], { cwd: tmp });
+    run(['hypotheses', 'add', 'sum subtracts', '--check', 'node check.js'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'test'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--status', 'confirmed', '--evidence-for', 'sum.js uses a - b', '--source-kind', 'code'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'refine'], { cwd: tmp });
+    run(['hypotheses', 'update', 'h1', '--refutation', 'survived', '--refuted-by', 'refuter-1'], { cwd: tmp });
+    run(['solve-advance', '--phase', 'resolve'], { cwd: tmp });
+    return problem;
+  }
+
+  const verify = (tmp) => run(['repro', 'verify', '--output', 'ok', '--exit-code', '0'], { cwd: tmp });
+  const signalsOf = (tmp, problem) => JSON.parse(readFileSync(
+    join(tmp, '.xm', 'solver', 'problems', problem, 'phases', '03-solve', 'strategy-state.json'), 'utf8',
+  )).repro.after.workaround_signals;
+
+  test('an added empty catch is reported but does not block the proof', () => {
+    const tmp = gitRepo(BUGGY);
+    try {
+      const problem = atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), 'module.exports = (a, b) => { try { return a + b; } catch {} };\n');
+      const r = verify(tmp);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain('Regression proof: proven');
+      expect(r.stderr).toContain('[empty-catch] sum.js:1');
+      expect(signalsOf(tmp, problem).map((s) => s.kind)).toEqual(['empty-catch']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a new untracked file is scanned too', () => {
+    const tmp = gitRepo(BUGGY);
+    try {
+      const problem = atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), FIXED);
+      writeFileSync(join(tmp, 'guard.js'), "test.skip('flaky sum', () => {});\n");
+      expect(verify(tmp).exitCode).toBe(0);
+      expect(signalsOf(tmp, problem)).toEqual([{ kind: 'skip-or-mock', file: 'guard.js', line: 1, text: "test.skip('flaky sum', () => {});" }]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a clean fix records an empty list, and lines from the baseline patch are not the fix', () => {
+    const tmp = gitRepo('module.exports = (a, b) => a + b;\nfunction load() {}\n');
+    try {
+      // The uncommitted state the bug was recorded on already has the empty catch.
+      writeFileSync(join(tmp, 'sum.js'), 'module.exports = (a, b) => a - b;\ntry { load(); } catch {}\n');
+      const problem = atResolve(tmp);
+      writeFileSync(join(tmp, 'sum.js'), 'module.exports = (a, b) => a + b;\ntry { load(); } catch {}\n');
+      expect(verify(tmp).exitCode).toBe(0);
+      expect(signalsOf(tmp, problem)).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

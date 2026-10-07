@@ -388,6 +388,11 @@ requires the command to fail there with the marker. It then requires the same co
 current tree. A test that passes on the baseline is refused. If it fails there for an unrelated reason
 (a dependency the fresh worktree lacks), pass `--regression-setup`; `node_modules` is linked already.
 
+`verify` also scans the lines added since the baseline for shapes that usually hide a symptom: an
+empty catch, a raised timeout or retry count, a new skip or mock, an `is not None` assert. It warns
+and records them in `repro.after.workaround_signals`; it does not refuse. Explain each intended one
+in the close summary, or review it with the x-review silent-failures lens.
+
 `verify` reads this record: a `reproduced` problem whose regression proof is missing comes back
 `unverified` (`reason: regression_proof_absent`) and cannot be closed. `--manual` is not a way around
 it — a re-run is checkable by execution, which is exactly what `--manual` is not for. The reverse
