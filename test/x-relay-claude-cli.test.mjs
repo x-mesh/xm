@@ -63,12 +63,13 @@ async function withFixture(options, fn) {
   }
 }
 
-function run(f, args, extraEnv = {}) {
+function run(f, args, extraEnv = {}, input) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [CLI, ...args], {
       cwd: f.root,
       env: { ...process.env, CODEX_THREAD_ID: '', CLAUDE_CODE_SESSION_ID: '', HOME: f.home, CLAUDE_CONFIG_DIR: f.config, XM_RELAY_CLAUDE_BIN: f.fakeClaude, FAKE_CLAUDE_AGENTS: JSON.stringify(f.agents), ...extraEnv },
     });
+    if (input !== undefined) child.stdin.end(input);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
@@ -110,6 +111,15 @@ describe.if(supported)('Claude relay CLI', () => {
       expect(result.status).toBe(0);
       expect(result.output.reply_to).toMatchObject({ provider: 'claude', session_id: SESSION, verification: 'live_inbox' });
       expect(sentFrame(f).message.content).toContain(JSON.stringify({ provider: 'claude', session_id: SESSION }));
+    });
+  });
+
+  test('--message-file - sends the stdin bytes literally', async () => {
+    await withFixture({}, async f => {
+      const body = '두 줄 답장\n`$HOME` 그대로\n';
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message-file', '-'], {}, body);
+      expect(result.status).toBe(0);
+      expect(sentFrame(f).message.content).toContain(body);
     });
   });
 

@@ -45,6 +45,7 @@ function parseArgs(argv) {
   for (const flag of ['--request-id', '--in-reply-to']) if (options[flag] && !THREAD_ID.test(options[flag])) throw new Error(`${flag} requires an exact UUID`);
   if (command === 'chat') {
     if (options['--thread'] || options['--session'] || options['--to'] || options['--message']) throw new Error('chat selects its recipient interactively; use send for explicit recipients or inline messages');
+    if (options['--message-file'] === '-') throw new Error('chat reads the terminal; pass a file path, not -, to --message-file');
     return { command, options };
   }
   if (Boolean(options['--message']) === Boolean(options['--message-file'])) throw new Error('send requires exactly one of --message or --message-file');
@@ -58,6 +59,13 @@ function parseArgs(argv) {
     if (!options[targetFlag] || options[otherTargetFlag]) throw new Error(`send with --provider ${provider} requires ${targetFlag}`);
   }
   return { command, options };
+}
+
+function readMessage(options) {
+  const file = options['--message-file'];
+  if (!file) return options['--message'];
+  // "-" reads stdin, so a receiver can answer in one command without a temporary file.
+  return readFileSync(file === '-' ? 0 : file, 'utf8');
 }
 
 function registryProject(name) {
@@ -235,7 +243,7 @@ async function sendClaudeMessage(options) {
   requireClaudeSocketPlatform();
   const sessionId = options['--session'];
   if (!THREAD_ID.test(sessionId)) throw new Error('send requires an exact Claude session UUID');
-  const message = options['--message-file'] ? readFileSync(options['--message-file'], 'utf8') : options['--message'];
+  const message = readMessage(options);
   if (!message.trim() || message.length > MAX_MESSAGE_LENGTH) throw new Error(`message must contain 1-${MAX_MESSAGE_LENGTH} characters`);
   const project = options['--project'] ? registryProject(options['--project']) : null;
   const candidates = claudeSessions().filter(session => session.sessionId === sessionId);
@@ -515,7 +523,7 @@ function isLiveCodexThread(thread) {
 async function sendMessage(options) {
   const threadId = options['--thread'];
   if (!THREAD_ID.test(threadId)) throw new Error('send requires an exact thread UUID');
-  const message = options['--message-file'] ? readFileSync(options['--message-file'], 'utf8') : options['--message'];
+  const message = readMessage(options);
   if (!message.trim() || message.length > MAX_MESSAGE_LENGTH) throw new Error(`message must contain 1-${MAX_MESSAGE_LENGTH} characters`);
   const { socketPath } = daemonVersion();
   const project = options['--project'] ? registryProject(options['--project']) : null;
@@ -543,7 +551,7 @@ function listProvider(provider, projectName) {
 async function sendAgyMessage(options) {
   const sessionId = options['--session'];
   if (!THREAD_ID.test(sessionId || '')) throw new Error('send requires an exact AGY session UUID');
-  const message = options['--message-file'] ? readFileSync(options['--message-file'], 'utf8') : options['--message'];
+  const message = readMessage(options);
   if (!message?.trim() || message.length > MAX_MESSAGE_LENGTH) throw new Error(`message must contain 1-${MAX_MESSAGE_LENGTH} characters`);
   const session = listAgySessions(options['--project']).sessions.find(row => row.session_id === sessionId);
   if (!session) throw new Error(`live AGY session not found: ${sessionId}`);
@@ -561,7 +569,7 @@ async function sendAgyMessage(options) {
 
 async function dispatchSend(options) {
   const requestId = options['--request-id'] || randomUUID();
-  const message = options['--message-file'] ? readFileSync(options['--message-file'], 'utf8') : options['--message'];
+  const message = readMessage(options);
   if (!message?.trim() || message.length > MAX_MESSAGE_LENGTH) throw new Error(`message must contain 1-${MAX_MESSAGE_LENGTH} characters`);
   const targets = options['--to'] || [`${options['--provider'] || 'codex'}:${options['--thread'] || options['--session']}`];
   const results = [];
@@ -587,7 +595,7 @@ async function dispatchSend(options) {
 
 async function main(argv) {
   const { command, options } = parseArgs(argv);
-  if (command === 'help') return { ok: true, usage: 'xm relay sessions [--provider codex|claude|agy] [--project ID] | xm relay chat [--project ID] [--provider PROVIDER] [--message-file PATH] | xm relay send (--to PROVIDER:UUID ... | --provider PROVIDER --thread/--session UUID) (--message TEXT | --message-file PATH) [--kind message|command] [--request-id UUID] [--in-reply-to UUID] [--from-provider PROVIDER --from-session UUID]', note: 'Chat selects message recipients only. No tmux, attach, resume, or new conversation is launched. AGY requires local agentapi backend context.' };
+  if (command === 'help') return { ok: true, usage: 'xm relay sessions [--provider codex|claude|agy] [--project ID] | xm relay chat [--project ID] [--provider PROVIDER] [--message-file PATH] | xm relay send (--to PROVIDER:UUID ... | --provider PROVIDER --thread/--session UUID) (--message TEXT | --message-file PATH|-) [--kind message|command] [--request-id UUID] [--in-reply-to UUID] [--from-provider PROVIDER --from-session UUID]', note: 'Chat selects message recipients only. No tmux, attach, resume, or new conversation is launched. AGY requires local agentapi backend context.' };
   if (command === 'sessions') return listProvider(options['--provider'] || 'codex', options['--project']);
   if (command === 'chat') {
     await runChat(options, { listProvider, registryProject, projectNameFor: createProjectNameResolver(), send: dispatchSend,
