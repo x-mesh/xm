@@ -9,7 +9,7 @@ import net from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { runChat, createProjectNameResolver } from './x-relay-chat.mjs';
 import { agySessions, agyApi, verifyAgyRecipient } from './x-relay-agy.mjs';
-import { liveSessionFiles } from './x-relay-live.mjs';
+import { canonical, daemonHeldCodexFiles, interactiveCodexCwds, liveSessionFiles } from './x-relay-live.mjs';
 
 const CODEX = process.env.XM_RELAY_CODEX_BIN || 'codex';
 const CLAUDE = process.env.XM_RELAY_CLAUDE_BIN || 'claude';
@@ -434,6 +434,22 @@ async function withDaemon(socketPath, fn) {
   }
 }
 
+function codexLockDirectory() {
+  return join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'thread-writer-locks');
+}
+
+function isLoadedStatus(status) {
+  return status !== 'notLoaded' && status !== 'unknown';
+}
+
+// A daemon-held thread is a live CLI's only while it is loaded and an
+// interactive Codex CLI runs in its directory; a thread the daemon kept after
+// its CLI exited fails the second check.
+function daemonAttachedPids(cwd, status, held, threadId, cliCwds) {
+  if (!held.has(threadId) || !cwd || !isLoadedStatus(status)) return null;
+  return (cliCwds ?? interactiveCodexCwds()).get(canonical(cwd)) || null;
+}
+
 function newestLoadedFirst(left, right) {
   if (left.loaded !== right.loaded) return left.loaded ? -1 : 1;
   return (right.updated_at ?? 0) - (left.updated_at ?? 0);
@@ -441,7 +457,9 @@ function newestLoadedFirst(left, right) {
 
 async function listSessions(projectName) {
   const { socketPath } = daemonVersion();
-  const live = liveSessionFiles(join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'thread-writer-locks'), 'codex');
+  const live = liveSessionFiles(codexLockDirectory(), 'codex');
+  const held = daemonHeldCodexFiles(codexLockDirectory());
+  for (const threadId of live.keys()) held.delete(threadId);
   const project = projectName ? registryProject(projectName) : null;
   const matchesProject = project ? createProjectMatcher(project.path) : null;
   return withDaemon(socketPath, async server => {
@@ -463,7 +481,7 @@ async function listSessions(projectName) {
       if (seen.has(cursor) || page === 4) { partial = true; break; }
       seen.add(cursor);
     }
-    for (const [threadId, pids] of live) {
+    for (const [threadId, pids] of [...live, ...[...held].map(threadId => [threadId, []])]) {
       if (sessions.has(threadId)) continue;
       try {
         const thread = (await server.request('thread/read', { threadId, includeTurns: false })).thread;
@@ -479,9 +497,19 @@ async function listSessions(projectName) {
         notes.push(`Live Codex thread ${threadId} metadata unavailable: ${error.message}`);
       }
     }
-    const listed = [...sessions.values()].filter(session => live.has(session.thread_id)).sort(newestLoadedFirst);
-    return { ok: true, provider: 'codex', transport: 'shared_daemon_queue', project: projectName || null, sessions: listed, partial, notes, note: 'Only threads held open by a running local Codex CLI process are listed; daemon-only and saved threads are omitted.' };
+    const cliCwds = held.size ? interactiveCodexCwds() : null;
+    const listed = [...sessions.values()].flatMap(session => {
+      if (live.has(session.thread_id)) return [session];
+      const pids = daemonAttachedPids(session.cwd, session.app_server_status, held, session.thread_id, cliCwds);
+      return pids ? [{ ...session, pids, attachment: 'daemon' }] : [];
+    }).sort(newestLoadedFirst);
+    return { ok: true, provider: 'codex', transport: 'shared_daemon_queue', project: projectName || null, sessions: listed, partial, notes, note: 'Only threads held open by a running local Codex CLI process, directly or through the shared daemon, are listed; saved threads and daemon threads without a live CLI in their directory are omitted.' };
   });
+}
+
+function isLiveCodexThread(thread) {
+  if (liveSessionFiles(codexLockDirectory(), 'codex').has(thread.id)) return true;
+  return Boolean(daemonAttachedPids(thread.cwd, thread.status?.type || 'unknown', daemonHeldCodexFiles(codexLockDirectory()), thread.id));
 }
 
 async function sendMessage(options) {
@@ -494,11 +522,11 @@ async function sendMessage(options) {
   const thread = await withDaemon(socketPath, async server => (await server.request('thread/read', { threadId, includeTurns: false })).thread);
   if (thread?.id !== threadId) throw new Error(`thread not found: ${threadId}`);
   if (project && !projectMatches(thread.cwd, project.path)) throw new Error(`thread ${threadId} is not in project ${project.id}`);
-  if (!liveSessionFiles(join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'thread-writer-locks'), 'codex').has(threadId)) throw new Error(`live Codex session not found: ${threadId}`);
+  if (!isLiveCodexThread(thread)) throw new Error(`live Codex session not found: ${threadId}`);
   if (thread.source && typeof thread.source === 'object' && ('subAgent' in thread.source || 'subagent' in thread.source)) throw new Error('relay does not target subagents');
   const replyTo = await replyAddress(options);
   const outgoing = addressedMessage(message, replyTo, 'codex', threadId, options);
-  if (!liveSessionFiles(join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'thread-writer-locks'), 'codex').has(threadId)) throw new Error(`live Codex session not found: ${threadId}`);
+  if (!isLiveCodexThread(thread)) throw new Error(`live Codex session not found: ${threadId}`);
   // The = form keeps clap from reading a message that starts with "-" (a bullet list) as a flag.
   const queued = spawnSync(CODEX, ['queue', '--thread', threadId, `--message=${outgoing}`], { encoding: 'utf8', timeout: 15000 });
   if (queued.error || queued.status !== 0) throw new Error((queued.stderr || queued.error?.message || 'Codex queue failed').trim());

@@ -1322,7 +1322,7 @@ A repro found while working in project A often implicates project B. `/xm:toss` 
 
 Toss captures the repro command **and its actual output** (secret-redacted, tail-bounded) plus a concrete fix direction — it refuses a "be careful"-level report with no repro. The sender writes a durable record into its own `.xm/outbox/<id>.json` and never touches the target's `.xm/`. Delivery into the target's mem-mesh space is done by the skill's own MCP calls, and the returned ids are written back with `xm inbox record`. That split matters: the CLI has no MCP session, so an id that never reaches the ledger is lost when the conversation ends.
 
-`/xm:relay` lists currently running local Claude, Codex, and AGY sessions in separate sections. Stored conversations and exited sessions are omitted. Codex UUIDs require a verified live CLI process holding their session file; daemon-only threads are omitted.
+`/xm:relay` lists currently running local Claude, Codex, and AGY sessions in separate sections. Stored conversations and exited sessions are omitted. Codex UUIDs require a verified live CLI process. The CLI holds the session file itself, or the shared daemon holds it for a CLI that runs in the same directory. Daemon threads without a live CLI are omitted.
 
 Use `/xm:relay sessions --provider claude|codex|agy` for the full provider list. Use `send` for a short message or `handoff` for a work summary.
 

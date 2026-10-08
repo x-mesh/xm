@@ -1323,7 +1323,7 @@ xm remote start            # gateway + host 동시 기동
 
 toss는 재현 명령과 **실제 출력**(시크릿 마스킹, 뒷부분만 보존), 그리고 구체적인 수정 방향을 함께 담습니다 — 재현 없는 "조심하세요" 수준의 리포트는 거부합니다. 보내는 쪽은 자기 `.xm/outbox/<id>.json`에 기록을 남기고 대상의 `.xm/`은 절대 건드리지 않습니다. 대상 mem-mesh 공간으로의 전달은 스킬 자신의 MCP 호출로 이루어지며, 반환된 id는 `xm inbox record`로 되돌려 기록합니다. 이 분리가 중요한 이유는 CLI에 MCP 세션이 없기 때문입니다 — 원장에 남지 않은 id는 대화가 끝나는 순간 사라집니다.
 
-`/xm:relay`는 현재 실행 중인 로컬 Claude·Codex·AGY 세션만 provider별로 보여 줍니다. 저장된 대화나 종료된 세션은 목록에 넣지 않습니다. Codex는 UUID별 파일을 열고 있는 실제 CLI 프로세스를 확인하며, daemon에만 열린 thread는 제외합니다. 한 provider의 목록은 `/xm:relay sessions --provider claude|codex|agy`로 확인합니다. 짧은 메시지는 `send`, 작업 요약은 `handoff`로 보냅니다.
+`/xm:relay`는 현재 실행 중인 로컬 Claude·Codex·AGY 세션만 provider별로 보여 줍니다. 저장된 대화나 종료된 세션은 목록에 넣지 않습니다. Codex는 실제로 실행 중인 CLI 프로세스를 확인합니다. CLI가 UUID별 파일을 직접 열고 있거나, 같은 디렉터리에서 실행 중인 CLI를 대신해 공유 daemon이 열고 있어야 합니다. 실행 중인 CLI가 없는 daemon thread는 제외합니다. 한 provider의 목록은 `/xm:relay sessions --provider claude|codex|agy`로 확인합니다. 짧은 메시지는 `send`, 작업 요약은 `handoff`로 보냅니다.
 
 macOS와 Linux에서 셸 adapter는 Claude의 비공개 로컬 inbox에 메시지를 제출하고, Codex 메시지는 공유 daemon의 queue에 넣습니다. 어느 쪽도 상대가 읽었다는 보장은 아닙니다. Windows named pipe는 지원하지 않습니다.
 

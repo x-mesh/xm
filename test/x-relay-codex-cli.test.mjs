@@ -268,6 +268,36 @@ describe('Codex relay CLI', () => {
     });
   });
 
+  test('lists a loaded daemon-held thread while an interactive CLI runs in its directory, and queues to it', async () => {
+    await withFixture(async f => {
+      const locks = join(realpathSync(f.home), '.codex', 'thread-writer-locks');
+      const uid = process.getuid();
+      const daemon = '/opt/codex/releases/0.161.0/bin/codex app-server --listen unix:// --managed-daemon';
+      const script = (name, body) => {
+        writeFileSync(join(f.root, 'bins', name), `#!/usr/bin/env node\nconst args = process.argv.slice(2);\n${body}\n`);
+        chmodSync(join(f.root, 'bins', name), 0o755);
+      };
+      script('lsof', `if (args.includes('cwd')) process.stdout.write('p4242\\nfcwd\\nn' + process.env.FAKE_CLI_CWD + '\\n');
+else process.stdout.write(${JSON.stringify(`p999\nccodex\nf3\nn${join(locks, `${THREAD_A}.lock`)}\nf4\nn${join(locks, `${THREAD_C}.lock`)}\n`)});`);
+      script('ps', `if (args.includes('-A')) process.stdout.write(${JSON.stringify(`4242 ${uid} codex codex --dangerously-bypass-approvals-and-sandbox\n999 ${uid} /opt/codex/re ${daemon}\n`)});
+else process.stdout.write(${JSON.stringify(`999 /opt/codex/re ${daemon}\n`)});`);
+
+      const attached = await run(f, ['sessions'], { FAKE_CLI_CWD: f.repo });
+      expect(attached.status).toBe(0);
+      expect(attached.output.sessions.map(row => [row.thread_id, row.pids, row.attachment])).toEqual([[THREAD_C, [4242], 'daemon']]);
+
+      const queued = await run(f, ['send', '--thread', THREAD_C, '--message', 'hello'], { FAKE_CLI_CWD: f.repo });
+      expect(queued.status).toBe(0);
+      expect(queued.output.state).toBe('queued');
+
+      const elsewhere = await run(f, ['sessions'], { FAKE_CLI_CWD: f.root });
+      expect(elsewhere.output.sessions).toEqual([]);
+      const refused = await run(f, ['send', '--thread', THREAD_C, '--message', 'hello'], { FAKE_CLI_CWD: f.root });
+      expect(refused.status).not.toBe(0);
+      expect(refused.output.error).toContain('live Codex session not found');
+    });
+  });
+
   test('omits stored threads without a live CLI even when metadata exists', async () => {
     await withFixture(async f => {
       f.threads[1].status = { type: 'idle' };
