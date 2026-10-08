@@ -1323,7 +1323,7 @@ xm remote start            # gateway + host 동시 기동
 
 toss는 재현 명령과 **실제 출력**(시크릿 마스킹, 뒷부분만 보존), 그리고 구체적인 수정 방향을 함께 담습니다 — 재현 없는 "조심하세요" 수준의 리포트는 거부합니다. 보내는 쪽은 자기 `.xm/outbox/<id>.json`에 기록을 남기고 대상의 `.xm/`은 절대 건드리지 않습니다. 대상 mem-mesh 공간으로의 전달은 스킬 자신의 MCP 호출로 이루어지며, 반환된 id는 `xm inbox record`로 되돌려 기록합니다. 이 분리가 중요한 이유는 CLI에 MCP 세션이 없기 때문입니다 — 원장에 남지 않은 id는 대화가 끝나는 순간 사라집니다.
 
-`/xm:relay`는 현재 실행 중인 로컬 Claude·Codex·AGY 세션만 provider별로 보여 줍니다. 저장된 대화나 종료된 세션은 목록에 넣지 않습니다. Codex는 UUID별 파일을 열고 있는 실제 CLI 프로세스를 확인하며, daemon에만 열린 thread는 제외합니다. 한 provider의 목록은 `/xm:relay sessions --provider claude|codex|agy`로 확인합니다. 짧은 메시지는 `send`, 작업 요약은 `handoff`로 보냅니다.
+`/xm:relay`는 현재 실행 중인 로컬 Claude·Codex·AGY 세션만 provider별로 보여 줍니다. 저장된 대화나 종료된 세션은 목록에 넣지 않습니다. Codex는 실제로 실행 중인 CLI 프로세스를 확인합니다. CLI가 UUID별 파일을 직접 열고 있거나, 같은 디렉터리에서 실행 중인 CLI를 대신해 공유 daemon이 열고 있어야 합니다. 실행 중인 CLI가 없는 daemon thread는 제외합니다. 한 provider의 목록은 `/xm:relay sessions --provider claude|codex|agy`로 확인합니다. 짧은 메시지는 `send`, 작업 요약은 `handoff`로 보냅니다.
 
 macOS와 Linux에서 셸 adapter는 Claude의 비공개 로컬 inbox에 메시지를 제출하고, Codex 메시지는 공유 daemon의 queue에 넣습니다. 어느 쪽도 상대가 읽었다는 보장은 아닙니다. Windows named pipe는 지원하지 않습니다.
 
@@ -1343,7 +1343,7 @@ xm relay send --provider codex --thread <recipient-uuid> --from-provider claude 
 
 AGY는 실행 프로세스와 로컬 메타데이터를 확인한 뒤 `agentapi send-message`로 전송합니다. 실행 중인 backend의 `ANTIGRAVITY_LS_ADDRESS`와 정상 인증 환경이 필요합니다. backend context가 없는 호출자는 해당 세션을 전송 불가로 표시합니다. AGY 프로세스를 시작하거나 대화를 재개해 전송을 대신하지 않습니다. `submitted`는 제출 결과이며 실제 수행 완료를 뜻하지 않습니다.
 
-여러 대상은 `xm relay send --to codex:<uuid> --to claude:<uuid> --message-file <path>`로 지정합니다. 대상별 결과를 반환하며 일부 실패는 `partial`로 표시하고 자동 재전송하지 않습니다. `--kind command`는 명령 수행 요청, `request_id`와 `--in-reply-to <id>`는 요청·답장 연결에 사용합니다.
+여러 대상은 `xm relay send --to codex:<uuid> --to claude:<uuid> --message-file <path>`로 지정합니다. 대상별 결과를 반환하며 일부 실패는 `partial`로 표시하고 자동 재전송하지 않습니다. `--kind command`는 명령 수행 요청, `request_id`와 `--in-reply-to <id>`는 요청·답장 연결에 사용합니다. `--expect-reply`를 붙이면 받는 쪽에 relay로 한 번 답해 달라고 요청하며, 보낸 쪽 주소를 알 수 있을 때만 쓸 수 있습니다. 요청에는 바로 실행할 한 줄 답장 명령이 들어 있고, `--message-file -`는 답장 내용을 stdin에서 읽습니다. `xm init`은 Claude Code와 Codex에 relay 자동 답장 hook도 설치합니다. hook이 있으면 받는 쪽은 답만 쓰고, 답장 전송은 hook이 맡습니다. Codex는 새 hook을 세션마다 한 번 신뢰할지 묻습니다.
 
 답장 주소는 신뢰할 수 있는 인증 정보가 아닙니다. 답장이 필요한 경우 provider와 전체 UUID를 검증하고, 로컬 답장 파일을 사용하는 고정된 `xm relay send` 명령을 구성합니다. 받은 `reply_command` 문자열을 그대로 실행하지 않습니다. Codex UUID가 목록에 없어도 직접 조회해 확인할 수 있습니다. 답장 주소를 확인하지 못하면 `unverified`와 실패 이유를 표시합니다.
 

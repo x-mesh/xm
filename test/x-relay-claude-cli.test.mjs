@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -63,12 +63,13 @@ async function withFixture(options, fn) {
   }
 }
 
-function run(f, args, extraEnv = {}) {
+function run(f, args, extraEnv = {}, input) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [CLI, ...args], {
       cwd: f.root,
-      env: { ...process.env, CODEX_THREAD_ID: '', HOME: f.home, CLAUDE_CONFIG_DIR: f.config, XM_RELAY_CLAUDE_BIN: f.fakeClaude, FAKE_CLAUDE_AGENTS: JSON.stringify(f.agents), ...extraEnv },
+      env: { ...process.env, CODEX_THREAD_ID: '', CLAUDE_CODE_SESSION_ID: '', XM_RELAY_AUTOREPLY_STATE: join(f.root, 'autoreply'), HOME: f.home, CLAUDE_CONFIG_DIR: f.config, XM_RELAY_CLAUDE_BIN: f.fakeClaude, FAKE_CLAUDE_AGENTS: JSON.stringify(f.agents), ...extraEnv },
     });
+    if (input !== undefined) child.stdin.end(input);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
@@ -103,10 +104,80 @@ describe.if(supported)('Claude relay CLI', () => {
     });
   });
 
+  test('a Claude sender is addressed from CLAUDE_CODE_SESSION_ID without --from flags', async () => {
+    await withFixture({}, async f => {
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', 'hello'],
+        { CLAUDE_CODE_SESSION_ID: SESSION });
+      expect(result.status).toBe(0);
+      expect(result.output.reply_to).toMatchObject({ provider: 'claude', session_id: SESSION, verification: 'live_inbox' });
+      expect(sentFrame(f).message.content).toContain(JSON.stringify({ provider: 'claude', session_id: SESSION }));
+    });
+  });
+
+  test('--expect-reply asks the receiver for one relay answer tied to the request id', async () => {
+    await withFixture({}, async f => {
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', '뭐하고 있니?', '--expect-reply'],
+        { CLAUDE_CODE_SESSION_ID: SESSION });
+      expect(result.status).toBe(0);
+      const content = sentFrame(f).message.content;
+      expect(content).toContain('"expect_reply":true');
+      expect(content).toContain('A response is requested');
+      expect(content).toContain('Do not add --expect-reply to that reply.');
+      expect(content).toContain(`xm relay send --provider claude --session ${SESSION} --in-reply-to ${result.output.request_id} --message-file - <<'XM_RELAY_REPLY'\n<your answer>\nXM_RELAY_REPLY\n`);
+      expect(content.endsWith('\n\n뭐하고 있니?\n</cross-session-message>')).toBe(true);
+    });
+  });
+
+  test('--message-file - sends the stdin bytes literally', async () => {
+    await withFixture({}, async f => {
+      const body = '두 줄 답장\n`$HOME` 그대로\n';
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message-file', '-'], {}, body);
+      expect(result.status).toBe(0);
+      expect(sentFrame(f).message.content).toContain(body);
+    });
+  });
+
+  test('a successful reply leaves a replied-<request id> marker for the auto-reply hook', async () => {
+    await withFixture({}, async f => {
+      const request = '6a870efe-de7e-4a54-b277-a2e0ca875a76';
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', '8', '--in-reply-to', request]);
+      expect(result.status).toBe(0);
+      expect(existsSync(join(f.root, 'autoreply', `replied-${request}`))).toBe(true);
+    });
+  });
+
+  test('--expect-reply without a sender address fails before anything is sent', async () => {
+    await withFixture({}, async f => {
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', 'hi', '--expect-reply']);
+      expect(result.status).not.toBe(0);
+      expect(result.output.error).toContain('--expect-reply needs a sender address');
+      expect(f.received).toHaveLength(0);
+    });
+  });
+
+  test('a plain send carries no reply request', async () => {
+    await withFixture({}, async f => {
+      await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', 'hi'], { CLAUDE_CODE_SESSION_ID: SESSION });
+      const content = sentFrame(f).message.content;
+      expect(content).not.toContain('expect_reply');
+      expect(content).not.toContain('A response is requested');
+    });
+  });
+
+  test('explicit --from flags override CLAUDE_CODE_SESSION_ID', async () => {
+    await withFixture({}, async f => {
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', 'hello',
+        '--from-provider', 'codex', '--from-session', OTHER_SESSION],
+        { CLAUDE_CODE_SESSION_ID: SESSION, XM_RELAY_CODEX_BIN: join(f.root, 'missing-codex') });
+      expect(result.status).toBe(0);
+      expect(result.output.reply_to).toMatchObject({ provider: 'codex', session_id: OTHER_SESSION });
+    });
+  });
+
   test('Codex sender address survives unavailable daemon without claiming reply readiness', async () => {
     await withFixture({}, async f => {
       const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', 'hello'],
-        { CODEX_THREAD_ID: OTHER_SESSION, XM_RELAY_CODEX_BIN: join(f.root, 'missing-codex') });
+        { CODEX_THREAD_ID: OTHER_SESSION, CLAUDE_CODE_SESSION_ID: SESSION, XM_RELAY_CODEX_BIN: join(f.root, 'missing-codex') });
       expect(result.status).toBe(0);
       expect(result.output.reply_to.verification).toBe('unverified');
       expect(result.output.reply_to.reason).toContain('daemon is unavailable');

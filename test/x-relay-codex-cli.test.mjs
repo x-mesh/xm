@@ -146,7 +146,7 @@ function run(f, args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [CLI, ...args], {
       cwd: f.root,
-      env: { ...process.env, CODEX_THREAD_ID: '', HOME: f.home, CODEX_HOME: join(f.home, '.codex'), PATH: join(f.root, 'bins') + ':' + process.env.PATH, XM_RELAY_CODEX_BIN: f.fake, FAKE_DAEMON_SOCKET: f.socketPath, FAKE_QUEUE_CAPTURE: f.capture, ...extraEnv },
+      env: { ...process.env, CODEX_THREAD_ID: '', CLAUDE_CODE_SESSION_ID: '', XM_RELAY_AUTOREPLY_STATE: join(f.root, 'autoreply'), HOME: f.home, CODEX_HOME: join(f.home, '.codex'), PATH: join(f.root, 'bins') + ':' + process.env.PATH, XM_RELAY_CODEX_BIN: f.fake, FAKE_DAEMON_SOCKET: f.socketPath, FAKE_QUEUE_CAPTURE: f.capture, ...extraEnv },
     });
     let stdout = '';
     let stderr = '';
@@ -205,6 +205,11 @@ describe('Codex relay CLI', () => {
   test('rejects malformed or duplicate recipients before any submission', () => {
     expect(() => parseArgs(['send', '--to', `codex:${THREAD_A}`, '--to', `codex:${THREAD_A}`, '--message', 'hello'])).toThrow('duplicate recipient');
     expect(() => parseArgs(['send', '--to', 'codex:prefix', '--message', 'hello'])).toThrow('provider:UUID');
+    expect(parseArgs(['send', '--thread', THREAD_A, '--message', 'hello', '--expect-reply']).options['--expect-reply']).toBe(true);
+    expect(() => parseArgs(['send', '--thread', THREAD_A, '--message', 'hello', '--expect-reply', '--expect-reply'])).toThrow('duplicate option: --expect-reply');
+    expect(() => parseArgs(['sessions', '--expect-reply'])).toThrow('sessions accepts only');
+    expect(parseArgs(['send', '--thread', THREAD_A, '--message-file', '-']).options['--message-file']).toBe('-');
+    expect(() => parseArgs(['chat', '--message-file', '-'])).toThrow('pass a file path, not -');
     expect(() => parseArgs(['send', '--to', `codex:${THREAD_A}`, '--provider', 'codex', '--message', 'hello'])).toThrow('cannot be combined');
   });
 
@@ -265,6 +270,36 @@ describe('Codex relay CLI', () => {
       expect(result.output.sessions.map(row => row.thread_id)).toEqual([THREAD_C, THREAD_A]);
       expect(result.output.sessions.every(row => row.live_status === 'running')).toBe(true);
       expect(result.output.partial).toBe(false);
+    });
+  });
+
+  test('lists a loaded daemon-held thread while an interactive CLI runs in its directory, and queues to it', async () => {
+    await withFixture(async f => {
+      const locks = join(realpathSync(f.home), '.codex', 'thread-writer-locks');
+      const uid = process.getuid();
+      const daemon = '/opt/codex/releases/0.161.0/bin/codex app-server --listen unix:// --managed-daemon';
+      const script = (name, body) => {
+        writeFileSync(join(f.root, 'bins', name), `#!/usr/bin/env node\nconst args = process.argv.slice(2);\n${body}\n`);
+        chmodSync(join(f.root, 'bins', name), 0o755);
+      };
+      script('lsof', `if (args.includes('cwd')) process.stdout.write('p4242\\nfcwd\\nn' + process.env.FAKE_CLI_CWD + '\\n');
+else process.stdout.write(${JSON.stringify(`p999\nccodex\nf3\nn${join(locks, `${THREAD_A}.lock`)}\nf4\nn${join(locks, `${THREAD_C}.lock`)}\n`)});`);
+      script('ps', `if (args.includes('-A')) process.stdout.write(${JSON.stringify(`4242 ${uid} codex codex --dangerously-bypass-approvals-and-sandbox\n999 ${uid} /opt/codex/re ${daemon}\n`)});
+else process.stdout.write(${JSON.stringify(`999 /opt/codex/re ${daemon}\n`)});`);
+
+      const attached = await run(f, ['sessions'], { FAKE_CLI_CWD: f.repo });
+      expect(attached.status).toBe(0);
+      expect(attached.output.sessions.map(row => [row.thread_id, row.pids, row.attachment])).toEqual([[THREAD_C, [4242], 'daemon']]);
+
+      const queued = await run(f, ['send', '--thread', THREAD_C, '--message', 'hello'], { FAKE_CLI_CWD: f.repo });
+      expect(queued.status).toBe(0);
+      expect(queued.output.state).toBe('queued');
+
+      const elsewhere = await run(f, ['sessions'], { FAKE_CLI_CWD: f.root });
+      expect(elsewhere.output.sessions).toEqual([]);
+      const refused = await run(f, ['send', '--thread', THREAD_C, '--message', 'hello'], { FAKE_CLI_CWD: f.root });
+      expect(refused.status).not.toBe(0);
+      expect(refused.output.error).toContain('live Codex session not found');
     });
   });
 
@@ -446,7 +481,7 @@ console.log(JSON.stringify(await chatCandidates({ listProvider: provider => prov
 `);
     const result = await new Promise((resolveResult, reject) => {
       const child = spawn('node', [wrapper], { cwd: f.root, env: {
-        ...process.env, HOME: f.home, CODEX_HOME: join(f.home, '.codex'), CODEX_THREAD_ID: '',
+        ...process.env, HOME: f.home, CODEX_HOME: join(f.home, '.codex'), CODEX_THREAD_ID: '', CLAUDE_CODE_SESSION_ID: '',
         PATH: join(f.root, 'bins') + ':' + process.env.PATH,
         XM_RELAY_CODEX_BIN: f.fake, XM_RELAY_CLAUDE_BIN: fakeClaude,
         FAKE_DAEMON_SOCKET: f.socketPath, FAKE_QUEUE_CAPTURE: f.capture,

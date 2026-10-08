@@ -30,7 +30,7 @@ else process.exit(2);`,
     };
     for (const [name, source] of Object.entries(scripts)) { writeFileSync(join(bins, name), '#!/usr/bin/env node\n' + source); chmodSync(join(bins, name), 0o755); }
     const run = (args, env = {}) => {
-      const result = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: { ...process.env, CODEX_THREAD_ID: '', ANTIGRAVITY_CONVERSATION_ID: '', XM_RELAY_AGY_DATA_DIR: data, XM_RELAY_AGY_AGENTAPI_BIN: join(bins, 'agentapi'), ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:12345', PATH: bins + ':' + process.env.PATH, ...env } });
+      const result = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: { ...process.env, CODEX_THREAD_ID: '', ANTIGRAVITY_CONVERSATION_ID: '', CLAUDE_CODE_SESSION_ID: '', XM_RELAY_AUTOREPLY_STATE: join(data, 'autoreply'), XM_RELAY_AGY_DATA_DIR: data, XM_RELAY_AGY_AGENTAPI_BIN: join(bins, 'agentapi'), ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:12345', PATH: bins + ':' + process.env.PATH, ...env } });
       return { status: result.status, output: JSON.parse(result.status === 0 ? result.stdout : result.stderr) };
     };
     fn({ run, capture });
