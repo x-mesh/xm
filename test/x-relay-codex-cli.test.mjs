@@ -205,6 +205,9 @@ describe('Codex relay CLI', () => {
   test('rejects malformed or duplicate recipients before any submission', () => {
     expect(() => parseArgs(['send', '--to', `codex:${THREAD_A}`, '--to', `codex:${THREAD_A}`, '--message', 'hello'])).toThrow('duplicate recipient');
     expect(() => parseArgs(['send', '--to', 'codex:prefix', '--message', 'hello'])).toThrow('provider:UUID');
+    expect(parseArgs(['send', '--thread', THREAD_A, '--message', 'hello', '--expect-reply']).options['--expect-reply']).toBe(true);
+    expect(() => parseArgs(['send', '--thread', THREAD_A, '--message', 'hello', '--expect-reply', '--expect-reply'])).toThrow('duplicate option: --expect-reply');
+    expect(() => parseArgs(['sessions', '--expect-reply'])).toThrow('sessions accepts only');
     expect(parseArgs(['send', '--thread', THREAD_A, '--message-file', '-']).options['--message-file']).toBe('-');
     expect(() => parseArgs(['chat', '--message-file', '-'])).toThrow('pass a file path, not -');
     expect(() => parseArgs(['send', '--to', `codex:${THREAD_A}`, '--provider', 'codex', '--message', 'hello'])).toThrow('cannot be combined');

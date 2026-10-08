@@ -114,12 +114,44 @@ describe.if(supported)('Claude relay CLI', () => {
     });
   });
 
+  test('--expect-reply asks the receiver for one relay answer tied to the request id', async () => {
+    await withFixture({}, async f => {
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', '뭐하고 있니?', '--expect-reply'],
+        { CLAUDE_CODE_SESSION_ID: SESSION });
+      expect(result.status).toBe(0);
+      const content = sentFrame(f).message.content;
+      expect(content).toContain('"expect_reply":true');
+      expect(content).toContain('A response is requested');
+      expect(content).toContain('Do not add --expect-reply to that reply.');
+      expect(content).toContain(`xm relay send --provider claude --session ${SESSION} --in-reply-to ${result.output.request_id} --message-file - <<'XM_RELAY_REPLY'\n<your answer>\nXM_RELAY_REPLY\n`);
+      expect(content.endsWith('\n\n뭐하고 있니?\n</cross-session-message>')).toBe(true);
+    });
+  });
+
   test('--message-file - sends the stdin bytes literally', async () => {
     await withFixture({}, async f => {
       const body = '두 줄 답장\n`$HOME` 그대로\n';
       const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message-file', '-'], {}, body);
       expect(result.status).toBe(0);
       expect(sentFrame(f).message.content).toContain(body);
+    });
+  });
+
+  test('--expect-reply without a sender address fails before anything is sent', async () => {
+    await withFixture({}, async f => {
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', 'hi', '--expect-reply']);
+      expect(result.status).not.toBe(0);
+      expect(result.output.error).toContain('--expect-reply needs a sender address');
+      expect(f.received).toHaveLength(0);
+    });
+  });
+
+  test('a plain send carries no reply request', async () => {
+    await withFixture({}, async f => {
+      await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', 'hi'], { CLAUDE_CODE_SESSION_ID: SESSION });
+      const content = sentFrame(f).message.content;
+      expect(content).not.toContain('expect_reply');
+      expect(content).not.toContain('A response is requested');
     });
   });
 

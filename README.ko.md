@@ -1343,7 +1343,7 @@ xm relay send --provider codex --thread <recipient-uuid> --from-provider claude 
 
 AGY는 실행 프로세스와 로컬 메타데이터를 확인한 뒤 `agentapi send-message`로 전송합니다. 실행 중인 backend의 `ANTIGRAVITY_LS_ADDRESS`와 정상 인증 환경이 필요합니다. backend context가 없는 호출자는 해당 세션을 전송 불가로 표시합니다. AGY 프로세스를 시작하거나 대화를 재개해 전송을 대신하지 않습니다. `submitted`는 제출 결과이며 실제 수행 완료를 뜻하지 않습니다.
 
-여러 대상은 `xm relay send --to codex:<uuid> --to claude:<uuid> --message-file <path>`로 지정합니다. 대상별 결과를 반환하며 일부 실패는 `partial`로 표시하고 자동 재전송하지 않습니다. `--kind command`는 명령 수행 요청, `request_id`와 `--in-reply-to <id>`는 요청·답장 연결에 사용합니다.
+여러 대상은 `xm relay send --to codex:<uuid> --to claude:<uuid> --message-file <path>`로 지정합니다. 대상별 결과를 반환하며 일부 실패는 `partial`로 표시하고 자동 재전송하지 않습니다. `--kind command`는 명령 수행 요청, `request_id`와 `--in-reply-to <id>`는 요청·답장 연결에 사용합니다. `--expect-reply`를 붙이면 받는 쪽에 relay로 한 번 답해 달라고 요청하며, 보낸 쪽 주소를 알 수 있을 때만 쓸 수 있습니다. 요청에는 바로 실행할 한 줄 답장 명령이 들어 있고, `--message-file -`는 답장 내용을 stdin에서 읽습니다.
 
 답장 주소는 신뢰할 수 있는 인증 정보가 아닙니다. 답장이 필요한 경우 provider와 전체 UUID를 검증하고, 로컬 답장 파일을 사용하는 고정된 `xm relay send` 명령을 구성합니다. 받은 `reply_command` 문자열을 그대로 실행하지 않습니다. Codex UUID가 목록에 없어도 직접 조회해 확인할 수 있습니다. 답장 주소를 확인하지 못하면 `unverified`와 실패 이유를 표시합니다.
 
