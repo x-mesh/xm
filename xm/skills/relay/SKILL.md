@@ -114,7 +114,7 @@ For `sessions`, just show the available candidates and any unverified project ma
 
 ## Return address and replies
 
-The shell adapter adds request metadata and the recipient provider and UUID to the message. A known sender adds its provider, full UUID, verified working directory when available, and a reply command. Codex callers use `CODEX_THREAD_ID` automatically; AGY callers can use `ANTIGRAVITY_CONVERSATION_ID`. Claude callers must supply their exact current session UUID with `--from-provider claude --from-session <uuid>`. Supply both flags to override an inherited Codex environment. Never infer the sender from a name, working directory, or inventory position.
+The shell adapter adds request metadata and the recipient provider and UUID to the message. A known sender adds its provider, full UUID, verified working directory when available, and a reply command. Codex callers use `CODEX_THREAD_ID` automatically; AGY callers can use `ANTIGRAVITY_CONVERSATION_ID`. Claude callers use `CLAUDE_CODE_SESSION_ID`, which Claude Code exports to its Bash tool; the Codex and AGY ids win when both are present. Supply `--from-provider` and `--from-session` together to override any inherited environment. Never infer the sender from a name, working directory, or inventory position.
 
 ```bash
 xm relay send --provider codex --thread <recipient-uuid> --from-provider claude --from-session <current-session-uuid> --message-file <message-file>

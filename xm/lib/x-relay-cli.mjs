@@ -155,8 +155,9 @@ function listAgySessions(projectName) {
 }
 
 async function replyAddress(options) {
-  const provider = options['--from-provider'] || (process.env.CODEX_THREAD_ID ? 'codex' : process.env.ANTIGRAVITY_CONVERSATION_ID ? 'agy' : null);
-  const sessionId = options['--from-session'] || process.env.CODEX_THREAD_ID || process.env.ANTIGRAVITY_CONVERSATION_ID;
+  // Codex and AGY run inside a Claude Code shell too, so their ids win over the inherited Claude one.
+  const provider = options['--from-provider'] || (process.env.CODEX_THREAD_ID ? 'codex' : process.env.ANTIGRAVITY_CONVERSATION_ID ? 'agy' : process.env.CLAUDE_CODE_SESSION_ID ? 'claude' : null);
+  const sessionId = options['--from-session'] || process.env.CODEX_THREAD_ID || process.env.ANTIGRAVITY_CONVERSATION_ID || process.env.CLAUDE_CODE_SESSION_ID;
   if (!provider || !THREAD_ID.test(sessionId || '')) return null;
   const address = {
     provider, session_id: sessionId, cwd: null, verification: 'unverified',

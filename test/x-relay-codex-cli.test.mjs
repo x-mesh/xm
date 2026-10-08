@@ -146,7 +146,7 @@ function run(f, args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [CLI, ...args], {
       cwd: f.root,
-      env: { ...process.env, CODEX_THREAD_ID: '', HOME: f.home, CODEX_HOME: join(f.home, '.codex'), PATH: join(f.root, 'bins') + ':' + process.env.PATH, XM_RELAY_CODEX_BIN: f.fake, FAKE_DAEMON_SOCKET: f.socketPath, FAKE_QUEUE_CAPTURE: f.capture, ...extraEnv },
+      env: { ...process.env, CODEX_THREAD_ID: '', CLAUDE_CODE_SESSION_ID: '', HOME: f.home, CODEX_HOME: join(f.home, '.codex'), PATH: join(f.root, 'bins') + ':' + process.env.PATH, XM_RELAY_CODEX_BIN: f.fake, FAKE_DAEMON_SOCKET: f.socketPath, FAKE_QUEUE_CAPTURE: f.capture, ...extraEnv },
     });
     let stdout = '';
     let stderr = '';
@@ -446,7 +446,7 @@ console.log(JSON.stringify(await chatCandidates({ listProvider: provider => prov
 `);
     const result = await new Promise((resolveResult, reject) => {
       const child = spawn('node', [wrapper], { cwd: f.root, env: {
-        ...process.env, HOME: f.home, CODEX_HOME: join(f.home, '.codex'), CODEX_THREAD_ID: '',
+        ...process.env, HOME: f.home, CODEX_HOME: join(f.home, '.codex'), CODEX_THREAD_ID: '', CLAUDE_CODE_SESSION_ID: '',
         PATH: join(f.root, 'bins') + ':' + process.env.PATH,
         XM_RELAY_CODEX_BIN: f.fake, XM_RELAY_CLAUDE_BIN: fakeClaude,
         FAKE_DAEMON_SOCKET: f.socketPath, FAKE_QUEUE_CAPTURE: f.capture,

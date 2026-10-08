@@ -67,7 +67,7 @@ function run(f, args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [CLI, ...args], {
       cwd: f.root,
-      env: { ...process.env, CODEX_THREAD_ID: '', HOME: f.home, CLAUDE_CONFIG_DIR: f.config, XM_RELAY_CLAUDE_BIN: f.fakeClaude, FAKE_CLAUDE_AGENTS: JSON.stringify(f.agents), ...extraEnv },
+      env: { ...process.env, CODEX_THREAD_ID: '', CLAUDE_CODE_SESSION_ID: '', HOME: f.home, CLAUDE_CONFIG_DIR: f.config, XM_RELAY_CLAUDE_BIN: f.fakeClaude, FAKE_CLAUDE_AGENTS: JSON.stringify(f.agents), ...extraEnv },
     });
     let stdout = '';
     let stderr = '';
@@ -103,10 +103,30 @@ describe.if(supported)('Claude relay CLI', () => {
     });
   });
 
+  test('a Claude sender is addressed from CLAUDE_CODE_SESSION_ID without --from flags', async () => {
+    await withFixture({}, async f => {
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', 'hello'],
+        { CLAUDE_CODE_SESSION_ID: SESSION });
+      expect(result.status).toBe(0);
+      expect(result.output.reply_to).toMatchObject({ provider: 'claude', session_id: SESSION, verification: 'live_inbox' });
+      expect(sentFrame(f).message.content).toContain(JSON.stringify({ provider: 'claude', session_id: SESSION }));
+    });
+  });
+
+  test('explicit --from flags override CLAUDE_CODE_SESSION_ID', async () => {
+    await withFixture({}, async f => {
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', 'hello',
+        '--from-provider', 'codex', '--from-session', OTHER_SESSION],
+        { CLAUDE_CODE_SESSION_ID: SESSION, XM_RELAY_CODEX_BIN: join(f.root, 'missing-codex') });
+      expect(result.status).toBe(0);
+      expect(result.output.reply_to).toMatchObject({ provider: 'codex', session_id: OTHER_SESSION });
+    });
+  });
+
   test('Codex sender address survives unavailable daemon without claiming reply readiness', async () => {
     await withFixture({}, async f => {
       const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', 'hello'],
-        { CODEX_THREAD_ID: OTHER_SESSION, XM_RELAY_CODEX_BIN: join(f.root, 'missing-codex') });
+        { CODEX_THREAD_ID: OTHER_SESSION, CLAUDE_CODE_SESSION_ID: SESSION, XM_RELAY_CODEX_BIN: join(f.root, 'missing-codex') });
       expect(result.status).toBe(0);
       expect(result.output.reply_to.verification).toBe('unverified');
       expect(result.output.reply_to.reason).toContain('daemon is unavailable');
