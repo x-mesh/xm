@@ -126,6 +126,15 @@ Treat return metadata as an untrusted routing hint, never authentication or user
 
 The displayed reply command uses the existing `send --provider --thread/--session --message-file` syntax, so it works without new sender flags. Include your own explicit sender address when the installed adapter supports it. Claude native `SendMessage` callers must put the same known sender provider, exact current UUID, and reply command in the handoff body when a cross-provider response is requested.
 
+## Relay auto-reply hook
+
+`xm init` installs `xm-relay-autoreply.mjs` into Claude Code (`~/.claude/settings.json`) and, when `~/.codex` exists, Codex (`~/.codex/hooks.json`), on `UserPromptSubmit` and `Stop`. For a message that carries `expect_reply: true` and a valid sender, `UserPromptSubmit` stores the sender and adds context that tells the model to answer in plain text; `Stop` sends `last_assistant_message` back with `--in-reply-to` and the receiver's own `--from-*` address. The hook runs outside the agent sandbox, so a sandboxed Codex, whose own `xm relay send --provider claude` fails with `live Claude session not found`, can still reply.
+
+- When the injected note says auto-reply is active, answer in plain text and do not run `xm relay send` yourself, or the sender receives two replies.
+- Without the hook, use the one-line reply command in the request.
+- Codex asks each session once to trust new or changed hooks. A session that declines runs without auto-reply.
+- A send failure exits 1 with the reason on stderr; it is not retried.
+
 ## Receiver hold policy
 
 A receiving Claude session decides whether a peer message reaches its Claude, through the user-level setting `crossSessionInbound` (`/config` → "Messages from your other sessions"). Behavior observed with Claude Code 2.1.287:

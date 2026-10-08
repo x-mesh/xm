@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -64,6 +64,19 @@ function parseArgs(argv) {
     if (!options[targetFlag] || options[otherTargetFlag]) throw new Error(`send with --provider ${provider} requires ${targetFlag}`);
   }
   return { command, options };
+}
+
+// The relay auto-reply hook (xm/hooks/relay-autoreply.mjs) skips its own send
+// for a request this marker says was already answered, so a model that replies
+// by hand and the hook do not both answer.
+function markReplied(requestId) {
+  const dir = process.env.XM_RELAY_AUTOREPLY_STATE || join(homedir(), '.xm', 'relay-autoreply');
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `replied-${requestId}`), '');
+  } catch (error) {
+    process.stderr.write(`relay: reply sent, but the auto-reply marker was not written (${error.message}); a relay auto-reply hook may answer again\n`);
+  }
 }
 
 function readMessage(options) {
@@ -607,6 +620,7 @@ async function dispatchSend(options) {
       results.push({ ok: false, provider, session_id: sessionId, request_id: requestId, state: 'error', error: error.message });
     }
   }
+  if (options['--in-reply-to'] && results.some(result => result.ok)) markReplied(options['--in-reply-to']);
   if (!options['--to']) return results[0];
   const ok = results.every(result => result.ok);
   return { ok, request_id: requestId, state: ok ? 'submitted' : results.some(result => result.ok) ? 'partial' : 'error', results };

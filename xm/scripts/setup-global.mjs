@@ -26,6 +26,14 @@ const HOOK_CMD_POST = `"${NODE_BIN}" "${HOOK_DEST}" post`;
 // Stop closes the session the Skill call opened: PostToolUse(Skill) fires before
 // the skill's own Agent calls, so it cannot be the close.
 const HOOK_CMD_STOP = `"${NODE_BIN}" "${HOOK_DEST}" stop`;
+const RELAY_HOOK_FILENAME = 'xm-relay-autoreply.mjs';
+const RELAY_HOOK_DEST = path.join(HOOKS_DIR, RELAY_HOOK_FILENAME);
+const CODEX_DIR = path.join(HOME, '.codex');
+const CODEX_HOOKS = path.join(CODEX_DIR, 'hooks.json');
+const CODEX_RELAY_HOOK_DEST = path.join(CODEX_DIR, 'xm', 'hooks', RELAY_HOOK_FILENAME);
+// The Stop half runs `xm relay send`, which can take several seconds.
+const RELAY_HOOK_TIMEOUT = 30;
+const RELAY_HOOK_EVENTS = ['UserPromptSubmit', 'Stop'];
 const XM_CMD_DEST = path.join(COMMANDS_DIR, 'xm.md');
 const XM_PLAN_CMD_DEST = path.join(COMMANDS_DIR, 'xm-plan.md');
 const XM_PLAN_CMD_BACKUP = path.join(COMMANDS_DIR, 'xm-plan.md.pre-xm');
@@ -97,16 +105,16 @@ function log(msg) { process.stdout.write(`[xm ${VERB}] ${msg}\n`); }
 function warn(msg) { process.stderr.write(`[xm ${VERB}] ${msg}\n`); }
 function die(msg) { warn(msg); process.exit(1); }
 
-function resolveHookSource() {
-  if (process.env.XM_HOOK_SRC && fs.existsSync(process.env.XM_HOOK_SRC)) {
+function resolveHookSource(file = 'trace-session.mjs') {
+  if (file === 'trace-session.mjs' && process.env.XM_HOOK_SRC && fs.existsSync(process.env.XM_HOOK_SRC)) {
     return process.env.XM_HOOK_SRC;
   }
   const candidates = [];
   if (process.env.XM_LIB) {
-    candidates.push(path.join(process.env.XM_LIB, 'xm', 'hooks', 'trace-session.mjs'));
+    candidates.push(path.join(process.env.XM_LIB, 'xm', 'hooks', file));
   }
   // Local repo (cwd)
-  candidates.push(path.join(process.cwd(), 'xm', 'hooks', 'trace-session.mjs'));
+  candidates.push(path.join(process.cwd(), 'xm', 'hooks', file));
   // Plugin cache: ~/.claude/plugins/cache/xm/xm/<ver>/hooks/trace-session.mjs (new) or legacy xm path
   for (const cacheRoot of [
     path.join(HOME, '.claude', 'plugins', 'cache', 'xm', 'xm'),
@@ -119,7 +127,7 @@ function resolveHookSource() {
       .sort()
       .reverse();
     for (const v of versions) {
-      candidates.push(path.join(cacheRoot, v, 'hooks', 'trace-session.mjs'));
+      candidates.push(path.join(cacheRoot, v, 'hooks', file));
     }
   }
   return candidates.find((p) => fs.existsSync(p)) || null;
@@ -323,6 +331,103 @@ function removeHookCommand(entries, command) {
     .filter(Boolean);
 }
 
+/** Drop every hook whose command runs `file`, whatever node path an earlier install used. */
+function withoutHookFile(entries, file) {
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .map((group) => {
+      if (!Array.isArray(group?.hooks)) return group;
+      const hooks = group.hooks.filter((h) => !(typeof h?.command === 'string' && h.command.includes(file)));
+      return hooks.length ? { ...group, hooks } : null;
+    })
+    .filter(Boolean);
+}
+
+/** Wire `node <dest> <agent>` into UserPromptSubmit and Stop of a hooks document, replacing earlier copies. */
+function withRelayHook(document, dest, agent) {
+  const hooks = { ...(document.hooks || {}) };
+  for (const event of RELAY_HOOK_EVENTS) {
+    hooks[event] = [...withoutHookFile(hooks[event], dest),
+      { hooks: [{ type: 'command', command: `"${NODE_BIN}" "${dest}" ${agent}`, timeout: RELAY_HOOK_TIMEOUT }] }];
+  }
+  return { ...document, hooks };
+}
+
+function withoutRelayHook(document, dest) {
+  if (!document.hooks) return document;
+  const hooks = { ...document.hooks };
+  for (const event of RELAY_HOOK_EVENTS) {
+    if (!(event in hooks)) continue;
+    hooks[event] = withoutHookFile(hooks[event], dest);
+    if (hooks[event].length === 0) delete hooks[event];
+  }
+  return { ...document, hooks };
+}
+
+function readCodexHooks() {
+  if (!fs.existsSync(CODEX_HOOKS)) return { hooks: {} };
+  try { return JSON.parse(fs.readFileSync(CODEX_HOOKS, 'utf8')); }
+  catch (e) { die(`cannot parse ${CODEX_HOOKS}: ${e.message}`); }
+}
+
+function writeCodexHooks(document) {
+  const backup = `${CODEX_HOOKS}.backup-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  if (fs.existsSync(CODEX_HOOKS)) fs.copyFileSync(CODEX_HOOKS, backup);
+  fs.writeFileSync(CODEX_HOOKS, JSON.stringify(document, null, 2) + '\n');
+  return backup;
+}
+
+function installRelayHook() {
+  const src = resolveHookSource('relay-autoreply.mjs');
+  // An xm build older than the hook has no source; the trace hook above still installs.
+  if (!src) {
+    warn('relay auto-reply hook skipped: relay-autoreply.mjs not found. Update the xm plugin, then re-run xm init.');
+    return;
+  }
+  fs.copyFileSync(src, RELAY_HOOK_DEST);
+  fs.chmodSync(RELAY_HOOK_DEST, 0o755);
+  const backup = writeSettings(withRelayHook(readSettings(), RELAY_HOOK_DEST, 'claude'));
+  log(`relay auto-reply hook: ${RELAY_HOOK_DEST} (settings backup: ${path.basename(backup)})`);
+
+  if (!fs.existsSync(CODEX_DIR)) {
+    log('relay auto-reply hook: ~/.codex not found, Codex skipped');
+    return;
+  }
+  fs.mkdirSync(path.dirname(CODEX_RELAY_HOOK_DEST), { recursive: true });
+  fs.copyFileSync(src, CODEX_RELAY_HOOK_DEST);
+  fs.chmodSync(CODEX_RELAY_HOOK_DEST, 0o755);
+  const codexBackup = writeCodexHooks(withRelayHook(readCodexHooks(), CODEX_RELAY_HOOK_DEST, 'codex'));
+  log(`relay auto-reply hook: ${CODEX_RELAY_HOOK_DEST} (hooks.json backup: ${path.basename(codexBackup)})`);
+  log('Codex asks each session once to trust new or changed hooks; choose "Trust all and continue".');
+}
+
+function uninstallRelayHook() {
+  let removed = false;
+  for (const dest of [RELAY_HOOK_DEST, CODEX_RELAY_HOOK_DEST]) {
+    if (!fs.existsSync(dest)) continue;
+    fs.unlinkSync(dest);
+    log(`removed ${dest}`);
+    removed = true;
+  }
+  if (fs.existsSync(SETTINGS)) {
+    const settings = readSettings();
+    const cleaned = withoutRelayHook(settings, RELAY_HOOK_DEST);
+    if (JSON.stringify(cleaned) !== JSON.stringify(settings)) {
+      log(`cleaned relay hook from ${SETTINGS} (backup: ${path.basename(writeSettings(cleaned))})`);
+      removed = true;
+    }
+  }
+  if (fs.existsSync(CODEX_HOOKS)) {
+    const document = readCodexHooks();
+    const cleaned = withoutRelayHook(document, CODEX_RELAY_HOOK_DEST);
+    if (JSON.stringify(cleaned) !== JSON.stringify(document)) {
+      log(`cleaned relay hook from ${CODEX_HOOKS} (backup: ${path.basename(writeCodexHooks(cleaned))})`);
+      removed = true;
+    }
+  }
+  return removed;
+}
+
 function install(opts) {
   fs.mkdirSync(HOOKS_DIR, { recursive: true });
   fs.mkdirSync(COMMANDS_DIR, { recursive: true });
@@ -370,6 +475,7 @@ function install(opts) {
     const backup = writeSettings(settings);
     log(`updated ${SETTINGS} (backup: ${path.basename(backup)})`);
     log('hook installed. Skill sessions (closed at Stop) + Agent spans → <project>/.xm/traces/');
+    installRelayHook();
   } else {
     log('hooks skipped (--no-hooks). CLI dispatcher install is handled by install.sh.');
   }
@@ -458,7 +564,7 @@ function resolveBashDispatcher() {
 }
 
 function uninstall() {
-  let removed = false;
+  let removed = uninstallRelayHook();
   if (fs.existsSync(HOOK_DEST)) {
     fs.unlinkSync(HOOK_DEST);
     log(`removed ${HOOK_DEST}`);
@@ -571,7 +677,7 @@ switch (cmd) {
   case 'help':
     process.stdout.write(`xm ${VERB} — install global hooks into ~/.claude/ (once per machine)\n\n`
       + `Usage:\n`
-      + `  xm ${VERB}                 # install trace-session hook globally\n`
+      + `  xm ${VERB}                 # install trace-session and relay auto-reply hooks globally\n`
       + `  xm ${VERB} --no-hooks      # skip hook install (CLI only)\n`
       + `  xm ${VERB} --claude-md     # also add the xm routing block to ~/.claude/CLAUDE.md\n`
       + `                           #   (later installs and xm update refresh it while it exists)\n`

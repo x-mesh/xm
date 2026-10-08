@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -67,7 +67,7 @@ function run(f, args, extraEnv = {}, input) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [CLI, ...args], {
       cwd: f.root,
-      env: { ...process.env, CODEX_THREAD_ID: '', CLAUDE_CODE_SESSION_ID: '', HOME: f.home, CLAUDE_CONFIG_DIR: f.config, XM_RELAY_CLAUDE_BIN: f.fakeClaude, FAKE_CLAUDE_AGENTS: JSON.stringify(f.agents), ...extraEnv },
+      env: { ...process.env, CODEX_THREAD_ID: '', CLAUDE_CODE_SESSION_ID: '', XM_RELAY_AUTOREPLY_STATE: join(f.root, 'autoreply'), HOME: f.home, CLAUDE_CONFIG_DIR: f.config, XM_RELAY_CLAUDE_BIN: f.fakeClaude, FAKE_CLAUDE_AGENTS: JSON.stringify(f.agents), ...extraEnv },
     });
     if (input !== undefined) child.stdin.end(input);
     let stdout = '';
@@ -134,6 +134,15 @@ describe.if(supported)('Claude relay CLI', () => {
       const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message-file', '-'], {}, body);
       expect(result.status).toBe(0);
       expect(sentFrame(f).message.content).toContain(body);
+    });
+  });
+
+  test('a successful reply leaves a replied-<request id> marker for the auto-reply hook', async () => {
+    await withFixture({}, async f => {
+      const request = '6a870efe-de7e-4a54-b277-a2e0ca875a76';
+      const result = await run(f, ['send', '--provider', 'claude', '--session', SESSION, '--message', '8', '--in-reply-to', request]);
+      expect(result.status).toBe(0);
+      expect(existsSync(join(f.root, 'autoreply', `replied-${request}`))).toBe(true);
     });
   });
 
