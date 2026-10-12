@@ -65,9 +65,14 @@ export function cursorSessions({ matchesProject = null, now = Date.now() } = {})
   if (matched.length > CURSOR_LIST_LIMIT) notes.push(`Only the ${CURSOR_LIST_LIMIT} most recent of ${matched.length} Cursor chats are listed.`);
   return {
     ok: true, provider: 'cursor', transport: 'cursor_agent_resume',
-    sessions: matched.slice(0, CURSOR_LIST_LIMIT).map(chat => ({
-      ...chat, status: 'saved', live_status: 'saved', capabilities: { send: true }, transport: 'cursor_agent_resume',
-    })),
+    sessions: matched.slice(0, CURSOR_LIST_LIMIT).map(chat => {
+      // cursorTurn refuses a chat whose directory is gone, so the listing says so up front.
+      const sendable = Boolean(chat.cwd && existsSync(chat.cwd));
+      return {
+        ...chat, status: 'saved', live_status: 'saved', capabilities: { send: sendable }, transport: 'cursor_agent_resume',
+        ...(sendable ? {} : { unavailable_reason: `Cursor chat working directory is not on this machine: ${chat.cwd || 'none recorded'}` }),
+      };
+    }),
     partial: matched.length > CURSOR_LIST_LIMIT || unreadable > 0,
     notes,
     note: 'Saved Cursor Agent chats. A send runs one read-only cursor-agent turn (--mode ask) and returns its answer; it does not reach a running interactive session.',

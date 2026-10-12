@@ -98,6 +98,15 @@ describe('Cursor relay adapter', () => {
     expect(existsSync(join(root, 'args.json'))).toBe(false);
   });
 
+  test('lists a chat whose working directory is gone as not sendable, with the reason', () => {
+    const gone = '0dd0a11e-0000-4000-8000-000000000000';
+    writeChat('ws4', gone, { hasConversation: true, cwd: join(root, 'deleted-worktree'), updatedAtMs: Date.now() });
+    const rows = run(['sessions', '--provider', 'cursor']).output.sessions;
+    expect(rows.find(row => row.session_id === gone)).toMatchObject({ capabilities: { send: false }, unavailable_reason: `Cursor chat working directory is not on this machine: ${join(root, 'deleted-worktree')}` });
+    expect(rows.find(row => row.session_id === CHAT_A)).toMatchObject({ capabilities: { send: true } });
+    expect(rows.find(row => row.session_id === CHAT_A).unavailable_reason).toBeUndefined();
+  });
+
   test('refuses a chat whose working directory is gone instead of running the turn in the home directory', () => {
     const gone = '0dd0a11e-0000-4000-8000-000000000000';
     writeChat('ws4', gone, { hasConversation: true, cwd: join(root, 'deleted-worktree'), updatedAtMs: Date.now() });

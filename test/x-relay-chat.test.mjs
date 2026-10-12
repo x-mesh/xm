@@ -100,6 +100,20 @@ test('omits saved sessions from recipient selection', async () => {
   expect(result.candidates).toEqual([]);
 });
 
+test('offers saved Cursor chats with --provider cursor and keeps an unsendable one visible', async () => {
+  const providers = [];
+  const snapshot = await chatCandidates(context({ listProvider: async provider => {
+    providers.push(provider);
+    return { sessions: [
+      { session_id: ID, name: 'App review', cwd: '/repo', live_status: 'saved', capabilities: { send: true } },
+      { session_id: OTHER, cwd: '/gone', live_status: 'saved', capabilities: { send: false }, unavailable_reason: 'Cursor chat working directory is not on this machine: /gone' },
+    ] };
+  } }), null, 'cursor');
+  expect(providers).toEqual(['cursor']);
+  expect(snapshot.candidates.map(row => [row.provider, row.id, row.sendable, row.unavailable])).toEqual([
+    ['cursor', ID, true, null], ['cursor', OTHER, false, 'Cursor chat working directory is not on this machine: /gone']]);
+});
+
 test('a synchronous provider failure retains the other providers', async () => {
   const snapshot = await chatCandidates(context({ listProvider: provider => {
     if (provider === 'codex') return { sessions: [{ thread_id: ID, live_status: 'running' }] };

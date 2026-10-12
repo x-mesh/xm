@@ -56,7 +56,9 @@ export async function chatCandidates(context, projectName, provider) {
     if (result.status === 'rejected') { notes.push(`${name} 조회 실패: ${displayText(result.reason.message)}`); continue; }
     for (const session of result.value.sessions) {
       const id = name === 'codex' ? session.thread_id : session.session_id;
-      if (!UUID.test(id || '') || (name !== 'claude' && session.live_status !== 'running')) continue;
+      // Cursor offers saved chats, not running processes; a send runs one turn on the chat.
+      const listed = name === 'claude' || session.live_status === 'running' || (name === 'cursor' && session.live_status === 'saved');
+      if (!UUID.test(id || '') || !listed) continue;
       candidates.push({ provider: name, id, name: session.name || id, cwd: session.cwd,
         directory: session.cwd ? basename(session.cwd) || session.cwd : '경로 확인 불가',
         projectName: context.projectNameFor?.(session.cwd) || null,
