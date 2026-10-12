@@ -454,6 +454,57 @@ describe('adaptive runtime routing', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  // Closing a fallback writes no outcome, so the direct attempt's verification failure would
+  // stay unresolved and block every later direct decision for the class.
+  test('a planned-fallback lease cannot be closed, and status does not offer close for it', async () => {
+    const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const cwd = fixtureRepo();
+    try {
+      const decision = module.decideAdaptiveRoute(eligible);
+      module.recordAdaptiveDecision(decision);
+      module.startAdaptiveRun({
+        decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'],
+        gate_commands: ['test=test -f src/ok.marker', 'boundary=true'], now_ms: 1000,
+      });
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 2;\n');
+      expect(module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1100 }).passed).toBe(false);
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 1;\n');
+      module.startAdaptiveRun({ decision_id: decision.decision_id, cwd, fallback: true, now_ms: 1200 });
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 3;\n');
+      writeFileSync(join(cwd, 'src', 'ok.marker'), 'ok\n');
+      const receipt = module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1300 });
+      expect(receipt.passed).toBe(false);
+      expect(receipt.unexpected_files).toEqual(['src/ok.marker']);
+      expect(receipt.gates.every((gate) => gate.passed)).toBe(true);
+      expect(module.adaptiveRunStatus(decision.decision_id).runs[0].next_action).toBe('restore_undeclared_then_verify');
+      expect(() => module.closeAdaptiveRun({ decision_id: decision.decision_id })).toThrow('planned-fallback lease must finish or abandon');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('close refuses a lease whose baseline dirty bytes changed after the receipt', async () => {
+    const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const cwd = fixtureRepo();
+    try {
+      writeFileSync(join(cwd, 'notes.txt'), 'already dirty\n');
+      const classification = module.classifyAdaptiveTask({
+        kind: 'feature', files: ['src/api.mjs'], independent: true, risk: 'low', public_contract: true,
+      });
+      const decision = module.decideAdaptiveRoute({ classification, failure_modes: 1, gates: ['schema'] });
+      module.recordAdaptiveDecision(decision);
+      module.startAdaptiveRun({
+        decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'], allow_dirty: true,
+        gate_commands: decision.gates.map((gate) => `${gate}=test -f src/ok.marker`), now_ms: 1000,
+      });
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 2;\n');
+      writeFileSync(join(cwd, 'src', 'ok.marker'), 'ok\n');
+      expect(module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1100 }).passed).toBe(false);
+      writeFileSync(join(cwd, 'notes.txt'), 'edited after the receipt\n');
+      expect(() => module.closeAdaptiveRun({ decision_id: decision.decision_id })).toThrow('baseline dirty bytes changed');
+      writeFileSync(join(cwd, 'notes.txt'), 'already dirty\n');
+      expect(module.closeAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1200 }).status).toBe('closed');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   test('a direct lease cannot be closed; it keeps fallback and abandon as its exits', async () => {
     const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
     const cwd = fixtureRepo();
@@ -468,7 +519,7 @@ describe('adaptive runtime routing', () => {
       writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 2;\n');
       writeFileSync(join(cwd, 'src', 'undeclared.mjs'), 'export {};\n');
       expect(module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1100 }).passed).toBe(false);
-      expect(() => module.closeAdaptiveRun({ decision_id: decision.decision_id })).toThrow('direct lease');
+      expect(() => module.closeAdaptiveRun({ decision_id: decision.decision_id })).toThrow('a direct lease uses route start --fallback');
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

@@ -648,7 +648,7 @@ export function adaptiveRunStatus(decisionId = null, nowMs = Date.now()) {
         // declaration is fixed at start, so an undeclared change is resolved by restoring it,
         // not by amending the lease.
         if (receipt?.head_changed) nextAction = 'restore_head_then_abandon';
-        else if (receipt?.unexpected_files?.length) nextAction = onlyUndeclaredFailure(receipt) ? 'restore_undeclared_then_verify_or_close' : 'restore_undeclared_then_verify';
+        else if (receipt?.unexpected_files?.length) nextAction = lease.execution_phase === 'planned' && onlyUndeclaredFailure(receipt) ? 'restore_undeclared_then_verify_or_close' : 'restore_undeclared_then_verify';
         else nextAction = 'fix_then_verify';
       }
     }
@@ -678,7 +678,11 @@ export function closeAdaptiveRun(input) {
   const lease = readLocalJSON(leasePath(input.decision_id));
   if (!lease) throw new Error('execution lease not found');
   if (lease.status !== 'verification_failed') throw new Error(`only a failed verification can be closed: ${lease.status}`);
-  if (lease.execution_phase === 'direct') throw new Error('a direct lease closes through route start --fallback or route abandon');
+  // A planned-fallback lease carries the direct attempt's verification failure, which only
+  // an outcome resolves; closing it without one would keep the task class planned for good.
+  if (lease.execution_phase !== 'planned') {
+    throw new Error(`only a planned lease can be closed: a direct lease uses route start --fallback or route abandon, and a planned-fallback lease must finish or abandon so its escalation is recorded (${lease.execution_phase})`);
+  }
   const receipt = readLocalJSON(receiptPath(lease.decision_id));
   if (!receipt || !onlyUndeclaredFailure(receipt)) {
     throw new Error('close needs a receipt whose gates all passed and whose only failure is undeclared files');
@@ -689,6 +693,9 @@ export function closeAdaptiveRun(input) {
     throw new Error('expected files changed after verification receipt; verify again');
   }
   if (!receipt.unexpected_hashes) throw new Error('the receipt predates undeclared-file hashes; verify again');
+  if (JSON.stringify(hashMap(lease.cwd, lease.baseline_dirty)) !== JSON.stringify(lease.baseline_dirty_hashes)) {
+    throw new Error('baseline dirty bytes changed after verification receipt; verify again');
+  }
   const undeclared = gitStatus(lease.cwd).filter((file) => !lease.expected_files.includes(file) && !lease.baseline_dirty.includes(file));
   if (JSON.stringify(undeclared) !== JSON.stringify(receipt.unexpected_files)
     || JSON.stringify(hashMap(lease.cwd, undeclared)) !== JSON.stringify(receipt.unexpected_hashes)) {
