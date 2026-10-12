@@ -2,16 +2,19 @@
 // .claude/hooks/trace-session.mjs
 //
 // Auto-record an xm skill session: session_start when the Skill tool is invoked
-// (PreToolUse), one agent_step per Agent tool call made before the assistant turn
-// ends, and session_end at the Stop hook. PostToolUse(Skill) is deliberately not
-// the close: it fires as soon as the skill's instructions are loaded, before the
-// skill's own Agent calls. Other semantic entries (fan_out, synthesize) remain
-// LLM best-effort via SKILL.md.
+// (PreToolUse), one agent_step per Agent tool call made while it is open, and
+// session_end at the Stop hook. PostToolUse(Skill) is deliberately not the close:
+// it fires as soon as the skill's instructions are loaded, before the skill's own
+// Agent calls. A background Agent call is recorded when its SubagentStop arrives,
+// and Stop leaves the session open while one of them still runs. An xm skill a
+// subagent invokes becomes a skill_step of the open session. Other semantic
+// entries (fan_out, synthesize) remain LLM best-effort via SKILL.md.
 //
-// Usage in settings.json (all three point at the same file):
-//   PreToolUse  matcher Skill|Agent → node trace-session.mjs pre
-//   PostToolUse matcher Skill|Agent → node trace-session.mjs post
-//   Stop        (no matcher)        → node trace-session.mjs stop
+// Usage in settings.json (all point at the same file):
+//   PreToolUse   matcher Skill|Agent → node trace-session.mjs pre
+//   PostToolUse  matcher Skill|Agent → node trace-session.mjs post
+//   Stop         (no matcher)        → node trace-session.mjs stop
+//   SubagentStop (no matcher)        → node trace-session.mjs stop
 //
 // This hook is a STANDALONE file — it is copied to ~/.claude/hooks/ by `xm init`
 // and must run without the xm plugin lib on disk. It therefore cannot import
@@ -175,6 +178,9 @@ function makeSessionId(skillName) {
 
 const AGENT_TOOL_NAMES = new Set(['Agent']);
 const TOOL_USE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+// Pending background agent, keyed by the agent id that SubagentStop and Stop's
+// background_tasks report: .agents/bg-<agentId>.json.
+const BG_PREFIX = 'bg-';
 const STALE_MARKER_MS = 24 * 60 * 60 * 1000;
 // A session no Stop ever closed must not swallow the next turns' agents.
 const ACTIVE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -324,6 +330,14 @@ function looksLaunched(response) {
 // for a background dispatch; a dispatch acknowledgement is 'launched', not
 // 'success' (the agent has not run yet and duration_ms is launch latency); no
 // response at all stays 'unknown'. The post hook arriving never means success.
+// Claude Code answers a background dispatch with {isAsync, status: 'async_launched', agentId}.
+function launchedAgentId(input) {
+  const response = input.tool_response;
+  if (!response || typeof response !== 'object') return null;
+  if (response.status !== 'async_launched' && response.isAsync !== true) return null;
+  return typeof response.agentId === 'string' && TOOL_USE_ID_RE.test(response.agentId) ? response.agentId : null;
+}
+
 function agentStatus(input, toolInput) {
   const response = input.tool_response ?? input.tool_output;
   if (typeof response === 'string' && /^\s*error\b/i.test(response)) return 'error';
@@ -406,6 +420,13 @@ function agentSpan(tracesDir, phase, input, base) {
     }
   }
 
+  const backgroundId = started && toolUseId ? launchedAgentId(input) : null;
+  if (backgroundId) {
+    // Only dispatched so far: SubagentStop writes the row with the real duration.
+    claim(path.join(pendingDir, `${BG_PREFIX}${backgroundId}.json`), JSON.stringify({ ...started, tool_use_id: toolUseId }));
+    return;
+  }
+
   const startedAt = started ? Date.parse(started.ts) : NaN;
   appendRow(traceFile, {
     type: 'agent_step',
@@ -419,6 +440,38 @@ function agentSpan(tracesDir, phase, input, base) {
     status: agentStatus(input, toolInput),
     source: 'hook',
   });
+}
+
+// SubagentStop of a background agent this hook saw dispatched: write its row.
+// A foreground subagent has no bg marker, and a second registration loses the rename.
+function finishBackgroundAgent(tracesDir, input) {
+  const agentId = typeof input.agent_id === 'string' && TOOL_USE_ID_RE.test(input.agent_id) ? input.agent_id : null;
+  if (!agentId) return;
+  const pendingDir = path.join(tracesDir, '.agents');
+  const done = path.join(pendingDir, `${BG_PREFIX}${agentId}.done`);
+  if (!takeOver(path.join(pendingDir, `${BG_PREFIX}${agentId}.json`), done)) return;
+  const started = readJsonFile(done);
+  const traceFile = started?.session_id ? path.join(tracesDir, `${started.session_id}.jsonl`) : null;
+  if (!traceFile || !fs.existsSync(traceFile)) return;
+  const startedAt = Date.parse(started.ts);
+  appendRow(traceFile, {
+    type: 'agent_step', session_id: started.session_id, ts: new Date().toISOString(), v: 1,
+    id: started.tool_use_id || agentId, parent_id: null,
+    role: started.role || 'agent', model: started.model || 'inherit', ...(started.description ? { description: started.description } : {}),
+    duration_ms: Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : null,
+    // SubagentStop reports that the agent finished, not whether it succeeded.
+    status: 'completed', source: 'hook',
+  });
+}
+
+// Stop fires at every turn end. While an agent this session dispatched in the
+// background still runs, the work continues in later turns, so the session stays open.
+function backgroundAgentRunning(tracesDir, input) {
+  if (!Array.isArray(input.background_tasks)) return false;
+  const pendingDir = path.join(tracesDir, '.agents');
+  return input.background_tasks.some((task) => task?.type === 'subagent' && task.status === 'running'
+    && typeof task.id === 'string' && TOOL_USE_ID_RE.test(task.id)
+    && fs.existsSync(path.join(pendingDir, `${BG_PREFIX}${task.id}.json`)));
 }
 
 // Close the open session: one owner (rename-claim on .active), leftover agent
@@ -447,15 +500,18 @@ function closeSession(tracesDir, base, reason) {
       const data = readJsonFile(abandonedFile);
       if (data && data.session_id && data.session_id !== active.session_id) continue;
       const startedAt = Date.parse(data?.ts);
+      // A background agent's dispatch is known but its end was never seen.
+      const background = name.startsWith(BG_PREFIX);
       appendRow(traceFile, {
-        type: 'agent_step', session_id: active.session_id, ts: new Date().toISOString(), v: 1, id, parent_id: null,
+        type: 'agent_step', session_id: active.session_id, ts: new Date().toISOString(), v: 1,
+        id: background && data?.tool_use_id ? data.tool_use_id : id, parent_id: null,
         role: data?.role || 'agent', model: data?.model || 'inherit', ...(data?.description ? { description: data.description } : {}),
-        duration_ms: Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : null,
-        status: 'abandoned', source: 'hook',
+        duration_ms: !background && Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : null,
+        status: background ? 'launched' : 'abandoned', source: 'hook',
       });
     }
     purgeOld(pendingDir, ['.abandoned', '.done', '.post']);
-    purgeOld(path.join(tracesDir, '.claims'), ['.skill']);
+    purgeOld(path.join(tracesDir, '.claims'), ['.skill', '.nested']);
 
     let durationMs = 0;
     try {
@@ -492,6 +548,20 @@ async function openSession(tracesDir, base, input, skillName) {
   fs.mkdirSync(tracesDir, { recursive: true });
   const activeFile = path.join(tracesDir, '.active');
   const toolUseId = toolUseIdOf(input);
+  const parent = typeof input.agent_id === 'string' && input.agent_id ? currentSession(tracesDir, base, input) : null;
+  if (parent) {
+    // A skill a subagent invokes belongs to the session that dispatched the
+    // subagent; opening a new one would close that session as superseded.
+    if (toolUseId) {
+      fs.mkdirSync(path.join(tracesDir, '.claims'), { recursive: true });
+      if (!claim(path.join(tracesDir, '.claims', `${toolUseId}.nested`), new Date().toISOString())) return;
+    }
+    appendRow(path.join(tracesDir, `${parent.session_id}.jsonl`), {
+      type: 'skill_step', session_id: parent.session_id, ts: new Date().toISOString(), v: 1,
+      skill: skillName, args: input.tool_input?.args || '', agent_id: input.agent_id, source: 'hook',
+    });
+    return;
+  }
   const git = gitSnapshot(base);
   let claimFile = null;
   if (toolUseId) {
@@ -556,8 +626,16 @@ async function main() {
 
   try {
     if (phase === 'stop') {
+      if (input.hook_event_name === 'SubagentStop') {
+        finishBackgroundAgent(tracesDir, input);
+        process.exit(0);
+      }
       // Turn end is the only signal that arrives after the skill's own Agent
       // calls; it closes whatever session the turn opened.
+      if (backgroundAgentRunning(tracesDir, input)) {
+        debug('stop: a background agent of this session still runs; session stays open');
+        process.exit(0);
+      }
       closeSession(tracesDir, base, 'stop');
       process.exit(0);
     }
