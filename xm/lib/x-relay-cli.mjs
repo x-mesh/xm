@@ -9,6 +9,7 @@ import net from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { runChat, createProjectNameResolver } from './x-relay-chat.mjs';
 import { agySessions, agyApi, verifyAgyRecipient } from './x-relay-agy.mjs';
+import { cursorChats, cursorPreamble, cursorSessions, cursorTurn } from './x-relay-cursor.mjs';
 import { canonical, daemonHeldCodexFiles, interactiveCodexCwds, liveSessionFiles } from './x-relay-live.mjs';
 
 const CODEX = process.env.XM_RELAY_CODEX_BIN || 'codex';
@@ -38,7 +39,7 @@ function parseArgs(argv) {
     options[flag] = value;
   }
   const provider = options['--provider'] || 'codex';
-  if (!['codex', 'claude', 'agy'].includes(provider)) throw new Error('--provider must be codex, claude or agy');
+  if (!['codex', 'claude', 'agy', 'cursor'].includes(provider)) throw new Error('--provider must be codex, claude, agy or cursor');
   if (command === 'sessions') {
     if (Object.keys(options).some(flag => !['--provider', '--project'].includes(flag))) throw new Error('sessions accepts only --provider and --project');
     return { command, options };
@@ -56,7 +57,7 @@ function parseArgs(argv) {
   if (Boolean(options['--message']) === Boolean(options['--message-file'])) throw new Error('send requires exactly one of --message or --message-file');
   if (options['--to']) {
     if (options['--thread'] || options['--session'] || options['--provider']) throw new Error('--to cannot be combined with --provider, --thread or --session');
-    for (const target of options['--to']) if (!/^(codex|claude|agy):[0-9a-f-]{36}$/i.test(target) || !THREAD_ID.test(target.split(':')[1]) || !['codex', 'claude', 'agy'].includes(target.split(':')[0])) throw new Error('--to requires provider:UUID');
+    for (const target of options['--to']) if (!/^(codex|claude|agy|cursor):[0-9a-f-]{36}$/i.test(target) || !THREAD_ID.test(target.split(':')[1]) || !['codex', 'claude', 'agy', 'cursor'].includes(target.split(':')[0])) throw new Error('--to requires provider:UUID');
     if (new Set(options['--to'].map(target => target.toLowerCase())).size !== options['--to'].length) throw new Error('duplicate recipient');
   } else {
     const targetFlag = provider === 'codex' ? '--thread' : '--session';
@@ -502,27 +503,14 @@ async function listSessions(projectName) {
   for (const threadId of live.keys()) held.delete(threadId);
   const project = projectName ? registryProject(projectName) : null;
   const matchesProject = project ? createProjectMatcher(project.path) : null;
+  // Only a thread with a writer lock can be live, so read those few directly.
+  // Paging the daemon's saved-thread list instead cost seconds per page once
+  // it held hundreds of threads (measured: 6.5 s for five pages, 1 ms per read).
   return withDaemon(socketPath, async server => {
     const sessions = new Map();
-    const seen = new Set();
-    let cursor = null;
     let partial = false;
     const notes = [];
-    for (let page = 0; page < 5; page += 1) {
-      const result = await server.request('thread/list', { limit: 100, ...(cursor ? { cursor } : {}) });
-      for (const thread of result.data || []) {
-        if (thread.source && typeof thread.source === 'object' && ('subAgent' in thread.source || 'subagent' in thread.source)) continue;
-        if (matchesProject && !matchesProject(thread.cwd)) continue;
-        const status = thread.status?.type || 'unknown';
-        sessions.set(thread.id, { thread_id: thread.id, name: thread.name || null, cwd: thread.cwd || null, updated_at: thread.updatedAt || null, app_server_status: status, loaded: status !== 'notLoaded' && status !== 'unknown', live_status: 'running', pids: live.get(thread.id) || [] });
-      }
-      cursor = result.nextCursor || null;
-      if (!cursor) break;
-      if (seen.has(cursor) || page === 4) { partial = true; break; }
-      seen.add(cursor);
-    }
     for (const [threadId, pids] of [...live, ...[...held].map(threadId => [threadId, []])]) {
-      if (sessions.has(threadId)) continue;
       try {
         const thread = (await server.request('thread/read', { threadId, includeTurns: false })).thread;
         if (thread?.id !== threadId) throw new Error('thread metadata unavailable');
@@ -577,7 +565,29 @@ async function sendMessage(options) {
 function listProvider(provider, projectName) {
   if (provider === 'claude') return listClaudeSessions(projectName);
   if (provider === 'agy') return listAgySessions(projectName);
+  if (provider === 'cursor') return listCursorSessions(projectName);
   return listSessions(projectName);
+}
+
+function listCursorSessions(projectName) {
+  const project = projectName ? registryProject(projectName) : null;
+  return { ...cursorSessions({ matchesProject: project ? createProjectMatcher(project.path) : null }), project: projectName || null };
+}
+
+async function sendCursorMessage(options) {
+  const sessionId = options['--session'];
+  if (!THREAD_ID.test(sessionId || '')) throw new Error('send requires an exact Cursor chat UUID');
+  const message = readMessage(options);
+  if (!message?.trim() || message.length > MAX_MESSAGE_LENGTH) throw new Error(`message must contain 1-${MAX_MESSAGE_LENGTH} characters`);
+  const chat = cursorChats().chats.find(row => row.session_id === sessionId);
+  if (!chat) throw new Error(`Cursor chat not found: ${sessionId}`);
+  const project = options['--project'] ? registryProject(options['--project']) : null;
+  if (project && !projectMatches(chat.cwd, project.path)) throw new Error(`Cursor chat ${sessionId} is not in project ${project.id}`);
+  const replyTo = await replyAddress(options);
+  const answered = cursorTurn(sessionId, cursorPreamble(replyTo) + message, chat.cwd);
+  return { ok: true, provider: 'cursor', state: 'answered', session_id: sessionId, reply: answered.reply,
+    cursor_request_id: answered.request_id, usage: answered.usage, reply_to: replyTo, project: project?.id || null,
+    note: 'The reply is the answer of one read-only cursor-agent turn (--mode ask) on the saved chat.' };
 }
 
 async function sendAgyMessage(options) {
@@ -613,7 +623,8 @@ async function dispatchSend(options) {
     delete outgoing['--message-file'];
     try {
       const result = provider === 'claude' ? await sendClaudeMessage(outgoing)
-        : provider === 'agy' ? await sendAgyMessage(outgoing) : await sendMessage(outgoing);
+        : provider === 'agy' ? await sendAgyMessage(outgoing)
+          : provider === 'cursor' ? await sendCursorMessage(outgoing) : await sendMessage(outgoing);
       results.push({ ...result, request_id: requestId, in_reply_to: options['--in-reply-to'] || null });
     } catch (error) {
       if (!options['--to']) throw error;
@@ -628,7 +639,7 @@ async function dispatchSend(options) {
 
 async function main(argv) {
   const { command, options } = parseArgs(argv);
-  if (command === 'help') return { ok: true, usage: 'xm relay sessions [--provider codex|claude|agy] [--project ID] | xm relay chat [--project ID] [--provider PROVIDER] [--message-file PATH] | xm relay send (--to PROVIDER:UUID ... | --provider PROVIDER --thread/--session UUID) (--message TEXT | --message-file PATH|-) [--kind message|command] [--request-id UUID] [--in-reply-to UUID] [--expect-reply] [--from-provider PROVIDER --from-session UUID]', note: 'Chat selects message recipients only. No tmux, attach, resume, or new conversation is launched. AGY requires local agentapi backend context.' };
+  if (command === 'help') return { ok: true, usage: 'xm relay sessions [--provider codex|claude|agy|cursor] [--project ID] | xm relay chat [--project ID] [--provider PROVIDER] [--message-file PATH] | xm relay send (--to PROVIDER:UUID ... | --provider PROVIDER --thread/--session UUID) (--message TEXT | --message-file PATH|-) [--kind message|command] [--request-id UUID] [--in-reply-to UUID] [--expect-reply] [--from-provider PROVIDER --from-session UUID]', note: 'Chat selects message recipients only. No tmux, attach, resume, or new conversation is launched. AGY requires local agentapi backend context.' };
   if (command === 'sessions') return listProvider(options['--provider'] || 'codex', options['--project']);
   if (command === 'chat') {
     await runChat(options, { listProvider, registryProject, projectNameFor: createProjectNameResolver(), send: dispatchSend,
