@@ -502,27 +502,14 @@ async function listSessions(projectName) {
   for (const threadId of live.keys()) held.delete(threadId);
   const project = projectName ? registryProject(projectName) : null;
   const matchesProject = project ? createProjectMatcher(project.path) : null;
+  // Only a thread with a writer lock can be live, so read those few directly.
+  // Paging the daemon's saved-thread list instead cost seconds per page once
+  // it held hundreds of threads (measured: 6.5 s for five pages, 1 ms per read).
   return withDaemon(socketPath, async server => {
     const sessions = new Map();
-    const seen = new Set();
-    let cursor = null;
     let partial = false;
     const notes = [];
-    for (let page = 0; page < 5; page += 1) {
-      const result = await server.request('thread/list', { limit: 100, ...(cursor ? { cursor } : {}) });
-      for (const thread of result.data || []) {
-        if (thread.source && typeof thread.source === 'object' && ('subAgent' in thread.source || 'subagent' in thread.source)) continue;
-        if (matchesProject && !matchesProject(thread.cwd)) continue;
-        const status = thread.status?.type || 'unknown';
-        sessions.set(thread.id, { thread_id: thread.id, name: thread.name || null, cwd: thread.cwd || null, updated_at: thread.updatedAt || null, app_server_status: status, loaded: status !== 'notLoaded' && status !== 'unknown', live_status: 'running', pids: live.get(thread.id) || [] });
-      }
-      cursor = result.nextCursor || null;
-      if (!cursor) break;
-      if (seen.has(cursor) || page === 4) { partial = true; break; }
-      seen.add(cursor);
-    }
     for (const [threadId, pids] of [...live, ...[...held].map(threadId => [threadId, []])]) {
-      if (sessions.has(threadId)) continue;
       try {
         const thread = (await server.request('thread/read', { threadId, includeTurns: false })).thread;
         if (thread?.id !== threadId) throw new Error('thread metadata unavailable');
