@@ -68,6 +68,7 @@ function startFakeDaemon(socketPath, threads, options = {}) {
       readClientFrames(state, text => {
         const request = JSON.parse(text);
         if (request.id == null) return;
+        options.requests?.push(request.method === 'thread/read' ? `${request.method} ${request.params.threadId}` : request.method);
         if (options.replyText !== undefined) { socket.write(serverFrame(options.replyText)); return; }
         let result = {};
         if (request.method === 'thread/list') result = options.pages ? options.pages[page++] : { data: threads, nextCursor: null };
@@ -413,24 +414,20 @@ else process.stdout.write(${JSON.stringify(`999 /opt/codex/re ${daemon}\n`)});`)
     }, { closeBeforeUpgrade: true });
   }, 10000);
 
-  test('deduplicates overlapping pages and keeps the later observed session state', async () => {
-    const original = { id: THREAD_A, name: 'old', updatedAt: 1, status: { type: 'notLoaded' } };
-    const latest = { ...original, name: 'latest', updatedAt: 2, status: { type: 'idle' } };
+  test('reads only the threads that hold a writer lock and never pages the saved-thread list', async () => {
+    const requests = [];
     await withFixture(async f => {
       const result = await run(f, ['sessions']);
       expect(result.status).toBe(0);
-      expect(result.output.sessions.map(row => [row.thread_id, row.name, row.loaded])).toEqual([[THREAD_A, 'latest', true], [THREAD_C, 'open in daemon', true]]);
+      expect(result.output.sessions.map(row => [row.thread_id, row.loaded])).toEqual([[THREAD_C, true], [THREAD_A, false]]);
       expect(result.output.partial).toBe(false);
-    }, { pages: [{ data: [original], nextCursor: 'next' }, { data: [latest], nextCursor: null }] });
+      expect(requests).not.toContain('thread/list');
+      expect(requests.filter(method => method.startsWith('thread/read')).sort()).toEqual([`thread/read ${THREAD_A}`, `thread/read ${THREAD_C}`]);
+    }, { requests });
   });
 
-  test('canonicalizes each directory once per project-scoped inventory, including across pages', async () => {
-    const pages = [];
+  test('canonicalizes each locked thread directory once per project-scoped inventory and skips unlocked threads', async () => {
     await withFixture(async f => {
-      pages.push(
-        { data: f.threads.slice(0, 2), nextCursor: 'next' },
-        { data: [f.threads[2], { ...f.threads[0], id: THREAD_D }], nextCursor: null },
-      );
       const bin = join(f.root, 'bin');
       mkdirSync(bin);
       const capture = join(f.root, 'git-calls.jsonl');
@@ -448,8 +445,9 @@ process.stdout.write(process.cwd() === ${JSON.stringify(realpathSync(f.worktree)
         expect(result.output.sessions.map(row => row.thread_id)).toEqual([THREAD_C, THREAD_A]);
       }
       const calls = readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-      for (const directory of [f.repo, f.worktree, f.threads[1].cwd]) expect(calls.filter(cwd => cwd === realpathSync(directory))).toHaveLength(2);
-    }, { pages });
+      for (const directory of [f.repo, f.worktree]) expect(calls.filter(cwd => cwd === realpathSync(directory))).toHaveLength(2);
+      expect(calls.filter(cwd => cwd === realpathSync(f.threads[1].cwd))).toHaveLength(0);
+    });
   });
 });
 
