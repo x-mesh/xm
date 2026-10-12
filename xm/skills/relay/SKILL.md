@@ -112,6 +112,15 @@ For `sessions`, just show the available candidates and any unverified project ma
 
 `XM_RELAY_AGY_DATA_DIR` overrides the local inventory directory. The observed metadata schema may change; report failures and do not replace missing transport with print mode or conversation resume.
 
+## Cursor recipients
+
+Cursor Agent cannot receive a message into a running interactive session. The relay instead runs one headless turn on a saved chat and returns its answer.
+
+1. Call `xm relay sessions --provider cursor [--project <id>]`. It lists saved chats that hold a conversation, from `~/.cursor/chats/*/<uuid>/meta.json`, newest first, at most 20, with title and working directory. Chats not updated in the last 7 days are hidden from the list, and a note gives their count; `send` still accepts their UUID. These are saved chats, not live processes.
+2. `xm relay send --provider cursor --session <chat-uuid> --message-file <path>` runs `cursor-agent --resume <uuid> --print --mode ask --output-format json` in the chat's working directory. `--mode ask` keeps the turn read-only. The result is `state: answered` with the answer in `reply`; no separate reply arrives later.
+3. A known sender address adds one line that names the sending session and says the answer returns automatically. Do not pass `--expect-reply`; the answer already comes back.
+4. A turn takes about 10-20 seconds and uses Cursor quota. A chat that is also open in an interactive Cursor terminal can conflict; this was not tested.
+
 ## Return address and replies
 
 The shell adapter adds request metadata and the recipient provider and UUID to the message. A known sender adds its provider, full UUID, verified working directory when available, and a reply command. Codex callers use `CODEX_THREAD_ID` automatically; AGY callers can use `ANTIGRAVITY_CONVERSATION_ID`. Claude callers use `CLAUDE_CODE_SESSION_ID`, which Claude Code exports to its Bash tool; the Codex and AGY ids win when both are present. Supply `--from-provider` and `--from-session` together to override any inherited environment. Never infer the sender from a name, working directory, or inventory position.
