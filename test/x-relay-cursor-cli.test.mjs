@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../xm/lib/x-relay-cli.mjs';
+import { cursorTurn } from '../xm/lib/x-relay-cursor.mjs';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'xm', 'lib', 'x-relay-cli.mjs');
 const CHAT_A = 'a5350b87-e97e-4ff0-a542-bf373d3de254';
@@ -30,11 +31,12 @@ function run(args, env = {}) {
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'xm-relay-cursor-'));
   mkdirSync(join(root, 'work', 'app'), { recursive: true });
+  mkdirSync(join(root, 'work', 'other'), { recursive: true });
   const now = Date.now();
   writeChat('ws1', CHAT_A, { hasConversation: true, cwd: join(root, 'work', 'app'), updatedAtMs: now - 1000, title: 'App review' });
-  writeChat('ws2', CHAT_B, { hasConversation: true, cwd: '/somewhere/else', updatedAtMs: now - 6 * DAY });
+  writeChat('ws2', CHAT_B, { hasConversation: true, cwd: join(root, 'work', 'other'), updatedAtMs: now - 6 * DAY });
   writeChat('ws2', CHAT_EMPTY, { hasConversation: false, updatedAtMs: now });
-  writeChat('ws2', CHAT_OLD, { hasConversation: true, cwd: '/somewhere/else', updatedAtMs: now - 32 * DAY, title: 'Old work' });
+  writeChat('ws2', CHAT_OLD, { hasConversation: true, cwd: join(root, 'work', 'other'), updatedAtMs: now - 32 * DAY, title: 'Old work' });
   writeChat('ws3', 'f00dfeed-0000-4000-8000-000000000000', '{ broken');
   writeFileSync(join(root, 'cursor-agent'), `#!/usr/bin/env node
 const fs = require('node:fs');
@@ -80,7 +82,7 @@ describe('Cursor relay adapter', () => {
     const { args } = JSON.parse(readFileSync(join(root, 'args.json'), 'utf8'));
     expect(args.at(-1)).toStartWith('Relay message from another local agent session (codex,');
     expect(args.at(-1).endsWith('\n\nhi')).toBe(true);
-    expect(args).not.toContain('--workspace');
+    expect(args.slice(args.indexOf('--workspace'), args.indexOf('--workspace') + 2)).toEqual(['--workspace', join(root, 'work', 'other')]);
   });
 
   test('fails visibly on a failed turn, a non-JSON answer, and an unknown chat', () => {
@@ -94,6 +96,27 @@ describe('Cursor relay adapter', () => {
     rmSync(join(root, 'args.json'), { force: true });
     run(['send', '--provider', 'cursor', '--session', CHAT_EMPTY, '--message', 'hi']);
     expect(existsSync(join(root, 'args.json'))).toBe(false);
+  });
+
+  test('refuses a chat whose working directory is gone instead of running the turn in the home directory', () => {
+    const gone = '0dd0a11e-0000-4000-8000-000000000000';
+    writeChat('ws4', gone, { hasConversation: true, cwd: join(root, 'deleted-worktree'), updatedAtMs: Date.now() });
+    writeChat('ws4', CHAT_EMPTY.replace('3bd117fa', '4ce228ab'), { hasConversation: true, updatedAtMs: Date.now() });
+    for (const id of [gone, CHAT_EMPTY.replace('3bd117fa', '4ce228ab')]) {
+      const result = run(['send', '--provider', 'cursor', '--session', id, '--message', 'hi']);
+      expect(result.status).not.toBe(0);
+      expect(result.output.error).toContain(`Cursor chat ${id} has no working directory on this machine`);
+    }
+    expect(existsSync(join(root, 'args.json'))).toBe(false);
+  });
+
+  // Bun's spawnSync does not enforce maxBuffer, so the spawn result is stubbed.
+  test('reports a turn stopped by the timeout or output limit as started, and a spawn failure as not run', () => {
+    const stopped = (code) => () => ({ status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: Object.assign(new Error(`spawnSync cursor-agent ${code}`), { code }) });
+    for (const code of ['ETIMEDOUT', 'ENOBUFS']) {
+      expect(() => cursorTurn(CHAT_A, 'hi', root, stopped(code))).toThrow(`cursor-agent turn started but was stopped (${code}); it may already be in chat ${CHAT_A}`);
+    }
+    expect(() => cursorTurn(CHAT_A, 'hi', root, stopped('ENOENT'))).toThrow('cursor-agent did not run');
   });
 
   test('accepts cursor as a provider and a --to target', () => {

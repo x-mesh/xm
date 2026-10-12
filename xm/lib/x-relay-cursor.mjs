@@ -76,10 +76,14 @@ export function cursorSessions({ matchesProject = null, now = Date.now() } = {})
 
 /** Run one read-only turn on a saved chat and return its answer. */
 export function cursorTurn(sessionId, message, cwd, run = spawnSync) {
-  const workspace = cwd && existsSync(cwd) ? cwd : null;
-  const args = ['--resume', sessionId, '--print', '--mode', 'ask', '--output-format', 'json', '--trust',
-    ...(workspace ? ['--workspace', workspace] : []), '--', message];
-  const ran = run(cursorBinary(), args, { cwd: workspace || homedir(), encoding: 'utf8', timeout: TURN_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+  // --trust accepts whatever workspace the turn runs in. Falling back to the home
+  // directory would trust all of it, so a chat whose directory is gone fails instead.
+  if (!cwd || !existsSync(cwd)) throw new Error(`Cursor chat ${sessionId} has no working directory on this machine: ${cwd || 'none recorded'}`);
+  const args = ['--resume', sessionId, '--print', '--mode', 'ask', '--output-format', 'json', '--trust', '--workspace', cwd, '--', message];
+  const ran = run(cursorBinary(), args, { cwd, encoding: 'utf8', timeout: TURN_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+  if (ran.error?.code === 'ETIMEDOUT' || ran.error?.code === 'ENOBUFS') {
+    throw new Error(`cursor-agent turn started but was stopped (${ran.error.code}); it may already be in chat ${sessionId}, so check the chat before sending again`);
+  }
   if (ran.error) throw new Error(`cursor-agent did not run: ${ran.error.message}`);
   let result;
   try {
