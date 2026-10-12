@@ -693,9 +693,10 @@ export function closeAdaptiveRun(input) {
     throw new Error('expected files changed after verification receipt; verify again');
   }
   if (!receipt.unexpected_hashes) throw new Error('the receipt predates undeclared-file hashes; verify again');
-  if (JSON.stringify(hashMap(lease.cwd, lease.baseline_dirty)) !== JSON.stringify(lease.baseline_dirty_hashes)) {
-    throw new Error('baseline dirty bytes changed after verification receipt; verify again');
-  }
+  // Expected files are meant to change, so only the other pre-dirty files are compared, as verify does.
+  const dirtyChanged = lease.baseline_dirty.filter((file) => !lease.expected_files.includes(file))
+    .filter((file) => lease.baseline_dirty_hashes[file] !== sha256File(resolve(lease.cwd, file)));
+  if (dirtyChanged.length) throw new Error(`baseline dirty bytes changed after verification receipt; verify again: ${dirtyChanged.join(', ')}`);
   const undeclared = gitStatus(lease.cwd).filter((file) => !lease.expected_files.includes(file) && !lease.baseline_dirty.includes(file));
   if (JSON.stringify(undeclared) !== JSON.stringify(receipt.unexpected_files)
     || JSON.stringify(hashMap(lease.cwd, undeclared)) !== JSON.stringify(receipt.unexpected_hashes)) {
