@@ -409,7 +409,66 @@ describe('adaptive runtime routing', () => {
       writeFileSync(join(cwd, 'src', 'ok.marker'), 'ok\n');
       const repaired = module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1200 });
       expect(repaired.unexpected_files).toContain('src/ok.marker');
-      expect(module.adaptiveRunStatus(decision.decision_id).runs[0].next_action).toBe('restore_undeclared_then_verify');
+      expect(module.adaptiveRunStatus(decision.decision_id).runs[0].next_action).toBe('restore_undeclared_then_verify_or_close');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  // The undeclared file is one the gates need, so restoring it fails them and abandon needs the
+  // baseline worktree: close is the only exit, and it must not count as accepted or failed.
+  test('a planned lease that passed its gates but changed an undeclared file closes without an outcome', async () => {
+    const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const cwd = fixtureRepo();
+    try {
+      const classification = module.classifyAdaptiveTask({
+        kind: 'feature', files: ['src/api.mjs'], independent: true, risk: 'low', public_contract: true,
+      });
+      const decision = module.decideAdaptiveRoute({ classification, failure_modes: 1, gates: ['schema'] });
+      module.recordAdaptiveDecision(decision);
+      module.startAdaptiveRun({
+        decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'],
+        gate_commands: decision.gates.map((gate) => `${gate}=test -f src/ok.marker`), now_ms: 1000,
+      });
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 2;\n');
+      const gateFailure = module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1100 });
+      expect(gateFailure.passed).toBe(false);
+      expect(() => module.closeAdaptiveRun({ decision_id: decision.decision_id })).toThrow('gates all passed');
+
+      writeFileSync(join(cwd, 'src', 'ok.marker'), 'ok\n');
+      expect(module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1200 }).passed).toBe(false);
+      writeFileSync(join(cwd, 'src', 'ok.marker'), 'changed after the receipt\n');
+      writeFileSync(join(cwd, 'src', 'extra.marker'), 'new\n');
+      expect(() => module.closeAdaptiveRun({ decision_id: decision.decision_id })).toThrow('verify again');
+      rmSync(join(cwd, 'src', 'extra.marker'));
+      // Same undeclared list, but its bytes are not the ones the gates ran against.
+      expect(() => module.closeAdaptiveRun({ decision_id: decision.decision_id })).toThrow('verify again');
+      expect(module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1250 }).passed).toBe(false);
+
+      const closed = module.closeAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1300 });
+      expect(closed).toMatchObject({ status: 'closed', closed_reason: 'undeclared_files', undeclared_files: ['src/ok.marker'] });
+      expect(closed.gate_commands).toBeUndefined();
+      expect(module.readAdaptiveRoutingEvents().filter((row) => row?.type === 'adaptive_route_outcome' && row.decision_id === decision.decision_id)).toHaveLength(0);
+      expect(module.adaptiveRunStatus(decision.decision_id).runs[0]).toMatchObject({ status: 'closed', next_action: 'none', stale: false });
+      for (const call of [module.verifyAdaptiveRun, module.finishAdaptiveRun, module.abandonAdaptiveRun, module.closeAdaptiveRun]) {
+        expect(() => call({ decision_id: decision.decision_id })).toThrow();
+      }
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test('a direct lease cannot be closed; it keeps fallback and abandon as its exits', async () => {
+    const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const cwd = fixtureRepo();
+    try {
+      const decision = module.decideAdaptiveRoute(eligible);
+      expect(decision.route).toBe('direct');
+      module.recordAdaptiveDecision(decision);
+      module.startAdaptiveRun({
+        decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'],
+        gate_commands: ['test=true', 'boundary=true'], now_ms: 1000,
+      });
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 2;\n');
+      writeFileSync(join(cwd, 'src', 'undeclared.mjs'), 'export {};\n');
+      expect(module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1100 }).passed).toBe(false);
+      expect(() => module.closeAdaptiveRun({ decision_id: decision.decision_id })).toThrow('direct lease');
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
