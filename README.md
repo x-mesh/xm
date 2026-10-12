@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.39.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.40.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#plugins"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -468,7 +468,7 @@ x-build is the lean execution workflow around x-plan. It inspects repository evi
 
 The default is adaptive, not plan-always. Bounded, independent, low-risk work takes the direct route — but only when deterministic gates already cover its failure modes. Shared, high-risk, or weakly observable work takes the planned route instead: x-plan Standard on the configured planner model, then the configured executor model once the plan succeeds. A missing or non-executable plan artifact stops it before Execute.
 
-`route start → verify → finish` binds the decision to the baseline commit, expected files, gates, byte hashes, elapsed time, and cost events. A failed direct verification can restart once from a clean planned fallback. Stale or incomplete receipts fail closed.
+`route start → verify → finish` binds the decision to the baseline commit, expected files, gates, byte hashes, elapsed time, and cost events. A failed direct verification can restart once from a clean planned fallback. Stale or incomplete receipts fail closed. A planned run can pass every gate and still change an undeclared file that the gates need. Then `xm build route close --decision-id <id>` closes the lease with the reason and the file list, and records no outcome.
 
 ```bash
 xm build route decide --kind bugfix --scope bounded --independent \

@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.39.0-blue" alt="Version" /></a>
+  <a href="https://github.com/x-mesh/xm/releases"><img src="https://img.shields.io/badge/version-2.40.0-blue" alt="Version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js" /></a>
   <a href="#플러그인"><img src="https://img.shields.io/badge/plugins-18-orange" alt="Plugins" /></a>
@@ -469,7 +469,7 @@ x-build는 x-plan을 감싸는 lean 실행 workflow입니다. 저장소 근거�
 
 기본은 항상 계획을 세우는 방식이 아니라 adaptive입니다. 범위가 작고 파일이 독립적이며 위험도가 낮은 작업은 direct route로 가되, failure mode를 결정적으로 검증할 gate가 이미 있을 때만 그렇습니다. 공유 상태를 건드리거나 위험도가 높거나 관측이 어려운 작업은 planned route로 갑니다. 설정된 planner model로 x-plan Standard를 돌리고, 계획이 성공하면 설정된 executor model에 실행을 넘깁니다. Plan artifact가 없거나 실행할 수 없으면 Execute 전에 멈춥니다.
 
-`route start → verify → finish`는 결정과 baseline commit, 예상 파일, CLI가 실행한 gate, byte hash, 실제 시간과 비용 event를 묶습니다. Direct 검증 실패는 clean planned fallback으로 한 번만 재개합니다. Receipt가 없거나 오래된 상태는 fail-closed로 처리합니다.
+`route start → verify → finish`는 결정과 baseline commit, 예상 파일, CLI가 실행한 gate, byte hash, 실제 시간과 비용 event를 묶습니다. Direct 검증 실패는 clean planned fallback으로 한 번만 재개합니다. Receipt가 없거나 오래된 상태는 fail-closed로 처리합니다. planned 실행이 모든 gate를 통과했지만 gate에 필요한 선언 밖 파일을 바꿨다면 `xm build route close --decision-id <id>`로 lease를 닫습니다. 이때 사유와 파일 목록만 남기고 outcome은 기록하지 않습니다.
 
 ```bash
 xm build route decide --kind bugfix --scope bounded --independent \

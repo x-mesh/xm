@@ -10,7 +10,7 @@
     {
       "name": "build",
       "description": "Repository-grounded planning with lean native execution; legacy phase, worktree, and gate workflows remain explicit opt-ins",
-      "version": "3.19.0",
+      "version": "3.20.0",
       "author": {
         "name": "x-mesh"
       },
@@ -100,7 +100,7 @@
     {
       "name": "trace",
       "description": "Agent execution tracing — timeline, token/cost tracking, replay, and diff for multi-agent observability",
-      "version": "2.4.0",
+      "version": "2.5.0",
       "author": {
         "name": "x-mesh"
       },
@@ -118,7 +118,7 @@
     {
       "name": "plan",
       "description": "Repository-grounded implementation planning with readable plans and validated PlanEnvelope artifacts",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "author": {
         "name": "x-mesh"
       },
@@ -295,7 +295,7 @@
     {
       "name": "xm",
       "description": "All-in-one bundle: build + op + agent + solver + eval + humble + cross-plugin quality pipeline",
-      "version": "2.39.0",
+      "version": "2.40.0",
       "author": {
         "name": "x-mesh"
       },
