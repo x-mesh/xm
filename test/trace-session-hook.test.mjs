@@ -381,6 +381,63 @@ describe('trace-session hook — Agent tool spans inside an xm session', () => {
     expect(existsSync(join(tracesDir, '.active'))).toBe(true); // the new session is the open one
   });
 
+  test('an xm skill a subagent invokes is a skill_step of the open session, not a superseding session', () => {
+    const { repo, env, tracesDir } = openSession('toolu_build');
+    const nested = { ...skillPayload(repo, 'toolu_plan'), tool_input: { skill: 'xm:plan', args: 'plan it' }, agent_id: 'a425d6867ad1c788b', agent_type: 'general-purpose' };
+    expect(runHook('pre', nested, env).status).toBe(0);
+    expect(runHook('pre', nested, env).status).toBe(0); // second hook registration
+    expect(runHook('stop', stopPayload(repo), env).status).toBe(0);
+
+    const rows = readTrace(tracesDir);
+    expect(rows.filter((l) => l.type === 'skill_step')).toEqual([expect.objectContaining({ skill: 'plan', args: 'plan it', agent_id: 'a425d6867ad1c788b', source: 'hook' })]);
+    const end = rows.find((l) => l.type === 'session_end');
+    expect(end.close_reason).toBeUndefined();
+  });
+
+  test('a background agent keeps the session open across turns and is recorded with its real duration at SubagentStop', () => {
+    const { repo, env, tracesDir } = openSession();
+    const launched = { response: { isAsync: true, status: 'async_launched', agentId: 'agent1' } };
+    expect(runHook('pre', agentPayload(repo, 'toolu_bg'), env).status).toBe(0);
+    expect(runHook('post', agentPayload(repo, 'toolu_bg', launched), env).status).toBe(0);
+    expect(existsSync(join(tracesDir, '.agents', 'bg-agent1.json'))).toBe(true);
+
+    const running = { ...stopPayload(repo), background_tasks: [{ id: 'agent1', type: 'subagent', status: 'running' }] };
+    expect(runHook('stop', running, env).status).toBe(0);
+    expect(existsSync(join(tracesDir, '.active'))).toBe(true);
+    expect(readTrace(tracesDir).filter((l) => l.type === 'agent_step' || l.type === 'session_end')).toHaveLength(0);
+
+    // A later turn dispatches the next agent into the same session.
+    expect(runHook('pre', agentPayload(repo, 'toolu_next'), env).status).toBe(0);
+    expect(runHook('post', agentPayload(repo, 'toolu_next', { response: { result: 'done' } }), env).status).toBe(0);
+
+    const subagentStop = { hook_event_name: 'SubagentStop', agent_id: 'agent1', cwd: repo };
+    expect(runHook('stop', subagentStop, env).status).toBe(0);
+    expect(runHook('stop', subagentStop, env).status).toBe(0); // second hook registration
+    expect(existsSync(join(tracesDir, '.active'))).toBe(true);
+    expect(runHook('stop', { ...stopPayload(repo), background_tasks: [] }, env).status).toBe(0);
+
+    const rows = readTrace(tracesDir);
+    const steps = rows.filter((l) => l.type === 'agent_step');
+    expect(Object.fromEntries(steps.map((s) => [s.id, s.status]))).toEqual({ toolu_next: 'success', toolu_bg: 'completed' });
+    expect(steps.find((s) => s.id === 'toolu_bg')).toMatchObject({ role: 'Explore', model: 'haiku', description: 'Scan tests' });
+    expect(typeof steps.find((s) => s.id === 'toolu_bg').duration_ms).toBe('number');
+    expect(rows.find((l) => l.type === 'session_end').agent_count).toBe(2);
+  });
+
+  test('a background agent whose end is never seen is written as launched without a duration when the session closes', () => {
+    const { repo, env, tracesDir } = openSession();
+    const launched = { response: { isAsync: true, status: 'async_launched', agentId: 'agent2' } };
+    expect(runHook('pre', agentPayload(repo, 'toolu_bg2'), env).status).toBe(0);
+    expect(runHook('post', agentPayload(repo, 'toolu_bg2', launched), env).status).toBe(0);
+    // A running task this session did not dispatch does not hold the session open.
+    const unrelated = { ...stopPayload(repo), background_tasks: [{ id: 'someone-else', type: 'subagent', status: 'running' }] };
+    expect(runHook('stop', unrelated, env).status).toBe(0);
+
+    const rows = readTrace(tracesDir);
+    expect(rows.filter((l) => l.type === 'agent_step')).toEqual([expect.objectContaining({ id: 'toolu_bg2', status: 'launched', duration_ms: null })]);
+    expect(existsSync(join(tracesDir, '.active'))).toBe(false);
+  });
+
   test('outside an xm session → exit 0, silent, no .xm created', () => {
     const base = makeTmp();
     const env = { CLAUDE_PROJECT_DIR: base };

@@ -774,6 +774,8 @@ ${C.bold}Analysis & Utilities:${C.reset}
                                  Bind native execution to baseline, files, CLI-run gates, and byte receipt
   route status [--decision-id ID]; route abandon --decision-id ID
                                  Recover or safely abandon interrupted leases
+  route close --decision-id ID   Close a planned lease whose gates passed but whose changes left
+                                 its declared files, recording why and no outcome
   route prove --fixture A,B --benchmark FILE --blind FILE
                                  Check 10 paired trials, quality, 20% cost, and 15% p50 latency
   route record --class C --route direct|planned --outcome accepted|escalated|failed --quality pass|fail --gates-run G

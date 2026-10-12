@@ -63,6 +63,8 @@ xm build route finish --decision-id <id> --json
 
 Direct verification 실패 시 작업 트리를 baseline으로 복원하거나 clean worktree를 준비한 다음 `route start --decision-id <id> --fallback`을 실행합니다. fallback이 끝나면 같은 `verify → finish`를 사용하며 outcome은 자동으로 `escalated`가 됩니다. 비용은 같은 `decision_id`에 결합되고 `cost_source=actual`인 x-build cost event를 `finish`가 자동 합산하며, 없으면 null로 남깁니다. `route record`는 기존 호출자 호환과 수동 복구용이며 기본 workflow에서는 사용하지 않습니다.
 
+planned route의 `verify`가 gate는 모두 통과했는데 선언하지 않은 파일이 바뀌어서만 실패했고, 그 변경이 gate 통과에 필요하다면 되돌리지 말고 `xm build route close --decision-id <id>`로 닫습니다. close는 사유와 파일 목록만 남기고 outcome을 기록하지 않으므로 accepted로 세지 않고 task class를 quality failure로 표시하지도 않습니다. 되돌려도 gate가 통과하는 변경이면 되돌린 뒤 다시 `verify`합니다.
+
 세션이 끊기면 `xm build route status [--decision-id <id>]`로 lease와 다음 action을 확인합니다. 작업 트리가 기록된 baseline과 완전히 같을 때만 `xm build route abandon --decision-id <id>`로 중단 lease를 닫습니다. 변경이 있으면 abandon하지 않고 `verify`하거나 변경을 보존한 채 복구합니다.
 
 Adaptive 개선을 완료로 주장하기 전에는 benchmark와 blind 산출물을 `route prove`로 판정합니다. fixture별 최소 10쌍, adaptive와 baseline verification 전부 통과, blind 품질 열세 0건, p50 비용 20% 이상 절감, p50 시간 15% 이상 단축을 모두 만족해야 합니다. 산출물 일부가 없거나 blind pair가 중복·불일치하면 실패합니다.

@@ -270,11 +270,14 @@ function writeSettings(obj) {
 // entry for the command (any matcher) and re-adds exactly one, so a duplicated or
 // corrupted registration cannot survive as "already present".
 const HOOK_MATCHER = 'Skill|Agent';
-// [event, command, matcher] — Stop has no matcher.
+// [event, command, matcher] — Stop and SubagentStop have no matcher. SubagentStop
+// runs the stop command too: the hook tells the two apart by hook_event_name and
+// records a background agent's end there instead of closing the session.
 const HOOK_REGISTRATIONS = [
   ['PreToolUse', HOOK_CMD_PRE, HOOK_MATCHER],
   ['PostToolUse', HOOK_CMD_POST, HOOK_MATCHER],
   ['Stop', HOOK_CMD_STOP, null],
+  ['SubagentStop', HOOK_CMD_STOP, null],
 ];
 
 const sameMatcher = (group, matcher) => (group?.matcher ?? null) === (matcher ?? null);

@@ -575,7 +575,7 @@ export function verifyAdaptiveRun(input) {
   const receipt = {
     schema: 1, decision_id: lease.decision_id, task_class: lease.task_class, selected_route: lease.selected_route,
     baseline_head: lease.baseline_head, head_changed: headChanged, expected_files: lease.expected_files, changed_files: changedFiles,
-    unexpected_files: unexpectedFiles, baseline_dirty_changed: baselineDirtyChanged,
+    unexpected_files: unexpectedFiles, unexpected_hashes: hashMap(lease.cwd, unexpectedFiles), baseline_dirty_changed: baselineDirtyChanged,
     changed_expected_files: changedExpectedFiles, final_hashes: finalHashes, gates, passed,
     verified_at: new Date(input.now_ms ?? Date.now()).toISOString(),
   };
@@ -648,7 +648,7 @@ export function adaptiveRunStatus(decisionId = null, nowMs = Date.now()) {
         // declaration is fixed at start, so an undeclared change is resolved by restoring it,
         // not by amending the lease.
         if (receipt?.head_changed) nextAction = 'restore_head_then_abandon';
-        else if (receipt?.unexpected_files?.length) nextAction = 'restore_undeclared_then_verify';
+        else if (receipt?.unexpected_files?.length) nextAction = lease.execution_phase === 'planned' && onlyUndeclaredFailure(receipt) ? 'restore_undeclared_then_verify_or_close' : 'restore_undeclared_then_verify';
         else nextAction = 'fix_then_verify';
       }
     }
@@ -656,7 +656,7 @@ export function adaptiveRunStatus(decisionId = null, nowMs = Date.now()) {
     return {
       decision_id: lease.decision_id, task_class: lease.task_class, selected_route: lease.selected_route,
       status: lease.status, execution_phase: lease.execution_phase, started_at: lease.started_at, age_ms: ageMs,
-      stale: ageMs != null && ageMs > 24 * 60 * 60 * 1000 && !['finished', 'abandoned'].includes(lease.status),
+      stale: ageMs != null && ageMs > 24 * 60 * 60 * 1000 && !['finished', 'abandoned', 'closed'].includes(lease.status),
       changed_files: changed, next_action: nextAction,
     };
   });
@@ -664,10 +664,55 @@ export function adaptiveRunStatus(decisionId = null, nowMs = Date.now()) {
   return { schema: 1, runs: runs.sort((a, b) => String(b.started_at).localeCompare(String(a.started_at))) };
 }
 
+function onlyUndeclaredFailure(receipt) {
+  return receipt.head_changed === false && !receipt.baseline_dirty_changed?.length && receipt.changed_expected_files?.length > 0
+    && receipt.unexpected_files?.length > 0 && Array.isArray(receipt.gates) && receipt.gates.every((gate) => gate.passed);
+}
+
+// A planned run whose gates all passed but that also changed files outside its declaration
+// had no exit: restoring a change the gates need fails them, abandon needs the baseline
+// worktree, and amending the declaration was rejected (see verifyAdaptiveRun). Close records
+// the reason and the files without an outcome, so the run neither counts as accepted nor marks
+// its task class with a quality failure that keeps it planned for good.
+export function closeAdaptiveRun(input) {
+  const lease = readLocalJSON(leasePath(input.decision_id));
+  if (!lease) throw new Error('execution lease not found');
+  if (lease.status !== 'verification_failed') throw new Error(`only a failed verification can be closed: ${lease.status}`);
+  // A planned-fallback lease carries the direct attempt's verification failure, which only
+  // an outcome resolves; closing it without one would keep the task class planned for good.
+  if (lease.execution_phase !== 'planned') {
+    throw new Error(`only a planned lease can be closed: a direct lease uses route start --fallback or route abandon, and a planned-fallback lease must finish or abandon so its escalation is recorded (${lease.execution_phase})`);
+  }
+  const receipt = readLocalJSON(receiptPath(lease.decision_id));
+  if (!receipt || !onlyUndeclaredFailure(receipt)) {
+    throw new Error('close needs a receipt whose gates all passed and whose only failure is undeclared files');
+  }
+  if (!existsSync(lease.cwd)) throw new Error('execution repository is unavailable; lease preserved for manual recovery');
+  if (gitHead(lease.cwd) !== receipt.baseline_head) throw new Error('HEAD changed after verification receipt');
+  if (JSON.stringify(hashMap(lease.cwd, lease.expected_files)) !== JSON.stringify(receipt.final_hashes)) {
+    throw new Error('expected files changed after verification receipt; verify again');
+  }
+  if (!receipt.unexpected_hashes) throw new Error('the receipt predates undeclared-file hashes; verify again');
+  if (JSON.stringify(hashMap(lease.cwd, lease.baseline_dirty)) !== JSON.stringify(lease.baseline_dirty_hashes)) {
+    throw new Error('baseline dirty bytes changed after verification receipt; verify again');
+  }
+  const undeclared = gitStatus(lease.cwd).filter((file) => !lease.expected_files.includes(file) && !lease.baseline_dirty.includes(file));
+  if (JSON.stringify(undeclared) !== JSON.stringify(receipt.unexpected_files)
+    || JSON.stringify(hashMap(lease.cwd, undeclared)) !== JSON.stringify(receipt.unexpected_hashes)) {
+    throw new Error('undeclared files changed after verification receipt; verify again');
+  }
+  const closed = {
+    ...lease, status: 'closed', closed_reason: 'undeclared_files', undeclared_files: receipt.unexpected_files,
+    closed_at: new Date(input.now_ms ?? Date.now()).toISOString(), gate_commands: undefined,
+  };
+  writeLocalJSON(leasePath(lease.decision_id), closed);
+  return closed;
+}
+
 export function abandonAdaptiveRun(input) {
   const lease = readLocalJSON(leasePath(input.decision_id));
   if (!lease) throw new Error('execution lease not found');
-  if (['finished', 'abandoned'].includes(lease.status)) throw new Error(`execution lease is already ${lease.status}`);
+  if (['finished', 'abandoned', 'closed'].includes(lease.status)) throw new Error(`execution lease is already ${lease.status}`);
   if (!existsSync(lease.cwd)) throw new Error('execution repository is unavailable; lease preserved for manual recovery');
   if (gitHead(lease.cwd) !== lease.baseline_head) throw new Error('cannot abandon after HEAD changed');
   const changed = gitStatus(lease.cwd);
@@ -787,6 +832,11 @@ export function cmdAdaptiveRoute(args) {
       console.log(JSON.stringify(result, null, 2));
       return result;
     }
+    if (verb === 'close') {
+      const result = closeAdaptiveRun({ decision_id: take(args, 'decision-id') });
+      console.log(JSON.stringify(result, null, 2));
+      return result;
+    }
     if (verb === 'report') {
       const events = readAdaptiveRoutingEvents();
       const requestedClass = take(args, 'class');
@@ -812,7 +862,7 @@ export function cmdAdaptiveRoute(args) {
       console.log(JSON.stringify(result, null, 2));
       return result;
     }
-    throw new Error('Usage: xm build route decide|start|verify|finish|status|abandon|record|report [options]');
+    throw new Error('Usage: xm build route decide|start|verify|finish|status|abandon|close|record|report [options]');
   } catch (error) {
     console.error(`❌ ${error.message}`);
     process.exitCode = 1;
