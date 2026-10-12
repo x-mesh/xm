@@ -505,6 +505,31 @@ describe('adaptive runtime routing', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  // verify leaves expected files out of the baseline-dirty comparison; close must too, or an
+  // expected file that was already dirty at start would block close however often verify runs.
+  test('close accepts a lease whose expected file was already dirty at start', async () => {
+    const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
+    const cwd = fixtureRepo();
+    try {
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 9;\n');
+      const classification = module.classifyAdaptiveTask({
+        kind: 'feature', files: ['src/api.mjs'], independent: true, risk: 'low', public_contract: true,
+      });
+      const decision = module.decideAdaptiveRoute({ classification, failure_modes: 1, gates: ['schema'] });
+      module.recordAdaptiveDecision(decision);
+      module.startAdaptiveRun({
+        decision_id: decision.decision_id, cwd, expected_files: ['src/value.mjs'], allow_dirty: true,
+        gate_commands: decision.gates.map((gate) => `${gate}=test -f src/ok.marker`), now_ms: 1000,
+      });
+      writeFileSync(join(cwd, 'src', 'value.mjs'), 'export const value = 2;\n');
+      writeFileSync(join(cwd, 'src', 'ok.marker'), 'ok\n');
+      const receipt = module.verifyAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1100 });
+      expect(receipt.unexpected_files).toEqual(['src/ok.marker']);
+      expect(module.adaptiveRunStatus(decision.decision_id).runs[0].next_action).toBe('restore_undeclared_then_verify_or_close');
+      expect(module.closeAdaptiveRun({ decision_id: decision.decision_id, now_ms: 1200 })).toMatchObject({ status: 'closed', undeclared_files: ['src/ok.marker'] });
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   test('a direct lease cannot be closed; it keeps fallback and abandon as its exits', async () => {
     const module = await import('../x-build/lib/x-build/adaptive-routing.mjs');
     const cwd = fixtureRepo();
