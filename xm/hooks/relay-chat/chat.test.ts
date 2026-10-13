@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { ago, parseDelivery, parseRelaySend, sendArgv, sessionRows, summarizeTranscript, transcriptPath } from './parse'
-import { badgeCells, cells, displayName, fit, labels, layoutFor } from './view'
+import { badgeCells, badgeColumns, cells, displayName, fit, labels, layoutFor } from './view'
 
 const CODEX = '019a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b'
 const OWN = 'dbccc1c8-c251-48be-a489-c6fde996d411'
@@ -166,12 +166,17 @@ describe('view helpers', () => {
     expect([...sameTail.values()]).toEqual(['edc#c11200a', 'edc#811200a'])
   })
 
-  test('encode a two-cell badge as little-endian u32 triplets', () => {
+  test('encode a badge as little-endian u32 triplets, one cell per glyph', () => {
     const bytes = Uint8Array.from(atob(badgeCells('codex')), c => c.charCodeAt(0))
     const words = new DataView(bytes.buffer)
     expect(bytes.length).toBe(24)
     expect([words.getUint32(0, true), words.getUint32(4, true), words.getUint32(8, true)]).toEqual(['>'.codePointAt(0), 0xffffff, 0x10a37f])
     expect(words.getUint32(12, true)).toBe('_'.codePointAt(0))
+    // The Claude mark is one glyph with a cell of margin on each side, so it sits centered.
+    expect(badgeColumns('claude')).toBe(3)
+    const claude = new DataView(Uint8Array.from(atob(badgeCells('claude')), c => c.charCodeAt(0)).buffer)
+    expect([0, 1, 2].map(i => claude.getUint32(i * 12, true))).toEqual([0x20, '✻'.codePointAt(0), 0x20])
+    expect(claude.getUint32(8, true)).toBe(0xd97757)
   })
 
   test('drop the provider prefix the icon already shows', () => {
@@ -220,8 +225,10 @@ describe('picker', () => {
       expect((await ui.find({ key: `pick-claude-${PEER}` }))?.text).toContain('gk-fa')
       expect(await ui.find({ key: `pick-claude-${OWN}` })).toBeUndefined()
       expect(await ui.find({ type: 'Text', text: /Git action 모니터링/ })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /PR 들 모두 처리해/ })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /릴리스 완료/ })).toBeDefined()
+      // One line under the name: the latest reply wins over the prompt and the path.
+      expect(await ui.find({ type: 'Text', text: /‹ 릴리스 완료/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /PR 들 모두 처리해/ })).toBeUndefined()
+      expect(await ui.find({ type: 'Text', text: /work\/gk/ })).toBeUndefined()
       expect(await ui.find({ type: 'Text', text: /3시간 전/ })).toBeDefined()
       await ui.unmount()
     }
@@ -309,7 +316,10 @@ describe('Cursor', () => {
       })
       if (surface === 'terminal') {
         await ui.press({ key: 'add' })
-        expect((await ui.find({ key: `pick-cursor-${CHAT}` }))?.text).toBe('app')
+        // The whole line is the button: the name first, then the state, filled to the line's width.
+        const row = (await ui.find({ key: `pick-cursor-${CHAT}` }))?.text ?? ''
+        expect(row.startsWith('app ● Cursor')).toBe(true)
+        expect(cells(row)).toBe(100 - 8)
         await ui.press({ key: `pick-cursor-${CHAT}` })
         await ui.input({ key: `say-cursor:${CHAT}`, text: '7+8은?' })
         expect(sent).toContain('cursor')
@@ -365,7 +375,8 @@ describe('session.receive', () => {
         props: { title: 'Relay 대화', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
       })
       const tab = await ui.find({ key: `tab-codex:${CODEX}` })
-      expect(tab?.text).toBe('019a1b2c')
+      expect(tab?.text?.startsWith('019a1b2c ')).toBe(true)
+      expect(cells(tab?.text ?? '')).toBe(80 - 6)
       await ui.press({ key: `tab-codex:${CODEX}` })
       expect(await ui.find({ type: 'Text', text: /리뷰 끝났어/ })).toBeDefined()
       expect(await ui.find({ key: `say-codex:${CODEX}` })).toBeDefined()

@@ -5,7 +5,7 @@ import type { Candidate, ChatLine, Conversation, Peer, Picker } from '../../type
 import {
   ago, parseDelivery, parseRelaySend, peerKey, sendArgv, sessionRows, shortName, summarizeTranscript, transcriptPath,
 } from './parse'
-import { BADGE_COLUMNS, ICON_SVG, LABEL, badgeCells, displayName, fit, labels, layoutFor, providerOf } from './view'
+import { ICON_SVG, LABEL, badgeCells, badgeColumns, cells, displayName, fit, labels, layoutFor, pad, providerOf } from './view'
 import type { Who } from './view'
 
 const PANE = 'relay-chat'
@@ -336,9 +336,14 @@ export const register: Register = on => {
     const speaker = (line: ChatLine, c: Conversation) => (line.by === 'me' ? '나' : line.by === 'model' ? '모델' : name(c))
     const icon = (w: Who, id: string) =>
       Svg ? <Svg source={ICON_SVG[w]} alt={LABEL[w]} width={14} height={14} />
-        : Raster ? <Raster key={`icon-${id}`} columns={BADGE_COLUMNS} rows={1} cells={badgeCells(w)} />
+        : Raster ? <Raster key={`icon-${id}`} columns={badgeColumns(w)} rows={1} cells={badgeCells(w)} />
           : <Text>{LABEL[w][0]}</Text>
     const cell = (width: number, child: RenderChildren) => <Box width={width} flexShrink={0}>{child}</Box>
+    // Each list line is one Button filled to the line's width, so the whole line
+    // takes the pointer and the press, not the name alone. A Button holds only
+    // text, so the badge stays outside it.
+    const rowWidth = e.props.bodyColumns - 2 - 4
+    const pickWidth = e.props.bodyColumns - 4 - 4
 
     return (
       <Box flexDirection="column">
@@ -354,17 +359,15 @@ export const register: Register = on => {
           return (
             <Box key={`row-${c.key}`}>
               {cell(2, <Text color={isActive ? 'suggestion' : 'subtle'}>{isActive ? '▸' : ' '}</Text>)}
-              {cell(3, icon(providerOf(c.peer), `row-${c.key}`))}
-              {cell(rows.nameWidth, <Button key={`tab-${c.key}`} label={fit(name(c), rows.nameWidth - 1)} plain dimColor={!isActive} onPress={() => select($, c.key)} />)}
-              {cell(4, c.unread > 0 ? <Text color="warning" bold>{`●${c.unread}`}</Text> : <Text> </Text>)}
-              {rows.showTime && cell(9, <Text dimColor wrap="truncate-end">{last ? ago(last.at, now) : '새 대화'}</Text>)}
-              {rows.showPreview && last && (
-                <Box flexGrow={1} flexShrink={1} minWidth={0}>
-                  <Text dimColor wrap="truncate-end">
-                    {speaker(last, c)}: {last.text.replace(/\s+/g, ' ')}
-                  </Text>
-                </Box>
-              )}
+              {cell(4, icon(providerOf(c.peer), `row-${c.key}`))}
+              <Button key={`tab-${c.key}`} plain dimColor={!isActive} onPress={() => select($, c.key)}>
+                <Text bold={isActive}>{pad(fit(name(c), rows.nameWidth - 1), rows.nameWidth)}</Text>
+                <Text color="warning" bold>{pad(c.unread > 0 ? `●${c.unread}` : '', 4)}</Text>
+                <Text dimColor>{pad(rows.showTime ? (last ? ago(last.at, now) : '새 대화') : '', rows.showTime ? 9 : 0)}</Text>
+                <Text dimColor>
+                  {pad(rows.showPreview && last ? `${speaker(last, c)}: ${last.text.replace(/\s+/g, ' ')}` : '', rowWidth - rows.nameWidth - 4 - (rows.showTime ? 9 : 0))}
+                </Text>
+              </Button>
             </Box>
           )
         })}
@@ -377,45 +380,42 @@ export const register: Register = on => {
             </Box>
             {pick.isLoading && <Text dimColor>{`${(pick.pending ?? []).map(p => LABEL[p]).join(', ')} 조회 중…`}</Text>}
             {!pick.isLoading && pick.candidates.length === 0 && <Text dimColor>대화할 수 있는 세션이 없습니다.</Text>}
-            {pick.candidates.map(c => (
-              <Box key={`cand-${c.provider}-${c.id}`} flexDirection="column" marginTop={1}>
-                <Box>
-                  {cell(3, icon(c.provider, `cand-${c.provider}-${c.id}`))}
-                  <Box flexShrink={0} marginRight={1}>
+            {pick.candidates.map(c => {
+              const label = `${fit(c.name, chat.nameWidth + 6)} `
+              const state = c.unavailable === null
+                ? `● ${c.status ?? LABEL[c.provider]}${c.lastAt ? ` · ${ago(c.lastAt, now)}` : ''}${talking.has(`${c.provider}:${c.id}`) ? ' · 대화 중' : ''} `
+                : `전송 불가 · ${unavailableLabel(c)}`
+              const stateText = fit(state, Math.max(0, pickWidth - cells(label)))
+              const rest = pickWidth - cells(label) - cells(stateText)
+              // One line of what happened last: the reply, else the prompt, else where it runs.
+              const detail = c.lastReply ? `‹ ${c.lastReply}` : c.lastPrompt ? `› ${c.lastPrompt}` : tilde(c.cwd)
+              const open = () => openCandidate($, c)
+              return (
+                <Box key={`cand-${c.provider}-${c.id}`} flexDirection="column">
+                  <Box>
+                    {cell(4, icon(c.provider, `cand-${c.provider}-${c.id}`))}
                     {c.unavailable === null ? (
-                      <Button key={`pick-${c.provider}-${c.id}`} label={fit(c.name, chat.nameWidth + 6)} onPress={() => openCandidate($, c)} />
+                      <Button key={`pick-${c.provider}-${c.id}`} plain onPress={open}>
+                        <Text bold>{label}</Text>
+                        <Text color={c.status === 'busy' ? 'warning' : c.status === 'idle' ? 'success' : 'subtle'}>{stateText}</Text>
+                        <Text dimColor>{pad(c.title && rows.showPreview ? ` ${c.title}` : '', rest)}</Text>
+                      </Button>
                     ) : (
-                      <Text dimColor>{fit(c.name, chat.nameWidth + 6)}</Text>
+                      <Text dimColor wrap="truncate-end">{`${label}${stateText}`}</Text>
                     )}
                   </Box>
-                  <Box flexShrink={1} minWidth={0}>
+                  <Box paddingLeft={4}>
                     {c.unavailable === null ? (
-                      <Text color={c.status === 'busy' ? 'warning' : c.status === 'idle' ? 'success' : 'subtle'} wrap="truncate-end">
-                        {`● ${c.status ?? LABEL[c.provider]}${c.lastAt ? ` · ${ago(c.lastAt, now)}` : ''}${talking.has(`${c.provider}:${c.id}`) ? ' · 대화 중' : ''}`}
-                      </Text>
+                      <Button key={`pick-detail-${c.provider}-${c.id}`} plain dimColor onPress={open}>
+                        <Text>{pad(detail, pickWidth)}</Text>
+                      </Button>
                     ) : (
-                      <Text dimColor wrap="truncate-end">{`전송 불가 · ${unavailableLabel(c)}`}</Text>
+                      <Text dimColor wrap="truncate-end">{detail}</Text>
                     )}
                   </Box>
                 </Box>
-                <Box flexDirection="column" paddingLeft={2}>
-                  {c.title && <Text wrap="truncate-end">{c.title}</Text>}
-                  <Text dimColor wrap="truncate-end">{tilde(c.cwd)}</Text>
-                  {c.lastPrompt && (
-                    <Box>
-                      {cell(7, <Text color="subtle">› 입력</Text>)}
-                      <Box flexShrink={1} minWidth={0}><Text wrap="truncate-end">{c.lastPrompt}</Text></Box>
-                    </Box>
-                  )}
-                  {c.lastReply && (
-                    <Box>
-                      {cell(7, <Text color="subtle">‹ 응답</Text>)}
-                      <Box flexShrink={1} minWidth={0}><Text wrap="truncate-end">{c.lastReply}</Text></Box>
-                    </Box>
-                  )}
-                </Box>
-              </Box>
-            ))}
+              )
+            })}
             {pick.notes.map(note => (
               <Text color="warning">{note}</Text>
             ))}
@@ -425,11 +425,11 @@ export const register: Register = on => {
         {current && (
           <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="suggestion" paddingX={1}>
             <Box>
-              {cell(3, icon(providerOf(current.peer), `head-${current.key}`))}
+              {cell(4, icon(providerOf(current.peer), `head-${current.key}`))}
               <Box flexShrink={0} marginRight={1}><Text bold>{fit(name(current), chat.nameWidth + 6)}</Text></Box>
               <Box flexShrink={1} minWidth={0}><Text dimColor wrap="truncate-end">{tilde(current.cwd)}</Text></Box>
             </Box>
-            {current.lines.length === 0 && <Text dimColor>주고받은 메시지가 없습니다.</Text>}
+            {current.lines.length === 0 && <Text dimColor>아직 메시지가 없습니다.</Text>}
             {current.lines.slice(-SHOWN_LINES).map(line => {
               const color = line.by === 'peer' ? 'suggestion' : line.by === 'me' ? 'success' : 'subtle'
               return chat.stackLines ? (
@@ -450,7 +450,11 @@ export const register: Register = on => {
             })}
             {current.waiting && <Text dimColor>{`${LABEL[providerOf(current.peer)]} 응답 대기 중…`}</Text>}
             {current.peer && Input ? (
-              <Input key={`say-${current.key}`} placeholder={`${fit(name(current), 14)}에게 보낼 내용`} submitLabel="보내기" onSubmit={(value: string) => say($, current.key, value)} />
+              // The field sits in its own frame in the composer's border color, with
+              // the composer's prompt mark: a hint in a bare field read as a message.
+              <Box marginTop={1} borderStyle="round" borderColor="promptBorder" paddingX={1}>
+                <Input key={`say-${current.key}`} label="❯ " placeholder={`${fit(name(current), 14)}에게 보낼 메시지`} submitLabel="보내기" autoFocus onSubmit={(value: string) => say($, current.key, value)} />
+              </Box>
             ) : (
               !current.peer && <Text dimColor>답장 경로가 없는 대화입니다.</Text>
             )}
@@ -458,8 +462,8 @@ export const register: Register = on => {
         )}
 
         {Input && list.filter(c => c.peer).length >= 2 && (
-          <Box marginTop={1}>
-            <Input key="say-all" label="모두에게 " placeholder="열린 대화 전체에 보낼 내용" submitLabel="보내기" onSubmit={(value: string) => broadcast($, value)} />
+          <Box marginTop={1} borderStyle="round" borderColor="promptBorder" paddingX={1}>
+            <Input key="say-all" label="모두에게 ❯ " placeholder="열린 대화 전체에 보낼 메시지" submitLabel="보내기" onSubmit={(value: string) => broadcast($, value)} />
           </Box>
         )}
       </Box>

@@ -7,26 +7,31 @@ export function providerOf(peer: Peer | null): Who {
   return peer.kind === 'native' ? 'claude' : peer.provider
 }
 
-// The terminal draws no Svg. A two-cell Raster badge, white glyphs on the
-// provider's color, works in any truecolor terminal without a graphics protocol.
-// Each glyph is one cell wide, as Raster requires.
+// The terminal draws no Svg. A Raster badge, white glyphs on the provider's
+// color, works in any truecolor terminal without a graphics protocol. Each glyph
+// is one cell wide, as Raster requires, and the badge is as wide as its glyphs:
+// a one-glyph mark padded to two cells would sit off center, so it takes a cell
+// of margin on each side instead.
 const BADGE: Record<Who, { glyphs: string; background: number }> = {
-  claude: { glyphs: '✻ ', background: 0xd97757 },
+  claude: { glyphs: ' ✻ ', background: 0xd97757 },
   codex: { glyphs: '>_', background: 0x10a37f },
   agy: { glyphs: 'AG', background: 0x4285f4 },
   cursor: { glyphs: 'Cu', background: 0x334155 },
-  unknown: { glyphs: '? ', background: 0x6b7280 },
+  unknown: { glyphs: ' ? ', background: 0x6b7280 },
 }
 const WHITE = 0xffffff
 
-export const BADGE_COLUMNS = 2
+/** The cells a badge takes; the row keeps four for it whatever this is. */
+export function badgeColumns(w: Who): number {
+  return [...BADGE[w].glyphs].length
+}
 
 /** Raster `cells`: base64 of little-endian u32 [codePoint, foreground, background] per cell. */
 export function badgeCells(w: Who): string {
   const { glyphs, background } = BADGE[w]
-  const bytes = new Uint8Array(BADGE_COLUMNS * 12)
+  const bytes = new Uint8Array(badgeColumns(w) * 12)
   const view = new DataView(bytes.buffer)
-  ;[...glyphs].slice(0, BADGE_COLUMNS).forEach((ch, i) => {
+  ;[...glyphs].forEach((ch, i) => {
     view.setUint32(i * 12, ch.codePointAt(0) ?? 0x20, true)
     view.setUint32(i * 12 + 4, WHITE, true)
     view.setUint32(i * 12 + 8, background, true)
@@ -59,6 +64,15 @@ export function cells(text: string): number {
   let width = 0
   for (const ch of text) width += isWide(ch.codePointAt(0) ?? 0) ? 2 : 1
   return width
+}
+
+/** `text` cut to `width` cells and filled with spaces to exactly that width. A
+ *  Button is pressable only where it draws, so a row filled to its width can be
+ *  pressed anywhere along the line. */
+export function pad(text: string, width: number): string {
+  const w = Math.max(0, width)
+  const cut = fit(text, w)
+  return cut + ' '.repeat(Math.max(0, w - cells(cut)))
 }
 
 /** Cut `text` to at most `width` cells, ending in "…" when cut. */
@@ -120,15 +134,15 @@ export function displayName(name: string, peer: Peer | null): string {
 
 export type Layout = { nameWidth: number; showTime: boolean; showPreview: boolean; stackLines: boolean }
 
-// Column budget of a conversation row: marker 2, icon 3, name, unread 4, time 9,
+// Column budget of a conversation row: marker 2, icon 4, name, unread 4, time 9,
 // then the preview takes what is left. Narrow panes drop the preview, then the
 // time; chat lines stack sender over text before the text column gets too thin.
 export function layoutFor(columns: number): Layout {
   const nameWidth = columns >= 70 ? 18 : columns >= 44 ? 14 : 10
   return {
     nameWidth,
-    showTime: columns >= 2 + 3 + nameWidth + 4 + 9,
-    showPreview: columns >= 2 + 3 + nameWidth + 4 + 9 + 16,
+    showTime: columns >= 2 + 4 + nameWidth + 4 + 9,
+    showPreview: columns >= 2 + 4 + nameWidth + 4 + 9 + 16,
     stackLines: columns < 48,
   }
 }
