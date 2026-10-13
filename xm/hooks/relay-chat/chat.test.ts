@@ -436,6 +436,29 @@ describe('session.receive', () => {
     expect(sent[0]).toContain(`--thread ${CODEX}`)
   })
 
+  test('a direct send refuses an id prefix that two open conversations share', async ($, on) => {
+    mock.clock(on, { now: 1_760_000_000_000 })
+    mock.env(on, { HOME: '/Users/me' })
+    on('session.id', () => ({ value: OWN }))
+    on('session.receive', (_$, e) => ({ text: e.text }))
+    const sent: string[] = []
+    on('process.run', (_$, e) => {
+      const argv = e.argv.join(' ')
+      if (argv.startsWith('xm relay send')) { sent.push(argv); return { value: { exitCode: 0, stderr: '', isStdoutTruncated: false, isStderrTruncated: false, stdout: '{"ok":true}' } } }
+      throw new Error(`unexpected command: ${argv}`)
+    })
+    const twin = '019a1bff-0000-7000-8000-000000000000'
+    await $.session.receive({ origin: { kind: 'peer' }, text: RELAYED })
+    await $.session.receive({ origin: { kind: 'peer' }, text: RELAYED.replace(CODEX, twin) })
+    const shared = await $.command.run({ command: 'relay-chat', args: '019a1b 안녕', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
+    expect(shared.text).toContain('대화 상대가 여러 개입니다')
+    expect(sent).toEqual([])
+    const unique = await $.command.run({ command: 'relay-chat', args: '019a1b2c 안녕', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
+    expect(unique.text).toContain('보냈습니다')
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toContain(`--thread ${CODEX}`)
+  })
+
   test('records the message file as the command left it', async ($, on) => {
     mock.clock(on, { now: 1_760_000_000_000 })
     mock.env(on, { HOME: '/Users/me' })

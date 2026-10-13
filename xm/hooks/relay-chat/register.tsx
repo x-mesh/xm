@@ -200,10 +200,17 @@ function clock(ts: number): string {
 }
 
 // An id is matched from its start only: a short target found in the middle of
-// another conversation's UUID would send the message to the wrong session.
-function lookup(list: readonly Conversation[], target: string): Conversation | undefined {
-  return list.find(c => c.name === target)
-    ?? list.find(c => (c.peer?.kind === 'xm' && c.peer.sessionId.startsWith(target)) || c.name.startsWith(target))
+// another conversation's UUID would send the message to the wrong session. Every
+// match is returned, so a caller can refuse a target that names more than one:
+// Codex ids are UUIDv7, and those opened around the same time share a prefix.
+function lookup(list: readonly Conversation[], target: string): Conversation[] {
+  const exact = list.filter(c => c.name === target)
+  if (exact.length) return exact
+  return list.filter(c => (c.peer?.kind === 'xm' && c.peer.sessionId.startsWith(target)) || c.name.startsWith(target))
+}
+
+function ambiguous(names: readonly string[]): string {
+  return `대화 상대가 여러 개입니다 (${names.join(', ')}). 이름이나 ID 앞부분을 더 길게 입력하세요.`
 }
 
 export const register: Register = on => {
@@ -237,13 +244,19 @@ export const register: Register = on => {
     const [target = '', ...rest] = args.split(/\s+/)
     const text = args.slice(target.length).trim()
     if (!rest.length || !text) return { text: '사용법: /relay-chat <상대 이름 또는 ID 앞부분> <내용>' }
-    let conversation = lookup(await read($, conversations), target)
+    const open = lookup(await read($, conversations), target)
+    if (open.length > 1) return { text: ambiguous(open.map(c => c.name)) }
+    let conversation = open[0]
     if (!conversation) {
       await loadCandidates($)
-      const candidate = (await read($, picker)).candidates.find(c => c.unavailable === null && (c.name === target || c.id.startsWith(target)))
+      const sendable = (await read($, picker)).candidates.filter(c => c.unavailable === null)
+      const exact = sendable.filter(c => c.name === target)
+      const found = exact.length ? exact : sendable.filter(c => c.id.startsWith(target))
+      if (found.length > 1) return { text: ambiguous(found.map(c => `${c.name} ${c.id.slice(0, 8)}`)) }
+      const candidate = found[0]
       if (!candidate) return { text: `대화 상대를 찾지 못했습니다: ${target}` }
       await openCandidate($, candidate)
-      conversation = lookup(await read($, conversations), candidate.id)
+      conversation = lookup(await read($, conversations), candidate.id)[0]
     }
     if (!conversation) return { text: `대화 상대를 찾지 못했습니다: ${target}` }
     const failure = await sendTo($, conversation, text)
@@ -263,13 +276,11 @@ export const register: Register = on => {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const send = parseRelaySend(e.command)
     if (!send) return next(e)
-    const readMessageFile = () => send.messageFile ? $.fs.read(send.messageFile).catch(() => undefined) : Promise.resolve(undefined)
-    // The command can write the file before it sends it, so the bytes read after
-    // it ran are what went out; the earlier read covers a command that removed it.
-    const before = await readMessageFile()
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError === true) return ran
-    const text = send.message ?? (await readMessageFile()) ?? before
+    // Read only after the command ran: it can write the file before it sends it,
+    // and a read taken earlier would record the file's previous message.
+    const text = send.message ?? (send.messageFile ? await $.fs.read(send.messageFile).catch(() => undefined) : undefined)
     // A piped command (`xm relay send ... | head`) exits 0 even when the send
     // failed, so read the CLI's own verdict from its JSON output.
     const stdout = (ran.result as { stdout?: unknown } | undefined)?.stdout
