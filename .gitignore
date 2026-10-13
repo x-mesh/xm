@@ -45,3 +45,6 @@ Thumbs.db
 # Prototypes — LLM outputs (large, noisy); keep scripts/rubrics/golden
 prototypes/*/out/
 prototypes/*/out-*/
+
+# Types the Claude Code engine lays when it loads the xm relay-chat mod from this folder
+xm/.claude-plugin/types/
