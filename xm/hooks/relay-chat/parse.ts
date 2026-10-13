@@ -77,15 +77,33 @@ export function sendArgv(peer: Extract<Peer, { kind: 'xm' }>, text: string, ownS
 
 // A value named like a credential, or a token with a known prefix, is blanked
 // before the digest leaves the session; a 40-hex git sha is left alone.
-// The key may sit inside a longer name (AWS_SECRET_ACCESS_KEY, POSTGRES_PASSWORD)
-// and may be quoted ("api_key": ...). Only a value that looks like a literal is
-// blanked, so `token === other` or `const token = parse(x)` stays readable.
-const SECRET_KEY = '(?:api[_-]?key|secret|token|password|passwd|authorization|bearer|private[_-]?key)'
-const SECRET_LINE = new RegExp(`(^|[^A-Za-z0-9])((?:[A-Za-z0-9]+[_-])*${SECRET_KEY}(?:[_-][A-Za-z0-9]+)*["']?\\s*[:=]\\s*)(?:["'][^"']{3,}|[A-Za-z0-9/+_.~-]{6,}).*$`, 'i')
+// The credential word may be one part of a longer name (AWS_SECRET_ACCESS_KEY,
+// x-api-key) and the name may be quoted ("api_key": ...). After `:`, `=` or `:=`
+// the value is blanked unless it is a comparison (`token === other`) or a call
+// (`const token = parse(x)`); a bare word such as `password: string` is blanked
+// too, since a short password looks the same.
+const SECRET_NAME = /(?:^|[_-])(?:api[_-]?key|secret|token|password|passwd|authorization|bearer|private[_-]?key)(?:[_-]|$)/i
+// The name is matched as a run that starts at a non-name character, so each
+// line is scanned once per name, not once per `_` inside a name.
+const ASSIGNMENT = /(^|[^A-Za-z0-9_-])([A-Za-z0-9_-]+)(["']?\s*(?::=|[:=])\s*)/g
+const LITERAL = /^(?:(?:basic|bearer|digest|token)\s+)?(?:["'][^"']{3,}|(?![A-Za-z_$][\w$.]*\s*\()[^\s"'(),;]{6,})/i
 const SECRET_TOKEN = /\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abp]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,})/g
 
+function maskLine(line: string): string {
+  if (!/[:=]/.test(line)) return line
+  for (const m of line.matchAll(ASSIGNMENT)) {
+    const [whole, lead = '', name = '', separator = ''] = m
+    if (!SECRET_NAME.test(name)) continue
+    const valueAt = (m.index ?? 0) + whole.length
+    const value = line.slice(valueAt)
+    if (value.startsWith('=') || !LITERAL.test(value)) continue
+    return `${line.slice(0, (m.index ?? 0) + lead.length)}${name}${separator}[가림]`
+  }
+  return line
+}
+
 export function maskSecrets(text: string): string {
-  return text.split('\n').map(line => line.replace(SECRET_LINE, '$1$2[가림]').replace(SECRET_TOKEN, '[가림]')).join('\n')
+  return text.split('\n').map(line => maskLine(line).replace(SECRET_TOKEN, '[가림]')).join('\n')
 }
 
 export type Exchange = { prompt: string; reply: string | null }
@@ -299,7 +317,7 @@ export function lightReviewText(range: string): string {
 export type CommitCommand = { root: string | null }
 
 // A commit lands through git itself or through the git-kit verbs that commit.
-const COMMIT_VERBS: Record<string, readonly string[]> = { git: ['commit'], gk: ['commit', 'land'], 'git-kit': ['commit', 'land'] }
+const COMMIT_VERBS: ReadonlyMap<string, readonly string[]> = new Map([['git', ['commit']], ['gk', ['commit', 'land']], ['git-kit', ['commit', 'land']]])
 // git's global options that take the next word as their value.
 const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace'])
 
@@ -315,9 +333,9 @@ export function parseCommitCommand(command: string): CommitCommand | null {
     const following = argv[i + 1]
     // A cd after the commit moves nothing the commit touched.
     if (!found && word === 'cd' && following && !following.startsWith('-')) root = following
-    // Own keys only: a word such as `constructor` would otherwise read Object.prototype.
-    if (!Object.prototype.hasOwnProperty.call(COMMIT_VERBS, word)) continue
-    const verbs = COMMIT_VERBS[word] ?? []
+    // A Map, not an object: a word such as `constructor` must not read Object.prototype.
+    const verbs = COMMIT_VERBS.get(word)
+    if (!verbs) continue
     let j = i + 1
     while (argv[j]?.startsWith('-')) {
       const flag = argv[j] ?? ''

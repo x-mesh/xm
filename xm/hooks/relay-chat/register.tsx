@@ -181,7 +181,7 @@ async function record($: EngineInterface, opening: Opening, line: ChatLine) {
       cwd: base.cwd ?? opening.cwd ?? null,
       lines: [...base.lines, line].slice(-KEEP_LINES),
       // A line the person sent reads the conversation; one the pane sent on its own does not.
-      unread: line.by === 'peer' ? base.unread + 1 : line.quiet ? base.unread : 0,
+      unread: line.by === 'peer' ? base.unread + 1 : line.auto ? base.unread : 0,
     }
     return found ? list.map(c => (c.key === opening.key ? next : c)) : [...list, next]
   })
@@ -288,9 +288,14 @@ async function markReviewed($: EngineInterface, newest: PendingCommit | undefine
 }
 
 // Dismissed commits are marked reviewed, so the next seed from git does not bring them back.
+// The marker is HEAD when HEAD is among them: commit times have one-second
+// resolution, so the newest by time can be an older commit of the same second.
 async function dismissCommits($: EngineInterface) {
   const root = await repoRoot($, await $.session.cwd())
-  const newest = (await read($, commits)).filter(c => c.root === root).sort((a, b) => b.at - a.at)[0]
+  const dismissed = (await read($, commits)).filter(c => c.root === root)
+  const head = (await git($, root, ['rev-parse', 'HEAD']))?.trim()
+  const newest = dismissed.find(c => c.sha === head)
+    ?? dismissed.map((c, i) => ({ c, i })).sort((a, b) => b.c.at - a.c.at || b.i - a.i)[0]?.c
   await markReviewed($, newest)
   await update($, commits, () => [])
 }
@@ -340,7 +345,7 @@ async function autoReviewTick($: EngineInterface, limits: AutoLimits) {
   if (requestId) await update($, quietRequests, ids => [...ids, requestId].slice(-20))
   else $.ui.toast('자동 리뷰 요청의 request_id를 읽지 못했습니다. 답장은 모델에게 그대로 전달됩니다.')
   const quiet = requestId !== null
-  await record($, conversation, { at: now, by: 'me', quiet, text: `자동 검토 요청 ${batch.range} · 커밋 ${batch.group.length}개 · diff ${lines}줄` })
+  await record($, conversation, { at: now, by: 'me', quiet, auto: true, text: `자동 검토 요청 ${batch.range} · 커밋 ${batch.group.length}개 · diff ${lines}줄` })
   await update($, autoReview, a => ({ ...a, lastAt: now, skippedSha: null, skippedLines: null }))
   await settleGroup($, batch)
 }
@@ -372,7 +377,8 @@ function unavailableLabel(c: Candidate): string {
 // inventory does not hold back the others. Rows from the previous load stay
 // on screen until their provider answers again.
 // `forPair` is set by the review request that opens the picker to choose a
-// pair; every other opening clears it, so a plain add never becomes a pairing.
+// pair, and kept by a refresh of that open picker; every other opening clears
+// it, so a plain add never becomes a pairing.
 async function loadCandidates($: EngineInterface, forPair = false) {
   const seq = ++loadSeq
   await update($, picker, p => ({ ...p, isOpen: true, isLoading: true, pending: [...PROVIDERS], notes: [], forPair }))

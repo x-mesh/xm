@@ -473,6 +473,23 @@ describe('context share', () => {
     // Code that only names a token keeps its shape.
     expect(maskSecrets('if (token === other) return')).toBe('if (token === other) return')
     expect(maskSecrets('const token = parse(x)')).toBe('const token = parse(x)')
+    // Auth schemes, special characters, short words and Go's := are values too.
+    for (const [line, masked] of [
+      ['Authorization: Basic dXNlcjpwYXNzd29yZA==', 'Authorization: [가림]'],
+      ['Authorization: Token 9944b09199c62bcf9418ad846dd0e4bbdfc6ee4b', 'Authorization: [가림]'],
+      ['password: P@ssw0rd!', 'password: [가림]'],
+      ['DB_PASSWORD=p@ssw0rd123', 'DB_PASSWORD=[가림]'],
+      ['client_secret=Zx9!kLmQ2rT', 'client_secret=[가림]'],
+      ['SECRET=$ecretValue99', 'SECRET=[가림]'],
+      ['\tpassword := "hunter2pass"', '\tpassword := [가림]'],
+      ['curl -H "x-api-key: abcdef1234567"', 'curl -H "x-api-key: [가림]'],
+    ]) {
+      expect(maskSecrets(line ?? '')).toBe(masked ?? '')
+    }
+    // A long name made of credential words does not stall the scan.
+    const started = performance.now()
+    maskSecrets(`${'token_'.repeat(2000)}: x`)
+    expect(performance.now() - started).toBeLessThan(200)
   })
 
   test('a share sends the recent turns and the diff without a reply request, with the typed text as its point, and keeps one line in the pane', async ($, on) => {
@@ -663,6 +680,24 @@ ${body}
     await ui.unmount()
   })
 
+  test('dismissing commits of the same second marks the newer one reviewed', async ($, on) => {
+    const sent: string[] = []
+    const store = new Map<string, unknown>()
+    const OLD = 'aaaa000000000000000000000000000000000001'
+    const NEW = 'bbbb000000000000000000000000000000000002'
+    // git log prints newest first; a rebase gives both commits one committer second.
+    world(on, sent, { '/repo': `${NEW}\x1ffix: later\x1f1760000000\n${OLD}\x1ffeat: earlier\x1f1760000000` }, store)
+    on('session.receive', (_$, e) => ({ text: e.text }))
+    await $.session.receive({ origin: { kind: 'peer' }, text: RELAYED })
+    const ui = await $.ui.mount({ plugin: 'xm', surface: 'terminal', component: 'Pane', requestId: 'relay-chat', props: pane })
+    await ui.press({ key: `tab-codex:${CODEX}` })
+    await ui.press({ key: 'pair-set' })
+    expect(await ui.find({ type: 'Text', text: /리뷰 대기 커밋 \(2\)/ })).toBeDefined()
+    await ui.press({ key: 'review-dismiss' })
+    expect(store.get('reviewed:/repo')).toBe(NEW)
+    await ui.unmount()
+  })
+
   test('a pair stored by an earlier session gets its conversation back, and a quiet line keeps the unread count', async ($, on) => {
     const sent: string[] = []
     const store = new Map<string, unknown>([['pair:/repo', { key: `codex:${CODEX}`, name: 'codex:019a1b2c', provider: 'codex', sessionId: CODEX }], ['auto:/repo', true]])
@@ -727,8 +762,13 @@ ${body}
     // After the cooldown a send that prints no request_id is reported and not kept quiet.
     await clock.advance(31 * 60_000)
     sendResult = { exitCode: 0, stdout: '{"ok":true,"state":"submitted"}' }
+    // An unread peer message survives a request the pane sent on its own.
+    await $.session.receive({ origin: { kind: 'peer' }, text: RELAYED })
     await $.turn.complete(turn)
     expect(sends).toBe(2)
+    const band = await $.ui.mount({ plugin: 'xm', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 100 } })
+    expect(await band.find({ key: 'band-open' })).toBeDefined()
+    await band.unmount()
     expect(toasts).toContain('자동 리뷰 요청의 request_id를 읽지 못했습니다. 답장은 모델에게 그대로 전달됩니다.')
     expect(await ui.find({ type: 'Text', text: /🔕/ })).toBeUndefined()
     await ui.unmount()

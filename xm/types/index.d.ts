@@ -10,6 +10,8 @@ export type ChatLine = {
   text: string
   /** Kept out of the model: an automatic review exchange, shown in the pane until forwarded. */
   quiet?: boolean
+  /** Sent by the pane on its own (an automatic review request), not by the person. */
+  auto?: boolean
 }
 
 export type Conversation = {
