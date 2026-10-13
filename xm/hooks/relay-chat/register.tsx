@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, SessionReceiveInput } from 'claude-code'
 
-import type { Candidate, ChatLine, Conversation, Peer, Picker } from '../../types'
+import type { AutoReview, Candidate, ChatLine, Conversation, Pair, PendingCommit, Peer, Picker } from '../../types'
 import {
-  ago, parseDelivery, parseRelaySend, peerKey, sendArgv, sessionRows, shortName, summarizeTranscript, transcriptPath,
+  ago, buildContextDigest, contextSummaryLine, diffLines, lightReviewText, parseCommitCommand, parseDelivery, parseRelaySend, peerKey,
+  recentExchanges, secretExcludes, selectDiff, sendArgv, sentRequestId, sessionRows, shortName, summarizeTranscript, transcriptPath,
 } from './parse'
 import { ICON_SVG, LABEL, badgeCells, badgeColumns, cells, displayName, fit, labels, layoutFor, pad, providerOf } from './view'
 import type { Who } from './view'
@@ -13,6 +14,8 @@ const COMMAND = 'relay-chat'
 const KEEP_LINES = 200
 const SHOWN_LINES = 30
 const PROVIDERS = ['codex', 'claude', 'agy', 'cursor'] as const
+const SHOWN_COMMITS = 5
+const KEEP_COMMITS = 20
 
 const conversations = atom({ plugin: 'xm', key: 'relayChatConversations' } as const, [])
 const activeKey = atom({ plugin: 'xm', key: 'relayChatActiveKey' } as const, null)
@@ -23,6 +26,118 @@ const picker = atom({ plugin: 'xm', key: 'relayChatPicker' } as const, {
   candidates: [],
   notes: [],
 })
+const pair = atom({ plugin: 'xm', key: 'relayChatPair' } as const, null)
+const commits = atom({ plugin: 'xm', key: 'relayChatCommits' } as const, [])
+const autoReview = atom({ plugin: 'xm', key: 'relayChatAutoReview' } as const, { enabled: false, lastAt: null, skippedSha: null, skippedLines: null })
+const quietRequests = atom({ plugin: 'xm', key: 'relayChatQuietRequests' } as const, [])
+// The time of the newest peer line the person dismissed from the band; a newer line shows it again.
+const bandDismissedAt = atom({ plugin: 'xm', key: 'relayChatBandDismissedAt' } as const, null)
+
+// Start values, not measured ones; the manifest's userConfig lets a person change them.
+const DEFAULT_AUTO_COOLDOWN_MINUTES = 30
+const DEFAULT_AUTO_MAX_LINES = 400
+type AutoLimits = { cooldownMs: number; maxLines: number }
+
+// Only a Claude or Codex session answers a review request; Cursor runs one
+// read-only turn and AGY cannot be reached from outside its own session.
+function canPair(peer: Peer | null): peer is Extract<Peer, { kind: 'xm' }> {
+  return peer?.kind === 'xm' && (peer.provider === 'claude' || peer.provider === 'codex')
+}
+
+const pairStoreKey = (cwd: string) => `pair:${cwd}`
+const autoStoreKey = (cwd: string) => `auto:${cwd}`
+// The newest commit a review request covered, so the next seed starts after it.
+const reviewedStoreKey = (cwd: string) => `reviewed:${cwd}`
+const COMMIT_FORMAT = '--format=%H%x1f%s%x1f%ct'
+
+function asPair(value: unknown): Pair | null {
+  if (!value || typeof value !== 'object') return null
+  const v = value as Record<string, unknown>
+  const provider = asProviderName(v.provider)
+  return typeof v.key === 'string' && typeof v.name === 'string' && provider && typeof v.sessionId === 'string'
+    ? { key: v.key, name: v.name, provider, sessionId: v.sessionId }
+    : null
+}
+
+function asProviderName(value: unknown): Pair['provider'] | null {
+  return value === 'claude' || value === 'codex' ? value : null
+}
+
+// The pair belongs to the project, so it is kept per session directory and
+// outlives the session.
+async function loadPair($: EngineInterface) {
+  const cwd = await $.session.cwd()
+  const saved = asPair(await $.store.get(pairStoreKey(cwd)))
+  await update($, pair, () => saved)
+  const enabled = (await $.store.get(autoStoreKey(cwd))) === true
+  await update($, autoReview, a => ({ ...a, enabled }))
+}
+
+async function setAutoReview($: EngineInterface, enabled: boolean) {
+  await $.store.set(autoStoreKey(await $.session.cwd()), enabled)
+  await update($, autoReview, a => ({ ...a, enabled }))
+}
+
+async function setPair($: EngineInterface, conversation: Conversation | null) {
+  const storeKey = pairStoreKey(await $.session.cwd())
+  if (!conversation || !canPair(conversation.peer)) {
+    await $.store.delete(storeKey)
+    await update($, pair, () => null)
+    return
+  }
+  const next: Pair = { key: conversation.key, name: conversation.name, provider: conversation.peer.provider, sessionId: conversation.peer.sessionId }
+  await $.store.set(storeKey, next)
+  await update($, pair, () => next)
+  $.ui.toast(`${conversation.name} 세션을 페어로 지정했습니다.`)
+  await seedCommits($)
+}
+
+function parseCommitLog(stdout: string, root: string, fallbackAt: number): { sha: string; subject: string; at: number; root: string }[] {
+  const found: { sha: string; subject: string; at: number; root: string }[] = []
+  for (const line of stdout.split('\n')) {
+    const [sha = '', subject = '', seconds = ''] = line.split('\x1f')
+    if (!/^[0-9a-f]{40}$/.test(sha)) continue
+    const at = Number(seconds) > 0 ? Number(seconds) * 1000 : fallbackAt
+    found.push({ sha, subject, at, root })
+  }
+  return found
+}
+
+type GitRun = { stdout: string; error: null } | { stdout: null; error: string }
+
+// The failure is kept, not swallowed: a digest that says "no branch" because
+// git could not run would send a peer a false picture of this session.
+async function gitRun($: EngineInterface, dir: string, args: readonly string[]): Promise<GitRun> {
+  try {
+    const ran = await $.process.run(['git', '-C', dir, ...args])
+    if (ran.exitCode === 0) return { stdout: ran.stdout, error: null }
+    return { stdout: null, error: `git ${args[0]}: ${ran.stderr.trim().split('\n')[0] || `exit ${ran.exitCode}`}` }
+  } catch (err) {
+    return { stdout: null, error: `git ${args[0]}: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+async function git($: EngineInterface, dir: string, args: readonly string[]): Promise<string | null> {
+  return (await gitRun($, dir, args)).stdout
+}
+
+// Commits made outside this session's Bash tool (the person's own terminal, an
+// earlier session) are found in git: everything after the last reviewed commit,
+// or else what is not pushed yet, or else the last five.
+async function seedCommits($: EngineInterface) {
+  const dir = await $.session.cwd()
+  const reviewed = await $.store.get(reviewedStoreKey(dir))
+  let stdout: string | null = null
+  if (typeof reviewed === 'string' && /^[0-9a-f]{40}$/.test(reviewed) && (await git($, dir, ['merge-base', '--is-ancestor', reviewed, 'HEAD'])) !== null) {
+    stdout = await git($, dir, ['log', COMMIT_FORMAT, '-n', String(KEEP_COMMITS), `${reviewed}..HEAD`])
+  }
+  if (stdout === null) stdout = await git($, dir, ['log', COMMIT_FORMAT, '-n', String(KEEP_COMMITS), '@{upstream}..HEAD'])
+  if (stdout === null) stdout = await git($, dir, ['log', COMMIT_FORMAT, '-n', String(SHOWN_COMMITS)])
+  if (stdout === null) return
+  const found = parseCommitLog(stdout, dir, await $.clock.now()).reverse()
+  if (!found.length) return
+  await update($, commits, list => [...list, ...found.filter(f => !list.some(c => c.sha === f.sha))].slice(-KEEP_COMMITS))
+}
 
 // Subagent loops and agent-team mailboxes are this session's own work, not a
 // conversation with another session.
@@ -39,7 +154,19 @@ async function refreshStatus($: EngineInterface) {
 
 type Opening = { key: string; name: string; peer: Peer | null; cwd?: string | null }
 
+// A peer's message is announced where the person is looking: a toast with its
+// first words, and the band above the prompt until the pane shows it. The
+// status line alone ("💬 relay 1") gave no way to see what arrived.
+function preview(text: string, width = 80): string {
+  return fit(text.replace(/\s+/g, ' ').trim(), width)
+}
+
 async function record($: EngineInterface, opening: Opening, line: ChatLine) {
+  if (line.by === 'peer') {
+    await update($, bandDismissedAt, () => null)
+    const who = displayName(opening.name, opening.peer)
+    $.ui.toast(line.quiet ? `🔕 ${who}의 자동 검토 답장 · /relay-chat에서 확인` : `💬 ${who}: ${preview(line.text, 60)}`)
+  }
   await update($, conversations, list => {
     const found = list.find(c => c.key === opening.key)
     const base: Conversation = found ?? { key: opening.key, name: opening.name, peer: opening.peer, cwd: opening.cwd ?? null, lines: [], unread: 0 }
@@ -63,13 +190,134 @@ async function select($: EngineInterface, key: string) {
 async function openCandidate($: EngineInterface, candidate: Candidate) {
   const peer: Peer = { kind: 'xm', provider: candidate.provider, sessionId: candidate.id }
   const key = peerKey(peer)
+  const forPair = (await read($, picker)).forPair === true
   await update($, conversations, list =>
     list.some(c => c.key === key)
       ? list.map(c => (c.key === key ? { ...c, name: candidate.name, cwd: candidate.cwd } : c))
       : [...list, { key, name: candidate.name, peer, cwd: candidate.cwd, lines: [], unread: 0 }],
   )
-  await update($, picker, p => ({ ...p, isOpen: false }))
+  await update($, picker, p => ({ ...p, isOpen: false, forPair: false }))
   await select($, key)
+  if (!forPair) return
+  const conversation = (await read($, conversations)).find(c => c.key === key)
+  if (!conversation || !canPair(conversation.peer)) {
+    $.ui.toast(`${candidate.name}은(는) 페어로 쓸 수 없습니다. Claude나 Codex 세션을 고르세요.`)
+    return
+  }
+  await setPair($, conversation)
+  await requestReview($)
+}
+
+// A commit the session made: the newest one in the directory the command named.
+async function noteCommit($: EngineInterface, root: string | null) {
+  const dir = root ?? await $.session.cwd()
+  let ran
+  try {
+    ran = await $.process.run(['git', '-C', dir, 'log', '-1', COMMIT_FORMAT])
+  } catch {
+    return
+  }
+  if (ran.exitCode !== 0) return
+  const [sha = '', subject = ''] = ran.stdout.trim().split('\x1f')
+  if (!/^[0-9a-f]{40}$/.test(sha)) return
+  const at = await $.clock.now()
+  await update($, commits, list => (list.some(c => c.sha === sha) ? list : [...list, { sha, subject, at, root: dir }].slice(-KEEP_COMMITS)))
+  const who = await read($, pair)
+  $.ui.toast(`커밋 ${sha.slice(0, 7)} · ${who ? `${who.name}에게 리뷰 요청 가능` : '리뷰 요청 가능'}`)
+}
+
+// One request covers every pending commit of one directory, oldest to newest,
+// as a command the pair runs in its own session (`xm:review diff <range>`).
+async function requestReview($: EngineInterface) {
+  const pending = await read($, commits)
+  if (!pending.length) return
+  const who = await read($, pair)
+  if (!who) {
+    await update($, picker, p => ({ ...p, forPair: true }))
+    await loadCandidates($)
+    return
+  }
+  const conversation = (await read($, conversations)).find(c => c.key === who.key)
+  if (!conversation || !canPair(conversation.peer)) {
+    $.ui.toast('페어 대화가 없습니다. 페어를 다시 지정하세요.')
+    return
+  }
+  const batch = pendingGroup(pending)
+  if (!batch) return
+  const ran = await $.process.run(sendArgv(conversation.peer, `xm:review diff ${batch.range}`, await $.session.id(), { kind: 'command' }))
+  if (ran.exitCode !== 0) {
+    $.ui.toast(`리뷰 요청 실패 (${conversation.name}): ${ran.stderr.trim().split('\n')[0] || `exit ${ran.exitCode}`}`)
+    return
+  }
+  await record($, conversation, {
+    at: await $.clock.now(), by: 'me',
+    text: `리뷰 요청 ${batch.range} · 커밋 ${batch.group.length}개: ${batch.group.map(c => c.subject).join(' / ')}`,
+  })
+  await settleGroup($, batch)
+  await select($, conversation.key)
+}
+
+type Batch = { group: PendingCommit[]; newest: PendingCommit; range: string }
+
+// The pending commits of the directory the newest one is in, oldest first.
+function pendingGroup(pending: readonly PendingCommit[]): Batch | null {
+  const newest = [...pending].sort((a, b) => b.at - a.at)[0]
+  if (!newest) return null
+  const group = pending.filter(c => c.root === newest.root).sort((a, b) => a.at - b.at)
+  const first = group[0]
+  if (!first) return null
+  return { group, newest, range: `${first.sha.slice(0, 7)}~1..${newest.sha.slice(0, 7)}` }
+}
+
+async function settleGroup($: EngineInterface, batch: Batch) {
+  await update($, commits, list => list.filter(c => !batch.group.some(g => g.sha === c.sha)))
+  if (batch.newest.root === await $.session.cwd()) await $.store.set(reviewedStoreKey(batch.newest.root), batch.newest.sha)
+}
+
+// At the end of a turn with the option on: one light request per cooldown,
+// for a diff under the size cap, as a message the pair answers in its own
+// context. The reply comes back quiet (see session.receive).
+async function autoReviewTick($: EngineInterface, limits: AutoLimits) {
+  const auto = await read($, autoReview)
+  if (!auto.enabled) return
+  const pending = await read($, commits)
+  const batch = pendingGroup(pending)
+  if (!batch) return
+  const now = await $.clock.now()
+  if (auto.lastAt !== null && now - auto.lastAt < limits.cooldownMs) return
+  const who = await read($, pair)
+  const conversation = who ? (await read($, conversations)).find(c => c.key === who.key) : undefined
+  if (!conversation || !canPair(conversation.peer)) return
+  const shortstat = await git($, batch.newest.root, ['diff', '--shortstat', `${batch.group[0]?.sha}~1`, batch.newest.sha])
+  const lines = shortstat === null ? null : diffLines(shortstat)
+  if (lines === null || lines > limits.maxLines) {
+    if (auto.skippedSha !== batch.newest.sha) {
+      await update($, autoReview, a => ({ ...a, skippedSha: batch.newest.sha, skippedLines: lines }))
+      $.ui.toast(lines === null ? '자동 리뷰 건너뜀: diff 크기를 읽지 못했습니다' : `자동 리뷰 건너뜀: diff ${lines}줄이 상한 ${limits.maxLines}줄을 넘습니다. 위 버튼으로 요청하세요.`)
+    }
+    return
+  }
+  const ran = await $.process.run(sendArgv(conversation.peer, lightReviewText(batch.range), await $.session.id()))
+  if (ran.exitCode !== 0) {
+    $.ui.toast(`자동 리뷰 요청 실패 (${conversation.name}): ${ran.stderr.trim().split('\n')[0] || `exit ${ran.exitCode}`}`)
+    return
+  }
+  const requestId = sentRequestId(ran.stdout)
+  if (requestId) await update($, quietRequests, ids => [...ids, requestId].slice(-20))
+  await record($, conversation, { at: now, by: 'me', quiet: true, text: `자동 검토 요청 ${batch.range} · 커밋 ${batch.group.length}개 · diff ${lines}줄` })
+  await update($, autoReview, a => ({ ...a, lastAt: now, skippedSha: null, skippedLines: null }))
+  await settleGroup($, batch)
+}
+
+// A quiet line goes to the model only when the person asks for it.
+async function forwardToModel($: EngineInterface, key: string, at: number) {
+  const conversation = (await read($, conversations)).find(c => c.key === key)
+  const line = conversation?.lines.find(l => l.at === at && l.quiet && l.by === 'peer')
+  if (!conversation || !line) return
+  await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: `[relay] ${conversation.name}의 검토 의견:\n${line.text}` }] } })
+  // Matched by fields: the value read and the one updated are not the same objects.
+  await update($, conversations, list => list.map(c => (c.key === key ? { ...c, lines: c.lines.map(l => (l.at === at && l.by === 'peer' && l.quiet ? { ...l, quiet: false } : l)) } : c)))
+  $.ui.toast(`${conversation.name}의 검토 의견을 모델에게 전달했습니다.`)
 }
 
 // Bumped per load, so a slower earlier load cannot overwrite a newer one.
@@ -176,6 +424,7 @@ async function sendToCursor($: EngineInterface, conversation: Conversation, peer
 }
 
 async function say($: EngineInterface, key: string, text: string) {
+  drafts.delete(key)
   if (!text.trim()) return
   const conversation = (await read($, conversations)).find(c => c.key === key)
   if (!conversation) return
@@ -184,6 +433,7 @@ async function say($: EngineInterface, key: string, text: string) {
 }
 
 async function broadcast($: EngineInterface, text: string) {
+  drafts.delete('all')
   if (!text.trim()) return
   const targets = (await read($, conversations)).filter(c => c.peer)
   const failed: string[] = []
@@ -192,6 +442,88 @@ async function broadcast($: EngineInterface, text: string) {
     if (failure) failed.push(`${conversation.name}: ${failure}`)
   }
   $.ui.toast(failed.length ? `${targets.length - failed.length}/${targets.length}곳 전송. 실패 ${failed.join(', ')}` : `${targets.length}곳에 전송`)
+}
+
+// The text in each message field as the person types it, by conversation key
+// ('all' for the broadcast field): a share takes it as its point. Module state:
+// a reload drops it, as it drops the field itself.
+const drafts = new Map<string, string>()
+
+// What this session is doing right now, from its own transcript and worktree:
+// the recent turns and the diff themselves, cut by size, with nothing summarized.
+async function gatherContext($: EngineInterface, note: string | null) {
+  const cwd = await $.session.cwd()
+  const own = await $.session.id()
+  const home = await $.env.get('HOME')
+  let title: string | null = null
+  let exchanges: ReturnType<typeof recentExchanges> = []
+  const errors: string[] = []
+  if (home) {
+    const path = transcriptPath(home, cwd, own)
+    if (await $.fs.exists(path)) {
+      const ran = await $.process.run(['tail', '-c', '2000000', path])
+      if (ran.exitCode === 0) {
+        title = summarizeTranscript(ran.stdout).title
+        exchanges = recentExchanges(ran.stdout)
+      } else {
+        errors.push('transcript: 읽기 실패')
+      }
+    }
+  }
+  const take = (run: GitRun) => {
+    if (run.error) errors.push(run.error)
+    return run.stdout
+  }
+  const branch = take(await gitRun($, cwd, ['rev-parse', '--abbrev-ref', 'HEAD']))?.trim() || null
+  const status = take(await gitRun($, cwd, ['status', '--short'])) ?? ''
+  // Credential-looking paths leave the diff before it is read; the names that
+  // dropped out are listed so that the peer knows the diff is not whole.
+  const scope = ['--', '.', ...secretExcludes()]
+  const names = (s: string | null) => (s ?? '').split('\n').filter(Boolean)
+  const all = names(take(await gitRun($, cwd, ['diff', 'HEAD', '--name-only'])))
+  const kept = new Set(names(take(await gitRun($, cwd, ['diff', 'HEAD', '--name-only', ...scope]))))
+  const excludedFiles = all.filter(n => !kept.has(n))
+  const diffStat = take(await gitRun($, cwd, ['diff', 'HEAD', '--stat', ...scope])) ?? ''
+  const body = take(await gitRun($, cwd, ['diff', 'HEAD', ...scope]))
+  const diff = body === null ? null : selectDiff(body)
+  const input = { cwd, branch, title, note, exchanges, status, diffStat, diff, excludedFiles, errors }
+  return { digest: buildContextDigest(input), line: contextSummaryLine(input), errors }
+}
+
+// Sent without a reply request: the peer keeps it and answers later questions
+// against it. Cursor runs one turn per send and keeps nothing, so it gets none.
+async function shareContext($: EngineInterface, conversation: Conversation, note: string | null = null): Promise<string | null> {
+  const peer = conversation.peer
+  if (!peer) return '답장 경로가 없는 대화입니다.'
+  if (peer.kind === 'xm' && peer.provider === 'cursor') return 'Cursor는 받은 맥락을 세션에 쌓지 않습니다.'
+  const { digest, line, errors } = await gatherContext($, note?.trim() || null)
+  if (errors.length) $.ui.toast(`맥락 일부를 읽지 못했습니다: ${errors.join(' · ')}`)
+  if (peer.kind === 'native') {
+    const sent = await $.session.send({ to: peer.to, text: digest })
+    if (!sent.isDelivered) return sent.reason
+  } else {
+    const ran = await $.process.run(sendArgv(peer, digest, await $.session.id(), { expectReply: false }))
+    if (ran.exitCode !== 0) return ran.stderr.trim().split('\n')[0] || ran.stdout.trim().split('\n')[0] || `exit ${ran.exitCode}`
+  }
+  await record($, conversation, { at: await $.clock.now(), by: 'me', text: line })
+  return null
+}
+
+async function shareContextWith($: EngineInterface, key: string) {
+  const conversation = (await read($, conversations)).find(c => c.key === key)
+  if (!conversation) return
+  const failure = await shareContext($, conversation, drafts.get(key) ?? null)
+  $.ui.toast(failure ? `맥락 공유 실패 (${conversation.name}): ${failure}` : `${conversation.name}에게 맥락을 보냈습니다.`)
+}
+
+async function broadcastContext($: EngineInterface) {
+  const targets = (await read($, conversations)).filter(c => c.peer && !(c.peer.kind === 'xm' && c.peer.provider === 'cursor'))
+  const failed: string[] = []
+  for (const conversation of targets) {
+    const failure = await shareContext($, conversation, drafts.get('all') ?? null)
+    if (failure) failed.push(`${conversation.name}: ${failure}`)
+  }
+  $.ui.toast(failed.length ? `${targets.length - failed.length}/${targets.length}곳에 맥락 전송. 실패 ${failed.join(', ')}` : `${targets.length}곳에 맥락을 보냈습니다.`)
 }
 
 function clock(ts: number): string {
@@ -213,7 +545,24 @@ function ambiguous(names: readonly string[]): string {
   return `대화 상대가 여러 개입니다 (${names.join(', ')}). 이름이나 ID 앞부분을 더 길게 입력하세요.`
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const limits: AutoLimits = {
+    cooldownMs: (Number(options.relayChatAutoReviewCooldownMinutes) || DEFAULT_AUTO_COOLDOWN_MINUTES) * 60_000,
+    maxLines: Number(options.relayChatAutoReviewMaxLines) || DEFAULT_AUTO_MAX_LINES,
+  }
+
+  on('turn.complete', async ($, e, next) => {
+    // Subagent turns and interrupted ones are not a checkpoint of this session's work.
+    if (e.agentId === undefined && !e.isAborted) {
+      try {
+        await autoReviewTick($, limits)
+      } catch (error) {
+        $.ui.toast(`자동 리뷰 확인 실패: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    return next(e)
+  })
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: COMMAND,
@@ -221,6 +570,7 @@ export const register: Register = on => {
       argumentHint: '[상대] [내용]',
     })
     await refreshStatus($)
+    await loadPair($)
 
     return next(e)
   })
@@ -233,15 +583,29 @@ export const register: Register = on => {
       await $.ui.open({ id: PANE, title: 'Relay 대화' })
       // With nobody to talk to yet, show the live sessions instead of an empty
       // pane. The timer starts the load after the command answers, so the pane
-      // opens at once.
+      // opens at once. With a pair, the unreviewed commits are listed instead.
       if ((await read($, conversations)).length === 0) {
         $.clock.after(0, () => {
           void loadCandidates($)
+        })
+      } else if (await read($, pair)) {
+        $.clock.after(0, () => {
+          void seedCommits($)
         })
       }
       return { text: 'Relay 대화창을 열었습니다.' }
     }
     const [target = '', ...rest] = args.split(/\s+/)
+    // `/relay-chat ctx <peer>` shares this session's context instead of a message.
+    if (target === 'ctx') {
+      const [who = '', ...noteWords] = rest
+      const found = who ? lookup(await read($, conversations), who) : []
+      if (found.length > 1) return { text: ambiguous(found.map(c => c.name)) }
+      const conversation = found[0]
+      if (!conversation) return { text: who ? `대화 상대를 찾지 못했습니다: ${who}` : '사용법: /relay-chat ctx <열린 대화 상대> [요점]' }
+      const failure = await shareContext($, conversation, noteWords.join(' ') || null)
+      return { text: failure ? `맥락 공유 실패 (${conversation.name}): ${failure}` : `${conversation.name}에게 맥락을 보냈습니다.` }
+    }
     const text = args.slice(target.length).trim()
     if (!rest.length || !text) return { text: '사용법: /relay-chat <상대 이름 또는 ID 앞부분> <내용>' }
     const open = lookup(await read($, conversations), target)
@@ -266,18 +630,28 @@ export const register: Register = on => {
   on('session.receive', async ($, e, next) => {
     if (!isPeerDelivery(e)) return next(e)
     const parsed = parseDelivery(e.text)
+    // The answer to an automatic review request stays in the pane: it was not
+    // asked for by the model, and the person decides whether it goes in.
+    if (parsed.inReplyTo && (await read($, quietRequests)).includes(parsed.inReplyTo)) {
+      const opening = parsed.peer ? { key: peerKey(parsed.peer), name: parsed.sender, peer: parsed.peer, cwd: parsed.cwd } : { key: `native:${parsed.sender}`, name: parsed.sender, peer: null }
+      await record($, opening, { at: await $.clock.now(), by: 'peer', quiet: true, text: parsed.body })
+      await update($, quietRequests, ids => ids.filter(id => id !== parsed.inReplyTo))
+      return { consumed: 'auto review reply kept in the relay chat pane' }
+    }
     const key = parsed.peer ? peerKey(parsed.peer) : `unknown:${parsed.sender}`
     await record($, { key, name: parsed.sender, peer: parsed.peer, cwd: parsed.cwd }, { at: await $.clock.now(), by: 'peer', text: parsed.body })
-    $.ui.toast(`💬 ${parsed.sender}: ${parsed.body.slice(0, 60)}`)
 
     return next(e)
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const send = parseRelaySend(e.command)
-    if (!send) return next(e)
+    const commit = parseCommitCommand(e.command)
+    if (!send && !commit) return next(e)
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError === true) return ran
+    if (commit) await noteCommit($, commit.root)
+    if (!send) return ran
     // Read only after the command ran: it can write the file before it sends it,
     // and a read taken earlier would record the file's previous message.
     const text = send.message ?? (send.messageFile ? await $.fs.read(send.messageFile).catch(() => undefined) : undefined)
@@ -309,6 +683,41 @@ export const register: Register = on => {
     return sent
   })
 
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey) return next(e)
+    const list = await read($, conversations)
+    const unread = list.filter(c => c.unread > 0)
+    const newest = unread
+      .map(c => ({ c, line: [...c.lines].reverse().find(l => l.by === 'peer') }))
+      .filter((x): x is { c: Conversation; line: ChatLine } => x.line !== undefined)
+      .sort((a, b) => b.line.at - a.line.at)[0]
+    const dismissedAt = await read($, bandDismissedAt)
+    if (!newest || (dismissedAt !== null && newest.line.at <= dismissedAt)) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const total = unread.reduce((sum, c) => sum + c.unread, 0)
+    const names = labels(list)
+    const who = names.get(newest.c.key) ?? displayName(newest.c.name, newest.c.peer)
+    const open = async () => {
+      await $.ui.open({ id: PANE, title: 'Relay 대화', focus: true })
+      await select($, newest.c.key)
+    }
+    const dismiss = () => update($, bandDismissedAt, () => newest.line.at)
+    // 4 columns of buttons and gaps are kept free of the text.
+    const width = Math.max(10, e.props.bodyColumns - cells(who) - 4 - 14 - 10)
+    return (
+      <Box gap={1}>
+        <Text color="warning">{newest.line.quiet ? '🔕' : '💬'}</Text>
+        <Text bold>{who}</Text>
+        <Box flexShrink={1} minWidth={0}>
+          <Text wrap="truncate-end">{newest.line.quiet ? '자동 검토 답장' : preview(newest.line.text, width)}</Text>
+        </Box>
+        <Text dimColor>{total > 1 ? `외 ${total - 1}건 · /relay-chat` : '/relay-chat'}</Text>
+        <Button key="band-open" label="열기" onPress={open} />
+        <Button key="band-dismiss" label="닫기" plain dimColor onPress={dismiss} />
+      </Box>
+    )
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)
     const { Box, Text, Button } = elements
@@ -322,6 +731,9 @@ export const register: Register = on => {
     const key = await read($, activeKey)
     const current = list.find(c => c.key === key)
     const pick: Picker = await read($, picker)
+    const who = await read($, pair)
+    const pending = await read($, commits)
+    const auto = await read($, autoReview)
     const now = await $.clock.now()
     const home = await $.env.get('HOME')
     const tilde = (path: string | null) => (path && home && path.startsWith(home) ? `~${path.slice(home.length)}` : path ?? '')
@@ -349,8 +761,31 @@ export const register: Register = on => {
       <Box flexDirection="column">
         <Box justifyContent="space-between">
           <Text bold>대화 {list.length ? `(${list.length})` : ''}</Text>
-          <Button key="add" label={pick.isOpen ? '목록 새로고침' : '+ 상대 추가'} onPress={() => loadCandidates($)} />
+          <Box gap={1}>
+            {list.filter(c => c.peer && !(c.peer.kind === 'xm' && c.peer.provider === 'cursor')).length >= 2 && (
+              <Button key="ctx-all" label="모두에게 맥락 공유" dimColor onPress={() => broadcastContext($)} />
+            )}
+            <Button key="add" label={pick.isOpen ? '목록 새로고침' : '+ 상대 추가'} onPress={() => loadCandidates($)} />
+          </Box>
         </Box>
+
+        {pending.length > 0 && (
+          <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="warning" paddingX={1}>
+            <Box justifyContent="space-between">
+              <Text bold>{`리뷰 대기 커밋 (${pending.length})`}</Text>
+              <Box gap={1}>
+                <Button key="review-request" variant="primary" label={who ? `리뷰 요청 → ${fit(who.name, 14)}` : '페어 지정 후 리뷰 요청'} onPress={() => requestReview($)} />
+                <Button key="review-dismiss" label="지우기" dimColor onPress={() => update($, commits, () => [])} />
+              </Box>
+            </Box>
+            {pending.slice(-SHOWN_COMMITS).map(c => (
+              <Box key={`commit-${c.sha}`}>
+                {cell(8, <Text color="warning">{c.sha.slice(0, 7)}</Text>)}
+                <Box flexShrink={1} minWidth={0}><Text wrap="truncate-end">{c.subject}</Text></Box>
+              </Box>
+            ))}
+          </Box>
+        )}
 
         {list.length === 0 && !pick.isOpen && <Text dimColor>아직 대화가 없습니다. + 상대 추가로 시작하세요.</Text>}
         {ordered.map(c => {
@@ -378,6 +813,7 @@ export const register: Register = on => {
               <Text bold>대화 상대 고르기</Text>
               <Button key="pick-close" label="닫기" dimColor onPress={() => update($, picker, p => ({ ...p, isOpen: false }))} />
             </Box>
+            {pick.forPair && <Text color="warning">페어로 쓸 Claude나 Codex 세션을 고르세요. 고른 세션에 바로 리뷰를 요청합니다.</Text>}
             {pick.isLoading && <Text dimColor>{`${(pick.pending ?? []).map(p => LABEL[p]).join(', ')} 조회 중…`}</Text>}
             {!pick.isLoading && pick.candidates.length === 0 && <Text dimColor>대화할 수 있는 세션이 없습니다.</Text>}
             {pick.candidates.map(c => {
@@ -424,27 +860,62 @@ export const register: Register = on => {
 
         {current && (
           <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="suggestion" paddingX={1}>
-            <Box>
-              {cell(4, icon(providerOf(current.peer), `head-${current.key}`))}
-              <Box flexShrink={0} marginRight={1}><Text bold>{fit(name(current), chat.nameWidth + 6)}</Text></Box>
-              <Box flexShrink={1} minWidth={0}><Text dimColor wrap="truncate-end">{tilde(current.cwd)}</Text></Box>
+            <Box justifyContent="space-between">
+              <Box flexShrink={1} minWidth={0}>
+                {cell(4, icon(providerOf(current.peer), `head-${current.key}`))}
+                <Box flexShrink={0} marginRight={1}><Text bold>{fit(name(current), chat.nameWidth + 6)}</Text></Box>
+                <Box flexShrink={1} minWidth={0}><Text dimColor wrap="truncate-end">{tilde(current.cwd)}</Text></Box>
+              </Box>
+              <Box flexShrink={0} gap={1}>
+                {current.peer && !(current.peer.kind === 'xm' && current.peer.provider === 'cursor') && (
+                  <Button key={`ctx-${current.key}`} label="맥락 공유" dimColor onPress={() => shareContextWith($, current.key)} />
+                )}
+                {who?.key === current.key ? (
+                  <>
+                    <Text color="success">◆ 페어</Text>
+                    <Button key="pair-clear" label="페어 해제" dimColor onPress={() => setPair($, null)} />
+                  </>
+                ) : canPair(current.peer) && (
+                  <Button key="pair-set" label="페어 지정" dimColor onPress={() => setPair($, current)} />
+                )}
+              </Box>
             </Box>
+            {who?.key === current.key && (
+              <Box gap={1}>
+                <Button key="auto-toggle" label={auto.enabled ? '자동 리뷰 켬' : '자동 리뷰 끔'} dimColor={!auto.enabled} onPress={() => setAutoReview($, !auto.enabled)} />
+                <Box flexShrink={1} minWidth={0}>
+                  <Text dimColor wrap="truncate-end">
+                    {auto.enabled
+                      ? (auto.skippedSha && pending.some(c => c.sha === auto.skippedSha)
+                        ? `diff ${auto.skippedLines ?? '?'}줄이 상한 ${limits.maxLines}줄을 넘어 자동 요청을 멈췄습니다 · 위 버튼으로 요청하세요`
+                        : `턴이 끝나면 ${Math.round(limits.cooldownMs / 60_000)}분 간격으로 가벼운 검토를 요청하고, 답장은 이 창에만 둡니다`)
+                      : (pending.length ? `리뷰 대기 커밋 ${pending.length}개 · 위 상자의 리뷰 요청 버튼으로 보냅니다` : '리뷰할 새 커밋이 없습니다 · 커밋하면 위에 리뷰 요청 버튼이 나옵니다')}
+                  </Text>
+                </Box>
+              </Box>
+            )}
             {current.lines.length === 0 && <Text dimColor>아직 메시지가 없습니다.</Text>}
             {current.lines.slice(-SHOWN_LINES).map(line => {
               const color = line.by === 'peer' ? 'suggestion' : line.by === 'me' ? 'success' : 'subtle'
+              const forward = line.quiet && line.by === 'peer'
+                ? <Button key={`forward-${current.key}-${line.at}`} label="모델에게 전달" dimColor onPress={() => forwardToModel($, current.key, line.at)} />
+                : null
+              const marker = line.quiet ? '🔕 ' : ''
               return chat.stackLines ? (
                 <Box flexDirection="column">
                   <Box gap={1}>
                     <Text dimColor>{clock(line.at)}</Text>
-                    <Text color={color} bold wrap="truncate-end">{speaker(line, current)}</Text>
+                    <Text color={color} bold wrap="truncate-end">{marker + speaker(line, current)}</Text>
+                    {forward}
                   </Box>
-                  <Box paddingLeft={2}><Text dimColor={line.by === 'model'}>{line.text}</Text></Box>
+                  <Box paddingLeft={2}><Text dimColor={line.by === 'model' || line.quiet === true}>{line.text}</Text></Box>
                 </Box>
               ) : (
                 <Box>
                   {cell(6, <Text dimColor>{clock(line.at)}</Text>)}
-                  {cell(12, <Text color={color} bold wrap="truncate-end">{fit(speaker(line, current), 11)}</Text>)}
-                  <Box flexGrow={1} flexShrink={1} minWidth={0}><Text dimColor={line.by === 'model'}>{line.text}</Text></Box>
+                  {cell(12, <Text color={color} bold wrap="truncate-end">{fit(marker + speaker(line, current), 11)}</Text>)}
+                  <Box flexGrow={1} flexShrink={1} minWidth={0}><Text dimColor={line.by === 'model' || line.quiet === true}>{line.text}</Text></Box>
+                  {forward && <Box flexShrink={0} marginLeft={1}>{forward}</Box>}
                 </Box>
               )
             })}
@@ -453,7 +924,7 @@ export const register: Register = on => {
               // The field sits in its own frame in the composer's border color, with
               // the composer's prompt mark: a hint in a bare field read as a message.
               <Box marginTop={1} borderStyle="round" borderColor="promptBorder" paddingX={1}>
-                <Input key={`say-${current.key}`} label="❯ " placeholder={`${fit(name(current), 14)}에게 보낼 메시지`} submitLabel="보내기" autoFocus onSubmit={(value: string) => say($, current.key, value)} />
+                <Input key={`say-${current.key}`} label="❯ " placeholder={`${fit(name(current), 14)}에게 보낼 메시지`} submitLabel="보내기" autoFocus onInput={(value: string) => { drafts.set(current.key, value) }} onSubmit={(value: string) => say($, current.key, value)} />
               </Box>
             ) : (
               !current.peer && <Text dimColor>답장 경로가 없는 대화입니다.</Text>
@@ -463,7 +934,7 @@ export const register: Register = on => {
 
         {Input && list.filter(c => c.peer).length >= 2 && (
           <Box marginTop={1} borderStyle="round" borderColor="promptBorder" paddingX={1}>
-            <Input key="say-all" label="모두에게 ❯ " placeholder="열린 대화 전체에 보낼 메시지" submitLabel="보내기" onSubmit={(value: string) => broadcast($, value)} />
+            <Input key="say-all" label="모두에게 ❯ " placeholder="열린 대화 전체에 보낼 메시지" submitLabel="보내기" onInput={(value: string) => { drafts.set('all', value) }} onSubmit={(value: string) => broadcast($, value)} />
           </Box>
         )}
       </Box>
