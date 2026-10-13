@@ -365,6 +365,13 @@ describe('commit detection', () => {
     expect(parseCommitCommand('GK_AGENT=1 git-kit land')).toEqual({ root: null })
     expect(parseCommitCommand('git commit --dry-run')).toBeNull()
     expect(parseCommitCommand('git log --oneline -3 && git status')).toBeNull()
+    // A word that names an Object.prototype property is not a verb table entry.
+    expect(parseCommitCommand('rg constructor src/')).toBeNull()
+    expect(parseCommitCommand('grep -rn toString . && git log')).toBeNull()
+    // A cd after the commit does not move it; -c takes its value like -C.
+    expect(parseCommitCommand('git commit -m x && cd /other && ls')).toEqual({ root: null })
+    expect(parseCommitCommand('git -c user.name=x commit -m y')).toEqual({ root: null })
+    expect(parseCommitCommand('git -c a=b -C /w/app commit -m y')).toEqual({ root: '/w/app' })
     expect(parseCommitCommand("xm relay send --provider claude --session x --message 'git commit later'")).toBeNull()
   })
 
@@ -399,6 +406,15 @@ describe('context share', () => {
     expect(got[1]?.reply).toBe(`${'x'.repeat(1500)} … (100자 생략)`)
     expect(got[2]?.reply).toBeNull()
     expect(recentExchanges(tail, 5).map(x => x.prompt)).toEqual(['첫 요청', '둘째 요청', '셋째 요청', '넷째 요청'])
+
+    // An answer to a relayed message or a slash command is not the answer to the prompt before it.
+    const relayed = [
+      user('A 요청'), assistant('A 답'),
+      user('<cross-session-message from-name="a">\nhi\n</cross-session-message>'), assistant('peer에게 답'),
+      user('<command-name>/xm:review</command-name>'), assistant('리뷰 결과'),
+      user('<task-notification>done</task-notification>'), assistant('알림 처리'),
+    ].join('\n')
+    expect(recentExchanges(relayed)).toEqual([{ prompt: 'A 요청', reply: 'A 답' }])
   })
 
   const chunk = (file: string, lines: number) => `diff --git a/${file} b/${file}\n${Array.from({ length: lines - 1 }, (_, i) => `+${i}`).join('\n')}\n`
@@ -450,6 +466,13 @@ describe('context share', () => {
     expect(maskSecrets('API_KEY=sk-abcdefghijklmnopqrstuvwxyz\ntoken: ghp_ABCDEFGHIJKLMNOPQRSTUVWX\nsha 3c1e2f4a5b6c7d8e9f001122334455667788aa99 fine'))
       .toBe('API_KEY=[가림]\ntoken: [가림]\nsha 3c1e2f4a5b6c7d8e9f001122334455667788aa99 fine')
     expect(maskSecrets('Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abcdefghijklmnop')).toBe('Authorization: [가림]')
+    // Keys inside longer names and quoted keys are found; their values are blanked.
+    expect(maskSecrets('export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')).toBe('export AWS_SECRET_ACCESS_KEY=[가림]')
+    expect(maskSecrets('  POSTGRES_PASSWORD: hunter22')).toBe('  POSTGRES_PASSWORD: [가림]')
+    expect(maskSecrets('{ "api_key": "abcdef123456" }')).toBe('{ "api_key": [가림]')
+    // Code that only names a token keeps its shape.
+    expect(maskSecrets('if (token === other) return')).toBe('if (token === other) return')
+    expect(maskSecrets('const token = parse(x)')).toBe('const token = parse(x)')
   })
 
   test('a share sends the recent turns and the diff without a reply request, with the typed text as its point, and keeps one line in the pane', async ($, on) => {
@@ -471,7 +494,11 @@ describe('context share', () => {
       if (e.argv[0] === 'git' && e.argv[3] === 'rev-parse') return ok('feat/x\n')
       if (e.argv[0] === 'git' && e.argv[3] === 'status') return ok(' M a.ts\n?? b.ts\n')
       const excluded = e.argv.some(a => a.startsWith(':(exclude,glob)'))
-      if (e.argv[0] === 'git' && e.argv[3] === 'diff' && e.argv.includes('--name-only')) return ok(excluded ? 'a.ts\n' : 'a.ts\n.env.local\n')
+      if (e.argv[0] === 'git' && e.argv[3] === 'diff' && e.argv.includes('--name-only')) {
+        // Both listings name the same tree; only the credential excludes differ.
+        if (!e.argv.includes('.')) throw new Error('the name listing must be scoped like the diff')
+        return ok(excluded ? 'a.ts\n' : 'a.ts\n.env.local\n')
+      }
       if (e.argv[0] === 'git' && e.argv[3] === 'diff' && !excluded) throw new Error('the diff must be read with the credential paths excluded')
       if (e.argv[0] === 'git' && e.argv[3] === 'diff' && e.argv.includes('--stat')) return ok(' a.ts | 2 +-\n')
       if (e.argv[0] === 'git' && e.argv[3] === 'diff') return ok('diff --git a/a.ts b/a.ts\n-old\n+new\n')
@@ -537,6 +564,7 @@ ${body}
       const argv = e.argv.join(' ')
       const ok = (stdout: string) => ({ value: { exitCode: 0, stderr: '', isStdoutTruncated: false, isStderrTruncated: false, stdout } })
       if (e.argv[0] === 'git' && e.argv[3] === 'merge-base') return ok('')
+      if (e.argv[0] === 'git' && e.argv[3] === 'rev-parse' && e.argv.includes('--show-toplevel')) return ok(`${log[`top:${e.argv[2] ?? ''}`] ?? e.argv[2]}\n`)
       if (e.argv[0] === 'git' && e.argv[3] === 'log') return ok((e.argv.includes('-1') ? log : log)[e.argv[2] ?? ''] ?? '')
       if (argv === 'xm relay sessions --provider claude') return ok(JSON.stringify({ ok: true, sessions: [{ session_id: PEER, name: 'gk-fa', cwd: '/repo', status: 'idle' }] }))
       if (argv.startsWith('xm relay sessions')) return ok(JSON.stringify({ ok: true, sessions: [] }))
@@ -601,6 +629,108 @@ ${body}
     expect(sent[0]).toContain(`--thread ${CODEX} --message xm:review diff ${OLD.slice(0, 7)}~1..${NEW.slice(0, 7)} --kind command`)
     expect(store.get('reviewed:/repo')).toBe(NEW)
     expect(await ui.find({ type: 'Text', text: /리뷰할 새 커밋이 없습니다/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('closing the pair picker without a choice leaves a later add a plain add', async ($, on) => {
+    const sent: string[] = []
+    const store = new Map<string, unknown>()
+    world(on, sent, { '/repo': `${SHA}\x1ffeat: x` }, store)
+    await $.tool.call({ tool: 'Bash', command: "git commit -m 'feat: x'" })
+    const ui = await $.ui.mount({ plugin: 'xm', surface: 'terminal', component: 'Pane', requestId: 'relay-chat', props: pane })
+    await ui.press({ key: 'review-request' })
+    expect(await ui.find({ type: 'Text', text: /페어로 쓸 Claude나 Codex 세션을 고르세요/ })).toBeDefined()
+    await ui.press({ key: 'pick-close' })
+    await ui.press({ key: 'add' })
+    expect(await ui.find({ type: 'Text', text: /페어로 쓸 Claude나 Codex 세션을 고르세요/ })).toBeUndefined()
+    await ui.press({ key: `pick-claude-${PEER}` })
+    expect(store.has('pair:/repo')).toBe(false)
+    expect(sent).toEqual([])
+    await ui.unmount()
+  })
+
+  test('a commit from a subdirectory is grouped under its repository, and dismissed commits stay dismissed', async ($, on) => {
+    const sent: string[] = []
+    const store = new Map<string, unknown>()
+    world(on, sent, { '/repo/sub': `${SHA}\x1ffeat: x\x1f1760000000`, '/repo': `${SHA}\x1ffeat: x\x1f1760000000`, 'top:/repo/sub': '/repo' }, store)
+    await $.tool.call({ tool: 'Bash', command: "cd /repo/sub && git commit -m 'feat: x'" })
+    const ui = await $.ui.mount({ plugin: 'xm', surface: 'terminal', component: 'Pane', requestId: 'relay-chat', props: pane })
+    expect(await ui.find({ type: 'Text', text: /리뷰 대기 커밋 \(1\)/ })).toBeDefined()
+    await ui.press({ key: 'review-dismiss' })
+    // The marker is stored for the session directory, which is the repository root here.
+    expect(store.get('reviewed:/repo')).toBe(SHA)
+    expect(await ui.find({ type: 'Text', text: /리뷰 대기 커밋/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a pair stored by an earlier session gets its conversation back, and a quiet line keeps the unread count', async ($, on) => {
+    const sent: string[] = []
+    const store = new Map<string, unknown>([['pair:/repo', { key: `codex:${CODEX}`, name: 'codex:019a1b2c', provider: 'codex', sessionId: CODEX }], ['auto:/repo', true]])
+    world(on, sent, { '/repo': `${SHA}\x1ffeat: x\x1f1760000000` }, store)
+    on('turn.complete', (_$, e) => ({ text: e.answer }))
+    on('session.receive', (_$, e) => ({ text: e.text }))
+    on('command.register', () => ({ value: undefined }))
+    on('session.start', (_$, e) => ({ cwd: e.cwd }))
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    // An unread peer message, then a commit and a turn end: the automatic request goes to the restored pair.
+    await $.session.receive({ origin: { kind: 'peer' }, text: RELAYED })
+    await $.tool.call({ tool: 'Bash', command: "git commit -m 'feat: x'" })
+    await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toContain(`--thread ${CODEX} --message [자동 검토]`)
+    const band = await $.ui.mount({ plugin: 'xm', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 100 } })
+    expect(await band.find({ key: 'band-open' })).toBeDefined()
+    await band.unmount()
+  })
+
+  test('a failed automatic request waits out the cooldown, and one without a request_id is not kept quiet', async ($, on) => {
+    const store = new Map<string, unknown>()
+    const clock = mock.clock(on, { now: 1_760_000_000_000 })
+    mock.env(on, { HOME: '/Users/me' })
+    on('store.get', (_$, e) => ({ value: store.get(e.key) }))
+    on('store.set', (_$, e) => { store.set(e.key, e.value); return { value: undefined } })
+    on('store.delete', (_$, e) => { store.delete(e.key); return { value: undefined } })
+    on('session.id', () => ({ value: OWN }))
+    on('session.cwd', () => ({ value: '/repo' }))
+    on('fs.exists', () => ({ value: false }))
+    on('turn.complete', (_$, e) => ({ text: e.answer }))
+    on('session.receive', (_$, e) => ({ text: e.text }))
+    on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false } }))
+    const toasts: string[] = []
+    on('ui.toast', (_$, e) => { toasts.push(e.text); return { value: undefined } })
+    let sendResult: { exitCode: number; stdout: string } = { exitCode: 1, stdout: '' }
+    let sends = 0
+    on('process.run', (_$, e) => {
+      const argv = e.argv.join(' ')
+      const ok = (stdout: string, exitCode = 0) => ({ value: { exitCode, stderr: exitCode ? 'no such session' : '', isStdoutTruncated: false, isStderrTruncated: false, stdout } })
+      if (e.argv[0] === 'git' && e.argv[3] === 'merge-base') return ok('')
+      if (e.argv[0] === 'git' && e.argv[3] === 'rev-parse') return ok('/repo\n')
+      if (e.argv[0] === 'git' && e.argv[3] === 'log') return ok(`${SHA}\x1ffeat: x\x1f1760000000`)
+      if (e.argv[0] === 'git' && e.argv[3] === 'diff') return ok(' 1 file changed, 2 insertions(+)')
+      if (argv.startsWith('xm relay send')) { sends += 1; return ok(sendResult.stdout, sendResult.exitCode) }
+      throw new Error(`unexpected command: ${argv}`)
+    })
+    await $.session.receive({ origin: { kind: 'peer' }, text: RELAYED })
+    const ui = await $.ui.mount({ plugin: 'xm', surface: 'terminal', component: 'Pane', requestId: 'relay-chat', props: pane })
+    await ui.press({ key: `tab-codex:${CODEX}` })
+    await ui.press({ key: 'pair-set' })
+    sends = 0
+    await ui.press({ key: 'auto-toggle' })
+    await $.tool.call({ tool: 'Bash', command: "git commit -m 'feat: x'" })
+    const turn = { answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' as const }
+    await $.turn.complete(turn)
+    expect(sends).toBe(1)
+    expect(toasts.some(t => t.startsWith('자동 리뷰 요청 실패'))).toBe(true)
+    // The next turn inside the cooldown does not ask again.
+    await $.turn.complete(turn)
+    expect(sends).toBe(1)
+    // After the cooldown a send that prints no request_id is reported and not kept quiet.
+    await clock.advance(31 * 60_000)
+    sendResult = { exitCode: 0, stdout: '{"ok":true,"state":"submitted"}' }
+    await $.turn.complete(turn)
+    expect(sends).toBe(2)
+    expect(toasts).toContain('자동 리뷰 요청의 request_id를 읽지 못했습니다. 답장은 모델에게 그대로 전달됩니다.')
+    expect(await ui.find({ type: 'Text', text: /🔕/ })).toBeUndefined()
     await ui.unmount()
   })
 

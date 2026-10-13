@@ -77,11 +77,15 @@ export function sendArgv(peer: Extract<Peer, { kind: 'xm' }>, text: string, ownS
 
 // A value named like a credential, or a token with a known prefix, is blanked
 // before the digest leaves the session; a 40-hex git sha is left alone.
-const SECRET_LINE = /\b(api[_-]?key|secret|token|password|passwd|authorization|bearer|private[_-]?key)\b\s*[:=]\s*\S/i
+// The key may sit inside a longer name (AWS_SECRET_ACCESS_KEY, POSTGRES_PASSWORD)
+// and may be quoted ("api_key": ...). Only a value that looks like a literal is
+// blanked, so `token === other` or `const token = parse(x)` stays readable.
+const SECRET_KEY = '(?:api[_-]?key|secret|token|password|passwd|authorization|bearer|private[_-]?key)'
+const SECRET_LINE = new RegExp(`(^|[^A-Za-z0-9])((?:[A-Za-z0-9]+[_-])*${SECRET_KEY}(?:[_-][A-Za-z0-9]+)*["']?\\s*[:=]\\s*)(?:["'][^"']{3,}|[A-Za-z0-9/+_.~-]{6,}).*$`, 'i')
 const SECRET_TOKEN = /\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abp]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,})/g
 
 export function maskSecrets(text: string): string {
-  return text.split('\n').map(line => (SECRET_LINE.test(line) ? line.replace(/([:=]\s*)\S.*$/, '$1[가림]') : line.replace(SECRET_TOKEN, '[가림]'))).join('\n')
+  return text.split('\n').map(line => line.replace(SECRET_LINE, '$1$2[가림]').replace(SECRET_TOKEN, '[가림]')).join('\n')
 }
 
 export type Exchange = { prompt: string; reply: string | null }
@@ -119,7 +123,7 @@ export const DIFF_MAX_LINES = 600
 
 // Paths whose content is a credential more often than code. They leave the
 // diff whole: the masking below catches values by shape, and a key file has none.
-export const SECRET_PATHS = ['**/.env', '**/.env.*', '**/*.pem', '**/*.key', '**/*.p12', '**/*.pfx', '**/id_rsa*', '**/id_ed25519*', '**/credentials*', '**/*secret*']
+export const SECRET_PATHS = ['**/.env*', '**/*.pem', '**/*.key', '**/*.p12', '**/*.pfx', '**/id_rsa*', '**/id_ed25519*', '**/credentials*', '**/*secret*']
 export const secretExcludes = (): string[] => SECRET_PATHS.map(glob => `:(exclude,glob)${glob}`)
 
 // Tests and documents are tried after the code they describe, so a cap keeps
@@ -165,22 +169,26 @@ function clip(text: string, limit: number): string {
 
 // Rows the person did not type: slash command echoes, relayed peer messages,
 // interruptions. They would show a peer the plumbing, not the conversation.
-const PROMPT_SKIP = /^\s*(<command-name>|<local-command-stdout>|<local-command-caveat>|<system-reminder|<cross-session-message|\[Request interrupted)/
+const PROMPT_SKIP = /^\s*(<command-name>|<local-command-stdout>|<local-command-caveat>|<system-reminder|<cross-session-message|<task-notification|\[Request interrupted)/
 
-function promptText(row: Record<string, unknown>): string | null {
+function rowText(row: Record<string, unknown>): string {
   const content = (row.message as { content?: unknown } | undefined)?.content
-  const text = typeof content === 'string'
+  return typeof content === 'string'
     ? content
     : Array.isArray(content)
       ? content.filter((b): b is { type: 'text'; text: string } => b?.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n')
       : ''
-  return text.trim() && !PROMPT_SKIP.test(text) ? text : null
 }
 
 /** The last `turns` exchanges of a transcript tail, oldest first: each prompt
  *  the person typed with the final text of the answer that followed it. */
 export function recentExchanges(tail: string, turns = EXCHANGE_TURNS, replyLimit = REPLY_LIMIT): Exchange[] {
   const found: Exchange[] = []
+  // The exchange the next answer belongs to. A user row with text the person did
+  // not type (a relayed message, a slash command) opens a turn of its own, so its
+  // answer must not land on the prompt before it. Tool results carry no text and
+  // an injected meta row arrives inside the same turn; neither closes it.
+  let current: Exchange | null = null
   for (const line of tail.split('\n')) {
     let row: Record<string, unknown>
     try {
@@ -190,13 +198,17 @@ export function recentExchanges(tail: string, turns = EXCHANGE_TURNS, replyLimit
     }
     if (row.isSidechain === true || row.isMeta === true) continue
     if (row.type === 'user') {
-      const prompt = promptText(row)
-      if (prompt) found.push({ prompt: clip(prompt, PROMPT_LIMIT), reply: null })
+      const text = rowText(row)
+      if (!text.trim()) continue
+      if (PROMPT_SKIP.test(text)) {
+        current = null
+        continue
+      }
+      current = { prompt: clip(text, PROMPT_LIMIT), reply: null }
+      found.push(current)
       continue
     }
-    if (row.type !== 'assistant') continue
-    const current = found.at(-1)
-    if (!current) continue
+    if (row.type !== 'assistant' || !current) continue
     const content = (row.message as { content?: unknown } | undefined)?.content
     if (!Array.isArray(content)) continue
     const reply = content
@@ -288,6 +300,8 @@ export type CommitCommand = { root: string | null }
 
 // A commit lands through git itself or through the git-kit verbs that commit.
 const COMMIT_VERBS: Record<string, readonly string[]> = { git: ['commit'], gk: ['commit', 'land'], 'git-kit': ['commit', 'land'] }
+// git's global options that take the next word as their value.
+const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace'])
 
 /** The commit a Bash command makes, with the directory it names (`cd <dir> &&`,
  *  `git -C <dir>`), or null when the command commits nothing. */
@@ -299,13 +313,16 @@ export function parseCommitCommand(command: string): CommitCommand | null {
   for (let i = 0; i < argv.length; i++) {
     const word = argv[i] ?? ''
     const following = argv[i + 1]
-    if (word === 'cd' && following && !following.startsWith('-')) root = following
-    const verbs = COMMIT_VERBS[word]
-    if (!verbs) continue
+    // A cd after the commit moves nothing the commit touched.
+    if (!found && word === 'cd' && following && !following.startsWith('-')) root = following
+    // Own keys only: a word such as `constructor` would otherwise read Object.prototype.
+    if (!Object.prototype.hasOwnProperty.call(COMMIT_VERBS, word)) continue
+    const verbs = COMMIT_VERBS[word] ?? []
     let j = i + 1
     while (argv[j]?.startsWith('-')) {
-      if (argv[j] === '-C' && argv[j + 1]) root = argv[j + 1] ?? null
-      j += argv[j] === '-C' ? 2 : 1
+      const flag = argv[j] ?? ''
+      if (flag === '-C' && argv[j + 1]) root = argv[j + 1] ?? null
+      j += GIT_VALUE_OPTIONS.has(flag) ? 2 : 1
     }
     if (!verbs.includes(argv[j] ?? '')) continue
     if (argv.slice(j).includes('--dry-run')) return null

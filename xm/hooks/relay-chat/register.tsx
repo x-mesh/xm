@@ -121,6 +121,12 @@ async function git($: EngineInterface, dir: string, args: readonly string[]): Pr
   return (await gitRun($, dir, args)).stdout
 }
 
+// Commits are grouped and marked reviewed by repository, so `cd sub && git
+// commit` and a commit from the session's own directory land in one place.
+async function repoRoot($: EngineInterface, dir: string): Promise<string> {
+  return (await git($, dir, ['rev-parse', '--show-toplevel']))?.trim() || dir
+}
+
 // Commits made outside this session's Bash tool (the person's own terminal, an
 // earlier session) are found in git: everything after the last reviewed commit,
 // or else what is not pushed yet, or else the last five.
@@ -134,7 +140,7 @@ async function seedCommits($: EngineInterface) {
   if (stdout === null) stdout = await git($, dir, ['log', COMMIT_FORMAT, '-n', String(KEEP_COMMITS), '@{upstream}..HEAD'])
   if (stdout === null) stdout = await git($, dir, ['log', COMMIT_FORMAT, '-n', String(SHOWN_COMMITS)])
   if (stdout === null) return
-  const found = parseCommitLog(stdout, dir, await $.clock.now()).reverse()
+  const found = parseCommitLog(stdout, await repoRoot($, dir), await $.clock.now()).reverse()
   if (!found.length) return
   await update($, commits, list => [...list, ...found.filter(f => !list.some(c => c.sha === f.sha))].slice(-KEEP_COMMITS))
 }
@@ -174,7 +180,8 @@ async function record($: EngineInterface, opening: Opening, line: ChatLine) {
       ...base,
       cwd: base.cwd ?? opening.cwd ?? null,
       lines: [...base.lines, line].slice(-KEEP_LINES),
-      unread: line.by === 'peer' ? base.unread + 1 : 0,
+      // A line the person sent reads the conversation; one the pane sent on its own does not.
+      unread: line.by === 'peer' ? base.unread + 1 : line.quiet ? base.unread : 0,
     }
     return found ? list.map(c => (c.key === opening.key ? next : c)) : [...list, next]
   })
@@ -221,7 +228,8 @@ async function noteCommit($: EngineInterface, root: string | null) {
   const [sha = '', subject = ''] = ran.stdout.trim().split('\x1f')
   if (!/^[0-9a-f]{40}$/.test(sha)) return
   const at = await $.clock.now()
-  await update($, commits, list => (list.some(c => c.sha === sha) ? list : [...list, { sha, subject, at, root: dir }].slice(-KEEP_COMMITS)))
+  const repo = await repoRoot($, dir)
+  await update($, commits, list => (list.some(c => c.sha === sha) ? list : [...list, { sha, subject, at, root: repo }].slice(-KEEP_COMMITS)))
   const who = await read($, pair)
   $.ui.toast(`커밋 ${sha.slice(0, 7)} · ${who ? `${who.name}에게 리뷰 요청 가능` : '리뷰 요청 가능'}`)
 }
@@ -233,11 +241,10 @@ async function requestReview($: EngineInterface) {
   if (!pending.length) return
   const who = await read($, pair)
   if (!who) {
-    await update($, picker, p => ({ ...p, forPair: true }))
-    await loadCandidates($)
+    await loadCandidates($, true)
     return
   }
-  const conversation = (await read($, conversations)).find(c => c.key === who.key)
+  const conversation = await pairConversation($, who)
   if (!conversation || !canPair(conversation.peer)) {
     $.ui.toast('페어 대화가 없습니다. 페어를 다시 지정하세요.')
     return
@@ -271,7 +278,32 @@ function pendingGroup(pending: readonly PendingCommit[]): Batch | null {
 
 async function settleGroup($: EngineInterface, batch: Batch) {
   await update($, commits, list => list.filter(c => !batch.group.some(g => g.sha === c.sha)))
-  if (batch.newest.root === await $.session.cwd()) await $.store.set(reviewedStoreKey(batch.newest.root), batch.newest.sha)
+  await markReviewed($, batch.newest)
+}
+
+// The marker is kept per session directory, for commits of that directory's repository.
+async function markReviewed($: EngineInterface, newest: PendingCommit | undefined) {
+  const cwd = await $.session.cwd()
+  if (newest && newest.root === await repoRoot($, cwd)) await $.store.set(reviewedStoreKey(cwd), newest.sha)
+}
+
+// Dismissed commits are marked reviewed, so the next seed from git does not bring them back.
+async function dismissCommits($: EngineInterface) {
+  const root = await repoRoot($, await $.session.cwd())
+  const newest = (await read($, commits)).filter(c => c.root === root).sort((a, b) => b.at - a.at)[0]
+  await markReviewed($, newest)
+  await update($, commits, () => [])
+}
+
+// The pair outlives the session in the store; the conversations do not. A pair
+// restored in a new session gets its conversation back from what was stored.
+async function pairConversation($: EngineInterface, who: Pair): Promise<Conversation | undefined> {
+  const found = (await read($, conversations)).find(c => c.key === who.key)
+  if (found) return found
+  const peer: Peer = { kind: 'xm', provider: who.provider, sessionId: who.sessionId }
+  const restored: Conversation = { key: who.key, name: who.name, peer, cwd: null, lines: [], unread: 0 }
+  await update($, conversations, list => (list.some(c => c.key === who.key) ? list : [...list, restored]))
+  return (await read($, conversations)).find(c => c.key === who.key)
 }
 
 // At the end of a turn with the option on: one light request per cooldown,
@@ -286,7 +318,7 @@ async function autoReviewTick($: EngineInterface, limits: AutoLimits) {
   const now = await $.clock.now()
   if (auto.lastAt !== null && now - auto.lastAt < limits.cooldownMs) return
   const who = await read($, pair)
-  const conversation = who ? (await read($, conversations)).find(c => c.key === who.key) : undefined
+  const conversation = who ? await pairConversation($, who) : undefined
   if (!conversation || !canPair(conversation.peer)) return
   const shortstat = await git($, batch.newest.root, ['diff', '--shortstat', `${batch.group[0]?.sha}~1`, batch.newest.sha])
   const lines = shortstat === null ? null : diffLines(shortstat)
@@ -299,12 +331,16 @@ async function autoReviewTick($: EngineInterface, limits: AutoLimits) {
   }
   const ran = await $.process.run(sendArgv(conversation.peer, lightReviewText(batch.range), await $.session.id()))
   if (ran.exitCode !== 0) {
+    // The cooldown spaces retries too: a pair that went away is not asked every turn.
+    await update($, autoReview, a => ({ ...a, lastAt: now }))
     $.ui.toast(`자동 리뷰 요청 실패 (${conversation.name}): ${ran.stderr.trim().split('\n')[0] || `exit ${ran.exitCode}`}`)
     return
   }
   const requestId = sentRequestId(ran.stdout)
   if (requestId) await update($, quietRequests, ids => [...ids, requestId].slice(-20))
-  await record($, conversation, { at: now, by: 'me', quiet: true, text: `자동 검토 요청 ${batch.range} · 커밋 ${batch.group.length}개 · diff ${lines}줄` })
+  else $.ui.toast('자동 리뷰 요청의 request_id를 읽지 못했습니다. 답장은 모델에게 그대로 전달됩니다.')
+  const quiet = requestId !== null
+  await record($, conversation, { at: now, by: 'me', quiet, text: `자동 검토 요청 ${batch.range} · 커밋 ${batch.group.length}개 · diff ${lines}줄` })
   await update($, autoReview, a => ({ ...a, lastAt: now, skippedSha: null, skippedLines: null }))
   await settleGroup($, batch)
 }
@@ -335,9 +371,11 @@ function unavailableLabel(c: Candidate): string {
 // Providers are listed in parallel and merged as each answers, so one slow
 // inventory does not hold back the others. Rows from the previous load stay
 // on screen until their provider answers again.
-async function loadCandidates($: EngineInterface) {
+// `forPair` is set by the review request that opens the picker to choose a
+// pair; every other opening clears it, so a plain add never becomes a pairing.
+async function loadCandidates($: EngineInterface, forPair = false) {
   const seq = ++loadSeq
-  await update($, picker, p => ({ ...p, isOpen: true, isLoading: true, pending: [...PROVIDERS], notes: [] }))
+  await update($, picker, p => ({ ...p, isOpen: true, isLoading: true, pending: [...PROVIDERS], notes: [], forPair }))
   const own = await $.session.id()
   const home = await $.env.get('HOME')
   await Promise.all(PROVIDERS.map(async provider => {
@@ -480,7 +518,7 @@ async function gatherContext($: EngineInterface, note: string | null) {
   // dropped out are listed so that the peer knows the diff is not whole.
   const scope = ['--', '.', ...secretExcludes()]
   const names = (s: string | null) => (s ?? '').split('\n').filter(Boolean)
-  const all = names(take(await gitRun($, cwd, ['diff', 'HEAD', '--name-only'])))
+  const all = names(take(await gitRun($, cwd, ['diff', 'HEAD', '--name-only', '--', '.'])))
   const kept = new Set(names(take(await gitRun($, cwd, ['diff', 'HEAD', '--name-only', ...scope]))))
   const excludedFiles = all.filter(n => !kept.has(n))
   const diffStat = take(await gitRun($, cwd, ['diff', 'HEAD', '--stat', ...scope])) ?? ''
@@ -765,7 +803,7 @@ export const register: Register = (on, options) => {
             {list.filter(c => c.peer && !(c.peer.kind === 'xm' && c.peer.provider === 'cursor')).length >= 2 && (
               <Button key="ctx-all" label="모두에게 맥락 공유" dimColor onPress={() => broadcastContext($)} />
             )}
-            <Button key="add" label={pick.isOpen ? '목록 새로고침' : '+ 상대 추가'} onPress={() => loadCandidates($)} />
+            <Button key="add" label={pick.isOpen ? '목록 새로고침' : '+ 상대 추가'} onPress={() => loadCandidates($, pick.isOpen && pick.forPair === true)} />
           </Box>
         </Box>
 
@@ -775,7 +813,7 @@ export const register: Register = (on, options) => {
               <Text bold>{`리뷰 대기 커밋 (${pending.length})`}</Text>
               <Box gap={1}>
                 <Button key="review-request" variant="primary" label={who ? `리뷰 요청 → ${fit(who.name, 14)}` : '페어 지정 후 리뷰 요청'} onPress={() => requestReview($)} />
-                <Button key="review-dismiss" label="지우기" dimColor onPress={() => update($, commits, () => [])} />
+                <Button key="review-dismiss" label="지우기" dimColor onPress={() => dismissCommits($)} />
               </Box>
             </Box>
             {pending.slice(-SHOWN_COMMITS).map(c => (
@@ -811,7 +849,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="subtle" paddingX={1}>
             <Box justifyContent="space-between">
               <Text bold>대화 상대 고르기</Text>
-              <Button key="pick-close" label="닫기" dimColor onPress={() => update($, picker, p => ({ ...p, isOpen: false }))} />
+              <Button key="pick-close" label="닫기" dimColor onPress={() => update($, picker, p => ({ ...p, isOpen: false, forPair: false }))} />
             </Box>
             {pick.forPair && <Text color="warning">페어로 쓸 Claude나 Codex 세션을 고르세요. 고른 세션에 바로 리뷰를 요청합니다.</Text>}
             {pick.isLoading && <Text dimColor>{`${(pick.pending ?? []).map(p => LABEL[p]).join(', ')} 조회 중…`}</Text>}
