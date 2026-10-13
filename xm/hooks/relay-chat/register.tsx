@@ -199,8 +199,11 @@ function clock(ts: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+// An id is matched from its start only: a short target found in the middle of
+// another conversation's UUID would send the message to the wrong session.
 function lookup(list: readonly Conversation[], target: string): Conversation | undefined {
-  return list.find(c => c.name === target) ?? list.find(c => c.key.includes(target) || c.name.startsWith(target))
+  return list.find(c => c.name === target)
+    ?? list.find(c => (c.peer?.kind === 'xm' && c.peer.sessionId.startsWith(target)) || c.name.startsWith(target))
 }
 
 export const register: Register = on => {
@@ -260,9 +263,13 @@ export const register: Register = on => {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const send = parseRelaySend(e.command)
     if (!send) return next(e)
-    const text = send.message ?? (send.messageFile ? await $.fs.read(send.messageFile).catch(() => undefined) : undefined)
+    const readMessageFile = () => send.messageFile ? $.fs.read(send.messageFile).catch(() => undefined) : Promise.resolve(undefined)
+    // The command can write the file before it sends it, so the bytes read after
+    // it ran are what went out; the earlier read covers a command that removed it.
+    const before = await readMessageFile()
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError === true) return ran
+    const text = send.message ?? (await readMessageFile()) ?? before
     // A piped command (`xm relay send ... | head`) exits 0 even when the send
     // failed, so read the CLI's own verdict from its JSON output.
     const stdout = (ran.result as { stdout?: unknown } | undefined)?.stdout

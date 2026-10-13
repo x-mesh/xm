@@ -86,15 +86,29 @@ function baseLabel(c: Named): string {
 }
 
 /** Display names keyed by conversation: the project directory instead of a bare
- *  session id, with the id's first four characters when two names collide. */
+ *  session id, with the end of the id when two names collide. A Codex id is a
+ *  UUIDv7 whose leading characters are a timestamp, so its start would collide too. */
 export function labels(all: readonly Named[]): Map<string, string> {
   const bases = new Map(all.map(c => [c.key, baseLabel(c)]))
   const counts = new Map<string, number>()
   for (const base of bases.values()) counts.set(base, (counts.get(base) ?? 0) + 1)
+  const idsByBase = new Map<string, string[]>()
+  for (const c of all) {
+    const id = c.peer?.kind === 'xm' ? c.peer.sessionId : null
+    const base = bases.get(c.key) ?? c.name
+    if (id) idsByBase.set(base, [...(idsByBase.get(base) ?? []), id])
+  }
+  const tailLength = new Map<string, number>()
+  for (const [base, ids] of idsByBase) {
+    let n = 4
+    while (n < 36 && new Set(ids.map(id => id.slice(-n))).size < ids.length) n += 1
+    tailLength.set(base, n)
+  }
   return new Map(all.map(c => {
     const base = bases.get(c.key) ?? c.name
     const id = c.peer?.kind === 'xm' ? c.peer.sessionId : null
-    return [c.key, (counts.get(base) ?? 0) > 1 && id ? `${base}#${id.slice(0, 4)}` : base]
+    const collides = (counts.get(base) ?? 0) > 1
+    return [c.key, collides && id ? `${base}#${id.slice(-(tailLength.get(base) ?? 4))}` : base]
   }))
 }
 

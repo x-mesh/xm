@@ -158,7 +158,12 @@ describe('view helpers', () => {
       { key: 'c', name: 'gk-fa', peer: xm('claude', PEER), cwd: '/w/gk' },
       { key: 'd', name: 'codex:019a1b2c', peer: xm('codex', CODEX), cwd: null },
     ])
-    expect([...names.values()]).toEqual(['edc#01a1', 'edc#01a1', 'gk-fa', '019a1b2c'])
+    expect([...names.values()]).toEqual(['edc#200a', 'edc#be7a', 'gk-fa', '019a1b2c'])
+    const sameTail = labels([
+      { key: 'a', name: '01a118cb', peer: xm('codex', '01a118cb-0fb1-7f60-94cb-80f67c11200a'), cwd: '/w/edc' },
+      { key: 'b', name: '01a1191e', peer: xm('codex', '01a1191e-1413-7ef1-8881-f535c811200a'), cwd: '/w/edc' },
+    ])
+    expect([...sameTail.values()]).toEqual(['edc#c11200a', 'edc#811200a'])
   })
 
   test('encode a two-cell badge as little-endian u32 triplets', () => {
@@ -405,6 +410,48 @@ describe('session.receive', () => {
     expect(await ui.find({ key: `tab-claude:${PEER}` }), 'successful send recorded').toBeDefined()
     expect(await ui.find({ type: 'Text', text: /모델: 안녕/ }), 'heredoc body shown').toBeDefined()
     expect(await ui.find({ key: `tab-claude:${OWN}` }), 'failed send skipped').toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a direct send matches an open conversation by the start of its id, not the middle', async ($, on) => {
+    mock.clock(on, { now: 1_760_000_000_000 })
+    mock.env(on, { HOME: '/Users/me' })
+    on('session.id', () => ({ value: OWN }))
+    on('session.receive', (_$, e) => ({ text: e.text }))
+    const sent: string[] = []
+    on('process.run', (_$, e) => {
+      const argv = e.argv.join(' ')
+      if (argv.startsWith('xm relay sessions')) return { value: { exitCode: 0, stderr: '', isStdoutTruncated: false, isStderrTruncated: false, stdout: JSON.stringify({ ok: true, sessions: [] }) } }
+      if (argv.startsWith('xm relay send')) { sent.push(argv); return { value: { exitCode: 0, stderr: '', isStdoutTruncated: false, isStderrTruncated: false, stdout: '{"ok":true}' } } }
+      throw new Error(`unexpected command: ${argv}`)
+    })
+    await $.session.receive({ origin: { kind: 'peer' }, text: RELAYED })
+    // '3d4e' sits in the middle of the open conversation's id.
+    const middle = await $.command.run({ command: 'relay-chat', args: '3d4e 안녕', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
+    expect(middle.text).toContain('대화 상대를 찾지 못했습니다')
+    expect(sent).toEqual([])
+    const start = await $.command.run({ command: 'relay-chat', args: '019a 안녕', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
+    expect(start.text).toContain('보냈습니다')
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toContain(`--thread ${CODEX}`)
+  })
+
+  test('records the message file as the command left it', async ($, on) => {
+    mock.clock(on, { now: 1_760_000_000_000 })
+    mock.env(on, { HOME: '/Users/me' })
+    let contents = '지난 메시지'
+    on('fs.read', () => ({ value: contents }))
+    on('tool.call', () => {
+      contents = '새 메시지'
+      return { result: { stdout: '{"ok":true,"state":"submitted"}', stderr: '', interrupted: false } }
+    })
+    await $.tool.call({ tool: 'Bash', command: `printf x > /tmp/m.md && xm relay send --provider claude --session ${PEER} --message-file /tmp/m.md` })
+    const ui = await $.ui.mount({
+      plugin: 'xm', surface: 'terminal', component: 'Pane', requestId: 'relay-chat',
+      props: { title: 'Relay 대화', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+    })
+    expect(await ui.find({ type: 'Text', text: /모델: 새 메시지/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /지난 메시지/ })).toBeUndefined()
     await ui.unmount()
   })
 
