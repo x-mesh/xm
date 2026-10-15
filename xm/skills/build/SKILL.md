@@ -137,6 +137,16 @@ fallback은 다음 조건을 모두 만족할 때만 추가합니다.
 - direct → planned escalation은 legacy harness fallback이 아닙니다. task-specific deterministic gate가 구체적인 실패를 검출했고 clean state에서 재실행할 때만 한 번 허용합니다.
 - public test 통과만으로 fast route 품질을 증명하지 않습니다. 숨은 경계와 실패 모드를 관측할 gate가 없으면 처음부터 planned route를 사용합니다.
 
+### Plan progress tracking
+
+When executing an executable x-plan session (`.xm/plan/<run-id>/`):
+
+- Before each task, run `xm build progress start --plan <run-id> --task <id>`.
+- After the task, run `xm build progress verify --plan <run-id> --task <id>`. It runs the plan's `validation.commands` and checks off the task only if they pass.
+- Treat a verify failure (exit code 2) as the task not done. Fix the work and verify again.
+- Never edit `tasks.md` or `progress.json` by hand. Both are generated.
+- At the end, run `xm build progress show --plan <run-id>` and report it to the user.
+
 ## Explicit Legacy Opt-In
 
 기존 CLI는 호환성을 위해 남아 있지만 사용자가 명령이나 기능을 명시한 경우에만 실행합니다.
